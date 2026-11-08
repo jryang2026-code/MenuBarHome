@@ -783,8 +783,6 @@ mod tests {
             &HashSet::new(),
             "http://api.deepseek.com/v1",
             "http://ha.example.com:8123/api",
-            false,
-            false,
             |origin, warning| {
                 prompts.borrow_mut().push((origin.to_string(), warning));
                 true
@@ -817,8 +815,6 @@ mod tests {
         let result = authorize_service_endpoints(
             "http://api.deepseek.com/v1",
             "https://ha.example.com/api",
-            false,
-            false,
             |origin, warning| {
                 prompts.borrow_mut().push((origin.to_string(), warning));
                 true
@@ -842,8 +838,6 @@ mod tests {
             &HashSet::new(),
             "http://192.168.1.8:11434/v1",
             "",
-            true,
-            false,
             |origin, warning| {
                 prompts.push((origin.to_string(), warning));
                 true
