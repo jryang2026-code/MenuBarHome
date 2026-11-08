@@ -4,20 +4,20 @@ Cursor loads each skill from `.cursor/skills/<name>/SKILL.md`. The frontmatter `
 
 ## Sources
 
-These skills come from three sources. The vendored date is 2026-11-03.
+Two sources remain. The vendored date is 2026-11-03; the pstack subset was localized on 2026-11-08.
 
-- pstack is by Lauren Tan. The source is https://github.com/cursor/plugins/tree/main/pstack. The MIT license is `pstack-LICENSE`.
-- tstack is the set at https://github.com/t3dotgg/tstack. Each directory name starts with `tstack-`, and the frontmatter `name` matches it.
+- `poteto-mode` and the retained `principle-*` subset derive from pstack by Lauren Tan. The source is https://github.com/cursor/plugins/tree/main/pstack. The MIT license is `pstack-LICENSE`. The rest of pstack (orchestration, model routing, Cursor playbooks) is retired and is not refreshed.
 - mattpocock skills are by Matt Pocock. The source is https://github.com/mattpocock/skills. The MIT license is `mattpocock-LICENSE`. Each directory and its frontmatter `name` start with `mp-`.
+- tstack was removed on 2026-11-08. Its GitHub PR workflows do not fit this GitLab repo.
 
 The pack includes the MIT licenses for pstack and for mattpocock. Those two files sit next to the skills.
 
 ## Refresh the skills
 
-Refresh from a pack directory that contains `pstack/`, `tstack/`, and `mattpocock/`.
+Only the mattpocock pack is refreshed. Use a pack directory that contains `mattpocock/`.
 
 1. Run `python3 .cursor/skills/refresh.py <pack>`.
 2. Set the vendored date in this file to the day of that run.
 3. Run `python3 .cursor/skills/refresh.py --check`.
 
-The script copies each skill with its helper files and writes the two license files next to the skills. It deletes only the directories and license files named in `vendor-manifest.json`, so a project-local skill stays. Mattpocock directories and frontmatter names gain an `mp-` prefix, and Skill tool arguments and slash commands in those skills gain it too. The script sets each tstack frontmatter `name` to its directory name. `tstack-full-stop` links to `tstack-full-send`. `poteto-help` links to the pstack README and guide on GitHub. When the pack has `pstack/agents/`, those files are copied to `.cursor/agents/`. `poteto-agent` reads `.cursor/skills/poteto-mode/SKILL.md` when that file exists.
+The script copies each mattpocock skill with its helper files and writes `mattpocock-LICENSE`. It deletes only the directories and license files named in `vendor-manifest.json`, so the project-local pstack subset stays. Mattpocock directories and frontmatter names gain an `mp-` prefix, and Skill tool arguments and slash commands in those skills gain it too. The script leaves `.cursor/agents/` untouched. `poteto-agent` reads `.cursor/skills/poteto-mode/SKILL.md`.

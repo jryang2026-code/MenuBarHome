@@ -55,3 +55,4 @@ docs/assets/AppIcon_*.png
 
 # 本地构建的带云台补丁 go2rtc（scripts/go2rtc-ptz/build.sh）
 scripts/go2rtc-ptz/out/
+__pycache__/

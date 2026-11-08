@@ -54,5 +54,5 @@ Linux 云代理的构建、检查与端口约定见 `docs/agents/cursor-cloud.md
 
 ## Cursor skills
 
-Before coding, read `.cursor/skills/poteto-mode/SKILL.md` and follow its playbook. Then use any fitting `tstack-`, `mp-`, or `principle-` skill. Sources and refresh steps are in `.cursor/skills/README.md`.
+Before coding, read `.cursor/skills/poteto-mode/SKILL.md` and follow its rules. Then use any fitting `mp-` or `principle-` skill. Sources and refresh steps are in `.cursor/skills/README.md`.
 

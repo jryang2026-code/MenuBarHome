@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Copy pstack, tstack, and mattpocock skills into this directory."""
+"""Copy mattpocock skills into this directory. The pstack and tstack packs are retired."""
 
 import argparse
 import json
@@ -14,16 +14,9 @@ LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 SKILL_ARG_RE = re.compile(
     r'(?P<pre>\b(?:with|for|and)\s+)(?P<q>["\'`])(?P<name>[a-z0-9-]+)(?P=q)'
 )
-SOURCES = ("pstack", "tstack", "mattpocock")
+SOURCES = ("mattpocock",)
 MANIFEST_NAME = "vendor-manifest.json"
 TEXT_SUFFIXES = {".md", ".yaml", ".yml", ".txt"}
-POTETO_PATH_SENTENCE = (
-    "With no path, before any other work, search `~/.cursor/plugins/`"
-)
-POTETO_PATH_REPLACEMENT = (
-    "With no path, read `.cursor/skills/poteto-mode/SKILL.md` when that file exists. "
-    "Otherwise, before any other work, search `~/.cursor/plugins/`"
-)
 
 
 def dest_name(source: str, folder: str) -> str:
@@ -151,32 +144,6 @@ def rewrite_mp_references(text: str, names: list[str]) -> str:
     return text
 
 
-def adapt_agent(name: str, text: str) -> str:
-    if name != "poteto-agent.md" or POTETO_PATH_REPLACEMENT.split(". ")[0] in text:
-        return text
-    if POTETO_PATH_SENTENCE not in text:
-        raise SystemExit("poteto-agent.md no longer has the plugin search sentence")
-    return text.replace(POTETO_PATH_SENTENCE, POTETO_PATH_REPLACEMENT, 1)
-
-
-def copy_agents(pack: Path, dest: Path, previous: dict[str, list[str]]) -> list[str]:
-    source = pack / "pstack" / "agents"
-    agents_dir = dest.parent / "agents"
-    if not source.is_dir():
-        return list(previous["agents"])
-    for name in previous["agents"]:
-        target = agents_dir / name
-        if target.is_file():
-            target.unlink()
-    agents_dir.mkdir(parents=True, exist_ok=True)
-    copied: list[str] = []
-    for path in sorted(source.glob("*.md")):
-        text = adapt_agent(path.name, path.read_text())
-        (agents_dir / path.name).write_text(text)
-        copied.append(path.name)
-    return copied
-
-
 def refresh(pack: Path, dest: Path) -> dict[str, int]:
     for source in SOURCES:
         if not (pack / source).is_dir():
@@ -218,14 +185,9 @@ def refresh(pack: Path, dest: Path) -> dict[str, int]:
     for skill_md in dest.glob("*/SKILL.md"):
         original = skill_md.read_text()
         rewritten = rewrite_plugin_links(original)
-        if skill_md.parent.name == "tstack-full-stop":
-            rewritten = rewritten.replace(
-                "../full-send/SKILL.md", "../tstack-full-send/SKILL.md"
-            )
         if rewritten != original:
             skill_md.write_text(rewritten)
-    owned_agents = copy_agents(pack, dest, previous)
-    counts["pstack"] += len(owned_agents)
+    owned_agents = list(previous["agents"])
     write_manifest(
         dest,
         {"skills": owned_skills, "licenses": owned_licenses, "agents": owned_agents},
@@ -299,9 +261,6 @@ def check(dest: Path) -> None:
         body = license_path.read_text()
         if "MIT License" not in body or holder not in body:
             errors.append(f"{license_name} is not the {holder} MIT license")
-    full_stop = dest / "tstack-full-stop" / "SKILL.md"
-    if full_stop.is_file() and "../full-send/SKILL.md" in full_stop.read_text():
-        errors.append("tstack-full-stop still points at ../full-send/SKILL.md")
     mp_names = sorted(
         (path.name[3:] for path in skill_dirs(dest) if path.name.startswith("mp-")),
         key=len,
@@ -339,7 +298,7 @@ def check(dest: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("pack", nargs="?", type=Path, help="directory with pstack/, tstack/, and mattpocock/")
+    parser.add_argument("pack", nargs="?", type=Path, help="directory with mattpocock/")
     parser.add_argument("--check", action="store_true", help="validate the skills directory without copying")
     parser.add_argument("--dest", type=Path, help="skills directory, default is this script's directory")
     args = parser.parse_args()
