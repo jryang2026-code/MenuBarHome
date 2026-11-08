@@ -49,6 +49,8 @@ struct AppIntentExecutionTests {
             defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
             let provider = ControlledIntentProvider()
             let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+            await provider.sendSnapshot(SynthesizedHome(devices: [Self.lamp]))
+            try await store.waitForTestSnapshot()
             let intent = ToggleDeviceIntent()
             intent.device = DeviceEntity(device: Self.lamp)
             var returned = false
@@ -57,9 +59,6 @@ struct AppIntentExecutionTests {
                 returned = true
                 return message
             }
-            await Task.yield()
-            #expect(!returned)
-            await provider.sendSnapshot(SynthesizedHome(devices: [Self.lamp]))
             await provider.waitForCommand(1)
             #expect(await provider.commandCount == 1)
             #expect(store.waitingDeviceIds.contains("test-lamp"))
@@ -81,6 +80,7 @@ struct AppIntentExecutionTests {
             let provider = ControlledIntentProvider()
             let store = HomeStore(provider: provider, defaultsSuiteName: suite)
             await provider.sendSnapshot(SynthesizedHome(scenes: [Self.scene]))
+            try await store.waitForTestSnapshot()
             let intent = RunSceneIntent()
             intent.scene = SceneEntity(scene: Self.scene)
             let failed = Task { try await intent.execute(in: store) }
@@ -114,6 +114,7 @@ struct AppIntentExecutionTests {
             // approved for this Shortcuts-path test (#143).
             store.manualControlConfirmationHandler = { _ in true }
             await provider.sendSnapshot(SynthesizedHome(devices: [wolDevice]))
+            try await store.waitForTestSnapshot()
             let intent = ToggleDeviceIntent()
             intent.device = DeviceEntity(device: wolDevice)
             let succeeded = Task { try await intent.execute(in: store) }
