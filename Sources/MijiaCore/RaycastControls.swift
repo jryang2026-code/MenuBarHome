@@ -139,7 +139,6 @@ extension HomeStore {
             guard !dev.name.isEmpty else { return false }
             let combined = "\(dev.roomName)\(dev.name)"
             return dev.name.localizedCaseInsensitiveContains(clean)
-                || clean.localizedCaseInsensitiveContains(dev.name)
                 || combined.localizedCaseInsensitiveContains(clean)
         }
         if substring.count == 1 { return substring[0] }
@@ -295,6 +294,12 @@ extension HomeStore {
         }
         guard let cmd = command else {
             return (true, L10n.format("%@ 不支持该位置调节", "%@ does not support that position", device.name), true)
+        }
+        let origin = activeCoverOrigin(for: device.id, fallback: spec.positionPercent)
+        if let previous = spec.positionPercent, clamped != previous {
+            spec.motion = clamped > previous ? .opening : .closing
+            spec.motionIsInferred = false
+            coverCommandOrigins[device.id] = origin
         }
         spec.positionPercent = clamped
         var updated = device

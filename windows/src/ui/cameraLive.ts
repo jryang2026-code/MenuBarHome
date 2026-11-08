@@ -79,6 +79,10 @@ export class CameraLiveController {
       this.liveCameraHidden = false;
       this.clearCameraKeepAlive();
       invokeTauriVoid("set_pin_popover", { pin: true });
+      // A power-on while hidden skips the reconnect, so this is the first chance to start it.
+      if (dev.kind.isOn && !this.liveCameraImgEl && !this.liveCameraRawMediaEl && !this.liveCameraLoading && !this.liveCameraError) {
+        this.reconnectCameraLiveView();
+      }
       this.host.render();
       return;
     }

@@ -643,7 +643,7 @@ extension HomeStore {
         )
     }
 
-    private func activeCoverOrigin(for deviceId: String, fallback: Int?) -> Int? {
+    func activeCoverOrigin(for deviceId: String, fallback: Int?) -> Int? {
         if let lockUntil = optimisticLockUntil[deviceId], ContinuousClock.now < lockUntil,
            let origin = coverCommandOrigins[deviceId] {
             return origin

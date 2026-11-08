@@ -86,6 +86,31 @@ struct ControlWriteTests {
         #expect(store.optimisticLockUntil["curtain"] == nil)
     }
 
+    @Test("A Raycast link with a delay or a second target is left to the assistant")
+    func raycastDirectMatchNeedsTheWholeTarget() async throws {
+        let store = try await makeStore()
+        for text in ["十分钟后把窗帘开到50%", "半小时后把风扇风速调到30%", "打开窗帘和台灯", "打开窗帘灯"] {
+            let result = await store.executeRaycastDirectCommand(text)
+            #expect(!result.handled, "\(text)")
+        }
+    }
+
+    @Test("A Raycast cover move records where the cover started, like a card move")
+    func raycastCoverMoveRecordsOrigin() async throws {
+        let provider = RefusingProvider(snapshot: SynthesizedHome(devices: [Self.curtain]), refuses: false)
+        let store = HomeStore(provider: provider, defaultsSuiteName: "test.controlwrite.\(UUID().uuidString)")
+        store.toastAutoDismissInterval = nil
+        try await store.waitForTestSnapshot()
+        let result = await store.executeRaycastDirectCommand("把窗帘开到70%")
+        #expect(result.handled && !result.isError)
+        #expect(store.coverCommandOrigins["curtain"] == 40)
+        guard case .cover(let s) = store.devices.first(where: { $0.id == "curtain" })?.kind else {
+            Issue.record("curtain missing")
+            return
+        }
+        #expect(s.motion == .opening)
+    }
+
     @Test("Card and Raycast fan speed share one change: power on and switch to Favorite")
     func fanPercentageChangeIsShared() async throws {
         let change = try #require(HomeStore.fanPercentageChange(Self.fan, percent: 0))
@@ -101,8 +126,12 @@ struct ControlWriteTests {
 /// A provider that accepts the snapshot but refuses every write.
 private actor RefusingProvider: HomeProvider {
     private let snapshot: SynthesizedHome
+    private let refuses: Bool
 
-    init(snapshot: SynthesizedHome) { self.snapshot = snapshot }
+    init(snapshot: SynthesizedHome, refuses: Bool = true) {
+        self.snapshot = snapshot
+        self.refuses = refuses
+    }
 
     nonisolated func events() -> AsyncStream<HomeProviderEvent> {
         AsyncStream { continuation in
@@ -116,6 +145,7 @@ private actor RefusingProvider: HomeProvider {
     }
 
     func execute(_ command: DeviceCommand) async throws {
+        guard refuses else { return }
         throw HomeProviderError.serviceCallFailed(500, "refused")
     }
 

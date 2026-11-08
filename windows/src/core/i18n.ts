@@ -280,6 +280,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "「{action}」属于高风险设备，再点一次确认执行": ["「{action}」属于高风险设备，再点一次确认执行", "「{action}」is a high-risk device. Tap again to confirm."],
   "高风险设备需要先确认，未设定定时": ["高风险设备需要先确认，未设定定时", "High-risk devices need confirmation first, so no timer was set"],
   "出错提示": ["出错提示", "Error"],
+  "服务地址未生效": ["服务地址未生效", "Service address not applied"],
   "控制失败": ["控制失败", "Control failed"],
   "撤销提示": ["撤销提示", "Undo"],
   "已恢复": ["已恢复", "Restored"],

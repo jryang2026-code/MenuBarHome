@@ -100,6 +100,22 @@ afterEach(async () => {
 });
 
 describe("Service endpoint submission", () => {
+  it("shows why a service endpoint was rejected", async () => {
+    const invoke = async (command: string): Promise<unknown> => {
+      if (command === "set_service_endpoints") throw "AI 服务地址必须使用 https 或局域网地址：http://api.example.com";
+      return undefined;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "demo",
+      hasCompletedOnboarding: true,
+      assistantBaseURL: "http://api.example.com/v1",
+    }));
+    const app = new MenuMijiaWindowsApp(element("#app"));
+    await setImmediate();
+    assert.match(app.replyBanner?.text ?? "", /必须使用 https/);
+  });
+
   it("sends the saved assistant and Home Assistant URLs and not a free origin list", async () => {
     const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
     const invoke = async (command: string, args: Record<string, unknown> = {}) => {
@@ -2136,6 +2152,34 @@ describe("Smart camera support and live view (#97)", () => {
     await waitFor(() => document.querySelector("#cc-camera-live-img") !== null);
     assert.equal(bridges.length, 1, "reopening must reveal the existing handshake without stopping the camera");
     assert.equal(app.cameraLive.liveCameraHidden, false);
+    app.cameraLive.closeCameraLiveView();
+  });
+
+  it("connects a camera that was powered on while its view was hidden", async () => {
+    const bridges: string[] = [];
+    const invoke = async (name: string, args: Record<string, unknown> = {}): Promise<unknown> => {
+      if (name === "go2rtc_endpoint") return { origin: "http://127.0.0.1:43123" };
+      if (name === "bridge_hls_camera_stream") {
+        bridges.push(String(args.hlsUrl));
+        return "cam_mjpeg_living";
+      }
+      if (name === "go2rtc_jpeg_frame") return "aGVsbG8";
+      return undefined;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "demo", hasCompletedOnboarding: true,
+      cameraStreamURLs: { "camera.living_cam": "https://example.com/live.m3u8" },
+    }));
+    const app = new MenuMijiaWindowsApp(element("#app"));
+    const camera = app.devices.find((device) => device.id === "camera.living_cam")!;
+    Object.assign(camera.kind, { isOn: false });
+    app.cameraLive.openCameraLiveView("camera.living_cam");
+    app.cameraLive.hideCameraLiveView();
+    assert.equal(bridges.length, 0);
+    Object.assign(camera.kind, { isOn: true });
+    app.cameraLive.openCameraLiveView("camera.living_cam");
+    await waitFor(() => bridges.length === 1);
     app.cameraLive.closeCameraLiveView();
   });
 

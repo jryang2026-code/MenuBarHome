@@ -193,7 +193,7 @@ final class AutomationEngine {
                 rule-check trigger=\(trigger.rawValue, privacy: .public) \
                 rule=\(rule.id.uuidString.prefix(8), privacy: .public) \
                 wifi=\(result.logToken, privacy: .public) \
-                ssid=\(reading?.ssid ?? "-", privacy: .public) \
+                ssid=\(reading?.ssid ?? "-", privacy: .private) \
                 verdict=\(result.isSatisfied ? "run" : "skip", privacy: .public)
                 """
             )
@@ -341,21 +341,21 @@ final class AutomationEngine {
     /// by a cached SSID, otherwise a rule would fire on a network the Mac already left.
     private func wifiReadingForDispatch(at now: Date) -> WiFiReading? {
         if let lockTimeWiFi, lockTimeWiFi.isFresh(at: now) {
-            logger.notice("wifi-source lock-time ssid=\(lockTimeWiFi.ssid ?? "-", privacy: .public)")
+            logger.notice("wifi-source lock-time ssid=\(lockTimeWiFi.ssid ?? "-", privacy: .private)")
             return lockTimeWiFi
         }
         let live = captureWiFi(at: now)
         if live.ssid != nil || !live.isAuthorized {
             logger.notice(
                 """
-                wifi-source live ssid=\(live.ssid ?? "-", privacy: .public) \
+                wifi-source live ssid=\(live.ssid ?? "-", privacy: .private) \
                 authorized=\(live.isAuthorized, privacy: .public)
                 """
             )
             return live
         }
         if let cached = lastKnownWiFi, cached.isFresh(at: now), cached.ssid != nil {
-            logger.notice("wifi-source cached ssid=\(cached.ssid ?? "-", privacy: .public)")
+            logger.notice("wifi-source cached ssid=\(cached.ssid ?? "-", privacy: .private)")
             return cached
         }
         logger.notice("wifi-source none")

@@ -129,7 +129,14 @@ export function submitServiceEndpoints(host: MenuMijiaWindowsApp, force = false)
       haUrl,
       assistantIsLocalNetwork: isLocalNetworkURL(assistantUrl),
       haIsLocalNetwork: isLocalNetworkURL(haUrl),
-    }).catch(() => undefined);
+    }).catch((error: unknown) => {
+      host.replyBanner = {
+        text: error instanceof Error ? error.message : String(error),
+        source: t("服务地址未生效"),
+        isError: true,
+      };
+      host.render();
+    });
   }
 
   /** Restores the last known release so an update found yesterday still shows after a restart. */
