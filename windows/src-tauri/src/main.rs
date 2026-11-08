@@ -567,9 +567,7 @@ mod tests {
                 url: invoke_url.clone(),
                 body: tauri::ipc::InvokeBody::Json(serde_json::json!({
                     "assistantUrl": "https://evil.example",
-                    "haUrl": "",
-                    "assistantIsLocalNetwork": false,
-                    "haIsLocalNetwork": false
+                    "haUrl": ""
                 })),
                 headers: Default::default(),
                 invoke_key: tauri::test::INVOKE_KEY.to_string(),
@@ -616,8 +614,6 @@ mod tests {
             &empty,
             "HTTPS://API.DeepSeek.com:8443/v1",
             "http://[::1]:8123/api",
-            false,
-            true,
             |_, _| true,
         )
         .expect("confirmed endpoints authorize");
@@ -646,8 +642,6 @@ mod tests {
             &granted,
             "https://evil.example",
             "http://[::1]:8123/api",
-            false,
-            true,
             |_, _| false,
         );
         assert!(denied.is_err());
@@ -661,8 +655,6 @@ mod tests {
             &granted,
             "",
             "http://[::1]:8123/api",
-            false,
-            true,
             |_, _| false,
         )
         .expect("dropping an endpoint does not need a new grant");
@@ -692,6 +684,16 @@ mod tests {
     }
 
     #[test]
+    fn native_classification_rejects_public_plaintext_ai_endpoints() {
+        let public = requested_service_origins("http://evil.example/v1", "").expect("parses");
+        assert!(public.rejected_assistant.is_some());
+        assert!(public.origins.is_empty());
+        let local = requested_service_origins("http://192.168.1.5:11434/v1", "").expect("parses");
+        assert!(local.rejected_assistant.is_none());
+        assert_eq!(local.origins.len(), 1);
+    }
+
+    #[test]
     fn confirmation_warning_matches_the_shared_local_network_golden() {
         let raw = include_str!("../../../Tests/Fixtures/local_network_endpoint_golden.json");
         let golden: serde_json::Value = serde_json::from_str(raw).expect("LAN endpoint golden");
@@ -705,7 +707,7 @@ mod tests {
             } else {
                 format!("http://{host}")
             };
-            let requested = requested_service_origins("", &url, false, is_local)
+            let requested = requested_service_origins("", &url)
                 .expect("golden endpoint must parse");
             assert!(requested.rejected_assistant.is_none(), "{host}");
             assert_eq!(requested.origins.len(), 1, "{host}");
@@ -734,8 +736,6 @@ mod tests {
             &empty,
             "https://api.deepseek.com/v1",
             "http://ha.example.com:8123/api",
-            false,
-            false,
             confirm,
         )
         .expect("public plaintext Home Assistant is confirmed");
@@ -753,8 +753,6 @@ mod tests {
             &empty,
             "https://api.deepseek.com/v1",
             "http://192.168.1.8:8123/api",
-            false,
-            true,
             confirm,
         )
         .expect("LAN Home Assistant is confirmed");
@@ -769,8 +767,6 @@ mod tests {
             &empty,
             "https://api.deepseek.com/v1",
             "https://ha.example.com/api",
-            false,
-            false,
             confirm,
         )
         .expect("HTTPS Home Assistant is confirmed");

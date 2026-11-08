@@ -253,6 +253,38 @@ impl ServiceOrigins {
     }
 }
 
+const LOCAL_HOST_SUFFIXES: &[&str] = &[".local", ".lan", ".home.arpa", ".internal"];
+
+/// Native copy of `isLocalNetworkEndpoint`, so a compromised WebView cannot vouch for a public
+/// host. Both sides are held to `Tests/Fixtures/local_network_endpoint_golden.json`.
+pub(crate) fn is_local_network_host(host: &str) -> bool {
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        let [a, b, ..] = ip.octets();
+        return a == 127
+            || a == 10
+            || (a == 192 && b == 168)
+            || (a == 169 && b == 254)
+            || (a == 172 && (16..=31).contains(&b))
+            || (a == 100 && (64..=127).contains(&b));
+    }
+    if let Ok(ip) = host.parse::<std::net::Ipv6Addr>() {
+        let first = ip.segments()[0];
+        return ip.is_loopback() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80;
+    }
+    if host == "localhost" || LOCAL_HOST_SUFFIXES.iter().any(|suffix| host.ends_with(suffix)) {
+        return true;
+    }
+    let two_letter_tld = host.len() == 2 && host.bytes().all(|byte| byte.is_ascii_lowercase());
+    !host.contains('.') && !host.starts_with("xn--") && host.is_ascii() && !two_letter_tld
+}
+
+fn origin_is_local_network(origin: &str) -> bool {
+    reqwest::Url::parse(origin)
+        .ok()
+        .and_then(|url| url.host_str().map(normalize_host))
+        .is_some_and(|host| is_local_network_host(&host))
+}
+
 /// Configured origins paired with whether their dialog needs a plaintext warning.
 ///
 /// A public plaintext AI endpoint is left out and remembered for rejection, so an
@@ -260,18 +292,13 @@ impl ServiceOrigins {
 pub(crate) fn requested_service_origins(
     assistant_url: &str,
     ha_url: &str,
-    assistant_is_local_network: bool,
-    ha_is_local_network: bool,
 ) -> Result<ServiceOrigins, String> {
     let mut requested = ServiceOrigins::default();
-    for (raw, is_local_network, is_assistant) in [
-        (assistant_url, assistant_is_local_network, true),
-        (ha_url, ha_is_local_network, false),
-    ] {
+    for (raw, is_assistant) in [(assistant_url, true), (ha_url, false)] {
         let Some(origin) = service_origin(raw)? else {
             continue;
         };
-        let plaintext_warning = origin.starts_with("http://") && !is_local_network;
+        let plaintext_warning = origin.starts_with("http://") && !origin_is_local_network(&origin);
         if is_assistant && plaintext_warning {
             requested.rejected_assistant = Some(origin);
             continue;
@@ -360,15 +387,11 @@ pub(crate) fn decide_service_origins(
     current: &HashSet<String>,
     assistant_url: &str,
     ha_url: &str,
-    assistant_is_local_network: bool,
-    ha_is_local_network: bool,
     confirm: impl FnMut(&str, bool) -> bool,
 ) -> Result<HashSet<String>, String> {
     let requested = requested_service_origins(
         assistant_url,
         ha_url,
-        assistant_is_local_network,
-        ha_is_local_network,
     )?;
     let authorized = confirm_novel_origins(current, &requested, confirm)?;
     if let Some(message) = requested.rejection() {
@@ -380,16 +403,12 @@ pub(crate) fn decide_service_origins(
 pub(crate) fn authorize_service_endpoints(
     assistant_url: &str,
     ha_url: &str,
-    assistant_is_local_network: bool,
-    ha_is_local_network: bool,
     confirm: impl FnMut(&str, bool) -> bool,
 ) -> Result<(), String> {
     let current = allowed_origins_snapshot()?;
     let requested = requested_service_origins(
         assistant_url,
         ha_url,
-        assistant_is_local_network,
-        ha_is_local_network,
     )?;
     let next = confirm_novel_origins(&current, &requested, confirm)?;
     store_authorized(&next)?;
@@ -458,14 +477,10 @@ pub(crate) fn user_confirms_origin(_origin: &str, _plaintext_warning: bool) -> b
 pub(crate) fn set_service_endpoints(
     assistant_url: String,
     ha_url: String,
-    assistant_is_local_network: bool,
-    ha_is_local_network: bool,
 ) -> Result<(), String> {
     authorize_service_endpoints(
         &assistant_url,
         &ha_url,
-        assistant_is_local_network,
-        ha_is_local_network,
         user_confirms_origin,
     )
 }

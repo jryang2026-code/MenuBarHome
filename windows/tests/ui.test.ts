@@ -137,8 +137,6 @@ describe("Service endpoint submission", () => {
       {
         assistantUrl: "HTTPS://API.DeepSeek.com:8443/v1",
         haUrl: "http://[::1]:8123/api",
-        assistantIsLocalNetwork: false,
-        haIsLocalNetwork: true,
       },
     ]);
     assert.equal(calls.some((call) => call.command === "set_allowed_origins"), false);
@@ -165,8 +163,6 @@ describe("Service endpoint submission", () => {
       {
         assistantUrl: "https://api.deepseek.com/v1",
         haUrl: "http://ha.example.com:8123",
-        assistantIsLocalNetwork: false,
-        haIsLocalNetwork: false,
       },
     ]);
   });
@@ -192,8 +188,6 @@ describe("Service endpoint submission", () => {
       {
         assistantUrl: "https://api.deepseek.com/v1",
         haUrl: "http://homeassistant.lan:8123",
-        assistantIsLocalNetwork: false,
-        haIsLocalNetwork: true,
       },
     ]);
   });

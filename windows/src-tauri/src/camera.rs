@@ -383,7 +383,7 @@ pub(crate) const GO2RTC_EXE_SHA256: &str =
 /// Tauri resource directory subfolder populated by `bundle.resources` (see tauri.conf.json).
 pub(crate) const CAMERA_COMPONENT_DIR: &str = "camera-bin";
 const CAMERA_MANUAL_BIN_HINT: &str =
-    "或手动下载 go2rtc_win64.zip，解压后把 go2rtc.exe 放到 %LOCALAPPDATA%\\MenuBarMijia\\bin\\";
+    "或手动下载 go2rtc v1.9.15 的 go2rtc_win64.zip（必须是这个版本，其他版本校验不通过），解压后把 go2rtc.exe 放到 %LOCALAPPDATA%\\MenuBarMijia\\bin\\";
 
 /// go2rtc `subtype` for a Xiaomi MISS stream (#97). `max` is numeric subtype 3, which
 /// several 4K models require; `None` keeps the historical `hd` default.

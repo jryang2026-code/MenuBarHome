@@ -9,9 +9,19 @@ private actor FakePTZClient: CameraPTZControlling {
     var stopResult = CameraPTZStopResult(sent: true, confirmed: false, mode: .continuous)
 
     func begin() async throws -> (token: CameraPTZSessionToken, mode: CameraPTZMotionMode?) {
-        try await withCheckedThrowingContinuation { continuation in
-            beginContinuation = continuation
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                beginContinuation = continuation
+            }
+        } onCancel: {
+            Task { await self.failBegin() }
         }
+    }
+
+    /// `URLSession` throws as soon as its task is cancelled, even after the bridge accepted `begin`.
+    private func failBegin() {
+        beginContinuation?.resume(throwing: CancellationError())
+        beginContinuation = nil
     }
 
     func releaseBegin(_ token: CameraPTZSessionToken, mode: CameraPTZMotionMode = .unknown) {

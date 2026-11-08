@@ -32,11 +32,9 @@ extension CameraLivePanelController {
             // begin sees the old session active and fails (or races its stop).
             await previousStop?.value
             do {
+                // Never cancelled: a cancelled request can throw after the bridge opened the
+                // session, leaving no token to stop it. A finished drag stops it below instead.
                 let begin = try await client.begin()
-                if Task.isCancelled {
-                    try? await client.stop(token: begin.token)
-                    return
-                }
                 guard let self, self.ptzDragID == dragID else {
                     try? await client.stop(token: begin.token)
                     return
@@ -48,7 +46,7 @@ extension CameraLivePanelController {
                     self.enqueueMove(direction)
                 }
             } catch {
-                guard let self, !Task.isCancelled, self.ptzDragID == dragID else { return }
+                guard let self, self.ptzDragID == dragID else { return }
                 self.showPTZNotice(error.localizedDescription)
                 self.finishPTZMove(notify: false)
             }
@@ -136,7 +134,7 @@ extension CameraLivePanelController {
             }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
-                guard let self, !Task.isCancelled, self.ptzDragID == dragID else { return }
+                guard let self, self.ptzDragID == dragID else { return }
                 let commands = self.ptzPlanner.heartbeat(time: self.ptzTime)
                 if commands.contains(.stop) {
                     self.finishPTZMove()
@@ -153,7 +151,7 @@ extension CameraLivePanelController {
     /// attempted even when the move task failed. Any result is guarded by the device that
     /// started the drag, so an old stop cannot put a notice over a newly opened camera.
     func finishPTZMove(notify: Bool = true) {
-        ptzBeginTask?.cancel()
+        let pendingBegin = ptzBeginTask
         ptzBeginTask = nil
         ptzHeartbeatTask?.cancel()
         ptzHeartbeatTask = nil
@@ -166,7 +164,11 @@ extension CameraLivePanelController {
         ptzDeviceId = nil
         let lifecycleID = ptzLifecycleID
         _ = ptzPlanner.cancel()
-        guard let token, let client = ptzClient else { return }
+        guard let token, let client = ptzClient else {
+            // The begin task stops its own session; the next drag must wait for that first.
+            if let pendingBegin { ptzStopTask = pendingBegin }
+            return
+        }
         let stopTask = Task { @MainActor [weak self] in
             do {
                 let result = try await client.stop(token: token)
@@ -219,7 +221,6 @@ extension CameraLivePanelController {
         client: (any CameraPTZControlling)? = nil,
         hasFrame: Bool = true
     ) {
-        ptzBeginTask?.cancel()
         ptzBeginTask = nil
         ptzHeartbeatTask?.cancel()
         ptzHeartbeatTask = nil

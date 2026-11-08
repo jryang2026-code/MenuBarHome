@@ -14,7 +14,7 @@ import {
 import { credentialsFromSettings, hasCredentials } from "../core/secureStore.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { normalizeMiCloudRegion } from "../core/miCloudClient.js";
-import { assistantEndpointIdentity, isLocalNetworkURL } from "../core/assistant.js";
+import { assistantEndpointIdentity } from "../core/assistant.js";
 import { setLanguage, resolveLanguage } from "../core/i18n.js";
 import { applyTemperatureUnit } from "../core/temperature.js";
 import { cloudRefreshDue } from "../core/models.js";
@@ -127,8 +127,6 @@ export function submitServiceEndpoints(host: MenuMijiaWindowsApp, force = false)
     host.endpointSubmission = invoke("set_service_endpoints", {
       assistantUrl,
       haUrl,
-      assistantIsLocalNetwork: isLocalNetworkURL(assistantUrl),
-      haIsLocalNetwork: isLocalNetworkURL(haUrl),
     }).catch((error: unknown) => {
       host.replyBanner = {
         text: error instanceof Error ? error.message : String(error),
