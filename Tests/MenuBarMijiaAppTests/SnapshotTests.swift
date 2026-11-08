@@ -84,6 +84,7 @@ struct SnapshotTests {
 
     // MARK: - Room order (#146)
 
+    #if DEBUG
     @Test("The room-order list renders over the dashboard with 16 rooms")
     func roomOrderSnapshot() async throws {
         let fixture = try await SnapshotFixture(roomCount: 16, editMode: .roomOrder)
@@ -109,6 +110,7 @@ struct SnapshotTests {
             "16 rooms must overflow the list so the drag can scroll"
         )
     }
+    #endif
 
     // MARK: - Device cards: light / climate / plug / sensor / TV
 
@@ -1307,7 +1309,9 @@ private struct SnapshotFixture {
         UserDefaults.standard.removeObject(forKey: RoomPrefs.orderKey)
         UserDefaults.standard.removeObject(forKey: RoomPrefs.aliasesKey)
         // The session state is a process-wide observable: a previous test's draft must not leak in.
+        #if DEBUG
         LayoutUIState.shared.resetForTesting()
+        #endif
 
         let suiteName = "MenuBarMijiaSnapshotTests-\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
@@ -1397,7 +1401,9 @@ private struct SnapshotFixture {
         } else {
             UserDefaults.standard.removeObject(forKey: RoomPrefs.aliasesKey)
         }
+        #if DEBUG
         LayoutUIState.shared.resetForTesting()
+        #endif
     }
 }
 

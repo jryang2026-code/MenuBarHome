@@ -32,7 +32,8 @@ DMG="$DIST/MenuBarHome-$VERSION.dmg"
 
 echo "▶ [0/5] 运行门禁检查与 Release 模式单元测试..."
 bash scripts/check.sh --lint-only
-swift test -c release
+# Baselines are this maintainer Mac's rendering, so releases built on CI cannot compare them.
+bash scripts/ci_swift_test.sh -c release --skip SnapshotTests
 
 # 发布包必须带上正确的 40 位证书 SHA-1。缺失或无效时应用内更新会失败关闭。
 if [ "$DEVELOPER_ID" = "-" ]; then

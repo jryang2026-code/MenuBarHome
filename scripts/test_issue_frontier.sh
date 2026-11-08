@@ -4,6 +4,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# BSD awk in a UTF-8 locale splits the wide-character columns differently.
+export LC_ALL=C
 export ISSUE_FRONTIER_FIXTURES=scripts/testdata/issue-frontier
 failures=0
 pass() { printf 'PASS %s\n' "$1"; }

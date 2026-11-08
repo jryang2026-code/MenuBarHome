@@ -195,11 +195,20 @@ jobs:
           fi
           echo "✅ 签名身份与证书 pin 就绪：$IDENTITY ($CERT_SHA1)"
 
+      - name: Match the maintainer's region
+        # 温度单位跟随系统区域。托管机默认美国区（华氏度），测试的基准是中国区。
+        run: |
+          defaults write -g AppleLocale zh_CN
+          defaults write -g AppleMetricUnits -bool true
+          defaults write -g AppleMeasurementUnits Centimeters
+          defaults write -g AppleTemperatureUnit Celsius
+
       - name: Lint, test, sign, and build DMG
         env:
           DEVELOPER_ID: ${{ steps.signing.outputs.identity }}
           MACOS_CERT_SHA1: ${{ steps.signing.outputs.sha1 }}
           SKIP_NOTARIZE: "1"
+          LC_ALL: C
         run: bash scripts/release.sh
 
       - name: Check macOS build outputs
