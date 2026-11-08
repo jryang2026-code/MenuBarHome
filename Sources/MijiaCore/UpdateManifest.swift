@@ -128,9 +128,9 @@ public enum UpdateManifest {
             return nil
         }
         let expected: [(platform: String, file: String)] = [
-            ("macos", "MenuBarMijia-\(version).dmg"),
-            ("windows", "MenuBarMijia-\(version)-windows-x64-setup.exe"),
-            ("windows", "MenuBarMijia-\(version)-windows-x64.msi"),
+            ("macos", "MenuBarHome-\(version).dmg"),
+            ("windows", "MenuBarHome-\(version)-windows-x64-setup.exe"),
+            ("windows", "MenuBarHome-\(version)-windows-x64.msi"),
         ]
         var files: [ParsedFile] = []
         for (index, raw) in rawFiles.enumerated() {

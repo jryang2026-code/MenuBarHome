@@ -58,13 +58,13 @@ Keep at least one offline backup outside the signing machine. Losing every copy 
 `scripts/sign_update.swift` signs the exact bytes of:
 
 ```
-MenuBarMijia-<version>.update.json
+MenuBarHome-<version>.update.json
 ```
 
 and writes a detached base64 signature plus a trailing newline to:
 
 ```
-MenuBarMijia-<version>.update.json.ed25519.sig
+MenuBarHome-<version>.update.json.ed25519.sig
 ```
 
 The manifest is produced by `scripts/update_manifest.py canonical_bytes`: one-line JSON with the keys in this order and exactly three `files` entries.
@@ -97,7 +97,7 @@ The trust set is compiled into each client. There is no fetched key list and no 
 | `scripts/update_manifest.py` | `public_key()` | Reads the primary key from `UpdateChecker.swift` and writes it as `key_id` |
 | `scripts/check_release.sh` | `verify_ed25519_file` | Reads the primary key from `UpdateChecker.swift` and verifies the manifest with `openssl pkeyutl` |
 | `scripts/check.sh` | Ed25519 block | Fails unless the primary key is identical in all four source files, the overlap key is identical in both platform files, and any non-empty overlap key is valid 32-byte base64 distinct from the primary |
-| `scripts/testdata/MenuBarMijia-1.1.7.update.json` | `scripts/update_manifest.py self-test` golden | Hard-codes the primary `key_id`; must be re-keyed whenever the primary changes |
+| `scripts/testdata/MenuBarHome-1.1.7.update.json` | `scripts/update_manifest.py self-test` golden | Hard-codes the primary `key_id`; must be re-keyed whenever the primary changes |
 
 `check.sh --lint-only` is the single command that proves these copies agree.
 
@@ -213,7 +213,7 @@ Verify before publishing:
 
 ```bash
 python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key_id"])' \
-  dist/MenuBarMijia-<R1>.update.json
+  dist/MenuBarHome-<R1>.update.json
 # must print K_old
 
 bash scripts/check_release.sh assets <R1> dist
@@ -235,7 +235,7 @@ Change all trust-set copies at once:
 4. `windows/src-tauri/src/main.rs`:
    - `UPDATE_SIGNING_PUBLIC_KEY_BASE64 = "<K_new>"`
    - `UPDATE_SIGNING_OVERLAP_PUBLIC_KEY_BASE64 = "<K_old>"`
-5. `scripts/testdata/MenuBarMijia-1.1.7.update.json`: replace its `key_id` value with `<K_new>`. The golden is a fixed 526-byte fixture; the base64 key length is unchanged, so only that value changes. `scripts/update_manifest.py self-test` fails until this is done.
+5. `scripts/testdata/MenuBarHome-1.1.7.update.json`: replace its `key_id` value with `<K_new>`. The golden is a fixed 526-byte fixture; the base64 key length is unchanged, so only that value changes. `scripts/update_manifest.py self-test` fails until this is done.
 
 Run:
 
@@ -248,9 +248,9 @@ Ship `R2` with the private key for `K_new`:
 ```bash
 MENUBARMIJIA_UPDATE_SIGNING_KEY='<K_new seed>' \
   swift scripts/sign_update.swift --min-from <floor> \
-  dist/MenuBarMijia-<R2>.dmg \
-  dist/MenuBarMijia-<R2>-windows-x64-setup.exe \
-  dist/MenuBarMijia-<R2>-windows-x64.msi
+  dist/MenuBarHome-<R2>.dmg \
+  dist/MenuBarHome-<R2>-windows-x64-setup.exe \
+  dist/MenuBarHome-<R2>-windows-x64.msi
 ```
 
 `sign_update.swift` refuses to continue unless the seed's public key equals the new primary (`keyMismatch`), and prints the public key it used.
@@ -259,7 +259,7 @@ Verify:
 
 ```bash
 python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key_id"])' \
-  dist/MenuBarMijia-<R2>.update.json
+  dist/MenuBarHome-<R2>.update.json
 # must print K_new
 
 bash scripts/check_release.sh assets <R2> dist
@@ -417,10 +417,10 @@ macOS:
 1. Download the DMG from the release linked in the advisory.
 2. Verify the hash:
    ```bash
-   shasum -a 256 MenuBarMijia-<version>.dmg
-   cat MenuBarMijia-<version>.dmg.sha256
+   shasum -a 256 MenuBarHome-<version>.dmg
+   cat MenuBarHome-<version>.dmg.sha256
    ```
-3. Open the DMG, drag `MenuBarMijia` to `/Applications`, and replace the existing copy.
+3. Open the DMG, drag `MenuBarHome` to `/Applications`, and replace the existing copy.
 4. The in-app updater on an old client will keep failing closed until the app is replaced; that is expected.
 
 Windows:
@@ -428,7 +428,7 @@ Windows:
 1. Download the EXE or MSI from the release linked in the advisory.
 2. Verify the hash:
    ```powershell
-   Get-FileHash -Algorithm SHA256 .\MenuBarMijia-<version>-windows-x64-setup.exe
+   Get-FileHash -Algorithm SHA256 .\MenuBarHome-<version>-windows-x64-setup.exe
    ```
    Compare with the `.sha256` asset.
 3. Run the installer.
@@ -485,7 +485,7 @@ Finalize Release checks out the tag, so the key it verifies with is the key comp
 
 ```bash
 python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key_id"])' \
-  dist/MenuBarMijia-<version>.update.json
+  dist/MenuBarHome-<version>.update.json
 ```
 
 Compare the output with:

@@ -375,8 +375,8 @@ private func askAssistant(_ utterance: String, in store: HomeStore) async -> Str
         store.presentAssistantBar()
         HotkeyAndNotificationManager.shared.ensureMenuBarExtraWindowVisible()
         return L10n.tr(
-            "这条指令需要云端 AI。请在 MenuBarMijia 面板里确认后重试。",
-            "This command needs cloud AI. Confirm it in the MenuBarMijia panel and try again."
+            "这条指令需要云端 AI。请在 MenuBarHome 面板里确认后重试。",
+            "This command needs cloud AI. Confirm it in the MenuBarHome panel and try again."
         )
     }
     if let plan, !plan.reply.isEmpty {
@@ -413,7 +413,7 @@ private func missingClimateText(roomName: String) -> String {
 @MainActor
 private func notifyExternalAction(_ message: String) {
     HotkeyAndNotificationManager.shared.deliverExternalActionNotification(
-        title: "MenuBarMijia",
+        title: "MenuBarHome",
         body: message
     )
 }

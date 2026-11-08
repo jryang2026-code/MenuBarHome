@@ -83,7 +83,7 @@ struct UpdateSection: View {
     private var statusSubtitle: String {
         switch store.updateState {
         case .idle:
-            return L10n.tr("MenuBarMijia 更新发布在 GitHub Releases", "MenuBarMijia updates are published on GitHub Releases")
+            return L10n.tr("MenuBarHome 更新发布在 GitHub Releases", "MenuBarHome updates are published on GitHub Releases")
         case .checking:
             return L10n.tr("正在查看 GitHub 上的最新版本…", "Checking GitHub for the latest release…")
         case .upToDate:

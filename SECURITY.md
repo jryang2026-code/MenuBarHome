@@ -1,12 +1,12 @@
 # Security policy
 
-This page is the security policy for MenuBarMijia.
+This page is the security policy for MenuBarHome.
 
 It names the supported release, how you report a vulnerability, when you can expect an acknowledgement, and which reports are in scope.
 
 ## Affiliation and trademarks
 
-MenuBarMijia is an independent open-source project.
+MenuBarHome is an independent open-source project.
 
 It is not an official Xiaomi or Mijia product.
 
@@ -74,14 +74,14 @@ The `Release` workflow attaches build provenance attestations and a software bil
 
 The attestations cover the three installers:
 
-- `MenuBarMijia-<version>.dmg`
-- `MenuBarMijia-<version>-windows-x64-setup.exe`
-- `MenuBarMijia-<version>-windows-x64.msi`
+- `MenuBarHome-<version>.dmg`
+- `MenuBarHome-<version>-windows-x64-setup.exe`
+- `MenuBarHome-<version>-windows-x64.msi`
 
 Verify a downloaded installer with [GitHub CLI](https://cli.github.com) 2.49 or newer:
 
 ```bash
-gh attestation verify MenuBarMijia-<version>.dmg --repo jryang2026-code/MenuBarHome
+gh attestation verify MenuBarHome-<version>.dmg --repo jryang2026-code/MenuBarHome
 ```
 
 The command exits non-zero when the file is not the byte-for-byte artifact built by this repository.
@@ -90,8 +90,8 @@ Add `--signer-workflow jryang2026-code/MenuBarHome/.github/workflows/release.yml
 
 The SBOMs are SPDX 2.3 JSON files:
 
-- `MenuBarMijia-<version>-macos.spdx.json` describes the `.app` bundle inside the DMG, including the bundled `go2rtc`.
-- `MenuBarMijia-<version>-windows-x64.spdx.json` describes the npm and Cargo dependency graph of the Windows build together with the EXE and MSI it produced.
+- `MenuBarHome-<version>-macos.spdx.json` describes the `.app` bundle inside the DMG, including the bundled `go2rtc`.
+- `MenuBarHome-<version>-windows-x64.spdx.json` describes the npm and Cargo dependency graph of the Windows build together with the EXE and MSI it produced.
 
 Both are generated in the release build with [syft](https://github.com/anchore/syft) and attached next to the installers.
 
@@ -115,7 +115,7 @@ Storing a Mi `passToken` is in scope.
 
 ### Update chain
 
-macOS `UpdateChecker`/`AppUpdater` and the Windows updater verify a detached Ed25519 signature over `MenuBarMijia-<version>.update.json` after download and before unpacking or running anything.
+macOS `UpdateChecker`/`AppUpdater` and the Windows updater verify a detached Ed25519 signature over `MenuBarHome-<version>.update.json` after download and before unpacking or running anything.
 
 The signed manifest names the release version, the minimum running version (`min_from`), the signing key (`key_id`), and the SHA-256 of the DMG, EXE, and MSI. The package hash check follows the signature check.
 

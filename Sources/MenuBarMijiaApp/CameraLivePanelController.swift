@@ -572,7 +572,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
             .replacingOccurrences(of: #"https?://[^\s\)]+"#, with: "<url>", options: .regularExpression)
             .replacingOccurrences(of: #"\b[0-9a-fA-F]{16,}\b"#, with: "<redacted>", options: .regularExpression)
         return [
-            "MenuBarMijia Camera Diagnostics",
+            "MenuBarHome Camera Diagnostics",
             "version: \(version) (macOS \(arch))",
             "backend: \(backend) (region: \(region))",
             "camera_info: \(model)",

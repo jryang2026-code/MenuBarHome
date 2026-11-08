@@ -29,7 +29,7 @@ usage() {
 
 tag 必须等于 VERSION 加 v 前缀（例如 VERSION=1.0.6 → v1.0.6），并且指向当前 HEAD。
 assets 只接受 6 个安装包和校验文件、两端 SPDX SBOM，再加上
-MenuBarMijia-<version>.update.json 与 MenuBarMijia-<version>.update.json.ed25519.sig，一共 10 个文件。
+MenuBarHome-<version>.update.json 与 MenuBarHome-<version>.update.json.ed25519.sig，一共 10 个文件。
 draft-assets 只接受那 6 个待签附件与两端 SBOM，供 CI 产出草稿时自检；
 它不做签名校验，发布前仍必须跑 assets（严格 10 个，只验清单签名）。
 notes 按 Windows 签名状态增删“未签名”段落，重复执行结果一致。
@@ -263,25 +263,25 @@ PY
 verify_ed25519() {
     local dir="$1"
     local version="$2"
-    verify_ed25519_file "$dir/MenuBarMijia-${version}.update.json"
+    verify_ed25519_file "$dir/MenuBarHome-${version}.update.json"
 }
 
 release_assets() {
     local version="$1"
     local with_signature="$2"
     printf '%s\n' \
-        "MenuBarMijia-${version}.dmg" \
-        "MenuBarMijia-${version}.dmg.sha256" \
-        "MenuBarMijia-${version}-windows-x64-setup.exe" \
-        "MenuBarMijia-${version}-windows-x64-setup.exe.sha256" \
-        "MenuBarMijia-${version}-windows-x64.msi" \
-        "MenuBarMijia-${version}-windows-x64.msi.sha256" \
-        "MenuBarMijia-${version}-macos.spdx.json" \
-        "MenuBarMijia-${version}-windows-x64.spdx.json"
+        "MenuBarHome-${version}.dmg" \
+        "MenuBarHome-${version}.dmg.sha256" \
+        "MenuBarHome-${version}-windows-x64-setup.exe" \
+        "MenuBarHome-${version}-windows-x64-setup.exe.sha256" \
+        "MenuBarHome-${version}-windows-x64.msi" \
+        "MenuBarHome-${version}-windows-x64.msi.sha256" \
+        "MenuBarHome-${version}-macos.spdx.json" \
+        "MenuBarHome-${version}-windows-x64.spdx.json"
     if [ "$with_signature" = "1" ]; then
         printf '%s\n' \
-            "MenuBarMijia-${version}.update.json" \
-            "MenuBarMijia-${version}.update.json.ed25519.sig"
+            "MenuBarHome-${version}.update.json" \
+            "MenuBarHome-${version}.update.json.ed25519.sig"
     fi
 }
 
@@ -367,11 +367,11 @@ validate_assets() {
     done < <(release_assets "$version" "$with_signature")
     check_asset_set "$dir" "${required[@]}"
 
-    verify_checksum "$dir" "MenuBarMijia-${version}.dmg"
-    verify_checksum "$dir" "MenuBarMijia-${version}-windows-x64-setup.exe"
-    verify_checksum "$dir" "MenuBarMijia-${version}-windows-x64.msi"
-    verify_sbom "$dir" "MenuBarMijia-${version}-macos.spdx.json"
-    verify_sbom "$dir" "MenuBarMijia-${version}-windows-x64.spdx.json"
+    verify_checksum "$dir" "MenuBarHome-${version}.dmg"
+    verify_checksum "$dir" "MenuBarHome-${version}-windows-x64-setup.exe"
+    verify_checksum "$dir" "MenuBarHome-${version}-windows-x64.msi"
+    verify_sbom "$dir" "MenuBarHome-${version}-macos.spdx.json"
+    verify_sbom "$dir" "MenuBarHome-${version}-windows-x64.spdx.json"
 
     if [ "$with_signature" -eq 1 ]; then
         verify_ed25519 "$dir" "$version"
@@ -396,7 +396,7 @@ END = "<!-- windows-signing-status:end -->"
 BLOCK = [
     "### ⚠️ Windows 安装包未签名",
     "本次 release 的 EXE/MSI 没有 Authenticode 签名，安装时 SmartScreen 会提示“Windows 已保护你的电脑”。",
-    f"这与 macOS 侧无关：发布清单 `MenuBarMijia-{version}.update.json` 带 Ed25519 签名，应用内更新会强制校验。",
+    f"这与 macOS 侧无关：发布清单 `MenuBarHome-{version}.update.json` 带 Ed25519 签名，应用内更新会强制校验。",
     "Windows 安装包请以本页附带的 `.sha256` 为准。签名接入见 issue #32。",
 ]
 

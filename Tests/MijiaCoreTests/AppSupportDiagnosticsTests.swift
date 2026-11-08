@@ -263,7 +263,7 @@ struct AppSupportDiagnosticsTests {
             )
         )
 
-        #expect(report.hasPrefix("## MenuBarMijia"))
+        #expect(report.hasPrefix("## MenuBarHome"))
         #expect(report.contains("1.0.6 (42)"))
         #expect(report.contains("Xiaomi Cloud Direct"))
         #expect(report.contains("`yeelink.light.ceiling`: 2"))

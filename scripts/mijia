@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""mijia — 在终端或 MCP 客户端里控制 MenuBarMijia。
+"""mijia — 在终端或 MCP 客户端里控制 MenuBarHome。
 
-所有控制都通过 `menumijia://` 链接交给 MenuBarMijia 执行，本脚本只读应用写出的
+所有控制都通过 `menumijia://` 链接交给 MenuBarHome 执行，本脚本只读应用写出的
 `raycast-snapshot.json`，不保存也不转发米家 / Home Assistant 凭据。因此需要：
 
-1. 打开 MenuBarMijia：设置 → 自动化与外部控制 → 打开「Raycast 集成」；
+1. 打开 MenuBarHome：设置 → 自动化与外部控制 → 打开「Raycast 集成」；
 2. 让应用保持运行（关闭后它无法执行链接）。
 
 用法示例：
@@ -57,8 +57,8 @@ MCP_DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 MCP_SUPPORTED_PROTOCOL_VERSIONS = ("2025-03-26", "2024-11-05")
 MCP_SERVER_INFO = {"name": "menubarmijia", "version": "1.1.7"}
 MCP_INSTRUCTIONS = (
-    "MenuBarMijia 本地智能家居伴生服务。只读 raycast-snapshot.json 并通过 menumijia:// "
-    "交由正在运行的 MenuBarMijia 执行，不接触米家或 Home Assistant 凭据；"
+    "MenuBarHome 本地智能家居伴生服务。只读 raycast-snapshot.json 并通过 menumijia:// "
+    "交由正在运行的 MenuBarHome 执行，不接触米家或 Home Assistant 凭据；"
     "锁屏拦截与高风险设备（电暖器、插座、摄像机、扫地机、热水器、开窗器、晾衣架、车库门）"
     "二次确认均在应用内生效。"
 )
@@ -86,7 +86,7 @@ def load_snapshot(path: Path) -> dict:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         raise CliError(
-            f"没找到 {path}。请在 MenuBarMijia 的设置 → 自动化与外部控制里打开「Raycast 集成」。"
+            f"没找到 {path}。请在 MenuBarHome 的设置 → 自动化与外部控制里打开「Raycast 集成」。"
         ) from None
     except OSError as error:
         raise CliError(f"读取快照失败：{error}") from error
@@ -296,7 +296,7 @@ def open_url(url: str) -> None:
         raise CliError(f"无法调用 open 打开链接：{error}") from error
     if completed.returncode != 0:
         reason = (completed.stderr or "").strip() or f"退出码 {completed.returncode}"
-        raise CliError(f"系统没能打开 menumijia:// 链接（{reason}），请确认 MenuBarMijia 已安装。")
+        raise CliError(f"系统没能打开 menumijia:// 链接（{reason}），请确认 MenuBarHome 已安装。")
 
 
 def validate_timeout(timeout: object) -> float:
@@ -320,7 +320,7 @@ def wait_for_feedback(path: Path, request_id: str, timeout: float, now, sleep) -
             return feedback
         if now() >= deadline:
             raise FeedbackTimeout(
-                f"等了 {valid_timeout:g} 秒没收到执行结果。请确认 MenuBarMijia 正在运行、"
+                f"等了 {valid_timeout:g} 秒没收到执行结果。请确认 MenuBarHome 正在运行、"
                 "「Raycast 集成」仍处于打开状态。"
             )
         sleep(POLL_INTERVAL)
@@ -1040,7 +1040,7 @@ CONTROL_NON_IDEMPOTENT_ANNOTATIONS = {
 MCP_TOOLS: tuple[McpToolSpec, ...] = (
     McpToolSpec(
         name="list_devices",
-        description="列出 MenuBarMijia 面板里可见的智能设备、在线状态、当前读数与可控能力；可按房间、类别或在线状态筛选。",
+        description="列出 MenuBarHome 面板里可见的智能设备、在线状态、当前读数与可控能力；可按房间、类别或在线状态筛选。",
         input_schema={
             "type": "object",
             "properties": {
@@ -1188,7 +1188,7 @@ MCP_TOOLS: tuple[McpToolSpec, ...] = (
     ),
     McpToolSpec(
         name="ask_home",
-        description="向 MenuBarMijia 发送一句自然语言指令（如「把书房灯设为柔和月光模式」「10分钟后关书房灯」），复用应用内本地规则与确认策略。",
+        description="向 MenuBarHome 发送一句自然语言指令（如「把书房灯设为柔和月光模式」「10分钟后关书房灯」），复用应用内本地规则与确认策略。",
         input_schema={
             "type": "object",
             "properties": {
@@ -1202,7 +1202,7 @@ MCP_TOOLS: tuple[McpToolSpec, ...] = (
     ),
     McpToolSpec(
         name="focus_device",
-        description="在 MenuBarMijia 面板中定位并展开指定设备的详情抽屉（只做界面跳转，不改变设备状态）。",
+        description="在 MenuBarHome 面板中定位并展开指定设备的详情抽屉（只做界面跳转，不改变设备状态）。",
         input_schema={
             "type": "object",
             "properties": {
@@ -1468,7 +1468,7 @@ def serve_mcp_stdio(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mijia",
-        description="通过 menumijia:// 链接控制 MenuBarMijia（需在设置里打开「Raycast 集成」）。",
+        description="通过 menumijia:// 链接控制 MenuBarHome（需在设置里打开「Raycast 集成」）。",
         epilog=f"快照路径可用环境变量 {SNAPSHOT_ENV} 覆盖。",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)

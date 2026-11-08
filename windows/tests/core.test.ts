@@ -3311,7 +3311,7 @@ describe("Windows update check (#39)", () => {
 
   it("drops a cached installer that still points at a package signature", () => {
     const base =
-      "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64-setup.exe";
+      "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarHome-1.2.0-windows-x64-setup.exe";
     const legacyState = JSON.stringify({
       lastCheckedAtMs: 1_764_000_000_000,
       release: {
@@ -3319,7 +3319,7 @@ describe("Windows update check (#39)", () => {
         tag: "v1.2.0",
         htmlURL: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.2.0",
         installerAsset: {
-          name: "MenuBarMijia-1.2.0-windows-x64-setup.exe",
+          name: "MenuBarHome-1.2.0-windows-x64-setup.exe",
           downloadURL: base,
           sizeBytes: 2048,
           sha256: "c".repeat(64),
@@ -3335,8 +3335,8 @@ describe("Windows update check (#39)", () => {
   it("prefers Windows setup.exe over MSI and requires the update manifest", () => {
     const sha = "a".repeat(64);
     const manifest = {
-      name: "MenuBarMijia-1.2.0.update.json",
-      browser_download_url: "https://evil.example/MenuBarMijia-1.2.0.update.json",
+      name: "MenuBarHome-1.2.0.update.json",
+      browser_download_url: "https://evil.example/MenuBarHome-1.2.0.update.json",
       size: 526,
     };
     const fullPayload = JSON.stringify({
@@ -3345,22 +3345,22 @@ describe("Windows update check (#39)", () => {
       body: "支持应用内一键更新",
       assets: [
         {
-          name: "MenuBarMijia-1.2.0-windows-x64.msi",
+          name: "MenuBarHome-1.2.0-windows-x64.msi",
           browser_download_url:
-            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64.msi",
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarHome-1.2.0-windows-x64.msi",
           size: 4096,
           digest: `sha256:${sha}`,
         },
         {
-          name: "MenuBarMijia-1.2.0-windows-x64-setup.exe",
+          name: "MenuBarHome-1.2.0-windows-x64-setup.exe",
           browser_download_url: "https://evil.example/setup.exe",
           size: 2048,
           digest: `sha256:${sha.toUpperCase()}`,
         },
         {
-          name: "MenuBarMijia-1.2.0-windows-x64-setup.exe.ed25519.sig",
+          name: "MenuBarHome-1.2.0-windows-x64-setup.exe.ed25519.sig",
           browser_download_url:
-            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64-setup.exe.ed25519.sig",
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarHome-1.2.0-windows-x64-setup.exe.ed25519.sig",
           size: 96,
         },
         manifest,
@@ -3369,12 +3369,12 @@ describe("Windows update check (#39)", () => {
     const parsed = parseLatestRelease(fullPayload);
     assert.equal(parsed?.notes, "支持应用内一键更新");
     assert.deepEqual(parsed?.installerAsset, {
-      name: "MenuBarMijia-1.2.0-windows-x64-setup.exe",
+      name: "MenuBarHome-1.2.0-windows-x64-setup.exe",
       downloadUrl:
-        "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64-setup.exe",
+        "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarHome-1.2.0-windows-x64-setup.exe",
       sizeBytes: 2048,
       manifestUrl:
-        "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarMijia-1.2.0.update.json",
+        "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarHome-1.2.0.update.json",
     });
 
     const roundTrip = parseUpdateState(serializeUpdateState({ lastCheckedAtMs: 123, release: parsed }));
@@ -3382,7 +3382,7 @@ describe("Windows update check (#39)", () => {
 
     const withoutManifest = JSON.parse(fullPayload) as { assets: unknown[] };
     withoutManifest.assets = withoutManifest.assets.filter(
-      (asset) => (asset as { name?: string }).name !== "MenuBarMijia-1.2.0.update.json",
+      (asset) => (asset as { name?: string }).name !== "MenuBarHome-1.2.0.update.json",
     );
     assert.equal(parseLatestRelease(JSON.stringify(withoutManifest))?.installerAsset, undefined);
   });

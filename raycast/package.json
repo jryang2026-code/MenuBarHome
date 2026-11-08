@@ -1,8 +1,8 @@
 {
   "$schema": "https://www.raycast.com/schemas/extension.json",
   "name": "menubarmijia",
-  "title": "MenuBarMijia",
-  "description": "Search and control MenuBarMijia devices, scenes and quick actions from Raycast. Runs through the app's menumijia:// links, so your Mi Home and Home Assistant credentials never leave the app.",
+  "title": "MenuBarHome",
+  "description": "Search and control MenuBarHome devices, scenes and quick actions from Raycast. Runs through the app's menumijia:// links, so your Mi Home and Home Assistant credentials never leave the app.",
   "icon": "icon.png",
   "author": "jryang1997",
   "license": "MIT",
@@ -12,22 +12,22 @@
     {
       "name": "search-devices",
       "title": "Search Devices",
-      "subtitle": "MenuBarMijia",
-      "description": "Search the devices MenuBarMijia shows and control power, brightness, colour temperature, thermostat target and fan speed.",
+      "subtitle": "MenuBarHome",
+      "description": "Search the devices MenuBarHome shows and control power, brightness, colour temperature, thermostat target and fan speed.",
       "mode": "view"
     },
     {
       "name": "search-scenes",
       "title": "Scenes & Quick Actions",
-      "subtitle": "MenuBarMijia",
+      "subtitle": "MenuBarHome",
       "description": "Run Home Assistant scenes and the built-in quick actions: all lights off, soft night light, sleep climate off, all off and undo.",
       "mode": "view"
     },
     {
       "name": "ask",
-      "title": "Ask MenuBarMijia",
-      "subtitle": "MenuBarMijia",
-      "description": "Send one natural-language command to the MenuBarMijia assistant, using the same parsing and confirmation rules as the app.",
+      "title": "Ask MenuBarHome",
+      "subtitle": "MenuBarHome",
+      "description": "Send one natural-language command to the MenuBarHome assistant, using the same parsing and confirmation rules as the app.",
       "mode": "view"
     }
   ],
@@ -43,7 +43,7 @@
     {
       "name": "waitTimeoutSeconds",
       "title": "Result Timeout",
-      "description": "Seconds to wait for MenuBarMijia to report the result of a command.",
+      "description": "Seconds to wait for MenuBarHome to report the result of a command.",
       "type": "textfield",
       "required": false,
       "default": "12"

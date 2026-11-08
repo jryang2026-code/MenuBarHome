@@ -79,7 +79,7 @@ sha256_of() {
     fi
 }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/menubarmijia-cask-selftest.XXXXXX")"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/menubarhome-cask-selftest.XXXXXX")"
 
 # 每个场景用一份独立拷贝，这样改坏模板只影响那一个场景。
 prepare_copy() {
@@ -87,12 +87,12 @@ prepare_copy() {
     local dir="$WORK/$name"
     mkdir -p "$dir"
     cp "$SCRIPT_DIR/update_cask.sh" "$dir/update_cask.sh"
-    cp "$SCRIPT_DIR/menubarmijia.rb.tmpl" "$dir/menubarmijia.rb.tmpl"
+    cp "$SCRIPT_DIR/menubarhome.rb.tmpl" "$dir/menubarhome.rb.tmpl"
     printf '%s\n' "$dir"
 }
 
 # 合成一个“DMG”：脚本只把它当字节流处理，签名字样与大小都不影响生成逻辑。
-FIXTURE_DMG="$WORK/MenuBarMijia-1.0.6.dmg"
+FIXTURE_DMG="$WORK/MenuBarHome-1.0.6.dmg"
 printf 'synthetic dmg payload for self test\n' > "$FIXTURE_DMG"
 FIXTURE_SHA="$(sha256_of "$FIXTURE_DMG")"
 
@@ -103,11 +103,11 @@ expect_ok "fixture 生成成功" \
     bash "$base/update_cask.sh" --version 1.0.6 \
         --source-file "$FIXTURE_DMG" --expected-sha256 "$FIXTURE_SHA" \
         --cask-dir "$out" --github-output "$WORK/gh-out.txt"
-generated="$out/menubarmijia.rb"
+generated="$out/menubarhome.rb"
 if [ -f "$generated" ]; then
-    ok "生成了 menubarmijia.rb"
+    ok "生成了 menubarhome.rb"
 else
-    bad "没有生成 menubarmijia.rb"
+    bad "没有生成 menubarhome.rb"
 fi
 if grep -qx '  version "1.0.6"' "$generated"; then
     ok "version 行正确"
@@ -120,7 +120,7 @@ else
     bad "sha256 行不正确"
 fi
 if grep -qF 'depends_on macos: :sonoma' "$generated" \
-    && grep -qF 'app "MenuBarMijia.app"' "$generated" \
+    && grep -qF 'app "MenuBarHome.app"' "$generated" \
     && grep -qF 'verified: "github.com/jryang2026-code/MenuBarHome/"' "$generated"; then
     ok "保留最低系统版本、app artifact 与 verified 域名"
 else
@@ -180,20 +180,20 @@ expect_fail "缺少 --version 必须被拒绝" 2 bash "$base/update_cask.sh"
 
 echo "▶ [4/5] 模板被改坏时必须拒绝"
 postflight="$(prepare_copy postflight)"
-printf '\n  postflight do\n    system_command "/usr/bin/xattr", args: ["-cr", "#{appdir}/MenuBarMijia.app"]\n  end\n' \
-    >> "$postflight/menubarmijia.rb.tmpl"
+printf '\n  postflight do\n    system_command "/usr/bin/xattr", args: ["-cr", "#{appdir}/MenuBarHome.app"]\n  end\n' \
+    >> "$postflight/menubarhome.rb.tmpl"
 expect_fail "模板带 xattr postflight 必须被拒绝" 1 \
     bash "$postflight/update_cask.sh" --version 1.0.6 \
         --source-file "$FIXTURE_DMG" --expected-sha256 "$FIXTURE_SHA" --cask-dir "$WORK/neg-hook"
 
 noapp="$(prepare_copy noapp)"
-sed -i.bak 's|^  app "MenuBarMijia.app"$|  # app stanza removed|' "$noapp/menubarmijia.rb.tmpl"
+sed -i.bak 's|^  app "MenuBarHome.app"$|  # app stanza removed|' "$noapp/menubarhome.rb.tmpl"
 expect_fail "模板缺 app stanza 必须被拒绝" 1 \
     bash "$noapp/update_cask.sh" --version 1.0.6 \
         --source-file "$FIXTURE_DMG" --expected-sha256 "$FIXTURE_SHA" --cask-dir "$WORK/neg-noapp"
 
 nosonoma="$(prepare_copy nosonoma)"
-sed -i.bak 's|^  depends_on macos: :sonoma$||' "$nosonoma/menubarmijia.rb.tmpl"
+sed -i.bak 's|^  depends_on macos: :sonoma$||' "$nosonoma/menubarhome.rb.tmpl"
 expect_fail "模板缺最低系统版本必须被拒绝" 1 \
     bash "$nosonoma/update_cask.sh" --version 1.0.6 \
         --source-file "$FIXTURE_DMG" --expected-sha256 "$FIXTURE_SHA" --cask-dir "$WORK/neg-nosonoma"
@@ -205,12 +205,12 @@ expect_ok "--check 对刚生成的内容通过" \
         --cask-dir "$out" --check
 drift="$WORK/drift"
 mkdir -p "$drift"
-sed 's/^  sha256 ".*"$/  sha256 "deadbeef"/' "$generated" > "$drift/menubarmijia.rb"
+sed 's/^  sha256 ".*"$/  sha256 "deadbeef"/' "$generated" > "$drift/menubarhome.rb"
 expect_fail "--check 能发现被手改的 cask" 1 \
     bash "$base/update_cask.sh" --version 1.0.6 \
         --source-file "$FIXTURE_DMG" --expected-sha256 "$FIXTURE_SHA" \
         --cask-dir "$drift" --check
-if cmp -s "$drift/menubarmijia.rb" <(sed 's/^  sha256 ".*"$/  sha256 "deadbeef"/' "$generated"); then
+if cmp -s "$drift/menubarhome.rb" <(sed 's/^  sha256 ".*"$/  sha256 "deadbeef"/' "$generated"); then
     ok "--check 不修改已有文件"
 else
     bad "--check 修改了已有文件"

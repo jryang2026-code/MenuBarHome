@@ -30,7 +30,7 @@ enum KeychainUpgradeNotice {
     private static func present(mergingOldItems: Bool) {
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = L10n.tr("MenuBarMijia 已更新", "MenuBarMijia was updated")
+        alert.messageText = L10n.tr("MenuBarHome 已更新", "MenuBarHome was updated")
         let howMany = mergingOldItems
             ? L10n.tr(
                 "这次会把旧版本分开保存的凭据合并成一份，所以可能会连续问几次（每份凭据一次）；以后每次更新只问一次。",
@@ -39,10 +39,10 @@ enum KeychainUpgradeNotice {
             )
             : L10n.tr("每次更新后只问这一次。", "It asks only once per update.")
         alert.informativeText = L10n.tr(
-            "接下来 macOS 会询问是否允许 MenuBarMijia 使用钥匙串里保存的登录信息。"
+            "接下来 macOS 会询问是否允许 MenuBarHome 使用钥匙串里保存的登录信息。"
                 + "\n\n请输入这台 Mac 的登录密码，然后点「始终允许」。" + howMany
                 + "\n\n如果点「拒绝」，App 会显示为未登录，但保存的登录信息不会被删除，下次启动会再询问。",
-            "Next, macOS will ask whether MenuBarMijia may use the sign-in details saved in your Keychain."
+            "Next, macOS will ask whether MenuBarHome may use the sign-in details saved in your Keychain."
                 + "\n\nEnter this Mac's login password, then click \u{201C}Always Allow\u{201D}. " + howMany
                 + "\n\nIf you click \u{201C}Deny\u{201D}, the app shows as signed out, but your saved sign-in details "
                 + "are not deleted and you will be asked again at the next launch."

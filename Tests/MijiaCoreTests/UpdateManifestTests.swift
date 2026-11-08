@@ -13,7 +13,7 @@ struct UpdateManifestTests {
             trustedPublicKeysBase64: [signed.publicKey],
             releaseVersion: "1.1.8",
             runningVersion: "1.1.5",
-            packageName: "MenuBarMijia-1.1.6.dmg",
+            packageName: "MenuBarHome-1.1.6.dmg",
             packageBytes: signed.package
         )
         #expect(result == .failure(.releaseVersionMismatch))
@@ -38,7 +38,7 @@ struct UpdateManifestTests {
             trustedPublicKeysBase64: [signed.publicKey],
             releaseVersion: "9.9.9",
             runningVersion: "1.0.0",
-            packageName: "MenuBarMijia-1.1.6.dmg",
+            packageName: "MenuBarHome-1.1.6.dmg",
             packageBytes: signed.package
         )
         #expect(result == .failure(.signatureInvalid))
@@ -142,7 +142,7 @@ struct UpdateManifestTests {
 
     @Test("A DMG name that disagrees with the manifest version is malformed")
     func rejectsDMGNameThatDisagreesWithVersion() throws {
-        let signed = try signedUpdateManifest(version: "1.1.6", dmgFile: "MenuBarMijia-1.1.7.dmg")
+        let signed = try signedUpdateManifest(version: "1.1.6", dmgFile: "MenuBarHome-1.1.7.dmg")
         let result = accept(signed, releaseVersion: "1.1.6", runningVersion: "1.1.5")
         #expect(result == .failure(.malformed))
     }
@@ -156,7 +156,7 @@ struct UpdateManifestTests {
             return
         }
         #expect(verified.versionText == "1.1.7")
-        #expect(verified.packageName == "MenuBarMijia-1.1.7.dmg")
+        #expect(verified.packageName == "MenuBarHome-1.1.7.dmg")
         #expect(verified.version == AppVersion("1.1.7"))
     }
 
@@ -167,7 +167,7 @@ struct UpdateManifestTests {
             Issue.record("expected a macOS-only manifest to verify")
             return
         }
-        #expect(verified.packageName == "MenuBarMijia-1.1.8.dmg")
+        #expect(verified.packageName == "MenuBarHome-1.1.8.dmg")
 
         let exeOnly = try signedUpdateManifest(version: "1.1.8", windowsEntries: 1)
         #expect(accept(exeOnly, releaseVersion: "1.1.8", runningVersion: "1.1.7") == .failure(.malformed))
@@ -206,11 +206,11 @@ func signedUpdateManifest(
 ) throws -> SignedUpdateManifest {
     let key = signingKey ?? Curve25519.Signing.PrivateKey()
     let publicKey = key.publicKey.rawRepresentation.base64EncodedString()
-    let dmgName = dmgFile ?? "MenuBarMijia-\(version).dmg"
+    let dmgName = dmgFile ?? "MenuBarHome-\(version).dmg"
     let entries = [
         "{\"platform\":\"macos\",\"file\":\"\(dmgName)\",\"sha256\":\"\(SHA256Digest.hash(package).hex)\"}",
-        "{\"platform\":\"windows\",\"file\":\"MenuBarMijia-\(version)-windows-x64-setup.exe\",\"sha256\":\"\(exeDigest)\"}",
-        "{\"platform\":\"windows\",\"file\":\"MenuBarMijia-\(version)-windows-x64.msi\",\"sha256\":\"\(msiDigest)\"}",
+        "{\"platform\":\"windows\",\"file\":\"MenuBarHome-\(version)-windows-x64-setup.exe\",\"sha256\":\"\(exeDigest)\"}",
+        "{\"platform\":\"windows\",\"file\":\"MenuBarHome-\(version)-windows-x64.msi\",\"sha256\":\"\(msiDigest)\"}",
     ].prefix(1 + windowsEntries)
     let body = "{\"version\":\"\(version)\",\"min_from\":\"\(minFrom)\",\"key_id\":\"\(keyID ?? publicKey)\",\"files\":["
         + entries.joined(separator: ",") + "]}\n"
@@ -221,7 +221,7 @@ func signedUpdateManifest(
         signatureText: signatureText,
         publicKey: publicKey,
         package: package,
-        packageName: "MenuBarMijia-\(version).dmg"
+        packageName: "MenuBarHome-\(version).dmg"
     )
 }
 

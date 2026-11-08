@@ -11,7 +11,7 @@ struct DemoNetworkPolicyTests {
         defaults.set(HomeBackend.demo.rawValue, forKey: "home_backend")
         defer { defaults.removePersistentDomain(forName: suite) }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("demo-update-\(UUID().uuidString)")
-        let target = root.appendingPathComponent("MenuBarMijia.app")
+        let target = root.appendingPathComponent("MenuBarHome.app")
         try FileManager.default.createDirectory(at: target.appendingPathComponent("Contents"), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let plist = ["CFBundleIdentifier": AppUpdater.expectedBundleIdentifier, "CFBundleShortVersionString": "1.0.0"]
@@ -40,7 +40,7 @@ struct DemoNetworkPolicyTests {
             pageURL: try #require(URL(string: "https://example.invalid/release")),
             notes: "Isolated update fixture",
             packageAsset: .init(
-                name: "MenuBarMijia-2.0.0.dmg",
+                name: "MenuBarHome-2.0.0.dmg",
                 downloadURL: try #require(URL(string: "https://example.invalid/app.dmg")),
                 sizeBytes: 1, kind: .dmg
             )

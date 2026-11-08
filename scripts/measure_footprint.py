@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure MenuBarMijia's memory and CPU, and print the README FAQ comparison.
+"""Measure MenuBarHome's memory and CPU, and print the README FAQ comparison.
 
 The live path samples a process that is already running; it never launches the
 app. Put the app in the state you want to measure first:
@@ -43,8 +43,8 @@ DEFAULT_SAMPLES = 3
 DEFAULT_INTERVAL_SECONDS = 5.0
 MACOS_PROCESS_NAME = "MenuBarMijiaApp"
 # Tauri's package name (windows/src-tauri/Cargo.toml) names the built binary
-# menubarmijia-windows.exe; installers and shortcuts ship it as MenuBarMijia.exe.
-WINDOWS_APP_NAMES = ("MenuBarMijia.exe", "menubarmijia-windows.exe")
+# menubarmijia-windows.exe; installers and shortcuts ship it as MenuBarHome.exe.
+WINDOWS_APP_NAMES = ("MenuBarHome.exe", "menubarmijia-windows.exe")
 SYNTHESIS_DEVICES = 24
 
 # Recorded rows back the table when no app is running and fill the states the
@@ -406,7 +406,7 @@ def measure_windows(
             except MeasureError:
                 continue  # the renderer may exit between the snapshot and the read
         if not current:
-            raise MeasureError("no readable MenuBarMijia process")
+            raise MeasureError("no readable MenuBarHome process")
         rss_mb = sum(rss for rss, _cpu in current.values())
         wall = clock()
         if index:

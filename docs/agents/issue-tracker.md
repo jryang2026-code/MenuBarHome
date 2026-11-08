@@ -1,6 +1,6 @@
 # Issue tracker: GitHub
 
-Issues, specs and pull requests live at ``. Every operation goes through the `gh` CLI, logged in as ``. GitLab (`git remote gitlab`) and the NAS Forgejo (`git remote nas`, LAN only) are backups; file nothing there. The old account `jryang1997` is suspended.
+Issues, specs and pull requests live at `https://github.com/jryang2026-code/MenuBarHome`. Every operation goes through the `gh` CLI, logged in as `jryang2026-code`. GitLab (`git remote gitlab`) and the NAS Forgejo (`git remote nas`, LAN only) are backups; file nothing there. The old account `jryang1997` is suspended.
 
 GitHub numbers issues and pull requests from one sequence.
 

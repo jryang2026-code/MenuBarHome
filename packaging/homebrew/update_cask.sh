@@ -6,18 +6,18 @@
 #   packaging/homebrew/update_cask.sh --version 1.0.6 --check         # 只校验现有 cask 是否与已发布版本一致
 #   packaging/homebrew/update_cask.sh --version 1.0.6 --cask-dir out  # 写到别处（CI dry-run 的 artifact）
 #   packaging/homebrew/update_cask.sh --version 1.0.6 \
-#       --source-file MenuBarMijia-1.0.6.dmg --expected-sha256 <hex>  # 离线 fixture（不联网）
+#       --source-file MenuBarHome-1.0.6.dmg --expected-sha256 <hex>  # 离线 fixture（不联网）
 #
 # 输入只有「版本号」一个可变量，其余全部由固定常量推导：
 #   - 源仓库固定为 jryang2026-code/MenuBarHome，不接受 --repo / --tag / --url 覆盖；
 #   - 版本号必须严格是 X.Y.Z 十进制，且对应 release 必须已发布（非 draft、非 prerelease）；
-#   - 附件名固定为 MenuBarMijia-<version>.dmg / .dmg.sha256，附件下载地址必须逐字等于推导出的 URL。
+#   - 附件名固定为 MenuBarHome-<version>.dmg / .dmg.sha256，附件下载地址必须逐字等于推导出的 URL。
 # 因此脚本无法把一个任意仓库、任意 tag 或任意 URL 的内容写进 cask。
 #
 # SHA-256 交叉校验（任一不符即失败，绝不只信一个来源）：
 #   1. 本地对整个 DMG 计算的 SHA-256；
 #   2. GitHub Releases API 给该附件的服务端 digest；
-#   3. release 里发布的 MenuBarMijia-<version>.dmg.sha256 附件内容（若存在）。
+#   3. release 里发布的 MenuBarHome-<version>.dmg.sha256 附件内容（若存在）。
 # 三者必须一致；(1) 与 (2)(3) 至少要有一个可比，否则视为无法验证并失败。
 #
 # 依赖：bash、curl、python3（解析 release JSON）、shasum 或 sha256sum 或 openssl。
@@ -31,8 +31,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # 唯一允许的源：改这里等于改发布源，属于需要 review 的改动。
 SOURCE_REPO="jryang2026-code/MenuBarHome"
 SOURCE_HOST="github.com"
-CASK_NAME="menubarmijia"
-APP_NAME="MenuBarMijia"
+CASK_NAME="menubarhome"
+APP_NAME="MenuBarHome"
 TEMPLATE="$SCRIPT_DIR/${CASK_NAME}.rb.tmpl"
 DEFAULT_CASK_DIR="$REPO_ROOT/packaging/homebrew/Casks"
 
@@ -59,7 +59,7 @@ usage() {
 用法：packaging/homebrew/update_cask.sh --version <X.Y.Z> [选项]
 
 选项：
-  --version <X.Y.Z>        要写进 tap 的 MenuBarMijia 版本（不带 v 前缀，例如 1.0.6）
+  --version <X.Y.Z>        要写进 tap 的 MenuBarHome 版本（不带 v 前缀，例如 1.0.6）
   --cask-dir <目录>        写入目录（默认 packaging/homebrew/Casks）
   --check                  不写文件；生成的 cask 与 --cask-dir 中的不一致时以非零码退出
   --source-file <DMG>      离线 fixture：用本地 DMG 代替下载（必须同时给 --expected-sha256）
@@ -180,7 +180,7 @@ http_get() {
         "$@" -o "$output" "$url"
 }
 
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/menubarmijia-cask.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/menubarhome-cask.XXXXXX")"
 DOWNLOADED="$TMP_DIR/$DMG_NAME"
 
 API_DIGEST=""

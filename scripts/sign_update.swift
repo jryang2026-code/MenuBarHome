@@ -99,10 +99,10 @@ func isReleaseVersion(_ text: String) -> Bool {
 
 func versionFromDMG(_ url: URL) throws -> String {
     let name = url.lastPathComponent
-    let prefix = "MenuBarMijia-"
+    let prefix = "MenuBarHome-"
     let suffix = ".dmg"
     guard name.hasPrefix(prefix), name.hasSuffix(suffix) else {
-        throw SigningError.invalidPackage("DMG 文件名必须是 MenuBarMijia-<version>.dmg")
+        throw SigningError.invalidPackage("DMG 文件名必须是 MenuBarHome-<version>.dmg")
     }
     let version = String(name.dropFirst(prefix.count).dropLast(suffix.count))
     guard isReleaseVersion(version) else {
@@ -154,8 +154,8 @@ func main() throws {
     }
 
     let version = try versionFromDMG(dmgURL)
-    let exeName = "MenuBarMijia-\(version)-windows-x64-setup.exe"
-    let msiName = "MenuBarMijia-\(version)-windows-x64.msi"
+    let exeName = "MenuBarHome-\(version)-windows-x64-setup.exe"
+    let msiName = "MenuBarHome-\(version)-windows-x64.msi"
     if let exeURL, let msiURL {
         guard exeURL.lastPathComponent == exeName, msiURL.lastPathComponent == msiName else {
             throw SigningError.invalidPackage("EXE 与 MSI 必须带上与 DMG 相同的版本")
@@ -198,7 +198,7 @@ func main() throws {
     }
 
     let manifestURL = dmgURL.deletingLastPathComponent()
-        .appendingPathComponent("MenuBarMijia-\(version).update.json")
+        .appendingPathComponent("MenuBarHome-\(version).update.json")
     let manifestBytes: Data
     do {
         manifestBytes = try Data(contentsOf: manifestURL)
@@ -207,7 +207,7 @@ func main() throws {
     }
     let signature = try key.signature(for: manifestBytes)
     let signatureURL = dmgURL.deletingLastPathComponent()
-        .appendingPathComponent("MenuBarMijia-\(version).update.json.ed25519.sig")
+        .appendingPathComponent("MenuBarHome-\(version).update.json.ed25519.sig")
     do {
         try (signature.base64EncodedString() + "\n").write(to: signatureURL, atomically: true, encoding: .utf8)
     } catch {

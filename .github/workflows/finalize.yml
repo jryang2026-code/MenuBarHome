@@ -86,12 +86,12 @@ jobs:
           RELEASE_VERSION: ${{ steps.check.outputs.version }}
         run: |
           set -euo pipefail
-          dmg="MenuBarMijia-${RELEASE_VERSION}.dmg"
-          exe="MenuBarMijia-${RELEASE_VERSION}-windows-x64-setup.exe"
-          msi="MenuBarMijia-${RELEASE_VERSION}-windows-x64.msi"
+          dmg="MenuBarHome-${RELEASE_VERSION}.dmg"
+          exe="MenuBarHome-${RELEASE_VERSION}-windows-x64-setup.exe"
+          msi="MenuBarHome-${RELEASE_VERSION}-windows-x64.msi"
           required_sigs=(
-            "MenuBarMijia-${RELEASE_VERSION}.update.json"
-            "MenuBarMijia-${RELEASE_VERSION}.update.json.ed25519.sig"
+            "MenuBarHome-${RELEASE_VERSION}.update.json"
+            "MenuBarHome-${RELEASE_VERSION}.update.json.ed25519.sig"
           )
 
           mapfile -t draft_assets < <(gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name' | tr -d '\r')
@@ -107,15 +107,15 @@ jobs:
               echo "草稿里缺少 \`${missing_sigs[*]}\`，因此拒绝发布（宁可不发，也不发无法通过应用内更新校验的包）。"
               echo "请在**可信机器**上执行，私钥不要进入 GitHub："
               echo '```bash'
-              echo "gh release download ${RELEASE_TAG} --pattern \"MenuBarMijia-${RELEASE_VERSION}*\" --dir dist"
+              echo "gh release download ${RELEASE_TAG} --pattern \"MenuBarHome-${RELEASE_VERSION}*\" --dir dist"
               echo "MENUBARMIJIA_UPDATE_SIGNING_KEY=\"<离线私钥>\" swift scripts/sign_update.swift \\"
               echo "  --min-from <x.y.z> \\"
               echo "  dist/$dmg \\"
               echo "  dist/$exe \\"
               echo "  dist/$msi"
               echo "gh release upload ${RELEASE_TAG} \\"
-              echo "  dist/MenuBarMijia-${RELEASE_VERSION}.update.json \\"
-              echo "  dist/MenuBarMijia-${RELEASE_VERSION}.update.json.ed25519.sig"
+              echo "  dist/MenuBarHome-${RELEASE_VERSION}.update.json \\"
+              echo "  dist/MenuBarHome-${RELEASE_VERSION}.update.json.ed25519.sig"
               echo '```'
               echo "上传签名后重新触发本工作流。"
             } >> "$GITHUB_STEP_SUMMARY"

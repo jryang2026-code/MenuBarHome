@@ -304,22 +304,22 @@ public struct UpdateChecker: Sendable {
     public static func releaseAssetURL(version: String, fileName: String) -> URL? {
         guard UpdateManifest.isReleaseVersionText(version) else { return nil }
         let allowed: Set<String> = [
-            "MenuBarMijia-\(version).dmg",
-            "MenuBarMijia-\(version).dmg.sha256",
-            "MenuBarMijia-\(version)-windows-x64-setup.exe",
-            "MenuBarMijia-\(version)-windows-x64-setup.exe.sha256",
-            "MenuBarMijia-\(version)-windows-x64.msi",
-            "MenuBarMijia-\(version)-windows-x64.msi.sha256",
-            "MenuBarMijia-\(version).update.json",
-            "MenuBarMijia-\(version).update.json.ed25519.sig",
+            "MenuBarHome-\(version).dmg",
+            "MenuBarHome-\(version).dmg.sha256",
+            "MenuBarHome-\(version)-windows-x64-setup.exe",
+            "MenuBarHome-\(version)-windows-x64-setup.exe.sha256",
+            "MenuBarHome-\(version)-windows-x64.msi",
+            "MenuBarHome-\(version)-windows-x64.msi.sha256",
+            "MenuBarHome-\(version).update.json",
+            "MenuBarHome-\(version).update.json.ed25519.sig",
         ]
         guard allowed.contains(fileName) else { return nil }
         return URL(string: "https://github.com/jryang2026-code/MenuBarHome/releases/download/v\(version)/\(fileName)")
     }
 
     private static func selectPackageAsset(version: String, from rawAssets: [[String: Any]]) -> AppRelease.PackageAsset? {
-        let dmgName = "MenuBarMijia-\(version).dmg"
-        let manifestName = "MenuBarMijia-\(version).update.json"
+        let dmgName = "MenuBarHome-\(version).dmg"
+        let manifestName = "MenuBarHome-\(version).update.json"
         guard let downloadURL = releaseAssetURL(version: version, fileName: dmgName) else {
             return nil
         }
@@ -484,7 +484,7 @@ public struct UpdateSystemDriver: Sendable {
     public static let live = UpdateSystemDriver(
         downloadFile: { url, destination, onProgress in
             var request = URLRequest(url: url, timeoutInterval: 60)
-            request.setValue("MenuBarMijia", forHTTPHeaderField: "User-Agent")
+            request.setValue("MenuBarHome", forHTTPHeaderField: "User-Agent")
             #if os(macOS)
             let (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 200
@@ -780,7 +780,7 @@ public struct UpdateSystemDriver: Sendable {
     }
 
     private static func findAppBundle(in directory: URL) throws -> URL? {
-        let preferred = directory.appendingPathComponent("MenuBarMijia.app", isDirectory: true)
+        let preferred = directory.appendingPathComponent("MenuBarHome.app", isDirectory: true)
         if FileManager.default.fileExists(atPath: preferred.path) {
             return preferred
         }
@@ -832,11 +832,11 @@ public struct AppUpdater: Sendable {
         guard let packageURL = UpdateChecker.releaseAssetURL(version: release.version, fileName: asset.name),
               let manifestURL = UpdateChecker.releaseAssetURL(
                 version: release.version,
-                fileName: "MenuBarMijia-\(release.version).update.json"
+                fileName: "MenuBarHome-\(release.version).update.json"
               ),
               let signatureURL = UpdateChecker.releaseAssetURL(
                 version: release.version,
-                fileName: "MenuBarMijia-\(release.version).update.json.ed25519.sig"
+                fileName: "MenuBarHome-\(release.version).update.json.ed25519.sig"
               ) else {
             throw UpdateInstallError.updateSignatureInvalid("release asset name is not publishable")
         }

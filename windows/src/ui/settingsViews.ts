@@ -361,7 +361,7 @@ export interface SettingsViewContext {
           ${!ctx.availableUpdate ? renderUpdateSection(ctx) : ""}
 
           <div class="cc-sheet-footer">
-            <button class="cc-btn-danger" id="btn-settings-quit">${t("退出 MenuBarMijia")}</button>
+            <button class="cc-btn-danger" id="btn-settings-quit">${t("退出 MenuBarHome")}</button>
             <button class="cc-btn-primary" id="btn-save-settings">${t("完成并保存")}</button>
           </div>
         </div>

@@ -186,7 +186,7 @@ export async function checkForAppUpdate(host: MenuMijiaWindowsApp, manual: boole
           method: "GET",
           headers: {
             Accept: "application/vnd.github+json",
-            "User-Agent": "MenuBarMijia-Windows",
+            "User-Agent": "MenuBarHome-Windows",
           },
           timeoutMs: 8000,
         }),

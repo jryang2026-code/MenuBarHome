@@ -133,30 +133,30 @@ class MacosSamplingTests(unittest.TestCase):
 class WindowsProcessTreeTests(unittest.TestCase):
     def test_includes_app_and_webview_children_only(self):
         entries = [
-            (100, 1, "MenuBarMijia.exe"),
+            (100, 1, "MenuBarHome.exe"),
             (200, 100, "msedgewebview2.exe"),
             (201, 200, "msedgewebview2.exe"),
             (300, 1, "msedgewebview2.exe"),
             (400, 300, "msedgewebview2.exe"),
         ]
-        tree = fp.select_process_tree(entries, "MenuBarMijia.exe")
+        tree = fp.select_process_tree(entries, "MenuBarHome.exe")
         self.assertEqual([pid for pid, _name in tree], [100, 200, 201])
 
     def test_missing_root_yields_nothing(self):
-        self.assertEqual(fp.select_process_tree([(5, 1, "other.exe")], "MenuBarMijia.exe"), [])
+        self.assertEqual(fp.select_process_tree([(5, 1, "other.exe")], "MenuBarHome.exe"), [])
 
     def test_matches_the_tauri_binary_name(self):
         entries = [
             (700, 1, "menubarmijia-windows.exe"),
             (701, 700, "msedgewebview2.exe"),
-            (702, 1, "MenuBarMijia.exe"),
+            (702, 1, "MenuBarHome.exe"),
         ]
         tree = fp.select_process_tree(entries, fp.WINDOWS_APP_NAMES)
         self.assertEqual([pid for pid, _name in tree], [700, 701, 702])
 
     def test_name_matching_ignores_case(self):
         entries = [(800, 1, "MENUBARMIJIA-WINDOWS.EXE")]
-        tree = fp.select_process_tree(entries, ("MenuBarMijia.exe", "menubarmijia-windows.exe"))
+        tree = fp.select_process_tree(entries, ("MenuBarHome.exe", "menubarmijia-windows.exe"))
         self.assertEqual(tree, [(800, "MENUBARMIJIA-WINDOWS.EXE")])
 
     def test_sampler_sums_host_and_renderer_cpu(self):
@@ -173,7 +173,7 @@ class WindowsProcessTreeTests(unittest.TestCase):
             ]
         )
         walls = iter([0.0, 5.0, 10.0, 15.0])
-        with mock.patch.object(fp, "windows_process_tree", return_value=[(100, "MenuBarMijia.exe"), (200, "msedgewebview2.exe")]), mock.patch.object(
+        with mock.patch.object(fp, "windows_process_tree", return_value=[(100, "MenuBarHome.exe"), (200, "msedgewebview2.exe")]), mock.patch.object(
             fp, "_windows_reading", side_effect=lambda _pid: next(responses)
         ):
             measured = fp.measure_windows(

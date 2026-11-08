@@ -55,7 +55,7 @@ if ! printf '%s' "$ARCHS" | grep -qw "arm64" || ! printf '%s' "$ARCHS" | grep -q
     echo "❌ MenuBarMijiaApp 未包含完整通用二进制架构（当前：${ARCHS:-<未知>}，期望：arm64 + x86_64）" >&2
     exit 1
 fi
-APP_DIR="$ROOT/MenuBarMijia.app"
+APP_DIR="$ROOT/MenuBarHome.app"
 rm -rf "$ROOT/米家控制中心.app" "$ROOT/MenuMijia.app"  # 清理旧名字产物
 
 WAS_RUNNING=0
@@ -185,7 +185,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
         <string>en</string>
     </array>
     <key>CFBundleDisplayName</key>
-    <string>MenuBarMijia</string>
+    <string>MenuBarHome</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIconName</key>
@@ -213,7 +213,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>MenuBarMijia</string>
+    <string>MenuBarHome</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -227,7 +227,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
-    <string>Not affiliated with Xiaomi. MenuBarMijia is an independent open-source project, not an official Xiaomi or Mijia product. "Xiaomi", "Mijia", "Mi Home", and "米家" are trademarks of Xiaomi Corporation and its affiliates, used only to describe compatibility. No endorsement is implied. Copyright © 2026 jryang1997. MIT License.</string>
+    <string>Not affiliated with Xiaomi. MenuBarHome is an independent open-source project, not an official Xiaomi or Mijia product. "Xiaomi", "Mijia", "Mi Home", and "米家" are trademarks of Xiaomi Corporation and its affiliates, used only to describe compatibility. No endorsement is implied. Copyright © 2026 jryang1997. MIT License.</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>用于局域网自动发现并实时连接 Home Assistant 及电视等智能家居设备。</string>
     <key>NSBonjourServices</key>
@@ -409,7 +409,7 @@ generate_app_intents_metadata() {
     echo "🧩 已嵌入 App Intents 元数据：$(du -h "$resources/extract.actionsdata" | awk '{print $1}') extract.actionsdata（快捷指令 / Siri 可发现）"
 }
 if [ "${APP_INTENTS_ONLY:-0}" = "1" ]; then
-    APP_DIR="$(mktemp -d)/MenuBarMijia.app"
+    APP_DIR="$(mktemp -d)/MenuBarHome.app"
     mkdir -p "$APP_DIR/Contents/Resources"
     generate_app_intents_metadata
     if [ ! -s "$APP_DIR/Contents/Resources/Metadata.appintents/extract.actionsdata" ]; then
@@ -458,8 +458,8 @@ echo "✅ 已打包完成：$APP_DIR"
 
 if [ "$WAS_RUNNING" = "1" ] && [ "${SKIP_RESTART:-0}" != "1" ]; then
     open "$APP_DIR"
-    echo "🔄 已自动重启 MenuBarMijia.app"
+    echo "🔄 已自动重启 MenuBarHome.app"
 fi
 if [ "${SKIP_RESTART:-0}" = "1" ]; then
-    echo "⏸️  SKIP_RESTART=1：未终止、未启动任何 MenuBarMijia 进程"
+    echo "⏸️  SKIP_RESTART=1：未终止、未启动任何 MenuBarHome 进程"
 fi

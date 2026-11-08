@@ -36,7 +36,7 @@ export async function runCommand(
   const token = (snapshot.bridgeToken ?? "").trim();
   if (!token) {
     throw new Error(
-      "The snapshot has no bridge token. Toggle Raycast 集成 off and on again in MenuBarMijia.",
+      "The snapshot has no bridge token. Toggle Raycast 集成 off and on again in MenuBarHome.",
     );
   }
   const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -56,7 +56,7 @@ export async function runCommandWithToast(route: string, params: CommandParams =
       title: result.message || (result.isError ? "The command failed" : "Done"),
     });
   } catch (error) {
-    await showToast({ style: Toast.Style.Failure, title: "MenuBarMijia", message: errorMessage(error) });
+    await showToast({ style: Toast.Style.Failure, title: "MenuBarHome", message: errorMessage(error) });
   }
 }
 
@@ -82,6 +82,6 @@ async function waitForFeedback(requestId: string): Promise<RaycastFeedback> {
     }
   }
   throw new Error(
-    "MenuBarMijia did not report a result in time. Is the app running, and is Raycast 集成 still on?",
+    "MenuBarHome did not report a result in time. Is the app running, and is Raycast 集成 still on?",
   );
 }

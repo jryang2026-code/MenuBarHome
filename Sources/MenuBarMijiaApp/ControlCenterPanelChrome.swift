@@ -1154,7 +1154,7 @@ extension ControlCenterPanel {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(Text(L10n.tr("退出应用", "Quit App")))
-            .panelHelp(L10n.tr("完全退出 MenuBarMijia（⌘Q）", "Quit MenuBarMijia (⌘Q)"))
+            .panelHelp(L10n.tr("完全退出 MenuBarHome（⌘Q）", "Quit MenuBarHome (⌘Q)"))
         }
     }
 

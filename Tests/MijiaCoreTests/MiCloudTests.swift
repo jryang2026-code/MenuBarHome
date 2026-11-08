@@ -1719,7 +1719,7 @@ struct MiCloudClientTests {
         let record = Go2RTCOwnerRecord(
             pid: 42,
             session: session,
-            binaryPath: "/tmp/MenuBarMijia.app/Contents/Resources/bin/go2rtc",
+            binaryPath: "/tmp/MenuBarHome.app/Contents/Resources/bin/go2rtc",
             binarySize: 40_900_000,
             binaryModifiedAt: 1_700_000_000
         )

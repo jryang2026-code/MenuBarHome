@@ -377,7 +377,7 @@ final class MenuBarPanelController: NSObject {
         menu.addItem(.separator())
 
         let quit = NSMenuItem(
-            title: L10n.tr("退出 MenuBarMijia", "Quit MenuBarMijia"),
+            title: L10n.tr("退出 MenuBarHome", "Quit MenuBarHome"),
             action: #selector(quitFromStatusMenu(_:)),
             keyEquivalent: ""
         )

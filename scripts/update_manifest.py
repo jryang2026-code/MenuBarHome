@@ -12,7 +12,7 @@ VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 KEY_RE = re.compile(r'updateSigningPublicKeyBase64\s*=\s*"([^"]+)"')
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PUBLIC_KEY_SOURCE = ROOT / "Sources/MijiaCore/UpdateChecker.swift"
-GOLDEN = ROOT / "scripts/testdata/MenuBarMijia-1.1.7.update.json"
+GOLDEN = ROOT / "scripts/testdata/MenuBarHome-1.1.7.update.json"
 
 
 def public_key() -> str:
@@ -42,34 +42,34 @@ def canonical_bytes(version: str, min_from: str, key_id: str, digests: tuple[str
         "version": version,
         "min_from": min_from,
         "key_id": key_id,
-        "files": [{"platform": "macos", "file": f"MenuBarMijia-{version}.dmg", "sha256": digests[0]}],
+        "files": [{"platform": "macos", "file": f"MenuBarHome-{version}.dmg", "sha256": digests[0]}],
     }
     if len(digests) == 3:
         document["files"] += [
             {
                 "platform": "windows",
-                "file": f"MenuBarMijia-{version}-windows-x64-setup.exe",
+                "file": f"MenuBarHome-{version}-windows-x64-setup.exe",
                 "sha256": digests[1],
             },
-            {"platform": "windows", "file": f"MenuBarMijia-{version}-windows-x64.msi", "sha256": digests[2]},
+            {"platform": "windows", "file": f"MenuBarHome-{version}-windows-x64.msi", "sha256": digests[2]},
         ]
     return (json.dumps(document, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
 
 
 def package_names(version: str) -> tuple[str, str, str]:
     return (
-        f"MenuBarMijia-{version}.dmg",
-        f"MenuBarMijia-{version}-windows-x64-setup.exe",
-        f"MenuBarMijia-{version}-windows-x64.msi",
+        f"MenuBarHome-{version}.dmg",
+        f"MenuBarHome-{version}-windows-x64-setup.exe",
+        f"MenuBarHome-{version}-windows-x64.msi",
     )
 
 
 def version_from_dmg(path: pathlib.Path) -> str:
     name = path.name
-    prefix = "MenuBarMijia-"
+    prefix = "MenuBarHome-"
     suffix = ".dmg"
     if not (name.startswith(prefix) and name.endswith(suffix)):
-        raise SystemExit("DMG 文件名必须是 MenuBarMijia-<version>.dmg")
+        raise SystemExit("DMG 文件名必须是 MenuBarHome-<version>.dmg")
     version = name[len(prefix) : -len(suffix)]
     if not VERSION_RE.fullmatch(version):
         raise SystemExit(f"DMG 版本不是 x.y.z：{version}")
@@ -117,13 +117,13 @@ def encode(min_from: str, dmg: pathlib.Path, exe: pathlib.Path | None, msi: path
             raise SystemExit("EXE 与 MSI 必须带上与 DMG 相同的版本")
         packages += [exe, msi]
     body = canonical_bytes(version, min_from, public_key(), tuple(read_sidecar(path) for path in packages))
-    dmg.with_name(f"MenuBarMijia-{version}.update.json").write_bytes(body)
+    dmg.with_name(f"MenuBarHome-{version}.update.json").write_bytes(body)
 
 
 def check_fields(version: str, directory: pathlib.Path) -> None:
     if not VERSION_RE.fullmatch(version):
         raise SystemExit("版本必须是 x.y.z")
-    manifest_path = directory / f"MenuBarMijia-{version}.update.json"
+    manifest_path = directory / f"MenuBarHome-{version}.update.json"
     raw = manifest_path.read_bytes()
     try:
         parsed = json.loads(raw.decode("utf-8"))
@@ -149,7 +149,7 @@ def self_test() -> None:
     )
     # Git for Windows checks text out with CRLF; the canonical golden is LF.
     golden = GOLDEN.read_bytes().replace(b"\r\n", b"\n")
-    if golden_body != golden or len(golden) != 526:
+    if golden_body != golden or len(golden) != 523:
         raise SystemExit(
             f"canonical_bytes 与黄金清单不一致：生成 {len(golden_body)} 字节，文件 {len(golden)} 字节"
         )
@@ -185,12 +185,12 @@ def self_test() -> None:
     # macOS-only release: the manifest lists the DMG alone, and check-fields ignores absent Windows files.
     with tempfile.TemporaryDirectory() as tmp:
         directory = pathlib.Path(tmp)
-        dmg = directory / "MenuBarMijia-1.2.4.dmg"
+        dmg = directory / "MenuBarHome-1.2.4.dmg"
         dmg.write_bytes(b"dmg-only")
         digest = hashlib.sha256(b"dmg-only").hexdigest()
         pathlib.Path(str(dmg) + ".sha256").write_text(f"{digest}  {dmg.name}\n", encoding="utf-8")
         encode("1.0.0", dmg, None, None)
-        manifest = json.loads((directory / "MenuBarMijia-1.2.4.update.json").read_text(encoding="utf-8"))
+        manifest = json.loads((directory / "MenuBarHome-1.2.4.update.json").read_text(encoding="utf-8"))
         if [entry["platform"] for entry in manifest["files"]] != ["macos"]:
             raise SystemExit("仅 macOS 清单应只含 DMG 一项")
         check_fields("1.2.4", directory)

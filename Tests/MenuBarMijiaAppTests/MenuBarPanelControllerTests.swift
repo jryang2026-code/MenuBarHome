@@ -142,7 +142,7 @@ struct MenuBarPanelControllerTests {
 
         verify(
             language: .zhHans,
-            titles: ["家居连接", "设置…", "检查更新…", "", "退出 MenuBarMijia"],
+            titles: ["家居连接", "设置…", "检查更新…", "", "退出 MenuBarHome"],
             connectionTitles: [
                 "实时连接",
                 "演示模式",
@@ -155,7 +155,7 @@ struct MenuBarPanelControllerTests {
         )
         verify(
             language: .zhHant,
-            titles: ["家居連線", "設定…", "檢查更新…", "", "退出 MenuBarMijia"],
+            titles: ["家居連線", "設定…", "檢查更新…", "", "退出 MenuBarHome"],
             connectionTitles: [
                 "實時連線",
                 "演示模式",
@@ -168,7 +168,7 @@ struct MenuBarPanelControllerTests {
         )
         verify(
             language: .en,
-            titles: ["Connections", "Settings…", "Check for Updates…", "", "Quit MenuBarMijia"],
+            titles: ["Connections", "Settings…", "Check for Updates…", "", "Quit MenuBarHome"],
             connectionTitles: [
                 "Live Connections",
                 "Demo Mode",

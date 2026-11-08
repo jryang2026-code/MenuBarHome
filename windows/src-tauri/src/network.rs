@@ -405,7 +405,7 @@ pub(crate) const PLAINTEXT_WARNING: &str =
 
 pub(crate) fn confirmation_message(origin: &str, plaintext_warning: bool) -> String {
     let mut text = format!(
-        "允许 MenuBarMijia 连接这个地址吗？\n\n{origin}\n\n只有你在设置里填写的 Home Assistant 或 AI 服务地址才应该出现在这里。"
+        "允许 MenuBarHome 连接这个地址吗？\n\n{origin}\n\n只有你在设置里填写的 Home Assistant 或 AI 服务地址才应该出现在这里。"
     );
     if plaintext_warning {
         text.push_str("\n\n");
@@ -425,7 +425,7 @@ pub(crate) fn user_confirms_origin(origin: &str, plaintext_warning: bool) -> boo
     use std::os::windows::ffi::OsStrExt;
     let text = confirmation_message(origin, plaintext_warning);
     let text_wide: Vec<u16> = OsStr::new(&text).encode_wide().chain(std::iter::once(0)).collect();
-    let title_wide: Vec<u16> = OsStr::new("MenuBarMijia").encode_wide().chain(std::iter::once(0)).collect();
+    let title_wide: Vec<u16> = OsStr::new("MenuBarHome").encode_wide().chain(std::iter::once(0)).collect();
     #[link(name = "user32")]
     extern "system" {
         fn MessageBoxW(

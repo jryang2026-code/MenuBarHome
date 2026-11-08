@@ -37,7 +37,7 @@ export default function SearchDevices() {
       {error ? (
         <List.EmptyView
           icon={Icon.Warning}
-          title="Cannot read the MenuBarMijia snapshot"
+          title="Cannot read the MenuBarHome snapshot"
           description={error}
           actions={
             <ActionPanel>

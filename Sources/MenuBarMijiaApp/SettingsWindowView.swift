@@ -1221,7 +1221,7 @@ private struct AboutSettingsTab: View {
         let _ = store.effectiveLanguage
         ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: 16) {
-                SettingsSection(title: L10n.tr("关于 MenuBarMijia", "About MenuBarMijia")) {
+                SettingsSection(title: L10n.tr("关于 MenuBarHome", "About MenuBarHome")) {
                     HStack(spacing: 10) {
                         Image(systemName: "house.fill")
                             .font(.system(size: DesignTokens.TypeSize.title, weight: .bold))
@@ -1237,7 +1237,7 @@ private struct AboutSettingsTab: View {
                             )
 
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("MenuBarMijia")
+                            Text("MenuBarHome")
                                 .font(.system(size: DesignTokens.TypeSize.body, weight: .bold))
                             Text(L10n.tr("版本 \(appVersion) (\(buildNumber))", "Version \(appVersion) (\(buildNumber))"))
                                 .font(.system(size: DesignTokens.TypeSize.caption))
@@ -1276,7 +1276,7 @@ private struct AboutSettingsTab: View {
                         } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: "power")
-                                Text(L10n.tr("退出 MenuBarMijia", "Quit MenuBarMijia"))
+                                Text(L10n.tr("退出 MenuBarHome", "Quit MenuBarHome"))
                             }
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                             .foregroundStyle(.red.opacity(0.85))

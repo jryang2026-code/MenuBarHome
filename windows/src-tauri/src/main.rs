@@ -124,11 +124,11 @@ fn tray_labels_for_shortcut(shortcut_label: Option<&str>) -> (String, String) {
     match shortcut_label.map(str::trim).filter(|s| !s.is_empty()) {
         Some(label) => (
             format!("打开/隐藏控制中心 ({label})"),
-            format!("MenuBarMijia · 菜单栏米家 ({label})"),
+            format!("MenuBarHome · 菜单栏米家 ({label})"),
         ),
         None => (
             "打开/隐藏控制中心".to_string(),
-            "MenuBarMijia · 菜单栏米家".to_string(),
+            "MenuBarHome · 菜单栏米家".to_string(),
         ),
     }
 }
@@ -145,7 +145,7 @@ fn build_tray_menu(
     if let Some(version) = update_version {
         builder = builder.text("update", format!("有新版本 v{version}，点击查看"));
     }
-    builder.text("quit", "退出 MenuBarMijia").build()
+    builder.text("quit", "退出 MenuBarHome").build()
 }
 
 fn refresh_tray_chrome(app: &AppHandle, shortcut_label: Option<&str>, update_version: Option<&str>) {
@@ -294,7 +294,7 @@ fn main() {
             let menu = build_tray_menu(app.handle(), Some("Alt+M"), None)?;
 
             let mut tray_builder = TrayIconBuilder::with_id("main-tray")
-                .tooltip("MenuBarMijia · 菜单栏米家 (Alt+M)")
+                .tooltip("MenuBarHome · 菜单栏米家 (Alt+M)")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -338,7 +338,7 @@ fn main() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running MenuBarMijia Windows application");
+        .expect("error while running MenuBarHome Windows application");
 }
 
 #[cfg(test)]
@@ -502,15 +502,15 @@ mod tests {
         let raw = include_str!("../../tests/fixtures/windows-installer-asset.json");
         let payload: InstallerAssetPayload =
             serde_json::from_str(raw).expect("the Windows frontend installer payload must deserialize");
-        assert_eq!(payload.name, "MenuBarMijia-9.9.9-windows-x64-setup.exe");
+        assert_eq!(payload.name, "MenuBarHome-9.9.9-windows-x64-setup.exe");
         assert_eq!(
             payload.download_url,
-            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v9.9.9/MenuBarMijia-9.9.9-windows-x64-setup.exe"
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v9.9.9/MenuBarHome-9.9.9-windows-x64-setup.exe"
         );
         assert_eq!(payload.size_bytes, 3_145_728);
         assert_eq!(
             payload.manifest_url,
-            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v9.9.9/MenuBarMijia-9.9.9.update.json"
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v9.9.9/MenuBarHome-9.9.9.update.json"
         );
     }
 
@@ -688,7 +688,7 @@ mod tests {
 
         let public_http = confirmation_message("http://ha.example.com:8123", true);
         assert!(public_http.contains(PLAINTEXT_WARNING));
-        assert!(public_http.starts_with("允许 MenuBarMijia 连接这个地址吗？"));
+        assert!(public_http.starts_with("允许 MenuBarHome 连接这个地址吗？"));
     }
 
     #[test]
@@ -913,14 +913,14 @@ mod tests {
             tray_labels_for_shortcut(Some("Ctrl+Alt+M")),
             (
                 "打开/隐藏控制中心 (Ctrl+Alt+M)".to_string(),
-                "MenuBarMijia · 菜单栏米家 (Ctrl+Alt+M)".to_string()
+                "MenuBarHome · 菜单栏米家 (Ctrl+Alt+M)".to_string()
             )
         );
         assert_eq!(
             tray_labels_for_shortcut(None),
             (
                 "打开/隐藏控制中心".to_string(),
-                "MenuBarMijia · 菜单栏米家".to_string()
+                "MenuBarHome · 菜单栏米家".to_string()
             )
         );
     }
@@ -928,11 +928,11 @@ mod tests {
     #[test]
     fn validates_release_asset_urls_filenames_and_sha256() {
         assert!(validated_release_asset_url(
-            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.1.4/MenuBarMijia-1.1.4-windows-x64-setup.exe"
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.1.4/MenuBarHome-1.1.4-windows-x64-setup.exe"
         )
         .is_ok());
         assert!(validated_release_asset_url(
-            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.1.4/MenuBarMijia-1.1.4-windows-x64-setup.exe.sha256"
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.1.4/MenuBarHome-1.1.4-windows-x64-setup.exe.sha256"
         )
         .is_ok());
 
@@ -957,8 +957,8 @@ mod tests {
         ));
 
         assert_eq!(
-            sanitize_installer_filename("MenuBarMijia-1.1.4-windows-x64-setup.exe").ok(),
-            Some("MenuBarMijia-1.1.4-windows-x64-setup.exe".to_string())
+            sanitize_installer_filename("MenuBarHome-1.1.4-windows-x64-setup.exe").ok(),
+            Some("MenuBarHome-1.1.4-windows-x64-setup.exe".to_string())
         );
         for bad_name in [
             "../setup.exe",
@@ -973,7 +973,7 @@ mod tests {
 
         let hex = compute_sha256_hex(b"verified-windows-installer");
         assert_eq!(parse_sha256_hex(&format!("sha256:{}", hex.to_uppercase())), Some(hex.clone()));
-        assert_eq!(parse_sha256_hex(&format!("{hex}  MenuBarMijia-1.1.4-windows-x64-setup.exe\n")), Some(hex));
+        assert_eq!(parse_sha256_hex(&format!("{hex}  MenuBarHome-1.1.4-windows-x64-setup.exe\n")), Some(hex));
         assert_eq!(parse_sha256_hex("sha256:1234"), None);
 
         // Built-in Ed25519 public key decodes to 32 bytes (ADR-0005).

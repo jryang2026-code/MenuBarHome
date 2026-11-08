@@ -366,7 +366,7 @@ final class URLCommandHandler {
             // `triggerScene` already reports success/failure through the store toast; only mirror it
             // to the notification banner so a Raycast/Stream Deck trigger is visible.
             HotkeyAndNotificationManager.shared.deliverExternalActionNotification(
-                title: L10n.tr("MenuBarMijia 外部链接", "MenuBarMijia external link"),
+                title: L10n.tr("MenuBarHome 外部链接", "MenuBarHome external link"),
                 body: message
             )
         case .builtInScene(let builtIn):
@@ -478,7 +478,7 @@ final class URLCommandHandler {
             isError: isError
         )
         HotkeyAndNotificationManager.shared.deliverExternalActionNotification(
-            title: L10n.tr("MenuBarMijia 外部链接", "MenuBarMijia external link"),
+            title: L10n.tr("MenuBarHome 外部链接", "MenuBarHome external link"),
             body: message
         )
     }

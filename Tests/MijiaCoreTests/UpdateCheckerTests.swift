@@ -61,7 +61,7 @@ struct UpdateCheckerTests {
         let expectedHex = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
 
         let fromInline = SHA256Digest(parsing: "sha256:\(expectedHex.uppercased())")
-        let fromSidecar = SHA256Digest(parsing: "\(expectedHex)  MenuBarMijia-1.2.0.dmg\n")
+        let fromSidecar = SHA256Digest(parsing: "\(expectedHex)  MenuBarHome-1.2.0.dmg\n")
         #expect(fromInline?.hex == expectedHex)
         #expect(fromSidecar == fromInline)
         #expect(SHA256Digest(parsing: "sha256:1234") == nil)
@@ -83,14 +83,14 @@ struct UpdateCheckerTests {
           "body": "支持应用内更新",
           "assets": [
             {
-              "name": "MenuBarMijia-1.2.0.zip",
-              "browser_download_url": "https://example.com/MenuBarMijia-1.2.0.zip",
+              "name": "MenuBarHome-1.2.0.zip",
+              "browser_download_url": "https://example.com/MenuBarHome-1.2.0.zip",
               "size": 1024,
               "digest": "sha256:\(String(repeating: "a", count: 64))"
             },
             {
-              "name": "MenuBarMijia-1.2.0.update.json",
-              "browser_download_url": "https://example.com/MenuBarMijia-1.2.0.update.json"
+              "name": "MenuBarHome-1.2.0.update.json",
+              "browser_download_url": "https://example.com/MenuBarHome-1.2.0.update.json"
             }
           ]
         }
@@ -105,8 +105,8 @@ struct UpdateCheckerTests {
           "html_url": "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.2.0",
           "assets": [
             {
-              "name": "MenuBarMijia-1.2.0.dmg",
-              "browser_download_url": "https://example.com/MenuBarMijia-1.2.0.dmg",
+              "name": "MenuBarHome-1.2.0.dmg",
+              "browser_download_url": "https://example.com/MenuBarHome-1.2.0.dmg",
               "size": 2048,
               "digest": "sha256:\(String(repeating: "a", count: 64))"
             }
@@ -122,17 +122,17 @@ struct UpdateCheckerTests {
           "body": "清单在场",
           "assets": [
             {
-              "name": "MenuBarMijia-1.3.0.zip",
-              "browser_download_url": "https://example.com/MenuBarMijia-1.3.0.zip",
+              "name": "MenuBarHome-1.3.0.zip",
+              "browser_download_url": "https://example.com/MenuBarHome-1.3.0.zip",
               "digest": "sha256:\(String(repeating: "b", count: 64))"
             },
             {
-              "name": "MenuBarMijia-1.3.0.dmg",
-              "browser_download_url": "https://example.com/MenuBarMijia-1.3.0.dmg",
+              "name": "MenuBarHome-1.3.0.dmg",
+              "browser_download_url": "https://example.com/MenuBarHome-1.3.0.dmg",
               "size": 4096
             },
             {
-              "name": "MenuBarMijia-1.3.0.update.json",
+              "name": "MenuBarHome-1.3.0.update.json",
               "size": 526
             }
           ]
@@ -141,15 +141,15 @@ struct UpdateCheckerTests {
         let release = try await Self.checker(status: 200, body: listed).checkRelease()
         #expect(release?.notes == "清单在场")
         #expect(release?.packageAsset?.kind == .dmg)
-        #expect(release?.packageAsset?.name == "MenuBarMijia-1.3.0.dmg")
+        #expect(release?.packageAsset?.name == "MenuBarHome-1.3.0.dmg")
         #expect(release?.packageAsset?.sizeBytes == 4096)
         #expect(release?.packageAsset?.downloadURL == UpdateChecker.releaseAssetURL(
             version: "1.3.0",
-            fileName: "MenuBarMijia-1.3.0.dmg"
+            fileName: "MenuBarHome-1.3.0.dmg"
         ))
-        #expect(UpdateChecker.releaseAssetURL(version: "1.2", fileName: "MenuBarMijia-1.2.dmg") == nil)
-        #expect(UpdateChecker.releaseAssetURL(version: "v1.2.0", fileName: "MenuBarMijia-1.2.0.dmg") == nil)
-        #expect(UpdateChecker.releaseAssetURL(version: "1.2.0", fileName: "MenuBarMijia-1.2.0.zip") == nil)
+        #expect(UpdateChecker.releaseAssetURL(version: "1.2", fileName: "MenuBarHome-1.2.dmg") == nil)
+        #expect(UpdateChecker.releaseAssetURL(version: "v1.2.0", fileName: "MenuBarHome-1.2.0.dmg") == nil)
+        #expect(UpdateChecker.releaseAssetURL(version: "1.2.0", fileName: "MenuBarHome-1.2.0.zip") == nil)
     }
 
     private static func makeFakeAppBundle(
@@ -157,7 +157,7 @@ struct UpdateCheckerTests {
         bundleID: String = AppUpdater.expectedBundleIdentifier,
         shortVersion: String = "1.2.0"
     ) throws -> URL {
-        let appURL = directory.appendingPathComponent("MenuBarMijia.app", isDirectory: true)
+        let appURL = directory.appendingPathComponent("MenuBarHome.app", isDirectory: true)
         let contentsURL = appURL.appendingPathComponent("Contents", isDirectory: true)
         try FileManager.default.createDirectory(at: contentsURL, withIntermediateDirectories: true)
         let plist: [String: Any] = [
@@ -183,13 +183,13 @@ struct UpdateCheckerTests {
         let signingKey = Curve25519.Signing.PrivateKey()
         let signingPublicKey = signingKey.publicKey.rawRepresentation.base64EncodedString()
         let signed = try signedUpdateManifest(version: "1.2.0", package: archiveBytes, signingKey: signingKey)
-        let packageURL = try #require(UpdateChecker.releaseAssetURL(version: "1.2.0", fileName: "MenuBarMijia-1.2.0.dmg"))
+        let packageURL = try #require(UpdateChecker.releaseAssetURL(version: "1.2.0", fileName: "MenuBarHome-1.2.0.dmg"))
         let release = AppRelease(
             version: "1.2.0",
             pageURL: URL(string: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.2.0")!,
             notes: "Release notes",
             packageAsset: .init(
-                name: "MenuBarMijia-1.2.0.dmg",
+                name: "MenuBarHome-1.2.0.dmg",
                 downloadURL: packageURL,
                 sizeBytes: Int64(archiveBytes.count),
                 kind: .dmg
@@ -218,7 +218,7 @@ struct UpdateCheckerTests {
                 if path.hasSuffix(".update.json.ed25519.sig") {
                     #expect(req.url == UpdateChecker.releaseAssetURL(
                         version: "1.2.0",
-                        fileName: "MenuBarMijia-1.2.0.update.json.ed25519.sig"
+                        fileName: "MenuBarHome-1.2.0.update.json.ed25519.sig"
                     ))
                     return (Data(signed.signatureText.utf8), resp)
                 }
@@ -247,7 +247,7 @@ struct UpdateCheckerTests {
 
         var symlinkDriver = happyDriver
         symlinkDriver.unpackArchive = { _, _, destinationDir in
-            let symlinkURL = destinationDir.appendingPathComponent("MenuBarMijia.app")
+            let symlinkURL = destinationDir.appendingPathComponent("MenuBarHome.app")
             try FileManager.default.createSymbolicLink(at: symlinkURL, withDestinationURL: targetAppURL)
             return symlinkURL
         }
@@ -331,8 +331,8 @@ struct UpdateCheckerTests {
             pageURL: URL(string: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.1.8")!,
             notes: "replay",
             packageAsset: .init(
-                name: "MenuBarMijia-1.1.8.dmg",
-                downloadURL: try #require(UpdateChecker.releaseAssetURL(version: "1.1.8", fileName: "MenuBarMijia-1.1.8.dmg")),
+                name: "MenuBarHome-1.1.8.dmg",
+                downloadURL: try #require(UpdateChecker.releaseAssetURL(version: "1.1.8", fileName: "MenuBarHome-1.1.8.dmg")),
                 sizeBytes: 7,
                 kind: .dmg
             )
@@ -424,11 +424,11 @@ struct UpdateCheckerTests {
           "body": "支持状态栏气泡提醒",
           "assets": [
             {
-              "name": "MenuBarMijia-1.4.0.dmg",
+              "name": "MenuBarHome-1.4.0.dmg",
               "size": \(archiveBytes.count)
             },
             {
-              "name": "MenuBarMijia-1.4.0.update.json",
+              "name": "MenuBarHome-1.4.0.update.json",
               "size": \(signed.bytes.count)
             }
           ]
@@ -607,7 +607,7 @@ struct UpdateCheckerTests {
         bundleID: String = AppUpdater.expectedBundleIdentifier,
         shortVersion: String = "1.5.0"
     ) throws -> URL {
-        let appURL = directory.appendingPathComponent("MenuBarMijia.app", isDirectory: true)
+        let appURL = directory.appendingPathComponent("MenuBarHome.app", isDirectory: true)
         let contentsURL = appURL.appendingPathComponent("Contents", isDirectory: true)
         let macOSURL = contentsURL.appendingPathComponent("MacOS", isDirectory: true)
         try FileManager.default.createDirectory(at: macOSURL, withIntermediateDirectories: true)
@@ -643,13 +643,13 @@ struct UpdateCheckerTests {
         try FileManager.default.createDirectory(at: buildDir, withIntermediateDirectories: true)
         let signedAppURL = try Self.makeSignedMachOAppBundle(in: buildDir, shortVersion: "1.5.0")
 
-        let zipURL = rootDir.appendingPathComponent("MenuBarMijia-1.5.0.zip")
+        let zipURL = rootDir.appendingPathComponent("MenuBarHome-1.5.0.zip")
         try Self.runTool("/usr/bin/ditto", ["-c", "-k", "--keepParent", signedAppURL.path, zipURL.path])
 
         let zipDest = rootDir.appendingPathComponent("zip-dest", isDirectory: true)
         try FileManager.default.createDirectory(at: zipDest, withIntermediateDirectories: true)
         let unpackedFromZip = try await UpdateSystemDriver.live.unpackArchive(zipURL, .zip, zipDest)
-        #expect(unpackedFromZip.lastPathComponent == "MenuBarMijia.app")
+        #expect(unpackedFromZip.lastPathComponent == "MenuBarHome.app")
         try await UpdateSystemDriver.live.stripQuarantine(unpackedFromZip)
         await #expect(throws: UpdateInstallError.self) {
             try await UpdateSystemDriver.live.verifyCodeSignature(unpackedFromZip, missingPinRequirement)
@@ -663,18 +663,18 @@ struct UpdateCheckerTests {
         try FileManager.default.createDirectory(at: dmgSrcDir, withIntermediateDirectories: true)
         try FileManager.default.copyItem(
             at: signedAppURL,
-            to: dmgSrcDir.appendingPathComponent("MenuBarMijia.app", isDirectory: true)
+            to: dmgSrcDir.appendingPathComponent("MenuBarHome.app", isDirectory: true)
         )
-        let dmgURL = rootDir.appendingPathComponent("MenuBarMijia-1.5.0.dmg")
+        let dmgURL = rootDir.appendingPathComponent("MenuBarHome-1.5.0.dmg")
         try Self.runTool(
             "/usr/bin/hdiutil",
-            ["create", "-volname", "MenuBarMijia 1.5.0", "-srcfolder", dmgSrcDir.path, "-ov", "-format", "UDZO", dmgURL.path]
+            ["create", "-volname", "MenuBarHome 1.5.0", "-srcfolder", dmgSrcDir.path, "-ov", "-format", "UDZO", dmgURL.path]
         )
 
         let dmgDest = rootDir.appendingPathComponent("dmg-dest", isDirectory: true)
         try FileManager.default.createDirectory(at: dmgDest, withIntermediateDirectories: true)
         let unpackedFromDmg = try await UpdateSystemDriver.live.unpackArchive(dmgURL, .dmg, dmgDest)
-        #expect(unpackedFromDmg.lastPathComponent == "MenuBarMijia.app")
+        #expect(unpackedFromDmg.lastPathComponent == "MenuBarHome.app")
         #expect(!FileManager.default.fileExists(atPath: dmgDest.appendingPathComponent("mnt").path))
         try await UpdateSystemDriver.live.stripQuarantine(unpackedFromDmg)
         await #expect(throws: UpdateInstallError.self) {

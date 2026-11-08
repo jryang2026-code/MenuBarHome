@@ -1,22 +1,22 @@
 English | [简体中文](README.zh-CN.md)
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/309141?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-309141" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/309141/daily?language=Swift" alt="jryang1997%2FMenuBarMijia | Trendshift" width="250" height="55"/></a>
-  <a href="https://trendshift.io/repositories/309141?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-309141" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/309141/weekly?language=Swift" alt="jryang1997%2FMenuBarMijia | Trendshift" width="250" height="55"/></a>
+  <a href="https://trendshift.io/repositories/309141?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-309141" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/309141/daily?language=Swift" alt="jryang1997%2FMenuBarHome | Trendshift" width="250" height="55"/></a>
+  <a href="https://trendshift.io/repositories/309141?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-309141" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/309141/weekly?language=Swift" alt="jryang1997%2FMenuBarHome | Trendshift" width="250" height="55"/></a>
 </p>
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="docs/assets/logo-light.svg">
-    <img src="docs/assets/logo.svg" width="120" alt="MenuBarMijia Logo">
+    <img src="docs/assets/logo.svg" width="120" alt="MenuBarHome Logo">
   </picture>
 </p>
 
-<h1 align="center">MenuBarMijia</h1>
+<h1 align="center">MenuBarHome</h1>
 
 > [!IMPORTANT]
-> **Not affiliated with Xiaomi.** MenuBarMijia is an independent open-source project, not an official Xiaomi or Mijia product, and is not affiliated with, endorsed by, or sponsored by Xiaomi Corporation or its affiliates. "Xiaomi", "Mijia", "Mi Home", and "米家" are trademarks of Xiaomi Corporation and its affiliates. The project uses these names only to describe compatibility with Xiaomi / Mijia devices; no endorsement is implied.
+> **Not affiliated with Xiaomi.** MenuBarHome is an independent open-source project, not an official Xiaomi or Mijia product, and is not affiliated with, endorsed by, or sponsored by Xiaomi Corporation or its affiliates. "Xiaomi", "Mijia", "Mi Home", and "米家" are trademarks of Xiaomi Corporation and its affiliates. The project uses these names only to describe compatibility with Xiaomi / Mijia devices; no endorsement is implied.
 
 <p align="center">
   <b>Control your entire home right from your computer, without picking up your phone.</b><br>
@@ -40,6 +40,8 @@ English | [简体中文](README.zh-CN.md)
   <a href="#safety-privacy--limitations">Safety & Privacy</a> ·
   <a href="CHANGELOG.md">Changelog</a>
 </p>
+
+> **Renamed:** MenuBarMijia is now MenuBarHome. Quit and delete the old `MenuBarMijia` app after installing this one; your sign-in and settings carry over. On Windows, uninstall the old version.
 
 > **Back on GitHub (2026-11):** the original GitHub account was suspended, so the repository now lives at [github.com/jryang2026-code/MenuBarHome](https://github.com/jryang2026-code/MenuBarHome). Installed builds up to v1.1.7 keep working, but their update check still points at the old address, so install the next version by hand once.
 
@@ -155,9 +157,9 @@ The macOS version is built natively in Swift 6, while the Windows 11 client is a
 **Homebrew:** the `jryang2026-code/tap` tap is offline until it is republished.
 
 **Direct DMG Download**
-Download the latest macOS DMG from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) and drag `MenuBarMijia.app` into your Applications folder.
+Download the latest macOS DMG from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) and drag `MenuBarHome.app` into your Applications folder.
 > **About macOS Gatekeeper:**<br>
-> This project is an independent open-source tool and is not enrolled in the paid Apple Developer Program (no Developer ID notarization). If Gatekeeper blocks initial launch, open **System Settings → Privacy & Security**, scroll down, and click **"Open Anyway"** for MenuBarMijia.
+> This project is an independent open-source tool and is not enrolled in the paid Apple Developer Program (no Developer ID notarization). If Gatekeeper blocks initial launch, open **System Settings → Privacy & Security**, scroll down, and click **"Open Anyway"** for MenuBarHome.
 
 #### Installing on Windows 11
 
@@ -177,7 +179,7 @@ Click the menu bar icon to reveal the panel, then open Settings `⚙️`:
   Select "Mi Cloud Connect" in Settings. A QR code appears on screen. Scan it with the official Mi Home app on your phone to link your account. All your homes, rooms, and supported devices sync instantly. On macOS, you can click "Add Account" in Settings to sign in to multiple Xiaomi accounts across regions at once and merge their devices and homes in one panel (Windows currently supports a single signed-in account). When Xiaomi's login response declares a cookie expiry (or the server rejects an expired token), the panel warns 3 days before expiry and switches the menu-bar icon to `house.slash` once expired, offering a one-click in-panel QR re-scan without guessing a lifetime for undated sessions.
 - **Option B: Home Assistant local connection:**<br>
   Select "Home Assistant" and enter your instance origin, such as `http://192.168.1.100:8123`, and Long-Lived Access Token. On Windows, save settings and approve the endpoint in the native dialog. The token stays in Windows Credential Manager. A rejected or failed connection never switches to demo. Windows supports the existing light, climate, fan, plug, fridge, vacuum, camera-control, and sensor card models, plus scenes and scripts. macOS-only device types and HA camera live streams are outside this Windows backend.<br>
-  On macOS, connecting to a LAN address or `.local` host can be blocked by the system's local-network privacy gate. The panel says so explicitly ("Local network connection blocked by macOS") instead of showing a generic socket error. Grant MenuBarMijia permission under **System Settings → Privacy & Security → Local Network**; if it still fails, reinstall so the local app signature lines up.
+  On macOS, connecting to a LAN address or `.local` host can be blocked by the system's local-network privacy gate. The panel says so explicitly ("Local network connection blocked by macOS") instead of showing a generic socket error. Grant MenuBarHome permission under **System Settings → Privacy & Security → Local Network**; if it still fails, reinstall so the local app signature lines up.
 - **Option C: Offline Demo Home:**<br>
   Explore the interface and controls without an account using simulated devices.
 
@@ -191,7 +193,7 @@ These panel shortcuts apply to macOS. On Windows, the default shortcut to open t
 
 | Shortcut | Action |
 | :--- | :--- |
-| `⌥M` | Toggle the MenuBarMijia panel |
+| `⌥M` | Toggle the MenuBarHome panel |
 | Type letters | Instant search by device name, room, or pinyin initials (e.g. `sftd`) |
 | `↑` / `↓` | Navigate through search matches and device cards |
 | `Return` / `Space` | Toggle the focused device; expand the detail drawer if not directly switchable |
@@ -214,11 +216,11 @@ These phrases are parsed locally **without any AI API key** or cloud model token
 
 ## Raycast Extension, Local CLI & MCP Server
 
-MenuBarMijia can hand its device list to a companion without sharing any credential. Turn on **Settings → 自动化与外部控制 → Raycast 集成**: the app writes `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json` (mode `0600`) with your devices, scenes, quick actions, environment readings, the last command result, and a random local bridge token. Links that carry the token skip the external-link confirmation sheet; high-risk devices still ask, and the lock-screen block still applies. Turning the integration off deletes the file and revokes the token. The contract and the trade-offs behind it are in [ADR-0013](docs/adr/0013-raycast-companion-contract.md).
+MenuBarHome can hand its device list to a companion without sharing any credential. Turn on **Settings → 自动化与外部控制 → Raycast 集成**: the app writes `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json` (mode `0600`) with your devices, scenes, quick actions, environment readings, the last command result, and a random local bridge token. Links that carry the token skip the external-link confirmation sheet; high-risk devices still ask, and the lock-screen block still applies. Turning the integration off deletes the file and revokes the token. The contract and the trade-offs behind it are in [ADR-0013](docs/adr/0013-raycast-companion-contract.md).
 
 ### Local CLI
 
-`scripts/mijia` is a dependency-free Python 3 script. Keep MenuBarMijia running while you use it.
+`scripts/mijia` is a dependency-free Python 3 script. Keep MenuBarHome running while you use it.
 
 | Command | What it does |
 | :--- | :--- |
@@ -245,7 +247,7 @@ Exit codes: `0` success, `1` the app reported a failure, `2` local error (snapsh
 {
   "mcpServers": {
     "menubarmijia": {
-      "command": "/ABSOLUTE/PATH/TO/MenuBarMijia/scripts/mijia-mcp"
+      "command": "/ABSOLUTE/PATH/TO/MenuBarHome/scripts/mijia-mcp"
     }
   }
 }
@@ -253,13 +255,13 @@ Exit codes: `0` success, `1` the app reported a failure, `2` local error (snapsh
 
 ### Raycast
 
-`raycast/` is a standard Raycast extension with three commands: **Search Devices**, **Scenes & Quick Actions**, and **Ask MenuBarMijia**. Import it with Raycast → Extensions → `+` → **Import Extension**, or run `cd raycast && npm ci && npm run dev` while Raycast is open. Power, brightness, colour temperature, thermostat target and fan speed are sent as exact values (`menumijia://power`, `brightness`, `color-temp`, `temperature`, `fan`), so a slider never flips a device by guessing its state; each command shows a toast with the app's result.
+`raycast/` is a standard Raycast extension with three commands: **Search Devices**, **Scenes & Quick Actions**, and **Ask MenuBarHome**. Import it with Raycast → Extensions → `+` → **Import Extension**, or run `cd raycast && npm ci && npm run dev` while Raycast is open. Power, brightness, colour temperature, thermostat target and fan speed are sent as exact values (`menumijia://power`, `brightness`, `color-temp`, `temperature`, `fan`), so a slider never flips a device by guessing its state; each command shows a toast with the app's result.
 
 ---
 
 ## Safety, Privacy & Limitations
 
-MenuBarMijia is an independent open-source project, not an official Xiaomi app. Mi Home cloud control needs an internet connection. You can connect your own Home Assistant instance on macOS or Windows.
+MenuBarHome is an independent open-source project, not an official Xiaomi app. Mi Home cloud control needs an internet connection. You can connect your own Home Assistant instance on macOS or Windows.
 
 ### Where credentials live
 
@@ -270,7 +272,7 @@ MenuBarMijia is an independent open-source project, not an official Xiaomi app. 
 | AI assistants | The API key saved for each provider, plus the imported-key source label and remembered cloud-consent endpoints | API keys in macOS Keychain / Windows Credential Manager; the non-secret labels in app preferences |
 | LG webOS TV | The pairing client key issued by the TV | macOS Keychain |
 
-macOS encrypts these Keychain items at rest and protects them with the login Keychain; MenuBarMijia writes them with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, so they are available after the first unlock but are never synced to iCloud or another Mac. The app does not store these secrets in plain `UserDefaults` or log files. macOS may ask for Keychain permission after an app update because the build signature changes; answering "Always Allow" covers later reads and writes.
+macOS encrypts these Keychain items at rest and protects them with the login Keychain; MenuBarHome writes them with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, so they are available after the first unlock but are never synced to iCloud or another Mac. The app does not store these secrets in plain `UserDefaults` or log files. macOS may ask for Keychain permission after an app update because the build signature changes; answering "Always Allow" covers later reads and writes.
 
 Versions up to 1.0.6 could mirror credentials into plain `UserDefaults`. On first launch after upgrading, each legacy plaintext value is written into the Keychain and the plaintext key is deleted only after that write succeeds. If the Keychain is unavailable, the old copy is left in place for the next attempt instead of silently pretending the migration succeeded.
 
@@ -307,7 +309,7 @@ To report a vulnerability in private, follow [Security policy](SECURITY.md).
 # Run secret checks, linters, and Swift tests on macOS
 bash scripts/check.sh
 
-# Build, sign locally, and launch MenuBarMijia.app
+# Build, sign locally, and launch MenuBarHome.app
 bash scripts/build_app.sh
 
 # Build and test the Windows tray app
@@ -335,15 +337,15 @@ Thanks to everyone who has contributed features, fixes, and feedback:
 - **Third-Party Integrations:** This repository does not distribute third-party integrations. The optional Home Assistant scripts reference repositories: [xiaomi_home](https://github.com/XiaoMi/ha_xiaomi_home) and [midea_ac_lan](https://github.com/wuwentao/midea_ac_lan).
 - **Trademarks:** "Xiaomi", "Mijia", and "Midea" are registered trademarks of their respective owners. Used here solely to indicate device compatibility.
 
-Thanks to all contributors who have submitted PRs, reported issues, and helped refine the desktop smart home experience! If MenuBarMijia helps you keep your hands on the keyboard, please give it a ⭐ Star on GitHub.
+Thanks to all contributors who have submitted PRs, reported issues, and helped refine the desktop smart home experience! If MenuBarHome helps you keep your hands on the keyboard, please give it a ⭐ Star on GitHub.
 
 ---
 
 ## 常见问题（FAQ） / Frequently Asked Questions
 
-### How much memory and CPU does MenuBarMijia use?
+### How much memory and CPU does MenuBarHome use?
 
-The macOS build is one native AppKit/SwiftUI process, with no bundled browser engine. Measured on 2026-11-07 with MenuBarMijia 1.1.7 (426) on an Apple-silicon Mac (10 cores, macOS 27.0.1), with about a dozen devices configured, one of them a camera:
+The macOS build is one native AppKit/SwiftUI process, with no bundled browser engine. Measured on 2026-11-07 with MenuBarHome 1.1.7 (426) on an Apple-silicon Mac (10 cores, macOS 27.0.1), with about a dozen devices configured, one of them a camera:
 
 | State | RSS | CPU (one core) |
 | --- | --- | --- |
@@ -359,7 +361,7 @@ The macOS build is one native AppKit/SwiftUI process, with no bundled browser en
 
 ### What about Windows 11?
 
-The Windows build is Tauri v2 with WebView2. One host process runs the tray app, either `MenuBarMijia.exe` from the installer or `menubarmijia-windows.exe` from a local Tauri build, and one or more `msedgewebview2.exe` processes render the UI. `scripts/measure_footprint.py` sums the host and its own renderer descendants, and ignores WebView2 processes that belong to other applications.
+The Windows build is Tauri v2 with WebView2. One host process runs the tray app, either `MenuBarHome.exe` from the installer or `menubarmijia-windows.exe` from a local Tauri build, and one or more `msedgewebview2.exe` processes render the UI. `scripts/measure_footprint.py` sums the host and its own renderer descendants, and ignores WebView2 processes that belong to other applications.
 
 Windows 11 memory and CPU numbers are not in the table yet. They have to be taken on a Windows host. With the tray app running, run the same command there:
 

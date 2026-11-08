@@ -324,7 +324,7 @@ import { quickActions } from "./demo.js";
             <button
               class="cc-footer-pill is-danger"
               id="btn-quit-app"
-              title="${t("完全退出 MenuBarMijia")}"
+              title="${t("完全退出 MenuBarHome")}"
             >
               ${SF_ICONS.power}
               <span>${t("退出")}</span>

@@ -24,7 +24,7 @@ export default function Ask() {
         id="text"
         title="Command"
         placeholder="Turn the living room light to 40%"
-        info="Runs through MenuBarMijia, so the same local parsing, high-risk confirmation and lock-screen rules apply."
+        info="Runs through MenuBarHome, so the same local parsing, high-risk confirmation and lock-screen rules apply."
         autoFocus
       />
       <Form.Description text="Examples: 把客厅灯调到 40% · 打开书房台灯 · 空调调到 26 度 · 关闭全屋灯光" />

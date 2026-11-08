@@ -26,9 +26,9 @@ if [ -z "${DEVELOPER_ID:-}" ]; then
 fi
 NOTARY_PROFILE="${NOTARY_PROFILE:-menubarmijia-notary}"
 VERSION="$(tr -d '[:space:]' < VERSION)"
-APP="$ROOT/MenuBarMijia.app"
+APP="$ROOT/MenuBarHome.app"
 DIST="$ROOT/dist"
-DMG="$DIST/MenuBarMijia-$VERSION.dmg"
+DMG="$DIST/MenuBarHome-$VERSION.dmg"
 
 echo "▶ [0/5] 运行门禁检查与 Release 模式单元测试..."
 bash scripts/check.sh --lint-only
@@ -58,7 +58,7 @@ if ! printf '%s' "$MACOS_CERT_SHA1" | grep -Eq '^[0-9a-f]{40}$'; then
     exit 1
 fi
 
-echo "▶ [1/5] 编译并签名 MenuBarMijia $VERSION (SIGN_IDENTITY=$DEVELOPER_ID, CERT_SHA1=$MACOS_CERT_SHA1)"
+echo "▶ [1/5] 编译并签名 MenuBarHome $VERSION (SIGN_IDENTITY=$DEVELOPER_ID, CERT_SHA1=$MACOS_CERT_SHA1)"
 MACOS_CERT_SHA1="$MACOS_CERT_SHA1" SIGN_IDENTITY="$DEVELOPER_ID" bash scripts/build_app.sh
 codesign --verify --strict --verbose=2 "$APP"
 
@@ -76,12 +76,12 @@ echo "▶ [2/5] 制作 DMG（含「应用程序」快捷方式，拖进去就装
 rm -rf "$DIST" && mkdir -p "$DIST/stage"
 cp -R "$APP" "$DIST/stage/"
 ln -s /Applications "$DIST/stage/Applications"
-hdiutil create -volname "MenuBarMijia $VERSION" -srcfolder "$DIST/stage" -ov -format UDZO "$DMG" >/dev/null
+hdiutil create -volname "MenuBarHome $VERSION" -srcfolder "$DIST/stage" -ov -format UDZO "$DMG" >/dev/null
 rm -rf "$DIST/stage"
 
 if [ "${SKIP_NOTARIZE:-0}" = "1" ]; then
     codesign --force --sign "$DEVELOPER_ID" "$DMG"
-    echo "ℹ️  已生成本地签名 DMG（SKIP_NOTARIZE=1，未提交公证；其他用户首次打开可在「隐私与安全性」点「仍要打开」或执行 xattr -cr /Applications/MenuBarMijia.app）。"
+    echo "ℹ️  已生成本地签名 DMG（SKIP_NOTARIZE=1，未提交公证；其他用户首次打开可在「隐私与安全性」点「仍要打开」或执行 xattr -cr /Applications/MenuBarHome.app）。"
 else
     codesign --force --timestamp --sign "$DEVELOPER_ID" "$DMG"
     echo "▶ [3/5] 提交苹果公证（通常 1–5 分钟）"

@@ -1,7 +1,7 @@
 import type { RaycastCapabilities, RaycastDevice, RaycastSnapshot } from "./snapshot";
 
 /**
- * The contract MenuBarMijia writes to `raycast-snapshot.json` (schema version 1).
+ * The contract MenuBarHome writes to `raycast-snapshot.json` (schema version 1).
  * Keep the field names identical to `Sources/MijiaCore/RaycastSnapshot.swift`; a rename there is a
  * breaking change here and the schema version must move with it.
  */
@@ -17,12 +17,12 @@ const DEVICE_LISTS = ["availableEffects", "availableModes", "availablePresetMode
  */
 export function validateSnapshot(parsed: unknown, path: string): RaycastSnapshot {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`${path} is not a MenuBarMijia snapshot object.`);
+    throw new Error(`${path} is not a MenuBarHome snapshot object.`);
   }
   const snapshot = parsed as Partial<RaycastSnapshot>;
   if (snapshot.schemaVersion !== SNAPSHOT_SCHEMA_VERSION) {
     throw new Error(
-      `Snapshot schema ${String(snapshot.schemaVersion)} is not supported (expected ${SNAPSHOT_SCHEMA_VERSION}). Update MenuBarMijia or this extension.`,
+      `Snapshot schema ${String(snapshot.schemaVersion)} is not supported (expected ${SNAPSHOT_SCHEMA_VERSION}). Update MenuBarHome or this extension.`,
     );
   }
   if (!Array.isArray(snapshot.devices) || !Array.isArray(snapshot.scenes) || !Array.isArray(snapshot.quickActions)) {

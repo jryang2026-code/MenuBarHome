@@ -270,7 +270,7 @@ public enum DiagnosticsReportBuilder {
 
     public static func markdown(_ input: Input, now: Date = Date()) -> String {
         var lines: [String] = []
-        lines.append("## MenuBarMijia \(L10n.tr("诊断信息", "Diagnostics"))")
+        lines.append("## MenuBarHome \(L10n.tr("诊断信息", "Diagnostics"))")
         lines.append("")
         lines.append("- \(L10n.tr("版本", "Version")): \(input.appVersion) (\(input.buildNumber))")
         lines.append("- macOS: \(input.macOSVersion)")

@@ -1845,13 +1845,13 @@ describe("Update notice (#39)", () => {
       body: "新增应用内直接更新",
       assets: [
         {
-          name: "MenuBarMijia-9.9.9-windows-x64-setup.exe",
+          name: "MenuBarHome-9.9.9-windows-x64-setup.exe",
           browser_download_url:
-            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v9.9.9/MenuBarMijia-9.9.9-windows-x64-setup.exe",
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v9.9.9/MenuBarHome-9.9.9-windows-x64-setup.exe",
           size: 3145728,
         },
         {
-          name: "MenuBarMijia-9.9.9.update.json",
+          name: "MenuBarHome-9.9.9.update.json",
           size: 526,
         },
       ],

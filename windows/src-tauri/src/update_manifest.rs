@@ -123,12 +123,12 @@ pub(crate) fn release_pair(
     if installer_version != manifest_version {
         return Err("安装包与更新清单的版本不一致".to_string());
     }
-    let exe = format!("MenuBarMijia-{installer_version}-windows-x64-setup.exe");
-    let msi = format!("MenuBarMijia-{installer_version}-windows-x64.msi");
+    let exe = format!("MenuBarHome-{installer_version}-windows-x64-setup.exe");
+    let msi = format!("MenuBarHome-{installer_version}-windows-x64.msi");
     if name != installer_file || (installer_file != exe && installer_file != msi) {
         return Err("更新包文件名与版本不匹配".to_string());
     }
-    let expected_manifest = format!("MenuBarMijia-{manifest_version}.update.json");
+    let expected_manifest = format!("MenuBarHome-{manifest_version}.update.json");
     if manifest_file != expected_manifest {
         return Err("更新清单文件名与版本不匹配".to_string());
     }
@@ -181,9 +181,9 @@ fn parse_manifest(bytes: &[u8]) -> Option<ParsedManifest> {
         return None;
     }
     let expected = [
-        ("macos", format!("MenuBarMijia-{version}.dmg")),
-        ("windows", format!("MenuBarMijia-{version}-windows-x64-setup.exe")),
-        ("windows", format!("MenuBarMijia-{version}-windows-x64.msi")),
+        ("macos", format!("MenuBarHome-{version}.dmg")),
+        ("windows", format!("MenuBarHome-{version}-windows-x64-setup.exe")),
+        ("windows", format!("MenuBarHome-{version}-windows-x64.msi")),
     ];
     let mut files = Vec::with_capacity(3);
     for (raw, (platform, name)) in raw_files.iter().zip(expected) {
@@ -260,8 +260,8 @@ fn compare_versions(left: &str, right: &str) -> Option<std::cmp::Ordering> {
 fn release_file(url: &reqwest::Url) -> Option<(String, String)> {
     let segments: Vec<&str> = url.path().split('/').filter(|part| !part.is_empty()).collect();
     if segments.len() != 6
-        || segments[0] != "jryang1997"
-        || segments[1] != "MenuBarMijia"
+        || segments[0] != "jryang2026-code"
+        || segments[1] != "MenuBarHome"
         || segments[2] != "releases"
         || segments[3] != "download"
     {
@@ -279,6 +279,19 @@ mod tests {
     use super::*;
     use ring::rand::SystemRandom;
     use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    #[test]
+    fn release_file_accepts_only_this_repository() {
+        let url = |path: &str| reqwest::Url::parse(&format!("https://github.com{path}")).unwrap();
+        assert_eq!(
+            release_file(&url("/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarHome-1.2.0.update.json")),
+            Some(("1.2.0".to_string(), "MenuBarHome-1.2.0.update.json".to_string()))
+        );
+        assert_eq!(
+            release_file(&url("/jryang1997/MenuBarMijia/releases/download/v1.2.0/MenuBarHome-1.2.0.update.json")),
+            None
+        );
+    }
 
     struct SignedManifest {
         bytes: Vec<u8>,
@@ -323,12 +336,12 @@ mod tests {
         let document = Ed25519KeyPair::generate_pkcs8(&rng).expect("ephemeral key");
         let key = Ed25519KeyPair::from_pkcs8(document.as_ref()).expect("ephemeral key");
         let public_key = base64_encode(key.public_key().as_ref());
-        let owned_dmg = format!("MenuBarMijia-{version}.dmg");
+        let owned_dmg = format!("MenuBarHome-{version}.dmg");
         let dmg_name = dmg_file.unwrap_or(owned_dmg.as_str());
         let digest = super::super::compute_sha256_hex(package);
         let key_text = key_id.unwrap_or(public_key.as_str());
         let body = format!(
-            "{{\"version\":\"{version}\",\"min_from\":\"{min_from}\",\"key_id\":\"{key_text}\",\"files\":[{{\"platform\":\"macos\",\"file\":\"{dmg_name}\",\"sha256\":\"{digest}\"}},{{\"platform\":\"windows\",\"file\":\"MenuBarMijia-{version}-windows-x64-setup.exe\",\"sha256\":\"{b}\"}},{{\"platform\":\"windows\",\"file\":\"MenuBarMijia-{version}-windows-x64.msi\",\"sha256\":\"{c}\"}}]}}\n",
+            "{{\"version\":\"{version}\",\"min_from\":\"{min_from}\",\"key_id\":\"{key_text}\",\"files\":[{{\"platform\":\"macos\",\"file\":\"{dmg_name}\",\"sha256\":\"{digest}\"}},{{\"platform\":\"windows\",\"file\":\"MenuBarHome-{version}-windows-x64-setup.exe\",\"sha256\":\"{b}\"}},{{\"platform\":\"windows\",\"file\":\"MenuBarHome-{version}-windows-x64.msi\",\"sha256\":\"{c}\"}}]}}\n",
             b = "b".repeat(64),
             c = "c".repeat(64),
         );
@@ -363,14 +376,14 @@ mod tests {
     #[test]
     fn rejects_a_manifest_signed_for_an_older_version() {
         let signed = sign_manifest("1.1.6", "1.0.0", None, None, b"dmg-1.1.6");
-        let result = accept(&signed, "1.1.8", "1.1.5", "MenuBarMijia-1.1.6.dmg", &signed.package);
+        let result = accept(&signed, "1.1.8", "1.1.5", "MenuBarHome-1.1.6.dmg", &signed.package);
         assert_eq!(result.err(), Some(AcceptFailure::ReleaseVersionMismatch));
     }
 
     #[test]
     fn rejects_the_same_running_version() {
         let signed = sign_manifest("1.1.6", "1.0.0", None, None, b"dmg");
-        let result = accept(&signed, "1.1.6", "1.1.6", "MenuBarMijia-1.1.6.dmg", &signed.package);
+        let result = accept(&signed, "1.1.6", "1.1.6", "MenuBarHome-1.1.6.dmg", &signed.package);
         assert_eq!(result.err(), Some(AcceptFailure::NotNewer));
     }
 
@@ -386,7 +399,7 @@ mod tests {
             &[signed.public_key.as_str()],
             "9.9.9",
             "1.0.0",
-            "MenuBarMijia-1.1.6.dmg",
+            "MenuBarHome-1.1.6.dmg",
             &signed.package,
         );
         assert_eq!(result.err(), Some(AcceptFailure::SignatureInvalid));
@@ -396,7 +409,7 @@ mod tests {
     fn rejects_package_bytes_that_do_not_match() {
         let signed = sign_manifest("1.1.6", "1.0.0", None, None, b"dmg");
         let tampered = b"tampered";
-        let result = accept(&signed, "1.1.6", "1.1.5", "MenuBarMijia-1.1.6.dmg", tampered);
+        let result = accept(&signed, "1.1.6", "1.1.5", "MenuBarHome-1.1.6.dmg", tampered);
         assert_eq!(
             result.err(),
             Some(AcceptFailure::HashMismatch {
@@ -409,7 +422,7 @@ mod tests {
     #[test]
     fn rejects_a_key_id_that_differs_from_the_public_key() {
         let signed = sign_manifest("1.1.6", "1.0.0", Some("not-the-public-key"), None, b"dmg");
-        let result = accept(&signed, "1.1.6", "1.1.5", "MenuBarMijia-1.1.6.dmg", &signed.package);
+        let result = accept(&signed, "1.1.6", "1.1.5", "MenuBarHome-1.1.6.dmg", &signed.package);
         assert_eq!(result.err(), Some(AcceptFailure::KeyIdMismatch));
     }
 
@@ -423,7 +436,7 @@ mod tests {
             &[primary.as_str(), signed.public_key.as_str()],
             "1.1.6",
             "1.1.5",
-            "MenuBarMijia-1.1.6.dmg",
+            "MenuBarHome-1.1.6.dmg",
             &signed.package,
         )
         .unwrap();
@@ -440,7 +453,7 @@ mod tests {
             &[untrusted.as_str()],
             "1.1.6",
             "1.1.5",
-            "MenuBarMijia-1.1.6.dmg",
+            "MenuBarHome-1.1.6.dmg",
             &signed.package,
         );
         assert_eq!(result.err(), Some(AcceptFailure::SignatureInvalid));
@@ -456,7 +469,7 @@ mod tests {
             &[primary.as_str(), signed.public_key.as_str()],
             "1.1.6",
             "1.1.5",
-            "MenuBarMijia-1.1.6.dmg",
+            "MenuBarHome-1.1.6.dmg",
             &signed.package,
         );
         assert_eq!(result.err(), Some(AcceptFailure::KeyIdMismatch));
@@ -465,7 +478,7 @@ mod tests {
     #[test]
     fn rejects_a_running_version_below_the_minimum() {
         let signed = sign_manifest("1.1.6", "1.1.0", None, None, b"dmg");
-        let result = accept(&signed, "1.1.6", "1.0.9", "MenuBarMijia-1.1.6.dmg", &signed.package);
+        let result = accept(&signed, "1.1.6", "1.0.9", "MenuBarHome-1.1.6.dmg", &signed.package);
         assert_eq!(
             result.err(),
             Some(AcceptFailure::BelowMinimum {
@@ -484,7 +497,7 @@ mod tests {
             &[signed.public_key.as_str()],
             "1.1.6",
             "1.1.5",
-            "MenuBarMijia-1.1.6.dmg",
+            "MenuBarHome-1.1.6.dmg",
             &signed.package,
         );
         assert_eq!(result.err(), Some(AcceptFailure::SignatureMissing));
@@ -492,32 +505,32 @@ mod tests {
 
     #[test]
     fn rejects_a_dmg_name_that_disagrees_with_the_version() {
-        let signed = sign_manifest("1.1.6", "1.0.0", None, Some("MenuBarMijia-1.1.7.dmg"), b"dmg");
-        let result = accept(&signed, "1.1.6", "1.1.5", "MenuBarMijia-1.1.6.dmg", &signed.package);
+        let signed = sign_manifest("1.1.6", "1.0.0", None, Some("MenuBarHome-1.1.7.dmg"), b"dmg");
+        let result = accept(&signed, "1.1.6", "1.1.5", "MenuBarHome-1.1.6.dmg", &signed.package);
         assert_eq!(result.err(), Some(AcceptFailure::Malformed));
     }
 
     #[test]
     fn success_returns_the_signed_version_and_package_name() {
         let signed = sign_manifest("1.1.7", "1.0.0", None, None, b"dmg");
-        let verified = accept(&signed, "1.1.7", "1.1.6", "MenuBarMijia-1.1.7.dmg", &signed.package).unwrap();
+        let verified = accept(&signed, "1.1.7", "1.1.6", "MenuBarHome-1.1.7.dmg", &signed.package).unwrap();
         assert_eq!(verified.version_text, "1.1.7");
-        assert_eq!(verified.package_name, "MenuBarMijia-1.1.7.dmg");
+        assert_eq!(verified.package_name, "MenuBarHome-1.1.7.dmg");
     }
 
     #[test]
     fn one_zero_ten_is_newer_than_one_zero_nine() {
         let signed = sign_manifest("1.0.10", "1.0.0", None, None, b"dmg");
-        let verified = accept(&signed, "1.0.10", "1.0.9", "MenuBarMijia-1.0.10.dmg", &signed.package).unwrap();
+        let verified = accept(&signed, "1.0.10", "1.0.9", "MenuBarHome-1.0.10.dmg", &signed.package).unwrap();
         assert_eq!(verified.version_text, "1.0.10");
     }
 
     #[test]
     fn release_pair_rejects_a_non_github_host() {
         let result = release_pair(
-            "MenuBarMijia-1.2.0-windows-x64-setup.exe",
-            "https://evil.example/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64-setup.exe",
-            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarMijia-1.2.0.update.json",
+            "MenuBarHome-1.2.0-windows-x64-setup.exe",
+            "https://evil.example/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarHome-1.2.0-windows-x64-setup.exe",
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarHome-1.2.0.update.json",
         );
         assert!(result.is_err());
     }
@@ -525,9 +538,9 @@ mod tests {
     #[test]
     fn release_pair_rejects_a_version_mismatch_between_installer_and_manifest() {
         let result = release_pair(
-            "MenuBarMijia-1.2.0-windows-x64-setup.exe",
-            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64-setup.exe",
-            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.1/MenuBarMijia-1.2.1.update.json",
+            "MenuBarHome-1.2.0-windows-x64-setup.exe",
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarHome-1.2.0-windows-x64-setup.exe",
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.1/MenuBarHome-1.2.1.update.json",
         );
         assert!(result.is_err());
     }

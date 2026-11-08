@@ -40,13 +40,13 @@ new_assets() {
     write_checksum "$dir/$dmg"
     write_checksum "$dir/$exe"
     write_checksum "$dir/$msi"
-    spdx_document "MenuBarMijia-${version}-macos" > "$dir/MenuBarMijia-${version}-macos.spdx.json"
-    spdx_document "MenuBarMijia-${version}-windows-x64" > "$dir/MenuBarMijia-${version}-windows-x64.spdx.json"
+    spdx_document "MenuBarHome-${version}-macos" > "$dir/MenuBarHome-${version}-macos.spdx.json"
+    spdx_document "MenuBarHome-${version}-windows-x64" > "$dir/MenuBarHome-${version}-windows-x64.spdx.json"
 }
 
-dmg="MenuBarMijia-${version}.dmg"
-exe="MenuBarMijia-${version}-windows-x64-setup.exe"
-msi="MenuBarMijia-${version}-windows-x64.msi"
+dmg="MenuBarHome-${version}.dmg"
+exe="MenuBarHome-${version}-windows-x64-setup.exe"
+msi="MenuBarHome-${version}-windows-x64.msi"
 good="$workdir/good"
 new_assets "$good" "$dmg" "$exe" "$msi"
 
@@ -69,25 +69,25 @@ expect_draft() {
 
 expect_draft 0 'draft-assets accepts the six build files plus both SPDX SBOMs'
 
-rm "$good/MenuBarMijia-${version}-macos.spdx.json"
+rm "$good/MenuBarHome-${version}-macos.spdx.json"
 expect_draft 1 'draft-assets rejects a missing macOS SBOM'
-spdx_document "MenuBarMijia-${version}-macos" > "$good/MenuBarMijia-${version}-macos.spdx.json"
+spdx_document "MenuBarHome-${version}-macos" > "$good/MenuBarHome-${version}-macos.spdx.json"
 
-rm "$good/MenuBarMijia-${version}-windows-x64.spdx.json"
+rm "$good/MenuBarHome-${version}-windows-x64.spdx.json"
 expect_draft 1 'draft-assets rejects a missing Windows SBOM'
-spdx_document "MenuBarMijia-${version}-windows-x64" > "$good/MenuBarMijia-${version}-windows-x64.spdx.json"
+spdx_document "MenuBarHome-${version}-windows-x64" > "$good/MenuBarHome-${version}-windows-x64.spdx.json"
 
 printf 'unexpected\n' > "$good/notes.txt"
 expect_draft 1 'draft-assets rejects an unexpected extra file'
 rm "$good/notes.txt"
 
-printf 'not json\n' > "$good/MenuBarMijia-${version}-macos.spdx.json"
+printf 'not json\n' > "$good/MenuBarHome-${version}-macos.spdx.json"
 expect_draft 1 'draft-assets rejects an SBOM that is not JSON'
-spdx_document "MenuBarMijia-${version}-macos" > "$good/MenuBarMijia-${version}-macos.spdx.json"
+spdx_document "MenuBarHome-${version}-macos" > "$good/MenuBarHome-${version}-macos.spdx.json"
 
-printf '{"spdxVersion":"SPDX-2.3","packages":[]}\n' > "$good/MenuBarMijia-${version}-windows-x64.spdx.json"
+printf '{"spdxVersion":"SPDX-2.3","packages":[]}\n' > "$good/MenuBarHome-${version}-windows-x64.spdx.json"
 expect_draft 1 'draft-assets rejects an SBOM with no components'
-spdx_document "MenuBarMijia-${version}-windows-x64" > "$good/MenuBarMijia-${version}-windows-x64.spdx.json"
+spdx_document "MenuBarHome-${version}-windows-x64" > "$good/MenuBarHome-${version}-windows-x64.spdx.json"
 
 printf 'tampered\n' > "$good/$dmg"
 expect_draft 1 'draft-assets rejects an installer whose SHA-256 does not match'

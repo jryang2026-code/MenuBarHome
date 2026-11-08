@@ -964,7 +964,7 @@ export class CameraLiveController {
           .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "<redacted-ip>")
           .replace(/\b[0-9a-fA-F]{24,}\b/g, "<redacted-token>");
       const report = [
-        "MenuBarMijia Camera Diagnostics (Windows)",
+        "MenuBarHome Camera Diagnostics (Windows)",
         `model: ${dev.model}`,
         `online: ${dev.isOnline}`,
         `isOn: ${dev.kind.isOn}`,

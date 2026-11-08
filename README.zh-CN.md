@@ -1,22 +1,22 @@
 [English](README.md) | 简体中文
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/309141?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-309141" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/309141/daily?language=Swift" alt="jryang1997%2FMenuBarMijia | Trendshift" width="250" height="55"/></a>
-  <a href="https://trendshift.io/repositories/309141?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-309141" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/309141/weekly?language=Swift" alt="jryang1997%2FMenuBarMijia | Trendshift" width="250" height="55"/></a>
+  <a href="https://trendshift.io/repositories/309141?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-309141" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/309141/daily?language=Swift" alt="jryang1997%2FMenuBarHome | Trendshift" width="250" height="55"/></a>
+  <a href="https://trendshift.io/repositories/309141?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-309141" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/309141/weekly?language=Swift" alt="jryang1997%2FMenuBarHome | Trendshift" width="250" height="55"/></a>
 </p>
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="docs/assets/logo-light.svg">
-    <img src="docs/assets/logo.svg" width="120" alt="MenuBarMijia Logo">
+    <img src="docs/assets/logo.svg" width="120" alt="MenuBarHome Logo">
   </picture>
 </p>
 
-<h1 align="center">MenuBarMijia</h1>
+<h1 align="center">MenuBarHome</h1>
 
 > [!IMPORTANT]
-> **非小米官方产品，与小米无关联。** MenuBarMijia 是独立开源项目，并非小米或米家官方客户端，与小米科技有限责任公司及其关联公司不存在隶属、合作、赞助或背书关系。「小米」「米家」「Xiaomi」「Mijia」「Mi Home」是小米科技有限责任公司及其关联公司的商标。本项目仅在说明与小米 / 米家设备的兼容性时使用这些名称，不暗示任何背书或认可。
+> **非小米官方产品，与小米无关联。** MenuBarHome 是独立开源项目，并非小米或米家官方客户端，与小米科技有限责任公司及其关联公司不存在隶属、合作、赞助或背书关系。「小米」「米家」「Xiaomi」「Mijia」「Mi Home」是小米科技有限责任公司及其关联公司的商标。本项目仅在说明与小米 / 米家设备的兼容性时使用这些名称，不暗示任何背书或认可。
 
 <p align="center">
   <b>在电脑上，顺手控制整个家。</b><br>
@@ -40,6 +40,8 @@
   <a href="#安全隐私与限制">安全与限制</a> ·
   <a href="CHANGELOG.md">更新日志</a>
 </p>
+
+> **已改名：** MenuBarMijia 现在叫 MenuBarHome。装好新版后退出并删除旧的 `MenuBarMijia` 应用，登录和设置都会保留；Windows 用户请卸载旧版。
 
 > **已迁回 GitHub（2026-11）：** 项目原来的 GitHub 账号被停用，仓库现在在 [github.com/jryang2026-code/MenuBarHome](https://github.com/jryang2026-code/MenuBarHome)。已安装的 1.1.7 及更早版本照常使用，但检查更新时仍然访问旧地址，下一个版本需要手动下载安装一次。
 
@@ -104,7 +106,7 @@
 
 ## 功能概览与双端对照
 
-MenuBarMijia 的 macOS 版本采用 Swift 6 原生开发，Windows 11 版本基于 Tauri v2 / TypeScript 独立实现。两端均经过共享测试集（`Tests/Fixtures/`）断言基础协议的一致性，但系统级能力存在平台差异。
+MenuBarHome 的 macOS 版本采用 Swift 6 原生开发，Windows 11 版本基于 Tauri v2 / TypeScript 独立实现。两端均经过共享测试集（`Tests/Fixtures/`）断言基础协议的一致性，但系统级能力存在平台差异。
 
 | 功能维度 | macOS 原生版 (14+) | Windows 11 托盘版 | 说明 |
 | :--- | :---: | :---: | :--- |
@@ -155,9 +157,9 @@ MenuBarMijia 的 macOS 版本采用 Swift 6 原生开发，Windows 11 版本基�
 **Homebrew：** `jryang2026-code/tap` 还没有重新发布，发布前暂不可用。
 
 **下载 DMG 手动安装**
-前往 [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) 下载最新的 macOS DMG 安装包，打开并将 `MenuBarMijia.app` 拖入「应用程序（Applications）」文件夹。
+前往 [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) 下载最新的 macOS DMG 安装包，打开并将 `MenuBarHome.app` 拖入「应用程序（Applications）」文件夹。
 > **首次打开拦截说明：**<br>
-> 本项目为个人开源作品，尚未加入付费的 Apple 开发者计划（未完成 Developer ID 公证）。首次启动若被 Gatekeeper 拦截，请打开 **「系统设置 → 隐私与安全性」**，在页面底部点击针对 MenuBarMijia 的 **「仍要打开」** 即可。
+> 本项目为个人开源作品，尚未加入付费的 Apple 开发者计划（未完成 Developer ID 公证）。首次启动若被 Gatekeeper 拦截，请打开 **「系统设置 → 隐私与安全性」**，在页面底部点击针对 MenuBarHome 的 **「仍要打开」** 即可。
 
 #### Windows 11 安装方式
 
@@ -177,7 +179,7 @@ MenuBarMijia 的 macOS 版本采用 Swift 6 原生开发，Windows 11 版本基�
   在设置中选择「米家云端直连」，屏幕上将显示登录二维码。使用手机「米家」App 扫码并确认登录，全屋家庭、房间与设备将自动同步到面板中。macOS 支持在设置中继续点击「添加账号」同时登录多个不同地区或家人的小米账号，自动合并全部账号的设备与家庭（Windows 端暂为单账号登录）。当小米登录响应声明了 `serviceToken` 到期时间或服务端返回登录失效时，面板会在到期前 3 天提前提示，并在已过期时将菜单栏图标切换为断连态（`house.slash`），支持在面板内一键弹出二维码重新扫码续期（未声明有效期的凭据不凭空猜测寿命）。
 - **方式二：接入已有 Home Assistant：**<br>
   选择「Home Assistant」，填写实例根地址（如 `http://192.168.1.100:8123`）与长期访问令牌。Windows 保存设置后需在原生对话框允许该来源，令牌保存在 Windows 凭据管理器。拒绝授权或连接失败不会切换到演示模式。Windows 支持现有灯、温控、风扇、插座、冰箱、扫地机、摄像机控制和传感器卡片，以及场景和脚本。macOS 独有设备类型与 HA 摄像机实时流不在本次 Windows 后端范围内。<br>
-  macOS 上连接局域网地址或 `.local` 主机时，可能被系统的本地网络隐私开关拦截。面板会直接提示「局域网连接被系统拦截」，而不是一句笼统的套接字错误。请在 **「系统设置 → 隐私与安全性 → 本地网络」** 中允许 MenuBarMijia；若仍然失败，重新安装一次以对齐本地应用签名。
+  macOS 上连接局域网地址或 `.local` 主机时，可能被系统的本地网络隐私开关拦截。面板会直接提示「局域网连接被系统拦截」，而不是一句笼统的套接字错误。请在 **「系统设置 → 隐私与安全性 → 本地网络」** 中允许 MenuBarHome；若仍然失败，重新安装一次以对齐本地应用签名。
 - **方式三：离线演示模式（Demo Home）：**<br>
   无需账号即可使用虚拟设备体验界面和控制操作。
 
@@ -218,7 +220,7 @@ MenuBarMijia 的 macOS 版本采用 Swift 6 原生开发，Windows 11 版本基�
 
 ### 本地 CLI
 
-`scripts/mijia` 是只依赖 Python 3 标准库的脚本，使用时保持 MenuBarMijia 运行即可。
+`scripts/mijia` 是只依赖 Python 3 标准库的脚本，使用时保持 MenuBarHome 运行即可。
 
 | 命令 | 作用 |
 | :--- | :--- |
@@ -245,7 +247,7 @@ MenuBarMijia 的 macOS 版本采用 Swift 6 原生开发，Windows 11 版本基�
 {
   "mcpServers": {
     "menubarmijia": {
-      "command": "/ABSOLUTE/PATH/TO/MenuBarMijia/scripts/mijia-mcp"
+      "command": "/ABSOLUTE/PATH/TO/MenuBarHome/scripts/mijia-mcp"
     }
   }
 }
@@ -253,13 +255,13 @@ MenuBarMijia 的 macOS 版本采用 Swift 6 原生开发，Windows 11 版本基�
 
 ### Raycast 扩展
 
-`raycast/` 是标准 Raycast 扩展，提供三个命令：**搜索设备**、**场景与快捷动作**、**问 MenuBarMijia**。在 Raycast 的扩展页按 `+` → **Import Extension** 选择 `raycast/` 即可，或在 Raycast 打开时运行 `cd raycast && npm ci && npm run dev`。开关、亮度、色温、目标温度与风速都按精确值下发（`menumijia://power`、`brightness`、`color-temp`、`temperature`、`fan`），滑条不会靠猜当前状态去翻转设备；每条命令都会用 toast 显示应用的执行结果。
+`raycast/` 是标准 Raycast 扩展，提供三个命令：**搜索设备**、**场景与快捷动作**、**问 MenuBarHome**。在 Raycast 的扩展页按 `+` → **Import Extension** 选择 `raycast/` 即可，或在 Raycast 打开时运行 `cd raycast && npm ci && npm run dev`。开关、亮度、色温、目标温度与风速都按精确值下发（`menumijia://power`、`brightness`、`color-temp`、`temperature`、`fan`），滑条不会靠猜当前状态去翻转设备；每条命令都会用 toast 显示应用的执行结果。
 
 ---
 
 ## 安全、隐私与限制
 
-MenuBarMijia 是独立开源项目，并非小米官方客户端。米家云直连需要联网；已有 Home Assistant 时，可在 macOS 或 Windows 上连接自己的实例。
+MenuBarHome 是独立开源项目，并非小米官方客户端。米家云直连需要联网；已有 Home Assistant 时，可在 macOS 或 Windows 上连接自己的实例。
 
 ### 凭据存放在哪
 
@@ -270,7 +272,7 @@ MenuBarMijia 是独立开源项目，并非小米官方客户端。米家云直�
 | AI 助手 | 各服务商已保存的 API 密钥、导入来源标记与已允许的云端授权地址 | API 密钥在 macOS 钥匙串 / Windows 凭据管理器；非机密的标记在应用偏好中 |
 | LG webOS 电视 | 电视签发的配对客户端密钥 | macOS 钥匙串 |
 
-macOS 会将这些钥匙串项加密保存，并由登录钥匙串保护；MenuBarMijia 写入时使用 `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`，首次解锁后可用，但不会同步到 iCloud 或另一台 Mac。应用不会把这些机密写进明文 `UserDefaults` 或日志。macOS 更新后可能询问一次钥匙串授权（构建签名发生变化）；选择「始终允许」即可覆盖之后的读写。
+macOS 会将这些钥匙串项加密保存，并由登录钥匙串保护；MenuBarHome 写入时使用 `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`，首次解锁后可用，但不会同步到 iCloud 或另一台 Mac。应用不会把这些机密写进明文 `UserDefaults` 或日志。macOS 更新后可能询问一次钥匙串授权（构建签名发生变化）；选择「始终允许」即可覆盖之后的读写。
 
 1.0.6 及更早版本曾把凭据镜像到明文 `UserDefaults`。升级后首次启动时，每个旧明文值都会先写入钥匙串，写入成功后才删除对应明文键。钥匙串不可用时，旧副本会保留以便下次重试，而不是假装迁移已经成功。
 
@@ -321,7 +323,7 @@ npm run build
 
 ## 贡献者与致谢
 
-感谢为 MenuBarMijia 提交代码、修补协议细节与打磨交互体验的贡献者：
+感谢为 MenuBarHome 提交代码、修补协议细节与打磨交互体验的贡献者：
 
 - [@jryang2026-code](https://github.com/jryang2026-code)（一群小羊说）— 项目发起与维护
 - [@almightyYantao](https://github.com/almightyYantao)（Alimighty.Yantao）— 多键 Mesh 开关分键设备识别与合成（GitHub #6、GitHub #7）、米家多家庭切换与灯组情景过滤（GitHub #8）、多主题面板皮肤、空调/温湿度计独立模块、长按拖拽自由布局与自定义分组（GitHub #9）、macOS 应用图标打包集成（GitHub #10）、面板下落动画、本地设备重命名与房间栏细节打磨（GitHub #11）、Windows 功能对齐与跨端界面修复（GitHub #12），以及连接源快照的冗余写入优化（GitHub #66）
@@ -333,7 +335,7 @@ npm run build
 - **第三方集成说明：** 本仓库不分发任何第三方官方组件。涉及 Home Assistant 模式下的 [xiaomi_home](https://github.com/XiaoMi/ha_xiaomi_home) 与 [midea_ac_lan](https://github.com/wuwentao/midea_ac_lan) 分别来自小米及其各自维护者，版权归各自作者所有。
 - **商标声明：** 「小米」「米家」「Xiaomi」「Mijia」等为小米科技有限责任公司注册商标；「美的」为美的集团股份有限公司注册商标。本文档与本项目仅用于描述设备兼容性。
 
-感谢所有为 MenuBarMijia 提交代码、报告缺陷与改进建议的贡献者！如果这个小工具让你在工作时少掏了几次手机，欢迎在 GitHub 上点一个 ⭐ Star。
+感谢所有为 MenuBarHome 提交代码、报告缺陷与改进建议的贡献者！如果这个小工具让你在工作时少掏了几次手机，欢迎在 GitHub 上点一个 ⭐ Star。
 
 ---
 

@@ -726,8 +726,8 @@ public actor HAWebSocketProvider: HomeProvider {
            let host = URL(string: normalizeBaseURL(baseURLString))?.host?.lowercased(),
            (HADiscovery.isPrivateLANIPv4(host) || host.hasSuffix(".local")) {
             return L10n.tr(
-                "局域网连接被系统拦截（请检查「系统设置 → 隐私与安全性 → 本地网络」中的 MenuBarMijia 权限，或重新安装对齐本地应用签名）",
-                "Local network connection blocked by macOS (check System Settings → Privacy & Security → Local Network for MenuBarMijia)"
+                "局域网连接被系统拦截（请检查「系统设置 → 隐私与安全性 → 本地网络」中的 MenuBarHome 权限，或重新安装对齐本地应用签名）",
+                "Local network connection blocked by macOS (check System Settings → Privacy & Security → Local Network for MenuBarHome)"
             )
         }
         return (error as? LocalizedError)?.errorDescription ?? error.localizedDescription

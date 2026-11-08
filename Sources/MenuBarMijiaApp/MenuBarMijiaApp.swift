@@ -70,13 +70,13 @@ final class MenuBarMijiaAppDelegate: NSObject, NSApplicationDelegate, Observable
 
 // MARK: - Menu Bar Tooltip (#54)
 
-/// One-line status shown when hovering the menu-bar icon: "MenuBarMijia · 3 on · Study 26.5° ·
+/// One-line status shown when hovering the menu-bar icon: "MenuBarHome · 3 on · Study 26.5° ·
 /// Xiaomi Cloud connected". Disconnected shows the reason instead of the backend name.
 @MainActor
 enum MenuBarStatusSummary {
     static func text(for store: HomeStore) -> String {
         let _ = store.effectiveLanguage
-        var parts: [String] = ["MenuBarMijia"]
+        var parts: [String] = ["MenuBarHome"]
         if store.deviceValuesAreStale {
             parts.append(L10n.tr("可能过期", "Possibly stale"))
         } else {

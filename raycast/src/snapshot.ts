@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { validateSnapshot } from "./snapshot-validation";
 
 /**
- * The contract MenuBarMijia writes to `raycast-snapshot.json` (schema version 1).
+ * The contract MenuBarHome writes to `raycast-snapshot.json` (schema version 1).
  * Keep the field names identical to `Sources/MijiaCore/RaycastSnapshot.swift`; a rename there is a
  * breaking change here and the schema version must move with it. `validateSnapshot` checks the
  * fields this extension dereferences before any command renders them.
@@ -126,7 +126,7 @@ export function snapshotPath(): string {
   if (override) {
     return override.startsWith("~/") ? join(homedir(), override.slice(2)) : override;
   }
-  return join(homedir(), "Library", "Application Support", "MenuBarMijia", "raycast-snapshot.json");
+  return join(homedir(), "Library", "Application Support", "MenuBarHome", "raycast-snapshot.json");
 }
 
 export function resultTimeoutSeconds(): number {
@@ -141,7 +141,7 @@ export async function loadSnapshot(): Promise<RaycastSnapshot> {
     raw = await readFile(path, "utf8");
   } catch {
     throw new Error(
-      `Cannot read ${path}. Turn on Settings → 自动化与外部控制 → Raycast 集成 in MenuBarMijia.`,
+      `Cannot read ${path}. Turn on Settings → 自动化与外部控制 → Raycast 集成 in MenuBarHome.`,
     );
   }
   let parsed: unknown;

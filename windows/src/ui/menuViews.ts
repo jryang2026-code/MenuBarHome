@@ -99,7 +99,7 @@ export function renderOnboardingModal(host: MenuMijiaWindowsApp): string {
       <div class="cc-sheet-backdrop">
         <div class="cc-sheet" role="dialog" aria-modal="true" aria-label="${t("首次设置")}">
           <div class="cc-sheet-header">
-            <div class="cc-sheet-badge">${t("MenuBarMijia 控制中心")}</div>
+            <div class="cc-sheet-badge">${t("MenuBarHome 控制中心")}</div>
             <button class="cc-circle-btn is-small" id="btn-close-onboarding" title="${t("关闭引导")}" aria-label="${t("关闭引导")}">
               ${SF_ICONS.xmark}
             </button>

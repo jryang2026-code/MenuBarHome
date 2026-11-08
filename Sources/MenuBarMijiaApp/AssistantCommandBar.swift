@@ -170,8 +170,8 @@ public final class SpeechInputController {
         guard micAllowed else {
             isHoldToTalk = false
             errorMessage = L10n.tr(
-                "请在「系统设置 → 隐私与安全性 → 麦克风」中允许 MenuBarMijia",
-                "Please allow MenuBarMijia in System Settings → Privacy & Security → Microphone"
+                "请在「系统设置 → 隐私与安全性 → 麦克风」中允许 MenuBarHome",
+                "Please allow MenuBarHome in System Settings → Privacy & Security → Microphone"
             )
             return
         }
@@ -180,8 +180,8 @@ public final class SpeechInputController {
         guard speechStatus == .authorized else {
             isHoldToTalk = false
             errorMessage = L10n.tr(
-                "请在「系统设置 → 隐私与安全性 → 语音识别」中允许 MenuBarMijia",
-                "Please allow MenuBarMijia in System Settings → Privacy & Security → Speech Recognition"
+                "请在「系统设置 → 隐私与安全性 → 语音识别」中允许 MenuBarHome",
+                "Please allow MenuBarHome in System Settings → Privacy & Security → Speech Recognition"
             )
             return
         }

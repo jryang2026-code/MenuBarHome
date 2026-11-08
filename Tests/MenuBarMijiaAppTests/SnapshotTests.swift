@@ -1104,7 +1104,7 @@ struct SnapshotTests {
         defer { fixture.restore() }
 
         let text = MenuBarStatusSummary.text(for: fixture.store)
-        #expect(text.hasPrefix("MenuBarMijia · "))
+        #expect(text.hasPrefix("MenuBarHome · "))
         #expect(text.contains("台开启"))
         #expect(text.contains("已连接 Home Assistant"))
     }

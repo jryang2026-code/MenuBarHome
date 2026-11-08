@@ -208,20 +208,20 @@ jobs:
           version="$(tr -d '[:space:]' < VERSION)"
           # 只有 DMG、.sha256 与 SBOM：Ed25519 私钥不进 CI，签名必须由维护者在可信机器离线完成。
           for file in \
-            "dist/MenuBarMijia-${version}.dmg" \
-            "dist/MenuBarMijia-${version}.dmg.sha256"
+            "dist/MenuBarHome-${version}.dmg" \
+            "dist/MenuBarHome-${version}.dmg.sha256"
           do
             if [ ! -s "$file" ]; then
               echo "❌ 缺少发布附件：$file" >&2
               exit 1
             fi
           done
-          go2rtc_archs="$(lipo -archs "MenuBarMijia.app/Contents/Resources/bin/go2rtc" 2>/dev/null || true)"
+          go2rtc_archs="$(lipo -archs "MenuBarHome.app/Contents/Resources/bin/go2rtc" 2>/dev/null || true)"
           if ! printf '%s' "$go2rtc_archs" | grep -qw "arm64" || ! printf '%s' "$go2rtc_archs" | grep -qw "x86_64"; then
-            echo "❌ MenuBarMijia.app 缺少通用架构 go2rtc 组件（当前：${go2rtc_archs:-<缺失>}，期望：arm64 + x86_64）" >&2
+            echo "❌ MenuBarHome.app 缺少通用架构 go2rtc 组件（当前：${go2rtc_archs:-<缺失>}，期望：arm64 + x86_64）" >&2
             exit 1
           fi
-          if [ -e "dist/MenuBarMijia-${version}.dmg.ed25519.sig" ]; then
+          if [ -e "dist/MenuBarHome-${version}.dmg.ed25519.sig" ]; then
             echo "❌ CI 不应产出 Ed25519 签名：私钥必须留在可信机器上（issue #17）。" >&2
             exit 1
           fi
@@ -233,24 +233,24 @@ jobs:
         # 避免草稿还没创建时它去找 release（或额外多出一份 workflow artifact）。
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
-          path: MenuBarMijia.app
+          path: MenuBarHome.app
           format: spdx-json
-          output-file: dist/MenuBarMijia-${{ needs.verify-tag.outputs.version }}-macos.spdx.json
+          output-file: dist/MenuBarHome-${{ needs.verify-tag.outputs.version }}-macos.spdx.json
           upload-artifact: false
           upload-release-assets: false
 
       - name: Attest DMG build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/MenuBarMijia-${{ needs.verify-tag.outputs.version }}.dmg
+          subject-path: dist/MenuBarHome-${{ needs.verify-tag.outputs.version }}.dmg
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-dmg
           path: |
-            dist/MenuBarMijia-*.dmg
-            dist/MenuBarMijia-*.dmg.sha256
-            dist/MenuBarMijia-*.spdx.json
+            dist/MenuBarHome-*.dmg
+            dist/MenuBarHome-*.dmg.sha256
+            dist/MenuBarHome-*.spdx.json
           if-no-files-found: error
 
   windows-release:
@@ -386,11 +386,11 @@ jobs:
           set -euo pipefail
           version="$(tr -d '[:space:]' < ../VERSION)"
           mkdir -p ../dist-windows
-          cp src-tauri/target/release/bundle/nsis/*.exe "../dist-windows/MenuBarMijia-${version}-windows-x64-setup.exe"
-          cp src-tauri/target/release/bundle/msi/*.msi "../dist-windows/MenuBarMijia-${version}-windows-x64.msi"
+          cp src-tauri/target/release/bundle/nsis/*.exe "../dist-windows/MenuBarHome-${version}-windows-x64-setup.exe"
+          cp src-tauri/target/release/bundle/msi/*.msi "../dist-windows/MenuBarHome-${version}-windows-x64.msi"
           cd ../dist-windows
-          sha256sum "MenuBarMijia-${version}-windows-x64-setup.exe" > "MenuBarMijia-${version}-windows-x64-setup.exe.sha256"
-          sha256sum "MenuBarMijia-${version}-windows-x64.msi" > "MenuBarMijia-${version}-windows-x64.msi.sha256"
+          sha256sum "MenuBarHome-${version}-windows-x64-setup.exe" > "MenuBarHome-${version}-windows-x64-setup.exe.sha256"
+          sha256sum "MenuBarHome-${version}-windows-x64.msi" > "MenuBarHome-${version}-windows-x64.msi.sha256"
           ls -l
 
       - name: Verify installer signatures
@@ -400,8 +400,8 @@ jobs:
         run: |
           $version = (Get-Content (Join-Path $env:GITHUB_WORKSPACE 'VERSION') -Raw).Trim()
           $targets = @(
-            (Join-Path $env:GITHUB_WORKSPACE "dist-windows/MenuBarMijia-$version-windows-x64-setup.exe"),
-            (Join-Path $env:GITHUB_WORKSPACE "dist-windows/MenuBarMijia-$version-windows-x64.msi")
+            (Join-Path $env:GITHUB_WORKSPACE "dist-windows/MenuBarHome-$version-windows-x64-setup.exe"),
+            (Join-Path $env:GITHUB_WORKSPACE "dist-windows/MenuBarHome-$version-windows-x64.msi")
           )
           $failed = $false
           foreach ($target in $targets) {
@@ -437,8 +437,8 @@ jobs:
           mkdir -p "$staging"
           cp package.json package-lock.json "$staging/"
           cp src-tauri/Cargo.toml src-tauri/Cargo.lock "$staging/"
-          cp ../dist-windows/MenuBarMijia-*-windows-x64-setup.exe \
-            ../dist-windows/MenuBarMijia-*-windows-x64.msi "$staging/"
+          cp ../dist-windows/MenuBarHome-*-windows-x64-setup.exe \
+            ../dist-windows/MenuBarHome-*-windows-x64.msi "$staging/"
           ls -l "$staging"
 
       - name: Generate Windows SBOM (SPDX 2.3)
@@ -447,7 +447,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/sbom-input
           format: spdx-json
-          output-file: dist-windows/MenuBarMijia-${{ needs.verify-tag.outputs.version }}-windows-x64.spdx.json
+          output-file: dist-windows/MenuBarHome-${{ needs.verify-tag.outputs.version }}-windows-x64.spdx.json
           upload-artifact: false
           upload-release-assets: false
 
@@ -455,8 +455,8 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
-            dist-windows/MenuBarMijia-${{ needs.verify-tag.outputs.version }}-windows-x64-setup.exe
-            dist-windows/MenuBarMijia-${{ needs.verify-tag.outputs.version }}-windows-x64.msi
+            dist-windows/MenuBarHome-${{ needs.verify-tag.outputs.version }}-windows-x64-setup.exe
+            dist-windows/MenuBarHome-${{ needs.verify-tag.outputs.version }}-windows-x64.msi
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -546,14 +546,14 @@ jobs:
           for name in "${actual[@]:-}"; do
             [ -n "$name" ] || continue
             case "$name" in
-              "MenuBarMijia-${RELEASE_VERSION}.dmg.ed25519.sig"|\
-              "MenuBarMijia-${RELEASE_VERSION}-windows-x64-setup.exe.ed25519.sig"|\
-              "MenuBarMijia-${RELEASE_VERSION}-windows-x64.msi.ed25519.sig")
+              "MenuBarHome-${RELEASE_VERSION}.dmg.ed25519.sig"|\
+              "MenuBarHome-${RELEASE_VERSION}-windows-x64-setup.exe.ed25519.sig"|\
+              "MenuBarHome-${RELEASE_VERSION}-windows-x64.msi.ed25519.sig")
                 echo "❌ 草稿里还有旧的安装包签名 $name。请手动删除后再跑；本工作流不会删除 GitHub 附件。" >&2
                 exit 1
                 ;;
-              "MenuBarMijia-${RELEASE_VERSION}.update.json"|\
-              "MenuBarMijia-${RELEASE_VERSION}.update.json.ed25519.sig")
+              "MenuBarHome-${RELEASE_VERSION}.update.json"|\
+              "MenuBarHome-${RELEASE_VERSION}.update.json.ed25519.sig")
                 continue
                 ;;
             esac
@@ -574,7 +574,7 @@ jobs:
           gh release create "${RELEASE_TAG}" \
             --draft \
             --verify-tag \
-            --title "MenuBarMijia ${RELEASE_VERSION}" \
+            --title "MenuBarHome ${RELEASE_VERSION}" \
             --generate-notes \
             dist/*
 
@@ -584,7 +584,7 @@ jobs:
           set -euo pipefail
           # 只重传这 8 个构建附件（含两端 SBOM）。清单和清单签名不在 dist/ 里，不会被覆盖，也不会被删除。
           had_sig=false
-          if gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name' | tr -d '\r' | grep -qF "MenuBarMijia-${RELEASE_VERSION}.update.json.ed25519.sig"; then
+          if gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name' | tr -d '\r' | grep -qF "MenuBarHome-${RELEASE_VERSION}.update.json.ed25519.sig"; then
             had_sig=true
           fi
           gh release upload "${RELEASE_TAG}" dist/* --clobber
@@ -601,7 +601,7 @@ jobs:
         run: |
           set -euo pipefail
           expected="$(cd dist && printf '%s\n' * | sort)"
-          actual="$(gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name' | tr -d '\r' | sort | grep -vE '\.ed25519\.sig$' | grep -vFx "MenuBarMijia-${RELEASE_VERSION}.update.json" || true)"
+          actual="$(gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name' | tr -d '\r' | sort | grep -vE '\.ed25519\.sig$' | grep -vFx "MenuBarHome-${RELEASE_VERSION}.update.json" || true)"
           if [ "$actual" != "$expected" ]; then
             echo "❌ 草稿附件与本地构建产物不一致" >&2
             diff <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") >&2 || true
@@ -619,7 +619,7 @@ jobs:
           while read -r name digest size; do
             [ -n "$name" ] || continue
             case "$name" in
-              *.ed25519.sig|"MenuBarMijia-${RELEASE_VERSION}.update.json") continue ;;
+              *.ed25519.sig|"MenuBarHome-${RELEASE_VERSION}.update.json") continue ;;
             esac
             local_file="dist/${name}"
             local_size="$(wc -c < "$local_file" | tr -d '[:space:]')"
@@ -667,15 +667,15 @@ jobs:
             echo ""
             echo "**尚未发布**：CI 不持有更新签名私钥（issue #17）。请在可信机器上执行："
             echo '```bash'
-            echo "gh release download ${RELEASE_TAG} --pattern \"MenuBarMijia-${RELEASE_VERSION}*\" --dir dist"
+            echo "gh release download ${RELEASE_TAG} --pattern \"MenuBarHome-${RELEASE_VERSION}*\" --dir dist"
             echo "MENUBARMIJIA_UPDATE_SIGNING_KEY=\"<离线私钥>\" swift scripts/sign_update.swift \\"
             echo "  --min-from <x.y.z> \\"
-            echo "  dist/MenuBarMijia-${RELEASE_VERSION}.dmg \\"
-            echo "  dist/MenuBarMijia-${RELEASE_VERSION}-windows-x64-setup.exe \\"
-            echo "  dist/MenuBarMijia-${RELEASE_VERSION}-windows-x64.msi"
+            echo "  dist/MenuBarHome-${RELEASE_VERSION}.dmg \\"
+            echo "  dist/MenuBarHome-${RELEASE_VERSION}-windows-x64-setup.exe \\"
+            echo "  dist/MenuBarHome-${RELEASE_VERSION}-windows-x64.msi"
             echo "gh release upload ${RELEASE_TAG} \\"
-            echo "  dist/MenuBarMijia-${RELEASE_VERSION}.update.json \\"
-            echo "  dist/MenuBarMijia-${RELEASE_VERSION}.update.json.ed25519.sig"
+            echo "  dist/MenuBarHome-${RELEASE_VERSION}.update.json \\"
+            echo "  dist/MenuBarHome-${RELEASE_VERSION}.update.json.ed25519.sig"
             echo '```'
             echo "然后运行 **Finalize Release** 工作流（tag=${RELEASE_TAG}）完成严格校验并发布。"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -5,7 +5,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEFAULT_TARGET="$HOME/Documents/MenuBarMijia-wt/MenuBarMijia.app"
+DEFAULT_TARGET="$HOME/Documents/MenuBarMijia-wt/MenuBarHome.app"
 TARGET="${INSTALL_TARGET:-$DEFAULT_TARGET}"
 BUNDLE=""
 SKIP_BUILD=0
@@ -16,9 +16,9 @@ usage() {
     cat <<'USAGE'
 用法: scripts/install_local_app.sh [选项]
 
-  --skip-build        直接使用 ROOT/MenuBarMijia.app，不重新打包
+  --skip-build        直接使用 ROOT/MenuBarHome.app，不重新打包
   --bundle <path>     安装指定的 .app（仍会校验 CFBundleVersion 与 HEAD 一致）
-  --target <path>     安装到指定位置（默认 $HOME/Documents/MenuBarMijia-wt/MenuBarMijia.app，
+  --target <path>     安装到指定位置（默认 $HOME/Documents/MenuBarMijia-wt/MenuBarHome.app，
                       也可用 INSTALL_TARGET 环境变量）
   --dry-run           只校验并打印计划，不改动任何文件
   --no-relaunch       不关闭正在运行的实例，也不自动打开
@@ -40,10 +40,10 @@ done
 fail() { echo "❌ $*" >&2; exit 1; }
 
 if [ "$SKIP_BUILD" = "0" ]; then
-    echo "▶ 打包 MenuBarMijia.app..."
+    echo "▶ 打包 MenuBarHome.app..."
     bash "$ROOT/scripts/build_app.sh"
 fi
-BUNDLE="${BUNDLE:-$ROOT/MenuBarMijia.app}"
+BUNDLE="${BUNDLE:-$ROOT/MenuBarHome.app}"
 [ -d "$BUNDLE" ] || fail "找不到 $BUNDLE"
 
 BUNDLE="$(cd "$BUNDLE" && pwd)"
@@ -73,13 +73,13 @@ fi
 mkdir -p "$(dirname "$TARGET")"
 BACKUP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mmb-previous-app.XXXXXX")"
 if [ -d "$TARGET" ]; then
-    mv "$TARGET" "$BACKUP_DIR/MenuBarMijia.app"
+    mv "$TARGET" "$BACKUP_DIR/MenuBarHome.app"
 fi
 
 restore() {
     rm -rf "$TARGET"
-    if [ -d "$BACKUP_DIR/MenuBarMijia.app" ]; then
-        mv "$BACKUP_DIR/MenuBarMijia.app" "$TARGET"
+    if [ -d "$BACKUP_DIR/MenuBarHome.app" ]; then
+        mv "$BACKUP_DIR/MenuBarHome.app" "$TARGET"
         echo "↩️ 已恢复原有应用" >&2
     fi
 }
@@ -97,9 +97,16 @@ INSTALLED_SHA="$(shasum -a 256 "$TARGET/Contents/MacOS/MenuBarMijiaApp" | awk '{
 [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$TARGET/Contents/Info.plist")" = "$EXPECTED_BUILD" ] || \
     fail "安装后的构建号不是 ${EXPECTED_BUILD}，原应用在 $BACKUP_DIR"
 
-# Keep any sibling local MenuBarMijia.app bundles in sync so macOS nehelper's path-pinned
+# The app was called MenuBarMijia.app before the rename; move it away so only one copy remains.
+LEGACY_BUNDLE="$(dirname "$TARGET")/MenuBarMijia.app"
+if [ -d "$LEGACY_BUNDLE" ]; then
+    mv "$LEGACY_BUNDLE" "$BACKUP_DIR/MenuBarMijia-legacy.app"
+    echo "  ↻ 旧名应用已移到：$BACKUP_DIR/MenuBarMijia-legacy.app"
+fi
+
+# Keep any sibling local MenuBarHome.app bundles in sync so macOS nehelper's path-pinned
 # NEPathRule entries for com.jryang1997.MenuBarMijia never cache a stale LC_UUID (#LocalNetwork).
-for SIBLING in "$ROOT/MenuBarMijia.app" "$HOME/Documents/MenuBarMijia/MenuBarMijia.app" "/private/tmp/mmb-114/MenuBarMijia.app"; do
+for SIBLING in "$ROOT/MenuBarHome.app" "$HOME/Documents/MenuBarMijia/MenuBarHome.app" "/private/tmp/mmb-114/MenuBarHome.app"; do
     if [ -d "$SIBLING" ] && [ "$SIBLING" != "$TARGET" ] && [ "$SIBLING" != "$BUNDLE" ]; then
         SIBLING_STAGING="$SIBLING.staging.$$"
         rm -rf "$SIBLING_STAGING"
@@ -125,4 +132,4 @@ if [ "$RELAUNCH" = "1" ]; then
 fi
 
 echo "✅ 已安装 ${TARGET}（构建号 ${ACTUAL_BUILD}）"
-echo "   上一版本保留在：$BACKUP_DIR/MenuBarMijia.app"
+echo "   上一版本保留在：$BACKUP_DIR/MenuBarHome.app"

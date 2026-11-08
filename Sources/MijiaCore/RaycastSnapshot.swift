@@ -263,7 +263,7 @@ public struct RaycastClimateItem: Codable, Equatable, Sendable {
     }
 }
 
-/// Versioned snapshot written by `MenuBarMijia` for `raycast-mijia` to read without touching credentials.
+/// Versioned snapshot written by `MenuBarHome` for `raycast-mijia` to read without touching credentials.
 public struct RaycastSnapshot: Codable, Equatable, Sendable {
     public static let currentSchemaVersion = 1
 

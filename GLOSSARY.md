@@ -1,4 +1,4 @@
-# MenuBarMijia
+# MenuBarHome
 
 macOS 菜单栏智能家居控制中心，将群晖 Home Assistant 或米家云端直连接入的设备合成为符合 Apple Control Center 交互范式的桌面面板。
 
@@ -23,7 +23,7 @@ _Avoid_: Data mapping（数据映射）、Parsing（解析）
 _Avoid_: Server type（服务器类型）、Mode（模式）
 
 **RaycastSnapshot（伴生快照）**：
-启用「Raycast 集成」后由 `MenuBarMijia` 写到 `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json`（`0600`）的只读设备、场景、快捷动作、环境读数与 `lastCommandFeedback`，供 `raycast/` 扩展、`scripts/mijia` CLI 与 `scripts/mijia-mcp` 本地 MCP 服务搜索与展示，伴生端因此不需要接触米家或 Home Assistant 凭据。字段随 `RaycastSnapshot.currentSchemaVersion` 演进，改名即破坏契约。
+启用「Raycast 集成」后由 `MenuBarHome` 写到 `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json`（`0600`）的只读设备、场景、快捷动作、环境读数与 `lastCommandFeedback`，供 `raycast/` 扩展、`scripts/mijia` CLI 与 `scripts/mijia-mcp` 本地 MCP 服务搜索与展示，伴生端因此不需要接触米家或 Home Assistant 凭据。字段随 `RaycastSnapshot.currentSchemaVersion` 演进，改名即破坏契约。
 _Avoid_: 缓存文件、数据库
 
 **BridgeToken（伴生令牌）**：

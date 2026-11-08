@@ -151,7 +151,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "立即同步最新设备状态": ["立即同步最新设备状态", "Sync device state now"],
   "连接设置与 AI 决策配置": ["连接设置与 AI 决策配置", "Connection and AI settings"],
   "打开设置": ["打开设置", "Open settings"],
-  "完全退出 MenuBarMijia": ["完全退出 MenuBarMijia", "Quit MenuBarMijia"],
+  "完全退出 MenuBarHome": ["完全退出 MenuBarHome", "Quit MenuBarHome"],
   "退出": ["退出", "Quit"],
   "扫码直连": ["扫码直连", "Scan to connect"],
   "用手机米家 App 扫码直连真实设备": ["用手机米家 App 扫码直连真实设备", "Scan with the Mi Home app to connect real devices"],
@@ -370,7 +370,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
 
   // Onboarding
   "首次设置": ["首次设置", "First-time setup"],
-  "MenuBarMijia 控制中心": ["MenuBarMijia 控制中心", "MenuBarMijia control center"],
+  "MenuBarHome 控制中心": ["MenuBarHome 控制中心", "MenuBarHome control center"],
   "扫码直连你的真实米家设备": ["扫码直连你的真实米家设备", "Scan to connect your real devices"],
   "手机打开「米家 App → 扫一扫」即可直接同步全屋真实设备；常驻 Windows 右下角系统托盘，点击图标或按 Alt+M 随时弹出，点击外部自动收起。": ["手机打开「米家 App → 扫一扫」即可直接同步全屋真实设备；常驻 Windows 右下角系统托盘，点击图标或按 Alt+M 随时弹出，点击外部自动收起。", "Open “Mi Home → Scan” on your phone to sync your devices. The panel lives in the Windows tray: click the icon or press Alt+M to open it, and it hides when you click outside."],
   "云端服务器地区": ["云端服务器地区", "Cloud region"],
@@ -427,7 +427,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "下载或校验更新包失败，请重试或手动下载": ["下载或校验更新包失败，请重试或手动下载", "Failed to download or verify update package; please retry or download manually"],
   "立即检查": ["立即检查", "Check now"],
   "每天自动检查更新（关闭后不再请求 GitHub）": ["每天自动检查更新（关闭后不再请求 GitHub）", "Check for updates daily (off means no GitHub request)"],
-  "退出 MenuBarMijia": ["退出 MenuBarMijia", "Quit MenuBarMijia"],
+  "退出 MenuBarHome": ["退出 MenuBarHome", "Quit MenuBarHome"],
   "完成并保存": ["完成并保存", "Done and save"],
   "外观模式": ["外观模式", "Appearance"],
   "浅色": ["浅色", "Light"],

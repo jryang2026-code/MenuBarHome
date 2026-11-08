@@ -16,7 +16,7 @@ export const UPDATE_STORAGE_KEY = "menumijia.windows.update.v1";
 export const UPDATE_SIGNING_PUBLIC_KEY_BASE64 = "rLwWXuP0sOZvgd/KusLTTmBXN9DAZ9EzPBNhFSn9yUo=";
 
 export interface WindowsInstallerAsset {
-  /** Asset file name, e.g. `MenuBarMijia-1.1.4-windows-x64-setup.exe`. */
+  /** Asset file name, e.g. `MenuBarHome-1.1.4-windows-x64-setup.exe`. */
   readonly name: string;
   /** Constructed download URL under https://github.com/jryang2026-code/MenuBarHome/releases/download/... */
   readonly downloadUrl: string;
@@ -126,10 +126,10 @@ export function selectWindowsInstallerAsset(version: string, rawAssets: unknown)
     names.add(name);
     if (!sizeByName.has(name)) sizeByName.set(name, assetSize(record["size"]));
   }
-  const manifestName = `MenuBarMijia-${version}.update.json`;
+  const manifestName = `MenuBarHome-${version}.update.json`;
   if (!names.has(manifestName)) return null;
-  const exeName = `MenuBarMijia-${version}-windows-x64-setup.exe`;
-  const msiName = `MenuBarMijia-${version}-windows-x64.msi`;
+  const exeName = `MenuBarHome-${version}-windows-x64-setup.exe`;
+  const msiName = `MenuBarHome-${version}-windows-x64.msi`;
   const chosen = names.has(exeName) ? exeName : names.has(msiName) ? msiName : null;
   if (!chosen) return null;
   return {
