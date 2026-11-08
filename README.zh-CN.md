@@ -154,7 +154,13 @@ MenuBarHome 的 macOS 版本采用 Swift 6 原生开发，Windows 11 版本基�
 
 #### macOS 安装方式
 
-**Homebrew：** `jryang2026-code/tap` 还没有重新发布，发布前暂不可用。
+**Homebrew：**
+
+```bash
+brew tap jryang2026-code/tap
+brew trust --cask jryang2026-code/tap/menubarhome
+brew install --cask jryang2026-code/tap/menubarhome
+```
 
 **下载 DMG 手动安装**
 前往 [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) 下载最新的 macOS DMG 安装包，打开并将 `MenuBarHome.app` 拖入「应用程序（Applications）」文件夹。

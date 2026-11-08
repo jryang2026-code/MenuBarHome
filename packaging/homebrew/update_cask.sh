@@ -323,7 +323,6 @@ grep -qx "  version \"${VERSION}\"" "$RENDERED" || fail "渲染后的 cask 缺�
 grep -qx "  sha256 \"${actual_sha}\"" "$RENDERED" || fail "渲染后的 cask 的 sha256 行不正确"
 grep -qF "https://${SOURCE_HOST}/${SOURCE_REPO}/releases/download/v#{version}/${APP_NAME}-#{version}.dmg" "$RENDERED" \
     || fail "渲染后的 cask 的 URL 不是由 version 推导的固定 release 地址"
-grep -qF "verified: \"${SOURCE_HOST}/${SOURCE_REPO}/\"" "$RENDERED" || fail "cask 缺少 verified 域名绑定"
 grep -qF 'depends_on macos: :sonoma' "$RENDERED" || fail "cask 缺少 macOS 14 (Sonoma) 最低版本"
 grep -qF "  app \"${APP_NAME}.app\"" "$RENDERED" || fail "cask 缺少 app \"${APP_NAME}.app\""
 # 只在非注释行里拒绝 quarantine 绕过：注释不执行，但代码行里出现这些就没人能相信 cask 不带钩子。

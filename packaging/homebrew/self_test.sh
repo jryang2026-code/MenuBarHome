@@ -120,9 +120,8 @@ else
     bad "sha256 行不正确"
 fi
 if grep -qF 'depends_on macos: :sonoma' "$generated" \
-    && grep -qF 'app "MenuBarHome.app"' "$generated" \
-    && grep -qF 'verified: "github.com/jryang2026-code/MenuBarHome/"' "$generated"; then
-    ok "保留最低系统版本、app artifact 与 verified 域名"
+    && grep -qF 'app "MenuBarHome.app"' "$generated"; then
+    ok "保留最低系统版本与 app artifact"
 else
     bad "关键 stanza 缺失"
 fi

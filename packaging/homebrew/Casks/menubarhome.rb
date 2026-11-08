@@ -13,8 +13,7 @@ cask "menubarhome" do
   version "1.0.6"
   sha256 "f6266785fcaf295bf0e076c687a4df9c5cd67f2775723a9b23e401f476183ec8"
 
-  url "https://github.com/jryang2026-code/MenuBarHome/releases/download/v#{version}/MenuBarHome-#{version}.dmg",
-      verified: "github.com/jryang2026-code/MenuBarHome/"
+  url "https://github.com/jryang2026-code/MenuBarHome/releases/download/v#{version}/MenuBarHome-#{version}.dmg"
   name "MenuBarHome"
   desc "Menu bar control center for Mijia and Home Assistant devices"
   homepage "https://github.com/jryang2026-code/MenuBarHome"

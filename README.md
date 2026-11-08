@@ -154,7 +154,13 @@ The macOS version is built natively in Swift 6, while the Windows 11 client is a
 
 #### Installing on macOS
 
-**Homebrew:** the `jryang2026-code/tap` tap is offline until it is republished.
+**Homebrew:**
+
+```bash
+brew tap jryang2026-code/tap
+brew trust --cask jryang2026-code/tap/menubarhome
+brew install --cask jryang2026-code/tap/menubarhome
+```
 
 **Direct DMG Download**
 Download the latest macOS DMG from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) and drag `MenuBarHome.app` into your Applications folder.
