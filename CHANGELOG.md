@@ -1,16 +1,41 @@
 # 更新记录
 
+## 1.2.0
+
+### 改名并迁回 GitHub
+- **项目改名为 MenuBarHome，仓库迁到 [github.com/jryang2026-code/MenuBarHome](https://github.com/jryang2026-code/MenuBarHome)**：应用名、安装包和 Homebrew cask（`menubarhome`）都换成新名字，登录信息和设置都会保留。
+- **请手动安装一次**：1.1.7 及更早版本的更新地址已经失效，收不到这次更新。装好后退出并删除旧的 `MenuBarMijia` 应用；Windows 新版不会覆盖旧版，请先卸载旧版。
+
+### 新功能
+- **摄像机云台**：按住实时画面拖动即可控制云台转向，松手停止（原 GitHub #97）。
+- **Windows 设备搜索与键盘控制**：面板可搜索设备，并用键盘选择和控制。
+- **门铃响起自动打开摄像机**（Home Assistant 门铃）。
+- **家庭健康周报**：汇总经常掉线的设备、扫地机低电量、插座待机耗电和房间网络问题，可导出 Markdown。
+- **自动化**：锁屏、合盖、休眠分开触发，并支持 Wi-Fi 条件。
+- **更多设备**：窗帘和双轨窗帘、晾衣架、热水器，以及 Home Assistant 的加湿器、热水器和阀门；详情抽屉新增「更多设置」。
+- **房间和设备类型可以自由排序**，新手引导里可开启登录时启动。
+- **Windows 补齐窗帘、家电与通用卡片（[#9](https://github.com/jryang2026-code/MenuBarHome/issues/9)，原 GitHub #310）**：Windows 托盘版此前只认灯、空调、风扇这类常见设备，米家的窗帘、晾衣架、浴霸、油烟机、热水器、洗衣烘干洗碗机以及没有专用类型的设备都会被丢掉。现在这些类型与 macOS 走同一份 `deviceProfiles.json` 与同一套合成规则：窗帘与晾衣架显示真实开合中状态、两端 2% 吸附，晾衣架显示的是高度而不是下降距离；家电卡按规格给出电源、模式、目标温度、风速、灯光、状态、故障、剩余时间与无参的开始 / 暂停 / 停止，主功能所在的副服务（浴霸的 PTC、油烟机的排风）不会被灯光顶替；没有专用卡片的设备显示通用卡，其余控件进入「更多设置」。覆盖率基线里的 `windowsDivergences` 从 14 个降到 0，共享 golden 新增家电、晾衣架、兜底卡与控件列表用例，两端断言同一份期望值。
+- **智能鱼缸与宠物喂食器（[#7](https://github.com/jryang2026-code/MenuBarHome/issues/7)，原 GitHub #306）**：米家 `fish-tank` 与 `pet-feeder` 规格不再只有一张通用卡。鱼缸主区显示整机开关与水温（m300 保留 0.1℃ 精度），「更多设置」优先列出水泵开关与档位、灯光的开关 / 模式 / 亮度、按份投喂、滤芯寿命（部分机型有两个滤芯服务）与水温告警上下限；喂食器主区显示余粮，优先列出故障、余粮、目标份数与出粮。投喂先选份数再二次确认，确认框写明「今日已投喂」多少份（机型不报今日总量时会直接说明），按钮本身不需要先打开「允许次要写入」。水泵未插入、低水位、堵塞、故障会直接显示成红色提示，不再藏在折叠区。绑定时间戳、触发状态、灯光模式列表、排程与场景私有字符串继续过滤，`temp-custom` / `feeder-custom` 里只捞出水温告警与今日份数。Windows 端尚未接入这层家族规则。
+- **通用兜底卡片（[#6](https://github.com/jryang2026-code/MenuBarHome/issues/6)，原 GitHub #305）**：米家规格里没有专用类型、但通用控件层仍能列出可写控件或只读读数的设备，现在显示一张通用卡，不再被丢进「未显示设备」。卡片显示名称、房间、最多两个关键读数和低风险主开关，其余控件进入「更多设置」；只有读数的设备明确标注「只读」。门锁、加热类与路由器配置默认只读，放开次要写入需二次确认；通用卡默认不参与「全关」和助手批量指令。「不支持设备」扫描只保留没有规格或确实没有可用项的设备，覆盖率基线里「丢弃但有可控项」降到 0%。
+- **摄像机 HUD 说明「仅画面」，HLS 可开声音（[#29](https://github.com/jryang2026-code/MenuBarHome/issues/29)，原 GitHub #97 评论）**：米家 P2P、HA MJPEG 与抓拍流本身不含音轨，实时小窗顶部现在直接标注「仅画面」并在悬停说明原因，不再让人以为是静音开关坏了。带音轨的自定义 HLS (.m3u8) 流在 macOS 显示静音 / 开启声音按钮（默认静音），Windows 只在原生 `<video>` 兜底流上提供同样的切换。脱敏诊断新增 `stream_mode` 与 `audio_support` 两行，便于确认当前画面是否支持声音。
+- **本地 MCP 服务与 CLI 精确值命令（[#19](https://github.com/jryang2026-code/MenuBarHome/issues/19)，原 GitHub #177）**：在 `RaycastSnapshot` + `menumijia://` 伴生契约上新增 `scripts/mijia-mcp`（或 `scripts/mijia mcp`）stdio MCP 服务，供 Claude Desktop、Claude Code 与 Cursor 直接挂载。暴露只读资源（`mijia://status`、`mijia://devices`、`mijia://scenes`）与 11 个工具（`list_devices`、`get_home_status`、`toggle_device`、`set_device_power`、`set_light_brightness`、`set_light_color_temp`、`set_temperature`、`set_fan`、`run_scene`、`ask_home`、`focus_device`），`scripts/mijia` 同步补齐 `brightness` / `color-temp` / `temperature` / `fan` / `focus` 子命令。所有写入继续走应用内的锁屏拦截与高风险二次确认，MCP 返回给模型的内容一律剥离 `bridgeToken`。
+- **Raycast 扩展与本地 CLI（[#20](https://github.com/jryang2026-code/MenuBarHome/issues/20)）**：设置 → 自动化与外部控制新增「Raycast 集成」的配套客户端。`raycast/` 是标准 Raycast 扩展（搜索设备并开关、调亮度 / 色温 / 目标温度 / 风速、搜索并执行场景与快捷动作、一句话指令、打开设备详情），`scripts/mijia` 把同一套能力搬进终端（`list` / `status` / `toggle` / `on` / `off` / `scene` / `ask`）。两者都只读应用写出的 `raycast-snapshot.json`（`0600`）并用 `menumijia://` 链接回传执行，不持有米家或 Home Assistant 凭据；高风险设备仍需二次确认，锁屏拦截照旧，命令结果写回 `lastCommandFeedback` 后由客户端显示。新增按值控制的链接 `power` / `brightness` / `color-temp` / `temperature` / `fan` 与只做导航的 `focus`，滑条按目标值下发，不再靠当前状态推测；关灯用 `power` 而不是 0% 亮度，避免 Home Assistant 把 0 夹到 1% 后反而开灯。
+
+### 修复
+- **Raycast 和外部链接**：带延时或多个设备的指令不再被提前执行到错误的设备上。
+- **Windows 摄像机**：画面流更稳定，重连不再互相打断；隐藏窗口时打开的摄像机，重新显示后会自动连接。
+- **Windows 定时任务**：重启后保留，错过的指令会安全恢复。
+- **Windows 自动更新恢复可用**，AI 服务地址被拒绝时会显示原因。
+- **隐私**：Wi-Fi 名称不再以明文写入系统日志。
+- **云台**：快速按下松开不再残留控制会话。
+
 ## 1.1.7
 
 ### 修复与设备支持
-- **Windows 补齐窗帘、家电与通用卡片（[#9](https://gitlab.com/jryang1997/MenuBarMijia/-/work_items/9)，原 GitHub #310）**：Windows 托盘版此前只认灯、空调、风扇这类常见设备，米家的窗帘、晾衣架、浴霸、油烟机、热水器、洗衣烘干洗碗机以及没有专用类型的设备都会被丢掉。现在这些类型与 macOS 走同一份 `deviceProfiles.json` 与同一套合成规则：窗帘与晾衣架显示真实开合中状态、两端 2% 吸附，晾衣架显示的是高度而不是下降距离；家电卡按规格给出电源、模式、目标温度、风速、灯光、状态、故障、剩余时间与无参的开始 / 暂停 / 停止，主功能所在的副服务（浴霸的 PTC、油烟机的排风）不会被灯光顶替；没有专用卡片的设备显示通用卡，其余控件进入「更多设置」。覆盖率基线里的 `windowsDivergences` 从 14 个降到 0，共享 golden 新增家电、晾衣架、兜底卡与控件列表用例，两端断言同一份期望值。
-- **智能鱼缸与宠物喂食器（[#7](https://gitlab.com/jryang1997/MenuBarMijia/-/work_items/7)，原 GitHub #306）**：米家 `fish-tank` 与 `pet-feeder` 规格不再只有一张通用卡。鱼缸主区显示整机开关与水温（m300 保留 0.1℃ 精度），「更多设置」优先列出水泵开关与档位、灯光的开关 / 模式 / 亮度、按份投喂、滤芯寿命（部分机型有两个滤芯服务）与水温告警上下限；喂食器主区显示余粮，优先列出故障、余粮、目标份数与出粮。投喂先选份数再二次确认，确认框写明「今日已投喂」多少份（机型不报今日总量时会直接说明），按钮本身不需要先打开「允许次要写入」。水泵未插入、低水位、堵塞、故障会直接显示成红色提示，不再藏在折叠区。绑定时间戳、触发状态、灯光模式列表、排程与场景私有字符串继续过滤，`temp-custom` / `feeder-custom` 里只捞出水温告警与今日份数。Windows 端尚未接入这层家族规则。
-- **通用兜底卡片（[#6](https://gitlab.com/jryang1997/MenuBarMijia/-/work_items/6)，原 GitHub #305）**：米家规格里没有专用类型、但通用控件层仍能列出可写控件或只读读数的设备，现在显示一张通用卡，不再被丢进「未显示设备」。卡片显示名称、房间、最多两个关键读数和低风险主开关，其余控件进入「更多设置」；只有读数的设备明确标注「只读」。门锁、加热类与路由器配置默认只读，放开次要写入需二次确认；通用卡默认不参与「全关」和助手批量指令。「不支持设备」扫描只保留没有规格或确实没有可用项的设备，覆盖率基线里「丢弃但有可控项」降到 0%。
 - **macOS 长时间看摄像机更稳定（[#97](https://github.com/jryang1997/MenuBarMijia/issues/97), [#271](https://github.com/jryang1997/MenuBarMijia/pull/271)）**：实时画面改用一条从第一帧对齐主机时钟的播放时间轴，解码出的画面按时间释放，降低长时间观看后因 Mach 端口耗尽闪退的风险；渲染队列满时先丢掉积压，再从下一个关键帧继续。实测米家摄像机 fMP4 实时画面加画中画连续播放约 14 分钟，端口数与内存保持平稳。若仍遇到闪退，请在 #97 附上崩溃报告。
 - **macOS 摄像机小窗可以关闭，并可选择画质（[#97](https://github.com/jryang1997/MenuBarMijia/issues/97), [#193](https://github.com/jryang1997/MenuBarMijia/pull/193)）**：关闭按钮与 Esc 立即收起小窗，并同时停止播放、画中画与本地 go2rtc 桥，不再残留黑块和暂停按钮；画中画窗口尺寸与时间范围修正。米家摄像机新增「自动 / 流畅 / 高清 / 超清」画质（默认高清），4K 摄像机不再固定为 480P；个别旧机型不支持超清时可切回高清或流畅。
 - **同时连着 HA 和米家时，摄像头卡片改用能出画面的那一路（[#97](https://github.com/jryang1997/MenuBarMijia/issues/97), [#266](https://github.com/jryang1997/MenuBarMijia/pull/266)）**：Home Assistant 的米家集成只给摄像头开关、没有画面，合并后的卡片却常常选了 HA 那一份，打开就是「未暴露视频流 (404)」。现在合并时优先能播放的一份：米家云端的摄像头都能通过本地 go2rtc 播放；HA 只有提供摄像头实体或快照时才算。手动指定的连接源仍然优先。
 - **只用 Home Assistant 时也能看摄像头（[#267](https://github.com/jryang1997/MenuBarMijia/pull/267)）**：HA 摄像头实体不支持 HLS 时，改用 HA 的 MJPEG 代理播放连续画面，不再是每秒一张的抓拍（与 Windows 一致）。米家摄像头在 HA 里没有画面时，窗口会说明原因，并在未登录米家时提供「登录米家观看」。
-- **摄像机 HUD 说明「仅画面」，HLS 可开声音（[#29](https://gitlab.com/jryang1997/MenuBarMijia/-/work_items/29)，原 GitHub #97 评论）**：米家 P2P、HA MJPEG 与抓拍流本身不含音轨，实时小窗顶部现在直接标注「仅画面」并在悬停说明原因，不再让人以为是静音开关坏了。带音轨的自定义 HLS (.m3u8) 流在 macOS 显示静音 / 开启声音按钮（默认静音），Windows 只在原生 `<video>` 兜底流上提供同样的切换。脱敏诊断新增 `stream_mode` 与 `audio_support` 两行，便于确认当前画面是否支持声音。
 - **画中画显示完整画面（[#97](https://github.com/jryang1997/MenuBarMijia/issues/97), [#268](https://github.com/jryang1997/MenuBarMijia/pull/268)）**：画中画不再只显示画面的一角，放大窗口时也不会出现黑色色块。
 - **本地 go2rtc 桥加鉴权（[#192](https://github.com/jryang1997/MenuBarMijia/pull/192)）**：每次启动绑定随机回环端口并要求 Basic 认证（本机访问也一样），只复用本应用自己启动的进程，其他本机程序无法借它看摄像头。
 - **无法确认的设备规格保持只读（[#154](https://github.com/jryang1997/MenuBarMijia/issues/154), [#159](https://github.com/jryang1997/MenuBarMijia/pull/159)）**：灯、空调、风扇、新风、加湿器、摄像机、插座按型号猜出的规格不再声明可写，两端都隐藏这类设备实际做不到的控件，避免发出错误指令。
@@ -49,8 +74,6 @@
 - **控制中心面板拆开（[#184](https://github.com/jryang1997/MenuBarMijia/issues/184)）**：面板主文件拆成布局拖拽和顶栏底栏两份，回到 1500 行以下。房间、分组、拖拽和底栏的行为不变。issue 里点名的 Windows 文件此前已经拆完。
 
 ### 自动化
-- **本地 MCP 服务与 CLI 精确值命令（[#19](https://gitlab.com/jryang1997/MenuBarMijia/-/work_items/19)，原 GitHub #177）**：在 `RaycastSnapshot` + `menumijia://` 伴生契约上新增 `scripts/mijia-mcp`（或 `scripts/mijia mcp`）stdio MCP 服务，供 Claude Desktop、Claude Code 与 Cursor 直接挂载。暴露只读资源（`mijia://status`、`mijia://devices`、`mijia://scenes`）与 11 个工具（`list_devices`、`get_home_status`、`toggle_device`、`set_device_power`、`set_light_brightness`、`set_light_color_temp`、`set_temperature`、`set_fan`、`run_scene`、`ask_home`、`focus_device`），`scripts/mijia` 同步补齐 `brightness` / `color-temp` / `temperature` / `fan` / `focus` 子命令。所有写入继续走应用内的锁屏拦截与高风险二次确认，MCP 返回给模型的内容一律剥离 `bridgeToken`。
-- **Raycast 扩展与本地 CLI（[#20](https://gitlab.com/jryang1997/MenuBarMijia/-/work_items/20)）**：设置 → 自动化与外部控制新增「Raycast 集成」的配套客户端。`raycast/` 是标准 Raycast 扩展（搜索设备并开关、调亮度 / 色温 / 目标温度 / 风速、搜索并执行场景与快捷动作、一句话指令、打开设备详情），`scripts/mijia` 把同一套能力搬进终端（`list` / `status` / `toggle` / `on` / `off` / `scene` / `ask`）。两者都只读应用写出的 `raycast-snapshot.json`（`0600`）并用 `menumijia://` 链接回传执行，不持有米家或 Home Assistant 凭据；高风险设备仍需二次确认，锁屏拦截照旧，命令结果写回 `lastCommandFeedback` 后由客户端显示。新增按值控制的链接 `power` / `brightness` / `color-temp` / `temperature` / `fan` 与只做导航的 `focus`，滑条按目标值下发，不再靠当前状态推测；关灯用 `power` 而不是 0% 亮度，避免 Home Assistant 把 0 夹到 1% 后反而开灯。
 - **更多 Mac 上下文触发（[#174](https://github.com/jryang1997/MenuBarMijia/issues/174)）**：自动化规则新增摄像头 / 麦克风开始与停止使用、接通 / 断开电源、电量低于阈值、Wi-Fi 连接 / 离开（可指定 SSID）、深夜使用电脑（以 Mac 唤醒且未锁屏为准）、专注模式开关与日历会议开始前触发。全部默认关闭，需在「自动化与外部控制」中逐条添加；沿用既有的确认、乐观更新、失败回滚与 5 分钟撤销横幅。深夜规则每晚最多执行一次；日历规则按事件去重并忽略全天 / 已拒绝的事件。摄像头 / 麦克风通过 CoreMediaIO / CoreAudio 的 `IsRunningSomewhere` 读取，无需额外权限；Wi-Fi 名称需要「定位」权限，专注状态需要「专注状态」权限，日历需要完整日历访问权限，未授权时对应规则保持静默。公开 API 只提供「是否处于专注」而不提供具体专注模式名称，因此专注触发是开关而非按模式区分；摄像头 / 麦克风检测也会看到本应用自己的录音 / 录像。
 
 ### 安全

@@ -55,7 +55,7 @@ EXIT_TIMEOUT = 3
 
 MCP_DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 MCP_SUPPORTED_PROTOCOL_VERSIONS = ("2025-03-26", "2024-11-05")
-MCP_SERVER_INFO = {"name": "menubarmijia", "version": "1.1.7"}
+MCP_SERVER_INFO = {"name": "menubarmijia", "version": "1.2.0"}
 MCP_INSTRUCTIONS = (
     "MenuBarHome 本地智能家居伴生服务。只读 raycast-snapshot.json 并通过 menumijia:// "
     "交由正在运行的 MenuBarHome 执行，不接触米家或 Home Assistant 凭据；"
