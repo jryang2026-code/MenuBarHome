@@ -20,9 +20,10 @@ struct PanelSearchGoldenTests {
 
     @Test("Windows and macOS share panel search matching and Return routing")
     func sharedSearchCorpus() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent()
-        let data = try Data(contentsOf: root.appendingPathComponent("Tests/Fixtures/panel_search_golden.json"))
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("../Fixtures/panel_search_golden.json")
+        let data = try Data(contentsOf: fixtureURL)
         let corpus = try JSONDecoder().decode(Corpus.self, from: data)
         let entries = corpus.devices.map { row in
             DeviceSearchEntry(

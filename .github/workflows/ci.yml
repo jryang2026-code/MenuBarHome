@@ -185,6 +185,8 @@ jobs:
         with:
           name: camera-bin
           path: windows/src-tauri/camera-bin
+      - name: Build the frontend that tauri::generate_context! embeds
+        run: npm run build
       - name: Test native URL and credential policies
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - name: Build Windows Tauri installer (.exe & .msi)
@@ -225,6 +227,13 @@ jobs:
             spm-debug-v3-${{ runner.os }}-
       - name: Restore source mtimes for the Swift cache
         run: bash scripts/ci_restore_mtimes.sh
+      - name: Match the maintainer's region
+        # 温度单位跟随系统区域。托管机默认美国区（华氏度），测试和黄金语料的基准是中国区。
+        run: |
+          defaults write -g AppleLocale zh_CN
+          defaults write -g AppleMetricUnits -bool true
+          defaults write -g AppleMeasurementUnits Centimeters
+          defaults write -g AppleTemperatureUnit Celsius
       - name: Swift tests
         env:
           # A deadlocked test samples its stacks and fails here instead of burning the 45-minute

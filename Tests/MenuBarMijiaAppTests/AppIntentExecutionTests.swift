@@ -144,11 +144,10 @@ struct AppIntentExecutionTests {
             let store = HomeStore(provider: provider, defaultsSuiteName: suite)
             let intent = AskAssistantIntent()
             intent.text = "关灯"
-            let invocation = Task { try await intent.execute(in: store) }
-            await Task.yield()
             await provider.sendSnapshot(SynthesizedHome(devices: [ceiling, desk]))
+            try await store.waitForTestSnapshot()
 
-            let message = try await invocation.value
+            let message = try await intent.execute(in: store)
             #expect(message == "开着：书房吸顶灯、书房台灯。请说出房间或设备名")
             #expect(await provider.commandCount == 0)
             #expect(store.scheduledCommands.isEmpty)
@@ -175,11 +174,10 @@ struct AppIntentExecutionTests {
             let store = HomeStore(provider: provider, defaultsSuiteName: suite)
             let intent = AskAssistantIntent()
             intent.text = "开灯"
-            let invocation = Task { try await intent.execute(in: store) }
-            await Task.yield()
             await provider.sendSnapshot(SynthesizedHome(devices: [ceiling, desk]))
+            try await store.waitForTestSnapshot()
 
-            let message = try await invocation.value
+            let message = try await intent.execute(in: store)
             #expect(message == "关着：书房吸顶灯、书房台灯。请说出房间或设备名")
             #expect(await provider.commandCount == 0)
             #expect(store.devices.allSatisfy { !$0.isActiveOn })
@@ -211,7 +209,7 @@ struct AppIntentExecutionTests {
             let provider = ControlledIntentProvider(autoComplete: true)
             let store = HomeStore(provider: provider, defaultsSuiteName: suite)
             await provider.sendSnapshot(SynthesizedHome(devices: [desk, heater]))
-            try await store.waitForInitialSnapshot()
+            try await store.waitForTestSnapshot()
 
             let handler = URLCommandHandler()
             var externalAlertsCount = 0
@@ -381,7 +379,7 @@ struct AppIntentExecutionTests {
             await provider.sendSnapshot(
                 SynthesizedHome(devices: [desk, monoLamp, ac, curtain, fan, vacuum])
             )
-            try await store.waitForInitialSnapshot()
+            try await store.waitForTestSnapshot()
 
             let handler = URLCommandHandler()
             store.setRaycastIntegration(enabled: true)

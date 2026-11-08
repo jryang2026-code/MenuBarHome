@@ -180,9 +180,10 @@ struct FacetSafetyTests {
 
     @Test("Curtain calibration mode stays disabled without advanced writes")
     func curtainCalibrationIsNotWhitelisted() throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent()
-        let data = try Data(contentsOf: root.appendingPathComponent("Tests/Fixtures/miot_coverage_specs.json"))
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("../Fixtures/miot_coverage_specs.json")
+        let data = try Data(contentsOf: fixtureURL)
         let specs = try JSONDecoder().decode([String: MiotDeviceSpec].self, from: data)
         let spec = try #require(specs["090615.curtain.1mcu01"])
         let controls = MiotFacetEngine.controls(for: spec, did: "curtain", values: [:], primaryServiceId: 2)

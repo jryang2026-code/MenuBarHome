@@ -4,6 +4,6 @@
 set -euo pipefail
 L="$(cd "$(dirname "$0")" && pwd)"; R="$(cd "$L/../.." && pwd)"
 rm -rf "$L/.work"; mkdir -p "$L/.work"
-cp -r "$R/Sources/MijiaCore" "$L/.work/MijiaCore"; cp -r "$R/Tests/MijiaCoreTests" "$L/.work/MijiaCoreTests"
+cp -r "$R/Sources/MijiaCore" "$L/.work/MijiaCore"; cp -r "$R/Tests/MijiaCoreTests" "$L/.work/MijiaCoreTests"; ln -s "$R/Tests/Fixtures" "$L/.work/Fixtures"
 find "$L/.work" -name '*.swift' -exec sed -i -e '1i #if canImport(FoundationNetworking)\nimport FoundationNetworking\n#endif' -e '/waitsForConnectivity = /d' {} \;
 cd "$L"; TZ="${TZ:-Asia/Shanghai}" swift test "$@"
