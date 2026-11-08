@@ -1782,7 +1782,7 @@ describe("Update notice (#39)", () => {
     const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
     const releaseBody = JSON.stringify({
       tag_name: "v9.9.9",
-      html_url: "https://github.com/jryang1997/MenuBarMijia/releases/tag/v9.9.9",
+      html_url: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v9.9.9",
     });
     const invoke = async (name: string, args: Record<string, unknown> = {}): Promise<unknown> => {
       calls.push({ name, args });
@@ -1813,7 +1813,7 @@ describe("Update notice (#39)", () => {
     await click("#btn-open-update");
     const openCall = calls.find((call) => call.name === "open_release_page");
     assert.deepEqual(openCall?.args, {
-      url: "https://github.com/jryang1997/MenuBarMijia/releases/tag/v9.9.9",
+      url: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v9.9.9",
     });
   });
 
@@ -1825,13 +1825,13 @@ describe("Update notice (#39)", () => {
     ) as Record<string, unknown>;
     const releaseBody = JSON.stringify({
       tag_name: "v9.9.9",
-      html_url: "https://github.com/jryang1997/MenuBarMijia/releases/tag/v9.9.9",
+      html_url: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v9.9.9",
       body: "新增应用内直接更新",
       assets: [
         {
           name: "MenuBarMijia-9.9.9-windows-x64-setup.exe",
           browser_download_url:
-            "https://github.com/jryang1997/MenuBarMijia/releases/download/v9.9.9/MenuBarMijia-9.9.9-windows-x64-setup.exe",
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v9.9.9/MenuBarMijia-9.9.9-windows-x64-setup.exe",
           size: 3145728,
         },
         {

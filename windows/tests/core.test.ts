@@ -3191,7 +3191,7 @@ describe("assistant ambient context (#38)", () => {
 describe("Windows update check (#39)", () => {
   const releaseBody = JSON.stringify({
     tag_name: "v1.0.10",
-    html_url: "https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.0.10",
+    html_url: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.0.10",
   });
 
   it("compares dotted versions numerically, not as strings", () => {
@@ -3208,7 +3208,7 @@ describe("Windows update check (#39)", () => {
     assert.deepEqual(parseLatestRelease(releaseBody), {
       version: "1.0.10",
       tag: "v1.0.10",
-      htmlURL: "https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.0.10",
+      htmlURL: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.0.10",
     });
     assert.equal(parseLatestRelease("{}"), null);
     assert.equal(parseLatestRelease("not json"), null);
@@ -3218,7 +3218,7 @@ describe("Windows update check (#39)", () => {
       {
         version: "1.0.7",
         tag: "v1.0.7",
-        htmlURL: "https://github.com/jryang1997/MenuBarMijia/releases/latest",
+        htmlURL: "https://github.com/jryang2026-code/MenuBarHome/releases/latest",
       },
     );
   });
@@ -3311,13 +3311,13 @@ describe("Windows update check (#39)", () => {
 
   it("drops a cached installer that still points at a package signature", () => {
     const base =
-      "https://github.com/jryang1997/MenuBarMijia/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64-setup.exe";
+      "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64-setup.exe";
     const legacyState = JSON.stringify({
       lastCheckedAtMs: 1_764_000_000_000,
       release: {
         version: "1.2.0",
         tag: "v1.2.0",
-        htmlURL: "https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.2.0",
+        htmlURL: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.2.0",
         installerAsset: {
           name: "MenuBarMijia-1.2.0-windows-x64-setup.exe",
           downloadURL: base,
@@ -3341,13 +3341,13 @@ describe("Windows update check (#39)", () => {
     };
     const fullPayload = JSON.stringify({
       tag_name: "v1.2.0",
-      html_url: "https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.2.0",
+      html_url: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.2.0",
       body: "支持应用内一键更新",
       assets: [
         {
           name: "MenuBarMijia-1.2.0-windows-x64.msi",
           browser_download_url:
-            "https://github.com/jryang1997/MenuBarMijia/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64.msi",
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64.msi",
           size: 4096,
           digest: `sha256:${sha}`,
         },
@@ -3360,7 +3360,7 @@ describe("Windows update check (#39)", () => {
         {
           name: "MenuBarMijia-1.2.0-windows-x64-setup.exe.ed25519.sig",
           browser_download_url:
-            "https://github.com/jryang1997/MenuBarMijia/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64-setup.exe.ed25519.sig",
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64-setup.exe.ed25519.sig",
           size: 96,
         },
         manifest,
@@ -3371,10 +3371,10 @@ describe("Windows update check (#39)", () => {
     assert.deepEqual(parsed?.installerAsset, {
       name: "MenuBarMijia-1.2.0-windows-x64-setup.exe",
       downloadUrl:
-        "https://github.com/jryang1997/MenuBarMijia/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64-setup.exe",
+        "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64-setup.exe",
       sizeBytes: 2048,
       manifestUrl:
-        "https://github.com/jryang1997/MenuBarMijia/releases/download/v1.2.0/MenuBarMijia-1.2.0.update.json",
+        "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarMijia-1.2.0.update.json",
     });
 
     const roundTrip = parseUpdateState(serializeUpdateState({ lastCheckedAtMs: 123, release: parsed }));

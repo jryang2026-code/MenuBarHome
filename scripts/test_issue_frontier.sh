@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# issue-frontier.sh 判定规则的自测（#338）：读 scripts/testdata/issue-frontier 里的固定数据，不连 GitLab。
+# issue-frontier.sh 判定规则的自测（#338）：读 scripts/testdata/issue-frontier 里的固定数据，不连 GitHub。
 # fixture 里每张票只踩一条跳过规则，所以哪条规则被放宽，哪张票的断言就会失败。
 set -euo pipefail
 cd "$(dirname "$0")/.."

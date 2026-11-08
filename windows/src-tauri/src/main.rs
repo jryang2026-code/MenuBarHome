@@ -103,7 +103,7 @@ fn parse_global_shortcut(raw: &str) -> Result<(Shortcut, String), String> {
 }
 
 /// Windows release page opened from the tray/update row (#39).
-const RELEASE_PAGE_URL: &str = "https://github.com/jryang1997/MenuBarMijia/releases/latest";
+const RELEASE_PAGE_URL: &str = "https://github.com/jryang2026-code/MenuBarHome/releases/latest";
 
 /// Offline Ed25519 public key (32-byte raw, base64) shared with `UpdateChecker.updateSigningPublicKeyBase64` (ADR-0005).
 const UPDATE_SIGNING_PUBLIC_KEY_BASE64: &str = "rLwWXuP0sOZvgd/KusLTTmBXN9DAZ9EzPBNhFSn9yUo=";
@@ -489,11 +489,11 @@ mod tests {
     #[test]
     fn allows_the_public_github_release_api_only() {
         assert!(allows(
-            "https://api.github.com/repos/jryang1997/MenuBarMijia/releases/latest",
+            "https://api.github.com/repos/jryang2026-code/MenuBarHome/releases/latest",
             &[]
         ));
         // The browser-facing host is opened through the OS, never proxied by native_http.
-        assert!(!allows("https://github.com/jryang1997/MenuBarMijia/releases", &[]));
+        assert!(!allows("https://github.com/jryang2026-code/MenuBarHome/releases", &[]));
         assert!(!allows("https://api.github.com.evil.example/latest", &[]));
     }
 
@@ -505,12 +505,12 @@ mod tests {
         assert_eq!(payload.name, "MenuBarMijia-9.9.9-windows-x64-setup.exe");
         assert_eq!(
             payload.download_url,
-            "https://github.com/jryang1997/MenuBarMijia/releases/download/v9.9.9/MenuBarMijia-9.9.9-windows-x64-setup.exe"
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v9.9.9/MenuBarMijia-9.9.9-windows-x64-setup.exe"
         );
         assert_eq!(payload.size_bytes, 3_145_728);
         assert_eq!(
             payload.manifest_url,
-            "https://github.com/jryang1997/MenuBarMijia/releases/download/v9.9.9/MenuBarMijia-9.9.9.update.json"
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v9.9.9/MenuBarMijia-9.9.9.update.json"
         );
     }
 
@@ -518,14 +518,14 @@ mod tests {
     fn only_opens_menu_barmijia_release_pages() {
         assert!(validated_release_url(RELEASE_PAGE_URL).is_ok());
         assert!(validated_release_url(
-            "https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.0.7"
+            "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.0.7"
         )
         .is_ok());
 
-        assert!(validated_release_url("http://github.com/jryang1997/MenuBarMijia/releases").is_err());
-        assert!(validated_release_url("https://evil.example/jryang1997/MenuBarMijia/releases").is_err());
+        assert!(validated_release_url("http://github.com/jryang2026-code/MenuBarHome/releases").is_err());
+        assert!(validated_release_url("https://evil.example/jryang2026-code/MenuBarHome/releases").is_err());
         assert!(validated_release_url("https://github.com/other/repo/releases").is_err());
-        assert!(validated_release_url("https://github.com/jryang1997/MenuBarMijia").is_err());
+        assert!(validated_release_url("https://github.com/jryang2026-code/MenuBarHome").is_err());
         assert!(validated_release_url("javascript:alert(1)").is_err());
     }
 
@@ -928,20 +928,20 @@ mod tests {
     #[test]
     fn validates_release_asset_urls_filenames_and_sha256() {
         assert!(validated_release_asset_url(
-            "https://github.com/jryang1997/MenuBarMijia/releases/download/v1.1.4/MenuBarMijia-1.1.4-windows-x64-setup.exe"
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.1.4/MenuBarMijia-1.1.4-windows-x64-setup.exe"
         )
         .is_ok());
         assert!(validated_release_asset_url(
-            "https://github.com/jryang1997/MenuBarMijia/releases/download/v1.1.4/MenuBarMijia-1.1.4-windows-x64-setup.exe.sha256"
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.1.4/MenuBarMijia-1.1.4-windows-x64-setup.exe.sha256"
         )
         .is_ok());
 
         for bad in [
-            "http://github.com/jryang1997/MenuBarMijia/releases/download/v1.1.4/setup.exe",
-            "https://evil.example/jryang1997/MenuBarMijia/releases/download/v1.1.4/setup.exe",
+            "http://github.com/jryang2026-code/MenuBarHome/releases/download/v1.1.4/setup.exe",
+            "https://evil.example/jryang2026-code/MenuBarHome/releases/download/v1.1.4/setup.exe",
             "https://github.com/other/repo/releases/download/v1.1.4/setup.exe",
-            "https://github.com/jryang1997/MenuBarMijia/releases/tag/v1.1.4",
-            "https://github.com/jryang1997/MenuBarMijia/releases/download/v1.1.4/setup.exe?foo=1",
+            "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.1.4",
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.1.4/setup.exe?foo=1",
         ] {
             assert!(validated_release_asset_url(bad).is_err(), "{bad}");
         }

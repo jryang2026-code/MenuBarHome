@@ -1,6 +1,6 @@
 name: Homebrew tap
 
-# 把「已正式发布的 DMG」同步成 jryang1997/homebrew-tap 里的 cask（issue #61）。
+# 把「已正式发布的 DMG」同步成 jryang2026-code/homebrew-tap 里的 cask（issue #61）。
 #
 # 触发路径：
 #   release: published —— 人工在网页/CLI 上用**自己的**凭据发布 release 时触发。
@@ -30,7 +30,7 @@ on:
         required: true
         type: string
       dry_run:
-        description: "只生成 cask artifact，不写 jryang1997/homebrew-tap"
+        description: "只生成 cask artifact，不写 jryang2026-code/homebrew-tap"
         required: false
         type: boolean
         default: true
@@ -232,7 +232,7 @@ jobs:
     # 只读 job：下载已发布 DMG、独立校验 SHA-256、渲染 cask，并把结果留成可 review 的 artifact。
     # 每次运行都真的联网取附件，所以 dry-run 的产物与真正写入 tap 的内容逐字节相同。
     needs: resolve
-    if: github.repository == 'jryang1997/MenuBarMijia' && needs.resolve.outputs.proceed == 'true'
+    if: github.repository == 'jryang2026-code/MenuBarHome' && needs.resolve.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -277,7 +277,7 @@ jobs:
     # 跨仓库写入。release / 已完成的 Release 工作流会自动执行；手动触发默认只做 dry-run。
     needs: [resolve, render]
     if: >-
-      github.repository == 'jryang1997/MenuBarMijia'
+      github.repository == 'jryang2026-code/MenuBarHome'
       && needs.resolve.outputs.proceed == 'true'
       && (github.event_name == 'release' || github.event_name == 'workflow_run' || inputs.dry_run == false)
     # 单独串行：两次运行同时推同一个 tap 会互相造成 non-fast-forward。
@@ -287,7 +287,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      TAP_REPO: jryang1997/homebrew-tap
+      TAP_REPO: jryang2026-code/homebrew-tap
       TAP_CASK_PATH: Casks/menubarmijia.rb
     steps:
       - name: Preflight tap credentials
@@ -305,7 +305,7 @@ jobs:
           if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
             summary "缺少 HOMEBREW_TAP_TOKEN，已拒绝更新 tap" \
               "本工作流不创建 homebrew-tap 仓库、也不改任何 secret。需要人工完成：" \
-              '1. 在 `jryang1997` 下创建公开仓库 `homebrew-tap`（tap 名即 `jryang1997/tap`）；' \
+              '1. 在 `jryang2026-code` 下创建公开仓库 `homebrew-tap`（tap 名即 `jryang2026-code/tap`）；' \
               "2. 建一个只对该仓库有 contents: write 的细粒度 PAT（或 GitHub App 令牌）；" \
               '3. 在 MenuBarMijia 仓库 Settings → Secrets 里添加 `HOMEBREW_TAP_TOKEN`。' \
               "在此之前 cask 只留在 artifact 里，tap 没有更新。"
@@ -328,7 +328,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: jryang1997/homebrew-tap
+          repository: jryang2026-code/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
           # 只需要默认分支的最新提交；浅克隆避免拉下整个 tap 历史。
@@ -445,5 +445,5 @@ jobs:
             echo "### 已更新 ${TAP_REPO}"
             echo "- cask：\`${TAP_CASK_PATH}\` → menubarmijia ${VERSION}"
             echo "- DMG SHA-256：\`${DMG_SHA256:-<未记录>}\`"
-            echo '- 安装：`brew install --cask jryang1997/tap/menubarmijia`'
+            echo '- 安装：`brew install --cask jryang2026-code/tap/menubarmijia`'
           } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

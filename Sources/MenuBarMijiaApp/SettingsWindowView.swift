@@ -990,8 +990,8 @@ private struct PrivacySettingsTab: View {
             VStack(alignment: .leading, spacing: 16) {
                 SettingsSection(title: L10n.tr("诊断信息", "Diagnostics")) {
                     Text(L10n.tr(
-                        "复制一段 Markdown 粘贴到 GitLab issue。内容只有版本、系统、后端、型号与未识别设备，不含设备 ID、令牌、服务器地址或账号信息。",
-                        "Copies Markdown for a GitLab issue: versions, OS, backend, models and skipped devices only. No device IDs, tokens, server addresses or account information."
+                        "复制一段 Markdown 粘贴到 GitHub issue。内容只有版本、系统、后端、型号与未识别设备，不含设备 ID、令牌、服务器地址或账号信息。",
+                        "Copies Markdown for a GitHub issue: versions, OS, backend, models and skipped devices only. No device IDs, tokens, server addresses or account information."
                     ))
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(.secondary)
@@ -1016,8 +1016,8 @@ private struct PrivacySettingsTab: View {
 
                         Spacer()
 
-                        Button(L10n.tr("打开 GitLab Issues", "Open GitLab Issues")) {
-                            if let url = URL(string: "https://gitlab.com/jryang1997/MenuBarMijia/-/issues") {
+                        Button(L10n.tr("打开 GitHub Issues", "Open GitHub Issues")) {
+                            if let url = URL(string: "https://github.com/jryang2026-code/MenuBarHome/issues") {
                                 NSWorkspace.shared.open(url)
                             }
                         }
@@ -1085,7 +1085,7 @@ private struct PrivacySettingsTab: View {
                                 Link(destination: url) {
                                     HStack(spacing: 3) {
                                         Image(systemName: "arrow.up.right.square")
-                                        Text(L10n.tr("去 GitLab 反馈", "Report on GitLab"))
+                                        Text(L10n.tr("去 GitHub 反馈", "Report on GitHub"))
                                     }
                                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                                 }
@@ -1255,9 +1255,9 @@ private struct AboutSettingsTab: View {
                     }
 
                     HStack(spacing: 8) {
-                        Link(L10n.tr("项目主页", "Repository"), destination: URL(string: "https://gitlab.com/jryang1997/MenuBarMijia")!)
-                        Link(L10n.tr("问题反馈", "Issues"), destination: URL(string: "https://gitlab.com/jryang1997/MenuBarMijia/-/issues")!)
-                        Link(L10n.tr("更新日志", "Releases"), destination: URL(string: "https://gitlab.com/jryang1997/MenuBarMijia/-/releases")!)
+                        Link(L10n.tr("项目主页", "Repository"), destination: URL(string: "https://github.com/jryang2026-code/MenuBarHome")!)
+                        Link(L10n.tr("问题反馈", "Issues"), destination: URL(string: "https://github.com/jryang2026-code/MenuBarHome/issues")!)
+                        Link(L10n.tr("更新日志", "Releases"), destination: URL(string: "https://github.com/jryang2026-code/MenuBarHome/releases")!)
                         Spacer()
                     }
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))

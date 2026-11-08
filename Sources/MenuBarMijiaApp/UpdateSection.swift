@@ -83,9 +83,9 @@ struct UpdateSection: View {
     private var statusSubtitle: String {
         switch store.updateState {
         case .idle:
-            return L10n.tr("MenuBarMijia 更新发布在 GitLab Releases", "MenuBarMijia updates are published on GitLab Releases")
+            return L10n.tr("MenuBarMijia 更新发布在 GitHub Releases", "MenuBarMijia updates are published on GitHub Releases")
         case .checking:
-            return L10n.tr("正在查看 GitLab 上的最新版本…", "Checking GitLab for the latest release…")
+            return L10n.tr("正在查看 GitHub 上的最新版本…", "Checking GitHub for the latest release…")
         case .upToDate:
             return L10n.tr("已是最新版本", "You're up to date")
         case .available(let release):
@@ -97,7 +97,7 @@ struct UpdateSection: View {
             }
             return L10n.tr(
                 "有新版本 v\(release.version)，请前往发布页下载",
-                "New version v\(release.version) available on GitLab Releases"
+                "New version v\(release.version) available on GitHub Releases"
             )
         case .downloading(let release, let progress):
             return L10n.tr(

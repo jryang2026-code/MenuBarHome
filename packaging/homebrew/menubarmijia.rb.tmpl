@@ -1,9 +1,9 @@
 # MenuBarMijia Homebrew cask（issue #61）。
 #
-# 自有 tap 安装：brew install --cask jryang1997/tap/menubarmijia
+# 自有 tap 安装：brew install --cask jryang2026-code/tap/menubarmijia
 # 本文件由 packaging/homebrew/update_cask.sh 从 packaging/homebrew/menubarmijia.rb.tmpl 生成：
 # 版本号、URL、SHA-256 全部从「已发布的 vX.Y.Z」推导（脚本只接受 fixed 仓库 + X.Y.Z tag），
-# 发版后由 .github/workflows/homebrew-tap.yml 同步到 jryang1997/homebrew-tap。
+# 发版后由 .github/workflows/homebrew-tap.yml 同步到 jryang2026-code/homebrew-tap。
 # 手改生成结果会被 update_cask.sh --check 判成漂移；要改内容请改模板再重新生成。
 #
 # 签名状态：Developer ID 签名 + 公证（issue #17）完成前，首次启动会被 Gatekeeper 拦住，需要用户在
@@ -13,14 +13,14 @@ cask "menubarmijia" do
   version "@VERSION@"
   sha256 "@SHA256@"
 
-  url "https://github.com/jryang1997/MenuBarMijia/releases/download/v#{version}/MenuBarMijia-#{version}.dmg",
-      verified: "github.com/jryang1997/MenuBarMijia/"
+  url "https://github.com/jryang2026-code/MenuBarHome/releases/download/v#{version}/MenuBarMijia-#{version}.dmg",
+      verified: "github.com/jryang2026-code/MenuBarHome/"
   name "MenuBarMijia"
   desc "Menu bar control center for Mijia and Home Assistant devices"
-  homepage "https://github.com/jryang1997/MenuBarMijia"
+  homepage "https://github.com/jryang2026-code/MenuBarHome"
 
   livecheck do
-    url "https://github.com/jryang1997/MenuBarMijia"
+    url "https://github.com/jryang2026-code/MenuBarHome"
     strategy :github_latest
   end
 

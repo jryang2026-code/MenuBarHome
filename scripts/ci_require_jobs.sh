@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Arguments are name:result[:relevant] triples from a CI aggregator job.
 # result is the needs.<job>.result; relevant is true/false/always (default always).
-# Full CI (code changed, not record-only) requires success for relevant jobs.
-# Docs-only, record-only, and jobs whose surface did not change accept skipped.
+# Full CI (code changed) requires success for relevant jobs.
+# Docs-only and jobs whose surface did not change accept skipped.
 set -euo pipefail
 
 if [ "${CHANGES:-}" != "success" ]; then
@@ -11,7 +11,7 @@ if [ "${CHANGES:-}" != "success" ]; then
 fi
 
 strict=0
-if [ "${CODE:-}" = "true" ] && [ "${RECORD_ONLY:-}" != "true" ]; then
+if [ "${CODE:-}" = "true" ]; then
     strict=1
 fi
 

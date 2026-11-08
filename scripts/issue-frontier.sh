@@ -7,12 +7,12 @@
 # 可做：ticket 格式（## What to build + ## Acceptance criteria），没有未关闭的 blocker、
 #       没有 assignee、没有 claimed:* 标签、没有关联的 open PR、远端没有 issue-<号> 分支。
 # 可拆：spec 格式（## Problem Statement 或 ## User Stories），还没有 sub-issue，其余条件同上。
-# 所有会话共用一个 GitLab 账号，所以 assignee 和 claimed:* 标签都算已被认领。
+# 所有会话共用一个 GitHub 账号，所以 assignee 和 claimed:* 标签都算已被认领。
 # 从 GitHub 迁来的票标题带 [GH#旧号]，正文里的编号是旧号：按标题前缀翻译成新号，翻不到的旧号已归档关闭；
 # 分支名和 PR 里提到新号或旧号都算关联。
 # 找票顺序：priority:high → medium → 没标优先级 → low，同级编号小的在前。
 #
-# 只取三次数据：全部 open issue、open PR（都走 scripts/forge.py 调 GitLab API，转成下面判定逻辑用的字段）、git ls-remote。
+# 只取三次数据：全部 open issue（REST 自带依赖与 sub-issue 摘要）、open PR、git ls-remote。
 # 设了 ISSUE_FRONTIER_FIXTURES=<目录> 时改读其中的 issues.json / prs.json / branches.txt（自测用）。
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -39,19 +39,8 @@ else
     data_dir="$(mktemp -d "${TMPDIR:-/tmp}/issue-frontier.XXXXXX")"
     trap 'rm -rf "$data_dir"' EXIT
     # 取全部 open issue 而不只是 ready-for-agent：正文 Blocked by 里的票要靠它判断是否还开着。
-    python3 scripts/forge.py api GET '{repo}/issues?state=opened' --paginate | python3 -c '
-import json, sys
-issues = json.load(sys.stdin)
-json.dump([[{"number": i["iid"], "title": i["title"], "body": i.get("description") or "",
-             "labels": [{"name": name} for name in i.get("labels") or []],
-             "assignees": [{"login": user["username"]} for user in i.get("assignees") or []]} for i in issues]], sys.stdout)' \
-        > "$data_dir/issues.json"
-    # 不读 GitLab 的 closes 关联：关联只靠 MR 标题、描述和源分支名里的编号。
-    python3 scripts/forge.py api GET '{repo}/merge_requests?state=opened' --paginate | python3 -c '
-import json, sys
-mrs = json.load(sys.stdin)
-json.dump([{"number": m["iid"], "title": m["title"], "body": m.get("description") or "", "headRefName": m["source_branch"],
-            "closingIssuesReferences": []} for m in mrs], sys.stdout)' > "$data_dir/prs.json"
+    gh api --paginate --slurp 'repos/{owner}/{repo}/issues?state=open&per_page=100' > "$data_dir/issues.json"
+    gh pr list --state open --limit 1000 --json number,title,body,headRefName,closingIssuesReferences > "$data_dir/prs.json"
     git ls-remote --heads origin > "$data_dir/branches.txt"
 fi
 

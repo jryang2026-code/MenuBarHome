@@ -3,8 +3,8 @@
 #
 #   bash scripts/record_snapshots.sh [--dry-run]
 #
-# This Mac is the reference renderer: the GitLab runner that compares the baselines in CI is the
-# same machine (see .gitlab-ci.yml), so a baseline recorded here is the one CI checks. Review the
+# This Mac is the reference renderer: GitHub-hosted Macs render differently, so CI skips the
+# snapshot comparison and the local gate (scripts/check.sh) is the one that checks these baselines. Review the
 # changed PNGs as a normal diff before committing.
 #   --dry-run  record into a scratch copy and list what would change, leaving the baselines alone
 set -euo pipefail

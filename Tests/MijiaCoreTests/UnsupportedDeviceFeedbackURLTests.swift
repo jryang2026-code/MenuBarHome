@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import MijiaCore
 
-/// #284: the "report this device" link prefills a GitLab issue title and a sectioned description.
+/// #284: the "report this device" link prefills the fields of `unsupported_device.yml`.
 struct UnsupportedDeviceFeedbackURLTests {
     private struct Form {
         let url: URL
@@ -15,16 +15,6 @@ struct UnsupportedDeviceFeedbackURLTests {
         }
 
         subscript(name: String) -> String? { items[name] }
-        var title: String? { items["issue[title]"] }
-        var description: String { items["issue[description]"] ?? "" }
-
-        func section(_ heading: String) -> String? {
-            let marker = "### \(heading)\n\n"
-            guard let start = description.range(of: marker) else { return nil }
-            let rest = description[start.upperBound...]
-            let end = rest.range(of: "\n\n### ")?.lowerBound ?? rest.endIndex
-            return rest[..<end].trimmingCharacters(in: .newlines)
-        }
     }
 
     private func form(language: AppLanguage, device: UnsupportedDevice) throws -> Form {
@@ -44,13 +34,14 @@ struct UnsupportedDeviceFeedbackURLTests {
         )
         let form = try form(language: .zhHans, device: device)
 
-        #expect(form.url.absoluteString.hasPrefix("https://gitlab.com/jryang1997/MenuBarMijia/-/issues/new?"))
-        #expect(form.title == "[设备不支持] 客厅新风机 (acme.fan.v1)")
-        #expect(form.section("平台 / Platform") == "macOS")
-        #expect(form.section("接入方式 / Backend") == "小米云（扫码登录）")
-        #expect(form.section("型号 / Model") == "acme.fan.v1")
-        #expect(form.section("现象 / Symptom") == "没有取到米家设备规格\n\n期望支持的功能（开关、亮度、温度…）：")
-        #expect(Set(form.items.keys) == ["issue[title]", "issue[description]"])
+        #expect(form["template"] == "unsupported_device.yml")
+        #expect(form["title"] == "[设备不支持] 客厅新风机 (acme.fan.v1)")
+        #expect(form["platform"] == "macOS")
+        #expect(form["backend"] == "小米云（扫码登录）")
+        #expect(form["model"] == "acme.fan.v1")
+        #expect(form["symptom"] == "没有取到米家设备规格\n\n期望支持的功能（开关、亮度、温度…）：")
+        #expect(form["did"] == nil)
+        #expect(form["did-format"] == nil)
         #expect(!form.items.values.contains { $0.contains(device.id) })
     }
 
@@ -64,12 +55,13 @@ struct UnsupportedDeviceFeedbackURLTests {
         )
         let form = try form(language: .en, device: device)
 
-        #expect(form.title == "[Unsupported device] Air Fryer (acme.fryer)")
-        #expect(form.section("平台 / Platform") == "macOS")
-        #expect(form.section("接入方式 / Backend") == "Home Assistant")
-        #expect(form.section("型号 / Model") == "acme.fryer")
-        #expect(form.section("现象 / Symptom") == "Entity type not supported yet\n\nWhat should it support (power, brightness, temperature…):")
-        #expect(Set(form.items.keys) == ["issue[title]", "issue[description]"])
+        #expect(form["title"] == "[Unsupported device] Air Fryer (acme.fryer)")
+        #expect(form["platform"] == "macOS")
+        #expect(form["backend"] == "Home Assistant")
+        #expect(form["model"] == "acme.fryer")
+        #expect(form["symptom"] == "Entity type not supported yet\n\nWhat should it support (power, brightness, temperature…):")
+        #expect(form["did"] == nil)
+        #expect(form["did-format"] == nil)
         #expect(!form.items.values.contains { $0.contains(device.id) })
     }
 
@@ -80,8 +72,8 @@ struct UnsupportedDeviceFeedbackURLTests {
         let device = UnsupportedDevice(id: "did-secret", name: name, model: model, reason: .unknownModel)
         let form = try form(language: .zhHans, device: device)
 
-        #expect(form.title == "[设备不支持] \(name) (\(model))")
-        #expect(form.section("型号 / Model") == model)
+        #expect(form["title"] == "[设备不支持] \(name) (\(model))")
+        #expect(form["model"] == model)
 
         let encoded = URLComponents(url: form.url, resolvingAgainstBaseURL: false)?.percentEncodedQuery ?? ""
         #expect(!encoded.contains(" "))
@@ -106,7 +98,7 @@ struct UnsupportedDeviceFeedbackURLTests {
             .replacingOccurrences(of: "+", with: " ")
             .removingPercentEncoding ?? ""
         #expect(formDecoded.contains("[设备不支持] \(name) (\(model))"))
-        #expect(formDecoded.contains("### 型号 / Model\n\n\(model)"))
+        #expect(formDecoded.contains("model=\(model)"))
     }
 
     @Test("Intentional skips (duplicates, devices disabled or hidden in HA) get no feedback link")
@@ -130,6 +122,6 @@ struct UnsupportedDeviceFeedbackURLTests {
                 try #require(UnsupportedDeviceFeedbackURL.make(for: device))
             }
         }
-        #expect(Form(url).section("现象 / Symptom")?.hasSuffix("期望支援的功能（開關、亮度、溫度…）：") == true)
+        #expect(Form(url)["symptom"]?.hasSuffix("期望支援的功能（開關、亮度、溫度…）：") == true)
     }
 }

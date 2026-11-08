@@ -516,8 +516,8 @@ mod tests {
     fn release_pair_rejects_a_non_github_host() {
         let result = release_pair(
             "MenuBarMijia-1.2.0-windows-x64-setup.exe",
-            "https://evil.example/jryang1997/MenuBarMijia/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64-setup.exe",
-            "https://github.com/jryang1997/MenuBarMijia/releases/download/v1.2.0/MenuBarMijia-1.2.0.update.json",
+            "https://evil.example/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64-setup.exe",
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarMijia-1.2.0.update.json",
         );
         assert!(result.is_err());
     }
@@ -526,8 +526,8 @@ mod tests {
     fn release_pair_rejects_a_version_mismatch_between_installer_and_manifest() {
         let result = release_pair(
             "MenuBarMijia-1.2.0-windows-x64-setup.exe",
-            "https://github.com/jryang1997/MenuBarMijia/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64-setup.exe",
-            "https://github.com/jryang1997/MenuBarMijia/releases/download/v1.2.1/MenuBarMijia-1.2.1.update.json",
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.0/MenuBarMijia-1.2.0-windows-x64-setup.exe",
+            "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.1/MenuBarMijia-1.2.1.update.json",
         );
         assert!(result.is_err());
     }

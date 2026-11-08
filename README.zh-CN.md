@@ -25,8 +25,8 @@
 </p>
 
 <p align="center">
-  <a href="https://gitlab.com/jryang1997/MenuBarMijia/-/starrers"><img src="https://img.shields.io/gitlab/stars/jryang1997%2FMenuBarMijia?style=social" alt="GitLab Stars"></a>
-  <a href="https://gitlab.com/jryang1997/MenuBarMijia/-/releases"><img src="https://img.shields.io/gitlab/v/release/jryang1997%2FMenuBarMijia?color=0A84FF&label=release" alt="Latest Release"></a>
+  <a href="https://github.com/jryang2026-code/MenuBarHome/stargazers"><img src="https://img.shields.io/github/stars/jryang2026-code/MenuBarHome?style=social" alt="GitHub Stars"></a>
+  <a href="https://github.com/jryang2026-code/MenuBarHome/releases/latest"><img src="https://img.shields.io/github/v/release/jryang2026-code/MenuBarHome?color=0A84FF&label=release" alt="Latest Release"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Windows_11-Tauri_v2-0078D4?logo=windows11&logoColor=white" alt="Windows 11">
   <img src="https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white" alt="Swift 6">
@@ -34,14 +34,14 @@
 </p>
 
 <p align="center">
-  <a href="https://gitlab.com/jryang1997/MenuBarMijia/-/releases">下载最新版本</a> ·
+  <a href="https://github.com/jryang2026-code/MenuBarHome/releases/latest">下载最新版本</a> ·
   <a href="#快速开始">安装与连接</a> ·
   <a href="#功能概览与双端对照">平台能力对照</a> ·
   <a href="#安全隐私与限制">安全与限制</a> ·
   <a href="CHANGELOG.md">更新日志</a>
 </p>
 
-> **已迁到 GitLab（2026-11）：** 项目原来的 GitHub 账号被停用，仓库现在在 [gitlab.com/jryang1997/MenuBarMijia](https://gitlab.com/jryang1997/MenuBarMijia)。安装包和 Homebrew Tap 正在 [GitLab Releases](https://gitlab.com/jryang1997/MenuBarMijia/-/releases) 重新发布。已安装的版本照常使用，但它检查更新时仍然访问 GitHub，下一个版本需要手动下载安装一次。
+> **已迁回 GitHub（2026-11）：** 项目原来的 GitHub 账号被停用，仓库现在在 [github.com/jryang2026-code/MenuBarHome](https://github.com/jryang2026-code/MenuBarHome)。已安装的 1.1.7 及更早版本照常使用，但检查更新时仍然访问旧地址，下一个版本需要手动下载安装一次。
 
 ---
 
@@ -152,16 +152,16 @@ MenuBarMijia 的 macOS 版本采用 Swift 6 原生开发，Windows 11 版本基�
 
 #### macOS 安装方式
 
-**Homebrew：** `jryang1997/tap` 原本托管在 GitHub，在 GitLab 上重新发布之前暂不可用。
+**Homebrew：** `jryang2026-code/tap` 还没有重新发布，发布前暂不可用。
 
 **下载 DMG 手动安装**
-前往 [GitLab Releases](https://gitlab.com/jryang1997/MenuBarMijia/-/releases) 下载最新的 macOS DMG 安装包，打开并将 `MenuBarMijia.app` 拖入「应用程序（Applications）」文件夹。
+前往 [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) 下载最新的 macOS DMG 安装包，打开并将 `MenuBarMijia.app` 拖入「应用程序（Applications）」文件夹。
 > **首次打开拦截说明：**<br>
 > 本项目为个人开源作品，尚未加入付费的 Apple 开发者计划（未完成 Developer ID 公证）。首次启动若被 Gatekeeper 拦截，请打开 **「系统设置 → 隐私与安全性」**，在页面底部点击针对 MenuBarMijia 的 **「仍要打开」** 即可。
 
 #### Windows 11 安装方式
 
-前往 [GitLab Releases](https://gitlab.com/jryang1997/MenuBarMijia/-/releases) 下载最新的 Windows x64 `.exe` 或 `.msi` 安装包。
+前往 [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) 下载最新的 Windows x64 `.exe` 或 `.msi` 安装包。
 > **SmartScreen 提示说明：**<br>
 > 当前 Windows 正式发布包暂未购买商业代码签名证书。首次安装若弹出“Windows 已保护你的电脑”，请点击 **「更多信息」→「仍要运行」**。安装包 SHA-256 哈希值已在 Releases 页面公开，可自行校验完整性。
 
@@ -323,7 +323,7 @@ npm run build
 
 感谢为 MenuBarMijia 提交代码、修补协议细节与打磨交互体验的贡献者：
 
-- [@jryang1997](https://gitlab.com/jryang1997)（一群小羊说）— 项目发起与维护
+- [@jryang2026-code](https://github.com/jryang2026-code)（一群小羊说）— 项目发起与维护
 - [@almightyYantao](https://github.com/almightyYantao)（Alimighty.Yantao）— 多键 Mesh 开关分键设备识别与合成（GitHub #6、GitHub #7）、米家多家庭切换与灯组情景过滤（GitHub #8）、多主题面板皮肤、空调/温湿度计独立模块、长按拖拽自由布局与自定义分组（GitHub #9）、macOS 应用图标打包集成（GitHub #10）、面板下落动画、本地设备重命名与房间栏细节打磨（GitHub #11）、Windows 功能对齐与跨端界面修复（GitHub #12），以及连接源快照的冗余写入优化（GitHub #66）
 - [@htx996](https://github.com/htx996)（han）— macOS 菜单栏状态项右键菜单：实时连接 / 演示模式切换、双源连接状态展示，以及与长按语音、键盘操作互不干扰的点击处理（GitHub #250）
 
@@ -333,7 +333,7 @@ npm run build
 - **第三方集成说明：** 本仓库不分发任何第三方官方组件。涉及 Home Assistant 模式下的 [xiaomi_home](https://github.com/XiaoMi/ha_xiaomi_home) 与 [midea_ac_lan](https://github.com/wuwentao/midea_ac_lan) 分别来自小米及其各自维护者，版权归各自作者所有。
 - **商标声明：** 「小米」「米家」「Xiaomi」「Mijia」等为小米科技有限责任公司注册商标；「美的」为美的集团股份有限公司注册商标。本文档与本项目仅用于描述设备兼容性。
 
-感谢所有为 MenuBarMijia 提交代码、报告缺陷与改进建议的贡献者！如果这个小工具让你在工作时少掏了几次手机，欢迎在 GitLab 上点一个 ⭐ Star。
+感谢所有为 MenuBarMijia 提交代码、报告缺陷与改进建议的贡献者！如果这个小工具让你在工作时少掏了几次手机，欢迎在 GitHub 上点一个 ⭐ Star。
 
 ---
 

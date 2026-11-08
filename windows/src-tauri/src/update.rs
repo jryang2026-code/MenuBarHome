@@ -12,7 +12,7 @@ pub(crate) fn validated_release_url(raw: &str) -> Result<String, String> {
     if host != "github.com" {
         return Err(format!("拒绝打开非 GitHub 地址：{host}"));
     }
-    if !url.path().starts_with("/jryang1997/MenuBarMijia/releases") {
+    if !url.path().starts_with("/jryang2026-code/MenuBarHome/releases") {
         return Err("拒绝打开非 MenuBarMijia 发布页".to_string());
     }
     Ok(url.to_string())
@@ -107,7 +107,7 @@ pub(crate) fn validated_release_asset_url(raw: &str) -> Result<reqwest::Url, Str
     }
     if !url
         .path()
-        .starts_with("/jryang1997/MenuBarMijia/releases/download/")
+        .starts_with("/jryang2026-code/MenuBarHome/releases/download/")
     {
         return Err("拒绝下载非 MenuBarMijia 官方发布附件".to_string());
     }

@@ -1,37 +1,32 @@
 import Foundation
 
-/// GitLab new-issue link for a device the panel skipped (#284).
+/// GitHub issue-form link for a device the panel skipped (#284).
 ///
-/// GitLab prefills only `issue[title]` and `issue[description]`, so the fields the old GitHub issue
-/// form asked for (platform, backend, model, symptom) go into the description as Markdown sections.
-/// The backend values stay Chinese in every UI language so reports group the same way. The device
-/// `id` is a did or an HA device id and never enters the URL.
+/// GitHub prefills a form from query items named after the field ids in
+/// `.github/ISSUE_TEMPLATE/unsupported_device.yml`. A dropdown only matches its option text, so the
+/// backend values below stay Chinese in every UI language. The device `id` is a did or an HA device
+/// id and never enters the URL.
 public enum UnsupportedDeviceFeedbackURL {
-    private static let issueURL = "https://gitlab.com/jryang1997/MenuBarMijia/-/issues/new"
+    private static let issueURL = "https://github.com/jryang2026-code/MenuBarHome/issues/new"
 
     public static func make(for device: UnsupportedDevice) -> URL? {
         guard let backend = backend(for: device.reason) else { return nil }
 
         var components = URLComponents(string: issueURL)
         components?.queryItems = [
-            URLQueryItem(name: "issue[title]", value: title(for: device)),
-            URLQueryItem(name: "issue[description]", value: description(for: device, backend: backend)),
+            URLQueryItem(name: "template", value: "unsupported_device.yml"),
+            URLQueryItem(name: "title", value: title(for: device)),
+            URLQueryItem(name: "platform", value: "macOS"),
+            URLQueryItem(name: "backend", value: backend),
+            URLQueryItem(name: "model", value: device.model),
+            URLQueryItem(name: "symptom", value: symptom(for: device)),
         ]
-        // URLComponents keeps a literal "+" in a value, but form-urlencoded decoders read it as a
-        // space, so escape it explicitly.
+        // URLComponents keeps a literal "+" in a value, but form-urlencoded decoders (GitHub's
+        // included) read it as a space, so escape it explicitly.
         if let encodedQuery = components?.percentEncodedQuery {
             components?.percentEncodedQuery = encodedQuery.replacingOccurrences(of: "+", with: "%2B")
         }
         return components?.url
-    }
-
-    private static func description(for device: UnsupportedDevice, backend: String) -> String {
-        [
-            "### 平台 / Platform\n\nmacOS",
-            "### 接入方式 / Backend\n\n\(backend)",
-            "### 型号 / Model\n\n\(device.model)",
-            "### 现象 / Symptom\n\n\(symptom(for: device))",
-        ].joined(separator: "\n\n") + "\n"
     }
 
     /// The skip reason alone would satisfy the required field with nothing the maintainer can act on,

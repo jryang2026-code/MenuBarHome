@@ -9,7 +9,7 @@
 #       --source-file MenuBarMijia-1.0.6.dmg --expected-sha256 <hex>  # 离线 fixture（不联网）
 #
 # 输入只有「版本号」一个可变量，其余全部由固定常量推导：
-#   - 源仓库固定为 jryang1997/MenuBarMijia，不接受 --repo / --tag / --url 覆盖；
+#   - 源仓库固定为 jryang2026-code/MenuBarHome，不接受 --repo / --tag / --url 覆盖；
 #   - 版本号必须严格是 X.Y.Z 十进制，且对应 release 必须已发布（非 draft、非 prerelease）；
 #   - 附件名固定为 MenuBarMijia-<version>.dmg / .dmg.sha256，附件下载地址必须逐字等于推导出的 URL。
 # 因此脚本无法把一个任意仓库、任意 tag 或任意 URL 的内容写进 cask。
@@ -29,7 +29,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # 唯一允许的源：改这里等于改发布源，属于需要 review 的改动。
-SOURCE_REPO="jryang1997/MenuBarMijia"
+SOURCE_REPO="jryang2026-code/MenuBarHome"
 SOURCE_HOST="github.com"
 CASK_NAME="menubarmijia"
 APP_NAME="MenuBarMijia"

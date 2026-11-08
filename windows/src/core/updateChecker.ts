@@ -9,8 +9,8 @@
  */
 
 export const UPDATE_RELEASES_URL =
-  "https://api.github.com/repos/jryang1997/MenuBarMijia/releases/latest";
-export const UPDATE_RELEASES_PAGE = "https://github.com/jryang1997/MenuBarMijia/releases/latest";
+  "https://api.github.com/repos/jryang2026-code/MenuBarHome/releases/latest";
+export const UPDATE_RELEASES_PAGE = "https://github.com/jryang2026-code/MenuBarHome/releases/latest";
 export const UPDATE_STORAGE_KEY = "menumijia.windows.update.v1";
 /** Offline Ed25519 public key (ADR-0005), shared with `UpdateChecker.updateSigningPublicKeyBase64` on macOS. */
 export const UPDATE_SIGNING_PUBLIC_KEY_BASE64 = "rLwWXuP0sOZvgd/KusLTTmBXN9DAZ9EzPBNhFSn9yUo=";
@@ -18,7 +18,7 @@ export const UPDATE_SIGNING_PUBLIC_KEY_BASE64 = "rLwWXuP0sOZvgd/KusLTTmBXN9DAZ9E
 export interface WindowsInstallerAsset {
   /** Asset file name, e.g. `MenuBarMijia-1.1.4-windows-x64-setup.exe`. */
   readonly name: string;
-  /** Constructed download URL under https://github.com/jryang1997/MenuBarMijia/releases/download/... */
+  /** Constructed download URL under https://github.com/jryang2026-code/MenuBarHome/releases/download/... */
   readonly downloadUrl: string;
   /** Byte size reported by GitHub (0 when unknown). */
   readonly sizeBytes: number;
@@ -89,10 +89,10 @@ export function shouldCheckForUpdate(nowMs: number, lastCheckedAtMs: number | nu
 }
 
 const RELEASE_DOWNLOAD_URL_PATTERN =
-  /^https:\/\/github\.com\/jryang1997\/MenuBarMijia\/releases\/download\/[^\s]+$/i;
+  /^https:\/\/github\.com\/jryang2026-code\/MenuBarHome\/releases\/download\/[^\s]+$/i;
 
 function releaseDownloadURL(version: string, fileName: string): string {
-  return `https://github.com/jryang1997/MenuBarMijia/releases/download/v${version}/${fileName}`;
+  return `https://github.com/jryang2026-code/MenuBarHome/releases/download/v${version}/${fileName}`;
 }
 
 function assetSize(raw: unknown): number {

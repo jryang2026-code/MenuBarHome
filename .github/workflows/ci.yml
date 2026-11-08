@@ -5,15 +5,6 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-    inputs:
-      snapshot_failure_probe:
-        description: "Intentionally mismatch one snapshot to verify failure artifacts"
-        type: boolean
-        default: false
-      record_only:
-        description: "Only record snapshot baselines (skips the test jobs; used by scripts/record_snapshots.sh)"
-        type: boolean
-        default: false
 
 # 最小权限。actions: write 只用于 Actions cache（Swift .build / npm / Rust），
 # 不授予 contents: write。需要写仓库的发布流程在单独的 release 工作流里。
@@ -99,7 +90,7 @@ jobs:
 
   nas-safety:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && inputs.record_only != true
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -117,7 +108,7 @@ jobs:
 
   linux-core:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.core == 'true' && inputs.record_only != true
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.core == 'true'
     # 验证 MijiaCore 全量单测（Ubuntu + Swift 6.1）。密钥与编码规范在 nas-safety 里跑。
     # 只在核心库或其共享语料变更时运行；macos-test 仍覆盖同一批 MijiaCoreTests。
     runs-on: ubuntu-latest
@@ -127,9 +118,26 @@ jobs:
       - name: Test MijiaCore on Linux
         run: bash scripts/linux-check/run.sh
 
+  raycast:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: raycast
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: raycast/package-lock.json
+      - name: Test and typecheck the Raycast extension
+        run: npm ci --no-audit --no-fund && npm test && npm run typecheck
+
   windows-core:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.windows == 'true' && inputs.record_only != true
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.windows == 'true'
     # 验证 Windows 版 TypeScript 核心测试与前端打包
     runs-on: ubuntu-latest
     defaults:
@@ -147,13 +155,13 @@ jobs:
 
   windows-camera-bin:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.windows == 'true' && inputs.record_only != true
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.windows == 'true'
     # 构建安装包内置的 go2rtc 与最小 LGPL ffmpeg；结果由 windows-installer 消费。
     uses: ./.github/workflows/camera-bin.yml
 
   windows-installer:
     needs: [changes, windows-camera-bin]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.windows == 'true' && inputs.record_only != true
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.windows == 'true'
     # 安装包依赖 windows-camera-bin 的内置组件；前端测试仍由 windows-core 覆盖，
     # 这里保留 cargo test 与 Tauri 安装包构建。
     runs-on: windows-latest
@@ -198,8 +206,8 @@ jobs:
 
   macos-test:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true' && inputs.record_only != true
-    # 全部 Swift 单测（含快照）。App Intents 与 Release 通用二进制各用一台机器，三路并行。
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
+    # 全部 Swift 单测（快照比对留在本机门禁）。App Intents 与 Release 通用二进制各用一台机器，三路并行。
     runs-on: macos-26
     timeout-minutes: 45
     steps:
@@ -217,33 +225,22 @@ jobs:
             spm-debug-v3-${{ runner.os }}-
       - name: Restore source mtimes for the Swift cache
         run: bash scripts/ci_restore_mtimes.sh
-      - name: Perturb baseline for the manual snapshot failure probe
-        if: github.event_name == 'workflow_dispatch' && inputs.snapshot_failure_probe
-        run: sips -z 1 1 Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests/deviceCardSnapshots.card-light-classic-zh-light.png
       - name: Swift tests
         env:
-          # 快照不一致时把差异图写到固定目录，便于作为 artifact 下载（#46）。
-          SNAPSHOT_ARTIFACTS: "${{ github.workspace }}/snapshot-failed"
           # A deadlocked test samples its stacks and fails here instead of burning the 45-minute
           # job timeout in silence.
           SWIFT_TEST_STALL_SECONDS: "300"
-        run: bash scripts/ci_swift_test.sh
+        # 快照基线以维护者的 Mac 为准，托管机渲染不同；快照比对在本机 scripts/check.sh 里跑。
+        run: bash scripts/ci_swift_test.sh --skip SnapshotTests
       - name: Trim Swift build cache
         if: success()
         run: |
           find .build -type d \( -name ModuleCache -o -name Index.noindex \) -prune -exec rm -rf {} + 2>/dev/null || true
           du -sh .build 2>/dev/null || true
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: failure()
-        with:
-          name: snapshot-diff
-          path: snapshot-failed
-          if-no-files-found: ignore
-          include-hidden-files: true
 
   macos-appintents:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true' && inputs.record_only != true
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
     # xcodebuild 提取 App Intents。和 swift test 串在一台 3 核机器上时，冷启动会把两者相加。
     runs-on: macos-26
     timeout-minutes: 30
@@ -276,7 +273,7 @@ jobs:
 
   macos-release:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true' && inputs.record_only != true
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
     # Release -O 通用二进制（#2 这类崩溃只在 -O 下出现）以及符号表路径泄露检查。
     runs-on: macos-26
     timeout-minutes: 45
@@ -319,7 +316,6 @@ jobs:
         env:
           CHANGES: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
-          RECORD_ONLY: ${{ inputs.record_only }}
           MACOS: ${{ needs.changes.outputs.macos }}
           TESTS: ${{ needs.macos-test.result }}
           RELEASE: ${{ needs.macos-release.result }}
@@ -330,37 +326,10 @@ jobs:
           "macos-release:$RELEASE:$MACOS"
           "macos-appintents:$INTENTS:$MACOS"
 
-  snapshot-record:
-    # 仅手动触发且 record_only=true 时录制 UI 快照基线（#46）；普通手动全量 CI 不再顺带录制。
-    # Record 模式下 SnapshotTesting 以非零码退出，属预期；把 PNG 从 artifact 下载后
-    # 拷到 Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests/ 提交即可。
-    if: github.event_name == 'workflow_dispatch' && inputs.record_only && !inputs.snapshot_failure_probe
-    runs-on: macos-26
-    timeout-minutes: 30
-    env:
-      SNAPSHOT_RECORD: "1"
-      SNAPSHOT_ARTIFACTS: "${{ github.workspace }}/snapshot-failed"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Record snapshot baselines
-        continue-on-error: true
-        run: swift test --filter SnapshotTests
-      - name: Collect baselines
-        if: always()
-        run: |
-          mkdir -p snapshot-baselines
-          find Tests/MenuBarMijiaAppTests/__Snapshots__ -name '*.png' -exec cp {} snapshot-baselines/ \; 2>/dev/null || true
-          ls snapshot-baselines | head -20
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: snapshot-baselines
-          path: snapshot-baselines
-
   ci:
-    # 始终运行的汇总检查。文档-only、record-only 或未受影响的平台任务被跳过时，这里成功；
+    # 始终运行的汇总检查。文档-only 或未受影响的平台任务被跳过时，这里成功；
     # 任何一个实际失败（不是预期跳过）则失败。适合作为唯一的 required check。
-    needs: [changes, nas-safety, linux-core, windows-core, windows-camera-bin, windows-installer, macos-test, macos-release, macos-appintents]
+    needs: [changes, nas-safety, linux-core, raycast, windows-core, windows-camera-bin, windows-installer, macos-test, macos-release, macos-appintents]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -370,12 +339,12 @@ jobs:
         env:
           CHANGES: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
-          RECORD_ONLY: ${{ inputs.record_only }}
           MACOS: ${{ needs.changes.outputs.macos }}
           WINDOWS: ${{ needs.changes.outputs.windows }}
           CORE: ${{ needs.changes.outputs.core }}
           NAS: ${{ needs.nas-safety.result }}
           LINUX: ${{ needs.linux-core.result }}
+          RAYCAST: ${{ needs.raycast.result }}
           WINDOWS_CORE: ${{ needs.windows-core.result }}
           WINDOWS_CAMERA: ${{ needs.windows-camera-bin.result }}
           WINDOWS_INSTALLER: ${{ needs.windows-installer.result }}
@@ -386,6 +355,7 @@ jobs:
           bash scripts/ci_require_jobs.sh
           "nas-safety:$NAS:always"
           "linux-core:$LINUX:$CORE"
+          "raycast:$RAYCAST:always"
           "windows-core:$WINDOWS_CORE:$WINDOWS"
           "windows-camera-bin:$WINDOWS_CAMERA:$WINDOWS"
           "windows-installer:$WINDOWS_INSTALLER:$WINDOWS"

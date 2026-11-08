@@ -25,8 +25,8 @@ English | [简体中文](README.zh-CN.md)
 </p>
 
 <p align="center">
-  <a href="https://gitlab.com/jryang1997/MenuBarMijia/-/starrers"><img src="https://img.shields.io/gitlab/stars/jryang1997%2FMenuBarMijia?style=social" alt="GitLab Stars"></a>
-  <a href="https://gitlab.com/jryang1997/MenuBarMijia/-/releases"><img src="https://img.shields.io/gitlab/v/release/jryang1997%2FMenuBarMijia?color=0A84FF&label=release" alt="Latest Release"></a>
+  <a href="https://github.com/jryang2026-code/MenuBarHome/stargazers"><img src="https://img.shields.io/github/stars/jryang2026-code/MenuBarHome?style=social" alt="GitHub Stars"></a>
+  <a href="https://github.com/jryang2026-code/MenuBarHome/releases/latest"><img src="https://img.shields.io/github/v/release/jryang2026-code/MenuBarHome?color=0A84FF&label=release" alt="Latest Release"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Windows_11-Tauri_v2-0078D4?logo=windows11&logoColor=white" alt="Windows 11">
   <img src="https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white" alt="Swift 6">
@@ -34,14 +34,14 @@ English | [简体中文](README.zh-CN.md)
 </p>
 
 <p align="center">
-  <a href="https://gitlab.com/jryang1997/MenuBarMijia/-/releases">Download latest</a> ·
+  <a href="https://github.com/jryang2026-code/MenuBarHome/releases/latest">Download latest</a> ·
   <a href="#quick-start">Install & Connect</a> ·
   <a href="#features--platform-matrix">Platform Comparison</a> ·
   <a href="#safety-privacy--limitations">Safety & Privacy</a> ·
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
-> **Moved to GitLab (2026-11):** the GitHub account behind this project was suspended, so the repository now lives at [gitlab.com/jryang1997/MenuBarMijia](https://gitlab.com/jryang1997/MenuBarMijia). Installers and the Homebrew tap are being republished on [GitLab Releases](https://gitlab.com/jryang1997/MenuBarMijia/-/releases). Installed builds keep working, but their update check still points at GitHub, so install the next version by hand once.
+> **Back on GitHub (2026-11):** the original GitHub account was suspended, so the repository now lives at [github.com/jryang2026-code/MenuBarHome](https://github.com/jryang2026-code/MenuBarHome). Installed builds up to v1.1.7 keep working, but their update check still points at the old address, so install the next version by hand once.
 
 ---
 
@@ -152,16 +152,16 @@ The macOS version is built natively in Swift 6, while the Windows 11 client is a
 
 #### Installing on macOS
 
-**Homebrew:** the `jryang1997/tap` tap was hosted on GitHub and is offline until it is republished on GitLab.
+**Homebrew:** the `jryang2026-code/tap` tap is offline until it is republished.
 
 **Direct DMG Download**
-Download the latest macOS DMG from [GitLab Releases](https://gitlab.com/jryang1997/MenuBarMijia/-/releases) and drag `MenuBarMijia.app` into your Applications folder.
+Download the latest macOS DMG from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) and drag `MenuBarMijia.app` into your Applications folder.
 > **About macOS Gatekeeper:**<br>
 > This project is an independent open-source tool and is not enrolled in the paid Apple Developer Program (no Developer ID notarization). If Gatekeeper blocks initial launch, open **System Settings → Privacy & Security**, scroll down, and click **"Open Anyway"** for MenuBarMijia.
 
 #### Installing on Windows 11
 
-Download the latest Windows x64 `.exe` or `.msi` from [GitLab Releases](https://gitlab.com/jryang1997/MenuBarMijia/-/releases).
+Download the latest Windows x64 `.exe` or `.msi` from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest).
 > **About Windows SmartScreen:**<br>
 > The Windows binary is not signed with an enterprise Authenticode certificate. If SmartScreen shows "Windows protected your PC", click **"More info" → "Run anyway"**. SHA-256 digests are published on each Release for manual verification.
 
@@ -290,7 +290,7 @@ To help prevent mistakes, actions the AI is unsure about ask first ("Ask me when
 
 The macOS app is not yet notarized by Apple, so you may need to allow it in System Settings the first time. Windows may show a SmartScreen prompt. macOS updates are verified with an Ed25519 public key; the signing key stays offline. See [ADR-0007](docs/adr/0007-lan-direct-deferred.md) for more on connection options.
 
-Releases published on GitHub (up to v1.1.7) carried GitHub build provenance attestations and SPDX SBOMs; GitLab releases do not have attestations yet. See [verifying release artifacts](SECURITY.md#verifying-release-artifacts).
+Releases built by GitHub Actions carry build provenance attestations and SPDX SBOMs. See [verifying release artifacts](SECURITY.md#verifying-release-artifacts).
 
 To report a vulnerability in private, follow [Security policy](SECURITY.md).
 
@@ -325,7 +325,7 @@ Please review [CODING_STANDARDS.md](CODING_STANDARDS.md) before submitting pull 
 
 Thanks to everyone who has contributed features, fixes, and feedback:
 
-- [@jryang1997](https://gitlab.com/jryang1997) (一群小羊说) — Creator & maintainer
+- [@jryang2026-code](https://github.com/jryang2026-code) (一群小羊说) — Creator & maintainer
 - [@almightyYantao](https://github.com/almightyYantao) (Alimighty.Yantao) — Multi-key Mesh switch split-device synthesis (GitHub #6, GitHub #7), multi-home switcher & light-group scene filtering (GitHub #8), visual skin system, inline climate module, drag-to-reorder layout & custom device groups (GitHub #9), macOS app bundle icon packaging (GitHub #10), panel drop-in animation, local device renaming & room-strip polish (GitHub #11), Windows feature parity and cross-platform UI fixes (GitHub #12), and redundant-write optimization for provider snapshots (GitHub #66)
 - [@htx996](https://github.com/htx996) (han) — macOS status-item context menu with live/demo mode switching, dual-source status, and menu-safe click, hold-to-talk, and keyboard handling (GitHub #250)
 

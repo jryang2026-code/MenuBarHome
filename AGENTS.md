@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-GitLab (`https://gitlab.com/jryang1997/MenuBarMijia`, git remote `origin`) via `python3 scripts/forge.py`; the GitHub account is suspended, so never use `gh`. The NAS Forgejo (remote `nas`) is only a backup. Migrated issues were renumbered and cite old GitHub numbers. See `docs/agents/issue-tracker.md`.
+GitHub (`https://github.com/jryang2026-code/MenuBarHome`, git remote `origin`) via the `gh` CLI, logged in as `jryang2026-code`. The old account `jryang1997` is suspended. GitLab (remote `gitlab`) and the NAS Forgejo (remote `nas`) are backups; file nothing there. Migrated issues cite older GitHub numbers. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
@@ -18,9 +18,9 @@ Read `CODING_STANDARDS.md` when reviewing diffs (`/code-review`) or modifying sy
 
 ### Build & verification
 
-Run `bash scripts/check.sh` for secret scan, mechanical lints, and `swift test`, snapshots included. The pre-commit hook and GitLab CI run the same gate. `--skip-snapshots` is only for a Mac other than the maintainer's, whose renderer is not the reference. Run `bash scripts/install_local_app.sh` to build, verify, and install into the bundle the user launches (it keeps the previous version for rollback); `bash scripts/build_app.sh` only packages the bundle inside the worktree. Run `swift scripts/generate_app_icon.swift` when modifying `Resources/AppIcon/AppIcon-*.svg` to regenerate macOS `.icns`, `Assets.car`, README logos, and Windows Tauri icons.
+Run `bash scripts/check.sh` for secret scan, mechanical lints, and `swift test`, snapshots included. The pre-commit hook runs the same gate. GitHub Actions runs it on hosted machines without the snapshot comparison. `--skip-snapshots` is only for a Mac other than the maintainer's, whose renderer is not the reference. Run `bash scripts/install_local_app.sh` to build, verify, and install into the bundle the user launches (it keeps the previous version for rollback); `bash scripts/build_app.sh` only packages the bundle inside the worktree. Run `swift scripts/generate_app_icon.swift` when modifying `Resources/AppIcon/AppIcon-*.svg` to regenerate macOS `.icns`, `Assets.car`, README logos, and Windows Tauri icons.
 
-快照基线以维护者这台 Mac 的渲染为准；它同时是 GitLab CI 的 runner，所以本地与 CI 比对的是同一份基线。改到 `Sources/MenuBarMijiaApp/` 而界面有变化时，`bash scripts/record_snapshots.sh` 重录，审阅变化的 PNG 后随改动一起提交（`--dry-run` 只列出会变的图）。改动没碰界面、快照却突然失败时，先在最近一次通过的提交上重跑同一组快照：那边也失败，说明是渲染环境变了。差异时有时无（如系统滚动条样式、并行测试残留的状态）就修测试工具，不要重录基线；系统升级后差异稳定复现，逐张审阅后再重录。`check.sh` 会跑完 Swift 与 Windows 两端再汇总失败。
+快照基线以维护者这台 Mac 的渲染为准。GitHub 托管机渲染不同，所以 CI 跳过快照比对，只由本机门禁比对。改到 `Sources/MenuBarMijiaApp/` 而界面有变化时，`bash scripts/record_snapshots.sh` 重录，审阅变化的 PNG 后随改动一起提交（`--dry-run` 只列出会变的图）。改动没碰界面、快照却突然失败时，先在最近一次通过的提交上重跑同一组快照：那边也失败，说明是渲染环境变了。差异时有时无（如系统滚动条样式、并行测试残留的状态）就修测试工具，不要重录基线；系统升级后差异稳定复现，逐张审阅后再重录。`check.sh` 会跑完 Swift 与 Windows 两端再汇总失败。
 
 Windows 上没有 Swift 工具链：本机跑 `bash scripts/check.sh --lint-only`，Swift 测试交给 CI 或局域网 Mac（`bash scripts/remote-swift-test.sh --host <user>@<mac>`，一次配置见脚本头）。
 
@@ -28,7 +28,7 @@ Windows 上没有 Swift 工具链：本机跑 `bash scripts/check.sh --lint-only
 
 本仓库的 Swift 与 Rust 没有语言服务器：引用与定义检索用 `grep` 或 `xd://ast_grep`，不要反复尝试 `xd://lsp`。
 
-CI 失败先看 `bash scripts/ci_errors.sh <pipeline-id|log-file>`（只打失败 job、错误与失败用例）；盘点未合并分支和工作树用 `bash scripts/pending-work.sh`；挑票用 `bash scripts/issue-frontier.sh`（一次列出所有 `ready-for-agent` 票能不能做：blocker、assignee、`claimed:*` 标签、关联的 open PR 和分支；`--doable` 只输出可做编号）。
+CI 失败先看 `bash scripts/ci_errors.sh <run-id>`（只打失败 job、错误与失败用例）；盘点未合并分支和工作树用 `bash scripts/pending-work.sh`；挑票用 `bash scripts/issue-frontier.sh`（一次列出所有 `ready-for-agent` 票能不能做：blocker、assignee、`claimed:*` 标签、关联的 open PR 和分支；`--doable` 只输出可做编号）。
 
 ### Commit & PR policy
 
@@ -40,7 +40,7 @@ CI 失败先看 `bash scripts/ci_errors.sh <pipeline-id|log-file>`（只打失�
 - 一个完整问题对应一次提交或一个 PR；同一问题的后续调整继续使用原 PR。
 - 多个代理并行时按顺序合并：上一个合并进 `main` 的流水线变绿后，再合下一个。连续合并时，后一次 push 会取消前一次的流水线，`main` 变红后就查不出是哪次合并引入的。
 - 直接 push 后，有 runner 时确认云端检查的最终结果；交付时区分“已推送”与“检查已通过”。直接 push 不等于发布新版本。
-- 合并请求（MR，即本文的 PR）用 `python3 scripts/forge.py pr create` 开，`pr checks <n>` 看流水线。`.gitlab-ci.yml` 在维护者 Mac 上的项目 runner（shell executor，标签 `macos`）跑 `bash scripts/check.sh`，含快照比对、Windows 前端测试与 `vite build` 打包；Rust 由 `windows` 作业在 GitLab.com 托管 Windows runner（标签 `saas-windows-medium-amd64`）上跑 `npm run build` 与 `cargo test`，仅在 `windows/src-tauri/` 或 `.gitlab-ci.yml` 变更时触发。首次查询为空时按退避重试。`.github/workflows`、Codex 审查与 `pr-wait`/babysit 一类依赖 GitHub 的技能都已不可用。
+- PR 用 `gh pr create` 开，`gh pr checks <n>` 看检查。`.github/workflows/ci.yml` 全部跑在 GitHub 托管机上：`ubuntu-latest`、`macos-26`、`windows-latest`。不要把这台 Mac 注册成自托管 runner，公开仓库的外部 PR 可能在上面执行代码，而签名私钥在这台机器上。首次查询为空时按退避重试。
 
 ### Worktrees
 

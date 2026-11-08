@@ -8,7 +8,7 @@ import AppKit
 /// UI snapshots for the menu-bar panel and the five device-card families (#46).
 ///
 /// Two-phase baseline: `bash scripts/record_snapshots.sh` runs `SNAPSHOT_RECORD=1 swift test --filter
-/// SnapshotTests` on the maintainer's Mac, which is also the GitLab CI runner, and writes PNGs into
+/// SnapshotTests` on the maintainer's Mac, the only renderer they are compared on, and writes PNGs into
 /// `Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests/`; those files are then committed.
 /// SnapshotAssertion reports "Record mode is on" as a failure for that run, so recording exits
 /// non-zero while still producing every baseline. Later runs compare
