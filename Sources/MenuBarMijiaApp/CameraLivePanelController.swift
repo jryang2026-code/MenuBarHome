@@ -79,6 +79,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     var ptzNoticeTask: Task<Void, Never>?
     var ptzStopTask: Task<Void, Never>?
     var ptzLifecycleID = UUID()
+    var ptzStopRecovery = CameraPTZStopRecovery.idle
+    var ptzStopRetryHold: (@MainActor () async -> Void)?
+    var ptzManualStopInFlight = false
     /// Fixed clock for deterministic previews; nil in production.
     var demoTimestampOverride: Date?
 
@@ -888,11 +891,13 @@ struct CameraLiveAudioStatusView: View {
                 .font(.system(size: 9, weight: .semibold))
             Text(L10n.tr("仅画面", "Video only"))
                 .font(.system(size: 9.5, weight: .semibold))
+                .lineLimit(1)
         }
         .foregroundStyle(.white.opacity(0.72))
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
         .background(Capsule().fill(Color.white.opacity(0.10)))
+        .fixedSize(horizontal: true, vertical: false)
         .help(L10n.tr(
             "当前视频流（米家 P2P / MJPEG / 快照）仅传输画面；配置包含音轨的自定义 HLS (.m3u8) 流可开启声音。",
             "Current stream (Xiaomi P2P / MJPEG / Snapshot) carries video only; custom HLS (.m3u8) streams with an audio track support sound."
@@ -973,9 +978,16 @@ struct CameraLivePanelView: View {
                     )
                 }
                 if let notice = controller.ptzNotice {
-                    CameraPTZNoticeBanner(text: notice)
-                        .padding(.bottom, 10)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    CameraPTZFailureNotice(
+                        text: notice,
+                        retryTitle: controller.offersPTZStopRetry
+                            ? L10n.tr("再次停止", "Stop again")
+                            : nil,
+                        onRetry: { controller.retryFailedPTZStop() }
+                    )
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 10)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1000,7 +1012,21 @@ struct CameraLivePanelView: View {
     }
 
     private var topHUDBar: some View {
-        HStack(spacing: 8) {
+        CameraTitleBarLayout(spacing: 6) {
+            titleCluster
+            toolbarTrailing
+        }
+        .padding(.vertical, 8)
+        .background {
+            ZStack {
+                Color.black.opacity(0.42)
+                WindowDragArea()
+            }
+        }
+    }
+
+    private var titleCluster: some View {
+        HStack(spacing: 6) {
             Circle()
                 .fill(statusDotColor)
                 .frame(width: 8, height: 8)
@@ -1010,18 +1036,24 @@ struct CameraLivePanelView: View {
                 .font(.system(size: 12.5, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
+                .layoutPriority(1)
 
             if let room = device?.roomName, !room.isEmpty {
                 Text(L10n.displayRoomName(room))
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.72))
+                    .lineLimit(1)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(Capsule().fill(Color.white.opacity(0.12)))
             }
+        }
+        .padding(.leading, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 
-            Spacer(minLength: 4)
-
+    private var toolbarTrailing: some View {
+        HStack(spacing: 4) {
             CameraLiveAudioStatusView(
                 status: CameraLiveAudioStatus(streamSource: controller.streamSource, isMuted: controller.isMuted)
             ) {
@@ -1038,18 +1070,6 @@ struct CameraLivePanelView: View {
                 controller.isPinnedOnTop.toggle()
             }
 
-            if case .liveMP4 = controller.streamSource {
-                CameraHUDIconButton(
-                    symbol: controller.isPictureInPictureActive ? "pip.exit" : "pip.enter",
-                    isActive: controller.isPictureInPictureActive,
-                    help: L10n.tr("系统画中画（可放在任意位置、跨全屏应用）", "Picture in Picture (system floating window)")
-                ) {
-                    controller.togglePictureInPicture()
-                }
-                .disabled(!controller.hasLiveVideoFrame && !controller.isPictureInPictureActive)
-                .opacity(controller.hasLiveVideoFrame || controller.isPictureInPictureActive ? 1 : 0.4)
-            }
-
             CameraHUDIconButton(
                 symbol: controller.isExpandedSize
                     ? "arrow.down.right.and.arrow.up.left"
@@ -1062,22 +1082,7 @@ struct CameraLivePanelView: View {
                 controller.toggleExpandedSize()
             }
 
-            CameraHUDIconButton(
-                symbol: "link",
-                isActive: controller.isShowingURLConfig || !(store.cameraCustomStreamURL(for: device?.id ?? "") ?? "").isEmpty,
-                help: L10n.tr("配置自定义 HLS / go2rtc / 抓拍流地址", "Configure custom HLS / go2rtc / snapshot stream URL")
-            ) {
-                controller.isShowingURLConfig.toggle()
-                controller.setURLFieldActive(controller.isShowingURLConfig)
-            }
-
-            CameraHUDIconButton(
-                symbol: "arrow.clockwise",
-                isActive: false,
-                help: L10n.tr("重新连接画面", "Reload stream")
-            ) {
-                controller.reloadStream()
-            }
+            toolbarOverflowMenu
 
             CameraHUDIconButton(
                 symbol: "xmark",
@@ -1087,14 +1092,48 @@ struct CameraLivePanelView: View {
                 controller.closePanel()
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background {
-            ZStack {
-                Color.black.opacity(0.42)
-                WindowDragArea()
+        .padding(.trailing, 12)
+    }
+
+    private var toolbarOverflowMenu: some View {
+        let hasCustomURL = !(store.cameraCustomStreamURL(for: device?.id ?? "") ?? "").isEmpty
+        return Menu {
+            if case .liveMP4 = controller.streamSource {
+                Button {
+                    controller.togglePictureInPicture()
+                } label: {
+                    Label(
+                        L10n.tr("画中画", "Picture in Picture"),
+                        systemImage: controller.isPictureInPictureActive ? "pip.exit" : "pip.enter"
+                    )
+                }
+                .disabled(!controller.hasLiveVideoFrame && !controller.isPictureInPictureActive)
             }
+            Button {
+                controller.isShowingURLConfig.toggle()
+                controller.setURLFieldActive(controller.isShowingURLConfig)
+            } label: {
+                Label(
+                    L10n.tr("配置流地址", "Stream address"),
+                    systemImage: hasCustomURL || controller.isShowingURLConfig ? "checkmark" : "link"
+                )
+            }
+            Button {
+                controller.reloadStream()
+            } label: {
+                Label(L10n.tr("重新连接", "Reconnect"), systemImage: "arrow.clockwise")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.82))
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(Color.white.opacity(0.10)))
         }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(L10n.tr("画面操作", "Picture controls"))
     }
 
     private var customURLBar: some View {
@@ -1336,66 +1375,7 @@ struct CameraLivePanelView: View {
     }
 
     private func bottomControlsBar(spec: CameraSpec) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            AdaptiveGlassContainer(spacing: 6) {
-                HStack(spacing: 6) {
-                    if spec.powerWritable {
-                        Button {
-                            if let dev = device {
-                                _ = store.togglePrimary(dev)
-                            }
-                        } label: {
-                            Label(
-                                spec.isOn ? L10n.tr("休眠镜头", "Sleep") : L10n.tr("唤醒镜头", "Wake"),
-                                systemImage: spec.isOn ? "moon.zzz.fill" : "power"
-                            )
-                        }
-                        .buttonStyle(PillActionButtonStyle(isSelected: !spec.isOn, tintColor: .cyan))
-                    }
-
-                    if store.deviceBackend(for: device?.id ?? "") == .xiaomiCloud,
-                       (store.cameraCustomStreamURL(for: device?.id ?? "") ?? "").isEmpty,
-                       let deviceId = device?.id {
-                        ForEach(XiaomiCameraStreamQuality.allCases, id: \.self) { quality in
-                            let selected = store.cameraStreamQuality(for: deviceId) == quality
-                            Button(Self.qualityTitle(quality)) {
-                                store.setCameraStreamQuality(quality, for: deviceId)
-                                controller.reloadStream()
-                            }
-                            .buttonStyle(PillActionButtonStyle(isSelected: selected, tintColor: .cyan))
-                        }
-                    }
-
-                    if spec.motionDetectionEntityId != nil {
-                        let motionOn = spec.isMotionDetectionOn ?? false
-                        Button {
-                            if let dev = device {
-                                store.setCameraMotionDetection(dev.id, enabled: !motionOn)
-                            }
-                        } label: {
-                            Label(
-                                motionOn ? L10n.tr("移动侦测：开", "Motion: On") : L10n.tr("移动侦测：关", "Motion: Off"),
-                                systemImage: "figure.walk.motion"
-                            )
-                        }
-                        .buttonStyle(PillActionButtonStyle(isSelected: motionOn, tintColor: .cyan))
-                    }
-
-                    ForEach(spec.availableNightShots, id: \.self) { mode in
-                        let selected = (spec.nightShot == mode)
-                        Button(SmartDevice.localizeNightShot(mode)) {
-                            if let dev = device {
-                                store.setCameraNightShot(dev.id, mode: mode)
-                            }
-                        }
-                        .buttonStyle(PillActionButtonStyle(isSelected: selected, tintColor: .cyan))
-                    }
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-        }
-        .background(Color.black.opacity(0.45))
+        CameraControlBarView(spec: spec, device: device, store: store, controller: controller)
     }
 
     private var statusDotColor: Color {
@@ -1403,15 +1383,6 @@ struct CameraLivePanelView: View {
         if controller.isLoadingStream { return .orange }
         if controller.streamSource != nil { return .green }
         return .orange
-    }
-
-    private static func qualityTitle(_ quality: XiaomiCameraStreamQuality) -> String {
-        switch quality {
-        case .auto: return L10n.tr("自动", "Auto")
-        case .sd: return L10n.tr("流畅", "SD")
-        case .hd: return L10n.tr("高清", "HD")
-        case .max: return L10n.tr("超清", "Ultra")
-        }
     }
 
     private static func timestampString(controller: CameraLivePanelController, tick: Int) -> String {
