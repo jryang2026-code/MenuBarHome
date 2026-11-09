@@ -214,9 +214,13 @@ extension HomeStore {
         // A cover is write-only: the motor reports its position only after it moves, so the
         // commanded row and travel origin are shown and locked before the send. A snapshot that
         // lands while the command is in flight is then held instead of replacing the row and
-        // dropping the origin the takeover rule needs (#298 follow-up).
+        // dropping the origin the takeover rule needs (#298 follow-up). The unexpired lock this
+        // tap replaces is kept so a failed send can put it back.
         var coverWrite: OptimisticWrite?
+        var coverPriorLockUntil: ContinuousClock.Instant?
         if case .cover = updated.kind {
+            let now = ContinuousClock.now
+            coverPriorLockUntil = optimisticLockUntil[device.id].flatMap { $0 > now ? $0 : nil }
             coverWrite = beginOptimisticWrite(from: previous, to: updated, lock: .seconds(8))
         }
 
@@ -252,10 +256,17 @@ extension HomeStore {
                 // lock; the origin it wrote goes back to the value it displaced.
                 if self.readBackTickets.isLatest(device.id, ticket: ticket) {
                     if let coverWrite {
-                        if self.ownsRow(coverWrite) {
+                        // A report that confirmed travel removes the lock entry without bumping
+                        // the revision, so the entry must still exist for this write to own the
+                        // row; the same rule guards the batch rollback. Only then does the tap
+                        // restore its pre-tap row, the lock it displaced, and that lock's origin.
+                        if self.ownsRow(coverWrite), self.optimisticLockUntil[device.id] != nil {
                             self.revert(coverWrite)
-                            if let prior = coverOrigin?.prior {
-                                self.coverCommandOrigins[device.id] = prior
+                            if let coverPriorLockUntil {
+                                self.optimisticLockUntil[device.id] = coverPriorLockUntil
+                                if let prior = coverOrigin?.prior {
+                                    self.coverCommandOrigins[device.id] = prior
+                                }
                             }
                         }
                     } else {

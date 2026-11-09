@@ -28,6 +28,18 @@ struct CoverCommandOriginTests {
         return (store, mock)
     }
 
+    /// The same curtain parked at `position`, as a report from the device.
+    private static func curtain(at position: Int) -> SmartDevice {
+        var device = curtain
+        guard case .cover(var spec) = device.kind else { return device }
+        spec.positionPercent = position
+        spec.reportedPositionPercent = position
+        spec.motion = .stopped
+        spec.motionIsInferred = false
+        device.kind = .cover(spec)
+        return device
+    }
+
     @MainActor
     private func waitUntil(_ condition: @escaping @MainActor () async -> Bool) async throws {
         for _ in 0..<200 {
@@ -116,5 +128,95 @@ struct CoverCommandOriginTests {
 
         await mock.releaseExecute()
         _ = await first.value
+    }
+
+    @Test("A report that confirms travel survives a failed send")
+    @MainActor
+    func takeoverSurvivesFailedSend() async throws {
+        let (store, mock) = try await makeStore()
+        await mock.holdNextExecute()
+        await mock.setFailingTargets(["cover.curtain"])
+
+        let card = try #require(store.devices.first)
+        let beforeCommand = store.snapshotGeneration
+        let command = try #require(store.togglePrimary(card))
+        try await waitUntil { await mock.executeStarted > 0 }
+
+        // The motor reports a real stop at 40% while the write is still in flight. That report
+        // confirms the row and ends the tap's lock.
+        let moved = Self.curtain(at: 40)
+        await mock.updateSnapshot(SynthesizedHome(devices: [moved]))
+        try await waitUntil { store.snapshotGeneration > beforeCommand }
+        let takenOver = try #require(store.devices.first)
+        guard case .cover(let takenSpec) = takenOver.kind else {
+            Issue.record("expected the curtain row, got \(takenOver.kind)")
+            return
+        }
+        #expect(takenSpec.positionPercent == 40)
+        #expect(store.optimisticLockUntil["curtain"] == nil, "the report took the row over")
+
+        await mock.releaseExecute()
+        #expect(await command.value == false)
+
+        // The failed send must not put the pre-tap 0% back over the device's own report.
+        let row = try #require(store.devices.first)
+        guard case .cover(let shown) = row.kind else {
+            Issue.record("expected the curtain row, got \(row.kind)")
+            return
+        }
+        #expect(shown.positionPercent == 40, "a failed send keeps the position the device reported")
+        #expect(shown.motion == .stopped)
+        #expect(store.coverCommandOrigins["curtain"] == nil)
+    }
+
+    @Test("A failed pause restores the lock and origin of the open it interrupted")
+    @MainActor
+    func failedPauseRestoresEarlierLock() async throws {
+        let (store, mock) = try await makeStore()
+        let card = try #require(store.devices.first)
+        let openBefore = store.snapshotGeneration
+        #expect(await store.togglePrimary(card)?.value == true)
+        try await store.settleCoverCommand(card.id, after: openBefore)
+
+        let moving = try #require(store.devices.first)
+        guard case .cover(let openSpec) = moving.kind else {
+            Issue.record("expected the curtain row, got \(moving.kind)")
+            return
+        }
+        #expect(openSpec.motion == .opening)
+        let openLock = try #require(store.optimisticLockUntil[card.id])
+
+        await mock.holdNextExecute()
+        await mock.setFailingTargets(["cover.curtain"])
+        let started = await mock.executeStarted
+        let pause = try #require(store.togglePrimary(moving))
+        try await waitUntil { await mock.executeStarted > started }
+        await mock.releaseExecute()
+        #expect(await pause.value == false)
+
+        // The interrupted open is back, with the lock that protected it.
+        let restored = try #require(store.devices.first)
+        guard case .cover(let restoredSpec) = restored.kind else {
+            Issue.record("expected the curtain row, got \(restored.kind)")
+            return
+        }
+        #expect(restoredSpec.positionPercent == 100)
+        #expect(restoredSpec.motion == .opening, "the failed pause restores the opening row")
+        let restoredLock = try #require(store.optimisticLockUntil[card.id], "the open's lock is back")
+        #expect(restoredLock >= openLock)
+
+        // A late stale report at the pre-open position must not pull the card back.
+        let stale = Self.curtain(at: 0)
+        let beforeStale = store.snapshotGeneration
+        await mock.updateSnapshot(SynthesizedHome(devices: [stale]))
+        try await waitUntil { store.snapshotGeneration > beforeStale }
+
+        let row = try #require(store.devices.first)
+        guard case .cover(let shown) = row.kind else {
+            Issue.record("expected the curtain row, got \(row.kind)")
+            return
+        }
+        #expect(shown.positionPercent == 100)
+        #expect(shown.motion == .opening)
     }
 }
