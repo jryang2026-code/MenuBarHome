@@ -342,6 +342,35 @@ struct OnboardingChecklistTests {
         #expect(store.undoBanner == nil)
         #expect(store.toastNotice == nil, "a rehearsal undo never prompts for the expired session")
     }
+
+    @Test("Skipped onboarding never rehearses from the launch-at-login reminder")
+    @MainActor
+    func launchAtLoginReminderDoesNotRehearse() async throws {
+        let suite = "test.onboarding.reminder.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.set(true, forKey: "has_completed_onboarding")
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(
+            devices: [Self.livingLight, Self.studyLight],
+            scenes: []
+        ))
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        store.hasHASource = true
+        store.recordOnboardingMilestone(.searchedDevice)
+        #expect(store.shouldShowLaunchAtLoginSuggestion)
+        #expect(store.showsOnboardingChecklistCard, "the reminder keeps the row on screen")
+        #expect(!store.showsOnboardingChecklist, "the lessons themselves are done")
+        #expect(store.onboardingChecklist.nextStep == .allOffAndUndo, "the checklist math still offers the step")
+        #expect(!store.allOffLessonIsActive, "a reminder-only row is not the lesson")
+
+        let task = try #require(store.rehearseAllOff())
+        await task.value
+        #expect(store.onboardingMilestones.contains(.turnedAllOff))
+        #expect(!store.onboardingMilestones.contains(.rehearsedAllOff))
+        #expect(store.undoBanner?.isAllOff == true)
+        #expect(store.devices.contains { !$0.isActiveOn })
+        #expect(!(await mock.executedCommands).isEmpty, "the hold really switches devices off")
+    }
 }
 
 struct PanelNoticeTests {
@@ -408,6 +437,25 @@ struct PanelNoticeTests {
         #expect(slot.hidesChecklist)
     }
 
+    @Test("The reminder button walks the pending notices and keeps the count")
+    func reminderCyclesThroughNotices() {
+        let soon = Date(timeIntervalSince1970: 1_700_000_000)
+        let plaintext = HAPlaintextPrompt.asking("http://203.0.113.5:8123")
+        let address = HADiscoveredInstance(baseURL: "http://203.0.113.9:8123", locationName: "客厅")
+        let kinds = PanelNotice.kinds(
+            miExpired: true, expiringSoon: soon, plaintext: plaintext, address: address
+        )
+        #expect(kinds == [
+            .miBlocked, .haPlaintext(plaintext), .haAddress(address), .miExpiringSoon(soon)
+        ])
+        let shown: [PanelNoticeSlot.Kind?] = (0...4).map { PanelNotice.slot(kinds, at: $0)?.kind }
+        #expect(shown == [
+            .miBlocked, .haPlaintext(plaintext), .haAddress(address), .miExpiringSoon(soon), .miBlocked
+        ])
+        #expect((0...4).allSatisfy { PanelNotice.slot(kinds, at: $0)?.extraCount == 3 })
+        #expect(PanelNotice.slot([], at: 0) == nil)
+    }
+
     @Test("The blocked banner already carries the expiry toast's message and Scan action")
     func blockedNoticeSupersedesTheExpiryToast() {
         let blocked = PanelNoticeSlot(kind: .miBlocked, extraCount: 0)
@@ -431,6 +479,37 @@ struct PanelNoticeTests {
             extraCount: 0
         )
         #expect(!expiring.repeats(expiryToast))
+    }
+
+    @Test("A blocked session with a plaintext prompt cycles to the HA decision")
+    @MainActor
+    func blockedAndPlaintextCycleToTheHADecision() async throws {
+        let suite = "test.notice.cycle.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+        #expect(MiSessionStore.save(
+            MiSession(
+                userId: "42",
+                cUserId: "c",
+                ssecurity: "s",
+                serviceToken: "tok",
+                expiresAt: Date(timeIntervalSince1970: 1_700_000_000)
+            ),
+            defaults: defaults
+        ))
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [], scenes: [])),
+            defaultsSuiteName: suite
+        )
+        let prompt = HAPlaintextPrompt.asking("http://203.0.113.5:8123")
+        store.haPlaintextPrompt = prompt
+
+        #expect(store.panelNoticeKinds == [.miBlocked, .haPlaintext(prompt)])
+        #expect(store.panelNoticeSlot?.kind == .miBlocked)
+        let second = try #require(PanelNotice.slot(store.panelNoticeKinds, at: 1))
+        #expect(second.kind == .haPlaintext(prompt))
+        #expect(second.extraCount == 1, "the count does not change while cycling")
+        #expect(second.hidesChecklist)
     }
 
     @Test("Kind chips stay hidden until 全部 is opened again or a kind filter is on")

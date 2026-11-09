@@ -51,6 +51,9 @@ public struct ControlCenterPanel: View {
     @State var kindScrollTrigger = 0
     /// The kind-chip row stays hidden until the user taps the active 全部 pill again.
     @State var kindChipsRevealed = false
+    /// Which pending notice the 「还有 N 条提醒」 button has walked to. The highest priority is
+    /// shown on every open and whenever the pending set changes.
+    @State var noticeIndex = 0
 
     /// Card sizes are remembered per page: a room id, or "all" for the overview.
     var layoutScope: String { store.selectedRoomId ?? "all" }
@@ -71,8 +74,11 @@ public struct ControlCenterPanel: View {
     /// resolve the effective scheme locally (#51).
     var effectiveScheme: ColorScheme { appearance.colorScheme ?? colorScheme }
 
-    public init(store: HomeStore) {
+    /// - Parameter initialNoticeIndex: lets the snapshot and layout tests put a specific pending
+    ///   notice on screen. Production always starts at the highest priority.
+    public init(store: HomeStore, initialNoticeIndex: Int = 0) {
         self.store = store
+        _noticeIndex = State(initialValue: initialNoticeIndex)
     }
     public var body: some View {
         let _ = (store.effectiveLanguage, store.selectedRoomId, store.rooms.count)
@@ -85,11 +91,14 @@ public struct ControlCenterPanel: View {
             .onChange(of: store.assistantState) { _, state in handleAssistantState(state) }
             // #45: the only place that sees every error toast is the panel root.
             .onChange(of: store.toastNotice?.id) { _, _ in handleToastNotice() }
+            // A newly pending notice takes priority; a stale cycle position would hide it.
+            .onChange(of: store.panelNoticeKinds) { _, _ in noticeIndex = 0 }
             // Frequently opened utility: show immediately, including keyboard invocation.
             .onReceive(NotificationCenter.default.publisher(for: MenuBarPanelController.didShowNotification)) { _ in
                 UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
                 LaunchAtLoginCoordinator.live(store: store).refresh()
                 isPresented = true
+                noticeIndex = 0
             }
             .onAppear { handlePanelAppear() }
             // The panel tree survives a close, so a half-typed query would come back on the next open.
@@ -340,19 +349,34 @@ public struct ControlCenterPanel: View {
         kindChipsRevealed.toggle()
     }
 
+    /// Every pending notice in priority order.
+    private var noticeKinds: [PanelNoticeSlot.Kind] { store.panelNoticeKinds }
+
+    /// The notice on screen: the highest priority one unless the reminder button walked forward.
+    private var currentNotice: PanelNoticeSlot? {
+        PanelNotice.slot(noticeKinds, at: noticeIndex)
+    }
+
     /// Blocked and security notices stay above the search field. Anything quieter scrolls.
     private var pinnedNotice: PanelNoticeSlot? {
-        guard let slot = store.panelNoticeSlot, slot.hidesChecklist else { return nil }
+        guard let slot = currentNotice, slot.hidesChecklist else { return nil }
         return slot
     }
 
     private var scrollingNotice: PanelNoticeSlot? {
-        guard let slot = store.panelNoticeSlot, !slot.hidesChecklist else { return nil }
+        guard let slot = currentNotice, !slot.hidesChecklist else { return nil }
         return slot
     }
 
     private var showsLessonRow: Bool {
-        store.showsOnboardingChecklistCard && store.panelNoticeSlot?.hidesChecklist != true
+        store.showsOnboardingChecklistCard && !noticeKinds.contains(where: \.hidesChecklist)
+    }
+
+    /// Walks to the next pending notice; the last step returns to the highest priority.
+    private func advanceNotice() {
+        let count = noticeKinds.count
+        guard count > 1 else { return }
+        withAnimation(AppleMotion.snappySpring) { noticeIndex = (noticeIndex + 1) % count }
     }
 
     private var showsScrollPreface: Bool {
@@ -404,10 +428,16 @@ public struct ControlCenterPanel: View {
                 haAddressSuggestionBanner(instance)
             }
             if slot.extraCount > 0 {
-                Text(PanelNotice.extraReminderLabel(count: slot.extraCount))
-                    .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("panel-notice-extra")
+                Button {
+                    advanceNotice()
+                } label: {
+                    Text(PanelNotice.extraReminderLabel(count: slot.extraCount))
+                        .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("panel-notice-extra")
+                .panelHelp(L10n.tr("查看下一条提醒", "Show the next reminder"))
             }
         }
         .foldOrigin { $0.systemNoticeMinY = $1 }

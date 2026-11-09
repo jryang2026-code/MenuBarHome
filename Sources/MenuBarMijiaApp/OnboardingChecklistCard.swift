@@ -9,8 +9,11 @@ struct OnboardingChecklistCard: View {
 
     var body: some View {
         let checklist = store.onboardingChecklist
+        // The same row doubles as the standalone launch-at-login reminder after onboarding is
+        // skipped or done. That row is not a lesson step and must not offer 试试.
+        let nextStep = store.showsOnboardingChecklist ? checklist.nextStep : nil
         HStack(spacing: 6) {
-            Text(rowTitle(checklist))
+            Text(rowTitle(checklist, nextStep: nextStep))
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
@@ -22,7 +25,7 @@ struct OnboardingChecklistCard: View {
                 launchOverflow
             }
 
-            if let next = checklist.nextStep {
+            if let next = nextStep {
                 Button(L10n.tr("试试", "Try")) {
                     run(next)
                 }
@@ -62,9 +65,9 @@ struct OnboardingChecklistCard: View {
         .accessibilityIdentifier("onboarding-lesson-row")
     }
 
-    private func rowTitle(_ checklist: OnboardingChecklist) -> String {
+    private func rowTitle(_ checklist: OnboardingChecklist, nextStep: OnboardingStep?) -> String {
         let done = checklist.completedSteps.count
-        if let next = checklist.nextStep {
+        if let next = nextStep {
             return L10n.tr(
                 "上手 \(done)/3 · 下一步：\(nextAction(next))",
                 "Start \(done)/3 · Next: \(nextAction(next))"

@@ -124,6 +124,71 @@ struct SnapshotTests {
         )
     }
 
+    @Test("The dashboard checklist shows the next lesson while the lessons are pending")
+    func panelOnboardingLessonSnapshot() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        fixture.store.hasCompletedOnboarding = false
+        fixture.store.recordOnboardingMilestone(.searchedDevice)
+        #expect(fixture.store.showsOnboardingChecklist)
+        #expect(fixture.store.onboardingChecklist.nextStep == .allOffAndUndo)
+        #expect(fixture.store.allOffLessonIsActive)
+
+        assertRendered(
+            snapshotReady(ControlCenterPanel(store: fixture.store)),
+            size: CGSize(width: 376, height: 560),
+            named: "panel-onboarding-lesson-zh-light"
+        )
+    }
+
+    @Test("The practice hold shows the rehearsal banner")
+    func panelAllOffRehearsalSnapshot() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        fixture.store.hasCompletedOnboarding = false
+        fixture.store.recordOnboardingMilestone(.searchedDevice)
+        #expect(fixture.store.onboardingChecklist.nextStep == .allOffAndUndo)
+        #expect(fixture.store.rehearseAllOff() == nil, "a practice hold sends nothing")
+        let title = try #require(fixture.store.undoBanner?.title)
+        #expect(title.hasPrefix("演练：将关闭"))
+
+        assertRendered(
+            snapshotReady(ControlCenterPanel(store: fixture.store)),
+            size: CGSize(width: 376, height: 560),
+            named: "panel-all-off-rehearsal-zh-light"
+        )
+    }
+
+    @Test("The reminder button shows the HA plaintext decision behind an expired Mi session")
+    func panelNoticeCycleSnapshot() async throws {
+        let fixture = try await SnapshotFixture(
+            miSession: MiSession(
+                userId: "42",
+                cUserId: "c",
+                ssecurity: "c2VjcmV0",
+                serviceToken: "tok",
+                expiresAt: Date(timeIntervalSince1970: 1_700_000_000)
+            ),
+            configuredHASource: false
+        )
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        let prompt = HAPlaintextPrompt.asking("http://203.0.113.5:8123")
+        fixture.store.haPlaintextPrompt = prompt
+        #expect(fixture.store.panelNoticeKinds == [.miBlocked, .haPlaintext(prompt)])
+
+        assertRendered(
+            snapshotReady(ControlCenterPanel(store: fixture.store, initialNoticeIndex: 1)),
+            size: CGSize(width: 376, height: 560),
+            named: "panel-notice-cycle-plaintext-zh-light"
+        )
+    }
+
     @Test("Panel asks before sending the HA token over public plain http, and keeps the declined reason", arguments: [
         (HAPlaintextPrompt.asking("http://203.0.113.5:8123"), "panel-ha-plaintext-asking-zh-light"),
         (HAPlaintextPrompt.declined("http://203.0.113.5:8123"), "panel-ha-plaintext-declined-zh-light"),

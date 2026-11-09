@@ -10,13 +10,19 @@ import Testing
 @MainActor
 @Suite(.serialized)
 struct PanelFoldLayoutTests {
-    @Test("The default 560 pt panel keeps the first device card at or above 200 pt")
-    func firstDeviceCardIsAboveTheFold() async throws {
+    @Test("The default 560 pt panel keeps the first device card at or above 200 pt", arguments: [
+        (AppLanguage.zhHans, false),
+        (AppLanguage.en, false),
+        (AppLanguage.zhHans, true),
+        (AppLanguage.en, true),
+    ])
+    func firstDeviceCardIsAboveTheFold(language: AppLanguage, compact: Bool) async throws {
         let fixture = try await SnapshotFixture()
         defer { fixture.restore() }
-        let reading = try await PanelFoldMeasure.reading(store: fixture.store)
+        fixture.store.isCompactGridMode = compact
+        let reading = try PanelFoldMeasure.reading(store: fixture.store, language: language)
         let cardTop = reading.cardTop
-        #expect(cardTop <= 200, "first device card top is \(cardTop)")
+        #expect(cardTop <= 200, "\(language.rawValue) compact=\(compact): first device card top is \(cardTop)")
         #expect(reading.kindMinY == nil, "kind chips stay hidden until 全部 is tapped again")
         #expect(reading.lessonMinY != nil, "the getting-started row is in the list")
         let lesson = try #require(reading.lessonTop)
@@ -45,7 +51,7 @@ struct PanelFoldLayoutTests {
         }
         defer { fixture.restore() }
 
-        let reading = try await PanelFoldMeasure.reading(store: fixture.store)
+        let reading = try PanelFoldMeasure.reading(store: fixture.store)
         let notice = try #require(reading.noticeTop, "the warning is on screen")
         let omnibar = try #require(reading.omnibarTop)
         let cardTop = reading.cardTop
@@ -75,7 +81,15 @@ enum PanelFoldMeasure {
 
     /// Card frames are published from `onAppear`, the same wait the resize test already uses.
     /// Measurements stay on a record this test owns. Other suites do not see it.
-    static func reading(store: HomeStore) async throws -> Reading {
+    ///
+    /// Synchronous on purpose: `L10n.currentLanguage` is process-wide, so the switch and its
+    /// restore must not span an await where another suite could render a snapshot in the other
+    /// language.
+    static func reading(store: HomeStore, language: AppLanguage = .zhHans) throws -> Reading {
+        let previousLanguage = L10n.currentLanguage
+        L10n.currentLanguage = language
+        defer { L10n.currentLanguage = previousLanguage }
+
         let record = PanelFoldRecord()
         _ = NSApplication.shared
         let hosting = NSHostingView(
@@ -103,12 +117,12 @@ enum PanelFoldMeasure {
             window.contentView = nil
             window.orderOut(nil)
         }
-        window.layoutIfNeeded()
-        hosting.layoutSubtreeIfNeeded()
-        hosting.displayIfNeeded()
-        window.displayIfNeeded()
-        try await Task.sleep(for: .milliseconds(250))
-        pumpMainRunLoop()
+        for _ in 0..<6 {
+            window.layoutIfNeeded()
+            hosting.layoutSubtreeIfNeeded()
+            hosting.displayIfNeeded()
+            pumpMainRunLoop()
+        }
 
         let light = try #require(store.devices.first { device in
             if case .light = device.kind { return true }

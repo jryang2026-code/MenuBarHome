@@ -79,15 +79,20 @@ extension HomeStore {
         )
     }
 
-    /// The one system notice the panel may show. Blocked outranks security, then a suggestion,
-    /// then a session that is only expiring. `extraCount` is how many notices are waiting behind it.
-    public var panelNoticeSlot: PanelNoticeSlot? {
-        PanelNotice.slot(
+    /// Every pending notice in priority order. The panel shows the first unless the user cycles.
+    public var panelNoticeKinds: [PanelNoticeSlot.Kind] {
+        PanelNotice.kinds(
             miExpired: miSessionShowsExpired,
             expiringSoon: miSessionExpiringSoonDate,
             plaintext: haPlaintextPrompt,
             address: pendingHAAddressSuggestion
         )
+    }
+
+    /// The one system notice the panel may show. Blocked outranks security, then a suggestion,
+    /// then a session that is only expiring. `extraCount` is how many notices are waiting behind it.
+    public var panelNoticeSlot: PanelNoticeSlot? {
+        PanelNotice.slot(panelNoticeKinds, at: 0)
     }
 
     /// Header hold during the All Off lesson. Every other caller, including URL, Raycast, and
@@ -99,8 +104,10 @@ extension HomeStore {
     }
 
     /// The All Off lesson is on screen and is the next step, so a hold must not change the home.
+    /// `showsOnboardingChecklist` and not `showsOnboardingChecklistCard`: the card also appears for
+    /// the standalone launch-at-login reminder, and that row is not the lesson.
     var allOffLessonIsActive: Bool {
-        guard showsOnboardingChecklistCard else { return false }
+        guard showsOnboardingChecklist else { return false }
         if panelNoticeSlot?.hidesChecklist == true { return false }
         return onboardingChecklist.nextStep == .allOffAndUndo
     }
@@ -143,18 +150,21 @@ public struct PanelNoticeSlot: Equatable, Sendable {
         case haPlaintext(HAPlaintextPrompt)
         case haAddress(HADiscoveredInstance)
         case miExpiringSoon(Date)
+
+        /// A blocked session or a plaintext-token decision hides the getting-started row.
+        public var hidesChecklist: Bool {
+            switch self {
+            case .miBlocked, .haPlaintext: true
+            case .haAddress, .miExpiringSoon: false
+            }
+        }
     }
 
     public var kind: Kind
     public var extraCount: Int
 
-    /// A blocked session or a plaintext-token decision hides the getting-started row.
-    public var hidesChecklist: Bool {
-        switch kind {
-        case .miBlocked, .haPlaintext: true
-        case .haAddress, .miExpiringSoon: false
-        }
-    }
+    /// Whether this notice hides the getting-started row while it is the one on screen.
+    public var hidesChecklist: Bool { kind.hidesChecklist }
 
     /// #47's persistent expiry toast says what the blocked banner already says and carries the
     /// same Scan action. Showing both makes one expired session read as two alerts.
@@ -174,6 +184,30 @@ public struct PanelNoticeSlot: Equatable, Sendable {
 }
 
 public enum PanelNotice {
+    /// Every pending notice, highest priority first. A missing input is not a notice. The panel
+    /// shows the first by default and the 「还有 N 条提醒」 button walks the rest.
+    public static func kinds(
+        miExpired: Bool,
+        expiringSoon: Date?,
+        plaintext: HAPlaintextPrompt?,
+        address: HADiscoveredInstance?
+    ) -> [PanelNoticeSlot.Kind] {
+        var kinds: [PanelNoticeSlot.Kind] = []
+        if miExpired { kinds.append(.miBlocked) }
+        if let plaintext { kinds.append(.haPlaintext(plaintext)) }
+        if let address { kinds.append(.haAddress(address)) }
+        if let expiringSoon { kinds.append(.miExpiringSoon(expiringSoon)) }
+        return kinds
+    }
+
+    /// The notice at `index` in `kinds`, wrapping so the last step returns to the highest priority.
+    /// `extraCount` stays the number waiting behind, whichever notice is on screen.
+    public static func slot(_ kinds: [PanelNoticeSlot.Kind], at index: Int) -> PanelNoticeSlot? {
+        guard !kinds.isEmpty else { return nil }
+        let wrapped = ((index % kinds.count) + kinds.count) % kinds.count
+        return PanelNoticeSlot(kind: kinds[wrapped], extraCount: kinds.count - 1)
+    }
+
     /// Highest priority first. A missing input is not a notice.
     public static func slot(
         miExpired: Bool,
@@ -181,25 +215,15 @@ public enum PanelNotice {
         plaintext: HAPlaintextPrompt?,
         address: HADiscoveredInstance?
     ) -> PanelNoticeSlot? {
-        let pending = (miExpired ? 1 : 0)
-            + (plaintext == nil ? 0 : 1)
-            + (address == nil ? 0 : 1)
-            + (expiringSoon == nil ? 0 : 1)
-        guard pending > 0 else { return nil }
-
-        let kind: PanelNoticeSlot.Kind
-        if miExpired {
-            kind = .miBlocked
-        } else if let plaintext {
-            kind = .haPlaintext(plaintext)
-        } else if let address {
-            kind = .haAddress(address)
-        } else if let expiringSoon {
-            kind = .miExpiringSoon(expiringSoon)
-        } else {
-            return nil
-        }
-        return PanelNoticeSlot(kind: kind, extraCount: pending - 1)
+        slot(
+            kinds(
+                miExpired: miExpired,
+                expiringSoon: expiringSoon,
+                plaintext: plaintext,
+                address: address
+            ),
+            at: 0
+        )
     }
 
     public static func extraReminderLabel(count: Int) -> String {
