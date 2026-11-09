@@ -8,13 +8,13 @@ struct MiotValueTextTests {
     @Test("Wash programmes, day and night, and level names follow the display language")
     func programmeNames() {
         L10n.$overrideLanguage.withValue(.zhHans) {
-            #expect(MiotValueText.display("Mix") == "混合洗")
+            #expect(MiotValueText.display("Mix") == "混合")
             #expect(MiotValueText.display("Quick Wash") == "快速洗")
             #expect(MiotValueText.display("Delicate Wash") == "轻柔洗")
             #expect(MiotValueText.display("Heavy Wash") == "大件洗")
-            #expect(MiotValueText.display("Cotton") == "棉麻洗")
-            #expect(MiotValueText.display("Synthetic") == "化纤洗")
-            #expect(MiotValueText.display("Wool") == "羊毛洗")
+            #expect(MiotValueText.display("Cotton") == "棉麻")
+            #expect(MiotValueText.display("Synthetic") == "化纤")
+            #expect(MiotValueText.display("Wool") == "羊毛")
             #expect(MiotValueText.display("Spin") == "单脱水")
             #expect(MiotValueText.display("Rinse") == "漂洗")
             #expect(MiotValueText.display("Rinse Spin") == "漂加脱")
@@ -52,6 +52,27 @@ struct MiotValueTextTests {
             #expect(MiotValueText.display("Day") == "Day")
             #expect(MiotValueText.display("Level1") == "Level1")
             #expect(MiotValueText.display("Night") == "Night")
+        }
+    }
+
+    /// A dryer publishes the same mode words as a washer (`bshcn.dry.2j7x10`: `Mix`, `Baby Care`,
+    /// `Down Coat`, `Synthetic`). One shared table serves both, so a dryer menu must not read as a
+    /// washing programme.
+    @Test("A dryer mode word does not read as a washing programme")
+    func dryerModesCarryNoWash() {
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(MiotValueText.display("Baby Care") == "婴童")
+            #expect(MiotValueText.display("Down Coat") == "羽绒")
+            for mode in ["Mix", "Baby Care", "Down Coat", "Synthetic", "Wool", "Cotton"] {
+                #expect(!MiotValueText.display(mode).contains("洗"))
+            }
+            #expect(MiotValueText.display("Quick Wash") == "快速洗")
+            #expect(MiotValueText.display("Rinse") == "漂洗")
+        }
+        L10n.$overrideLanguage.withValue(.zhHant) {
+            #expect(MiotValueText.display("Down Coat") == "羽絨")
+            #expect(!MiotValueText.display("Down Coat").contains("洗"))
+            #expect(MiotValueText.display("Quick Wash") == "快速洗")
         }
     }
 
@@ -283,7 +304,7 @@ struct MiotValueTextTests {
         let store = HomeStore(provider: mock, defaultsSuiteName: "test.miotvalue.\(UUID().uuidString)")
         try await store.waitForTestSnapshot()
 
-        store.setApplianceMode("washer", mode: "混合洗")
+        store.setApplianceMode("washer", mode: "混合")
         await Task.yield()
         #expect(await mock.executedCommands.isEmpty)
         if case .appliance(let spec) = store.devices.first?.kind {
