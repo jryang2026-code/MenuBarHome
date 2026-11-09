@@ -47,14 +47,14 @@ public struct SettingsWindowView: View {
 
             // Toasts are rendered by the panel; surface them here too while the panel is closed.
             if let toast = store.toastNotice {
-                HStack(spacing: 6) {
-                    Image(systemName: toast.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                        .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(toast.isError ? .orange : .green)
-                    Text(toast.message)
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                        .lineLimit(2)
-                }
+                NoticeToastBanner(
+                    notice: toast,
+                    onAction: {
+                        guard let action = toast.action else { return }
+                        ToastNoticeActions.perform(action, store: store)
+                    },
+                    onDismiss: { store.dismissToast() }
+                )
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
                 .adaptiveGlass(in: Capsule(style: .continuous))
@@ -681,7 +681,7 @@ private struct ConnectionSettingsTab: View {
                         Text(connectionBadgeText)
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                             .foregroundStyle(connectionBadgeColor)
-                            .help(disconnectReason ?? "")
+                            .help(connectionBadgeHelp)
                     }
 
                     Toggle(isOn: Binding(
@@ -839,20 +839,43 @@ private struct ConnectionSettingsTab: View {
     }
 
     private var connectionBadgeText: String {
-        if store.homeBackend == .demo { return L10n.tr("● 离线演示", "● Offline Demo") }
-        switch store.connectionStatus {
-        case .connected: return L10n.tr("● 已连接", "● Connected")
-        case .connecting: return L10n.tr("● 连接中…", "● Connecting…")
-        case .disconnected: return L10n.tr("● 未连接", "● Disconnected")
+        switch store.panelHealth {
+        case .ok where store.homeBackend == .demo:
+            return L10n.tr("● 离线演示", "● Offline Demo")
+        case .ok:
+            return L10n.tr("● 已连接", "● Connected")
+        case .connecting:
+            return L10n.tr("● 连接中…", "● Connecting…")
+        case .degraded:
+            return L10n.tr("● 部分可用", "● Partially available")
+        case .blocked:
+            return L10n.tr("● 未连接", "● Disconnected")
+        case .notConfigured:
+            return L10n.tr("未配置数据源", "No data source configured")
         }
     }
 
     private var connectionBadgeColor: Color {
-        if store.homeBackend == .demo { return .secondary }
-        switch store.connectionStatus {
-        case .connected: return .green
-        case .connecting: return .orange
-        case .disconnected: return .red
+        switch store.panelHealth {
+        case .ok where store.homeBackend == .demo:
+            return .secondary
+        case .ok:
+            return .green
+        case .connecting, .degraded:
+            return .orange
+        case .blocked, .notConfigured:
+            return .red
+        }
+    }
+
+    private var connectionBadgeHelp: String {
+        switch store.panelHealth {
+        case .degraded(let reason), .blocked(let reason, _):
+            return reason
+        case .notConfigured:
+            return L10n.tr("未配置数据源", "No data source configured")
+        case .ok, .connecting:
+            return disconnectReason ?? ""
         }
     }
 

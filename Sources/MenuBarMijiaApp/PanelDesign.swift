@@ -167,6 +167,55 @@ struct BreathingDot: View {
     }
 }
 
+struct NoticeToastBanner: View {
+    let notice: ToastNotice
+    var onAction: () -> Void
+    var onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: notice.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .foregroundStyle(notice.isError ? Color.red : Color.green)
+                .font(.system(size: DesignTokens.TypeSize.caption))
+            Text(notice.message)
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                .multilineTextAlignment(.leading)
+                .lineLimit(notice.isError ? 2 : 1)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: notice.isError ? 280 : nil, alignment: .leading)
+            if let action = notice.action {
+                Button(action.title, action: onAction)
+                    .buttonStyle(.plain)
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    .foregroundStyle(Color.red)
+            }
+            if notice.isError {
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: DesignTokens.TypeSize.micro, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(L10n.tr("关闭", "Close")))
+            }
+        }
+    }
+}
+
+@MainActor
+enum ToastNoticeActions {
+    static func perform(_ action: ToastAction, store: HomeStore) {
+        switch action.kind {
+        case .presentMiReauth:
+            store.presentMiReauth()
+        case .openConnectionSettings:
+            SettingsWindowOpener.shared.show(tab: .connection)
+        }
+    }
+}
+
 extension View {
     /// Adds a shadow only when `active`; a clear shadow still costs an offscreen pass per frame.
     @ViewBuilder
@@ -185,6 +234,7 @@ extension View {
 struct HoldToConfirmButton: View {
     let title: String
     let count: Int
+    let helpText: String
     let onConfirm: () -> Void
     let onTap: () -> Void
 
@@ -194,11 +244,9 @@ struct HoldToConfirmButton: View {
         let capsule = Capsule(style: .continuous)
         HStack(spacing: 4) {
             Image(systemName: "power").font(.system(size: DesignTokens.TypeSize.micro, weight: .bold))
-            Text(title).font(.system(size: DesignTokens.TypeSize.control, weight: .semibold))
-            Text("(\(count))")
+            Text(title)
                 .font(.system(size: DesignTokens.TypeSize.control, weight: .semibold))
                 .monospacedDigit()
-                .contentTransition(.numericText(value: Double(count)))
         }
         .lineLimit(1)
         .fixedSize(horizontal: true, vertical: false)
@@ -225,10 +273,10 @@ struct HoldToConfirmButton: View {
         } onPressingChanged: { pressing in
             withAnimation(pressing ? .linear(duration: 0.6) : .easeOut(duration: 0.2)) { holding = pressing }
         }
-        .panelHelp(L10n.tr("按住 0.6 秒关闭这 \(count) 台设备", "Hold 0.6s to turn off these \(count) devices"))
+        .panelHelp(helpText)
         // VoiceOver cannot long-press easily; give it an explicit, clearly named action instead.
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text("\(title) (\(count))"))
+        .accessibilityLabel(Text(title))
         .accessibilityHint(Text(L10n.tr("按住 0.6 秒关闭", "Hold 0.6 seconds to turn off")))
         .accessibilityAddTraits(.isButton)
         .accessibilityAction(named: Text(L10n.tr("关闭这 \(count) 台设备", "Turn off these \(count) devices"))) {

@@ -125,21 +125,30 @@ extension ControlCenterPanel {
                         .transition(.scale(scale: 0.8).combined(with: .opacity))
                 } else if !store.allOffTargets.isEmpty {
                     // The label says what will be switched off (#23); a hold confirms.
-                    let count = store.allOffTargets.count
-                    HoldToConfirmButton(
-                        title: allOffScopeDisplayName.map { L10n.tr("全关 \($0)", "All Off \($0)") } ?? L10n.tr("全关", "All Off"),
-                        count: count,
-                        onConfirm: {
-                            withAnimation(AppleMotion.snappySpring) { _ = store.turnAllOff() }
-                            SoundFeedback.playSuccess()
-                        },
-                        onTap: {
-                            store.showToast(
-                                L10n.tr("按住 0.6 秒关闭这 \(count) 台（插座、扫地机默认不参与）", "Hold 0.6s to turn off these \(count) (plugs and vacuums are left out by default)"),
-                                isError: false
-                            )
+                    let copy = PanelHeaderCopy.allOff(store: store, scopeName: allOffScopeDisplayName)
+                    VStack(alignment: .trailing, spacing: 1) {
+                        HoldToConfirmButton(
+                            title: copy.title,
+                            count: store.allOffTargets.count,
+                            helpText: copy.tooltip,
+                            onConfirm: {
+                                withAnimation(AppleMotion.snappySpring) { _ = store.turnAllOff() }
+                                SoundFeedback.playSuccess()
+                            },
+                            onTap: {
+                                store.showToast(L10n.tr(
+                                    "按住 0.6 秒确认全关",
+                                    "Hold for 0.6s to confirm All Off"
+                                ))
+                            }
+                        )
+                        if let helper = copy.helper {
+                            Text(helper)
+                                .font(.system(size: DesignTokens.TypeSize.micro))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
-                    )
+                    }
                     .transition(.scale(scale: 0.8).combined(with: .opacity))
                 }
             }
@@ -952,40 +961,56 @@ extension ControlCenterPanel {
         let shape = RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
         let host = HAPlaintextConsent.host(prompt.address)
         let isDeclined = prompt == .declined(prompt.address)
-        return VStack(alignment: .leading, spacing: 6) {
-            Label(
-                isDeclined
-                    ? HAPlaintextConsent.declinedMessage(prompt.address)
-                    : L10n.tr("令牌会以明文传输到 \(host)", "Your token would travel unencrypted to \(host)"),
-                systemImage: "lock.open.fill"
-            )
-            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-            .fixedSize(horizontal: false, vertical: true)
-            if !isDeclined {
-                Text(L10n.tr(
-                    "这是公网上的 http 地址，路上任何人都能看到 Home Assistant 令牌。能改用 https 就别连接。",
-                    "This is a public http address, so anyone on the path can read your Home Assistant token. Use https if you can."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "exclamationmark.shield.fill")
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(isDeclined
+                        ? HAPlaintextConsent.declinedMessage(prompt.address)
+                        : L10n.tr("令牌会以明文发送", "Your token would be sent in plaintext"))
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !isDeclined {
+                        Text(L10n.tr(
+                            "\(host) 是公网上的 http 地址，路上任何人都能看到 Home Assistant 令牌。能改用 https 就别连接。",
+                            "\(host) is a public http address, so anyone on the path can read your Home Assistant token. Use https if you can."
+                        ))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            if isDeclined {
+                Button(L10n.tr("改用 https…", "Use https…")) {
+                    SettingsWindowOpener.shared.show(tab: .connection)
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
             }
             HStack(spacing: 8) {
-                Button(L10n.tr("仍然连接", "Connect Anyway")) {
-                    withAnimation(AppleMotion.snappySpring) { store.allowHAPlaintext() }
-                }
-                .buttonStyle(PillActionButtonStyle())
                 if !isDeclined {
                     Button(L10n.tr("不连接", "Don't Connect")) {
                         withAnimation(AppleMotion.snappySpring) { store.declineHAPlaintext() }
                     }
-                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
                 }
+                Spacer(minLength: 8)
+                Button(L10n.tr("仍然连接", "Connect Anyway")) {
+                    withAnimation(AppleMotion.snappySpring) { store.allowHAPlaintext() }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                .foregroundStyle(.secondary)
             }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveGlass(in: shape)
+        .background(Color.orange.opacity(0.08), in: shape)
+        .overlay(shape.strokeBorder(Color.orange.opacity(0.35), lineWidth: 1))
     }
 
     // MARK: - 3. Floating Undo & Toast Banner
@@ -1028,15 +1053,16 @@ extension ControlCenterPanel {
             .transition(AppleMotion.drawerTransition)
         } else if let toast = store.toastNotice {
             let toastShape = Capsule(style: .continuous)
-            HStack(spacing: 6) {
-                Image(systemName: toast.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                    .foregroundStyle(toast.isError ? .orange : .green)
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-
-                Text(toast.message)
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                    .lineLimit(1)
-            }
+            NoticeToastBanner(
+                notice: toast,
+                onAction: {
+                    guard let action = toast.action else { return }
+                    withAnimation(AppleMotion.snappySpring) {
+                        ToastNoticeActions.perform(action, store: store)
+                    }
+                },
+                onDismiss: { store.dismissToast() }
+            )
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
             .adaptiveGlass(in: toastShape)
@@ -1052,14 +1078,11 @@ extension ControlCenterPanel {
         HStack(spacing: 8) {
             BreathingDot(
                 color: statusDotColor,
-                animate: statusDotColor == .green
+                animate: statusDotAnimates
             )
             .id(statusDotColor)
 
-            Text(statusFooterLabel)
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            statusFooterControl
 
             Spacer()
 
@@ -1179,18 +1202,55 @@ extension ControlCenterPanel {
         }
     }
 
+    var statusDotAnimates: Bool {
+        if case .ok = store.panelHealth { return true }
+        return false
+    }
+
     var statusDotColor: Color {
-        switch store.connectionStatus {
-        case .connected: return .green
-        case .connecting: return .orange
-        case .disconnected: return .red
+        switch store.panelHealth {
+        case .ok:
+            return .green
+        case .connecting, .degraded:
+            return .orange
+        case .blocked, .notConfigured:
+            return .red
+        }
+    }
+
+    @ViewBuilder
+    var statusFooterControl: some View {
+        if case .blocked(_, let action) = store.panelHealth {
+            Button {
+                performPanelHealthAction(action)
+            } label: {
+                Text(statusFooterLabel)
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    .foregroundStyle(statusDotColor)
+                    .lineLimit(1)
+            }
+            .buttonStyle(.plain)
+        } else {
+            Text(statusFooterLabel)
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    func performPanelHealthAction(_ action: PanelHealthAction) {
+        switch action {
+        case .presentMiReauth:
+            withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
+        case .openConnectionSettings:
+            SettingsWindowOpener.shared.show(tab: .connection)
         }
     }
 
     var statusFooterLabel: String {
-        if let dual = store.dualSourceStatusSummary { return dual }
-        switch store.connectionStatus {
-        case .connected:
+        switch store.panelHealth {
+        case .ok:
+            if let dual = store.dualSourceStatusSummary { return dual }
             if store.homeBackend == .demo {
                 return L10n.tr("虚拟设备，离线运行", "Virtual devices, offline")
             }
@@ -1203,8 +1263,10 @@ extension ControlCenterPanel {
             return L10n.tr("HA 实时连接 (\(store.serverHostSummary))", "HA Live (\(store.serverHostSummary))")
         case .connecting:
             return L10n.tr("正在连接 (\(store.serverHostSummary))…", "Connecting (\(store.serverHostSummary))…")
-        case .disconnected(let reason):
-            return L10n.tr("未连接：\(reason)", "Disconnected: \(reason)")
+        case .degraded(let reason), .blocked(let reason, _):
+            return reason
+        case .notConfigured:
+            return L10n.tr("未配置数据源", "No data source configured")
         }
     }
 }

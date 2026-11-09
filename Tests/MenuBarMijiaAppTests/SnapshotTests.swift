@@ -1108,7 +1108,8 @@ struct SnapshotTests {
         let text = MenuBarStatusSummary.text(for: fixture.store)
         #expect(text.hasPrefix("MenuBarHome · "))
         #expect(text.contains("台开启"))
-        #expect(text.contains("已连接 Home Assistant"))
+        #expect(text.contains("未配置数据源"))
+        #expect(!text.contains("已连接"))
     }
 
     // MARK: - Camera live HUD audio states (#29)

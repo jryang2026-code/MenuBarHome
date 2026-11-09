@@ -1,6 +1,16 @@
 import Foundation
 import MijiaCore
 
+enum PanelHeaderCopy {
+    static func allOff(store: HomeStore, scopeName: String?) -> AllOffHeaderCopy {
+        AllOffHeaderCopy.make(
+            activeDeviceCount: store.activeDeviceCount,
+            targetNames: store.allOffTargets.map(\.name),
+            scopeName: scopeName
+        )
+    }
+}
+
 /// The one-line subtitle under the home title: what is on, plus the single most useful reading.
 struct PanelStatusLine: Equatable {
     enum Trailing: Equatable {
