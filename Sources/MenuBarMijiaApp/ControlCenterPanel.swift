@@ -267,7 +267,7 @@ public struct ControlCenterPanel: View {
                 omnibar
                     .foldOrigin { PanelFoldProbe.omnibarMinY = $0 }
                     .padding(.horizontal, 14)
-                    .padding(.bottom, 8)
+                    .padding(.bottom, 4)
 
                 if showsInputDrawer {
                     inputDrawer
@@ -301,7 +301,7 @@ public struct ControlCenterPanel: View {
                 } else {
                     browsingFilters
                         .padding(.horizontal, 14)
-                        .padding(.bottom, 8)
+                        .padding(.bottom, 4)
                 }
             }
 
@@ -420,7 +420,6 @@ public struct ControlCenterPanel: View {
                     VStack(alignment: .leading, spacing: 0) {
                         if showsScrollPreface {
                             scrollPreface
-                                .padding(.bottom, 2)
                         }
                         VStack(alignment: .leading, spacing: 11) {
                             if search.isSearching {
@@ -455,7 +454,7 @@ public struct ControlCenterPanel: View {
                         }
                     }
                     .padding(.horizontal, 13)
-                    .padding(.top, showsScrollPreface ? 2 : 10)
+                    .padding(.top, showsScrollPreface ? 0 : 10)
                     .padding(.bottom, store.undoBanner != nil || store.toastNotice != nil ? 48 : 12)
                 }
                 .onChange(of: pendingScrollToDeviceId) { _, targetId in
