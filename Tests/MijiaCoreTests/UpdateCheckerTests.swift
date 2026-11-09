@@ -602,6 +602,146 @@ struct UpdateCheckerTests {
         }
     }
 
+    private static func runToolOutput(_ executable: String, _ arguments: [String]) -> Data? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        let outPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        while process.isRunning {
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        return process.terminationStatus == 0 ? data : nil
+    }
+
+    /// Serializes the attach work inside this process: Swift Testing runs test cases and their
+    /// repetitions in parallel, and two attaches at once are what `hdiutil` answers with
+    /// "Resource temporarily unavailable".
+    private final class HdiutilGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var isBusy = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        func acquire() async {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if !isBusy {
+                    isBusy = true
+                    lock.unlock()
+                    continuation.resume()
+                } else {
+                    waiters.append(continuation)
+                    lock.unlock()
+                }
+            }
+        }
+
+        func release() {
+            lock.lock()
+            if waiters.isEmpty {
+                isBusy = false
+                lock.unlock()
+            } else {
+                let next = waiters.removeFirst()
+                lock.unlock()
+                next.resume()
+            }
+        }
+    }
+
+    private static let hdiutilGate = HdiutilGate()
+
+    /// A machine-wide lock around the attach work. Two checkouts on this Mac share one mount
+    /// table, and attaches at the same time are what it answers with "Resource temporarily
+    /// unavailable". `flock` releases on process death, so an interrupted run cannot leave it
+    /// held.
+    private final class CrossProcessLock: @unchecked Sendable {
+        private let path: String
+        private var descriptor: Int32?
+
+        init(name: String) {
+            path = FileManager.default.temporaryDirectory.appendingPathComponent(name).path
+        }
+
+        /// False when another process held the lock for the whole wait; the caller runs anyway and
+        /// lets the attach retries decide.
+        func acquire(timeout: Duration = .seconds(120)) async -> Bool {
+            let deadline = ContinuousClock.now + timeout
+            while true {
+                let fd = open(path, O_CREAT | O_RDWR, 0o644)
+                guard fd >= 0 else { return false }
+                if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+                    descriptor = fd
+                    return true
+                }
+                close(fd)
+                guard ContinuousClock.now < deadline else { return false }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+
+        func release() {
+            guard let descriptor else { return }
+            flock(descriptor, LOCK_UN)
+            close(descriptor)
+            self.descriptor = nil
+        }
+    }
+
+    private static let hdiutilLock = CrossProcessLock(name: "MenuBarHome-live-driver.lock")
+
+    /// Whole-image device entries (`/dev/diskN`) of attached images whose `image-path` satisfies
+    /// `matches`. Reading `hdiutil info` keeps this test from detaching a volume another checkout
+    /// is still using.
+    private static func imageDevices(where matches: (String) -> Bool) -> [String] {
+        guard let data = runToolOutput("/usr/bin/hdiutil", ["info", "-plist"]),
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              let images = plist["images"] as? [[String: Any]] else { return [] }
+        var devices: [String] = []
+        for image in images {
+            guard let path = image["image-path"] as? String, matches(path),
+                  let entities = image["system-entities"] as? [[String: Any]],
+                  let device = entities.compactMap({ $0["dev-entry"] as? String }).first else { continue }
+            devices.append(device)
+        }
+        return devices
+    }
+
+    private static func detach(_ devices: [String]) {
+        for device in devices {
+            try? runTool("/usr/bin/hdiutil", ["detach", device, "-force"])
+        }
+    }
+
+    /// Detaches only the images this run created: their `image-path` is inside `rootDir`.
+    private static func detachImages(beneath rootDir: URL) {
+        let root = rootDir.resolvingSymlinksInPath().path
+        detach(imageDevices { path in
+            URL(fileURLWithPath: path).resolvingSymlinksInPath().path.hasPrefix(root)
+        })
+    }
+
+    /// An interrupted earlier run leaves its image attached and counts against the system mount
+    /// limit. A live checkout still holds a DMG created seconds ago, so only images this test's
+    /// own `live-driver-*` naming owns that are old — or whose file is already gone — are
+    /// detached. A concurrent run is never touched.
+    private static func detachStaleLiveDriverImages() {
+        let fileManager = FileManager.default
+        let cutoff = Date().addingTimeInterval(-10 * 60)
+        let stale = imageDevices { path in
+            let url = URL(fileURLWithPath: path)
+            guard url.deletingLastPathComponent().lastPathComponent.hasPrefix("live-driver-"),
+                  url.lastPathComponent.hasPrefix("MenuBarHome-") else { return false }
+            guard let attributes = try? fileManager.attributesOfItem(atPath: path),
+                  let modified = attributes[.modificationDate] as? Date else { return true }
+            return modified < cutoff
+        }
+        detach(stale)
+    }
+
     private static func makeSignedMachOAppBundle(
         in directory: URL,
         bundleID: String = AppUpdater.expectedBundleIdentifier,
@@ -629,7 +769,19 @@ struct UpdateCheckerTests {
     func liveDriverUnpacksAndVerifiesSignedBundles() async throws {
         let rootDir = FileManager.default.temporaryDirectory.appendingPathComponent("live-driver-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: rootDir) }
+        // One attach at a time in this process and on this Mac, and detach this run's image
+        // whatever happens: a leaked image counts against the system mount limit and makes the
+        // next attach fail.
+        await Self.hdiutilGate.acquire()
+        let locked = await Self.hdiutilLock.acquire()
+        defer {
+            Self.detachImages(beneath: rootDir)
+            Self.hdiutilLock.release()
+            Self.hdiutilGate.release()
+            try? FileManager.default.removeItem(at: rootDir)
+        }
+        #expect(locked, "another checkout held the hdiutil lock for two minutes")
+        Self.detachStaleLiveDriverImages()
 
         let missingPinRequirement = AppUpdater.codeSigningRequirement(
             bundleIdentifier: AppUpdater.expectedBundleIdentifier,
@@ -666,9 +818,12 @@ struct UpdateCheckerTests {
             to: dmgSrcDir.appendingPathComponent("MenuBarHome.app", isDirectory: true)
         )
         let dmgURL = rootDir.appendingPathComponent("MenuBarHome-1.5.0.dmg")
+        // A volume name another checkout still has mounted makes `hdiutil create` answer
+        // "Resource busy"; the suffix keeps two checkouts out of each other's way.
+        let volumeName = "MenuBarHome 1.5.0 \(UUID().uuidString.prefix(8))"
         try Self.runTool(
             "/usr/bin/hdiutil",
-            ["create", "-volname", "MenuBarHome 1.5.0", "-srcfolder", dmgSrcDir.path, "-ov", "-format", "UDZO", dmgURL.path]
+            ["create", "-volname", volumeName, "-srcfolder", dmgSrcDir.path, "-ov", "-format", "UDZO", dmgURL.path]
         )
 
         let dmgDest = rootDir.appendingPathComponent("dmg-dest", isDirectory: true)
