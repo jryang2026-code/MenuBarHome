@@ -295,6 +295,176 @@ struct PanelHealthTests {
         }
     }
 
+    @Test("An expired Mi session still controls a LAN LG TV; the Mi light stays refused")
+    func blockedSessionDoesNotBlockLGViaLAN() async throws {
+        let lgTV = SmartDevice(
+            id: LGWebOSProtocol.deviceId,
+            name: "LG C2 电视",
+            roomId: "ke_ting",
+            roomName: "客厅",
+            model: "lg.webos.oled42c2pca",
+            isOnline: true,
+            kind: .tv(TVSpec(
+                mediaEntityId: LGWebOSProtocol.mediaEntityId,
+                state: "standby",
+                volumePercent: 18,
+                currentSource: "HDMI 1",
+                availableSources: ["HDMI 1", "HDMI 2"]
+            ))
+        )
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(devices: [
+            lgTV,
+            try #require(Self.lampHome.devices.first),
+        ]))
+        let store = try await makeStore(backend: .xiaomiCloud, session: expiredSession(), provider: provider)
+        store.lgWebOSClient = LGWebOSClient(
+            config: LGWebOSConfig(isEnabled: false),
+            onDeviceUpdated: { _ in },
+            onClientKeyRegistered: { _ in },
+            onSecurityFailure: { _ in }
+        )
+        #expect(store.miSessionBlocksControl)
+
+        try await L10n.$overrideLanguage.withValue(.zhHans) {
+            // The card tap is answered over the LAN: no expiry toast, nothing sent to the provider.
+            let tv = try #require(store.devices.first { $0.id == LGWebOSProtocol.deviceId })
+            let task = try #require(store.togglePrimary(tv))
+            #expect(await task.value)
+            #expect(store.toastNotice == nil)
+            #expect(await provider.executedCommands.isEmpty)
+            #expect(store.devices.first { $0.id == LGWebOSProtocol.deviceId }?.isActiveOn == true)
+
+            // The drawer's own LAN controls pass the same gate (`controllableDevice`).
+            store.grokBallCelebrationUntil = nil
+            store.toggleTVMute(LGWebOSProtocol.deviceId)
+            for _ in 0..<500 {
+                if store.grokBallCelebrationUntil != nil { break }
+                await Task.yield()
+            }
+            #expect(store.grokBallCelebrationUntil != nil)
+            #expect(store.toastNotice == nil)
+            if case .tv(let spec)? = store.devices.first(where: { $0.id == LGWebOSProtocol.deviceId })?.kind {
+                #expect(spec.isMuted)
+            } else {
+                Issue.record("the LG TV row is missing")
+            }
+
+            // A Mi light still sends nothing and explains the expired session.
+            let lamp = try #require(store.devices.first { $0.id == "lamp" })
+            #expect(store.togglePrimary(lamp) == nil)
+            #expect(store.toastNotice?.message == "米家登录已过期")
+            #expect(store.toastNotice?.persistent == true)
+            #expect(store.toastNotice?.action == ToastAction(title: "扫码", kind: .presentMiReauth))
+            #expect(await provider.executedCommands.isEmpty)
+        }
+    }
+
+    @Test("A blocked toggle leaves no optimistic lock or fake row on a cover")
+    func blockedCoverToggleLeavesNoLock() async throws {
+        let cover = SmartDevice(
+            id: "curtain",
+            name: "窗帘",
+            roomId: "room",
+            roomName: "书房",
+            model: "lumi.curtain",
+            isOnline: true,
+            kind: .cover(CoverSpec(
+                entityId: "cover.curtain",
+                subtype: .curtain,
+                positionPercent: 0,
+                positionWritable: true,
+                openDescription: "open",
+                closeDescription: "close"
+            ))
+        )
+        let store = try await makeStore(
+            backend: .xiaomiCloud,
+            session: expiredSession(),
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [cover]))
+        )
+        #expect(store.miSessionBlocksControl)
+        let row = try #require(store.devices.first)
+        #expect(store.togglePrimary(row) == nil)
+        #expect(store.optimisticLockUntil[cover.id] == nil, "a refused tap takes no row lock")
+        #expect(store.devices.first == cover, "a refused tap shows no fake row")
+        #expect(store.toastNotice?.message == "米家登录已过期")
+    }
+
+    @Test("All Off of only LAN TVs runs while every Mi session is expired")
+    func blockedSessionAllowsLGOnlyAllOff() async throws {
+        let lgTV = SmartDevice(
+            id: LGWebOSProtocol.deviceId,
+            name: "LG C2 电视",
+            roomId: "ke_ting",
+            roomName: "客厅",
+            model: "lg.webos.oled42c2pca",
+            isOnline: true,
+            kind: .tv(TVSpec(
+                mediaEntityId: LGWebOSProtocol.mediaEntityId,
+                state: "on",
+                volumePercent: 18
+            ))
+        )
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(devices: [lgTV]))
+        let store = try await makeStore(backend: .xiaomiCloud, session: expiredSession(), provider: provider)
+        store.lgWebOSClient = LGWebOSClient(
+            config: LGWebOSConfig(isEnabled: false),
+            onDeviceUpdated: { _ in },
+            onClientKeyRegistered: { _ in },
+            onSecurityFailure: { _ in }
+        )
+        #expect(store.miSessionBlocksControl)
+
+        let task = try #require(store.turnAllOff(), "an all-LAN 全关 does not need the Mi session")
+        await task.value
+        #expect(store.toastNotice == nil)
+        #expect(await provider.executedCommands.isEmpty)
+        #expect(store.devices.first { $0.id == LGWebOSProtocol.deviceId }?.isActiveOn == false)
+        #expect(store.undoBanner != nil)
+    }
+
+    @Test("All Off with no device on is a result, not an error")
+    func allOffWithNothingOnIsNotAnError() async throws {
+        let store = try await makeStore()
+        await L10n.$overrideLanguage.withValue(.zhHans) {
+            let result = await store.executeBuiltInURLScene(.allOff)
+            #expect(result.message == "当前没有开启的设备")
+            #expect(!result.isError)
+        }
+    }
+
+    @Test("An All Off link reports the expiry that stops its batch midway")
+    func allOffURLReportsMidBatchExpiry() async throws {
+        let provider = MockHomeProvider(snapshot: Self.twoLampHome)
+        let store = try await makeStore(backend: .xiaomiCloud, session: validSession(), provider: provider)
+        #expect(!store.miSessionBlocksControl)
+
+        await provider.holdNextExecute(forTarget: "light.a")
+        await provider.setFailingTargets(["light.a"])
+        let link = Task { await store.executeBuiltInURLScene(.allOff) }
+        for _ in 0..<1_000 {
+            if await provider.executeStarted >= 1 { break }
+            await Task.yield()
+        }
+        #expect(await provider.executeStarted == 1)
+
+        // The session expires while the first command is in flight.
+        store.miSessionExpiresAt = expiredAt
+        store.miAccounts = [MiAccount(session: expiredSession())]
+        #expect(store.miSessionBlocksControl)
+        await provider.releaseExecute()
+
+        await L10n.$overrideLanguage.withValue(.zhHans) {
+            let result = await link.value
+            #expect(result.isError)
+            #expect(result.message == "米家登录已过期", "the link must not report the success banner it captured first")
+        }
+        #expect(store.undoBanner == nil, "a batch refused by the session leaves no banner")
+        #expect(store.devices.allSatisfy { $0.isActiveOn }, "the refused batch puts its rows back")
+        #expect(store.toastNotice?.message == "米家登录已过期")
+        #expect(store.toastNotice?.persistent == true)
+    }
+
     private func health(_ store: HomeStore) -> PanelHealth {
         store.panelHealth
     }
@@ -317,6 +487,27 @@ struct PanelHealthTests {
             isOnline: true,
             kind: .light(LightSpec(entityId: "light.lamp", isOn: true, brightnessPercent: 80))
         )
+    ])
+
+    private static let twoLampHome = SynthesizedHome(devices: [
+        SmartDevice(
+            id: "lamp-a",
+            name: "台灯 A",
+            roomId: "room",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.a", isOn: true))
+        ),
+        SmartDevice(
+            id: "lamp-b",
+            name: "台灯 B",
+            roomId: "room",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.b", isOn: true))
+        ),
     ])
 
     @discardableResult

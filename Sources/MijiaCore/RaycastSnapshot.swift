@@ -463,11 +463,19 @@ extension HomeStore {
 
         case .allOff:
             let targetCount = allOffTargets.count
-            guard turnAllOff() != nil else {
+            guard let task = turnAllOff() else {
+                // "Nothing to turn off" is a result, not a failure; only the expired-session
+                // refusal raises an error.
                 let fallback = L10n.tr("当前没有开启的设备", "No active devices are currently on")
-                return (toastNotice?.message ?? fallback, toastNotice?.isError ?? true)
+                return (toastNotice?.message ?? fallback, toastNotice?.isError ?? miSessionBlocksControl)
             }
             let bannerTitle = undoBanner?.title ?? L10n.tr("已关闭 \(targetCount) 台设备", "Turned off \(targetCount) device(s)")
+            // A session that expires mid-batch removes the banner and leaves the persistent expiry
+            // toast; awaiting the batch reports that instead of the success title captured above.
+            await task.value
+            if let toast = toastNotice, toast.isError, toast.persistent {
+                return (toast.message, true)
+            }
             return (bannerTitle, false)
 
         case .undo:

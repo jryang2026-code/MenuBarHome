@@ -253,6 +253,25 @@ jobs:
           # 和 release.yml 共用一份 release 产物；tag 读得到 main 的缓存，反过来不行。
           shared-key: windows-release-build
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Read the Tauri CLI version for the tools cache key
+        id: tauri-cli
+        shell: bash
+        # package-lock.json only: the key follows the CLI that downloads the bundler tools, not the
+        # rest of the dependency tree.
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package-lock.json').packages['node_modules/@tauri-apps/cli'].version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      # Tauri downloads NSIS 3.13 and WiX 3.14 from GitHub Releases on every cold run (~125 MB
+      # extracted) and answers 504 outages with `failed to bundle project: http status: 504`.
+      # Cache both toolsets; the key only moves when the CLI version does. Save on main only, like
+      # linux-core, so PR runs do not fill the 10 GB Actions cache.
+      - name: Restore the Tauri bundler tools cache
+        id: tauri-tools-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~\AppData\Local\tauri
+          key: tauri-bundler-tools-v1-${{ runner.os }}-${{ steps.tauri-cli.outputs.version }}
       - name: Install frontend & Tauri CLI dependencies
         run: npm ci
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -260,7 +279,34 @@ jobs:
           name: camera-bin
           path: windows/src-tauri/camera-bin
       - name: Build Windows Tauri installer (.exe & .msi)
-        run: npx tauri build -- --locked
+        shell: pwsh
+        # A cold run or a cache miss still downloads the bundler tools, so retry once when the only
+        # failure is an HTTP 5xx download. Compile errors do not match and fail immediately.
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'tauri-build.log'
+          Remove-Item $log -ErrorAction SilentlyContinue
+          function Invoke-TauriBuild {
+            & npx tauri build -- --locked 2>&1 | Tee-Object -FilePath $log -Append | Out-Host
+            $script:tauriExitCode = $LASTEXITCODE
+          }
+          Invoke-TauriBuild
+          $exitCode = $script:tauriExitCode
+          if ($exitCode -ne 0) {
+            $output = if (Test-Path $log) { Get-Content $log -Raw } else { '' }
+            if ($output -match 'http status:\s*5\d\d') {
+              Write-Host '::warning::Tauri bundler download returned an HTTP 5xx; retrying once'
+              Invoke-TauriBuild
+              $exitCode = $script:tauriExitCode
+            }
+          }
+          if ($null -eq $exitCode) { $exitCode = 1 }
+          exit $exitCode
+      - name: Save the Tauri bundler tools cache
+        if: success() && github.ref == 'refs/heads/main' && steps.tauri-tools-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~\AppData\Local\tauri
+          key: ${{ steps.tauri-tools-cache.outputs.cache-primary-key }}
       - name: Collect Windows installers
         shell: bash
         run: |

@@ -17,9 +17,11 @@ extension HomeStore {
 
     // MARK: - Primary Toggle & Manual Light Memory
 
+    /// Shows the persistent expiry toast and returns true when the write must be refused.
+    /// `needsMi` is false for a command the LAN LG client answers, which needs no Mi session.
     @discardableResult
-    func rejectWritesBlockedByMiSession() -> Bool {
-        guard miSessionBlocksControl else { return false }
+    func rejectWritesBlockedByMiSession(needsMi: Bool = true) -> Bool {
+        guard needsMi, miSessionBlocksControl else { return false }
         showToast(
             L10n.tr("米家登录已过期", "Xiaomi Home session expired"),
             isError: true,
@@ -31,7 +33,8 @@ extension HomeStore {
 
     @discardableResult
     public func togglePrimary(_ device: SmartDevice) -> Task<Bool, Never>? {
-        guard !rejectWritesBlockedByMiSession() else { return nil }
+        // A tap on an LG TV is answered over the LAN, so the expired Mi session does not refuse it.
+        guard !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(device)) else { return nil }
         guard device.isOnline else {
             showToast(L10n.tr("\(device.name) 当前离线（可能断电）", "\(device.name) is offline (unplugged)"), isError: true)
             return nil
@@ -224,6 +227,19 @@ extension HomeStore {
             return nil
         }
 
+        // A cover is write-only: the motor reports its position only after it moves, so the
+        // commanded row and travel origin are shown and locked before the send. A snapshot that
+        // lands while the command is in flight is then held instead of replacing the row and
+        // dropping the origin the takeover rule needs (#298 follow-up). The unexpired lock this
+        // tap replaces is kept so a failed send can put it back.
+        var coverWrite: OptimisticWrite?
+        var coverPriorLockUntil: ContinuousClock.Instant?
+        if case .cover = updated.kind {
+            let now = ContinuousClock.now
+            coverPriorLockUntil = optimisticLockUntil[device.id].flatMap { $0 > now ? $0 : nil }
+            coverWrite = beginOptimisticWrite(from: previous, to: updated, lock: .seconds(8))
+        }
+
         return Task {
             defer { self.readBackTickets.finish(device.id, ticket: ticket) }
             guard self.controlContextID == context else { return false }
@@ -251,9 +267,27 @@ extension HomeStore {
                 }
             } catch {
                 guard self.controlContextID == context else { return false }
-                // A newer tap may own the device by now; only an unclaimed failure drops our origin.
+                // A newer tap may own the device by now; only an unclaimed failure drops what
+                // this tap showed. A cover tap restores the pre-tap row and releases its early
+                // lock; the origin it wrote goes back to the value it displaced.
                 if self.readBackTickets.isLatest(device.id, ticket: ticket) {
-                    self.discardCoverOrigin(coverOrigin, deviceId: device.id, revision: lockRevision)
+                    if let coverWrite {
+                        // A report that confirmed travel removes the lock entry without bumping
+                        // the revision, so the entry must still exist for this write to own the
+                        // row; the same rule guards the batch rollback. Only then does the tap
+                        // restore its pre-tap row, the lock it displaced, and that lock's origin.
+                        if self.ownsRow(coverWrite), self.optimisticLockUntil[device.id] != nil {
+                            self.revert(coverWrite)
+                            if let coverPriorLockUntil {
+                                self.optimisticLockUntil[device.id] = coverPriorLockUntil
+                                if let prior = coverOrigin?.prior {
+                                    self.coverCommandOrigins[device.id] = prior
+                                }
+                            }
+                        }
+                    } else {
+                        self.discardCoverOrigin(coverOrigin, deviceId: device.id, revision: lockRevision)
+                    }
                 }
                 self.showToast(L10n.tr("\(device.name) 响应失败", "\(device.name) failed to respond"), isError: true)
                 return false

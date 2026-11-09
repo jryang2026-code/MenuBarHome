@@ -206,10 +206,19 @@ struct NoticeToastBanner: View {
 
 @MainActor
 enum ToastNoticeActions {
+    /// The QR sign-in view lives inside the control-center panel, which the Settings window does
+    /// not host. Tests replace this to observe the reveal without a running app.
+    static var revealPanel: () -> Void = {
+        MenuBarPanelController.shared.showPanel()
+    }
+
     static func perform(_ action: ToastAction, store: HomeStore) {
         switch action.kind {
         case .presentMiReauth:
             store.presentMiReauth()
+            // The QR view lives in the panel, not in Settings. Re-showing an open panel is a no-op
+            // for the drop-in animation, so the panel's own toast can take this path too.
+            revealPanel()
         case .openConnectionSettings:
             SettingsWindowOpener.shared.show(tab: .connection)
         }

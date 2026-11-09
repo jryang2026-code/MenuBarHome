@@ -207,16 +207,22 @@ struct CurtainDeviceTests {
     @MainActor
     func tapOpensClosedAndClosesOpenCurtain() async throws {
         let (closed, _, _) = try singleTrackHome(position: 0, status: 0)
-        let closedStore = try await makeStore([closed])
-        #expect(await closedStore.0.togglePrimary(try #require(closedStore.0.devices.first))?.value == true)
-        #expect(await closedStore.1.executedCommands == [.setSelectOption(entityId: "miot:curtain1:2", option: "Open")])
-        #expect(closedStore.0.devices.first?.coverPosition == 100)
+        let (closedStore, closedMock) = try await makeStore([closed])
+        let closedCard = try #require(closedStore.devices.first)
+        let closedBefore = closedStore.snapshotGeneration
+        #expect(await closedStore.togglePrimary(closedCard)?.value == true)
+        try await closedStore.settleCoverCommand(closedCard.id, after: closedBefore)
+        #expect(await closedMock.executedCommands == [.setSelectOption(entityId: "miot:curtain1:2", option: "Open")])
+        #expect(closedStore.devices.first?.coverPosition == 100)
 
         let (open, _, _) = try singleTrackHome(position: 65, status: 0)
-        let openStore = try await makeStore([open])
-        #expect(await openStore.0.togglePrimary(try #require(openStore.0.devices.first))?.value == true)
-        #expect(await openStore.1.executedCommands == [.setSelectOption(entityId: "miot:curtain1:2", option: "Close")])
-        #expect(openStore.0.devices.first?.coverPosition == 0)
+        let (openStore, openMock) = try await makeStore([open])
+        let openCard = try #require(openStore.devices.first)
+        let openBefore = openStore.snapshotGeneration
+        #expect(await openStore.togglePrimary(openCard)?.value == true)
+        try await openStore.settleCoverCommand(openCard.id, after: openBefore)
+        #expect(await openMock.executedCommands == [.setSelectOption(entityId: "miot:curtain1:2", option: "Close")])
+        #expect(openStore.devices.first?.coverPosition == 0)
     }
 
     @Test("Each dual-track card controls only its own track")
@@ -226,9 +232,14 @@ struct CurtainDeviceTests {
         let (store, mock) = try await makeStore([drape, lace])
 
         let drapeCard = try #require(store.devices.first { $0.id == "dual1.s2" })
+        let drapeBefore = store.snapshotGeneration
         #expect(await store.togglePrimary(drapeCard)?.value == true)
+        try await store.settleCoverCommand(drapeCard.id, after: drapeBefore)
+
         let laceCard = try #require(store.devices.first { $0.id == "dual1.s3" })
+        let laceBefore = store.snapshotGeneration
         #expect(await store.togglePrimary(laceCard)?.value == true)
+        try await store.settleCoverCommand(laceCard.id, after: laceBefore)
 
         #expect(await mock.executedCommands == [
             .setSelectOption(entityId: "miot:dual1:2", option: "Open"),
@@ -247,22 +258,32 @@ struct CurtainDeviceTests {
         let (store, mock) = try await makeStore([closed])
         let card = try #require(store.devices.first)
 
+        let openBefore = store.snapshotGeneration
         store.setCoverMotor(card.id, description: "Open")
-        await waitUntil { await mock.executedCommands.count == 1 }
+        try store.extendCoverLock(card.id)
+        await store.waitForCoverSnapshot(after: openBefore)
         #expect(await mock.executedCommands == [.setSelectOption(entityId: "miot:curtain1:2", option: "Open")])
         #expect(store.devices.first?.coverPosition == 100)
 
+        let pauseBefore = store.snapshotGeneration
         store.setCoverMotor(card.id, description: "Pause")
-        await waitUntil { await mock.executedCommands.count == 2 }
+        try store.extendCoverLock(card.id)
+        await store.waitForCoverSnapshot(after: pauseBefore)
         #expect(await mock.executedCommands.last == .setSelectOption(entityId: "miot:curtain1:2", option: "Pause"))
 
+        let closeBefore = store.snapshotGeneration
         store.setCoverMotor(card.id, description: "Close")
-        await waitUntil { await mock.executedCommands.count == 3 }
+        try store.extendCoverLock(card.id)
+        // The parked echo reports the close's own position, so its takeover ends the lock; waiting
+        // for it first keeps it from landing after the slider write below.
+        await store.waitForCoverSnapshot(after: closeBefore)
         #expect(await mock.executedCommands.last == .setSelectOption(entityId: "miot:curtain1:2", option: "Close"))
         #expect(store.devices.first?.coverPosition == 0)
 
+        let sliderBefore = store.snapshotGeneration
         store.setCoverPosition(card.id, percent: 37)
-        await waitUntil { await mock.executedCommands.count == 4 }
+        try store.extendCoverLock(card.id)
+        await store.waitForCoverSnapshot(after: sliderBefore)
         #expect(await mock.executedCommands.last == .setNumberValue(entityId: "miot:curtain1:2", value: 37))
         #expect(store.devices.first?.coverPosition == 37)
     }
@@ -274,13 +295,15 @@ struct CurtainDeviceTests {
         let (store, mock) = try await makeStore([closed])
         let card = try #require(store.devices.first)
 
+        let sliderBefore = store.snapshotGeneration
         store.setCoverPosition(card.id, percent: 70)
-        await waitUntil { await mock.executedCommands == [.setNumberValue(entityId: "miot:curtain1:2", value: 70)] }
+        // Let the slider's echo land before the pause sends, so the pause reads the settled row.
+        try await store.settleCoverCommand(card.id, after: sliderBefore)
 
         let moved = try #require(store.devices.first)
         #expect(await store.togglePrimary(moved)?.value == true)
-        #expect(await mock.executedCommands.last == .setSelectOption(entityId: "miot:curtain1:2", option: "Pause"))
         #expect(store.devices.first?.coverPosition == 70)
+        #expect(await mock.executedCommands.last == .setSelectOption(entityId: "miot:curtain1:2", option: "Pause"))
     }
 
     @Test("A curtain card shows the position the device reports after a poll")

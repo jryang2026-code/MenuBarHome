@@ -4739,6 +4739,27 @@ describe("Appliance and generic cards (#9)", () => {
     target: { kind: "property" as const, entityId: "miot:did_tank:2", piid: 4 },
   };
 
+  /**
+   * A generic facet outside the low-risk whitelist. macOS `ManualControlPolicy` asks before every
+   * direction of one, unlike `childLock` above, which is a low-risk token and writes directly.
+   */
+  const pump = {
+    id: "2.5",
+    kind: "toggle" as const,
+    name: "pump",
+    title: null,
+    serviceName: "fish-tank",
+    unit: null,
+    scale: null,
+    value: false,
+    options: [],
+    range: null,
+    isWritable: true,
+    writesByDefault: false,
+    isHighValue: false,
+    target: { kind: "property" as const, entityId: "miot:did_tank:2", piid: 5 },
+  };
+
   /** One app on a demo connection, so its own listeners own the injected cards. */
   const mount = (devices: SmartDevice[], facets: Record<string, readonly FacetControl[]> = {}) => {
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
@@ -4764,11 +4785,11 @@ describe("Appliance and generic cards (#9)", () => {
   });
 
   it("keeps a generic card's readings on the tile and its gated rows behind the switch", async () => {
-    const app = mount([tank], { [tank.id]: [childLock] });
+    const app = mount([tank], { [tank.id]: [pump] });
 
     assert.match(tile("miot:did_tank"), /88%/);
     await click('[data-body-device="miot:did_tank"]');
-    const gated = () => element('[data-facet-toggle="miot:did_tank|2.4"]') as HTMLButtonElement;
+    const gated = () => element('[data-facet-toggle="miot:did_tank|2.5"]') as HTMLButtonElement;
     assert.equal(gated().disabled, true, "a high-risk row needs 允许写入高级属性 first");
 
     app.settings.allowAdvancedFacetWrites = true;
@@ -4916,22 +4937,22 @@ describe("Appliance and generic cards (#9)", () => {
       value: null,
       target: { kind: "action", entityId: "miot-action:did_tank:2:9" },
     });
-    const app = mount([tank], { [tank.id]: [childLock, reset] });
+    const app = mount([tank], { [tank.id]: [pump, reset] });
     app.settings.allowAdvancedFacetWrites = true;
     app.render();
     await click('[data-body-device="miot:did_tank"]');
 
-    const lockRow = () => element('[data-facet-toggle="miot:did_tank|2.4"]');
+    const pumpRow = () => element('[data-facet-toggle="miot:did_tank|2.5"]');
     const resetRow = () => element('[data-facet-action="miot:did_tank|2.9"]');
 
-    lockRow().click();
+    pumpRow().click();
     await setImmediate();
     assert.match(document.body.textContent ?? "", /再点一次确认执行/, "the first tap only asks");
 
     resetRow().click();
     await setImmediate();
     assert.match(document.body.textContent ?? "", /再点一次确认执行/, "a different write asks again");
-    assert.match(lockRow().textContent ?? "", /关/, "and the armed write never ran");
+    assert.match(pumpRow().textContent ?? "", /关/, "and the armed write never ran");
     assert.doesNotMatch(document.body.textContent ?? "", /已执行鱼缸/);
 
     resetRow().click();

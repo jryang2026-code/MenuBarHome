@@ -30,6 +30,18 @@ struct OptimisticWrite: Sendable {
 struct MiSessionWriteBlocked: Error {}
 
 extension HomeStore {
+    /// True when the LAN client answers this command, so an expired Mi session cannot block it.
+    func lgClientServes(_ command: DeviceCommand) -> Bool {
+        lgWebOSClient != nil && LGWebOSProtocol.isLGEntity(command.targetEntityId)
+    }
+
+    /// True when this row is an LG TV the LAN client controls, so its card and drawer writes need
+    /// no Mi session. A TV row without a running client falls back to the provider and does.
+    func lgClientServes(_ device: SmartDevice) -> Bool {
+        guard lgWebOSClient != nil, case .tv(let spec) = device.kind else { return false }
+        return LGWebOSProtocol.isLGEntity(spec.mediaEntityId)
+    }
+
     @discardableResult
     func lockOptimistic(_ deviceId: String, duration: Duration) -> UInt64 {
         let rev = (optimisticLockRevision[deviceId] ?? 0) &+ 1
@@ -39,12 +51,14 @@ extension HomeStore {
     }
 
     func executeDeviceCommand(_ command: DeviceCommand) async throws {
-        if rejectWritesBlockedByMiSession() {
-            throw MiSessionWriteBlocked()
-        }
         if LGWebOSProtocol.isLGEntity(command.targetEntityId), let lgClient = lgWebOSClient {
             try await lgClient.execute(command)
         } else {
+            // The guard sits on the Mi provider call, not on every command: a LAN TV write does
+            // not depend on the expired Xiaomi Home session.
+            if rejectWritesBlockedByMiSession() {
+                throw MiSessionWriteBlocked()
+            }
             try await provider.execute(command)
         }
     }
@@ -129,11 +143,12 @@ extension HomeStore {
 
     // MARK: Card controls
 
-    /// The row a card control acts on, after the lock-screen check.
+    /// The row a card control acts on, after the lock-screen and expired-session checks.
     func controllableDevice(_ deviceId: String) -> SmartDevice? {
-        guard !rejectWritesBlockedByMiSession() else { return nil }
+        guard let device = devices.first(where: { $0.id == deviceId }) else { return nil }
+        guard !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(device)) else { return nil }
         guard !rejectControlWhileLocked() else { return nil }
-        return devices.first(where: { $0.id == deviceId })
+        return device
     }
 
     /// A card control's write: show `updated`, send `command` (after `debounceKey`'s quiet period

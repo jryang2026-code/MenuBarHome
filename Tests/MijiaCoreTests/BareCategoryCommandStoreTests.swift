@@ -191,7 +191,7 @@ struct BareCategoryCommandStoreTests {
 
         store.selectRoom(nil)
         gate.continuation.finish()
-        for _ in 0..<50 where !store.scheduledCommands.isEmpty {
+        for _ in 0..<50 where await mock.executedCommands.count < 2 {
             try await Task.sleep(for: .milliseconds(20))
         }
         #expect(store.scheduledCommands.isEmpty)
