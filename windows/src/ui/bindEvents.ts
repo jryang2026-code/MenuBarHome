@@ -699,9 +699,15 @@ import { bindPanelInput } from "./panelKeyboard.js";
      * A high-risk manual write asks for one more tap on the same card within a few seconds, and
      * the arm is bound to that exact command: a different high-risk write on the same device
      * re-arms instead of spending the previous tap. The window expires so an old tap can never
-     * authorise a later write (macOS 再点一次确认).
+     * authorise a later write (macOS 再点一次确认). A control that cannot repeat its value (the
+     * climate slider) passes `explicit`, which renders one confirm button for the captured command.
      */
-    const confirmHighRisk = (deviceId: string, command: DeviceCommand, label: string): boolean => {
+    const confirmHighRisk = (
+      deviceId: string,
+      command: DeviceCommand,
+      label: string,
+      explicit?: { readonly summary: string; readonly intent: DeviceIntent },
+    ): boolean => {
       const actionKey = JSON.stringify(command);
       const armed = host.pendingHighRisk;
       if (
@@ -713,14 +719,40 @@ import { bindPanelInput } from "./panelKeyboard.js";
         host.pendingHighRisk = null;
         return true;
       }
-      host.pendingHighRisk = { deviceId, actionKey, expiresAtMs: Date.now() + 8000 };
+      host.pendingHighRisk = {
+        deviceId,
+        actionKey,
+        expiresAtMs: Date.now() + 8000,
+        ...(explicit
+          ? { confirm: { command, summary: explicit.summary, intent: explicit.intent } }
+          : {}),
+      };
       host.replyBanner = {
-        text: t("「{action}」属于高风险设备，再点一次确认执行", { action: label }),
+        text: explicit
+          ? t("「{action}」属于高风险设备，确认后执行", { action: label })
+          : t("「{action}」属于高风险设备，再点一次确认执行", { action: label }),
         source: t("需要确认"),
       };
       host.render();
       return false;
     };
+
+    host.root.querySelector("#btn-high-risk-confirm")?.addEventListener("click", () => {
+      const armed = host.pendingHighRisk;
+      if (!armed?.confirm) return;
+      host.pendingHighRisk = null;
+      if (armed.expiresAtMs <= Date.now()) {
+        host.replyBanner = { text: t("确认已过期，请重新操作"), source: t("需要确认") };
+        host.render();
+        return;
+      }
+      const dev = host.devices.find((device) => device.id === armed.deviceId);
+      if (!dev) {
+        host.render();
+        return;
+      }
+      void host.executeSingleCommand(dev, armed.confirm.command, armed.confirm.summary, armed.confirm.intent);
+    });
 
     /** Three `|`-separated parts, for rows whose value is itself a segment (`id|control|value`). */
     const splitChoice = (raw: string | undefined): [string, string, string] | null => {
@@ -740,7 +772,11 @@ import { bindPanelInput } from "./panelKeyboard.js";
         return;
       }
       if (host.waitingDeviceIds.has(id)) return;
-      const nextOn = !isDeviceActiveOn(dev);
+      // A momentary plug button only fires an activation; macOS always sends `.power(true)`,
+      // even when Home Assistant still reports the button as on (#9).
+      const isMomentaryPlug =
+        dev.kind.kind === "plug" && dev.kind.switchEntityId.startsWith("button.");
+      const nextOn = isMomentaryPlug || !isDeviceActiveOn(dev);
       const powerIntent: DeviceIntent = { targetId: dev.id, operation: { kind: "power", isOn: nextOn } };
       const cmds = IntentValidator.commandsForIntent(powerIntent, dev);
       const firstCmd = cmds[0];
@@ -797,15 +833,9 @@ import { bindPanelInput } from "./panelKeyboard.js";
             toggleDeviceById(id);
           }
           host.cameraLive.openCameraLiveView(id);
-        } else if (k === "light" || k === "climate" || k === "fan" || k === "fridge" || k === "speaker") {
-          if (!hasDetailDrawer(dev, host.deviceFacets[id] ?? [])) return;
-          host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
-          host.render();
-        } else if (
-          (k === "appliance" || k === "generic") &&
-          hasDetailDrawer(dev, host.deviceFacets[id] ?? [])
-        ) {
-          // An appliance or a generic card opens its drawer from the body; its orb is the switch.
+        } else if (hasDetailDrawer(dev, host.deviceFacets[id] ?? [])) {
+          // macOS card body: after the camera special case the drawer wins, so a vacuum, plug or
+          // cover with 更多设置 rows expands instead of running its switch.
           host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
           host.render();
         } else if (writable) {
@@ -875,23 +905,19 @@ import { bindPanelInput } from "./panelKeyboard.js";
         if (!id) return;
         const dev = host.devices.find((d) => d.id === id);
         if (!dev || dev.kind.kind !== "climate") return;
-        // The slider works in display units; the command carries Celsius (#52).
+        // The slider works in display units; the command carries Celsius (#52). A refusal loses
+        // the slider position on the next render, so this prompt carries the exact command.
         const temperature = Number(toCelsius(Number(slider.value)).toFixed(2));
         const command: DeviceCommand = { kind: "setClimateTemperature", entityId: dev.kind.entityId, temperature };
         const intent: DeviceIntent = { targetId: dev.id, operation: { kind: "targetTemperature", celsius: temperature } };
-        // A refused write re-renders the panel, so the slider falls back to the real target.
+        const summary = t("已将{name}设为 {temp}", { name: dev.name, temp: formatTemperature(temperature) });
         if (
           ManualControlPolicy.requiresConfirmation(intent, host.devices) &&
-          !confirmHighRisk(dev.id, command, t("设为 {temp}", { temp: formatTemperature(temperature) }))
+          !confirmHighRisk(dev.id, command, t("设为 {temp}", { temp: formatTemperature(temperature) }), { summary, intent })
         ) {
           return;
         }
-        void host.executeSingleCommand(
-          dev,
-          command,
-          t("已将{name}设为 {temp}", { name: dev.name, temp: formatTemperature(temperature) }),
-          intent,
-        );
+        void host.executeSingleCommand(dev, command, summary, intent);
       });
     });
 

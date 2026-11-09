@@ -10,7 +10,7 @@ import {
 } from "../core/assistant.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { normalizeMiCloudRegion } from "../core/miCloudClient.js";
-import { joinsAllOffByDefault, type AssistantSuggestion, type EnvironmentReading, type FacetControl, type HomeScene, type SmartDevice } from "../core/models.js";
+import { joinsAllOffByDefault, type AssistantSuggestion, type DeviceCommand, type DeviceIntent, type EnvironmentReading, type FacetControl, type HomeScene, type SmartDevice } from "../core/models.js";
 import { withAliases, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
 import type { ConnectionMode, PersistedSettings, ReplyBannerState } from "./appTypes.js";
 import { demoDevices, demoScenes } from "./demo.js";
@@ -35,6 +35,11 @@ export interface SettingsEventsHost {
     readonly deviceId: string;
     readonly actionKey: string;
     readonly expiresAtMs: number;
+    readonly confirm?: {
+      readonly command: DeviceCommand;
+      readonly summary: string;
+      readonly intent: DeviceIntent;
+    };
   } | null;
   groupOwnerByMemberDid: Map<string, string>;
   hotkeyNeedsHint: boolean;

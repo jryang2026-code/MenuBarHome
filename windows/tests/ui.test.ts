@@ -5126,7 +5126,7 @@ describe("Manual control parity with macOS (#143)", () => {
     },
   });
 
-  const vacuum = (): SmartDevice => ({
+  const vacuumWithStatus = (status: string): SmartDevice => ({
     ...common,
     id: "vac",
     name: "扫地机",
@@ -5134,12 +5134,69 @@ describe("Manual control parity with macOS (#143)", () => {
     kind: {
       kind: "vacuum",
       entityId: "vacuum.robot",
-      status: "docked",
+      status,
       battery: 90,
       modeEntityId: null,
       currentMode: null,
       availableModes: [],
     },
+  });
+
+  const vacuum = (): SmartDevice => vacuumWithStatus("docked");
+
+  const momentaryPlug = (): SmartDevice => ({
+    ...common,
+    id: "momentary",
+    name: "书房按钮",
+    model: "cuco.plug.v3",
+    kind: {
+      kind: "plug",
+      switchEntityId: "button.wake",
+      isOn: true,
+      powerWatts: null,
+      energyKwh: null,
+      childLockEntityId: null,
+      isChildLocked: false,
+    },
+  });
+
+  const fanOnlyClimate = (): SmartDevice => ({
+    ...common,
+    id: "fan-climate",
+    name: "客厅空调",
+    model: "xiaomi.aircondition.mc5",
+    kind: {
+      kind: "climate",
+      entityId: "miot:fan-climate:2",
+      isOn: true,
+      hvacMode: "fan_only",
+      availableModes: [],
+      targetTemperature: 25,
+      currentTemperature: null,
+      minTemp: 16,
+      maxTemp: 30,
+      step: 1,
+      fanMode: "Low",
+      availableFanModes: ["Low", "High"],
+      temperatureWritable: false,
+    },
+  });
+
+  const facetControl = (deviceId: string): FacetControl => ({
+    id: "9.1",
+    kind: "toggle",
+    name: "on",
+    title: null,
+    serviceName: "switch",
+    unit: null,
+    scale: null,
+    value: true,
+    options: [],
+    range: null,
+    isWritable: true,
+    writesByDefault: true,
+    isHighValue: false,
+    target: { kind: "property", entityId: `miot:${deviceId}:9`, piid: 1 },
   });
 
   const bareFan = (): SmartDevice => ({
@@ -5274,11 +5331,92 @@ describe("Manual control parity with macOS (#143)", () => {
     assert.equal(vacuumStatus(app), "returning");
   });
 
+  it("opens the drawer from the body before falling back to the switch", async () => {
+    const app = await startWithDevices([vacuum(), garage(), plug()]);
+    app.deviceFacets = { garage: [facetControl("garage")], plug: [facetControl("plug")] };
+    app.render();
+
+    await click('[data-body-device="vac"]');
+    assert.equal(app.expandedDeviceId, "vac", "a vacuum body tap opens its drawer");
+    assert.equal(vacuumStatus(app), "docked", "and never starts a clean");
+
+    await click('[data-body-device="garage"]');
+    assert.equal(app.expandedDeviceId, "garage", "a cover with 更多设置 rows opens the drawer");
+    assert.equal(coverPosition(app), 100, "and never moves the curtain");
+
+    await click('[data-body-device="plug"]');
+    assert.equal(app.expandedDeviceId, "plug", "a plug with 更多设置 rows opens the drawer");
+    const plugKind = app.devices.find((device) => device.id === "plug")!.kind;
+    assert.ok(plugKind.kind === "plug" && !plugKind.isOn, "and never flips the plug");
+  });
+
+  it("activates a momentary plug that reports on instead of dropping the tap", async () => {
+    const app = await startWithDevices([momentaryPlug()]);
+    await click('[data-toggle-device="momentary"]');
+    assert.equal(app.pendingHighRisk?.deviceId, "momentary", "a plug power-on asks first");
+    await click('[data-toggle-device="momentary"]');
+    assert.match(document.body.textContent ?? "", /已打开书房按钮/);
+    assert.equal(document.querySelector("#btn-undo"), null, "a momentary button has no undo");
+  });
+
+  it("docks a vacuum that Home Assistant reports as on", async () => {
+    const app = await startWithDevices([vacuumWithStatus("on")]);
+    await click('[data-toggle-device="vac"]');
+    assert.equal(vacuumStatus(app), "returning");
+    assert.equal(app.pendingHighRisk, null, "docking is a de-escalation, not a hazard opt-in");
+  });
+
+  it("renders the fan row in a half-size climate drawer with no temperatures", async () => {
+    const app = await startWithDevices([fanOnlyClimate()]);
+    app.layout.tileSizes["fan-climate"] = "half";
+    app.render();
+    await click('[data-expand-device="fan-climate"]');
+    assert.ok(document.querySelector('[data-acfan="fan-climate:Low"]'), "the fan row is the drawer's content");
+    assert.ok(document.querySelector('[data-acfan="fan-climate:High"]'));
+  });
+
+  it("offers an explicit confirm for a refused heater slider and sends that exact value", async () => {
+    const app = await startWithDevices([heater()]);
+    app.layout.tileSizes["heater"] = "half";
+    app.render();
+    await click('[data-expand-device="heater"]');
+    const target = () =>
+      (app.devices.find((device) => device.id === "heater")!.kind as Extract<SmartDevice["kind"], { kind: "climate" }>).targetTemperature;
+
+    await setRange('[data-actemp="heater"]', "27");
+    assert.equal(target(), 20, "the refused write sends nothing");
+    assert.match(document.body.textContent ?? "", /确认后执行/);
+    element("#btn-high-risk-confirm").click();
+    await setImmediate();
+    assert.equal(target(), 27);
+    assert.equal(app.pendingHighRisk, null);
+  });
+
+  it("drops a slider confirmation once it expires", async () => {
+    const app = await startWithDevices([heater()]);
+    app.layout.tileSizes["heater"] = "half";
+    app.render();
+    await click('[data-expand-device="heater"]');
+    const target = () =>
+      (app.devices.find((device) => device.id === "heater")!.kind as Extract<SmartDevice["kind"], { kind: "climate" }>).targetTemperature;
+
+    await setRange('[data-actemp="heater"]', "26");
+    assert.equal(target(), 20);
+    assert.ok(app.pendingHighRisk);
+    app.pendingHighRisk = { ...app.pendingHighRisk, expiresAtMs: Date.now() - 1 };
+    await click("#btn-high-risk-confirm");
+    assert.equal(target(), 20, "an expired confirmation sends nothing");
+    assert.equal(app.pendingHighRisk, null);
+    assert.match(document.body.textContent ?? "", /确认已过期/);
+  });
+
   it("never opens an empty drawer, and opens one for a card whose only control is 更多设置", async () => {
     const app = await startWithDevices([bareFan(), lightWithFacets()]);
     assert.equal(document.querySelector('[data-expand-device="fan-bare"]'), null);
     await click('[data-body-device="fan-bare"]');
     assert.equal(app.expandedDeviceId, null);
+    const fanKind = app.devices.find((device) => device.id === "fan-bare")!.kind;
+    assert.ok(fanKind.kind === "fan" && fanKind.isOn, "a card without a drawer falls back to its switch");
 
     app.deviceFacets = {
       "light-facets": [{

@@ -500,12 +500,14 @@ export function hasDetailDrawer(device: SmartDevice, facets: readonly FacetContr
         kind.colorWritable !== false ||
         kind.availableEffects.length > 0
       );
-    case "climate":
-      return (
-        kind.temperatureWritable !== false ||
-        kind.availableModes.length > 0 ||
-        kind.availableFanModes.length > 0
-      );
+    case "climate": {
+      // Mirrors the drawer's rows: the temperature stepper, a mode pill the renderer keeps
+      // (it drops "off"), and the fan-speed row added to `renderPrimaryDrawer`.
+      const showsModes =
+        kind.availableModes.some((mode) => mode !== "off") ||
+        (!kind.entityId.startsWith("miot:") && kind.powerWritable !== false);
+      return kind.temperatureWritable !== false || showsModes || kind.availableFanModes.length > 0;
+    }
     case "fan": {
       const hasReadings =
         kind.pm25Density != null ||
@@ -530,14 +532,17 @@ export function hasDetailDrawer(device: SmartDevice, facets: readonly FacetContr
     case "fridge":
       return true;
     case "appliance":
+      // Line by line with `renderPrimaryDrawer`'s appliance rows: an empty mode list, a writable
+      // fan level without options, or humidity on an appliance that is not a room reading draws
+      // nothing, so they must not advertise a drawer.
       return (
         (kind.temperatureWritable && kind.targetTemperature !== null) ||
-        kind.modeWritable ||
+        (kind.modeWritable && kind.availableModes.length > 0) ||
+        (kind.fanLevel?.writable === true && kind.fanLevel.options.length > 0) ||
         kind.light?.writable === true ||
-        kind.fanLevel?.writable === true ||
-        kind.currentHumidity !== null ||
-        kind.statusText !== null ||
-        kind.faultText !== null ||
+        (kind.roomReading && kind.currentHumidity !== null) ||
+        Boolean(kind.statusText) ||
+        Boolean(kind.faultText) ||
         kind.remainingMinutes !== null ||
         kind.startAction !== null ||
         kind.pauseAction !== null ||
@@ -619,7 +624,9 @@ export function isDeviceActiveOn(device: SmartDevice): boolean {
     case "camera":
       return device.kind.isOn;
     case "vacuum":
-      return device.kind.status === "cleaning";
+      // macOS `VacuumSpec.isCleaning` treats both "cleaning" and Home Assistant's "on" as running,
+      // so a reported "on" docks instead of asking to start again.
+      return device.kind.status === "cleaning" || device.kind.status === "on";
     case "cover":
       return (device.kind.positionPercent ?? 0) > 0;
     case "speaker":

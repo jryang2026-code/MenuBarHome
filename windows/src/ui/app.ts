@@ -231,6 +231,15 @@ export class MenuMijiaWindowsApp {
     readonly deviceId: string;
     readonly actionKey: string;
     readonly expiresAtMs: number;
+    /**
+     * A write whose control cannot repeat the same value (the climate slider) carries the exact
+     * command so the prompt can offer one explicit confirm button instead of a second tap.
+     */
+    readonly confirm?: {
+      readonly command: DeviceCommand;
+      readonly summary: string;
+      readonly intent: DeviceIntent;
+    };
   } | null = null;
   public isShowingAssistantBar = true;
   public activeSheet: "none" | "onboarding" | "settings" = "none";

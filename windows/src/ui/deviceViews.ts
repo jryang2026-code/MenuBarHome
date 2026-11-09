@@ -117,8 +117,7 @@ import { SF_ICONS } from "./appConstants.js";
     const running = readout !== "possiblyStale" && dev.isOnline && k.isOn && k.hvacMode !== "off";
     const powerWritable = k.powerWritable !== false;
     const temperatureWritable = k.temperatureWritable !== false;
-    const canExpand =
-      temperatureWritable || k.availableModes.length > 0 || k.availableFanModes.length > 0 || facets.length > 0;
+    const canExpand = hasDetailDrawer(dev, facets);
     const open = canExpand && (forceOpen || expandedDeviceId === dev.id);
     const id = escapeHtml(dev.id);
     const modeLabel: Record<string, string> = { cool: t("制冷"), heat: t("制热"), dry: t("除湿"), fan_only: t("送风"), auto: t("自动") };
@@ -234,7 +233,8 @@ function renderPrimaryDrawer(dev: SmartDevice, escapeHtml: (value: string) => st
     if (k.kind === "climate") {
       const showTemp = k.temperatureWritable !== false;
       const showModes = k.availableModes.some((mode) => mode !== "off") || (!k.entityId.startsWith("miot:") && k.powerWritable !== false);
-      if (!showTemp && !showModes) return "";
+      const showFan = k.availableFanModes.length > 0;
+      if (!showTemp && !showModes && !showFan) return "";
       const modes: ReadonlyArray<{ readonly code: string; readonly label: string }> = [
         { code: "cool", label: t("制冷") },
         { code: "heat", label: t("制热") },
@@ -259,6 +259,14 @@ function renderPrimaryDrawer(dev: SmartDevice, escapeHtml: (value: string) => st
                 ${m.label}
               </button>
             `,
+              )
+              .join("")}
+          </div>` : ""}
+          ${showFan ? `<div class="cc-segmented-pills">
+            <span class="cc-pill-label">${t("风速")}</span>
+            ${k.availableFanModes
+              .map(
+                (fanMode) => `<button class="cc-seg-pill ${k.fanMode === fanMode ? "is-active" : ""}" data-acfan="${escapeHtml(dev.id)}:${escapeHtml(fanMode)}" aria-pressed="${k.fanMode === fanMode}">${escapeHtml(localizeFanMode(fanMode))}</button>`,
               )
               .join("")}
           </div>` : ""}
