@@ -107,6 +107,9 @@ extension HomeStore {
         hasReceivedInitialSnapshot = false
         connectedBackends = []
         deviceBackends = [:]
+        // The devices on screen belong to the previous connection until the next snapshot lands;
+        // scheduling refuses that window instead of stamping a stale list with the new sources.
+        listeningSnapshotGeneration = snapshotGeneration
         eventTask?.cancel()
         let stream = provider.events()
         eventTask = Task { [weak self] in
@@ -407,26 +410,41 @@ extension HomeStore {
         rawDeviceNames[deviceId] ?? devices.first(where: { $0.id == deviceId })?.name
     }
 
-    /// Identifies the connected home source: `demo`, `ha:<url>` or `mi:<scope>`. Sensor history and
-    /// scheduled commands are partitioned by it so one home's data never lands in another's. Nil while
-    /// a live source has no resolved session (signed out), so nothing may be armed or adopted on it.
-    /// Dual-source and multi-account setups share one scope (Home Assistant wins, Mi uses its session):
-    /// a timer set there is held back through the missed flow when its target is absent, never sent to
-    /// another home's device (ADR-0019).
+    /// Identifies the connected home source for sensor history and safety alerts: `demo`, `ha:<url>` or
+    /// `mi:<scope>`. Nil while a live source has no resolved session (signed out), so nothing may be
+    /// adopted on it. Scheduled commands no longer share this single primary value: each timer records
+    /// the whole `activeConnectionScopes` set and matches against it (ADR-0019).
     public var connectionScopeIdentifier: String? {
         if homeBackend == .demo { return "demo" }
-        if hasHASource {
-            return "ha:\(HAWebSocketProvider.canonicalHistoryScopeURL(serverURLString))"
-        }
+        if hasHASource { return homeAssistantScopeIdentifier }
         if hasMiSource { return miSessionScopeIdentifier }
         switch homeBackend {
         case .demo:
             return "demo"
         case .homeAssistant:
-            return "ha:\(HAWebSocketProvider.canonicalHistoryScopeURL(serverURLString))"
+            return homeAssistantScopeIdentifier
         case .xiaomiCloud:
             return miSessionScopeIdentifier
         }
+    }
+
+    /// The Home Assistant scope value, shaped like the `ha:` entry `syncSensorHistoryScope()` writes, so
+    /// stored timer stamps stay comparable with history scopes and with entries written by older builds.
+    var homeAssistantScopeIdentifier: String {
+        "ha:\(HAWebSocketProvider.canonicalHistoryScopeURL(serverURLString))"
+    }
+
+    /// Every source configured right now: `demo`; Home Assistant when a token is saved plus each signed-in
+    /// Xiaomi account. Timers record this set when created and arm while it still matches, so a source can
+    /// be removed without stranding timers owned by the sources that remain. With no saved source
+    /// (injected test providers, signed out) the primary scope keeps the old behavior.
+    public var activeConnectionScopes: Set<String> {
+        if homeBackend == .demo { return ["demo"] }
+        var scopes: Set<String> = []
+        if hasHASource { scopes.insert(homeAssistantScopeIdentifier) }
+        if hasMiSource { scopes.formUnion(miAccounts.map(\.id)) }
+        if scopes.isEmpty, let scope = connectionScopeIdentifier { scopes.insert(scope) }
+        return scopes
     }
 
     /// Updates `sensorHistory.connectionScope` so sensors on different Home Assistant servers,

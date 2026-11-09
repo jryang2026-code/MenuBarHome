@@ -134,7 +134,7 @@ _Avoid_: Prompt output（模型输出）、Action script（动作脚本）
 _Avoid_: Ambiguous command（模糊指令）、Whole-home command（全屋指令）
 
 **ScheduledCommand（定时指令）**：
-带有绝对触发时刻 `fireDate`、已解析 `IntentPlan` 与来源作用域 `sourceScope`（`demo` / `ha:<url>` / `mi:<scope>`）的延时控制任务，持久化在本地 `UserDefaults`（`assistant_scheduled_commands_v1`）。只有当前连接作用域的条目会被武装和展示，其他作用域的条目照常保存在磁盘、保存时不会被删除；目标设备或场景不在当前家庭时不执行，转入 missed 待确认（ADR-0019）。应用重启时未到期项按剩余时间继续倒计时；退出期间已过期项转入 `missedScheduledCommands` 待确认队列并保留在磁盘，必须由用户点击「立即执行」或「忽略」后才执行或移除，绝不在后台静默触发过期硬件动作。
+带有绝对触发时刻 `fireDate`、已解析 `IntentPlan` 与创建时连接源集合 `sourceScopes`（`demo` / `ha:<url>` / `mi:<scope>` 的子集）的延时控制任务，持久化在本地 `UserDefaults`（`assistant_scheduled_commands_v1`）。旧字段 `sourceScope` 仍可解码并作为单元素集合使用。条目在当前连接源集合与盖章有交集、且不跨越不同 Home Assistant 服务器时才会被武装和展示；其他作用域的条目照常保存在磁盘、保存时不会被删除。目标设备或场景不在当前家庭时不执行，转入 missed 待确认；新建定时必须等到 `startListening()` 之后的首个快照（ADR-0019）。应用重启时未到期项按剩余时间继续倒计时；退出期间已过期项转入 `missedScheduledCommands` 待确认队列并保留在磁盘，必须由用户点击「立即执行」或「忽略」后才执行或移除，绝不在后台静默触发过期硬件动作。
 _Avoid_: Background job（后台任务）、Cron（计划任务）
 
 **ActiveDevice（活跃开启设备）**：
