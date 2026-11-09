@@ -214,6 +214,29 @@ struct URLCommandHandlerTests {
         }
     }
 
+    @Test("Two blocked URL toggles in a row both report the expired session")
+    func consecutiveBlockedTogglesReportSession() async throws {
+        try await L10n.$overrideLanguage.withValue(.en) {
+            let (store, provider) = try await Self.makeBlockedStore()
+            store.setRaycastIntegration(enabled: true)
+            let token = try #require(store.raycastBridgeToken)
+            let handler = URLCommandHandler()
+
+            for index in 1...2 {
+                let link = try Self.url(
+                    "menumijia://toggle?device=dev_lamp&id=cli-toggle-\(index)&token=\(token)"
+                )
+                await handler.handle(link, in: store)
+                #expect(store.lastRaycastCommandFeedback?.isError == true)
+                #expect(
+                    store.lastRaycastCommandFeedback?.message == "Xiaomi Home session expired",
+                    "toggle \(index) must name the expired session, not a device failure"
+                )
+            }
+            #expect(await provider.executedCommands.isEmpty)
+        }
+    }
+
     @Test("A focus link opens the panel on the device without asking and without sending a command")
     func focusLinkOpensThePanel() async throws {
         try await L10n.$overrideLanguage.withValue(.en) {

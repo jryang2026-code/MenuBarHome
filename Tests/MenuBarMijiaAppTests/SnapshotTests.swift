@@ -81,6 +81,34 @@ struct SnapshotTests {
         )
     }
 
+    @Test("Panel shows the persistent expired-session toast with its Scan action and close button")
+    func panelExpiredMiSessionToastSnapshot() async throws {
+        let fixture = try await SnapshotFixture(
+            miSession: MiSession(
+                userId: "42",
+                cUserId: "c",
+                ssecurity: "c2VjcmV0",
+                serviceToken: "tok",
+                expiresAt: Date(timeIntervalSince1970: 1_700_000_000)
+            ),
+            configuredHASource: false
+        )
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        #expect(fixture.store.miSessionBlocksControl)
+        let device = try #require(fixture.store.devices.first { $0.isPrimaryToggleable })
+        #expect(fixture.store.togglePrimary(device) == nil)
+        #expect(fixture.store.toastNotice?.persistent == true)
+        #expect(fixture.store.toastNotice?.action == ToastAction(title: "扫码", kind: .presentMiReauth))
+
+        assertRendered(
+            snapshotReady(ControlCenterPanel(store: fixture.store)),
+            size: CGSize(width: 376, height: 560),
+            named: "panel-mi-session-expired-toast-zh-light"
+        )
+    }
+
     @Test("Panel asks before sending the HA token over public plain http, and keeps the declined reason", arguments: [
         (HAPlaintextPrompt.asking("http://203.0.113.5:8123"), "panel-ha-plaintext-asking-zh-light"),
         (HAPlaintextPrompt.declined("http://203.0.113.5:8123"), "panel-ha-plaintext-declined-zh-light"),

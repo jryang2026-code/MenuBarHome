@@ -968,16 +968,6 @@ public final class HomeStore {
         showSessionExpiryToast()
     }
 
-    /// The message an external caller reports for a failed write. The expired-session refusal
-    /// already has a persistent toast with the Scan action, so its copy wins over the caller's
-    /// generic "did not respond" fallback.
-    public func externalFailureMessage(_ fallback: String) -> String {
-        if miSessionBlocksControl, let current = toastNotice, current.persistent {
-            return current.message
-        }
-        return fallback
-    }
-
     /// Success stays for `toastAutoDismissInterval` (2.8 s). An error stays for 8 s.
     /// A persistent toast, and any toast while the test seam is `nil`, stays until dismissed.
     func toastDismissInterval(for notice: ToastNotice) -> Duration? {

@@ -31,6 +31,22 @@ extension HomeStore {
         return true
     }
 
+    /// True when a primary toggle of this row would be sent over the Mi provider, so the expired
+    /// session refuses it. Mirrors the gate at the top of `togglePrimary`.
+    public func primaryToggleNeedsMiSession(_ device: SmartDevice) -> Bool {
+        !lgClientServes(device)
+    }
+
+    /// The external error for a failed toggle. The session refusal is decided by the session and
+    /// the command's route, not by which toast happens to be on screen: the prompt can be suspended
+    /// behind an earlier result, and a second blocked tap creates no new toast.
+    public func primaryToggleFailureMessage(_ fallback: String, for device: SmartDevice) -> String {
+        if miSessionBlocksControl, primaryToggleNeedsMiSession(device) {
+            return Self.miSessionBlockedMessage
+        }
+        return fallback
+    }
+
     /// The persistent prompt that carries the only way back into the blocked account.
     func showSessionExpiryToast() {
         showToast(
