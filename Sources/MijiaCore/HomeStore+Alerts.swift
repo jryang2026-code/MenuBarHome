@@ -40,11 +40,37 @@ extension HomeStore {
         )
     }
 
-    public func executeSafetyAlertAction(_ alert: SafetyAlert) {
-        guard let cmd = alert.turnOffCommand else { return }
-        Task {
-            try? await provider.execute(cmd)
-            await provider.refreshNow()
+    /// Runs the 立即关闭 action of a safety notification. A notification is a person acting now, so the
+    /// lock-screen preference applies (#143), and a notification tapped after the user switched home,
+    /// account or source must not reach a device that is no longer theirs.
+    @discardableResult
+    public func executeSafetyAlertAction(_ alert: SafetyAlert) -> Task<Void, Never>? {
+        guard let cmd = alert.turnOffCommand else { return nil }
+        if rejectControlWhileLocked() { return nil }
+        guard let device = devices.first(where: { $0.id == alert.deviceId }) else {
+            showToast(
+                L10n.tr(
+                    "该提醒已不适用于当前家居，未关闭设备",
+                    "This alert no longer applies to the current home; nothing was turned off"
+                ),
+                isError: true
+            )
+            return nil
+        }
+        let context = controlContextID
+        return Task {
+            do {
+                try await executeDeviceCommand(cmd)
+                guard context == controlContextID else { return }
+                await provider.refreshNow()
+            } catch {
+                // A switch during the send makes the failure irrelevant to the new home.
+                guard context == controlContextID else { return }
+                showToast(
+                    L10n.format("「%@」关闭失败", "Could not turn off %@", device.name),
+                    isError: true
+                )
+            }
         }
     }
 }

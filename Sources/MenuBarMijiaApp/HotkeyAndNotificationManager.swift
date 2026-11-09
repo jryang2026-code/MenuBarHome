@@ -25,6 +25,11 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     private var applicationBecomeActiveObserver: NSObjectProtocol?
     private var safetyTimerTask: Task<Void, Never>?
     private var pendingAlertsById: [String: SafetyAlert] = [:]
+    /// Insertion order of `pendingAlertsById`, so the oldest alert can be dropped at the cap.
+    private var pendingAlertOrder: [String] = []
+    /// Alerts whose notification the system never reports back (permission removed, banners off) would
+    /// otherwise accumulate for the whole run; only the recent ones can still be acted on.
+    private static let pendingAlertLimit = 32
 
     private static let turnOffActionId = "TURN_OFF_ACTION"
     private static let safetyCategoryId = "MIJIA_SAFETY_ALERT"
@@ -497,18 +502,20 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         let turnOffAction = UNNotificationAction(
             identifier: Self.turnOffActionId,
             title: L10n.tr("立即关闭", "Turn Off Now"),
-            options: [.destructive]
+            // A device control from the lock screen still needs the Mac unlocked.
+            options: [.destructive, .authenticationRequired]
         )
         let category = UNNotificationCategory(
             identifier: Self.safetyCategoryId,
             actions: [turnOffAction],
             intentIdentifiers: [],
-            options: []
+            // Report a dismissal too, so the alert can be forgotten instead of kept for the whole run.
+            options: [.customDismissAction]
         )
         let runMissedAction = UNNotificationAction(
             identifier: Self.runMissedTimerActionId,
             title: L10n.tr("立即补执行", "Run Now"),
-            options: []
+            options: [.authenticationRequired]
         )
         let missedCategory = UNNotificationCategory(
             identifier: Self.missedTimerCategoryId,
@@ -612,7 +619,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     }
 
     private func deliverNotification(for alert: SafetyAlert) {
-        pendingAlertsById[alert.id] = alert
+        rememberPendingAlert(alert)
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
 
         let content = UNMutableNotificationContent()
@@ -684,14 +691,33 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         UNUserNotificationCenter.current().add(request)
     }
 
+    private func rememberPendingAlert(_ alert: SafetyAlert) {
+        if pendingAlertsById.updateValue(alert, forKey: alert.id) == nil {
+            pendingAlertOrder.append(alert.id)
+        }
+        while pendingAlertOrder.count > Self.pendingAlertLimit {
+            pendingAlertsById.removeValue(forKey: pendingAlertOrder.removeFirst())
+        }
+    }
+
+    private func forgetPendingAlert(_ id: String) {
+        pendingAlertsById.removeValue(forKey: id)
+        pendingAlertOrder.removeAll { $0 == id }
+    }
+
     public func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let alertId = response.notification.request.identifier
-        if response.actionIdentifier == Self.turnOffActionId,
-           let alert = pendingAlertsById[alertId] {
+        defer {
+            // Every response consumes the notification: the action, the default tap and (because the
+            // safety category sets `customDismissAction`) a dismissal. Without this the map only grew.
+            forgetPendingAlert(alertId)
+            completionHandler()
+        }
+        if response.actionIdentifier == Self.turnOffActionId, let alert = pendingAlertsById[alertId] {
             store?.executeSafetyAlertAction(alert)
         } else if response.actionIdentifier == Self.runMissedTimerActionId,
                   let missedId = MissedTimerNotificationIdentifier(rawValue: alertId) {
@@ -699,7 +725,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
                 _ = await self?.store?.runMissedScheduledCommand(id: missedId.commandId)
             }
         }
-        completionHandler()
+        // The default tap only opens the app; nothing else to do here.
     }
 
     public func userNotificationCenter(
