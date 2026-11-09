@@ -5758,6 +5758,32 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.equal(app.activeSheet, "settings");
   });
 
+  it("keeps a command's Mi Cloud 401 as an offline footer after the banner is dismissed", async () => {
+    const cloud = cloudFixture([]);
+    cloud.expireNextWrites();
+    const app = new MenuMijiaWindowsApp(element("#app"));
+    await setImmediate();
+    assert.match(tile("fixture-light"), /50%/);
+
+    await click('[data-toggle-device="fixture-light"]');
+    assert.equal(element(".cc-live-banner").getAttribute("role"), "alert");
+    assert.match(textOf(".cc-feedback-text"), /登录已过期/);
+    assert.ok(element(".cc-status-dot").classList.contains("is-offline"), "a 401 from a command means the login is dead");
+    assert.match(textOf("#btn-footer-health"), /登录已过期/);
+    assert.equal(app.miSessionExpired, true);
+
+    await click("#btn-dismiss-banner");
+    assert.equal(document.querySelector(".cc-live-banner"), null);
+    assert.ok(element(".cc-status-dot").classList.contains("is-offline"), "the expiry outlives the banner");
+    assert.match(textOf("#btn-footer-health"), /登录已过期/);
+
+    // A later successful refresh clears the expiry the same way a fresh login does.
+    await click("#btn-refresh");
+    await waitFor(() => !element("#btn-refresh").classList.contains("is-spinning"));
+    assert.equal(app.miSessionExpired, false);
+    assert.ok(element(".cc-status-dot").classList.contains("is-online"));
+  });
+
   it("marks a stale Xiaomi home as degraded and an unconfigured Home Assistant as offline", () => {
     const app = startDemoApp();
     app.settings.connectionMode = "xiaomiCloud";

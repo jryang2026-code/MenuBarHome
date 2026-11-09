@@ -1,7 +1,7 @@
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
 import { HomeAssistantClient, homeAssistantCommand } from "../core/homeAssistant.js";
-import { MiCloudClient, MiotCommandMapper, propKeyString } from "../core/miCloudClient.js";
+import { MiCloudClient, MiCloudError, MiotCommandMapper, propKeyString } from "../core/miCloudClient.js";
 import { readMiotPower, type DeviceCommand, type DeviceKind, type FacetControl, type SmartDevice } from "../core/models.js";
 import { applyCommandToDevices } from "../core/commandEffects.js";
 
@@ -26,6 +26,9 @@ export async function applyCommand(host: MenuMijiaWindowsApp, command: DeviceCom
       if (typeof readPower === "boolean") command = withReadPower(command, readPower);
     } catch (error) {
       if (sourceRevision !== host.sourceRevision) return false;
+      // A command refused for a dead login is the same evidence a refresh gets: the footer must
+      // stay offline after the banner is dismissed, so record it before rendering.
+      if (error instanceof MiCloudError && error.kind === "sessionExpired") host.miSessionExpired = true;
       host.replyBanner = {
         text: error instanceof Error ? error.message : String(error),
         source: t("控制失败"),
