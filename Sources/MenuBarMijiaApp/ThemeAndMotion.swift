@@ -880,23 +880,38 @@ struct GlassSwitch: View {
 }
 
 /// `.toggleStyle(.glass)` draws the label beside the switch.
-/// `.labelsHidden()` sets `labelsVisibility` to `.hidden`, so a row that already has its own title does not show that title twice.
+/// `.labelsHidden()` sets `labelsVisibility` to `.hidden` on macOS 15 and later, so a row that already has its own title does not show that title twice.
 struct GlassSwitchToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
-        GlassSwitchToggleBody(configuration: configuration)
+        if #available(macOS 15.0, *) {
+            GlassSwitchVisibilityBody(configuration: configuration)
+        } else {
+            GlassSwitchLabeledBody(configuration: configuration, showsLabel: true)
+        }
     }
 }
 
-private struct GlassSwitchToggleBody: View {
+@available(macOS 15.0, *)
+private struct GlassSwitchVisibilityBody: View {
     @Environment(\.labelsVisibility) private var labelsVisibility
-    @Environment(\.isEnabled) private var isEnabled
     var configuration: ToggleStyleConfiguration
 
     var body: some View {
+        GlassSwitchLabeledBody(
+            configuration: configuration,
+            showsLabel: labelsVisibility != .hidden
+        )
+    }
+}
+
+private struct GlassSwitchLabeledBody: View {
+    @Environment(\.isEnabled) private var isEnabled
+    var configuration: ToggleStyleConfiguration
+    var showsLabel: Bool
+
+    var body: some View {
         Group {
-            if labelsVisibility == .hidden {
-                GlassSwitch(isOn: configuration.$isOn)
-            } else {
+            if showsLabel {
                 HStack(alignment: .center, spacing: 0) {
                     configuration.label
                         .multilineTextAlignment(.leading)
@@ -911,6 +926,8 @@ private struct GlassSwitchToggleBody: View {
                     GlassSwitch(isOn: configuration.$isOn)
                         .layoutPriority(2)
                 }
+            } else {
+                GlassSwitch(isOn: configuration.$isOn)
             }
         }
         .accessibilityRepresentation {
