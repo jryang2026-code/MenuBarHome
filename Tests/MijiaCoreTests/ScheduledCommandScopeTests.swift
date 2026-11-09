@@ -26,6 +26,49 @@ struct ScheduledCommandScopeTests {
     /// A second Home Assistant that is not the one this test store starts on.
     static let otherHomeURL = "http://192.0.2.20:8123"
 
+    static let cnAccount = MiAccount(session: MiSession(
+        userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-cn", serviceToken: "tok-cn", region: "cn"
+    ))
+    static let deAccount = MiAccount(session: MiSession(
+        userId: "20020002", cUserId: "c-de", ssecurity: "ssec-de", serviceToken: "tok-de", region: "de"
+    ))
+    static let miLamp = SmartDevice(
+        id: "1234567890", name: "米家台灯", roomId: "wo_shi", roomName: "卧室",
+        model: "yeelink.light.lamp1", isOnline: true,
+        kind: .light(LightSpec(entityId: "miot:1234567890:2", isOn: true)),
+        accountId: cnAccount.id
+    )
+    static let deLamp = SmartDevice(
+        id: "{{DEVICE_ab12cd34}}", name: "德国台灯", roomId: "de_wo_shi", roomName: "卧室",
+        model: "yeelink.light.lamp1", isOnline: true,
+        kind: .light(LightSpec(entityId: "miot:{{DEVICE_ab12cd34}}:2", isOn: true)),
+        accountId: deAccount.id
+    )
+    static let lgTV = SmartDevice(
+        id: LGWebOSProtocol.deviceId, name: "LG电视", roomId: "ke_ting", roomName: "客厅",
+        model: "lg.webos.oled42c2pca", isOnline: true,
+        kind: .tv(TVSpec(mediaEntityId: LGWebOSProtocol.mediaEntityId, state: "on", volumePercent: 12))
+    )
+
+    /// Home Assistant plus one Xiaomi account, both configured.
+    @MainActor
+    private func makeDualSourceStore(
+        devices: [SmartDevice]? = nil
+    ) async throws -> (HomeStore, MockHomeProvider) {
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(
+            devices: devices ?? [Self.ceiling, Self.miLamp],
+            scenes: []
+        ))
+        let store = HomeStore(provider: mock, defaultsSuiteName: "test.schedulescope.\(UUID().uuidString)")
+        try await store.waitForTestSnapshot()
+        store.hasHASource = true
+        store.miAccounts = [Self.cnAccount]
+        store.miSessionMaskedUserId = Self.cnAccount.maskedUserId
+        store.miSessionScopeIdentifier = Self.cnAccount.id
+        store.homeBackend = .homeAssistant
+        return (store, mock)
+    }
+
     @MainActor
     private func makeStore() async throws -> (HomeStore, MockHomeProvider) {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.ceiling], scenes: []))
@@ -85,6 +128,7 @@ struct ScheduledCommandScopeTests {
         store.startListening()
         #expect(store.scheduledCommands.isEmpty, "Another source's timer must not be armed here")
         #expect(store.missedScheduledCommands.isEmpty)
+        try await store.waitForTestSnapshot()
 
         // A timer set on the new source is saved next to the old one instead of deleting it.
         let otherGate = SleepGate()
@@ -104,7 +148,8 @@ struct ScheduledCommandScopeTests {
         #expect(store.scheduledCommands.map(\.id) == [homeTimer.id])
         await waitUntil { rearmGate.waiting == 1 }
         rearmGate.release()
-        await waitUntil { store.scheduledCommands.isEmpty }
+        await waitUntil { await mock.executedCommands.count == 1 }
+        #expect(store.scheduledCommands.isEmpty)
         #expect(store.missedScheduledCommands.isEmpty)
         #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
         #expect(ScheduledCommand.load(from: store.userDefaults).map(\.id) == [otherTimer.id])
@@ -361,7 +406,7 @@ struct ScheduledCommandScopeTests {
         store.serverURLString = Self.otherHomeURL
         store.startListening()
         await mock.releaseExecute()
-        await waitUntil { !ScheduledCommand.load(from: store.userDefaults).contains { $0.id == entry.id } }
+        await waitUntil { await mock.executedCommands.count == 1 }
 
         store.serverURLString = homeURL
         store.startListening()
@@ -369,6 +414,36 @@ struct ScheduledCommandScopeTests {
         #expect(store.missedScheduledCommands.isEmpty)
         #expect(!ScheduledCommand.load(from: store.userDefaults).contains { $0.id == entry.id })
         #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
+    }
+
+    @Test("A switch away and back while the send is in flight cannot offer the timer again")
+    @MainActor
+    func roundTripDuringExecutionRunsOnce() async throws {
+        let (store, mock) = try await makeStore()
+        let homeURL = store.serverURLString
+        store.assistantSleep = { _ in }
+        await mock.holdNextExecute()
+        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        let entry = try #require(store.scheduledCommands.first)
+        await waitUntil { await mock.executeStarted >= 1 }
+
+        // Consumed before the request goes out: a re-partition during the in-flight send has
+        // nothing left to bring back as missed.
+        #expect(!ScheduledCommand.load(from: store.userDefaults).contains { $0.id == entry.id })
+
+        store.serverURLString = Self.otherHomeURL
+        store.startListening()
+        store.serverURLString = homeURL
+        store.startListening()
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(store.missedScheduledCommands.isEmpty, "An in-flight timer must not come back as missed")
+        #expect(!ScheduledCommand.load(from: store.userDefaults).contains { $0.id == entry.id })
+
+        await mock.releaseExecute()
+        await waitUntil { await mock.executedCommands.count == 1 }
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
+        #expect(store.missedScheduledCommands.isEmpty)
+        #expect(ScheduledCommand.load(from: store.userDefaults).isEmpty)
     }
 
     @Test("A source switch during a timer's sleep keeps it from running")
@@ -453,5 +528,291 @@ struct ScheduledCommandScopeTests {
         #expect(store.scheduledCommands.isEmpty)
         #expect(store.toastNotice?.isError == true)
         #expect(await mock.executedCommands.isEmpty)
+    }
+
+    // MARK: - The stamp is the connected source set (ADR-0019)
+
+    @Test("Scope matching needs an intersection and never crosses Home Assistant servers")
+    @MainActor
+    func scopeMatchingRule() {
+        #expect(HomeStore.sourceScopesMatch(["ha:a", "mi:x"], active: ["mi:x"]))
+        #expect(!HomeStore.sourceScopesMatch(["ha:a", "mi:x"], active: ["ha:b", "mi:x"]))
+        #expect(!HomeStore.sourceScopesMatch(["mi:x"], active: ["ha:a", "mi:x"]))
+        #expect(!HomeStore.sourceScopesMatch(["mi:x"], active: ["mi:y"]))
+        #expect(HomeStore.sourceScopesMatch(["demo"], active: ["demo"]))
+    }
+
+    @Test("A Xiaomi-device timer keeps running after Home Assistant is removed")
+    @MainActor
+    func xiaomiTimerSurvivesHARemoval() async throws {
+        let (store, mock) = try await makeDualSourceStore()
+        let gate = SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
+        _ = await store.runAssistantCommand("10分钟后关闭米家台灯")
+        let timer = try #require(store.scheduledCommands.first)
+        let haScope = "ha:\(HAWebSocketProvider.canonicalHistoryScopeURL(store.serverURLString))"
+        #expect(Set(try #require(timer.effectiveSourceScopes)) == [Self.cnAccount.id, haScope])
+        await waitUntil { gate.waiting == 1 }
+
+        store.hasHASource = false
+        store.startListening()
+        #expect(store.scheduledCommands.map(\.id) == [timer.id])
+
+        gate.release()
+        await waitUntil { await mock.executedCommands.count == 1 }
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "miot:1234567890:2", isOn: false)])
+        #expect(store.missedScheduledCommands.isEmpty)
+        #expect(ScheduledCommand.load(from: store.userDefaults).isEmpty)
+    }
+
+    @Test("A captured HA A vetoes arming on HA B even while a Xiaomi scope still overlaps")
+    @MainActor
+    func haServerChangeVetoesTheWholeStamp() async throws {
+        let (store, mock) = try await makeDualSourceStore()
+        let homeURL = store.serverURLString
+        let gate = SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
+        _ = await store.runAssistantCommand("10分钟后关闭米家台灯")
+        let timer = try #require(store.scheduledCommands.first)
+        await waitUntil { gate.waiting == 1 }
+
+        store.hasHASource = false
+        store.startListening()
+        #expect(store.scheduledCommands.map(\.id) == [timer.id], "Removing HA leaves the Mi source matching")
+
+        store.serverURLString = Self.otherHomeURL
+        store.hasHASource = true
+        store.startListening()
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(store.foreignScheduledCommands.map(\.id) == [timer.id])
+        #expect(ScheduledCommand.load(from: store.userDefaults).map(\.id) == [timer.id])
+        for _ in 0..<50 { await Task.yield() }
+        #expect(await mock.executedCommands.isEmpty, "Nothing may reach server B")
+
+        store.serverURLString = homeURL
+        store.startListening()
+        #expect(store.scheduledCommands.map(\.id) == [timer.id], "Switching back to A re-arms the timer")
+        _ = store.cancelScheduledCommands()
+    }
+
+    @Test("Connecting a Home Assistant after creation holds a Xiaomi-only timer back until it is removed")
+    @MainActor
+    func haAddedAfterCreationHoldsTheTimerBack() async throws {
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.miLamp], scenes: []))
+        let store = HomeStore(provider: mock, defaultsSuiteName: "test.schedulescope.\(UUID().uuidString)")
+        try await store.waitForTestSnapshot()
+        store.homeBackend = .xiaomiCloud
+        store.hasHASource = false
+        store.miAccounts = [Self.cnAccount]
+        store.miSessionMaskedUserId = Self.cnAccount.maskedUserId
+        store.miSessionScopeIdentifier = Self.cnAccount.id
+        let gate = SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
+
+        _ = await store.runAssistantCommand("10分钟后关闭米家台灯")
+        let timer = try #require(store.scheduledCommands.first)
+        #expect(timer.effectiveSourceScopes == [Self.cnAccount.id])
+        await waitUntil { gate.waiting == 1 }
+
+        // A merged card id can be claimed by a Home Assistant the timer never saw when it was created.
+        store.hasHASource = true
+        store.startListening()
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(store.foreignScheduledCommands.map(\.id) == [timer.id])
+        #expect(ScheduledCommand.load(from: store.userDefaults).map(\.id) == [timer.id])
+        for _ in 0..<50 { await Task.yield() }
+        #expect(await mock.executedCommands.isEmpty)
+
+        // Removing that HA restores the original Xiaomi-only match.
+        store.hasHASource = false
+        store.startListening()
+        #expect(store.scheduledCommands.map(\.id) == [timer.id])
+
+        gate.release()
+        await waitUntil { await mock.executedCommands.count == 1 }
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "miot:1234567890:2", isOn: false)])
+    }
+
+    @Test("Removing the first Mi account keeps a timer stamped with both")
+    @MainActor
+    func secondAccountTimerSurvivesFirstAccountRemoval() async throws {
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.miLamp, Self.deLamp], scenes: []))
+        let store = HomeStore(provider: mock, defaultsSuiteName: "test.schedulescope.\(UUID().uuidString)")
+        try await store.waitForTestSnapshot()
+        store.homeBackend = .xiaomiCloud
+        store.hasHASource = false
+        store.miAccounts = [Self.cnAccount, Self.deAccount]
+        store.miSessionMaskedUserId = Self.cnAccount.maskedUserId
+        store.miSessionScopeIdentifier = Self.cnAccount.id
+        let gate = SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
+
+        _ = await store.runAssistantCommand("10分钟后关闭德国台灯")
+        let timer = try #require(store.scheduledCommands.first)
+        #expect(Set(try #require(timer.effectiveSourceScopes)) == [Self.cnAccount.id, Self.deAccount.id])
+        await waitUntil { gate.waiting == 1 }
+
+        store.miAccounts = [Self.deAccount]
+        store.miSessionMaskedUserId = Self.deAccount.maskedUserId
+        store.miSessionScopeIdentifier = Self.deAccount.id
+        store.startListening()
+        #expect(store.scheduledCommands.map(\.id) == [timer.id])
+
+        gate.release()
+        await waitUntil { await mock.executedCommands.count == 1 }
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "miot:\(Self.deLamp.id):2", isOn: false)])
+    }
+
+    @Test("A stamp from an unrelated source is foreign and stays on disk")
+    @MainActor
+    func unrelatedStampIsForeign() async throws {
+        let (store, _) = try await makeStore()
+        let foreign = ScheduledCommand(
+            reply: "10 分钟后关闭书房吸顶灯",
+            fireDate: Date().addingTimeInterval(600),
+            plan: Self.plan,
+            sourceScopes: ["mi:xx:0123456789abcdef"]
+        )
+        ScheduledCommand.save([foreign], to: store.userDefaults)
+
+        store.restoreScheduledCommands()
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(store.foreignScheduledCommands.map(\.id) == [foreign.id])
+        #expect(ScheduledCommand.load(from: store.userDefaults).map(\.id) == [foreign.id])
+    }
+
+    @Test("A mixed plan stays one timer and its undo record covers every target")
+    @MainActor
+    func mixedPlanStaysOneEntry() async throws {
+        let (store, mock) = try await makeDualSourceStore()
+        let gate = SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
+        _ = await store.runAssistantCommand("10分钟后关闭米家台灯、书房吸顶灯")
+
+        let timer = try #require(store.scheduledCommands.first)
+        #expect(store.scheduledCommands.count == 1)
+        #expect(Set(timer.plan.intents.map(\.targetId)) == [Self.miLamp.id, Self.ceiling.id])
+        await waitUntil { gate.waiting == 1 }
+
+        gate.release()
+        await waitUntil { await mock.executedCommands.count == 2 }
+        let executed = await mock.executedCommands
+        #expect(executed.contains(.setLightPower(entityId: "miot:1234567890:2", isOn: false)))
+        #expect(executed.contains(.setLightPower(entityId: "light.study_ceiling", isOn: false)))
+        #expect(store.undoBanner?.restoreCommands.count == 2)
+        #expect(store.lastAssistantUndo?.previous.count == 2)
+        #expect(store.lastAssistantUndo?.restore.count == 2)
+    }
+
+    @Test("An LG TV without a backend map can still be scheduled in dual-source mode")
+    @MainActor
+    func lgTimerSchedulesInDualSourceMode() async throws {
+        let (store, _) = try await makeDualSourceStore(devices: [Self.ceiling])
+        store.lgConfig = LGWebOSConfig(isEnabled: true, host: "192.0.2.10")
+        store.applyLGDeviceUpdate(Self.lgTV)
+        let gate = SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
+
+        _ = await store.runAssistantCommand("10分钟后关闭LG电视")
+        #expect(store.scheduledCommands.count == 1)
+        #expect(store.scheduledCommands.first?.plan.intents.map(\.targetId) == [Self.lgTV.id])
+        _ = store.cancelScheduledCommands()
+    }
+
+    @Test("An LG-only timer skips the cloud snapshot guard")
+    @MainActor
+    func lgOnlyTimerSkipsSnapshotGuard() async throws {
+        let (store, _) = try await makeDualSourceStore(devices: [Self.ceiling])
+        store.lgConfig = LGWebOSConfig(isEnabled: true, host: "192.0.2.10")
+        store.applyLGDeviceUpdate(Self.lgTV)
+        let gate = SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
+
+        // No cloud snapshot since the last listen; the LAN TV row is still current.
+        store.startListening()
+        store.eventTask?.cancel()
+        #expect(store.listeningSnapshotGeneration == store.snapshotGeneration)
+        _ = await store.runAssistantCommand("10分钟后关闭LG电视")
+        #expect(store.scheduledCommands.count == 1)
+        #expect(store.scheduledCommands.first?.plan.intents.map(\.targetId) == [Self.lgTV.id])
+        _ = store.cancelScheduledCommands()
+    }
+
+    @Test("An LG timer with a cloud target still waits for a snapshot")
+    @MainActor
+    func mixedLGAndCloudTimerNeedsSnapshot() async throws {
+        let (store, _) = try await makeDualSourceStore(devices: [Self.ceiling])
+        store.lgConfig = LGWebOSConfig(isEnabled: true, host: "192.0.2.10")
+        store.applyLGDeviceUpdate(Self.lgTV)
+        let gate = SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
+
+        store.startListening()
+        store.eventTask?.cancel()
+        _ = await store.runAssistantCommand("10分钟后关闭LG电视、书房吸顶灯")
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(store.toastNotice?.message == "数据源尚未就绪，定时任务未创建")
+    }
+
+    @Test("Scheduling refuses until a snapshot arrives after startListening")
+    @MainActor
+    func refusesStaleDeviceListAfterStartListening() async throws {
+        let (store, _) = try await makeStore()
+        let gate = SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
+
+        store.startListening()
+        store.eventTask?.cancel()
+        #expect(store.listeningSnapshotGeneration == store.snapshotGeneration)
+        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(store.toastNotice?.message == "数据源尚未就绪，定时任务未创建")
+
+        store.startListening()
+        try await store.waitForTestSnapshot()
+        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        #expect(store.scheduledCommands.count == 1)
+        _ = store.cancelScheduledCommands()
+    }
+
+    @Test("Demo mode still creates a timer after its snapshot")
+    @MainActor
+    func demoTimerStillSchedules() async throws {
+        let (store, _) = try await makeStore()
+        store.homeBackend = .demo
+        let gate = SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
+
+        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        #expect(store.scheduledCommands.count == 1)
+        #expect(store.scheduledCommands.first?.effectiveSourceScopes == ["demo"])
+        _ = store.cancelScheduledCommands()
+    }
+
+    @Test("An entry with only the older sourceScope field still decodes and arms")
+    @MainActor
+    func legacySingleScopeFieldStillWorks() async throws {
+        let (store, mock) = try await makeStore()
+        let id = UUID()
+        let fireDate = Date().addingTimeInterval(600)
+        let scope = "ha:\(HAWebSocketProvider.canonicalHistoryScopeURL(store.serverURLString))"
+        // Exactly what the per-target build wrote: one `sourceScope`, no `sourceScopes` key.
+        let legacyJSON = """
+        [{"id":"\(id.uuidString)","reply":"10 分钟后关闭书房吸顶灯","fireDate":\(fireDate.timeIntervalSinceReferenceDate),\
+        "plan":{"intents":[{"targetId":"dev_study_ceiling","operation":{"power":{"_0":false}}}],\
+        "reply":"已关闭书房吸顶灯","source":"local","suggestions":[]},"sourceScope":"\(scope)"}]
+        """
+        store.userDefaults.set(Data(legacyJSON.utf8), forKey: ScheduledCommand.storageKey)
+
+        let decoded = try #require(ScheduledCommand.load(from: store.userDefaults).first)
+        #expect(decoded.sourceScopes == nil)
+        #expect(decoded.effectiveSourceScopes == [scope])
+
+        let gate = SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
+        store.restoreScheduledCommands()
+        #expect(store.scheduledCommands.map(\.id) == [id])
+        #expect(await mock.executedCommands.isEmpty)
+        _ = store.cancelScheduledCommands()
     }
 }

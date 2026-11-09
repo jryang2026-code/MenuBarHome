@@ -310,6 +310,24 @@ jobs:
           shared-key: windows-release-build
           save-if: false
 
+      - name: Read the Tauri CLI version for the tools cache key
+        id: tauri-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package-lock.json').packages['node_modules/@tauri-apps/cli'].version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Same tools cache CI fills on main: NSIS 3.13 and WiX 3.14 from GitHub Releases. Release only
+      # restores. continue-on-error: a cache outage has no business failing a release; a miss just
+      # downloads the tools again inside the build step.
+      - name: Restore the Tauri bundler tools cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        continue-on-error: true
+        with:
+          path: ~\AppData\Local\tauri
+          key: tauri-bundler-tools-v1-${{ runner.os }}-${{ steps.tauri-cli.outputs.version }}
+
       - name: Install frontend & Tauri CLI dependencies
         run: npm ci
 

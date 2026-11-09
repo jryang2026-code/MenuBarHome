@@ -5,30 +5,13 @@ import type { FacetControl } from "../core/models.js";
 /**
  * 更多设置 rows (#5): one generic facet each, rendered from the shared `deviceProfiles.json`
  * rules. A facet outside the low-risk whitelist stays disabled until the user turns on
- * 允许写入高级/高风险设备属性, and a write that still counts as high risk asks once more.
+ * 允许写入高级/高风险设备属性, and a write that still counts as high risk asks once more —
+ * `ManualControlPolicy.facetRequiresConfirmation` decides which ones.
  */
 
 /** False for a write outside the low-risk whitelist while 允许写入高级属性 is off. */
 export function facetWriteEnabled(control: FacetControl, allowAdvanced: boolean): boolean {
   return control.isWritable && control.target !== null && (control.writesByDefault || allowAdvanced);
-}
-
-/**
- * True when the write still needs a second tap (#5, #6): a facet outside the low-risk whitelist
- * that turns something on or up. Turning a device off, or choosing an off-ish option, only makes
- * the home safer, so it stays direct (macOS `ManualControlPolicy` facet rule). A button or an
- * action always asks, because a physical consequence has no value to read back.
- */
-export function facetWriteIsHazardous(control: FacetControl, next: unknown): boolean {
-  if (!control.isWritable) return false;
-  if (control.kind === "button" || control.target?.kind === "action") return true;
-  if (control.writesByDefault) return false;
-  if (next === false || next === 0) return false;
-  if (control.name === "mode" && typeof next === "number") {
-    const option = control.options.find((item) => item.value === next);
-    if (option && ["off", "close", "closed", "standby"].includes(option.label.trim().toLowerCase())) return false;
-  }
-  return true;
 }
 
 function row(control: FacetControl, deviceId: string, allowAdvanced: boolean, escapeHtml: (v: string) => string): string {
