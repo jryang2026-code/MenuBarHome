@@ -323,10 +323,14 @@ function deescalatesHazard(operation: IntentOperation): boolean {
 /**
  * The manual-control hazard rule, mirroring MijiaCore.ManualControlPolicy. A person switching a
  * device off is making the home safer, so it stays direct unlike the model hazard table (#143).
+ * Closing a cover is not automatically de-escalating: a garage door closing is itself hazardous,
+ * so every cover operation goes through the subtype hazard table. An unknown target is low risk.
  */
 export const ManualControlPolicy = {
   requiresConfirmation(intent: DeviceIntent, devices: readonly SmartDevice[]): boolean {
-    if (deescalatesHazard(intent.operation)) return false;
+    const device = devices.find((d) => d.id === intent.targetId);
+    if (!device) return false;
+    if (deescalatesHazard(intent.operation) && device.kind.kind !== "cover") return false;
     return ModelActionPolicy.needsConfirmation(intent, devices);
   },
 };

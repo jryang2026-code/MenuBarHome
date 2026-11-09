@@ -2,10 +2,10 @@ import { t } from "../core/i18n.js";
 import { IntentReply } from "../core/assistant.js";
 import { renderMoreSettings } from "./facetViews.js";
 import {
-  deviceAcceptsControlWrites,
   deviceCanTogglePower,
   deviceReadout,
   deviceStatusSummary,
+  hasDetailDrawer,
   isDeviceActiveOn,
   localizeAirQuality,
   localizeFanPreset,
@@ -465,6 +465,29 @@ function renderPrimaryDrawer(dev: SmartDevice, escapeHtml: (value: string) => st
       if (rows.length === 0) return "";
       return `<div class="cc-tile-drawer">${rows.join("")}</div>`;
     }
+    if (k.kind === "vacuum") {
+      // macOS vacuumDrawer: start / pause / dock, with the reported status picked.
+      if (k.actionsWritable === false) return "";
+      const id = escapeHtml(dev.id);
+      const status = k.status.toLowerCase();
+      const actions = [
+        ["start", t("开始清扫"), status === "cleaning"],
+        ["pause", t("暂停"), status === "paused"],
+        ["returnToBase", t("回充"), status === "returning"],
+      ] as const;
+      return `
+        <div class="cc-tile-drawer">
+          <div class="cc-segmented-pills">
+            ${actions
+              .map(
+                ([action, label, selected]) =>
+                  `<button class="cc-seg-pill ${selected ? "is-active" : ""}" data-vacuumaction="${id}|${action}" aria-pressed="${selected}">${label}</button>`,
+              )
+              .join("")}
+          </div>
+        </div>
+      `;
+    }
     if (k.kind === "fridge") {
       const id = escapeHtml(dev.id);
       const fridgeStep = k.fridgeTargetEntityId
@@ -615,30 +638,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
   const palette = devicePaletteClass(dev);
   const svg = deviceSvgIcon(dev);
   const writable = deviceCanTogglePower(dev);
-  const fanReadings =
-    dev.kind.kind === "fan" &&
-    (dev.kind.pm25Density != null ||
-      dev.kind.airQuality != null ||
-      dev.kind.temperature != null ||
-      dev.kind.humidity != null ||
-      dev.kind.filterLifePercent != null);
-  const hasDrawer =
-    kind === "fridge" ||
-    (dev.kind.kind === "light" &&
-      (dev.kind.brightnessWritable !== false || dev.kind.colorWritable !== false || dev.kind.availableEffects.length > 0)) ||
-    (dev.kind.kind === "climate" &&
-      (dev.kind.temperatureWritable !== false || dev.kind.availableModes.length > 0 || dev.kind.availableFanModes.length > 0)) ||
-    (dev.kind.kind === "fan" &&
-      (fanReadings ||
-        dev.kind.availablePresetModes.length > 0 ||
-        (dev.kind.speedWritable !== false && dev.kind.percentage !== null) ||
-        (dev.kind.swingWritable !== false && dev.kind.isOscillating !== null))) ||
-    (dev.kind.kind === "camera" &&
-      (writable || dev.kind.availableNightShots.length > 0 || dev.kind.motionDetectionEntityId !== null)) ||
-    (dev.kind.kind === "vacuum" && dev.kind.actionsWritable !== false) ||
-    (dev.kind.kind === "speaker" && deviceAcceptsControlWrites(dev)) ||
-    (dev.kind.kind === "appliance" && deviceAcceptsControlWrites(dev)) ||
-    (state.deviceFacets[dev.id]?.length ?? 0) > 0;
+  const hasDrawer = hasDetailDrawer(dev, state.deviceFacets[dev.id] ?? []);
   const subtitle =
     state.selectedRoom === "全部"
       ? `${dev.roomName} · ${deviceStatusSummary(dev)}`

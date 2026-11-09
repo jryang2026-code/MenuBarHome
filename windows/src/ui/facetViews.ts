@@ -16,10 +16,13 @@ export function facetWriteEnabled(control: FacetControl, allowAdvanced: boolean)
 /**
  * True when the write still needs a second tap (#5, #6): a facet outside the low-risk whitelist
  * that turns something on or up. Turning a device off, or choosing an off-ish option, only makes
- * the home safer, so it stays direct (macOS `ManualControlPolicy` facet rule).
+ * the home safer, so it stays direct (macOS `ManualControlPolicy` facet rule). A button or an
+ * action always asks, because a physical consequence has no value to read back.
  */
 export function facetWriteIsHazardous(control: FacetControl, next: unknown): boolean {
-  if (!control.isWritable || control.writesByDefault) return false;
+  if (!control.isWritable) return false;
+  if (control.kind === "button" || control.target?.kind === "action") return true;
+  if (control.writesByDefault) return false;
   if (next === false || next === 0) return false;
   if (control.name === "mode" && typeof next === "number") {
     const option = control.options.find((item) => item.value === next);

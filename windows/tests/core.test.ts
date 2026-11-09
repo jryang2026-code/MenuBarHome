@@ -85,6 +85,7 @@ import {
   type DeviceIntent,
   type ScheduledCommand,
   deviceReadout,
+  hasDetailDrawer,
   isActiveDevice,
   isDeviceActiveOn,
   readMiotPower,
@@ -2485,6 +2486,134 @@ it("manual controls stay direct when they end a hazard (#143, #274)", () => {
   assert.equal(confirm(plug, { kind: "power", isOn: false }), false);
   assert.equal(confirm(heater, { kind: "power", isOn: true }), true);
   assert.equal(confirm(heater, { kind: "hvacMode", mode: "off" }), false);
+});
+
+it("manual controls do not exempt covers from the off shortcut; unknown targets are low risk (#143)", () => {
+  const base = { roomId: "door", roomName: "门口", isOnline: true };
+  const garageKind: CoverSpec = {
+    kind: "cover",
+    entityId: "cover.garage",
+    subtype: "garage-door",
+    positionPercent: 100,
+    positionWritable: true,
+    openDescription: "Open",
+    closeDescription: "Close",
+    pauseDescription: "Pause",
+    batteryPercent: null,
+    faultText: null,
+    motion: "stopped",
+  };
+  const garage: SmartDevice = {
+    ...base,
+    id: "garage",
+    name: "车库门",
+    model: "hmpace.wallswitch.v1",
+    kind: garageKind,
+  };
+  const curtain: SmartDevice = {
+    ...garage,
+    id: "curtain",
+    name: "客厅窗帘",
+    kind: { ...garageKind, entityId: "cover.curtain", subtype: "curtain" },
+  };
+  const heater: SmartDevice = {
+    ...base,
+    id: "heater",
+    name: "书房电暖器",
+    model: "zhimi.heater.za2",
+    kind: {
+      kind: "climate",
+      entityId: "climate.heater",
+      isOn: false,
+      hvacMode: "off",
+      availableModes: ["off", "heat"],
+      targetTemperature: 20,
+      currentTemperature: null,
+      minTemp: 18,
+      maxTemp: 28,
+      step: 1,
+      fanMode: null,
+      availableFanModes: [],
+    },
+  };
+  const devices = [garage, curtain, heater];
+  const confirm = (device: SmartDevice, operation: DeviceIntent["operation"]): boolean =>
+    ManualControlPolicy.requiresConfirmation({ targetId: device.id, operation }, devices);
+
+  // Closing a garage door is itself hazardous, so the cover exemption from "off is safe" holds.
+  assert.equal(confirm(garage, { kind: "power", isOn: false }), true);
+  assert.equal(confirm(garage, { kind: "power", isOn: true }), true);
+  // A curtain has no hazard at all; an unknown target cannot be hazardous.
+  assert.equal(confirm(curtain, { kind: "power", isOn: false }), false);
+  assert.equal(
+    ManualControlPolicy.requiresConfirmation({ targetId: "missing", operation: { kind: "power", isOn: true } }, devices),
+    false,
+  );
+  // A heater temperature change always asks, in either direction.
+  assert.equal(confirm(heater, { kind: "targetTemperature", celsius: 22 }), true);
+  assert.equal(confirm(heater, { kind: "targetTemperature", celsius: 18 }), true);
+});
+
+it("hasDetailDrawer mirrors the macOS card table and never opens an empty drawer", () => {
+  const device = (id: string, kind: SmartDevice["kind"]): SmartDevice => ({
+    id,
+    name: id,
+    roomId: "study",
+    roomName: "书房",
+    model: `fixture.${id}`,
+    isOnline: true,
+    kind,
+  });
+  const facet = (): FacetControl => ({
+    id: "2.1",
+    kind: "toggle",
+    name: "on",
+    title: null,
+    serviceName: "switch",
+    unit: null,
+    scale: null,
+    value: true,
+    options: [],
+    range: null,
+    isWritable: true,
+    writesByDefault: true,
+    isHighValue: false,
+    target: { kind: "property", entityId: "miot:facet:2", piid: 1 },
+  });
+  const table: Array<[string, SmartDevice, boolean]> = [
+    ["light with no writable control", device("light-off", { kind: "light", entityId: "l", isOn: false, brightnessPercent: 50, colorTempKelvin: 4000, minKelvin: 2700, maxKelvin: 6500, currentEffect: null, availableEffects: [], brightnessWritable: false, colorWritable: false }), false],
+    ["light with effects", device("light-fx", { kind: "light", entityId: "l", isOn: false, brightnessPercent: null, colorTempKelvin: null, minKelvin: 2700, maxKelvin: 6500, currentEffect: null, availableEffects: ["Night"], brightnessWritable: false, colorWritable: false }), true],
+    ["climate with fan speed only", device("climate-fan", { kind: "climate", entityId: "c", isOn: true, hvacMode: "fan_only", availableModes: [], targetTemperature: 25, currentTemperature: null, minTemp: 16, maxTemp: 30, step: 1, fanMode: "Low", availableFanModes: ["Low"], temperatureWritable: false }), true],
+    ["climate with nothing writable", device("climate-ro", { kind: "climate", entityId: "c", isOn: false, hvacMode: "off", availableModes: [], targetTemperature: 25, currentTemperature: null, minTemp: 16, maxTemp: 30, step: 1, fanMode: null, availableFanModes: [], temperatureWritable: false }), false],
+    ["fan with no controls", device("fan-bare", { kind: "fan", entityId: "f", isOn: false, percentage: null, presetMode: null, availablePresetModes: [], isOscillating: null, speedWritable: false, swingWritable: false }), false],
+    ["fan with a preset", device("fan-preset", { kind: "fan", entityId: "f", isOn: false, percentage: null, presetMode: null, availablePresetModes: ["Auto"], isOscillating: null }), true],
+    ["vacuum with actions", device("vac", { kind: "vacuum", entityId: "v", status: "docked", battery: 90, modeEntityId: null, currentMode: null, availableModes: [] }), true],
+    ["vacuum with actions disabled", device("vac-ro", { kind: "vacuum", entityId: "v", status: "docked", battery: 90, modeEntityId: null, currentMode: null, availableModes: [], actionsWritable: false }), false],
+    ["read-only camera", device("cam", { kind: "camera", entityId: "cam", isOn: true, nightShot: null, availableNightShots: [], motionDetectionEntityId: null, isMotionDetectionOn: null, streamEntityId: null, powerWritable: false }), false],
+    ["speaker with nothing writable", device("spk", { kind: "speaker", mediaEntityId: "media", state: "idle", volumePercent: 30, isMuted: false, muteSwitchEntityId: null, sleepModeEntityId: null, isSleepMode: false, volumeWritable: false }), false],
+    ["appliance with power only", device("app-power", { kind: "appliance", entityId: "a", isOn: false, powerPresent: true, powerWritable: true, currentMode: null, availableModes: [], modeWritable: false, targetTemperature: null, currentTemperature: null, minTemp: 0, maxTemp: 0, step: 1, temperatureWritable: false, statusText: null, faultText: null, remainingMinutes: null, startAction: null, pauseAction: null, stopAction: null, powerEntityId: "a", modeEntityId: "a", temperatureEntityId: "a", light: null, fanLevel: null, currentHumidity: null, symbolName: null, roomReading: false, heats: false }), false],
+    ["appliance with a programme", device("app-start", { kind: "appliance", entityId: "a", isOn: false, powerPresent: true, powerWritable: true, currentMode: null, availableModes: [], modeWritable: false, targetTemperature: null, currentTemperature: null, minTemp: 0, maxTemp: 0, step: 1, temperatureWritable: false, statusText: null, faultText: null, remainingMinutes: null, startAction: { kind: "start", entityId: "a.start" }, pauseAction: null, stopAction: null, powerEntityId: "a", modeEntityId: "a", temperatureEntityId: "a", light: null, fanLevel: null, currentHumidity: null, symbolName: null, roomReading: false, heats: false }), true],
+    ["fridge", device("fridge", { kind: "fridge", modeEntityId: null, currentMode: "auto", availableModes: [], fridgeCurrentTemp: 4, fridgeTargetTemp: 4, fridgeTargetEntityId: null, freezerCurrentTemp: -18, freezerTargetTemp: -18, freezerTargetEntityId: null }), true],
+    ["sensor", device("sensor", { kind: "sensor", temperature: 20, humidity: 40, battery: 90 }), false],
+    // macOS plug/cover/generic primary drawers (energy, position, generic extras) are not
+    // rendered on Windows, so those cards open only for 更多设置 rows.
+    ["plug without facets", device("plug", { kind: "plug", switchEntityId: "switch.p", isOn: true, powerWatts: 40, energyKwh: 1, childLockEntityId: null, isChildLocked: false }), false],
+    ["cover without facets", device("cover", { kind: "cover", entityId: "c", subtype: "curtain", positionPercent: 100, positionWritable: true, openDescription: "Open", closeDescription: "Close", pauseDescription: "Pause", batteryPercent: null, faultText: null, motion: "stopped" }), false],
+    ["generic without facets", device("generic", { kind: "generic", deviceType: "fish-tank", typeTitle: "鱼缸", isOn: false, powerControl: null, isReadOnly: true, readouts: [], symbolName: null }), false],
+  ];
+  for (const [label, dev, expected] of table) {
+    assert.equal(hasDetailDrawer(dev), expected, label);
+  }
+  // Any 更多设置 row makes the drawer worth opening, whatever the card kind.
+  const labeled = (label: string): SmartDevice => {
+    const row = table.find(([name]) => name === label);
+    assert.ok(row, `missing row ${label}`);
+    return row[1];
+  };
+  assert.equal(hasDetailDrawer(labeled("light with no writable control"), [facet()]), true, "light with facets");
+  assert.equal(hasDetailDrawer(labeled("plug without facets"), [facet()]), true, "plug with facets");
+  assert.equal(hasDetailDrawer(labeled("cover without facets"), [facet()]), true, "cover with facets");
+  assert.equal(hasDetailDrawer(labeled("generic without facets"), [facet()]), true, "generic with facets");
 });
 
 describe("AI provider detection and key transport (#19)", () => {

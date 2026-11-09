@@ -483,6 +483,79 @@ export function deviceAcceptsControlWrites(device: SmartDevice): boolean {
   }
 }
 
+/**
+ * Whether a card opens a detail drawer, mirroring MijiaCore.SmartDevice.hasDetailDrawer plus the
+ * facet rule of HomeStore.hasDetailDrawer(for:). A card opens only when the drawer has something
+ * to show: an empty drawer is a dead tap. macOS renders plug energy/child lock, cover position and
+ * generic card rows in its primary drawer; Windows does not yet, so those cards open only for
+ * 更多设置 rows. Every other kind keeps the macOS table.
+ */
+export function hasDetailDrawer(device: SmartDevice, facets: readonly FacetControl[] = []): boolean {
+  if (facets.length > 0) return true;
+  const kind = device.kind;
+  switch (kind.kind) {
+    case "light":
+      return (
+        kind.brightnessWritable !== false ||
+        kind.colorWritable !== false ||
+        kind.availableEffects.length > 0
+      );
+    case "climate":
+      return (
+        kind.temperatureWritable !== false ||
+        kind.availableModes.length > 0 ||
+        kind.availableFanModes.length > 0
+      );
+    case "fan": {
+      const hasReadings =
+        kind.pm25Density != null ||
+        kind.airQuality != null ||
+        kind.temperature != null ||
+        kind.humidity != null ||
+        kind.filterLifePercent != null;
+      const speed = kind.speedWritable !== false && kind.percentage !== null;
+      const swing = kind.swingWritable !== false && kind.isOscillating !== null;
+      return speed || swing || kind.availablePresetModes.length > 0 || hasReadings;
+    }
+    case "camera":
+      return (
+        kind.powerWritable !== false ||
+        kind.availableNightShots.length > 0 ||
+        kind.motionDetectionEntityId !== null
+      );
+    case "vacuum":
+      return kind.actionsWritable !== false;
+    case "speaker":
+      return kind.volumeWritable || kind.muteSwitchEntityId !== null || kind.sleepModeEntityId !== null;
+    case "fridge":
+      return true;
+    case "appliance":
+      return (
+        (kind.temperatureWritable && kind.targetTemperature !== null) ||
+        kind.modeWritable ||
+        kind.light?.writable === true ||
+        kind.fanLevel?.writable === true ||
+        kind.currentHumidity !== null ||
+        kind.statusText !== null ||
+        kind.faultText !== null ||
+        kind.remainingMinutes !== null ||
+        kind.startAction !== null ||
+        kind.pauseAction !== null ||
+        kind.stopAction !== null
+      );
+    case "sensor":
+      return false;
+    case "plug":
+    case "cover":
+    case "generic":
+      return false;
+    default: {
+      const _exhaustive: never = kind;
+      return _exhaustive;
+    }
+  }
+}
+
 export function joinsAllOffByDefault(device: SmartDevice): boolean {
   return (
     device.kind.kind !== "plug" &&
@@ -709,6 +782,26 @@ export function localizeFridgeMode(mode: string): string {
     case "quick frozen":
     case "super freeze":
       return t("速冻");
+    default:
+      return mode;
+  }
+}
+
+/** The HVAC modes the card offers; mirrors macOS `SmartDevice.localizeHVACMode` for prompts. */
+export function localizeHvacMode(mode: string): string {
+  switch (mode.trim().toLowerCase()) {
+    case "cool":
+      return t("制冷");
+    case "heat":
+      return t("制热");
+    case "dry":
+      return t("除湿");
+    case "fan_only":
+      return t("送风");
+    case "auto":
+      return t("自动");
+    case "off":
+      return t("已关闭");
     default:
       return mode;
   }
