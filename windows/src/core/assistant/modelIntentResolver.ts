@@ -1,5 +1,5 @@
 import type { HttpTransport } from "../miCloudClient.js";
-import type { AssistantSuggestion, DeviceIntent, HomeScene, IntentOperation, IntentPlan, SmartDevice } from "../models.js";
+import type { AssistantSuggestion, HomeScene, IntentOperation, IntentPlan, SmartDevice } from "../models.js";
 import { ModelActionPolicy, type ChosenAction } from "./actionPolicy.js";
 import type { AssistantContext } from "./context.js";
 import { EMPTY_ASSISTANT_CONTEXT } from "./context.js";

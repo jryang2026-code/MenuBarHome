@@ -72,7 +72,6 @@ import {
   sanitizeSettingsForStorage,
   serializeMiSession,
   sessionWithoutPassToken,
-  type SecureInvoke,
 } from "../src/core/secureStore.js";
 import {
   allOffTargets,

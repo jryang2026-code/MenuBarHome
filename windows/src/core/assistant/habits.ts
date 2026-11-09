@@ -280,14 +280,12 @@ export class UserHabitMemory {
           e.bucket === bucket && e.dayType === dayType
             && e.targetId === intent.targetId && e.operationKey === intent.operationKey,
       );
-      let previousDayType: HabitDayType | null = dayType;
       if (idx < 0) {
         idx = this.entries.findIndex(
           (e) =>
             e.bucket === bucket && e.dayType === undefined
               && e.targetId === intent.targetId && e.operationKey === intent.operationKey,
         );
-        previousDayType = idx >= 0 ? null : dayType;
       }
       if (idx >= 0) {
         changes.push({

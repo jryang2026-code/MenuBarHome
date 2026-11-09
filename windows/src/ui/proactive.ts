@@ -15,7 +15,6 @@ import {
   timeBucketLabel,
 } from "../core/assistant.js";
 import type { AssistantSuggestion, DeviceIntent, SmartDevice } from "../core/models.js";
-import { GrokBallView } from "./grokBall.js";
 import { withAliases } from "./panelPrefs.js";
 import { inverseCommands } from "../core/commandEffects.js";
 

@@ -1,7 +1,7 @@
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
-import { MI_CLOUD_REGIONS, maskedMiUserId, normalizeMiCloudRegion } from "../core/miCloudClient.js";
-import { TILE_SIZES, chosenSize, homeOptions } from "./panelPrefs.js";
+import { MI_CLOUD_REGIONS, normalizeMiCloudRegion } from "../core/miCloudClient.js";
+import { TILE_SIZES, chosenSize } from "./panelPrefs.js";
 import { SF_ICONS } from "./appConstants.js";
 import { renderSettingsModal as renderSettingsModalView } from "./settingsViews.js";
 

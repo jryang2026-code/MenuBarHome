@@ -1,9 +1,6 @@
 import { t } from "../core/i18n.js";
 import type { DeviceCommand, DeviceIntent, SmartDevice } from "../core/models.js";
 import {
-  chosenSize,
-  moveInOrder,
-  nextSize,
   projectedOffset,
   releaseVelocity,
   scopedKey,

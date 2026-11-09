@@ -1,5 +1,4 @@
 import type {
-  AssistantSuggestion,
   DeviceIntent,
   EnvironmentReading,
   HomeScene,
@@ -18,7 +17,6 @@ import type {
   HabitSharing,
 } from "./habits.js";
 import { shareHabitSentence } from "./habits.js";
-import { IntentValidator } from "./intent.js";
 import {
   cleanPromptField,
   PROMPT_DATA_NOTICE,

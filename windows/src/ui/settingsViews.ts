@@ -1,7 +1,6 @@
 import { ASSISTANT_PROVIDER_PRESETS, inferAssistantPreset } from "../core/assistant.js";
 import { t } from "../core/i18n.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
-import { isNewerVersion } from "../core/updateChecker.js";
 import type { QRLoginTicket } from "../core/miCloudClient.js";
 import {
   MI_CLOUD_REGIONS,
@@ -17,7 +16,6 @@ import {
   PANEL_HEIGHTS,
   PANEL_OPACITY_MAX,
   PANEL_OPACITY_MIN,
-  SKINS,
   type PanelAnchor,
 } from "./panelPrefs.js";
 import type { PersistedSettings } from "./appTypes.js";

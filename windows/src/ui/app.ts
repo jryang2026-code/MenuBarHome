@@ -1,43 +1,18 @@
-import { HomeAssistantClient, homeAssistantIdentity, homeAssistantCommand } from "../core/homeAssistant.js";
+import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { GrokBallView } from "./grokBall.js";
 import {
-  ASSISTANT_PROVIDER_PRESETS,
-  IntentReply,
-  IntentValidator,
-  ModelIntentResolver,
-  UserHabitMemory,
-  buildAssistantContext,
-  resolveHabitSharing,
-  shareHabitSentence,
-  habitActionable,
-  inferAssistantPreset,
   assistantEndpointIdentity,
-  endpointAllowsSendingSecrets,
-  isLocalAssistantEndpoint,
-  timeBucketLabel,
   partitionHabitReceipt,
-  resolveGrokBallEmotion,
-  type HabitEntry,
   type HabitLastAction,
   type HabitRecordingReceipt,
   type HabitSequenceEntry,
 } from "../core/assistant.js";
 import {
-  type HttpRequest,
-  type HttpResponse,
   type HttpTransport,
   MiAccountLogin,
-  MiCloudClient,
-  type MiDeviceRecord,
-  type MiRoom,
-  MiotCommandMapper,
-  propKeyString,
-  type MiotDeviceSpec,
   MiotSpecResolver,
-  type MiSession,
   type QRLoginTicket,
   maskedMiUserId,
-  miCloudRegionLabel,
   normalizeMiCloudRegion,
 } from "../core/miCloudClient.js";
 import {
@@ -49,58 +24,29 @@ import {
   sessionWithoutPassToken,
 } from "../core/secureStore.js";
 import {
-  type CameraStreamQuality,
-  CAMERA_STREAM_QUALITIES,
-  DEFAULT_CAMERA_STREAM_QUALITY,
-  normalizeCameraStreamQuality,
-  normalizeCameraStreamQualityMap,
-} from "../core/cameraQuality.js";
-import {
   type AssistantSuggestion,
   type DeviceCommand,
   type DeviceIntent,
   type EnvironmentReading,
   type FacetControl,
   type HomeScene,
-  type IntentPlan,
   type ScheduledCommand,
   type SmartDevice,
   allOffTargets,
   deviceEnvironmentReading,
-  readMiotPower,
   environmentReadingPriority,
   isActiveDevice,
-  joinsAllOff,
-  joinsAllOffByDefault,
-  localizeNightShot,
-  localizeAirQuality,
-  localizeFanPreset,
-  localizeFridgeMode,
 } from "../core/models.js";
 import {
-  type AppAppearance,
   type AppSkin,
   type LayoutPrefs,
   type PanelAnchor,
-  type PanelHeight,
   type PanelPlacement,
   type TileSize,
-  APPEARANCES,
-  DEFAULT_GLOBAL_SHORTCUT,
-  PANEL_ANCHORS,
   PANEL_HEIGHTS,
-  SKINS,
   applyOrder,
-  targetSize,
-  releaseVelocity,
-  projectedOffset,
   chosenSize,
-  comfort,
-  emptyLayoutPrefs,
-  localizeEffect,
-  localizeFanMode,
   moveInOrder,
-  nextSize,
   pageSections,
   parsePanelPlacement,
   resolveAppearance,
@@ -111,20 +57,9 @@ import {
   type HomeOption,
 } from "./panelPrefs.js";
 import {
-  type AppLanguage,
-  type LanguagePreference,
   speechLocale,
   t,
 } from "../core/i18n.js";
-import {
-  type TemperatureUnitPreference,
-  displayStep,
-  formatTemperatureValue,
-  getTemperatureUnit,
-  stepCelsius,
-  temperatureSymbol,
-  toCelsius,
-} from "../core/temperature.js";
 import {
   KIND_CHIP,
   filterByListCut,
@@ -135,25 +70,25 @@ import {
   type RoomOption,
 } from "./listCut.js";
 
-import { SpeechRecognitionInstance, type ConnectionMode, type LearnedShortcut, type LoadedSettings, type PendingHighRiskConfirmation, type PersistedSettings, type ReplyBannerState, type UndoAction, type UndoStep } from "./appTypes.js";
-import { CAMERA_QUALITY_TITLES, CACHED_DEVICES_VERSION, LEGACY_STORAGE_KEY, SF_ICONS, STORAGE_KEY } from "./appConstants.js";
+import { SpeechRecognitionInstance, type LoadedSettings, type PendingHighRiskConfirmation, type PersistedSettings, type ReplyBannerState, type UndoAction, type UndoStep } from "./appTypes.js";
+import { SF_ICONS } from "./appConstants.js";
 import { demoDevices, demoScenes } from "./demo.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
-import { loadSettings, upgradeCachedDevices } from "./settings.js";
+import { loadSettings } from "./settings.js";
 import { CameraLiveController } from "./cameraLive.js";
 import { renderDeviceTile as renderDeviceTileView, renderEnvironmentStrip as renderEnvironmentStripView } from "./deviceViews.js";
 import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt, renderSettingsModal } from "./menuViews.js";
 import { bindEvents as bindEventsImpl } from "./bindEvents.js";
 import { renderPanel } from "./panelView.js";
-import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, checkForAppUpdate, initializeCredentials, openSettingsSheet, openUpdatePage, osLanguages, restoreUpdateState, saveSettings, saveUpdateState, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
-import { handleNaturalCommand, learnShortcut, runScheduledCommand } from "./naturalCommand.js";
-import { currentProactiveSuggestions, invalidateSourceControl, isIntentReversibleOnDevice, maybeRefreshProactiveInBackground, renderGrokBallSidebar, setGrokBallStageExpanded, syncGrokBallEmotion } from "./proactive.js";
+import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, checkForAppUpdate, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
+import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
+import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground, renderGrokBallSidebar, setGrokBallStageExpanded, syncGrokBallEmotion } from "./proactive.js";
 import { applyCommand, markCloudValuesFresh, markCloudValuesStale } from "./commandDispatch.js";
-import { filterBySelectedHome, foldGrouped, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
-import { executeIntents, executeSingleCommand, habitSequences, lastHabitAction, recordHabits, saveHabitMemory, unrecordHabits } from "./intentExecution.js";
+import { foldGrouped, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
+import { executeIntents, executeSingleCommand, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
 import { bindLayoutGestures } from "./layoutGestures.js";
 import { bindSettingsEvents } from "./settingsEvents.js";
-import { hasMatchingDomShape, inputKeepsDraft, morphMatchingDom, parseSingleElement, waitForCameraFrameGap } from "./dom.js";
+import { inputKeepsDraft } from "./dom.js";
 export { waitForCameraFrameGap } from "./dom.js";
 import { createPanelSearchState, normalizeSearch, PanelSearchIndex } from "../core/panelSearch.js";
 import { syncPanelSelection } from "./panelKeyboard.js";
@@ -231,7 +166,6 @@ export class MenuMijiaWindowsApp {
   private pendingHighRiskTimer: number | null = null;
   public isShowingAssistantBar = true;
   public activeSheet: "none" | "onboarding" | "settings" = "none";
-  private onboardingStep = 0;
   public replyBanner: ReplyBannerState | null = null;
   public haConnectionError: string | null = null;
   public waitingDeviceIds = new Set<string>();
@@ -257,8 +191,6 @@ export class MenuMijiaWindowsApp {
   public panelAnchor: PanelAnchor = "auto";
   /** Earliest timestamp a failed background refresh may retry (Codex #116 review). */
   public proactiveRetryAfterMs: number | null = null;
-  /** Cooldown before a failed background refresh retries (Codex #116 review). */
-  private static readonly PROACTIVE_RETRY_COOLDOWN_MS = 5 * 60_000;
   public isResolvingIntent = false;
   public isSyncingCloud = false;
   public syncGeneration = 0;
@@ -381,10 +313,6 @@ export class MenuMijiaWindowsApp {
     saveSettings(this, forceSubmitEndpoints);
   }
 
-  private static osLanguages(): string[] {
-    return osLanguages();
-  }
-
   public applyInterfaceLanguage(): void {
     applyInterfaceLanguage(this);
   }
@@ -399,10 +327,6 @@ export class MenuMijiaWindowsApp {
 
   private restoreUpdateState(): void {
     restoreUpdateState(this);
-  }
-
-  private saveUpdateState(): void {
-    saveUpdateState(this);
   }
 
   public async checkForAppUpdate(manual: boolean): Promise<void> {
@@ -544,13 +468,6 @@ export class MenuMijiaWindowsApp {
 
 
 
-  private filterBySelectedHome<D extends { readonly did: string; readonly splitParentDid?: string | null }, R extends { readonly homeId?: string; readonly dids: readonly string[] }>(
-    devices: readonly D[],
-    rooms: readonly R[],
-  ): { devices: D[]; rooms: R[] } {
-    return filterBySelectedHome(this, devices, rooms);
-  }
-
   public selectHome(id: string | null): void {
     this.settings.selectedHomeId = id;
     this.isHomeMenuOpen = false;
@@ -660,14 +577,6 @@ export class MenuMijiaWindowsApp {
     return runScheduledCommand(this, item);
   }
 
-  private learnShortcut(
-    phrase: string,
-    reply: string,
-    intents: readonly DeviceIntent[],
-  ): void {
-    learnShortcut(this, phrase, reply, intents);
-  }
-
   public async executeIntents(
     intents: readonly DeviceIntent[],
     replyText: string,
@@ -688,10 +597,6 @@ export class MenuMijiaWindowsApp {
   }
 
 
-  private recordHabits(intents: readonly DeviceIntent[]): HabitRecordingReceipt | null {
-    return recordHabits(this, intents);
-  }
-
   public habitSequences(): HabitSequenceEntry[] {
     return habitSequences();
   }
@@ -700,18 +605,8 @@ export class MenuMijiaWindowsApp {
     return lastHabitAction();
   }
 
-  private saveHabitMemory(memory: UserHabitMemory): void {
-    saveHabitMemory(this, memory);
-  }
-
   private unrecordHabits(receipt: HabitRecordingReceipt): void {
     unrecordHabits(this, receipt);
-  }
-
-  /** Time bucket + per-room temperature (1 °C steps) and humidity (5 % steps): the ambient signature (#113). */
-
-  private isIntentReversibleOnDevice(intent: DeviceIntent, device: SmartDevice): { reversible: boolean; nextDevice: SmartDevice } {
-    return isIntentReversibleOnDevice(this, intent, device);
   }
 
   public currentProactiveSuggestions(): AssistantSuggestion[] {

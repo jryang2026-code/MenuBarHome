@@ -2,11 +2,11 @@ import { markTimerSnapshotReady } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
 import { MiCloudClient, MiCloudError, MiotSynthesizer, maskedMiUserId, type MiDeviceRecord, type MiRoom, type MiSession, type MiotPropKey } from "../core/miCloudClient.js";
-import { HomeAssistantClient, homeAssistantCommand, homeAssistantIdentity } from "../core/homeAssistant.js";
+import { HomeAssistantClient, homeAssistantIdentity } from "../core/homeAssistant.js";
 import { applyOrder, homeOptions, pageSections, scopedKey, spans, withAliases } from "./panelPrefs.js";
 import { foldGroupedLights, kindChips, memberGroupOwners, showsKindRow } from "./listCut.js";
 import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom.js";
-import { deviceEnvironmentReading, environmentReadingPriority, type EnvironmentReading, type SmartDevice } from "../core/models.js";
+import { environmentReadingPriority, type SmartDevice } from "../core/models.js";
 
 export function foldGrouped(host: MenuMijiaWindowsApp, devices: readonly SmartDevice[]): SmartDevice[] {
     return host.settings.hideGroupedLights

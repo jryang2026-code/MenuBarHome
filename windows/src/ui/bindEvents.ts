@@ -1,210 +1,48 @@
 import { cancelScheduledCommands, confirmMissedScheduledCommand } from "./scheduledCommands.js";
-import { HomeAssistantClient, homeAssistantIdentity, homeAssistantCommand, parseCachedHAHome } from "../core/homeAssistant.js";
-import type { SynthesizedHome } from "../core/models.js";
-import { GrokBallView } from "./grokBall.js";
 import {
-  ASSISTANT_PROVIDER_PRESETS,
-  DelayPhrase,
   IntentReply,
   IntentValidator,
-  LocalIntentParser,
   ManualControlPolicy,
-  ModelIntentResolver,
-  UndoPhrase,
-  UserHabitMemory,
-  buildAssistantContext,
-  resolveHabitSharing,
-  shareHabitSentence,
-  habitActionable,
-  inferAssistantPreset,
-  assistantEndpointIdentity,
-  endpointAllowsSendingSecrets,
-  isLocalAssistantEndpoint,
-  timeBucketLabel,
-  INSECURE_ENDPOINT_MESSAGE,
   ModelActionPolicy,
-  partitionHabitReceipt,
-  resolveGrokBallEmotion,
-  type HabitEntry,
-  type HabitLastAction,
-  type HabitRecordingReceipt,
-  type HabitSequenceEntry,
 } from "../core/assistant.js";
 import {
-  type HttpRequest,
-  type HttpResponse,
-  type HttpTransport,
-  MI_CLOUD_REGIONS,
-  MiAccountLogin,
-  MiCloudClient,
-  MiCloudError,
-  type MiDeviceRecord,
-  type MiRoom,
-  MiotCommandMapper,
-  propKeyString,
-  type MiotDeviceSpec,
-  type MiotPropKey,
-  MiotSpecResolver,
-  MiotSynthesizer,
-  type MiSession,
-  type QRLoginTicket,
-  maskedMiUserId,
-  miCloudRegionLabel,
-  normalizeMiCloudRegion,
-} from "../core/miCloudClient.js";
-import {
-  UPDATE_RELEASES_PAGE,
-  UPDATE_RELEASES_URL,
-  UPDATE_STORAGE_KEY,
-  checkForUpdate,
-  isNewerVersion,
-  parseUpdateState,
-  serializeUpdateState,
-  type GitHubRelease,
-  type UpdateState,
-} from "../core/updateChecker.js";
-import {
-  CredentialVault,
-  credentialsFromSettings,
-  hasCredentials,
-  parseMiSession,
-  sanitizeSettingsForStorage,
-  sessionWithoutPassToken,
-} from "../core/secureStore.js";
-import {
-  type CameraStreamQuality,
-  CAMERA_STREAM_QUALITIES,
-  DEFAULT_CAMERA_STREAM_QUALITY,
-  normalizeCameraStreamQuality,
-  normalizeCameraStreamQualityMap,
-} from "../core/cameraQuality.js";
-import {
-  type AssistantSuggestion,
   type DeviceCommand,
   type DeviceIntent,
-  type EnvironmentReading,
   type FacetControl,
-  type HomeScene,
-  type IntentPlan,
-  type ScheduledCommand,
   type SmartDevice,
-  allOffTargets,
   applianceModeStartsHeating,
-  cloudRefreshDue,
-  deviceAcceptsControlWrites,
   deviceCanTogglePower,
-  deviceEnvironmentReading,
-  deviceReadout,
-  readMiotPower,
-  deviceStatusSummary,
-  environmentReadingPriority,
   hasDetailDrawer,
   isDeviceActiveOn,
-  joinsAllOff,
-  joinsAllOffByDefault,
   localizeApplianceFanLevel,
   localizeApplianceMode,
   localizeHvacMode,
   localizeNightShot,
-  localizeAirQuality,
-  localizeFanPreset,
   localizeFridgeMode,
-  partitionDueTimers,
 } from "../core/models.js";
 import {
-  type AppAppearance,
   type AppSkin,
-  type LayoutPrefs,
-  type PanelAnchor,
   type PanelHeight,
-  type PanelPlacement,
   type TileSize,
-  APPEARANCES,
   DEFAULT_GLOBAL_SHORTCUT,
   PANEL_ANCHORS,
-  PANEL_HEIGHTS,
-  SKINS,
-  TILE_SIZES,
-  applyOrder,
   applyPanelOpacity,
-  targetSize,
-  releaseVelocity,
-  projectedOffset,
-  chosenSize,
-  comfort,
-  emptyLayoutPrefs,
-  homeOptions,
-  localizeEffect,
   localizeFanMode,
-  moveInOrder,
   nextSize,
-  normalizeGlobalShortcut,
   normalizePanelOpacity,
-  pageSections,
-  parsePanelPlacement,
-  recordShortcutFromKeyEvent,
-  resolveAppearance,
-  resolvedSize,
   scopedKey,
-  spans,
   withAliases,
-  type HomeOption,
 } from "./panelPrefs.js";
+import { t } from "../core/i18n.js";
 import {
-  type AppLanguage,
-  type LanguagePreference,
-  resolveLanguage,
-  setLanguage,
-  speechLocale,
-  t,
-} from "../core/i18n.js";
-import {
-  type TemperatureUnitPreference,
-  applyTemperatureUnit,
-  displayStep,
   formatTemperature,
-  formatTemperatureValue,
-  getTemperatureUnit,
   stepCelsius,
-  temperatureSymbol,
   toCelsius,
 } from "../core/temperature.js";
-import {
-  KIND_CHIP,
-  filterByListCut,
-  foldGroupedLights,
-  kindChips,
-  memberGroupOwners,
-  showsKindRow,
-  type DeviceKindTag,
-  type DeviceListCut,
-} from "./listCut.js";
 
-import { SpeechRecognitionInstance, type ConnectionMode, type LearnedShortcut, type LoadedSettings, type PersistedSettings, type ReplyBannerState, type UndoAction, type UndoStep } from "./appTypes.js";
-import { APP_VERSION, CAMERA_QUALITY_TITLES, CACHED_DEVICES_VERSION, LEGACY_STORAGE_KEY, SF_ICONS, STORAGE_KEY } from "./appConstants.js";
-import { demoDevices, demoScenes, quickActions } from "./demo.js";
-import { createTransport, invokeTauriVoid } from "./transport.js";
-import { loadSettings, stripCredentialFieldsFromStoredCopies, upgradeCachedDevices, writeSettingsForStorage } from "./settings.js";
-import { CameraLiveController } from "./cameraLive.js";
-import { renderClimateStrip, renderDeviceDrawer, renderSensorCard } from "./deviceViews.js";
+import { invokeTauriVoid } from "./transport.js";
 import { facetWriteEnabled, facetWriteIsHazardous } from "./facetViews.js";
 import { facetTitle, facetValue } from "../core/miotFacetText.js";
-import { renderSettingsModal } from "./settingsViews.js";
-import { bindLayoutGestures } from "./layoutGestures.js";
-import { bindSettingsEvents } from "./settingsEvents.js";
-import { hasMatchingDomShape, inputKeepsDraft, morphMatchingDom, parseSingleElement, waitForCameraFrameGap } from "./dom.js";
-export { waitForCameraFrameGap } from "./dom.js";
-function withReadPower(command: DeviceCommand, isOn: boolean): DeviceCommand {
-  switch (command.kind) {
-    case "setLightPower":
-    case "setClimatePower":
-    case "setFanPower":
-    case "setSwitch":
-      return { ...command, isOn };
-    default:
-      return command;
-  }
-}
 
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { bindPanelInput } from "./panelKeyboard.js";
