@@ -62,8 +62,8 @@ type ConfirmationHazard =
   | { readonly kind: "powerOnOrHotter"; readonly setpoint: number };
 
 function confirmationHazard(dev: SmartDevice): ConfirmationHazard | null {
-  // `deviceCategory` treats any 暖 in the name as a heater. A water heater whose model
-  // is not a heater still follows the hotter-only rule (#167).
+  // A water heater whose model and name miss every heater hint is still a heater for the
+  // hotter-only rule (#167), and the facet rule reads `spec.heats` the same way.
   if (
     dev.kind.kind === "climate" &&
     dev.name.includes("热水器") &&
@@ -331,12 +331,35 @@ function deescalatesHazard(operation: IntentOperation): boolean {
 const MANUAL_CONTROL_RULES: ManualControlRules =
   DEVICE_PROFILES.manualControlPolicy ?? MANUAL_CONTROL_FALLBACK_RULES;
 
-/** A number the JSON value can carry, or null (macOS `JSONValue.doubleValue`). */
+/** `Double(String)` decimal forms: sign, digits, an optional dot, an optional exponent. */
+const DECIMAL_NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+/** `Double(String)` hex floats take a lowercase `0x`, an optional dot and an optional `p` exponent. */
+const HEX_NUMBER = /^([+-]?)0x([0-9a-fA-F]+\.?[0-9a-fA-F]*|\.[0-9a-fA-F]+)(?:[pP]([+-]?\d+))?$/;
+const INFINITY_NUMBER = /^[+-]?inf(?:inity)?$/i;
+const NAN_NUMBER = /^[+-]?nan$/i;
+
+/**
+ * The string forms Swift `Double(String)` accepts. `Number()` is looser in both directions: it
+ * trims whitespace, reads `0b101`/`0o17`, turns `""` into 0, and rejects the hex floats Swift
+ * takes. A facet value that does not parse has to fall through the hazard table exactly as macOS
+ * does, so the grammar is spelled out rather than delegated.
+ */
+function doubleFromString(text: string): number | null {
+  if (INFINITY_NUMBER.test(text)) return text.startsWith("-") ? -Infinity : Infinity;
+  if (NAN_NUMBER.test(text)) return NaN;
+  if (DECIMAL_NUMBER.test(text)) return Number(text);
+  const hex = HEX_NUMBER.exec(text);
+  if (!hex) return null;
+  const [, sign = "", body = "", exponent] = hex;
+  const [whole = "", fraction = ""] = body.split(".");
+  const value = Number.parseInt(`${whole}${fraction}`, 16) / 16 ** fraction.length;
+  return (sign === "-" ? -value : value) * 2 ** Number(exponent ?? 0);
+}
+
+/** A number the value can carry, or null (macOS `JSONValue.doubleValue`). */
 function doubleValue(value: unknown): number | null {
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  if (typeof value !== "string" || value.trim() === "") return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
+  if (typeof value === "number") return value;
+  return typeof value === "string" ? doubleFromString(value) : null;
 }
 
 /** A rounded integer the JSON value can carry, or null (macOS `JSONValue.intValue`). */
