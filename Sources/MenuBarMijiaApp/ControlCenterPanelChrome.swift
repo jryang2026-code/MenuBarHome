@@ -1051,7 +1051,7 @@ extension ControlCenterPanel {
                 }
             }
             .transition(AppleMotion.drawerTransition)
-        } else if let toast = store.toastNotice {
+        } else if let toast = visibleToast {
             let toastShape = Capsule(style: .continuous)
             NoticeToastBanner(
                 notice: toast,

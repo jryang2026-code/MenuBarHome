@@ -93,7 +93,7 @@ extension HomeStore {
     /// Header hold during the All Off lesson. Every other caller, including URL, Raycast, and
     /// App Intent scenes, uses `turnAllOff()` and really switches devices off.
     @discardableResult
-    public func rehearseAllOff() -> Task<Void, Never>? {
+    public func rehearseAllOff() -> Task<BulkWriteOutcome, Never>? {
         if rehearseAllOffLessonIfNeeded() { return nil }
         return turnAllOff()
     }
@@ -153,6 +153,17 @@ public struct PanelNoticeSlot: Equatable, Sendable {
         switch kind {
         case .miBlocked, .haPlaintext: true
         case .haAddress, .miExpiringSoon: false
+        }
+    }
+
+    /// #47's persistent expiry toast says what the blocked banner already says and carries the
+    /// same Scan action. Showing both makes one expired session read as two alerts.
+    public func repeats(_ toast: ToastNotice) -> Bool {
+        switch kind {
+        case .miBlocked:
+            return toast.persistent && toast.action?.kind == .presentMiReauth
+        case .haPlaintext, .haAddress, .miExpiringSoon:
+            return false
         }
     }
 

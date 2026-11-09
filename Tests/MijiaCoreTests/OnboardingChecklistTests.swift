@@ -271,6 +271,41 @@ struct OnboardingChecklistTests {
         let sent = await mock.executedCommands
         #expect(!sent.isEmpty)
     }
+
+    @Test("A blocked Mi session hides the lesson, so a hold is a real refused All Off")
+    @MainActor
+    func blockedSessionSkipsTheRehearsal() async throws {
+        let suite = "test.onboarding.blocked.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+        #expect(MiSessionStore.save(
+            MiSession(
+                userId: "42",
+                cUserId: "c",
+                ssecurity: "s",
+                serviceToken: "tok",
+                expiresAt: Date(timeIntervalSince1970: 1_700_000_000)
+            ),
+            defaults: defaults
+        ))
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(
+            devices: [Self.livingLight, Self.studyLight],
+            scenes: []
+        ))
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        store.recordOnboardingMilestone(.searchedDevice)
+        #expect(store.miSessionBlocksControl)
+        #expect(!store.allOffLessonIsActive, "the blocked notice hides the getting-started row")
+
+        let task = try #require(store.rehearseAllOff())
+        #expect(await task.value == .refusedByMiSession)
+        #expect(store.undoBanner == nil, "a blocked session never shows a rehearsal banner")
+        #expect(!store.onboardingMilestones.contains(.rehearsedAllOff))
+        #expect(!store.onboardingMilestones.contains(.turnedAllOff))
+        #expect(store.toastNotice?.persistent == true)
+        #expect(await mock.executedCommands.isEmpty)
+    }
 }
 
 struct PanelNoticeTests {
@@ -335,6 +370,31 @@ struct PanelNoticeTests {
         }
         #expect(slot.extraCount == 1)
         #expect(slot.hidesChecklist)
+    }
+
+    @Test("The blocked banner already carries the expiry toast's message and Scan action")
+    func blockedNoticeSupersedesTheExpiryToast() {
+        let blocked = PanelNoticeSlot(kind: .miBlocked, extraCount: 0)
+        let expiryToast = ToastNotice(
+            message: HomeStore.miSessionBlockedMessage,
+            isError: true,
+            action: ToastAction(title: "扫码", kind: .presentMiReauth),
+            persistent: true
+        )
+        #expect(blocked.repeats(expiryToast))
+        // Anything else keeps its own slot: an ordinary toast, another action, or another notice.
+        #expect(!blocked.repeats(ToastNotice(message: "已关闭 2 台设备")))
+        #expect(!blocked.repeats(ToastNotice(
+            message: "Home Assistant 未连接",
+            isError: true,
+            action: ToastAction(title: "设置", kind: .openConnectionSettings),
+            persistent: true
+        )))
+        let expiring = PanelNoticeSlot(
+            kind: .miExpiringSoon(Date(timeIntervalSince1970: 1_700_000_000)),
+            extraCount: 0
+        )
+        #expect(!expiring.repeats(expiryToast))
     }
 
     @Test("Kind chips stay hidden until 全部 is opened again or a kind filter is on")

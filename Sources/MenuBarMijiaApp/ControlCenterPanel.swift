@@ -359,6 +359,14 @@ public struct ControlCenterPanel: View {
         scrollingNotice != nil || showsLessonRow
     }
 
+    /// The toast the panel actually draws. A pinned blocked notice already carries the same
+    /// message and Scan action, so #47's persistent expiry toast must not repeat it.
+    var visibleToast: ToastNotice? {
+        guard let toast = store.toastNotice else { return nil }
+        guard !(store.panelNoticeSlot?.repeats(toast) ?? false) else { return nil }
+        return toast
+    }
+
     private var showsKindChips: Bool {
         KindChipRowPolicy.isShown(listCut: store.listCut, revealed: kindChipsRevealed)
     }
@@ -459,7 +467,7 @@ public struct ControlCenterPanel: View {
                     }
                     .padding(.horizontal, 13)
                     .padding(.top, showsScrollPreface ? 0 : 10)
-                    .padding(.bottom, store.undoBanner != nil || store.toastNotice != nil ? 48 : 12)
+                    .padding(.bottom, store.undoBanner != nil || visibleToast != nil ? 48 : 12)
                 }
                 .onChange(of: pendingScrollToDeviceId) { _, targetId in
                     guard let targetId else { return }

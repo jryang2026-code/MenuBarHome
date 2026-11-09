@@ -96,7 +96,7 @@ struct SnapshotTests {
         )
     }
 
-    @Test("Panel shows the persistent expired-session toast with its Scan action and close button")
+    @Test("The expired-session toast never repeats the banner that already offers Scan")
     func panelExpiredMiSessionToastSnapshot() async throws {
         let fixture = try await SnapshotFixture(
             miSession: MiSession(
