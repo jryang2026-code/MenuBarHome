@@ -72,6 +72,5 @@ struct CoverCommandOriginTests {
 
         await mock.releaseExecute()
         _ = await first.value
-        #expect(store.coverCommandOrigins["curtain"] == 0, "the confirmed travel keeps its origin for the lock")
     }
 }

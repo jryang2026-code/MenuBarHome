@@ -35,6 +35,8 @@ struct BulkWriteRollbackTests {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: devices))
         let store = HomeStore(provider: mock, defaultsSuiteName: "test.bulkrollback.\(UUID().uuidString)")
         try await store.waitForTestSnapshot()
+        // Freeze the toast so a loaded CI cannot dismiss it before the assertions (CODING_STANDARDS §9).
+        store.toastAutoDismissInterval = nil
         return (store, mock)
     }
 
