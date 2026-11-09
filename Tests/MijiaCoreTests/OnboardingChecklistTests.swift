@@ -268,7 +268,6 @@ struct OnboardingChecklistTests {
         #expect(store.onboardingMilestones.contains(.turnedAllOff))
         #expect(!store.onboardingMilestones.contains(.rehearsedAllOff))
         #expect(store.devices.contains { !$0.isActiveOn })
-        try await Task.sleep(for: .milliseconds(80))
         let sent = await mock.executedCommands
         #expect(!sent.isEmpty)
     }
