@@ -195,6 +195,113 @@ struct BulkWriteRollbackTests {
         )
     }
 
+    @Test("A device that accepted one command keeps its row and undo entry when the next one fails")
+    @MainActor
+    func partlyAppliedDeviceKeepsItsRowAndBanner() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling])
+        await mock.setFailingCommands { command in
+            if case .setLightColorTemp = command { return true }
+            return false
+        }
+
+        let task = store.executeQuickAction(.softNightLight)
+        store.pauseUndoBannerCountdown()
+        await task?.value
+
+        // The brightness write turned the lamp on, so the card must not claim it is off again and
+        // 撤销 must stay available to turn it back off.
+        let light = try #require(store.devices.first { $0.id == "dev_ceiling" })
+        #expect(light.isActiveOn)
+        if case .light(let spec) = light.kind {
+            #expect(spec.brightnessPercent == 15)
+        } else {
+            Issue.record("expected the ceiling light row, got \(light.kind)")
+        }
+        let banner = try #require(store.undoBanner, "undo must still turn the light back off")
+        #expect(banner.restoreCommands == [
+            .setLightBrightness(entityId: "light.ceiling", percent: 80),
+            .setLightColorTemp(entityId: "light.ceiling", kelvin: 4000),
+        ])
+        #expect(banner.previousDevices.map(\.id) == ["dev_ceiling"])
+        #expect(banner.deviceCount == 1)
+        #expect(store.toastNotice?.isError == true)
+        #expect(store.toastNotice?.message.contains("客厅吸顶灯") == true)
+        #expect(store.toastNotice?.message.contains("只生效了一部分") == true)
+        #expect(await mock.executedCommands == [.setLightBrightness(entityId: "light.ceiling", percent: 15)])
+        #expect(store.userHabitMemory.entries.isEmpty, "habits train only on fully applied devices")
+    }
+
+    @Test("After a device's command fails, its remaining commands are not sent")
+    @MainActor
+    func failureStopsRemainingCommandsForThatDevice() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling])
+        await mock.setFailingCommands { command in
+            if case .setLightBrightness = command { return true }
+            return false
+        }
+
+        let task = store.executeQuickAction(.softNightLight)
+        store.pauseUndoBannerCountdown()
+        await task?.value
+
+        #expect(await mock.executeStarted == 1, "the colour command must not follow the failed brightness write")
+        #expect(await mock.executedCommands.isEmpty)
+        // Nothing was accepted, so the row and the banner go back to the pre-action state.
+        #expect(store.undoBanner == nil)
+        let light = try #require(store.devices.first { $0.id == "dev_ceiling" })
+        if case .light(let spec) = light.kind {
+            #expect(spec.isOn)
+            #expect(spec.brightnessPercent == 80)
+            #expect(spec.colorTempKelvin == 4000)
+        } else {
+            Issue.record("expected the ceiling light row, got \(light.kind)")
+        }
+        #expect(store.toastNotice?.message.contains("未响应") == true)
+    }
+
+    @Test("A report that lands after a failed device's lock expired is not overwritten")
+    @MainActor
+    func expiredLockSkipsTheRevert() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling, Self.deskLamp])
+        await mock.setFailingTargets(["light.ceiling"])
+        await mock.setFailingCommands { command in
+            if case .setLightPower(let entityId, _) = command, entityId == "light.desk" { return true }
+            return false
+        }
+        await mock.holdNextExecute(forTarget: "light.desk")
+
+        let task = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        // The first device fails; the second is still inside the provider.
+        try await waitUntil { await mock.executeStarted == 2 }
+
+        // The 3 s lock runs out and the device's own report lands before the batch finishes.
+        store.optimisticLockUntil.removeValue(forKey: "dev_ceiling")
+        var moved = Self.ceiling
+        if case .light(var spec) = moved.kind {
+            spec.brightnessPercent = 42
+            moved.kind = .light(spec)
+        }
+        let before = store.snapshotGeneration
+        await mock.updateSnapshot(SynthesizedHome(devices: [moved, Self.deskLamp]))
+        try await waitUntil { store.snapshotGeneration > before }
+        #expect(store.devices.first { $0.id == "dev_ceiling" }?.isActiveOn == true)
+
+        await mock.releaseExecute()
+        await task?.value
+
+        // The batch must leave the fresher row alone: it no longer owns the device.
+        let light = try #require(store.devices.first { $0.id == "dev_ceiling" })
+        #expect(light.isActiveOn)
+        if case .light(let spec) = light.kind {
+            #expect(spec.brightnessPercent == 42)
+        } else {
+            Issue.record("expected the ceiling light row, got \(light.kind)")
+        }
+        #expect(store.toastNotice?.message.contains("客厅吸顶灯") == true)
+        #expect(store.undoBanner == nil, "both devices refused, so the banner has nothing to offer")
+    }
+
     @Test("turnAllOff hands back the task that sends its commands")
     @MainActor
     func turnAllOffReturnsItsTask() async throws {

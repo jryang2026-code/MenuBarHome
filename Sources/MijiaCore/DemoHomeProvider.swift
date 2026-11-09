@@ -10,7 +10,9 @@ public actor MockHomeProvider: HomeProvider {
     public private(set) var pollingContexts: [PollingContext] = []
     public var shouldFailCommands: Bool = false
     private var failingTargets: Set<String> = []
+    private var failingCommandFilter: (@Sendable (DeviceCommand) -> Bool)?
     private var holdNext = false
+    private var holdTarget: String?
     private var executeWaiter: CheckedContinuation<Void, Never>?
     public private(set) var executeStarted = 0
     public private(set) var requestedCameraQualities: [XiaomiCameraStreamQuality] = []
@@ -28,6 +30,12 @@ public actor MockHomeProvider: HomeProvider {
     /// refuse while the rest accept.
     public func setFailingTargets(_ entityIds: Set<String>) {
         self.failingTargets = entityIds
+    }
+
+    /// Fails the commands `filter` matches, so a test can make one command of a multi-command
+    /// device fail while an earlier one on the same device succeeds.
+    public func setFailingCommands(_ filter: @escaping @Sendable (DeviceCommand) -> Bool) {
+        self.failingCommandFilter = filter
     }
 
     public func setPollingContext(_ context: PollingContext) async {
@@ -52,6 +60,12 @@ public actor MockHomeProvider: HomeProvider {
         holdNext = true
     }
 
+    /// Holds the next command aimed at `entityId`, so a test can let one device finish while
+    /// another is still in flight.
+    public func holdNextExecute(forTarget entityId: String) {
+        holdTarget = entityId
+    }
+
     public func releaseExecute() {
         holdNext = false
         executeWaiter?.resume()
@@ -60,11 +74,14 @@ public actor MockHomeProvider: HomeProvider {
 
     public func execute(_ command: DeviceCommand) async throws {
         executeStarted += 1
-        if holdNext {
+        if holdNext || holdTarget == command.targetEntityId {
             holdNext = false
+            if holdTarget == command.targetEntityId { holdTarget = nil }
             await withCheckedContinuation { executeWaiter = $0 }
         }
-        if shouldFailCommands || failingTargets.contains(command.targetEntityId) {
+        if shouldFailCommands
+            || failingTargets.contains(command.targetEntityId)
+            || failingCommandFilter?(command) == true {
             throw HomeProviderError.serviceCallFailed(500, "模拟网络失败")
         }
         executedCommands.append(command)

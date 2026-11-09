@@ -180,36 +180,43 @@ extension HomeStore {
         let context = controlContextID
         let deviceNames = Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0.name) })
         return Task {
-            var failedDeviceIds: Set<String> = []
-            var failedNames: [String] = []
-            for item in commands {
-                guard context == controlContextID else { return }
-                do {
-                    try await executeDeviceCommand(item.command)
-                } catch {
-                    if failedDeviceIds.insert(item.deviceId).inserted, let name = deviceNames[item.deviceId] {
-                        failedNames.append(name)
-                    }
-                }
-            }
-            guard context == controlContextID else { return }
+            guard let outcome = await runBatchCommands(commands, context: context) else { return }
+            let failedDeviceIds = outcome.failedDeviceIds
             if !failedDeviceIds.isEmpty {
-                // The row was shown ahead of the device; a refusal puts it back and leaves this
-                // action's banner, which must only offer what the devices accepted.
-                for deviceId in failedDeviceIds {
-                    if let write = writes[deviceId] { revert(write) }
+                // A device with no accepted command keeps nothing on screen: its row goes back and
+                // its restore commands leave this action's banner. A device that accepted an earlier
+                // command stays as shown (undo still turns it back), and is reported separately.
+                let refusedDeviceIds = failedDeviceIds.filter { outcome.acceptedByDevice[$0] == nil }
+                let now = ContinuousClock.now
+                for deviceId in refusedDeviceIds {
+                    // Revert only while this batch's lock still holds the row. An expired lock means
+                    // a device report already took over, and a whole-row revert would overwrite it.
+                    guard let write = writes[deviceId],
+                          let lockUntil = optimisticLockUntil[deviceId],
+                          now < lockUntil else { continue }
+                    revert(write)
                 }
                 trimUndoBanner(
                     bannerId,
-                    failedDeviceIds: failedDeviceIds,
+                    droppedDeviceIds: refusedDeviceIds,
                     restoreCommands: restoreCommands,
-                    remainingDeviceCount: affectedDeviceIds.subtracting(failedDeviceIds).count,
+                    remainingDeviceCount: affectedDeviceIds.subtracting(refusedDeviceIds).count,
                     title: bannerTitle
                 )
-                showBatchWriteFailure(actionTitle: action.title, failedNames: failedNames)
+                let names = Self.batchFailureNames(
+                    commands: commands,
+                    failedDeviceIds: failedDeviceIds,
+                    acceptedByDevice: outcome.acceptedByDevice,
+                    deviceNames: deviceNames
+                )
+                showBatchWriteFailure(
+                    actionTitle: action.title,
+                    refusedNames: names.refused,
+                    partlyAppliedNames: names.partlyApplied
+                )
             }
-            // Habits train only on confirmed success, and only while the banner this action
-            // created is still the live one (an undo or expiry cancels the learning) (#113).
+            // Habits train only on devices with no failed command, and only while the banner this
+            // action created is still the live one (an undo or expiry cancels the learning) (#113).
             let succeededIntents = habitIntents.filter { !failedDeviceIds.contains($0.targetId) }
             guard context == controlContextID, !succeededIntents.isEmpty, recordsHabits, undoBanner?.id == bannerId else { return }
             undoBanner?.habitReceipt = confirmManualControl(intents: succeededIntents)
@@ -353,32 +360,38 @@ extension HomeStore {
         let context = controlContextID
         let deviceNames = Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0.name) })
         return Task {
-            var failedDeviceIds: Set<String> = []
-            var failedNames: [String] = []
-            for item in offCommands {
-                guard context == controlContextID else { return }
-                do {
-                    try await executeDeviceCommand(item.command)
-                } catch {
-                    if failedDeviceIds.insert(item.deviceId).inserted, let name = deviceNames[item.deviceId] {
-                        failedNames.append(name)
-                    }
-                }
-            }
-            guard context == controlContextID else { return }
+            guard let outcome = await runBatchCommands(offCommands, context: context) else { return }
+            let failedDeviceIds = outcome.failedDeviceIds
             if !failedDeviceIds.isEmpty {
-                for deviceId in failedDeviceIds {
-                    if let write = writes[deviceId] { revert(write) }
+                let refusedDeviceIds = failedDeviceIds.filter { outcome.acceptedByDevice[$0] == nil }
+                let now = ContinuousClock.now
+                for deviceId in refusedDeviceIds {
+                    // Revert only while this batch's lock still holds the row; an expired lock means
+                    // a device report already took over.
+                    guard let write = writes[deviceId],
+                          let lockUntil = optimisticLockUntil[deviceId],
+                          now < lockUntil else { continue }
+                    revert(write)
                 }
-                let remainingDeviceCount = offCommands.count - failedDeviceIds.count
+                let remainingDeviceCount = offCommands.count - refusedDeviceIds.count
                 trimUndoBanner(
                     bannerId,
-                    failedDeviceIds: failedDeviceIds,
+                    droppedDeviceIds: refusedDeviceIds,
                     restoreCommands: restoreCommands,
                     remainingDeviceCount: remainingDeviceCount,
                     title: L10n.tr("已关闭 \(remainingDeviceCount) 台设备", "Turned off \(remainingDeviceCount) device(s)")
                 )
-                showBatchWriteFailure(actionTitle: L10n.tr("全关", "Turn all off"), failedNames: failedNames)
+                let names = Self.batchFailureNames(
+                    commands: offCommands,
+                    failedDeviceIds: failedDeviceIds,
+                    acceptedByDevice: outcome.acceptedByDevice,
+                    deviceNames: deviceNames
+                )
+                showBatchWriteFailure(
+                    actionTitle: L10n.tr("全关", "Turn all off"),
+                    refusedNames: names.refused,
+                    partlyAppliedNames: names.partlyApplied
+                )
             }
             // Habits train only on confirmed success while this action's banner is live (#113).
             let succeededIntents = habitIntents.filter { !failedDeviceIds.contains($0.targetId) }
@@ -430,14 +443,14 @@ extension HomeStore {
     /// has already been replaced or dismissed is left alone.
     private func trimUndoBanner(
         _ bannerId: UUID,
-        failedDeviceIds: Set<String>,
+        droppedDeviceIds: Set<String>,
         restoreCommands: [(deviceId: String, command: DeviceCommand)],
         remainingDeviceCount: Int,
         title: String
     ) {
         guard let banner = undoBanner, banner.id == bannerId else { return }
         let keptCommands = restoreCommands
-            .filter { !failedDeviceIds.contains($0.deviceId) }
+            .filter { !droppedDeviceIds.contains($0.deviceId) }
             .map(\.command)
         guard !keptCommands.isEmpty else {
             undoTimerTask?.cancel()
@@ -446,21 +459,84 @@ extension HomeStore {
         }
         undoBanner?.title = title
         undoBanner?.restoreCommands = keptCommands
-        undoBanner?.previousDevices = banner.previousDevices.filter { !failedDeviceIds.contains($0.id) }
+        undoBanner?.previousDevices = banner.previousDevices.filter { !droppedDeviceIds.contains($0.id) }
         undoBanner?.deviceCount = remainingDeviceCount
     }
 
-    /// `撤销未完成` wording for a bulk action some devices refused (#113).
-    private func showBatchWriteFailure(actionTitle: String, failedNames: [String]) {
+    /// `撤销未完成` wording for a bulk action some devices refused or only partly applied (#113).
+    private func showBatchWriteFailure(
+        actionTitle: String,
+        refusedNames: [String],
+        partlyAppliedNames: [String]
+    ) {
         let separator = L10n.isEnglish ? ", " : "、"
-        let list = failedNames.joined(separator: separator)
+        var clauses: [String] = []
+        if !refusedNames.isEmpty {
+            let list = refusedNames.joined(separator: separator)
+            clauses.append(L10n.tr("\(list) 未响应", "\(list) did not respond"))
+        }
+        if !partlyAppliedNames.isEmpty {
+            let list = partlyAppliedNames.joined(separator: separator)
+            clauses.append(L10n.tr("\(list) 只生效了一部分", "\(list) applied only partly"))
+        }
+        let detail = clauses.joined(separator: L10n.isEnglish ? "; " : "；")
         showToast(
-            L10n.tr(
-                "「\(actionTitle)」未完成：\(list) 未响应，已恢复这些设备",
-                "\"\(actionTitle)\" incomplete: \(list) did not respond; those devices were restored"
-            ),
+            L10n.tr("「\(actionTitle)」未完成：\(detail)", "\"\(actionTitle)\" incomplete: \(detail)"),
             isError: true
         )
+    }
+
+    /// What a bulk action's commands did, split by device.
+    struct BatchCommandOutcome {
+        /// Commands each device accepted; a device missing here accepted none.
+        var acceptedByDevice: [String: Int] = [:]
+        /// Devices with at least one failed command.
+        var failedDeviceIds: Set<String> = []
+    }
+
+    /// Sends a bulk action's commands in order. Once a command on a device fails, that device's
+    /// remaining commands are not sent, the same rule the undo executor follows. Returns nil when
+    /// the control context moved on.
+    func runBatchCommands(
+        _ commands: [(deviceId: String, command: DeviceCommand)],
+        context: UUID
+    ) async -> BatchCommandOutcome? {
+        var outcome = BatchCommandOutcome()
+        for item in commands {
+            guard context == controlContextID else { return nil }
+            if outcome.failedDeviceIds.contains(item.deviceId) { continue }
+            do {
+                try await executeDeviceCommand(item.command)
+                outcome.acceptedByDevice[item.deviceId, default: 0] += 1
+            } catch {
+                outcome.failedDeviceIds.insert(item.deviceId)
+            }
+        }
+        guard context == controlContextID else { return nil }
+        return outcome
+    }
+
+    /// Names for the failure toast, in the order the action sent the devices: those that refused
+    /// every command, and those that accepted at least one before one failed.
+    nonisolated static func batchFailureNames(
+        commands: [(deviceId: String, command: DeviceCommand)],
+        failedDeviceIds: Set<String>,
+        acceptedByDevice: [String: Int],
+        deviceNames: [String: String]
+    ) -> (refused: [String], partlyApplied: [String]) {
+        var refused: [String] = []
+        var partlyApplied: [String] = []
+        var seen: Set<String> = []
+        for item in commands {
+            guard seen.insert(item.deviceId).inserted else { continue }
+            guard failedDeviceIds.contains(item.deviceId), let name = deviceNames[item.deviceId] else { continue }
+            if acceptedByDevice[item.deviceId] == nil {
+                refused.append(name)
+            } else {
+                partlyApplied.append(name)
+            }
+        }
+        return (refused, partlyApplied)
     }
 
     @discardableResult
