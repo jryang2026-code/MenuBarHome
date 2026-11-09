@@ -250,12 +250,16 @@ struct CoverMovingStateTests {
         }
     }
 
-    /// The takeover rule is the subject of the tests below, not the eight-second duration of the
-    /// optimistic lock. Pin the lock far enough out that a loaded runner cannot let it expire
-    /// between the reports a test delivers.
+    /// Extends the optimistic lock the command armed; it never creates one, so a test that
+    /// asserts the lock survived a report cannot pass on a lock the test itself added. The lock
+    /// runs on real time, so a loaded runner can let its eight seconds expire mid-test.
     @MainActor
-    private func pinCoverLock(_ store: HomeStore, _ deviceId: String) {
-        store.optimisticLockUntil[deviceId] = ContinuousClock.now.advanced(by: .seconds(600))
+    private func extendCoverLock(_ store: HomeStore, _ deviceId: String) throws {
+        let existing = try #require(
+            store.optimisticLockUntil[deviceId],
+            "the command must have armed the optimistic lock before the test extends it"
+        )
+        store.optimisticLockUntil[deviceId] = max(existing, ContinuousClock.now.advanced(by: .seconds(600)))
     }
 
     @Test("A travel report at the commanded position takes over the card")
@@ -266,7 +270,7 @@ struct CoverMovingStateTests {
         let card = try #require(store.devices.first)
 
         #expect(await store.togglePrimary(card)?.value == true)
-        pinCoverLock(store, card.id)
+        try extendCoverLock(store, card.id)
         let optimistic = try #require(store.devices.first?.coverSpec)
         #expect(optimistic.positionPercent == 100)
         #expect(optimistic.motion == .opening)
@@ -355,11 +359,14 @@ struct CoverMovingStateTests {
         let parked = try coverDevice(current: 0, target: 0, status: 0)
         let (store, mock) = try await makeStore([parked])
         let card = try #require(store.devices.first)
+        let beforeCommand = store.snapshotGeneration
         #expect(await store.togglePrimary(card)?.value == true)
-        pinCoverLock(store, card.id)
-        // The tap records the pre-command position as the travel origin, and the merge compares a
-        // stopped report against it. Pin it: a mock echo that lands during the send would otherwise
-        // clear it and let the test depend on scheduling instead of on the takeover rule.
+        // The mock echoes the parked snapshot while the send is in flight, and that echo can land
+        // before the command arms its lock, which drops the travel origin. Wait for it to be
+        // applied, then put back the origin the tap wrote, so the takeover rule is what this test
+        // exercises instead of the echo's timing.
+        await waitUntil { store.snapshotGeneration > beforeCommand }
+        try extendCoverLock(store, card.id)
         store.coverCommandOrigins[card.id] = 0
 
         // The target moved to 100 and the status says Opening, but the reported position is still 0.
@@ -403,7 +410,7 @@ struct CoverMovingStateTests {
         let (store, mock) = try await makeStore([parked])
         let card = try #require(store.devices.first)
         #expect(await store.togglePrimary(card)?.value == true)
-        pinCoverLock(store, card.id)
+        try extendCoverLock(store, card.id)
 
         // The motor says it is opening while its target still reads 0. Accepting this sample would
         // replace the commanded 100 with 1, so the lock must hold until the position catches up.
@@ -432,7 +439,7 @@ struct CoverMovingStateTests {
         let card = try #require(store.devices.first)
 
         #expect(await store.togglePrimary(card)?.value == true)
-        pinCoverLock(store, card.id)
+        try extendCoverLock(store, card.id)
 
         let moving = try coverDevice(current: 100, target: 100, status: 1)
         await mock.updateSnapshot(SynthesizedHome(devices: [moving]))
@@ -476,7 +483,7 @@ struct CoverMovingStateTests {
         let card = try #require(store.devices.first)
 
         #expect(await store.togglePrimary(card)?.value == true)
-        pinCoverLock(store, card.id)
+        try extendCoverLock(store, card.id)
         let paused = try #require(store.devices.first?.coverSpec)
         #expect(paused.motion == .stopped)
         #expect(store.optimisticLockUntil[moving.id] != nil, "a stale travel report must not restart the label")
@@ -497,7 +504,7 @@ struct CoverMovingStateTests {
         let card = try #require(store.devices.first)
 
         #expect(await store.togglePrimary(card)?.value == true)
-        pinCoverLock(store, card.id)
+        try extendCoverLock(store, card.id)
 
         // The motor reported stopped at 40 while the target still says 100. The pre-command
         // position was 0, so this is a real stop, not the stale snapshot before travel.
