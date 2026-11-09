@@ -61,7 +61,7 @@ extension HomeStore {
         var affectedDeviceIds: Set<String> = []
         var habitIntents: [DeviceIntent] = []
         // One write per device: a device that sends two commands (softNightLight) is rolled back once.
-        var writes: [String: OptimisticWrite] = [:]
+        var writes: [String: BatchWrite] = [:]
 
         switch action {
         case .lightsOff:
@@ -76,7 +76,10 @@ extension HomeStore {
                 s.isOn = false
                 var updated = previous
                 updated.kind = .light(s)
-                writes[deviceId] = beginOptimisticWrite(from: previous, to: updated, lock: .seconds(3.0))
+                writes[deviceId] = BatchWrite(
+                    write: beginOptimisticWrite(from: previous, to: updated, lock: .seconds(3.0)),
+                    shown: updated
+                )
             }
 
         case .softNightLight:
@@ -127,7 +130,10 @@ extension HomeStore {
                 s.currentEffect = nil
                 var updated = previous
                 updated.kind = .light(s)
-                writes[deviceId] = beginOptimisticWrite(from: previous, to: updated, lock: .seconds(3.0))
+                writes[deviceId] = BatchWrite(
+                    write: beginOptimisticWrite(from: previous, to: updated, lock: .seconds(3.0)),
+                    shown: updated
+                )
             }
 
         case .climateSleepOff:
@@ -145,7 +151,10 @@ extension HomeStore {
                     s.hvacMode = "off"
                     var updated = previous
                     updated.kind = .climate(s)
-                    writes[deviceId] = beginOptimisticWrite(from: previous, to: updated, lock: .seconds(3.0))
+                    writes[deviceId] = BatchWrite(
+                        write: beginOptimisticWrite(from: previous, to: updated, lock: .seconds(3.0)),
+                        shown: updated
+                    )
                 case .fan(var s) where s.isOn && s.powerWritable:
                     affectedDeviceIds.insert(deviceId)
                     habitIntents.append(.init(targetId: deviceId, operation: .power(false)))
@@ -154,7 +163,10 @@ extension HomeStore {
                     s.isOn = false
                     var updated = previous
                     updated.kind = .fan(s)
-                    writes[deviceId] = beginOptimisticWrite(from: previous, to: updated, lock: .seconds(3.0))
+                    writes[deviceId] = BatchWrite(
+                        write: beginOptimisticWrite(from: previous, to: updated, lock: .seconds(3.0)),
+                        shown: updated
+                    )
                 default:
                     break
                 }
@@ -187,15 +199,7 @@ extension HomeStore {
                 // its restore commands leave this action's banner. A device that accepted an earlier
                 // command stays as shown (undo still turns it back), and is reported separately.
                 let refusedDeviceIds = failedDeviceIds.filter { outcome.acceptedByDevice[$0] == nil }
-                let now = ContinuousClock.now
-                for deviceId in refusedDeviceIds {
-                    // Revert only while this batch's lock still holds the row. An expired lock means
-                    // a device report already took over, and a whole-row revert would overwrite it.
-                    guard let write = writes[deviceId],
-                          let lockUntil = optimisticLockUntil[deviceId],
-                          now < lockUntil else { continue }
-                    revert(write)
-                }
+                revertRefusedBatchWrites(refusedDeviceIds, writes: writes)
                 trimUndoBanner(
                     bannerId,
                     droppedDeviceIds: refusedDeviceIds,
@@ -330,7 +334,7 @@ extension HomeStore {
         var offCommands: [(deviceId: String, command: DeviceCommand)] = []
         var restoreCommands: [(deviceId: String, command: DeviceCommand)] = []
         var habitIntents: [DeviceIntent] = []
-        var writes: [String: OptimisticWrite] = [:]
+        var writes: [String: BatchWrite] = [:]
 
         for idx in devices.indices where targetIds.contains(devices[idx].id) {
             let previous = devices[idx]
@@ -344,7 +348,10 @@ extension HomeStore {
             restoreCommands.append((deviceId, change.restore))
             var updated = previous
             updated.kind = change.kind
-            writes[deviceId] = beginOptimisticWrite(from: previous, to: updated, lock: .seconds(3.0))
+            writes[deviceId] = BatchWrite(
+                write: beginOptimisticWrite(from: previous, to: updated, lock: .seconds(3.0)),
+                shown: updated
+            )
         }
 
         scheduleUndoBanner(
@@ -364,15 +371,7 @@ extension HomeStore {
             let failedDeviceIds = outcome.failedDeviceIds
             if !failedDeviceIds.isEmpty {
                 let refusedDeviceIds = failedDeviceIds.filter { outcome.acceptedByDevice[$0] == nil }
-                let now = ContinuousClock.now
-                for deviceId in refusedDeviceIds {
-                    // Revert only while this batch's lock still holds the row; an expired lock means
-                    // a device report already took over.
-                    guard let write = writes[deviceId],
-                          let lockUntil = optimisticLockUntil[deviceId],
-                          now < lockUntil else { continue }
-                    revert(write)
-                }
+                revertRefusedBatchWrites(refusedDeviceIds, writes: writes)
                 let remainingDeviceCount = offCommands.count - refusedDeviceIds.count
                 trimUndoBanner(
                     bannerId,
@@ -492,6 +491,28 @@ extension HomeStore {
         var acceptedByDevice: [String: Int] = [:]
         /// Devices with at least one failed command.
         var failedDeviceIds: Set<String> = []
+    }
+
+    /// The optimistic row a bulk action showed for a device, and the write that owns it.
+    struct BatchWrite {
+        let write: OptimisticWrite
+        let shown: SmartDevice
+    }
+
+    /// Puts the rows a bulk action showed back for the devices that refused every command, but only
+    /// while the batch still owns them. A snapshot that takes a row clears its lock entry, and an
+    /// expired entry that was left behind still means the row is the batch's; a row that no longer
+    /// matches what the batch showed belongs to the device or to a newer write.
+    private func revertRefusedBatchWrites(
+        _ refusedDeviceIds: Set<String>,
+        writes: [String: BatchWrite]
+    ) {
+        for deviceId in refusedDeviceIds {
+            guard let batchWrite = writes[deviceId],
+                  optimisticLockUntil[deviceId] != nil,
+                  devices.first(where: { $0.id == deviceId })?.kind == batchWrite.shown.kind else { continue }
+            revert(batchWrite.write)
+        }
     }
 
     /// Sends a bulk action's commands in order. Once a command on a device fails, that device's

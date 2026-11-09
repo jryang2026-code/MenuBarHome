@@ -259,6 +259,27 @@ struct BulkWriteRollbackTests {
         #expect(store.toastNotice?.message.contains("未响应") == true)
     }
 
+    @Test("A failed device whose lock ran out is still rolled back when no report arrived")
+    @MainActor
+    func expiredLockWithoutSnapshotStillReverts() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling])
+        await mock.setFailingTargets(["light.ceiling"])
+
+        let task = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        // The 3 s window ran out, but the device never reported, so the row is still the fake one.
+        store.optimisticLockUntil["dev_ceiling"] = ContinuousClock.now.advanced(by: .milliseconds(-1))
+        await task?.value
+
+        #expect(
+            store.devices.first { $0.id == "dev_ceiling" }?.isActiveOn == true,
+            "the fake off state is rolled back even though the lock expired"
+        )
+        #expect(store.optimisticLockUntil["dev_ceiling"] == nil)
+        #expect(store.undoBanner == nil)
+        #expect(store.toastNotice?.message.contains("客厅吸顶灯") == true)
+    }
+
     @Test("A report that lands after a failed device's lock expired is not overwritten")
     @MainActor
     func expiredLockSkipsTheRevert() async throws {
@@ -275,8 +296,8 @@ struct BulkWriteRollbackTests {
         // The first device fails; the second is still inside the provider.
         try await waitUntil { await mock.executeStarted == 2 }
 
-        // The 3 s lock runs out and the device's own report lands before the batch finishes.
-        store.optimisticLockUntil.removeValue(forKey: "dev_ceiling")
+        // The lock runs out and the device's own report lands before the batch finishes.
+        store.optimisticLockUntil["dev_ceiling"] = ContinuousClock.now.advanced(by: .milliseconds(-1))
         var moved = Self.ceiling
         if case .light(var spec) = moved.kind {
             spec.brightnessPercent = 42
@@ -285,6 +306,7 @@ struct BulkWriteRollbackTests {
         let before = store.snapshotGeneration
         await mock.updateSnapshot(SynthesizedHome(devices: [moved, Self.deskLamp]))
         try await waitUntil { store.snapshotGeneration > before }
+        #expect(store.optimisticLockUntil["dev_ceiling"] == nil, "applying the report drops the expired entry")
         #expect(store.devices.first { $0.id == "dev_ceiling" }?.isActiveOn == true)
 
         await mock.releaseExecute()
