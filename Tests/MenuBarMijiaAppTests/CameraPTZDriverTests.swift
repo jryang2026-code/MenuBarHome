@@ -63,6 +63,8 @@ private actor FakePTZClient: CameraPTZControlling {
         return stopResult
     }
 
+    func recordedStops() -> [CameraPTZSessionToken] { stopTokens }
+
     /// Waits until the controller actually called `begin`. The deadline removes the waiter and
     /// resumes it with `false`, so a regression fails the test instead of hanging the run.
     func waitForBegin(timeout: Duration = .seconds(30)) async -> Bool {
@@ -404,7 +406,7 @@ struct CameraPTZDriverTests {
             lifecycleID: controller.ptzLifecycleID,
             client: client
         )
-        controller.ptzStopRecovery = .needsManualStop(attempt)
+        controller.ptzUnresolvedStops = [attempt]
         controller.showPTZNotice(CameraLivePanelController.stopWriteFailedNotice, sticky: true)
         controller.showPTZNotice("a transient move error")
         #expect(controller.ptzNotice == CameraLivePanelController.stopWriteFailedNotice)
@@ -487,13 +489,13 @@ struct CameraPTZDriverTests {
             client: clientA
         )
         try await failStopTwice(controller, client: clientA, token: tokenA, deviceId: "cam-a", gate: gate)
-        #expect(controller.ptzStopRecovery == .needsManualStop(attemptA))
+        #expect(controller.ptzUnresolvedStops == [attemptA])
         #expect(controller.ptzNotice == CameraLivePanelController.stopWriteFailedNotice)
         controller.ptzStopRetryHold = nil
 
         let clientB = FakePTZClient()
         switchCamera(controller, to: "cam-b", client: clientB)
-        #expect(controller.ptzStopRecovery == .needsManualStop(attemptA))
+        #expect(controller.ptzUnresolvedStops == [attemptA])
 
         let tokenB = CameraPTZSessionToken(epoch: "e1", session: 2)
         controller.ptzToken = tokenB
@@ -503,7 +505,7 @@ struct CameraPTZDriverTests {
         for _ in 0..<500 {
             await Task.yield()
         }
-        #expect(controller.ptzStopRecovery == .needsManualStop(attemptA), "B's success replaced A's unresolved record")
+        #expect(controller.ptzUnresolvedStops == [attemptA], "B's success replaced A's unresolved record")
         #expect(controller.ptzNotice == CameraLivePanelController.stopWriteFailedNotice)
         #expect(controller.offersPTZStopRetry == true)
 
@@ -517,60 +519,88 @@ struct CameraPTZDriverTests {
         #expect(controller.offersPTZStopRetry == false)
     }
 
-    @Test("A failed stop on another camera keeps the older unresolved record and its retry")
-    func failedStopOnAnotherCameraKeepsOlderRecovery() async throws {
+    @Test("Identical session tokens on two cameras keep two unresolved stops, and retry resolves each")
+    func identicalTokensOnTwoCamerasStayIndependent() async throws {
         let controller = CameraLivePanelController.shared
-        let clientA = FakePTZClient()
         let failed = CameraPTZStopResult(
             sent: false,
             confirmed: false,
             mode: .continuous,
             errorReason: "write_failed"
         )
-        await clientA.setStopScript([failed, failed, CameraPTZStopResult(sent: true, confirmed: false, mode: .continuous)])
+        let succeeded = CameraPTZStopResult(sent: true, confirmed: false, mode: .continuous)
+        // The bridge epoch is per process and the session counter is per stream, so two cameras
+        // can legitimately hand out the same token.
+        let sharedToken = CameraPTZSessionToken(epoch: "e1", session: 1)
+
+        let clientA = FakePTZClient()
+        await clientA.setStopScript([failed, failed, succeeded])
         configure(controller, deviceId: "cam-a", client: clientA)
         let gateA = PTZRetryGate()
         controller.ptzStopRetryHold = { await gateA.wait() }
         defer {
             gateA.release()
+            controller.ptzStopRetryHold = nil
             controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false)
         }
 
-        let tokenA = CameraPTZSessionToken(epoch: "e1", session: 1)
         let attemptA = CameraPTZStopAttempt(
-            token: tokenA,
+            token: sharedToken,
             deviceId: "cam-a",
             lifecycleID: controller.ptzLifecycleID,
             client: clientA
         )
-        try await failStopTwice(controller, client: clientA, token: tokenA, deviceId: "cam-a", gate: gateA)
-        #expect(controller.ptzStopRecovery == .needsManualStop(attemptA))
+        try await failStopTwice(controller, client: clientA, token: sharedToken, deviceId: "cam-a", gate: gateA)
+        #expect(controller.ptzUnresolvedStops == [attemptA])
 
         let clientB = FakePTZClient()
-        await clientB.setStopResult(failed)
+        await clientB.setStopScript([failed, failed, failed, succeeded])
         switchCamera(controller, to: "cam-b", client: clientB)
+        let attemptB = CameraPTZStopAttempt(
+            token: sharedToken,
+            deviceId: "cam-b",
+            lifecycleID: controller.ptzLifecycleID,
+            client: clientB
+        )
         let gateB = PTZRetryGate()
         controller.ptzStopRetryHold = { await gateB.wait() }
         defer { gateB.release() }
 
-        let tokenB = CameraPTZSessionToken(epoch: "e1", session: 2)
-        controller.ptzToken = tokenB
+        controller.ptzToken = sharedToken
         controller.ptzDeviceId = "cam-b"
         controller.finishPTZMove(notify: false)
         _ = try #require(await clientB.waitForStops(), "camera B never wrote its first stop")
         gateB.release()
         _ = try #require(await clientB.waitForStops(minimum: 2), "camera B's automatic retry was never written")
-        for _ in 0..<500 {
+        for _ in 0..<5000 where controller.ptzUnresolvedStops.count < 2 {
             await Task.yield()
         }
-        #expect(controller.ptzStopRecovery == .needsManualStop(attemptA), "B's failure replaced A's unresolved record")
+        #expect(controller.ptzUnresolvedStops == [attemptA, attemptB], "identical tokens collapsed into one record")
         #expect(controller.ptzNotice == CameraLivePanelController.stopWriteFailedNotice)
-        #expect(controller.offersPTZStopRetry == true)
         controller.ptzStopRetryHold = nil
 
+        // A's stop recovers, B's third write fails again: only A leaves the list.
         controller.retryFailedPTZStop()
-        let retried = try #require(await clientA.waitForStops(minimum: 3), "the stop-again button did not reach A's client")
-        #expect(retried.count == 3)
+        let bStops = try #require(await clientB.waitForStops(minimum: 3), "the stop-again button skipped B's client")
+        #expect(bStops.count == 3)
+        for _ in 0..<5000 where controller.ptzUnresolvedStops != [attemptB] {
+            await Task.yield()
+        }
+        #expect(controller.ptzUnresolvedStops == [attemptB], "B's failed retry did not stay listed")
+        #expect(await clientA.recordedStops().count == 3)
+        #expect(controller.ptzNotice == CameraLivePanelController.stopWriteFailedNotice, "B never stopped")
+        #expect(controller.offersPTZStopRetry == true)
+
+        // The next press resolves B and must not touch A's already resolved client again.
+        controller.retryFailedPTZStop()
+        _ = try #require(await clientB.waitForStops(minimum: 4), "the second stop-again press did not reach B")
+        for _ in 0..<5000 where controller.offersPTZStopRetry {
+            await Task.yield()
+        }
+        #expect(controller.ptzUnresolvedStops.isEmpty)
+        #expect(await clientA.recordedStops().count == 3)
+        #expect(controller.ptzNotice == nil)
+        #expect(controller.offersPTZStopRetry == false)
     }
 
     @Test("The automatic stop retry waits about half a second")

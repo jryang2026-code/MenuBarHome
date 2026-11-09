@@ -15,6 +15,21 @@ import AppKit
 /// against them; on a mismatch the new bitmap is written under `$SNAPSHOT_ARTIFACTS`/SnapshotTests
 /// (or `$TMPDIR/SnapshotTests`) and the diff command is printed in the failure message.
 ///
+/// Snapshot-only PTZ client: the stop-warning banner's retry button is driven by an unresolved
+/// stop attempt, so the rendering must not depend on a network bridge.
+private struct SnapshotPTZClient: CameraPTZControlling {
+    func begin() async throws -> (token: CameraPTZSessionToken, mode: CameraPTZMotionMode?) {
+        throw CameraPTZClientError.notConfigured
+    }
+
+    func move(direction: CameraPTZDirection, token: CameraPTZSessionToken, seq: UInt64) async throws {}
+    func heartbeat(token: CameraPTZSessionToken, seq: UInt64) async throws {}
+
+    func stop(token: CameraPTZSessionToken) async throws -> CameraPTZStopResult {
+        CameraPTZStopResult(sent: true)
+    }
+}
+
 /// The renderer is fed fixed demo data and the accessibility "reduce motion" / "reduce transparency"
 /// switches, so animations and materials cannot make two runs differ. The suite is serialized
 /// because it changes `UserDefaults.standard` (the panel reads skin/appearance through
@@ -1166,6 +1181,12 @@ struct SnapshotTests {
             notice: "停止指令写入失败，云台可能仍在转动",
             ready: true
         )
+        controller.ptzUnresolvedStops = [CameraPTZStopAttempt(
+            token: CameraPTZSessionToken(epoch: "snapshot", session: 1),
+            deviceId: camera.id,
+            lifecycleID: controller.ptzLifecycleID,
+            client: SnapshotPTZClient()
+        )]
         defer { controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false) }
 
         assertRendered(

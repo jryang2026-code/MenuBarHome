@@ -200,9 +200,6 @@ extension CameraLivePanelController {
             // the same way as an explicit bridge write failure.
         }
 
-        if stillOwns(attempt), stopRecoveryAccepts(attempt) {
-            ptzStopRecovery = .retrying(attempt)
-        }
         await waitForAutomaticPTZStopRetry()
 
         // The second stop is sent even when this panel no longer owns the lifecycle: the bridge
@@ -214,19 +211,11 @@ extension CameraLivePanelController {
                 return
             }
         } catch {
-            // Both attempts failed: fall through to the manual stop offer.
+            // Both attempts failed: fall through to the manual stop list.
         }
 
-        guard stillOwns(attempt) else {
-            clearTransientStopRetry(for: attempt)
-            return
-        }
-        // A newer camera's failure must not replace the older unresolved danger: its record and
-        // captured client stay retryable. The warning is shared, so keep it visible either way.
-        if stopRecoveryAccepts(attempt) {
-            ptzStopRecovery = .needsManualStop(attempt)
-        }
-        showPTZNotice(Self.stopWriteFailedNotice, sticky: true)
+        guard stillOwns(attempt) else { return }
+        recordUnresolvedStop(attempt)
     }
 
     func finishSuccessfulPTZStop(
@@ -234,30 +223,28 @@ extension CameraLivePanelController {
         attempt: CameraPTZStopAttempt,
         notify: Bool
     ) {
-        guard stillOwns(attempt) else {
-            clearTransientStopRetry(for: attempt)
-            return
-        }
-        // A stop only clears the recovery record it belongs to. Another camera's success cannot
-        // prove that an older, unresolved stop reached its motor.
-        guard stopRecoveryAccepts(attempt) else { return }
-        dismissStopRecovery()
+        resolveUnresolvedStop(attempt)
+        guard stillOwns(attempt) else { return }
         reportStopThatWasNotSent(result, notify: notify)
     }
 
-    /// Whether the current recovery record is empty or belongs to this bridge session.
-    func stopRecoveryAccepts(_ attempt: CameraPTZStopAttempt) -> Bool {
-        switch ptzStopRecovery {
-        case .idle:
-            return true
-        case .retrying(let pending), .needsManualStop(let pending):
-            return pending.token == attempt.token
+    /// Every attempt that failed its write and the automatic retry. Each keeps the client that
+    /// can still stop its own bridge session.
+    func recordUnresolvedStop(_ attempt: CameraPTZStopAttempt) {
+        if !ptzUnresolvedStops.contains(attempt) {
+            ptzUnresolvedStops.append(attempt)
         }
+        showPTZNotice(Self.stopWriteFailedNotice, sticky: true)
     }
 
-    func clearTransientStopRetry(for attempt: CameraPTZStopAttempt) {
-        guard case .retrying(let pending) = ptzStopRecovery, pending.token == attempt.token else { return }
-        ptzStopRecovery = .idle
+    /// A stop resolves only the attempt it belongs to. The warning stays while any attempt is
+    /// still unresolved, and a stop for a session that is not listed changes nothing.
+    func resolveUnresolvedStop(_ attempt: CameraPTZStopAttempt) {
+        guard ptzUnresolvedStops.contains(attempt) else { return }
+        ptzUnresolvedStops.removeAll { $0 == attempt }
+        if ptzUnresolvedStops.isEmpty {
+            clearStopWriteFailureNotice()
+        }
     }
 
     func reportStopThatWasNotSent(_ result: CameraPTZStopResult, notify: Bool) {
@@ -281,23 +268,18 @@ extension CameraLivePanelController {
 
     func retryFailedPTZStop() {
         guard !ptzManualStopInFlight, ptzDragID == nil, ptzBeginTask == nil else { return }
-        guard case .needsManualStop(let attempt) = ptzStopRecovery else { return }
+        let attempts = ptzUnresolvedStops
+        guard !attempts.isEmpty else { return }
         ptzManualStopInFlight = true
         let task = Task { @MainActor [weak self] in
             defer { self?.ptzManualStopInFlight = false }
-            let result = try? await attempt.client.stop(token: attempt.token)
-            guard let self else { return }
-            guard let result, result.errorReason == nil else { return }
-            if case .needsManualStop(let pending) = self.ptzStopRecovery, pending == attempt {
-                self.dismissStopRecovery()
+            for attempt in attempts {
+                let result = try? await attempt.client.stop(token: attempt.token)
+                guard let self, let result, result.errorReason == nil else { continue }
+                self.resolveUnresolvedStop(attempt)
             }
         }
         ptzStopTask = task
-    }
-
-    func dismissStopRecovery() {
-        ptzStopRecovery = .idle
-        clearStopWriteFailureNotice()
     }
 
     func clearStopWriteFailureNotice() {
@@ -311,7 +293,7 @@ extension CameraLivePanelController {
         guard let text else { return }
         // The stop-write warning is about a motor that may still be running. A transient notice
         // (a failed move, a lost begin) must not replace it before a stop succeeds.
-        if !sticky, case .needsManualStop = ptzStopRecovery { return }
+        if !sticky, !ptzUnresolvedStops.isEmpty { return }
         ptzNotice = text
         ptzNoticeTask?.cancel()
         ptzNoticeTask = nil
@@ -349,7 +331,7 @@ extension CameraLivePanelController {
         ptzDragID = nil
         ptzToken = nil
         ptzDeviceId = nil
-        ptzStopRecovery = .idle
+        ptzUnresolvedStops = []
         ptzStopRetryHold = nil
         ptzManualStopInFlight = false
         ptzClient = client
@@ -376,9 +358,7 @@ extension CameraLivePanelController {
         ptzNoticeTask = nil
         // Closing or reloading the panel does not stop the motor; a sticky stop-write warning
         // and its retry attempt survive until a stop reports no error.
-        if case .needsManualStop = ptzStopRecovery {
-            // Keep the warning.
-        } else {
+        if ptzUnresolvedStops.isEmpty {
             ptzNotice = nil
         }
         ptzManualStopInFlight = false
@@ -391,16 +371,9 @@ extension CameraLivePanelController {
     }
 
     var offersPTZStopRetry: Bool {
-        if case .needsManualStop = ptzStopRecovery { return true }
-        return ptzNotice == Self.stopWriteFailedNotice
+        !ptzUnresolvedStops.isEmpty
     }
 
-}
-
-enum CameraPTZStopRecovery: Equatable {
-    case idle
-    case retrying(CameraPTZStopAttempt)
-    case needsManualStop(CameraPTZStopAttempt)
 }
 
 struct CameraPTZStopAttempt: Equatable {
