@@ -128,12 +128,7 @@ export function submitServiceEndpoints(host: MenuMijiaWindowsApp, force = false)
       assistantUrl,
       haUrl,
     }).catch((error: unknown) => {
-      host.replyBanner = {
-        text: error instanceof Error ? error.message : String(error),
-        source: t("服务地址未生效"),
-        isError: true,
-      };
-      host.render();
+      host.noteServiceEndpointFailure(error);
     });
   }
 

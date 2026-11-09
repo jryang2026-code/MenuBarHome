@@ -304,7 +304,7 @@ function quickStrip(host: MenuMijiaWindowsApp): string {
     ).join("");
     return `<section class="cc-quick-strip">${pills}</section>`;
   }
-  if (host.scenes.length === 0) return "";
+  if (host.settings.connectionMode !== "homeAssistant" || host.scenes.length === 0) return "";
   const pills = host.scenes
     .map(
       (scene) => `<button class="cc-quick-pill tint-blue" data-ha-scene="${host.escapeHtml(scene.id)}"><span class="cc-quick-icon">${SF_ICONS.sparkles}</span><span>${host.escapeHtml(scene.name)}</span></button>`,

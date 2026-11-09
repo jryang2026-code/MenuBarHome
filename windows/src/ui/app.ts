@@ -109,6 +109,35 @@ export function undoBannerMs(deviceCount: number): number {
   return (deviceCount >= 3 ? 15 : 10) * 1000;
 }
 
+export function undoDeviceCount(steps: readonly { readonly deviceId: string }[]): number {
+  return new Set(steps.map((step) => step.deviceId)).size;
+}
+
+export type HaConnectionBlock = "plaintext" | "auth" | "stale" | "none";
+
+function endpointOrigin(raw: string): string | null {
+  try {
+    const url = new URL(raw.trim());
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+/** What the footer should say about a Home Assistant error string. */
+export function haConnectionBlock(url: string, message: string): HaConnectionBlock {
+  const text = message.trim();
+  if (text === "") return "none";
+  if (text.includes("Home Assistant authentication rejected")) return "auth";
+  const origin = endpointOrigin(url);
+  const publicHttp = origin !== null && !endpointAllowsSendingSecrets(url);
+  const declinedThisHost = text.includes("未授权的网络来源") && origin !== null && text.includes(origin);
+  const unapproved = text.includes("Home Assistant endpoint has not been approved");
+  if (publicHttp && (declinedThisHost || unapproved)) return "plaintext";
+  return "stale";
+}
+
 export class MenuMijiaWindowsApp {
   public readonly loadedSettings: LoadedSettings = loadSettings();
   public settings: PersistedSettings = this.loadedSettings.settings;
@@ -236,6 +265,7 @@ export class MenuMijiaWindowsApp {
   private trackedUndoAction: UndoAction | null = null;
   /** True after a hold already ran All Off, so a later pointerup on the rebuilt button does not replace the result with the short-press hint. */
   private allOffHoldConsumed = false;
+  private allOffHoldTimer: number | null = null;
   private undoBannerTimer: number | null = null;
   public undoBannerUntilMs = 0;
   public qrTicket: QRLoginTicket | null = null;
@@ -546,16 +576,24 @@ export class MenuMijiaWindowsApp {
     </button>`;
   }
 
+  private clearAllOffHold(): void {
+    if (this.allOffHoldTimer !== null) {
+      window.clearTimeout(this.allOffHoldTimer);
+      this.allOffHoldTimer = null;
+    }
+  }
+
   public bindAllOffControl(): void {
+    this.clearAllOffHold();
     const allOff = this.root.querySelector<HTMLElement>("#btn-all-off");
     if (!allOff) return;
-    let holdTimer: number | undefined;
     const beginHold = () => {
-      if (holdTimer !== undefined) return;
+      if (this.allOffHoldTimer !== null) return;
       this.allOffHoldConsumed = false;
       allOff.classList.add("is-holding");
-      holdTimer = window.setTimeout(() => {
-        holdTimer = undefined;
+      this.allOffHoldTimer = window.setTimeout(() => {
+        this.allOffHoldTimer = null;
+        if (!allOff.isConnected) return;
         this.allOffHoldConsumed = true;
         allOff.classList.remove("is-holding");
         void this.turnAllOff();
@@ -563,11 +601,8 @@ export class MenuMijiaWindowsApp {
     };
     // A keyup after the button was rebuilt has no pending timer, so it must not show the short-press hint.
     const endHold = (hint: "never" | "if-pending" | "always") => {
-      const pending = holdTimer !== undefined;
-      if (holdTimer !== undefined) {
-        window.clearTimeout(holdTimer);
-        holdTimer = undefined;
-      }
+      const pending = this.allOffHoldTimer !== null;
+      this.clearAllOffHold();
       allOff.classList.remove("is-holding");
       const showHint = !this.allOffHoldConsumed && (hint === "always" || (hint === "if-pending" && pending));
       if (!showHint) return;
@@ -578,6 +613,10 @@ export class MenuMijiaWindowsApp {
     allOff.addEventListener("pointerdown", () => beginHold());
     allOff.addEventListener("pointerup", () => endHold("always"));
     allOff.addEventListener("pointerleave", () => endHold("never"));
+    allOff.addEventListener("blur", () => {
+      this.clearAllOffHold();
+      allOff.classList.remove("is-holding");
+    });
     allOff.addEventListener("keydown", (event) => {
       if (!isHoldKey(event)) return;
       event.preventDefault();
@@ -770,7 +809,8 @@ export class MenuMijiaWindowsApp {
       return this.cloudValuesStale && this.devices.length > 0;
     }
     if (this.settings.connectionMode === "homeAssistant") {
-      return this.haConnectionError !== null && this.devices.length > 0;
+      return haConnectionBlock(this.settings.haBaseURL, this.haConnectionError ?? "") === "stale"
+        && this.devices.length > 0;
     }
     return false;
   }
@@ -897,7 +937,7 @@ export class MenuMijiaWindowsApp {
     }
     if (this.trackedUndoAction === action) return;
     this.trackedUndoAction = action;
-    const ms = undoBannerMs(action.steps.length);
+    const ms = undoBannerMs(undoDeviceCount(action.steps));
     this.undoBannerUntilMs = now + ms;
     if (this.undoBannerTimer !== null) window.clearTimeout(this.undoBannerTimer);
     this.undoBannerTimer = window.setTimeout(() => {
@@ -919,8 +959,14 @@ export class MenuMijiaWindowsApp {
     if (mode === "xiaomiCloud" && this.settings.miSession && this.miSessionExpired) {
       return { kind: "offline", dot: "is-offline", label: t("米家登录已过期 · 点此扫码"), recovery: "qr" };
     }
-    if (mode === "homeAssistant" && this.haPlaintextDeclined()) {
-      return { kind: "offline", dot: "is-offline", label: t("Home Assistant 未连接（已拒绝明文）"), recovery: "none" };
+    if (mode === "homeAssistant") {
+      const block = haConnectionBlock(this.settings.haBaseURL, this.haConnectionError ?? "");
+      if (block === "plaintext") {
+        return { kind: "offline", dot: "is-offline", label: t("Home Assistant 未连接（已拒绝明文）"), recovery: "none" };
+      }
+      if (block === "auth") {
+        return { kind: "offline", dot: "is-offline", label: t("Home Assistant 认证被拒绝"), recovery: "none" };
+      }
     }
     if (this.sourceIsMissing()) {
       const recovery = mode === "xiaomiCloud" ? "qr" : "none";
@@ -961,11 +1007,21 @@ export class MenuMijiaWindowsApp {
     return false;
   }
 
-  private haPlaintextDeclined(): boolean {
-    const url = this.settings.haBaseURL.trim();
-    if (url === "" || endpointAllowsSendingSecrets(url)) return false;
-    const message = this.haConnectionError ?? "";
-    return message.includes("未授权的网络来源");
+  /** The native endpoint dialog rejected a public Home Assistant address. Keep it on the connection, not only the banner. */
+  public noteServiceEndpointFailure(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    this.replyBanner = {
+      text: message,
+      source: t("服务地址未生效"),
+      isError: true,
+    };
+    if (
+      this.settings.connectionMode === "homeAssistant" &&
+      haConnectionBlock(this.settings.haBaseURL, message) === "plaintext"
+    ) {
+      this.haConnectionError = message;
+    }
+    this.render();
   }
 
   public get statusSummaryText(): string {
