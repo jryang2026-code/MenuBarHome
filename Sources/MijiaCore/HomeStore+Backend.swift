@@ -1178,7 +1178,9 @@ enum PanelHealthResolver {
                 "Home Assistant 未连接（已拒绝明文）",
                 "Home Assistant is not connected (plaintext declined)"
             )
-            let miStillWorks = input.hasMiSource && !input.miSessionShowsExpired && !input.isDemo
+            // Another signed-in Mi account is a working source even when one account expired;
+            // `miSessionShowsExpired` covers any account, so it must not stand in for "all dead".
+            let miStillWorks = input.hasMiSource && input.anotherMiAccountSignedIn && !input.isDemo
             if miStillWorks {
                 return .degraded(reason: reason)
             }

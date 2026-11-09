@@ -43,6 +43,40 @@ struct URLCommandHandlerTests {
         return (store, provider)
     }
 
+    private static let chineseLamp = SmartDevice(
+        id: "dev_lamp",
+        name: "台灯",
+        roomId: "study",
+        roomName: "Study",
+        model: "test.light",
+        isOnline: true,
+        kind: .light(LightSpec(entityId: "light.lamp", isOn: true, brightnessPercent: 80))
+    )
+
+    private static func makeBlockedStore(
+        devices: [SmartDevice]? = nil
+    ) async throws -> (HomeStore, MockHomeProvider) {
+        let suite = "test.urlhandler.blocked.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(
+            rooms: [RoomArea(id: "study", name: "Study", sortOrder: 0)],
+            devices: devices ?? [lamp]
+        ))
+        let expired = MiSession(
+            userId: "1234567890",
+            cUserId: "cu",
+            ssecurity: "s",
+            serviceToken: "tok",
+            expiresAt: Date().addingTimeInterval(-60)
+        )
+        #expect(MiSessionStore.save(expired, defaults: defaults))
+        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        return (store, provider)
+    }
+
     private static func url(_ raw: String) throws -> URL {
         try #require(URL(string: raw))
     }
@@ -76,23 +110,7 @@ struct URLCommandHandlerTests {
     @Test("A blocked Mi write keeps the scan toast while the link still reports the error")
     func blockedWriteKeepsPersistentToast() async throws {
         try await L10n.$overrideLanguage.withValue(.en) {
-            let suite = "test.urlhandler.blocked.\(UUID().uuidString)"
-            let defaults = try #require(UserDefaults(suiteName: suite))
-            defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-            let provider = MockHomeProvider(snapshot: SynthesizedHome(
-                rooms: [RoomArea(id: "study", name: "Study", sortOrder: 0)],
-                devices: [Self.lamp]
-            ))
-            let expired = MiSession(
-                userId: "1234567890",
-                cUserId: "cu",
-                ssecurity: "s",
-                serviceToken: "tok",
-                expiresAt: Date().addingTimeInterval(-60)
-            )
-            #expect(MiSessionStore.save(expired, defaults: defaults))
-            let store = HomeStore(provider: provider, defaultsSuiteName: suite)
-            try await store.waitForTestSnapshot()
+            let (store, provider) = try await Self.makeBlockedStore()
             #expect(store.miSessionBlocksControl)
             store.setRaycastIntegration(enabled: true)
             let token = try #require(store.raycastBridgeToken)
@@ -112,26 +130,34 @@ struct URLCommandHandlerTests {
         }
     }
 
+    @Test("An ask link while expired keeps the scan toast")
+    func askLinkKeepsScanToast() async throws {
+        try await L10n.$overrideLanguage.withValue(.zhHans) {
+            let (store, provider) = try await Self.makeBlockedStore(devices: [Self.chineseLamp])
+            store.setRaycastIntegration(enabled: true)
+            let token = try #require(store.raycastBridgeToken)
+            let lamp = try #require(store.devices.first)
+            #expect(store.togglePrimary(lamp) == nil)
+            #expect(store.toastNotice?.persistent == true)
+
+            let handler = URLCommandHandler()
+            let link = try Self.url(
+                "menumijia://ask?text=%E5%85%B3%E7%81%AF&id=cli-ask&token=\(token)"
+            )
+            await handler.handle(link, in: store)
+
+            #expect(store.lastRaycastCommandFeedback?.isError == true)
+            #expect(store.lastRaycastCommandFeedback?.message == "台灯 未响应")
+            #expect(store.toastNotice?.message == "米家登录已过期", "the assistant failure must not replace the scan toast")
+            #expect(store.toastNotice?.persistent == true)
+            #expect(await provider.executedCommands.isEmpty)
+        }
+    }
+
     @Test("A power link keeps a stale scan toast while still reporting the refusal")
     func blockedPowerLinkKeepsStaleToast() async throws {
         try await L10n.$overrideLanguage.withValue(.en) {
-            let suite = "test.urlhandler.blocked-power.\(UUID().uuidString)"
-            let defaults = try #require(UserDefaults(suiteName: suite))
-            defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-            let provider = MockHomeProvider(snapshot: SynthesizedHome(
-                rooms: [RoomArea(id: "study", name: "Study", sortOrder: 0)],
-                devices: [Self.lamp]
-            ))
-            let expired = MiSession(
-                userId: "1234567890",
-                cUserId: "cu",
-                ssecurity: "s",
-                serviceToken: "tok",
-                expiresAt: Date().addingTimeInterval(-60)
-            )
-            #expect(MiSessionStore.save(expired, defaults: defaults))
-            let store = HomeStore(provider: provider, defaultsSuiteName: suite)
-            try await store.waitForTestSnapshot()
+            let (store, provider) = try await Self.makeBlockedStore()
             store.setRaycastIntegration(enabled: true)
             let token = try #require(store.raycastBridgeToken)
             // An earlier Mi tap left the toast on screen before the link arrives, so the refusal

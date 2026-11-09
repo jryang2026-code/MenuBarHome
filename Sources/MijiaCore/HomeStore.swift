@@ -911,6 +911,16 @@ public final class HomeStore {
            current.action == notice.action {
             return
         }
+        // While the expired-session toast is showing, its Scan action is the only way back into
+        // the account. An ordinary message must not replace it and take that action away; when the
+        // session recovers, or the context changes (which dismisses the toast), normal toasts return.
+        if !notice.persistent,
+           miSessionBlocksControl,
+           let current = toastNotice,
+           current.persistent,
+           current.action?.kind == .presentMiReauth {
+            return
+        }
         toastNotice = notice
         toastTimerTask?.cancel()
         toastTimerTask = nil
@@ -932,16 +942,6 @@ public final class HomeStore {
         toastTimerTask = nil
         toastNotice = nil
         activeToastDismissInterval = nil
-    }
-
-    /// Shows an external command's result. A failure identical to the persistent toast already on
-    /// screen is the same refusal, explained with an action; it must not be replaced by a short
-    /// error at the feedback layer.
-    public func showExternalCommandResult(_ message: String, isError: Bool) {
-        if isError, let current = toastNotice, current.persistent, current.message == message {
-            return
-        }
-        showToast(message, isError: isError)
     }
 
     /// The message an external caller reports for a failed write. The expired-session refusal

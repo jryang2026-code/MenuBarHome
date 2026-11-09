@@ -289,7 +289,8 @@ extension HomeStore {
                 undoBanner?.habitReceipt = confirmManualControl(intents: succeededIntents)
             }
             if !outcome.sessionRefusedDeviceIds.isEmpty { return .refusedByMiSession }
-            return failedDeviceIds.isEmpty ? .completed : .partial
+            if !failedDeviceIds.isEmpty || !outcome.takenOverDeviceIds.isEmpty { return .partial }
+            return .completed
         }
         // A main-actor task only starts once this synchronous section yields, so the entry is in
         // place before `runBatchCommands` looks it up.
@@ -504,7 +505,8 @@ extension HomeStore {
                 undoBanner?.habitReceipt = confirmManualControl(intents: succeededIntents)
             }
             if !outcome.sessionRefusedDeviceIds.isEmpty { return .refusedByMiSession }
-            return failedDeviceIds.isEmpty ? .completed : .partial
+            if !failedDeviceIds.isEmpty || !outcome.takenOverDeviceIds.isEmpty { return .partial }
+            return .completed
         }
         // A main-actor task only starts once this synchronous section yields, so the entry is in
         // place before `runBatchCommands` looks it up.

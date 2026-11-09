@@ -510,6 +510,104 @@ struct PanelHealthTests {
         #expect(store.toastNotice?.persistent == true)
     }
 
+    @Test("A batch with a refusal and a real failure keeps the scan toast")
+    func batchRefusalAndFailureKeepScanToast() async throws {
+        let provider = MockHomeProvider(snapshot: Self.twoLampHome)
+        let store = try await makeStore(backend: .xiaomiCloud, session: validSession(), provider: provider)
+        #expect(!store.miSessionBlocksControl)
+
+        await provider.holdNextExecute(forTarget: "light.a")
+        await provider.setFailingTargets(["light.a"])
+        let allOff = try #require(store.turnAllOff())
+        for _ in 0..<1_000 {
+            if await provider.executeStarted >= 1 { break }
+            await Task.yield()
+        }
+        #expect(await provider.executeStarted == 1)
+        store.miSessionExpiresAt = expiredAt
+        store.miAccounts = [MiAccount(session: expiredSession())]
+        await provider.releaseExecute()
+
+        let outcome = await allOff.value
+        #expect(outcome == .refusedByMiSession)
+        #expect(store.undoBanner == nil, "neither device accepted a command")
+        #expect(store.toastNotice?.message == "米家登录已过期", "the real failure must not replace the scan toast")
+        #expect(store.toastNotice?.persistent == true)
+        #expect(store.toastNotice?.action == ToastAction(title: "扫码", kind: .presentMiReauth))
+    }
+
+    @Test("An ordinary toast shows normally again once the session is valid")
+    func ordinaryToastReturnsAfterSessionRecovers() async throws {
+        let store = try await makeStore(
+            backend: .xiaomiCloud,
+            session: expiredSession(),
+            provider: MockHomeProvider(snapshot: Self.lampHome)
+        )
+        #expect(store.rejectWritesBlockedByMiSession())
+        #expect(store.toastNotice?.persistent == true)
+
+        // The user signed in again.
+        store.miSessionExpiresAt = farEnd
+        store.miAccounts = [MiAccount(session: validSession())]
+        #expect(!store.miSessionBlocksControl)
+
+        store.showToast("已保存")
+        #expect(store.toastNotice?.message == "已保存")
+        #expect(store.toastNotice?.persistent == false)
+    }
+
+    @Test("A batch whose row a newer write took reports partial")
+    func takenOverBatchReportsPartial() async throws {
+        let provider = MockHomeProvider(snapshot: Self.twoLampHome)
+        let store = try await makeStore(backend: .xiaomiCloud, session: validSession(), provider: provider)
+
+        await provider.holdNextExecute(forTarget: "light.a")
+        let allOff = try #require(store.turnAllOff())
+        for _ in 0..<1_000 {
+            if await provider.executeStarted >= 1 { break }
+            await Task.yield()
+        }
+        #expect(await provider.executeStarted == 1)
+
+        // The user moves the second lamp while the batch is still on the first one: this takes the
+        // row at a newer revision, so the queued off command must not overwrite it.
+        store.controlDebounceInterval = .milliseconds(1)
+        store.setLightBrightness("lamp-b", percent: 30)
+        await provider.releaseExecute()
+
+        #expect(await allOff.value == .partial, "a taken-over row means the action was not fully applied")
+        #expect(store.devices.first { $0.id == "lamp-a" }?.isActiveOn == false)
+        #expect(store.devices.first { $0.id == "lamp-b" }?.isActiveOn == true)
+        #expect(store.undoBanner?.restoreCommands == [.setLightPower(entityId: "light.a", isOn: true)])
+    }
+
+    @Test("Two Mi accounts, one expired, keep a declined HA prompt degraded")
+    func declinedPlaintextWithAnotherMiAccountStaysDegraded() async throws {
+        let suite = "com.jryang1997.MenuBarMijia.panel-health.declined-partial.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+        let saved = MiSessionStore.saveAccounts([
+            MiAccount(session: MiSession(
+                userId: "1111111111", cUserId: "c1", ssecurity: "s", serviceToken: "t1", expiresAt: expiredAt
+            )),
+            MiAccount(session: MiSession(
+                userId: "2222222222", cUserId: "c2", ssecurity: "s", serviceToken: "t2", expiresAt: farEnd
+            )),
+        ], defaults: defaults)
+        #expect(saved)
+        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        store.hasHASource = true
+        store.haPlaintextPrompt = .declined("http://203.0.113.5:8123")
+        #expect(store.miSessionShowsExpired)
+        #expect(!store.miSessionBlocksControl)
+
+        try await L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(store.panelHealth == .degraded(reason: "Home Assistant 未连接（已拒绝明文）"))
+        }
+    }
+
     @Test("A mixed undo sends the LAN restore and keeps the refused Mi restore in the banner")
     func mixedUndoSendsLGAndKeepsMi() async throws {
         let lgTV = SmartDevice(

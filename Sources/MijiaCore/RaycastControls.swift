@@ -204,10 +204,11 @@ extension HomeStore {
             showToast(success, isError: false)
             return (true, success, false)
         } catch {
-            guard !(error is MiSessionWriteBlocked) else {
-                return (true, Self.miSessionBlockedMessage, true)
-            }
-            let msg = L10n.format("%@ 响应失败", "%@ failed to respond", device.name)
+            // `showToast` keeps the persistent expiry toast while the session is blocked, so this
+            // only decides the message the companion receives.
+            let msg = error is MiSessionWriteBlocked
+                ? Self.miSessionBlockedMessage
+                : L10n.format("%@ 响应失败", "%@ failed to respond", device.name)
             showToast(msg, isError: true)
             return (true, msg, true)
         }

@@ -474,7 +474,7 @@ final class URLCommandHandler {
         envelope: AppURLCommandEnvelope,
         store: HomeStore
     ) {
-        store.showExternalCommandResult(message, isError: isError)
+        store.showToast(message, isError: isError)
         store.recordRaycastCommandFeedback(
             requestId: envelope.requestId,
             command: commandLabel(for: envelope.command),
