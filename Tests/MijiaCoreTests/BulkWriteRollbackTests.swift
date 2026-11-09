@@ -764,4 +764,64 @@ struct BulkWriteRollbackTests {
             Issue.record("expected the desk lamp row, got \(desk.kind)")
         }
     }
+
+    @Test("A newer 全关 that takes a row during the wait gets no restore from the old undo")
+    @MainActor
+    func undoWaitSkipsDeviceANewerBatchTook() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling, Self.deskLamp])
+        // The ceiling light's command goes out; the desk lamp's is held, so the old batch is still
+        // running with both devices attempted when the undo arrives.
+        await mock.holdNextExecute(forTarget: "light.desk")
+
+        let oldBatch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        try await waitUntil { await mock.executeStarted == 2 }
+
+        let undo = try #require(store.undoTurnAllOff())
+        // The user asks for another 全关 while the old undo waits; it only sees the living room.
+        store.selectRoom("ke_ting")
+        let newerBatch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        await newerBatch?.value
+
+        await mock.releaseExecute()
+        await oldBatch?.value
+        await undo.value
+
+        let commands = await mock.executedCommands
+        #expect(
+            !commands.contains(.setLightPower(entityId: "light.ceiling", isOn: true)),
+            "the newer 全关 owns the ceiling row, so the old undo must not turn it back on"
+        )
+        #expect(
+            commands.contains(.setLightPower(entityId: "light.desk", isOn: true)),
+            "the desk lamp still belongs to the old undo and is restored"
+        )
+    }
+
+    @Test("An undo whose rows were all taken during the wait ends quietly")
+    @MainActor
+    func undoWaitQuietWhenEveryRowWasTaken() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling, Self.deskLamp])
+        await mock.holdNextExecute()
+
+        let oldBatch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        try await waitUntil { await mock.executeStarted == 1 }
+
+        let undo = try #require(store.undoTurnAllOff())
+        // A newer 全关 takes both rows while the old undo is still waiting.
+        let newerBatch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        await newerBatch?.value
+
+        await mock.releaseExecute()
+        await oldBatch?.value
+        await undo.value
+
+        let commands = await mock.executedCommands
+        #expect(!commands.contains(.setLightPower(entityId: "light.ceiling", isOn: true)))
+        #expect(!commands.contains(.setLightPower(entityId: "light.desk", isOn: true)))
+        #expect(store.toastNotice == nil, "nothing was restored, so nothing is announced")
+    }
 }

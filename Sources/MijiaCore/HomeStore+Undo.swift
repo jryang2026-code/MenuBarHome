@@ -671,26 +671,37 @@ extension HomeStore {
 
         let context = controlContextID
         return Task {
+            var restorable = applicable
             if let batchTask {
                 // The batch is sequential, so at most the one in-flight command is still running.
                 await batchTask.value
                 // The wait can outlive the connection it started on; a home that is no longer on
                 // screen writes nothing.
                 guard context == controlContextID else { return }
-                // Back to the normal lease. A newer write owns its row and keeps whatever lock it
-                // took, so only the rows this undo still holds are relaxed.
+                // A newer batch or write can take a row while this undo waits. The last revision per
+                // device is the one this undo holds; a device with two restore commands retook its
+                // row twice, the same way `rollbackFailedUndoDevices` reads it. A device taken over
+                // during the wait gets neither its lock refreshed nor a restore command.
                 var held: [String: UInt64] = [:]
                 for item in applicable { held[item.deviceId] = item.lockRevision }
-                let normal = ContinuousClock.now.advanced(by: .seconds(3.0))
-                for (deviceId, revision) in held where optimisticLockRevision[deviceId] == revision {
-                    optimisticLockUntil[deviceId] = normal
+                let owned = held.compactMap { deviceId, revision in
+                    optimisticLockRevision[deviceId] == revision ? deviceId : nil
                 }
+                restorable = applicable.filter { owned.contains($0.deviceId) }
+                guard !restorable.isEmpty else {
+                    // Every row is the newer action's now, so there is nothing left to restore and
+                    // nothing to announce.
+                    return
+                }
+                // Back to the normal lease.
+                let normal = ContinuousClock.now.advanced(by: .seconds(3.0))
+                for deviceId in owned { optimisticLockUntil[deviceId] = normal }
             }
             // A device this batch never sent to is still where the action found it: its row is back
             // above, and a restore command would re-apply a change that never happened.
             let restoreTargets = attemptedDeviceIds.map { attempted in
-                applicable.filter { attempted.contains($0.deviceId) }
-            } ?? applicable
+                restorable.filter { attempted.contains($0.deviceId) }
+            } ?? restorable
             guard let outcome = await runUndoCommands(
                 restoreTargets,
                 context: context,
