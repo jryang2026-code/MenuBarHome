@@ -620,6 +620,9 @@ public final class HomeStore {
     }
     var facetWrites: [String: FacetWriteState] = [:]
     var undoTimerTask: Task<Void, Never>?
+    /// Bulk actions whose commands are still being sent, keyed by the banner they created.
+    /// 撤销 stops the entry here and waits on its task before restoring (`HomeStore+Undo.swift`).
+    var runningBatches: [UUID: RunningBatch] = [:]
     private var toastTimerTask: Task<Void, Never>?
     var optimisticLockUntil: [String: ContinuousClock.Instant] = [:]
     var optimisticLockRevision: [String: UInt64] = [:]
