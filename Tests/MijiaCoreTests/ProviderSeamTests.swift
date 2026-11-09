@@ -29,17 +29,18 @@ struct ProviderSeamTests {
         )
         let provider: any HomeProvider = composite
         await provider.shutdown()
-        for _ in 0..<200 {
-            if await ha.stopped, await mi.stopped { break }
-            await Task.yield()
-        }
+        // The composite shuts each source down from a detached task. Wait on each source's own
+        // signal instead of yielding a fixed number of times, which a loaded runner can outrun.
+        await ha.waitUntilStopped()
+        await mi.waitUntilStopped()
         #expect(await ha.stopped)
         #expect(await mi.stopped)
     }
 }
 
 private actor StoppableProvider: HomeProvider {
-    var stopped = false
+    private(set) var stopped = false
+    private var stopWaiters: [CheckedContinuation<Void, Never>] = []
 
     nonisolated func events() -> AsyncStream<HomeProviderEvent> {
         AsyncStream { _ in }
@@ -47,5 +48,16 @@ private actor StoppableProvider: HomeProvider {
 
     func execute(_ command: DeviceCommand) async throws {}
     func refreshNow() async {}
-    func shutdown() async { stopped = true }
+    func shutdown() async {
+        stopped = true
+        let waiters = stopWaiters
+        stopWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    /// Suspends until `shutdown` ran; returns at once when it already did.
+    func waitUntilStopped() async {
+        guard !stopped else { return }
+        await withCheckedContinuation { stopWaiters.append($0) }
+    }
 }
