@@ -411,7 +411,7 @@ public struct OnboardingGuideView: View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
                 stepBadge("3", isDone: checklist.isComplete(.allOffAndUndo))
-                Text(L10n.tr("试一次全关，再撤销", "Try All Off, Then Undo"))
+                Text(L10n.tr("演练一次全关", "Practice All Off"))
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
                 if checklist.isComplete(.allOffAndUndo) {
@@ -422,8 +422,8 @@ public struct OnboardingGuideView: View {
             }
 
             Text(L10n.tr(
-                "点面板底部的「全关」，10 秒内点撤销横幅就能恢复；3 台以上有 15 秒。",
-                "Tap All Off at the bottom of the panel, then tap the undo banner within 10 seconds (15 seconds for three or more devices)."
+                "按住顶部「全关」会列出将关闭的设备，并提示未实际执行。以后真的全关，这一步也算完成。",
+                "Hold All Off at the top to list the devices that would turn off. Nothing is sent. A real All Off later completes this step too."
             ))
             .font(.system(size: 10.5))
             .foregroundStyle(.secondary)

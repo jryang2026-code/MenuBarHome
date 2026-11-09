@@ -48,6 +48,8 @@ public struct ControlCenterPanel: View {
     /// Re-centers the active room pill when the user taps an already-selected pill after scrolling.
     @State var roomScrollTrigger = 0
     @State var kindScrollTrigger = 0
+    /// The kind-chip row stays hidden until the user taps the active 全部 pill again.
+    @State var kindChipsRevealed = false
 
     /// Card sizes are remembered per page: a room id, or "all" for the overview.
     var layoutScope: String { store.selectedRoomId ?? "all" }
@@ -250,35 +252,10 @@ public struct ControlCenterPanel: View {
                 .padding(.top, 12)
                 .padding(.bottom, 8)
 
-            // #180 review: after connecting, the lessons stay above the dashboard so search and
-            // All Off/Undo can be tried while these instructions are still on screen.
-            // Reordering wants the height for the list instead (§5.1).
-            if store.showsOnboardingChecklistCard, !isRoomOrdering {
-                OnboardingChecklistCard(
-                    store: store,
-                    onBeginSearch: { search.focus() }
-                )
-                .padding(.horizontal, 14)
-                .padding(.bottom, 8)
-                .transition(AppleMotion.drawerTransition)
-            }
-
-            if store.miSessionShowsExpired || store.miSessionExpiringSoonDate != nil {
-                miSessionExpiryBanner
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 8)
-                    .transition(AppleMotion.drawerTransition)
-            }
-
-            if let suggestion = store.pendingHAAddressSuggestion {
-                haAddressSuggestionBanner(suggestion)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 8)
-                    .transition(AppleMotion.drawerTransition)
-            }
-
-            if let prompt = store.haPlaintextPrompt {
-                haPlaintextConsentBanner(prompt)
+            // A blocked session or a plaintext-token choice stays pinned under the header so it
+            // is the first thing the user reads. Lower-priority notices scroll with the devices.
+            if let slot = pinnedNotice {
+                systemNotice(slot)
                     .padding(.horizontal, 14)
                     .padding(.bottom, 8)
                     .transition(AppleMotion.drawerTransition)
@@ -288,6 +265,7 @@ public struct ControlCenterPanel: View {
             // the height for the list instead.
             if !isRoomOrdering {
                 omnibar
+                    .foldOrigin { PanelFoldProbe.omnibarMinY = $0 }
                     .padding(.horizontal, 14)
                     .padding(.bottom, 8)
 
@@ -321,7 +299,7 @@ public struct ControlCenterPanel: View {
                         .padding(.bottom, 8)
                     }
                 } else {
-                    listFilterBars
+                    browsingFilters
                         .padding(.horizontal, 14)
                         .padding(.bottom, 8)
                 }
@@ -347,8 +325,84 @@ public struct ControlCenterPanel: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 9)
         }
+        .foldOrigin { PanelFoldProbe.panelMinY = $0 }
         .animation(AppleMotion.snappySpring, value: store.isShowingAssistantBar)
         .animation(AppleMotion.snappySpring, value: layoutUI.editMode)
+        .animation(AppleMotion.snappySpring, value: kindChipsRevealed)
+        .onChange(of: roomScrollTrigger) { _, value in handleAllPillReselect(value) }
+    }
+
+    /// Re-tapping the already-selected 全部 pill increments `roomScrollTrigger`. That second tap
+    /// is the gesture that shows or hides the kind chips.
+    private func handleAllPillReselect(_ value: Int) {
+        guard value > 0, store.listCut == .all else { return }
+        kindChipsRevealed.toggle()
+    }
+
+    /// Blocked and security notices stay above the search field. Anything quieter scrolls.
+    private var pinnedNotice: PanelNoticeSlot? {
+        guard let slot = store.panelNoticeSlot, slot.hidesChecklist else { return nil }
+        return slot
+    }
+
+    private var scrollingNotice: PanelNoticeSlot? {
+        guard let slot = store.panelNoticeSlot, !slot.hidesChecklist else { return nil }
+        return slot
+    }
+
+    private var showsLessonRow: Bool {
+        store.showsOnboardingChecklistCard && store.panelNoticeSlot?.hidesChecklist != true
+    }
+
+    private var showsScrollPreface: Bool {
+        scrollingNotice != nil || showsLessonRow
+    }
+
+    private var showsKindChips: Bool {
+        KindChipRowPolicy.isShown(listCut: store.listCut, revealed: kindChipsRevealed)
+    }
+
+    private var browsingFilters: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            roomFilterBar
+            if showsKindChips {
+                kindFilterBar
+                    .foldOrigin { PanelFoldProbe.kindRowMinY = $0 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var scrollPreface: some View {
+        if let slot = scrollingNotice {
+            systemNotice(slot)
+        }
+        if showsLessonRow {
+            OnboardingChecklistCard(store: store, onBeginSearch: { search.focus() })
+                .foldOrigin { PanelFoldProbe.lessonRowMinY = $0 }
+        }
+    }
+
+    @ViewBuilder
+    func systemNotice(_ slot: PanelNoticeSlot) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            switch slot.kind {
+            case .miBlocked, .miExpiringSoon:
+                miSessionExpiryBanner
+            case .haPlaintext(let prompt):
+                haPlaintextConsentBanner(prompt)
+            case .haAddress(let instance):
+                haAddressSuggestionBanner(instance)
+            }
+            if slot.extraCount > 0 {
+                Text(PanelNotice.extraReminderLabel(count: slot.extraCount))
+                    .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("panel-notice-extra")
+            }
+        }
+        .foldOrigin { PanelFoldProbe.systemNoticeMinY = $0 }
+        .accessibilityIdentifier("panel-system-notice")
     }
 
     /// The 460 pt panel gives the height to the list instead of a strip that duplicates it (§5.1).
@@ -363,39 +417,45 @@ public struct ControlCenterPanel: View {
                         uniqueKeysWithValues: sections.flatMap(\.devices).prefix(9).enumerated().map { ($1.id, $0 + 1) }
                     )
 
-                    VStack(alignment: .leading, spacing: 11) {
-                        if search.isSearching {
-                            searchResultsList(results: searchResults)
-                        } else if store.visibleDevices.isEmpty {
-                            emptyStateView
-                        } else {
-                            ForEach(sections) { section in
-                                if section.title != nil {
-                                    groupHeader(section)
-                                }
-                                if !collapsedGroups.contains(collapseKey(section)) {
-                                    deviceCollectionView(
-                                        devices: section.devices,
-                                        showRoomBadge: store.selectedRoomId == nil,
-                                        quickIndexMap: quickIndexMap
-                                    )
-                                    .transition(.asymmetric(
-                                        insertion: .opacity.combined(with: .offset(y: -8)),
-                                        removal: .opacity.combined(with: .scale(scale: 0.97, anchor: .top))
-                                    ))
+                    VStack(alignment: .leading, spacing: 0) {
+                        if showsScrollPreface {
+                            scrollPreface
+                                .padding(.bottom, 2)
+                        }
+                        VStack(alignment: .leading, spacing: 11) {
+                            if search.isSearching {
+                                searchResultsList(results: searchResults)
+                            } else if store.visibleDevices.isEmpty {
+                                emptyStateView
+                            } else {
+                                ForEach(sections) { section in
+                                    if section.title != nil {
+                                        groupHeader(section)
+                                    }
+                                    if !collapsedGroups.contains(collapseKey(section)) {
+                                        deviceCollectionView(
+                                            devices: section.devices,
+                                            showRoomBadge: store.selectedRoomId == nil,
+                                            quickIndexMap: quickIndexMap
+                                        )
+                                        .transition(.asymmetric(
+                                            insertion: .opacity.combined(with: .offset(y: -8)),
+                                            removal: .opacity.combined(with: .scale(scale: 0.97, anchor: .top))
+                                        ))
+                                    }
                                 }
                             }
                         }
-                    }
-                    .coordinateSpace(name: TileSpace.name)
-                    // Cards stop hit-testing in edit mode; the container must still catch the press.
-                    .contentShape(Rectangle())
-                    .simultaneousGesture(tileDragGesture)
-                    .onPreferenceChange(TileFramesKey.self) { frames in
-                        if frames != tileFrames { tileFrames = frames }
+                        .coordinateSpace(name: TileSpace.name)
+                        // Cards stop hit-testing in edit mode; the container must still catch the press.
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(tileDragGesture)
+                        .onPreferenceChange(TileFramesKey.self) { frames in
+                            if frames != tileFrames { tileFrames = frames }
+                        }
                     }
                     .padding(.horizontal, 13)
-                    .padding(.top, 10)
+                    .padding(.top, showsScrollPreface ? 2 : 10)
                     .padding(.bottom, store.undoBanner != nil || store.toastNotice != nil ? 48 : 12)
                 }
                 .onChange(of: pendingScrollToDeviceId) { _, targetId in
@@ -839,6 +899,38 @@ enum PanelSearchKeyboard {
         store.presentAssistantBar()
         Task { @MainActor in
             await store.runAssistantCommand(utterance)
+        }
+    }
+}
+
+/// Layout positions the fold tests read after the panel has appeared. Global Y matches the
+/// coordinate space already stored on device cards.
+enum PanelFoldProbe {
+    // Written from SwiftUI layout and read by the fold tests on the main thread.
+    nonisolated(unsafe) static var panelMinY: CGFloat?
+    nonisolated(unsafe) static var systemNoticeMinY: CGFloat?
+    nonisolated(unsafe) static var omnibarMinY: CGFloat?
+    nonisolated(unsafe) static var lessonRowMinY: CGFloat?
+    nonisolated(unsafe) static var kindRowMinY: CGFloat?
+
+    static func reset() {
+        panelMinY = nil
+        systemNoticeMinY = nil
+        omnibarMinY = nil
+        lessonRowMinY = nil
+        kindRowMinY = nil
+    }
+}
+
+private extension View {
+    func foldOrigin(_ write: @escaping (CGFloat) -> Void) -> some View {
+        background {
+            GeometryReader { geo in
+                let y = geo.frame(in: .global).minY
+                Color.clear
+                    .onAppear { write(y) }
+                    .onChange(of: y) { _, newY in write(newY) }
+            }
         }
     }
 }

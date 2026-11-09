@@ -1,175 +1,114 @@
 import SwiftUI
 import MijiaCore
 
-/// Compact next-steps card that rides above the live dashboard after a source is configured (#180
-/// review). Keeping it outside the full-screen guide lets the user search a device and try All Off +
-/// Undo while the instructions are still on screen.
+/// One 44 pt row for the next getting-started step. Launch at login lives in the overflow menu
+/// so it does not add a second row above the devices.
 struct OnboardingChecklistCard: View {
     let store: HomeStore
     var onBeginSearch: () -> Void
 
     var body: some View {
         let checklist = store.onboardingChecklist
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                Image(systemName: "checklist")
-                    .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
+        HStack(spacing: 6) {
+            Text(rowTitle(checklist))
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
 
-                Text(L10n.tr("上手清单", "Getting Started"))
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+            Spacer(minLength: 4)
 
-                Text("\(checklist.completedSteps.count)/\(OnboardingStep.allCases.count)")
-                    .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-
-                Spacer(minLength: 4)
-
-                Button {
-                    withAnimation(AppleMotion.snappySpring) {
-                        store.completeOnboarding()
-                        store.dismissLaunchAtLoginSuggestion()
-                    }
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9.5, weight: .bold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 18, height: 18)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(Text(L10n.tr("关闭上手清单", "Close getting-started checklist")))
-                .panelHelp(L10n.tr("关闭清单；随时可在设置 → 通用 → 首次设置重新打开", "Close the checklist; reopen it in Settings → General → Setup"))
-            }
-
-            HStack(spacing: 6) {
-                ForEach(OnboardingStep.allCases, id: \.self) { step in
-                    stepPill(step, checklist: checklist)
-                }
+            if store.shouldShowLaunchAtLoginSuggestion {
+                launchOverflow
             }
 
             if let next = checklist.nextStep {
-                HStack(alignment: .center, spacing: 6) {
-                    Text(instruction(for: next, checklist: checklist))
-                        .font(.system(size: DesignTokens.TypeSize.micro))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Spacer(minLength: 4)
-
-                    actionButton(for: next)
+                Button(L10n.tr("试试", "Try")) {
+                    run(next)
                 }
-            } else {
-                Text(L10n.tr("三步都试过了，可以关掉这张清单。", "All three tried — close this card whenever you like."))
-                    .font(.system(size: DesignTokens.TypeSize.micro))
+                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+                .disabled(next == .allOffAndUndo && store.allOffTargets.isEmpty)
+                .panelHelp(tryHelp(next))
+            }
+
+            Button {
+                withAnimation(AppleMotion.snappySpring) {
+                    store.completeOnboarding()
+                    store.dismissLaunchAtLoginSuggestion()
+                }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9.5, weight: .bold))
                     .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
             }
-
-            if store.shouldShowLaunchAtLoginSuggestion {
-                Divider()
-                    .overlay(Color.accentColor.opacity(0.15))
-
-                HStack(alignment: .top, spacing: 7) {
-                    Image(systemName: "power")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
-                        .frame(width: 16, alignment: .center)
-                        .padding(.top, 1)
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(L10n.tr("开机自动启动", "Launch at Login"))
-                            .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
-                        Text(launchAtLoginDetail)
-                            .font(.system(size: DesignTokens.TypeSize.micro))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    Spacer(minLength: 4)
-
-                    if store.launchAtLoginPolicy.needsManualApproval {
-                        Button(L10n.tr("去系统设置开启", "Open System Settings")) {
-                            launchAtLogin.openSystemSettings()
-                        }
-                        .buttonStyle(PillActionButtonStyle())
-                    } else {
-                        Button(L10n.tr("开启", "Turn On")) {
-                            withAnimation(AppleMotion.snappySpring) {
-                                launchAtLogin.setEnabled(true)
-                            }
-                        }
-                        .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
-                    }
-
-                    Button(L10n.tr("跳过", "Skip")) {
-                        withAnimation(AppleMotion.snappySpring) {
-                            store.dismissLaunchAtLoginSuggestion()
-                        }
-                    }
-                    .buttonStyle(PillActionButtonStyle())
-                }
-            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text(L10n.tr("关闭上手清单", "Close getting-started checklist")))
+            .panelHelp(L10n.tr(
+                "关闭清单；随时可在设置 → 通用 → 首次设置重新打开",
+                "Close the checklist; reopen it in Settings → General → Setup"
+            ))
         }
-        .padding(10)
+        .padding(.horizontal, 10)
+        .frame(height: 44)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(Color.accentColor.opacity(0.20), lineWidth: DesignTokens.hairline)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("onboarding-lesson-row")
     }
 
-    private func stepPill(_ step: OnboardingStep, checklist: OnboardingChecklist) -> some View {
-        let done = checklist.isComplete(step)
-        let current = checklist.nextStep == step
-        return HStack(spacing: 3) {
-            Image(systemName: done ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(done ? .green : (current ? Color.accentColor : Color.secondary))
-            Text(title(for: step))
-                .font(.system(size: DesignTokens.TypeSize.micro, weight: current ? .semibold : .regular))
-                .foregroundStyle(done || current ? Color.primary.opacity(0.82) : Color.secondary)
-                .lineLimit(1)
+    private func rowTitle(_ checklist: OnboardingChecklist) -> String {
+        let done = checklist.completedSteps.count
+        if let next = checklist.nextStep {
+            return L10n.tr(
+                "上手 \(done)/3 · 下一步：\(nextAction(next))",
+                "Start \(done)/3 · Next: \(nextAction(next))"
+            )
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2.5)
-        .background(
-            (current ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04)),
-            in: Capsule(style: .continuous)
-        )
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text("\(title(for: step)) \(done ? L10n.tr("已完成", "done") : L10n.tr("未完成", "not done"))"))
+        return L10n.tr("开机自动启动", "Launch at Login")
     }
 
-    @ViewBuilder
-    private func actionButton(for step: OnboardingStep) -> some View {
+    private func nextAction(_ step: OnboardingStep) -> String {
         switch step {
         case .connectAccount:
-            // The card only exists once a source is configured, so the connect lesson is already done.
-            EmptyView()
-
+            return L10n.tr("连接账号", "Connect")
         case .searchDevice:
-            Button(L10n.tr("搜索", "Search")) {
-                onBeginSearch()
-            }
-            .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
-
+            return L10n.tr("按 \(hotkeyLabel) 搜索", "Search with \(hotkeyLabel)")
         case .allOffAndUndo:
-            if store.undoBanner != nil {
-                Button(L10n.tr("撤销", "Undo")) {
-                    withAnimation(AppleMotion.snappySpring) { _ = store.undoTurnAllOff() }
-                }
-                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
-            } else {
-                Button(L10n.tr("全关", "All Off")) {
-                    withAnimation(AppleMotion.snappySpring) { _ = store.turnAllOff() }
-                }
-                .buttonStyle(PillActionButtonStyle())
-                .disabled(store.allOffTargets.isEmpty)
-                .panelHelp(store.allOffTargets.isEmpty
-                    ? L10n.tr("当前没有开启的设备", "No active devices are currently on")
-                    : L10n.tr("关闭当前能关的设备，然后点撤销", "Turn off what is on, then undo"))
+            return L10n.tr("演练全关", "Practice All Off")
+        }
+    }
+
+    private func tryHelp(_ step: OnboardingStep) -> String {
+        switch step {
+        case .connectAccount:
+            return L10n.tr("去连接账号", "Connect an account")
+        case .searchDevice:
+            return L10n.tr("把光标放进搜索框", "Focus the search field")
+        case .allOffAndUndo:
+            if store.allOffTargets.isEmpty {
+                return L10n.tr("当前没有开启的设备", "No active devices are currently on")
             }
+            return L10n.tr(
+                "按住全关，只预览会关闭哪些设备，不会真的发送",
+                "Hold All Off to preview the devices. Nothing is sent."
+            )
+        }
+    }
+
+    private func run(_ step: OnboardingStep) {
+        switch step {
+        case .connectAccount:
+            break
+        case .searchDevice:
+            onBeginSearch()
+        case .allOffAndUndo:
+            withAnimation(AppleMotion.snappySpring) { _ = store.turnAllOff() }
         }
     }
 
@@ -178,6 +117,38 @@ struct OnboardingChecklistCard: View {
     }
 
     @MainActor private var launchAtLogin: LaunchAtLoginCoordinator { .live(store: store) }
+
+    private var launchOverflow: some View {
+        Menu {
+            if store.launchAtLoginPolicy.needsManualApproval {
+                Button(L10n.tr("去系统设置开启", "Open System Settings")) {
+                    launchAtLogin.openSystemSettings()
+                }
+            } else {
+                Button(L10n.tr("开机自动启动", "Turn On Launch at Login")) {
+                    withAnimation(AppleMotion.snappySpring) {
+                        launchAtLogin.setEnabled(true)
+                    }
+                }
+            }
+            Button(L10n.tr("跳过", "Skip")) {
+                withAnimation(AppleMotion.snappySpring) {
+                    store.dismissLaunchAtLoginSuggestion()
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.secondary)
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .accessibilityLabel(Text(L10n.tr("开机自动启动", "Launch at Login")))
+        .panelHelp(launchAtLoginDetail)
+    }
 
     private var launchAtLoginDetail: String {
         if store.launchAtLoginPolicy.needsManualApproval {
@@ -190,42 +161,5 @@ struct OnboardingChecklistCard: View {
             "登录 Mac 后自动打开面板，不用再找菜单栏。",
             "Open the panel automatically after you log in, without hunting for the menu bar."
         )
-    }
-
-    private func title(for step: OnboardingStep) -> String {
-        switch step {
-        case .connectAccount:
-            return L10n.tr("连接账号", "Connect")
-        case .searchDevice:
-            return L10n.tr("搜设备", "Search")
-        case .allOffAndUndo:
-            return L10n.tr("全关撤销", "All Off + Undo")
-        }
-    }
-
-    private func instruction(for step: OnboardingStep, checklist: OnboardingChecklist) -> String {
-        switch step {
-        case .connectAccount:
-            return L10n.tr(
-                "扫码或填好 Home Assistant 地址后连接。",
-                "Scan a QR code or enter your Home Assistant address."
-            )
-        case .searchDevice:
-            return L10n.tr(
-                "按 \(hotkeyLabel) 打开面板，直接打字搜索，↑↓ 选中，回车开关。",
-                "Tap \(hotkeyLabel), type to search, use ↑↓ to choose and Return to toggle."
-            )
-        case .allOffAndUndo:
-            if checklist.milestones.contains(.turnedAllOff), store.undoBanner != nil {
-                return L10n.tr(
-                    "已全关，点「撤销」恢复关闭前的状态。",
-                    "Everything is off — tap Undo to restore the previous state."
-                )
-            }
-            return L10n.tr(
-                "点「全关」，10 秒内点撤销即可恢复。",
-                "Tap All Off, then Undo within 10 seconds to restore it."
-            )
-        }
     }
 }

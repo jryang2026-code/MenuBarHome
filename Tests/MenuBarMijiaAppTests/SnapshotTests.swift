@@ -1275,7 +1275,7 @@ struct SnapshotTests {
 /// A loaded store over the built-in virtual home, with a fixed language and the standard-defaults
 /// keys the panel reads through `@AppStorage`.
 @MainActor
-private struct SnapshotFixture {
+struct SnapshotFixture {
     struct MissingDefaults: Error {}
 
     let store: HomeStore
