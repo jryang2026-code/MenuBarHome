@@ -57,22 +57,26 @@ extension HomeStore {
         if respectScreenLock, rejectControlWhileLocked() { return nil }
         let previousSnapshot = devices
         var commands: [(deviceId: String, command: DeviceCommand)] = []
-        var restoreCommands: [DeviceCommand] = []
+        var restoreCommands: [(deviceId: String, command: DeviceCommand)] = []
         var affectedDeviceIds: Set<String> = []
         var habitIntents: [DeviceIntent] = []
+        // One write per device: a device that sends two commands (softNightLight) is rolled back once.
+        var writes: [String: OptimisticWrite] = [:]
 
         switch action {
         case .lightsOff:
             for idx in devices.indices where devices[idx].isOnline {
-                guard case .light(var s) = devices[idx].kind, s.isOn, s.powerWritable else { continue }
-                let deviceId = devices[idx].id
+                let previous = devices[idx]
+                guard case .light(var s) = previous.kind, s.isOn, s.powerWritable else { continue }
+                let deviceId = previous.id
                 affectedDeviceIds.insert(deviceId)
                 habitIntents.append(.init(targetId: deviceId, operation: .power(false)))
-                lockOptimistic(deviceId, duration: .seconds(3.0))
                 commands.append((deviceId, .setLightPower(entityId: s.entityId, isOn: false)))
-                restoreCommands.append(.setLightPower(entityId: s.entityId, isOn: true))
+                restoreCommands.append((deviceId, .setLightPower(entityId: s.entityId, isOn: true)))
                 s.isOn = false
-                devices[idx].kind = .light(s)
+                var updated = previous
+                updated.kind = .light(s)
+                writes[deviceId] = beginOptimisticWrite(from: previous, to: updated, lock: .seconds(3.0))
             }
 
         case .softNightLight:
@@ -100,52 +104,57 @@ extension HomeStore {
                 }
             }
             for idx in targetIndices {
-                guard case .light(var s) = devices[idx].kind else { continue }
-                let deviceId = devices[idx].id
+                let previous = devices[idx]
+                guard case .light(var s) = previous.kind else { continue }
+                let deviceId = previous.id
                 affectedDeviceIds.insert(deviceId)
                 habitIntents.append(.init(targetId: deviceId, operation: .brightness(15)))
                 habitIntents.append(.init(targetId: deviceId, operation: .colorTemperature(max(s.minKelvin, 2700))))
-                lockOptimistic(deviceId, duration: .seconds(3.0))
                 let prevOn = s.isOn
                 let prevBri = s.brightnessPercent ?? 80
                 let prevKelvin = s.colorTempKelvin ?? 4000
                 commands.append((deviceId, .setLightBrightness(entityId: s.entityId, percent: 15)))
                 commands.append((deviceId, .setLightColorTemp(entityId: s.entityId, kelvin: max(s.minKelvin, 2700))))
                 if prevOn {
-                    restoreCommands.append(.setLightBrightness(entityId: s.entityId, percent: prevBri))
-                    restoreCommands.append(.setLightColorTemp(entityId: s.entityId, kelvin: prevKelvin))
+                    restoreCommands.append((deviceId, .setLightBrightness(entityId: s.entityId, percent: prevBri)))
+                    restoreCommands.append((deviceId, .setLightColorTemp(entityId: s.entityId, kelvin: prevKelvin)))
                 } else {
-                    restoreCommands.append(.setLightPower(entityId: s.entityId, isOn: false))
+                    restoreCommands.append((deviceId, .setLightPower(entityId: s.entityId, isOn: false)))
                 }
                 s.isOn = true
                 s.brightnessPercent = 15
                 s.colorTempKelvin = max(s.minKelvin, 2700)
                 s.currentEffect = nil
-                devices[idx].kind = .light(s)
+                var updated = previous
+                updated.kind = .light(s)
+                writes[deviceId] = beginOptimisticWrite(from: previous, to: updated, lock: .seconds(3.0))
             }
 
         case .climateSleepOff:
             for idx in devices.indices where devices[idx].isOnline {
-                let deviceId = devices[idx].id
-                switch devices[idx].kind {
+                let previous = devices[idx]
+                let deviceId = previous.id
+                switch previous.kind {
                 case .climate(var s) where s.isOn && s.hvacMode != "off" && s.powerWritable:
                     let prevMode = s.hvacMode
                     affectedDeviceIds.insert(deviceId)
                     habitIntents.append(.init(targetId: deviceId, operation: .power(false)))
-                    lockOptimistic(deviceId, duration: .seconds(3.0))
                     commands.append((deviceId, .setClimatePower(entityId: s.entityId, isOn: false, fallbackMode: prevMode)))
-                    restoreCommands.append(.setClimatePower(entityId: s.entityId, isOn: true, fallbackMode: prevMode))
+                    restoreCommands.append((deviceId, .setClimatePower(entityId: s.entityId, isOn: true, fallbackMode: prevMode)))
                     s.isOn = false
                     s.hvacMode = "off"
-                    devices[idx].kind = .climate(s)
+                    var updated = previous
+                    updated.kind = .climate(s)
+                    writes[deviceId] = beginOptimisticWrite(from: previous, to: updated, lock: .seconds(3.0))
                 case .fan(var s) where s.isOn && s.powerWritable:
                     affectedDeviceIds.insert(deviceId)
                     habitIntents.append(.init(targetId: deviceId, operation: .power(false)))
-                    lockOptimistic(deviceId, duration: .seconds(3.0))
                     commands.append((deviceId, .setFanPower(entityId: s.entityId, isOn: false)))
-                    restoreCommands.append(.setFanPower(entityId: s.entityId, isOn: true))
+                    restoreCommands.append((deviceId, .setFanPower(entityId: s.entityId, isOn: true)))
                     s.isOn = false
-                    devices[idx].kind = .fan(s)
+                    var updated = previous
+                    updated.kind = .fan(s)
+                    writes[deviceId] = beginOptimisticWrite(from: previous, to: updated, lock: .seconds(3.0))
                 default:
                     break
                 }
@@ -157,9 +166,10 @@ extension HomeStore {
             return nil
         }
 
+        let bannerTitle = L10n.tr("已执行「\(action.title)」", "Executed \"\(action.title)\"")
         scheduleUndoBanner(
-            title: L10n.tr("已执行「\(action.title)」", "Executed \"\(action.title)\""),
-            restoreCommands: restoreCommands,
+            title: bannerTitle,
+            restoreCommands: restoreCommands.map(\.command),
             previousDevices: previousSnapshot,
             deviceCount: affectedDeviceIds.count,
             habitReceipt: nil,
@@ -168,15 +178,35 @@ extension HomeStore {
         guard let bannerId = undoBanner?.id else { return nil }
 
         let context = controlContextID
+        let deviceNames = Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0.name) })
         return Task {
             var failedDeviceIds: Set<String> = []
+            var failedNames: [String] = []
             for item in commands {
                 guard context == controlContextID else { return }
                 do {
                     try await executeDeviceCommand(item.command)
                 } catch {
-                    failedDeviceIds.insert(item.deviceId)
+                    if failedDeviceIds.insert(item.deviceId).inserted, let name = deviceNames[item.deviceId] {
+                        failedNames.append(name)
+                    }
                 }
+            }
+            guard context == controlContextID else { return }
+            if !failedDeviceIds.isEmpty {
+                // The row was shown ahead of the device; a refusal puts it back and leaves this
+                // action's banner, which must only offer what the devices accepted.
+                for deviceId in failedDeviceIds {
+                    if let write = writes[deviceId] { revert(write) }
+                }
+                trimUndoBanner(
+                    bannerId,
+                    failedDeviceIds: failedDeviceIds,
+                    restoreCommands: restoreCommands,
+                    remainingDeviceCount: affectedDeviceIds.subtracting(failedDeviceIds).count,
+                    title: bannerTitle
+                )
+                showBatchWriteFailure(actionTitle: action.title, failedNames: failedNames)
             }
             // Habits train only on confirmed success, and only while the banner this action
             // created is still the live one (an undo or expiry cancels the learning) (#113).
@@ -279,53 +309,76 @@ extension HomeStore {
         }
     }
 
-    public func turnAllOff() {
-        guard !rejectControlWhileLocked() else { return }
+    @discardableResult
+    public func turnAllOff() -> Task<Void, Never>? {
+        guard !rejectControlWhileLocked() else { return nil }
         let targetIds = Set(allOffTargets.map(\.id))
         guard !targetIds.isEmpty else {
             showToast(L10n.tr("当前没有开启的设备", "No active devices are currently on"))
-            return
+            return nil
         }
         recordOnboardingMilestone(.turnedAllOff)
 
         let previousSnapshot = devices
         var offCommands: [(deviceId: String, command: DeviceCommand)] = []
-        var restoreCommands: [DeviceCommand] = []
+        var restoreCommands: [(deviceId: String, command: DeviceCommand)] = []
         var habitIntents: [DeviceIntent] = []
+        var writes: [String: OptimisticWrite] = [:]
 
         for idx in devices.indices where targetIds.contains(devices[idx].id) {
-            guard let change = Self.allOffChange(for: devices[idx]) else { continue }
-            let deviceId = devices[idx].id
+            let previous = devices[idx]
+            guard let change = Self.allOffChange(for: previous) else { continue }
+            let deviceId = previous.id
             // A vacuum returning home has no power op, so it executes but does not train a habit (#113).
-            if UserHabitMemory.isPowerToggleable(devices[idx]) {
+            if UserHabitMemory.isPowerToggleable(previous) {
                 habitIntents.append(.init(targetId: deviceId, operation: .power(false)))
             }
-            lockOptimistic(deviceId, duration: .seconds(3.0))
             offCommands.append((deviceId, change.off))
-            restoreCommands.append(change.restore)
-            devices[idx].kind = change.kind
+            restoreCommands.append((deviceId, change.restore))
+            var updated = previous
+            updated.kind = change.kind
+            writes[deviceId] = beginOptimisticWrite(from: previous, to: updated, lock: .seconds(3.0))
         }
 
         scheduleUndoBanner(
             title: L10n.tr("已关闭 \(offCommands.count) 台设备", "Turned off \(offCommands.count) device(s)"),
-            restoreCommands: restoreCommands,
+            restoreCommands: restoreCommands.map(\.command),
             previousDevices: previousSnapshot,
             deviceCount: targetIds.count,
             habitReceipt: nil,
             isAllOff: true
         )
-        guard let bannerId = undoBanner?.id else { return }
+        guard let bannerId = undoBanner?.id else { return nil }
 
         let context = controlContextID
-        Task {
+        let deviceNames = Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0.name) })
+        return Task {
             var failedDeviceIds: Set<String> = []
+            var failedNames: [String] = []
             for item in offCommands {
                 guard context == controlContextID else { return }
                 do {
                     try await executeDeviceCommand(item.command)
                 } catch {
-                    failedDeviceIds.insert(item.deviceId)
+                    if failedDeviceIds.insert(item.deviceId).inserted, let name = deviceNames[item.deviceId] {
+                        failedNames.append(name)
+                    }
                 }
+            }
+            guard context == controlContextID else { return }
+            if !failedDeviceIds.isEmpty {
+                for deviceId in failedDeviceIds {
+                    if let write = writes[deviceId] { revert(write) }
+                }
+                let remainingDeviceCount = offCommands.count - failedDeviceIds.count
+                trimUndoBanner(
+                    bannerId,
+                    failedDeviceIds: failedDeviceIds,
+                    restoreCommands: restoreCommands,
+                    remainingDeviceCount: remainingDeviceCount,
+                    title: L10n.tr("已关闭 \(remainingDeviceCount) 台设备", "Turned off \(remainingDeviceCount) device(s)")
+                )
+                showBatchWriteFailure(actionTitle: L10n.tr("全关", "Turn all off"), failedNames: failedNames)
             }
             // Habits train only on confirmed success while this action's banner is live (#113).
             let succeededIntents = habitIntents.filter { !failedDeviceIds.contains($0.targetId) }
@@ -353,6 +406,7 @@ extension HomeStore {
             title: title,
             restoreCommands: restoreCommands,
             previousDevices: previousDevices,
+            deviceCount: deviceCount,
             habitReceipt: habitReceipt,
             duration: duration,
             isAllOff: isAllOff
@@ -369,6 +423,44 @@ extension HomeStore {
                 self?.undoBanner = nil
             }
         }
+    }
+
+    /// Drops the devices a bulk action failed on from the banner it created, so 撤销 restores only
+    /// what the devices accepted. Every device failing removes the banner instead. A banner that
+    /// has already been replaced or dismissed is left alone.
+    private func trimUndoBanner(
+        _ bannerId: UUID,
+        failedDeviceIds: Set<String>,
+        restoreCommands: [(deviceId: String, command: DeviceCommand)],
+        remainingDeviceCount: Int,
+        title: String
+    ) {
+        guard let banner = undoBanner, banner.id == bannerId else { return }
+        let keptCommands = restoreCommands
+            .filter { !failedDeviceIds.contains($0.deviceId) }
+            .map(\.command)
+        guard !keptCommands.isEmpty else {
+            undoTimerTask?.cancel()
+            undoBanner = nil
+            return
+        }
+        undoBanner?.title = title
+        undoBanner?.restoreCommands = keptCommands
+        undoBanner?.previousDevices = banner.previousDevices.filter { !failedDeviceIds.contains($0.id) }
+        undoBanner?.deviceCount = remainingDeviceCount
+    }
+
+    /// `撤销未完成` wording for a bulk action some devices refused (#113).
+    private func showBatchWriteFailure(actionTitle: String, failedNames: [String]) {
+        let separator = L10n.isEnglish ? ", " : "、"
+        let list = failedNames.joined(separator: separator)
+        showToast(
+            L10n.tr(
+                "「\(actionTitle)」未完成：\(list) 未响应，已恢复这些设备",
+                "\"\(actionTitle)\" incomplete: \(list) did not respond; those devices were restored"
+            ),
+            isError: true
+        )
     }
 
     @discardableResult

@@ -91,6 +91,24 @@ extension HomeStore {
         coverCommandOrigins.removeValue(forKey: write.deviceId)
     }
 
+    /// Puts back the cover travel origin a tap wrote before its command, for a tap that never
+    /// reached the device. Only the tap's own value is put back, and only while no newer write has
+    /// taken the row, so a newer tap or drag keeps the origin it owns.
+    func discardCoverOrigin(
+        _ origin: (prior: Int?, written: Int)?,
+        deviceId: String,
+        revision: UInt64?
+    ) {
+        guard let origin,
+              optimisticLockRevision[deviceId] == revision,
+              coverCommandOrigins[deviceId] == origin.written else { return }
+        if let prior = origin.prior {
+            coverCommandOrigins[deviceId] = prior
+        } else {
+            coverCommandOrigins.removeValue(forKey: deviceId)
+        }
+    }
+
     /// Keeps a stored facet row on the same value as the generic tile's main switch. The switch is
     /// normally not in `deviceFacets`, so this is a no-op unless a test or an older snapshot row
     /// still carries it.

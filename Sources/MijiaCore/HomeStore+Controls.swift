@@ -60,6 +60,10 @@ extension HomeStore {
         }
         var updated = previous
         var command: DeviceCommand?
+        // The cover travel origin this tap writes before the send. A tap that never reaches the
+        // device must put it back, or a genuine report at that position is rejected later.
+        var coverOrigin: (prior: Int?, written: Int)?
+        let lockRevision = optimisticLockRevision[device.id]
 
         switch updated.kind {
         case .light(var s):
@@ -116,6 +120,9 @@ extension HomeStore {
         case .cover(var s):
             // A cover tap is a three-way control: travel stops, otherwise open/close. Pause needs
             // no position reading, so a moving cover stops before the position guard (#298).
+            // The stored origin is kept before `activeCoverOrigin` can drop a stale one: a tap whose
+            // claim fails has to leave the in-flight tap's origin in place.
+            let priorOrigin = coverCommandOrigins[device.id]
             let origin = activeCoverOrigin(for: device.id, fallback: s.positionPercent)
             if s.isMoving {
                 guard let pause = s.pauseDescription else {
@@ -125,7 +132,10 @@ extension HomeStore {
                 s.motion = .stopped
                 s.motionIsInferred = false
                 updated.kind = .cover(s)
-                coverCommandOrigins[device.id] = origin
+                if let origin {
+                    coverOrigin = (priorOrigin, origin)
+                    coverCommandOrigins[device.id] = origin
+                }
                 command = .setSelectOption(entityId: s.entityId, option: pause)
             } else {
                 guard let pos = s.positionPercent,
@@ -133,6 +143,7 @@ extension HomeStore {
                     toggleExpanded(device.id)
                     return nil
                 }
+                coverOrigin = (priorOrigin, pos)
                 coverCommandOrigins[device.id] = pos
                 let shouldOpen = pos == 0
                 s.positionPercent = shouldOpen ? 100 : 0
@@ -193,7 +204,12 @@ extension HomeStore {
             }
         }
 
-        guard let ticket = self.readBackTickets.claim(device.id) else { return nil }
+        guard let ticket = self.readBackTickets.claim(device.id) else {
+            // An earlier tap still owns the read-back, so this one never sends; it must not leave
+            // its own travel origin behind.
+            self.discardCoverOrigin(coverOrigin, deviceId: device.id, revision: lockRevision)
+            return nil
+        }
 
         return Task {
             defer { self.readBackTickets.finish(device.id, ticket: ticket) }
@@ -222,6 +238,10 @@ extension HomeStore {
                 }
             } catch {
                 guard self.controlContextID == context else { return false }
+                // A newer tap may own the device by now; only an unclaimed failure drops our origin.
+                if self.readBackTickets.isLatest(device.id, ticket: ticket) {
+                    self.discardCoverOrigin(coverOrigin, deviceId: device.id, revision: lockRevision)
+                }
                 self.showToast(L10n.tr("\(device.name) 响应失败", "\(device.name) failed to respond"), isError: true)
                 return false
             }

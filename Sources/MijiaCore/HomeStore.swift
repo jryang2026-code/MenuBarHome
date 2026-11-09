@@ -18,6 +18,9 @@ public struct UndoBanner: Equatable, Sendable {
     public var title: String
     public var restoreCommands: [DeviceCommand]
     public var previousDevices: [SmartDevice]
+    /// Devices the action reached. The 10/15 s window follows it, and a bulk action that fails
+    /// part way lowers it before a hover-resume re-arms the timer.
+    public var deviceCount: Int
     /// Habit records written while executing this action; undoing the banner takes them back (#34).
     public var habitReceipt: UserHabitMemory.RecordingReceipt?
     /// Explicit window for actions outside the panel (automation, #59); nil uses the device-count rule.
@@ -30,6 +33,7 @@ public struct UndoBanner: Equatable, Sendable {
         title: String,
         restoreCommands: [DeviceCommand],
         previousDevices: [SmartDevice],
+        deviceCount: Int = 1,
         habitReceipt: UserHabitMemory.RecordingReceipt? = nil,
         duration: TimeInterval? = nil,
         isAllOff: Bool = false
@@ -38,6 +42,7 @@ public struct UndoBanner: Equatable, Sendable {
         self.title = title
         self.restoreCommands = restoreCommands
         self.previousDevices = previousDevices
+        self.deviceCount = deviceCount
         self.habitReceipt = habitReceipt
         self.duration = duration
         self.isAllOff = isAllOff

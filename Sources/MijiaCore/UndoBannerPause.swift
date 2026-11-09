@@ -20,10 +20,10 @@ extension HomeStore {
     public func resumeUndoBannerCountdown() {
         guard let banner = undoBanner else { return }
         undoTimerTask?.cancel()
-        // `restoreCommands` holds one command per device for 全关 and at least one per device for
-        // assistant plans, so it never undercounts the action's reach. Automation banners carry
-        // their own window (#59) and keep it here instead of dropping back to the device rule.
-        let seconds = banner.duration ?? Self.undoBannerSeconds(forDeviceCount: max(1, banner.restoreCommands.count))
+        // `deviceCount` is the number of devices the action reached: `restoreCommands` can hold
+        // several commands for one device (a quick action sending brightness and colour). Automation
+        // banners carry their own window (#59) and keep it here instead of dropping back to the rule.
+        let seconds = banner.duration ?? Self.undoBannerSeconds(forDeviceCount: max(1, banner.deviceCount))
         undoTimerTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(seconds))
             guard !Task.isCancelled else { return }

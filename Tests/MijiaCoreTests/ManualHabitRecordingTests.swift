@@ -118,14 +118,12 @@ struct ManualHabitRecordingTests {
         let (store, mock) = try await makeStore()
         await mock.setShouldFail(true)
 
-        store.executeQuickAction(.lightsOff)
-        #expect(store.undoBanner != nil, "the banner still offers device restore")
+        let task = store.executeQuickAction(.lightsOff)
         store.pauseUndoBannerCountdown()
-        // Wait for the dispatch task to actually attempt the command.
-        for _ in 0..<100 where (await mock.executedCommands).isEmpty {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await task?.value
 
+        // Every device refused, so the rows are back and the banner has nothing left to offer.
+        #expect(store.undoBanner == nil)
         let memory = store.userHabitMemory
         #expect(memory.entries.isEmpty)
     }
@@ -134,12 +132,10 @@ struct ManualHabitRecordingTests {
     func turnAllOffRecordsAndUndoRollsBack() async throws {
         let (store, _) = try await makeStore()
 
-        store.turnAllOff()
+        let task = store.turnAllOff()
         // Freeze the banner so a loaded CI cannot expire it mid-test.
         store.pauseUndoBannerCountdown()
-        for _ in 0..<100 where store.userHabitMemory.entries.count < 2 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await task?.value
 
         var memory = store.userHabitMemory
         #expect(Set(memory.entries.map { "\($0.targetId)|\($0.operationKey)" }) == [
@@ -207,11 +203,9 @@ struct ManualHabitRecordingTests {
     func undoTurnAllOffReArmsOnCommandFailure() async throws {
         let (store, mock) = try await makeStore()
 
-        store.turnAllOff()
+        let task = store.turnAllOff()
         store.pauseUndoBannerCountdown()
-        for _ in 0..<100 where store.userHabitMemory.entries.count < 2 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await task?.value
         #expect(store.userHabitMemory.entries.count == 2)
 
         await mock.setShouldFail(true)

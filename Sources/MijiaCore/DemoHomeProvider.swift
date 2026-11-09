@@ -9,6 +9,7 @@ public actor MockHomeProvider: HomeProvider {
     /// Every polling context the store sent, in order (#26).
     public private(set) var pollingContexts: [PollingContext] = []
     public var shouldFailCommands: Bool = false
+    private var failingTargets: Set<String> = []
     private var holdNext = false
     private var executeWaiter: CheckedContinuation<Void, Never>?
     public private(set) var executeStarted = 0
@@ -21,6 +22,12 @@ public actor MockHomeProvider: HomeProvider {
 
     public func setShouldFail(_ fail: Bool) {
         self.shouldFailCommands = fail
+    }
+
+    /// Fails only the commands that address these entities, so a batch test can make one device
+    /// refuse while the rest accept.
+    public func setFailingTargets(_ entityIds: Set<String>) {
+        self.failingTargets = entityIds
     }
 
     public func setPollingContext(_ context: PollingContext) async {
@@ -57,7 +64,7 @@ public actor MockHomeProvider: HomeProvider {
             holdNext = false
             await withCheckedContinuation { executeWaiter = $0 }
         }
-        if shouldFailCommands {
+        if shouldFailCommands || failingTargets.contains(command.targetEntityId) {
             throw HomeProviderError.serviceCallFailed(500, "模拟网络失败")
         }
         executedCommands.append(command)
