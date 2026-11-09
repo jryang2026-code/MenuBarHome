@@ -744,10 +744,14 @@ extension HomeStore {
             )
             return nil
         }
+        // The user may have dismissed or cancelled it during the wait, and a second tap may already
+        // have taken it. Existence check, removal and persistence run in one stretch without an await
+        // so exactly one waiter can win.
+        guard let current = missedScheduledCommands.first(where: { $0.id == id }) else { return nil }
         missedScheduledCommands.removeAll { $0.id == id }
         notifiedMissedTimerIds.remove(id)
         persistAllScheduledCommands()
-        return await executeIntentPlan(entry.plan, recordedUtterance: nil, origin: .scheduled)
+        return await executeIntentPlan(current.plan, recordedUtterance: nil, origin: .scheduled)
     }
 
     public func dismissMissedScheduledCommand(id: UUID) {

@@ -219,6 +219,85 @@ struct ScheduledCommandScopeTests {
         #expect(await mock.executedCommands.isEmpty)
     }
 
+    @Test("A missed timer dismissed while 立即补执行 waits sends nothing")
+    @MainActor
+    func dismissDuringSnapshotWaitSendsNothing() async throws {
+        let (store, mock) = try await makeStore()
+        let homeScope = try #require(store.connectionScopeIdentifier)
+        let expired = ScheduledCommand(
+            reply: "10 分钟后关闭书房吸顶灯",
+            fireDate: Date().addingTimeInterval(-120),
+            plan: Self.plan,
+            sourceScope: homeScope
+        )
+        ScheduledCommand.save([expired], to: store.userDefaults)
+        store.restoreScheduledCommands()
+
+        store.devices = []
+        let run = Task { await store.runMissedScheduledCommand(id: expired.id) }
+        for _ in 0..<10 { await Task.yield() }
+        store.dismissMissedScheduledCommand(id: expired.id)
+        store.devices = [Self.ceiling]
+
+        #expect(await run.value == nil)
+        #expect(store.missedScheduledCommands.isEmpty)
+        #expect(ScheduledCommand.load(from: store.userDefaults).isEmpty)
+        #expect(await mock.executedCommands.isEmpty)
+    }
+
+    @Test("Cancelling all timers while 立即补执行 waits sends nothing")
+    @MainActor
+    func cancelAllDuringSnapshotWaitSendsNothing() async throws {
+        let (store, mock) = try await makeStore()
+        let homeScope = try #require(store.connectionScopeIdentifier)
+        let expired = ScheduledCommand(
+            reply: "10 分钟后关闭书房吸顶灯",
+            fireDate: Date().addingTimeInterval(-120),
+            plan: Self.plan,
+            sourceScope: homeScope
+        )
+        ScheduledCommand.save([expired], to: store.userDefaults)
+        store.restoreScheduledCommands()
+
+        store.devices = []
+        let run = Task { await store.runMissedScheduledCommand(id: expired.id) }
+        for _ in 0..<10 { await Task.yield() }
+        #expect(store.cancelScheduledCommands() == 1)
+        store.devices = [Self.ceiling]
+
+        #expect(await run.value == nil)
+        #expect(store.missedScheduledCommands.isEmpty)
+        #expect(ScheduledCommand.load(from: store.userDefaults).isEmpty)
+        #expect(await mock.executedCommands.isEmpty)
+    }
+
+    @Test("Two 立即补执行 taps on the same missed timer run it once")
+    @MainActor
+    func concurrentMissedRunsExecuteOnce() async throws {
+        let (store, mock) = try await makeStore()
+        let homeScope = try #require(store.connectionScopeIdentifier)
+        let expired = ScheduledCommand(
+            reply: "10 分钟后关闭书房吸顶灯",
+            fireDate: Date().addingTimeInterval(-120),
+            plan: Self.plan,
+            sourceScope: homeScope
+        )
+        ScheduledCommand.save([expired], to: store.userDefaults)
+        store.restoreScheduledCommands()
+
+        store.devices = []
+        let first = Task { await store.runMissedScheduledCommand(id: expired.id) }
+        let second = Task { await store.runMissedScheduledCommand(id: expired.id) }
+        for _ in 0..<10 { await Task.yield() }
+        store.devices = [Self.ceiling]
+
+        let firstResult = await first.value
+        let secondResult = await second.value
+        #expect((firstResult == nil) != (secondResult == nil), "Only one tap may run the plan")
+        #expect(store.missedScheduledCommands.isEmpty)
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
+    }
+
     @Test("A timer whose device is not in the current home waits for confirmation")
     @MainActor
     func timerWithAbsentTargetWaitsForConfirmation() async throws {
