@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import MijiaCore
 import SwiftUI
@@ -66,6 +67,8 @@ struct DetailSliderControl: View {
 /// words instead of showing controls it cannot offer; a writable one explains why the main switch
 /// is missing when no low-risk `on` exists.
 struct GenericDetailDrawer: View {
+    var device: SmartDevice? = nil
+    var store: HomeStore? = nil
     let spec: GenericSpec
     let statusColor: Color
 
@@ -76,6 +79,16 @@ struct GenericDetailDrawer: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                     Text(alert)
                         .fixedSize(horizontal: false, vertical: true)
+                    if let controlID = lockedControlID(for: alert) {
+                        Spacer(minLength: 8)
+                        Button(L10n.tr("去处理", "Show")) {
+                            guard let device else { return }
+                            FacetRowFocus.shared.reveal(deviceID: device.id, controlID: controlID)
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: DesignTokens.TypeSize.control, weight: .semibold))
+                        .foregroundStyle(Color.primary)
+                    }
                 }
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                 .foregroundStyle(.red)
@@ -98,8 +111,8 @@ struct GenericDetailDrawer: View {
             } else if spec.powerControl == nil {
                 explanation(
                     L10n.tr(
-                        "没有低风险的主开关；其余控件在下方「更多设置」，高风险写入默认保持只读。",
-                        "No low-risk main switch. The remaining controls are under More Settings; high-risk writes stay read-only by default."
+                        "为安全起见，这类设备默认只能查看。需要调整时，在下方「更多设置」里开启。",
+                        "For safety, this kind of device is view-only. Turn changes on under More Settings below when you need to adjust it."
                     ),
                     systemImage: "lock.shield"
                 )
@@ -114,12 +127,23 @@ struct GenericDetailDrawer: View {
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    /// The locked row this alarm can scroll to. Nil when the related control is already writable,
+    /// so the banner does not offer a button that cannot change anything.
+    private func lockedControlID(for alert: String) -> String? {
+        guard let device, let store else { return nil }
+        return MiotFacetText.lockedControlID(
+            forAlert: alert,
+            controls: store.deviceFacets[device.id] ?? [],
+            allowsAdvancedWrites: store.allowAdvancedFacetWrites
+        )
+    }
 }
 
 // MARK: - 更多设置
 
 /// Generic drawer rows synthesized from the MIoT spec (#5). The section starts folded, keeps the
-/// busiest rows behind a second fold, and explains every write the whitelist keeps closed.
+/// busiest rows behind a second fold, and shows one notice when advanced writes stay locked.
 struct DeviceFacetSection: View {
     let device: SmartDevice
     let store: HomeStore
@@ -180,12 +204,16 @@ struct DeviceFacetSection: View {
     }
 
     var body: some View {
+        let focusToken = FacetRowFocus.shared.token
         if controls.isEmpty {
             EmptyView()
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 header
                 if isExpanded {
+                    if showsWriteLockNotice {
+                        writeLockNotice
+                    }
                     ForEach(visible) { control in
                         row(control)
                     }
@@ -198,6 +226,9 @@ struct DeviceFacetSection: View {
                         }
                     }
                 }
+            }
+            .onChange(of: focusToken) { _, _ in
+                revealFocusedRow()
             }
         }
     }
@@ -258,39 +289,53 @@ struct DeviceFacetSection: View {
     private func row(_ control: FacetControl) -> some View {
         let title = displayTitle(control)
         let enabled = isEnabled(control)
-        let reason = disabledReason(control)
+        let locked = isWriteLocked(control)
+        let anchor = FacetRowFocus.anchorID(deviceID: device.id, controlID: control.id)
+        rowBody(control, title: title, enabled: enabled, locked: locked)
+            .background(alignment: .leading) {
+                FacetRowAnchor(identifier: anchor)
+                    .frame(width: 1, height: 1)
+            }
+    }
+
+    @ViewBuilder
+    private func rowBody(
+        _ control: FacetControl,
+        title: String,
+        enabled: Bool,
+        locked: Bool
+    ) -> some View {
         switch control.kind {
         case .toggle:
             HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                    if let reason { reasonText(reason) }
-                }
+                Text(title)
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                 Spacer(minLength: 8)
-                Toggle("", isOn: Binding(
-                    get: { control.isOn ?? false },
-                    set: { store.setFacetValue(device.id, controlId: control.id, value: .bool($0)) }
-                ))
-                .labelsHidden()
-                .accessibilityLabel(Text(title))
-                .toggleStyle(.glass)
-                .controlSize(.mini)
-                .disabled(!enabled)
+                lockedControl(locked) {
+                    Toggle("", isOn: Binding(
+                        get: { control.isOn ?? false },
+                        set: { store.setFacetValue(device.id, controlId: control.id, value: .bool($0)) }
+                    ))
+                    .labelsHidden()
+                    .accessibilityLabel(Text(title))
+                    .toggleStyle(.glass)
+                    .controlSize(.mini)
+                    .disabled(!enabled)
+                }
             }
 
         case .select:
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 8) {
-                    Text(title)
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                    Spacer(minLength: 8)
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                Spacer(minLength: 8)
+                lockedControl(locked) {
                     Picker("", selection: Binding(
                         get: { control.value?.intValue ?? control.options.first?.value ?? 0 },
                         set: { store.setFacetValue(device.id, controlId: control.id, value: .number(Double($0))) }
                     )) {
                         ForEach(control.options, id: \.value) { option in
-                            Text(option.label).tag(option.value)
+                            Text(MiotValueText.display(option.label)).tag(option.value)
                         }
                     }
                     .labelsHidden()
@@ -299,7 +344,6 @@ struct DeviceFacetSection: View {
                     .fixedSize()
                     .disabled(!enabled)
                 }
-                if let reason { reasonText(reason) }
             }
 
         case .slider:
@@ -307,21 +351,23 @@ struct DeviceFacetSection: View {
                 Text(title)
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                 if let range = control.range {
-                    DetailSliderControl(
-                        value: control.numberValue ?? range.min,
-                        range: range.min...range.max,
-                        step: range.step > 0 ? range.step : nil,
-                        iconName: FacetLabel.icon(control.name),
-                        iconColor: statusColor,
-                        trackColors: [accent.opacity(0.55), accent.opacity(0.92)],
-                        formattedValue: FacetLabel.value(control)
-                    ) { newValue in
-                        store.setFacetValue(device.id, controlId: control.id, value: .number(newValue))
+                    lockedControl(locked) {
+                        DetailSliderControl(
+                            value: control.numberValue ?? range.min,
+                            range: range.min...range.max,
+                            step: range.step > 0 ? range.step : nil,
+                            iconName: FacetLabel.icon(control.name),
+                            iconColor: statusColor,
+                            trackColors: [accent.opacity(0.55), accent.opacity(0.92)],
+                            formattedValue: FacetLabel.value(control)
+                        ) { newValue in
+                            store.setFacetValue(device.id, controlId: control.id, value: .number(newValue))
+                        }
+                        .disabled(!enabled)
+                        .accessibilityLabel(Text(title))
+                        .frame(maxWidth: .infinity)
                     }
-                    .disabled(!enabled)
-                    .accessibilityLabel(Text(title))
                 }
-                if let reason { reasonText(reason) }
             }
 
         case .reading:
@@ -330,20 +376,24 @@ struct DeviceFacetSection: View {
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 8)
-                DetailValueText(text: FacetLabel.value(control), color: statusColor)
+                DetailValueText(text: FacetLabel.value(control), color: .secondary)
             }
 
         case .button:
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 8) {
-                    DetailPillButton(title: title, tint: accent) {
-                        store.runFacetAction(
-                            device.id,
-                            controlId: control.id,
-                            portion: portion(for: control)
-                        )
+                    if locked {
+                        lockedButton(title)
+                    } else {
+                        DetailPillButton(title: title, tint: accent) {
+                            store.runFacetAction(
+                                device.id,
+                                controlId: control.id,
+                                portion: portion(for: control)
+                            )
+                        }
+                        .disabled(!enabled)
                     }
-                    .disabled(!enabled)
                     if let values = portionValues(control) {
                         Picker("", selection: Binding(
                             get: { portion(for: control) },
@@ -366,8 +416,79 @@ struct DeviceFacetSection: View {
                         .font(.system(size: DesignTokens.TypeSize.micro, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
-                if let reason { reasonText(reason) }
             }
+        }
+    }
+
+    private var showsWriteLockNotice: Bool {
+        ordered.contains(where: isWriteLocked)
+    }
+
+    private var writeLockNotice: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(L10n.tr(
+                "部分高级项默认只读，防止误操作",
+                "Some advanced controls stay view-only to prevent mistakes."
+            ))
+            .font(.system(size: DesignTokens.TypeSize.control, weight: .medium))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button(L10n.tr("允许修改…", "Allow changes…")) {
+                SettingsWindowOpener.shared.show(tab: .general)
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: DesignTokens.TypeSize.control, weight: .semibold))
+            .foregroundStyle(accent)
+        }
+    }
+
+    /// Dims the control itself. The lock stays at full opacity so the row still explains why.
+    @ViewBuilder
+    private func lockedControl<Content: View>(_ locked: Bool, @ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 6) {
+            content()
+                .opacity(locked ? 0.4 : 1)
+            if locked {
+                lockGlyph
+            }
+        }
+    }
+
+    /// A flat label. The glass pill reads as tappable even when the button is disabled.
+    private func lockedButton(_ title: String) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Color.primary.opacity(0.06))
+                )
+                .opacity(0.4)
+            lockGlyph
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text(title))
+        .accessibilityValue(Text(L10n.tr("默认只读", "View only")))
+    }
+
+    private var lockGlyph: some View {
+        Image(systemName: "lock.fill")
+            .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .accessibilityHidden(true)
+    }
+
+    private func revealFocusedRow() {
+        guard FacetRowFocus.shared.deviceID == device.id,
+              let controlID = FacetRowFocus.shared.controlID,
+              ordered.contains(where: { $0.id == controlID }) else { return }
+        isExpanded = true
+        if folded.contains(where: { $0.id == controlID }) {
+            showsRest = true
         }
     }
 
@@ -394,24 +515,70 @@ struct DeviceFacetSection: View {
             && (control.writesByDefault || control.isConfirmedWrite || store.allowAdvancedFacetWrites)
     }
 
-    private func disabledReason(_ control: FacetControl) -> String? {
-        guard control.isWritable,
-              !control.isConfirmedWrite,
-              !control.writesByDefault,
-              !store.allowAdvancedFacetWrites else {
-            return nil
+    private func isWriteLocked(_ control: FacetControl) -> Bool {
+        MiotFacetText.isAdvancedWriteLocked(control, allowsAdvancedWrites: store.allowAdvancedFacetWrites)
+    }
+}
+
+/// A tap on an alarm's 去处理 asks the matching drawer to open that row.
+@MainActor
+@Observable
+final class FacetRowFocus {
+    static let shared = FacetRowFocus()
+
+    private(set) var token = 0
+    private(set) var deviceID: String?
+    private(set) var controlID: String?
+
+    private init() {}
+
+    func reveal(deviceID: String, controlID: String) {
+        self.deviceID = deviceID
+        self.controlID = controlID
+        token += 1
+        let anchor = Self.anchorID(deviceID: deviceID, controlID: controlID)
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(100))
+            FacetRowScroller.scroll(to: anchor)
         }
-        return L10n.tr(
-            "不在默认写入白名单，可在设置中允许写入",
-            "Outside the write whitelist; allow writes in Settings"
-        )
     }
 
-    private func reasonText(_ reason: String) -> some View {
-        Label(reason, systemImage: "lock.fill")
-            .font(.system(size: DesignTokens.TypeSize.micro, weight: .medium))
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+    static func anchorID(deviceID: String, controlID: String) -> String {
+        "facet-row-\(deviceID)-\(controlID)"
+    }
+}
+
+private struct FacetRowAnchor: NSViewRepresentable {
+    var identifier: String
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        view.setAccessibilityElement(false)
+        view.setAccessibilityIdentifier(identifier)
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        view.setAccessibilityIdentifier(identifier)
+    }
+}
+
+private enum FacetRowScroller {
+    @MainActor
+    static func scroll(to identifier: String) {
+        for window in NSApp.windows {
+            guard let root = window.contentView, let target = find(identifier, in: root) else { continue }
+            target.scrollToVisible(target.bounds)
+            return
+        }
+    }
+
+    private static func find(_ identifier: String, in view: NSView) -> NSView? {
+        if view.accessibilityIdentifier() == identifier { return view }
+        for child in view.subviews {
+            if let found = find(identifier, in: child) { return found }
+        }
+        return nil
     }
 }
 

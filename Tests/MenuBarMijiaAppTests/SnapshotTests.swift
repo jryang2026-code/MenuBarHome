@@ -235,7 +235,7 @@ struct SnapshotTests {
                     .padding(8)
                     .frame(width: 360)
             ),
-            size: CGSize(width: 376, height: 260),
+            size: CGSize(width: 376, height: 320),
             named: "generic-high-risk-drawer-zh-light"
         )
     }
@@ -252,7 +252,12 @@ struct SnapshotTests {
         assertRendered(
             snapshotReady(
                 VStack(alignment: .leading, spacing: 10) {
-                    GenericDetailDrawer(spec: card, statusColor: DesignTokens.active)
+                    GenericDetailDrawer(
+                        device: device,
+                        spec: card,
+                        store: fixture.store,
+                        statusColor: DesignTokens.active
+                    )
                     DeviceFacetSection(
                         device: device,
                         store: fixture.store,
@@ -264,7 +269,7 @@ struct SnapshotTests {
                 .padding(10)
                 .frame(width: 360)
             ),
-            size: CGSize(width: 376, height: 520),
+            size: CGSize(width: 376, height: 580),
             named: "fish-tank-drawer-zh-light"
         )
     }
@@ -522,7 +527,7 @@ struct SnapshotTests {
                 .padding(10)
                 .frame(width: 360)
             ),
-            size: CGSize(width: 376, height: 380),
+            size: CGSize(width: 376, height: 440),
             named: "facet-drawer-expanded-zh-light"
         )
     }
@@ -565,7 +570,7 @@ struct SnapshotTests {
                     .padding(8)
                     .frame(width: 360)
             ),
-            size: CGSize(width: 376, height: 320),
+            size: CGSize(width: 376, height: 400),
             named: "expanded-appliance-fault-zh-light"
         )
     }
@@ -925,7 +930,7 @@ struct SnapshotTests {
                 .padding(10)
                 .frame(width: 360)
             ),
-            size: CGSize(width: 376, height: 360),
+            size: CGSize(width: 376, height: 420),
             named: "ha-facet-drawer-expanded-zh-light"
         )
     }
