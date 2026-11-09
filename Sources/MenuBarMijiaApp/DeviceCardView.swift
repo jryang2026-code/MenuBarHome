@@ -14,22 +14,17 @@ public struct DeviceCardView: View {
     public let showRoomBadge: Bool
     public let isCompactTile: Bool
     public let quickIndex: Int?
-    public let isBentoTile: Bool
 
     @State private var isHovered: Bool = false
     @State private var speakerInputText: String = ""
-    @State private var dragBrightness: Double?
-    @State private var cardWidth: CGFloat = 1
 
     public init(
         device: SmartDevice,
         store: HomeStore,
         showRoomBadge: Bool = false,
         isCompactTile: Bool = false,
-        quickIndex: Int? = nil,
-        isBentoTile: Bool = false
+        quickIndex: Int? = nil
     ) {
-        self.isBentoTile = isBentoTile
         self.device = device
         self.store = store
         self.showRoomBadge = showRoomBadge
@@ -132,14 +127,6 @@ public struct DeviceCardView: View {
         return L10n.tr("\(device.name)，\(state)，\(subtitle)", "\(device.name), \(state), \(subtitle)")
     }
 
-    /// Current brightness 0...1 for lights (live while dragging), nil for other kinds.
-    private var lightLevel: Double? {
-        guard case .light(let spec) = device.kind else { return nil }
-        if let dragBrightness { return dragBrightness }
-        guard spec.isOn else { return 0 }
-        return Double(spec.brightnessPercent ?? 100) / 100
-    }
-
     private var favoriteStarColor: Color { statusColor }
 
     public var body: some View {
@@ -148,7 +135,7 @@ public struct DeviceCardView: View {
            climatePanelModule || chosenSize != .auto {
             ClimatePanelModule(device: device, spec: spec, store: store, showRoomBadge: showRoomBadge, forceExpanded: resolvedSize == .panel)
                 .contextMenu { contextMenuItems }
-        } else if case .sensor(let spec) = device.kind, !isBentoTile, (spec.temperature != nil || spec.humidity != nil) {
+        } else if case .sensor(let spec) = device.kind, (spec.temperature != nil || spec.humidity != nil) {
             SensorCardView(
                 device: device,
                 spec: spec,
@@ -165,9 +152,7 @@ public struct DeviceCardView: View {
 
     private var cardBody: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if isBentoTile {
-                bentoBody
-            } else if isCompactTile {
+            if isCompactTile {
                 compactHeaderRow
                     .frame(minHeight: 50, maxHeight: isExpanded ? nil : .infinity)
             } else {
@@ -188,13 +173,6 @@ public struct DeviceCardView: View {
             }
         }
         .glassTile(isActive: onPlatter, cornerRadius: PanelLook.tileRadius, tint: tileTint)
-        .background {
-            GeometryReader { geo in
-                Color.clear
-                    .onAppear { cardWidth = geo.size.width }
-                    .onChange(of: geo.size.width) { _, w in cardWidth = w }
-            }
-        }
         .overlay(
             RoundedRectangle(cornerRadius: PanelLook.tileRadius, style: .continuous)
                 .strokeBorder(isKeyboardFocused ? accent.opacity(0.85) : Color.clear, lineWidth: 1.6)
@@ -375,70 +353,6 @@ public struct DeviceCardView: View {
             }
     }
 
-    // MARK: - Bento Tile (icon on top, text below; tap toggles, chevron expands)
-
-    private var bentoBody: some View {
-        Button {
-            guard !isEditingLayout else { return }
-            if case .camera(let cam) = device.kind {
-                if device.kind.canTogglePower, !cam.isOn {
-                    withAnimation(AppleMotion.snappySpring) { _ = store.togglePrimary(device) }
-                }
-                store.openCameraLiveView(device.id)
-                if device.isOnline, device.kind.canTogglePower { SoundFeedback.playSuccess() }
-                return
-            }
-            guard device.kind.canTogglePower else { return }
-            withAnimation(AppleMotion.snappySpring) { _ = store.togglePrimary(device) }
-            if device.isOnline { SoundFeedback.playSuccess() }
-        } label: {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .top) {
-                    iconBadge
-                    Spacer(minLength: 0)
-                    if store.hasDetailDrawer(for: device) {
-                        Button {
-                            guard !isEditingLayout else { return }
-                            withAnimation(AppleMotion.snappySpring) { store.toggleExpanded(device.id) }
-                        } label: {
-                            Image(systemName: "ellipsis")
-                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .bold))
-                                .foregroundStyle(statusColor)
-                                .frame(width: 22, height: 22)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(Text(L10n.tr("更多 \(device.name) 操作", "More actions for \(device.name)")))
-                    }
-                }
-                Spacer(minLength: 6)
-                HStack(spacing: 5) {
-                    Text(device.name)
-                        .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                        .foregroundStyle(nameColor)
-                        .lineLimit(1)
-
-                    genericReadOnlyBadge
-                }
-                Text(dragBrightness.map { L10n.tr("亮度 \(Int($0 * 100))%", "Brightness \(Int($0 * 100))%") } ?? shownStatus.replacingOccurrences(of: " · ", with: L10n.tr("，", ", ")))
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: device.isActiveOn ? .semibold : .regular))
-                    .monospacedDigit()
-                    .foregroundStyle(statusColor)
-                    .lineLimit(1)
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(PressableCardButtonStyle(scaleAmount: 0.95))
-        .accessibilityLabel(Text(accessibilitySummary))
-        .accessibilityHint(Text(isCameraDevice
-            ? L10n.tr("打开实时画面", "Open live view")
-            : device.isPrimaryToggleable
-                ? L10n.tr("切换开关", "Toggle power")
-                : L10n.tr("只读状态", "Read only")))
-    }
-
     // MARK: - Compact 2-Column Header (Left Icon Toggles, Right Area Expands)
 
     private var compactHeaderRow: some View {
@@ -503,7 +417,7 @@ public struct DeviceCardView: View {
                             genericReadOnlyBadge
                         }
 
-                        Text(dragBrightness.map { L10n.tr("亮度 \(Int($0 * 100))%", "Brightness \(Int($0 * 100))%") } ?? shownStatus.replacingOccurrences(of: " · ", with: L10n.tr("，", ", ")))
+                        Text(shownStatus.replacingOccurrences(of: " · ", with: L10n.tr("，", ", ")))
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: device.isActiveOn ? .semibold : .regular))
                             .monospacedDigit()
                             .foregroundStyle(statusColor)
@@ -600,7 +514,7 @@ public struct DeviceCardView: View {
                             genericReadOnlyBadge
                         }
 
-                        Text(dragBrightness.map { L10n.tr("亮度 \(Int($0 * 100))%", "Brightness \(Int($0 * 100))%") } ?? shownStatus.replacingOccurrences(of: " · ", with: L10n.tr("，", ", ")))
+                        Text(shownStatus.replacingOccurrences(of: " · ", with: L10n.tr("，", ", ")))
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: device.isActiveOn ? .semibold : .regular))
                             .monospacedDigit()
                             .foregroundStyle(statusColor)

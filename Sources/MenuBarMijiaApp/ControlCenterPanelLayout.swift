@@ -790,8 +790,7 @@ extension ControlCenterPanel {
                     store: store,
                     showRoomBadge: showRoomBadge,
                     isCompactTile: span < 6,
-                    quickIndex: quickIndexMap[dev.id],
-                    isBentoTile: false
+                    quickIndex: quickIndexMap[dev.id]
                 )
                 .frame(maxHeight: .infinity, alignment: .top)
                 .modifier(editable(dev))

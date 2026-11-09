@@ -1414,10 +1414,14 @@ struct CameraLivePanelView: View {
         }
     }
 
-    private static func timestampString(controller: CameraLivePanelController, tick: Int) -> String {
-        let _ = tick
+    private static let timestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return formatter.string(from: controller.demoTimestampOverride ?? Date())
+        return formatter
+    }()
+
+    private static func timestampString(controller: CameraLivePanelController, tick: Int) -> String {
+        let _ = tick
+        return timestampFormatter.string(from: controller.demoTimestampOverride ?? Date())
     }
 }

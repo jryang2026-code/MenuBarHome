@@ -43,7 +43,7 @@ public struct ControlCenterPanel: View {
     @Environment(\.effectiveReduceTransparency) var reduceTransparency
     /// Opens the ⌘, Settings window; the popover no longer hosts the long form (#42).
     @Environment(\.openSettings) var openSettings
-    /// Drives the open animation; reset whenever the menu-bar window closes so every open replays it.
+    /// Flips with the menu-bar window so the room strip re-centers on every open.
     @State var isPresented = false
     /// Re-centers the active room pill when the user taps an already-selected pill after scrolling.
     @State var roomScrollTrigger = 0
@@ -59,7 +59,6 @@ public struct ControlCenterPanel: View {
     var isEditing: Bool { layoutUI.editMode != .none }
     @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
     @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
-    @Namespace private var roomPillNamespace
     public let store: HomeStore
 
     private static let panelWidth: CGFloat = 376
@@ -100,9 +99,6 @@ public struct ControlCenterPanel: View {
             .onChange(of: search.query) { _, query in handleSearchQuery(query) }
             // Scenes and suggestions open with the field; make sure the suggestions are fresh by then.
             .onChange(of: isSearchFieldFocused) { _, focused in handleSearchFocus(focused) }
-            // Mi cloud polls every 6 s only while the panel is on screen (#26).
-            .onChange(of: isPresented) { _, visible in store.setPanelVisible(visible) }
-            .onDisappear { store.setPanelVisible(false) }
             .transaction { if reduceMotion { $0.disablesAnimations = true } }
             .environment(\.isEditingLayout, isEditingLayout)
             .panelRoot()
