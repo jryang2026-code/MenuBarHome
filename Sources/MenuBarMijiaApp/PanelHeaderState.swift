@@ -1,6 +1,7 @@
 import Foundation
 import MijiaCore
 
+@MainActor
 enum PanelHeaderCopy {
     static func allOff(store: HomeStore, scopeName: String?) -> AllOffHeaderCopy {
         AllOffHeaderCopy.make(

@@ -35,6 +35,7 @@ struct SnapshotTests {
 
         UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
 
+        #expect(fixture.store.panelHealth == .ok)
         assertRendered(
             snapshotReady(ControlCenterPanel(store: fixture.store)),
             size: CGSize(width: 376, height: 560),
@@ -42,9 +43,25 @@ struct SnapshotTests {
         )
     }
 
+    @Test("A panel with no configured source names that instead of connected")
+    func panelNoSourceSnapshot() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: false)
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        #expect(fixture.store.panelHealth == .notConfigured)
+
+        assertRendered(
+            snapshotReady(ControlCenterPanel(store: fixture.store)),
+            size: CGSize(width: 376, height: 560),
+            named: "panel-no-source-zh-light"
+        )
+    }
+
     @Test("Panel shows the expired Mi session banner")
     func panelExpiredMiSessionSnapshot() async throws {
         let fixture = try await SnapshotFixture(
+            configuredHASource: false,
             miSession: MiSession(
                 userId: "42",
                 cUserId: "c",
@@ -965,7 +982,7 @@ struct SnapshotTests {
 
     @Test("Settings remain readable in light and dark appearances")
     func settingsSnapshots() async throws {
-        let fixture = try await SnapshotFixture()
+        let fixture = try await SnapshotFixture(configuredHASource: false)
         defer { fixture.restore() }
         for tab in [SettingsTab.general, .connection, .assistant, .appearance, .privacy, .about] {
             for scheme in [ColorScheme.light, .dark] {
@@ -984,7 +1001,7 @@ struct SnapshotTests {
 
     @Test("Settings capsule fits English at minimum window size with glass enabled")
     func settingsCapsuleVariants() async throws {
-        let fixture = try await SnapshotFixture()
+        let fixture = try await SnapshotFixture(configuredHASource: false)
         defer { fixture.restore() }
         for language in [AppLanguage.zhHans, .en] {
             L10n.currentLanguage = language
@@ -1005,7 +1022,7 @@ struct SnapshotTests {
 
     @Test("Settings stay proportional in wide windows and with motion enabled")
     func settingsWideWindows() async throws {
-        let fixture = try await SnapshotFixture()
+        let fixture = try await SnapshotFixture(configuredHASource: false)
         defer { fixture.restore() }
         for width: CGFloat in [900, 1200] {
             for scheme in [ColorScheme.light, .dark] {
@@ -1108,8 +1125,7 @@ struct SnapshotTests {
         let text = MenuBarStatusSummary.text(for: fixture.store)
         #expect(text.hasPrefix("MenuBarHome · "))
         #expect(text.contains("台开启"))
-        #expect(text.contains("未配置数据源"))
-        #expect(!text.contains("已连接"))
+        #expect(text.contains("已连接 Home Assistant"))
     }
 
     // MARK: - Camera live HUD audio states (#29)
@@ -1294,7 +1310,8 @@ private struct SnapshotFixture {
         miSession: MiSession? = nil,
         roomCount: Int? = nil,
         editMode: PanelEditMode = .none,
-        includeCamera: Bool = false
+        includeCamera: Bool = false,
+        configuredHASource: Bool = true
     ) async throws {
         previousLanguage = L10n.currentLanguage
         L10n.currentLanguage = .zhHans
@@ -1342,6 +1359,9 @@ private struct SnapshotFixture {
             attempts += 1
         }
         #expect(!store.devices.isEmpty, "MockHomeProvider should deliver a snapshot right away")
+        if configuredHASource {
+            store.hasHASource = true
+        }
 
         if editMode == .roomOrder {
             LayoutUIState.shared.beginRoomOrder(
