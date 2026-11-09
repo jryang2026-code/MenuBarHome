@@ -10,6 +10,13 @@ struct ScheduledCommandScopeTests {
         kind: .light(LightSpec(entityId: "light.study_ceiling", isOn: true))
     )
 
+    /// A device from another Mi Home: it keeps the timer from being confused with an empty store.
+    static let kitchen = SmartDevice(
+        id: "dev_kitchen", name: "厨房灯", roomId: "chu_fang", roomName: "厨房",
+        model: "yeelink.light.ceiling20", isOnline: true,
+        kind: .light(LightSpec(entityId: "light.kitchen", isOn: true))
+    )
+
     static let plan = IntentPlan(
         intents: [DeviceIntent(targetId: "dev_study_ceiling", operation: .power(false))],
         reply: "已关闭书房吸顶灯",
@@ -27,17 +34,51 @@ struct ScheduledCommandScopeTests {
         return (store, mock)
     }
 
+    /// Parks a timer inside `assistantSleep` until the test releases it; cancellation still wakes it, so
+    /// a source switch never depends on a wall-clock countdown.
+    @MainActor
+    private final class SleepGate {
+        private var continuation: AsyncStream<Void>.Continuation
+        private var stream: AsyncStream<Void>
+        private(set) var waiting = 0
+
+        init() {
+            (stream, continuation) = AsyncStream.makeStream(of: Void.self)
+        }
+
+        func sleep() async {
+            waiting += 1
+            var iterator = stream.makeAsyncIterator()
+            _ = await iterator.next()
+            waiting -= 1
+        }
+
+        func release() {
+            continuation.yield(())
+        }
+    }
+
+    @MainActor
+    private func waitUntil(_ condition: () async -> Bool) async {
+        for _ in 0..<200 {
+            if await condition() { return }
+            await Task.yield()
+        }
+    }
+
     @Test("A timer belongs to the source that created it, survives another source's save and re-arms on return")
     @MainActor
     func timerFollowsItsSource() async throws {
         let (store, mock) = try await makeStore()
-        store.assistantSleep = { _ in try await Task.sleep(for: .seconds(5)) }
         let homeURL = store.serverURLString
+        let homeGate = SleepGate()
+        store.assistantSleep = { _ in await homeGate.sleep() }
 
         _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
         let homeTimer = try #require(store.scheduledCommands.first)
         let homeScope = try #require(homeTimer.sourceScope)
         #expect(homeScope == store.connectionScopeIdentifier)
+        await waitUntil { homeGate.waiting == 1 }
 
         // The user points the app at another Home Assistant while this timer counts down.
         store.serverURLString = Self.otherHomeURL
@@ -46,23 +87,24 @@ struct ScheduledCommandScopeTests {
         #expect(store.missedScheduledCommands.isEmpty)
 
         // A timer set on the new source is saved next to the old one instead of deleting it.
+        let otherGate = SleepGate()
+        store.assistantSleep = { _ in await otherGate.sleep() }
         _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
         let otherTimer = try #require(store.scheduledCommands.first)
         #expect(otherTimer.sourceScope != homeScope)
-
-        let persisted = ScheduledCommand.load(from: store.userDefaults)
-        #expect(Set(persisted.map(\.id)) == [homeTimer.id, otherTimer.id])
-        try await Task.sleep(for: .milliseconds(100))
+        await waitUntil { otherGate.waiting == 1 }
+        #expect(Set(ScheduledCommand.load(from: store.userDefaults).map(\.id)) == [homeTimer.id, otherTimer.id])
         #expect(await mock.executedCommands.isEmpty, "No timer of an inactive source may fire")
 
         // Back home: the original timer is still there and runs.
-        store.assistantSleep = { _ in try await Task.sleep(for: .milliseconds(30)) }
+        let rearmGate = SleepGate()
+        store.assistantSleep = { _ in await rearmGate.sleep() }
         store.serverURLString = homeURL
         store.startListening()
         #expect(store.scheduledCommands.map(\.id) == [homeTimer.id])
-        for _ in 0..<50 where !store.scheduledCommands.isEmpty {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        await waitUntil { rearmGate.waiting == 1 }
+        rearmGate.release()
+        await waitUntil { store.scheduledCommands.isEmpty }
         #expect(store.missedScheduledCommands.isEmpty)
         #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
         #expect(ScheduledCommand.load(from: store.userDefaults).map(\.id) == [otherTimer.id])
@@ -125,6 +167,33 @@ struct ScheduledCommandScopeTests {
         #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
     }
 
+    @Test("A switch while 立即补执行 waits for the snapshot keeps the entry and sends nothing")
+    @MainActor
+    func missedRunRefusedWhenScopeChangesDuringTheSnapshotWait() async throws {
+        let (store, mock) = try await makeStore()
+        let homeScope = try #require(store.connectionScopeIdentifier)
+        let expired = ScheduledCommand(
+            reply: "10 分钟后关闭书房吸顶灯",
+            fireDate: Date().addingTimeInterval(-120),
+            plan: Self.plan,
+            sourceScope: homeScope
+        )
+        ScheduledCommand.save([expired], to: store.userDefaults)
+        store.restoreScheduledCommands()
+
+        // No snapshot yet, so the run parks in `waitForInitialSnapshotIfNeeded`.
+        store.devices = []
+        let run = Task { await store.runMissedScheduledCommand(id: expired.id) }
+        for _ in 0..<5 { await Task.yield() }
+        store.serverURLString = Self.otherHomeURL
+        store.devices = [Self.ceiling]
+
+        #expect(await run.value == nil)
+        #expect(store.missedScheduledCommands.map(\.id) == [expired.id])
+        #expect(ScheduledCommand.load(from: store.userDefaults).map(\.id) == [expired.id])
+        #expect(await mock.executedCommands.isEmpty)
+    }
+
     @Test("A missed timer from another source is refused and kept")
     @MainActor
     func missedRunRefusesAnotherScope() async throws {
@@ -150,21 +219,92 @@ struct ScheduledCommandScopeTests {
         #expect(await mock.executedCommands.isEmpty)
     }
 
+    @Test("A timer whose device is not in the current home waits for confirmation")
+    @MainActor
+    func timerWithAbsentTargetWaitsForConfirmation() async throws {
+        let (store, mock) = try await makeStore()
+        let gate = SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
+        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        let timer = try #require(store.scheduledCommands.first)
+        await waitUntil { gate.waiting == 1 }
+
+        // Selecting another Mi Home keeps the account scope but replaces the device list.
+        store.devices = [Self.kitchen]
+        gate.release()
+        await waitUntil { store.missedScheduledCommands.contains { $0.id == timer.id } }
+
+        #expect(store.missedScheduledCommands.map(\.id) == [timer.id])
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(await mock.executedCommands.isEmpty)
+
+        // Confirming it must not send the command to a device that is not here either.
+        #expect(await store.runMissedScheduledCommand(id: timer.id) == nil)
+        #expect(store.missedScheduledCommands.map(\.id) == [timer.id])
+        #expect(store.toastNotice?.isError == true)
+        #expect(store.toastNotice?.message == "定时的目标设备不在当前家庭，未执行")
+        #expect(await mock.executedCommands.isEmpty)
+    }
+
+    @Test("A plan with no device targets is not misrouted into the missed flow")
+    @MainActor
+    func emptyPlanIsConsumed() async throws {
+        let (store, mock) = try await makeStore()
+        let homeScope = try #require(store.connectionScopeIdentifier)
+        let empty = ScheduledCommand(
+            reply: "空计划",
+            fireDate: Date().addingTimeInterval(600),
+            plan: IntentPlan(intents: [], reply: "", source: .local),
+            sourceScope: homeScope
+        )
+        ScheduledCommand.save([empty], to: store.userDefaults)
+        store.assistantSleep = { _ in }
+        store.restoreScheduledCommands()
+        await waitUntil { store.scheduledCommands.isEmpty }
+
+        #expect(store.missedScheduledCommands.isEmpty)
+        #expect(ScheduledCommand.load(from: store.userDefaults).isEmpty)
+        #expect(await mock.executedCommands.isEmpty)
+    }
+
+    @Test("A switch during execution does not let a consumed timer reappear")
+    @MainActor
+    func switchDuringExecutionLeavesNoRecord() async throws {
+        let (store, mock) = try await makeStore()
+        let homeURL = store.serverURLString
+        store.assistantSleep = { _ in }
+        await mock.holdNextExecute()
+        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        let entry = try #require(store.scheduledCommands.first)
+        await waitUntil { await mock.executeStarted >= 1 }
+
+        // Switch while the send is in flight: restore parks the entry as another source's.
+        store.serverURLString = Self.otherHomeURL
+        store.startListening()
+        await mock.releaseExecute()
+        await waitUntil { !ScheduledCommand.load(from: store.userDefaults).contains { $0.id == entry.id } }
+
+        store.serverURLString = homeURL
+        store.startListening()
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(store.missedScheduledCommands.isEmpty)
+        #expect(!ScheduledCommand.load(from: store.userDefaults).contains { $0.id == entry.id })
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
+    }
+
     @Test("A source switch during a timer's sleep keeps it from running")
     @MainActor
     func switchDuringSleepStopsTimer() async throws {
         let (store, mock) = try await makeStore()
-        let gate = AsyncStream.makeStream(of: Void.self)
-        store.assistantSleep = { _ in
-            var iterator = gate.stream.makeAsyncIterator()
-            _ = await iterator.next()
-        }
+        let gate = SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
         _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
         #expect(store.scheduledCommands.count == 1)
+        await waitUntil { gate.waiting == 1 }
 
         // The scope changes before the provider swap re-partitions the timers.
         store.serverURLString = Self.otherHomeURL
-        gate.continuation.finish()
+        gate.release()
         for _ in 0..<50 { await Task.yield() }
 
         #expect(await mock.executedCommands.isEmpty)

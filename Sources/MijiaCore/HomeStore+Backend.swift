@@ -410,7 +410,10 @@ extension HomeStore {
     /// Identifies the connected home source: `demo`, `ha:<url>` or `mi:<scope>`. Sensor history and
     /// scheduled commands are partitioned by it so one home's data never lands in another's. Nil while
     /// a live source has no resolved session (signed out), so nothing may be armed or adopted on it.
-    var connectionScopeIdentifier: String? {
+    /// Dual-source and multi-account setups share one scope (Home Assistant wins, Mi uses its session):
+    /// a timer set there is held back through the missed flow when its target is absent, never sent to
+    /// another home's device (ADR-0019).
+    public var connectionScopeIdentifier: String? {
         if homeBackend == .demo { return "demo" }
         if hasHASource {
             return "ha:\(HAWebSocketProvider.canonicalHistoryScopeURL(serverURLString))"

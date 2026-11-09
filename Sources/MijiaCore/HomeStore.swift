@@ -935,6 +935,8 @@ public final class HomeStore {
     public var onMissedScheduledCommand: ((ScheduledCommand) -> Void)?
     var notifiedMissedTimerIds: Set<UUID> = []
     var scheduledTasks: [UUID: Task<Void, Never>] = [:]
+    /// Token of the run currently owning each handle, so a completed run cannot clear a re-armed one.
+    var scheduledTaskTokens: [UUID: UUID] = [:]
     /// The most recent assistant action, kept so "撤销" can restore it after the 5 s banner is gone.
     var lastAssistantUndo: (
         reply: String,

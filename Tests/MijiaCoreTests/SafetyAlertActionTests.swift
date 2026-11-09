@@ -34,7 +34,8 @@ struct SafetyAlertActionTests {
         let (store, mock) = try await makeStore()
         store.setScreenLocked(true)
 
-        #expect(store.executeSafetyAlertAction(alert()) == nil)
+        let scope = try #require(store.connectionScopeIdentifier)
+        #expect(store.executeSafetyAlertAction(alert(), deliveredInScope: scope) == nil)
         #expect(store.toastNotice?.message == store.screenLockBlockedMessage)
         #expect(await mock.executedCommands.isEmpty)
     }
@@ -43,11 +44,42 @@ struct SafetyAlertActionTests {
     @MainActor
     func staleAlertSendsNothing() async throws {
         let (store, mock) = try await makeStore()
+        let scope = try #require(store.connectionScopeIdentifier)
 
         // The notification was delivered from another home, account or source; that device is gone.
-        #expect(store.executeSafetyAlertAction(alert(deviceId: "dev_other_home")) == nil)
+        #expect(store.executeSafetyAlertAction(alert(deviceId: "dev_other_home"), deliveredInScope: scope) == nil)
         #expect(store.toastNotice?.isError == true)
-        #expect(store.toastNotice?.message == "该提醒已不适用于当前家居，未关闭设备")
+        #expect(store.toastNotice?.message == store.staleSafetyAlertMessage)
+        #expect(await mock.executedCommands.isEmpty)
+    }
+
+    @Test("A device id shared by two Home Assistant servers is not proof of the same home")
+    @MainActor
+    func alertFromAnotherServerIsRefused() async throws {
+        let (store, mock) = try await makeStore()
+        let homeScope = try #require(store.connectionScopeIdentifier)
+        // Both servers expose an entity with the same id, so the card still exists after switching.
+        store.serverURLString = "http://192.0.2.20:8123"
+        #expect(store.connectionScopeIdentifier != homeScope)
+        #expect(store.devices.map(\.id) == [Self.light.id])
+
+        #expect(store.executeSafetyAlertAction(alert(), deliveredInScope: homeScope) == nil)
+        #expect(store.toastNotice?.message == store.staleSafetyAlertMessage)
+        #expect(await mock.executedCommands.isEmpty)
+    }
+
+    @Test("A switch that lands between creating the task and it starting still refuses")
+    @MainActor
+    func switchBeforeTaskStartsRefuses() async throws {
+        let (store, mock) = try await makeStore()
+        let homeScope = try #require(store.connectionScopeIdentifier)
+        let task = try #require(store.executeSafetyAlertAction(alert(), deliveredInScope: homeScope))
+
+        // The Task body cannot run until this synchronous test suspends, so the switch lands first.
+        store.serverURLString = "http://192.0.2.20:8123"
+        await task.value
+
+        #expect(store.toastNotice?.message == store.staleSafetyAlertMessage)
         #expect(await mock.executedCommands.isEmpty)
     }
 
@@ -56,8 +88,9 @@ struct SafetyAlertActionTests {
     func failedSendShowsErrorToast() async throws {
         let (store, mock) = try await makeStore()
         await mock.setShouldFail(true)
+        let scope = try #require(store.connectionScopeIdentifier)
 
-        let task = try #require(store.executeSafetyAlertAction(alert()))
+        let task = try #require(store.executeSafetyAlertAction(alert(), deliveredInScope: scope))
         await task.value
 
         #expect(store.toastNotice?.isError == true)
@@ -69,8 +102,9 @@ struct SafetyAlertActionTests {
     @MainActor
     func successfulSendExecutesCommand() async throws {
         let (store, mock) = try await makeStore()
+        let scope = try #require(store.connectionScopeIdentifier)
 
-        let task = try #require(store.executeSafetyAlertAction(alert()))
+        let task = try #require(store.executeSafetyAlertAction(alert(), deliveredInScope: scope))
         await task.value
 
         #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
@@ -80,9 +114,10 @@ struct SafetyAlertActionTests {
     @MainActor
     func readOnlyAlertDoesNothing() async throws {
         let (store, mock) = try await makeStore()
+        let scope = try #require(store.connectionScopeIdentifier)
         let offline = SafetyAlert(id: "offline:dev", deviceId: "dev_study_ceiling", title: "已离线", body: "")
 
-        #expect(store.executeSafetyAlertAction(offline) == nil)
+        #expect(store.executeSafetyAlertAction(offline, deliveredInScope: scope) == nil)
         #expect(await mock.executedCommands.isEmpty)
     }
 }

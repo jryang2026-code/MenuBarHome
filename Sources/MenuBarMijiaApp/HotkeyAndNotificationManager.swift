@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import CoreGraphics
 import Foundation
 import UserNotifications
 import MijiaCore
@@ -24,7 +25,13 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     private var windowBecomeKeyObserver: NSObjectProtocol?
     private var applicationBecomeActiveObserver: NSObjectProtocol?
     private var safetyTimerTask: Task<Void, Never>?
-    private var pendingAlertsById: [String: SafetyAlert] = [:]
+    /// The alert and the connection scope it was delivered in. Home Assistant entity ids repeat across
+    /// servers (`light.heater`), so the device id alone does not identify the home the alert was about.
+    private struct PendingAlert {
+        let alert: SafetyAlert
+        let scope: String?
+    }
+    private var pendingAlertsById: [String: PendingAlert] = [:]
     /// Insertion order of `pendingAlertsById`, so the oldest alert can be dropped at the cap.
     private var pendingAlertOrder: [String] = []
     /// Alerts whose notification the system never reports back (permission removed, banners off) would
@@ -619,7 +626,8 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     }
 
     private func deliverNotification(for alert: SafetyAlert) {
-        rememberPendingAlert(alert)
+        // Remember which home this alert belongs to at delivery time; the tap may come much later.
+        rememberPendingAlert(alert, scope: store?.connectionScopeIdentifier)
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
 
         let content = UNMutableNotificationContent()
@@ -691,12 +699,18 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         UNUserNotificationCenter.current().add(request)
     }
 
-    private func rememberPendingAlert(_ alert: SafetyAlert) {
-        if pendingAlertsById.updateValue(alert, forKey: alert.id) == nil {
+    private func rememberPendingAlert(_ alert: SafetyAlert, scope: String?) {
+        let record = PendingAlert(alert: alert, scope: scope)
+        if pendingAlertsById.updateValue(record, forKey: alert.id) == nil {
             pendingAlertOrder.append(alert.id)
         }
         while pendingAlertOrder.count > Self.pendingAlertLimit {
-            pendingAlertsById.removeValue(forKey: pendingAlertOrder.removeFirst())
+            let evicted = pendingAlertOrder.removeFirst()
+            pendingAlertsById.removeValue(forKey: evicted)
+            // The banner for an alert we can no longer act on would only fail when tapped.
+            if Bundle.main.bundleURL.pathExtension == "app" {
+                UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [evicted])
+            }
         }
     }
 
@@ -705,22 +719,44 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         pendingAlertOrder.removeAll { $0 == id }
     }
 
+    /// The distributed lock notification can arrive after the authenticated action callback, so a
+    /// legitimate tap would be refused with the stale flag still set. Read the session itself (#143).
+    private func refreshScreenLockState() {
+        guard let store else { return }
+        store.setScreenLocked(ScreenLockPolicy.isLocked(session: CGSessionCopyCurrentDictionary() as? [String: Any]))
+    }
+
     public func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let alertId = response.notification.request.identifier
+        if response.actionIdentifier == Self.turnOffActionId {
+            defer { completionHandler() }
+            guard let pending = pendingAlertsById[alertId] else {
+                if let store {
+                    store.showToast(store.staleSafetyAlertMessage, isError: true)
+                }
+                return
+            }
+            refreshScreenLockState()
+            let task = store?.executeSafetyAlertAction(pending.alert, deliveredInScope: pending.scope)
+            // A refusal (locked, or another home now) has not consumed the notification: keep the
+            // record so a later tap after unlocking still works.
+            if task != nil {
+                forgetPendingAlert(alertId)
+            }
+            return
+        }
+        // The default tap, a dismissal and the missed-timer action all consume the notification.
         defer {
-            // Every response consumes the notification: the action, the default tap and (because the
-            // safety category sets `customDismissAction`) a dismissal. Without this the map only grew.
             forgetPendingAlert(alertId)
             completionHandler()
         }
-        if response.actionIdentifier == Self.turnOffActionId, let alert = pendingAlertsById[alertId] {
-            store?.executeSafetyAlertAction(alert)
-        } else if response.actionIdentifier == Self.runMissedTimerActionId,
-                  let missedId = MissedTimerNotificationIdentifier(rawValue: alertId) {
+        if response.actionIdentifier == Self.runMissedTimerActionId,
+           let missedId = MissedTimerNotificationIdentifier(rawValue: alertId) {
+            refreshScreenLockState()
             Task { @MainActor [weak self] in
                 _ = await self?.store?.runMissedScheduledCommand(id: missedId.commandId)
             }
