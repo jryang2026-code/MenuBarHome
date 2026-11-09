@@ -80,4 +80,42 @@ describe("Command effects (core)", () => {
   it("a vacuum action has no inverse", () => {
     assert.deepEqual(inverseCommands(fan(), { kind: "vacuumAction", entityId: "x", action: "start" }), []);
   });
+
+  it("restores appliance power through the service that carries it", () => {
+    const washer: SmartDevice = {
+      id: "washer", name: "洗衣机", roomId: "bath", roomName: "卫生间", model: "mijia.washer.s1", isOnline: true,
+      kind: {
+        kind: "appliance", entityId: "miot:washer:2", isOn: true, powerPresent: true, powerWritable: true,
+        currentMode: "standard", availableModes: ["standard"], modeWritable: true, targetTemperature: null,
+        currentTemperature: null, minTemp: 0, maxTemp: 0, step: 1, temperatureWritable: false,
+        statusText: null, faultText: null, remainingMinutes: null, startAction: null, pauseAction: null,
+        stopAction: null, powerEntityId: "miot:washer:3", modeEntityId: "miot:washer:4",
+        temperatureEntityId: "miot:washer:5", light: null, fanLevel: null, currentHumidity: null,
+        symbolName: null, roomReading: false, heats: false,
+      },
+    };
+    assert.deepEqual(
+      inverseCommands(washer, { kind: "setSwitch", entityId: "miot:washer:3", isOn: false }),
+      [{ kind: "setSwitch", entityId: "miot:washer:3", isOn: true }],
+    );
+    // The lamp switch and programme writes are manual accents with no macOS undo.
+    assert.deepEqual(inverseCommands(washer, { kind: "setSwitch", entityId: "miot:washer:9", isOn: false }), []);
+    assert.deepEqual(inverseCommands(washer, { kind: "setSelectOption", entityId: "miot:washer:4", option: "quick" }), []);
+  });
+
+  it("keeps 更多设置 writes and the generic main switch non-reversible (#5)", () => {
+    const tank: SmartDevice = {
+      id: "tank", name: "鱼缸", roomId: "living", roomName: "客厅", model: "mijia.fish-tank", isOnline: true,
+      kind: {
+        kind: "generic", deviceType: "fish-tank", typeTitle: "鱼缸", isOn: true,
+        powerControl: {
+          id: "2.1", kind: "toggle", name: "on", title: null, serviceName: "fish-tank", unit: null,
+          scale: null, value: true, options: [], range: null, isWritable: true, writesByDefault: true,
+          isHighValue: false, target: { kind: "property", entityId: "miot:tank:2", piid: 1 },
+        },
+        isReadOnly: false, readouts: [], symbolName: null,
+      },
+    };
+    assert.deepEqual(inverseCommands(tank, { kind: "setMiotProperty", entityId: "miot:tank:2", piid: 1, value: false }), []);
+  });
 });

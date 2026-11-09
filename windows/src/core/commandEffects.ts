@@ -278,6 +278,13 @@ export function inverseCommands(dev: SmartDevice, command: DeviceCommand): Devic
         if (command.entityId === k.muteSwitchEntityId) return [{ kind: "setSwitch", entityId: command.entityId, isOn: k.isMuted }];
         if (command.entityId === k.sleepModeEntityId) return [{ kind: "setSwitch", entityId: command.entityId, isOn: k.isSleepMode }];
       }
+      if (k.kind === "appliance") {
+        // macOS `assistantEffect(.power, .appliance)` and `allOffChange` restore the appliance
+        // through the service that carries power; the lamp switch has no undo (manual write).
+        if (command.entityId === k.powerEntityId) {
+          return [{ kind: "setSwitch", entityId: command.entityId, isOn: k.isOn }];
+        }
+      }
       return [];
     case "setSelectOption":
       if (k.kind === "camera" && k.nightShot !== null) {
