@@ -55,6 +55,8 @@ When modifying `ScheduledCommand` or `HomeStore+Assistant.swift`:
 - Persist both `scheduledCommands` and unconfirmed `missedScheduledCommands` to `UserDefaults` (`ScheduledCommand.storageKey`) on every schedule, fire, restore, confirm, dismiss, or cancel transition.
 - Never auto-execute an expired timer silently on launch; keep it in `missedScheduledCommands` (and on disk across restarts) until the user explicitly confirms (`runMissedScheduledCommand`) or dismisses (`dismissMissedScheduledCommand`).
 - The same applies after the Mac sleeps: `Task.sleep` keeps counting during sleep, so a timer task can wake up long after its `fireDate`. A timer that wakes more than `HomeStore.lateTimerGrace` (60 s) late goes to `missedScheduledCommands` instead of running. Tests simulate this with `assistantNow`.
+- A timer belongs to the connection scope that created it (`HomeStore.connectionScopeIdentifier`, ADR-0019). `schedule(_:after:)` stamps `sourceScope`; only that scope is armed or shown, a save writes `foreignScheduledCommands` back too so another source's entries survive, and the firing task re-checks the scope after waking. Entries written before scopes existed are adopted once at `restoreScheduledCommands` when a scope is resolved. `startListening()` is the single re-partition point; `invalidateUndoContext()` runs before the switch and cannot decide it.
+- `runMissedScheduledCommand` is a person acting now: the screen-lock guard runs before the entry leaves the list, so a refused run can be retried. A timer firing on schedule stays exempt (#143).
 
 ## 8. macOS 14+ Adaptive Glass Boundary
 

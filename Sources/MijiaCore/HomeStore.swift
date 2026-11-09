@@ -923,9 +923,15 @@ public final class HomeStore {
     /// Test seam overriding whether Apple's on-device model is usable on this machine.
     var localAssistantAvailabilityOverride: AssistantLocalModelAvailability?
     /// Commands waiting on a spoken delay ("10 分钟后关灯"), soonest first. Persisted across launches.
+    /// Holds only the current connection scope's timers (ADR-0019).
     public internal(set) var scheduledCommands: [ScheduledCommand] = []
     /// Timers that came due while the app was closed or the Mac slept. Never auto-executed without user confirmation.
     public internal(set) var missedScheduledCommands: [ScheduledCommand] = []
+    /// Timers created on another connection source. Kept so a save of the current source never deletes
+    /// them and switching back finds them again; not armed and not shown.
+    var foreignScheduledCommands: [ScheduledCommand] = []
+    /// The connection scope `scheduledCommands` and `missedScheduledCommands` were partitioned under.
+    var scheduledCommandsScope: String?
     public var onMissedScheduledCommand: ((ScheduledCommand) -> Void)?
     var notifiedMissedTimerIds: Set<UUID> = []
     var scheduledTasks: [UUID: Task<Void, Never>] = [:]

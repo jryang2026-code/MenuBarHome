@@ -131,12 +131,22 @@ public struct ScheduledCommand: Codable, Identifiable, Equatable, Sendable {
     public let reply: String
     public let fireDate: Date
     public let plan: IntentPlan
+    /// The connection source that created this timer (`demo`, `ha:<url>`, `mi:<scope>`); a timer only
+    /// fires against the source it was set on. Nil on entries written before scopes existed; they are
+    /// adopted into the current source once, at the next restore (ADR-0019).
+    public let sourceScope: String?
 
-    public init(id: UUID = UUID(), reply: String, fireDate: Date, plan: IntentPlan) {
+    public init(id: UUID = UUID(), reply: String, fireDate: Date, plan: IntentPlan, sourceScope: String? = nil) {
         self.id = id
         self.reply = reply
         self.fireDate = fireDate
         self.plan = plan
+        self.sourceScope = sourceScope
+    }
+
+    /// The same timer, claimed by the source that is connected now. Used only for legacy entries.
+    func adoptingScope(_ scope: String) -> ScheduledCommand {
+        ScheduledCommand(id: id, reply: reply, fireDate: fireDate, plan: plan, sourceScope: scope)
     }
 
     public static func load(from defaults: UserDefaults) -> [ScheduledCommand] {
