@@ -200,6 +200,9 @@ struct CoverDeviceTests {
         // Curtain starts at 60% (open) -> tap closes it without confirmation
         let curtainCard = try #require(curtainStore.devices.first)
         #expect(await curtainStore.togglePrimary(curtainCard)?.value == true)
+        // The next tap depends on this row still reading as closing; keep the command's lock from
+        // expiring under a loaded runner before that read.
+        try curtainStore.extendCoverLock(curtainCard.id)
         #expect(prompts == 0)
         #expect(await curtainMock.executedCommands == [.setSelectOption(entityId: "cover.class_curtain", option: "Close")])
 
@@ -227,6 +230,8 @@ struct CoverDeviceTests {
                 return true
             }
             #expect(await winStore.togglePrimary(closedWin)?.value == true)
+            // The next tap reads this row as moving; keep the command's lock from expiring first.
+            try winStore.extendCoverLock(closedWin.id)
             #expect(winPrompts == 2)
 
             let openWin = try #require(winStore.devices.first)

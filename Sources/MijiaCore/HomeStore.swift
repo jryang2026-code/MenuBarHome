@@ -27,6 +27,10 @@ public struct UndoBanner: Equatable, Sendable {
     public var duration: TimeInterval?
     /// True only for 全关, so the onboarding marker records an undo of the all-off lesson (#180).
     public var isAllOff: Bool
+    /// Devices the action's batch actually sent to. `nil` when no batch reported them (assistant
+    /// plans), where undo sends every restore command it carries. A device a newer write took
+    /// before its send is missing here, and its restore command is dropped.
+    public var attemptedDeviceIds: Set<String>?
 
     public init(
         id: UUID = UUID(),
@@ -36,7 +40,8 @@ public struct UndoBanner: Equatable, Sendable {
         deviceCount: Int = 1,
         habitReceipt: UserHabitMemory.RecordingReceipt? = nil,
         duration: TimeInterval? = nil,
-        isAllOff: Bool = false
+        isAllOff: Bool = false,
+        attemptedDeviceIds: Set<String>? = nil
     ) {
         self.id = id
         self.title = title
@@ -46,6 +51,7 @@ public struct UndoBanner: Equatable, Sendable {
         self.habitReceipt = habitReceipt
         self.duration = duration
         self.isAllOff = isAllOff
+        self.attemptedDeviceIds = attemptedDeviceIds
     }
 }
 
@@ -620,6 +626,9 @@ public final class HomeStore {
     }
     var facetWrites: [String: FacetWriteState] = [:]
     var undoTimerTask: Task<Void, Never>?
+    /// Bulk actions whose commands are still being sent, keyed by the banner they created.
+    /// 撤销 stops the entry here and waits on its task before restoring (`HomeStore+Undo.swift`).
+    var runningBatches: [UUID: RunningBatch] = [:]
     private var toastTimerTask: Task<Void, Never>?
     var optimisticLockUntil: [String: ContinuousClock.Instant] = [:]
     var optimisticLockRevision: [String: UInt64] = [:]

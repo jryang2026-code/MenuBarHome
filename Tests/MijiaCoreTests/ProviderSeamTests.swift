@@ -29,17 +29,21 @@ struct ProviderSeamTests {
         )
         let provider: any HomeProvider = composite
         await provider.shutdown()
-        for _ in 0..<200 {
-            if await ha.stopped, await mi.stopped { break }
-            await Task.yield()
-        }
+        // The composite shuts each source down from a detached task. Wait on each source's own
+        // signal instead of yielding a fixed number of times, and name the source that did not
+        // stop when its deadline expires.
+        let haStopped = await ha.waitUntilStopped()
+        #expect(haStopped, "the composite never shut down the Home Assistant source")
+        let miStopped = await mi.waitUntilStopped()
+        #expect(miStopped, "the composite never shut down the Xiaomi Cloud source")
         #expect(await ha.stopped)
         #expect(await mi.stopped)
     }
 }
 
 private actor StoppableProvider: HomeProvider {
-    var stopped = false
+    private(set) var stopped = false
+    private var stopWaiter: (continuation: CheckedContinuation<Bool, Never>, timeout: Task<Void, Never>)?
 
     nonisolated func events() -> AsyncStream<HomeProviderEvent> {
         AsyncStream { _ in }
@@ -47,5 +51,32 @@ private actor StoppableProvider: HomeProvider {
 
     func execute(_ command: DeviceCommand) async throws {}
     func refreshNow() async {}
-    func shutdown() async { stopped = true }
+    func shutdown() async {
+        stopped = true
+        guard let waiter = stopWaiter else { return }
+        stopWaiter = nil
+        waiter.timeout.cancel()
+        waiter.continuation.resume(returning: true)
+    }
+
+    /// Waits until `shutdown` ran; false when the deadline expired first. The deadline task is
+    /// cancelled when the signal arrives, so it never outlives the wait.
+    func waitUntilStopped(timeout: Duration = .seconds(10)) async -> Bool {
+        if stopped { return true }
+        return await withCheckedContinuation { continuation in
+            let timeoutTask = Task {
+                try? await Task.sleep(for: timeout)
+                guard !Task.isCancelled else { return }
+                await self.expireStopWaiter()
+            }
+            stopWaiter = (continuation, timeoutTask)
+        }
+    }
+
+    private func expireStopWaiter() {
+        guard let waiter = stopWaiter else { return }
+        stopWaiter = nil
+        waiter.timeout.cancel()
+        waiter.continuation.resume(returning: false)
+    }
 }
