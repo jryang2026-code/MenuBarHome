@@ -323,6 +323,7 @@ struct DeviceFacetSection: View {
                         set: { store.setFacetValue(device.id, controlId: control.id, value: .bool($0)) }
                     ))
                     .labelsHidden()
+                    .glassLabelHidden()
                     .accessibilityLabel(Text(title))
                     .toggleStyle(.glass)
                     .controlSize(.mini)

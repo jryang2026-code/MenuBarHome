@@ -206,6 +206,7 @@ struct SettingsToggleRow: View {
             Spacer()
             Toggle(title, isOn: $isOn)
                 .labelsHidden()
+                .glassLabelHidden()
                 .toggleStyle(.glass)
                 .controlSize(.regular)
         }
@@ -350,6 +351,7 @@ private struct GeneralSettingsTab: View {
                             set: { launchAtLogin.setEnabled($0) }
                         ))
                         .labelsHidden()
+                        .glassLabelHidden()
                         .toggleStyle(.glass)
                         .controlSize(.regular)
                     }
@@ -1322,6 +1324,7 @@ struct LGWebOSSettingsSection: View {
                 Spacer()
                 Toggle(L10n.tr("启用 LG 电视局域网直连", "Enable LG TV Direct LAN"), isOn: $isEnabled)
                     .labelsHidden()
+                    .glassLabelHidden()
                     .toggleStyle(.glass)
                     .controlSize(.regular)
                     .onChange(of: isEnabled) { _, newValue in

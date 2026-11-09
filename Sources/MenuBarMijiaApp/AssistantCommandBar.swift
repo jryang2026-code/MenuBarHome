@@ -691,7 +691,6 @@ private struct ExecutionRouteBadge: View {
 
 // MARK: - Settings: AI 指令
 
-/// Copy on the assistant card before the user opens 高级. Protocol names stay off this surface.
 enum AssistantSettingsCopy {
     static var title: String {
         L10n.tr("AI 助手（可选）", "AI assistant (optional)")
@@ -767,16 +766,27 @@ enum AssistantSettingsCopy {
     static var testConnection: String { L10n.tr("测试连接", "Test AI") }
     static var testingConnection: String { L10n.tr("测试中…", "Testing…") }
     static var saveConfiguration: String { L10n.tr("保存 AI 配置", "Save AI Config") }
+    static var keySaved: String { L10n.tr("已填写", "Key saved") }
+    static var loopback: String { L10n.tr("本机免密", "Local, no key") }
+    static var httpsRequired: String { L10n.tr("需用 https，否则不会发送", "Use https or nothing is sent") }
+    static var customAddressRequired: String {
+        L10n.tr("请先填写自定义服务地址", "Enter the custom service address first")
+    }
 
-    /// Strings a person sees on the assistant tab while 高级 stays collapsed and no key is saved.
-    static func collapsedSurface(presetTitle: String) -> [String] {
-        [
-            title,
-            subtitle,
-            providerLabel,
-            presetTitle,
-            apiKeyLabel,
-            apiKeyPlaceholder,
+    /// The status beside the card title. It never names where a key came from; the import row inside 高级 owns that.
+    static func headerStatus(isInsecure: Bool, hasKey: Bool, isLoopback: Bool) -> String? {
+        if isInsecure { return httpsRequired }
+        if hasKey { return keySaved }
+        if isLoopback { return loopback }
+        return nil
+    }
+
+    static func collapsedSurface(presetTitle: String, hasKey: Bool) -> [String] {
+        var strings = [title, subtitle, providerLabel, presetTitle, apiKeyLabel, apiKeyPlaceholder]
+        if let status = headerStatus(isInsecure: false, hasKey: hasKey, isLoopback: false) {
+            strings.append(status)
+        }
+        strings += [
             advancedTitle,
             learnHabits,
             shareHabits,
@@ -789,10 +799,59 @@ enum AssistantSettingsCopy {
             testConnection,
             saveConfiguration
         ]
+        return strings
     }
 
     static func containsDeveloperJargon(_ text: String) -> Bool {
         ["systemone", "System One", "CodexBar", "/v1/chat/completions"].contains { text.contains($0) }
+    }
+}
+
+/// Editable fields of the AI settings card, kept pure so the preset switch and the save rule are testable.
+enum AssistantSettingsDraft {
+    struct Fields: Equatable {
+        var baseURL: String
+        var model: String
+        var apiKey: String
+    }
+
+    /// Picking a preset brings its address, model and stored key. 自定义 has no default address, so the
+    /// previous provider's URL is cleared instead of later being saved with an empty key (#49).
+    static func selecting(
+        _ newPreset: AssistantProviderPreset,
+        from oldPreset: AssistantProviderPreset,
+        fields: Fields,
+        storedKey: (String) -> String
+    ) -> Fields {
+        guard newPreset != .custom else {
+            return Fields(
+                baseURL: "",
+                model: fields.model == oldPreset.defaultModel || ModelIntentResolver.isSystemOneModel(fields.model)
+                    ? "gpt-4o-mini"
+                    : fields.model,
+                apiKey: ""
+            )
+        }
+        return Fields(
+            baseURL: newPreset.defaultBaseURL,
+            model: newPreset.defaultModel,
+            apiKey: storedKey(newPreset.defaultBaseURL)
+        )
+    }
+
+    /// The config Save writes, or nil while 自定义 has no address. Writing the fallback provider's URL with
+    /// an empty key would delete that provider's saved key.
+    static func configToSave(preset: AssistantProviderPreset, fields: Fields) -> AssistantConfig? {
+        let trimmedBase = fields.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if preset == .custom && trimmedBase.isEmpty { return nil }
+        let fallbackBase = preset.defaultBaseURL.isEmpty ? AssistantConfig.defaultBaseURL : preset.defaultBaseURL
+        let fallbackModel = preset.defaultModel.isEmpty ? "gpt-4o-mini" : preset.defaultModel
+        let trimmedModel = fields.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return AssistantConfig(
+            baseURL: trimmedBase.isEmpty ? fallbackBase : trimmedBase,
+            model: trimmedModel.isEmpty ? fallbackModel : trimmedModel,
+            apiKey: fields.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
     }
 }
 
@@ -810,7 +869,6 @@ struct AssistantSettingsSection: View {
     @State private var habitRevision = 0
     /// Imported-key labels and cloud consent also live in UserDefaults; bump to redraw after import/undo/revoke.
     @State private var storageRevision = 0
-    /// Service URL, model name and key import stay folded until the user asks for them.
     @State private var showsAdvanced = false
 
     var body: some View {
@@ -824,18 +882,22 @@ struct AssistantSettingsSection: View {
         let isLoopback = AssistantConfig(baseURL: baseURLDraft, model: modelDraft, apiKey: "").isLoopbackEndpoint
         let isInsecure = !baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !AssistantConfig(baseURL: baseURLDraft, model: modelDraft, apiKey: "").allowsSendingAPIKey
+        let headerStatus = AssistantSettingsCopy.headerStatus(
+            isInsecure: isInsecure,
+            hasKey: hasCustomKey,
+            isLoopback: isLoopback
+        )
         VStack(alignment: .leading, spacing: 9) {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(AssistantSettingsCopy.title)
                         .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                     Spacer(minLength: 8)
-                    connectionStatus(
-                        isInsecure: isInsecure,
-                        importedSource: importedSource,
-                        hasCustomKey: hasCustomKey,
-                        isLoopback: isLoopback
-                    )
+                    if let headerStatus {
+                        Text(headerStatus)
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                            .foregroundStyle(isInsecure ? Color.orange : Color.green)
+                    }
                 }
                 Text(AssistantSettingsCopy.subtitle)
                     .font(.system(size: DesignTokens.TypeSize.caption))
@@ -853,21 +915,15 @@ struct AssistantSettingsSection: View {
                     selection: Binding(
                         get: { selectedPreset },
                         set: { newPreset in
-                            let oldPreset = selectedPreset
+                            let fields = AssistantSettingsDraft.selecting(
+                                newPreset,
+                                from: selectedPreset,
+                                fields: draftFields,
+                                storedKey: { store.storedAssistantAPIKey(forBaseURL: $0) }
+                            )
                             selectedPreset = newPreset
-                            if newPreset != .custom {
-                                baseURLDraft = newPreset.defaultBaseURL
-                                modelDraft = newPreset.defaultModel
-                                apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: newPreset.defaultBaseURL)
-                            } else {
-                                if modelDraft == oldPreset.defaultModel || ModelIntentResolver.isSystemOneModel(modelDraft) {
-                                    modelDraft = "gpt-4o-mini"
-                                }
-                                // Keys never follow the user to another provider; a custom key reappears once its own URL is typed.
-                                apiKeyDraft = AssistantProviderPreset.infer(baseURL: baseURLDraft) == .custom
-                                    ? store.storedAssistantAPIKey(forBaseURL: baseURLDraft)
-                                    : ""
-                            }
+                            apply(fields)
+                            if newPreset == .custom { showsAdvanced = true }
                         }
                     )
                 ) {
@@ -909,7 +965,7 @@ struct AssistantSettingsSection: View {
                 .buttonStyle(PillActionButtonStyle())
 
                 Button(isTestingConnection ? AssistantSettingsCopy.testingConnection : AssistantSettingsCopy.testConnection) {
-                    let saved = saveCurrentDraft()
+                    guard let saved = saveCurrentDraft() else { return }
                     isTestingConnection = true
                     Task {
                         let result = await store.verifyAssistantConfig(saved)
@@ -923,8 +979,9 @@ struct AssistantSettingsSection: View {
                 Spacer()
 
                 Button(AssistantSettingsCopy.saveConfiguration) {
-                    _ = saveCurrentDraft()
-                    store.showToast(L10n.tr("已保存 AI 指令配置", "Saved AI configuration"))
+                    if saveCurrentDraft() != nil {
+                        store.showToast(L10n.tr("已保存 AI 指令配置", "Saved AI configuration"))
+                    }
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
             }
@@ -941,20 +998,24 @@ struct AssistantSettingsSection: View {
         }
     }
 
+    private var draftFields: AssistantSettingsDraft.Fields {
+        AssistantSettingsDraft.Fields(baseURL: baseURLDraft, model: modelDraft, apiKey: apiKeyDraft)
+    }
+
+    private func apply(_ fields: AssistantSettingsDraft.Fields) {
+        baseURLDraft = fields.baseURL
+        modelDraft = fields.model
+        apiKeyDraft = fields.apiKey
+    }
+
+    /// Saves the visible fields. Returns nil while 自定义 has no address, so the previous config and
+    /// every saved provider key stay untouched.
     @discardableResult
-    private func saveCurrentDraft() -> AssistantConfig {
-        let normalizedBase = baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? (selectedPreset.defaultBaseURL.isEmpty ? AssistantConfig.defaultBaseURL : selectedPreset.defaultBaseURL)
-            : baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let fallbackModel = selectedPreset.defaultModel.isEmpty ? "gpt-4o-mini" : selectedPreset.defaultModel
-        let normalizedModel = modelDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? fallbackModel
-            : modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cfg = AssistantConfig(
-            baseURL: normalizedBase,
-            model: normalizedModel,
-            apiKey: apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        )
+    private func saveCurrentDraft() -> AssistantConfig? {
+        guard let cfg = AssistantSettingsDraft.configToSave(preset: selectedPreset, fields: draftFields) else {
+            store.showToast(AssistantSettingsCopy.customAddressRequired, isError: true)
+            return nil
+        }
         store.assistantConfig = cfg
         let resolved = store.assistantConfig
         baseURLDraft = resolved.baseURL
@@ -963,34 +1024,6 @@ struct AssistantSettingsSection: View {
         return cfg
     }
 
-    @ViewBuilder
-    private func connectionStatus(
-        isInsecure: Bool,
-        importedSource: String?,
-        hasCustomKey: Bool,
-        isLoopback: Bool
-    ) -> some View {
-        let caption = Font.system(size: DesignTokens.TypeSize.caption, weight: .medium)
-        if isInsecure {
-            Text(L10n.tr("需用 https，否则不会发送", "Use https or nothing is sent"))
-                .font(caption)
-                .foregroundStyle(.orange)
-        } else if let importedSource {
-            Text(L10n.tr("已从 \(importedSource) 导入", "Imported from \(importedSource)"))
-                .font(caption)
-                .foregroundStyle(.green)
-        } else if hasCustomKey {
-            Text(L10n.tr("已填写", "Key saved"))
-                .font(caption)
-                .foregroundStyle(.green)
-        } else if isLoopback {
-            Text(L10n.tr("本机免密", "Local, no key"))
-                .font(caption)
-                .foregroundStyle(.green)
-        }
-    }
-
-    /// Address, model and key import. Collapsed on first open so the card stays in plain language.
     @ViewBuilder
     private func advancedFields(importedSource: String?) -> some View {
         labeledField(AssistantSettingsCopy.serviceAddressLabel) {
@@ -1006,7 +1039,6 @@ struct AssistantSettingsSection: View {
                         if inferred == .custom, inferred == oldPreset,
                            AssistantEndpoint(newValue)?.identity != AssistantEndpoint(oldURL)?.identity,
                            apiKeyDraft.isEmpty || apiKeyDraft == store.storedAssistantAPIKey(forBaseURL: oldURL) {
-                            // Another custom server: the saved key stays with its own server (#19).
                             apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: newValue)
                         }
                         if inferred != oldPreset {

@@ -172,6 +172,7 @@ struct AutomationSettingsSection: View {
 
             Toggle("", isOn: enabledBinding(for: rule))
                 .labelsHidden()
+                .glassLabelHidden()
                 .toggleStyle(.glass)
                 .controlSize(.regular)
 

@@ -64,6 +64,7 @@ struct UpdateSection: View {
                     )
                 )
                 .labelsHidden()
+                .glassLabelHidden()
                 .toggleStyle(.glass)
                 .controlSize(.regular)
             }
@@ -217,15 +218,14 @@ struct UpdateSection: View {
     }
 }
 
-/// The first section's bullet titles, at most five, ready to show in place of a raw changelog.
 enum ReleaseNotesDigest {
     static let maximumLeadIns = 5
+    static let maximumLeadInLength = 160
 
     static var readMoreTitle: String {
         L10n.tr("查看完整更新记录 →", "See the full release notes →")
     }
 
-    /// Bold lead-ins from the first section that contains bullets. A version heading with no bullets is skipped.
     static func titles(in notes: String) -> [String] {
         let lines = notes.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
         var sections: [[String]] = [[]]
@@ -245,12 +245,11 @@ enum ReleaseNotesDigest {
         if !titles.isEmpty { return titles }
         return lines
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { line in !line.isEmpty && !isHeading(line) }
+            .filter { line in !line.isEmpty && !isHeading(line) && !isBareMarker(line) }
             .prefix(maximumLeadIns)
-            .map { String($0) }
+            .map { capped(String($0)) }
     }
 
-    /// Parses inline markdown so `**` and `](` never reach the screen. A failed parse drops those markers.
     static func render(_ markdown: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(
             interpretedSyntax: .inlineOnly,
@@ -280,18 +279,35 @@ enum ReleaseNotesDigest {
         guard let body = bulletBody(line) else { return nil }
         let title = titleBeforeDescription(body)
         let trimmed = title.trimmingCharacters(in: .whitespaces)
-        return trimmed.isEmpty ? nil : trimmed
+        return trimmed.isEmpty ? nil : capped(trimmed)
+    }
+
+    private static func capped(_ title: String) -> String {
+        guard title.count > maximumLeadInLength else { return title }
+        return String(title.prefix(maximumLeadInLength - 1)) + "…"
     }
 
     private static func bulletBody(_ line: String) -> String? {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
-        let markers = ["- ", "* ", "+ "]
-        guard let marker = markers.first(where: { trimmed.hasPrefix($0) }) else { return nil }
-        let body = String(trimmed.dropFirst(marker.count)).trimmingCharacters(in: .whitespaces)
+        guard let markerLength = bulletMarkerLength(in: trimmed) else { return nil }
+        let body = String(trimmed.dropFirst(markerLength)).trimmingCharacters(in: .whitespaces)
         return body.isEmpty ? nil : body
     }
 
-    /// Text before `：` or `: `, ignoring colons inside bold spans and markdown links.
+    private static func bulletMarkerLength(in line: String) -> Int? {
+        for marker in ["- ", "* ", "+ "] where line.hasPrefix(marker) { return marker.count }
+        let digitCount = line.prefix { $0.isNumber }.count
+        guard (1...3).contains(digitCount) else { return nil }
+        let afterDigits = line.index(line.startIndex, offsetBy: digitCount)
+        return line[afterDigits...].hasPrefix(". ") ? digitCount + 2 : nil
+    }
+
+    private static func isBareMarker(_ line: String) -> Bool {
+        if ["-", "*", "+"].contains(line) { return true }
+        let digits = line.hasSuffix(".") ? String(line.dropLast()) : line
+        return !digits.isEmpty && digits.allSatisfy { $0.isNumber }
+    }
+
     private static func titleBeforeDescription(_ body: String) -> String {
         var bold = false
         var index = body.startIndex
@@ -348,12 +364,22 @@ enum ReleaseNotesDigest {
                 index = next
                 continue
             }
-            if markdown[index] == "[", let linkEnd = endOfLink(in: markdown, from: index),
-               let labelEnd = markdown[index...].firstIndex(of: "]") {
-                let labelStart = markdown.index(after: index)
-                result += markdown[labelStart..<labelEnd]
-                index = linkEnd
-                continue
+            if markdown[index] == "[", let labelEnd = markdown[index...].firstIndex(of: "]") {
+                let afterLabel = markdown.index(after: labelEnd)
+                if afterLabel < markdown.endIndex, markdown[afterLabel] == "(" {
+                    let labelStart = markdown.index(after: index)
+                    result += markdown[labelStart..<labelEnd]
+                    if let linkEnd = endOfLink(in: markdown, from: index) {
+                        index = linkEnd
+                    } else {
+                        var end = markdown.index(after: afterLabel)
+                        while end < markdown.endIndex, !markdown[end].isWhitespace {
+                            end = markdown.index(after: end)
+                        }
+                        index = end
+                    }
+                    continue
+                }
             }
             result.append(markdown[index])
             index = markdown.index(after: index)
@@ -370,7 +396,12 @@ enum ReleaseNotesDigest {
                 size: DesignTokens.TypeSize.caption,
                 weight: strong ? .semibold : .regular
             )
-            attributes.foregroundColor = run.link == nil ? Color.secondary : Color.accentColor
+            if let link = run.link, link.scheme?.lowercased() == "https" {
+                attributes.foregroundColor = Color.accentColor
+            } else {
+                attributes.foregroundColor = Color.secondary
+                text[run.range].link = nil
+            }
             text[run.range].mergeAttributes(attributes)
         }
         return text

@@ -879,27 +879,70 @@ struct GlassSwitch: View {
     }
 }
 
-/// `.toggleStyle(.glass)` draws the label beside the switch.
-/// `.labelsHidden()` sets `labelsVisibility` to `.hidden` on macOS 15 and later, so a row that already has its own title does not show that title twice.
 struct GlassSwitchToggleStyle: ToggleStyle {
+    static func showsLabel(glassLabelHidden: Bool, labelsHidden: Bool) -> Bool {
+        !glassLabelHidden && !labelsHidden
+    }
+
     func makeBody(configuration: Configuration) -> some View {
+        GlassSwitchLabelHost(configuration: configuration)
+    }
+}
+
+private struct GlassLabelHiddenKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var glassLabelHidden: Bool {
+        get { self[GlassLabelHiddenKey.self] }
+        set { self[GlassLabelHiddenKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Hides the label `ToggleStyle.glass` draws for a row that already shows its own title.
+    /// macOS 14 exposes no `labelsVisibility`, so the style reads this value on every OS.
+    func glassLabelHidden() -> some View {
+        environment(\.glassLabelHidden, true)
+    }
+}
+
+private struct GlassSwitchLabelHost: View {
+    @Environment(\.glassLabelHidden) private var glassLabelHidden
+    var configuration: ToggleStyleConfiguration
+
+    var body: some View {
         if #available(macOS 15.0, *) {
-            GlassSwitchVisibilityBody(configuration: configuration)
+            GlassSwitchSystemVisibilityBody(
+                configuration: configuration,
+                glassLabelHidden: glassLabelHidden
+            )
         } else {
-            GlassSwitchLabeledBody(configuration: configuration, showsLabel: true)
+            GlassSwitchLabeledBody(
+                configuration: configuration,
+                showsLabel: GlassSwitchToggleStyle.showsLabel(
+                    glassLabelHidden: glassLabelHidden,
+                    labelsHidden: false
+                )
+            )
         }
     }
 }
 
 @available(macOS 15.0, *)
-private struct GlassSwitchVisibilityBody: View {
+private struct GlassSwitchSystemVisibilityBody: View {
     @Environment(\.labelsVisibility) private var labelsVisibility
     var configuration: ToggleStyleConfiguration
+    var glassLabelHidden: Bool
 
     var body: some View {
         GlassSwitchLabeledBody(
             configuration: configuration,
-            showsLabel: labelsVisibility != .hidden
+            showsLabel: GlassSwitchToggleStyle.showsLabel(
+                glassLabelHidden: glassLabelHidden,
+                labelsHidden: labelsVisibility == .hidden
+            )
         )
     }
 }

@@ -329,6 +329,7 @@ public struct OnboardingGuideView: View {
                     set: { store.launchAtLoginOnboardingChoice = $0 }
                 ))
                 .labelsHidden()
+                .glassLabelHidden()
                 .toggleStyle(.glass)
             }
 
