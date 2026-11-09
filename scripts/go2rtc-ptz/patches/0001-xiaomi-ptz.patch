@@ -140,10 +140,10 @@ index 0000000..3ffd76c
 +}
 diff --git a/internal/xiaomi/ptz.go b/internal/xiaomi/ptz.go
 new file mode 100644
-index 0000000..ad92bf7
+index 0000000..e1479c2
 --- /dev/null
 +++ b/internal/xiaomi/ptz.go
-@@ -0,0 +1,606 @@
+@@ -0,0 +1,639 @@
 +package xiaomi
 +
 +import (
@@ -485,9 +485,42 @@ index 0000000..ad92bf7
 +			<-wait
 +		}
 +		m.mu.Lock()
-+		sent, err := storedStopLocked(stream, session)
++		if stream.current != current || stream.lastStopSession != session || stream.lastStopErr == nil {
++			sent, err := storedStopLocked(stream, session)
++			m.mu.Unlock()
++			return sent, mode, err
++		}
++		// A repeated stop is a new attempt, not a cached failure: re-command the motor as long
++		// as this session still owns the stream. The stop barrier orders this write before a
++		// new session's first move, while a session that is no longer current is never moved.
++		if stream.stopsInFlight == 0 {
++			stream.stopBarrier = make(chan struct{})
++		}
++		stream.stopsInFlight++
 +		m.mu.Unlock()
-+		return sent, mode, err
++
++		stream.stopMu.Lock()
++		stream.motorLock.Lock()
++		err := current.motor.Motor(-1001)
++		stream.motorLock.Unlock()
++		stream.stopMu.Unlock()
++
++		m.mu.Lock()
++		if stream.current == current && stream.lastStopSession == session {
++			stream.lastStopSent = err == nil
++			stream.lastStopErr = err
++		}
++		stream.stopsInFlight--
++		if stream.stopsInFlight == 0 {
++			close(stream.stopBarrier)
++			stream.stopBarrier = nil
++		}
++		m.mu.Unlock()
++
++		if err != nil {
++			return false, mode, fmt.Errorf("%w: %v", errPTZStopWrite, err)
++		}
++		return true, mode, nil
 +	}
 +	sendStop := mode != ptzStep && !current.started.IsZero()
 +	m.mu.Unlock()
@@ -752,10 +785,10 @@ index 0000000..ad92bf7
 +}
 diff --git a/internal/xiaomi/ptz_test.go b/internal/xiaomi/ptz_test.go
 new file mode 100644
-index 0000000..7432e20
+index 0000000..a9ff824
 --- /dev/null
 +++ b/internal/xiaomi/ptz_test.go
-@@ -0,0 +1,508 @@
+@@ -0,0 +1,587 @@
 +package xiaomi
 +
 +import (
@@ -773,11 +806,16 @@ index 0000000..7432e20
 +	model string
 +	mu    sync.Mutex
 +	ops   []int
++	calls []int
 +	fail  map[int]bool
 +}
 +
 +func (f *fakeMotor) Motor(operation int) error {
-+	if f.fail[operation] {
++	f.mu.Lock()
++	f.calls = append(f.calls, operation)
++	failing := f.fail[operation]
++	f.mu.Unlock()
++	if failing {
 +		return errors.New("write failed")
 +	}
 +	f.mu.Lock()
@@ -792,6 +830,23 @@ index 0000000..7432e20
 +	f.mu.Lock()
 +	defer f.mu.Unlock()
 +	return append([]int(nil), f.ops...)
++}
++
++// callSnapshot includes writes the fake rejected, so a test can tell a cached failure from a
++// new attempt to move the motor.
++func (f *fakeMotor) callSnapshot() []int {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	return append([]int(nil), f.calls...)
++}
++
++func (f *fakeMotor) setFail(operation int, fail bool) {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	if f.fail == nil {
++		f.fail = map[int]bool{}
++	}
++	f.fail[operation] = fail
 +}
 +
 +func withPTZFixture(t *testing.T, motor *fakeMotor, timing ptzTiming) {
@@ -1260,8 +1315,65 @@ index 0000000..7432e20
 +	if _, _, err := ptz.stop("cam", ptz.epoch, session); err == nil {
 +		t.Fatal("first stop lost the write error")
 +	}
++	if got := countOps(motor.callSnapshot(), -1001); got != 1 {
++		t.Fatalf("motor stop calls after the first failure = %d, want 1", got)
++	}
 +	if _, _, err := ptz.stop("cam", ptz.epoch, session); err == nil {
 +		t.Fatal("repeated stop forgot the write error")
++	}
++	if got := countOps(motor.callSnapshot(), -1001); got != 2 {
++		t.Fatalf("a repeated stop did not re-command the motor: calls = %d, want 2", got)
++	}
++	// A later write may succeed: the next attempt reaches the motor again, not a cached error.
++	motor.setFail(-1001, false)
++	sent, _, err := ptz.stop("cam", ptz.epoch, session)
++	if err != nil || !sent {
++		t.Fatalf("stop after the write recovered: sent=%v err=%v", sent, err)
++	}
++	if got := countOps(motor.callSnapshot(), -1001); got != 3 {
++		t.Fatalf("motor stop calls after recovery = %d, want 3", got)
++	}
++	// The success is cached: another stop on the ended session must not move the motor again.
++	if _, _, err := ptz.stop("cam", ptz.epoch, session); err != nil {
++		t.Fatalf("stop after success: %v", err)
++	}
++	if got := countOps(motor.callSnapshot(), -1001); got != 3 {
++		t.Fatalf("a stop after success moved the motor again: calls = %d, want 3", got)
++	}
++}
++
++func TestOldStopAfterAWriteFailureDoesNotMoveTheNewSession(t *testing.T) {
++	motor := &fakeMotor{model: "xiaomi.camera.c01a01", fail: map[int]bool{-1001: true}}
++	withPTZFixture(t, motor, ptzDefaultTiming)
++	now := time.Unix(18000, 0)
++
++	first, _, _ := ptz.begin("cam", now)
++	if _, err := ptz.move("cam", ptz.epoch, first, 1, "left", now); err != nil {
++		t.Fatal(err)
++	}
++	if _, _, err := ptz.stop("cam", ptz.epoch, first); err == nil {
++		t.Fatal("first stop lost the write error")
++	}
++	motor.setFail(-1001, false)
++
++	second, _, err := ptz.begin("cam", now.Add(time.Millisecond))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, err := ptz.move("cam", ptz.epoch, second, 1, "right", now.Add(time.Millisecond)); err != nil {
++		t.Fatal(err)
++	}
++	if _, _, err := ptz.stop("cam", ptz.epoch, first); err != nil {
++		t.Fatalf("late stop of the ended session: %v", err)
++	}
++	if got := countOps(motor.callSnapshot(), -1001); got != 1 {
++		t.Fatalf("a stop for a session that no longer owns the stream moved the motor: calls = %d", got)
++	}
++	if sent, _, err := ptz.stop("cam", ptz.epoch, second); err != nil || !sent {
++		t.Fatalf("new session stop: sent=%v err=%v", sent, err)
++	}
++	if got := countOps(motor.callSnapshot(), -1001); got != 2 {
++		t.Fatalf("new session stop calls = %d, want 2", got)
 +	}
 +}
 diff --git a/internal/xiaomi/round2_repro_test.go b/internal/xiaomi/round2_repro_test.go

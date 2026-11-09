@@ -680,7 +680,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.isMovableByWindowBackground = true
-        panel.minSize = NSSize(width: 300, height: 204)
+        panel.minSize = NSSize(width: CameraLivePanelMetrics.compactWidth, height: 204)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.delegate = self
         panel.contentView = nil
@@ -699,7 +699,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         if let saved = UserDefaults.standard.string(forKey: Self.frameStorageKey) {
             let rect = NSRectFromString(saved)
-            if rect.width >= 300, rect.height >= 200 {
+            if rect.width >= CameraLivePanelMetrics.compactWidth, rect.height >= 200 {
                 let x = min(max(rect.minX, visible.minX + 12), visible.maxX - size.width - 12)
                 let y = min(max(rect.minY, visible.minY + 12), visible.maxY - size.height - 12)
                 let candidate = NSRect(origin: NSPoint(x: x, y: y), size: size)
@@ -1064,16 +1064,6 @@ struct CameraLivePanelView: View {
             }
 
             CameraHUDIconButton(
-                symbol: controller.isPinnedOnTop ? "pin.fill" : "pin.slash",
-                isActive: controller.isPinnedOnTop,
-                help: controller.isPinnedOnTop
-                    ? L10n.tr("已置顶（全屏看电视时保持最前）", "Pinned on top (stays above full-screen video)")
-                    : L10n.tr("点击置顶小窗", "Pin window on top")
-            ) {
-                controller.isPinnedOnTop.toggle()
-            }
-
-            CameraHUDIconButton(
                 symbol: controller.isExpandedSize
                     ? "arrow.down.right.and.arrow.up.left"
                     : "arrow.up.left.and.arrow.down.right",
@@ -1101,6 +1091,14 @@ struct CameraLivePanelView: View {
     private var toolbarOverflowMenu: some View {
         let hasCustomURL = !(store.cameraCustomStreamURL(for: device?.id ?? "") ?? "").isEmpty
         return Menu {
+            Button {
+                controller.isPinnedOnTop.toggle()
+            } label: {
+                Label(
+                    L10n.tr("置顶小窗", "Pin window on top"),
+                    systemImage: controller.isPinnedOnTop ? "checkmark" : "pin"
+                )
+            }
             if case .liveMP4 = controller.streamSource {
                 Button {
                     controller.togglePictureInPicture()
