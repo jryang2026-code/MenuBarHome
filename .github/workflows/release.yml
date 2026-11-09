@@ -306,6 +306,9 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: "windows/src-tauri -> target"
+          # 读 main 上 CI 存的 release 产物。tag 作用域的缓存别的 ref 都读不到，存了也是白占空间。
+          shared-key: windows-release-build
+          save-if: false
 
       - name: Install frontend & Tauri CLI dependencies
         run: npm ci

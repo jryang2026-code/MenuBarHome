@@ -11,6 +11,8 @@ on:
       - "Tests/Fixtures/miot_coverage_golden.json"
       - ".github/workflows/capability-matrix.yml"
   push:
+    # 只听 main：功能分支已由 pull_request 覆盖，不限分支时同一次改动会跑两遍，打 tag 也会多跑一遍。
+    branches: [main]
     paths:
       - "README.md"
       - "README.zh-CN.md"

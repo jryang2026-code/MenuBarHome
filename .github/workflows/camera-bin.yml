@@ -20,7 +20,14 @@ jobs:
         working-directory: windows
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+      # 缓存放在 msys2 前面：命中时脚本什么都不做，不必花 30 秒装编译工具链。
+      - id: camera-bin-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: windows/src-tauri/camera-bin
+          key: camera-bin-${{ hashFiles('windows/scripts/build-ffmpeg-min.sh', 'windows/scripts/prepare-camera-bin.sh', 'windows/scripts/patch_pe_subsystem.py') }}
+      - if: steps.camera-bin-cache.outputs.cache-hit != 'true'
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
           msystem: MINGW64
           update: false
@@ -30,12 +37,13 @@ jobs:
             nasm
             python
             curl
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: windows/src-tauri/camera-bin
-          key: camera-bin-${{ hashFiles('windows/scripts/build-ffmpeg-min.sh', 'windows/scripts/prepare-camera-bin.sh', 'windows/scripts/patch_pe_subsystem.py') }}
       - name: Build go2rtc and minimal ffmpeg
+        if: steps.camera-bin-cache.outputs.cache-hit != 'true'
         run: bash scripts/prepare-camera-bin.sh src-tauri/camera-bin
+      - name: Require both camera helpers
+        # 以前脚本会补齐缺失的文件；命中缓存跳过脚本后，用这一步挡住不完整的缓存。
+        shell: bash
+        run: test -s src-tauri/camera-bin/go2rtc.exe && test -s src-tauri/camera-bin/ffmpeg-silent.exe && test -s src-tauri/camera-bin/GO2RTC-LICENSE.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: camera-bin

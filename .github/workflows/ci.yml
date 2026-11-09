@@ -13,8 +13,9 @@ permissions:
   actions: write
 
 # PR 上连续推送只保留最新一次。main 的每一次提交都要跑完（发版依赖这条），不取消。
+# main 按 sha 分组：同组里排队的运行即使 cancel-in-progress 为 false 也会被更新的推送顶掉。
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || (github.ref == 'refs/heads/main' && github.sha) || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
@@ -115,13 +116,45 @@ jobs:
     container: swift:6.1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Restore the Linux build cache
+        id: linux-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            scripts/linux-check/.build
+            scripts/linux-check/.work
+          # 列出具体文件：.build 和 .work 恢复后不能算进哈希。
+          key: linux-core-v1-${{ hashFiles('scripts/linux-check/Package.swift', 'scripts/linux-check/Package.resolved', 'scripts/linux-check/run.sh', 'scripts/linux-check/Shims/**') }}-${{ github.sha }}
+          restore-keys: |
+            linux-core-v1-${{ hashFiles('scripts/linux-check/Package.swift', 'scripts/linux-check/Package.resolved', 'scripts/linux-check/run.sh', 'scripts/linux-check/Shims/**') }}-
+      - name: Pin shim mtimes for the Swift cache
+        # checkout 把 mtime 设成当前时间，Shims 是 MijiaCore 的依赖，会连带全量重编。
+        # 这些文件的内容已进缓存 key，内容变了就换缓存，固定时间戳不会用到旧产物。
+        run: find scripts/linux-check/Shims scripts/linux-check/Package.swift scripts/linux-check/Package.resolved -type f -exec touch -d @1577836800 {} +
       - name: Test MijiaCore on Linux
         run: bash scripts/linux-check/run.sh
+      - name: Trim the Linux build cache
+        if: success() && github.ref == 'refs/heads/main'
+        run: find scripts/linux-check/.build -type d \( -name ModuleCache -o -name Index.noindex \) -prune -exec rm -rf {} + 2>/dev/null || true
+      - name: Save the Linux build cache
+        if: success() && github.ref == 'refs/heads/main' && steps.linux-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            scripts/linux-check/.build
+            scripts/linux-check/.work
+          key: ${{ steps.linux-cache.outputs.cache-primary-key }}
 
   raycast:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    # 不放 macOS：这些测试不依赖系统，macOS 并发额度留给 Swift。
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: raycast
@@ -129,7 +162,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: raycast/package-lock.json
       - name: Test and typecheck the Raycast extension
@@ -139,15 +172,21 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.windows == 'true'
     # 验证 Windows 版 TypeScript 核心测试与前端打包
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
+        shell: bash
         working-directory: windows
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: windows/package-lock.json
       - name: Install & Test & Build Frontend
@@ -159,11 +198,11 @@ jobs:
     # 构建安装包内置的 go2rtc 与最小 LGPL ffmpeg；结果由 windows-installer 消费。
     uses: ./.github/workflows/camera-bin.yml
 
-  windows-installer:
+  windows-rust-test:
     needs: [changes, windows-camera-bin]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.windows == 'true'
-    # 安装包依赖 windows-camera-bin 的内置组件；前端测试仍由 windows-core 覆盖，
-    # 这里保留 cargo test 与 Tauri 安装包构建。
+    # 从安装包 job 拆出来并行：debug 和 release 是两套产物，串在一台机器上只是把时间相加。
+    # tauri_build 会校验 camera-bin/* 资源存在，所以这里同样要下载内置组件。
     runs-on: windows-latest
     defaults:
       run:
@@ -179,6 +218,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: "windows/src-tauri -> target"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install frontend & Tauri CLI dependencies
         run: npm ci
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -189,6 +229,36 @@ jobs:
         run: npm run build
       - name: Test native URL and credential policies
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+  windows-installer:
+    needs: [changes, windows-camera-bin]
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.windows == 'true'
+    # 安装包依赖 windows-camera-bin 的内置组件；前端测试由 windows-core 覆盖，
+    # cargo test 在 windows-rust-test。前端由 tauri 的 beforeBuildCommand 构建。
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: "windows/src-tauri -> target"
+          # 和 release.yml 共用一份 release 产物；tag 读得到 main 的缓存，反过来不行。
+          shared-key: windows-release-build
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install frontend & Tauri CLI dependencies
+        run: npm ci
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: camera-bin
+          path: windows/src-tauri/camera-bin
       - name: Build Windows Tauri installer (.exe & .msi)
         run: npx tauri build -- --locked
       - name: Collect Windows installers
@@ -218,7 +288,9 @@ jobs:
           fetch-depth: 0
       - name: Toolchain info
         run: xcodebuild -version && swift --version
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # 只有 main 写缓存：key 带 sha，PR 也写的话一次运行 370 MB，很快撑满仓库的 10 GB。
+      - id: swift-debug-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build
           # v3 discards caches built while merge commits were not stamped.
@@ -242,10 +314,16 @@ jobs:
         # 快照基线以维护者的 Mac 为准，托管机渲染不同；快照比对在本机 scripts/check.sh 里跑。
         run: bash scripts/ci_swift_test.sh --skip SnapshotTests
       - name: Trim Swift build cache
-        if: success()
+        if: success() && github.ref == 'refs/heads/main'
         run: |
           find .build -type d \( -name ModuleCache -o -name Index.noindex \) -prune -exec rm -rf {} + 2>/dev/null || true
           du -sh .build 2>/dev/null || true
+      - name: Save Swift build cache
+        if: success() && github.ref == 'refs/heads/main' && steps.swift-debug-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build
+          key: ${{ steps.swift-debug-cache.outputs.cache-primary-key }}
 
   macos-appintents:
     needs: changes
@@ -257,7 +335,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - id: appintents-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .derived
           key: appintents-v1-${{ runner.os }}-${{ github.sha }}
@@ -268,11 +347,17 @@ jobs:
       - name: App Intents metadata
         run: APP_INTENTS_ONLY=1 bash scripts/build_app.sh
       - name: Trim Xcode derived data
-        if: success()
+        if: success() && github.ref == 'refs/heads/main'
         run: |
           find .derived -type d \( -name ModuleCache -o -name Index.noindex \) -prune -exec rm -rf {} + 2>/dev/null || true
           rm -f .derived/appintents-build.log
           du -sh .derived 2>/dev/null || true
+      - name: Save Xcode derived data
+        if: success() && github.ref == 'refs/heads/main' && steps.appintents-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .derived
+          key: ${{ steps.appintents-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
@@ -292,7 +377,8 @@ jobs:
           fetch-depth: 0
       - name: Toolchain info
         run: xcodebuild -version && swift --version
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - id: swift-release-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build
           key: spm-release-v2-${{ runner.os }}-${{ github.sha }}
@@ -306,11 +392,17 @@ jobs:
           SKIP_APP_INTENTS: "1"
         run: bash scripts/build_app.sh
       - name: Trim Swift build cache
-        if: success()
+        if: success() && github.ref == 'refs/heads/main'
         run: |
           find .build -type d \( -name ModuleCache -o -name Index.noindex \) -prune -exec rm -rf {} + 2>/dev/null || true
           rm -f .build/appintents-build.log
           du -sh .build 2>/dev/null || true
+      - name: Save Swift build cache
+        if: success() && github.ref == 'refs/heads/main' && steps.swift-release-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build
+          key: ${{ steps.swift-release-cache.outputs.cache-primary-key }}
 
   macos:
     # 历史 required check 的名字。文档-only 或只改 Windows 时三个 macOS job 被跳过，这里仍成功，
@@ -338,7 +430,7 @@ jobs:
   ci:
     # 始终运行的汇总检查。文档-only 或未受影响的平台任务被跳过时，这里成功；
     # 任何一个实际失败（不是预期跳过）则失败。适合作为唯一的 required check。
-    needs: [changes, nas-safety, linux-core, raycast, windows-core, windows-camera-bin, windows-installer, macos-test, macos-release, macos-appintents]
+    needs: [changes, nas-safety, linux-core, raycast, windows-core, windows-camera-bin, windows-rust-test, windows-installer, macos-test, macos-release, macos-appintents]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -356,6 +448,7 @@ jobs:
           RAYCAST: ${{ needs.raycast.result }}
           WINDOWS_CORE: ${{ needs.windows-core.result }}
           WINDOWS_CAMERA: ${{ needs.windows-camera-bin.result }}
+          WINDOWS_RUST_TEST: ${{ needs.windows-rust-test.result }}
           WINDOWS_INSTALLER: ${{ needs.windows-installer.result }}
           MACOS_TEST: ${{ needs.macos-test.result }}
           MACOS_RELEASE: ${{ needs.macos-release.result }}
@@ -367,6 +460,7 @@ jobs:
           "raycast:$RAYCAST:always"
           "windows-core:$WINDOWS_CORE:$WINDOWS"
           "windows-camera-bin:$WINDOWS_CAMERA:$WINDOWS"
+          "windows-rust-test:$WINDOWS_RUST_TEST:$WINDOWS"
           "windows-installer:$WINDOWS_INSTALLER:$WINDOWS"
           "macos-test:$MACOS_TEST:$MACOS"
           "macos-release:$MACOS_RELEASE:$MACOS"

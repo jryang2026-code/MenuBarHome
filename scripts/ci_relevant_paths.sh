@@ -30,6 +30,10 @@ while IFS= read -r path || [ -n "$path" ]; do
             ;;
         *.md|docs/*|LICENSE|.github/ISSUE_TEMPLATE/*)
             ;;
+        # Each of these has its own workflow that tests it; nothing in ci.yml builds or reads them.
+        packaging/homebrew/*|.github/workflows/homebrew-tap.yml|.github/workflows/capability-matrix.yml|.github/workflows/snapshot-guard.yml)
+            code=true
+            ;;
         # *.md is already docs-only. This arm covers the other skill files, including scripts and licenses.
         .cursor/skills/*)
             ;;
