@@ -61,14 +61,14 @@ struct SnapshotTests {
     @Test("Panel shows the expired Mi session banner")
     func panelExpiredMiSessionSnapshot() async throws {
         let fixture = try await SnapshotFixture(
-            configuredHASource: false,
             miSession: MiSession(
                 userId: "42",
                 cUserId: "c",
                 ssecurity: "c2VjcmV0",
                 serviceToken: "tok",
                 expiresAt: Date(timeIntervalSince1970: 1_700_000_000)
-            )
+            ),
+            configuredHASource: false
         )
         defer { fixture.restore() }
 
