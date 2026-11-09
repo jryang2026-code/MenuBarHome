@@ -818,6 +818,7 @@ extension ControlCenterPanel {
                                 key: TileFramesKey.self,
                                 value: [dev.id: CGRect(x: f.minX.rounded(), y: f.minY.rounded(), width: f.width.rounded(), height: f.height.rounded())]
                             )
+                            .preference(key: CardGlobalTopKey.self, value: [dev.id: g.minY])
                             .onAppear { LayoutUIState.shared.cardGlobalFrames[dev.id] = g }
                             .onChange(of: g) { _, newFrame in LayoutUIState.shared.cardGlobalFrames[dev.id] = newFrame }
                     }

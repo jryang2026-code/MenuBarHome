@@ -74,12 +74,13 @@ enum PanelFoldMeasure {
     }
 
     /// Card frames are published from `onAppear`, the same wait the resize test already uses.
+    /// Measurements stay on a record this test owns. Other suites do not see it.
     static func reading(store: HomeStore) async throws -> Reading {
-        PanelFoldProbe.reset()
-        LayoutUIState.shared.cardGlobalFrames.removeAll()
+        let record = PanelFoldRecord()
         _ = NSApplication.shared
         let hosting = NSHostingView(
             rootView: ControlCenterPanel(store: store)
+                .environment(\.panelFoldRecord, record)
                 .environment(\.colorScheme, .light)
                 .environment(\.reduceMotionOverride, true)
                 .environment(\.reduceTransparencyOverride, true)
@@ -113,18 +114,15 @@ enum PanelFoldMeasure {
             if case .light = device.kind { return true }
             return false
         })
-        let card = try #require(
-            LayoutUIState.shared.cardGlobalFrames[light.id],
-            "the first light card publishes its frame"
-        )
-        let panelMinY = try #require(PanelFoldProbe.panelMinY, "the panel publishes its top edge")
+        let cardMinY = try #require(record.cardTops[light.id], "the first light card publishes its frame")
+        let panelMinY = try #require(record.panelMinY, "the panel publishes its top edge")
         return Reading(
             panelMinY: panelMinY,
-            cardMinY: card.minY,
-            noticeMinY: PanelFoldProbe.systemNoticeMinY,
-            omnibarMinY: PanelFoldProbe.omnibarMinY,
-            lessonMinY: PanelFoldProbe.lessonRowMinY,
-            kindMinY: PanelFoldProbe.kindRowMinY
+            cardMinY: cardMinY,
+            noticeMinY: record.systemNoticeMinY,
+            omnibarMinY: record.omnibarMinY,
+            lessonMinY: record.lessonRowMinY,
+            kindMinY: record.kindRowMinY
         )
     }
 }
