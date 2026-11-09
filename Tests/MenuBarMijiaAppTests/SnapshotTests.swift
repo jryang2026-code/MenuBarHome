@@ -254,8 +254,8 @@ struct SnapshotTests {
                 VStack(alignment: .leading, spacing: 10) {
                     GenericDetailDrawer(
                         device: device,
-                        spec: card,
                         store: fixture.store,
+                        spec: card,
                         statusColor: DesignTokens.active
                     )
                     DeviceFacetSection(

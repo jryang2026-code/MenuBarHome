@@ -573,6 +573,7 @@ private enum FacetRowScroller {
         }
     }
 
+    @MainActor
     private static func find(_ identifier: String, in view: NSView) -> NSView? {
         if view.accessibilityIdentifier() == identifier { return view }
         for child in view.subviews {

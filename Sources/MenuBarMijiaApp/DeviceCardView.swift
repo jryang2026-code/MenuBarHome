@@ -699,8 +699,8 @@ public struct DeviceCardView: View {
         case .generic(let spec):
             GenericDetailDrawer(
                 device: device,
-                spec: spec,
                 store: store,
+                spec: spec,
                 statusColor: statusColor
             )
         case .humidifier(let spec):
