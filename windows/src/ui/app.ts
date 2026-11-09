@@ -420,6 +420,7 @@ export class MenuMijiaWindowsApp {
       this.activeSheet !== "none" ||
       this.pointerIsDown ||
       this.isListeningVoice ||
+      this.allOffHoldTimer !== null ||
       this.draggingId !== null ||
       this.isEditingLayout ||
       this.isHomeMenuOpen ||
@@ -952,7 +953,8 @@ export class MenuMijiaWindowsApp {
     if (this.undoBannerTimer !== null) window.clearTimeout(this.undoBannerTimer);
     this.undoBannerTimer = window.setTimeout(() => {
       this.undoBannerTimer = null;
-      if (this.trackedUndoAction === action) this.render();
+      // The button leaving must not rebuild the panel under a slider drag or an All Off hold.
+      if (this.trackedUndoAction === action) this.queueBackgroundRender();
     }, ms);
   }
 

@@ -5614,6 +5614,39 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     target.dispatchEvent(new window.KeyboardEvent(type, { key, bubbles: true, cancelable: true, repeat }));
   }
 
+  /** Grabs the undo banner's expiry callback and the 1 s panel tick without waiting for either. */
+  function capturePanelTimers(): { fireUndoExpiry(): void; tick(): void } {
+    let undoExpiry: (() => void) | null = null;
+    const ticks: Array<() => void> = [];
+    const realSetTimeout = window.setTimeout.bind(window);
+    const realSetInterval = window.setInterval.bind(window);
+    Object.defineProperty(window, "setTimeout", {
+      configurable: true,
+      value: (handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+        if ((timeout === 10_000 || timeout === 15_000) && typeof handler === "function") {
+          undoExpiry = () => { handler(); };
+        }
+        return realSetTimeout(handler, timeout, ...args);
+      },
+    });
+    Object.defineProperty(window, "setInterval", {
+      configurable: true,
+      value: (handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+        if (timeout === 1000 && typeof handler === "function") ticks.push(() => { handler(); });
+        return realSetInterval(handler, timeout, ...args);
+      },
+    });
+    return {
+      fireUndoExpiry: () => {
+        assert.ok(undoExpiry, "the undo banner did not arm its expiry timer");
+        undoExpiry();
+      },
+      tick: () => {
+        for (const tick of ticks) tick();
+      },
+    };
+  }
+
   it("shows undo after All Off while the assistant extras are collapsed, and undo restores the lights", async () => {
     startDemoApp();
     element("#btn-toggle-assistant").click();
@@ -5726,6 +5759,65 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
       assert.ok(document.querySelector("#btn-undo"));
       clock = started + 15_000;
       app.render();
+      assert.equal(document.querySelector("#btn-undo"), null);
+    } finally {
+      Date.now = original;
+    }
+  });
+
+  it("defers the undo expiry render while a pointer gesture is active", () => {
+    const timers = capturePanelTimers();
+    const app = startDemoApp();
+    const started = Date.now();
+    let clock = started;
+    const original = Date.now;
+    Date.now = () => clock;
+    try {
+      app.lastUndoAction = {
+        summary: "一台",
+        steps: [{ deviceId: "light.living_ceiling", commands: [{ kind: "setSwitch", entityId: "switch.light", isOn: true }] }],
+        expiresAtMs: started + 60_000,
+      };
+      app.pointerIsDown = true;
+      app.render();
+      const undo = element("#btn-undo");
+      clock = started + 10_000;
+      timers.fireUndoExpiry();
+      assert.ok(app.pendingCloudRender);
+      assert.equal(document.querySelector("#btn-undo"), undo, "the gesture's DOM survives the expiry");
+      app.pointerIsDown = false;
+      timers.tick();
+      assert.equal(document.querySelector("#btn-undo"), null, "the deferred render lands after the gesture");
+    } finally {
+      Date.now = original;
+    }
+  });
+
+  it("defers the undo expiry render while the All Off hold is armed", () => {
+    const timers = capturePanelTimers();
+    const app = startDemoApp();
+    const started = Date.now();
+    let clock = started;
+    const original = Date.now;
+    Date.now = () => clock;
+    try {
+      app.lastUndoAction = {
+        summary: "一台",
+        steps: [{ deviceId: "light.living_ceiling", commands: [{ kind: "setSwitch", entityId: "switch.light", isOn: true }] }],
+        expiresAtMs: started + 60_000,
+      };
+      app.render();
+      const button = element("#btn-all-off");
+      const undo = element("#btn-undo");
+      button.focus();
+      pressHoldKey(button, " ", "keydown");
+      clock = started + 10_000;
+      timers.fireUndoExpiry();
+      assert.ok(app.pendingCloudRender);
+      assert.equal(document.querySelector("#btn-undo"), undo, "the hold keeps its DOM");
+      assert.ok(element("#btn-all-off").classList.contains("is-holding"), "the hold was not cancelled");
+      pressHoldKey(element("#btn-all-off"), " ", "keyup");
+      timers.tick();
       assert.equal(document.querySelector("#btn-undo"), null);
     } finally {
       Date.now = original;
