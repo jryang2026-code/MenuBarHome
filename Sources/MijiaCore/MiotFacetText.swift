@@ -169,7 +169,7 @@ public enum MiotFacetText {
         controls: [FacetControl],
         allowsAdvancedWrites: Bool
     ) -> String? {
-        guard let source = controls.first(where: { alertText($0) == alert }) else { return nil }
+        guard let source = controls.first(where: { alertSentences($0).contains(alert) }) else { return nil }
         let stem = relatedControlName(source.name)
         let locked = controls.filter { isAdvancedWriteLocked($0, allowsAdvancedWrites: allowsAdvancedWrites) }
         if let match = locked.first(where: { $0.name == stem }) { return match.id }
@@ -181,13 +181,34 @@ public enum MiotFacetText {
         return nil
     }
 
-    private static func alertText(_ control: FacetControl) -> String? {
+    /// Every wording synthesis may have stored for this reading. The banner keeps the sentence
+    /// from the language that was current then, so the match cannot use only the language now.
+    private static func alertSentences(_ control: FacetControl) -> [String] {
         guard control.kind == .reading,
               let raw = control.value?.intValue,
               let option = control.options.first(where: { $0.value == raw }),
-              MiotFacetEngine.isAlertLabel(option.label) else { return nil }
-        let name = title(name: control.name, title: control.title)
-        return MiotFacetEngine.alertText(title: name, propertyName: control.name, label: option.label)
+              MiotFacetEngine.isAlertLabel(option.label) else { return [] }
+        return [AppLanguage.zhHans, .zhHant, .en].map { language in
+            L10n.$overrideLanguage.withValue(language) {
+                let name = title(name: control.name, title: control.title)
+                return MiotFacetEngine.alertText(
+                    title: name,
+                    propertyName: control.name,
+                    label: option.label
+                )
+            }
+        }
+    }
+
+    /// The high-risk explanation. It is true only when every writable facet still needs the
+    /// advanced-write opt-in. A facet that writes by default means the device is not view-only.
+    public static func showsAdvancedViewOnlyCopy(
+        controls: [FacetControl],
+        allowsAdvancedWrites: Bool
+    ) -> Bool {
+        let writable = controls.filter(\.isWritable)
+        guard !writable.isEmpty else { return false }
+        return writable.allSatisfy { isAdvancedWriteLocked($0, allowsAdvancedWrites: allowsAdvancedWrites) }
     }
 
     private static func relatedControlName(_ name: String) -> String {

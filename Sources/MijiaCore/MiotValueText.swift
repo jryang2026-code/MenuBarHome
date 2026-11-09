@@ -140,7 +140,7 @@ public enum MiotValueText {
         "synthetic": Phrase("化纤洗", "化纖洗"),
         "underwear": Phrase("内衣洗", "內衣洗"),
         "jacket": Phrase("冲锋衣", "衝鋒衣"),
-        "smart": Phrase("智能洗", "智能洗"),
+        "smart": Phrase("智能", "智能"),
         "sportswear": Phrase("运动服", "運動服"),
         "new clothes wash": Phrase("新衣洗", "新衣洗"),
         "silk": Phrase("真丝洗", "真絲洗"),

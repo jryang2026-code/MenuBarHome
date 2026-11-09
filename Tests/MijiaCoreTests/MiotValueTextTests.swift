@@ -29,6 +29,10 @@ struct MiotValueTextTests {
             #expect(MiotValueText.display("Favorite") == "最爱")
             #expect(MiotValueText.display("Silent") == "静音")
             #expect(MiotValueText.display("Strong") == "强力")
+            #expect(MiotValueText.display("Smart") == "智能")
+            #expect(SmartDevice.localizeApplianceMode("Smart") == "智能")
+            #expect(SmartDevice.localizeApplianceMode("Night") == "夜晚")
+            #expect(SmartDevice.localizeApplianceMode("Sleep") == "睡眠")
             #expect(MiotValueText.display("Low") == "Low")
             #expect(MiotValueText.display("Empty") == "Empty")
             #expect(MiotValueText.display("Daily Wash") == "Daily Wash")
@@ -177,6 +181,131 @@ struct MiotValueTextTests {
                 ) == nil
             )
         }
+    }
+
+    @Test("A Chinese alarm baked before a language switch still points at the pump facet")
+    func alarmTargetSurvivesLanguageChange() {
+        let status = facet(
+            id: "2.4",
+            kind: .reading,
+            name: "water-pump-status",
+            value: .number(4),
+            options: [MiotFacetOption(value: 4, label: "Blocked")],
+            writable: false
+        )
+        let pump = facet(id: "2.2", kind: .toggle, name: "water-pump", value: .bool(true))
+        let baked = L10n.$overrideLanguage.withValue(.zhHans) {
+            MiotFacetEngine.alertText(
+                title: MiotFacetText.title(name: "water-pump-status", title: nil),
+                propertyName: "water-pump-status",
+                label: "Blocked"
+            )
+        }
+        #expect(baked == "水泵状态：堵塞")
+        L10n.$overrideLanguage.withValue(.en) {
+            #expect(
+                MiotFacetText.lockedControlID(
+                    forAlert: baked,
+                    controls: [status, pump],
+                    allowsAdvancedWrites: false
+                ) == "2.2"
+            )
+        }
+    }
+
+    @Test("The view-only sentence appears only when every writable facet is advanced-locked")
+    func viewOnlyCopyRequiresEveryWriteLocked() {
+        let locked = facet(id: "4.2", kind: .select, name: "mode", value: .number(0))
+        var open = facet(id: "3.1", kind: .toggle, name: "brightness", value: .bool(true))
+        open.writesByDefault = true
+        #expect(MiotFacetText.showsAdvancedViewOnlyCopy(controls: [locked], allowsAdvancedWrites: false))
+        #expect(!MiotFacetText.showsAdvancedViewOnlyCopy(controls: [locked, open], allowsAdvancedWrites: false))
+        #expect(!MiotFacetText.showsAdvancedViewOnlyCopy(controls: [locked], allowsAdvancedWrites: true))
+        #expect(!MiotFacetText.showsAdvancedViewOnlyCopy(controls: [], allowsAdvancedWrites: false))
+    }
+
+    @Test("A facet write sends the spec value, and a Chinese programme name sends nothing")
+    @MainActor
+    func writesKeepTheSpecWord() async throws {
+        let mode = FacetControl(
+            id: "2.2",
+            kind: .select,
+            name: "mode",
+            title: nil,
+            serviceName: "washer",
+            value: .number(1),
+            options: [MiotFacetOption(value: 1, label: "Quick Wash")],
+            isWritable: true,
+            writesByDefault: true,
+            isHighValue: false,
+            target: .property(entityId: "miot:washer:2", piid: 2)
+        )
+        #expect(
+            HomeStore.facetCommand(for: mode, value: .number(1))
+                == .setMiotProperty(entityId: "miot:washer:2", piid: 2, value: .number(1))
+        )
+        let haMode = FacetControl(
+            id: "select.mode",
+            kind: .select,
+            name: "mode",
+            title: nil,
+            serviceName: "select",
+            value: .number(1),
+            options: [MiotFacetOption(value: 1, label: "Quick Wash")],
+            isWritable: true,
+            writesByDefault: true,
+            isHighValue: false,
+            target: .haProperty(entityId: "select.mode")
+        )
+        #expect(
+            HomeStore.facetCommand(for: haMode, value: .number(1))
+                == .setSelectOption(entityId: "select.mode", option: "Quick Wash")
+        )
+
+        let device = SmartDevice(
+            id: "washer",
+            name: "洗衣机",
+            roomId: "balcony",
+            roomName: "阳台",
+            model: "test.washer",
+            isOnline: true,
+            kind: .appliance(ApplianceSpec(
+                entityId: "miot:washer:2",
+                isOn: true,
+                powerPresent: true,
+                powerWritable: true,
+                currentMode: "Mix",
+                availableModes: ["Mix", "Quick Wash"],
+                modeWritable: true
+            ))
+        )
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [device], scenes: []))
+        let store = HomeStore(provider: mock, defaultsSuiteName: "test.miotvalue.\(UUID().uuidString)")
+        try await store.waitForTestSnapshot()
+
+        store.setApplianceMode("washer", mode: "混合洗")
+        await Task.yield()
+        #expect(await mock.executedCommands.isEmpty)
+        if case .appliance(let spec) = store.devices.first?.kind {
+            #expect(spec.currentMode == "Mix")
+        } else {
+            Issue.record("washer left the store")
+        }
+
+        store.setApplianceMode("washer", mode: "Quick Wash")
+        await waitUntil { await mock.executedCommands.count == 1 }
+        #expect(await mock.executedCommands == [
+            .setSelectOption(entityId: "miot:washer:2", option: "Quick Wash")
+        ])
+    }
+
+    @MainActor
+    private func waitUntil(_ condition: @MainActor () async -> Bool) async {
+        for _ in 0..<100 {
+            if await condition() { return }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        Issue.record("condition was not met in time")
     }
 
     private func reading(

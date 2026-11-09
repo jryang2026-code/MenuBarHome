@@ -371,7 +371,7 @@ extension SmartDevice {
         case "quick", "fast", "快速": return L10n.tr("快速", "Quick")
         case "electricheating", "electric heating", "电加热": return L10n.tr("电加热", "Electric Heating")
         case "auto", "automatic", "自动": return L10n.tr("自动", "Auto")
-        case "sleep", "night", "睡眠": return L10n.tr("睡眠", "Sleep")
+        case "sleep", "睡眠": return L10n.tr("睡眠", "Sleep")
         case "strong", "high", "强力", "强": return L10n.tr("强力", "Strong")
         case "baby", "婴儿": return L10n.tr("婴儿", "Baby")
         case "manual", "手动": return L10n.tr("手动", "Manual")

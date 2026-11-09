@@ -108,7 +108,7 @@ struct GenericDetailDrawer: View {
                     ),
                     systemImage: "lock.fill"
                 )
-            } else if spec.powerControl == nil {
+            } else if spec.powerControl == nil, showsAdvancedViewOnlyCopy {
                 explanation(
                     L10n.tr(
                         "为安全起见，这类设备默认只能查看。需要调整时，在下方「更多设置」里开启。",
@@ -128,8 +128,14 @@ struct GenericDetailDrawer: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// The locked row this alarm can scroll to. Nil when the related control is already writable,
-    /// so the banner does not offer a button that cannot change anything.
+    private var showsAdvancedViewOnlyCopy: Bool {
+        guard let device, let store else { return false }
+        return MiotFacetText.showsAdvancedViewOnlyCopy(
+            controls: store.deviceFacets[device.id] ?? [],
+            allowsAdvancedWrites: store.allowAdvancedFacetWrites
+        )
+    }
+
     private func lockedControlID(for alert: String) -> String? {
         guard let device, let store else { return nil }
         return MiotFacetText.lockedControlID(
