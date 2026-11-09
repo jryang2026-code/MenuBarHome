@@ -1,0 +1,409 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { ManualControlPolicy } from "../src/core/assistant/actionPolicy.js";
+import {
+  DEVICE_PROFILES,
+  MANUAL_CONTROL_FALLBACK_RULES,
+  type ManualControlRules,
+} from "../src/core/miCloud/facets.js";
+import type { FacetControl, SmartDevice } from "../src/core/models.js";
+
+/**
+ * The Windows 更多设置 confirmation table, one row per macOS branch:
+ * `MijiaCore.ManualControlPolicy.facetRequiresConfirmation` (`Sources/MijiaCore/ManualControlPolicy.swift`)
+ * is the reference. Rows that Swift tests already pin name that test.
+ */
+function device(kind: SmartDevice["kind"], overrides: Partial<SmartDevice> = {}): SmartDevice {
+  return {
+    id: `did_${kind.kind}`,
+    name: kind.kind,
+    roomId: "room",
+    roomName: "Room",
+    model: `vendor.${kind.kind}.v1`,
+    isOnline: true,
+    kind,
+    ...overrides,
+  };
+}
+
+function generic(deviceType: string, overrides: Partial<SmartDevice> = {}): SmartDevice {
+  return device(
+    {
+      kind: "generic",
+      deviceType,
+      typeTitle: deviceType,
+      isOn: false,
+      powerControl: null,
+      isReadOnly: false,
+      readouts: [],
+      symbolName: null,
+    },
+    { id: `did_${deviceType}`, name: deviceType, model: `generic.${deviceType}`, ...overrides },
+  );
+}
+
+/** `deviceCategory` calls this a heater: a climate card whose model names a heater. */
+function heater(overrides: Partial<SmartDevice> = {}): SmartDevice {
+  return device(
+    {
+      kind: "climate",
+      entityId: "miot:heater:2",
+      isOn: false,
+      hvacMode: "off",
+      availableModes: ["off", "heat"],
+      targetTemperature: 22,
+      currentTemperature: 20,
+      minTemp: 16,
+      maxTemp: 30,
+      step: 1,
+      fanMode: null,
+      availableFanModes: [],
+    },
+    { id: "did_heater", name: "电暖器", model: "dmaker.heater.v1", ...overrides },
+  );
+}
+
+/** An appliance card that heats water, so `spec.heats` drives the water-heater branch. */
+function waterHeater(): SmartDevice {
+  return device(
+    {
+      kind: "appliance",
+      entityId: "miot:water_heater:2",
+      isOn: true,
+      powerPresent: true,
+      powerWritable: true,
+      currentMode: "heat",
+      availableModes: ["off", "heat"],
+      modeWritable: true,
+      targetTemperature: 45,
+      currentTemperature: 44,
+      minTemp: 30,
+      maxTemp: 75,
+      step: 1,
+      temperatureWritable: true,
+      statusText: null,
+      faultText: null,
+      remainingMinutes: null,
+      startAction: null,
+      pauseAction: null,
+      stopAction: null,
+      powerEntityId: "miot:water_heater:2",
+      modeEntityId: "miot:water_heater:3",
+      temperatureEntityId: "miot:water_heater:4",
+      light: null,
+      fanLevel: null,
+      currentHumidity: null,
+      symbolName: null,
+      roomReading: false,
+      heats: true,
+    },
+    { id: "did_water_heater", name: "热水器", model: "xiaomi.waterheater.v1" },
+  );
+}
+
+function curtain(): SmartDevice {
+  return device(
+    {
+      kind: "cover",
+      entityId: "miot:curtain:2",
+      subtype: "curtain",
+      positionPercent: 50,
+      positionWritable: true,
+      openDescription: null,
+      closeDescription: null,
+      pauseDescription: null,
+      batteryPercent: null,
+      faultText: null,
+      motion: "stopped",
+    },
+    { id: "did_curtain", name: "窗帘", model: "lumi.curtain.v1" },
+  );
+}
+
+function facet(overrides: Partial<FacetControl> = {}): FacetControl {
+  return {
+    id: "2.2",
+    kind: "toggle",
+    name: "speed",
+    title: null,
+    serviceName: "vendor-service",
+    unit: null,
+    scale: null,
+    value: 1,
+    options: [],
+    range: null,
+    isWritable: true,
+    writesByDefault: false,
+    isHighValue: false,
+    target: { kind: "property", entityId: "miot:vendor:2", piid: 2 },
+    ...overrides,
+  };
+}
+
+const offHeatOptions = [
+  { value: 0, label: "Off" },
+  { value: 1, label: "Heat" },
+];
+
+interface Row {
+  readonly name: string;
+  readonly control: FacetControl;
+  readonly value: unknown;
+  readonly device: SmartDevice;
+  readonly expected: boolean;
+  readonly source: string;
+}
+
+const rows: readonly Row[] = [
+  {
+    name: "a button always asks, whitelisted or not",
+    control: facet({ kind: "button", writesByDefault: true, target: { kind: "action", entityId: "miot:vendor:a2" } }),
+    value: undefined,
+    device: generic("vendor-box"),
+    expected: true,
+    source: "ManualControlPolicy.swift L132: `if facet.kind == .button { return true }`",
+  },
+  {
+    name: "an action target always asks even behind a toggle row",
+    control: facet({ kind: "toggle", writesByDefault: true, target: { kind: "action", entityId: "miot:vendor:a2" } }),
+    value: true,
+    device: generic("vendor-box"),
+    expected: true,
+    source: "ManualControlPolicy.swift L134: `facet.target?.isAction == true`",
+  },
+  {
+    name: "a cover mode write asks even when the facet is whitelisted",
+    control: facet({
+      kind: "select",
+      name: "mode",
+      serviceName: "curtain",
+      options: offHeatOptions,
+      writesByDefault: true,
+      value: 0,
+    }),
+    value: 1,
+    device: curtain(),
+    expected: true,
+    source: "ManualControlPolicy.swift L139-140: `isMode` on a cover or cover service",
+  },
+  {
+    name: "a strictly high-risk device type asks even with a whitelisted facet",
+    control: facet({ name: "on", writesByDefault: true, value: false }),
+    value: true,
+    device: generic("lock"),
+    expected: true,
+    source: "ManualControlPolicy.swift `strictlyHighRisk`: `lock` matches the device type",
+  },
+  {
+    name: "a strictly high-risk service asks even for the off direction",
+    control: facet({ name: "on", serviceName: "lock", writesByDefault: true, value: true }),
+    value: false,
+    device: generic("vendor-box"),
+    expected: true,
+    source: "ManualControlPolicy.swift `strictlyHighRisk`: off still asks (#6 review)",
+  },
+  {
+    name: "an indicator token stays direct",
+    control: facet({ name: "indicator", serviceName: "indicator-light", writesByDefault: true, value: false }),
+    value: true,
+    device: generic("vendor-box"),
+    expected: false,
+    source: "ManualControlPolicy.swift `lowRiskTokens` / `lowRiskServices`",
+  },
+  {
+    name: "a child-lock token stays direct",
+    control: facet({ name: "child-lock", writesByDefault: true, value: false }),
+    value: true,
+    device: generic("vendor-box"),
+    expected: false,
+    source: "ManualControlPolicy.swift `lowRiskHA`: `name.contains(\"child-lock\")`",
+  },
+  {
+    name: "a night light stays direct",
+    control: facet({ name: "night-light", writesByDefault: true, value: false }),
+    value: true,
+    device: generic("vendor-box"),
+    expected: false,
+    source: "ManualControlPolicy.swift `lowRiskHA`: `name.contains(\"night-light\")`",
+  },
+  {
+    name: "a buzzer service stays direct",
+    control: facet({ name: "volume", serviceName: "buzzer", writesByDefault: true, value: 1 }),
+    value: 2,
+    device: generic("vendor-box"),
+    expected: false,
+    source: "ManualControlPolicy.swift `lowRiskServices`",
+  },
+  {
+    name: "an HA switch turned on follows the heater power table and asks",
+    control: facet({ name: "bath-heater-ptc", serviceName: "switch", value: false }),
+    value: true,
+    device: heater(),
+    expected: true,
+    source: "ManualControlPolicy.swift L167: `service == \"switch\"` → `.power(isOn)`",
+  },
+  {
+    name: "an HA switch reports its direction as 0/1 strings too",
+    control: facet({ name: "bath-heater-ptc", serviceName: "switch", value: "0" }),
+    value: "1",
+    device: heater(),
+    expected: true,
+    source: "ManualControlPolicy.swift L167 switch branch reads the 0/1 form as a boolean",
+  },
+  {
+    name: "an HA switch turned off on a heater stays direct",
+    control: facet({ name: "bath-heater-ptc", serviceName: "switch", value: true }),
+    value: false,
+    device: heater(),
+    expected: false,
+    source: "ManualControlPolicy.swift L167: the same power table keeps off direct",
+  },
+  {
+    name: "any heater target temperature asks, hotter or cooler",
+    control: facet({ kind: "slider", name: "target-temperature", serviceName: "heater", value: 22 }),
+    value: 28,
+    device: heater(),
+    expected: true,
+    source: "ManualControlPolicy.swift L176-180: heater category falls through to `return true`",
+  },
+  {
+    name: "turning a heater off stays direct",
+    control: facet({ name: "on", serviceName: "heater", value: true }),
+    value: false,
+    device: heater(),
+    expected: false,
+    source: "ManualControlPolicy.swift L177: `if isPower, let isOn = value?.miotBool { return isOn }`",
+  },
+  {
+    name: "a heater mode set to Off stays direct",
+    control: facet({ kind: "select", name: "mode", serviceName: "heater", options: offHeatOptions, value: 1 }),
+    value: 0,
+    device: heater(),
+    expected: false,
+    source: "ManualControlPolicy.swift L178: `selectedMode` off is direct",
+  },
+  {
+    name: "a heater mode set to Heat asks",
+    control: facet({ kind: "select", name: "mode", serviceName: "heater", options: offHeatOptions, value: 0 }),
+    value: 1,
+    device: heater(),
+    expected: true,
+    source: "ManualControlPolicy.swift L178",
+  },
+  {
+    name: "a heating service switched on asks",
+    control: facet({ name: "on", serviceName: "heater", value: false }),
+    value: true,
+    device: generic("vendor-box"),
+    expected: true,
+    source: "ManualControlPolicy.swift L183-185: `heatingService { return isOn }`",
+  },
+  {
+    name: "a heating service switched off stays direct",
+    control: facet({ name: "on", serviceName: "heater", value: true }),
+    value: false,
+    device: generic("vendor-box"),
+    expected: false,
+    source: "ManualControlPolicy.swift L183-185",
+  },
+  {
+    name: "a water heater target above the current reading asks",
+    control: facet({ kind: "slider", name: "target-temperature", serviceName: "water-heater", value: 45 }),
+    value: 60,
+    device: waterHeater(),
+    expected: true,
+    source: "ManualControlPolicy.swift L196-198: `requested > current`",
+  },
+  {
+    name: "a water heater target below the current reading stays direct",
+    control: facet({ kind: "slider", name: "target-temperature", serviceName: "water-heater", value: 45 }),
+    value: 40,
+    device: waterHeater(),
+    expected: false,
+    source: "ManualControlPolicy.swift L196-198",
+  },
+  {
+    name: "a water heater target with no reading asks on a heating service",
+    control: facet({ kind: "slider", name: "target-temperature", serviceName: "water-heater", value: null }),
+    value: 50,
+    device: waterHeater(),
+    expected: true,
+    source: "ManualControlPolicy.swift L199: `if heatingService { return true }`",
+  },
+  {
+    name: "a generic facet outside the whitelist asks",
+    control: facet({ name: "speed", value: 1 }),
+    value: 2,
+    device: generic("vendor-box"),
+    expected: true,
+    source: "ManualControlPolicy.swift L208-210: generic devices outside the whitelist",
+  },
+  {
+    name: "a whitelisted write on a generic device stays direct",
+    control: facet({ name: "speed", writesByDefault: true, value: 1 }),
+    value: 2,
+    device: generic("vendor-box"),
+    expected: false,
+    source: "ManualControlPolicy.swift L208-210",
+  },
+  {
+    name: "a generic mode set to Off stays direct",
+    control: facet({ kind: "select", name: "mode", options: offHeatOptions, value: 1 }),
+    value: 0,
+    device: generic("vendor-box"),
+    expected: false,
+    source: "ManualControlPolicy.swift L213-215: an off mode is not a hazard",
+  },
+  {
+    name: "a generic mode set to Heat asks",
+    control: facet({ kind: "select", name: "mode", options: offHeatOptions, value: 0 }),
+    value: 1,
+    device: generic("vendor-box"),
+    expected: true,
+    source: "ManualControlPolicy.swift L213-215",
+  },
+];
+
+describe("更多设置 confirmation rule (#5, #6)", () => {
+  for (const row of rows) {
+    it(row.name, () => {
+      assert.equal(
+        ManualControlPolicy.facetRequiresConfirmation(row.control, row.value, row.device),
+        row.expected,
+        row.source,
+      );
+    });
+  }
+
+  it("custom rules de-escalate a service the default table asks about (Tests/MijiaCoreTests/ManualControlPolicyTests.swift rulesDriveFacetConfirmation)", () => {
+    const dev = generic("vendor-box");
+    const control = facet();
+    assert.equal(ManualControlPolicy.facetRequiresConfirmation(control, 2, dev), true);
+
+    const custom: ManualControlRules = {
+      strictlyHighRisk: [],
+      heatingService: [],
+      lowRiskServices: ["vendor-service"],
+      lowRiskTokens: [],
+    };
+    assert.equal(ManualControlPolicy.facetRequiresConfirmation(control, 2, dev, custom), false);
+  });
+
+  it("custom strictly-high-risk entries keep an off direction behind a confirmation (ManualControlPolicyTests rulesDriveStrictRisk)", () => {
+    const dev = generic("vendor-box");
+    const control = facet({ name: "on", value: true });
+    assert.equal(ManualControlPolicy.facetRequiresConfirmation(control, false, dev), false);
+
+    const custom: ManualControlRules = {
+      strictlyHighRisk: ["vendor-service"],
+      heatingService: [],
+      lowRiskServices: [],
+      lowRiskTokens: [],
+    };
+    assert.equal(ManualControlPolicy.facetRequiresConfirmation(control, false, dev, custom), true);
+  });
+
+  it("the bundled document carries the manual-control table macOS reads (ManualControlPolicyTests bundledRulesMatchDocument)", () => {
+    assert.deepEqual(DEVICE_PROFILES.manualControlPolicy, MANUAL_CONTROL_FALLBACK_RULES);
+  });
+});
