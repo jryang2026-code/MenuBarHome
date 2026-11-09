@@ -1047,6 +1047,46 @@ struct SnapshotTests {
         }
     }
 
+    @Test("Expanded plug shows the child-lock label")
+    func expandedPlugChildLockSnapshot() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+        let spec = PlugSpec(
+            switchEntityId: "miot:snapshot-plug:2", isOn: true, powerWatts: 12,
+            childLockEntityId: "miot:snapshot-plug:7", isChildLocked: true
+        )
+        let device = SmartDevice(
+            id: "snapshot-plug-lock", name: "客厅插座", roomId: "living", roomName: "客厅",
+            model: "cuco.plug.v3", isOnline: true, kind: .plug(spec)
+        )
+        fixture.store.expandedDeviceId = device.id
+        assertRendered(
+            snapshotReady(DeviceCardView(device: device, store: fixture.store, showRoomBadge: true).padding(8).frame(width: 360)),
+            size: CGSize(width: 376, height: 260),
+            named: "expanded-plug-childlock-zh-light"
+        )
+    }
+
+    @Test("About shows rendered release notes instead of raw markdown")
+    func settingsAboutNotesSnapshot() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+        let notes = "### 亮点\n- **bold** [#9](https://github.com/jryang2026-code/MenuBarHome/issues/9)：说明\n- **two**"
+        fixture.store.updateState = .available(AppRelease(
+            version: "9.9.9",
+            pageURL: URL(string: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v9.9.9")!,
+            notes: notes
+        ))
+        assertRendered(
+            SettingsWindowView(store: fixture.store, selectedTab: .about)
+                .environment(\.colorScheme, .light)
+                .environment(\.reduceMotionOverride, true)
+                .environment(\.reduceTransparencyOverride, true),
+            size: CGSize(width: 780, height: 680),
+            named: "settings-about-notes-zh-light"
+        )
+    }
+
     // MARK: - Non-visual guards for the appearance work (#51) and tooltip (#54)
 
     @Test("On and off tiles never share the same ink or fill")

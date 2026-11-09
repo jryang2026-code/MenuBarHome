@@ -879,13 +879,48 @@ struct GlassSwitch: View {
     }
 }
 
-/// `.toggleStyle(.glass)` — the switch above, with the Toggle's own label and VoiceOver intact.
+/// `.toggleStyle(.glass)` draws the label beside the switch.
+/// `.labelsHidden()` still hides it, so a row that already has its own title does not show that title twice.
 struct GlassSwitchToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
-        GlassSwitch(isOn: configuration.$isOn)
-            .accessibilityRepresentation {
-                Toggle(isOn: configuration.$isOn) { configuration.label }
+        GlassSwitchToggleBody(configuration: configuration)
+    }
+}
+
+private struct GlassSwitchToggleBody: View {
+    @Environment(\.labelsHidden) private var labelsHidden
+    @Environment(\.isEnabled) private var isEnabled
+    var configuration: ToggleStyleConfiguration
+
+    var body: some View {
+        Group {
+            if labelsHidden {
+                GlassSwitch(isOn: configuration.$isOn)
+            } else {
+                HStack(alignment: .center, spacing: 0) {
+                    configuration.label
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .layoutPriority(1)
+                        .opacity(isEnabled ? 1 : 0.45)
+                        .contentShape(Rectangle())
+                        .onTapGesture { toggle() }
+                    Spacer(minLength: 8)
+                        .contentShape(Rectangle())
+                        .onTapGesture { toggle() }
+                    GlassSwitch(isOn: configuration.$isOn)
+                        .layoutPriority(2)
+                }
             }
+        }
+        .accessibilityRepresentation {
+            Toggle(isOn: configuration.$isOn) { configuration.label }
+        }
+    }
+
+    private func toggle() {
+        guard isEnabled else { return }
+        configuration.isOn.toggle()
     }
 }
 
