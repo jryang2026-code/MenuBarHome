@@ -908,7 +908,7 @@ enum PanelSearchKeyboard {
 
 /// Per-panel measurements for the fold test. Absent unless a test injects one, so other UI
 /// suites do not share this storage.
-final class PanelFoldRecord {
+final class PanelFoldRecord: @unchecked Sendable {
     var panelMinY: CGFloat?
     var systemNoticeMinY: CGFloat?
     var omnibarMinY: CGFloat?
@@ -929,7 +929,7 @@ extension EnvironmentValues {
 }
 
 struct CardGlobalTopKey: PreferenceKey {
-    static var defaultValue: [String: CGFloat] = [:]
+    static let defaultValue: [String: CGFloat] = [:]
     static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
         value.merge(nextValue()) { _, new in new }
     }
