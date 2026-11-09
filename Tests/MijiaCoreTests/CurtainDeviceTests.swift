@@ -209,20 +209,18 @@ struct CurtainDeviceTests {
         let (closed, _, _) = try singleTrackHome(position: 0, status: 0)
         let (closedStore, closedMock) = try await makeStore([closed])
         let closedCard = try #require(closedStore.devices.first)
-        let closedOrigin = closedStore.devices.first?.coverPosition
         let closedBefore = closedStore.snapshotGeneration
         #expect(await closedStore.togglePrimary(closedCard)?.value == true)
-        try await closedStore.settleCoverCommand(closedCard.id, origin: closedOrigin, after: closedBefore)
+        try await closedStore.settleCoverCommand(closedCard.id, after: closedBefore)
         #expect(await closedMock.executedCommands == [.setSelectOption(entityId: "miot:curtain1:2", option: "Open")])
         #expect(closedStore.devices.first?.coverPosition == 100)
 
         let (open, _, _) = try singleTrackHome(position: 65, status: 0)
         let (openStore, openMock) = try await makeStore([open])
         let openCard = try #require(openStore.devices.first)
-        let openOrigin = openStore.devices.first?.coverPosition
         let openBefore = openStore.snapshotGeneration
         #expect(await openStore.togglePrimary(openCard)?.value == true)
-        try await openStore.settleCoverCommand(openCard.id, origin: openOrigin, after: openBefore)
+        try await openStore.settleCoverCommand(openCard.id, after: openBefore)
         #expect(await openMock.executedCommands == [.setSelectOption(entityId: "miot:curtain1:2", option: "Close")])
         #expect(openStore.devices.first?.coverPosition == 0)
     }
@@ -234,16 +232,14 @@ struct CurtainDeviceTests {
         let (store, mock) = try await makeStore([drape, lace])
 
         let drapeCard = try #require(store.devices.first { $0.id == "dual1.s2" })
-        let drapeOrigin = store.devices.first { $0.id == "dual1.s2" }?.coverPosition
         let drapeBefore = store.snapshotGeneration
         #expect(await store.togglePrimary(drapeCard)?.value == true)
-        try await store.settleCoverCommand(drapeCard.id, origin: drapeOrigin, after: drapeBefore)
+        try await store.settleCoverCommand(drapeCard.id, after: drapeBefore)
 
         let laceCard = try #require(store.devices.first { $0.id == "dual1.s3" })
-        let laceOrigin = store.devices.first { $0.id == "dual1.s3" }?.coverPosition
         let laceBefore = store.snapshotGeneration
         #expect(await store.togglePrimary(laceCard)?.value == true)
-        try await store.settleCoverCommand(laceCard.id, origin: laceOrigin, after: laceBefore)
+        try await store.settleCoverCommand(laceCard.id, after: laceBefore)
 
         #expect(await mock.executedCommands == [
             .setSelectOption(entityId: "miot:dual1:2", option: "Open"),
@@ -300,13 +296,9 @@ struct CurtainDeviceTests {
         let card = try #require(store.devices.first)
 
         let sliderBefore = store.snapshotGeneration
-        let sliderOrigin = store.devices.first?.coverPosition
         store.setCoverPosition(card.id, percent: 70)
-        try store.extendCoverLock(card.id)
-        // The slider's parked echo must land before the pause sends: while the pause's read-back
-        // ticket is in flight that echo replaces the row and drops the travel origin, and the
-        // pause's own echo then takes the row over.
-        try await store.settleCoverCommand(card.id, origin: sliderOrigin, after: sliderBefore)
+        // Let the slider's echo land before the pause sends, so the pause reads the settled row.
+        try await store.settleCoverCommand(card.id, after: sliderBefore)
 
         let moved = try #require(store.devices.first)
         #expect(await store.togglePrimary(moved)?.value == true)

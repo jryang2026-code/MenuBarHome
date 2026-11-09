@@ -317,12 +317,22 @@ extension HomeStore {
                         debounceTasks.removeValue(forKey: key)?.cancel()
                     }
                 }
-                // A primary toggle is waiting for this read-back, so the lock from an older
-                // command must not hide the device's own property snapshot.
+                // A primary power toggle is waiting for this read-back, so the lock from an
+                // older command must not hide the device's own property snapshot. A cover tap
+                // has no property read-back to wait for: the motor reports its position only
+                // after it moves. Its commanded row and travel origin must therefore survive
+                // every snapshot that lands while the tap is in flight, or a parked report
+                // replaces the row and drops the origin the takeover rule needs.
+                let readBackNeedsSnapshot: Bool
+                if case .cover = incoming.kind {
+                    readBackNeedsSnapshot = false
+                } else {
+                    readBackNeedsSnapshot = waitingDeviceIds.contains(incoming.id)
+                        || readBackTickets.isInFlight(incoming.id)
+                }
                 if let lockTime = optimisticLockUntil[incoming.id], now < lockTime,
                    let local = existingById[incoming.id],
-                   !waitingDeviceIds.contains(incoming.id),
-                   !readBackTickets.isInFlight(incoming.id) {
+                   !readBackNeedsSnapshot {
                     if coverTravelTakesOver(deviceId: incoming.id, local: local, incoming: incoming) {
                         // The motor has confirmed the command, so its own report is authoritative.
                         // Keeping the timed lock here would hide it and make the card jump when

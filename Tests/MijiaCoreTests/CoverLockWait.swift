@@ -25,19 +25,10 @@ extension HomeStore {
         }
     }
 
-    /// Waits for the provider snapshot a cover command produces, keeps its lock from expiring, and
-    /// puts back the travel origin the command wrote when a merge cleared it.
-    ///
-    /// A merge that runs while the command's read-back ticket is in flight replaces the row with
-    /// the parked report and drops the origin; without the origin, the echo that is still pending
-    /// would then take the row over. Restoring the origin before the wait makes that merge hold,
-    /// and waiting for the echo before the next command keeps the takeover rule, not echo timing,
-    /// in charge. `origin` is the position the row held before the command.
-    func settleCoverCommand(_ deviceId: String, origin: Int?, after generation: UInt64) async throws {
+    /// Extends the lock a cover command armed and waits for the provider echo it produces, so the
+    /// next assertion or command runs against the settled row instead of racing the echo.
+    func settleCoverCommand(_ deviceId: String, after generation: UInt64) async throws {
         try extendCoverLock(deviceId)
-        if coverCommandOrigins[deviceId] == nil, let origin {
-            coverCommandOrigins[deviceId] = origin
-        }
         await waitForCoverSnapshot(after: generation)
     }
 }

@@ -211,6 +211,15 @@ extension HomeStore {
             return nil
         }
 
+        // A cover is write-only: the motor reports its position only after it moves, so the
+        // commanded row and travel origin are shown and locked before the send. A snapshot that
+        // lands while the command is in flight is then held instead of replacing the row and
+        // dropping the origin the takeover rule needs (#298 follow-up).
+        var coverWrite: OptimisticWrite?
+        if case .cover = updated.kind {
+            coverWrite = beginOptimisticWrite(from: previous, to: updated, lock: .seconds(8))
+        }
+
         return Task {
             defer { self.readBackTickets.finish(device.id, ticket: ticket) }
             guard self.controlContextID == context else { return false }
@@ -238,9 +247,20 @@ extension HomeStore {
                 }
             } catch {
                 guard self.controlContextID == context else { return false }
-                // A newer tap may own the device by now; only an unclaimed failure drops our origin.
+                // A newer tap may own the device by now; only an unclaimed failure drops what
+                // this tap showed. A cover tap restores the pre-tap row and releases its early
+                // lock; the origin it wrote goes back to the value it displaced.
                 if self.readBackTickets.isLatest(device.id, ticket: ticket) {
-                    self.discardCoverOrigin(coverOrigin, deviceId: device.id, revision: lockRevision)
+                    if let coverWrite {
+                        if self.ownsRow(coverWrite) {
+                            self.revert(coverWrite)
+                            if let prior = coverOrigin?.prior {
+                                self.coverCommandOrigins[device.id] = prior
+                            }
+                        }
+                    } else {
+                        self.discardCoverOrigin(coverOrigin, deviceId: device.id, revision: lockRevision)
+                    }
                 }
                 self.showToast(L10n.tr("\(device.name) 响应失败", "\(device.name) failed to respond"), isError: true)
                 return false

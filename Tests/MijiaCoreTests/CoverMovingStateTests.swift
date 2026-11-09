@@ -347,14 +347,11 @@ struct CoverMovingStateTests {
         let parked = try coverDevice(current: 0, target: 0, status: 0)
         let (store, mock) = try await makeStore([parked])
         let card = try #require(store.devices.first)
-        let origin = store.devices.first?.coverSpec?.positionPercent
         let beforeCommand = store.snapshotGeneration
         #expect(await store.togglePrimary(card)?.value == true)
-        // The mock echoes the parked snapshot while the send is in flight, and that echo can land
-        // while the read-back ticket is in flight, replacing the row and dropping the travel
-        // origin. Wait for it, then put the origin the tap wrote back, so the takeover rule is what
-        // this test exercises instead of the echo's timing.
-        try await store.settleCoverCommand(card.id, origin: origin, after: beforeCommand)
+        // The mock echoes the parked snapshot while the send is in flight. Wait for it so the
+        // takeover rule, not the echo's timing, is what this test exercises.
+        try await store.settleCoverCommand(card.id, after: beforeCommand)
 
         // The target moved to 100 and the status says Opening, but the reported position is still 0.
         // The display position is the target, so comparing it would unlock before the motor moves.

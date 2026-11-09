@@ -47,12 +47,56 @@ struct CoverCommandOriginTests {
         let succeeded = await store.togglePrimary(device)?.value
         #expect(succeeded == false)
         #expect(store.coverCommandOrigins["curtain"] == nil)
+        #expect(store.optimisticLockUntil["curtain"] == nil, "a failed send releases its early lock")
         let row = try #require(store.devices.first)
         if case .cover(let spec) = row.kind {
             #expect(spec.positionPercent == 0, "the row keeps the closed position")
         } else {
             Issue.record("expected the curtain row, got \(row.kind)")
         }
+    }
+
+    @Test("A snapshot while the command is in flight cannot pull the card back")
+    @MainActor
+    func inFlightSnapshotCannotDropCommandedTravel() async throws {
+        let (store, mock) = try await makeStore()
+        await mock.holdNextExecute()
+
+        let card = try #require(store.devices.first)
+        let beforeCommand = store.snapshotGeneration
+        let command = try #require(store.togglePrimary(card))
+        try await waitUntil { await mock.executeStarted > 0 }
+
+        // The provider still reports the parked position while the write is in flight.
+        await mock.updateSnapshot(SynthesizedHome(devices: [Self.curtain]))
+        try await waitUntil { store.snapshotGeneration > beforeCommand }
+
+        let during = try #require(store.devices.first)
+        guard case .cover(let optimistic) = during.kind else {
+            Issue.record("expected the curtain row, got \(during.kind)")
+            return
+        }
+        #expect(optimistic.positionPercent == 100, "the card shows the commanded travel before the send returns")
+        #expect(optimistic.motion == .opening, "the in-flight snapshot does not stop the commanded travel")
+
+        let beforeRelease = store.snapshotGeneration
+        await mock.releaseExecute()
+        #expect(await command.value == true)
+        await store.waitForCoverSnapshot(after: beforeRelease)
+
+        // A late poll still reports the pre-command position. The tap's origin must keep the
+        // commanded travel on the card instead of reading the stale stop as a takeover.
+        let beforeStale = store.snapshotGeneration
+        await mock.updateSnapshot(SynthesizedHome(devices: [Self.curtain]))
+        try await waitUntil { store.snapshotGeneration > beforeStale }
+
+        let row = try #require(store.devices.first)
+        guard case .cover(let shown) = row.kind else {
+            Issue.record("expected the curtain row, got \(row.kind)")
+            return
+        }
+        #expect(shown.positionPercent == 100, "the card keeps the commanded open position")
+        #expect(shown.motion == .opening, "the card keeps showing the commanded travel")
     }
 
     @Test("A tap that cannot claim leaves the in-flight tap's origin alone")
