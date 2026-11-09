@@ -379,12 +379,16 @@ struct CameraTitleBarSplit: Equatable {
     }
 }
 
+enum CameraLivePanelMetrics {
+    static let compactWidth: CGFloat = 360
+    static let compactHeight: CGFloat = 244
+}
+
 struct CameraTitleBarLayout: Layout {
     var spacing: CGFloat = 6
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let compactWidth = CameraLivePanelController.compactSize.width
-        let width = proposal.width ?? compactWidth
+        let width = proposal.width ?? CameraLivePanelMetrics.compactWidth
         let split = split(for: width, subviews: subviews)
         let leadingHeight = subviews.first.map {
             $0.sizeThatFits(ProposedViewSize(width: split.leadingWidth, height: proposal.height)).height

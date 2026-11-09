@@ -33,7 +33,10 @@ final class CameraFloatingPanel: NSPanel {
 public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     public static let shared = CameraLivePanelController()
 
-    public static let compactSize = NSSize(width: 360, height: 244)
+    public static let compactSize = NSSize(
+        width: CameraLivePanelMetrics.compactWidth,
+        height: CameraLivePanelMetrics.compactHeight
+    )
     public static let expandedSize = NSSize(width: 640, height: 420)
     private static let frameStorageKey = "camera_live_panel_frame_v1"
 
