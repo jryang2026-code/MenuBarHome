@@ -133,6 +133,23 @@ export interface ReplyBannerState {
   readonly isError?: boolean;
 }
 
+/**
+ * A high-risk manual write waiting for its confirm. `actionKey` binds the arm to one exact
+ * command and `sourceRevision` to the backend that produced it; a write whose control cannot
+ * repeat the same value (the climate slider) carries the captured command for one explicit button.
+ */
+export interface PendingHighRiskConfirmation {
+  readonly deviceId: string;
+  readonly actionKey: string;
+  readonly expiresAtMs: number;
+  readonly sourceRevision: number;
+  readonly confirm?: {
+    readonly command: DeviceCommand;
+    readonly summary: string;
+    readonly intent: DeviceIntent;
+  };
+}
+
 
 export interface LoadedSettings {
   readonly settings: PersistedSettings;

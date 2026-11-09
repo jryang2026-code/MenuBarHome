@@ -283,6 +283,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "需要确认": ["需要确认", "Confirmation needed"],
   "「{action}」属于高风险设备，再点一次确认执行": ["「{action}」属于高风险设备，再点一次确认执行", "「{action}」is a high-risk device. Tap again to confirm."],
   "「{action}」属于高风险设备，确认后执行": ["「{action}」属于高风险设备，确认后执行", "「{action}」is a high-risk device. Confirm to run it."],
+  "设为 {temp}？": ["设为 {temp}？", "Set to {temp}?"],
   "确认执行": ["确认执行", "Confirm"],
   "确认已过期，请重新操作": ["确认已过期，请重新操作", "Confirmation expired. Try again."],
   "高风险设备需要先确认，未设定定时": ["高风险设备需要先确认，未设定定时", "High-risk devices need confirmation first, so no timer was set"],

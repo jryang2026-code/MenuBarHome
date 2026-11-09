@@ -126,11 +126,6 @@ import { quickActions } from "./demo.js";
                         : ""
                     }
                     ${
-                      host.pendingHighRisk?.confirm && host.pendingHighRisk.expiresAtMs > Date.now()
-                        ? `<button class="cc-inline-pill" id="btn-high-risk-confirm">${t("确认执行")}</button>`
-                        : ""
-                    }
-                    ${
                       activeUndo
                         ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>`
                         : ""

@@ -714,19 +714,21 @@ import { bindPanelInput } from "./panelKeyboard.js";
         armed &&
         armed.deviceId === deviceId &&
         armed.actionKey === actionKey &&
+        armed.sourceRevision === host.sourceRevision &&
         armed.expiresAtMs > Date.now()
       ) {
-        host.pendingHighRisk = null;
+        host.clearPendingHighRisk();
         return true;
       }
-      host.pendingHighRisk = {
+      host.setPendingHighRisk({
         deviceId,
         actionKey,
         expiresAtMs: Date.now() + 8000,
+        sourceRevision: host.sourceRevision,
         ...(explicit
           ? { confirm: { command, summary: explicit.summary, intent: explicit.intent } }
           : {}),
-      };
+      });
       host.replyBanner = {
         text: explicit
           ? t("「{action}」属于高风险设备，确认后执行", { action: label })
@@ -737,21 +739,24 @@ import { bindPanelInput } from "./panelKeyboard.js";
       return false;
     };
 
-    host.root.querySelector("#btn-high-risk-confirm")?.addEventListener("click", () => {
-      const armed = host.pendingHighRisk;
-      if (!armed?.confirm) return;
-      host.pendingHighRisk = null;
-      if (armed.expiresAtMs <= Date.now()) {
-        host.replyBanner = { text: t("确认已过期，请重新操作"), source: t("需要确认") };
+    host.root.querySelectorAll<HTMLElement>("[data-high-risk-confirm]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.highRiskConfirm;
+        const armed = host.pendingHighRisk;
+        if (!id || !armed?.confirm || armed.deviceId !== id) return;
+        const expired = armed.expiresAtMs <= Date.now();
+        const stale = armed.sourceRevision !== host.sourceRevision;
+        // Consume before sending: the row must disappear before the network call finishes.
+        host.clearPendingHighRisk();
+        if (expired) {
+          host.replyBanner = { text: t("确认已过期，请重新操作"), source: t("需要确认") };
+        }
         host.render();
-        return;
-      }
-      const dev = host.devices.find((device) => device.id === armed.deviceId);
-      if (!dev) {
-        host.render();
-        return;
-      }
-      void host.executeSingleCommand(dev, armed.confirm.command, armed.confirm.summary, armed.confirm.intent);
+        if (expired || stale) return;
+        const dev = host.devices.find((device) => device.id === id);
+        if (!dev) return;
+        void host.executeSingleCommand(dev, armed.confirm.command, armed.confirm.summary, armed.confirm.intent);
+      });
     });
 
     /** Three `|`-separated parts, for rows whose value is itself a segment (`id|control|value`). */

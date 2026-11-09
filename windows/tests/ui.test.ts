@@ -12,7 +12,7 @@ import { SKINS } from "../src/ui/panelPrefs.js";
 import { cloudFixture } from "./cloudFixture.js";
 import { MiCloudClient, MiotSynthesizer, inferFallbackSpec, parseMiotDeviceSpec } from "../src/core/miCloudClient.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
-import type { FacetControl, GenericSpec, SmartDevice } from "../src/core/models.js";
+import type { DeviceCommand, FacetControl, GenericSpec, SmartDevice } from "../src/core/models.js";
 
 let dom: Window;
 
@@ -5090,6 +5090,17 @@ describe("Manual control parity with macOS (#143)", () => {
     },
   });
 
+  const secondHeater = (): SmartDevice => {
+    const dev = heater();
+    const kind = dev.kind as Extract<SmartDevice["kind"], { kind: "climate" }>;
+    return {
+      ...dev,
+      id: "heater-2",
+      name: "客厅电暖器",
+      kind: { ...kind, entityId: "climate.heater2" },
+    };
+  };
+
   const plug = (): SmartDevice => ({
     ...common,
     id: "plug",
@@ -5375,7 +5386,7 @@ describe("Manual control parity with macOS (#143)", () => {
     assert.ok(document.querySelector('[data-acfan="fan-climate:High"]'));
   });
 
-  it("offers an explicit confirm for a refused heater slider and sends that exact value", async () => {
+  it("puts the slider confirmation in the owning drawer and sends the captured value", async () => {
     const app = await startWithDevices([heater()]);
     app.layout.tileSizes["heater"] = "half";
     app.render();
@@ -5385,29 +5396,127 @@ describe("Manual control parity with macOS (#143)", () => {
 
     await setRange('[data-actemp="heater"]', "27");
     assert.equal(target(), 20, "the refused write sends nothing");
-    assert.match(document.body.textContent ?? "", /确认后执行/);
-    element("#btn-high-risk-confirm").click();
+    assert.ok(document.querySelector("#btn-high-risk-confirm") === null, "no banner button");
+    assert.ok(document.querySelector(".cc-feedback-card [data-high-risk-confirm]") === null, "nothing under the feedback");
+    const row = element('[data-tile-id="heater"] [data-high-risk-confirm="heater"]');
+    assert.match(row.parentElement?.textContent ?? "", /设为 27°C？/);
+    assert.equal(row.textContent?.trim(), "确认执行");
+
+    row.click();
+    assert.ok(document.querySelector('[data-high-risk-confirm="heater"]') === null, "the row disappears before the send resolves");
     await setImmediate();
     assert.equal(target(), 27);
     assert.equal(app.pendingHighRisk, null);
   });
 
-  it("drops a slider confirmation once it expires", async () => {
+  it("keeps the confirmation out of another device's feedback and visible without the assistant bar", async () => {
+    const app = await startWithDevices([heater(), lightWithFacets()]);
+    app.layout.tileSizes["heater"] = "half";
+    app.render();
+    await click('[data-expand-device="heater"]');
+    await setRange('[data-actemp="heater"]', "27");
+
+    app.replyBanner = { text: "已打开书房灯带", source: "实时控制" };
+    app.isShowingAssistantBar = false;
+    app.render();
+    assert.ok(document.querySelector('[data-tile-id="heater"] [data-high-risk-confirm="heater"]'));
+    assert.ok(document.querySelector(".cc-feedback-card [data-high-risk-confirm]") === null);
+    assert.ok(document.querySelector('[data-tile-id="light-facets"] [data-high-risk-confirm]') === null);
+  });
+
+  it("clears a pending slider confirmation when the backend is invalidated", async () => {
     const app = await startWithDevices([heater()]);
     app.layout.tileSizes["heater"] = "half";
     app.render();
     await click('[data-expand-device="heater"]');
+    await setRange('[data-actemp="heater"]', "27");
+    assert.ok(app.pendingHighRisk);
+
+    app.invalidateSourceControl();
+    app.render();
+    assert.equal(app.pendingHighRisk, null);
+    assert.ok(document.querySelector('[data-high-risk-confirm="heater"]') === null);
+  });
+
+  it("sends nothing when the pending confirmation belongs to another backend revision", async () => {
+    const app = await startWithDevices([heater()]);
+    app.layout.tileSizes["heater"] = "half";
+    app.render();
+    await click('[data-expand-device="heater"]');
+    await setRange('[data-actemp="heater"]', "27");
     const target = () =>
       (app.devices.find((device) => device.id === "heater")!.kind as Extract<SmartDevice["kind"], { kind: "climate" }>).targetTemperature;
 
-    await setRange('[data-actemp="heater"]', "26");
-    assert.equal(target(), 20);
-    assert.ok(app.pendingHighRisk);
-    app.pendingHighRisk = { ...app.pendingHighRisk, expiresAtMs: Date.now() - 1 };
-    await click("#btn-high-risk-confirm");
-    assert.equal(target(), 20, "an expired confirmation sends nothing");
+    app.sourceRevision += 1;
+    element('[data-high-risk-confirm="heater"]').click();
+    await setImmediate();
+    assert.equal(target(), 20, "a stale revision must not run the captured command");
     assert.equal(app.pendingHighRisk, null);
-    assert.match(document.body.textContent ?? "", /确认已过期/);
+  });
+
+  it("removes the slider confirmation row when its window expires", async () => {
+    const app = await startWithDevices([heater()]);
+    app.layout.tileSizes["heater"] = "half";
+    app.render();
+    await click('[data-expand-device="heater"]');
+    await setRange('[data-actemp="heater"]', "26");
+    const armed = app.pendingHighRisk;
+    assert.ok(armed);
+
+    // Re-arm the same prompt with a short window so the production timer can be observed without
+    // sleeping through the shipped eight seconds (Coding Standard #9: wait on the real signal).
+    app.setPendingHighRisk({ ...armed, expiresAtMs: Date.now() + 20 });
+    await waitFor(() => app.pendingHighRisk === null);
+    assert.ok(document.querySelector('[data-high-risk-confirm="heater"]') === null);
+    const target = () =>
+      (app.devices.find((device) => device.id === "heater")!.kind as Extract<SmartDevice["kind"], { kind: "climate" }>).targetTemperature;
+    assert.equal(target(), 20);
+  });
+
+  it("hides the row with the drawer and replaces it when another device arms one", async () => {
+    const app = await startWithDevices([heater(), secondHeater()]);
+    app.layout.tileSizes["heater"] = "half";
+    app.layout.tileSizes["heater-2"] = "half";
+    app.render();
+    await click('[data-expand-device="heater"]');
+    await setRange('[data-actemp="heater"]', "27");
+    assert.ok(document.querySelector('[data-high-risk-confirm="heater"]'));
+
+    await click('[data-expand-device="heater"]');
+    assert.ok(document.querySelector('[data-high-risk-confirm="heater"]') === null, "a collapsed drawer shows no row");
+
+    await click('[data-expand-device="heater"]');
+    assert.ok(document.querySelector('[data-high-risk-confirm="heater"]'), "reopening within the window shows it again");
+
+    await click('[data-expand-device="heater"]');
+    await click('[data-expand-device="heater-2"]');
+    await setRange('[data-actemp="heater-2"]', "22");
+    assert.equal(app.pendingHighRisk?.deviceId, "heater-2");
+    assert.equal(document.querySelectorAll("[data-high-risk-confirm]").length, 1);
+    assert.ok(document.querySelector('[data-tile-id="heater-2"] [data-high-risk-confirm="heater-2"]'));
+
+    app.devices = app.devices.filter((device) => device.id !== "heater-2");
+    app.render();
+    assert.equal(document.querySelectorAll("[data-high-risk-confirm]").length, 0, "a removed device leaves no row");
+  });
+
+  it("sends once when the drawer confirmation is double-clicked", async () => {
+    const app = await startWithDevices([heater()]);
+    app.layout.tileSizes["heater"] = "half";
+    app.render();
+    await click('[data-expand-device="heater"]');
+    await setRange('[data-actemp="heater"]', "27");
+    const commands: DeviceCommand[] = [];
+    app.executeSingleCommand = async (_device, command) => {
+      commands.push(command);
+    };
+
+    const button = element('[data-high-risk-confirm="heater"]');
+    button.click();
+    button.click();
+    await setImmediate();
+    assert.equal(commands.length, 1);
+    assert.equal(commands[0]?.kind, "setClimateTemperature");
   });
 
   it("never opens an empty drawer, and opens one for a card whose only control is 更多设置", async () => {

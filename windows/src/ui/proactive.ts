@@ -247,5 +247,6 @@ export function invalidateSourceControl(host: MenuMijiaWindowsApp): void {
     host.haConnectionError = null;
     host.lastUndoAction = null;
     host.pendingCloudConsent = null;
+    host.clearPendingHighRisk();
     host.pendingSuggestions = [];
   }

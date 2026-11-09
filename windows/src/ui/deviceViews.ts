@@ -33,6 +33,7 @@ import {
   temperatureSymbol,
 } from "../core/temperature.js";
 import { SF_ICONS } from "./appConstants.js";
+import type { PendingHighRiskConfirmation } from "./appTypes.js";
 
   export function renderSensorCard(
     dev: SmartDevice,
@@ -192,7 +193,11 @@ import { SF_ICONS } from "./appConstants.js";
   }
 
 /** The card's own detailed controls; 更多设置 is appended by `renderDeviceDrawer` (#5). */
-function renderPrimaryDrawer(dev: SmartDevice, escapeHtml: (value: string) => string): string {
+function renderPrimaryDrawer(
+  dev: SmartDevice,
+  escapeHtml: (value: string) => string,
+  pendingHighRisk: PendingHighRiskConfirmation | null = null,
+): string {
     const k = dev.kind;
     if (k.kind === "light") {
       const showBrightness = k.brightnessWritable !== false;
@@ -235,6 +240,15 @@ function renderPrimaryDrawer(dev: SmartDevice, escapeHtml: (value: string) => st
       const showModes = k.availableModes.some((mode) => mode !== "off") || (!k.entityId.startsWith("miot:") && k.powerWritable !== false);
       const showFan = k.availableFanModes.length > 0;
       if (!showTemp && !showModes && !showFan) return "";
+      // The confirmation belongs to this card and to the captured command, never to the current
+      // slider value; the timer removes the state when its window closes.
+      const confirmTemperature =
+        pendingHighRisk &&
+        pendingHighRisk.deviceId === dev.id &&
+        pendingHighRisk.expiresAtMs > Date.now() &&
+        pendingHighRisk.confirm?.command.kind === "setClimateTemperature"
+          ? pendingHighRisk.confirm.command.temperature
+          : null;
       const modes: ReadonlyArray<{ readonly code: string; readonly label: string }> = [
         { code: "cool", label: t("制冷") },
         { code: "heat", label: t("制热") },
@@ -250,6 +264,10 @@ function renderPrimaryDrawer(dev: SmartDevice, escapeHtml: (value: string) => st
               <strong>${formatTemperature(k.targetTemperature)}</strong>
             </div>
             <input class="cc-range is-blue" type="range" min="${formatTemperatureValue(k.minTemp)}" max="${formatTemperatureValue(k.maxTemp)}" step="${displayStep(k.step)}" value="${formatTemperatureValue(k.targetTemperature)}" data-actemp="${escapeHtml(dev.id)}" aria-label="${t("目标温度")}" aria-valuemin="${formatTemperatureValue(k.minTemp)}" aria-valuemax="${formatTemperatureValue(k.maxTemp)}" aria-valuetext="${formatTemperature(k.targetTemperature)}" />
+          </div>` : ""}
+          ${confirmTemperature !== null ? `<div class="cc-slider-label">
+            <span>${t("设为 {temp}？", { temp: formatTemperature(confirmTemperature) })}</span>
+            <button class="cc-inline-pill" data-high-risk-confirm="${escapeHtml(dev.id)}">${t("确认执行")}</button>
           </div>` : ""}
           ${showModes ? `<div class="cc-segmented-pills">
             ${modes
@@ -541,9 +559,10 @@ export function renderDeviceDrawer(
   escapeHtml: (value: string) => string,
   facets: readonly FacetControl[] = [],
   allowAdvanced = false,
+  pendingHighRisk: PendingHighRiskConfirmation | null = null,
 ): string {
   return (
-    renderPrimaryDrawer(dev, escapeHtml) +
+    renderPrimaryDrawer(dev, escapeHtml, pendingHighRisk) +
     renderMoreSettings({ deviceId: dev.id, facets, allowAdvanced, escapeHtml })
   );
 }
@@ -616,6 +635,7 @@ export interface DeviceTileViewState {
   readonly selectedRoom: string;
   readonly valuesAreStale: boolean;
   readonly expandedDeviceId: string | null;
+  readonly pendingHighRisk: PendingHighRiskConfirmation | null;
   readonly waitingDeviceIds: ReadonlySet<string>;
   readonly compactGrid: boolean;
   readonly dimPreview: { readonly id: string; readonly percent: number } | null;
@@ -715,7 +735,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
         </div>
         ${
           isExpanded && hasDrawer
-            ? renderDeviceDrawer(dev, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites)
+            ? renderDeviceDrawer(dev, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk)
             : ""
         }
       </div>

@@ -135,7 +135,7 @@ import {
   type RoomOption,
 } from "./listCut.js";
 
-import { SpeechRecognitionInstance, type ConnectionMode, type LearnedShortcut, type LoadedSettings, type PersistedSettings, type ReplyBannerState, type UndoAction, type UndoStep } from "./appTypes.js";
+import { SpeechRecognitionInstance, type ConnectionMode, type LearnedShortcut, type LoadedSettings, type PendingHighRiskConfirmation, type PersistedSettings, type ReplyBannerState, type UndoAction, type UndoStep } from "./appTypes.js";
 import { CAMERA_QUALITY_TITLES, CACHED_DEVICES_VERSION, LEGACY_STORAGE_KEY, SF_ICONS, STORAGE_KEY } from "./appConstants.js";
 import { demoDevices, demoScenes } from "./demo.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
@@ -227,20 +227,8 @@ export class MenuMijiaWindowsApp {
    * `actionKey` binds the arm to one exact command, so tapping a different high-risk control
    * on the same device re-arms instead of spending the previous confirmation.
    */
-  public pendingHighRisk: {
-    readonly deviceId: string;
-    readonly actionKey: string;
-    readonly expiresAtMs: number;
-    /**
-     * A write whose control cannot repeat the same value (the climate slider) carries the exact
-     * command so the prompt can offer one explicit confirm button instead of a second tap.
-     */
-    readonly confirm?: {
-      readonly command: DeviceCommand;
-      readonly summary: string;
-      readonly intent: DeviceIntent;
-    };
-  } | null = null;
+  public pendingHighRisk: PendingHighRiskConfirmation | null = null;
+  private pendingHighRiskTimer: number | null = null;
   public isShowingAssistantBar = true;
   public activeSheet: "none" | "onboarding" | "settings" = "none";
   private onboardingStep = 0;
@@ -812,6 +800,27 @@ export class MenuMijiaWindowsApp {
     return applyCommand(this, command, readBackPower);
   }
 
+  /** Arms a high-risk confirmation and its own expiry timer, replacing any previous arm. */
+  public setPendingHighRisk(pending: PendingHighRiskConfirmation): void {
+    this.clearPendingHighRisk();
+    this.pendingHighRisk = pending;
+    this.pendingHighRiskTimer = window.setTimeout(() => {
+      this.pendingHighRiskTimer = null;
+      if (!this.pendingHighRisk) return;
+      this.pendingHighRisk = null;
+      this.render();
+    }, Math.max(0, pending.expiresAtMs - Date.now()));
+  }
+
+  /** Disarms the arm and cancels its timer; callers render when the row must disappear now. */
+  public clearPendingHighRisk(): void {
+    if (this.pendingHighRiskTimer !== null) {
+      window.clearTimeout(this.pendingHighRiskTimer);
+      this.pendingHighRiskTimer = null;
+    }
+    this.pendingHighRisk = null;
+  }
+
 
   public markCloudValuesStale(): void {
     markCloudValuesStale(this);
@@ -1188,6 +1197,7 @@ export class MenuMijiaWindowsApp {
       selectedRoom: this.selectedRoom,
       valuesAreStale: this.valuesAreStale,
       expandedDeviceId: this.expandedDeviceId,
+      pendingHighRisk: this.pendingHighRisk,
       waitingDeviceIds: this.waitingDeviceIds,
       compactGrid: this.settings.isCompactGridMode,
       dimPreview: this.dimPreview,
