@@ -389,7 +389,7 @@ extension SmartDevice {
         case "cool", "凉风": return L10n.tr("凉风", "Cool")
         case "deodorize", "除味": return L10n.tr("除味", "Deodorize")
         case "other", "其他": return L10n.tr("其他", "Other")
-        default: return mode
+        default: return MiotValueText.display(mode)
         }
     }
 
