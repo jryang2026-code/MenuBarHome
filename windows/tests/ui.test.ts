@@ -5698,7 +5698,27 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
       assert.ok(app.lastUndoAction, "the action itself stays available after the button leaves");
 
       clock = started;
-      app.lastUndoAction = { summary: "三台", steps: [step, step, step], expiresAtMs: started + 60_000 };
+      app.lastUndoAction = {
+        summary: "同一台灯的颜色和亮度",
+        steps: [step, { ...step, commands: [{ kind: "setLightBrightness" as const, entityId: "light.living", percent: 40 }] }, { ...step, commands: [{ kind: "setLightEffect" as const, entityId: "light.living", effect: "Night" }] }],
+        expiresAtMs: started + 60_000,
+      };
+      app.render();
+      assert.ok(document.querySelector("#btn-undo"));
+      clock = started + 10_000;
+      app.render();
+      assert.equal(document.querySelector("#btn-undo"), null, "three writes on one device stay up for 10 seconds");
+
+      clock = started;
+      app.lastUndoAction = {
+        summary: "三台",
+        steps: [
+          { ...step, deviceId: "light.living_ceiling" },
+          { ...step, deviceId: "light.study_desk" },
+          { ...step, deviceId: "light.entry" },
+        ],
+        expiresAtMs: started + 60_000,
+      };
       app.render();
       assert.ok(document.querySelector("#btn-undo"));
       clock = started + 10_000;
@@ -5777,31 +5797,187 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.match(textOf(".cc-footer-label"), /已拒绝明文/);
   });
 
-  it("uses the user's scenes on a real home and the built-in pills only in the demo", () => {
+  function cachedHaHome(baseURL: string, token: string) {
+    const fixture = JSON.parse(readFileSync("../Tests/Fixtures/ha_snapshot.json", "utf8")) as unknown;
+    return {
+      identity: homeAssistantIdentity(baseURL, token),
+      home: HomeAssistantSynthesizer.synthesize(fixture),
+    };
+  }
+
+  it("keeps a declined public Home Assistant address offline after the banner is dismissed", async () => {
+    const baseURL = "http://203.0.113.5:8123";
+    const token = "controlled-token";
+    const endpoints: Array<Record<string, unknown>> = [];
+    const invoke = async (name: string, args: Record<string, unknown> = {}) => {
+      if (name === "secure_store_get") return args.name === "ha_token" ? token : null;
+      if (name === "set_service_endpoints") {
+        endpoints.push(args);
+        throw new Error("未授权的网络来源：http://203.0.113.5:8123");
+      }
+      if (name === "ha_snapshot") throw new Error("Home Assistant endpoint has not been approved");
+      return null;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "homeAssistant",
+      haBaseURL: baseURL,
+      hasCompletedOnboarding: true,
+      cachedHAHome: cachedHaHome(baseURL, token),
+    }));
+    new MenuMijiaWindowsApp(element("#app"));
+    await waitFor(() => (document.querySelector(".cc-footer-label")?.textContent ?? "").includes("已拒绝明文"));
+    assert.ok(endpoints.some((args) => args.haUrl === baseURL));
+    const footer = textOf(".cc-footer-label");
+    assert.match(footer, /已拒绝明文/);
+    assert.doesNotMatch(footer, /可能过期/);
+    assert.ok(element(".cc-status-dot").classList.contains("is-offline"));
+    assert.equal(document.querySelector("#btn-footer-health"), null);
+    await click("#btn-dismiss-banner");
+    assert.match(textOf(".cc-footer-label"), /已拒绝明文/);
+    assert.doesNotMatch(textOf(".cc-footer-label"), /可能过期/);
+    assert.ok(element(".cc-status-dot").classList.contains("is-offline"));
+  });
+
+  it("blocks the footer when Home Assistant rejects the token and a device is already cached", async () => {
+    const baseURL = "http://localhost:8123";
+    const token = "controlled-token";
+    const invoke = async (name: string, args: Record<string, unknown> = {}) => {
+      if (name === "secure_store_get") return args.name === "ha_token" ? token : null;
+      if (name === "set_service_endpoints") return null;
+      if (name === "ha_snapshot") throw new Error("Home Assistant authentication rejected");
+      return null;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "homeAssistant",
+      haBaseURL: baseURL,
+      hasCompletedOnboarding: true,
+      cachedHAHome: cachedHaHome(baseURL, token),
+    }));
+    new MenuMijiaWindowsApp(element("#app"));
+    await waitFor(() => (document.querySelector(".cc-footer-label")?.textContent ?? "").includes("认证被拒绝"));
+    assert.ok(element(".cc-status-dot").classList.contains("is-offline"));
+    assert.doesNotMatch(textOf(".cc-footer-label"), /可能过期/);
+    assert.doesNotMatch(textOf(".cc-footer-label"), /已拒绝明文/);
+    assert.equal(document.querySelector("#btn-footer-health"), null);
+  });
+
+  it("marks a failed refresh of an accepted Home Assistant connection as stale", async () => {
+    const baseURL = "http://localhost:8123";
+    const token = "controlled-token";
+    const invoke = async (name: string, args: Record<string, unknown> = {}) => {
+      if (name === "secure_store_get") return args.name === "ha_token" ? token : null;
+      if (name === "ha_snapshot") throw new Error("Home Assistant disconnected");
+      return null;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "homeAssistant",
+      haBaseURL: baseURL,
+      hasCompletedOnboarding: true,
+      cachedHAHome: cachedHaHome(baseURL, token),
+    }));
+    new MenuMijiaWindowsApp(element("#app"));
+    await waitFor(() => element(".cc-status-dot").classList.contains("is-degraded"));
+    assert.match(textOf(".cc-footer-label"), /可能过期/);
+    assert.match(textOf("[data-ha-error]"), /Home Assistant disconnected/);
+  });
+
+  it("cancels All Off when the hold loses focus or the panel renders", async () => {
     const app = startDemoApp();
+    let calls = 0;
+    const run = app.executeIntents.bind(app);
+    app.executeIntents = async (...args) => {
+      calls += 1;
+      return run(...args);
+    };
+    const button = element("#btn-all-off");
+    button.focus();
+    pressHoldKey(button, " ", "keydown");
+    element("#command-input").focus();
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await setImmediate();
+    assert.equal(calls, 0);
+    assert.match(tile("light.living_ceiling"), /已开启/);
+
+    const again = element("#btn-all-off");
+    again.focus();
+    pressHoldKey(again, " ", "keydown");
+    app.render();
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await setImmediate();
+    assert.equal(calls, 0);
+    assert.match(tile("light.living_ceiling"), /已开启/);
+  });
+
+  it("cancels All Off when a pending schedule redraws the button", async () => {
+    const ticks: Array<() => void> = [];
+    const realSetInterval = window.setInterval.bind(window);
+    Object.defineProperty(window, "setInterval", {
+      configurable: true,
+      value: (handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+        if (timeout === 1000 && typeof handler === "function") ticks.push(() => { handler(); });
+        return realSetInterval(handler, timeout, ...args);
+      },
+    });
+    const app = startDemoApp();
+    await command("10分钟后关闭书房台灯");
+    assert.ok(app.scheduledCommands.length > 0);
+    assert.ok(ticks.length > 0);
+    let calls = 0;
+    const run = app.executeIntents.bind(app);
+    app.executeIntents = async (...args) => {
+      calls += 1;
+      return run(...args);
+    };
+    const before = element("#btn-all-off");
+    before.focus();
+    pressHoldKey(before, " ", "keydown");
+    for (const tick of ticks) tick();
+    const replaced = element("#btn-all-off");
+    assert.notEqual(replaced, before);
+    pressHoldKey(replaced, " ", "keyup");
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await setImmediate();
+    assert.equal(calls, 0);
+    assert.match(tile("light.living_ceiling"), /已开启/);
+    assert.match(tile("light.study_desk"), /已开启/);
+  });
+
+  it("keeps demo pills in the demo and Home Assistant scenes on a Home Assistant home", async () => {
+    startDemoApp();
     assert.match(document.body.textContent ?? "", /全开主灯/);
     assert.match(document.body.textContent ?? "", /25°制冷/);
 
-    app.settings.connectionMode = "xiaomiCloud";
-    app.settings.miSession = {
-      userId: "12345678",
-      cUserId: "",
-      ssecurity: "x",
-      serviceToken: "y",
-      passToken: "",
-      region: "cn",
+    const baseURL = "http://localhost:8123";
+    const token = "controlled-token";
+    const fixture = JSON.parse(readFileSync("../Tests/Fixtures/ha_snapshot.json", "utf8")) as unknown;
+    const invoke = async (name: string, args: Record<string, unknown> = {}) => {
+      if (name === "secure_store_get") return args.name === "ha_token" ? token : null;
+      if (name === "ha_snapshot") return structuredClone(fixture);
+      return null;
     };
-    app.scenes = [{ id: "scene.movie", name: "观影", entityId: "scene.movie" }];
-    app.render();
-    assert.doesNotMatch(document.body.textContent ?? "", /全开主灯/);
-    assert.doesNotMatch(document.body.textContent ?? "", /25°制冷/);
-    assert.match(textOf('[data-ha-scene="scene.movie"]'), /观影/);
-
-    app.settings.connectionMode = "homeAssistant";
-    app.scenes = [{ id: "scene.evening", name: "晚安", entityId: "scene.evening" }];
-    app.render();
-    assert.doesNotMatch(document.body.textContent ?? "", /全开主灯/);
-    assert.doesNotMatch(document.body.textContent ?? "", /25°制冷/);
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "homeAssistant",
+      haBaseURL: baseURL,
+      hasCompletedOnboarding: true,
+    }));
+    new MenuMijiaWindowsApp(element("#app"));
+    await waitFor(() => !!document.querySelector('[data-ha-scene="scene.evening"]'));
     assert.match(textOf('[data-ha-scene="scene.evening"]'), /晚安/);
+    assert.doesNotMatch(document.body.textContent ?? "", /全开主灯/);
+    assert.doesNotMatch(document.body.textContent ?? "", /25°制冷/);
+  });
+
+  it("does not turn a Xiaomi refresh into Home Assistant scene buttons", async () => {
+    cloudFixture([]);
+    new MenuMijiaWindowsApp(element("#app"));
+    await waitFor(() => !!document.querySelector("[data-body-device]"));
+    assert.equal(document.querySelector("[data-ha-scene]"), null);
+    assert.equal(document.querySelector("[data-scene-cmd]"), null);
+    assert.doesNotMatch(document.body.textContent ?? "", /全开主灯/);
+    assert.doesNotMatch(document.body.textContent ?? "", /25°制冷/);
   });
 });
