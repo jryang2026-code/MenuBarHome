@@ -207,6 +207,9 @@ struct PanelHealthTests {
             let url = await store.executeBuiltInURLScene(.allOff)
             #expect(url.isError)
             #expect(url.message == "米家登录已过期")
+            let quickURL = await store.executeBuiltInURLScene(.lightsOff)
+            #expect(quickURL.isError, "a refused quick action is not the success title it captured")
+            #expect(quickURL.message == "米家登录已过期")
             #expect(await provider.executedCommands.isEmpty)
         }
     }
@@ -440,7 +443,6 @@ struct PanelHealthTests {
         #expect(!store.miSessionBlocksControl)
 
         await provider.holdNextExecute(forTarget: "light.a")
-        await provider.setFailingTargets(["light.a"])
         let link = Task { await store.executeBuiltInURLScene(.allOff) }
         for _ in 0..<1_000 {
             if await provider.executeStarted >= 1 { break }
@@ -459,10 +461,207 @@ struct PanelHealthTests {
             #expect(result.isError)
             #expect(result.message == "米家登录已过期", "the link must not report the success banner it captured first")
         }
-        #expect(store.undoBanner == nil, "a batch refused by the session leaves no banner")
-        #expect(store.devices.allSatisfy { $0.isActiveOn }, "the refused batch puts its rows back")
+        // The accepted device did switch off, so its row and its undo entry stay. The refused one
+        // goes back and leaves the banner.
+        #expect(store.devices.first { $0.id == "lamp-a" }?.isActiveOn == false)
+        #expect(store.devices.first { $0.id == "lamp-b" }?.isActiveOn == true)
+        #expect(store.undoBanner?.restoreCommands == [.setLightPower(entityId: "light.a", isOn: true)])
+        #expect(store.undoBanner?.deviceCount == 1)
         #expect(store.toastNotice?.message == "米家登录已过期")
         #expect(store.toastNotice?.persistent == true)
+    }
+
+    @Test("A mixed LG and Mi 全关 sends the LAN TV and refuses only the Mi row")
+    func mixedLGAAndMiAllOffSendsLG() async throws {
+        let lgTV = SmartDevice(
+            id: LGWebOSProtocol.deviceId,
+            name: "LG C2 电视",
+            roomId: "ke_ting",
+            roomName: "客厅",
+            model: "lg.webos.oled42c2pca",
+            isOnline: true,
+            kind: .tv(TVSpec(
+                mediaEntityId: LGWebOSProtocol.mediaEntityId,
+                state: "on",
+                volumePercent: 18
+            ))
+        )
+        let lamp = try #require(Self.lampHome.devices.first)
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(devices: [lgTV, lamp]))
+        let store = try await makeStore(backend: .xiaomiCloud, session: expiredSession(), provider: provider)
+        store.lgWebOSClient = LGWebOSClient(
+            config: LGWebOSConfig(isEnabled: false),
+            onDeviceUpdated: { _ in },
+            onClientKeyRegistered: { _ in },
+            onSecurityFailure: { _ in }
+        )
+        #expect(store.miSessionBlocksControl)
+
+        let task = try #require(store.turnAllOff(), "a mixed batch sends its LAN targets")
+        let outcome = await task.value
+        #expect(outcome == .refusedByMiSession)
+        #expect(await provider.executedCommands.isEmpty, "the Mi light is refused, not sent")
+        #expect(store.devices.first { $0.id == LGWebOSProtocol.deviceId }?.isActiveOn == false)
+        #expect(store.devices.first { $0.id == "lamp" }?.isActiveOn == true)
+        #expect(store.undoBanner?.restoreCommands == [
+            .setSwitch(entityId: LGWebOSProtocol.powerEntityId, isOn: true),
+        ])
+        #expect(store.toastNotice?.message == "米家登录已过期")
+        #expect(store.toastNotice?.persistent == true)
+    }
+
+    @Test("A mixed undo sends the LAN restore and keeps the refused Mi restore in the banner")
+    func mixedUndoSendsLGAndKeepsMi() async throws {
+        let lgTV = SmartDevice(
+            id: LGWebOSProtocol.deviceId,
+            name: "LG C2 电视",
+            roomId: "ke_ting",
+            roomName: "客厅",
+            model: "lg.webos.oled42c2pca",
+            isOnline: true,
+            kind: .tv(TVSpec(
+                mediaEntityId: LGWebOSProtocol.mediaEntityId,
+                state: "on",
+                volumePercent: 18
+            ))
+        )
+        let lamp = try #require(Self.lampHome.devices.first)
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(devices: [lgTV, lamp]))
+        let store = try await makeStore(backend: .xiaomiCloud, session: validSession(), provider: provider)
+        store.lgWebOSClient = LGWebOSClient(
+            config: LGWebOSConfig(isEnabled: false),
+            onDeviceUpdated: { _ in },
+            onClientKeyRegistered: { _ in },
+            onSecurityFailure: { _ in }
+        )
+
+        let allOff = try #require(store.turnAllOff())
+        #expect(await allOff.value == .completed)
+        #expect(store.undoBanner != nil)
+
+        // The undo starts after the session expired, but its LAN restore still runs.
+        store.miSessionExpiresAt = expiredAt
+        store.miAccounts = [MiAccount(session: expiredSession())]
+        #expect(store.miSessionBlocksControl)
+
+        let undo = try #require(store.undoTurnAllOff(), "a mixed undo is not refused outright")
+        await undo.value
+
+        #expect(store.devices.first { $0.id == LGWebOSProtocol.deviceId }?.isActiveOn == true)
+        #expect(store.devices.first { $0.id == "lamp" }?.isActiveOn == false)
+        #expect(store.undoBanner?.restoreCommands == [.setLightPower(entityId: "light.lamp", isOn: true)])
+        #expect(store.toastNotice?.message == "米家登录已过期", "the generic undo failure must not replace the scan toast")
+        #expect(store.toastNotice?.persistent == true)
+    }
+
+    @Test("A stale expiry toast does not turn a completed LAN-only 全关 into an error")
+    func staleExpiryToastDoesNotFailLGOnlyAllOff() async throws {
+        let lgTV = SmartDevice(
+            id: LGWebOSProtocol.deviceId,
+            name: "LG C2 电视",
+            roomId: "ke_ting",
+            roomName: "客厅",
+            model: "lg.webos.oled42c2pca",
+            isOnline: true,
+            kind: .tv(TVSpec(
+                mediaEntityId: LGWebOSProtocol.mediaEntityId,
+                state: "on",
+                volumePercent: 18
+            ))
+        )
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(devices: [lgTV]))
+        let store = try await makeStore(backend: .xiaomiCloud, session: expiredSession(), provider: provider)
+        store.lgWebOSClient = LGWebOSClient(
+            config: LGWebOSConfig(isEnabled: false),
+            onDeviceUpdated: { _ in },
+            onClientKeyRegistered: { _ in },
+            onSecurityFailure: { _ in }
+        )
+        #expect(store.miSessionBlocksControl)
+
+        // An earlier Mi tap left the persistent toast up.
+        #expect(store.rejectWritesBlockedByMiSession())
+
+        await L10n.$overrideLanguage.withValue(.zhHans) {
+            let result = await store.executeBuiltInURLScene(.allOff)
+            #expect(!result.isError, "the LAN batch completed, so the link must not report the stale toast")
+            #expect(result.message == "已关闭 1 台设备")
+        }
+        #expect(store.toastNotice?.message == "米家登录已过期", "the Mi session is still expired")
+    }
+
+    @Test("A slider write refused mid-debounce keeps the scan toast")
+    func blockedSliderWriteKeepsScanToast() async throws {
+        let provider = MockHomeProvider(snapshot: Self.lampHome)
+        let store = try await makeStore(backend: .xiaomiCloud, session: validSession(), provider: provider)
+        #expect(!store.miSessionBlocksControl)
+        store.controlDebounceInterval = .milliseconds(1)
+
+        store.setLightBrightness("lamp", percent: 40)
+        // Nothing may run between the tap and this line: the debounce task cannot start until the
+        // main actor yields, so the session is expired before the send.
+        store.miSessionExpiresAt = expiredAt
+        store.miAccounts = [MiAccount(session: expiredSession())]
+        #expect(store.miSessionBlocksControl)
+
+        for _ in 0..<1_000 {
+            if case .light(let spec)? = store.devices.first(where: { $0.id == "lamp" })?.kind,
+               spec.brightnessPercent == 80 {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        if case .light(let spec)? = store.devices.first(where: { $0.id == "lamp" })?.kind {
+            #expect(spec.brightnessPercent == 80, "the refused write puts the row back")
+        } else {
+            Issue.record("the lamp row is missing")
+        }
+        #expect(store.toastNotice?.message == "米家登录已过期")
+        #expect(store.toastNotice?.persistent == true)
+        #expect(await provider.executedCommands.isEmpty)
+    }
+
+    @Test("Switching to demo clears the expired-session toast")
+    func switchingBackendClearsExpiredToast() async throws {
+        let store = try await makeStore(
+            backend: .xiaomiCloud,
+            session: expiredSession(),
+            provider: MockHomeProvider(snapshot: Self.lampHome)
+        )
+        #expect(store.miSessionBlocksControl)
+        #expect(store.rejectWritesBlockedByMiSession())
+        #expect(store.toastNotice?.persistent == true)
+
+        store.switchBackend(.demo)
+        #expect(store.toastNotice == nil, "the toast belongs to the old connection")
+    }
+
+    @Test("One expired Mi account beside an online one and an offline HA names the other account")
+    func offlineHAWithAnotherMiAccountNamesTheOtherAccount() async throws {
+        let suite = "com.jryang1997.MenuBarMijia.panel-health.offline-ha.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+        let saved = MiSessionStore.saveAccounts([
+            MiAccount(session: MiSession(
+                userId: "1111111111", cUserId: "c1", ssecurity: "s", serviceToken: "t1", expiresAt: expiredAt
+            )),
+            MiAccount(session: MiSession(
+                userId: "2222222222", cUserId: "c2", ssecurity: "s", serviceToken: "t2", expiresAt: farEnd
+            )),
+        ], defaults: defaults)
+        #expect(saved)
+        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        #expect(store.miSessionShowsExpired)
+        #expect(!store.miSessionBlocksControl)
+        store.hasHASource = true
+        store.sourceStatuses = [.homeAssistant: .disconnected("")]
+        store.connectionStatus = .connected
+
+        try await L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(store.panelHealth == .degraded(reason: "有米家账号已过期，其他账号仍保持登录"))
+        }
     }
 
     private func health(_ store: HomeStore) -> PanelHealth {
@@ -526,8 +725,11 @@ struct PanelHealthTests {
             #expect(saved)
         }
         let store = HomeStore(provider: provider ?? MockHomeProvider(), defaultsSuiteName: suite)
-        if haSource { store.hasHASource = true }
         try await store.waitForTestSnapshot()
+        if haSource {
+            store.hasHASource = true
+            store.sourceStatuses[.homeAssistant] = .connected
+        }
         return store
     }
 }

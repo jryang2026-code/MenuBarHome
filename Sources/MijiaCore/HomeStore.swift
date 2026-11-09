@@ -934,6 +934,26 @@ public final class HomeStore {
         activeToastDismissInterval = nil
     }
 
+    /// Shows an external command's result. A failure identical to the persistent toast already on
+    /// screen is the same refusal, explained with an action; it must not be replaced by a short
+    /// error at the feedback layer.
+    public func showExternalCommandResult(_ message: String, isError: Bool) {
+        if isError, let current = toastNotice, current.persistent, current.message == message {
+            return
+        }
+        showToast(message, isError: isError)
+    }
+
+    /// The message an external caller reports for a failed write. The expired-session refusal
+    /// already has a persistent toast with the Scan action, so its copy wins over the caller's
+    /// generic "did not respond" fallback.
+    public func externalFailureMessage(_ fallback: String) -> String {
+        if miSessionBlocksControl, let current = toastNotice, current.persistent {
+            return current.message
+        }
+        return fallback
+    }
+
     /// Success stays for `toastAutoDismissInterval` (2.8 s). An error stays for 8 s.
     /// A persistent toast, and any toast while the test seam is `nil`, stays until dismissed.
     func toastDismissInterval(for notice: ToastNotice) -> Duration? {

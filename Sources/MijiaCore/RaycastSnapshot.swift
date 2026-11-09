@@ -454,29 +454,29 @@ extension HomeStore {
                 return (L10n.tr("不支持的快捷动作", "Unsupported quick action"), true)
             }
             guard let task = executeQuickAction(action) else {
-                let fallback = L10n.tr("当前无需执行「\(action.title)」", "No devices need \"\(action.title)\"")
-                return (toastNotice?.message ?? fallback, false)
+                return (
+                    L10n.tr("当前无需执行「\(action.title)」", "No devices need \"\(action.title)\""),
+                    false
+                )
             }
-            let bannerTitle = undoBanner?.title ?? L10n.tr("已执行「\(action.title)」", "Executed \"\(action.title)\"")
-            await task.value
-            return (bannerTitle, false)
+            let outcome = await task.value
+            return outcome.externalResult(
+                success: L10n.tr("已执行「\(action.title)」", "Executed \"\(action.title)\""),
+                incomplete: L10n.tr("「\(action.title)」未完成", "\"\(action.title)\" incomplete")
+            )
 
         case .allOff:
             let targetCount = allOffTargets.count
             guard let task = turnAllOff() else {
-                // "Nothing to turn off" is a result, not a failure; only the expired-session
-                // refusal raises an error.
-                let fallback = L10n.tr("当前没有开启的设备", "No active devices are currently on")
-                return (toastNotice?.message ?? fallback, toastNotice?.isError ?? miSessionBlocksControl)
+                // "Nothing to turn off" is a result, not a failure; only the batch's own verdict
+                // decides whether the link reports an error.
+                return (L10n.tr("当前没有开启的设备", "No active devices are currently on"), false)
             }
-            let bannerTitle = undoBanner?.title ?? L10n.tr("已关闭 \(targetCount) 台设备", "Turned off \(targetCount) device(s)")
-            // A session that expires mid-batch removes the banner and leaves the persistent expiry
-            // toast; awaiting the batch reports that instead of the success title captured above.
-            await task.value
-            if let toast = toastNotice, toast.isError, toast.persistent {
-                return (toast.message, true)
-            }
-            return (bannerTitle, false)
+            let outcome = await task.value
+            return outcome.externalResult(
+                success: L10n.tr("已关闭 \(targetCount) 台设备", "Turned off \(targetCount) device(s)"),
+                incomplete: L10n.tr("全关未完成", "Turn all off incomplete")
+            )
 
         case .undo:
             if undoBanner != nil {

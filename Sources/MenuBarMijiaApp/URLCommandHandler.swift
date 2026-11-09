@@ -309,10 +309,12 @@ final class URLCommandHandler {
                     ? store.toastNotice?.message
                     : nil
                 finish(
-                    cancellationOrRejection ?? (
-                        isMomentary
-                            ? L10n.format("%@ 触发失败", "Failed to trigger %@", device.name)
-                            : L10n.format("%@ 响应失败", "%@ failed to respond", device.name)
+                    store.externalFailureMessage(
+                        cancellationOrRejection ?? (
+                            isMomentary
+                                ? L10n.format("%@ 触发失败", "Failed to trigger %@", device.name)
+                                : L10n.format("%@ 响应失败", "%@ failed to respond", device.name)
+                        )
                     ),
                     isError: true,
                     envelope: envelope,
@@ -322,9 +324,11 @@ final class URLCommandHandler {
             }
             guard await task.value == true else {
                 finish(
-                    isMomentary
-                        ? L10n.format("%@ 触发失败", "Failed to trigger %@", device.name)
-                        : L10n.format("%@ 响应失败", "%@ failed to respond", device.name),
+                    store.externalFailureMessage(
+                        isMomentary
+                            ? L10n.format("%@ 触发失败", "Failed to trigger %@", device.name)
+                            : L10n.format("%@ 响应失败", "%@ failed to respond", device.name)
+                    ),
                     isError: true,
                     envelope: envelope,
                     store: store
@@ -470,7 +474,7 @@ final class URLCommandHandler {
         envelope: AppURLCommandEnvelope,
         store: HomeStore
     ) {
-        store.showToast(message, isError: isError)
+        store.showExternalCommandResult(message, isError: isError)
         store.recordRaycastCommandFeedback(
             requestId: envelope.requestId,
             command: commandLabel(for: envelope.command),

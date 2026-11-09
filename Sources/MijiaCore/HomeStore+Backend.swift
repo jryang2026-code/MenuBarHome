@@ -1121,6 +1121,8 @@ extension HomeStore {
                 if case .declined = haPlaintextPrompt { return true }
                 return false
             }(),
+            haStatus: sourceStatuses[.homeAssistant]
+                ?? (connectedBackends.contains(.homeAssistant) ? .connected : .connecting),
             anotherMiAccountSignedIn: miAccounts.contains { account in
                 account.session.expiryState(at: Date()) != .expired
             },
@@ -1152,6 +1154,9 @@ struct PanelHealthInput: Equatable, Sendable {
     var miSessionBlocksControl: Bool
     var miSessionShowsExpired: Bool
     var haPlaintextDeclined: Bool
+    /// Home Assistant's own connection state, not the merged aggregate: one healthy Mi account can
+    /// keep the aggregate `.connected` while HA is offline.
+    var haStatus: ConnectionStatus
     var anotherMiAccountSignedIn: Bool
     var deviceValuesAreStale: Bool
     var connectionStatus: ConnectionStatus
@@ -1185,7 +1190,8 @@ enum PanelHealthResolver {
         if !input.hasHASource && !input.hasMiSource {
             return .notConfigured
         }
-        if input.miSessionShowsExpired, input.hasHASource, case .connected = input.connectionStatus {
+        if input.miSessionShowsExpired, input.hasHASource,
+           case .connected = input.connectionStatus, case .connected = input.haStatus {
             return .degraded(reason: L10n.tr(
                 "米家登录已过期，Home Assistant 仍可用",
                 "Xiaomi Home session expired. Home Assistant still works"

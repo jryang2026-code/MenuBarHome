@@ -17,13 +17,18 @@ extension HomeStore {
 
     // MARK: - Primary Toggle & Manual Light Memory
 
+    /// Copy for the persistent expired-session toast and for external callers reporting it.
+    public nonisolated static var miSessionBlockedMessage: String {
+        L10n.tr("米家登录已过期", "Xiaomi Home session expired")
+    }
+
     /// Shows the persistent expiry toast and returns true when the write must be refused.
     /// `needsMi` is false for a command the LAN LG client answers, which needs no Mi session.
     @discardableResult
     func rejectWritesBlockedByMiSession(needsMi: Bool = true) -> Bool {
         guard needsMi, miSessionBlocksControl else { return false }
         showToast(
-            L10n.tr("米家登录已过期", "Xiaomi Home session expired"),
+            Self.miSessionBlockedMessage,
             isError: true,
             action: ToastAction(title: L10n.tr("扫码", "Scan"), kind: .presentMiReauth),
             persistent: true

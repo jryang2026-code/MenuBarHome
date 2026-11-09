@@ -189,6 +189,9 @@ extension HomeStore {
 
     func showControlFailure(_ error: Error, device: SmartDevice, adjustment: Bool) {
         guard !ControlFailure.isCancellation(error) else { return }
+        // The expired-session toast is persistent and carries the Scan action; the generic device
+        // message would replace it with an 8 s error for the same cause.
+        guard !(error is MiSessionWriteBlocked) else { return }
         showToast(
             ControlFailure.userMessage(
                 for: error,
