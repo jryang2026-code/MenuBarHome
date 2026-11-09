@@ -104,7 +104,8 @@ struct ScheduledCommandScopeTests {
         #expect(store.scheduledCommands.map(\.id) == [homeTimer.id])
         await waitUntil { rearmGate.waiting == 1 }
         rearmGate.release()
-        await waitUntil { store.scheduledCommands.isEmpty }
+        await waitUntil { await mock.executedCommands.count == 1 }
+        #expect(store.scheduledCommands.isEmpty)
         #expect(store.missedScheduledCommands.isEmpty)
         #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
         #expect(ScheduledCommand.load(from: store.userDefaults).map(\.id) == [otherTimer.id])
@@ -361,7 +362,7 @@ struct ScheduledCommandScopeTests {
         store.serverURLString = Self.otherHomeURL
         store.startListening()
         await mock.releaseExecute()
-        await waitUntil { !ScheduledCommand.load(from: store.userDefaults).contains { $0.id == entry.id } }
+        await waitUntil { await mock.executedCommands.count == 1 }
 
         store.serverURLString = homeURL
         store.startListening()
@@ -369,6 +370,36 @@ struct ScheduledCommandScopeTests {
         #expect(store.missedScheduledCommands.isEmpty)
         #expect(!ScheduledCommand.load(from: store.userDefaults).contains { $0.id == entry.id })
         #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
+    }
+
+    @Test("A switch away and back while the send is in flight cannot offer the timer again")
+    @MainActor
+    func roundTripDuringExecutionRunsOnce() async throws {
+        let (store, mock) = try await makeStore()
+        let homeURL = store.serverURLString
+        store.assistantSleep = { _ in }
+        await mock.holdNextExecute()
+        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        let entry = try #require(store.scheduledCommands.first)
+        await waitUntil { await mock.executeStarted >= 1 }
+
+        // Consumed before the request goes out: a re-partition during the in-flight send has
+        // nothing left to bring back as missed.
+        #expect(!ScheduledCommand.load(from: store.userDefaults).contains { $0.id == entry.id })
+
+        store.serverURLString = Self.otherHomeURL
+        store.startListening()
+        store.serverURLString = homeURL
+        store.startListening()
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(store.missedScheduledCommands.isEmpty, "An in-flight timer must not come back as missed")
+        #expect(!ScheduledCommand.load(from: store.userDefaults).contains { $0.id == entry.id })
+
+        await mock.releaseExecute()
+        await waitUntil { await mock.executedCommands.count == 1 }
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
+        #expect(store.missedScheduledCommands.isEmpty)
+        #expect(ScheduledCommand.load(from: store.userDefaults).isEmpty)
     }
 
     @Test("A source switch during a timer's sleep keeps it from running")

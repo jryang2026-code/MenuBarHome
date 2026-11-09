@@ -604,14 +604,15 @@ extension HomeStore {
                 self.moveToMissed(entry, taskToken: token)
                 return
             }
-            _ = await self.executeIntentPlan(entry.plan, recordedUtterance: nil, origin: .scheduled)
-            // A switch during execution may have moved the entry to another partition; drop it from
-            // all of them so a consumed timer cannot reappear after switching back.
+            // Consume before sending. A switch while the request is in flight re-partitions from disk,
+            // and an entry still there would be armed or moved to missed again and could run twice.
+            // Losing a timer to a crash mid-execution is the safer failure for hardware.
             self.scheduledCommands.removeAll { $0.id == entry.id }
             self.missedScheduledCommands.removeAll { $0.id == entry.id }
             self.foreignScheduledCommands.removeAll { $0.id == entry.id }
-            self.finishScheduledTask(entry.id, token: token)
             self.persistAllScheduledCommands()
+            _ = await self.executeIntentPlan(entry.plan, recordedUtterance: nil, origin: .scheduled)
+            self.finishScheduledTask(entry.id, token: token)
         }
     }
 
