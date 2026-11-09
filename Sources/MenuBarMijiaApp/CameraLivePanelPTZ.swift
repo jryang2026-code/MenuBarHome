@@ -174,7 +174,8 @@ extension CameraLivePanelController {
         clearStopWriteFailureNotice()
         let attempt = CameraPTZStopAttempt(token: token, deviceId: deviceId, lifecycleID: lifecycleID)
         let stopTask = Task { @MainActor [weak self] in
-            await self?.completePTZStop(client: client, attempt: attempt, notify: notify)
+            guard let self else { return }
+            await self.completePTZStop(client: client, attempt: attempt, notify: notify)
         }
         ptzStopTask = stopTask
     }
@@ -382,7 +383,8 @@ struct CameraTitleBarLayout: Layout {
     var spacing: CGFloat = 6
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? CameraLivePanelController.compactSize.width
+        let compactWidth = CameraLivePanelController.compactSize.width
+        let width = proposal.width ?? compactWidth
         let split = split(for: width, subviews: subviews)
         let leadingHeight = subviews.first.map {
             $0.sizeThatFits(ProposedViewSize(width: split.leadingWidth, height: proposal.height)).height
