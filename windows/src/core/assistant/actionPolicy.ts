@@ -333,33 +333,17 @@ const MANUAL_CONTROL_RULES: ManualControlRules =
 
 /** `Double(String)` decimal forms: sign, digits, an optional dot, an optional exponent. */
 const DECIMAL_NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
-/** `Double(String)` hex floats take a lowercase `0x`, an optional dot and an optional `p` exponent. */
-const HEX_NUMBER = /^([+-]?)0x([0-9a-fA-F]+\.?[0-9a-fA-F]*|\.[0-9a-fA-F]+)(?:[pP]([+-]?\d+))?$/;
-const INFINITY_NUMBER = /^[+-]?inf(?:inity)?$/i;
-const NAN_NUMBER = /^[+-]?nan$/i;
 
 /**
- * The string forms Swift `Double(String)` accepts. `Number()` is looser in both directions: it
- * trims whitespace, reads `0b101`/`0o17`, turns `""` into 0, and rejects the hex floats Swift
- * takes. A facet value that does not parse has to fall through the hazard table exactly as macOS
- * does, so the grammar is spelled out rather than delegated.
+ * A number the value can carry, or null (macOS `JSONValue.doubleValue`).
+ *
+ * Only plain decimal text parses. Swift's `Double(String)` also takes hex floats (`0x10`,
+ * `0x1p3`) and `inf`/`nan`; here those stay unknown on purpose, so a reading that never occurs in
+ * the wild lands in the confirm path instead of skipping a confirmation.
  */
-function doubleFromString(text: string): number | null {
-  if (INFINITY_NUMBER.test(text)) return text.startsWith("-") ? -Infinity : Infinity;
-  if (NAN_NUMBER.test(text)) return NaN;
-  if (DECIMAL_NUMBER.test(text)) return Number(text);
-  const hex = HEX_NUMBER.exec(text);
-  if (!hex) return null;
-  const [, sign = "", body = "", exponent] = hex;
-  const [whole = "", fraction = ""] = body.split(".");
-  const value = Number.parseInt(`${whole}${fraction}`, 16) / 16 ** fraction.length;
-  return (sign === "-" ? -value : value) * 2 ** Number(exponent ?? 0);
-}
-
-/** A number the value can carry, or null (macOS `JSONValue.doubleValue`). */
 function doubleValue(value: unknown): number | null {
   if (typeof value === "number") return value;
-  return typeof value === "string" ? doubleFromString(value) : null;
+  return typeof value === "string" && DECIMAL_NUMBER.test(value) ? Number(value) : null;
 }
 
 /** A rounded integer the JSON value can carry, or null (macOS `JSONValue.intValue`). */
