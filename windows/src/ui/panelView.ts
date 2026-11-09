@@ -268,7 +268,6 @@ function liveBanner(host: MenuMijiaWindowsApp): string {
 }
 
 function assistantExtras(host: MenuMijiaWindowsApp): string {
-  if (!host.isShowingAssistantBar) return "";
   const suggestions = host.pendingSuggestions.length > 0
     ? `<div class="cc-suggestion-row">${host.pendingSuggestions
         .map(
@@ -278,6 +277,10 @@ function assistantExtras(host: MenuMijiaWindowsApp): string {
         )
         .join("")}</div>`
     : "";
+  // The search box stays available while the extras are collapsed, so a command can still leave
+  // a confirmation or disambiguation waiting. Those options are the only way to answer it, so they
+  // stay visible; timers and other extras stay hidden until the area is opened.
+  if (!host.isShowingAssistantBar) return suggestions ? `<div class="cc-feedback-card">${suggestions}</div>` : "";
   const missed = host.missedScheduledCommands.length > 0
     ? `<div class="cc-timers-stack">${host.missedScheduledCommands
         .map(

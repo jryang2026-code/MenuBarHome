@@ -326,6 +326,8 @@ export class MenuMijiaWindowsApp {
     }
 
     this.bindGlobalKeys();
+    // Alt+Tab hides the popover without a button blur; a hold started before it must not finish.
+    window.addEventListener("blur", () => this.cancelAllOffHold());
     window.addEventListener("pointermove", (event) => {
       const rect = this.grokBall.element.getBoundingClientRect();
       this.grokBallPointerUntil = Date.now() + 1500;
@@ -583,6 +585,12 @@ export class MenuMijiaWindowsApp {
     }
   }
 
+  /** Losing window focus disarms the hold without the short-press hint. */
+  private cancelAllOffHold(): void {
+    this.clearAllOffHold();
+    this.root.querySelector<HTMLElement>("#btn-all-off")?.classList.remove("is-holding");
+  }
+
   public bindAllOffControl(): void {
     this.clearAllOffHold();
     const allOff = this.root.querySelector<HTMLElement>("#btn-all-off");
@@ -593,7 +601,9 @@ export class MenuMijiaWindowsApp {
       allOff.classList.add("is-holding");
       this.allOffHoldTimer = window.setTimeout(() => {
         this.allOffHoldTimer = null;
-        if (!allOff.isConnected) return;
+        // The popover hides on window blur but the button stays in the DOM: never fire a hold the
+        // user cannot see finish.
+        if (!allOff.isConnected || !document.hasFocus()) return;
         this.allOffHoldConsumed = true;
         allOff.classList.remove("is-holding");
         void this.turnAllOff();

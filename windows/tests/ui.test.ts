@@ -5937,6 +5937,91 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.match(tile("light.living_ceiling"), /已开启/);
   });
 
+  it("cancels All Off when the window loses focus", async () => {
+    const app = startDemoApp();
+    let calls = 0;
+    const run = app.executeIntents.bind(app);
+    app.executeIntents = async (...args) => {
+      calls += 1;
+      return run(...args);
+    };
+    const button = element("#btn-all-off");
+    button.focus();
+    pressHoldKey(button, " ", "keydown");
+    window.dispatchEvent(new Event("blur"));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await setImmediate();
+    assert.equal(calls, 0);
+    assert.match(tile("light.living_ceiling"), /已开启/);
+  });
+
+  it("does not run All Off when the window is unfocused as the hold completes", async () => {
+    const app = startDemoApp();
+    let calls = 0;
+    const run = app.executeIntents.bind(app);
+    app.executeIntents = async (...args) => {
+      calls += 1;
+      return run(...args);
+    };
+    const hadFocus = document.hasFocus.bind(document);
+    document.hasFocus = () => false;
+    try {
+      const button = element("#btn-all-off");
+      button.dispatchEvent(new Event("pointerdown"));
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      await setImmediate();
+    } finally {
+      document.hasFocus = hadFocus;
+    }
+    assert.equal(calls, 0);
+    assert.match(tile("light.living_ceiling"), /已开启/);
+  });
+
+  it("keeps a pending confirmation visible while the assistant extras are collapsed", async () => {
+    const app = startDemoApp();
+    app.devices = app.devices.map((device) =>
+      device.id === "plug.entry_socket" && device.kind.kind === "plug"
+        ? { ...device, kind: { ...device.kind, isOn: false } }
+        : device,
+    );
+    app.isShowingAssistantBar = false;
+    app.render();
+    await command("打开插座");
+    assert.match(textOf(".cc-feedback-text"), /再点一次确认执行/);
+    const chip = document.querySelector<HTMLElement>('[data-suggestion-id="confirm:local"]');
+    assert.ok(chip, "the confirmation cannot hide with the collapsed extras");
+    await click('[data-suggestion-id="confirm:local"]');
+    assert.match(tile("plug.entry_socket"), /供电中/);
+  });
+
+  it("keeps a pending disambiguation visible while the assistant extras are collapsed", async () => {
+    const app = startDemoApp();
+    const template = app.devices.find((device) => device.id === "plug.entry_socket");
+    assert.ok(template && template.kind.kind === "plug");
+    const second: SmartDevice = {
+      ...structuredClone(template),
+      id: "plug.study_socket",
+      name: "书房插座",
+      roomId: "room_study",
+      roomName: "书房",
+      kind: { ...template.kind, isOn: false },
+    };
+    app.devices = app.devices.map((device) =>
+      device.id === "plug.entry_socket" && device.kind.kind === "plug"
+        ? { ...device, kind: { ...device.kind, isOn: false } }
+        : device,
+    );
+    app.devices = [...app.devices, second];
+    app.isShowingAssistantBar = false;
+    app.render();
+    await command("打开插座");
+    assert.ok(
+      document.querySelector('[data-suggestion-id="bare:on:plug.entry_socket"]'),
+      "disambiguation options cannot hide with the collapsed extras",
+    );
+    assert.ok(document.querySelector('[data-suggestion-id="bare:on:plug.study_socket"]'));
+  });
+
   it("cancels All Off when a pending schedule redraws the button", async () => {
     const ticks: Array<() => void> = [];
     const realSetInterval = window.setInterval.bind(window);
