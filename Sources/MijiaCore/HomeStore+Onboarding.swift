@@ -90,6 +90,14 @@ extension HomeStore {
         )
     }
 
+    /// Header hold during the All Off lesson. Every other caller, including URL, Raycast, and
+    /// App Intent scenes, uses `turnAllOff()` and really switches devices off.
+    @discardableResult
+    public func rehearseAllOff() -> Task<Void, Never>? {
+        if rehearseAllOffLessonIfNeeded() { return nil }
+        return turnAllOff()
+    }
+
     /// The All Off lesson is on screen and is the next step, so a hold must not change the home.
     var allOffLessonIsActive: Bool {
         guard showsOnboardingChecklistCard else { return false }

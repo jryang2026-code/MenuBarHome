@@ -311,8 +311,6 @@ extension HomeStore {
     @discardableResult
     public func turnAllOff() -> Task<Void, Never>? {
         guard !rejectControlWhileLocked() else { return nil }
-        // While the All Off lesson is the next step, the hold is a dry run and sends nothing.
-        if rehearseAllOffLessonIfNeeded() { return nil }
         let targetIds = Set(allOffTargets.map(\.id))
         guard !targetIds.isEmpty else {
             showToast(L10n.tr("当前没有开启的设备", "No active devices are currently on"))

@@ -217,7 +217,7 @@ struct OnboardingChecklistTests {
         #expect(store.onboardingChecklist.nextStep == .allOffAndUndo)
         #expect(store.allOffLessonIsActive)
 
-        let rehearsal = store.turnAllOff()
+        let rehearsal = store.rehearseAllOff()
         #expect(rehearsal == nil)
         #expect(store.onboardingMilestones.contains(.rehearsedAllOff))
         #expect(!store.onboardingMilestones.contains(.turnedAllOff))
@@ -244,6 +244,33 @@ struct OnboardingChecklistTests {
         #expect(!sent.isEmpty)
         #expect(store.onboardingMilestones.contains(.turnedAllOff))
         #expect(store.devices.contains { !$0.isActiveOn })
+    }
+
+    @Test("URL, Raycast, and App Intent All Off still writes while the lesson is pending")
+    @MainActor
+    func urlAllOffWritesDuringLesson() async throws {
+        let snapshot = SynthesizedHome(
+            rooms: [RoomArea(id: "living", name: "客厅", sortOrder: 1)],
+            devices: [Self.livingLight, Self.studyLight],
+            scenes: []
+        )
+        let mock = MockHomeProvider(snapshot: snapshot)
+        let store = HomeStore(
+            provider: mock,
+            defaultsSuiteName: "test.onboarding.url-alloff.\(UUID().uuidString)"
+        )
+        try await store.waitForTestSnapshot()
+        store.recordOnboardingMilestone(.searchedDevice)
+        #expect(store.allOffLessonIsActive)
+
+        let outcome = await store.executeBuiltInURLScene(.allOff)
+        #expect(outcome.isError == false)
+        #expect(store.onboardingMilestones.contains(.turnedAllOff))
+        #expect(!store.onboardingMilestones.contains(.rehearsedAllOff))
+        #expect(store.devices.contains { !$0.isActiveOn })
+        try await Task.sleep(for: .milliseconds(80))
+        let sent = await mock.executedCommands
+        #expect(!sent.isEmpty)
     }
 }
 

@@ -108,7 +108,7 @@ struct OnboardingChecklistCard: View {
         case .searchDevice:
             onBeginSearch()
         case .allOffAndUndo:
-            withAnimation(AppleMotion.snappySpring) { _ = store.turnAllOff() }
+            withAnimation(AppleMotion.snappySpring) { _ = store.rehearseAllOff() }
         }
     }
 
