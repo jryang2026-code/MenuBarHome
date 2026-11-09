@@ -528,8 +528,11 @@ extension HomeStore {
     private func schedule(_ plan: IntentPlan, after delay: TimeInterval) -> IntentPlan {
         let scopes = activeConnectionScopes
         // A timer made against the previous source's device list would be stamped with the new
-        // sources; wait for one snapshot after `startListening()` before offering to schedule.
-        guard snapshotGeneration != listeningSnapshotGeneration, !scopes.isEmpty else {
+        // sources; wait for one snapshot after `startListening()` before offering to schedule. LG rows
+        // come from the LAN client, so an all-LG plan is current even without a cloud snapshot.
+        let needsCloudSnapshot = !planHasOnlyLGTargets(plan)
+        guard !scopes.isEmpty,
+              !needsCloudSnapshot || snapshotGeneration != listeningSnapshotGeneration else {
             let message = L10n.tr(
                 "数据源尚未就绪，定时任务未创建",
                 "The home source is not ready; the timer was not created"
@@ -555,6 +558,16 @@ extension HomeStore {
         reply.reply = L10n.tr("好的，", "Scheduled — ") + entry.reply
         setAssistantState(.done(reply.reply))
         return reply
+    }
+
+    /// True when every target is a local LG card. Those rows come from the LAN client rather than a
+    /// cloud snapshot, so a stale `snapshotGeneration` says nothing about their freshness.
+    private func planHasOnlyLGTargets(_ plan: IntentPlan) -> Bool {
+        !plan.intents.isEmpty && plan.intents.allSatisfy { intent in
+            guard let device = devices.first(where: { $0.id == intent.targetId }),
+                  case .tv(let spec) = device.kind else { return false }
+            return LGWebOSProtocol.isLGEntity(spec.mediaEntityId)
+        }
     }
 
     /// Saves every source's timers. Only the current source's arrays are shown, so writing just those
@@ -629,10 +642,9 @@ extension HomeStore {
     /// armed or shown; the caller decides what a mismatch means.
     static func sourceScopesMatch(_ stamped: [String], active: Set<String>) -> Bool {
         guard stamped.contains(where: active.contains) else { return false }
-        let activeHAs = active.filter { $0.hasPrefix("ha:") }
-        guard !activeHAs.isEmpty else { return true }
-        // Only `ha:` needs this: HA entity ids repeat between servers; Xiaomi dids are globally unique.
-        return stamped.filter { $0.hasPrefix("ha:") }.allSatisfy(activeHAs.contains)
+        // Timer targets are merged card ids that an HA absent at creation can already claim, so every
+        // HA connected now must be one this timer saw when it was created.
+        return active.filter { $0.hasPrefix("ha:") }.allSatisfy(stamped.contains)
     }
 
     /// Plan targets that are in neither the current device list nor the current scenes. A plan with no

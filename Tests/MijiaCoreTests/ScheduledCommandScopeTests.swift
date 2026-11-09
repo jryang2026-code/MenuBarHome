@@ -537,7 +537,7 @@ struct ScheduledCommandScopeTests {
     func scopeMatchingRule() {
         #expect(HomeStore.sourceScopesMatch(["ha:a", "mi:x"], active: ["mi:x"]))
         #expect(!HomeStore.sourceScopesMatch(["ha:a", "mi:x"], active: ["ha:b", "mi:x"]))
-        #expect(HomeStore.sourceScopesMatch(["mi:x"], active: ["ha:a", "mi:x"]))
+        #expect(!HomeStore.sourceScopesMatch(["mi:x"], active: ["ha:a", "mi:x"]))
         #expect(!HomeStore.sourceScopesMatch(["mi:x"], active: ["mi:y"]))
         #expect(HomeStore.sourceScopesMatch(["demo"], active: ["demo"]))
     }
@@ -595,9 +595,9 @@ struct ScheduledCommandScopeTests {
         _ = store.cancelScheduledCommands()
     }
 
-    @Test("A Xiaomi-only stamp keeps running after Home Assistant is added")
+    @Test("Connecting a Home Assistant after creation holds a Xiaomi-only timer back until it is removed")
     @MainActor
-    func xiaomiOnlyStampSurvivesHAAddition() async throws {
+    func haAddedAfterCreationHoldsTheTimerBack() async throws {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.miLamp], scenes: []))
         let store = HomeStore(provider: mock, defaultsSuiteName: "test.schedulescope.\(UUID().uuidString)")
         try await store.waitForTestSnapshot()
@@ -614,7 +614,17 @@ struct ScheduledCommandScopeTests {
         #expect(timer.effectiveSourceScopes == [Self.cnAccount.id])
         await waitUntil { gate.waiting == 1 }
 
+        // A merged card id can be claimed by a Home Assistant the timer never saw when it was created.
         store.hasHASource = true
+        store.startListening()
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(store.foreignScheduledCommands.map(\.id) == [timer.id])
+        #expect(ScheduledCommand.load(from: store.userDefaults).map(\.id) == [timer.id])
+        for _ in 0..<50 { await Task.yield() }
+        #expect(await mock.executedCommands.isEmpty)
+
+        // Removing that HA restores the original Xiaomi-only match.
+        store.hasHASource = false
         store.startListening()
         #expect(store.scheduledCommands.map(\.id) == [timer.id])
 
@@ -707,6 +717,41 @@ struct ScheduledCommandScopeTests {
         #expect(store.scheduledCommands.count == 1)
         #expect(store.scheduledCommands.first?.plan.intents.map(\.targetId) == [Self.lgTV.id])
         _ = store.cancelScheduledCommands()
+    }
+
+    @Test("An LG-only timer skips the cloud snapshot guard")
+    @MainActor
+    func lgOnlyTimerSkipsSnapshotGuard() async throws {
+        let (store, _) = try await makeDualSourceStore(devices: [Self.ceiling])
+        store.lgConfig = LGWebOSConfig(isEnabled: true, host: "192.0.2.10")
+        store.applyLGDeviceUpdate(Self.lgTV)
+        let gate = SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
+
+        // No cloud snapshot since the last listen; the LAN TV row is still current.
+        store.startListening()
+        store.eventTask?.cancel()
+        #expect(store.listeningSnapshotGeneration == store.snapshotGeneration)
+        _ = await store.runAssistantCommand("10分钟后关闭LG电视")
+        #expect(store.scheduledCommands.count == 1)
+        #expect(store.scheduledCommands.first?.plan.intents.map(\.targetId) == [Self.lgTV.id])
+        _ = store.cancelScheduledCommands()
+    }
+
+    @Test("An LG timer with a cloud target still waits for a snapshot")
+    @MainActor
+    func mixedLGAndCloudTimerNeedsSnapshot() async throws {
+        let (store, _) = try await makeDualSourceStore(devices: [Self.ceiling])
+        store.lgConfig = LGWebOSConfig(isEnabled: true, host: "192.0.2.10")
+        store.applyLGDeviceUpdate(Self.lgTV)
+        let gate = SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
+
+        store.startListening()
+        store.eventTask?.cancel()
+        _ = await store.runAssistantCommand("10分钟后关闭LG电视、书房吸顶灯")
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(store.toastNotice?.message == "数据源尚未就绪，定时任务未创建")
     }
 
     @Test("Scheduling refuses until a snapshot arrives after startListening")
