@@ -107,7 +107,7 @@ enum PanelFoldMeasure {
         hosting.displayIfNeeded()
         window.displayIfNeeded()
         try await Task.sleep(for: .milliseconds(250))
-        CFRunLoopRunInMode(.defaultMode, 0.05, false)
+        pumpMainRunLoop()
 
         let light = try #require(store.devices.first { device in
             if case .light = device.kind { return true }
@@ -127,4 +127,9 @@ enum PanelFoldMeasure {
             kindMinY: PanelFoldProbe.kindRowMinY
         )
     }
+}
+
+/// `CFRunLoopRunInMode` is unavailable directly inside an async test.
+private func pumpMainRunLoop() {
+    CFRunLoopRunInMode(.defaultMode, 0.05, false)
 }
