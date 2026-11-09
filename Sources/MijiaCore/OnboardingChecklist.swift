@@ -14,6 +14,8 @@ public enum OnboardingMilestone: String, CaseIterable, Sendable {
     case searchedDevice
     case turnedAllOff
     case undidAllOff
+    /// The All Off lesson was practiced. No device command was sent.
+    case rehearsedAllOff
 }
 
 /// Pure checklist for the three-step guide. Lives in `MijiaCore` so the completion rules are
@@ -34,7 +36,9 @@ public struct OnboardingChecklist: Equatable, Sendable {
         case .searchDevice:
             return milestones.contains(.searchedDevice)
         case .allOffAndUndo:
-            return milestones.contains(.turnedAllOff) && milestones.contains(.undidAllOff)
+            // A dry run finishes the lesson without touching the home. Doing All Off for real later
+            // finishes it too. Undo stays available, and is no longer required.
+            return milestones.contains(.rehearsedAllOff) || milestones.contains(.turnedAllOff)
         }
     }
 

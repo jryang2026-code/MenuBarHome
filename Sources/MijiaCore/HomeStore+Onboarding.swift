@@ -78,4 +78,123 @@ extension HomeStore {
             threshold: ModelActionPolicy.autoRunThreshold
         )
     }
+
+    /// The one system notice the panel may show. Blocked outranks security, then a suggestion,
+    /// then a session that is only expiring. `extraCount` is how many notices are waiting behind it.
+    public var panelNoticeSlot: PanelNoticeSlot? {
+        PanelNotice.slot(
+            miExpired: miSessionShowsExpired,
+            expiringSoon: miSessionExpiringSoonDate,
+            plaintext: haPlaintextPrompt,
+            address: pendingHAAddressSuggestion
+        )
+    }
+
+    /// The All Off lesson is on screen and is the next step, so a hold must not change the home.
+    var allOffLessonIsActive: Bool {
+        guard showsOnboardingChecklistCard else { return false }
+        if panelNoticeSlot?.hidesChecklist == true { return false }
+        return onboardingChecklist.nextStep == .allOffAndUndo
+    }
+
+    /// Shows the rehearsal banner and marks the lesson done. Returns false when this hold should
+    /// really turn devices off.
+    func rehearseAllOffLessonIfNeeded() -> Bool {
+        guard allOffLessonIsActive else { return false }
+        let targets = allOffTargets
+        guard !targets.isEmpty else { return false }
+        scheduleUndoBanner(
+            title: Self.rehearsalBannerTitle(names: targets.map(\.name)),
+            restoreCommands: [],
+            previousDevices: devices,
+            deviceCount: targets.count,
+            isAllOff: false
+        )
+        recordOnboardingMilestone(.rehearsedAllOff)
+        return true
+    }
+
+    static func rehearsalBannerTitle(names: [String]) -> String {
+        let count = names.count
+        let separator = L10n.isEnglish ? ", " : "、"
+        let shown = names.prefix(5)
+        let list = shown.joined(separator: separator)
+        let more = names.count > shown.count ? L10n.tr("等", "…") : ""
+        let detail = list.isEmpty ? "" : " \(list)\(more)"
+        return L10n.tr(
+            "演练：将关闭 \(count) 台（未实际执行）\(detail)",
+            "Practice: would turn off \(count) (not sent)\(detail)"
+        )
+    }
+}
+
+/// One system notice, plus how many others are waiting. The panel draws `kind` and nothing else.
+public struct PanelNoticeSlot: Equatable, Sendable {
+    public enum Kind: Equatable, Sendable {
+        case miBlocked
+        case haPlaintext(HAPlaintextPrompt)
+        case haAddress(HADiscoveredInstance)
+        case miExpiringSoon(Date)
+    }
+
+    public var kind: Kind
+    public var extraCount: Int
+
+    /// A blocked session or a plaintext-token decision hides the getting-started row.
+    public var hidesChecklist: Bool {
+        switch kind {
+        case .miBlocked, .haPlaintext: true
+        case .haAddress, .miExpiringSoon: false
+        }
+    }
+
+    public init(kind: Kind, extraCount: Int) {
+        self.kind = kind
+        self.extraCount = extraCount
+    }
+}
+
+public enum PanelNotice {
+    /// Highest priority first. A missing input is not a notice.
+    public static func slot(
+        miExpired: Bool,
+        expiringSoon: Date?,
+        plaintext: HAPlaintextPrompt?,
+        address: HADiscoveredInstance?
+    ) -> PanelNoticeSlot? {
+        let pending = (miExpired ? 1 : 0)
+            + (plaintext == nil ? 0 : 1)
+            + (address == nil ? 0 : 1)
+            + (expiringSoon == nil ? 0 : 1)
+        guard pending > 0 else { return nil }
+
+        let kind: PanelNoticeSlot.Kind
+        if miExpired {
+            kind = .miBlocked
+        } else if let plaintext {
+            kind = .haPlaintext(plaintext)
+        } else if let address {
+            kind = .haAddress(address)
+        } else if let expiringSoon {
+            kind = .miExpiringSoon(expiringSoon)
+        } else {
+            return nil
+        }
+        return PanelNoticeSlot(kind: kind, extraCount: pending - 1)
+    }
+
+    public static func extraReminderLabel(count: Int) -> String {
+        L10n.tr("还有 \(count) 条提醒", count == 1 ? "1 more reminder" : "\(count) more reminders")
+    }
+}
+
+/// The kind-chip row stays hidden until the user asks for it, or a kind filter is already on.
+public enum KindChipRowPolicy {
+    public static func isShown(listCut: DeviceListCut, revealed: Bool) -> Bool {
+        switch listCut {
+        case .kind: return true
+        case .all: return revealed
+        case .room: return false
+        }
+    }
 }
