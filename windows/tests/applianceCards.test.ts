@@ -14,7 +14,7 @@ import { applyCommandToDevices } from "../src/core/commandEffects.js";
 import { deviceOwningEntityId } from "../src/ui/commandDispatch.js";
 import { parseMiotDeviceSpec } from "../src/core/miCloud/spec.js";
 import { MiotSynthesizer } from "../src/core/miCloud/synthesis.js";
-import { facetWriteEnabled, facetWriteIsHazardous } from "../src/ui/facetViews.js";
+import { facetWriteEnabled } from "../src/ui/facetViews.js";
 
 const U = (kind: string, name: string, code: string, vendor: string) =>
   `urn:miot-spec-v2:${kind}:${name}:${code}:${vendor}:1`;
@@ -282,48 +282,12 @@ describe("更多设置 writes (#5)", () => {
     assert.equal(deviceOwningEntityId([plug], facets, "miot:plug2:3"), null);
   });
 
-  const facet = (overrides: Partial<FacetControl>): FacetControl => ({
-    id: "2.4",
-    kind: "toggle",
-    name: "child-lock",
-    title: null,
-    serviceName: "fish-tank",
-    unit: null,
-    scale: null,
-    value: false,
-    options: [],
-    range: null,
-    isWritable: true,
-    writesByDefault: false,
-    isHighValue: false,
-    target: { kind: "property", entityId: "miot:did_tank:2", piid: 4 },
-    ...overrides,
-  });
-
   it("keeps a row outside the low-risk whitelist disabled until advanced writes are allowed", () => {
-    const control = facet({});
+    const control = powerFacet({ name: "child-lock", value: false, writesByDefault: false });
     assert.equal(facetWriteEnabled(control, false), false);
     assert.equal(facetWriteEnabled(control, true), true);
-    assert.equal(facetWriteEnabled(facet({ writesByDefault: true }), false), true);
-    assert.equal(facetWriteEnabled(facet({ isWritable: false }), true), false);
-  });
-
-  it("asks once more for the hazardous direction only", () => {
-    const control = facet({});
-    assert.equal(facetWriteIsHazardous(control, true), true, "turning a gated switch on asks");
-    assert.equal(facetWriteIsHazardous(control, false), false, "turning it off only makes the home safer");
-    assert.equal(facetWriteIsHazardous(facet({ writesByDefault: true }), true), false, "a whitelisted write stays direct");
-    const mode = facet({
-      id: "2.2",
-      kind: "select",
-      name: "mode",
-      options: [
-        { value: 0, label: "Off" },
-        { value: 1, label: "Heat" },
-      ],
-    });
-    assert.equal(facetWriteIsHazardous(mode, 0), false);
-    assert.equal(facetWriteIsHazardous(mode, 1), true);
+    assert.equal(facetWriteEnabled(powerFacet({}), false), true);
+    assert.equal(facetWriteEnabled(powerFacet({ isWritable: false }), true), false);
   });
 });
 

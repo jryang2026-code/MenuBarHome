@@ -4,15 +4,28 @@ import Testing
 @testable import MenuBarMijiaApp
 
 private actor FakePTZClient: CameraPTZControlling {
+    private struct StopWaiter {
+        var minimum: Int
+        var id: UInt64
+        var continuation: CheckedContinuation<[CameraPTZSessionToken]?, Never>
+    }
+
     private var beginContinuation: CheckedContinuation<(token: CameraPTZSessionToken, mode: CameraPTZMotionMode?), Error>?
+    private var beginWaiter: (id: UInt64, continuation: CheckedContinuation<Bool, Never>)?
     private var stopTokens: [CameraPTZSessionToken] = []
+    private var stopWaiter: StopWaiter?
     private var scriptedStops: [CameraPTZStopResult] = []
+    private var nextWaiterID: UInt64 = 0
     var stopResult = CameraPTZStopResult(sent: true, confirmed: false, mode: .continuous)
 
     func begin() async throws -> (token: CameraPTZSessionToken, mode: CameraPTZMotionMode?) {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 beginContinuation = continuation
+                if let waiter = beginWaiter {
+                    beginWaiter = nil
+                    waiter.continuation.resume(returning: true)
+                }
             }
         } onCancel: {
             Task { await self.failBegin() }
@@ -35,14 +48,57 @@ private actor FakePTZClient: CameraPTZControlling {
 
     func stop(token: CameraPTZSessionToken) async throws -> CameraPTZStopResult {
         stopTokens.append(token)
+        if let waiter = stopWaiter, stopTokens.count >= waiter.minimum {
+            stopWaiter = nil
+            waiter.continuation.resume(returning: stopTokens)
+        }
         if !scriptedStops.isEmpty {
             return scriptedStops.removeFirst()
         }
         return stopResult
     }
 
-    func recordedStops() -> [CameraPTZSessionToken] { stopTokens }
-    func hasPendingBegin() -> Bool { beginContinuation != nil }
+    /// Waits until the controller actually called `begin`. The deadline removes the waiter and
+    /// resumes it with `false`, so a regression fails the test instead of hanging the run.
+    func waitForBegin(timeout: Duration = .seconds(30)) async -> Bool {
+        guard beginContinuation == nil else { return true }
+        nextWaiterID &+= 1
+        let id = nextWaiterID
+        return await withCheckedContinuation { continuation in
+            beginWaiter = (id, continuation)
+            Task {
+                try? await Task.sleep(for: timeout)
+                self.expireBeginWaiter(id)
+            }
+        }
+    }
+
+    /// Waits until at least `minimum` stops were written; nil when the deadline expired. A stop
+    /// that arrived before the wait cannot strand it.
+    func waitForStops(minimum: Int = 1, timeout: Duration = .seconds(30)) async -> [CameraPTZSessionToken]? {
+        guard stopTokens.count < minimum else { return stopTokens }
+        nextWaiterID &+= 1
+        let id = nextWaiterID
+        return await withCheckedContinuation { continuation in
+            stopWaiter = StopWaiter(minimum: minimum, id: id, continuation: continuation)
+            Task {
+                try? await Task.sleep(for: timeout)
+                self.expireStopWaiter(id)
+            }
+        }
+    }
+
+    private func expireBeginWaiter(_ id: UInt64) {
+        guard let waiter = beginWaiter, waiter.id == id else { return }
+        beginWaiter = nil
+        waiter.continuation.resume(returning: false)
+    }
+
+    private func expireStopWaiter(_ id: UInt64) {
+        guard let waiter = stopWaiter, waiter.id == id else { return }
+        stopWaiter = nil
+        waiter.continuation.resume(returning: nil)
+    }
 }
 
 @MainActor
@@ -76,58 +132,45 @@ struct CameraPTZDriverTests {
         )
     }
 
-    private func waitForStops(_ client: FakePTZClient, count: Int = 1) async -> [CameraPTZSessionToken] {
-        for _ in 0..<5000 {
-            let stops = await client.recordedStops()
-            if stops.count >= count { return stops }
-            await Task.yield()
-        }
-        return await client.recordedStops()
-    }
-
     @Test("A cancelled begin releases the bridge token instead of leaking it")
-    func cancelledBeginReleasesToken() async {
+    func cancelledBeginReleasesToken() async throws {
         let controller = CameraLivePanelController.shared
         let client = FakePTZClient()
         configure(controller, deviceId: "cam-a", client: client)
         defer { controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false) }
 
         controller.ptzDragBegan(at: .init(x: 0, y: 0))
-        for _ in 0..<2000 where await !client.hasPendingBegin() {
-            await Task.yield()
-        }
+        #expect(await client.waitForBegin(), "the controller never called begin")
         controller.ptzDragCancelled()
         let token = CameraPTZSessionToken(epoch: "e1", session: 9)
         await client.releaseBegin(token)
 
-        let stops = await waitForStops(client)
+        let stops = try #require(await client.waitForStops(), "the controller never wrote a stop")
         #expect(stops == [token])
         #expect(controller.ptzNotice == nil)
     }
 
     @Test("A begin that resolves after a device switch stops its old token and does not touch the new camera")
-    func lateBeginAfterDeviceSwitchIsIsolated() async {
+    func lateBeginAfterDeviceSwitchIsIsolated() async throws {
         let controller = CameraLivePanelController.shared
         let client = FakePTZClient()
         configure(controller, deviceId: "cam-a", client: client)
 
         controller.ptzDragBegan(at: .init(x: 0, y: 0))
-        for _ in 0..<2000 where await !client.hasPendingBegin() {
-            await Task.yield()
-        }
+        #expect(await client.waitForBegin(), "the controller never called begin")
         configure(controller, deviceId: "cam-b", client: client)
         defer { controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false) }
 
         let token = CameraPTZSessionToken(epoch: "e1", session: 9)
         await client.releaseBegin(token)
 
-        let stops = await waitForStops(client)
+        let stops = try #require(await client.waitForStops(), "the controller never wrote a stop")
         #expect(stops == [token])
         #expect(controller.ptzNotice == nil, "the old stream's error must not paint the new camera")
     }
 
     @Test("A stop write failure retries once, then the stop-again button sends one more stop")
-    func stopWriteFailureRetriesOnceThenTheButtonSendsStopAgain() async {
+    func stopWriteFailureRetriesOnceThenTheButtonSendsStopAgain() async throws {
         let controller = CameraLivePanelController.shared
         let client = FakePTZClient()
         let failed = CameraPTZStopResult(
@@ -143,9 +186,9 @@ struct CameraPTZDriverTests {
         let gate = PTZRetryGate()
         controller.ptzStopRetryHold = { await gate.wait() }
         defer {
+            gate.release()
             controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false)
             L10n.currentLanguage = previousLanguage
-            gate.release()
         }
 
         let token = CameraPTZSessionToken(epoch: "e1", session: 9)
@@ -154,13 +197,13 @@ struct CameraPTZDriverTests {
         controller.ptzDragID = UUID()
         controller.finishPTZMove(notify: false)
 
-        let first = await waitForStops(client, count: 1)
+        let first = try #require(await client.waitForStops(), "the first stop was never written")
         #expect(first == [token])
         #expect(controller.ptzNotice == nil)
         #expect(controller.offersPTZStopRetry == false)
 
         gate.release()
-        let second = await waitForStops(client, count: 2)
+        let second = try #require(await client.waitForStops(minimum: 2), "the automatic retry was never written")
         #expect(second == [token, token])
         for _ in 0..<5000 where controller.ptzNotice == nil {
             await Task.yield()
@@ -169,14 +212,14 @@ struct CameraPTZDriverTests {
         #expect(controller.offersPTZStopRetry == true)
 
         controller.retryFailedPTZStop()
-        let third = await waitForStops(client, count: 3)
+        let third = try #require(await client.waitForStops(minimum: 3), "the stop-again button wrote nothing")
         #expect(third == [token, token, token])
         #expect(controller.ptzNotice == "停止指令写入失败，云台可能仍在转动")
         #expect(controller.offersPTZStopRetry == true)
     }
 
     @Test("A stop that succeeds on the automatic retry clears the warning")
-    func automaticStopRetrySuccessClearsTheWarning() async {
+    func automaticStopRetrySuccessClearsTheWarning() async throws {
         let controller = CameraLivePanelController.shared
         let client = FakePTZClient()
         await client.setStopScript([
@@ -187,18 +230,18 @@ struct CameraPTZDriverTests {
         let gate = PTZRetryGate()
         controller.ptzStopRetryHold = { await gate.wait() }
         defer {
-            controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false)
             gate.release()
+            controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false)
         }
 
         controller.ptzToken = CameraPTZSessionToken(epoch: "e1", session: 9)
         controller.ptzDeviceId = "cam-a"
         controller.finishPTZMove(notify: false)
-        _ = await waitForStops(client, count: 1)
+        _ = try #require(await client.waitForStops(), "the first stop was never written")
         #expect(controller.ptzNotice == nil)
 
         gate.release()
-        let stops = await waitForStops(client, count: 2)
+        let stops = try #require(await client.waitForStops(minimum: 2), "the automatic retry was never written")
         #expect(stops.count == 2)
         for _ in 0..<500 {
             await Task.yield()
@@ -208,7 +251,7 @@ struct CameraPTZDriverTests {
     }
 
     @Test("Pressing stop again after a failed stop clears the warning when the write succeeds")
-    func manualStopSuccessClearsTheWarning() async {
+    func manualStopSuccessClearsTheWarning() async throws {
         let controller = CameraLivePanelController.shared
         let client = FakePTZClient()
         let failed = CameraPTZStopResult(
@@ -222,23 +265,23 @@ struct CameraPTZDriverTests {
         let gate = PTZRetryGate()
         controller.ptzStopRetryHold = { await gate.wait() }
         defer {
-            controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false)
             gate.release()
+            controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false)
         }
 
         controller.ptzToken = CameraPTZSessionToken(epoch: "e1", session: 4)
         controller.ptzDeviceId = "cam-a"
         controller.finishPTZMove(notify: false)
-        _ = await waitForStops(client, count: 1)
+        _ = try #require(await client.waitForStops(), "the first stop was never written")
         gate.release()
-        _ = await waitForStops(client, count: 2)
+        _ = try #require(await client.waitForStops(minimum: 2), "the automatic retry was never written")
         for _ in 0..<5000 where controller.offersPTZStopRetry == false {
             await Task.yield()
         }
         #expect(controller.offersPTZStopRetry == true)
 
         controller.retryFailedPTZStop()
-        _ = await waitForStops(client, count: 3)
+        _ = try #require(await client.waitForStops(minimum: 3), "the stop-again button wrote nothing")
         for _ in 0..<5000 where controller.ptzNotice != nil {
             await Task.yield()
         }

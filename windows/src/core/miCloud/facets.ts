@@ -3,6 +3,19 @@ import type { FacetControl, FacetKind, FacetOption, FacetRange, FacetTarget } fr
 import { makeMiotActionAddress, makeMiotAddress, miotShortName } from "./spec.js";
 import type { MiotAction, MiotDeviceSpec, MiotProperty, MiotService, MiotValueListItem } from "./spec.js";
 
+/**
+ * The confirmation table behind `ManualControlPolicy` (#26). Patterns use the same glob syntax as
+ * `facets`: `strictlyHighRisk` matches device types and services that ask even for an off direction,
+ * `heatingService` names services whose power-on and hotter targets can hurt, and
+ * `lowRiskServices`/`lowRiskTokens` never ask.
+ */
+export interface ManualControlRules {
+  readonly strictlyHighRisk: readonly string[];
+  readonly heatingService: readonly string[];
+  readonly lowRiskServices: readonly string[];
+  readonly lowRiskTokens: readonly string[];
+}
+
 export interface DeviceProfiles {
   readonly version: number;
   readonly noise: {
@@ -36,6 +49,11 @@ export interface DeviceProfiles {
    * (heat for a bath heater, exhaust for a hood); `companions` fill the other controls and readings.
    */
   readonly appliances: Readonly<Record<string, ApplianceProfile>>;
+  /**
+   * The manual-control confirmation table (#26). Optional so a document without it still loads and
+   * falls back to `MANUAL_CONTROL_FALLBACK_RULES`, mirroring macOS `ManualControlRules.defaults`.
+   */
+  readonly manualControlPolicy?: ManualControlRules;
 }
 
 export interface ApplianceProfile {
@@ -60,6 +78,45 @@ export interface DeviceOverride {
 
 /** The same `deviceProfiles.json` the macOS bundle ships (#303). */
 export const DEVICE_PROFILES = deviceProfiles as DeviceProfiles;
+
+/**
+ * Mirrors `ManualControlRules.defaults` on macOS, so a document that predates the field keeps the
+ * #6 confirmation behaviour instead of silently letting every write through. A test asserts it
+ * equals the bundled document, so the two cannot drift.
+ */
+export const MANUAL_CONTROL_FALLBACK_RULES: ManualControlRules = {
+  strictlyHighRisk: [
+    "lock",
+    "*-lock",
+    "germicidal-lamp",
+    "alertor",
+    "garbage-disposal",
+    "router",
+    "gateway",
+    "repeater",
+    "lock-*",
+    "*-valve",
+    "*disposal*",
+    "*alarm*",
+    "*steriliz*",
+    "*router*",
+    "*wifi*",
+    "*wlan*",
+    "*gateway*",
+    "*repeater*",
+  ],
+  heatingService: [
+    "heater",
+    "ptc",
+    "floor-heat",
+    "heating",
+    "water-heater",
+    "electric-water-heater",
+    "gas-water-heater",
+  ],
+  lowRiskServices: ["indicator-light", "night-light", "buzzer", "speaker", "physical-controls-locked"],
+  lowRiskTokens: ["led", "indicator", "buzzer", "mute", "display", "screen"],
+};
 
 /**
  * Whether a device whose type names none of its own services may be drawn from `service` (#296),

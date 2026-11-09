@@ -43,6 +43,9 @@ struct UndoScopeTests {
         store.turnAllOff()
         // Freeze the banner so a loaded CI cannot expire it before the undo below.
         store.pauseUndoBannerCountdown()
+        // Undo now waits for a running batch, so let its command out first: this test is about the
+        // other device's later change, not about undoing mid-batch.
+        #expect(await provider.waitForCommands(1))
         let other = try #require(store.devices.first { $0.id == "b" })
         let task = try #require(store.togglePrimary(other))
         _ = await task.value

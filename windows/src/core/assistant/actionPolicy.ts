@@ -1,10 +1,17 @@
 import type {
   AssistantSuggestion,
   DeviceIntent,
+  FacetControl,
   HomeScene,
   IntentOperation,
   SmartDevice,
 } from "../models.js";
+import {
+  DEVICE_PROFILES,
+  MANUAL_CONTROL_FALLBACK_RULES,
+  matchesMiotFacetPattern,
+  type ManualControlRules,
+} from "../miCloud/facets.js";
 import { deviceCategory } from "./deviceCategory.js";
 import { IntentReply, IntentValidator } from "./intent.js";
 import { PROMPT_NAME_LIMIT, sanitizePromptText } from "./promptText.js";
@@ -55,8 +62,8 @@ type ConfirmationHazard =
   | { readonly kind: "powerOnOrHotter"; readonly setpoint: number };
 
 function confirmationHazard(dev: SmartDevice): ConfirmationHazard | null {
-  // `deviceCategory` treats any 暖 in the name as a heater. A water heater whose model
-  // is not a heater still follows the hotter-only rule (#167).
+  // A water heater whose model and name miss every heater hint is still a heater for the
+  // hotter-only rule (#167), and the facet rule reads `spec.heats` the same way.
   if (
     dev.kind.kind === "climate" &&
     dev.name.includes("热水器") &&
@@ -320,6 +327,59 @@ function deescalatesHazard(operation: IntentOperation): boolean {
   return false;
 }
 
+/** The confirmation table from the shared `deviceProfiles.json`, mirroring `currentRules` (#26). */
+const MANUAL_CONTROL_RULES: ManualControlRules =
+  DEVICE_PROFILES.manualControlPolicy ?? MANUAL_CONTROL_FALLBACK_RULES;
+
+/** `Double(String)` decimal forms: sign, digits, an optional dot, an optional exponent. */
+const DECIMAL_NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+/**
+ * A number the value can carry, or null (macOS `JSONValue.doubleValue`).
+ *
+ * Only plain decimal text parses. Swift's `Double(String)` also takes hex floats (`0x10`,
+ * `0x1p3`) and `inf`/`nan`; here those stay unknown on purpose, so a reading that never occurs in
+ * the wild lands in the confirm path instead of skipping a confirmation.
+ */
+function doubleValue(value: unknown): number | null {
+  if (typeof value === "number") return value;
+  return typeof value === "string" && DECIMAL_NUMBER.test(value) ? Number(value) : null;
+}
+
+/** A rounded integer the JSON value can carry, or null (macOS `JSONValue.intValue`). */
+function intValue(value: unknown): number | null {
+  const number = doubleValue(value);
+  if (number === null) return null;
+  const rounded = Math.sign(number) * Math.round(Math.abs(number));
+  return Number.isSafeInteger(rounded) ? rounded : null;
+}
+
+/** MIoT booleans occasionally arrive as 0/1 (macOS `JSONValue.miotBool`). */
+function miotBool(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  const number = doubleValue(value);
+  return number === null ? null : number !== 0;
+}
+
+/** The option label the write selects, or the raw string (macOS facet `selectedMode`). */
+function selectedModeLabel(control: FacetControl, next: unknown): string | null {
+  const selected = intValue(next);
+  if (selected !== null) {
+    const option = control.options.find((item) => item.value === selected);
+    if (option) return option.label;
+  }
+  return typeof next === "string" ? next : null;
+}
+
+/** Exactly "off" ignoring case, the only option that ends a hazard (macOS `caseInsensitiveCompare`). */
+function selectedModeIsOff(selected: string | null): boolean {
+  return selected !== null && selected.toLowerCase() === "off";
+}
+
+function requiresOperationConfirmation(device: SmartDevice, operation: IntentOperation): boolean {
+  return ManualControlPolicy.requiresConfirmation({ targetId: device.id, operation }, [device]);
+}
+
 /**
  * The manual-control hazard rule, mirroring MijiaCore.ManualControlPolicy. A person switching a
  * device off is making the home safer, so it stays direct unlike the model hazard table (#143).
@@ -332,5 +392,116 @@ export const ManualControlPolicy = {
     if (!device) return false;
     if (deescalatesHazard(intent.operation) && device.kind.kind !== "cover") return false;
     return ModelActionPolicy.needsConfirmation(intent, devices);
+  },
+
+  /**
+   * True when a 更多设置 write needs a second tap, mirroring
+   * `MijiaCore.ManualControlPolicy.facetRequiresConfirmation`. The whitelist controls availability;
+   * confirmation follows the meaning of the write, so an off direction stays direct unless the
+   * device or service is strictly high risk. Branches stay in the macOS order.
+   */
+  facetRequiresConfirmation(
+    control: FacetControl,
+    next: unknown,
+    device: SmartDevice,
+    rules: ManualControlRules = MANUAL_CONTROL_RULES,
+  ): boolean {
+    // A physical consequence has no value to read back, so a button or action always asks.
+    if (control.kind === "button") return true;
+    if (control.target?.kind === "action") return true;
+
+    const service = control.serviceName.toLowerCase();
+    const name = control.name.toLowerCase();
+    const tokens = name.split("-").filter((token) => token !== "");
+    const isMode = name === "mode" || name.endsWith("-mode");
+    const isTargetTemperature =
+      name === "target-temperature" || name.endsWith("-target-temperature");
+    const isPower = ["on", "power", "power-switch"].includes(name) || name.endsWith("-power");
+    const coverServices = ["curtain", "window-opener", "airer", "clothes-airer", "garage-door"];
+    // A cover's `mode` calibrates or re-zeroes the motor, so it always asks (#5).
+    if (isMode && (device.kind.kind === "cover" || coverServices.includes(service))) return true;
+
+    const deviceType = device.kind.kind === "generic" ? device.kind.deviceType : "";
+    if (
+      matchesMiotFacetPattern(deviceType, rules.strictlyHighRisk) ||
+      matchesMiotFacetPattern(service, rules.strictlyHighRisk)
+    ) {
+      return true;
+    }
+
+    // Indicator, sound and child-lock controls never move the appliance's main function.
+    const lowRiskTokens = new Set(rules.lowRiskTokens);
+    const lowRiskHA =
+      tokens.some((token) => lowRiskTokens.has(token)) ||
+      name.includes("night-light") ||
+      name.includes("child-lock") ||
+      name.includes("physical-controls-locked") ||
+      name.includes("auto-off");
+    if (rules.lowRiskServices.includes(service) || lowRiskHA) return false;
+
+    // A Home Assistant auxiliary switch uses the `switch` domain with a device-specific object id,
+    // so it follows the power hazard table rather than a MIoT property short name. This also keeps
+    // a heater switch's off direction direct.
+    if (service === "switch") {
+      const isOn = miotBool(next);
+      if (isOn !== null) return requiresOperationConfirmation(device, { kind: "power", isOn });
+    }
+
+    const selectedMode = selectedModeLabel(control, next);
+
+    if (deviceCategory(device) === "heater") {
+      if (isPower) {
+        const isOn = miotBool(next);
+        if (isOn !== null) return isOn;
+      }
+      if (isMode) return !selectedModeIsOff(selectedMode);
+      return true;
+    }
+
+    const heatingService = rules.heatingService.includes(service);
+    if (isPower) {
+      const isOn = miotBool(next);
+      if (isOn !== null) {
+        if (heatingService) return isOn;
+        if (device.kind.kind !== "generic") {
+          return requiresOperationConfirmation(device, { kind: "power", isOn });
+        }
+      }
+    }
+
+    const waterHeater =
+      device.kind.kind === "appliance"
+        ? device.kind.heats
+        : device.kind.kind === "climate"
+          ? device.name.includes("热水器")
+          : false;
+    if (isTargetTemperature) {
+      const requested = doubleValue(next);
+      if (requested !== null && (heatingService || waterHeater)) {
+        const current = doubleValue(control.value);
+        if (current !== null) return requested > current;
+        if (heatingService) return true;
+        return requiresOperationConfirmation(device, {
+          kind: "targetTemperature",
+          celsius: requested,
+        });
+      }
+    }
+    if (isMode && (heatingService || waterHeater)) return !selectedModeIsOff(selectedMode);
+
+    // Data-driven high-risk types and services (#6). Generic facets outside the low-risk whitelist
+    // belong here too: enabling advanced writes is not itself the confirmation. The heating rules
+    // above keep their off and cool-down directions direct.
+    const highRisk =
+      matchesMiotFacetPattern(deviceType, DEVICE_PROFILES.facets.highRiskTypes) ||
+      matchesMiotFacetPattern(service, DEVICE_PROFILES.facets.highRiskServices) ||
+      (device.kind.kind === "generic" && !control.writesByDefault);
+    if (highRisk) {
+      const isOff =
+        (isPower && miotBool(next) === false) ||
+        (isMode && selectedModeIsOff(selectedMode));
+      return !isOff;
+    }
+    return false;
   },
 };

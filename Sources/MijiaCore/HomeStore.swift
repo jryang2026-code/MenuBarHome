@@ -27,6 +27,10 @@ public struct UndoBanner: Equatable, Sendable {
     public var duration: TimeInterval?
     /// True only for 全关, so the onboarding marker records an undo of the all-off lesson (#180).
     public var isAllOff: Bool
+    /// Devices the action's batch actually sent to. `nil` when no batch reported them (assistant
+    /// plans), where undo sends every restore command it carries. A device a newer write took
+    /// before its send is missing here, and its restore command is dropped.
+    public var attemptedDeviceIds: Set<String>?
 
     public init(
         id: UUID = UUID(),
@@ -36,7 +40,8 @@ public struct UndoBanner: Equatable, Sendable {
         deviceCount: Int = 1,
         habitReceipt: UserHabitMemory.RecordingReceipt? = nil,
         duration: TimeInterval? = nil,
-        isAllOff: Bool = false
+        isAllOff: Bool = false,
+        attemptedDeviceIds: Set<String>? = nil
     ) {
         self.id = id
         self.title = title
@@ -46,6 +51,7 @@ public struct UndoBanner: Equatable, Sendable {
         self.habitReceipt = habitReceipt
         self.duration = duration
         self.isAllOff = isAllOff
+        self.attemptedDeviceIds = attemptedDeviceIds
     }
 }
 
@@ -620,6 +626,9 @@ public final class HomeStore {
     }
     var facetWrites: [String: FacetWriteState] = [:]
     var undoTimerTask: Task<Void, Never>?
+    /// Bulk actions whose commands are still being sent, keyed by the banner they created.
+    /// 撤销 stops the entry here and waits on its task before restoring (`HomeStore+Undo.swift`).
+    var runningBatches: [UUID: RunningBatch] = [:]
     private var toastTimerTask: Task<Void, Never>?
     var optimisticLockUntil: [String: ContinuousClock.Instant] = [:]
     var optimisticLockRevision: [String: UInt64] = [:]
@@ -923,15 +932,18 @@ public final class HomeStore {
     /// Test seam overriding whether Apple's on-device model is usable on this machine.
     var localAssistantAvailabilityOverride: AssistantLocalModelAvailability?
     /// Commands waiting on a spoken delay ("10 分钟后关灯"), soonest first. Persisted across launches.
-    /// Holds only the current connection scope's timers (ADR-0019).
+    /// Holds timers whose captured sources still match the connected ones (ADR-0019).
     public internal(set) var scheduledCommands: [ScheduledCommand] = []
     /// Timers that came due while the app was closed or the Mac slept. Never auto-executed without user confirmation.
     public internal(set) var missedScheduledCommands: [ScheduledCommand] = []
-    /// Timers created on another connection source. Kept so a save of the current source never deletes
+    /// Timers created on another connection source. Kept so a save of the current sources never deletes
     /// them and switching back finds them again; not armed and not shown.
     var foreignScheduledCommands: [ScheduledCommand] = []
-    /// The connection scope `scheduledCommands` and `missedScheduledCommands` were partitioned under.
-    var scheduledCommandsScope: String?
+    /// The source scopes `scheduledCommands` and `missedScheduledCommands` were partitioned under.
+    var scheduledCommandsScope: Set<String> = []
+    /// `snapshotGeneration` at the last `startListening()`. Scheduling compares against it so a timer
+    /// is never created against the previous source's stale device list (ADR-0019).
+    var listeningSnapshotGeneration: UInt64 = 0
     public var onMissedScheduledCommand: ((ScheduledCommand) -> Void)?
     var notifiedMissedTimerIds: Set<UUID> = []
     var scheduledTasks: [UUID: Task<Void, Never>] = [:]
