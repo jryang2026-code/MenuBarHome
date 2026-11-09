@@ -411,10 +411,16 @@ import { bindPanelInput } from "./panelKeyboard.js";
       }
     });
 
-    host.root.querySelector("#btn-footer-qr")?.addEventListener("click", () => {
+    const startQrLogin = () => {
       host.activeSheet = "settings";
       host.render();
       void host.startXiaomiQRLogin();
+    };
+    host.root.querySelector("#btn-footer-qr")?.addEventListener("click", startQrLogin);
+    host.root.querySelector("#btn-footer-health")?.addEventListener("click", startQrLogin);
+    host.root.querySelector("#btn-dismiss-banner")?.addEventListener("click", () => {
+      host.replyBanner = null;
+      host.render();
     });
 
     host.root.querySelector("#btn-empty-resync")?.addEventListener("click", () => {

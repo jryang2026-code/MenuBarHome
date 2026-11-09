@@ -1659,12 +1659,45 @@ body {
   box-shadow: 0 0 6px rgba(48, 209, 88, 0.55);
 }
 
-.cc-status-dot.is-syncing {
+.cc-status-dot.is-syncing,
+.cc-status-dot.is-degraded {
   background: var(--apple-amber);
+}
+
+.cc-status-dot.is-offline {
+  background: var(--apple-red);
 }
 
 .cc-status-dot.is-demo {
   background: rgba(235, 235, 245, 0.38);
+}
+
+.cc-live-banner {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 48px;
+  z-index: 6;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+
+.cc-popover:has(.cc-live-banner) .cc-scroll-area {
+  padding-bottom: 76px;
+}
+
+button.cc-footer-label {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.cc-footer-label.is-action {
+  color: #ff8a84;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .cc-footer-label {

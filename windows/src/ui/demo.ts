@@ -151,10 +151,10 @@ export function demoDevices(): SmartDevice[] {
 
 export function demoScenes(): HomeScene[] {
   return [
-    { id: "scene.home", name: t(t("回家模式")), entityId: "scene.home" },
-    { id: "scene.focus", name: t(t("专注模式")), entityId: "scene.focus" },
-    { id: "scene.sleep", name: t(t("睡眠模式")), entityId: "scene.sleep" },
-    { id: "scene.leave", name: t(t("离家模式")), entityId: "scene.leave" },
+    { id: "scene.home", name: t("回家模式"), entityId: "scene.home" },
+    { id: "scene.focus", name: t("专注模式"), entityId: "scene.focus" },
+    { id: "scene.sleep", name: t("睡眠模式"), entityId: "scene.sleep" },
+    { id: "scene.leave", name: t("离家模式"), entityId: "scene.leave" },
   ];
 }
 
@@ -166,9 +166,9 @@ export function quickActions(): ReadonlyArray<{
   readonly command: string;
 }> {
   return [
-    { id: "lights_on", title: t(t("全开主灯")), icon: SF_ICONS.sunMaxFill, tint: "amber", command: t(t("打开所有灯")) },
-    { id: "lights_off", title: t(t("睡眠关灯")), icon: SF_ICONS.moonStarsFill, tint: "indigo", command: t(t("关闭所有灯")) },
-    { id: "cool_25", title: t(t("25°制冷")), icon: SF_ICONS.snowflake, tint: "cyan", command: t(t("空调调到25度")) },
-    { id: "focus", title: t(t("调亮灯光")), icon: SF_ICONS.lightbulbFill, tint: "amber", command: t(t("再亮一点")) },
+    { id: "lights_on", title: t("全开主灯"), icon: SF_ICONS.sunMaxFill, tint: "amber", command: t("打开所有灯") },
+    { id: "lights_off", title: t("睡眠关灯"), icon: SF_ICONS.moonStarsFill, tint: "indigo", command: t("关闭所有灯") },
+    { id: "cool_25", title: t("25°制冷"), icon: SF_ICONS.snowflake, tint: "cyan", command: t("空调调到25度") },
+    { id: "focus", title: t("调亮灯光"), icon: SF_ICONS.lightbulbFill, tint: "amber", command: t("再亮一点") },
   ];
 }

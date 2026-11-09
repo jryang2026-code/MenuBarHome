@@ -1,16 +1,11 @@
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
-import { maskedMiUserId } from "../core/miCloudClient.js";
 import { SF_ICONS } from "./appConstants.js";
 import { applyPanelOpacity } from "./panelPrefs.js";
 import { quickActions } from "./demo.js";
 
   export function renderPanel(host: MenuMijiaWindowsApp): void {
     const isDemo = host.settings.connectionMode === "demo";
-    const activeUndo =
-      host.lastUndoAction && host.lastUndoAction.expiresAtMs > Date.now()
-        ? host.lastUndoAction
-        : null;
     const scheme = host.effectiveAppearance;
     host.root.dataset.scheme = scheme;
     applyPanelOpacity(host.root, host.settings.panelOpacity);
@@ -55,8 +50,8 @@ import { quickActions } from "./demo.js";
               <button
                 class="cc-circle-btn ${host.isShowingAssistantBar ? "is-selected" : ""}"
                 id="btn-toggle-assistant"
-                title="${t("AI 自然语言指令栏 (/)")}"
-                aria-label="${t("AI 自然语言指令栏")}"
+                title="${t("显示建议和定时")}"
+                aria-label="${t("显示建议和定时")}"
                 aria-pressed="${host.isShowingAssistantBar}"
               >
                 ${SF_ICONS.sparkles}
@@ -76,142 +71,39 @@ import { quickActions } from "./demo.js";
           ${host.renderEnvironmentStrip()}
         </header>
 
-        ${
-          host.isShowingAssistantBar
-            ? `
-          <section class="cc-assistant-section">
-            <div class="cc-spotlight-bar">
-              <span class="cc-spotlight-icon">${SF_ICONS.sparkles}</span>
-              <input
-                id="command-input"
-                class="cc-spotlight-input"
-                type="text"
-                placeholder="${t("搜索设备，或直接说一句话")}"
-                value="${host.escapeHtml(host.panelSearch.query)}"
-                autocomplete="off"
-                aria-description="${t("Ctrl+F 聚焦，↑↓ 选择，回车开关或执行口令，→ 展开，Esc 清空")}"
-                aria-label="${t("搜索设备或输入指令")}"
-                ${host.isResolvingIntent ? "disabled" : ""}
-              />
-              ${host.panelSearch.query ? `<span class="cc-search-count" role="status">${host.presentationDevices.length}</span><button class="cc-circle-btn is-small" id="btn-clear-search" aria-label="${t("清空输入")}">×</button>` : ""}
-              <button
-                id="btn-send"
-                class="cc-spotlight-send"
-                title="${t("执行指令 (Enter)")}"
-                aria-label="${t("执行指令")}"
-                ${host.isResolvingIntent ? "disabled" : ""}
-              >
-                ${SF_ICONS.arrowUpCircle}
-              </button>
-            </div>
+        <section class="cc-assistant-section">
+          <div class="cc-spotlight-bar">
+            <span class="cc-spotlight-icon">${SF_ICONS.sparkles}</span>
+            <input
+              id="command-input"
+              class="cc-spotlight-input"
+              type="text"
+              placeholder="${t("搜索设备，或直接说一句话")}"
+              value="${host.escapeHtml(host.panelSearch.query)}"
+              autocomplete="off"
+              aria-description="${t("Ctrl+F 聚焦，↑↓ 选择，回车开关或执行口令，→ 展开，Esc 清空")}"
+              aria-label="${t("搜索设备或输入指令")}"
+              ${host.isResolvingIntent ? "disabled" : ""}
+            />
+            ${host.panelSearch.query ? `<span class="cc-search-count" role="status">${host.presentationDevices.length}</span><button class="cc-circle-btn is-small" id="btn-clear-search" aria-label="${t("清空输入")}">×</button>` : ""}
+            <button
+              id="btn-send"
+              class="cc-spotlight-send"
+              title="${t("执行指令 (Enter)")}"
+              aria-label="${t("执行指令")}"
+              ${host.isResolvingIntent ? "disabled" : ""}
+            >
+              ${SF_ICONS.arrowUpCircle}
+            </button>
+          </div>
+          ${assistantExtras(host)}
+        </section>
 
-            ${
-              host.replyBanner ||
-              host.scheduledCommands.length > 0 ||
-              host.missedScheduledCommands.length > 0 ||
-              activeUndo ||
-              host.pendingSuggestions.length > 0
-                ? `
-              <div class="cc-feedback-card ${host.replyBanner?.isError ? "is-error" : ""}">
-                ${
-                  host.replyBanner
-                    ? `
-                  <div class="cc-feedback-row">
-                    <span class="cc-feedback-badge">${host.escapeHtml(host.replyBanner.source)}</span>
-                    <span class="cc-feedback-text">${host.escapeHtml(host.replyBanner.text)}</span>
-                    ${
-                      host.pendingCloudConsent
-                        ? `<button class="cc-inline-pill" id="btn-cloud-allow">${t("允许并发送")}</button>
-                           <button class="cc-inline-pill" id="btn-cloud-decline">${t("不用了")}</button>`
-                        : ""
-                    }
-                    ${
-                      activeUndo
-                        ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>`
-                        : ""
-                    }
-                  </div>
-                `
-                    : ""
-                }
-                ${
-                  host.pendingSuggestions.length > 0
-                    ? `
-                  <div class="cc-suggestion-row">
-                    ${host.pendingSuggestions
-                      .map(
-                        (item) => `<button class="cc-inline-pill" data-suggestion-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${
-                          item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""
-                        }</button>`,
-                      )
-                      .join("")}
-                  </div>
-                `
-                    : ""
-                }
-                ${
-                  host.missedScheduledCommands.length > 0
-                    ? `
-                  <div class="cc-timers-stack">
-                    ${host.missedScheduledCommands
-                      .map(
-                        (item) => `
-                      <div class="cc-timer-row">
-                        <span>${t("已错过定时：{command}（没有自动执行，请确认后运行）", { command: host.escapeHtml(item.command) })}</span>
-                        <button class="cc-inline-pill" data-run-missed="${item.id}">立即执行</button>
-                        <button class="cc-inline-pill" data-dismiss-missed="${item.id}">忽略</button>
-                      </div>
-                    `,
-                      )
-                      .join("")}
-                  </div>
-                `
-                    : ""
-                }
-                ${
-                  host.scheduledCommands.length > 0
-                    ? `
-                  <div class="cc-timers-stack">
-                    ${host.scheduledCommands
-                      .map(
-                        (item) => `
-                      <div class="cc-timer-row">
-                        <span>${host.escapeHtml(item.command)} ${t("· 剩余 {remaining}", { remaining: host.formatRemainingMs(item.fireTimestampMs - Date.now()) })}</span>
-                        <button class="cc-inline-pill" data-cancel-timer="${item.id}">取消</button>
-                      </div>
-                    `,
-                      )
-                      .join("")}
-                  </div>
-                `
-                    : ""
-                }
-              </div>
-            `
-                : ""
-            }
-          </section>
-        `
-            : ""
-        }
+        ${liveBanner(host)}
 
         ${host.haConnectionError ? `<div class="cc-feedback-card is-error" role="alert" data-ha-error><span class="cc-feedback-badge">Home Assistant</span><span class="cc-feedback-text">${host.escapeHtml(host.haConnectionError)}</span></div>` : ""}
 
-        ${
-          host.settings.showQuickActionsBar
-            ? `<section class="cc-quick-strip">
-          ${quickActions().map(
-            (act) => `
-            <button class="cc-quick-pill tint-${act.tint}" data-scene-cmd="${host.escapeHtml(act.command)}">
-              <span class="cc-quick-icon">${act.icon}</span>
-              <span>${host.escapeHtml(act.title)}</span>
-            </button>
-          `,
-          ).join("")}
-          ${host.settings.connectionMode === "homeAssistant" ? host.scenes.map((scene) => `<button class="cc-quick-pill tint-blue" data-ha-scene="${host.escapeHtml(scene.id)}"><span class="cc-quick-icon">${SF_ICONS.sparkles}</span><span>${host.escapeHtml(scene.name)}</span></button>`).join("") : ""}
-        </section>`
-            : ""
-        }
+        ${quickStrip(host)}
 
 
         <div class="cc-room-bar">
@@ -271,14 +163,7 @@ import { quickActions } from "./demo.js";
 
         <footer class="cc-footer">
           <div class="cc-footer-status">
-            <span class="cc-status-dot ${host.isSyncingCloud ? "is-syncing" : host.settings.connectionMode === "homeAssistant" ? (host.haConnectionError || !host.settings.haBaseURL || !host.settings.haToken ? "is-demo" : "is-online") : isDemo ? "is-demo" : "is-online"}"></span>
-            <span class="cc-footer-label">
-              ${
-                host.settings.connectionMode === "xiaomiCloud" && host.settings.miSession
-                  ? t("米家账号 {user} · {count} 台设备", { user: maskedMiUserId(host.settings.miSession.userId), count: host.devices.length })
-                  : host.settings.connectionMode === "homeAssistant" ? `Home Assistant · ${host.devices.length}` : t("演示模式 · 未连接米家云")
-              }
-            </span>
+            ${footerStatus(host)}
           </div>
 
           <div class="cc-footer-actions">
@@ -353,3 +238,77 @@ import { quickActions } from "./demo.js";
 
     host.bindEvents();
   }
+
+function footerStatus(host: MenuMijiaWindowsApp): string {
+  const health = host.panelHealth();
+  const dot = `<span class="cc-status-dot ${health.dot}"></span>`;
+  if (health.kind === "offline" && health.recovery === "qr") {
+    return `${dot}<button type="button" class="cc-footer-label is-action" id="btn-footer-health">${host.escapeHtml(health.label)}</button>`;
+  }
+  return `${dot}<span class="cc-footer-label">${host.escapeHtml(health.label)}</span>`;
+}
+
+function liveBanner(host: MenuMijiaWindowsApp): string {
+  const reply = host.replyBanner;
+  const undo = host.undoButtonVisible();
+  if (!reply && !undo && !host.pendingCloudConsent) return "";
+  const role = reply?.isError ? "alert" : "status";
+  return `<div class="cc-live-banner cc-feedback-card ${reply?.isError ? "is-error" : ""}" role="${role}">
+    <div class="cc-feedback-row">
+      ${reply ? `<span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>` : ""}
+      ${
+        host.pendingCloudConsent
+          ? `<button class="cc-inline-pill" id="btn-cloud-allow">${t("允许并发送")}</button><button class="cc-inline-pill" id="btn-cloud-decline">${t("不用了")}</button>`
+          : ""
+      }
+      ${undo ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}
+      ${reply?.isError ? `<button type="button" class="cc-inline-pill" id="btn-dismiss-banner" aria-label="${t("忽略")}">×</button>` : ""}
+    </div>
+  </div>`;
+}
+
+function assistantExtras(host: MenuMijiaWindowsApp): string {
+  if (!host.isShowingAssistantBar) return "";
+  const suggestions = host.pendingSuggestions.length > 0
+    ? `<div class="cc-suggestion-row">${host.pendingSuggestions
+        .map(
+          (item) => `<button class="cc-inline-pill" data-suggestion-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${
+            item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""
+          }</button>`,
+        )
+        .join("")}</div>`
+    : "";
+  const missed = host.missedScheduledCommands.length > 0
+    ? `<div class="cc-timers-stack">${host.missedScheduledCommands
+        .map(
+          (item) => `<div class="cc-timer-row"><span>${t("已错过定时：{command}（没有自动执行，请确认后运行）", { command: host.escapeHtml(item.command) })}</span><button class="cc-inline-pill" data-run-missed="${item.id}">立即执行</button><button class="cc-inline-pill" data-dismiss-missed="${item.id}">忽略</button></div>`,
+        )
+        .join("")}</div>`
+    : "";
+  const timers = host.scheduledCommands.length > 0
+    ? `<div class="cc-timers-stack">${host.scheduledCommands
+        .map(
+          (item) => `<div class="cc-timer-row"><span>${host.escapeHtml(item.command)} ${t("· 剩余 {remaining}", { remaining: host.formatRemainingMs(item.fireTimestampMs - Date.now()) })}</span><button class="cc-inline-pill" data-cancel-timer="${item.id}">取消</button></div>`,
+        )
+        .join("")}</div>`
+    : "";
+  if (!suggestions && !missed && !timers) return "";
+  return `<div class="cc-feedback-card">${suggestions}${missed}${timers}</div>`;
+}
+
+function quickStrip(host: MenuMijiaWindowsApp): string {
+  if (!host.settings.showQuickActionsBar) return "";
+  if (host.settings.connectionMode === "demo") {
+    const pills = quickActions().map(
+      (act) => `<button class="cc-quick-pill tint-${act.tint}" data-scene-cmd="${host.escapeHtml(act.command)}"><span class="cc-quick-icon">${act.icon}</span><span>${host.escapeHtml(act.title)}</span></button>`,
+    ).join("");
+    return `<section class="cc-quick-strip">${pills}</section>`;
+  }
+  if (host.scenes.length === 0) return "";
+  const pills = host.scenes
+    .map(
+      (scene) => `<button class="cc-quick-pill tint-blue" data-ha-scene="${host.escapeHtml(scene.id)}"><span class="cc-quick-icon">${SF_ICONS.sparkles}</span><span>${host.escapeHtml(scene.name)}</span></button>`,
+    )
+    .join("");
+  return `<section class="cc-quick-strip">${pills}</section>`;
+}

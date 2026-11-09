@@ -3999,7 +3999,7 @@ describe("Home Assistant source", () => {
     await click("#btn-refresh");
     await waitFor(() => !document.querySelector("[data-ha-error]"));
     assert.match(tile("study-light"), /书房灯/);
-    assert.equal(document.querySelector("#command-input"), null);
+    assert.ok(document.querySelector("#command-input"), "search stays available when the assistant extras are hidden");
   });
   it("rejects malformed cached HA homes and refreshes into an empty state", async () => {
     let snapshots = 0;
@@ -5598,5 +5598,210 @@ describe("Manual control parity with macOS (#143)", () => {
     await click('[data-body-device="light-facets"]');
     assert.equal(app.expandedDeviceId, "light-facets");
     assert.ok(document.querySelector('[data-facet-toggle="light-facets|2.1"]'));
+  });
+});
+
+describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20, UX-21)", () => {
+  function startDemoApp(): MenuMijiaWindowsApp {
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "demo",
+      hasCompletedOnboarding: true,
+    }));
+    return new MenuMijiaWindowsApp(element("#app"));
+  }
+
+  function pressHoldKey(target: HTMLElement, key: string, type: "keydown" | "keyup", repeat = false): void {
+    target.dispatchEvent(new window.KeyboardEvent(type, { key, bubbles: true, cancelable: true, repeat }));
+  }
+
+  it("shows undo after All Off while the assistant extras are collapsed, and undo restores the lights", async () => {
+    startDemoApp();
+    element("#btn-toggle-assistant").click();
+    assert.ok(document.querySelector("#command-input"), "search stays in the page");
+    assert.equal(document.querySelector("[data-suggestion-id]"), null);
+
+    element("#btn-all-off").dispatchEvent(new Event("pointerdown"));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await setImmediate();
+
+    const banner = element(".cc-live-banner");
+    assert.equal(banner.getAttribute("role"), "status");
+    assert.ok(document.querySelector("#btn-undo"));
+    assert.equal(document.querySelector("#btn-all-off"), null);
+    assert.doesNotMatch(tile("light.living_ceiling"), /已开启/);
+    assert.doesNotMatch(textOf(".cc-feedback-text"), /按住 0.6 秒/);
+
+    await click("#btn-undo");
+    await setImmediate();
+    assert.match(tile("light.living_ceiling"), /已开启/);
+  });
+
+  it("keeps an error banner until it is dismissed, even with the assistant extras hidden", async () => {
+    const app = startDemoApp();
+    app.isShowingAssistantBar = false;
+    app.replyBanner = { text: "米家云同步失败：超时", source: "连接异常", isError: true };
+    app.render();
+    assert.equal(element(".cc-live-banner").getAttribute("role"), "alert");
+    assert.match(textOf(".cc-feedback-text"), /超时/);
+    await click("#btn-dismiss-banner");
+    assert.equal(document.querySelector(".cc-live-banner"), null);
+    assert.equal(app.replyBanner, null);
+  });
+
+  it("holds All Off from the keyboard once, and a short press only shows the hint", async () => {
+    const app = startDemoApp();
+    const button = element("#btn-all-off");
+    button.focus();
+    assert.equal(document.activeElement, button);
+    pressHoldKey(button, " ", "keydown");
+    pressHoldKey(button, " ", "keyup");
+    await setImmediate();
+    assert.match(textOf(".cc-feedback-text"), /按住 0.6 秒/);
+    assert.equal(element(".cc-live-banner").getAttribute("role"), "status");
+    assert.match(tile("light.living_ceiling"), /已开启/);
+
+    let calls = 0;
+    const run = app.executeIntents.bind(app);
+    app.executeIntents = async (...args) => {
+      calls += 1;
+      return run(...args);
+    };
+    const again = element("#btn-all-off");
+    again.focus();
+    pressHoldKey(again, " ", "keydown");
+    assert.ok(again.classList.contains("is-holding"));
+    pressHoldKey(again, " ", "keydown", true);
+    assert.ok(again.classList.contains("is-holding"));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await setImmediate();
+    assert.equal(calls, 1);
+    assert.doesNotMatch(tile("light.living_ceiling"), /已开启/);
+  });
+
+  it("hides the undo control after 10 seconds, and after 15 seconds when three devices are involved", () => {
+    const app = startDemoApp();
+    const started = Date.now();
+    let clock = started;
+    const original = Date.now;
+    Date.now = () => clock;
+    const step = {
+      deviceId: "light.living_ceiling",
+      commands: [{ kind: "setSwitch" as const, entityId: "switch.light", isOn: true }],
+    };
+    try {
+      app.lastUndoAction = { summary: "一台", steps: [step], expiresAtMs: started + 60_000 };
+      app.render();
+      assert.ok(document.querySelector("#btn-undo"));
+      clock = started + 10_000;
+      app.render();
+      assert.equal(document.querySelector("#btn-undo"), null);
+      assert.ok(app.lastUndoAction, "the action itself stays available after the button leaves");
+
+      clock = started;
+      app.lastUndoAction = { summary: "三台", steps: [step, step, step], expiresAtMs: started + 60_000 };
+      app.render();
+      assert.ok(document.querySelector("#btn-undo"));
+      clock = started + 10_000;
+      app.render();
+      assert.ok(document.querySelector("#btn-undo"));
+      clock = started + 15_000;
+      app.render();
+      assert.equal(document.querySelector("#btn-undo"), null);
+    } finally {
+      Date.now = original;
+    }
+  });
+
+  it("renders an expired Mi session as an offline footer the user can tap to scan", async () => {
+    const invoke = async (name: string) => {
+      if (name === "native_http") return { status: 401, headers: {}, body: "" };
+      return null;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "xiaomiCloud",
+      hasCompletedOnboarding: true,
+      miSession: {
+        userId: "12345678",
+        cUserId: "",
+        ssecurity: "AQIDBAUGBwgJCgsMDQ4PEA==",
+        serviceToken: "expired-token",
+        passToken: "",
+        region: "cn",
+      },
+    }));
+    const app = new MenuMijiaWindowsApp(element("#app"));
+    await waitFor(() => element(".cc-status-dot").classList.contains("is-offline"));
+    assert.match(textOf("#btn-footer-health"), /登录已过期/);
+    assert.equal(app.miSessionExpired, true);
+    await click("#btn-footer-health");
+    assert.equal(app.activeSheet, "settings");
+  });
+
+  it("marks a stale Xiaomi home as degraded and an unconfigured Home Assistant as offline", () => {
+    const app = startDemoApp();
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.miSession = {
+      userId: "12345678",
+      cUserId: "",
+      ssecurity: "x",
+      serviceToken: "y",
+      passToken: "",
+      region: "cn",
+    };
+    app.cloudValuesStale = true;
+    app.isSyncingCloud = false;
+    app.render();
+    assert.ok(element(".cc-status-dot").classList.contains("is-degraded"));
+    assert.match(textOf(".cc-footer-label"), /可能过期/);
+
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.miSession = null;
+    app.settings.haBaseURL = "";
+    app.settings.haToken = "";
+    app.cloudValuesStale = false;
+    app.haConnectionError = null;
+    app.render();
+    assert.ok(element(".cc-status-dot").classList.contains("is-offline"));
+    assert.match(textOf(".cc-footer-label"), /未配置数据源/);
+  });
+
+  it("shows the declined plain-HTTP Home Assistant copy", () => {
+    const app = startDemoApp();
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = "http://203.0.113.5:8123";
+    app.settings.haToken = "controlled-token";
+    app.haConnectionError = "未授权的网络来源：http://203.0.113.5:8123";
+    app.render();
+    assert.ok(element(".cc-status-dot").classList.contains("is-offline"));
+    assert.match(textOf(".cc-footer-label"), /已拒绝明文/);
+  });
+
+  it("uses the user's scenes on a real home and the built-in pills only in the demo", () => {
+    const app = startDemoApp();
+    assert.match(document.body.textContent ?? "", /全开主灯/);
+    assert.match(document.body.textContent ?? "", /25°制冷/);
+
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.miSession = {
+      userId: "12345678",
+      cUserId: "",
+      ssecurity: "x",
+      serviceToken: "y",
+      passToken: "",
+      region: "cn",
+    };
+    app.scenes = [{ id: "scene.movie", name: "观影", entityId: "scene.movie" }];
+    app.render();
+    assert.doesNotMatch(document.body.textContent ?? "", /全开主灯/);
+    assert.doesNotMatch(document.body.textContent ?? "", /25°制冷/);
+    assert.match(textOf('[data-ha-scene="scene.movie"]'), /观影/);
+
+    app.settings.connectionMode = "homeAssistant";
+    app.scenes = [{ id: "scene.evening", name: "晚安", entityId: "scene.evening" }];
+    app.render();
+    assert.doesNotMatch(document.body.textContent ?? "", /全开主灯/);
+    assert.doesNotMatch(document.body.textContent ?? "", /25°制冷/);
+    assert.match(textOf('[data-ha-scene="scene.evening"]'), /晚安/);
   });
 });
