@@ -200,7 +200,7 @@ extension CameraLivePanelController {
             // the same way as an explicit bridge write failure.
         }
 
-        if stillOwns(attempt) {
+        if stillOwns(attempt), stopRecoveryAccepts(attempt) {
             ptzStopRecovery = .retrying(attempt)
         }
         await waitForAutomaticPTZStopRetry()
@@ -218,10 +218,14 @@ extension CameraLivePanelController {
         }
 
         guard stillOwns(attempt) else {
-            if case .retrying = ptzStopRecovery { ptzStopRecovery = .idle }
+            clearTransientStopRetry(for: attempt)
             return
         }
-        ptzStopRecovery = .needsManualStop(attempt)
+        // A newer camera's failure must not replace the older unresolved danger: its record and
+        // captured client stay retryable. The warning is shared, so keep it visible either way.
+        if stopRecoveryAccepts(attempt) {
+            ptzStopRecovery = .needsManualStop(attempt)
+        }
         showPTZNotice(Self.stopWriteFailedNotice, sticky: true)
     }
 
@@ -231,11 +235,29 @@ extension CameraLivePanelController {
         notify: Bool
     ) {
         guard stillOwns(attempt) else {
-            if case .retrying = ptzStopRecovery { ptzStopRecovery = .idle }
+            clearTransientStopRetry(for: attempt)
             return
         }
+        // A stop only clears the recovery record it belongs to. Another camera's success cannot
+        // prove that an older, unresolved stop reached its motor.
+        guard stopRecoveryAccepts(attempt) else { return }
         dismissStopRecovery()
         reportStopThatWasNotSent(result, notify: notify)
+    }
+
+    /// Whether the current recovery record is empty or belongs to this bridge session.
+    func stopRecoveryAccepts(_ attempt: CameraPTZStopAttempt) -> Bool {
+        switch ptzStopRecovery {
+        case .idle:
+            return true
+        case .retrying(let pending), .needsManualStop(let pending):
+            return pending.token == attempt.token
+        }
+    }
+
+    func clearTransientStopRetry(for attempt: CameraPTZStopAttempt) {
+        guard case .retrying(let pending) = ptzStopRecovery, pending.token == attempt.token else { return }
+        ptzStopRecovery = .idle
     }
 
     func reportStopThatWasNotSent(_ result: CameraPTZStopResult, notify: Bool) {

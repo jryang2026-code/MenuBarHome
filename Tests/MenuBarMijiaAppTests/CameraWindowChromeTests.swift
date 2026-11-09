@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import Testing
 @testable import MijiaCore
 @testable import MenuBarMijiaApp
@@ -52,5 +54,39 @@ struct CameraWindowChromeTests {
         let roomy = CameraTitleBarSplit.split(barWidth: 360, trailingIdeal: 120, spacing: 6)
         #expect(roomy.trailingWidth == 120)
         #expect(roomy.leadingWidth == 234)
+    }
+
+    @MainActor
+    @Test("The trailing toolbar fits the half reserved at the 360 pt compact width in both languages")
+    func trailingToolbarFitsCompactWidth() {
+        let previous = L10n.currentLanguage
+        defer { L10n.currentLanguage = previous }
+        let reserved = CameraTitleBarSplit.split(barWidth: 360, trailingIdeal: 500, spacing: 6).trailingWidth
+        #expect(reserved == 177)
+
+        for language in [AppLanguage.zhHans, AppLanguage.en] {
+            L10n.currentLanguage = language
+            // Same order and spacing as CameraLivePanelView.toolbarTrailing: audio badge, pin,
+            // overflow menu, close.
+            let bar = HStack(spacing: 4) {
+                CameraLiveAudioStatusView(status: .videoOnly, onToggleMute: {})
+                CameraHUDGlyph(symbol: "pin.slash")
+                Menu {
+                    Button("Reconnect") {}
+                } label: {
+                    CameraHUDGlyph(symbol: "ellipsis")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                CameraHUDGlyph(symbol: "xmark")
+            }
+            .padding(.trailing, 12)
+            let width = NSHostingView(rootView: bar).fittingSize.width
+            #expect(
+                width <= reserved,
+                "\(language.rawValue) trailing toolbar is \(width) pt, reserved \(reserved) pt"
+            )
+        }
     }
 }

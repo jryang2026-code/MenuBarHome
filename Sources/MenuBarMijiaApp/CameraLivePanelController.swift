@@ -908,6 +908,24 @@ struct CameraLiveAudioStatusView: View {
     }
 }
 
+/// Shared 24 pt HUD glyph so the circular button and the overflow menu label draw and measure
+/// identically.
+struct CameraHUDGlyph: View {
+    let symbol: String
+    var isActive = false
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(isActive ? Color.cyan : Color.white.opacity(0.82))
+            .frame(width: 24, height: 24)
+            .background(
+                Circle()
+                    .fill(isActive ? Color.cyan.opacity(0.20) : Color.white.opacity(0.10))
+            )
+    }
+}
+
 /// Circular HUD button shared by the live-window controls.
 private struct CameraHUDIconButton: View {
     let symbol: String
@@ -917,14 +935,7 @@ private struct CameraHUDIconButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(isActive ? Color.cyan : Color.white.opacity(0.82))
-                .frame(width: 24, height: 24)
-                .background(
-                    Circle()
-                        .fill(isActive ? Color.cyan.opacity(0.20) : Color.white.opacity(0.10))
-                )
+            CameraHUDGlyph(symbol: symbol, isActive: isActive)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -1064,15 +1075,13 @@ struct CameraLivePanelView: View {
             }
 
             CameraHUDIconButton(
-                symbol: controller.isExpandedSize
-                    ? "arrow.down.right.and.arrow.up.left"
-                    : "arrow.up.left.and.arrow.down.right",
-                isActive: false,
-                help: controller.isExpandedSize
-                    ? L10n.tr("切换为角落迷你小窗", "Switch to compact mini window")
-                    : L10n.tr("放大实时画面窗口", "Expand live view window")
+                symbol: controller.isPinnedOnTop ? "pin.fill" : "pin.slash",
+                isActive: controller.isPinnedOnTop,
+                help: controller.isPinnedOnTop
+                    ? L10n.tr("已置顶（全屏看电视时保持最前）", "Pinned on top (stays above full-screen video)")
+                    : L10n.tr("点击置顶小窗", "Pin window on top")
             ) {
-                controller.toggleExpandedSize()
+                controller.isPinnedOnTop.toggle()
             }
 
             toolbarOverflowMenu
@@ -1092,11 +1101,15 @@ struct CameraLivePanelView: View {
         let hasCustomURL = !(store.cameraCustomStreamURL(for: device?.id ?? "") ?? "").isEmpty
         return Menu {
             Button {
-                controller.isPinnedOnTop.toggle()
+                controller.toggleExpandedSize()
             } label: {
                 Label(
-                    L10n.tr("置顶小窗", "Pin window on top"),
-                    systemImage: controller.isPinnedOnTop ? "checkmark" : "pin"
+                    controller.isExpandedSize
+                        ? L10n.tr("切换为角落迷你小窗", "Switch to compact mini window")
+                        : L10n.tr("放大实时画面窗口", "Expand live view window"),
+                    systemImage: controller.isExpandedSize
+                        ? "arrow.down.right.and.arrow.up.left"
+                        : "arrow.up.left.and.arrow.down.right"
                 )
             }
             if case .liveMP4 = controller.streamSource {
@@ -1125,11 +1138,7 @@ struct CameraLivePanelView: View {
                 Label(L10n.tr("重新连接", "Reconnect"), systemImage: "arrow.clockwise")
             }
         } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.82))
-                .frame(width: 24, height: 24)
-                .background(Circle().fill(Color.white.opacity(0.10)))
+            CameraHUDGlyph(symbol: "ellipsis")
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
