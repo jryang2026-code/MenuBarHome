@@ -497,62 +497,30 @@ extension HomeStore {
             return
         }
         let context = controlContextID
-        var failedCommands: [DeviceCommand] = []
-        var failedDeviceIds: Set<String> = []
-        var failedNames: [String] = []
-        for item in applicable {
-            guard context == controlContextID else { return }
-            if failedDeviceIds.contains(item.deviceId) {
-                failedCommands.append(item.command)
-                continue
-            }
-            do {
-                try await executeDeviceCommand(item.command)
-            } catch {
-                failedCommands.append(item.command)
-                failedDeviceIds.insert(item.deviceId)
-                if !failedNames.contains(item.deviceName) {
-                    failedNames.append(item.deviceName)
-                }
-            }
-        }
-        guard context == controlContextID else { return }
-        if !failedCommands.isEmpty {
-            rollbackFailedUndoDevices(
-                failedDeviceIds, applicable: applicable, preUndoById: preUndoById,
-                preUndoFacetsById: preUndoFacetsById
-            )
-            var remainingReceipt: UserHabitMemory.RecordingReceipt?
-            if let receipt = last.habitReceipt {
-                let (succeededPart, remainingPart) = Self.partitionHabitReceipt(receipt, failedDeviceIds: failedDeviceIds)
-                if let succeededPart {
-                    var memory = userHabitMemory
-                    memory.unrecord(succeededPart)
-                    userHabitMemory = memory
-                }
-                remainingReceipt = remainingPart
-            }
-            if undoStateRevision == undoRevision {
-                lastAssistantUndo = (
-                    reply: last.reply,
-                    restore: failedCommands,
-                    previous: last.previous.filter { failedDeviceIds.contains($0.id) },
-                    at: Date(),
-                    habitReceipt: remainingReceipt
-                )
-            }
-            let sep = L10n.isEnglish ? ", " : "、"
-            let list = failedNames.joined(separator: sep)
-            setAssistantState(.failed(L10n.tr("撤销未完成：\(list) 未响应，可再次撤销重试", "Undo incomplete: \(list) did not respond; retry undo")))
+        guard let outcome = await runUndoCommands(
+            applicable,
+            context: context,
+            preUndoById: preUndoById,
+            preUndoFacetsById: preUndoFacetsById,
+            habitReceipt: last.habitReceipt
+        ) else { return }
+        if outcome.succeeded {
+            let what = last.reply.hasPrefix("已") ? String(last.reply.dropFirst()) : last.reply
+            setAssistantState(.done(L10n.tr("已撤销：\(what)", "Undone: \(what)")))
             return
         }
-        if let receipt = last.habitReceipt {
-            var memory = userHabitMemory
-            memory.unrecord(receipt)
-            userHabitMemory = memory
+        if undoStateRevision == undoRevision {
+            lastAssistantUndo = (
+                reply: last.reply,
+                restore: outcome.failedCommands,
+                previous: last.previous.filter { outcome.failedDeviceIds.contains($0.id) },
+                at: Date(),
+                habitReceipt: outcome.habitReceipt
+            )
         }
-        let what = last.reply.hasPrefix("已") ? String(last.reply.dropFirst()) : last.reply
-        setAssistantState(.done(L10n.tr("已撤销：\(what)", "Undone: \(what)")))
+        let sep = L10n.isEnglish ? ", " : "、"
+        let list = outcome.failedNames.joined(separator: sep)
+        setAssistantState(.failed(L10n.tr("撤销未完成：\(list) 未响应，可再次撤销重试", "Undo incomplete: \(list) did not respond; retry undo")))
     }
 
     // MARK: - Scheduled Commands

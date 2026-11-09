@@ -481,65 +481,30 @@ extension HomeStore {
 
         let context = controlContextID
         return Task {
-            var failedCommands: [DeviceCommand] = []
-            var failedDeviceIds: Set<String> = []
-            var failedNames: [String] = []
-            for item in applicable {
-                guard context == controlContextID else { return }
-                if failedDeviceIds.contains(item.deviceId) {
-                    failedCommands.append(item.command)
-                    continue
-                }
-                do {
-                    try await executeDeviceCommand(item.command)
-                } catch {
-                    failedCommands.append(item.command)
-                    failedDeviceIds.insert(item.deviceId)
-                    if !failedNames.contains(item.deviceName) {
-                        failedNames.append(item.deviceName)
-                    }
-                }
-            }
-            guard context == controlContextID else { return }
-            if failedCommands.isEmpty {
-                if let receipt = banner.habitReceipt {
-                    var memory = userHabitMemory
-                    memory.unrecord(receipt)
-                    userHabitMemory = memory
-                }
+            guard let outcome = await runUndoCommands(
+                applicable,
+                context: context,
+                preUndoById: preUndoById,
+                preUndoFacetsById: preUndoFacetsById,
+                habitReceipt: banner.habitReceipt
+            ) else { return }
+            if outcome.succeeded {
                 showToast(L10n.tr("已恢复关闭前的状态", "Restored previous device states"))
                 return
             }
-
-            rollbackFailedUndoDevices(
-                failedDeviceIds, applicable: applicable, preUndoById: preUndoById,
-                preUndoFacetsById: preUndoFacetsById
-            )
-
-            var remainingReceipt: UserHabitMemory.RecordingReceipt?
-            if let receipt = banner.habitReceipt {
-                let (succeededPart, remainingPart) = Self.partitionHabitReceipt(receipt, failedDeviceIds: failedDeviceIds)
-                if let succeededPart {
-                    var memory = userHabitMemory
-                    memory.unrecord(succeededPart)
-                    userHabitMemory = memory
-                }
-                remainingReceipt = remainingPart
-            }
-
             if undoStateRevision == undoRevision {
                 scheduleUndoBanner(
                     title: banner.title,
-                    restoreCommands: failedCommands,
+                    restoreCommands: outcome.failedCommands,
                     previousDevices: banner.previousDevices,
-                    deviceCount: failedDeviceIds.count,
-                    habitReceipt: remainingReceipt,
+                    deviceCount: outcome.failedDeviceIds.count,
+                    habitReceipt: outcome.habitReceipt,
                     duration: banner.duration,
                     isAllOff: banner.isAllOff
                 )
             }
             let sep = L10n.isEnglish ? ", " : "、"
-            let list = failedNames.joined(separator: sep)
+            let list = outcome.failedNames.joined(separator: sep)
             showToast(
                 L10n.tr(
                     "撤销未完成：\(list) 未响应，可再次点击撤销重试",
@@ -555,6 +520,82 @@ extension HomeStore {
         let deviceId: String
         let deviceName: String
         let lockRevision: UInt64
+    }
+
+    /// What replaying an undo stack did: the devices that refused, and the habit records that still
+    /// belong to the devices that accepted.
+    struct UndoRunOutcome {
+        let failedCommands: [DeviceCommand]
+        let failedDeviceIds: Set<String>
+        let failedNames: [String]
+        let habitReceipt: UserHabitMemory.RecordingReceipt?
+
+        var succeeded: Bool { failedCommands.isEmpty }
+    }
+
+    /// Sends `applicable` undo commands in order, rolls back the devices that refused, and takes back
+    /// the habit entries that belonged to them. Returns nil when the control context moved on: a home
+    /// that is no longer on screen reports nothing.
+    func runUndoCommands(
+        _ applicable: [UndoApplicableCommand],
+        context: UUID,
+        preUndoById: [String: SmartDevice],
+        preUndoFacetsById: [String: [FacetControl]],
+        habitReceipt: UserHabitMemory.RecordingReceipt?
+    ) async -> UndoRunOutcome? {
+        var failedCommands: [DeviceCommand] = []
+        var failedDeviceIds: Set<String> = []
+        var failedNames: [String] = []
+        for item in applicable {
+            guard context == controlContextID else { return nil }
+            if failedDeviceIds.contains(item.deviceId) {
+                failedCommands.append(item.command)
+                continue
+            }
+            do {
+                try await executeDeviceCommand(item.command)
+            } catch {
+                failedCommands.append(item.command)
+                failedDeviceIds.insert(item.deviceId)
+                if !failedNames.contains(item.deviceName) {
+                    failedNames.append(item.deviceName)
+                }
+            }
+        }
+        guard context == controlContextID else { return nil }
+        if failedCommands.isEmpty {
+            if let habitReceipt {
+                var memory = userHabitMemory
+                memory.unrecord(habitReceipt)
+                userHabitMemory = memory
+            }
+            return UndoRunOutcome(
+                failedCommands: [],
+                failedDeviceIds: [],
+                failedNames: [],
+                habitReceipt: nil
+            )
+        }
+        rollbackFailedUndoDevices(
+            failedDeviceIds, applicable: applicable, preUndoById: preUndoById,
+            preUndoFacetsById: preUndoFacetsById
+        )
+        var remainingReceipt: UserHabitMemory.RecordingReceipt?
+        if let habitReceipt {
+            let (succeededPart, remainingPart) = Self.partitionHabitReceipt(habitReceipt, failedDeviceIds: failedDeviceIds)
+            if let succeededPart {
+                var memory = userHabitMemory
+                memory.unrecord(succeededPart)
+                userHabitMemory = memory
+            }
+            remainingReceipt = remainingPart
+        }
+        return UndoRunOutcome(
+            failedCommands: failedCommands,
+            failedDeviceIds: failedDeviceIds,
+            failedNames: failedNames,
+            habitReceipt: remainingReceipt
+        )
     }
 
     func applyUndoCommands(
