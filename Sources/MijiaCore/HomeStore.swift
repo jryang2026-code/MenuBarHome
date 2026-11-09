@@ -1,15 +1,40 @@
 import Foundation
 import Observation
 
+public struct ToastAction: Equatable, Sendable {
+    public enum Kind: Equatable, Sendable {
+        case presentMiReauth
+        case openConnectionSettings
+    }
+
+    public var title: String
+    public var kind: Kind
+
+    public init(title: String, kind: Kind) {
+        self.title = title
+        self.kind = kind
+    }
+}
+
 public struct ToastNotice: Equatable, Sendable {
     public let id: UUID
     public var message: String
     public var isError: Bool
+    public var action: ToastAction?
+    public var persistent: Bool
 
-    public init(id: UUID = UUID(), message: String, isError: Bool = false) {
+    public init(
+        id: UUID = UUID(),
+        message: String,
+        isError: Bool = false,
+        action: ToastAction? = nil,
+        persistent: Bool = false
+    ) {
         self.id = id
         self.message = message
         self.isError = isError
+        self.action = action
+        self.persistent = persistent
     }
 }
 
@@ -291,8 +316,14 @@ public final class HomeStore {
     /// Test seam for the manual-control debounce window (sliders fire continuously, #113).
     var controlDebounceInterval: Duration = .milliseconds(280)
 
-    /// Test seam for the toast lifetime. `nil` keeps the toast up until the test reads it.
-    var toastAutoDismissInterval: Duration? = .seconds(2.8)
+    /// How long a success toast stays. Errors use `errorToastDismissInterval` unless they are persistent.
+    public static let successToastDismissInterval: Duration = .seconds(2.8)
+    /// An error toast stays at least this long, and can be dismissed sooner by the × button.
+    public static let errorToastDismissInterval: Duration = .seconds(8)
+    /// Test seam for the toast lifetime. `nil` keeps every toast up until the test reads it.
+    var toastAutoDismissInterval: Duration? = successToastDismissInterval
+    /// The delay `showToast` armed for the toast on screen. `nil` means it will not auto-dismiss.
+    var activeToastDismissInterval: Duration?
 
     /// Ask macOS to keep speech recognition on this Mac (no audio sent to Apple) when the language supports it.
     /// Defaults on for privacy; an explicitly saved `false` still wins (#50).
@@ -856,19 +887,51 @@ public final class HomeStore {
         scheduleRaycastSnapshotExport()
     }
 
-    public func showToast(_ message: String, isError: Bool = false) {
-        let notice = ToastNotice(message: message, isError: isError)
-        self.toastNotice = notice
+    public func showToast(
+        _ message: String,
+        isError: Bool = false,
+        action: ToastAction? = nil,
+        persistent: Bool = false
+    ) {
+        let notice = ToastNotice(message: message, isError: isError, action: action, persistent: persistent)
+        if notice.persistent,
+           let current = toastNotice,
+           current.persistent,
+           current.message == notice.message,
+           current.isError == notice.isError,
+           current.action == notice.action {
+            return
+        }
+        toastNotice = notice
         toastTimerTask?.cancel()
         toastTimerTask = nil
-        guard let interval = toastAutoDismissInterval else { return }
+        let interval = toastDismissInterval(for: notice)
+        activeToastDismissInterval = interval
+        guard let interval else { return }
         toastTimerTask = Task { [weak self] in
             try? await Task.sleep(for: interval)
             guard !Task.isCancelled else { return }
             if self?.toastNotice?.id == notice.id {
                 self?.toastNotice = nil
+                self?.activeToastDismissInterval = nil
             }
         }
+    }
+
+    public func dismissToast() {
+        toastTimerTask?.cancel()
+        toastTimerTask = nil
+        toastNotice = nil
+        activeToastDismissInterval = nil
+    }
+
+    /// Success stays for `toastAutoDismissInterval` (2.8 s). An error stays for 8 s.
+    /// A persistent toast, and any toast while the test seam is `nil`, stays until dismissed.
+    func toastDismissInterval(for notice: ToastNotice) -> Duration? {
+        if notice.persistent { return nil }
+        guard toastAutoDismissInterval != nil else { return nil }
+        if notice.isError { return Self.errorToastDismissInterval }
+        return toastAutoDismissInterval
     }
 
     // MARK: - Command Execution & Optimistic Locks

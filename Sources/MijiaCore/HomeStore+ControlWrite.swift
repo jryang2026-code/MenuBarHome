@@ -125,6 +125,7 @@ extension HomeStore {
 
     /// The row a card control acts on, after the lock-screen check.
     func controllableDevice(_ deviceId: String) -> SmartDevice? {
+        guard !rejectWritesBlockedByMiSession() else { return nil }
         guard !rejectControlWhileLocked() else { return nil }
         return devices.first(where: { $0.id == deviceId })
     }

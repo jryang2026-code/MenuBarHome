@@ -33,6 +33,7 @@ extension HomeStore {
 
     @discardableResult
     public func triggerScene(_ scene: HomeScene) -> Task<Bool, Never> {
+        guard !rejectWritesBlockedByMiSession() else { return Task { false } }
         guard !rejectControlWhileLocked() else { return Task { false } }
         return Task {
             do {
@@ -310,6 +311,7 @@ extension HomeStore {
 
     @discardableResult
     public func turnAllOff() -> Task<Void, Never>? {
+        guard !rejectWritesBlockedByMiSession() else { return nil }
         guard !rejectControlWhileLocked() else { return nil }
         let targetIds = Set(allOffTargets.map(\.id))
         guard !targetIds.isEmpty else {

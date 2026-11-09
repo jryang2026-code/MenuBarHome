@@ -18,7 +18,20 @@ extension HomeStore {
     // MARK: - Primary Toggle & Manual Light Memory
 
     @discardableResult
+    func rejectWritesBlockedByMiSession() -> Bool {
+        guard miSessionBlocksControl else { return false }
+        showToast(
+            L10n.tr("米家登录已过期", "Xiaomi Home session expired"),
+            isError: true,
+            action: ToastAction(title: L10n.tr("扫码", "Scan"), kind: .presentMiReauth),
+            persistent: true
+        )
+        return true
+    }
+
+    @discardableResult
     public func togglePrimary(_ device: SmartDevice) -> Task<Bool, Never>? {
+        guard !rejectWritesBlockedByMiSession() else { return nil }
         guard device.isOnline else {
             showToast(L10n.tr("\(device.name) 当前离线（可能断电）", "\(device.name) is offline (unplugged)"), isError: true)
             return nil
@@ -1027,6 +1040,7 @@ extension HomeStore {
     }
 
     public func sendSpeakerText(_ deviceId: String, text: String, asDirective: Bool) {
+        guard !rejectWritesBlockedByMiSession() else { return }
         guard !rejectControlWhileLocked() else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
@@ -1054,6 +1068,7 @@ extension HomeStore {
     }
 
     public func pressDeviceButton(_ buttonEntityId: String, label: String) {
+        guard !rejectWritesBlockedByMiSession() else { return }
         guard !rejectControlWhileLocked() else { return }
         Task {
             do {
