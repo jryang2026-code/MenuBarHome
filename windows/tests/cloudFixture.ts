@@ -47,6 +47,7 @@ export function cloudFixture(intents: readonly DeviceIntent[]) {
   let completedReads = 0;
   let failGets = 0;
   let failGroupStatus = 0;
+  let expireWrites = 0;
   let writeGate: {
     readonly promise: Promise<void>;
     readonly started: Promise<void>;
@@ -95,6 +96,10 @@ export function cloudFixture(intents: readonly DeviceIntent[]) {
     } else if (url.includes("homeroom/")) {
       result = { homelist: [{ id: "fixture-home", name: "测试家庭", roomlist: roomRecords }] };
     } else if (url.includes("miotspec/prop/")) {
+      if (url.includes("/set") && expireWrites > 0) {
+        expireWrites -= 1;
+        return { status: 401, headers: {}, body: "" };
+      }
       if (!url.includes("/set") && failGets > 0) {
         failGets -= 1;
         return { status: 500, headers: {}, body: "" };
@@ -167,6 +172,10 @@ export function cloudFixture(intents: readonly DeviceIntent[]) {
     /** Captures the next property read's values, then waits until the test releases the response. */
     failNextGets: (count = 1) => {
       failGets = count;
+    },
+    /** Refuses the next property writes with 401, the answer a dead Mi session gets. */
+    expireNextWrites: (count = 1) => {
+      expireWrites = count;
     },
     failNextGroupStatus: (count = 1) => {
       failGroupStatus = count;

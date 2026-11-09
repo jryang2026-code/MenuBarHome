@@ -136,21 +136,30 @@ describe("Panel keyboard on the rendered demo", () => {
     assert.equal(element<HTMLInputElement>("#command-input").value, "打开书房灯");
     assert.equal(document.activeElement?.id, "command-input");
   });
-  for (const transition of ["blur", "window blur", "settings", "source", "hide input"] as const) {
+  for (const transition of ["blur", "window blur", "settings", "source"] as const) {
     it(`ends an interrupted IME composition on ${transition}`, () => {
       const field = input("书");
       field.dispatchEvent(new window.CompositionEvent("compositionstart", { bubbles: true }));
       if (transition === "blur") field.blur();
       else if (transition === "window blur") window.dispatchEvent(new Event("blur"));
       else if (transition === "settings") app.openSettingsSheet();
-      else if (transition === "source") { app.sourceRevision += 1; app.render(); }
-      else { app.isShowingAssistantBar = false; app.render(); }
+      else { app.sourceRevision += 1; app.render(); }
       assert.equal(app.panelSearch.isComposing, false);
       if (transition === "settings") assert.ok(document.querySelector(".cc-sheet"));
       app.activeSheet = "none"; app.isShowingAssistantBar = true; app.render();
       input("sftd"); assert.deepEqual(ids(), ["light.study_desk"]);
     });
   }
+  it("keeps the search field and an open composition when the assistant extras collapse", () => {
+    const field = input("书");
+    field.dispatchEvent(new window.CompositionEvent("compositionstart", { bubbles: true }));
+    app.isShowingAssistantBar = false;
+    app.render();
+    assert.equal(document.querySelector("#command-input"), field);
+    assert.equal(app.panelSearch.isComposing, true);
+    field.dispatchEvent(new window.CompositionEvent("compositionend", { bubbles: true }));
+    assert.equal(app.panelSearch.isComposing, false);
+  });
   it("offline and stale matches cannot be toggled from Return", async () => {
     let writes = 0;
     app.executeSingleCommand = async () => { writes += 1; };

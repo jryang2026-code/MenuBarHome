@@ -43,6 +43,40 @@ struct URLCommandHandlerTests {
         return (store, provider)
     }
 
+    private static let chineseLamp = SmartDevice(
+        id: "dev_lamp",
+        name: "台灯",
+        roomId: "study",
+        roomName: "Study",
+        model: "test.light",
+        isOnline: true,
+        kind: .light(LightSpec(entityId: "light.lamp", isOn: true, brightnessPercent: 80))
+    )
+
+    private static func makeBlockedStore(
+        devices: [SmartDevice]? = nil
+    ) async throws -> (HomeStore, MockHomeProvider) {
+        let suite = "test.urlhandler.blocked.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(
+            rooms: [RoomArea(id: "study", name: "Study", sortOrder: 0)],
+            devices: devices ?? [lamp]
+        ))
+        let expired = MiSession(
+            userId: "1234567890",
+            cUserId: "cu",
+            ssecurity: "s",
+            serviceToken: "tok",
+            expiresAt: Date().addingTimeInterval(-60)
+        )
+        #expect(MiSessionStore.save(expired, defaults: defaults))
+        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        return (store, provider)
+    }
+
     private static func url(_ raw: String) throws -> URL {
         try #require(URL(string: raw))
     }
@@ -73,6 +107,87 @@ struct URLCommandHandlerTests {
         }
     }
 
+    @Test("A blocked Mi write shows the link result, then restores the scan toast")
+    func blockedWriteRestoresScanToast() async throws {
+        try await L10n.$overrideLanguage.withValue(.en) {
+            let (store, provider) = try await Self.makeBlockedStore()
+            #expect(store.miSessionBlocksControl)
+            store.setRaycastIntegration(enabled: true)
+            let token = try #require(store.raycastBridgeToken)
+
+            let handler = URLCommandHandler()
+            handler.confirmationHandler = { _ in true }
+            let link = try Self.url(
+                "menumijia://brightness?device=dev_lamp&percent=40&id=cli-blocked&token=\(token)"
+            )
+            await handler.handle(link, in: store)
+
+            #expect(store.lastRaycastCommandFeedback?.isError == true)
+            #expect(store.lastRaycastCommandFeedback?.message == "Xiaomi Home session expired")
+            #expect(store.toastNotice?.message == "Xiaomi Home session expired")
+            #expect(store.toastNotice?.persistent == false, "the link result is shown while the prompt waits")
+            store.dismissToast()
+            #expect(store.toastNotice?.persistent == true, "the scan action returns when the result ends")
+            #expect(await provider.executedCommands.isEmpty)
+        }
+    }
+
+    @Test("An ask link while expired shows its failure, then restores the scan toast")
+    func askLinkRestoresScanToast() async throws {
+        try await L10n.$overrideLanguage.withValue(.zhHans) {
+            let (store, provider) = try await Self.makeBlockedStore(devices: [Self.chineseLamp])
+            store.setRaycastIntegration(enabled: true)
+            let token = try #require(store.raycastBridgeToken)
+            let lamp = try #require(store.devices.first)
+            #expect(store.togglePrimary(lamp) == nil)
+            #expect(store.toastNotice?.persistent == true)
+
+            let handler = URLCommandHandler()
+            let link = try Self.url(
+                "menumijia://ask?text=%E5%85%B3%E7%81%AF&id=cli-ask&token=\(token)"
+            )
+            await handler.handle(link, in: store)
+
+            #expect(store.lastRaycastCommandFeedback?.isError == true)
+            #expect(store.lastRaycastCommandFeedback?.message == "台灯 未响应")
+            // The assistant failure is shown; the scan prompt waits behind it and returns.
+            #expect(store.toastNotice?.message == "台灯 未响应")
+            #expect(store.toastNotice?.persistent == false)
+            store.dismissToast()
+            #expect(store.toastNotice?.message == "米家登录已过期")
+            #expect(store.toastNotice?.persistent == true)
+            #expect(await provider.executedCommands.isEmpty)
+        }
+    }
+
+    @Test("A power link shows its refusal, then restores a suspended scan toast")
+    func blockedPowerLinkRestoresScanToast() async throws {
+        try await L10n.$overrideLanguage.withValue(.en) {
+            let (store, provider) = try await Self.makeBlockedStore()
+            store.setRaycastIntegration(enabled: true)
+            let token = try #require(store.raycastBridgeToken)
+            // An earlier Mi tap left the toast on screen before the link arrives, so the refusal
+            // does not create a new id for a previous-toast-id check to notice.
+            let lamp = try #require(store.devices.first)
+            #expect(store.togglePrimary(lamp) == nil)
+            #expect(store.toastNotice?.persistent == true)
+
+            let handler = URLCommandHandler()
+            let link = try Self.url(
+                "menumijia://power?device=dev_lamp&on=false&id=cli-blocked-power&token=\(token)"
+            )
+            await handler.handle(link, in: store)
+
+            #expect(store.lastRaycastCommandFeedback?.isError == true)
+            #expect(store.lastRaycastCommandFeedback?.message == "Xiaomi Home session expired")
+            #expect(store.toastNotice?.message == "Xiaomi Home session expired")
+            #expect(store.toastNotice?.persistent == false)
+            store.dismissToast()
+            #expect(store.toastNotice?.persistent == true)
+            #expect(await provider.executedCommands.isEmpty)
+        }
+    }
+
     @Test("An untrusted value link names the device and the value, and a refusal sends nothing")
     func untrustedLinkAsksWithTheExactValue() async throws {
         try await L10n.$overrideLanguage.withValue(.en) {
@@ -96,6 +211,29 @@ struct URLCommandHandlerTests {
             #expect(await provider.executedCommands.isEmpty)
             #expect(store.lastRaycastCommandFeedback?.isError == true)
             #expect(store.lastRaycastCommandFeedback?.message.contains("Cancelled") == true)
+        }
+    }
+
+    @Test("Two blocked URL toggles in a row both report the expired session")
+    func consecutiveBlockedTogglesReportSession() async throws {
+        try await L10n.$overrideLanguage.withValue(.en) {
+            let (store, provider) = try await Self.makeBlockedStore()
+            store.setRaycastIntegration(enabled: true)
+            let token = try #require(store.raycastBridgeToken)
+            let handler = URLCommandHandler()
+
+            for index in 1...2 {
+                let link = try Self.url(
+                    "menumijia://toggle?device=dev_lamp&id=cli-toggle-\(index)&token=\(token)"
+                )
+                await handler.handle(link, in: store)
+                #expect(store.lastRaycastCommandFeedback?.isError == true)
+                #expect(
+                    store.lastRaycastCommandFeedback?.message == "Xiaomi Home session expired",
+                    "toggle \(index) must name the expired session, not a device failure"
+                )
+            }
+            #expect(await provider.executedCommands.isEmpty)
         }
     }
 

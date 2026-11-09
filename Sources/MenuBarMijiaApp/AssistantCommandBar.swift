@@ -691,6 +691,170 @@ private struct ExecutionRouteBadge: View {
 
 // MARK: - Settings: AI 指令
 
+enum AssistantSettingsCopy {
+    static var title: String {
+        L10n.tr("AI 助手（可选）", "AI assistant (optional)")
+    }
+
+    static var subtitle: String {
+        L10n.tr(
+            "不填也能用：开关、调光、温度等常规指令在本机解析",
+            "Leave this empty and switches, dimming and temperature still work on this Mac."
+        )
+    }
+
+    static var providerLabel: String { L10n.tr("服务商", "Provider") }
+
+    static var apiKeyLabel: String {
+        L10n.tr("API Key（只存在本机钥匙串）", "API Key (stored only in this Mac's Keychain)")
+    }
+
+    static var apiKeyPlaceholder: String {
+        L10n.tr("粘贴 API Key，没有也能用", "Paste an API key, or leave it empty")
+    }
+
+    static var advancedTitle: String { L10n.tr("高级", "Advanced") }
+
+    static var serviceAddressLabel: String { L10n.tr("服务地址", "Service address") }
+
+    static var modelLabel: String { L10n.tr("模型", "Model") }
+
+    static var protocolNote: String {
+        L10n.tr(
+            "支持 System One（/v1/systemone）和 OpenAI 兼容接口（/v1/chat/completions）。",
+            "Supports System One (/v1/systemone) and OpenAI-compatible endpoints (/v1/chat/completions)."
+        )
+    }
+
+    static var learnHabits: String {
+        L10n.tr("学习我的使用习惯（用于猜你想做）", "Learn my usage habits (for proactive suggestions)")
+    }
+
+    static var shareHabits: String {
+        L10n.tr("发送习惯摘要（只包含这句话点名的设备）", "Share habit summary (only devices this command names)")
+    }
+
+    static var onDeviceSpeech: String {
+        L10n.tr(
+            "语音只在本机识别（不把声音发给苹果，系统支持时生效）",
+            "On-device speech recognition only (when supported by macOS)"
+        )
+    }
+
+    static var habitPreviewPlaceholder: String {
+        L10n.tr("预览这句话会发送的习惯摘要", "Preview the habit summary this sentence would send")
+    }
+
+    static var habitPreviewEmpty: String {
+        L10n.tr("不会发送习惯摘要", "Nothing from your habits is sent.")
+    }
+
+    static func learnedHabitsTitle(count: Int, expanded: Bool) -> String {
+        expanded
+            ? L10n.tr("收起已学习的习惯", "Hide learned habits")
+            : L10n.tr("查看已学习的习惯（\(count) 条）", "View learned habits (\(count))")
+    }
+
+    static var privacyExplanation: String {
+        L10n.tr(
+            "发给 AI 的内容：你说的那句话、设备名称/房间/当前状态、时间段、室温。打开「发送习惯摘要」后，还会发送这句话点名的设备的习惯摘要。只有本机解析不了的指令才会发送。API Key 和米家登录信息只存在本机钥匙串，不会发送。",
+            "Sent to AI only when local parsing cannot resolve: your command text, device names/rooms/states, time slot, and room temperature. Turning on “Share habit summary” also sends the habit summary for devices this command names. API keys and Xiaomi credentials stay in your local Keychain."
+        )
+    }
+
+    static var restoreDefaults: String { L10n.tr("恢复默认", "Restore Defaults") }
+    static var testConnection: String { L10n.tr("测试连接", "Test AI") }
+    static var testingConnection: String { L10n.tr("测试中…", "Testing…") }
+    static var saveConfiguration: String { L10n.tr("保存 AI 配置", "Save AI Config") }
+    static var keySaved: String { L10n.tr("已填写", "Key saved") }
+    static var loopback: String { L10n.tr("本机免密", "Local, no key") }
+    static var httpsRequired: String { L10n.tr("需用 https，否则不会发送", "Use https or nothing is sent") }
+    static var customAddressRequired: String {
+        L10n.tr("请先填写自定义服务地址", "Enter the custom service address first")
+    }
+
+    /// The status beside the card title. It never names where a key came from; the import row inside 高级 owns that.
+    static func headerStatus(isInsecure: Bool, hasKey: Bool, isLoopback: Bool) -> String? {
+        if isInsecure { return httpsRequired }
+        if hasKey { return keySaved }
+        if isLoopback { return loopback }
+        return nil
+    }
+
+    static func collapsedSurface(presetTitle: String, hasKey: Bool) -> [String] {
+        var strings = [title, subtitle, providerLabel, presetTitle, apiKeyLabel, apiKeyPlaceholder]
+        if let status = headerStatus(isInsecure: false, hasKey: hasKey, isLoopback: false) {
+            strings.append(status)
+        }
+        strings += [
+            advancedTitle,
+            learnHabits,
+            shareHabits,
+            habitPreviewPlaceholder,
+            habitPreviewEmpty,
+            onDeviceSpeech,
+            learnedHabitsTitle(count: 0, expanded: false),
+            privacyExplanation,
+            restoreDefaults,
+            testConnection,
+            saveConfiguration
+        ]
+        return strings
+    }
+
+    static func containsDeveloperJargon(_ text: String) -> Bool {
+        ["systemone", "System One", "CodexBar", "/v1/chat/completions"].contains { text.contains($0) }
+    }
+}
+
+/// Editable fields of the AI settings card, kept pure so the preset switch and the save rule are testable.
+enum AssistantSettingsDraft {
+    struct Fields: Equatable {
+        var baseURL: String
+        var model: String
+        var apiKey: String
+    }
+
+    /// Picking a preset brings its address, model and stored key. 自定义 has no default address, so the
+    /// previous provider's URL is cleared instead of later being saved with an empty key (#49).
+    static func selecting(
+        _ newPreset: AssistantProviderPreset,
+        from oldPreset: AssistantProviderPreset,
+        fields: Fields,
+        storedKey: (String) -> String
+    ) -> Fields {
+        guard newPreset != .custom else {
+            return Fields(
+                baseURL: "",
+                model: fields.model == oldPreset.defaultModel || ModelIntentResolver.isSystemOneModel(fields.model)
+                    ? "gpt-4o-mini"
+                    : fields.model,
+                apiKey: ""
+            )
+        }
+        return Fields(
+            baseURL: newPreset.defaultBaseURL,
+            model: newPreset.defaultModel,
+            apiKey: storedKey(newPreset.defaultBaseURL)
+        )
+    }
+
+    /// The config Save writes, or nil while 自定义 has no address. Writing the fallback provider's URL with
+    /// an empty key would delete that provider's saved key.
+    static func configToSave(preset: AssistantProviderPreset, fields: Fields) -> AssistantConfig? {
+        let trimmedBase = fields.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if preset == .custom && trimmedBase.isEmpty { return nil }
+        let fallbackBase = preset.defaultBaseURL.isEmpty ? AssistantConfig.defaultBaseURL : preset.defaultBaseURL
+        let fallbackModel = preset.defaultModel.isEmpty ? "gpt-4o-mini" : preset.defaultModel
+        let trimmedModel = fields.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return AssistantConfig(
+            baseURL: trimmedBase.isEmpty ? fallbackBase : trimmedBase,
+            model: trimmedModel.isEmpty ? fallbackModel : trimmedModel,
+            apiKey: fields.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+}
+
 struct AssistantSettingsSection: View {
     let store: HomeStore
 
@@ -705,6 +869,7 @@ struct AssistantSettingsSection: View {
     @State private var habitRevision = 0
     /// Imported-key labels and cloud consent also live in UserDefaults; bump to redraw after import/undo/revoke.
     @State private var storageRevision = 0
+    @State private var showsAdvanced = false
 
     var body: some View {
         let _ = store.effectiveLanguage
@@ -717,61 +882,48 @@ struct AssistantSettingsSection: View {
         let isLoopback = AssistantConfig(baseURL: baseURLDraft, model: modelDraft, apiKey: "").isLoopbackEndpoint
         let isInsecure = !baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !AssistantConfig(baseURL: baseURLDraft, model: modelDraft, apiKey: "").allowsSendingAPIKey
-        let isSystemOne = ModelIntentResolver.isSystemOneModel(modelDraft)
-
+        let headerStatus = AssistantSettingsCopy.headerStatus(
+            isInsecure: isInsecure,
+            hasKey: hasCustomKey,
+            isLoopback: isLoopback
+        )
         VStack(alignment: .leading, spacing: 9) {
-            HStack {
-                Text(L10n.tr("AI 决策模型与习惯记忆", "AI Decision Model & Habit Memory"))
-                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if isInsecure {
-                    Text(L10n.tr("● 地址需用 https，否则不会发送", "● Use https; nothing will be sent"))
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                        .foregroundStyle(.orange)
-                } else if let importedSource {
-                    Text(L10n.tr("● 已从 \(importedSource) 导入", "● Imported from \(importedSource)"))
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                        .foregroundStyle(.green)
-                } else if hasCustomKey {
-                    Text(L10n.tr("● 已配置自定义密钥", "● Custom API Key Set"))
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                        .foregroundStyle(.green)
-                } else if isLoopback {
-                    Text(L10n.tr("● 本机免密接口", "● Local Endpoint"))
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                        .foregroundStyle(.green)
-                } else {
-                    Text(L10n.tr("● 待填 API Key（常规指令本地可用）", "● No Key (Local Rules Active)"))
-                        .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(AssistantSettingsCopy.title)
+                        .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                    Spacer(minLength: 8)
+                    if let headerStatus {
+                        Text(headerStatus)
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                            .foregroundStyle(isInsecure ? Color.orange : Color.green)
+                    }
                 }
+                Text(AssistantSettingsCopy.subtitle)
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack {
-                Text(L10n.tr("AI 服务商预设", "AI Provider"))
+                Text(AssistantSettingsCopy.providerLabel)
                     .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.secondary)
                 Spacer()
                 Picker(
                     "",
                     selection: Binding(
                         get: { selectedPreset },
                         set: { newPreset in
-                            let oldPreset = selectedPreset
+                            let fields = AssistantSettingsDraft.selecting(
+                                newPreset,
+                                from: selectedPreset,
+                                fields: draftFields,
+                                storedKey: { store.storedAssistantAPIKey(forBaseURL: $0) }
+                            )
                             selectedPreset = newPreset
-                            if newPreset != .custom {
-                                baseURLDraft = newPreset.defaultBaseURL
-                                modelDraft = newPreset.defaultModel
-                                apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: newPreset.defaultBaseURL)
-                            } else {
-                                if modelDraft == oldPreset.defaultModel || ModelIntentResolver.isSystemOneModel(modelDraft) {
-                                    modelDraft = "gpt-4o-mini"
-                                }
-                                // Keys never follow the user to another provider; a custom key reappears once its own URL is typed.
-                                apiKeyDraft = AssistantProviderPreset.infer(baseURL: baseURLDraft) == .custom
-                                    ? store.storedAssistantAPIKey(forBaseURL: baseURLDraft)
-                                    : ""
-                            }
+                            apply(fields)
+                            if newPreset == .custom { showsAdvanced = true }
                         }
                     )
                 ) {
@@ -784,91 +936,25 @@ struct AssistantSettingsSection: View {
                 .controlSize(.regular)
             }
 
-            labeledField(L10n.tr(
-                "服务地址 (支持 /v1/systemone 协议与 OpenAI 兼容 /v1/chat/completions)",
-                "Endpoint URL (Supports /v1/systemone & OpenAI-compatible /v1/chat/completions)"
-            )) {
-                TextField(
-                    selectedPreset.defaultBaseURL.isEmpty ? AssistantConfig.defaultBaseURL : selectedPreset.defaultBaseURL,
-                    text: Binding(
-                        get: { baseURLDraft },
-                        set: { newValue in
-                            let oldPreset = selectedPreset
-                            let oldURL = baseURLDraft
-                            baseURLDraft = newValue
-                            let inferred = AssistantProviderPreset.infer(baseURL: newValue)
-                            if inferred == .custom, inferred == oldPreset,
-                               AssistantEndpoint(newValue)?.identity != AssistantEndpoint(oldURL)?.identity,
-                               apiKeyDraft.isEmpty || apiKeyDraft == store.storedAssistantAPIKey(forBaseURL: oldURL) {
-                                // Another custom server: the saved key stays with its own server (#19).
-                                apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: newValue)
-                            }
-                            if inferred != oldPreset {
-                                selectedPreset = inferred
-                                apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: newValue)
-                                if !inferred.defaultModel.isEmpty {
-                                    modelDraft = inferred.defaultModel
-                                } else if modelDraft == oldPreset.defaultModel || ModelIntentResolver.isSystemOneModel(modelDraft) {
-                                    modelDraft = "gpt-4o-mini"
-                                }
-                            }
-                        }
-                    )
-                )
-                .textFieldStyle(.roundedBorder)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 4) {
-                    Text(isSystemOne
-                         ? L10n.tr("模型 (System One 协议 · 单次多头并发决策)", "Model (System One · Multi-Head Decision)")
-                         : L10n.tr("模型 (OpenAI 兼容 Chat Completions)", "Model (OpenAI-Compatible Chat)"))
-                        .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    ForEach(selectedPreset.recommendedModels.prefix(2), id: \.self) { candidate in
-                        Button(candidate) {
-                            modelDraft = candidate
-                        }
-                        .buttonStyle(.plain)
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: modelDraft == candidate ? .semibold : .regular, design: .monospaced))
-                        .foregroundStyle(modelDraft == candidate ? Color.accentColor : Color.secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1.5)
-                        .background(
-                            (modelDraft == candidate ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.05)),
-                            in: Capsule()
-                        )
-                    }
-                }
-                TextField(
-                    selectedPreset.defaultModel.isEmpty ? AssistantConfig.defaultModel : selectedPreset.defaultModel,
-                    text: $modelDraft
-                )
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.regular)
-                .font(.system(size: DesignTokens.TypeSize.body, design: .monospaced))
-            }
-
-            labeledField(L10n.tr(
-                "API Key（只存在本机钥匙串）",
-                "API Key (Stored only in your Keychain)"
-            )) {
-                SecureField(
-                    selectedPreset.keyPlaceholder,
-                    text: $apiKeyDraft
-                )
-                .textFieldStyle(.roundedBorder)
-            }
-
-            if selectedPreset.supportsKeyImport {
-                keyImportRow(importedSource: importedSource)
+            labeledField(AssistantSettingsCopy.apiKeyLabel) {
+                SecureField(AssistantSettingsCopy.apiKeyPlaceholder, text: $apiKeyDraft)
+                    .textFieldStyle(.roundedBorder)
             }
 
             privacySection(habitItems: habitItems, habitCount: habitCount)
 
+            DisclosureGroup(isExpanded: $showsAdvanced) {
+                if showsAdvanced {
+                    advancedFields(importedSource: importedSource)
+                        .padding(.top, 6)
+                }
+            } label: {
+                Text(AssistantSettingsCopy.advancedTitle)
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+            }
+
             HStack(spacing: 6) {
-                Button(L10n.tr("恢复默认", "Restore Defaults")) {
+                Button(AssistantSettingsCopy.restoreDefaults) {
                     selectedPreset = .openRouterJev
                     baseURLDraft = AssistantConfig.defaultBaseURL
                     modelDraft = AssistantConfig.defaultModel
@@ -878,8 +964,8 @@ struct AssistantSettingsSection: View {
                 }
                 .buttonStyle(PillActionButtonStyle())
 
-                Button(isTestingConnection ? L10n.tr("测试中…", "Testing…") : L10n.tr("测试连接", "Test AI")) {
-                    let saved = saveCurrentDraft()
+                Button(isTestingConnection ? AssistantSettingsCopy.testingConnection : AssistantSettingsCopy.testConnection) {
+                    guard let saved = saveCurrentDraft() else { return }
                     isTestingConnection = true
                     Task {
                         let result = await store.verifyAssistantConfig(saved)
@@ -892,9 +978,10 @@ struct AssistantSettingsSection: View {
 
                 Spacer()
 
-                Button(L10n.tr("保存 AI 配置", "Save AI Config")) {
-                    _ = saveCurrentDraft()
-                    store.showToast(L10n.tr("已保存 AI 指令配置", "Saved AI configuration"))
+                Button(AssistantSettingsCopy.saveConfiguration) {
+                    if saveCurrentDraft() != nil {
+                        store.showToast(L10n.tr("已保存 AI 指令配置", "Saved AI configuration"))
+                    }
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
             }
@@ -911,26 +998,102 @@ struct AssistantSettingsSection: View {
         }
     }
 
+    private var draftFields: AssistantSettingsDraft.Fields {
+        AssistantSettingsDraft.Fields(baseURL: baseURLDraft, model: modelDraft, apiKey: apiKeyDraft)
+    }
+
+    private func apply(_ fields: AssistantSettingsDraft.Fields) {
+        baseURLDraft = fields.baseURL
+        modelDraft = fields.model
+        apiKeyDraft = fields.apiKey
+    }
+
+    /// Saves the visible fields. Returns nil while 自定义 has no address, so the previous config and
+    /// every saved provider key stay untouched.
     @discardableResult
-    private func saveCurrentDraft() -> AssistantConfig {
-        let normalizedBase = baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? (selectedPreset.defaultBaseURL.isEmpty ? AssistantConfig.defaultBaseURL : selectedPreset.defaultBaseURL)
-            : baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let fallbackModel = selectedPreset.defaultModel.isEmpty ? "gpt-4o-mini" : selectedPreset.defaultModel
-        let normalizedModel = modelDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? fallbackModel
-            : modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cfg = AssistantConfig(
-            baseURL: normalizedBase,
-            model: normalizedModel,
-            apiKey: apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        )
+    private func saveCurrentDraft() -> AssistantConfig? {
+        guard let cfg = AssistantSettingsDraft.configToSave(preset: selectedPreset, fields: draftFields) else {
+            store.showToast(AssistantSettingsCopy.customAddressRequired, isError: true)
+            return nil
+        }
         store.assistantConfig = cfg
         let resolved = store.assistantConfig
         baseURLDraft = resolved.baseURL
         modelDraft = resolved.model
         selectedPreset = resolved.preset
         return cfg
+    }
+
+    @ViewBuilder
+    private func advancedFields(importedSource: String?) -> some View {
+        labeledField(AssistantSettingsCopy.serviceAddressLabel) {
+            TextField(
+                selectedPreset.defaultBaseURL.isEmpty ? AssistantConfig.defaultBaseURL : selectedPreset.defaultBaseURL,
+                text: Binding(
+                    get: { baseURLDraft },
+                    set: { newValue in
+                        let oldPreset = selectedPreset
+                        let oldURL = baseURLDraft
+                        baseURLDraft = newValue
+                        let inferred = AssistantProviderPreset.infer(baseURL: newValue)
+                        if inferred == .custom, inferred == oldPreset,
+                           AssistantEndpoint(newValue)?.identity != AssistantEndpoint(oldURL)?.identity,
+                           apiKeyDraft.isEmpty || apiKeyDraft == store.storedAssistantAPIKey(forBaseURL: oldURL) {
+                            apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: newValue)
+                        }
+                        if inferred != oldPreset {
+                            selectedPreset = inferred
+                            apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: newValue)
+                            if !inferred.defaultModel.isEmpty {
+                                modelDraft = inferred.defaultModel
+                            } else if modelDraft == oldPreset.defaultModel || ModelIntentResolver.isSystemOneModel(modelDraft) {
+                                modelDraft = "gpt-4o-mini"
+                            }
+                        }
+                    }
+                )
+            )
+            .textFieldStyle(.roundedBorder)
+        }
+
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Text(AssistantSettingsCopy.modelLabel)
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                ForEach(selectedPreset.recommendedModels.prefix(2), id: \.self) { candidate in
+                    Button(candidate) {
+                        modelDraft = candidate
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: modelDraft == candidate ? .semibold : .regular, design: .monospaced))
+                    .foregroundStyle(modelDraft == candidate ? Color.accentColor : Color.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1.5)
+                    .background(
+                        (modelDraft == candidate ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.05)),
+                        in: Capsule()
+                    )
+                }
+            }
+            TextField(
+                selectedPreset.defaultModel.isEmpty ? AssistantConfig.defaultModel : selectedPreset.defaultModel,
+                text: $modelDraft
+            )
+            .textFieldStyle(.roundedBorder)
+            .controlSize(.regular)
+            .font(.system(size: DesignTokens.TypeSize.body, design: .monospaced))
+        }
+
+        Text(AssistantSettingsCopy.protocolNote)
+            .font(.system(size: DesignTokens.TypeSize.caption))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+        if selectedPreset.supportsKeyImport {
+            keyImportRow(importedSource: importedSource)
+        }
     }
 
     /// Whether the current UI language ships an on-device recognizer on this Mac (#50).
@@ -947,7 +1110,7 @@ struct AssistantSettingsSection: View {
                 get: { store.isHabitLearningEnabled },
                 set: { store.isHabitLearningEnabled = $0 }
             )) {
-                Text(L10n.tr("学习我的使用习惯（用于猜你想做）", "Learn my usage habits (for proactive suggestions)"))
+                Text(AssistantSettingsCopy.learnHabits)
                     .font(.system(size: DesignTokens.TypeSize.caption))
             }
             .toggleStyle(.glass)
@@ -957,18 +1120,15 @@ struct AssistantSettingsSection: View {
                 get: { store.habitSharing == .on },
                 set: { store.habitSharing = $0 ? .on : .off }
             )) {
-                Text(L10n.tr("发送习惯摘要（只包含这句话点名的设备）", "Share habit summary (only devices this command names)"))
+                Text(AssistantSettingsCopy.shareHabits)
                     .font(.system(size: DesignTokens.TypeSize.caption))
             }
             .toggleStyle(.glass)
             .controlSize(.regular)
 
-            TextField(
-                L10n.tr("预览这句话会发送的习惯摘要", "Preview the habit summary this sentence would send"),
-                text: $habitShareSample
-            )
-            .textFieldStyle(.roundedBorder)
-            .font(.system(size: DesignTokens.TypeSize.caption))
+            TextField(AssistantSettingsCopy.habitPreviewPlaceholder, text: $habitShareSample)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: DesignTokens.TypeSize.caption))
 
             let habitSharePreview = shareHabitSentence(
                 sharing: store.habitSharing,
@@ -978,9 +1138,7 @@ struct AssistantSettingsSection: View {
                 mention: .utterance(habitShareSample),
                 now: Date()
             )
-            Text(habitSharePreview.isEmpty
-                 ? L10n.tr("不会发送习惯摘要", "Nothing from your habits is sent.")
-                 : habitSharePreview)
+            Text(habitSharePreview.isEmpty ? AssistantSettingsCopy.habitPreviewEmpty : habitSharePreview)
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -989,7 +1147,7 @@ struct AssistantSettingsSection: View {
                 get: { store.prefersOnDeviceSpeech },
                 set: { store.prefersOnDeviceSpeech = $0 }
             )) {
-                Text(L10n.tr("语音只在本机识别（不把声音发给苹果，系统支持时生效）", "On-device speech recognition only (when supported by macOS)"))
+                Text(AssistantSettingsCopy.onDeviceSpeech)
                     .font(.system(size: DesignTokens.TypeSize.caption))
             }
             .toggleStyle(.glass)
@@ -1010,9 +1168,7 @@ struct AssistantSettingsSection: View {
             }
 
             HStack {
-                Button(isShowingHabits
-                       ? L10n.tr("收起已学习的习惯", "Hide learned habits")
-                       : L10n.tr("查看已学习的习惯（\(habitCount) 条）", "View learned habits (\(habitCount))")) {
+                Button(AssistantSettingsCopy.learnedHabitsTitle(count: habitCount, expanded: isShowingHabits)) {
                     isShowingHabits.toggle()
                 }
                 .buttonStyle(.plain)
@@ -1071,10 +1227,7 @@ struct AssistantSettingsSection: View {
                 }
             }
 
-            Text(L10n.tr(
-                "发给 AI 的内容：你说的那句话、设备名称/房间/当前状态、时间段、室温。打开「发送习惯摘要」后，还会发送这句话点名的设备的习惯摘要。只有本机解析不了的指令才会发送。API Key 和米家登录信息只存在本机钥匙串，不会发送。",
-                "Sent to AI only when local parsing cannot resolve: your command text, device names/rooms/states, time slot, and room temperature. Turning on “Share habit summary” also sends the habit summary for devices this command names. API keys and Xiaomi credentials stay in your local Keychain."
-            ))
+            Text(AssistantSettingsCopy.privacyExplanation)
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

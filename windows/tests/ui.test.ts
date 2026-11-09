@@ -3999,7 +3999,7 @@ describe("Home Assistant source", () => {
     await click("#btn-refresh");
     await waitFor(() => !document.querySelector("[data-ha-error]"));
     assert.match(tile("study-light"), /书房灯/);
-    assert.equal(document.querySelector("#command-input"), null);
+    assert.ok(document.querySelector("#command-input"), "search stays available when the assistant extras are hidden");
   });
   it("rejects malformed cached HA homes and refreshes into an empty state", async () => {
     let snapshots = 0;
@@ -4739,6 +4739,27 @@ describe("Appliance and generic cards (#9)", () => {
     target: { kind: "property" as const, entityId: "miot:did_tank:2", piid: 4 },
   };
 
+  /**
+   * A generic facet outside the low-risk whitelist. macOS `ManualControlPolicy` asks before every
+   * direction of one, unlike `childLock` above, which is a low-risk token and writes directly.
+   */
+  const pump = {
+    id: "2.5",
+    kind: "toggle" as const,
+    name: "pump",
+    title: null,
+    serviceName: "fish-tank",
+    unit: null,
+    scale: null,
+    value: false,
+    options: [],
+    range: null,
+    isWritable: true,
+    writesByDefault: false,
+    isHighValue: false,
+    target: { kind: "property" as const, entityId: "miot:did_tank:2", piid: 5 },
+  };
+
   /** One app on a demo connection, so its own listeners own the injected cards. */
   const mount = (devices: SmartDevice[], facets: Record<string, readonly FacetControl[]> = {}) => {
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
@@ -4764,11 +4785,11 @@ describe("Appliance and generic cards (#9)", () => {
   });
 
   it("keeps a generic card's readings on the tile and its gated rows behind the switch", async () => {
-    const app = mount([tank], { [tank.id]: [childLock] });
+    const app = mount([tank], { [tank.id]: [pump] });
 
     assert.match(tile("miot:did_tank"), /88%/);
     await click('[data-body-device="miot:did_tank"]');
-    const gated = () => element('[data-facet-toggle="miot:did_tank|2.4"]') as HTMLButtonElement;
+    const gated = () => element('[data-facet-toggle="miot:did_tank|2.5"]') as HTMLButtonElement;
     assert.equal(gated().disabled, true, "a high-risk row needs 允许写入高级属性 first");
 
     app.settings.allowAdvancedFacetWrites = true;
@@ -4916,22 +4937,22 @@ describe("Appliance and generic cards (#9)", () => {
       value: null,
       target: { kind: "action", entityId: "miot-action:did_tank:2:9" },
     });
-    const app = mount([tank], { [tank.id]: [childLock, reset] });
+    const app = mount([tank], { [tank.id]: [pump, reset] });
     app.settings.allowAdvancedFacetWrites = true;
     app.render();
     await click('[data-body-device="miot:did_tank"]');
 
-    const lockRow = () => element('[data-facet-toggle="miot:did_tank|2.4"]');
+    const pumpRow = () => element('[data-facet-toggle="miot:did_tank|2.5"]');
     const resetRow = () => element('[data-facet-action="miot:did_tank|2.9"]');
 
-    lockRow().click();
+    pumpRow().click();
     await setImmediate();
     assert.match(document.body.textContent ?? "", /再点一次确认执行/, "the first tap only asks");
 
     resetRow().click();
     await setImmediate();
     assert.match(document.body.textContent ?? "", /再点一次确认执行/, "a different write asks again");
-    assert.match(lockRow().textContent ?? "", /关/, "and the armed write never ran");
+    assert.match(pumpRow().textContent ?? "", /关/, "and the armed write never ran");
     assert.doesNotMatch(document.body.textContent ?? "", /已执行鱼缸/);
 
     resetRow().click();
@@ -5577,5 +5598,589 @@ describe("Manual control parity with macOS (#143)", () => {
     await click('[data-body-device="light-facets"]');
     assert.equal(app.expandedDeviceId, "light-facets");
     assert.ok(document.querySelector('[data-facet-toggle="light-facets|2.1"]'));
+  });
+});
+
+describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20, UX-21)", () => {
+  function startDemoApp(): MenuMijiaWindowsApp {
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "demo",
+      hasCompletedOnboarding: true,
+    }));
+    return new MenuMijiaWindowsApp(element("#app"));
+  }
+
+  function pressHoldKey(target: HTMLElement, key: string, type: "keydown" | "keyup", repeat = false): void {
+    target.dispatchEvent(new window.KeyboardEvent(type, { key, bubbles: true, cancelable: true, repeat }));
+  }
+
+  /** Grabs the undo banner's expiry callback and the 1 s panel tick without waiting for either. */
+  function capturePanelTimers(): { fireUndoExpiry(): void; tick(): void } {
+    let undoExpiry: (() => void) | null = null;
+    const ticks: Array<() => void> = [];
+    const realSetTimeout = window.setTimeout.bind(window);
+    const realSetInterval = window.setInterval.bind(window);
+    Object.defineProperty(window, "setTimeout", {
+      configurable: true,
+      value: (handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+        if ((timeout === 10_000 || timeout === 15_000) && typeof handler === "function") {
+          undoExpiry = () => { handler(); };
+        }
+        return realSetTimeout(handler, timeout, ...args);
+      },
+    });
+    Object.defineProperty(window, "setInterval", {
+      configurable: true,
+      value: (handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+        if (timeout === 1000 && typeof handler === "function") ticks.push(() => { handler(); });
+        return realSetInterval(handler, timeout, ...args);
+      },
+    });
+    return {
+      fireUndoExpiry: () => {
+        assert.ok(undoExpiry, "the undo banner did not arm its expiry timer");
+        undoExpiry();
+      },
+      tick: () => {
+        for (const tick of ticks) tick();
+      },
+    };
+  }
+
+  it("shows undo after All Off while the assistant extras are collapsed, and undo restores the lights", async () => {
+    startDemoApp();
+    element("#btn-toggle-assistant").click();
+    assert.ok(document.querySelector("#command-input"), "search stays in the page");
+    assert.equal(document.querySelector("[data-suggestion-id]"), null);
+
+    element("#btn-all-off").dispatchEvent(new Event("pointerdown"));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await setImmediate();
+
+    const banner = element(".cc-live-banner");
+    assert.equal(banner.getAttribute("role"), "status");
+    assert.ok(document.querySelector("#btn-undo"));
+    assert.equal(document.querySelector("#btn-all-off"), null);
+    assert.doesNotMatch(tile("light.living_ceiling"), /已开启/);
+    assert.doesNotMatch(textOf(".cc-feedback-text"), /按住 0.6 秒/);
+
+    await click("#btn-undo");
+    await setImmediate();
+    assert.match(tile("light.living_ceiling"), /已开启/);
+  });
+
+  it("keeps an error banner until it is dismissed, even with the assistant extras hidden", async () => {
+    const app = startDemoApp();
+    app.isShowingAssistantBar = false;
+    app.replyBanner = { text: "米家云同步失败：超时", source: "连接异常", isError: true };
+    app.render();
+    assert.equal(element(".cc-live-banner").getAttribute("role"), "alert");
+    assert.match(textOf(".cc-feedback-text"), /超时/);
+    await click("#btn-dismiss-banner");
+    assert.equal(document.querySelector(".cc-live-banner"), null);
+    assert.equal(app.replyBanner, null);
+  });
+
+  it("holds All Off from the keyboard once, and a short press only shows the hint", async () => {
+    const app = startDemoApp();
+    const button = element("#btn-all-off");
+    button.focus();
+    assert.equal(document.activeElement, button);
+    pressHoldKey(button, " ", "keydown");
+    pressHoldKey(button, " ", "keyup");
+    await setImmediate();
+    assert.match(textOf(".cc-feedback-text"), /按住 0.6 秒/);
+    assert.equal(element(".cc-live-banner").getAttribute("role"), "status");
+    assert.match(tile("light.living_ceiling"), /已开启/);
+
+    let calls = 0;
+    const run = app.executeIntents.bind(app);
+    app.executeIntents = async (...args) => {
+      calls += 1;
+      return run(...args);
+    };
+    const again = element("#btn-all-off");
+    again.focus();
+    pressHoldKey(again, " ", "keydown");
+    assert.ok(again.classList.contains("is-holding"));
+    pressHoldKey(again, " ", "keydown", true);
+    assert.ok(again.classList.contains("is-holding"));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await setImmediate();
+    assert.equal(calls, 1);
+    assert.doesNotMatch(tile("light.living_ceiling"), /已开启/);
+  });
+
+  it("hides the undo control after 10 seconds, and after 15 seconds when three devices are involved", () => {
+    const app = startDemoApp();
+    const started = Date.now();
+    let clock = started;
+    const original = Date.now;
+    Date.now = () => clock;
+    const step = {
+      deviceId: "light.living_ceiling",
+      commands: [{ kind: "setSwitch" as const, entityId: "switch.light", isOn: true }],
+    };
+    try {
+      app.lastUndoAction = { summary: "一台", steps: [step], expiresAtMs: started + 60_000 };
+      app.render();
+      assert.ok(document.querySelector("#btn-undo"));
+      clock = started + 10_000;
+      app.render();
+      assert.equal(document.querySelector("#btn-undo"), null);
+      assert.ok(app.lastUndoAction, "the action itself stays available after the button leaves");
+
+      clock = started;
+      app.lastUndoAction = {
+        summary: "同一台灯的颜色和亮度",
+        steps: [step, { ...step, commands: [{ kind: "setLightBrightness" as const, entityId: "light.living", percent: 40 }] }, { ...step, commands: [{ kind: "setLightEffect" as const, entityId: "light.living", effect: "Night" }] }],
+        expiresAtMs: started + 60_000,
+      };
+      app.render();
+      assert.ok(document.querySelector("#btn-undo"));
+      clock = started + 10_000;
+      app.render();
+      assert.equal(document.querySelector("#btn-undo"), null, "three writes on one device stay up for 10 seconds");
+
+      clock = started;
+      app.lastUndoAction = {
+        summary: "三台",
+        steps: [
+          { ...step, deviceId: "light.living_ceiling" },
+          { ...step, deviceId: "light.study_desk" },
+          { ...step, deviceId: "light.entry" },
+        ],
+        expiresAtMs: started + 60_000,
+      };
+      app.render();
+      assert.ok(document.querySelector("#btn-undo"));
+      clock = started + 10_000;
+      app.render();
+      assert.ok(document.querySelector("#btn-undo"));
+      clock = started + 15_000;
+      app.render();
+      assert.equal(document.querySelector("#btn-undo"), null);
+    } finally {
+      Date.now = original;
+    }
+  });
+
+  it("defers the undo expiry render while a pointer gesture is active", () => {
+    const timers = capturePanelTimers();
+    const app = startDemoApp();
+    const started = Date.now();
+    let clock = started;
+    const original = Date.now;
+    Date.now = () => clock;
+    try {
+      app.lastUndoAction = {
+        summary: "一台",
+        steps: [{ deviceId: "light.living_ceiling", commands: [{ kind: "setSwitch", entityId: "switch.light", isOn: true }] }],
+        expiresAtMs: started + 60_000,
+      };
+      app.pointerIsDown = true;
+      app.render();
+      const undo = element("#btn-undo");
+      clock = started + 10_000;
+      timers.fireUndoExpiry();
+      assert.ok(app.pendingCloudRender);
+      assert.equal(document.querySelector("#btn-undo"), undo, "the gesture's DOM survives the expiry");
+      app.pointerIsDown = false;
+      timers.tick();
+      assert.equal(document.querySelector("#btn-undo"), null, "the deferred render lands after the gesture");
+    } finally {
+      Date.now = original;
+    }
+  });
+
+  it("defers the undo expiry render while the All Off hold is armed", () => {
+    const timers = capturePanelTimers();
+    const app = startDemoApp();
+    const started = Date.now();
+    let clock = started;
+    const original = Date.now;
+    Date.now = () => clock;
+    try {
+      app.lastUndoAction = {
+        summary: "一台",
+        steps: [{ deviceId: "light.living_ceiling", commands: [{ kind: "setSwitch", entityId: "switch.light", isOn: true }] }],
+        expiresAtMs: started + 60_000,
+      };
+      app.render();
+      const button = element("#btn-all-off");
+      const undo = element("#btn-undo");
+      button.focus();
+      pressHoldKey(button, " ", "keydown");
+      clock = started + 10_000;
+      timers.fireUndoExpiry();
+      assert.ok(app.pendingCloudRender);
+      assert.equal(document.querySelector("#btn-undo"), undo, "the hold keeps its DOM");
+      assert.ok(element("#btn-all-off").classList.contains("is-holding"), "the hold was not cancelled");
+      pressHoldKey(element("#btn-all-off"), " ", "keyup");
+      timers.tick();
+      assert.equal(document.querySelector("#btn-undo"), null);
+    } finally {
+      Date.now = original;
+    }
+  });
+
+  it("renders an expired Mi session as an offline footer the user can tap to scan", async () => {
+    const invoke = async (name: string) => {
+      if (name === "native_http") return { status: 401, headers: {}, body: "" };
+      return null;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "xiaomiCloud",
+      hasCompletedOnboarding: true,
+      miSession: {
+        userId: "12345678",
+        cUserId: "",
+        ssecurity: "AQIDBAUGBwgJCgsMDQ4PEA==",
+        serviceToken: "expired-token",
+        passToken: "",
+        region: "cn",
+      },
+    }));
+    const app = new MenuMijiaWindowsApp(element("#app"));
+    await waitFor(() => element(".cc-status-dot").classList.contains("is-offline"));
+    assert.match(textOf("#btn-footer-health"), /登录已过期/);
+    assert.equal(app.miSessionExpired, true);
+    await click("#btn-footer-health");
+    assert.equal(app.activeSheet, "settings");
+  });
+
+  it("keeps a command's Mi Cloud 401 as an offline footer after the banner is dismissed", async () => {
+    const cloud = cloudFixture([]);
+    cloud.expireNextWrites();
+    const app = new MenuMijiaWindowsApp(element("#app"));
+    await setImmediate();
+    assert.match(tile("fixture-light"), /50%/);
+
+    await click('[data-toggle-device="fixture-light"]');
+    assert.equal(element(".cc-live-banner").getAttribute("role"), "alert");
+    assert.match(textOf(".cc-feedback-text"), /登录已过期/);
+    assert.ok(element(".cc-status-dot").classList.contains("is-offline"), "a 401 from a command means the login is dead");
+    assert.match(textOf("#btn-footer-health"), /登录已过期/);
+    assert.equal(app.miSessionExpired, true);
+
+    await click("#btn-dismiss-banner");
+    assert.equal(document.querySelector(".cc-live-banner"), null);
+    assert.ok(element(".cc-status-dot").classList.contains("is-offline"), "the expiry outlives the banner");
+    assert.match(textOf("#btn-footer-health"), /登录已过期/);
+
+    // A later successful refresh clears the expiry the same way a fresh login does.
+    await click("#btn-refresh");
+    await waitFor(() => !element("#btn-refresh").classList.contains("is-spinning"));
+    assert.equal(app.miSessionExpired, false);
+    assert.ok(element(".cc-status-dot").classList.contains("is-online"));
+  });
+
+  it("marks a stale Xiaomi home as degraded and an unconfigured Home Assistant as offline", () => {
+    const app = startDemoApp();
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.miSession = {
+      userId: "12345678",
+      cUserId: "",
+      ssecurity: "x",
+      serviceToken: "y",
+      passToken: "",
+      region: "cn",
+    };
+    app.cloudValuesStale = true;
+    app.isSyncingCloud = false;
+    app.render();
+    assert.ok(element(".cc-status-dot").classList.contains("is-degraded"));
+    assert.match(textOf(".cc-footer-label"), /可能过期/);
+
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.miSession = null;
+    app.settings.haBaseURL = "";
+    app.settings.haToken = "";
+    app.cloudValuesStale = false;
+    app.haConnectionError = null;
+    app.render();
+    assert.ok(element(".cc-status-dot").classList.contains("is-offline"));
+    assert.match(textOf(".cc-footer-label"), /未配置数据源/);
+  });
+
+  it("shows the declined plain-HTTP Home Assistant copy", () => {
+    const app = startDemoApp();
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = "http://203.0.113.5:8123";
+    app.settings.haToken = "controlled-token";
+    app.haConnectionError = "未授权的网络来源：http://203.0.113.5:8123";
+    app.render();
+    assert.ok(element(".cc-status-dot").classList.contains("is-offline"));
+    assert.match(textOf(".cc-footer-label"), /已拒绝明文/);
+  });
+
+  function cachedHaHome(baseURL: string, token: string) {
+    const fixture = JSON.parse(readFileSync("../Tests/Fixtures/ha_snapshot.json", "utf8")) as unknown;
+    return {
+      identity: homeAssistantIdentity(baseURL, token),
+      home: HomeAssistantSynthesizer.synthesize(fixture),
+    };
+  }
+
+  it("keeps a declined public Home Assistant address offline after the banner is dismissed", async () => {
+    const baseURL = "http://203.0.113.5:8123";
+    const token = "controlled-token";
+    const endpoints: Array<Record<string, unknown>> = [];
+    const invoke = async (name: string, args: Record<string, unknown> = {}) => {
+      if (name === "secure_store_get") return args.name === "ha_token" ? token : null;
+      if (name === "set_service_endpoints") {
+        endpoints.push(args);
+        throw new Error("未授权的网络来源：http://203.0.113.5:8123");
+      }
+      if (name === "ha_snapshot") throw new Error("Home Assistant endpoint has not been approved");
+      return null;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "homeAssistant",
+      haBaseURL: baseURL,
+      hasCompletedOnboarding: true,
+      cachedHAHome: cachedHaHome(baseURL, token),
+    }));
+    new MenuMijiaWindowsApp(element("#app"));
+    await waitFor(() => (document.querySelector(".cc-footer-label")?.textContent ?? "").includes("已拒绝明文"));
+    assert.ok(endpoints.some((args) => args.haUrl === baseURL));
+    const footer = textOf(".cc-footer-label");
+    assert.match(footer, /已拒绝明文/);
+    assert.doesNotMatch(footer, /可能过期/);
+    assert.ok(element(".cc-status-dot").classList.contains("is-offline"));
+    assert.equal(document.querySelector("#btn-footer-health"), null);
+    await click("#btn-dismiss-banner");
+    assert.match(textOf(".cc-footer-label"), /已拒绝明文/);
+    assert.doesNotMatch(textOf(".cc-footer-label"), /可能过期/);
+    assert.ok(element(".cc-status-dot").classList.contains("is-offline"));
+  });
+
+  it("blocks the footer when Home Assistant rejects the token and a device is already cached", async () => {
+    const baseURL = "http://localhost:8123";
+    const token = "controlled-token";
+    const invoke = async (name: string, args: Record<string, unknown> = {}) => {
+      if (name === "secure_store_get") return args.name === "ha_token" ? token : null;
+      if (name === "set_service_endpoints") return null;
+      if (name === "ha_snapshot") throw new Error("Home Assistant authentication rejected");
+      return null;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "homeAssistant",
+      haBaseURL: baseURL,
+      hasCompletedOnboarding: true,
+      cachedHAHome: cachedHaHome(baseURL, token),
+    }));
+    new MenuMijiaWindowsApp(element("#app"));
+    await waitFor(() => (document.querySelector(".cc-footer-label")?.textContent ?? "").includes("认证被拒绝"));
+    assert.ok(element(".cc-status-dot").classList.contains("is-offline"));
+    assert.doesNotMatch(textOf(".cc-footer-label"), /可能过期/);
+    assert.doesNotMatch(textOf(".cc-footer-label"), /已拒绝明文/);
+    assert.equal(document.querySelector("#btn-footer-health"), null);
+  });
+
+  it("marks a failed refresh of an accepted Home Assistant connection as stale", async () => {
+    const baseURL = "http://localhost:8123";
+    const token = "controlled-token";
+    const invoke = async (name: string, args: Record<string, unknown> = {}) => {
+      if (name === "secure_store_get") return args.name === "ha_token" ? token : null;
+      if (name === "ha_snapshot") throw new Error("Home Assistant disconnected");
+      return null;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "homeAssistant",
+      haBaseURL: baseURL,
+      hasCompletedOnboarding: true,
+      cachedHAHome: cachedHaHome(baseURL, token),
+    }));
+    new MenuMijiaWindowsApp(element("#app"));
+    await waitFor(() => element(".cc-status-dot").classList.contains("is-degraded"));
+    assert.match(textOf(".cc-footer-label"), /可能过期/);
+    assert.match(textOf("[data-ha-error]"), /Home Assistant disconnected/);
+  });
+
+  it("cancels All Off when the hold loses focus or the panel renders", async () => {
+    const app = startDemoApp();
+    let calls = 0;
+    const run = app.executeIntents.bind(app);
+    app.executeIntents = async (...args) => {
+      calls += 1;
+      return run(...args);
+    };
+    const button = element("#btn-all-off");
+    button.focus();
+    pressHoldKey(button, " ", "keydown");
+    element("#command-input").focus();
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await setImmediate();
+    assert.equal(calls, 0);
+    assert.match(tile("light.living_ceiling"), /已开启/);
+
+    const again = element("#btn-all-off");
+    again.focus();
+    pressHoldKey(again, " ", "keydown");
+    app.render();
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await setImmediate();
+    assert.equal(calls, 0);
+    assert.match(tile("light.living_ceiling"), /已开启/);
+  });
+
+  it("cancels All Off when the window loses focus", async () => {
+    const app = startDemoApp();
+    let calls = 0;
+    const run = app.executeIntents.bind(app);
+    app.executeIntents = async (...args) => {
+      calls += 1;
+      return run(...args);
+    };
+    const button = element("#btn-all-off");
+    button.focus();
+    pressHoldKey(button, " ", "keydown");
+    window.dispatchEvent(new Event("blur"));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await setImmediate();
+    assert.equal(calls, 0);
+    assert.match(tile("light.living_ceiling"), /已开启/);
+  });
+
+  it("does not run All Off when the window is unfocused as the hold completes", async () => {
+    const app = startDemoApp();
+    let calls = 0;
+    const run = app.executeIntents.bind(app);
+    app.executeIntents = async (...args) => {
+      calls += 1;
+      return run(...args);
+    };
+    const hadFocus = document.hasFocus.bind(document);
+    document.hasFocus = () => false;
+    try {
+      const button = element("#btn-all-off");
+      button.dispatchEvent(new Event("pointerdown"));
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      await setImmediate();
+    } finally {
+      document.hasFocus = hadFocus;
+    }
+    assert.equal(calls, 0);
+    assert.match(tile("light.living_ceiling"), /已开启/);
+  });
+
+  it("keeps a pending confirmation visible while the assistant extras are collapsed", async () => {
+    const app = startDemoApp();
+    app.devices = app.devices.map((device) =>
+      device.id === "plug.entry_socket" && device.kind.kind === "plug"
+        ? { ...device, kind: { ...device.kind, isOn: false } }
+        : device,
+    );
+    app.isShowingAssistantBar = false;
+    app.render();
+    await command("打开插座");
+    assert.match(textOf(".cc-feedback-text"), /再点一次确认执行/);
+    const chip = document.querySelector<HTMLElement>('[data-suggestion-id="confirm:local"]');
+    assert.ok(chip, "the confirmation cannot hide with the collapsed extras");
+    await click('[data-suggestion-id="confirm:local"]');
+    assert.match(tile("plug.entry_socket"), /供电中/);
+  });
+
+  it("keeps a pending disambiguation visible while the assistant extras are collapsed", async () => {
+    const app = startDemoApp();
+    const template = app.devices.find((device) => device.id === "plug.entry_socket");
+    assert.ok(template && template.kind.kind === "plug");
+    const second: SmartDevice = {
+      ...structuredClone(template),
+      id: "plug.study_socket",
+      name: "书房插座",
+      roomId: "room_study",
+      roomName: "书房",
+      kind: { ...template.kind, isOn: false },
+    };
+    app.devices = app.devices.map((device) =>
+      device.id === "plug.entry_socket" && device.kind.kind === "plug"
+        ? { ...device, kind: { ...device.kind, isOn: false } }
+        : device,
+    );
+    app.devices = [...app.devices, second];
+    app.isShowingAssistantBar = false;
+    app.render();
+    await command("打开插座");
+    assert.ok(
+      document.querySelector('[data-suggestion-id="bare:on:plug.entry_socket"]'),
+      "disambiguation options cannot hide with the collapsed extras",
+    );
+    assert.ok(document.querySelector('[data-suggestion-id="bare:on:plug.study_socket"]'));
+  });
+
+  it("cancels All Off when a pending schedule redraws the button", async () => {
+    const ticks: Array<() => void> = [];
+    const realSetInterval = window.setInterval.bind(window);
+    Object.defineProperty(window, "setInterval", {
+      configurable: true,
+      value: (handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+        if (timeout === 1000 && typeof handler === "function") ticks.push(() => { handler(); });
+        return realSetInterval(handler, timeout, ...args);
+      },
+    });
+    const app = startDemoApp();
+    await command("10分钟后关闭书房台灯");
+    assert.ok(app.scheduledCommands.length > 0);
+    assert.ok(ticks.length > 0);
+    let calls = 0;
+    const run = app.executeIntents.bind(app);
+    app.executeIntents = async (...args) => {
+      calls += 1;
+      return run(...args);
+    };
+    const before = element("#btn-all-off");
+    before.focus();
+    pressHoldKey(before, " ", "keydown");
+    for (const tick of ticks) tick();
+    const replaced = element("#btn-all-off");
+    assert.notEqual(replaced, before);
+    pressHoldKey(replaced, " ", "keyup");
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await setImmediate();
+    assert.equal(calls, 0);
+    assert.match(tile("light.living_ceiling"), /已开启/);
+    assert.match(tile("light.study_desk"), /已开启/);
+  });
+
+  it("keeps demo pills in the demo and Home Assistant scenes on a Home Assistant home", async () => {
+    startDemoApp();
+    assert.match(document.body.textContent ?? "", /全开主灯/);
+    assert.match(document.body.textContent ?? "", /25°制冷/);
+
+    const baseURL = "http://localhost:8123";
+    const token = "controlled-token";
+    const fixture = JSON.parse(readFileSync("../Tests/Fixtures/ha_snapshot.json", "utf8")) as unknown;
+    const invoke = async (name: string, args: Record<string, unknown> = {}) => {
+      if (name === "secure_store_get") return args.name === "ha_token" ? token : null;
+      if (name === "ha_snapshot") return structuredClone(fixture);
+      return null;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "homeAssistant",
+      haBaseURL: baseURL,
+      hasCompletedOnboarding: true,
+    }));
+    new MenuMijiaWindowsApp(element("#app"));
+    await waitFor(() => !!document.querySelector('[data-ha-scene="scene.evening"]'));
+    assert.match(textOf('[data-ha-scene="scene.evening"]'), /晚安/);
+    assert.doesNotMatch(document.body.textContent ?? "", /全开主灯/);
+    assert.doesNotMatch(document.body.textContent ?? "", /25°制冷/);
+  });
+
+  it("does not turn a Xiaomi refresh into Home Assistant scene buttons", async () => {
+    cloudFixture([]);
+    new MenuMijiaWindowsApp(element("#app"));
+    await waitFor(() => !!document.querySelector("[data-body-device]"));
+    assert.equal(document.querySelector("[data-ha-scene]"), null);
+    assert.equal(document.querySelector("[data-scene-cmd]"), null);
+    assert.doesNotMatch(document.body.textContent ?? "", /全开主灯/);
+    assert.doesNotMatch(document.body.textContent ?? "", /25°制冷/);
   });
 });

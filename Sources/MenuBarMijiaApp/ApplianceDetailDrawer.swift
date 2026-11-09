@@ -1,3 +1,4 @@
+import AppKit
 import MijiaCore
 import SwiftUI
 
@@ -13,20 +14,7 @@ struct ApplianceDetailDrawer: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let fault = spec.faultText, !fault.isEmpty {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                    Text(fault)
-                        .lineLimit(2)
-                }
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .foregroundStyle(.red)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: DesignTokens.Radius.inset, style: .continuous)
-                        .fill(Color.red.opacity(0.10))
-                )
+                faultBanner(MiotValueText.faultNotice(fault))
             }
 
             if let target = spec.targetTemperature, spec.temperatureWritable {
@@ -34,24 +22,29 @@ struct ApplianceDetailDrawer: View {
             }
 
             if !spec.availableModes.isEmpty, spec.modeWritable {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    AdaptiveGlassContainer(spacing: 6) {
-                        HStack(spacing: 6) {
-                            ForEach(spec.availableModes, id: \.self) { mode in
-                                Button(SmartDevice.localizeApplianceMode(mode)) {
-                                    store.setApplianceMode(device.id, mode: mode)
+                // More than four programmes clip in one row. A menu keeps every name on screen.
+                if spec.availableModes.count > 4 {
+                    modeMenu
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        AdaptiveGlassContainer(spacing: 6) {
+                            HStack(spacing: 6) {
+                                ForEach(spec.availableModes, id: \.self) { mode in
+                                    Button(SmartDevice.localizeApplianceMode(mode)) {
+                                        store.setApplianceMode(device.id, mode: mode)
+                                    }
+                                    .buttonStyle(PillActionButtonStyle(
+                                        isSelected: spec.currentMode == mode,
+                                        tintColor: accent
+                                    ))
+                                    .disabled(!device.isOnline || !spec.modeWritable)
                                 }
-                                .buttonStyle(PillActionButtonStyle(
-                                    isSelected: spec.currentMode == mode,
-                                    tintColor: accent
-                                ))
-                                .disabled(!device.isOnline || !spec.modeWritable)
                             }
                         }
+                        .padding(6)
                     }
-                    .padding(6)
+                    .padding(-6)
                 }
-                .padding(-6)
             }
 
             if let fan = spec.fanLevel, fan.writable, !fan.options.isEmpty {
@@ -109,6 +102,56 @@ struct ApplianceDetailDrawer: View {
                     Spacer(minLength: 0)
                 }
             }
+        }
+    }
+
+    private func faultBanner(_ notice: MiotValueText.FaultNotice) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+            Text(notice.message)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button(L10n.tr("复制代码", "Copy code")) {
+                copyFaultCode(notice.copyText)
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: DesignTokens.TypeSize.control, weight: .semibold))
+            .foregroundStyle(Color.primary)
+        }
+        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+        .foregroundStyle(.red)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.inset, style: .continuous)
+                .fill(Color.red.opacity(0.10))
+        )
+    }
+
+    private func copyFaultCode(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
+    private var modeMenu: some View {
+        HStack(spacing: 8) {
+            Text(L10n.tr("模式", "Mode"))
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+            Spacer(minLength: 8)
+            Picker(L10n.tr("模式", "Mode"), selection: Binding(
+                get: { spec.currentMode ?? spec.availableModes.first ?? "" },
+                set: { store.setApplianceMode(device.id, mode: $0) }
+            )) {
+                ForEach(spec.availableModes, id: \.self) { mode in
+                    Text(SmartDevice.localizeApplianceMode(mode)).tag(mode)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .fixedSize()
+            .disabled(!device.isOnline)
         }
     }
 

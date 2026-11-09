@@ -204,7 +204,11 @@ extension HomeStore {
             showToast(success, isError: false)
             return (true, success, false)
         } catch {
-            let msg = L10n.format("%@ 响应失败", "%@ failed to respond", device.name)
+            // `showToast` keeps the persistent expiry toast while the session is blocked, so this
+            // only decides the message the companion receives.
+            let msg = error is MiSessionWriteBlocked
+                ? Self.miSessionBlockedMessage
+                : L10n.format("%@ 响应失败", "%@ failed to respond", device.name)
             showToast(msg, isError: true)
             return (true, msg, true)
         }
@@ -423,10 +427,17 @@ extension HomeStore {
         guard let task = togglePrimary(device) else {
             let refusal = (toastNotice?.id != previousToastId ? toastNotice?.message : nil)
                 ?? L10n.format("%@ 响应失败", "%@ failed to respond", device.name)
-            return (true, refusal, true)
+            return (true, primaryToggleFailureMessage(refusal, for: device), true)
         }
         guard await task.value else {
-            return (true, L10n.format("%@ 响应失败", "%@ failed to respond", device.name), true)
+            return (
+                true,
+                primaryToggleFailureMessage(
+                    L10n.format("%@ 响应失败", "%@ failed to respond", device.name),
+                    for: device
+                ),
+                true
+            )
         }
         if device.isMomentaryButton {
             return (true, L10n.format("已触发 %@", "Triggered %@", device.name), false)

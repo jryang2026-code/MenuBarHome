@@ -879,13 +879,108 @@ struct GlassSwitch: View {
     }
 }
 
-/// `.toggleStyle(.glass)` — the switch above, with the Toggle's own label and VoiceOver intact.
 struct GlassSwitchToggleStyle: ToggleStyle {
+    static func showsLabel(glassLabelHidden: Bool, labelsHidden: Bool) -> Bool {
+        !glassLabelHidden && !labelsHidden
+    }
+
     func makeBody(configuration: Configuration) -> some View {
-        GlassSwitch(isOn: configuration.$isOn)
-            .accessibilityRepresentation {
-                Toggle(isOn: configuration.$isOn) { configuration.label }
+        GlassSwitchLabelHost(configuration: configuration)
+    }
+}
+
+private struct GlassLabelHiddenKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var glassLabelHidden: Bool {
+        get { self[GlassLabelHiddenKey.self] }
+        set { self[GlassLabelHiddenKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Hides the label `ToggleStyle.glass` draws for a row that already shows its own title.
+    /// macOS 14 exposes no `labelsVisibility`, so the style reads this value on every OS.
+    func glassLabelHidden() -> some View {
+        environment(\.glassLabelHidden, true)
+    }
+}
+
+private struct GlassSwitchLabelHost: View {
+    @Environment(\.glassLabelHidden) private var glassLabelHidden
+    var configuration: ToggleStyleConfiguration
+
+    var body: some View {
+        if #available(macOS 15.0, *) {
+            GlassSwitchSystemVisibilityBody(
+                configuration: configuration,
+                glassLabelHidden: glassLabelHidden
+            )
+        } else {
+            GlassSwitchLabeledBody(
+                configuration: configuration,
+                showsLabel: GlassSwitchToggleStyle.showsLabel(
+                    glassLabelHidden: glassLabelHidden,
+                    labelsHidden: false
+                )
+            )
+        }
+    }
+}
+
+@available(macOS 15.0, *)
+private struct GlassSwitchSystemVisibilityBody: View {
+    @Environment(\.labelsVisibility) private var labelsVisibility
+    var configuration: ToggleStyleConfiguration
+    var glassLabelHidden: Bool
+
+    var body: some View {
+        GlassSwitchLabeledBody(
+            configuration: configuration,
+            showsLabel: GlassSwitchToggleStyle.showsLabel(
+                glassLabelHidden: glassLabelHidden,
+                labelsHidden: labelsVisibility == .hidden
+            )
+        )
+    }
+}
+
+private struct GlassSwitchLabeledBody: View {
+    @Environment(\.isEnabled) private var isEnabled
+    var configuration: ToggleStyleConfiguration
+    var showsLabel: Bool
+
+    var body: some View {
+        Group {
+            if showsLabel {
+                HStack(alignment: .center, spacing: 0) {
+                    configuration.label
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .layoutPriority(1)
+                        .opacity(isEnabled ? 1 : 0.45)
+                        .contentShape(Rectangle())
+                        .onTapGesture { toggle() }
+                    Spacer(minLength: 8)
+                        .contentShape(Rectangle())
+                        .onTapGesture { toggle() }
+                    GlassSwitch(isOn: configuration.$isOn)
+                        .layoutPriority(2)
+                }
+            } else {
+                GlassSwitch(isOn: configuration.$isOn)
             }
+        }
+        .accessibilityRepresentation {
+            Toggle(isOn: configuration.$isOn) { configuration.label }
+        }
+    }
+
+    private func toggle() {
+        guard isEnabled else { return }
+        configuration.isOn.toggle()
     }
 }
 

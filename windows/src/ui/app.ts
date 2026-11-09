@@ -2,6 +2,7 @@ import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { GrokBallView } from "./grokBall.js";
 import {
   assistantEndpointIdentity,
+  endpointAllowsSendingSecrets,
   partitionHabitReceipt,
   type HabitLastAction,
   type HabitRecordingReceipt,
@@ -95,6 +96,47 @@ import { syncPanelSelection } from "./panelKeyboard.js";
 
 import { ScheduledCommandStore } from "../core/scheduledCommands.js";
 import { scheduledCommandIdentity } from "./scheduledCommands.js";
+
+export type PanelHealth =
+  | { readonly kind: "demo"; readonly dot: "is-demo"; readonly label: string }
+  | { readonly kind: "syncing"; readonly dot: "is-syncing"; readonly label: string }
+  | { readonly kind: "online"; readonly dot: "is-online"; readonly label: string }
+  | { readonly kind: "degraded"; readonly dot: "is-degraded"; readonly label: string }
+  | { readonly kind: "offline"; readonly dot: "is-offline"; readonly label: string; readonly recovery: "qr" | "none" };
+
+/** 10s for one or two devices, 15s from three. Same rule as macOS `HomeStore.undoBannerSeconds`. */
+export function undoBannerMs(deviceCount: number): number {
+  return (deviceCount >= 3 ? 15 : 10) * 1000;
+}
+
+export function undoDeviceCount(steps: readonly { readonly deviceId: string }[]): number {
+  return new Set(steps.map((step) => step.deviceId)).size;
+}
+
+export type HaConnectionBlock = "plaintext" | "auth" | "stale" | "none";
+
+function endpointOrigin(raw: string): string | null {
+  try {
+    const url = new URL(raw.trim());
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+/** What the footer should say about a Home Assistant error string. */
+export function haConnectionBlock(url: string, message: string): HaConnectionBlock {
+  const text = message.trim();
+  if (text === "") return "none";
+  if (text.includes("Home Assistant authentication rejected")) return "auth";
+  const origin = endpointOrigin(url);
+  const publicHttp = origin !== null && !endpointAllowsSendingSecrets(url);
+  const declinedThisHost = text.includes("未授权的网络来源") && origin !== null && text.includes(origin);
+  const unapproved = text.includes("Home Assistant endpoint has not been approved");
+  if (publicHttp && (declinedThisHost || unapproved)) return "plaintext";
+  return "stale";
+}
 
 export class MenuMijiaWindowsApp {
   public readonly loadedSettings: LoadedSettings = loadSettings();
@@ -218,6 +260,14 @@ export class MenuMijiaWindowsApp {
     this.scheduledCommandStore.queue(scheduledCommandIdentity(this.settings)).missedScheduledCommands = items;
   }
   public lastUndoAction: UndoAction | null = null;
+  /** Set when a Xiaomi refresh fails because the login itself is dead. */
+  public miSessionExpired = false;
+  private trackedUndoAction: UndoAction | null = null;
+  /** True after a hold already ran All Off, so a later pointerup on the rebuilt button does not replace the result with the short-press hint. */
+  private allOffHoldConsumed = false;
+  private allOffHoldTimer: number | null = null;
+  private undoBannerTimer: number | null = null;
+  public undoBannerUntilMs = 0;
   public qrTicket: QRLoginTicket | null = null;
   public qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");
   public isPollingQR = false;
@@ -276,6 +326,8 @@ export class MenuMijiaWindowsApp {
     }
 
     this.bindGlobalKeys();
+    // Alt+Tab hides the popover without a button blur; a hold started before it must not finish.
+    window.addEventListener("blur", () => this.cancelAllOffHold());
     window.addEventListener("pointermove", (event) => {
       const rect = this.grokBall.element.getBoundingClientRect();
       this.grokBallPointerUntil = Date.now() + 1500;
@@ -368,6 +420,7 @@ export class MenuMijiaWindowsApp {
       this.activeSheet !== "none" ||
       this.pointerIsDown ||
       this.isListeningVoice ||
+      this.allOffHoldTimer !== null ||
       this.draggingId !== null ||
       this.isEditingLayout ||
       this.isHomeMenuOpen ||
@@ -526,32 +579,68 @@ export class MenuMijiaWindowsApp {
     </button>`;
   }
 
+  private clearAllOffHold(): void {
+    if (this.allOffHoldTimer !== null) {
+      window.clearTimeout(this.allOffHoldTimer);
+      this.allOffHoldTimer = null;
+    }
+  }
+
+  /** Losing window focus disarms the hold without the short-press hint. */
+  private cancelAllOffHold(): void {
+    this.clearAllOffHold();
+    this.root.querySelector<HTMLElement>("#btn-all-off")?.classList.remove("is-holding");
+  }
+
   public bindAllOffControl(): void {
+    this.clearAllOffHold();
     const allOff = this.root.querySelector<HTMLElement>("#btn-all-off");
     if (!allOff) return;
-    let holdTimer: number | undefined;
-    let fired = false;
-    allOff.addEventListener("pointerdown", () => {
-      fired = false;
+    const beginHold = () => {
+      if (this.allOffHoldTimer !== null) return;
+      this.allOffHoldConsumed = false;
       allOff.classList.add("is-holding");
-      holdTimer = window.setTimeout(() => {
-        fired = true;
+      this.allOffHoldTimer = window.setTimeout(() => {
+        this.allOffHoldTimer = null;
+        // The popover hides on window blur but the button stays in the DOM: never fire a hold the
+        // user cannot see finish.
+        if (!allOff.isConnected || !document.hasFocus()) return;
+        this.allOffHoldConsumed = true;
         allOff.classList.remove("is-holding");
         void this.turnAllOff();
       }, 600);
-    });
-    const cancel = () => {
-      window.clearTimeout(holdTimer);
-      allOff.classList.remove("is-holding");
     };
-    allOff.addEventListener("pointerup", () => {
-      cancel();
-      if (!fired) {
-        this.replyBanner = { text: t("按住 0.6 秒关闭这 {count} 台（插座、扫地机默认不参与）", { count: this.allOffTargets.length }), source: t("提示") };
-        this.render();
-      }
+    // A keyup after the button was rebuilt has no pending timer, so it must not show the short-press hint.
+    const endHold = (hint: "never" | "if-pending" | "always") => {
+      const pending = this.allOffHoldTimer !== null;
+      this.clearAllOffHold();
+      allOff.classList.remove("is-holding");
+      const showHint = !this.allOffHoldConsumed && (hint === "always" || (hint === "if-pending" && pending));
+      if (!showHint) return;
+      this.replyBanner = { text: t("按住 0.6 秒关闭这 {count} 台（插座、扫地机默认不参与）", { count: this.allOffTargets.length }), source: t("提示") };
+      this.render();
+    };
+    const isHoldKey = (event: KeyboardEvent) => event.key === " " || event.key === "Spacebar" || event.key === "Enter";
+    allOff.addEventListener("pointerdown", () => beginHold());
+    allOff.addEventListener("pointerup", () => endHold("always"));
+    allOff.addEventListener("pointerleave", () => endHold("never"));
+    allOff.addEventListener("blur", () => {
+      this.clearAllOffHold();
+      allOff.classList.remove("is-holding");
     });
-    allOff.addEventListener("pointerleave", cancel);
+    allOff.addEventListener("keydown", (event) => {
+      if (!isHoldKey(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.repeat) return;
+      beginHold();
+    });
+    allOff.addEventListener("keyup", (event) => {
+      if (!isHoldKey(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      endHold("if-pending");
+    });
   }
 
   private async turnAllOff(): Promise<void> {
@@ -731,7 +820,8 @@ export class MenuMijiaWindowsApp {
       return this.cloudValuesStale && this.devices.length > 0;
     }
     if (this.settings.connectionMode === "homeAssistant") {
-      return this.haConnectionError !== null && this.devices.length > 0;
+      return haConnectionBlock(this.settings.haBaseURL, this.haConnectionError ?? "") === "stale"
+        && this.devices.length > 0;
     }
     return false;
   }
@@ -803,6 +893,7 @@ export class MenuMijiaWindowsApp {
       this.invalidateSourceControl();
       // The account-level passToken is never persisted (#27).
       this.settings.miSession = sessionWithoutPassToken(session);
+      this.miSessionExpired = false;
       this.settings.miCloudRegion = normalizeMiCloudRegion(session.region);
       this.settings.connectionMode = "xiaomiCloud";
       this.settings.hasCompletedOnboarding = true;
@@ -841,6 +932,108 @@ export class MenuMijiaWindowsApp {
       return s > 0 ? `${m}分${s}秒` : `${m}分钟`;
     }
     return `${secs}秒`;
+  }
+
+  /** How long the 撤销 control stays up. Matches macOS `undoBannerSeconds`: 10s, or 15s from three devices. */
+  public syncUndoBannerClock(now = Date.now()): void {
+    const action = this.lastUndoAction;
+    if (!action || action.expiresAtMs <= now) {
+      this.trackedUndoAction = null;
+      this.undoBannerUntilMs = 0;
+      if (this.undoBannerTimer !== null) {
+        window.clearTimeout(this.undoBannerTimer);
+        this.undoBannerTimer = null;
+      }
+      return;
+    }
+    if (this.trackedUndoAction === action) return;
+    this.trackedUndoAction = action;
+    const ms = undoBannerMs(undoDeviceCount(action.steps));
+    this.undoBannerUntilMs = now + ms;
+    if (this.undoBannerTimer !== null) window.clearTimeout(this.undoBannerTimer);
+    this.undoBannerTimer = window.setTimeout(() => {
+      this.undoBannerTimer = null;
+      // The button leaving must not rebuild the panel under a slider drag or an All Off hold.
+      if (this.trackedUndoAction === action) this.queueBackgroundRender();
+    }, ms);
+  }
+
+  public undoButtonVisible(now = Date.now()): boolean {
+    this.syncUndoBannerClock(now);
+    return this.lastUndoAction !== null && this.lastUndoAction.expiresAtMs > now && now < this.undoBannerUntilMs;
+  }
+
+  public panelHealth(): PanelHealth {
+    const mode = this.settings.connectionMode;
+    if (mode === "demo") {
+      return { kind: "demo", dot: "is-demo", label: t("演示模式 · 未连接米家云") };
+    }
+    if (mode === "xiaomiCloud" && this.settings.miSession && this.miSessionExpired) {
+      return { kind: "offline", dot: "is-offline", label: t("米家登录已过期 · 点此扫码"), recovery: "qr" };
+    }
+    if (mode === "homeAssistant") {
+      const block = haConnectionBlock(this.settings.haBaseURL, this.haConnectionError ?? "");
+      if (block === "plaintext") {
+        return { kind: "offline", dot: "is-offline", label: t("Home Assistant 未连接（已拒绝明文）"), recovery: "none" };
+      }
+      if (block === "auth") {
+        return { kind: "offline", dot: "is-offline", label: t("Home Assistant 认证被拒绝"), recovery: "none" };
+      }
+    }
+    if (this.sourceIsMissing()) {
+      const recovery = mode === "xiaomiCloud" ? "qr" : "none";
+      return { kind: "offline", dot: "is-offline", label: t("未配置数据源"), recovery };
+    }
+    const label = this.connectionFooterLabel();
+    if (this.isSyncingCloud) {
+      return { kind: "syncing", dot: "is-syncing", label };
+    }
+    const cloudFailed = mode === "xiaomiCloud" && this.cloudValuesStale;
+    const haFailed = mode === "homeAssistant" && this.haConnectionError !== null;
+    if (cloudFailed || haFailed || this.valuesAreStale) {
+      const stale = this.valuesAreStale ? `${label} · ${t("可能过期")}` : label;
+      return { kind: "degraded", dot: "is-degraded", label: stale };
+    }
+    return { kind: "online", dot: "is-online", label };
+  }
+
+  private connectionFooterLabel(): string {
+    if (this.settings.connectionMode === "xiaomiCloud" && this.settings.miSession) {
+      return t("米家账号 {user} · {count} 台设备", {
+        user: maskedMiUserId(this.settings.miSession.userId),
+        count: this.devices.length,
+      });
+    }
+    if (this.settings.connectionMode === "homeAssistant") {
+      return `Home Assistant · ${this.devices.length}`;
+    }
+    return t("演示模式 · 未连接米家云");
+  }
+
+  private sourceIsMissing(): boolean {
+    const mode = this.settings.connectionMode;
+    if (mode === "xiaomiCloud") return this.settings.miSession === null;
+    if (mode === "homeAssistant") {
+      return this.settings.haBaseURL.trim() === "" || this.settings.haToken.trim() === "";
+    }
+    return false;
+  }
+
+  /** The native endpoint dialog rejected a public Home Assistant address. Keep it on the connection, not only the banner. */
+  public noteServiceEndpointFailure(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    this.replyBanner = {
+      text: message,
+      source: t("服务地址未生效"),
+      isError: true,
+    };
+    if (
+      this.settings.connectionMode === "homeAssistant" &&
+      haConnectionBlock(this.settings.haBaseURL, message) === "plaintext"
+    ) {
+      this.haConnectionError = message;
+    }
+    this.render();
   }
 
   public get statusSummaryText(): string {
@@ -892,7 +1085,7 @@ export class MenuMijiaWindowsApp {
    */
   public render(): void {
     if (this.panelSearch.isComposing) {
-      if (this.activeSheet !== "none" || !this.isShowingAssistantBar ||
+      if (this.activeSheet !== "none" ||
           document.activeElement?.id !== "command-input" || this.panelSearch.compositionSourceRevision !== this.sourceRevision) {
         this.panelSearch.isComposing = false;
       } else {

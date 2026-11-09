@@ -1,7 +1,7 @@
 import { markTimerSnapshotReady } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
-import { MiCloudClient, MiCloudError, MiotSynthesizer, maskedMiUserId, type MiDeviceRecord, type MiRoom, type MiSession, type MiotPropKey } from "../core/miCloudClient.js";
+import { MiCloudClient, MiCloudError, MiotSynthesizer, type MiDeviceRecord, type MiRoom, type MiSession, type MiotPropKey } from "../core/miCloudClient.js";
 import { HomeAssistantClient, homeAssistantIdentity } from "../core/homeAssistant.js";
 import { applyOrder, homeOptions, pageSections, scopedKey, spans, withAliases } from "./panelPrefs.js";
 import { foldGroupedLights, kindChips, memberGroupOwners, showsKindRow } from "./listCut.js";
@@ -46,6 +46,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
     const previousPresentation = cloudPresentationFingerprint(host);
     const previousStructure = cloudPanelStructureFingerprint(host);
     const staleBefore = host.cloudValuesStale;
+    const expiredBefore = host.miSessionExpired;
     const stateRevisionAtStart = host.localControlRevision;
     const syncGen = ++host.syncGeneration;
     let presentationChanged = false;
@@ -125,6 +126,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       const membersByGroup = await membershipByGroup;
       // An old refresh must not clear or set freshness for the connection that replaced it.
       if (cloudSnapshotIsStale(host, session, stateRevisionAtStart)) return;
+      host.miSessionExpired = false;
       host.markCloudValuesFresh();
       host.groupOwnerByMemberDid = memberGroupOwners(membersByGroup);
       // Cloud list order is not a layout preference. Keep known devices in their
@@ -167,6 +169,9 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
     } catch (err) {
       if (!cloudSnapshotIsStale(host, session, stateRevisionAtStart)) {
         host.markCloudValuesStale();
+        if (err instanceof MiCloudError && err.kind === "sessionExpired") {
+          host.miSessionExpired = true;
+        }
       }
       if (!silent) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -180,7 +185,8 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       if (host.syncGeneration === syncGen) {
         host.isSyncingCloud = false;
         const staleChanged = staleBefore !== host.cloudValuesStale;
-        if (!silent || staleChanged) {
+        const expiredChanged = expiredBefore !== host.miSessionExpired;
+        if (!silent || staleChanged || expiredChanged) {
           host.render();
         } else if (presentationChanged) {
           if (
@@ -393,16 +399,13 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
     host.root
       .querySelector<HTMLElement>(".cc-home-badge")
       ?.classList.toggle("is-active", host.activeDeviceCount > 0);
+    const health = host.panelHealth();
+    const dot = host.root.querySelector<HTMLElement>(".cc-status-dot");
+    if (dot) dot.className = `cc-status-dot ${health.dot}`;
     const footerLabel = host.root.querySelector<HTMLElement>(".cc-footer-label");
-    if (footerLabel) {
-      footerLabel.textContent =
-        host.settings.connectionMode === "xiaomiCloud" && host.settings.miSession
-          ? t("米家账号 {user} · {count} 台设备", {
-              user: maskedMiUserId(host.settings.miSession.userId),
-              count: host.devices.length,
-            })
-          : host.settings.connectionMode === "homeAssistant" ? `Home Assistant · ${host.devices.length}` : t("演示模式 · 未连接米家云");
-    }
+    const wantsButton = health.kind === "offline" && health.recovery === "qr";
+    if (footerLabel && (footerLabel.tagName === "BUTTON") !== wantsButton) return false;
+    if (footerLabel) footerLabel.textContent = health.label;
     host.syncGrokBallEmotion();
     return true;
   }

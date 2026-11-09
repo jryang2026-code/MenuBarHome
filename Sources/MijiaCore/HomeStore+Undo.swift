@@ -1,5 +1,55 @@
 import Foundation
 
+/// The verdict of a bulk action that an external entry point can report on its own, instead of
+/// reading whatever toast happens to be on screen (a stale expiry toast from an earlier tap must
+/// not turn a completed LAN-only action into an error, and a refused batch must not report the
+/// success title it captured before sending).
+public enum BulkWriteOutcome: Equatable, Sendable {
+    /// Every command was accepted.
+    case completed
+    /// At least one device refused a command for a reason other than the expired Mi session.
+    /// The rows and the undo banner already show which.
+    case partial
+    /// The expired Mi session refused at least one device. Nothing that needed Mi was sent; the
+    /// persistent expiry toast explains it.
+    case refusedByMiSession
+}
+
+extension BulkWriteOutcome {
+    /// The message and `isError` an external caller (`menumijia://`, Raycast) reports.
+    public func externalResult(success: String, incomplete: String) -> (message: String, isError: Bool) {
+        switch self {
+        case .completed: return (success, false)
+        case .partial: return (incomplete, true)
+        case .refusedByMiSession: return (HomeStore.miSessionBlockedMessage, true)
+        }
+    }
+}
+
+/// A quick action or 全关 whose commands are still being sent, keyed by the undo banner it created.
+///
+/// `undoTurnAllOff` flips `isStopped` synchronously and then waits on `task`, so a batch command can
+/// never land after the restore that took it back. `attemptedDeviceIds` records a device before its
+/// command is sent, so the command in flight at undo time is included — it may already have reached
+/// the device. Once `isStopped` is set the set is final: the loop checks the stop before it records.
+@MainActor
+final class RunningBatch {
+    let task: Task<BulkWriteOutcome, Never>
+    /// The action's optimistic write per device. Undo compares the row revision through `ownsRow`,
+    /// so a device a newer write took keeps its own state instead of being restored to this
+    /// action's snapshot.
+    let writes: [String: OptimisticWrite]
+    var isStopped = false
+    var attemptedDeviceIds: Set<String> = []
+    /// Devices this batch skipped because a newer write owns their row.
+    var takenOverDeviceIds: Set<String> = []
+
+    init(task: Task<BulkWriteOutcome, Never>, writes: [String: OptimisticWrite]) {
+        self.task = task
+        self.writes = writes
+    }
+}
+
 // Scenes, quick actions, 全关 and the unified undo banner (#48).
 extension HomeStore {
     func invalidateUndoContext() {
@@ -27,12 +77,19 @@ extension HomeStore {
         lastProactiveRefreshSignature = nil
         for task in debounceTasks.values { task.cancel() }
         debounceTasks.removeAll()
+        // A persistent toast carries an action for the connection that raised it (the expired Mi
+        // session's Scan button). Reaching demo mode or another account leaves it a dead button,
+        // so it must end with the context that created it (§13). A suspended prompt is dropped too,
+        // so the end of whatever ordinary toast is on screen cannot bring it back.
+        isSessionToastSuspended = false
+        if toastNotice?.persistent == true { dismissToast() }
     }
 
     // MARK: - Scenes & Built-In QuickActions with 5-Second Undo
 
     @discardableResult
     public func triggerScene(_ scene: HomeScene) -> Task<Bool, Never> {
+        guard !rejectWritesBlockedByMiSession() else { return Task { false } }
         guard !rejectControlWhileLocked() else { return Task { false } }
         return Task {
             do {
@@ -53,8 +110,11 @@ extension HomeStore {
         undoBannerDuration: TimeInterval? = nil,
         recordsHabits: Bool = true,
         respectScreenLock: Bool = true
-    ) -> Task<Void, Never>? {
+    ) -> Task<BulkWriteOutcome, Never>? {
         if respectScreenLock, rejectControlWhileLocked() { return nil }
+        // Every quick action targets Mi rows only, so a blocked session means no target can be
+        // sent: refuse before building rows or a banner instead of flashing them and taking them back.
+        if rejectWritesBlockedByMiSession() { return Task { .refusedByMiSession } }
         let previousSnapshot = devices
         var commands: [(deviceId: String, command: DeviceCommand)] = []
         var restoreCommands: [(deviceId: String, command: DeviceCommand)] = []
@@ -179,25 +239,37 @@ extension HomeStore {
 
         let context = controlContextID
         let deviceNames = Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0.name) })
-        return Task {
-            guard let outcome = await runBatchCommands(commands, context: context) else { return }
+        let task = Task { () -> BulkWriteOutcome in
+            // Every exit drops the registration, so a later undo never waits on a finished batch.
+            defer { runningBatches[bannerId] = nil }
+            guard let outcome = await runBatchCommands(commands, context: context, batchId: bannerId, writes: writes) else { return .partial }
+            // Undo needs this report after this task ends: a device a newer write took before its
+            // send keeps its own state and must not receive a restore command.
+            if undoBanner?.id == bannerId { undoBanner?.attemptedDeviceIds = outcome.attemptedDeviceIds }
             let failedDeviceIds = outcome.failedDeviceIds
-            if !failedDeviceIds.isEmpty {
+            let refusedDeviceIds = failedDeviceIds.filter { outcome.acceptedByDevice[$0] == nil }
+            let droppedDeviceIds = refusedDeviceIds.union(outcome.takenOverDeviceIds)
+            if !droppedDeviceIds.isEmpty {
                 // A device with no accepted command keeps nothing on screen: its row goes back and
                 // its restore commands leave this action's banner. A device that accepted an earlier
-                // command stays as shown (undo still turns it back), and is reported separately.
-                let refusedDeviceIds = failedDeviceIds.filter { outcome.acceptedByDevice[$0] == nil }
+                // command stays as shown (undo still turns it back), and is reported separately. A
+                // device a newer write took keeps that write, so it leaves the banner too.
                 revertRefusedBatchWrites(refusedDeviceIds, writes: writes)
                 trimUndoBanner(
                     bannerId,
-                    droppedDeviceIds: refusedDeviceIds,
+                    droppedDeviceIds: droppedDeviceIds,
                     restoreCommands: restoreCommands,
-                    remainingDeviceCount: affectedDeviceIds.subtracting(refusedDeviceIds).count,
+                    remainingDeviceCount: affectedDeviceIds.subtracting(droppedDeviceIds).count,
                     title: bannerTitle
                 )
+            }
+            // A session-refused device already has the persistent expiry toast; naming it in the
+            // "did not respond" toast would blame the device and queue a second message.
+            let reportedFailureIds = failedDeviceIds.subtracting(outcome.sessionRefusedDeviceIds)
+            if !reportedFailureIds.isEmpty {
                 let names = Self.batchFailureNames(
                     commands: commands,
-                    failedDeviceIds: failedDeviceIds,
+                    failedDeviceIds: reportedFailureIds,
                     acceptedByDevice: outcome.acceptedByDevice,
                     deviceNames: deviceNames
                 )
@@ -207,12 +279,25 @@ extension HomeStore {
                     partlyAppliedNames: names.partlyApplied
                 )
             }
-            // Habits train only on devices with no failed command, and only while the banner this
-            // action created is still the live one (an undo or expiry cancels the learning) (#113).
-            let succeededIntents = habitIntents.filter { !failedDeviceIds.contains($0.targetId) }
-            guard context == controlContextID, !succeededIntents.isEmpty, recordsHabits, undoBanner?.id == bannerId else { return }
-            undoBanner?.habitReceipt = confirmManualControl(intents: succeededIntents)
+            // Habits train only on devices this action actually reached in full, without a newer
+            // write taking the row, and only while the banner this action created is still the live
+            // one (an undo or expiry cancels the learning) (#113).
+            let succeededIntents = habitIntents.filter {
+                outcome.attemptedDeviceIds.contains($0.targetId)
+                    && !failedDeviceIds.contains($0.targetId)
+                    && !outcome.takenOverDeviceIds.contains($0.targetId)
+            }
+            if context == controlContextID, !succeededIntents.isEmpty, recordsHabits, undoBanner?.id == bannerId {
+                undoBanner?.habitReceipt = confirmManualControl(intents: succeededIntents)
+            }
+            if !outcome.sessionRefusedDeviceIds.isEmpty { return .refusedByMiSession }
+            if !failedDeviceIds.isEmpty || !outcome.takenOverDeviceIds.isEmpty { return .partial }
+            return .completed
         }
+        // A main-actor task only starts once this synchronous section yields, so the entry is in
+        // place before `runBatchCommands` looks it up.
+        runningBatches[bannerId] = RunningBatch(task: task, writes: writes)
+        return task
     }
 
     // MARK: - Turn All Off with Undo
@@ -238,6 +323,25 @@ extension HomeStore {
     /// take part in 全关, and can actually be switched off from here.
     public var allOffTargets: [SmartDevice] {
         filteredDevices.filter { $0.isActiveOn && joinsAllOff($0) && Self.allOffChange(for: $0) != nil }
+    }
+
+    /// Header copy for 全关. The excluded count is the active devices in the current room or filter,
+    /// and the plug phrase appears only when one of those leftovers is a plug.
+    public func allOffHeaderCopy(scopeName: String?) -> AllOffHeaderCopy {
+        let visibleActive = filteredDevices.filter(\.isActiveDevice)
+        let targets = allOffTargets
+        let targetIDs = Set(targets.map(\.id))
+        let excluded = visibleActive.filter { !targetIDs.contains($0.id) }
+        let includesPlug = excluded.contains { device in
+            if case .plug = device.kind { return true }
+            return false
+        }
+        return AllOffHeaderCopy.make(
+            activeDeviceCount: visibleActive.count,
+            targetNames: targets.map(\.name),
+            scopeName: scopeName,
+            excludedIncludesPlug: includesPlug
+        )
     }
 
     public var allOffScopeName: String? {
@@ -309,12 +413,18 @@ extension HomeStore {
     }
 
     @discardableResult
-    public func turnAllOff() -> Task<Void, Never>? {
+    public func turnAllOff() -> Task<BulkWriteOutcome, Never>? {
         guard !rejectControlWhileLocked() else { return nil }
-        let targetIds = Set(allOffTargets.map(\.id))
+        let targets = allOffTargets
+        let targetIds = Set(targets.map(\.id))
         guard !targetIds.isEmpty else {
             showToast(L10n.tr("当前没有开启的设备", "No active devices are currently on"))
             return nil
+        }
+        // Mixed LG + Mi runs: the batch refuses only the Mi rows. Refuse early only when no target
+        // can be sent at all, so an all-Mi tap does not flash its fabricated rows.
+        if targets.allSatisfy({ !lgClientServes($0) }), rejectWritesBlockedByMiSession() {
+            return Task { .refusedByMiSession }
         }
         recordOnboardingMilestone(.turnedAllOff)
 
@@ -351,23 +461,32 @@ extension HomeStore {
 
         let context = controlContextID
         let deviceNames = Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0.name) })
-        return Task {
-            guard let outcome = await runBatchCommands(offCommands, context: context) else { return }
+        let task = Task { () -> BulkWriteOutcome in
+            // Every exit drops the registration, so a later undo never waits on a finished batch.
+            defer { runningBatches[bannerId] = nil }
+            guard let outcome = await runBatchCommands(offCommands, context: context, batchId: bannerId, writes: writes) else { return .partial }
+            // Undo needs this report after this task ends: a device a newer write took before its
+            // send keeps its own state and must not receive a restore command.
+            if undoBanner?.id == bannerId { undoBanner?.attemptedDeviceIds = outcome.attemptedDeviceIds }
             let failedDeviceIds = outcome.failedDeviceIds
-            if !failedDeviceIds.isEmpty {
-                let refusedDeviceIds = failedDeviceIds.filter { outcome.acceptedByDevice[$0] == nil }
+            let refusedDeviceIds = failedDeviceIds.filter { outcome.acceptedByDevice[$0] == nil }
+            let droppedDeviceIds = refusedDeviceIds.union(outcome.takenOverDeviceIds)
+            if !droppedDeviceIds.isEmpty {
                 revertRefusedBatchWrites(refusedDeviceIds, writes: writes)
-                let remainingDeviceCount = offCommands.count - refusedDeviceIds.count
+                let remainingDeviceCount = offCommands.count - droppedDeviceIds.count
                 trimUndoBanner(
                     bannerId,
-                    droppedDeviceIds: refusedDeviceIds,
+                    droppedDeviceIds: droppedDeviceIds,
                     restoreCommands: restoreCommands,
                     remainingDeviceCount: remainingDeviceCount,
                     title: L10n.tr("已关闭 \(remainingDeviceCount) 台设备", "Turned off \(remainingDeviceCount) device(s)")
                 )
+            }
+            let reportedFailureIds = failedDeviceIds.subtracting(outcome.sessionRefusedDeviceIds)
+            if !reportedFailureIds.isEmpty {
                 let names = Self.batchFailureNames(
                     commands: offCommands,
-                    failedDeviceIds: failedDeviceIds,
+                    failedDeviceIds: reportedFailureIds,
                     acceptedByDevice: outcome.acceptedByDevice,
                     deviceNames: deviceNames
                 )
@@ -377,11 +496,24 @@ extension HomeStore {
                     partlyAppliedNames: names.partlyApplied
                 )
             }
-            // Habits train only on confirmed success while this action's banner is live (#113).
-            let succeededIntents = habitIntents.filter { !failedDeviceIds.contains($0.targetId) }
-            guard context == controlContextID, !succeededIntents.isEmpty, undoBanner?.id == bannerId else { return }
-            undoBanner?.habitReceipt = confirmManualControl(intents: succeededIntents)
+            // Habits train only on devices this action actually reached in full, without a newer
+            // write taking the row, while this action's banner is live (#113).
+            let succeededIntents = habitIntents.filter {
+                outcome.attemptedDeviceIds.contains($0.targetId)
+                    && !failedDeviceIds.contains($0.targetId)
+                    && !outcome.takenOverDeviceIds.contains($0.targetId)
+            }
+            if context == controlContextID, !succeededIntents.isEmpty, undoBanner?.id == bannerId {
+                undoBanner?.habitReceipt = confirmManualControl(intents: succeededIntents)
+            }
+            if !outcome.sessionRefusedDeviceIds.isEmpty { return .refusedByMiSession }
+            if !failedDeviceIds.isEmpty || !outcome.takenOverDeviceIds.isEmpty { return .partial }
+            return .completed
         }
+        // A main-actor task only starts once this synchronous section yields, so the entry is in
+        // place before `runBatchCommands` looks it up.
+        runningBatches[bannerId] = RunningBatch(task: task, writes: writes)
+        return task
     }
 
     /// How long the 撤销 banner stays after 全关 and similar bulk actions (#23): 10 s for one or two
@@ -389,6 +521,12 @@ extension HomeStore {
     nonisolated static func undoBannerSeconds(forDeviceCount count: Int) -> Double {
         count >= 3 ? 15 : 10
     }
+
+    /// How long the rows a waiting undo restored stay locked. A bulk action's command can be in
+    /// flight for as long as the Home Assistant request timeout (120 s), so the normal 3 s lease
+    /// would run out mid-wait and a snapshot could overwrite the restored card. The ceiling keeps a
+    /// command that never returns from holding the row locked forever.
+    static let undoWaitLockCeiling: Duration = .seconds(120)
 
     func scheduleUndoBanner(
         title: String,
@@ -476,6 +614,13 @@ extension HomeStore {
         var acceptedByDevice: [String: Int] = [:]
         /// Devices with at least one failed command.
         var failedDeviceIds: Set<String> = []
+        /// Devices a `MiSessionWriteBlocked` refused. Their persistent toast is already up, so the
+        /// failure toast must not name them a second time.
+        var sessionRefusedDeviceIds: Set<String> = []
+        /// Devices the batch sent to, including the one in flight at undo time.
+        var attemptedDeviceIds: Set<String> = []
+        /// Devices the batch skipped because a newer write owns their row.
+        var takenOverDeviceIds: Set<String> = []
     }
 
     /// Puts the rows a bulk action showed back for the devices that refused every command, but only
@@ -494,23 +639,49 @@ extension HomeStore {
 
     /// Sends a bulk action's commands in order. Once a command on a device fails, that device's
     /// remaining commands are not sent, the same rule the undo executor follows. Returns nil when
-    /// the control context moved on.
+    /// the control context moved on or the action's undo stopped this batch: a stopped batch
+    /// reports nothing, so it cannot revert, trim or toast over the rows the undo put back.
+    ///
+    /// `batchId` names the entry the action registered for its banner; each device is recorded
+    /// before its command is sent, so the command in flight at undo time counts as attempted.
+    /// `writes` is the action's optimistic write per device; a device a newer write took since is
+    /// skipped, because a queued command must not overwrite that newer state.
     func runBatchCommands(
         _ commands: [(deviceId: String, command: DeviceCommand)],
-        context: UUID
+        context: UUID,
+        batchId: UUID,
+        writes: [String: OptimisticWrite]
     ) async -> BatchCommandOutcome? {
         var outcome = BatchCommandOutcome()
         for item in commands {
-            guard context == controlContextID else { return nil }
+            guard context == controlContextID,
+                  let batch = runningBatches[batchId], !batch.isStopped else { return nil }
             if outcome.failedDeviceIds.contains(item.deviceId) { continue }
+            // The batch's own write sets the revision once and nothing bumps it before a send, so
+            // this only fires for a newer write (the user, another action, an undo). A device's own
+            // report is adopted without bumping the revision, so it never counts as a takeover.
+            if let write = writes[item.deviceId], !ownsRow(write) {
+                batch.takenOverDeviceIds.insert(item.deviceId)
+                continue
+            }
+            batch.attemptedDeviceIds.insert(item.deviceId)
             do {
                 try await executeDeviceCommand(item.command)
                 outcome.acceptedByDevice[item.deviceId, default: 0] += 1
+            } catch is MiSessionWriteBlocked {
+                // This device is refused like any other; later devices still run, so a batch that
+                // mixes LAN targets and Mi targets keeps sending the LAN ones. The catch continues
+                // the loop instead of breaking.
+                outcome.sessionRefusedDeviceIds.insert(item.deviceId)
+                outcome.failedDeviceIds.insert(item.deviceId)
             } catch {
                 outcome.failedDeviceIds.insert(item.deviceId)
             }
         }
-        guard context == controlContextID else { return nil }
+        guard context == controlContextID,
+              let batch = runningBatches[batchId], !batch.isStopped else { return nil }
+        outcome.attemptedDeviceIds = batch.attemptedDeviceIds
+        outcome.takenOverDeviceIds = batch.takenOverDeviceIds
         return outcome
     }
 
@@ -539,26 +710,97 @@ extension HomeStore {
 
     @discardableResult
     public func undoTurnAllOff() -> Task<Void, Never>? {
+        // Nothing to undo stays silent. A blocked Mi session is checked before any UI state or a
+        // running batch is touched: undo cannot restore anything over the expired source, so the
+        // banner stays and the batch keeps running. The batch stops itself at its next command,
+        // puts its rows back and drops this banner through the blocked path, which is exactly the
+        // cleanup an undo would otherwise do.
         guard let banner = undoBanner else { return nil }
+        // Only an undo whose restores are all Mi-dependent is refused outright. A mixed undo sends
+        // its LAN restores, keeps the refused Mi ones in the banner and leaves the expiry toast up.
+        let hasLGRestore = banner.restoreCommands.contains { lgClientServes($0) }
+        let hasMiRestore = banner.restoreCommands.contains { !lgClientServes($0) }
+        if hasMiRestore, !hasLGRestore, rejectWritesBlockedByMiSession() {
+            return nil
+        }
         lastAssistantUndo = nil
         undoTimerTask?.cancel()
         self.undoBanner = nil
-        // A rehearsal banner has nothing to restore. Dismissing it must not claim the home came back.
+        // A rehearsal banner has nothing to restore. Dismissing it must not claim the home came back,
+        // and a rehearsal never starts a batch, so the batch bookkeeping below does not concern it.
         if banner.restoreCommands.isEmpty { return nil }
+        // A bulk action that is still sending must stop before its next command, and the restore
+        // below waits for the command already in flight, so a late batch write cannot land after
+        // the undo. The rows go back synchronously, so the card still answers at once.
+        let batch = runningBatches[banner.id]
+        batch?.isStopped = true
+        let batchTask = batch?.task
+        // Final once stopped: the loop records a device before its send and checks the stop before
+        // recording, so the wait below cannot admit another device. A batch that already finished
+        // left its report on the banner; an assistant-plan banner has neither, so undo sends all.
+        let attemptedDeviceIds = batch?.attemptedDeviceIds ?? banner.attemptedDeviceIds
+        // A device a newer write took keeps its own state: neither its row nor a restore command
+        // belongs to this action any more. A running batch compares each row's revision through
+        // `ownsRow`; a finished batch had these devices dropped from its banner when it ended.
+        let takenOverDeviceIds = batch.map { running in
+            Set(running.writes.filter { !ownsRow($0.value) }.keys)
+        } ?? []
         let undoRevision = undoStateRevision
         let preUndoById = Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0) })
         let preUndoFacetsById = deviceFacets
-        let applicable = applyUndoCommands(banner.restoreCommands, previousDevices: banner.previousDevices)
+        let applicable = applyUndoCommands(
+            banner.restoreCommands,
+            previousDevices: banner.previousDevices,
+            excludingDeviceIds: takenOverDeviceIds
+        )
         if applicable.isEmpty, !banner.restoreCommands.isEmpty {
             showToast(L10n.tr("设备状态已变化，无法撤销", "Device state changed; cannot undo"), isError: true)
             return nil
         }
         if !applicable.isEmpty, banner.isAllOff { recordOnboardingMilestone(.undidAllOff) }
+        // The 3 s row locks `applyUndoCommands` took are shorter than a stalled command can be. Hold
+        // these rows for as long as the wait can last, so no snapshot can overwrite the restored
+        // card; the ceiling means a command that never returns still releases them.
+        if batchTask != nil {
+            let until = ContinuousClock.now.advanced(by: Self.undoWaitLockCeiling)
+            for item in applicable { optimisticLockUntil[item.deviceId] = until }
+        }
 
         let context = controlContextID
         return Task {
+            var restorable = applicable
+            if let batchTask {
+                // The batch is sequential, so at most the one in-flight command is still running.
+                _ = await batchTask.value
+                // The wait can outlive the connection it started on; a home that is no longer on
+                // screen writes nothing.
+                guard context == controlContextID else { return }
+                // A newer batch or write can take a row while this undo waits. The last revision per
+                // device is the one this undo holds; a device with two restore commands retook its
+                // row twice, the same way `rollbackFailedUndoDevices` reads it. A device taken over
+                // during the wait gets neither its lock refreshed nor a restore command.
+                var held: [String: UInt64] = [:]
+                for item in applicable { held[item.deviceId] = item.lockRevision }
+                let owned = held.compactMap { deviceId, revision in
+                    optimisticLockRevision[deviceId] == revision ? deviceId : nil
+                }
+                restorable = applicable.filter { owned.contains($0.deviceId) }
+                guard !restorable.isEmpty else {
+                    // Every row is the newer action's now, so there is nothing left to restore and
+                    // nothing to announce.
+                    return
+                }
+                // Back to the normal lease.
+                let normal = ContinuousClock.now.advanced(by: .seconds(3.0))
+                for deviceId in owned { optimisticLockUntil[deviceId] = normal }
+            }
+            // A device this batch never sent to is still where the action found it: its row is back
+            // above, and a restore command would re-apply a change that never happened.
+            let restoreTargets = attemptedDeviceIds.map { attempted in
+                restorable.filter { attempted.contains($0.deviceId) }
+            } ?? restorable
             guard let outcome = await runUndoCommands(
-                applicable,
+                restoreTargets,
                 context: context,
                 preUndoById: preUndoById,
                 preUndoFacetsById: preUndoFacetsById,
@@ -579,15 +821,19 @@ extension HomeStore {
                     isAllOff: banner.isAllOff
                 )
             }
-            let sep = L10n.isEnglish ? ", " : "、"
-            let list = outcome.failedNames.joined(separator: sep)
-            showToast(
-                L10n.tr(
-                    "撤销未完成：\(list) 未响应，可再次点击撤销重试",
-                    "Undo incomplete: \(list) did not respond; tap Undo to retry"
-                ),
-                isError: true
-            )
+            // The refused Mi commands stay in the banner; the persistent expiry toast already
+            // explains them, so the generic "did not respond" message would only replace it.
+            if !outcome.blockedByMiSession {
+                let sep = L10n.isEnglish ? ", " : "、"
+                let list = outcome.failedNames.joined(separator: sep)
+                showToast(
+                    L10n.tr(
+                        "撤销未完成：\(list) 未响应，可再次点击撤销重试",
+                        "Undo incomplete: \(list) did not respond; tap Undo to retry"
+                    ),
+                    isError: true
+                )
+            }
         }
     }
 
@@ -605,6 +851,8 @@ extension HomeStore {
         let failedDeviceIds: Set<String>
         let failedNames: [String]
         let habitReceipt: UserHabitMemory.RecordingReceipt?
+        /// At least one restore was refused by the expired Mi session; its persistent toast is up.
+        let blockedByMiSession: Bool
 
         var succeeded: Bool { failedCommands.isEmpty }
     }
@@ -622,6 +870,7 @@ extension HomeStore {
         var failedCommands: [DeviceCommand] = []
         var failedDeviceIds: Set<String> = []
         var failedNames: [String] = []
+        var blockedByMiSession = false
         for item in applicable {
             guard context == controlContextID else { return nil }
             if failedDeviceIds.contains(item.deviceId) {
@@ -631,6 +880,7 @@ extension HomeStore {
             do {
                 try await executeDeviceCommand(item.command)
             } catch {
+                if error is MiSessionWriteBlocked { blockedByMiSession = true }
                 failedCommands.append(item.command)
                 failedDeviceIds.insert(item.deviceId)
                 if !failedNames.contains(item.deviceName) {
@@ -649,7 +899,8 @@ extension HomeStore {
                 failedCommands: [],
                 failedDeviceIds: [],
                 failedNames: [],
-                habitReceipt: nil
+                habitReceipt: nil,
+                blockedByMiSession: false
             )
         }
         rollbackFailedUndoDevices(
@@ -670,13 +921,18 @@ extension HomeStore {
             failedCommands: failedCommands,
             failedDeviceIds: failedDeviceIds,
             failedNames: failedNames,
-            habitReceipt: remainingReceipt
+            habitReceipt: remainingReceipt,
+            blockedByMiSession: blockedByMiSession
         )
     }
 
+    /// Puts the rows an undo restores back on screen and collects the commands to send. A device a
+    /// newer write owns (`excludingDeviceIds`) is left alone entirely: neither its row nor its
+    /// restore command belongs to this action any more.
     func applyUndoCommands(
         _ commands: [DeviceCommand],
-        previousDevices: [SmartDevice] = []
+        previousDevices: [SmartDevice] = [],
+        excludingDeviceIds: Set<String> = []
     ) -> [UndoApplicableCommand] {
         var applicable: [UndoApplicableCommand] = []
         for command in commands {
@@ -684,6 +940,7 @@ extension HomeStore {
             if let target = Self.facetTarget(for: command),
                let device = devices.first(where: { device in
                    deviceFacets[device.id]?.contains { $0.target == target } == true
+                       && !excludingDeviceIds.contains(device.id)
                }),
                device.isOnline {
                 if var facets = deviceFacets[device.id],
@@ -712,7 +969,8 @@ extension HomeStore {
                     did.map { device.id == $0 || device.miotCommandDids.contains($0) } == true
                 }
                 guard let device = fallbackOwners.count == 1 ? fallbackOwners.first : nil,
-                      device.isOnline else {
+                      device.isOnline,
+                      !excludingDeviceIds.contains(device.id) else {
                     continue
                 }
                 if var facets = deviceFacets[device.id],
@@ -732,7 +990,10 @@ extension HomeStore {
                 )
                 continue
             }
-            if let idx = devices.indices.first(where: { Self.undoEffect(of: command, on: devices[$0]) != nil }),
+            if let idx = devices.indices.first(where: {
+                   !excludingDeviceIds.contains(devices[$0].id)
+                       && Self.undoEffect(of: command, on: devices[$0]) != nil
+               }),
                let restored = Self.undoEffect(of: command, on: devices[idx]) {
                 let name = devices[idx].name
                 devices[idx] = restored
@@ -748,7 +1009,10 @@ extension HomeStore {
                 continue
             }
 
-            guard let prev = previousDevices.first(where: { Self.undoEffect(of: command, on: $0) != nil }),
+            guard let prev = previousDevices.first(where: {
+                      !excludingDeviceIds.contains($0.id)
+                          && Self.undoEffect(of: command, on: $0) != nil
+                  }),
                   let idx = devices.indices.first(where: { devices[$0].id == prev.id && devices[$0].isOnline }),
                   let retargeted = Self.retargetedUndoEffect(of: command, on: devices[idx]) else {
                 continue

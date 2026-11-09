@@ -371,7 +371,7 @@ extension SmartDevice {
         case "quick", "fast", "快速": return L10n.tr("快速", "Quick")
         case "electricheating", "electric heating", "电加热": return L10n.tr("电加热", "Electric Heating")
         case "auto", "automatic", "自动": return L10n.tr("自动", "Auto")
-        case "sleep", "night", "睡眠": return L10n.tr("睡眠", "Sleep")
+        case "sleep", "睡眠": return L10n.tr("睡眠", "Sleep")
         case "strong", "high", "强力", "强": return L10n.tr("强力", "Strong")
         case "baby", "婴儿": return L10n.tr("婴儿", "Baby")
         case "manual", "手动": return L10n.tr("手动", "Manual")
@@ -389,7 +389,7 @@ extension SmartDevice {
         case "cool", "凉风": return L10n.tr("凉风", "Cool")
         case "deodorize", "除味": return L10n.tr("除味", "Deodorize")
         case "other", "其他": return L10n.tr("其他", "Other")
-        default: return mode
+        default: return MiotValueText.display(mode)
         }
     }
 

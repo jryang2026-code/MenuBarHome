@@ -75,6 +75,8 @@ extension HomeStore {
                 try await executeDeviceCommand(cmd)
                 guard context == controlContextID else { return }
                 await provider.refreshNow()
+            } catch is MiSessionWriteBlocked {
+                return
             } catch {
                 // A switch during the send makes the failure irrelevant to the new home.
                 guard context == controlContextID else { return }

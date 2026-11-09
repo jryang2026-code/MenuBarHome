@@ -17,8 +17,50 @@ extension HomeStore {
 
     // MARK: - Primary Toggle & Manual Light Memory
 
+    /// Copy for the persistent expired-session toast and for external callers reporting it.
+    public nonisolated static var miSessionBlockedMessage: String {
+        L10n.tr("米家登录已过期", "Xiaomi Home session expired")
+    }
+
+    /// Shows the persistent expiry toast and returns true when the write must be refused.
+    /// `needsMi` is false for a command the LAN LG client answers, which needs no Mi session.
+    @discardableResult
+    func rejectWritesBlockedByMiSession(needsMi: Bool = true) -> Bool {
+        guard needsMi, miSessionBlocksControl else { return false }
+        showSessionExpiryToast()
+        return true
+    }
+
+    /// True when a primary toggle of this row would be sent over the Mi provider, so the expired
+    /// session refuses it. Mirrors the gate at the top of `togglePrimary`.
+    public func primaryToggleNeedsMiSession(_ device: SmartDevice) -> Bool {
+        !lgClientServes(device)
+    }
+
+    /// The external error for a failed toggle. The session refusal is decided by the session and
+    /// the command's route, not by which toast happens to be on screen: the prompt can be suspended
+    /// behind an earlier result, and a second blocked tap creates no new toast.
+    public func primaryToggleFailureMessage(_ fallback: String, for device: SmartDevice) -> String {
+        if miSessionBlocksControl, primaryToggleNeedsMiSession(device) {
+            return Self.miSessionBlockedMessage
+        }
+        return fallback
+    }
+
+    /// The persistent prompt that carries the only way back into the blocked account.
+    func showSessionExpiryToast() {
+        showToast(
+            Self.miSessionBlockedMessage,
+            isError: true,
+            action: ToastAction(title: L10n.tr("扫码", "Scan"), kind: .presentMiReauth),
+            persistent: true
+        )
+    }
+
     @discardableResult
     public func togglePrimary(_ device: SmartDevice) -> Task<Bool, Never>? {
+        // A tap on an LG TV is answered over the LAN, so the expired Mi session does not refuse it.
+        guard !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(device)) else { return nil }
         guard device.isOnline else {
             showToast(L10n.tr("\(device.name) 当前离线（可能断电）", "\(device.name) is offline (unplugged)"), isError: true)
             return nil
@@ -211,6 +253,19 @@ extension HomeStore {
             return nil
         }
 
+        // A cover is write-only: the motor reports its position only after it moves, so the
+        // commanded row and travel origin are shown and locked before the send. A snapshot that
+        // lands while the command is in flight is then held instead of replacing the row and
+        // dropping the origin the takeover rule needs (#298 follow-up). The unexpired lock this
+        // tap replaces is kept so a failed send can put it back.
+        var coverWrite: OptimisticWrite?
+        var coverPriorLockUntil: ContinuousClock.Instant?
+        if case .cover = updated.kind {
+            let now = ContinuousClock.now
+            coverPriorLockUntil = optimisticLockUntil[device.id].flatMap { $0 > now ? $0 : nil }
+            coverWrite = beginOptimisticWrite(from: previous, to: updated, lock: .seconds(8))
+        }
+
         return Task {
             defer { self.readBackTickets.finish(device.id, ticket: ticket) }
             guard self.controlContextID == context else { return false }
@@ -238,9 +293,27 @@ extension HomeStore {
                 }
             } catch {
                 guard self.controlContextID == context else { return false }
-                // A newer tap may own the device by now; only an unclaimed failure drops our origin.
+                // A newer tap may own the device by now; only an unclaimed failure drops what
+                // this tap showed. A cover tap restores the pre-tap row and releases its early
+                // lock; the origin it wrote goes back to the value it displaced.
                 if self.readBackTickets.isLatest(device.id, ticket: ticket) {
-                    self.discardCoverOrigin(coverOrigin, deviceId: device.id, revision: lockRevision)
+                    if let coverWrite {
+                        // A report that confirmed travel removes the lock entry without bumping
+                        // the revision, so the entry must still exist for this write to own the
+                        // row; the same rule guards the batch rollback. Only then does the tap
+                        // restore its pre-tap row, the lock it displaced, and that lock's origin.
+                        if self.ownsRow(coverWrite), self.optimisticLockUntil[device.id] != nil {
+                            self.revert(coverWrite)
+                            if let coverPriorLockUntil {
+                                self.optimisticLockUntil[device.id] = coverPriorLockUntil
+                                if let prior = coverOrigin?.prior {
+                                    self.coverCommandOrigins[device.id] = prior
+                                }
+                            }
+                        }
+                    } else {
+                        self.discardCoverOrigin(coverOrigin, deviceId: device.id, revision: lockRevision)
+                    }
                 }
                 self.showToast(L10n.tr("\(device.name) 响应失败", "\(device.name) failed to respond"), isError: true)
                 return false
@@ -1027,6 +1100,7 @@ extension HomeStore {
     }
 
     public func sendSpeakerText(_ deviceId: String, text: String, asDirective: Bool) {
+        guard !rejectWritesBlockedByMiSession() else { return }
         guard !rejectControlWhileLocked() else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
@@ -1054,6 +1128,7 @@ extension HomeStore {
     }
 
     public func pressDeviceButton(_ buttonEntityId: String, label: String) {
+        guard !rejectWritesBlockedByMiSession() else { return }
         guard !rejectControlWhileLocked() else { return }
         Task {
             do {

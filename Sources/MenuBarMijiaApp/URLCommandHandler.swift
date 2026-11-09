@@ -309,10 +309,13 @@ final class URLCommandHandler {
                     ? store.toastNotice?.message
                     : nil
                 finish(
-                    cancellationOrRejection ?? (
-                        isMomentary
-                            ? L10n.format("%@ 触发失败", "Failed to trigger %@", device.name)
-                            : L10n.format("%@ 响应失败", "%@ failed to respond", device.name)
+                    store.primaryToggleFailureMessage(
+                        cancellationOrRejection ?? (
+                            isMomentary
+                                ? L10n.format("%@ 触发失败", "Failed to trigger %@", device.name)
+                                : L10n.format("%@ 响应失败", "%@ failed to respond", device.name)
+                        ),
+                        for: device
                     ),
                     isError: true,
                     envelope: envelope,
@@ -322,9 +325,12 @@ final class URLCommandHandler {
             }
             guard await task.value == true else {
                 finish(
-                    isMomentary
-                        ? L10n.format("%@ 触发失败", "Failed to trigger %@", device.name)
-                        : L10n.format("%@ 响应失败", "%@ failed to respond", device.name),
+                    store.primaryToggleFailureMessage(
+                        isMomentary
+                            ? L10n.format("%@ 触发失败", "Failed to trigger %@", device.name)
+                            : L10n.format("%@ 响应失败", "%@ failed to respond", device.name),
+                        for: device
+                    ),
                     isError: true,
                     envelope: envelope,
                     store: store

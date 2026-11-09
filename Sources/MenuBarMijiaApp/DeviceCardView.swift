@@ -697,7 +697,12 @@ public struct DeviceCardView: View {
                 statusColor: statusColor
             )
         case .generic(let spec):
-            GenericDetailDrawer(spec: spec, statusColor: statusColor)
+            GenericDetailDrawer(
+                device: device,
+                store: store,
+                spec: spec,
+                statusColor: statusColor
+            )
         case .humidifier(let spec):
             humidifierDrawer(spec)
         case .valve:

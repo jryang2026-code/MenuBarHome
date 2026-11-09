@@ -41,7 +41,7 @@ import {
 } from "../core/temperature.js";
 
 import { invokeTauriVoid } from "./transport.js";
-import { facetWriteEnabled, facetWriteIsHazardous } from "./facetViews.js";
+import { facetWriteEnabled } from "./facetViews.js";
 import { facetTitle, facetValue } from "../core/miotFacetText.js";
 
 import type { MenuMijiaWindowsApp } from "./app.js";
@@ -411,10 +411,16 @@ import { bindPanelInput } from "./panelKeyboard.js";
       }
     });
 
-    host.root.querySelector("#btn-footer-qr")?.addEventListener("click", () => {
+    const startQrLogin = () => {
       host.activeSheet = "settings";
       host.render();
       void host.startXiaomiQRLogin();
+    };
+    host.root.querySelector("#btn-footer-qr")?.addEventListener("click", startQrLogin);
+    host.root.querySelector("#btn-footer-health")?.addEventListener("click", startQrLogin);
+    host.root.querySelector("#btn-dismiss-banner")?.addEventListener("click", () => {
+      host.replyBanner = null;
+      host.render();
     });
 
     host.root.querySelector("#btn-empty-resync")?.addEventListener("click", () => {
@@ -1136,7 +1142,10 @@ import { bindPanelInput } from "./panelKeyboard.js";
         target.kind === "action"
           ? { kind: "pressButton", entityId: target.entityId }
           : { kind: "setMiotProperty", entityId: target.entityId, piid: target.piid, value };
-      if (facetWriteIsHazardous(control, value) && !confirmHighRisk(dev.id, command, facetTitle(control))) {
+      if (
+        ManualControlPolicy.facetRequiresConfirmation(control, value, dev) &&
+        !confirmHighRisk(dev.id, command, facetTitle(control))
+      ) {
         return;
       }
       if (target.kind === "action") {

@@ -574,6 +574,11 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "米家云指令失败 ({code})：{message}": ["米家云指令失败 ({code})：{message}", "Mi Cloud command failed ({code}): {message}"],
   "米家云服务 HTTP {status}": ["米家云服务 HTTP {status}", "Mi Cloud service returned HTTP {status}"],
   "米家登录已过期，请重新扫码": ["米家登录已过期，请重新扫码", "The Mi Home session expired; scan again"],
+  "米家登录已过期 · 点此扫码": ["米家登录已过期 · 点此扫码", "Xiaomi Home session expired · Tap to scan"],
+  "Home Assistant 未连接（已拒绝明文）": ["Home Assistant 未连接（已拒绝明文）", "Home Assistant not connected (plain HTTP declined)"],
+  "Home Assistant 认证被拒绝": ["Home Assistant 认证被拒绝", "Home Assistant authentication rejected"],
+  "未配置数据源": ["未配置数据源", "No data source configured"],
+  "显示建议和定时": ["显示建议和定时", "Show suggestions and timers"],
 
   // Camera (#97)
   "客厅摄像机": ["客厅摄像机", "Living Room Camera"],
