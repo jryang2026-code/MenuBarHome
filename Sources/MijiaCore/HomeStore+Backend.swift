@@ -85,6 +85,9 @@ extension HomeStore {
         if let lockTime = optimisticLockUntil[dev.id], now < lockTime {
             return
         }
+        // Adopting the row is the same takeover an ordinary snapshot performs, so the lock entry
+        // must stop being evidence that the row is still an optimistic write of ours.
+        optimisticLockUntil.removeValue(forKey: dev.id)
         if let idx = devices.firstIndex(where: { $0.id == dev.id }) {
             devices[idx] = dev
         } else {
@@ -336,6 +339,9 @@ extension HomeStore {
                    let local = existingById[lgDev.id] {
                     merged.insert(local, at: 0)
                 } else {
+                    // Taking the LG row is a takeover too, so a batch rollback can tell the row is
+                    // no longer an optimistic write of its own.
+                    optimisticLockUntil.removeValue(forKey: lgDev.id)
                     merged.insert(lgDev, at: 0)
                 }
             }

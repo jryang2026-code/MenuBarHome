@@ -324,6 +324,50 @@ struct BulkWriteRollbackTests {
         #expect(store.undoBanner == nil, "both devices refused, so the banner has nothing to offer")
     }
 
+    @Test("An LG report that repeats the row the batch showed still counts as a takeover")
+    @MainActor
+    func equalLGReportTakesTheRow() async throws {
+        let tv = SmartDevice(
+            id: LGWebOSProtocol.deviceId, name: "LG C2 电视", roomId: "ke_ting", roomName: "客厅",
+            model: "lg.webos.oled42c2pca", isOnline: true,
+            kind: .tv(TVSpec(mediaEntityId: LGWebOSProtocol.mediaEntityId, state: "on", volumePercent: 12))
+        )
+        // The provider snapshot has no LG tile; the LAN client adds it, as in the app.
+        let (store, mock) = try await makeStore([Self.ceiling])
+        store.lgConfig = LGWebOSConfig(isEnabled: true, host: "192.0.2.10")
+        store.applyLGDeviceUpdate(tv)
+        #expect(store.devices.map(\.id) == ["dev_ceiling", tv.id])
+
+        await mock.setFailingTargets(["light.ceiling", LGWebOSProtocol.powerEntityId])
+        await mock.holdNextExecute(forTarget: LGWebOSProtocol.powerEntityId)
+
+        let task = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        // The light fails; the TV keeps the batch open.
+        try await waitUntil { await mock.executeStarted == 2 }
+
+        // The window runs out and the TV reports the same standby row the batch showed.
+        store.optimisticLockUntil[tv.id] = ContinuousClock.now.advanced(by: .milliseconds(-1))
+        var reported = tv
+        if case .tv(var spec) = reported.kind {
+            spec.state = "standby"
+            reported.kind = .tv(spec)
+        }
+        store.applyLGDeviceUpdate(reported)
+        #expect(store.optimisticLockUntil[tv.id] == nil, "adopting an LG row drops its lock entry")
+
+        await mock.releaseExecute()
+        await task?.value
+
+        let row = try #require(store.devices.first { $0.id == tv.id })
+        if case .tv(let spec) = row.kind {
+            #expect(spec.state == "standby", "the adopted report must not be rolled back to on")
+        } else {
+            Issue.record("expected the TV row, got \(row.kind)")
+        }
+        #expect(store.undoBanner == nil)
+    }
+
     @Test("turnAllOff hands back the task that sends its commands")
     @MainActor
     func turnAllOffReturnsItsTask() async throws {
