@@ -253,7 +253,7 @@ enum ReleaseNotesDigest {
     /// Parses inline markdown so `**` and `](` never reach the screen. A failed parse drops those markers.
     static func render(_ markdown: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(
-            interpretedSyntax: .inlineOnlyPresumed,
+            interpretedSyntax: .inlineOnly,
             failurePolicy: .returnPartiallyParsedIfPossible
         )
         if let parsed = try? AttributedString(markdown: markdown, options: options) {

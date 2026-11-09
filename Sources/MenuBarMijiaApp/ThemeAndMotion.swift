@@ -880,7 +880,7 @@ struct GlassSwitch: View {
 }
 
 /// `.toggleStyle(.glass)` draws the label beside the switch.
-/// `.labelsHidden()` still hides it, so a row that already has its own title does not show that title twice.
+/// `.labelsHidden()` sets `labelsVisibility` to `.hidden`, so a row that already has its own title does not show that title twice.
 struct GlassSwitchToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         GlassSwitchToggleBody(configuration: configuration)
@@ -888,13 +888,13 @@ struct GlassSwitchToggleStyle: ToggleStyle {
 }
 
 private struct GlassSwitchToggleBody: View {
-    @Environment(\.labelsHidden) private var labelsHidden
+    @Environment(\.labelsVisibility) private var labelsVisibility
     @Environment(\.isEnabled) private var isEnabled
     var configuration: ToggleStyleConfiguration
 
     var body: some View {
         Group {
-            if labelsHidden {
+            if labelsVisibility == .hidden {
                 GlassSwitch(isOn: configuration.$isOn)
             } else {
                 HStack(alignment: .center, spacing: 0) {
