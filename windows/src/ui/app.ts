@@ -808,7 +808,8 @@ export class MenuMijiaWindowsApp {
       this.pendingHighRiskTimer = null;
       if (!this.pendingHighRisk) return;
       this.pendingHighRisk = null;
-      this.render();
+      // A gesture in progress (a slider drag) owns the current DOM; drop the row once it ends.
+      this.queueBackgroundRender();
     }, Math.max(0, pending.expiresAtMs - Date.now()));
   }
 

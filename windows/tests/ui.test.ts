@@ -5473,6 +5473,33 @@ describe("Manual control parity with macOS (#143)", () => {
     assert.equal(target(), 20);
   });
 
+  it("queues the expired row removal while a panel gesture is active", async () => {
+    const app = await startWithDevices([heater()]);
+    app.layout.tileSizes["heater"] = "half";
+    app.render();
+    await click('[data-expand-device="heater"]');
+    await setRange('[data-actemp="heater"]', "26");
+    const armed = app.pendingHighRisk;
+    assert.ok(armed);
+
+    app.setPendingHighRisk({ ...armed, expiresAtMs: Date.now() + 20 });
+    app.pointerIsDown = true;
+    let renders = 0;
+    const render = app.render.bind(app);
+    app.render = () => {
+      renders += 1;
+      render();
+    };
+    await waitFor(() => app.pendingHighRisk === null);
+    assert.equal(renders, 0, "expiry must not rebuild the panel mid-gesture");
+    assert.ok(document.querySelector('[data-high-risk-confirm="heater"]'), "the row waits for the gesture to end");
+
+    app.pointerIsDown = false;
+    app.queueBackgroundRender();
+    assert.equal(renders, 1);
+    assert.ok(document.querySelector('[data-high-risk-confirm="heater"]') === null);
+  });
+
   it("hides the row with the drawer and replaces it when another device arms one", async () => {
     const app = await startWithDevices([heater(), secondHeater()]);
     app.layout.tileSizes["heater"] = "half";
