@@ -162,7 +162,7 @@ struct OnboardingChecklistCard: View {
                 .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
             } else {
                 Button(L10n.tr("全关", "All Off")) {
-                    withAnimation(AppleMotion.snappySpring) { store.turnAllOff() }
+                    withAnimation(AppleMotion.snappySpring) { _ = store.turnAllOff() }
                 }
                 .buttonStyle(PillActionButtonStyle())
                 .disabled(store.allOffTargets.isEmpty)

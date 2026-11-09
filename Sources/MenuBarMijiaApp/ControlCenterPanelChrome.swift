@@ -130,7 +130,7 @@ extension ControlCenterPanel {
                         title: allOffScopeDisplayName.map { L10n.tr("全关 \($0)", "All Off \($0)") } ?? L10n.tr("全关", "All Off"),
                         count: count,
                         onConfirm: {
-                            withAnimation(AppleMotion.snappySpring) { store.turnAllOff() }
+                            withAnimation(AppleMotion.snappySpring) { _ = store.turnAllOff() }
                             SoundFeedback.playSuccess()
                         },
                         onTap: {
