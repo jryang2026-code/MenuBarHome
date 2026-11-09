@@ -250,6 +250,14 @@ struct CoverMovingStateTests {
         }
     }
 
+    /// The takeover rule is the subject of the tests below, not the eight-second duration of the
+    /// optimistic lock. Pin the lock far enough out that a loaded runner cannot let it expire
+    /// between the reports a test delivers.
+    @MainActor
+    private func pinCoverLock(_ store: HomeStore, _ deviceId: String) {
+        store.optimisticLockUntil[deviceId] = ContinuousClock.now.advanced(by: .seconds(600))
+    }
+
     @Test("A travel report at the commanded position takes over the card")
     @MainActor
     func movingReadBackTakesOverTheCard() async throws {
@@ -258,6 +266,7 @@ struct CoverMovingStateTests {
         let card = try #require(store.devices.first)
 
         #expect(await store.togglePrimary(card)?.value == true)
+        pinCoverLock(store, card.id)
         let optimistic = try #require(store.devices.first?.coverSpec)
         #expect(optimistic.positionPercent == 100)
         #expect(optimistic.motion == .opening)
@@ -347,6 +356,11 @@ struct CoverMovingStateTests {
         let (store, mock) = try await makeStore([parked])
         let card = try #require(store.devices.first)
         #expect(await store.togglePrimary(card)?.value == true)
+        pinCoverLock(store, card.id)
+        // The tap records the pre-command position as the travel origin, and the merge compares a
+        // stopped report against it. Pin it: a mock echo that lands during the send would otherwise
+        // clear it and let the test depend on scheduling instead of on the takeover rule.
+        store.coverCommandOrigins[card.id] = 0
 
         // The target moved to 100 and the status says Opening, but the reported position is still 0.
         // The display position is the target, so comparing it would unlock before the motor moves.
@@ -371,7 +385,12 @@ struct CoverMovingStateTests {
 
         let arrived = try coverDevice(current: 100, target: 100, status: 0)
         await mock.updateSnapshot(SynthesizedHome(devices: [arrived]))
-        await waitUntil { store.devices.first?.coverSpec?.motion == CoverMotion.stopped }
+        // The stale stop above already reads as "stopped", so wait for the state this report
+        // produces instead of for a stop word an earlier snapshot can supply.
+        await waitUntil {
+            let current = store.devices.first?.coverSpec
+            return current?.motion == .stopped && current?.positionPercent == 100
+        }
         let settled = try #require(store.devices.first?.coverSpec)
         #expect(settled.positionPercent == 100)
         #expect(settled.motion == .stopped)
@@ -384,6 +403,7 @@ struct CoverMovingStateTests {
         let (store, mock) = try await makeStore([parked])
         let card = try #require(store.devices.first)
         #expect(await store.togglePrimary(card)?.value == true)
+        pinCoverLock(store, card.id)
 
         // The motor says it is opening while its target still reads 0. Accepting this sample would
         // replace the commanded 100 with 1, so the lock must hold until the position catches up.
@@ -412,6 +432,7 @@ struct CoverMovingStateTests {
         let card = try #require(store.devices.first)
 
         #expect(await store.togglePrimary(card)?.value == true)
+        pinCoverLock(store, card.id)
 
         let moving = try coverDevice(current: 100, target: 100, status: 1)
         await mock.updateSnapshot(SynthesizedHome(devices: [moving]))
@@ -455,6 +476,7 @@ struct CoverMovingStateTests {
         let card = try #require(store.devices.first)
 
         #expect(await store.togglePrimary(card)?.value == true)
+        pinCoverLock(store, card.id)
         let paused = try #require(store.devices.first?.coverSpec)
         #expect(paused.motion == .stopped)
         #expect(store.optimisticLockUntil[moving.id] != nil, "a stale travel report must not restart the label")
@@ -475,6 +497,7 @@ struct CoverMovingStateTests {
         let card = try #require(store.devices.first)
 
         #expect(await store.togglePrimary(card)?.value == true)
+        pinCoverLock(store, card.id)
 
         // The motor reported stopped at 40 while the target still says 100. The pre-command
         // position was 0, so this is a real stop, not the stale snapshot before travel.
