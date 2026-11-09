@@ -214,8 +214,13 @@ extension CameraLivePanelController {
             // Both attempts failed: fall through to the manual stop list.
         }
 
-        guard stillOwns(attempt) else { return }
+        // A finally failed stop stays retryable even after the window closed or switched
+        // cameras: the motor may still be running and the bridge session has ended. Only the
+        // notice update belongs to the panel that watched it fail.
         recordUnresolvedStop(attempt)
+        if stillOwns(attempt) {
+            showPTZNotice(Self.stopWriteFailedNotice, sticky: true)
+        }
     }
 
     func finishSuccessfulPTZStop(
@@ -229,12 +234,11 @@ extension CameraLivePanelController {
     }
 
     /// Every attempt that failed its write and the automatic retry. Each keeps the client that
-    /// can still stop its own bridge session.
+    /// can still stop its own bridge session. One entry per camera: the newest failure replaces
+    /// the older one for the same device, and entries for other cameras are never dropped.
     func recordUnresolvedStop(_ attempt: CameraPTZStopAttempt) {
-        if !ptzUnresolvedStops.contains(attempt) {
-            ptzUnresolvedStops.append(attempt)
-        }
-        showPTZNotice(Self.stopWriteFailedNotice, sticky: true)
+        ptzUnresolvedStops.removeAll { $0.deviceId == attempt.deviceId }
+        ptzUnresolvedStops.append(attempt)
     }
 
     /// A stop resolves only the attempt it belongs to. The warning stays while any attempt is
@@ -357,11 +361,11 @@ extension CameraLivePanelController {
         ptzNoticeTask?.cancel()
         ptzNoticeTask = nil
         // Closing or reloading the panel does not stop the motor; a sticky stop-write warning
-        // and its retry attempt survive until a stop reports no error.
+        // and its retry attempts survive until a stop reports no error. A retry batch that is
+        // still in flight clears its own flag, so reopening cannot start an overlapping batch.
         if ptzUnresolvedStops.isEmpty {
             ptzNotice = nil
         }
-        ptzManualStopInFlight = false
     }
 
     static var ptzStopRetryDelay: Duration { .milliseconds(500) }
@@ -372,6 +376,12 @@ extension CameraLivePanelController {
 
     var offersPTZStopRetry: Bool {
         !ptzUnresolvedStops.isEmpty
+    }
+
+    /// The stop-write warning is a function of unresolved danger, so it is visible after a
+    /// close or camera switch even when the failure arrived while the panel was not watching.
+    var ptzVisibleNotice: String? {
+        ptzUnresolvedStops.isEmpty ? ptzNotice : Self.stopWriteFailedNotice
     }
 
 }

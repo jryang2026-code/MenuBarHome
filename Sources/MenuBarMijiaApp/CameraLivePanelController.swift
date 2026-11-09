@@ -991,7 +991,7 @@ struct CameraLivePanelView: View {
                         onDoubleClick: { controller.toggleExpandedSize() }
                     )
                 }
-                if let notice = controller.ptzNotice {
+                if let notice = controller.ptzVisibleNotice {
                     CameraPTZFailureNotice(
                         text: notice,
                         retryTitle: controller.offersPTZStopRetry

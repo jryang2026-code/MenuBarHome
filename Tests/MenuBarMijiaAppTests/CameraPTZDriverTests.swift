@@ -16,6 +16,7 @@ private actor FakePTZClient: CameraPTZControlling {
     private var stopWaiter: StopWaiter?
     private var scriptedStops: [CameraPTZStopResult] = []
     private var stopErrorCount = 0
+    private var stopHold: (@Sendable () async -> Void)?
     private var nextWaiterID: UInt64 = 0
     var stopResult = CameraPTZStopResult(sent: true, confirmed: false, mode: .continuous)
 
@@ -52,6 +53,9 @@ private actor FakePTZClient: CameraPTZControlling {
         if let waiter = stopWaiter, stopTokens.count >= waiter.minimum {
             stopWaiter = nil
             waiter.continuation.resume(returning: stopTokens)
+        }
+        if let stopHold {
+            await stopHold()
         }
         if stopErrorCount > 0 {
             stopErrorCount -= 1
@@ -426,7 +430,7 @@ struct CameraPTZDriverTests {
         #expect(controller.offersPTZStopRetry == true)
     }
 
-    @Test("The automatic retry stops the captured session after the panel lifecycle changed")
+    @Test("The automatic retry stops the captured session after the panel lifecycle changed and stays retryable")
     func automaticRetrySurvivesLifecycleChange() async throws {
         let controller = CameraLivePanelController.shared
         let client = FakePTZClient()
@@ -459,7 +463,9 @@ struct CameraPTZDriverTests {
             await Task.yield()
         }
         #expect(controller.ptzNotice == nil, "the old session's failure must not paint the new lifecycle")
-        #expect(controller.offersPTZStopRetry == false)
+        #expect(controller.ptzUnresolvedStops.count == 1, "a finally failed stop must stay retryable")
+        #expect(controller.ptzVisibleNotice == CameraLivePanelController.stopWriteFailedNotice)
+        #expect(controller.offersPTZStopRetry == true)
     }
 
     @Test("A successful stop on another camera leaves the older failed stop and its retry untouched")
@@ -603,6 +609,179 @@ struct CameraPTZDriverTests {
         #expect(controller.offersPTZStopRetry == false)
     }
 
+    @Test("A retry that fails after the panel closed stays retryable on reopening")
+    func retryFailureAfterCloseStaysRetryable() async throws {
+        let controller = CameraLivePanelController.shared
+        let failed = CameraPTZStopResult(
+            sent: false,
+            confirmed: false,
+            mode: .continuous,
+            errorReason: "write_failed"
+        )
+        let succeeded = CameraPTZStopResult(sent: true, confirmed: false, mode: .continuous)
+        let clientA = FakePTZClient()
+        await clientA.setStopScript([failed, failed, succeeded])
+        configure(controller, deviceId: "cam-a", client: clientA)
+        let gate = PTZRetryGate()
+        controller.ptzStopRetryHold = { await gate.wait() }
+        defer {
+            gate.release()
+            controller.ptzStopRetryHold = nil
+            controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false)
+        }
+
+        let tokenA = CameraPTZSessionToken(epoch: "e1", session: 3)
+        let attemptA = CameraPTZStopAttempt(
+            token: tokenA,
+            deviceId: "cam-a",
+            lifecycleID: controller.ptzLifecycleID,
+            client: clientA
+        )
+        controller.ptzToken = tokenA
+        controller.ptzDeviceId = "cam-a"
+        controller.finishPTZMove(notify: false)
+        _ = try #require(await clientA.waitForStops(), "the first stop was never written")
+
+        // The panel closes while the automatic retry is still waiting.
+        controller.clearPTZ()
+        gate.release()
+        _ = try #require(await clientA.waitForStops(minimum: 2), "the retry was skipped after the close")
+        for _ in 0..<5000 where controller.ptzUnresolvedStops.isEmpty {
+            await Task.yield()
+        }
+        #expect(controller.ptzUnresolvedStops == [attemptA], "a finally failed stop was dropped after the close")
+        #expect(controller.ptzNotice == nil, "the closed panel must not have painted a notice")
+        #expect(controller.offersPTZStopRetry == true)
+        #expect(controller.ptzVisibleNotice == CameraLivePanelController.stopWriteFailedNotice)
+
+        // Reopening the same camera shows the warning and retries the captured client, not the
+        // new panel's client.
+        let reopened = FakePTZClient()
+        switchCamera(controller, to: "cam-a", client: reopened)
+        #expect(controller.ptzVisibleNotice == CameraLivePanelController.stopWriteFailedNotice)
+        #expect(controller.offersPTZStopRetry == true)
+
+        controller.ptzStopRetryHold = nil
+        controller.retryFailedPTZStop()
+        let retried = try #require(await clientA.waitForStops(minimum: 3), "the retry did not reach the captured client")
+        #expect(retried.count == 3)
+        for _ in 0..<5000 where !controller.ptzUnresolvedStops.isEmpty {
+            await Task.yield()
+        }
+        #expect(controller.ptzUnresolvedStops.isEmpty)
+        #expect(controller.ptzVisibleNotice == nil)
+        #expect(await reopened.recordedStops().isEmpty)
+    }
+
+    @Test("A new failed stop for the same camera replaces the older unresolved attempt")
+    func newerFailureReplacesTheOlderAttemptForTheSameCamera() async throws {
+        let controller = CameraLivePanelController.shared
+        let failed = CameraPTZStopResult(
+            sent: false,
+            confirmed: false,
+            mode: .continuous,
+            errorReason: "write_failed"
+        )
+        let succeeded = CameraPTZStopResult(sent: true, confirmed: false, mode: .continuous)
+
+        let clientOld = FakePTZClient()
+        await clientOld.setStopResult(failed)
+        configure(controller, deviceId: "cam-a", client: clientOld)
+        let gateOld = PTZRetryGate()
+        controller.ptzStopRetryHold = { await gateOld.wait() }
+        defer {
+            gateOld.release()
+            controller.ptzStopRetryHold = nil
+            controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false)
+        }
+
+        let tokenOld = CameraPTZSessionToken(epoch: "e1", session: 4)
+        let attemptOld = CameraPTZStopAttempt(
+            token: tokenOld,
+            deviceId: "cam-a",
+            lifecycleID: controller.ptzLifecycleID,
+            client: clientOld
+        )
+        try await failStopTwice(controller, client: clientOld, token: tokenOld, deviceId: "cam-a", gate: gateOld)
+        #expect(controller.ptzUnresolvedStops == [attemptOld])
+
+        let clientNew = FakePTZClient()
+        await clientNew.setStopScript([failed, failed, succeeded])
+        switchCamera(controller, to: "cam-a", client: clientNew)
+        let gateNew = PTZRetryGate()
+        controller.ptzStopRetryHold = { await gateNew.wait() }
+        defer { gateNew.release() }
+
+        let tokenNew = CameraPTZSessionToken(epoch: "e1", session: 5)
+        let attemptNew = CameraPTZStopAttempt(
+            token: tokenNew,
+            deviceId: "cam-a",
+            lifecycleID: controller.ptzLifecycleID,
+            client: clientNew
+        )
+        try await failStopTwice(controller, client: clientNew, token: tokenNew, deviceId: "cam-a", gate: gateNew)
+        #expect(controller.ptzUnresolvedStops == [attemptNew], "a newer failure grew the list instead of replacing")
+        #expect(controller.ptzUnresolvedStops.count == 1)
+
+        controller.ptzStopRetryHold = nil
+        controller.retryFailedPTZStop()
+        let retried = try #require(await clientNew.waitForStops(minimum: 3), "the retry did not use the newer attempt")
+        #expect(retried.count == 3)
+        #expect(await clientOld.recordedStops().count == 2, "the replaced attempt must not be retried")
+        for _ in 0..<5000 where !controller.ptzUnresolvedStops.isEmpty {
+            await Task.yield()
+        }
+        #expect(controller.ptzUnresolvedStops.isEmpty)
+    }
+
+    @Test("Reopening the panel during a retry batch does not start an overlapping batch")
+    func reopeningDoesNotStartOverlappingRetryBatches() async throws {
+        let controller = CameraLivePanelController.shared
+        let failed = CameraPTZStopResult(
+            sent: false,
+            confirmed: false,
+            mode: .continuous,
+            errorReason: "write_failed"
+        )
+        let succeeded = CameraPTZStopResult(sent: true, confirmed: false, mode: .continuous)
+        let client = FakePTZClient()
+        await client.setStopScript([failed, failed, succeeded])
+        configure(controller, deviceId: "cam-a", client: client)
+        let gate = PTZRetryGate()
+        controller.ptzStopRetryHold = { await gate.wait() }
+        defer {
+            gate.release()
+            controller.ptzStopRetryHold = nil
+            controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false)
+        }
+
+        let token = CameraPTZSessionToken(epoch: "e1", session: 6)
+        try await failStopTwice(controller, client: client, token: token, deviceId: "cam-a", gate: gate)
+        controller.ptzStopRetryHold = nil
+        #expect(controller.ptzUnresolvedStops.count == 1)
+
+        let retryGate = PTZRetryGate()
+        await client.setStopHold { await retryGate.wait() }
+        controller.retryFailedPTZStop()
+        _ = try #require(await client.waitForStops(minimum: 3), "the retry batch never started")
+
+        // Close and reopen while the batch is still in flight; a second press must be ignored.
+        controller.clearPTZ()
+        switchCamera(controller, to: "cam-a", client: client)
+        controller.retryFailedPTZStop()
+        for _ in 0..<500 {
+            await Task.yield()
+        }
+        #expect(await client.recordedStops().count == 3, "a reopened panel started a second retry batch")
+
+        await client.setStopHold(nil)
+        retryGate.release()
+        for _ in 0..<5000 where !controller.ptzUnresolvedStops.isEmpty {
+            await Task.yield()
+        }
+        #expect(controller.ptzUnresolvedStops.isEmpty)
+    }
+
     @Test("The automatic stop retry waits about half a second")
     func automaticStopRetryWaitsHalfASecond() async throws {
         let controller = CameraLivePanelController.shared
@@ -661,5 +840,9 @@ private extension FakePTZClient {
 
     func setStopErrorCount(_ count: Int) {
         stopErrorCount = count
+    }
+
+    func setStopHold(_ hold: (@Sendable () async -> Void)?) {
+        stopHold = hold
     }
 }
