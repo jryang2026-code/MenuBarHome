@@ -300,42 +300,11 @@ mod tests {
         package: Vec<u8>,
     }
 
-    fn base64_encode(bytes: &[u8]) -> String {
-        const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut out = String::new();
-        let mut index = 0;
-        while index + 3 <= bytes.len() {
-            let value = ((bytes[index] as u32) << 16)
-                | ((bytes[index + 1] as u32) << 8)
-                | (bytes[index + 2] as u32);
-            out.push(TABLE[((value >> 18) & 63) as usize] as char);
-            out.push(TABLE[((value >> 12) & 63) as usize] as char);
-            out.push(TABLE[((value >> 6) & 63) as usize] as char);
-            out.push(TABLE[(value & 63) as usize] as char);
-            index += 3;
-        }
-        let remaining = bytes.len() - index;
-        if remaining == 1 {
-            let value = (bytes[index] as u32) << 16;
-            out.push(TABLE[((value >> 18) & 63) as usize] as char);
-            out.push(TABLE[((value >> 12) & 63) as usize] as char);
-            out.push('=');
-            out.push('=');
-        } else if remaining == 2 {
-            let value = ((bytes[index] as u32) << 16) | ((bytes[index + 1] as u32) << 8);
-            out.push(TABLE[((value >> 18) & 63) as usize] as char);
-            out.push(TABLE[((value >> 12) & 63) as usize] as char);
-            out.push(TABLE[((value >> 6) & 63) as usize] as char);
-            out.push('=');
-        }
-        out
-    }
-
     fn sign_manifest(version: &str, min_from: &str, key_id: Option<&str>, dmg_file: Option<&str>, package: &[u8]) -> SignedManifest {
         let rng = SystemRandom::new();
         let document = Ed25519KeyPair::generate_pkcs8(&rng).expect("ephemeral key");
         let key = Ed25519KeyPair::from_pkcs8(document.as_ref()).expect("ephemeral key");
-        let public_key = base64_encode(key.public_key().as_ref());
+        let public_key = crate::camera::base64_encode(key.public_key().as_ref());
         let owned_dmg = format!("MenuBarHome-{version}.dmg");
         let dmg_name = dmg_file.unwrap_or(owned_dmg.as_str());
         let digest = super::super::compute_sha256_hex(package);
@@ -346,7 +315,7 @@ mod tests {
             c = "c".repeat(64),
         );
         let bytes = body.into_bytes();
-        let signature = base64_encode(key.sign(&bytes).as_ref()) + "\n";
+        let signature = crate::camera::base64_encode(key.sign(&bytes).as_ref()) + "\n";
         SignedManifest {
             bytes,
             signature,
