@@ -79,7 +79,9 @@ extension HomeStore {
         debounceTasks.removeAll()
         // A persistent toast carries an action for the connection that raised it (the expired Mi
         // session's Scan button). Reaching demo mode or another account leaves it a dead button,
-        // so it must end with the context that created it (§13).
+        // so it must end with the context that created it (§13). A suspended prompt is dropped too,
+        // so the end of whatever ordinary toast is on screen cannot bring it back.
+        isSessionToastSuspended = false
         if toastNotice?.persistent == true { dismissToast() }
     }
 

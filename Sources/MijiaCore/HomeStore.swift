@@ -330,6 +330,9 @@ public final class HomeStore {
     var toastAutoDismissInterval: Duration? = successToastDismissInterval
     /// The delay `showToast` armed for the toast on screen. `nil` means it will not auto-dismiss.
     var activeToastDismissInterval: Duration?
+    /// True while an ordinary toast hides the persistent expired-session prompt. When that toast
+    /// ends the prompt comes back, unless the session recovered or a context change cleared it.
+    var isSessionToastSuspended = false
 
     /// Ask macOS to keep speech recognition on this Mac (no audio sent to Apple) when the language supports it.
     /// Defaults on for privacy; an explicitly saved `false` still wins (#50).
@@ -911,15 +914,23 @@ public final class HomeStore {
            current.action == notice.action {
             return
         }
-        // While the expired-session toast is showing, its Scan action is the only way back into
-        // the account. An ordinary message must not replace it and take that action away; when the
-        // session recovers, or the context changes (which dismisses the toast), normal toasts return.
+        // A suspension from an old session must not hide a fresh prompt after the session came back.
+        if isSessionToastSuspended, !miSessionBlocksControl {
+            isSessionToastSuspended = false
+        }
+        // Another blocked write while the prompt is behind an ordinary toast must neither stack a
+        // copy nor steal that ordinary message; the prompt returns when the ordinary toast ends.
+        if notice.persistent, isSessionToastSuspended {
+            return
+        }
+        // An ordinary toast may replace the prompt, so its message is never swallowed. Remember
+        // the prompt so the end of that toast can put it back.
         if !notice.persistent,
            miSessionBlocksControl,
            let current = toastNotice,
            current.persistent,
            current.action?.kind == .presentMiReauth {
-            return
+            isSessionToastSuspended = true
         }
         toastNotice = notice
         toastTimerTask?.cancel()
@@ -933,6 +944,7 @@ public final class HomeStore {
             if self?.toastNotice?.id == notice.id {
                 self?.toastNotice = nil
                 self?.activeToastDismissInterval = nil
+                self?.restoreSuspendedSessionToast()
             }
         }
     }
@@ -942,6 +954,18 @@ public final class HomeStore {
         toastTimerTask = nil
         toastNotice = nil
         activeToastDismissInterval = nil
+        restoreSuspendedSessionToast()
+    }
+
+    /// The ordinary toast in front of the expired-session prompt ended. Put the prompt back while
+    /// the session is still blocked. A recovered session or a context change cleared the flag, so
+    /// nothing is restored then. Restoring goes through `showToast`, which never re-enters here:
+    /// a persistent toast has no timer and is not itself preceded by a persistent prompt.
+    private func restoreSuspendedSessionToast() {
+        guard isSessionToastSuspended else { return }
+        isSessionToastSuspended = false
+        guard miSessionBlocksControl else { return }
+        showSessionExpiryToast()
     }
 
     /// The message an external caller reports for a failed write. The expired-session refusal

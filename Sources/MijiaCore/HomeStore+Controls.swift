@@ -27,13 +27,18 @@ extension HomeStore {
     @discardableResult
     func rejectWritesBlockedByMiSession(needsMi: Bool = true) -> Bool {
         guard needsMi, miSessionBlocksControl else { return false }
+        showSessionExpiryToast()
+        return true
+    }
+
+    /// The persistent prompt that carries the only way back into the blocked account.
+    func showSessionExpiryToast() {
         showToast(
             Self.miSessionBlockedMessage,
             isError: true,
             action: ToastAction(title: L10n.tr("扫码", "Scan"), kind: .presentMiReauth),
             persistent: true
         )
-        return true
     }
 
     @discardableResult

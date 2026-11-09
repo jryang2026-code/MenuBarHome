@@ -107,8 +107,8 @@ struct URLCommandHandlerTests {
         }
     }
 
-    @Test("A blocked Mi write keeps the scan toast while the link still reports the error")
-    func blockedWriteKeepsPersistentToast() async throws {
+    @Test("A blocked Mi write shows the link result, then restores the scan toast")
+    func blockedWriteRestoresScanToast() async throws {
         try await L10n.$overrideLanguage.withValue(.en) {
             let (store, provider) = try await Self.makeBlockedStore()
             #expect(store.miSessionBlocksControl)
@@ -125,13 +125,15 @@ struct URLCommandHandlerTests {
             #expect(store.lastRaycastCommandFeedback?.isError == true)
             #expect(store.lastRaycastCommandFeedback?.message == "Xiaomi Home session expired")
             #expect(store.toastNotice?.message == "Xiaomi Home session expired")
-            #expect(store.toastNotice?.persistent == true, "the scan action must survive the link result")
+            #expect(store.toastNotice?.persistent == false, "the link result is shown while the prompt waits")
+            store.dismissToast()
+            #expect(store.toastNotice?.persistent == true, "the scan action returns when the result ends")
             #expect(await provider.executedCommands.isEmpty)
         }
     }
 
-    @Test("An ask link while expired keeps the scan toast")
-    func askLinkKeepsScanToast() async throws {
+    @Test("An ask link while expired shows its failure, then restores the scan toast")
+    func askLinkRestoresScanToast() async throws {
         try await L10n.$overrideLanguage.withValue(.zhHans) {
             let (store, provider) = try await Self.makeBlockedStore(devices: [Self.chineseLamp])
             store.setRaycastIntegration(enabled: true)
@@ -148,14 +150,18 @@ struct URLCommandHandlerTests {
 
             #expect(store.lastRaycastCommandFeedback?.isError == true)
             #expect(store.lastRaycastCommandFeedback?.message == "台灯 未响应")
-            #expect(store.toastNotice?.message == "米家登录已过期", "the assistant failure must not replace the scan toast")
+            // The assistant failure is shown; the scan prompt waits behind it and returns.
+            #expect(store.toastNotice?.message == "台灯 未响应")
+            #expect(store.toastNotice?.persistent == false)
+            store.dismissToast()
+            #expect(store.toastNotice?.message == "米家登录已过期")
             #expect(store.toastNotice?.persistent == true)
             #expect(await provider.executedCommands.isEmpty)
         }
     }
 
-    @Test("A power link keeps a stale scan toast while still reporting the refusal")
-    func blockedPowerLinkKeepsStaleToast() async throws {
+    @Test("A power link shows its refusal, then restores a suspended scan toast")
+    func blockedPowerLinkRestoresScanToast() async throws {
         try await L10n.$overrideLanguage.withValue(.en) {
             let (store, provider) = try await Self.makeBlockedStore()
             store.setRaycastIntegration(enabled: true)
@@ -175,6 +181,8 @@ struct URLCommandHandlerTests {
             #expect(store.lastRaycastCommandFeedback?.isError == true)
             #expect(store.lastRaycastCommandFeedback?.message == "Xiaomi Home session expired")
             #expect(store.toastNotice?.message == "Xiaomi Home session expired")
+            #expect(store.toastNotice?.persistent == false)
+            store.dismissToast()
             #expect(store.toastNotice?.persistent == true)
             #expect(await provider.executedCommands.isEmpty)
         }

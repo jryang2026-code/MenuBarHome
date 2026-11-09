@@ -510,8 +510,8 @@ struct PanelHealthTests {
         #expect(store.toastNotice?.persistent == true)
     }
 
-    @Test("A batch with a refusal and a real failure keeps the scan toast")
-    func batchRefusalAndFailureKeepScanToast() async throws {
+    @Test("A batch with a refusal and a real failure shows the failure, then restores the scan toast")
+    func batchRefusalAndFailureRestoresScanToast() async throws {
         let provider = MockHomeProvider(snapshot: Self.twoLampHome)
         let store = try await makeStore(backend: .xiaomiCloud, session: validSession(), provider: provider)
         #expect(!store.miSessionBlocksControl)
@@ -531,7 +531,11 @@ struct PanelHealthTests {
         let outcome = await allOff.value
         #expect(outcome == .refusedByMiSession)
         #expect(store.undoBanner == nil, "neither device accepted a command")
-        #expect(store.toastNotice?.message == "米家登录已过期", "the real failure must not replace the scan toast")
+        // The real failure is shown, the expiry prompt waits behind it, then comes back.
+        #expect(store.toastNotice?.message.contains("未完成") == true)
+        #expect(store.toastNotice?.persistent == false)
+        store.dismissToast()
+        #expect(store.toastNotice?.message == "米家登录已过期")
         #expect(store.toastNotice?.persistent == true)
         #expect(store.toastNotice?.action == ToastAction(title: "扫码", kind: .presentMiReauth))
     }
@@ -714,9 +718,115 @@ struct PanelHealthTests {
         } else {
             Issue.record("the lamp row is missing")
         }
+        #expect(store.toastNotice?.message == "台灯 调节未生效")
+        #expect(store.toastNotice?.persistent == false)
+        store.dismissToast()
         #expect(store.toastNotice?.message == "米家登录已过期")
         #expect(store.toastNotice?.persistent == true)
         #expect(await provider.executedCommands.isEmpty)
+    }
+
+    @Test("An ordinary error during the block is shown, and the scan toast returns when it ends")
+    func ordinaryErrorSuspendsSessionToast() async throws {
+        let store = try await makeStore(
+            backend: .xiaomiCloud,
+            session: expiredSession(),
+            provider: MockHomeProvider(snapshot: Self.lampHome)
+        )
+        #expect(store.rejectWritesBlockedByMiSession())
+        #expect(store.toastNotice?.persistent == true)
+
+        store.showToast("无法写入钥匙串", isError: true)
+        #expect(store.toastNotice?.message == "无法写入钥匙串", "the keychain error must not be swallowed")
+        #expect(store.toastNotice?.persistent == false)
+        #expect(store.isSessionToastSuspended)
+        let keychainToastID = store.toastNotice?.id
+
+        store.dismissToast()
+        #expect(store.toastNotice?.message == "米家登录已过期")
+        #expect(store.toastNotice?.persistent == true)
+        #expect(store.toastNotice?.id != keychainToastID)
+        #expect(!store.isSessionToastSuspended)
+    }
+
+    @Test("The scan toast returns after an ordinary toast auto-dismisses")
+    func autoDismissRestoresSessionToast() async throws {
+        let store = try await makeStore(
+            backend: .xiaomiCloud,
+            session: expiredSession(),
+            provider: MockHomeProvider(snapshot: Self.lampHome)
+        )
+        #expect(store.rejectWritesBlockedByMiSession())
+        store.toastAutoDismissInterval = .milliseconds(1)
+
+        store.showToast("已同步")
+        #expect(store.toastNotice?.message == "已同步")
+        #expect(store.isSessionToastSuspended)
+
+        for _ in 0..<1_000 {
+            if store.toastNotice?.persistent == true { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(store.toastNotice?.message == "米家登录已过期")
+        #expect(store.toastNotice?.persistent == true)
+        #expect(!store.isSessionToastSuspended)
+    }
+
+    @Test("Recovery while the scan toast is suspended restores nothing")
+    func recoveryWhileSuspendedRestoresNothing() async throws {
+        let store = try await makeStore(
+            backend: .xiaomiCloud,
+            session: expiredSession(),
+            provider: MockHomeProvider(snapshot: Self.lampHome)
+        )
+        #expect(store.rejectWritesBlockedByMiSession())
+        store.showToast("无法写入钥匙串", isError: true)
+        #expect(store.isSessionToastSuspended)
+
+        store.miSessionExpiresAt = farEnd
+        store.miAccounts = [MiAccount(session: validSession())]
+        #expect(!store.miSessionBlocksControl)
+
+        store.dismissToast()
+        #expect(store.toastNotice == nil, "a recovered session must not bring the prompt back")
+        #expect(!store.isSessionToastSuspended)
+    }
+
+    @Test("A context change while the scan toast is suspended restores nothing")
+    func contextChangeWhileSuspendedRestoresNothing() async throws {
+        let store = try await makeStore(
+            backend: .xiaomiCloud,
+            session: expiredSession(),
+            provider: MockHomeProvider(snapshot: Self.lampHome)
+        )
+        #expect(store.rejectWritesBlockedByMiSession())
+        store.showToast("无法写入钥匙串", isError: true)
+        #expect(store.isSessionToastSuspended)
+
+        store.switchBackend(.demo)
+        #expect(!store.isSessionToastSuspended)
+        store.dismissToast()
+        #expect(store.toastNotice == nil, "demo mode must not restore the old prompt")
+    }
+
+    @Test("A second blocked write does not stack a toast behind the ordinary one")
+    func secondBlockedWriteDoesNotStack() async throws {
+        let store = try await makeStore(
+            backend: .xiaomiCloud,
+            session: expiredSession(),
+            provider: MockHomeProvider(snapshot: Self.lampHome)
+        )
+        #expect(store.rejectWritesBlockedByMiSession())
+        store.showToast("无法写入钥匙串", isError: true)
+        let ordinaryID = store.toastNotice?.id
+
+        #expect(store.rejectWritesBlockedByMiSession())
+        #expect(store.toastNotice?.id == ordinaryID, "the ordinary message stays on screen")
+        #expect(store.isSessionToastSuspended)
+
+        store.dismissToast()
+        #expect(store.toastNotice?.message == "米家登录已过期")
+        #expect(store.toastNotice?.persistent == true)
     }
 
     @Test("Switching to demo clears the expired-session toast")
