@@ -584,22 +584,286 @@ struct UpdateCheckerTests {
         #expect(waited < .seconds(20), "an update install never stalls long on a broken image")
     }
 
-    private static func runTool(_ executable: String, _ arguments: [String]) throws {
+    /// Collects a child's pipe output on the queue that reads it, so the test never blocks on a
+    /// pipe that a hung child keeps open.
+    private final class PipeCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var chunks = Data()
+        private var finished = false
+
+        func append(_ chunk: Data) {
+            lock.lock()
+            chunks.append(chunk)
+            lock.unlock()
+        }
+
+        func finish() {
+            lock.lock()
+            finished = true
+            lock.unlock()
+        }
+
+        var data: Data {
+            lock.lock()
+            defer { lock.unlock() }
+            return chunks
+        }
+
+        /// Waits briefly for the reader to see end of file; whatever it already read is kept.
+        func waitUntilFinished(timeout: Duration = .seconds(2)) {
+            let deadline = ContinuousClock.now + timeout
+            while ContinuousClock.now < deadline {
+                lock.lock()
+                let done = finished
+                lock.unlock()
+                if done { return }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
+    }
+
+    private struct ToolResult {
+        let status: Int32
+        let stdout: Data
+        let stderr: Data
+        let timedOut: Bool
+    }
+
+    /// Runs a tool with a deadline. A hung subprocess is terminated, then killed, instead of
+    /// blocking the test or holding the hdiutil gate forever.
+    private static func runToolProcess(
+        _ executable: String,
+        _ arguments: [String],
+        timeout: Duration = .seconds(30)
+    ) throws -> ToolResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-        process.standardOutput = FileHandle.nullDevice
+        let outPipe = Pipe()
         let errPipe = Pipe()
+        process.standardOutput = outPipe
         process.standardError = errPipe
         try process.run()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-        while process.isRunning {
-            Thread.sleep(forTimeInterval: 0.005)
+
+        let stdout = PipeCollector()
+        let stderr = PipeCollector()
+        outPipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                handle.readabilityHandler = nil
+                stdout.finish()
+            } else {
+                stdout.append(chunk)
+            }
         }
-        if process.terminationStatus != 0 {
-            let errText = String(data: errData, encoding: .utf8) ?? ""
-            throw UpdateInstallError.unpackFailed("\(executable) exited \(process.terminationStatus): \(errText)")
+        errPipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                handle.readabilityHandler = nil
+                stderr.finish()
+            } else {
+                stderr.append(chunk)
+            }
         }
+
+        let deadline = ContinuousClock.now + timeout
+        while process.isRunning, ContinuousClock.now < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        var timedOut = false
+        if process.isRunning {
+            timedOut = true
+            process.terminate()
+            let grace = ContinuousClock.now + .seconds(2)
+            while process.isRunning, ContinuousClock.now < grace {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
+        process.waitUntilExit()
+        stdout.waitUntilFinished()
+        stderr.waitUntilFinished()
+        return ToolResult(
+            status: process.terminationStatus,
+            stdout: stdout.data,
+            stderr: stderr.data,
+            timedOut: timedOut
+        )
+    }
+
+    private static func runTool(_ executable: String, _ arguments: [String]) throws {
+        let result = try runToolProcess(executable, arguments)
+        if result.timedOut {
+            throw UpdateInstallError.unpackFailed("\(executable) timed out")
+        }
+        if result.status != 0 {
+            let errText = String(decoding: result.stderr, as: UTF8.self)
+            throw UpdateInstallError.unpackFailed("\(executable) exited \(result.status): \(errText)")
+        }
+    }
+
+    private static func runToolOutput(_ executable: String, _ arguments: [String]) -> Data? {
+        guard let result = try? runToolProcess(executable, arguments, timeout: .seconds(20)),
+              !result.timedOut, result.status == 0 else { return nil }
+        return result.stdout
+    }
+
+    /// Serializes the attach work inside this process: Swift Testing runs test cases and their
+    /// repetitions in parallel, and two attaches at once are what `hdiutil` answers with
+    /// "Resource temporarily unavailable". A waiter that never gets the gate times out and
+    /// reports it instead of hanging the run.
+    private final class HdiutilGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var isBusy = false
+        private var waiters: [(id: UInt64, continuation: CheckedContinuation<Bool, Never>)] = []
+        private var nextID: UInt64 = 0
+
+        func acquire(timeout: Duration = .seconds(120)) async -> Bool {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if !isBusy {
+                    isBusy = true
+                    lock.unlock()
+                    continuation.resume(returning: true)
+                    return
+                }
+                nextID &+= 1
+                let id = nextID
+                waiters.append((id, continuation))
+                lock.unlock()
+                Task {
+                    try? await Task.sleep(for: timeout)
+                    self.expire(id)
+                }
+            }
+        }
+
+        private func expire(_ id: UInt64) {
+            lock.lock()
+            guard let index = waiters.firstIndex(where: { $0.id == id }) else {
+                lock.unlock()
+                return
+            }
+            let waiter = waiters.remove(at: index)
+            lock.unlock()
+            waiter.continuation.resume(returning: false)
+        }
+
+        func release() {
+            lock.lock()
+            if waiters.isEmpty {
+                isBusy = false
+                lock.unlock()
+            } else {
+                let next = waiters.removeFirst()
+                lock.unlock()
+                next.continuation.resume(returning: true)
+            }
+        }
+    }
+
+    private static let hdiutilGate = HdiutilGate()
+
+    /// A machine-wide lock around the attach work. Two checkouts on this Mac share one mount
+    /// table, and attaches at the same time are what it answers with "Resource temporarily
+    /// unavailable". `flock` releases on process death, so an interrupted run cannot leave it
+    /// held.
+    private final class CrossProcessLock: @unchecked Sendable {
+        private let path: String
+        private var descriptor: Int32?
+
+        init(name: String) {
+            path = FileManager.default.temporaryDirectory.appendingPathComponent(name).path
+        }
+
+        /// False when another process held the lock for the whole wait.
+        func acquire(timeout: Duration = .seconds(120)) async -> Bool {
+            let deadline = ContinuousClock.now + timeout
+            while true {
+                let fd = open(path, O_CREAT | O_RDWR, 0o644)
+                guard fd >= 0 else { return false }
+                if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+                    descriptor = fd
+                    return true
+                }
+                close(fd)
+                guard ContinuousClock.now < deadline else { return false }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+
+        func release() {
+            guard let descriptor else { return }
+            flock(descriptor, LOCK_UN)
+            close(descriptor)
+            self.descriptor = nil
+        }
+    }
+
+    private static let hdiutilLock = CrossProcessLock(name: "MenuBarHome-live-driver.lock")
+
+    /// Whole-image device entries (`/dev/diskN`) of attached images whose `image-path` satisfies
+    /// `matches`. Reading `hdiutil info` keeps this test from detaching a volume another checkout
+    /// is still using.
+    private static func imageDevices(where matches: (String) -> Bool) -> [String] {
+        guard let data = runToolOutput("/usr/bin/hdiutil", ["info", "-plist"]),
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              let images = plist["images"] as? [[String: Any]] else { return [] }
+        var devices: [String] = []
+        for image in images {
+            guard let path = image["image-path"] as? String, matches(path),
+                  let entities = image["system-entities"] as? [[String: Any]],
+                  let device = entities.compactMap({ $0["dev-entry"] as? String }).first else { continue }
+            devices.append(device)
+        }
+        return devices
+    }
+
+    private static func detach(_ devices: [String]) {
+        for device in devices {
+            try? runTool("/usr/bin/hdiutil", ["detach", device, "-force"])
+        }
+    }
+
+    /// Detaches only the images this run created: their `image-path` is inside `rootDir`.
+    private static func detachImages(beneath rootDir: URL) {
+        let root = rootDir.resolvingSymlinksInPath().path
+        detach(imageDevices { path in
+            URL(fileURLWithPath: path).resolvingSymlinksInPath().path.hasPrefix(root)
+        })
+    }
+
+    /// Unpacks the DMG. A checkout still running the code before the flock existed creates and
+    /// attaches images without the lock, so an attach can be busy past the production retry
+    /// window; one more attempt turns that into a slower pass. Every other failure, including a
+    /// bad signature or a broken image, is rethrown unchanged.
+    private static func unpackDmg(_ url: URL, into destination: URL) async throws -> URL {
+        do {
+            return try await UpdateSystemDriver.live.unpackArchive(url, .dmg, destination)
+        } catch UpdateInstallError.unpackFailed(let reason) where isAttachBusy(reason) {
+            try await Task.sleep(for: .seconds(1))
+            return try await UpdateSystemDriver.live.unpackArchive(url, .dmg, destination)
+        }
+    }
+
+    /// The disk-image service answers this when two attaches overlap.
+    private static func isAttachBusy(_ reason: String) -> Bool {
+        reason.contains("attach failed")
+            && (reason.contains("Resource temporarily unavailable") || reason.contains("资源暂时不可用"))
+    }
+
+    /// Detaches images this test created in an interrupted earlier run. Only a missing backing
+    /// file proves that run is gone: a file that still exists may belong to a checkout running
+    /// right now, and its image is never touched.
+    private static func detachDeadLiveDriverImages() {
+        let fileManager = FileManager.default
+        let dead = imageDevices { path in
+            let url = URL(fileURLWithPath: path)
+            return url.deletingLastPathComponent().lastPathComponent.hasPrefix("live-driver-")
+                && url.lastPathComponent.hasPrefix("MenuBarHome-")
+                && !fileManager.fileExists(atPath: path)
+        }
+        detach(dead)
     }
 
     private static func makeSignedMachOAppBundle(
@@ -629,7 +893,20 @@ struct UpdateCheckerTests {
     func liveDriverUnpacksAndVerifiesSignedBundles() async throws {
         let rootDir = FileManager.default.temporaryDirectory.appendingPathComponent("live-driver-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: rootDir) }
+        // One attach at a time in this process and on this Mac, and detach this run's image
+        // whatever happens: a leaked image counts against the system mount limit and makes the
+        // next attach fail.
+        let gateAcquired = await Self.hdiutilGate.acquire()
+        try #require(gateAcquired, "another test in this process held the hdiutil gate for two minutes")
+        let locked = await Self.hdiutilLock.acquire()
+        defer {
+            Self.detachImages(beneath: rootDir)
+            Self.hdiutilLock.release()
+            Self.hdiutilGate.release()
+            try? FileManager.default.removeItem(at: rootDir)
+        }
+        try #require(locked, "another checkout held the hdiutil lock for two minutes")
+        Self.detachDeadLiveDriverImages()
 
         let missingPinRequirement = AppUpdater.codeSigningRequirement(
             bundleIdentifier: AppUpdater.expectedBundleIdentifier,
@@ -666,14 +943,17 @@ struct UpdateCheckerTests {
             to: dmgSrcDir.appendingPathComponent("MenuBarHome.app", isDirectory: true)
         )
         let dmgURL = rootDir.appendingPathComponent("MenuBarHome-1.5.0.dmg")
+        // A volume name another checkout still has mounted makes `hdiutil create` answer
+        // "Resource busy"; the suffix keeps two checkouts out of each other's way.
+        let volumeName = "MenuBarHome 1.5.0 \(UUID().uuidString.prefix(8))"
         try Self.runTool(
             "/usr/bin/hdiutil",
-            ["create", "-volname", "MenuBarHome 1.5.0", "-srcfolder", dmgSrcDir.path, "-ov", "-format", "UDZO", dmgURL.path]
+            ["create", "-volname", volumeName, "-srcfolder", dmgSrcDir.path, "-ov", "-format", "UDZO", dmgURL.path]
         )
 
         let dmgDest = rootDir.appendingPathComponent("dmg-dest", isDirectory: true)
         try FileManager.default.createDirectory(at: dmgDest, withIntermediateDirectories: true)
-        let unpackedFromDmg = try await UpdateSystemDriver.live.unpackArchive(dmgURL, .dmg, dmgDest)
+        let unpackedFromDmg = try await Self.unpackDmg(dmgURL, into: dmgDest)
         #expect(unpackedFromDmg.lastPathComponent == "MenuBarHome.app")
         #expect(!FileManager.default.fileExists(atPath: dmgDest.appendingPathComponent("mnt").path))
         try await UpdateSystemDriver.live.stripQuarantine(unpackedFromDmg)

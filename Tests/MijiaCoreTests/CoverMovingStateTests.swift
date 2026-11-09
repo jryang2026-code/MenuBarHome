@@ -258,6 +258,7 @@ struct CoverMovingStateTests {
         let card = try #require(store.devices.first)
 
         #expect(await store.togglePrimary(card)?.value == true)
+        try store.extendCoverLock(card.id)
         let optimistic = try #require(store.devices.first?.coverSpec)
         #expect(optimistic.positionPercent == 100)
         #expect(optimistic.motion == .opening)
@@ -346,7 +347,11 @@ struct CoverMovingStateTests {
         let parked = try coverDevice(current: 0, target: 0, status: 0)
         let (store, mock) = try await makeStore([parked])
         let card = try #require(store.devices.first)
+        let beforeCommand = store.snapshotGeneration
         #expect(await store.togglePrimary(card)?.value == true)
+        // The mock echoes the parked snapshot while the send is in flight. Wait for it so the
+        // takeover rule, not the echo's timing, is what this test exercises.
+        try await store.settleCoverCommand(card.id, after: beforeCommand)
 
         // The target moved to 100 and the status says Opening, but the reported position is still 0.
         // The display position is the target, so comparing it would unlock before the motor moves.
@@ -371,7 +376,12 @@ struct CoverMovingStateTests {
 
         let arrived = try coverDevice(current: 100, target: 100, status: 0)
         await mock.updateSnapshot(SynthesizedHome(devices: [arrived]))
-        await waitUntil { store.devices.first?.coverSpec?.motion == CoverMotion.stopped }
+        // The stale stop above already reads as "stopped", so wait for the state this report
+        // produces instead of for a stop word an earlier snapshot can supply.
+        await waitUntil {
+            let current = store.devices.first?.coverSpec
+            return current?.motion == .stopped && current?.positionPercent == 100
+        }
         let settled = try #require(store.devices.first?.coverSpec)
         #expect(settled.positionPercent == 100)
         #expect(settled.motion == .stopped)
@@ -384,6 +394,7 @@ struct CoverMovingStateTests {
         let (store, mock) = try await makeStore([parked])
         let card = try #require(store.devices.first)
         #expect(await store.togglePrimary(card)?.value == true)
+        try store.extendCoverLock(card.id)
 
         // The motor says it is opening while its target still reads 0. Accepting this sample would
         // replace the commanded 100 with 1, so the lock must hold until the position catches up.
@@ -412,6 +423,7 @@ struct CoverMovingStateTests {
         let card = try #require(store.devices.first)
 
         #expect(await store.togglePrimary(card)?.value == true)
+        try store.extendCoverLock(card.id)
 
         let moving = try coverDevice(current: 100, target: 100, status: 1)
         await mock.updateSnapshot(SynthesizedHome(devices: [moving]))
@@ -435,12 +447,14 @@ struct CoverMovingStateTests {
         let id = parked.id
 
         store.setCoverPosition(id, percent: 99)
+        try store.extendCoverLock(id)
         await waitUntil { await mock.executedCommands.count == 1 }
         let high = try #require(store.devices.first?.coverSpec)
         #expect(high.positionPercent == 100)
         #expect(await mock.executedCommands.last == .setNumberValue(entityId: "miot:cover1:2", value: 99))
 
         store.setCoverPosition(id, percent: 1)
+        try store.extendCoverLock(id)
         await waitUntil { await mock.executedCommands.count == 2 }
         let low = try #require(store.devices.first?.coverSpec)
         #expect(low.positionPercent == 0)
@@ -455,6 +469,7 @@ struct CoverMovingStateTests {
         let card = try #require(store.devices.first)
 
         #expect(await store.togglePrimary(card)?.value == true)
+        try store.extendCoverLock(card.id)
         let paused = try #require(store.devices.first?.coverSpec)
         #expect(paused.motion == .stopped)
         #expect(store.optimisticLockUntil[moving.id] != nil, "a stale travel report must not restart the label")
@@ -475,6 +490,7 @@ struct CoverMovingStateTests {
         let card = try #require(store.devices.first)
 
         #expect(await store.togglePrimary(card)?.value == true)
+        try store.extendCoverLock(card.id)
 
         // The motor reported stopped at 40 while the target still says 100. The pre-command
         // position was 0, so this is a real stop, not the stale snapshot before travel.

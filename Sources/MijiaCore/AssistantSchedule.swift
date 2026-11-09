@@ -131,17 +131,35 @@ public struct ScheduledCommand: Codable, Identifiable, Equatable, Sendable {
     public let reply: String
     public let fireDate: Date
     public let plan: IntentPlan
-    /// The connection source that created this timer (`demo`, `ha:<url>`, `mi:<scope>`); a timer only
-    /// fires against the source it was set on. Nil on entries written before scopes existed; they are
-    /// adopted into the current source once, at the next restore (ADR-0019).
+    /// Every source connected when this timer was created (`demo`, `ha:<url>`, `mi:<scope>`). It arms
+    /// while this set still matches the connected sources; a Home Assistant server change never matches.
+    /// Entries written before this field existed have only `sourceScope`; see `effectiveSourceScopes`.
+    public let sourceScopes: [String]?
+    /// The connection source written by earlier builds (`demo`, `ha:<url>`, `mi:<scope>`). Kept so stored
+    /// timers and downgrades still decode; new timers set both fields (ADR-0019).
     public let sourceScope: String?
 
-    public init(id: UUID = UUID(), reply: String, fireDate: Date, plan: IntentPlan, sourceScope: String? = nil) {
+    /// What the timer is matched against: the recorded set, the older single scope, or nil for entries
+    /// written before scopes existed (adopted once at restore).
+    public var effectiveSourceScopes: [String]? {
+        if let sourceScopes { return sourceScopes }
+        return sourceScope.map { [$0] }
+    }
+
+    public init(
+        id: UUID = UUID(),
+        reply: String,
+        fireDate: Date,
+        plan: IntentPlan,
+        sourceScope: String? = nil,
+        sourceScopes: [String]? = nil
+    ) {
         self.id = id
         self.reply = reply
         self.fireDate = fireDate
         self.plan = plan
         self.sourceScope = sourceScope
+        self.sourceScopes = sourceScopes
     }
 
     /// The same timer, claimed by the source that is connected now. Used only for legacy entries.

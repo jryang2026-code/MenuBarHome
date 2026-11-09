@@ -60,7 +60,7 @@ struct AssistantScheduleTests {
         #expect(store.scheduledCommands.map(\.reply) == ["10 分钟后关闭书房吸顶灯"])
         #expect(await mock.executedCommands.isEmpty)
 
-        for _ in 0..<50 where store.scheduledCommands.isEmpty == false {
+        for _ in 0..<50 where await mock.executedCommands.isEmpty {
             try await Task.sleep(for: .milliseconds(20))
         }
         #expect(store.scheduledCommands.isEmpty)
@@ -108,7 +108,7 @@ struct AssistantScheduleTests {
 
         store.assistantSleep = { _ in try await Task.sleep(for: .milliseconds(30)) }
         store.restoreScheduledCommands(now: Date())
-        for _ in 0..<50 where !store.scheduledCommands.isEmpty {
+        for _ in 0..<50 where await mock.executedCommands.isEmpty {
             try await Task.sleep(for: .milliseconds(20))
         }
         #expect(store.scheduledCommands.isEmpty)
@@ -188,7 +188,7 @@ struct AssistantScheduleTests {
         let (store, mock) = try await makeStore()
         _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
         store.assistantNow = { Date().addingTimeInterval(10 * 60 + 20) }
-        for _ in 0..<50 where !store.scheduledCommands.isEmpty {
+        for _ in 0..<50 where await mock.executedCommands.isEmpty {
             try await Task.sleep(for: .milliseconds(20))
         }
         #expect(store.missedScheduledCommands.isEmpty)

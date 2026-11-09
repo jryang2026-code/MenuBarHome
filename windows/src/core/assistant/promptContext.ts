@@ -8,7 +8,7 @@ import { deviceAcceptsControlWrites, isActiveDevice } from "../models.js";
 import { deviceHeadInstruction, proactiveHeadInstruction } from "./actionPolicy.js";
 import type { AssistantContext } from "./context.js";
 import { buildEnvironmentSummary, buildTimeSummary, EMPTY_ASSISTANT_CONTEXT } from "./context.js";
-import { isAirPurifierDevice } from "./deviceCategory.js";
+import { isAirPurifierDevice, isHeaterDevice } from "./deviceCategory.js";
 import type {
   CommandMention,
   HabitEntry,
@@ -68,14 +68,7 @@ export function assistantDeviceCategory(device: SmartDevice): string | null {
     case "light":
       return "light";
     case "climate":
-      if (
-        device.model.includes("heater") ||
-        device.model.includes("blanket") ||
-        ["电暖", "暖气", "取暖", "暖风"].some((hint) => device.name.includes(hint))
-      ) {
-        return "heater";
-      }
-      return "climate";
+      return isHeaterDevice(device) ? "heater" : "climate";
     case "plug":
     case "vacuum":
     case "camera":

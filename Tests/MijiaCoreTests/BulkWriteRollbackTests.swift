@@ -195,6 +195,7 @@ struct BulkWriteRollbackTests {
             store.devices.first { $0.id == "dev_ceiling" }?.isActiveOn == false,
             "no rollback after the context moved on"
         )
+        #expect(store.runningBatches.isEmpty, "the stopped batch leaves no registration behind")
     }
 
     @Test("A device that accepted one command keeps its row and undo entry when the next one fails")
@@ -380,5 +381,447 @@ struct BulkWriteRollbackTests {
         store.pauseUndoBannerCountdown()
         await task?.value
         #expect(await mock.executedCommands == [.setLightPower(entityId: "light.ceiling", isOn: false)])
+    }
+
+    @Test("Undo during a running 全关 stops the batch and restores only the device it reached")
+    @MainActor
+    func undoDuringRunningBatchStopsRemainingCommands() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling, Self.deskLamp])
+        await mock.holdNextExecute()
+
+        let batch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        try await waitUntil { await mock.executeStarted == 1 }
+
+        let undo = try #require(store.undoTurnAllOff())
+        // The cards answer at once, before the held command has reached its device.
+        #expect(store.devices.first { $0.id == "dev_ceiling" }?.isActiveOn == true)
+        #expect(store.devices.first { $0.id == "dev_desk" }?.isActiveOn == true)
+
+        await mock.releaseExecute()
+        await batch?.value
+        await undo.value
+
+        // The held command finishes first, then the only restore. The desk lamp is never switched
+        // off, so it never needs (and never gets) a restore command.
+        #expect(await mock.executedCommands == [
+            .setLightPower(entityId: "light.ceiling", isOn: false),
+            .setLightPower(entityId: "light.ceiling", isOn: true),
+        ])
+        #expect(store.devices.first { $0.id == "dev_ceiling" }?.isActiveOn == true)
+        #expect(store.devices.first { $0.id == "dev_desk" }?.isActiveOn == true)
+        #expect(store.runningBatches.isEmpty)
+        #expect(store.undoBanner == nil)
+        #expect(store.toastNotice?.message.contains("已恢复关闭前的状态") == true)
+    }
+
+    @Test("Undo during a running quick action restores only the device it reached")
+    @MainActor
+    func undoDuringRunningQuickActionFiltersRestores() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling, Self.deskLamp])
+        await mock.holdNextExecute()
+
+        let batch = store.executeQuickAction(.softNightLight)
+        store.pauseUndoBannerCountdown()
+        try await waitUntil { await mock.executeStarted == 1 }
+
+        let undo = try #require(store.undoTurnAllOff())
+        await mock.releaseExecute()
+        await batch?.value
+        await undo.value
+
+        // Only the ceiling light was touched: its brightness landed, its colour never left, and
+        // only its own two restores are sent. The desk lamp row is back whole with no command.
+        #expect(await mock.executedCommands == [
+            .setLightBrightness(entityId: "light.ceiling", percent: 15),
+            .setLightBrightness(entityId: "light.ceiling", percent: 80),
+            .setLightColorTemp(entityId: "light.ceiling", kelvin: 4000),
+        ])
+        let desk = try #require(store.devices.first { $0.id == "dev_desk" })
+        if case .light(let spec) = desk.kind {
+            #expect(spec.isOn)
+            #expect(spec.brightnessPercent == 60)
+            #expect(spec.colorTempKelvin == 5000)
+        } else {
+            Issue.record("expected the desk lamp row, got \(desk.kind)")
+        }
+        #expect(store.undoBanner == nil)
+    }
+
+    @Test("A command that fails after the undo reports nothing and revives no banner")
+    @MainActor
+    func failureAfterUndoStaysSilent() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling])
+        // The held off command fails; the undo's on command still succeeds.
+        await mock.setFailingCommands { command in
+            if case .setLightPower(_, let isOn) = command { return isOn == false }
+            return false
+        }
+        await mock.holdNextExecute()
+
+        let batch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        try await waitUntil { await mock.executeStarted == 1 }
+
+        let undo = try #require(store.undoTurnAllOff())
+        // Let an unserialised undo finish its restore and toast before the held command fails, so a
+        // late failure report would be the last word on screen. The serialised undo is parked on the
+        // in-flight command here and sends nothing.
+        for _ in 0..<100 { await Task.yield() }
+        #expect(store.toastNotice == nil, "the undo must still be waiting for the held command")
+        await mock.releaseExecute()
+        await batch?.value
+        await undo.value
+
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "light.ceiling", isOn: true)])
+        #expect(store.devices.first { $0.id == "dev_ceiling" }?.isActiveOn == true)
+        #expect(store.undoBanner == nil, "a stopped batch must not bring the banner back")
+        #expect(store.toastNotice?.isError == false)
+        #expect(store.toastNotice?.message.contains("未完成") == false)
+        #expect(store.toastNotice?.message.contains("未响应") == false)
+        #expect(store.userHabitMemory.entries.isEmpty, "a stopped batch never trains habits")
+    }
+
+    @Test("A banner that expires mid-batch still sends the remaining commands")
+    @MainActor
+    func bannerExpiryDoesNotStopTheBatch() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling, Self.deskLamp])
+        await mock.holdNextExecute()
+
+        let batch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        try await waitUntil { await mock.executeStarted == 1 }
+
+        // What the expiry timer does when the window runs out: only an actual undo may stop a batch.
+        store.undoBanner = nil
+        await mock.releaseExecute()
+        await batch?.value
+
+        #expect(await mock.executedCommands == [
+            .setLightPower(entityId: "light.ceiling", isOn: false),
+            .setLightPower(entityId: "light.desk", isOn: false),
+        ])
+        #expect(store.devices.allSatisfy { !$0.isActiveOn })
+        #expect(store.undoBanner == nil)
+    }
+
+    @Test("Undo after the batch finished restores every device it switched off")
+    @MainActor
+    func undoAfterFinishedBatchRestoresEveryDevice() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling, Self.deskLamp])
+        let batch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        await batch?.value
+        #expect(store.runningBatches.isEmpty)
+
+        let undo = try #require(store.undoTurnAllOff())
+        await undo.value
+
+        let commands = await mock.executedCommands
+        #expect(commands.count == 4)
+        #expect(Array(commands.suffix(2)) == [
+            .setLightPower(entityId: "light.ceiling", isOn: true),
+            .setLightPower(entityId: "light.desk", isOn: true),
+        ])
+        #expect(store.devices.allSatisfy { $0.isActiveOn })
+    }
+
+    @Test("A snapshot during the undo wait cannot leave the card off")
+    @MainActor
+    func undoWaitKeepsRestoredRowAgainstSnapshot() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling])
+        await mock.holdNextExecute()
+
+        let batch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        try await waitUntil { await mock.executeStarted == 1 }
+
+        let undo = try #require(store.undoTurnAllOff())
+        #expect(store.devices.first?.isActiveOn == true)
+        // The device answers slowly and reports the batch's own state while the undo is still waiting.
+        var reportedOff = Self.ceiling
+        if case .light(var spec) = reportedOff.kind {
+            spec.isOn = false
+            reportedOff.kind = .light(spec)
+        }
+        let before = store.snapshotGeneration
+        await mock.updateSnapshot(SynthesizedHome(devices: [reportedOff]))
+        try await waitUntil { store.snapshotGeneration > before }
+        #expect(store.devices.first?.isActiveOn == true, "the wait lock keeps the restored row")
+
+        await mock.releaseExecute()
+        await batch?.value
+        await undo.value
+        #expect(store.devices.first?.isActiveOn == true)
+        #expect(await mock.executedCommands == [
+            .setLightPower(entityId: "light.ceiling", isOn: false),
+            .setLightPower(entityId: "light.ceiling", isOn: true),
+        ])
+    }
+
+    @Test("The undo holds its rows through the wait, then relaxes the lock")
+    @MainActor
+    func undoWaitLockIsBoundedAndRelaxed() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling])
+        await mock.holdNextExecute()
+
+        let batch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        try await waitUntil { await mock.executeStarted == 1 }
+
+        let undo = try #require(store.undoTurnAllOff())
+        let now = ContinuousClock.now
+        let waitingDeadline = try #require(store.optimisticLockUntil["dev_ceiling"])
+        #expect(waitingDeadline > now.advanced(by: .seconds(3)), "held past the normal 3 s window")
+        #expect(
+            waitingDeadline <= now.advanced(by: HomeStore.undoWaitLockCeiling),
+            "bounded: a command that never returns cannot keep the row locked forever"
+        )
+
+        // Hold the restore so the relaxed lock can be seen before its snapshot arrives.
+        await mock.holdNextExecute(forTarget: "light.ceiling")
+        await mock.releaseExecute()
+        await batch?.value
+        try await waitUntil { await mock.executeStarted == 2 }
+        let afterWait = try #require(store.optimisticLockUntil["dev_ceiling"])
+        #expect(
+            afterWait <= ContinuousClock.now.advanced(by: .seconds(3)),
+            "the normal lease is back once the wait is over"
+        )
+
+        await mock.releaseExecute()
+        await undo.value
+    }
+
+    @Test("A context change while the undo waits writes nothing into the new home")
+    @MainActor
+    func undoWaitStopsAtContextChange() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling])
+        await mock.holdNextExecute()
+
+        let batch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        try await waitUntil { await mock.executeStarted == 1 }
+
+        let undo = try #require(store.undoTurnAllOff())
+        store.invalidateUndoContext()
+        await mock.releaseExecute()
+        await batch?.value
+        await undo.value
+
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "light.ceiling", isOn: false)])
+        #expect(store.toastNotice == nil, "a home that is no longer on screen reports nothing")
+        #expect(store.undoBanner == nil)
+        #expect(
+            store.optimisticLockUntil.isEmpty,
+            "a stale undo must not write row state into the new home"
+        )
+    }
+
+    @Test("A newer write during the undo wait keeps its row")
+    @MainActor
+    func undoWaitLeavesNewerWriteInPlace() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling])
+        store.controlDebounceInterval = .zero
+        await mock.holdNextExecute()
+
+        let batch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        try await waitUntil { await mock.executeStarted == 1 }
+
+        let undo = try #require(store.undoTurnAllOff())
+        // The user changes the lamp while the undo waits for the slow off command.
+        store.setLightBrightness("dev_ceiling", percent: 42)
+        try await waitUntil {
+            await mock.executedCommands.contains(
+                .setLightBrightness(entityId: "light.ceiling", percent: 42)
+            )
+        }
+
+        await mock.releaseExecute()
+        await batch?.value
+        await undo.value
+
+        let light = try #require(store.devices.first)
+        if case .light(let spec) = light.kind {
+            #expect(spec.isOn)
+            #expect(spec.brightnessPercent == 42, "the newer write owns the row, so the undo leaves it")
+        } else {
+            Issue.record("expected the light row, got \(light.kind)")
+        }
+    }
+
+    @Test("A device taken over during the batch gets neither a local nor a network restore")
+    @MainActor
+    func undoDuringBatchLeavesTakenOverDeviceAlone() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling, Self.deskLamp])
+        store.controlDebounceInterval = .zero
+        await mock.holdNextExecute()
+
+        let batch = store.executeQuickAction(.softNightLight)
+        store.pauseUndoBannerCountdown()
+        try await waitUntil { await mock.executeStarted == 1 }
+
+        // The desk lamp is taken over while the ceiling light's command is still in flight.
+        store.setLightBrightness("dev_desk", percent: 70)
+        try await waitUntil {
+            await mock.executedCommands.contains(
+                .setLightBrightness(entityId: "light.desk", percent: 70)
+            )
+        }
+
+        let undo = try #require(store.undoTurnAllOff())
+        let desk = try #require(store.devices.first { $0.id == "dev_desk" })
+        if case .light(let spec) = desk.kind {
+            #expect(spec.brightnessPercent == 70, "undo does not restore a taken-over row locally")
+        } else {
+            Issue.record("expected the desk lamp row, got \(desk.kind)")
+        }
+
+        await mock.releaseExecute()
+        await batch?.value
+        await undo.value
+
+        let commands = await mock.executedCommands
+        #expect(!commands.contains(.setLightBrightness(entityId: "light.desk", percent: 60)))
+        #expect(!commands.contains(.setLightColorTemp(entityId: "light.desk", kelvin: 5000)))
+        #expect(commands.contains(.setLightBrightness(entityId: "light.ceiling", percent: 80)))
+    }
+
+    @Test("A skipped command keeps its whole intent group out of the habits")
+    @MainActor
+    func skippedCommandTrainsNoHabitGroup() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling])
+        store.controlDebounceInterval = .zero
+        await mock.holdNextExecute()
+
+        let batch = store.executeQuickAction(.softNightLight)
+        store.pauseUndoBannerCountdown()
+        try await waitUntil { await mock.executeStarted == 1 }
+
+        // The brightness command is out; a newer write takes the row before the colour follows.
+        store.setLightBrightness("dev_ceiling", percent: 70)
+        try await waitUntil {
+            await mock.executedCommands.contains(
+                .setLightBrightness(entityId: "light.ceiling", percent: 70)
+            )
+        }
+
+        await mock.releaseExecute()
+        await batch?.value
+
+        #expect(
+            !(await mock.executedCommands.contains(
+                .setLightColorTemp(entityId: "light.ceiling", kelvin: 2700)
+            ))
+        )
+        let keys = store.userHabitMemory.entries.map { "\($0.targetId)|\($0.operationKey)" }
+        #expect(!keys.contains("dev_ceiling|brightness:15"), "a skipped command must not train its group")
+        #expect(!keys.contains("dev_ceiling|colorTemperature:2700"))
+    }
+
+    @Test("An older batch skips a device a newer write took and still sends to the rest")
+    @MainActor
+    func olderBatchSkipsTakenDevice() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling, Self.deskLamp])
+        store.controlDebounceInterval = .zero
+        await mock.holdNextExecute()
+
+        let batch = store.executeQuickAction(.softNightLight)
+        store.pauseUndoBannerCountdown()
+        try await waitUntil { await mock.executeStarted == 1 }
+
+        // The user dims the second lamp while the first command is still in flight.
+        store.setLightBrightness("dev_desk", percent: 70)
+        try await waitUntil {
+            await mock.executedCommands.contains(
+                .setLightBrightness(entityId: "light.desk", percent: 70)
+            )
+        }
+
+        await mock.releaseExecute()
+        await batch?.value
+
+        // Its queued brightness and colour must not overwrite the newer 70.
+        let commands = await mock.executedCommands
+        #expect(!commands.contains(.setLightBrightness(entityId: "light.desk", percent: 15)))
+        #expect(!commands.contains(.setLightColorTemp(entityId: "light.desk", kelvin: 2700)))
+        #expect(commands.contains(.setLightColorTemp(entityId: "light.ceiling", kelvin: 2700)))
+        #expect(store.toastNotice == nil, "a skipped device is not a failure")
+        #expect(store.devices.first { $0.id == "dev_desk" }?.isActiveOn == true)
+
+        // The banner no longer carries it, so undo leaves both its row and the network alone.
+        let undo = try #require(store.undoTurnAllOff())
+        await undo.value
+        let afterUndo = await mock.executedCommands
+        #expect(!afterUndo.contains(.setLightBrightness(entityId: "light.desk", percent: 60)))
+        #expect(!afterUndo.contains(.setLightColorTemp(entityId: "light.desk", kelvin: 5000)))
+        #expect(afterUndo.contains(.setLightBrightness(entityId: "light.ceiling", percent: 80)))
+        let desk = try #require(store.devices.first { $0.id == "dev_desk" })
+        if case .light(let spec) = desk.kind {
+            #expect(spec.brightnessPercent == 70, "undo leaves the taken-over lamp's newer write")
+        } else {
+            Issue.record("expected the desk lamp row, got \(desk.kind)")
+        }
+    }
+
+    @Test("A newer 全关 that takes a row during the wait gets no restore from the old undo")
+    @MainActor
+    func undoWaitSkipsDeviceANewerBatchTook() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling, Self.deskLamp])
+        // The ceiling light's command goes out; the desk lamp's is held, so the old batch is still
+        // running with both devices attempted when the undo arrives.
+        await mock.holdNextExecute(forTarget: "light.desk")
+
+        let oldBatch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        try await waitUntil { await mock.executeStarted == 2 }
+
+        let undo = try #require(store.undoTurnAllOff())
+        // The user asks for another 全关 while the old undo waits; it only sees the living room.
+        store.selectRoom("ke_ting")
+        let newerBatch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        await newerBatch?.value
+
+        await mock.releaseExecute()
+        await oldBatch?.value
+        await undo.value
+
+        let commands = await mock.executedCommands
+        #expect(
+            !commands.contains(.setLightPower(entityId: "light.ceiling", isOn: true)),
+            "the newer 全关 owns the ceiling row, so the old undo must not turn it back on"
+        )
+        #expect(
+            commands.contains(.setLightPower(entityId: "light.desk", isOn: true)),
+            "the desk lamp still belongs to the old undo and is restored"
+        )
+    }
+
+    @Test("An undo whose rows were all taken during the wait ends quietly")
+    @MainActor
+    func undoWaitQuietWhenEveryRowWasTaken() async throws {
+        let (store, mock) = try await makeStore([Self.ceiling, Self.deskLamp])
+        await mock.holdNextExecute()
+
+        let oldBatch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        try await waitUntil { await mock.executeStarted == 1 }
+
+        let undo = try #require(store.undoTurnAllOff())
+        // A newer 全关 takes both rows while the old undo is still waiting.
+        let newerBatch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        await newerBatch?.value
+
+        await mock.releaseExecute()
+        await oldBatch?.value
+        await undo.value
+
+        let commands = await mock.executedCommands
+        #expect(!commands.contains(.setLightPower(entityId: "light.ceiling", isOn: true)))
+        #expect(!commands.contains(.setLightPower(entityId: "light.desk", isOn: true)))
+        #expect(store.toastNotice == nil, "nothing was restored, so nothing is announced")
     }
 }
