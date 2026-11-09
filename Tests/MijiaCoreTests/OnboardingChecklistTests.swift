@@ -306,6 +306,42 @@ struct OnboardingChecklistTests {
         #expect(store.toastNotice?.persistent == true)
         #expect(await mock.executedCommands.isEmpty)
     }
+
+    @Test("Undoing a rehearsal banner stays silent when the session expired afterwards")
+    @MainActor
+    func rehearsalUndoNeverPromptsForAnExpiredSession() async throws {
+        let suite = "test.onboarding.rehearsal-undo-blocked.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+        #expect(MiSessionStore.save(
+            MiSession(
+                userId: "42",
+                cUserId: "c",
+                ssecurity: "s",
+                serviceToken: "tok",
+                expiresAt: Date(timeIntervalSince1970: 1_700_000_000)
+            ),
+            defaults: defaults
+        ))
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.livingLight], scenes: [])),
+            defaultsSuiteName: suite
+        )
+        try await store.waitForTestSnapshot()
+        #expect(store.miSessionBlocksControl)
+        // A rehearsal banner that outlives the session still has no restores to refuse.
+        store.scheduleUndoBanner(
+            title: "演练：将关闭 1 台（未实际执行）",
+            restoreCommands: [],
+            previousDevices: store.devices,
+            deviceCount: 1,
+            isAllOff: false
+        )
+
+        #expect(store.undoTurnAllOff() == nil)
+        #expect(store.undoBanner == nil)
+        #expect(store.toastNotice == nil, "a rehearsal undo never prompts for the expired session")
+    }
 }
 
 struct PanelNoticeTests {
