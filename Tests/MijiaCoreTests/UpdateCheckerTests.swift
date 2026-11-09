@@ -724,6 +724,19 @@ struct UpdateCheckerTests {
         })
     }
 
+    /// Unpacks the DMG, retrying the whole operation once. A checkout still running the code
+    /// before the flock existed creates and attaches images without the lock, so the disk-image
+    /// service can stay busy past the production retry window; a second attempt after a pause
+    /// turns that contention into a slower pass instead of a failure.
+    private static func unpackDmg(_ url: URL, into destination: URL) async throws -> URL {
+        do {
+            return try await UpdateSystemDriver.live.unpackArchive(url, .dmg, destination)
+        } catch {
+            try await Task.sleep(for: .seconds(1))
+            return try await UpdateSystemDriver.live.unpackArchive(url, .dmg, destination)
+        }
+    }
+
     /// An interrupted earlier run leaves its image attached and counts against the system mount
     /// limit. A live checkout still holds a DMG created seconds ago, so only images this test's
     /// own `live-driver-*` naming owns that are old — or whose file is already gone — are
@@ -828,7 +841,7 @@ struct UpdateCheckerTests {
 
         let dmgDest = rootDir.appendingPathComponent("dmg-dest", isDirectory: true)
         try FileManager.default.createDirectory(at: dmgDest, withIntermediateDirectories: true)
-        let unpackedFromDmg = try await UpdateSystemDriver.live.unpackArchive(dmgURL, .dmg, dmgDest)
+        let unpackedFromDmg = try await Self.unpackDmg(dmgURL, into: dmgDest)
         #expect(unpackedFromDmg.lastPathComponent == "MenuBarHome.app")
         #expect(!FileManager.default.fileExists(atPath: dmgDest.appendingPathComponent("mnt").path))
         try await UpdateSystemDriver.live.stripQuarantine(unpackedFromDmg)
