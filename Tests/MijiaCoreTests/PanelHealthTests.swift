@@ -124,21 +124,174 @@ struct PanelHealthTests {
     @Test("All Off names the devices it will turn off and the ones it leaves out")
     func allOffCopy() async throws {
         try await L10n.$overrideLanguage.withValue(.zhHans) {
-            let narrow = AllOffHeaderCopy.make(activeDeviceCount: 4, targetNames: ["台灯"], scopeName: nil)
+            let narrow = AllOffHeaderCopy.make(
+                activeDeviceCount: 4, targetNames: ["台灯"], scopeName: nil, excludedIncludesPlug: true
+            )
             #expect(narrow.title == "全关 1 台")
             #expect(narrow.helper == "全关不含插座等 3 台")
             #expect(narrow.tooltip == "按住 0.6 秒关闭：台灯")
 
-            let matched = AllOffHeaderCopy.make(activeDeviceCount: 1, targetNames: ["台灯"], scopeName: nil)
+            let matched = AllOffHeaderCopy.make(
+                activeDeviceCount: 1, targetNames: ["台灯"], scopeName: nil, excludedIncludesPlug: false
+            )
             #expect(matched.helper == nil)
 
-            let room = AllOffHeaderCopy.make(activeDeviceCount: 2, targetNames: ["台灯"], scopeName: "书房")
+            let room = AllOffHeaderCopy.make(
+                activeDeviceCount: 2, targetNames: ["台灯"], scopeName: "书房", excludedIncludesPlug: false
+            )
             #expect(room.title == "全关 书房 1 台")
+            #expect(room.helper == "全关不含这 1 台")
 
             let names = ["一", "二", "三", "四", "五", "六"]
-            let listed = AllOffHeaderCopy.make(activeDeviceCount: 6, targetNames: names, scopeName: nil)
+            let listed = AllOffHeaderCopy.make(
+                activeDeviceCount: 6, targetNames: names, scopeName: nil, excludedIncludesPlug: true
+            )
             #expect(listed.tooltip == "按住 0.6 秒关闭：一、二、三、四、五 等")
             #expect(!listed.tooltip.contains("六"))
+        }
+        try await L10n.$overrideLanguage.withValue(.en) {
+            let room = AllOffHeaderCopy.make(
+                activeDeviceCount: 2, targetNames: ["Desk"], scopeName: "Study", excludedIncludesPlug: false
+            )
+            #expect(room.title == "All Off 1 in Study")
+        }
+    }
+
+    @Test("A blocked Mi session sends no quick action, undo, assistant, safety, or URL command")
+    func blockedSessionStopsEveryWriteEntry() async throws {
+        let provider = MockHomeProvider(snapshot: Self.lampHome)
+        let store = try await makeStore(backend: .xiaomiCloud, session: expiredSession(), provider: provider)
+        #expect(store.miSessionBlocksControl)
+        let lampOn = store.devices.first { $0.id == "lamp" }?.isActiveOn
+
+        try await L10n.$overrideLanguage.withValue(.zhHans) {
+            let quick = try #require(store.executeQuickAction(.lightsOff))
+            await quick.value
+            #expect(await provider.executedCommands.isEmpty)
+            #expect(store.toastNotice?.message == "米家登录已过期")
+            #expect(store.toastNotice?.persistent == true)
+            #expect(store.toastNotice?.action == ToastAction(title: "扫码", kind: .presentMiReauth))
+            #expect(store.devices.first { $0.id == "lamp" }?.isActiveOn == lampOn)
+
+            store.undoBanner = UndoBanner(
+                title: "已关闭 1 台",
+                restoreCommands: [.setLightPower(entityId: "light.lamp", isOn: false)],
+                previousDevices: store.devices,
+                deviceCount: 1,
+                isAllOff: true
+            )
+            #expect(store.undoTurnAllOff() == nil)
+            #expect(store.undoBanner != nil)
+            #expect(store.devices.first { $0.id == "lamp" }?.isActiveOn == lampOn)
+            #expect(await provider.executedCommands.isEmpty)
+
+            _ = await store.runAssistantCommand("关灯")
+            #expect(await provider.executedCommands.isEmpty)
+            #expect(store.toastNotice?.message == "米家登录已过期")
+
+            let scope = try #require(store.connectionScopeIdentifier)
+            let alert = SafetyAlert(
+                id: "longrun:lamp",
+                deviceId: "lamp",
+                title: "台灯开着",
+                body: "关闭",
+                turnOffCommand: .setLightPower(entityId: "light.lamp", isOn: false)
+            )
+            if let safety = store.executeSafetyAlertAction(alert, deliveredInScope: scope) {
+                await safety.value
+            }
+            #expect(await provider.executedCommands.isEmpty)
+            #expect(store.toastNotice?.message == "米家登录已过期")
+            #expect(store.toastNotice?.isError == true)
+
+            let url = await store.executeBuiltInURLScene(.allOff)
+            #expect(url.isError)
+            #expect(url.message == "米家登录已过期")
+            #expect(await provider.executedCommands.isEmpty)
+        }
+    }
+
+    @Test("One expired Mi account beside a live one does not claim Home Assistant still works")
+    func partialMiExpiryNamesTheOtherAccount() async throws {
+        let suite = "com.jryang1997.MenuBarMijia.panel-health.partial.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+        let saved = MiSessionStore.saveAccounts([
+            MiAccount(session: MiSession(
+                userId: "1111111111", cUserId: "c1", ssecurity: "s", serviceToken: "t1", expiresAt: expiredAt
+            )),
+            MiAccount(session: MiSession(
+                userId: "2222222222", cUserId: "c2", ssecurity: "s", serviceToken: "t2", expiresAt: farEnd
+            ))
+        ], defaults: defaults)
+        #expect(saved)
+        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        #expect(store.miSessionShowsExpired)
+        #expect(!store.miSessionBlocksControl)
+        #expect(!store.hasHASource)
+
+        try await L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(store.panelHealth == .degraded(reason: "有米家账号已过期，其他账号仍保持登录"))
+            store.connectionStatus = .connecting
+            #expect(store.panelHealth == .degraded(reason: "有米家账号已过期，其他账号仍保持登录"))
+        }
+
+        let ha = try await makeStore(backend: .xiaomiCloud, session: expiredSession(), haSource: true)
+        ha.connectionStatus = .connecting
+        try await L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(ha.panelHealth == .connecting)
+        }
+        ha.connectionStatus = .connected
+        try await L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(ha.panelHealth == .degraded(reason: "米家登录已过期，Home Assistant 仍可用"))
+        }
+    }
+
+    @Test("All Off exclusion follows the visible room and mentions plugs only when a plug is left out")
+    func allOffExclusionFollowsTheFilter() async throws {
+        let studyLight = SmartDevice(
+            id: "study-light", name: "书房灯", roomId: "study", roomName: "书房",
+            model: "yeelink.light.lamp4", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.study", isOn: true))
+        )
+        let studyPlug = SmartDevice(
+            id: "study-plug", name: "插座", roomId: "study", roomName: "书房",
+            model: "chuangmi.plug.v3", isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.study", isOn: true))
+        )
+        let studyCamera = SmartDevice(
+            id: "study-cam", name: "摄像机", roomId: "study", roomName: "书房",
+            model: "chuangmi.camera", isOnline: true,
+            kind: .camera(CameraSpec(entityId: "camera.study", isOn: true))
+        )
+        let otherLight = SmartDevice(
+            id: "bed-light", name: "床头灯", roomId: "bed", roomName: "主卧",
+            model: "yeelink.light.lamp4", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.bed", isOn: true))
+        )
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(
+            rooms: [RoomArea(id: "study", name: "书房", sortOrder: 0), RoomArea(id: "bed", name: "主卧", sortOrder: 1)],
+            devices: [studyLight, studyPlug, otherLight]
+        ))
+        let store = try await makeStore(provider: provider)
+        store.listCut = .room("study")
+        try await L10n.$overrideLanguage.withValue(.zhHans) {
+            let copy = store.allOffHeaderCopy(scopeName: "书房")
+            #expect(copy.title == "全关 书房 1 台")
+            #expect(copy.helper == "全关不含插座等 1 台")
+        }
+
+        let cameraProvider = MockHomeProvider(snapshot: SynthesizedHome(
+            rooms: [RoomArea(id: "study", name: "书房", sortOrder: 0)],
+            devices: [studyLight, studyCamera]
+        ))
+        let cameraStore = try await makeStore(provider: cameraProvider)
+        try await L10n.$overrideLanguage.withValue(.zhHans) {
+            let copy = cameraStore.allOffHeaderCopy(scopeName: nil)
+            #expect(copy.helper == "全关不含这 1 台")
+            #expect(copy.helper?.contains("插座") == false)
         }
     }
 

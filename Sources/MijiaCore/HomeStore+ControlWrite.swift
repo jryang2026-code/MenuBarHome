@@ -26,6 +26,9 @@ struct OptimisticWrite: Sendable {
     let isShown: Bool
 }
 
+/// A write refused because the only Mi session has expired. The persistent toast is already showing.
+struct MiSessionWriteBlocked: Error {}
+
 extension HomeStore {
     @discardableResult
     func lockOptimistic(_ deviceId: String, duration: Duration) -> UInt64 {
@@ -36,6 +39,9 @@ extension HomeStore {
     }
 
     func executeDeviceCommand(_ command: DeviceCommand) async throws {
+        if rejectWritesBlockedByMiSession() {
+            throw MiSessionWriteBlocked()
+        }
         if LGWebOSProtocol.isLGEntity(command.targetEntityId), let lgClient = lgWebOSClient {
             try await lgClient.execute(command)
         } else {

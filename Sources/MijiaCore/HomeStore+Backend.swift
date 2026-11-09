@@ -1093,6 +1093,9 @@ extension HomeStore {
                 if case .declined = haPlaintextPrompt { return true }
                 return false
             }(),
+            anotherMiAccountSignedIn: miAccounts.contains { account in
+                account.session.expiryState(at: Date()) != .expired
+            },
             deviceValuesAreStale: deviceValuesAreStale,
             connectionStatus: connectionStatus
         ))
@@ -1121,6 +1124,7 @@ struct PanelHealthInput: Equatable, Sendable {
     var miSessionBlocksControl: Bool
     var miSessionShowsExpired: Bool
     var haPlaintextDeclined: Bool
+    var anotherMiAccountSignedIn: Bool
     var deviceValuesAreStale: Bool
     var connectionStatus: ConnectionStatus
 }
@@ -1153,16 +1157,17 @@ enum PanelHealthResolver {
         if !input.hasHASource && !input.hasMiSource {
             return .notConfigured
         }
-        if input.miSessionShowsExpired {
-            switch input.connectionStatus {
-            case .disconnected:
-                break
-            case .connected, .connecting:
-                return .degraded(reason: L10n.tr(
-                    "米家登录已过期，Home Assistant 仍可用",
-                    "Xiaomi Home session expired. Home Assistant still works"
-                ))
-            }
+        if input.miSessionShowsExpired, input.hasHASource, case .connected = input.connectionStatus {
+            return .degraded(reason: L10n.tr(
+                "米家登录已过期，Home Assistant 仍可用",
+                "Xiaomi Home session expired. Home Assistant still works"
+            ))
+        }
+        if input.miSessionShowsExpired, input.anotherMiAccountSignedIn {
+            return .degraded(reason: L10n.tr(
+                "有米家账号已过期，其他账号仍保持登录",
+                "A Xiaomi Home account expired. Another account is still signed in."
+            ))
         }
         if input.deviceValuesAreStale, case .connected = input.connectionStatus {
             return .degraded(reason: L10n.tr("设备状态可能过期", "Device states may be out of date"))
@@ -1190,19 +1195,25 @@ public struct AllOffHeaderCopy: Equatable, Sendable {
     public static func make(
         activeDeviceCount: Int,
         targetNames: [String],
-        scopeName: String?
+        scopeName: String?,
+        excludedIncludesPlug: Bool
     ) -> AllOffHeaderCopy {
         let count = targetNames.count
         let title: String
         if let scopeName, !scopeName.isEmpty {
-            title = L10n.tr("全关 \(scopeName) \(count) 台", "All Off \(scopeName) \(count)")
+            title = L10n.tr("全关 \(scopeName) \(count) 台", "All Off \(count) in \(scopeName)")
         } else {
             title = L10n.tr("全关 \(count) 台", "All Off \(count)")
         }
         let excluded = activeDeviceCount - count
-        let helper: String? = excluded > 0
-            ? L10n.tr("全关不含插座等 \(excluded) 台", "All Off leaves out \(excluded), including plugs")
-            : nil
+        let helper: String?
+        if excluded > 0, excludedIncludesPlug {
+            helper = L10n.tr("全关不含插座等 \(excluded) 台", "All Off leaves out \(excluded), including plugs")
+        } else if excluded > 0 {
+            helper = L10n.tr("全关不含这 \(excluded) 台", "All Off leaves out \(excluded)")
+        } else {
+            helper = nil
+        }
         let shown = targetNames.prefix(5)
         let list = shown.joined(separator: L10n.tr("、", ", "))
         let more = targetNames.count > 5 ? L10n.tr(" 等", "…") : ""

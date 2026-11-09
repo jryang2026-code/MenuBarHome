@@ -182,6 +182,14 @@ extension HomeStore {
         let deviceNames = Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0.name) })
         return Task {
             guard let outcome = await runBatchCommands(commands, context: context) else { return }
+            if outcome.blockedByMiSession {
+                revertRefusedBatchWrites(Set(writes.keys), writes: writes)
+                if undoBanner?.id == bannerId {
+                    undoTimerTask?.cancel()
+                    undoBanner = nil
+                }
+                return
+            }
             let failedDeviceIds = outcome.failedDeviceIds
             if !failedDeviceIds.isEmpty {
                 // A device with no accepted command keeps nothing on screen: its row goes back and
@@ -239,6 +247,25 @@ extension HomeStore {
     /// take part in 全关, and can actually be switched off from here.
     public var allOffTargets: [SmartDevice] {
         filteredDevices.filter { $0.isActiveOn && joinsAllOff($0) && Self.allOffChange(for: $0) != nil }
+    }
+
+    /// Header copy for 全关. The excluded count is the active devices in the current room or filter,
+    /// and the plug phrase appears only when one of those leftovers is a plug.
+    public func allOffHeaderCopy(scopeName: String?) -> AllOffHeaderCopy {
+        let visibleActive = filteredDevices.filter(\.isActiveDevice)
+        let targets = allOffTargets
+        let targetIDs = Set(targets.map(\.id))
+        let excluded = visibleActive.filter { !targetIDs.contains($0.id) }
+        let includesPlug = excluded.contains { device in
+            if case .plug = device.kind { return true }
+            return false
+        }
+        return AllOffHeaderCopy.make(
+            activeDeviceCount: visibleActive.count,
+            targetNames: targets.map(\.name),
+            scopeName: scopeName,
+            excludedIncludesPlug: includesPlug
+        )
     }
 
     public var allOffScopeName: String? {
@@ -478,6 +505,8 @@ extension HomeStore {
         var acceptedByDevice: [String: Int] = [:]
         /// Devices with at least one failed command.
         var failedDeviceIds: Set<String> = []
+        /// The Mi session refused the batch. The persistent toast is already up, so no second failure toast.
+        var blockedByMiSession = false
     }
 
     /// Puts the rows a bulk action showed back for the devices that refused every command, but only
@@ -508,6 +537,10 @@ extension HomeStore {
             do {
                 try await executeDeviceCommand(item.command)
                 outcome.acceptedByDevice[item.deviceId, default: 0] += 1
+            } catch is MiSessionWriteBlocked {
+                outcome.blockedByMiSession = true
+                outcome.failedDeviceIds.insert(item.deviceId)
+                break
             } catch {
                 outcome.failedDeviceIds.insert(item.deviceId)
             }
@@ -541,6 +574,8 @@ extension HomeStore {
 
     @discardableResult
     public func undoTurnAllOff() -> Task<Void, Never>? {
+        guard undoBanner != nil else { return nil }
+        if rejectWritesBlockedByMiSession() { return nil }
         guard let banner = undoBanner else { return nil }
         lastAssistantUndo = nil
         undoTimerTask?.cancel()

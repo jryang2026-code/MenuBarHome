@@ -463,10 +463,9 @@ extension HomeStore {
 
         case .allOff:
             let targetCount = allOffTargets.count
-            turnAllOff()
-            guard targetCount > 0 else {
+            guard turnAllOff() != nil else {
                 let fallback = L10n.tr("当前没有开启的设备", "No active devices are currently on")
-                return (toastNotice?.message ?? fallback, false)
+                return (toastNotice?.message ?? fallback, toastNotice?.isError ?? true)
             }
             let bannerTitle = undoBanner?.title ?? L10n.tr("已关闭 \(targetCount) 台设备", "Turned off \(targetCount) device(s)")
             return (bannerTitle, false)

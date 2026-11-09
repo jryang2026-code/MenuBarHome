@@ -4,11 +4,7 @@ import MijiaCore
 @MainActor
 enum PanelHeaderCopy {
     static func allOff(store: HomeStore, scopeName: String?) -> AllOffHeaderCopy {
-        AllOffHeaderCopy.make(
-            activeDeviceCount: store.activeDeviceCount,
-            targetNames: store.allOffTargets.map(\.name),
-            scopeName: scopeName
-        )
+        store.allOffHeaderCopy(scopeName: scopeName)
     }
 }
 
