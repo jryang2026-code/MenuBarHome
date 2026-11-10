@@ -57,7 +57,7 @@ struct SensorCardView: View {
                 wide
             }
         }
-        .frame(minHeight: (isCompact && !isExpanded) ? 50 : nil, maxHeight: isExpanded ? nil : .infinity)
+        .frame(minHeight: (isCompact && !isExpanded) ? 58 : nil, maxHeight: isExpanded ? nil : .infinity)
         .contentShape(Rectangle())
         .onTapGesture {
             guard !isEditingLayout, let store else { return }
@@ -95,35 +95,56 @@ struct SensorCardView: View {
 
     // MARK: Layouts
 
+    /// A 58 pt capsule twin of the device tiles: glass orb on the left, hero readings on the right.
     private var compact: some View {
-        VStack(alignment: .leading, spacing: 2.5) {
-            HStack(spacing: 4) {
+        HStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.08))
+                Circle()
+                    .strokeBorder(
+                        Color.white.opacity(colorScheme == .dark ? 0.14 : 0.35),
+                        lineWidth: DesignTokens.hairline
+                    )
                 Image(systemName: "thermometer.medium")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    .font(.system(size: DesignTokens.TypeSize.title, weight: .semibold))
                     .foregroundStyle(tempColor)
-                Text(displayName)
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                    .foregroundStyle(muted)
-                    .lineLimit(1)
-                Spacer(minLength: 2)
-                comfortChip
             }
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                temperatureText(size: DesignTokens.TypeSize.reading)
-                if let h = spec.humidity {
-                    HStack(alignment: .firstTextBaseline, spacing: 2) {
-                        Image(systemName: "drop.fill")
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                        Text(String(format: "%.0f%%", h))
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold, design: .rounded))
-                            .monospacedDigit()
+            .frame(width: 38, height: 38)
+
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 5) {
+                    Text(displayName)
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                        .foregroundStyle(fg)
+                        .lineLimit(1)
+                    if showRoomBadge {
+                        Text(L10n.displayRoomName(device.roomName))
+                            .font(.system(size: DesignTokens.TypeSize.micro, weight: .medium))
+                            .foregroundStyle(muted)
+                            .lineLimit(1)
                     }
-                    .foregroundStyle(humidityColor)
+                    Spacer(minLength: 2)
+                    comfortChip
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    temperatureText(size: DesignTokens.TypeSize.reading)
+                    if let h = spec.humidity {
+                        HStack(alignment: .firstTextBaseline, spacing: 2) {
+                            Image(systemName: "drop.fill")
+                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                            Text(String(format: "%.0f%%", h))
+                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold, design: .rounded))
+                                .monospacedDigit()
+                        }
+                        .foregroundStyle(humidityColor)
+                    }
+                    Spacer(minLength: 0)
                 }
             }
-            humidityBar
         }
-        .padding(.horizontal, 9)
+        .padding(.leading, 8)
+        .padding(.trailing, 12)
         .padding(.vertical, 6)
     }
 
@@ -182,15 +203,15 @@ struct SensorCardView: View {
                     }
                 }
 
-            Rectangle()
-                .fill(Color.primary.opacity(0.08))
-                .frame(height: 1)
-                .padding(.horizontal, 14)
-
             historyDrawer
-                .padding(.horizontal, 14)
-                .padding(.top, 10)
-                .padding(.bottom, 12)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
+                        .fill(Color.primary.opacity(0.05))
+                )
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
                 .transition(AppleMotion.drawerTransition)
                 // Absorb taps inside the chart controls so switching 24h/7d or metric never collapses the card.
                 .onTapGesture {}
@@ -686,19 +707,6 @@ struct SensorCardView: View {
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold, design: .rounded))
                 .foregroundStyle(muted)
         }
-    }
-
-    private var humidityBar: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule(style: .continuous).fill(track)
-                Capsule(style: .continuous)
-                    .fill(LinearGradient(colors: [humidityColor.opacity(0.6), humidityColor], startPoint: .leading, endPoint: .trailing))
-                    .frame(width: geo.size.width * CGFloat(min(max((spec.humidity ?? 0) / 100, 0), 1)))
-            }
-        }
-        .frame(height: isCompact ? 3 : 4)
-        .animation(.spring(response: 0.5, dampingFraction: 0.8), value: spec.humidity)
     }
 
     private func humidityRing(_ h: Double) -> some View {
