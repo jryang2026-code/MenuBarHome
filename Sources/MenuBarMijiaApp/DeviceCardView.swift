@@ -202,6 +202,11 @@ public struct DeviceCardView: View {
             }
         }
         .glassTile(isActive: isLit, cornerRadius: cardRadius, isCapsule: isCompactTile && !isExpanded && resolvedSize != .hero, tint: tileTint)
+        .glassHoverHighlight(
+            cornerRadius: cardRadius,
+            isCapsule: isCompactTile && !isExpanded && resolvedSize != .hero,
+            isEnabled: inlinePrimarySlider == nil
+        )
         .overlay(
             RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                 .strokeBorder(isKeyboardFocused ? accent.opacity(0.85) : Color.clear, lineWidth: 1.6)

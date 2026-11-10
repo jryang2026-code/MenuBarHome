@@ -2245,8 +2245,8 @@ struct MenuBarPanelControllerTests {
         try await Task.sleep(for: .milliseconds(550))
         Self.pumpMainRunLoop()
 
-        // The hold itself must do nothing: no jiggle editing, no drawer, no toggle mid-press.
-        #expect(LayoutUIState.shared.editMode == .none, "A 550 ms hold on a card must not enter jiggle editing")
+        // The hold itself must do nothing: no edit mode, no drawer, no toggle mid-press.
+        #expect(LayoutUIState.shared.editMode == .none, "A 550 ms hold on a card must not enter edit mode")
         #expect(store.expandedDeviceId == nil, "Holding a card must not expand its drawer")
         #expect(store.devices.first(where: { $0.id == light.id })?.isActiveOn == initialIsOn, "Holding a card must not toggle it mid-press")
 
@@ -2255,7 +2255,7 @@ struct MenuBarPanelControllerTests {
         try await Task.sleep(for: .milliseconds(150))
         Self.pumpMainRunLoop()
 
-        #expect(LayoutUIState.shared.editMode == .none, "Releasing the hold must not enter jiggle editing")
+        #expect(LayoutUIState.shared.editMode == .none, "Releasing the hold must not enter edit mode")
         #expect(store.expandedDeviceId == nil, "Releasing the hold must not open the drawer")
 
         func handlePoint() -> NSPoint {
@@ -2347,6 +2347,17 @@ struct MenuBarPanelControllerTests {
 
         let sizes4 = try await tapHandle()
         #expect(sizes4["all|\(light.id)"] == .half)
+
+        // 4. Tapping the top-left `−` badge removes the card from 常用 (favorites).
+        #expect(store.favoriteDeviceIds.contains(light.id), "The light card starts in Favorites")
+        let cardBeforeRemove = try #require(LayoutUIState.shared.cardGlobalFrames[light.id])
+        let removeBadgePoint = NSPoint(x: cardBeforeRemove.minX + 8, y: hosting.bounds.height - (cardBeforeRemove.minY + 8))
+        sendMouse(.leftMouseDown, at: removeBadgePoint)
+        try await Task.sleep(for: .milliseconds(40))
+        Self.pumpMainRunLoop()
+        sendMouse(.leftMouseUp, at: removeBadgePoint)
+        try await flushLayout()
+        #expect(!store.favoriteDeviceIds.contains(light.id), "Clicking the top-left − badge in edit mode must remove the device from Favorites")
 
         LayoutUIState.shared.endDeviceLayoutEditing()
     }

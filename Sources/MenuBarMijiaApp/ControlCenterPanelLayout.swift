@@ -10,14 +10,25 @@ extension ControlCenterPanel {
             deviceId: device.id,
             size: tileSize(device),
             isDragging: draggingId == device.id,
+            isAnyCardDragging: draggingId != nil,
             isResizing: activeResize?.deviceId == device.id,
             dragOffset: dragOffset(for: device.id),
             onCycleSize: { cycleSize(device) },
             onBeginResize: { beginResizeIfNeeded(device.id) },
             onResizeDrag: { translation in updateResize(device.id, translation: translation) },
             onEndResize: { translation, samples in endResize(device.id, translation: translation, samples: samples) },
-            onRename: { layoutUI.renamingDeviceId = device.id }
+            onRemove: favoriteRemoval(for: device)
         )
+    }
+
+    /// The `−` badge: only cards in 常用 are edited here, and removing one just un-pins it, so the
+    /// device reappears in its room or type stack below.
+    func favoriteRemoval(for device: SmartDevice) -> (() -> Void)? {
+        guard store.favoriteDeviceIds.contains(device.id) else { return nil }
+        return {
+            guard store.favoriteDeviceIds.contains(device.id) else { return }
+            withAnimation(reduceMotion ? nil : AppleMotion.reveal) { store.toggleFavorite(device.id) }
+        }
     }
 
     // MARK: - Room Strip (#146)
@@ -368,6 +379,9 @@ extension ControlCenterPanel {
                     updateResize(resizingId, translation: d.translation)
                     return
                 }
+                if removeBadgeCardId(at: d.startLocation) != nil {
+                    return
+                }
                 if draggingId == nil, moved > 3, let id = cardId(at: d.startLocation) {
                     beginDrag(id, at: d.startLocation)
                 }
@@ -382,8 +396,14 @@ extension ControlCenterPanel {
                     endResize(resizingId, translation: d.translation, samples: [])
                     return
                 }
+                if hypot(d.translation.width, d.translation.height) < 5,
+                   let removeId = removeBadgeCardId(at: d.startLocation),
+                   let device = store.devices.first(where: { $0.id == removeId }) {
+                    favoriteRemoval(for: device)?()
+                    return
+                }
                 guard draggingId != nil else { return }
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                withAnimation(AppleMotion.snappySpring) {
                     draggingId = nil
                     dragLocation = nil
                 }
@@ -405,6 +425,17 @@ extension ControlCenterPanel {
         return nil
     }
 
+
+    /// Hit-tests the 20×20 top-left `−` favorite-removal badge in `TileSpace.name`.
+    func removeBadgeCardId(at point: CGPoint) -> String? {
+        for (id, frame) in tileFrames where store.favoriteDeviceIds.contains(id) {
+            let badgeRect = CGRect(x: frame.minX - 4, y: frame.minY - 4, width: 24, height: 24)
+            if badgeRect.contains(point) {
+                return id
+            }
+        }
+        return nil
+    }
     func beginResizeIfNeeded(_ deviceId: String) {
         guard activeResize == nil,
               let device = store.devices.first(where: { $0.id == deviceId }) else { return }
@@ -454,7 +485,7 @@ extension ControlCenterPanel {
         let origin = tileFrames[id]?.origin ?? start
         grabOffset = CGSize(width: start.x - origin.x, height: start.y - origin.y)
         dragLocation = start
-        withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) { draggingId = id }
+        withAnimation(AppleMotion.snappySpring) { draggingId = id }
     }
 
     /// Decides where the dragged card should go: before or after the card under the pointer (top
@@ -511,7 +542,7 @@ extension ControlCenterPanel {
         guard let t = order.firstIndex(of: target) else { return }
         order.insert(dragged, at: after ? t + 1 : t)
         guard order != currentOrder else { return }
-        withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.50, dampingFraction: 1.0)) {
             panelLayout.setOrder(order)
             if store.favoriteDeviceIds.contains(dragged) {
                 store.favoriteOrder = order.filter { store.favoriteDeviceIds.contains($0) }
@@ -535,42 +566,54 @@ extension ControlCenterPanel {
         if playHaptic {
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         }
-        withAnimation(AppleMotion.snappySpring) {
+        withAnimation(reduceMotion ? nil : AppleMotion.reveal) {
             store.expandedDeviceId = nil
             panelLayout.setSize(next, of: device.id, scope: layoutScope)
         }
     }
 
-    /// "完成" for either edit mode. In the room-order list Return is routed by the panel's key
-    /// monitor (so it can never fall through to `toggleFocusedDevice`), which is why the default
-    /// action shortcut is only attached in device-layout mode.
-    @ViewBuilder
-    var doneEditingButton: some View {
+    /// Ends the open edit session: commits a room-order draft, or leaves card editing.
+    func finishEditing() {
         if isRoomOrdering {
-            doneButton
-        } else {
-            doneButton.keyboardShortcut(.defaultAction)
+            finishRoomOrder(.commit)
+            return
+        }
+        withAnimation(AppleMotion.snappySpring) {
+            draggingId = nil
+            activeResize = nil
+            layoutUI.endDeviceLayoutEditing()
         }
     }
 
-    private var doneButton: some View {
+    /// "完成" for the room-order list, in the header next to 取消. Return is routed by the panel's
+    /// key monitor there, so it can never fall through to `toggleFocusedDevice`.
+    var doneEditingButton: some View {
         Button {
-            if isRoomOrdering {
-                finishRoomOrder(.commit)
-                return
-            }
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                draggingId = nil
-                activeResize = nil
-                layoutUI.endDeviceLayoutEditing()
-            }
+            finishEditing()
         } label: {
             Text(L10n.tr("完成", "Done")).font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
         }
         .buttonStyle(PillActionButtonStyle(isSelected: true))
-        .accessibilityHint(isRoomOrdering
-            ? L10n.tr("保存房间顺序并返回首页", "Save the room order and go back")
-            : L10n.tr("结束布局编辑", "Finish editing the layout"))
+        .accessibilityHint(Text(L10n.tr("保存房间顺序并返回首页", "Save the room order and go back")))
+    }
+
+    /// Card editing's toolbar, in the grouping capsule's place: a glass capsule with the hint on
+    /// the left and 完成 on the right, like Control Center's edit bar.
+    var layoutEditToolbar: some View {
+        HStack(spacing: 10) {
+            Text(L10n.tr("编辑常用：拖动排序，拖右下角调整大小", "Edit Favorites: drag to reorder, drag the corner to resize"))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+            Spacer(minLength: 4)
+            LayoutEditDoneButton(action: finishEditing)
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 5)
+        .frame(height: 36)
+        .frame(maxWidth: .infinity)
+        .adaptiveGlass(in: Capsule(style: .continuous))
     }
 
     /// "取消" only exists for the room-order session: it discards the draft and rolls the strip
@@ -697,7 +740,8 @@ extension ControlCenterPanel {
                 }
             }
         }
-        .animation(AppleMotion.snappySpring, value: ordered.map { "\($0.id):\(spanMap[$0.id] ?? 12)" })
+        .animation(reduceMotion ? nil : .spring(response: 0.50, dampingFraction: 1.0), value: ordered.map(\.id))
+        .animation(reduceMotion ? nil : AppleMotion.reveal, value: ordered.map { spanMap[$0.id] ?? 12 })
         .id("rows")
     }
 }
