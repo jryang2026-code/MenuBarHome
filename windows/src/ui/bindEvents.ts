@@ -21,7 +21,6 @@ import {
   localizeFridgeMode,
 } from "../core/models.js";
 import {
-  type AppSkin,
   type PanelHeight,
   type TileSize,
   DEFAULT_GLOBAL_SHORTCUT,
@@ -233,13 +232,6 @@ import { bindPanelInput } from "./panelKeyboard.js";
       });
     });
 
-    host.root.querySelectorAll<HTMLElement>("[data-skin]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        host.settings.skin = btn.dataset.skin as AppSkin;
-        host.saveSettings();
-        host.render();
-      });
-    });
     host.root.querySelectorAll<HTMLElement>("[data-appearance]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const value = btn.dataset.appearance;

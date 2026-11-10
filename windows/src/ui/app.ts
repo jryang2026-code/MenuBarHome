@@ -39,7 +39,6 @@ import {
   isActiveDevice,
 } from "../core/models.js";
 import {
-  type AppSkin,
   type LayoutPrefs,
   type PanelAnchor,
   type PanelPlacement,
@@ -343,6 +342,7 @@ export class MenuMijiaWindowsApp {
     });
     this.applyPanelHeight();
     this.syncPanelPlacement();
+    this.syncPanelBackdrop();
     void this.applyGlobalHotkey();
     this.startTimerLoop();
     this.restoreUpdateState();
@@ -1051,10 +1051,6 @@ export class MenuMijiaWindowsApp {
     return t("演示预览 · 点击下方「扫码直连」同步你的真机");
   }
 
-  public get skin(): AppSkin {
-    return this.settings.skin;
-  }
-
   public get effectiveAppearance(): "light" | "dark" {
     const prefersLight =
       typeof window.matchMedia === "function" &&
@@ -1248,12 +1244,11 @@ export class MenuMijiaWindowsApp {
     const isAll = this.selectedRoom === "全部";
     const ordered = withAliases(this.layout, applyOrder(this.layout.order, this.presentationDevices));
     const sections = pageSections(this.layout, ordered, isAll);
-    const bento = this.skin === "bento" && this.settings.isCompactGridMode;
     let index = 0;
     return sections
       .map((section) => {
         const collapsed = this.layout.collapsed.includes(scopedKey(this.pageKey, section.id));
-        const spanMap = spans(section.devices, (d) => (this.expandedDeviceId === d.id ? "full" : this.tileSize(d)), bento);
+        const spanMap = spans(section.devices, (d) => (this.expandedDeviceId === d.id ? "full" : this.tileSize(d)));
         const header =
           section.title === null
             ? ""
@@ -1265,7 +1260,7 @@ export class MenuMijiaWindowsApp {
               </button>`;
         const body = collapsed
           ? ""
-          : `<div class="cc-devices-grid is-flow ${bento ? "is-bento" : ""}">
+          : `<div class="cc-devices-grid is-flow">
               ${section.devices.map((dev) => this.renderDeviceTile(dev, spanMap.get(dev.id) ?? 6, index++)).join("")}
             </div>`;
         return `<section class="cc-group">${header}${body}</section>`;
@@ -1278,7 +1273,6 @@ export class MenuMijiaWindowsApp {
       span,
       index,
       size: this.tileSize(dev),
-      skin: this.skin,
       animateEntrance: this.animateEntrance,
       poppedDeviceId: this.poppedDeviceId,
       draggingId: this.draggingId,
@@ -1288,7 +1282,6 @@ export class MenuMijiaWindowsApp {
       expandedDeviceId: this.expandedDeviceId,
       pendingHighRisk: this.pendingHighRisk,
       waitingDeviceIds: this.waitingDeviceIds,
-      compactGrid: this.settings.isCompactGridMode,
       dimPreview: this.dimPreview,
       deviceFacets: this.deviceFacets,
       allowAdvancedFacetWrites: this.settings.allowAdvancedFacetWrites,
@@ -1480,6 +1473,20 @@ export class MenuMijiaWindowsApp {
       });
     }
     play();
+  }
+
+  /**
+   * The native backdrop the window manager granted (§1.4). WebView2 cannot sample the desktop, so the
+   * stylesheet only lowers the panel fill to a tint when Rust reports a real Acrylic/Mica backdrop.
+   */
+  public syncPanelBackdrop(): void {
+    const invoke = window.__TAURI_INTERNALS__?.invoke;
+    if (!invoke) return;
+    void invoke<string>("panel_backdrop")
+      .then((value) => {
+        this.root.dataset.backdrop = value === "acrylic" ? "acrylic" : "none";
+      })
+      .catch(() => undefined);
   }
 
   /** Pulls the placement the backend persists so a drag shows up in the settings sheet (#204). */

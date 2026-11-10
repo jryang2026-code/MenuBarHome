@@ -192,3 +192,8 @@ _Avoid_: Border、Hairline（描边与高光边现在是两个概念）
 **ViewPreference（本地视图偏好）**：
 仅作用于当前客户端的展示配置（包括星标常用置顶、自定义分组 `DeviceGroup`、长按拖拽排序、通过编辑态卡片右下角圆弧手柄拖拽或轻点调节的分页面卡片尺寸 `TileSize`、单设备固定数据源覆盖、隐藏特定设备、隐藏离线设备、面板高度 `PanelHeight`、Windows 面板位置 `PanelAnchor`（跟随任务栏或工作区四角，保存在 `%APPDATA%\MenuBarMijia\panel-placement.json` 以便拖动窗口后即时落盘）、菜单栏常驻指标选择），存储在本地且不回写远端数据源。
 _Avoid_: Device config（设备配置）、Profile（档案）
+
+**NativeBackdrop（原生背景）**：
+窗口管理器直接画在 WebView 后面的材质，WebView2 自己采不到桌面，所以只有它能给出真正的毛玻璃。Windows 端由 `window.rs:apply_panel_backdrop` 依次尝试 Mica（Windows 11 22H2+）与 Acrylic，成功时 `panel_backdrop` 命令返回 `acrylic`，前端据此在 `#app` 上写 `data-backdrop="acrylic"`，把面板底色从实色降到 0.55–0.62 的薄雾；失败即 `none`，面板保持接近实色的填充。`--panel-opacity` 始终作用于这两档基准，`prefers-reduced-transparency: reduce` 时回到实色。
+_Avoid_: 玻璃皮（WebView 内的 blur）、壁纸透出（那是不透明度的语义）
+

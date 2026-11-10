@@ -25,6 +25,13 @@ tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 # Windows Credential Manager for tokens and API keys (#28).
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+# Native backdrop (§1.4): the DWM system-backdrop attribute and the two registry reads that decide
+# whether this machine may have one. 0.59 is already in Cargo.lock through tauri, so no second copy.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_System_Registry",
+] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

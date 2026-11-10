@@ -3,6 +3,35 @@ use crate::placement::*;
 
 pub(crate) static LAST_FOCUS_LOSS_MS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static PIN_POPOVER: AtomicBool = AtomicBool::new(false);
+/// Whether the window manager granted the panel a native backdrop (§1.4 of the control center spec).
+static PANEL_BACKDROP_ACRYLIC: AtomicBool = AtomicBool::new(false);
+
+/// Window pixels reserved around the card column for the panel's own drop shadow. `#app { padding }`
+/// in `styles.css` carries the same value on all four sides.
+pub(crate) const PANEL_PADDING: f64 = 16.0;
+/// Gap between the card column and the assistant rail in `#app`'s grid.
+pub(crate) const PANEL_COLUMN_GAP: f64 = 12.0;
+
+/// Window width around the fixed 472 px card column: both paddings, the column gap and an optional rail.
+pub(crate) fn panel_window_width(rail_width: f64) -> f64 {
+    let rail = if rail_width > 0.0 { rail_width + PANEL_COLUMN_GAP } else { 0.0 };
+    472.0 + PANEL_PADDING * 2.0 + rail
+}
+
+/// Applies the native backdrop this machine earns (see `backdrop.rs`) and records it for the webview.
+pub(crate) fn apply_panel_backdrop(window: &WebviewWindow) {
+    PANEL_BACKDROP_ACRYLIC.store(crate::backdrop::apply(window), Ordering::SeqCst);
+}
+
+/// What the window manager granted, so the stylesheet can lower its own fill to a tint.
+#[tauri::command]
+pub(crate) fn panel_backdrop() -> &'static str {
+    if PANEL_BACKDROP_ACRYLIC.load(Ordering::SeqCst) {
+        "acrylic"
+    } else {
+        "none"
+    }
+}
 
 
 #[tauri::command]
@@ -149,10 +178,18 @@ pub(crate) fn monitor_rects(monitor: &Monitor) -> (Rect, Rect) {
     }
 }
 
+/// Left offset of the main card column inside the window: one padding, then the rail and its gap.
+/// Independent of the sidecar so `place()` can centre the card column under the tray icon.
+pub(crate) fn main_column_offset(window_width: i32, scale: f64) -> i32 {
+    let main = (472.0 * scale).round() as i32;
+    let padding = (PANEL_PADDING * scale).round() as i32;
+    (window_width - main - padding).max(0)
+}
+
 /// Left inset of the main card column inside the panel; the sidecar widens the window to its left.
 pub(crate) fn main_column_inset(window_width: i32, scale: f64) -> i32 {
     if GROK_SIDE_LEFT.load(Ordering::SeqCst) {
-        (window_width - (472.0 * scale).round() as i32 - (8.0 * scale).round() as i32).max(0)
+        main_column_offset(window_width, scale)
     } else {
         0
     }
@@ -175,13 +212,14 @@ pub(crate) fn set_panel_height(
         .map(monitor_rects)
         .unwrap_or((Rect::new(0, 0, 1920, 1080), Rect::new(0, 0, 1920, 1080)));
     let margin = (12.0 * scale).round() as i32;
-    // The work area already excludes the taskbar, whichever edge it is docked to (#204).
+    // The work area already excludes the taskbar, whichever edge it is docked to (#204). The window
+    // carries the card plus the padding the panel draws its own shadow in.
     let max_h = (work.height as f64 / scale - 24.0).max(480.0);
-    let target_h = if height <= 0.0 { max_h } else { height.min(max_h) };
+    let target_h = if height <= 0.0 { max_h } else { (height + PANEL_PADDING * 2.0).min(max_h) };
     let old_pos = window.outer_position().unwrap_or(PhysicalPosition::new(0, 0));
     let old_size = window.outer_size().unwrap_or(PhysicalSize::new(480, 520));
     let main_width = 472.0 * scale;
-    let main_x = old_pos.x as f64 + if side_left { (old_size.width as f64 - main_width - 8.0 * scale).max(0.0) } else { 0.0 };
+    let main_x = old_pos.x as f64 + if side_left { (old_size.width as f64 - main_width - PANEL_PADDING * 2.0 * scale).max(0.0) } else { 0.0 };
     let left = work.x as f64 + margin as f64;
     let right = work.right() as f64 - margin as f64;
     let room_right = right - main_x - main_width;
@@ -189,7 +227,7 @@ pub(crate) fn set_panel_height(
     let enabled = grok_enabled.unwrap_or(true);
     let on_left = if enabled { panel_sidecar_on_left(room_left, room_right, scale) } else { false };
     let rail_width: f64 = if !enabled { 0.0 } else if expanded { 232.0 } else { 84.0 };
-    let target_w = (472.0 + if enabled { rail_width + 20.0 } else { 8.0 }).min((right - left) / scale);
+    let target_w = panel_window_width(if enabled { rail_width } else { 0.0 }).min((right - left) / scale);
     let desired_x = main_x - if on_left { (rail_width + 12.0) * scale } else { 0.0 };
     let x = desired_x.clamp(left, (right - target_w * scale).max(left));
     let new_h = (target_h * scale).round() as i32;
