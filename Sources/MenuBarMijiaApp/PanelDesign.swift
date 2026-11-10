@@ -92,17 +92,14 @@ public struct TileSurface: Equatable, Sendable {
 
     public var secondaryInk: Color { .secondary }
 
-    /// Each floating module carries its own smoked glass base over the desktop.
+    /// Fallback fill for Reduce Transparency and macOS 14/15 Material mode. On macOS 26 with native
+    /// Liquid Glass enabled, `GlassShapeBackground` delegates directly to `ThemeAndMotion` without
+    /// painting a background fill over the glass.
     public var fill: AnyShapeStyle {
-        if isActive, let tint {
-            return scheme == .dark
-                ? AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.28), Color.white.opacity(0.12)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                : AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.20), Color.white.opacity(0.58)], startPoint: .topLeading, endPoint: .bottomTrailing))
-        }
         if scheme == .dark {
-            return AnyShapeStyle(isActive ? Color.white.opacity(0.18) : Color.black.opacity(0.24))
+            return AnyShapeStyle(Color.white.opacity(isActive ? 0.14 : 0.08))
         }
-        return AnyShapeStyle(Color.white.opacity(isActive ? 0.62 : 0.38))
+        return AnyShapeStyle(Color.white.opacity(isActive ? 0.56 : 0.42))
     }
 }
 
@@ -222,14 +219,15 @@ struct HoldToConfirmButton: View {
         .fixedSize(horizontal: true, vertical: false)
         .foregroundStyle(Color.primary.opacity(0.88))
         .padding(.horizontal, 11)
-        .frame(height: 28)
-        .background {
+        .frame(height: 30)
+        .overlay {
             GeometryReader { geo in
                 Rectangle()
                     .fill(Color.accentColor.opacity(0.28))
                     .frame(width: holding ? geo.size.width : 0)
             }
             .clipShape(capsule)
+            .allowsHitTesting(false)
         }
         .modifier(ChipSurface(shape: capsule, tint: nil, interactive: true, clear: false))
         .scaleEffect(holding ? 0.95 : 1)

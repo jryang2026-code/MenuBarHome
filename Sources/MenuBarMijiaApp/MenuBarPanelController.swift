@@ -61,6 +61,7 @@ final class MenuBarPanelController: NSObject {
 
     private(set) var statusItem: NSStatusItem?
     private(set) var panelWindow: NSPanel?
+    private var backdropWindow: NSPanel?
     private var grokBallSidecar: GrokBallSidecarController?
     var grokBallSidecarWindow: NSPanel? { grokBallSidecar?.panelWindow }
 
@@ -208,6 +209,9 @@ final class MenuBarPanelController: NSObject {
         grokBallSidecar?.tearDown()
         grokBallSidecar = nil
         store?.dismissGrokBallStage()
+        backdropWindow?.orderOut(nil)
+        backdropWindow?.contentView = nil
+        backdropWindow = nil
         panelWindow?.orderOut(nil)
         panelWindow?.contentView = nil
         panelWindow = nil
@@ -681,6 +685,7 @@ final class MenuBarPanelController: NSObject {
     /// keyboard handling and the outside-click rule can tell it apart from Settings.
     func isPanelWindow(_ window: NSWindow?) -> Bool {
         guard let window, let panelWindow else { return false }
+        if window === backdropWindow { return false }
         if window === panelWindow { return true }
         if window.parent === panelWindow { return true }
         if panelWindow.attachedSheet === window { return true }
@@ -730,6 +735,7 @@ final class MenuBarPanelController: NSObject {
         let wasVisible = panel.isVisible
         installMouseMonitors()
         if presentsActively {
+            presentBackdropShadow(around: target, screen: statusScreen, under: panel, animate: !wasVisible)
             panel.alphaValue = 1
             panel.hasShadow = false
             // Order the window in first: cooperative activation only succeeds once the app has a
@@ -759,6 +765,7 @@ final class MenuBarPanelController: NSObject {
         LayoutUIState.shared.commitRoomOrderIfNeeded()
         grokBallSidecar?.hide()
         store?.dismissGrokBallStage()
+        hideBackdropShadow()
         panel.orderOut(nil)
         restoreStatusItemHighlight()
         store?.setPanelVisible(false)
@@ -779,6 +786,9 @@ final class MenuBarPanelController: NSObject {
         )
         if panel.frame != target {
             panel.setFrame(target, display: true)
+        }
+        if presentsActively, panel.isVisible {
+            presentBackdropShadow(around: target, screen: statusScreen, under: panel, animate: false)
         }
         grokBallSidecar?.synchronize()
     }
@@ -1211,6 +1221,7 @@ final class MenuBarPanelController: NSObject {
     /// panel spawned (sheet, popover, context menu) are exempt.
     func handleOtherWindowBecameKey(_ window: NSWindow?) {
         guard isPanelVisible, let window else { return }
+        guard window !== backdropWindow else { return }
         guard !isPanelWindow(window) else { return }
         guard window !== statusItem?.button?.window else { return }
         guard window !== CameraLivePanelController.shared.panelWindow else { return }
@@ -1348,10 +1359,11 @@ final class MenuBarPanelController: NSObject {
 
     func handleScreenParametersChanged() {
         guard let panel = panelWindow, panel.isVisible else { return }
-        panel.setFrame(
-            Self.frame(for: panel.frame.size, anchor: statusAnchor, screen: statusScreen),
-            display: true
-        )
+        let target = Self.frame(for: panel.frame.size, anchor: statusAnchor, screen: statusScreen)
+        panel.setFrame(target, display: true)
+        if presentsActively {
+            presentBackdropShadow(around: target, screen: statusScreen, under: panel, animate: false)
+        }
         grokBallSidecar?.synchronize()
     }
 
@@ -1362,6 +1374,64 @@ final class MenuBarPanelController: NSObject {
         let height = Self.preferredContentSize(screen: statusScreen).height
         updatePanelSize(width: Self.panelWidth, height: height)
     }
+
+    // MARK: - Control Center Readability Backdrop Halo
+
+    private static let backdropBleed: CGFloat = 180
+
+    private func presentBackdropShadow(around panelFrame: NSRect, screen: NSScreen?, under panel: NSPanel, animate: Bool) {
+        let visible = (screen ?? NSScreen.main)?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let raw = panelFrame.insetBy(dx: -Self.backdropBleed, dy: -Self.backdropBleed)
+        let frame = raw.intersection(visible)
+        let backdrop = backdropWindow ?? Self.makeBackdropWindow(frame: frame)
+        backdropWindow = backdrop
+        if backdrop.frame != frame {
+            backdrop.setFrame(frame, display: true)
+        }
+        if animate {
+            backdrop.alphaValue = 0
+            backdrop.order(.below, relativeTo: panel.windowNumber)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.28
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
+                backdrop.animator().alphaValue = 1
+            }
+        } else {
+            backdrop.alphaValue = 1
+            backdrop.order(.below, relativeTo: panel.windowNumber)
+        }
+    }
+
+    private func hideBackdropShadow() {
+        guard let backdrop = backdropWindow, backdrop.isVisible else { return }
+        backdrop.orderOut(nil)
+        backdrop.alphaValue = 0
+    }
+
+    private static func makeBackdropWindow(frame: NSRect) -> NSPanel {
+        let w = NSPanel(
+            contentRect: frame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        w.isFloatingPanel = true
+        w.level = .statusBar
+        w.hidesOnDeactivate = false
+        w.isReleasedWhenClosed = false
+        w.becomesKeyOnlyIfNeeded = true
+        w.isOpaque = false
+        w.backgroundColor = .clear
+        w.hasShadow = false
+        w.ignoresMouseEvents = true
+        w.animationBehavior = .none
+        w.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient, .ignoresCycle]
+        let hosting = NSHostingView(rootView: ControlCenterReadabilityBackdrop())
+        hosting.frame = NSRect(origin: .zero, size: frame.size)
+        hosting.autoresizingMask = [.width, .height]
+        w.contentView = hosting
+        return w
+    }
 }
 
 /// Borderless panels are not key windows by default; the control center needs key status for arrow
@@ -1369,4 +1439,24 @@ final class MenuBarPanelController: NSObject {
 final class MenuBarPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+}
+
+/// Soft radial vignette that drops behind the floating Liquid Glass modules when the panel opens,
+/// replicating macOS Control Center's readability shadow without putting a box around the panel.
+private struct ControlCenterReadabilityBackdrop: View {
+    var body: some View {
+        EllipticalGradient(
+            stops: [
+                .init(color: .black.opacity(0.30), location: 0.0),
+                .init(color: .black.opacity(0.20), location: 0.42),
+                .init(color: .black.opacity(0.08), location: 0.72),
+                .init(color: .clear, location: 1.0)
+            ],
+            center: UnitPoint(x: 0.5, y: 0.44),
+            startRadiusFraction: 0.0,
+            endRadiusFraction: 0.5
+        )
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
 }

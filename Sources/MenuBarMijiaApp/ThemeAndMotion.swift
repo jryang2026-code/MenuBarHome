@@ -100,24 +100,17 @@ public struct PillActionButtonStyle: ButtonStyle {
         let capsule = Capsule(style: .continuous)
         return configuration.label
             .font(.system(size: DesignTokens.TypeSize.caption, weight: isSelected ? .semibold : .medium))
-            .foregroundStyle(Color.primary.opacity(0.88))
+            .foregroundStyle(Color.primary.opacity(isSelected ? 0.96 : 0.88))
             .padding(.horizontal, 10.5)
             .padding(.vertical, 5)
-            .background {
-                if isSelected {
-                    capsule.fill(Color.primary.opacity(colorScheme == .dark ? 0.18 : 0.09))
-                }
-            }
             .modifier(
                 ChipSurface(
                     shape: capsule,
-                    tint: nil,
+                    tint: isSelected ? tintColor.opacity(0.24) : nil,
                     interactive: true,
-                    clear: false,
-                    isHidden: isSelected
+                    clear: false
                 )
             )
-            .specularRim(capsule)
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1.0)
             .animation(reduceMotion ? nil : AppleMotion.pressFeedback, value: configuration.isPressed)
     }
@@ -245,12 +238,7 @@ public struct GlassShapeBackground<S: InsettableShape>: ViewModifier {
 
     public func body(content: Content) -> some View {
         surfaceBody(content)
-            .shadow(
-                color: .black.opacity(colorScheme == .dark ? (isActive ? 0.28 : 0.20) : (isActive ? 0.14 : 0.08)),
-                radius: isActive ? 10 : 7,
-                y: isActive ? 4 : 2
-            )
-            .animation(.easeOut(duration: 0.18), value: isActive)
+            .animation(AppleMotion.control, value: isActive)
     }
 
     @ViewBuilder
@@ -263,27 +251,30 @@ public struct GlassShapeBackground<S: InsettableShape>: ViewModifier {
                     shape.fill(surface.fill)
                 }
                 .specularRim(shape)
+                .shadow(color: .black.opacity(colorScheme == .dark ? 0.24 : 0.10), radius: 7, y: 2)
         } else if #available(macOS 26.0, *) {
-            content
-                .background { shape.fill(surface.fill) }
-                .glassEffect(moduleGlass, in: shape)
-                .specularRim(shape, strength: isActive ? 1.25 : 1.0)
+            // Pure native Liquid Glass: never paint a `.background` fill before `.glassEffect`, or
+            // the view's own fill sits in front of the system glass slab and blocks both desktop
+            // refraction and System Settings (Tinted / Clear) adaptation.
+            if let tint {
+                content.glassEffect(.regular.interactive().tint(tint), in: shape)
+            } else {
+                content.glassEffect(.regular.interactive(), in: shape)
+            }
         } else {
             content
                 .background {
                     ZStack {
                         shape.fill(.ultraThinMaterial)
                         shape.fill(surface.fill)
+                        if let tint {
+                            shape.fill(tint.opacity(0.16))
+                        }
                     }
                 }
                 .specularRim(shape, strength: isActive ? 1.25 : 1.0)
+                .shadow(color: .black.opacity(colorScheme == .dark ? 0.24 : 0.10), radius: 8, y: 3)
         }
-    }
-
-    @available(macOS 26.0, *)
-    private var moduleGlass: Glass {
-        if isActive, let tint { return .regular.interactive().tint(tint) }
-        return .regular.interactive()
     }
 }
 
@@ -313,7 +304,8 @@ struct ChipSurface<S: InsettableShape>: ViewModifier {
 
     @available(macOS 26.0, *)
     private var glassStyle: Glass {
-        interactive ? .regular.interactive() : .regular
+        let base: Glass = clear ? .clear : .regular
+        return interactive ? base.interactive() : base
     }
 }
 struct ClassicGlass<S: InsettableShape>: ViewModifier {
@@ -587,30 +579,18 @@ public struct LiquidGlassSlider: View {
 
             ZStack(alignment: .leading) {
                 Capsule(style: .continuous)
-                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.10))
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08))
                     .overlay(alignment: .leading) {
                         Capsule(style: .continuous)
                             .fill(trackFill)
                             .frame(width: min(fillWidth, width))
                     }
-                    .adaptiveGlass(in: Capsule(style: .continuous))
-                    .specularRim(Capsule(style: .continuous))
+                    .clipShape(Capsule(style: .continuous))
 
-                Capsule(style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(isDragging ? 0.30 : (colorScheme == .dark ? 0.78 : 0.84)),
-                                Color.white.opacity(isDragging ? 0.10 : (colorScheme == .dark ? 0.42 : 0.52))
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
+                Color.clear
                     .frame(width: thumbWidth, height: thumbHeight)
-                    .adaptiveGlass(in: Capsule(style: .continuous), interactive: true, clear: true)
-                    .specularRim(Capsule(style: .continuous), strength: 1.4)
-                    .shadow(color: .black.opacity(isDragging ? 0.26 : 0.18), radius: isDragging ? 5 : 2.5, y: isDragging ? 2 : 1)
+                    .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
+                    .shadow(color: .black.opacity(isDragging ? 0.24 : 0.14), radius: isDragging ? 5 : 2.5, y: isDragging ? 2 : 1)
                     .position(x: thumbCenterX, y: geo.size.height / 2)
 
                 HStack {

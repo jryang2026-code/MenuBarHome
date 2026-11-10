@@ -21,7 +21,7 @@ extension SmartDevice {
             return s.isOn ? "snowflake" : "air.conditioner.horizontal"
         case .fan(let s):
             if model.contains(".derh.") { return "humidity.fill" }
-            if model.contains("humidifier") || name.contains("加湿") { return "air.humidifier.fill" }
+            if model.contains("humidifier") || name.contains("加湿") { return "humidifier.fill" }
             if model.contains("airfresh") || name.contains("新风") { return "wind" }
             if model.contains("airp") || model.contains("purifier") || name.contains("净化")
                 || s.pm25Density != nil || s.airQuality != nil || s.filterLifePercent != nil {
@@ -29,7 +29,7 @@ extension SmartDevice {
             }
             return "fan.floor.fill"
         case .plug(let s):
-            if model.contains(".diffuser.") { return "air.humidifier.fill" }
+            if model.contains(".diffuser.") { return "humidifier.fill" }
             if s.switchEntityId.hasPrefix("button.") {
                 if s.switchEntityId.contains("wake_on_lan") || name.contains("电脑")
                     || name.localizedCaseInsensitiveContains("pc") || name.localizedCaseInsensitiveContains("mac") {
@@ -52,7 +52,7 @@ extension SmartDevice {
         case .vacuum:
             return "humidifier.and.droplets.fill" // clean appliance icon fallback handled in view
         case .speaker(let s):
-            return s.isMuted ? "hifispeaker.slash.fill" : "hifispeaker.fill"
+            return s.isMuted ? "speaker.slash.fill" : "hifispeaker.fill"
         case .tv:
             return "tv.fill"
         case .camera(let s):

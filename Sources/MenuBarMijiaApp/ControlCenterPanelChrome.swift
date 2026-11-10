@@ -95,11 +95,9 @@ extension ControlCenterPanel {
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 12)
             .frame(height: 30)
             .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
-            .specularRim(Capsule(style: .continuous))
-            .shadow(color: .black.opacity(effectiveScheme == .dark ? 0.20 : 0.10), radius: 7, y: 2)
 
             Spacer(minLength: 0)
 
@@ -162,9 +160,8 @@ extension ControlCenterPanel {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: 28, height: 28)
+        .frame(width: 30, height: 30)
         .adaptiveGlass(in: Circle(), interactive: true)
-        .specularRim(Circle())
         .accessibilityLabel(Text(L10n.tr("更多操作", "More actions")))
     }
 
@@ -178,11 +175,10 @@ extension ControlCenterPanel {
         } label: {
             Image(systemName: store.updateState.isReadyToRelaunch ? "arrow.triangle.2.circlepath.circle.fill" : "arrow.down.circle.fill")
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .frame(width: 28, height: 28)
+                .frame(width: 30, height: 30)
         }
         .buttonStyle(.plain)
-        .adaptiveGlass(in: Capsule(style: .continuous), tint: .accentColor, interactive: true)
-        .specularRim(Capsule(style: .continuous))
+        .adaptiveGlass(in: Circle(), tint: .accentColor, interactive: true)
         .accessibilityLabel(Text(updateBadgeTitle(for: release)))
         .panelHelp(updateBadgeTitle(for: release))
     }
@@ -488,8 +484,8 @@ extension ControlCenterPanel {
                 )
             )
         }
+        .frame(height: 30)
         .adaptiveGlass(in: Capsule(style: .continuous))
-        .specularRim(Capsule(style: .continuous))
     }
 
     @ViewBuilder
@@ -554,37 +550,33 @@ extension ControlCenterPanel {
     }
 
     func kindPillLabel(_ tag: DeviceKindTag, isSelected: Bool) -> some View {
-        let surface = TileSurface(isActive: true, scheme: effectiveScheme)
-        return Text(tag.chipTitle)
+        Text(tag.chipTitle)
             .font(.system(size: DesignTokens.TypeSize.caption, weight: isSelected ? .semibold : .medium))
             .foregroundStyle(isSelected ? Color.primary : Color.secondary)
             .padding(.horizontal, 11)
-            .padding(.vertical, 5)
+            .padding(.vertical, 4.5)
             .background {
                 if isSelected {
                     Capsule(style: .continuous)
-                        .fill(surface.fill)
-                        .shadow(color: .black.opacity(effectiveScheme == .dark ? 0.28 : 0.10), radius: 2, y: 1)
+                        .fill(Color.primary.opacity(effectiveScheme == .dark ? 0.16 : 0.10))
                 }
             }
             .contentShape(Capsule(style: .continuous))
-            .animation(AppleMotion.snappySpring, value: isSelected)
+            .animation(AppleMotion.control, value: isSelected)
     }
 
     /// `[全部] [rooms…scroll…]` inside one capsule track, with the sort and view controls beside it.
     /// 全部 sits outside the scroll view so the most-used filter can never be scrolled out of view
     /// while a room is selected (§2.2 audit item 5).
     var roomFilterBar: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 6) {
             ScrollViewReader { proxy in
                 HStack(spacing: 0) {
                     roomPill(title: L10n.tr("全部", "All"), roomId: nil)
-                        .padding(.vertical, 3)
-                        .padding(.leading, 4)
+                        .padding(.leading, 3)
 
                     ScrollView(.horizontal, showsIndicators: false) {
                         roomPillsRow
-                            .padding(.vertical, 3)
                             .padding(.trailing, 4)
                             .horizontalWheelScroll()
                     }
@@ -618,8 +610,8 @@ extension ControlCenterPanel {
                         )
                     )
                 }
+                .frame(height: 30)
                 .adaptiveGlass(in: Capsule(style: .continuous))
-                .specularRim(Capsule(style: .continuous))
             }
 
             sortRoomsButton
@@ -644,21 +636,12 @@ extension ControlCenterPanel {
             } label: {
                 Image(systemName: "arrow.up.arrow.down")
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(isRoomOrdering ? Color.white : Color.primary.opacity(0.78))
-                    .frame(width: 26, height: 24)
-                    .background {
-                        if isRoomOrdering {
-                            Capsule(style: .continuous).fill(Color.accentColor)
-                        }
-                    }
-                    .modifier(
-                        ChipSurface(
-                            shape: Capsule(style: .continuous),
-                            tint: nil,
-                            interactive: true,
-                            clear: false,
-                            isHidden: isRoomOrdering
-                        )
+                    .foregroundStyle(isRoomOrdering ? Color.accentColor : Color.primary.opacity(0.82))
+                    .frame(width: 30, height: 30)
+                    .adaptiveGlass(
+                        in: Circle(),
+                        tint: isRoomOrdering ? Color.accentColor.opacity(0.26) : nil,
+                        interactive: true
                     )
             }
             .buttonStyle(.plain)
@@ -713,22 +696,12 @@ extension ControlCenterPanel {
         } label: {
             Image(systemName: isOn ? onSymbol : offSymbol)
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .foregroundStyle(isOn ? Color.white : Color.primary.opacity(0.78))
-                .frame(width: 26, height: 24)
-                .background {
-                    if isOn {
-                        Capsule(style: .continuous)
-                            .fill(Color.accentColor)
-                    }
-                }
-                .modifier(
-                    ChipSurface(
-                        shape: Capsule(style: .continuous),
-                        tint: nil,
-                        interactive: true,
-                        clear: false,
-                        isHidden: isOn
-                    )
+                .foregroundStyle(isOn ? Color.accentColor : Color.primary.opacity(0.78))
+                .frame(width: 30, height: 30)
+                .adaptiveGlass(
+                    in: Circle(),
+                    tint: isOn ? Color.accentColor.opacity(0.24) : nil,
+                    interactive: true
                 )
         }
         .buttonStyle(.plain)
@@ -750,22 +723,19 @@ extension ControlCenterPanel {
             : store.selectedRoomId == roomId
         // While the order list is open the strip is a live preview: pills neither select nor drag.
         let isPreview = isRoomOrdering
-        let surface = TileSurface(isActive: true, scheme: effectiveScheme)
         let content = Text(title)
             .font(.system(size: DesignTokens.TypeSize.caption, weight: isSelected ? .semibold : .medium))
             .foregroundStyle(isSelected ? Color.primary : Color.secondary)
             .lineLimit(1)
             .padding(.horizontal, 11)
-            .padding(.vertical, 5)
+            .padding(.vertical, 4.5)
             .background {
                 if isSelected {
                     Capsule(style: .continuous)
-                        .fill(surface.fill)
-                        .shadow(color: .black.opacity(effectiveScheme == .dark ? 0.28 : 0.10), radius: 2, y: 1)
+                        .fill(Color.primary.opacity(effectiveScheme == .dark ? 0.16 : 0.10))
                 }
             }
             .contentShape(Capsule(style: .continuous))
-
         Group {
             // 只有预览态下胶囊不可点；浏览态连「全部」也必须能点，否则选中房间后无法点回全屋视图。
             if isPreview {

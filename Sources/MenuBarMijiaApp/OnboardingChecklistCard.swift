@@ -53,10 +53,10 @@ struct OnboardingChecklistCard: View {
                 "Close the checklist; reopen it in Settings → General → Setup"
             ))
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 12)
         .frame(height: 44)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.module)
+        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.panel)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("onboarding-lesson-row")
     }

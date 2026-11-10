@@ -113,14 +113,15 @@ struct SensorCardView: View {
                     .font(.system(size: DesignTokens.TypeSize.title, weight: .semibold))
                     .foregroundStyle(tempColor)
             }
-            .frame(width: 38, height: 38)
+            .frame(width: 42, height: 42)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
-                    Text(displayName)
+                    Text(compactDisplayName)
                         .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                         .foregroundStyle(fg)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.84)
                     Spacer(minLength: 2)
                     comfortChip
                 }
@@ -757,6 +758,12 @@ struct SensorCardView: View {
         return n.isEmpty ? device.name : n
     }
 
+    /// In a 171 pt 2×1 capsule, "客厅温湿度计" alongside the comfort pill truncates to "客厅温…";
+    /// shortening the suffix to "温湿度" keeps both the room name and the comfort pill intact.
+    private var compactDisplayName: String {
+        let n = displayName.replacingOccurrences(of: "温湿度计", with: "温湿度")
+        return n.isEmpty ? displayName : n
+    }
     /// The comfort badge speaks through colour too: green when fine, amber hot, blue cold, teal dry/humid.
     private enum ComfortState {
         case comfy, warm, cool, dry, humid

@@ -335,7 +335,6 @@ extension ControlCenterPanel {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 3.5)
                 .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
-                .specularRim(Capsule(style: .continuous))
 
                 Spacer(minLength: 0)
             }
@@ -756,9 +755,16 @@ extension ControlCenterPanel {
         sortByUserOrder: Bool = true
     ) -> some View {
         let aliases = GroupPrefs.map(aliasesRaw)
-        let source = sortByUserOrder
-            ? DeviceLayoutPrefs.apply(order: currentOrder, to: devices)
-            : devices
+        let hasUserOrder = !currentOrder.isEmpty
+        let source: [SmartDevice] = {
+            if !sortByUserOrder { return devices }
+            if hasUserOrder { return DeviceLayoutPrefs.apply(order: currentOrder, to: devices) }
+            // Without a custom order, pack 2×1 capsules first and full-row modules after them so an
+            // odd full-row climate strip never leaves a lone half-row capsule with a blank right slot.
+            let subRow = devices.filter { gridSpan(for: tileSize($0)) < 12 }
+            let fullRow = devices.filter { gridSpan(for: tileSize($0)) >= 12 }
+            return subRow + fullRow
+        }()
         let ordered = source.map { dev -> SmartDevice in
             guard let alias = aliases[dev.id] else { return dev }
             var d = dev

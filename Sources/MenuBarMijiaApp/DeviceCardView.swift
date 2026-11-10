@@ -79,9 +79,9 @@ public struct DeviceCardView: View {
 
     private var accent: Color { DevicePalette.accentColor(for: device) }
 
-    /// A running device washes its capsule in its own family colour, the way Control Center's
-    /// Focus and Now Playing tiles glow; a quiet one stays neutral glass.
-    private var tileTint: Color? { isLit ? accent : nil }
+    /// Card glass stays neutral in both states: only the left icon orb carries the device's family
+    /// colour when on (gray when off), matching macOS Tahoe Control Center's Wi-Fi / Bluetooth pills.
+    private var tileTint: Color? { nil }
 
     /// A compact, collapsed 2×1 tile is a true capsule (58 pt tall → radius 29). A 2×2 hero tile or
     /// full row uses the module corner radius.
@@ -91,8 +91,8 @@ public struct DeviceCardView: View {
             : DesignTokens.Radius.module
     }
 
-    /// Compact capsules wear a 40 pt orb; a full row's is 38 pt (contract §1.2).
-    private var orbDiameter: CGFloat { (isCompactTile && !isExpanded) ? 40 : 38 }
+    /// Compact capsules wear a 42 pt orb; a full row's is 38 pt.
+    private var orbDiameter: CGFloat { (isCompactTile && !isExpanded) ? 42 : 38 }
 
     /// The device is running: a lit well, never an opaque slab.
     private var isLit: Bool { store.presentsAsActive(device) }
@@ -644,22 +644,24 @@ public struct DeviceCardView: View {
 
     private var iconBadge: some View {
         let on = device.isActiveOn && device.isOnline
+        let offFill = colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.10)
+        let offInk = colorScheme == .dark ? Color.white.opacity(0.68) : Color.secondary
         return ZStack {
             Circle()
-                .fill(on ? AnyShapeStyle(accent) : AnyShapeStyle(Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.08)))
+                .fill(on ? AnyShapeStyle(accent) : AnyShapeStyle(offFill))
             Circle()
                 .strokeBorder(
-                    Color.white.opacity(on ? 0.28 : (colorScheme == .dark ? 0.14 : 0.35)),
+                    Color.white.opacity(on ? 0.32 : (colorScheme == .dark ? 0.16 : 0.28)),
                     lineWidth: DesignTokens.hairline
                 )
             Image(systemName: resolvedSymbolName)
                 .font(.system(size: DesignTokens.TypeSize.title, weight: .semibold))
-                .foregroundStyle(on ? Color.white : Color.primary.opacity(0.78))
+                .foregroundStyle(on ? Color.white : offInk)
                 .symbolEffect(.bounce, value: on)
         }
         .frame(width: orbDiameter, height: orbDiameter)
-        .shadowIf(on, color: accent.opacity(0.45), radius: 8, y: 2)
-        .animation(.spring(response: 0.4, dampingFraction: 0.72), value: on)
+        .shadowIf(on, color: accent.opacity(0.38), radius: 6, y: 2)
+        .animation(AppleMotion.control, value: on)
     }
 
     private var resolvedSymbolName: String {

@@ -44,6 +44,8 @@ public struct ControlCenterPanel: View {
     @Environment(\.openSettings) var openSettings
     /// Flips with the menu-bar window so the room strip re-centers on every open.
     @State var isPresented = false
+    /// Drives the subtle spring drop-in when the panel opens on screen (starts true for offscreen snapshots).
+    @State private var entranceRevealed = true
     /// Re-centers the active room pill when the user taps an already-selected pill after scrolling.
     @State var roomScrollTrigger = 0
     @State var kindScrollTrigger = 0
@@ -96,6 +98,14 @@ public struct ControlCenterPanel: View {
                 UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
                 LaunchAtLoginCoordinator.live(store: store).refresh()
                 isPresented = true
+                if !reduceMotion {
+                    entranceRevealed = false
+                    withAnimation(AppleMotion.reveal) {
+                        entranceRevealed = true
+                    }
+                } else {
+                    entranceRevealed = true
+                }
             }
             .onAppear { handlePanelAppear() }
             // The panel tree survives a close, so a half-typed query would come back on the next open.
@@ -149,6 +159,9 @@ public struct ControlCenterPanel: View {
                     .zIndex(3)
             }
         }
+        .scaleEffect(entranceRevealed || reduceMotion ? 1.0 : 0.965, anchor: .top)
+        .offset(y: entranceRevealed || reduceMotion ? 0 : -10)
+        .opacity(entranceRevealed || reduceMotion ? 1.0 : 0.0)
         .onChange(of: store.favoriteOrder) { _, favOrder in
             guard !favOrder.isEmpty else { return }
             var order = currentOrder
@@ -260,16 +273,16 @@ public struct ControlCenterPanel: View {
     private var mainDashboard: some View {
         VStack(alignment: .leading, spacing: 0) {
             topHeroHeader
-                .padding(.horizontal, 14)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
+                .padding(.horizontal, 13)
+                .padding(.top, 8)
+                .padding(.bottom, 6)
 
             if !store.panelActivities.isEmpty {
                 activityStack
                     .layoutPriority(activitiesExpanded ? 1 : 0)
                     .foldOrigin { $0.systemNoticeMinY = $1 }
                     .accessibilityIdentifier("panel-system-notice")
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, 13)
                     .padding(.bottom, 8)
             }
 
@@ -278,19 +291,19 @@ public struct ControlCenterPanel: View {
             if !isRoomOrdering {
                 omnibar
                     .foldOrigin { $0.omnibarMinY = $1 }
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 4)
+                    .padding(.horizontal, 13)
+                    .padding(.bottom, 5)
 
                 if showsInputDrawer {
                     inputDrawer
-                        .padding(.horizontal, 14)
+                        .padding(.horizontal, 13)
                         .padding(.bottom, 8)
                         .transition(AppleMotion.drawerTransition)
                 }
 
                 if store.isShowingAssistantBar || speech.errorMessage != nil {
                     AssistantResponseArea(store: store)
-                        .padding(.horizontal, 14)
+                        .padding(.horizontal, 13)
                         .padding(.bottom, 8)
                         .transition(AppleMotion.drawerTransition)
                 }
@@ -307,12 +320,12 @@ public struct ControlCenterPanel: View {
                             // Ordering kinds previews the chip row under the strip instead.
                             if layoutUI.orderTarget == .kinds { kindFilterBar }
                         }
-                        .padding(.horizontal, 14)
+                        .padding(.horizontal, 13)
                         .padding(.bottom, 8)
                     }
                 } else {
                     browsingFilters
-                        .padding(.horizontal, 14)
+                        .padding(.horizontal, 13)
                         .padding(.bottom, 4)
                 }
             }
@@ -329,6 +342,10 @@ public struct ControlCenterPanel: View {
 
         }
         .foldOrigin { $0.panelMinY = $1 }
+        .animation(AppleMotion.reveal, value: store.expandedDeviceId)
+        .animation(AppleMotion.reveal, value: store.selectedRoomId)
+        .animation(AppleMotion.reveal, value: store.listCut)
+        .animation(AppleMotion.reveal, value: store.isCompactGridMode)
         .animation(AppleMotion.snappySpring, value: store.isShowingAssistantBar)
         .animation(AppleMotion.snappySpring, value: layoutUI.editMode)
         .animation(AppleMotion.snappySpring, value: kindChipsRevealed)
@@ -397,8 +414,9 @@ public struct ControlCenterPanel: View {
                     VStack(alignment: .leading, spacing: 0) {
                         if showsScrollPreface {
                             scrollPreface
+                                .padding(.bottom, 4)
                         }
-                        VStack(alignment: .leading, spacing: 11) {
+                        VStack(alignment: .leading, spacing: 9) {
                             if search.isSearching {
                                 searchResultsList(results: searchResults)
                             } else if store.visibleDevices.isEmpty {
@@ -434,7 +452,7 @@ public struct ControlCenterPanel: View {
                         }
                     }
                     .padding(.horizontal, 13)
-                    .padding(.top, showsScrollPreface ? 0 : 10)
+                    .padding(.top, 0)
                     .padding(.bottom, max(12, transientStackHeight + 8))
                 }
                 .onChange(of: pendingScrollToDeviceId) { _, targetId in
@@ -477,7 +495,7 @@ public struct ControlCenterPanel: View {
     /// The single input: typing filters devices, a sentence plus Return runs as an instruction, the
     /// mic dictates into the same field.
     private var omnibar: some View {
-        let shape = RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
+        let shape = Capsule(style: .continuous)
         let listening = speech.isListening
         return HStack(spacing: 7) {
             Image(systemName: listening ? "waveform" : "magnifyingglass")
@@ -543,13 +561,13 @@ public struct ControlCenterPanel: View {
                     : L10n.tr("语音输入（快捷键 V，或长按 ⌥M / 菜单栏图标）", "Voice input (Shortcut V, or hold ⌥M / menu bar icon)"))
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.horizontal, 12)
+        .frame(height: 32)
         .adaptiveGlass(in: shape, interactive: true)
         .overlay(
             shape.strokeBorder(
-                listening ? Color.red.opacity(0.65) : Color.accentColor.opacity(isSearchFieldFocused ? 0.55 : 0.16),
-                lineWidth: DesignTokens.hairline
+                listening ? Color.red.opacity(0.65) : (isSearchFieldFocused ? Color.accentColor.opacity(0.65) : Color.clear),
+                lineWidth: 1.5
             )
         )
         .onChange(of: search.focusRequest) { _, _ in focusInput() }
