@@ -382,7 +382,9 @@ struct MijiaCoreTests {
         let suiteName = "test.slice4.\(UUID().uuidString)"
         let mock = MockHomeProvider(snapshot: snapshot)
         let store = HomeStore(provider: mock, defaultsSuiteName: suiteName)
+        store.enableSafetyAlerts = false
         try await store.waitForTestSnapshot()
+        store.enableSafetyAlerts = true
 
         // 1. Dynamic menu bar target: temp+humidity and total power
         store.menuBarTargetId = "temp_hum:dev_sensor_study"
@@ -411,6 +413,7 @@ struct MijiaCoreTests {
         // 4. SafetyAlert: Starred device (dev_coffee) going offline triggers offline alert
         var offlineCoffee = coffeePlug
         offlineCoffee.isOnline = false
+        store.enableSafetyAlerts = false
         await mock.updateSnapshot(
             SynthesizedHome(
                 rooms: snapshot.rooms,
@@ -419,6 +422,7 @@ struct MijiaCoreTests {
             )
         )
         try await Task.sleep(for: .milliseconds(50))
+        store.enableSafetyAlerts = true
         let offlineAlerts = store.evaluateSafetyAlerts(now: after46Min.addingTimeInterval(30))
         #expect(offlineAlerts.contains(where: { $0.deviceId == "dev_coffee" && $0.title.contains("离线") }))
     }

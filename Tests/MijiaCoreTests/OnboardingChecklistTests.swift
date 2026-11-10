@@ -374,91 +374,53 @@ struct OnboardingChecklistTests {
 }
 
 struct PanelNoticeTests {
-    @Test("One notice is shown, blocked ahead of security, then suggestion, then expiring")
-    func priorityKeepsASingleSlot() {
+    @Test("Every pending notice keeps its priority: blocked, security, suggestion, expiring")
+    func kindsKeepTheirPriorityOrder() {
         let soon = Date(timeIntervalSince1970: 1_700_000_000)
         let plaintext = HAPlaintextPrompt.asking("http://203.0.113.5:8123")
+        let declined = HAPlaintextPrompt.declined("http://203.0.113.5:8123")
         let address = HADiscoveredInstance(baseURL: "http://203.0.113.9:8123", locationName: "客厅")
 
-        #expect(PanelNotice.slot(miExpired: false, expiringSoon: nil, plaintext: nil, address: nil) == nil)
-
-        let blocked = PanelNotice.slot(
+        #expect(PanelNotice.kinds(miExpired: false, expiringSoon: nil, plaintext: nil, address: nil).isEmpty)
+        #expect(PanelNotice.kinds(
             miExpired: true, expiringSoon: soon, plaintext: plaintext, address: address
-        )
-        #expect(blocked?.kind == .miBlocked)
-        #expect(blocked?.extraCount == 3)
-        #expect(blocked?.hidesChecklist == true)
-
-        let security = PanelNotice.slot(
-            miExpired: false, expiringSoon: soon, plaintext: plaintext, address: address
-        )
-        #expect(security?.kind == .haPlaintext(plaintext))
-        #expect(security?.extraCount == 2)
-        #expect(security?.hidesChecklist == true)
-
-        let declined = HAPlaintextPrompt.declined("http://203.0.113.5:8123")
-        let declinedSlot = PanelNotice.slot(
-            miExpired: false, expiringSoon: nil, plaintext: declined, address: nil
-        )
-        #expect(declinedSlot?.hidesChecklist == true)
-
-        let suggestion = PanelNotice.slot(
-            miExpired: false, expiringSoon: soon, plaintext: nil, address: address
-        )
-        #expect(suggestion?.kind == .haAddress(address))
-        #expect(suggestion?.extraCount == 1)
-        #expect(suggestion?.hidesChecklist == false)
-
-        let expiring = PanelNotice.slot(
+        ) == [.miBlocked, .haPlaintext(plaintext), .haAddress(address), .miExpiringSoon(soon)])
+        #expect(PanelNotice.kinds(
+            miExpired: false, expiringSoon: soon, plaintext: plaintext, address: nil
+        ) == [.haPlaintext(plaintext), .miExpiringSoon(soon)])
+        #expect(PanelNotice.kinds(
+            miExpired: false, expiringSoon: nil, plaintext: nil, address: address
+        ) == [.haAddress(address)])
+        #expect(PanelNotice.kinds(
             miExpired: false, expiringSoon: soon, plaintext: nil, address: nil
-        )
-        #expect(expiring?.kind == .miExpiringSoon(soon))
-        #expect(expiring?.extraCount == 0)
-        #expect(expiring?.hidesChecklist == false)
-        #expect(PanelNotice.extraReminderLabel(count: 1) == "还有 1 条提醒")
-        #expect(PanelNotice.extraReminderLabel(count: 2) == "还有 2 条提醒")
+        ) == [.miExpiringSoon(soon)])
+
+        #expect(PanelNoticeSlot.Kind.miBlocked.hidesChecklist)
+        #expect(PanelNoticeSlot.Kind.haPlaintext(plaintext).hidesChecklist)
+        #expect(PanelNoticeSlot.Kind.haPlaintext(declined).hidesChecklist)
+        #expect(!PanelNoticeSlot.Kind.haAddress(address).hidesChecklist)
+        #expect(!PanelNoticeSlot.Kind.miExpiringSoon(soon).hidesChecklist)
     }
 
-    @Test("The live store shows only the higher notice when expiry and plaintext are both set")
+    @Test("The live store lists each pending notice once, highest priority first")
     @MainActor
-    func storeShowsOneNotice() async throws {
+    func storeListsEachPendingNotice() async throws {
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [], scenes: [])),
             defaultsSuiteName: "test.notice.slot.\(UUID().uuidString)"
         )
         store.haPlaintextPrompt = .asking("http://203.0.113.5:8123")
         store.pendingHAAddressSuggestion = HADiscoveredInstance(baseURL: "http://203.0.113.9:8123")
-        let slot = try #require(store.panelNoticeSlot)
-        if case .haPlaintext(.asking("http://203.0.113.5:8123")) = slot.kind {
-        } else {
-            Issue.record("Expected the plaintext notice, got \(slot.kind)")
-        }
-        #expect(slot.extraCount == 1)
-        #expect(slot.hidesChecklist)
-    }
-
-    @Test("The reminder button walks the pending notices and keeps the count")
-    func reminderCyclesThroughNotices() {
-        let soon = Date(timeIntervalSince1970: 1_700_000_000)
-        let plaintext = HAPlaintextPrompt.asking("http://203.0.113.5:8123")
-        let address = HADiscoveredInstance(baseURL: "http://203.0.113.9:8123", locationName: "客厅")
-        let kinds = PanelNotice.kinds(
-            miExpired: true, expiringSoon: soon, plaintext: plaintext, address: address
-        )
-        #expect(kinds == [
-            .miBlocked, .haPlaintext(plaintext), .haAddress(address), .miExpiringSoon(soon)
+        #expect(store.panelNoticeKinds == [
+            .haPlaintext(.asking("http://203.0.113.5:8123")),
+            .haAddress(HADiscoveredInstance(baseURL: "http://203.0.113.9:8123"))
         ])
-        let shown: [PanelNoticeSlot.Kind?] = (0...4).map { PanelNotice.slot(kinds, at: $0)?.kind }
-        #expect(shown == [
-            .miBlocked, .haPlaintext(plaintext), .haAddress(address), .miExpiringSoon(soon), .miBlocked
-        ])
-        #expect((0...4).allSatisfy { PanelNotice.slot(kinds, at: $0)?.extraCount == 3 })
-        #expect(PanelNotice.slot([], at: 0) == nil)
+        #expect(store.panelActivities.map(\.id) == ["notice.haPlaintext.asking", "notice.haAddress"])
     }
 
     @Test("The blocked banner already carries the expiry toast's message and Scan action")
     func blockedNoticeSupersedesTheExpiryToast() {
-        let blocked = PanelNoticeSlot(kind: .miBlocked, extraCount: 0)
+        let blocked = PanelNoticeSlot.Kind.miBlocked
         let expiryToast = ToastNotice(
             message: HomeStore.miSessionBlockedMessage,
             isError: true,
@@ -474,16 +436,13 @@ struct PanelNoticeTests {
             action: ToastAction(title: "设置", kind: .openConnectionSettings),
             persistent: true
         )))
-        let expiring = PanelNoticeSlot(
-            kind: .miExpiringSoon(Date(timeIntervalSince1970: 1_700_000_000)),
-            extraCount: 0
-        )
+        let expiring = PanelNoticeSlot.Kind.miExpiringSoon(Date(timeIntervalSince1970: 1_700_000_000))
         #expect(!expiring.repeats(expiryToast))
     }
 
-    @Test("A blocked session with a plaintext prompt cycles to the HA decision")
+    @Test("A blocked session lists the plaintext decision behind it")
     @MainActor
-    func blockedAndPlaintextCycleToTheHADecision() async throws {
+    func blockedAndPlaintextBothList() async throws {
         let suite = "test.notice.cycle.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
@@ -505,11 +464,13 @@ struct PanelNoticeTests {
         store.haPlaintextPrompt = prompt
 
         #expect(store.panelNoticeKinds == [.miBlocked, .haPlaintext(prompt)])
-        #expect(store.panelNoticeSlot?.kind == .miBlocked)
-        let second = try #require(PanelNotice.slot(store.panelNoticeKinds, at: 1))
-        #expect(second.kind == .haPlaintext(prompt))
-        #expect(second.extraCount == 1, "the count does not change while cycling")
-        #expect(second.hidesChecklist)
+        let activities = store.panelActivities
+        #expect(activities.map(\.id) == ["notice.miBlocked", "notice.haPlaintext.asking"])
+        #expect(activities.allSatisfy { !$0.isDismissible }, "neither waits for clearing, both wait for the user")
+        #expect(activities.allSatisfy { activity in
+            if case .notice(let kind) = activity.kind { return kind.hidesChecklist }
+            return false
+        })
     }
 
     @Test("Kind chips stay hidden until 全部 is opened again or a kind filter is on")

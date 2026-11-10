@@ -86,10 +86,9 @@ struct MainsBreakerTests {
         )
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [breaker, kettle]))
         let store = HomeStore(provider: mock, defaultsSuiteName: "test.breaker.\(UUID().uuidString)")
-        for _ in 0..<100 where store.devices.count < 2 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(store.devices.count == 2)
+        store.enableSafetyAlerts = false
+        try await store.waitForTestSnapshot()
+        store.enableSafetyAlerts = true
         #expect(store.totalPowerWatts == 1_500)
 
         let start = Date(timeIntervalSince1970: 1_800_000_000)

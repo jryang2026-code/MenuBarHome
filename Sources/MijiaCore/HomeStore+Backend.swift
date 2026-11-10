@@ -379,6 +379,7 @@ extension HomeStore {
             // Compare the displayed names so aliases do not cause two observable writes per snapshot.
             let nextDevices = devicesWithAliases(merged)
             if devices != nextDevices { devices = nextDevices }
+            removeActivitiesForMissingDevices()
             seedDefaultFavoritesIfNeeded()
             isApplyingProviderSnapshot = false
             let sampleNow = Date()
@@ -387,9 +388,15 @@ extension HomeStore {
             sensorHistory.record(devices: devices, now: sampleNow)
             offlineHistory.record(devices: devices, now: sampleNow)
 
-            if enableSafetyAlerts, let handler = onSafetyAlert {
-                for alert in evaluateSafetyAlerts(now: Date()) {
-                    handler(alert)
+            if enableSafetyAlerts {
+                let alerts = evaluateSafetyAlerts(now: Date())
+                // The activity stack keeps its own record whether or not the app installed a
+                // notification handler: the panel still has to show the alert.
+                recordSafetyAlerts(alerts)
+                if let handler = onSafetyAlert {
+                    for alert in alerts {
+                        handler(alert)
+                    }
                 }
             }
             if snapshot.closesAwayGap {

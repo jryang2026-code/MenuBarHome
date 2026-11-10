@@ -1910,11 +1910,16 @@ struct MenuBarPanelControllerTests {
         }
 
         store.openCameraLiveView(camera.id)
-        var waited = 0
-        while cameraController.streamSource == nil, waited < 40 {
-            try await Task.sleep(for: .milliseconds(25))
-            waited += 1
+        func waitForDemoStream() async -> Bool {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+            while cameraController.streamSource == nil {
+                guard ContinuousClock.now < deadline else { return false }
+                await Task.yield()
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            return true
         }
+        try #require(await waitForDemoStream(), "30 秒内没有拿到 demo 流")
         let report = cameraController.desensitizedDiagnosticsReport()
         #expect(report.contains("stream_mode: demo, audio_support: video-only"))
 

@@ -161,29 +161,80 @@ struct SnapshotTests {
         )
     }
 
-    @Test("The reminder button shows the HA plaintext decision behind an expired Mi session")
-    func panelNoticeCycleSnapshot() async throws {
+    @Test("Activity center stacks three cards and expands in place", arguments: [
+        (false, false, "activity-stack-collapsed-light"),
+        (true, false, "activity-stack-expanded-light"),
+        (false, true, "activity-stack-collapsed-dark"),
+    ])
+    func activityStackSnapshots(expanded: Bool, dark: Bool, name: String) async throws {
         let fixture = try await SnapshotFixture(
-            miSession: MiSession(
-                userId: "42",
-                cUserId: "c",
-                ssecurity: "c2VjcmV0",
-                serviceToken: "tok",
-                expiresAt: Date(timeIntervalSince1970: 1_700_000_000)
-            ),
+            miSession: MiSession(userId: "42", cUserId: "c", ssecurity: "c2VjcmV0",
+                serviceToken: "tok", expiresAt: Date(timeIntervalSince1970: 1_700_000_000)),
             configuredHASource: false
         )
         defer { fixture.restore() }
-
-        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
-        let prompt = HAPlaintextPrompt.asking("http://203.0.113.5:8123")
-        fixture.store.haPlaintextPrompt = prompt
-        #expect(fixture.store.panelNoticeKinds == [.miBlocked, .haPlaintext(prompt)])
-
+        let store = fixture.store
+        store.pendingHAAddressSuggestion = HADiscoveredInstance(baseURL: "http://192.0.2.10:8123", locationName: "家里的 Home Assistant")
+        let device = try #require(store.devices.first)
+        store.recentSafetyAlerts = [RecordedSafetyAlert(
+            alert: SafetyAlert(id: "snapshot-safety", deviceId: device.id,
+                title: "设备持续运行", body: "设备已持续运行，请确认是否需要关闭。"),
+            scope: store.connectionScopeIdentifier, date: Date(timeIntervalSince1970: 1_700_000_000))]
+        #expect(store.panelActivities.count == 3)
+        let scheme: ColorScheme = dark ? .dark : .light
         assertRendered(
-            snapshotReady(ControlCenterPanel(store: fixture.store, initialNoticeIndex: 1)),
-            size: CGSize(width: 376, height: 560),
-            named: "panel-notice-cycle-plaintext-zh-light"
+            snapshotReady(ControlCenterPanel(store: store, initialActivitiesExpanded: expanded), scheme: scheme, reduceMotion: false),
+            size: CGSize(width: 376, height: 560), named: name, scheme: scheme
+        )
+    }
+
+    @Test("One activity has no notification header")
+    func activitySingleSnapshot() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+        let device = try #require(fixture.store.devices.first)
+        fixture.store.recentSafetyAlerts = [RecordedSafetyAlert(
+            alert: SafetyAlert(id: "snapshot-single", deviceId: device.id, title: "设备持续运行", body: "请确认是否需要关闭。",
+                turnOffCommand: .setLightPower(entityId: "light.snapshot", isOn: false)),
+            scope: fixture.store.connectionScopeIdentifier, date: Date(timeIntervalSince1970: 1_700_000_000))]
+        assertRendered(snapshotReady(ControlCenterPanel(store: fixture.store)),
+            size: CGSize(width: 376, height: 560), named: "activity-single-light")
+    }
+
+    @Test("Doorbell activity offers its camera")
+    func activityDoorbellSnapshot() async throws {
+        let fixture = try await SnapshotFixture(includeCamera: true)
+        defer { fixture.restore() }
+        let camera = try #require(fixture.store.devices.first { if case .camera = $0.kind { true } else { false } })
+        fixture.store.handleDoorbellRing(DoorbellRing(deviceId: camera.id, entityId: "event.snapshot_doorbell", firedAt: "2023-11-14T22:13:20Z"))
+        #expect(fixture.store.panelActivities.first?.date == Date(timeIntervalSince1970: 1_700_000_000))
+        assertRendered(snapshotReady(ControlCenterPanel(store: fixture.store)),
+            size: CGSize(width: 376, height: 560), named: "activity-doorbell-light")
+    }
+
+    @Test("Required decisions keep their header without a clear button")
+    func activityRequiredDecisionsSnapshot() async throws {
+        let fixture = try await SnapshotFixture(
+            miSession: MiSession(userId: "42", cUserId: "c", ssecurity: "c2VjcmV0", serviceToken: "tok", expiresAt: Date(timeIntervalSince1970: 1_700_000_000)),
+            configuredHASource: false)
+        defer { fixture.restore() }
+        fixture.store.haPlaintextPrompt = .asking("http://203.0.113.5:8123")
+        assertRendered(snapshotReady(ControlCenterPanel(store: fixture.store, initialActivitiesExpanded: true)),
+            size: CGSize(width: 376, height: 560), named: "activity-required-decisions-light")
+    }
+
+    @Test("Undo and toast coexist at the bottom", arguments: [false, true])
+    func transientStackSnapshots(expanded: Bool) async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+        let store = fixture.store
+        store.toastAutoDismissInterval = nil
+        store.undoBanner = UndoBanner(title: "已关闭 3 台设备", restoreCommands: [], previousDevices: store.devices, deviceCount: 3, isAllOff: true)
+        store.pauseUndoBannerCountdown()
+        store.showToast("已更新设备设置")
+        assertRendered(
+            snapshotReady(ControlCenterPanel(store: store, initialTransientExpanded: expanded), reduceMotion: false),
+            size: CGSize(width: 376, height: 560), named: expanded ? "transient-stack-expanded-light" : "transient-stack-collapsed-light"
         )
     }
 
@@ -1375,10 +1426,10 @@ struct SnapshotTests {
 
     // MARK: - Rendering switches
 
-    private func snapshotReady<V: View>(_ view: V, scheme: ColorScheme = .light) -> some View {
+    private func snapshotReady<V: View>(_ view: V, scheme: ColorScheme = .light, reduceMotion: Bool = true) -> some View {
         view
             .environment(\.colorScheme, scheme)
-            .environment(\.reduceMotionOverride, true)
+            .environment(\.reduceMotionOverride, reduceMotion)
             .environment(\.reduceTransparencyOverride, true)
             .transaction { transaction in
                 transaction.disablesAnimations = true

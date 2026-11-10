@@ -51,9 +51,11 @@ public struct ControlCenterPanel: View {
     @State var kindScrollTrigger = 0
     /// The kind-chip row stays hidden until the user taps the active 全部 pill again.
     @State var kindChipsRevealed = false
-    /// Which pending notice the 「还有 N 条提醒」 button has walked to. The highest priority is
-    /// shown on every open and whenever the pending set changes.
-    @State var noticeIndex = 0
+    /// Expansion ends on panel close, backend change, or an empty activity feed.
+    @State var activitiesExpanded = false
+    /// Measured by the transient surface; reset when that surface disappears.
+    @State var transientStackHeight: CGFloat = 0
+    let initialTransientExpanded: Bool
 
     /// Card sizes are remembered per page: a room id, or "all" for the overview.
     var layoutScope: String { store.selectedRoomId ?? "all" }
@@ -69,16 +71,16 @@ public struct ControlCenterPanel: View {
 
     private static let panelWidth: CGFloat = 376
     private var panelHeight: CGFloat { (PanelHeight(rawValue: panelHeightRaw) ?? .standard).points }
+    var activityViewportHeight: CGFloat { panelHeight / 2 }
     private var appearance: AppAppearance { AppAppearance(rawValue: appearanceRaw) ?? .system }
     /// The panel sets `panelRoot` on its own body, so it cannot read that environment back;
     /// resolve the effective scheme locally (#51).
     var effectiveScheme: ColorScheme { appearance.colorScheme ?? colorScheme }
 
-    /// - Parameter initialNoticeIndex: lets the snapshot and layout tests put a specific pending
-    ///   notice on screen. Production always starts at the highest priority.
-    public init(store: HomeStore, initialNoticeIndex: Int = 0) {
+    public init(store: HomeStore, initialActivitiesExpanded: Bool = false, initialTransientExpanded: Bool = false) {
         self.store = store
-        _noticeIndex = State(initialValue: initialNoticeIndex)
+        _activitiesExpanded = State(initialValue: initialActivitiesExpanded)
+        self.initialTransientExpanded = initialTransientExpanded
     }
     public var body: some View {
         let _ = (store.effectiveLanguage, store.selectedRoomId, store.rooms.count)
@@ -91,22 +93,24 @@ public struct ControlCenterPanel: View {
             .onChange(of: store.assistantState) { _, state in handleAssistantState(state) }
             // #45: the only place that sees every error toast is the panel root.
             .onChange(of: store.toastNotice?.id) { _, _ in handleToastNotice() }
-            // A newly pending notice takes priority; a stale cycle position would hide it.
-            .onChange(of: store.panelNoticeKinds) { _, _ in noticeIndex = 0 }
             // Frequently opened utility: show immediately, including keyboard invocation.
             .onReceive(NotificationCenter.default.publisher(for: MenuBarPanelController.didShowNotification)) { _ in
                 UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
                 LaunchAtLoginCoordinator.live(store: store).refresh()
                 isPresented = true
-                noticeIndex = 0
             }
             .onAppear { handlePanelAppear() }
             // The panel tree survives a close, so a half-typed query would come back on the next open.
             .onReceive(NotificationCenter.default.publisher(for: MenuBarPanelController.didHideNotification)) { _ in
                 handlePanelDidHide()
+                activitiesExpanded = false
             }
             // Leaving search puts the caret back on the panel, so Esc closes it instead of resigning the field.
             .onChange(of: search.isSearching) { _, searching in handleSearching(searching) }
+            .onChange(of: store.homeBackend) { _, _ in activitiesExpanded = false }
+            .onChange(of: store.panelActivities.isEmpty) { _, empty in
+                if empty { activitiesExpanded = false }
+            }
             // #180: typing a query — through the key monitor or the field — ticks the guide's search step.
             .onChange(of: search.query) { _, query in handleSearchQuery(query) }
             // Scenes and suggestions open with the field; make sure the suggestions are fresh by then.
@@ -262,13 +266,13 @@ public struct ControlCenterPanel: View {
                 .padding(.top, 12)
                 .padding(.bottom, 8)
 
-            // A blocked session or a plaintext-token choice stays pinned under the header so it
-            // is the first thing the user reads. Lower-priority notices scroll with the devices.
-            if let slot = pinnedNotice {
-                systemNotice(slot)
+            if !store.panelActivities.isEmpty {
+                activityStack
+                    .layoutPriority(activitiesExpanded ? 1 : 0)
+                    .foldOrigin { $0.systemNoticeMinY = $1 }
+                    .accessibilityIdentifier("panel-system-notice")
                     .padding(.horizontal, 14)
                     .padding(.bottom, 8)
-                    .transition(AppleMotion.drawerTransition)
             }
 
             // One input for search and assistant commands, always on screen (#60). Reordering wants
@@ -349,45 +353,20 @@ public struct ControlCenterPanel: View {
         kindChipsRevealed.toggle()
     }
 
-    /// Every pending notice in priority order.
-    private var noticeKinds: [PanelNoticeSlot.Kind] { store.panelNoticeKinds }
-
-    /// The notice on screen: the highest priority one unless the reminder button walked forward.
-    private var currentNotice: PanelNoticeSlot? {
-        PanelNotice.slot(noticeKinds, at: noticeIndex)
-    }
-
-    /// Blocked and security notices stay above the search field. Anything quieter scrolls.
-    private var pinnedNotice: PanelNoticeSlot? {
-        guard let slot = currentNotice, slot.hidesChecklist else { return nil }
-        return slot
-    }
-
-    private var scrollingNotice: PanelNoticeSlot? {
-        guard let slot = currentNotice, !slot.hidesChecklist else { return nil }
-        return slot
-    }
-
     private var showsLessonRow: Bool {
-        store.showsOnboardingChecklistCard && !noticeKinds.contains(where: \.hidesChecklist)
+        store.showsOnboardingChecklistCard && !store.panelActivities.contains { activity in
+            if case .notice(let kind) = activity.kind { return kind.hidesChecklist }
+            return false
+        }
     }
 
-    /// Walks to the next pending notice; the last step returns to the highest priority.
-    private func advanceNotice() {
-        let count = noticeKinds.count
-        guard count > 1 else { return }
-        withAnimation(AppleMotion.snappySpring) { noticeIndex = (noticeIndex + 1) % count }
-    }
-
-    private var showsScrollPreface: Bool {
-        scrollingNotice != nil || showsLessonRow
-    }
+    private var showsScrollPreface: Bool { showsLessonRow }
 
     /// The toast the panel actually draws. A pinned blocked notice already carries the same
     /// message and Scan action, so #47's persistent expiry toast must not repeat it.
     var visibleToast: ToastNotice? {
         guard let toast = store.toastNotice else { return nil }
-        guard !(store.panelNoticeSlot?.repeats(toast) ?? false) else { return nil }
+        guard !store.panelNoticeKinds.contains(where: { $0.repeats(toast) }) else { return nil }
         return toast
     }
 
@@ -407,42 +386,12 @@ public struct ControlCenterPanel: View {
 
     @ViewBuilder
     private var scrollPreface: some View {
-        if let slot = scrollingNotice {
-            systemNotice(slot)
-        }
         if showsLessonRow {
             OnboardingChecklistCard(store: store, onBeginSearch: { search.focus() })
                 .foldOrigin { $0.lessonRowMinY = $1 }
         }
     }
 
-    @ViewBuilder
-    func systemNotice(_ slot: PanelNoticeSlot) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            switch slot.kind {
-            case .miBlocked, .miExpiringSoon:
-                miSessionExpiryBanner
-            case .haPlaintext(let prompt):
-                haPlaintextConsentBanner(prompt)
-            case .haAddress(let instance):
-                haAddressSuggestionBanner(instance)
-            }
-            if slot.extraCount > 0 {
-                Button {
-                    advanceNotice()
-                } label: {
-                    Text(PanelNotice.extraReminderLabel(count: slot.extraCount))
-                        .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("panel-notice-extra")
-                .panelHelp(L10n.tr("查看下一条提醒", "Show the next reminder"))
-            }
-        }
-        .foldOrigin { $0.systemNoticeMinY = $1 }
-        .accessibilityIdentifier("panel-system-notice")
-    }
 
     /// The 460 pt panel gives the height to the list instead of a strip that duplicates it (§5.1).
     var showsRoomStripPreview: Bool { panelHeight > PanelHeight.compact.points }
@@ -497,7 +446,7 @@ public struct ControlCenterPanel: View {
                     }
                     .padding(.horizontal, 13)
                     .padding(.top, showsScrollPreface ? 0 : 10)
-                    .padding(.bottom, store.undoBanner != nil || visibleToast != nil ? 48 : 12)
+                    .padding(.bottom, max(12, transientStackHeight + 8))
                 }
                 .onChange(of: pendingScrollToDeviceId) { _, targetId in
                     guard let targetId else { return }
