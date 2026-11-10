@@ -6,13 +6,15 @@ import Testing
 struct AssistantErrorMessageTests {
     @Test("Network and HTTP failures read as plain advice")
     func plainMessages() {
-        #expect(AssistantError.userMessage(for: URLError(.timedOut)).hasPrefix("AI 服务 10 秒没回应"))
-        #expect(AssistantError.userMessage(for: URLError(.notConnectedToInternet)).hasPrefix("连不上 AI 服务"))
-        #expect(AssistantError.userMessage(for: URLError(.cannotConnectToHost)).hasPrefix("连不上 AI 服务"))
-        #expect(AssistantError.userMessage(for: AssistantError.httpStatus(401)) == "AI 服务的 API Key 无效或已过期，请到设置里重新填写")
-        #expect(AssistantError.userMessage(for: AssistantError.httpStatus(429)) == "AI 服务请求太频繁，稍等几秒再试")
-        #expect(AssistantError.userMessage(for: AssistantError.httpStatus(503)) == "AI 服务暂时出错（503），稍后再试")
-        #expect(AssistantError.userMessage(for: AssistantError.malformedResponse) == "AI 返回的内容看不懂，换个说法再试")
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(AssistantError.userMessage(for: URLError(.timedOut)).hasPrefix("AI 服务 10 秒没回应"))
+            #expect(AssistantError.userMessage(for: URLError(.notConnectedToInternet)).hasPrefix("连不上 AI 服务"))
+            #expect(AssistantError.userMessage(for: URLError(.cannotConnectToHost)).hasPrefix("连不上 AI 服务"))
+            #expect(AssistantError.userMessage(for: AssistantError.httpStatus(401)) == "AI 服务的 API Key 无效或已过期，请到设置里重新填写")
+            #expect(AssistantError.userMessage(for: AssistantError.httpStatus(429)) == "AI 服务请求太频繁，稍等几秒再试")
+            #expect(AssistantError.userMessage(for: AssistantError.httpStatus(503)) == "AI 服务暂时出错（503），稍后再试")
+            #expect(AssistantError.userMessage(for: AssistantError.malformedResponse) == "AI 返回的内容看不懂，换个说法再试")
+        }
     }
 
     @Test("A failing model call surfaces the plain message in the command bar")
@@ -25,9 +27,13 @@ struct AssistantErrorMessageTests {
             config: AssistantConfig(baseURL: "https://example.invalid/v1", model: "m", apiKey: "k"),
             transport: { _ in throw URLError(.timedOut) }
         )
-        _ = await store.runAssistantCommand("我有点冷怎么办")
-        guard case .failed(let message) = store.assistantState else {
-            Issue.record("expected failure"); return
+        let message = await L10n.$overrideLanguage.withValue(.zhHans) {
+            _ = await store.runAssistantCommand("我有点冷怎么办")
+            guard case .failed(let message) = store.assistantState else {
+                Issue.record("expected failure")
+                return ""
+            }
+            return message
         }
         #expect(message.hasPrefix("AI 服务 10 秒没回应"))
     }
