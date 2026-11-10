@@ -206,6 +206,7 @@ PY
     bash scripts/test_issue_frontier.sh
     bash scripts/test_gate_report.sh
     bash scripts/test_install_ripgrep.sh
+    bash scripts/test_go2rtc_gate.sh
     bash scripts/test_tauri_cache_key.sh
     bash scripts/test_ci_errors.sh
     bash scripts/test_pr_ready.sh
@@ -329,25 +330,21 @@ run_raycast_gate() {
     [ "$status" -eq 0 ]
 }
 
-# Same places verify.sh looks: PATH, then the pinned toolchain build.sh caches.
-go2rtc_toolchain_ready() {
-    if command -v go >/dev/null 2>&1; then
-        return 0
-    fi
-    local cached="${GO2RTC_PTZ_GO_CACHE:-$HOME/.cache/menubarmijia/go1.26.10}/go/bin/go"
-    [ -x "$cached" ]
-}
-
 # verify.sh clones go2rtc and runs go test -race. --lint-only returns before these
 # steps, so a machine that already has Go keeps the fast lint. The patch SHA is
 # checked in check_model_tables.py, which that fast path already runs.
+# A directory or a stub that fails `go version` is not a toolchain: skip it.
+# A working go whose verify.sh fails still fails this gate.
 run_go2rtc_gate() {
-    if ! go2rtc_toolchain_ready; then
+    local go err status=0
+    err="$(mktemp)"
+    if ! go="$(bash "$ROOT_DIR/scripts/go2rtc-ptz/go_ready.sh" 2>"$err")"; then
         record_gate_result "go2rtc=skip"
-        echo "⏭️  跳过 go2rtc 云台补丁验证：未找到 go"
+        echo "⏭️  跳过 go2rtc 云台补丁验证：$(cat "$err")"
+        rm -f "$err"
         return 0
     fi
-    local status=0
+    rm -f "$err"
     run_logged "go2rtc 云台补丁" bash "$ROOT_DIR/scripts/go2rtc-ptz/verify.sh" || status=$?
     record_gate_result "go2rtc=${status}"
     [ "$status" -eq 0 ]
