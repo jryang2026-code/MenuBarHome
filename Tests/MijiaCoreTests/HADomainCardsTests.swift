@@ -542,15 +542,6 @@ struct HADomainCardsTests {
     }
 
     @MainActor
-    private func waitUntil(_ condition: @MainActor () async -> Bool) async {
-        for _ in 0..<150 {
-            if await condition() { return }
-            try? await Task.sleep(for: .milliseconds(20))
-        }
-        Issue.record("condition was not met in time")
-    }
-
-    @MainActor
     @Test("HA facet toggles, selects, sliders and buttons dispatch their own services and undo")
     func facetWritesAndUndo() async throws {
         let (store, provider) = try await makeStore()

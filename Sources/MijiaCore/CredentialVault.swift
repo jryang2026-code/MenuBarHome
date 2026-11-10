@@ -37,8 +37,8 @@ public final class CredentialVault: @unchecked Sendable {
     }
 
     /// The single Keychain item that holds the encoded vault.
-    struct Storage: Sendable {
-        enum ReadResult: Equatable, Sendable {
+    public struct Storage: Sendable {
+        public enum ReadResult: Equatable, Sendable {
             case found(Data)
             case notFound
             case unavailable

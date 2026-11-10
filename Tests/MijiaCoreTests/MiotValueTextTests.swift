@@ -336,15 +336,6 @@ struct MiotValueTextTests {
         ])
     }
 
-    @MainActor
-    private func waitUntil(_ condition: @MainActor () async -> Bool) async {
-        for _ in 0..<100 {
-            if await condition() { return }
-            try? await Task.sleep(for: .milliseconds(20))
-        }
-        Issue.record("condition was not met in time")
-    }
-
     private func reading(
         unit: String? = nil,
         number: Double? = nil,

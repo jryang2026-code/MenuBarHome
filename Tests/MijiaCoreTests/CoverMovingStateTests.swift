@@ -242,14 +242,6 @@ struct CoverMovingStateTests {
         return (store, mock)
     }
 
-    @MainActor
-    private func waitUntil(_ condition: @MainActor () async -> Bool) async {
-        for _ in 0..<100 {
-            if await condition() { return }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
     @Test("A travel report at the commanded position takes over the card")
     @MainActor
     func movingReadBackTakesOverTheCard() async throws {
@@ -608,12 +600,5 @@ struct CoverMovingStateTests {
         status: Int? = nil
     ) throws -> CoverSpec {
         try #require(try coverDevice(model: model, current: current, target: target, status: status).coverSpec)
-    }
-}
-
-private extension SmartDevice {
-    var coverSpec: CoverSpec? {
-        guard case .cover(let spec) = kind else { return nil }
-        return spec
     }
 }

@@ -4,113 +4,28 @@ import Testing
 
 /// 定时任务属于创建它的数据源：换家庭 / 账号 / 数据源后不能误触发，也不能被别的数据源保存时删掉（ADR-0019）。
 struct ScheduledCommandScopeTests {
-    static let ceiling = SmartDevice(
-        id: "dev_study_ceiling", name: "书房吸顶灯", roomId: "shu_fang", roomName: "书房",
-        model: "yeelink.light.ceiling20", isOnline: true,
-        kind: .light(LightSpec(entityId: "light.study_ceiling", isOn: true))
-    )
+    private typealias SleepGate = ScheduledCommandTestSupport.SleepGate
 
-    /// A device from another Mi Home: it keeps the timer from being confused with an empty store.
-    static let kitchen = SmartDevice(
-        id: "dev_kitchen", name: "厨房灯", roomId: "chu_fang", roomName: "厨房",
-        model: "yeelink.light.ceiling20", isOnline: true,
-        kind: .light(LightSpec(entityId: "light.kitchen", isOn: true))
-    )
+    static let ceiling = ScheduledCommandTestSupport.ceiling
+    static let kitchen = ScheduledCommandTestSupport.kitchen
+    static let plan = ScheduledCommandTestSupport.plan
+    static let otherHomeURL = ScheduledCommandTestSupport.otherHomeURL
+    static let cnAccount = ScheduledCommandTestSupport.cnAccount
+    static let deAccount = ScheduledCommandTestSupport.deAccount
+    static let miLamp = ScheduledCommandTestSupport.miLamp
+    static let deLamp = ScheduledCommandTestSupport.deLamp
+    static let lgTV = ScheduledCommandTestSupport.lgTV
 
-    static let plan = IntentPlan(
-        intents: [DeviceIntent(targetId: "dev_study_ceiling", operation: .power(false))],
-        reply: "已关闭书房吸顶灯",
-        source: .local
-    )
-
-    /// A second Home Assistant that is not the one this test store starts on.
-    static let otherHomeURL = "http://192.0.2.20:8123"
-
-    static let cnAccount = MiAccount(session: MiSession(
-        userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-cn", serviceToken: "tok-cn", region: "cn"
-    ))
-    static let deAccount = MiAccount(session: MiSession(
-        userId: "20020002", cUserId: "c-de", ssecurity: "ssec-de", serviceToken: "tok-de", region: "de"
-    ))
-    static let miLamp = SmartDevice(
-        id: "1234567890", name: "米家台灯", roomId: "wo_shi", roomName: "卧室",
-        model: "yeelink.light.lamp1", isOnline: true,
-        kind: .light(LightSpec(entityId: "miot:1234567890:2", isOn: true)),
-        accountId: cnAccount.id
-    )
-    static let deLamp = SmartDevice(
-        id: "{{DEVICE_ab12cd34}}", name: "德国台灯", roomId: "de_wo_shi", roomName: "卧室",
-        model: "yeelink.light.lamp1", isOnline: true,
-        kind: .light(LightSpec(entityId: "miot:{{DEVICE_ab12cd34}}:2", isOn: true)),
-        accountId: deAccount.id
-    )
-    static let lgTV = SmartDevice(
-        id: LGWebOSProtocol.deviceId, name: "LG电视", roomId: "ke_ting", roomName: "客厅",
-        model: "lg.webos.oled42c2pca", isOnline: true,
-        kind: .tv(TVSpec(mediaEntityId: LGWebOSProtocol.mediaEntityId, state: "on", volumePercent: 12))
-    )
-
-    /// Home Assistant plus one Xiaomi account, both configured.
     @MainActor
     private func makeDualSourceStore(
         devices: [SmartDevice]? = nil
     ) async throws -> (HomeStore, MockHomeProvider) {
-        let mock = MockHomeProvider(snapshot: SynthesizedHome(
-            devices: devices ?? [Self.ceiling, Self.miLamp],
-            scenes: []
-        ))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.schedulescope.\(UUID().uuidString)")
-        try await store.waitForTestSnapshot()
-        store.hasHASource = true
-        store.miAccounts = [Self.cnAccount]
-        store.miSessionMaskedUserId = Self.cnAccount.maskedUserId
-        store.miSessionScopeIdentifier = Self.cnAccount.id
-        store.homeBackend = .homeAssistant
-        return (store, mock)
+        try await ScheduledCommandTestSupport.makeDualSourceStore(devices: devices)
     }
 
     @MainActor
     private func makeStore() async throws -> (HomeStore, MockHomeProvider) {
-        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.ceiling], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.schedulescope.\(UUID().uuidString)")
-        try await store.waitForTestSnapshot()
-        return (store, mock)
-    }
-
-    /// Parks a timer inside `assistantSleep` until the test releases it; cancellation still wakes it, so
-    /// a source switch never depends on a wall-clock countdown.
-    @MainActor
-    private final class SleepGate {
-        private var continuation: AsyncStream<Void>.Continuation
-        private var stream: AsyncStream<Void>
-        private(set) var waiting = 0
-
-        init() {
-            (stream, continuation) = AsyncStream.makeStream(of: Void.self)
-        }
-
-        func sleep() async {
-            waiting += 1
-            var iterator = stream.makeAsyncIterator()
-            _ = await iterator.next()
-            waiting -= 1
-        }
-
-        func release() {
-            continuation.yield(())
-        }
-    }
-
-    @MainActor
-    private func waitUntil(_ condition: () async -> Bool) async {
-        for attempt in 0..<400 {
-            if await condition() { return }
-            if attempt < 100 {
-                await Task.yield()
-            } else {
-                try? await Task.sleep(for: .milliseconds(5))
-            }
-        }
+        try await ScheduledCommandTestSupport.makeStore()
     }
 
     @Test("A timer belongs to the source that created it, survives another source's save and re-arms on return")
@@ -121,7 +36,7 @@ struct ScheduledCommandScopeTests {
         let homeGate = SleepGate()
         store.assistantSleep = { _ in await homeGate.sleep() }
 
-        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        _ = await store.runLocalCommand("10分钟后关闭书房吸顶灯")
         let homeTimer = try #require(store.scheduledCommands.first)
         let homeScope = try #require(homeTimer.sourceScope)
         #expect(homeScope == store.connectionScopeIdentifier)
@@ -137,7 +52,7 @@ struct ScheduledCommandScopeTests {
         // A timer set on the new source is saved next to the old one instead of deleting it.
         let otherGate = SleepGate()
         store.assistantSleep = { _ in await otherGate.sleep() }
-        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        _ = await store.runLocalCommand("10分钟后关闭书房吸顶灯")
         let otherTimer = try #require(store.scheduledCommands.first)
         #expect(otherTimer.sourceScope != homeScope)
         await waitUntil { otherGate.waiting == 1 }
@@ -233,7 +148,7 @@ struct ScheduledCommandScopeTests {
         // No snapshot yet, so the run parks in `waitForInitialSnapshotIfNeeded`.
         store.devices = []
         let run = Task { await store.runMissedScheduledCommand(id: expired.id) }
-        for _ in 0..<5 { await Task.yield() }
+        await waitUntil { store.initialSnapshotWaiters == 1 }
         store.serverURLString = Self.otherHomeURL
         store.devices = [Self.ceiling]
 
@@ -284,7 +199,7 @@ struct ScheduledCommandScopeTests {
 
         store.devices = []
         let run = Task { await store.runMissedScheduledCommand(id: expired.id) }
-        for _ in 0..<10 { await Task.yield() }
+        await waitUntil { store.initialSnapshotWaiters == 1 }
         store.dismissMissedScheduledCommand(id: expired.id)
         store.devices = [Self.ceiling]
 
@@ -310,7 +225,7 @@ struct ScheduledCommandScopeTests {
 
         store.devices = []
         let run = Task { await store.runMissedScheduledCommand(id: expired.id) }
-        for _ in 0..<10 { await Task.yield() }
+        await waitUntil { store.initialSnapshotWaiters == 1 }
         #expect(store.cancelScheduledCommands() == 1)
         store.devices = [Self.ceiling]
 
@@ -337,7 +252,7 @@ struct ScheduledCommandScopeTests {
         store.devices = []
         let first = Task { await store.runMissedScheduledCommand(id: expired.id) }
         let second = Task { await store.runMissedScheduledCommand(id: expired.id) }
-        for _ in 0..<10 { await Task.yield() }
+        await waitUntil { store.initialSnapshotWaiters == 2 }
         store.devices = [Self.ceiling]
 
         let firstResult = await first.value
@@ -353,7 +268,7 @@ struct ScheduledCommandScopeTests {
         let (store, mock) = try await makeStore()
         let gate = SleepGate()
         store.assistantSleep = { _ in await gate.sleep() }
-        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        _ = await store.runLocalCommand("10分钟后关闭书房吸顶灯")
         let timer = try #require(store.scheduledCommands.first)
         await waitUntil { gate.waiting == 1 }
 
@@ -402,7 +317,7 @@ struct ScheduledCommandScopeTests {
         let homeURL = store.serverURLString
         store.assistantSleep = { _ in }
         await mock.holdNextExecute()
-        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        _ = await store.runLocalCommand("10分钟后关闭书房吸顶灯")
         let entry = try #require(store.scheduledCommands.first)
         await waitUntil { await mock.executeStarted >= 1 }
 
@@ -427,7 +342,7 @@ struct ScheduledCommandScopeTests {
         let homeURL = store.serverURLString
         store.assistantSleep = { _ in }
         await mock.holdNextExecute()
-        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        _ = await store.runLocalCommand("10分钟后关闭书房吸顶灯")
         let entry = try #require(store.scheduledCommands.first)
         await waitUntil { await mock.executeStarted >= 1 }
 
@@ -456,14 +371,15 @@ struct ScheduledCommandScopeTests {
         let (store, mock) = try await makeStore()
         let gate = SleepGate()
         store.assistantSleep = { _ in await gate.sleep() }
-        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        _ = await store.runLocalCommand("10分钟后关闭书房吸顶灯")
         #expect(store.scheduledCommands.count == 1)
         await waitUntil { gate.waiting == 1 }
 
         // The scope changes before the provider swap re-partitions the timers.
         store.serverURLString = Self.otherHomeURL
+        let exits = store.scheduledTaskExits
         gate.release()
-        for _ in 0..<50 { await Task.yield() }
+        await waitUntil { store.scheduledTaskExits > exits }
 
         #expect(await mock.executedCommands.isEmpty)
         #expect(store.scheduledCommands.count == 1, "The timer was neither run nor silently dropped")
@@ -501,7 +417,7 @@ struct ScheduledCommandScopeTests {
         store.setScreenLocked(true)
         store.assistantSleep = { _ in }
 
-        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        _ = await store.runLocalCommand("10分钟后关闭书房吸顶灯")
         for _ in 0..<100 where store.devices.first?.isActiveOn != false {
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -528,7 +444,7 @@ struct ScheduledCommandScopeTests {
         #expect(persisted.map(\.id) == [legacy.id])
         #expect(persisted.first?.sourceScope == nil, "Without a source nothing may claim the timer")
 
-        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        _ = await store.runLocalCommand("10分钟后关闭书房吸顶灯")
         #expect(store.scheduledCommands.isEmpty)
         #expect(store.toastNotice?.isError == true)
         #expect(await mock.executedCommands.isEmpty)
@@ -552,7 +468,7 @@ struct ScheduledCommandScopeTests {
         let (store, mock) = try await makeDualSourceStore()
         let gate = SleepGate()
         store.assistantSleep = { _ in await gate.sleep() }
-        _ = await store.runAssistantCommand("10分钟后关闭米家台灯")
+        _ = await store.runLocalCommand("10分钟后关闭米家台灯")
         let timer = try #require(store.scheduledCommands.first)
         let haScope = "ha:\(HAWebSocketProvider.canonicalHistoryScopeURL(store.serverURLString))"
         #expect(Set(try #require(timer.effectiveSourceScopes)) == [Self.cnAccount.id, haScope])
@@ -576,7 +492,7 @@ struct ScheduledCommandScopeTests {
         let homeURL = store.serverURLString
         let gate = SleepGate()
         store.assistantSleep = { _ in await gate.sleep() }
-        _ = await store.runAssistantCommand("10分钟后关闭米家台灯")
+        _ = await store.runLocalCommand("10分钟后关闭米家台灯")
         let timer = try #require(store.scheduledCommands.first)
         await waitUntil { gate.waiting == 1 }
 
@@ -584,13 +500,14 @@ struct ScheduledCommandScopeTests {
         store.startListening()
         #expect(store.scheduledCommands.map(\.id) == [timer.id], "Removing HA leaves the Mi source matching")
 
+        let exits = store.scheduledTaskExits
         store.serverURLString = Self.otherHomeURL
         store.hasHASource = true
         store.startListening()
         #expect(store.scheduledCommands.isEmpty)
         #expect(store.foreignScheduledCommands.map(\.id) == [timer.id])
         #expect(ScheduledCommand.load(from: store.userDefaults).map(\.id) == [timer.id])
-        for _ in 0..<50 { await Task.yield() }
+        await waitUntil { store.scheduledTaskExits > exits }
         #expect(await mock.executedCommands.isEmpty, "Nothing may reach server B")
 
         store.serverURLString = homeURL
@@ -613,18 +530,19 @@ struct ScheduledCommandScopeTests {
         let gate = SleepGate()
         store.assistantSleep = { _ in await gate.sleep() }
 
-        _ = await store.runAssistantCommand("10分钟后关闭米家台灯")
+        _ = await store.runLocalCommand("10分钟后关闭米家台灯")
         let timer = try #require(store.scheduledCommands.first)
         #expect(timer.effectiveSourceScopes == [Self.cnAccount.id])
         await waitUntil { gate.waiting == 1 }
 
         // A merged card id can be claimed by a Home Assistant the timer never saw when it was created.
+        let exits = store.scheduledTaskExits
         store.hasHASource = true
         store.startListening()
         #expect(store.scheduledCommands.isEmpty)
         #expect(store.foreignScheduledCommands.map(\.id) == [timer.id])
         #expect(ScheduledCommand.load(from: store.userDefaults).map(\.id) == [timer.id])
-        for _ in 0..<50 { await Task.yield() }
+        await waitUntil { store.scheduledTaskExits > exits }
         #expect(await mock.executedCommands.isEmpty)
 
         // Removing that HA restores the original Xiaomi-only match.
@@ -651,7 +569,7 @@ struct ScheduledCommandScopeTests {
         let gate = SleepGate()
         store.assistantSleep = { _ in await gate.sleep() }
 
-        _ = await store.runAssistantCommand("10分钟后关闭德国台灯")
+        _ = await store.runLocalCommand("10分钟后关闭德国台灯")
         let timer = try #require(store.scheduledCommands.first)
         #expect(Set(try #require(timer.effectiveSourceScopes)) == [Self.cnAccount.id, Self.deAccount.id])
         await waitUntil { gate.waiting == 1 }
@@ -691,7 +609,7 @@ struct ScheduledCommandScopeTests {
         let (store, mock) = try await makeDualSourceStore()
         let gate = SleepGate()
         store.assistantSleep = { _ in await gate.sleep() }
-        _ = await store.runAssistantCommand("10分钟后关闭米家台灯、书房吸顶灯")
+        _ = await store.runLocalCommand("10分钟后关闭米家台灯、书房吸顶灯")
 
         let timer = try #require(store.scheduledCommands.first)
         #expect(store.scheduledCommands.count == 1)
@@ -721,7 +639,7 @@ struct ScheduledCommandScopeTests {
         let gate = SleepGate()
         store.assistantSleep = { _ in await gate.sleep() }
 
-        _ = await store.runAssistantCommand("10分钟后关闭LG电视")
+        _ = await store.runLocalCommand("10分钟后关闭LG电视")
         #expect(store.scheduledCommands.count == 1)
         #expect(store.scheduledCommands.first?.plan.intents.map(\.targetId) == [Self.lgTV.id])
         _ = store.cancelScheduledCommands()
@@ -740,7 +658,7 @@ struct ScheduledCommandScopeTests {
         store.startListening()
         store.eventTask?.cancel()
         #expect(store.listeningSnapshotGeneration == store.snapshotGeneration)
-        _ = await store.runAssistantCommand("10分钟后关闭LG电视")
+        _ = await store.runLocalCommand("10分钟后关闭LG电视")
         #expect(store.scheduledCommands.count == 1)
         #expect(store.scheduledCommands.first?.plan.intents.map(\.targetId) == [Self.lgTV.id])
         _ = store.cancelScheduledCommands()
@@ -757,7 +675,7 @@ struct ScheduledCommandScopeTests {
 
         store.startListening()
         store.eventTask?.cancel()
-        _ = await store.runAssistantCommand("10分钟后关闭LG电视、书房吸顶灯")
+        _ = await store.runLocalCommand("10分钟后关闭LG电视、书房吸顶灯")
         #expect(store.scheduledCommands.isEmpty)
         #expect(store.toastNotice?.message == "数据源尚未就绪，定时任务未创建")
     }
@@ -772,13 +690,13 @@ struct ScheduledCommandScopeTests {
         store.startListening()
         store.eventTask?.cancel()
         #expect(store.listeningSnapshotGeneration == store.snapshotGeneration)
-        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        _ = await store.runLocalCommand("10分钟后关闭书房吸顶灯")
         #expect(store.scheduledCommands.isEmpty)
         #expect(store.toastNotice?.message == "数据源尚未就绪，定时任务未创建")
 
         store.startListening()
         try await store.waitForTestSnapshot()
-        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        _ = await store.runLocalCommand("10分钟后关闭书房吸顶灯")
         #expect(store.scheduledCommands.count == 1)
         _ = store.cancelScheduledCommands()
     }
@@ -791,7 +709,7 @@ struct ScheduledCommandScopeTests {
         let gate = SleepGate()
         store.assistantSleep = { _ in await gate.sleep() }
 
-        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        _ = await store.runLocalCommand("10分钟后关闭书房吸顶灯")
         #expect(store.scheduledCommands.count == 1)
         #expect(store.scheduledCommands.first?.effectiveSourceScopes == ["demo"])
         _ = store.cancelScheduledCommands()

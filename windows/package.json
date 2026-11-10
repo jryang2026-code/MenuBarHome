@@ -9,7 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "node --import ./tests/tsLoader.mjs --test tests/*.test.ts",
-    "test:file": "node --import ./tests/tsLoader.mjs --test",
+    "test:file": "node ./scripts/test-file.mjs",
     "tauri": "tauri"
   },
   "devDependencies": {

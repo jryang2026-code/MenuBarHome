@@ -322,6 +322,10 @@ public final class HomeStore {
     /// Test seam for the manual-control debounce window (sliders fire continuously, #113).
     var controlDebounceInterval: Duration = .milliseconds(280)
 
+    /// How long a cover command keeps its optimistic row. The product value is 8 seconds.
+    /// Tests set a shorter value instead of waiting out that lock.
+    var coverOptimisticLockDuration: Duration = .seconds(8)
+
     /// How long a success toast stays. Errors use `errorToastDismissInterval` unless they are persistent.
     public static let successToastDismissInterval: Duration = .seconds(2.8)
     /// An error toast stays at least this long, and can be dismissed sooner by the × button.
@@ -663,6 +667,8 @@ public final class HomeStore {
     /// Bulk actions whose commands are still being sent, keyed by the banner they created.
     /// 撤销 stops the entry here and waits on its task before restoring (`HomeStore+Undo.swift`).
     var runningBatches: [UUID: RunningBatch] = [:]
+    /// Undo tasks currently suspended on an in-flight batch. Tests wait on this instead of yielding.
+    var undoInFlightWaiters = 0
     private var toastTimerTask: Task<Void, Never>?
     var optimisticLockUntil: [String: ContinuousClock.Instant] = [:]
     var optimisticLockRevision: [String: UInt64] = [:]
@@ -1046,6 +1052,11 @@ public final class HomeStore {
     var scheduledTasks: [UUID: Task<Void, Never>] = [:]
     /// Token of the run currently owning each handle, so a completed run cannot clear a re-armed one.
     var scheduledTaskTokens: [UUID: UUID] = [:]
+    /// Calls to `waitForInitialSnapshotIfNeeded` that are inside the wait. Tests wait on this
+    /// instead of a fixed `Task.yield` count.
+    var initialSnapshotWaiters = 0
+    /// Scheduled-command tasks that have left, including cancellation.
+    var scheduledTaskExits = 0
     /// The most recent assistant action, kept so "撤销" can restore it after the 5 s banner is gone.
     var lastAssistantUndo: (
         reply: String,

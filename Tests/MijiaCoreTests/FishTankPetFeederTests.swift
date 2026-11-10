@@ -330,7 +330,7 @@ struct FishTankPetFeederTests {
 
         store.manualControlConfirmationHandler = { _ in true }
         store.runFacetAction("tank", controlId: feed.id, portion: 2)
-        await Self.waitUntil {
+        await waitUntil {
             await mock.executedCommands.contains(
                 .callMiotAction(entityId: "miot-action:tank:2:1", arguments: [.number(2)])
             )
@@ -382,15 +382,5 @@ struct FishTankPetFeederTests {
         #expect(facets.contains { $0.name == "desiccant-left-level" && $0.value == .number(40) })
         #expect(facets.contains { $0.name == "pet-food-out" && $0.portionArgumentIndex == 0 })
         #expect(!facets.contains { $0.name == "feeder-schedule" }, "the vendor schedule stays private")
-    }
-
-    // MARK: - Helpers
-
-    @MainActor
-    private static func waitUntil(_ condition: @MainActor () async -> Bool) async {
-        for _ in 0..<200 {
-            if await condition() { return }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
     }
 }

@@ -36,19 +36,6 @@ struct DualSourceIntegrationTests {
     }
 
     @MainActor
-    private func waitUntil(
-        timeout: Duration = .seconds(15),
-        _ condition: @MainActor () -> Bool
-    ) async throws {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while ContinuousClock.now < deadline {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(condition(), "condition not met before timeout")
-    }
-
-    @MainActor
     @Test("HA disconnect hands the paired card to Mi Cloud with its favorite and alias intact")
     func haDisconnectKeepsPreferences() async throws {
         let suite = "test.dual.fallback.\(UUID().uuidString)"
@@ -103,7 +90,7 @@ struct DualSourceIntegrationTests {
             defaultsSuiteName: suite
         )
 
-        try await waitUntil {
+        await waitUntil {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
                 && store.devices.count == 1
                 && store.deviceBackend(for: haID) == .homeAssistant
@@ -126,7 +113,7 @@ struct DualSourceIntegrationTests {
         #expect(haCommands.contains { $0.targetEntityId == "light.living_ceiling" })
 
         await haMock.sendStatus(.disconnected("LAN unreachable"))
-        try await waitUntil {
+        await waitUntil {
             store.devices.count == 1 && store.deviceBackend(for: canonical) == .xiaomiCloud
         }
         #expect(store.devices.first?.id == canonical)
@@ -148,7 +135,7 @@ struct DualSourceIntegrationTests {
         #expect((await haMock.executedCommands).count == haCommands.count)
 
         await haMock.updateSnapshot(haHome)
-        try await waitUntil {
+        await waitUntil {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
                 && store.deviceBackend(for: canonical) == .homeAssistant
         }
@@ -211,7 +198,7 @@ struct DualSourceIntegrationTests {
             ),
             defaultsSuiteName: suite
         )
-        try await waitUntil {
+        await waitUntil {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud]) && store.devices.count == 1
         }
 
@@ -272,11 +259,11 @@ struct DualSourceIntegrationTests {
             defaultsSuiteName: suite
         )
 
-        try await waitUntil {
+        await waitUntil {
             store.devices.count == 1 && store.favoriteDeviceIds.contains(did)
         }
         await haMock.updateSnapshot(haHome)
-        try await waitUntil {
+        await waitUntil {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
                 && store.devices.count == 1
                 && store.deviceBackend(for: did) == .homeAssistant
@@ -436,7 +423,7 @@ struct DualSourceIntegrationTests {
             defaultsSuiteName: suite
         )
 
-        try await waitUntil {
+        await waitUntil {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
                 && store.devices.count == 1
         }
@@ -444,7 +431,7 @@ struct DualSourceIntegrationTests {
         #expect(store.deviceBackend(for: canonical) == .homeAssistant)
 
         store.turnAllOff()
-        try await waitUntil { store.undoBanner != nil }
+        await waitUntil { store.undoBanner != nil }
         store.pauseUndoBannerCountdown()
         for _ in 0..<100 where (await haMock.executedCommands.isEmpty) {
             try await Task.sleep(for: .milliseconds(10))
@@ -452,7 +439,7 @@ struct DualSourceIntegrationTests {
 
         // HA disconnects before the user taps Undo; the card falls back to Mi Cloud (`miot:...`).
         await haMock.sendStatus(.disconnected("HA down"))
-        try await waitUntil {
+        await waitUntil {
             store.deviceBackend(for: canonical) == .xiaomiCloud
         }
 
@@ -516,7 +503,7 @@ struct DualSourceIntegrationTests {
         )
         store.controlDebounceInterval = .milliseconds(120)
 
-        try await waitUntil {
+        await waitUntil {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
                 && store.devices.count == 1
         }
@@ -527,7 +514,7 @@ struct DualSourceIntegrationTests {
         store.setLightBrightness(canonical, percent: 45)
         let debouncedTask = try #require(store.debounceTasks["\(canonical).brightness"])
         await haMock.sendStatus(.disconnected("HA down"))
-        try await waitUntil {
+        await waitUntil {
             store.deviceBackend(for: canonical) == .xiaomiCloud
         }
         await debouncedTask.value
@@ -568,14 +555,14 @@ struct DualSourceIntegrationTests {
         store.hasHASource = true
         store.miSessionMaskedUserId = "masked"
 
-        try await waitUntil {
+        await waitUntil {
             store.sourceStatuses[.homeAssistant] == .connected
                 && store.sourceStatuses[.xiaomiCloud] == .connected
         }
 
         await haMock.sendStatus(.disconnected("HA down"))
         await miMock.sendStatus(.disconnected("Mi down"))
-        try await waitUntil {
+        await waitUntil {
             if case .disconnected = store.connectionStatus {
                 return store.sourceStatuses[.homeAssistant] != .connected
                     && store.sourceStatuses[.xiaomiCloud] != .connected
@@ -584,7 +571,7 @@ struct DualSourceIntegrationTests {
         }
 
         await haMock.sendStatus(.connecting)
-        try await waitUntil {
+        await waitUntil {
             store.sourceStatuses[.homeAssistant] == .connecting
                 && store.sourceStatuses[.xiaomiCloud] != .connected
         }
