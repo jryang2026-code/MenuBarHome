@@ -204,6 +204,13 @@ PY
     # 多个会话靠 issue-frontier.sh 挑票，判定规则放宽会导致重复认领（#338）。
     bash scripts/test_issue_frontier.sh
     bash scripts/test_gate_report.sh
+    bash scripts/test_install_ripgrep.sh
+    bash scripts/test_tauri_cache_key.sh
+    bash scripts/test_ci_errors.sh
+    bash scripts/test_pr_ready.sh
+    if command -v pwsh >/dev/null 2>&1; then
+        bash scripts/test_build_installer.sh
+    fi
 fi
 
 large_files=""
