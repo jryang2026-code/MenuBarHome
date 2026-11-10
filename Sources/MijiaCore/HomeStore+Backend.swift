@@ -684,9 +684,14 @@ extension HomeStore {
             }
             rebuildLiveProvider()
             // Leaving demo mode resumes the LAN TV link that demo stopped; `start()` no-ops when the
-            // config is disabled or has no host.
-            if previousBackend == .demo, let lgClient = lgWebOSClient {
-                Task { await lgClient.start() }
+            // config is disabled or has no host. A launch in demo mode never created the client, so
+            // create it now instead of leaving a configured TV missing until relaunch.
+            if previousBackend == .demo {
+                if let lgClient = lgWebOSClient {
+                    Task { await lgClient.start() }
+                } else {
+                    startLGWebOSIfNeeded()
+                }
             }
         }
     }
@@ -856,6 +861,14 @@ extension HomeStore {
     }
 
     public func updateConnection(serverURL: String, token: String) {
+        // A refused Keychain write must not report "Saved": the token would be gone after relaunch.
+        guard KeychainHelper.saveToken(token, defaults: userDefaults, vault: credentialVault) else {
+            showToast(
+                L10n.tr("无法写入钥匙串，请授权钥匙串访问后重试", "Could not save to Keychain; allow Keychain access and try again"),
+                isError: true
+            )
+            return
+        }
         invalidateUndoContext()
         let normalized = HAWebSocketProvider.normalizeBaseURL(serverURL)
         if normalized != HAWebSocketProvider.normalizeBaseURL(serverURLString) {
@@ -863,7 +876,6 @@ extension HomeStore {
         }
         pendingHAAddressSuggestion = nil
         self.serverURLString = normalized
-        KeychainHelper.saveToken(token, defaults: userDefaults, vault: credentialVault)
         self.hasHASource = !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         self.homeBackend = preferredLiveBackend
         if !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

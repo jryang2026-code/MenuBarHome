@@ -352,17 +352,18 @@ export function startTimerLoop(host: MenuMijiaWindowsApp): void {
 
       const now = Date.now();
       host.syncGrokBallEmotion();
-      let changed = false;
-
+      // An expired undo row is a background change: defer its paint past a gesture. Scheduled
+      // commands that just ran may render at once (CODING_STANDARDS.md section 16).
+      let undoExpired = false;
       if (host.lastUndoAction && host.lastUndoAction.expiresAtMs <= now) {
         host.lastUndoAction = null;
-        changed = true;
+        undoExpired = true;
       }
 
-      changed = processScheduledCommands(host, now) || changed;
-
-      if (changed) {
+      if (processScheduledCommands(host, now)) {
         host.render();
+      } else if (undoExpired) {
+        host.queueBackgroundRender();
       }
 
       if (

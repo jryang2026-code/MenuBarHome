@@ -41,8 +41,8 @@ Read this once before coding. It is the project-local replacement for the pstack
 
 ## Repo rules win
 
-`AGENTS.md`, `CODING_STANDARDS.md`, and the project skills override this style. Follow them for worktrees, GitLab delivery through `scripts/forge.py`, checks, snapshots, signing, and releases.
+`AGENTS.md`, `CODING_STANDARDS.md`, and the project skills override this style. Follow them for worktrees, GitHub delivery through `gh`, checks, snapshots, signing, and releases.
 
 ## Retired on purpose
 
-The pstack orchestration skills (`architect`, `arena`, `swarm`, `interrogate`, `how`, `why`, `reflect`), `setup-pstack` model routing, and the tstack PR workflows are no longer installed. Use Paseo profiles for role and model routing, `paseo-committee` or `paseo-advisor` for a second opinion, and the repo's GitLab flow for delivery. Do not reinstall them.
+The pstack orchestration skills (`architect`, `arena`, `swarm`, `interrogate`, `how`, `why`, `reflect`), `setup-pstack` model routing, and the tstack PR workflows are no longer installed. Use Paseo profiles for role and model routing, `paseo-committee` or `paseo-advisor` for a second opinion, and the `gh` flow in `AGENTS.md` for delivery. Do not reinstall them.

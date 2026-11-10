@@ -14,7 +14,10 @@ run="$1"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/ci-errors.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 gh repo view --json nameWithOwner >"$tmp/repo.json"
-gh run view "$run" --json jobs,event,headBranch,headSha,createdAt,databaseId,workflowName >"$tmp/run.json"
+gh run view "$run" --json jobs,event,headBranch,headSha,createdAt,databaseId,workflowName >"$tmp/run.json" || {
+    echo "❌ 读不到 run ${run}（id 不对，或 gh 未登录/网络失败）" >&2
+    exit 1
+}
 gh run view "$run" --log-failed >"$tmp/log.txt" || true
 branch="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("headBranch") or "")' "$tmp/run.json")"
 workflow="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("workflowName") or "")' "$tmp/run.json")"

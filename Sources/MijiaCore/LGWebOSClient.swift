@@ -249,8 +249,8 @@ public enum LGWebOSProtocol {
         if lower.contains("apple") { return "Apple TV" }
         if lower.contains("disney") { return "Disney+" }
         if lower.contains("airplay") { return "AirPlay" }
-        if lower.contains("livetv") { return "直播电视" }
-        if lower.isEmpty { return "主页" }
+        if lower.contains("livetv") { return L10n.tr("直播电视", "Live TV") }
+        if lower.isEmpty { return L10n.tr("主页", "Home") }
         return appId.components(separatedBy: ".").last?.capitalized ?? appId
     }
 

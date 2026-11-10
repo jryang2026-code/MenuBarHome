@@ -66,11 +66,18 @@ final class UnsupportedDeviceScanner {
         var errors: [String] = []
 
         if scanMi {
-            do {
-                let scanned = try await Self.scanMiCloud(session: store.miAccounts.first?.session)
-                results.append(contentsOf: scanned)
-            } catch {
-                errors.append((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            // Every signed-in account, not just the first: a second account's devices are merged into
+            // the panel too, so its skipped devices belong in this list. A device shared between two
+            // accounts appears once.
+            let sessions: [MiSession?] = store.miAccounts.isEmpty ? [nil] : store.miAccounts.map(\.session)
+            var seen = Set<String>()
+            for session in sessions {
+                do {
+                    let scanned = try await Self.scanMiCloud(session: session)
+                    results.append(contentsOf: scanned.filter { seen.insert($0.id).inserted })
+                } catch {
+                    errors.append((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+                }
             }
         }
         if scanHA {

@@ -62,6 +62,13 @@ fi
 
 changed="$(bash "$ROOT_DIR/scripts/gate_report.sh" list-snapshot-changes "$SNAPSHOT_REL")"
 if [ -z "$changed" ]; then
+    # Record mode only fails a test for a baseline it rewrites. With nothing rewritten, a non-zero
+    # exit is a real failure, not "no change".
+    if [ "$swift_status" -ne 0 ]; then
+        echo "❌ 没有基线变化，但快照测试失败（退出码 ${swift_status}）。完整日志：${LOG}"
+        bash "$ROOT_DIR/scripts/gate_report.sh" failing-tests "$LOG" | head -20
+        exit 1
+    fi
     echo "✅ 基线无变化"
     exit 0
 fi

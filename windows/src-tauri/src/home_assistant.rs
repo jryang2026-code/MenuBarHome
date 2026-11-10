@@ -147,6 +147,7 @@ fn validate_call(command: &HaServiceCall) -> Result<(), String> {
         ("button", &["press"]),
         ("camera", &["turn_on", "turn_off"]),
         ("select", &["select_option"]),
+        ("number", &["set_value"]),
         ("vacuum", &["start", "pause", "return_to_base"]),
         ("scene", &["turn_on"]),
         ("script", &["turn_on"]),
@@ -172,6 +173,7 @@ fn validate_call(command: &HaServiceCall) -> Result<(), String> {
         ("fan", "set_preset_mode") => &["preset_mode"],
         ("fan", "oscillate") => &["oscillating"],
         ("select", "select_option") => &["option"],
+        ("number", "set_value") => &["value"],
         _ => &[],
     };
     if command.data.keys().any(|key| !keys.contains(&key.as_str())) {
@@ -242,6 +244,20 @@ mod tests {
         call.service = "delete".into();
         assert!(validate_call(&call).is_err());
         call.service = "turn_on".into();
+        call.data.insert("entity_id".into(), json!("all"));
+        assert!(validate_call(&call).is_err());
+    }
+
+    #[test]
+    fn allows_number_set_value_for_fridge_targets() {
+        let mut call = HaServiceCall {
+            domain: "number".into(),
+            service: "set_value".into(),
+            entity_id: "number.fridge_target_temperature_p_3".into(),
+            data: Default::default(),
+        };
+        call.data.insert("value".into(), json!(4));
+        assert!(validate_call(&call).is_ok());
         call.data.insert("entity_id".into(), json!("all"));
         assert!(validate_call(&call).is_err());
     }

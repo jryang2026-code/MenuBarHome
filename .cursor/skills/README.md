@@ -8,7 +8,7 @@ Two sources remain. The vendored date is 2026-11-03; the pstack subset was local
 
 - `poteto-mode` and the retained `principle-*` subset derive from pstack by Lauren Tan. The source is https://github.com/cursor/plugins/tree/main/pstack. The MIT license is `pstack-LICENSE`. The rest of pstack (orchestration, model routing, Cursor playbooks) is retired and is not refreshed.
 - mattpocock skills are by Matt Pocock. The source is https://github.com/mattpocock/skills. The MIT license is `mattpocock-LICENSE`. Each directory and its frontmatter `name` start with `mp-`.
-- tstack was removed on 2026-11-08. Its GitHub PR workflows do not fit this GitLab repo.
+- tstack was removed on 2026-11-08; this repo follows the commit and PR policy in `AGENTS.md` instead.
 
 The pack includes the MIT licenses for pstack and for mattpocock. Those two files sit next to the skills.
 

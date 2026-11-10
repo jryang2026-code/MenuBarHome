@@ -76,7 +76,7 @@ SKIP_RESTART=1 bash scripts/build_app.sh
 bash scripts/go2rtc-ptz/verify.sh
 ```
 
-会重新克隆基座、应用补丁，运行 `go test -race ./internal/xiaomi ./pkg/xiaomi/miss ./pkg/xiaomi/miss/cs2 ./pkg/tutk` 与
+会重新克隆基座、应用补丁，运行 `go test -race ./internal/xiaomi ./pkg/xiaomi/miss ./pkg/xiaomi/miss/cs2 ./pkg/tutk ./pkg/onvif ./internal/onvif` 与
 `go build ./...`。本机已验证（2026-11-07，Go 1.26.10）：
 
 - 补丁零冲突；

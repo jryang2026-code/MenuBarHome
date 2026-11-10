@@ -39,12 +39,13 @@ if [[ "$joined" == *"pr checks"* ]]; then
     if [[ "${PR_READY_CHECKS_MODE:-}" == pending ]]; then
         exit 8
     fi
-    if [[ "$joined" == *"--json"* ]]; then
-        cat "$fixture/checks.json"
-        exit 1
-    fi
+    # TTY first: if pr-ready.sh stops clearing GH_FORCE_TTY, its --json call gets table text and fails.
     if [[ "${GH_FORCE_TTY:-}" == 1 ]]; then
         printf '%s\n' 'macos-test fail 2m https://example.test/2'
+        exit 1
+    fi
+    if [[ "$joined" == *"--json"* ]]; then
+        cat "$fixture/checks.json"
         exit 1
     fi
     cat "$fixture/checks.txt"

@@ -2322,9 +2322,9 @@ describe("Smart camera support and live view (#97)", () => {
     );
     assert.deepEqual(values, ["auto", "sd", "hd", "max"]);
     assert.equal(
-      document.querySelector('[data-cameraquality-value="hd"]')?.getAttribute("aria-pressed"),
+      document.querySelector('[data-cameraquality-value="sd"]')?.getAttribute("aria-pressed"),
       "true",
-      "hd is the default quality",
+      "sd is the default quality, as on macOS",
     );
 
     await click('[data-cameraquality-value="max"]');
@@ -5773,6 +5773,34 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
       timers.fireUndoExpiry();
       assert.ok(app.pendingCloudRender);
       assert.ok(document.querySelector("#btn-undo") === undo, "the gesture's DOM survives the expiry");
+      app.pointerIsDown = false;
+      timers.tick();
+      assertMissing(document.querySelector("#btn-undo"), "the deferred render lands after the gesture");
+    } finally {
+      Date.now = original;
+    }
+  });
+
+  it("defers the tick that drops an expired undo action while a pointer gesture is active", () => {
+    const timers = capturePanelTimers();
+    const app = startDemoApp();
+    const started = Date.now();
+    let clock = started;
+    const original = Date.now;
+    Date.now = () => clock;
+    try {
+      app.lastUndoAction = {
+        summary: "一台",
+        steps: [{ deviceId: "light.living_ceiling", commands: [{ kind: "setSwitch", entityId: "switch.light", isOn: true }] }],
+        expiresAtMs: started + 5_000,
+      };
+      app.render();
+      app.pointerIsDown = true;
+      const undo = element("#btn-undo");
+      clock = started + 5_000;
+      timers.tick();
+      assert.equal(app.lastUndoAction, null, "the tick still drops the expired action");
+      assert.ok(document.querySelector("#btn-undo") === undo, "the gesture's DOM survives the tick");
       app.pointerIsDown = false;
       timers.tick();
       assertMissing(document.querySelector("#btn-undo"), "the deferred render lands after the gesture");

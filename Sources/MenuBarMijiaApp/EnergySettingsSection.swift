@@ -308,11 +308,17 @@ struct EnergySettingsSection: View {
         priceDraft = Self.priceDraftText(history.pricePerKwh)
     }
 
+    /// An empty field clears the price; text that is not a positive number keeps the saved price
+    /// and restores the field, so a typo never erases a configured price.
     private func applyPrice() {
         let normalized = priceDraft
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: ",", with: ".")
-        history.setPricePerKwh(normalized.isEmpty ? nil : Double(normalized))
+        if normalized.isEmpty {
+            history.setPricePerKwh(nil)
+        } else if let price = Double(normalized), price.isFinite, price > 0 {
+            history.setPricePerKwh(price)
+        }
         seedPriceDraft()
     }
 

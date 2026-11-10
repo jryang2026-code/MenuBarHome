@@ -31,7 +31,7 @@ private struct SnapshotPTZClient: CameraPTZControlling {
 /// The renderer is fed fixed demo data and the accessibility "reduce motion" / "reduce transparency"
 /// switches, so animations and materials cannot make two runs differ. The suite is serialized
 /// because it changes `UserDefaults.standard` (the panel reads skin/appearance through
-/// `@AppStorage`) and `L10n.currentLanguage`.
+/// `@AppStorage`); language goes through the task-local `L10n.$overrideLanguage`.
 @MainActor
 @Suite(.serialized)
 struct SnapshotTests {
