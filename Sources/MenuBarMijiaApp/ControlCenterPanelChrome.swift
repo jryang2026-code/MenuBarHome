@@ -534,7 +534,7 @@ extension ControlCenterPanel {
         let surface = TileSurface(isActive: true, scheme: effectiveScheme)
         return Text(tag.chipTitle)
             .font(.system(size: DesignTokens.TypeSize.caption, weight: isSelected ? .semibold : .medium))
-            .foregroundStyle(isSelected ? surface.ink : Color.secondary)
+            .foregroundStyle(isSelected ? Color.primary : Color.secondary)
             .padding(.horizontal, 11)
             .padding(.vertical, 5)
             .background {
@@ -741,7 +741,7 @@ extension ControlCenterPanel {
         let surface = TileSurface(isActive: true, scheme: effectiveScheme)
         let content = Text(title)
             .font(.system(size: DesignTokens.TypeSize.caption, weight: isSelected ? .semibold : .medium))
-            .foregroundStyle(isSelected ? surface.ink : Color.secondary)
+            .foregroundStyle(isSelected ? Color.primary : Color.secondary)
             .lineLimit(1)
             .padding(.horizontal, 11)
             .padding(.vertical, 5)

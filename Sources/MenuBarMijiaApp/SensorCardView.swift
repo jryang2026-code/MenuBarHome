@@ -65,7 +65,7 @@ struct SensorCardView: View {
                 store.toggleExpanded(device.id)
             }
         }
-        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.card)
+        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.module)
         .opacity(device.isOnline ? 1 : 0.58)
         // Display-only card when collapsed: VoiceOver reads one sentence instead of five loose labels (#41).
         .accessibilityElement(children: isExpanded ? .contain : .ignore)

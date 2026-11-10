@@ -72,27 +72,9 @@ public enum AppAppearance: String, CaseIterable, Identifiable, Sendable {
 
 // MARK: - System Panel Look
 
-/// One system design, no skins. Tiles mirror Control Center: anything that is on gets the loudest
-/// surface the appearance allows — an opaque bright platter in light mode, a lifted well one step
-/// above the quiet off-state glass in dark mode, where a white slab would glare and force the ink
-/// inside it back to the light scheme. `TileSurface` derives ink, fill and hairline together so no
-/// caller has to reason about the pairing.
-public enum PanelLook {
-    public static let tileRadius: CGFloat = 14
-
-    /// Ink for the light-mode platter. `Color.primary` is white in dark mode, so the bright platter
-    /// carries its own fixed dark ink instead of following the window scheme.
-    public static let platterInk = DesignTokens.Ink.onPlatter
-
-    /// Soft drop shadow that keeps the platter above the glass; wells stay flat.
-    public static func platterShadow(isActive: Bool) -> Color {
-        isActive ? Color.black.opacity(0.18) : .clear
-    }
-}
-
-/// One tile's presentation state: lit or quiet, and when lit, on the light-mode platter or the
-/// family-coloured glass. Ink, fill and hairline all derive from it, so callers pass one value
-/// instead of repeating the active/tint/scheme triple.
+/// One system design, no skins. A tile is always the same glass: a quiet well when off, one step
+/// lighter when on, and a family-colour wash when on with a tint. Nothing paints an opaque slab, so
+/// the ink inside a tile never has to flip against the window scheme.
 public struct TileSurface: Equatable, Sendable {
     public var isActive: Bool
     public var tint: Color?
@@ -104,45 +86,24 @@ public struct TileSurface: Equatable, Sendable {
         self.scheme = scheme
     }
 
-    /// The one surface that needs the fixed dark ink: the light-mode platter. Dark mode never
-    /// paints a bright tile, so white ink stays valid everywhere else — this flag is the single
-    /// place that decides, which is what keeps the ink rules from drifting apart again.
-    public var isBrightPlatter: Bool { isActive && scheme == .light }
+    /// Text ink follows the window scheme in every state. An active tile earns its emphasis from
+    /// the orb, a heavier weight and the fill — never from inverting the ink.
+    public var ink: Color { .primary }
 
-    /// Ink on the lit surface. Every lit surface in dark mode is dark glass, so it keeps white ink;
-    /// only the bright platter needs the fixed dark ink.
-    public var ink: Color {
-        if isActive, !isBrightPlatter { return .white }
-        return isActive ? PanelLook.platterInk : .primary
-    }
+    public var secondaryInk: Color { .secondary }
 
-    public var secondaryInk: Color {
-        if isActive, !isBrightPlatter { return Color.white.opacity(0.62) }
-        return isActive ? PanelLook.platterInk.opacity(0.55) : .secondary
-    }
-
-    /// The tile fill: bright platter when lit in light mode, one step above the well when lit in dark
-    /// mode; a tint swaps either for a wash of the family colour so the hue carries the state.
+    /// The well: translucent white over the panel glass in both appearances, or a family-colour
+    /// wash when the device is on and carries a tint (contract §1.2).
     public var fill: AnyShapeStyle {
         if isActive, let tint {
             return scheme == .dark
-                ? AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.24), Color.white.opacity(0.08)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                : AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.14), Color.white.opacity(0.92)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                ? AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.20), Color.white.opacity(0.08)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                : AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.14), Color.white.opacity(0.70)], startPoint: .topLeading, endPoint: .bottomTrailing))
         }
         if scheme == .dark {
-            // Never a white slab in dark mode: it glares, and every bit of ink inside it would have
-            // to flip back to the light scheme. A lit tile is simply a brighter well.
-            return AnyShapeStyle(Color.white.opacity(isActive ? 0.17 : 0.07))
+            return AnyShapeStyle(Color.white.opacity(isActive ? 0.13 : 0.07))
         }
-        return isActive ? AnyShapeStyle(Color.white) : AnyShapeStyle(Color.black.opacity(0.045))
-    }
-
-    public var hairline: Color {
-        if isActive, let tint {
-            return tint.opacity(scheme == .dark ? 0.38 : 0.30)
-        }
-        if isActive { return scheme == .dark ? Color.white.opacity(0.12) : Color.black.opacity(0.07) }
-        return scheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.05)
+        return AnyShapeStyle(Color.white.opacity(isActive ? 0.72 : 0.42))
     }
 }
 

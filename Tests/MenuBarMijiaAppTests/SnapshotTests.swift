@@ -1058,7 +1058,7 @@ struct SnapshotTests {
         )
     }
 
-    @Test("Climate card wears its tinted platter when on")
+    @Test("Climate card wears its tinted well when on")
     func climateOnCardSnapshot() async throws {
         let fixture = try await SnapshotFixture()
         defer { fixture.restore() }
@@ -1213,43 +1213,6 @@ struct SnapshotTests {
             size: CGSize(width: 780, height: 680),
             named: "settings-about-notes-zh-light"
         )
-    }
-
-    // MARK: - Non-visual guards for the appearance work (#51) and tooltip (#54)
-
-    @Test("On and off tiles never share the same ink or fill")
-    func platterContrastHoldsInBothSchemes() {
-        let lit = TileSurface(isActive: true, scheme: .light)
-        let quiet = TileSurface(isActive: false, scheme: .light)
-        #expect(lit.ink == PanelLook.platterInk)
-        #expect(quiet.ink == .primary)
-        #expect(lit.secondaryInk == PanelLook.platterInk.opacity(0.55))
-        #expect(quiet.secondaryInk == .secondary)
-        // The platter keeps a defined hairline in light mode; wells get the quieter one.
-        #expect(lit.hairline != quiet.hairline)
-
-        // A tinted lit surface is dark blue glass in dark mode, so it takes white ink and the
-        // family hairline instead of the platter rules.
-        let darkTinted = TileSurface(isActive: true, tint: DesignTokens.Orb.climate, scheme: .dark)
-        #expect(darkTinted.ink == .white)
-        #expect(darkTinted.ink != lit.ink)
-        #expect(darkTinted.secondaryInk == .white.opacity(0.62))
-        #expect(darkTinted.hairline != lit.hairline)
-
-        // Dark mode never puts a white platter under the window's ink: every lit surface there is
-        // dark glass, so it keeps white ink instead of the light-mode platter ink.
-        let darkLit = TileSurface(isActive: true, scheme: .dark)
-        #expect(darkLit.ink == .white)
-        #expect(darkLit.secondaryInk == .white.opacity(0.62))
-        #expect(darkLit.ink != lit.ink)
-
-        // The bright platter is the only surface that owns the fixed dark ink, and it exists in
-        // light mode only. If a future fill change reintroduces a white tile in dark mode, this
-        // pairing breaks before the ink can go white-on-white.
-        #expect(lit.isBrightPlatter)
-        #expect(!quiet.isBrightPlatter)
-        #expect(!darkLit.isBrightPlatter)
-        #expect(!darkTinted.isBrightPlatter)
     }
 
     @Test("Scene icons map to one visual category per family")

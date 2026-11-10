@@ -80,20 +80,20 @@ public struct DeviceCardView: View {
 
     private var accent: Color { DevicePalette.accentColor(for: device) }
 
-    /// Climate tiles wear their family colour when on; every other kind keeps the white platter.
+    /// Climate tiles wear their family colour when on; every other kind keeps the plain well.
     private var tileTint: Color? {
         if case .climate = device.kind { return DesignTokens.Orb.climate }
         return nil
     }
 
-    /// On the bright platter, system `primary` would turn white and disappear; text flips to ink.
-    private var onPlatter: Bool { store.presentsAsActive(device) }
+    /// The device is running: a lit well, never an opaque slab.
+    private var isLit: Bool { store.presentsAsActive(device) }
 
     private var shownStatus: String { store.presentedStatus(for: device) }
 
-    /// One presentation state drives text ink: lit white platter vs quiet well vs tinted glass.
+    /// One presentation state drives the fill; the ink stays the window's `primary` / `secondary`.
     private var surface: TileSurface {
-        TileSurface(isActive: onPlatter, tint: tileTint, scheme: colorScheme)
+        TileSurface(isActive: isLit, tint: tileTint, scheme: colorScheme)
     }
 
     private var statusColor: Color { surface.secondaryInk }
@@ -172,9 +172,9 @@ public struct DeviceCardView: View {
                     .transition(AppleMotion.drawerTransition)
             }
         }
-        .glassTile(isActive: onPlatter, cornerRadius: PanelLook.tileRadius, tint: tileTint)
+        .glassTile(isActive: isLit, cornerRadius: DesignTokens.Radius.module, tint: tileTint)
         .overlay(
-            RoundedRectangle(cornerRadius: PanelLook.tileRadius, style: .continuous)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.module, style: .continuous)
                 .strokeBorder(isKeyboardFocused ? accent.opacity(0.85) : Color.clear, lineWidth: 1.6)
         )
         .opacity(device.isOnline ? 1.0 : 0.58)
