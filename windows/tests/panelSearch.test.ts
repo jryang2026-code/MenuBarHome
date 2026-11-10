@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
-import { Window } from "happy-dom";
-import { installWindow } from "./dom.js";
+import type { Window } from "happy-dom";
+import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { panelQueryKind, PanelSearchIndex, searchEntries, searchMatches } from "../src/core/panelSearch.js";
 import type { SmartDevice } from "../src/core/models.js";
@@ -73,13 +73,11 @@ function lightIsOn(id = "light.study_desk"): boolean {
 }
 
 beforeEach(() => {
-  dom = new Window({ url: "http://localhost/" }); installWindow(dom);
-  Object.defineProperty(dom.navigator, "languages", { value: ["zh-CN"], configurable: true });
-  document.body.innerHTML = '<div id="app"></div>';
+  dom = mountTestWindow();
   localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true }));
   app = new MenuMijiaWindowsApp(element("#app"));
 });
-afterEach(async () => { await dom.happyDOM.abort(); dom.close(); });
+afterEach(async () => { await closeTestWindow(dom); });
 
 describe("Panel keyboard on the rendered demo", () => {
   it("searches across room/kind filters, honours aliases and restores the cut after Escape", () => {
@@ -130,7 +128,7 @@ describe("Panel keyboard on the rendered demo", () => {
     field.dispatchEvent(new Event("input", { bubbles: true }));
     key("Enter", { isComposing: true }); key("Escape", { keyCode: 229 });
     app.render();
-    assert.equal(element("#command-input"), field);
+    assert.ok(element("#command-input") === field);
     assert.deepEqual(commands, []);
     field.dispatchEvent(new window.CompositionEvent("compositionend", { bubbles: true }));
     assert.equal(element<HTMLInputElement>("#command-input").value, "打开书房灯");
@@ -155,7 +153,7 @@ describe("Panel keyboard on the rendered demo", () => {
     field.dispatchEvent(new window.CompositionEvent("compositionstart", { bubbles: true }));
     app.isShowingAssistantBar = false;
     app.render();
-    assert.equal(document.querySelector("#command-input"), field);
+    assert.ok(document.querySelector("#command-input") === field);
     assert.equal(app.panelSearch.isComposing, true);
     field.dispatchEvent(new window.CompositionEvent("compositionend", { bubbles: true }));
     assert.equal(app.panelSearch.isComposing, false);
@@ -236,7 +234,7 @@ describe("Panel keyboard on the rendered demo", () => {
     const area = document.createElement("textarea"); document.body.append(area); area.focus();
     key("ArrowDown"); key("Enter"); key("Escape");
     assert.equal(app.panelSearch.selectedDeviceId, null);
-    assert.equal(document.activeElement, area);
+    assert.ok(document.activeElement === area);
     app.isShowingAssistantBar = false; app.render(); area.focus(); key("/");
     assert.equal(app.isShowingAssistantBar, false);
   });

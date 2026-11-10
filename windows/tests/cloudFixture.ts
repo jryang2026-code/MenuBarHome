@@ -19,6 +19,22 @@ const spec: MiotDeviceSpec = {
   }],
 };
 
+export const cloudFixtureHookIndex = {
+  sensorRecord: "Build a sensor device record for the fixture home.",
+  completedReads: "How many property reads have finished.",
+  failNextGets: "Fail the next property reads.",
+  expireNextWrites: "Answer the next property writes with 401, the dead Mi session response.",
+  failNextGroupStatus: "Fail the next group status read.",
+  setEchoPowerReads: "Repeat the last written power value on later reads.",
+  setNumericPowerReads: "Return power as 1 or 0 instead of a boolean.",
+  enableHabitLearning: "Turn habit learning on in the seeded settings.",
+  holdNextWrite: "Pause the next property write until the test releases it.",
+  holdNextRead: "Capture the next property read, then wait until the test releases the response.",
+  allowBrightness: "Accept brightness writes again.",
+  reject: "Refuse one property value.",
+  allow: "Accept one property again.",
+} as const;
+
 const sensorModel = "fixture.sensor_ht";
 const sensorSpec: MiotDeviceSpec = {
   type: "urn:miot-spec-v2:device:temperature-humidity-sensor:0000A00A:review-test:1",
@@ -169,11 +185,9 @@ export function cloudFixture(intents: readonly DeviceIntent[]) {
     sensorRecord: (did: string, name: string) => ({ did, name, model: sensorModel, isOnline: true, spec_type: sensorSpec.type }),
     writes,
     completedReads: () => completedReads,
-    /** Captures the next property read's values, then waits until the test releases the response. */
     failNextGets: (count = 1) => {
       failGets = count;
     },
-    /** Refuses the next property writes with 401, the answer a dead Mi session gets. */
     expireNextWrites: (count = 1) => {
       expireWrites = count;
     },

@@ -1,9 +1,10 @@
-import { installWindow } from "./dom.js";
+import { assertMissing } from "./dom.js";
+import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import { readFileSync } from "node:fs";
-import { Window } from "happy-dom";
+import type { Window } from "happy-dom";
 import { ScheduledCommandStore, SCHEDULED_COMMANDS_STORAGE_KEY } from "../src/core/scheduledCommands.js";
 import type { DeviceIntent, ScheduledCommand } from "../src/core/models.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
@@ -98,19 +99,13 @@ describe("Scheduled command persistence", () => {
 let dom: Window;
 const windows: Window[] = [];
 beforeEach(() => {
-  dom = new Window({ url: "http://localhost/" });
+  dom = mountTestWindow({ stubInterval: true });
   windows.push(dom);
-  installWindow(dom);
-  Object.defineProperty(dom.navigator, "languages", { value: ["zh-CN"], configurable: true });
-  document.body.innerHTML = '<div id="app"></div>';
-  // Timer ticks are driven by processScheduledCommands with an explicit clock.
-  Object.defineProperty(dom, "setInterval", { value: () => 0, configurable: true });
   localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true, enableGrokBall: false, autoCheckUpdates: false }));
 });
 afterEach(async () => {
   for (const instance of windows.splice(0)) {
-    await instance.happyDOM.abort();
-    instance.close();
+    await closeTestWindow(instance);
   }
 });
 function app(): MenuMijiaWindowsApp {
@@ -120,14 +115,9 @@ function app(): MenuMijiaWindowsApp {
 }
 async function restart(): Promise<MenuMijiaWindowsApp> {
   const saved = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).flatMap((key) => key ? [[key, localStorage.getItem(key) ?? ""]] : []);
-  await dom.happyDOM.abort();
-  dom.close();
-  dom = new Window({ url: "http://localhost/" });
+  await closeTestWindow(dom);
+  dom = mountTestWindow({ stubInterval: true });
   windows.push(dom);
-  installWindow(dom);
-  Object.defineProperty(dom.navigator, "languages", { value: ["zh-CN"], configurable: true });
-  document.body.innerHTML = '<div id="app"></div>';
-  Object.defineProperty(dom, "setInterval", { value: () => 0, configurable: true });
   for (const [key, value] of saved) if (key !== undefined && value !== undefined) localStorage.setItem(key, value);
   const instance = app();
   await setImmediate();
@@ -334,7 +324,7 @@ describe("Timer app wiring", () => {
     assert.equal(calls.length, 0);
     assert.equal(instance.scheduledCommands.length, 0);
     assert.equal(instance.pendingSuggestions.length, 0);
-    assert.equal(document.querySelector("[data-suggestion-id]"), null);
+    assertMissing(document.querySelector("[data-suggestion-id]"));
     assert.match(document.body.textContent ?? "", /定时指令需要明确的设备和操作，未设定定时/);
   });
 

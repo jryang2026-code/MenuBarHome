@@ -4,9 +4,10 @@ import { HomeAssistantSynthesizer, homeAssistantIdentity } from "../src/core/hom
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
-import { Window } from "happy-dom";
+import type { Window } from "happy-dom";
 
-import { installWindow } from "./dom.js";
+import { assertMissing } from "./dom.js";
+import { closeTestWindow, mountTestWindow, setWindowFocused } from "./uiHarness.js";
 import { MenuMijiaWindowsApp, waitForCameraFrameGap } from "../src/ui/app.js";
 import { SKINS } from "../src/ui/panelPrefs.js";
 import { cloudFixture } from "./cloudFixture.js";
@@ -83,20 +84,14 @@ async function withTimeout<T>(
 }
 
 beforeEach(() => {
-  dom = new Window({ url: "http://localhost/" });
-  installWindow(dom);
-  // The suite asserts Simplified Chinese chrome; pin the OS language so `system` resolves to it.
-  Object.defineProperty(dom.navigator, "languages", { value: ["zh-CN", "zh"], configurable: true });
-  Object.defineProperty(dom.navigator, "language", { value: "zh-CN", configurable: true });
-  document.body.innerHTML = '<div id="app"></div>';
+  dom = mountTestWindow();
   // Most UI tests do not exercise the daily GitHub check; mark it done today so the
   // startup request cannot change their request lists (#39). Update tests clear this.
   localStorage.setItem("menumijia.windows.update.v1", JSON.stringify({ lastCheckedAtMs: Date.now(), release: null }));
 });
 
 afterEach(async () => {
-  await dom.happyDOM.abort();
-  dom.close();
+  await closeTestWindow(dom);
 });
 
 describe("Service endpoint submission", () => {
@@ -568,8 +563,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
     await click('[data-kind="light"]');
     await click("#btn-toggle-hide-offline");
     assert.ok(document.querySelector('[data-kind="light"]'));
-    assert.equal(document.querySelector('[data-kind="sensor"]'), null);
-
+    assertMissing(document.querySelector('[data-kind="sensor"]'));
     const sensor = cloud.deviceRecords.find((record) => record.did === "sensor-bedroom");
     assert.ok(sensor);
     sensor.isOnline = true;
@@ -608,7 +602,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
         },
       }));
     });
-    assert.equal(document.querySelector('[data-collapse="g-sensors"]'), null);
+    assertMissing(document.querySelector('[data-collapse="g-sensors"]'));
     assert.ok(document.querySelector('[data-tile-id="fixture-light"]'));
     const sensor = cloud.deviceRecords.find((record) => record.did === "sensor-bedroom");
     assert.ok(sensor);
@@ -622,7 +616,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
     const header = element('[data-collapse="g-sensors"]');
     assert.match(header.textContent ?? "", /传感器/);
     assert.equal(header.querySelector(".cc-group-count")?.textContent, "1");
-    assert.equal(document.querySelector('[data-tile-id="sensor-bedroom"]'), null);
+    assertMissing(document.querySelector('[data-tile-id="sensor-bedroom"]'));
     await click('[data-collapse="g-sensors"]');
     assert.ok(document.querySelector('[data-tile-id="sensor-bedroom"]'));
   });
@@ -745,9 +739,9 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
     await withTimeout(heldRead.finished, "Cloud response did not finish");
     await setImmediate();
 
-    assert.equal(element(".cc-popover"), popover);
-    assert.equal(element("#command-input"), input);
-    assert.equal(document.activeElement, input);
+    assert.ok(element(".cc-popover") === popover);
+    assert.ok(element("#command-input") === input);
+    assert.ok(document.activeElement === input);
     assert.equal(input.value, "未发送的草稿");
   });
 
@@ -1089,7 +1083,7 @@ describe("First cloud AI request asks once (#20)", () => {
 
     await command("帮我想想今晚怎么安排灯光氛围");
     assert.equal(urls.length, 2);
-    assert.equal(document.querySelector("#btn-cloud-allow"), null);
+    assertMissing(document.querySelector("#btn-cloud-allow"));
   });
 
   it("declining sends nothing", async () => {
@@ -1135,7 +1129,7 @@ describe("AI suggestions wait for a tap (#21)", () => {
     chip.click();
     await setImmediate();
     await setImmediate();
-    assert.equal(document.querySelector("[data-suggestion-id]"), null);
+    assertMissing(document.querySelector("[data-suggestion-id]"));
     assert.match(tile("light.study_desk"), /已关闭/);
   });
 });
@@ -1155,7 +1149,7 @@ describe("Timers the PC slept through (#22)", () => {
       await click("[data-run-missed]");
       await setImmediate();
       assert.match(tile("light.study_desk"), /已关闭/);
-      assert.equal(document.querySelector("[data-run-missed]"), null);
+      assertMissing(document.querySelector("[data-run-missed]"));
     } finally {
       Date.now = realNow;
     }
@@ -1282,7 +1276,7 @@ describe("Bare category commands (#273)", () => {
     pills[1]!.click();
     await setImmediate();
     assert.ok(document.querySelector('[data-tile-id="light.de_living"]'));
-    assert.equal(document.querySelector('[data-tile-id="light.cn_living"]'), null);
+    assertMissing(document.querySelector('[data-tile-id="light.cn_living"]'));
   });
 
   it("关灯 closes only the room the panel shows", async () => {
@@ -1290,7 +1284,7 @@ describe("Bare category commands (#273)", () => {
     await click('[data-room="客厅"]');
     await command("关灯");
     assert.match(tile("light.living_ceiling"), /已关闭/);
-    assert.equal(document.querySelector("[data-suggestion-id]"), null);
+    assertMissing(document.querySelector("[data-suggestion-id]"));
     await click('[data-room="全部"]');
     assert.match(tile("light.study_desk"), /已开启/);
   });
@@ -1303,7 +1297,7 @@ describe("Bare category commands (#273)", () => {
 
     await command("关灯");
     assert.match(document.body.textContent ?? "", /灯都关着/);
-    assert.equal(document.querySelector("[data-suggestion-id]"), null);
+    assertMissing(document.querySelector("[data-suggestion-id]"));
     assert.match(tile("light.living_ceiling"), /已关闭/);
     assert.match(tile("light.study_desk"), /已关闭/);
   });
@@ -1312,7 +1306,7 @@ describe("Bare category commands (#273)", () => {
     startDemo();
     await command("10分钟后关灯");
     assert.match(document.body.textContent ?? "", /开着：客厅吸顶灯、书房台灯。请说出房间或设备名/);
-    assert.equal(document.querySelector("[data-suggestion-id]"), null);
+    assertMissing(document.querySelector("[data-suggestion-id]"));
     assert.doesNotMatch(document.body.textContent ?? "", /剩余/);
     assert.match(tile("light.living_ceiling"), /已开启/);
     assert.match(tile("light.study_desk"), /已开启/);
@@ -1444,8 +1438,7 @@ describe("Bare category opens (#274)", () => {
     const bedroom = app.devices.find((device) => device.id === "light.bedroom_lamp");
     assert.equal(bedroom?.kind.kind, "light");
     assert.equal(bedroom?.kind.kind === "light" && bedroom.kind.isOn, false);
-    assert.equal(document.querySelector("[data-suggestion-id]"), null);
-
+    assertMissing(document.querySelector("[data-suggestion-id]"));
     await click('[data-room="全部"]');
     assert.match(tile("light.bedroom_lamp"), /已关闭/);
   });
@@ -1587,15 +1580,15 @@ describe("Unverified MIoT fallback controls (#154)", () => {
     new MenuMijiaWindowsApp(element("#app"));
     await setImmediate();
 
-    assert.equal(document.querySelector('[data-toggle-device="fb-air"]'), null);
-    assert.equal(document.querySelector("[data-fanpreset]"), null);
-    assert.equal(document.querySelector("[data-fanosc]"), null);
+    assertMissing(document.querySelector('[data-toggle-device="fb-air"]'));
+    assertMissing(document.querySelector("[data-fanpreset]"));
+    assertMissing(document.querySelector("[data-fanosc]"));
     assert.ok(document.querySelector('[data-toggle-device="real-light"]'));
     assert.match(tile("fb-air"), /PM2\.5 12/);
 
     await click('[data-body-device="fb-air"]');
-    assert.equal(document.querySelector("[data-fanpreset]"), null);
-    assert.equal(document.querySelector("[data-fanpercent]"), null);
+    assertMissing(document.querySelector("[data-fanpreset]"));
+    assertMissing(document.querySelector("[data-fanpercent]"));
     assert.match(document.body.textContent ?? "", /PM2\.5 12/);
   });
 
@@ -1673,19 +1666,18 @@ describe("Unverified MIoT fallback controls (#154)", () => {
     new MenuMijiaWindowsApp(element("#app"));
     await setImmediate();
 
-    assert.equal(document.querySelector('[data-toggle-device="cam-ro"]'), null);
+    assertMissing(document.querySelector('[data-toggle-device="cam-ro"]'));
     await click('[data-body-device="cam-ro"]');
     assert.ok(document.querySelector(".cc-camera-live-sheet"));
-    assert.equal(document.querySelector('[data-toggle-device="cam-ro"]'), null);
+    assertMissing(document.querySelector('[data-toggle-device="cam-ro"]'));
     assert.ok(document.querySelector("#btn-toggle-camera-url"));
 
     await click('[data-body-device="cam-off"]');
     assert.ok(document.querySelector(".cc-camera-stage.is-sleeping"));
-    assert.equal(document.querySelector('[data-toggle-device="cam-off"]'), null);
-
+    assertMissing(document.querySelector('[data-toggle-device="cam-off"]'));
     assert.ok(document.querySelector('[data-expand-device="ac-fan"]'));
-    assert.equal(document.querySelector('[data-toggle-device="ac-fan"]'), null);
-    assert.equal(document.querySelector("[data-acstep]"), null);
+    assertMissing(document.querySelector('[data-toggle-device="ac-fan"]'));
+    assertMissing(document.querySelector("[data-acstep]"));
     await click('[data-expand-device="ac-fan"]');
     assert.ok(document.querySelector('[data-acfan="ac-fan:Low"]'));
   });
@@ -2081,7 +2073,7 @@ describe("Customizable global shortcut (#43)", () => {
     enableBox.dispatchEvent(new window.Event("change", { bubbles: true }));
     await setImmediate();
     assert.deepEqual(hotkeyCalls.at(-1), { enabled: false, shortcut: "Alt+M" });
-    assert.equal(document.querySelector("#btn-record-hotkey"), null);
+    assertMissing(document.querySelector("#btn-record-hotkey"));
   });
 
   it("surfaces a conflict notice when registration fails and clears it on retry", async () => {
@@ -2113,7 +2105,7 @@ describe("Customizable global shortcut (#43)", () => {
     shouldFail = false;
     await click("#btn-retry-hotkey");
     await setImmediate();
-    assert.equal(document.querySelector("#hotkey-conflict-row"), null);
+    assertMissing(document.querySelector("#hotkey-conflict-row"));
   });
 });
 
@@ -2245,7 +2237,7 @@ describe("Smart camera support and live view (#97)", () => {
     assert.equal(video.getAttribute("src"), null);
     assert.equal(video.isConnected, false);
     app.cameraLive.closeCameraLiveView();
-    assert.equal(document.querySelector("#cc-camera-video"), null);
+    assertMissing(document.querySelector("#cc-camera-video"));
   });
 
   it("clicking a camera card opens the live stream window and supports night-shot, hot-hide reopen, timed teardown, motion detection, and undo", async () => {
@@ -2390,14 +2382,13 @@ describe("Smart camera support and live view (#97)", () => {
     const app = new MenuMijiaWindowsApp(element("#app"));
     await click('[data-body-device="camera.living_cam"]');
     assert.equal(textOf("#cc-camera-audio-badge"), "仅画面");
-    assert.equal(document.querySelector("#cc-camera-mute"), null);
-
+    assertMissing(document.querySelector("#cc-camera-mute"));
     await click("#btn-toggle-camera-url");
     (element("#camera-stream-url-input") as HTMLInputElement).value = "https://example.com/live.m3u8";
     await click("#btn-save-camera-url");
     const video = element("#cc-camera-video") as HTMLVideoElement;
     assert.equal(video.muted, true, "video streams start muted");
-    assert.equal(document.querySelector("#cc-camera-audio-badge"), null);
+    assertMissing(document.querySelector("#cc-camera-audio-badge"));
     assert.equal(textOf("#cc-camera-mute"), "🔇");
 
     await click("#cc-camera-mute");
@@ -2470,7 +2461,7 @@ describe("Smart camera support and live view (#97)", () => {
       800,
     );
     assert.equal(textOf("#cc-camera-audio-badge"), "仅画面");
-    assert.equal(document.querySelector("#cc-camera-mute"), null);
+    assertMissing(document.querySelector("#cc-camera-mute"));
     assert.equal(live.bridgeCalls.length, 1);
   });
 
@@ -2658,7 +2649,7 @@ describe("Smart camera support and live view (#97)", () => {
     releaseEndpoint({ origin: "http://127.0.0.1:43123", authorization: "Basic aa" });
     await setImmediate();
     assert.deepEqual(bridgedCalls, []);
-    assert.equal(document.querySelector(".cc-camera-live-sheet"), null);
+    assertMissing(document.querySelector(".cc-camera-live-sheet"));
   });
 
   it("releases an active P2P session when negotiation fails while the camera modal remains open", async () => {
@@ -2987,7 +2978,7 @@ describe("Smart camera support and live view (#97)", () => {
     );
     assert.equal(live.bridgeCalls.length, 1);
     assert.equal(live.p2pStarts.count, 1);
-    assert.equal(document.querySelector("#btn-copy-camera-diag"), null);
+    assertMissing(document.querySelector("#btn-copy-camera-diag"));
     assert.equal((document.body.textContent ?? "").includes("正在握手并连接摄像机实时画面"), false);
   });
 
@@ -3373,7 +3364,7 @@ describe("Air purifier support (#98)", () => {
 
     await click('[data-toggle-device="light.living_ceiling"]');
     assert.equal(root.classList.contains("is-opening"), false);
-    assert.equal(element(".cc-popover"), initialPopover);
+    assert.ok(element(".cc-popover") === initialPopover);
   });
 
   it("displays 0.5°C increments on every single AC step click in Celsius mode", async () => {
@@ -3563,7 +3554,7 @@ describe("Manual habit learning and proactive Top-4 (#113)", () => {
     // Reopening filters out the completed action because the lights are now off.
     await waitFor(() => document.querySelector(".cc-grok-stage") === null);
     await click("#btn-grok-ball");
-    assert.equal(document.querySelector('[data-proactive-id^="builtin:lightsOff"]'), null);
+    assertMissing(document.querySelector('[data-proactive-id^="builtin:lightsOff"]'));
   });
 
   it("records a scene quick action through the natural command flow", async () => {
@@ -4110,7 +4101,7 @@ describe("Home Assistant source", () => {
     complete(fixture);
     await setImmediate();
     await click("#btn-close-settings");
-    assert.equal(document.querySelector('[data-body-device="study-light"]'),null);
+    assertMissing(document.querySelector('[data-body-device="study-light"]'));
     assert.ok(document.querySelector('[data-body-device="light.living_ceiling"]'));
     assert.equal(snapshots,1);
   });
@@ -4135,8 +4126,8 @@ describe("Home Assistant source", () => {
     const card = element('[data-body-device="study-light"]');
     await click("#btn-refresh");
     assert.equal(snapshots,2);
-    assert.equal(element('[data-body-device="study-light"]'),card);
-    assert.equal(document.activeElement,input);
+    assert.ok(element('[data-body-device="study-light"]') === card);
+    assert.ok(document.activeElement === input);
     assert.match(tile("study-light"),/78%|78 %/);
   });
 
@@ -4221,8 +4212,7 @@ describe("Home Assistant source", () => {
 describe("GrokBall side attachment (#114)", () => {
   it("stays hidden by default and opens four side actions when enabled", async () => {
     startDemo();
-    assert.equal(document.querySelector("#btn-grok-ball"), null);
-
+    assertMissing(document.querySelector("#btn-grok-ball"));
     await click("#btn-settings");
     const toggle = element("#settings-grok-ball") as HTMLInputElement;
     assert.equal(toggle.checked, false);
@@ -4235,12 +4225,12 @@ describe("GrokBall side attachment (#114)", () => {
     assert.equal(document.querySelectorAll(".cc-grok-sidebar [data-proactive-id]").length, 4);
     await click(".cc-grok-pill");
     await waitFor(() => document.querySelector("#btn-undo") !== null);
-    assert.equal(document.querySelector(".cc-grok-stage"), null);
+    assertMissing(document.querySelector(".cc-grok-stage"));
     assert.equal(element(".cc-grok-ball").dataset.emotion, "33");
     await click("#btn-undo");
     await click("#btn-grok-ball");
     dom.dispatchEvent(new dom.KeyboardEvent("keydown", { key: "Escape" }));
-    assert.equal(document.querySelector(".cc-grok-stage"), null);
+    assertMissing(document.querySelector(".cc-grok-stage"));
   });
 
   it("keeps learned scenes outside the reversible side attachment", async () => {
@@ -4250,7 +4240,7 @@ describe("GrokBall side attachment (#114)", () => {
     }));
     new MenuMijiaWindowsApp(element("#app"));
     await click("#btn-grok-ball");
-    assert.equal(document.querySelector('[data-proactive-id*="scene.home"]'), null);
+    assertMissing(document.querySelector('[data-proactive-id*="scene.home"]'));
     assert.equal(document.querySelectorAll(".cc-grok-pill").length, 4);
   });
 
@@ -4314,7 +4304,7 @@ describe("只显示在线设备 (#158)", () => {
   it("stays off by default, hides offline cards and 全关 targets, and survives a restart", async () => {
     startCached();
     const toggle = element("#btn-toggle-hide-offline");
-    assert.equal(element("#btn-toggle-grid").nextElementSibling, toggle);
+    assert.ok(element("#btn-toggle-grid").nextElementSibling === toggle);
     assert.equal(toggle.getAttribute("aria-label"), "只显示在线设备");
     assert.equal(toggle.getAttribute("aria-pressed"), "false");
     assert.equal(toggle.getAttribute("title"), "点击隐藏未通电/离线设备");
@@ -4624,7 +4614,7 @@ describe("Panel opacity (#252)", () => {
     slider.dispatchEvent(new Event("input", { bubbles: true }));
     assert.equal(root.style.getPropertyValue("--panel-opacity"), "1");
     assert.equal(textOf("#settings-panel-opacity-value"), "100%");
-    assert.equal(element("#settings-panel-opacity"), slider, "dragging must not re-render the sheet");
+    assert.ok(element("#settings-panel-opacity") === slider, "dragging must not re-render the sheet");
     assert.notEqual(storedOpacity(), 100, "dragging alone does not write settings");
 
     slider.dispatchEvent(new Event("change", { bubbles: true }));
@@ -5388,7 +5378,7 @@ describe("Manual control parity with macOS (#143)", () => {
     assert.equal(app.pendingHighRisk?.deviceId, "momentary", "a plug power-on asks first");
     await click('[data-toggle-device="momentary"]');
     assert.match(document.body.textContent ?? "", /已打开书房按钮/);
-    assert.equal(document.querySelector("#btn-undo"), null, "a momentary button has no undo");
+    assertMissing(document.querySelector("#btn-undo"), "a momentary button has no undo");
   });
 
   it("docks a vacuum that Home Assistant reports as on", async () => {
@@ -5569,7 +5559,7 @@ describe("Manual control parity with macOS (#143)", () => {
 
   it("never opens an empty drawer, and opens one for a card whose only control is 更多设置", async () => {
     const app = await startWithDevices([bareFan(), lightWithFacets()]);
-    assert.equal(document.querySelector('[data-expand-device="fan-bare"]'), null);
+    assertMissing(document.querySelector('[data-expand-device="fan-bare"]'));
     await click('[data-body-device="fan-bare"]');
     assert.equal(app.expandedDeviceId, null);
     const fanKind = app.devices.find((device) => device.id === "fan-bare")!.kind;
@@ -5651,8 +5641,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     startDemoApp();
     element("#btn-toggle-assistant").click();
     assert.ok(document.querySelector("#command-input"), "search stays in the page");
-    assert.equal(document.querySelector("[data-suggestion-id]"), null);
-
+    assertMissing(document.querySelector("[data-suggestion-id]"));
     element("#btn-all-off").dispatchEvent(new Event("pointerdown"));
     await new Promise((resolve) => setTimeout(resolve, 700));
     await setImmediate();
@@ -5660,7 +5649,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     const banner = element(".cc-live-banner");
     assert.equal(banner.getAttribute("role"), "status");
     assert.ok(document.querySelector("#btn-undo"));
-    assert.equal(document.querySelector("#btn-all-off"), null);
+    assertMissing(document.querySelector("#btn-all-off"));
     assert.doesNotMatch(tile("light.living_ceiling"), /已开启/);
     assert.doesNotMatch(textOf(".cc-feedback-text"), /按住 0.6 秒/);
 
@@ -5677,7 +5666,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.equal(element(".cc-live-banner").getAttribute("role"), "alert");
     assert.match(textOf(".cc-feedback-text"), /超时/);
     await click("#btn-dismiss-banner");
-    assert.equal(document.querySelector(".cc-live-banner"), null);
+    assertMissing(document.querySelector(".cc-live-banner"));
     assert.equal(app.replyBanner, null);
   });
 
@@ -5685,7 +5674,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     const app = startDemoApp();
     const button = element("#btn-all-off");
     button.focus();
-    assert.equal(document.activeElement, button);
+    assert.ok(document.activeElement === button);
     pressHoldKey(button, " ", "keydown");
     pressHoldKey(button, " ", "keyup");
     await setImmediate();
@@ -5727,7 +5716,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
       assert.ok(document.querySelector("#btn-undo"));
       clock = started + 10_000;
       app.render();
-      assert.equal(document.querySelector("#btn-undo"), null);
+      assertMissing(document.querySelector("#btn-undo"));
       assert.ok(app.lastUndoAction, "the action itself stays available after the button leaves");
 
       clock = started;
@@ -5740,8 +5729,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
       assert.ok(document.querySelector("#btn-undo"));
       clock = started + 10_000;
       app.render();
-      assert.equal(document.querySelector("#btn-undo"), null, "three writes on one device stay up for 10 seconds");
-
+      assertMissing(document.querySelector("#btn-undo"), "three writes on one device stay up for 10 seconds");
       clock = started;
       app.lastUndoAction = {
         summary: "三台",
@@ -5759,7 +5747,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
       assert.ok(document.querySelector("#btn-undo"));
       clock = started + 15_000;
       app.render();
-      assert.equal(document.querySelector("#btn-undo"), null);
+      assertMissing(document.querySelector("#btn-undo"));
     } finally {
       Date.now = original;
     }
@@ -5784,10 +5772,10 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
       clock = started + 10_000;
       timers.fireUndoExpiry();
       assert.ok(app.pendingCloudRender);
-      assert.equal(document.querySelector("#btn-undo"), undo, "the gesture's DOM survives the expiry");
+      assert.ok(document.querySelector("#btn-undo") === undo, "the gesture's DOM survives the expiry");
       app.pointerIsDown = false;
       timers.tick();
-      assert.equal(document.querySelector("#btn-undo"), null, "the deferred render lands after the gesture");
+      assertMissing(document.querySelector("#btn-undo"), "the deferred render lands after the gesture");
     } finally {
       Date.now = original;
     }
@@ -5814,11 +5802,11 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
       clock = started + 10_000;
       timers.fireUndoExpiry();
       assert.ok(app.pendingCloudRender);
-      assert.equal(document.querySelector("#btn-undo"), undo, "the hold keeps its DOM");
+      assert.ok(document.querySelector("#btn-undo") === undo, "the hold keeps its DOM");
       assert.ok(element("#btn-all-off").classList.contains("is-holding"), "the hold was not cancelled");
       pressHoldKey(element("#btn-all-off"), " ", "keyup");
       timers.tick();
-      assert.equal(document.querySelector("#btn-undo"), null);
+      assertMissing(document.querySelector("#btn-undo"));
     } finally {
       Date.now = original;
     }
@@ -5865,7 +5853,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.equal(app.miSessionExpired, true);
 
     await click("#btn-dismiss-banner");
-    assert.equal(document.querySelector(".cc-live-banner"), null);
+    assertMissing(document.querySelector(".cc-live-banner"));
     assert.ok(element(".cc-status-dot").classList.contains("is-offline"), "the expiry outlives the banner");
     assert.match(textOf("#btn-footer-health"), /登录已过期/);
 
@@ -5950,7 +5938,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.match(footer, /已拒绝明文/);
     assert.doesNotMatch(footer, /可能过期/);
     assert.ok(element(".cc-status-dot").classList.contains("is-offline"));
-    assert.equal(document.querySelector("#btn-footer-health"), null);
+    assertMissing(document.querySelector("#btn-footer-health"));
     await click("#btn-dismiss-banner");
     assert.match(textOf(".cc-footer-label"), /已拒绝明文/);
     assert.doesNotMatch(textOf(".cc-footer-label"), /可能过期/);
@@ -5978,7 +5966,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.ok(element(".cc-status-dot").classList.contains("is-offline"));
     assert.doesNotMatch(textOf(".cc-footer-label"), /可能过期/);
     assert.doesNotMatch(textOf(".cc-footer-label"), /已拒绝明文/);
-    assert.equal(document.querySelector("#btn-footer-health"), null);
+    assertMissing(document.querySelector("#btn-footer-health"));
   });
 
   it("marks a failed refresh of an accepted Home Assistant connection as stale", async () => {
@@ -6055,18 +6043,27 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
       calls += 1;
       return run(...args);
     };
-    const hadFocus = document.hasFocus.bind(document);
-    document.hasFocus = () => false;
+    const restoreUnfocused = setWindowFocused(false);
     try {
-      const button = element("#btn-all-off");
-      button.dispatchEvent(new Event("pointerdown"));
+      element("#btn-all-off").dispatchEvent(new Event("pointerdown"));
       await new Promise((resolve) => setTimeout(resolve, 700));
       await setImmediate();
     } finally {
-      document.hasFocus = hadFocus;
+      restoreUnfocused();
     }
     assert.equal(calls, 0);
     assert.match(tile("light.living_ceiling"), /已开启/);
+
+    const restoreFocused = setWindowFocused(true);
+    try {
+      element("#btn-all-off").dispatchEvent(new Event("pointerdown"));
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      await setImmediate();
+    } finally {
+      restoreFocused();
+    }
+    assert.equal(calls, 1);
+    assert.doesNotMatch(tile("light.living_ceiling"), /已开启/);
   });
 
   it("keeps a pending confirmation visible while the assistant extras are collapsed", async () => {
@@ -6139,7 +6136,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     pressHoldKey(before, " ", "keydown");
     for (const tick of ticks) tick();
     const replaced = element("#btn-all-off");
-    assert.notEqual(replaced, before);
+    assert.ok(replaced !== before);
     pressHoldKey(replaced, " ", "keyup");
     await new Promise((resolve) => setTimeout(resolve, 700));
     await setImmediate();
@@ -6178,8 +6175,8 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     cloudFixture([]);
     new MenuMijiaWindowsApp(element("#app"));
     await waitFor(() => !!document.querySelector("[data-body-device]"));
-    assert.equal(document.querySelector("[data-ha-scene]"), null);
-    assert.equal(document.querySelector("[data-scene-cmd]"), null);
+    assertMissing(document.querySelector("[data-ha-scene]"));
+    assertMissing(document.querySelector("[data-scene-cmd]"));
     assert.doesNotMatch(document.body.textContent ?? "", /全开主灯/);
     assert.doesNotMatch(document.body.textContent ?? "", /25°制冷/);
   });
