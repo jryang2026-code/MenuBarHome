@@ -89,6 +89,7 @@ The same rule covers a test that needs to observe an intermediate state. Hold th
 - New tests that need a language use `L10n.$overrideLanguage`. `L10n.currentLanguage` is process-wide. `CameraWindowChromeTests` and `SettingsPlainLanguageTests` still assign it and are not `@Suite(.serialized)`.
 - After `startListening()`, call `waitForTestSnapshot()` before treating `devices` as the new home. An all-LG plan is the exception in §7. Pinned by `ScheduledCommandScopeTests.refusesStaleDeviceListAfterStartListening` and `lgOnlyTimerSkipsSnapshotGuard`.
 - A PTZ stop test counts motor calls. Owner: `FakePTZClient.recordedStops`. Pinned by `CameraPTZDriverTests.stopWriteFailureRetriesOnceThenTheButtonSendsStopAgain`.
+- Camera diagnostics waits for `streamSource != nil` with a 30-second `ContinuousClock` deadline and requires the readiness result before reading the report. The former 40 × 25 ms loop silently continued with `stream_mode: none` on a loaded runner. Pinned by `MenuBarPanelControllerTests.cameraDiagnosticsReportStreamModeAndAudioSupport`.
 
 ## 10. Overlay Geometry Has One Owner
 
