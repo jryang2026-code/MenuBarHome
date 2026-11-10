@@ -233,6 +233,7 @@ else
     printf 'stdout:\n%s\nfile:\n%s\nlog:\n%s\n' "$stdout" "$(cat "$home/.local/bin/rg" 2>/dev/null || true)" "$(cat "$RG_TEST_LOG")" >&2
 fi
 
+if command -v shasum >/dev/null 2>&1; then
 sha_tools="$tmp/sha-tools"
 mkdir -p "$sha_tools"
 for cmd in mkdir mktemp tar gzip chmod cp rm id head cat; do
@@ -290,6 +291,9 @@ if [[ "${RG_TEST_SHASUM_ONLY:-0}" != 1 ]]; then
         printf '%s\n' "$shim_out" | tail -n 40 >&2
     fi
     rm -rf "$shim"
+fi
+else
+    pass "本机没有 shasum，校验走 sha256sum"
 fi
 
 if [[ "$failures" -eq 0 ]]; then

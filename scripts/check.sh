@@ -329,9 +329,34 @@ run_raycast_gate() {
     [ "$status" -eq 0 ]
 }
 
+# Same places verify.sh looks: PATH, then the pinned toolchain build.sh caches.
+go2rtc_toolchain_ready() {
+    if command -v go >/dev/null 2>&1; then
+        return 0
+    fi
+    local cached="${GO2RTC_PTZ_GO_CACHE:-$HOME/.cache/menubarmijia/go1.26.10}/go/bin/go"
+    [ -x "$cached" ]
+}
+
+# verify.sh clones go2rtc and runs go test -race. --lint-only returns before these
+# steps, so a machine that already has Go keeps the fast lint. The patch SHA is
+# checked in check_model_tables.py, which that fast path already runs.
+run_go2rtc_gate() {
+    if ! go2rtc_toolchain_ready; then
+        record_gate_result "go2rtc=skip"
+        echo "⏭️  跳过 go2rtc 云台补丁验证：未找到 go"
+        return 0
+    fi
+    local status=0
+    run_logged "go2rtc 云台补丁" bash "$ROOT_DIR/scripts/go2rtc-ptz/verify.sh" || status=$?
+    record_gate_result "go2rtc=${status}"
+    [ "$status" -eq 0 ]
+}
+
 add_gate_step "Swift 测试" run_swift_gate
 add_gate_step "Windows 前端" run_windows_gate
 add_gate_step "Raycast 扩展" run_raycast_gate
+add_gate_step "go2rtc 云台补丁" run_go2rtc_gate
 
 failed=0
 step_total=${#gate_step_fns[@]}

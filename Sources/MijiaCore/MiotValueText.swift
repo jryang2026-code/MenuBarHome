@@ -164,6 +164,11 @@ public enum MiotValueText {
         "strong": Phrase("强力", "強力"),
     ]
 
+    /// Keys of the shared programme wordlist. A dryer publishes the same words as a washer.
+    static var programmeKeys: [String] {
+        programmes.keys.sorted()
+    }
+
     /// Fault descriptions whose spec comment is the same on every fixture that publishes them.
     /// The trailing code in the comment is the code the banner can name.
     private static let faults: [String: Phrase] = [
