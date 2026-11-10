@@ -261,7 +261,7 @@ go build -trimpath -ldflags "-s -w" -o go2rtc .
 | --- | --- | --- |
 | go2rtc 补丁 | `scripts/go2rtc-ptz/patches/0001-xiaomi-ptz.patch` | 基座 `v1.9.15`（`7c05066`）；同会话 `0x112`、TUTK dafang raw、命令通道排水、大端修正、尾 NUL、可中断 ACK 等待、租约端点 |
 | 构建/复核 | `scripts/go2rtc-ptz/{build,verify}.sh`、`README.md` | 可重现构建（arm64/amd64 通用 + Windows）、`go test -race`、许可证与证据说明 |
-| 应用打包 | `scripts/build_app.sh` | 默认官方桥；`PTZ_BRIDGE=1` 时构建/校验双架构补丁桥并 fail-closed 打包；`SKIP_RESTART=1` 同时禁止 killall/open |
+| 应用打包 | `scripts/build_app.sh` | 默认开启 `PTZ_BRIDGE=1` 构建/校验双架构补丁桥并 fail-closed 打包（`PTZ_BRIDGE=0` 可显式退回官方桥）；`SKIP_RESTART=1` 同时禁止 killall/open |
 | 领域模型 | `Sources/MijiaCore/CameraPTZ.swift` | 能力证据表（CS2 step/continuous/unknown、TUTK dafang）、拖动规划器（阈值/轴锁/心跳/8s cap/松手 stop） |
 | 桥客户端 | `Sources/MijiaCore/CameraPTZClient.swift` | loopback HTTP + Basic auth；拒绝时只暴露通用错误，不回显响应 |
 | 桥接线 | `Sources/MijiaCore/MiCloud/XiaomiCameraBridge.swift` | 端点探针、能力门控、按桥版本决定 CS2 gate 是否截断命令通道 |

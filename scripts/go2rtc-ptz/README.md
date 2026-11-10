@@ -61,14 +61,13 @@ bash scripts/go2rtc-ptz/build.sh
 
 `build.sh` 只克隆上游、打补丁、构建，不发布、不覆盖 `~/Library/Application Support/MenuBarMijia/bin/go2rtc`。
 
-应用打包必须显式要求云台桥；默认包不含：
+应用打包（`scripts/build_app.sh`、`scripts/install_local_app.sh`、`scripts/release.sh`）默认开启 `PTZ_BRIDGE=1` 并内置云台补丁桥：
 
 ```bash
-PTZ_BRIDGE=1 SKIP_RESTART=1 bash scripts/build_app.sh
+SKIP_RESTART=1 bash scripts/build_app.sh
 ```
 
-`PTZ_BRIDGE=1` 时若 `out/go2rtc-universal` 缺失会先调用 `build.sh`，构建失败或不是双架构就
-直接失败，不会静默回退到官方二进制。`SKIP_RESTART=1` 同时阻止打包脚本 killall 和 open。
+`PTZ_BRIDGE=1`（默认）时若 `out/go2rtc-universal` 缺失或补丁 SHA 变化，会先调用 `build.sh`（本机缺少 Go 1.26+ 时自动下载并校验固定版本 Go 1.26.10 工具链），构建失败或不是双架构就直接失败，不会静默回退到官方二进制。仅在显式指定 `PTZ_BRIDGE=0` 时才打入官方无补丁二进制。`SKIP_RESTART=1` 同时阻止打包脚本 killall 和 open。
 
 ## 验证
 

@@ -433,10 +433,21 @@ jobs:
             spm-release-v1-${{ runner.os }}-
       - name: Restore source mtimes for the Swift cache
         run: bash scripts/ci_restore_mtimes.sh
+      - id: go2rtc-ptz-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: scripts/go2rtc-ptz/out
+          key: go2rtc-ptz-v1-${{ runner.os }}-${{ hashFiles('scripts/go2rtc-ptz/patches/0001-xiaomi-ptz.patch', 'scripts/go2rtc-ptz/build.sh') }}
       - name: Build app (release universal)
         env:
           SKIP_APP_INTENTS: "1"
         run: bash scripts/build_app.sh
+      - name: Save patched go2rtc cache
+        if: success() && github.ref == 'refs/heads/main' && steps.go2rtc-ptz-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: scripts/go2rtc-ptz/out
+          key: ${{ steps.go2rtc-ptz-cache.outputs.cache-primary-key }}
       - name: Trim Swift build cache
         if: success() && github.ref == 'refs/heads/main'
         run: |

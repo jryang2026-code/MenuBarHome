@@ -5,7 +5,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEFAULT_TARGET="$HOME/Documents/MenuBarMijia-wt/MenuBarHome.app"
+if [ -d "/Applications/MenuBarHome.app" ]; then
+    DEFAULT_TARGET="/Applications/MenuBarHome.app"
+else
+    DEFAULT_TARGET="$HOME/Documents/MenuBarMijia-wt/MenuBarHome.app"
+fi
 TARGET="${INSTALL_TARGET:-$DEFAULT_TARGET}"
 BUNDLE=""
 SKIP_BUILD=0
@@ -18,8 +22,8 @@ usage() {
 
   --skip-build        直接使用 ROOT/MenuBarHome.app，不重新打包
   --bundle <path>     安装指定的 .app（仍会校验 CFBundleVersion 与 HEAD 一致）
-  --target <path>     安装到指定位置（默认 $HOME/Documents/MenuBarMijia-wt/MenuBarHome.app，
-                      也可用 INSTALL_TARGET 环境变量）
+  --target <path>     安装到指定位置（存在 /Applications/MenuBarHome.app 时默认安装到该处，
+                      否则为 $HOME/Documents/MenuBarMijia-wt/MenuBarHome.app；也可用 INSTALL_TARGET）
   --dry-run           只校验并打印计划，不改动任何文件
   --no-relaunch       不关闭正在运行的实例，也不自动打开
 USAGE
@@ -41,7 +45,7 @@ fail() { echo "❌ $*" >&2; exit 1; }
 
 if [ "$SKIP_BUILD" = "0" ]; then
     echo "▶ 打包 MenuBarHome.app..."
-    bash "$ROOT/scripts/build_app.sh"
+    SKIP_RESTART=1 bash "$ROOT/scripts/build_app.sh"
 fi
 BUNDLE="${BUNDLE:-$ROOT/MenuBarHome.app}"
 [ -d "$BUNDLE" ] || fail "找不到 $BUNDLE"
@@ -54,6 +58,14 @@ ACTUAL_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$BUNDLE/Con
     fail "包内版本 $ACTUAL_BUILD 与 HEAD 的 $EXPECTED_BUILD 不一致，请先重新打包或改用正确的 --bundle"
 
 codesign --verify --deep --strict "$BUNDLE" || fail "打包产物签名校验失败"
+if [ "${PTZ_BRIDGE:-1}" = "1" ]; then
+    GO2RTC_BIN="$BUNDLE/Contents/Resources/bin/go2rtc"
+    [ -x "$GO2RTC_BIN" ] || fail "$BUNDLE 缺少内置 go2rtc 组件"
+    if ! strings "$GO2RTC_BIN" | grep -F "api/xiaomi/ptz" >/dev/null 2>&1 \
+        || ! strings "$GO2RTC_BIN" | grep -F "X-MenuBarMijia-PTZ" >/dev/null 2>&1; then
+        fail "$BUNDLE 内置 go2rtc 缺少 /api/xiaomi/ptz 云台路由或版本头，请重新打包"
+    fi
+fi
 BUNDLE_SHA="$(shasum -a 256 "$BUNDLE/Contents/MacOS/MenuBarMijiaApp" | awk '{print $1}')"
 
 echo "▶ 计划安装：$BUNDLE"
@@ -106,7 +118,7 @@ fi
 
 # Keep any sibling local MenuBarHome.app bundles in sync so macOS nehelper's path-pinned
 # NEPathRule entries for com.jryang1997.MenuBarMijia never cache a stale LC_UUID (#LocalNetwork).
-for SIBLING in "$ROOT/MenuBarHome.app" "$HOME/Documents/MenuBarMijia/MenuBarHome.app" "/private/tmp/mmb-114/MenuBarHome.app"; do
+for SIBLING in "/Applications/MenuBarHome.app" "$HOME/Documents/MenuBarMijia-wt/MenuBarHome.app" "$ROOT/MenuBarHome.app" "$HOME/Documents/MenuBarMijia/MenuBarHome.app" "/private/tmp/mmb-114/MenuBarHome.app"; do
     if [ -d "$SIBLING" ] && [ "$SIBLING" != "$TARGET" ] && [ "$SIBLING" != "$BUNDLE" ]; then
         SIBLING_STAGING="$SIBLING.staging.$$"
         rm -rf "$SIBLING_STAGING"

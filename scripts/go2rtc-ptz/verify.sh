@@ -7,8 +7,11 @@ BASE_COMMIT="7c05066c90ab6ad1fccb506d5f0408aa31ebe60f"
 PATCH_FILE="$ROOT_DIR/scripts/go2rtc-ptz/patches/0001-xiaomi-ptz.patch"
 UPSTREAM="https://github.com/AlexxIT/go2rtc"
 
+if ! command -v go >/dev/null 2>&1 && [ -x "${GO2RTC_PTZ_GO_CACHE:-$HOME/.cache/menubarmijia/go1.26.10}/go/bin/go" ]; then
+    export PATH="${GO2RTC_PTZ_GO_CACHE:-$HOME/.cache/menubarmijia/go1.26.10}/go/bin:$PATH"
+fi
 if ! command -v go >/dev/null 2>&1; then
-    echo "❌ 未找到 go（需要 Go 1.26+）。安装后重试：brew install go" >&2
+    echo "❌ 未找到 go（需要 Go 1.26+）。可先运行 bash scripts/go2rtc-ptz/build.sh 自动准备固定版本 Go 工具链" >&2
     exit 1
 fi
 

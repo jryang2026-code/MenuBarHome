@@ -81,7 +81,7 @@ if [ ! -d "$RESOURCE_BUNDLE" ]; then
 fi
 cp -R "$RESOURCE_BUNDLE" "$APP_DIR/Contents/Resources/MenuBarMijia_MijiaCore.bundle"
 
-if [ "${PTZ_BRIDGE:-0}" = "1" ]; then
+if [ "${PTZ_BRIDGE:-1}" = "1" ]; then
     PATCHED_GO2RTC="$ROOT/scripts/go2rtc-ptz/out/go2rtc-universal"
     PATCH_SHA="$(shasum -a 256 "$ROOT/scripts/go2rtc-ptz/patches/0001-xiaomi-ptz.patch" | awk '{print $1}')"
     MANIFEST="$ROOT/scripts/go2rtc-ptz/out/go2rtc-ptz.manifest"
@@ -112,7 +112,7 @@ if [ "${PTZ_BRIDGE:-0}" = "1" ]; then
     echo "▶ 使用带云台补丁的 go2rtc ($PATCHED_ARCHS)"
     GO2RTC_CACHED="$PATCHED_GO2RTC"
 else
-    echo "ℹ️ 未设置 PTZ_BRIDGE=1：打进官方 go2rtc，不包含云台补丁"
+    echo "ℹ️ PTZ_BRIDGE=0：打进官方 go2rtc，不包含云台补丁"
     GO2RTC_CACHED="$HOME/Library/Application Support/MenuBarMijia/bin/go2rtc"
 fi
 GO2RTC_ARCHS="$(lipo -archs "$GO2RTC_CACHED" 2>/dev/null || true)"

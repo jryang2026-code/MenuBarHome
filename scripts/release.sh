@@ -107,6 +107,16 @@ if ! printf '%s' "$APP_ARCHS" | grep -qw "arm64" || ! printf '%s' "$APP_ARCHS" |
     echo "❌ 发布二进制缺少通用架构支持（当前：${APP_ARCHS:-<未知>}，期望：arm64 + x86_64），已中止发布！" >&2
     exit 1
 fi
+GO2RTC_ARCHS="$(lipo -archs "$APP/Contents/Resources/bin/go2rtc" 2>/dev/null || true)"
+if ! printf '%s' "$GO2RTC_ARCHS" | grep -qw "arm64" || ! printf '%s' "$GO2RTC_ARCHS" | grep -qw "x86_64"; then
+    echo "❌ 发布包内置 go2rtc 缺少通用架构支持（当前：${GO2RTC_ARCHS:-<未知>}，期望：arm64 + x86_64），已中止发布！" >&2
+    exit 1
+fi
+if ! strings "$APP/Contents/Resources/bin/go2rtc" | grep -F "api/xiaomi/ptz" >/dev/null 2>&1 \
+    || ! strings "$APP/Contents/Resources/bin/go2rtc" | grep -F "X-MenuBarMijia-PTZ" >/dev/null 2>&1; then
+    echo "❌ 发布包内置 go2rtc 缺少 /api/xiaomi/ptz 云台补丁路由或版本头，已中止发布！" >&2
+    exit 1
+fi
 for file in "$APP/Contents/MacOS/MenuBarMijiaApp" "$DMG"; do
     if grep -aq "/Users/" "$file"; then
         echo "❌ 检测到 $(basename "$file") 内残留本机路径 (/Users/)，已中止发布！" >&2

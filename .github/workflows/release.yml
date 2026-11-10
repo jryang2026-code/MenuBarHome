@@ -230,6 +230,11 @@ jobs:
             echo "❌ MenuBarHome.app 缺少通用架构 go2rtc 组件（当前：${go2rtc_archs:-<缺失>}，期望：arm64 + x86_64）" >&2
             exit 1
           fi
+          if ! strings "MenuBarHome.app/Contents/Resources/bin/go2rtc" | grep -F "api/xiaomi/ptz" >/dev/null 2>&1 \
+            || ! strings "MenuBarHome.app/Contents/Resources/bin/go2rtc" | grep -F "X-MenuBarMijia-PTZ" >/dev/null 2>&1; then
+            echo "❌ MenuBarHome.app 内置 go2rtc 缺少 /api/xiaomi/ptz 云台补丁路由或版本头" >&2
+            exit 1
+          fi
           if [ -e "dist/MenuBarHome-${version}.dmg.ed25519.sig" ]; then
             echo "❌ CI 不应产出 Ed25519 签名：私钥必须留在可信机器上（issue #17）。" >&2
             exit 1
