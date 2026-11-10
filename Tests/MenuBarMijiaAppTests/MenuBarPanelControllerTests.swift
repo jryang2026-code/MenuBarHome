@@ -2042,6 +2042,83 @@ struct MenuBarPanelControllerTests {
         #expect(panel.frame.size != screen.visibleFrame.size)
     }
 
+    @Test("Picture in Picture keeps the maximized frame, so one click restores the small window")
+    func pictureInPictureRestoreThenMaximizeReturnsTheSmallFrame() async throws {
+        _ = NSApplication.shared
+        let (store, suite) = try await makeStore()
+        defer {
+            UserDefaults.standard.removeObject(forKey: "camera_live_panel_frame_v1")
+            UserDefaults.standard.removePersistentDomain(forName: suite)
+        }
+        let camera = try #require(store.devices.first(where: {
+            if case .camera = $0.kind { return true }
+            return false
+        }))
+        let cameraController = CameraLivePanelController.shared
+        cameraController.presentsActively = false
+        cameraController.install(with: store)
+        defer {
+            cameraController.closePanel()
+            cameraController.presentsActively = true
+        }
+
+        store.openCameraLiveView(camera.id)
+        let panel = try #require(cameraController.panelWindow)
+        let screen = try #require(panel.screen ?? NSScreen.main)
+        let small = panel.frame
+
+        cameraController.toggleMaximized()
+        #expect(cameraController.isMaximized)
+        #expect(panel.frame == screen.visibleFrame)
+
+        cameraController.suspendPanelForPictureInPicture()
+        #expect(cameraController.isMaximized)
+        #expect(panel.frame == screen.visibleFrame)
+        panel.orderFrontRegardless()
+
+        cameraController.toggleMaximized()
+        #expect(!cameraController.isMaximized)
+        #expect(panel.frame == small)
+    }
+
+    @Test("Reopening a hidden maximized window replaces the frame, so the next maximize fills the screen")
+    func hiddenMaximizedWindowPresentsThenMaximizeFillsTheScreen() async throws {
+        _ = NSApplication.shared
+        UserDefaults.standard.removeObject(forKey: "camera_live_panel_frame_v1")
+        let (store, suite) = try await makeStore()
+        defer {
+            UserDefaults.standard.removeObject(forKey: "camera_live_panel_frame_v1")
+            UserDefaults.standard.removePersistentDomain(forName: suite)
+        }
+        let camera = try #require(store.devices.first(where: {
+            if case .camera = $0.kind { return true }
+            return false
+        }))
+        let cameraController = CameraLivePanelController.shared
+        cameraController.presentsActively = false
+        cameraController.install(with: store)
+        defer {
+            cameraController.closePanel()
+            cameraController.presentsActively = true
+        }
+
+        store.openCameraLiveView(camera.id)
+        let panel = try #require(cameraController.panelWindow)
+        let screen = try #require(panel.screen ?? NSScreen.main)
+        cameraController.toggleMaximized()
+        #expect(panel.frame == screen.visibleFrame)
+
+        panel.orderOut(nil)
+        #expect(cameraController.isMaximized)
+        store.openCameraLiveView(camera.id)
+        #expect(!cameraController.isMaximized)
+        #expect(panel.frame != screen.visibleFrame)
+
+        cameraController.toggleMaximized()
+        #expect(cameraController.isMaximized)
+        #expect(panel.frame == screen.visibleFrame)
+    }
+
     @Test("Closing the camera mini-window hides it at once and releases the stream")
     func cameraLivePanelCloseReleasesStreamImmediately() async throws {
         _ = NSApplication.shared

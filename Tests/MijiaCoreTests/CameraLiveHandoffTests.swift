@@ -53,13 +53,6 @@ struct CameraLiveHandoffTests {
         #expect(CameraWindowFrames.anchorBeforeSizeToggle(isMaximized: false, saved: nil, current: small) == small)
     }
 
-    @Test("Hiding a maximized panel clears the maximize flag before the next open")
-    func hidingAMaximizedPanelClearsTheFlag() {
-        let cleared = CameraPanelMaximize.stateAfterReplacingHiddenFrame()
-        #expect(cleared.isMaximized == false)
-        #expect(cleared.keepsFrameBeforeMaximize == false)
-    }
-
     @Test("Picture in Picture teardown keeps a restore that stop already requested")
     func pipInvalidateDoesNotTurnRestoreIntoAClose() {
         #expect(!PictureInPictureCloseDecision.clearRestoreOnInvalidate(restoreAlreadyRequested: true))

@@ -334,7 +334,10 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         if !panel.isVisible {
             let initialSize = isExpandedSize ? Self.expandedSize : Self.compactSize
             panel.setFrame(initialFrame(for: initialSize), display: true)
-            clearMaximizedBecauseFrameWasReplaced()
+            // The frame is no longer the maximized rect, so the flag and the saved
+            // small rect leave together. Order-out does not do this: the frame is unchanged.
+            isMaximized = false
+            frameBeforeMaximize = nil
         }
         if presentsActively {
             panel.alphaValue = 1
@@ -445,12 +448,15 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         )
     }
 
-    private func clearMaximizedBecauseFrameWasReplaced() {
-        let cleared = CameraPanelMaximize.stateAfterReplacingHiddenFrame()
-        isMaximized = cleared.isMaximized
-        if !cleared.keepsFrameBeforeMaximize {
-            frameBeforeMaximize = nil
-        }
+    /// The system PiP window is showing the same frame. Ordering the panel out
+    /// does not change that rect, so the maximize flag and the saved small frame stay.
+    func suspendPanelForPictureInPicture() {
+        doorbellDismissTask?.cancel()
+        doorbellDismissTask = nil
+        doorbellOwnsClose = false
+        setURLFieldActive(false)
+        storePanelFrame()
+        panelWindow?.orderOut(nil)
     }
 
     func storePanelFrame() {
@@ -538,13 +544,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
             if pip.isActive, !wasActive {
                 // The system PiP window replaces the floating panel; the stream stays live. Taking
                 // a ring's window into PiP means the user wants it, so it no longer closes itself.
-                self.doorbellDismissTask?.cancel()
-                self.doorbellDismissTask = nil
-                self.doorbellOwnsClose = false
-                self.setURLFieldActive(false)
-                self.storePanelFrame()
-                self.clearMaximizedBecauseFrameWasReplaced()
-                self.panelWindow?.orderOut(nil)
+                self.suspendPanelForPictureInPicture()
             }
         }
         pip.onPlaybackPaused = { [weak player] paused in
