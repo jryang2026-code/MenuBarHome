@@ -356,7 +356,7 @@ public struct OnboardingGuideView: View {
             }
         }
         .padding(11)
-        .glassTile(isActive: store.hasConnectedHomeSource, cornerRadius: 12)
+        .glassTile(isActive: store.hasConnectedHomeSource, cornerRadius: DesignTokens.Radius.card)
     }
 
     // MARK: - Step 2: Search with the global shortcut
@@ -403,7 +403,7 @@ public struct OnboardingGuideView: View {
             }
         }
         .padding(11)
-        .glassTile(isActive: false, cornerRadius: 12)
+        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.card)
     }
 
     // MARK: - Step 3: All Off + Undo
@@ -450,7 +450,7 @@ public struct OnboardingGuideView: View {
             }
         }
         .padding(11)
-        .glassTile(isActive: false, cornerRadius: 12)
+        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.card)
     }
 
     // MARK: - Advanced (collapsed by default)
@@ -527,7 +527,7 @@ public struct OnboardingGuideView: View {
         }
         .tint(Color.accentColor)
         .padding(11)
-        .glassTile(isActive: false, cornerRadius: 12)
+        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.card)
     }
 
     // MARK: - Advanced: AI Decision Model

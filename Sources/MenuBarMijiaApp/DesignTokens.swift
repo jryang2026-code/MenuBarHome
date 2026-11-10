@@ -11,10 +11,10 @@ enum DesignTokens {
         static let reading: CGFloat = 24
     }
 
-    /// Ink for the bright "on" platter. Dark mode has no bright platter, so this ink is light-mode
-    /// only; a dark lit tile keeps white ink.
+    /// Ink for the settings segmented control's white selection lens. Tiles never paint an opaque
+    /// slab, so this is the only surface whose text cannot follow the window scheme.
     enum Ink {
-        static let onPlatter = Color(red: 0.11, green: 0.12, blue: 0.14)
+        static let onLens = Color(red: 0.11, green: 0.12, blue: 0.14)
     }
 
     /// Control Center-style semantic colours for device icon orbs (#FF9500 / #007AFF / #30D158…).
@@ -96,7 +96,9 @@ enum DesignTokens {
         static let railInset: CGFloat = 4
     }
     enum Radius {
-        static let panel: CGFloat = 16
+        static let panel: CGFloat = 22
+        /// Whole-row cards, 2×2 tiles and notification cards (contract §1.1).
+        static let module: CGFloat = 18
         static let card: CGFloat = 12
         static let inset: CGFloat = 8
         static let label: CGFloat = 4

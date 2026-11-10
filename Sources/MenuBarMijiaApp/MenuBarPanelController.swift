@@ -44,7 +44,7 @@ final class MenuBarPanelController: NSObject {
     /// Control center width, identical in every skin.
     static let panelWidth: CGFloat = 376
     /// The panel draws its own material; AppKit only clips it to the extra's rounded corners.
-    static let panelCornerRadius: CGFloat = 12
+    static let panelCornerRadius: CGFloat = DesignTokens.Radius.panel
 
     /// Posted after the panel becomes visible, and after it is ordered out.
     static let didShowNotification = Notification.Name("MenuBarMijia.panelDidShow")

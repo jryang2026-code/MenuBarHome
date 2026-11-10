@@ -963,8 +963,8 @@ private struct AppearanceSettingsTab: View {
                     )
 
                     Text(L10n.tr(
-                        "面板只有一套系统外观：跟随系统时会自动使用浅色或深色材质，开启的设备显示为亮色磁贴。",
-                        "The panel has one system look: it follows light and dark automatically, and devices that are on use a bright platter."
+                        "面板只有一套系统外观：跟随系统时会自动使用浅色或深色材质，开启的设备比关闭的磁贴略亮一层。",
+                        "The panel has one system look: it follows light and dark automatically, and a device that is on sits one step brighter than the off tile."
                     ))
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(.secondary)
