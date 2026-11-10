@@ -483,42 +483,23 @@ extension ControlCenterPanel {
 
     /// Lives on the tile container, not on a card: a card's own gesture is cancelled the moment the
     /// card moves to a new slot, which froze the drag right after each swap.
+    ///
+    /// Only active while layout editing is on. Outside edit mode the container leaves clicks, orbs
+    /// and inline sliders completely untouched: no long-press timer, no drag interception.
     var tileDragGesture: some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(TileSpace.name))
             .onChanged { d in
-                // A filtered list is ranked, not ordered: the long-press "edit layout" would let a
-                // search result be dragged into the saved order. Cards stay tappable instead.
-                guard !search.isSearching else { return }
+                // A filtered list is ranked, not ordered: a drag would write that rank into the
+                // saved order. Cards stay tappable instead.
+                guard !search.isSearching, isEditingLayout else { return }
                 let moved = hypot(d.translation.width, d.translation.height)
-                if isEditingLayout {
-                    if let resizingId = activeResize?.deviceId ?? resizeHandleCardId(at: d.startLocation) {
-                        beginResizeIfNeeded(resizingId)
-                        updateResize(resizingId, translation: d.translation)
-                        return
-                    }
+                if let resizingId = activeResize?.deviceId ?? resizeHandleCardId(at: d.startLocation) {
+                    beginResizeIfNeeded(resizingId)
+                    updateResize(resizingId, translation: d.translation)
+                    return
                 }
-                if draggingId == nil {
-                    if isEditingLayout {
-                        if moved > 3, let id = cardId(at: d.startLocation) { beginDrag(id, at: d.startLocation) }
-                    } else if pressTask == nil, !pressCancelled, let id = cardId(at: d.startLocation) {
-                        let start = d.startLocation
-                        pressTask = Task { @MainActor in
-                            try? await Task.sleep(for: .milliseconds(450))
-                            guard !Task.isCancelled else { return }
-                            NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                store.expandedDeviceId = nil
-                                // Entering layout commits any open room-order draft: no draft crosses
-                                // into another context (§5.2).
-                                layoutUI.beginDeviceLayoutEditing()
-                            }
-                            beginDrag(id, at: start)
-                        }
-                    } else if moved > 8 {
-                        // Moving before the hold completes is an ordinary drag (e.g. dimming).
-                        pressTask?.cancel()
-                        pressCancelled = true
-                    }
+                if draggingId == nil, moved > 3, let id = cardId(at: d.startLocation) {
+                    beginDrag(id, at: d.startLocation)
                 }
                 if let id = draggingId {
                     dragLocation = d.location
@@ -526,9 +507,6 @@ extension ControlCenterPanel {
                 }
             }
             .onEnded { d in
-                pressTask?.cancel()
-                pressTask = nil
-                pressCancelled = false
                 lastSwapTarget = nil
                 if let resizingId = activeResize?.deviceId {
                     endResize(resizingId, translation: d.translation, samples: [])
@@ -674,9 +652,10 @@ extension ControlCenterPanel {
     func cycleSize(_ device: SmartDevice) {
         let next: TileSize
         switch tileSize(device) {
-        case .half: next = .full
+        case .half: next = .hero
+        case .hero: next = .full
         case .full: next = .panel
-        case .panel, .auto: next = .half
+        case .panel, .small, .auto: next = .half
         }
         setTileSize(next, for: device, playHaptic: true)
     }
@@ -749,15 +728,22 @@ extension ControlCenterPanel {
 
     // MARK: - Device Collection (flow layout with per-card spans)
 
-    /// Column span out of 6 for each device: half = 3, full/panel = 6; Bento alternates 4+2 and 2+2+2.
+    /// Column span out of 12: 1×1 round = 3, 2×1 capsule / 2×2 hero = 6, full row = 12.
     func spans(for devices: [SmartDevice]) -> [String: Int] {
         var result: [String: Int] = [:]
         for dev in devices {
-            let size = tileSize(dev)
             let isTransientlyExpanded = !isEditingLayout && store.expandedDeviceId == dev.id
-            result[dev.id] = (size == .half && !isTransientlyExpanded) ? 3 : 6
+            result[dev.id] = isTransientlyExpanded ? 12 : gridSpan(for: tileSize(dev))
         }
         return result
+    }
+
+    private func gridSpan(for size: TileSize) -> Int {
+        switch size {
+        case .small: return 3
+        case .half, .hero: return 6
+        case .full, .panel, .auto: return 12
+        }
     }
 
     /// Cards for one collection. Search results pass `sortByUserOrder: false`, so rank wins over the
@@ -782,51 +768,56 @@ extension ControlCenterPanel {
         }
         let spanMap = spans(for: ordered)
         // Every card is its own child keyed by device id, so a reorder slides cards instead of rebuilding rows.
-        TileFlowLayout(spacing: 7) {
-            ForEach(Array(ordered.enumerated()), id: \.element.id) { index, dev in
-                let span = spanMap[dev.id] ?? 6
-                DeviceCardView(
-                    device: dev,
-                    store: store,
-                    showRoomBadge: showRoomBadge,
-                    isCompactTile: span < 6,
-                    quickIndex: quickIndexMap[dev.id]
-                )
-                .frame(maxHeight: .infinity, alignment: .top)
-                .modifier(editable(dev))
-                .overlay {
-                    if highlightId == dev.id {
-                        RoundedRectangle(
-                            cornerRadius: DesignTokens.Radius.module,
-                            style: .continuous
-                        )
-                        .strokeBorder(
-                            Color.accentColor.opacity(0.85),
-                            lineWidth: 1.6
-                        )
-                        .allowsHitTesting(false)
-                    }
-                }
-                // Measured outside the jiggle/drag effects: those transforms would otherwise change the
-                // reported frame every animation frame and re-layout the whole panel continuously.
-                .background {
-                    GeometryReader { geo in
-                        let f = geo.frame(in: .named(TileSpace.name))
-                        let g = geo.frame(in: .global)
-                        Color.clear
-                            .preference(
-                                key: TileFramesKey.self,
-                                value: [dev.id: CGRect(x: f.minX.rounded(), y: f.minY.rounded(), width: f.width.rounded(), height: f.height.rounded())]
+        // The glass container lets neighbouring liquid-glass modules merge their edges on macOS 26.
+        AdaptiveGlassContainer(spacing: 8) {
+            TileFlowLayout(spacing: 8) {
+                ForEach(Array(ordered.enumerated()), id: \.element.id) { index, dev in
+                    let span = spanMap[dev.id] ?? 12
+                    let isHero = tileSize(dev) == .hero && store.expandedDeviceId != dev.id
+                    DeviceCardView(
+                        device: dev,
+                        store: store,
+                        showRoomBadge: showRoomBadge,
+                        isCompactTile: span <= 6,
+                        quickIndex: quickIndexMap[dev.id]
+                    )
+                    .frame(minHeight: isHero ? 124 : nil)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .modifier(editable(dev))
+                    .overlay {
+                        if highlightId == dev.id {
+                            RoundedRectangle(
+                                cornerRadius: DesignTokens.Radius.module,
+                                style: .continuous
                             )
-                            .preference(key: CardGlobalTopKey.self, value: [dev.id: g.minY])
-                            .onAppear { LayoutUIState.shared.cardGlobalFrames[dev.id] = g }
-                            .onChange(of: g) { _, newFrame in LayoutUIState.shared.cardGlobalFrames[dev.id] = newFrame }
+                            .strokeBorder(
+                                Color.accentColor.opacity(0.85),
+                                lineWidth: 1.6
+                            )
+                            .allowsHitTesting(false)
+                        }
                     }
+                    // Measured outside the jiggle/drag effects: those transforms would otherwise change the
+                    // reported frame every animation frame and re-layout the whole panel continuously.
+                    .background {
+                        GeometryReader { geo in
+                            let f = geo.frame(in: .named(TileSpace.name))
+                            let g = geo.frame(in: .global)
+                            Color.clear
+                                .preference(
+                                    key: TileFramesKey.self,
+                                    value: [dev.id: CGRect(x: f.minX.rounded(), y: f.minY.rounded(), width: f.width.rounded(), height: f.height.rounded())]
+                                )
+                                .preference(key: CardGlobalTopKey.self, value: [dev.id: g.minY])
+                                .onAppear { LayoutUIState.shared.cardGlobalFrames[dev.id] = g }
+                                .onChange(of: g) { _, newFrame in LayoutUIState.shared.cardGlobalFrames[dev.id] = newFrame }
+                        }
+                    }
+                    .layoutValue(key: TileSpanKey.self, value: span)
                 }
-                .layoutValue(key: TileSpanKey.self, value: span)
             }
         }
-        .animation(AppleMotion.snappySpring, value: ordered.map { "\($0.id):\(spanMap[$0.id] ?? 6)" })
+        .animation(AppleMotion.snappySpring, value: ordered.map { "\($0.id):\(spanMap[$0.id] ?? 12)" })
         .id("rows")
     }
 }

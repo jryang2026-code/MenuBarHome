@@ -13,6 +13,7 @@ import {
   isValidGlobalShortcut,
   localizeFanMode,
   moveInOrder,
+  nextSize,
   normalizeGlobalShortcut,
   normalizePanelOpacity,
   pageSections,
@@ -73,6 +74,17 @@ describe("panel layout prefs", () => {
     assert.equal(targetSize("auto", { width: 50, height: 0 }, true), "full");
     assert.equal(targetSize("auto", { width: 50, height: 0 }, false), "panel");
     assert.equal(targetSize("auto", { width: -50, height: 0 }, false), "half");
+
+    // Small resizes from the capsule step, hero from the full-row step.
+    assert.equal(targetSize("small", { width: 31, height: 0 }, true), "full");
+    assert.equal(targetSize("hero", { width: 0, height: -31 }, true), "half");
+  });
+
+  it("keeps the Windows tap cycle on half -> full -> panel and folds the round button into it", () => {
+    assert.equal(nextSize("half"), "full");
+    assert.equal(nextSize("full"), "panel");
+    assert.equal(nextSize("panel"), "half");
+    assert.equal(nextSize("small"), "half");
   });
 
   it("computes release velocity from the last 100ms and projects a flick onto at most one step (#115)", () => {
@@ -111,10 +123,10 @@ describe("panel layout prefs", () => {
     assert.deepEqual(applyOrder(["c", "a"], [plug("a"), plug("b"), plug("c")]).map((d) => d.id), ["c", "a", "b"]);
   });
 
-  it("half cards take three of six columns and full cards take the row", () => {
-    const devs = ["a", "b", "c"].map(plug);
-    const map = spans(devs, (d) => (d.id === "c" ? "full" : "half"));
-    assert.deepEqual(devs.map((d) => map.get(d.id)), [3, 3, 6]);
+  it("small and half cards take three of six columns, hero and full cards take the row", () => {
+    const devs = ["a", "b", "c", "d"].map(plug);
+    const map = spans(devs, (d) => (d.id === "a" ? "small" : d.id === "b" ? "half" : d.id === "c" ? "hero" : "full"));
+    assert.deepEqual(devs.map((d) => map.get(d.id)), [3, 3, 6, 6]);
   });
 
   it("groups come first, the rest is titled only when groups exist", () => {

@@ -2232,8 +2232,8 @@ struct MenuBarPanelControllerTests {
         #expect(abs(slow.height + 9.9) < 0.001)
     }
 
-    @Test("Long-pressing a light card enters edit mode and bottom-right corner arc handle supports both drag resizing and tap cycling without reordering (#115)")
-    func longPressOnLightCardEntersEditModeWithoutExpandingAndCyclesTileSizes() async throws {
+    @Test("Long-pressing a light card no longer enters edit mode; the corner handle resizes and cycles once editing is entered from the menu (#115)")
+    func longPressOnLightCardNoLongerEntersEditModeAndCornerHandleResizesWhenEditing() async throws {
         _ = NSApplication.shared
         let previousLanguage = L10n.currentLanguage
         L10n.currentLanguage = .zhHans
@@ -2310,12 +2310,19 @@ struct MenuBarPanelControllerTests {
         sendMouse(.leftMouseDown, at: longPressPoint)
         try await Task.sleep(for: .milliseconds(550))
         Self.pumpMainRunLoop()
+
+        // The hold itself must do nothing: no jiggle editing, no drawer, no toggle mid-press.
+        #expect(LayoutUIState.shared.editMode == .none, "A 550 ms hold on a card must not enter jiggle editing")
+        #expect(store.expandedDeviceId == nil, "Holding a card must not expand its drawer")
+        #expect(store.devices.first(where: { $0.id == light.id })?.isActiveOn == initialIsOn, "Holding a card must not toggle it mid-press")
+
+        // Releasing is an ordinary click, never an edit-mode entry.
         sendMouse(.leftMouseUp, at: longPressPoint)
         try await Task.sleep(for: .milliseconds(150))
         Self.pumpMainRunLoop()
 
-        #expect(store.expandedDeviceId == nil, "Releasing long-press must not trigger the card's expand-drawer button")
-        #expect(store.devices.first(where: { $0.id == light.id })?.isActiveOn == initialIsOn)
+        #expect(LayoutUIState.shared.editMode == .none, "Releasing the hold must not enter jiggle editing")
+        #expect(store.expandedDeviceId == nil, "Releasing the hold must not open the drawer")
 
         func handlePoint() -> NSPoint {
             if let g = LayoutUIState.shared.cardGlobalFrames[light.id] {
@@ -2334,6 +2341,13 @@ struct MenuBarPanelControllerTests {
             window.displayIfNeeded()
             Self.pumpMainRunLoop()
         }
+
+        // Entering layout editing is a menu action only: the card's "Edit Layout…" item raises this
+        // request, and the panel translates it into the one edit mode.
+        LayoutUIState.shared.isEditingLayoutRequested = true
+        try await flushLayout()
+        #expect(LayoutUIState.shared.editMode == .deviceLayout, "The context-menu request must enter layout editing")
+        #expect(!LayoutUIState.shared.isEditingLayoutRequested, "The request flag is consumed once handled")
 
         // 1. Outward drag on bottom-right corner arc handle: half -> full -> panel without reordering.
         let dragOutStart = handlePoint()
@@ -2377,7 +2391,7 @@ struct MenuBarPanelControllerTests {
         #expect(currentSizes()["all|\(light.id)"] == .half)
         #expect(DeviceLayoutPrefs.decodeOrder(defaults.string(forKey: DeviceLayoutPrefs.orderKey) ?? "[]").isEmpty, "Inward handle drag must not trigger card reordering")
 
-        // 3. Light tap on bottom-right corner arc handle still cycles half -> full -> panel -> half.
+        // 3. Light tap on bottom-right corner arc handle cycles half -> 2×2 hero -> full -> panel -> half.
         func tapHandle() async throws -> [String: TileSize] {
             let point = handlePoint()
             sendMouse(.leftMouseDown, at: point)
@@ -2389,13 +2403,18 @@ struct MenuBarPanelControllerTests {
         }
 
         let sizes1 = try await tapHandle()
-        #expect(sizes1["all|\(light.id)"] == .full)
+        #expect(sizes1["all|\(light.id)"] == .hero)
 
         let sizes2 = try await tapHandle()
-        #expect(sizes2["all|\(light.id)"] == .panel)
+        #expect(sizes2["all|\(light.id)"] == .full)
 
         let sizes3 = try await tapHandle()
-        #expect(sizes3["all|\(light.id)"] == .half)
+        #expect(sizes3["all|\(light.id)"] == .panel)
+
+        let sizes4 = try await tapHandle()
+        #expect(sizes4["all|\(light.id)"] == .half)
+
+        LayoutUIState.shared.endDeviceLayoutEditing()
     }
 
     private static func pumpMainRunLoop(_ seconds: TimeInterval = 0.05) {
