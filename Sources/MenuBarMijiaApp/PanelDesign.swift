@@ -5,6 +5,9 @@ import MijiaCore
 // MARK: - Panel Height
 
 /// User-chosen panel height; `.max` fills the screen below the menu bar.
+///
+/// Only the classic panel reads this: the Liquid Glass column always runs to the bottom of the
+/// screen. The storage key predates the themes, so the choice survives a theme switch.
 public enum PanelHeight: String, CaseIterable, Identifiable, Sendable {
     case compact, standard, tall, max
 
@@ -70,29 +73,58 @@ public enum AppAppearance: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-// MARK: - System Panel Look
+// MARK: - Panel Theme
 
-/// One system design, no skins. Tiles mirror Control Center: anything that is on gets the loudest
-/// surface the appearance allows — an opaque bright platter in light mode, a lifted well one step
-/// above the quiet off-state glass in dark mode, where a white slab would glare and force the ink
-/// inside it back to the light scheme. `TileSurface` derives ink, fill and hairline together so no
-/// caller has to reason about the pairing.
-public enum PanelLook {
-    public static let tileRadius: CGFloat = 14
+/// The panel's layout family.
+///
+/// The two themes are structural, not skins: `classic` is the compact card panel that hangs under
+/// the menu-bar item, `liquidGlass` is the full-height column that slides in from the right edge.
+/// The Liquid Glass theme is designed around macOS 26's native glass, so it is unavailable before
+/// macOS 26. Every macOS version keeps the classic panel.
+public enum PanelTheme: String, CaseIterable, Identifiable, Sendable {
+    case classic
+    case liquidGlass
 
-    /// Ink for the light-mode platter. `Color.primary` is white in dark mode, so the bright platter
-    /// carries its own fixed dark ink instead of following the window scheme.
-    public static let platterInk = DesignTokens.Ink.onPlatter
+    public static let storageKey = "panel_theme"
+    public static let defaultValue: PanelTheme = .classic
 
-    /// Soft drop shadow that keeps the platter above the glass; wells stay flat.
-    public static func platterShadow(isActive: Bool) -> Color {
-        isActive ? Color.black.opacity(0.18) : .clear
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .classic: return L10n.tr("常规", "Classic")
+        case .liquidGlass: return L10n.tr("液态玻璃", "Liquid Glass")
+        }
+    }
+
+    /// The Liquid Glass panel is built on native glass, which macOS 26 introduced.
+    public static var isLiquidGlassAvailable: Bool {
+        if #available(macOS 26.0, *) { return true }
+        return false
+    }
+
+    /// Resolves a stored value against platform support. Older systems always get `.classic`, and
+    /// an unknown value falls back to the default. Tests pass `liquidGlassAvailable` so the
+    /// fallback is exercised without a macOS 26 host.
+    public static func resolved(
+        from raw: String?,
+        liquidGlassAvailable: Bool = isLiquidGlassAvailable
+    ) -> PanelTheme {
+        guard liquidGlassAvailable, let raw else { return .classic }
+        return PanelTheme(rawValue: raw) ?? .classic
+    }
+
+    /// The theme the next panel presentation builds.
+    public static var current: PanelTheme {
+        resolved(from: UserDefaults.standard.string(forKey: storageKey))
     }
 }
 
-/// One tile's presentation state: lit or quiet, and when lit, on the light-mode platter or the
-/// family-coloured glass. Ink, fill and hairline all derive from it, so callers pass one value
-/// instead of repeating the active/tint/scheme triple.
+// MARK: - System Panel Look
+
+/// One system design, no skins. A tile is always the same glass: a quiet well when off, one step
+/// lighter when on, and a family-colour wash when on with a tint. Nothing paints an opaque slab, so
+/// the ink inside a tile never has to flip against the window scheme.
 public struct TileSurface: Equatable, Sendable {
     public var isActive: Bool
     public var tint: Color?
@@ -104,45 +136,20 @@ public struct TileSurface: Equatable, Sendable {
         self.scheme = scheme
     }
 
-    /// The one surface that needs the fixed dark ink: the light-mode platter. Dark mode never
-    /// paints a bright tile, so white ink stays valid everywhere else — this flag is the single
-    /// place that decides, which is what keeps the ink rules from drifting apart again.
-    public var isBrightPlatter: Bool { isActive && scheme == .light }
+    /// Text ink follows the window scheme in every state. An active tile earns its emphasis from
+    /// the orb, a heavier weight and the fill — never from inverting the ink.
+    public var ink: Color { .primary }
 
-    /// Ink on the lit surface. Every lit surface in dark mode is dark glass, so it keeps white ink;
-    /// only the bright platter needs the fixed dark ink.
-    public var ink: Color {
-        if isActive, !isBrightPlatter { return .white }
-        return isActive ? PanelLook.platterInk : .primary
-    }
+    public var secondaryInk: Color { .secondary }
 
-    public var secondaryInk: Color {
-        if isActive, !isBrightPlatter { return Color.white.opacity(0.62) }
-        return isActive ? PanelLook.platterInk.opacity(0.55) : .secondary
-    }
-
-    /// The tile fill: bright platter when lit in light mode, one step above the well when lit in dark
-    /// mode; a tint swaps either for a wash of the family colour so the hue carries the state.
+    /// Fallback fill for Reduce Transparency and macOS 14/15 Material mode. On macOS 26 with native
+    /// Liquid Glass enabled, `GlassShapeBackground` delegates directly to `ThemeAndMotion` without
+    /// painting a background fill over the glass.
     public var fill: AnyShapeStyle {
-        if isActive, let tint {
-            return scheme == .dark
-                ? AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.24), Color.white.opacity(0.08)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                : AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.14), Color.white.opacity(0.92)], startPoint: .topLeading, endPoint: .bottomTrailing))
-        }
         if scheme == .dark {
-            // Never a white slab in dark mode: it glares, and every bit of ink inside it would have
-            // to flip back to the light scheme. A lit tile is simply a brighter well.
-            return AnyShapeStyle(Color.white.opacity(isActive ? 0.17 : 0.07))
+            return AnyShapeStyle(Color.white.opacity(isActive ? 0.14 : 0.08))
         }
-        return isActive ? AnyShapeStyle(Color.white) : AnyShapeStyle(Color.black.opacity(0.045))
-    }
-
-    public var hairline: Color {
-        if isActive, let tint {
-            return tint.opacity(scheme == .dark ? 0.38 : 0.30)
-        }
-        if isActive { return scheme == .dark ? Color.white.opacity(0.12) : Color.black.opacity(0.07) }
-        return scheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.05)
+        return AnyShapeStyle(Color.white.opacity(isActive ? 0.56 : 0.42))
     }
 }
 
@@ -187,7 +194,8 @@ struct NoticeToastBanner: View {
                 Button(action.title, action: onAction)
                     .buttonStyle(.plain)
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(Color.red)
+                    // Only a failure earns alarm red; a plain call to action stays the accent (§2.5).
+                    .foregroundStyle(notice.isError ? Color.red : Color.accentColor)
             }
             if notice.isError {
                 Button(action: onDismiss) {
@@ -261,14 +269,15 @@ struct HoldToConfirmButton: View {
         .fixedSize(horizontal: true, vertical: false)
         .foregroundStyle(Color.primary.opacity(0.88))
         .padding(.horizontal, 11)
-        .padding(.vertical, 5)
-        .background {
+        .frame(height: 30)
+        .overlay {
             GeometryReader { geo in
                 Rectangle()
                     .fill(Color.accentColor.opacity(0.28))
                     .frame(width: holding ? geo.size.width : 0)
             }
             .clipShape(capsule)
+            .allowsHitTesting(false)
         }
         .modifier(ChipSurface(shape: capsule, tint: nil, interactive: true, clear: false))
         .scaleEffect(holding ? 0.95 : 1)
@@ -297,8 +306,7 @@ struct HoldToConfirmButton: View {
 
 // MARK: - Panel Root
 
-/// Panel root: one system material behind every state, with the forced appearance and the
-/// "Reduce transparency" fallback (#41).
+/// Transparent module host, with an opaque accessibility fallback and forced appearance.
 public struct PanelRoot: ViewModifier {
     @Environment(\.colorScheme) private var systemScheme
     @Environment(\.effectiveReduceTransparency) private var reduceTransparency
@@ -309,21 +317,8 @@ public struct PanelRoot: ViewModifier {
         content
             .background {
                 if reduceTransparency {
-                    Rectangle().fill(Color(nsColor: .windowBackgroundColor))
-                } else if #available(macOS 26.0, *) {
-                    // Native Liquid Glass replaces the hand-stacked material+scrim; the wrapper
-                    // keeps the macOS 26 API inside ThemeAndMotion. A lighter scrim still pins the
-                    // chosen appearance: over a bright wallpaper the dark scheme must stay dark or
-                    // white text loses contrast.
-                    Color.clear
-                        .panelRootGlass()
-                    Rectangle().fill(scheme == .dark ? Color.black.opacity(0.30) : Color.white.opacity(0.18))
-                } else {
-                    // A thin material alone picks up whatever is behind the window: over a bright
-                    // wallpaper the dark scheme stays light and white text loses contrast. The scrim
-                    // pins the surface to the chosen appearance without losing the glass.
-                    Rectangle().fill(.ultraThinMaterial)
-                    Rectangle().fill(scheme == .dark ? Color.black.opacity(0.42) : Color.white.opacity(0.32))
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.panel, style: .continuous)
+                        .fill(Color(nsColor: .windowBackgroundColor))
                 }
             }
             .environment(\.colorScheme, scheme)

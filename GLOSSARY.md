@@ -153,6 +153,14 @@ _Avoid_: Online device（在线设备）
 每行并排展示两张设备的紧凑网格视图；当任意设备展开详情抽屉时，该卡片自动切换为跨满整行宽度以容纳滑块与模式按钮。
 _Avoid_: Mini card（迷你卡片）、Widget（小组件）
 
+**ActivityStack（通知中心）**：
+面板头部与搜索框之间的提醒集合，依次显示系统提醒、主动守护告警与门铃记录。收起时最多露出三层，点按展开列表。米家登录已过期与等待决定的 HA 明文连接不可清除，其余支持滑走或清除全部；切换连接后端时清空本机告警记录与清除状态。
+_Avoid_: Reminder cycle（提醒轮播）、Toast（瞬时提示）
+
+**TransientStack（瞬时横幅栈）**：
+面板底部同时承载撤销与 Toast 的浮层，新到的横幅在前。悬停时展开全部横幅并暂停撤销倒计时，离开后恢复。栈的实际高度决定设备列表底部留白，与通知中心共用 `StackedCardGeometry`。
+_Avoid_: Activity feed（持久提醒集合）、Single banner（互斥横幅）
+
 **SafetyAlert（主动守护提醒）**：
 macOS 原生通知。原有四类仍按原规则提醒：插座持续开启 45 分钟且**实时功率超过 300 W**（没有功率读数就不触发）、空调或电暖器连续运行 4 小时、传感器或门锁电量低于 15%、星标设备意外离线。低电量同一设备 24 小时内不重复，冷却时间持久化；带关闭动作的提醒可在通知上直接执行。传感器边沿提醒另计：漏水、烟雾、燃气默认开启，门窗与人体移动默认关闭，每一类都能单独开关。报警从无到有才通知一次，危险类第一次采样已是报警也会通知，正文带检测时刻；恢复平静不通知。漏水、烟雾、燃气报警期间菜单栏图标变红。门窗和移动可以限制为只在这台 Mac 锁屏、睡眠或切换用户期间提醒。Windows 没有这条传感器提醒。
 _Avoid_: Alarm（警报）、Push notification（远程推送）
@@ -181,6 +189,19 @@ _Avoid_: Room order（保存后的顺序值）、Layout edit（设备布局编�
 面板唯一的三态编辑状态（`none` / `deviceLayout` / `roomOrder`），保存在共享的 `LayoutUIState` 上，因此面板视图与全局键盘监视器读到同一个值。进入任一模式时按自身规则收尾另一个会话：进入设备布局会先提交房间排序草稿。排序模式的 `Return` 提交退出、`Esc` 取消回滚，都不会落到「开关聚焦设备」或「关闭面板」。
 _Avoid_: isEditingLayout / isEditingRooms（已被本枚举取代的两个布尔值）
 
+**内容井（well）**：
+无障碍「减弱透明度」或 macOS 14/15 Material 模式下卡片的半透明基底（`PanelDesign.swift:TileSurface.fill`）：关闭态深色 `white 0.08`（浅色 `0.42`），开启态深色 `white 0.14`（浅色 `0.56`）；在 macOS 26 原生 Liquid Glass 模式下，模块直接调用 `.glassEffect(.regular.interactive(), in: shape)`，不额外涂抹背景层，以免遮挡系统液态玻璃折射与明暗自适应。任何模式都不再出现整块白色底板，文字始终跟随窗口方案（`.primary` / `.secondary`），开启态的色彩强调只来自左侧发光圆章与滑杆填充。
+_Avoid_: Platter（白色底板）、Card background（卡片底色）
+
+**高光边（Specular Rim）**：
+玻璃边缘的唯一处理（`ThemeAndMotion.swift:specularRim`）：沿形状内缘绘制 `DesignTokens.hairline` 的上下亮、中部微暗的立体折射描边（深色亮边 `0.34` / 浅色 `0.75`）；减弱透明度或提高对比度时退化为一条 `.primary` 0.18 的实线，胶囊形采用半高正圆圆角以避免 1x 栅格化切点伪影。Windows 端对应 `styles.css` 的 `.cc-rim`。
+_Avoid_: Border、Hairline（描边与高光边现在是两个概念）
+
 **ViewPreference（本地视图偏好）**：
-仅作用于当前客户端的展示配置（包括星标常用置顶、自定义分组 `DeviceGroup`、长按拖拽排序、通过编辑态卡片右下角圆弧手柄拖拽或轻点调节的分页面卡片尺寸 `TileSize`、单设备固定数据源覆盖、隐藏特定设备、隐藏离线设备、面板高度 `PanelHeight`、Windows 面板位置 `PanelAnchor`（跟随任务栏或工作区四角，保存在 `%APPDATA%\MenuBarMijia\panel-placement.json` 以便拖动窗口后即时落盘）、菜单栏常驻指标选择），存储在本地且不回写远端数据源。
+仅作用于当前客户端的展示配置（包括星标常用置顶、自定义分组 `DeviceGroup`、进入编辑模式后的拖拽排序、通过编辑态卡片右下角圆弧手柄拖拽或轻点调节的分页面卡片尺寸 `TileSize`、单设备固定数据源覆盖、隐藏特定设备、隐藏离线设备、面板高度 `PanelHeight`（Windows 与 macOS 常规主题可调）、macOS 面板主题 `PanelTheme`（`classic`「常规」，默认；`liquidGlass`「液态玻璃」，仅 macOS 26+，固定为屏幕右侧整列）、液态玻璃面板分组方式 `PanelGrouping`（按房间/按类型）、Windows 面板位置 `PanelAnchor`（跟随任务栏或工作区四角，保存在 `%APPDATA%\MenuBarMijia\panel-placement.json` 以便拖动窗口后即时落盘）、菜单栏常驻指标选择），存储在本地且不回写远端数据源。
 _Avoid_: Device config（设备配置）、Profile（档案）
+
+**NativeBackdrop（原生背景）**：
+窗口管理器直接画在 WebView 后面的材质，WebView2 自己采不到桌面，所以只有它能给出真正的毛玻璃。Windows 端由 `window.rs:apply_panel_backdrop` 依次尝试 Mica（Windows 11 22H2+）与 Acrylic，成功时 `panel_backdrop` 命令返回 `acrylic`，前端据此在 `#app` 上写 `data-backdrop="acrylic"`，把面板底色从实色降到 0.55–0.62 的薄雾；失败即 `none`，面板保持接近实色的填充。`--panel-opacity` 始终作用于这两档基准，`prefers-reduced-transparency: reduce` 时回到实色。
+_Avoid_: 玻璃皮（WebView 内的 blur）、壁纸透出（那是不透明度的语义）
+

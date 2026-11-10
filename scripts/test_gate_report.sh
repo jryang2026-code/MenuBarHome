@@ -3,6 +3,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 root="$(pwd)"
+# A commit hook exports GIT_INDEX_FILE and GIT_DIR. They point at the committing repository, so
+# the temporary repository below would stage and commit into the real index instead of its own.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 
 failures=0
 pass() { printf 'PASS %s\n' "$1"; }
@@ -115,6 +118,15 @@ if [ "$status" = 1 ]; then
     pass "信号退出码仍判定录制没跑完"
 else
     fail "退出码 139 应判定崩溃，实际 ${status}"
+fi
+printf '%s\n' "✔ Test run with 7 tests in 1 suite passed after 0.1 seconds." \
+    "error: Exited with unexpected signal code 5" >"$finished_log"
+status=0
+bash scripts/gate_report.sh record-verdict 1 "$finished_log" >/dev/null 2>&1 || status=$?
+if [ "$status" = 1 ]; then
+    pass "前面的测试汇总不掩盖后面崩溃的快照进程"
+else
+    fail "汇总之后进程崩溃应判定录制没跑完，实际 ${status}"
 fi
 rm -f "$finished_log"
 

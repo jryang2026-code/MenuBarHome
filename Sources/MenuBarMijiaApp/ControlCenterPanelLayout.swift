@@ -10,14 +10,24 @@ extension ControlCenterPanel {
             deviceId: device.id,
             size: tileSize(device),
             isDragging: draggingId == device.id,
+            isAnyCardDragging: draggingId != nil,
             isResizing: activeResize?.deviceId == device.id,
             dragOffset: dragOffset(for: device.id),
             onCycleSize: { cycleSize(device) },
             onBeginResize: { beginResizeIfNeeded(device.id) },
             onResizeDrag: { translation in updateResize(device.id, translation: translation) },
-            onEndResize: { translation, samples in endResize(device.id, translation: translation, samples: samples) },
-            onRename: { layoutUI.renamingDeviceId = device.id }
+            onEndResize: { translation, samples in endResize(device.id, translation: translation, samples: samples) }
         )
+    }
+
+    /// The `−` badge: only cards in 常用 are edited here, and removing one just un-pins it, so the
+    /// device reappears in its room or type stack below.
+    func favoriteRemoval(for device: SmartDevice) -> (() -> Void)? {
+        guard store.favoriteDeviceIds.contains(device.id) else { return nil }
+        return {
+            guard store.favoriteDeviceIds.contains(device.id) else { return }
+            withAnimation(reduceMotion ? nil : AppleMotion.reveal) { store.toggleFavorite(device.id) }
+        }
     }
 
     // MARK: - Room Strip (#146)
@@ -199,92 +209,13 @@ extension ControlCenterPanel {
         store.scheduleRaycastSnapshotExport()
     }
 
-    // MARK: - Page Sections (favorites, custom groups, ungrouped)
-
-    struct PageSection: Identifiable {
-        let id: String
-        let title: String?
-        let devices: [SmartDevice]
-        /// Custom group id when the section is a user group (enables rename / reorder / delete).
-        let groupId: String?
-    }
+    // MARK: - Groups (favorites, custom groups)
 
     var groups: [DeviceGroup] { GroupPrefs.groups(groupsRaw) }
     /// Saved card order, sizes and group membership for this store's defaults.
     var panelLayout: PanelLayoutStore { PanelLayoutStore.shared(for: store.userDefaults) }
 
     var groupMap: [String: String] { panelLayout.groupMap }
-    var collapsedGroups: Set<String> { GroupPrefs.set(collapsedRaw) }
-
-    /// Collapse state is per page: folding "更多设备" in All must not hide "其他" in a room.
-    func collapseKey(_ section: PageSection) -> String { "\(layoutScope)|\(section.id)" }
-
-    /// "All": 常用 first, then each custom group, then the rest. A room: custom groups then 其他;
-    /// without any group in the room it is one untitled section, as before.
-    var pageSections: [PageSection] {
-        let known = Set(groups.map(\.id))
-        let map = groupMap.filter { known.contains($0.value) }
-        let order = currentOrder
-        var sections: [PageSection] = []
-        let pool: [SmartDevice]
-        if store.selectedRoomId == nil {
-            if !store.favoriteDevices.isEmpty {
-                let orderedFavs = DeviceLayoutPrefs.apply(order: order, to: store.favoriteDevices)
-                sections.append(PageSection(id: "fav", title: L10n.tr("常用控制", "Favorites"), devices: orderedFavs, groupId: nil))
-            }
-            pool = store.nonFavoriteDevices
-        } else {
-            pool = store.visibleDevices
-        }
-        for group in groups {
-            let members = DeviceLayoutPrefs.apply(order: order, to: pool.filter { map[$0.id] == group.id })
-            if !members.isEmpty {
-                sections.append(PageSection(id: group.id, title: group.name, devices: members, groupId: group.id))
-            }
-        }
-        let rest = DeviceLayoutPrefs.apply(order: order, to: pool.filter { map[$0.id] == nil })
-        if !rest.isEmpty {
-            // Several Mi Cloud accounts in one panel: devices stay grouped under the account that
-            // owns them. Other backends have no account to group by, even when Mi accounts remain
-            // signed in.
-            let accountIds = Set(store.miAccounts.map(\.id))
-            let hasAccountOwnedDevices = rest.contains { device in
-                guard let accountId = device.accountId else { return false }
-                return accountIds.contains(accountId)
-            }
-            if store.miAccounts.count > 1,
-               store.selectedRoomId == nil,
-               store.homeBackend != .demo,
-               store.homeBackend == .xiaomiCloud || hasAccountOwnedDevices {
-                for account in store.miAccounts {
-                    let members = rest.filter { $0.accountId == account.id }
-                    if !members.isEmpty {
-                        sections.append(PageSection(
-                            id: "account:\(account.id)",
-                            title: account.displayName,
-                            devices: members,
-                            groupId: nil
-                        ))
-                    }
-                }
-                let unowned = rest.filter { device in
-                    guard let accountId = device.accountId else { return true }
-                    return !accountIds.contains(accountId)
-                }
-                if !unowned.isEmpty {
-                    sections.append(PageSection(id: "rest", title: L10n.tr("其他", "Other"), devices: unowned, groupId: nil))
-                }
-            } else {
-                let titled = !sections.isEmpty
-                let title: String? = store.selectedRoomId == nil
-                    ? (sections.isEmpty ? L10n.tr("全屋设备", "All Devices") : L10n.tr("更多设备", "More Devices"))
-                    : (titled ? L10n.tr("其他", "Other") : nil)
-                sections.append(PageSection(id: "rest", title: title, devices: rest, groupId: nil))
-            }
-        }
-        return sections
-    }
-
     /// Section key used to detect a drag into a different section.
     func sectionKey(of id: String) -> String {
         if store.selectedRoomId == nil, store.favoriteDeviceIds.contains(id) { return "fav" }
@@ -306,57 +237,6 @@ extension ControlCenterPanel {
             }
         }
     }
-
-    func groupHeader(_ section: PageSection) -> some View {
-        let collapsed = collapsedGroups.contains(collapseKey(section))
-        let accent = Color.accentColor
-        return Button {
-            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
-                var set = collapsedGroups
-                if collapsed { set.remove(collapseKey(section)) } else { set.insert(collapseKey(section)) }
-                collapsedRaw = GroupPrefs.encode(set)
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .bold))
-                    .rotationEffect(.degrees(collapsed ? -90 : 0))
-                    .foregroundStyle(hoveredHeader == section.id ? accent : Color.secondary)
-                Text(section.title ?? "")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(hoveredHeader == section.id ? accent : Color.secondary)
-                Text("\(section.devices.count)")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .contentTransition(.numericText(value: Double(section.devices.count)))
-                    .foregroundStyle(.secondary.opacity(0.8))
-                if section.groupId != nil {
-                    Capsule(style: .continuous)
-                        .fill(accent.opacity(hoveredHeader == section.id ? 0.35 : 0.18))
-                        .frame(height: 1)
-                        .frame(maxWidth: .infinity)
-                } else {
-                    Spacer()
-                }
-            }
-            .padding(.horizontal, 3)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hoveredHeader = $0 ? section.id : (hoveredHeader == section.id ? nil : hoveredHeader) }
-        .animation(.easeOut(duration: 0.15), value: hoveredHeader)
-        .contextMenu {
-            if let gid = section.groupId {
-                Button { layoutUI.renamingGroupId = gid } label: { Label(L10n.tr("重命名", "Rename"), systemImage: "pencil") }
-                Button { moveGroup(gid, by: -1) } label: { Label(L10n.tr("上移分组", "Move Up"), systemImage: "arrow.up") }
-                Button { moveGroup(gid, by: 1) } label: { Label(L10n.tr("下移分组", "Move Down"), systemImage: "arrow.down") }
-                Divider()
-                Button(role: .destructive) { deleteGroup(gid) } label: { Label(L10n.tr("删除分组", "Delete Group"), systemImage: "trash") }
-            }
-        }
-        .padding(.bottom, -3)
-    }
-
     func moveGroup(_ id: String, by delta: Int) {
         var list = groups
         guard let i = list.firstIndex(where: { $0.id == id }) else { return }
@@ -483,42 +363,26 @@ extension ControlCenterPanel {
 
     /// Lives on the tile container, not on a card: a card's own gesture is cancelled the moment the
     /// card moves to a new slot, which froze the drag right after each swap.
+    ///
+    /// Only active while layout editing is on. Outside edit mode the container leaves clicks, orbs
+    /// and inline sliders completely untouched: no long-press timer, no drag interception.
     var tileDragGesture: some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(TileSpace.name))
             .onChanged { d in
-                // A filtered list is ranked, not ordered: the long-press "edit layout" would let a
-                // search result be dragged into the saved order. Cards stay tappable instead.
-                guard !search.isSearching else { return }
+                // A filtered list is ranked, not ordered: a drag would write that rank into the
+                // saved order. Cards stay tappable instead.
+                guard !search.isSearching, isEditingLayout else { return }
                 let moved = hypot(d.translation.width, d.translation.height)
-                if isEditingLayout {
-                    if let resizingId = activeResize?.deviceId ?? resizeHandleCardId(at: d.startLocation) {
-                        beginResizeIfNeeded(resizingId)
-                        updateResize(resizingId, translation: d.translation)
-                        return
-                    }
+                if let resizingId = activeResize?.deviceId ?? resizeHandleCardId(at: d.startLocation) {
+                    beginResizeIfNeeded(resizingId)
+                    updateResize(resizingId, translation: d.translation)
+                    return
                 }
-                if draggingId == nil {
-                    if isEditingLayout {
-                        if moved > 3, let id = cardId(at: d.startLocation) { beginDrag(id, at: d.startLocation) }
-                    } else if pressTask == nil, !pressCancelled, let id = cardId(at: d.startLocation) {
-                        let start = d.startLocation
-                        pressTask = Task { @MainActor in
-                            try? await Task.sleep(for: .milliseconds(450))
-                            guard !Task.isCancelled else { return }
-                            NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                store.expandedDeviceId = nil
-                                // Entering layout commits any open room-order draft: no draft crosses
-                                // into another context (§5.2).
-                                layoutUI.beginDeviceLayoutEditing()
-                            }
-                            beginDrag(id, at: start)
-                        }
-                    } else if moved > 8 {
-                        // Moving before the hold completes is an ordinary drag (e.g. dimming).
-                        pressTask?.cancel()
-                        pressCancelled = true
-                    }
+                if removeBadgeCardId(at: d.startLocation) != nil {
+                    return
+                }
+                if draggingId == nil, moved > 3, let id = cardId(at: d.startLocation) {
+                    beginDrag(id, at: d.startLocation)
                 }
                 if let id = draggingId {
                     dragLocation = d.location
@@ -526,16 +390,19 @@ extension ControlCenterPanel {
                 }
             }
             .onEnded { d in
-                pressTask?.cancel()
-                pressTask = nil
-                pressCancelled = false
                 lastSwapTarget = nil
                 if let resizingId = activeResize?.deviceId {
                     endResize(resizingId, translation: d.translation, samples: [])
                     return
                 }
+                if hypot(d.translation.width, d.translation.height) < 5,
+                   let removeId = removeBadgeCardId(at: d.startLocation),
+                   let device = store.devices.first(where: { $0.id == removeId }) {
+                    favoriteRemoval(for: device)?()
+                    return
+                }
                 guard draggingId != nil else { return }
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                withAnimation(AppleMotion.snappySpring) {
                     draggingId = nil
                     dragLocation = nil
                 }
@@ -557,6 +424,17 @@ extension ControlCenterPanel {
         return nil
     }
 
+
+    /// Hit-tests the 20×20 top-left `−` favorite-removal badge in `TileSpace.name`.
+    func removeBadgeCardId(at point: CGPoint) -> String? {
+        for (id, frame) in tileFrames where store.favoriteDeviceIds.contains(id) {
+            let badgeRect = CGRect(x: frame.minX - 4, y: frame.minY - 4, width: 24, height: 24)
+            if badgeRect.contains(point) {
+                return id
+            }
+        }
+        return nil
+    }
     func beginResizeIfNeeded(_ deviceId: String) {
         guard activeResize == nil,
               let device = store.devices.first(where: { $0.id == deviceId }) else { return }
@@ -606,7 +484,7 @@ extension ControlCenterPanel {
         let origin = tileFrames[id]?.origin ?? start
         grabOffset = CGSize(width: start.x - origin.x, height: start.y - origin.y)
         dragLocation = start
-        withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) { draggingId = id }
+        withAnimation(AppleMotion.snappySpring) { draggingId = id }
     }
 
     /// Decides where the dragged card should go: before or after the card under the pointer (top
@@ -663,7 +541,7 @@ extension ControlCenterPanel {
         guard let t = order.firstIndex(of: target) else { return }
         order.insert(dragged, at: after ? t + 1 : t)
         guard order != currentOrder else { return }
-        withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.50, dampingFraction: 1.0)) {
             panelLayout.setOrder(order)
             if store.favoriteDeviceIds.contains(dragged) {
                 store.favoriteOrder = order.filter { store.favoriteDeviceIds.contains($0) }
@@ -674,9 +552,10 @@ extension ControlCenterPanel {
     func cycleSize(_ device: SmartDevice) {
         let next: TileSize
         switch tileSize(device) {
-        case .half: next = .full
+        case .half: next = .hero
+        case .hero: next = .full
         case .full: next = .panel
-        case .panel, .auto: next = .half
+        case .panel, .small, .auto: next = .half
         }
         setTileSize(next, for: device, playHaptic: true)
     }
@@ -686,42 +565,54 @@ extension ControlCenterPanel {
         if playHaptic {
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         }
-        withAnimation(AppleMotion.snappySpring) {
+        withAnimation(reduceMotion ? nil : AppleMotion.reveal) {
             store.expandedDeviceId = nil
             panelLayout.setSize(next, of: device.id, scope: layoutScope)
         }
     }
 
-    /// "完成" for either edit mode. In the room-order list Return is routed by the panel's key
-    /// monitor (so it can never fall through to `toggleFocusedDevice`), which is why the default
-    /// action shortcut is only attached in device-layout mode.
-    @ViewBuilder
-    var doneEditingButton: some View {
+    /// Ends the open edit session: commits a room-order draft, or leaves card editing.
+    func finishEditing() {
         if isRoomOrdering {
-            doneButton
-        } else {
-            doneButton.keyboardShortcut(.defaultAction)
+            finishRoomOrder(.commit)
+            return
+        }
+        withAnimation(AppleMotion.snappySpring) {
+            draggingId = nil
+            activeResize = nil
+            layoutUI.endDeviceLayoutEditing()
         }
     }
 
-    private var doneButton: some View {
+    /// "完成" for the room-order list, in the header next to 取消. Return is routed by the panel's
+    /// key monitor there, so it can never fall through to `toggleFocusedDevice`.
+    var doneEditingButton: some View {
         Button {
-            if isRoomOrdering {
-                finishRoomOrder(.commit)
-                return
-            }
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                draggingId = nil
-                activeResize = nil
-                layoutUI.endDeviceLayoutEditing()
-            }
+            finishEditing()
         } label: {
             Text(L10n.tr("完成", "Done")).font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
         }
         .buttonStyle(PillActionButtonStyle(isSelected: true))
-        .accessibilityHint(isRoomOrdering
-            ? L10n.tr("保存房间顺序并返回首页", "Save the room order and go back")
-            : L10n.tr("结束布局编辑", "Finish editing the layout"))
+        .accessibilityHint(Text(L10n.tr("保存房间顺序并返回首页", "Save the room order and go back")))
+    }
+
+    /// Card editing's toolbar, in the grouping capsule's place: a glass capsule with the hint on
+    /// the left and 完成 on the right, like Control Center's edit bar.
+    var layoutEditToolbar: some View {
+        HStack(spacing: 10) {
+            Text(L10n.tr("编辑常用：拖动排序，拖右下角调整大小", "Edit Favorites: drag to reorder, drag the corner to resize"))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+            Spacer(minLength: 4)
+            LayoutEditDoneButton(action: finishEditing)
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 5)
+        .frame(height: 36)
+        .frame(maxWidth: .infinity)
+        .adaptiveGlass(in: Capsule(style: .continuous))
     }
 
     /// "取消" only exists for the room-order session: it discards the draft and rolls the strip
@@ -749,84 +640,129 @@ extension ControlCenterPanel {
 
     // MARK: - Device Collection (flow layout with per-card spans)
 
-    /// Column span out of 6 for each device: half = 3, full/panel = 6; Bento alternates 4+2 and 2+2+2.
+    /// Column span out of 12: 1×1 round = 3, 2×1 capsule / 2×2 hero = 6, full row = 12.
     func spans(for devices: [SmartDevice]) -> [String: Int] {
         var result: [String: Int] = [:]
         for dev in devices {
-            let size = tileSize(dev)
             let isTransientlyExpanded = !isEditingLayout && store.expandedDeviceId == dev.id
-            result[dev.id] = (size == .half && !isTransientlyExpanded) ? 3 : 6
+            result[dev.id] = isTransientlyExpanded ? 12 : gridSpan(for: tileSize(dev))
         }
         return result
     }
 
+    private func gridSpan(for size: TileSize) -> Int {
+        switch size {
+        case .small: return 3
+        case .half, .hero: return 6
+        case .full, .panel, .auto: return 12
+        }
+    }
+
+    /// The draw order also supplies the digit badges; an open drawer changes span, not order.
+    func cardOrder(_ devices: [SmartDevice]) -> [SmartDevice] {
+        if !currentOrder.isEmpty { return DeviceLayoutPrefs.apply(order: currentOrder, to: devices) }
+        var subRow: [SmartDevice] = []
+        var fullRow: [SmartDevice] = []
+        for device in devices {
+            if gridSpan(for: tileSize(device)) < 12 { subRow.append(device) }
+            else { fullRow.append(device) }
+        }
+        return subRow + fullRow
+    }
+
     /// Cards for one collection. Search results pass `sortByUserOrder: false`, so rank wins over the
-    /// saved layout order.
+    /// saved layout order. `asRows` draws an opened stack: every device a full-width rounded card,
+    /// like the notifications of an expanded group, outside the favorites' resize/drag editing.
     @ViewBuilder
     func deviceCollectionView(
         devices: [SmartDevice],
         showRoomBadge: Bool,
         quickIndexMap: [String: Int],
         highlightId: String? = nil,
-        sortByUserOrder: Bool = true
+        sortByUserOrder: Bool = true,
+        asRows: Bool = false
     ) -> some View {
         let aliases = GroupPrefs.map(aliasesRaw)
-        let source = sortByUserOrder
-            ? DeviceLayoutPrefs.apply(order: currentOrder, to: devices)
-            : devices
+        let source = sortByUserOrder ? cardOrder(devices) : devices
         let ordered = source.map { dev -> SmartDevice in
             guard let alias = aliases[dev.id] else { return dev }
             var d = dev
             d.name = alias
             return d
         }
-        let spanMap = spans(for: ordered)
+        let spanMap = asRows ? Dictionary(uniqueKeysWithValues: ordered.map { ($0.id, 12) }) : spans(for: ordered)
         // Every card is its own child keyed by device id, so a reorder slides cards instead of rebuilding rows.
-        TileFlowLayout(spacing: 7) {
-            ForEach(Array(ordered.enumerated()), id: \.element.id) { index, dev in
-                let span = spanMap[dev.id] ?? 6
-                DeviceCardView(
-                    device: dev,
-                    store: store,
-                    showRoomBadge: showRoomBadge,
-                    isCompactTile: span < 6,
-                    quickIndex: quickIndexMap[dev.id]
-                )
-                .frame(maxHeight: .infinity, alignment: .top)
-                .modifier(editable(dev))
-                .overlay {
-                    if highlightId == dev.id {
-                        RoundedRectangle(
-                            cornerRadius: PanelLook.tileRadius,
-                            style: .continuous
-                        )
-                        .strokeBorder(
-                            Color.accentColor.opacity(0.85),
-                            lineWidth: 1.6
-                        )
-                        .allowsHitTesting(false)
-                    }
-                }
-                // Measured outside the jiggle/drag effects: those transforms would otherwise change the
-                // reported frame every animation frame and re-layout the whole panel continuously.
-                .background {
-                    GeometryReader { geo in
-                        let f = geo.frame(in: .named(TileSpace.name))
-                        let g = geo.frame(in: .global)
-                        Color.clear
-                            .preference(
-                                key: TileFramesKey.self,
-                                value: [dev.id: CGRect(x: f.minX.rounded(), y: f.minY.rounded(), width: f.width.rounded(), height: f.height.rounded())]
+        // The glass container lets neighbouring liquid-glass modules merge their edges on macOS 26.
+        AdaptiveGlassContainer(spacing: 8) {
+            TileFlowLayout(spacing: 8) {
+                ForEach(Array(ordered.enumerated()), id: \.element.id) { index, dev in
+                    let span = spanMap[dev.id] ?? 12
+                    let isHero = !asRows && tileSize(dev) == .hero && store.expandedDeviceId != dev.id
+                    DeviceCardView(
+                        device: dev,
+                        store: store,
+                        showRoomBadge: showRoomBadge,
+                        isCompactTile: span <= 6,
+                        quickIndex: quickIndexMap[dev.id]
+                    )
+                    .frame(minHeight: isHero ? 124 : nil)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .modifier(OptionalModifier(asRows ? nil : editable(dev)))
+                    .overlay {
+                        if highlightId == dev.id {
+                            RoundedRectangle(
+                                cornerRadius: DesignTokens.Radius.module,
+                                style: .continuous
                             )
-                            .preference(key: CardGlobalTopKey.self, value: [dev.id: g.minY])
-                            .onAppear { LayoutUIState.shared.cardGlobalFrames[dev.id] = g }
-                            .onChange(of: g) { _, newFrame in LayoutUIState.shared.cardGlobalFrames[dev.id] = newFrame }
+                            .strokeBorder(
+                                Color.accentColor.opacity(0.85),
+                                lineWidth: 1.6
+                            )
+                            .allowsHitTesting(false)
+                        }
                     }
+                    // Measured outside the jiggle/drag effects: those transforms would otherwise change the
+                    // reported frame every animation frame and re-layout the whole panel continuously.
+                    .background {
+                        GeometryReader { geo in
+                            let f = geo.frame(in: .named(TileSpace.name))
+                            let g = geo.frame(in: .global)
+                            Color.clear
+                                // Stack rows are not drop targets for the favorites' drag reorder.
+                                .preference(
+                                    key: TileFramesKey.self,
+                                    value: asRows ? [:] : [dev.id: CGRect(x: f.minX.rounded(), y: f.minY.rounded(), width: f.width.rounded(), height: f.height.rounded())]
+                                )
+                                .preference(key: CardGlobalTopKey.self, value: [dev.id: g.minY])
+                                .onAppear { LayoutUIState.shared.cardGlobalFrames[dev.id] = g }
+                                .onChange(of: g) { _, newFrame in LayoutUIState.shared.cardGlobalFrames[dev.id] = newFrame }
+                        }
+                    }
+                    .layoutValue(key: TileSpanKey.self, value: span)
                 }
-                .layoutValue(key: TileSpanKey.self, value: span)
             }
         }
-        .animation(AppleMotion.snappySpring, value: ordered.map { "\($0.id):\(spanMap[$0.id] ?? 6)" })
+        .overlayPreferenceValue(TileFramesKey.self, alignment: .topLeading) { frames in
+            // `−` badges sit above the glass container: inside it, the cards' glass composites over
+            // anything a card draws past its own edge.
+            if isEditingLayout, !asRows, draggingId == nil {
+                GeometryReader { geo in
+                    let origin = geo.frame(in: .named(TileSpace.name)).origin
+                    ForEach(ordered) { dev in
+                        if let remove = favoriteRemoval(for: dev), let frame = frames[dev.id] {
+                            LayoutRemoveBadge(
+                                frame: frame.offsetBy(dx: -origin.x, dy: -origin.y),
+                                isCapsule: (spanMap[dev.id] ?? 12) <= 6 && tileSize(dev) != .hero,
+                                action: remove
+                            )
+                        }
+                    }
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(reduceMotion ? nil : .spring(response: 0.50, dampingFraction: 1.0), value: ordered.map(\.id))
+        .animation(reduceMotion ? nil : AppleMotion.reveal, value: ordered.map { spanMap[$0.id] ?? 12 })
         .id("rows")
     }
 }

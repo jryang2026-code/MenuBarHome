@@ -115,6 +115,7 @@ final class GrokBallSidecarController {
     private var holdTask: Task<Void, Never>?
     private var ballOffset: NSPoint?
     private var isTornDown = false
+    private(set) var isPresentationSuspended = false
     private enum Gesture {
         case pressed(origin: NSPoint, center: NSPoint)
         case dragging(origin: NSPoint, center: NSPoint)
@@ -155,8 +156,14 @@ final class GrokBallSidecarController {
         observePresentation()
     }
 
+    /// The parent slides as one rigid surface; place the ball only once that surface settles.
+    func setPresentationSuspended(_ suspended: Bool) {
+        isPresentationSuspended = suspended
+        if suspended { hide() } else { synchronize() }
+    }
+
     func synchronize() {
-        guard !isTornDown, let parent else { return }
+        guard !isTornDown, !isPresentationSuspended, let parent else { return }
         panelWindow.appearance = parent.appearance
         panelWindow.alphaValue = parent.alphaValue
         guard parent.isVisible, !store.showsFullOnboardingGuide, store.enableGrokBall else { hide(); return }

@@ -895,10 +895,10 @@ struct SensorSafetyAlertTests {
         let name = suite ?? "test.sensor.alerts.\(UUID().uuidString)"
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: devices))
         let store = HomeStore(provider: mock, defaultsSuiteName: name)
-        for _ in 0..<100 where store.devices.count < devices.count {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(store.devices.count >= devices.count)
+        // These cases drive the evaluator with a fixed clock; snapshot delivery must not consume it.
+        store.enableSafetyAlerts = false
+        try await store.waitForTestSnapshot()
+        store.enableSafetyAlerts = true
         return (store, name)
     }
 }

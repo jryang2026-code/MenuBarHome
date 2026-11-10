@@ -2,10 +2,8 @@ import type { MiRoom } from "../core/miCloudClient.js";
 import type { SmartDevice } from "../core/models.js";
 import { t } from "../core/i18n.js";
 
-// Panel personalisation shared with the macOS app: skins, per-page card sizes, custom order,
+// Panel personalisation shared with the macOS app: per-page card sizes, custom order,
 // user groups and local device names. Pure functions only, so they can be unit tested.
-
-export type AppSkin = "classic" | "frost" | "night" | "glass" | "soft" | "bento" | "neon" | "capsule" | "dawn";
 
 export type AppAppearance = "system" | "light" | "dark";
 
@@ -20,14 +18,6 @@ export function resolveAppearance(preference: AppAppearance, systemPrefersLight 
   if (preference === "dark") return "dark";
   return systemPrefersLight ? "light" : "dark";
 }
-
-/**
- * Skin ids stay stable (they are persisted); `title` is a getter so it is translated in whatever
- * language is active when the panel renders, not at module load (#52).
- */
-export const SKINS: ReadonlyArray<{ readonly id: AppSkin; readonly title: string }> = [
-  { id: "classic", get title() { return t("经典"); } },
-];
 
 /**
  * Panel background opacity in percent (#252). WebView2 does not blur the desktop behind a
@@ -83,7 +73,11 @@ export function parsePanelPlacement(value: unknown): PanelPlacement {
   return { anchor: known?.id ?? "auto" };
 }
 
-export type TileSize = "auto" | "half" | "full" | "panel";
+/**
+ * Sizes the shared layout JSON can carry. `small` and `hero` come from the macOS 12-column grid;
+ * Windows still renders a 6-column grid, so `TILE_SIZES` below offers only the sizes it can draw.
+ */
+export type TileSize = "auto" | "small" | "half" | "hero" | "full" | "panel";
 
 export const TILE_SIZES: ReadonlyArray<{ readonly id: TileSize; readonly title: string }> = [
   { id: "auto", get title() { return t("自动"); } },
@@ -134,6 +128,9 @@ export function resolvedSize(size: TileSize, device: SmartDevice, compactGrid: b
 }
 
 export function nextSize(size: Exclude<TileSize, "auto">): Exclude<TileSize, "auto"> {
+  // Windows still packs a 6-column grid without 2×2 rows, so its tap cycle keeps the original
+  // three steps; `small`/`hero` arrive only through a saved macOS layout.
+  if (size === "small") return "half";
   return size === "half" ? "full" : size === "full" ? "panel" : "half";
 }
 
@@ -167,7 +164,10 @@ export function targetSize(
   isCompactGrid = true,
 ): Exclude<TileSize, "auto"> {
   const resolvedStart: Exclude<TileSize, "auto"> = startSize === "auto" ? (isCompactGrid ? "half" : "full") : startSize;
-  const startIndex = ORDERED_CONCRETE_TILE_SIZES.indexOf(resolvedStart);
+  // A 1×1 round button resizes from the capsule step; a 2×2 hero from the full-row step.
+  const gestureStart: Exclude<TileSize, "auto"> =
+    resolvedStart === "small" ? "half" : resolvedStart === "hero" ? "full" : resolvedStart;
+  const startIndex = ORDERED_CONCRETE_TILE_SIZES.indexOf(gestureStart);
   const stepDelta =
     resizeAxisSteps(translation.width, RESIZE_STEP_THRESHOLD) +
     resizeAxisSteps(translation.height, RESIZE_STEP_THRESHOLD);
@@ -221,24 +221,16 @@ export function moveInOrder(order: readonly string[], allIds: readonly string[],
   return without;
 }
 
-/** Column span out of 6: half = 3, full/panel = 6; Bento alternates 4+2 and 2+2+2. */
+/** Column span out of 6: small/half = 3, hero/full/panel = 6. */
 export function spans(
   devices: readonly SmartDevice[],
   sizeOf: (d: SmartDevice) => Exclude<TileSize, "auto">,
-  bento: boolean,
 ): Map<string, number> {
   const out = new Map<string, number>();
-  if (bento) {
-    let pattern: number[] = [];
-    let rows = 0;
-    for (const d of devices) {
-      if (sizeOf(d) !== "half") { out.set(d.id, 6); pattern = []; continue; }
-      if (pattern.length === 0) { pattern = rows % 2 === 0 ? [4, 2] : [2, 2, 2]; rows++; }
-      out.set(d.id, pattern.shift() ?? 2);
-    }
-    return out;
+  for (const d of devices) {
+    const size = sizeOf(d);
+    out.set(d.id, size === "small" || size === "half" ? 3 : 6);
   }
-  for (const d of devices) out.set(d.id, sizeOf(d) === "half" ? 3 : 6);
   return out;
 }
 

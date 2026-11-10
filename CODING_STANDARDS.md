@@ -25,12 +25,12 @@ System-wide registrations (such as Carbon `RegisterEventHotKey` in `HotkeyAndNot
 - Call `UnregisterEventHotKey` immediately when `enableGlobalHotkey` is set to `false`, and re-register when set to `true`.
 - Leaving a global hotkey registered while ignoring the callback hijacks the key chord from other macOS applications.
 
-## 4. CompactTile Two-Column Alignment
+## 4. Control Center 12-Column Flow Layout & Module Spans
 
-In `ControlCenterPanel` when `isCompactGridMode` is active:
+In `ControlCenterPanel` (`ControlCenterPanelLayout.swift:spans(for:)` and `DeviceLayout.swift:TileFlowLayout`):
 
-- Devices with an open detail drawer (`expandedDeviceId == dev.id`) render as full-width `.single(dev)` rows (`isCompactTile: false`).
-- Unexpanded devices render in two-column `.pair(left, right)` rows (`isCompactTile: true`). When an unexpanded tile has no partner, pair it with `nil` and render a half-width `Color.clear.frame(maxWidth: .infinity)` placeholder so single tiles never stretch full-width.
+- `TileFlowLayout` packs children into a 12-column grid (`3` = 1×1 round button, `6` = 2×1 capsule or 2×2 hero square, `12` = 4×1 full row or always-expanded panel).
+- Devices with an open detail drawer (`expandedDeviceId == dev.id`) transiently take span `12` (`isCompactTile: false`) while unexpanded compact tiles take span `<= 6` (`isCompactTile: true`). When no custom order is saved, sub-row tiles (`span < 12`) are packed before full-row modules (`span == 12`) so an odd full-row strip never strands a lone half-row capsule.
 
 ## 5. Domain Vocabulary & Single Source of Truth
 
@@ -42,6 +42,8 @@ In `ControlCenterPanel` when `isCompactGridMode` is active:
 - A decision reads the value it changes, not a wrapping container. Owner: `ManualControlPolicy.facetRequiresConfirmation` (`facet.value`), `StatusItemEventDecision.decide`, `PanelKeyRouter.beforeSearch`, `PanelFoldMeasure.Reading.cardTop`. Pinned by `FacetSafetyTests.waterHeaterTemperatureUsesFacetOrigin` and `PanelFoldLayoutTests.firstDeviceCardIsAboveTheFold`.
 
 ## 6. Cross-Platform Golden Corpora & AI Provider Parity
+
+`PanelTheme` is a macOS-only `ViewPreference`: `.classic` is the default on every supported macOS version; `.liquidGlass` is selectable on macOS 26 and later. Windows keeps its existing panel. The two macOS layouts share device control, search, keyboard routing and saved layout preferences; their presentation and window geometry remain separate.
 
 When adding or changing spoken command, delay, undo, habit-memory, proactive-suggestion, MIoT synthesis, MIoT command mapping, or AI provider preset rules, or model confirmation rules, in `Sources/MijiaCore/LocalIntentParser.swift`, `Sources/MijiaCore/UserHabitMemory.swift`, `Sources/MijiaCore/AssistantSchedule.swift`, `Sources/MijiaCore/AssistantConfig.swift`, `Sources/MijiaCore/ModelActionPolicy.swift`, `Sources/MijiaCore/MiCloud/MiotSynthesizer.swift`, `Sources/MijiaCore/MiCloud/MiotCommandMapper.swift`, `windows/src/core/assistant.ts`, or `windows/src/core/miCloudClient.ts`:
 
@@ -89,6 +91,7 @@ The same rule covers a test that needs to observe an intermediate state. Hold th
 - Tests that need a language use `L10n.$overrideLanguage.withValue`. `L10n.currentLanguage` is process-wide. Assigning it from a test races every other suite (`check.sh` rejects `L10n.currentLanguage =` under `Tests/`).
 - After `startListening()`, call `waitForTestSnapshot()` before treating `devices` as the new home. An all-LG plan is the exception in §7. Pinned by `ScheduledCommandScopeTests.refusesStaleDeviceListAfterStartListening` and `lgOnlyTimerSkipsSnapshotGuard`.
 - A PTZ stop test counts motor calls. Owner: `FakePTZClient.recordedStops`. Pinned by `CameraPTZDriverTests.stopWriteFailureRetriesOnceThenTheButtonSendsStopAgain`.
+- Camera diagnostics waits for `streamSource != nil` with a 30-second `ContinuousClock` deadline and requires the readiness result before reading the report. The former 40 × 25 ms loop silently continued with `stream_mode: none` on a loaded runner. Pinned by `MenuBarPanelControllerTests.cameraDiagnosticsReportStreamModeAndAudioSupport`.
 
 ## 10. Overlay Geometry Has One Owner
 
@@ -121,6 +124,10 @@ State that waits on the user or a timer (a consent prompt, an auto-dismiss timer
 - **Backend switch.** A persistent toast ends when `invalidateUndoContext` runs. `switchBackend` calls it. `rebuildLiveProvider` does not, so `allowHAPlaintext` leaves the toast up. `updateConnection` calls `invalidateUndoContext` even when the Home Assistant URL is unchanged. Owner: `invalidateUndoContext`. Pinned by `PanelHealthTests.switchingBackendClearsExpiredToast` for the switch to demo. The same-home rebuild has no pinning test. #276 shipped a consent banner whose 仍然连接 rebuilt the live backends while the app said demo.
 - **User takeover.** A window or session the user opened, kept or moved into picture-in-picture belongs to the user; automation never moves, switches or closes it. #308 needed this three times: a ring hijacked an open camera view, a later ring re-armed auto-close after picture-in-picture, and a restore was closed by an old timer.
 - **Repeat and stale events.** A repeated event renews what it owns or does nothing; an event about an older head, address or timestamp is ignored.
+- **Activity center.** `recentSafetyAlerts` (at most 10, newest record per id) and `dismissedActivityIds` end in `invalidateUndoContext`, before another backend can own the panel. `panelActivities` excludes records whose device has disappeared; safety actions retain the scope captured at delivery. A dismissed expiring-session notice returns for a different expiry. Owners: `HomeStore+Activities.swift`, `invalidateUndoContext`, `PanelActivityFeed`. Pinned by `PanelActivityStoreTests.switchingBackendClearsActivities`, `stackLeavesOutForeignAndOrphanedRows`, `recordingDedupesAndCapsAtTen`, and `PanelActivityFeedTests.dismissedExpiringWarningReturnsWithANewExpiry`.
+- **Stack interaction.** Activity expansion ends on panel hide, backend switch, or an empty feed. Transient hover and expansion end on leave, panel hide, an empty feed, or view disappearance; hiding a panel resumes the undo countdown even when AppKit never sends hover-leave. The transient view reports its measured height (including its bottom inset), and the device grid derives its bottom padding from that reading. Owners: `ActivityStackView`, `TransientStackView`, `ControlCenterPanel`.
+- A new safety occurrence clears the previous dismissal for its id. Finishing a swipe can dismiss only the captured record's date. Accepted device snapshots delete orphaned safety records and their dismissal ids, so returning devices cannot revive old alerts. Pinned by `PanelActivityStoreTests.recurringAlertReappearsAfterDismissal`, `staleAlertDismissalKeepsNewOccurrence`, and `removedDeviceDoesNotReviveOldAlert`.
+- Hover expansion is derived again on every transient-card collection change, including 1→2 and 2→1→2 while the pointer stays still. Owner: `TransientStackExpansion.isExpanded`. Pinned by `TransientStackExpansionTests.hoveredSingleExpandsWhenSecondCardArrives` and `hoveredStackReexpandsAfterCardReplacement`.
 
 Name the clearing site for each new field in the diff. A field set in one place and cleared nowhere is the defect.
 

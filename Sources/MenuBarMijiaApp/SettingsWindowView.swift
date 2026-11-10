@@ -947,8 +947,15 @@ private struct AssistantSettingsTab: View {
 private struct AppearanceSettingsTab: View {
     let store: HomeStore
     @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
-    @AppStorage(PanelPrefs.climatePanelKey) private var climatePanelModule: Bool = true
+    @AppStorage(PanelTheme.storageKey) private var panelThemeRaw: String = PanelTheme.defaultValue.rawValue
     @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
+    @AppStorage(PanelPrefs.climatePanelKey) private var climatePanelModule: Bool = true
+
+    /// The theme the app actually renders, so a stored Liquid Glass choice on an older system still
+    /// shows the classic controls.
+    private var panelTheme: PanelTheme {
+        PanelTheme.resolved(from: panelThemeRaw)
+    }
 
     var body: some View {
         let _ = store.effectiveLanguage
@@ -963,29 +970,48 @@ private struct AppearanceSettingsTab: View {
                     )
 
                     Text(L10n.tr(
-                        "面板只有一套系统外观：跟随系统时会自动使用浅色或深色材质，开启的设备显示为亮色磁贴。",
-                        "The panel has one system look: it follows light and dark automatically, and devices that are on use a bright platter."
+                        "面板会跟随系统自动使用浅色或深色材质，开启的设备比关闭的磁贴略亮一层。",
+                        "The panel follows light and dark automatically, and a device that is on sits one step brighter than the off tile."
                     ))
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                    if #available(macOS 26.0, *) {
+                        Divider().overlay(Color.primary.opacity(0.06))
+
+                        HStack {
+                            Text(L10n.tr("面板主题", "Panel Theme"))
+                                .font(.system(size: DesignTokens.TypeSize.body))
+                            Spacer()
+                            GlassSegmentedControl(
+                                selection: $panelThemeRaw,
+                                segments: PanelTheme.allCases.map {
+                                    GlassSegment(value: $0.rawValue, title: $0.title)
+                                }
+                            )
+                            .frame(width: 210)
+                        }
+                    }
                 }
 
                 SettingsSection(title: L10n.tr("面板布局", "Panel Layout")) {
-                    HStack {
-                        Text(L10n.tr("面板高度", "Panel Height"))
-                            .font(.system(size: DesignTokens.TypeSize.body))
-                        Spacer()
-                        GlassSegmentedControl(
-                            selection: $panelHeightRaw,
-                            segments: PanelHeight.allCases.map {
-                                GlassSegment(value: $0.rawValue, title: $0.title)
-                            }
-                        )
-                        .frame(width: 210)
-                    }
+                    if panelTheme == .classic {
+                        HStack {
+                            Text(L10n.tr("面板高度", "Panel Height"))
+                                .font(.system(size: DesignTokens.TypeSize.body))
+                            Spacer()
+                            GlassSegmentedControl(
+                                selection: $panelHeightRaw,
+                                segments: PanelHeight.allCases.map {
+                                    GlassSegment(value: $0.rawValue, title: $0.title)
+                                }
+                            )
+                            .frame(width: 210)
+                        }
 
-                    Divider().overlay(Color.primary.opacity(0.06))
+                        Divider().overlay(Color.primary.opacity(0.06))
+                    }
 
                     SettingsToggleRow(
                         title: L10n.tr("空调使用整行面板模块", "Full-Width Climate Panel"),

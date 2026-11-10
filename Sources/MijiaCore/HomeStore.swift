@@ -263,6 +263,15 @@ public final class HomeStore {
 
     /// Recent doorbell presses, newest first, including ones that did not open a window (#308).
     public internal(set) var recentDoorbellRings: [DoorbellRing] = []
+    /// Safety alerts the panel's activity stack shows, newest first, at most
+    /// `recentSafetyAlertLimit`. Written by the snapshot path in `HomeStore+Backend.swift`, which is
+    /// also where the notification handler fires, so the panel keeps its copy when no handler is
+    /// installed. Cleared by `invalidateUndoContext`; an alert whose card leaves the home drops out
+    /// of `panelActivities`.
+    public internal(set) var recentSafetyAlerts: [RecordedSafetyAlert] = []
+    /// Activity ids the user cleared from the stack. Ignored for the notices that cannot be cleared.
+    /// In memory only, and cleared by `invalidateUndoContext` with the previous home's prompts.
+    public internal(set) var dismissedActivityIds: Set<String> = []
     /// Installed by the app to play the chime and open the live camera window for a ring.
     public var onDoorbellRing: (@MainActor (DoorbellResponse) -> Void)?
 
@@ -605,6 +614,8 @@ public final class HomeStore {
         }
     }
     var undoStateRevision: UInt64 = 0
+    /// Delivers a newly fired safety alert to the app's notifier. Optional: the panel's activity
+    /// stack records the alert in `recentSafetyAlerts` whether or not this is installed.
     public var onSafetyAlert: ((SafetyAlert) -> Void)?
     public var onGlobalHotkeyPreferenceChanged: ((Bool) -> Void)?
 

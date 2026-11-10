@@ -41,7 +41,7 @@ struct OnboardingChecklistCard: View {
                 }
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 9.5, weight: .bold))
+                    .font(.system(size: DesignTokens.TypeSize.micro, weight: .bold))
                     .foregroundStyle(.secondary)
                     .frame(width: 22, height: 22)
                     .contentShape(Rectangle())
@@ -53,14 +53,10 @@ struct OnboardingChecklistCard: View {
                 "Close the checklist; reopen it in Settings → General → Setup"
             ))
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 12)
         .frame(height: 44)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.accentColor.opacity(0.20), lineWidth: DesignTokens.hairline)
-        }
+        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.panel, isCapsule: true)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("onboarding-lesson-row")
     }
@@ -141,7 +137,7 @@ struct OnboardingChecklistCard: View {
             }
         } label: {
             Image(systemName: "ellipsis")
-                .font(.system(size: 12, weight: .bold))
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .bold))
                 .foregroundStyle(.secondary)
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())

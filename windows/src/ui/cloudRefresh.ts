@@ -339,7 +339,6 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
       const count = header?.querySelector(".cc-group-count")?.textContent ?? "";
       if (!header || count !== String(section.devices.length)) return false;
     }
-    const bento = host.skin === "bento" && host.settings.isCompactGridMode;
     const tilePatches: Array<{ current: HTMLElement; desired: Element }> = [];
     const unmatchedTileIds = new Set(
       Array.from(host.root.querySelectorAll<HTMLElement>("[data-tile-id]"), (element) => element.dataset.tileId ?? ""),
@@ -350,7 +349,6 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
       const spanMap = spans(
         section.devices,
         (device) => (host.expandedDeviceId === device.id ? "full" : host.tileSize(device)),
-        bento,
       );
       for (const device of section.devices) {
         unmatchedTileIds.delete(device.id);

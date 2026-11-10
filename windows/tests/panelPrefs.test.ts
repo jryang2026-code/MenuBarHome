@@ -5,7 +5,6 @@ import type { SmartDevice } from "../src/core/models.js";
 import {
   DEFAULT_GLOBAL_SHORTCUT,
   PANEL_ANCHORS,
-  SKINS,
   applyOrder,
   chosenSize,
   comfort,
@@ -14,6 +13,7 @@ import {
   isValidGlobalShortcut,
   localizeFanMode,
   moveInOrder,
+  nextSize,
   normalizeGlobalShortcut,
   normalizePanelOpacity,
   pageSections,
@@ -37,10 +37,6 @@ const climate = (id: string): SmartDevice => ({
 });
 
 describe("panel layout prefs", () => {
-  it("exposes only the default classic skin", () => {
-    assert.deepEqual(SKINS.map((s) => s.id), ["classic"]);
-  });
-
   it("page-scoped size overrides the all-pages default", () => {
     const prefs = emptyLayoutPrefs();
     prefs.tileSizes = { a: "full", "客厅|a": "panel" };
@@ -78,6 +74,17 @@ describe("panel layout prefs", () => {
     assert.equal(targetSize("auto", { width: 50, height: 0 }, true), "full");
     assert.equal(targetSize("auto", { width: 50, height: 0 }, false), "panel");
     assert.equal(targetSize("auto", { width: -50, height: 0 }, false), "half");
+
+    // Small resizes from the capsule step, hero from the full-row step.
+    assert.equal(targetSize("small", { width: 31, height: 0 }, true), "full");
+    assert.equal(targetSize("hero", { width: 0, height: -31 }, true), "half");
+  });
+
+  it("keeps the Windows tap cycle on half -> full -> panel and folds the round button into it", () => {
+    assert.equal(nextSize("half"), "full");
+    assert.equal(nextSize("full"), "panel");
+    assert.equal(nextSize("panel"), "half");
+    assert.equal(nextSize("small"), "half");
   });
 
   it("computes release velocity from the last 100ms and projects a flick onto at most one step (#115)", () => {
@@ -116,10 +123,10 @@ describe("panel layout prefs", () => {
     assert.deepEqual(applyOrder(["c", "a"], [plug("a"), plug("b"), plug("c")]).map((d) => d.id), ["c", "a", "b"]);
   });
 
-  it("bento alternates 4+2 and 2+2+2; full cards take the row", () => {
-    const devs = ["a", "b", "c", "d", "e", "f"].map(plug);
-    const map = spans(devs, (d) => (d.id === "c" ? "full" : "half"), true);
-    assert.deepEqual(devs.map((d) => map.get(d.id)), [4, 2, 6, 2, 2, 2]);
+  it("small and half cards take three of six columns, hero and full cards take the row", () => {
+    const devs = ["a", "b", "c", "d"].map(plug);
+    const map = spans(devs, (d) => (d.id === "a" ? "small" : d.id === "b" ? "half" : d.id === "c" ? "hero" : "full"));
+    assert.deepEqual(devs.map((d) => map.get(d.id)), [3, 3, 6, 6]);
   });
 
   it("groups come first, the rest is titled only when groups exist", () => {

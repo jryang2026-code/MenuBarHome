@@ -379,6 +379,7 @@ extension HomeStore {
             // Compare the displayed names so aliases do not cause two observable writes per snapshot.
             let nextDevices = devicesWithAliases(merged)
             if devices != nextDevices { devices = nextDevices }
+            removeActivitiesForMissingDevices()
             seedDefaultFavoritesIfNeeded()
             isApplyingProviderSnapshot = false
             let sampleNow = Date()
@@ -387,9 +388,15 @@ extension HomeStore {
             sensorHistory.record(devices: devices, now: sampleNow)
             offlineHistory.record(devices: devices, now: sampleNow)
 
-            if enableSafetyAlerts, let handler = onSafetyAlert {
-                for alert in evaluateSafetyAlerts(now: Date()) {
-                    handler(alert)
+            if enableSafetyAlerts {
+                let alerts = evaluateSafetyAlerts(now: Date())
+                // The activity stack keeps its own record whether or not the app installed a
+                // notification handler: the panel still has to show the alert.
+                recordSafetyAlerts(alerts)
+                if let handler = onSafetyAlert {
+                    for alert in alerts {
+                        handler(alert)
+                    }
                 }
             }
             if snapshot.closesAwayGap {
@@ -405,11 +412,12 @@ extension HomeStore {
               !devices.isEmpty else {
             return
         }
-        // Automatically star online controllable devices on first launch
-        let initial = devices
-            .filter { $0.isOnline && ($0.isPrimaryToggleable || $0.hasDetailDrawer) }
-            .prefix(6)
-            .map(\.id)
+        // Automatically star online controllable devices on first launch, putting full-row
+        // climate strips after compact capsules so 2×1 capsules pair cleanly side by side.
+        let candidates = devices.filter { $0.isOnline && ($0.isPrimaryToggleable || $0.hasDetailDrawer) }
+        let nonClimate = candidates.filter { if case .climate = $0.kind { return false } else { return true } }
+        let climate = candidates.filter { if case .climate = $0.kind { return true } else { return false } }
+        let initial = (nonClimate + climate).prefix(6).map(\.id)
         if !initial.isEmpty {
             self.favoriteDeviceIds = Set(initial)
             self.favoriteOrder = initial

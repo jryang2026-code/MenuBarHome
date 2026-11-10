@@ -81,3 +81,182 @@ struct CoverDetailDrawer: View {
         }
     }
 }
+
+/// The slider a full-row card shows without opening a drawer: brightness, fan speed, cover
+/// position, target humidity or volume. Kept beside the cover drawer so `DeviceCardView` stays
+/// under the line-count gate (#184).
+struct InlinePrimaryControl {
+    enum Target {
+        case lightBrightness, fanSpeed, coverPosition, humidity, volume
+    }
+
+    let target: Target
+    let value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+    let iconName: String
+    let label: String
+
+    init?(device: SmartDevice) {
+        switch device.kind {
+        case .light(let spec) where spec.brightnessWritable:
+            target = .lightBrightness
+            value = Double(spec.brightnessPercent ?? (spec.isOn ? 80 : 0))
+            range = 1...100
+            step = 1
+            iconName = "sun.max.fill"
+            label = L10n.tr("亮度", "Brightness")
+        case .fan(let spec) where spec.speedWritable:
+            guard let percent = spec.percentage else { return nil }
+            target = .fanSpeed
+            value = Double(max(1, min(100, percent)))
+            range = 1...100
+            step = 1
+            iconName = "wind"
+            label = L10n.tr("风速", "Fan speed")
+        case .cover(let spec) where spec.positionWritable:
+            target = .coverPosition
+            value = Double(spec.positionPercent ?? 0)
+            range = 0...100
+            step = 1
+            iconName = spec.subtype == .clothesAirer ? "hanger" : "window.vertical.open"
+            label = L10n.tr("开合位置", "Position")
+        case .humidifier(let spec) where spec.humidityWritable:
+            guard let targetHumidity = spec.targetHumidity else { return nil }
+            target = .humidity
+            value = Double(targetHumidity)
+            range = Double(spec.minHumidity)...Double(max(spec.minHumidity + 1, spec.maxHumidity))
+            step = Double(max(spec.step, 1))
+            iconName = "humidity.fill"
+            label = L10n.tr("目标湿度", "Target humidity")
+        case .speaker(let spec):
+            guard device.isActiveOn else { return nil }
+            target = .volume
+            value = Double(spec.volumePercent)
+            range = 0...100
+            step = 1
+            iconName = "speaker.wave.2.fill"
+            label = L10n.tr("音量", "Volume")
+        case .tv(let spec):
+            guard device.isActiveOn else { return nil }
+            target = .volume
+            value = Double(spec.volumePercent)
+            range = 0...100
+            step = 1
+            iconName = "speaker.wave.2.fill"
+            label = L10n.tr("音量", "Volume")
+        default:
+            return nil
+        }
+    }
+
+    var formattedValue: String { "\(Int(value.rounded()))%" }
+
+    @MainActor
+    func apply(_ newValue: Double, device: SmartDevice, store: HomeStore) {
+        let percent = Int(newValue.rounded())
+        switch target {
+        case .lightBrightness: store.setLightBrightness(device.id, percent: percent)
+        case .fanSpeed: store.setFanPercentage(device.id, percent: percent)
+        case .coverPosition: store.setCoverPosition(device.id, percent: percent)
+        case .humidity: store.setHumidifierHumidity(device.id, percent: percent)
+        case .volume: store.setSpeakerVolume(device.id, percent: percent)
+        }
+    }
+}
+
+/// The control-center style inline slider itself: one full-width glass track under the header.
+struct DeviceInlineSlider: View {
+    let control: InlinePrimaryControl
+    let device: SmartDevice
+    let store: HomeStore
+    let accent: Color
+    let statusColor: Color
+
+    var body: some View {
+        LiquidGlassSlider(
+            value: Binding(
+                get: { control.value },
+                set: { control.apply($0, device: device, store: store) }
+            ),
+            in: control.range,
+            step: control.step,
+            iconName: control.iconName,
+            iconColor: statusColor,
+            trackFill: LinearGradient(
+                colors: [accent.opacity(0.55), accent.opacity(0.92)],
+                startPoint: .leading,
+                endPoint: .trailing
+            ),
+            formattedValue: control.formattedValue
+        )
+        .accessibilityLabel(Text(control.label))
+    }
+}
+
+/// Target humidity, modes and the live reading for a humidifier. Split from `DeviceCardView` for
+/// the line-count gate (#184), like the cover controls above.
+struct HumidifierDetailDrawer: View {
+    let device: SmartDevice
+    let spec: HumidifierSpec
+    let store: HomeStore
+    let accent: Color
+    let statusColor: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if spec.humidityWritable, let target = spec.targetHumidity {
+                LiquidGlassSlider(
+                    value: Binding(
+                        get: { Double(target) },
+                        set: { store.setHumidifierHumidity(device.id, percent: Int($0.rounded())) }
+                    ),
+                    in: Double(spec.minHumidity)...Double(max(spec.minHumidity + 1, spec.maxHumidity)),
+                    step: Double(spec.step),
+                    iconName: "humidity.fill",
+                    iconColor: statusColor,
+                    trackFill: LinearGradient(
+                        colors: [accent.opacity(0.55), accent.opacity(0.92)],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    ),
+                    formattedValue: "\(target)%"
+                )
+                .disabled(!device.isOnline)
+                .accessibilityLabel(Text(L10n.tr("目标湿度", "Target humidity")))
+            }
+
+            if !spec.availableModes.isEmpty, spec.modeWritable {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    AdaptiveGlassContainer(spacing: 6) {
+                        HStack(spacing: 6) {
+                            ForEach(spec.availableModes, id: \.self) { mode in
+                                Button(SmartDevice.localizeApplianceMode(mode)) {
+                                    store.setHumidifierMode(device.id, mode: mode)
+                                }
+                                .buttonStyle(PillActionButtonStyle(
+                                    isSelected: spec.currentMode == mode,
+                                    tintColor: accent
+                                ))
+                                .disabled(!device.isOnline)
+                            }
+                        }
+                    }
+                    .padding(6)
+                }
+                .padding(-6)
+            }
+
+            if let current = spec.currentHumidity {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(L10n.tr("当前湿度", "Current humidity"))
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    DetailValueText(text: "\(Int(current.rounded()))%", color: statusColor)
+                }
+                .padding(.horizontal, 8)
+            }
+        }
+    }
+}

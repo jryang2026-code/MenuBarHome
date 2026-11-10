@@ -4,23 +4,27 @@ import MijiaCore
 
 /// Per-device card size picked from the card's context menu.
 public enum TileSize: String, CaseIterable, Identifiable, Sendable {
-    case auto, half, full, panel
+    case auto, small, half, hero, full, panel
 
     public var id: String { rawValue }
 
     public var title: String {
         switch self {
         case .auto: return L10n.tr("自动", "Auto")
-        case .half: return L10n.tr("半行", "Half Row")
-        case .full: return L10n.tr("整行", "Full Row")
-        case .panel: return L10n.tr("展开面板", "Open Panel")
+        case .small: return L10n.tr("圆钮 (1×1)", "Round (1×1)")
+        case .half: return L10n.tr("胶囊 (2×1)", "Capsule (2×1)")
+        case .hero: return L10n.tr("方砖 (2×2)", "Square (2×2)")
+        case .full: return L10n.tr("整行 (4×1)", "Full Row (4×1)")
+        case .panel: return L10n.tr("常驻展开", "Always Expanded")
         }
     }
 
     public var symbol: String {
         switch self {
         case .auto: return "wand.and.stars"
+        case .small: return "circle.grid.2x2"
         case .half: return "rectangle.split.2x1"
+        case .hero: return "square.grid.2x2"
         case .full: return "rectangle"
         case .panel: return "rectangle.expand.vertical"
         }
@@ -42,7 +46,13 @@ public enum TileResizeGestureMath {
         let resolvedStart: TileSize = startSize == .auto
             ? (isCompactGrid ? .half : .full)
             : startSize
-        guard let startIndex = orderedSizes.firstIndex(of: resolvedStart) else {
+        // A 1×1 round button resizes from the capsule step; a 2×2 hero from the full-row step.
+        let gestureStart: TileSize = switch resolvedStart {
+        case .small: .half
+        case .hero: .full
+        default: resolvedStart
+        }
+        guard let startIndex = orderedSizes.firstIndex(of: gestureStart) else {
             return resolvedStart
         }
         let stepDelta = axisSteps(for: translation.width) + axisSteps(for: translation.height)
@@ -167,7 +177,7 @@ extension DeviceLayoutPrefs {
     }
 }
 
-// MARK: - Edit Mode (long-press → jiggle, drag to reorder, corner arc handle to resize)
+// MARK: - Edit Mode (menu → still cards, drag to reorder, corner arc handle to resize)
 
 private struct LayoutEditingKey: EnvironmentKey {
     static let defaultValue = false
@@ -180,146 +190,220 @@ extension EnvironmentValues {
     }
 }
 
-/// Draws an iOS Control Center-style quarter-circle arc hugging the card's bottom-right corner (#115).
-/// The visual arc is small and quiet; the enclosing 28pt frame stays the hit area.
+/// The arc macOS Control Center draws on the hovered module's bottom-right corner while editing.
+/// Concentric with the card's own corner (`distance == 0` rides directly on the card's outer edge),
+/// spanning 49° (`20.5° → 69.5°`) centred on the 45° diagonal. `cornerRadius == nil` means a
+/// capsule, whose corner radius is half the shorter side. Drawn in the card's bounds.
 struct CornerArcHandleShape: Shape {
-    var cornerRadius: CGFloat = 10
-    var inset: CGFloat = 8
+    var cornerRadius: CGFloat?
+    /// Distance from the card edge to the stroke's centre line (0 pt rides on the card's outer arc).
+    var distance: CGFloat = 0
 
     func path(in rect: CGRect) -> Path {
-        let radius = max(6, cornerRadius)
-        let center = CGPoint(
-            x: rect.maxX - inset - radius,
-            y: rect.maxY - inset - radius
-        )
+        let corner = resolvedCorner(in: rect.size)
         var path = Path()
         path.addArc(
-            center: center,
-            radius: radius,
-            startAngle: .degrees(0),
-            endAngle: .degrees(90),
+            center: CGPoint(x: rect.maxX - corner, y: rect.maxY - corner),
+            radius: corner + distance,
+            startAngle: .degrees(20.5),
+            endAngle: .degrees(69.5),
             clockwise: false
         )
         return path
     }
+
+    func resolvedCorner(in size: CGSize) -> CGFloat {
+        let capsule = min(size.width, size.height) / 2
+        return min(cornerRadius ?? capsule, capsule)
+    }
 }
 
-/// Wraps one device card. Long-press then keep dragging picks the card up straight away (no
-/// second click); while editing a plain drag moves any card. The card follows the pointer via
-/// `dragOffset`, jiggles, and shows a bottom-right corner arc handle that supports both drag
-/// resizing (`half ↔ full ↔ panel`) and tap cycling (`half → full → panel → half`).
+/// The visible resize grabber: pure white 4.75 pt round-capped arc with a faint 5 % black shadow.
+private struct CornerArcHandle: View {
+    let cornerRadius: CGFloat?
+    let isActive: Bool
+
+    var body: some View {
+        GeometryReader { geo in
+            let corner = CornerArcHandleShape(cornerRadius: cornerRadius).resolvedCorner(in: geo.size)
+            CornerArcHandleShape(cornerRadius: cornerRadius)
+                .stroke(
+                    Color.white,
+                    style: StrokeStyle(lineWidth: 4.75, lineCap: .round)
+                )
+                .shadow(color: .black.opacity(0.05), radius: 1.2)
+                .scaleEffect(
+                    isActive ? 1.12 : 1,
+                    anchor: UnitPoint(
+                        x: geo.size.width > 0 ? (geo.size.width - corner) / geo.size.width : 1,
+                        y: geo.size.height > 0 ? (geo.size.height - corner) / geo.size.height : 1
+                    )
+                )
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// 完成 in the edit toolbar: a glass capsule that rises 2 % under the pointer. Return finishes too.
+struct LayoutEditDoneButton: View {
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
+    let action: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(L10n.tr("完成", "Done"))
+                .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                .padding(.horizontal, 16)
+                .frame(height: 28)
+                .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
+                .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut(.defaultAction)
+        .scaleEffect(isHovering && !reduceMotion ? 1.02 : 1)
+        .animation(reduceMotion ? nil : AppleMotion.control, value: isHovering)
+        .onHover { isHovering = $0 }
+        .accessibilityHint(Text(L10n.tr("结束布局编辑", "Finish editing the layout")))
+    }
+}
+
+/// Wraps one device card. While editing (entered from the `⋯` menu or a card's context menu,
+/// never a long press) cards stay at scale 1.0 without jiggling; the hovered card shows the
+/// bottom-right corner arc grabber, which drags or taps between sizes (`1×1 ↔ 2×1 ↔ 2×2 ↔ 4×1`).
+/// A plain drag anywhere on a card reorders it with a subtle shadow while neighbours reflow along
+/// a critically damped 0.50 s spring. The `−` badge is drawn by `LayoutRemoveBadge` above the glass
+/// container, which would otherwise composite neighbouring cards' glass over it.
 struct LayoutEditable: ViewModifier {
     @Environment(\.isEditingLayout) private var editing
     @Environment(\.effectiveReduceMotion) private var reduceMotion
-    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
     let deviceId: String
     let size: TileSize
     let isDragging: Bool
+    var isAnyCardDragging: Bool = false
     var isResizing: Bool = false
     let dragOffset: CGSize
     let onCycleSize: () -> Void
     var onBeginResize: () -> Void = {}
     var onResizeDrag: (CGSize) -> Void = { _ in }
     var onEndResize: (CGSize, [TileResizeGestureMath.ResizeSample]) -> Void = { _, _ in }
-    /// #145: edit mode shows a pencil badge that opens the shared device rename prompt.
-    var onRename: (() -> Void)? = nil
 
     /// Gesture-scoped state lives here so per-pointermove updates never re-render the whole
-    /// panel (#115, QuotaKeeper-style "only the active card needs layout"). The card itself
-    /// never transforms during a handle drag — a corner-anchored scale would push the
-    /// opposite edges past the panel padding — only the handle leans into the finger.
+    /// panel (#115, QuotaKeeper-style "only the active card needs layout").
     @State private var isHandleActive = false
     @State private var resizeSamples: [TileResizeGestureMath.ResizeSample] = []
+    @State private var isCardHovered = false
+    @State private var isHandleHovered = false
 
-    // Per-card phase so neighbouring cards do not swing in sync.
-    private var phase: Double { Double(abs(deviceId.hashValue % 97)) / 97 * .pi * 2 }
+    /// 1×1 and 2×1 cards are capsules; 2×2 and full rows use the module radius.
+    private var arcCornerRadius: CGFloat? {
+        (size == .half || size == .small) ? nil : DesignTokens.Radius.module
+    }
 
-    /// Quiet at rest, confident under the finger.
-    private var handleInk: Color {
-        if isHandleActive {
-            return colorScheme == .dark ? Color.white.opacity(0.9) : Color.primary.opacity(0.8)
-        }
-        return colorScheme == .dark ? Color.white.opacity(0.55) : Color.primary.opacity(0.45)
+    private var showsChrome: Bool {
+        editing && !isDragging && !isAnyCardDragging
+            && (isCardHovered || isHandleHovered || isResizing || isHandleActive)
     }
 
     func body(content: Content) -> some View {
         ZStack(alignment: .bottomTrailing) {
-            jiggling(content.allowsHitTesting(!editing))
-                .scaleEffect(isDragging ? 1.05 : 1)
-                .shadowIf(isDragging, color: .black.opacity(0.3), radius: 12, y: 6)
+            content.allowsHitTesting(!editing)
+                .shadow(
+                    color: .black.opacity(isDragging ? 0.30 : 0),
+                    radius: isDragging ? 14 : 0,
+                    y: isDragging ? 6 : 0
+                )
+                .animation(reduceMotion ? nil : AppleMotion.snappySpring, value: isDragging)
 
-            if editing && !isDragging {
-                CornerArcHandleShape()
-                    .stroke(
-                        handleInk,
-                        style: StrokeStyle(lineWidth: isHandleActive ? 4 : 3, lineCap: .round)
-                    )
-                    .shadow(color: .black.opacity(0.15), radius: 1, y: 1)
-                    .scaleEffect(isHandleActive ? 1.25 : 1, anchor: .bottomTrailing)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
-                    .animation(reduceMotion ? nil : AppleMotion.pressFeedback, value: isHandleActive)
-                    .highPriorityGesture(
-                        DragGesture(minimumDistance: 0, coordinateSpace: .named(TileSpace.name))
-                            .onChanged { value in
-                                isHandleActive = true
-                                onBeginResize()
-                                onResizeDrag(value.translation)
-                                guard !reduceMotion else { return }
-                                let now = Date.timeIntervalSinceReferenceDate
-                                resizeSamples.append(TileResizeGestureMath.ResizeSample(offset: value.translation, time: now))
-                                resizeSamples = resizeSamples.filter { now - $0.time <= 0.12 }
-                            }
-                            .onEnded { value in
-                                isHandleActive = false
-                                let samples = resizeSamples
-                                resizeSamples = []
-                                onEndResize(value.translation, samples)
-                            }
-                    )
-                    .accessibilityElement()
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityLabel(Text(L10n.tr("调整卡片大小，当前 \(size.title)", "Resize card, currently \(size.title)")))
-                    .accessibilityAction { onCycleSize() }
-                    .panelHelp(L10n.tr("拖拽或点击调整卡片大小：\(size.title)", "Drag or click to resize: \(size.title)"))
-                    .padding(.bottom, -4)
-                    .padding(.trailing, -4)
-                    .transition(.scale(scale: 0.92, anchor: .bottomTrailing).combined(with: .opacity))
+            if editing && !isDragging && !isAnyCardDragging {
+                resizeHandle
             }
         }
-        .overlay(alignment: .topTrailing) {
-            if editing, !isDragging, let onRename {
-                Button(action: onRename) {
-                    Image(systemName: "pencil")
-                        .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
-                        .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.88) : Color.primary.opacity(0.72))
-                        .frame(width: 22, height: 22)
-                        .adaptiveGlass(in: Circle(), interactive: true)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(Text(L10n.tr("重命名设备", "Rename Device")))
-                .accessibilityHint(Text(L10n.tr("打开重命名输入框", "Opens the rename prompt")))
-                .panelHelp(L10n.tr("重命名设备（仅在编辑状态显示）", "Rename device (shown while editing)"))
-                .padding(6)
-                .transition(.scale(scale: 0.86).combined(with: .opacity))
+        .contentShape(Rectangle())
+        .onHover { isCardHovered = $0 }
+        .overlay {
+            if showsChrome {
+                CornerArcHandle(cornerRadius: arcCornerRadius, isActive: isHandleActive || isResizing)
+                    .transition(.opacity)
             }
         }
+        .animation(reduceMotion ? nil : AppleMotion.control, value: showsChrome)
+        .animation(reduceMotion ? nil : AppleMotion.control, value: isAnyCardDragging)
         .offset(dragOffset)
         .zIndex(isDragging ? 10 : 0)
+        .onChange(of: editing) { _, _ in
+            isCardHovered = false
+            isHandleHovered = false
+        }
+    }
+    /// The 28 pt hit area at the card's bottom-right corner. It stays mounted (and invisible) for
+    /// every card while editing; the arc only draws once the pointer is over the card.
+    private var resizeHandle: some View {
+        Color.clear
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
+            .onHover { isHandleHovered = $0 }
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .named(TileSpace.name))
+                    .onChanged { value in
+                        isHandleActive = true
+                        onBeginResize()
+                        onResizeDrag(value.translation)
+                        guard !reduceMotion else { return }
+                        let now = Date.timeIntervalSinceReferenceDate
+                        resizeSamples.append(TileResizeGestureMath.ResizeSample(offset: value.translation, time: now))
+                        resizeSamples = resizeSamples.filter { now - $0.time <= 0.12 }
+                    }
+                    .onEnded { value in
+                        isHandleActive = false
+                        let samples = resizeSamples
+                        resizeSamples = []
+                        onEndResize(value.translation, samples)
+                    }
+            )
+            .accessibilityElement()
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel(Text(L10n.tr("调整卡片大小，当前 \(size.title)", "Resize card, currently \(size.title)")))
+            .accessibilityAction { onCycleSize() }
+            .panelHelp(L10n.tr("拖拽或点击调整卡片大小：\(size.title)", "Drag or click to resize: \(size.title)"))
+            .padding(.bottom, -4)
+            .padding(.trailing, -4)
+    }
+}
+
+/// Control Center's `−` badge: a 20 pt dark frosted disc centred on the card's corner curve.
+struct LayoutRemoveBadge: View {
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
+    let frame: CGRect
+    let isCapsule: Bool
+    let action: () -> Void
+
+    /// The 45° point of the corner curve, minus the badge radius; a module card keeps the
+    /// measured (−2, −2) pt corner offset.
+    private var inset: CGFloat {
+        let radius = isCapsule ? frame.height / 2 : DesignTokens.Radius.module
+        return max(-2, radius * (1 - 1 / 2.squareRoot()) - 10)
     }
 
-    /// Angle is computed from the clock each frame, so a card rebuilt mid-edit keeps jiggling
-    /// instead of freezing at the last animated angle.
-    @ViewBuilder
-    private func jiggling<V: View>(_ view: V) -> some View {
-        if editing && !reduceMotion && !isDragging && !isResizing {
-            TimelineView(.animation) { context in
-                let t = context.date.timeIntervalSinceReferenceDate
-                view.rotationEffect(.degrees(sin(t * 2 * .pi * 3.6 + phase) * 1.1))
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(reduceTransparency ? AnyShapeStyle(Color.black.opacity(0.78)) : AnyShapeStyle(.ultraThinMaterial))
+                Circle()
+                    .fill(Color.black.opacity(reduceTransparency ? 0.20 : 0.48))
+                Capsule(style: .continuous)
+                    .fill(Color.white.opacity(0.90))
+                    .frame(width: 9, height: 1.75)
             }
-        } else {
-            view
+            .frame(width: 20, height: 20)
+            .contentShape(Circle())
         }
+        .buttonStyle(.plain)
+        .position(x: frame.minX + inset + 10, y: frame.minY + inset + 10)
+        .accessibilityLabel(Text(L10n.tr("从常用移除", "Remove from Favorites")))
+        .panelHelp(L10n.tr("从常用移除（设备仍在下方的房间里）", "Remove from Favorites (the device stays in its room below)"))
     }
 }
 
@@ -346,13 +430,14 @@ struct TileFramesKey: PreferenceKey {
 // MARK: - Flow Layout
 
 struct TileSpanKey: LayoutValueKey {
-    static let defaultValue = 6
+    static let defaultValue = 12
 }
 
-/// Packs children left to right into rows of 6 columns using each child's `TileSpanKey`.
+/// Packs children left to right into rows of 12 columns using each child's `TileSpanKey`
+/// (3 = 1×1 round button, 6 = 2×1 capsule / 2×2 hero, 12 = full row).
 /// Cards in a row share the tallest card's height.
 struct TileFlowLayout: Layout {
-    var spacing: CGFloat = 7
+    var spacing: CGFloat = 8
 
     private struct Row {
         var indices: [Int] = []
@@ -360,7 +445,7 @@ struct TileFlowLayout: Layout {
     }
 
     private func width(for span: Int, total: CGFloat) -> CGFloat {
-        let unit = (total - spacing * 5) / 6
+        let unit = (total - spacing * 11) / 12
         return unit * CGFloat(span) + spacing * CGFloat(span - 1)
     }
 
@@ -369,8 +454,8 @@ struct TileFlowLayout: Layout {
         var current = Row()
         var used = 0
         for (i, sub) in subviews.enumerated() {
-            let span = min(max(sub[TileSpanKey.self], 1), 6)
-            if used + span > 6, !current.indices.isEmpty {
+            let span = min(max(sub[TileSpanKey.self], 1), 12)
+            if used + span > 12, !current.indices.isEmpty {
                 rows.append(current)
                 current = Row()
                 used = 0
@@ -385,7 +470,7 @@ struct TileFlowLayout: Layout {
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let total = proposal.width ?? 330
+        let total = proposal.width ?? 350
         let rs = rows(subviews, total: total)
         let height = rs.reduce(0) { $0 + $1.height } + spacing * CGFloat(max(rs.count - 1, 0))
         return CGSize(width: total, height: height)
@@ -396,7 +481,7 @@ struct TileFlowLayout: Layout {
         for row in rows(subviews, total: bounds.width) {
             var x = bounds.minX
             for i in row.indices {
-                let span = min(max(subviews[i][TileSpanKey.self], 1), 6)
+                let span = min(max(subviews[i][TileSpanKey.self], 1), 12)
                 let w = width(for: span, total: bounds.width)
                 subviews[i].place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: ProposedViewSize(width: w, height: row.height))
                 x += w + spacing
@@ -561,8 +646,8 @@ final class LayoutUIState {
     var renamingDeviceId: String?
     /// Non-nil while renaming that room (local display name only).
     var renamingRoomId: String?
-    /// Raised from a card's context menu, so entering edit mode no longer requires the 0.6 s
-    /// long-press the audit flagged as inaccessible (#41).
+    /// Raised from a card's context menu, so entering edit mode is a discovered menu action and
+    /// never a long press on a card (#41).
     var isEditingLayoutRequested = false
     /// Latest card frames in window `.global` coordinates; lets UI tests locate the resize
     /// handle after dynamic relayouts without hard-coding pixel positions.
@@ -594,13 +679,13 @@ struct GroupNamePrompt: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.system(size: 13, weight: .semibold))
+            Text(title).font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
             TextField(placeholder, text: $name)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13))
+                .font(.system(size: DesignTokens.TypeSize.body))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
-                .adaptiveGlass(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .adaptiveGlass(in: RoundedRectangle(cornerRadius: DesignTokens.Radius.inset, style: .continuous))
                 .focused($focused)
                 .onSubmit(save)
             HStack {
@@ -619,15 +704,7 @@ struct GroupNamePrompt: View {
         }
         .padding(14)
         .frame(width: 280)
-        .background {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(.regularMaterial)
-                .shadow(color: .black.opacity(0.3), radius: 20, y: 8)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.primary.opacity(0.1), lineWidth: 1)
-        }
+        .adaptiveGlass(in: RoundedRectangle(cornerRadius: DesignTokens.Radius.module, style: .continuous))
         .onAppear { focused = true }
     }
 

@@ -25,9 +25,9 @@ struct ClimatePanelModule: View {
 
     private var accent: Color { DevicePalette.accentColor(for: device) }
 
-    /// One presentation state drives text ink; a running unit sits on the tinted platter.
+    /// One presentation state drives the fill; a running unit sits on the family-tinted well.
     private var surface: TileSurface {
-        TileSurface(isActive: isRunning, tint: isRunning ? DesignTokens.Orb.climate : nil, scheme: colorScheme)
+        TileSurface(isActive: isRunning, tint: nil, scheme: colorScheme)
     }
 
     private var fg: Color { surface.ink }
@@ -78,7 +78,8 @@ struct ClimatePanelModule: View {
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 10)
-        .glassTile(isActive: isRunning, cornerRadius: DesignTokens.Radius.card, tint: DesignTokens.Orb.climate)
+        .glassTile(isActive: isRunning, cornerRadius: DesignTokens.Radius.module)
+        .glassHoverHighlight(cornerRadius: DesignTokens.Radius.module)
         .opacity(device.isOnline ? 1 : 0.58)
         .disabled(!device.isOnline)
         .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.8), value: isRunning)
@@ -94,16 +95,7 @@ struct ClimatePanelModule: View {
                 withAnimation(AppleMotion.snappySpring) { _ = store.togglePrimary(device) }
                 if device.isOnline { SoundFeedback.playSuccess() }
             } label: {
-                ZStack {
-                    Circle()
-                        .fill(isRunning ? AnyShapeStyle(accent) : AnyShapeStyle(Color.primary.opacity(0.08)))
-                        .frame(width: 32, height: 32)
-                        .shadowIf(isRunning, color: accent.opacity(0.4), radius: 6)
-                    Image(systemName: spec.hvacMode == "heat" ? "flame.fill" : "snowflake")
-                        .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                        .foregroundStyle(isRunning ? Color.white : muted)
-
-                }
+                orb
             }
             .buttonStyle(PressableCardButtonStyle())
             .accessibilityLabel(Text(isRunning
@@ -161,16 +153,31 @@ struct ClimatePanelModule: View {
         }
     }
 
-    private var iconBadge: some View {
-        ZStack {
+    /// The control-center orb: saturated family colour with a white rim and glow when running,
+    /// a quiet recessed well with primary ink when off (same contract as `DeviceCardView`).
+    private var orb: some View {
+        let offFill = colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.10)
+        let offInk = colorScheme == .dark ? Color.white.opacity(0.68) : Color.secondary
+        return ZStack {
             Circle()
-                .fill(isRunning ? AnyShapeStyle(accent) : AnyShapeStyle(Color.primary.opacity(0.08)))
-                .frame(width: 32, height: 32)
+                .fill(isRunning ? AnyShapeStyle(accent) : AnyShapeStyle(offFill))
+            Circle()
+                .strokeBorder(
+                    Color.white.opacity(isRunning ? 0.32 : (colorScheme == .dark ? 0.16 : 0.28)),
+                    lineWidth: DesignTokens.hairline
+                )
             Image(systemName: spec.hvacMode == "heat" ? "flame.fill" : "snowflake")
-                .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                .foregroundStyle(isRunning ? Color.white : muted)
+                .font(.system(size: DesignTokens.TypeSize.title, weight: .semibold))
+                .foregroundStyle(isRunning ? Color.white : offInk)
+                .symbolEffect(.bounce, value: isRunning)
         }
-        .accessibilityHidden(true)
+        .frame(width: 38, height: 38)
+        .shadowIf(isRunning, color: accent.opacity(0.38), radius: 6, y: 2)
+        .animation(AppleMotion.control, value: isRunning)
+    }
+
+    private var iconBadge: some View {
+        orb.accessibilityHidden(true)
     }
 
     private var statusLine: String {
@@ -197,7 +204,7 @@ struct ClimatePanelModule: View {
                     .frame(width: max(6, geo.size.width * progress))
             }
         }
-        .frame(height: 4)
+        .frame(height: 6)
         .animation(reduceMotion ? nil : AppleMotion.pressFeedback, value: spec.targetTemperature)
     }
 
@@ -211,7 +218,7 @@ struct ClimatePanelModule: View {
             Image(systemName: symbol)
                 .font(.system(size: DesignTokens.TypeSize.body, weight: .bold))
                 .foregroundStyle(fg)
-                .frame(width: 28, height: 28)
+                .frame(width: 30, height: 30)
                 .adaptiveGlass(in: Circle(), interactive: true)
         }
         .buttonStyle(PressableCardButtonStyle(scaleAmount: 0.86))

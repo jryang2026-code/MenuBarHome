@@ -21,6 +21,41 @@ private final class TestStatusItem: NSStatusItem {
     override var button: NSStatusBarButton? { testButton }
 }
 
+/// Writes `panel_theme` / `panel_height` into the developer defaults for one test and puts the
+/// previous values back, so a themed test cannot leak its choice into the next one.
+@MainActor
+private final class PanelPreferenceScope {
+    private let previousTheme: String?
+    private let previousHeight: String?
+
+    init(theme: PanelTheme? = nil, height: PanelHeight? = nil) {
+        previousTheme = UserDefaults.standard.string(forKey: PanelTheme.storageKey)
+        previousHeight = UserDefaults.standard.string(forKey: PanelHeight.storageKey)
+        if let theme {
+            UserDefaults.standard.set(theme.rawValue, forKey: PanelTheme.storageKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: PanelTheme.storageKey)
+        }
+        if let height {
+            UserDefaults.standard.set(height.rawValue, forKey: PanelHeight.storageKey)
+        }
+    }
+
+    func restore() {
+        if let previousTheme {
+            UserDefaults.standard.set(previousTheme, forKey: PanelTheme.storageKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: PanelTheme.storageKey)
+        }
+        if let previousHeight {
+            UserDefaults.standard.set(previousHeight, forKey: PanelHeight.storageKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: PanelHeight.storageKey)
+        }
+    }
+}
+
+extension PanelPresentationTests {
 /// #56: the control center is hosted by an app-owned `NSStatusItem` + `NSPanel` instead of the
 /// `MenuBarExtra` scene. These tests drive the real AppKit objects — window creation, show/hide,
 /// outside-click closing, sizing and positioning — with an in-memory home and no network.
@@ -584,6 +619,26 @@ struct MenuBarPanelControllerTests {
         #expect(button.cell?.isHighlighted == false)
     }
 
+    @Test("Closing without another status-item click releases its highlight", arguments: PanelTheme.allCases, [false, true])
+    func programmaticCloseReleasesStatusItemHighlight(theme: PanelTheme, animated: Bool) async throws {
+        let preferences = PanelPreferenceScope(theme: theme)
+        defer { preferences.restore() }
+        let (store, suite) = try await makeStore()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let item = TestStatusItem()
+        let controller = MenuBarPanelController(statusItem: item)
+        controller.presentsActively = animated
+        controller.shouldReduceMotion = { true }
+        controller.install(with: store)
+        defer { controller.uninstall() }
+
+        controller.showPanel()
+        #expect(item.testButton.cell?.isHighlighted == true)
+        controller.hidePanel()
+        #expect(controller.isPanelVisible == false)
+        #expect(item.testButton.cell?.isHighlighted == false)
+    }
+
     @Test("Primary long press stays highlighted until release")
     func primaryLongPressHighlightsUntilRelease() {
         let statusItem = TestStatusItem()
@@ -982,8 +1037,68 @@ struct MenuBarPanelControllerTests {
         #expect(MenuBarPanelController.statusBarImage(symbolName: "nonexistent.symbol.for.test.181") != nil)
     }
 
-    @Test("Showing the panel creates a key-capable 376 pt window and marks it visible")
-    func showPanelCreatesVisibleWindow() async throws {
+
+    @Test("Reopening during dismissal preserves the panel and emits each visibility change once", arguments: [false, true])
+    func reopenDuringDismissal(reduced: Bool) async throws {
+        // The slide-in dismissal this test drives belongs to the liquid-glass window.
+        let themeScope = PanelPreferenceScope(theme: .liquidGlass)
+        defer { themeScope.restore() }
+        let (store, suite) = try await makeStore()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        store.enableGrokBall = true
+        let controller = makeController(store: store)
+        defer { controller.uninstall() }
+        controller.presentsActively = true
+        controller.shouldReduceMotion = { reduced }
+        var shows = 0
+        var hides = 0
+        let shown = NotificationCenter.default.addObserver(forName: MenuBarPanelController.didShowNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { shows += 1 }
+        }
+        let hidden = NotificationCenter.default.addObserver(forName: MenuBarPanelController.didHideNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { hides += 1 }
+        }
+        defer {
+            NotificationCenter.default.removeObserver(shown)
+            NotificationCenter.default.removeObserver(hidden)
+        }
+        func waitUntil(_ predicate: () -> Bool) async -> Bool {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while !predicate() {
+                guard ContinuousClock.now < deadline else { return false }
+                Self.pumpMainRunLoop(0.005)
+                await Task.yield()
+            }
+            return true
+        }
+        controller.showPanel()
+        let panel = try #require(controller.panelWindow)
+        #expect(await waitUntil { controller.grokBallSidecarWindow?.isVisible == true })
+        let settled = panel.frame
+        controller.hidePanel()
+        controller.hidePanel()
+        #expect(await waitUntil { reduced ? panel.alphaValue < 0.95 : panel.frame.minX > settled.minX + 2 })
+        let interrupted = panel.frame
+        controller.handlePreferencesChanged()
+        #expect(panel.frame == interrupted, "a preferences notification cannot snap a closing window back")
+        controller.showPanel()
+        controller.showPanel()
+        #expect(abs(panel.frame.minX - interrupted.minX) <= 1, "reopening starts at the current position")
+        #expect(await waitUntil { controller.grokBallSidecarWindow?.isVisible == true })
+        #expect(panel.isVisible)
+        #expect(controller.isPanelVisible)
+        #expect(panel.frame == settled)
+        #expect(shows == 2)
+        #expect(hides == 1)
+        controller.hidePanel()
+        #expect(await waitUntil { !panel.isVisible })
+        #expect(hides == 2)
+    }
+
+    @Test("Showing the panel creates a key-capable 376 pt window and marks it visible", arguments: PanelTheme.allCases)
+    func showPanelCreatesVisibleWindow(theme: PanelTheme) async throws {
+        let themeScope = PanelPreferenceScope(theme: theme)
+        defer { themeScope.restore() }
         let (store, suite) = try await makeStore()
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let controller = makeController(store: store)
@@ -993,9 +1108,9 @@ struct MenuBarPanelControllerTests {
         let token = NotificationCenter.default.addObserver(
             forName: MenuBarPanelController.didShowNotification,
             object: nil,
-            queue: nil
+            queue: .main
         ) { _ in
-            didShow = true
+            MainActor.assumeIsolated { didShow = true }
         }
         defer { NotificationCenter.default.removeObserver(token) }
 
@@ -1010,10 +1125,16 @@ struct MenuBarPanelControllerTests {
         #expect(panel.canBecomeKey, "arrow keys and text fields need a key panel")
         #expect(panel.canBecomeMain == false)
         #expect(abs(panel.frame.width - MenuBarPanelController.panelWidth) < 1)
-        #expect(panel.contentView is NSHostingView<ControlCenterPanel>)
+        #expect(controller.hostedPanelTheme == theme)
 
-        let expectedHeight = MenuBarPanelController.preferredContentSize().height
-        #expect(abs(panel.frame.height - expectedHeight) < 1)
+        let visible = try #require(panel.screen ?? NSScreen.main).visibleFrame
+        switch theme {
+        case .classic:
+            let expectedHeight = min(PanelHeight.standard.points, visible.height - 24)
+            #expect(abs(panel.frame.height - expectedHeight) <= 1, "the classic panel follows PanelHeight")
+        case .liquidGlass:
+            #expect(panel.frame.height > visible.height - 30, "the column runs almost the whole visible height")
+        }
     }
 
     @Test("Hiding orders the window out, keeps the SwiftUI tree and posts the hide notification")
@@ -1025,15 +1146,15 @@ struct MenuBarPanelControllerTests {
 
         controller.showPanel()
         let panel = try #require(controller.panelWindow)
-        let hosting = try #require(panel.contentView as? NSHostingView<ControlCenterPanel>)
+        let hosting = try #require(panel.contentView)
 
         var didHide = false
         let token = NotificationCenter.default.addObserver(
             forName: MenuBarPanelController.didHideNotification,
             object: nil,
-            queue: nil
+            queue: .main
         ) { _ in
-            didHide = true
+            MainActor.assumeIsolated { didHide = true }
         }
         defer { NotificationCenter.default.removeObserver(token) }
 
@@ -1065,9 +1186,6 @@ struct MenuBarPanelControllerTests {
 
         #expect(store.isShowingMiReauth)
         #expect(controller.isPanelVisible)
-        let panel = try #require(controller.panelWindow)
-        let hosting = try #require(panel.contentView as? NSHostingView<ControlCenterPanel>)
-        #expect(hosting.rootView.store.isShowingMiReauth)
     }
 
     @Test("Toggle switches between visible and hidden while preserving the same SwiftUI tree")
@@ -1079,7 +1197,7 @@ struct MenuBarPanelControllerTests {
 
         controller.togglePanel()
         let panel = try #require(controller.panelWindow)
-        let hosting = try #require(panel.contentView as? NSHostingView<ControlCenterPanel>)
+        let hosting = try #require(panel.contentView)
         #expect(controller.isPanelVisible)
 
         controller.togglePanel()
@@ -1130,35 +1248,166 @@ struct MenuBarPanelControllerTests {
         #expect(controller.isPanelWindow(statusWindow) == false, "the status item window is not the panel")
     }
 
-    @Test("Panel tracks the panel-height preference and stays 376 wide")
-    func panelSizingFollowsPreference() async throws {
+    @Test("The liquid-glass panel is a 376 pt column from under the menu bar to the bottom of the screen")
+    func panelIsFullHeightColumn() async throws {
+        let themeScope = PanelPreferenceScope(theme: .liquidGlass)
+        defer { themeScope.restore() }
         let (store, suite) = try await makeStore()
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let previous = UserDefaults.standard.string(forKey: PanelHeight.storageKey)
-        UserDefaults.standard.set(PanelHeight.compact.rawValue, forKey: PanelHeight.storageKey)
-        defer {
-            if let previous {
-                UserDefaults.standard.set(previous, forKey: PanelHeight.storageKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: PanelHeight.storageKey)
-            }
-        }
-        // The controller reads the preference through `UserDefaults.standard`, like the panel's
-        // `@AppStorage`, so the window starts at the compact height.
-
         let controller = makeController(store: store)
         defer { controller.uninstall() }
         controller.showPanel()
         let panel = try #require(controller.panelWindow)
+        #expect(controller.hostedPanelTheme == .liquidGlass)
 
-        let compact = PanelHeight.compact.points
-        let screenHeight = (panel.screen ?? NSScreen.main)?.visibleFrame.height ?? 900
-        // `preferredContentSize()` caps the preference to 24 pt below the visible frame.
-        #expect(abs(panel.frame.height - min(compact, screenHeight - 24)) < 1)
-
-        controller.updatePanelSize(width: MenuBarPanelController.panelWidth, height: 320)
-        #expect(abs(panel.frame.height - 320) < 1)
+        let visible = try #require(panel.screen ?? NSScreen.main).visibleFrame
         #expect(abs(panel.frame.width - MenuBarPanelController.panelWidth) < 1)
+        #expect(panel.frame.height > visible.height - 30, "the column runs almost the whole visible height")
+        #expect(panel.frame.minY >= visible.minY, "the column stays on screen")
+        #expect(panel.frame.maxY <= visible.maxY)
+        #expect(abs(panel.frame.maxX - (visible.maxX - 16)) <= 0.5)
+        #expect(abs(panel.frame.maxY - (visible.maxY - 6)) <= 1)
+        #expect(abs(panel.frame.minY - (visible.minY + 8)) <= 1)
+    }
+
+    @Test("The classic panel hangs under the status item at the PanelHeight preference", arguments: [
+        PanelHeight.compact, PanelHeight.standard, PanelHeight.tall, PanelHeight.max,
+    ])
+    func classicPanelFrameFollowsPanelHeight(height: PanelHeight) async throws {
+        let themeScope = PanelPreferenceScope(theme: .classic, height: height)
+        defer { themeScope.restore() }
+        let (store, suite) = try await makeStore()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let controller = makeController(store: store)
+        defer { controller.uninstall() }
+
+        controller.showPanel()
+        let panel = try #require(controller.panelWindow)
+        #expect(controller.hostedPanelTheme == .classic)
+
+        let visible = try #require(panel.screen ?? NSScreen.main).visibleFrame
+        let expectedHeight = min(height.points, visible.height - 24)
+        #expect(abs(panel.frame.width - MenuBarPanelController.panelWidth) < 1)
+        #expect(abs(panel.frame.height - expectedHeight) <= 1, "classic height follows panel_height")
+        #expect(panel.frame.minY >= visible.minY, "the panel stays on screen")
+        #expect(panel.frame.maxY <= visible.maxY + 1)
+        #expect(panel.frame.minX >= visible.minX)
+        #expect(panel.frame.maxX <= visible.maxX)
+
+        // `swift test` can receive a detached status-item window below the visible screen. Use a
+        // known menu-bar anchor to verify placement independently of that AppKit host lifecycle.
+        let anchor = NSRect(x: visible.midX - 12, y: visible.maxY, width: 24, height: 24)
+        let anchoredFrame = MenuBarPanelController.frame(
+            for: panel.frame.size, anchor: anchor, screen: panel.screen, theme: .classic
+        )
+        #expect(abs(anchoredFrame.maxY - (anchor.minY - 6)) <= 1)
+        #expect(abs(anchoredFrame.midX - anchor.midX) <= 1)
+    }
+
+    @Test("Changing the classic PanelHeight preference resizes the open panel")
+    func classicPanelFollowsPanelHeightPreferenceChange() async throws {
+        let themeScope = PanelPreferenceScope(theme: .classic, height: .compact)
+        defer { themeScope.restore() }
+        let (store, suite) = try await makeStore()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let controller = makeController(store: store)
+        defer { controller.uninstall() }
+
+        controller.showPanel()
+        let panel = try #require(controller.panelWindow)
+        let compactHeight = panel.frame.height
+
+        UserDefaults.standard.set(PanelHeight.tall.rawValue, forKey: PanelHeight.storageKey)
+        controller.handlePreferencesChanged()
+
+        let visible = try #require(panel.screen ?? NSScreen.main).visibleFrame
+        let expectedHeight = min(PanelHeight.tall.points, visible.height - 24)
+        #expect(panel.frame.height > compactHeight, "the taller preference must grow the window")
+        #expect(abs(panel.frame.height - expectedHeight) <= 1)
+        #expect(panel.frame.minY >= visible.minY)
+    }
+
+    @Test("Switching the panel theme closes the panel; the next show rebuilds that theme's root and frame")
+    func switchingPanelThemeClosesAndRebuilds() async throws {
+        let themeScope = PanelPreferenceScope(theme: .classic, height: .standard)
+        defer { themeScope.restore() }
+        let (store, suite) = try await makeStore()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        store.enableGrokBall = true
+        let controller = makeController(store: store)
+        defer { controller.uninstall() }
+
+        controller.showPanel()
+        let panel = try #require(controller.panelWindow)
+        let classicContent = try #require(panel.contentView)
+        let visible = try #require(panel.screen ?? NSScreen.main).visibleFrame
+        #expect(controller.hostedPanelTheme == .classic)
+        #expect(abs(panel.frame.height - min(PanelHeight.standard.points, visible.height - 24)) <= 1)
+        #expect(controller.grokBallSidecarWindow?.isVisible == true, "the ball shows with the classic panel")
+
+        // The user picks liquid glass while the panel is open: it closes first.
+        UserDefaults.standard.set(PanelTheme.liquidGlass.rawValue, forKey: PanelTheme.storageKey)
+        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: UserDefaults.standard)
+        Self.pumpMainRunLoop()
+
+        #expect(controller.isPanelVisible == false, "a theme change closes the open panel")
+        #expect(panel.contentView == nil, "the next show builds the other root instead of reusing the tree")
+
+        controller.showPanel()
+        #expect(controller.isPanelVisible)
+        #expect(controller.hostedPanelTheme == .liquidGlass)
+        let liquidContent = try #require(panel.contentView)
+        #expect(liquidContent !== classicContent)
+        #expect(panel.frame.height > visible.height - 30, "liquid glass uses the full-height column")
+        #expect(abs(panel.frame.maxX - (visible.maxX - 16)) <= 0.5)
+        #expect(controller.grokBallSidecarWindow?.isVisible == true, "the ball returns with the liquid panel")
+
+        // Switching back while open closes it again and the next show restores the classic frame.
+        UserDefaults.standard.set(PanelTheme.classic.rawValue, forKey: PanelTheme.storageKey)
+        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: UserDefaults.standard)
+        Self.pumpMainRunLoop()
+
+        #expect(controller.isPanelVisible == false)
+        #expect(panel.contentView == nil)
+
+        controller.showPanel()
+        #expect(controller.hostedPanelTheme == .classic)
+        #expect(abs(panel.frame.height - min(PanelHeight.standard.points, visible.height - 24)) <= 1)
+        #expect(controller.grokBallSidecarWindow?.isVisible == true, "the ball is not left suspended by the switch")
+    }
+
+    @Test("Both themes present without activating the app when presentsActively is off", arguments: PanelTheme.allCases)
+    func panelsPresentPassively(theme: PanelTheme) async throws {
+        let themeScope = PanelPreferenceScope(theme: theme)
+        defer { themeScope.restore() }
+        let (store, suite) = try await makeStore()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let controller = makeController(store: store)
+        defer { controller.uninstall() }
+
+        #expect(controller.presentsActively == false)
+        controller.showPanel()
+        let panel = try #require(controller.panelWindow)
+        #expect(controller.isPanelVisible)
+        #expect(panel.isVisible)
+        #expect(panel.alphaValue == 0)
+        #expect(panel.hasShadow == false)
+        #expect(controller.hostedPanelTheme == theme)
+    }
+
+    @Test("The panel theme defaults to classic and old systems cannot resolve liquid glass")
+    func panelThemeDefaultsToClassic() {
+        let themeScope = PanelPreferenceScope(theme: nil)
+        defer { themeScope.restore() }
+        UserDefaults.standard.removeObject(forKey: PanelTheme.storageKey)
+
+        #expect(PanelTheme.storageKey == "panel_theme")
+        #expect(PanelTheme.defaultValue == .classic)
+        #expect(PanelTheme.resolved(from: nil) == .classic)
+        #expect(PanelTheme.resolved(from: "liquidGlass", liquidGlassAvailable: true) == .liquidGlass)
+        #expect(PanelTheme.resolved(from: "liquidGlass", liquidGlassAvailable: false) == .classic, "macOS < 26 always uses classic")
+        #expect(PanelTheme.resolved(from: "unknown", liquidGlassAvailable: true) == .classic)
+        #expect(PanelTheme.current == .classic, "an absent preference resolves to the default")
     }
 
     @Test("GrokBall sidecar stays outside the 376 pt panel and expands without changing it")
@@ -1409,17 +1658,6 @@ struct MenuBarPanelControllerTests {
         NSApp.sendEvent(event)
     }
 
-    @Test("Sizing while the panel is closed does not create a window")
-    func sizingBeforeOpenIsIgnored() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let controller = makeController(store: store)
-        defer { controller.uninstall() }
-
-        controller.updatePanelSize(width: MenuBarPanelController.panelWidth, height: 420)
-        #expect(controller.panelWindow == nil)
-    }
-
     @Test("The panel is placed under the menu bar of its screen and clamped on screen")
     func panelIsPositionedUnderTheMenuBar() async throws {
         let (store, suite) = try await makeStore()
@@ -1563,6 +1801,8 @@ struct MenuBarPanelControllerTests {
 
     @Test("Dark appearance renders a dark panel background instead of light material")
     func classicDarkModeRendersDarkBackground() async throws {
+        let themeScope = PanelPreferenceScope(theme: .classic)
+        defer { themeScope.restore() }
         let (store, suite) = try await makeStore()
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
 
@@ -1766,100 +2006,6 @@ struct MenuBarPanelControllerTests {
         #expect(!movedWhenFitting)
     }
 
-    @Test("Room strip scrolls hidden rooms into view when selected or cycled")
-    func classicSkinRoomStripScrollsToSelectedRoom() async throws {
-        let rooms = [
-            RoomArea(id: "r1", name: "书房", sortOrder: 0),
-            RoomArea(id: "r2", name: "办公室", sortOrder: 1),
-            RoomArea(id: "r3", name: "卧室", sortOrder: 2),
-            RoomArea(id: "r4", name: "厨房", sortOrder: 3),
-            RoomArea(id: "r5", name: "客厅", sortOrder: 4),
-            RoomArea(id: "r6", name: "阳台", sortOrder: 5),
-            RoomArea(id: "r7", name: "次卧", sortOrder: 6),
-            RoomArea(id: "r8", name: "卫生间", sortOrder: 7)
-        ]
-        var base = DemoHomeProvider.defaultHome()
-        base.rooms = rooms
-        base.environmentReadings = []
-        base.scenes = []
-
-        let suite = "MenuBarPanelTests-rooms-\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        guard let defaults = UserDefaults(suiteName: suite) else { return }
-        defaults.set(true, forKey: "has_completed_onboarding")
-        defaults.set(true, forKey: "launch_at_login_suggestion_dismissed")
-        defaults.set(false, forKey: "automatically_checks_for_updates")
-        defaults.set(false, forKey: "show_quick_actions_bar")
-
-        let store = HomeStore(provider: MockHomeProvider(snapshot: base), defaultsSuiteName: suite)
-        for _ in 0..<50 where store.rooms.count < rooms.count {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(store.rooms.count == rooms.count)
-
-        let hosting = NSHostingView(
-            rootView: ControlCenterPanel(store: store)
-                .defaultAppStorage(defaults)
-                .environment(\.reduceMotionOverride, true)
-        )
-        hosting.frame = NSRect(x: 0, y: 0, width: 376, height: 560)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 376, height: 560),
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false
-        )
-        window.isReleasedWhenClosed = false
-        window.alphaValue = 0
-        window.hasShadow = false
-        window.contentView = hosting
-        window.orderFront(nil)
-        defer {
-            window.contentView = nil
-            window.orderOut(nil)
-        }
-        window.layoutIfNeeded()
-        hosting.layoutSubtreeIfNeeded()
-        hosting.displayIfNeeded()
-        window.displayIfNeeded()
-        try await Task.sleep(for: .milliseconds(50))
-        Self.pumpMainRunLoop()
-
-        func findRoomScrollView(in view: NSView) -> NSScrollView? {
-            if let sv = view as? NSScrollView,
-               let doc = sv.documentView,
-               doc.bounds.width > sv.contentView.bounds.width + 20,
-               sv.frame.height < 60 {
-                return sv
-            }
-            for sub in view.subviews {
-                if let found = findRoomScrollView(in: sub) {
-                    return found
-                }
-            }
-            return nil
-        }
-
-        let roomScrollView = try #require(findRoomScrollView(in: hosting))
-        #expect(roomScrollView.contentView.bounds.origin.x < 1)
-
-        store.selectRoom("r8")
-        try await Task.sleep(for: .milliseconds(80))
-        Self.pumpMainRunLoop()
-        hosting.layoutSubtreeIfNeeded()
-        hosting.displayIfNeeded()
-        window.displayIfNeeded()
-        #expect(roomScrollView.contentView.bounds.origin.x > 40)
-
-        store.selectRoom(nil)
-        try await Task.sleep(for: .milliseconds(80))
-        Self.pumpMainRunLoop()
-        hosting.layoutSubtreeIfNeeded()
-        hosting.displayIfNeeded()
-        window.displayIfNeeded()
-        #expect(roomScrollView.contentView.bounds.origin.x < 1)
-    }
-
     @Test("CameraLivePanelController attaches NSHostingView contentView and elevates above MenuBarPanel")
     func cameraLivePanelAttachesHostingViewAndOrdersAboveMenuBarPanel() async throws {
         let suite = "MenuBarPanelTests-camera-\(UUID().uuidString)"
@@ -1910,11 +2056,16 @@ struct MenuBarPanelControllerTests {
         }
 
         store.openCameraLiveView(camera.id)
-        var waited = 0
-        while cameraController.streamSource == nil, waited < 40 {
-            try await Task.sleep(for: .milliseconds(25))
-            waited += 1
+        func waitForDemoStream() async -> Bool {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+            while cameraController.streamSource == nil {
+                guard ContinuousClock.now < deadline else { return false }
+                await Task.yield()
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            return true
         }
+        try #require(await waitForDemoStream(), "30 秒内没有拿到 demo 流")
         let report = cameraController.desensitizedDiagnosticsReport()
         #expect(report.contains("stream_mode: demo, audio_support: video-only"))
 
@@ -2227,8 +2378,8 @@ struct MenuBarPanelControllerTests {
         #expect(abs(slow.height + 9.9) < 0.001)
     }
 
-    @Test("Long-pressing a light card enters edit mode and bottom-right corner arc handle supports both drag resizing and tap cycling without reordering (#115)")
-    func longPressOnLightCardEntersEditModeWithoutExpandingAndCyclesTileSizes() async throws {
+    @Test("Long-pressing a light card no longer enters edit mode; the corner handle resizes and cycles once editing is entered from the menu (#115)")
+    func longPressOnLightCardNoLongerEntersEditModeAndCornerHandleResizesWhenEditing() async throws {
         _ = NSApplication.shared
         let previousAppearance = UserDefaults.standard.string(forKey: AppAppearance.storageKey)
         UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
@@ -2304,12 +2455,19 @@ struct MenuBarPanelControllerTests {
         sendMouse(.leftMouseDown, at: longPressPoint)
         try await Task.sleep(for: .milliseconds(550))
         Self.pumpMainRunLoop()
+
+        // The hold itself must do nothing: no edit mode, no drawer, no toggle mid-press.
+        #expect(LayoutUIState.shared.editMode == .none, "A 550 ms hold on a card must not enter edit mode")
+        #expect(store.expandedDeviceId == nil, "Holding a card must not expand its drawer")
+        #expect(store.devices.first(where: { $0.id == light.id })?.isActiveOn == initialIsOn, "Holding a card must not toggle it mid-press")
+
+        // Releasing is an ordinary click, never an edit-mode entry.
         sendMouse(.leftMouseUp, at: longPressPoint)
         try await Task.sleep(for: .milliseconds(150))
         Self.pumpMainRunLoop()
 
-        #expect(store.expandedDeviceId == nil, "Releasing long-press must not trigger the card's expand-drawer button")
-        #expect(store.devices.first(where: { $0.id == light.id })?.isActiveOn == initialIsOn)
+        #expect(LayoutUIState.shared.editMode == .none, "Releasing the hold must not enter edit mode")
+        #expect(store.expandedDeviceId == nil, "Releasing the hold must not open the drawer")
 
         func handlePoint() -> NSPoint {
             if let g = LayoutUIState.shared.cardGlobalFrames[light.id] {
@@ -2328,6 +2486,13 @@ struct MenuBarPanelControllerTests {
             window.displayIfNeeded()
             Self.pumpMainRunLoop()
         }
+
+        // Entering layout editing is a menu action only: the card's "Edit Layout…" item raises this
+        // request, and the panel translates it into the one edit mode.
+        LayoutUIState.shared.isEditingLayoutRequested = true
+        try await flushLayout()
+        #expect(LayoutUIState.shared.editMode == .deviceLayout, "The context-menu request must enter layout editing")
+        #expect(!LayoutUIState.shared.isEditingLayoutRequested, "The request flag is consumed once handled")
 
         // 1. Outward drag on bottom-right corner arc handle: half -> full -> panel without reordering.
         let dragOutStart = handlePoint()
@@ -2371,7 +2536,7 @@ struct MenuBarPanelControllerTests {
         #expect(currentSizes()["all|\(light.id)"] == .half)
         #expect(DeviceLayoutPrefs.decodeOrder(defaults.string(forKey: DeviceLayoutPrefs.orderKey) ?? "[]").isEmpty, "Inward handle drag must not trigger card reordering")
 
-        // 3. Light tap on bottom-right corner arc handle still cycles half -> full -> panel -> half.
+        // 3. Light tap on bottom-right corner arc handle cycles half -> 2×2 hero -> full -> panel -> half.
         func tapHandle() async throws -> [String: TileSize] {
             let point = handlePoint()
             sendMouse(.leftMouseDown, at: point)
@@ -2383,16 +2548,33 @@ struct MenuBarPanelControllerTests {
         }
 
         let sizes1 = try await tapHandle()
-        #expect(sizes1["all|\(light.id)"] == .full)
+        #expect(sizes1["all|\(light.id)"] == .hero)
 
         let sizes2 = try await tapHandle()
-        #expect(sizes2["all|\(light.id)"] == .panel)
+        #expect(sizes2["all|\(light.id)"] == .full)
 
         let sizes3 = try await tapHandle()
-        #expect(sizes3["all|\(light.id)"] == .half)
+        #expect(sizes3["all|\(light.id)"] == .panel)
+
+        let sizes4 = try await tapHandle()
+        #expect(sizes4["all|\(light.id)"] == .half)
+
+        // 4. Tapping the top-left `−` badge removes the card from 常用 (favorites).
+        #expect(store.favoriteDeviceIds.contains(light.id), "The light card starts in Favorites")
+        let cardBeforeRemove = try #require(LayoutUIState.shared.cardGlobalFrames[light.id])
+        let removeBadgePoint = NSPoint(x: cardBeforeRemove.minX + 8, y: hosting.bounds.height - (cardBeforeRemove.minY + 8))
+        sendMouse(.leftMouseDown, at: removeBadgePoint)
+        try await Task.sleep(for: .milliseconds(40))
+        Self.pumpMainRunLoop()
+        sendMouse(.leftMouseUp, at: removeBadgePoint)
+        try await flushLayout()
+        #expect(!store.favoriteDeviceIds.contains(light.id), "Clicking the top-left − badge in edit mode must remove the device from Favorites")
+
+        LayoutUIState.shared.endDeviceLayoutEditing()
     }
 
     private static func pumpMainRunLoop(_ seconds: TimeInterval = 0.05) {
         CFRunLoopRunInMode(.defaultMode, seconds, false)
     }
+}
 }

@@ -5,7 +5,6 @@ import {
   releaseVelocity,
   scopedKey,
   targetSize,
-  type AppSkin,
   type LayoutPrefs,
   type TileSize,
 } from "./panelPrefs.js";
@@ -15,7 +14,6 @@ export interface LayoutGestureHost {
   readonly root: HTMLElement;
   readonly devices: readonly SmartDevice[];
   readonly settings: PersistedSettings;
-  readonly skin: AppSkin;
   readonly layout: LayoutPrefs;
   readonly pageKey: string;
   expandedDeviceId: string | null;
@@ -78,6 +76,34 @@ export interface LayoutGestureHost {
       },
       { capture: true },
     );
+    /**
+     * A cancelled gesture (pointer cancel, window blur) ends the press without sending anything: the
+     * pending dim preview and the long-press timer are dropped, so the next plain click on the tile is
+     * a plain click instead of a brightness write against a stale preview.
+     */
+    const cancelGesture = (): void => {
+      host.pointerIsDown = false;
+      if (resizing) {
+        endHandleGesture(resizing.id);
+        resizing = null;
+      }
+      if (press) {
+        window.clearTimeout(press.timer);
+        press = null;
+      }
+      // Both a dim preview and a reorder drag live in the rendered DOM (the preview fill and the
+      // dragged card's translate/is-dragging), so dropping either needs a repaint: the release that
+      // follows a cancel no longer sees a press and would not render on its own.
+      const droppedPreview = host.dimPreview !== null;
+      const droppedDrag = host.draggingId !== null;
+      host.dimPreview = null;
+      host.draggingId = null;
+      host.dragPointer = null;
+      host.lastSwap = null;
+      host.suppressNextClick = false;
+      if (droppedPreview || droppedDrag) host.render();
+    };
+
     window.addEventListener(
       "pointerup",
       () => {
@@ -85,14 +111,8 @@ export interface LayoutGestureHost {
       },
       { capture: true },
     );
-    window.addEventListener("pointercancel", () => {
-      host.pointerIsDown = false;
-      if (resizing) { endHandleGesture(resizing.id); resizing = null; }
-    });
-    window.addEventListener("blur", () => {
-      host.pointerIsDown = false;
-      if (resizing) { endHandleGesture(resizing.id); resizing = null; }
-    });
+    window.addEventListener("pointercancel", cancelGesture);
+    window.addEventListener("blur", cancelGesture);
 
     host.root.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
@@ -178,7 +198,6 @@ export interface LayoutGestureHost {
       const dev = host.devices.find((d) => d.id === press?.id);
       const isExpanded = dev ? (host.expandedDeviceId === dev.id || host.tileSize(dev) === "panel") : false;
       const canDim =
-        host.skin !== "classic" &&
         !isExpanded &&
         dev?.kind.kind === "light" &&
         dev.isOnline &&

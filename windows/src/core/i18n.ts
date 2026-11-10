@@ -258,6 +258,8 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "打开 {name}": ["打开 {name}", "Turn on {name}"],
   "{name}，温度 {temp}{humidity}": ["{name}，温度 {temp}{humidity}", "{name}, temperature {temp}{humidity}"],
   "，湿度 {humidity}%": ["，湿度 {humidity}%", ", humidity {humidity}%"],
+  "电量 {percent}%": ["电量 {percent}%", "Battery {percent}%"],
+  "，电量 {percent}%": ["，电量 {percent}%", ", battery {percent}%"],
   "，离线": ["，离线", ", offline"],
 
   // Quick actions
@@ -389,8 +391,6 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   // Settings sheet
   "偏好设置": ["偏好设置", "Preferences"],
   "偏好设置与米家连接": ["偏好设置与米家连接", "Preferences and Mi Home connection"],
-  "面板皮肤": ["面板皮肤", "Panel skin"],
-  "经典以外的皮肤带有：卡片依次入场、在灯上左右拖动调亮度、按住「全关」0.6 秒确认。长按卡片可以拖动排序，右键卡片可以改大小、分组和重命名。": ["经典以外的皮肤带有：卡片依次入场、在灯上左右拖动调亮度、按住「全关」0.6 秒确认。长按卡片可以拖动排序，右键卡片可以改大小、分组和重命名。", "Skins other than Classic animate cards in, let you drag on a light to dim it, and require holding “All off” for 0.6 s. Long-press to reorder; right-click a card to resize, group or rename it."],
   "面板高度": ["面板高度", "Panel height"],
   "面板不透明度": ["面板不透明度", "Panel opacity"],
   "壁纸透出导致文字看不清时调高；100% 为不透明。": ["壁纸透出导致文字看不清时调高；100% 为不透明。", "Raise this if the wallpaper makes text hard to read; 100% is solid."],
@@ -501,16 +501,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "新加坡 / 国际 (sg)": ["新加坡 / 国际 (sg)", "Singapore / Global (sg)"],
   "美区 (us)": ["美区 (us)", "United States (us)"],
 
-  // Skins, heights, sizes, comfort, effects, fans
-  "经典": ["经典", "Classic"],
-  "霜白": ["霜白", "Frost"],
-  "夜航": ["夜航", "Night flight"],
-  "液态玻璃": ["液态玻璃", "Liquid glass"],
-  "柔雾": ["柔雾", "Soft mist"],
-  "便当格": ["便当格", "Bento"],
-  "霓虹夜": ["霓虹夜", "Neon night"],
-  "胶囊": ["胶囊", "Capsule"],
-  "晨光": ["晨光", "Dawn"],
+  // Heights, sizes, comfort, effects, fans
   "紧凑": ["紧凑", "Compact"],
   "标准": ["标准", "Standard"],
   "加高": ["加高", "Tall"],

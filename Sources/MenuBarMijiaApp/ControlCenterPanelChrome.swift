@@ -9,7 +9,6 @@ extension ControlCenterPanel {
         let expired = store.miSessionShowsExpired
         let dateText = store.miSessionExpiringSoonDate?
             .formatted(date: .abbreviated, time: .omitted) ?? ""
-        let shape = RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
         return HStack(spacing: 8) {
             Image(systemName: expired ? "exclamationmark.triangle.fill" : "clock")
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
@@ -19,11 +18,11 @@ extension ControlCenterPanel {
                 Text(expired
                     ? L10n.tr("米家登录已过期", "Xiaomi Home session expired")
                     : L10n.tr("米家登录将在 \(dateText) 到期", "Xiaomi Home sign-in expires \(dateText)"))
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                 Text(expired
                     ? L10n.tr("设备控制已暂停，扫码后恢复", "Device controls are paused; scan to restore them")
                     : L10n.tr("提前扫码可以避免控制中断", "Scan now to avoid an interruption"))
-                    .font(.system(size: DesignTokens.TypeSize.micro))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(.secondary)
             }
 
@@ -38,7 +37,6 @@ extension ControlCenterPanel {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveGlass(in: shape)
     }
 
     var miReauthOverlay: some View {
@@ -78,81 +76,142 @@ extension ControlCenterPanel {
         }
     }
 
-    // MARK: - 1. Hero Header & Live Environment Chips
+    // MARK: - 1. Notification Center–style text header
 
-    var topHeroHeader: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .center, spacing: 9) {
-                Image(systemName: "house.fill")
-                    .font(.system(size: DesignTokens.TypeSize.title, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 34, height: 34)
-                    .background(
-                        LinearGradient(colors: [.orange, DesignTokens.active],
-                                       startPoint: .topLeading, endPoint: .bottomTrailing),
-                        in: Circle()
-                    )
-
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 6) {
-                        homeTitle
-
-                        if store.homeBackend == .demo {
-                            Text(L10n.tr("演示预览", "Demo"))
-                                .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 1.5)
-                                .background(Color.primary.opacity(0.07), in: Capsule(style: .continuous))
-                                .panelHelp(L10n.tr(
-                                    "正在使用内置虚拟设备，完全离线，不联网。可在设置里切回真实账号。",
-                                    "Using built-in virtual devices, fully offline. Switch back to a real account in Settings."
-                                ))
-                        }
+    /// A large text title like Notification Center's, the live climate as plain text under it, and
+    /// round glass buttons on the right. No capsule around the words: type carries the hierarchy.
+    var panelHeader: some View {
+        HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    homeTitle
+                        .lineLimit(1)
+                    if store.homeBackend == .demo {
+                        Text(L10n.tr("演示", "Demo"))
+                            .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
+                            .foregroundStyle(.secondary)
                     }
-
+                }
+                HStack(spacing: 5) {
+                    BreathingDot(color: statusDotColor, animate: statusDotAnimates)
+                        .id(statusDotColor)
                     statusSubtitle
                 }
+            }
+            .layoutPriority(1)
 
-                Spacer(minLength: 6)
+            Spacer(minLength: 0)
 
-                if isEditing {
+            AdaptiveGlassContainer(spacing: 6) {
+                HStack(spacing: 6) {
                     if isRoomOrdering {
                         cancelRoomOrderButton
-                            .transition(.scale(scale: 0.8).combined(with: .opacity))
-                    }
-                    doneEditingButton
-                        .transition(.scale(scale: 0.8).combined(with: .opacity))
-                } else if !store.allOffTargets.isEmpty {
-                    // The label says what will be switched off (#23); a hold confirms.
-                    let copy = PanelHeaderCopy.allOff(store: store, scopeName: allOffScopeDisplayName)
-                    VStack(alignment: .trailing, spacing: 1) {
-                        HoldToConfirmButton(
-                            title: copy.title,
-                            count: store.allOffTargets.count,
-                            helpText: copy.tooltip,
-                            onConfirm: {
-                                withAnimation(AppleMotion.snappySpring) { _ = store.rehearseAllOff() }
-                                SoundFeedback.playSuccess()
-                            },
-                            onTap: {
-                                store.showToast(L10n.tr(
-                                    "按住 0.6 秒确认全关",
-                                    "Hold for 0.6s to confirm All Off"
-                                ))
-                            }
-                        )
-                        if let helper = copy.helper {
-                            Text(helper)
-                                .font(.system(size: DesignTokens.TypeSize.micro))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                        doneEditingButton
+                    } else if !isEditingLayout {
+                        if let release = store.updateState.badgeRelease {
+                            updateCapsule(for: release)
                         }
+                        if !store.allOffTargets.isEmpty {
+                            let copy = PanelHeaderCopy.allOff(store: store, scopeName: allOffScopeDisplayName)
+                            HoldToConfirmButton(
+                                title: copy.title,
+                                count: store.allOffTargets.count,
+                                helpText: [copy.tooltip, copy.helper].compactMap { $0 }.joined(separator: "\n"),
+                                onConfirm: {
+                                    withAnimation(AppleMotion.snappySpring) { _ = store.rehearseAllOff() }
+                                    SoundFeedback.playSuccess()
+                                },
+                                onTap: {
+                                    store.showToast(L10n.tr("按住 0.6 秒确认全关", "Hold for 0.6s to confirm All Off"))
+                                }
+                            )
+                        }
+                        searchButton
+                        panelMoreMenu
                     }
-                    .transition(.scale(scale: 0.8).combined(with: .opacity))
                 }
             }
+            .fixedSize(horizontal: true, vertical: false)
         }
+        .frame(minHeight: 44)
+    }
+
+    private var searchButton: some View {
+        let open = showsOmnibar
+        return Button {
+            toggleSearch()
+        } label: {
+            Image(systemName: open ? "xmark" : "magnifyingglass")
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 30, height: 30)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .adaptiveGlass(in: Circle(), interactive: true)
+        .accessibilityLabel(Text(open ? L10n.tr("关闭搜索", "Close search") : L10n.tr("搜索设备", "Search devices")))
+        .panelHelp(L10n.tr("搜索设备或说一句话（⌘F，或直接打字）", "Search devices or give a command (⌘F, or just type)"))
+    }
+
+    private var panelMoreMenu: some View {
+        Menu {
+            statusFooterControl
+            Divider()
+            Toggle(L10n.tr("常用设备用双列胶囊", "Two-column favorites"), isOn: Binding(
+                get: { store.isCompactGridMode },
+                set: { value in withAnimation(AppleMotion.reveal) { store.isCompactGridMode = value } }
+            ))
+            Toggle(L10n.tr("只显示在线设备", "Online devices only"), isOn: Binding(
+                get: { store.hideOfflineDevices },
+                set: { value in withAnimation(AppleMotion.reveal) { store.hideOfflineDevices = value } }
+            ))
+            Divider()
+            if UndoAvailabilityTracker.shared.isAvailable {
+                Button(L10n.tr("撤销上一步", "Undo last action")) {
+                    store.presentAssistantBar()
+                    Task { await UndoAvailabilityTracker.shared.performUndo(store: store) }
+                }
+            }
+            Button(L10n.tr("立即同步", "Refresh now")) { store.refreshNow() }
+            Button(L10n.tr("编辑卡片布局…", "Edit card layout…")) {
+                LayoutUIState.shared.isEditingLayoutRequested = true
+            }
+            if canReorderRooms || canReorderKinds {
+                Button(L10n.tr("排序房间与类型…", "Reorder rooms and kinds…")) { beginRoomOrder() }
+            }
+            Button(L10n.tr("偏好设置…", "Preferences…")) { presentSettingsWindow() }
+            Divider()
+            Button(L10n.tr("退出 MenuBarHome", "Quit MenuBarHome")) { NSApplication.shared.terminate(nil) }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                .frame(width: 30, height: 30)
+                .contentShape(Circle())
+                .adaptiveGlass(in: Circle(), interactive: true)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .accessibilityLabel(Text(L10n.tr("更多操作", "More actions")))
+    }
+
+    private func updateCapsule(for release: AppRelease) -> some View {
+        Button {
+            if store.updateState.isReadyToRelaunch {
+                withAnimation(AppleMotion.snappySpring) { store.confirmRelaunchForUpdate() }
+            } else {
+                SettingsWindowOpener.shared.show(tab: .about)
+            }
+        } label: {
+            Image(systemName: store.updateState.isReadyToRelaunch ? "arrow.triangle.2.circlepath.circle.fill" : "arrow.down.circle.fill")
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                .frame(width: 30, height: 30)
+        }
+        .buttonStyle(.plain)
+        .adaptiveGlass(in: Circle(), tint: .accentColor, interactive: true)
+        .accessibilityLabel(Text(updateBadgeTitle(for: release)))
+        .panelHelp(updateBadgeTitle(for: release))
     }
 
     /// Dashboard title; with several Mi Homes it becomes a menu that switches between them. Several
@@ -186,10 +245,9 @@ extension ControlCenterPanel {
                     }
                 }
             } label: {
-                HStack(spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text(selectedHomeTitle)
-                        .font(.system(size: DesignTokens.TypeSize.title, weight: .bold))
-                        .tracking(-0.2)
+                        .font(.system(size: DesignTokens.TypeSize.headline, weight: .bold))
                     Image(systemName: "chevron.down")
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .bold))
                         .foregroundStyle(.secondary)
@@ -202,8 +260,7 @@ extension ControlCenterPanel {
             .panelHelp(L10n.tr("切换家庭", "Switch home"))
         } else {
             Text(store.homeName)
-                .font(.system(size: DesignTokens.TypeSize.title, weight: .bold))
-                .tracking(-0.2)
+                .font(.system(size: DesignTokens.TypeSize.headline, weight: .bold))
         }
     }
 
@@ -236,14 +293,7 @@ extension ControlCenterPanel {
             if !store.filteredDevices.contains(where: { $0.id == env.id }) {
                 store.selectRoom(nil)
             }
-            for section in pageSections where section.devices.contains(where: { $0.id == env.id }) {
-                let key = collapseKey(section)
-                var set = collapsedGroups
-                if set.contains(key) {
-                    set.remove(key)
-                    collapsedRaw = GroupPrefs.encode(set)
-                }
-            }
+            openStack(containing: env.id)
             store.toggleExpanded(env.id)
             if store.expandedDeviceId == env.id {
                 pendingScrollToDeviceId = env.id
@@ -251,7 +301,8 @@ extension ControlCenterPanel {
         }
     }
 
-    /// Edit hints replace the live status while a drag mode is open.
+    /// Edit hints replace the live status while room ordering is open; card layout editing shows its
+    /// own glass toolbar capsule below the header instead.
     private var editingHint: String? {
         if isRoomOrdering {
             // Short on purpose: the long explanation lives under the list title, and a sentence
@@ -260,15 +311,10 @@ extension ControlCenterPanel {
                 ? L10n.tr("调整类型顺序", "Reorder kinds")
                 : L10n.tr("调整房间顺序", "Reorder rooms")
         }
-        if isEditingLayout {
-            return L10n.tr("拖动卡片排序，点右下角圆弧手柄改大小", "Drag to reorder, drag or tap the corner handle to resize")
-        }
         return nil
     }
 
-    /// One line under the home title. The reading is the menu-bar title's primary sensor; tapping it
-    /// locates that sensor's card, which is the only way back to the chart the old strip opened.
-    /// The header row is narrow, so the reading sheds detail, then drops out, before the count truncates.
+    /// Compact live status; tapping the reading locates and expands its sensor card.
     var statusSubtitle: some View {
         Group {
             if let hint = editingHint {
@@ -378,442 +424,6 @@ extension ControlCenterPanel {
         }
     }
 
-    // MARK: - 2. Room Filter Strip & Grid Toggle
-
-    /// Only real rooms live in the scrolling part; `全部` is pinned by `roomFilterBar` (§5.1).
-    var roomPillsRow: some View {
-        HStack(spacing: 2) {
-            Color.clear.frame(width: 0, height: 1).id("roomsStart")
-            ForEach(displayRooms) { room in
-                roomPill(title: roomDisplayTitle(room), roomId: room.id)
-                    .id(room.id)
-            }
-        }
-        .animation(AppleMotion.snappySpring, value: displayRooms.map(\.id))
-    }
-
-    func scrollRoomStrip(using proxy: ScrollViewProxy, roomId: String?, animated: Bool) {
-        let target = roomId ?? "roomsStart"
-        let anchor: UnitPoint = roomId == nil ? .leading : .center
-        if animated && !reduceMotion {
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
-                proxy.scrollTo(target, anchor: anchor)
-            }
-        } else {
-            proxy.scrollTo(target, anchor: anchor)
-        }
-    }
-
-    var listFilterBars: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            roomFilterBar
-            if showsKindRow { kindFilterBar }
-        }
-    }
-
-    var showsKindRow: Bool {
-        if case .kind = store.listCut { return true }
-        return store.kindChips.count >= 2
-    }
-
-    func scrollKindStrip(using proxy: ScrollViewProxy, tag: DeviceKindTag) {
-        if reduceMotion {
-            proxy.scrollTo(tag, anchor: .center)
-        } else {
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
-                proxy.scrollTo(tag, anchor: .center)
-            }
-        }
-    }
-
-    var kindFilterBar: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 2) {
-                    ForEach(displayKinds, id: \.self) { tag in
-                        kindPill(tag)
-                            .id(tag)
-                    }
-                }
-                .padding(.vertical, 3)
-                .padding(.horizontal, 4)
-                .horizontalWheelScroll()
-            }
-            .defaultScrollAnchor(.leading)
-            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-            .onChange(of: store.listCut) { _, cut in
-                guard case .kind(let tag) = cut else { return }
-                scrollKindStrip(using: proxy, tag: tag)
-            }
-            .onChange(of: kindScrollTrigger) { _, _ in
-                guard case .kind(let tag) = store.listCut else { return }
-                scrollKindStrip(using: proxy, tag: tag)
-            }
-            .mask(
-                LinearGradient(
-                    stops: [
-                        .init(color: .black.opacity(0.0), location: 0.0),
-                        .init(color: .black, location: 0.035),
-                        .init(color: .black, location: 0.86),
-                        .init(color: .black.opacity(0.0), location: 1.0)
-                    ],
-                    startPoint: .leading, endPoint: .trailing
-                )
-            )
-        }
-        .background(segmentedTrack, in: Capsule(style: .continuous))
-        .overlay {
-            Capsule(style: .continuous)
-                .strokeBorder(segmentedTrackRim, lineWidth: DesignTokens.hairline)
-        }
-        .clipShape(Capsule(style: .continuous))
-    }
-
-    @ViewBuilder
-    func kindPill(_ tag: DeviceKindTag) -> some View {
-        if let hint = tag.chipHint {
-            kindPillButton(tag).panelHelp(hint)
-        } else {
-            kindPillButton(tag)
-        }
-    }
-
-    @ViewBuilder
-    func kindPillButton(_ tag: DeviceKindTag) -> some View {
-        let isSelected = store.listCut == .kind(tag)
-        // While the order list is open the chip row is a live preview, like the room strip.
-        if isRoomOrdering {
-            kindPillLabel(tag, isSelected: isSelected)
-                .accessibilityLabel(Text(tag.chipTitle))
-                .accessibilityHint(Text(L10n.tr("排序预览，不可点选", "Order preview; not selectable")))
-        } else {
-            Button {
-                withAnimation(AppleMotion.snappySpring) {
-                    if store.listCut == .kind(tag) {
-                        kindScrollTrigger &+= 1
-                    } else {
-                        store.selectKind(tag)
-                    }
-                }
-            } label: {
-                kindPillLabel(tag, isSelected: isSelected)
-            }
-            .buttonStyle(.plain)
-            .accessibilityAddTraits(isSelected ? .isSelected : [])
-            .contextMenu {
-                Button {
-                    moveKind(tag, by: -1)
-                } label: {
-                    Label(L10n.tr("左移", "Move Left"), systemImage: "arrow.left")
-                }
-                .disabled(displayKinds.first == tag)
-                Button {
-                    moveKind(tag, by: 1)
-                } label: {
-                    Label(L10n.tr("右移", "Move Right"), systemImage: "arrow.right")
-                }
-                .disabled(displayKinds.last == tag)
-                Divider()
-                Button {
-                    beginRoomOrder(target: .kinds)
-                } label: {
-                    Label(L10n.tr("排序类型…", "Reorder Kinds…"), systemImage: "arrow.up.arrow.down")
-                }
-            }
-            .accessibilityActions {
-                Button(L10n.tr("左移", "Move Left")) { moveKind(tag, by: -1) }
-                    .disabled(displayKinds.first == tag)
-                Button(L10n.tr("右移", "Move Right")) { moveKind(tag, by: 1) }
-                    .disabled(displayKinds.last == tag)
-                Button(L10n.tr("排序类型", "Reorder Kinds…")) { beginRoomOrder(target: .kinds) }
-            }
-        }
-    }
-
-    func kindPillLabel(_ tag: DeviceKindTag, isSelected: Bool) -> some View {
-        let surface = TileSurface(isActive: true, scheme: effectiveScheme)
-        return Text(tag.chipTitle)
-            .font(.system(size: DesignTokens.TypeSize.caption, weight: isSelected ? .semibold : .medium))
-            .foregroundStyle(isSelected ? surface.ink : Color.secondary)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 5)
-            .background {
-                if isSelected {
-                    Capsule(style: .continuous)
-                        .fill(surface.fill)
-                        .shadow(color: .black.opacity(effectiveScheme == .dark ? 0.28 : 0.10), radius: 2, y: 1)
-                }
-            }
-            .contentShape(Capsule(style: .continuous))
-            .animation(AppleMotion.snappySpring, value: isSelected)
-    }
-
-    /// `[全部] [rooms…scroll…]` inside one capsule track, with the sort and view controls beside it.
-    /// 全部 sits outside the scroll view so the most-used filter can never be scrolled out of view
-    /// while a room is selected (§2.2 audit item 5).
-    var roomFilterBar: some View {
-        HStack(spacing: 5) {
-            ScrollViewReader { proxy in
-                HStack(spacing: 0) {
-                    roomPill(title: L10n.tr("全部", "All"), roomId: nil)
-                        .padding(.vertical, 3)
-                        .padding(.leading, 4)
-
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        roomPillsRow
-                            .padding(.vertical, 3)
-                            .padding(.trailing, 4)
-                            .horizontalWheelScroll()
-                    }
-                    .defaultScrollAnchor(.leading)
-                    .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-                    // The menu-bar window restores a stale horizontal offset on reopen; snap back to
-                    // the start (or the selected room) so the first pill is not half scrolled out.
-                    .onChange(of: isPresented) { _, shown in
-                        guard shown else { return }
-                        scrollRoomStrip(using: proxy, roomId: store.selectedRoomId, animated: false)
-                    }
-                    .onAppear {
-                        scrollRoomStrip(using: proxy, roomId: store.selectedRoomId, animated: false)
-                    }
-                    .onChange(of: store.selectedRoomId) { _, id in
-                        scrollRoomStrip(using: proxy, roomId: id, animated: true)
-                    }
-                    .onChange(of: roomScrollTrigger) { _, _ in
-                        scrollRoomStrip(using: proxy, roomId: store.selectedRoomId, animated: true)
-                    }
-                    // Fade only the trailing edge: 全部 is pinned right beside this edge, so a fade
-                    // there would read as a seam between the fixed pill and the scrolling rooms.
-                    .mask(
-                        LinearGradient(
-                            stops: [
-                                .init(color: .black, location: 0.0),
-                                .init(color: .black, location: 0.88),
-                                .init(color: .black.opacity(0.0), location: 1.0)
-                            ],
-                            startPoint: .leading, endPoint: .trailing
-                        )
-                    )
-                }
-                .background(segmentedTrack, in: Capsule(style: .continuous))
-                .overlay {
-                    Capsule(style: .continuous)
-                        .strokeBorder(segmentedTrackRim, lineWidth: DesignTokens.hairline)
-                }
-                .clipShape(Capsule(style: .continuous))
-            }
-
-            sortRoomsButton
-            gridToggleButtons
-        }
-    }
-
-    /// The one discoverable entry to reordering (#146): a permanent 26×24 pt button instead of the
-    /// 450 ms long press, which no pointer-less path could reach. Hidden with 0 or 1 rooms, where
-    /// there is nothing to order.
-    @ViewBuilder
-    var sortRoomsButton: some View {
-        // Device-layout editing has its own Done; entering a second mode from inside it is not part
-        // of the state machine (§5.2), so the entry is closed there.
-        if canReorderRooms || canReorderKinds, !isEditingLayout {
-            Button {
-                if isRoomOrdering {
-                    finishRoomOrder(.commit)
-                } else {
-                    beginRoomOrder()
-                }
-            } label: {
-                Image(systemName: "arrow.up.arrow.down")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(isRoomOrdering ? Color.white : Color.primary.opacity(0.78))
-                    .frame(width: 26, height: 24)
-                    .background {
-                        if isRoomOrdering {
-                            Capsule(style: .continuous).fill(Color.accentColor)
-                        }
-                    }
-                    .modifier(
-                        ChipSurface(
-                            shape: Capsule(style: .continuous),
-                            tint: nil,
-                            interactive: true,
-                            clear: false,
-                            isHidden: isRoomOrdering
-                        )
-                    )
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text(L10n.tr("排序", "Reorder")))
-            .accessibilityAddTraits(isRoomOrdering ? .isSelected : [])
-            .accessibilityHint(Text(L10n.tr("调整房间和设备类型的显示顺序", "Set the order of rooms and device kinds")))
-            .panelHelp(isRoomOrdering
-                ? L10n.tr("完成排序并返回设备", "Finish reordering and go back")
-                : L10n.tr("排序：调整房间和设备类型的显示顺序", "Reorder: set the order of rooms and device kinds"))
-        }
-    }
-
-    var segmentedTrack: Color {
-        effectiveScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.055)
-    }
-
-    var segmentedTrackRim: Color {
-        effectiveScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.04)
-    }
-
-    var gridToggleButtons: some View {
-        HStack(spacing: 5) {
-            toggleChip(
-                isOn: store.isCompactGridMode,
-                onSymbol: "rectangle.grid.2x2.fill",
-                offSymbol: "rectangle.grid.1x2.fill",
-                onLabel: L10n.tr("紧凑双列视图", "Compact two-column view"),
-                help: store.isCompactGridMode
-                    ? L10n.tr("当前：双列紧凑磁贴（点击切换单列）", "2-column compact tiles (click for single column)")
-                    : L10n.tr("点击切换双列紧凑磁贴视图", "Switch to 2-column compact tiles")
-            ) {
-                store.isCompactGridMode.toggle()
-            }
-
-            toggleChip(
-                isOn: store.hideOfflineDevices,
-                onSymbol: "wifi",
-                offSymbol: "wifi.slash",
-                onLabel: L10n.tr("只显示在线设备", "Show online devices only"),
-                help: store.hideOfflineDevices
-                    ? L10n.tr("当前只显示在线设备（点击显示全部）", "Showing online devices only (click to show all)")
-                    : L10n.tr("点击隐藏未通电/离线设备", "Hide offline/unplugged devices")
-            ) {
-                store.hideOfflineDevices.toggle()
-            }
-        }
-    }
-
-    func toggleChip(
-        isOn: Bool,
-        onSymbol: String,
-        offSymbol: String,
-        onLabel: String,
-        help: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button {
-            withAnimation(AppleMotion.snappySpring) { action() }
-        } label: {
-            Image(systemName: isOn ? onSymbol : offSymbol)
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .foregroundStyle(isOn ? Color.white : Color.primary.opacity(0.78))
-                .frame(width: 26, height: 24)
-                .background {
-                    if isOn {
-                        Capsule(style: .continuous)
-                            .fill(Color.accentColor)
-                    }
-                }
-                .modifier(
-                    ChipSurface(
-                        shape: Capsule(style: .continuous),
-                        tint: nil,
-                        interactive: true,
-                        clear: false,
-                        isHidden: isOn
-                    )
-                )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(Text(onLabel))
-        .accessibilityAddTraits(isOn ? AccessibilityTraits.isSelected : [])
-        .panelHelp(help)
-    }
-
-    func selectRoom(_ roomId: String?, animation: Animation) {
-        withAnimation(animation) {
-            if !store.selectRoom(roomId) { roomScrollTrigger &+= 1 }
-        }
-    }
-
-    @ViewBuilder
-    func roomPill(title: String, roomId: String?) -> some View {
-        let isSelected = roomId == nil
-            ? store.listCut == .all
-            : store.selectedRoomId == roomId
-        // While the order list is open the strip is a live preview: pills neither select nor drag.
-        let isPreview = isRoomOrdering
-        let surface = TileSurface(isActive: true, scheme: effectiveScheme)
-        let content = Text(title)
-            .font(.system(size: DesignTokens.TypeSize.caption, weight: isSelected ? .semibold : .medium))
-            .foregroundStyle(isSelected ? surface.ink : Color.secondary)
-            .lineLimit(1)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 5)
-            .background {
-                if isSelected {
-                    Capsule(style: .continuous)
-                        .fill(surface.fill)
-                        .shadow(color: .black.opacity(effectiveScheme == .dark ? 0.28 : 0.10), radius: 2, y: 1)
-                }
-            }
-            .contentShape(Capsule(style: .continuous))
-
-        Group {
-            // 只有预览态下胶囊不可点；浏览态连「全部」也必须能点，否则选中房间后无法点回全屋视图。
-            if isPreview {
-                content
-            } else {
-                Button {
-                    selectRoom(roomId, animation: AppleMotion.snappySpring)
-                } label: {
-                    content
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .animation(AppleMotion.snappySpring, value: isSelected)
-        .contextMenu {
-            if let roomId, !isPreview {
-                Button {
-                    layoutUI.renamingRoomId = roomId
-                } label: {
-                    Label(L10n.tr("重命名房间…", "Rename Room…"), systemImage: "pencil")
-                }
-                Button {
-                    moveRoom(roomId, by: -1)
-                } label: {
-                    Label(L10n.tr("左移", "Move Left"), systemImage: "arrow.left")
-                }
-                .disabled(displayRooms.first?.id == roomId)
-                Button {
-                    moveRoom(roomId, by: 1)
-                } label: {
-                    Label(L10n.tr("右移", "Move Right"), systemImage: "arrow.right")
-                }
-                .disabled(displayRooms.last?.id == roomId)
-                Divider()
-                // One-step nudge stays on the strip; whole-list ordering opens the list view.
-                Button {
-                    beginRoomOrder()
-                } label: {
-                    Label(L10n.tr("排序房间…", "Reorder Rooms…"), systemImage: "arrow.up.arrow.down")
-                }
-            }
-        }
-        .accessibilityLabel(Text(title))
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .accessibilityHint(Text(isPreview
-            ? L10n.tr("排序预览，不可点选", "Order preview; not selectable")
-            : L10n.tr("切换到该房间", "Show this room")))
-        // Pointer-free single-step reordering, so VoiceOver users never need the list view (#146).
-        .accessibilityActions {
-            if let roomId, !isPreview {
-                Button(L10n.tr("左移", "Move Left")) { moveRoom(roomId, by: -1) }
-                    .disabled(displayRooms.first?.id == roomId)
-                Button(L10n.tr("右移", "Move Right")) { moveRoom(roomId, by: 1) }
-                    .disabled(displayRooms.last?.id == roomId)
-                Button(L10n.tr("移到最前", "Move to Front")) { moveRoom(roomId, toFront: true) }
-                Button(L10n.tr("移到最后", "Move to End")) { moveRoom(roomId, toFront: false) }
-                Button(L10n.tr("排序房间", "Reorder Rooms…")) { beginRoomOrder() }
-            }
-        }
-    }
 
     var disconnectedEmptyBackend: HomeBackend {
         if store.hasMiSource && !store.hasHASource { return .xiaomiCloud }
@@ -916,15 +526,16 @@ extension ControlCenterPanel {
                 }
             }
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 28)
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 36)
+        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.module)
     }
 
     // MARK: - Home Assistant Address Question (#18)
 
     /// The app never moves the token to a new address by itself; it asks here first.
     func haAddressSuggestionBanner(_ instance: HADiscoveredInstance) -> some View {
-        let shape = RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
         let place = instance.locationName.isEmpty || instance.locationName == "Home Assistant"
             ? instance.hostAndPort
             : "\(instance.locationName)（\(instance.hostAndPort)）"
@@ -933,7 +544,7 @@ extension ControlCenterPanel {
                 L10n.tr("连不上 Home Assistant。发现了 \(place)，要切换过去吗？", "Can't reach Home Assistant. Found \(place). Switch to it?"),
                 systemImage: "questionmark.circle.fill"
             )
-            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+            .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
             Text(L10n.tr(
                 "切换后会把访问令牌发给这个地址。不认识这个地址就点「不切换」。",
                 "Switching sends your access token to this address. If you don't recognize it, choose Don't Switch."
@@ -953,12 +564,10 @@ extension ControlCenterPanel {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveGlass(in: shape)
     }
 
     /// A public plain-http Home Assistant address: nothing carrying the token is sent until the user agrees (#276).
     func haPlaintextConsentBanner(_ prompt: HAPlaintextPrompt) -> some View {
-        let shape = RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
         let host = HAPlaintextConsent.host(prompt.address)
         let isDeclined = prompt == .declined(prompt.address)
         return VStack(alignment: .leading, spacing: 8) {
@@ -970,7 +579,7 @@ extension ControlCenterPanel {
                     Text(isDeclined
                         ? HAPlaintextConsent.declinedMessage(prompt.address)
                         : L10n.tr("令牌会以明文发送", "Your token would be sent in plaintext"))
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                        .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                         .fixedSize(horizontal: false, vertical: true)
                     if !isDeclined {
                         Text(L10n.tr(
@@ -1009,177 +618,22 @@ extension ControlCenterPanel {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.08), in: shape)
-        .overlay(shape.strokeBorder(Color.orange.opacity(0.35), lineWidth: 1))
     }
 
-    // MARK: - 3. Floating Undo & Toast Banner
+    // MARK: - 3. Floating Undo & Toast Stack
 
-    @ViewBuilder
+    /// Undo and toast share one floating surface instead of taking turns (spec §2.2). The stack
+    /// measures itself, so the device list reserves the real height rather than a guess.
     var overlayNotifications: some View {
-        if let banner = store.undoBanner {
-            let bannerShape = RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
-            HStack(spacing: 10) {
-                Image(systemName: "moon.stars.fill")
-                    .foregroundStyle(.orange)
-                    .font(.system(size: DesignTokens.TypeSize.body))
-
-                Text(banner.title)
-                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
-
-                Spacer()
-
-                Button(L10n.tr("撤销", "Undo")) {
-                    withAnimation(AppleMotion.snappySpring) {
-                        _ = store.undoTurnAllOff()
-                    }
-                }
-                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: DesignTokens.active))
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .adaptiveGlass(in: bannerShape)
-            .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 4)
-            .padding(.horizontal, 14)
-            .padding(.bottom, 42)
-            // #53: reading the banner must not cost the undo. Leaving restarts the full window.
-            .onHover { hovering in
-                if hovering {
-                    store.pauseUndoBannerCountdown()
-                } else {
-                    store.resumeUndoBannerCountdown()
-                }
-            }
-            .transition(AppleMotion.drawerTransition)
-        } else if let toast = visibleToast {
-            let toastShape = Capsule(style: .continuous)
-            NoticeToastBanner(
-                notice: toast,
-                onAction: {
-                    guard let action = toast.action else { return }
-                    withAnimation(AppleMotion.snappySpring) {
-                        ToastNoticeActions.perform(action, store: store)
-                    }
-                },
-                onDismiss: { store.dismissToast() }
-            )
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .adaptiveGlass(in: toastShape)
-            .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 3)
-            .padding(.bottom, 42)
-            .transition(AppleMotion.drawerTransition)
-        }
+        TransientStackView(
+            store: store,
+            toast: visibleToast,
+            initialExpanded: initialTransientExpanded,
+            onHeightChange: { transientStackHeight = $0 }
+        )
     }
 
-    // MARK: - 4. Footer Status Bar
-
-    var footerBar: some View {
-        HStack(spacing: 8) {
-            BreathingDot(
-                color: statusDotColor,
-                animate: statusDotAnimates
-            )
-            .id(statusDotColor)
-
-            statusFooterControl
-
-            Spacer()
-
-            if let release = store.updateState.badgeRelease {
-                Button {
-                    if store.updateState.isReadyToRelaunch {
-                        withAnimation(AppleMotion.snappySpring) {
-                            store.confirmRelaunchForUpdate()
-                        }
-                    } else {
-                        SettingsWindowOpener.shared.show(tab: .about)
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(
-                            systemName: store.updateState.isReadyToRelaunch
-                                ? "arrow.triangle.2.circlepath.circle.fill"
-                                : "arrow.down.circle.fill"
-                        )
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                        Text(updateBadgeTitle(for: release))
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                        .monospacedDigit()
-                    }
-                }
-                .buttonStyle(
-                    PillActionButtonStyle(
-                        isSelected: true,
-                        tintColor: store.updateState.isReadyToRelaunch ? .green : .accentColor
-                    )
-                )
-                .panelHelp(
-                    store.updateState.isReadyToRelaunch
-                        ? L10n.tr("点击立即重启并完成 v\(release.version) 更新", "Click to relaunch and finish updating to v\(release.version)")
-                        : L10n.tr("发现新版本 v\(release.version)，点击直接打开更新", "New version v\(release.version) available")
-                )
-            }
-
-            // #53: once the banner is gone the assistant action is still undoable for ten minutes.
-            if store.undoBanner == nil,
-               !store.isShowingAssistantBar,
-               UndoAvailabilityTracker.shared.isAvailable {
-                Button {
-                    store.presentAssistantBar()
-                    Task { await UndoAvailabilityTracker.shared.performUndo(store: store) }
-                } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                        .foregroundStyle(.primary.opacity(0.72))
-                        .frame(width: 24, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(Text(L10n.tr("撤销上一步", "Undo last action")))
-                .panelHelp(L10n.tr("撤销上一步（10 分钟内有效）", "Undo the last assistant action (valid for 10 minutes)"))
-            }
-
-            Button {
-                store.refreshNow()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(.primary.opacity(0.72))
-                    .frame(width: 24, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text(L10n.tr("立即同步", "Refresh now")))
-            .panelHelp(L10n.tr("立即同步最新状态", "Refresh device states now"))
-
-            Button {
-                presentSettingsWindow()
-            } label: {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                    .foregroundStyle(.primary.opacity(0.72))
-                    .frame(width: 24, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text(L10n.tr("打开设置", "Open Settings")))
-            .panelHelp(L10n.tr("偏好设置与连接配置（⌘,）", "Preferences & connection settings (⌘,)"))
-
-            Button {
-                NSApplication.shared.terminate(nil)
-            } label: {
-                Image(systemName: "power")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(.primary.opacity(0.72))
-                    .frame(width: 24, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text(L10n.tr("退出应用", "Quit App")))
-            .panelHelp(L10n.tr("完全退出 MenuBarHome（⌘Q）", "Quit MenuBarHome (⌘Q)"))
-        }
-    }
+    // MARK: - Header Status and Actions
 
     /// `openSettings` is the supported way to reveal the Settings scene from a MenuBarExtra.
     func presentSettingsWindow() {

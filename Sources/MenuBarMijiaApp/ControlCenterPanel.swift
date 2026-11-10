@@ -14,12 +14,8 @@ public struct ControlCenterPanel: View {
     @State var grabOffset: CGSize = .zero
     @State var lastSwapTarget: String?
     @State var lastSwapAt: Date = .distantPast
-    @State var pressTask: Task<Void, Never>?
-    @State var pressCancelled = false
     @State var pendingScrollToDeviceId: String?
     @AppStorage(GroupPrefs.groupsKey) var groupsRaw: String = "[]"
-    @AppStorage(GroupPrefs.collapsedKey) var collapsedRaw: String = "[]"
-    @State var hoveredHeader: String?
     @AppStorage(GroupPrefs.aliasesKey) var aliasesRaw: String = "{}"
     // #146: room aliases and order, separate from device prefs so a room rename never touches devices.
     @AppStorage(RoomPrefs.aliasesKey) var roomAliasesRaw: String = "{}"
@@ -44,16 +40,17 @@ public struct ControlCenterPanel: View {
     @Environment(\.effectiveReduceTransparency) var reduceTransparency
     /// Opens the ⌘, Settings window; the popover no longer hosts the long form (#42).
     @Environment(\.openSettings) var openSettings
-    /// Flips with the menu-bar window so the room strip re-centers on every open.
-    @State var isPresented = false
-    /// Re-centers the active room pill when the user taps an already-selected pill after scrolling.
-    @State var roomScrollTrigger = 0
-    @State var kindScrollTrigger = 0
-    /// The kind-chip row stays hidden until the user taps the active 全部 pill again.
-    @State var kindChipsRevealed = false
-    /// Which pending notice the 「还有 N 条提醒」 button has walked to. The highest priority is
-    /// shown on every open and whenever the pending set changes.
-    @State var noticeIndex = 0
+    /// Room stacks or kind stacks — the capsule under the title (Notification Center's grouping).
+    @AppStorage(PanelGrouping.storageKey) var groupingRaw: String = PanelGrouping.room.rawValue
+    /// Stacks opened this session; Notification Center also forgets an opened group on close.
+    @State var expandedStacks: Set<String> = []
+    /// The search field is folded behind the header's magnifier until asked for.
+    @State private var isSearchRevealed = false
+    /// Expansion ends on panel close, backend change, or an empty activity feed.
+    @State var activitiesExpanded = false
+    /// Measured by the transient surface; reset when that surface disappears.
+    @State var transientStackHeight: CGFloat = 0
+    let initialTransientExpanded: Bool
 
     /// Card sizes are remembered per page: a room id, or "all" for the overview.
     var layoutScope: String { store.selectedRoomId ?? "all" }
@@ -63,50 +60,51 @@ public struct ControlCenterPanel: View {
     var isRoomOrdering: Bool { layoutUI.editMode == .roomOrder }
     /// Either edit mode: cards and room pills stop hit-testing while one is active.
     var isEditing: Bool { layoutUI.editMode != .none }
-    @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
     @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
     public let store: HomeStore
 
     private static let panelWidth: CGFloat = 376
-    private var panelHeight: CGFloat { (PanelHeight(rawValue: panelHeightRaw) ?? .standard).points }
+    /// One inset for the header, the grouping capsule and every card, so their edges line up.
+    static let columnInset: CGFloat = 12
     private var appearance: AppAppearance { AppAppearance(rawValue: appearanceRaw) ?? .system }
     /// The panel sets `panelRoot` on its own body, so it cannot read that environment back;
     /// resolve the effective scheme locally (#51).
     var effectiveScheme: ColorScheme { appearance.colorScheme ?? colorScheme }
 
-    /// - Parameter initialNoticeIndex: lets the snapshot and layout tests put a specific pending
-    ///   notice on screen. Production always starts at the highest priority.
-    public init(store: HomeStore, initialNoticeIndex: Int = 0) {
+    public init(store: HomeStore, initialActivitiesExpanded: Bool = false, initialTransientExpanded: Bool = false) {
         self.store = store
-        _noticeIndex = State(initialValue: initialNoticeIndex)
+        _activitiesExpanded = State(initialValue: initialActivitiesExpanded)
+        self.initialTransientExpanded = initialTransientExpanded
     }
     public var body: some View {
         let _ = (store.effectiveLanguage, store.selectedRoomId, store.rooms.count)
         return dashboardRoot
-            .frame(width: Self.panelWidth, height: panelHeight)
-            .onChange(of: panelHeightRaw) { _, _ in syncMenuBarWindowSize() }
+            .frame(width: Self.panelWidth)
+            .frame(maxHeight: .infinity, alignment: .top)
             .onChange(of: store.lastAssistantActionAt) { _, date in
                 UndoAvailabilityTracker.shared.syncAction(at: date)
             }
             .onChange(of: store.assistantState) { _, state in handleAssistantState(state) }
             // #45: the only place that sees every error toast is the panel root.
             .onChange(of: store.toastNotice?.id) { _, _ in handleToastNotice() }
-            // A newly pending notice takes priority; a stale cycle position would hide it.
-            .onChange(of: store.panelNoticeKinds) { _, _ in noticeIndex = 0 }
-            // Frequently opened utility: show immediately, including keyboard invocation.
+            // The window fades in like Control Center; nothing inside the panel moves on open.
             .onReceive(NotificationCenter.default.publisher(for: MenuBarPanelController.didShowNotification)) { _ in
                 UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
                 LaunchAtLoginCoordinator.live(store: store).refresh()
-                isPresented = true
-                noticeIndex = 0
             }
             .onAppear { handlePanelAppear() }
             // The panel tree survives a close, so a half-typed query would come back on the next open.
             .onReceive(NotificationCenter.default.publisher(for: MenuBarPanelController.didHideNotification)) { _ in
                 handlePanelDidHide()
+                activitiesExpanded = false
+                expandedStacks = []
             }
             // Leaving search puts the caret back on the panel, so Esc closes it instead of resigning the field.
             .onChange(of: search.isSearching) { _, searching in handleSearching(searching) }
+            .onChange(of: store.homeBackend) { _, _ in activitiesExpanded = false }
+            .onChange(of: store.panelActivities.isEmpty) { _, empty in
+                if empty { activitiesExpanded = false }
+            }
             // #180: typing a query — through the key monitor or the field — ticks the guide's search step.
             .onChange(of: search.query) { _, query in handleSearchQuery(query) }
             // Scenes and suggestions open with the field; make sure the suggestions are fresh by then.
@@ -127,7 +125,8 @@ public struct ControlCenterPanel: View {
         return ZStack(alignment: .bottom) {
             if store.showsFullOnboardingGuide {
                 OnboardingGuideView(store: store)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(maxWidth: .infinity, maxHeight: 640, alignment: .top)
+                    .frame(maxHeight: .infinity, alignment: .top)
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
             } else {
                 mainDashboard
@@ -160,7 +159,7 @@ public struct ControlCenterPanel: View {
                 }
             }
             if order != currentOrder {
-                withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { panelLayout.setOrder(order) }
+                withAnimation(reduceMotion ? nil : .spring(response: 0.50, dampingFraction: 1.0)) { panelLayout.setOrder(order) }
             }
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.newGroupForDevice)
@@ -216,14 +215,12 @@ public struct ControlCenterPanel: View {
     private func handlePanelAppear() {
         UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
         SettingsWindowOpener.shared.open = { openSettings() }
-        syncMenuBarWindowSize()
-        isPresented = true
     }
 
     private func handlePanelDidHide() {
-        isPresented = false
         search.end()
         isSearchFieldFocused = false
+        isSearchRevealed = false
     }
 
     private func handleSearching(_ searching: Bool) {
@@ -249,267 +246,187 @@ public struct ControlCenterPanel: View {
         if isRoomOrdering { layoutUI.updateRoomOrderDraft(rooms: store.rooms) { _ in } }
     }
 
-    private func syncMenuBarWindowSize() {
-        MenuBarPanelController.shared.updatePanelSize(width: Self.panelWidth, height: panelHeight)
-    }
-
     // MARK: - Main Dashboard
 
+    /// Notification Center's column: a text title, the grouping capsule, then one scroll of
+    /// notices, the pinned favorites and the room or kind stacks.
     private var mainDashboard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            topHeroHeader
-                .padding(.horizontal, 14)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
+            panelHeader
+                .padding(.horizontal, Self.columnInset + 2)
+                .padding(.top, 4)
+                .padding(.bottom, 10)
 
-            // A blocked session or a plaintext-token choice stays pinned under the header so it
-            // is the first thing the user reads. Lower-priority notices scroll with the devices.
-            if let slot = pinnedNotice {
-                systemNotice(slot)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 8)
+            // One input for search and assistant commands (#60), folded behind the magnifier.
+            if showsOmnibar, !isRoomOrdering {
+                VStack(alignment: .leading, spacing: 8) {
+                    omnibar
+                        .foldOrigin { $0.omnibarMinY = $1 }
+                    if showsInputDrawer {
+                        inputDrawer
+                            .transition(AppleMotion.drawerTransition)
+                    }
+                }
+                .padding(.horizontal, Self.columnInset)
+                .padding(.bottom, 10)
+                .transition(.opacity.combined(with: .offset(y: -6)))
+            }
+
+            if store.isShowingAssistantBar || speech.errorMessage != nil {
+                AssistantResponseArea(store: store)
+                    .padding(.horizontal, Self.columnInset)
+                    .padding(.bottom, 10)
                     .transition(AppleMotion.drawerTransition)
             }
 
-            // One input for search and assistant commands, always on screen (#60). Reordering wants
-            // the height for the list instead.
-            if !isRoomOrdering {
-                omnibar
-                    .foldOrigin { $0.omnibarMinY = $1 }
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 4)
-
-                if showsInputDrawer {
-                    inputDrawer
-                        .padding(.horizontal, 14)
-                        .padding(.bottom, 8)
-                        .transition(AppleMotion.drawerTransition)
-                }
-
-                if store.isShowingAssistantBar || speech.errorMessage != nil {
-                    AssistantResponseArea(store: store)
-                        .padding(.horizontal, 14)
-                        .padding(.bottom, 8)
-                        .transition(AppleMotion.drawerTransition)
-                }
-            }
-
-            // While a search is open the results replace the room strip, so the empty-query layout
-            // is untouched and results are not silently narrowed by the selected room.
-            // #146: sorting keeps the room strip as a live preview, but drops the kind-filter row.
-            if !search.isSearching {
-                if isRoomOrdering {
-                    if showsRoomStripPreview {
-                        VStack(alignment: .leading, spacing: 6) {
-                            roomFilterBar
-                            // Ordering kinds previews the chip row under the strip instead.
-                            if layoutUI.orderTarget == .kinds { kindFilterBar }
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.bottom, 8)
-                    }
+            if !isRoomOrdering, !search.isSearching {
+                if isEditingLayout {
+                    layoutEditToolbar
+                        .padding(.horizontal, Self.columnInset)
+                        .padding(.bottom, 12)
+                        .transition(.opacity)
                 } else {
-                    browsingFilters
-                        .padding(.horizontal, 14)
-                        .padding(.bottom, 4)
+                    groupingBar
+                        .padding(.horizontal, Self.columnInset)
+                        .padding(.bottom, 12)
+                        .transition(.opacity)
                 }
             }
-
-            Divider()
-                .overlay(Color.primary.opacity(0.07))
 
             if isRoomOrdering {
-                // The order list replaces the whole scrolling dashboard: one vertical scroll only,
+                // The order list replaces the whole scrolling column: one vertical scroll only,
                 // and no tile frames or tile drag gesture mounted underneath (§5.1).
                 RoomOrderEditor(store: store)
                     .frame(maxHeight: .infinity)
             } else {
-                deviceGrid
+                deviceColumn
                     .frame(maxHeight: .infinity)
             }
-
-            Divider()
-                .overlay(Color.primary.opacity(0.07))
-
-            footerBar
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
         }
         .foldOrigin { $0.panelMinY = $1 }
+        .animation(AppleMotion.reveal, value: store.expandedDeviceId)
+        .animation(AppleMotion.reveal, value: store.listCut)
+        .animation(AppleMotion.reveal, value: store.isCompactGridMode)
+        .animation(AppleMotion.reveal, value: groupingRaw)
         .animation(AppleMotion.snappySpring, value: store.isShowingAssistantBar)
         .animation(AppleMotion.snappySpring, value: layoutUI.editMode)
-        .animation(AppleMotion.snappySpring, value: kindChipsRevealed)
-        .onChange(of: roomScrollTrigger) { _, value in handleAllPillReselect(value) }
+        .animation(AppleMotion.snappySpring, value: showsOmnibar)
+        // Typing, ⌘F, "/" and dictation all ask for the field; it unfolds before it takes focus.
+        .onChange(of: search.focusRequest) { _, _ in revealSearch() }
+        .onChange(of: store.assistantFocusRequest) { _, _ in revealSearch() }
+        .onChange(of: store.assistantVoiceRequest) { _, _ in revealSearch() }
+        .onChange(of: isSearchFieldFocused) { _, focused in if !focused { foldSearchIfIdle() } }
+        .onChange(of: isDrawerHovered) { _, hovered in if !hovered, !isSearchFieldFocused { foldSearchIfIdle() } }
+        // A device reached by keyboard, the status line or the assistant opens its stack first.
+        .onChange(of: store.focusedDeviceId) { _, id in openStack(containing: id) }
+        .onChange(of: store.expandedDeviceId) { _, id in openStack(containing: id) }
     }
 
-    /// Re-tapping the already-selected 全部 pill increments `roomScrollTrigger`. That second tap
-    /// is the gesture that shows or hides the kind chips.
-    private func handleAllPillReselect(_ value: Int) {
-        guard value > 0, store.listCut == .all else { return }
-        kindChipsRevealed.toggle()
+    /// The field shows while asked for, while something is typed, and while voice or the assistant
+    /// is working through it.
+    var showsOmnibar: Bool {
+        isSearchRevealed || search.isSearching || speech.isListening || speech.isHoldToTalk
+            || store.isShowingAssistantBar
     }
 
-    /// Every pending notice in priority order.
-    private var noticeKinds: [PanelNoticeSlot.Kind] { store.panelNoticeKinds }
-
-    /// The notice on screen: the highest priority one unless the reminder button walked forward.
-    private var currentNotice: PanelNoticeSlot? {
-        PanelNotice.slot(noticeKinds, at: noticeIndex)
+    private func revealSearch() {
+        guard !isSearchRevealed else { return }
+        withAnimation(reduceMotion ? nil : AppleMotion.snappySpring) { isSearchRevealed = true }
     }
 
-    /// Blocked and security notices stay above the search field. Anything quieter scrolls.
-    private var pinnedNotice: PanelNoticeSlot? {
-        guard let slot = currentNotice, slot.hidesChecklist else { return nil }
-        return slot
+    /// Leaving an empty field folds it back; the drawer under the pointer keeps it until its click lands.
+    private func foldSearchIfIdle() {
+        guard search.query.isEmpty, !speech.isListening, !speech.isHoldToTalk,
+              !isDrawerHovered, !store.isShowingAssistantBar else { return }
+        withAnimation(reduceMotion ? nil : AppleMotion.snappySpring) { isSearchRevealed = false }
     }
 
-    private var scrollingNotice: PanelNoticeSlot? {
-        guard let slot = currentNotice, !slot.hidesChecklist else { return nil }
-        return slot
+    /// The header's magnifier: opens and focuses the field, or closes an open one.
+    func toggleSearch() {
+        if showsOmnibar {
+            search.end()
+            isSearchFieldFocused = false
+            withAnimation(reduceMotion ? nil : AppleMotion.snappySpring) { isSearchRevealed = false }
+        } else {
+            search.focus()
+        }
     }
 
     private var showsLessonRow: Bool {
-        store.showsOnboardingChecklistCard && !noticeKinds.contains(where: \.hidesChecklist)
-    }
-
-    /// Walks to the next pending notice; the last step returns to the highest priority.
-    private func advanceNotice() {
-        let count = noticeKinds.count
-        guard count > 1 else { return }
-        withAnimation(AppleMotion.snappySpring) { noticeIndex = (noticeIndex + 1) % count }
-    }
-
-    private var showsScrollPreface: Bool {
-        scrollingNotice != nil || showsLessonRow
+        store.showsOnboardingChecklistCard && !store.panelActivities.contains { activity in
+            if case .notice(let kind) = activity.kind { return kind.hidesChecklist }
+            return false
+        }
     }
 
     /// The toast the panel actually draws. A pinned blocked notice already carries the same
     /// message and Scan action, so #47's persistent expiry toast must not repeat it.
     var visibleToast: ToastNotice? {
         guard let toast = store.toastNotice else { return nil }
-        guard !(store.panelNoticeSlot?.repeats(toast) ?? false) else { return nil }
+        guard !store.panelNoticeKinds.contains(where: { $0.repeats(toast) }) else { return nil }
         return toast
     }
 
-    private var showsKindChips: Bool {
-        KindChipRowPolicy.isShown(listCut: store.listCut, revealed: kindChipsRevealed)
-    }
-
-    private var browsingFilters: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            roomFilterBar
-            if showsKindChips {
-                kindFilterBar
-                    .foldOrigin { $0.kindRowMinY = $1 }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var scrollPreface: some View {
-        if let slot = scrollingNotice {
-            systemNotice(slot)
-        }
-        if showsLessonRow {
-            OnboardingChecklistCard(store: store, onBeginSearch: { search.focus() })
-                .foldOrigin { $0.lessonRowMinY = $1 }
-        }
-    }
-
-    @ViewBuilder
-    func systemNotice(_ slot: PanelNoticeSlot) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            switch slot.kind {
-            case .miBlocked, .miExpiringSoon:
-                miSessionExpiryBanner
-            case .haPlaintext(let prompt):
-                haPlaintextConsentBanner(prompt)
-            case .haAddress(let instance):
-                haAddressSuggestionBanner(instance)
-            }
-            if slot.extraCount > 0 {
-                Button {
-                    advanceNotice()
-                } label: {
-                    Text(PanelNotice.extraReminderLabel(count: slot.extraCount))
-                        .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("panel-notice-extra")
-                .panelHelp(L10n.tr("查看下一条提醒", "Show the next reminder"))
-            }
-        }
-        .foldOrigin { $0.systemNoticeMinY = $1 }
-        .accessibilityIdentifier("panel-system-notice")
-    }
-
-    /// The 460 pt panel gives the height to the list instead of a strip that duplicates it (§5.1).
-    var showsRoomStripPreview: Bool { panelHeight > PanelHeight.compact.points }
-
-    private var deviceGrid: some View {
-        Group {
-            ScrollViewReader { scrollProxy in
-                ScrollView(.vertical, showsIndicators: false) {
-                    let sections = pageSections
-                    let quickIndexMap = Dictionary(
-                        uniqueKeysWithValues: sections.flatMap(\.devices).prefix(9).enumerated().map { ($1.id, $0 + 1) }
-                    )
-
-                    VStack(alignment: .leading, spacing: 0) {
-                        if showsScrollPreface {
-                            scrollPreface
-                        }
-                        VStack(alignment: .leading, spacing: 11) {
-                            if search.isSearching {
-                                searchResultsList(results: searchResults)
-                            } else if store.visibleDevices.isEmpty {
-                                emptyStateView
-                            } else {
-                                ForEach(sections) { section in
-                                    if section.title != nil {
-                                        groupHeader(section)
-                                    }
-                                    if !collapsedGroups.contains(collapseKey(section)) {
-                                        deviceCollectionView(
-                                            devices: section.devices,
-                                            showRoomBadge: store.selectedRoomId == nil,
-                                            quickIndexMap: quickIndexMap
-                                        )
-                                        .transition(.asymmetric(
-                                            insertion: .opacity.combined(with: .offset(y: -8)),
-                                            removal: .opacity.combined(with: .scale(scale: 0.97, anchor: .top))
-                                        ))
-                                    }
-                                }
-                            }
-                        }
-                        .coordinateSpace(name: TileSpace.name)
-                        // Cards stop hit-testing in edit mode; the container must still catch the press.
-                        .contentShape(Rectangle())
-                        .simultaneousGesture(tileDragGesture)
-                        .onPreferenceChange(TileFramesKey.self) { frames in
-                            if frames != tileFrames { tileFrames = frames }
-                        }
-                        .onPreferenceChange(CardGlobalTopKey.self) { tops in
-                            panelFoldRecord?.cardTops = tops
-                        }
+    private var deviceColumn: some View {
+        ScrollViewReader { scrollProxy in
+            let stacks = deviceStacks
+            // The one order both the card badges and the digit shortcuts read: only cards that are
+            // actually drawn take a number, in the order they are drawn.
+            let quickIndex = quickIndexOrder(stacks)
+            let quickIndexBadges = quickIndex.badges
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 16) {
+                    if !store.panelActivities.isEmpty {
+                        activityStack
+                            .foldOrigin { $0.systemNoticeMinY = $1 }
+                            .accessibilityIdentifier("panel-system-notice")
                     }
-                    .padding(.horizontal, 13)
-                    .padding(.top, showsScrollPreface ? 0 : 10)
-                    .padding(.bottom, store.undoBanner != nil || visibleToast != nil ? 48 : 12)
-                }
-                .onChange(of: pendingScrollToDeviceId) { _, targetId in
-                    guard let targetId else { return }
-                    pendingScrollToDeviceId = nil
-                    Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(80))
-                        withAnimation(AppleMotion.snappySpring) {
-                            scrollProxy.scrollTo(targetId, anchor: .center)
+                    if showsLessonRow {
+                        OnboardingChecklistCard(store: store, onBeginSearch: { search.focus() })
+                            .foldOrigin { $0.lessonRowMinY = $1 }
+                    }
+                    if search.isSearching {
+                        searchResultsList(results: searchResults)
+                    } else if store.visibleDevices.isEmpty {
+                        emptyStateView
+                    } else {
+                        ForEach(stacks) { stack in
+                            stackView(stack, quickIndexMap: quickIndexBadges)
+                                .transition(.opacity)
                         }
                     }
                 }
+                .coordinateSpace(name: TileSpace.name)
+                // Cards stop hit-testing in edit mode; the container must still catch the press.
+                .contentShape(Rectangle())
+                .simultaneousGesture(tileDragGesture)
+                .onPreferenceChange(TileFramesKey.self) { frames in
+                    if frames != tileFrames { tileFrames = frames }
+                }
+                .onPreferenceChange(CardGlobalTopKey.self) { tops in
+                    panelFoldRecord?.cardTops = tops
+                }
+                .padding(.horizontal, Self.columnInset)
+                .padding(.top, 2)
+                .padding(.bottom, max(16, transientStackHeight + 8))
             }
+            .scrollDisabled(draggingId != nil || activeResize != nil)
+            .softTopScrollEdge()
+            .onChange(of: pendingScrollToDeviceId) { _, targetId in
+                guard let targetId else { return }
+                pendingScrollToDeviceId = nil
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(80))
+                    withAnimation(AppleMotion.snappySpring) {
+                        scrollProxy.scrollTo(targetId, anchor: .center)
+                    }
+                }
+            }
+            // The digit shortcuts run in the app-wide key monitor, which cannot read this view's
+            // state: publish the drawn order it must follow, and withdraw it with the column.
+            .onAppear { PanelQuickIndexState.shared.register(quickIndex) }
+            .onChange(of: quickIndex) { _, next in PanelQuickIndexState.shared.register(next) }
+            .onDisappear { PanelQuickIndexState.shared.clear() }
         }
     }
 
@@ -539,7 +456,7 @@ public struct ControlCenterPanel: View {
     /// The single input: typing filters devices, a sentence plus Return runs as an instruction, the
     /// mic dictates into the same field.
     private var omnibar: some View {
-        let shape = RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
+        let shape = Capsule(style: .continuous)
         let listening = speech.isListening
         return HStack(spacing: 7) {
             Image(systemName: listening ? "waveform" : "magnifyingglass")
@@ -605,13 +522,13 @@ public struct ControlCenterPanel: View {
                     : L10n.tr("语音输入（快捷键 V，或长按 ⌥M / 菜单栏图标）", "Voice input (Shortcut V, or hold ⌥M / menu bar icon)"))
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.horizontal, 12)
+        .frame(height: 32)
         .adaptiveGlass(in: shape, interactive: true)
         .overlay(
             shape.strokeBorder(
-                listening ? Color.red.opacity(0.65) : Color.accentColor.opacity(isSearchFieldFocused ? 0.55 : 0.16),
-                lineWidth: DesignTokens.hairline
+                listening ? Color.red.opacity(0.65) : (isSearchFieldFocused ? Color.accentColor.opacity(0.65) : Color.clear),
+                lineWidth: 1.5
             )
         )
         .onChange(of: search.focusRequest) { _, _ in focusInput() }
@@ -633,7 +550,8 @@ public struct ControlCenterPanel: View {
             if store.assistantVoiceRequest != lastHandledVoiceRequest {
                 lastHandledVoiceRequest = store.assistantVoiceRequest
                 Task { await speech.start(holdMode: false, store: store) }
-            } else if search.focusRequest > 0 {
+            } else {
+                // The field only mounts when someone asked for it, so it takes the caret at once.
                 focusInput()
             }
         }
@@ -706,8 +624,10 @@ public struct ControlCenterPanel: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 26)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 30)
+            .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.module)
         } else {
             let quickIndexMap = Dictionary(
                 uniqueKeysWithValues: results.prefix(9).enumerated().map { ($1.id, $0 + 1) }

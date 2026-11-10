@@ -42,6 +42,14 @@ public enum AppleMotion {
     /// Critically damped spring (damping ~ 0.94, response 0.26s) — smooth, interruptible, no distracting overshoot
     public static let snappySpring = Animation.spring(response: 0.26, dampingFraction: 0.94, blendDuration: 0.08)
 
+    /// Switches, orbs and selection lenses (contract §1.6). Short enough that a toggle answers the
+    /// click instead of performing for it.
+    public static let control = Animation.spring(response: 0.24, dampingFraction: 0.86)
+
+    /// Drawer expansion and grid reflow: the same character as `control`, one beat slower, because
+    /// a surface that changes the layout must not snap.
+    public static let reveal = Animation.spring(response: 0.34, dampingFraction: 0.86)
+
     /// Fast ease-out for press feedback (120ms)
     public static let pressFeedback = Animation.easeOut(duration: 0.12)
 
@@ -92,37 +100,17 @@ public struct PillActionButtonStyle: ButtonStyle {
         let capsule = Capsule(style: .continuous)
         return configuration.label
             .font(.system(size: DesignTokens.TypeSize.caption, weight: isSelected ? .semibold : .medium))
-            .foregroundStyle(Color.primary.opacity(0.88))
+            .foregroundStyle(Color.primary.opacity(isSelected ? 0.96 : 0.88))
             .padding(.horizontal, 10.5)
             .padding(.vertical, 5)
-            .background {
-                if isSelected {
-                    capsule.fill(Color.primary.opacity(colorScheme == .dark ? 0.18 : 0.09))
-                }
-            }
             .modifier(
-                ChipSurface(
+                ClassicGlass(
                     shape: capsule,
-                    tint: nil,
+                    tint: isSelected ? tintColor.opacity(0.24) : nil,
                     interactive: true,
-                    clear: false,
-                    isHidden: isSelected
+                    clear: false
                 )
             )
-            .overlay {
-                capsule
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(isSelected ? 0.52 : (colorScheme == .dark ? 0.24 : 0.58)),
-                                Color.white.opacity(0.08)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: DesignTokens.hairline
-                    )
-            }
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1.0)
             .animation(reduceMotion ? nil : AppleMotion.pressFeedback, value: configuration.isPressed)
     }
@@ -171,54 +159,263 @@ public enum ScenePalette {
     }
 }
 
-// MARK: - Panel Tile Surface
+// MARK: - Specular Rim
 
-/// Tile surface: a bright platter when the device is on, a quiet glass well when it is off.
-public struct GlassTileBackground: ViewModifier {
+/// The panel's one edge treatment (contract §1.3): a bright band on the top and bottom, a dark one
+/// on the left and right, both squeezed into a 1 pt border so the rounded corners blend them without
+/// special-casing. The gradient stop fractions are what keep each side band from reaching the middle
+/// of the edge, which is why the corners read lit and the sides read shaded.
+struct SpecularRim<S: InsettableShape>: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
-    public var isActive: Bool
-    public var cornerRadius: CGFloat
-    public var tint: Color?
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
 
-    @ViewBuilder
-    public func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        let surface = TileSurface(isActive: isActive, tint: tint, scheme: colorScheme)
-        content
-            .background {
-                shape.fill(surface.fill)
-            }
-            .overlay {
-                shape.strokeBorder(surface.hairline, lineWidth: DesignTokens.hairline)
-            }
-            // Glass catch-light along the top edge, strongest on a lit platter. The strip is drawn
-            // inside a full-height frame before clipping so the rounded corners clip it too.
-            .overlay(alignment: .top) {
-                LinearGradient(
-                    colors: [Color.white.opacity(specularStrength), Color.white.opacity(0)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: 1.5)
-                .frame(maxHeight: .infinity, alignment: .top)
-                .clipShape(shape)
-            }
-            .shadowIf(isActive, color: PanelLook.platterShadow(isActive: isActive), radius: 8, y: 2)
-            .animation(.easeOut(duration: 0.18), value: isActive)
+    let shape: S
+    let strength: Double
+
+    private var litEdge: Color {
+        Color.white.opacity((colorScheme == .dark ? 0.34 : 0.75) * strength)
     }
 
-    private var specularStrength: CGFloat {
-        switch (colorScheme, isActive) {
-        case (.dark, true): return 0.40
-        case (.dark, false): return 0.14
-        case (_, true): return 0.90
-        case (_, false): return 0.55
+    private var shadedEdge: Color {
+        Color.black.opacity(colorScheme == .dark ? 0.28 : 0.10)
+    }
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        content.overlay {
+            if reduceTransparency || contrast == .increased {
+                // A translucent edge is the first thing those modes erase; one solid hairline keeps
+                // the shape's boundary visible instead. Use an exact half-height circular rounded
+                // rectangle on capsules to avoid SwiftUI's 1x `Capsule` stroke tangent artifact.
+                if shape is Capsule {
+                    GeometryReader { geo in
+                        let r = min(geo.size.width, geo.size.height) / 2
+                        RoundedRectangle(cornerRadius: r, style: .circular)
+                            .strokeBorder(Color.primary.opacity(0.18), lineWidth: DesignTokens.hairline)
+                    }
+                    .allowsHitTesting(false)
+                } else {
+                    shape.strokeBorder(Color.primary.opacity(0.18), lineWidth: DesignTokens.hairline)
+                        .allowsHitTesting(false)
+                }
+            } else if shape is Capsule {
+                GeometryReader { geo in
+                    let r = min(geo.size.width, geo.size.height) / 2
+                    RoundedRectangle(cornerRadius: r, style: .circular).strokeBorder(
+                        LinearGradient(
+                            stops: [
+                                .init(color: litEdge, location: 0.0),
+                                .init(color: litEdge.opacity(0.25), location: 0.28),
+                                .init(color: shadedEdge, location: 0.50),
+                                .init(color: litEdge.opacity(0.25), location: 0.72),
+                                .init(color: litEdge, location: 1.0)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: DesignTokens.hairline
+                    )
+                }
+                .allowsHitTesting(false)
+            } else {
+                shape.strokeBorder(
+                    LinearGradient(
+                        stops: [
+                            .init(color: litEdge, location: 0.0),
+                            .init(color: litEdge.opacity(0.25), location: 0.28),
+                            .init(color: shadedEdge, location: 0.50),
+                            .init(color: litEdge.opacity(0.25), location: 0.72),
+                            .init(color: litEdge, location: 1.0)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: DesignTokens.hairline
+                )
+                .allowsHitTesting(false)
+            }
         }
     }
 }
 
-/// The panel's one small glass chip: thin material plus a white specular rim.
-struct ChipSurface<S: Shape>: ViewModifier {
+extension View {
+    /// The shared edge for every glass surface. Pass `strength` to lift a control that floats above
+    /// its own track.
+    func specularRim<S: InsettableShape>(_ shape: S, strength: Double = 1) -> some View {
+        modifier(SpecularRim(shape: shape, strength: strength))
+    }
+}
+
+// MARK: - Glass Hover Highlight
+
+/// The subtle additive lift a native macOS Control Center Liquid Glass module shows under the
+/// pointer: +7/255 (~0.03 white `.plusLighter`) across the body and a faint top/bottom 2 pt rim
+/// boost (+4/255 at the outer edge, fading to 0 across the middle third of the side arcs).
+/// Strictly an overlay on top of the `.glassEffect` surface so the system glass slab is never
+/// occluded; never changes size or shadow. Disabled while editing the layout, under Reduce
+/// Transparency, or on full-row cards that host an inline slider.
+struct GlassHoverHighlight<S: InsettableShape>: ViewModifier {
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
+    @Environment(\.isEditingLayout) private var isEditingLayout
+
+    let shape: S
+    var isEnabled: Bool = true
+    @State private var isHovering = false
+
+    private var isLit: Bool { isEnabled && isHovering && !isEditingLayout && !reduceTransparency }
+
+    /// Symmetric top/bottom edge boost measured from ControlCenter.app; middle third is clear.
+    private var rimGradient: LinearGradient {
+        LinearGradient(
+            stops: [
+                .init(color: .white.opacity(0.05), location: 0.00),
+                .init(color: .white.opacity(0.02), location: 0.12),
+                .init(color: .clear, location: 0.33),
+                .init(color: .clear, location: 0.67),
+                .init(color: .white.opacity(0.02), location: 0.88),
+                .init(color: .white.opacity(0.05), location: 1.00)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { isHovering = $0 }
+            .overlay {
+                highlight
+                    .opacity(isLit ? 1 : 0)
+                    .animation(
+                        reduceMotion ? nil : .easeInOut(duration: 0.30),
+                        value: isLit
+                    )
+                    .allowsHitTesting(false)
+            }
+    }
+
+    private var highlight: some View {
+        ZStack {
+            fill
+            rim
+        }
+    }
+
+    @ViewBuilder
+    private var fill: some View {
+        if shape is Capsule {
+            GeometryReader { geo in
+                RoundedRectangle(cornerRadius: min(geo.size.width, geo.size.height) / 2, style: .circular)
+                    .fill(Color.white.opacity(0.03))
+            }
+            .blendMode(.plusLighter)
+        } else {
+            shape.fill(Color.white.opacity(0.03))
+                .blendMode(.plusLighter)
+        }
+    }
+
+    /// `Capsule`'s 1x stroke leaves a tangent artifact; an exact half-height circular rounded
+    /// rectangle draws the same outline cleanly (same workaround as `SpecularRim`).
+    @ViewBuilder
+    private var rim: some View {
+        if shape is Capsule {
+            GeometryReader { geo in
+                RoundedRectangle(cornerRadius: min(geo.size.width, geo.size.height) / 2, style: .circular)
+                    .strokeBorder(rimGradient, lineWidth: 1.5)
+            }
+            .blendMode(.plusLighter)
+        } else {
+            shape.strokeBorder(rimGradient, lineWidth: 1.5)
+                .blendMode(.plusLighter)
+        }
+    }
+}
+
+extension View {
+    func glassHoverHighlight<S: InsettableShape>(in shape: S, isEnabled: Bool = true) -> some View {
+        modifier(GlassHoverHighlight(shape: shape, isEnabled: isEnabled))
+    }
+
+    /// Same shape choice as `glassTile`, so the highlight always matches the card's own glass.
+    @ViewBuilder
+    func glassHoverHighlight(cornerRadius: CGFloat, isCapsule: Bool = false, isEnabled: Bool = true) -> some View {
+        if isCapsule {
+            glassHoverHighlight(in: Capsule(style: .circular), isEnabled: isEnabled)
+        } else {
+            glassHoverHighlight(in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous), isEnabled: isEnabled)
+        }
+    }
+}
+
+// MARK: - Panel Tile Surface
+
+/// Independent refractive module, including an opaque accessibility fallback.
+public struct GlassShapeBackground<S: InsettableShape>: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
+    public var shape: S
+    public var isActive: Bool
+    public var tint: Color?
+
+    public func body(content: Content) -> some View {
+        surfaceBody(content)
+            .animation(AppleMotion.control, value: isActive)
+    }
+
+    @ViewBuilder
+    private func fillShape<Style: ShapeStyle>(_ style: Style) -> some View {
+        if shape is Capsule {
+            GeometryReader { geo in
+                let r = min(geo.size.width, geo.size.height) / 2
+                RoundedRectangle(cornerRadius: r, style: .circular).fill(style)
+            }
+        } else {
+            shape.fill(style)
+        }
+    }
+    @ViewBuilder
+    private func surfaceBody(_ content: Content) -> some View {
+        let surface = TileSurface(isActive: isActive, tint: tint, scheme: colorScheme)
+        if reduceTransparency {
+            content
+                .background {
+                    fillShape(Color(nsColor: .controlBackgroundColor))
+                    fillShape(surface.fill)
+                }
+                .specularRim(shape)
+                .shadow(color: .black.opacity(colorScheme == .dark ? 0.24 : 0.10), radius: 7, y: 2)
+        } else if #available(macOS 26.0, *) {
+            // Pure native Liquid Glass: never paint a `.background` fill before `.glassEffect`, or
+            // the view's own fill sits in front of the system glass slab and blocks both desktop
+            // refraction and System Settings (Tinted / Clear) adaptation.
+            if let tint {
+                content.glassEffect(.regular.interactive().tint(tint), in: shape)
+            } else {
+                content.glassEffect(.regular.interactive(), in: shape)
+            }
+        } else {
+            content
+                .background {
+                    ZStack {
+                        fillShape(.ultraThinMaterial)
+                        fillShape(surface.fill)
+                        if let tint {
+                            fillShape(tint.opacity(0.16))
+                        }
+                    }
+                }
+                .specularRim(shape, strength: isActive ? 1.25 : 1.0)
+                .shadow(color: .black.opacity(colorScheme == .dark ? 0.24 : 0.10), radius: 8, y: 3)
+        }
+    }
+}
+
+/// The panel's one small glass chip: macOS 26 glass, or the material stack on 14 and 15.
+struct ChipSurface<S: InsettableShape>: ViewModifier {
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
     let shape: S
     let tint: Color?
     let interactive: Bool
@@ -229,12 +426,24 @@ struct ChipSurface<S: Shape>: ViewModifier {
     func body(content: Content) -> some View {
         if isHidden {
             content
+        } else if #available(macOS 26.0, *), !reduceTransparency {
+            if let tint {
+                content.glassEffect(glassStyle.tint(tint), in: shape)
+            } else {
+                content.glassEffect(glassStyle, in: shape)
+            }
         } else {
             content.modifier(ClassicGlass(shape: shape, tint: tint, interactive: interactive, clear: clear))
         }
     }
+
+    @available(macOS 26.0, *)
+    private var glassStyle: Glass {
+        let base: Glass = clear ? .clear : .regular
+        return interactive ? base.interactive() : base
+    }
 }
-struct ClassicGlass<S: Shape>: ViewModifier {
+struct ClassicGlass<S: InsettableShape>: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.effectiveReduceTransparency) private var reduceTransparency
     let shape: S
@@ -243,47 +452,62 @@ struct ClassicGlass<S: Shape>: ViewModifier {
     let clear: Bool
     var translucentOnly = false
 
+    @ViewBuilder
+    private func fillShape<Style: ShapeStyle>(_ style: Style) -> some View {
+        if shape is Capsule {
+            GeometryReader { geo in
+                let r = min(geo.size.width, geo.size.height) / 2
+                RoundedRectangle(cornerRadius: r, style: .circular).fill(style)
+            }
+        } else {
+            shape.fill(style)
+        }
+    }
     func body(content: Content) -> some View {
         if translucentOnly {
             content
-                .background { shape.fill(reduceTransparency ? Color(nsColor: .controlBackgroundColor) : .white.opacity(0.14)); if let tint { shape.fill(tint) } }
-                .overlay { shape.stroke(.white.opacity(0.28), lineWidth: DesignTokens.hairline) }
+                .background { fillShape(reduceTransparency ? Color(nsColor: .controlBackgroundColor) : .white.opacity(0.14)); if let tint { fillShape(tint) } }
+                .specularRim(shape)
         } else {
             content
                 .background {
                     if clear {
-                        shape.fill(reduceTransparency ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor)) : AnyShapeStyle(.thinMaterial))
+                        fillShape(reduceTransparency ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor)) : AnyShapeStyle(.thinMaterial))
                     } else {
                         ZStack {
-                            shape.fill(reduceTransparency ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor)) : AnyShapeStyle(.ultraThinMaterial))
-                            shape.fill(
+                            fillShape(reduceTransparency ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor)) : AnyShapeStyle(.ultraThinMaterial))
+                            fillShape(
                                 colorScheme == .dark
                                     ? Color.white.opacity(0.06)
                                     : Color.white.opacity(0.45)
                             )
                             if let tint {
-                                shape.fill(tint)
+                                fillShape(tint)
                             }
                         }
                     }
                 }
-                .overlay {
-                    shape.stroke(
-                        Color.white.opacity(colorScheme == .dark ? 0.18 : 0.50),
-                        lineWidth: DesignTokens.hairline
-                    )
-                }
+                .specularRim(shape)
         }
     }
 }
 
 extension View {
-    public func glassTile(isActive: Bool, cornerRadius: CGFloat = 14, tint: Color? = nil) -> some View {
-        modifier(GlassTileBackground(isActive: isActive, cornerRadius: cornerRadius, tint: tint))
+    @ViewBuilder
+    public func glassTile(isActive: Bool, cornerRadius: CGFloat, isCapsule: Bool = false, tint: Color? = nil) -> some View {
+        if isCapsule {
+            glassShape(Capsule(style: .circular), isActive: isActive, tint: tint)
+        } else {
+            glassShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous), isActive: isActive, tint: tint)
+        }
     }
 
-    /// The panel's one glass chip (thin material + specular rim).
-    public func adaptiveGlass<S: Shape>(
+    public func glassShape<S: InsettableShape>(_ shape: S, isActive: Bool, tint: Color? = nil) -> some View {
+        modifier(GlassShapeBackground(shape: shape, isActive: isActive, tint: tint))
+    }
+
+    /// The panel's one glass chip (glass on macOS 26, thin material before it).
+    public func adaptiveGlass<S: InsettableShape>(
         in shape: S,
         tint: Color? = nil,
         interactive: Bool = false,
@@ -294,6 +518,10 @@ extension View {
 }
 
 public struct AdaptiveGlassContainer<Content: View>: View {
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
+    /// Edit badges are drawn over the cards; a container composites its merged glass above every
+    /// overlay, so while the layout is being edited the cards stand alone.
+    @Environment(\.isEditingLayout) private var isEditingLayout
     public var spacing: CGFloat
     @ViewBuilder public var content: () -> Content
 
@@ -302,8 +530,15 @@ public struct AdaptiveGlassContainer<Content: View>: View {
         self.content = content
     }
 
+    @ViewBuilder
     public var body: some View {
-        content()
+        if #available(macOS 26.0, *), !reduceTransparency, !isEditingLayout {
+            // Adjacent glass shapes merge their edges only inside a container; without it every chip
+            // draws its own rim and a row of buttons reads as a pile of separate panes.
+            GlassEffectContainer(spacing: spacing) { content() }
+        } else {
+            content()
+        }
     }
 }
 
@@ -364,23 +599,6 @@ private struct SettingsGlassContainer: ViewModifier {
     }
 }
 
-/// Full-surface Liquid Glass for the panel root (macOS 26+; no-op on earlier systems, where
-/// `panelRoot` keeps its material+scrim stack). The glass is far more translucent than
-/// ultraThinMaterial, so the caller still applies a lighter appearance-pinning scrim.
-private struct PanelRootGlass: ViewModifier {
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
-            content.glassEffect(.regular, in: Rectangle())
-        } else {
-            content
-        }
-    }
-}
-
-extension View {
-    func panelRootGlass() -> some View { modifier(PanelRootGlass()) }
-}
 
 extension View {
     func settingsGlassContainer() -> some View {
@@ -408,6 +626,7 @@ extension View {
 public struct LiquidGlassSlider: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
 
     @Binding public var value: Double
     public let range: ClosedRange<Double>
@@ -419,6 +638,7 @@ public struct LiquidGlassSlider: View {
     public let formattedValue: String
 
     @State private var isDragging: Bool = false
+    @FocusState private var isFocused: Bool
 
     public init<S: ShapeStyle>(
         value: Binding<Double>,
@@ -465,8 +685,8 @@ public struct LiquidGlassSlider: View {
             }
         }
         .focusable()
-        // .focusable() 是方向键调节的前提，但 macOS 默认会给它画系统蓝框；
-        // 玻璃滑杆自带高光与旋钮反馈，蓝框与卡片风格冲突，故只关掉 focus ring。
+        .focused($isFocused)
+        // The capsule draws its own visible keyboard focus ring.
         .focusEffectDisabled()
         .onKeyPress(.upArrow) { adjust(by: unitStep); return .handled }
         .onKeyPress(.rightArrow) { adjust(by: unitStep); return .handled }
@@ -504,121 +724,80 @@ public struct LiquidGlassSlider: View {
     }
 
     private var classicBody: some View {
-        HStack(spacing: 8) {
-            Image(systemName: iconName)
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .foregroundStyle(iconColor)
-                .frame(width: 16, alignment: .center)
+        GeometryReader { geo in
+            let width = max(geo.size.width, 1)
+            let thumbWidth: CGFloat = isDragging ? 28 : 22
+            let thumbHeight: CGFloat = 22
+            let trackHeight: CGFloat = 28
+            let usableTravel = max(width - thumbWidth - 4, 1)
+            let thumbCenterX = 2 + thumbWidth / 2 + normalizedProgress * usableTravel
+            let fillWidth = isSpectrumTrack ? width : max(thumbCenterX + thumbWidth / 2 - 1, trackHeight)
 
-            GeometryReader { geo in
-                let width = max(geo.size.width, 1)
-                let thumbWidth: CGFloat = isDragging ? 29 : 23
-                let thumbHeight: CGFloat = isDragging ? 20 : 16
-                let trackHeight: CGFloat = 22
-                let usableTravel = max(width - thumbWidth - 4, 1)
-                let thumbCenterX = 2 + thumbWidth / 2 + normalizedProgress * usableTravel
-                let fillWidth = isSpectrumTrack ? width : max(thumbCenterX + thumbWidth / 2 - 1, trackHeight)
+            ZStack(alignment: .leading) {
+                Capsule(style: .continuous)
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08))
+                    .overlay(alignment: .leading) {
+                        Capsule(style: .continuous)
+                            .fill(trackFill)
+                            .frame(width: min(fillWidth, width))
+                    }
+                    .clipShape(Capsule(style: .continuous))
 
-                ZStack(alignment: .leading) {
-                    // 1. Recessed Liquid Glass Track Capsule
-                    Capsule(style: .continuous)
-                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08))
-                        .frame(height: trackHeight)
-                        .overlay {
-                            // Active progress fill bar or full Kelvin spectrum inside glass track
-                            GeometryReader { trackGeo in
-                                Capsule(style: .continuous)
-                                    .fill(trackFill)
-                                    .frame(
-                                        width: isSpectrumTrack ? trackGeo.size.width : min(fillWidth, trackGeo.size.width),
-                                        height: trackHeight
-                                    )
-                            }
-                            .clipShape(Capsule(style: .continuous))
-                        }
-                        .adaptiveGlass(in: Capsule(style: .continuous))
-                        .overlay {
-                            // Top inner specular rim
-                            Capsule(style: .continuous)
-                                .strokeBorder(
-                                    LinearGradient(
-                                        colors: [
-                                            Color.white.opacity(colorScheme == .dark ? 0.28 : 0.62),
-                                            Color.primary.opacity(0.10)
-                                        ],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    ),
-                                    lineWidth: DesignTokens.hairline
+                RoundedRectangle(cornerRadius: thumbHeight / 2, style: .circular)
+                    .fill(
+                        reduceTransparency
+                            ? AnyShapeStyle(Color.white.opacity(colorScheme == .dark ? 0.90 : 0.96))
+                            : AnyShapeStyle(
+                                LinearGradient(
+                                    colors: [
+                                        Color.white.opacity(isDragging ? 0.36 : (colorScheme == .dark ? 0.88 : 0.92)),
+                                        Color.white.opacity(isDragging ? 0.16 : (colorScheme == .dark ? 0.58 : 0.68))
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
                                 )
-                        }
-
-                    // 2. Refractive 3D Liquid Glass Meniscus Thumb Lens
-                    Capsule(style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(isDragging ? 0.30 : (colorScheme == .dark ? 0.78 : 0.84)),
-                                    Color.white.opacity(isDragging ? 0.10 : (colorScheme == .dark ? 0.42 : 0.52))
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
                             )
-                        )
-                        .frame(width: thumbWidth, height: thumbHeight)
-                        .adaptiveGlass(in: Capsule(style: .continuous), interactive: true, clear: true)
-                        .overlay {
-                            // Outer meniscus specular highlight
-                            Capsule(style: .continuous)
-                                .strokeBorder(
-                                    LinearGradient(
-                                        colors: [
-                                            Color.white.opacity(0.98),
-                                            Color.white.opacity(0.32),
-                                            Color.white.opacity(0.75)
-                                        ],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    ),
-                                    lineWidth: isDragging ? 1.25 : 0.95
-                                )
-                        }
-                        .shadow(
-                            color: Color.black.opacity(isDragging ? 0.26 : 0.18),
-                            radius: isDragging ? 5 : 2.5,
-                            x: 0,
-                            y: isDragging ? 2 : 1
-                        )
-                        .position(x: thumbCenterX, y: geo.size.height / 2)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { drag in
-                            guard isEnabled else { return }
-                            if !isDragging {
-                                withAnimation(AppleMotion.glassLensSpring) {
-                                    isDragging = true
-                                }
-                            }
-                            updateValue(at: drag.location.x, in: width, thumbWidth: thumbWidth)
-                        }
-                        .onEnded { _ in
-                            withAnimation(AppleMotion.glassLensSpring) {
-                                isDragging = false
-                            }
-                        }
-                )
-            }
-            .frame(height: 24)
+                    )
+                    .frame(width: thumbWidth, height: thumbHeight)
+                    .specularRim(Capsule(style: .circular), strength: 1.4)
+                    .shadow(color: .black.opacity(isDragging ? 0.26 : 0.18), radius: isDragging ? 5 : 2.5, y: isDragging ? 2 : 1)
+                    .position(x: thumbCenterX, y: geo.size.height / 2)
 
-            Text(formattedValue)
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(.primary.opacity(0.80))
-                .frame(width: 42, alignment: .trailing)
+                HStack {
+                    Image(systemName: iconName)
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                        .foregroundStyle(Color.primary.opacity(0.85))
+                        .padding(.leading, 9)
+                    Spacer(minLength: 4)
+                    Text(formattedValue)
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.primary.opacity(0.78))
+                        .padding(.trailing, 10)
+                }
+                .allowsHitTesting(false)
+            }
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(isFocused ? Color.accentColor.opacity(0.85) : Color.clear, lineWidth: 1.5)
+                    .allowsHitTesting(false)
+            }
+            .contentShape(Capsule(style: .continuous))
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { drag in
+                        guard isEnabled else { return }
+                        if !isDragging {
+                            withAnimation(AppleMotion.glassLensSpring) { isDragging = true }
+                        }
+                        updateValue(at: drag.location.x, in: width, thumbWidth: thumbWidth)
+                    }
+                    .onEnded { _ in
+                        withAnimation(AppleMotion.glassLensSpring) { isDragging = false }
+                    }
+            )
         }
+        .frame(height: 28)
         .opacity(isEnabled ? 1.0 : 0.5)
     }
 
@@ -1042,7 +1221,7 @@ struct GlassSegmentedControl<Value: Hashable>: View {
                             size: DesignTokens.TypeSize.caption,
                             weight: isSelected ? .semibold : .medium
                         ))
-                        .foregroundStyle(isSelected ? PanelLook.platterInk : Color.secondary)
+                        .foregroundStyle(isSelected ? DesignTokens.Ink.onLens : Color.secondary)
                         .lineLimit(1)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)

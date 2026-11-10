@@ -6,12 +6,10 @@ import type { SmartDevice } from "../core/models.js";
 import {
   DEFAULT_GLOBAL_SHORTCUT,
   PANEL_HEIGHTS,
-  SKINS,
   emptyLayoutPrefs,
   DEFAULT_PANEL_OPACITY,
   normalizeGlobalShortcut,
   normalizePanelOpacity,
-  type AppSkin,
   type PanelHeight,
 } from "./panelPrefs.js";
 import { parseMiSession, sanitizeSettingsForStorage } from "../core/secureStore.js";
@@ -135,7 +133,8 @@ export function loadSettings(): LoadedSettings {
             parsed.cachedModelTypes && typeof parsed.cachedModelTypes === "object"
               ? parsed.cachedModelTypes
               : {},
-          skin: SKINS.some((k) => k.id === parsed.skin) ? (parsed.skin as AppSkin) : "classic",
+          // A stored `skin` from builds before the redesign is simply not read; every surface today
+          // is the same glass panel.
           appearance:
             parsed.appearance === "light" || parsed.appearance === "dark"
               ? parsed.appearance
@@ -200,7 +199,6 @@ export function loadSettings(): LoadedSettings {
       cachedDevicesVersion: CACHED_DEVICES_VERSION,
       cachedHAHome: null,
       cachedModelTypes: {},
-      skin: "classic",
       appearance: "system",
       panelHeight: "standard",
       panelOpacity: DEFAULT_PANEL_OPACITY,

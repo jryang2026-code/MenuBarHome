@@ -2,6 +2,7 @@
 
 mod home_assistant;
 mod camera;
+mod backdrop;
 mod credentials;
 mod network;
 mod placement;
@@ -249,6 +250,7 @@ fn main() {
             secure_store_delete,
             hide_panel,
             quit_app,
+            panel_backdrop,
             set_panel_height,
             set_pin_popover,
             panel_placement,
@@ -274,6 +276,7 @@ fn main() {
             let _ = app.global_shortcut().register(default_shortcut);
             load_panel_placement();
             if let Some(main_win) = app.get_webview_window("main") {
+                apply_panel_backdrop(&main_win);
                 position_popover(&main_win, None);
                 let win_for_event = main_win.clone();
                 let app_for_events = app.handle().clone();
@@ -352,6 +355,18 @@ mod tests {
             assert!(!panel_sidecar_on_left(1178.0 * scale, 252.0 * scale, scale));
             assert!(panel_sidecar_on_left(244.0 * scale, 251.0 * scale, scale));
         }
+    }
+
+    #[test]
+    fn the_panel_window_carries_the_padding_its_shadow_is_drawn_in() {
+        // `#app` pads `--panel-inset: 16px` on every side, then 12 px of column gap before the rail.
+        assert_eq!(panel_window_width(0.0), 504.0);
+        assert_eq!(panel_window_width(84.0), 600.0);
+        assert_eq!(panel_window_width(232.0), 748.0);
+        // The card column starts one padding in, then the rail and its gap.
+        assert_eq!(main_column_offset(600, 1.0), 112);
+        assert_eq!(main_column_offset(504, 1.0), 16);
+        assert_eq!(main_column_offset(750, 1.25), 140);
     }
 
 

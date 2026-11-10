@@ -5,35 +5,58 @@ import Testing
 @testable import MijiaCore
 @testable import MenuBarMijiaApp
 
-/// Layout checks for the 560 pt panel. This suite is separate from `SnapshotTests` so the macOS
-/// CI job, which skips snapshot image comparison, still measures the fold.
+extension PanelPresentationTests {
+/// Layout checks for the 560 pt panel in both panel themes. This suite is separate from
+/// `SnapshotTests` so the macOS CI job, which skips snapshot image comparison, still measures the
+/// fold.
+///
+/// Both themes render in a 376 × 560 hosting view. Classic keeps the 321c067 geometry: the search
+/// field stays on screen above the checklist, and the first device card stays above 200 pt. The
+/// liquid-glass theme folds the search field behind the header's magnifier.
 @MainActor
 @Suite(.serialized)
 struct PanelFoldLayoutTests {
-    @Test("The default 560 pt panel keeps the first device card at or above 200 pt", arguments: [
-        (AppLanguage.zhHans, false),
-        (AppLanguage.en, false),
-        (AppLanguage.zhHans, true),
-        (AppLanguage.en, true),
+    @Test("The first device card sits right under the header and grouping capsule", arguments: [
+        (PanelTheme.classic, AppLanguage.zhHans, false),
+        (PanelTheme.classic, AppLanguage.en, false),
+        (PanelTheme.classic, AppLanguage.zhHans, true),
+        (PanelTheme.classic, AppLanguage.en, true),
+        (PanelTheme.liquidGlass, AppLanguage.zhHans, false),
+        (PanelTheme.liquidGlass, AppLanguage.en, false),
+        (PanelTheme.liquidGlass, AppLanguage.zhHans, true),
+        (PanelTheme.liquidGlass, AppLanguage.en, true),
     ])
-    func firstDeviceCardIsAboveTheFold(language: AppLanguage, compact: Bool) async throws {
+    func firstDeviceCardIsAboveTheFold(theme: PanelTheme, language: AppLanguage, compact: Bool) async throws {
         let fixture = try await SnapshotFixture()
         defer { fixture.restore() }
         fixture.store.isCompactGridMode = compact
-        let reading = try PanelFoldMeasure.reading(store: fixture.store, language: language)
+        let reading = try PanelFoldMeasure.reading(theme: theme, store: fixture.store, language: language)
         let cardTop = reading.cardTop
-        #expect(cardTop <= 200, "\(language.rawValue) compact=\(compact): first device card top is \(cardTop)")
-        #expect(reading.kindMinY == nil, "kind chips stay hidden until 全部 is tapped again")
+        #expect(
+            cardTop <= 200,
+            "\(theme.rawValue) \(language.rawValue) compact=\(compact): first device card top is \(cardTop)"
+        )
         #expect(reading.lessonMinY != nil, "the getting-started row is in the list")
         let lesson = try #require(reading.lessonTop)
-        let omnibar = try #require(reading.omnibarTop)
-        #expect(lesson > omnibar, "the lesson row scrolls under the search field")
+        #expect(lesson < cardTop, "the lesson row leads the device list")
+        switch theme {
+        case .classic:
+            #expect(reading.kindMinY == nil, "kind chips stay hidden until 全部 is tapped again")
+            // 321c067 keeps the search field on screen; the lesson row scrolls under it.
+            let omnibar = try #require(reading.omnibarTop, "the classic panel keeps the search field on screen")
+            #expect(lesson > omnibar, "the lesson row scrolls under the search field")
+        case .liquidGlass:
+            #expect(reading.omnibarMinY == nil, "search stays folded behind the header's magnifier")
+        }
     }
 
     @Test("A blocked or plaintext warning leads the panel and hides the checklist", arguments: [
-        "expired", "plaintext"
+        (PanelTheme.classic, "expired"),
+        (PanelTheme.classic, "plaintext"),
+        (PanelTheme.liquidGlass, "expired"),
+        (PanelTheme.liquidGlass, "plaintext"),
     ])
-    func warningLeadsThePanel(kind: String) async throws {
+    func warningLeadsThePanel(theme: PanelTheme, kind: String) async throws {
         let fixture: SnapshotFixture
         if kind == "expired" {
             fixture = try await SnapshotFixture(
@@ -51,15 +74,21 @@ struct PanelFoldLayoutTests {
         }
         defer { fixture.restore() }
 
-        let reading = try PanelFoldMeasure.reading(store: fixture.store)
+        let reading = try PanelFoldMeasure.reading(theme: theme, store: fixture.store)
         let notice = try #require(reading.noticeTop, "the warning is on screen")
-        let omnibar = try #require(reading.omnibarTop)
         let cardTop = reading.cardTop
         #expect(reading.lessonMinY == nil, "the checklist hides behind a blocked or security notice")
-        #expect(notice < omnibar, "the warning sits above the search field")
         #expect(notice < cardTop)
-        #expect(notice < 120, "the warning is the first block under the header, at \(notice)")
+        switch theme {
+        case .classic:
+            let omnibar = try #require(reading.omnibarTop, "the classic search field is on screen")
+            #expect(notice < omnibar, "the warning sits above the search field")
+            #expect(notice < 120, "the warning is the first block under the header, at \(notice)")
+        case .liquidGlass:
+            #expect(notice < 140, "the warning is the first block under the header, at \(notice)")
+        }
     }
+}
 }
 
 @MainActor
@@ -84,12 +113,30 @@ enum PanelFoldMeasure {
     ///
     /// The language override is task-local and this function does not await, so the hosting
     /// view is measured on the same task that pinned the language.
-    static func reading(store: HomeStore, language: AppLanguage = .zhHans) throws -> Reading {
+    static func reading(theme: PanelTheme, store: HomeStore, language: AppLanguage = .zhHans) throws -> Reading {
         try L10n.$overrideLanguage.withValue(language) {
+        let speech = SpeechInputController.shared
+        let savedSpeech = (speech.isListening, speech.isHoldToTalk, speech.draft, speech.errorMessage)
+        speech.setPreviewState(isListening: false, isHoldToTalk: false, draft: "")
+        defer {
+            speech.setPreviewState(
+                isListening: savedSpeech.0,
+                isHoldToTalk: savedSpeech.1,
+                draft: savedSpeech.2,
+                errorMessage: savedSpeech.3
+            )
+        }
         let record = PanelFoldRecord()
         _ = NSApplication.shared
+        let root: AnyView
+        switch theme {
+        case .classic:
+            root = AnyView(ClassicControlCenterPanel(store: store))
+        case .liquidGlass:
+            root = AnyView(ControlCenterPanel(store: store))
+        }
         let hosting = NSHostingView(
-            rootView: ControlCenterPanel(store: store)
+            rootView: root
                 .environment(\.panelFoldRecord, record)
                 .environment(\.colorScheme, .light)
                 .environment(\.reduceMotionOverride, true)

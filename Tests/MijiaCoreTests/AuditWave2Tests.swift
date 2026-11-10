@@ -45,12 +45,15 @@ struct AuditWave2Tests {
             provider: mock,
             defaultsSuiteName: suite ?? "test.auditwave2.\(UUID().uuidString)"
         )
+        // Fixed-clock evaluator cases own their first sample, rather than the provider callback.
+        store.enableSafetyAlerts = false
         for _ in 0..<100 {
             if store.devices.count >= devices.count && (readings.isEmpty || !store.environmentReadings.isEmpty) {
                 break
             }
             try await Task.sleep(for: .milliseconds(10))
         }
+        store.enableSafetyAlerts = true
         return (store, mock)
     }
 
