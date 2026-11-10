@@ -731,7 +731,7 @@ final class MenuBarPanelController: NSObject {
         installMouseMonitors()
         if presentsActively {
             panel.alphaValue = 1
-            panel.hasShadow = true
+            panel.hasShadow = false
             // Order the window in first: cooperative activation only succeeds once the app has a
             // window to become active for, and this agent app owns none at that moment.
             panel.makeKeyAndOrderFront(nil)
@@ -797,7 +797,7 @@ final class MenuBarPanelController: NSObject {
         panel.becomesKeyOnlyIfNeeded = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        panel.hasShadow = false
         panel.animationBehavior = .none
         panel.isMovable = false
         panel.isMovableByWindowBackground = false
@@ -820,8 +820,8 @@ final class MenuBarPanelController: NSObject {
         hosting.frame = NSRect(origin: .zero, size: panel.frame.size)
         hosting.autoresizingMask = [.width, .height]
         hosting.wantsLayer = true
-        hosting.layer?.cornerRadius = Self.panelCornerRadius
-        hosting.layer?.masksToBounds = true
+        hosting.layer?.cornerRadius = 0
+        hosting.layer?.masksToBounds = false
         panel.contentView = hosting
         panel.initialFirstResponder = hosting
         _ = panel.makeFirstResponder(hosting)

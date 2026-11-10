@@ -319,9 +319,6 @@ public struct ControlCenterPanel: View {
                 }
             }
 
-            Divider()
-                .overlay(Color.primary.opacity(0.07))
-
             if isRoomOrdering {
                 // The order list replaces the whole scrolling dashboard: one vertical scroll only,
                 // and no tile frames or tile drag gesture mounted underneath (§5.1).
@@ -332,12 +329,6 @@ public struct ControlCenterPanel: View {
                     .frame(maxHeight: .infinity)
             }
 
-            Divider()
-                .overlay(Color.primary.opacity(0.07))
-
-            footerBar
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
         }
         .foldOrigin { $0.panelMinY = $1 }
         .animation(AppleMotion.snappySpring, value: store.isShowingAssistantBar)
