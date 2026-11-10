@@ -658,6 +658,18 @@ extension ControlCenterPanel {
         }
     }
 
+    /// The draw order also supplies the digit badges; an open drawer changes span, not order.
+    func cardOrder(_ devices: [SmartDevice]) -> [SmartDevice] {
+        if !currentOrder.isEmpty { return DeviceLayoutPrefs.apply(order: currentOrder, to: devices) }
+        var subRow: [SmartDevice] = []
+        var fullRow: [SmartDevice] = []
+        for device in devices {
+            if gridSpan(for: tileSize(device)) < 12 { subRow.append(device) }
+            else { fullRow.append(device) }
+        }
+        return subRow + fullRow
+    }
+
     /// Cards for one collection. Search results pass `sortByUserOrder: false`, so rank wins over the
     /// saved layout order. `asRows` draws an opened stack: every device a full-width rounded card,
     /// like the notifications of an expanded group, outside the favorites' resize/drag editing.
@@ -671,16 +683,7 @@ extension ControlCenterPanel {
         asRows: Bool = false
     ) -> some View {
         let aliases = GroupPrefs.map(aliasesRaw)
-        let hasUserOrder = !currentOrder.isEmpty
-        let source: [SmartDevice] = {
-            if !sortByUserOrder { return devices }
-            if hasUserOrder { return DeviceLayoutPrefs.apply(order: currentOrder, to: devices) }
-            // Without a custom order, pack 2×1 capsules first and full-row modules after them so an
-            // odd full-row climate strip never leaves a lone half-row capsule with a blank right slot.
-            let subRow = devices.filter { gridSpan(for: tileSize($0)) < 12 }
-            let fullRow = devices.filter { gridSpan(for: tileSize($0)) >= 12 }
-            return subRow + fullRow
-        }()
+        let source = sortByUserOrder ? cardOrder(devices) : devices
         let ordered = source.map { dev -> SmartDevice in
             guard let alias = aliases[dev.id] else { return dev }
             var d = dev

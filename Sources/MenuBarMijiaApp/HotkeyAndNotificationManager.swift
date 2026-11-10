@@ -475,7 +475,9 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         case .hidePanel:
             MenuBarPanelController.shared.hidePanel()
         case .selectQuickIndex(let digit):
-            store.selectQuickIndex(digit)
+            // The Liquid Glass column numbers only the cards it draws; it publishes that order for
+            // this monitor. Classic has no registration and keeps the store's own list.
+            PanelQuickIndexState.shared.select(digit, store: store)
         }
         return true
     }

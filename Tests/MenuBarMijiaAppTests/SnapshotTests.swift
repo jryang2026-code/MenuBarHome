@@ -409,6 +409,30 @@ struct SnapshotTests {
         }
     }
 
+    @Test("Round tiles show their icon at the actual quarter-row width", arguments: ["light", "sensor"])
+    func roundTileSnapshots(kind: String) async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+        let device = try #require(fixture.store.devices.first { device in
+            switch device.kind {
+            case .light: return kind == "light"
+            case .sensor: return kind == "sensor"
+            default: return false
+            }
+        })
+        let layout = PanelLayoutStore.shared(for: fixture.store.userDefaults)
+        layout.setSize(.small, of: device.id, scope: "all")
+        assertRendered(
+            snapshotReady(
+                DeviceCardView(device: device, store: fixture.store, isCompactTile: true)
+                    .frame(width: 82, height: 58)
+                    .padding(10)
+            ),
+            size: CGSize(width: 102, height: 78),
+            named: "liquid-round-\(kind)-zh-light"
+        )
+    }
+
     // MARK: - Generic fallback cards (#6)
 
     @Test("Generic controllable and read-only cards render")
@@ -1582,8 +1606,7 @@ struct SnapshotTests {
         }
     }
 
-    /// The card surface for one theme. Classic cards carry the 321c067 chrome; the drawers and
-    /// facet sections they host stay shared, so drawer-only snapshots are not duplicated.
+    /// The card surface for one theme. Each card uses its theme's drawer presentation.
     private func themedCard(
         _ theme: PanelTheme,
         device: SmartDevice,

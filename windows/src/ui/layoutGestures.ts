@@ -91,13 +91,17 @@ export interface LayoutGestureHost {
         window.clearTimeout(press.timer);
         press = null;
       }
+      // Both a dim preview and a reorder drag live in the rendered DOM (the preview fill and the
+      // dragged card's translate/is-dragging), so dropping either needs a repaint: the release that
+      // follows a cancel no longer sees a press and would not render on its own.
       const droppedPreview = host.dimPreview !== null;
+      const droppedDrag = host.draggingId !== null;
       host.dimPreview = null;
       host.draggingId = null;
       host.dragPointer = null;
       host.lastSwap = null;
       host.suppressNextClick = false;
-      if (droppedPreview) host.render();
+      if (droppedPreview || droppedDrag) host.render();
     };
 
     window.addEventListener(

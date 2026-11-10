@@ -369,13 +369,12 @@ public struct ControlCenterPanel: View {
 
     private var deviceColumn: some View {
         ScrollViewReader { scrollProxy in
+            let stacks = deviceStacks
+            // The one order both the card badges and the digit shortcuts read: only cards that are
+            // actually drawn take a number, in the order they are drawn.
+            let quickIndex = quickIndexOrder(stacks)
+            let quickIndexBadges = quickIndex.badges
             ScrollView(.vertical, showsIndicators: false) {
-                let stacks = deviceStacks
-                let quickIndexMap = Dictionary(
-                    uniqueKeysWithValues: stacks.filter(isStackOpen).flatMap(\.devices).prefix(9)
-                        .enumerated().map { ($1.id, $0 + 1) }
-                )
-
                 VStack(alignment: .leading, spacing: 16) {
                     if !store.panelActivities.isEmpty {
                         activityStack
@@ -392,7 +391,7 @@ public struct ControlCenterPanel: View {
                         emptyStateView
                     } else {
                         ForEach(stacks) { stack in
-                            stackView(stack, quickIndexMap: quickIndexMap)
+                            stackView(stack, quickIndexMap: quickIndexBadges)
                                 .transition(.opacity)
                         }
                     }
@@ -423,6 +422,11 @@ public struct ControlCenterPanel: View {
                     }
                 }
             }
+            // The digit shortcuts run in the app-wide key monitor, which cannot read this view's
+            // state: publish the drawn order it must follow, and withdraw it with the column.
+            .onAppear { PanelQuickIndexState.shared.register(quickIndex) }
+            .onChange(of: quickIndex) { _, next in PanelQuickIndexState.shared.register(next) }
+            .onDisappear { PanelQuickIndexState.shared.clear() }
         }
     }
 

@@ -1808,6 +1808,57 @@ describe("Unverified MIoT fallback controls (#154)", () => {
       restoreCssEscape();
     }
   });
+
+  it("drops a cancelled reorder drag and leaves the next click working", async () => {
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "demo",
+      hasCompletedOnboarding: true,
+    }));
+    const restoreCssEscape = installCssEscape();
+    try {
+      const app = new MenuMijiaWindowsApp(element("#app"));
+      await setImmediate();
+      const selector = '[data-tile-id="light.living_ceiling"]';
+      element(selector).dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, clientX: 80, clientY: 80 }));
+      await click("[data-start-editing]");
+      assert.equal(app.isEditingLayout, true);
+
+      const startReorderDrag = async (): Promise<void> => {
+        element(selector).dispatchEvent(
+          new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 40, clientY: 40 }),
+        );
+        // The first move arms the reorder, the second parks the card under the pointer.
+        window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 120, clientY: 60 }));
+        window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 160, clientY: 80 }));
+        await setImmediate();
+      };
+
+      // A gesture is cancelled by a pointer cancel (touch, pen) or by the window losing focus.
+      for (const cancel of ["pointercancel", "blur"]) {
+        await startReorderDrag();
+        assert.equal(app.draggingId, "light.living_ceiling", `${cancel}: the card must be mid-reorder`);
+        assert.equal(element(selector).classList.contains("is-dragging"), true, `${cancel}: the reorder must be on screen`);
+        assert.notEqual(element(selector).style.translate, "", `${cancel}: the card must follow the pointer`);
+
+        window.dispatchEvent(new window.Event(cancel));
+        await setImmediate();
+
+        assert.equal(app.draggingId, null, `${cancel}: the drag model must be cleared`);
+        assert.equal(app.dragPointer, null, `${cancel}: the pointer anchor must be cleared`);
+        assert.equal(element(selector).classList.contains("is-dragging"), false, `${cancel}: the card must stop showing the reorder`);
+        assert.equal(element(selector).style.translate, "", `${cancel}: the card must drop back into its slot`);
+        assert.doesNotMatch(document.body.textContent ?? "", /已将|控制失败/, `${cancel}: a cancelled gesture never sends a device command`);
+      }
+
+      // The cancel must not swallow the next click: finish editing, then the card still toggles.
+      await click("#btn-done-editing");
+      assert.equal(app.isEditingLayout, false);
+      await click('[data-toggle-device="light.living_ceiling"]');
+      await waitFor(() => /已关闭/.test(document.querySelector('[data-body-device="light.living_ceiling"]')?.textContent ?? ""));
+    } finally {
+      restoreCssEscape();
+    }
+  });
 });
 
 describe("Xiaomi cloud region switch (#37)", () => {

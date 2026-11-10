@@ -149,7 +149,16 @@ public struct DeviceCardView: View {
 
     public var body: some View {
         let _ = store.effectiveLanguage
-        if !isCompactTile, resolvedSize != .half, case .climate(let spec) = device.kind,
+        if resolvedSize == .small, isCompactTile, !isExpanded {
+            SmallDeviceTile(
+                device: device,
+                store: store,
+                accessibilitySummary: accessibilitySummary,
+                quickIndex: shouldShowQuickBadge ? quickIndex : nil
+            ) {
+                contextMenuItems
+            }
+        } else if !isCompactTile, resolvedSize != .half, case .climate(let spec) = device.kind,
            climatePanelModule || chosenSize != .auto {
             ClimatePanelModule(device: device, spec: spec, store: store, showRoomBadge: showRoomBadge, forceExpanded: resolvedSize == .panel)
                 .contextMenu { contextMenuItems }
@@ -464,7 +473,7 @@ public struct DeviceCardView: View {
                     Spacer(minLength: 2)
 
                     if let quickIndex, shouldShowQuickBadge {
-                        quickIndexPill(quickIndex)
+                        QuickIndexPill(index: quickIndex, tint: statusColor)
                     } else if store.hasDetailDrawer(for: device) {
                         Image(systemName: "chevron.right")
                             .font(.system(size: DesignTokens.TypeSize.micro, weight: .bold))
@@ -590,7 +599,7 @@ public struct DeviceCardView: View {
                     : device.name)
 
             if let quickIndex, shouldShowQuickBadge {
-                quickIndexPill(quickIndex)
+                QuickIndexPill(index: quickIndex, tint: statusColor)
             }
 
             if case .camera = device.kind {
@@ -634,46 +643,8 @@ public struct DeviceCardView: View {
         .padding(.vertical, 9.5)
     }
 
-    private func quickIndexPill(_ index: Int) -> some View {
-        Text("\(index)")
-            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold, design: .rounded))
-            .monospacedDigit()
-            .foregroundStyle(statusColor)
-            .padding(.horizontal, 4.5)
-            .padding(.vertical, 1.5)
-            .background(
-                RoundedRectangle(cornerRadius: DesignTokens.Radius.label, style: .continuous)
-                    .fill(Color.primary.opacity(0.08))
-            )
-    }
-
     private var iconBadge: some View {
-        let on = device.isActiveOn && device.isOnline
-        let offFill = colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.10)
-        let offInk = colorScheme == .dark ? Color.white.opacity(0.68) : Color.secondary
-        return ZStack {
-            Circle()
-                .fill(on ? AnyShapeStyle(accent) : AnyShapeStyle(offFill))
-            Circle()
-                .strokeBorder(
-                    Color.white.opacity(on ? 0.32 : (colorScheme == .dark ? 0.16 : 0.28)),
-                    lineWidth: DesignTokens.hairline
-                )
-            Image(systemName: resolvedSymbolName)
-                .font(.system(size: DesignTokens.TypeSize.title, weight: .semibold))
-                .foregroundStyle(on ? Color.white : offInk)
-                .symbolEffect(.bounce, value: on)
-        }
-        .frame(width: orbDiameter, height: orbDiameter)
-        .shadowIf(on, color: accent.opacity(0.38), radius: 6, y: 2)
-        .animation(AppleMotion.control, value: on)
-    }
-
-    private var resolvedSymbolName: String {
-        if case .vacuum = device.kind {
-            return "circle.dotted.circle.fill"
-        }
-        return device.sfSymbolName
+        DeviceIconOrb(device: device, accent: accent, diameter: orbDiameter)
     }
 
     // MARK: - Expandable Detail Drawer

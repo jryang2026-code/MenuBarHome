@@ -124,7 +124,6 @@ extension MenuBarPanelController {
             grokBallSidecar?.setPresentationSuspended(true)
         }
         store?.dismissGrokBallStage()
-        restoreStatusItemHighlight()
         store?.setPanelVisible(false)
         if presentsActively, animated, hostedPanelTheme == .liquidGlass {
             // Hide logically now; order out only after the window and its shadow leave the screen.
@@ -144,6 +143,7 @@ extension MenuBarPanelController {
             hideBackdropShadow()
             panel.orderOut(nil)
         }
+        restoreStatusItemHighlight()
         // The SwiftUI tree stays alive, exactly like a `.window`-style `MenuBarExtra`: scroll
         // position, the search field text and layout-editing state survive a close/reopen. A theme
         // switch drops it explicitly so the next open builds the other root view.

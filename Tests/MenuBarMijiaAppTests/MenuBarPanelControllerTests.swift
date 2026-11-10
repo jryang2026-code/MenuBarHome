@@ -619,6 +619,26 @@ struct MenuBarPanelControllerTests {
         #expect(button.cell?.isHighlighted == false)
     }
 
+    @Test("Closing without another status-item click releases its highlight", arguments: PanelTheme.allCases, [false, true])
+    func programmaticCloseReleasesStatusItemHighlight(theme: PanelTheme, animated: Bool) async throws {
+        let preferences = PanelPreferenceScope(theme: theme)
+        defer { preferences.restore() }
+        let (store, suite) = try await makeStore()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let item = TestStatusItem()
+        let controller = MenuBarPanelController(statusItem: item)
+        controller.presentsActively = animated
+        controller.shouldReduceMotion = { true }
+        controller.install(with: store)
+        defer { controller.uninstall() }
+
+        controller.showPanel()
+        #expect(item.testButton.cell?.isHighlighted == true)
+        controller.hidePanel()
+        #expect(controller.isPanelVisible == false)
+        #expect(item.testButton.cell?.isHighlighted == false)
+    }
+
     @Test("Primary long press stays highlighted until release")
     func primaryLongPressHighlightsUntilRelease() {
         let statusItem = TestStatusItem()

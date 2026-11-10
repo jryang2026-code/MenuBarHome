@@ -130,6 +130,12 @@ extension ControlCenterPanel {
         stack.isPinned || stack.devices.count == 1 || expandedStacks.contains(stack.id)
     }
 
+    /// The order the digit shortcuts and the card badges share: every card the column draws, in
+    /// the order it draws them. Folded stacks draw one summary card and contribute no digits.
+    func quickIndexOrder(_ stacks: [DeviceStack]) -> PanelQuickIndexOrder {
+        PanelQuickIndexOrder(stacks: stacks, isOpen: isStackOpen, cards: { cardOrder($0.devices) })
+    }
+
     func openStack(containing deviceId: String?) {
         guard let deviceId,
               let stack = deviceStacks.first(where: { $0.devices.contains { $0.id == deviceId } }),
