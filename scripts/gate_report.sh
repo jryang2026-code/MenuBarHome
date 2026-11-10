@@ -96,9 +96,12 @@ cmd_record_verdict() {
     local status="$1" log="$2" summary
     summary="$(grep -E 'Test run with' "$log" | tail -n 1 || true)"
     # Record mode reports an issue for each baseline it rewrites, so a finished
-    # suite can exit non-zero. A signal, or no Swift Testing summary, means it
-    # did not finish.
-    if [ "$status" -ge 128 ] || [ -z "$summary" ]; then
+    # suite can exit non-zero. A signal, no Swift Testing summary, or a test
+    # process that crashed means it did not finish. `--filter SnapshotTests`
+    # also runs a few core tests, whose summary is printed before the UI suite
+    # starts, so a summary alone does not prove the UI suite finished.
+    if [ "$status" -ge 128 ] || [ -z "$summary" ] \
+        || grep -qE 'unexpected signal code|Fatal error:' "$log"; then
         echo "❌ 快照录制没有跑完。Swift 测试退出码：${status}"
         echo "完整日志：${log}"
         tail -n 20 "$log" || true
