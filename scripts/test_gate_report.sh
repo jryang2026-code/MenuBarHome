@@ -46,17 +46,19 @@ this should be hidden
 ✅ 没有超过 1500 行的源文件。
 ✔ some passing test
 ✔ Test run with 3 tests in 1 suite passed after 0.1 seconds.
+✘ Test run with 2 tests failed after 0.2 seconds.
+PASS 钩子摘要保留 Test run with 3 tests
 ⚠️ 部分通过：跳过 Windows、Raycast
 EOF
 hook_out="$(bash scripts/gate_report.sh hook-success "$hook_log")"
-for needle in "单文件行数告警" "Sources/Foo.swift" "windows/src/Bar.ts" "没有超过 1500 行" "Test run with 3 tests" "部分通过：跳过 Windows、Raycast"; do
+for needle in "单文件行数告警" "Sources/Foo.swift" "windows/src/Bar.ts" "没有超过 1500 行" "✔ Test run with 3 tests" "✘ Test run with 2 tests" "部分通过：跳过 Windows、Raycast"; do
     if printf '%s\n' "$hook_out" | grep -qF -- "$needle"; then
         pass "钩子摘要保留 ${needle}"
     else
         fail "钩子摘要丢掉了 ${needle}"
     fi
 done
-if printf '%s\n' "$hook_out" | grep -qF "this should be hidden" || printf '%s\n' "$hook_out" | grep -qF "some passing test"; then
+if printf '%s\n' "$hook_out" | grep -qF "this should be hidden" || printf '%s\n' "$hook_out" | grep -qF "some passing test" || printf '%s\n' "$hook_out" | grep -qF "PASS 钩子摘要保留 Test run with 3 tests"; then
     fail "钩子摘要把测试过程也打出来了"
 else
     pass "钩子摘要不打印测试过程"
@@ -196,6 +198,9 @@ fi
 rm -rf "$sizes" "$manifest" "$changed"
 
 if [ -f windows/package.json ]; then
+    if ! command -v node >/dev/null 2>&1; then
+        echo "⏭️  跳过 Windows 测试发现自测：未找到 node"
+    else
     node --input-type=module <<'JS'
 import { globSync, readFileSync, readdirSync } from "node:fs";
 const script = JSON.parse(readFileSync("windows/package.json", "utf8")).scripts.test;
@@ -217,6 +222,7 @@ if (missing.length || extra.length || disk.length === 0) {
 }
 console.log(`PASS windows test glob ${disk.length}`);
 JS
+    fi
 fi
 
 if grep -qF 'add_gate_step' scripts/check.sh && grep -qF 'record_gate_result' scripts/check.sh && grep -qF 'gate_report.sh" summary' scripts/check.sh; then

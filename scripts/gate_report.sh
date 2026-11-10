@@ -65,7 +65,7 @@ cmd_summary() {
 
 cmd_hook_success() {
     awk '
-        /^(✅|⚠️)|Test run with|^部分通过/ {
+        /^(✅|⚠️)|^(✔|✘) Test run with|^部分通过/ {
             print
             keep_body = ($0 ~ /单文件行数告警/) ? 1 : 0
             next
