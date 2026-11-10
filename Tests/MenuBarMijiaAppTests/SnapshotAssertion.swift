@@ -57,11 +57,61 @@ enum SnapshotAssertion {
         let byteCount = oldCtx.height * oldCtx.bytesPerRow
         if memcmp(oldBytes, newBytes, byteCount) == 0 { return nil }
         if let roundTripped = NSImage(data: newPNG)?.cgImage(forProposedRect: nil, context: nil, hints: nil),
-           let rtCtx = rasterContext(for: roundTripped), let rtBytes = rtCtx.data,
-           memcmp(oldBytes, rtBytes, byteCount) == 0 {
-            return nil
+           let rtCtx = rasterContext(for: roundTripped),
+           let rtBytes = rtCtx.data,
+           rtCtx.width == oldCtx.width,
+           rtCtx.height == oldCtx.height {
+            let rtCount = rtCtx.height * rtCtx.bytesPerRow
+            if rtCount == byteCount, memcmp(oldBytes, rtBytes, rtCount) == 0 {
+                return nil
+            }
+            let detail = firstDifferingPixel(
+                reference: UnsafeRawPointer(oldBytes),
+                snapshot: UnsafeRawPointer(rtBytes),
+                width: rtCtx.width,
+                height: rtCtx.height,
+                bytesPerRow: rtCtx.bytesPerRow
+            )
+            return "Newly-taken snapshot does not match reference. \(detail)"
         }
-        return "Newly-taken snapshot does not match reference."
+        let detail = firstDifferingPixel(
+            reference: UnsafeRawPointer(oldBytes),
+            snapshot: UnsafeRawPointer(newBytes),
+            width: newCtx.width,
+            height: newCtx.height,
+            bytesPerRow: newCtx.bytesPerRow
+        )
+        return "Newly-taken snapshot does not match reference. \(detail)"
+    }
+
+    private static func firstDifferingPixel(
+        reference: UnsafeRawPointer,
+        snapshot: UnsafeRawPointer,
+        width: Int,
+        height: Int,
+        bytesPerRow: Int
+    ) -> String {
+        guard width > 0, height > 0, bytesPerRow >= width * 4 else {
+            return "Pixel buffers differ, but the bitmap stride is too small to name a pixel."
+        }
+        for y in 0..<height {
+            for x in 0..<width {
+                let offset = y * bytesPerRow + x * 4
+                let referenceRed = reference.load(fromByteOffset: offset, as: UInt8.self)
+                let referenceGreen = reference.load(fromByteOffset: offset + 1, as: UInt8.self)
+                let referenceBlue = reference.load(fromByteOffset: offset + 2, as: UInt8.self)
+                let referenceAlpha = reference.load(fromByteOffset: offset + 3, as: UInt8.self)
+                let snapshotRed = snapshot.load(fromByteOffset: offset, as: UInt8.self)
+                let snapshotGreen = snapshot.load(fromByteOffset: offset + 1, as: UInt8.self)
+                let snapshotBlue = snapshot.load(fromByteOffset: offset + 2, as: UInt8.self)
+                let snapshotAlpha = snapshot.load(fromByteOffset: offset + 3, as: UInt8.self)
+                if referenceRed != snapshotRed || referenceGreen != snapshotGreen
+                    || referenceBlue != snapshotBlue || referenceAlpha != snapshotAlpha {
+                    return "First differing pixel is (\(x), \(y)): reference rgba(\(referenceRed), \(referenceGreen), \(referenceBlue), \(referenceAlpha)), snapshot rgba(\(snapshotRed), \(snapshotGreen), \(snapshotBlue), \(snapshotAlpha))."
+                }
+            }
+        }
+        return "Pixel buffers differ, but no RGBA sample differs."
     }
 
     static func verifyImage(
@@ -83,23 +133,29 @@ enum SnapshotAssertion {
         guard let newPNG = pngData(for: image) else { return "Could not encode PNG snapshot." }
         do {
             try FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
-            if recordAll || !FileManager.default.fileExists(atPath: snapshotURL.path) {
-                try newPNG.write(to: snapshotURL)
-                return recordAll
-                    ? "Record mode is on. Automatically recorded snapshot: \(snapshotURL.path)"
-                    : "No reference was found on disk. Automatically recorded snapshot: \(snapshotURL.path)"
+            if FileManager.default.fileExists(atPath: snapshotURL.path) {
+                let referenceData = try Data(contentsOf: snapshotURL)
+                guard let referenceImage = NSImage(data: referenceData) else {
+                    return "Reference image could not be loaded."
+                }
+                if let reason = compare(referenceImage, image, newPNG: newPNG) {
+                    if recordAll {
+                        try newPNG.write(to: snapshotURL)
+                        return "Record mode is on. Automatically recorded snapshot: \(snapshotURL.path)\n\(reason)"
+                    }
+                    let artifactsRoot = URL(fileURLWithPath: artifactsDirectory ?? NSTemporaryDirectory(), isDirectory: true)
+                        .appendingPathComponent(suiteName, isDirectory: true)
+                    try FileManager.default.createDirectory(at: artifactsRoot, withIntermediateDirectories: true)
+                    let failedURL = artifactsRoot.appendingPathComponent(filename, isDirectory: false)
+                    try newPNG.write(to: failedURL)
+                    return "Snapshot \"\(name)\" does not match reference.\n\nksdiff \"\(snapshotURL.path)\" \"\(failedURL.path)\"\n\n\(reason)"
+                }
+                return nil
             }
-            let referenceData = try Data(contentsOf: snapshotURL)
-            guard let referenceImage = NSImage(data: referenceData) else {
-                return "Reference image could not be loaded."
-            }
-            guard let reason = compare(referenceImage, image, newPNG: newPNG) else { return nil }
-            let artifactsRoot = URL(fileURLWithPath: artifactsDirectory ?? NSTemporaryDirectory(), isDirectory: true)
-                .appendingPathComponent(suiteName, isDirectory: true)
-            try FileManager.default.createDirectory(at: artifactsRoot, withIntermediateDirectories: true)
-            let failedURL = artifactsRoot.appendingPathComponent(filename, isDirectory: false)
-            try newPNG.write(to: failedURL)
-            return "Snapshot \"\(name)\" does not match reference.\n\nksdiff \"\(snapshotURL.path)\" \"\(failedURL.path)\"\n\n\(reason)"
+            try newPNG.write(to: snapshotURL)
+            return recordAll
+                ? "Record mode is on. Automatically recorded snapshot: \(snapshotURL.path)"
+                : "No reference was found on disk. Automatically recorded snapshot: \(snapshotURL.path)"
         } catch {
             return error.localizedDescription
         }

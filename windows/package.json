@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node --import ./tests/tsLoader.mjs --test tests/tsLoader.test.ts tests/core.test.ts tests/ui.test.ts tests/panelPrefs.test.ts tests/i18n.test.ts tests/listCut.test.ts tests/fallbackSpecs.test.ts tests/miotCoverage.test.ts tests/miotFacets.test.ts tests/speakerOpener.test.ts tests/percentScale.test.ts tests/commandEffects.test.ts tests/applianceCards.test.ts tests/facetPolicy.test.ts tests/scheduledCommands.test.ts tests/panelSearch.test.ts",
+    "test": "node --import ./tests/tsLoader.mjs --test tests/*.test.ts",
     "tauri": "tauri"
   },
   "devDependencies": {

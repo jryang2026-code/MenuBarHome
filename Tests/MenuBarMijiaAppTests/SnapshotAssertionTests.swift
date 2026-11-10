@@ -76,6 +76,19 @@ struct SnapshotAssertionTests {
         )
         #expect(matchMsg == nil)
 
+        let bytesBeforeRecord = try Data(contentsOf: baselineFile)
+        let unchangedRecord = SnapshotAssertion.verifyImage(
+            blue,
+            named: "tile-light",
+            recordAll: true,
+            snapshotDirectory: snapshotsDir,
+            artifactsDirectory: artifactsDir.path,
+            testName: "sampleTest()"
+        )
+        #expect(unchangedRecord == nil)
+        let bytesAfterRecord = try Data(contentsOf: baselineFile)
+        #expect(bytesAfterRecord == bytesBeforeRecord)
+
         // 3. Different pixels fail and write the artifact PNG.
         let mismatchMsg = SnapshotAssertion.verifyImage(
             red,
@@ -87,6 +100,7 @@ struct SnapshotAssertionTests {
         )
         let diffText = try #require(mismatchMsg)
         #expect(diffText.contains("does not match reference"))
+        #expect(diffText.contains("First differing pixel is ("))
         let artifactFile = artifactsDir
             .appendingPathComponent("SnapshotAssertionTests", isDirectory: true)
             .appendingPathComponent("sampleTest.tile-light.png")
@@ -212,5 +226,52 @@ struct SnapshotAssertionTests {
         // @2x (16x16px @ 8x8pt) vs @1x (8x8px @ 8x8pt): same point size, different pixel size -> fail with px dimensions.
         let pixelMismatch = SnapshotAssertion.compare(retina2x, tightRGBA, newPNG: tightPNG)
         #expect(pixelMismatch?.contains("(8x8px) does not match reference@(16x16px)") == true)
+    }
+
+    @Test("Names the first pixel whose RGBA differs")
+    func namesFirstDifferingPixel() throws {
+        func makeImage(
+            pixelsWide: Int,
+            pixelsHigh: Int,
+            paint: (Int, Int, UnsafeMutablePointer<UInt8>) -> Void
+        ) throws -> NSImage {
+            let rep = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: pixelsWide,
+                pixelsHigh: pixelsHigh,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: pixelsWide * 4,
+                bitsPerPixel: 32
+            )!
+            rep.size = CGSize(width: pixelsWide, height: pixelsHigh)
+            let base = try #require(rep.bitmapData)
+            for y in 0..<pixelsHigh {
+                for x in 0..<pixelsWide {
+                    let px = base.advanced(by: (y * pixelsWide + x) * 4)
+                    px[0] = 10
+                    px[1] = 20
+                    px[2] = 30
+                    px[3] = 255
+                    paint(x, y, px)
+                }
+            }
+            let rendered = NSImage(size: CGSize(width: pixelsWide, height: pixelsHigh))
+            rendered.addRepresentation(rep)
+            return rendered
+        }
+
+        let reference = try makeImage(pixelsWide: 1, pixelsHigh: 1) { _, _, _ in }
+        let snapshot = try makeImage(pixelsWide: 1, pixelsHigh: 1) { _, _, px in
+            px[0] = 200
+        }
+        let png = try #require(SnapshotAssertion.pngData(for: snapshot))
+        let message = try #require(SnapshotAssertion.compare(reference, snapshot, newPNG: png))
+        #expect(message.contains("First differing pixel is (0, 0)"))
+        #expect(message.contains("reference rgba(10, 20, 30, 255)"))
+        #expect(message.contains("snapshot rgba(200, 20, 30, 255)"))
     }
 }

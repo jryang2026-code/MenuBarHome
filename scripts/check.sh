@@ -70,7 +70,7 @@ search_files() {
     fi
 }
 
-echo "🔍 [1/4] 检查是否存在硬编码 JWT / 密钥 / 个人局域网地址泄露..."
+echo "🔍 检查是否存在硬编码 JWT / 密钥 / 个人局域网地址泄露..."
 if search_matches 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}' Sources/ Tests/; then
     echo "❌ 检测到疑似 JWT Token，请移除后再提交！"
     exit 1
@@ -94,7 +94,7 @@ if [ -n "$lan_ip_hits" ] || search_matches 'localhost:3425' Sources/; then
     exit 1
 fi
 
-echo "🔍 [2/4] 检查机械性编码规范 (kVK_* 键码常量 & UNUserNotificationCenter Bundle 守卫)..."
+echo "🔍 检查机械性编码规范 (kVK_* 键码常量 & UNUserNotificationCenter Bundle 守卫)..."
 if search_matches 'event\.keyCode[[:space:]]*==[[:space:]]*[0-9]+' Sources/; then
     echo "❌ 请使用 Carbon 的 kVK_* 常量，不要直接比较 event.keyCode 数字字面量！"
     exit 1
@@ -203,6 +203,7 @@ PY
     bash scripts/test_check_release.sh
     # 多个会话靠 issue-frontier.sh 挑票，判定规则放宽会导致重复认领（#338）。
     bash scripts/test_issue_frontier.sh
+    bash scripts/test_gate_report.sh
 fi
 
 large_files=""
@@ -227,49 +228,124 @@ if [ "$LINT_ONLY" = "1" ]; then
     exit 0
 fi
 
-swift_status=0
-swift_skipped=0
-if [ "$(uname -s)" = "Linux" ]; then
-    # Package.swift requires the macOS SDK. CI's linux-core job runs MijiaCore through this
-    # shim; `swift test` at the repo root cannot compile Security/AppKit imports on Linux.
-    echo "🧪 [3/4] 运行 Linux 上的 MijiaCore 测试（scripts/linux-check）与双端黄金语料校验..."
-    bash scripts/linux-check/run.sh || swift_status=$?
-elif ! command -v swift >/dev/null 2>&1; then
-    # Windows development machines have no Swift toolchain; CI still runs the suite.
-    swift_skipped=1
-    echo "⏭️  跳过 Swift 门槛：未找到 swift"
-elif [ "$SKIP_SNAPSHOTS" = "1" ]; then
-    # For a machine whose renderer is not the reference (any Mac other than the one that records the
-    # baselines and runs CI). The default gate compares snapshots.
-    echo "🧪 [3/4] 运行 Swift 单元测试（跳过快照）与双端黄金语料校验..."
-    swift test --skip SnapshotTests || swift_status=$?
-else
-    echo "🧪 [3/4] 运行 Swift 单元测试 (swift test) 与双端黄金语料校验..."
-    swift test || swift_status=$?
-fi
+# A new step is one add_gate_step line. The function calls record_gate_result with 名称=0, 名称=skip, or 名称=退出码.
+gate_step_names=()
+gate_step_fns=()
+gate_results=()
+add_gate_step() {
+    gate_step_names[${#gate_step_names[@]}]="$1"
+    gate_step_fns[${#gate_step_fns[@]}]="$2"
+}
+record_gate_result() {
+    gate_results[${#gate_results[@]}]="$1"
+}
 
-echo "🧪 [4/4] 运行 Windows 前端测试与 Raycast 扩展类型检查..."
-windows_status=0
-if [ -x "windows/node_modules/.bin/tsc" ]; then
+run_logged() {
+    local title="$1"
+    shift
+    local log status
+    log="$(mktemp "${TMPDIR:-/tmp}/mmb-check.XXXXXX")"
+    set +e
+    "$@" 2>&1 | tee "$log"
+    status=${PIPESTATUS[0]}
+    set -e
+    if [ "$status" -ne 0 ]; then
+        echo "❌ ${title} 失败（退出码 ${status}），完整日志：${log}" >&2
+        bash "$ROOT_DIR/scripts/gate_report.sh" failing-tests "$log" >&2 || true
+        return "$status"
+    fi
+    rm -f "$log"
+    return 0
+}
+
+windows_npm() {
+    cd "$ROOT_DIR/windows"
+    npm test && npm run typecheck && npm run build
+}
+
+raycast_npm() {
+    cd "$ROOT_DIR/raycast"
+    npm test && npm run typecheck
+}
+
+run_swift_gate() {
+    local status=0
+    if [ "$(uname -s)" = "Linux" ]; then
+        # Package.swift requires the macOS SDK. CI's linux-core job runs MijiaCore through this
+        # shim; `swift test` at the repo root cannot compile Security/AppKit imports on Linux.
+        echo "运行 Linux 上的 MijiaCore 测试（scripts/linux-check）与双端黄金语料校验..."
+        run_logged "Linux MijiaCore" bash "$ROOT_DIR/scripts/linux-check/run.sh" || status=$?
+        record_gate_result "Swift=${status}"
+    elif ! command -v swift >/dev/null 2>&1; then
+        # Windows development machines have no Swift toolchain; CI still runs the suite.
+        record_gate_result "Swift=skip"
+        echo "⏭️  跳过 Swift 门槛：未找到 swift"
+        return 0
+    elif [ "$SKIP_SNAPSHOTS" = "1" ]; then
+        # For a machine whose renderer is not the reference (any Mac other than the one that records the
+        # baselines). The default gate compares snapshots.
+        echo "运行 Swift 单元测试（跳过快照）与双端黄金语料校验..."
+        run_logged "Swift 测试" swift test --skip SnapshotTests || status=$?
+        record_gate_result "Swift=${status}"
+    else
+        echo "运行 Swift 单元测试 (swift test) 与双端黄金语料校验..."
+        run_logged "Swift 测试" swift test || status=$?
+        record_gate_result "Swift=${status}"
+    fi
+    [ "$status" -eq 0 ]
+}
+
+run_windows_gate() {
+    if [ ! -x "windows/node_modules/.bin/tsc" ]; then
+        record_gate_result "Windows=skip"
+        echo "⏭️  跳过 Windows 门槛：未找到 windows/node_modules（先 cd windows && npm ci）"
+        return 0
+    fi
     # `npm run build` = tsc --noEmit + vite build: the bundle that ships in the installer,
     # which typecheck alone does not prove (asset imports, CSS, chunk limits).
-    (cd windows && npm test && npm run typecheck && npm run build) || windows_status=$?
-else
-    echo "⏭️  跳过 Windows 门槛：未找到 windows/node_modules（先 cd windows && npm ci）"
-fi
-if [ -x "raycast/node_modules/.bin/tsc" ]; then
-    (cd raycast && npm test && npm run typecheck) || windows_status=$?
-else
-    echo "⏭️  跳过 Raycast 门槛：未找到 raycast/node_modules（先 cd raycast && npm ci）"
-fi
+    local status=0
+    run_logged "Windows 前端" windows_npm || status=$?
+    record_gate_result "Windows=${status}"
+    [ "$status" -eq 0 ]
+}
 
-if [ "$swift_status" -ne 0 ] || [ "$windows_status" -ne 0 ]; then
-    echo "❌ 门禁未通过：swift=$swift_status windows/raycast=$windows_status" >&2
+run_raycast_gate() {
+    if [ ! -x "raycast/node_modules/.bin/tsc" ]; then
+        record_gate_result "Raycast=skip"
+        echo "⏭️  跳过 Raycast 门槛：未找到 raycast/node_modules（先 cd raycast && npm ci）"
+        return 0
+    fi
+    local status=0
+    run_logged "Raycast 扩展" raycast_npm || status=$?
+    record_gate_result "Raycast=${status}"
+    [ "$status" -eq 0 ]
+}
+
+add_gate_step "Swift 测试" run_swift_gate
+add_gate_step "Windows 前端" run_windows_gate
+add_gate_step "Raycast 扩展" run_raycast_gate
+
+failed=0
+step_total=${#gate_step_fns[@]}
+step_index=0
+while [ "$step_index" -lt "$step_total" ]; do
+    echo "🧪 [$((step_index + 1))/${step_total}] ${gate_step_names[$step_index]}"
+    if ! "${gate_step_fns[$step_index]}"; then
+        failed=1
+    fi
+    step_index=$((step_index + 1))
+done
+
+set +e
+if [ "${#gate_results[@]}" -eq 0 ]; then
+    bash "$ROOT_DIR/scripts/gate_report.sh" summary
+else
+    bash "$ROOT_DIR/scripts/gate_report.sh" summary "${gate_results[@]}"
+fi
+summary_status=$?
+set -e
+if [ "$failed" -ne 0 ] && [ "$summary_status" -eq 0 ]; then
+    echo "❌ 门禁未通过：某一步失败了，但汇总结果仍是通过" >&2
     exit 1
 fi
-
-if [ "$swift_skipped" = "1" ]; then
-    echo "✅ Windows 门禁检查与单元测试通过（Swift 未运行：未找到 swift）"
-else
-    echo "✅ [4/4] 所有门禁检查与单元测试全部通过！"
-fi
+exit "$summary_status"

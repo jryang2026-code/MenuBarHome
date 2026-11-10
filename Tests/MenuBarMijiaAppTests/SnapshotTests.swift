@@ -10,10 +10,8 @@ import AppKit
 /// Two-phase baseline: `bash scripts/record_snapshots.sh` runs `SNAPSHOT_RECORD=1 swift test --filter
 /// SnapshotTests` on the maintainer's Mac, the only renderer they are compared on, and writes PNGs into
 /// `Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests/`; those files are then committed.
-/// SnapshotAssertion reports "Record mode is on" as a failure for that run, so recording exits
-/// non-zero while still producing every baseline. Later runs compare
-/// against them; on a mismatch the new bitmap is written under `$SNAPSHOT_ARTIFACTS`/SnapshotTests
-/// (or `$TMPDIR/SnapshotTests`) and the diff command is printed in the failure message.
+/// An identical PNG is left untouched. Later runs compare against the committed PNGs; on a mismatch
+/// the new bitmap is written under `$SNAPSHOT_ARTIFACTS`/SnapshotTests (or `$TMPDIR/SnapshotTests`).
 ///
 /// Snapshot-only PTZ client: the stop-warning banner's retry button is driven by an unresolved
 /// stop attempt, so the rendering must not depend on a network bridge.

@@ -3,12 +3,14 @@
 # baselines and is also the CI runner).
 #
 # The full gate prints every test line (~180 KB). A commit only needs the verdict, so the run goes
-# to a log file: success prints the summary lines, failure prints the failing cases plus the log's
-# tail and keeps the log. MMB_HOOK_VERBOSE=1 streams everything as before.
+# to a log file: success prints the summary lines, including the long-file list, failure prints
+# the failing cases plus the log's tail and keeps the log. MMB_HOOK_VERBOSE=1 streams everything.
 set -euo pipefail
 
 ROOT_DIR="$(git rev-parse --show-toplevel)"
 CHECK=(bash "$ROOT_DIR/scripts/check.sh")
+
+bash "$ROOT_DIR/scripts/gate_report.sh" unstaged-snapshots
 
 if [ "${MMB_HOOK_VERBOSE:-0}" = "1" ]; then
     exec "${CHECK[@]}"
@@ -20,13 +22,13 @@ status=0
 "${CHECK[@]}" >"$LOG" 2>&1 || status=$?
 
 if [ "$status" -eq 0 ]; then
-    grep -E '^(✅|⚠️)|Test run with' "$LOG" || true
+    bash "$ROOT_DIR/scripts/gate_report.sh" hook-success "$LOG" || true
     rm -f "$LOG"
     exit 0
 fi
 
 echo "❌ 提交前检查失败（退出码 ${status}），完整日志保留在：${LOG}"
-grep -E '✘|❌|error:' "$LOG" | head -40 || true
+grep -E '✘|✖|❌|error:|^not ok ' "$LOG" | head -40 || true
 echo "--- 日志末尾 ---"
 tail -n 20 "$LOG"
 exit "$status"
