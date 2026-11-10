@@ -14,18 +14,31 @@ run="$1"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/ci-errors.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 gh repo view --json nameWithOwner >"$tmp/repo.json"
-gh run view "$run" --json jobs >"$tmp/jobs.json"
+gh run view "$run" --json jobs,event,headBranch,headSha,createdAt,databaseId,workflowName >"$tmp/run.json"
 gh run view "$run" --log-failed >"$tmp/log.txt" || true
+branch="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("headBranch") or "")' "$tmp/run.json")"
+workflow="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("workflowName") or "")' "$tmp/run.json")"
+if [ -n "$branch" ]; then
+    if [ -n "$workflow" ]; then
+        gh run list --branch "$branch" --workflow "$workflow" --limit 30 --json databaseId,createdAt,headSha,event,headBranch >"$tmp/runs.json" || printf '[]\n' >"$tmp/runs.json"
+    else
+        gh run list --branch "$branch" --limit 30 --json databaseId,createdAt,headSha,event,headBranch >"$tmp/runs.json" || printf '[]\n' >"$tmp/runs.json"
+    fi
+else
+    printf '[]\n' >"$tmp/runs.json"
+fi
 
-python3 -I - "$run" "$tmp/repo.json" "$tmp/jobs.json" "$tmp/log.txt" <<'PY'
+python3 -I - "$run" "$tmp/repo.json" "$tmp/run.json" "$tmp/log.txt" "$tmp/runs.json" <<'PY'
 import json
 import re
 import subprocess
 import sys
 
-run, repo_path, jobs_path, log_path = sys.argv[1:5]
+run, repo_path, run_path, log_path, runs_path = sys.argv[1:6]
 repo = json.load(open(repo_path, encoding="utf-8"))["nameWithOwner"]
-jobs = json.load(open(jobs_path, encoding="utf-8"))["jobs"]
+run_doc = json.load(open(run_path, encoding="utf-8"))
+jobs = run_doc["jobs"]
+runs = json.load(open(runs_path, encoding="utf-8"))
 log = open(log_path, encoding="utf-8", errors="replace").read()
 
 QUIET = {"success", "skipped", "", None}
@@ -66,24 +79,54 @@ def fetch_annotations(job_id):
     return flatten_pages(json.loads(proc.stdout))
 
 
+def has_newer_run(meta, candidates):
+    created = meta.get("createdAt") or ""
+    if not created or not isinstance(candidates, list):
+        return False
+    branch = meta.get("headBranch") or ""
+    sha = meta.get("headSha") or ""
+    me = meta.get("databaseId")
+    for other in candidates:
+        if not isinstance(other, dict) or other.get("databaseId") == me:
+            continue
+        if (other.get("createdAt") or "") <= created:
+            continue
+        # main groups concurrency by commit, so the next commit does not cancel this run.
+        if branch == "main" and other.get("headSha") != sha:
+            continue
+        return True
+    return False
+
+
+newer = has_newer_run(run_doc, runs)
+superseded = []
 infra = []
 annotations = []
 for job in jobs:
     conclusion = job.get("conclusion")
-    if conclusion == "cancelled" and not (job.get("steps") or []):
-        infra.append(job.get("name") or str(job.get("databaseId")))
-    if conclusion in QUIET:
-        continue
-    for ann in fetch_annotations(job.get("databaseId")):
-        annotations.append(
-            (
-                job.get("name") or "",
-                ann.get("annotation_level") or "",
-                one_line(ann.get("message")),
+    job_anns = []
+    if conclusion not in QUIET:
+        job_anns = fetch_annotations(job.get("databaseId"))
+        for ann in job_anns:
+            annotations.append(
+                (
+                    job.get("name") or "",
+                    ann.get("annotation_level") or "",
+                    one_line(ann.get("message")),
+                )
             )
-        )
+    if conclusion == "cancelled" and not (job.get("steps") or []):
+        text = " ".join((ann.get("message") or "") for ann in job_anns).lower()
+        name = job.get("name") or str(job.get("databaseId"))
+        if newer or "higher priority waiting request" in text:
+            superseded.append(name)
+        else:
+            infra.append(name)
 
 sections = []
+if superseded:
+    sections.append("=== cancelled (superseded)")
+    sections.extend(superseded)
 if infra:
     sections.append("=== 取消且 steps=0（runner 未分配，基础设施，不是代码）")
     sections.extend(infra)

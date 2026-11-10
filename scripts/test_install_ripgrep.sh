@@ -19,9 +19,24 @@ tools="$tmp/tools"
 home="$tmp/home"
 err="$tmp/err"
 mkdir -p "$bin" "$tools" "$home"
-for cmd in mkdir mktemp tar gzip sha256sum chmod cp rm id head cat; do
-    ln -s "$(command -v "$cmd")" "$tools/$cmd"
+link_tool() {
+    local cmd="$1" src
+    src="$(command -v "$cmd" 2>/dev/null || true)"
+    if [[ -z "$src" ]]; then
+        return 1
+    fi
+    ln -s "$src" "$tools/$cmd"
+}
+for cmd in mkdir mktemp tar gzip chmod cp rm id head cat; do
+    link_tool "$cmd" || {
+        echo "FAIL 缺少 ${cmd}" >&2
+        exit 1
+    }
 done
+if ! link_tool sha256sum && ! link_tool shasum; then
+    echo "FAIL 需要 sha256sum 或 shasum" >&2
+    exit 1
+fi
 
 cat >"$bin/uname" <<'EOF'
 #!/bin/bash

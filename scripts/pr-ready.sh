@@ -17,7 +17,9 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/pr-ready.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 gh repo view --json nameWithOwner >"$tmp/repo.json"
 gh pr view "$n" --json headRefOid,mergeStateStatus >"$tmp/meta.json"
-gh pr checks "$n" >"$tmp/checks.txt" || true
+checks_status=0
+env -u GH_FORCE_TTY gh pr checks "$n" --json name,state,bucket >"$tmp/checks.json" 2>"$tmp/checks.err" || checks_status=$?
+printf '%s\n' "$checks_status" >"$tmp/checks.status"
 repo="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["nameWithOwner"])' "$tmp/repo.json")"
 gh api --paginate --slurp "repos/${repo}/issues/${n}/comments?per_page=100" >"$tmp/issues.json"
 gh api --paginate --slurp "repos/${repo}/pulls/${n}/comments?per_page=100" >"$tmp/reviews.json"
@@ -32,7 +34,9 @@ tmp = Path(sys.argv[1])
 meta = json.loads((tmp / "meta.json").read_text(encoding="utf-8"))
 head = meta["headRefOid"]
 merge = meta["mergeStateStatus"]
-checks = (tmp / "checks.txt").read_text(encoding="utf-8", errors="replace")
+checks_status = int((tmp / "checks.status").read_text(encoding="utf-8").strip() or "0")
+checks_raw = (tmp / "checks.json").read_text(encoding="utf-8", errors="replace")
+checks_err = (tmp / "checks.err").read_text(encoding="utf-8", errors="replace").strip()
 issue_pages = json.loads((tmp / "issues.json").read_text(encoding="utf-8"))
 review_pages = json.loads((tmp / "reviews.json").read_text(encoding="utf-8"))
 
@@ -79,22 +83,46 @@ def clean_body(body):
     return body.strip()
 
 
+def parse_checks(raw):
+    if not raw.strip():
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, list):
+        return None
+    rows = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        bucket = item.get("bucket") or ""
+        name = item.get("name") or ""
+        if not name or bucket in ("pass", "skipping"):
+            continue
+        rows.append(f"  {name}: {bucket}")
+    return rows
+
+
 print(f"head {head} {merge}")
 
-rows = []
-for line in checks.splitlines():
-    if not line.strip():
-        continue
-    parts = line.split("\t")
-    if len(parts) < 2:
-        continue
-    name, state = parts[0], parts[1]
-    if state in ("pass", "skipping"):
-        continue
-    rows.append(f"  {name}: {state}")
-if rows:
+parsed = parse_checks(checks_raw)
+checks_error = False
+if parsed is None:
+    if checks_status == 8:
+        print("checks: pending")
+    elif checks_status == 0:
+        print("checks: none")
+    else:
+        print("checks: error")
+        if checks_err:
+            print(checks_err.splitlines()[-1])
+        checks_error = True
+elif parsed:
     print("checks:")
-    print("\n".join(rows))
+    print("\n".join(parsed))
+elif checks_status == 8:
+    print("checks: pending")
 else:
     print("checks: none")
 
@@ -130,4 +158,6 @@ else:
         print(f"* {path} {line_no}")
         if body:
             print(body[:900])
+if checks_error:
+    sys.exit(1)
 PY
