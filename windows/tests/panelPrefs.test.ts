@@ -5,7 +5,6 @@ import type { SmartDevice } from "../src/core/models.js";
 import {
   DEFAULT_GLOBAL_SHORTCUT,
   PANEL_ANCHORS,
-  SKINS,
   applyOrder,
   chosenSize,
   comfort,
@@ -37,10 +36,6 @@ const climate = (id: string): SmartDevice => ({
 });
 
 describe("panel layout prefs", () => {
-  it("exposes only the default classic skin", () => {
-    assert.deepEqual(SKINS.map((s) => s.id), ["classic"]);
-  });
-
   it("page-scoped size overrides the all-pages default", () => {
     const prefs = emptyLayoutPrefs();
     prefs.tileSizes = { a: "full", "客厅|a": "panel" };
@@ -116,10 +111,10 @@ describe("panel layout prefs", () => {
     assert.deepEqual(applyOrder(["c", "a"], [plug("a"), plug("b"), plug("c")]).map((d) => d.id), ["c", "a", "b"]);
   });
 
-  it("bento alternates 4+2 and 2+2+2; full cards take the row", () => {
-    const devs = ["a", "b", "c", "d", "e", "f"].map(plug);
-    const map = spans(devs, (d) => (d.id === "c" ? "full" : "half"), true);
-    assert.deepEqual(devs.map((d) => map.get(d.id)), [4, 2, 6, 2, 2, 2]);
+  it("half cards take three of six columns and full cards take the row", () => {
+    const devs = ["a", "b", "c"].map(plug);
+    const map = spans(devs, (d) => (d.id === "c" ? "full" : "half"));
+    assert.deepEqual(devs.map((d) => map.get(d.id)), [3, 3, 6]);
   });
 
   it("groups come first, the rest is titled only when groups exist", () => {

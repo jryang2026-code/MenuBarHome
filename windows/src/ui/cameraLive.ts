@@ -799,7 +799,7 @@ export class CameraLiveController {
     const muteLabel = t(this.liveCameraMuted ? "开启声音" : "关闭声音");
     const audioControl =
       mediaKind === "video"
-        ? `<button type="button" class="cc-circle-btn is-small" id="cc-camera-mute" title="${muteLabel}" aria-label="${muteLabel}" aria-pressed="${this.liveCameraMuted}">${this.liveCameraMuted ? "🔇" : "🔊"}</button>`
+        ? `<button type="button" class="cc-circle-btn is-small" id="cc-camera-mute" title="${muteLabel}" aria-label="${muteLabel}" aria-pressed="${this.liveCameraMuted}">${this.liveCameraMuted ? SF_ICONS.speakerSlash : SF_ICONS.speakerWave}</button>`
         : mediaKind === "frames" || mediaKind === "image" || mediaKind === "demo"
           ? `<span class="cc-pill-label" id="cc-camera-audio-badge" title="${t("当前视频流（米家 P2P / MJPEG / 抓拍）只传画面，不含音频")}">${t("仅画面")}</span>`
           : "";
@@ -812,7 +812,7 @@ export class CameraLiveController {
             <div style="display:flex;gap:6px;">
               ${audioControl}
               <button class="cc-circle-btn is-small" id="btn-reload-camera-live" title="${t("重新连接")}" aria-label="${t("重新连接")}">${SF_ICONS.arrowClockwise}</button>
-              <button class="cc-circle-btn is-small" id="btn-toggle-camera-url" title="${t("配置流地址")}">🔗</button>
+              <button class="cc-circle-btn is-small" id="btn-toggle-camera-url" title="${t("配置流地址")}" aria-label="${t("配置流地址")}">${SF_ICONS.link}</button>
               <button class="cc-circle-btn is-small" id="btn-close-camera-live" title="${t("关闭画面")}" aria-label="${t("关闭画面")}">
                 ${SF_ICONS.xmark}
               </button>
@@ -986,7 +986,7 @@ export class CameraLiveController {
     const button = this.host.root.querySelector<HTMLElement>("#cc-camera-mute");
     if (!button) return;
     const label = t(this.liveCameraMuted ? "开启声音" : "关闭声音");
-    button.textContent = this.liveCameraMuted ? "🔇" : "🔊";
+    button.innerHTML = this.liveCameraMuted ? SF_ICONS.speakerSlash : SF_ICONS.speakerWave;
     button.title = label;
     button.setAttribute("aria-label", label);
     button.setAttribute("aria-pressed", String(this.liveCameraMuted));

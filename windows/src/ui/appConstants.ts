@@ -46,6 +46,13 @@ export const SF_ICONS = {
   xmark: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/></svg>`,
   arrowUpCircle: `<svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.53-11.28a.75.75 0 00-1.06 0L6.72 9.47a.75.75 0 101.06 1.06l1.47-1.47v4.19a.75.75 0 001.5 0V9.06l1.47 1.47a.75.75 0 101.06-1.06l-2.75-2.75z"/></svg>`,
   videoFill: `<svg viewBox="0 0 20 20" fill="currentColor"><path d="M3 5a2 2 0 012-2h7a2 2 0 012 2v1.8l3.1-1.85A.75.75 0 0118.25 5.6v8.8a.75.75 0 01-1.15.65L14 13.2V15a2 2 0 01-2 2H5a2 2 0 01-2-2V5z"/></svg>`,
+  dropFill: `<svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 2.4c3.2 3.5 5.5 6.3 5.5 8.9a5.5 5.5 0 11-11 0c0-2.6 2.3-5.4 5.5-8.9z"/></svg>`,
+  batteryFull: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.7" y="6" width="13" height="8" rx="2.2"/><path stroke-linecap="round" d="M16.8 8.4v3.2"/><rect x="3.7" y="8" width="9" height="4" rx="1" fill="currentColor" stroke="none"/></svg>`,
+  batteryLow: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.7" y="6" width="13" height="8" rx="2.2"/><path stroke-linecap="round" d="M16.8 8.4v3.2"/><rect x="3.7" y="8" width="2.6" height="4" rx="1" fill="currentColor" stroke="none"/></svg>`,
+  flameFill: `<svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 2.1c.55 2.3.5 4.2-.2 5.9-.32.76-.8 1.28-1.45 1.9-.4-.75-.53-1.5-.4-2.4-1.35 1.2-2.2 2.3-2.6 3.4a5.7 5.7 0 00-.35 2 5.1 5.1 0 0010.2 0c0-1.6-.5-3.05-1.5-4.35-1.3-1.7-3.1-3.3-3.7-6.45z"/></svg>`,
+  speakerSlash: `<svg viewBox="0 0 20 20" fill="currentColor"><path d="M3.6 7.4h2.5l3.8-3.2a.8.8 0 011.3.62v10.36a.8.8 0 01-1.3.62L6.1 12.6H3.6a1.1 1.1 0 01-1.1-1.1V8.5a1.1 1.1 0 011.1-1.1z"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M12.6 8.1l4.2 3.8M16.8 8.1l-4.2 3.8"/></svg>`,
+  speakerWave: `<svg viewBox="0 0 20 20" fill="currentColor"><path d="M3.6 7.4h2.5l3.8-3.2a.8.8 0 011.3.62v10.36a.8.8 0 01-1.3.62L6.1 12.6H3.6a1.1 1.1 0 01-1.1-1.1V8.5a1.1 1.1 0 011.1-1.1z"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M12.8 7.6a3.4 3.4 0 010 4.8M15.2 5.4a6.6 6.6 0 010 9.2"/></svg>`,
+  link: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M8.4 11.6a3.1 3.1 0 010-4.4l2.5-2.5a3.1 3.1 0 014.4 4.4l-1.3 1.3"/><path d="M11.6 8.4a3.1 3.1 0 010 4.4l-2.5 2.5a3.1 3.1 0 01-4.4-4.4l1.3-1.3"/></svg>`,
 };
 
 /** Demo home, materialised per language so the preview text follows the UI (#52). */

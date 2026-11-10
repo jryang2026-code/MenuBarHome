@@ -13,7 +13,7 @@ import { quickActions } from "./demo.js";
     host.root.classList.toggle("is-grok-expanded", host.settings.enableGrokBall && host.isGrokBallStageExpanded);
     host.root.classList.toggle("is-native-host", Boolean(window.__TAURI_INTERNALS__));
     host.root.dataset.grokSide = host.grokBallOnLeft ? "left" : "right";
-    const popoverClass = `cc-popover skin-${host.skin} scheme-${scheme} ${host.skin === "classic" ? "" : "is-skinned"} ${host.isEditingLayout ? "is-editing" : ""}`.trim();
+    const popoverClass = `cc-popover cc-rim scheme-${scheme} ${host.isEditingLayout ? "is-editing" : ""}`.trim();
     const innerContent = `
         <header class="cc-header">
           <div class="cc-header-top">

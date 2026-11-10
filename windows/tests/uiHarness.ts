@@ -29,3 +29,12 @@ export function setWindowFocused(focused: boolean): () => void {
     document.hasFocus = previous;
   };
 }
+
+/** happy-dom has no `CSS.escape`, which the layout gestures use to build tile selectors. */
+export function installCssEscape(): () => void {
+  Object.defineProperty(globalThis, "CSS", {
+    value: { escape: (value: string) => value },
+    configurable: true,
+  });
+  return () => Reflect.deleteProperty(globalThis, "CSS");
+}

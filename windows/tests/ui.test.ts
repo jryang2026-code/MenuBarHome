@@ -7,9 +7,8 @@ import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
 
 import { assertMissing } from "./dom.js";
-import { closeTestWindow, mountTestWindow, setWindowFocused } from "./uiHarness.js";
+import { closeTestWindow, installCssEscape, mountTestWindow, setWindowFocused } from "./uiHarness.js";
 import { MenuMijiaWindowsApp, waitForCameraFrameGap } from "../src/ui/app.js";
-import { SKINS } from "../src/ui/panelPrefs.js";
 import { cloudFixture } from "./cloudFixture.js";
 import { MiCloudClient, MiotSynthesizer, inferFallbackSpec, parseMiotDeviceSpec } from "../src/core/miCloudClient.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
@@ -1523,7 +1522,7 @@ describe("Bare category opens (#274)", () => {
 });
 
 describe("全关 (#23)", () => {
-  it("needs a hold in the classic skin and leaves the plug on", async () => {
+  it("needs a hold and leaves the plug on", async () => {
     startDemo();
     const button = element("#btn-all-off");
     assert.match(button.textContent ?? "", /全关 \(3\)/);
@@ -1682,42 +1681,37 @@ describe("Unverified MIoT fallback controls (#154)", () => {
     assert.ok(document.querySelector('[data-acfan="ac-fan:Low"]'));
   });
 
-  it("does not dim a read-only light when the tile is dragged", async () => {
-    const skins = SKINS as Array<{ id: string; readonly title: string }>;
-    skins.push({ id: "frost", get title() { return "霜"; } });
+  it("dims a writable light by dragging the tile and leaves a read-only light alone", async () => {
+    const light = (id: string, brightnessWritable: boolean) => ({
+      id,
+      name: id,
+      roomId: "r1",
+      roomName: "客厅",
+      model: "yeelink.light.ceiling22",
+      isOnline: true,
+      kind: {
+        kind: "light",
+        entityId: `miot:${id}:2`,
+        isOn: true,
+        brightnessPercent: 40,
+        colorTempKelvin: 4000,
+        minKelvin: 2700,
+        maxKelvin: 6500,
+        currentEffect: null,
+        availableEffects: [],
+        powerWritable: true,
+        brightnessWritable,
+        colorWritable: false,
+      },
+    });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "xiaomiCloud",
+      hasCompletedOnboarding: true,
+      isCompactGridMode: false,
+      cachedXiaomiDevices: [light("ro-light", false), light("rw-light", true)],
+    }));
+    const restoreCssEscape = installCssEscape();
     try {
-      const light = (id: string, brightnessWritable: boolean) => ({
-        id,
-        name: id,
-        roomId: "r1",
-        roomName: "客厅",
-        model: "yeelink.light.ceiling22",
-        isOnline: true,
-        kind: {
-          kind: "light",
-          entityId: `miot:${id}:2`,
-          isOn: true,
-          brightnessPercent: 40,
-          colorTempKelvin: 4000,
-          minKelvin: 2700,
-          maxKelvin: 6500,
-          currentEffect: null,
-          availableEffects: [],
-          powerWritable: true,
-          brightnessWritable,
-          colorWritable: false,
-        },
-      });
-      localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
-        connectionMode: "xiaomiCloud",
-        hasCompletedOnboarding: true,
-        skin: "frost",
-        isCompactGridMode: false,
-        cachedXiaomiDevices: [light("ro-light", false), light("rw-light", true)],
-      }));
-      (globalThis as { CSS?: { escape: (value: string) => string } }).CSS = {
-        escape: (value: string) => value,
-      };
       new MenuMijiaWindowsApp(element("#app"));
       await setImmediate();
 
@@ -1743,8 +1737,7 @@ describe("Unverified MIoT fallback controls (#154)", () => {
       await setImmediate();
       assert.match(fill("rw-light"), /width:100%/);
     } finally {
-      skins.pop();
-      delete (globalThis as { CSS?: unknown }).CSS;
+      restoreCssEscape();
     }
   });
 });
@@ -2387,13 +2380,13 @@ describe("Smart camera support and live view (#97)", () => {
     (element("#camera-stream-url-input") as HTMLInputElement).value = "https://example.com/live.m3u8";
     await click("#btn-save-camera-url");
     const video = element("#cc-camera-video") as HTMLVideoElement;
+    // The HUD mute button swaps its drawn icon, so its pressed state is the observable contract.
     assert.equal(video.muted, true, "video streams start muted");
     assertMissing(document.querySelector("#cc-camera-audio-badge"));
-    assert.equal(textOf("#cc-camera-mute"), "🔇");
+    assert.equal(element("#cc-camera-mute").getAttribute("aria-pressed"), "true");
 
     await click("#cc-camera-mute");
     assert.equal(video.muted, false);
-    assert.equal(textOf("#cc-camera-mute"), "🔊");
     assert.equal(element("#cc-camera-mute").getAttribute("title"), "关闭声音");
     assert.equal(element("#cc-camera-mute").getAttribute("aria-pressed"), "false");
 
@@ -2406,22 +2399,22 @@ describe("Smart camera support and live view (#97)", () => {
     video.muted = false;
     video.dispatchEvent(new Event("volumechange"));
     assert.equal(app.cameraLive.liveCameraMuted, false);
-    assert.equal(textOf("#cc-camera-mute"), "🔊");
     assert.equal(element("#cc-camera-mute").getAttribute("title"), "关闭声音");
+    assert.equal(element("#cc-camera-mute").getAttribute("aria-pressed"), "false");
 
     video.volume = 0;
     video.muted = false;
     video.dispatchEvent(new Event("volumechange"));
     assert.equal(app.cameraLive.liveCameraMuted, true);
-    assert.equal(textOf("#cc-camera-mute"), "🔇");
+    assert.equal(element("#cc-camera-mute").getAttribute("aria-pressed"), "true");
 
     // Unmuting while a native control left the volume at 0 must restore an audible level.
     await click("#cc-camera-mute");
     assert.equal(video.muted, false);
     assert.equal(video.volume, 1);
     assert.equal(app.cameraLive.liveCameraMuted, false);
-    assert.equal(textOf("#cc-camera-mute"), "🔊");
     assert.equal(element("#cc-camera-mute").getAttribute("title"), "关闭声音");
+    assert.equal(element("#cc-camera-mute").getAttribute("aria-pressed"), "false");
   });
 
   it("starts the next live window muted after a full close (#29)", async () => {
@@ -2445,7 +2438,7 @@ describe("Smart camera support and live view (#97)", () => {
     await click('[data-body-device="camera.living_cam"]');
     const video = element("#cc-camera-video") as HTMLVideoElement;
     assert.equal(video.muted, true);
-    assert.equal(textOf("#cc-camera-mute"), "🔇");
+    assert.equal(element("#cc-camera-mute").getAttribute("aria-pressed"), "true");
   });
 
   it("labels a native MJPEG live view as video only without offering a mute toggle (#29)", async () => {

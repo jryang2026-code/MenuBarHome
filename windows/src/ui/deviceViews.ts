@@ -22,7 +22,6 @@ import {
   comfort,
   localizeEffect,
   localizeFanMode,
-  type AppSkin,
   type TileSize,
 } from "./panelPrefs.js";
 import {
@@ -71,7 +70,7 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
           </div>
           <div class="cc-sensor-main">
             <span class="cc-sensor-temp">${temp}<small>${temperatureSymbol()}</small></span>
-            ${hum !== null ? `<span class="cc-sensor-hum">💧 ${hum}%</span>` : ""}
+            ${hum !== null ? `<span class="cc-sensor-hum"><span class="cc-icon-inline" aria-hidden="true">${SF_ICONS.dropFill}</span> ${hum}%</span>` : ""}
           </div>
           <div class="cc-hum-bar"><span style="width:${hum ?? 0}%"></span></div>
         </div>`;
@@ -91,7 +90,7 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
             <span class="cc-sensor-temp is-big">${temp}<small>${temperatureSymbol()}</small></span>
             <div class="cc-sensor-meta">
               <span class="cc-comfort is-${c.level}">${c.label}</span>
-              ${k.battery !== null ? `<span class="cc-sensor-batt ${k.battery <= 20 ? "is-low" : ""}">🔋 ${k.battery}%</span>` : ""}
+              ${k.battery !== null ? `<span class="cc-sensor-batt ${k.battery <= 20 ? "is-low" : ""}"><span class="cc-icon-inline" aria-hidden="true">${k.battery <= 20 ? SF_ICONS.batteryLow : SF_ICONS.batteryFull}</span> ${k.battery}%</span>` : ""}
             </div>
           </div>
           ${ring}
@@ -148,10 +147,10 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
     const temp = formatTemperatureValue(k.targetTemperature);
     const power = powerWritable
       ? `<button class="cc-climate-power ${running ? "is-on" : ""}" data-toggle-device="${id}" title="${running ? t("关闭空调") : t("打开空调")}" aria-label="${running ? t("关闭 {name}", { name: escapeHtml(dev.name) }) : t("打开 {name}", { name: escapeHtml(dev.name) })}" aria-pressed="${running}">
-            <span aria-hidden="true" ${k.hvacMode === "heat" ? "" : "hidden"}>🔥</span><span aria-hidden="true" ${k.hvacMode === "heat" ? "hidden" : ""}>${SF_ICONS.snowflake}</span>
+            <span aria-hidden="true" ${k.hvacMode === "heat" ? "" : "hidden"}>${SF_ICONS.flameFill}</span><span aria-hidden="true" ${k.hvacMode === "heat" ? "hidden" : ""}>${SF_ICONS.snowflake}</span>
           </button>`
       : `<span class="cc-climate-power ${running ? "is-on" : ""}" aria-hidden="true">
-            <span ${k.hvacMode === "heat" ? "" : "hidden"}>🔥</span><span ${k.hvacMode === "heat" ? "hidden" : ""}>${SF_ICONS.snowflake}</span>
+            <span ${k.hvacMode === "heat" ? "" : "hidden"}>${SF_ICONS.flameFill}</span><span ${k.hvacMode === "heat" ? "hidden" : ""}>${SF_ICONS.snowflake}</span>
           </span>`;
     const steps = readout === "possiblyStale"
       ? ""
@@ -627,7 +626,6 @@ export interface DeviceTileViewState {
   readonly span: number;
   readonly index: number;
   readonly size: Exclude<TileSize, "auto">;
-  readonly skin: AppSkin;
   readonly animateEntrance: boolean;
   readonly poppedDeviceId: string | null;
   readonly draggingId: string | null;
@@ -637,7 +635,6 @@ export interface DeviceTileViewState {
   readonly expandedDeviceId: string | null;
   readonly pendingHighRisk: PendingHighRiskConfirmation | null;
   readonly waitingDeviceIds: ReadonlySet<string>;
-  readonly compactGrid: boolean;
   readonly dimPreview: { readonly id: string; readonly percent: number } | null;
   readonly deviceFacets: Readonly<Record<string, readonly FacetControl[]>>;
   readonly allowAdvancedFacetWrites: boolean;
@@ -648,12 +645,12 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
   const size = state.size;
   const escape = state.escapeHtml;
   const attrs = `data-tile-id="${escape(dev.id)}" style="grid-column: span ${state.span}; --i: ${Math.min(state.index, 12)}; --jd: -${Math.round((performance.now() + (state.index * 137) % 560) % 560)}ms"`;
-  const motion = `${state.animateEntrance && state.skin !== "classic" ? "is-entering" : ""} ${state.poppedDeviceId === dev.id ? "is-popped" : ""} ${state.draggingId === dev.id ? "is-dragging" : ""}`;
+  const motion = `${state.animateEntrance ? "is-entering" : ""} ${state.poppedDeviceId === dev.id ? "is-popped" : ""} ${state.draggingId === dev.id ? "is-dragging" : ""}`;
   const sizeTitle = TILE_SIZES.find((item) => item.id === size)?.title ?? "";
   const badge = state.isEditingLayout
     ? `<button class="cc-resize-handle" data-resize-handle="${escape(dev.id)}" data-cycle-size="${escape(dev.id)}" data-tile-size="${size}" title="${t("切换卡片大小")}：${sizeTitle}" aria-label="${t("切换卡片大小")}，${sizeTitle}"><svg class="cc-resize-arc" viewBox="0 0 28 28" aria-hidden="true"><path d="M 22 10 A 12 12 0 0 1 10 22" /></svg></button>`
     : "";
-  if (dev.kind.kind === "sensor" && (dev.kind.temperature !== null || dev.kind.humidity !== null) && !(state.skin === "bento" && state.span < 6)) {
+  if (dev.kind.kind === "sensor" && (dev.kind.temperature !== null || dev.kind.humidity !== null)) {
     return renderSensorCard(dev, dev.kind, state.span < 6, attrs, motion, badge, state.selectedRoom, state.valuesAreStale, escape);
   }
   if (dev.kind.kind === "climate" && size !== "half") {
@@ -673,7 +670,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
       : deviceStatusSummary(dev);
 
   const dim = state.dimPreview?.id === dev.id ? state.dimPreview.percent : null;
-  const fill = kind === "light" && state.skin !== "classic" && !isExpanded
+  const fill = kind === "light" && !isExpanded
     ? dim ?? (isOn && dev.kind.kind === "light" ? dev.kind.brightnessPercent ?? 100 : 0)
     : 0;
   const shownSubtitle = readout === "waiting"
@@ -685,7 +682,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
         : subtitle;
   const staleClass = readout === "possiblyStale" ? "is-stale" : "";
   return `
-      <div class="cc-tile ${palette} ${isOn ? "is-active" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${state.skin === "bento" && state.span < 6 ? "is-bento-tile" : ""} ${motion}" ${attrs}>
+      <div class="cc-tile ${palette} ${isOn ? "is-active" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" ${attrs}>
         ${fill > 0 ? `<span class="cc-tile-fill" style="width:${fill}%"></span>` : ""}
         ${badge}
         <div class="cc-tile-header">
@@ -720,7 +717,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
           </button>
 
           ${
-            hasDrawer && size !== "panel" && (state.skin === "classic" || !state.compactGrid || isExpanded)
+            hasDrawer && size !== "panel"
               ? `<button
                   class="cc-tile-chevron ${isExpanded ? "is-open" : ""}"
                   data-expand-device="${escape(dev.id)}"

@@ -5,7 +5,6 @@ import {
   releaseVelocity,
   scopedKey,
   targetSize,
-  type AppSkin,
   type LayoutPrefs,
   type TileSize,
 } from "./panelPrefs.js";
@@ -15,7 +14,6 @@ export interface LayoutGestureHost {
   readonly root: HTMLElement;
   readonly devices: readonly SmartDevice[];
   readonly settings: PersistedSettings;
-  readonly skin: AppSkin;
   readonly layout: LayoutPrefs;
   readonly pageKey: string;
   expandedDeviceId: string | null;
@@ -178,7 +176,6 @@ export interface LayoutGestureHost {
       const dev = host.devices.find((d) => d.id === press?.id);
       const isExpanded = dev ? (host.expandedDeviceId === dev.id || host.tileSize(dev) === "panel") : false;
       const canDim =
-        host.skin !== "classic" &&
         !isExpanded &&
         dev?.kind.kind === "light" &&
         dev.isOnline &&

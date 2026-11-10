@@ -306,7 +306,7 @@ CODE_ANCHORS = (
         },
         "windows": {
             "path": "windows/src/ui/styles.css",
-            "symbol": "--glass-bg",
+            "symbol": "--tile-bg",
         },
     },
     {

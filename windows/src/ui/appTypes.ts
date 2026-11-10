@@ -5,7 +5,6 @@ import type { MiSession } from "../core/miCloudClient.js";
 import type { DeviceCommand, DeviceIntent, SmartDevice, SynthesizedHome } from "../core/models.js";
 import type {
   AppAppearance,
-  AppSkin,
   LayoutPrefs,
   PanelHeight,
 } from "./panelPrefs.js";
@@ -89,7 +88,6 @@ export interface PersistedSettings {
   cachedDevicesVersion: number;
   cachedHAHome: { identity: string; home: SynthesizedHome } | null;
   cachedModelTypes: Record<string, string>;
-  skin: AppSkin;
   appearance: AppAppearance;
   panelHeight: PanelHeight;
   /** Panel background opacity, 60–100 percent (#252). */

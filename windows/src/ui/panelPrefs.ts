@@ -2,10 +2,8 @@ import type { MiRoom } from "../core/miCloudClient.js";
 import type { SmartDevice } from "../core/models.js";
 import { t } from "../core/i18n.js";
 
-// Panel personalisation shared with the macOS app: skins, per-page card sizes, custom order,
+// Panel personalisation shared with the macOS app: per-page card sizes, custom order,
 // user groups and local device names. Pure functions only, so they can be unit tested.
-
-export type AppSkin = "classic" | "frost" | "night" | "glass" | "soft" | "bento" | "neon" | "capsule" | "dawn";
 
 export type AppAppearance = "system" | "light" | "dark";
 
@@ -20,14 +18,6 @@ export function resolveAppearance(preference: AppAppearance, systemPrefersLight 
   if (preference === "dark") return "dark";
   return systemPrefersLight ? "light" : "dark";
 }
-
-/**
- * Skin ids stay stable (they are persisted); `title` is a getter so it is translated in whatever
- * language is active when the panel renders, not at module load (#52).
- */
-export const SKINS: ReadonlyArray<{ readonly id: AppSkin; readonly title: string }> = [
-  { id: "classic", get title() { return t("经典"); } },
-];
 
 /**
  * Panel background opacity in percent (#252). WebView2 does not blur the desktop behind a
@@ -221,23 +211,12 @@ export function moveInOrder(order: readonly string[], allIds: readonly string[],
   return without;
 }
 
-/** Column span out of 6: half = 3, full/panel = 6; Bento alternates 4+2 and 2+2+2. */
+/** Column span out of 6: half = 3, full/panel = 6. */
 export function spans(
   devices: readonly SmartDevice[],
   sizeOf: (d: SmartDevice) => Exclude<TileSize, "auto">,
-  bento: boolean,
 ): Map<string, number> {
   const out = new Map<string, number>();
-  if (bento) {
-    let pattern: number[] = [];
-    let rows = 0;
-    for (const d of devices) {
-      if (sizeOf(d) !== "half") { out.set(d.id, 6); pattern = []; continue; }
-      if (pattern.length === 0) { pattern = rows % 2 === 0 ? [4, 2] : [2, 2, 2]; rows++; }
-      out.set(d.id, pattern.shift() ?? 2);
-    }
-    return out;
-  }
   for (const d of devices) out.set(d.id, sizeOf(d) === "half" ? 3 : 6);
   return out;
 }
