@@ -103,9 +103,13 @@ struct ScheduledCommandScopeTests {
 
     @MainActor
     private func waitUntil(_ condition: () async -> Bool) async {
-        for _ in 0..<200 {
+        for attempt in 0..<400 {
             if await condition() { return }
-            await Task.yield()
+            if attempt < 100 {
+                await Task.yield()
+            } else {
+                try? await Task.sleep(for: .milliseconds(5))
+            }
         }
     }
 
@@ -695,7 +699,11 @@ struct ScheduledCommandScopeTests {
         await waitUntil { gate.waiting == 1 }
 
         gate.release()
-        await waitUntil { await mock.executedCommands.count == 2 }
+        await waitUntil {
+            await mock.executedCommands.count == 2
+                && store.undoBanner != nil
+                && store.lastAssistantUndo != nil
+        }
         let executed = await mock.executedCommands
         #expect(executed.contains(.setLightPower(entityId: "miot:1234567890:2", isOn: false)))
         #expect(executed.contains(.setLightPower(entityId: "light.study_ceiling", isOn: false)))

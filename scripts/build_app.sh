@@ -87,7 +87,7 @@ if [ "${PTZ_BRIDGE:-1}" = "1" ]; then
     MANIFEST="$ROOT/scripts/go2rtc-ptz/out/go2rtc-ptz.manifest"
     MANIFEST_SHA="$(sed -n 's/^patch_sha256=//p' "$MANIFEST" 2>/dev/null || true)"
     if [ ! -x "$PATCHED_GO2RTC" ] || [ "$MANIFEST_SHA" != "$PATCH_SHA" ]; then
-        echo "▶ PTZ_BRIDGE=1：构建或更新带云台补丁的 go2rtc（patch $PATCH_SHA）"
+        echo "▶ PTZ_BRIDGE=1：构建或更新带云台补丁的 go2rtc（patch ${PATCH_SHA}）"
         rm -f "$PATCHED_GO2RTC"
         bash "$ROOT/scripts/go2rtc-ptz/build.sh" || {
             echo "❌ PTZ_BRIDGE=1 但补丁桥构建失败，拒绝打出没有云台能力的包" >&2

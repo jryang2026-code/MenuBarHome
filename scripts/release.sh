@@ -69,7 +69,7 @@ if ! printf '%s' "$PINNED" | grep -Eq '^[0-9a-f]{40}$'; then
     exit 1
 fi
 if [ "$PINNED" != "$MACOS_CERT_SHA1" ]; then
-    echo "❌ App 内钉住的证书 SHA-1（$PINNED）与本次签名证书（$MACOS_CERT_SHA1）不一致。" >&2
+    echo "❌ App 内钉住的证书 SHA-1（${PINNED}）与本次签名证书（${MACOS_CERT_SHA1}）不一致。" >&2
     exit 1
 fi
 

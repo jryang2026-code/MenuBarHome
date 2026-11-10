@@ -64,7 +64,7 @@ ensure_go_126() {
     fi
     if [ "$actual_sha" != "$sha256" ]; then
         rm -f "$tmp_archive"
-        echo "❌ Go 1.26.10 SHA-256 校验失败（期望 $sha256，实际 $actual_sha）" >&2
+        echo "❌ Go 1.26.10 SHA-256 校验失败（期望 ${sha256}，实际 ${actual_sha}）" >&2
         exit 1
     fi
     rm -rf "$cache_root/go" "$cache_root/go.staging.$$"
