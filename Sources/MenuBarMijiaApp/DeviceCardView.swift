@@ -201,7 +201,7 @@ public struct DeviceCardView: View {
                     .transition(AppleMotion.drawerTransition)
             }
         }
-        .glassTile(isActive: isLit, cornerRadius: cardRadius, tint: tileTint)
+        .glassTile(isActive: isLit, cornerRadius: cardRadius, isCapsule: isCompactTile && !isExpanded && resolvedSize != .hero, tint: tileTint)
         .overlay(
             RoundedRectangle(cornerRadius: cardRadius, style: .continuous)
                 .strokeBorder(isKeyboardFocused ? accent.opacity(0.85) : Color.clear, lineWidth: 1.6)

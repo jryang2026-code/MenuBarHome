@@ -182,15 +182,15 @@ _Avoid_: Room order（保存后的顺序值）、Layout edit（设备布局编�
 _Avoid_: isEditingLayout / isEditingRooms（已被本枚举取代的两个布尔值）
 
 **内容井（well）**：
-面板玻璃之上的一层平的内容底：关闭态 `white 0.07`（浅色 `0.42`），开启态 `white 0.13`（浅色 `0.72`），空调等带家族色的卡片用家族色 `0.20→0.08`（浅色 `0.14→0.70`）渐变。任何模式都不再出现整块白色底板，所以井里的文字始终跟随窗口方案（`.primary` / `.secondary`），开启态的强调只来自圆章、字重和滑杆填充。填充由 `PanelDesign.swift:TileSurface.fill` 一处推导，设备卡、空调卡、传感器卡与选中态胶囊共用。
+无障碍「减弱透明度」或 macOS 14/15 Material 模式下卡片的半透明基底（`PanelDesign.swift:TileSurface.fill`）：关闭态深色 `white 0.08`（浅色 `0.42`），开启态深色 `white 0.14`（浅色 `0.56`）；在 macOS 26 原生 Liquid Glass 模式下，模块直接调用 `.glassEffect(.regular.interactive(), in: shape)`，不额外涂抹背景层，以免遮挡系统液态玻璃折射与明暗自适应。任何模式都不再出现整块白色底板，文字始终跟随窗口方案（`.primary` / `.secondary`），开启态的色彩强调只来自左侧发光圆章与滑杆填充。
 _Avoid_: Platter（白色底板）、Card background（卡片底色）
 
 **高光边（Specular Rim）**：
-玻璃边缘的唯一处理（`ThemeAndMotion.swift:specularRim`）：上下 1 pt 白色亮边（深色 `0.22` / 浅色 `0.65`）、左右 1 pt 黑色暗边（深色 `0.25` / 浅色 `0.08`），两条渐变裁进 1 pt 描边，在圆角处自然交叠。减弱透明度或提高对比度时退化为一条 `.primary` 0.25 的实线。它取代了设备卡顶部的 1.5 pt 高光条、`ClassicGlass` 的统一白描边和 `PillActionButtonStyle` 的斜向描边；Windows 端对应 `styles.css` 的 `.cc-rim`。
+玻璃边缘的唯一处理（`ThemeAndMotion.swift:specularRim`）：沿形状内缘绘制 `DesignTokens.hairline` 的上下亮、中部微暗的立体折射描边（深色亮边 `0.34` / 浅色 `0.75`）；减弱透明度或提高对比度时退化为一条 `.primary` 0.18 的实线，胶囊形采用半高正圆圆角以避免 1x 栅格化切点伪影。Windows 端对应 `styles.css` 的 `.cc-rim`。
 _Avoid_: Border、Hairline（描边与高光边现在是两个概念）
 
 **ViewPreference（本地视图偏好）**：
-仅作用于当前客户端的展示配置（包括星标常用置顶、自定义分组 `DeviceGroup`、长按拖拽排序、通过编辑态卡片右下角圆弧手柄拖拽或轻点调节的分页面卡片尺寸 `TileSize`、单设备固定数据源覆盖、隐藏特定设备、隐藏离线设备、面板高度 `PanelHeight`、Windows 面板位置 `PanelAnchor`（跟随任务栏或工作区四角，保存在 `%APPDATA%\MenuBarMijia\panel-placement.json` 以便拖动窗口后即时落盘）、菜单栏常驻指标选择），存储在本地且不回写远端数据源。
+仅作用于当前客户端的展示配置（包括星标常用置顶、自定义分组 `DeviceGroup`、进入编辑模式后的拖拽排序、通过编辑态卡片右下角圆弧手柄拖拽或轻点调节的分页面卡片尺寸 `TileSize`、单设备固定数据源覆盖、隐藏特定设备、隐藏离线设备、面板高度 `PanelHeight`、Windows 面板位置 `PanelAnchor`（跟随任务栏或工作区四角，保存在 `%APPDATA%\MenuBarMijia\panel-placement.json` 以便拖动窗口后即时落盘）、菜单栏常驻指标选择），存储在本地且不回写远端数据源。
 _Avoid_: Device config（设备配置）、Profile（档案）
 
 **NativeBackdrop（原生背景）**：

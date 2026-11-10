@@ -993,9 +993,9 @@ struct MenuBarPanelControllerTests {
         let token = NotificationCenter.default.addObserver(
             forName: MenuBarPanelController.didShowNotification,
             object: nil,
-            queue: nil
+            queue: .main
         ) { _ in
-            didShow = true
+            MainActor.assumeIsolated { didShow = true }
         }
         defer { NotificationCenter.default.removeObserver(token) }
 
@@ -1031,9 +1031,9 @@ struct MenuBarPanelControllerTests {
         let token = NotificationCenter.default.addObserver(
             forName: MenuBarPanelController.didHideNotification,
             object: nil,
-            queue: nil
+            queue: .main
         ) { _ in
-            didHide = true
+            MainActor.assumeIsolated { didHide = true }
         }
         defer { NotificationCenter.default.removeObserver(token) }
 

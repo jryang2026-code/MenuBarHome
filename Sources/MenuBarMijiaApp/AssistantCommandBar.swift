@@ -987,8 +987,13 @@ struct AssistantSettingsSection: View {
             }
             .padding(.top, 2)
         }
-        .padding(12)
-        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.card)
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.card))
+        .overlay {
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.card)
+                .strokeBorder(DesignTokens.separator.opacity(0.5), lineWidth: DesignTokens.hairline)
+        }
         .onAppear {
             let config = store.assistantConfig
             baseURLDraft = config.baseURL

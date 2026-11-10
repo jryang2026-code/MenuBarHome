@@ -1116,7 +1116,7 @@ struct SnapshotTests {
         var climate = try #require(fixture.store.devices.first { device in
             if case .climate = device.kind { return true } else { return false }
         })
-        await fixture.store.togglePrimary(climate)?.value
+        _ = await fixture.store.togglePrimary(climate)?.value
         climate = try #require(fixture.store.devices.first { $0.id == climate.id })
         #expect(climate.isActiveOn, "MockHomeProvider should apply the power toggle")
 

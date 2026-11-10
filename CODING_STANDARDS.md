@@ -25,12 +25,12 @@ System-wide registrations (such as Carbon `RegisterEventHotKey` in `HotkeyAndNot
 - Call `UnregisterEventHotKey` immediately when `enableGlobalHotkey` is set to `false`, and re-register when set to `true`.
 - Leaving a global hotkey registered while ignoring the callback hijacks the key chord from other macOS applications.
 
-## 4. CompactTile Two-Column Alignment
+## 4. Control Center 12-Column Flow Layout & Module Spans
 
-In `ControlCenterPanel` when `isCompactGridMode` is active:
+In `ControlCenterPanel` (`ControlCenterPanelLayout.swift:spans(for:)` and `DeviceLayout.swift:TileFlowLayout`):
 
-- Devices with an open detail drawer (`expandedDeviceId == dev.id`) render as full-width `.single(dev)` rows (`isCompactTile: false`).
-- Unexpanded devices render in two-column `.pair(left, right)` rows (`isCompactTile: true`). When an unexpanded tile has no partner, pair it with `nil` and render a half-width `Color.clear.frame(maxWidth: .infinity)` placeholder so single tiles never stretch full-width.
+- `TileFlowLayout` packs children into a 12-column grid (`3` = 1×1 round button, `6` = 2×1 capsule or 2×2 hero square, `12` = 4×1 full row or always-expanded panel).
+- Devices with an open detail drawer (`expandedDeviceId == dev.id`) transiently take span `12` (`isCompactTile: false`) while unexpanded compact tiles take span `<= 6` (`isCompactTile: true`). When no custom order is saved, sub-row tiles (`span < 12`) are packed before full-row modules (`span == 12`) so an odd full-row strip never strands a lone half-row capsule.
 
 ## 5. Domain Vocabulary & Single Source of Truth
 

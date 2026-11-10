@@ -56,7 +56,7 @@ struct OnboardingChecklistCard: View {
         .padding(.horizontal, 12)
         .frame(height: 44)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.panel)
+        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.panel, isCapsule: true)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("onboarding-lesson-row")
     }

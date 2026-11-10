@@ -104,7 +104,7 @@ public struct PillActionButtonStyle: ButtonStyle {
             .padding(.horizontal, 10.5)
             .padding(.vertical, 5)
             .modifier(
-                ChipSurface(
+                ClassicGlass(
                     shape: capsule,
                     tint: isSelected ? tintColor.opacity(0.24) : nil,
                     interactive: true,
@@ -186,32 +186,53 @@ struct SpecularRim<S: InsettableShape>: ViewModifier {
         content.overlay {
             if reduceTransparency || contrast == .increased {
                 // A translucent edge is the first thing those modes erase; one solid hairline keeps
-                // the shape's boundary visible instead.
-                shape.strokeBorder(Color.primary.opacity(0.25), lineWidth: 1)
+                // the shape's boundary visible instead. Use an exact half-height circular rounded
+                // rectangle on capsules to avoid SwiftUI's 1x `Capsule` stroke tangent artifact.
+                if shape is Capsule {
+                    GeometryReader { geo in
+                        let r = min(geo.size.width, geo.size.height) / 2
+                        RoundedRectangle(cornerRadius: r, style: .circular)
+                            .strokeBorder(Color.primary.opacity(0.18), lineWidth: DesignTokens.hairline)
+                    }
+                    .allowsHitTesting(false)
+                } else {
+                    shape.strokeBorder(Color.primary.opacity(0.18), lineWidth: DesignTokens.hairline)
+                        .allowsHitTesting(false)
+                }
+            } else if shape is Capsule {
+                GeometryReader { geo in
+                    let r = min(geo.size.width, geo.size.height) / 2
+                    RoundedRectangle(cornerRadius: r, style: .circular).strokeBorder(
+                        LinearGradient(
+                            stops: [
+                                .init(color: litEdge, location: 0.0),
+                                .init(color: litEdge.opacity(0.25), location: 0.28),
+                                .init(color: shadedEdge, location: 0.50),
+                                .init(color: litEdge.opacity(0.25), location: 0.72),
+                                .init(color: litEdge, location: 1.0)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: DesignTokens.hairline
+                    )
+                }
+                .allowsHitTesting(false)
             } else {
-                ZStack {
+                shape.strokeBorder(
                     LinearGradient(
                         stops: [
-                            .init(color: litEdge, location: 0),
-                            .init(color: .clear, location: 0.14),
-                            .init(color: .clear, location: 0.86),
-                            .init(color: litEdge, location: 1)
+                            .init(color: litEdge, location: 0.0),
+                            .init(color: litEdge.opacity(0.25), location: 0.28),
+                            .init(color: shadedEdge, location: 0.50),
+                            .init(color: litEdge.opacity(0.25), location: 0.72),
+                            .init(color: litEdge, location: 1.0)
                         ],
                         startPoint: .top,
                         endPoint: .bottom
-                    )
-                    LinearGradient(
-                        stops: [
-                            .init(color: shadedEdge, location: 0),
-                            .init(color: .clear, location: 0.06),
-                            .init(color: .clear, location: 0.94),
-                            .init(color: shadedEdge, location: 1)
-                        ],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                }
-                .mask { shape.strokeBorder(Color.white, lineWidth: 1) }
+                    ),
+                    lineWidth: DesignTokens.hairline
+                )
                 .allowsHitTesting(false)
             }
         }
@@ -242,13 +263,24 @@ public struct GlassShapeBackground<S: InsettableShape>: ViewModifier {
     }
 
     @ViewBuilder
+    private func fillShape<Style: ShapeStyle>(_ style: Style) -> some View {
+        if shape is Capsule {
+            GeometryReader { geo in
+                let r = min(geo.size.width, geo.size.height) / 2
+                RoundedRectangle(cornerRadius: r, style: .circular).fill(style)
+            }
+        } else {
+            shape.fill(style)
+        }
+    }
+    @ViewBuilder
     private func surfaceBody(_ content: Content) -> some View {
         let surface = TileSurface(isActive: isActive, tint: tint, scheme: colorScheme)
         if reduceTransparency {
             content
                 .background {
-                    shape.fill(Color(nsColor: .controlBackgroundColor))
-                    shape.fill(surface.fill)
+                    fillShape(Color(nsColor: .controlBackgroundColor))
+                    fillShape(surface.fill)
                 }
                 .specularRim(shape)
                 .shadow(color: .black.opacity(colorScheme == .dark ? 0.24 : 0.10), radius: 7, y: 2)
@@ -265,10 +297,10 @@ public struct GlassShapeBackground<S: InsettableShape>: ViewModifier {
             content
                 .background {
                     ZStack {
-                        shape.fill(.ultraThinMaterial)
-                        shape.fill(surface.fill)
+                        fillShape(.ultraThinMaterial)
+                        fillShape(surface.fill)
                         if let tint {
-                            shape.fill(tint.opacity(0.16))
+                            fillShape(tint.opacity(0.16))
                         }
                     }
                 }
@@ -317,26 +349,37 @@ struct ClassicGlass<S: InsettableShape>: ViewModifier {
     let clear: Bool
     var translucentOnly = false
 
+    @ViewBuilder
+    private func fillShape<Style: ShapeStyle>(_ style: Style) -> some View {
+        if shape is Capsule {
+            GeometryReader { geo in
+                let r = min(geo.size.width, geo.size.height) / 2
+                RoundedRectangle(cornerRadius: r, style: .circular).fill(style)
+            }
+        } else {
+            shape.fill(style)
+        }
+    }
     func body(content: Content) -> some View {
         if translucentOnly {
             content
-                .background { shape.fill(reduceTransparency ? Color(nsColor: .controlBackgroundColor) : .white.opacity(0.14)); if let tint { shape.fill(tint) } }
+                .background { fillShape(reduceTransparency ? Color(nsColor: .controlBackgroundColor) : .white.opacity(0.14)); if let tint { fillShape(tint) } }
                 .specularRim(shape)
         } else {
             content
                 .background {
                     if clear {
-                        shape.fill(reduceTransparency ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor)) : AnyShapeStyle(.thinMaterial))
+                        fillShape(reduceTransparency ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor)) : AnyShapeStyle(.thinMaterial))
                     } else {
                         ZStack {
-                            shape.fill(reduceTransparency ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor)) : AnyShapeStyle(.ultraThinMaterial))
-                            shape.fill(
+                            fillShape(reduceTransparency ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor)) : AnyShapeStyle(.ultraThinMaterial))
+                            fillShape(
                                 colorScheme == .dark
                                     ? Color.white.opacity(0.06)
                                     : Color.white.opacity(0.45)
                             )
                             if let tint {
-                                shape.fill(tint)
+                                fillShape(tint)
                             }
                         }
                     }
@@ -347,8 +390,13 @@ struct ClassicGlass<S: InsettableShape>: ViewModifier {
 }
 
 extension View {
-    public func glassTile(isActive: Bool, cornerRadius: CGFloat, tint: Color? = nil) -> some View {
-        glassShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous), isActive: isActive, tint: tint)
+    @ViewBuilder
+    public func glassTile(isActive: Bool, cornerRadius: CGFloat, isCapsule: Bool = false, tint: Color? = nil) -> some View {
+        if isCapsule {
+            glassShape(Capsule(style: .circular), isActive: isActive, tint: tint)
+        } else {
+            glassShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous), isActive: isActive, tint: tint)
+        }
     }
 
     public func glassShape<S: InsettableShape>(_ shape: S, isActive: Bool, tint: Color? = nil) -> some View {
@@ -367,6 +415,7 @@ extension View {
 }
 
 public struct AdaptiveGlassContainer<Content: View>: View {
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
     public var spacing: CGFloat
     @ViewBuilder public var content: () -> Content
 
@@ -377,7 +426,7 @@ public struct AdaptiveGlassContainer<Content: View>: View {
 
     @ViewBuilder
     public var body: some View {
-        if #available(macOS 26.0, *) {
+        if #available(macOS 26.0, *), !reduceTransparency {
             // Adjacent glass shapes merge their edges only inside a container; without it every chip
             // draws its own rim and a row of buttons reads as a pile of separate panes.
             GlassEffectContainer(spacing: spacing) { content() }
@@ -471,6 +520,7 @@ extension View {
 public struct LiquidGlassSlider: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
 
     @Binding public var value: Double
     public let range: ClosedRange<Double>
@@ -587,10 +637,24 @@ public struct LiquidGlassSlider: View {
                     }
                     .clipShape(Capsule(style: .continuous))
 
-                Color.clear
+                RoundedRectangle(cornerRadius: thumbHeight / 2, style: .circular)
+                    .fill(
+                        reduceTransparency
+                            ? AnyShapeStyle(Color.white.opacity(colorScheme == .dark ? 0.90 : 0.96))
+                            : AnyShapeStyle(
+                                LinearGradient(
+                                    colors: [
+                                        Color.white.opacity(isDragging ? 0.36 : (colorScheme == .dark ? 0.88 : 0.92)),
+                                        Color.white.opacity(isDragging ? 0.16 : (colorScheme == .dark ? 0.58 : 0.68))
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                    )
                     .frame(width: thumbWidth, height: thumbHeight)
-                    .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
-                    .shadow(color: .black.opacity(isDragging ? 0.24 : 0.14), radius: isDragging ? 5 : 2.5, y: isDragging ? 2 : 1)
+                    .specularRim(Capsule(style: .circular), strength: 1.4)
+                    .shadow(color: .black.opacity(isDragging ? 0.26 : 0.18), radius: isDragging ? 5 : 2.5, y: isDragging ? 2 : 1)
                     .position(x: thumbCenterX, y: geo.size.height / 2)
 
                 HStack {
