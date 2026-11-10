@@ -5,7 +5,6 @@ import MijiaCore
 struct ActivityStackView<Content: View>: View {
     let activities: [PanelActivity]
     @Binding var isExpanded: Bool
-    let expandedViewportHeight: CGFloat
     let dismiss: (PanelActivity) -> Void
     let clear: () -> Void
     let label: (PanelActivity) -> String
@@ -25,26 +24,18 @@ struct ActivityStackView<Content: View>: View {
             VStack(alignment: .leading, spacing: 8) {
                 if activities.count > 1 { header }
                 if isExpanded {
-                    ScrollView(.vertical, showsIndicators: false) {
-                        VStack(spacing: 8) {
-                            ForEach(activities) { activity in
-                                card(activity)
-                                    .shadow(color: .black.opacity(activity.id == first.id ? 0.18 : 0), radius: 10, x: 0, y: 4)
-                                    .accessibilityActions {
-                                        if activity.isDismissible {
-                                            Button(L10n.tr("清除", "Dismiss")) { dismiss(activity) }
-                                        }
+                    // The column is the one scroll view; an expanded stack simply grows inside it.
+                    VStack(spacing: 8) {
+                        ForEach(activities) { activity in
+                            card(activity)
+                                .shadow(color: .black.opacity(activity.id == first.id ? 0.18 : 0), radius: 10, x: 0, y: 4)
+                                .accessibilityActions {
+                                    if activity.isDismissible {
+                                        Button(L10n.tr("清除", "Dismiss")) { dismiss(activity) }
                                     }
-                            }
-                            Button(L10n.tr("收起", "Collapse")) {
-                                withAnimation(animation) { isExpanded = false }
-                            }
-                            .buttonStyle(.plain)
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                            .padding(.vertical, 4)
+                                }
                         }
                     }
-                    .frame(height: expandedViewportHeight)
                     .accessibilityElement(children: .contain)
                 } else {
                     collapsed(first)
@@ -122,7 +113,8 @@ struct ActivityStackView<Content: View>: View {
                     if activities.count > 1 { withAnimation(animation) { isExpanded = true } }
                 }
                 .simultaneousGesture(swipe(first))
-        .padding(.bottom, activities.count > 1 && !reduceMotion ? StackedCardGeometry.peekReserve : 0)
+        .padding(.bottom, activities.count > 1 && !reduceMotion
+            ? StackedCardGeometry.offsetY(depth: activities.count - 1) : 0)
         .onPreferenceChange(ActivityHeadSizeKey.self) { size in
             if size.width > 0 { cardWidth = size.width }
         }

@@ -3,15 +3,18 @@ import SwiftUI
 @testable import MenuBarMijiaApp
 
 struct StackedCardGeometryTests {
-    @Test func visibleDepthsAndClamping() {
-        let front = StackedCardGeometry.transform(depth: 0)
-        #expect(front.scale == 1 && front.offsetY == 0 && front.opacity == 1)
-        let middle = StackedCardGeometry.transform(depth: 1)
-        #expect(middle.scale == 0.94 && middle.offsetY == 8 && middle.opacity == 0.78)
-        let back = StackedCardGeometry.transform(depth: 2)
-        #expect(back.scale == 0.88 && back.offsetY == 15 && back.opacity == 0.55)
-        let overflow = StackedCardGeometry.transform(depth: 8)
-        #expect(overflow.scale == back.scale && overflow.offsetY == back.offsetY && overflow.opacity == back.opacity)
+    /// Notification Center's peek: 7 pt per layer, 14 then 25 pt in from each side, deeper clamps.
+    @Test func peekLayersKeepFixedSideInsetsAndClamp() {
+        let width: CGFloat = 350
+        #expect(StackedCardGeometry.offsetY(depth: 0) == 0)
+        #expect(StackedCardGeometry.scale(depth: 0, width: width) == 1)
+        #expect(StackedCardGeometry.offsetY(depth: 1) == 7)
+        #expect(abs(StackedCardGeometry.scale(depth: 1, width: width) * width - (width - 28)) < 0.001)
+        #expect(StackedCardGeometry.offsetY(depth: 2) == 14)
+        #expect(abs(StackedCardGeometry.scale(depth: 2, width: width) * width - (width - 50)) < 0.001)
+        #expect(StackedCardGeometry.offsetY(depth: 8) == StackedCardGeometry.offsetY(depth: 2))
+        #expect(StackedCardGeometry.scale(depth: 1, width: 0) == 1)
+        #expect(StackedCardGeometry.peekReserve == 14)
     }
 
     @Test func unmeasuredCardHasFiniteRubberBandOffset() {

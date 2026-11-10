@@ -6,7 +6,6 @@ extension ControlCenterPanel {
         ActivityStackView(
             activities: store.panelActivities,
             isExpanded: $activitiesExpanded,
-            expandedViewportHeight: activityViewportHeight,
             dismiss: store.dismissActivity,
             clear: store.clearDismissibleActivities,
             label: activityLabel

@@ -948,7 +948,6 @@ private struct AppearanceSettingsTab: View {
     let store: HomeStore
     @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
     @AppStorage(PanelPrefs.climatePanelKey) private var climatePanelModule: Bool = true
-    @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
 
     var body: some View {
         let _ = store.effectiveLanguage
@@ -972,21 +971,6 @@ private struct AppearanceSettingsTab: View {
                 }
 
                 SettingsSection(title: L10n.tr("面板布局", "Panel Layout")) {
-                    HStack {
-                        Text(L10n.tr("面板高度", "Panel Height"))
-                            .font(.system(size: DesignTokens.TypeSize.body))
-                        Spacer()
-                        GlassSegmentedControl(
-                            selection: $panelHeightRaw,
-                            segments: PanelHeight.allCases.map {
-                                GlassSegment(value: $0.rawValue, title: $0.title)
-                            }
-                        )
-                        .frame(width: 210)
-                    }
-
-                    Divider().overlay(Color.primary.opacity(0.06))
-
                     SettingsToggleRow(
                         title: L10n.tr("空调使用整行面板模块", "Full-Width Climate Panel"),
                         isOn: $climatePanelModule

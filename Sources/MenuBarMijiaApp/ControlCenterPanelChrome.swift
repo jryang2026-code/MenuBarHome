@@ -76,28 +76,29 @@ extension ControlCenterPanel {
         }
     }
 
-    // MARK: - 1. Hero Header & Live Environment Chips
+    // MARK: - 1. Notification Center–style text header
 
-    var topHeroHeader: some View {
-        HStack(spacing: 6) {
-            HStack(spacing: 5) {
-                BreathingDot(color: statusDotColor, animate: statusDotAnimates)
-                    .id(statusDotColor)
-                homeTitle
-                    .lineLimit(1)
-                    .layoutPriority(1)
-                Text(" · ")
-                    .foregroundStyle(.secondary)
-                statusSubtitle
-                if store.homeBackend == .demo {
-                    Text(L10n.tr("演示", "Demo"))
-                        .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
-                        .foregroundStyle(.secondary)
+    /// A large text title like Notification Center's, the live climate as plain text under it, and
+    /// round glass buttons on the right. No capsule around the words: type carries the hierarchy.
+    var panelHeader: some View {
+        HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    homeTitle
+                        .lineLimit(1)
+                    if store.homeBackend == .demo {
+                        Text(L10n.tr("演示", "Demo"))
+                            .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                HStack(spacing: 5) {
+                    BreathingDot(color: statusDotColor, animate: statusDotAnimates)
+                        .id(statusDotColor)
+                    statusSubtitle
                 }
             }
-            .padding(.horizontal, 12)
-            .frame(height: 30)
-            .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
+            .layoutPriority(1)
 
             Spacer(minLength: 0)
 
@@ -125,18 +126,45 @@ extension ControlCenterPanel {
                                 }
                             )
                         }
+                        searchButton
                         panelMoreMenu
                     }
                 }
             }
             .fixedSize(horizontal: true, vertical: false)
         }
-        .frame(height: 30)
+        .frame(minHeight: 44)
+    }
+
+    private var searchButton: some View {
+        let open = showsOmnibar
+        return Button {
+            toggleSearch()
+        } label: {
+            Image(systemName: open ? "xmark" : "magnifyingglass")
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 30, height: 30)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .adaptiveGlass(in: Circle(), interactive: true)
+        .accessibilityLabel(Text(open ? L10n.tr("关闭搜索", "Close search") : L10n.tr("搜索设备", "Search devices")))
+        .panelHelp(L10n.tr("搜索设备或说一句话（⌘F，或直接打字）", "Search devices or give a command (⌘F, or just type)"))
     }
 
     private var panelMoreMenu: some View {
         Menu {
             statusFooterControl
+            Divider()
+            Toggle(L10n.tr("常用设备用双列胶囊", "Two-column favorites"), isOn: Binding(
+                get: { store.isCompactGridMode },
+                set: { value in withAnimation(AppleMotion.reveal) { store.isCompactGridMode = value } }
+            ))
+            Toggle(L10n.tr("只显示在线设备", "Online devices only"), isOn: Binding(
+                get: { store.hideOfflineDevices },
+                set: { value in withAnimation(AppleMotion.reveal) { store.hideOfflineDevices = value } }
+            ))
             Divider()
             if UndoAvailabilityTracker.shared.isAvailable {
                 Button(L10n.tr("撤销上一步", "Undo last action")) {
@@ -214,9 +242,9 @@ extension ControlCenterPanel {
                     }
                 }
             } label: {
-                HStack(spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text(selectedHomeTitle)
-                        .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                        .font(.system(size: DesignTokens.TypeSize.headline, weight: .bold))
                     Image(systemName: "chevron.down")
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .bold))
                         .foregroundStyle(.secondary)
@@ -225,10 +253,11 @@ extension ControlCenterPanel {
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
+            .fixedSize()
             .panelHelp(L10n.tr("切换家庭", "Switch home"))
         } else {
             Text(store.homeName)
-                .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                .font(.system(size: DesignTokens.TypeSize.headline, weight: .bold))
         }
     }
 
@@ -261,14 +290,7 @@ extension ControlCenterPanel {
             if !store.filteredDevices.contains(where: { $0.id == env.id }) {
                 store.selectRoom(nil)
             }
-            for section in pageSections where section.devices.contains(where: { $0.id == env.id }) {
-                let key = collapseKey(section)
-                var set = collapsedGroups
-                if set.contains(key) {
-                    set.remove(key)
-                    collapsedRaw = GroupPrefs.encode(set)
-                }
-            }
+            openStack(containing: env.id)
             store.toggleExpanded(env.id)
             if store.expandedDeviceId == env.id {
                 pendingScrollToDeviceId = env.id
@@ -401,401 +423,6 @@ extension ControlCenterPanel {
         }
     }
 
-    // MARK: - 2. Room Filter Strip & Grid Toggle
-
-    /// Only real rooms live in the scrolling part; `全部` is pinned by `roomFilterBar` (§5.1).
-    var roomPillsRow: some View {
-        HStack(spacing: 2) {
-            Color.clear.frame(width: 0, height: 1).id("roomsStart")
-            ForEach(displayRooms) { room in
-                roomPill(title: roomDisplayTitle(room), roomId: room.id)
-                    .id(room.id)
-            }
-        }
-        .animation(AppleMotion.snappySpring, value: displayRooms.map(\.id))
-    }
-
-    func scrollRoomStrip(using proxy: ScrollViewProxy, roomId: String?, animated: Bool) {
-        let target = roomId ?? "roomsStart"
-        let anchor: UnitPoint = roomId == nil ? .leading : .center
-        if animated && !reduceMotion {
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
-                proxy.scrollTo(target, anchor: anchor)
-            }
-        } else {
-            proxy.scrollTo(target, anchor: anchor)
-        }
-    }
-
-    var listFilterBars: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            roomFilterBar
-            if showsKindRow { kindFilterBar }
-        }
-    }
-
-    var showsKindRow: Bool {
-        if case .kind = store.listCut { return true }
-        return store.kindChips.count >= 2
-    }
-
-    func scrollKindStrip(using proxy: ScrollViewProxy, tag: DeviceKindTag) {
-        if reduceMotion {
-            proxy.scrollTo(tag, anchor: .center)
-        } else {
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
-                proxy.scrollTo(tag, anchor: .center)
-            }
-        }
-    }
-
-    var kindFilterBar: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 2) {
-                    ForEach(displayKinds, id: \.self) { tag in
-                        kindPill(tag)
-                            .id(tag)
-                    }
-                }
-                .padding(.vertical, 3)
-                .padding(.horizontal, 4)
-                .horizontalWheelScroll()
-            }
-            .defaultScrollAnchor(.leading)
-            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-            .onChange(of: store.listCut) { _, cut in
-                guard case .kind(let tag) = cut else { return }
-                scrollKindStrip(using: proxy, tag: tag)
-            }
-            .onChange(of: kindScrollTrigger) { _, _ in
-                guard case .kind(let tag) = store.listCut else { return }
-                scrollKindStrip(using: proxy, tag: tag)
-            }
-            .mask(
-                LinearGradient(
-                    stops: [
-                        .init(color: .black.opacity(0.0), location: 0.0),
-                        .init(color: .black, location: 0.035),
-                        .init(color: .black, location: 0.86),
-                        .init(color: .black.opacity(0.0), location: 1.0)
-                    ],
-                    startPoint: .leading, endPoint: .trailing
-                )
-            )
-        }
-        .frame(height: 30)
-        .adaptiveGlass(in: Capsule(style: .continuous))
-    }
-
-    @ViewBuilder
-    func kindPill(_ tag: DeviceKindTag) -> some View {
-        if let hint = tag.chipHint {
-            kindPillButton(tag).panelHelp(hint)
-        } else {
-            kindPillButton(tag)
-        }
-    }
-
-    @ViewBuilder
-    func kindPillButton(_ tag: DeviceKindTag) -> some View {
-        let isSelected = store.listCut == .kind(tag)
-        // While the order list is open the chip row is a live preview, like the room strip.
-        if isRoomOrdering {
-            kindPillLabel(tag, isSelected: isSelected)
-                .accessibilityLabel(Text(tag.chipTitle))
-                .accessibilityHint(Text(L10n.tr("排序预览，不可点选", "Order preview; not selectable")))
-        } else {
-            Button {
-                withAnimation(AppleMotion.snappySpring) {
-                    if store.listCut == .kind(tag) {
-                        kindScrollTrigger &+= 1
-                    } else {
-                        store.selectKind(tag)
-                    }
-                }
-            } label: {
-                kindPillLabel(tag, isSelected: isSelected)
-            }
-            .buttonStyle(.plain)
-            .accessibilityAddTraits(isSelected ? .isSelected : [])
-            .contextMenu {
-                Button {
-                    moveKind(tag, by: -1)
-                } label: {
-                    Label(L10n.tr("左移", "Move Left"), systemImage: "arrow.left")
-                }
-                .disabled(displayKinds.first == tag)
-                Button {
-                    moveKind(tag, by: 1)
-                } label: {
-                    Label(L10n.tr("右移", "Move Right"), systemImage: "arrow.right")
-                }
-                .disabled(displayKinds.last == tag)
-                Divider()
-                Button {
-                    beginRoomOrder(target: .kinds)
-                } label: {
-                    Label(L10n.tr("排序类型…", "Reorder Kinds…"), systemImage: "arrow.up.arrow.down")
-                }
-            }
-            .accessibilityActions {
-                Button(L10n.tr("左移", "Move Left")) { moveKind(tag, by: -1) }
-                    .disabled(displayKinds.first == tag)
-                Button(L10n.tr("右移", "Move Right")) { moveKind(tag, by: 1) }
-                    .disabled(displayKinds.last == tag)
-                Button(L10n.tr("排序类型", "Reorder Kinds…")) { beginRoomOrder(target: .kinds) }
-            }
-        }
-    }
-
-    func kindPillLabel(_ tag: DeviceKindTag, isSelected: Bool) -> some View {
-        Text(tag.chipTitle)
-            .font(.system(size: DesignTokens.TypeSize.caption, weight: isSelected ? .semibold : .medium))
-            .foregroundStyle(isSelected ? Color.primary : Color.secondary)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 4.5)
-            .background {
-                if isSelected {
-                    Capsule(style: .continuous)
-                        .fill(Color.primary.opacity(effectiveScheme == .dark ? 0.16 : 0.10))
-                }
-            }
-            .contentShape(Capsule(style: .continuous))
-            .animation(AppleMotion.control, value: isSelected)
-    }
-
-    /// `[全部] [rooms…scroll…]` inside one capsule track, with the sort and view controls beside it.
-    /// 全部 sits outside the scroll view so the most-used filter can never be scrolled out of view
-    /// while a room is selected (§2.2 audit item 5).
-    var roomFilterBar: some View {
-        HStack(spacing: 6) {
-            ScrollViewReader { proxy in
-                HStack(spacing: 0) {
-                    roomPill(title: L10n.tr("全部", "All"), roomId: nil)
-                        .padding(.leading, 3)
-
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        roomPillsRow
-                            .padding(.trailing, 4)
-                            .horizontalWheelScroll()
-                    }
-                    .defaultScrollAnchor(.leading)
-                    .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-                    // The menu-bar window restores a stale horizontal offset on reopen; snap back to
-                    // the start (or the selected room) so the first pill is not half scrolled out.
-                    .onChange(of: isPresented) { _, shown in
-                        guard shown else { return }
-                        scrollRoomStrip(using: proxy, roomId: store.selectedRoomId, animated: false)
-                    }
-                    .onAppear {
-                        scrollRoomStrip(using: proxy, roomId: store.selectedRoomId, animated: false)
-                    }
-                    .onChange(of: store.selectedRoomId) { _, id in
-                        scrollRoomStrip(using: proxy, roomId: id, animated: true)
-                    }
-                    .onChange(of: roomScrollTrigger) { _, _ in
-                        scrollRoomStrip(using: proxy, roomId: store.selectedRoomId, animated: true)
-                    }
-                    // Fade only the trailing edge: 全部 is pinned right beside this edge, so a fade
-                    // there would read as a seam between the fixed pill and the scrolling rooms.
-                    .mask(
-                        LinearGradient(
-                            stops: [
-                                .init(color: .black, location: 0.0),
-                                .init(color: .black, location: 0.88),
-                                .init(color: .black.opacity(0.0), location: 1.0)
-                            ],
-                            startPoint: .leading, endPoint: .trailing
-                        )
-                    )
-                }
-                .frame(height: 30)
-                .adaptiveGlass(in: Capsule(style: .continuous))
-            }
-
-            sortRoomsButton
-            gridToggleButtons
-        }
-    }
-
-    /// The one discoverable entry to reordering (#146): a permanent 26×24 pt button instead of the
-    /// 450 ms long press, which no pointer-less path could reach. Hidden with 0 or 1 rooms, where
-    /// there is nothing to order.
-    @ViewBuilder
-    var sortRoomsButton: some View {
-        // Device-layout editing has its own Done; entering a second mode from inside it is not part
-        // of the state machine (§5.2), so the entry is closed there.
-        if canReorderRooms || canReorderKinds, !isEditingLayout {
-            Button {
-                if isRoomOrdering {
-                    finishRoomOrder(.commit)
-                } else {
-                    beginRoomOrder()
-                }
-            } label: {
-                Image(systemName: "arrow.up.arrow.down")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(isRoomOrdering ? Color.accentColor : Color.primary.opacity(0.82))
-                    .frame(width: 30, height: 30)
-                    .adaptiveGlass(
-                        in: Circle(),
-                        tint: isRoomOrdering ? Color.accentColor.opacity(0.26) : nil,
-                        interactive: true
-                    )
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text(L10n.tr("排序", "Reorder")))
-            .accessibilityAddTraits(isRoomOrdering ? .isSelected : [])
-            .accessibilityHint(Text(L10n.tr("调整房间和设备类型的显示顺序", "Set the order of rooms and device kinds")))
-            .panelHelp(isRoomOrdering
-                ? L10n.tr("完成排序并返回设备", "Finish reordering and go back")
-                : L10n.tr("排序：调整房间和设备类型的显示顺序", "Reorder: set the order of rooms and device kinds"))
-        }
-    }
-
-
-    var gridToggleButtons: some View {
-        HStack(spacing: 5) {
-            toggleChip(
-                isOn: store.isCompactGridMode,
-                onSymbol: "rectangle.grid.2x2.fill",
-                offSymbol: "rectangle.grid.1x2.fill",
-                onLabel: L10n.tr("紧凑双列视图", "Compact two-column view"),
-                help: store.isCompactGridMode
-                    ? L10n.tr("当前：双列紧凑磁贴（点击切换单列）", "2-column compact tiles (click for single column)")
-                    : L10n.tr("点击切换双列紧凑磁贴视图", "Switch to 2-column compact tiles")
-            ) {
-                store.isCompactGridMode.toggle()
-            }
-
-            toggleChip(
-                isOn: store.hideOfflineDevices,
-                onSymbol: "wifi",
-                offSymbol: "wifi.slash",
-                onLabel: L10n.tr("只显示在线设备", "Show online devices only"),
-                help: store.hideOfflineDevices
-                    ? L10n.tr("当前只显示在线设备（点击显示全部）", "Showing online devices only (click to show all)")
-                    : L10n.tr("点击隐藏未通电/离线设备", "Hide offline/unplugged devices")
-            ) {
-                store.hideOfflineDevices.toggle()
-            }
-        }
-    }
-
-    func toggleChip(
-        isOn: Bool,
-        onSymbol: String,
-        offSymbol: String,
-        onLabel: String,
-        help: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button {
-            withAnimation(AppleMotion.snappySpring) { action() }
-        } label: {
-            Image(systemName: isOn ? onSymbol : offSymbol)
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .foregroundStyle(isOn ? Color.accentColor : Color.primary.opacity(0.78))
-                .frame(width: 30, height: 30)
-                .adaptiveGlass(
-                    in: Circle(),
-                    tint: isOn ? Color.accentColor.opacity(0.24) : nil,
-                    interactive: true
-                )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(Text(onLabel))
-        .accessibilityAddTraits(isOn ? AccessibilityTraits.isSelected : [])
-        .panelHelp(help)
-    }
-
-    func selectRoom(_ roomId: String?, animation: Animation) {
-        withAnimation(animation) {
-            if !store.selectRoom(roomId) { roomScrollTrigger &+= 1 }
-        }
-    }
-
-    @ViewBuilder
-    func roomPill(title: String, roomId: String?) -> some View {
-        let isSelected = roomId == nil
-            ? store.listCut == .all
-            : store.selectedRoomId == roomId
-        // While the order list is open the strip is a live preview: pills neither select nor drag.
-        let isPreview = isRoomOrdering
-        let content = Text(title)
-            .font(.system(size: DesignTokens.TypeSize.caption, weight: isSelected ? .semibold : .medium))
-            .foregroundStyle(isSelected ? Color.primary : Color.secondary)
-            .lineLimit(1)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 4.5)
-            .background {
-                if isSelected {
-                    Capsule(style: .continuous)
-                        .fill(Color.primary.opacity(effectiveScheme == .dark ? 0.16 : 0.10))
-                }
-            }
-            .contentShape(Capsule(style: .continuous))
-        Group {
-            // 只有预览态下胶囊不可点；浏览态连「全部」也必须能点，否则选中房间后无法点回全屋视图。
-            if isPreview {
-                content
-            } else {
-                Button {
-                    selectRoom(roomId, animation: AppleMotion.snappySpring)
-                } label: {
-                    content
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .animation(AppleMotion.snappySpring, value: isSelected)
-        .contextMenu {
-            if let roomId, !isPreview {
-                Button {
-                    layoutUI.renamingRoomId = roomId
-                } label: {
-                    Label(L10n.tr("重命名房间…", "Rename Room…"), systemImage: "pencil")
-                }
-                Button {
-                    moveRoom(roomId, by: -1)
-                } label: {
-                    Label(L10n.tr("左移", "Move Left"), systemImage: "arrow.left")
-                }
-                .disabled(displayRooms.first?.id == roomId)
-                Button {
-                    moveRoom(roomId, by: 1)
-                } label: {
-                    Label(L10n.tr("右移", "Move Right"), systemImage: "arrow.right")
-                }
-                .disabled(displayRooms.last?.id == roomId)
-                Divider()
-                // One-step nudge stays on the strip; whole-list ordering opens the list view.
-                Button {
-                    beginRoomOrder()
-                } label: {
-                    Label(L10n.tr("排序房间…", "Reorder Rooms…"), systemImage: "arrow.up.arrow.down")
-                }
-            }
-        }
-        .accessibilityLabel(Text(title))
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .accessibilityHint(Text(isPreview
-            ? L10n.tr("排序预览，不可点选", "Order preview; not selectable")
-            : L10n.tr("切换到该房间", "Show this room")))
-        // Pointer-free single-step reordering, so VoiceOver users never need the list view (#146).
-        .accessibilityActions {
-            if let roomId, !isPreview {
-                Button(L10n.tr("左移", "Move Left")) { moveRoom(roomId, by: -1) }
-                    .disabled(displayRooms.first?.id == roomId)
-                Button(L10n.tr("右移", "Move Right")) { moveRoom(roomId, by: 1) }
-                    .disabled(displayRooms.last?.id == roomId)
-                Button(L10n.tr("移到最前", "Move to Front")) { moveRoom(roomId, toFront: true) }
-                Button(L10n.tr("移到最后", "Move to End")) { moveRoom(roomId, toFront: false) }
-                Button(L10n.tr("排序房间", "Reorder Rooms…")) { beginRoomOrder() }
-            }
-        }
-    }
 
     var disconnectedEmptyBackend: HomeBackend {
         if store.hasMiSource && !store.hasHASource { return .xiaomiCloud }

@@ -47,7 +47,7 @@ struct TransientStackView: View {
     private var cardTransition: AnyTransition { reduceMotion ? .opacity : AppleMotion.drawerTransition }
 
     /// Reduced motion never offsets or scales; only the opacity changes.
-    private var peekOffset: CGFloat { reduceMotion ? 0 : StackedCardGeometry.transform(depth: 1).offsetY }
+    private var peekOffset: CGFloat { reduceMotion ? 0 : StackedCardGeometry.offsetY(depth: 1) }
 
     var body: some View {
         content

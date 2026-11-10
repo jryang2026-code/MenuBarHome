@@ -3,6 +3,8 @@ import SwiftUI
 /// Shared macOS presentation values. Focus rings and data marks retain their own functional widths.
 enum DesignTokens {
     enum TypeSize {
+        /// The column title, Notification Center's 通知中心 scale.
+        static let headline: CGFloat = 20
         static let title: CGFloat = 15
         static let body: CGFloat = 13
         static let caption: CGFloat = 12

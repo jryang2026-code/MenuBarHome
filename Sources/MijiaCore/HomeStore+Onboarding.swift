@@ -211,14 +211,3 @@ public enum PanelNotice {
         return kinds
     }
 }
-
-/// The kind-chip row stays hidden until the user asks for it, or a kind filter is already on.
-public enum KindChipRowPolicy {
-    public static func isShown(listCut: DeviceListCut, revealed: Bool) -> Bool {
-        switch listCut {
-        case .kind: return true
-        case .all: return revealed
-        case .room: return false
-        }
-    }
-}

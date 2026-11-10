@@ -472,12 +472,4 @@ struct PanelNoticeTests {
             return false
         })
     }
-
-    @Test("Kind chips stay hidden until 全部 is opened again or a kind filter is on")
-    func kindChipsStayHiddenByDefault() {
-        #expect(!KindChipRowPolicy.isShown(listCut: .all, revealed: false))
-        #expect(KindChipRowPolicy.isShown(listCut: .all, revealed: true))
-        #expect(!KindChipRowPolicy.isShown(listCut: .room("living"), revealed: true))
-        #expect(KindChipRowPolicy.isShown(listCut: .kind(.light), revealed: false))
-    }
 }

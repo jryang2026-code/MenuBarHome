@@ -199,92 +199,13 @@ extension ControlCenterPanel {
         store.scheduleRaycastSnapshotExport()
     }
 
-    // MARK: - Page Sections (favorites, custom groups, ungrouped)
-
-    struct PageSection: Identifiable {
-        let id: String
-        let title: String?
-        let devices: [SmartDevice]
-        /// Custom group id when the section is a user group (enables rename / reorder / delete).
-        let groupId: String?
-    }
+    // MARK: - Groups (favorites, custom groups)
 
     var groups: [DeviceGroup] { GroupPrefs.groups(groupsRaw) }
     /// Saved card order, sizes and group membership for this store's defaults.
     var panelLayout: PanelLayoutStore { PanelLayoutStore.shared(for: store.userDefaults) }
 
     var groupMap: [String: String] { panelLayout.groupMap }
-    var collapsedGroups: Set<String> { GroupPrefs.set(collapsedRaw) }
-
-    /// Collapse state is per page: folding "更多设备" in All must not hide "其他" in a room.
-    func collapseKey(_ section: PageSection) -> String { "\(layoutScope)|\(section.id)" }
-
-    /// "All": 常用 first, then each custom group, then the rest. A room: custom groups then 其他;
-    /// without any group in the room it is one untitled section, as before.
-    var pageSections: [PageSection] {
-        let known = Set(groups.map(\.id))
-        let map = groupMap.filter { known.contains($0.value) }
-        let order = currentOrder
-        var sections: [PageSection] = []
-        let pool: [SmartDevice]
-        if store.selectedRoomId == nil {
-            if !store.favoriteDevices.isEmpty {
-                let orderedFavs = DeviceLayoutPrefs.apply(order: order, to: store.favoriteDevices)
-                sections.append(PageSection(id: "fav", title: L10n.tr("常用控制", "Favorites"), devices: orderedFavs, groupId: nil))
-            }
-            pool = store.nonFavoriteDevices
-        } else {
-            pool = store.visibleDevices
-        }
-        for group in groups {
-            let members = DeviceLayoutPrefs.apply(order: order, to: pool.filter { map[$0.id] == group.id })
-            if !members.isEmpty {
-                sections.append(PageSection(id: group.id, title: group.name, devices: members, groupId: group.id))
-            }
-        }
-        let rest = DeviceLayoutPrefs.apply(order: order, to: pool.filter { map[$0.id] == nil })
-        if !rest.isEmpty {
-            // Several Mi Cloud accounts in one panel: devices stay grouped under the account that
-            // owns them. Other backends have no account to group by, even when Mi accounts remain
-            // signed in.
-            let accountIds = Set(store.miAccounts.map(\.id))
-            let hasAccountOwnedDevices = rest.contains { device in
-                guard let accountId = device.accountId else { return false }
-                return accountIds.contains(accountId)
-            }
-            if store.miAccounts.count > 1,
-               store.selectedRoomId == nil,
-               store.homeBackend != .demo,
-               store.homeBackend == .xiaomiCloud || hasAccountOwnedDevices {
-                for account in store.miAccounts {
-                    let members = rest.filter { $0.accountId == account.id }
-                    if !members.isEmpty {
-                        sections.append(PageSection(
-                            id: "account:\(account.id)",
-                            title: account.displayName,
-                            devices: members,
-                            groupId: nil
-                        ))
-                    }
-                }
-                let unowned = rest.filter { device in
-                    guard let accountId = device.accountId else { return true }
-                    return !accountIds.contains(accountId)
-                }
-                if !unowned.isEmpty {
-                    sections.append(PageSection(id: "rest", title: L10n.tr("其他", "Other"), devices: unowned, groupId: nil))
-                }
-            } else {
-                let titled = !sections.isEmpty
-                let title: String? = store.selectedRoomId == nil
-                    ? (sections.isEmpty ? L10n.tr("全屋设备", "All Devices") : L10n.tr("更多设备", "More Devices"))
-                    : (titled ? L10n.tr("其他", "Other") : nil)
-                sections.append(PageSection(id: "rest", title: title, devices: rest, groupId: nil))
-            }
-        }
-        return sections
-    }
-
     /// Section key used to detect a drag into a different section.
     func sectionKey(of id: String) -> String {
         if store.selectedRoomId == nil, store.favoriteDeviceIds.contains(id) { return "fav" }
@@ -306,55 +227,6 @@ extension ControlCenterPanel {
             }
         }
     }
-
-    func groupHeader(_ section: PageSection) -> some View {
-        let collapsed = collapsedGroups.contains(collapseKey(section))
-        let accent = Color.accentColor
-        return Button {
-            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
-                var set = collapsedGroups
-                if collapsed { set.remove(collapseKey(section)) } else { set.insert(collapseKey(section)) }
-                collapsedRaw = GroupPrefs.encode(set)
-            }
-        } label: {
-            HStack(spacing: 6) {
-                HStack(spacing: 5) {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: DesignTokens.TypeSize.micro, weight: .bold))
-                        .rotationEffect(.degrees(collapsed ? -90 : 0))
-                        .foregroundStyle(hoveredHeader == section.id ? accent : Color.primary.opacity(0.82))
-                    Text(section.title ?? "")
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                        .foregroundStyle(hoveredHeader == section.id ? accent : Color.primary.opacity(0.88))
-                    Text("\(section.devices.count)")
-                        .font(.system(size: DesignTokens.TypeSize.micro, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .contentTransition(.numericText(value: Double(section.devices.count)))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 3.5)
-                .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
-
-                Spacer(minLength: 0)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hoveredHeader = $0 ? section.id : (hoveredHeader == section.id ? nil : hoveredHeader) }
-        .animation(.easeOut(duration: 0.15), value: hoveredHeader)
-        .contextMenu {
-            if let gid = section.groupId {
-                Button { layoutUI.renamingGroupId = gid } label: { Label(L10n.tr("重命名", "Rename"), systemImage: "pencil") }
-                Button { moveGroup(gid, by: -1) } label: { Label(L10n.tr("上移分组", "Move Up"), systemImage: "arrow.up") }
-                Button { moveGroup(gid, by: 1) } label: { Label(L10n.tr("下移分组", "Move Down"), systemImage: "arrow.down") }
-                Divider()
-                Button(role: .destructive) { deleteGroup(gid) } label: { Label(L10n.tr("删除分组", "Delete Group"), systemImage: "trash") }
-            }
-        }
-        .padding(.bottom, -3)
-    }
-
     func moveGroup(_ id: String, by delta: Int) {
         var list = groups
         guard let i = list.firstIndex(where: { $0.id == id }) else { return }
@@ -745,14 +617,16 @@ extension ControlCenterPanel {
     }
 
     /// Cards for one collection. Search results pass `sortByUserOrder: false`, so rank wins over the
-    /// saved layout order.
+    /// saved layout order. `asRows` draws an opened stack: every device a full-width rounded card,
+    /// like the notifications of an expanded group, outside the favorites' resize/drag editing.
     @ViewBuilder
     func deviceCollectionView(
         devices: [SmartDevice],
         showRoomBadge: Bool,
         quickIndexMap: [String: Int],
         highlightId: String? = nil,
-        sortByUserOrder: Bool = true
+        sortByUserOrder: Bool = true,
+        asRows: Bool = false
     ) -> some View {
         let aliases = GroupPrefs.map(aliasesRaw)
         let hasUserOrder = !currentOrder.isEmpty
@@ -771,14 +645,14 @@ extension ControlCenterPanel {
             d.name = alias
             return d
         }
-        let spanMap = spans(for: ordered)
+        let spanMap = asRows ? Dictionary(uniqueKeysWithValues: ordered.map { ($0.id, 12) }) : spans(for: ordered)
         // Every card is its own child keyed by device id, so a reorder slides cards instead of rebuilding rows.
         // The glass container lets neighbouring liquid-glass modules merge their edges on macOS 26.
         AdaptiveGlassContainer(spacing: 8) {
             TileFlowLayout(spacing: 8) {
                 ForEach(Array(ordered.enumerated()), id: \.element.id) { index, dev in
                     let span = spanMap[dev.id] ?? 12
-                    let isHero = tileSize(dev) == .hero && store.expandedDeviceId != dev.id
+                    let isHero = !asRows && tileSize(dev) == .hero && store.expandedDeviceId != dev.id
                     DeviceCardView(
                         device: dev,
                         store: store,
@@ -788,7 +662,7 @@ extension ControlCenterPanel {
                     )
                     .frame(minHeight: isHero ? 124 : nil)
                     .frame(maxHeight: .infinity, alignment: .top)
-                    .modifier(editable(dev))
+                    .modifier(OptionalModifier(asRows ? nil : editable(dev)))
                     .overlay {
                         if highlightId == dev.id {
                             RoundedRectangle(
@@ -809,9 +683,10 @@ extension ControlCenterPanel {
                             let f = geo.frame(in: .named(TileSpace.name))
                             let g = geo.frame(in: .global)
                             Color.clear
+                                // Stack rows are not drop targets for the favorites' drag reorder.
                                 .preference(
                                     key: TileFramesKey.self,
-                                    value: [dev.id: CGRect(x: f.minX.rounded(), y: f.minY.rounded(), width: f.width.rounded(), height: f.height.rounded())]
+                                    value: asRows ? [:] : [dev.id: CGRect(x: f.minX.rounded(), y: f.minY.rounded(), width: f.width.rounded(), height: f.height.rounded())]
                                 )
                                 .preference(key: CardGlobalTopKey.self, value: [dev.id: g.minY])
                                 .onAppear { LayoutUIState.shared.cardGlobalFrames[dev.id] = g }

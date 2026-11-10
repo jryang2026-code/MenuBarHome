@@ -1012,8 +1012,8 @@ struct MenuBarPanelControllerTests {
         #expect(abs(panel.frame.width - MenuBarPanelController.panelWidth) < 1)
         #expect(panel.contentView is NSHostingView<ControlCenterPanel>)
 
-        let expectedHeight = MenuBarPanelController.preferredContentSize().height
-        #expect(abs(panel.frame.height - expectedHeight) < 1)
+        let visible = try #require(panel.screen ?? NSScreen.main).visibleFrame
+        #expect(panel.frame.height > visible.height - 30, "the column runs almost the whole visible height")
     }
 
     @Test("Hiding orders the window out, keeps the SwiftUI tree and posts the hide notification")
@@ -1130,35 +1130,20 @@ struct MenuBarPanelControllerTests {
         #expect(controller.isPanelWindow(statusWindow) == false, "the status item window is not the panel")
     }
 
-    @Test("Panel tracks the panel-height preference and stays 376 wide")
-    func panelSizingFollowsPreference() async throws {
+    @Test("The panel is a 376 pt column from under the menu bar to the bottom of the screen")
+    func panelIsFullHeightColumn() async throws {
         let (store, suite) = try await makeStore()
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let previous = UserDefaults.standard.string(forKey: PanelHeight.storageKey)
-        UserDefaults.standard.set(PanelHeight.compact.rawValue, forKey: PanelHeight.storageKey)
-        defer {
-            if let previous {
-                UserDefaults.standard.set(previous, forKey: PanelHeight.storageKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: PanelHeight.storageKey)
-            }
-        }
-        // The controller reads the preference through `UserDefaults.standard`, like the panel's
-        // `@AppStorage`, so the window starts at the compact height.
-
         let controller = makeController(store: store)
         defer { controller.uninstall() }
         controller.showPanel()
         let panel = try #require(controller.panelWindow)
 
-        let compact = PanelHeight.compact.points
-        let screenHeight = (panel.screen ?? NSScreen.main)?.visibleFrame.height ?? 900
-        // `preferredContentSize()` caps the preference to 24 pt below the visible frame.
-        #expect(abs(panel.frame.height - min(compact, screenHeight - 24)) < 1)
-
-        controller.updatePanelSize(width: MenuBarPanelController.panelWidth, height: 320)
-        #expect(abs(panel.frame.height - 320) < 1)
+        let visible = try #require(panel.screen ?? NSScreen.main).visibleFrame
         #expect(abs(panel.frame.width - MenuBarPanelController.panelWidth) < 1)
+        #expect(panel.frame.height > visible.height - 30, "the column runs almost the whole visible height")
+        #expect(panel.frame.minY >= visible.minY, "the column stays on screen")
+        #expect(panel.frame.maxY <= visible.maxY)
     }
 
     @Test("GrokBall sidecar stays outside the 376 pt panel and expands without changing it")
@@ -1407,17 +1392,6 @@ struct MenuBarPanelControllerTests {
                                             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
                                             context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { return }
         NSApp.sendEvent(event)
-    }
-
-    @Test("Sizing while the panel is closed does not create a window")
-    func sizingBeforeOpenIsIgnored() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let controller = makeController(store: store)
-        defer { controller.uninstall() }
-
-        controller.updatePanelSize(width: MenuBarPanelController.panelWidth, height: 420)
-        #expect(controller.panelWindow == nil)
     }
 
     @Test("The panel is placed under the menu bar of its screen and clamped on screen")
@@ -1764,100 +1738,6 @@ struct MenuBarPanelControllerTests {
             hasPreciseDeltas: false
         )
         #expect(!movedWhenFitting)
-    }
-
-    @Test("Room strip scrolls hidden rooms into view when selected or cycled")
-    func classicSkinRoomStripScrollsToSelectedRoom() async throws {
-        let rooms = [
-            RoomArea(id: "r1", name: "书房", sortOrder: 0),
-            RoomArea(id: "r2", name: "办公室", sortOrder: 1),
-            RoomArea(id: "r3", name: "卧室", sortOrder: 2),
-            RoomArea(id: "r4", name: "厨房", sortOrder: 3),
-            RoomArea(id: "r5", name: "客厅", sortOrder: 4),
-            RoomArea(id: "r6", name: "阳台", sortOrder: 5),
-            RoomArea(id: "r7", name: "次卧", sortOrder: 6),
-            RoomArea(id: "r8", name: "卫生间", sortOrder: 7)
-        ]
-        var base = DemoHomeProvider.defaultHome()
-        base.rooms = rooms
-        base.environmentReadings = []
-        base.scenes = []
-
-        let suite = "MenuBarPanelTests-rooms-\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        guard let defaults = UserDefaults(suiteName: suite) else { return }
-        defaults.set(true, forKey: "has_completed_onboarding")
-        defaults.set(true, forKey: "launch_at_login_suggestion_dismissed")
-        defaults.set(false, forKey: "automatically_checks_for_updates")
-        defaults.set(false, forKey: "show_quick_actions_bar")
-
-        let store = HomeStore(provider: MockHomeProvider(snapshot: base), defaultsSuiteName: suite)
-        for _ in 0..<50 where store.rooms.count < rooms.count {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(store.rooms.count == rooms.count)
-
-        let hosting = NSHostingView(
-            rootView: ControlCenterPanel(store: store)
-                .defaultAppStorage(defaults)
-                .environment(\.reduceMotionOverride, true)
-        )
-        hosting.frame = NSRect(x: 0, y: 0, width: 376, height: 560)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 376, height: 560),
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false
-        )
-        window.isReleasedWhenClosed = false
-        window.alphaValue = 0
-        window.hasShadow = false
-        window.contentView = hosting
-        window.orderFront(nil)
-        defer {
-            window.contentView = nil
-            window.orderOut(nil)
-        }
-        window.layoutIfNeeded()
-        hosting.layoutSubtreeIfNeeded()
-        hosting.displayIfNeeded()
-        window.displayIfNeeded()
-        try await Task.sleep(for: .milliseconds(50))
-        Self.pumpMainRunLoop()
-
-        func findRoomScrollView(in view: NSView) -> NSScrollView? {
-            if let sv = view as? NSScrollView,
-               let doc = sv.documentView,
-               doc.bounds.width > sv.contentView.bounds.width + 20,
-               sv.frame.height < 60 {
-                return sv
-            }
-            for sub in view.subviews {
-                if let found = findRoomScrollView(in: sub) {
-                    return found
-                }
-            }
-            return nil
-        }
-
-        let roomScrollView = try #require(findRoomScrollView(in: hosting))
-        #expect(roomScrollView.contentView.bounds.origin.x < 1)
-
-        store.selectRoom("r8")
-        try await Task.sleep(for: .milliseconds(80))
-        Self.pumpMainRunLoop()
-        hosting.layoutSubtreeIfNeeded()
-        hosting.displayIfNeeded()
-        window.displayIfNeeded()
-        #expect(roomScrollView.contentView.bounds.origin.x > 40)
-
-        store.selectRoom(nil)
-        try await Task.sleep(for: .milliseconds(80))
-        Self.pumpMainRunLoop()
-        hosting.layoutSubtreeIfNeeded()
-        hosting.displayIfNeeded()
-        window.displayIfNeeded()
-        #expect(roomScrollView.contentView.bounds.origin.x < 1)
     }
 
     @Test("CameraLivePanelController attaches NSHostingView contentView and elevates above MenuBarPanel")

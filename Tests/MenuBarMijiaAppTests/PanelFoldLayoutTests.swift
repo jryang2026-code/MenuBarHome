@@ -10,7 +10,7 @@ import Testing
 @MainActor
 @Suite(.serialized)
 struct PanelFoldLayoutTests {
-    @Test("The default 560 pt panel keeps the first device card at or above 200 pt", arguments: [
+    @Test("The first device card sits right under the header and grouping capsule", arguments: [
         (AppLanguage.zhHans, false),
         (AppLanguage.en, false),
         (AppLanguage.zhHans, true),
@@ -23,11 +23,9 @@ struct PanelFoldLayoutTests {
         let reading = try PanelFoldMeasure.reading(store: fixture.store, language: language)
         let cardTop = reading.cardTop
         #expect(cardTop <= 200, "\(language.rawValue) compact=\(compact): first device card top is \(cardTop)")
-        #expect(reading.kindMinY == nil, "kind chips stay hidden until 全部 is tapped again")
-        #expect(reading.lessonMinY != nil, "the getting-started row is in the list")
-        let lesson = try #require(reading.lessonTop)
-        let omnibar = try #require(reading.omnibarTop)
-        #expect(lesson > omnibar, "the lesson row scrolls under the search field")
+        #expect(reading.omnibarMinY == nil, "search stays folded behind the header's magnifier")
+        let lesson = try #require(reading.lessonTop, "the getting-started row is in the list")
+        #expect(lesson < cardTop, "the lesson row leads the device list")
     }
 
     @Test("A blocked or plaintext warning leads the panel and hides the checklist", arguments: [
@@ -53,12 +51,10 @@ struct PanelFoldLayoutTests {
 
         let reading = try PanelFoldMeasure.reading(store: fixture.store)
         let notice = try #require(reading.noticeTop, "the warning is on screen")
-        let omnibar = try #require(reading.omnibarTop)
         let cardTop = reading.cardTop
         #expect(reading.lessonMinY == nil, "the checklist hides behind a blocked or security notice")
-        #expect(notice < omnibar, "the warning sits above the search field")
         #expect(notice < cardTop)
-        #expect(notice < 120, "the warning is the first block under the header, at \(notice)")
+        #expect(notice < 140, "the warning is the first block under the header, at \(notice)")
     }
 }
 
@@ -70,7 +66,6 @@ enum PanelFoldMeasure {
         var noticeMinY: CGFloat?
         var omnibarMinY: CGFloat?
         var lessonMinY: CGFloat?
-        var kindMinY: CGFloat?
 
         /// Distance from the top of the panel. Both edges share one global origin.
         var cardTop: CGFloat { cardMinY - panelMinY }
@@ -135,8 +130,7 @@ enum PanelFoldMeasure {
             cardMinY: cardMinY,
             noticeMinY: record.systemNoticeMinY,
             omnibarMinY: record.omnibarMinY,
-            lessonMinY: record.lessonRowMinY,
-            kindMinY: record.kindRowMinY
+            lessonMinY: record.lessonRowMinY
         )
     }
 }

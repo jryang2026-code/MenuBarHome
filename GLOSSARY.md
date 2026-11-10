@@ -190,7 +190,7 @@ _Avoid_: Platter（白色底板）、Card background（卡片底色）
 _Avoid_: Border、Hairline（描边与高光边现在是两个概念）
 
 **ViewPreference（本地视图偏好）**：
-仅作用于当前客户端的展示配置（包括星标常用置顶、自定义分组 `DeviceGroup`、进入编辑模式后的拖拽排序、通过编辑态卡片右下角圆弧手柄拖拽或轻点调节的分页面卡片尺寸 `TileSize`、单设备固定数据源覆盖、隐藏特定设备、隐藏离线设备、面板高度 `PanelHeight`、Windows 面板位置 `PanelAnchor`（跟随任务栏或工作区四角，保存在 `%APPDATA%\MenuBarMijia\panel-placement.json` 以便拖动窗口后即时落盘）、菜单栏常驻指标选择），存储在本地且不回写远端数据源。
+仅作用于当前客户端的展示配置（包括星标常用置顶、自定义分组 `DeviceGroup`、进入编辑模式后的拖拽排序、通过编辑态卡片右下角圆弧手柄拖拽或轻点调节的分页面卡片尺寸 `TileSize`、单设备固定数据源覆盖、隐藏特定设备、隐藏离线设备、Windows 面板高度 `PanelHeight`（macOS 面板固定为从菜单栏到屏幕底部的整列）、macOS 面板分组方式 `PanelGrouping`（按房间/按类型）、Windows 面板位置 `PanelAnchor`（跟随任务栏或工作区四角，保存在 `%APPDATA%\MenuBarMijia\panel-placement.json` 以便拖动窗口后即时落盘）、菜单栏常驻指标选择），存储在本地且不回写远端数据源。
 _Avoid_: Device config（设备配置）、Profile（档案）
 
 **NativeBackdrop（原生背景）**：
