@@ -867,6 +867,7 @@ final class PanelFoldRecord: @unchecked Sendable {
     var systemNoticeMinY: CGFloat?
     var omnibarMinY: CGFloat?
     var lessonRowMinY: CGFloat?
+    var kindRowMinY: CGFloat?
     var cardTops: [String: CGFloat] = [:]
 }
 

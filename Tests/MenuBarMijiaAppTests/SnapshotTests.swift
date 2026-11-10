@@ -13,6 +13,9 @@ import AppKit
 /// An identical PNG is left untouched. Later runs compare against the committed PNGs; on a mismatch
 /// the new bitmap is written under `$SNAPSHOT_ARTIFACTS`/SnapshotTests (or `$TMPDIR/SnapshotTests`).
 ///
+/// The panel and every card surface render once per `PanelTheme`, named `classic-…` / `liquid-…`.
+/// Shared surfaces — Settings, the camera HUD, and standalone drawers — stay a single baseline.
+///
 /// Snapshot-only PTZ client: the stop-warning banner's retry button is driven by an unresolved
 /// stop attempt, so the rendering must not depend on a network bridge.
 private struct SnapshotPTZClient: CameraPTZControlling {
@@ -28,6 +31,7 @@ private struct SnapshotPTZClient: CameraPTZControlling {
     }
 }
 
+extension PanelPresentationTests {
 /// The renderer is fed fixed demo data and the accessibility "reduce motion" / "reduce transparency"
 /// switches, so animations and materials cannot make two runs differ. The suite is serialized
 /// because it changes `UserDefaults.standard` (the panel reads skin/appearance through
@@ -41,7 +45,7 @@ struct SnapshotTests {
 
     // MARK: - Panel: one system look (Chinese, light, single column)
 
-    @Test("Panel renders in the system look")
+    @Test("Panel renders in both themes")
     func panelSnapshot() async throws {
         let fixture = try await SnapshotFixture()
         defer { fixture.restore() }
@@ -49,11 +53,13 @@ struct SnapshotTests {
         UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
 
         #expect(fixture.store.panelHealth == .ok)
-        assertRendered(
-            snapshotReady(ControlCenterPanel(store: fixture.store)),
-            size: CGSize(width: 376, height: 560),
-            named: "panel-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "panel-zh-light")
+            )
+        }
     }
 
     @Test("A panel with no configured source names that instead of connected")
@@ -64,11 +70,13 @@ struct SnapshotTests {
         UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
         #expect(fixture.store.panelHealth == .notConfigured)
 
-        assertRendered(
-            snapshotReady(ControlCenterPanel(store: fixture.store)),
-            size: CGSize(width: 376, height: 560),
-            named: "panel-no-source-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "panel-no-source-zh-light")
+            )
+        }
     }
 
     @Test("Panel shows the expired Mi session banner")
@@ -87,11 +95,13 @@ struct SnapshotTests {
 
         UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
 
-        assertRendered(
-            snapshotReady(ControlCenterPanel(store: fixture.store)),
-            size: CGSize(width: 376, height: 560),
-            named: "panel-mi-session-expired-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "panel-mi-session-expired-zh-light")
+            )
+        }
     }
 
     @Test("The expired-session toast never repeats the banner that already offers Scan")
@@ -115,11 +125,13 @@ struct SnapshotTests {
         #expect(fixture.store.toastNotice?.persistent == true)
         #expect(fixture.store.toastNotice?.action == ToastAction(title: "扫码", kind: .presentMiReauth))
 
-        assertRendered(
-            snapshotReady(ControlCenterPanel(store: fixture.store)),
-            size: CGSize(width: 376, height: 560),
-            named: "panel-mi-session-expired-toast-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "panel-mi-session-expired-toast-zh-light")
+            )
+        }
     }
 
     @Test("The dashboard checklist shows the next lesson while the lessons are pending")
@@ -134,11 +146,13 @@ struct SnapshotTests {
         #expect(fixture.store.onboardingChecklist.nextStep == .allOffAndUndo)
         #expect(fixture.store.allOffLessonIsActive)
 
-        assertRendered(
-            snapshotReady(ControlCenterPanel(store: fixture.store)),
-            size: CGSize(width: 376, height: 560),
-            named: "panel-onboarding-lesson-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "panel-onboarding-lesson-zh-light")
+            )
+        }
     }
 
     @Test("The practice hold shows the rehearsal banner")
@@ -154,19 +168,23 @@ struct SnapshotTests {
         let title = try #require(fixture.store.undoBanner?.title)
         #expect(title.hasPrefix("演练：将关闭"))
 
-        assertRendered(
-            snapshotReady(ControlCenterPanel(store: fixture.store)),
-            size: CGSize(width: 376, height: 560),
-            named: "panel-all-off-rehearsal-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "panel-all-off-rehearsal-zh-light")
+            )
+        }
     }
 
     @Test("Activity center stacks three cards and expands in place", arguments: [
-        (false, false, "activity-stack-collapsed-light"),
-        (true, false, "activity-stack-expanded-light"),
-        (false, true, "activity-stack-collapsed-dark"),
+        (false, false, true, "activity-stack-collapsed-light"),
+        (true, false, true, "activity-stack-expanded-light"),
+        (false, true, true, "activity-stack-collapsed-dark"),
+        (false, false, false, "activity-stack-collapsed-single-column-light"),
+        (true, false, false, "activity-stack-expanded-single-column-light"),
     ])
-    func activityStackSnapshots(expanded: Bool, dark: Bool, name: String) async throws {
+    func activityStackSnapshots(expanded: Bool, dark: Bool, compact: Bool, name: String) async throws {
         let fixture = try await SnapshotFixture(
             miSession: MiSession(userId: "42", cUserId: "c", ssecurity: "c2VjcmV0",
                 serviceToken: "tok", expiresAt: Date(timeIntervalSince1970: 1_700_000_000)),
@@ -174,6 +192,7 @@ struct SnapshotTests {
         )
         defer { fixture.restore() }
         let store = fixture.store
+        store.isCompactGridMode = compact
         store.pendingHAAddressSuggestion = HADiscoveredInstance(baseURL: "http://192.0.2.10:8123", locationName: "家里的 Home Assistant")
         let device = try #require(store.devices.first)
         store.recentSafetyAlerts = [RecordedSafetyAlert(
@@ -182,10 +201,18 @@ struct SnapshotTests {
             scope: store.connectionScopeIdentifier, date: Date(timeIntervalSince1970: 1_700_000_000))]
         #expect(store.panelActivities.count == 3)
         let scheme: ColorScheme = dark ? .dark : .light
-        assertRendered(
-            snapshotReady(ControlCenterPanel(store: store, initialActivitiesExpanded: expanded), scheme: scheme, reduceMotion: false),
-            size: CGSize(width: 376, height: 560), named: name, scheme: scheme
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedPanel(theme, store: store, initialActivitiesExpanded: expanded),
+                    scheme: scheme,
+                    reduceMotion: false
+                ),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, name),
+                scheme: scheme
+            )
+        }
     }
 
     @Test("One activity has no notification header")
@@ -197,8 +224,13 @@ struct SnapshotTests {
             alert: SafetyAlert(id: "snapshot-single", deviceId: device.id, title: "设备持续运行", body: "请确认是否需要关闭。",
                 turnOffCommand: .setLightPower(entityId: "light.snapshot", isOn: false)),
             scope: fixture.store.connectionScopeIdentifier, date: Date(timeIntervalSince1970: 1_700_000_000))]
-        assertRendered(snapshotReady(ControlCenterPanel(store: fixture.store)),
-            size: CGSize(width: 376, height: 560), named: "activity-single-light")
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "activity-single-light")
+            )
+        }
     }
 
     @Test("Doorbell activity offers its camera")
@@ -208,8 +240,13 @@ struct SnapshotTests {
         let camera = try #require(fixture.store.devices.first { if case .camera = $0.kind { true } else { false } })
         fixture.store.handleDoorbellRing(DoorbellRing(deviceId: camera.id, entityId: "event.snapshot_doorbell", firedAt: "2023-11-14T22:13:20Z"))
         #expect(fixture.store.panelActivities.first?.date == Date(timeIntervalSince1970: 1_700_000_000))
-        assertRendered(snapshotReady(ControlCenterPanel(store: fixture.store)),
-            size: CGSize(width: 376, height: 560), named: "activity-doorbell-light")
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "activity-doorbell-light")
+            )
+        }
     }
 
     @Test("Required decisions keep their header without a clear button")
@@ -219,23 +256,47 @@ struct SnapshotTests {
             configuredHASource: false)
         defer { fixture.restore() }
         fixture.store.haPlaintextPrompt = .asking("http://203.0.113.5:8123")
-        assertRendered(snapshotReady(ControlCenterPanel(store: fixture.store, initialActivitiesExpanded: true)),
-            size: CGSize(width: 376, height: 560), named: "activity-required-decisions-light")
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store, initialActivitiesExpanded: true)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "activity-required-decisions-light")
+            )
+        }
     }
 
-    @Test("Undo and toast coexist at the bottom", arguments: [false, true])
-    func transientStackSnapshots(expanded: Bool) async throws {
+    @Test("Undo and toast coexist at the bottom", arguments: [
+        (false, false),
+        (true, false),
+        (false, true),
+        (true, true),
+    ])
+    func transientStackSnapshots(expanded: Bool, compact: Bool) async throws {
         let fixture = try await SnapshotFixture()
         defer { fixture.restore() }
         let store = fixture.store
+        store.isCompactGridMode = compact
         store.toastAutoDismissInterval = nil
         store.undoBanner = UndoBanner(title: "已关闭 3 台设备", restoreCommands: [], previousDevices: store.devices, deviceCount: 3, isAllOff: true)
         store.pauseUndoBannerCountdown()
         store.showToast("已更新设备设置")
-        assertRendered(
-            snapshotReady(ControlCenterPanel(store: store, initialTransientExpanded: expanded), reduceMotion: false),
-            size: CGSize(width: 376, height: 560), named: expanded ? "transient-stack-expanded-light" : "transient-stack-collapsed-light"
-        )
+        let name: String
+        switch (expanded, compact) {
+        case (true, true): name = "transient-stack-expanded-light"
+        case (true, false): name = "transient-stack-expanded-single-column-light"
+        case (false, true): name = "transient-stack-collapsed-light"
+        case (false, false): name = "transient-stack-collapsed-single-column-light"
+        }
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedPanel(theme, store: store, initialTransientExpanded: expanded),
+                    reduceMotion: false
+                ),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, name)
+            )
+        }
     }
 
     @Test("Panel asks before sending the HA token over public plain http, and keeps the declined reason", arguments: [
@@ -249,11 +310,13 @@ struct SnapshotTests {
         UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
         fixture.store.haPlaintextPrompt = prompt
 
-        assertRendered(
-            snapshotReady(ControlCenterPanel(store: fixture.store)),
-            size: CGSize(width: 376, height: 560),
-            named: name
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, name)
+            )
+        }
     }
 
     // MARK: - Room order (#146)
@@ -267,16 +330,30 @@ struct SnapshotTests {
         UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
 
         assertRendered(
-            snapshotReady(ControlCenterPanel(store: fixture.store)),
+            snapshotReady(themedPanel(.classic, store: fixture.store)),
             size: CGSize(width: 376, height: 560),
-            named: "panel-room-order-zh-light"
+            named: themedName(.classic, "panel-room-order-zh-light")
+        )
+        let classicScrollView = try #require(
+            RoomOrderScrollProbe.lastResolvedScrollView,
+            "the classic room-order list must hand the drag its NSScrollView"
+        )
+        let classicDocument = try #require(classicScrollView.documentView)
+        #expect(
+            classicDocument.frame.height > classicScrollView.contentView.bounds.height,
+            "16 classic rooms must overflow the list so the drag can scroll"
         )
 
+        assertRendered(
+            snapshotReady(themedPanel(.liquidGlass, store: fixture.store)),
+            size: CGSize(width: 376, height: 560),
+            named: themedName(.liquidGlass, "panel-room-order-zh-light")
+        )
         // The drag needs the real backing scroll view: without it auto-scroll never runs and the
         // pointer-to-row mapping loses the scroll offset (found in review, guarded here).
         let scrollView = try #require(
             RoomOrderScrollProbe.lastResolvedScrollView,
-            "the room-order list must hand the drag its NSScrollView"
+            "the liquid-glass room-order list must hand the drag its NSScrollView"
         )
         let document = try #require(scrollView.documentView)
         #expect(
@@ -316,17 +393,19 @@ struct SnapshotTests {
             ("tv", tv)
         ]
 
-        for (name, device) in cards {
-            let view = snapshotReady(
-                DeviceCardView(device: device, store: fixture.store, showRoomBadge: true)
-                    .padding(8)
-                    .frame(width: 360)
-            )
-            assertRendered(
-                view,
-                size: CGSize(width: 376, height: 140),
-                named: "card-\(name)-zh-light"
-            )
+        for theme in PanelTheme.allCases {
+            for (name, device) in cards {
+                let view = snapshotReady(
+                    themedCard(theme, device: device, store: fixture.store)
+                        .padding(8)
+                        .frame(width: 360)
+                )
+                assertRendered(
+                    view,
+                    size: CGSize(width: 376, height: 140),
+                    named: themedName(theme, "card-\(name)-zh-light")
+                )
+            }
         }
     }
 
@@ -341,15 +420,17 @@ struct SnapshotTests {
             let (device, facets) = Self.genericDevice(readOnly: readOnly)
             fixture.store.devices.append(device)
             fixture.store.deviceFacets[device.id] = facets
-            assertRendered(
-                snapshotReady(
-                    DeviceCardView(device: device, store: fixture.store, showRoomBadge: true)
-                        .padding(8)
-                        .frame(width: 360)
-                ),
-                size: CGSize(width: 376, height: 140),
-                named: name
-            )
+            for theme in PanelTheme.allCases {
+                assertRendered(
+                    snapshotReady(
+                        themedCard(theme, device: device, store: fixture.store)
+                            .padding(8)
+                            .frame(width: 360)
+                    ),
+                    size: CGSize(width: 376, height: 140),
+                    named: themedName(theme, name)
+                )
+            }
         }
     }
 
@@ -363,15 +444,17 @@ struct SnapshotTests {
         fixture.store.deviceFacets[device.id] = facets
         fixture.store.expandedDeviceId = device.id
 
-        assertRendered(
-            snapshotReady(
-                DeviceCardView(device: device, store: fixture.store, showRoomBadge: true)
-                    .padding(8)
-                    .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 260),
-            named: "generic-readonly-drawer-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedCard(theme, device: device, store: fixture.store)
+                        .padding(8)
+                        .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 260),
+                named: themedName(theme, "generic-readonly-drawer-zh-light")
+            )
+        }
     }
 
     @Test("A generic drawer explains why no low-risk main switch exists")
@@ -403,15 +486,17 @@ struct SnapshotTests {
         fixture.store.deviceFacets[device.id] = [mode]
         fixture.store.expandedDeviceId = device.id
 
-        assertRendered(
-            snapshotReady(
-                DeviceCardView(device: device, store: fixture.store, showRoomBadge: true)
-                    .padding(8)
-                    .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 320),
-            named: "generic-high-risk-drawer-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedCard(theme, device: device, store: fixture.store)
+                        .padding(8)
+                        .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 320),
+                named: themedName(theme, "generic-high-risk-drawer-zh-light")
+            )
+        }
     }
 
     @Test("A fish tank drawer shows the pump alert and the portioned feeding action")
@@ -423,29 +508,33 @@ struct SnapshotTests {
         fixture.store.devices.append(device)
         fixture.store.deviceFacets[device.id] = facets
 
-        assertRendered(
-            snapshotReady(
-                VStack(alignment: .leading, spacing: 10) {
-                    GenericDetailDrawer(
-                        device: device,
-                        store: fixture.store,
-                        spec: card,
-                        statusColor: DesignTokens.active
-                    )
-                    DeviceFacetSection(
-                        device: device,
-                        store: fixture.store,
-                        accent: DesignTokens.active,
-                        statusColor: DesignTokens.active,
-                        initiallyExpanded: true
-                    )
-                }
-                .padding(10)
-                .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 580),
-            named: "fish-tank-drawer-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    VStack(alignment: .leading, spacing: 10) {
+                        themedGenericDrawer(
+                            theme,
+                            device: device,
+                            store: fixture.store,
+                            spec: card,
+                            statusColor: DesignTokens.active
+                        )
+                        themedFacets(
+                            theme,
+                            device: device,
+                            store: fixture.store,
+                            accent: DesignTokens.active,
+                            statusColor: DesignTokens.active,
+                            initiallyExpanded: true
+                        )
+                    }
+                    .padding(10)
+                    .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 580),
+                named: themedName(theme, "fish-tank-drawer-zh-light")
+            )
+        }
     }
 
     /// A real `xiaomi.fishbowl.m200` synthesized from the public spec: pump blocked, 24.5 °C water,
@@ -545,21 +634,24 @@ struct SnapshotTests {
             kind: .cover(spec)
         )
 
-        assertRendered(
-            snapshotReady(
-                CoverDetailDrawer(
-                    device: device,
-                    spec: spec,
-                    store: fixture.store,
-                    accent: DesignTokens.active,
-                    statusColor: DesignTokens.active
-                )
-                .padding(8)
-                .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 160),
-            named: "cover-drawer-opening-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedCoverDrawer(
+                        theme,
+                        device: device,
+                        spec: spec,
+                        store: fixture.store,
+                        accent: DesignTokens.active,
+                        statusColor: DesignTokens.active
+                    )
+                    .padding(8)
+                    .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 160),
+                named: themedName(theme, "cover-drawer-opening-zh-light")
+            )
+        }
     }
 
     @Test("Airer drawer reads as height with raise / stop / lower while lowering (#299)")
@@ -584,21 +676,24 @@ struct SnapshotTests {
             kind: .cover(spec)
         )
 
-        assertRendered(
-            snapshotReady(
-                CoverDetailDrawer(
-                    device: device,
-                    spec: spec,
-                    store: fixture.store,
-                    accent: DesignTokens.active,
-                    statusColor: DesignTokens.active
-                )
-                .padding(8)
-                .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 160),
-            named: "airer-drawer-lowering-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedCoverDrawer(
+                        theme,
+                        device: device,
+                        spec: spec,
+                        store: fixture.store,
+                        accent: DesignTokens.active,
+                        statusColor: DesignTokens.active
+                    )
+                    .padding(8)
+                    .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 160),
+                named: themedName(theme, "airer-drawer-lowering-zh-light")
+            )
+        }
     }
 
     @Test("More Settings starts folded, then shows every facet style with closed writes explained")
@@ -674,36 +769,42 @@ struct SnapshotTests {
             ),
         ]]
 
-        assertRendered(
-            snapshotReady(
-                DeviceFacetSection(
-                    device: device,
-                    store: fixture.store,
-                    accent: DesignTokens.active,
-                    statusColor: DesignTokens.active
-                )
-                .padding(10)
-                .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 64),
-            named: "facet-drawer-collapsed-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedFacets(
+                        theme,
+                        device: device,
+                        store: fixture.store,
+                        accent: DesignTokens.active,
+                        statusColor: DesignTokens.active
+                    )
+                    .padding(10)
+                    .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 64),
+                named: themedName(theme, "facet-drawer-collapsed-zh-light")
+            )
+        }
 
-        assertRendered(
-            snapshotReady(
-                DeviceFacetSection(
-                    device: device,
-                    store: fixture.store,
-                    accent: DesignTokens.active,
-                    statusColor: DesignTokens.active,
-                    initiallyExpanded: true
-                )
-                .padding(10)
-                .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 440),
-            named: "facet-drawer-expanded-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedFacets(
+                        theme,
+                        device: device,
+                        store: fixture.store,
+                        accent: DesignTokens.active,
+                        statusColor: DesignTokens.active,
+                        initiallyExpanded: true
+                    )
+                    .padding(10)
+                    .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 440),
+                named: themedName(theme, "facet-drawer-expanded-zh-light")
+            )
+        }
     }
 
     @Test("Appliance card shows the water heater controls the spec publishes")
@@ -712,41 +813,45 @@ struct SnapshotTests {
         defer { fixture.restore() }
         let device = Self.waterHeater
 
-        assertRendered(
-            snapshotReady(
-                DeviceCardView(device: device, store: fixture.store, showRoomBadge: true)
-                    .padding(8)
-                    .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 140),
-            named: "card-appliance-zh-light"
-        )
-
-        fixture.store.expandedDeviceId = device.id
-        assertRendered(
-            snapshotReady(
-                DeviceCardView(device: device, store: fixture.store, showRoomBadge: true)
-                    .padding(8)
-                    .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 320),
-            named: "expanded-appliance-zh-light"
-        )
-
         var faulty = device
         if case .appliance(var spec) = faulty.kind {
             spec.faultText = "E3"
             faulty.kind = .appliance(spec)
         }
-        assertRendered(
-            snapshotReady(
-                DeviceCardView(device: faulty, store: fixture.store, showRoomBadge: true)
-                    .padding(8)
-                    .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 400),
-            named: "expanded-appliance-fault-zh-light"
-        )
+
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedCard(theme, device: device, store: fixture.store)
+                        .padding(8)
+                        .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 140),
+                named: themedName(theme, "card-appliance-zh-light")
+            )
+        }
+
+        fixture.store.expandedDeviceId = device.id
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedCard(theme, device: device, store: fixture.store)
+                        .padding(8)
+                        .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 320),
+                named: themedName(theme, "expanded-appliance-zh-light")
+            )
+            assertRendered(
+                snapshotReady(
+                    themedCard(theme, device: faulty, store: fixture.store)
+                        .padding(8)
+                        .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 400),
+                named: themedName(theme, "expanded-appliance-fault-zh-light")
+            )
+        }
     }
 
     @Test("Washer card shows the wash stage, remaining time and its long programme row")
@@ -755,26 +860,30 @@ struct SnapshotTests {
         defer { fixture.restore() }
         let device = Self.washer
 
-        assertRendered(
-            snapshotReady(
-                DeviceCardView(device: device, store: fixture.store, showRoomBadge: true)
-                    .padding(8)
-                    .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 140),
-            named: "card-appliance-washer-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedCard(theme, device: device, store: fixture.store)
+                        .padding(8)
+                        .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 140),
+                named: themedName(theme, "card-appliance-washer-zh-light")
+            )
+        }
 
         fixture.store.expandedDeviceId = device.id
-        assertRendered(
-            snapshotReady(
-                DeviceCardView(device: device, store: fixture.store, showRoomBadge: true)
-                    .padding(8)
-                    .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 320),
-            named: "expanded-appliance-washer-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedCard(theme, device: device, store: fixture.store)
+                        .padding(8)
+                        .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 320),
+                named: themedName(theme, "expanded-appliance-washer-zh-light")
+            )
+        }
     }
 
     @Test("An expanded air-conditioner card lists its synthesized 更多设置 rows (#30)")
@@ -812,15 +921,17 @@ struct SnapshotTests {
         ]
         fixture.store.expandedDeviceId = climate.id
 
-        assertRendered(
-            snapshotReady(
-                DeviceCardView(device: climate, store: fixture.store, showRoomBadge: true)
-                    .padding(8)
-                    .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 460),
-            named: "expanded-climate-facets-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedCard(theme, device: climate, store: fixture.store)
+                        .padding(8)
+                        .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 460),
+                named: themedName(theme, "expanded-climate-facets-zh-light")
+            )
+        }
     }
 
     /// The program names are the released `mibx5.washer.f27vn` list (#3); 25 entries is what the
@@ -865,15 +976,17 @@ struct SnapshotTests {
         ]
         for item in cases {
             fixture.store.expandedDeviceId = item.device.id
-            assertRendered(
-                snapshotReady(
-                    DeviceCardView(device: item.device, store: fixture.store, showRoomBadge: true)
-                        .padding(8)
-                        .frame(width: 360)
-                ),
-                size: item.size,
-                named: item.name
-            )
+            for theme in PanelTheme.allCases {
+                assertRendered(
+                    snapshotReady(
+                        themedCard(theme, device: item.device, store: fixture.store)
+                            .padding(8)
+                            .frame(width: 360)
+                    ),
+                    size: item.size,
+                    named: themedName(theme, item.name)
+                )
+            }
         }
     }
 
@@ -1016,37 +1129,43 @@ struct SnapshotTests {
         let fixture = try await SnapshotFixture()
         defer { fixture.restore() }
 
-        assertRendered(
-            snapshotReady(
-                DeviceCardView(device: Self.humidifier, store: fixture.store, showRoomBadge: true)
-                    .padding(8)
-                    .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 140),
-            named: "card-humidifier-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedCard(theme, device: Self.humidifier, store: fixture.store)
+                        .padding(8)
+                        .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 140),
+                named: themedName(theme, "card-humidifier-zh-light")
+            )
+        }
 
         fixture.store.expandedDeviceId = Self.humidifier.id
-        assertRendered(
-            snapshotReady(
-                DeviceCardView(device: Self.humidifier, store: fixture.store, showRoomBadge: true)
-                    .padding(8)
-                    .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 280),
-            named: "expanded-humidifier-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedCard(theme, device: Self.humidifier, store: fixture.store)
+                        .padding(8)
+                        .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 280),
+                named: themedName(theme, "expanded-humidifier-zh-light")
+            )
+        }
 
         fixture.store.expandedDeviceId = nil
-        assertRendered(
-            snapshotReady(
-                DeviceCardView(device: Self.valve, store: fixture.store, showRoomBadge: true)
-                    .padding(8)
-                    .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 140),
-            named: "card-valve-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedCard(theme, device: Self.valve, store: fixture.store)
+                        .padding(8)
+                        .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 140),
+                named: themedName(theme, "card-valve-zh-light")
+            )
+        }
     }
 
     @Test("Home Assistant facets render as toggles, selects, sliders, buttons and readings")
@@ -1092,21 +1211,24 @@ struct SnapshotTests {
             ),
         ]
 
-        assertRendered(
-            snapshotReady(
-                DeviceFacetSection(
-                    device: device,
-                    store: fixture.store,
-                    accent: DesignTokens.active,
-                    statusColor: DesignTokens.active,
-                    initiallyExpanded: true
-                )
-                .padding(10)
-                .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 420),
-            named: "ha-facet-drawer-expanded-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedFacets(
+                        theme,
+                        device: device,
+                        store: fixture.store,
+                        accent: DesignTokens.active,
+                        statusColor: DesignTokens.active,
+                        initiallyExpanded: true
+                    )
+                    .padding(10)
+                    .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 420),
+                named: themedName(theme, "ha-facet-drawer-expanded-zh-light")
+            )
+        }
     }
 
     @Test("Climate card wears its tinted well when on")
@@ -1120,26 +1242,28 @@ struct SnapshotTests {
         climate = try #require(fixture.store.devices.first { $0.id == climate.id })
         #expect(climate.isActiveOn, "MockHomeProvider should apply the power toggle")
 
-        assertRendered(
-            snapshotReady(
-                DeviceCardView(device: climate, store: fixture.store, showRoomBadge: true)
-                    .padding(8)
-                    .frame(width: 360)
-            ),
-            size: CGSize(width: 376, height: 140),
-            named: "card-climate-on-zh-light"
-        )
-        assertRendered(
-            snapshotReady(
-                DeviceCardView(device: climate, store: fixture.store, showRoomBadge: true)
-                    .padding(8)
-                    .frame(width: 360),
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedCard(theme, device: climate, store: fixture.store)
+                        .padding(8)
+                        .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 140),
+                named: themedName(theme, "card-climate-on-zh-light")
+            )
+            assertRendered(
+                snapshotReady(
+                    themedCard(theme, device: climate, store: fixture.store)
+                        .padding(8)
+                        .frame(width: 360),
+                    scheme: .dark
+                ),
+                size: CGSize(width: 376, height: 140),
+                named: themedName(theme, "card-climate-on-zh-dark"),
                 scheme: .dark
-            ),
-            size: CGSize(width: 376, height: 140),
-            named: "card-climate-on-zh-dark",
-            scheme: .dark
-        )
+            )
+        }
     }
 
     @Test("Settings remain readable in light and dark appearances")
@@ -1206,24 +1330,31 @@ struct SnapshotTests {
     func panelInteractionStates() async throws {
         let fixture = try await SnapshotFixture()
         defer { fixture.restore() }
-        for compact in [false, true] {
-            fixture.store.isCompactGridMode = compact
-            assertRendered(
-                snapshotReady(ControlCenterPanel(store: fixture.store), scheme: .dark),
-                size: CGSize(width: 376, height: 560),
-                named: compact ? "panel-compact-dark" : "panel-dark",
-                scheme: .dark
-            )
+        for theme in PanelTheme.allCases {
+            for compact in [false, true] {
+                fixture.store.isCompactGridMode = compact
+                assertRendered(
+                    snapshotReady(themedPanel(theme, store: fixture.store), scheme: .dark),
+                    size: CGSize(width: 376, height: 560),
+                    named: themedName(theme, compact ? "panel-compact-dark" : "panel-dark"),
+                    scheme: .dark
+                )
+            }
         }
         let light = try #require(fixture.store.devices.first { if case .light = $0.kind { true } else { false } })
         fixture.store.expandedDeviceId = light.id
-        for scheme in [ColorScheme.light, .dark] {
-            assertRendered(
-                snapshotReady(DeviceCardView(device: light, store: fixture.store, showRoomBadge: true).padding(8), scheme: scheme),
-                size: CGSize(width: 376, height: 260),
-                named: "expanded-light-\(scheme == .dark ? "dark" : "light")",
-                scheme: scheme
-            )
+        for theme in PanelTheme.allCases {
+            for scheme in [ColorScheme.light, .dark] {
+                assertRendered(
+                    snapshotReady(
+                        themedCard(theme, device: light, store: fixture.store).padding(8),
+                        scheme: scheme
+                    ),
+                    size: CGSize(width: 376, height: 260),
+                    named: themedName(theme, "expanded-light-\(scheme == .dark ? "dark" : "light")"),
+                    scheme: scheme
+                )
+            }
         }
     }
 
@@ -1240,11 +1371,13 @@ struct SnapshotTests {
             model: "cuco.plug.v3", isOnline: true, kind: .plug(spec)
         )
         fixture.store.expandedDeviceId = device.id
-        assertRendered(
-            snapshotReady(DeviceCardView(device: device, store: fixture.store, showRoomBadge: true).padding(8).frame(width: 360)),
-            size: CGSize(width: 376, height: 260),
-            named: "expanded-plug-childlock-zh-light"
-        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedCard(theme, device: device, store: fixture.store).padding(8).frame(width: 360)),
+                size: CGSize(width: 376, height: 260),
+                named: themedName(theme, "expanded-plug-childlock-zh-light")
+            )
+        }
     }
 
     @Test("About shows rendered release notes instead of raw markdown")
@@ -1423,6 +1556,137 @@ struct SnapshotTests {
         )
     }
 
+    // MARK: - Theme coverage
+
+    /// The panel root for one theme. Classic and liquid glass keep separate view trees; this is the
+    /// only place the snapshot suite chooses between them.
+    private func themedPanel(
+        _ theme: PanelTheme,
+        store: HomeStore,
+        initialActivitiesExpanded: Bool = false,
+        initialTransientExpanded: Bool = false
+    ) -> AnyView {
+        switch theme {
+        case .classic:
+            return AnyView(ClassicControlCenterPanel(
+                store: store,
+                initialActivitiesExpanded: initialActivitiesExpanded,
+                initialTransientExpanded: initialTransientExpanded
+            ))
+        case .liquidGlass:
+            return AnyView(ControlCenterPanel(
+                store: store,
+                initialActivitiesExpanded: initialActivitiesExpanded,
+                initialTransientExpanded: initialTransientExpanded
+            ))
+        }
+    }
+
+    /// The card surface for one theme. Classic cards carry the 321c067 chrome; the drawers and
+    /// facet sections they host stay shared, so drawer-only snapshots are not duplicated.
+    private func themedCard(
+        _ theme: PanelTheme,
+        device: SmartDevice,
+        store: HomeStore,
+        showRoomBadge: Bool = true
+    ) -> AnyView {
+        switch theme {
+        case .classic:
+            return AnyView(ClassicDeviceCardView(device: device, store: store, showRoomBadge: showRoomBadge))
+        case .liquidGlass:
+            return AnyView(DeviceCardView(device: device, store: store, showRoomBadge: showRoomBadge))
+        }
+    }
+
+    private func themedName(_ theme: PanelTheme, _ name: String) -> String {
+        "\(theme == .classic ? "classic" : "liquid")-\(name)"
+    }
+
+    /// The generic-device drawer for one theme. Classic cards host their own drawer chrome, so a
+    /// standalone drawer snapshot needs the same split as the card surface.
+    private func themedGenericDrawer(
+        _ theme: PanelTheme,
+        device: SmartDevice,
+        store: HomeStore,
+        spec: GenericSpec,
+        statusColor: Color
+    ) -> AnyView {
+        switch theme {
+        case .classic:
+            return AnyView(ClassicGenericDetailDrawer(
+                device: device,
+                store: store,
+                spec: spec,
+                statusColor: statusColor
+            ))
+        case .liquidGlass:
+            return AnyView(GenericDetailDrawer(
+                device: device,
+                store: store,
+                spec: spec,
+                statusColor: statusColor
+            ))
+        }
+    }
+
+    /// The variable facet list (更多设置) for one theme.
+    private func themedFacets(
+        _ theme: PanelTheme,
+        device: SmartDevice,
+        store: HomeStore,
+        accent: Color,
+        statusColor: Color,
+        initiallyExpanded: Bool = false
+    ) -> AnyView {
+        switch theme {
+        case .classic:
+            return AnyView(ClassicDeviceFacetSection(
+                device: device,
+                store: store,
+                accent: accent,
+                statusColor: statusColor,
+                initiallyExpanded: initiallyExpanded
+            ))
+        case .liquidGlass:
+            return AnyView(DeviceFacetSection(
+                device: device,
+                store: store,
+                accent: accent,
+                statusColor: statusColor,
+                initiallyExpanded: initiallyExpanded
+            ))
+        }
+    }
+
+    /// The cover / airer drawer for one theme.
+    private func themedCoverDrawer(
+        _ theme: PanelTheme,
+        device: SmartDevice,
+        spec: CoverSpec,
+        store: HomeStore,
+        accent: Color,
+        statusColor: Color
+    ) -> AnyView {
+        switch theme {
+        case .classic:
+            return AnyView(ClassicCoverDetailDrawer(
+                device: device,
+                spec: spec,
+                store: store,
+                accent: accent,
+                statusColor: statusColor
+            ))
+        case .liquidGlass:
+            return AnyView(CoverDetailDrawer(
+                device: device,
+                spec: spec,
+                store: store,
+                accent: accent,
+                statusColor: statusColor
+            ))
+        }
+    }
+
     // MARK: - Rendering switches
 
     private func snapshotReady<V: View>(_ view: V, scheme: ColorScheme = .light, reduceMotion: Bool = true) -> some View {
@@ -1518,6 +1782,7 @@ struct SnapshotTests {
         window.orderOut(nil)
     }
 }
+}
 
 /// A loaded store over the built-in virtual home, with a fixed language and the standard-defaults
 /// keys the panel reads through `@AppStorage`.
@@ -1530,6 +1795,8 @@ struct SnapshotFixture {
     private let previousTemperatureUnit: String?
     private let previousRoomOrder: String?
     private let previousRoomAliases: String?
+    private let previousPanelTheme: String?
+    private let previousPanelHeight: String?
 
     /// - Parameters:
     ///   - roomCount: builds a home with that many rooms instead of the demo's three, so the
@@ -1550,8 +1817,14 @@ struct SnapshotFixture {
         // clearing without restoring would wipe a developer's own room layout on every test run.
         previousRoomOrder = UserDefaults.standard.string(forKey: RoomPrefs.orderKey)
         previousRoomAliases = UserDefaults.standard.string(forKey: RoomPrefs.aliasesKey)
+        // Panel theme and height are real preferences too. Every render pins them so a developer's
+        // own panel choice cannot leak into a baseline, and `restore()` puts them back.
+        previousPanelTheme = UserDefaults.standard.string(forKey: PanelTheme.storageKey)
+        previousPanelHeight = UserDefaults.standard.string(forKey: PanelHeight.storageKey)
         UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
         UserDefaults.standard.set(TemperatureUnitPreference.celsius.rawValue, forKey: TemperatureUnitPreference.storageKey)
+        UserDefaults.standard.set(PanelTheme.classic.rawValue, forKey: PanelTheme.storageKey)
+        UserDefaults.standard.set(PanelHeight.standard.rawValue, forKey: PanelHeight.storageKey)
         UserDefaults.standard.removeObject(forKey: RoomPrefs.orderKey)
         UserDefaults.standard.removeObject(forKey: RoomPrefs.aliasesKey)
         // The session state is a process-wide observable: a previous test's draft must not leak in.
@@ -1591,6 +1864,14 @@ struct SnapshotFixture {
             attempts += 1
         }
         #expect(!store.devices.isEmpty, "MockHomeProvider should deliver a snapshot right away")
+        // Keep the historical demo input fixed: automatic favorite seeding is shared product logic,
+        // while these baselines compare the two presentations against the same six devices.
+        let favorites = [
+            "demo_living_light", "demo_living_climate", "demo_living_plug",
+            "demo_living_tv", "demo_bedroom_light", "demo_bedroom_climate"
+        ]
+        store.favoriteDeviceIds = Set(favorites)
+        store.favoriteOrder = favorites
         if configuredHASource {
             store.hasHASource = true
         }
@@ -1679,6 +1960,17 @@ struct SnapshotFixture {
             UserDefaults.standard.set(previousRoomAliases, forKey: RoomPrefs.aliasesKey)
         } else {
             UserDefaults.standard.removeObject(forKey: RoomPrefs.aliasesKey)
+        }
+        // The panel theme and height are the developer's real preferences as well.
+        if let previousPanelTheme {
+            UserDefaults.standard.set(previousPanelTheme, forKey: PanelTheme.storageKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: PanelTheme.storageKey)
+        }
+        if let previousPanelHeight {
+            UserDefaults.standard.set(previousPanelHeight, forKey: PanelHeight.storageKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: PanelHeight.storageKey)
         }
         #if DEBUG
         LayoutUIState.shared.resetForTesting()

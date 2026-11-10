@@ -21,8 +21,14 @@ rules = (
     (r'Color\(\s*(?:red|hue|white):', '自定义颜色请移入 DesignTokens 调色板'),
 )
 errors = []
-for name in surfaces:
-    path = root / 'Sources/MenuBarMijiaApp' / (name + '.swift')
+surface_root = root / 'Sources/MenuBarMijiaApp'
+surface_paths = [(name, surface_root / (name + '.swift')) for name in surfaces]
+surface_paths.extend(
+    (path.stem, path)
+    for path in (surface_root / 'Classic').glob('*.swift')
+    if path.stem.removeprefix('Classic') in surfaces
+)
+for name, path in surface_paths:
     text = path.read_text(encoding='utf-8')
     start = 0
     end = len(text)

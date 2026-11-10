@@ -2,6 +2,40 @@ import SwiftUI
 import AppKit
 import MijiaCore
 
+// MARK: - Panel Height
+
+/// User-chosen panel height; `.max` fills the screen below the menu bar.
+///
+/// Only the classic panel reads this: the Liquid Glass column always runs to the bottom of the
+/// screen. The storage key predates the themes, so the choice survives a theme switch.
+public enum PanelHeight: String, CaseIterable, Identifiable, Sendable {
+    case compact, standard, tall, max
+
+    public static let storageKey = "panel_height"
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .compact: return L10n.tr("紧凑", "Compact")
+        case .standard: return L10n.tr("标准", "Standard")
+        case .tall: return L10n.tr("加高", "Tall")
+        case .max: return L10n.tr("最大", "Max")
+        }
+    }
+
+    @MainActor
+    public var points: CGFloat {
+        let screen = (NSScreen.main?.visibleFrame.height ?? 900) - 40
+        switch self {
+        case .compact: return 460
+        case .standard: return Swift.min(560, screen)
+        case .tall: return Swift.min(680, screen)
+        case .max: return Swift.max(460, screen)
+        }
+    }
+}
+
 // MARK: - Appearance
 
 /// Panel appearance: follow the system, or force light/dark.
@@ -36,6 +70,53 @@ public enum AppAppearance: String, CaseIterable, Identifiable, Sendable {
         case .light: return NSAppearance(named: .aqua)
         case .dark: return NSAppearance(named: .darkAqua)
         }
+    }
+}
+
+// MARK: - Panel Theme
+
+/// The panel's layout family.
+///
+/// The two themes are structural, not skins: `classic` is the compact card panel that hangs under
+/// the menu-bar item, `liquidGlass` is the full-height column that slides in from the right edge.
+/// The Liquid Glass theme is designed around macOS 26's native glass, so it is unavailable before
+/// macOS 26. Every macOS version keeps the classic panel.
+public enum PanelTheme: String, CaseIterable, Identifiable, Sendable {
+    case classic
+    case liquidGlass
+
+    public static let storageKey = "panel_theme"
+    public static let defaultValue: PanelTheme = .classic
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .classic: return L10n.tr("常规", "Classic")
+        case .liquidGlass: return L10n.tr("液态玻璃", "Liquid Glass")
+        }
+    }
+
+    /// The Liquid Glass panel is built on native glass, which macOS 26 introduced.
+    public static var isLiquidGlassAvailable: Bool {
+        if #available(macOS 26.0, *) { return true }
+        return false
+    }
+
+    /// Resolves a stored value against platform support. Older systems always get `.classic`, and
+    /// an unknown value falls back to the default. Tests pass `liquidGlassAvailable` so the
+    /// fallback is exercised without a macOS 26 host.
+    public static func resolved(
+        from raw: String?,
+        liquidGlassAvailable: Bool = isLiquidGlassAvailable
+    ) -> PanelTheme {
+        guard liquidGlassAvailable, let raw else { return .classic }
+        return PanelTheme(rawValue: raw) ?? .classic
+    }
+
+    /// The theme the next panel presentation builds.
+    public static var current: PanelTheme {
+        resolved(from: UserDefaults.standard.string(forKey: storageKey))
     }
 }
 

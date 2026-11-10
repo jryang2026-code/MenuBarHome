@@ -18,8 +18,10 @@ import MijiaCore
 /// - the panel closes on an outside click or when the app deactivates (unless dictation is running);
 /// - it becomes key, so arrow keys, Esc, ⌘, and its text fields behave as they did before;
 /// - it is anchored under the item's own screen and stays on screen across display changes;
-/// - it is a full-height column: 376 pt wide, inset 16 pt from the visible right edge, sliding
-///   horizontally like Notification Center (a cross-fade when Reduce Motion is enabled).
+/// - its geometry follows `PanelTheme`: the classic card is 376 pt wide and `PanelHeight` tall,
+///   hung centred under the item; the Liquid Glass column is 376 pt wide, inset 16 pt from the
+///   visible right edge, full height, sliding horizontally like Notification Center (a cross-fade
+///   when Reduce Motion is enabled).
 ///
 /// The panel's SwiftUI tree stays alive between opens, like a `.window`-style `MenuBarExtra`, so
 /// scroll position, search text and layout state survive a close; `didShow` / `didHide` notifications
@@ -51,10 +53,8 @@ final class MenuBarPanelController: NSObject {
     static let didShowNotification = Notification.Name("MenuBarMijia.panelDidShow")
     static let didHideNotification = Notification.Name("MenuBarMijia.panelDidHide")
 
-    private static let topGap: CGFloat = 6
     /// Fallback for hosts that do not expose an event number when AppKit dismisses a menu.
     private static let contextMenuSyntheticClickTail: TimeInterval = 0.08
-    private static let screenMargin: CGFloat = 8
     /// Press-and-hold on the icon starts dictation instead of toggling the panel. 0.5 s is long
     /// enough that an ordinary slow click toggles the panel instead of dictating.
     private static let holdThreshold: TimeInterval = 0.5
@@ -62,25 +62,24 @@ final class MenuBarPanelController: NSObject {
 
     private(set) var statusItem: NSStatusItem?
     private(set) var panelWindow: NSPanel?
-    private var backdropWindow: NSPanel?
-    private var grokBallSidecar: GrokBallSidecarController?
+    /// Theme of the root view currently installed in `panelWindow`; nil until the first open.
+    private(set) var hostedPanelTheme: PanelTheme?
+    /// Owned by the readability-shadow code; the presentation extension reads it while animating.
+    private(set) var backdropWindow: NSPanel?
+    /// Created on the first open; the presentation extension only drives the existing sidecar.
+    private(set) var grokBallSidecar: GrokBallSidecarController?
     var grokBallSidecarWindow: NSPanel? { grokBallSidecar?.panelWindow }
 
     /// Tests switch this off so `swift test` shows the window without stealing key status or focus
     /// from the terminal; the app keeps it on, which is what makes the panel key like the extra was.
     var presentsActively = true
     var shouldReduceMotion: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
-    /// A close transition is running: toggles reopen the logically hidden panel from its current position.
-    private var isClosing = false
+    /// A close transition is running: toggles reopen the logically hidden panel from its current
+    /// position. Read and written by `MenuBarPanelController+Presentation.swift`.
+    var isClosing = false
     /// Bumped on every show, so stale presentation completions cannot hide a reopened panel.
-    private var presentationGeneration = 0
+    var presentationGeneration = 0
 
-    /// Notification Center measurements: 50 % at 85 ms, 63 % at 115 ms, 91 % at 198 ms.
-    private static let fadeInDuration: TimeInterval = 0.365
-    private static let fadeOutDuration: TimeInterval = 0.217
-    private static let fadeCurve = CAMediaTimingFunction(controlPoints: 0.44, 1, 0.54, 0.98)
-    private static let closeCurve = CAMediaTimingFunction(controlPoints: 0.20, 0, 0.50, 1)
-    private static let rightInset: CGFloat = 16
     /// Page-routing boundary used by the status menu; the app delegates to the existing Settings owner.
     var showSettings: (SettingsTab?) -> Void = { SettingsWindowOpener.shared.show(tab: $0) }
     /// Backend-routing boundary used by tests; production falls through to the installed store.
@@ -138,7 +137,8 @@ final class MenuBarPanelController: NSObject {
         }
     }
 
-    private weak var store: HomeStore?
+    /// Read-only outside this file; `install` / `uninstall` own the lifetime.
+    private(set) weak var store: HomeStore?
     private var labelTimer: Timer?
     private var pressTimer: Timer?
     private var pressStartedAt: TimeInterval = 0
@@ -230,6 +230,7 @@ final class MenuBarPanelController: NSObject {
         panelWindow?.orderOut(nil)
         panelWindow?.contentView = nil
         panelWindow = nil
+        hostedPanelTheme = nil
         if let statusItem {
             NSStatusBar.system.removeStatusItem(statusItem)
         }
@@ -724,228 +725,77 @@ final class MenuBarPanelController: NSObject {
         }
     }
 
-    func showPanel() {
-        guard let store else { return }
-        let panel = panelWindow ?? Self.makePanel()
+    // MARK: - Panel Content
+
+    /// Creates the window on demand and records it. Presentation only reads `panelWindow`.
+    func ensurePanelWindow(theme: PanelTheme) -> NSPanel {
+        if let panelWindow { return panelWindow }
+        let panel = Self.makePanel(theme: theme)
         panelWindow = panel
-        if grokBallSidecar == nil {
-            grokBallSidecar = GrokBallSidecarController(
-                store: store, parent: panel,
-                beginVoice: { [weak self] in self?.beginHoldToTalk() },
-                endVoice: { [weak self] in self?.endHoldToTalk() },
-                closePanel: { [weak self] in self?.hidePanel() }
-            )
-            installPanelGeometryObservers(for: panel)
-        }
-        panel.appearance = Self.preferredAppearance()
-        if panel.contentView == nil {
-            attachContent(to: panel)
-        }
-
-        let target = columnFrame
-        let wasVisible = panel.isVisible && !isClosing
-        let wasOnScreen = panel.isVisible
-        isClosing = false
-        if !wasVisible { presentationGeneration &+= 1 }
-        let generation = presentationGeneration
-        panel.ignoresMouseEvents = false
-        installMouseMonitors()
-        if presentsActively {
-            if !wasVisible {
-                grokBallSidecar?.setPresentationSuspended(true)
-                if !wasOnScreen {
-                    let reduced = shouldReduceMotion()
-                    panel.setFrame(reduced ? target : target.offsetBy(dx: target.width + Self.rightInset, dy: 0), display: true)
-                    panel.alphaValue = reduced ? 0 : 1
-                }
-            }
-            panel.hasShadow = false
-            presentBackdropShadow(around: panel.frame, under: panel)
-            // Agent activation is asynchronous; the hosting root also keeps glass active on frame one.
-            NSApp.activate(ignoringOtherApps: true)
-            panel.makeKeyAndOrderFront(nil)
-        } else {
-            panel.setFrame(target, display: true)
-            panel.alphaValue = 0
-            panel.hasShadow = false
-            panel.orderFront(nil)
-        }
-        setStatusItemHighlighted(true)
-        guard !wasVisible else {
-            grokBallSidecar?.synchronize()
-            return
-        }
-        store.setPanelVisible(true)
-        NotificationCenter.default.post(name: Self.didShowNotification, object: panel)
-        if presentsActively {
-            // Finish initial glass layout before starting the motion clock, avoiding a skipped first half.
-            panel.contentView?.layoutSubtreeIfNeeded()
-            panel.displayIfNeeded()
-            backdropWindow?.displayIfNeeded()
-            CATransaction.flush()
-            fadePanel(to: 1, duration: Self.fadeInDuration) { [weak self] in
-                guard let self, generation == self.presentationGeneration, !self.isClosing else { return }
-                self.grokBallSidecar?.setPresentationSuspended(false)
-                self.refreshPanelFrame()
-            }
-        } else {
-            grokBallSidecar?.setPresentationSuspended(false)
-        }
-    }
-
-    func hidePanel() {
-        guard let panel = panelWindow, panel.isVisible, !isClosing else { return }
-        // #146 §5.2：点面板外、⌘Tab、打开设置、Esc 阶梯都会走到这里，排序会话不能比面板活得久。
-        // 必须在这里提交草稿，而不是依赖视图的 `onDisappear`——拖动中 `DragGesture.onEnded` 不保证执行。
-        LayoutUIState.shared.commitRoomOrderIfNeeded()
-        grokBallSidecar?.setPresentationSuspended(true)
-        store?.dismissGrokBallStage()
-        restoreStatusItemHighlight()
-        store?.setPanelVisible(false)
-        if presentsActively {
-            // Hide logically now; order out only after the window and its shadow leave the screen.
-            isClosing = true
-            panel.ignoresMouseEvents = true
-            let generation = presentationGeneration
-            fadePanel(to: 0, duration: Self.fadeOutDuration) { [weak self] in
-                guard let self, self.isClosing, generation == self.presentationGeneration else { return }
-                self.isClosing = false
-                panel.ignoresMouseEvents = false
-                self.hideBackdropShadow()
-                panel.orderOut(nil)
-            }
-        } else {
-            hideBackdropShadow()
-            panel.orderOut(nil)
-        }
-        // The SwiftUI tree stays alive, exactly like a `.window`-style `MenuBarExtra`: scroll
-        // position, the search field text and layout-editing state survive a close/reopen.
-        NotificationCenter.default.post(name: Self.didHideNotification, object: panel)
-    }
-
-    /// Retarget the current window position, keeping the full shadow in the same animation group.
-    /// Reduce Motion keeps the final geometry and cross-fades over 0.2 seconds instead.
-    private func fadePanel(to alpha: CGFloat, duration: TimeInterval, completion: (@MainActor @Sendable () -> Void)? = nil) {
-        guard let panel = panelWindow else { return }
-        let target = columnFrame
-        let reduced = shouldReduceMotion()
-        let destination = alpha == 1 ? target : target.offsetBy(dx: target.width + Self.rightInset, dy: 0)
-        if reduced {
-            panel.setFrame(target, display: true)
-            backdropWindow?.setFrame(target.insetBy(dx: -Self.backdropBleed, dy: -Self.backdropBleed), display: true)
-        }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = reduced ? 0.2 : duration
-            context.timingFunction = alpha == 1 ? Self.fadeCurve : Self.closeCurve
-            if reduced {
-                panel.animator().alphaValue = alpha
-                backdropWindow?.animator().alphaValue = alpha
-            } else {
-                panel.alphaValue = 1
-                backdropWindow?.alphaValue = 1
-                panel.animator().setFrame(destination, display: true)
-                backdropWindow?.animator().setFrame(destination.insetBy(dx: -Self.backdropBleed, dy: -Self.backdropBleed), display: true)
-            }
-        } completionHandler: {
-            MainActor.assumeIsolated { completion?() }
-        }
-    }
-
-    /// The column under the status item on the item's own screen.
-    private var columnFrame: NSRect {
-        Self.frame(for: Self.preferredContentSize(screen: statusScreen), anchor: statusAnchor, screen: statusScreen)
-    }
-
-    /// Re-applies the column frame after a screen or preference change. No-op while closed.
-    private func refreshPanelFrame() {
-        guard let panel = panelWindow, isPanelVisible, grokBallSidecar?.isPresentationSuspended != true else { return }
-        let target = columnFrame
-        if panel.frame != target {
-            panel.setFrame(target, display: true)
-        }
-        if presentsActively {
-            presentBackdropShadow(around: target, under: panel)
-        }
-        grokBallSidecar?.synchronize()
-    }
-
-    private static func makePanel() -> NSPanel {
-        let panel = MenuBarPanel(
-            contentRect: NSRect(origin: .zero, size: preferredContentSize()),
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false
-        )
-        panel.isFloatingPanel = true
-        panel.level = .statusBar
-        panel.hidesOnDeactivate = false
-        panel.isReleasedWhenClosed = false
-        panel.becomesKeyOnlyIfNeeded = false
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = false
-        panel.animationBehavior = .none
-        panel.isMovable = false
-        panel.isMovableByWindowBackground = false
-        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
-        panel.appearance = preferredAppearance()
-        panel.contentView = nil
         return panel
     }
 
-    /// Mirrors `AppAppearance` onto the AppKit panel so materials, dynamic `NSColor`s, menus and
-    /// tooltips match the SwiftUI scheme.
-    static func preferredAppearance() -> NSAppearance? {
-        let raw = UserDefaults.standard.string(forKey: AppAppearance.storageKey)
-        return (raw.flatMap(AppAppearance.init(rawValue:)) ?? .system).nsAppearance
+    /// One Grok ball per panel; it is created with the first open and reused for the window's life.
+    func prepareSidecar(for panel: NSPanel) {
+        guard grokBallSidecar == nil, let store else { return }
+        grokBallSidecar = GrokBallSidecarController(
+            store: store, parent: panel,
+            beginVoice: { [weak self] in self?.beginHoldToTalk() },
+            endVoice: { [weak self] in self?.endHoldToTalk() },
+            closePanel: { [weak self] in self?.hidePanel() }
+        )
+        installPanelGeometryObservers(for: panel)
     }
 
-    private func attachContent(to panel: NSPanel) {
-        guard let store else { return }
-        let hosting = NSHostingView(rootView: ControlCenterPanel(store: store).environment(\.appearsActive, true))
+    /// Installs the theme's root view. Same theme → keeps the live tree, so scroll position, search
+    /// text and layout-editing state survive a close/reopen.
+    func refreshPanelContent(theme: PanelTheme) {
+        guard let panel = panelWindow, let store else { return }
+        guard panel.contentView == nil || hostedPanelTheme != theme else { return }
+        if hostedPanelTheme == .liquidGlass {
+            // Leaving the glass tree behind: its readability backdrop must not outlive it.
+            hideBackdropShadow()
+        }
+        panel.contentView = nil
+        let hosting = NSHostingView(rootView: Self.panelRoot(store: store, theme: theme))
         hosting.frame = NSRect(origin: .zero, size: panel.frame.size)
         hosting.autoresizingMask = [.width, .height]
-        // The column's size comes from the screen, not the SwiftUI content; without this the
-        // hosting view shrinks the window to the content's ideal height on every layout.
-        hosting.sizingOptions = []
         hosting.wantsLayer = true
-        hosting.layer?.cornerRadius = 0
-        hosting.layer?.masksToBounds = false
+        switch theme {
+        case .classic:
+            // The card draws its own opaque surface; AppKit clips it to the rounded window.
+            hosting.layer?.cornerRadius = Self.panelCornerRadius
+            hosting.layer?.masksToBounds = true
+        case .liquidGlass:
+            // The column's size comes from the screen, not the SwiftUI content; without this the
+            // hosting view shrinks the window to the content's ideal height on every layout.
+            hosting.sizingOptions = []
+            hosting.layer?.cornerRadius = 0
+            hosting.layer?.masksToBounds = false
+        }
+        // Record the theme before the view gains its window: `onAppear` may call back into
+        // `updatePanelSize`, which only acts while a classic tree is installed.
+        hostedPanelTheme = theme
         panel.contentView = hosting
         panel.initialFirstResponder = hosting
         _ = panel.makeFirstResponder(hosting)
     }
 
-    /// Fixed width; the height runs from under the menu bar to the bottom of the visible frame.
-    static func preferredContentSize(screen: NSScreen? = nil) -> NSSize {
-        let available = (screen ?? NSScreen.main)?.visibleFrame.height ?? 900
-        return NSSize(width: panelWidth, height: max(320, available - topGap - screenMargin))
+    /// Drops the hosting tree so the next open builds the other theme's root view. The readability
+    /// backdrop belongs to the Liquid Glass tree, so it leaves with it — including mid-close.
+    func dropPanelContent() {
+        hideBackdropShadow()
+        panelWindow?.contentView = nil
+        hostedPanelTheme = nil
     }
 
-    // MARK: - Positioning
-
-    private var statusAnchor: NSRect? {
-        guard let button = statusItem?.button, let window = button.window else { return nil }
-        return window.convertToScreen(button.convert(button.bounds, to: nil))
-    }
-
-    private var statusScreen: NSScreen? {
-        statusItem?.button?.window?.screen ?? NSScreen.main
-    }
-
-    /// Right-aligns the column on the status item's screen, with its top below the menu bar.
-    /// The column runs down to the screen margin; detached anchors fall back to the visible top.
-    private static func frame(for size: NSSize, anchor: NSRect?, screen: NSScreen?) -> NSRect {
-        let visible = screen?.visibleFrame ?? NSScreen.main?.visibleFrame
-            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let width = min(size.width, visible.width - screenMargin - rightInset)
-        let x = visible.maxX - width - rightInset
-        let bottom = visible.minY + screenMargin
-        // An anchor outside the visible frame (a hidden or detached item) falls back to the top edge.
-        let anchorTop = anchor?.minY ?? visible.maxY
-        let top = (anchorTop > bottom + 320 && anchorTop <= visible.maxY + 1 ? anchorTop : visible.maxY) - topGap
-        let height = max(min(size.height, top - bottom), 320)
-        return NSRect(x: x.rounded(), y: (top - height).rounded(), width: width, height: height.rounded())
+    private static func panelRoot(store: HomeStore, theme: PanelTheme) -> AnyView {
+        switch theme {
+        case .classic:
+            return AnyView(ClassicControlCenterPanel(store: store))
+        case .liquidGlass:
+            return AnyView(ControlCenterPanel(store: store).environment(\.appearsActive, true))
+        }
     }
 
     // MARK: - Status Item Gesture
@@ -1161,11 +1011,11 @@ final class MenuBarPanelController: NSObject {
 
     /// Keeps the status item selected while its control-center panel remains visible, and otherwise
     /// preserves the transient pressed appearance only for an active primary gesture.
-    private func restoreStatusItemHighlight() {
+    func restoreStatusItemHighlight() {
         setStatusItemHighlighted(isPanelVisible || isStatusItemPressActive)
     }
 
-    private func setStatusItemHighlighted(_ highlighted: Bool) {
+    func setStatusItemHighlighted(_ highlighted: Bool) {
         Self.setStatusItemHighlight(on: statusItem?.button, highlighted: highlighted)
     }
 
@@ -1299,7 +1149,7 @@ final class MenuBarPanelController: NSObject {
         hidePanel()
     }
 
-    private func installMouseMonitors() {
+    func installMouseMonitors() {
         guard localMouseMonitor == nil else { return }
         let clicks: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: clicks) { [weak self] event in
@@ -1428,23 +1278,13 @@ final class MenuBarPanelController: NSObject {
         hidePanel()
     }
 
-    func handleScreenParametersChanged() {
-        refreshPanelFrame()
-    }
-
-    func handlePreferencesChanged() {
-        panelWindow?.appearance = Self.preferredAppearance()
-        grokBallSidecarWindow?.appearance = Self.preferredAppearance()
-        refreshPanelFrame()
-    }
-
     // MARK: - Control Center Readability Shadow
 
     /// Keep the full blur footprint while the column travels across the screen edge.
     static let backdropBleed: CGFloat = 72
 
     /// Keep the shadow's column geometry intact; the display clips the off-screen portion.
-    private func presentBackdropShadow(around panelFrame: NSRect, under panel: NSPanel) {
+    func presentBackdropShadow(around panelFrame: NSRect, under panel: NSPanel) {
         let frame = panelFrame.insetBy(dx: -Self.backdropBleed, dy: -Self.backdropBleed)
         let backdrop = backdropWindow ?? Self.makeBackdropWindow(frame: frame)
         backdropWindow = backdrop
@@ -1456,7 +1296,7 @@ final class MenuBarPanelController: NSObject {
         backdrop.order(.below, relativeTo: panel.windowNumber)
     }
 
-    private func hideBackdropShadow() {
+    func hideBackdropShadow() {
         guard let backdrop = backdropWindow, backdrop.isVisible else { return }
         backdrop.orderOut(nil)
         backdrop.alphaValue = 0
