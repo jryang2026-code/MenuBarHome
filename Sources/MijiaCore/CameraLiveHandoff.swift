@@ -91,6 +91,14 @@ public enum CameraWindowFrames {
     }
 }
 
+/// Entering Picture in Picture, or opening a hidden panel, replaces the on-screen frame.
+/// The maximize flag has to drop with that frame, or the next maximize click restores.
+public enum CameraPanelMaximize {
+    public static func stateAfterReplacingHiddenFrame() -> (isMaximized: Bool, keepsFrameBeforeMaximize: Bool) {
+        (false, false)
+    }
+}
+
 /// `stop()` asks Picture in Picture to come back. A later invalidate must not turn that into a close.
 public enum PictureInPictureCloseDecision {
     public static func clearRestoreOnInvalidate(restoreAlreadyRequested: Bool) -> Bool {

@@ -5,6 +5,7 @@ import SwiftUI
 /// Drag surface for a camera with a physical gimbal. It sits above the video and below the HUD
 /// buttons, so a press-drag turns the camera while the title bar keeps dragging the window.
 struct CameraPTZDragSurface: NSViewRepresentable {
+    var rotationDegrees: Int = 0
     var onBegan: (CameraPTZPoint) -> Void
     var onMoved: (CameraPTZPoint) -> Void
     var onEnded: () -> Void
@@ -16,6 +17,7 @@ struct CameraPTZDragSurface: NSViewRepresentable {
         view.onMoved = onMoved
         view.onEnded = onEnded
         view.onDoubleClick = onDoubleClick
+        view.rotationDegrees = rotationDegrees
         return view
     }
 
@@ -24,6 +26,7 @@ struct CameraPTZDragSurface: NSViewRepresentable {
         nsView.onMoved = onMoved
         nsView.onEnded = onEnded
         nsView.onDoubleClick = onDoubleClick
+        nsView.rotationDegrees = rotationDegrees
     }
 }
 
@@ -32,6 +35,7 @@ final class CameraPTZDragView: NSView {
     var onMoved: ((CameraPTZPoint) -> Void)?
     var onEnded: (() -> Void)?
     var onDoubleClick: (() -> Void)?
+    var rotationDegrees: Int = 0
     private var hasPushedCursor = false
 
     override var acceptsFirstResponder: Bool { true }
@@ -81,7 +85,13 @@ final class CameraPTZDragView: NSView {
     /// AppKit view coordinates grow up; the planner treats y as growing down.
     private func point(for event: NSEvent) -> CameraPTZPoint {
         let local = convert(event.locationInWindow, from: nil)
-        return CameraPTZPoint(x: local.x, y: bounds.height - local.y)
+        let unrotated = CameraPTZPoint(x: local.x, y: bounds.height - local.y)
+        return CameraPTZDragPlanner.sensorPoint(
+            from: unrotated,
+            width: bounds.width,
+            height: bounds.height,
+            degrees: rotationDegrees
+        )
     }
 }
 

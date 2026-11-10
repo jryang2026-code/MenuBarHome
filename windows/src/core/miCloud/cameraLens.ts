@@ -50,7 +50,9 @@ function containsAffirmedWord(name: string, word: string): boolean {
 /** A whole word or a known phrase. `Individual` and `不是双摄` are one lens. */
 function nameSelectsSecondLens(name: string): boolean {
   return containsAffirmedPhrase(name, "双镜头")
+    || containsAffirmedPhrase(name, "雙鏡頭")
     || containsAffirmedPhrase(name, "双摄")
+    || containsAffirmedPhrase(name, "雙攝")
     || containsAffirmedWord(name, "dual");
 }
 

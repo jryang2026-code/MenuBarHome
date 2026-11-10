@@ -334,6 +334,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         if !panel.isVisible {
             let initialSize = isExpandedSize ? Self.expandedSize : Self.compactSize
             panel.setFrame(initialFrame(for: initialSize), display: true)
+            clearMaximizedBecauseFrameWasReplaced()
         }
         if presentsActively {
             panel.alphaValue = 1
@@ -444,6 +445,14 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         )
     }
 
+    private func clearMaximizedBecauseFrameWasReplaced() {
+        let cleared = CameraPanelMaximize.stateAfterReplacingHiddenFrame()
+        isMaximized = cleared.isMaximized
+        if !cleared.keepsFrameBeforeMaximize {
+            frameBeforeMaximize = nil
+        }
+    }
+
     func storePanelFrame() {
         guard !isDoorbellPlacement, let panel = panelWindow else { return }
         let frame = CameraWindowFrames.frameToRemember(
@@ -534,6 +543,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                 self.doorbellOwnsClose = false
                 self.setURLFieldActive(false)
                 self.storePanelFrame()
+                self.clearMaximizedBecauseFrameWasReplaced()
                 self.panelWindow?.orderOut(nil)
             }
         }
@@ -1307,6 +1317,7 @@ struct CameraLivePanelView: View {
                 viewportContent
                 if controller.isPTZEnabled {
                     CameraPTZDragSurface(
+                        rotationDegrees: videoRotationDegrees,
                         onBegan: { controller.ptzDragBegan(at: $0) },
                         onMoved: { controller.ptzDragMoved(to: $0) },
                         onEnded: { controller.ptzDragEnded() },

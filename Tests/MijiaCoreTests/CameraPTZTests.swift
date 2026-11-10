@@ -89,6 +89,27 @@ struct CameraPTZDragPlannerTests {
         #expect(planner.moved(to: .init(x: 110, y: 100), time: 0.1, capability: capability) == [.move(.right)])
     }
 
+    @Test("A rotated picture maps a rightward drag to the sensor direction at 0, 90, 180, and 270")
+    func rotatedDragFollowsThePicture() {
+        let width = 200.0
+        let height = 100.0
+        let center = CameraPTZPoint(x: 100, y: 50)
+        let right = CameraPTZPoint(x: 150, y: 50)
+        let expected: [Int: CameraPTZDirection] = [0: .right, 90: .up, 180: .left, 270: .down]
+        for degrees in [0, 90, 180, 270] {
+            let mappedRight = CameraPTZDragPlanner.sensorPoint(from: right, width: width, height: height, degrees: degrees)
+            let mappedCenter = CameraPTZDragPlanner.sensorPoint(from: center, width: width, height: height, degrees: degrees)
+            var drag = planner()
+            drag.began(at: mappedCenter, time: 0)
+            let commands = drag.moved(to: mappedRight, time: 0.1, capability: capability)
+            #expect(commands == [.move(expected[degrees]!)])
+        }
+        #expect(CameraPTZDragPlanner.sensorPoint(from: right, width: width, height: height, degrees: 0) == right)
+        #expect(CameraPTZDragPlanner.sensorPoint(from: right, width: width, height: height, degrees: 90) == CameraPTZPoint(x: 100, y: 0))
+        #expect(CameraPTZDragPlanner.sensorPoint(from: right, width: width, height: height, degrees: 180) == CameraPTZPoint(x: 50, y: 50))
+        #expect(CameraPTZDragPlanner.sensorPoint(from: right, width: width, height: height, degrees: 270) == CameraPTZPoint(x: 100, y: 100))
+    }
+
     @Test("Dragging right, left, up and down maps to the camera moving the same way")
     func directions() {
         var planner = planner()

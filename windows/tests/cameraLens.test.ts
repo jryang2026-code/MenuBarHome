@@ -11,6 +11,8 @@ describe("camera lens names", () => {
     assert.equal(cameraLensesFor("vendor.camera.unknown", "客厅双摄").length, 2);
     assert.equal(cameraLensesFor("vendor.camera.unknown", "Front dual-lens").length, 2);
     assert.equal(cameraLensesFor("vendor.camera.unknown", "双镜头摄像机").length, 2);
+    assert.equal(cameraLensesFor("vendor.camera.unknown", "客廳雙攝").length, 2);
+    assert.equal(cameraLensesFor("vendor.camera.unknown", "雙鏡頭攝像機").length, 2);
   });
 
   it("does not treat a substring or a negation as a second lens", () => {
@@ -18,6 +20,7 @@ describe("camera lens names", () => {
     assert.equal(cameraLensesFor("vendor.camera.unknown", "Individual").length, 0);
     assert.equal(cameraLensesFor("vendor.camera.unknown", "不是双摄").length, 0);
     assert.equal(cameraLensesFor("vendor.camera.unknown", "不是双镜头").length, 0);
+    assert.equal(cameraLensesFor("vendor.camera.unknown", "不是雙攝").length, 0);
     assert.equal(cameraLensesFor("vendor.camera.unknown", "not dual").length, 0);
   });
 });

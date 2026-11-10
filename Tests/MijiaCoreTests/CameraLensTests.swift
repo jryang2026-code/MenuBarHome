@@ -19,6 +19,8 @@ struct CameraLensTests {
         #expect(CameraLensCatalog.lenses(for: "vendor.camera.unknown", name: "客厅双摄").count == 2)
         #expect(CameraLensCatalog.lenses(for: "vendor.camera.unknown", name: "Front dual-lens").count == 2)
         #expect(CameraLensCatalog.lenses(for: "vendor.camera.unknown", name: "双镜头摄像机").count == 2)
+        #expect(CameraLensCatalog.lenses(for: "vendor.camera.unknown", name: "客廳雙攝").count == 2)
+        #expect(CameraLensCatalog.lenses(for: "vendor.camera.unknown", name: "雙鏡頭攝像機").count == 2)
     }
 
     @Test("A name that only contains those letters is still one lens")
@@ -27,6 +29,7 @@ struct CameraLensTests {
         #expect(CameraLensCatalog.lenses(for: "vendor.camera.unknown", name: "Individual").isEmpty)
         #expect(CameraLensCatalog.lenses(for: "vendor.camera.unknown", name: "不是双摄").isEmpty)
         #expect(CameraLensCatalog.lenses(for: "vendor.camera.unknown", name: "不是双镜头").isEmpty)
+        #expect(CameraLensCatalog.lenses(for: "vendor.camera.unknown", name: "不是雙攝").isEmpty)
         #expect(CameraLensCatalog.lenses(for: "vendor.camera.unknown", name: "not dual").isEmpty)
     }
 

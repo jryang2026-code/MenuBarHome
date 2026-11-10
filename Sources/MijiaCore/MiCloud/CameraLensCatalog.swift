@@ -27,7 +27,9 @@ public enum CameraLensCatalog {
     /// letters of "dual", and `不是双摄` contains `双摄`, but neither camera has a second lens.
     static func nameSelectsSecondLens(_ name: String) -> Bool {
         containsAffirmedPhrase(name, phrase: "双镜头")
+            || containsAffirmedPhrase(name, phrase: "雙鏡頭")
             || containsAffirmedPhrase(name, phrase: "双摄")
+            || containsAffirmedPhrase(name, phrase: "雙攝")
             || containsAffirmedWord(name, word: "dual")
     }
 

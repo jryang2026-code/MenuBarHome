@@ -167,6 +167,39 @@ public struct CameraPTZDragPlanner: Sendable {
         self.timing = timing
     }
 
+    /// Maps a drag on the rotated picture back to the unrotated sensor.
+    /// The drag surface is not inside the rotated media, so a 90 degree picture
+    /// would otherwise pan when the user drags vertically.
+    public static func sensorPoint(
+        from point: CameraPTZPoint,
+        width: Double,
+        height: Double,
+        degrees: Int
+    ) -> CameraPTZPoint {
+        let normalized = ((degrees % 360) + 360) % 360
+        let centerX = width / 2
+        let centerY = height / 2
+        let dx = point.x - centerX
+        let dy = point.y - centerY
+        let rotatedX: Double
+        let rotatedY: Double
+        switch normalized {
+        case 90:
+            rotatedX = dy
+            rotatedY = -dx
+        case 180:
+            rotatedX = -dx
+            rotatedY = -dy
+        case 270:
+            rotatedX = -dy
+            rotatedY = dx
+        default:
+            rotatedX = dx
+            rotatedY = dy
+        }
+        return CameraPTZPoint(x: centerX + rotatedX, y: centerY + rotatedY)
+    }
+
     public mutating func began(at point: CameraPTZPoint, time: TimeInterval) {
         start = point
         beganAt = time
