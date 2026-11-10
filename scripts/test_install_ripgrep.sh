@@ -218,6 +218,65 @@ else
     printf 'stdout:\n%s\nfile:\n%s\nlog:\n%s\n' "$stdout" "$(cat "$home/.local/bin/rg" 2>/dev/null || true)" "$(cat "$RG_TEST_LOG")" >&2
 fi
 
+sha_tools="$tmp/sha-tools"
+mkdir -p "$sha_tools"
+for cmd in mkdir mktemp tar gzip chmod cp rm id head cat; do
+    ln -s "$tools/$cmd" "$sha_tools/$cmd"
+done
+ln -s "$(command -v shasum)" "$sha_tools/shasum"
+rm -f "$bin/sha256sum" "$bin/shasum" "$bin/rg"
+rm -rf "$home/.local"
+: >"$RG_TEST_LOG"
+set +e
+stdout="$(PATH="$bin:$sha_tools" RG_TEST_KERNEL=Linux RG_TEST_MACHINE=x86_64 RG_TEST_CURL=bad RG_TEST_APT=ok "$bash_bin" "$root/scripts/install_ripgrep.sh" 2>"$err")"
+status=$?
+set -e
+assert_case "没有 sha256sum 时坏包被 shasum 拒绝" 1
+if grep -q 'SHA-256' "$err" && ! grep -q 'apt-get' "$RG_TEST_LOG"; then
+    pass "shasum 校验失败时终止，不改用系统包"
+else
+    fail "shasum 校验失败仍继续安装"
+    printf 'stderr:\n%s\nlog:\n%s\n' "$(cat "$err")" "$(cat "$RG_TEST_LOG")" >&2
+fi
+
+printf '%s\n' '#!/bin/bash' 'printf '\''shasum\n'\'' >> "${RG_TEST_LOG:?}"' 'cat >/dev/null' 'exit 0' >"$bin/shasum"
+chmod +x "$bin/shasum"
+rm -f "$bin/rg"
+rm -rf "$home/.local"
+: >"$RG_TEST_LOG"
+set +e
+stdout="$(PATH="$bin:$sha_tools" RG_TEST_KERNEL=Linux RG_TEST_MACHINE=x86_64 RG_TEST_CURL=ok RG_TEST_APT=ok "$bash_bin" "$root/scripts/install_ripgrep.sh" 2>"$err")"
+status=$?
+set -e
+assert_case "没有 sha256sum 时 shasum 放行预编译包" 0
+if grep -qx 'shasum' "$RG_TEST_LOG" && ! grep -q 'apt-get' "$RG_TEST_LOG" && printf '%s\n' "$stdout" | grep -q 'ripgrep 14.1.1'; then
+    pass "没有 sha256sum 时改走 shasum"
+else
+    fail "没有调用 shasum，或改用了系统包"
+    printf 'stdout:\n%s\nlog:\n%s\n' "$stdout" "$(cat "$RG_TEST_LOG")" >&2
+fi
+rm -f "$bin/shasum"
+
+# Mac pre-commit has shasum and no sha256sum. The harness must finish on that PATH.
+if [[ "${RG_TEST_SHASUM_ONLY:-0}" != 1 ]]; then
+    shim="$(mktemp -d)"
+    for cmd in bash dirname mkdir mktemp tar gzip chmod cp rm id head cat python3 ln grep sed; do
+        ln -s "$(command -v "$cmd")" "$shim/$cmd"
+    done
+    ln -s "$(command -v shasum)" "$shim/shasum"
+    set +e
+    shim_out="$(RG_TEST_SHASUM_ONLY=1 PATH="$shim" "$bash_bin" "$root/scripts/test_install_ripgrep.sh" 2>&1)"
+    shim_status=$?
+    set -e
+    if [[ "$shim_status" == 0 ]]; then
+        pass "PATH 只有 shasum、没有 sha256sum 时自测通过"
+    else
+        fail "PATH 只有 shasum、没有 sha256sum 时自测失败，退出 ${shim_status}"
+        printf '%s\n' "$shim_out" | tail -n 40 >&2
+    fi
+    rm -rf "$shim"
+fi
+
 if [[ "$failures" -eq 0 ]]; then
     exit 0
 fi

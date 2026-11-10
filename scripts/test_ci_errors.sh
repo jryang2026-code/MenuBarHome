@@ -30,6 +30,14 @@ if [[ "$joined" == *"--log-failed"* ]]; then
     fi
     exit 0
 fi
+if [[ "$joined" == *"run list"* ]]; then
+    if [[ -f "$fixture/runs.json" ]]; then
+        cat "$fixture/runs.json"
+    else
+        printf '%s\n' '[]'
+    fi
+    exit 0
+fi
 if [[ "$joined" == *"--json jobs"* ]]; then
     cat "$fixture/jobs.json"
     exit 0
@@ -140,6 +148,41 @@ if [[ "$status" == 2 ]]; then
 else
     fail "缺少 run id 时应退出 2，实际 $status"
 fi
+
+rm -f "$tmp/fix/log.txt" "$tmp/fix/runs.json"
+cat >"$tmp/fix/jobs.json" <<'EOF'
+{"jobs":[{"name":"macos","conclusion":"cancelled","databaseId":77,"steps":[]}],"event":"pull_request","headBranch":"cursor/example","headSha":"abc","createdAt":"2026-11-10T02:26:54Z","databaseId":100,"workflowName":"CI"}
+EOF
+cat >"$tmp/fix/ann-77.json" <<'EOF'
+[
+  [{"annotation_level":"failure","message":"Canceling since a higher priority waiting request for ci-CI-58 exists"}]
+]
+EOF
+run_case 100 0 "$(printf '%s\n' "=== cancelled (superseded)" "macos" "=== annotations" "macos	failure	Canceling since a higher priority waiting request for ci-CI-58 exists")"
+
+cat >"$tmp/fix/jobs.json" <<'EOF'
+{"jobs":[{"name":"ci","conclusion":"cancelled","databaseId":22,"steps":[]}],"event":"pull_request","headBranch":"cursor/example","headSha":"old","createdAt":"2026-11-10T02:26:54Z","databaseId":42742825141,"workflowName":"CI"}
+EOF
+cat >"$tmp/fix/ann-22.json" <<'EOF'
+[[]]
+EOF
+cat >"$tmp/fix/runs.json" <<'EOF'
+[{"databaseId":42743559490,"createdAt":"2026-11-10T02:33:17Z","headSha":"new","headBranch":"cursor/example","event":"pull_request"}]
+EOF
+run_case 42742825141 0 "$(printf '%s\n' "=== cancelled (superseded)" "ci")"
+
+cat >"$tmp/fix/jobs.json" <<'EOF'
+{"jobs":[{"name":"macos-test","conclusion":"cancelled","databaseId":88,"steps":[]}],"event":"push","headBranch":"main","headSha":"abc","createdAt":"2026-11-10T02:26:54Z","databaseId":50,"workflowName":"CI"}
+EOF
+cat >"$tmp/fix/ann-88.json" <<'EOF'
+[
+  [{"annotation_level":"failure","message":"The job was not acquired by Runner of type hosted"}]
+]
+EOF
+cat >"$tmp/fix/runs.json" <<'EOF'
+[{"databaseId":60,"createdAt":"2026-11-10T03:00:00Z","headSha":"def","headBranch":"main","event":"push"}]
+EOF
+run_case 50 0 "$(printf '%s\n' "=== 取消且 steps=0（runner 未分配，基础设施，不是代码）" "macos-test" "=== annotations" "macos-test	failure	The job was not acquired by Runner of type hosted")"
 
 if [[ "$failures" -eq 0 ]]; then
     exit 0

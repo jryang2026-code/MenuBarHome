@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 root="$(pwd)"
+unset GH_FORCE_TTY
 
 failures=0
 pass() { printf 'PASS %s\n' "$1"; }
@@ -31,6 +32,21 @@ if [[ "$joined" == *"pr view"* ]]; then
     exit 0
 fi
 if [[ "$joined" == *"pr checks"* ]]; then
+    if [[ "${PR_READY_CHECKS_MODE:-}" == error ]]; then
+        echo "HTTP 502" >&2
+        exit 1
+    fi
+    if [[ "${PR_READY_CHECKS_MODE:-}" == pending ]]; then
+        exit 8
+    fi
+    if [[ "$joined" == *"--json"* ]]; then
+        cat "$fixture/checks.json"
+        exit 1
+    fi
+    if [[ "${GH_FORCE_TTY:-}" == 1 ]]; then
+        printf '%s\n' 'macos-test fail 2m https://example.test/2'
+        exit 1
+    fi
     cat "$fixture/checks.txt"
     exit 1
 fi
@@ -66,6 +82,14 @@ linux-core	pass	1m	https://example.test/1
 macos-test	fail	2m	https://example.test/2
 windows-core (ubuntu-latest, 22)	pending	0	https://example.test/3
 raycast	skipping	0	https://example.test/4
+EOF
+cat >"$tmp/fix/checks.json" <<'EOF'
+[
+  {"name":"linux-core","state":"SUCCESS","bucket":"pass"},
+  {"name":"macos-test","state":"FAILURE","bucket":"fail"},
+  {"name":"windows-core (ubuntu-latest, 22)","state":"PENDING","bucket":"pending"},
+  {"name":"raycast","state":"NEUTRAL","bucket":"skipping"}
+]
 EOF
 python3 -I - "$tmp/fix/issues.json" "$old_sha" "$head_sha" <<'PY'
 import json, sys
@@ -166,6 +190,7 @@ with open(path, "w", encoding="utf-8") as fh:
     json.dump(pages, fh)
 PY
 printf '%s\n' 'linux-core	pass	1m	https://example.test/1' >"$tmp/fix/checks.txt"
+printf '%s\n' '[{"name":"linux-core","state":"SUCCESS","bucket":"pass"}]' >"$tmp/fix/checks.json"
 printf '%s\n' '[[]]' >"$tmp/fix/reviews.json"
 stale="$(cat <<EOF
 head $head_sha BLOCKED
@@ -196,6 +221,34 @@ if [[ "$status" == 2 ]]; then
     pass "非数字 PR 号退出 2"
 else
     fail "非数字 PR 号应退出 2，实际 $status"
+fi
+
+status=0
+output="$(PR_READY_CHECKS_MODE=error PR_READY_FIXTURE="$tmp/fix" PATH="$bin:$PATH" bash "$root/scripts/pr-ready.sh" 60 2>"$tmp/err")" || status=$?
+if [[ "$status" != 0 ]] && printf '%s\n' "$output" | grep -q 'checks: error' && printf '%s\n' "$output" | grep -q 'HTTP 502' && ! printf '%s\n' "$output" | grep -q 'checks: none'; then
+    pass "gh pr checks 失败且没有检查行时退出非 0"
+else
+    fail "空的失败检查被当成全部通过，退出 $status"
+    printf 'stdout:\n%s\nstderr:\n%s\n' "$output" "$(cat "$tmp/err")" >&2
+fi
+
+status=0
+output="$(PR_READY_CHECKS_MODE=pending PR_READY_FIXTURE="$tmp/fix" PATH="$bin:$PATH" bash "$root/scripts/pr-ready.sh" 60 2>"$tmp/err")" || status=$?
+if [[ "$status" == 0 ]] && printf '%s\n' "$output" | grep -qx 'checks: pending'; then
+    pass "gh 退出 8 表示检查仍在进行"
+else
+    fail "退出 8 没有标成 pending，退出 $status"
+    printf '%s\n' "$output" >&2
+fi
+
+printf '%s\n' '[{"name":"macos-test","state":"FAILURE","bucket":"fail"}]' >"$tmp/fix/checks.json"
+status=0
+output="$(GH_FORCE_TTY=1 PR_READY_FIXTURE="$tmp/fix" PATH="$bin:$PATH" bash "$root/scripts/pr-ready.sh" 60 2>"$tmp/err")" || status=$?
+if [[ "$status" == 0 ]] && printf '%s\n' "$output" | grep -q 'macos-test: fail' && ! printf '%s\n' "$output" | grep -q 'checks: none'; then
+    pass "GH_FORCE_TTY=1 仍列出失败检查"
+else
+    fail "GH_FORCE_TTY=1 把失败检查藏起来了，退出 $status"
+    printf '%s\n' "$output" >&2
 fi
 
 if [[ "$failures" -eq 0 ]]; then
