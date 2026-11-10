@@ -2230,15 +2230,12 @@ struct MenuBarPanelControllerTests {
     @Test("Long-pressing a light card enters edit mode and bottom-right corner arc handle supports both drag resizing and tap cycling without reordering (#115)")
     func longPressOnLightCardEntersEditModeWithoutExpandingAndCyclesTileSizes() async throws {
         _ = NSApplication.shared
-        let previousLanguage = L10n.currentLanguage
-        L10n.currentLanguage = .zhHans
         let previousAppearance = UserDefaults.standard.string(forKey: AppAppearance.storageKey)
         UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
 
         let suite = "MenuBarPanelTests-resize-\(UUID().uuidString)"
         defer {
             UserDefaults.standard.removePersistentDomain(forName: suite)
-            L10n.currentLanguage = previousLanguage
             if let previousAppearance {
                 UserDefaults.standard.set(previousAppearance, forKey: AppAppearance.storageKey)
             }

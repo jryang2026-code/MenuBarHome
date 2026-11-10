@@ -225,15 +225,12 @@ struct CameraPTZDriverTests {
             errorReason: "write_failed"
         )
         await client.setStopResult(failed)
-        let previousLanguage = L10n.currentLanguage
-        L10n.currentLanguage = .zhHans
         configure(controller, deviceId: "cam-a", client: client)
         let gate = PTZRetryGate()
         controller.ptzStopRetryHold = { await gate.wait() }
         defer {
             gate.release()
             controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false)
-            L10n.currentLanguage = previousLanguage
         }
 
         let token = CameraPTZSessionToken(epoch: "e1", session: 9)
@@ -346,15 +343,12 @@ struct CameraPTZDriverTests {
         )
         let oldSession = CameraPTZStopResult(sent: false, confirmed: false, mode: .step)
         await client.setStopScript([failed, failed, oldSession])
-        let previousLanguage = L10n.currentLanguage
-        L10n.currentLanguage = .zhHans
         configure(controller, deviceId: "cam-a", client: client)
         let gate = PTZRetryGate()
         controller.ptzStopRetryHold = { await gate.wait() }
         defer {
             gate.release()
             controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false)
-            L10n.currentLanguage = previousLanguage
         }
 
         controller.ptzToken = CameraPTZSessionToken(epoch: "e1", session: 4)
