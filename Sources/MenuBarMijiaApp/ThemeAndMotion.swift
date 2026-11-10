@@ -519,6 +519,9 @@ extension View {
 
 public struct AdaptiveGlassContainer<Content: View>: View {
     @Environment(\.effectiveReduceTransparency) private var reduceTransparency
+    /// Edit badges are drawn over the cards; a container composites its merged glass above every
+    /// overlay, so while the layout is being edited the cards stand alone.
+    @Environment(\.isEditingLayout) private var isEditingLayout
     public var spacing: CGFloat
     @ViewBuilder public var content: () -> Content
 
@@ -529,7 +532,7 @@ public struct AdaptiveGlassContainer<Content: View>: View {
 
     @ViewBuilder
     public var body: some View {
-        if #available(macOS 26.0, *), !reduceTransparency {
+        if #available(macOS 26.0, *), !reduceTransparency, !isEditingLayout {
             // Adjacent glass shapes merge their edges only inside a container; without it every chip
             // draws its own rim and a row of buttons reads as a pile of separate panes.
             GlassEffectContainer(spacing: spacing) { content() }

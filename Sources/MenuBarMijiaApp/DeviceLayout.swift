@@ -272,8 +272,8 @@ struct LayoutEditDoneButton: View {
 /// never a long press) cards stay at scale 1.0 without jiggling; the hovered card shows the
 /// bottom-right corner arc grabber, which drags or taps between sizes (`1×1 ↔ 2×1 ↔ 2×2 ↔ 4×1`).
 /// A plain drag anywhere on a card reorders it with a subtle shadow while neighbours reflow along
-/// a critically damped 0.50 s spring. A 20 pt dark frosted `−` badge on the top-left removes the
-/// card from 常用 (and hides across all cards while a drag is in flight).
+/// a critically damped 0.50 s spring. The `−` badge is drawn by `LayoutRemoveBadge` above the glass
+/// container, which would otherwise composite neighbouring cards' glass over it.
 struct LayoutEditable: ViewModifier {
     @Environment(\.isEditingLayout) private var editing
     @Environment(\.effectiveReduceMotion) private var reduceMotion
@@ -288,8 +288,6 @@ struct LayoutEditable: ViewModifier {
     var onBeginResize: () -> Void = {}
     var onResizeDrag: (CGSize) -> Void = { _ in }
     var onEndResize: (CGSize, [TileResizeGestureMath.ResizeSample]) -> Void = { _, _ in }
-    /// Only cards in 常用 are edited here; `nil` hides the `−` badge for the rest.
-    var onRemove: (() -> Void)? = nil
 
     /// Gesture-scoped state lives here so per-pointermove updates never re-render the whole
     /// panel (#115, QuotaKeeper-style "only the active card needs layout").
@@ -324,28 +322,6 @@ struct LayoutEditable: ViewModifier {
         }
         .contentShape(Rectangle())
         .onHover { isCardHovered = $0 }
-        .overlay(alignment: .topLeading) {
-            if editing, !isDragging, !isAnyCardDragging, let onRemove {
-                Button(action: onRemove) {
-                    ZStack {
-                        Circle()
-                            .fill(reduceTransparency ? AnyShapeStyle(Color.black.opacity(0.78)) : AnyShapeStyle(.ultraThinMaterial))
-                        Circle()
-                            .fill(Color.black.opacity(reduceTransparency ? 0.20 : 0.48))
-                        Capsule(style: .continuous)
-                            .fill(Color.white.opacity(0.90))
-                            .frame(width: 9, height: 1.75)
-                    }
-                    .frame(width: 20, height: 20)
-                    .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .offset(x: -2, y: -2)
-                .accessibilityLabel(Text(L10n.tr("从常用移除", "Remove from Favorites")))
-                .panelHelp(L10n.tr("从常用移除（设备仍在下方的房间里）", "Remove from Favorites (the device stays in its room below)"))
-                .transition(.opacity)
-            }
-        }
         .overlay {
             if showsChrome {
                 CornerArcHandle(cornerRadius: arcCornerRadius, isActive: isHandleActive || isResizing)
@@ -361,7 +337,6 @@ struct LayoutEditable: ViewModifier {
             isHandleHovered = false
         }
     }
-
     /// The 28 pt hit area at the card's bottom-right corner. It stays mounted (and invisible) for
     /// every card while editing; the arc only draws once the pointer is over the card.
     private var resizeHandle: some View {
@@ -394,6 +369,41 @@ struct LayoutEditable: ViewModifier {
             .panelHelp(L10n.tr("拖拽或点击调整卡片大小：\(size.title)", "Drag or click to resize: \(size.title)"))
             .padding(.bottom, -4)
             .padding(.trailing, -4)
+    }
+}
+
+/// Control Center's `−` badge: a 20 pt dark frosted disc centred on the card's corner curve.
+struct LayoutRemoveBadge: View {
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
+    let frame: CGRect
+    let isCapsule: Bool
+    let action: () -> Void
+
+    /// The 45° point of the corner curve, minus the badge radius; a module card keeps the
+    /// measured (−2, −2) pt corner offset.
+    private var inset: CGFloat {
+        let radius = isCapsule ? frame.height / 2 : DesignTokens.Radius.module
+        return max(-2, radius * (1 - 1 / 2.squareRoot()) - 10)
+    }
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(reduceTransparency ? AnyShapeStyle(Color.black.opacity(0.78)) : AnyShapeStyle(.ultraThinMaterial))
+                Circle()
+                    .fill(Color.black.opacity(reduceTransparency ? 0.20 : 0.48))
+                Capsule(style: .continuous)
+                    .fill(Color.white.opacity(0.90))
+                    .frame(width: 9, height: 1.75)
+            }
+            .frame(width: 20, height: 20)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .position(x: frame.minX + inset + 10, y: frame.minY + inset + 10)
+        .accessibilityLabel(Text(L10n.tr("从常用移除", "Remove from Favorites")))
+        .panelHelp(L10n.tr("从常用移除（设备仍在下方的房间里）", "Remove from Favorites (the device stays in its room below)"))
     }
 }
 

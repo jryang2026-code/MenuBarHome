@@ -16,8 +16,7 @@ extension ControlCenterPanel {
             onCycleSize: { cycleSize(device) },
             onBeginResize: { beginResizeIfNeeded(device.id) },
             onResizeDrag: { translation in updateResize(device.id, translation: translation) },
-            onEndResize: { translation, samples in endResize(device.id, translation: translation, samples: samples) },
-            onRemove: favoriteRemoval(for: device)
+            onEndResize: { translation, samples in endResize(device.id, translation: translation, samples: samples) }
         )
     }
 
@@ -738,6 +737,25 @@ extension ControlCenterPanel {
                     }
                     .layoutValue(key: TileSpanKey.self, value: span)
                 }
+            }
+        }
+        .overlayPreferenceValue(TileFramesKey.self, alignment: .topLeading) { frames in
+            // `−` badges sit above the glass container: inside it, the cards' glass composites over
+            // anything a card draws past its own edge.
+            if isEditingLayout, !asRows, draggingId == nil {
+                GeometryReader { geo in
+                    let origin = geo.frame(in: .named(TileSpace.name)).origin
+                    ForEach(ordered) { dev in
+                        if let remove = favoriteRemoval(for: dev), let frame = frames[dev.id] {
+                            LayoutRemoveBadge(
+                                frame: frame.offsetBy(dx: -origin.x, dy: -origin.y),
+                                isCapsule: (spanMap[dev.id] ?? 12) <= 6 && tileSize(dev) != .hero,
+                                action: remove
+                            )
+                        }
+                    }
+                }
+                .transition(.opacity)
             }
         }
         .animation(reduceMotion ? nil : .spring(response: 0.50, dampingFraction: 1.0), value: ordered.map(\.id))
