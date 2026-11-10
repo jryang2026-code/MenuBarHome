@@ -35,8 +35,12 @@ _Avoid_: API Key、密码
 _Avoid_: Intranet（内网）、Trusted host（可信主机）
 
 **DeviceDeduplication（跨源设备去重合并）**：
-当 Home Assistant 与米家云端同时生效时，按硬件标识（`xiaomi_home` 的 `<server>_<did>`、裸 `did`、MAC 地址）及同房间唯一同款/同名规则识别同一台物理设备，并按「在线状态优先 → 可控能力评分优先 → 同分 Home Assistant 优先」选出单一胜出数据源驱动该 `SmartDevice` 卡片的纯函数合并过程。
+当 Home Assistant 与米家云端同时生效时，按硬件标识（`xiaomi_home` 的 `<server>_<did>`、裸 `did`、MAC 地址）及同房间唯一同款/同名规则识别同一台物理设备，并按「在线状态优先 → 可控能力评分优先 → 同分 Home Assistant 优先」选出单一胜出数据源驱动该 `SmartDevice` 卡片的纯函数合并过程。配对成一张卡时，`accountId` 取胜出设备的值。胜出设备没有账号时，取落败来源的值。
 _Avoid_: Cloud sync（云同步）、Entity bridge（实体桥接）
+
+**deviceBackends（卡片数据源表）**：
+`DeviceDeduplicator.merge` 为结果里的每张卡片写下当前驱动源，只接 Home Assistant 或只接米家时也写。演示模式的快照这张表是空的。LG 电视在快照之后插入面板，表里没有条目，`HomeStore.deviceBackend(for:)` 回退到 `homeBackend`。
+_Avoid_: activeBackends（本次快照包含的源）、pinnedDeviceSources（用户钉住的源）
 
 **MiSession（米家云端会话）**：
 通过小米账号二维码扫码登录获取并持久化在钥匙串中的会话凭证（含 `userId`、`ssecurity`、`serviceToken` 与区域），用于签名与加解密 `/app/*` 请求。这里的 RC4 是小米云 `api.io.mi.com` 私有接口的**传输层**加密（`MIOT-ENCRYPT-ALGORITHM: ENCRYPT-RC4`），不是端到端加密：指令与状态经小米服务器中转，服务器可读明文。
@@ -156,6 +160,10 @@ _Avoid_: Alarm（警报）、Push notification（远程推送）
 **ProactiveSuggestion（猜你想控推荐）**：
 结合用户全渠道操作习惯记忆（`UserHabitMemory`，涵盖时段与工作日/周末频次、时间衰减与动作序列预测，见 ADR-0009）、当前环境温湿度与在线设备，立即给出最多四项当前可执行的候选动作（`AssistantSuggestion`）；配置大模型时在后台刷新。动作不足四项时显示实际数量。
 _Avoid_: Static shortcut（静态快捷方式）、Random tip（随机提示）
+
+**pendingSuggestions（待点建议）**：
+Windows 命令栏里等用户点一下才执行的芯片（`MenuMijiaWindowsApp.pendingSuggestions`）。来源是刚解析完的计划，或本地高风险动作换成的二次确认。计划里的本地芯片以 `bare:on` 或 `bare:off` 开头，后面是设备 id 或 `all`。模型确认芯片的 id 是 `confirm`、`confirm:primary`，或 `confirm:` 加目标 id。二次确认的 id 是 `confirm:local`（本地高风险）或 `confirm:bare`（点了仍需确认的 `bare:on` 芯片）。习惯推荐在 `aiProactiveSuggestions`，不进这张表。macOS 模型计划里的 `jev:` 与 `chat:` 也不写入这个字段。
+_Avoid_: ProactiveSuggestion（猜你想控）、assistantSuggestions（macOS 命令栏）
 
 **GrokBall（AI 情绪表情球）**：
 控制面板外的球面双目动态组件，实时注视光标，并随睡眠、待机、聆听、思考、执行成功与异常状态切换表情；macOS 的默认、好奇和睡眠表情使用黑色球体与白色眼睛，支持自由拖动与长按 0.5 秒进入语音输入。轻点后最多展示四项设备 `ProactiveSuggestion`，macOS 根据球在主面板的左、右、上、下位置向外安排胶囊，并在屏幕边缘调整行列或换向；Windows 保留固定侧挂与纵向推荐。展开不改变主面板卡片布局，设备推荐支持撤销，场景可通过语音或文本指令执行。
