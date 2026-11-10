@@ -125,9 +125,9 @@ extension ControlCenterPanel {
         return stacks
     }
 
-    /// Pinned favorites and single-device groups never fold; edit mode opens everything.
+    /// Pinned favorites and single-device groups never fold; edit mode leaves stacks folded.
     func isStackOpen(_ stack: DeviceStack) -> Bool {
-        stack.isPinned || stack.devices.count == 1 || isEditingLayout || expandedStacks.contains(stack.id)
+        stack.isPinned || stack.devices.count == 1 || expandedStacks.contains(stack.id)
     }
 
     func openStack(containing deviceId: String?) {
@@ -195,6 +195,7 @@ extension ControlCenterPanel {
     @ViewBuilder
     func stackView(_ stack: DeviceStack, quickIndexMap: [String: Int]) -> some View {
         let open = isStackOpen(stack)
+        let dimmedInEdit = !stack.isPinned && isEditingLayout
         VStack(alignment: .leading, spacing: 8) {
             if open {
                 stackHeader(stack)
@@ -217,6 +218,8 @@ extension ControlCenterPanel {
                     .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
             }
         }
+        .opacity(dimmedInEdit ? 0.45 : 1)
+        .allowsHitTesting(!dimmedInEdit)
         .id(stack.id)
     }
 
@@ -288,6 +291,7 @@ extension ControlCenterPanel {
         }
         .buttonStyle(PressableCardButtonStyle())
         .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.module)
+        .glassHoverHighlight(in: shape)
         .background {
             GeometryReader { proxy in
                 // The peek says "more inside", so it stays under reduced motion too.

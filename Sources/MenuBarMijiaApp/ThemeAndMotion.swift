@@ -247,6 +247,109 @@ extension View {
     }
 }
 
+// MARK: - Glass Hover Highlight
+
+/// The subtle additive lift a native macOS Control Center Liquid Glass module shows under the
+/// pointer: +7/255 (~0.03 white `.plusLighter`) across the body and a faint top/bottom 2 pt rim
+/// boost (+4/255 at the outer edge, fading to 0 across the middle third of the side arcs).
+/// Strictly an overlay on top of the `.glassEffect` surface so the system glass slab is never
+/// occluded; never changes size or shadow. Disabled while editing the layout, under Reduce
+/// Transparency, or on full-row cards that host an inline slider.
+struct GlassHoverHighlight<S: InsettableShape>: ViewModifier {
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
+    @Environment(\.isEditingLayout) private var isEditingLayout
+
+    let shape: S
+    var isEnabled: Bool = true
+    @State private var isHovering = false
+
+    private var isLit: Bool { isEnabled && isHovering && !isEditingLayout && !reduceTransparency }
+
+    /// Symmetric top/bottom edge boost measured from ControlCenter.app; middle third is clear.
+    private var rimGradient: LinearGradient {
+        LinearGradient(
+            stops: [
+                .init(color: .white.opacity(0.05), location: 0.00),
+                .init(color: .white.opacity(0.02), location: 0.12),
+                .init(color: .clear, location: 0.33),
+                .init(color: .clear, location: 0.67),
+                .init(color: .white.opacity(0.02), location: 0.88),
+                .init(color: .white.opacity(0.05), location: 1.00)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { isHovering = $0 }
+            .overlay {
+                highlight
+                    .opacity(isLit ? 1 : 0)
+                    .animation(
+                        reduceMotion ? nil : .easeInOut(duration: 0.30),
+                        value: isLit
+                    )
+                    .allowsHitTesting(false)
+            }
+    }
+
+    private var highlight: some View {
+        ZStack {
+            fill
+            rim
+        }
+    }
+
+    @ViewBuilder
+    private var fill: some View {
+        if shape is Capsule {
+            GeometryReader { geo in
+                RoundedRectangle(cornerRadius: min(geo.size.width, geo.size.height) / 2, style: .circular)
+                    .fill(Color.white.opacity(0.03))
+            }
+            .blendMode(.plusLighter)
+        } else {
+            shape.fill(Color.white.opacity(0.03))
+                .blendMode(.plusLighter)
+        }
+    }
+
+    /// `Capsule`'s 1x stroke leaves a tangent artifact; an exact half-height circular rounded
+    /// rectangle draws the same outline cleanly (same workaround as `SpecularRim`).
+    @ViewBuilder
+    private var rim: some View {
+        if shape is Capsule {
+            GeometryReader { geo in
+                RoundedRectangle(cornerRadius: min(geo.size.width, geo.size.height) / 2, style: .circular)
+                    .strokeBorder(rimGradient, lineWidth: 1.5)
+            }
+            .blendMode(.plusLighter)
+        } else {
+            shape.strokeBorder(rimGradient, lineWidth: 1.5)
+                .blendMode(.plusLighter)
+        }
+    }
+}
+
+extension View {
+    func glassHoverHighlight<S: InsettableShape>(in shape: S, isEnabled: Bool = true) -> some View {
+        modifier(GlassHoverHighlight(shape: shape, isEnabled: isEnabled))
+    }
+
+    /// Same shape choice as `glassTile`, so the highlight always matches the card's own glass.
+    @ViewBuilder
+    func glassHoverHighlight(cornerRadius: CGFloat, isCapsule: Bool = false, isEnabled: Bool = true) -> some View {
+        if isCapsule {
+            glassHoverHighlight(in: Capsule(style: .circular), isEnabled: isEnabled)
+        } else {
+            glassHoverHighlight(in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous), isEnabled: isEnabled)
+        }
+    }
+}
+
 // MARK: - Panel Tile Surface
 
 /// Independent refractive module, including an opaque accessibility fallback.

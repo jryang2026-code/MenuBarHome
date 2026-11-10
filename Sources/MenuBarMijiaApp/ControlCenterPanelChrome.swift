@@ -104,10 +104,10 @@ extension ControlCenterPanel {
 
             AdaptiveGlassContainer(spacing: 6) {
                 HStack(spacing: 6) {
-                    if isEditing {
-                        if isRoomOrdering { cancelRoomOrderButton }
+                    if isRoomOrdering {
+                        cancelRoomOrderButton
                         doneEditingButton
-                    } else {
+                    } else if !isEditingLayout {
                         if let release = store.updateState.badgeRelease {
                             updateCapsule(for: release)
                         }
@@ -298,7 +298,8 @@ extension ControlCenterPanel {
         }
     }
 
-    /// Edit hints replace the live status while a drag mode is open.
+    /// Edit hints replace the live status while room ordering is open; card layout editing shows its
+    /// own glass toolbar capsule below the header instead.
     private var editingHint: String? {
         if isRoomOrdering {
             // Short on purpose: the long explanation lives under the list title, and a sentence
@@ -306,9 +307,6 @@ extension ControlCenterPanel {
             return layoutUI.orderTarget == .kinds
                 ? L10n.tr("调整类型顺序", "Reorder kinds")
                 : L10n.tr("调整房间顺序", "Reorder rooms")
-        }
-        if isEditingLayout {
-            return L10n.tr("拖动卡片排序，点右下角圆弧手柄改大小", "Drag to reorder, drag or tap the corner handle to resize")
         }
         return nil
     }

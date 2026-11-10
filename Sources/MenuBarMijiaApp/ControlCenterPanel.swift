@@ -159,7 +159,7 @@ public struct ControlCenterPanel: View {
                 }
             }
             if order != currentOrder {
-                withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { panelLayout.setOrder(order) }
+                withAnimation(reduceMotion ? nil : .spring(response: 0.50, dampingFraction: 1.0)) { panelLayout.setOrder(order) }
             }
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.newGroupForDevice)
@@ -279,11 +279,18 @@ public struct ControlCenterPanel: View {
                     .transition(AppleMotion.drawerTransition)
             }
 
-            if !isRoomOrdering, !search.isSearching, !isEditingLayout {
-                groupingBar
-                    .padding(.horizontal, Self.columnInset)
-                    .padding(.bottom, 12)
-                    .transition(.opacity)
+            if !isRoomOrdering, !search.isSearching {
+                if isEditingLayout {
+                    layoutEditToolbar
+                        .padding(.horizontal, Self.columnInset)
+                        .padding(.bottom, 12)
+                        .transition(.opacity)
+                } else {
+                    groupingBar
+                        .padding(.horizontal, Self.columnInset)
+                        .padding(.bottom, 12)
+                        .transition(.opacity)
+                }
             }
 
             if isRoomOrdering {
@@ -404,6 +411,7 @@ public struct ControlCenterPanel: View {
                 .padding(.top, 2)
                 .padding(.bottom, max(16, transientStackHeight + 8))
             }
+            .scrollDisabled(draggingId != nil || activeResize != nil)
             .softTopScrollEdge()
             .onChange(of: pendingScrollToDeviceId) { _, targetId in
                 guard let targetId else { return }

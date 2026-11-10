@@ -79,6 +79,7 @@ struct ClimatePanelModule: View {
         .padding(.horizontal, 11)
         .padding(.vertical, 10)
         .glassTile(isActive: isRunning, cornerRadius: DesignTokens.Radius.module)
+        .glassHoverHighlight(cornerRadius: DesignTokens.Radius.module)
         .opacity(device.isOnline ? 1 : 0.58)
         .disabled(!device.isOnline)
         .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.8), value: isRunning)
