@@ -122,7 +122,7 @@ fi
 # overwrite the copy the user runs every day.
 SIBLINGS=()
 if [ "$TARGET" = "$DEFAULT_TARGET" ]; then
-    SIBLINGS=("/Applications/MenuBarHome.app" "$HOME/Documents/MenuBarMijia-wt/MenuBarHome.app" "$ROOT/MenuBarHome.app" "$HOME/Documents/MenuBarMijia/MenuBarHome.app" "/private/tmp/mmb-114/MenuBarHome.app")
+    SIBLINGS=("/Applications/MenuBarHome.app" "$HOME/Documents/MenuBarMijia-wt/MenuBarHome.app" "$ROOT/MenuBarHome.app" "$HOME/Documents/MenuBarMijia/MenuBarHome.app")
 fi
 for SIBLING in ${SIBLINGS[@]+"${SIBLINGS[@]}"}; do
     if [ -d "$SIBLING" ] && [ "$SIBLING" != "$TARGET" ] && [ "$SIBLING" != "$BUNDLE" ]; then

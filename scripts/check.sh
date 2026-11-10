@@ -107,6 +107,13 @@ if search_matches '#require\([^)]*#require' Tests/; then
     exit 1
 fi
 
+# L10n.currentLanguage is one value for the whole process. A test that assigns it changes
+# every other suite's strings. Task-local $overrideLanguage is the only test seam.
+if search_matches 'L10n\.currentLanguage[[:space:]]*=([^=]|$)' Tests; then
+    echo "❌ 测试给 L10n.currentLanguage 赋值会改到进程里的其他套件。请改用 L10n.\$overrideLanguage.withValue。"
+    exit 1
+fi
+
 for f in $(search_files 'UNUserNotificationCenter\.current\(\)' Sources || true); do
     if ! search_quiet 'pathExtension == "app"' "$f"; then
         echo "❌ $f 调用了 UNUserNotificationCenter.current()，但缺少 Bundle.main.bundleURL.pathExtension == \"app\" 守卫（会导致 swift test 崩溃）！"
@@ -210,6 +217,7 @@ PY
     bash scripts/test_issue_frontier.sh
     bash scripts/test_gate_report.sh
     bash scripts/test_install_ripgrep.sh
+    bash scripts/test_go2rtc_gate.sh
     bash scripts/test_tauri_cache_key.sh
     bash scripts/test_ci_errors.sh
     bash scripts/test_pr_ready.sh
@@ -299,6 +307,8 @@ run_swift_gate() {
         echo "运行 Swift 单元测试（跳过快照）与双端黄金语料校验..."
         run_logged "Swift 测试" swift test --skip SnapshotTests || status=$?
         record_gate_result "Swift=${status}"
+        # The summary must not call this a full pass: the snapshot comparison did not run.
+        record_gate_result "Snapshots=skip"
     else
         echo "运行 Swift 单元测试 (swift test) 与双端黄金语料校验..."
         run_logged "Swift 测试" swift test || status=$?
@@ -333,9 +343,30 @@ run_raycast_gate() {
     [ "$status" -eq 0 ]
 }
 
+# verify.sh clones go2rtc and runs go test -race. --lint-only returns before these
+# steps, so a machine that already has Go keeps the fast lint. The patch SHA is
+# checked in check_model_tables.py, which that fast path already runs.
+# A directory or a stub that fails `go version` is not a toolchain: skip it.
+# A working go whose verify.sh fails still fails this gate.
+run_go2rtc_gate() {
+    local go err status=0
+    err="$(mktemp)"
+    if ! go="$(bash "$ROOT_DIR/scripts/go2rtc-ptz/go_ready.sh" 2>"$err")"; then
+        record_gate_result "go2rtc=skip"
+        echo "⏭️  跳过 go2rtc 云台补丁验证：$(cat "$err")"
+        rm -f "$err"
+        return 0
+    fi
+    rm -f "$err"
+    run_logged "go2rtc 云台补丁" bash "$ROOT_DIR/scripts/go2rtc-ptz/verify.sh" || status=$?
+    record_gate_result "go2rtc=${status}"
+    [ "$status" -eq 0 ]
+}
+
 add_gate_step "Swift 测试" run_swift_gate
 add_gate_step "Windows 前端" run_windows_gate
 add_gate_step "Raycast 扩展" run_raycast_gate
+add_gate_step "go2rtc 云台补丁" run_go2rtc_gate
 
 failed=0
 step_total=${#gate_step_fns[@]}

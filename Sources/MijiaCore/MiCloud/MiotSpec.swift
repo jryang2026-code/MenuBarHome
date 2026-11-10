@@ -264,9 +264,11 @@ public actor MiotSpecStore: MiotSpecSource {
     private func loadTypeIndex() async throws -> [String: String] {
         let file = cacheDirectory.appendingPathComponent("miot-instances.json")
         var data: Data?
+        // A modification date in the future (clock skew, copied file) would otherwise keep a stale
+        // index forever, so only a non-negative age counts as fresh.
         if let attrs = try? FileManager.default.attributesOfItem(atPath: file.path),
            let modified = attrs[.modificationDate] as? Date,
-           Date().timeIntervalSince(modified) < indexMaxAge {
+           case let age = Date().timeIntervalSince(modified), age >= 0, age < indexMaxAge {
             data = try? Data(contentsOf: file)
         }
         if data == nil {

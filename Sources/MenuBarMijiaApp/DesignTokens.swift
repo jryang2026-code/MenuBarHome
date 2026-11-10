@@ -104,10 +104,6 @@ enum DesignTokens {
         static let card: CGFloat = 12
         static let inset: CGFloat = 8
         static let label: CGFloat = 4
-
-        static func nested(outer: CGFloat, inset: CGFloat) -> CGFloat {
-            max(0, outer - inset)
-        }
     }
     static let hairline: CGFloat = 0.5
     static let active = Color(red: 0.93, green: 0.43, blue: 0.06)
@@ -115,8 +111,6 @@ enum DesignTokens {
         static let warm = Color(red: 0.98, green: 0.62, blue: 0.16)
         static let neutral = Color(red: 1.0, green: 0.90, blue: 0.74)
         static let cool = Color(red: 0.56, green: 0.82, blue: 1.0)
-        static let capsuleBulb = Color(red: 1, green: 0.84, blue: 0.04)
-        static let onCapsuleBulb = Color(red: 0.23, green: 0.18, blue: 0)
     }
     static let separator = Color(nsColor: .separatorColor)
 }

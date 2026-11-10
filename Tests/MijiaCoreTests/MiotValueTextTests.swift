@@ -76,6 +76,22 @@ struct MiotValueTextTests {
         }
     }
 
+    /// 洗 stays on wash, rinse, and spin. Every other programme name is shared with dryers.
+    @Test("A programme whose words are not wash, rinse, or spin does not display 洗")
+    func nonWashProgrammesDoNotSayWash() {
+        let washWords: Set<String> = ["wash", "rinse", "spin"]
+        for key in MiotValueText.programmeKeys {
+            let words = Set(key.split(separator: " ").map(String.init))
+            if !words.isDisjoint(with: washWords) { continue }
+            for language in [AppLanguage.zhHans, AppLanguage.zhHant] {
+                L10n.$overrideLanguage.withValue(language) {
+                    let name = MiotValueText.display(key)
+                    #expect(!name.contains("洗"), "\(key) in \(language.rawValue) displays \(name)")
+                }
+            }
+        }
+    }
+
     @Test("A selected value-list word uses the same names as the programme menu")
     func selectedOptionUsesTheTable() {
         let options = [

@@ -500,11 +500,13 @@ public actor DemoHomeProvider: HomeProvider {
     /// Applies a command to the virtual devices so the demo panel reflects what was clicked.
     static func applying(_ command: DeviceCommand, to home: SynthesizedHome) -> SynthesizedHome {
         var next = home
-        if case .setMiotProperty(let entityId, let piid, let value) = command {
+        // Facet rows sit beside the device kind. A Home Assistant property write does not
+        // change the kind, so the echo has to write the row. A snapshot that arrives after
+        // the optimistic lock expires otherwise puts the old value back.
+        if let target = HomeStore.facetTarget(for: command) {
             for (deviceId, facets) in next.deviceFacets {
-                guard let index = facets.firstIndex(where: {
-                    $0.target == .property(entityId: entityId, piid: piid)
-                }) else { continue }
+                guard let index = facets.firstIndex(where: { $0.target == target }),
+                      let value = HomeStore.facetValue(for: command, control: facets[index]) else { continue }
                 var updated = facets
                 updated[index].value = value
                 next.deviceFacets[deviceId] = updated

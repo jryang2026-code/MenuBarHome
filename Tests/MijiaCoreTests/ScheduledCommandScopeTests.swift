@@ -478,6 +478,8 @@ struct ScheduledCommandScopeTests {
         store.startListening()
         #expect(store.scheduledCommands.map(\.id) == [timer.id])
 
+        // startListening cancelled the first sleeper and re-armed the timer; release the new one.
+        await waitUntil { gate.parkCount == 2 }
         gate.release()
         await waitUntil { await mock.executedCommands.count == 1 }
         #expect(await mock.executedCommands == [.setLightPower(entityId: "miot:1234567890:2", isOn: false)])
@@ -550,6 +552,7 @@ struct ScheduledCommandScopeTests {
         store.startListening()
         #expect(store.scheduledCommands.map(\.id) == [timer.id])
 
+        await waitUntil { gate.parkCount == 2 }
         gate.release()
         await waitUntil { await mock.executedCommands.count == 1 }
         #expect(await mock.executedCommands == [.setLightPower(entityId: "miot:1234567890:2", isOn: false)])
@@ -580,6 +583,7 @@ struct ScheduledCommandScopeTests {
         store.startListening()
         #expect(store.scheduledCommands.map(\.id) == [timer.id])
 
+        await waitUntil { gate.parkCount == 2 }
         gate.release()
         await waitUntil { await mock.executedCommands.count == 1 }
         #expect(await mock.executedCommands == [.setLightPower(entityId: "miot:\(Self.deLamp.id):2", isOn: false)])

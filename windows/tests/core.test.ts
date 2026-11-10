@@ -4747,8 +4747,8 @@ describe("Xiaomi camera quality (#97)", () => {
     assert.equal(cameraStreamSubtype("hd"), "hd");
     assert.equal(cameraStreamSubtype("max"), "3");
     assert.equal(normalizeCameraStreamQuality("max"), "max");
-    assert.equal(normalizeCameraStreamQuality("4k"), "hd");
-    assert.equal(normalizeCameraStreamQuality(null), "hd");
+    assert.equal(normalizeCameraStreamQuality("4k"), "sd");
+    assert.equal(normalizeCameraStreamQuality(null), "sd");
     assert.deepEqual(
       normalizeCameraStreamQualityMap({ cam1: "max", cam2: "4k", cam3: 3 }),
       { cam1: "max" },

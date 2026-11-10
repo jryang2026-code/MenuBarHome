@@ -347,7 +347,6 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "二维码已过期，请重新获取": ["二维码已过期，请重新获取", "The QR code expired; request a new one"],
   "切换/重新扫码 (已登录 {user})": ["切换/重新扫码 (已登录 {user})", "Switch / rescan (signed in as {user})"],
   "请先扫码登录米家": ["请先扫码登录米家", "Sign in to Mi Home first"],
-  "Windows 端暂不支持 Home Assistant 连接": ["Windows 端暂不支持 Home Assistant 连接", "Home Assistant isn’t supported on Windows yet"],
   "当前系统环境不支持离线语音识别，请直接输入文字指令。": ["当前系统环境不支持离线语音识别，请直接输入文字指令。", "On-device speech recognition isn’t available here; please type the command."],
 
   // Empty states

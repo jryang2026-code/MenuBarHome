@@ -579,6 +579,22 @@ struct HADomainCardsTests {
     }
 
     @MainActor
+    @Test("An HA facet keeps the commanded value when its echo arrives after the lock expires")
+    func haFacetEchoAfterLock() async throws {
+        let (store, provider) = try await makeStore()
+        await provider.holdSnapshots()
+        store.setFacetValue("humidifier-full", controlId: "switch.living_led", value: .bool(false))
+        await waitUntil {
+            await provider.executedCommands.last == .setSwitch(entityId: "switch.living_led", isOn: false)
+        }
+        store.optimisticLockUntil["humidifier-full"] = ContinuousClock.now.advanced(by: .milliseconds(-1))
+        let generation = store.snapshotGeneration
+        await provider.emitSnapshot()
+        await waitUntil { store.snapshotGeneration > generation }
+        #expect(store.deviceFacets["humidifier-full"]?.first { $0.id == "switch.living_led" }?.value == .bool(false))
+    }
+
+    @MainActor
     @Test("Humidifier mode and target humidity write to humidifier.set_mode and set_humidity")
     func humidifierControls() async throws {
         let (store, provider) = try await makeStore()

@@ -18,8 +18,10 @@ public enum MiotCommandError: LocalizedError, Equatable, Sendable {
 
     public var errorDescription: String? {
         switch self {
-        case .invalidAddress(let id): return "无法识别的米家设备地址：\(id)"
-        case .unsupported(let what): return "该设备暂不支持此操作：\(what)"
+        case .invalidAddress(let id):
+            return L10n.tr("无法识别的米家设备地址：", "Unrecognized Mijia device address: ") + id
+        case .unsupported(let what):
+            return L10n.tr("该设备暂不支持此操作：", "This device does not support this action yet: ") + what
         }
     }
 }

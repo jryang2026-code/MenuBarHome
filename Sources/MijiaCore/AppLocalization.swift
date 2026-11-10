@@ -352,6 +352,9 @@ public enum L10n {
 
     // MARK: Language
 
+    /// The app-wide language. A test that needs another language uses `$overrideLanguage`,
+    /// which is task-local and is checked first. Assigning this property is visible to every
+    /// task, so a test that does it races every other suite.
     public static var currentLanguage: AppLanguage {
         get { overrideLanguage ?? languageBox.get() }
         set { languageBox.set(newValue) }

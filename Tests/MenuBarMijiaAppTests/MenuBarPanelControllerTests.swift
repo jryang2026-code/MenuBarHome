@@ -2169,17 +2169,16 @@ struct MenuBarPanelControllerTests {
     @Test("Long-pressing a light card no longer enters edit mode; the corner handle resizes and cycles once editing is entered from the menu (#115)")
     func longPressOnLightCardNoLongerEntersEditModeAndCornerHandleResizesWhenEditing() async throws {
         _ = NSApplication.shared
-        let previousLanguage = L10n.currentLanguage
-        L10n.currentLanguage = .zhHans
         let previousAppearance = UserDefaults.standard.string(forKey: AppAppearance.storageKey)
         UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
 
         let suite = "MenuBarPanelTests-resize-\(UUID().uuidString)"
         defer {
             UserDefaults.standard.removePersistentDomain(forName: suite)
-            L10n.currentLanguage = previousLanguage
             if let previousAppearance {
                 UserDefaults.standard.set(previousAppearance, forKey: AppAppearance.storageKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: AppAppearance.storageKey)
             }
         }
         let defaults = try #require(UserDefaults(suiteName: suite))

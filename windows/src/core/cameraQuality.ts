@@ -11,8 +11,8 @@ export type CameraStreamQuality = "auto" | "sd" | "hd" | "max";
 
 export const CAMERA_STREAM_QUALITIES: readonly CameraStreamQuality[] = ["auto", "sd", "hd", "max"];
 
-/** Matches the macOS storage default (#193): go2rtc's usual quality, not the 4K subtype. */
-export const DEFAULT_CAMERA_STREAM_QUALITY: CameraStreamQuality = "hd";
+/** Matches the macOS storage default (`XiaomiCameraStreamQuality.storageDefault`): the compatible `sd` stream. */
+export const DEFAULT_CAMERA_STREAM_QUALITY: CameraStreamQuality = "sd";
 
 /** go2rtc query value for a stored quality. `auto` lets the camera pick. */
 export function cameraStreamSubtype(quality: CameraStreamQuality): string {

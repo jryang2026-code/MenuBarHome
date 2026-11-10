@@ -82,7 +82,7 @@ MSG
 printf '%s\n' "$SOURCES" | sed 's/^/  - /' >&2
 cat >&2 <<'MSG'
 
-重录（在维护者这台 Mac 上，它也是 CI runner）：
+重录（在维护者这台 Mac 上；CI 托管机不比对快照）：
   bash scripts/record_snapshots.sh --dry-run   # 只列出会变的 PNG
   bash scripts/record_snapshots.sh             # 写入变化的 PNG，审阅后提交
 新增只在某个状态下出现的视图（横幅、提示、空状态）时，先给该状态加快照用例再录制。

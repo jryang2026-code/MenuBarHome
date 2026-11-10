@@ -1,11 +1,31 @@
 #!/usr/bin/env python3
 """Fail when the Swift/Go PTZ evidence tables drift from the shared fixture."""
+import hashlib
 import json
 import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def require_patch_sha_matches_readme() -> None:
+    """The README cell is the recorded hash. The patch file is the bytes that ship."""
+    readme = (ROOT / "scripts/go2rtc-ptz/README.md").read_text(encoding="utf-8")
+    match = re.search(r"^\|\s*补丁 SHA-256\s*\|\s*`([0-9a-f]{64})`\s*\|", readme, re.M)
+    if not match:
+        sys.exit("❌ go2rtc README 没有记录补丁 SHA-256")
+    recorded = match.group(1)
+    actual = hashlib.sha256(
+        (ROOT / "scripts/go2rtc-ptz/patches/0001-xiaomi-ptz.patch").read_bytes()
+    ).hexdigest()
+    if recorded != actual:
+        sys.exit(f"❌ 补丁 SHA-256 不一致：README 记录 {recorded}，补丁文件是 {actual}")
+    print("✅ 补丁 SHA-256 与 README 一致")
+
+
+require_patch_sha_matches_readme()
+
 fixture = json.loads((ROOT / "Tests/Fixtures/camera_ptz_models.json").read_text())
 expected = {
     (row["model"], row["mode"]): row["confidence"]

@@ -126,7 +126,7 @@ export function snapshotPath(): string {
   if (override) {
     return override.startsWith("~/") ? join(homedir(), override.slice(2)) : override;
   }
-  return join(homedir(), "Library", "Application Support", "MenuBarHome", "raycast-snapshot.json");
+  return join(homedir(), "Library", "Application Support", "MenuBarMijia", "raycast-snapshot.json");
 }
 
 export function resultTimeoutSeconds(): number {

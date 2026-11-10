@@ -11,7 +11,7 @@
 | 基座 tag | `v1.9.15` |
 | 基座 commit | `7c05066c90ab6ad1fccb506d5f0408aa31ebe60f` |
 | 补丁文件 | `patches/0001-xiaomi-ptz.patch` |
-| 补丁 SHA-256 | `ac02a179c47adf5f26bab689d6a2aa432dbbf8517c38e8319308b088b5102420` |
+| 补丁 SHA-256 | `5b239e896c553444fc98d32fc9d62295685aca018caa6c448de5d597ba901b67` |
 | 许可 | MIT（保留 go2rtc 版权声明；补丁本身同样以 MIT 提供） |
 
 补丁的思路来自社区真机报告与上游 PR #2531（`bcamarneiro`，commit `1a056d7c29` / `e23a21b9ee`），但这里只保留单会话电机命令与租约端点，没有引入 ONVIF 相关代码。
@@ -76,7 +76,7 @@ SKIP_RESTART=1 bash scripts/build_app.sh
 bash scripts/go2rtc-ptz/verify.sh
 ```
 
-会重新克隆基座、应用补丁，运行 `go test -race ./internal/xiaomi ./pkg/xiaomi/miss ./pkg/xiaomi/miss/cs2 ./pkg/tutk` 与
+会重新克隆基座、应用补丁，运行 `go test -race ./internal/xiaomi ./pkg/xiaomi/miss ./pkg/xiaomi/miss/cs2 ./pkg/tutk ./pkg/onvif ./internal/onvif` 与
 `go build ./...`。本机已验证（2026-11-07，Go 1.26.10）：
 
 - 补丁零冲突；

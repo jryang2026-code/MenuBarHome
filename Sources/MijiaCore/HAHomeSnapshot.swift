@@ -7,8 +7,14 @@ struct HAHomeSnapshot {
 
         var errorDescription: String? {
             switch self {
-            case .rejected: "HA 未允许读取设备或注册表，请检查访问令牌的账号权限"
-            case .invalidResponse: "HA 返回的设备或注册表数据格式无效，请检查 HA 版本和连接地址"
+            case .rejected: L10n.tr(
+                "HA 未允许读取设备或注册表，请检查访问令牌的账号权限",
+                "Home Assistant refused to read devices or registries; check the access token's user permissions"
+            )
+            case .invalidResponse: L10n.tr(
+                "HA 返回的设备或注册表数据格式无效，请检查 HA 版本和连接地址",
+                "Home Assistant returned invalid device or registry data; check its version and address"
+            )
             }
         }
     }
