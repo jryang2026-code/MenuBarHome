@@ -43,10 +43,67 @@ def code_mask(src: str) -> bytearray:
     return code
 
 
+# A slash after one of these words starts a regex (`return /a/`), not a division.
+_REGEX_WORDS = frozenset({
+    "return", "throw", "case", "else", "do", "typeof", "void", "delete",
+    "yield", "await", "in", "of", "instanceof", "new", "extends",
+})
+
+
+def skip_regex(src: str, i: int, end: int) -> int:
+    """Skip a `/.../flags` literal. `i` points at the opening slash.
+
+    Quotes inside a character class stay inside the literal. Treating them as
+    a string start is what made the scanner lose the rest of the file.
+    """
+    i += 1
+    in_class = False
+    while i < end:
+        c = src[i]
+        if c in "\n\r":
+            return i
+        if c == "\\":
+            i += 2 if i + 1 < end else 1
+            continue
+        if in_class:
+            if c == "]":
+                in_class = False
+            i += 1
+            continue
+        if c == "[":
+            in_class = True
+            i += 1
+            continue
+        if c == "/":
+            i += 1
+            while i < end and src[i].isascii() and src[i].isalpha():
+                i += 1
+            return i
+        i += 1
+    return end
+
+
 def scan_code(src: str, i: int, end: int, code: bytearray) -> int:
+    i, _can_regex = scan_tokens(src, i, end, code, can_regex=True, stop_on_brace=False)
+    return i
+
+
+def scan_tokens(
+    src: str,
+    i: int,
+    end: int,
+    code: bytearray,
+    can_regex: bool,
+    stop_on_brace: bool,
+) -> tuple[int, bool]:
+    depth = 0
     while i < end:
         c = src[i]
         nxt = src[i + 1] if i + 1 < end else ""
+        if c in " \t\r\n":
+            code[i] = 1
+            i += 1
+            continue
         if c == "/" and nxt == "/":
             i += 2
             while i < end and src[i] != "\n":
@@ -58,15 +115,78 @@ def scan_code(src: str, i: int, end: int, code: bytearray) -> int:
                 i += 1
             i = min(end, i + 2)
             continue
+        if c == "/" and can_regex:
+            i = skip_regex(src, i, end)
+            can_regex = False
+            continue
         if c in "'\"":
             i = skip_quoted(src, i, end, c)
+            can_regex = False
             continue
         if c == "`":
             i = skip_template(src, i, end, code)
+            can_regex = False
             continue
+        if c.isalpha() or c in "_$":
+            j = i + 1
+            while j < end and (src[j].isalnum() or src[j] in "_$"):
+                j += 1
+            word = src[i:j]
+            for index in range(i, j):
+                code[index] = 1
+            can_regex = word in _REGEX_WORDS
+            i = j
+            continue
+        if c.isdigit():
+            while i < end and (src[i].isalnum() or src[i] in "._"):
+                code[i] = 1
+                i += 1
+            can_regex = False
+            continue
+        if c == "}" and stop_on_brace and depth == 0:
+            return i, can_regex
         code[i] = 1
+        if c == "{":
+            depth += 1
+            can_regex = True
+            i += 1
+            continue
+        if c == "}":
+            depth = max(0, depth - 1)
+            can_regex = False
+            i += 1
+            continue
+        if c == "?":
+            if nxt == ".":
+                code[i + 1] = 1
+                can_regex = False
+                i += 2
+                continue
+            if nxt == "?":
+                code[i + 1] = 1
+                can_regex = True
+                i += 2
+                continue
+            can_regex = True
+            i += 1
+            continue
+        if c == "=" and nxt == ">":
+            code[i + 1] = 1
+            can_regex = True
+            i += 2
+            continue
+        if c == ".":
+            can_regex = False
+            i += 1
+            continue
+        if c in ")]}":
+            can_regex = False
+            i += 1
+            continue
+        # An operator, including a division slash, can be followed by a regex (`a / /b/`).
+        can_regex = True
         i += 1
-    return i
+    return i, can_regex
 
 
 def skip_quoted(src: str, i: int, end: int, quote: str) -> int:
@@ -99,33 +219,10 @@ def skip_template(src: str, i: int, end: int, code: bytearray) -> int:
 
 
 def scan_template_expr(src: str, i: int, end: int, code: bytearray) -> int:
-    depth = 1
-    while i < end and depth:
-        c = src[i]
-        nxt = src[i + 1] if i + 1 < end else ""
-        if c == "/" and nxt == "/":
-            i += 2
-            while i < end and src[i] != "\n":
-                i += 1
-            continue
-        if c == "/" and nxt == "*":
-            i += 2
-            while i + 1 < end and not (src[i] == "*" and src[i + 1] == "/"):
-                i += 1
-            i = min(end, i + 2)
-            continue
-        if c in "'\"":
-            i = skip_quoted(src, i, end, c)
-            continue
-        if c == "`":
-            i = skip_template(src, i, end, code)
-            continue
-        if c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
+    i, _can_regex = scan_tokens(src, i, end, code, can_regex=True, stop_on_brace=True)
+    if i < end and src[i] == "}":
         code[i] = 1
-        i += 1
+        return i + 1
     return i
 
 
@@ -473,6 +570,20 @@ def self_test() -> None:
         ),
         "string that names render is not an alias": (
             "const paint = \"host.render\";\nsetTimeout(() => { paint(); }, 0);\n",
+            [],
+        ),
+        "regex character class then a timer render": (
+            "const urlMatch = /https?:\\/\\/[^\\s\"'\\\\]+/i;\n"
+            "window.setTimeout(() => { this.host.render(); }, 0);\n",
+            ["window.setTimeout(() => { this.host.render(); }, 0);"],
+        ),
+        "division is not a regex": (
+            "const n = a / b;\n"
+            "window.setTimeout(() => { host.render(); }, 0);\n",
+            ["window.setTimeout(() => { host.render(); }, 0);"],
+        ),
+        "regex inside the timer is not a call": (
+            "setTimeout(() => { const re = /render\\(/; }, 0);\n",
             [],
         ),
     }
