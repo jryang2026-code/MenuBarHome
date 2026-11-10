@@ -6035,7 +6035,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.match(tile("light.living_ceiling"), /已开启/);
   });
 
-  it("does not run All Off when the window is unfocused as the hold completes", async () => {
+  it("does not run All Off when the window is unfocused as the hold completes, and runs it when the window is focused", async () => {
     const app = startDemoApp();
     let calls = 0;
     const run = app.executeIntents.bind(app);

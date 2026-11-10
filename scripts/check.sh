@@ -148,6 +148,10 @@ fi
 if command -v python3 >/dev/null 2>&1; then
     python3 scripts/check_design_tokens.py
     python3 scripts/check_timer_render.py
+    python3 scripts/check_swift_harness_lints.py
+    bash scripts/repeat_test.sh --self-test
+    bash scripts/red-check.sh --self-test
+    node windows/scripts/test-file.mjs --self-test
     python3 scripts/test_check_capability_matrix.py
     python3 scripts/test_mijia_cli.py
     python3 scripts/check_capability_matrix.py
