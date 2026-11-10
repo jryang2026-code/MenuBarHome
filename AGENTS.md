@@ -28,7 +28,7 @@ Run `bash scripts/check.sh` for secret scan, mechanical lints, and `swift test`,
 
 提交钩子的路径用 `git rev-parse --git-path hooks/pre-commit` 查。仓库里的门禁脚本是 `scripts/hooks/pre-commit`。`scripts/check.sh` 把共享 git 目录的 `hooks/pre-commit` 写成包装，转去跑当前工作区的那份脚本。
 
-`hdiutil attach` 报 `Resource temporarily unavailable` 时先重试这一次。应用内挂载已经按退避重试（`UpdateChecker.retryingAttach`）。测试里重复 attach 的串行要求见 `CODING_STANDARDS.md`。
+`hdiutil attach` 报 `Resource temporarily unavailable` 时先重试这一次。应用内挂载已经按退避重试（`UpdateSystemDriver.retryingAttach`）。测试里重复 attach 的串行要求见 `CODING_STANDARDS.md`。
 
 改 `.github/workflows/` 下的工作流后，跑 `actionlint .github/workflows/*.yml`。`check.sh` 不跑这条。
 
