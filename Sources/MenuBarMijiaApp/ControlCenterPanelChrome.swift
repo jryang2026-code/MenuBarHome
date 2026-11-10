@@ -79,78 +79,112 @@ extension ControlCenterPanel {
     // MARK: - 1. Hero Header & Live Environment Chips
 
     var topHeroHeader: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .center, spacing: 9) {
-                Image(systemName: "house.fill")
-                    .font(.system(size: DesignTokens.TypeSize.title, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 34, height: 34)
-                    .background(
-                        LinearGradient(colors: [.orange, DesignTokens.active],
-                                       startPoint: .topLeading, endPoint: .bottomTrailing),
-                        in: Circle()
-                    )
-
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 6) {
-                        homeTitle
-
-                        if store.homeBackend == .demo {
-                            Text(L10n.tr("演示预览", "Demo"))
-                                .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 1.5)
-                                .background(Color.primary.opacity(0.07), in: Capsule(style: .continuous))
-                                .panelHelp(L10n.tr(
-                                    "正在使用内置虚拟设备，完全离线，不联网。可在设置里切回真实账号。",
-                                    "Using built-in virtual devices, fully offline. Switch back to a real account in Settings."
-                                ))
-                        }
-                    }
-
-                    statusSubtitle
-                }
-
-                Spacer(minLength: 6)
-
-                if isEditing {
-                    if isRoomOrdering {
-                        cancelRoomOrderButton
-                            .transition(.scale(scale: 0.8).combined(with: .opacity))
-                    }
-                    doneEditingButton
-                        .transition(.scale(scale: 0.8).combined(with: .opacity))
-                } else if !store.allOffTargets.isEmpty {
-                    // The label says what will be switched off (#23); a hold confirms.
-                    let copy = PanelHeaderCopy.allOff(store: store, scopeName: allOffScopeDisplayName)
-                    VStack(alignment: .trailing, spacing: 1) {
-                        HoldToConfirmButton(
-                            title: copy.title,
-                            count: store.allOffTargets.count,
-                            helpText: copy.tooltip,
-                            onConfirm: {
-                                withAnimation(AppleMotion.snappySpring) { _ = store.rehearseAllOff() }
-                                SoundFeedback.playSuccess()
-                            },
-                            onTap: {
-                                store.showToast(L10n.tr(
-                                    "按住 0.6 秒确认全关",
-                                    "Hold for 0.6s to confirm All Off"
-                                ))
-                            }
-                        )
-                        if let helper = copy.helper {
-                            Text(helper)
-                                .font(.system(size: DesignTokens.TypeSize.micro))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                    }
-                    .transition(.scale(scale: 0.8).combined(with: .opacity))
+        HStack(spacing: 6) {
+            HStack(spacing: 5) {
+                BreathingDot(color: statusDotColor, animate: statusDotAnimates)
+                    .id(statusDotColor)
+                homeTitle
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                Text(" · ")
+                    .foregroundStyle(.secondary)
+                statusSubtitle
+                if store.homeBackend == .demo {
+                    Text(L10n.tr("演示", "Demo"))
+                        .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
+                        .foregroundStyle(.secondary)
                 }
             }
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
+            .specularRim(Capsule(style: .continuous))
+            .shadow(color: .black.opacity(effectiveScheme == .dark ? 0.20 : 0.10), radius: 7, y: 2)
+
+            Spacer(minLength: 0)
+
+            AdaptiveGlassContainer(spacing: 6) {
+                HStack(spacing: 6) {
+                    if isEditing {
+                        if isRoomOrdering { cancelRoomOrderButton }
+                        doneEditingButton
+                    } else {
+                        if let release = store.updateState.badgeRelease {
+                            updateCapsule(for: release)
+                        }
+                        if !store.allOffTargets.isEmpty {
+                            let copy = PanelHeaderCopy.allOff(store: store, scopeName: allOffScopeDisplayName)
+                            HoldToConfirmButton(
+                                title: copy.title,
+                                count: store.allOffTargets.count,
+                                helpText: [copy.tooltip, copy.helper].compactMap { $0 }.joined(separator: "\n"),
+                                onConfirm: {
+                                    withAnimation(AppleMotion.snappySpring) { _ = store.rehearseAllOff() }
+                                    SoundFeedback.playSuccess()
+                                },
+                                onTap: {
+                                    store.showToast(L10n.tr("按住 0.6 秒确认全关", "Hold for 0.6s to confirm All Off"))
+                                }
+                            )
+                        }
+                        panelMoreMenu
+                    }
+                }
+            }
+            .fixedSize(horizontal: true, vertical: false)
         }
+        .frame(height: 30)
+    }
+
+    private var panelMoreMenu: some View {
+        Menu {
+            statusFooterControl
+            Divider()
+            if UndoAvailabilityTracker.shared.isAvailable {
+                Button(L10n.tr("撤销上一步", "Undo last action")) {
+                    store.presentAssistantBar()
+                    Task { await UndoAvailabilityTracker.shared.performUndo(store: store) }
+                }
+            }
+            Button(L10n.tr("立即同步", "Refresh now")) { store.refreshNow() }
+            Button(L10n.tr("编辑卡片布局…", "Edit card layout…")) {
+                LayoutUIState.shared.isEditingLayoutRequested = true
+            }
+            if canReorderRooms || canReorderKinds {
+                Button(L10n.tr("排序房间与类型…", "Reorder rooms and kinds…")) { beginRoomOrder() }
+            }
+            Button(L10n.tr("偏好设置…", "Preferences…")) { presentSettingsWindow() }
+            Divider()
+            Button(L10n.tr("退出 MenuBarHome", "Quit MenuBarHome")) { NSApplication.shared.terminate(nil) }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .frame(width: 28, height: 28)
+        .adaptiveGlass(in: Circle(), interactive: true)
+        .specularRim(Circle())
+        .accessibilityLabel(Text(L10n.tr("更多操作", "More actions")))
+    }
+
+    private func updateCapsule(for release: AppRelease) -> some View {
+        Button {
+            if store.updateState.isReadyToRelaunch {
+                withAnimation(AppleMotion.snappySpring) { store.confirmRelaunchForUpdate() }
+            } else {
+                SettingsWindowOpener.shared.show(tab: .about)
+            }
+        } label: {
+            Image(systemName: store.updateState.isReadyToRelaunch ? "arrow.triangle.2.circlepath.circle.fill" : "arrow.down.circle.fill")
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                .frame(width: 28, height: 28)
+        }
+        .buttonStyle(.plain)
+        .adaptiveGlass(in: Capsule(style: .continuous), tint: .accentColor, interactive: true)
+        .specularRim(Capsule(style: .continuous))
+        .accessibilityLabel(Text(updateBadgeTitle(for: release)))
+        .panelHelp(updateBadgeTitle(for: release))
     }
 
     /// Dashboard title; with several Mi Homes it becomes a menu that switches between them. Several
@@ -186,8 +220,7 @@ extension ControlCenterPanel {
             } label: {
                 HStack(spacing: 4) {
                     Text(selectedHomeTitle)
-                        .font(.system(size: DesignTokens.TypeSize.title, weight: .bold))
-                        .tracking(-0.2)
+                        .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                     Image(systemName: "chevron.down")
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .bold))
                         .foregroundStyle(.secondary)
@@ -196,12 +229,10 @@ extension ControlCenterPanel {
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
-            .fixedSize()
             .panelHelp(L10n.tr("切换家庭", "Switch home"))
         } else {
             Text(store.homeName)
-                .font(.system(size: DesignTokens.TypeSize.title, weight: .bold))
-                .tracking(-0.2)
+                .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
         }
     }
 
@@ -264,9 +295,7 @@ extension ControlCenterPanel {
         return nil
     }
 
-    /// One line under the home title. The reading is the menu-bar title's primary sensor; tapping it
-    /// locates that sensor's card, which is the only way back to the chart the old strip opened.
-    /// The header row is narrow, so the reading sheds detail, then drops out, before the count truncates.
+    /// Compact live status; tapping the reading locates and expands its sensor card.
     var statusSubtitle: some View {
         Group {
             if let hint = editingHint {
@@ -459,12 +488,8 @@ extension ControlCenterPanel {
                 )
             )
         }
-        .background(segmentedTrack, in: Capsule(style: .continuous))
-        .overlay {
-            Capsule(style: .continuous)
-                .strokeBorder(segmentedTrackRim, lineWidth: DesignTokens.hairline)
-        }
-        .clipShape(Capsule(style: .continuous))
+        .adaptiveGlass(in: Capsule(style: .continuous))
+        .specularRim(Capsule(style: .continuous))
     }
 
     @ViewBuilder
@@ -593,12 +618,8 @@ extension ControlCenterPanel {
                         )
                     )
                 }
-                .background(segmentedTrack, in: Capsule(style: .continuous))
-                .overlay {
-                    Capsule(style: .continuous)
-                        .strokeBorder(segmentedTrackRim, lineWidth: DesignTokens.hairline)
-                }
-                .clipShape(Capsule(style: .continuous))
+                .adaptiveGlass(in: Capsule(style: .continuous))
+                .specularRim(Capsule(style: .continuous))
             }
 
             sortRoomsButton
@@ -650,13 +671,6 @@ extension ControlCenterPanel {
         }
     }
 
-    var segmentedTrack: Color {
-        effectiveScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.055)
-    }
-
-    var segmentedTrackRim: Color {
-        effectiveScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.04)
-    }
 
     var gridToggleButtons: some View {
         HStack(spacing: 5) {
@@ -1019,114 +1033,7 @@ extension ControlCenterPanel {
         )
     }
 
-    // MARK: - 4. Footer Status Bar
-
-    var footerBar: some View {
-        HStack(spacing: 8) {
-            BreathingDot(
-                color: statusDotColor,
-                animate: statusDotAnimates
-            )
-            .id(statusDotColor)
-
-            statusFooterControl
-
-            Spacer()
-
-            if let release = store.updateState.badgeRelease {
-                Button {
-                    if store.updateState.isReadyToRelaunch {
-                        withAnimation(AppleMotion.snappySpring) {
-                            store.confirmRelaunchForUpdate()
-                        }
-                    } else {
-                        SettingsWindowOpener.shared.show(tab: .about)
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(
-                            systemName: store.updateState.isReadyToRelaunch
-                                ? "arrow.triangle.2.circlepath.circle.fill"
-                                : "arrow.down.circle.fill"
-                        )
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                        Text(updateBadgeTitle(for: release))
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                        .monospacedDigit()
-                    }
-                }
-                .buttonStyle(
-                    PillActionButtonStyle(
-                        isSelected: true,
-                        tintColor: store.updateState.isReadyToRelaunch ? .green : .accentColor
-                    )
-                )
-                .panelHelp(
-                    store.updateState.isReadyToRelaunch
-                        ? L10n.tr("点击立即重启并完成 v\(release.version) 更新", "Click to relaunch and finish updating to v\(release.version)")
-                        : L10n.tr("发现新版本 v\(release.version)，点击直接打开更新", "New version v\(release.version) available")
-                )
-            }
-
-            // #53: once the banner is gone the assistant action is still undoable for ten minutes.
-            if store.undoBanner == nil,
-               !store.isShowingAssistantBar,
-               UndoAvailabilityTracker.shared.isAvailable {
-                Button {
-                    store.presentAssistantBar()
-                    Task { await UndoAvailabilityTracker.shared.performUndo(store: store) }
-                } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                        .foregroundStyle(.primary.opacity(0.72))
-                        .frame(width: 24, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(Text(L10n.tr("撤销上一步", "Undo last action")))
-                .panelHelp(L10n.tr("撤销上一步（10 分钟内有效）", "Undo the last assistant action (valid for 10 minutes)"))
-            }
-
-            Button {
-                store.refreshNow()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(.primary.opacity(0.72))
-                    .frame(width: 24, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text(L10n.tr("立即同步", "Refresh now")))
-            .panelHelp(L10n.tr("立即同步最新状态", "Refresh device states now"))
-
-            Button {
-                presentSettingsWindow()
-            } label: {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                    .foregroundStyle(.primary.opacity(0.72))
-                    .frame(width: 24, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text(L10n.tr("打开设置", "Open Settings")))
-            .panelHelp(L10n.tr("偏好设置与连接配置（⌘,）", "Preferences & connection settings (⌘,)"))
-
-            Button {
-                NSApplication.shared.terminate(nil)
-            } label: {
-                Image(systemName: "power")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(.primary.opacity(0.72))
-                    .frame(width: 24, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text(L10n.tr("退出应用", "Quit App")))
-            .panelHelp(L10n.tr("完全退出 MenuBarHome（⌘Q）", "Quit MenuBarHome (⌘Q)"))
-        }
-    }
+    // MARK: - Header Status and Actions
 
     /// `openSettings` is the supported way to reveal the Settings scene from a MenuBarExtra.
     func presentSettingsWindow() {

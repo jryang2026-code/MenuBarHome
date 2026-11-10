@@ -92,18 +92,17 @@ public struct TileSurface: Equatable, Sendable {
 
     public var secondaryInk: Color { .secondary }
 
-    /// The well: translucent white over the panel glass in both appearances, or a family-colour
-    /// wash when the device is on and carries a tint (contract §1.2).
+    /// Each floating module carries its own smoked glass base over the desktop.
     public var fill: AnyShapeStyle {
         if isActive, let tint {
             return scheme == .dark
-                ? AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.20), Color.white.opacity(0.08)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                : AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.14), Color.white.opacity(0.70)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                ? AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.28), Color.white.opacity(0.12)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                : AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.20), Color.white.opacity(0.58)], startPoint: .topLeading, endPoint: .bottomTrailing))
         }
         if scheme == .dark {
-            return AnyShapeStyle(Color.white.opacity(isActive ? 0.13 : 0.07))
+            return AnyShapeStyle(isActive ? Color.white.opacity(0.18) : Color.black.opacity(0.24))
         }
-        return AnyShapeStyle(Color.white.opacity(isActive ? 0.72 : 0.42))
+        return AnyShapeStyle(Color.white.opacity(isActive ? 0.62 : 0.38))
     }
 }
 
@@ -223,7 +222,7 @@ struct HoldToConfirmButton: View {
         .fixedSize(horizontal: true, vertical: false)
         .foregroundStyle(Color.primary.opacity(0.88))
         .padding(.horizontal, 11)
-        .padding(.vertical, 5)
+        .frame(height: 28)
         .background {
             GeometryReader { geo in
                 Rectangle()
@@ -259,8 +258,7 @@ struct HoldToConfirmButton: View {
 
 // MARK: - Panel Root
 
-/// Panel root: one system material behind every state, with the forced appearance and the
-/// "Reduce transparency" fallback (#41).
+/// Transparent module host, with an opaque accessibility fallback and forced appearance.
 public struct PanelRoot: ViewModifier {
     @Environment(\.colorScheme) private var systemScheme
     @Environment(\.effectiveReduceTransparency) private var reduceTransparency
@@ -271,21 +269,8 @@ public struct PanelRoot: ViewModifier {
         content
             .background {
                 if reduceTransparency {
-                    Rectangle().fill(Color(nsColor: .windowBackgroundColor))
-                } else if #available(macOS 26.0, *) {
-                    // Native Liquid Glass replaces the hand-stacked material+scrim; the wrapper
-                    // keeps the macOS 26 API inside ThemeAndMotion. A lighter scrim still pins the
-                    // chosen appearance: over a bright wallpaper the dark scheme must stay dark or
-                    // white text loses contrast.
-                    Color.clear
-                        .panelRootGlass()
-                    Rectangle().fill(scheme == .dark ? Color.black.opacity(0.30) : Color.white.opacity(0.18))
-                } else {
-                    // A thin material alone picks up whatever is behind the window: over a bright
-                    // wallpaper the dark scheme stays light and white text loses contrast. The scrim
-                    // pins the surface to the chosen appearance without losing the glass.
-                    Rectangle().fill(.ultraThinMaterial)
-                    Rectangle().fill(scheme == .dark ? Color.black.opacity(0.42) : Color.white.opacity(0.32))
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.panel, style: .continuous)
+                        .fill(Color(nsColor: .windowBackgroundColor))
                 }
             }
             .environment(\.colorScheme, scheme)
