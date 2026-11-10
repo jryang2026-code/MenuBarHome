@@ -4,23 +4,27 @@ import MijiaCore
 
 /// Per-device card size picked from the card's context menu.
 public enum TileSize: String, CaseIterable, Identifiable, Sendable {
-    case auto, half, full, panel
+    case auto, small, half, hero, full, panel
 
     public var id: String { rawValue }
 
     public var title: String {
         switch self {
         case .auto: return L10n.tr("自动", "Auto")
-        case .half: return L10n.tr("半行", "Half Row")
-        case .full: return L10n.tr("整行", "Full Row")
-        case .panel: return L10n.tr("展开面板", "Open Panel")
+        case .small: return L10n.tr("圆钮 (1×1)", "Round (1×1)")
+        case .half: return L10n.tr("胶囊 (2×1)", "Capsule (2×1)")
+        case .hero: return L10n.tr("方砖 (2×2)", "Square (2×2)")
+        case .full: return L10n.tr("整行 (4×1)", "Full Row (4×1)")
+        case .panel: return L10n.tr("常驻展开", "Always Expanded")
         }
     }
 
     public var symbol: String {
         switch self {
         case .auto: return "wand.and.stars"
+        case .small: return "circle.grid.2x2"
         case .half: return "rectangle.split.2x1"
+        case .hero: return "square.grid.2x2"
         case .full: return "rectangle"
         case .panel: return "rectangle.expand.vertical"
         }
@@ -42,7 +46,13 @@ public enum TileResizeGestureMath {
         let resolvedStart: TileSize = startSize == .auto
             ? (isCompactGrid ? .half : .full)
             : startSize
-        guard let startIndex = orderedSizes.firstIndex(of: resolvedStart) else {
+        // A 1×1 round button resizes from the capsule step; a 2×2 hero from the full-row step.
+        let gestureStart: TileSize = switch resolvedStart {
+        case .small: .half
+        case .hero: .full
+        default: resolvedStart
+        }
+        guard let startIndex = orderedSizes.firstIndex(of: gestureStart) else {
             return resolvedStart
         }
         let stepDelta = axisSteps(for: translation.width) + axisSteps(for: translation.height)
@@ -167,7 +177,7 @@ extension DeviceLayoutPrefs {
     }
 }
 
-// MARK: - Edit Mode (long-press → jiggle, drag to reorder, corner arc handle to resize)
+// MARK: - Edit Mode (context menu → jiggle, drag to reorder, corner arc handle to resize)
 
 private struct LayoutEditingKey: EnvironmentKey {
     static let defaultValue = false
@@ -204,10 +214,10 @@ struct CornerArcHandleShape: Shape {
     }
 }
 
-/// Wraps one device card. Long-press then keep dragging picks the card up straight away (no
-/// second click); while editing a plain drag moves any card. The card follows the pointer via
+/// Wraps one device card. While editing a plain drag moves any card; entering edit mode is a
+/// context-menu or top-bar action, never a long press. The card follows the pointer via
 /// `dragOffset`, jiggles, and shows a bottom-right corner arc handle that supports both drag
-/// resizing (`half ↔ full ↔ panel`) and tap cycling (`half → full → panel → half`).
+/// resizing (`half ↔ full ↔ panel`) and tap cycling (`half → 2×2 → full → panel → half`).
 struct LayoutEditable: ViewModifier {
     @Environment(\.isEditingLayout) private var editing
     @Environment(\.effectiveReduceMotion) private var reduceMotion
@@ -346,13 +356,14 @@ struct TileFramesKey: PreferenceKey {
 // MARK: - Flow Layout
 
 struct TileSpanKey: LayoutValueKey {
-    static let defaultValue = 6
+    static let defaultValue = 12
 }
 
-/// Packs children left to right into rows of 6 columns using each child's `TileSpanKey`.
+/// Packs children left to right into rows of 12 columns using each child's `TileSpanKey`
+/// (3 = 1×1 round button, 6 = 2×1 capsule / 2×2 hero, 12 = full row).
 /// Cards in a row share the tallest card's height.
 struct TileFlowLayout: Layout {
-    var spacing: CGFloat = 7
+    var spacing: CGFloat = 8
 
     private struct Row {
         var indices: [Int] = []
@@ -360,7 +371,7 @@ struct TileFlowLayout: Layout {
     }
 
     private func width(for span: Int, total: CGFloat) -> CGFloat {
-        let unit = (total - spacing * 5) / 6
+        let unit = (total - spacing * 11) / 12
         return unit * CGFloat(span) + spacing * CGFloat(span - 1)
     }
 
@@ -369,8 +380,8 @@ struct TileFlowLayout: Layout {
         var current = Row()
         var used = 0
         for (i, sub) in subviews.enumerated() {
-            let span = min(max(sub[TileSpanKey.self], 1), 6)
-            if used + span > 6, !current.indices.isEmpty {
+            let span = min(max(sub[TileSpanKey.self], 1), 12)
+            if used + span > 12, !current.indices.isEmpty {
                 rows.append(current)
                 current = Row()
                 used = 0
@@ -385,7 +396,7 @@ struct TileFlowLayout: Layout {
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let total = proposal.width ?? 330
+        let total = proposal.width ?? 350
         let rs = rows(subviews, total: total)
         let height = rs.reduce(0) { $0 + $1.height } + spacing * CGFloat(max(rs.count - 1, 0))
         return CGSize(width: total, height: height)
@@ -396,7 +407,7 @@ struct TileFlowLayout: Layout {
         for row in rows(subviews, total: bounds.width) {
             var x = bounds.minX
             for i in row.indices {
-                let span = min(max(subviews[i][TileSpanKey.self], 1), 6)
+                let span = min(max(subviews[i][TileSpanKey.self], 1), 12)
                 let w = width(for: span, total: bounds.width)
                 subviews[i].place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: ProposedViewSize(width: w, height: row.height))
                 x += w + spacing
@@ -561,8 +572,8 @@ final class LayoutUIState {
     var renamingDeviceId: String?
     /// Non-nil while renaming that room (local display name only).
     var renamingRoomId: String?
-    /// Raised from a card's context menu, so entering edit mode no longer requires the 0.6 s
-    /// long-press the audit flagged as inaccessible (#41).
+    /// Raised from a card's context menu, so entering edit mode is a discovered menu action and
+    /// never a long press on a card (#41).
     var isEditingLayoutRequested = false
     /// Latest card frames in window `.global` coordinates; lets UI tests locate the resize
     /// handle after dynamic relayouts without hard-coding pixel positions.
@@ -594,13 +605,13 @@ struct GroupNamePrompt: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.system(size: 13, weight: .semibold))
+            Text(title).font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
             TextField(placeholder, text: $name)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13))
+                .font(.system(size: DesignTokens.TypeSize.body))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
-                .adaptiveGlass(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .adaptiveGlass(in: RoundedRectangle(cornerRadius: DesignTokens.Radius.inset, style: .continuous))
                 .focused($focused)
                 .onSubmit(save)
             HStack {
@@ -619,15 +630,7 @@ struct GroupNamePrompt: View {
         }
         .padding(14)
         .frame(width: 280)
-        .background {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(.regularMaterial)
-                .shadow(color: .black.opacity(0.3), radius: 20, y: 8)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.primary.opacity(0.1), lineWidth: 1)
-        }
+        .adaptiveGlass(in: RoundedRectangle(cornerRadius: DesignTokens.Radius.module, style: .continuous))
         .onAppear { focused = true }
     }
 
