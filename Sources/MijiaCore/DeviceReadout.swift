@@ -40,8 +40,8 @@ extension HomeStore {
         }
     }
 
-    /// The lit platter is a claim that the device is on. A stale cloud cannot make that claim.
-    /// Waiting keeps the last confirmed platter until the read-back arrives.
+    /// A lit tile is a claim that the device is on. A stale cloud cannot make that claim.
+    /// Waiting keeps the last confirmed state until the read-back arrives.
     public func presentsAsActive(_ device: SmartDevice) -> Bool {
         guard readout(for: device.id) != .possiblyStale else { return false }
         return device.isActiveOn && device.isOnline

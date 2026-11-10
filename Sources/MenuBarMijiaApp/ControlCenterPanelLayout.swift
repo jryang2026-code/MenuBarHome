@@ -797,7 +797,7 @@ extension ControlCenterPanel {
                 .overlay {
                     if highlightId == dev.id {
                         RoundedRectangle(
-                            cornerRadius: PanelLook.tileRadius,
+                            cornerRadius: DesignTokens.Radius.module,
                             style: .continuous
                         )
                         .strokeBorder(

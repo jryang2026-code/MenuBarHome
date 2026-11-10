@@ -25,7 +25,7 @@ struct ClimatePanelModule: View {
 
     private var accent: Color { DevicePalette.accentColor(for: device) }
 
-    /// One presentation state drives text ink; a running unit sits on the tinted platter.
+    /// One presentation state drives the fill; a running unit sits on the family-tinted well.
     private var surface: TileSurface {
         TileSurface(isActive: isRunning, tint: isRunning ? DesignTokens.Orb.climate : nil, scheme: colorScheme)
     }
@@ -78,7 +78,7 @@ struct ClimatePanelModule: View {
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 10)
-        .glassTile(isActive: isRunning, cornerRadius: DesignTokens.Radius.card, tint: DesignTokens.Orb.climate)
+        .glassTile(isActive: isRunning, cornerRadius: DesignTokens.Radius.module, tint: DesignTokens.Orb.climate)
         .opacity(device.isOnline ? 1 : 0.58)
         .disabled(!device.isOnline)
         .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.8), value: isRunning)

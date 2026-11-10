@@ -119,6 +119,15 @@ if [ "$status" = 1 ]; then
 else
     fail "退出码 139 应判定崩溃，实际 ${status}"
 fi
+printf '%s\n' "✔ Test run with 7 tests in 1 suite passed after 0.1 seconds." \
+    "error: Exited with unexpected signal code 5" >"$finished_log"
+status=0
+bash scripts/gate_report.sh record-verdict 1 "$finished_log" >/dev/null 2>&1 || status=$?
+if [ "$status" = 1 ]; then
+    pass "前面的测试汇总不掩盖后面崩溃的快照进程"
+else
+    fail "汇总之后进程崩溃应判定录制没跑完，实际 ${status}"
+fi
 rm -f "$finished_log"
 
 repo="$(mktemp -d)"

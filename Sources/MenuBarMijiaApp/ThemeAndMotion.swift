@@ -42,6 +42,14 @@ public enum AppleMotion {
     /// Critically damped spring (damping ~ 0.94, response 0.26s) — smooth, interruptible, no distracting overshoot
     public static let snappySpring = Animation.spring(response: 0.26, dampingFraction: 0.94, blendDuration: 0.08)
 
+    /// Switches, orbs and selection lenses (contract §1.6). Short enough that a toggle answers the
+    /// click instead of performing for it.
+    public static let control = Animation.spring(response: 0.24, dampingFraction: 0.86)
+
+    /// Drawer expansion and grid reflow: the same character as `control`, one beat slower, because
+    /// a surface that changes the layout must not snap.
+    public static let reveal = Animation.spring(response: 0.34, dampingFraction: 0.86)
+
     /// Fast ease-out for press feedback (120ms)
     public static let pressFeedback = Animation.easeOut(duration: 0.12)
 
@@ -109,20 +117,7 @@ public struct PillActionButtonStyle: ButtonStyle {
                     isHidden: isSelected
                 )
             )
-            .overlay {
-                capsule
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(isSelected ? 0.52 : (colorScheme == .dark ? 0.24 : 0.58)),
-                                Color.white.opacity(0.08)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: DesignTokens.hairline
-                    )
-            }
+            .specularRim(capsule)
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1.0)
             .animation(reduceMotion ? nil : AppleMotion.pressFeedback, value: configuration.isPressed)
     }
@@ -171,9 +166,77 @@ public enum ScenePalette {
     }
 }
 
+// MARK: - Specular Rim
+
+/// The panel's one edge treatment (contract §1.3): a bright band on the top and bottom, a dark one
+/// on the left and right, both squeezed into a 1 pt border so the rounded corners blend them without
+/// special-casing. The gradient stop fractions are what keep each side band from reaching the middle
+/// of the edge, which is why the corners read lit and the sides read shaded.
+struct SpecularRim<S: InsettableShape>: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    let shape: S
+    let strength: Double
+
+    private var litEdge: Color {
+        Color.white.opacity((colorScheme == .dark ? 0.22 : 0.65) * strength)
+    }
+
+    private var shadedEdge: Color {
+        Color.black.opacity(colorScheme == .dark ? 0.25 : 0.08)
+    }
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        content.overlay {
+            if reduceTransparency || contrast == .increased {
+                // A translucent edge is the first thing those modes erase; one solid hairline keeps
+                // the shape's boundary visible instead.
+                shape.strokeBorder(Color.primary.opacity(0.25), lineWidth: 1)
+            } else {
+                ZStack {
+                    LinearGradient(
+                        stops: [
+                            .init(color: litEdge, location: 0),
+                            .init(color: .clear, location: 0.14),
+                            .init(color: .clear, location: 0.86),
+                            .init(color: litEdge, location: 1)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    LinearGradient(
+                        stops: [
+                            .init(color: shadedEdge, location: 0),
+                            .init(color: .clear, location: 0.06),
+                            .init(color: .clear, location: 0.94),
+                            .init(color: shadedEdge, location: 1)
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                }
+                .mask { shape.strokeBorder(Color.white, lineWidth: 1) }
+                .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
+extension View {
+    /// The shared edge for every glass surface. Pass `strength` to lift a control that floats above
+    /// its own track.
+    func specularRim<S: InsettableShape>(_ shape: S, strength: Double = 1) -> some View {
+        modifier(SpecularRim(shape: shape, strength: strength))
+    }
+}
+
 // MARK: - Panel Tile Surface
 
-/// Tile surface: a bright platter when the device is on, a quiet glass well when it is off.
+/// Tile surface: a quiet glass well when the device is off, one step lighter when it is on. The
+/// family colour, the orb and the weight carry the state; the surface itself never turns opaque.
 public struct GlassTileBackground: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     public var isActive: Bool
@@ -188,37 +251,21 @@ public struct GlassTileBackground: ViewModifier {
             .background {
                 shape.fill(surface.fill)
             }
-            .overlay {
-                shape.strokeBorder(surface.hairline, lineWidth: DesignTokens.hairline)
-            }
-            // Glass catch-light along the top edge, strongest on a lit platter. The strip is drawn
-            // inside a full-height frame before clipping so the rounded corners clip it too.
-            .overlay(alignment: .top) {
-                LinearGradient(
-                    colors: [Color.white.opacity(specularStrength), Color.white.opacity(0)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: 1.5)
-                .frame(maxHeight: .infinity, alignment: .top)
-                .clipShape(shape)
-            }
-            .shadowIf(isActive, color: PanelLook.platterShadow(isActive: isActive), radius: 8, y: 2)
+            .specularRim(shape)
+            // One shadow carries the depth: a lit module sits above the panel, a quiet one lies flat.
+            .shadowIf(
+                isActive,
+                color: .black.opacity(colorScheme == .dark ? 0.28 : 0.10),
+                radius: 10,
+                y: 3
+            )
             .animation(.easeOut(duration: 0.18), value: isActive)
-    }
-
-    private var specularStrength: CGFloat {
-        switch (colorScheme, isActive) {
-        case (.dark, true): return 0.40
-        case (.dark, false): return 0.14
-        case (_, true): return 0.90
-        case (_, false): return 0.55
-        }
     }
 }
 
-/// The panel's one small glass chip: thin material plus a white specular rim.
-struct ChipSurface<S: Shape>: ViewModifier {
+/// The panel's one small glass chip: macOS 26 glass, or the material stack on 14 and 15.
+struct ChipSurface<S: InsettableShape>: ViewModifier {
+    @Environment(\.effectiveReduceTransparency) private var reduceTransparency
     let shape: S
     let tint: Color?
     let interactive: Bool
@@ -229,12 +276,23 @@ struct ChipSurface<S: Shape>: ViewModifier {
     func body(content: Content) -> some View {
         if isHidden {
             content
+        } else if #available(macOS 26.0, *), !reduceTransparency {
+            if let tint {
+                content.glassEffect(glassStyle.tint(tint), in: shape)
+            } else {
+                content.glassEffect(glassStyle, in: shape)
+            }
         } else {
             content.modifier(ClassicGlass(shape: shape, tint: tint, interactive: interactive, clear: clear))
         }
     }
+
+    @available(macOS 26.0, *)
+    private var glassStyle: Glass {
+        interactive ? .regular.interactive() : .regular
+    }
 }
-struct ClassicGlass<S: Shape>: ViewModifier {
+struct ClassicGlass<S: InsettableShape>: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.effectiveReduceTransparency) private var reduceTransparency
     let shape: S
@@ -247,7 +305,7 @@ struct ClassicGlass<S: Shape>: ViewModifier {
         if translucentOnly {
             content
                 .background { shape.fill(reduceTransparency ? Color(nsColor: .controlBackgroundColor) : .white.opacity(0.14)); if let tint { shape.fill(tint) } }
-                .overlay { shape.stroke(.white.opacity(0.28), lineWidth: DesignTokens.hairline) }
+                .specularRim(shape)
         } else {
             content
                 .background {
@@ -267,23 +325,18 @@ struct ClassicGlass<S: Shape>: ViewModifier {
                         }
                     }
                 }
-                .overlay {
-                    shape.stroke(
-                        Color.white.opacity(colorScheme == .dark ? 0.18 : 0.50),
-                        lineWidth: DesignTokens.hairline
-                    )
-                }
+                .specularRim(shape)
         }
     }
 }
 
 extension View {
-    public func glassTile(isActive: Bool, cornerRadius: CGFloat = 14, tint: Color? = nil) -> some View {
+    public func glassTile(isActive: Bool, cornerRadius: CGFloat, tint: Color? = nil) -> some View {
         modifier(GlassTileBackground(isActive: isActive, cornerRadius: cornerRadius, tint: tint))
     }
 
-    /// The panel's one glass chip (thin material + specular rim).
-    public func adaptiveGlass<S: Shape>(
+    /// The panel's one glass chip (glass on macOS 26, thin material before it).
+    public func adaptiveGlass<S: InsettableShape>(
         in shape: S,
         tint: Color? = nil,
         interactive: Bool = false,
@@ -302,8 +355,15 @@ public struct AdaptiveGlassContainer<Content: View>: View {
         self.content = content
     }
 
+    @ViewBuilder
     public var body: some View {
-        content()
+        if #available(macOS 26.0, *) {
+            // Adjacent glass shapes merge their edges only inside a container; without it every chip
+            // draws its own rim and a row of buttons reads as a pile of separate panes.
+            GlassEffectContainer(spacing: spacing) { content() }
+        } else {
+            content()
+        }
     }
 }
 
@@ -537,21 +597,7 @@ public struct LiquidGlassSlider: View {
                             .clipShape(Capsule(style: .continuous))
                         }
                         .adaptiveGlass(in: Capsule(style: .continuous))
-                        .overlay {
-                            // Top inner specular rim
-                            Capsule(style: .continuous)
-                                .strokeBorder(
-                                    LinearGradient(
-                                        colors: [
-                                            Color.white.opacity(colorScheme == .dark ? 0.28 : 0.62),
-                                            Color.primary.opacity(0.10)
-                                        ],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    ),
-                                    lineWidth: DesignTokens.hairline
-                                )
-                        }
+                        .specularRim(Capsule(style: .continuous))
 
                     // 2. Refractive 3D Liquid Glass Meniscus Thumb Lens
                     Capsule(style: .continuous)
@@ -567,22 +613,7 @@ public struct LiquidGlassSlider: View {
                         )
                         .frame(width: thumbWidth, height: thumbHeight)
                         .adaptiveGlass(in: Capsule(style: .continuous), interactive: true, clear: true)
-                        .overlay {
-                            // Outer meniscus specular highlight
-                            Capsule(style: .continuous)
-                                .strokeBorder(
-                                    LinearGradient(
-                                        colors: [
-                                            Color.white.opacity(0.98),
-                                            Color.white.opacity(0.32),
-                                            Color.white.opacity(0.75)
-                                        ],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    ),
-                                    lineWidth: isDragging ? 1.25 : 0.95
-                                )
-                        }
+                        .specularRim(Capsule(style: .continuous), strength: 1.4)
                         .shadow(
                             color: Color.black.opacity(isDragging ? 0.26 : 0.18),
                             radius: isDragging ? 5 : 2.5,
@@ -1042,7 +1073,7 @@ struct GlassSegmentedControl<Value: Hashable>: View {
                             size: DesignTokens.TypeSize.caption,
                             weight: isSelected ? .semibold : .medium
                         ))
-                        .foregroundStyle(isSelected ? PanelLook.platterInk : Color.secondary)
+                        .foregroundStyle(isSelected ? DesignTokens.Ink.onLens : Color.secondary)
                         .lineLimit(1)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
