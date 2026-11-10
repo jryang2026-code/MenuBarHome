@@ -107,6 +107,13 @@ if search_matches '#require\([^)]*#require' Tests/; then
     exit 1
 fi
 
+# L10n.currentLanguage is one value for the whole process. A test that assigns it changes
+# every other suite's strings. Task-local $overrideLanguage is the only test seam.
+if search_matches 'L10n\.currentLanguage[[:space:]]*=' Tests; then
+    echo "❌ 测试给 L10n.currentLanguage 赋值会改到进程里的其他套件。请改用 L10n.\$overrideLanguage.withValue。"
+    exit 1
+fi
+
 for f in $(search_files 'UNUserNotificationCenter\.current\(\)' Sources || true); do
     if ! search_quiet 'pathExtension == "app"' "$f"; then
         echo "❌ $f 调用了 UNUserNotificationCenter.current()，但缺少 Bundle.main.bundleURL.pathExtension == \"app\" 守卫（会导致 swift test 崩溃）！"

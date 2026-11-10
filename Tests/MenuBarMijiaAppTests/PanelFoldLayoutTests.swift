@@ -82,14 +82,10 @@ enum PanelFoldMeasure {
     /// Card frames are published from `onAppear`, the same wait the resize test already uses.
     /// Measurements stay on a record this test owns. Other suites do not see it.
     ///
-    /// Synchronous on purpose: `L10n.currentLanguage` is process-wide, so the switch and its
-    /// restore must not span an await where another suite could render a snapshot in the other
-    /// language.
+    /// The language override is task-local and this function does not await, so the hosting
+    /// view is measured on the same task that pinned the language.
     static func reading(store: HomeStore, language: AppLanguage = .zhHans) throws -> Reading {
-        let previousLanguage = L10n.currentLanguage
-        L10n.currentLanguage = language
-        defer { L10n.currentLanguage = previousLanguage }
-
+        try L10n.$overrideLanguage.withValue(language) {
         let record = PanelFoldRecord()
         _ = NSApplication.shared
         let hosting = NSHostingView(
@@ -138,6 +134,7 @@ enum PanelFoldMeasure {
             lessonMinY: record.lessonRowMinY,
             kindMinY: record.kindRowMinY
         )
+        }
     }
 }
 

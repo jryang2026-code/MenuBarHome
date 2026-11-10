@@ -1115,7 +1115,7 @@ struct SnapshotTests {
         let fixture = try await SnapshotFixture(configuredHASource: false)
         defer { fixture.restore() }
         for language in [AppLanguage.zhHans, .en] {
-            L10n.currentLanguage = language
+            try L10n.$overrideLanguage.withValue(language) {
             fixture.store.appLanguagePreference = AppLanguagePreference(language)
             for scheme in [ColorScheme.light, .dark] {
                 assertRendered(
@@ -1127,6 +1127,7 @@ struct SnapshotTests {
                     named: "settings-capsule-\(language == .en ? "en" : "zh")-\(scheme == .dark ? "dark" : "light")",
                     scheme: scheme
                 )
+            }
             }
         }
     }
@@ -1283,10 +1284,7 @@ struct SnapshotTests {
 
     @Test("Camera HUD labels video-only streams and offers unmute for HLS")
     func cameraAudioHUDStates() async throws {
-        let previousLanguage = L10n.currentLanguage
-        L10n.currentLanguage = .zhHans
-        defer { L10n.currentLanguage = previousLanguage }
-
+        try L10n.$overrideLanguage.withValue(.zhHans) {
         let states: [(CameraLiveAudioStatus, String)] = [
             (.videoOnly, "video-only"),
             (.audio(isMuted: true), "muted"),
@@ -1304,6 +1302,7 @@ struct SnapshotTests {
                 named: "camera-audio-\(name)-dark",
                 scheme: .dark
             )
+        }
         }
     }
 
@@ -1515,7 +1514,6 @@ struct SnapshotFixture {
     let store: HomeStore
     private let previousAppearance: String?
     private let previousTemperatureUnit: String?
-    private let previousLanguage: AppLanguage
     private let previousRoomOrder: String?
     private let previousRoomAliases: String?
 
@@ -1531,8 +1529,6 @@ struct SnapshotFixture {
         includeDualLensCamera: Bool = false,
         configuredHASource: Bool = true
     ) async throws {
-        previousLanguage = L10n.currentLanguage
-        L10n.currentLanguage = .zhHans
         previousAppearance = UserDefaults.standard.string(forKey: AppAppearance.storageKey)
         previousTemperatureUnit = UserDefaults.standard.string(forKey: TemperatureUnitPreference.storageKey)
         // The panel reads room order/aliases through `@AppStorage` on `.standard`, i.e. the real
@@ -1654,7 +1650,6 @@ struct SnapshotFixture {
         } else {
             UserDefaults.standard.removeObject(forKey: AppAppearance.storageKey)
         }
-        L10n.currentLanguage = previousLanguage
         if let previousTemperatureUnit {
             UserDefaults.standard.set(previousTemperatureUnit, forKey: TemperatureUnitPreference.storageKey)
         } else {

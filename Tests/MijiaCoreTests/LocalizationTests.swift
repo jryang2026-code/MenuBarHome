@@ -493,4 +493,34 @@ struct LocalizationTests {
         #expect(defaults.string(forKey: "app_language") == "zh-Hant")
         #expect(AppLanguagePreference(rawValue: defaults.string(forKey: "app_language") ?? "") == .zhHant)
     }
+
+    /// The English scope is task-local. A concurrent reader that did not opt in keeps Simplified Chinese.
+    @Test("An English override on one task leaves another task in Simplified Chinese")
+    func englishOverrideStaysOnItsTask() async {
+        let mismatches = await withTaskGroup(of: Int.self) { group in
+            group.addTask {
+                var bad = 0
+                for _ in 0..<8000 {
+                    if L10n.tr("已上锁", "Locked") != "已上锁" { bad += 1 }
+                    let unknown = L10n.tr("锁状态未知", "Lock status unknown")
+                    if unknown != "锁状态未知" { bad += 1 }
+                }
+                return bad
+            }
+            group.addTask {
+                var bad = 0
+                for _ in 0..<8000 {
+                    let saw = L10n.$overrideLanguage.withValue(.en) {
+                        L10n.tr("已上锁", "Locked")
+                    }
+                    if saw != "Locked" { bad += 1 }
+                }
+                return bad
+            }
+            var total = 0
+            for await count in group { total += count }
+            return total
+        }
+        #expect(mismatches == 0)
+    }
 }

@@ -135,20 +135,18 @@ struct SettingsPlainLanguageTests {
 
     @Test("The read-more link names the release notes")
     func readMoreTitle() {
-        let previous = L10n.currentLanguage
-        defer { L10n.currentLanguage = previous }
-        L10n.currentLanguage = .zhHans
-        #expect(ReleaseNotesDigest.readMoreTitle == "查看完整更新记录 →")
-        L10n.currentLanguage = .en
-        #expect(ReleaseNotesDigest.readMoreTitle == "See the full release notes →")
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(ReleaseNotesDigest.readMoreTitle == "查看完整更新记录 →")
+        }
+        L10n.$overrideLanguage.withValue(.en) {
+            #expect(ReleaseNotesDigest.readMoreTitle == "See the full release notes →")
+        }
     }
 
     @Test("The collapsed assistant tab is plain language")
     func collapsedAssistantHidesDeveloperVocabulary() {
-        let previous = L10n.currentLanguage
-        defer { L10n.currentLanguage = previous }
         for language in [AppLanguage.zhHans, AppLanguage.en] {
-            L10n.currentLanguage = language
+            L10n.$overrideLanguage.withValue(language) {
             let header = AssistantSettingsCopy.headerStatus(isInsecure: false, hasKey: true, isLoopback: false)
             #expect(header == AssistantSettingsCopy.keySaved)
             let visible = AssistantSettingsCopy.collapsedSurface(
@@ -166,8 +164,9 @@ struct SettingsPlainLanguageTests {
             #expect(visible.contains(AssistantSettingsCopy.learnHabits))
             #expect(visible.contains(AssistantSettingsCopy.shareHabits))
             #expect(visible.contains(AssistantSettingsCopy.onDeviceSpeech))
+            }
         }
-        L10n.currentLanguage = .zhHans
+        L10n.$overrideLanguage.withValue(.zhHans) {
         #expect(AssistantSettingsCopy.title == "AI 助手（可选）")
         #expect(AssistantSettingsCopy.subtitle.contains("不填也能用：开关、调光、温度等常规指令在本机解析"))
         #expect(AssistantSettingsCopy.advancedTitle == "高级")
@@ -176,13 +175,12 @@ struct SettingsPlainLanguageTests {
         #expect(AssistantSettingsCopy.learnHabits.hasPrefix("学习我的使用习惯"))
         #expect(AssistantSettingsCopy.shareHabits.hasPrefix("发送习惯摘要"))
         #expect(AssistantSettingsCopy.onDeviceSpeech.hasPrefix("语音只在本机识别"))
+        }
     }
 
     @Test("The new card copy is translated into Traditional Chinese")
     func newCardCopyHasHantTranslations() {
-        let previous = L10n.currentLanguage
-        defer { L10n.currentLanguage = previous }
-        L10n.currentLanguage = .zhHant
+        L10n.$overrideLanguage.withValue(.zhHant) {
         #expect(AssistantSettingsCopy.title == "AI 助手（可選）")
         #expect(AssistantSettingsCopy.subtitle == "不填也能用：開關、調光、溫度等常規指令在本機解析")
         #expect(AssistantSettingsCopy.providerLabel == "服務商")
@@ -195,5 +193,6 @@ struct SettingsPlainLanguageTests {
         #expect(AssistantSettingsCopy.httpsRequired == "需用 https，否則不會傳送")
         #expect(AssistantSettingsCopy.customAddressRequired == "請先填寫自定義服務地址")
         #expect(ReleaseNotesDigest.readMoreTitle == "檢視完整更新記錄 →")
+        }
     }
 }
