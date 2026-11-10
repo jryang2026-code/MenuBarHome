@@ -1,3 +1,4 @@
+#if os(macOS)
 import KeychainTestGuard
 @testable import MijiaCore
 
@@ -5,3 +6,4 @@ import KeychainTestGuard
 public func installTestKeychainGuard() {
     SystemKeychainAccess.installGuard { keychain_guard_fail() }
 }
+#endif

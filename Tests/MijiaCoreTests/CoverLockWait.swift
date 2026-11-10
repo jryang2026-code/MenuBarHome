@@ -18,11 +18,9 @@ extension HomeStore {
     /// Waits for the provider snapshot a cover command produces. `MockHomeProvider` echoes a
     /// snapshot while the send is in flight, and it is applied after the command is recorded, so
     /// waiting for it keeps a later write from being judged against the older report.
+    /// `snapshotGeneration` is the counter. The wait does not guess with `Task.yield`.
     func waitForCoverSnapshot(after generation: UInt64) async {
-        let deadline = ContinuousClock.now + .seconds(30)
-        while snapshotGeneration <= generation, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(5))
-        }
+        await waitUntil(timeout: .seconds(30)) { snapshotGeneration > generation }
     }
 
     /// Extends the lock a cover command armed and waits for the provider echo it produces, so the

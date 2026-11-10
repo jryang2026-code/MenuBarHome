@@ -166,14 +166,6 @@ struct CurtainDeviceTests {
         return (store, mock)
     }
 
-    @MainActor
-    private func waitUntil(_ condition: @MainActor () async -> Bool) async {
-        for _ in 0..<100 {
-            if await condition() { return }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
     @Test("Tapping a moving curtain stops it instead of reversing it")
     @MainActor
     func tapStopsMovingCurtain() async throws {

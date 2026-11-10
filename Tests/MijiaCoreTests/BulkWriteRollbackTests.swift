@@ -40,16 +40,6 @@ struct BulkWriteRollbackTests {
         return (store, mock)
     }
 
-    /// Bounded poll for a deterministic signal instead of a fixed sleep (CODING_STANDARDS §9).
-    @MainActor
-    private func waitUntil(_ condition: @escaping @MainActor () async -> Bool) async throws {
-        for _ in 0..<200 {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        Issue.record("condition was never satisfied")
-    }
-
     @Test("A refused 全关 device keeps its previous row and leaves the undo banner")
     @MainActor
     func partialFailureRollsBackOnlyTheFailedDevice() async throws {
@@ -151,11 +141,11 @@ struct BulkWriteRollbackTests {
 
         let task = store.executeQuickAction(.lightsOff)
         store.pauseUndoBannerCountdown()
-        try await waitUntil { await mock.executeStarted > 0 }
+        await waitUntil { await mock.executeStarted > 0 }
 
         // A newer write takes the row while the batch command is still in flight.
         store.setLightBrightness("dev_ceiling", percent: 42)
-        try await waitUntil {
+        await waitUntil {
             await mock.executedCommands.contains(
                 .setLightBrightness(entityId: "light.ceiling", percent: 42)
             )
@@ -182,7 +172,7 @@ struct BulkWriteRollbackTests {
         await mock.holdNextExecute()
 
         let task = store.turnAllOff()
-        try await waitUntil { await mock.executeStarted > 0 }
+        await waitUntil { await mock.executeStarted > 0 }
 
         store.invalidateUndoContext()
         await mock.setShouldFail(true)
@@ -297,7 +287,7 @@ struct BulkWriteRollbackTests {
         let task = store.turnAllOff()
         store.pauseUndoBannerCountdown()
         // The first device fails; the second is still inside the provider.
-        try await waitUntil { await mock.executeStarted == 2 }
+        await waitUntil { await mock.executeStarted == 2 }
 
         // The lock runs out and the device's own report lands before the batch finishes.
         store.optimisticLockUntil["dev_ceiling"] = ContinuousClock.now.advanced(by: .milliseconds(-1))
@@ -308,7 +298,7 @@ struct BulkWriteRollbackTests {
         }
         let before = store.snapshotGeneration
         await mock.updateSnapshot(SynthesizedHome(devices: [moved, Self.deskLamp]))
-        try await waitUntil { store.snapshotGeneration > before }
+        await waitUntil { store.snapshotGeneration > before }
         #expect(store.optimisticLockUntil["dev_ceiling"] == nil, "applying the report drops the expired entry")
         #expect(store.devices.first { $0.id == "dev_ceiling" }?.isActiveOn == true)
 
@@ -347,7 +337,7 @@ struct BulkWriteRollbackTests {
         let task = store.turnAllOff()
         store.pauseUndoBannerCountdown()
         // The light fails; the TV keeps the batch open.
-        try await waitUntil { await mock.executeStarted == 2 }
+        await waitUntil { await mock.executeStarted == 2 }
 
         // The window runs out and the TV reports the same standby row the batch showed.
         store.optimisticLockUntil[tv.id] = ContinuousClock.now.advanced(by: .milliseconds(-1))
@@ -391,7 +381,7 @@ struct BulkWriteRollbackTests {
 
         let batch = store.turnAllOff()
         store.pauseUndoBannerCountdown()
-        try await waitUntil { await mock.executeStarted == 1 }
+        await waitUntil { await mock.executeStarted == 1 }
 
         let undo = try #require(store.undoTurnAllOff())
         // The cards answer at once, before the held command has reached its device.
@@ -423,7 +413,7 @@ struct BulkWriteRollbackTests {
 
         let batch = store.executeQuickAction(.softNightLight)
         store.pauseUndoBannerCountdown()
-        try await waitUntil { await mock.executeStarted == 1 }
+        await waitUntil { await mock.executeStarted == 1 }
 
         let undo = try #require(store.undoTurnAllOff())
         await mock.releaseExecute()
@@ -461,13 +451,13 @@ struct BulkWriteRollbackTests {
 
         let batch = store.turnAllOff()
         store.pauseUndoBannerCountdown()
-        try await waitUntil { await mock.executeStarted == 1 }
+        await waitUntil { await mock.executeStarted == 1 }
 
         let undo = try #require(store.undoTurnAllOff())
-        // Let an unserialised undo finish its restore and toast before the held command fails, so a
-        // late failure report would be the last word on screen. The serialised undo is parked on the
-        // in-flight command here and sends nothing.
-        for _ in 0..<100 { await Task.yield() }
+        // An unserialised undo would finish its restore and toast before the held command fails, so a
+        // late failure report would be the last word on screen. The serialised undo parks on the
+        // in-flight command and sends nothing.
+        await waitUntil { store.undoInFlightWaiters == 1 }
         #expect(store.toastNotice == nil, "the undo must still be waiting for the held command")
         await mock.releaseExecute()
         await batch?.value
@@ -490,7 +480,7 @@ struct BulkWriteRollbackTests {
 
         let batch = store.turnAllOff()
         store.pauseUndoBannerCountdown()
-        try await waitUntil { await mock.executeStarted == 1 }
+        await waitUntil { await mock.executeStarted == 1 }
 
         // What the expiry timer does when the window runs out: only an actual undo may stop a batch.
         store.undoBanner = nil
@@ -534,7 +524,7 @@ struct BulkWriteRollbackTests {
 
         let batch = store.turnAllOff()
         store.pauseUndoBannerCountdown()
-        try await waitUntil { await mock.executeStarted == 1 }
+        await waitUntil { await mock.executeStarted == 1 }
 
         let undo = try #require(store.undoTurnAllOff())
         #expect(store.devices.first?.isActiveOn == true)
@@ -546,7 +536,7 @@ struct BulkWriteRollbackTests {
         }
         let before = store.snapshotGeneration
         await mock.updateSnapshot(SynthesizedHome(devices: [reportedOff]))
-        try await waitUntil { store.snapshotGeneration > before }
+        await waitUntil { store.snapshotGeneration > before }
         #expect(store.devices.first?.isActiveOn == true, "the wait lock keeps the restored row")
 
         await mock.releaseExecute()
@@ -567,7 +557,7 @@ struct BulkWriteRollbackTests {
 
         let batch = store.turnAllOff()
         store.pauseUndoBannerCountdown()
-        try await waitUntil { await mock.executeStarted == 1 }
+        await waitUntil { await mock.executeStarted == 1 }
 
         let undo = try #require(store.undoTurnAllOff())
         let now = ContinuousClock.now
@@ -582,7 +572,7 @@ struct BulkWriteRollbackTests {
         await mock.holdNextExecute(forTarget: "light.ceiling")
         await mock.releaseExecute()
         await batch?.value
-        try await waitUntil { await mock.executeStarted == 2 }
+        await waitUntil { await mock.executeStarted == 2 }
         let afterWait = try #require(store.optimisticLockUntil["dev_ceiling"])
         #expect(
             afterWait <= ContinuousClock.now.advanced(by: .seconds(3)),
@@ -601,7 +591,7 @@ struct BulkWriteRollbackTests {
 
         let batch = store.turnAllOff()
         store.pauseUndoBannerCountdown()
-        try await waitUntil { await mock.executeStarted == 1 }
+        await waitUntil { await mock.executeStarted == 1 }
 
         let undo = try #require(store.undoTurnAllOff())
         store.invalidateUndoContext()
@@ -627,12 +617,12 @@ struct BulkWriteRollbackTests {
 
         let batch = store.turnAllOff()
         store.pauseUndoBannerCountdown()
-        try await waitUntil { await mock.executeStarted == 1 }
+        await waitUntil { await mock.executeStarted == 1 }
 
         let undo = try #require(store.undoTurnAllOff())
         // The user changes the lamp while the undo waits for the slow off command.
         store.setLightBrightness("dev_ceiling", percent: 42)
-        try await waitUntil {
+        await waitUntil {
             await mock.executedCommands.contains(
                 .setLightBrightness(entityId: "light.ceiling", percent: 42)
             )
@@ -660,11 +650,11 @@ struct BulkWriteRollbackTests {
 
         let batch = store.executeQuickAction(.softNightLight)
         store.pauseUndoBannerCountdown()
-        try await waitUntil { await mock.executeStarted == 1 }
+        await waitUntil { await mock.executeStarted == 1 }
 
         // The desk lamp is taken over while the ceiling light's command is still in flight.
         store.setLightBrightness("dev_desk", percent: 70)
-        try await waitUntil {
+        await waitUntil {
             await mock.executedCommands.contains(
                 .setLightBrightness(entityId: "light.desk", percent: 70)
             )
@@ -697,11 +687,11 @@ struct BulkWriteRollbackTests {
 
         let batch = store.executeQuickAction(.softNightLight)
         store.pauseUndoBannerCountdown()
-        try await waitUntil { await mock.executeStarted == 1 }
+        await waitUntil { await mock.executeStarted == 1 }
 
         // The brightness command is out; a newer write takes the row before the colour follows.
         store.setLightBrightness("dev_ceiling", percent: 70)
-        try await waitUntil {
+        await waitUntil {
             await mock.executedCommands.contains(
                 .setLightBrightness(entityId: "light.ceiling", percent: 70)
             )
@@ -729,11 +719,11 @@ struct BulkWriteRollbackTests {
 
         let batch = store.executeQuickAction(.softNightLight)
         store.pauseUndoBannerCountdown()
-        try await waitUntil { await mock.executeStarted == 1 }
+        await waitUntil { await mock.executeStarted == 1 }
 
         // The user dims the second lamp while the first command is still in flight.
         store.setLightBrightness("dev_desk", percent: 70)
-        try await waitUntil {
+        await waitUntil {
             await mock.executedCommands.contains(
                 .setLightBrightness(entityId: "light.desk", percent: 70)
             )
@@ -775,7 +765,7 @@ struct BulkWriteRollbackTests {
 
         let oldBatch = store.turnAllOff()
         store.pauseUndoBannerCountdown()
-        try await waitUntil { await mock.executeStarted == 2 }
+        await waitUntil { await mock.executeStarted == 2 }
 
         let undo = try #require(store.undoTurnAllOff())
         // The user asks for another 全关 while the old undo waits; it only sees the living room.
@@ -807,7 +797,7 @@ struct BulkWriteRollbackTests {
 
         let oldBatch = store.turnAllOff()
         store.pauseUndoBannerCountdown()
-        try await waitUntil { await mock.executeStarted == 1 }
+        await waitUntil { await mock.executeStarted == 1 }
 
         let undo = try #require(store.undoTurnAllOff())
         // A newer 全关 takes both rows while the old undo is still waiting.

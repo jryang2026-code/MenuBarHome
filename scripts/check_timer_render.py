@@ -11,6 +11,7 @@ too, so the reason cannot outlive the code.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -25,10 +26,12 @@ ALLOWLIST: dict[str, dict[str, tuple[int, str]]] = {
     "windows/src/ui/appLifecycle.ts": {
         "host.render();": (
             2,
-            "startTimerLoop's first host.render() flushes pendingCloudRender after the gesture "
-            "check. render() clears the flag. The second paints undo expiry or a due scheduled "
-            "command during a gesture. queueBackgroundRender() there would set the flag and leave "
-            "the paint to a later tick. CODING_STANDARDS.md section 16 allows that direct call.",
+            "startTimerLoop calls host.render() twice. The first flushes pendingCloudRender only "
+            "after hasBlockingPanelInteraction() is false, and render() clears that flag. The "
+            "second is the direct call CODING_STANDARDS.md section 16 allows while scheduled "
+            "commands are queued, without the gesture check. The same statement also clears an "
+            "expired undo row. Section 16 does not allow that undo paint on its own. "
+            "queueBackgroundRender() would set the flag and leave the paint to a later tick.",
         ),
     },
 }
@@ -40,10 +43,67 @@ def code_mask(src: str) -> bytearray:
     return code
 
 
+# A slash after one of these words starts a regex (`return /a/`), not a division.
+_REGEX_WORDS = frozenset({
+    "return", "throw", "case", "else", "do", "typeof", "void", "delete",
+    "yield", "await", "in", "of", "instanceof", "new", "extends",
+})
+
+
+def skip_regex(src: str, i: int, end: int) -> int:
+    """Skip a `/.../flags` literal. `i` points at the opening slash.
+
+    Quotes inside a character class stay inside the literal. Treating them as
+    a string start is what made the scanner lose the rest of the file.
+    """
+    i += 1
+    in_class = False
+    while i < end:
+        c = src[i]
+        if c in "\n\r":
+            return i
+        if c == "\\":
+            i += 2 if i + 1 < end else 1
+            continue
+        if in_class:
+            if c == "]":
+                in_class = False
+            i += 1
+            continue
+        if c == "[":
+            in_class = True
+            i += 1
+            continue
+        if c == "/":
+            i += 1
+            while i < end and src[i].isascii() and src[i].isalpha():
+                i += 1
+            return i
+        i += 1
+    return end
+
+
 def scan_code(src: str, i: int, end: int, code: bytearray) -> int:
+    i, _can_regex = scan_tokens(src, i, end, code, can_regex=True, stop_on_brace=False)
+    return i
+
+
+def scan_tokens(
+    src: str,
+    i: int,
+    end: int,
+    code: bytearray,
+    can_regex: bool,
+    stop_on_brace: bool,
+) -> tuple[int, bool]:
+    depth = 0
     while i < end:
         c = src[i]
         nxt = src[i + 1] if i + 1 < end else ""
+        if c in " \t\r\n":
+            code[i] = 1
+            i += 1
+            continue
         if c == "/" and nxt == "/":
             i += 2
             while i < end and src[i] != "\n":
@@ -55,15 +115,78 @@ def scan_code(src: str, i: int, end: int, code: bytearray) -> int:
                 i += 1
             i = min(end, i + 2)
             continue
+        if c == "/" and can_regex:
+            i = skip_regex(src, i, end)
+            can_regex = False
+            continue
         if c in "'\"":
             i = skip_quoted(src, i, end, c)
+            can_regex = False
             continue
         if c == "`":
             i = skip_template(src, i, end, code)
+            can_regex = False
             continue
+        if c.isalpha() or c in "_$":
+            j = i + 1
+            while j < end and (src[j].isalnum() or src[j] in "_$"):
+                j += 1
+            word = src[i:j]
+            for index in range(i, j):
+                code[index] = 1
+            can_regex = word in _REGEX_WORDS
+            i = j
+            continue
+        if c.isdigit():
+            while i < end and (src[i].isalnum() or src[i] in "._"):
+                code[i] = 1
+                i += 1
+            can_regex = False
+            continue
+        if c == "}" and stop_on_brace and depth == 0:
+            return i, can_regex
         code[i] = 1
+        if c == "{":
+            depth += 1
+            can_regex = True
+            i += 1
+            continue
+        if c == "}":
+            depth = max(0, depth - 1)
+            can_regex = False
+            i += 1
+            continue
+        if c == "?":
+            if nxt == ".":
+                code[i + 1] = 1
+                can_regex = False
+                i += 2
+                continue
+            if nxt == "?":
+                code[i + 1] = 1
+                can_regex = True
+                i += 2
+                continue
+            can_regex = True
+            i += 1
+            continue
+        if c == "=" and nxt == ">":
+            code[i + 1] = 1
+            can_regex = True
+            i += 2
+            continue
+        if c == ".":
+            can_regex = False
+            i += 1
+            continue
+        if c in ")]}":
+            can_regex = False
+            i += 1
+            continue
+        # An operator, including a division slash, can be followed by a regex (`a / /b/`).
+        can_regex = True
         i += 1
-    return i
+    return i, can_regex
 
 
 def skip_quoted(src: str, i: int, end: int, quote: str) -> int:
@@ -96,33 +219,10 @@ def skip_template(src: str, i: int, end: int, code: bytearray) -> int:
 
 
 def scan_template_expr(src: str, i: int, end: int, code: bytearray) -> int:
-    depth = 1
-    while i < end and depth:
-        c = src[i]
-        nxt = src[i + 1] if i + 1 < end else ""
-        if c == "/" and nxt == "/":
-            i += 2
-            while i < end and src[i] != "\n":
-                i += 1
-            continue
-        if c == "/" and nxt == "*":
-            i += 2
-            while i + 1 < end and not (src[i] == "*" and src[i + 1] == "/"):
-                i += 1
-            i = min(end, i + 2)
-            continue
-        if c in "'\"":
-            i = skip_quoted(src, i, end, c)
-            continue
-        if c == "`":
-            i = skip_template(src, i, end, code)
-            continue
-        if c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
+    i, _can_regex = scan_tokens(src, i, end, code, can_regex=True, stop_on_brace=True)
+    if i < end and src[i] == "}":
         code[i] = 1
-        i += 1
+        return i + 1
     return i
 
 
@@ -174,6 +274,36 @@ def normalize_line(line: str) -> str:
     return " ".join("".join(without_comment).split())
 
 
+def is_ident_char(ch: str) -> bool:
+    return ch.isalnum() or ch in "_$"
+
+
+def skip_ws(src: str, code: bytearray, j: int, end: int) -> int:
+    while j < end and code[j] and src[j] in " \t\r\n":
+        j += 1
+    return j
+
+
+def render_word(src: str, code: bytearray, i: int, end: int) -> int | None:
+    if not code[i] or not src.startswith("render", i):
+        return None
+    if i > 0 and is_ident_char(src[i - 1]):
+        return None
+    j = i + len("render")
+    if j < end and code[j] and is_ident_char(src[j]):
+        return None
+    return j
+
+
+def opens_call(src: str, code: bytearray, j: int, end: int) -> int | None:
+    j = skip_ws(src, code, j, end)
+    if j + 1 < end and src.startswith("?.", j) and code[j]:
+        j = skip_ws(src, code, j + 2, end)
+    if j < end and code[j] and src[j] == "(":
+        return j
+    return None
+
+
 def render_calls(src: str, code: bytearray, start: int, end: int) -> list[int]:
     hits: list[int] = []
     i = start
@@ -181,28 +311,92 @@ def render_calls(src: str, code: bytearray, start: int, end: int) -> list[int]:
         if not code[i]:
             i += 1
             continue
-        if src.startswith("render", i) and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] in "_$")):
-            j = i + len("render")
-            while j < end and code[j] and src[j] in " \t\r\n":
-                j += 1
-            if j < end and code[j] and src[j] == "(":
+        word = render_word(src, code, i, end)
+        if word is not None:
+            call = opens_call(src, code, word, end)
+            if call is not None:
                 hits.append(i)
-                i = j + 1
+                i = call + 1
                 continue
+        bracket = bracket_render_call(src, code, i, end)
+        if bracket is not None:
+            hits.append(i)
+            i = bracket + 1
+            continue
         i += 1
+    return hits
+
+
+def bracket_render_call(src: str, code: bytearray, i: int, end: int) -> int | None:
+    if src[i] != "[" or not code[i]:
+        return None
+    j = skip_ws(src, code, i + 1, end)
+    if j >= end or src[j] not in "'\"":
+        return None
+    quote = src[j]
+    name_start = j + 1
+    name_end = src.find(quote, name_start, end)
+    if name_end < 0 or src[name_start:name_end] != "render":
+        return None
+    j = skip_ws(src, code, name_end + 1, end)
+    if j >= end or not code[j] or src[j] != "]":
+        return None
+    if opens_call(src, code, j + 1, end) is None:
+        return None
+    return i
+
+
+def alias_names(src: str, code: bytearray) -> set[str]:
+    names: set[str] = set()
+    pattern = re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]*)")
+    access = re.compile(r"\.render\b|\[\s*['\"]render['\"]\s*\]")
+    for match in pattern.finditer(src):
+        if not code[match.start()]:
+            continue
+        expr_start = match.start(2)
+        for found in access.finditer(match.group(2)):
+            if code[expr_start + found.start()]:
+                names.add(match.group(1))
+                break
+    return names
+
+
+def alias_calls(src: str, code: bytearray, start: int, end: int, names: set[str]) -> list[int]:
+    hits: list[int] = []
+    for name in names:
+        if name == "render":
+            continue
+        i = start
+        while i < end:
+            if (
+                code[i]
+                and src.startswith(name, i)
+                and (i == 0 or not is_ident_char(src[i - 1]))
+                and (i + len(name) >= end or not is_ident_char(src[i + len(name)]))
+            ):
+                call = opens_call(src, code, i + len(name), end)
+                if call is not None:
+                    hits.append(i)
+                    i = call + 1
+                    continue
+            i += 1
     return hits
 
 
 def bare_render_argument(src: str, code: bytearray, start: int, end: int) -> int | None:
     chars = [src[i] for i in range(start, end) if code[i]]
     text = "".join(chars).strip()
+    raw = src[start:end]
     if text == "render" or text.endswith(".render"):
+        return start
+    if text.endswith("[]") and ('["render"]' in raw or "['render']" in raw):
         return start
     return None
 
 
 def scan_source(path: str, src: str) -> list[tuple[str, int, str]]:
     code = code_mask(src)
+    names = alias_names(src, code)
     hits: list[tuple[str, int, str]] = []
     i = 0
     n = len(src)
@@ -228,11 +422,13 @@ def scan_source(path: str, src: str) -> list[tuple[str, int, str]]:
             i = matched + 1
             continue
         start, end = arg
-        for call in render_calls(src, code, start, end):
+        calls = render_calls(src, code, start, end)
+        calls.extend(index for index in alias_calls(src, code, start, end, names) if index not in calls)
+        for call in calls:
             line_no, line = line_span(src, call)
             hits.append((path, line_no, normalize_line(line)))
         bare = bare_render_argument(src, code, start, end)
-        if bare is not None and not render_calls(src, code, start, end):
+        if bare is not None and not calls:
             line_no, line = line_span(src, bare)
             hits.append((path, line_no, normalize_line(line)))
         i = end
@@ -341,6 +537,53 @@ def self_test() -> None:
         "nested parens before render outside": (
             "window.setTimeout(() => {\n  suppress = false;\n}, 0);\n"
             "host.render();\n",
+            [],
+        ),
+        "optional call": (
+            "setTimeout(() => {\n  host.render?.();\n}, 0);\n",
+            ["host.render?.();"],
+        ),
+        "bracket call": (
+            "setTimeout(() => {\n  host[\"render\"]();\n}, 0);\n",
+            ["host[]();"],
+        ),
+        "single quote bracket": (
+            "setTimeout(() => {\n  host['render']();\n}, 1);\n",
+            ["host[]();"],
+        ),
+        "aliased call": (
+            "const paint = host.render;\n"
+            "setTimeout(() => {\n  paint();\n}, 0);\n",
+            ["paint();"],
+        ),
+        "optional alias": (
+            "let paint = this.render;\nsetTimeout(() => paint?.(), 0);\n",
+            ["setTimeout(() => paint?.(), 0);"],
+        ),
+        "bracket alias": (
+            "const paint = host[\"render\"];\nsetTimeout(() => {\n  paint();\n}, 0);\n",
+            ["paint();"],
+        ),
+        "bare bracket argument": (
+            "window.setTimeout(host[\"render\"], 0);\n",
+            ["window.setTimeout(host[], 0);"],
+        ),
+        "string that names render is not an alias": (
+            "const paint = \"host.render\";\nsetTimeout(() => { paint(); }, 0);\n",
+            [],
+        ),
+        "regex character class then a timer render": (
+            "const urlMatch = /https?:\\/\\/[^\\s\"'\\\\]+/i;\n"
+            "window.setTimeout(() => { this.host.render(); }, 0);\n",
+            ["window.setTimeout(() => { this.host.render(); }, 0);"],
+        ),
+        "division is not a regex": (
+            "const n = a / b;\n"
+            "window.setTimeout(() => { host.render(); }, 0);\n",
+            ["window.setTimeout(() => { host.render(); }, 0);"],
+        ),
+        "regex inside the timer is not a call": (
+            "setTimeout(() => { const re = /render\\(/; }, 0);\n",
             [],
         ),
     }

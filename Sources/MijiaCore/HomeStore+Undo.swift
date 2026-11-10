@@ -771,6 +771,8 @@ extension HomeStore {
             var restorable = applicable
             if let batchTask {
                 // The batch is sequential, so at most the one in-flight command is still running.
+                undoInFlightWaiters += 1
+                defer { undoInFlightWaiters -= 1 }
                 _ = await batchTask.value
                 // The wait can outlive the connection it started on; a home that is no longer on
                 // screen writes nothing.

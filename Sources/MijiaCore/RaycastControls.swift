@@ -316,7 +316,7 @@ extension HomeStore {
         } else {
             success = L10n.tr("已将\(device.name)开到 \(clamped)%", "Set \(device.name) to \(clamped)%")
         }
-        return await raycastWrite(from: device, to: updated, commands: [cmd], lock: .seconds(8), success: success)
+        return await raycastWrite(from: device, to: updated, commands: [cmd], lock: coverOptimisticLockDuration, success: success)
     }
 
     private func executeDirectFanPercentage(at idx: Int, percent: Int) async -> RaycastDirectResult {

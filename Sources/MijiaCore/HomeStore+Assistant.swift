@@ -592,6 +592,11 @@ extension HomeStore {
         let token = UUID()
         scheduledTaskTokens[entry.id] = token
         scheduledTasks[entry.id] = Task { [weak self] in
+            defer {
+                if let self {
+                    self.scheduledTaskExits &+= 1
+                }
+            }
             do { try await sleep(.seconds(waitSeconds)) } catch { return }
             guard let self, !Task.isCancelled else { return }
             // A source switch while this timer slept re-partitions the lists elsewhere; the timer must
@@ -676,6 +681,9 @@ extension HomeStore {
     }
 
     private func waitForInitialSnapshotIfNeeded() async {
+        guard devices.isEmpty, scenes.isEmpty, !Task.isCancelled else { return }
+        initialSnapshotWaiters += 1
+        defer { initialSnapshotWaiters -= 1 }
         for _ in 0..<50 where devices.isEmpty && scenes.isEmpty && !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(100))
         }
