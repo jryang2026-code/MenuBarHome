@@ -41,6 +41,22 @@ public struct CameraPTZStopResult: Equatable, Sendable {
     }
 }
 
+/// Which failed-stop attempts remain after a later stop on the same camera.
+public enum CameraPTZFailureResolution {
+    /// A stop that sent `-1001` proves the motor stopped, so older failures for
+    /// that camera are finished. A not-sent reply leaves every attempt in place.
+    public static func remainingDeviceIds(
+        unresolvedDeviceIds: [String],
+        stoppedDeviceId: String?,
+        result: CameraPTZStopResult
+    ) -> [String] {
+        guard result.clearsFailedWrite, let stoppedDeviceId else {
+            return unresolvedDeviceIds
+        }
+        return unresolvedDeviceIds.filter { $0 != stoppedDeviceId }
+    }
+}
+
 public enum CameraPTZClientError: LocalizedError, Equatable, Sendable {
     case notConfigured
     case rejected

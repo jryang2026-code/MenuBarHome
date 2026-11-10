@@ -228,7 +228,22 @@ extension CameraLivePanelController {
         attempt: CameraPTZStopAttempt,
         notify: Bool
     ) {
-        resolveUnresolvedStop(attempt)
+        let kept = Set(CameraPTZFailureResolution.remainingDeviceIds(
+            unresolvedDeviceIds: ptzUnresolvedStops.compactMap(\.deviceId),
+            stoppedDeviceId: attempt.deviceId,
+            result: result
+        ))
+        if result.clearsFailedWrite {
+            ptzUnresolvedStops.removeAll { stop in
+                guard let id = stop.deviceId else { return false }
+                return !kept.contains(id)
+            }
+            if ptzUnresolvedStops.isEmpty {
+                clearStopWriteFailureNotice()
+            }
+        } else {
+            resolveUnresolvedStop(attempt)
+        }
         guard stillOwns(attempt) else { return }
         reportStopThatWasNotSent(result, notify: notify)
     }

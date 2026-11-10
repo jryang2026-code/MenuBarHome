@@ -169,4 +169,22 @@ struct CameraPTZClientTests {
         #expect(result.mode == .step)
         #expect(result.clearsFailedWrite == false)
     }
+
+    @Test("A newer session's sent stop clears an older failure, and a not-sent reply does not")
+    func newerCleanStopClearsOlderFailureForTheSameCamera() {
+        let unresolved = ["cam-a", "cam-b"]
+        let clean = CameraPTZStopResult(sent: true, mode: .continuous)
+        #expect(CameraPTZFailureResolution.remainingDeviceIds(
+            unresolvedDeviceIds: unresolved,
+            stoppedDeviceId: "cam-a",
+            result: clean
+        ) == ["cam-b"])
+
+        let notSent = CameraPTZStopResult(sent: false, mode: .step)
+        #expect(CameraPTZFailureResolution.remainingDeviceIds(
+            unresolvedDeviceIds: unresolved,
+            stoppedDeviceId: "cam-a",
+            result: notSent
+        ) == unresolved)
+    }
 }

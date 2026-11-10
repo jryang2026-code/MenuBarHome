@@ -931,8 +931,10 @@ public actor MiCloudProvider: HomeProvider {
         }
 
         let online = scoped.filter(\.isOnline)
-        if let cameraRoom, let sameRoom = online.first(where: { cameraRoom.dids.contains($0.did) }) {
-            return sameRoom
+        if let cameraRoom {
+            let sameRoom = online.filter { cameraRoom.dids.contains($0.did) }
+            if sameRoom.count > 1 { return nil }
+            if let only = sameRoom.first { return only }
         }
         guard scoped.count == 1 else { return nil }
         return online.first
