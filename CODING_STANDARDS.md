@@ -2,6 +2,8 @@
 
 Reviewed by `/code-review` (Standards axis). Mechanical rules (secret scanning, `kVK_*` key constants, `UNUserNotificationCenter` `.app` bundle guard, and `swift test`) are enforced deterministically by `scripts/check.sh`. The rules below cover architectural and domain judgement calls.
 
+A review citation names the deciding symbol as `path:symbol` and quotes those lines. `HomeStore+ControlWrite.swift:lockOptimistic` is one.
+
 ## 1. Entity Registry Exclusions Block State Fallbacks
 
 When synthesizing Home Assistant entities in `Sources/MijiaCore/DeviceSynthesizer.swift` with a primary pass over `snapshot.entityRegistry` followed by a fallback pass over `snapshot.states`:
@@ -34,6 +36,10 @@ In `ControlCenterPanel` when `isCompactGridMode` is active:
 
 - Keep `MijiaCore` free of `AppKit` / `SwiftUI` imports so all synthesis, optimistic locking, and store state remain fast-testable via `MockHomeProvider`.
 - Align type and property names with [`GLOSSARY.md`](GLOSSARY.md) and [`docs/adr/0001-ha-as-single-source-of-truth.md`](docs/adr/0001-ha-as-single-source-of-truth.md).
+- Windows assistant classification of a card goes through `windows/src/core/assistant/deviceCategory.ts:deviceCategory`. The four heater name words live in `deviceCategory.ts:HEATER_NAME_HINTS`. The macOS list is `CommandIntent.swift:IntentDeviceCategory` (`heaterNameHints`). `actionPolicy.ts:confirmationHazard` calls `deviceCategory` for the heater, plug, camera, and vacuum split. `promptContext.ts:assistantDeviceCategory` calls `isHeaterDevice` and `isAirPurifierDevice` from that file. A water heater that those hints miss stays a `climate` card, and the hotter-only hazard for the word 热水器 stays in `confirmationHazard`.
+- The AI settings draft that chooses which saved key a preset switch keeps is `AssistantCommandBar.swift:AssistantSettingsDraft.selecting` and `AssistantSettingsDraft.configToSave`. The settings view applies the returned fields. `selecting` clears the address and the key when the next preset is 自定义. `configToSave` returns nil while that address is empty, and the save leaves the previous provider's key where it is.
+- `HomeStore` is one type split across `extension HomeStore` files (`HomeStore+ControlWrite.swift`, `HomeStore+Backend.swift`, `HomeStore+Undo.swift`, and the other `HomeStore+*.swift` files). Before deleting a stored property, search every extension. A property one extension still reads is live.
+- A behavior decision reads the state it acts on. `StatusItemEventDecision.swift:StatusItemEventDecision.decide` reads `State` (which button is down, whether a press is active). `PanelKeyRouter.swift:PanelKeyRouter.beforeSearch` reads `Context`. `PanelFoldLayoutTests.swift:PanelFoldMeasure.Reading.cardTop` is that card's `cardTops` entry minus `panelMinY`.
 
 ## 6. Cross-Platform Golden Corpora & AI Provider Parity
 
@@ -63,6 +69,7 @@ When modifying `ScheduledCommand` or `HomeStore+Assistant.swift`:
 ## 8. macOS 14+ Adaptive Glass Boundary
 
 - Isolate macOS 26 `.glassEffect(` and `GlassEffectContainer` calls inside `Sources/MenuBarMijiaApp/ThemeAndMotion.swift` (`View.adaptiveGlass` and `AdaptiveGlassContainer`), guarded by `#available(macOS 26.0, *)` with Material fallback for macOS 14 and 15. Enforced mechanically by `scripts/check.sh`.
+- `ThemeAndMotion.swift:GlassSwitchToggleStyle.showsLabel` hides the toggle's own label when `glassLabelHidden` or `labelsHidden` is true. macOS 14 has no `labelsVisibility`, so `GlassSwitchLabelHost` passes `labelsHidden: false` and the row uses `View.glassLabelHidden()`. A glass toggle that reads `labelsVisibility` alone draws a second title on macOS 14.
 
 ## 9. Tests Must Not Race Product Timers
 
@@ -74,6 +81,13 @@ When a test asserts on state that a production timer can change (undo banner exp
 A wall-clock sleep before the assertion is the failure mode: on a loaded CI runner the sleep stretches past the timer's expiry, so the assertion fails nondeterministically while passing locally. This shipped once: `failedQuickActionRecordsNothing` spun on `executedCommands` (empty on failures) for 18 s in CI, past the 10 s banner expiry.
 
 The same rule covers a test that needs to observe an intermediate state. Hold the seam open and release it from the test (`setGetPropsHook` fed by an `AsyncStream`, `GatedUndoProvider.release()`, `readBackEchoHold`) instead of sleeping for the state to appear; a sleep long enough to see the state on this machine is a coin flip on a loaded runner. See `initialSnapshotWaitsForEveryAccount` and `wakeFromSleepWaitsForAllAccountsBeforeClosingAwayGap` in `MiAccountsProviderTests` for the gated form.
+
+- Assert a toast that must still be on screen after setting `HomeStore.toastAutoDismissInterval` to `nil`. `HomeStore.toastDismissInterval(for:)` then returns nil, including for an error. `PanelHealthTests` does this before expecting the frozen notice. Assert an in-flight row while the gate is still closed (`MockHomeProvider.holdNextExecute`, `HomeStore.pauseUndoBannerCountdown`).
+- A value the production path reads after an `await` needs a test that changes it during the wait. `HomeStore+Undo.swift:undoTurnAllOff` re-reads `optimisticLockRevision` after `batchTask.value`. `BulkWriteRollbackTests.undoWaitSkipsDeviceANewerBatchTook` takes the row while `holdNextExecute` is held.
+- "Still in flight" is a counter the path increments. `ScheduledCommandScopeTests.waitUntil` polls `SleepGate.waiting`.
+- A suite that writes process-wide state is `@Suite(.serialized)`. Keep that write inside one synchronous stretch. `PanelFoldLayoutTests` is serialized. `PanelFoldMeasure.reading` assigns `L10n.currentLanguage` and restores it with `defer` before it returns, because another suite can render during an `await`. `CameraPTZDriverTests` is serialized because it uses `CameraLivePanelController.shared`.
+- After `HomeStore.startListening()`, call `HomeStore.waitForInitialSnapshot` (`HomeStore.waitForTestSnapshot()` in tests) before treating `devices` as the new home. Assign a row the test invents after that wait. The snapshot replaces an unlocked row. `startListening` records `listeningSnapshotGeneration` and returns.
+- A PTZ stop test asserts the motor calls. `CameraPTZDriverTests` expects `FakePTZClient.recordedStops` together with `CameraLivePanelController.ptzUnresolvedStops`.
 
 ## 10. Overlay Geometry Has One Owner
 
@@ -107,6 +121,34 @@ State that waits on the user or a timer (a consent prompt, an auto-dismiss timer
 - **User takeover.** A window or session the user opened, kept or moved into picture-in-picture belongs to the user; automation never moves, switches or closes it. #308 needed this three times: a ring hijacked an open camera view, a later ring re-armed auto-close after picture-in-picture, and a restore was closed by an old timer.
 - **Repeat and stale events.** A repeated event renews what it owns or does nothing; an event about an older head, address or timestamp is ignored.
 
-Name the clearing site for each new field in the diff; a field set in one place and cleared nowhere is the defect.
+Name the clearing site for each new field in the diff. A field set in one place and cleared nowhere is the defect.
+
+The expired-session prompt is one of these fields. `HomeStore.swift:showToast` lets an ordinary toast replace it, and sets `isSessionToastSuspended`, when the current notice is persistent and its action is `.presentMiReauth`. The ordinary toast stays visible because it can be a real error, such as a keychain write failure. `HomeStore.restoreSuspendedSessionToast` puts the prompt back when the ordinary toast ends, while `miSessionBlocksControl` is still true. A second persistent toast returns while one is suspended. `HomeStore.invalidateUndoContext` sets `isSessionToastSuspended` to false and dismisses a persistent toast, so a later ordinary toast ends on its own.
+
+## 14. Optimistic Lock Lifecycle
+
+A write that shows a row before the device reports it locks that row first. `HomeStore+ControlWrite.swift:beginOptimisticWrite` assigns the row, then calls `lockOptimistic` when `lock` is non-nil. The send runs after that returns.
+
+- `optimisticLockRevision` increases in `HomeStore+ControlWrite.swift:lockOptimistic` and in `HomeStore+Backend.swift:handleProviderEvent` when `backendChanged` is true. Adopting a snapshot or an LG report removes the id from `optimisticLockUntil` and leaves the revision unchanged. `HomeStore+Undo.swift:runBatchCommands` still sees `ownsRow` for that write, and the batch still sends the command.
+- A locked row keeps the local device. The snapshot replaces it when a primary-toggle read-back is in flight (`waitingDeviceIds` or `ReadBackTickets.isInFlight`) and the incoming row is not a cover. `HomeStore+Controls.swift:togglePrimary` is the caller of `readBackTickets.claim`. A cover forces `readBackNeedsSnapshot` false, so the locked row stays until `coverTravelTakesOver` or `optimisticLockUntil` passes.
+- Adopting a reported row removes that id from `optimisticLockUntil`. The sites are the snapshot branch that appends `incoming`, `HomeStore+Backend.swift:coverTravelTakesOver`, `applyLGDeviceUpdate` when the lock is missing or expired, and the `backendChanged` branch.
+- `HomeStore+Undo.swift:revertRefusedBatchWrites` restores a refused device when `optimisticLockUntil` still contains the id. `HomeStore+ControlWrite.swift:revert` then requires `ownsRow`, which compares `optimisticLockRevision` with the write's revision. An expired instant still counts. After a report removes the entry, `revertRefusedBatchWrites` skips that device and the reported row stays.
+- `revert` removes the lock entry. `togglePrimary` stores an unexpired lock it is about to replace in `coverPriorLockUntil`. On a failed cover send that still `ownsRow` and still has a lock entry, it writes that instant back after `revert`. When `coverOrigin.prior` is set, it writes that value back into `coverCommandOrigins`.
+- `undoTurnAllOff` extends `optimisticLockUntil` to `HomeStore.undoWaitLockCeiling` (120 seconds) while it waits for the in-flight batch, without a new revision. After the wait, a row it still owns returns to a 3 second lock.
+
+## 15. Bulk Write Results
+
+`HomeStore+Undo.swift:BulkWriteOutcome` is the verdict `executeQuickAction` and `turnAllOff` return.
+
+- A device that accepted at least one command stays on screen and stays in the undo banner. A device that accepted none is in `refusedDeviceIds`. `revertRefusedBatchWrites` puts its row back when the lock entry remains, and `trimUndoBanner` drops it. A device in `takenOverDeviceIds` leaves the banner with the newer write's row.
+- `takenOverDeviceIds`, or any `failedDeviceIds` when `sessionRefusedDeviceIds` is empty, returns `.partial`. A non-empty `sessionRefusedDeviceIds` returns `.refusedByMiSession`. `runBatchCommands` returns nil when `controlContextID` has moved or the batch `isStopped`, and the task then returns `.partial`.
+- `RaycastSnapshot.swift:executeBuiltInURLScene` reports a quick action and 全关 with `BulkWriteOutcome.externalResult` after `task.value`. The undo case reads `toastNotice` after `undoTurnAllOff`. Undo does not return `BulkWriteOutcome`.
+- `HomeStore+ControlWrite.swift:executeDeviceCommand` throws `MiSessionWriteBlocked` on the `provider.execute` call. An LG entity with `lgWebOSClient` goes to `lgClient.execute` and skips that throw. `executeQuickAction` returns `.refusedByMiSession` before it builds rows when the session blocks every target. `turnAllOff` does the same when `lgClientServes` is false for every target. A batch that mixes an LG target with a Mi target sends the LG commands.
+
+## 16. Windows Panel Interaction
+
+- A timer whose job is to refresh the panel calls `windows/src/ui/app.ts:MenuMijiaWindowsApp.queueBackgroundRender`. It calls `render` when `hasBlockingPanelInteraction` is false, and otherwise sets `pendingCloudRender` for `appLifecycle.ts:startTimerLoop` to apply on a later tick. `setPendingHighRisk`, `syncUndoBannerClock`, and the cloud refresh in `cloudRefresh.ts` use it. `startTimerLoop` calls `render` when scheduled-command state changed.
+- The All Off hold fires from `app.ts:bindAllOffControl` when the button is connected and `document.hasFocus()` is true. A `window` `blur` calls `cancelAllOffHold`. The button's own `blur` clears the timer.
+- A card opens a drawer when `windows/src/core/models.ts:hasDetailDrawer` is true. The body click in `bindEvents.ts` and the chevron in `deviceViews.ts:renderDeviceTile` and `renderClimateStrip` call that function.
 
 
