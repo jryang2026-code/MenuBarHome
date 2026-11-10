@@ -263,7 +263,7 @@ extension HomeStore {
         if case .cover = updated.kind {
             let now = ContinuousClock.now
             coverPriorLockUntil = optimisticLockUntil[device.id].flatMap { $0 > now ? $0 : nil }
-            coverWrite = beginOptimisticWrite(from: previous, to: updated, lock: .seconds(8))
+            coverWrite = beginOptimisticWrite(from: previous, to: updated, lock: coverOptimisticLockDuration)
         }
 
         return Task {
@@ -340,7 +340,7 @@ extension HomeStore {
             // lock holds the accepted state until the device reports the same travel (or a stop
             // after a pause), then `coverTravelTakesOver` ends it.
             applyConfirmedPower(from: requested, deviceId: deviceId)
-            lockOptimistic(deviceId, duration: .seconds(8))
+            lockOptimistic(deviceId, duration: coverOptimisticLockDuration)
             return .matched
         }
         if case .tv(let spec) = requested.kind, LGWebOSProtocol.isLGEntity(spec.mediaEntityId) {
@@ -702,7 +702,7 @@ extension HomeStore {
         commitManualWrite(
             from: previous, to: updated,
             command: .setSelectOption(entityId: s.entityId, option: description),
-            lock: (opening || closing || pausing) ? .seconds(8) : nil
+            lock: (opening || closing || pausing) ? coverOptimisticLockDuration : nil
         )
     }
 
@@ -732,7 +732,7 @@ extension HomeStore {
         commitManualWrite(
             from: previous, to: updated,
             command: .setNumberValue(entityId: s.entityId, value: Double(clamped)),
-            lock: s.isMoving ? .seconds(8) : nil, debounceKey: "\(deviceId).cover"
+            lock: s.isMoving ? coverOptimisticLockDuration : nil, debounceKey: "\(deviceId).cover"
         )
     }
 

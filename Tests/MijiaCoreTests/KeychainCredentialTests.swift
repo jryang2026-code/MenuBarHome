@@ -1,6 +1,7 @@
 import Foundation
 import Security
 import Testing
+import KeychainTestSupport
 @testable import MijiaCore
 
 /// 审计 #16 / #27：凭证只存钥匙串，不再明文镜像到 `UserDefaults`；旧明文键在启动时迁入钥匙串并删除；

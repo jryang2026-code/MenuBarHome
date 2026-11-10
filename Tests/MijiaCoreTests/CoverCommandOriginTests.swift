@@ -40,15 +40,6 @@ struct CoverCommandOriginTests {
         return device
     }
 
-    @MainActor
-    private func waitUntil(_ condition: @escaping @MainActor () async -> Bool) async throws {
-        for _ in 0..<200 {
-            if await condition() { return }
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        Issue.record("condition was never satisfied")
-    }
-
     @Test("A failed cover send leaves no travel origin behind")
     @MainActor
     func failedSendDropsOrigin() async throws {
@@ -77,11 +68,11 @@ struct CoverCommandOriginTests {
         let card = try #require(store.devices.first)
         let beforeCommand = store.snapshotGeneration
         let command = try #require(store.togglePrimary(card))
-        try await waitUntil { await mock.executeStarted > 0 }
+        await waitUntil { await mock.executeStarted > 0 }
 
         // The provider still reports the parked position while the write is in flight.
         await mock.updateSnapshot(SynthesizedHome(devices: [Self.curtain]))
-        try await waitUntil { store.snapshotGeneration > beforeCommand }
+        await waitUntil { store.snapshotGeneration > beforeCommand }
 
         let during = try #require(store.devices.first)
         guard case .cover(let optimistic) = during.kind else {
@@ -100,7 +91,7 @@ struct CoverCommandOriginTests {
         // commanded travel on the card instead of reading the stale stop as a takeover.
         let beforeStale = store.snapshotGeneration
         await mock.updateSnapshot(SynthesizedHome(devices: [Self.curtain]))
-        try await waitUntil { store.snapshotGeneration > beforeStale }
+        await waitUntil { store.snapshotGeneration > beforeStale }
 
         let row = try #require(store.devices.first)
         guard case .cover(let shown) = row.kind else {
@@ -119,7 +110,7 @@ struct CoverCommandOriginTests {
 
         let device = try #require(store.devices.first)
         let first = try #require(store.togglePrimary(device))
-        try await waitUntil { await mock.executeStarted > 0 }
+        await waitUntil { await mock.executeStarted > 0 }
         #expect(store.coverCommandOrigins["curtain"] == 0)
 
         let second = store.togglePrimary(device)
@@ -140,13 +131,13 @@ struct CoverCommandOriginTests {
         let card = try #require(store.devices.first)
         let beforeCommand = store.snapshotGeneration
         let command = try #require(store.togglePrimary(card))
-        try await waitUntil { await mock.executeStarted > 0 }
+        await waitUntil { await mock.executeStarted > 0 }
 
         // The motor reports a real stop at 40% while the write is still in flight. That report
         // confirms the row and ends the tap's lock.
         let moved = Self.curtain(at: 40)
         await mock.updateSnapshot(SynthesizedHome(devices: [moved]))
-        try await waitUntil { store.snapshotGeneration > beforeCommand }
+        await waitUntil { store.snapshotGeneration > beforeCommand }
         let takenOver = try #require(store.devices.first)
         guard case .cover(let takenSpec) = takenOver.kind else {
             Issue.record("expected the curtain row, got \(takenOver.kind)")
@@ -190,7 +181,7 @@ struct CoverCommandOriginTests {
         await mock.setFailingTargets(["cover.curtain"])
         let started = await mock.executeStarted
         let pause = try #require(store.togglePrimary(moving))
-        try await waitUntil { await mock.executeStarted > started }
+        await waitUntil { await mock.executeStarted > started }
         await mock.releaseExecute()
         #expect(await pause.value == false)
 
@@ -209,7 +200,7 @@ struct CoverCommandOriginTests {
         let stale = Self.curtain(at: 0)
         let beforeStale = store.snapshotGeneration
         await mock.updateSnapshot(SynthesizedHome(devices: [stale]))
-        try await waitUntil { store.snapshotGeneration > beforeStale }
+        await waitUntil { store.snapshotGeneration > beforeStale }
 
         let row = try #require(store.devices.first)
         guard case .cover(let shown) = row.kind else {

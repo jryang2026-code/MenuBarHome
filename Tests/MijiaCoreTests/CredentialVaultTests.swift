@@ -1,60 +1,8 @@
 import Foundation
 import Security
 import Testing
+import KeychainTestSupport
 @testable import MijiaCore
-
-/// In-memory stand-in for the vault's single Keychain item; counts reads and writes so tests can prove how often
-/// macOS would have been asked.
-final class MemoryVaultStorage: @unchecked Sendable {
-    private let lock = NSLock()
-    private var blob: Data?
-    private var _readResult: CredentialVault.Storage.ReadResult?
-    private var _writeSucceeds = true
-    private var _reads = 0
-    private var _writes = 0
-
-    init(blob: Data? = nil) { self.blob = blob }
-
-    /// Overrides what a read returns (e.g. `.unavailable` for a declined prompt).
-    var readResult: CredentialVault.Storage.ReadResult? {
-        get { locked { _readResult } }
-        set { locked { _readResult = newValue } }
-    }
-    var writeSucceeds: Bool {
-        get { locked { _writeSucceeds } }
-        set { locked { _writeSucceeds = newValue } }
-    }
-    var reads: Int { locked { _reads } }
-    var writes: Int { locked { _writes } }
-    var rawBlob: Data? { locked { blob } }
-    var storedItems: [String: Data]? { rawBlob.flatMap(CredentialVault.decode) }
-
-    var storage: CredentialVault.Storage {
-        CredentialVault.Storage(
-            read: { [self] in
-                locked {
-                    _reads += 1
-                    if let override = _readResult { return override }
-                    return blob.map { .found($0) } ?? .notFound
-                }
-            },
-            write: { [self] data in
-                locked {
-                    _writes += 1
-                    guard _writeSucceeds else { return false }
-                    blob = data
-                    return true
-                }
-            }
-        )
-    }
-
-    private func locked<T>(_ body: () -> T) -> T {
-        lock.lock()
-        defer { lock.unlock() }
-        return body()
-    }
-}
 
 /// In-memory stand-in for the per-account Keychain items written by releases up to 1.1.0.
 final class MemoryLegacyItems: @unchecked Sendable {

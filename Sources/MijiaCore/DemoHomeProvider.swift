@@ -2,6 +2,11 @@ import Foundation
 
 // MARK: - Mock Provider for Testing & Instant Previews
 
+/// In-memory home for tests and previews.
+///
+/// `readBack`, `refreshNow`, and the snapshot delivered from `events()` report the snapshot
+/// already stored here. They do not ask a device. A caller that changed nothing still receives
+/// that same snapshot.
 public actor MockHomeProvider: HomeProvider {
     private var snapshot: SynthesizedHome
     private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
@@ -13,6 +18,7 @@ public actor MockHomeProvider: HomeProvider {
     private var failingCommandFilter: (@Sendable (DeviceCommand) -> Bool)?
     private var holdNext = false
     private var holdTarget: String?
+    private var snapshotsHeld = false
     private var executeWaiter: CheckedContinuation<Void, Never>?
     public private(set) var executeStarted = 0
     public private(set) var requestedCameraQualities: [XiaomiCameraStreamQuality] = []
@@ -53,19 +59,53 @@ public actor MockHomeProvider: HomeProvider {
     private func register(_ cont: AsyncStream<HomeProviderEvent>.Continuation) {
         self.continuation = cont
         cont.yield(.statusChanged(.connected))
-        cont.yield(.snapshotUpdated(snapshot))
+        publishSnapshot()
     }
 
+    /// Delivers `snapshot` unless `holdSnapshots()` is in effect. The payload is the snapshot
+    /// already in memory, including when no command has changed it.
+    private func publishSnapshot() {
+        guard !snapshotsHeld else { return }
+        continuation?.yield(.snapshotUpdated(snapshot))
+    }
+
+    /// Stops delivering snapshots. `execute` still updates the in-memory snapshot. `readBack`
+    /// and `refreshNow` still describe that unchanged snapshot, but the store does not receive
+    /// it until `emitSnapshot()`.
+    public func holdSnapshots() {
+        snapshotsHeld = true
+    }
+
+    /// Delivers the current snapshot once, changed or not, and resumes normal delivery.
+    /// Call `holdSnapshots()` again to suppress the following one.
+    public func emitSnapshot() {
+        snapshotsHeld = false
+        continuation?.yield(.snapshotUpdated(snapshot))
+    }
+
+    /// Holds the next `execute`, whichever device it addresses.
+    ///
+    /// The hold is one shot. That command clears the hold, increments `executeStarted`, then
+    /// suspends until `releaseExecute()`. A later command is not held. Only one command can be
+    /// suspended. A target hold from `holdNextExecute(forTarget:)` stays in place when this
+    /// blanket hold is the one that matched and the command's target differs.
     public func holdNextExecute() {
         holdNext = true
     }
 
-    /// Holds the next command aimed at `entityId`, so a test can let one device finish while
-    /// another is still in flight.
+    /// Holds the next `execute` whose `targetEntityId` is `entityId`.
+    ///
+    /// A command for any other target runs immediately and does not consume the hold. The
+    /// matching command clears the target hold, increments `executeStarted`, then suspends until
+    /// `releaseExecute()`. When `holdNextExecute()` is also set, the first command matches the
+    /// blanket hold even if its target differs, and that command clears only the blanket hold.
+    /// A command that matches both clears both.
     public func holdNextExecute(forTarget entityId: String) {
         holdTarget = entityId
     }
 
+    /// Resumes the command suspended by either hold. A second call, or a call with nothing
+    /// waiting, does nothing.
     public func releaseExecute() {
         holdNext = false
         executeWaiter?.resume()
@@ -86,24 +126,27 @@ public actor MockHomeProvider: HomeProvider {
         }
         executedCommands.append(command)
         snapshot = DemoHomeProvider.applying(command, to: snapshot)
-        continuation?.yield(.snapshotUpdated(snapshot))
+        publishSnapshot()
     }
 
     public private(set) var readBackCalls = 0
 
+    /// Reports the snapshot already in memory. The device row is unchanged. While snapshots are
+    /// held, the call still counts and still returns `.published`, and the store does not see it.
     public func readBack(deviceId: String) async -> ControlReadBack {
         readBackCalls += 1
-        continuation?.yield(.snapshotUpdated(snapshot))
+        publishSnapshot()
         return .published
     }
 
+    /// Reports the snapshot already in memory, unchanged.
     public func refreshNow() async {
-        continuation?.yield(.snapshotUpdated(snapshot))
+        publishSnapshot()
     }
 
     public func updateSnapshot(_ next: SynthesizedHome) {
         self.snapshot = next
-        continuation?.yield(.snapshotUpdated(next))
+        publishSnapshot()
     }
 
     public func sendStatus(_ status: ConnectionStatus) {

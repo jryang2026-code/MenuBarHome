@@ -232,15 +232,6 @@ struct BathHeaterHoodDeviceTests {
         #expect(store.devices.first { $0.id == did }?.applianceCard?.fanLevel?.current == "Low")
     }
 
-    @MainActor
-    private func waitUntil(_ condition: @MainActor () async -> Bool) async {
-        for _ in 0..<100 {
-            if await condition() { return }
-            try? await Task.sleep(for: .milliseconds(20))
-        }
-        Issue.record("condition was not met in time")
-    }
-
     @Test("Undo after All Off restores an appliance whose power lives on a companion service")
     @MainActor
     func undoAllOffUsesPowerService() async throws {

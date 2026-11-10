@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import KeychainTestSupport
 @testable import MijiaCore
 
 /// #143: high-risk manual actions ask again, the screen-lock guard blocks only user paths, and the
