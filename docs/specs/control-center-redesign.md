@@ -1,175 +1,83 @@
-# 控制中心改版（实验分支）规格与契约
+# 控制中心改版（实验分支）规格与契约（v2 · 无背景纯液态玻璃）
 
-分支：`exp/control-center-redesign`（从 `origin/main` 955ba23 切出）。所有子任务 PR 的 base 都是这个分支，**不碰 `main`**。全部阶段完成、用户实机确认后，再由总指挥从本分支向 `main` 开一个总 PR，是否合并由用户决定。
+分支：`exp/control-center-redesign`。所有子任务 PR 的 base 都是这个分支，**不碰 `main`**。当前阶段**只改 macOS 端**（除非触及双端共享测试契约文件，如 `TileResizeGestureMath` 与 `windows/src/ui/panelPrefs.ts`）。
 
-调研依据：`docs/research/` 下的 2026-11-10 UX 调研（会话内四份报告的结论），以及用户给的两张参考图：macOS Tahoe 控制中心、通知中心堆叠。
+## 0. 核心设计转向（最高优先级）
 
-## 0. 设计方向（一句话）
+用户实机看过第一阶段试用版后明确指出：**不要底板大背景！要完全对标 macOS Tahoe 原生控制中心——窗口本身全透明（无背景、无外框裁切），每一颗胶囊（`Capsule`）、方砖（`RoundedRectangle`）、圆钮（`Circle`）、滑杆模块都是独立的液态玻璃（Liquid Glass），直接悬浮在桌面壁纸之上！**
 
-面板从「套了玻璃皮的设备列表」变成「控制中心模块网格」：状态色只放在图标圆章、滑杆填充和状态文字上，底板始终是同一层安静的玻璃；所有提醒收进一个 3 层堆叠的「通知中心」，撤销与 Toast 收进底部的瞬时横幅栈，二者可以同时存在。
+大刀阔斧砍掉过去「传统弹窗 App」的外壳与遗留包袱：
+1. **彻底移除面板背景板（Window Background = Clear）**：
+   - `PanelRoot` 在正常模式下**不画任何底板或遮罩**（删掉 `Color.clear.panelRootGlass()`、删掉 `Rectangle().fill(.ultraThinMaterial)`、删掉 `0.30 / 0.18` 的整窗黑/白遮罩）；仅在 `reduceTransparency == true` 时保留 `Color(nsColor: .windowBackgroundColor).clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.panel, style: .continuous))` 无障碍回退。
+   - `MenuBarPanelController.swift`：`panel.hasShadow = false`（去掉矩形大窗阴影），`hosting.layer?.cornerRadius = 0` 且 `hosting.layer?.masksToBounds = false`（让每个独立液态玻璃模块自带的柔和阴影与折射高光自然向外发散，不被矩形边框一刀切）。
+2. **每一个模块自己就是真液态玻璃（Module = Independent Liquid Glass）**：
+   - 推翻旧版「卡片不用玻璃、只用平井」的妥协！因为面板没有大背景，每一张卡片/胶囊/方砖都直接面对桌面壁纸，**必须自身就是完整的 Liquid Glass 折射体**。
+   - `GlassTileBackground<S: InsettableShape>` 支持任意形状（`Capsule(style: .continuous)`、`RoundedRectangle(cornerRadius: DesignTokens.Radius.module, style: .continuous)`、`Circle()`）：
+     - 在 macOS 26 且 `!reduceTransparency` 时：底层叠加 `shape.fill(surface.fill)`（提供微妙的明暗与家族色情绪基底），再直接走 `.glassEffect(isActive ? .regular.interactive().tint(tint) : .regular.interactive(), in: shape)`，外加 `.specularRim(shape, strength: isActive ? 1.25 : 1.0)` 与模块独立投影 `.shadow(color: .black.opacity(colorScheme == .dark ? 0.24 : 0.12), radius: isActive ? 12 : 8, y: isActive ? 4 : 2)`（关闭态也有轻柔悬浮阴影，因为直接浮在桌面上！）。
+     - 在 macOS 14/15 或快照回退时：`shape.fill(.ultraThinMaterial)` + `shape.fill(surface.fill)` + `.specularRim(shape)` + 同款独立阴影。
+   - 每个分组/网格外层用 `AdaptiveGlassContainer(spacing: 8)` 包裹，让相邻液态玻璃模块在 macOS 26 下拥有原生的光学边缘交互。
+3. **砍掉旧 App 式的「五层头部 + 分割线 + 底栏」**：
+   - **删掉所有 `Divider()`**（液态玻璃控制中心里绝不允许出现横穿屏幕的实线分割线）。
+   - **删掉传统底栏 `footerBar`**（底栏那排刷新、设置、退出按钮和连接文字全部收进顶部或右键菜单，释放宝贵垂直空间并消除「窗口底边」感）。
+   - **顶部浓缩为苹果原生控制中心同款「悬浮灵动胶囊栏」**：
+     - 居中或左对齐一颗 28pt 高的独立液态玻璃小胶囊（如参考图顶部的 `UURemoteService` 胶囊）：显示 `🏠 家庭名 · 4 台开启 · 25.8°`（点击可切换家庭或定位传感器）；右侧并排悬浮小巧的圆形液态玻璃按钮（搜索/语音 `magnifyingglass`、全关确认 `power`、更多菜单 `ellipsis` 含打开设置/立即刷新/排序/退出/更新角标）。
+     - 搜索框（`omnibar`）和房间筛选胶囊同样是独立悬浮的液态玻璃胶囊，不再镶嵌在大底板上。
 
-模式：Operate（工具面板）。克制优先，熟悉的苹果控件语法优先于新奇效果；动效只表达状态。
+---
 
-## 1. 设计令牌（双端同值，macOS 单位 pt，Windows 单位 px）
+## 1. 视觉与几何规格（严格对齐 macOS Tahoe 控制中心参考图）
 
-### 1.1 圆角与形状
+### 1.1 四种原生几何模块（12 列混排网格）
 
-| 令牌 | 值 | 用途 |
-| --- | --- | --- |
-| `Radius.panel` | 22 | 面板外框（macOS `MenuBarPanelController.panelCornerRadius` 与 Windows `.cc-popover` 同值） |
-| `Radius.module` | 18 | 整行卡片、2×2 主磁贴、通知卡片 |
-| `Radius.card` | 12 | 抽屉内嵌区块、输入框、提示条（沿用） |
-| `Radius.inset` | 8 | 抽屉里的字段（沿用） |
-| 2×1 磁贴 | `Capsule(style: .continuous)` | 半行设备磁贴 |
-| 1×1 按钮 | `Circle()` | 场景、快捷动作 |
+内容区净宽 `350pt`（左右各 `13pt` 留白供模块阴影自然呼吸），列间距与行间距统一为 `8pt`：
 
-`PanelLook.tileRadius`（14）删除，调用方改用 `Radius.module` 或胶囊。
+| 模块类型 | `TileSize` 枚举 | 网格跨度 | 尺寸与形状 | 适用设备与视觉布局 |
+| --- | --- | --- | --- | --- |
+| **2×1 液态胶囊** | `.half`（紧凑默认） | 6 列 × 1 行 | `171 × 58pt`<br>`Capsule(style: .continuous)` | **Wi-Fi / 蓝牙 / 专注模式同款**：左侧 `42×42pt` 饱满圆形图标章（距左边缘 `8pt`），开启时白底（`Color.white.opacity(0.95)`）配家族色图标或家族色实心圆配纯白图标（带柔和发光阴影），关闭时半透明暗槽（`Color.primary.opacity(0.10)`）配次要色图标；右侧紧凑两行：主标题 `13pt semibold` + 状态副标题 `12pt medium`。尾部最多 1 个元素（展开详情的小箭头或快捷键角标）。 |
+| **2×2 液态大方砖** | `.hero`（新增） | 6 列 × 2 行 | `171 × 124pt`<br>`RoundedRectangle(22pt)` | **右上角「正在播放」同款方砖**：用于主空调、温湿度计、摄像机、音箱。左上角大号圆章或温湿度/封面，中部设备名与核心大字号读数（`24pt rounded bold`），底部内嵌快捷控制行（如空调 `− 26° +` 或音箱播放/暂停、传感器湿度条）。 |
+| **1×1 液态正圆钮** | `.small`（新增） | 3 列 × 1 行 | `58 × 58pt`（或双圆并排）<br>`Circle()` | **台前调度 / 屏幕镜像同款正圆按钮**：用于快捷场景（全屋关灯、柔和夜灯、睡眠模式）或用户设为 `.small` 的单键开关/触发器。开启时整颗圆钮呈亮白/高光玻璃态+彩色图标，悬停/辅助功能显示名称。 |
+| **4×1 内嵌滑杆大胶囊** | `.full` / `.panel` | 12 列 × 1 行 | `350 × 64pt`<br>`RoundedRectangle(22pt)` 或厚胶囊 | **「声音 / 显示器」同款全宽滑杆模块**：用于整行灯光、风扇、窗帘、加湿器。模块内部上方 `13pt semibold` 标题 + 右侧状态，下方直接内嵌 **28pt 满幅液态玻璃滑杆轨道**（左侧图标内嵌在轨道内，右侧内嵌 `26pt` 圆形更多/展开按钮），**无需点开二级抽屉就能直接滑动调光/调风速/调窗帘**！ |
 
-### 1.2 表面（Surface）
+### 1.2 表面与色彩令牌（`PanelDesign.swift` & `ThemeAndMotion.swift`）
 
-一层面板玻璃 + 平的内容井，**任何模式下都不再出现整块白色底板**。
+- **`TileSurface`**：
+  - 关闭态玻璃基底（`isActive == false`）：深色 `Color.black.opacity(0.22)` 叠 `Color.white.opacity(0.08)`；浅色 `Color.white.opacity(0.38)` 叠 `Color.black.opacity(0.04)`——保证在任何亮/暗桌面壁纸上，无背景悬浮胶囊都有温润的烟熏/磨砂玻璃体量感（如图中左侧 Wi-Fi/蓝牙/隔空投送的半透明灰玻质感）。
+  - 开启态玻璃基底（`isActive == true`）：
+    - 若带家族 `tint`（如专注模式/空调/彩色灯）：家族色 `0.26` 渐变到 `Color.white.opacity(scheme == .dark ? 0.14 : 0.48)`。
+    - 普通开启态：深色 `Color.white.opacity(0.18)`，浅色 `Color.white.opacity(0.62)`。
+  - 圆章（Icon Orb）：
+    - 开启态：直径 `42pt`（紧凑胶囊）或 `38pt`（全宽模块），填充饱满家族色 `accent`（或白色圆章配 `accent` 图标），内部图标纯白，带 `accent.opacity(0.42), radius: 8, y: 2` 辉光。
+    - 关闭态：直径同上，填充 `Color.primary.opacity(scheme == .dark ? 0.12 : 0.08)`，内部图标 `.primary.opacity(0.78)`。
+- **双轴折射高光边（`SpecularRim`）**：
+  - 强化棱镜折射感：上下亮边 `litEdge` 在深色下提高到 `0.34 * strength`（浅色 `0.75 * strength`），左右暗边 `shadedEdge` 深色 `0.28`（浅色 `0.10`），让每颗悬浮胶囊的上下玻璃厚边一眼可见（完全还原参考图里每颗胶囊周圈的明亮折射银边）。
 
-| 状态 | 深色 | 浅色 |
-| --- | --- | --- |
-| 关（well） | `white 0.07` | `white 0.42` |
-| 开（lit well） | `white 0.13` | `white 0.72` |
-| 开 + 家族色（空调等） | 家族色 `0.20` 渐变到 `white 0.08` | 家族色 `0.14` 渐变到 `white 0.70` |
-| 文字 | `.primary` / `.secondary` | `.primary` / `.secondary` |
+---
 
-- 开启态的强调只来自：圆章填充家族色 + 白色图标、状态文字加粗、滑杆填充。
-- 删除 `TileSurface.isBrightPlatter`、`PanelLook.platterInk`、`DesignTokens.Ink.onPlatter` 以及只为白底板存在的反色墨水逻辑。
-- 抽屉（展开区）是平的内嵌区：`Color.primary.opacity(0.04)`，不再叠第二层材质。
-- 只在一个 1 px 阴影上做层级：模块 `black 0.10, r 10, y 3`（深色 `0.28`）；关闭态不加阴影。
+## 2. 交互契约（纯正 Apple Control Center 手感）
 
-### 1.3 高光边（Specular Rim）
+1. **统一点击契约（全尺寸一致）**：
+   - **点左侧圆章** = 立即切换开关（`togglePrimary`）。
+   - **点右侧标题/状态文字或尾部圆形按钮** = 展开/收起详细控制抽屉（若设备无二级抽屉，则整颗胶囊点击均为切换开关）。
+2. **移除 450ms 长按误进抖动编辑**：
+   - 删掉 `ControlCenterPanelLayout.swift` 中 `pressTask`（450ms 长按卡片进入抖动编辑）的逻辑与状态，防止用户想拖动滑杆或慢点卡片时误触发全屏抖动。
+   - 进入「编辑布局」统一走：卡片右键菜单「编辑布局…」或顶部胶囊栏的「…」菜单。
+3. **直出式控制中心滑杆（`CCSlider` / 升级 `LiquidGlassSlider`）**：
+   - 复刻参考图「声音 / 显示器」滑杆：胶囊轨道高 `28pt`，左端内嵌小图标（`sun.max.fill` / `wind` / `window.vertical.open`），拖动时填充条圆润跟随，游标采用立体液态透镜（`Capsule` 宽 `26pt` 高 `22pt`），右侧可带圆形「更多」按钮展开色温/模式等次级选项。
 
-不是单一斜向渐变。实测 Tahoe 控制中心是**上下两条亮边、左右两条暗边**：
+---
 
-- 上、下边：1 pt，白色（深色 `0.22` / 浅色 `0.65`），向内 14 pt 渐隐。
-- 左、右边：1 pt，黑色（深色 `0.25` / 浅色 `0.08`），向内 6 pt 渐隐。
-- 圆角处两条渐变自然交叠，不做特殊处理。
-- 只有一个实现：macOS `ThemeAndMotion.swift` 里的 `SpecularRim` 修饰符；Windows `styles.css` 里的 `.cc-rim::after`（`mask-composite: exclude`）。现有的 `GlassTileBackground` 顶部 1.5 pt 高光条、`ClassicGlass` 的统一白描边、`PillActionButtonStyle` 的斜向描边全部改用它。
+## 3. 第二阶段并行拆解（3 个独立 Worktree，只攻 macOS）
 
-### 1.4 玻璃
-
-- macOS 26：`adaptiveGlass` 走 `.glassEffect(.regular.interactive(), in: shape)`，`AdaptiveGlassContainer` 走 `GlassEffectContainer(spacing:)`；macOS 14/15 维持现有 Material 回退。只能在 `ThemeAndMotion.swift` 里调用（CODING_STANDARDS §8，`check.sh` 机械检查）。
-- 内容磁贴（设备卡）**不用**玻璃，用 1.2 的平井；玻璃只给浮在内容上的东西：通知卡、瞬时横幅、滑杆游标、圆形按钮。
-- Windows：WebView2 采不到桌面，`.cc-popover` 的 `backdrop-filter` 删除；改用 Tauri 原生 `windowEffects`（Acrylic，Win11 22H2+ 可用 Mica），CSS 底色降到 `0.55–0.62` 透明度；不支持时回退到实色 `#1c1d24`。
-
-### 1.5 字号
-
-沿用 `DesignTokens.TypeSize`。新增用法：2×1 磁贴标题 `body`(13) semibold、副标题 `caption`(12)；通知卡标题 `body` semibold、正文 `caption`、时间 `micro`(10)。
-
-### 1.6 动效（`AppleMotion`）
-
-| 令牌 | 值 | 用途 |
-| --- | --- | --- |
-| `press` | easeOut 0.12，scale 0.97 | 一切可按元素 |
-| `control` | spring 0.24 / 0.86 | 开关、圆章、选中态 |
-| `reveal` | spring 0.34 / 0.86 | 抽屉展开、网格重排 |
-| `stack` | spring 0.38 / 0.84 | 堆叠展开 / 收起 / 补位 |
-| `dismiss` | spring 0.28 / 1.0 | 滑走、关闭 |
-| `snappySpring` | 保留 0.26 / 0.94 | 现有调用方，逐步迁移 |
-
-- 键盘触发的动作不加动画。
-- 减弱动态效果：位移、缩放、模糊一律去掉，只保留 0.2 s 透明度渐变。
-- Windows 用 `cubic-bezier(0.32, 0.72, 0, 1)` 近似 `stack`/`reveal`，`cubic-bezier(0.23, 1, 0.32, 1)` 做 `press`。
-
-## 2. 通知中心（ActivityStack）契约
-
-### 2.1 两个表面
-
-| 表面 | 位置 | 内容 | 是否占布局 |
+| 线程 | 任务代号 | 通道 / 模型 | 负责范围与文件边界（互不冲突） |
 | --- | --- | --- | --- |
-| **通知中心** `ActivityStackView` | 头部之下、搜索框之上 | 系统提醒（米家过期/将过期、HA 明文令牌、HA 地址）、主动守护告警、门铃记录 | 占；空时高度为 0 |
-| **瞬时横幅栈** `TransientStackView` | 底部浮层（现 `overlayNotifications` 位置） | 撤销横幅、Toast，**可同时存在** | 不占，浮在内容上 |
+| **线程 1** | **P2-GlassShell**<br>无背景透明窗 + 真液态玻璃表面 + 悬浮顶部胶囊栏 | 攻坚 · OMP (`Codex Sol`) | **文件**：`MenuBarPanelController.swift`、`PanelDesign.swift`、`ThemeAndMotion.swift`、`ControlCenterPanel.swift`、`ControlCenterPanelChrome.swift`、`ActivityStackView.swift`、`TransientStackView.swift`、`PanelFoldLayoutTests.swift`<br>**内容**：<br>1. 去掉窗口大背景与外框圆角裁切（`PanelRoot` 透明化、`MenuBarPanelController` 关掉大窗阴影与 `masksToBounds`）；<br>2. 新增 `glassModule(in: shape, isActive:tint:)`，所有模块直接走真 `.glassEffect` + 强化版 `SpecularRim` + 独立悬浮阴影；<br>3. 升级 `LiquidGlassSlider` 为控制中心内嵌图标厚胶囊滑杆（高 28pt，图标在轨道内）；<br>4. 砍掉所有 `Divider()` 与底部 `footerBar`，将顶部改造为参考图同款「居中/置顶灵动状态胶囊 + 悬浮圆形工具钮（搜索、全关、更多菜单含设置/刷新/退出/更新）」；快捷场景栏改为紧凑液态玻璃胶囊/圆钮。 |
+| **线程 2** | **P2-CapsuleCards**<br>2×1 真胶囊磁贴 + 42pt 发光圆章 + 直出滑杆大模块 + 统一点击契约 | 执行 A · OMP (`CommandCode DeepSeek`) | **文件**：`DeviceCardView.swift`、`ClimatePanelModule.swift`、`SensorCardView.swift`、`CoverDetailDrawer.swift`、`OnboardingChecklistCard.swift`<br>**内容**：<br>1. 半行设备卡（`isCompactTile == true`）外框彻底改为 `Capsule(style: .continuous)`（高 `58pt`），左侧 `42×42pt` 圆形图标章（距左 `8pt`），右侧两行标题+状态，去掉杂乱角标（星标/房间移入右键或副标题）；<br>2. 整行灯具、风扇、窗帘、加湿器卡片做成像参考图「声音 / 显示器」那样的直出滑杆大模块（上半行标题+开关圆章+右侧展开圆形钮，下半行直接内嵌滑杆，无需展开抽屉即可滑动！）；<br>3. 空调模块（`ClimatePanelModule`）与传感器卡（`SensorCardView`）升级为圆润 `22pt` 液态玻璃方砖，去掉生硬细线分割；<br>4. 统一单双列点击契约：左圆章=开关，右文字/圆形展开钮=展开详情。 |
+| **线程 3** | **P2-GridLayout**<br>12 列网格 + `1×1 / 2×2` 模块尺寸 + 移除 450ms 长按抖动陷阱 | 执行 B · OMP (`OpenCode DeepSeek`) | **文件**：`DeviceLayout.swift`、`ControlCenterPanelLayout.swift`、`MenuBarPanelControllerTests.swift`、`windows/src/ui/panelPrefs.ts`、`windows/tests/panelPrefs.test.ts`<br>**内容**：<br>1. `TileSize` 扩展并支持 `.small`、`half`（2×1 胶囊）、`.hero`（2×2 方砖）、`.full`、`.panel`；`TileFlowLayout` 升级为 12 列网格并支持 `2×2` 方砖混排，四周留出阴影呼吸间距；<br>2. 彻底删除 `ControlCenterPanelLayout.swift` 中 450ms 长按卡片触发抖动编辑的 `pressTask` 逻辑（保留右键菜单「编辑布局…」与顶部菜单入口），更新 `MenuBarPanelControllerTests.swift` 中对应测试为通过 `LayoutUIState.shared.beginDeviceLayoutEditing()` 进入编辑并验证右下角圆弧手柄缩放；<br>3. 同步 `TileResizeGestureMath` 与 `windows/src/ui/panelPrefs.ts` 的共享契约测试。 |
 
-两者共用同一个几何助手 `StackedCardGeometry`（CODING_STANDARDS §10：几何只有一个来源）。
+---
 
-### 2.2 堆叠几何
+## 4. 合并与实机交付顺序
 
-- 最多可见 3 张：`depth = min(index, 2)`。
-- 缩放锚点 `.bottom`：depth 0 `scale 1.0, y 0, opacity 1`；depth 1 `0.94, +8, 0.78`；depth 2 `0.88, +15, 0.55`。
-- 后两张只露底边：用遮罩隐藏文字，只留玻璃边缘与高光边。
-- 容器高度 = 首卡高度 + 15，不是所有卡片之和。
-- 只有首卡投阴影。
-- 收起态点首卡或标题：用 `stack` 弹簧展开成竖排列表；列表底部「收起」。
-- 首卡横向拖动超过宽度 40% 或抛掷速度足够即移除，下一张从 0.94 弹到 1.0。
-- 指针悬停在栈上时暂停撤销倒计时（复用 `pauseUndoBannerCountdown` / `resumeUndoBannerCountdown`）。
-
-### 2.3 头部
-
-- 左：`通知中心`（`title` bold）+ 数量。
-- 右：28 pt 圆形玻璃 `×`，清除所有**可清除**项。米家已过期（`.miBlocked`）与等待决定的 HA 明文令牌（`.haPlaintext(.asking)`）不可清除，清除全部后它们仍在。
-- 只有 1 条时不显示头部，直接显示卡片。
-
-### 2.4 数据模型（`MijiaCore`，纯值、可测、不 import SwiftUI）
-
-```swift
-public struct PanelActivity: Identifiable, Equatable, Sendable {
-    public enum Kind: Equatable, Sendable {
-        case notice(PanelNoticeSlot.Kind)
-        case safety(RecordedSafetyAlert)
-        case doorbell(DoorbellRing)
-    }
-    public let id: String          // 稳定：notice 用种类名，safety 用 alert.id，doorbell 用 ring.key
-    public let kind: Kind
-    public let date: Date?
-    public var isDismissible: Bool
-}
-
-public enum PanelActivityFeed {
-    /// 优先级：notice（沿用 PanelNotice.kinds 的顺序）> safety（新到旧）> doorbell（新到旧）。
-    /// `dismissedIds` 里的可清除项被过滤；不可清除项忽略它。
-    public static func items(notices: [PanelNoticeSlot.Kind], safety: [RecordedSafetyAlert],
-                             doorbells: [DoorbellRing], dismissedIds: Set<String>) -> [PanelActivity]
-}
-```
-
-- `HomeStore` 新增 `recentSafetyAlerts`（上限 10，在 `HomeStore+Backend.swift` 触发 `onSafetyAlert` 的同一处写入，开关关闭时不写）与 `dismissedActivityIds`。
-- `RecordedSafetyAlert` 保存 `alert`、投递时的 `scope` 与 `date`；卡片动作使用该作用域调用 `executeSafetyAlertAction`，避免切换连接后把旧告警发给新家庭。相同告警 id 只保留最新记录；没有系统通知 handler 时仍记录到面板。
-- 每个新字段要写明清除点（CODING_STANDARDS §13）：切换后端（`invalidateUndoContext`）清空 `recentSafetyAlerts` 与 `dismissedActivityIds`；设备消失时对应告警移除。
-- 撤销与 Toast 不进入这个模型，继续由 `undoBanner` / `toastNotice` 驱动，`TransientStackView` 只负责把它们同时画出来。
-
-### 2.5 删除项（clean cutover）
-
-- `PanelNoticeSlot.extraCount`、`PanelNotice.extraReminderLabel`、`ControlCenterPanel.noticeIndex` / `advanceNotice` / `pinnedNotice` / `scrollingNotice`、「还有 N 条提醒」按钮。
-- `overlayNotifications` 的 `if undo else if toast` 互斥。
-- `NoticeToastBanner` 动作按钮一律红色的写法：只有 `isError` 才用红色，否则用 `accentColor`。
-
-## 3. 模块网格契约（阶段 2）
-
-- `TileFlowLayout` 改为 12 列（内容宽 350 时单位 ≈ 22.4），支持行跨度：`TileSize` 增加 `.small`（1×1，3 列）与 `.hero`（2×2，6 列 × 2 行）；`.half` = 6 列（2×1 胶囊），`.full`/`.panel` = 12 列。已有保存的布局值保持含义不变。
-- 行高固定：模块行 56，2×2 = 56×2 + 间距。设备列表里展开抽屉的卡片按内容高度。
-- 点击契约，所有尺寸一致：**圆章 = 开关；名称/状态 = 打开详情；箭头 = 打开详情**；没有详情的设备，名称区也是开关。
-- 进入布局编辑只走右键菜单「编辑布局…」与头部按钮；删掉卡片容器上 450 ms 长按进入编辑的路径。
-- 2×1 胶囊：高 56，左侧 40 pt 圆章距边 8，标题 + 副标题两行，尾部最多 1 个元素（箭头）。星标、PiP、房间徽标移入右键菜单或副标题。
-- `CCSlider`（替代 `LiquidGlassSlider`）：胶囊高 34，图标在轨道内左端，数值在轨道内右端或拖动时浮出，尾部可选 28 pt 圆形「更多」按钮；保留 10% 触感刻度、方向键与 VoiceOver 调节，并补可见的键盘焦点描边。
-- Windows `panelPrefs.ts` 的 `spans()` / `targetSize` 与 macOS `TileResizeGestureMath` 同步改，二者是共享契约。
-
-## 4. 阶段与分工
-
-| 阶段 | 任务 | 平台 | 通道 |
-| --- | --- | --- | --- |
-| 1 | P1-A 表面、高光边、圆角、玻璃、动效令牌 | macOS | 执行 A |
-| 1 | P1-B 通知中心 + 瞬时横幅栈 | macOS | 攻坚 |
-| 1 | P1-C 原生 Acrylic、阴影、表面令牌、焦点环、减弱动态、解封动效 | Windows | 执行 B |
-| 2 | P2-A 12 列网格 + 行跨度 + 1×1 / 2×2 | macOS（+ Windows 契约） | 攻坚 |
-| 2 | P2-B 2×1 胶囊卡片 + 点击契约 + 删除长按编辑 | macOS | 执行 A |
-| 2 | P2-C Windows 通知中心 + 瞬时横幅栈 | Windows | 执行 B |
-| 3 | P3-A `CCSlider` 内嵌滑杆，灯/风扇/窗帘整行卡直出 | 双端 | 执行 A |
-| 3 | P3-B 顶部状态胶囊（最近操作、摄像头/麦克风占用）、页脚收进溢出菜单、去分割线、打开即刷新 + 入场动效 | macOS | 执行 B |
-| 3 | P3-C Windows 胶囊卡片、网格、滑杆对齐 | Windows | 攻坚 |
-| 4 | 同房间多灯堆叠卡、灯组成员列表、分组总开关、摄像机 2×2 封面、菜单栏组合读数与告警角标 | 双端 | 按复杂度分配 |
-| 5 | impeccable critique / polish、Codex 本地审查、实机验收清单 | — | 总指挥 + 审查 |
-
-## 5. 每个子任务的交付规则
-
-1. 在自己的 worktree 里，从 `origin/exp/control-center-redesign` 切出 `exp/cc-<任务号>-<短名>`。
-2. 动 UI 前读：`.cursor/skills/poteto-mode/SKILL.md`、`~/.agents/skills/apple-design/SKILL.md`、`~/.agents/skills/emil-design-eng/SKILL.md`、`~/.agents/skills/impeccable/reference/craft-floor.md`；本文件是契约，冲突时以本文件为准，本文件与 `CODING_STANDARDS.md` 冲突时停下上报。
-3. 调试只跑定向测试（`swift test --filter …`、`cd windows && npm test`）；提 PR 前跑一次 `bash scripts/check.sh`。
-4. 界面变化：`bash scripts/record_snapshots.sh` 重录，逐张看过变化的 PNG，与代码同一个 commit。新增的条件视图带自己的快照用例（CODING_STANDARDS §12）。
-5. 合并顺序在先的 PR 合进集成分支后，后到的 PR 用 `git merge origin/exp/control-center-redesign` 同步（不 rebase、不强推），PNG 冲突取对方版本后重录。
-6. `gh pr create --base exp/control-center-redesign`，正文写：改了什么、新测试名、`check.sh` 汇总原文、截图前后对比、未验证项。
-7. 跟进 Codex Auto Review 与 CI，修完评论 `@codex review`；同一问题 2 轮不收敛就停下上报。
-8. 新术语写进 `GLOSSARY.md`；改到 CODING_STANDARDS 列出的不变量要同步改那一条。
+1. 三个线程在独立 worktree 开发并跑通各自定向测试；
+2. 先合 **P2-GlassShell** 与 **P2-GridLayout**，再合 **P2-CapsuleCards**，在集成分支统一重录快照基线并跑通全量 `bash scripts/check.sh`；
+3. 立即使用 `screencapture -x -o -l<windowid>` 抓取桌面壁纸上的**真实上屏合成图**（检验无背景透明悬浮与 `.glassEffect` 真折射），并重新打包更新 `~/Applications/MenuBarHome-试用.app` 供用户实机体验。
