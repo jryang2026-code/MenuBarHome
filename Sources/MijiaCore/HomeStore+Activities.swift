@@ -35,6 +35,10 @@ extension HomeStore {
         }
         if case .notice(.haPlaintext(let prompt)) = activity.kind,
            haPlaintextPrompt != prompt { return }
+        if case .safety(let recorded) = activity.kind {
+            // An exit animation owns this occurrence, not a later alert reusing its id.
+            guard recentSafetyAlerts.contains(where: { $0.id == recorded.id && $0.date == recorded.date }) else { return }
+        }
         dismissedActivityIds.insert(activity.id)
     }
 
@@ -53,6 +57,7 @@ extension HomeStore {
         let scope = connectionScopeIdentifier
         var next = recentSafetyAlerts
         for alert in alerts {
+            dismissedActivityIds.remove(alert.id)
             next.removeAll { $0.id == alert.id }
             next.insert(RecordedSafetyAlert(alert: alert, scope: scope, date: now), at: 0)
         }
@@ -60,5 +65,15 @@ extension HomeStore {
             next.removeLast(next.count - Self.recentSafetyAlertLimit)
         }
         if next != recentSafetyAlerts { recentSafetyAlerts = next }
+    }
+
+    /// Snapshot removal ends the record, so reconnecting a device cannot revive an old warning.
+    func removeActivitiesForMissingDevices() {
+        let presentIds = Set(devices.map(\.id))
+        recentSafetyAlerts.removeAll { recorded in
+            guard !presentIds.contains(recorded.alert.deviceId) else { return false }
+            dismissedActivityIds.remove(recorded.id)
+            return true
+        }
     }
 }

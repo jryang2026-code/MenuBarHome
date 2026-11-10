@@ -255,6 +255,54 @@ struct PanelActivityStoreTests {
         #expect(store.panelActivities.map(\.id) == ["notice.haAddress"])
     }
 
+    @Test("A newly fired alert reappears after the same alert id was cleared")
+    func recurringAlertReappearsAfterDismissal() async throws {
+        let store = try await makeStore(devices: [lamp])
+        store.recordSafetyAlerts([alert("battery:lamp")], now: start)
+        store.dismissActivity(try #require(store.panelActivities.first))
+        store.recordSafetyAlerts([alert("battery:lamp")], now: start.addingTimeInterval(60))
+        #expect(store.panelActivities.map(\.id) == ["battery:lamp"])
+        #expect(!store.dismissedActivityIds.contains("battery:lamp"))
+    }
+
+    @Test("A swipe finishing after a new alert cannot clear its replacement")
+    func staleAlertDismissalKeepsNewOccurrence() async throws {
+        let store = try await makeStore(devices: [lamp])
+        store.recordSafetyAlerts([alert("battery:lamp")], now: start)
+        let swiped = try #require(store.panelActivities.first)
+        store.recordSafetyAlerts([alert("battery:lamp")], now: start.addingTimeInterval(60))
+        store.dismissActivity(swiped)
+        #expect(store.panelActivities.first?.date == start.addingTimeInterval(60))
+        #expect(!store.dismissedActivityIds.contains("battery:lamp"))
+    }
+
+    @Test("A removed device cannot revive its previous alert when it returns")
+    func removedDeviceDoesNotReviveOldAlert() async throws {
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [lamp]))
+        let store = HomeStore(provider: mock, defaultsSuiteName: try makeSuite("removal"))
+        try await store.waitForTestSnapshot()
+        store.enableSafetyAlerts = false
+        store.recordSafetyAlerts([alert("battery:lamp")], now: start)
+        store.dismissActivity(try #require(store.panelActivities.first))
+        await mock.updateSnapshot(SynthesizedHome(devices: []))
+        try #require(await waitForDevicePresence(store, present: false))
+        #expect(store.recentSafetyAlerts.isEmpty)
+        #expect(!store.dismissedActivityIds.contains("battery:lamp"))
+        await mock.updateSnapshot(SynthesizedHome(devices: [lamp]))
+        try #require(await waitForDevicePresence(store, present: true))
+        #expect(store.panelActivities.isEmpty)
+    }
+
+    private func waitForDevicePresence(_ store: HomeStore, present: Bool) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+        while store.devices.contains(where: { $0.id == lamp.id }) != present {
+            guard ContinuousClock.now < deadline else { return false }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return true
+    }
+
     @Test("Clearing the address suggestion dismisses the suggestion itself")
     func dismissingTheAddressSuggestionDismissesIt() async throws {
         let store = try await makeStore()

@@ -67,7 +67,7 @@ struct TransientStackView: View {
                 } else if let newestCardID, !newIDs.contains(newestCardID) {
                     self.newestCardID = newIDs.first
                 }
-                if newIDs.count < 2 { isExpanded = false }
+                isExpanded = TransientStackExpansion.isExpanded(isHovered: isHovered, cardCount: newIDs.count)
                 if newIDs.isEmpty {
                     isHovered = false
                     newestCardID = nil
@@ -256,8 +256,9 @@ struct TransientStackView: View {
         } else {
             store.resumeUndoBannerCountdown()
         }
-        guard cards.count > 1 else { return }
-        withAnimation(animation) { isExpanded = hovering }
+        withAnimation(animation) {
+            isExpanded = TransientStackExpansion.isExpanded(isHovered: hovering, cardCount: cards.count)
+        }
     }
 
     // MARK: - Model
@@ -280,3 +281,9 @@ private struct TransientStackHeightKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
+
+enum TransientStackExpansion {
+    static func isExpanded(isHovered: Bool, cardCount: Int) -> Bool {
+        isHovered && cardCount > 1
+    }
+}
