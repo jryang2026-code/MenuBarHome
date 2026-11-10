@@ -59,7 +59,8 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
     const temp = k.temperature !== null ? formatTemperatureValue(k.temperature, undefined, 1) : "--";
     const hum = k.humidity !== null ? Math.round(k.humidity) : null;
     const room = selectedRoom === "全部" ? `<span class="cc-sensor-room">${escapeHtml(dev.roomName)}</span>` : "";
-    const sensorAria = `${t("{name}，温度 {temp}", { name, temp: k.temperature !== null ? formatTemperature(k.temperature, undefined, 1) : "--" })}${hum !== null ? t("，湿度 {humidity}%", { humidity: hum }) : ""}${dev.isOnline ? "" : t("，离线")}`;
+    const batteryLabel = k.battery !== null ? t("电量 {percent}%", { percent: k.battery }) : "";
+    const sensorAria = `${t("{name}，温度 {temp}", { name, temp: k.temperature !== null ? formatTemperature(k.temperature, undefined, 1) : "--" })}${hum !== null ? t("，湿度 {humidity}%", { humidity: hum }) : ""}${k.battery !== null ? t("，电量 {percent}%", { percent: k.battery }) : ""}${dev.isOnline ? "" : t("，离线")}`;
     if (compact) {
       return `
         <div class="cc-tile cc-sensor is-compact ${dev.isOnline ? "" : "is-offline"} ${motion}" ${attrs} role="group" aria-label="${escapeHtml(sensorAria)}">
@@ -90,7 +91,7 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
             <span class="cc-sensor-temp is-big">${temp}<small>${temperatureSymbol()}</small></span>
             <div class="cc-sensor-meta">
               <span class="cc-comfort is-${c.level}">${c.label}</span>
-              ${k.battery !== null ? `<span class="cc-sensor-batt ${k.battery <= 20 ? "is-low" : ""}"><span class="cc-icon-inline" aria-hidden="true">${k.battery <= 20 ? SF_ICONS.batteryLow : SF_ICONS.batteryFull}</span> ${k.battery}%</span>` : ""}
+              ${k.battery !== null ? `<span class="cc-sensor-batt ${k.battery <= 20 ? "is-low" : ""}" role="img" aria-label="${escapeHtml(batteryLabel)}" title="${escapeHtml(batteryLabel)}"><span class="cc-icon-inline" aria-hidden="true">${k.battery <= 20 ? SF_ICONS.batteryLow : SF_ICONS.batteryFull}</span> ${k.battery}%</span>` : ""}
             </div>
           </div>
           ${ring}

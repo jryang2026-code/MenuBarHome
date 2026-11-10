@@ -1740,6 +1740,74 @@ describe("Unverified MIoT fallback controls (#154)", () => {
       restoreCssEscape();
     }
   });
+
+  it("drops a cancelled drag-to-dim instead of writing brightness on the next release", async () => {
+    const light = {
+      id: "rw-light",
+      name: "书房台灯",
+      roomId: "r1",
+      roomName: "客厅",
+      model: "yeelink.light.ceiling22",
+      isOnline: true,
+      kind: {
+        kind: "light",
+        entityId: "miot:rw-light:2",
+        isOn: true,
+        brightnessPercent: 40,
+        colorTempKelvin: 4000,
+        minKelvin: 2700,
+        maxKelvin: 6500,
+        currentEffect: null,
+        availableEffects: [],
+        powerWritable: true,
+        brightnessWritable: true,
+        colorWritable: false,
+      },
+    };
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "xiaomiCloud",
+      hasCompletedOnboarding: true,
+      isCompactGridMode: false,
+      cachedXiaomiDevices: [light],
+    }));
+    const restoreCssEscape = installCssEscape();
+    try {
+      const app = new MenuMijiaWindowsApp(element("#app"));
+      await setImmediate();
+      const fill = () =>
+        document.querySelector('[data-tile-id="rw-light"] .cc-tile-fill')?.getAttribute("style") ?? "";
+
+      element('[data-tile-id="rw-light"]').dispatchEvent(
+        new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 10, clientY: 40 }),
+      );
+      window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 180, clientY: 42 }));
+      await setImmediate();
+      assert.match(fill(), /width:100%/);
+      assert.deepEqual(app.dimPreview, { id: "rw-light", percent: 100 });
+
+      // The pointer stream is cancelled (touch cancel, window blur): the preview goes away and the
+      // release that follows must not spend it as a brightness command.
+      window.dispatchEvent(new window.Event("pointercancel"));
+      await setImmediate();
+      assert.equal(app.dimPreview, null);
+      assert.match(fill(), /width:40%/);
+      window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
+      await setImmediate();
+      assert.doesNotMatch(document.body.textContent ?? "", /已将|控制失败/);
+
+      // A real drag still writes exactly once when the pointer is released.
+      element('[data-tile-id="rw-light"]').dispatchEvent(
+        new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 10, clientY: 40 }),
+      );
+      window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 180, clientY: 42 }));
+      await setImmediate();
+      window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
+      await setImmediate();
+      assert.match(document.body.textContent ?? "", /已将|控制失败/);
+    } finally {
+      restoreCssEscape();
+    }
+  });
 });
 
 describe("Xiaomi cloud region switch (#37)", () => {

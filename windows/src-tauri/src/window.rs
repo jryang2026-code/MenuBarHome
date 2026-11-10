@@ -1,6 +1,5 @@
 use super::*;
 use crate::placement::*;
-use tauri::window::{Effect, EffectsBuilder};
 
 pub(crate) static LAST_FOCUS_LOSS_MS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static PIN_POPOVER: AtomicBool = AtomicBool::new(false);
@@ -19,19 +18,9 @@ pub(crate) fn panel_window_width(rail_width: f64) -> f64 {
     472.0 + PANEL_PADDING * 2.0 + rail
 }
 
-/// Applies the native backdrop the webview cannot fake: Mica where the compositor supports it,
-/// Acrylic otherwise. Records the outcome for `panel_backdrop`.
+/// Applies the native backdrop this machine earns (see `backdrop.rs`) and records it for the webview.
 pub(crate) fn apply_panel_backdrop(window: &WebviewWindow) {
-    for effect in [Effect::Mica, Effect::Acrylic] {
-        if window
-            .set_effects(EffectsBuilder::new().effect(effect).build())
-            .is_ok()
-        {
-            PANEL_BACKDROP_ACRYLIC.store(true, Ordering::SeqCst);
-            return;
-        }
-    }
-    PANEL_BACKDROP_ACRYLIC.store(false, Ordering::SeqCst);
+    PANEL_BACKDROP_ACRYLIC.store(crate::backdrop::apply(window), Ordering::SeqCst);
 }
 
 /// What the window manager granted, so the stylesheet can lower its own fill to a tint.

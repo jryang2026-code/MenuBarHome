@@ -2,6 +2,7 @@
 
 mod home_assistant;
 mod camera;
+mod backdrop;
 mod credentials;
 mod network;
 mod placement;

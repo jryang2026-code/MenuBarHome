@@ -258,6 +258,8 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "打开 {name}": ["打开 {name}", "Turn on {name}"],
   "{name}，温度 {temp}{humidity}": ["{name}，温度 {temp}{humidity}", "{name}, temperature {temp}{humidity}"],
   "，湿度 {humidity}%": ["，湿度 {humidity}%", ", humidity {humidity}%"],
+  "电量 {percent}%": ["电量 {percent}%", "Battery {percent}%"],
+  "，电量 {percent}%": ["，电量 {percent}%", ", battery {percent}%"],
   "，离线": ["，离线", ", offline"],
 
   // Quick actions

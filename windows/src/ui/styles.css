@@ -154,9 +154,12 @@ body {
      granted the native Acrylic/Mica backdrop (`data-backdrop`, §1.4); then it drops to a tint. */
   --panel-alpha-top: calc(var(--panel-opacity, 0.9) * 1.6 - 0.6);
   --panel-alpha-bottom: var(--panel-opacity, 0.9);
+  /* `data-backdrop="none"` is the default, and also every machine that cannot paint a material: one
+     solid base colour (#1c1d24, §1.4) at the user's opacity. A translucent panel over an unblurred
+     desktop is the failure this rule prevents. */
   background:
     radial-gradient(120% 70% at 0% 0%, rgba(255, 255, 255, 0.045), transparent 55%),
-    linear-gradient(180deg, rgba(40, 42, 52, var(--panel-alpha-top)) 0%, rgba(24, 25, 32, var(--panel-alpha-bottom)) 100%);
+    linear-gradient(180deg, rgba(28, 29, 36, var(--panel-alpha-top)) 0%, rgba(28, 29, 36, var(--panel-alpha-bottom)) 100%);
   box-shadow:
     0 18px 40px rgba(0, 0, 0, 0.45),
     0 2px 8px rgba(0, 0, 0, 0.25);
@@ -1137,7 +1140,6 @@ body {
   height: 7px;
   border-radius: var(--r-pill);
   background: rgba(255, 255, 255, 0.16);
-  outline: none;
   cursor: pointer;
 }
 
@@ -2716,7 +2718,7 @@ input[type="checkbox"]:checked::after {
   --panel-alpha-bottom: calc(var(--panel-opacity, 0.9) * 0.8 + 0.2);
   background:
     radial-gradient(120% 70% at 0% 0%, rgba(255, 255, 255, 0.85), transparent 55%),
-    linear-gradient(180deg, rgba(248, 250, 254, var(--panel-alpha-top)) 0%, rgba(235, 239, 247, var(--panel-alpha-bottom)) 100%);
+    linear-gradient(180deg, rgba(246, 248, 252, var(--panel-alpha-top)) 0%, rgba(246, 248, 252, var(--panel-alpha-bottom)) 100%);
   box-shadow:
     0 18px 40px rgba(15, 23, 42, 0.18),
     0 2px 8px rgba(15, 23, 42, 0.08);
@@ -3084,11 +3086,11 @@ input[type="checkbox"]:checked::after {
   font-size: 11px;
   font-weight: 600;
   color: var(--text-primary);
-  background: linear-gradient(180deg, rgba(40, 42, 52, var(--panel-alpha-top)) 0%, rgba(24, 25, 32, var(--panel-alpha-bottom)) 100%);
+  background: linear-gradient(180deg, rgba(28, 29, 36, var(--panel-alpha-top)) 0%, rgba(28, 29, 36, var(--panel-alpha-bottom)) 100%);
 }
 
 .cc-popover.scheme-light .cc-opacity-preview-panel {
-  background: linear-gradient(180deg, rgba(248, 250, 254, var(--panel-alpha-top)) 0%, rgba(235, 239, 247, var(--panel-alpha-bottom)) 100%);
+  background: linear-gradient(180deg, rgba(246, 248, 252, var(--panel-alpha-top)) 0%, rgba(246, 248, 252, var(--panel-alpha-bottom)) 100%);
 }
 
 .cc-tile.is-keyboard-selected {
@@ -3107,34 +3109,37 @@ input[type="checkbox"]:checked::after {
    ========================================================================= */
 
 /* One press response for every pressable surface: shrink to .97 on the press curve. `:where()`
-   keeps the specificity of a bare pseudo-class so no element rule has to opt out. */
-:where(
-  .cc-circle-btn,
-  .cc-all-off-pill,
-  .cc-quick-pill,
-  .cc-room-pill,
-  .cc-tile-orb,
-  .cc-tile-chevron,
-  .cc-footer-icon-btn,
-  .cc-footer-pill,
-  .cc-seg-pill,
-  .cc-inline-pill,
-  .cc-climate-power,
-  .cc-climate-step,
-  .cc-menu-item,
-  .cc-menu-chip,
-  .cc-btn-primary,
-  .cc-btn-secondary,
-  .cc-btn-danger,
-  .cc-spotlight-send,
-  .cc-grok-pill,
-  .cc-home-switch,
-  .cc-tile-body,
-  .cc-climate-name
-):active {
-  transform: scale(0.97);
-  transition-duration: 120ms;
-  transition-timing-function: var(--ease-press);
+   keeps the specificity of a bare pseudo-class so no element rule has to opt out. The shrink is
+   motion, so reduced-motion users keep colour feedback only. */
+@media (prefers-reduced-motion: no-preference) {
+  :where(
+    .cc-circle-btn,
+    .cc-all-off-pill,
+    .cc-quick-pill,
+    .cc-room-pill,
+    .cc-tile-orb,
+    .cc-tile-chevron,
+    .cc-footer-icon-btn,
+    .cc-footer-pill,
+    .cc-seg-pill,
+    .cc-inline-pill,
+    .cc-climate-power,
+    .cc-climate-step,
+    .cc-menu-item,
+    .cc-menu-chip,
+    .cc-btn-primary,
+    .cc-btn-secondary,
+    .cc-btn-danger,
+    .cc-spotlight-send,
+    .cc-grok-pill,
+    .cc-home-switch,
+    .cc-tile-body,
+    .cc-climate-name
+  ):active {
+    transform: scale(0.97);
+    transition-duration: 120ms;
+    transition-timing-function: var(--ease-press);
+  }
 }
 
 /* Server-accented tiles keep one visible focus ring at every contrast level. */
