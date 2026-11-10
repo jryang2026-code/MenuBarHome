@@ -3,6 +3,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 root="$(pwd)"
+# A commit hook exports GIT_INDEX_FILE and GIT_DIR. They point at the committing repository, so
+# the temporary repository below would stage and commit into the real index instead of its own.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 
 failures=0
 pass() { printf 'PASS %s\n' "$1"; }
