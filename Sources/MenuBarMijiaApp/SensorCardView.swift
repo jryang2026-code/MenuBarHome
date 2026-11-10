@@ -65,7 +65,10 @@ struct SensorCardView: View {
                 store.toggleExpanded(device.id)
             }
         }
-        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.module)
+        .glassTile(
+            isActive: false,
+            cornerRadius: (isCompact && !isExpanded) ? DesignTokens.Radius.panel + 7 : DesignTokens.Radius.module
+        )
         .opacity(device.isOnline ? 1 : 0.58)
         // Display-only card when collapsed: VoiceOver reads one sentence instead of five loose labels (#41).
         .accessibilityElement(children: isExpanded ? .contain : .ignore)
@@ -112,32 +115,27 @@ struct SensorCardView: View {
             }
             .frame(width: 38, height: 38)
 
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     Text(displayName)
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                        .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                         .foregroundStyle(fg)
                         .lineLimit(1)
-                    if showRoomBadge {
-                        Text(L10n.displayRoomName(device.roomName))
-                            .font(.system(size: DesignTokens.TypeSize.micro, weight: .medium))
-                            .foregroundStyle(muted)
-                            .lineLimit(1)
-                    }
                     Spacer(minLength: 2)
                     comfortChip
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    temperatureText(size: DesignTokens.TypeSize.reading)
+                    temperatureText(size: DesignTokens.TypeSize.title)
                     if let h = spec.humidity {
                         HStack(alignment: .firstTextBaseline, spacing: 2) {
                             Image(systemName: "drop.fill")
-                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                                .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
                             Text(String(format: "%.0f%%", h))
                                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold, design: .rounded))
                                 .monospacedDigit()
                         }
                         .foregroundStyle(humidityColor)
+                        .fixedSize()
                     }
                     Spacer(minLength: 0)
                 }
@@ -145,7 +143,7 @@ struct SensorCardView: View {
         }
         .padding(.leading, 8)
         .padding(.trailing, 12)
-        .padding(.vertical, 6)
+        .padding(.vertical, 8)
     }
 
     private var wide: some View {
@@ -699,6 +697,7 @@ struct SensorCardView: View {
             Text(spec.temperature.map { L10n.temperatureValue($0, fractionDigits: 1) } ?? "--")
                 .font(.system(size: size, weight: .semibold, design: .rounded))
                 .monospacedDigit()
+                .lineLimit(1)
                 .contentTransition(.numericText(value: spec.temperature ?? 0))
                 // The reading is the card's hero number: at 24 pt a saturated blue reads as a glow,
                 // so it takes the label ink and the thermometer glyph carries the temperature hue.
@@ -707,6 +706,7 @@ struct SensorCardView: View {
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold, design: .rounded))
                 .foregroundStyle(muted)
         }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private func humidityRing(_ h: Double) -> some View {
@@ -741,8 +741,10 @@ struct SensorCardView: View {
     private var comfortChip: some View {
         let descriptor = comfortDescriptor
         return Text(descriptor.label)
-            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+            .font(.system(size: isCompact ? DesignTokens.TypeSize.micro : DesignTokens.TypeSize.caption, weight: .semibold))
             .foregroundStyle(descriptor.color)
+            .lineLimit(1)
+            .fixedSize()
             .padding(.horizontal, isCompact ? 5.5 : 6)
             .padding(.vertical, isCompact ? 1.5 : 2)
             .background(Capsule(style: .continuous).fill(descriptor.color.opacity(0.16)))

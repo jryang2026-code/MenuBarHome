@@ -318,28 +318,27 @@ extension ControlCenterPanel {
             }
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .bold))
-                    .rotationEffect(.degrees(collapsed ? -90 : 0))
-                    .foregroundStyle(hoveredHeader == section.id ? accent : Color.secondary)
-                Text(section.title ?? "")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(hoveredHeader == section.id ? accent : Color.secondary)
-                Text("\(section.devices.count)")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .contentTransition(.numericText(value: Double(section.devices.count)))
-                    .foregroundStyle(.secondary.opacity(0.8))
-                if section.groupId != nil {
-                    Capsule(style: .continuous)
-                        .fill(accent.opacity(hoveredHeader == section.id ? 0.35 : 0.18))
-                        .frame(height: 1)
-                        .frame(maxWidth: .infinity)
-                } else {
-                    Spacer()
+                HStack(spacing: 5) {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: DesignTokens.TypeSize.micro, weight: .bold))
+                        .rotationEffect(.degrees(collapsed ? -90 : 0))
+                        .foregroundStyle(hoveredHeader == section.id ? accent : Color.primary.opacity(0.82))
+                    Text(section.title ?? "")
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                        .foregroundStyle(hoveredHeader == section.id ? accent : Color.primary.opacity(0.88))
+                    Text("\(section.devices.count)")
+                        .font(.system(size: DesignTokens.TypeSize.micro, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .contentTransition(.numericText(value: Double(section.devices.count)))
+                        .foregroundStyle(.secondary)
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 3.5)
+                .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
+                .specularRim(Capsule(style: .continuous))
+
+                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 3)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

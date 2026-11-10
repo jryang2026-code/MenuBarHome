@@ -928,8 +928,10 @@ extension ControlCenterPanel {
                 }
             }
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 28)
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 36)
+        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.module)
     }
 
     // MARK: - Home Assistant Address Question (#18)

@@ -14,8 +14,6 @@ public struct ControlCenterPanel: View {
     @State var grabOffset: CGSize = .zero
     @State var lastSwapTarget: String?
     @State var lastSwapAt: Date = .distantPast
-    @State var pressTask: Task<Void, Never>?
-    @State var pressCancelled = false
     @State var pendingScrollToDeviceId: String?
     @AppStorage(GroupPrefs.groupsKey) var groupsRaw: String = "[]"
     @AppStorage(GroupPrefs.collapsedKey) var collapsedRaw: String = "[]"
@@ -646,8 +644,10 @@ public struct ControlCenterPanel: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 26)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 30)
+            .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.module)
         } else {
             let quickIndexMap = Dictionary(
                 uniqueKeysWithValues: results.prefix(9).enumerated().map { ($1.id, $0 + 1) }

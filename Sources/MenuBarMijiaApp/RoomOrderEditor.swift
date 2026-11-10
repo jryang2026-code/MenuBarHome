@@ -201,6 +201,9 @@ struct RoomOrderEditor: View {
 
             listFooter
         }
+        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.module)
+        .padding(.horizontal, 13)
+        .padding(.bottom, 12)
         // Leaving the mode mid-drag (Esc, Done, hiding the panel) tears the view down without an
         // `onEnded`, so the auto-scroll loop has to be stopped here or it keeps ticking at 60 fps.
         .onDisappear { stopAutoScroll() }

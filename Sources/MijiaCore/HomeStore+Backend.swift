@@ -412,11 +412,12 @@ extension HomeStore {
               !devices.isEmpty else {
             return
         }
-        // Automatically star online controllable devices on first launch
-        let initial = devices
-            .filter { $0.isOnline && ($0.isPrimaryToggleable || $0.hasDetailDrawer) }
-            .prefix(6)
-            .map(\.id)
+        // Automatically star online controllable devices on first launch, putting full-row
+        // climate strips after compact capsules so 2×1 capsules pair cleanly side by side.
+        let candidates = devices.filter { $0.isOnline && ($0.isPrimaryToggleable || $0.hasDetailDrawer) }
+        let nonClimate = candidates.filter { if case .climate = $0.kind { return false } else { return true } }
+        let climate = candidates.filter { if case .climate = $0.kind { return true } else { return false } }
+        let initial = (nonClimate + climate).prefix(6).map(\.id)
         if !initial.isEmpty {
             self.favoriteDeviceIds = Set(initial)
             self.favoriteOrder = initial

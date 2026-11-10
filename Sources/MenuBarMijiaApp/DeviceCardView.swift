@@ -83,10 +83,12 @@ public struct DeviceCardView: View {
     /// Focus and Now Playing tiles glow; a quiet one stays neutral glass.
     private var tileTint: Color? { isLit ? accent : nil }
 
-    /// A compact, collapsed tile is a true capsule: 58 pt tall, so half the height is the radius.
-    /// `glassTile` takes a radius, and 22 + 7 lands exactly on that capsule edge.
+    /// A compact, collapsed 2×1 tile is a true capsule (58 pt tall → radius 29). A 2×2 hero tile or
+    /// full row uses the module corner radius.
     private var cardRadius: CGFloat {
-        (isCompactTile && !isExpanded) ? DesignTokens.Radius.panel + 7 : DesignTokens.Radius.module
+        (isCompactTile && !isExpanded && resolvedSize != .hero)
+            ? DesignTokens.Radius.panel + 7
+            : DesignTokens.Radius.module
     }
 
     /// Compact capsules wear a 40 pt orb; a full row's is 38 pt (contract §1.2).
@@ -96,12 +98,17 @@ public struct DeviceCardView: View {
     private var isLit: Bool { store.presentsAsActive(device) }
 
     private var shownStatus: String { store.presentedStatus(for: device) }
-
-    /// A compact capsule folds the room into its one status line, so the title row stays two words.
+    /// Compact capsule status line: concise readout, falling back to the room name only when the
+    /// status is a plain On/Off word.
     private var compactStatusLine: String {
         let status = shownStatus.replacingOccurrences(of: " · ", with: L10n.tr("，", ", "))
         guard showRoomBadge else { return status }
-        return "\(L10n.displayRoomName(device.roomName)) · \(status)"
+        let on = L10n.tr("已开启", "On")
+        let off = L10n.tr("已关闭", "Off")
+        if status == on || status == off {
+            return "\(L10n.displayRoomName(device.roomName)) · \(status)"
+        }
+        return status
     }
 
     /// One presentation state drives the fill; the ink stays the window's `primary` / `secondary`.
@@ -165,7 +172,7 @@ public struct DeviceCardView: View {
         VStack(alignment: .leading, spacing: 0) {
             if isCompactTile {
                 compactHeaderRow
-                    .frame(minHeight: 58, maxHeight: isExpanded ? nil : .infinity)
+                    .frame(minHeight: resolvedSize == .hero ? 124 : 58, maxHeight: isExpanded ? nil : .infinity, alignment: resolvedSize == .hero ? .topLeading : .center)
             } else {
                 headerRow
                     .frame(maxHeight: isExpanded ? nil : .infinity)
