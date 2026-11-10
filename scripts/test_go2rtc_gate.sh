@@ -14,6 +14,9 @@ ready="scripts/go2rtc-ptz/go_ready.sh"
 bash_bin="$(command -v bash)"
 empty="$(mktemp -d)"
 cache="$(mktemp -d)"
+# PATH must not contain go. perl still has to be visible: the deadline uses it,
+# and macOS and Linux both ship perl outside the Go toolchain.
+ln -s "$(command -v perl)" "$empty/perl"
 trap 'rm -rf "$empty" "$cache"' EXIT
 
 expect_skip() {
@@ -61,6 +64,44 @@ if [ "$status" -eq 0 ] && [ "$(cat "$out")" = "$cache/go/bin/go" ] && [ ! -s "$e
     pass "能跑 go version 的桩可用"
 else
     fail "能跑 go version 的桩应退出 0 并打印路径，实际退出 ${status}，stdout「$(cat "$out")」，stderr「$(cat "$err")」"
+fi
+rm -f "$out" "$err"
+
+# A stub that sleeps must not stall the gate. The skip itself returns 0.
+hang_pid="$cache/hang.pid"
+rm -f "$hang_pid"
+printf '%s\n' '#!/bin/sh' "echo \$\$ > '$hang_pid'" '/bin/sleep 30' >"$cache/go/bin/go"
+chmod +x "$cache/go/bin/go"
+start=$(date +%s)
+status=0
+out="$(mktemp)"
+err="$(mktemp)"
+set +e
+env PATH="$empty" GO2RTC_PTZ_GO_CACHE="$cache" "$bash_bin" "$ready" >"$out" 2>"$err"
+status=$?
+set -e
+end=$(date +%s)
+elapsed=$((end - start))
+gate_status=1
+gate_line=""
+if [ "$status" -ne 0 ]; then
+    gate_line="⏭️  跳过 go2rtc 云台补丁验证：$(cat "$err")"
+    gate_status=0
+fi
+if [ -f "$hang_pid" ]; then
+    hang_id="$(cat "$hang_pid")"
+    kill -KILL -- "-$hang_id" 2>/dev/null || true
+    kill -KILL "$hang_id" 2>/dev/null || true
+fi
+if [ "$status" -eq 2 ] \
+    && [ "$(cat "$err")" = "go version 超时" ] \
+    && [ "$gate_status" -eq 0 ] \
+    && [ "$elapsed" -ge 4 ] \
+    && [ "$elapsed" -lt 8 ] \
+    && [ ! -s "$out" ]; then
+    printf 'PASS go version 超时的桩在 %ss 内跳过：%s\n' "$elapsed" "$gate_line"
+else
+    fail "挂起的桩应在约 5s 内以退出 2 跳过且门禁返回 0，实际探针退出 ${status}，门禁 ${gate_status}，用时 ${elapsed}s，stderr「$(cat "$err")」，stdout「$(cat "$out")」"
 fi
 rm -f "$out" "$err"
 
