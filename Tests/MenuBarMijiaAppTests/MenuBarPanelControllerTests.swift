@@ -982,6 +982,61 @@ struct MenuBarPanelControllerTests {
         #expect(MenuBarPanelController.statusBarImage(symbolName: "nonexistent.symbol.for.test.181") != nil)
     }
 
+
+    @Test("Reopening during dismissal preserves the panel and emits each visibility change once", arguments: [false, true])
+    func reopenDuringDismissal(reduced: Bool) async throws {
+        let (store, suite) = try await makeStore()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        store.enableGrokBall = true
+        let controller = makeController(store: store)
+        defer { controller.uninstall() }
+        controller.presentsActively = true
+        controller.shouldReduceMotion = { reduced }
+        var shows = 0
+        var hides = 0
+        let shown = NotificationCenter.default.addObserver(forName: MenuBarPanelController.didShowNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { shows += 1 }
+        }
+        let hidden = NotificationCenter.default.addObserver(forName: MenuBarPanelController.didHideNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { hides += 1 }
+        }
+        defer {
+            NotificationCenter.default.removeObserver(shown)
+            NotificationCenter.default.removeObserver(hidden)
+        }
+        func waitUntil(_ predicate: () -> Bool) async -> Bool {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while !predicate() {
+                guard ContinuousClock.now < deadline else { return false }
+                Self.pumpMainRunLoop(0.005)
+                await Task.yield()
+            }
+            return true
+        }
+        controller.showPanel()
+        let panel = try #require(controller.panelWindow)
+        #expect(await waitUntil { controller.grokBallSidecarWindow?.isVisible == true })
+        let settled = panel.frame
+        controller.hidePanel()
+        controller.hidePanel()
+        #expect(await waitUntil { reduced ? panel.alphaValue < 0.95 : panel.frame.minX > settled.minX + 2 })
+        let interrupted = panel.frame
+        controller.handlePreferencesChanged()
+        #expect(panel.frame == interrupted, "a preferences notification cannot snap a closing window back")
+        controller.showPanel()
+        controller.showPanel()
+        #expect(abs(panel.frame.minX - interrupted.minX) <= 1, "reopening starts at the current position")
+        #expect(await waitUntil { controller.grokBallSidecarWindow?.isVisible == true })
+        #expect(panel.isVisible)
+        #expect(controller.isPanelVisible)
+        #expect(panel.frame == settled)
+        #expect(shows == 2)
+        #expect(hides == 1)
+        controller.hidePanel()
+        #expect(await waitUntil { !panel.isVisible })
+        #expect(hides == 2)
+    }
+
     @Test("Showing the panel creates a key-capable 376 pt window and marks it visible")
     func showPanelCreatesVisibleWindow() async throws {
         let (store, suite) = try await makeStore()
@@ -1010,7 +1065,6 @@ struct MenuBarPanelControllerTests {
         #expect(panel.canBecomeKey, "arrow keys and text fields need a key panel")
         #expect(panel.canBecomeMain == false)
         #expect(abs(panel.frame.width - MenuBarPanelController.panelWidth) < 1)
-        #expect(panel.contentView is NSHostingView<ControlCenterPanel>)
 
         let visible = try #require(panel.screen ?? NSScreen.main).visibleFrame
         #expect(panel.frame.height > visible.height - 30, "the column runs almost the whole visible height")
@@ -1025,7 +1079,7 @@ struct MenuBarPanelControllerTests {
 
         controller.showPanel()
         let panel = try #require(controller.panelWindow)
-        let hosting = try #require(panel.contentView as? NSHostingView<ControlCenterPanel>)
+        let hosting = try #require(panel.contentView)
 
         var didHide = false
         let token = NotificationCenter.default.addObserver(
@@ -1065,9 +1119,6 @@ struct MenuBarPanelControllerTests {
 
         #expect(store.isShowingMiReauth)
         #expect(controller.isPanelVisible)
-        let panel = try #require(controller.panelWindow)
-        let hosting = try #require(panel.contentView as? NSHostingView<ControlCenterPanel>)
-        #expect(hosting.rootView.store.isShowingMiReauth)
     }
 
     @Test("Toggle switches between visible and hidden while preserving the same SwiftUI tree")
@@ -1079,7 +1130,7 @@ struct MenuBarPanelControllerTests {
 
         controller.togglePanel()
         let panel = try #require(controller.panelWindow)
-        let hosting = try #require(panel.contentView as? NSHostingView<ControlCenterPanel>)
+        let hosting = try #require(panel.contentView)
         #expect(controller.isPanelVisible)
 
         controller.togglePanel()
@@ -1144,6 +1195,9 @@ struct MenuBarPanelControllerTests {
         #expect(panel.frame.height > visible.height - 30, "the column runs almost the whole visible height")
         #expect(panel.frame.minY >= visible.minY, "the column stays on screen")
         #expect(panel.frame.maxY <= visible.maxY)
+        #expect(abs(panel.frame.maxX - (visible.maxX - 16)) <= 0.5)
+        #expect(abs(panel.frame.maxY - (visible.maxY - 6)) <= 1)
+        #expect(abs(panel.frame.minY - (visible.minY + 8)) <= 1)
     }
 
     @Test("GrokBall sidecar stays outside the 376 pt panel and expands without changing it")

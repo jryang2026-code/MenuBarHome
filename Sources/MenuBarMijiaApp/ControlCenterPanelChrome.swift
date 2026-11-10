@@ -185,11 +185,14 @@ extension ControlCenterPanel {
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                .frame(width: 30, height: 30)
+                .contentShape(Circle())
+                .adaptiveGlass(in: Circle(), interactive: true)
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
-        .frame(width: 30, height: 30)
-        .adaptiveGlass(in: Circle(), interactive: true)
+        .fixedSize()
         .accessibilityLabel(Text(L10n.tr("更多操作", "More actions")))
     }
 
