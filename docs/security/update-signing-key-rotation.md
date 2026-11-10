@@ -235,7 +235,7 @@ Change all trust-set copies at once:
 4. `windows/src-tauri/src/main.rs`:
    - `UPDATE_SIGNING_PUBLIC_KEY_BASE64 = "<K_new>"`
    - `UPDATE_SIGNING_OVERLAP_PUBLIC_KEY_BASE64 = "<K_old>"`
-5. `scripts/testdata/MenuBarHome-1.1.7.update.json`: replace its `key_id` value with `<K_new>`. The golden is a fixed 526-byte fixture; the base64 key length is unchanged, so only that value changes. `scripts/update_manifest.py self-test` fails until this is done.
+5. `scripts/testdata/MenuBarHome-1.1.7.update.json`: replace its `key_id` value with `<K_new>`. The golden is a fixed 523-byte fixture; the base64 key length is unchanged, so only that value changes. `scripts/update_manifest.py self-test` fails until this is done.
 
 Run:
 
@@ -466,7 +466,7 @@ Rust tests for `update_manifest.rs` and the key helper run in Windows CI (`cargo
 
 ### 5.4 Release gate
 
-Collect exactly the eight published assets into one directory and run:
+Collect exactly the ten published assets (DMG, EXE, MSI, their `.sha256` files, both SPDX SBOMs, the update manifest and its `.ed25519.sig`) into one directory and run:
 
 ```bash
 bash scripts/check_release.sh assets <version> <dir>

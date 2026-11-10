@@ -28,10 +28,9 @@ ALLOWLIST: dict[str, dict[str, tuple[int, str]]] = {
             2,
             "startTimerLoop calls host.render() twice. The first flushes pendingCloudRender only "
             "after hasBlockingPanelInteraction() is false, and render() clears that flag. The "
-            "second is the direct call CODING_STANDARDS.md section 16 allows while scheduled "
-            "commands are queued, without the gesture check. The same statement also clears an "
-            "expired undo row. Section 16 does not allow that undo paint on its own. "
-            "queueBackgroundRender() would set the flag and leave the paint to a later tick.",
+            "second is the direct call CODING_STANDARDS.md section 16 allows when scheduled "
+            "commands just ran, without the gesture check. An expired undo row alone goes "
+            "through queueBackgroundRender(), so it never rebuilds the panel mid-gesture.",
         ),
     },
 }

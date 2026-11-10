@@ -4,8 +4,6 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 import MijiaCore
 
-public typealias MiAccountConnectionCard = MiAccountSection
-
 public struct MiAccountSection: View {
     public let store: HomeStore
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Local commit gate: the same `scripts/check.sh` CI runs, snapshots included (this Mac records the
-# baselines and is also the CI runner).
+# Local commit gate: `scripts/check.sh`, snapshots included (this Mac records the baselines; the
+# GitHub-hosted CI skips the snapshot comparison).
 #
 # The full gate prints every test line (~180 KB). A commit only needs the verdict, so the run goes
 # to a log file: success prints the summary lines, including the long-file list, failure prints
@@ -8,7 +8,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(git rev-parse --show-toplevel)"
-CHECK=(bash "$ROOT_DIR/scripts/check.sh")
+# git exports GIT_DIR and GIT_INDEX_FILE to hooks. The gate's self-tests build scratch repos with
+# `git -C "$tmp"`, which still obeys those variables, so without this they write `user.name` into
+# the shared repo config and stage scratch files into the commit being made. check.sh only reads
+# the worktree, so it runs without them; the unstaged-snapshot check above keeps the real index.
+CHECK=(env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE -u GIT_PREFIX -u GIT_COMMON_DIR
+    bash "$ROOT_DIR/scripts/check.sh")
 
 bash "$ROOT_DIR/scripts/gate_report.sh" unstaged-snapshots
 

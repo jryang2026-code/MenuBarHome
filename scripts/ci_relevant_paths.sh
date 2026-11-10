@@ -37,6 +37,10 @@ while IFS= read -r path || [ -n "$path" ]; do
         # *.md is already docs-only. This arm covers the other skill files, including scripts and licenses.
         .cursor/skills/*)
             ;;
+        # The raycast and nas-safety jobs run on code=true; no macOS, Windows or core suite reads them.
+        raycast/*|nas/*)
+            code=true
+            ;;
         windows/*)
             code=true
             windows=true

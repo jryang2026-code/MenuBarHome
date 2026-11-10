@@ -1071,13 +1071,6 @@ final class MenuBarPanelController: NSObject {
         }
     }
 
-    /// `NSStatusBarButton` normally clears its pressed appearance after dispatching an action.
-    /// Because this controller receives both mouse-down and mouse-up actions (and can enter a modal
-    /// menu loop), AppKit can leave the cell highlighted after the physical button is released.
-    private func clearStatusItemHighlight() {
-        setStatusItemHighlighted(false)
-    }
-
     /// Keeps the status item selected while its control-center panel remains visible, and otherwise
     /// preserves the transient pressed appearance only for an active primary gesture.
     private func restoreStatusItemHighlight() {

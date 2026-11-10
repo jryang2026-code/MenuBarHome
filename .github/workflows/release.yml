@@ -510,7 +510,7 @@ jobs:
     # 为什么不自动发布（issue #17）：应用内更新用离线 Ed25519 私钥签名，私钥必须留在维护者的
     # 可信机器上。任何能从 secrets 读到私钥的 CI 都等于把“GitHub 被攻破”重新纳入密钥泄露面，
     # 所以本工作流不读取、不存储私钥，也就不具备发布未签名更新的能力。
-    # 草稿缺清单签名是**预期状态**：维护者离线签名并上传后，由 finalize-release.yml 发布。
+    # 草稿缺清单签名是**预期状态**：维护者离线签名并上传后，由 finalize.yml 发布。
     needs: [verify-tag, macos-release, windows-release]
     runs-on: ubuntu-latest
     timeout-minutes: 20

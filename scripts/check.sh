@@ -109,7 +109,7 @@ fi
 
 # L10n.currentLanguage is one value for the whole process. A test that assigns it changes
 # every other suite's strings. Task-local $overrideLanguage is the only test seam.
-if search_matches 'L10n\.currentLanguage[[:space:]]*=' Tests; then
+if search_matches 'L10n\.currentLanguage[[:space:]]*=([^=]|$)' Tests; then
     echo "❌ 测试给 L10n.currentLanguage 赋值会改到进程里的其他套件。请改用 L10n.\$overrideLanguage.withValue。"
     exit 1
 fi
@@ -307,6 +307,8 @@ run_swift_gate() {
         echo "运行 Swift 单元测试（跳过快照）与双端黄金语料校验..."
         run_logged "Swift 测试" swift test --skip SnapshotTests || status=$?
         record_gate_result "Swift=${status}"
+        # The summary must not call this a full pass: the snapshot comparison did not run.
+        record_gate_result "Snapshots=skip"
     else
         echo "运行 Swift 单元测试 (swift test) 与双端黄金语料校验..."
         run_logged "Swift 测试" swift test || status=$?

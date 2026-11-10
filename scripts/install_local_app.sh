@@ -118,7 +118,7 @@ fi
 
 # Keep any sibling local MenuBarHome.app bundles in sync so macOS nehelper's path-pinned
 # NEPathRule entries for com.jryang1997.MenuBarMijia never cache a stale LC_UUID (#LocalNetwork).
-for SIBLING in "/Applications/MenuBarHome.app" "$HOME/Documents/MenuBarMijia-wt/MenuBarHome.app" "$ROOT/MenuBarHome.app" "$HOME/Documents/MenuBarMijia/MenuBarHome.app" "/private/tmp/mmb-114/MenuBarHome.app"; do
+for SIBLING in "/Applications/MenuBarHome.app" "$HOME/Documents/MenuBarMijia-wt/MenuBarHome.app" "$ROOT/MenuBarHome.app" "$HOME/Documents/MenuBarMijia/MenuBarHome.app"; do
     if [ -d "$SIBLING" ] && [ "$SIBLING" != "$TARGET" ] && [ "$SIBLING" != "$BUNDLE" ]; then
         SIBLING_STAGING="$SIBLING.staging.$$"
         rm -rf "$SIBLING_STAGING"

@@ -1,8 +1,8 @@
 [English](README.md) | 简体中文
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/309141?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-309141" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/309141/daily?language=Swift" alt="jryang1997%2FMenuBarHome | Trendshift" width="250" height="55"/></a>
-  <a href="https://trendshift.io/repositories/309141?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-309141" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/309141/weekly?language=Swift" alt="jryang1997%2FMenuBarHome | Trendshift" width="250" height="55"/></a>
+  <a href="https://trendshift.io/repositories/309141?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-309141" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/309141/daily?language=Swift" alt="jryang2026-code%2FMenuBarHome | Trendshift" width="250" height="55"/></a>
+  <a href="https://trendshift.io/repositories/309141?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-309141" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/309141/weekly?language=Swift" alt="jryang2026-code%2FMenuBarHome | Trendshift" width="250" height="55"/></a>
 </p>
 
 <p align="center">
@@ -136,8 +136,8 @@ MenuBarHome 的 macOS 版本采用 Swift 6 原生开发，Windows 11 版本基�
 | **除湿机 / 水暖毯 / 香氛机 / 音箱** | ✅ 支持 | ✅ 支持 | 除湿机合成为风扇卡，按其上报的模式列表切换并读取自身温湿度，水暖毯合成为温控卡，香氛机作为可开关插座，音箱作为媒体卡支持音量、静音、播放状态、睡眠模式与文本播报（文本播报仅 macOS；Windows 音箱卡支持音量、静音、播放状态与睡眠模式） |
 | **门锁与人体、环境传感器** | ✅ 只读卡片 | ✅ 只读卡片 | 门锁显示电量。读到 `door-state` 或 Home Assistant 的 `lock` 实体时展示已上锁、已开锁、虚掩或卡住；没有可靠状态时显示「锁状态未知」，不再固定写成「守护中」。人体移动/存在、门窗磁、水浸、光照与空气质量监测合成为传感器卡片；MIoT 不开放远程开锁，门锁只作状态展示。macOS 上，米家网关、路由器、中继器在有可用规格项时改为通用卡片（只读或低风险写入），没有规格或没有可用项时才进入「未显示设备」列表 |
 | **通用兜底卡片** | ✅ 支持 | ✅ 支持 | 米家规格里没有专用类型、但仍有可用控件或读数的设备显示一张通用卡：名称与房间、最多两个关键读数、一个低风险主开关，其余控件进入「更多设置」；只读设备明确标注「只读」。门锁、加热类与路由器配置默认只读，放开次要写入需二次确认；通用卡默认不参与「全关」与助手批量指令。Windows 的「更多设置」写入即时生效，但不提供撤销 |
-| **智能鱼缸与宠物喂食器** | ✅ 支持 | ⚠️ 仅通用卡 | 米家 `fish-tank`、`pet-feeder` 规格接入通用卡：卡片主区显示整机开关与水温（喂食器显示余粮），「更多设置」优先列出水泵开关与档位、灯光（模式 / 亮度）、按份投喂、滤芯寿命与水温告警。投喂先选份数，确认框会一并说明今日已投喂多少；水泵未插入、低水位、堵塞、故障直接显示为红色提示。厂商私有服务与内部属性继续隐藏。Windows 端尚未实现。 |
-| **摄像机实时画面** | ✅ 支持 | ✅ 支持 | 点击卡片放大弹出置顶实时小窗：macOS 走 HLS / HA 抓拍流，Windows 内置私有 P2P 桥（安装包内置组件，可选流畅 / 高清 / 超清）。米家 P2P、MJPEG 与抓拍流只传画面，HUD 会标注「仅画面」；带音轨的 HLS 流提供静音 / 开启声音切换（macOS） |
+| **智能鱼缸与宠物喂食器** | ✅ 支持 | ⚠️ 仅通用卡 | 米家 `fish-tank`、`pet-feeder` 规格接入通用卡：卡片主区显示整机开关与水温（喂食器显示余粮），「更多设置」优先列出水泵开关与档位、灯光（模式 / 亮度）、按份投喂、滤芯寿命与水温告警。投喂先选份数，确认框会一并说明今日已投喂多少；水泵未插入、低水位、堵塞、故障直接显示为红色提示。厂商私有服务与内部属性继续隐藏。 |
+| **摄像机实时画面** | ✅ 支持 | ✅ 支持 | 点击卡片放大弹出置顶实时小窗：macOS 走 HLS / HA 抓拍流，可在同一窗口切换摄像机，已验证的米家双摄型号提供主摄 / 副摄切换；Windows 内置私有 P2P 桥（安装包内置组件，可选流畅 / 高清 / 超清）。米家 P2P、MJPEG 与抓拍流只传画面，HUD 会标注「仅画面」；带音轨的 HLS 流提供静音 / 开启声音切换（macOS） |
 | **布局编辑调大小** | ✅ 支持 | ✅ 支持 | 编辑模式下卡片右下角显示 iOS 控制中心风格圆弧手柄：向外/向内拖拽逐档切换 半行 ↔ 整行 ↔ 展开面板，轻点则循环切换 |
 | **界面外观** | ✅ 一套系统外观 + 4 档高度 | ✅ 控制中心风格 | macOS 只用系统材质：开启的设备取当前外观下最亮的表面——浅色是亮色磁贴，深色是比关闭态高一级的玻璃——其余是安静玻璃。 |
 | **窗帘与开窗器** | ✅ 开合中状态 + 两端 2% 吸附 | ✅ 开合中状态 + 两端 2% 吸附 | 双端都显示真实开合中状态（含厂商拼写 `Dowm` / `Fallin` 与 `Up` / `Down`），位置落在两端 2% 内吸附为 0%/100%，移动中点卡片停止。晾衣架显示的是高度，因此双端都把米家的「下降距离」反转。打开开窗器或晾衣架需再点一次确认，车库门两个方向都要确认 |
@@ -237,7 +237,7 @@ brew install --cask jryang2026-code/tap/menubarhome
 | `scripts/mijia brightness 书房台灯 60` | 按百分比调节灯光亮度（`0`–`100`%） |
 | `scripts/mijia color-temp 书房台灯 4000` | 按开尔文调节灯光色温（`1000`–`20000` K） |
 | `scripts/mijia temperature 书房空调 25` | 设定目标温度（`-30`–`50` ℃） |
-| `scripts/mijia fan 客厅风扇 --percent 60` / `--preset 自然风` | 设定风速百分比（`0`–`100`%）或设备上报的档位 |
+| `scripts/mijia fan 客厅风扇 --percent 60` / `--preset 自然风` | 设定风速百分比（`1`–`100`%）或设备上报的档位 |
 | `scripts/mijia focus 书房台灯` | 在面板中定位到设备所在房间并展开详情抽屉（不操作硬件） |
 | `scripts/mijia scene 观影模式` | 执行 Home Assistant 场景或内置快捷动作（全屋关灯、一键全关、撤销……） |
 | `scripts/mijia ask "把客厅灯调到 40%"` | 一句话指令，复用应用自己的解析与确认规则 |

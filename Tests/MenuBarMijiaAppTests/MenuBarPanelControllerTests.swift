@@ -2238,6 +2238,8 @@ struct MenuBarPanelControllerTests {
             UserDefaults.standard.removePersistentDomain(forName: suite)
             if let previousAppearance {
                 UserDefaults.standard.set(previousAppearance, forKey: AppAppearance.storageKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: AppAppearance.storageKey)
             }
         }
         let defaults = try #require(UserDefaults(suiteName: suite))

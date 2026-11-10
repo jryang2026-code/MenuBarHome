@@ -136,6 +136,11 @@ enum SnapshotAssertion {
             if FileManager.default.fileExists(atPath: snapshotURL.path) {
                 let referenceData = try Data(contentsOf: snapshotURL)
                 guard let referenceImage = NSImage(data: referenceData) else {
+                    // Record mode is how a corrupt baseline gets replaced, so it must not stop here.
+                    if recordAll {
+                        try newPNG.write(to: snapshotURL)
+                        return "Record mode is on. Replaced an unreadable snapshot: \(snapshotURL.path)"
+                    }
                     return "Reference image could not be loaded."
                 }
                 if let reason = compare(referenceImage, image, newPNG: newPNG) {

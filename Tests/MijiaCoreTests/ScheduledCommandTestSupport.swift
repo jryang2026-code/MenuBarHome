@@ -79,25 +79,47 @@ enum ScheduledCommandTestSupport {
     /// Parks a timer inside `assistantSleep` until the test releases it. Cancellation still wakes it,
     /// so a source switch never depends on a wall-clock countdown. `waiting` is the counter a test
     /// waits on.
+    ///
+    /// Each sleeper has its own continuation. A shared `AsyncStream` would be finished by the first
+    /// cancelled reader, and every later `sleep()` on the gate would return at once.
     @MainActor
     final class SleepGate {
-        private var continuation: AsyncStream<Void>.Continuation
-        private var stream: AsyncStream<Void>
-        private(set) var waiting = 0
-
-        init() {
-            (stream, continuation) = AsyncStream.makeStream(of: Void.self)
-        }
+        private var sleepers: [(id: UUID, continuation: CheckedContinuation<Void, Never>)] = []
+        private var cancelledBeforeParking: Set<UUID> = []
+        var waiting: Int { sleepers.count }
+        /// Every `sleep()` that ever parked. A cancelled sleeper leaves `sleepers` one hop later, so
+        /// a re-armed timer is identified by this count, not by `waiting`.
+        private(set) var parkCount = 0
 
         func sleep() async {
-            waiting += 1
-            var iterator = stream.makeAsyncIterator()
-            _ = await iterator.next()
-            waiting -= 1
+            let id = UUID()
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    if cancelledBeforeParking.remove(id) != nil {
+                        continuation.resume()
+                    } else {
+                        sleepers.append((id, continuation))
+                        parkCount += 1
+                    }
+                }
+            } onCancel: {
+                Task { @MainActor in self.wake(id) }
+            }
         }
 
+        /// Releases the most recently parked sleeper: a cancelled one still waiting for its wake hop
+        /// is older, and resumes on its own.
         func release() {
-            continuation.yield(())
+            guard !sleepers.isEmpty else { return }
+            sleepers.removeLast().continuation.resume()
+        }
+
+        private func wake(_ id: UUID) {
+            if let index = sleepers.firstIndex(where: { $0.id == id }) {
+                sleepers.remove(at: index).continuation.resume()
+            } else {
+                cancelledBeforeParking.insert(id)
+            }
         }
     }
 }

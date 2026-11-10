@@ -179,21 +179,7 @@ export class MenuMijiaWindowsApp {
   }
 
   public kindTagFromDataset(value: string | undefined): DeviceKindTag | null {
-    switch (value) {
-      case "climate":
-      case "light":
-      case "plug":
-      case "fan":
-      case "vacuum":
-      case "fridge":
-      case "camera":
-      case "sensor":
-      case "cover":
-      case "speaker":
-        return value;
-      default:
-        return null;
-    }
+    return value !== undefined && Object.hasOwn(KIND_CHIP, value) ? (value as DeviceKindTag) : null;
   }
 
   public readonly panelSearch = createPanelSearchState();
