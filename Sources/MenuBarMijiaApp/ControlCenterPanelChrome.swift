@@ -9,7 +9,6 @@ extension ControlCenterPanel {
         let expired = store.miSessionShowsExpired
         let dateText = store.miSessionExpiringSoonDate?
             .formatted(date: .abbreviated, time: .omitted) ?? ""
-        let shape = RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
         return HStack(spacing: 8) {
             Image(systemName: expired ? "exclamationmark.triangle.fill" : "clock")
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
@@ -19,11 +18,11 @@ extension ControlCenterPanel {
                 Text(expired
                     ? L10n.tr("米家登录已过期", "Xiaomi Home session expired")
                     : L10n.tr("米家登录将在 \(dateText) 到期", "Xiaomi Home sign-in expires \(dateText)"))
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                 Text(expired
                     ? L10n.tr("设备控制已暂停，扫码后恢复", "Device controls are paused; scan to restore them")
                     : L10n.tr("提前扫码可以避免控制中断", "Scan now to avoid an interruption"))
-                    .font(.system(size: DesignTokens.TypeSize.micro))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(.secondary)
             }
 
@@ -38,7 +37,6 @@ extension ControlCenterPanel {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveGlass(in: shape)
     }
 
     var miReauthOverlay: some View {
@@ -924,7 +922,6 @@ extension ControlCenterPanel {
 
     /// The app never moves the token to a new address by itself; it asks here first.
     func haAddressSuggestionBanner(_ instance: HADiscoveredInstance) -> some View {
-        let shape = RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
         let place = instance.locationName.isEmpty || instance.locationName == "Home Assistant"
             ? instance.hostAndPort
             : "\(instance.locationName)（\(instance.hostAndPort)）"
@@ -933,7 +930,7 @@ extension ControlCenterPanel {
                 L10n.tr("连不上 Home Assistant。发现了 \(place)，要切换过去吗？", "Can't reach Home Assistant. Found \(place). Switch to it?"),
                 systemImage: "questionmark.circle.fill"
             )
-            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+            .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
             Text(L10n.tr(
                 "切换后会把访问令牌发给这个地址。不认识这个地址就点「不切换」。",
                 "Switching sends your access token to this address. If you don't recognize it, choose Don't Switch."
@@ -953,12 +950,10 @@ extension ControlCenterPanel {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveGlass(in: shape)
     }
 
     /// A public plain-http Home Assistant address: nothing carrying the token is sent until the user agrees (#276).
     func haPlaintextConsentBanner(_ prompt: HAPlaintextPrompt) -> some View {
-        let shape = RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
         let host = HAPlaintextConsent.host(prompt.address)
         let isDeclined = prompt == .declined(prompt.address)
         return VStack(alignment: .leading, spacing: 8) {
@@ -970,7 +965,7 @@ extension ControlCenterPanel {
                     Text(isDeclined
                         ? HAPlaintextConsent.declinedMessage(prompt.address)
                         : L10n.tr("令牌会以明文发送", "Your token would be sent in plaintext"))
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                        .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                         .fixedSize(horizontal: false, vertical: true)
                     if !isDeclined {
                         Text(L10n.tr(
@@ -1009,67 +1004,19 @@ extension ControlCenterPanel {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.08), in: shape)
-        .overlay(shape.strokeBorder(Color.orange.opacity(0.35), lineWidth: 1))
     }
 
-    // MARK: - 3. Floating Undo & Toast Banner
+    // MARK: - 3. Floating Undo & Toast Stack
 
-    @ViewBuilder
+    /// Undo and toast share one floating surface instead of taking turns (spec §2.2). The stack
+    /// measures itself, so the device list reserves the real height rather than a guess.
     var overlayNotifications: some View {
-        if let banner = store.undoBanner {
-            let bannerShape = RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
-            HStack(spacing: 10) {
-                Image(systemName: "moon.stars.fill")
-                    .foregroundStyle(.orange)
-                    .font(.system(size: DesignTokens.TypeSize.body))
-
-                Text(banner.title)
-                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
-
-                Spacer()
-
-                Button(L10n.tr("撤销", "Undo")) {
-                    withAnimation(AppleMotion.snappySpring) {
-                        _ = store.undoTurnAllOff()
-                    }
-                }
-                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: DesignTokens.active))
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .adaptiveGlass(in: bannerShape)
-            .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 4)
-            .padding(.horizontal, 14)
-            .padding(.bottom, 42)
-            // #53: reading the banner must not cost the undo. Leaving restarts the full window.
-            .onHover { hovering in
-                if hovering {
-                    store.pauseUndoBannerCountdown()
-                } else {
-                    store.resumeUndoBannerCountdown()
-                }
-            }
-            .transition(AppleMotion.drawerTransition)
-        } else if let toast = visibleToast {
-            let toastShape = Capsule(style: .continuous)
-            NoticeToastBanner(
-                notice: toast,
-                onAction: {
-                    guard let action = toast.action else { return }
-                    withAnimation(AppleMotion.snappySpring) {
-                        ToastNoticeActions.perform(action, store: store)
-                    }
-                },
-                onDismiss: { store.dismissToast() }
-            )
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .adaptiveGlass(in: toastShape)
-            .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 3)
-            .padding(.bottom, 42)
-            .transition(AppleMotion.drawerTransition)
-        }
+        TransientStackView(
+            store: store,
+            toast: visibleToast,
+            initialExpanded: initialTransientExpanded,
+            onHeightChange: { transientStackHeight = $0 }
+        )
     }
 
     // MARK: - 4. Footer Status Bar

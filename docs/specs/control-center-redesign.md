@@ -109,7 +109,7 @@
 public struct PanelActivity: Identifiable, Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case notice(PanelNoticeSlot.Kind)
-        case safety(SafetyAlert)
+        case safety(RecordedSafetyAlert)
         case doorbell(DoorbellRing)
     }
     public let id: String          // 稳定：notice 用种类名，safety 用 alert.id，doorbell 用 ring.key
@@ -121,12 +121,13 @@ public struct PanelActivity: Identifiable, Equatable, Sendable {
 public enum PanelActivityFeed {
     /// 优先级：notice（沿用 PanelNotice.kinds 的顺序）> safety（新到旧）> doorbell（新到旧）。
     /// `dismissedIds` 里的可清除项被过滤；不可清除项忽略它。
-    public static func items(notices: [PanelNoticeSlot.Kind], safety: [SafetyAlert],
+    public static func items(notices: [PanelNoticeSlot.Kind], safety: [RecordedSafetyAlert],
                              doorbells: [DoorbellRing], dismissedIds: Set<String>) -> [PanelActivity]
 }
 ```
 
 - `HomeStore` 新增 `recentSafetyAlerts`（上限 10，在 `HomeStore+Backend.swift` 触发 `onSafetyAlert` 的同一处写入，开关关闭时不写）与 `dismissedActivityIds`。
+- `RecordedSafetyAlert` 保存 `alert`、投递时的 `scope` 与 `date`；卡片动作使用该作用域调用 `executeSafetyAlertAction`，避免切换连接后把旧告警发给新家庭。相同告警 id 只保留最新记录；没有系统通知 handler 时仍记录到面板。
 - 每个新字段要写明清除点（CODING_STANDARDS §13）：切换后端（`invalidateUndoContext`）清空 `recentSafetyAlerts` 与 `dismissedActivityIds`；设备消失时对应告警移除。
 - 撤销与 Toast 不进入这个模型，继续由 `undoBanner` / `toastNotice` 驱动，`TransientStackView` 只负责把它们同时画出来。
 

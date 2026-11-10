@@ -79,7 +79,9 @@ extension HomeStore {
         )
     }
 
-    /// Every pending notice in priority order. The panel shows the first unless the user cycles.
+    /// Every pending notice in priority order: a blocked session, then the plaintext-token
+    /// decision, then an address suggestion, then a session that is only expiring. Each one is its
+    /// own row in the panel's activity stack.
     public var panelNoticeKinds: [PanelNoticeSlot.Kind] {
         PanelNotice.kinds(
             miExpired: miSessionShowsExpired,
@@ -87,12 +89,6 @@ extension HomeStore {
             plaintext: haPlaintextPrompt,
             address: pendingHAAddressSuggestion
         )
-    }
-
-    /// The one system notice the panel may show. Blocked outranks security, then a suggestion,
-    /// then a session that is only expiring. `extraCount` is how many notices are waiting behind it.
-    public var panelNoticeSlot: PanelNoticeSlot? {
-        PanelNotice.slot(panelNoticeKinds, at: 0)
     }
 
     /// Header hold during the All Off lesson. Every other caller, including URL, Raycast, and
@@ -108,7 +104,7 @@ extension HomeStore {
     /// the standalone launch-at-login reminder, and that row is not the lesson.
     var allOffLessonIsActive: Bool {
         guard showsOnboardingChecklist else { return false }
-        if panelNoticeSlot?.hidesChecklist == true { return false }
+        if panelNoticeKinds.contains(where: { $0.hidesChecklist }) { return false }
         return onboardingChecklist.nextStep == .allOffAndUndo
     }
 
@@ -143,8 +139,8 @@ extension HomeStore {
     }
 }
 
-/// One system notice, plus how many others are waiting. The panel draws `kind` and nothing else.
-public struct PanelNoticeSlot: Equatable, Sendable {
+/// The system notice kinds and their activity-stack visibility and dismissal rules.
+public enum PanelNoticeSlot {
     public enum Kind: Equatable, Sendable {
         case miBlocked
         case haPlaintext(HAPlaintextPrompt)
@@ -158,34 +154,49 @@ public struct PanelNoticeSlot: Equatable, Sendable {
             case .haAddress, .miExpiringSoon: false
             }
         }
-    }
 
-    public var kind: Kind
-    public var extraCount: Int
-
-    /// Whether this notice hides the getting-started row while it is the one on screen.
-    public var hidesChecklist: Bool { kind.hidesChecklist }
-
-    /// #47's persistent expiry toast says what the blocked banner already says and carries the
-    /// same Scan action. Showing both makes one expired session read as two alerts.
-    public func repeats(_ toast: ToastNotice) -> Bool {
-        switch kind {
-        case .miBlocked:
-            return toast.persistent && toast.action?.kind == .presentMiReauth
-        case .haPlaintext, .haAddress, .miExpiringSoon:
-            return false
+        /// The activity stack's identity for this notice. The expiring-soon warning names the expiry
+        /// it warns about, so the next session state is a new row rather than a cleared one.
+        public var activityID: String {
+            switch self {
+            case .miBlocked: "notice.miBlocked"
+            case .haPlaintext(.asking): "notice.haPlaintext.asking"
+            case .haPlaintext(.declined): "notice.haPlaintext.declined"
+            case .haAddress: "notice.haAddress"
+            case .miExpiringSoon(let expiry): "notice.miExpiringSoon.\(Int(expiry.timeIntervalSince1970))"
+            }
         }
-    }
 
-    public init(kind: Kind, extraCount: Int) {
-        self.kind = kind
-        self.extraCount = extraCount
+        /// A blocked session and the plaintext-token decision wait for the user; clearing them would
+        /// take away the only way to answer.
+        public var isDismissible: Bool {
+            switch self {
+            case .miBlocked, .haPlaintext(.asking): false
+            case .haPlaintext(.declined), .haAddress, .miExpiringSoon: true
+            }
+        }
+
+        /// The time the stack prints for this notice, when it has a time of its own.
+        public var announcedDate: Date? {
+            guard case .miExpiringSoon(let expiry) = self else { return nil }
+            return expiry
+        }
+
+        /// #47's persistent expiry toast says what the blocked banner already says and carries the
+        /// same Scan action. Showing both makes one expired session read as two alerts.
+        public func repeats(_ toast: ToastNotice) -> Bool {
+            switch self {
+            case .miBlocked:
+                return toast.persistent && toast.action?.kind == .presentMiReauth
+            case .haPlaintext, .haAddress, .miExpiringSoon:
+                return false
+            }
+        }
     }
 }
 
 public enum PanelNotice {
-    /// Every pending notice, highest priority first. A missing input is not a notice. The panel
-    /// shows the first by default and the 「还有 N 条提醒」 button walks the rest.
+    /// Every pending notice, highest priority first. A missing input is not a notice.
     public static func kinds(
         miExpired: Bool,
         expiringSoon: Date?,
@@ -198,36 +209,6 @@ public enum PanelNotice {
         if let address { kinds.append(.haAddress(address)) }
         if let expiringSoon { kinds.append(.miExpiringSoon(expiringSoon)) }
         return kinds
-    }
-
-    /// The notice at `index` in `kinds`, wrapping so the last step returns to the highest priority.
-    /// `extraCount` stays the number waiting behind, whichever notice is on screen.
-    public static func slot(_ kinds: [PanelNoticeSlot.Kind], at index: Int) -> PanelNoticeSlot? {
-        guard !kinds.isEmpty else { return nil }
-        let wrapped = ((index % kinds.count) + kinds.count) % kinds.count
-        return PanelNoticeSlot(kind: kinds[wrapped], extraCount: kinds.count - 1)
-    }
-
-    /// Highest priority first. A missing input is not a notice.
-    public static func slot(
-        miExpired: Bool,
-        expiringSoon: Date?,
-        plaintext: HAPlaintextPrompt?,
-        address: HADiscoveredInstance?
-    ) -> PanelNoticeSlot? {
-        slot(
-            kinds(
-                miExpired: miExpired,
-                expiringSoon: expiringSoon,
-                plaintext: plaintext,
-                address: address
-            ),
-            at: 0
-        )
-    }
-
-    public static func extraReminderLabel(count: Int) -> String {
-        L10n.tr("还有 \(count) 条提醒", count == 1 ? "1 more reminder" : "\(count) more reminders")
     }
 }
 

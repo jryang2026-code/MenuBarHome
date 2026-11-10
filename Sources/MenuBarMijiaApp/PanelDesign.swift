@@ -148,7 +148,8 @@ struct NoticeToastBanner: View {
                 Button(action.title, action: onAction)
                     .buttonStyle(.plain)
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(Color.red)
+                    // Only a failure earns alarm red; a plain call to action stays the accent (§2.5).
+                    .foregroundStyle(notice.isError ? Color.red : Color.accentColor)
             }
             if notice.isError {
                 Button(action: onDismiss) {
