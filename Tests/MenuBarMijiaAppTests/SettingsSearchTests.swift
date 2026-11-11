@@ -309,4 +309,159 @@ struct SettingsSearchTests {
             #expect(SettingsTab.allCases.contains(tab))
         }
     }
+
+    // MARK: Reachability
+
+    @Test("A hit behind a condition is reported as blocked, not offered")
+    func demoModeHidesConnectionRows() {
+        // The connection card lives inside `if store.homeBackend != .demo`, so in demo mode a jump
+        // to these rows would clear the query and land on a page without them.
+        let demo = SettingsSearchAvailability(
+            backend: .demo,
+            hiddenDeviceCount: 0,
+            storedPanelTheme: PanelTheme.classic.rawValue,
+            liquidGlassAvailable: true
+        )
+        for (query, anchor) in [
+            ("nabu casa", SettingsAnchor.haServerAddress),
+            ("access token", .haToken),
+            ("xiaomi", .miAccount),
+            ("ssap", .lgTV)
+        ] {
+            let outcome = SettingsSearch.search(query, availability: demo)
+            #expect(outcome.hits.isEmpty, "demo mode must not offer \(anchor.rawValue)")
+            #expect(outcome.blocked?.anchor == anchor)
+            #expect(outcome.blocked?.reason == .demoMode)
+        }
+    }
+
+    @Test("A reachable match keeps the explanation away")
+    func blockedOnlyWhenEveryMatchIsHidden() {
+        // "token" reaches both the HA token (behind demo mode) and the AI key (always drawn). A
+        // real destination must win: telling someone their setting is unavailable while offering
+        // it in the same list would be worse than saying nothing.
+        let demo = SettingsSearchAvailability(
+            backend: .demo,
+            hiddenDeviceCount: 0,
+            storedPanelTheme: PanelTheme.classic.rawValue,
+            liquidGlassAvailable: true
+        )
+        let outcome = SettingsSearch.search("token", availability: demo)
+        #expect(outcome.hits.contains { $0.anchor == .assistantAPIKey })
+        #expect(outcome.blocked == nil)
+        #expect(!outcome.isEmpty)
+    }
+
+    @Test("The theme picker is only reachable on macOS 26")
+    func panelThemeNeedsMacOS26() {
+        let oldSystem = SettingsSearchAvailability(
+            backend: .homeAssistant,
+            hiddenDeviceCount: 0,
+            storedPanelTheme: PanelTheme.classic.rawValue,
+            liquidGlassAvailable: false
+        )
+        let outcome = SettingsSearch.search("liquid glass", availability: oldSystem)
+        #expect(outcome.hits.isEmpty)
+        #expect(outcome.blocked?.reason == .needsMacOS26)
+
+        let newSystem = SettingsSearchAvailability(
+            backend: .homeAssistant,
+            hiddenDeviceCount: 0,
+            storedPanelTheme: PanelTheme.classic.rawValue,
+            liquidGlassAvailable: true
+        )
+        let reachable = SettingsSearch.search("liquid glass", availability: newSystem)
+        #expect(reachable.hits.contains { $0.anchor == .panelTheme })
+        #expect(reachable.blocked == nil)
+    }
+
+    @Test("The height control follows the resolved theme, not the stored string")
+    func panelHeightOnlyForClassic() {
+        // Storing "liquidGlass" on a pre-26 Mac resolves to `.classic`, so the height control is
+        // still drawn. Reading the raw string instead of resolving it would hide a live row.
+        let storedGlassButOldMac = SettingsSearchAvailability(
+            backend: .homeAssistant,
+            hiddenDeviceCount: 1,
+            storedPanelTheme: PanelTheme.liquidGlass.rawValue,
+            liquidGlassAvailable: false
+        )
+        #expect(storedGlassButOldMac.isReachable(.panelHeight))
+
+        let realGlass = SettingsSearchAvailability(
+            backend: .homeAssistant,
+            hiddenDeviceCount: 1,
+            storedPanelTheme: PanelTheme.liquidGlass.rawValue,
+            liquidGlassAvailable: true
+        )
+        let outcome = SettingsSearch.search("面板大小", availability: realGlass)
+        #expect(outcome.hits.isEmpty)
+        #expect(outcome.blocked?.reason == .liquidGlassPanel)
+    }
+
+    @Test("Hidden devices are only searchable while something is hidden")
+    func hiddenDevicesNeedsSomethingHidden() {
+        let nothingHidden = SettingsSearchAvailability(
+            backend: .homeAssistant,
+            hiddenDeviceCount: 0,
+            storedPanelTheme: PanelTheme.classic.rawValue,
+            liquidGlassAvailable: true
+        )
+        let blocked = SettingsSearch.search("hidden", availability: nothingHidden)
+        #expect(blocked.hits.isEmpty)
+        #expect(blocked.blocked?.reason == .nothingHidden)
+
+        let someHidden = SettingsSearchAvailability(
+            backend: .homeAssistant,
+            hiddenDeviceCount: 2,
+            storedPanelTheme: PanelTheme.classic.rawValue,
+            liquidGlassAvailable: true
+        )
+        #expect(SettingsSearch.search("hidden", availability: someHidden)
+            .hits.contains { $0.anchor == .hiddenDevices })
+    }
+
+    @Test("The unrestricted availability hides nothing and changes no ranking")
+    func unrestrictedKeepsEveryRow() {
+        // Pins the test helper itself: if `unrestricted` ever started blocking a row, every other
+        // index test would be measuring a filtered view without saying so.
+        for entry in SettingsSearch.entries() {
+            #expect(SettingsSearchAvailability.unrestricted.isReachable(entry.anchor),
+                    "\(entry.anchor.rawValue) is blocked by the unrestricted fixture")
+        }
+        #expect(SettingsSearch.search("令牌", availability: .unrestricted).hits.map(\.anchor)
+                == SettingsSearch.search("令牌").map(\.anchor))
+    }
+
+    @Test("The results cap survives the reachability filter")
+    func reachabilityHonorsLimit() {
+        let outcome = SettingsSearch.search("e", availability: .unrestricted, limit: 2)
+        #expect(outcome.hits.count <= 2)
+    }
+
+    @Test("Every block reason names a condition the window actually branches on")
+    func conditionalRowsAreDeclared() throws {
+        // The availability model is a hand-written copy of the window's own `if` statements, so it
+        // can drift from them silently: dropping `if store.homeBackend != .demo` would leave search
+        // blocking rows that are on screen. Each reason has to name the source condition it mirrors,
+        // and this reads the source back to prove that condition is still there.
+        let gates: [SettingsSearchBlockReason: String] = [
+            .demoMode: "store.homeBackend == .demo",
+            .nothingHidden: "!store.hiddenDevices.isEmpty",
+            .needsMacOS26: "#available(macOS 26.0, *)",
+            .liquidGlassPanel: "panelTheme == .classic"
+        ]
+        #expect(Set(gates.keys) == Set(SettingsSearchBlockReason.allCases),
+                "a block reason with no gate would never be reported")
+
+        let root = try Self.sourceRoot()
+        var source = ""
+        for path in try Self.swiftSources(under: root) {
+            source += try String(contentsOf: path, encoding: .utf8)
+        }
+        for (reason, condition) in gates {
+            #expect(source.contains(condition),
+                    "\(reason.rawValue) mirrors `\(condition)`, which no longer appears in the settings sources")
+            #expect(!reason.explanation.isEmpty)
+        }
+    }
 }

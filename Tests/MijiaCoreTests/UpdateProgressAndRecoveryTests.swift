@@ -317,8 +317,18 @@ private struct HomeStoreHarness {
             },
             fetchData: { request in
                 // Anything past the download is a manifest fetch that should not be needed here.
-                HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)
-                    .map { (Data(), $0) } ?? (Data(), URLResponse())
+                // Built as a guarded value rather than `HTTPURLResponse(...) ?? URLResponse()`:
+                // corelibs-foundation has no zero-argument `URLResponse()`, so the fallback only
+                // compiled on Darwin.
+                guard let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 500,
+                    httpVersion: nil,
+                    headerFields: nil
+                ) else {
+                    throw UpdateChecker.CheckError.httpStatus(500)
+                }
+                return (Data(), response)
             },
             unpackArchive: { _, _, directory in directory },
             verifyCodeSignature: { _, _ in },

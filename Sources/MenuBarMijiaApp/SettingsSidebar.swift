@@ -88,6 +88,9 @@ struct SettingsSidebar: View {
     var isSearching: Bool
     var searchField: AnyView
     var hasUpdateBadge: Bool
+    /// A click on a row. It carries the click itself rather than leaving the window to notice a
+    /// changed `selection`, because clicking the category already selected changes nothing.
+    var onSelectCategory: (SettingsTab) -> Void
 
     @Environment(\.effectiveReduceMotion) private var reduceMotion
     @FocusState private var listFocused: Bool
@@ -124,6 +127,7 @@ struct SettingsSidebar: View {
         let selected = tab == selection && !isSearching
         return Button {
             selection = tab
+            onSelectCategory(tab)
         } label: {
             HStack(spacing: 7) {
                 SettingsCategoryTile(tab: tab)
@@ -257,19 +261,40 @@ struct SettingsSearchField: View {
 struct SettingsSearchResults: View {
     let hits: [SettingsSearchHit]
     let selection: Int?
+    /// The row the query asked for that this window is not drawing, with the condition that hides it.
+    var blocked: SettingsSearchBlocked?
     var onPick: (SettingsSearchHit) -> Void
 
     @Environment(\.effectiveReduceMotion) private var reduceMotion
 
+    init(
+        hits: [SettingsSearchHit],
+        selection: Int?,
+        blocked: SettingsSearchBlocked? = nil,
+        onPick: @escaping (SettingsSearchHit) -> Void
+    ) {
+        self.hits = hits
+        self.selection = selection
+        self.blocked = blocked
+        self.onPick = onPick
+    }
+
     var body: some View {
         if hits.isEmpty {
             VStack(spacing: 4) {
-                Text(L10n.tr("没有匹配的设置", "No matching settings"))
+                Text(blocked == nil
+                     ? L10n.tr("没有匹配的设置", "No matching settings")
+                     : L10n.tr("这一项现在不在窗口里", "That setting is not on screen now"))
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                     .foregroundStyle(.secondary)
-                Text(L10n.tr("试试「开机」「令牌」「深色」", "Try “login”, “token”, “dark”"))
+                // Naming the condition is the difference between "this app has no such setting" and
+                // "turn Demo Mode off and it will be here".
+                Text(blocked?.reason.explanation
+                     ?? L10n.tr("试试「开机」「令牌」「深色」", "Try “login”, “token”, “dark”"))
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 8)

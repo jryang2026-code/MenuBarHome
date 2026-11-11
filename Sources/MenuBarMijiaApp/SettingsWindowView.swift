@@ -18,6 +18,9 @@ public struct SettingsWindowView: View {
     @State private var highlightedResult: Int?
     /// The ⌘, window is a separate scene, so it must apply the app's appearance itself.
     @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
+    /// The height control lives behind the resolved theme, so the window reads the same stored value
+    /// the appearance pane does and resolves it identically.
+    @AppStorage(PanelTheme.storageKey) private var panelThemeRaw: String = PanelTheme.defaultValue.rawValue
     @Environment(\.effectiveReduceMotion) private var reduceMotion
 
     public init(store: HomeStore) {
@@ -29,9 +32,23 @@ public struct SettingsWindowView: View {
         _tab = State(initialValue: selectedTab)
     }
 
-    private var hits: [SettingsSearchHit] {
-        focus.isSearching ? SettingsSearch.search(focus.query) : []
+    /// Which rows this window is actually drawing, so search never offers a row that is not there.
+    private var searchAvailability: SettingsSearchAvailability {
+        SettingsSearchAvailability(
+            backend: store.homeBackend,
+            hiddenDeviceCount: store.hiddenDevices.count,
+            storedPanelTheme: panelThemeRaw,
+            liquidGlassAvailable: PanelTheme.isLiquidGlassAvailable
+        )
     }
+
+    private var outcome: SettingsSearchOutcome {
+        focus.isSearching
+            ? SettingsSearch.search(focus.query, availability: searchAvailability)
+            : SettingsSearchOutcome()
+    }
+
+    private var hits: [SettingsSearchHit] { outcome.hits }
 
     public var body: some View {
         let _ = store.effectiveLanguage
@@ -42,7 +59,8 @@ public struct SettingsWindowView: View {
                     selection: $tab,
                     isSearching: focus.isSearching,
                     searchField: AnyView(searchField),
-                    hasUpdateBadge: store.updateState.badgeRelease != nil
+                    hasUpdateBadge: store.updateState.badgeRelease != nil,
+                    onSelectCategory: selectCategory
                 )
                 Divider()
                 detailPane
@@ -84,14 +102,11 @@ public struct SettingsWindowView: View {
             highlightedResult = SettingsSearchSelection.clamped(0, count: hits.count)
         }
         .onChange(of: tab) { _, newTab in
-            if focus.isSearching {
-                // Clicking a category is a decision to stop searching: the results list must not
-                // keep covering the rail. `jump` has already cleared the query, so a search jump
-                // never lands here with a live query.
-                focus.clearQuery()
-            } else if let highlight = focus.highlight, highlight.tab != newTab {
-                // A jump changes the tab too; it only abandons its highlight by leaving the pane
-                // that holds the row.
+            // A jump changes the tab too; it only abandons its highlight by leaving the pane that
+            // holds the row. Leaving search itself is `selectCategory`'s job: `onChange` does not
+            // fire when the clicked category is already selected, which is how a query used to
+            // survive a click on the category already on screen.
+            if let highlight = focus.highlight, highlight.tab != newTab {
                 focus.endHighlight()
             }
         }
@@ -122,7 +137,11 @@ public struct SettingsWindowView: View {
                 onCancel: clearSearch
             )
             if focus.isSearching {
-                SettingsSearchResults(hits: hits, selection: highlightedResult) { hit in
+                SettingsSearchResults(
+                    hits: hits,
+                    selection: highlightedResult,
+                    blocked: outcome.blocked
+                ) { hit in
                     jump(to: hit)
                 }
                 .padding(.top, 6)
@@ -146,6 +165,15 @@ public struct SettingsWindowView: View {
     private func clearSearch() {
         focus.clearQuery()
         highlightedResult = nil
+    }
+
+    /// A click on a category in the rail. It leaves search *here*, not through `onChange(of: tab)`:
+    /// clicking the category already on screen does not change `selection`, so the callback was never
+    /// reached and a live query kept covering the rail with no selected row in sight.
+    private func selectCategory(_ category: SettingsTab) {
+        focus.clearQuery()
+        highlightedResult = nil
+        tab = category
     }
 
     private func jump(to hit: SettingsSearchHit) {

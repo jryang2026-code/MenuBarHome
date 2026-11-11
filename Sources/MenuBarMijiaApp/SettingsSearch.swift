@@ -98,6 +98,105 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     }
 }
 
+// MARK: - Reachability
+
+/// Why a row in the index is not on screen right now.
+///
+/// Each case names a condition the window itself branches on, and doubles as the sentence the empty
+/// state shows instead of pretending the setting does not exist.
+enum SettingsSearchBlockReason: String, CaseIterable, Hashable, Sendable {
+    /// The connection rows live behind `store.homeBackend != .demo`.
+    case demoMode
+    /// The hidden-devices card is only drawn when at least one device is hidden.
+    case nothingHidden
+    /// The panel-theme picker is inside `#available(macOS 26.0, *)`.
+    case needsMacOS26
+    /// The panel-height control only exists for the classic panel.
+    case liquidGlassPanel
+
+    var explanation: String {
+        switch self {
+        case .demoMode:
+            return L10n.tr("关闭演示模式后可用", "Available once Demo Mode is off")
+        case .nothingHidden:
+            return L10n.tr("当前没有隐藏的设备", "No devices are hidden right now")
+        case .needsMacOS26:
+            return L10n.tr("需要 macOS 26 或更新版本", "Needs macOS 26 or later")
+        case .liquidGlassPanel:
+            return L10n.tr("切回「常规」面板主题后可用", "Available with the Classic panel theme")
+        }
+    }
+}
+
+/// The runtime facts that decide which rows the ⌘, window renders.
+///
+/// A hit that points at an absent row is the quietest failure this feature has: the jump clears the
+/// query, switches to the pane and then lands on a page where the promised row does not exist, so it
+/// reads as "this setting is gone". Search is therefore filtered by this value. It is a plain value
+/// type so every branch — demo mode, nothing hidden, macOS 26, the classic-only height control — can
+/// be pinned without rendering a window.
+struct SettingsSearchAvailability: Equatable, Sendable {
+    var backend: HomeBackend
+    var hiddenDeviceCount: Int
+    /// The stored `panel_theme` value, not an already-resolved theme: `AppearanceSettingsTab` reads
+    /// the stored value and resolves it, so the height control follows the *resolved* theme. Taking
+    /// the raw string here keeps that resolution in one place instead of trusting each caller.
+    var storedPanelTheme: String?
+    var liquidGlassAvailable: Bool
+
+    init(
+        backend: HomeBackend,
+        hiddenDeviceCount: Int,
+        storedPanelTheme: String?,
+        liquidGlassAvailable: Bool
+    ) {
+        self.backend = backend
+        self.hiddenDeviceCount = hiddenDeviceCount
+        self.storedPanelTheme = storedPanelTheme
+        self.liquidGlassAvailable = liquidGlassAvailable
+    }
+
+    /// The theme the appearance pane actually renders, the same value the height control branches on.
+    var panelTheme: PanelTheme {
+        PanelTheme.resolved(from: storedPanelTheme, liquidGlassAvailable: liquidGlassAvailable)
+    }
+
+    /// Every row assumed to be on screen. Only for tests that pin matching and ranking; the window
+    /// always builds the live value from the store, which `conditionalRowsAreDeclared` scans for.
+    static var unrestricted: SettingsSearchAvailability {
+        SettingsSearchAvailability(
+            backend: .homeAssistant,
+            hiddenDeviceCount: 1,
+            storedPanelTheme: PanelTheme.classic.rawValue,
+            // Fixed rather than read from the host so the index tests assert on the index, not on
+            // which macOS the test runner happens to be.
+            liquidGlassAvailable: true
+        )
+    }
+
+    func blockReason(for anchor: SettingsAnchor) -> SettingsSearchBlockReason? {
+        switch anchor {
+        // Rendered inside `if store.homeBackend != .demo` in `ConnectionSettingsTab`, including
+        // `haToken` (attached inside `homeAssistantForm`, which only that branch calls) and `lgTV`
+        // (`LGWebOSSettingsSection`, whose call site is inside the same branch).
+        case .haServerAddress, .haToken, .haDiscovery, .miAccount, .lgTV:
+            return backend == .demo ? .demoMode : nil
+        case .hiddenDevices:
+            return hiddenDeviceCount > 0 ? nil : .nothingHidden
+        case .panelTheme:
+            return liquidGlassAvailable ? nil : .needsMacOS26
+        case .panelHeight:
+            return panelTheme == .classic ? nil : .liquidGlassPanel
+        default:
+            return nil
+        }
+    }
+
+    func isReachable(_ anchor: SettingsAnchor) -> Bool {
+        blockReason(for: anchor) == nil
+    }
+}
+
 // MARK: - Search Index Entries
 
 /// One searchable row: what it is called, which card it sits in, and the words people use for it.
@@ -121,6 +220,23 @@ struct SettingsSearchHit: Identifiable, Hashable, Sendable {
     var anchor: SettingsAnchor { entry.anchor }
     var title: String { entry.title }
     var section: String { entry.section }
+}
+
+/// A row that matched the query but is not on screen, with the condition that hides it.
+struct SettingsSearchBlocked: Equatable, Sendable {
+    let anchor: SettingsAnchor
+    let reason: SettingsSearchBlockReason
+}
+
+/// What one query produced: the rows that are on screen now, and the best row that matched but is not.
+///
+/// Unreachable hits are kept rather than dropped so the empty state can say *why* — the difference
+/// between "no such setting" and "this setting needs Demo Mode off" is the whole point of the split.
+struct SettingsSearchOutcome: Equatable, Sendable {
+    var hits: [SettingsSearchHit] = []
+    var blocked: SettingsSearchBlocked?
+
+    var isEmpty: Bool { hits.isEmpty && blocked == nil }
 }
 
 // MARK: - Search Engine
@@ -299,6 +415,45 @@ enum SettingsSearch {
         _ query: String,
         limit: Int = resultLimit,
         entries: [SettingsSearchEntry]? = nil
+    ) -> [SettingsSearchHit] {
+        ranked(query, limit: limit, entries: entries)
+    }
+
+    /// The search the window runs: the same ranking, minus the rows this window is not drawing.
+    ///
+    /// When every match is hidden by a condition, the best one comes back as `blocked` so the empty
+    /// state can name the condition instead of claiming the setting does not exist.
+    static func search(
+        _ query: String,
+        availability: SettingsSearchAvailability,
+        limit: Int = resultLimit,
+        entries: [SettingsSearchEntry]? = nil
+    ) -> SettingsSearchOutcome {
+        let ranked = ranked(query, limit: Int.max, entries: entries)
+        var outcome = SettingsSearchOutcome()
+        for hit in ranked {
+            guard let reason = availability.blockReason(for: hit.anchor) else {
+                if outcome.hits.count < max(0, limit) {
+                    outcome.hits.append(hit)
+                }
+                continue
+            }
+            // `ranked` is sorted best-first, so the first blocked row is the one worth explaining.
+            if outcome.blocked == nil {
+                outcome.blocked = SettingsSearchBlocked(anchor: hit.anchor, reason: reason)
+            }
+        }
+        // A query that reaches a real row must not be reported as blocked just because a hidden row
+        // scored higher: the explanation is only for "everything you asked for is behind a condition".
+        if !outcome.hits.isEmpty { outcome.blocked = nil }
+        return outcome
+    }
+
+    /// The full ranking, before any reachability filter. Sorted best-first.
+    private static func ranked(
+        _ query: String,
+        limit: Int,
+        entries: [SettingsSearchEntry]?
     ) -> [SettingsSearchHit] {
         let tokens = tokens(in: query)
         guard !tokens.isEmpty else { return [] }
