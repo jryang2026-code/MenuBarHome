@@ -189,6 +189,7 @@ public actor HAWebSocketProvider: HomeProvider {
         activeWebSocket?.cancel(with: .goingAway, reason: nil)
         activeWebSocket = nil
         failPendingStreamRequests()
+        session.invalidateAndCancel()
         continuation?.finish()
         continuation = nil
     }
