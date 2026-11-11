@@ -393,6 +393,11 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   // Settings sheet
   "偏好设置": ["偏好设置", "Preferences"],
   "偏好设置与米家连接": ["偏好设置与米家连接", "Preferences and Mi Home connection"],
+  "设置分类": ["设置分类", "Settings categories"],
+  "外观与面板": ["外观与面板", "General"],
+  "数据源": ["数据源", "Sources"],
+  "AI 与习惯": ["AI 与习惯", "AI & Habits"],
+  "全关与更新": ["全关与更新", "All Off & Updates"],
   "当前所选家庭暂无可显示的设备": ["当前所选家庭暂无可显示的设备", "No devices to show in the selected home"],
   "显示全部家庭": ["显示全部家庭", "Show All Homes"],
   "面板高度": ["面板高度", "Panel height"],

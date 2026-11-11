@@ -22,6 +22,7 @@ import { normalizeGlobalShortcut, recordShortcutFromKeyEvent } from "./panelPref
 import { APP_VERSION } from "./appConstants.js";
 import { invokeTauriVoid } from "./transport.js";
 import { stripCredentialFieldsFromStoredCopies, writeSettingsForStorage } from "./settings.js";
+import type { SettingsTab } from "./settingsViews.js";
 
   /**
    * First run after this version: move the plaintext copy into the Windows Credential
@@ -247,8 +248,10 @@ export async function checkForAppUpdate(host: MenuMijiaWindowsApp, manual: boole
     }
   }
 
-export function openSettingsSheet(host: MenuMijiaWindowsApp): void {
+/** `tab` routes the caller to the category it needs: the QR button to sources, an update to general. */
+export function openSettingsSheet(host: MenuMijiaWindowsApp, tab: SettingsTab = "general"): void {
     host.activeSheet = "settings";
+    host.settingsTab = tab;
     invokeTauriVoid("set_pin_popover", { pin: true });
     host.syncPanelPlacement();
     host.render();

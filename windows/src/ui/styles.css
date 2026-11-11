@@ -2067,6 +2067,69 @@ input[type="checkbox"]:checked::after {
   padding-top: 4px;
 }
 
+/* =========================================================================
+   Settings sheet: fixed top (close + tabs), scrolling body, fixed bottom (#78)
+   ========================================================================= */
+.cc-settings-sheet {
+  overflow: hidden;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  max-height: 96%;
+}
+
+/* The close button and the category tabs never scroll, so either escape is always reachable. */
+.cc-settings-top {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 14px 8px;
+}
+
+.cc-settings-top .cc-sheet-header {
+  padding-bottom: 0;
+}
+
+.cc-settings-tabs {
+  gap: 4px;
+}
+
+.cc-settings-tabs .cc-seg-pill {
+  padding: 6px 8px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.cc-settings-sheet .cc-sheet-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cc-settings-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cc-settings-tab-panel[hidden] {
+  display: none;
+}
+
+/* 完成并保存 stays pinned under the scrolling body, so a half-scrolled sheet still saves. The
+   border is the only separator: the body clips its own content, so no layer scrolls under it. */
+.cc-settings-sheet .cc-sheet-footer {
+  flex-shrink: 0;
+  padding: 10px 14px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+}
+
 .cc-btn-primary,
 .cc-btn-secondary,
 .cc-btn-danger {
@@ -3008,6 +3071,23 @@ input[type="checkbox"]:checked::after {
 .cc-popover.scheme-light .cc-field,
 .cc-popover.scheme-light .cc-qr-box {
   background: rgba(255, 255, 255, 0.78);
+}
+
+.cc-popover.scheme-light .cc-settings-top {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+}
+
+.cc-popover.scheme-light .cc-settings-sheet .cc-sheet-footer {
+  border-top-color: rgba(0, 0, 0, 0.09);
+}
+
+.cc-popover.scheme-light .cc-settings-tabs .cc-seg-pill {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.cc-popover.scheme-light .cc-settings-tabs .cc-seg-pill.is-active {
+  background: var(--apple-blue);
+  color: #ffffff;
 }
 
 .cc-popover.scheme-light .cc-field > label:not(.cc-checkbox) {
