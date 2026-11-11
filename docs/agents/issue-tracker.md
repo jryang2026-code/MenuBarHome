@@ -4,15 +4,13 @@ Issues, specs and pull requests live at `https://github.com/jryang2026-code/Menu
 
 GitHub numbers issues and pull requests from one sequence.
 
-## Conventions
+## Triage labels
 
-- **Create an issue**: `gh issue create --title "..." --body-file - --label ready-for-agent`, with the body on stdin (heredoc).
-- **Read an issue**: `gh issue view <n> --comments`.
-- **List issues**: `gh issue list [--label L] [--state open|closed|all]`. Add `--json number,title,labels` for raw fields.
-- **Comment**: `gh issue comment <n> --body-file -`
-- **Apply / remove labels**: `gh issue edit <n> --add-label "..." --remove-label "..."`
-- **Close**: `gh issue close <n> --comment "..."`
-- **Anything else**: `gh api repos/{owner}/{repo}/<path>`.
+Default five canonical roles (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+## Repo helper scripts
+
+CI 失败先看 `bash scripts/ci_errors.sh <run-id>`。它打印失败日志和 check-run annotation，并把 `steps` 为空的取消任务分成「被更新的运行顶掉」和「runner 没分配」。看一个 PR 能不能合，用 `bash scripts/pr-ready.sh <pr>`（加 `--wait` 可静默轮询直到检查与当前 head 的 Codex 审查全部就绪，或遇到失败/审查问题立即提前返回）。盘点未合并分支和工作树用 `bash scripts/pending-work.sh`。挑票用 `bash scripts/issue-frontier.sh`（一次列出所有 `ready-for-agent` 票能不能做：blocker、assignee、`claimed:*` 标签、关联的 open PR 和分支；`--doable` 只输出可做编号）。
 
 ## Migrated issue numbers
 
@@ -24,22 +22,13 @@ Merge requests `!1` to `!54` stay on GitLab as history. Commit messages that say
 
 Some migrated bodies hold a broken `## Blocked by` section with `#$(cat n9)` placeholders. Use the `> 原 GitHub Issue … 前置：Blocked by GH#…` banner on the first line instead; it is the reliable blocker list.
 
-## Pull requests
+## Pull requests & skill hooks
 
-- **Open**: push the branch to `origin`, then `gh pr create --title "..." --body-file -`.
-- **Read**: `gh pr view <n>`; the diff is `gh pr diff <n>`.
 - **Checks**: `gh pr checks <n>`. `.github/workflows/ci.yml` runs on GitHub-hosted Linux, macOS and Windows machines, without the snapshot comparison. Failed job logs: `bash scripts/ci_errors.sh <run-id>`.
 - **Merge**: `gh pr merge <n> --squash --delete-branch`.
-
-**PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/mp-triage` reads this flag.)_
-
-## When a skill says "publish to the issue tracker"
-
-Create a GitHub issue with `gh issue create`.
-
-## When a skill says "fetch the relevant ticket"
-
-Run `gh issue view <n> --comments`.
+- **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/mp-triage` reads this flag.)_
+- **When a skill says "publish to the issue tracker"**: create a GitHub issue with `gh issue create --label ready-for-agent`.
+- **When a skill says "fetch the relevant ticket"**: run `gh issue view <n> --comments`.
 
 ## Wayfinding operations
 
