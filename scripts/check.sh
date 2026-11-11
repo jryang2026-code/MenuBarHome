@@ -44,9 +44,9 @@ search_matches() {
     local pattern="$1"
     shift
     if command -v rg >/dev/null 2>&1; then
-        rg -n "$pattern" "$@"
+        rg -n --glob '!**/node_modules/**' --glob '!**/target/**' --glob '!**/dist/**' "$pattern" "$@"
     else
-        grep -rnE "$pattern" "$@"
+        grep -rnE --exclude-dir=node_modules --exclude-dir=target --exclude-dir=dist "$pattern" "$@"
     fi
 }
 
@@ -64,35 +64,55 @@ search_files() {
     local pattern="$1"
     shift
     if command -v rg >/dev/null 2>&1; then
-        rg -l "$pattern" "$@"
+        rg -l --glob '!**/node_modules/**' --glob '!**/target/**' --glob '!**/dist/**' "$pattern" "$@"
     else
-        grep -rlE "$pattern" "$@"
+        grep -rlE --exclude-dir=node_modules --exclude-dir=target --exclude-dir=dist "$pattern" "$@"
     fi
 }
 
+check_secret_leaks() {
+    local scan_dirs=(
+        Sources
+        Tests
+        windows/src
+        windows/src-tauri/src
+        windows/tests
+        raycast/src
+    )
+    if search_matches 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}' "${scan_dirs[@]}"; then
+        echo "❌ 检测到疑似 JWT Token，请移除后再提交！"
+        return 1
+    fi
+
+    if ! search_quiet 'defaultSeededToken = ""' Sources/MijiaCore/KeychainAndPrefs.swift; then
+        echo "❌ KeychainAndPrefs.swift 中的 defaultSeededToken 必须为空字符串！"
+        return 1
+    fi
+
+    if ! search_quiet 'defaultHost = ""' Sources/MijiaCore/LGWebOSClient.swift; then
+        echo "❌ LGWebOSClient.swift 中的 defaultHost 必须为空字符串！"
+        return 1
+    fi
+
+    # 共享 golden 里的 10/8 是测试向量，AssistantTests 里的 localhost:3425 测自定义端口往返；只豁免这两处。
+    local lan_ip_hits debug_port_hits
+    lan_ip_hits="$(search_matches '10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' "${scan_dirs[@]}" | grep -Ev '^Tests[/\\]+Fixtures[/\\]+local_network_endpoint_golden\.json:' || true)"
+    debug_port_hits="$(search_matches 'localhost:3425' "${scan_dirs[@]}" | grep -Ev '^Tests[/\\]+MijiaCoreTests[/\\]+AssistantTests\.swift:' || true)"
+    if [ -n "$lan_ip_hits" ] || [ -n "$debug_port_hits" ]; then
+        if [ -n "$lan_ip_hits" ]; then
+            echo "$lan_ip_hits"
+        fi
+        if [ -n "$debug_port_hits" ]; then
+            echo "$debug_port_hits"
+        fi
+        echo "❌ 检测到硬编码的个人局域网 IP 或本机调试端口 (localhost:3425)，请移除！"
+        return 1
+    fi
+    return 0
+}
+
 echo "🔍 检查是否存在硬编码 JWT / 密钥 / 个人局域网地址泄露..."
-if search_matches 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}' Sources/ Tests/; then
-    echo "❌ 检测到疑似 JWT Token，请移除后再提交！"
-    exit 1
-fi
-
-if ! search_quiet 'defaultSeededToken = ""' Sources/MijiaCore/KeychainAndPrefs.swift; then
-    echo "❌ KeychainAndPrefs.swift 中的 defaultSeededToken 必须为空字符串！"
-    exit 1
-fi
-
-if ! search_quiet 'defaultHost = ""' Sources/MijiaCore/LGWebOSClient.swift; then
-    echo "❌ LGWebOSClient.swift 中的 defaultHost 必须为空字符串！"
-    exit 1
-fi
-
-# 共享 golden 里的 10/8 是测试向量，不是个人局域网地址；只豁免这一份 fixture。
-lan_ip_hits="$(search_matches '10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' Sources/ Tests/ | grep -v '^Tests[/\\]Fixtures[/\\]local_network_endpoint_golden\.json:' || true)"
-if [ -n "$lan_ip_hits" ] || search_matches 'localhost:3425' Sources/; then
-    [ -n "$lan_ip_hits" ] && echo "$lan_ip_hits"
-    echo "❌ 检测到硬编码的个人局域网 IP 或本机调试端口 (localhost:3425)，请移除！"
-    exit 1
-fi
+check_secret_leaks
 
 echo "🔍 检查机械性编码规范 (kVK_* 键码常量 & UNUserNotificationCenter Bundle 守卫)..."
 if search_matches 'event\.keyCode[[:space:]]*==[[:space:]]*[0-9]+' Sources/; then
@@ -234,6 +254,7 @@ PY
     # 多个会话靠 issue-frontier.sh 挑票，判定规则放宽会导致重复认领（#338）。
     bash scripts/test_issue_frontier.sh
     bash scripts/test_gate_report.sh
+    bash scripts/test_secret_scan.sh
     bash scripts/test_install_ripgrep.sh
     bash scripts/test_go2rtc_gate.sh
     bash scripts/test_tauri_cache_key.sh
