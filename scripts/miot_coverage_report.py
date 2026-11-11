@@ -7,6 +7,7 @@ so they are not comparable with the model-weighted estimates in docs/research.
 "Unexposed" counts writable bool/enum/range properties the card never reads; a property it
 reads without offering a control counts as exposed, so the figure is a lower bound.
 """
+from __future__ import annotations
 import json
 import sys
 from pathlib import Path

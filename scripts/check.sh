@@ -139,12 +139,23 @@ elif search_matches 'return \([^)]*\bawait\b' Sources; then
     exit 1
 fi
 
-PYTHON_BIN=""
-if command -v python3 >/dev/null 2>&1; then
-    PYTHON_BIN="python3"
-elif command -v python >/dev/null 2>&1; then
-    PYTHON_BIN="python"
-fi
+select_python_bin() {
+    local cand
+    for cand in python3 python3.15 python3.14 python3.13 python3.12 python3.11 python3.10 python; do
+        if command -v "$cand" >/dev/null 2>&1 \
+            && "$cand" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
+            printf '%s\n' "$cand"
+            return 0
+        fi
+    done
+    if command -v python3 >/dev/null 2>&1; then
+        printf '%s\n' "python3"
+    elif command -v python >/dev/null 2>&1; then
+        printf '%s\n' "python"
+    fi
+}
+
+PYTHON_BIN="$(select_python_bin)"
 
 if command -v xmllint >/dev/null 2>&1; then
     xmllint --noout docs/assets/*.svg Resources/AppIcon/*.svg
@@ -324,8 +335,42 @@ run_swift_gate() {
     [ "$status" -eq 0 ]
 }
 
+has_shared_windows_deps() {
+    [ "${MMB_DISABLE_SHARED_NODE_MODULES:-0}" = "1" ] && return 1
+    [ -f "$ROOT_DIR/windows/package-lock.json" ] || return 1
+    local wt
+    while IFS= read -r line; do
+        case "$line" in
+            "worktree "*)
+                wt="${line#worktree }"
+                [ "$wt" = "$ROOT_DIR" ] && continue
+                if [ -d "$wt/windows/node_modules/typescript" ] \
+                    && [ -f "$wt/windows/package-lock.json" ] \
+                    && cmp -s "$ROOT_DIR/windows/package-lock.json" "$wt/windows/package-lock.json"; then
+                    return 0
+                fi
+                ;;
+        esac
+    done < <(git worktree list --porcelain 2>/dev/null || true)
+    return 1
+}
+
+windows_shared_tests() {
+    cd "$ROOT_DIR/windows"
+    npm test
+}
+
 run_windows_gate() {
     if [ ! -x "windows/node_modules/.bin/tsc" ]; then
+        if command -v npm >/dev/null 2>&1 && has_shared_windows_deps; then
+            local status=0
+            echo "ℹ️  复用同锁文件的兄弟工作树依赖运行 Windows 单元测试（跳过 Vite 打包）..."
+            run_logged "Windows 单元测试" windows_shared_tests || status=$?
+            record_gate_result "WindowsTests=${status}"
+            record_gate_result "WindowsBuild=skip"
+            [ "$status" -eq 0 ]
+            return $?
+        fi
         record_gate_result "Windows=skip"
         echo "⏭️  跳过 Windows 门槛：未找到 windows/node_modules（先 cd windows && npm ci）"
         return 0

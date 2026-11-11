@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for the coverage-derived rows of scripts/check_capability_matrix.py (#185)."""
+from __future__ import annotations
 
 import pathlib
 import sys
