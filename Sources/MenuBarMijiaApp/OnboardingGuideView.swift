@@ -15,6 +15,7 @@ public struct OnboardingGuideView: View {
     @State private var baseURLDraft: String = ""
     @State private var modelDraft: String = ""
     @State private var apiKeyDraft: String = ""
+    @State private var showsCustomEndpointFields: Bool = false
     @State private var voiceAuthorized: Bool = false
     @State private var isRequestingVoice: Bool = false
     /// Advanced stays shut on first launch; the user opens it only when they need it.
@@ -31,6 +32,7 @@ public struct OnboardingGuideView: View {
         self.initialPresetOverride = initialPresetOverride
         if let initialPresetOverride {
             self._selectedPreset = State(initialValue: initialPresetOverride)
+            self._showsCustomEndpointFields = State(initialValue: initialPresetOverride == .custom)
         }
     }
 
@@ -83,11 +85,13 @@ public struct OnboardingGuideView: View {
                     storedKey: { store.storedAssistantAPIKey(forBaseURL: $0) }
                 )
                 selectedPreset = initialPresetOverride
+                showsCustomEndpointFields = initialPresetOverride == .custom
                 baseURLDraft = fields.baseURL
                 modelDraft = fields.model
                 apiKeyDraft = fields.apiKey
             } else {
                 selectedPreset = initialPreset
+                showsCustomEndpointFields = initialPreset == .custom
                 baseURLDraft = config.baseURL
                 modelDraft = config.model
                 apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: config.baseURL)
@@ -565,9 +569,7 @@ public struct OnboardingGuideView: View {
     // MARK: - Advanced: AI Decision Model
 
     private var advancedAIModelCard: some View {
-        let effectiveBase = selectedPreset == .custom
-            ? baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-            : selectedPreset.defaultBaseURL
+        let effectiveBase = baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasCustomKey = !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let importedSource = hasCustomKey && !effectiveBase.isEmpty
             ? AssistantConfig.importedKeySource(forBaseURL: effectiveBase, defaults: store.userDefaults, vault: store.credentialVault)
@@ -624,6 +626,7 @@ public struct OnboardingGuideView: View {
                                 storedKey: { store.storedAssistantAPIKey(forBaseURL: $0) }
                             )
                             selectedPreset = newPreset
+                            showsCustomEndpointFields = newPreset == .custom
                             applyDraft(fields)
                         }
                     )
@@ -646,10 +649,10 @@ public struct OnboardingGuideView: View {
                         store.showToast(L10n.tr("已保存 \(selectedPreset.shortTitle) 配置", "Saved \(selectedPreset.shortTitle) config"))
                     }
                 }
-                .buttonStyle(PillActionButtonStyle(isSelected: !apiKeyDraft.isEmpty || (selectedPreset == .custom && !effectiveBase.isEmpty), tintColor: .accentColor))
+                .buttonStyle(PillActionButtonStyle(isSelected: !apiKeyDraft.isEmpty || (showsCustomEndpointFields && !effectiveBase.isEmpty), tintColor: .accentColor))
             }
 
-            if selectedPreset == .custom {
+            if showsCustomEndpointFields {
                 HStack(spacing: 6) {
                     TextField(
                         AssistantConfig.defaultBaseURL,
@@ -804,8 +807,12 @@ public struct OnboardingGuideView: View {
             Button {
                 let trimmedKey = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                 let trimmedBase = baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                let trimmedModel = modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                 let currentPreset = AssistantProviderPreset.infer(baseURL: store.assistantConfig.baseURL)
-                if !trimmedKey.isEmpty || selectedPreset != currentPreset || (selectedPreset == .custom && !trimmedBase.isEmpty) {
+                if !trimmedKey.isEmpty
+                    || selectedPreset != currentPreset
+                    || trimmedBase != store.assistantConfig.baseURL
+                    || (!trimmedModel.isEmpty && trimmedModel != store.assistantConfig.model) {
                     _ = saveOnboardingAssistantDraft(showErrorToast: false)
                 }
                 withAnimation(AppleMotion.snappySpring) {
