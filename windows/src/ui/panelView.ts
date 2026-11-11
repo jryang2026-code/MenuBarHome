@@ -1,8 +1,11 @@
 import type { MenuMijiaWindowsApp } from "./app.js";
-import { t } from "../core/i18n.js";
+import { speechLocale, t } from "../core/i18n.js";
+import { miSessionExpiryState } from "../core/miCloud/session.js";
+import { availableQuickActions, trText, type QuickActionId } from "../core/quickActions.js";
 import { SF_ICONS } from "./appConstants.js";
 import { applyPanelOpacity } from "./panelPrefs.js";
 import { quickActions } from "./demo.js";
+import { quickActionScopeDevices, reconcileUndoBannerHoverAfterRender } from "./speechGuard.js";
 
   export function renderPanel(host: MenuMijiaWindowsApp): void {
     const isDemo = host.settings.connectionMode === "demo";
@@ -102,6 +105,8 @@ import { quickActions } from "./demo.js";
         ${liveBanner(host)}
 
         ${host.haConnectionError ? `<div class="cc-feedback-card is-error" role="alert" data-ha-error><span class="cc-feedback-badge">Home Assistant</span><span class="cc-feedback-text">${host.escapeHtml(host.haConnectionError)}</span></div>` : ""}
+
+        ${miExpiryWarningBanner(host)}
 
         ${quickStrip(host)}
 
@@ -237,7 +242,31 @@ import { quickActions } from "./demo.js";
     host.root.insertAdjacentHTML("beforeend", host.renderGrokBallSidebar());
 
     host.bindEvents();
+    reconcileUndoBannerHoverAfterRender(host);
   }
+
+function miExpiryWarningBanner(host: MenuMijiaWindowsApp): string {
+  if (
+    host.settings.connectionMode !== "xiaomiCloud" ||
+    !host.settings.miSession ||
+    host.miSessionExpired
+  ) {
+    return "";
+  }
+  const expiry = miSessionExpiryState(host.settings.miSession);
+  if (expiry.kind !== "expiringSoon") return "";
+  const dateText = new Intl.DateTimeFormat(speechLocale(), {
+    month: "short",
+    day: "numeric",
+  }).format(new Date(expiry.expiresAtMs));
+  return `<div class="cc-feedback-card" role="status" data-mi-expiry-warning>
+    <div class="cc-feedback-row">
+      <span class="cc-feedback-badge">${host.escapeHtml(trText("即将过期", "Expiring Soon"))}</span>
+      <span class="cc-feedback-text">${host.escapeHtml(trText("米家登录将在 {date} 到期", "Xiaomi Home sign-in expires {date}", { date: dateText }))}</span>
+      <button type="button" class="cc-inline-pill" id="btn-footer-qr">${host.escapeHtml(trText("重新扫码", "Re-scan"))}</button>
+    </div>
+  </div>`;
+}
 
 function footerStatus(host: MenuMijiaWindowsApp): string {
   const health = host.panelHealth();
@@ -277,10 +306,6 @@ function assistantExtras(host: MenuMijiaWindowsApp): string {
         )
         .join("")}</div>`
     : "";
-  // The search box stays available while the extras are collapsed, so a command can still leave
-  // a confirmation or disambiguation waiting. Those options are the only way to answer it, so they
-  // stay visible; timers and other extras stay hidden until the area is opened.
-  if (!host.isShowingAssistantBar) return suggestions ? `<div class="cc-feedback-card">${suggestions}</div>` : "";
   const missed = host.missedScheduledCommands.length > 0
     ? `<div class="cc-timers-stack">${host.missedScheduledCommands
         .map(
@@ -288,6 +313,27 @@ function assistantExtras(host: MenuMijiaWindowsApp): string {
         )
         .join("")}</div>`
     : "";
+  // The search box stays available while the extras are collapsed, so pending confirmations,
+  // disambiguations, and missed scheduled commands stay visible; active timers and proactive
+  // chips stay hidden until the area is opened.
+  if (!host.isShowingAssistantBar) {
+    return suggestions || missed ? `<div class="cc-feedback-card">${suggestions}${missed}</div>` : "";
+  }
+  const proactive =
+    host.pendingSuggestions.length === 0 &&
+    (!host.settings.enableGrokBall || !host.isGrokBallStageExpanded)
+      ? (() => {
+          const items = host.currentProactiveSuggestions();
+          if (items.length === 0) return "";
+          return `<div class="cc-suggestion-row" data-proactive-bar>${items
+            .map(
+              (item) => `<button class="cc-inline-pill" data-proactive-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${
+                item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""
+              }</button>`,
+            )
+            .join("")}</div>`;
+        })()
+      : "";
   const timers = host.scheduledCommands.length > 0
     ? `<div class="cc-timers-stack">${host.scheduledCommands
         .map(
@@ -295,8 +341,19 @@ function assistantExtras(host: MenuMijiaWindowsApp): string {
         )
         .join("")}</div>`
     : "";
-  if (!suggestions && !missed && !timers) return "";
-  return `<div class="cc-feedback-card">${suggestions}${missed}${timers}</div>`;
+  if (!suggestions && !proactive && !missed && !timers) return "";
+  return `<div class="cc-feedback-card">${suggestions}${proactive}${missed}${timers}</div>`;
+}
+
+function quickActionIcon(id: QuickActionId): string {
+  switch (id) {
+    case "lightsOff":
+      return SF_ICONS.lightbulbFill;
+    case "softNightLight":
+      return SF_ICONS.moonStarsFill;
+    case "climateSleepOff":
+      return SF_ICONS.snowflake;
+  }
 }
 
 function quickStrip(host: MenuMijiaWindowsApp): string {
@@ -307,11 +364,18 @@ function quickStrip(host: MenuMijiaWindowsApp): string {
     ).join("");
     return `<section class="cc-quick-strip">${pills}</section>`;
   }
-  if (host.settings.connectionMode !== "homeAssistant" || host.scenes.length === 0) return "";
-  const pills = host.scenes
-    .map(
-      (scene) => `<button class="cc-quick-pill tint-blue" data-ha-scene="${host.escapeHtml(scene.id)}"><span class="cc-quick-icon">${SF_ICONS.sparkles}</span><span>${host.escapeHtml(scene.name)}</span></button>`,
-    )
-    .join("");
-  return `<section class="cc-quick-strip">${pills}</section>`;
+  const builtIns = availableQuickActions(quickActionScopeDevices(host)).map(
+    (act) =>
+      `<button class="cc-quick-pill tint-${act.tint}" data-scene-cmd="${host.escapeHtml(act.command)}"><span class="cc-quick-icon">${quickActionIcon(act.id)}</span><span>${host.escapeHtml(act.title)}</span></button>`,
+  );
+  const haScenes =
+    host.settings.connectionMode === "homeAssistant"
+      ? host.scenes.map(
+          (scene) =>
+            `<button class="cc-quick-pill tint-blue" data-ha-scene="${host.escapeHtml(scene.id)}"><span class="cc-quick-icon">${SF_ICONS.sparkles}</span><span>${host.escapeHtml(scene.name)}</span></button>`,
+        )
+      : [];
+  const allPills = [...builtIns, ...haScenes];
+  if (allPills.length === 0) return "";
+  return `<section class="cc-quick-strip">${allPills.join("")}</section>`;
 }

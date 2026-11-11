@@ -210,7 +210,11 @@ describe("Settings sheet three-zone layout (#78)", () => {
     };
     Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
     localStorage.removeItem("menumijia.windows.update.v1");
-    startDemo();
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      connectionMode: "xiaomiCloud",
+      hasCompletedOnboarding: true,
+    }));
+    new MenuMijiaWindowsApp(element("#app"));
     await setImmediate();
     await setImmediate();
 
@@ -472,7 +476,11 @@ describe("Settings category routing (#78)", () => {
     };
     Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
     localStorage.removeItem("menumijia.windows.update.v1");
-    const app = startDemo();
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      connectionMode: "xiaomiCloud",
+      hasCompletedOnboarding: true,
+    }));
+    const app = new MenuMijiaWindowsApp(element("#app"));
     await setImmediate();
     await setImmediate();
     assert.ok(document.querySelector("#btn-footer-update"), "the pill is on screen");

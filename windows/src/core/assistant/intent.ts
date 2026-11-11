@@ -108,6 +108,25 @@ export const UndoPhrase = {
 
 // MARK: - Intent Validation & Normalization
 
+const HVAC_MODE_ALIASES: Readonly<Record<string, string>> = {
+  fan: "fan_only",
+  fanonly: "fan_only",
+  heat_cool: "auto",
+};
+
+const LIGHT_EFFECT_ALIASES: Readonly<Record<string, string>> = {
+  moonlight: "Night",
+  night: "Night",
+  月光: "Night",
+  月光模式: "Night",
+  夜灯: "Night",
+  夜灯模式: "Night",
+  daylight: "Day",
+  day: "Day",
+  日光: "Day",
+  日光模式: "Day",
+};
+
 export const IntentValidator = {
   normalize(op: IntentOperation, device: SmartDevice): IntentOperation | null {
     const k = device.kind;
@@ -135,7 +154,7 @@ export const IntentValidator = {
       }
       case "brightnessStep": {
         if (k.kind !== "light" || k.brightnessWritable === false) return null;
-        const base = k.isOn ? (k.brightnessPercent ?? 50) : 0;
+        const base = k.isOn ? (k.brightnessPercent ?? 100) : 0;
         return { kind: "brightness", percent: Math.max(1, Math.min(100, Math.round(base + op.delta))) };
       }
       case "colorTemperature": {
@@ -147,14 +166,25 @@ export const IntentValidator = {
       }
       case "lightEffect": {
         if (k.kind !== "light") return null;
-        const matched = k.availableEffects.find((e) => e.toLowerCase() === op.effect.toLowerCase());
+        const trimmed = op.effect.trim();
+        const canonical = LIGHT_EFFECT_ALIASES[trimmed.toLowerCase()] ?? LIGHT_EFFECT_ALIASES[trimmed] ?? trimmed;
+        const matched = k.availableEffects.find((e) => e.toLowerCase() === canonical.toLowerCase());
         return matched ? { kind: "lightEffect", effect: matched } : null;
       }
       case "hvacMode": {
         if (k.kind === "climate") {
           if (k.availableModes.length === 0) return null;
-          const matched = k.availableModes.find((m) => m.toLowerCase() === op.mode.toLowerCase());
-          return matched ? { kind: "hvacMode", mode: matched } : null;
+          const lowered = op.mode.trim().toLowerCase();
+          const canonical = HVAC_MODE_ALIASES[lowered] ?? lowered;
+          const matched = k.availableModes.find((m) => m.toLowerCase() === canonical);
+          if (matched) return { kind: "hvacMode", mode: matched };
+          if (canonical === "off") return { kind: "hvacMode", mode: "off" };
+          // HA climate entities expose "heat_cool" where users say "auto".
+          if (canonical === "auto") {
+            const heatCool = k.availableModes.find((m) => m.toLowerCase() === "heat_cool");
+            if (heatCool) return { kind: "hvacMode", mode: heatCool };
+          }
+          return null;
         }
         // 「自动模式」 parses as hvacMode(auto); on a fan that means its Auto preset (#98).
         if (k.kind === "fan" && op.mode.toLowerCase() === "auto") {

@@ -1,6 +1,7 @@
 import { cancelScheduledCommands, enqueueScheduledCommand } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
+import { parseQuickActionCommand } from "../core/quickActions.js";
 import {
   DelayPhrase,
   INSECURE_ENDPOINT_MESSAGE,
@@ -20,6 +21,7 @@ import {
 } from "../core/assistant.js";
 import type { DeviceIntent, IntentPlan, ScheduledCommand } from "../core/models.js";
 import { withAliases } from "./panelPrefs.js";
+import { executeBuiltInQuickAction } from "./speechGuard.js";
 
 function localParseOptions(host: MenuMijiaWindowsApp): LocalIntentParseOptions {
   const cut = host.listCut;
@@ -42,6 +44,12 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
     // A new command replaces any question still waiting for cloud consent, and old suggestions.
     host.pendingCloudConsent = null;
     host.pendingSuggestions = [];
+
+    const quickActionId = parseQuickActionCommand(trimmed);
+    if (quickActionId) {
+      await executeBuiltInQuickAction(host, quickActionId);
+      return;
+    }
 
     if (UndoPhrase.isUndo(trimmed)) {
       await host.performUndo();

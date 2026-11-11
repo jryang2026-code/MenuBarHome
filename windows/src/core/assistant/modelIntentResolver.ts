@@ -20,6 +20,7 @@ import {
   buildProactiveSystemOneRequestBody,
   buildSystemOneRequestBody,
 } from "./promptContext.js";
+import { cleanPromptField } from "./promptText.js";
 
 export class ModelIntentResolver {
   private readonly config: AssistantConfig;
@@ -81,7 +82,7 @@ export class ModelIntentResolver {
     if (this.usesSystemOne) {
       return this.resolveViaSystemOne(utterance, devices, scenes, context);
     }
-    return this.resolveViaChatCompletions(utterance, devices, scenes);
+    return this.resolveViaChatCompletions(utterance, devices, scenes, context);
   }
 
   /**
@@ -207,22 +208,29 @@ export class ModelIntentResolver {
       throw new Error(this.friendlyHttpError(resp.status));
     }
 
-    return ModelIntentResolver.planFromSystemOne(resp.body, request.catalog.aliasToIds, devices, scenes);
+    return ModelIntentResolver.planFromSystemOne(resp.body, request.catalog, devices, scenes);
   }
 
   static planFromSystemOne(
     bodyText: string,
-    aliasToIds: ReadonlyMap<string, readonly string[]>,
+    catalogOrAliasMap: IntentCatalog | ReadonlyMap<string, readonly string[]>,
     devices: readonly SmartDevice[],
     scenes: readonly HomeScene[]
   ): IntentPlan {
+    const catalog: IntentCatalog =
+      "aliasToIds" in catalogOrAliasMap
+        ? catalogOrAliasMap
+        : {
+            ...buildIntentCatalog(devices, scenes),
+            aliasToIds: catalogOrAliasMap,
+          };
     const parsed = JSON.parse(bodyText) as Record<string, unknown>;
     const answers = (parsed["answers"] ?? {}) as Record<string, Record<string, unknown>>;
     const targetChoice = String(answers["target"]?.["choice"] ?? "none");
     const opChoice = String(answers["op"]?.["choice"] ?? "");
     const tempChoice = String(answers["temp"]?.["choice"] ?? "none");
 
-    const targetIds = aliasToIds.get(targetChoice) ?? [];
+    const targetIds = targetChoice !== "none" ? (catalog.aliasToIds.get(targetChoice) ?? []) : [];
     const primaryOp = this.decodeSystemOneOp(opChoice);
     const hasTemp = tempChoice !== "none" && Number.isFinite(Number(tempChoice));
 
@@ -231,7 +239,8 @@ export class ModelIntentResolver {
     if (hasTemp) confidence = Math.min(confidence, ModelActionPolicy.probabilityOf(answers["temp"], tempChoice));
 
     const actions: ChosenAction[] = [];
-    if (targetChoice !== "none") {
+    const runnerUps: Array<{ prob: number; suggestion: AssistantSuggestion }> = [];
+    if (targetChoice !== "none" && targetIds.length > 0) {
       for (const id of targetIds) {
         if (primaryOp) actions.push({ intent: { targetId: id, operation: primaryOp }, confidence, primaryChoice: true });
         if (hasTemp) {
@@ -243,15 +252,88 @@ export class ModelIntentResolver {
         }
       }
     }
+
+    for (const { alias, device } of catalog.aliasDevices) {
+      const answer = answers[`dev_${alias}`];
+      if (!answer) continue;
+      const choice = String(answer["choice"] ?? "none");
+      const probs = (answer["probabilities"] ?? {}) as Record<string, unknown>;
+      const choiceProb = ModelActionPolicy.probabilityOf(answer, choice);
+      const isFallbackPowerOnForEffect =
+        opChoice.startsWith("effect_") && choice === "power_on" && !targetIds.includes(device.id);
+
+      if (choice !== "none" && !isFallbackPowerOnForEffect) {
+        for (const op of this.systemOneDeviceOperations(choice)) {
+          actions.push({
+            intent: { targetId: device.id, operation: op },
+            confidence: choiceProb,
+            primaryChoice: false,
+          });
+        }
+        continue;
+      }
+
+      const candidate =
+        choice !== "none"
+          ? { choice, prob: choiceProb }
+          : bestNonNoneProbability(probs);
+      if (candidate && (choice !== "none" || candidate.prob >= ModelActionPolicy.SUGGESTION_FLOOR)) {
+        const ops = IntentValidator.sanitize(
+          this.systemOneDeviceOperations(candidate.choice).map((operation) => ({
+            targetId: device.id,
+            operation,
+          })),
+          devices,
+          scenes,
+        );
+        const first = ops[0];
+        const firstTitle = first ? habitSuggestionTitle(first, devices, scenes) : null;
+        if (first && firstTitle !== null) {
+          const second = ops[1];
+          const title =
+            first.operation.kind === "hvacMode" && second?.operation.kind === "targetTemperature"
+              ? `${firstTitle} · ${formatTemperatureValue(second.operation.celsius)}°C`
+              : firstTitle;
+          const pct =
+            candidate.prob > 0 ? Math.max(20, Math.min(99, Math.round(candidate.prob * 100))) : null;
+          runnerUps.push({
+            prob: candidate.prob,
+            suggestion: {
+              id: `jev:${device.id}:${candidate.choice}`,
+              title,
+              confidencePercent: pct,
+              intents: ops,
+            },
+          });
+        }
+      }
+    }
+
     const decision = ModelActionPolicy.decide(devices, scenes, { actions });
+    const taken = new Set(
+      [...decision.intents, ...decision.suggestions.flatMap((item) => item.intents)].map((intent) => intent.targetId),
+    );
+    const seenTargetSets = new Set<string>();
+    const extras = runnerUps
+      .filter((item) => item.suggestion.intents.every((intent) => !taken.has(intent.targetId)))
+      .sort((a, b) => b.prob - a.prob)
+      .filter((item) => {
+        const key = [...new Set(item.suggestion.intents.map((intent) => intent.targetId))].sort().join("|");
+        if (seenTargetSets.has(key)) return false;
+        seenTargetSets.add(key);
+        return true;
+      })
+      .slice(0, 3)
+      .map((item) => item.suggestion);
+    const suggestions = [...decision.suggestions, ...extras];
     const described = IntentReply.describe(decision.intents, devices, scenes);
     return {
       intents: decision.intents,
-      reply: decision.suggestions.length > 0
+      reply: suggestions.length > 0
         ? ModelActionPolicy.confirmationReply(decision.intents.length > 0 ? described : null)
         : described,
       source: "model",
-      suggestions: decision.suggestions,
+      suggestions,
     };
   }
 
@@ -303,14 +385,39 @@ export class ModelIntentResolver {
     }
   }
 
+  static systemPrompt(catalog: IntentCatalog, context: AssistantContext = EMPTY_ASSISTANT_CONTEXT): string {
+    const contextParts = [
+      context.timeSummary,
+      context.environmentSummary,
+      context.activeDevicesSummary,
+      context.habitSummary,
+    ]
+      .map((field) => cleanPromptField(field))
+      .filter((field) => field.length > 0);
+    const contextBlock = contextParts.length > 0 ? `\n当前环境与习惯：${contextParts.join("；")}\n` : "";
+    return (
+      `你是智能家居指令解析器。把用户的中文指令转换为 JSON，只输出 JSON，不要解释。${contextBlock}\n` +
+      `${catalog.text}\n` +
+      `schema: {"actions":[{"device":"id","op":"power|brightness|brightness_step|color_temp|effect|hvac_mode|temperature|temperature_step|fan_speed|oscillation|scene","value":...}],"reply":"一句话中文回执"}\n` +
+      `规则：power 的 value 为 true/false；brightness 为 1-100（调暗用 20，调亮用 100）；color_temp 为开尔文；` +
+      `effect 取 Day（日光模式）或 Night（月光/夜灯模式），且必须是该灯具的可用模式；` +
+      `hvac_mode 取 cool/heat/dry/fan_only/auto/off 且必须是该设备的可用模式；temperature 为摄氏度数字；` +
+      `brightness_step / temperature_step 是相对调节（"再暗一点"=-20，"调高两度"=2），优先用于"再…一点"类说法；` +
+      `fan_speed 取 high/medium/low/auto 或该设备"可选风速"里的原名；oscillation 为 true/false（风扇摇头）；` +
+      `scene 的 device 填场景 id，value 填 null。只能使用上面列出的 id。` +
+      `无法执行时 actions 为空数组，并在 reply 中简短说明原因。`
+    );
+  }
+
   private async resolveViaChatCompletions(
     utterance: string,
     devices: readonly SmartDevice[],
-    scenes: readonly HomeScene[]
+    scenes: readonly HomeScene[],
+    context: AssistantContext = EMPTY_ASSISTANT_CONTEXT
   ): Promise<IntentPlan> {
     const url = this.endpointURL("/chat/completions");
     const catalog = buildIntentCatalog(devices, scenes);
-    const prompt = `你是智能家居指令解析器。把中文指令转为 JSON，只输出 JSON，不要解释。\n${catalog.text}\nschema: {"actions":[{"device":"id","op":"power|brightness|brightness_step|color_temp|effect|hvac_mode|temperature|temperature_step|fan_speed|oscillation|scene","value":...}],"reply":"一句话中文回执"}`;
+    const prompt = ModelIntentResolver.systemPrompt(catalog, context);
 
     const resp = await this.sendChatCompletion(
       url,
@@ -353,12 +460,28 @@ export class ModelIntentResolver {
         }
       }
     }
+    const rawSuggestions = Array.isArray(payload["suggestions"])
+      ? (payload["suggestions"] as Array<Record<string, unknown>>)
+      : [];
     const decision = ModelActionPolicy.decide(devices, scenes, { actions: chosen });
+    const confirmChips = decision.suggestions;
+    const primaryTargetIds = new Set(
+      [...decision.intents, ...confirmChips.flatMap((chip) => chip.intents)].map((intent) => intent.targetId),
+    );
+    const parsedSuggestions = parseChatSuggestionItems(rawSuggestions, catalog, devices, scenes).filter(
+      (suggestion) => !suggestion.intents.some((intent) => primaryTargetIds.has(intent.targetId)),
+    );
     const described = IntentReply.describe(decision.intents, devices, scenes);
-    const reply = decision.suggestions.length > 0
+    const modelReply = String(payload["reply"] ?? "").trim();
+    const reply = confirmChips.length > 0
       ? ModelActionPolicy.confirmationReply(decision.intents.length > 0 ? described : null)
-      : String(payload["reply"] ?? "").trim() || described;
-    return { intents: decision.intents, reply, source: "model", suggestions: decision.suggestions };
+      : modelReply || described;
+    return {
+      intents: decision.intents,
+      reply,
+      source: "model",
+      suggestions: [...confirmChips, ...parsedSuggestions],
+    };
   }
 
   static decodeChatOp(name: string, val: unknown): IntentOperation | null {
@@ -510,25 +633,19 @@ export function proactiveSuggestionsFromSystemOne(
     .map((item) => item.suggestion);
 }
 
-/** Parses proactive chat output into ranked suggestions; mirrors macOS `proactiveSuggestionsFromChat` (#113). */
-export function proactiveSuggestionsFromChat(
-  content: string,
+function parseChatSuggestionItems(
+  items: readonly Record<string, unknown>[],
   catalog: IntentCatalog,
   devices: readonly SmartDevice[],
   scenes: readonly HomeScene[],
 ): AssistantSuggestion[] {
-  const jsonSlice = ModelIntentResolver.extractFirstJSONObject(content);
-  if (!jsonSlice) throw new Error("AI 返回格式无法解析");
-  const payload = JSON.parse(jsonSlice) as Record<string, unknown>;
-  const items = (payload["suggestions"] as Array<Record<string, unknown>>) ?? (payload["actions"] as Array<Record<string, unknown>>) ?? [];
-
   const scored: Array<{ pct: number; suggestion: AssistantSuggestion }> = [];
   items.forEach((item, idx) => {
-    const alias = String(item["device"] ?? "");
-    const opName = String(item["op"] ?? "");
+    const alias = String(item["device"] ?? "").trim();
+    const opName = String(item["op"] ?? "").trim();
     const op = ModelIntentResolver.decodeChatOp(opName, item["value"]);
-    if (!op) return;
-    const targetIds = catalog.aliasToIds.get(alias) ?? (alias ? [alias] : []);
+    if (!op || !alias) return;
+    const targetIds = catalog.aliasToIds.get(alias) ?? [alias];
     const sanitized = IntentValidator.sanitize(
       targetIds.map((targetId) => ({ targetId, operation: op })),
       devices,
@@ -540,14 +657,33 @@ export function proactiveSuggestionsFromChat(
     if (title === null) return;
     const rawConf = numberFromValue(item["confidence"]) ?? 80;
     const normalizedConf = rawConf <= 1.0 ? Math.round(rawConf * 100) : Math.round(rawConf);
+    const pct = Math.max(18, Math.min(99, normalizedConf));
     scored.push({
-      pct: Math.max(18, Math.min(99, normalizedConf)),
-      suggestion: { id: `chat:${primary.targetId}:${idx}`, title, confidencePercent: Math.max(18, Math.min(99, normalizedConf)), intents: [primary] },
+      pct,
+      suggestion: {
+        id: `chat:${primary.targetId}:${idx}`,
+        title,
+        confidencePercent: pct,
+        intents: [primary],
+      },
     });
   });
-
   return scored
     .sort((a, b) => b.pct - a.pct)
     .slice(0, 3)
     .map((item) => item.suggestion);
+}
+
+/** Parses proactive chat output into ranked suggestions; mirrors macOS `proactiveSuggestionsFromChat` (#113). */
+export function proactiveSuggestionsFromChat(
+  content: string,
+  catalog: IntentCatalog,
+  devices: readonly SmartDevice[],
+  scenes: readonly HomeScene[],
+): AssistantSuggestion[] {
+  const jsonSlice = ModelIntentResolver.extractFirstJSONObject(content);
+  if (!jsonSlice) throw new Error("AI 返回格式无法解析");
+  const payload = JSON.parse(jsonSlice) as Record<string, unknown>;
+  const items = (payload["suggestions"] as Array<Record<string, unknown>>) ?? (payload["actions"] as Array<Record<string, unknown>>) ?? [];
+  return parseChatSuggestionItems(items, catalog, devices, scenes);
 }

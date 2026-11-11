@@ -31,6 +31,32 @@ export interface MiSession {
   readonly serviceToken: string;
   readonly passToken: string;
   readonly region: string;
+  /** Optional Unix timestamp (ms) extracted from the login `serviceToken` cookie (#181). */
+  readonly expiresAt?: number;
+}
+
+export type MiSessionExpiryState =
+  | { readonly kind: "valid" }
+  | { readonly kind: "expiringSoon"; readonly expiresAtMs: number }
+  | { readonly kind: "expired" };
+
+/** Lead time before declared cookie expiry where the 3-day warning surfaces (`MiSessionExpiry.swift`). */
+export const MI_SESSION_WARNING_LEAD_MS = 3 * 24 * 60 * 60 * 1000;
+
+/** An undated session (`expiresAt === undefined`) never warns and never expires on a guess (#181). */
+export function miSessionExpiryState(
+  session: MiSession | null | undefined,
+  nowMs = Date.now(),
+  warningLeadMs = MI_SESSION_WARNING_LEAD_MS,
+): MiSessionExpiryState {
+  if (!session || typeof session.expiresAt !== "number" || !Number.isFinite(session.expiresAt)) {
+    return { kind: "valid" };
+  }
+  if (nowMs >= session.expiresAt) return { kind: "expired" };
+  if (session.expiresAt - nowMs <= warningLeadMs) {
+    return { kind: "expiringSoon", expiresAtMs: session.expiresAt };
+  }
+  return { kind: "valid" };
 }
 
 export function maskedMiUserId(userId: string): string {

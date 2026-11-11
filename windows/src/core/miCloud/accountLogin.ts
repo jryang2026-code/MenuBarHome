@@ -111,18 +111,72 @@ export class MiAccountLogin {
       }
     }
 
-    const serviceToken = await this.fetchServiceToken(scanned.location);
+    const cookie = await this.fetchServiceToken(scanned.location);
     return {
       userId: scanned.userId,
       cUserId: scanned.cUserId,
       ssecurity: scanned.ssecurity,
-      serviceToken,
+      serviceToken: cookie.token,
       passToken: scanned.passToken,
       region: this.region,
+      ...(cookie.expiresAt !== undefined ? { expiresAt: cookie.expiresAt } : {}),
     };
   }
 
-  private async fetchServiceToken(initialLocation: string): Promise<string> {
+  /**
+   * Extracts `serviceToken` and its declared expiry from `Set-Cookie` headers (`MiAccountLogin.swift`).
+   * Per RFC 6265 §4.1.2.2, `Max-Age` (seconds) takes precedence over `Expires`.
+   */
+  static parseServiceTokenCookie(
+    headers: Readonly<Record<string, string>>,
+    nowMs = Date.now(),
+  ): { token: string; expiresAt?: number } | null {
+    const rawHeaders: string[] = [];
+    for (const [key, value] of Object.entries(headers)) {
+      if (key.toLowerCase() !== "set-cookie" || !value) continue;
+      const separated = value.replace(/,\s*(?=[^;,=\s]+=)/g, "\n");
+      rawHeaders.push(...separated.split("\n"));
+    }
+    for (const header of rawHeaders) {
+      const parts = header
+        .split(";")
+        .map((part) => part.trim())
+        .filter((part) => part.length > 0);
+      const first = parts[0];
+      if (!first) continue;
+      const eq = first.indexOf("=");
+      if (eq < 0) continue;
+      const cookieName = first.slice(0, eq).trim();
+      const cookieValue = first.slice(eq + 1).trim();
+      if (cookieName !== "serviceToken" || cookieValue.length === 0) continue;
+
+      let maxAgeSeconds: number | undefined;
+      let expiresMs: number | undefined;
+      for (const attr of parts.slice(1)) {
+        const attrEq = attr.indexOf("=");
+        if (attrEq < 0) continue;
+        const attrName = attr.slice(0, attrEq).trim().toLowerCase();
+        const attrVal = attr.slice(attrEq + 1).trim();
+        if (attrName === "max-age" && /^[-+]?\d+$/.test(attrVal)) {
+          const parsed = Number.parseInt(attrVal, 10);
+          if (Number.isFinite(parsed)) maxAgeSeconds = parsed;
+        } else if (attrName === "expires") {
+          const parsedDate = parseHttpCookieDate(attrVal);
+          if (parsedDate !== null) expiresMs = parsedDate;
+        }
+      }
+      if (maxAgeSeconds !== undefined) {
+        return {
+          token: cookieValue,
+          expiresAt: maxAgeSeconds <= 0 ? nowMs : nowMs + maxAgeSeconds * 1000,
+        };
+      }
+      return expiresMs !== undefined ? { token: cookieValue, expiresAt: expiresMs } : { token: cookieValue };
+    }
+    return null;
+  }
+
+  private async fetchServiceToken(initialLocation: string): Promise<{ token: string; expiresAt?: number }> {
     let url = initialLocation;
     for (let i = 0; i < 5; i++) {
       const resp = await this.transport({
@@ -131,11 +185,9 @@ export class MiAccountLogin {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         followRedirects: false,
       });
-      const cookieHeader =
-        resp.headers["set-cookie"] ?? resp.headers["Set-Cookie"] ?? "";
-      const match = /(?:^|[;,\s])serviceToken=([^;\s,]+)/.exec(cookieHeader);
-      if (match?.[1]) {
-        return match[1];
+      const parsedCookie = MiAccountLogin.parseServiceTokenCookie(resp.headers);
+      if (parsedCookie) {
+        return parsedCookie;
       }
       const nextLoc = resp.headers["location"] ?? resp.headers["Location"];
       if (resp.status >= 300 && resp.status < 400 && nextLoc) {
@@ -146,4 +198,13 @@ export class MiAccountLogin {
     }
     throw new MiCloudError("badResponse", "登录成功但未拿到 serviceToken，请重试");
   }
+}
+
+function parseHttpCookieDate(raw: string): number | null {
+  const normalized = raw.trim().replace(/^([A-Za-z]+,\s*\d{1,2})-([A-Za-z]{3})-(\d{2,4})\b/, (_m, prefix: string, mon: string, yr: string) => {
+    const fullYear = yr.length === 2 ? (Number(yr) >= 70 ? `19${yr}` : `20${yr}`) : yr;
+    return `${prefix} ${mon} ${fullYear}`;
+  });
+  const ms = Date.parse(normalized);
+  return Number.isFinite(ms) ? ms : null;
 }

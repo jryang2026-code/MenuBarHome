@@ -1,5 +1,7 @@
 import { ASSISTANT_PROVIDER_PRESETS, inferAssistantPreset } from "../core/assistant.js";
-import { t } from "../core/i18n.js";
+import { speechLocale, t } from "../core/i18n.js";
+import { miSessionExpiryState } from "../core/miCloud/session.js";
+import { trText } from "../core/quickActions.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
 import type { QRLoginTicket } from "../core/miCloudClient.js";
 import {
@@ -359,6 +361,7 @@ function renderConnectionPanel(ctx: SettingsViewContext): string {
           }
         </span>
       </button>
+      ${renderMiSessionNoteAndSignOut(ctx)}
       <div class="cc-qr-status">${ctx.escapeHtml(ctx.qrStatusText)}</div>
       ${
         ctx.qrTicket
@@ -367,6 +370,22 @@ function renderConnectionPanel(ctx: SettingsViewContext): string {
       }
     </div>
   `;
+}
+
+function renderMiSessionNoteAndSignOut(ctx: SettingsViewContext): string {
+  if (!ctx.settings.miSession) return "";
+  const expiry = miSessionExpiryState(ctx.settings.miSession);
+  let expiryHint = "";
+  if (expiry.kind === "expiringSoon") {
+    const dateText = new Intl.DateTimeFormat(speechLocale(), {
+      month: "short",
+      day: "numeric",
+    }).format(new Date(expiry.expiresAtMs));
+    expiryHint = `<div class="cc-qr-status" data-mi-settings-expiry>${ctx.escapeHtml(trText("米家登录将在 {date} 到期", "Xiaomi Home sign-in expires {date}", { date: dateText }))}</div>`;
+  } else if (expiry.kind === "expired") {
+    expiryHint = `<div class="cc-qr-status" data-mi-settings-expiry>${ctx.escapeHtml(t("米家登录已过期 · 点此扫码"))}</div>`;
+  }
+  return `${expiryHint}<button type="button" class="cc-btn-secondary is-full" id="btn-signout-mi" ${ctx.isPollingQR ? "disabled" : ""}>${ctx.escapeHtml(trText("退出米家登录", "Sign out"))}</button>`;
 }
 
 /** AI 与习惯: the decision model endpoint and everything the app learns from the user. */

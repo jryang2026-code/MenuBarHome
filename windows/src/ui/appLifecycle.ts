@@ -20,9 +20,16 @@ import { applyTemperatureUnit } from "../core/temperature.js";
 import { cloudRefreshDue } from "../core/models.js";
 import { normalizeGlobalShortcut, recordShortcutFromKeyEvent } from "./panelPrefs.js";
 import { APP_VERSION } from "./appConstants.js";
+import { trText } from "../core/quickActions.js";
 import { invokeTauriVoid } from "./transport.js";
 import { stripCredentialFieldsFromStoredCopies, writeSettingsForStorage } from "./settings.js";
 import type { SettingsTab } from "./settingsViews.js";
+import {
+  didMiExpiryKindChange,
+  isUndoHoverPaused,
+  resumeUndoHoverPause,
+  shouldKeepPopoverPinned,
+} from "./speechGuard.js";
 
   /**
    * First run after this version: move the plaintext copy into the Windows Credential
@@ -123,7 +130,60 @@ export async function persistCredentials(host: MenuMijiaWindowsApp): Promise<voi
       }
     } catch {
       // The credential manager refused the write; never fall back to plaintext storage.
+      host.replyBanner = {
+        text: trText(
+          "无法将凭据保存到 Windows 凭据管理器，请检查系统凭据设置。",
+          "Could not save credentials to Windows Credential Manager; check system settings.",
+        ),
+        source: t("出错提示"),
+        isError: true,
+      };
+      host.render();
     }
+  }
+
+export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
+    if (!host.settings.miSession && host.settings.cachedXiaomiDevices.length === 0) return;
+    const wasXiaomiMode = host.settings.connectionMode === "xiaomiCloud";
+    host.localControlRevision += 1;
+    if (wasXiaomiMode) {
+      host.invalidateSourceControl();
+      host.devices = [];
+      host.scenes = [];
+      host.environmentReadings = [];
+      host.homes = [];
+      host.groupOwnerByMemberDid = new Map();
+      host.deviceFacets = {};
+      host.expandedDeviceId = null;
+      host.waitingDeviceIds.clear();
+      host.selectRoom(null);
+    } else {
+      host.lastUndoAction = null;
+      host.clearPendingHighRisk();
+    }
+    host.settings.miSession = null;
+    host.settings.cachedXiaomiDevices = [];
+    host.settings.selectedHomeId = null;
+    host.miSessionExpired = false;
+    host.cloudValuesStale = false;
+    host.unresolvedRoomDids.clear();
+    host.qrTicket = null;
+    host.qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");
+    host.replyBanner = {
+      text: trText("已退出米家账号", "Signed out of Xiaomi Home"),
+      source: trText("账号管理", "Account"),
+    };
+    host.saveSettings();
+    void host.credentialVault.deleteMiSession().catch((error: unknown) => {
+      const detail = error instanceof Error && error.message.trim() ? ` (${error.message.trim()})` : "";
+      host.replyBanner = {
+        text: `${trText("无法从系统凭据库移除米家登录，请重试", "Could not remove Xiaomi sign-in from the OS credential vault; please retry")}${detail}`,
+        source: t("出错提示"),
+        isError: true,
+      };
+      host.queueBackgroundRender();
+    });
+    host.render();
   }
 
 export function saveSettings(host: MenuMijiaWindowsApp, forceSubmitEndpoints = false): void {
@@ -194,6 +254,18 @@ export function saveUpdateState(host: MenuMijiaWindowsApp): void {
    * limit and the auto-check switch (#39).
    */
 export async function checkForAppUpdate(host: MenuMijiaWindowsApp, manual: boolean): Promise<void> {
+    if (host.settings.connectionMode === "demo") {
+      if (manual) {
+        const text = trText(
+          "演示模式下不发起联网更新检查，切换真实数据源后再试。",
+          "Update checks are disabled in demo mode; switch to a live source first.",
+        );
+        host.updateStatusMessage = { text, isError: false };
+        host.replyBanner = { text, source: t("检查更新") };
+        host.render();
+      }
+      return;
+    }
     if (!manual && !window.__TAURI_INTERNALS__?.invoke) return;
     if (host.isCheckingUpdate || host.isInstallingUpdate) return;
     if (manual) {
@@ -264,6 +336,15 @@ export function openUpdatePage(host: MenuMijiaWindowsApp): void {
 
 export async function startUpdateInstall(host: MenuMijiaWindowsApp): Promise<void> {
     if (host.isInstallingUpdate || !host.availableUpdate) return;
+    if (host.settings.connectionMode === "demo") {
+      const text = trText(
+        "演示模式下不发起联网下载，切换真实数据源后再试。",
+        "Update downloads are disabled in demo mode; switch to a live source first.",
+      );
+      host.updateStatusMessage = { text, isError: false };
+      host.render();
+      return;
+    }
     const asset = host.availableUpdate.installerAsset;
     if (!asset) {
       openUpdatePage(host);
@@ -364,9 +445,10 @@ export function bindGlobalKeys(host: MenuMijiaWindowsApp): void {
           host.activeSheet = "none";
           host.isRecordingHotkey = false;
           host.hotkeyNeedsHint = false;
-          invokeTauriVoid("set_pin_popover", { pin: false });
+          invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
           host.render();
         } else {
+          resumeUndoHoverPause(host);
           invokeTauriVoid("hide_panel");
         }
       } else if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && document.activeElement?.tagName !== "INPUT") {
@@ -391,14 +473,15 @@ export function startTimerLoop(host: MenuMijiaWindowsApp): void {
       // An expired undo row is a background change: defer its paint past a gesture. Scheduled
       // commands that just ran may render at once (CODING_STANDARDS.md section 16).
       let undoExpired = false;
-      if (host.lastUndoAction && host.lastUndoAction.expiresAtMs <= now) {
+      if (!isUndoHoverPaused(host) && host.lastUndoAction && host.lastUndoAction.expiresAtMs <= now) {
         host.lastUndoAction = null;
         undoExpired = true;
       }
+      const miExpiryChanged = didMiExpiryKindChange(host, now);
 
       if (processScheduledCommands(host, now)) {
         host.render();
-      } else if (undoExpired) {
+      } else if (undoExpired || miExpiryChanged) {
         host.queueBackgroundRender();
       }
 
