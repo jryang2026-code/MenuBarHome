@@ -262,6 +262,8 @@ public final class HomeStore {
     }
 
     /// Recent doorbell presses, newest first, including ones that did not open a window (#308).
+    /// Cleared by `invalidateUndoContext`; a press whose card leaves the home drops out of
+    /// `panelActivities`.
     public internal(set) var recentDoorbellRings: [DoorbellRing] = []
     /// Safety alerts the panel's activity stack shows, newest first, at most
     /// `recentSafetyAlertLimit`. Written by the snapshot path in `HomeStore+Backend.swift`, which is

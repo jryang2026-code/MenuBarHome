@@ -769,6 +769,43 @@ class MijiaMcpTests(unittest.TestCase):
         self.assertIn("16°C–30°C", res["content"][0]["text"])
         self.assertEqual(app.opened, [])
 
+        # 热水器高于 50°C 的合法温度放行，超过 100°C 的全局上限拦截
+        snap = make_snapshot()
+        snap["devices"].append({
+            "id": "dev_water_heater",
+            "name": "卫生间热水器",
+            "roomId": "bath",
+            "roomName": "卫生间",
+            "roomSortOrder": 2,
+            "category": "climate",
+            "categoryTitle": "热水器",
+            "model": "viomi.waterheater.e1",
+            "stateText": "已开 · 50°C",
+            "isOnline": True,
+            "isActiveOn": True,
+            "isPrimaryToggleable": True,
+            "isFavorite": False,
+            "pinyinInitials": "wsjrsq",
+            "pinyinFull": "",
+            "roomPinyinInitials": "wsj",
+            "capabilities": {
+                "canTogglePower": True,
+                "temperatureWritable": True,
+                "targetTemperature": 50.0,
+                "currentTemperature": 48.0,
+                "minTemp": 35.0,
+                "maxTemp": 75.0,
+                "step": 1.0,
+            },
+        })
+        self.path.write_text(json.dumps(snap), encoding="utf-8")
+        res, app = self.call_tool("set_temperature", {"device": "卫生间热水器", "celsius": 60})
+        self.assertFalse(res["isError"])
+        self.assertEqual(app.query()["celsius"], "60")
+        res, app = self.call_tool("set_temperature", {"device": "卫生间热水器", "celsius": 101})
+        self.assertTrue(res["isError"])
+        self.assertEqual(app.opened, [])
+
         # 风扇同时传 percent 与 preset 视为歧义
         res, app = self.call_tool("set_fan", {"device": "客厅风扇", "percent": 50, "preset": "自然风"})
         self.assertTrue(res["isError"])

@@ -222,11 +222,11 @@ function kelvinOptions(device: RaycastDevice): number[] {
 function temperatureOptions(device: RaycastDevice): number[] {
   const rawMin = device.capabilities.minTemp ?? 16;
   const rawMax = device.capabilities.maxTemp ?? 30;
-  const min = Math.max(-30, Math.min(50, Math.min(rawMin, rawMax)));
-  const max = Math.max(-30, Math.min(50, Math.max(rawMin, rawMax)));
+  const min = Math.max(-30, Math.min(100, Math.min(rawMin, rawMax)));
+  const max = Math.max(-30, Math.min(100, Math.max(rawMin, rawMax)));
   const step = device.capabilities.step && device.capabilities.step > 0 ? device.capabilities.step : 1;
   const options: number[] = [];
-  for (let value = min; value <= max + 1e-9 && options.length < 40; value += step) {
+  for (let value = min; value <= max + 1e-9 && options.length < 150; value += step) {
     options.push(Math.round(value * 10) / 10);
   }
   return options;

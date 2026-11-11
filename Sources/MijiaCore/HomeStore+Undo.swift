@@ -83,10 +83,12 @@ extension HomeStore {
         // so the end of whatever ordinary toast is on screen cannot bring it back.
         isSessionToastSuspended = false
         if toastNotice?.persistent == true { dismissToast() }
-        // Safety alerts and cleared rows belong to the connection that recorded them: an alert's
-        // 立即关闭 names an entity of that home, and a row cleared there would arrive already hidden
-        // in the next one (§13).
+        // Safety alerts, doorbell presses, and cleared rows belong to the connection that recorded
+        // them: an alert's 立即关闭 names an entity of that home, a doorbell press must not carry
+        // across homes or suppress a matching key there, and a row cleared there would arrive
+        // already hidden in the next one (§13).
         recentSafetyAlerts = []
+        recentDoorbellRings = []
         dismissedActivityIds = []
     }
 

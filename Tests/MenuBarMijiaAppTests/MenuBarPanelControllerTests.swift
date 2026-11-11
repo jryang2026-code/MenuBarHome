@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 import Testing
-import MijiaCore
+@testable import MijiaCore
 @testable import MenuBarMijiaApp
 
 @MainActor
@@ -2316,6 +2316,59 @@ struct MenuBarPanelControllerTests {
         let range = CameraPictureInPicture.livePlaybackTimeRange()
         #expect(range.isValid)
         #expect(range.duration.isPositiveInfinity)
+    }
+
+    @Test("Moving, resizing, or interacting with a doorbell camera window cancels auto-dismiss (#308)")
+    func doorbellCameraUserTakeoverCancelsAutoDismiss() async throws {
+        _ = NSApplication.shared
+        let (store, suite) = try await makeStore()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let camera = try #require(store.devices.first(where: {
+            if case .camera = $0.kind { return true }
+            return false
+        }))
+
+        let cameraController = CameraLivePanelController.shared
+        cameraController.presentsActively = false
+        cameraController.install(with: store)
+        defer {
+            cameraController.closePanel()
+            cameraController.presentsActively = true
+        }
+
+        store.doorbellAutoPopup = true
+        store.doorbellChime = false
+        store.handleDoorbellRing(DoorbellRing(deviceId: camera.id, entityId: "event.door_ring", firedAt: "2026-11-11T06:00:00Z"))
+        let panel = try #require(cameraController.panelWindow)
+        #expect(cameraController.isVisible)
+        #expect(cameraController.isDoorbellPlacement)
+        #expect(cameraController.doorbellOwnsClose)
+        #expect(cameraController.hasPendingDoorbellAutoDismiss)
+
+        // Dragging the window hands both close ownership and placement ownership to the user,
+        // and a subsequent press while the claimed window is open must not re-arm auto-close.
+        cameraController.windowWillMove(Notification(name: NSWindow.willMoveNotification, object: panel))
+        #expect(!cameraController.isDoorbellPlacement)
+        #expect(!cameraController.doorbellOwnsClose)
+        #expect(!cameraController.hasPendingDoorbellAutoDismiss)
+        store.handleDoorbellRing(DoorbellRing(deviceId: camera.id, entityId: "event.door_ring", firedAt: "2026-11-11T06:01:00Z"))
+        #expect(!cameraController.hasPendingDoorbellAutoDismiss)
+
+        // Reset and check live-resize takeover vs non-positional HUD interaction (mute).
+        cameraController.closePanel()
+        store.handleDoorbellRing(DoorbellRing(deviceId: camera.id, entityId: "event.door_ring", firedAt: "2026-11-11T06:02:00Z"))
+        #expect(cameraController.hasPendingDoorbellAutoDismiss)
+        cameraController.toggleMute()
+        #expect(!cameraController.doorbellOwnsClose)
+        #expect(!cameraController.hasPendingDoorbellAutoDismiss)
+        #expect(cameraController.isDoorbellPlacement, "muting keeps doorbell placement so auto-top-right never overwrites saved frame")
+
+        cameraController.closePanel()
+        store.handleDoorbellRing(DoorbellRing(deviceId: camera.id, entityId: "event.door_ring", firedAt: "2026-11-11T06:03:00Z"))
+        #expect(cameraController.hasPendingDoorbellAutoDismiss)
+        cameraController.windowWillStartLiveResize(Notification(name: NSWindow.willStartLiveResizeNotification, object: panel))
+        #expect(!cameraController.isDoorbellPlacement)
+        #expect(!cameraController.hasPendingDoorbellAutoDismiss)
     }
 
 

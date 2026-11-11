@@ -327,6 +327,8 @@ struct AppURLCommandTests {
 
         let temperature = try #require(URL(string: "menumijia://temperature?device=dev_ac&celsius=25.5"))
         #expect(AppURLParser.parse(temperature) == .temperature(deviceId: "dev_ac", celsius: 25.5))
+        let hotWater = try #require(URL(string: "menumijia://temperature?device=dev_water_heater&celsius=65"))
+        #expect(AppURLParser.parse(hotWater) == .temperature(deviceId: "dev_water_heater", celsius: 65))
 
         let fanPercent = try #require(URL(string: "menumijia://fan?device=dev_fan&percent=60"))
         #expect(AppURLParser.parse(fanPercent) == .fan(deviceId: "dev_fan", percent: 60, preset: nil))
@@ -345,7 +347,8 @@ struct AppURLCommandTests {
             "menumijia://brightness?device=dev_light&percent=-1",
             "menumijia://color-temp?device=dev_light&kelvin=999",
             "menumijia://temperature?device=dev_ac&celsius=nan",
-            "menumijia://temperature?device=dev_ac&celsius=80",
+            "menumijia://temperature?device=dev_ac&celsius=101",
+            "menumijia://temperature?device=dev_ac&celsius=-31",
             "menumijia://fan?device=dev_fan",
             "menumijia://fan?device=dev_fan&percent=250",
             "menumijia://fan?device=dev_fan&percent=60&preset=Auto",
@@ -487,6 +490,17 @@ struct AppURLCommandTests {
         commands = await provider.executedCommands
         #expect(commands.count == 4)
 
+        // Water-heater temperatures (up to 100 °C) still clamp an AC to its own 30 °C ceiling.
+        let clampedAC = await store.executeRaycastTemperature(deviceId: "dev_study_ac", celsius: 75)
+        #expect(!clampedAC.isError)
+        guard case .climate(let maxACSpec) = try #require(device("dev_study_ac")?.kind) else {
+            Issue.record("expected a climate device")
+            return
+        }
+        #expect(maxACSpec.targetTemperature == 30.0)
+        commands = await provider.executedCommands
+        #expect(commands.last == .setClimateTemperature(entityId: "climate.study", temperature: 30.0))
+
         // Fan percentage powers on and switches to Favorite, the mode purifiers honour a speed in.
         let faster = await store.executeRaycastFan(deviceId: "dev_bedroom_fan", percent: 70, preset: nil)
         #expect(!faster.isError)
@@ -516,7 +530,7 @@ struct AppURLCommandTests {
         #expect(unknown.isError)
         #expect(unknown.message.contains("Auto"))
         commands = await provider.executedCommands
-        #expect(commands.count == 6)
+        #expect(commands.count == 7)
 
         // Explicit power: on/off set the state, and asking for the state it already holds is a no-op.
         let turnedOn = await store.executeRaycastPower(deviceId: "dev_bedroom_fan", isOn: true)
@@ -525,7 +539,7 @@ struct AppURLCommandTests {
         #expect(!alreadyOn.isError)
         #expect(alreadyOn.message.contains("已经"))
         commands = await provider.executedCommands
-        #expect(commands.count == 6, "an already-satisfied power link sends nothing")
+        #expect(commands.count == 7, "an already-satisfied power link sends nothing")
 
         let turnedOff = await store.executeRaycastPower(deviceId: "dev_bedroom_fan", isOn: false)
         #expect(!turnedOff.isError)

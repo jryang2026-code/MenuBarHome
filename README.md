@@ -236,7 +236,7 @@ MenuBarHome can hand its device list to a companion without sharing any credenti
 | `scripts/mijia on 客厅射灯` / `scripts/mijia off 客厅射灯` | Set an exact power state instead of flipping |
 | `scripts/mijia brightness 书房台灯 60` | Set light brightness (`0`–`100`%) |
 | `scripts/mijia color-temp 书房台灯 4000` | Set light colour temperature (`1000`–`20000` K) |
-| `scripts/mijia temperature 书房空调 25` | Set target temperature (`-30`–`50` ℃) |
+| `scripts/mijia temperature 书房空调 25` | Set target temperature (`-30`–`100` ℃) |
 | `scripts/mijia fan 客厅风扇 --percent 60` / `--preset 自然风` | Set fan speed percentage (`1`–`100`%) or a reported preset mode |
 | `scripts/mijia focus 书房台灯` | Reveal the device's room and detail drawer in the panel without actuating hardware |
 | `scripts/mijia scene 观影模式` | Run a Home Assistant scene or a built-in quick action (全屋关灯, 一键全关, 撤销…) |

@@ -18,6 +18,7 @@ extension CameraLivePanelController {
 
     public func ptzDragBegan(at point: CameraPTZPoint) {
         guard isPTZEnabled, let client = ptzClient, let deviceId = activeDeviceId else { return }
+        claimDoorbellWindowForUser(claimsPlacement: false)
         finishPTZMove()
         let dragID = UUID()
         ptzDragID = dragID

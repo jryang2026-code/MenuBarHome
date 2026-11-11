@@ -236,7 +236,7 @@ brew install --cask jryang2026-code/tap/menubarhome
 | `scripts/mijia on 客厅射灯` / `scripts/mijia off 客厅射灯` | 按目标状态开关，不再依赖当前状态 |
 | `scripts/mijia brightness 书房台灯 60` | 按百分比调节灯光亮度（`0`–`100`%） |
 | `scripts/mijia color-temp 书房台灯 4000` | 按开尔文调节灯光色温（`1000`–`20000` K） |
-| `scripts/mijia temperature 书房空调 25` | 设定目标温度（`-30`–`50` ℃） |
+| `scripts/mijia temperature 书房空调 25` | 设定目标温度（`-30`–`100` ℃） |
 | `scripts/mijia fan 客厅风扇 --percent 60` / `--preset 自然风` | 设定风速百分比（`1`–`100`%）或设备上报的档位 |
 | `scripts/mijia focus 书房台灯` | 在面板中定位到设备所在房间并展开详情抽屉（不操作硬件） |
 | `scripts/mijia scene 观影模式` | 执行 Home Assistant 场景或内置快捷动作（全屋关灯、一键全关、撤销……） |
