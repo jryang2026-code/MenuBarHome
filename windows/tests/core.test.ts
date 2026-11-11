@@ -243,24 +243,24 @@ describe("Secure credential storage (#28 / #27 / #49)", () => {
     await vault.persist({ miSession: session, haToken: "ha-token", assistantApiKey: "sk-live" });
     assert.deepEqual(
       calls.filter((call) => call.cmd === "secure_store_set").map((call) => call.name).sort(),
-      ["assistant_api_key", "ha_token", "mi_session"]
+      ["assistant_api_key_openrouter_jev", "ha_token", "mi_session"]
     );
     assert.equal(store.get("mi_session")?.includes("passToken"), false);
 
     await vault.persist({ miSession: session, haToken: "", assistantApiKey: "" });
     assert.deepEqual(
       calls.filter((call) => call.cmd === "secure_store_delete").map((call) => call.name).sort(),
-      ["assistant_api_key", "ha_token"]
+      ["assistant_api_key_openrouter_jev", "ha_token"]
     );
     assert.equal(store.has("ha_token"), false);
-    assert.equal(store.has("assistant_api_key"), false);
+    assert.equal(store.has("assistant_api_key_openrouter_jev"), false);
   });
 
   it("hydrates credentials from the store without rewriting them", async () => {
     const { vault, calls } = recordingVault({
       mi_session: serializeMiSession(session),
       ha_token: "ha-token",
-      assistant_api_key: "sk-live",
+      assistant_api_key_openrouter_jev: "sk-live",
     });
     const loaded = await vault.load();
     assert.equal(loaded.miSession?.userId, "100");
@@ -270,6 +270,120 @@ describe("Secure credential storage (#28 / #27 / #49)", () => {
 
     await vault.persist(loaded);
     assert.equal(calls.some((call) => call.cmd === "secure_store_set"), false);
+  });
+
+  it("migrates legacy assistant_api_key into the active provider slot once and isolates providers", async () => {
+    const { vault, store } = recordingVault({
+      assistant_api_key: "sk-legacy-deepseek",
+    });
+    const migrated = await vault.load("deepseek");
+    assert.equal(migrated.assistantApiKey, "sk-legacy-deepseek");
+    assert.equal(store.get("assistant_api_key_deepseek"), "sk-legacy-deepseek");
+    assert.equal(store.has("assistant_api_key"), false);
+
+    await vault.persist({
+      miSession: null,
+      haToken: "",
+      assistantApiKey: "sk-or-new",
+      assistantApiKeys: {
+        ...migrated.assistantApiKeys,
+        openrouter_jev: "sk-or-new",
+      },
+    });
+    assert.equal(store.get("assistant_api_key_deepseek"), "sk-legacy-deepseek");
+    assert.equal(store.get("assistant_api_key_openrouter_jev"), "sk-or-new");
+  });
+
+  it("still hydrates miSession and haToken when legacy key migration fails, and retries on persist", async () => {
+    const store = new Map<string, string>([
+      ["mi_session", serializeMiSession(session)],
+      ["ha_token", "ha-good"],
+      ["assistant_api_key", "sk-legacy"],
+    ]);
+    let failWrites = true;
+    const vault = new CredentialVault(async <T>(cmd: string, args: Record<string, unknown>): Promise<T | null> => {
+      const name = String(args.name ?? "");
+      if (cmd === "secure_store_get") return (store.get(name) ?? null) as T | null;
+      if (cmd === "secure_store_set" && failWrites) throw new Error("credential store locked");
+      if (cmd === "secure_store_set") store.set(name, String(args.value ?? ""));
+      if (cmd === "secure_store_delete") store.delete(name);
+      return null;
+    });
+
+    const loaded = await vault.load("openrouter_jev");
+    assert.equal(loaded.miSession?.userId, "100");
+    assert.equal(loaded.haToken, "ha-good");
+    assert.equal(loaded.assistantApiKey, "sk-legacy");
+    assert.equal(store.get("assistant_api_key"), "sk-legacy");
+
+    // While writes still fail (even if deletes succeed), persist must not delete the legacy copy.
+    await assert.rejects(() => vault.persist(loaded));
+    assert.equal(store.get("assistant_api_key"), "sk-legacy");
+
+    failWrites = false;
+    await vault.persist(loaded);
+    assert.equal(store.get("assistant_api_key_openrouter_jev"), "sk-legacy");
+    assert.equal(store.has("assistant_api_key"), false);
+  });
+
+  it("never copies a retained legacy key into a second provider when delete failed", async () => {
+    const store = new Map<string, string>([
+      ["assistant_api_key", "sk-or-only"],
+    ]);
+    const invoke = async <T>(cmd: string, args: Record<string, unknown>): Promise<T | null> => {
+      const name = String(args.name ?? "");
+      if (cmd === "secure_store_get") return (store.get(name) ?? null) as T | null;
+      if (cmd === "secure_store_set") store.set(name, String(args.value ?? ""));
+      if (cmd === "secure_store_delete") throw new Error("delete denied");
+      return null;
+    };
+
+    const firstBoot = new CredentialVault(invoke);
+    const first = await firstBoot.load("openrouter_jev", "openrouter.ai");
+    assert.equal(first.assistantApiKey, "sk-or-only");
+    assert.equal(store.get("assistant_api_key_openrouter_jev"), "sk-or-only");
+    assert.equal(store.get("assistant_api_key"), "sk-or-only");
+
+    // Next boot after switching to DeepSeek: OpenRouter's slot already exists, so DeepSeek stays empty.
+    const secondBoot = new CredentialVault(invoke);
+    const second = await secondBoot.load("deepseek", "openrouter.ai");
+    assert.equal(second.assistantApiKey, "");
+    assert.equal(store.has("assistant_api_key_deepseek"), false);
+    assert.equal(second.assistantApiKeys?.openrouter_jev, "sk-or-only");
+  });
+
+  it("retains the legacy entry when an unrelated provider slot exists but the legacy owner's slot failed to write", async () => {
+    const store = new Map<string, string>([
+      ["assistant_api_key", "sk-or-legacy"],
+      ["assistant_api_key_deepseek", "sk-ds-saved"],
+    ]);
+    let blockOpenRouterWrite = true;
+    const invoke = async <T>(cmd: string, args: Record<string, unknown>): Promise<T | null> => {
+      const name = String(args.name ?? "");
+      if (cmd === "secure_store_get") return (store.get(name) ?? null) as T | null;
+      if (cmd === "secure_store_set") {
+        if (blockOpenRouterWrite && name === "assistant_api_key_openrouter_jev") {
+          throw new Error("openrouter slot blocked");
+        }
+        store.set(name, String(args.value ?? ""));
+      }
+      if (cmd === "secure_store_delete") store.delete(name);
+      return null;
+    };
+
+    const firstBoot = new CredentialVault(invoke);
+    const loaded = await firstBoot.load("deepseek", "openrouter.ai");
+    assert.equal(loaded.assistantApiKey, "sk-ds-saved");
+    assert.equal(loaded.assistantApiKeys?.openrouter_jev, "sk-or-legacy");
+    // Unrelated DeepSeek slot must NOT cause the legacy OpenRouter entry to be deleted while its own slot failed.
+    assert.equal(store.get("assistant_api_key"), "sk-or-legacy");
+
+    blockOpenRouterWrite = false;
+    const nextBoot = new CredentialVault(invoke);
+    await nextBoot.load("deepseek", "openrouter.ai");
+    assert.equal(store.get("assistant_api_key_openrouter_jev"), "sk-or-legacy");
+    assert.equal(store.get("assistant_api_key_deepseek"), "sk-ds-saved");
+    assert.equal(store.has("assistant_api_key"), false);
   });
 
   it("uses Web Crypto, not Math.random, for the MIoT nonce (#49)", () => {

@@ -3,6 +3,7 @@ import { GrokBallView } from "./grokBall.js";
 import {
   assistantEndpointIdentity,
   endpointAllowsSendingSecrets,
+  inferAssistantPreset,
   partitionHabitReceipt,
   type HabitLastAction,
   type HabitRecordingReceipt,
@@ -141,6 +142,8 @@ export class MenuMijiaWindowsApp {
   public readonly loadedSettings: LoadedSettings = loadSettings();
   public settings: PersistedSettings = this.loadedSettings.settings;
   public readonly credentialVault = new CredentialVault();
+  /** Per-provider saved API keys in memory (`CODING_STANDARDS.md` §6); never written to localStorage. */
+  public assistantKeysByPreset: Record<string, string> = {};
   public lastSubmittedEndpoints: string | null = null;
   // Assigned in the constructor, after the interface language is resolved: the demo home is
   // generated per language (#52), so a field initializer would freeze the module default.
@@ -1510,23 +1513,42 @@ export class MenuMijiaWindowsApp {
     }).catch((error: unknown) => console.error("Panel geometry update failed", error));
   }
 
-  /** The saved API key, only when it was saved for this server (#19). */
+  /** The saved API key, isolated per provider preset and bound to custom host (#19, §6). */
   public apiKeyFor(baseURL: string): string {
+    const identity = assistantEndpointIdentity(baseURL);
+    if (!identity) return "";
+    const preset = inferAssistantPreset(baseURL);
+    if (preset.id !== "custom") {
+      const slotKey = this.assistantKeysByPreset[preset.id]?.trim() ?? "";
+      if (slotKey) return slotKey;
+    } else {
+      const customEndpoint = this.settings.assistantCustomKeyEndpoint ?? this.settings.assistantKeyEndpoint;
+      if (identity === customEndpoint) {
+        const customKey = this.assistantKeysByPreset.custom?.trim() ?? "";
+        if (customKey) return customKey;
+      }
+    }
     const key = this.settings.openRouterApiKey.trim();
     if (!key) return "";
-    const identity = assistantEndpointIdentity(baseURL);
-    return identity !== null && identity === this.settings.assistantKeyEndpoint ? key : "";
+    return identity === this.settings.assistantKeyEndpoint ? key : "";
   }
 
-  /** Pointing the address at another server clears the saved key from the form; switching back restores it. */
+  private isKnownSavedKey(candidate: string): boolean {
+    if (!candidate) return false;
+    if (candidate === this.settings.openRouterApiKey.trim()) return true;
+    return Object.values(this.assistantKeysByPreset).some((value) => value.trim() === candidate);
+  }
+
+  /** Pointing the address at another server loads its own slot or clears the previous provider's saved key. */
   public syncKeyFieldWithEndpoint(apiKeyEl: HTMLInputElement, baseURL: string): void {
-    const savedKey = this.settings.openRouterApiKey.trim();
-    if (!savedKey) return;
-    const belongs = this.apiKeyFor(baseURL) !== "";
-    if (!belongs && apiKeyEl.value.trim() === savedKey) {
+    const targetKey = this.apiKeyFor(baseURL);
+    const current = apiKeyEl.value.trim();
+    if (targetKey !== "") {
+      if (current === "" || this.isKnownSavedKey(current)) {
+        apiKeyEl.value = targetKey;
+      }
+    } else if (this.isKnownSavedKey(current)) {
       apiKeyEl.value = "";
-    } else if (belongs && apiKeyEl.value.trim() === "") {
-      apiKeyEl.value = savedKey;
     }
   }
 

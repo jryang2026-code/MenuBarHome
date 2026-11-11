@@ -77,6 +77,21 @@ pub(crate) async fn start_xiaomi_camera_bridge(
     Ok(format!("{h264_name}|{mjpeg_name}"))
 }
 
+pub(crate) fn validate_hls_stream_url(hls_url: &str) -> Result<reqwest::Url, String> {
+    let trimmed = hls_url.trim();
+    if trimmed.contains('#') || trimmed.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("HLS 流地址不能包含 # 片段或控制字符".to_string());
+    }
+    let parsed = reqwest::Url::parse(trimmed).map_err(|_| "无效的 HLS 流地址".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("HLS 流地址必须使用 http 或 https 协议".to_string());
+    }
+    if parsed.fragment().is_some() {
+        return Err("HLS 流地址不能包含 # 片段".to_string());
+    }
+    Ok(parsed)
+}
+
 #[tauri::command]
 pub(crate) async fn bridge_hls_camera_stream(
     app: AppHandle,
@@ -84,11 +99,7 @@ pub(crate) async fn bridge_hls_camera_stream(
     hls_url: String,
 ) -> Result<String, String> {
     let _bridge_order = CAMERA_BRIDGE_LOCK.lock().await;
-    let parsed =
-        reqwest::Url::parse(hls_url.trim()).map_err(|_| "无效的 HLS 流地址".to_string())?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err("HLS 流地址必须使用 http 或 https 协议".to_string());
-    }
+    let parsed = validate_hls_stream_url(&hls_url)?;
     ensure_go2rtc_running(&app).await?;
     let session = current_go2rtc_session()?;
     let clean_did: String = did
@@ -1143,6 +1154,7 @@ pub(crate) async fn spawn_fresh_go2rtc(
             command.creation_flags(CREATE_NO_WINDOW);
         }
         let child = command.spawn().map_err(|e| format!("启动 go2rtc 失败：{e}"))?;
+        crate::job_object::bind_child_to_kill_on_close_job(&child);
         let pid = child.id();
         if let Ok(mut guard) = GO2RTC_PROCESS.lock() {
             *guard = Some(child);
@@ -1219,7 +1231,6 @@ pub(crate) async fn ensure_go2rtc_running(app: &AppHandle) -> Result<(), String>
 #[derive(Serialize)]
 pub(crate) struct Go2RtcEndpoint {
     origin: String,
-    authorization: String,
 }
 
 #[tauri::command]
@@ -1231,10 +1242,7 @@ pub(crate) async fn go2rtc_endpoint(app: AppHandle) -> Result<Go2RtcEndpoint, St
     if !origin.starts_with("http://127.0.0.1:") || !is_acceptable_go2rtc_listen(&session.api_listen) {
         return Err("本地流媒体地址无效".to_string());
     }
-    Ok(Go2RtcEndpoint {
-        origin,
-        authorization: basic_authorization_value(&session.username, &session.password),
-    })
+    Ok(Go2RtcEndpoint { origin })
 }
 
 pub(crate) fn is_go2rtc_stream_name(src: &str) -> bool {

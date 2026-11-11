@@ -1,4 +1,4 @@
-import { assistantEndpointIdentity, resolveHabitSharing, type HabitEntry } from "../core/assistant.js";
+import { assistantEndpointIdentity, inferAssistantPreset, resolveHabitSharing, type HabitEntry } from "../core/assistant.js";
 import { normalizeCameraStreamQualityMap } from "../core/cameraQuality.js";
 import { parseCachedHAHome } from "../core/homeAssistant.js";
 import { normalizeMiCloudRegion } from "../core/miCloudClient.js";
@@ -76,6 +76,22 @@ export function loadSettings(): LoadedSettings {
       if (habitShare.persistOff) {
         writeSettingsForStorage({ ...parsed, habitShareEnabled: false });
       }
+      const resolvedKeyEndpoint =
+        parsed.assistantKeyEndpoint !== undefined
+          ? parsed.assistantKeyEndpoint
+          : parsed.openRouterApiKey
+            ? assistantEndpointIdentity(parsed.assistantBaseURL ?? "https://openrouter.ai/api/v1")
+            : null;
+      const assistantCustomKeyEndpoint =
+        typeof parsed.assistantCustomKeyEndpoint === "string" || parsed.assistantCustomKeyEndpoint === null
+          ? parsed.assistantCustomKeyEndpoint
+          : resolvedKeyEndpoint && inferAssistantPreset(`https://${resolvedKeyEndpoint}`).id === "custom"
+            ? resolvedKeyEndpoint
+            : null;
+      const assistantLegacyKeyEndpoint =
+        typeof parsed.assistantLegacyKeyEndpoint === "string" || parsed.assistantLegacyKeyEndpoint === null
+          ? parsed.assistantLegacyKeyEndpoint
+          : resolvedKeyEndpoint;
       return {
         settings: {
           connectionMode: mode,
@@ -87,12 +103,9 @@ export function loadSettings(): LoadedSettings {
           assistantBaseURL: parsed.assistantBaseURL ?? "https://openrouter.ai/api/v1",
           openRouterApiKey: rawApiKey,
           // Keys saved before binding existed belong to the URL saved alongside them.
-          assistantKeyEndpoint:
-            parsed.assistantKeyEndpoint !== undefined
-              ? parsed.assistantKeyEndpoint
-              : parsed.openRouterApiKey
-                ? assistantEndpointIdentity(parsed.assistantBaseURL ?? "https://openrouter.ai/api/v1")
-                : null,
+          assistantKeyEndpoint: resolvedKeyEndpoint,
+          assistantCustomKeyEndpoint,
+          assistantLegacyKeyEndpoint,
           cloudConsentEndpoints: Array.isArray(parsed.cloudConsentEndpoints)
             ? parsed.cloudConsentEndpoints.filter((e): e is string => typeof e === "string")
             : [],
@@ -183,6 +196,8 @@ export function loadSettings(): LoadedSettings {
       assistantBaseURL: "https://openrouter.ai/api/v1",
       openRouterApiKey: "",
       assistantKeyEndpoint: null,
+      assistantCustomKeyEndpoint: null,
+      assistantLegacyKeyEndpoint: null,
       cloudConsentEndpoints: [],
       allOffOverrides: {},
       assistantModel: "~typesafe/jev-latest",
