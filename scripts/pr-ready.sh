@@ -30,6 +30,9 @@ import re
 import sys
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", newline="\n")
+
 tmp = Path(sys.argv[1])
 meta = json.loads((tmp / "meta.json").read_text(encoding="utf-8"))
 head = meta["headRefOid"]

@@ -195,10 +195,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key>
     <string>com.jryang1997.MenuBarMijia</string>
     <!-- #57 External URL Scheme: menumijia://toggle?device=…, scene?name=…, ask?text=…
-         App Intents themselves need Metadata.appintents, which Xcode's
-         appintentsmetadataprocessor emits; SwiftPM does not produce the compiler's const-value
-         side outputs, so Shortcuts discovery may require an Xcode-project build. The URL Scheme
-         and in-app execution are unaffected. -->
+         App Intents metadata (Metadata.appintents) is generated below by
+         generate_app_intents_metadata unless SKIP_APP_INTENTS=1 on an ad-hoc build. -->
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
@@ -409,7 +407,9 @@ generate_app_intents_metadata() {
     echo "🧩 已嵌入 App Intents 元数据：$(du -h "$resources/extract.actionsdata" | awk '{print $1}') extract.actionsdata（快捷指令 / Siri 可发现）"
 }
 if [ "${APP_INTENTS_ONLY:-0}" = "1" ]; then
-    APP_DIR="$(mktemp -d)/MenuBarHome.app"
+    INTENTS_TMP_DIR="$(mktemp -d)"
+    trap 'rm -rf "$INTENTS_TMP_DIR"' EXIT
+    APP_DIR="$INTENTS_TMP_DIR/MenuBarHome.app"
     mkdir -p "$APP_DIR/Contents/Resources"
     generate_app_intents_metadata
     if [ ! -s "$APP_DIR/Contents/Resources/Metadata.appintents/extract.actionsdata" ]; then

@@ -142,7 +142,7 @@ canPTZ = buildHasMotorEndpoint
 
 扩展机制（新增一个型号或协议族时）：
 
-- 数据文件（沿用 `Resources/deviceProfiles.json` 风格）记录 `model → {transport, ptzOps, stopOps, evidence}`；未收录 = 未知。
+- 数据文件（沿用 `Sources/MijiaCore/Resources/deviceProfiles.json` 风格）记录 `model → {transport, ptzOps, stopOps, evidence}`；未收录 = 未知。
 - 新协议族只实现两种抽象之一：`move(step)`（有界步进）或 `move(continuous)+stop`（必须带服务端租约/看门狗）。
 - 任何“按品牌/系列批量放行”的规则都需要同族反例审查（CW500 就是反例）。
 

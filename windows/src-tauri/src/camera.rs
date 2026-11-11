@@ -1093,7 +1093,7 @@ pub(crate) async fn stop_owned_process(http: &reqwest::Client, record: &Go2RtcOw
         if !process_is_alive(record.pid) {
             break;
         }
-        std::thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     if process_is_alive(record.pid) {
         terminate_pid(record.pid);
@@ -1105,7 +1105,7 @@ pub(crate) async fn stop_owned_process(http: &reqwest::Client, record: &Go2RtcOw
 
 pub(crate) async fn wait_for_owned_api(http: &reqwest::Client, session: &Go2RtcSession) -> bool {
     for _ in 0..25 {
-        std::thread::sleep(Duration::from_millis(120));
+        tokio::time::sleep(Duration::from_millis(120)).await;
         let probe = probe_owned(http, session).await;
         if probe.authenticated && probe.nonce_matches {
             return true;

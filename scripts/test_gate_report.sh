@@ -135,6 +135,7 @@ git -C "$repo" init -q
 git -C "$repo" config user.email t@example.com
 git -C "$repo" config user.name t
 git -C "$repo" config commit.gpgsign false
+git -C "$repo" config core.autocrlf false
 mkdir -p "$repo/Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests"
 printf 'v1\n' >"$repo/Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests/a.png"
 git -C "$repo" add Tests
@@ -224,7 +225,7 @@ if (script.includes("tests/core.test.ts")) {
     console.error("FAIL test script 仍手工点名 tests/core.test.ts");
     process.exit(1);
 }
-const found = globSync("tests/*.test.ts", { cwd: "windows" }).sort();
+const found = globSync("tests/*.test.ts", { cwd: "windows" }).map((name) => name.replaceAll("\\", "/")).sort();
 const disk = readdirSync("windows/tests").filter((name) => name.endsWith(".test.ts")).map((name) => `tests/${name}`).sort();
 const missing = disk.filter((name) => !found.includes(name));
 const extra = found.filter((name) => !disk.includes(name));

@@ -133,7 +133,7 @@ extension HomeStore {
     public var favoriteDevices: [SmartDevice] {
         let favs = visibleDevices.filter { favoriteDeviceIds.contains($0.id) }
         guard !favoriteOrder.isEmpty else { return favs }
-        let orderIndex = Dictionary(uniqueKeysWithValues: favoriteOrder.enumerated().map { ($1, $0) })
+        let orderIndex = Dictionary(favoriteOrder.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
         return favs.sorted { a, b in
             let ia = orderIndex[a.id] ?? Int.max
             let ib = orderIndex[b.id] ?? Int.max

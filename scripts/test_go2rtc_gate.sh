@@ -12,11 +12,14 @@ fail() {
 
 ready="scripts/go2rtc-ptz/go_ready.sh"
 bash_bin="$(command -v bash)"
+sleep_bin="$(command -v sleep)"
 empty="$(mktemp -d)"
 cache="$(mktemp -d)"
 # PATH must not contain go. perl still has to be visible: the deadline uses it,
 # and macOS and Linux both ship perl outside the Go toolchain.
-ln -s "$(command -v perl)" "$empty/perl"
+# Wrap rather than ln -s so MSYS2 perl.exe keeps locating msys-2.0.dll in /usr/bin.
+printf '#!/bin/sh\nexec "%s" "$@"\n' "$(command -v perl)" > "$empty/perl"
+chmod +x "$empty/perl"
 trap 'rm -rf "$empty" "$cache"' EXIT
 
 expect_skip() {
@@ -70,7 +73,7 @@ rm -f "$out" "$err"
 # A stub that sleeps must not stall the gate. The skip itself returns 0.
 hang_pid="$cache/hang.pid"
 rm -f "$hang_pid"
-printf '%s\n' '#!/bin/sh' "echo \$\$ > '$hang_pid'" '/bin/sleep 30' >"$cache/go/bin/go"
+printf '%s\n' '#!/bin/sh' "echo \$\$ > '$hang_pid'" "\"$sleep_bin\" 30" >"$cache/go/bin/go"
 chmod +x "$cache/go/bin/go"
 start=$(date +%s)
 status=0

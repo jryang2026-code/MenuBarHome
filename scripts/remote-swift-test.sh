@@ -25,7 +25,7 @@ if [ -z "$host" ]; then
     exit 2
 fi
 
-root="$(git rev-parse --show-toplevel)"
+root="$(git rev-parse --show-toplevel 2>/dev/null || (cd "$(dirname "$0")/.." && pwd))"
 cd "$root"
 
 if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" 'command -v swift >/dev/null'; then

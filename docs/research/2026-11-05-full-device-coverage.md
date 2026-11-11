@@ -173,7 +173,7 @@
 
 ### 5.4 型号覆盖层数据化
 
-沿用 `Resources/fallbackSpecs.json` 的做法，新增一份**双端共享**的 `deviceProfiles.json`：
+沿用 `Sources/MijiaCore/Resources/fallbackSpecs.json` 的做法，新增一份**双端共享**的 `Sources/MijiaCore/Resources/deviceProfiles.json`：
 
 ```jsonc
 {

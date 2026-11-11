@@ -14,7 +14,7 @@
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-ROOT_DIR="$(git rev-parse --show-toplevel)"
+ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || (cd "$(dirname "$0")/.." && pwd))"
 SNAPSHOT_REL="Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests"
 SNAPSHOT_DIR="$ROOT_DIR/$SNAPSHOT_REL"
 DRY_RUN=0

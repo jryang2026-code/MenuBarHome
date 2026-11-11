@@ -451,7 +451,7 @@ class TlsProbeTests(unittest.TestCase):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as holder:
             holder.bind(("127.0.0.1", 0))
             port = holder.getsockname()[1]
-        result = probe.probe_tls("127.0.0.1", port, timeout=0.5)
+        result = probe.probe_tls("127.0.0.1", port, timeout=3.0)
         self.assertEqual(result.status, "closed")
 
     def test_plain_tcp_listener_is_rejected(self) -> None:

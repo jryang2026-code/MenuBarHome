@@ -189,12 +189,12 @@ struct ManualHabitRecordingTests {
     func learningDisabledRecordsNothing() async throws {
         let (store, _) = try await makeStore()
         store.isHabitLearningEnabled = false
+        store.controlDebounceInterval = .zero
         let dev = try #require(store.devices.first { $0.id == "dev_ceiling" })
 
         _ = await store.togglePrimary(dev)?.value
         store.setLightBrightness("dev_ceiling", percent: 50)
-        store.executeQuickAction(.lightsOff)
-        try await Task.sleep(for: .milliseconds(100))
+        _ = await store.executeQuickAction(.lightsOff)?.value
 
         #expect(store.userHabitMemory.entries.isEmpty)
     }

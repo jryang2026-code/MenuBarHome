@@ -983,9 +983,9 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
         case "power":
             return bool(from: value).map(IntentOperation.power)
         case "brightness":
-            return number(from: value).map { .brightness(Int($0.rounded())) }
+            return clampedInt(from: value).map(IntentOperation.brightness)
         case "color_temp", "color_temperature":
-            return number(from: value).map { .colorTemperature(Int($0.rounded())) }
+            return clampedInt(from: value).map(IntentOperation.colorTemperature)
         case "effect", "light_effect":
             return (value as? String).map(IntentOperation.lightEffect)
         case "hvac_mode", "mode":
@@ -995,7 +995,7 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
         case "scene":
             return .activateScene
         case "brightness_step":
-            return number(from: value).map { .brightnessStep(Int($0.rounded())) }
+            return clampedInt(from: value).map(IntentOperation.brightnessStep)
         case "temperature_step":
             return number(from: value).map(IntentOperation.temperatureStep)
         case "fan_speed", "fan_mode", "preset":
@@ -1022,11 +1022,22 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
     }
 
     private static func number(from value: Any?) -> Double? {
+        let parsed: Double?
         switch value {
-        case let n as NSNumber: return n.doubleValue
-        case let s as String: return Double(s.trimmingCharacters(in: CharacterSet(charactersIn: " %°CcKk")))
-        default: return nil
+        case let n as NSNumber: parsed = n.doubleValue
+        case let s as String: parsed = Double(s.trimmingCharacters(in: CharacterSet(charactersIn: " %°CcKk")))
+        default: parsed = nil
         }
+        guard let result = parsed, result.isFinite else { return nil }
+        return result
+    }
+
+    private static func clampedInt(from value: Any?) -> Int? {
+        guard let num = number(from: value) else { return nil }
+        let rounded = num.rounded()
+        if rounded >= Double(Int.max) { return Int.max }
+        if rounded <= Double(Int.min) { return Int.min }
+        return Int(rounded)
     }
 
     /// Extracts the first balanced `{...}` JSON object, tolerating `<think>...</think>` blocks,

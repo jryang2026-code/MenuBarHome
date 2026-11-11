@@ -60,6 +60,8 @@ self_test() {
     git init -q "$tmp/repo"
     git -C "$tmp/repo" config user.email "red-check@example.com"
     git -C "$tmp/repo" config user.name "red-check"
+    git -C "$tmp/repo" config commit.gpgsign false
+    git -C "$tmp/repo" config core.autocrlf false
     printf '%s\n' old > "$tmp/repo/app.txt"
     git -C "$tmp/repo" add app.txt
     git -C "$tmp/repo" commit -q -m base

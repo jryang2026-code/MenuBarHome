@@ -1377,6 +1377,7 @@ struct LGWebOSSettingsSection: View {
                     .toggleStyle(.glass)
                     .controlSize(.regular)
                     .onChange(of: isEnabled) { _, newValue in
+                        guard newValue != store.lgConfig.isEnabled else { return }
                         var next = store.lgConfig
                         next.isEnabled = newValue
                         next.host = hostDraft.trimmingCharacters(in: .whitespacesAndNewlines)

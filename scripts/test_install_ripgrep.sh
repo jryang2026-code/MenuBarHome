@@ -19,13 +19,18 @@ tools="$tmp/tools"
 home="$tmp/home"
 err="$tmp/err"
 mkdir -p "$bin" "$tools" "$home"
+wrap_tool() {
+    local src="$1" dest="$2"
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$src" > "$dest"
+    chmod +x "$dest"
+}
 link_tool() {
     local cmd="$1" src
     src="$(command -v "$cmd" 2>/dev/null || true)"
     if [[ -z "$src" ]]; then
         return 1
     fi
-    ln -s "$src" "$tools/$cmd"
+    wrap_tool "$src" "$tools/$cmd"
 }
 for cmd in mkdir mktemp tar gzip chmod cp rm id head cat; do
     link_tool "$cmd" || {
@@ -237,9 +242,9 @@ if command -v shasum >/dev/null 2>&1; then
 sha_tools="$tmp/sha-tools"
 mkdir -p "$sha_tools"
 for cmd in mkdir mktemp tar gzip chmod cp rm id head cat; do
-    ln -s "$tools/$cmd" "$sha_tools/$cmd"
+    wrap_tool "$tools/$cmd" "$sha_tools/$cmd"
 done
-ln -s "$(command -v shasum)" "$sha_tools/shasum"
+wrap_tool "$(command -v shasum)" "$sha_tools/shasum"
 rm -f "$bin/sha256sum" "$bin/shasum" "$bin/rg"
 rm -rf "$home/.local"
 : >"$RG_TEST_LOG"
@@ -276,10 +281,13 @@ rm -f "$bin/shasum"
 # Mac pre-commit has shasum and no sha256sum. The harness must finish on that PATH.
 if [[ "${RG_TEST_SHASUM_ONLY:-0}" != 1 ]]; then
     shim="$(mktemp -d)"
-    for cmd in bash dirname mkdir mktemp tar gzip chmod cp rm id head cat python3 ln grep sed; do
-        ln -s "$(command -v "$cmd")" "$shim/$cmd"
+    for cmd in bash dirname mkdir mktemp tar gzip chmod cp rm id head cat ln grep sed; do
+        wrap_tool "$(command -v "$cmd")" "$shim/$cmd"
     done
-    ln -s "$(command -v shasum)" "$shim/shasum"
+    if command -v python3 >/dev/null 2>&1; then
+        wrap_tool "$(command -v python3)" "$shim/python3"
+    fi
+    wrap_tool "$(command -v shasum)" "$shim/shasum"
     set +e
     shim_out="$(RG_TEST_SHASUM_ONLY=1 PATH="$shim" "$bash_bin" "$root/scripts/test_install_ripgrep.sh" 2>&1)"
     shim_status=$?

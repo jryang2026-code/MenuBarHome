@@ -544,7 +544,13 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
 
     private func existingOwnedRecord() -> Go2RTCOwnerRecord? {
         if let proc = go2rtcProcess, proc.isRunning, let activeOwner {
-            return Go2RTCOwnerRecord(pid: proc.processIdentifier, session: activeOwner.session)
+            return Go2RTCOwnerRecord(
+                pid: proc.processIdentifier,
+                session: activeOwner.session,
+                binaryPath: activeOwner.binaryPath,
+                binarySize: activeOwner.binarySize,
+                binaryModifiedAt: activeOwner.binaryModifiedAt
+            )
         }
         if let activeOwner, Self.processIsAlive(activeOwner.pid) {
             return activeOwner

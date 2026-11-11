@@ -5,9 +5,12 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+from pathlib import Path
+import sys
 import unittest
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import measure_footprint as fp
 
 
@@ -258,7 +261,10 @@ class CommandLineTests(unittest.TestCase):
         return code, output.getvalue()
 
     def test_no_live_json_prints_a_report(self):
-        code, output = self.run_main(["--no-live", "--json"])
+        with mock.patch.object(fp._platform, "system", return_value="Darwin"), mock.patch.object(
+            fp._platform, "machine", return_value="arm64"
+        ):
+            code, output = self.run_main(["--no-live", "--json"])
         self.assertEqual(code, 0)
         decoded = json.loads(output)
         self.assertEqual(decoded["mode"], "baseline")

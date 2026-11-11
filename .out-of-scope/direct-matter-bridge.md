@@ -59,7 +59,7 @@ Matter 控制器按订阅模型工作。Apple 家庭中枢连上桥以后会订�
 按投入从低到高，三条现成路径：
 
 1. **原生 Matter 设备，或明确声明可作 Matter Bridge 的第三方网关。** Aqara Hub M2、SwitchBot Hub 2、IKEA DIRIGERA、Philips Hue Bridge 这类桥在厂商文档里写明可把受支持的子设备暴露给 Matter 控制器，能桥接的型号与功能以厂商清单为准，且只覆盖标准化基础能力。手上是小米中枢网关一类的米家网关时，先查官方说明是否提供 Matter 桥接、可桥接哪些型号，不要按同品牌推断。米家 App 的 Matter 入口目前用于让米家控制原生 Matter 设备，不是把既有米家设备桥接给第三方平台。
-2. **常驻设备跑 Home Assistant，再接回面板。** NAS 或树莓派上跑 HA，由它承担 7×24 的桥接与自动化：面向 Apple 家庭用官方的 HomeKit Bridge 集成，按 HAP 把实体暴露成配件（[ADR-0001](../docs/adr/0001-ha-as-single-source-of-truth.md)）。注意 HA 官方的 Matter 集成只是控制器，官方文档写明它不能把 HA 里的设备变成 Matter 设备，把它当 Matter 桥是常见误读。MenuBarMijia 的 `HAWebSocketProvider`（`Sources/MijiaCore/HomeProvider.swift:117`）订阅同一个 HA 实例，面板、快捷动作、自然语言指令与撤销都照旧，在线时长由那台常驻设备保证，不受笔记本休眠影响。Windows 端走自己的 Home Assistant 客户端，数据源互斥，结论相同。
+2. **常驻设备跑 Home Assistant，再接回面板。** NAS 或树莓派上跑 HA，由它承担 7×24 的桥接与自动化：面向 Apple 家庭用官方的 HomeKit Bridge 集成，按 HAP 把实体暴露成配件（[ADR-0001](../docs/adr/0001-ha-as-single-source-of-truth.md)）。注意 HA 官方的 Matter 集成只是控制器，官方文档写明它不能把 HA 里的设备变成 Matter 设备，把它当 Matter 桥是常见误读。MenuBarMijia 的 `HAWebSocketProvider`（`Sources/MijiaCore/HomeProvider.swift:130`）订阅同一个 HA 实例，面板、快捷动作、自然语言指令与撤销都照旧，在线时长由那台常驻设备保证，不受笔记本休眠影响。Windows 端走自己的 Home Assistant 客户端，数据源互斥，结论相同。
 3. **只求遥控，不要求进 Apple 家庭。** 面板本身就能控制这些设备，Raycast 扩展、`scripts/mijia` CLI 与 `menumijia://` 已经把面板能力开放给本机脚本，这条路径不需要任何桥。
 
 ## 这不改变什么

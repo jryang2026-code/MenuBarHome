@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
@@ -40,11 +42,17 @@ function withLanguage<T>(language: AppLanguage, body: () => T): T {
 
 describe("text catalog (#52)", () => {
   it("every t() key used by the UI exists in the catalog", () => {
-    const sources = [
-      "src/ui/app.ts",
-      "src/ui/panelPrefs.ts",
-      "src/core/models.ts",
-    ].map((path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8"));
+    const srcRoot = fileURLToPath(new URL("../src", import.meta.url));
+    const walk = (dir: string): string[] => {
+      const out: string[] = [];
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) out.push(...walk(full));
+        else if (entry.isFile() && entry.name.endsWith(".ts") && entry.name !== "i18n.ts") out.push(full);
+      }
+      return out;
+    };
+    const sources = walk(srcRoot).map((path) => readFileSync(path, "utf8"));
     const used = new Set<string>();
     for (const source of sources) {
       for (const match of source.matchAll(/\bt\(\s*"((?:[^"\\]|\\.)*)"/g)) {

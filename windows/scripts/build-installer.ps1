@@ -1,6 +1,7 @@
 # A cold run or a cache miss still downloads the bundler tools, so retry once when the only
 # failure is an HTTP 5xx download. Compile errors do not match and fail immediately.
-$log = Join-Path $env:RUNNER_TEMP 'tauri-build.log'
+$tempRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
+$log = Join-Path $tempRoot 'tauri-build.log'
 Remove-Item $log -ErrorAction SilentlyContinue
 function Invoke-TauriBuild {
     & npx tauri build -- --locked 2>&1 | Tee-Object -FilePath $log -Append | Out-Host

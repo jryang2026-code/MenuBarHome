@@ -208,6 +208,8 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "已将{name}音量设为 {percent}%": ["已将{name}音量设为 {percent}%", "Set {name} volume to {percent}%"],
   "已{action}{name}静音": ["已{action}{name}静音", "{name} mute {action}"],
   "已{action}{name}睡眠模式": ["已{action}{name}睡眠模式", "{name} sleep mode {action}"],
+  "已{action}{name}摇头": ["已{action}{name}摇头", "{name} oscillation {action}"],
+  "允许写入高级/高风险设备属性": ["允许写入高级/高风险设备属性", "Allow writing advanced / high-risk device properties"],
   "已开启": ["已开启", "On"],
   "等待中": ["等待中", "Waiting"],
   "可能过期": ["可能过期", "Possibly stale"],

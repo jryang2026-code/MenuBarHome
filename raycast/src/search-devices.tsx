@@ -211,15 +211,19 @@ function categoryIcon(category: string): Icon {
 }
 
 function kelvinOptions(device: RaycastDevice): number[] {
-  const min = device.capabilities.minKelvin ?? COLOR_TEMP_STEPS[0];
-  const max = device.capabilities.maxKelvin ?? COLOR_TEMP_STEPS[COLOR_TEMP_STEPS.length - 1];
+  const rawMin = device.capabilities.minKelvin ?? COLOR_TEMP_STEPS[0];
+  const rawMax = device.capabilities.maxKelvin ?? COLOR_TEMP_STEPS[COLOR_TEMP_STEPS.length - 1];
+  const min = Math.max(1000, Math.min(20000, Math.min(rawMin, rawMax)));
+  const max = Math.max(1000, Math.min(20000, Math.max(rawMin, rawMax)));
   const inRange = COLOR_TEMP_STEPS.filter((value) => value >= min && value <= max);
-  return inRange.length > 0 ? inRange : [min, max];
+  return inRange.length > 0 ? inRange : Array.from(new Set([min, max]));
 }
 
 function temperatureOptions(device: RaycastDevice): number[] {
-  const min = device.capabilities.minTemp ?? 16;
-  const max = device.capabilities.maxTemp ?? 30;
+  const rawMin = device.capabilities.minTemp ?? 16;
+  const rawMax = device.capabilities.maxTemp ?? 30;
+  const min = Math.max(-30, Math.min(50, Math.min(rawMin, rawMax)));
+  const max = Math.max(-30, Math.min(50, Math.max(rawMin, rawMax)));
   const step = device.capabilities.step && device.capabilities.step > 0 ? device.capabilities.step : 1;
   const options: number[] = [];
   for (let value = min; value <= max + 1e-9 && options.length < 40; value += step) {

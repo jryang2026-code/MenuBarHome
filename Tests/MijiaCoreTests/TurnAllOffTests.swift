@@ -55,7 +55,8 @@ struct TurnAllOffTests {
         let (store, mock) = try await makeStore()
         #expect(Set(store.allOffTargets.map(\.id)) == ["light_bed", "light_study"])
 
-        store.turnAllOff()
+        let task = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
         #expect(!isOn(store, "light_bed"))
         #expect(!isOn(store, "light_study"))
         #expect(isOn(store, "light_aquarium"))
@@ -63,7 +64,7 @@ struct TurnAllOffTests {
         #expect(isOn(store, "vacuum"))
         #expect(store.undoBanner?.title == "已关闭 2 台设备")
 
-        try await Task.sleep(for: .milliseconds(60))
+        await task?.value
         let sent = await mock.executedCommands
         #expect(!sent.contains(.setSwitch(entityId: "switch.router", isOn: false)))
         #expect(!sent.contains(.setLightPower(entityId: "light.aquarium", isOn: false)))

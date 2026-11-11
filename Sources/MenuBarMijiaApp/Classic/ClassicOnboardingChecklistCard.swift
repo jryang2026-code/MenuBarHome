@@ -107,7 +107,7 @@ struct ClassicOnboardingChecklistCard: View {
     private func run(_ step: OnboardingStep) {
         switch step {
         case .connectAccount:
-            break
+            SettingsWindowOpener.shared.show(tab: .connection)
         case .searchDevice:
             onBeginSearch()
         case .allOffAndUndo:

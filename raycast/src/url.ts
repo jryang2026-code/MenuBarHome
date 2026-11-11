@@ -1,5 +1,5 @@
 import { open, showToast, Toast } from "@raycast/api";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { loadSnapshot, resultTimeoutSeconds, snapshotPath, type RaycastFeedback } from "./snapshot";
 
 export type CommandParams = Array<[string, string]>;
@@ -67,12 +67,18 @@ export function errorMessage(error: unknown): string {
 async function waitForFeedback(requestId: string): Promise<RaycastFeedback> {
   const path = snapshotPath();
   const deadline = Date.now() + resultTimeoutSeconds() * 1000;
+  let lastMtimeMs = -1;
   while (Date.now() < deadline) {
     const { promise, resolve } = Promise.withResolvers<void>();
     setTimeout(resolve, 150);
     await promise;
     try {
+      const info = await stat(path);
+      if (info.mtimeMs === lastMtimeMs) {
+        continue;
+      }
       const parsed = JSON.parse(await readFile(path, "utf8")) as { lastCommandFeedback?: RaycastFeedback };
+      lastMtimeMs = info.mtimeMs;
       const feedback = parsed.lastCommandFeedback;
       if (feedback?.requestId === requestId) {
         return feedback;

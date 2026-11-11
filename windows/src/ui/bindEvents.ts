@@ -105,9 +105,27 @@ import { bindPanelInput } from "./panelKeyboard.js";
       });
     });
 
+    const matchDeviceColonAttr = (raw: string | undefined): { dev: SmartDevice; rest: string } | null => {
+      if (!raw) return null;
+      let best: SmartDevice | null = null;
+      for (const candidate of host.devices) {
+        if (
+          raw.startsWith(`${candidate.id}:`) &&
+          raw.length > candidate.id.length + 1 &&
+          (!best || candidate.id.length > best.id.length)
+        ) {
+          best = candidate;
+        }
+      }
+      return best ? { dev: best, rest: raw.slice(best.id.length + 1) } : null;
+    };
+
     host.root.querySelectorAll<HTMLElement>("[data-set-size]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const [id, size] = (btn.dataset.setSize ?? "").split(":");
+        const raw = btn.dataset.setSize ?? "";
+        const sep = raw.lastIndexOf(":");
+        const id = sep > 0 ? raw.slice(0, sep) : "";
+        const size = sep > 0 ? raw.slice(sep + 1) : "";
         if (!id || !size) return;
         host.layout.tileSizes[scopedKey(host.pageKey, id)] = size as TileSize;
         host.saveLayout();
@@ -181,9 +199,9 @@ import { bindPanelInput } from "./panelKeyboard.js";
 
     host.root.querySelectorAll<HTMLElement>("[data-acstep]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const [id, dir] = (btn.dataset.acstep ?? "").split(":");
-        const dev = host.devices.find((d) => d.id === id);
-        if (!dev || dev.kind.kind !== "climate") return;
+        const matched = matchDeviceColonAttr(btn.dataset.acstep);
+        if (!matched || matched.dev.kind.kind !== "climate") return;
+        const { dev, rest: dir } = matched;
         const k = dev.kind;
         const step = stepCelsius(k.step || 1);
         const next = k.targetTemperature + Number(dir) * step;
@@ -210,11 +228,9 @@ import { bindPanelInput } from "./panelKeyboard.js";
     });
     host.root.querySelectorAll<HTMLElement>("[data-acfan]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const raw = btn.dataset.acfan ?? "";
-        const i = raw.indexOf(":");
-        const dev = host.devices.find((d) => d.id === raw.slice(0, i));
-        if (!dev || dev.kind.kind !== "climate") return;
-        const fanMode = raw.slice(i + 1);
+        const matched = matchDeviceColonAttr(btn.dataset.acfan);
+        if (!matched || matched.dev.kind.kind !== "climate") return;
+        const { dev, rest: fanMode } = matched;
         const command: DeviceCommand = { kind: "setClimateFanMode", entityId: dev.kind.entityId, fanMode };
         const intent: DeviceIntent = { targetId: dev.id, operation: { kind: "fanSpeed", speed: fanMode } };
         if (
@@ -764,12 +780,10 @@ import { bindPanelInput } from "./panelKeyboard.js";
 
     host.root.querySelectorAll<HTMLElement>("[data-acmode]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const raw = btn.dataset.acmode;
-        if (!raw) return;
-        const [id, hvacMode] = raw.split(":");
-        if (!id || !hvacMode) return;
-        const dev = host.devices.find((d) => d.id === id);
-        if (!dev || dev.kind.kind !== "climate") return;
+        const matched = matchDeviceColonAttr(btn.dataset.acmode);
+        if (!matched || matched.dev.kind.kind !== "climate") return;
+        const { dev, rest: hvacMode } = matched;
+        if (!hvacMode) return;
         const command: DeviceCommand = { kind: "setClimateMode", entityId: dev.kind.entityId, hvacMode };
         const intent: DeviceIntent = { targetId: dev.id, operation: { kind: "hvacMode", mode: hvacMode } };
         if (
@@ -789,12 +803,10 @@ import { bindPanelInput } from "./panelKeyboard.js";
 
     host.root.querySelectorAll<HTMLElement>("[data-fanpreset]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const raw = btn.dataset.fanpreset;
-        if (!raw) return;
-        const [id, presetMode] = raw.split(":");
-        if (!id || !presetMode) return;
-        const dev = host.devices.find((d) => d.id === id);
-        if (!dev || dev.kind.kind !== "fan") return;
+        const matched = matchDeviceColonAttr(btn.dataset.fanpreset);
+        if (!matched || matched.dev.kind.kind !== "fan") return;
+        const { dev, rest: presetMode } = matched;
+        if (!presetMode) return;
         void host.executeSingleCommand(
           dev,
           { kind: "setFanPresetMode", entityId: dev.kind.entityId, presetMode },
@@ -829,7 +841,7 @@ import { bindPanelInput } from "./panelKeyboard.js";
         void host.executeSingleCommand(
           dev,
           { kind: "setFanOscillating", entityId: dev.kind.entityId, oscillating: nextOsc },
-          `已${nextOsc ? t("开启") : t("关闭")}${dev.name}摇头`,
+          t("已{action}{name}摇头", { action: nextOsc ? t("开启") : t("关闭"), name: dev.name }),
           { targetId: dev.id, operation: { kind: "oscillation", enabled: nextOsc } },
         );
       });
@@ -899,12 +911,10 @@ import { bindPanelInput } from "./panelKeyboard.js";
 
     host.root.querySelectorAll<HTMLElement>("[data-cameranight]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const raw = btn.dataset.cameranight;
-        if (!raw) return;
-        const [id, mode] = raw.split(":");
-        if (!id || !mode) return;
-        const dev = host.devices.find((d) => d.id === id);
-        if (!dev || dev.kind.kind !== "camera") return;
+        const matched = matchDeviceColonAttr(btn.dataset.cameranight);
+        if (!matched || matched.dev.kind.kind !== "camera") return;
+        const { dev, rest: mode } = matched;
+        if (!mode) return;
         void host.executeSingleCommand(
           dev,
           { kind: "setSelectOption", entityId: dev.kind.entityId, option: mode },
@@ -915,12 +925,10 @@ import { bindPanelInput } from "./panelKeyboard.js";
 
     host.root.querySelectorAll<HTMLElement>("[data-fridgemode]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const raw = btn.dataset.fridgemode;
-        if (!raw) return;
-        const [id, mode] = raw.split(":");
-        if (!id || !mode) return;
-        const dev = host.devices.find((d) => d.id === id);
-        if (!dev || dev.kind.kind !== "fridge" || !dev.kind.modeEntityId) return;
+        const matched = matchDeviceColonAttr(btn.dataset.fridgemode);
+        if (!matched || matched.dev.kind.kind !== "fridge" || !matched.dev.kind.modeEntityId) return;
+        const { dev, rest: mode } = matched;
+        if (!mode || dev.kind.kind !== "fridge" || !dev.kind.modeEntityId) return;
         void host.executeSingleCommand(
           dev,
           { kind: "setSelectOption", entityId: dev.kind.modeEntityId, option: mode },
@@ -931,13 +939,12 @@ import { bindPanelInput } from "./panelKeyboard.js";
 
     host.root.querySelectorAll<HTMLElement>("[data-fridgestep]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const raw = btn.dataset.fridgestep;
-        if (!raw) return;
-        const [id, zone, deltaStr] = raw.split(":");
+        const matched = matchDeviceColonAttr(btn.dataset.fridgestep);
+        if (!matched || matched.dev.kind.kind !== "fridge") return;
+        const { dev, rest } = matched;
+        const [zone, deltaStr] = rest.split(":");
         const delta = Number(deltaStr);
-        if (!id || !zone || !Number.isFinite(delta)) return;
-        const dev = host.devices.find((d) => d.id === id);
-        if (!dev || dev.kind.kind !== "fridge") return;
+        if (!zone || !Number.isFinite(delta) || dev.kind.kind !== "fridge") return;
         const isFreezer = zone === "freezer";
         const entityId = isFreezer ? dev.kind.freezerTargetEntityId : dev.kind.fridgeTargetEntityId;
         if (!entityId) return;

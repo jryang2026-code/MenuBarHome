@@ -123,6 +123,9 @@ export const IntentValidator = {
         if (k.kind === "light" || k.kind === "climate" || k.kind === "fan" || k.kind === "camera") {
           return k.powerWritable === false ? null : op;
         }
+        if (k.kind === "appliance") {
+          return k.powerPresent && k.powerWritable ? op : null;
+        }
         if (k.kind === "vacuum") return k.actionsWritable === false ? null : op;
         return null;
       }

@@ -284,14 +284,14 @@ function assistantExtras(host: MenuMijiaWindowsApp): string {
   const missed = host.missedScheduledCommands.length > 0
     ? `<div class="cc-timers-stack">${host.missedScheduledCommands
         .map(
-          (item) => `<div class="cc-timer-row"><span>${t("已错过定时：{command}（没有自动执行，请确认后运行）", { command: host.escapeHtml(item.command) })}</span><button class="cc-inline-pill" data-run-missed="${item.id}">立即执行</button><button class="cc-inline-pill" data-dismiss-missed="${item.id}">忽略</button></div>`,
+          (item) => `<div class="cc-timer-row"><span>${t("已错过定时：{command}（没有自动执行，请确认后运行）", { command: host.escapeHtml(item.command) })}</span><button class="cc-inline-pill" data-run-missed="${host.escapeHtml(item.id)}">${t("立即执行")}</button><button class="cc-inline-pill" data-dismiss-missed="${host.escapeHtml(item.id)}">${t("忽略")}</button></div>`,
         )
         .join("")}</div>`
     : "";
   const timers = host.scheduledCommands.length > 0
     ? `<div class="cc-timers-stack">${host.scheduledCommands
         .map(
-          (item) => `<div class="cc-timer-row"><span>${host.escapeHtml(item.command)} ${t("· 剩余 {remaining}", { remaining: host.formatRemainingMs(item.fireTimestampMs - Date.now()) })}</span><button class="cc-inline-pill" data-cancel-timer="${item.id}">取消</button></div>`,
+          (item) => `<div class="cc-timer-row"><span>${host.escapeHtml(item.command)} ${t("· 剩余 {remaining}", { remaining: host.formatRemainingMs(item.fireTimestampMs - Date.now()) })}</span><button class="cc-inline-pill" data-cancel-timer="${host.escapeHtml(item.id)}">${t("取消")}</button></div>`,
         )
         .join("")}</div>`
     : "";
