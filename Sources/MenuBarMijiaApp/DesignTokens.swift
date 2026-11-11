@@ -89,13 +89,43 @@ enum DesignTokens {
         static let ribbonGradient = Gradient(colors: [confetti[4], confetti[1], confetti[5], confetti[2], confetti[3]])
     }
     enum Settings {
-        static let navigationWidth: CGFloat = 640
-        static let contentWidth: CGFloat = 720
+        /// Fixed rail beside the detail pane, System Settings' 236 pt column at this window size.
+        static let sidebarWidth: CGFloat = 236
+        /// The detail column never grows past this, so a wide window adds margin instead of
+        /// stretching a toggle row across 900 pt.
+        static let contentWidth: CGFloat = 620
+        static let contentInset: CGFloat = 20
         static let fieldWidth: CGFloat = 200
         static let rowHeight: CGFloat = 28
         static let rowSpacing: CGFloat = 6
-        static let segmentHeight: CGFloat = 32
-        static let railInset: CGFloat = 4
+        static let cardSpacing: CGFloat = 14
+        static let cardRadius: CGFloat = 10
+
+        // Sidebar
+        static let sidebarRowHeight: CGFloat = 30
+        static let sidebarRowRadius: CGFloat = 7
+        static let sidebarIconSize: CGFloat = 19
+        static let sidebarIconRadius: CGFloat = 5
+        static let sidebarIconGlyph: CGFloat = 11
+        static let sidebarInset: CGFloat = 10
+
+        // Search
+        static let searchFieldHeight: CGFloat = 28
+        static let searchResultIconSize: CGFloat = 22
+
+        // Pane header
+        static let headerIconSize: CGFloat = 44
+    }
+
+    /// Category tile colours, one per settings pane. A shade apart from `Orb` on purpose: these
+    /// badges sit on the sidebar's vibrancy, where the panel's device tints read one step too hot.
+    enum Category {
+        static let general = Color(red: 0.45, green: 0.47, blue: 0.52)
+        static let connection = Color(red: 0.00, green: 0.48, blue: 1.00)
+        static let assistant = Color(red: 0.44, green: 0.36, blue: 0.90)
+        static let appearance = Color(red: 0.20, green: 0.60, blue: 0.86)
+        static let privacy = Color(red: 0.13, green: 0.62, blue: 0.42)
+        static let about = Color(red: 0.60, green: 0.62, blue: 0.66)
     }
     enum Radius {
         static let panel: CGFloat = 22
