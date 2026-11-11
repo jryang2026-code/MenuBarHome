@@ -41,6 +41,9 @@ public struct MiRoom: Equatable, Sendable {
     public var homeId: String
     public var homeName: String
     public var isSharedHome: Bool
+    /// The uid that owns this home. A home shared with this account belongs to another uid, and
+    /// `v2/home/home_device_list` only answers for the pair (home id, owner uid) (#76, #67).
+    public var ownerUid: String?
 
     public init(
         id: String,
@@ -48,7 +51,8 @@ public struct MiRoom: Equatable, Sendable {
         dids: [String],
         homeId: String = "",
         homeName: String = "",
-        isSharedHome: Bool = false
+        isSharedHome: Bool = false,
+        ownerUid: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -56,6 +60,7 @@ public struct MiRoom: Equatable, Sendable {
         self.homeId = homeId
         self.homeName = homeName
         self.isSharedHome = isSharedHome
+        self.ownerUid = ownerUid
     }
 }
 
@@ -143,6 +148,10 @@ public protocol MiCloudAPI: Sendable {
     func homeRooms() async throws -> [MiRoom]
     /// Looks up specific devices by did, including those in homes shared with this account.
     func devices(dids: [String]) async throws -> [MiDeviceRecord]
+    /// Every device of one Mi Home, addressed by the pair (home id, owner uid). The unfiltered
+    /// device list leaves out homes shared with this account, and `devices(dids:)` can only find a
+    /// did the home list already named (#76, #67).
+    func homeDevices(homeId: String, ownerUid: String) async throws -> [MiDeviceRecord]
     /// Maps each `group.*` did among `groupDids` to its member device dids.
     func lightGroupMembers(groupDids: [String]) async throws -> [String: [String]]
     func getProps(_ keys: [MiotPropKey]) async throws -> [MiotPropKey: JSONValue]
@@ -162,6 +171,8 @@ public protocol MiCloudAPI: Sendable {
 
 extension MiCloudAPI {
     public func devices(dids: [String]) async throws -> [MiDeviceRecord] { [] }
+    /// Mocks and older conformances have no per-home lookup; the provider degrades to the did list.
+    public func homeDevices(homeId: String, ownerUid: String) async throws -> [MiDeviceRecord] { [] }
     public func lightGroupMembers(groupDids: [String]) async throws -> [String: [String]] { [:] }
     public func callAction(_ call: MiotActionCall) async throws -> JSONValue {
         try await action(call)
@@ -185,6 +196,13 @@ extension MiCloudAPI {
 }
 
 // MARK: - Live Client
+
+/// Numeric bounds for the ids this client sends as JSON numbers.
+public enum MiIdLimits {
+    /// Above this, a Mi id is sent as a string. The Mi Home app itself switches at this bound, and a
+    /// larger value loses precision as a JSON number.
+    public static let maxNumericId: Int64 = 9_000_000_000_000_000
+}
 
 public actor MiCloudClient: MiCloudAPI {
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "MiCloud")
@@ -259,9 +277,21 @@ public actor MiCloudClient: MiCloudAPI {
 
     static func decodeResponse(_ body: Data, statusCode: Int, signedNonce: String) throws -> JSONValue {
         if statusCode == 401 || statusCode == 403 { throw MiCloudError.sessionExpired }
-        // Errors come back as plain JSON; successes are base64(RC4(json)).
+        // Errors come back as plain JSON; successes are base64(RC4(json)). A plain object is never a
+        // success payload, so it must carry an explicit verdict: either an integer `code`, or a
+        // message that names the real reason (#76, #67).
         if let plain = try? JSONDecoder().decode(JSONValue.self, from: body), case .object = plain {
-            return try unwrapResult(plain)
+            if let code = plain["code"]?.intValue {
+                if code != 0 { return try unwrapResult(plain) }
+                // `{"code":0}` without the encrypted body is not a payload this client can use.
+                guard statusCode == 200 else { throw MiCloudError.http(statusCode) }
+                return try unwrapResult(plain)
+            }
+            if Self.isAuthRejection(plain) { throw MiCloudError.sessionExpired }
+            guard statusCode == 200 else { throw MiCloudError.http(statusCode) }
+            // A 200 object with no `code` is a gateway error page or an unknown envelope shape. The
+            // old code read it as `code: 0` and returned `.null`, which surfaced as "synced, no devices".
+            throw MiCloudError.badResponse("缺少状态码")
         }
         guard statusCode == 200 else { throw MiCloudError.http(statusCode) }
         guard let text = String(data: body, encoding: .utf8),
@@ -272,8 +302,25 @@ public actor MiCloudClient: MiCloudAPI {
         return try unwrapResult(json)
     }
 
+    /// True when a response body names an expired session or a rejected token without a `code`.
+    static func isAuthRejection(_ json: JSONValue) -> Bool {
+        let keys = ["message", "desc", "description", "error", "reason"]
+        let text = keys.compactMap { json[$0]?.stringValue }.joined(separator: " ").lowercased()
+        guard !text.isEmpty else { return false }
+        return text.contains("auth err")
+            || text.contains("servicetoken_expired")
+            || text.contains("token expired")
+            || text.contains("invalid signature")
+            || text.contains("invalid_token")
+            || text.contains("unauthorized")
+    }
+
     static func unwrapResult(_ json: JSONValue) throws -> JSONValue {
-        let code = json["code"]?.intValue ?? 0
+        // An envelope without an integer `code` has no verdict, so it is never a success (#76, #67).
+        guard let code = json["code"]?.intValue else {
+            if Self.isAuthRejection(json) { throw MiCloudError.sessionExpired }
+            throw MiCloudError.badResponse("缺少状态码")
+        }
         let message = json["message"]?.stringValue ?? json["desc"]?.stringValue ?? ""
         if code == 0 { return json["result"] ?? .null }
         let lower = message.lowercased()
@@ -371,6 +418,9 @@ public actor MiCloudClient: MiCloudAPI {
             var data: [String: JSONValue] = [
                 "get_split_device": .bool(true),
                 "support_smart_home": .bool(true),
+                // Without this the page omits third-party devices merged into Mi Home, which is how
+                // several accounts report an empty panel (#76, #67).
+                "get_third_device": .bool(true),
                 "limit": .number(200),
             ]
             if let dids { data["dids"] = .array(dids.map(JSONValue.string)) }
@@ -383,6 +433,47 @@ public actor MiCloudClient: MiCloudAPI {
         }
         var seen: Set<String> = []
         return records.filter { seen.insert($0.did).inserted }
+    }
+
+    /// Every device of one home, addressed by (home id, owner uid). The unfiltered list covers the
+    /// signed-in uid's own homes only, so a home shared with this account is invisible until asked
+    /// for this way (#76, #67).
+    public func homeDevices(homeId: String, ownerUid: String) async throws -> [MiDeviceRecord] {
+        var records: [MiDeviceRecord] = []
+        var startDid = ""
+        for _ in 0..<20 {
+            var data: [String: JSONValue] = [
+                "home_owner": Self.miIdValue(ownerUid),
+                "home_id": Self.miIdValue(homeId),
+                "limit": .number(300),
+                "get_split_device": .bool(true),
+                "support_smart_home": .bool(true),
+                "get_cariot_device": .bool(true),
+                "get_third_device": .bool(true),
+            ]
+            if !startDid.isEmpty { data["start_did"] = .string(startDid) }
+            let result = try await request("v2/home/home_device_list", data: .object(data))
+            records += Self.parseHomeDeviceList(result)
+            let next = result["max_did"]?.idString ?? result["next_start_did"]?.idString ?? ""
+            guard result["has_more"]?.boolValue == true, !next.isEmpty, next != startDid else { break }
+            startDid = next
+        }
+        var seen: Set<String> = []
+        return records.filter { seen.insert($0.did).inserted }
+    }
+
+    /// Mi ids travel as numbers when they fit the app's integer range, as strings otherwise.
+    static func miIdValue(_ raw: String) -> JSONValue {
+        guard let value = Int64(raw),
+              value > 0,
+              value < MiIdLimits.maxNumericId else { return .string(raw) }
+        return .number(Double(value))
+    }
+
+    /// `home_device_list` answers under `device_info`, newer builds under `list`.
+    static func parseHomeDeviceList(_ result: JSONValue) -> [MiDeviceRecord] {
+        let items = result["device_info"]?.arrayValue ?? result["list"]?.arrayValue ?? []
+        return Self.parseDeviceList(.object(["list": .array(items)]))
     }
 
     private func legacyDeviceList() async throws -> [MiDeviceRecord] {
@@ -448,17 +539,80 @@ public actor MiCloudClient: MiCloudAPI {
         do {
             merged = try await request("v2/homeroom/gethome_merged", data: .object([
                 "fg": .bool(true), "fetch_share": .bool(true), "fetch_share_dev": .bool(true),
-                "limit": .number(300), "app_ver": .number(7), "plat_form": .number(0),
+                "limit": .number(300), "app_ver": .number(9), "plat_form": .number(0),
             ]))
         } catch MiCloudError.sessionExpired {
             throw MiCloudError.sessionExpired
         } catch {
             merged = try await request("v2/homeroom/gethome", data: .object([
                 "fg": .bool(true), "fetch_share": .bool(true), "fetch_share_dev": .bool(true),
-                "limit": .number(300), "app_ver": .number(7),
+                "limit": .number(300), "app_ver": .number(9), "plat_form": .number(0),
             ]))
         }
-        return Self.parseRooms(merged)
+        var rooms = Self.parseRooms(merged)
+        // An account with many homes gets the first page only; the rest arrive by `max_id`. Without
+        // them the device list names dids no room owns, and the panel shows nothing (#76, #67).
+        var maxId = merged["max_id"]?.idString ?? ""
+        guard merged["has_more"]?.boolValue == true, !maxId.isEmpty else { return rooms }
+        for _ in 0..<20 {
+            let page = try await request("v2/homeroom/get_dev_room_page", data: .object([
+                "start_id": .string(maxId), "limit": .number(150),
+            ]))
+            rooms = Self.mergeRoomPage(page, into: rooms)
+            let nextMaxId = page["max_id"]?.idString ?? ""
+            guard page["has_more"]?.boolValue == true, !nextMaxId.isEmpty, nextMaxId != maxId else { break }
+            maxId = nextMaxId
+        }
+        return rooms
+    }
+
+    /// Merges one `v2/homeroom/get_dev_room_page` page into the rooms already parsed from
+    /// `gethome_merged`. A page repeats the home shape under `info` (`id`, `dids`, `roomlist`) but
+    /// omits the names, so it only adds dids — never a second room, and never a did twice.
+    static func mergeRoomPage(_ page: JSONValue, into rooms: [MiRoom]) -> [MiRoom] {
+        var result = rooms
+        func appendDids(_ dids: [String], toRoom roomId: String, homeId: String) {
+            guard !dids.isEmpty, !roomId.isEmpty else { return }
+            guard let index = result.firstIndex(where: { $0.id == roomId }) else {
+                // The page can name a home whose first page carried no dids at all, so no
+                // `home_<id>` room exists yet. Take the label from a sibling room of the home.
+                let sibling = result.first { $0.homeId == homeId }
+                result.append(MiRoom(
+                    id: roomId,
+                    name: "",
+                    dids: [],
+                    homeId: homeId,
+                    homeName: sibling?.homeName ?? "",
+                    isSharedHome: sibling?.isSharedHome ?? false,
+                    ownerUid: sibling?.ownerUid
+                ))
+                appendDids(dids, toRoom: roomId, homeId: homeId)
+                return
+            }
+            var room = result[index]
+            for did in dids where !room.dids.contains(did) {
+                room.dids.append(did)
+            }
+            result[index] = room
+        }
+
+        for info in page["info"]?.arrayValue ?? [] {
+            guard let homeId = info["id"]?.idString, !homeId.isEmpty else { continue }
+            appendDids(
+                (info["dids"]?.arrayValue ?? []).compactMap(\.idString),
+                toRoom: "home_\(homeId)",
+                homeId: homeId
+            )
+            for room in info["roomlist"]?.arrayValue ?? [] {
+                guard let roomId = room["id"]?.idString else { continue }
+                appendDids(
+                    (room["dids"]?.arrayValue ?? []).compactMap(\.idString),
+                    toRoom: roomId,
+                    homeId: homeId
+                )
+            }
+        }
+        return result
     }
 
     /// Homes another account shared with this one arrive under `share_home_list`, not `homelist` (#134).
@@ -470,6 +624,7 @@ public actor MiCloudClient: MiCloudAPI {
                 let homeId = home["id"]?.idString ?? ""
                 if !homeId.isEmpty, !seenHomes.insert(homeId).inserted { continue }
                 let homeName = home["name"]?.stringValue ?? ""
+                let ownerUid = home["uid"]?.idString
                 for room in home["roomlist"]?.arrayValue ?? [] {
                     guard let id = room["id"]?.idString else { continue }
                     rooms.append(MiRoom(
@@ -478,7 +633,8 @@ public actor MiCloudClient: MiCloudAPI {
                         dids: (room["dids"]?.arrayValue ?? []).compactMap(\.idString),
                         homeId: homeId,
                         homeName: homeName,
-                        isSharedHome: shared
+                        isSharedHome: shared,
+                        ownerUid: ownerUid
                     ))
                 }
                 let homeDids = (home["dids"]?.arrayValue ?? []).compactMap(\.idString)
@@ -489,7 +645,25 @@ public actor MiCloudClient: MiCloudAPI {
                         dids: homeDids,
                         homeId: homeId,
                         homeName: homeName,
-                        isSharedHome: shared
+                        isSharedHome: shared,
+                        ownerUid: ownerUid
+                    ))
+                }
+                // A home with no rooms and no dids still matters when the cloud names its owner:
+                // only `MiCloudDiscovery.homeFallback` can list its devices, and it needs a room to
+                // learn the pair (home id, owner uid) from. Without this entry such a home is
+                // invisible, which is the empty panel of #76 / #67.
+                if !homeId.isEmpty, homeDids.isEmpty,
+                   (home["roomlist"]?.arrayValue ?? []).isEmpty,
+                   ownerUid != nil {
+                    rooms.append(MiRoom(
+                        id: "home_\(homeId)",
+                        name: "",
+                        dids: [],
+                        homeId: homeId,
+                        homeName: homeName,
+                        isSharedHome: shared,
+                        ownerUid: ownerUid
                     ))
                 }
             }

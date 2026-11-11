@@ -393,6 +393,8 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   // Settings sheet
   "偏好设置": ["偏好设置", "Preferences"],
   "偏好设置与米家连接": ["偏好设置与米家连接", "Preferences and Mi Home connection"],
+  "当前所选家庭暂无可显示的设备": ["当前所选家庭暂无可显示的设备", "No devices to show in the selected home"],
+  "显示全部家庭": ["显示全部家庭", "Show All Homes"],
   "面板高度": ["面板高度", "Panel height"],
   "面板不透明度": ["面板不透明度", "Panel opacity"],
   "壁纸透出导致文字看不清时调高；100% 为不透明。": ["壁纸透出导致文字看不清时调高；100% 为不透明。", "Raise this if the wallpaper makes text hard to read; 100% is solid."],

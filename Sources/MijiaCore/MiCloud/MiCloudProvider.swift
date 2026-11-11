@@ -270,15 +270,20 @@ public actor MiCloudProvider: HomeProvider {
 
     private func discover(_ api: any MiCloudAPI) async throws {
         // Rooms first: they name the shared-home devices the unfiltered device list leaves out (#134).
-        do {
-            rooms = try await api.homeRooms()
-        } catch MiCloudError.sessionExpired {
-            throw MiCloudError.sessionExpired
-        } catch {
-            logger.notice("Room list unavailable, devices go to 全屋: \(error.localizedDescription, privacy: .public)")
+        let outcome = try await MiCloudDiscovery.rooms(api)
+        // A failed room list keeps the rooms of the last good refresh; only a success replaces them.
+        if outcome.error == nil {
+            if outcome.rooms != rooms { unresolvedRoomDids = [] }
+            rooms = outcome.rooms
         }
+        let roomsError = outcome.error
         logger.info("Mi cloud rooms: \(self.rooms.count, privacy: .public), homes: \(Self.homeOptions(from: self.rooms).count, privacy: .public)")
         try await refreshDeviceList(api, retryUnresolved: true)
+        // An account whose only devices live in a home shared with it has an empty device list until
+        // `homeRooms()` names that home. Reporting connected + empty hides that failure, so a broken
+        // room list surfaces as the error it is (#76, #67). An account with direct devices still
+        // degrades to 全屋, which is what the room-less snapshot is for.
+        if devices.isEmpty, let roomsError { throw roomsError }
     }
 
     /// Room dids the by-did lookup returned nothing for (IR remotes, removed devices); the periodic
@@ -286,25 +291,15 @@ public actor MiCloudProvider: HomeProvider {
     private var unresolvedRoomDids: Set<String> = []
 
     private func refreshDeviceList(_ api: any MiCloudAPI, retryUnresolved: Bool = false) async throws {
-        var list = try await api.deviceList()
-        let listed = Set(list.map(\.did))
-        var missingSet = Set(rooms.flatMap(\.dids)).subtracting(listed)
-        if retryUnresolved { unresolvedRoomDids = [] }
-        missingSet.subtract(unresolvedRoomDids)
-        let missing = missingSet.sorted()
-        if !missing.isEmpty {
-            do {
-                let extra = try await api.devices(dids: missing).filter { !listed.contains($0.did) }
-                list += extra
-                unresolvedRoomDids.formUnion(missingSet.subtracting(extra.map(\.did)))
-                logger.info("Mi cloud shared-home devices: \(extra.count, privacy: .public) of \(missing.count, privacy: .public) room dids not in the device list")
-            } catch MiCloudError.sessionExpired {
-                throw MiCloudError.sessionExpired
-            } catch {
-                logger.error("Shared-home device lookup failed: \(error.localizedDescription, privacy: .public)")
-            }
-        }
-        devices = list
+        let outcome = try await MiCloudDiscovery.devices(
+            api,
+            rooms: rooms,
+            retryUnresolved: retryUnresolved,
+            previousUnresolved: unresolvedRoomDids
+        )
+        unresolvedRoomDids = outcome.unresolvedRoomDids
+        rooms = outcome.rooms
+        devices = outcome.devices
         try await refreshGroupMembers(api)
         await loadMissingSpecs()
 
@@ -558,12 +553,24 @@ public actor MiCloudProvider: HomeProvider {
     static func homeOptions(from rooms: [MiRoom]) -> [HomeOption] {
         var order: [String] = []
         var names: [String: String] = [:]
+        var shared: [String: Bool] = [:]
         var didsByHome: [String: Set<String>] = [:]
         for room in rooms where !room.homeId.isEmpty {
-            if names[room.homeId] == nil { order.append(room.homeId); names[room.homeId] = room.homeName }
+            if names[room.homeId] == nil {
+                order.append(room.homeId)
+                names[room.homeId] = room.homeName
+                shared[room.homeId] = room.isSharedHome
+            }
             didsByHome[room.homeId, default: []].formUnion(room.dids)
         }
-        return order.map { HomeOption(id: $0, name: names[$0] ?? "", deviceCount: didsByHome[$0]?.count ?? 0) }
+        return order.map {
+            HomeOption(
+                id: $0,
+                name: names[$0] ?? "",
+                deviceCount: didsByHome[$0]?.count ?? 0,
+                isSharedHome: shared[$0] ?? false
+            )
+        }
     }
 
     // MARK: Commands

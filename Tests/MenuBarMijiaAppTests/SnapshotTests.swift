@@ -319,6 +319,36 @@ struct SnapshotTests {
         }
     }
 
+    @Test("Panel offers Show All Homes when the selected Mi Home is empty while other homes hold devices")
+    func panelEmptySelectedMiHomeSnapshot() async throws {
+        let fixture = try await SnapshotFixture(
+            miSession: MiSession(userId: "45123481", cUserId: "c", ssecurity: Data(repeating: 7, count: 16).base64EncodedString(), serviceToken: "tok"),
+            configuredHASource: false
+        )
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        fixture.store.devices = []
+        fixture.store.rooms = []
+        fixture.store.environmentReadings = []
+        fixture.store.homes = [
+            HomeOption(id: "acc/h1", name: "我的家", deviceCount: 0),
+            HomeOption(id: "acc/h2", name: "爸妈家", deviceCount: 3, isSharedHome: true),
+        ]
+        fixture.store.selectedMiHomeId = "acc/h1"
+        fixture.store.hasReceivedInitialSnapshot = true
+        fixture.store.connectionStatus = .connected
+        #expect(fixture.store.otherMiHomesDeviceCountWhenSelectedEmpty == 3)
+
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "panel-empty-selected-home-zh-light")
+            )
+        }
+    }
+
     // MARK: - Room order (#146)
 
     #if DEBUG

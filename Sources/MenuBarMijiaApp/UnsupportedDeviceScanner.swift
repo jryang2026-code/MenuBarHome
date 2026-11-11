@@ -101,7 +101,8 @@ final class UnsupportedDeviceScanner {
             throw UnsupportedDeviceScanError.notSignedIn
         }
         let api = MiCloudClient(session: session)
-        let records = try await api.deviceList()
+        let discovery = try await Self.discoverMiCloud(api)
+        let records = discovery.devices
 
         var specs: [String: MiotDeviceSpec] = [:]
         var pending: [String: String?] = [:]
@@ -116,8 +117,23 @@ final class UnsupportedDeviceScanner {
             }
         }
 
-        let home = MiotSynthesizer.synthesize(devices: records, rooms: [], specs: specs, values: [:])
+        let home = MiotSynthesizer.synthesize(devices: records, rooms: discovery.rooms, specs: specs, values: [:])
         return UnsupportedDeviceCollector.miCloud(devices: records, specs: specs, synthesized: home)
+    }
+
+    /// The same discovery the live provider runs, so the scan cannot report "no skipped devices"
+    /// for an account whose devices only the shared-home fallback reaches (#76, #67).
+    ///
+    /// A failed room list is fatal only when the device list came back empty: with devices in hand
+    /// the scan can still answer, which is how the provider degrades to 全屋.
+    nonisolated static func discoverMiCloud(
+        _ api: any MiCloudAPI
+    ) async throws -> MiCloudDiscovery.DeviceOutcome {
+        let roomOutcome = try await MiCloudDiscovery.rooms(api)
+        let roomsError = roomOutcome.error
+        let deviceOutcome = try await MiCloudDiscovery.devices(api, rooms: roomOutcome.rooms, retryUnresolved: true)
+        if deviceOutcome.devices.isEmpty, let roomsError { throw roomsError }
+        return deviceOutcome
     }
 
     // MARK: Home Assistant
