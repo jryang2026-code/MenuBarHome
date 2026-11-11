@@ -249,13 +249,17 @@ function renderPrimaryDrawer(
         pendingHighRisk.confirm?.command.kind === "setClimateTemperature"
           ? pendingHighRisk.confirm.command.temperature
           : null;
-      const modes: ReadonlyArray<{ readonly code: string; readonly label: string }> = [
+      const allModes: ReadonlyArray<{ readonly code: string; readonly label: string }> = [
         { code: "cool", label: t("制冷") },
         { code: "heat", label: t("制热") },
         { code: "dry", label: t("除湿") },
         { code: "fan_only", label: t("送风") },
         { code: "auto", label: t("自动") },
       ];
+      const modes =
+        k.availableModes.length > 0
+          ? allModes.filter((m) => k.availableModes.includes(m.code))
+          : allModes;
       return `
         <div class="cc-tile-drawer">
           ${showTemp ? `<div class="cc-slider-group">
@@ -697,7 +701,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
               ? `<button
             class="cc-tile-orb"
             data-toggle-device="${escape(dev.id)}"
-            title="${kind === "sensor" ? dev.name : t("点击直接切换开关")}"
+            title="${kind === "sensor" ? escape(dev.name) : t("点击直接切换开关")}"
             aria-label="${escape(t("{name} 开关", { name: dev.name }))}"
             aria-pressed="${isOn}"
           >

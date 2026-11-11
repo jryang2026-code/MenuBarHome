@@ -855,12 +855,8 @@ public final class HomeStore {
                 xiaomiCloud: dualSource.xiaomiCloud,
                 defaults: ud
             )
-        } else if initialBackend == .xiaomiCloud {
-            initialProvider = Self.makeMiAccountsProvider(accounts: initialAccounts, defaults: ud)
-        } else if initialBackend == .demo {
-            initialProvider = DemoHomeProvider()
         } else {
-            initialProvider = HAWebSocketProvider(baseURLString: savedURL, token: initialHAToken)
+            initialProvider = DemoHomeProvider()
         }
         self.provider = initialProvider
         if provider == nil, dualSource == nil, initialBackend != .demo {

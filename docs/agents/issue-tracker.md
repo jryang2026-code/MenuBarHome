@@ -31,7 +31,7 @@ Some migrated bodies hold a broken `## Blocked by` section with `#$(cat n9)` pla
 - **Checks**: `gh pr checks <n>`. `.github/workflows/ci.yml` runs on GitHub-hosted Linux, macOS and Windows machines, without the snapshot comparison. Failed job logs: `bash scripts/ci_errors.sh <run-id>`.
 - **Merge**: `gh pr merge <n> --squash --delete-branch`.
 
-**PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
+**PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/mp-triage` reads this flag.)_
 
 ## When a skill says "publish to the issue tracker"
 
@@ -43,7 +43,7 @@ Run `gh issue view <n> --comments`.
 
 ## Wayfinding operations
 
-`/wayfinder` uses these operations. The **map** is a single issue, and its **child** issues are the tickets.
+`/mp-wayfinder` uses these operations. The **map** is a single issue, and its **child** issues are the tickets.
 
 - **Map**: a single issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body.
 - **Child ticket**: add the child to a task list in the map body and put `Part of #<map>` at the top of the child body. Labels: `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). Once claimed, the ticket is assigned to the driving dev.

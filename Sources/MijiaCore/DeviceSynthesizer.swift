@@ -169,7 +169,7 @@ public enum JSONValue: Codable, Equatable, Sendable {
     }
 
     public var intValue: Int? {
-        guard let d = doubleValue else { return nil }
+        guard let d = doubleValue, d.isFinite else { return nil }
         // JSON numbers and numeric strings can exceed Int; `Int(_:)` traps on overflow.
         return Int(exactly: d.rounded())
     }
@@ -259,7 +259,7 @@ public enum DeviceSynthesizer {
         entities: [HAEntityEntry],
         states: [String: HAEntityState]
     ) -> SynthesizedHome {
-        let areaNameById = Dictionary(uniqueKeysWithValues: areas.map { ($0.area_id, $0.name) })
+        let areaNameById = Dictionary(areas.map { ($0.area_id, $0.name) }, uniquingKeysWith: { _, latest in latest })
 
         // Group active entities by device_id
         var entitiesByDevice: [String: [HAEntityEntry]] = [:]
@@ -390,8 +390,7 @@ public enum DeviceSynthesizer {
         }
 
         let registeredDeviceIds = Set(devices.map(\.id))
-        let disabledDeviceIds = Set(devices.filter { $0.disabled_by != nil }.map(\.id))
-        let entityById = Dictionary(uniqueKeysWithValues: entities.map { ($0.entity_id, $0) })
+        let entityById = Dictionary(entities.map { ($0.entity_id, $0) }, uniquingKeysWith: { _, latest in latest })
         for (eid, state) in states {
             guard eid.hasPrefix("light.") || eid.hasPrefix("climate.")
                     || eid.hasPrefix("fan.") || eid.hasPrefix("vacuum.")
@@ -403,7 +402,7 @@ public enum DeviceSynthesizer {
             let entity = entityById[eid]
             guard entity?.disabled_by == nil, entity?.hidden_by == nil else { continue }
             if let deviceId = entity?.device_id,
-               registeredDeviceIds.contains(deviceId) || disabledDeviceIds.contains(deviceId) {
+               registeredDeviceIds.contains(deviceId) {
                 continue
             }
 

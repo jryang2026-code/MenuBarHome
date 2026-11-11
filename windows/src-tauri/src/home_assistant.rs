@@ -148,6 +148,7 @@ fn validate_call(command: &HaServiceCall) -> Result<(), String> {
         ("camera", &["turn_on", "turn_off"]),
         ("select", &["select_option"]),
         ("number", &["set_value"]),
+        ("media_player", &["volume_set"]),
         ("vacuum", &["start", "pause", "return_to_base"]),
         ("scene", &["turn_on"]),
         ("script", &["turn_on"]),
@@ -174,6 +175,7 @@ fn validate_call(command: &HaServiceCall) -> Result<(), String> {
         ("fan", "oscillate") => &["oscillating"],
         ("select", "select_option") => &["option"],
         ("number", "set_value") => &["value"],
+        ("media_player", "volume_set") => &["volume_level"],
         _ => &[],
     };
     if command.data.keys().any(|key| !keys.contains(&key.as_str())) {
@@ -257,6 +259,20 @@ mod tests {
             data: Default::default(),
         };
         call.data.insert("value".into(), json!(4));
+        assert!(validate_call(&call).is_ok());
+        call.data.insert("entity_id".into(), json!("all"));
+        assert!(validate_call(&call).is_err());
+    }
+
+    #[test]
+    fn allows_media_player_volume_set_for_speakers() {
+        let mut call = HaServiceCall {
+            domain: "media_player".into(),
+            service: "volume_set".into(),
+            entity_id: "media_player.living_room_speaker".into(),
+            data: Default::default(),
+        };
+        call.data.insert("volume_level".into(), json!(0.5));
         assert!(validate_call(&call).is_ok());
         call.data.insert("entity_id".into(), json!("all"));
         assert!(validate_call(&call).is_err());

@@ -128,6 +128,7 @@ pub(crate) fn release_asset_redirect_allowed(next: &reqwest::Url) -> bool {
         || host.ends_with(".githubusercontent.com")
 }
 
+#[cfg(test)]
 pub(crate) fn parse_sha256_hex(raw: &str) -> Option<String> {
     let token = raw.split_whitespace().next()?;
     let candidate = token
@@ -142,6 +143,7 @@ pub(crate) fn parse_sha256_hex(raw: &str) -> Option<String> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn sanitize_installer_filename(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty()
@@ -414,6 +416,7 @@ pub(crate) async fn install_update(app: AppHandle, asset: InstallerAssetPayload)
     let app_for_exit = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(150));
+        shutdown_camera_daemons();
         app_for_exit.exit(0);
     });
     Ok(())

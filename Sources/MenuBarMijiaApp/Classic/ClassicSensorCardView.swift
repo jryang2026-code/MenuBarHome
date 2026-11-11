@@ -90,7 +90,7 @@ struct ClassicSensorCardView: View {
         if let b = spec.battery {
             parts.append(L10n.tr("电量 \(b)%", "battery \(b)%"))
         }
-        return parts.joined(separator: "，")
+        return parts.joined(separator: L10n.tr("，", ", "))
     }
 
     // MARK: Layouts

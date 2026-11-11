@@ -789,7 +789,7 @@ export class CameraLiveController {
         <div class="cc-camera-stage is-error" style="padding:16px;text-align:center;">
           <p style="margin-bottom:10px;">${this.host.escapeHtml(this.liveCameraError ?? t("可配置本地 go2rtc / HLS 流地址观看实时画面"))}</p>
           <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
-            <button class="cc-btn-secondary" id="btn-toggle-camera-url">${t("填写 go2rtc / HLS 流地址")}</button>
+            <button class="cc-btn-secondary" data-toggle-camera-url="1">${t("填写 go2rtc / HLS 流地址")}</button>
             <button class="cc-btn-secondary" id="btn-copy-camera-diag">${t("复制诊断")}</button>
           </div>
         </div>
@@ -948,7 +948,7 @@ export class CameraLiveController {
 
     this.attachLiveMedia();
 
-    this.host.root.querySelectorAll<HTMLElement>("#btn-toggle-camera-url").forEach((btn) => {
+    this.host.root.querySelectorAll<HTMLElement>("#btn-toggle-camera-url, [data-toggle-camera-url]").forEach((btn) => {
       btn.addEventListener("click", () => {
         this.liveCameraShowingURLInput = !this.liveCameraShowingURLInput;
         this.host.render();

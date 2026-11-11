@@ -70,3 +70,28 @@ test("a foreign schema version or a missing top-level list keeps its own message
   );
   assert.throws(() => validateSnapshot({ schemaVersion: SNAPSHOT_SCHEMA_VERSION, devices: [] }, path), /missing its device/);
 });
+
+test("malformed scene or quickAction items are rejected before rendering", () => {
+  assert.throws(
+    () =>
+      validateSnapshot(
+        {
+          ...(snapshotWith([]) as Record<string, unknown>),
+          scenes: [{ id: "scene_1", name: "晚安" }],
+        },
+        path,
+      ),
+    /scene "scene_1" has no entityId/,
+  );
+  assert.throws(
+    () =>
+      validateSnapshot(
+        {
+          ...(snapshotWith([]) as Record<string, unknown>),
+          quickActions: [{ id: "" }],
+        },
+        path,
+      ),
+    /quickAction #1 has no id/,
+  );
+});

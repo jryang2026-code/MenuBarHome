@@ -228,6 +228,7 @@ public struct ClassicControlCenterPanel: View {
         isPresented = false
         search.end()
         isSearchFieldFocused = false
+        isDrawerHovered = false
     }
 
     private func handleSearching(_ searching: Bool) {
@@ -483,6 +484,7 @@ public struct ClassicControlCenterPanel: View {
             AssistantSuggestionsRow(store: store)
         }
         .onHover { isDrawerHovered = $0 }
+        .onDisappear { isDrawerHovered = false }
     }
 
     /// The single input: typing filters devices, a sentence plus Return runs as an instruction, the

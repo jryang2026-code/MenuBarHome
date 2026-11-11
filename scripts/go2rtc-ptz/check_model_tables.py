@@ -17,7 +17,9 @@ def require_patch_sha_matches_readme() -> None:
         sys.exit("❌ go2rtc README 没有记录补丁 SHA-256")
     recorded = match.group(1)
     actual = hashlib.sha256(
-        (ROOT / "scripts/go2rtc-ptz/patches/0001-xiaomi-ptz.patch").read_bytes()
+        (ROOT / "scripts/go2rtc-ptz/patches/0001-xiaomi-ptz.patch")
+        .read_bytes()
+        .replace(b"\r\n", b"\n")
     ).hexdigest()
     if recorded != actual:
         sys.exit(f"❌ 补丁 SHA-256 不一致：README 记录 {recorded}，补丁文件是 {actual}")
@@ -26,13 +28,13 @@ def require_patch_sha_matches_readme() -> None:
 
 require_patch_sha_matches_readme()
 
-fixture = json.loads((ROOT / "Tests/Fixtures/camera_ptz_models.json").read_text())
+fixture = json.loads((ROOT / "Tests/Fixtures/camera_ptz_models.json").read_text(encoding="utf-8"))
 expected = {
     (row["model"], row["mode"]): row["confidence"]
     for row in fixture["models"]
 }
 
-go = (ROOT / "scripts/go2rtc-ptz/patches/0001-xiaomi-ptz.patch").read_text()
+go = (ROOT / "scripts/go2rtc-ptz/patches/0001-xiaomi-ptz.patch").read_text(encoding="utf-8")
 go_table = {}
 in_table = False
 for line in go.splitlines():
@@ -47,7 +49,7 @@ for line in go.splitlines():
     if match:
         go_table[match.group(1)] = match.group(2).lower()
 
-swift = (ROOT / "Sources/MijiaCore/CameraPTZ.swift").read_text()
+swift = (ROOT / "Sources/MijiaCore/CameraPTZ.swift").read_text(encoding="utf-8")
 swift_tables = {}
 for name, mode in (("stepModels", "step"), ("continuousModels", "continuous"), ("pendingModels", "unknown")):
     block = re.search(rf"let {name}: Set<String> = \[(.*?)\]", swift, re.S)

@@ -51,7 +51,7 @@ BUNDLE="${BUNDLE:-$ROOT/MenuBarHome.app}"
 [ -d "$BUNDLE" ] || fail "找不到 $BUNDLE"
 
 BUNDLE="$(cd "$BUNDLE" && pwd)"
-EXPECTED_BUILD="$(git -C "$ROOT" rev-list --count HEAD)"
+EXPECTED_BUILD="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
 ACTUAL_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$BUNDLE/Contents/Info.plist" 2>/dev/null || true)"
 [ -n "$ACTUAL_BUILD" ] || fail "$BUNDLE 缺少 CFBundleVersion"
 [ "$ACTUAL_BUILD" = "$EXPECTED_BUILD" ] || \

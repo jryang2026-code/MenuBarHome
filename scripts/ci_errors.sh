@@ -19,8 +19,8 @@ gh run view "$run" --json jobs,event,headBranch,headSha,createdAt,databaseId,wor
     exit 1
 }
 gh run view "$run" --log-failed >"$tmp/log.txt" || true
-branch="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("headBranch") or "")' "$tmp/run.json")"
-workflow="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("workflowName") or "")' "$tmp/run.json")"
+branch="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("headBranch") or "")' "$tmp/run.json")"
+workflow="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("workflowName") or "")' "$tmp/run.json")"
 if [ -n "$branch" ]; then
     if [ -n "$workflow" ]; then
         gh run list --branch "$branch" --workflow "$workflow" --limit 30 --json databaseId,createdAt,headSha,event,headBranch >"$tmp/runs.json" || printf '[]\n' >"$tmp/runs.json"
@@ -31,13 +31,18 @@ else
     printf '[]\n' >"$tmp/runs.json"
 fi
 
-python3 -I - "$run" "$tmp/repo.json" "$tmp/run.json" "$tmp/log.txt" "$tmp/runs.json" <<'PY'
+gh_bin="$(command -v gh)"
+python3 -I - "$run" "$tmp/repo.json" "$tmp/run.json" "$tmp/log.txt" "$tmp/runs.json" "$gh_bin" <<'PY'
 import json
+import os
 import re
 import subprocess
 import sys
 
-run, repo_path, run_path, log_path, runs_path = sys.argv[1:6]
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", newline="\n")
+
+run, repo_path, run_path, log_path, runs_path, gh_bin = sys.argv[1:7]
 repo = json.load(open(repo_path, encoding="utf-8"))["nameWithOwner"]
 run_doc = json.load(open(run_path, encoding="utf-8"))
 jobs = run_doc["jobs"]
@@ -68,11 +73,18 @@ def flatten_pages(payload):
 
 def fetch_annotations(job_id):
     url = f"repos/{repo}/check-runs/{job_id}/annotations?per_page=100"
+    cmd = (
+        ["bash", gh_bin, "api", "--paginate", "--slurp", url]
+        if os.name == "nt" and not gh_bin.lower().endswith((".exe", ".cmd", ".bat"))
+        else [gh_bin, "api", "--paginate", "--slurp", url]
+    )
     proc = subprocess.run(
-        ["gh", "api", "--paginate", "--slurp", url],
+        cmd,
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "annotation request failed").strip()

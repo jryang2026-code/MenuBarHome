@@ -11,9 +11,11 @@ struct GrokBallSidecarPlacement {
         var isVertical: Bool { self == .left || self == .right }
     }
 
-    static let collapsedWidth: CGFloat = 84
-    static let expandedWidth: CGFloat = 232
-    static let expandedHeight: CGFloat = 218
+    static let ballDiameter: CGFloat = 72
+    static let outerInset: CGFloat = 6
+    static let collapsedWidth: CGFloat = ballDiameter + 2 * outerInset
+    static let expandedWidth: CGFloat = ballDiameter + GrokBallSuggestionMetrics.gapToBall + GrokBallSuggestionMetrics.columnWidth + 2 * outerInset
+    static let expandedHeight: CGFloat = GrokBallSuggestionMetrics.columnHeight + 2 * outerInset
     static let gap: CGFloat = 8
     static let topInset: CGFloat = 44
     let side: Side
@@ -323,7 +325,9 @@ final class GrokBallSidecarController {
         if parent.frame.contains(point) || panelWindow.frame.contains(point) {
             let windowPoint = panelWindow.convertPoint(fromScreen: point)
             state.pointer.position = panelWindow.contentView?.convert(windowPoint, from: nil)
-        } else { state.pointer.position = nil }
+        } else if state.pointer.position != nil {
+            state.pointer.position = nil
+        }
     }
 }
 

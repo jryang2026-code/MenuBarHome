@@ -137,7 +137,7 @@ for dirpath, _, names in os.walk(root):
         if len(header) < 24 or header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
             continue
         width, height = struct.unpack(">II", header[16:24])
-        rel = os.path.relpath(path, root)
+        rel = os.path.relpath(path, root).replace("\\", "/")
         rows.append(f"{rel}\t{width}\t{height}")
 for row in sorted(rows):
     print(row)

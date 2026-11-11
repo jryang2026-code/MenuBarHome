@@ -139,10 +139,17 @@ elif search_matches 'return \([^)]*\bawait\b' Sources; then
     exit 1
 fi
 
+PYTHON_BIN=""
+if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+fi
+
 if command -v xmllint >/dev/null 2>&1; then
     xmllint --noout docs/assets/*.svg Resources/AppIcon/*.svg
-elif command -v python3 >/dev/null 2>&1; then
-    python3 -c 'import sys, xml.etree.ElementTree as ET; [ET.parse(f) for f in sys.argv[1:]]' docs/assets/*.svg Resources/AppIcon/*.svg
+elif [ -n "$PYTHON_BIN" ]; then
+    "$PYTHON_BIN" -c 'import sys, xml.etree.ElementTree as ET; [ET.parse(f) for f in sys.argv[1:]]' docs/assets/*.svg Resources/AppIcon/*.svg
 fi
 
 if ! cmp -s Resources/AppIcon/AppIcon-Dark.svg docs/assets/logo-dark.svg || ! cmp -s Resources/AppIcon/AppIcon-Light.svg docs/assets/logo-light.svg; then
@@ -150,22 +157,22 @@ if ! cmp -s Resources/AppIcon/AppIcon-Dark.svg docs/assets/logo-dark.svg || ! cm
     exit 1
 fi
 
-# Design-token and Ed25519 checks need python3. CI runs them on ubuntu-latest
+# Design-token and Ed25519 checks need Python 3. CI runs them on ubuntu-latest
 # (the Swift container image does not ship python3).
-if command -v python3 >/dev/null 2>&1; then
-    python3 scripts/check_design_tokens.py
-    python3 scripts/check_timer_render.py
-    python3 scripts/check_swift_harness_lints.py
+if [ -n "$PYTHON_BIN" ]; then
+    "$PYTHON_BIN" scripts/check_design_tokens.py
+    "$PYTHON_BIN" scripts/check_timer_render.py
+    "$PYTHON_BIN" scripts/check_swift_harness_lints.py
     bash scripts/repeat_test.sh --self-test
     bash scripts/red-check.sh --self-test
     node windows/scripts/test-file.mjs --self-test
-    python3 scripts/test_check_capability_matrix.py
-    python3 scripts/test_mijia_cli.py
-    python3 scripts/check_capability_matrix.py
-    python3 scripts/go2rtc-ptz/check_model_tables.py
+    "$PYTHON_BIN" scripts/test_check_capability_matrix.py
+    "$PYTHON_BIN" scripts/test_mijia_cli.py
+    "$PYTHON_BIN" scripts/check_capability_matrix.py
+    "$PYTHON_BIN" scripts/go2rtc-ptz/check_model_tables.py
     # Swift 与 Windows 测试都断言合成结果等于这份基线，所以这里直接读基线出报告（#295）。
-    python3 scripts/miot_coverage_report.py
-    python3 - <<'PY'
+    "$PYTHON_BIN" scripts/miot_coverage_report.py
+    "$PYTHON_BIN" - <<'PY'
 import base64
 import re
 import sys
@@ -210,7 +217,7 @@ if overlap:
     if overlap in keys.values():
         sys.exit("❌ Ed25519 过渡公开钥不能与当前签名公钥相同")
 PY
-    python3 scripts/update_manifest.py self-test
+    "$PYTHON_BIN" scripts/update_manifest.py self-test
     # 发布附件集合（含两端 SBOM）是发版硬门槛，用 fixture 验证严格清单不会悄悄放宽。
     bash scripts/test_check_release.sh
     # 多个会话靠 issue-frontier.sh 挑票，判定规则放宽会导致重复认领（#338）。

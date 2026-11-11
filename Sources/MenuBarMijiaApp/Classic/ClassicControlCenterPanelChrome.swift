@@ -402,18 +402,6 @@ extension ClassicControlCenterPanel {
         }
     }
 
-    var listFilterBars: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            roomFilterBar
-            if showsKindRow { kindFilterBar }
-        }
-    }
-
-    var showsKindRow: Bool {
-        if case .kind = store.listCut { return true }
-        return store.kindChips.count >= 2
-    }
-
     func scrollKindStrip(using proxy: ScrollViewProxy, tag: DeviceKindTag) {
         if reduceMotion {
             proxy.scrollTo(tag, anchor: .center)

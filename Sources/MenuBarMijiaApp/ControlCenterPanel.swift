@@ -221,6 +221,7 @@ public struct ControlCenterPanel: View {
         search.end()
         isSearchFieldFocused = false
         isSearchRevealed = false
+        isDrawerHovered = false
     }
 
     private func handleSearching(_ searching: Bool) {
@@ -451,6 +452,7 @@ public struct ControlCenterPanel: View {
             AssistantSuggestionsRow(store: store)
         }
         .onHover { isDrawerHovered = $0 }
+        .onDisappear { isDrawerHovered = false }
     }
 
     /// The single input: typing filters devices, a sentence plus Return runs as an instruction, the
@@ -706,7 +708,7 @@ final class PanelSearchState {
     /// Devices in the order the panel draws them, so ties keep the on-screen order.
     func devices(store: HomeStore) -> [SmartDevice] {
         let order = DeviceLayoutPrefs.decodeOrder(
-            UserDefaults.standard.string(forKey: DeviceLayoutPrefs.orderKey) ?? "[]"
+            store.userDefaults.string(forKey: DeviceLayoutPrefs.orderKey) ?? "[]"
         )
         return DeviceLayoutPrefs.apply(order: order, to: store.devices)
     }
@@ -714,7 +716,7 @@ final class PanelSearchState {
     /// Search results for the current query: hidden and (optionally) offline devices are excluded,
     /// the room filter is not applied, and ranked matches come first.
     func results(store: HomeStore) -> [SmartDevice] {
-        let aliases = GroupPrefs.map(UserDefaults.standard.string(forKey: GroupPrefs.aliasesKey) ?? "{}")
+        let aliases = GroupPrefs.map(store.userDefaults.string(forKey: GroupPrefs.aliasesKey) ?? "{}")
         return PanelSearch.results(
             query,
             devices: devices(store: store),

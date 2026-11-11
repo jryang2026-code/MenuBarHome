@@ -62,16 +62,6 @@ type ConfirmationHazard =
   | { readonly kind: "powerOnOrHotter"; readonly setpoint: number };
 
 function confirmationHazard(dev: SmartDevice): ConfirmationHazard | null {
-  // A water heater whose model and name miss every heater hint is still a heater for the
-  // hotter-only rule (#167), and the facet rule reads `spec.heats` the same way.
-  if (
-    dev.kind.kind === "climate" &&
-    dev.name.includes("热水器") &&
-    !dev.model.includes("heater") &&
-    !dev.model.includes("blanket")
-  ) {
-    return { kind: "powerOnOrHotter", setpoint: dev.kind.targetTemperature };
-  }
   if (dev.kind.kind === "cover") {
     switch (dev.kind.subtype) {
       // A curtain is the ticket's low-risk case; an airer moves like a window opener, and a

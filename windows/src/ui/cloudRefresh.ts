@@ -186,8 +186,10 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         host.isSyncingCloud = false;
         const staleChanged = staleBefore !== host.cloudValuesStale;
         const expiredChanged = expiredBefore !== host.miSessionExpired;
-        if (!silent || staleChanged || expiredChanged) {
+        if (!silent) {
           host.render();
+        } else if (staleChanged || expiredChanged) {
+          host.queueBackgroundRender();
         } else if (presentationChanged) {
           if (
             cloudPanelStructureFingerprint(host) !== previousStructure ||
@@ -260,6 +262,7 @@ export function cloudPresentationFingerprint(host: MenuMijiaWindowsApp): string 
     return JSON.stringify({
       homes: host.homes,
       devices: host.devices,
+      deviceFacets: host.deviceFacets,
       scenes: host.scenes,
       environmentReadings: host.environmentReadings,
       groupOwners: [...host.groupOwnerByMemberDid],
@@ -340,9 +343,12 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
       if (!header || count !== String(section.devices.length)) return false;
     }
     const tilePatches: Array<{ current: HTMLElement; desired: Element }> = [];
-    const unmatchedTileIds = new Set(
-      Array.from(host.root.querySelectorAll<HTMLElement>("[data-tile-id]"), (element) => element.dataset.tileId ?? ""),
-    );
+    const tileElementsById = new Map<string, HTMLElement>();
+    for (const element of host.root.querySelectorAll<HTMLElement>("[data-tile-id]")) {
+      const tileId = element.dataset.tileId ?? "";
+      if (tileId) tileElementsById.set(tileId, element);
+    }
+    const unmatchedTileIds = new Set(tileElementsById.keys());
     let index = 0;
     for (const section of sections) {
       if (host.layout.collapsed.includes(scopedKey(host.pageKey, section.id))) continue;
@@ -352,9 +358,7 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
       );
       for (const device of section.devices) {
         unmatchedTileIds.delete(device.id);
-        const current = Array.from(
-          host.root.querySelectorAll<HTMLElement>("[data-tile-id]"),
-        ).find((element) => element.dataset.tileId === device.id);
+        const current = tileElementsById.get(device.id);
         const desired = parseSingleElement(
           host.renderDeviceTile(device, spanMap.get(device.id) ?? 6, index++),
         );
@@ -419,7 +423,8 @@ export function filterBySelectedHome<D extends { readonly did: string; readonly 
     const homeRooms = rooms.filter((r) => r.homeId === selected);
     const dids = new Set(homeRooms.flatMap((r) => r.dids));
     const kept = devices.filter((d) => dids.has(d.did) || (d.splitParentDid ? dids.has(d.splitParentDid) : false));
+    const keptSet = new Set(kept);
     const parents = new Set(kept.map((d) => d.splitParentDid).filter((x): x is string => !!x));
-    const withParents = devices.filter((d) => kept.includes(d) || parents.has(d.did));
+    const withParents = devices.filter((d) => keptSet.has(d) || parents.has(d.did));
     return { devices: withParents, rooms: homeRooms };
   }

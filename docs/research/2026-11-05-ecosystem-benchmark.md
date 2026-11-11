@@ -15,7 +15,7 @@
 3. **鱼缸是多服务复合设备。** 三份真实规格都由 `fish-tank` + `light` + `feeder` + `filter` + 水温告警等服务组成，投喂是带参 action `pet-food-out`【复算】。目前整台被丢进"未显示设备"。
 4. **猫眼：控制项已有，视频已有通路，真正缺的是"事件"。** 猫眼 39 个型号里 38 个有 `doorbell-ring` 事件【复算】。事件有两条可行路径（§4.2）。
 5. **结构性差距：我们只有三层里的第一层。** 官方和 al-one 都是「类型化主实体 → 通用长尾兜底 → 按型号覆盖」；我们是"一设备一类型，选中主服务后其余丢弃"。这是鱼缸、喂食器、热水器、洗衣机一直补不完的根因（§3）。
-6. **已有数据驱动先例**：`Resources/fallbackSpecs.json` 是 macOS 与 Windows 共读的数据表；`MiotSynthesizer.swift`（970 行）与 `synthesis.ts`（999 行）则是两份平行实现。把注册表与规则做成共享数据，可以直接缓解 ADR-0006 记录的"每个 bug 修两遍"。
+6. **已有数据驱动先例**：`Sources/MijiaCore/Resources/fallbackSpecs.json` 是 macOS 与 Windows 共读的数据表；`MiotSynthesizer.swift`（970 行）与 `synthesis.ts`（999 行）则是两份平行实现。把注册表与规则做成共享数据，可以直接缓解 ADR-0006 记录的"每个 bug 修两遍"。
 
 ---
 

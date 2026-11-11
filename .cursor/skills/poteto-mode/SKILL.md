@@ -24,7 +24,7 @@ Read this once before coding. It is the project-local replacement for the pstack
 - Prove the change against the real artifact: run the app, the command, or the project check. Read `../principle-prove-it-works/SKILL.md`. Tests alone are not proof for a user-facing surface.
 - Fix the first place the system went wrong, not the symptom. Read `../principle-fix-root-causes/SKILL.md`.
 - Test observable behavior, not implementation details. Read `../principle-test-behavior-not-implementation/SKILL.md`.
-- In this repo, `bash scripts/check.sh` is the gate. Use the `menubarmijia-*` verification skills for rendering, snapshots, Windows parity, and real-device checks.
+- In this repo, `bash scripts/check.sh` is the gate. Follow `AGENTS.md` and `CODING_STANDARDS.md` for rendering, snapshots, Windows parity, and real-device checks.
 - Build the script or generator when it makes the work checkable. Read `../principle-build-the-lever/SKILL.md`. Before reporting a performance number, read `../benchmark-checklist/SKILL.md`.
 
 ## Delegate

@@ -2,7 +2,14 @@ import { existsSync, readFileSync } from "node:fs";
 import * as nodeModule from "node:module";
 import { fileURLToPath } from "node:url";
 import { isMainThread } from "node:worker_threads";
-import ts from "typescript";
+
+let ts = null;
+try {
+  const mod = await import("typescript");
+  ts = mod.default ?? mod;
+} catch {
+  ts = null;
+}
 
 const EXT_REWRITES = [
   [".js", [".ts", ".tsx"]],
@@ -41,16 +48,21 @@ export function load(url, context, nextLoad) {
     if (/\.(?:[cm]?ts|tsx)$/.test(pathname)) {
       const fileName = fileURLToPath(parsedUrl);
       const source = readFileSync(fileName, "utf8");
-      const { outputText } = ts.transpileModule(source, {
-        fileName,
-        compilerOptions: {
-          target: ts.ScriptTarget.ES2022,
-          module: ts.ModuleKind.ESNext,
-          jsx: pathname.endsWith(".tsx") ? ts.JsxEmit.ReactJSX : undefined,
-          isolatedModules: true,
-          inlineSourceMap: true,
-        },
-      });
+      const outputText = ts
+        ? ts.transpileModule(source, {
+            fileName,
+            compilerOptions: {
+              target: ts.ScriptTarget.ES2022,
+              module: ts.ModuleKind.ESNext,
+              jsx: pathname.endsWith(".tsx") ? ts.JsxEmit.ReactJSX : undefined,
+              isolatedModules: true,
+              inlineSourceMap: true,
+            },
+          }).outputText
+        : nodeModule.stripTypeScriptTypes(source, {
+            mode: "transform",
+            sourceUrl: fileName,
+          });
       return { format: "module", shortCircuit: true, source: outputText };
     }
   }

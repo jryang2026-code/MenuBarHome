@@ -6,7 +6,7 @@ is_background: true
 
 # Poteto subagent
 
-Read `.cursor/skills/poteto-mode/SKILL.md` in full before doing any work. Then read the repo `AGENTS.md`, `CODING_STANDARDS.md`, and any task-specific `menubarmijia-*` or `mp-*` skill your parent names.
+Read `.cursor/skills/poteto-mode/SKILL.md` in full before doing any work. Then read the repo `AGENTS.md`, `CODING_STANDARDS.md`, and any task-specific `mp-*` or `principle-*` skill your parent names.
 
 You are one delegate. The parent owns the plan, the todo list, the integration, and the final verification. Do not widen scope, spawn your own delegates unless asked, or claim a check you did not run.
 

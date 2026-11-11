@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ManualControlPolicy } from "../src/core/assistant/actionPolicy.js";
+import { ManualControlPolicy, ModelActionPolicy } from "../src/core/assistant/actionPolicy.js";
 import { deviceCategory } from "../src/core/assistant/deviceCategory.js";
+import { IntentValidator } from "../src/core/assistant/intent.js";
 import {
   DEVICE_PROFILES,
   MANUAL_CONTROL_FALLBACK_RULES,
@@ -551,5 +552,37 @@ describe("assistant device category heater rule (#143)", () => {
       "other",
       "an appliance is never re-categorised by its name",
     );
+  });
+
+  it("keeps heater-named 热水器 on the stricter heater rule while plain 热水器 stays hotter-only", () => {
+    const heaterNamed = climateDevice("取暖热水器", "viomi.wh.e1");
+    const plainWaterHeater = climateDevice("厨房热水器", "viomi.wh.e1");
+    assert.equal(
+      ModelActionPolicy.needsConfirmation(
+        { targetId: heaterNamed.id, operation: { kind: "targetTemperature", celsius: 20 } },
+        [heaterNamed],
+      ),
+      true,
+    );
+    assert.equal(
+      ModelActionPolicy.needsConfirmation(
+        { targetId: plainWaterHeater.id, operation: { kind: "targetTemperature", celsius: 20 } },
+        [plainWaterHeater],
+      ),
+      false,
+    );
+  });
+
+  it("preserves appliance power intents during IntentValidator.normalize when writable", () => {
+    const wh = waterHeater();
+    assert.deepEqual(IntentValidator.normalize({ kind: "power", isOn: false }, wh), {
+      kind: "power",
+      isOn: false,
+    });
+    const readOnlyWh: SmartDevice = {
+      ...wh,
+      kind: wh.kind.kind === "appliance" ? { ...wh.kind, powerWritable: false } : wh.kind,
+    };
+    assert.equal(IntentValidator.normalize({ kind: "power", isOn: true }, readOnlyWh), null);
   });
 });

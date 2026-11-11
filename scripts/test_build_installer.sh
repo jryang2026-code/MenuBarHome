@@ -52,34 +52,53 @@ case "$mode" in
 esac
 EOF
 chmod +x "$bin/npx"
+if command -v cygpath >/dev/null 2>&1; then
+    bash_win="$(cygpath -m "$(command -v bash)")"
+    npx_win="$(cygpath -m "$bin/npx")"
+    cat >"$bin/npx.cmd" <<EOF
+@echo off
+"$bash_win" "$npx_win" %*
+EOF
+fi
+
+host_path() {
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -m "$1"
+    else
+        printf '%s\n' "$1"
+    fi
+}
 
 pwsh_bin="$(command -v pwsh)"
 export PATH="$bin:$PATH"
-export RUNNER_TEMP="$tmp/runner"
-export BUILD_TEST_LOG="$tmp/calls.log"
-mkdir -p "$RUNNER_TEMP"
+export RUNNER_TEMP="$(host_path "$tmp/runner")"
+export BUILD_TEST_LOG="$(host_path "$tmp/calls.log")"
+mkdir -p "$tmp/runner"
 
 invoke_installer() {
-    : >"$BUILD_TEST_LOG"
-    rm -f "$RUNNER_TEMP/tauri-build.log"
+    : >"$tmp/calls.log"
+    rm -f "$tmp/runner/tauri-build.log"
     set +e
     invoke_out="$("$@")"
     invoke_status=$?
     set -e
-    invoke_calls="$(grep -c . "$BUILD_TEST_LOG" || true)"
+    invoke_calls="$(grep -c . "$tmp/calls.log" || true)"
 }
 
 run_mode() {
-    invoke_installer "$pwsh_bin" -NoProfile -File "$script"
+    local host_script host_step
+    host_script="$(host_path "$script")"
+    host_step="$(host_path "$tmp/step.ps1")"
+    invoke_installer "$pwsh_bin" -NoProfile -ExecutionPolicy Bypass -File "$host_script"
     file_out="$invoke_out"
     file_status="$invoke_status"
     file_calls="$invoke_calls"
     cat >"$tmp/step.ps1" <<EOF
 \$ErrorActionPreference = 'stop'
-& '$script'
+& '$host_script'
 if ((Test-Path -LiteralPath variable:\\LASTEXITCODE)) { exit \$LASTEXITCODE }
 EOF
-    invoke_installer "$pwsh_bin" -NoProfile -Command ". '$tmp/step.ps1'"
+    invoke_installer "$pwsh_bin" -NoProfile -ExecutionPolicy Bypass -Command ". '$host_step'"
     wrap_out="$invoke_out"
     wrap_status="$invoke_status"
     wrap_calls="$invoke_calls"

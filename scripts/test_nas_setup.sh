@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-python3 - <<'PY'
+PYTHON_BIN=python3
+command -v "$PYTHON_BIN" >/dev/null 2>&1 || PYTHON_BIN=python
+"$PYTHON_BIN" - <<'PY'
 import hashlib
 import io
 import os
@@ -30,8 +32,8 @@ with tempfile.TemporaryDirectory(prefix='menumijia-nas-test-') as temporary:
     bin_dir.mkdir()
     log = task / 'calls.log'
     log.touch()
-    (bin_dir / 'ssh').write_text('#!/bin/bash\necho "ssh $*" >> "$NAS_TEST_LOG"\nexit 91\n')
-    (bin_dir / 'curl').write_text('#!/bin/bash\necho "curl $*" >> "$NAS_TEST_LOG"\n[ "${NAS_TEST_READY:-0}" = 1 ] && { echo 200; exit 0; }\nexit 92\n')
+    (bin_dir / 'ssh').write_text('#!/bin/bash\necho "ssh $*" >> "$NAS_TEST_LOG"\nexit 91\n', encoding='utf-8', newline='\n')
+    (bin_dir / 'curl').write_text('#!/bin/bash\necho "curl $*" >> "$NAS_TEST_LOG"\n[ "${NAS_TEST_READY:-0}" = 1 ] && { echo 200; exit 0; }\nexit 92\n', encoding='utf-8', newline='\n')
     (bin_dir / 'docker').write_text('''#!/bin/bash
 printf 'docker %s\\n' "$*" >> "$NAS_TEST_LOG"
 case "$1" in
@@ -43,12 +45,12 @@ case "$1" in
     rm) [ "${NAS_TEST_OLD:-1}" = 1 ] ;;
     *) exit 0 ;;
 esac
-''')
-    (bin_dir / 'uname').write_text('#!/bin/bash\necho x86_64\n')
-    (bin_dir / 'ip').write_text('#!/bin/bash\necho "local src 192.0.2.10"\n')
+''', encoding='utf-8', newline='\n')
+    (bin_dir / 'uname').write_text('#!/bin/bash\necho x86_64\n', encoding='utf-8', newline='\n')
+    (bin_dir / 'ip').write_text('#!/bin/bash\necho "local src 192.0.2.10"\n', encoding='utf-8', newline='\n')
     for path in bin_dir.iterdir():
         path.chmod(0o755)
-    env = dict(os.environ, PATH=str(bin_dir) + ':' + os.environ['PATH'],
+    env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ['PATH'],
                NAS_TEST_LOG=str(log), PACKAGE_ONLY='1', TMPDIR=str(task))
     for key in ('GH_PROXY', 'MIRROR_FALLBACK', 'FORCE_NEW', 'HA_VERSION',
                 'HA_IMAGE_DIGEST', 'COMPONENTS_SHA256'):

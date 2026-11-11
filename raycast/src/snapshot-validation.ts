@@ -1,4 +1,10 @@
-import type { RaycastCapabilities, RaycastDevice, RaycastSnapshot } from "./snapshot";
+import type {
+  RaycastCapabilities,
+  RaycastDevice,
+  RaycastQuickAction,
+  RaycastScene,
+  RaycastSnapshot,
+} from "./snapshot";
 
 /**
  * The contract MenuBarHome writes to `raycast-snapshot.json` (schema version 1).
@@ -29,7 +35,40 @@ export function validateSnapshot(parsed: unknown, path: string): RaycastSnapshot
     throw new Error(`${path} is missing its device, scene or quick-action list.`);
   }
   snapshot.devices.forEach((device, index) => validateDevice(device, index, path));
+  snapshot.scenes.forEach((scene, index) => validateScene(scene, index, path));
+  snapshot.quickActions.forEach((action, index) => validateQuickAction(action, index, path));
   return snapshot as RaycastSnapshot;
+}
+
+function validateScene(value: unknown, index: number, path: string): RaycastScene {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${path} scene #${index + 1} is not an object.`);
+  }
+  const scene = value as Partial<RaycastScene>;
+  if (typeof scene.id !== "string" || scene.id.trim() === "") {
+    throw new Error(`${path} scene #${index + 1} has no id.`);
+  }
+  if (typeof scene.name !== "string") {
+    throw new Error(`${path} scene "${scene.id}" has no name.`);
+  }
+  if (typeof scene.entityId !== "string" || scene.entityId.trim() === "") {
+    throw new Error(`${path} scene "${scene.id}" has no entityId.`);
+  }
+  return scene as RaycastScene;
+}
+
+function validateQuickAction(value: unknown, index: number, path: string): RaycastQuickAction {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${path} quickAction #${index + 1} is not an object.`);
+  }
+  const action = value as Partial<RaycastQuickAction>;
+  if (typeof action.id !== "string" || action.id.trim() === "") {
+    throw new Error(`${path} quickAction #${index + 1} has no id.`);
+  }
+  if (typeof action.name !== "string") {
+    throw new Error(`${path} quickAction "${action.id}" has no name.`);
+  }
+  return action as RaycastQuickAction;
 }
 
 function validateDevice(value: unknown, index: number, path: string): RaycastDevice {
