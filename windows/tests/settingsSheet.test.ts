@@ -288,6 +288,31 @@ describe("Settings tab switching (#78)", () => {
     assert.ok(!element('[data-ai-preset="openrouter_jev"]').classList.contains("is-active"));
   });
 
+  it("never leaks a newly hydrated provider key into a switched endpoint draft on re-render", async () => {
+    const app = startDemo();
+    await click("#btn-settings");
+    await click('[data-settings-tab="assistant"]');
+    assert.equal(field("#settings-api-key").value, "");
+
+    // User switches to another endpoint before Credential Manager hydration finishes.
+    type("#settings-base-url", "https://custom.example/v1");
+    assert.equal(field("#settings-api-key").value, "");
+
+    // Hydration now populates OpenRouter's saved key and triggers a render.
+    app.settings.openRouterApiKey = "sk-openrouter-secret";
+    app.settings.assistantKeyEndpoint = "openrouter.ai";
+    app.assistantKeysByPreset["openrouter_jev"] = "sk-openrouter-secret";
+    app.render();
+    await setImmediate();
+
+    assert.equal(field("#settings-base-url").value, "https://custom.example/v1");
+    assert.equal(field("#settings-api-key").value, "", "OpenRouter's hydrated key must not stay in the custom endpoint draft");
+
+    await click("#btn-save-settings");
+    assert.equal(app.settings.assistantBaseURL, "https://custom.example/v1");
+    assert.equal(app.settings.openRouterApiKey, "");
+  });
+
   it("lets freshly hydrated credentials populate untouched fields on re-render", async () => {
     const app = startDemo();
     await click("#btn-settings");

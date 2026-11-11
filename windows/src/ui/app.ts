@@ -1131,7 +1131,11 @@ export class MenuMijiaWindowsApp {
     const sheet = this.root.querySelector<HTMLElement>(".cc-sheet-body") ?? this.root.querySelector<HTMLElement>(".cc-sheet");
     if (sheet) sheet.scrollTop = sheetScrollTop;
     // A preset click mutates the fields without a render, so only a rebuild can have dropped a draft.
-    if (restoreSettingsDraft(this.root, settingsDraft)) refreshHabitSharePreview(this);
+    if (
+      restoreSettingsDraft(this.root, settingsDraft, (el, url) => this.syncKeyFieldWithEndpoint(el, url))
+    ) {
+      refreshHabitSharePreview(this);
+    }
 
     if (focusSnapshot) {
       const matches = Array.from(

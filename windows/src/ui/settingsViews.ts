@@ -74,8 +74,13 @@ export function captureSettingsDraft(root: HTMLElement): SettingsDraft | null {
  * Puts the drafts back after a re-render. Returns true when the habit-share sample carried text and
  * the preview under it therefore has to be recomputed.
  */
-export function restoreSettingsDraft(root: HTMLElement, draft: SettingsDraft | null): boolean {
+export function restoreSettingsDraft(
+  root: HTMLElement,
+  draft: SettingsDraft | null,
+  syncKeyField?: (apiKeyEl: HTMLInputElement, baseURL: string) => void,
+): boolean {
   if (!draft) return false;
+  const hasKeyDraft = draft.values.some(([id]) => id === "settings-api-key");
   for (const [id, value] of draft.values) {
     const field = root.querySelector<HTMLInputElement>(`#${id}`);
     if (field) field.value = value;
@@ -91,7 +96,12 @@ export function restoreSettingsDraft(root: HTMLElement, draft: SettingsDraft | n
       el.classList.toggle("is-active", el.dataset.aiPreset === preset.id);
     });
     const apiKeyEl = root.querySelector<HTMLInputElement>("#settings-api-key");
-    if (apiKeyEl) apiKeyEl.placeholder = preset.keyPlaceholder;
+    if (apiKeyEl) {
+      apiKeyEl.placeholder = preset.keyPlaceholder;
+      if (!hasKeyDraft && syncKeyField) {
+        syncKeyField(apiKeyEl, baseEl.value);
+      }
+    }
   }
   return (draft.values.find(([id]) => id === "settings-habit-share-sample")?.[1] ?? "") !== "";
 }
