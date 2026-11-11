@@ -116,7 +116,7 @@ struct ClimatePanelModule: View {
                         .foregroundStyle(fg)
                         .lineLimit(1)
                     HStack(spacing: 3) {
-                        Text(showRoomBadge ? "\(L10n.displayRoomName(device.roomName))，\(statusLine)" : statusLine)
+                        Text(roomBadgeText.map { "\($0)，\(statusLine)" } ?? statusLine)
                             .lineLimit(1)
 
                     }
@@ -178,6 +178,10 @@ struct ClimatePanelModule: View {
 
     private var iconBadge: some View {
         orb.accessibilityHidden(true)
+    }
+
+    private var roomBadgeText: String? {
+        DeviceRoomBadge.label(roomName: device.roomName, title: device.name, showRoomBadge: showRoomBadge)
     }
 
     private var statusLine: String {

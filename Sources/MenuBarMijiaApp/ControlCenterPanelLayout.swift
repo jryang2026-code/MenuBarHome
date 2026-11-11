@@ -683,11 +683,16 @@ extension ControlCenterPanel {
         asRows: Bool = false
     ) -> some View {
         let aliases = GroupPrefs.map(aliasesRaw)
+        let currentRoomAliases = roomAliases
         let source = sortByUserOrder ? cardOrder(devices) : devices
         let ordered = source.map { dev -> SmartDevice in
-            guard let alias = aliases[dev.id] else { return dev }
             var d = dev
-            d.name = alias
+            if let alias = aliases[dev.id] {
+                d.name = alias
+            }
+            if let roomAlias = RoomPrefs.alias(for: dev.roomId, in: currentRoomAliases) {
+                d.roomName = roomAlias
+            }
             return d
         }
         let spanMap = asRows ? Dictionary(uniqueKeysWithValues: ordered.map { ($0.id, 12) }) : spans(for: ordered)

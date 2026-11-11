@@ -19,7 +19,7 @@ enum PanelGrouping: String, CaseIterable, Identifiable {
 
 /// One group in the column. Favorites are pinned open like Notification Center's widgets; every
 /// other group is a notification-style stack that opens into full-width device cards.
-struct DeviceStack: Identifiable {
+struct DeviceStack: Identifiable, Equatable {
     enum Source: Equatable {
         case favorites
         case group(String)
@@ -34,10 +34,113 @@ struct DeviceStack: Identifiable {
     let devices: [SmartDevice]
 
     var isPinned: Bool { source == .favorites }
-    /// A room stack already names the room, so its cards drop the room badge.
-    var showsRoomBadge: Bool {
-        if case .room = source { return false }
+
+    /// True when `listCut` already narrows the entire panel to this stack's room or kind.
+    func matches(listCut: DeviceListCut) -> Bool {
+        switch (source, listCut) {
+        case (.room(let stackRoomId?), .room(let cutRoomId)):
+            return stackRoomId == cutRoomId
+        case (.kind(let stackKind), .kind(let cutKind)):
+            return stackKind == cutKind
+        default:
+            return false
+        }
+    }
+
+    /// Pinned favorites, single-device groups, and a stack matching the active list cut never fold.
+    func isOpen(expandedStacks: Set<String>, listCut: DeviceListCut = .all) -> Bool {
+        isPinned || devices.count == 1 || matches(listCut: listCut) || expandedStacks.contains(id)
+    }
+
+    /// Only a multi-device unpinned stack outside a matching list cut can fold back up.
+    func canCollapse(listCut: DeviceListCut = .all, isEditingLayout: Bool = false) -> Bool {
+        !isPinned && devices.count > 1 && !matches(listCut: listCut) && !isEditingLayout
+    }
+
+    /// Whether an open stack draws a section header row above its cards:
+    /// - Single-device room/kind groups (`空调 1`, `扫地机 1`, `客厅 1`) omit the header and show
+    ///   the device card directly, matching `ActivityStackView`'s single-item rule.
+    /// - A room/kind group already named by the active `listCut` pill omits the duplicate header.
+    /// - When `常用` is the only group on screen (`totalStacks == 1`), there is no lower section
+    ///   to contrast with, so it omits the `"常用"` header as well.
+    /// - Custom user groups (`.group`) always keep their header: the group name lives nowhere on
+    ///   the card, and the header's context menu owns Rename / Reorder / Delete Group.
+    func showsHeader(totalStacks: Int, listCut: DeviceListCut = .all) -> Bool {
+        switch source {
+        case .favorites:
+            return totalStacks > 1
+        case .group:
+            return true
+        case .room, .kind:
+            return devices.count > 1 && !matches(listCut: listCut)
+        }
+    }
+
+    /// Single-item headers (e.g. a 1-device custom group or 1-device pinned `常用`) drop the `"1"`.
+    var showsHeaderCount: Bool {
+        devices.count > 1
+    }
+
+    /// Whether cards inside this open stack carry their room badge:
+    /// - Never when `listCut` already scopes the entire panel to one room.
+    /// - For a `.room` stack, omitted when `showsHeader` already names the room above, but shown
+    ///   when a single-device room renders headerless so the card still identifies its room.
+    /// - Shown for `.favorites`, `.group`, and `.kind` outside a room cut.
+    func showsRoomBadge(totalStacks: Int, listCut: DeviceListCut = .all) -> Bool {
+        if case .room = listCut { return false }
+        if case .room = source {
+            return !showsHeader(totalStacks: totalStacks, listCut: listCut)
+        }
         return true
+    }
+
+    /// Descriptor for the parent room/kind submenu injected into cards when `showsHeader` is false,
+    /// so hiding a single-device header never strands Rename Room or Move Up / Move Down.
+    struct HeaderlessMenuDescriptor: Equatable {
+        let title: String
+        let symbol: String
+    }
+
+    func headerlessMenuDescriptor(
+        showsHeader: Bool,
+        canReorderRooms: Bool,
+        canReorderKinds: Bool
+    ) -> HeaderlessMenuDescriptor? {
+        guard !showsHeader else { return nil }
+        switch source {
+        case .room(.some):
+            return HeaderlessMenuDescriptor(
+                title: L10n.tr("房间：\(title)", "Room: \(title)"),
+                symbol: "house"
+            )
+        case .kind:
+            guard canReorderKinds else { return nil }
+            return HeaderlessMenuDescriptor(
+                title: L10n.tr("类型：\(title)", "Type: \(title)"),
+                symbol: devices.first?.sfSymbolName ?? "square.stack"
+            )
+        case .favorites, .group, .room(nil):
+            return nil
+        }
+    }
+}
+
+/// Parent stack actions forwarded into `DeviceCardView`'s context menu when the stack's own
+/// section header is hidden (`showsHeader == false`).
+struct HeaderlessStackMenu {
+    let title: String
+    let symbol: String
+    let makeContent: @MainActor () -> AnyView
+}
+
+private struct HeaderlessStackMenuKey: EnvironmentKey {
+    nonisolated(unsafe) static let defaultValue: HeaderlessStackMenu? = nil
+}
+
+extension EnvironmentValues {
+    var headerlessStackMenu: HeaderlessStackMenu? {
+        get { self[HeaderlessStackMenuKey.self] }
+        set { self[HeaderlessStackMenuKey.self] = newValue }
     }
 }
 
@@ -125,9 +228,26 @@ extension ControlCenterPanel {
         return stacks
     }
 
-    /// Pinned favorites and single-device groups never fold; edit mode leaves stacks folded.
+    /// Pinned favorites, single-device groups, and a stack matching the active list cut never fold.
     func isStackOpen(_ stack: DeviceStack) -> Bool {
-        stack.isPinned || stack.devices.count == 1 || expandedStacks.contains(stack.id)
+        stack.isOpen(expandedStacks: expandedStacks, listCut: store.listCut)
+    }
+
+    /// Devices below `常用` and custom groups — the only slice `按房间 / 按类型` actually regroups.
+    /// With 0 or 1 device here, both segments render identically, so the toggle would do nothing.
+    var unpinnedUngroupedDeviceCount: Int {
+        let known = Set(groups.map(\.id))
+        let map = groupMap.filter { known.contains($0.value) }
+        let pool = store.favoriteDevices.isEmpty ? store.visibleDevices : store.nonFavoriteDevices
+        return pool.filter { map[$0.id] == nil }.count
+    }
+
+    var showsGroupingSegments: Bool {
+        unpinnedUngroupedDeviceCount > 1
+    }
+
+    var showsGroupingBar: Bool {
+        showsGroupingSegments || listCutTitle != nil
     }
 
     /// The order the digit shortcuts and the card badges share: every card the column draws, in
@@ -158,10 +278,12 @@ extension ControlCenterPanel {
     /// Rooms / types, plus the room or kind a Tab cut is showing, which a click clears.
     var groupingBar: some View {
         HStack(spacing: 6) {
-            GlassSegmentedControl(
-                selection: $groupingRaw,
-                segments: PanelGrouping.allCases.map { GlassSegment(value: $0.rawValue, title: $0.title) }
-            )
+            if showsGroupingSegments {
+                GlassSegmentedControl(
+                    selection: $groupingRaw,
+                    segments: PanelGrouping.allCases.map { GlassSegment(value: $0.rawValue, title: $0.title) }
+                )
+            }
             if let cut = listCutTitle {
                 Button {
                     withAnimation(AppleMotion.snappySpring) { _ = store.selectRoom(nil) }
@@ -182,6 +304,9 @@ extension ControlCenterPanel {
                 .accessibilityLabel(Text(L10n.tr("显示全部：取消只看\(cut)", "Show all: stop showing only \(cut)")))
                 .transition(.opacity.combined(with: .scale(scale: 0.9)))
             }
+            if !showsGroupingSegments {
+                Spacer(minLength: 0)
+            }
         }
     }
 
@@ -199,19 +324,24 @@ extension ControlCenterPanel {
     // MARK: - A stack
 
     @ViewBuilder
-    func stackView(_ stack: DeviceStack, quickIndexMap: [String: Int]) -> some View {
+    func stackView(_ stack: DeviceStack, totalStacks: Int, quickIndexMap: [String: Int]) -> some View {
         let open = isStackOpen(stack)
+        let showsHeader = stack.showsHeader(totalStacks: totalStacks, listCut: store.listCut)
+        let showRoomBadge = stack.showsRoomBadge(totalStacks: totalStacks, listCut: store.listCut)
         let dimmedInEdit = !stack.isPinned && isEditingLayout
         VStack(alignment: .leading, spacing: 8) {
             if open {
-                stackHeader(stack)
-                    .transition(.opacity)
+                if showsHeader {
+                    stackHeader(stack)
+                        .transition(.opacity)
+                }
                 deviceCollectionView(
                     devices: stack.devices,
-                    showRoomBadge: stack.showsRoomBadge,
+                    showRoomBadge: showRoomBadge,
                     quickIndexMap: quickIndexMap,
                     asRows: !stack.isPinned
                 )
+                .environment(\.headerlessStackMenu, headerlessStackMenu(for: stack, showsHeader: showsHeader))
                 // The cards slide out of the stack's top edge, as an opened notification group does.
                 .transition(.asymmetric(
                     insertion: .opacity
@@ -234,13 +364,15 @@ extension ControlCenterPanel {
             Text(stack.title)
                 .font(.system(size: DesignTokens.TypeSize.title, weight: .semibold))
                 .lineLimit(1)
-            Text("\(stack.devices.count)")
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .monospacedDigit()
-                .contentTransition(.numericText(value: Double(stack.devices.count)))
-                .foregroundStyle(.secondary)
+            if stack.showsHeaderCount {
+                Text("\(stack.devices.count)")
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    .monospacedDigit()
+                    .contentTransition(.numericText(value: Double(stack.devices.count)))
+                    .foregroundStyle(.secondary)
+            }
             Spacer(minLength: 8)
-            if !stack.isPinned, stack.devices.count > 1, !isEditingLayout {
+            if stack.canCollapse(listCut: store.listCut, isEditingLayout: isEditingLayout) {
                 Button {
                     setStack(stack, open: false)
                 } label: {
@@ -359,6 +491,21 @@ extension ControlCenterPanel {
         return parts.joined(separator: " · ")
     }
 
+    private func headerlessStackMenu(for stack: DeviceStack, showsHeader: Bool) -> HeaderlessStackMenu? {
+        guard let descriptor = stack.headerlessMenuDescriptor(
+            showsHeader: showsHeader,
+            canReorderRooms: canReorderRooms,
+            canReorderKinds: canReorderKinds
+        ) else {
+            return nil
+        }
+        return HeaderlessStackMenu(
+            title: descriptor.title,
+            symbol: descriptor.symbol,
+            makeContent: { AnyView(stackMenu(stack)) }
+        )
+    }
+
     // MARK: - Stack menu
 
     @ViewBuilder
@@ -374,21 +521,25 @@ extension ControlCenterPanel {
             Button(role: .destructive) { deleteGroup(gid) } label: { Label(L10n.tr("删除分组", "Delete Group"), systemImage: "trash") }
         case .room(let id?):
             Button { layoutUI.renamingRoomId = id } label: { Label(L10n.tr("重命名房间…", "Rename Room…"), systemImage: "pencil") }
-            Button { moveRoom(id, by: -1) } label: { Label(L10n.tr("上移", "Move Up"), systemImage: "arrow.up") }
-                .disabled(displayRooms.first?.id == id)
-            Button { moveRoom(id, by: 1) } label: { Label(L10n.tr("下移", "Move Down"), systemImage: "arrow.down") }
-                .disabled(displayRooms.last?.id == id)
-            Divider()
-            Button { beginRoomOrder() } label: { Label(L10n.tr("排序房间…", "Reorder Rooms…"), systemImage: "arrow.up.arrow.down") }
+            if canReorderRooms {
+                Button { moveRoom(id, by: -1) } label: { Label(L10n.tr("上移", "Move Up"), systemImage: "arrow.up") }
+                    .disabled(displayRooms.first?.id == id)
+                Button { moveRoom(id, by: 1) } label: { Label(L10n.tr("下移", "Move Down"), systemImage: "arrow.down") }
+                    .disabled(displayRooms.last?.id == id)
+                Divider()
+                Button { beginRoomOrder() } label: { Label(L10n.tr("排序房间…", "Reorder Rooms…"), systemImage: "arrow.up.arrow.down") }
+            }
         case .room(nil):
             EmptyView()
         case .kind(let tag):
-            Button { moveKind(tag, by: -1) } label: { Label(L10n.tr("上移", "Move Up"), systemImage: "arrow.up") }
-                .disabled(displayKinds.first == tag)
-            Button { moveKind(tag, by: 1) } label: { Label(L10n.tr("下移", "Move Down"), systemImage: "arrow.down") }
-                .disabled(displayKinds.last == tag)
-            Divider()
-            Button { beginRoomOrder(target: .kinds) } label: { Label(L10n.tr("排序类型…", "Reorder Kinds…"), systemImage: "arrow.up.arrow.down") }
+            if canReorderKinds {
+                Button { moveKind(tag, by: -1) } label: { Label(L10n.tr("上移", "Move Up"), systemImage: "arrow.up") }
+                    .disabled(displayKinds.first == tag)
+                Button { moveKind(tag, by: 1) } label: { Label(L10n.tr("下移", "Move Down"), systemImage: "arrow.down") }
+                    .disabled(displayKinds.last == tag)
+                Divider()
+                Button { beginRoomOrder(target: .kinds) } label: { Label(L10n.tr("排序类型…", "Reorder Kinds…"), systemImage: "arrow.up.arrow.down") }
+            }
         }
     }
 }
