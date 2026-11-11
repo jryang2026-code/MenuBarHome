@@ -2733,6 +2733,7 @@ it("hasDetailDrawer mirrors the macOS card table and never opens an empty drawer
     ["climate with fan speed only", device("climate-fan", { kind: "climate", entityId: "c", isOn: true, hvacMode: "fan_only", availableModes: [], targetTemperature: 25, currentTemperature: null, minTemp: 16, maxTemp: 30, step: 1, fanMode: "Low", availableFanModes: ["Low"], temperatureWritable: false }), true],
     ["climate with nothing writable", device("climate-ro", { kind: "climate", entityId: "miot:c", isOn: false, hvacMode: "off", availableModes: [], targetTemperature: 25, currentTemperature: null, minTemp: 16, maxTemp: 30, step: 1, fanMode: null, availableFanModes: [], temperatureWritable: false }), false],
     ["climate with only an off mode", device("climate-off", { kind: "climate", entityId: "miot:c", isOn: false, hvacMode: "off", availableModes: ["off"], targetTemperature: 25, currentTemperature: null, minTemp: 16, maxTemp: 30, step: 1, fanMode: null, availableFanModes: [], temperatureWritable: false, powerWritable: false }), false],
+    ["climate with swing modes only", device("climate-swing", { kind: "climate", entityId: "miot:c", isOn: true, hvacMode: "off", availableModes: ["off"], targetTemperature: 25, currentTemperature: null, minTemp: 16, maxTemp: 30, step: 1, fanMode: null, availableFanModes: [], swingMode: "vertical", availableSwingModes: ["off", "vertical"], temperatureWritable: false, powerWritable: false }), true],
     ["fan with no controls", device("fan-bare", { kind: "fan", entityId: "f", isOn: false, percentage: null, presetMode: null, availablePresetModes: [], isOscillating: null, speedWritable: false, swingWritable: false }), false],
     ["fan with a preset", device("fan-preset", { kind: "fan", entityId: "f", isOn: false, percentage: null, presetMode: null, availablePresetModes: ["Auto"], isOscillating: null }), true],
     ["vacuum with actions", device("vac", { kind: "vacuum", entityId: "v", status: "docked", battery: 90, modeEntityId: null, currentMode: null, availableModes: [] }), true],
@@ -2747,10 +2748,11 @@ it("hasDetailDrawer mirrors the macOS card table and never opens an empty drawer
     ["appliance with a writable empty fan level", device("app-fan", applianceKind({ fanLevel: { entityId: "a.fan", current: null, options: [], writable: true } })), false],
     ["fridge", device("fridge", { kind: "fridge", modeEntityId: null, currentMode: "auto", availableModes: [], fridgeCurrentTemp: 4, fridgeTargetTemp: 4, fridgeTargetEntityId: null, freezerCurrentTemp: -18, freezerTargetTemp: -18, freezerTargetEntityId: null }), true],
     ["sensor", device("sensor", { kind: "sensor", temperature: 20, humidity: 40, battery: 90 }), false],
-    // macOS plug/cover/generic primary drawers (energy, position, generic extras) are not
-    // rendered on Windows, so those cards open only for 更多设置 rows.
-    ["plug without facets", device("plug", { kind: "plug", switchEntityId: "switch.p", isOn: true, powerWatts: 40, energyKwh: 1, childLockEntityId: null, isChildLocked: false }), false],
-    ["cover without facets", device("cover", { kind: "cover", entityId: "c", subtype: "curtain", positionPercent: 100, positionWritable: true, openDescription: "Open", closeDescription: "Close", pauseDescription: "Pause", batteryPercent: null, faultText: null, motion: "stopped" }), false],
+    ["plug with power/energy metrics", device("plug-metrics", { kind: "plug", switchEntityId: "switch.p", isOn: true, powerWatts: 40, energyKwh: 1, childLockEntityId: null, isChildLocked: false }), true],
+    ["bare plug without facets", device("plug", { kind: "plug", switchEntityId: "switch.p", isOn: true, powerWatts: null, energyKwh: null, childLockEntityId: null, isChildLocked: false }), false],
+    ["cover with position/motor controls", device("cover-controls", { kind: "cover", entityId: "c", subtype: "curtain", positionPercent: 100, positionWritable: true, openDescription: "Open", closeDescription: "Close", pauseDescription: "Pause", batteryPercent: null, faultText: null, motion: "stopped" }), true],
+    ["bare cover without facets", device("cover", { kind: "cover", entityId: "c", subtype: "curtain", positionPercent: 100, positionWritable: false, openDescription: null, closeDescription: null, pauseDescription: null, batteryPercent: null, faultText: null, motion: "stopped" }), false],
+    ["generic with active alert", device("generic-alert", { kind: "generic", deviceType: "fish-tank", typeTitle: "鱼缸", isOn: false, powerControl: null, isReadOnly: true, readouts: [], alerts: ["水泵状态：堵塞"], symbolName: null }), true],
     ["generic without facets", device("generic", { kind: "generic", deviceType: "fish-tank", typeTitle: "鱼缸", isOn: false, powerControl: null, isReadOnly: true, readouts: [], symbolName: null }), false],
   ];
   for (const [label, dev, expected] of table) {
@@ -2763,8 +2765,8 @@ it("hasDetailDrawer mirrors the macOS card table and never opens an empty drawer
     return row[1];
   };
   assert.equal(hasDetailDrawer(labeled("light with no writable control"), [facet()]), true, "light with facets");
-  assert.equal(hasDetailDrawer(labeled("plug without facets"), [facet()]), true, "plug with facets");
-  assert.equal(hasDetailDrawer(labeled("cover without facets"), [facet()]), true, "cover with facets");
+  assert.equal(hasDetailDrawer(labeled("bare plug without facets"), [facet()]), true, "plug with facets");
+  assert.equal(hasDetailDrawer(labeled("bare cover without facets"), [facet()]), true, "cover with facets");
   assert.equal(hasDetailDrawer(labeled("generic without facets"), [facet()]), true, "generic with facets");
 });
 
@@ -5074,5 +5076,183 @@ describe("Air-quality grade (shared golden)", () => {
     for (const item of golden.cases) {
       assert.equal(airQualityLevel(item.raw, item.pm25), item.level, `raw ${item.raw} pm25 ${item.pm25}`);
     }
+  });
+});
+
+describe("Home Assistant cover & climate swing parity", () => {
+  it("synthesizes Tests/Fixtures/ha_cover_snapshot.json subtypes, features, battery, and maps cover/swing service calls", () => {
+    const raw = readFileSync(resolve(process.cwd(), "../Tests/Fixtures/ha_cover_snapshot.json"), "utf8");
+    const home = HomeAssistantSynthesizer.synthesize(JSON.parse(raw));
+    const byId = new Map(home.devices.map((d) => [d.id, d]));
+
+    const living = byId.get("ha_class_curtain");
+    assert.ok(living && living.kind.kind === "cover");
+    assert.equal(living.name, "客厅布帘");
+    assert.equal(living.kind.subtype, "curtain");
+    assert.equal(living.kind.positionPercent, 60);
+    assert.equal(living.kind.positionWritable, true);
+    assert.equal(living.kind.batteryPercent, 88);
+    assert.equal(living.kind.openDescription, "Open");
+    assert.equal(living.kind.closeDescription, "Close");
+    assert.equal(living.kind.pauseDescription, "Pause");
+
+    for (const id of [
+      "ha_class_blind",
+      "ha_class_shade",
+      "ha_class_shutter",
+      "ha_class_awning",
+      "ha_class_damper",
+      "ha_name_cn_curtain",
+      "ha_name_en_curtain",
+      "ha_name_en_blind",
+    ]) {
+      const dev = byId.get(id);
+      assert.ok(dev && dev.kind.kind === "cover", id);
+      assert.equal(dev.kind.subtype, "curtain", id);
+    }
+
+    for (const id of ["ha_class_window", "ha_name_cn_window", "ha_name_en_window", "ha_fallback_unknown"]) {
+      const dev = byId.get(id);
+      assert.ok(dev && dev.kind.kind === "cover", id);
+      assert.equal(dev.kind.subtype, "window-opener", id);
+    }
+
+    for (const id of [
+      "ha_class_garage",
+      "ha_class_gate",
+      "ha_class_door",
+      "ha_name_cn_garage",
+      "ha_name_cn_gate",
+      "ha_name_en_garage",
+      "ha_name_en_gate",
+    ]) {
+      const dev = byId.get(id);
+      assert.ok(dev && dev.kind.kind === "cover", id);
+      assert.equal(dev.kind.subtype, "garage-door", id);
+    }
+
+    const shutter = byId.get("ha_class_shutter");
+    assert.ok(shutter && shutter.kind.kind === "cover");
+    assert.equal(shutter.kind.positionWritable, false);
+    assert.equal(shutter.kind.pauseDescription, "Pause");
+
+    const door = byId.get("ha_class_door");
+    assert.ok(door && door.kind.kind === "cover");
+    assert.equal(door.kind.positionWritable, false);
+    assert.equal(door.kind.pauseDescription, null);
+
+    // Round-trip cached HA home with cover & climate swingMode
+    const cached = parseCachedHAHome({
+      identity: "https://ha.example.test:abc",
+      home: {
+        ...home,
+        devices: [
+          ...home.devices,
+          {
+            id: "dev_ac",
+            name: "客厅空调",
+            roomId: "living_room",
+            roomName: "客厅",
+            model: "ac",
+            isOnline: true,
+            kind: {
+              kind: "climate",
+              entityId: "climate.living_ac",
+              isOn: true,
+              hvacMode: "cool",
+              availableModes: ["off", "cool", "heat"],
+              targetTemperature: 24,
+              currentTemperature: 26,
+              minTemp: 16,
+              maxTemp: 30,
+              step: 1,
+              fanMode: "auto",
+              availableFanModes: ["auto", "high"],
+              swingMode: "vertical",
+              availableSwingModes: ["off", "vertical", "horizontal"],
+            },
+          },
+        ],
+      },
+    });
+    assert.ok(cached);
+    const cachedAc = cached.home.devices.find((d) => d.id === "dev_ac");
+    assert.ok(cachedAc && cachedAc.kind.kind === "climate");
+    assert.equal(cachedAc.kind.swingMode, "vertical");
+    assert.deepEqual(cachedAc.kind.availableSwingModes, ["off", "vertical", "horizontal"]);
+
+    assert.deepEqual(
+      haServiceCall({ kind: "setSelectOption", entityId: "cover.living_curtain", option: "Open" }),
+      { domain: "cover", service: "open_cover", entity_id: "cover.living_curtain", data: {} },
+    );
+    assert.deepEqual(
+      haServiceCall({ kind: "setSelectOption", entityId: "cover.living_curtain", option: "Pause" }),
+      { domain: "cover", service: "stop_cover", entity_id: "cover.living_curtain", data: {} },
+    );
+    assert.deepEqual(
+      haServiceCall({ kind: "setSelectOption", entityId: "cover.living_curtain", option: "Close" }),
+      { domain: "cover", service: "close_cover", entity_id: "cover.living_curtain", data: {} },
+    );
+    assert.deepEqual(
+      haServiceCall({ kind: "setNumberValue", entityId: "cover.living_curtain", value: 42 }),
+      { domain: "cover", service: "set_cover_position", entity_id: "cover.living_curtain", data: { position: 42 } },
+    );
+    assert.deepEqual(
+      haServiceCall({ kind: "setSelectOption", entityId: "climate.living_ac", option: "vertical" }),
+      { domain: "climate", service: "set_swing_mode", entity_id: "climate.living_ac", data: { swing_mode: "vertical" } },
+    );
+  });
+
+  it("maps parameterized MIoT action inputs and rejects missing or out-of-domain arguments (#7)", () => {
+    const spec = parseMiotDeviceSpec({
+      type: "urn:miot-spec-v2:device:pet-feeder:0000A06C:mmgg-feeder:1",
+      services: [
+        {
+          iid: 2,
+          type: "urn:miot-spec-v2:service:pet-feeder:00007847:mmgg-feeder:1",
+          properties: [
+            {
+              iid: 1,
+              type: "urn:miot-spec-v2:property:feeding-measure:00000080:mmgg-feeder:1",
+              format: "uint8",
+              access: ["write"],
+              "value-range": [1, 10, 1],
+            },
+          ],
+          actions: [
+            {
+              iid: 1,
+              type: "urn:miot-spec-v2:action:pet-food-out:0000282B:mmgg-feeder:1",
+              in: [1],
+            },
+          ],
+        },
+      ],
+    });
+    assert.ok(spec);
+    assert.throws(
+      () => MiotCommandMapper.map({ kind: "pressButton", entityId: "miot-action:feeder:2:1" }, spec),
+      /Action needs inputs/,
+    );
+    const mapped = MiotCommandMapper.map(
+      { kind: "pressButton", entityId: "miot-action:feeder:2:1", arguments: [3] },
+      spec,
+    );
+    assert.deepEqual(mapped, {
+      kind: "action",
+      call: { did: "feeder", siid: 2, aiid: 1, inputs: [3] },
+    });
+    const clamped = MiotCommandMapper.map(
+      { kind: "pressButton", entityId: "miot-action:feeder:2:1", arguments: [99] },
+      spec,
+    );
+    assert.deepEqual(clamped, {
+      kind: "action",
+      call: { did: "feeder", siid: 2, aiid: 1, inputs: [10] },
+    });
+    assert.throws(
+      () => MiotCommandMapper.map({ kind: "pressButton", entityId: "miot-action:feeder:2:1", arguments: [1, 2] }, spec),
+      /Unsupported action inputs/,
+    );
   });
 });

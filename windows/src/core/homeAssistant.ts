@@ -2,6 +2,7 @@ import { sha256 } from "./miCloudCrypto.js";
 import {
   deviceEnvironmentReading,
   environmentReadingPriority,
+  type CoverSpec,
   type DeviceCommand,
   type DeviceKind,
   type SmartDevice,
@@ -128,16 +129,63 @@ function requiredStrings(value: unknown): string[] {
   if (!Array.isArray(value)) throw new Error("Invalid cached string list");
   return value.map(requiredText);
 }
+function haCoverSubtype(deviceClass: string | null, name: string): CoverSpec["subtype"] {
+  const rawClass = (deviceClass ?? "").trim().toLowerCase();
+  switch (rawClass) {
+    case "curtain":
+    case "blind":
+    case "shade":
+    case "shutter":
+    case "awning":
+    case "damper":
+      return "curtain";
+    case "window":
+      return "window-opener";
+    case "garage":
+    case "gate":
+    case "door":
+      return "garage-door";
+    default:
+      break;
+  }
+  const lower = name.toLowerCase();
+  if (name.includes("帘") || lower.includes("curtain") || lower.includes("blind")) {
+    return "curtain";
+  }
+  if (name.includes("车库") || name.includes("大门") || lower.includes("garage") || lower.includes("gate")) {
+    return "garage-door";
+  }
+  if (name.includes("窗") || lower.includes("window")) {
+    return "window-opener";
+  }
+  return "window-opener";
+}
+
+function requiredCoverSubtype(value: unknown): CoverSpec["subtype"] {
+  if (value === "curtain" || value === "window-opener" || value === "garage-door" || value === "clothes-airer") {
+    return value;
+  }
+  throw new Error("Invalid cached cover subtype");
+}
+
+function requiredCoverMotion(value: unknown): CoverSpec["motion"] {
+  if (value === "stopped" || value === "opening" || value === "closing") {
+    return value;
+  }
+  throw new Error("Invalid cached cover motion");
+}
+
 function cachedKind(value: unknown): DeviceKind {
   const k = object(value);
   switch (k.kind) {
     case "light": return { kind: "light", entityId: requiredText(k.entityId), isOn: requiredBoolean(k.isOn), brightnessPercent: nullableNumber(k.brightnessPercent), colorTempKelvin: nullableNumber(k.colorTempKelvin), minKelvin: requiredNumber(k.minKelvin), maxKelvin: requiredNumber(k.maxKelvin), currentEffect: nullableText(k.currentEffect), availableEffects: requiredStrings(k.availableEffects) };
-    case "climate": return { kind: "climate", entityId: requiredText(k.entityId), isOn: requiredBoolean(k.isOn), hvacMode: requiredText(k.hvacMode), availableModes: requiredStrings(k.availableModes), targetTemperature: requiredNumber(k.targetTemperature), currentTemperature: nullableNumber(k.currentTemperature), minTemp: requiredNumber(k.minTemp), maxTemp: requiredNumber(k.maxTemp), step: requiredNumber(k.step), fanMode: nullableText(k.fanMode), availableFanModes: requiredStrings(k.availableFanModes) };
+    case "climate": return { kind: "climate", entityId: requiredText(k.entityId), isOn: requiredBoolean(k.isOn), hvacMode: requiredText(k.hvacMode), availableModes: requiredStrings(k.availableModes), targetTemperature: requiredNumber(k.targetTemperature), currentTemperature: nullableNumber(k.currentTemperature), minTemp: requiredNumber(k.minTemp), maxTemp: requiredNumber(k.maxTemp), step: requiredNumber(k.step), fanMode: nullableText(k.fanMode), availableFanModes: requiredStrings(k.availableFanModes), ...(k.swingMode !== undefined ? { swingMode: nullableText(k.swingMode) } : {}), ...(k.availableSwingModes !== undefined ? { availableSwingModes: requiredStrings(k.availableSwingModes) } : {}) };
     case "fan": return { kind: "fan", entityId: requiredText(k.entityId), isOn: requiredBoolean(k.isOn), percentage: nullableNumber(k.percentage), presetMode: nullableText(k.presetMode), availablePresetModes: requiredStrings(k.availablePresetModes), isOscillating: nullableBoolean(k.isOscillating), pm25Density: nullableNumber(k.pm25Density ?? null), airQuality: nullableText(k.airQuality ?? null), temperature: nullableNumber(k.temperature ?? null), humidity: nullableNumber(k.humidity ?? null), filterLifePercent: nullableNumber(k.filterLifePercent ?? null) };
     case "plug": return { kind: "plug", switchEntityId: requiredText(k.switchEntityId), isOn: requiredBoolean(k.isOn), powerWatts: nullableNumber(k.powerWatts), energyKwh: nullableNumber(k.energyKwh ?? null), childLockEntityId: nullableText(k.childLockEntityId), isChildLocked: requiredBoolean(k.isChildLocked) };
     case "fridge": return { kind: "fridge", modeEntityId: nullableText(k.modeEntityId), currentMode: requiredText(k.currentMode), availableModes: requiredStrings(k.availableModes), fridgeCurrentTemp: nullableNumber(k.fridgeCurrentTemp), fridgeTargetTemp: requiredNumber(k.fridgeTargetTemp), fridgeTargetEntityId: nullableText(k.fridgeTargetEntityId), freezerCurrentTemp: nullableNumber(k.freezerCurrentTemp), freezerTargetTemp: requiredNumber(k.freezerTargetTemp), freezerTargetEntityId: nullableText(k.freezerTargetEntityId) };
     case "vacuum": return { kind: "vacuum", entityId: requiredText(k.entityId), status: requiredText(k.status), battery: nullableNumber(k.battery), modeEntityId: nullableText(k.modeEntityId), currentMode: nullableText(k.currentMode), availableModes: requiredStrings(k.availableModes) };
     case "camera": return { kind: "camera", entityId: requiredText(k.entityId), isOn: requiredBoolean(k.isOn), nightShot: nullableText(k.nightShot), availableNightShots: requiredStrings(k.availableNightShots), motionDetectionEntityId: nullableText(k.motionDetectionEntityId), isMotionDetectionOn: nullableBoolean(k.isMotionDetectionOn), streamEntityId: nullableText(k.streamEntityId), snapshotPath: null };
+    case "cover": return { kind: "cover", entityId: requiredText(k.entityId), subtype: requiredCoverSubtype(k.subtype), positionPercent: nullableNumber(k.positionPercent), positionWritable: requiredBoolean(k.positionWritable), openDescription: nullableText(k.openDescription), closeDescription: nullableText(k.closeDescription), pauseDescription: nullableText(k.pauseDescription), batteryPercent: nullableNumber(k.batteryPercent), faultText: nullableText(k.faultText), motion: requiredCoverMotion(k.motion) };
     case "sensor": return { kind: "sensor", temperature: nullableNumber(k.temperature), humidity: nullableNumber(k.humidity), battery: nullableNumber(k.battery), ...(k.statusText !== undefined && k.statusText !== null ? { statusText: requiredText(k.statusText) } : {}) };
     default: throw new Error("Invalid cached device kind");
   }
@@ -188,6 +236,7 @@ function buildKind(
   entities: Row[],
   states: Map<string, HAState>,
   model: string,
+  deviceName = "",
 ): { kind: DeviceKind; online: boolean } | null {
   const find = (
     domain: string,
@@ -240,6 +289,8 @@ function buildKind(
   if ((state = find("climate"))) {
     const a = state.attributes;
     const modes = strings(a.hvac_modes);
+    const swingMode = typeof a.swing_mode === "string" ? a.swing_mode : undefined;
+    const swingModes = strings(a.swing_modes);
     kind = {
       kind: "climate",
       entityId: state.entityId,
@@ -253,6 +304,8 @@ function buildKind(
       step: number(a.target_temp_step) ?? 1,
       fanMode: typeof a.fan_mode === "string" ? a.fan_mode : null,
       availableFanModes: strings(a.fan_modes),
+      ...(swingMode !== undefined ? { swingMode } : {}),
+      ...(swingModes.length > 0 ? { availableSwingModes: swingModes } : {}),
     };
   } else if (
     (state = find(
@@ -362,6 +415,52 @@ function buildKind(
           : typeof camera?.attributes.access_token === "string" && camera.entityId
             ? `/api/camera_proxy/${camera.entityId}?token=${camera.attributes.access_token}`
             : null,
+    };
+  } else if (
+    (state = find(
+      "cover",
+      (entry) => entry.entity_category !== "config" && entry.entity_category !== "diagnostic",
+    ))
+  ) {
+    const a = state.attributes;
+    const coverEntry = entities.find((entry) => text(entry.entity_id) === state!.entityId);
+    const friendlyName =
+      typeof a.friendly_name === "string"
+        ? a.friendly_name
+        : text(coverEntry?.name, text(coverEntry?.original_name));
+    const nameForInference = !deviceName || deviceName === "智能设备" ? friendlyName : deviceName;
+    const rawPos = number(a.current_position);
+    const roundedPos =
+      rawPos !== null && Number.isSafeInteger(Math.round(rawPos))
+        ? Math.max(0, Math.min(100, Math.round(rawPos)))
+        : null;
+    const stateLower = state.state.toLowerCase();
+    const positionPercent =
+      roundedPos !== null
+        ? roundedPos
+        : stateLower === "open"
+          ? 100
+          : stateLower === "closed"
+            ? 0
+            : null;
+    const rawFeatures = number(a.supported_features);
+    const features =
+      rawFeatures !== null && Number.isSafeInteger(Math.trunc(rawFeatures)) ? Math.trunc(rawFeatures) : null;
+    const bat = reading("battery") ?? number(a.battery_level) ?? number(a.battery);
+    const batteryPercent =
+      bat !== null && Number.isSafeInteger(Math.round(bat)) ? Math.round(bat) : null;
+    kind = {
+      kind: "cover",
+      entityId: state.entityId,
+      subtype: haCoverSubtype(typeof a.device_class === "string" ? a.device_class : null, nameForInference),
+      positionPercent,
+      positionWritable: features !== null ? (features & 4) !== 0 : roundedPos !== null,
+      openDescription: features !== null ? ((features & 1) !== 0 ? "Open" : null) : "Open",
+      closeDescription: features !== null ? ((features & 2) !== 0 ? "Close" : null) : "Close",
+      pauseDescription: features !== null ? ((features & 8) !== 0 ? "Pause" : null) : "Pause",
+      batteryPercent,
+      faultText: null,
+      motion: stateLower === "opening" ? "opening" : stateLower === "closing" ? "closing" : "stopped",
     };
   } else if (
     // Companion switch.* entities must not hide the real lock state.
@@ -486,8 +585,6 @@ export class HomeAssistantSynthesizer {
       model: string,
       entities: Row[],
     ) => {
-      const built = buildKind(entities, states, model);
-      if (!built) return;
       const rawRoomName = text(
         snapshot.areas.find((area) => area.area_id === areaId)?.name,
         "全屋",
@@ -509,10 +606,12 @@ export class HomeAssistantSynthesizer {
       let cleanName = name
         .trim()
         .replace(/^(?:直流变频循环扇|米家踢脚线电暖器|Yeelight LED 彩光灯带)\s*/, "")
-        .replace(/(?:  灯|  电暖器|  风扇|  音箱|  电视|  开关 开关)$/, "")
+        .replace(/(?:  灯|  电暖器|  风扇|  音箱|  电视|  开关 开关|  窗帘)$/, "")
         .trim();
       if (cleanName === "吸顶灯" && roomName !== "全屋")
         cleanName = `${roomName}吸顶灯`;
+      const built = buildKind(entities, states, model, cleanName || name.trim());
+      if (!built) return;
       devices.push({
         id,
         name: cleanName || name.trim(),
@@ -660,9 +759,31 @@ export function haServiceCall(command: DeviceCommand): HaServiceCall {
       return call("set_preset_mode", { preset_mode: command.presetMode });
     case "setFanOscillating":
       return call("oscillate", { oscillating: command.oscillating });
-    case "setSelectOption":
+    case "setSelectOption": {
+      if (domain === "climate") {
+        return call("set_swing_mode", { swing_mode: command.option });
+      }
+      if (domain === "cover") {
+        const lower = command.option.trim().toLowerCase();
+        if (lower === "open" || lower === "up" || lower === "raise" || lower === "打开") {
+          return call("open_cover");
+        }
+        if (lower === "close" || lower === "down" || lower === "lower" || lower === "关闭") {
+          return call("close_cover");
+        }
+        if (lower === "pause" || lower === "stop" || lower === "暂停") {
+          return call("stop_cover");
+        }
+        throw new Error(`Unsupported cover motor option: ${command.option}`);
+      }
       return call("select_option", { option: command.option });
+    }
     case "setNumberValue":
+      if (domain === "cover") {
+        return call("set_cover_position", {
+          position: Math.max(0, Math.min(100, Math.round(command.value))),
+        });
+      }
       return call("set_value", { value: command.value });
     case "vacuumAction":
       return call(

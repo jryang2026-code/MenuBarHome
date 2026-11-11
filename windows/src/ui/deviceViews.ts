@@ -1,5 +1,11 @@
 import { t } from "../core/i18n.js";
 import { IntentReply } from "../core/assistant.js";
+import {
+  renderClimateSwingRow,
+  renderCoverDrawer,
+  renderGenericDrawer,
+  renderPlugDrawer,
+} from "./detailDrawers.js";
 import { renderMoreSettings } from "./facetViews.js";
 import {
   deviceCanTogglePower,
@@ -185,7 +191,8 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
                         .join("")}</div>`
                     : ""
                 }
-                ${renderMoreSettings({ deviceId: dev.id, facets, allowAdvanced: allowAdvancedFacetWrites, escapeHtml })}
+                ${renderClimateSwingRow(dev.id, k, escapeHtml)}
+                ${renderMoreSettings({ deviceId: dev.id, facets, allowAdvanced: allowAdvancedFacetWrites, isOnline: dev.isOnline, escapeHtml })}
               </div>`
             : ""
         }
@@ -197,6 +204,8 @@ function renderPrimaryDrawer(
   dev: SmartDevice,
   escapeHtml: (value: string) => string,
   pendingHighRisk: PendingHighRiskConfirmation | null = null,
+  facets: readonly FacetControl[] = [],
+  allowAdvanced = false,
 ): string {
     const k = dev.kind;
     if (k.kind === "light") {
@@ -239,7 +248,8 @@ function renderPrimaryDrawer(
       const showTemp = k.temperatureWritable !== false;
       const showModes = k.availableModes.some((mode) => mode !== "off") || (!k.entityId.startsWith("miot:") && k.powerWritable !== false);
       const showFan = k.availableFanModes.length > 0;
-      if (!showTemp && !showModes && !showFan) return "";
+      const showSwing = (k.availableSwingModes?.length ?? 0) > 0;
+      if (!showTemp && !showModes && !showFan && !showSwing) return "";
       // The confirmation belongs to this card and to the captured command, never to the current
       // slider value; the timer removes the state when its window closes.
       const confirmTemperature =
@@ -292,6 +302,7 @@ function renderPrimaryDrawer(
               )
               .join("")}
           </div>` : ""}
+          ${showSwing ? renderClimateSwingRow(dev.id, k, escapeHtml) : ""}
         </div>
       `;
     }
@@ -554,6 +565,15 @@ function renderPrimaryDrawer(
         </div>
       `;
     }
+    if (k.kind === "cover") {
+      return renderCoverDrawer(dev, k, escapeHtml);
+    }
+    if (k.kind === "plug") {
+      return renderPlugDrawer(dev, k, escapeHtml);
+    }
+    if (k.kind === "generic") {
+      return renderGenericDrawer(dev, k, facets, allowAdvanced, escapeHtml);
+    }
     return "";
   }
 
@@ -566,8 +586,14 @@ export function renderDeviceDrawer(
   pendingHighRisk: PendingHighRiskConfirmation | null = null,
 ): string {
   return (
-    renderPrimaryDrawer(dev, escapeHtml, pendingHighRisk) +
-    renderMoreSettings({ deviceId: dev.id, facets, allowAdvanced, escapeHtml })
+    renderPrimaryDrawer(dev, escapeHtml, pendingHighRisk, facets, allowAdvanced) +
+    renderMoreSettings({
+      deviceId: dev.id,
+      facets,
+      allowAdvanced,
+      isOnline: dev.isOnline,
+      escapeHtml,
+    })
   );
 }
 

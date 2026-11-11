@@ -19,6 +19,7 @@ import {
   localizeHvacMode,
   localizeNightShot,
   localizeFridgeMode,
+  localizeSwingMode,
 } from "../core/models.js";
 import {
   type PanelHeight,
@@ -40,13 +41,26 @@ import {
 } from "../core/temperature.js";
 
 import { invokeTauriVoid } from "./transport.js";
-import { facetWriteEnabled } from "./facetViews.js";
+import {
+  facetActionArguments,
+  feedingConfirmationBannerText,
+} from "../core/miCloud/feedAction.js";
+import {
+  bindDetailDrawerEvents,
+  coverMotorRequiresConfirmation,
+  ensureDrawerLifecycleListeners,
+} from "./detailDrawers.js";
+import {
+  facetWriteEnabled,
+  selectedPortionForControl,
+} from "./facetViews.js";
 import { facetTitle, facetValue } from "../core/miotFacetText.js";
 
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { bindPanelInput } from "./panelKeyboard.js";
 
   export function bindEvents(host: MenuMijiaWindowsApp): void {
+    ensureDrawerLifecycleListeners(host);
     host.root.querySelectorAll<HTMLElement>("[data-grok-toggle]").forEach((button) => {
       button.addEventListener("click", () => {
         host.setGrokBallStageExpanded(!host.isGrokBallStageExpanded);
@@ -247,6 +261,52 @@ import { bindPanelInput } from "./panelKeyboard.js";
           t("已将{name}风速设为 {speed}", { name: dev.name, speed: localizeFanMode(fanMode) }),
           intent,
         );
+      });
+    });
+    host.root.querySelectorAll<HTMLElement>("[data-acswing]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const matched = matchDeviceColonAttr(btn.dataset.acswing);
+        if (!matched) return;
+        const { dev, rest: swingMode } = matched;
+        if (!swingMode || dev.kind.kind !== "climate") return;
+        const command: DeviceCommand = {
+          kind: "setSelectOption",
+          entityId: dev.kind.entityId,
+          option: swingMode,
+        };
+        const intent: DeviceIntent = {
+          targetId: dev.id,
+          operation: { kind: "oscillation", enabled: swingMode.toLowerCase() !== "off" },
+        };
+        const localized = localizeSwingMode(swingMode);
+        if (
+          ManualControlPolicy.requiresConfirmation(intent, host.devices) &&
+          !confirmHighRisk(dev.id, command, `${t("摆风")} ${localized}`)
+        ) {
+          return;
+        }
+        const prevSwing = dev.kind.swingMode ?? null;
+        const summary = t("已将{name}摆风设为 {mode}", { name: dev.name, mode: localized });
+        const rev = host.sourceRevision;
+        void host.executeSingleCommand(dev, command, summary, intent).then(() => {
+          if (rev !== host.sourceRevision || host.replyBanner?.isError) return;
+          const live = host.devices.find((d) => d.id === dev.id);
+          if (!live || live.kind.kind !== "climate") return;
+          live.kind.swingMode = swingMode;
+          if (prevSwing !== null && prevSwing !== swingMode) {
+            host.lastUndoAction = {
+              summary,
+              steps: [
+                {
+                  deviceId: live.id,
+                  commands: [{ kind: "setSelectOption", entityId: live.kind.entityId, option: prevSwing }],
+                },
+              ],
+              expiresAtMs: Date.now() + 10 * 60 * 1000,
+            };
+          }
+          host.render();
+        });
       });
     });
 
@@ -570,6 +630,7 @@ import { bindPanelInput } from "./panelKeyboard.js";
       command: DeviceCommand,
       label: string,
       explicit?: { readonly summary: string; readonly intent: DeviceIntent },
+      bannerOverride?: string,
     ): boolean => {
       const actionKey = JSON.stringify(command);
       const armed = host.pendingHighRisk;
@@ -593,9 +654,11 @@ import { bindPanelInput } from "./panelKeyboard.js";
           : {}),
       });
       host.replyBanner = {
-        text: explicit
-          ? t("「{action}」属于高风险设备，确认后执行", { action: label })
-          : t("「{action}」属于高风险设备，再点一次确认执行", { action: label }),
+        text:
+          bannerOverride ??
+          (explicit
+            ? t("「{action}」属于高风险设备，确认后执行", { action: label })
+            : t("「{action}」属于高风险设备，再点一次确认执行", { action: label })),
         source: t("需要确认"),
       };
       host.render();
@@ -659,7 +722,10 @@ import { bindPanelInput } from "./panelKeyboard.js";
         firstCmd.kind === "setSelectOption" &&
         firstCmd.option === dev.kind.pauseDescription;
       const hazard =
-        !stopsMovingCover && ManualControlPolicy.requiresConfirmation(powerIntent, host.devices);
+        dev.kind.kind === "cover"
+          ? !stopsMovingCover &&
+            coverMotorRequiresConfirmation(dev.kind.subtype, nextOn ? "open" : "close")
+          : !stopsMovingCover && ManualControlPolicy.requiresConfirmation(powerIntent, host.devices);
       if (hazard && !confirmHighRisk(dev.id, firstCmd, `${nextOn ? t("打开") : t("关闭")}${dev.name}`)) return;
       host.poppedDeviceId = dev.id;
       const waitsForCloud = host.settings.connectionMode !== "demo";
@@ -1141,29 +1207,58 @@ import { bindPanelInput } from "./panelKeyboard.js";
       return dev && control ? { dev, control } : null;
     };
 
+    bindDetailDrawerEvents(host, {
+      splitControlId,
+      splitChoice,
+      facetFor,
+      confirmHighRisk,
+    });
+
     const writeFacet = (deviceId: string, controlId: string, value: unknown) => {
       const found = facetFor(deviceId, controlId);
       if (!found) return;
       const { dev, control } = found;
-      if (!facetWriteEnabled(control, host.settings.allowAdvancedFacetWrites)) return;
+      if (!facetWriteEnabled(control, host.settings.allowAdvancedFacetWrites, dev.isOnline)) return;
       const target = control.target;
       if (!target) return;
+      const isFeedAction =
+        target.kind === "action" &&
+        (control.portionArgumentIndex !== undefined ||
+          control.fedToday !== undefined ||
+          control.name.toLowerCase() === "pet-food-out");
+      const portion =
+        target.kind === "action" && (control.arguments?.length ?? 0) > 0
+          ? selectedPortionForControl(deviceId, control)
+          : null;
+      const args = target.kind === "action" ? facetActionArguments(control, portion) : undefined;
       const command: DeviceCommand =
         target.kind === "action"
-          ? { kind: "pressButton", entityId: target.entityId }
+          ? {
+              kind: "pressButton",
+              entityId: target.entityId,
+              ...(args && args.length > 0 ? { arguments: args } : {}),
+            }
           : { kind: "setMiotProperty", entityId: target.entityId, piid: target.piid, value };
+      const bannerOverride = isFeedAction
+        ? feedingConfirmationBannerText(dev.name, control, portion)
+        : undefined;
       if (
         ManualControlPolicy.facetRequiresConfirmation(control, value, dev) &&
-        !confirmHighRisk(dev.id, command, facetTitle(control))
+        !confirmHighRisk(dev.id, command, facetTitle(control), undefined, bannerOverride)
       ) {
         return;
       }
       if (target.kind === "action") {
-        void host.executeSingleCommand(
-          dev,
-          command,
-          t("已执行{name}的{control}", { name: dev.name, control: facetTitle(control) }),
-        );
+        const summary =
+          isFeedAction && portion !== null
+            ? t("已向{name}投喂 {count}", {
+                name: dev.name,
+                count: t("{count} 份", { count: portion }),
+              })
+            : t("已执行{name}的{control}", { name: dev.name, control: facetTitle(control) });
+        void host.executeSingleCommand(dev, command, summary).then(() => {
+          if (isFeedAction) host.lastUndoAction = null;
+        });
         return;
       }
       void host.executeSingleCommand(

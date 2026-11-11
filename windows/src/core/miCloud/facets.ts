@@ -2,6 +2,7 @@ import deviceProfiles from "./deviceProfiles.json";
 import type { FacetControl, FacetKind, FacetOption, FacetRange, FacetTarget } from "../models.js";
 import { makeMiotActionAddress, makeMiotAddress, miotShortName } from "./spec.js";
 import type { MiotAction, MiotDeviceSpec, MiotProperty, MiotService, MiotValueListItem } from "./spec.js";
+import { attachFedToday, findPortionArgumentIndex } from "./feedAction.js";
 
 /**
  * The confirmation table behind `ManualControlPolicy` (#26). Patterns use the same glob syntax as
@@ -473,10 +474,10 @@ function matchesPattern(value: string, pattern: string): boolean {
 const COVER_SERVICES = new Set(["curtain", "window-opener", "airer", "clothes-airer", "garage-door"]);
 
 /**
- * Drawer rows for 更多设置 (#5), mirroring macOS `MiotFacetEngine.controls`. A property the primary
- * card already read is left out, and so is any action of the card's own service: both are already
- * reachable from the main controls. An action with inputs has no generic editor, so it stays on its
- * dedicated card.
+ * Drawer rows for 更多设置 (#5, #7), mirroring macOS `MiotFacetEngine.controls`. A property the
+ * primary card already read is left out, and so is any action of the card's own service: both are
+ * already reachable from the main controls. Only the first matching feeding action carries
+ * arguments into the drawer; any other action with inputs stays on its dedicated card.
  */
 export function facetControls(
   spec: MiotDeviceSpec,
@@ -485,12 +486,24 @@ export function facetControls(
   primaryServiceId: number | null,
   excluding: ReadonlySet<string> = new Set(),
   model?: string,
+  profiles: DeviceProfiles = DEVICE_PROFILES,
 ): FacetControl[] {
+  const override = profileOverride(spec, model, profiles);
+  const feedingAction = override?.feeding?.action;
+  let feedingAssigned = false;
   const controls: FacetControl[] = [];
-  for (const facet of buildMiotFacets(spec, DEVICE_PROFILES, model)) {
+  for (const facet of buildMiotFacets(spec, profiles, model)) {
     if (facet.propertyId !== undefined && excluding.has(`${facet.serviceId}.${facet.propertyId}`)) continue;
     if (facet.actionId !== undefined && facet.serviceId === primaryServiceId) continue;
-    if ((facet.arguments?.length ?? 0) > 0) continue;
+    const isFeedingCandidate =
+      feedingAction !== undefined && facet.actionId !== undefined && facet.name === feedingAction;
+    if (isFeedingCandidate && feedingAssigned) continue;
+    const isFeeding = isFeedingCandidate && !feedingAssigned;
+    if (facet.actionId !== undefined) {
+      const isPlainAction = (facet.arguments?.length ?? 0) === 0;
+      if (!isFeeding && !isPlainAction) continue;
+      if (isFeeding) feedingAssigned = true;
+    }
     const value = facet.propertyId !== undefined
       ? (values.get(`${did}.${facet.serviceId}.${facet.propertyId}`) ?? null)
       : null;
@@ -505,6 +518,7 @@ export function facetControls(
         };
       }
     }
+    const args = isFeeding ? (facet.arguments ?? []) : undefined;
     controls.push({
       id: facet.id,
       kind: facet.kind,
@@ -522,7 +536,15 @@ export function facetControls(
         facet.writesByDefault && !(facet.name === "mode" && COVER_SERVICES.has(facet.serviceName)),
       isHighValue: facet.highValue,
       target,
+      ...(isFeeding
+        ? {
+            arguments: args,
+            portionArgumentIndex: findPortionArgumentIndex(args ?? []),
+            isConfirmedWrite: true,
+          }
+        : {}),
     });
   }
+  attachFedToday(controls, override?.feeding);
   return controls;
 }

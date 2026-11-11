@@ -17,21 +17,72 @@ export type MiotWrite =
   | { readonly kind: "setProps"; readonly writes: readonly MiotPropWrite[] }
   | { readonly kind: "action"; readonly call: MiotActionCall };
 
+function coercePropValue(prop: MiotProperty, val: number): number {
+  let n = val;
+  if (prop.valueRange && prop.valueRange.length >= 2) {
+    const lo = prop.valueRange[0] ?? n;
+    const hi = prop.valueRange[1] ?? n;
+    n = Math.min(hi, Math.max(lo, n));
+  }
+  if (prop.format.startsWith("int") || prop.format.startsWith("uint")) {
+    return Math.round(n);
+  }
+  const step = prop.valueRange?.[2];
+  if (step && step > 0) {
+    const base = prop.valueRange?.[0] ?? 0;
+    n = base + Math.round((n - base) / step) * step;
+  }
+  return n;
+}
+
 export const MiotCommandMapper = {
   map(command: DeviceCommand, spec: MiotDeviceSpec): MiotWrite {
     // A mains breaker is read-only whatever the spec allows: no path may switch it (#265).
     if (isMainsBreaker(spec)) throw new Error("Unsupported device: electronic-valve");
     if (command.kind === "pressButton") {
-      // A no-argument action carries its own address, so it never resolves a service first.
+      // An action carries its own address (`miot-action:did:siid:aiid`), optionally with inputs (#7).
       const action = parseMiotActionAddress(command.entityId);
       if (!action) throw new Error(`Invalid MIoT action address: ${command.entityId}`);
       const actionService = spec.services.find((s) => s.iid === action.siid);
       const declared = actionService?.actions.find((a) => a.iid === action.aiid);
       if (!actionService || !declared) throw new Error(`Unsupported action: ${command.entityId}`);
-      if ((declared.in?.length ?? 0) > 0) throw new Error(`Action needs inputs: ${command.entityId}`);
+      const declaredInputs = declared.in ?? [];
+      const supplied = command.arguments ?? [];
+      if (declaredInputs.length !== supplied.length) {
+        throw new Error(
+          declaredInputs.length > 0 && supplied.length === 0
+            ? `Action needs inputs: ${command.entityId}`
+            : `Unsupported action inputs: ${command.entityId}`,
+        );
+      }
+      const inputs: unknown[] = [];
+      for (let i = 0; i < declaredInputs.length; i += 1) {
+        const piid = declaredInputs[i]!;
+        const prop = actionService.properties.find((p) => p.iid === piid);
+        if (!prop) throw new Error(`Unsupported action input property: ${piid}`);
+        const rawArg = supplied[i];
+        if (prop.valueList && prop.valueList.length > 0) {
+          if (typeof rawArg !== "number" || !Number.isInteger(rawArg)) {
+            throw new Error(`Unsupported action option: ${String(rawArg)}`);
+          }
+          if (!prop.valueList.some((item) => item.value === rawArg)) {
+            throw new Error(`Unsupported action option: ${rawArg}`);
+          }
+          inputs.push(rawArg);
+          continue;
+        }
+        if (typeof rawArg === "number") {
+          if (!Number.isFinite(rawArg)) throw new Error("Unsupported non-finite action input");
+          inputs.push(coercePropValue(prop, rawArg));
+        } else if (typeof rawArg === "boolean" || typeof rawArg === "string") {
+          inputs.push(rawArg);
+        } else {
+          throw new Error("Unsupported action input type");
+        }
+      }
       return {
         kind: "action",
-        call: { did: action.did, siid: action.siid, aiid: action.aiid, inputs: [] },
+        call: { did: action.did, siid: action.siid, aiid: action.aiid, inputs },
       };
     }
     const addr = parseMiotAddress(command.entityId);
@@ -115,23 +166,7 @@ export const MiotCommandMapper = {
       return null;
     };
 
-    const coerce = (prop: MiotProperty, val: number): number => {
-      let n = val;
-      if (prop.valueRange && prop.valueRange.length >= 2) {
-        const lo = prop.valueRange[0] ?? n;
-        const hi = prop.valueRange[1] ?? n;
-        n = Math.min(hi, Math.max(lo, n));
-      }
-      if (prop.format.startsWith("int") || prop.format.startsWith("uint")) {
-        return Math.round(n);
-      }
-      const step = prop.valueRange?.[2];
-      if (step && step > 0) {
-        const base = prop.valueRange?.[0] ?? 0;
-        n = base + Math.round((n - base) / step) * step;
-      }
-      return n;
-    };
+    const coerce = coercePropValue;
 
     const powerOnPrefix = (): MiotPropWrite[] => {
       const onP = service.properties.find((p) => miotShortName(p.type) === "on" && p.access.includes("write"));
