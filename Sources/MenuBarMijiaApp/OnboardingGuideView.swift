@@ -12,14 +12,28 @@ public struct OnboardingGuideView: View {
     @State private var haURLDraft: String = ""
     @State private var haTokenDraft: String = ""
     @State private var selectedPreset: AssistantProviderPreset = .openRouterJev
+    @State private var baseURLDraft: String = ""
+    @State private var modelDraft: String = ""
     @State private var apiKeyDraft: String = ""
+    @State private var showsCustomEndpointFields: Bool = false
     @State private var voiceAuthorized: Bool = false
     @State private var isRequestingVoice: Bool = false
     /// Advanced stays shut on first launch; the user opens it only when they need it.
-    @State private var isAdvancedExpanded: Bool = false
+    @State private var isAdvancedExpanded: Bool
+    private let initialPresetOverride: AssistantProviderPreset?
 
-    public init(store: HomeStore) {
+    public init(
+        store: HomeStore,
+        initialAdvancedExpanded: Bool = false,
+        initialPresetOverride: AssistantProviderPreset? = nil
+    ) {
         self.store = store
+        self._isAdvancedExpanded = State(initialValue: initialAdvancedExpanded)
+        self.initialPresetOverride = initialPresetOverride
+        if let initialPresetOverride {
+            self._selectedPreset = State(initialValue: initialPresetOverride)
+            self._showsCustomEndpointFields = State(initialValue: initialPresetOverride == .custom)
+        }
     }
 
     public var body: some View {
@@ -57,9 +71,31 @@ public struct OnboardingGuideView: View {
             launchAtLogin.refresh()
             haURLDraft = store.serverURLString
             haTokenDraft = store.loadHAToken()
-            let currentBase = store.assistantConfig.baseURL
-            selectedPreset = AssistantProviderPreset.infer(baseURL: currentBase)
-            apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: currentBase)
+            let config = store.assistantConfig
+            let initialPreset = AssistantProviderPreset.infer(baseURL: config.baseURL)
+            if let initialPresetOverride {
+                let fields = AssistantSettingsDraft.selecting(
+                    initialPresetOverride,
+                    from: initialPreset,
+                    fields: .init(
+                        baseURL: config.baseURL,
+                        model: config.model,
+                        apiKey: store.storedAssistantAPIKey(forBaseURL: config.baseURL)
+                    ),
+                    storedKey: { store.storedAssistantAPIKey(forBaseURL: $0) }
+                )
+                selectedPreset = initialPresetOverride
+                showsCustomEndpointFields = initialPresetOverride == .custom
+                baseURLDraft = fields.baseURL
+                modelDraft = fields.model
+                apiKeyDraft = fields.apiKey
+            } else {
+                selectedPreset = initialPreset
+                showsCustomEndpointFields = initialPreset == .custom
+                baseURLDraft = config.baseURL
+                modelDraft = config.model
+                apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: config.baseURL)
+            }
             voiceAuthorized = SpeechInputController.shared.hasVoicePermissions
             if store.miSessionMaskedUserId == nil,
                haTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -533,10 +569,13 @@ public struct OnboardingGuideView: View {
     // MARK: - Advanced: AI Decision Model
 
     private var advancedAIModelCard: some View {
-        let effectiveBase = selectedPreset.defaultBaseURL.isEmpty ? store.assistantConfig.baseURL : selectedPreset.defaultBaseURL
+        let effectiveBase = baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasCustomKey = !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let importedSource = hasCustomKey ? AssistantConfig.importedKeySource(forBaseURL: effectiveBase, defaults: store.userDefaults, vault: store.credentialVault) : nil
-        let isLoopback = AssistantConfig(baseURL: effectiveBase, model: selectedPreset.defaultModel, apiKey: "").isLoopbackEndpoint
+        let importedSource = hasCustomKey && !effectiveBase.isEmpty
+            ? AssistantConfig.importedKeySource(forBaseURL: effectiveBase, defaults: store.userDefaults, vault: store.credentialVault)
+            : nil
+        let isLoopback = !effectiveBase.isEmpty
+            && AssistantConfig(baseURL: effectiveBase, model: modelDraft, apiKey: "").isLoopbackEndpoint
 
         return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
@@ -580,12 +619,15 @@ public struct OnboardingGuideView: View {
                     selection: Binding(
                         get: { selectedPreset },
                         set: { newPreset in
+                            let fields = AssistantSettingsDraft.selecting(
+                                newPreset,
+                                from: selectedPreset,
+                                fields: draftFields,
+                                storedKey: { store.storedAssistantAPIKey(forBaseURL: $0) }
+                            )
                             selectedPreset = newPreset
-                            if newPreset != .custom {
-                                apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: newPreset.defaultBaseURL)
-                            } else {
-                                apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: store.assistantConfig.baseURL)
-                            }
+                            showsCustomEndpointFields = newPreset == .custom
+                            applyDraft(fields)
                         }
                     )
                 ) {
@@ -603,10 +645,43 @@ public struct OnboardingGuideView: View {
                     .font(.system(size: 11, design: .monospaced))
 
                 Button(L10n.tr("保存", "Save")) {
-                    persistOnboardingAssistantDraft()
-                    store.showToast(L10n.tr("已保存 \(selectedPreset.shortTitle) 配置", "Saved \(selectedPreset.shortTitle) config"))
+                    if saveOnboardingAssistantDraft(showErrorToast: true) != nil {
+                        store.showToast(L10n.tr("已保存 \(selectedPreset.shortTitle) 配置", "Saved \(selectedPreset.shortTitle) config"))
+                    }
                 }
-                .buttonStyle(PillActionButtonStyle(isSelected: !apiKeyDraft.isEmpty, tintColor: .accentColor))
+                .buttonStyle(PillActionButtonStyle(isSelected: !apiKeyDraft.isEmpty || (showsCustomEndpointFields && !effectiveBase.isEmpty), tintColor: .accentColor))
+            }
+
+            if showsCustomEndpointFields {
+                HStack(spacing: 6) {
+                    TextField(
+                        AssistantConfig.defaultBaseURL,
+                        text: Binding(
+                            get: { baseURLDraft },
+                            set: { newValue in
+                                let updated = AssistantSettingsDraft.updatingBaseURL(
+                                    newValue,
+                                    currentPreset: selectedPreset,
+                                    fields: draftFields,
+                                    storedKey: { store.storedAssistantAPIKey(forBaseURL: $0) }
+                                )
+                                selectedPreset = updated.preset
+                                applyDraft(updated.fields)
+                            }
+                        )
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+                    .font(.system(size: 11, design: .monospaced))
+                    .accessibilityLabel(Text(AssistantSettingsCopy.serviceAddressLabel))
+
+                    TextField("gpt-4o-mini", text: $modelDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.small)
+                        .font(.system(size: 11, design: .monospaced))
+                        .frame(width: 112)
+                        .accessibilityLabel(Text(AssistantSettingsCopy.modelLabel))
+                }
             }
 
             if selectedPreset.supportsKeyImport && !hasCustomKey {
@@ -630,14 +705,30 @@ public struct OnboardingGuideView: View {
         .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
-    private func persistOnboardingAssistantDraft() {
-        let base = selectedPreset.defaultBaseURL.isEmpty ? store.assistantConfig.baseURL : selectedPreset.defaultBaseURL
-        let model = selectedPreset.defaultModel.isEmpty ? store.assistantConfig.model : selectedPreset.defaultModel
-        store.assistantConfig = AssistantConfig(
-            baseURL: base,
-            model: model,
-            apiKey: apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        )
+    private var draftFields: AssistantSettingsDraft.Fields {
+        AssistantSettingsDraft.Fields(baseURL: baseURLDraft, model: modelDraft, apiKey: apiKeyDraft)
+    }
+
+    private func applyDraft(_ fields: AssistantSettingsDraft.Fields) {
+        baseURLDraft = fields.baseURL
+        modelDraft = fields.model
+        apiKeyDraft = fields.apiKey
+    }
+
+    @discardableResult
+    private func saveOnboardingAssistantDraft(showErrorToast: Bool) -> AssistantConfig? {
+        guard let cfg = AssistantSettingsDraft.configToSave(preset: selectedPreset, fields: draftFields) else {
+            if showErrorToast {
+                store.showToast(AssistantSettingsCopy.customAddressRequired, isError: true)
+            }
+            return nil
+        }
+        store.assistantConfig = cfg
+        let resolved = store.assistantConfig
+        baseURLDraft = resolved.baseURL
+        modelDraft = resolved.model
+        selectedPreset = resolved.preset
+        return cfg
     }
 
     // MARK: - Advanced: Voice & Shortcuts
@@ -715,9 +806,14 @@ public struct OnboardingGuideView: View {
 
             Button {
                 let trimmedKey = apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                let trimmedBase = baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                let trimmedModel = modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                 let currentPreset = AssistantProviderPreset.infer(baseURL: store.assistantConfig.baseURL)
-                if !trimmedKey.isEmpty || selectedPreset != currentPreset {
-                    persistOnboardingAssistantDraft()
+                if !trimmedKey.isEmpty
+                    || selectedPreset != currentPreset
+                    || trimmedBase != store.assistantConfig.baseURL
+                    || (!trimmedModel.isEmpty && trimmedModel != store.assistantConfig.model) {
+                    _ = saveOnboardingAssistantDraft(showErrorToast: false)
                 }
                 withAnimation(AppleMotion.snappySpring) {
                     store.completeOnboarding()

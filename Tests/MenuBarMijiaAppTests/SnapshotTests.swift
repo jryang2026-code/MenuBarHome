@@ -409,6 +409,46 @@ struct SnapshotTests {
         }
     }
 
+    @Test("Focused sensor cards draw the keyboard focus border in both themes")
+    func focusedSensorCardSnapshots() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+        let sensor = try #require(fixture.store.devices.first { device in
+            if case .sensor = device.kind { return true } else { return false }
+        })
+        fixture.store.focusedDeviceId = sensor.id
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(
+                    themedCard(theme, device: sensor, store: fixture.store)
+                        .padding(8)
+                        .frame(width: 360)
+                ),
+                size: CGSize(width: 376, height: 140),
+                named: themedName(theme, "card-sensor-focused-zh-light")
+            )
+        }
+    }
+
+    @Test("Onboarding custom AI preset exposes its endpoint and model inputs")
+    func onboardingCustomAISnapshot() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+        fixture.store.hasCompletedOnboarding = false
+        assertRendered(
+            snapshotReady(
+                OnboardingGuideView(
+                    store: fixture.store,
+                    initialAdvancedExpanded: true,
+                    initialPresetOverride: .custom
+                )
+                .frame(width: 400, height: 1080)
+            ),
+            size: CGSize(width: 400, height: 1080),
+            named: "onboarding-custom-ai-zh-light"
+        )
+    }
+
     @Test("Round tiles show their icon at the actual quarter-row width", arguments: ["light", "sensor"])
     func roundTileSnapshots(kind: String) async throws {
         let fixture = try await SnapshotFixture()

@@ -131,6 +131,23 @@ struct SettingsPlainLanguageTests {
         toSave?.save(to: defaults)
 
         #expect(AssistantConfig.userStoredAPIKey(forBaseURL: openRouter, defaults: defaults) == savedKey)
+
+        // Entering a custom endpoint URL loads its own stored key (if any) and allows saving without touching OpenRouter.
+        let customEndpoint = "https://llm.example.com/v1"
+        let customUpdated = AssistantSettingsDraft.updatingBaseURL(
+            customEndpoint,
+            currentPreset: .custom,
+            fields: switched,
+            storedKey: { AssistantConfig.userStoredAPIKey(forBaseURL: $0, defaults: defaults) }
+        )
+        #expect(customUpdated.preset == .custom)
+        #expect(customUpdated.fields.baseURL == customEndpoint)
+        var withCustomKey = customUpdated.fields
+        withCustomKey.apiKey = "sk-custom-key"
+        let savedCustom = try #require(AssistantSettingsDraft.configToSave(preset: .custom, fields: withCustomKey))
+        savedCustom.save(to: defaults)
+        #expect(AssistantConfig.userStoredAPIKey(forBaseURL: openRouter, defaults: defaults) == savedKey)
+        #expect(AssistantConfig.userStoredAPIKey(forBaseURL: customEndpoint, defaults: defaults) == "sk-custom-key")
     }
 
     @Test("The read-more link names the release notes")

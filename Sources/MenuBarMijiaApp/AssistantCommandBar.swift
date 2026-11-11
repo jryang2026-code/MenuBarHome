@@ -853,6 +853,33 @@ enum AssistantSettingsDraft {
             apiKey: fields.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         )
     }
+
+    /// Updates draft fields and inferred preset when the user edits the custom endpoint URL.
+    static func updatingBaseURL(
+        _ newValue: String,
+        currentPreset oldPreset: AssistantProviderPreset,
+        fields: Fields,
+        storedKey: (String) -> String
+    ) -> (preset: AssistantProviderPreset, fields: Fields) {
+        let oldURL = fields.baseURL
+        var next = fields
+        next.baseURL = newValue
+        let inferred = AssistantProviderPreset.infer(baseURL: newValue)
+        if inferred == .custom, inferred == oldPreset,
+           AssistantEndpoint(newValue)?.identity != AssistantEndpoint(oldURL)?.identity,
+           next.apiKey.isEmpty || next.apiKey == storedKey(oldURL) {
+            next.apiKey = storedKey(newValue)
+        }
+        if inferred != oldPreset {
+            next.apiKey = storedKey(newValue)
+            if !inferred.defaultModel.isEmpty {
+                next.model = inferred.defaultModel
+            } else if next.model == oldPreset.defaultModel || ModelIntentResolver.isSystemOneModel(next.model) {
+                next.model = "gpt-4o-mini"
+            }
+        }
+        return (inferred, next)
+    }
 }
 
 struct AssistantSettingsSection: View {
@@ -1037,24 +1064,14 @@ struct AssistantSettingsSection: View {
                 text: Binding(
                     get: { baseURLDraft },
                     set: { newValue in
-                        let oldPreset = selectedPreset
-                        let oldURL = baseURLDraft
-                        baseURLDraft = newValue
-                        let inferred = AssistantProviderPreset.infer(baseURL: newValue)
-                        if inferred == .custom, inferred == oldPreset,
-                           AssistantEndpoint(newValue)?.identity != AssistantEndpoint(oldURL)?.identity,
-                           apiKeyDraft.isEmpty || apiKeyDraft == store.storedAssistantAPIKey(forBaseURL: oldURL) {
-                            apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: newValue)
-                        }
-                        if inferred != oldPreset {
-                            selectedPreset = inferred
-                            apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: newValue)
-                            if !inferred.defaultModel.isEmpty {
-                                modelDraft = inferred.defaultModel
-                            } else if modelDraft == oldPreset.defaultModel || ModelIntentResolver.isSystemOneModel(modelDraft) {
-                                modelDraft = "gpt-4o-mini"
-                            }
-                        }
+                        let updated = AssistantSettingsDraft.updatingBaseURL(
+                            newValue,
+                            currentPreset: selectedPreset,
+                            fields: draftFields,
+                            storedKey: { store.storedAssistantAPIKey(forBaseURL: $0) }
+                        )
+                        selectedPreset = updated.preset
+                        apply(updated.fields)
                     }
                 )
             )
