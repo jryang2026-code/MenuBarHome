@@ -1238,8 +1238,54 @@ struct MenuBarPanelControllerTests {
         #expect(controller.isPanelVisible, "a fresh physical press after deactivation must reopen on the first click")
         #expect(shows == 5)
 
+        // 2e. When `SETFRONT` (`handleApplicationResignActive`) runs before the global mouse
+        // monitor reports the same physical mouse-down (both on `statusRect` and in the menu-bar
+        // band when `statusWindow` is detached), the delayed monitor event preserves the reopen
+        // guard so the subsequent synthesized down/up pair still keeps the panel closed.
+        now += 0.5
+        controller.handleApplicationResignActive()
+        #expect(controller.isPanelVisible == false)
+        #expect(hides == 5)
+        now += 0.01
+        controller.handleMouseDown(
+            in: hostWindow,
+            at: insideStatusPoint,
+            eventType: .leftMouseDown,
+            pressedMouseButtons: 0x1
+        )
+        now += 0.06
+        controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0)
+        controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
+        #expect(controller.isPanelVisible == false, "delayed monitor mouse-down for the dismissal click must not clear the reopen guard")
+        #expect(shows == 5)
+
+        let screen = try #require(NSScreen.main)
+        let menuBarBandPoint = NSPoint(x: screen.frame.maxX - 40, y: screen.frame.maxY - 12)
+        controller.showPanel()
+        #expect(controller.isPanelVisible)
+        #expect(shows == 6)
+        now += 0.5
+        controller.handleApplicationResignActive()
+        #expect(controller.isPanelVisible == false)
+        #expect(hides == 6)
+        now += 0.01
+        controller.handleMouseDown(
+            in: nil,
+            at: menuBarBandPoint,
+            eventType: .leftMouseDown,
+            pressedMouseButtons: 0x1
+        )
+        now += 0.06
+        controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0)
+        controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
+        #expect(controller.isPanelVisible == false, "menu-bar-band monitor event for the dismissal click must preserve the reopen guard")
+        #expect(shows == 6)
+
         // 3. When the global mouse monitor sees the status-item hit before `SETFRONT`, the
         // deactivation is ignored and the release action closes the panel once.
+        controller.showPanel()
+        #expect(controller.isPanelVisible)
+        #expect(shows == 7)
         now += 0.5
         controller.handleMouseDown(
             in: hostWindow,
@@ -1250,14 +1296,14 @@ struct MenuBarPanelControllerTests {
         now += 0.01
         controller.handleApplicationResignActive()
         #expect(controller.isPanelVisible, "status-item mouse-down keeps the panel open until release")
-        #expect(hides == 4)
+        #expect(hides == 6)
 
         now += 0.05
         controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0)
         controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
         #expect(controller.isPanelVisible == false)
-        #expect(hides == 5)
-        #expect(shows == 5)
+        #expect(hides == 7)
+        #expect(shows == 7)
         #expect(await waitUntil { !panel.isVisible })
     }
 

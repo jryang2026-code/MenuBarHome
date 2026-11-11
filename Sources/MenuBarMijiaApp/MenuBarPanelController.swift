@@ -155,6 +155,7 @@ final class MenuBarPanelController: NSObject {
     private var suppressContextMenuUntil: TimeInterval = 0
     private var suppressResignActiveHideUntil: TimeInterval = 0
     private var suppressStatusItemReopenUntil: TimeInterval = 0
+    private var resignActiveAwaitingMonitorMouseDown = false
     /// A context menu waiting for the out-of-process menu bar to finish its own handling of the
     /// same secondary click (see `requestStatusContextMenu`).
     private var pendingContextMenu: DispatchWorkItem?
@@ -230,6 +231,7 @@ final class MenuBarPanelController: NSObject {
         suppressContextMenuUntil = 0
         suppressResignActiveHideUntil = 0
         suppressStatusItemReopenUntil = 0
+        resignActiveAwaitingMonitorMouseDown = false
         for observer in observers {
             NotificationCenter.default.removeObserver(observer)
         }
@@ -540,6 +542,7 @@ final class MenuBarPanelController: NSObject {
         suppressReleaseUntil = .infinity
         suppressResignActiveHideUntil = 0
         suppressStatusItemReopenUntil = 0
+        resignActiveAwaitingMonitorMouseDown = false
 
         let menu = makeStatusContextMenu()
         if let statusContextMenuPresenter {
@@ -856,6 +859,7 @@ final class MenuBarPanelController: NSObject {
         case .none:
             break
         case .beginPress:
+            resignActiveAwaitingMonitorMouseDown = false
             if (pressedMouseButtons & 0x1) != 0 {
                 suppressStatusItemReopenUntil = 0
             }
@@ -918,6 +922,7 @@ final class MenuBarPanelController: NSObject {
         )
         clearPostMenuPrimaryMouseUp()
         suppressStatusItemReopenUntil = 0
+        resignActiveAwaitingMonitorMouseDown = false
         if (pressedMouseButtons & 0x1) != 0 {
             setStatusItemHighlighted(true)
         }
@@ -939,10 +944,13 @@ final class MenuBarPanelController: NSObject {
     ///
     /// `allowsPostMenuToggle` is true only when the press landed on the button itself; the wider
     /// hold-tracking tolerance must not consume the pending post-menu click.
-    func beginHoldDetectionFromMonitor(allowsPostMenuToggle: Bool = false) {
+    func beginHoldDetectionFromMonitor(
+        allowsPostMenuToggle: Bool = false,
+        preservesDismissalReopenGuard: Bool = false
+    ) {
         let now = statusItemUptime()
         guard !pressTriggered else { return }
-        if allowsPostMenuToggle || !isPanelVisible {
+        if !preservesDismissalReopenGuard, allowsPostMenuToggle || !isPanelVisible {
             suppressStatusItemReopenUntil = 0
         }
         if now < suppressReleaseUntil {
@@ -1038,6 +1046,7 @@ final class MenuBarPanelController: NSObject {
     private func performStatusItemToggle() {
         let now = statusItemUptime()
         suppressResignActiveHideUntil = 0
+        resignActiveAwaitingMonitorMouseDown = false
         if !isPanelVisible, now < suppressStatusItemReopenUntil {
             suppressStatusItemReopenUntil = 0
             traceStatusItem(
@@ -1096,6 +1105,7 @@ final class MenuBarPanelController: NSObject {
     func beginHoldToTalk() {
         guard let store else { return }
         suppressStatusItemReopenUntil = 0
+        resignActiveAwaitingMonitorMouseDown = false
         SpeechInputController.shared.startHoldToTalk(store: store)
         syncStatusItem()
         showPanel()
@@ -1247,11 +1257,15 @@ final class MenuBarPanelController: NSObject {
                 eventType: eventType
             ) {
                 let now = statusItemUptime()
+                let isDelayedDismissalMouseDown = !isPanelVisible && resignActiveAwaitingMonitorMouseDown
+                resignActiveAwaitingMonitorMouseDown = false
                 if isPanelVisible {
                     suppressResignActiveHideUntil = max(
                         suppressResignActiveHideUntil,
                         now + ContextMenuSettle.fallback + 0.1
                     )
+                } else if isDelayedDismissalMouseDown {
+                    noteImplicitDismissalForStatusItemReopenGuard(now: now)
                 } else {
                     suppressStatusItemReopenUntil = 0
                 }
@@ -1275,7 +1289,8 @@ final class MenuBarPanelController: NSObject {
                         "handleMouseDown event=\(eventName) buttons=\(buttons) uptime=\(uptimeText) decision=beginHoldDetectionFromMonitor(allowsPostMenuToggle=\(allowsPostMenuToggle))"
                     )
                     beginHoldDetectionFromMonitor(
-                        allowsPostMenuToggle: allowsPostMenuToggle
+                        allowsPostMenuToggle: allowsPostMenuToggle,
+                        preservesDismissalReopenGuard: isDelayedDismissalMouseDown
                     )
                 } else {
                     traceStatusItem(
@@ -1285,8 +1300,15 @@ final class MenuBarPanelController: NSObject {
                 return
             }
         }
-        if eventType == .leftMouseDown, (pressedMouseButtons & 0x1) != 0, !isPanelVisible {
-            suppressStatusItemReopenUntil = 0
+        if eventType == .leftMouseDown, !isPanelVisible {
+            let isMenuBarHit = hostsStatusItemOutOfProcess && Self.isMenuBarBandPoint(screenPoint)
+            if resignActiveAwaitingMonitorMouseDown, isMenuBarHit {
+                resignActiveAwaitingMonitorMouseDown = false
+                noteImplicitDismissalForStatusItemReopenGuard()
+            } else if (pressedMouseButtons & 0x1) != 0 || !isMenuBarHit {
+                resignActiveAwaitingMonitorMouseDown = false
+                suppressStatusItemReopenUntil = 0
+            }
         }
         guard isPanelVisible, let panel = panelWindow else { return }
         if let sidecar = grokBallSidecar, window === sidecar.panelWindow {
@@ -1359,6 +1381,7 @@ final class MenuBarPanelController: NSObject {
             || isStatusItemMouseDownAtCurrentLocation()
             || HotkeyAndNotificationManager.shared.isHotkeyPhysicallyDown { return }
         if hostsStatusItemOutOfProcess {
+            resignActiveAwaitingMonitorMouseDown = true
             noteImplicitDismissalForStatusItemReopenGuard(now: now)
         }
         hidePanel()
@@ -1367,6 +1390,7 @@ final class MenuBarPanelController: NSObject {
     func clearImplicitDismissalStateOnShow() {
         suppressStatusItemReopenUntil = 0
         suppressResignActiveHideUntil = 0
+        resignActiveAwaitingMonitorMouseDown = false
     }
 
     func clearResignActiveSuppressionOnHide() {
