@@ -41,6 +41,9 @@ struct ClassicSensorCardView: View {
         return store?.expandedDeviceId == device.id
     }
 
+    private var accent: Color { DevicePalette.accentColor(for: device) }
+    private var isKeyboardFocused: Bool { store?.focusedDeviceId == device.id }
+
     private var fg: Color { .primary }
     private var muted: Color { .secondary }
     private var track: Color { Color.primary.opacity(0.08) }
@@ -66,6 +69,10 @@ struct ClassicSensorCardView: View {
             }
         }
         .classicTile(isActive: false, cornerRadius: DesignTokens.Radius.module)
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.module, style: .continuous)
+                .strokeBorder(isKeyboardFocused ? accent.opacity(0.85) : Color.clear, lineWidth: 1.6)
+        )
         .opacity(device.isOnline ? 1 : 0.58)
         // Display-only card when collapsed: VoiceOver reads one sentence instead of five loose labels (#41).
         .accessibilityElement(children: isExpanded ? .contain : .ignore)
