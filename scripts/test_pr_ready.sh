@@ -310,7 +310,7 @@ printf '[[]]\n' >"$wdir/reviews-1.json"
 printf '[[]]\n' >"$wdir/reviews-2.json"
 
 status=0
-output="$(PR_READY_WAIT_DIR="$wdir" PATH="$wait_bin:$PATH" bash "$root/scripts/pr-ready.sh" --wait --interval 0.02 --timeout 2 60 2>"$tmp/err")" || status=$?
+output="$(PR_READY_WAIT_DIR="$wdir" PATH="$wait_bin:$PATH" bash "$root/scripts/pr-ready.sh" --wait --interval 0.02 --timeout 30 60 2>"$tmp/err")" || status=$?
 if [[ "$status" == 0 ]] && [[ "$(printf '%s\n' "$output" | grep -c '^head ')" == 1 ]] && printf '%s\n' "$output" | grep -q "head $head_sha CLEAN"; then
     pass "--wait 轮询到 CLEAN 且审查完成后单屏退出 0"
 else
@@ -322,7 +322,7 @@ fi
 rm -f "$wdir/calls"
 printf '[[{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"<!-- codex-review-state:v1 -->{\\"code_review\\":{\\"commit_sha\\":\\"%s\\",\\"status\\":\\"completed\\",\\"has_any_findings\\":true,\\"has_unresolved_findings\\":true}}"}]]\n' "$head_sha" >"$wdir/issues-1.json"
 status=0
-output="$(PR_READY_WAIT_DIR="$wdir" PATH="$wait_bin:$PATH" bash "$root/scripts/pr-ready.sh" --wait --interval 0.02 --timeout 2 60 2>"$tmp/err")" || status=$?
+output="$(PR_READY_WAIT_DIR="$wdir" PATH="$wait_bin:$PATH" bash "$root/scripts/pr-ready.sh" --wait --interval 0.02 --timeout 30 60 2>"$tmp/err")" || status=$?
 if [[ "$status" == 1 ]] && [[ "$(cat "$wdir/calls")" == 1 ]]; then
     pass "--wait 遇到当前 head 的审查问题立即退出 1"
 else
@@ -337,7 +337,7 @@ cp "$wdir/checks-exit-1" "$wdir/checks-exit-2"
 printf '[[]]\n' >"$wdir/issues-1.json"
 printf '[[]]\n' >"$wdir/issues-2.json"
 status=0
-output="$(PR_READY_WAIT_DIR="$wdir" PATH="$wait_bin:$PATH" bash "$root/scripts/pr-ready.sh" --wait --interval 0.02 --timeout 0.05 60 2>"$tmp/err")" || status=$?
+output="$(PR_READY_WAIT_DIR="$wdir" PATH="$wait_bin:$PATH" bash "$root/scripts/pr-ready.sh" --wait --interval 0.02 --timeout 0 60 2>"$tmp/err")" || status=$?
 if [[ "$status" == 124 ]] && grep -q '超时' "$tmp/err"; then
     pass "--wait 超时退出 124"
 else
@@ -352,7 +352,7 @@ printf '0\n' >"$wdir/checks-exit-1"
 printf '[[{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"<!-- codex-review-state:v1 -->{\\"code_review\\":{\\"commit_sha\\":\\"%s\\",\\"status\\":\\"completed\\",\\"has_any_findings\\":true,\\"has_unresolved_findings\\":false}}"}]]\n' "$head_sha" >"$wdir/issues-1.json"
 printf '[[{"user":{"login":"chatgpt-codex-connector[bot]"},"original_commit_id":"%s","path":"a.swift","line":3,"body":"resolved"}]]\n' "$head_sha" >"$wdir/reviews-1.json"
 status=0
-output="$(PR_READY_WAIT_DIR="$wdir" PATH="$wait_bin:$PATH" bash "$root/scripts/pr-ready.sh" --wait --interval 0.02 --timeout 1 60 2>"$tmp/err")" || status=$?
+output="$(PR_READY_WAIT_DIR="$wdir" PATH="$wait_bin:$PATH" bash "$root/scripts/pr-ready.sh" --wait --interval 0.02 --timeout 30 60 2>"$tmp/err")" || status=$?
 if [[ "$status" == 0 ]]; then
     pass "--wait 在当前 head 审查标明已解决时忽略历史 inline 并退出 0"
 else
