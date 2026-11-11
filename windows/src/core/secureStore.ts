@@ -203,7 +203,7 @@ export class CredentialVault {
 
   constructor(private readonly invoke: SecureInvoke = tauriInvoke) {}
 
-  async load(activePresetId = "openrouter_jev"): Promise<CredentialSnapshot> {
+  async load(activePresetId = "openrouter_jev", legacyKeyEndpoint?: string | null): Promise<CredentialSnapshot> {
     const presetIds = ASSISTANT_PROVIDER_PRESETS.map((preset) => preset.id);
     const [sessionRaw, haToken, legacyAssistantKey, ...presetValues] = await Promise.all([
       secureStoreGet("mi_session", this.invoke).catch(() => null),
@@ -221,23 +221,39 @@ export class CredentialVault {
     }
     const legacyTrimmed = legacyAssistantKey?.trim() ?? "";
     this.remember("assistant_api_key", legacyTrimmed);
-    if (!assistantApiKeys[activePresetId] && legacyTrimmed !== "") {
-      const targetSlot = assistantApiKeyCredentialName(activePresetId);
-      assistantApiKeys[activePresetId] = legacyTrimmed;
-      let wroteTarget = false;
-      try {
-        await secureStoreSet(targetSlot, legacyTrimmed, this.invoke);
-        this.remember(targetSlot, legacyTrimmed);
-        wroteTarget = true;
-      } catch {
-        this.remember(targetSlot, "");
-      }
-      if (wroteTarget) {
+    if (legacyTrimmed !== "") {
+      const hasAnyProviderSlot = Object.keys(assistantApiKeys).length > 0;
+      if (hasAnyProviderSlot) {
+        // A per-provider slot already exists, so any leftover legacy entry is an uncleaned
+        // remnant from an earlier failed delete and must never be copied into a second provider.
         try {
           await secureStoreDelete("assistant_api_key", this.invoke);
           this.remember("assistant_api_key", "");
         } catch {
           this.remember("assistant_api_key", legacyTrimmed);
+        }
+      } else {
+        const ownerPreset =
+          legacyKeyEndpoint && legacyKeyEndpoint.trim() !== ""
+            ? inferAssistantPreset(`https://${legacyKeyEndpoint.trim()}`).id
+            : activePresetId;
+        const targetSlot = assistantApiKeyCredentialName(ownerPreset);
+        assistantApiKeys[ownerPreset] = legacyTrimmed;
+        let wroteTarget = false;
+        try {
+          await secureStoreSet(targetSlot, legacyTrimmed, this.invoke);
+          this.remember(targetSlot, legacyTrimmed);
+          wroteTarget = true;
+        } catch {
+          this.remember(targetSlot, "");
+        }
+        if (wroteTarget) {
+          try {
+            await secureStoreDelete("assistant_api_key", this.invoke);
+            this.remember("assistant_api_key", "");
+          } catch {
+            this.remember("assistant_api_key", legacyTrimmed);
+          }
         }
       }
     }

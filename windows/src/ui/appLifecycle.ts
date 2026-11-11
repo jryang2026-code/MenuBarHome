@@ -52,7 +52,7 @@ export function initializeCredentials(host: MenuMijiaWindowsApp): void {
 export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<void> {
     try {
       const activePreset = inferAssistantPreset(host.settings.assistantBaseURL).id;
-      const credentials = await host.credentialVault.load(activePreset);
+      const credentials = await host.credentialVault.load(activePreset, host.settings.assistantKeyEndpoint);
       if (!hasCredentials(credentials)) return;
       if (credentials.assistantApiKeys) {
         host.assistantKeysByPreset = { ...credentials.assistantApiKeys, ...host.assistantKeysByPreset };
@@ -60,14 +60,21 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
       const current = credentialsFromSettings(host.settings, host.assistantKeysByPreset);
       if (!current.miSession && credentials.miSession) host.settings.miSession = credentials.miSession;
       if (current.haToken === "" && credentials.haToken !== "") host.settings.haToken = credentials.haToken;
-      const activeSlotKey = host.assistantKeysByPreset[activePreset]?.trim() ?? credentials.assistantApiKey;
+      const currentEndpoint = assistantEndpointIdentity(host.settings.assistantBaseURL);
+      const boundCustomEndpoint =
+        host.settings.assistantCustomKeyEndpoint ?? host.settings.assistantKeyEndpoint ?? currentEndpoint;
+      const activeSlotKey =
+        activePreset === "custom"
+          ? currentEndpoint !== null && currentEndpoint === boundCustomEndpoint
+            ? host.assistantKeysByPreset.custom?.trim() ?? ""
+            : ""
+          : host.assistantKeysByPreset[activePreset]?.trim() ?? credentials.assistantApiKey;
       if (host.settings.openRouterApiKey.trim() === "" && activeSlotKey !== "") {
         host.settings.openRouterApiKey = activeSlotKey;
         if (activePreset !== "custom") {
-          host.settings.assistantKeyEndpoint = assistantEndpointIdentity(host.settings.assistantBaseURL);
+          host.settings.assistantKeyEndpoint = currentEndpoint;
         } else {
-          const endpoint = assistantEndpointIdentity(host.settings.assistantBaseURL);
-          host.settings.assistantCustomKeyEndpoint ??= endpoint;
+          host.settings.assistantCustomKeyEndpoint ??= boundCustomEndpoint;
           host.settings.assistantKeyEndpoint ??= host.settings.assistantCustomKeyEndpoint;
         }
       }

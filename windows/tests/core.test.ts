@@ -326,6 +326,32 @@ describe("Secure credential storage (#28 / #27 / #49)", () => {
     assert.equal(store.has("assistant_api_key"), false);
   });
 
+  it("never copies a retained legacy key into a second provider when delete failed", async () => {
+    const store = new Map<string, string>([
+      ["assistant_api_key", "sk-or-only"],
+    ]);
+    const invoke = async <T>(cmd: string, args: Record<string, unknown>): Promise<T | null> => {
+      const name = String(args.name ?? "");
+      if (cmd === "secure_store_get") return (store.get(name) ?? null) as T | null;
+      if (cmd === "secure_store_set") store.set(name, String(args.value ?? ""));
+      if (cmd === "secure_store_delete") throw new Error("delete denied");
+      return null;
+    };
+
+    const firstBoot = new CredentialVault(invoke);
+    const first = await firstBoot.load("openrouter_jev", "openrouter.ai");
+    assert.equal(first.assistantApiKey, "sk-or-only");
+    assert.equal(store.get("assistant_api_key_openrouter_jev"), "sk-or-only");
+    assert.equal(store.get("assistant_api_key"), "sk-or-only");
+
+    // Next boot after switching to DeepSeek: OpenRouter's slot already exists, so DeepSeek stays empty.
+    const secondBoot = new CredentialVault(invoke);
+    const second = await secondBoot.load("deepseek", "openrouter.ai");
+    assert.equal(second.assistantApiKey, "");
+    assert.equal(store.has("assistant_api_key_deepseek"), false);
+    assert.equal(second.assistantApiKeys?.openrouter_jev, "sk-or-only");
+  });
+
   it("uses Web Crypto, not Math.random, for the MIoT nonce (#49)", () => {
     const original = Math.random;
     Math.random = () => {
