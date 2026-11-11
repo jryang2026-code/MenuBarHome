@@ -447,13 +447,16 @@ public actor LGWebOSClient {
         self.onDeviceUpdated = onDeviceUpdated
         self.onClientKeyRegistered = onClientKeyRegistered
         self.onSecurityFailure = onSecurityFailure
+        self.session = Self.sharedSession
+    }
 
+    private static let sharedSession: URLSession = {
         let urlConfig = URLSessionConfiguration.ephemeral
         urlConfig.connectionProxyDictionary = [:]
         urlConfig.timeoutIntervalForRequest = 30
         urlConfig.waitsForConnectivity = false
-        self.session = URLSession(configuration: urlConfig, delegate: LGWebOSTrustDelegate(), delegateQueue: nil)
-    }
+        return URLSession(configuration: urlConfig, delegate: LGWebOSTrustDelegate(), delegateQueue: nil)
+    }()
 
     public func start() {
         guard config.isEnabled, config.hasConfiguredHost else { return }

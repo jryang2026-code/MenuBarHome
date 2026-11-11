@@ -6,24 +6,32 @@ public protocol MiHTTPTransport: Sendable {
 }
 
 public struct URLSessionMiTransport: MiHTTPTransport {
-    private let session: URLSession
-    private let followRedirects: Bool
-
-    public init(timeout: TimeInterval = 30, followRedirects: Bool = true) {
+    private static let sharedSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         // Cookies are attached by hand per request; a shared jar would leak one account's token into another login.
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
-        config.timeoutIntervalForRequest = timeout
+        config.timeoutIntervalForRequest = 30
         config.waitsForConnectivity = false
-        self.session = URLSession(configuration: config)
+        return URLSession(configuration: config)
+    }()
+
+    private static let noRedirectDelegate = NoRedirectDelegate()
+
+    private let timeout: TimeInterval
+    private let followRedirects: Bool
+
+    public init(timeout: TimeInterval = 30, followRedirects: Bool = true) {
+        self.timeout = timeout
         self.followRedirects = followRedirects
     }
 
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        var configured = request
+        configured.timeoutInterval = timeout
         let (data, response) = followRedirects
-            ? try await session.data(for: request)
-            : try await session.data(for: request, delegate: NoRedirectDelegate())
+            ? try await Self.sharedSession.data(for: configured)
+            : try await Self.sharedSession.data(for: configured, delegate: Self.noRedirectDelegate)
         guard let http = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }

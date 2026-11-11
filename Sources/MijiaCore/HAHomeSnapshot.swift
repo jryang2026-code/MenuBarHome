@@ -119,12 +119,23 @@ struct HAHomeSnapshot {
         )
     }
 
-    private static func parseLastChanged(_ value: JSONValue?) -> Date? {
-        guard let raw = value?.stringValue else { return nil }
+    private static let dateFormatterLock = NSLock()
+    nonisolated(unsafe) private static let fractionalISO8601Formatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: raw) { return date }
+        return formatter
+    }()
+    nonisolated(unsafe) private static let wholeSecondISO8601Formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: raw)
+        return formatter
+    }()
+
+    static func parseLastChanged(_ value: JSONValue?) -> Date? {
+        guard let raw = value?.stringValue else { return nil }
+        dateFormatterLock.lock()
+        defer { dateFormatterLock.unlock() }
+        if let date = fractionalISO8601Formatter.date(from: raw) { return date }
+        return wholeSecondISO8601Formatter.date(from: raw)
     }
 }

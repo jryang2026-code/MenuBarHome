@@ -97,6 +97,15 @@ public actor CameraPTZClient: CameraPTZControlling {
     private let authorization: String?
     private let session: URLSession
 
+    private static let defaultSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.connectionProxyDictionary = [:]
+        configuration.timeoutIntervalForRequest = 1.5
+        configuration.timeoutIntervalForResource = 2.5
+        configuration.waitsForConnectivity = false
+        return URLSession(configuration: configuration)
+    }()
+
     public init(
         baseURL: URL,
         streamName: String,
@@ -111,16 +120,7 @@ public actor CameraPTZClient: CameraPTZControlling {
         } else {
             authorization = nil
         }
-        if let session {
-            self.session = session
-        } else {
-            let configuration = URLSessionConfiguration.ephemeral
-            configuration.connectionProxyDictionary = [:]
-            configuration.timeoutIntervalForRequest = 1.5
-            configuration.timeoutIntervalForResource = 2.5
-            configuration.waitsForConnectivity = false
-            self.session = URLSession(configuration: configuration)
-        }
+        self.session = session ?? Self.defaultSession
     }
 
     @discardableResult
