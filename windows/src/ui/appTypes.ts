@@ -68,6 +68,8 @@ export interface PersistedSettings {
   assistantKeyEndpoint: string | null;
   /** Separate host[:port] binding for the `custom` provider slot so saving a built-in preset never drops it. */
   assistantCustomKeyEndpoint: string | null;
+  /** Original host[:port] of an unmigrated legacy `assistant_api_key` entry until its replacement slot is persisted. */
+  assistantLegacyKeyEndpoint: string | null;
   /** Cloud AI services (host[:port]) the user allowed to receive commands; asked once per service (#20). */
   cloudConsentEndpoints: string[];
   /** Per-device choice for 全关; missing means the default (plugs and vacuums stay out) (#23). */

@@ -88,6 +88,10 @@ export function loadSettings(): LoadedSettings {
           : resolvedKeyEndpoint && inferAssistantPreset(`https://${resolvedKeyEndpoint}`).id === "custom"
             ? resolvedKeyEndpoint
             : null;
+      const assistantLegacyKeyEndpoint =
+        typeof parsed.assistantLegacyKeyEndpoint === "string" || parsed.assistantLegacyKeyEndpoint === null
+          ? parsed.assistantLegacyKeyEndpoint
+          : resolvedKeyEndpoint;
       return {
         settings: {
           connectionMode: mode,
@@ -101,6 +105,7 @@ export function loadSettings(): LoadedSettings {
           // Keys saved before binding existed belong to the URL saved alongside them.
           assistantKeyEndpoint: resolvedKeyEndpoint,
           assistantCustomKeyEndpoint,
+          assistantLegacyKeyEndpoint,
           cloudConsentEndpoints: Array.isArray(parsed.cloudConsentEndpoints)
             ? parsed.cloudConsentEndpoints.filter((e): e is string => typeof e === "string")
             : [],
@@ -192,6 +197,7 @@ export function loadSettings(): LoadedSettings {
       openRouterApiKey: "",
       assistantKeyEndpoint: null,
       assistantCustomKeyEndpoint: null,
+      assistantLegacyKeyEndpoint: null,
       cloudConsentEndpoints: [],
       allOffOverrides: {},
       assistantModel: "~typesafe/jev-latest",

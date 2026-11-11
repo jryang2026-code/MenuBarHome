@@ -52,7 +52,12 @@ export function initializeCredentials(host: MenuMijiaWindowsApp): void {
 export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<void> {
     try {
       const activePreset = inferAssistantPreset(host.settings.assistantBaseURL).id;
-      const credentials = await host.credentialVault.load(activePreset, host.settings.assistantKeyEndpoint);
+      const legacyOwnerEndpoint = host.settings.assistantLegacyKeyEndpoint ?? host.settings.assistantKeyEndpoint;
+      const credentials = await host.credentialVault.load(activePreset, legacyOwnerEndpoint);
+      if (!host.credentialVault.hasLegacyAssistantKey() && host.settings.assistantLegacyKeyEndpoint !== null) {
+        host.settings.assistantLegacyKeyEndpoint = null;
+        writeSettingsForStorage(host.settings);
+      }
       if (!hasCredentials(credentials)) return;
       if (credentials.assistantApiKeys) {
         host.assistantKeysByPreset = { ...credentials.assistantApiKeys, ...host.assistantKeysByPreset };
@@ -111,6 +116,10 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
 export async function persistCredentials(host: MenuMijiaWindowsApp): Promise<void> {
     try {
       await host.credentialVault.persist(credentialsFromSettings(host.settings, host.assistantKeysByPreset));
+      if (!host.credentialVault.hasLegacyAssistantKey() && host.settings.assistantLegacyKeyEndpoint !== null) {
+        host.settings.assistantLegacyKeyEndpoint = null;
+        writeSettingsForStorage(host.settings);
+      }
     } catch {
       // The credential manager refused the write; never fall back to plaintext storage.
     }

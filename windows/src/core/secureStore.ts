@@ -222,10 +222,15 @@ export class CredentialVault {
     const legacyTrimmed = legacyAssistantKey?.trim() ?? "";
     this.remember("assistant_api_key", legacyTrimmed);
     if (legacyTrimmed !== "") {
-      const hasAnyProviderSlot = Object.keys(assistantApiKeys).length > 0;
-      if (hasAnyProviderSlot) {
-        // A per-provider slot already exists, so any leftover legacy entry is an uncleaned
-        // remnant from an earlier failed delete and must never be copied into a second provider.
+      const ownerPreset =
+        legacyKeyEndpoint !== undefined
+          ? legacyKeyEndpoint && legacyKeyEndpoint.trim() !== ""
+            ? inferAssistantPreset(`https://${legacyKeyEndpoint.trim()}`).id
+            : "openrouter_jev"
+          : activePresetId;
+      const targetSlot = assistantApiKeyCredentialName(ownerPreset);
+      if (assistantApiKeys[ownerPreset]) {
+        // Only delete the legacy entry once its own replacement slot is confirmed present.
         try {
           await secureStoreDelete("assistant_api_key", this.invoke);
           this.remember("assistant_api_key", "");
@@ -233,11 +238,6 @@ export class CredentialVault {
           this.remember("assistant_api_key", legacyTrimmed);
         }
       } else {
-        const ownerPreset =
-          legacyKeyEndpoint && legacyKeyEndpoint.trim() !== ""
-            ? inferAssistantPreset(`https://${legacyKeyEndpoint.trim()}`).id
-            : activePresetId;
-        const targetSlot = assistantApiKeyCredentialName(ownerPreset);
         assistantApiKeys[ownerPreset] = legacyTrimmed;
         let wroteTarget = false;
         try {
@@ -289,6 +289,10 @@ export class CredentialVault {
     if (credentials.assistantApiKeys !== undefined) {
       await this.sync("assistant_api_key", "");
     }
+  }
+
+  hasLegacyAssistantKey(): boolean {
+    return (this.known.get("assistant_api_key") ?? "") !== "";
   }
 
   private remember(name: SecureCredentialName, value: string): void {
