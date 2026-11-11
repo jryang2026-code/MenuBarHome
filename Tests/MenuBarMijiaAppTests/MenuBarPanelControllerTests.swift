@@ -1112,10 +1112,12 @@ struct MenuBarPanelControllerTests {
         statusItem.testButton.frame = NSRect(x: 0, y: 0, width: 80, height: 24)
         hostWindow.contentView = statusItem.testButton
 
+        var now: TimeInterval = 1_000
         let controller = MenuBarPanelController(statusItem: statusItem)
         controller.presentsActively = true
         controller.shouldReduceMotion = { true }
         controller.statusItemHostsOutOfProcess = { true }
+        controller.statusItemUptime = { now }
         controller.install(with: store)
         defer { controller.uninstall() }
 
@@ -1158,6 +1160,7 @@ struct MenuBarPanelControllerTests {
             eventType: .leftMouseDown,
             pressedMouseButtons: 0x1
         )
+        now += 0.04
         controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0)
         controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
         let panel = try #require(controller.panelWindow)
@@ -1168,11 +1171,13 @@ struct MenuBarPanelControllerTests {
         // 2a. Second click on macOS 26+ out-of-process menu bar where `MenuBarAgent` deactivates
         // the app (`SETFRONT`) on mouse-down ~60-90 ms before `NSMenuBarNavigateAction` delivers
         // the synthesized primary click pair upon release.
+        now += 0.5
         controller.handleApplicationResignActive()
         #expect(controller.isClosing, "deactivation starts the slide-out transition")
         #expect(controller.isPanelVisible == false)
         #expect(hides == 1)
 
+        now += 0.08
         controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0)
         controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
         #expect(controller.isPanelVisible == false, "trailing status-item action for the same click must not reopen the closing panel")
@@ -1182,17 +1187,22 @@ struct MenuBarPanelControllerTests {
         #expect(controller.isClosing == false)
 
         // 2b. Consuming the suppression lets the very next click reopen immediately.
+        now += 0.2
         controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0)
         controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
         #expect(controller.isPanelVisible)
         #expect(shows == 2)
 
         // 2c. A slower short click whose trailing synthesized action arrives after the 200 ms
-        // close animation completed is still suppressed rather than reopening the ordered-out panel.
+        // close animation completed (at +250 ms < 350 ms suppression window, frozen on `now` so
+        // `waitUntil` wall-clock time on a loaded runner cannot expire the deadline) is still
+        // suppressed rather than reopening the ordered-out panel.
+        now += 0.5
         controller.handleApplicationResignActive()
         #expect(await waitUntil { !panel.isVisible })
         #expect(controller.isClosing == false)
         #expect(hides == 2)
+        now += 0.25
         controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0)
         controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
         #expect(controller.isPanelVisible == false, "close-animation completion must not clear suppression before the trailing action arrives")
@@ -1203,6 +1213,7 @@ struct MenuBarPanelControllerTests {
         controller.showPanel()
         #expect(controller.isPanelVisible)
         #expect(shows == 3)
+        now += 0.05
         controller.handleMouseDown(
             in: nil,
             at: NSPoint(x: 20, y: 200),
@@ -1211,14 +1222,17 @@ struct MenuBarPanelControllerTests {
         )
         #expect(controller.isPanelVisible == false)
         #expect(hides == 3)
+        now += 0.05
         controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0)
         controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
         #expect(controller.isPanelVisible, "an outside click below the menu bar must not suppress the next status-item open")
         #expect(shows == 4)
 
+        now += 0.05
         controller.handleApplicationResignActive()
         #expect(controller.isPanelVisible == false)
         #expect(hides == 4)
+        now += 0.05
         controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0x1)
         controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
         #expect(controller.isPanelVisible, "a fresh physical press after deactivation must reopen on the first click")
@@ -1226,16 +1240,19 @@ struct MenuBarPanelControllerTests {
 
         // 3. When the global mouse monitor sees the status-item hit before `SETFRONT`, the
         // deactivation is ignored and the release action closes the panel once.
+        now += 0.5
         controller.handleMouseDown(
             in: hostWindow,
             at: insideStatusPoint,
             eventType: .leftMouseDown,
             pressedMouseButtons: 0x1
         )
+        now += 0.01
         controller.handleApplicationResignActive()
         #expect(controller.isPanelVisible, "status-item mouse-down keeps the panel open until release")
         #expect(hides == 4)
 
+        now += 0.05
         controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0)
         controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
         #expect(controller.isPanelVisible == false)
