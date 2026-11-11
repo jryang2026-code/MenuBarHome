@@ -304,7 +304,7 @@ describe("Secure credential storage (#28 / #27 / #49)", () => {
     const vault = new CredentialVault(async <T>(cmd: string, args: Record<string, unknown>): Promise<T | null> => {
       const name = String(args.name ?? "");
       if (cmd === "secure_store_get") return (store.get(name) ?? null) as T | null;
-      if (failWrites) throw new Error("credential store locked");
+      if (cmd === "secure_store_set" && failWrites) throw new Error("credential store locked");
       if (cmd === "secure_store_set") store.set(name, String(args.value ?? ""));
       if (cmd === "secure_store_delete") store.delete(name);
       return null;
@@ -314,6 +314,10 @@ describe("Secure credential storage (#28 / #27 / #49)", () => {
     assert.equal(loaded.miSession?.userId, "100");
     assert.equal(loaded.haToken, "ha-good");
     assert.equal(loaded.assistantApiKey, "sk-legacy");
+    assert.equal(store.get("assistant_api_key"), "sk-legacy");
+
+    // While writes still fail (even if deletes succeed), persist must not delete the legacy copy.
+    await assert.rejects(() => vault.persist(loaded));
     assert.equal(store.get("assistant_api_key"), "sk-legacy");
 
     failWrites = false;

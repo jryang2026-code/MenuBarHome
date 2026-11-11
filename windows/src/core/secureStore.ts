@@ -256,15 +256,12 @@ export class CredentialVault {
   async persist(credentials: CredentialSnapshot): Promise<void> {
     const keyWrites =
       credentials.assistantApiKeys !== undefined
-        ? [
-            ...ASSISTANT_PROVIDER_PRESETS.map((preset) =>
-              this.sync(
-                assistantApiKeyCredentialName(preset.id),
-                credentials.assistantApiKeys?.[preset.id]?.trim() ?? ""
-              )
-            ),
-            this.sync("assistant_api_key", ""),
-          ]
+        ? ASSISTANT_PROVIDER_PRESETS.map((preset) =>
+            this.sync(
+              assistantApiKeyCredentialName(preset.id),
+              credentials.assistantApiKeys?.[preset.id]?.trim() ?? ""
+            )
+          )
         : [this.sync(assistantApiKeyCredentialName("openrouter_jev"), credentials.assistantApiKey)];
     const results = await Promise.allSettled([
       this.sync("mi_session", credentials.miSession ? serializeMiSession(credentials.miSession) : ""),
@@ -273,6 +270,9 @@ export class CredentialVault {
     ]);
     const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (failure) throw failure.reason;
+    if (credentials.assistantApiKeys !== undefined) {
+      await this.sync("assistant_api_key", "");
+    }
   }
 
   private remember(name: SecureCredentialName, value: string): void {
