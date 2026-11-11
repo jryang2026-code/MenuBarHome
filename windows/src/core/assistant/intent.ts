@@ -167,7 +167,10 @@ export const IntentValidator = {
       case "lightEffect": {
         if (k.kind !== "light") return null;
         const trimmed = op.effect.trim();
-        const canonical = LIGHT_EFFECT_ALIASES[trimmed.toLowerCase()] ?? LIGHT_EFFECT_ALIASES[trimmed] ?? trimmed;
+        const direct = k.availableEffects.find((e) => e.toLowerCase() === trimmed.toLowerCase());
+        if (direct) return { kind: "lightEffect", effect: direct };
+        const canonical = LIGHT_EFFECT_ALIASES[trimmed.toLowerCase()] ?? LIGHT_EFFECT_ALIASES[trimmed];
+        if (!canonical) return null;
         const matched = k.availableEffects.find((e) => e.toLowerCase() === canonical.toLowerCase());
         return matched ? { kind: "lightEffect", effect: matched } : null;
       }
@@ -175,6 +178,8 @@ export const IntentValidator = {
         if (k.kind === "climate") {
           if (k.availableModes.length === 0) return null;
           const lowered = op.mode.trim().toLowerCase();
+          const direct = k.availableModes.find((m) => m.toLowerCase() === lowered);
+          if (direct) return { kind: "hvacMode", mode: direct };
           const canonical = HVAC_MODE_ALIASES[lowered] ?? lowered;
           const matched = k.availableModes.find((m) => m.toLowerCase() === canonical);
           if (matched) return { kind: "hvacMode", mode: matched };

@@ -145,8 +145,11 @@ export async function persistCredentials(host: MenuMijiaWindowsApp): Promise<voi
 export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     if (!host.settings.miSession && host.settings.cachedXiaomiDevices.length === 0) return;
     const wasXiaomiMode = host.settings.connectionMode === "xiaomiCloud";
-    host.localControlRevision += 1;
     if (wasXiaomiMode) {
+      host.localControlRevision += 1;
+      if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
+        host.cameraLive.closeCameraLiveView();
+      }
       host.invalidateSourceControl();
       host.devices = [];
       host.scenes = [];
@@ -157,9 +160,6 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
       host.expandedDeviceId = null;
       host.waitingDeviceIds.clear();
       host.selectRoom(null);
-    } else {
-      host.lastUndoAction = null;
-      host.clearPendingHighRisk();
     }
     host.settings.miSession = null;
     host.settings.cachedXiaomiDevices = [];

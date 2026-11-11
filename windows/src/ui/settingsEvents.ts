@@ -21,6 +21,11 @@ import type { GitHubRelease } from "../core/updateChecker.js";
 export interface SettingsEventsHost {
   readonly root: HTMLElement;
   readonly settings: PersistedSettings;
+  readonly cameraLive: {
+    readonly activeLiveCameraId: string | null;
+    readonly liveCameraKeepAliveTimer: number | null;
+    closeCameraLiveView(): void;
+  };
   assistantKeysByPreset: Record<string, string>;
   devices: SmartDevice[];
   scenes: HomeScene[];
@@ -187,6 +192,9 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       btn.addEventListener("click", () => {
         const mode = btn.dataset.connMode as ConnectionMode | undefined;
         if (!mode) return;
+        if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
+          host.cameraLive.closeCameraLiveView();
+        }
         host.localControlRevision += 1;
         host.invalidateSourceControl();
         host.environmentReadings = [];

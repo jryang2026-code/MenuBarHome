@@ -27,6 +27,7 @@ export interface CameraLiveHost {
   render(): void;
   escapeHtml(value: string): string;
   saveSettings(): void;
+  shouldKeepPopoverPinned(): boolean;
 }
 
 export class CameraLiveController {
@@ -127,7 +128,7 @@ export class CameraLiveController {
   public hideCameraLiveView(): void {
     if (this.activeLiveCameraId === null) return;
     this.liveCameraHidden = true;
-    invokeTauriVoid("set_pin_popover", { pin: false });
+    invokeTauriVoid("set_pin_popover", { pin: this.host.shouldKeepPopoverPinned() });
     this.clearCameraKeepAlive();
     this.liveCameraKeepAliveTimer = window.setTimeout(() => {
       this.liveCameraKeepAliveTimer = null;
@@ -161,7 +162,7 @@ export class CameraLiveController {
     if (closingId && this.host.settings.connectionMode === "xiaomiCloud" && closingDev) {
       void this.releaseCameraP2PSession(closingDev, this.liveCameraToken);
     }
-    invokeTauriVoid("set_pin_popover", { pin: false });
+    invokeTauriVoid("set_pin_popover", { pin: this.host.shouldKeepPopoverPinned() });
     this.host.render();
   }
 
@@ -175,7 +176,8 @@ export class CameraLiveController {
     releaseToken = this.liveCameraToken,
     allowActiveCamera = false,
   ): Promise<void> {
-    if (!this.host.settings.miSession) return Promise.resolve();
+    const session = this.host.settings.miSession;
+    if (!session) return Promise.resolve();
     const run = (async () => {
       try {
         const spec = await this.host.specResolver.resolve({
@@ -189,7 +191,7 @@ export class CameraLiveController {
         const p2pSvc = spec.services.find((s) => s.actions.some((a) => a.type.includes("stop-stream")));
         const stopAct = p2pSvc?.actions.find((a) => a.type.includes("stop-stream"));
         if (!p2pSvc || !stopAct) return;
-        const client = new MiCloudClient(this.host.settings.miSession!, this.host.transport);
+        const client = new MiCloudClient(session, this.host.transport);
         await client
           .callAction({ did: dev.id, siid: p2pSvc.iid, aiid: stopAct.iid, inputs: [] })
           .catch(() => {});

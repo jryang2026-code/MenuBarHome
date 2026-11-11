@@ -93,6 +93,7 @@ function makeClimate(overrides: {
   roomName?: string;
   isOn?: boolean;
   hvacMode?: string;
+  availableModes?: readonly string[];
 } = {}): SmartDevice {
   return {
     id: overrides.id ?? "climate.bedroom",
@@ -106,7 +107,7 @@ function makeClimate(overrides: {
       entityId: overrides.id ?? "climate.bedroom",
       isOn: overrides.isOn ?? true,
       hvacMode: overrides.hvacMode ?? "cool",
-      availableModes: ["off", "cool", "heat", "dry", "fan_only", "auto"],
+      availableModes: overrides.availableModes ? [...overrides.availableModes] : ["off", "cool", "heat", "dry", "fan_only", "auto"],
       targetTemperature: 25,
       currentTemperature: 28,
       minTemp: 16,
@@ -383,6 +384,19 @@ describe("AI /chat/completions context, multi-device JEV & suggestion chips (#2)
       IntentValidator.normalize({ kind: "lightEffect", effect: "日光模式" }, lamp),
       { kind: "lightEffect", effect: "Day" },
     );
+    // HA lights advertising literal "Moonlight" / "Daylight" keep their advertised effect names.
+    const haLamp = makeLight({
+      isOn: true,
+      availableEffects: ["Moonlight", "Daylight"],
+    });
+    assert.deepEqual(
+      IntentValidator.normalize({ kind: "lightEffect", effect: "Moonlight" }, haLamp),
+      { kind: "lightEffect", effect: "Moonlight" },
+    );
+    assert.deepEqual(
+      IntentValidator.normalize({ kind: "lightEffect", effect: "Daylight" }, haLamp),
+      { kind: "lightEffect", effect: "Daylight" },
+    );
     assert.deepEqual(
       IntentValidator.normalize({ kind: "brightnessStep", delta: -20 }, lamp),
       { kind: "brightness", percent: 80 },
@@ -396,6 +410,19 @@ describe("AI /chat/completions context, multi-device JEV & suggestion chips (#2)
     assert.deepEqual(
       IntentValidator.normalize({ kind: "hvacMode", mode: "heat_cool" }, ac),
       { kind: "hvacMode", mode: "auto" },
+    );
+    const haAc = makeClimate({
+      isOn: true,
+      hvacMode: "cool",
+      availableModes: ["off", "cool", "heat_cool", "fan"],
+    });
+    assert.deepEqual(
+      IntentValidator.normalize({ kind: "hvacMode", mode: "fan" }, haAc),
+      { kind: "hvacMode", mode: "fan" },
+    );
+    assert.deepEqual(
+      IntentValidator.normalize({ kind: "hvacMode", mode: "heat_cool" }, haAc),
+      { kind: "hvacMode", mode: "heat_cool" },
     );
   });
 });
@@ -545,6 +572,23 @@ describe("Mi session Set-Cookie expiry, 3-day warning & Sign Out (#3)", () => {
       expiresAt: Date.UTC(2026, 10, 12, 12, 0, 0),
     });
 
+    // native_http joins repeated Set-Cookie headers with "; " on a single line.
+    const fromFlattened = MiAccountLogin.parseServiceTokenCookie(
+      {
+        "set-cookie":
+          "userId=100; Max-Age=60; Path=/; serviceToken=tok_flat; Max-Age=3600; Path=/; cUserId=abc; Max-Age=10",
+      },
+      nowMs,
+    );
+    assert.deepEqual(fromFlattened, { token: "tok_flat", expiresAt: nowMs + 3_600_000 });
+    assert.deepEqual(
+      MiAccountLogin.parseServiceTokenCookie(
+        { "set-cookie": "userId=100; Path=/; serviceToken=tok_bare; Path=/" },
+        nowMs,
+      ),
+      { token: "tok_bare" },
+    );
+
     const undated = parseMiSession({
       userId: "100",
       cUserId: "",
@@ -578,25 +622,71 @@ describe("Mi session Set-Cookie expiry, 3-day warning & Sign Out (#3)", () => {
     assert.equal(loaded.miSession?.expiresAt, expiringSession.expiresAt);
   });
 
-  it("renders 3-day expiry warning banner and clears memory, localStorage, and CredentialVault on Sign Out", async () => {
+  it("renders 3-day expiry warning banner and clears memory, localStorage, CredentialVault, and hidden Xiaomi camera streams on Sign Out", async () => {
     const deletedSecrets: string[] = [];
+    const bridgeStoppedDids: string[] = [];
+    const httpUrls: string[] = [];
     const invoke = async (name: string, args: Record<string, unknown> = {}): Promise<unknown> => {
       if (name === "secure_store_delete") deletedSecrets.push(String(args["name"] ?? ""));
-      if (name === "native_http") return { status: 200, headers: {}, body: JSON.stringify({ code: 0, result: { list: [], homelist: [] } }) };
+      if (name === "stop_xiaomi_camera_bridge") bridgeStoppedDids.push(String(args["did"] ?? ""));
+      if (name === "native_http") {
+        const url = String(args["url"] ?? "");
+        httpUrls.push(url);
+        return { status: 200, headers: {}, body: JSON.stringify({ code: 0, result: { list: [], homelist: [] } }) };
+      }
       return null;
     };
     Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
 
+    const camDevice: SmartDevice = {
+      id: "cam-1",
+      name: "玄关摄像机",
+      roomId: "room_entry",
+      roomName: "玄关",
+      model: "chuangmi.camera.ipc019",
+      isOnline: true,
+      kind: {
+        kind: "camera",
+        entityId: "camera.cam_1",
+        isOn: true,
+        nightShot: "auto",
+        availableNightShots: ["auto", "off", "on"],
+        motionDetectionEntityId: null,
+        isMotionDetectionOn: null,
+        streamEntityId: null,
+      },
+    };
     const soonMs = Date.now() + 24 * 3600 * 1000;
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
         connectionMode: "xiaomiCloud",
         hasCompletedOnboarding: true,
-        cachedXiaomiDevices: [makeLight({ id: "cached-1" })],
+        cachedXiaomiDevices: [makeLight({ id: "cached-1" }), camDevice],
       }),
     );
     const app = new MenuMijiaWindowsApp(element("#app"));
+    app.specResolver.resolve = async () => ({
+      type: "urn:miot-spec-v2:device:camera:0000A01C:chuangmi-ipc019:1",
+      description: "Camera",
+      services: [
+        {
+          iid: 3,
+          type: "urn:miot-spec-v2:service:stream-p2p:00007881:chuangmi-ipc019:1",
+          description: "P2P",
+          properties: [],
+          actions: [
+            {
+              iid: 2,
+              type: "urn:miot-spec-v2:action:stop-stream:00002822:chuangmi-ipc019:1",
+              description: "Stop Stream",
+              in: [],
+              out: [],
+            },
+          ],
+        },
+      ],
+    });
     app.settings.miSession = {
       userId: "98765432",
       cUserId: "",
@@ -606,7 +696,14 @@ describe("Mi session Set-Cookie expiry, 3-day warning & Sign Out (#3)", () => {
       region: "cn",
       expiresAt: soonMs,
     };
-    app.devices = [makeLight({ id: "cached-1" })];
+    app.devices = [makeLight({ id: "cached-1" }), camDevice];
+    // Simulate a Xiaomi camera hidden in its 120-second keep-alive window when Sign Out happens.
+    const camAbort = new AbortController();
+    app.cameraLive.activeLiveCameraId = "cam-1";
+    app.cameraLive.liveCameraHidden = true;
+    app.cameraLive.liveCameraAbort = camAbort;
+    app.cameraLive.liveCameraKeepAliveTimer = window.setTimeout(() => {}, 120_000);
+    app.lastManuallyUsedLightId = "cached-1";
     app.lastUndoAction = {
       summary: "已关灯",
       steps: [{ deviceId: "cached-1", commands: [{ kind: "setLightPower", entityId: "light.cached-1", isOn: true }] }],
@@ -616,20 +713,52 @@ describe("Mi session Set-Cookie expiry, 3-day warning & Sign Out (#3)", () => {
 
     assert.ok(document.querySelector("[data-mi-expiry-warning]"), "3-day expiry banner should show");
 
+    httpUrls.length = 0;
     await click("#btn-settings");
     await click('[data-settings-tab="connection"]');
     assert.ok(document.querySelector("#btn-signout-mi"));
     await click("#btn-signout-mi");
+    await Promise.all([...app.cameraLive.pendingCameraReleases.values()]);
     await setImmediate();
 
     assert.equal(app.settings.miSession, null);
     assert.equal(app.devices.length, 0);
     assert.equal(app.settings.cachedXiaomiDevices.length, 0);
     assert.equal(app.lastUndoAction, null);
+    assert.equal(app.lastManuallyUsedLightId, null);
+    assert.equal(app.cameraLive.activeLiveCameraId, null);
+    assert.equal(app.cameraLive.liveCameraHidden, false);
+    assert.equal(app.cameraLive.liveCameraKeepAliveTimer, null);
+    assert.equal(camAbort.signal.aborted, true);
+    assert.deepEqual(bridgeStoppedDids, ["cam-1"]);
+    assert.ok(
+      httpUrls.some((url) => url.includes("/miotspec/action")),
+      "authenticated P2P stop-stream action must fire with captured session before credentials clear",
+    );
     assert.ok(deletedSecrets.includes("mi_session"));
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as Record<string, unknown>;
     assert.equal(stored["miSession"], undefined);
     assert.deepEqual(stored["cachedXiaomiDevices"], []);
+
+    // Signing out of a stored Mi session while running in demo/HA mode preserves active source undo state.
+    app.settings.connectionMode = "demo";
+    app.settings.miSession = {
+      userId: "98765432",
+      cUserId: "",
+      ssecurity: "AQIDBAUGBwgJCgsMDQ4PEA==",
+      serviceToken: "tok_again",
+      passToken: "",
+      region: "cn",
+    };
+    const demoUndo = {
+      summary: "演示模式操作",
+      steps: [{ deviceId: "light.study_desk", commands: [{ kind: "setLightPower" as const, entityId: "light.study_desk", isOn: true }] }],
+      expiresAtMs: Date.now() + 60_000,
+    };
+    app.lastUndoAction = demoUndo;
+    app.signOutXiaomiAccount();
+    assert.equal(app.settings.miSession, null);
+    assert.equal(app.lastUndoAction, demoUndo);
   });
 });
 

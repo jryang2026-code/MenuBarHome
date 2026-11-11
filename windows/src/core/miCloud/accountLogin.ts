@@ -126,6 +126,7 @@ export class MiAccountLogin {
   /**
    * Extracts `serviceToken` and its declared expiry from `Set-Cookie` headers (`MiAccountLogin.swift`).
    * Per RFC 6265 §4.1.2.2, `Max-Age` (seconds) takes precedence over `Expires`.
+   * Also supports `native_http`'s `; `-flattened header representation (`userId=1; Path=/; serviceToken=tok; Path=/`).
    */
   static parseServiceTokenCookie(
     headers: Readonly<Record<string, string>>,
@@ -142,36 +143,42 @@ export class MiAccountLogin {
         .split(";")
         .map((part) => part.trim())
         .filter((part) => part.length > 0);
-      const first = parts[0];
-      if (!first) continue;
-      const eq = first.indexOf("=");
-      if (eq < 0) continue;
-      const cookieName = first.slice(0, eq).trim();
-      const cookieValue = first.slice(eq + 1).trim();
-      if (cookieName !== "serviceToken" || cookieValue.length === 0) continue;
+      for (let i = 0; i < parts.length; i += 1) {
+        const part = parts[i]!;
+        const eq = part.indexOf("=");
+        if (eq < 0) continue;
+        const cookieName = part.slice(0, eq).trim();
+        const cookieValue = part.slice(eq + 1).trim();
+        if (cookieName !== "serviceToken" || cookieValue.length === 0) continue;
 
-      let maxAgeSeconds: number | undefined;
-      let expiresMs: number | undefined;
-      for (const attr of parts.slice(1)) {
-        const attrEq = attr.indexOf("=");
-        if (attrEq < 0) continue;
-        const attrName = attr.slice(0, attrEq).trim().toLowerCase();
-        const attrVal = attr.slice(attrEq + 1).trim();
-        if (attrName === "max-age" && /^[-+]?\d+$/.test(attrVal)) {
-          const parsed = Number.parseInt(attrVal, 10);
-          if (Number.isFinite(parsed)) maxAgeSeconds = parsed;
-        } else if (attrName === "expires") {
-          const parsedDate = parseHttpCookieDate(attrVal);
-          if (parsedDate !== null) expiresMs = parsedDate;
+        let maxAgeSeconds: number | undefined;
+        let expiresMs: number | undefined;
+        for (let j = i + 1; j < parts.length; j += 1) {
+          const attr = parts[j]!;
+          const attrEq = attr.indexOf("=");
+          if (attrEq < 0) continue;
+          const attrName = attr.slice(0, attrEq).trim().toLowerCase();
+          if (!COOKIE_ATTR_NAMES.has(attrName)) {
+            // Next cookie in a `; `-flattened `Set-Cookie` header (`native_http`).
+            break;
+          }
+          const attrVal = attr.slice(attrEq + 1).trim();
+          if (attrName === "max-age" && /^[-+]?\d+$/.test(attrVal)) {
+            const parsed = Number.parseInt(attrVal, 10);
+            if (Number.isFinite(parsed)) maxAgeSeconds = parsed;
+          } else if (attrName === "expires") {
+            const parsedDate = parseHttpCookieDate(attrVal);
+            if (parsedDate !== null) expiresMs = parsedDate;
+          }
         }
+        if (maxAgeSeconds !== undefined) {
+          return {
+            token: cookieValue,
+            expiresAt: maxAgeSeconds <= 0 ? nowMs : nowMs + maxAgeSeconds * 1000,
+          };
+        }
+        return expiresMs !== undefined ? { token: cookieValue, expiresAt: expiresMs } : { token: cookieValue };
       }
-      if (maxAgeSeconds !== undefined) {
-        return {
-          token: cookieValue,
-          expiresAt: maxAgeSeconds <= 0 ? nowMs : nowMs + maxAgeSeconds * 1000,
-        };
-      }
-      return expiresMs !== undefined ? { token: cookieValue, expiresAt: expiresMs } : { token: cookieValue };
     }
     return null;
   }
@@ -199,6 +206,20 @@ export class MiAccountLogin {
     throw new MiCloudError("badResponse", "登录成功但未拿到 serviceToken，请重试");
   }
 }
+
+const COOKIE_ATTR_NAMES = new Set([
+  "expires",
+  "max-age",
+  "domain",
+  "path",
+  "secure",
+  "httponly",
+  "samesite",
+  "priority",
+  "partitioned",
+  "version",
+  "comment",
+]);
 
 function parseHttpCookieDate(raw: string): number | null {
   const normalized = raw.trim().replace(/^([A-Za-z]+,\s*\d{1,2})-([A-Za-z]{3})-(\d{2,4})\b/, (_m, prefix: string, mon: string, yr: string) => {
