@@ -160,6 +160,7 @@ export function renderSettingsModal(host: MenuMijiaWindowsApp): string {
       settings: host.settings,
       devices: host.devices,
       availableUpdate: host.availableUpdate,
+      activeTab: host.settingsTab,
       apiKeyFor: (baseURL) => host.apiKeyFor(baseURL),
       habitSequences: () => host.habitSequences(),
       hotkeyNeedsHint: host.hotkeyNeedsHint,

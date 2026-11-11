@@ -88,7 +88,8 @@ import { applyCommand, markCloudValuesFresh, markCloudValuesStale } from "./comm
 import { foldGrouped, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
 import { executeIntents, executeSingleCommand, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
 import { bindLayoutGestures } from "./layoutGestures.js";
-import { bindSettingsEvents } from "./settingsEvents.js";
+import { bindSettingsEvents, refreshHabitSharePreview } from "./settingsEvents.js";
+import { captureSettingsDraft, restoreSettingsDraft, type SettingsTab } from "./settingsViews.js";
 import { inputKeepsDraft } from "./dom.js";
 export { waitForCameraFrameGap } from "./dom.js";
 import { createPanelSearchState, normalizeSearch, PanelSearchIndex } from "../core/panelSearch.js";
@@ -196,6 +197,8 @@ export class MenuMijiaWindowsApp {
   private pendingHighRiskTimer: number | null = null;
   public isShowingAssistantBar = true;
   public activeSheet: "none" | "onboarding" | "settings" = "none";
+  /** Open Settings category (#78); a re-render keeps it, `openSettingsSheet(tab)` routes it. */
+  public settingsTab: SettingsTab = "general";
   public replyBanner: ReplyBannerState | null = null;
   public haConnectionError: string | null = null;
   public waitingDeviceIds = new Set<string>();
@@ -374,8 +377,8 @@ export class MenuMijiaWindowsApp {
     return checkForAppUpdate(this, manual);
   }
 
-  public openSettingsSheet(): void {
-    openSettingsSheet(this);
+  public openSettingsSheet(tab: SettingsTab = "general"): void {
+    openSettingsSheet(this, tab);
   }
 
   public openUpdatePage(): void {
@@ -1107,7 +1110,11 @@ export class MenuMijiaWindowsApp {
     const before = new Map(tiles.map((el) => [el.dataset.tileId as string, el.getBoundingClientRect()]));
     const scrollTop = this.root.querySelector(".cc-scroll-area")?.scrollTop ?? 0;
     const roomLeft = this.root.querySelector(".cc-room-scroll")?.scrollLeft ?? 0;
-    const sheetScrollTop = this.root.querySelector(".cc-sheet")?.scrollTop ?? 0;
+    // The settings sheet scrolls its middle body, so that is the node whose offset has to survive.
+    const sheetScroll = this.root.querySelector<HTMLElement>(".cc-sheet-body") ?? this.root.querySelector<HTMLElement>(".cc-sheet");
+    const sheetScrollTop = sheetScroll?.scrollTop ?? 0;
+    // 完成并保存 reads every field, so a live refresh must not discard typed text in the sheet (#78).
+    const settingsDraft = captureSettingsDraft(this.root);
 
     this.pendingCloudRender = false;
     this.grokBall.prepareMove();
@@ -1121,8 +1128,14 @@ export class MenuMijiaWindowsApp {
     if (area) area.scrollTop = scrollTop;
     const strip = this.root.querySelector<HTMLElement>(".cc-room-scroll");
     if (strip) strip.scrollLeft = roomLeft;
-    const sheet = this.root.querySelector<HTMLElement>(".cc-sheet");
+    const sheet = this.root.querySelector<HTMLElement>(".cc-sheet-body") ?? this.root.querySelector<HTMLElement>(".cc-sheet");
     if (sheet) sheet.scrollTop = sheetScrollTop;
+    // A preset click mutates the fields without a render, so only a rebuild can have dropped a draft.
+    if (
+      restoreSettingsDraft(this.root, settingsDraft, (el, url) => this.syncKeyFieldWithEndpoint(el, url))
+    ) {
+      refreshHabitSharePreview(this);
+    }
 
     if (focusSnapshot) {
       const matches = Array.from(

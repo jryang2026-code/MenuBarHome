@@ -421,9 +421,9 @@ import { bindPanelInput } from "./panelKeyboard.js";
       }
     });
 
+    // The QR code lives on the sources tab, so signing in lands there instead of on 外观与面板.
     const startQrLogin = () => {
-      host.activeSheet = "settings";
-      host.render();
+      host.openSettingsSheet("connection");
       void host.startXiaomiQRLogin();
     };
     host.root.querySelector("#btn-footer-qr")?.addEventListener("click", startQrLogin);
@@ -438,7 +438,7 @@ import { bindPanelInput } from "./panelKeyboard.js";
     });
 
     host.root.querySelector("#btn-empty-settings")?.addEventListener("click", () => {
-      host.openSettingsSheet();
+      host.openSettingsSheet("connection");
     });
 
     // A home whose devices the cloud hid leaves the panel empty until the user goes back to all homes.

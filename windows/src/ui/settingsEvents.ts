@@ -15,6 +15,8 @@ import { withAliases, type HomeOption, type LayoutPrefs } from "./panelPrefs.js"
 import type { ConnectionMode, PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
 import { demoDevices, demoScenes } from "./demo.js";
 import { invokeTauriVoid } from "./transport.js";
+import type { SettingsTab } from "./settingsViews.js";
+import type { GitHubRelease } from "../core/updateChecker.js";
 
 export interface SettingsEventsHost {
   readonly root: HTMLElement;
@@ -26,6 +28,8 @@ export interface SettingsEventsHost {
   homes: HomeOption[];
   readonly layout: LayoutPrefs;
   activeSheet: "none" | "onboarding" | "settings";
+  settingsTab: SettingsTab;
+  availableUpdate: GitHubRelease | null;
   aiProactiveSignature: string | null;
   aiProactiveSuggestions: AssistantSuggestion[] | null;
   cloudValuesStale: boolean;
@@ -46,7 +50,7 @@ export interface SettingsEventsHost {
   checkForAppUpdate(manual: boolean): Promise<void>;
   handleNaturalCommand(raw: string, fromScheduled?: boolean): Promise<void>;
   invalidateSourceControl(): void;
-  openSettingsSheet(): void;
+  openSettingsSheet(tab?: SettingsTab): void;
   openUpdatePage(): void;
   refreshDevices(silent?: boolean): Promise<void>;
   refreshHADevices(silent?: boolean): Promise<void>;
@@ -122,8 +126,19 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       host.openUpdatePage();
     });
 
+    // A release notice lives on the general tab when one is waiting, otherwise on the system tab.
     host.root.querySelector("#btn-footer-update")?.addEventListener("click", () => {
-      host.openSettingsSheet();
+      host.openSettingsSheet(host.availableUpdate ? "general" : "system");
+    });
+
+    host.root.querySelectorAll<HTMLElement>("[data-settings-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const tab = btn.dataset.settingsTab;
+        if (tab !== "general" && tab !== "connection" && tab !== "assistant" && tab !== "system") return;
+        if (tab === host.settingsTab) return;
+        host.settingsTab = tab;
+        showSettingsTab(host.root, tab);
+      });
     });
 
     host.root.querySelector("#btn-start-qr")?.addEventListener("click", () => {
@@ -248,28 +263,10 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       if (apiKeyEl) host.syncKeyFieldWithEndpoint(apiKeyEl, target.value);
     });
 
-    const refreshHabitSharePreview = () => {
-      const shareEl = host.root.querySelector<HTMLInputElement>("#settings-habit-share");
-      const sampleEl = host.root.querySelector<HTMLInputElement>("#settings-habit-share-sample");
-      const preview = host.root.querySelector<HTMLElement>("#settings-habit-share-preview");
-      if (!shareEl || !sampleEl || !preview) return;
-      const sentence = shareHabitSentence({
-        sharing: shareEl.checked ? "on" : "off",
-        memory: new UserHabitMemory(host.settings.habitEntries, host.habitSequences(), host.lastHabitAction()),
-        phrases: host.settings.learnedShortcuts.map((shortcut) => ({
-          phrase: shortcut.phrase,
-          intents: shortcut.intents,
-        })),
-        devices: withAliases(host.layout, host.devices),
-        scenes: host.scenes,
-        mention: { kind: "utterance", text: sampleEl.value },
-        now: new Date(),
-      });
-      preview.textContent = sentence.length > 0 ? sentence : t("不会发送习惯摘要");
-    };
-    host.root.querySelector("#settings-habit-share")?.addEventListener("change", refreshHabitSharePreview);
-    host.root.querySelector("#settings-habit-share-sample")?.addEventListener("input", refreshHabitSharePreview);
-    refreshHabitSharePreview();
+    const refreshPreview = () => refreshHabitSharePreview(host);
+    host.root.querySelector("#settings-habit-share")?.addEventListener("change", refreshPreview);
+    host.root.querySelector("#settings-habit-share-sample")?.addEventListener("input", refreshPreview);
+    refreshPreview();
 
     host.root.querySelector("#btn-save-settings")?.addEventListener("click", () => {
       const baseEl = host.root.querySelector<HTMLInputElement>("#settings-base-url");
@@ -337,4 +334,42 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       invokeTauriVoid("set_pin_popover", { pin: false });
       host.render();
     });
+}
+
+/**
+ * Switches the visible Settings panel without a re-render. All four panels stay mounted behind
+ * `hidden`, so typed drafts and the scroll offset of the body survive the switch (#78).
+ */
+export function showSettingsTab(root: HTMLElement, tab: SettingsTab): void {
+  root.querySelectorAll<HTMLElement>("[data-settings-tab]").forEach((button) => {
+    const active = button.dataset.settingsTab === tab;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  root.querySelectorAll<HTMLElement>("[data-settings-panel]").forEach((panel) => {
+    panel.hidden = panel.dataset.settingsPanel !== tab;
+  });
+  const body = root.querySelector<HTMLElement>(".cc-sheet-body");
+  if (body) body.scrollTop = 0;
+}
+
+/** Recomputes the habit-share preview from the current switch and sample text. */
+export function refreshHabitSharePreview(host: SettingsEventsHost): void {
+  const shareEl = host.root.querySelector<HTMLInputElement>("#settings-habit-share");
+  const sampleEl = host.root.querySelector<HTMLInputElement>("#settings-habit-share-sample");
+  const preview = host.root.querySelector<HTMLElement>("#settings-habit-share-preview");
+  if (!shareEl || !sampleEl || !preview) return;
+  const sentence = shareHabitSentence({
+    sharing: shareEl.checked ? "on" : "off",
+    memory: new UserHabitMemory(host.settings.habitEntries, host.habitSequences(), host.lastHabitAction()),
+    phrases: host.settings.learnedShortcuts.map((shortcut) => ({
+      phrase: shortcut.phrase,
+      intents: shortcut.intents,
+    })),
+    devices: withAliases(host.layout, host.devices),
+    scenes: host.scenes,
+    mention: { kind: "utterance", text: sampleEl.value },
+    now: new Date(),
+  });
+  preview.textContent = sentence.length > 0 ? sentence : t("不会发送习惯摘要");
 }
