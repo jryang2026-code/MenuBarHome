@@ -692,7 +692,7 @@ public actor DemoHomeProvider: HomeProvider {
         window: SensorHistoryWindow,
         now: Date
     ) -> [SensorHistorySample] {
-        let phase = Double(abs(deviceId.unicodeScalars.reduce(0) { $0 &+ Int($1.value) }) % 12) * 0.5
+        let phase = Double(deviceId.unicodeScalars.reduce(0) { $0 &+ Int($1.value) }.magnitude % 12) * 0.5
         let cal = Calendar.current
         switch window {
         case .last24Hours:

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
@@ -181,6 +183,29 @@ describe("Mi Cloud room and device requests (#76 / #67)", () => {
         ["11", "1", "5001", ["lamp-4"]],
         ["home_1", "1", "5001", ["lamp-0", "lamp-3"]],
       ],
+    );
+  });
+
+  it("replays the shared mi_home_rooms_merged + mi_dev_room_page contract fixtures identically to macOS", () => {
+    const readContract = (name: string): Record<string, unknown> =>
+      JSON.parse(readFileSync(resolve(process.cwd(), `../Tests/Fixtures/contracts/${name}`), "utf8")) as Record<string, unknown>;
+    const initial = MiCloudClient.unwrapResult(readContract("mi_home_rooms_merged.json"));
+    const page = MiCloudClient.unwrapResult(readContract("mi_dev_room_page.json"));
+    const merged = MiCloudClient.mergeRoomPage(page, MiCloudClient.parseRooms(initial));
+    assert.deepEqual(merged, [
+      { id: "room-2001", name: "Living Room", dids: ["did-light-0001", "did-plug-0004"], homeId: "home-1001", homeName: "Contract Home" },
+      { id: "room-2002", name: "Study", dids: ["did-camera-0003", "did-fan-0006"], homeId: "home-1001", homeName: "Contract Home" },
+      { id: "home_home-1001", name: "", dids: ["did-light-0001", "did-switch-0002", "did-sensor-0005"], homeId: "home-1001", homeName: "Contract Home" },
+      { id: "room-2003", name: "Kitchen", dids: ["did-fridge-0008"], homeId: "home-1002", homeName: "Contract Beach House" },
+      { id: "room-2004", name: "Guest Room", dids: ["did-switch-0002.s2"], homeId: "home-1003", homeName: "Contract Shared Home", isSharedHome: true },
+      { id: "home_home-1002", name: "", dids: ["did-kettle-0007"], homeId: "home-1002", homeName: "Contract Beach House" },
+    ]);
+  });
+
+  it("rejects unstubbed live fetch in mounted UI tests immediately instead of polling the network", async () => {
+    await assert.rejects(
+      () => globalThis.fetch("https://account.xiaomi.com/longPolling/loginUrl"),
+      /Unstubbed network fetch in UI test/,
     );
   });
 

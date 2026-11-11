@@ -366,8 +366,8 @@ public enum IntentReply {
                     : L10n.format("%@关闭摇头", "Disabled oscillation on %@", joined)
             case .brightnessStep(let d):
                 return d >= 0
-                    ? L10n.format("%@亮度调高 %@%", "Increased %@ brightness by %@%", joined, String(abs(d)))
-                    : L10n.format("%@亮度调低 %@%", "Decreased %@ brightness by %@%", joined, String(abs(d)))
+                    ? L10n.format("%@亮度调高 %@%", "Increased %@ brightness by %@%", joined, String(d.magnitude))
+                    : L10n.format("%@亮度调低 %@%", "Decreased %@ brightness by %@%", joined, String(d.magnitude))
             case .temperatureStep(let d):
                 let delta = L10n.temperatureUnit == .fahrenheit ? abs(d) * 9 / 5 : abs(d)
                 let temperature = formatTemperature(delta) + L10n.temperatureSymbol

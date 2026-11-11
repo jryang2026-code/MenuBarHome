@@ -12,6 +12,7 @@ paths:
   - "Sources/MijiaCore/Models.swift"
   - "Sources/MijiaCore/MiCloud/**/*.swift"
   - "windows/src/core/**/*.ts"
+  - "windows/src/ui/cloudRefresh.ts"
   - "Tests/Fixtures/**"
   - "docs/capabilities.json"
 ---
@@ -49,6 +50,7 @@ When adding or changing spoken command, delay, undo, habit-memory, proactive-sug
 - [`Tests/Fixtures/confirmation_golden.json`](Tests/Fixtures/confirmation_golden.json) is the shared confirmation table asserted by `GoldenCorpusTests` and `windows/tests/core.test.ts`.
 - [`Tests/Fixtures/miot_coverage_golden.json`](Tests/Fixtures/miot_coverage_golden.json) pins how MIoT synthesis classifies one real public spec per device type (`miot_coverage_specs.json`), asserted by `MiotCoverageBaselineTests` and `windows/tests/miotCoverage.test.ts`. A synthesis change that moves a spec between categories must re-record it (`RECORD_MIOT_COVERAGE=1 swift test --filter MiotCoverageBaselineTests`); `windowsDivergences` lists the specs Windows still classifies differently, and must be pruned by hand when a Windows synthesis fix catches up (the recorder keeps the previous list). `miot_golden.json` also pins the generic-card summary (`genericCases`) and the 更多设置 control list (`facetCases`) for both platforms. Rows of [`docs/capabilities.json`](docs/capabilities.json) that carry `miotTypes` take both platforms' README status from this baseline (`scripts/check_capability_matrix.py`), so a re-record that matches or drops a listed type also updates that row in both READMEs.
 - [`Tests/Fixtures/miot_facets.json`](Tests/Fixtures/miot_facets.json) is the hand-written rule fixture for generic facets (#303), asserted by `MiotFacetsTests` and `windows/tests/miotFacets.test.ts`; [`miot_facets_coverage_golden.json`](Tests/Fixtures/miot_facets_coverage_golden.json) pins facet membership over the `miot_coverage_specs.json` models. A rule change must update the hand-written case and re-record the golden (`RECORD_MIOT_FACETS=1 swift test --filter MiotFacetsTests`).
+- Multi-key wall switches inherit their parent panel's room (`roomByDid[record.did] ?? record.splitParentDid.flatMap { roomByDid[$0] }`). Any per-home discovery fallback that appends unlisted `did`s into an unnamed `home_<id>` bucket must skip records whose `splitParentDid` is already assigned to a room of that home, otherwise the child keys lose their named room and land in 全屋. Owner: `MiCloudDiscovery.appendMissingDids`, `windows/src/ui/cloudRefresh.ts:appendMissingRoomDids`. Pinned by `MiCloudSyncResilienceTests.roomlessSharedHome` and `windows/tests/miCloudSync.test.ts`.
 
 ## 11. External Payload Replay & Deterministic Fuzzing
 
@@ -57,5 +59,5 @@ External payloads (Mi cloud responses, MIoT instance JSON, Home Assistant WebSoc
 - Sanitised recordings live in `Tests/Fixtures/contracts/`. Each fixture carries a `_fixture` object with its endpoint, capture date and sanitisation note; identifiers, names, MAC addresses and IP addresses are synthetic. Addresses use TEST-NET ranges (`192.0.2.0/24`), never a real LAN.
 - `ContractReplayTests` decodes each fixture and asserts the exact stable fields the app consumes. When the upstream shape changes, update the fixture and the assertions together; never weaken an assertion to make a changed payload pass.
 - Fuzz tests use `SeededFuzzGenerator` with a fixed base seed and bounded iterations, and print `seed=<n> iteration=<n> input=<hex>` in every failure message. They must finish in milliseconds so the normal `swift test` suite keeps them.
-- A fuzzer that finds a trap ships with the fix and a minimal regression case (see the `tfhd` / `trun` short-payload and huge-number cases). Production code must not convert external numbers with trapping initialisers: use `Int(exactly:)` / `DeviceSynthesizer.roundedInt` and degrade to "no reading" when out of range.
+- A fuzzer that finds a trap ships with the fix and a minimal regression case (see the `tfhd` / `trun` short-payload and huge-number cases). Production code must not convert external numbers with trapping initialisers or signed `abs(...)` (which traps on `.min`): use `Int(exactly:)` / `DeviceSynthesizer.roundedInt` / `.magnitude` and degrade to "no reading" when out of range.
 - A separate libFuzzer target is intentionally not wired into SwiftPM. The parsers are pure functions with deterministic seeds already reproducible on macOS and Linux; libFuzzer would add an LLVM-only build path without covering more code. Revisit only if a parser starts consuming non-deterministic process state.
