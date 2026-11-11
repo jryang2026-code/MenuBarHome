@@ -85,19 +85,27 @@ export async function withHomeDeviceLists(
       devices.push(...fresh);
       // Devices the home reports but no room names land in the home's room-less bucket, so
       // selecting that home still shows them.
-      appendMissingRoomDids(workingRooms, found.map((record) => record.did), homeId);
+      appendMissingRoomDids(workingRooms, found, homeId);
     }
     return { devices, rooms: workingRooms };
   }
 
   /**
-   * Adds each did no room of `homeId` names to that home's `home_<id>` bucket, so scoping the
-   * panel to one home keeps them. Mirrors `MiCloudDiscovery.appendMissingDids`.
+   * Adds each device neither named in `homeId` nor covered by a split parent in `homeId` to that
+   * home's `home_<id>` bucket, preserving parent-room inheritance for multi-key switch panels.
    */
-function appendMissingRoomDids(rooms: MiRoom[], dids: readonly string[], homeId: string): void {
-    if (dids.length === 0) return;
+function appendMissingRoomDids(rooms: MiRoom[], records: readonly MiDeviceRecord[], homeId: string): void {
+    if (records.length === 0) return;
     const namedInHome = new Set(rooms.filter((room) => room.homeId === homeId).flatMap((room) => room.dids));
-    const missing = dids.filter((did) => !namedInHome.has(did));
+    const seen = new Set<string>();
+    const missing: string[] = [];
+    for (const record of records) {
+      if (namedInHome.has(record.did)) continue;
+      if (record.splitParentDid && namedInHome.has(record.splitParentDid)) continue;
+      if (seen.has(record.did)) continue;
+      seen.add(record.did);
+      missing.push(record.did);
+    }
     if (missing.length === 0) return;
     const targetId = `home_${homeId}`;
     const sibling = rooms.find((room) => room.homeId === homeId);

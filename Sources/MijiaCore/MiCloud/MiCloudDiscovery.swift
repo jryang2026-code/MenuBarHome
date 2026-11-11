@@ -125,7 +125,7 @@ public enum MiCloudDiscovery {
                     list.append(record)
                     added += 1
                 }
-                appendMissingDids(found.map(\.did), homeId: home.homeId, rooms: &updatedRooms)
+                appendMissingDids(found, homeId: home.homeId, rooms: &updatedRooms)
                 if added > 0 {
                     logger.info("Mi cloud home \(home.homeId, privacy: .public): \(added, privacy: .public) extra devices")
                 }
@@ -139,21 +139,28 @@ public enum MiCloudDiscovery {
         return (list, updatedRooms)
     }
 
-    /// Adds each did the returned home devices named but no room of that home listed, so selecting
-    /// that home still shows them: `scopedDevicesAndRooms()` filters by room dids.
-    private static func appendMissingDids(_ dids: [String], homeId: String, rooms: inout [MiRoom]) {
+    /// Adds each device the returned home list named when neither it nor its split parent is already
+    /// assigned to a room of that home. Keeping split keys whose parent already lives in a named room
+    /// out of `home_<id>` preserves `MiotSynthesizer`'s parent-room inheritance instead of pulling
+    /// them into 全屋.
+    private static func appendMissingDids(_ records: [MiDeviceRecord], homeId: String, rooms: inout [MiRoom]) {
         let listedInHome = Set(rooms.filter { $0.homeId == homeId }.flatMap(\.dids))
+        var seen: Set<String> = []
+        let extra = records.compactMap { record -> String? in
+            if listedInHome.contains(record.did) { return nil }
+            if let parent = record.splitParentDid, listedInHome.contains(parent) { return nil }
+            return seen.insert(record.did).inserted ? record.did : nil
+        }
+        guard !extra.isEmpty else { return }
         let targetId = "home_\(homeId)"
         if let index = rooms.firstIndex(where: { $0.id == targetId }) {
             var room = rooms[index]
-            for did in dids where !listedInHome.contains(did) && !room.dids.contains(did) {
+            for did in extra where !room.dids.contains(did) {
                 room.dids.append(did)
             }
             rooms[index] = room
             return
         }
-        let extra = dids.filter { !listedInHome.contains($0) }
-        guard !extra.isEmpty else { return }
         let sibling = rooms.first { $0.homeId == homeId }
         rooms.append(MiRoom(
             id: targetId,

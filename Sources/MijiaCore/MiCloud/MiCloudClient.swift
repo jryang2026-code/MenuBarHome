@@ -552,15 +552,25 @@ public actor MiCloudClient: MiCloudAPI {
         var rooms = Self.parseRooms(merged)
         // An account with many homes gets the first page only; the rest arrive by `max_id`. Without
         // them the device list names dids no room owns, and the panel shows nothing (#76, #67).
+        var visited: Set<String> = []
         var maxId = merged["max_id"]?.idString ?? ""
         guard merged["has_more"]?.boolValue == true, !maxId.isEmpty else { return rooms }
         for _ in 0..<20 {
-            let page = try await request("v2/homeroom/get_dev_room_page", data: .object([
-                "start_id": .string(maxId), "limit": .number(150),
-            ]))
+            guard visited.insert(maxId).inserted else { break }
+            let page: JSONValue
+            do {
+                page = try await request("v2/homeroom/get_dev_room_page", data: .object([
+                    "start_id": .string(maxId), "limit": .number(150),
+                ]))
+            } catch MiCloudError.sessionExpired {
+                throw MiCloudError.sessionExpired
+            } catch {
+                logger.notice("Room continuation page failed, keeping \(rooms.count, privacy: .public) parsed rooms: \(error.localizedDescription, privacy: .public)")
+                break
+            }
             rooms = Self.mergeRoomPage(page, into: rooms)
             let nextMaxId = page["max_id"]?.idString ?? ""
-            guard page["has_more"]?.boolValue == true, !nextMaxId.isEmpty, nextMaxId != maxId else { break }
+            guard page["has_more"]?.boolValue == true, !nextMaxId.isEmpty else { break }
             maxId = nextMaxId
         }
         return rooms

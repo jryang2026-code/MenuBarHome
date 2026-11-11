@@ -365,6 +365,35 @@ describe("A shared home whose dids the by-did lookup already resolves (#134)", (
   });
 });
 
+describe("Split switch keys discovered via home_device_list", () => {
+  it("keeps the parent panel's named room instead of moving split keys into 全屋", async () => {
+    installInvoke(({ path, payload }) => {
+      if (path === "v2/home/home_device_list") {
+        return ok({
+          device_info: [
+            { did: "100", name: "双键开关", model: MODEL, isOnline: true },
+            { did: "100.s2", name: "筒灯", model: MODEL, isOnline: true, extra: { split: { parentId: "100", moduleId: 2 } } },
+          ],
+        });
+      }
+      if (path.includes("device_list")) {
+        if (Array.isArray(payload["dids"])) return ok({ list: [] });
+        return ok({ list: [{ did: "100", name: "双键开关", model: MODEL, isOnline: true }] });
+      }
+      return ok({
+        homelist: [{ id: "1", name: "我的家", uid: "5001", roomlist: [{ id: "10", name: "客厅", dids: ["100", "ghost"] }] }],
+      });
+    });
+    const app = cloudApp();
+
+    await waitFor(
+      () => app.devices.some((d) => d.id === "100.s2"),
+      "the split key never reached the panel",
+    );
+    assert.equal(app.devices.find((d) => d.id === "100.s2")?.roomName, "客厅");
+  });
+});
+
 describe("Xiaomi cloud devices of a room-less shared home (#67)", () => {
   it("finds them through home_device_list and shows them", async () => {
     const homeCalls: Record<string, unknown>[] = [];

@@ -65,6 +65,23 @@ struct MiCloudSyncResilienceTests {
         // Home dids and room dids both grow, and neither keeps a repeat.
         #expect(rooms.first { $0.id == "home_h1" }?.dids == ["1", "2", "3"])
         #expect(rooms.first { $0.id == "r1" }?.dids == ["1", "2", "3", "4"])
+
+        // A transient continuation failure preserves the first-page rooms instead of discarding them.
+        let brokenPageTransport = ScriptedTransport { request in
+            let fields = try formFields(request)
+            let signed = try MiCloudCrypto.signedNonce(
+                ssecurity: Self.sessionSsecurity,
+                nonce: fields["_nonce"] ?? ""
+            )
+            let path = String((request.url?.path ?? "").dropFirst("/app".count))
+            if path == "/v2/homeroom/get_dev_room_page" {
+                return (502, [:], #"{"error":"Bad Gateway"}"#)
+            }
+            let reply = #"{"code":0,"message":"ok","result":{"homelist":[{"id":"h1","name":"我的家","roomlist":[{"id":"r1","name":"客厅","dids":["1"]}]}],"has_more":true,"max_id":"50"}}"#
+            return (200, [:], try MiCloudCrypto.encrypt(reply, signedNonce: signed))
+        }
+        let partialRooms = try await MiCloudClient(session: Self.session, transport: brokenPageTransport).homeRooms()
+        #expect(partialRooms.map(\.id) == ["r1"])
     }
 
     // MARK: - Device endpoints
@@ -128,6 +145,26 @@ struct MiCloudSyncResilienceTests {
         #expect(outcome.devices.map(\.did) == ["7"])
         // The did joins the home, so selecting 爸妈家 still shows the device.
         #expect(outcome.rooms.first { $0.id == "home_h2" }?.dids == ["7"])
+
+        // Split keys whose parent already lives in a named room stay out of `home_<id>` so
+        // `MiotSynthesizer` inherits the parent's named room instead of placing them in 全屋.
+        let splitRooms = [
+            MiRoom(id: "r1", name: "客厅", dids: ["100", "ghost"], homeId: "h2", homeName: "爸妈家",
+                   isSharedHome: true, ownerUid: "999"),
+        ]
+        let splitParent = MiDeviceRecord(did: "100", name: "客厅双键", model: "lemesh.switch.sw2f12", isOnline: true)
+        let splitKey = MiDeviceRecord(
+            did: "100.s2", name: "筒灯", model: "lemesh.switch.sw2f12", isOnline: true,
+            splitParentDid: "100", splitSiid: 2
+        )
+        let splitApi = ResilienceAPI(rooms: splitRooms, records: [splitParent])
+        await splitApi.setPerHome(["h2": [splitParent, splitKey]])
+        let splitOutcome = try await MiCloudDiscovery.devices(splitApi, rooms: splitRooms, retryUnresolved: true)
+        #expect(splitOutcome.rooms.first { $0.id == "home_h2" } == nil)
+        let synth = MiotSynthesizer.synthesize(
+            devices: splitOutcome.devices, rooms: splitOutcome.rooms, specs: MiotFixtures.specs, values: [:]
+        )
+        #expect(synth.devices.first { $0.id == "100.s2" }?.roomName == "客厅")
 
         // If the per-home lookup itself fails and no other devices exist, surface the error rather
         // than reporting an empty home as connected.
