@@ -782,4 +782,222 @@ describe("FeedAction, MoreSettings 2-Stage Folding, and Live Slider Readouts", (
     await setImmediate();
     assert.equal(serviceCalls.length, 2);
   });
+
+  it("reverts plug child-lock, cover position, and climate swingMode UI state on Undo", async () => {
+    const plug: SmartDevice = {
+      id: "undo_plug",
+      name: "书桌插座",
+      roomId: "study",
+      roomName: "书房",
+      model: "cuco.plug.cp1",
+      isOnline: true,
+      kind: {
+        kind: "plug",
+        switchEntityId: "switch.undo_plug",
+        isOn: true,
+        powerWatts: 18,
+        energyKwh: null,
+        childLockEntityId: "switch.undo_plug_lock",
+        isChildLocked: false,
+      },
+    };
+    const curtain: SmartDevice = {
+      id: "undo_curtain",
+      name: "卧室窗帘",
+      roomId: "study",
+      roomName: "书房",
+      model: "lumi.curtain.v1",
+      isOnline: true,
+      kind: {
+        kind: "cover",
+        entityId: "cover.undo_curtain",
+        subtype: "curtain",
+        positionPercent: 40,
+        positionWritable: true,
+        motion: "stopped",
+        faultText: null,
+        openDescription: "Open",
+        closeDescription: "Close",
+        pauseDescription: "Pause",
+        batteryPercent: null,
+      },
+    };
+    const ac: SmartDevice = {
+      id: "undo_ac",
+      name: "卧室空调",
+      roomId: "study",
+      roomName: "书房",
+      model: "xiaomi.ac.v1",
+      isOnline: true,
+      kind: {
+        kind: "climate",
+        entityId: "climate.undo_ac",
+        isOn: true,
+        hvacMode: "cool",
+        availableModes: ["off", "cool"],
+        targetTemperature: 25,
+        currentTemperature: 26,
+        minTemp: 16,
+        maxTemp: 30,
+        step: 1,
+        fanMode: null,
+        availableFanModes: [],
+        swingMode: "off",
+        availableSwingModes: ["off", "vertical", "both"],
+      },
+    };
+
+    const { serviceCalls } = await mountWithHADevices([plug, curtain, ac], { climatePanel: false });
+
+    // 1. Plug child-lock: enable -> Undo -> UI reverts to unlocked and next click sends turn_on.
+    await click('[data-expand-device="undo_plug"]');
+    await click('[data-pluglock="undo_plug"]');
+    assert.equal(element('[data-pluglock="undo_plug"]').getAttribute("aria-pressed"), "true");
+    assert.match(element('[data-pluglock="undo_plug"]').textContent ?? "", /按键锁：开/);
+
+    await click("#btn-undo");
+    assert.equal(element('[data-pluglock="undo_plug"]').getAttribute("aria-pressed"), "false");
+    assert.match(element('[data-pluglock="undo_plug"]').textContent ?? "", /按键锁：关/);
+    assert.deepEqual(serviceCalls.at(-1), {
+      domain: "switch",
+      service: "turn_off",
+      entity_id: "switch.undo_plug_lock",
+      data: {},
+    });
+
+    await click('[data-pluglock="undo_plug"]');
+    assert.deepEqual(serviceCalls.at(-1), {
+      domain: "switch",
+      service: "turn_on",
+      entity_id: "switch.undo_plug_lock",
+      data: {},
+    });
+
+    // 2. Cover position slider: 40% -> 75% -> Undo -> slider & readout revert to 40%.
+    await click('[data-expand-device="undo_curtain"]');
+    const coverSlider = element<HTMLInputElement>('[data-coverpos="undo_curtain"]');
+    coverSlider.value = "75";
+    coverSlider.dispatchEvent(new Event("change", { bubbles: true }));
+    await setImmediate();
+    assert.equal(element<HTMLInputElement>('[data-coverpos="undo_curtain"]').value, "75");
+    assert.match(element('[data-tile-id="undo_curtain"] .cc-slider-label strong').textContent ?? "", /75%/);
+
+    await click("#btn-undo");
+    assert.equal(element<HTMLInputElement>('[data-coverpos="undo_curtain"]').value, "40");
+    assert.match(element('[data-tile-id="undo_curtain"] .cc-slider-label strong').textContent ?? "", /40%/);
+    assert.deepEqual(serviceCalls.at(-1), {
+      domain: "cover",
+      service: "set_cover_position",
+      entity_id: "cover.undo_curtain",
+      data: { position: 40 },
+    });
+
+    // 3. Climate swingMode: "off" -> "both" -> Undo -> active pill reverts to "off".
+    await click('[data-expand-device="undo_ac"]');
+    await click('[data-acswing="undo_ac:both"]');
+    assert.equal(element('[data-acswing="undo_ac:both"]').getAttribute("aria-pressed"), "true");
+
+    await click("#btn-undo");
+    assert.equal(element('[data-acswing="undo_ac:off"]').getAttribute("aria-pressed"), "true");
+    assert.equal(element('[data-acswing="undo_ac:both"]').getAttribute("aria-pressed"), "false");
+    assert.deepEqual(serviceCalls.at(-1), {
+      domain: "climate",
+      service: "set_swing_mode",
+      entity_id: "climate.undo_ac",
+      data: { swing_mode: "off" },
+    });
+  });
+
+  it("preserves prior lastUndoAction when a feed action fails and omits empty mode pills on swing-only climate strips", async () => {
+    const swingOnlyAc: SmartDevice = {
+      id: "swing_only_ac",
+      name: "新风摆风器",
+      roomId: "living",
+      roomName: "客厅",
+      model: "xiaomi.ac.swing",
+      isOnline: true,
+      kind: {
+        kind: "climate",
+        entityId: "miot:swing_only_ac:2:1",
+        isOn: true,
+        hvacMode: "off",
+        availableModes: ["off"],
+        targetTemperature: 24,
+        currentTemperature: 25,
+        minTemp: 16,
+        maxTemp: 30,
+        step: 1,
+        fanMode: null,
+        availableFanModes: [],
+        powerWritable: false,
+        temperatureWritable: false,
+        swingMode: "off",
+        availableSwingModes: ["off", "vertical"],
+      },
+    };
+    const feeder: SmartDevice = {
+      id: "feeder_fail",
+      name: "喂食器",
+      roomId: "living",
+      roomName: "客厅",
+      model: "mmgg.feeder.petfeeder",
+      isOnline: true,
+      kind: {
+        kind: "generic",
+        deviceType: "pet-feeder",
+        typeTitle: "喂食器",
+        isOn: false,
+        powerControl: null,
+        readouts: [],
+        alerts: [],
+        symbolName: null,
+        isReadOnly: false,
+      },
+    };
+
+    const { app } = await mountWithHADevices([swingOnlyAc, feeder], { climatePanel: true });
+    app.deviceFacets = {
+      feeder_fail: [
+        makeFacet({
+          id: "2.a1",
+          kind: "button",
+          serviceName: "pet-feeder",
+          name: "pet-food-out",
+          title: "出粮",
+          isWritable: true,
+          writesByDefault: false,
+          isConfirmedWrite: true,
+          isHighValue: true,
+          arguments: [{ propertyId: 1, name: "feeding-measure", format: "uint8", range: { min: 1, max: 5, step: 1 } }],
+          portionArgumentIndex: 0,
+          target: { kind: "action", entityId: "miot-action:feeder_fail:2:1" },
+        }),
+      ],
+    };
+    app.render();
+    await setImmediate();
+
+    await click('[data-expand-device="swing_only_ac"]');
+    assertMissing(document.querySelector('[data-tile-id="swing_only_ac"] .cc-segmented-pills.is-even'));
+    assert.ok(document.querySelector('[data-acswing="swing_only_ac:vertical"]'));
+
+    const existingUndo = {
+      summary: "已打开台灯",
+      steps: [{ deviceId: "other_lamp", commands: [{ kind: "setLightPower" as const, entityId: "light.other", isOn: false }] }],
+      expiresAtMs: Date.now() + 60_000,
+    };
+    app.lastUndoAction = existingUndo;
+    app.applyCommand = async () => {
+      app.replyBanner = { text: "网络超时", source: "控制失败", isError: true };
+      app.render();
+      return false;
+    };
+
+    await click('[data-expand-device="feeder_fail"]');
+    await click('[data-more-settings-toggle="feeder_fail"]');
+    await click('[data-facet-action="feeder_fail|2.a1"]');
+    await click('[data-facet-action="feeder_fail|2.a1"]');
+
+    assert.equal(app.lastUndoAction, existingUndo, "failed feed action must not wipe previous undo action");
+  });
 });

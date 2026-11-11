@@ -285,28 +285,8 @@ import { bindPanelInput } from "./panelKeyboard.js";
         ) {
           return;
         }
-        const prevSwing = dev.kind.swingMode ?? null;
         const summary = t("已将{name}摆风设为 {mode}", { name: dev.name, mode: localized });
-        const rev = host.sourceRevision;
-        void host.executeSingleCommand(dev, command, summary, intent).then(() => {
-          if (rev !== host.sourceRevision || host.replyBanner?.isError) return;
-          const live = host.devices.find((d) => d.id === dev.id);
-          if (!live || live.kind.kind !== "climate") return;
-          live.kind.swingMode = swingMode;
-          if (prevSwing !== null && prevSwing !== swingMode) {
-            host.lastUndoAction = {
-              summary,
-              steps: [
-                {
-                  deviceId: live.id,
-                  commands: [{ kind: "setSelectOption", entityId: live.kind.entityId, option: prevSwing }],
-                },
-              ],
-              expiresAtMs: Date.now() + 10 * 60 * 1000,
-            };
-          }
-          host.render();
-        });
+        void host.executeSingleCommand(dev, command, summary, intent);
       });
     });
 
@@ -1256,9 +1236,7 @@ import { bindPanelInput } from "./panelKeyboard.js";
                 count: t("{count} 份", { count: portion }),
               })
             : t("已执行{name}的{control}", { name: dev.name, control: facetTitle(control) });
-        void host.executeSingleCommand(dev, command, summary).then(() => {
-          if (isFeedAction) host.lastUndoAction = null;
-        });
+        void host.executeSingleCommand(dev, command, summary);
         return;
       }
       void host.executeSingleCommand(

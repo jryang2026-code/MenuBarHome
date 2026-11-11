@@ -429,35 +429,9 @@ export function bindDetailDrawerEvents(
       if (!dev || dev.kind.kind !== "cover" || !dev.kind.positionWritable || !dev.isOnline) return;
       const clamped = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
       const displayed = snapCoverPosition(clamped);
-      const prevPos = dev.kind.positionPercent;
       const command: DeviceCommand = { kind: "setNumberValue", entityId: dev.kind.entityId, value: clamped };
       const summary = t("已将{name}位置设为 {percent}%", { name: dev.name, percent: displayed });
-      const rev = host.sourceRevision;
-      void host.executeSingleCommand(dev, command, summary).then(() => {
-        if (rev !== host.sourceRevision || host.replyBanner?.isError) return;
-        const live = host.devices.find((d) => d.id === id);
-        if (!live || live.kind.kind !== "cover") return;
-        live.kind.motion =
-          prevPos !== null && displayed > prevPos
-            ? "opening"
-            : prevPos !== null && displayed < prevPos
-              ? "closing"
-              : "stopped";
-        live.kind.positionPercent = displayed;
-        if (prevPos !== null && prevPos !== clamped) {
-          host.lastUndoAction = {
-            summary,
-            steps: [
-              {
-                deviceId: live.id,
-                commands: [{ kind: "setNumberValue", entityId: live.kind.entityId, value: prevPos }],
-              },
-            ],
-            expiresAtMs: Date.now() + 10 * 60 * 1000,
-          };
-        }
-        host.render();
-      });
+      void host.executeSingleCommand(dev, command, summary);
     });
   });
 
@@ -507,20 +481,11 @@ export function bindDetailDrawerEvents(
         entityId: dev.kind.childLockEntityId,
         isOn: nextLocked,
       };
-      const rev = host.sourceRevision;
-      void host
-        .executeSingleCommand(
-          dev,
-          command,
-          t("已{action}{name}按键锁", { action: nextLocked ? t("开启") : t("关闭"), name: dev.name }),
-        )
-        .then(() => {
-          if (rev !== host.sourceRevision || host.replyBanner?.isError) return;
-          const live = host.devices.find((d) => d.id === id);
-          if (!live || live.kind.kind !== "plug") return;
-          live.kind.isChildLocked = nextLocked;
-          host.render();
-        });
+      void host.executeSingleCommand(
+        dev,
+        command,
+        t("已{action}{name}按键锁", { action: nextLocked ? t("开启") : t("关闭"), name: dev.name }),
+      );
     });
   });
 

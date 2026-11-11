@@ -181,9 +181,9 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
         ${
           open
             ? `<div class="cc-climate-more">
-                <div class="cc-segmented-pills is-even">
+                ${modes.length > 0 ? `<div class="cc-segmented-pills is-even">
                   ${modes.map((m) => `<button class="cc-seg-pill ${running && k.hvacMode === m ? "is-active" : ""}" data-acmode="${id}:${m}" aria-pressed="${running && k.hvacMode === m}">${modeLabel[m] ?? m}</button>`).join("")}
-                </div>
+                </div>` : ""}
                 ${
                   k.availableFanModes.length > 0
                     ? `<div class="cc-segmented-pills"><span class="cc-pill-label">${t("风速")}</span>${k.availableFanModes
