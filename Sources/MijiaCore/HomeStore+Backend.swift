@@ -678,6 +678,8 @@ extension HomeStore {
             updateTask?.cancel()
             updateTask = nil
             activeUpdateAttemptID = nil
+            updateRelaunchWatchdogTask?.cancel()
+            updateRelaunchWatchdogTask = nil
             if case .readyToRelaunch(let staged) = updateState {
                 updater.cleanupStagedApp(staged)
             }

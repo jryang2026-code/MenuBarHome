@@ -664,6 +664,15 @@ public final class HomeStore {
     public let sensorHistory: SensorHistory
     var updateTask: Task<Void, Never>?
     var activeUpdateAttemptID: UUID?
+    /// Set while the detached swap script owns the staged bundle; a cancel is refused in this window.
+    public var isInstallingUpdate: Bool {
+        if case .installing = updateState { return true }
+        return false
+    }
+    /// How long a relaunch may take before the update is treated as not landed. Longer than the
+    /// swap script's own 15 s wait for this process to exit. `nil` disables the watchdog (tests).
+    public var updateRelaunchWatchdogInterval: Duration? = .seconds(20)
+    var updateRelaunchWatchdogTask: Task<Void, Never>?
 
     public var lgConfig: LGWebOSConfig {
         didSet { lgConfig.save(to: userDefaults) }

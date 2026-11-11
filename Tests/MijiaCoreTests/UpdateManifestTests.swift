@@ -14,7 +14,7 @@ struct UpdateManifestTests {
             releaseVersion: "1.1.8",
             runningVersion: "1.1.5",
             packageName: "MenuBarHome-1.1.6.dmg",
-            packageBytes: signed.package
+            packageDigest: SHA256Digest.hash(signed.package)
         )
         #expect(result == .failure(.releaseVersionMismatch))
     }
@@ -39,7 +39,7 @@ struct UpdateManifestTests {
             releaseVersion: "9.9.9",
             runningVersion: "1.0.0",
             packageName: "MenuBarHome-1.1.6.dmg",
-            packageBytes: signed.package
+            packageDigest: SHA256Digest.hash(signed.package)
         )
         #expect(result == .failure(.signatureInvalid))
     }
@@ -76,7 +76,7 @@ struct UpdateManifestTests {
             releaseVersion: "1.1.6",
             runningVersion: "1.1.5",
             packageName: signed.packageName,
-            packageBytes: signed.package
+            packageDigest: SHA256Digest.hash(signed.package)
         )
         guard case .success(let verified) = result else {
             Issue.record("expected the overlap key to verify, got \(result)")
@@ -97,7 +97,7 @@ struct UpdateManifestTests {
             releaseVersion: "1.1.6",
             runningVersion: "1.1.5",
             packageName: signed.packageName,
-            packageBytes: signed.package
+            packageDigest: SHA256Digest.hash(signed.package)
         )
         #expect(result == .failure(.keyIDMismatch))
     }
@@ -113,7 +113,7 @@ struct UpdateManifestTests {
             releaseVersion: "1.1.6",
             runningVersion: "1.1.5",
             packageName: signed.packageName,
-            packageBytes: signed.package
+            packageDigest: SHA256Digest.hash(signed.package)
         )
         #expect(result == .failure(.signatureInvalid))
     }
@@ -135,7 +135,7 @@ struct UpdateManifestTests {
             releaseVersion: "1.1.6",
             runningVersion: "1.1.5",
             packageName: signed.packageName,
-            packageBytes: signed.package
+            packageDigest: SHA256Digest.hash(signed.package)
         )
         #expect(result == .failure(.signatureMissing))
     }
@@ -238,6 +238,6 @@ private func accept(
         releaseVersion: releaseVersion,
         runningVersion: runningVersion,
         packageName: signed.packageName,
-        packageBytes: packageBytes ?? signed.package
+        packageDigest: SHA256Digest.hash(packageBytes ?? signed.package)
     )
 }
