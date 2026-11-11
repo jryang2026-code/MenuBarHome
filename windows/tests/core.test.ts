@@ -243,24 +243,24 @@ describe("Secure credential storage (#28 / #27 / #49)", () => {
     await vault.persist({ miSession: session, haToken: "ha-token", assistantApiKey: "sk-live" });
     assert.deepEqual(
       calls.filter((call) => call.cmd === "secure_store_set").map((call) => call.name).sort(),
-      ["assistant_api_key", "ha_token", "mi_session"]
+      ["assistant_api_key_openrouter_jev", "ha_token", "mi_session"]
     );
     assert.equal(store.get("mi_session")?.includes("passToken"), false);
 
     await vault.persist({ miSession: session, haToken: "", assistantApiKey: "" });
     assert.deepEqual(
       calls.filter((call) => call.cmd === "secure_store_delete").map((call) => call.name).sort(),
-      ["assistant_api_key", "ha_token"]
+      ["assistant_api_key_openrouter_jev", "ha_token"]
     );
     assert.equal(store.has("ha_token"), false);
-    assert.equal(store.has("assistant_api_key"), false);
+    assert.equal(store.has("assistant_api_key_openrouter_jev"), false);
   });
 
   it("hydrates credentials from the store without rewriting them", async () => {
     const { vault, calls } = recordingVault({
       mi_session: serializeMiSession(session),
       ha_token: "ha-token",
-      assistant_api_key: "sk-live",
+      assistant_api_key_openrouter_jev: "sk-live",
     });
     const loaded = await vault.load();
     assert.equal(loaded.miSession?.userId, "100");
@@ -270,6 +270,28 @@ describe("Secure credential storage (#28 / #27 / #49)", () => {
 
     await vault.persist(loaded);
     assert.equal(calls.some((call) => call.cmd === "secure_store_set"), false);
+  });
+
+  it("migrates legacy assistant_api_key into the active provider slot once and isolates providers", async () => {
+    const { vault, store } = recordingVault({
+      assistant_api_key: "sk-legacy-deepseek",
+    });
+    const migrated = await vault.load("deepseek");
+    assert.equal(migrated.assistantApiKey, "sk-legacy-deepseek");
+    assert.equal(store.get("assistant_api_key_deepseek"), "sk-legacy-deepseek");
+    assert.equal(store.has("assistant_api_key"), false);
+
+    await vault.persist({
+      miSession: null,
+      haToken: "",
+      assistantApiKey: "sk-or-new",
+      assistantApiKeys: {
+        ...migrated.assistantApiKeys,
+        openrouter_jev: "sk-or-new",
+      },
+    });
+    assert.equal(store.get("assistant_api_key_deepseek"), "sk-legacy-deepseek");
+    assert.equal(store.get("assistant_api_key_openrouter_jev"), "sk-or-new");
   });
 
   it("uses Web Crypto, not Math.random, for the MIoT nonce (#49)", () => {

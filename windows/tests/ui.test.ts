@@ -990,7 +990,7 @@ describe("Credentials move out of localStorage (#28)", () => {
     assert.equal("miSession" in saved, false);
     assert.equal("haToken" in saved, false);
     assert.equal("openRouterApiKey" in saved, false);
-    assert.deepEqual([...store.keys()].sort(), ["assistant_api_key", "ha_token", "mi_session"]);
+    assert.deepEqual([...store.keys()].sort(), ["assistant_api_key_openrouter_jev", "ha_token", "mi_session"]);
     assert.equal(store.get("mi_session")?.includes("passToken"), false);
     assert.equal(store.get("mi_session")?.includes("account-level-pass-token"), false);
 
@@ -1043,6 +1043,53 @@ describe("AI key stays with the server it was saved for (#19)", () => {
     new MenuMijiaWindowsApp(element("#app"));
     await command("帮我想想今晚怎么安排灯光氛围");
     assert.match(document.body.textContent ?? "", /未命中本地规则。请在设置中填写 AI 服务的 API Key/);
+  });
+
+  it("isolates saved API keys per provider preset when switching back and forth", async () => {
+    const store = new Map<string, string>();
+    const invoke = async <T>(cmd: string, args: Record<string, unknown> = {}): Promise<T | null> => {
+      const name = String(args["name"] ?? "");
+      if (cmd === "secure_store_set") {
+        store.set(name, String(args["value"] ?? ""));
+        return null;
+      }
+      if (cmd === "secure_store_get") return (store.get(name) ?? null) as T | null;
+      if (cmd === "secure_store_delete") {
+        store.delete(name);
+        return null;
+      }
+      return null;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "demo",
+      hasCompletedOnboarding: true,
+    }));
+
+    new MenuMijiaWindowsApp(element("#app"));
+    await setImmediate();
+
+    await click("#btn-settings");
+    keyField().value = "sk-or-1";
+    await click("#btn-save-settings");
+    await setImmediate();
+
+    await click("#btn-settings");
+    await click('[data-ai-preset="deepseek"]');
+    assert.equal(keyField().value, "");
+    keyField().value = "sk-ds-2";
+    await click("#btn-save-settings");
+    await setImmediate();
+
+    assert.equal(store.get("assistant_api_key_openrouter_jev"), "sk-or-1");
+    assert.equal(store.get("assistant_api_key_deepseek"), "sk-ds-2");
+
+    await click("#btn-settings");
+    assert.equal(keyField().value, "sk-ds-2");
+    await click('[data-ai-preset="openrouter_jev"]');
+    assert.equal(keyField().value, "sk-or-1");
+    await click('[data-ai-preset="deepseek"]');
+    assert.equal(keyField().value, "sk-ds-2");
   });
 });
 
@@ -2590,7 +2637,7 @@ describe("Smart camera support and live view (#97)", () => {
     const invoke = async (name: string, args: Record<string, unknown> = {}): Promise<unknown> => {
       if (name === "secure_store_get") return args.name === "ha_token" ? "ha-token" : null;
       if (name === "go2rtc_endpoint") {
-        return { origin: "http://127.0.0.1:43123", authorization: "Basic bXVzZXI6bXBhc3M=" };
+        return { origin: "http://127.0.0.1:43123" };
       }
       if (name === "go2rtc_jpeg_frame") {
         frameCalls.push(String(args.src));
@@ -2654,7 +2701,7 @@ describe("Smart camera support and live view (#97)", () => {
     const frameCalls: string[] = [];
     let bridgedOwnedGo2rtc = false;
     const invoke = async (name: string, args: Record<string, unknown> = {}): Promise<unknown> => {
-      if (name === "go2rtc_endpoint") return { origin: "http://127.0.0.1:43123", authorization: "Basic aa" };
+      if (name === "go2rtc_endpoint") return { origin: "http://127.0.0.1:43123" };
       if (name === "bridge_hls_camera_stream") {
         const hlsUrl = String(args.hlsUrl);
         if (hlsUrl.includes("43123")) bridgedOwnedGo2rtc = true;
@@ -2732,8 +2779,8 @@ describe("Smart camera support and live view (#97)", () => {
   });
 
   it("does not start a bridge after the camera closes during the endpoint refresh", async () => {
-    let releaseEndpoint: (value: { origin: string; authorization: string }) => void = () => {};
-    const endpointGate = new Promise<{ origin: string; authorization: string }>((resolve) => {
+    let releaseEndpoint: (value: { origin: string }) => void = () => {};
+    const endpointGate = new Promise<{ origin: string }>((resolve) => {
       releaseEndpoint = resolve;
     });
     const bridgedCalls: string[] = [];
@@ -2758,7 +2805,7 @@ describe("Smart camera support and live view (#97)", () => {
     await click("#btn-save-camera-url");
     await click("#btn-close-camera-live");
     await waitFor(() => document.querySelector(".cc-camera-live-sheet") === null);
-    releaseEndpoint({ origin: "http://127.0.0.1:43123", authorization: "Basic aa" });
+    releaseEndpoint({ origin: "http://127.0.0.1:43123" });
     await setImmediate();
     assert.deepEqual(bridgedCalls, []);
     assertMissing(document.querySelector(".cc-camera-live-sheet"));
@@ -2873,7 +2920,7 @@ describe("Smart camera support and live view (#97)", () => {
     };
     const actionCalls: string[] = [];
     const invoke = async (name: string, args: Record<string, unknown> = {}): Promise<unknown> => {
-      if (name === "go2rtc_endpoint") return { origin: "http://127.0.0.1:43123", authorization: "Basic aa" };
+      if (name === "go2rtc_endpoint") return { origin: "http://127.0.0.1:43123" };
       if (name === "bridge_hls_camera_stream") return "cam_mjpeg_living";
       if (name === "go2rtc_jpeg_frame") return "aGVsbG8";
       if (name !== "native_http") return undefined;

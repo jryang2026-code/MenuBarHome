@@ -19,6 +19,7 @@ import { invokeTauriVoid } from "./transport.js";
 export interface SettingsEventsHost {
   readonly root: HTMLElement;
   readonly settings: PersistedSettings;
+  assistantKeysByPreset: Record<string, string>;
   devices: SmartDevice[];
   scenes: HomeScene[];
   environmentReadings: EnvironmentReading[];
@@ -132,7 +133,10 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     const closeOnboarding = () => {
       const keyInput = host.root.querySelector<HTMLInputElement>("#onboarding-api-key");
       if (keyInput && keyInput.value.trim()) {
-        host.settings.openRouterApiKey = keyInput.value.trim();
+        const trimmed = keyInput.value.trim();
+        const preset = inferAssistantPreset(host.settings.assistantBaseURL);
+        host.settings.openRouterApiKey = trimmed;
+        host.assistantKeysByPreset[preset.id] = trimmed;
         host.settings.assistantKeyEndpoint = assistantEndpointIdentity(host.settings.assistantBaseURL);
       }
       host.settings.hasCompletedOnboarding = true;
@@ -295,11 +299,25 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
         host.settings.haToken = token;
       }
       if (baseEl) host.settings.assistantBaseURL = baseEl.value.trim() || "https://openrouter.ai/api/v1";
-      if (apiKeyEl) host.settings.openRouterApiKey = apiKeyEl.value.trim();
-      host.settings.assistantKeyEndpoint = host.settings.openRouterApiKey
-        ? assistantEndpointIdentity(host.settings.assistantBaseURL)
-        : null;
       const inferredPreset = inferAssistantPreset(host.settings.assistantBaseURL);
+      if (apiKeyEl) {
+        const trimmedKey = apiKeyEl.value.trim();
+        host.settings.openRouterApiKey = trimmedKey;
+        if (trimmedKey !== "") {
+          host.assistantKeysByPreset[inferredPreset.id] = trimmedKey;
+        } else {
+          delete host.assistantKeysByPreset[inferredPreset.id];
+        }
+      }
+      if (inferredPreset.id === "custom") {
+        host.settings.assistantKeyEndpoint = host.settings.openRouterApiKey
+          ? assistantEndpointIdentity(host.settings.assistantBaseURL)
+          : null;
+      } else if (host.settings.openRouterApiKey) {
+        host.settings.assistantKeyEndpoint = assistantEndpointIdentity(host.settings.assistantBaseURL);
+      } else if (!host.assistantKeysByPreset.custom) {
+        host.settings.assistantKeyEndpoint = null;
+      }
       const fallbackModel = inferredPreset.defaultModel || "gpt-4o-mini";
       if (modelEl) host.settings.assistantModel = modelEl.value.trim() || fallbackModel;
       if (habitEl) host.settings.habitLearningEnabled = habitEl.checked;

@@ -2,6 +2,7 @@
 
 mod home_assistant;
 mod camera;
+mod job_object;
 mod backdrop;
 mod credentials;
 mod network;
@@ -281,6 +282,10 @@ fn main() {
                 let win_for_event = main_win.clone();
                 let app_for_events = app.handle().clone();
                 main_win.on_window_event(move |event| match event {
+                    WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        let _ = win_for_event.hide();
+                    }
                     WindowEvent::Focused(false) => {
                         if !PIN_POPOVER.load(Ordering::SeqCst) {
                             LAST_FOCUS_LOSS_MS.store(now_epoch_ms(), Ordering::SeqCst);
@@ -340,13 +345,28 @@ fn main() {
             let _tray = tray_builder.build(app)?;
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running MenuBarHome Windows application");
+        .build(tauri::generate_context!())
+        .expect("error while building MenuBarHome Windows application")
+        .run(|_app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                shutdown_camera_daemons();
+            }
+        });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hls_stream_url_rejects_go2rtc_ffmpeg_fragments_and_non_http_schemes() {
+        assert!(validate_hls_stream_url("http://192.0.2.10:8123/api/hls/master.m3u8").is_ok());
+        assert!(validate_hls_stream_url("  https://cam.example.com/live/index.m3u8?token=abc  ").is_ok());
+        assert!(validate_hls_stream_url("http://192.0.2.10/live.m3u8#input=-re").is_err());
+        assert!(validate_hls_stream_url("http://192.0.2.10/live.m3u8#raw=-f").is_err());
+        assert!(validate_hls_stream_url("rtsp://192.0.2.10/live").is_err());
+        assert!(validate_hls_stream_url("http://192.0.2.10/live\n.m3u8").is_err());
+    }
 
     #[test]
     fn sidecar_reserves_the_complete_expanded_footprint_at_each_scale() {

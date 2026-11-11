@@ -13,26 +13,41 @@
  * the store refuses, the app never falls back to writing plaintext.
  */
 
+import { ASSISTANT_PROVIDER_PRESETS, inferAssistantPreset } from "./assistant/provider.js";
 import { normalizeMiCloudRegion, type MiSession } from "./miCloudClient.js";
 
-export type SecureCredentialName = "mi_session" | "ha_token" | "assistant_api_key";
+export type AssistantPresetCredentialName = `assistant_api_key_${string}`;
+export type SecureCredentialName =
+  | "mi_session"
+  | "ha_token"
+  | "assistant_api_key"
+  | AssistantPresetCredentialName;
+
+export function assistantApiKeyCredentialName(presetId: string): AssistantPresetCredentialName {
+  return `assistant_api_key_${presetId}`;
+}
 
 export interface CredentialSnapshot {
   readonly miSession: MiSession | null;
   readonly haToken: string;
   readonly assistantApiKey: string;
+  readonly assistantApiKeys?: Readonly<Record<string, string>>;
 }
 
 export interface CredentialFields {
   readonly miSession?: MiSession | null;
   readonly haToken?: string;
   readonly openRouterApiKey?: string;
+  readonly assistantBaseURL?: string;
 }
 
 const CREDENTIAL_SETTINGS_FIELDS = ["miSession", "haToken", "openRouterApiKey"] as const;
 
 export function hasCredentials(credentials: CredentialSnapshot): boolean {
-  return credentials.miSession !== null || credentials.haToken !== "" || credentials.assistantApiKey !== "";
+  if (credentials.miSession !== null || credentials.haToken !== "" || credentials.assistantApiKey !== "") {
+    return true;
+  }
+  return Object.values(credentials.assistantApiKeys ?? {}).some((value) => value.trim() !== "");
 }
 
 /**
@@ -117,12 +132,30 @@ export function sessionWithoutPassToken(session: MiSession): MiSession {
   };
 }
 
-export function credentialsFromSettings(settings: CredentialFields): CredentialSnapshot {
+export function credentialsFromSettings(
+  settings: CredentialFields,
+  existingKeys?: Readonly<Record<string, string>>
+): CredentialSnapshot {
   const session = settings.miSession ? parseMiSession(settings.miSession) : null;
+  const activePreset = inferAssistantPreset(settings.assistantBaseURL ?? "https://openrouter.ai/api/v1").id;
+  const activeKey = settings.openRouterApiKey?.trim() ?? "";
+  const assistantApiKeys: Record<string, string> = {};
+  if (existingKeys) {
+    for (const [presetId, value] of Object.entries(existingKeys)) {
+      const trimmed = value.trim();
+      if (trimmed !== "") assistantApiKeys[presetId] = trimmed;
+    }
+  }
+  if (activeKey !== "") {
+    assistantApiKeys[activePreset] = activeKey;
+  } else {
+    delete assistantApiKeys[activePreset];
+  }
   return {
     miSession: session ? sessionWithoutPassToken(session) : null,
     haToken: settings.haToken?.trim() ?? "",
-    assistantApiKey: settings.openRouterApiKey?.trim() ?? "",
+    assistantApiKey: activeKey,
+    assistantApiKeys,
   };
 }
 
@@ -170,30 +203,61 @@ export class CredentialVault {
 
   constructor(private readonly invoke: SecureInvoke = tauriInvoke) {}
 
-  async load(): Promise<CredentialSnapshot> {
-    const [sessionRaw, haToken, assistantApiKey] = await Promise.all([
+  async load(activePresetId = "openrouter_jev"): Promise<CredentialSnapshot> {
+    const presetIds = ASSISTANT_PROVIDER_PRESETS.map((preset) => preset.id);
+    const [sessionRaw, haToken, legacyAssistantKey, ...presetValues] = await Promise.all([
       secureStoreGet("mi_session", this.invoke).catch(() => null),
       secureStoreGet("ha_token", this.invoke).catch(() => null),
       secureStoreGet("assistant_api_key", this.invoke).catch(() => null),
+      ...presetIds.map((id) => secureStoreGet(assistantApiKeyCredentialName(id), this.invoke).catch(() => null)),
     ]);
     const miSession = parseMiSession(sessionRaw);
+    const assistantApiKeys: Record<string, string> = {};
+    for (let i = 0; i < presetIds.length; i += 1) {
+      const presetId = presetIds[i]!;
+      const value = presetValues[i]?.trim() ?? "";
+      this.remember(assistantApiKeyCredentialName(presetId), value);
+      if (value !== "") assistantApiKeys[presetId] = value;
+    }
+    const legacyTrimmed = legacyAssistantKey?.trim() ?? "";
+    this.remember("assistant_api_key", legacyTrimmed);
+    if (!assistantApiKeys[activePresetId] && legacyTrimmed !== "") {
+      const targetSlot = assistantApiKeyCredentialName(activePresetId);
+      await secureStoreSet(targetSlot, legacyTrimmed, this.invoke);
+      await secureStoreDelete("assistant_api_key", this.invoke);
+      assistantApiKeys[activePresetId] = legacyTrimmed;
+      this.remember(targetSlot, legacyTrimmed);
+      this.remember("assistant_api_key", "");
+    }
     const snapshot: CredentialSnapshot = {
       miSession,
       haToken: haToken ?? "",
-      assistantApiKey: assistantApiKey ?? "",
+      assistantApiKey: assistantApiKeys[activePresetId] ?? "",
+      assistantApiKeys,
     };
     this.remember("mi_session", miSession ? serializeMiSession(miSession) : "");
     this.remember("ha_token", snapshot.haToken);
-    this.remember("assistant_api_key", snapshot.assistantApiKey);
     return snapshot;
   }
 
   /** Rejects when the credential manager refused a write; callers must not retry via plaintext. */
   async persist(credentials: CredentialSnapshot): Promise<void> {
+    const keyWrites =
+      credentials.assistantApiKeys !== undefined
+        ? [
+            ...ASSISTANT_PROVIDER_PRESETS.map((preset) =>
+              this.sync(
+                assistantApiKeyCredentialName(preset.id),
+                credentials.assistantApiKeys?.[preset.id]?.trim() ?? ""
+              )
+            ),
+            this.sync("assistant_api_key", ""),
+          ]
+        : [this.sync(assistantApiKeyCredentialName("openrouter_jev"), credentials.assistantApiKey)];
     const results = await Promise.allSettled([
       this.sync("mi_session", credentials.miSession ? serializeMiSession(credentials.miSession) : ""),
       this.sync("ha_token", credentials.haToken),
-      this.sync("assistant_api_key", credentials.assistantApiKey),
+      ...keyWrites,
     ]);
     const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (failure) throw failure.reason;

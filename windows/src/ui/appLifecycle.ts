@@ -14,7 +14,7 @@ import {
 import { credentialsFromSettings, hasCredentials } from "../core/secureStore.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { normalizeMiCloudRegion } from "../core/miCloudClient.js";
-import { assistantEndpointIdentity } from "../core/assistant.js";
+import { assistantEndpointIdentity, inferAssistantPreset } from "../core/assistant.js";
 import { setLanguage, resolveLanguage } from "../core/i18n.js";
 import { applyTemperatureUnit } from "../core/temperature.js";
 import { cloudRefreshDue } from "../core/models.js";
@@ -29,6 +29,12 @@ import { stripCredentialFieldsFromStoredCopies, writeSettingsForStorage } from "
    * credential store, so an upgrade needs no QR login again.
    */
 export function initializeCredentials(host: MenuMijiaWindowsApp): void {
+    const initialKey = host.settings.openRouterApiKey.trim();
+    const initialIdentity = assistantEndpointIdentity(host.settings.assistantBaseURL);
+    if (initialKey !== "" && initialIdentity !== null && initialIdentity === host.settings.assistantKeyEndpoint) {
+      const preset = inferAssistantPreset(host.settings.assistantBaseURL);
+      host.assistantKeysByPreset[preset.id] = initialKey;
+    }
     if (host.loadedSettings.hasLegacyCredentials) {
       // Rewrite the plaintext copy first so a credential-manager failure can never
       // leave tokens in localStorage. The in-memory settings keep the login alive.
@@ -45,14 +51,23 @@ export function initializeCredentials(host: MenuMijiaWindowsApp): void {
 
 export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<void> {
     try {
-      const credentials = await host.credentialVault.load();
+      const activePreset = inferAssistantPreset(host.settings.assistantBaseURL).id;
+      const credentials = await host.credentialVault.load(activePreset);
       if (!hasCredentials(credentials)) return;
-      const current = credentialsFromSettings(host.settings);
+      if (credentials.assistantApiKeys) {
+        host.assistantKeysByPreset = { ...credentials.assistantApiKeys, ...host.assistantKeysByPreset };
+      }
+      const current = credentialsFromSettings(host.settings, host.assistantKeysByPreset);
       if (!current.miSession && credentials.miSession) host.settings.miSession = credentials.miSession;
       if (current.haToken === "" && credentials.haToken !== "") host.settings.haToken = credentials.haToken;
-      if (current.assistantApiKey === "" && credentials.assistantApiKey !== "") {
-        host.settings.openRouterApiKey = credentials.assistantApiKey;
-        host.settings.assistantKeyEndpoint ??= assistantEndpointIdentity(host.settings.assistantBaseURL);
+      const activeSlotKey = host.assistantKeysByPreset[activePreset]?.trim() ?? credentials.assistantApiKey;
+      if (host.settings.openRouterApiKey.trim() === "" && activeSlotKey !== "") {
+        host.settings.openRouterApiKey = activeSlotKey;
+        if (activePreset !== "custom") {
+          host.settings.assistantKeyEndpoint = assistantEndpointIdentity(host.settings.assistantBaseURL);
+        } else {
+          host.settings.assistantKeyEndpoint ??= assistantEndpointIdentity(host.settings.assistantBaseURL);
+        }
       }
       if (host.settings.miSession) {
         host.settings.hasCompletedOnboarding = true;
@@ -86,7 +101,7 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
 
 export async function persistCredentials(host: MenuMijiaWindowsApp): Promise<void> {
     try {
-      await host.credentialVault.persist(credentialsFromSettings(host.settings));
+      await host.credentialVault.persist(credentialsFromSettings(host.settings, host.assistantKeysByPreset));
     } catch {
       // The credential manager refused the write; never fall back to plaintext storage.
     }
