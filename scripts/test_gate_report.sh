@@ -264,6 +264,25 @@ else
     fail "record_snapshots.sh 没有接上退出码、变更列表或尺寸"
 fi
 
+py_stub="$(mktemp -d)"
+cat >"$py_stub/python3" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+cat >"$py_stub/python3.15" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$py_stub/python3" "$py_stub/python3.15"
+bash_bin="$(command -v bash)"
+chosen="$(PATH="$py_stub" "$bash_bin" -c "$(sed -n '/^select_python_bin()/,/^}/p' scripts/check.sh); select_python_bin")"
+rm -rf "$py_stub"
+if [ "$chosen" = "python3.15" ]; then
+    pass "select_python_bin 跳过低于 3.10 的 python3 并优先选高版本"
+else
+    fail "select_python_bin 未选 python3.15，实际：$chosen"
+fi
+
 if [ "$failures" -ne 0 ]; then
     echo "❌ 门禁文案自测失败 ${failures} 项" >&2
     exit 1

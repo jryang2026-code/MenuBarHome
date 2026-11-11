@@ -6,6 +6,7 @@ contradicts a source file, and a row's `miotTypes` derives both platforms' statu
 MIoT coverage baseline (#185, #26). A row without `miotTypes` must have an anchor, so the
 manifest cannot grow a documentation-only line again.
 """
+from __future__ import annotations
 
 import json
 import pathlib

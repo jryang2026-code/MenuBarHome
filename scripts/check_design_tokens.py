@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Keep the polished macOS surfaces on the shared type, radius and color scale."""
+from __future__ import annotations
 from pathlib import Path
 import re
 import sys

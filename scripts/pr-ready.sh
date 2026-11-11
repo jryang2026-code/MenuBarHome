@@ -2,29 +2,87 @@
 # One screen for a pull request: head and merge state, failing or pending checks,
 # the latest Codex review state for this head, and Codex inline comments on this head.
 #
-# Usage: bash scripts/pr-ready.sh <pr>
+# Usage: bash scripts/pr-ready.sh [--wait] [--timeout <sec>] [--interval <sec>] <pr>
 # Needs `gh` logged in to the repository. Review comments are read past the first 100.
 set -euo pipefail
 export LC_ALL=C
 
-if [ "$#" -ne 1 ] || ! printf '%s\n' "$1" | grep -Eq '^[0-9]+$'; then
-    echo "用法：bash scripts/pr-ready.sh <pr>" >&2
+usage() {
+    echo "用法：bash scripts/pr-ready.sh [--wait] [--timeout <sec>] [--interval <sec>] <pr>" >&2
     exit 2
+}
+
+wait_mode=0
+timeout_sec=600
+interval_sec=20
+pr_number=""
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --wait)
+            wait_mode=1
+            shift
+            ;;
+        --timeout)
+            [ "$#" -ge 2 ] || usage
+            timeout_sec="$2"
+            shift 2
+            ;;
+        --interval)
+            [ "$#" -ge 2 ] || usage
+            interval_sec="$2"
+            shift 2
+            ;;
+        -*)
+            usage
+            ;;
+        *)
+            if [ -n "$pr_number" ]; then
+                usage
+            fi
+            pr_number="$1"
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$pr_number" ] || ! printf '%s\n' "$pr_number" | grep -Eq '^[0-9]+$'; then
+    usage
 fi
-n="$1"
+if ! printf '%s\n' "$timeout_sec" | grep -Eq '^[0-9]+(\.[0-9]+)?$' \
+    || ! printf '%s\n' "$interval_sec" | grep -Eq '^[0-9]+(\.[0-9]+)?$'; then
+    usage
+fi
 
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/pr-ready.XXXXXX")"
-trap 'rm -rf "$tmp"' EXIT
-gh repo view --json nameWithOwner >"$tmp/repo.json"
-gh pr view "$n" --json headRefOid,mergeStateStatus >"$tmp/meta.json"
-checks_status=0
-env -u GH_FORCE_TTY gh pr checks "$n" --json name,state,bucket >"$tmp/checks.json" 2>"$tmp/checks.err" || checks_status=$?
-printf '%s\n' "$checks_status" >"$tmp/checks.status"
-repo="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["nameWithOwner"])' "$tmp/repo.json")"
-gh api --paginate --slurp "repos/${repo}/issues/${n}/comments?per_page=100" >"$tmp/issues.json"
-gh api --paginate --slurp "repos/${repo}/pulls/${n}/comments?per_page=100" >"$tmp/reviews.json"
+python_bin=""
+for cand in python3 python3.15 python3.14 python3.13 python3.12 python3.11 python3.10 python; do
+    if command -v "$cand" >/dev/null 2>&1; then
+        python_bin="$cand"
+        break
+    fi
+done
+if [ -z "$python_bin" ]; then
+    echo "缺少 python3" >&2
+    exit 1
+fi
 
-python3 -I - "$tmp" <<'PY'
+inspect_once() {
+    local n="$1"
+    local wait_flag="$2"
+    local tmp
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/pr-ready.XXXXXX")"
+    gh repo view --json nameWithOwner >"$tmp/repo.json"
+    gh pr view "$n" --json headRefOid,mergeStateStatus >"$tmp/meta.json"
+    local checks_status=0
+    env -u GH_FORCE_TTY gh pr checks "$n" --json name,state,bucket >"$tmp/checks.json" 2>"$tmp/checks.err" || checks_status=$?
+    printf '%s\n' "$checks_status" >"$tmp/checks.status"
+    local repo
+    repo="$("$python_bin" -I -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["nameWithOwner"])' "$tmp/repo.json")"
+    gh api --paginate --slurp "repos/${repo}/issues/${n}/comments?per_page=100" >"$tmp/issues.json"
+    gh api --paginate --slurp "repos/${repo}/pulls/${n}/comments?per_page=100" >"$tmp/reviews.json"
+
+    local verdict_status=0
+    "$python_bin" -I - "$tmp" "$wait_flag" <<'PY' || verdict_status=$?
 import json
 import re
 import sys
@@ -34,6 +92,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", newline="\n")
 
 tmp = Path(sys.argv[1])
+wait_mode = sys.argv[2] == "1"
 meta = json.loads((tmp / "meta.json").read_text(encoding="utf-8"))
 head = meta["headRefOid"]
 merge = meta["mergeStateStatus"]
@@ -88,14 +147,15 @@ def clean_body(body):
 
 def parse_checks(raw):
     if not raw.strip():
-        return None
+        return None, []
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return None
+        return None, []
     if not isinstance(data, list):
-        return None
+        return None, []
     rows = []
+    buckets = []
     for item in data:
         if not isinstance(item, dict):
             continue
@@ -104,16 +164,20 @@ def parse_checks(raw):
         if not name or bucket in ("pass", "skipping"):
             continue
         rows.append(f"  {name}: {bucket}")
-    return rows
+        buckets.append(bucket)
+    return rows, buckets
 
 
 print(f"head {head} {merge}")
 
-parsed = parse_checks(checks_raw)
+parsed, non_pass_buckets = parse_checks(checks_raw)
 checks_error = False
+checks_pending = False
+checks_failed = False
 if parsed is None:
     if checks_status == 8:
         print("checks: pending")
+        checks_pending = True
     elif checks_status == 0:
         print("checks: none")
     else:
@@ -124,15 +188,22 @@ if parsed is None:
 elif parsed:
     print("checks:")
     print("\n".join(parsed))
+    for bucket in non_pass_buckets:
+        if bucket in ("fail", "cancel"):
+            checks_failed = True
+        else:
+            checks_pending = True
 elif checks_status == 8:
     print("checks: pending")
+    checks_pending = True
 else:
     print("checks: none")
 
 states = review_states(flatten_pages(issue_pages))
 matched = [state for state in states if state.get("commit_sha") == head]
-if matched:
-    print("codex review: " + json.dumps(matched[-1], separators=(",", ":"), ensure_ascii=False))
+latest_for_head = matched[-1] if matched else None
+if latest_for_head is not None:
+    print("codex review: " + json.dumps(latest_for_head, separators=(",", ":"), ensure_ascii=False))
 elif states:
     last = states[-1]
     print(f"codex review: none for {head} (latest {last.get('commit_sha')} {last.get('status')})")
@@ -161,6 +232,55 @@ else:
         print(f"* {path} {line_no}")
         if body:
             print(body[:900])
+
 if checks_error:
     sys.exit(1)
+
+if not wait_mode:
+    sys.exit(0)
+
+# In --wait mode: 0 = ready, 1 = terminal blocker/finding, 10 = still waiting.
+has_findings = bool(inlines) or bool(latest_for_head and latest_for_head.get("has_unresolved_findings") is True)
+if checks_failed or has_findings or merge in ("DIRTY", "CONFLICTING", "CLOSED"):
+    sys.exit(1)
+
+codex_done = bool(
+    latest_for_head
+    and latest_for_head.get("status") == "completed"
+    and latest_for_head.get("has_unresolved_findings") is False
+)
+if merge == "CLEAN" and not checks_pending and codex_done:
+    sys.exit(0)
+
+sys.exit(10)
 PY
+    rm -rf "$tmp"
+    return "$verdict_status"
+}
+
+if [ "$wait_mode" -eq 0 ]; then
+    inspect_once "$pr_number" 0
+    exit $?
+fi
+
+start_epoch="$("$python_bin" -I -c 'import time; print(f"{time.monotonic():.3f}")')"
+last_screen=""
+while true; do
+    status=0
+    last_screen="$(inspect_once "$pr_number" 1)" || status=$?
+    if [ "$status" -eq 0 ]; then
+        printf '%s\n' "$last_screen"
+        exit 0
+    fi
+    if [ "$status" -ne 10 ]; then
+        printf '%s\n' "$last_screen"
+        exit "$status"
+    fi
+    timed_out="$("$python_bin" -I -c 'import sys, time; elapsed = time.monotonic() - float(sys.argv[1]); print("1" if elapsed >= float(sys.argv[2]) else "0")' "$start_epoch" "$timeout_sec")"
+    if [ "$timed_out" = "1" ]; then
+        printf '%s\n' "$last_screen"
+        echo "等待 PR #${pr_number} 超时（${timeout_sec}s）" >&2
+        exit 124
+    fi
+    sleep "$interval_sec"
+done

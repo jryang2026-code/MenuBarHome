@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Fail when the Swift/Go PTZ evidence tables drift from the shared fixture."""
+from __future__ import annotations
 import hashlib
 import json
 import re

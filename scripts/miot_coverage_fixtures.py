@@ -8,6 +8,7 @@ special shapes named in EXTRA_MODELS. Specs are copied verbatim; only public dat
 
 After regenerating, re-record the baseline (see Tests/Fixtures/miot_coverage_golden.json).
 """
+from __future__ import annotations
 import json
 import sys
 import urllib.parse

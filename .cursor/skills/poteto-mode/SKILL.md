@@ -31,7 +31,7 @@ Read this once before coding. It is the project-local replacement for the pstack
 
 - Route bulk reads, mechanical edits, and coverage fan-out to subagents with consolidated briefs. Keep the main context for judgment. Read `../principle-guard-the-context-window/SKILL.md`.
 - Proceed on reversible work. Pause only for irreversible or external actions. Read `../principle-never-block-on-the-human/SKILL.md`.
-- You own every delegate's result. Review the diff and write your own summary; do not pass through what it said.
+- You own every delegate's result. Review the diff, verify every cited `path:symbol` against `HEAD` before writing a handoff or review, and write your own summary; do not pass through what a subagent said.
 
 ## Write
 

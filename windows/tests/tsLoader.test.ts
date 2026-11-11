@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
-import { load, resolve } from "./tsLoader.mjs";
+import { load, resolve, transpileTypeScript } from "./tsLoader.mjs";
 
 describe("tsLoader", () => {
   it("rewrites relative .js specifiers to sibling .ts files when present", async () => {
@@ -112,5 +112,24 @@ describe("tsLoader", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("falls back to mode=strip when typescript is absent and Node rejects mode=transform", () => {
+    const stripped = transpileTypeScript("export const answer: number = 42;\n", "/tmp/sample.ts", null);
+    assert.match(stripped, /export const answer\s*=\s*42/);
+
+    const modes: string[] = [];
+    const fakeStrip = (code: string, options: { mode: string }) => {
+      modes.push(options.mode);
+      if (options.mode === "transform") {
+        const err = new TypeError("options.mode must be strip") as TypeError & { code?: string };
+        err.code = "ERR_INVALID_ARG_VALUE";
+        throw err;
+      }
+      return code.replace(": string", "");
+    };
+    const out = transpileTypeScript("export const label: string = 'ok';\n", "/tmp/fallback.ts", null, fakeStrip);
+    assert.deepEqual(modes, ["transform", "strip"]);
+    assert.match(out, /export const label\s*=\s*'ok'/);
   });
 });
