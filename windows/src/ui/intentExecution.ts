@@ -65,117 +65,130 @@ export async function executeIntents(host: MenuMijiaWindowsApp,
       readonly key: string;
       readonly items: Array<{ readonly deviceId: string; readonly command: DeviceCommand; readonly intentIndex: number }>;
     }
-    const targetBatches: TargetBatch[] = [];
-    const batchByDeviceId = new Map<string, TargetBatch>();
+    const phases: TargetBatch[][] = [];
+    let currentPhase: TargetBatch[] = [];
+    let batchByDeviceId = new Map<string, TargetBatch>();
     for (let i = 0; i < commands.length; i += 1) {
       const item = commands[i]!;
       if (item.command.kind === "activateScene") {
-        targetBatches.push({ key: `scene:${i}:${item.deviceId}`, items: [item] });
+        // Scene activations may mutate arbitrary devices; treat them as ordering barriers.
+        if (currentPhase.length > 0) {
+          phases.push(currentPhase);
+          currentPhase = [];
+          batchByDeviceId = new Map();
+        }
+        phases.push([{ key: `scene:${i}:${item.deviceId}`, items: [item] }]);
         continue;
       }
       let batch = batchByDeviceId.get(item.deviceId);
       if (!batch) {
         batch = { key: `device:${item.deviceId}`, items: [] };
         batchByDeviceId.set(item.deviceId, batch);
-        targetBatches.push(batch);
+        currentPhase.push(batch);
       }
       batch.items.push(item);
     }
+    if (currentPhase.length > 0) {
+      phases.push(currentPhase);
+    }
 
-    const settledBatches = await Promise.allSettled(
-      targetBatches.map(async (batch) => {
-        const batchSteps: UndoStep[] = [];
-        let batchSucceeded = 0;
-        let batchFailed = 0;
-        let batchCanUndo = true;
-        let batchFailureMessage = "";
-        const succeededIntentIndices: number[] = [];
+    for (const phase of phases) {
+      if (sourceRevision !== host.sourceRevision) return false;
+      const settledBatches = await Promise.allSettled(
+        phase.map(async (batch) => {
+          const batchSteps: UndoStep[] = [];
+          let batchSucceeded = 0;
+          let batchFailed = 0;
+          let batchCanUndo = true;
+          let batchFailureMessage = "";
+          const succeededIntentIndices: number[] = [];
 
-        for (const { deviceId, command, intentIndex } of batch.items) {
-          if (sourceRevision !== host.sourceRevision) {
-            return {
-              batchSteps,
-              batchSucceeded,
-              batchFailed,
-              batchCanUndo,
-              batchFailureMessage,
-              succeededIntentIndices,
-            };
-          }
-          // Scenes have no device row and no inverse; they simply run and count as applied (#113).
-          if (command.kind === "activateScene") {
+          for (const { deviceId, command, intentIndex } of batch.items) {
+            if (sourceRevision !== host.sourceRevision) {
+              return {
+                batchSteps,
+                batchSucceeded,
+                batchFailed,
+                batchCanUndo,
+                batchFailureMessage,
+                succeededIntentIndices,
+              };
+            }
+            // Scenes have no device row and no inverse; they simply run and count as applied (#113).
+            if (command.kind === "activateScene") {
+              if (await host.applyCommand(command)) {
+                batchSucceeded += 1;
+                succeededIntentIndices.push(intentIndex);
+              } else {
+                batchFailed += 1;
+                batchFailureMessage = host.replyBanner?.text ?? "设备未响应";
+              }
+              continue;
+            }
+            const device = host.devices.find((d) => d.id === deviceId);
+            if (!device) {
+              batchFailed += 1;
+              batchFailureMessage = t("设备列表已更新，请重新执行");
+              continue;
+            }
+            const isMomentaryButton = command.kind === "setSwitch" && command.entityId.startsWith("button.");
+            const inverses = isMomentaryButton ? [] : inverseCommands(device, command);
             if (await host.applyCommand(command)) {
               batchSucceeded += 1;
               succeededIntentIndices.push(intentIndex);
+              if (device.kind.kind === "light" && (command.kind !== "setLightPower" || command.isOn)) {
+                host.lastManuallyUsedLightId = device.id;
+              }
+              if (!isMomentaryButton) {
+                batchCanUndo = batchCanUndo && inverses.length > 0;
+                if (inverses.length > 0) {
+                  batchSteps.push({ deviceId, commands: inverses });
+                }
+              }
             } else {
               batchFailed += 1;
               batchFailureMessage = host.replyBanner?.text ?? "设备未响应";
             }
-            continue;
           }
-          const device = host.devices.find((d) => d.id === deviceId);
-          if (!device) {
-            batchFailed += 1;
-            batchFailureMessage = t("设备列表已更新，请重新执行");
-            continue;
-          }
-          const isMomentaryButton = command.kind === "setSwitch" && command.entityId.startsWith("button.");
-          const inverses = isMomentaryButton ? [] : inverseCommands(device, command);
-          if (await host.applyCommand(command)) {
-            batchSucceeded += 1;
-            succeededIntentIndices.push(intentIndex);
-            if (device.kind.kind === "light" && (command.kind !== "setLightPower" || command.isOn)) {
-              host.lastManuallyUsedLightId = device.id;
-            }
-            if (!isMomentaryButton) {
-              batchCanUndo = batchCanUndo && inverses.length > 0;
-              if (inverses.length > 0) {
-                batchSteps.push({ deviceId, commands: inverses });
-              }
-            }
-          } else {
-            batchFailed += 1;
-            batchFailureMessage = host.replyBanner?.text ?? "设备未响应";
-          }
-        }
 
-        return {
+          return {
+            batchSteps,
+            batchSucceeded,
+            batchFailed,
+            batchCanUndo,
+            batchFailureMessage,
+            succeededIntentIndices,
+          };
+        }),
+      );
+
+      if (sourceRevision !== host.sourceRevision) return false;
+      for (const outcome of settledBatches) {
+        if (outcome.status === "rejected") {
+          failed += 1;
+          failureMessage =
+            outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+          continue;
+        }
+        const {
           batchSteps,
           batchSucceeded,
           batchFailed,
           batchCanUndo,
           batchFailureMessage,
           succeededIntentIndices,
-        };
-      }),
-    );
-
-    if (sourceRevision !== host.sourceRevision) return false;
-    for (const outcome of settledBatches) {
-      if (outcome.status === "rejected") {
-        failed += 1;
-        failureMessage =
-          outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
-        continue;
-      }
-      const {
-        batchSteps,
-        batchSucceeded,
-        batchFailed,
-        batchCanUndo,
-        batchFailureMessage,
-        succeededIntentIndices,
-      } = outcome.value;
-      succeeded += batchSucceeded;
-      failed += batchFailed;
-      canUndo = canUndo && batchCanUndo;
-      if (batchFailureMessage) failureMessage = batchFailureMessage;
-      for (const intentIndex of succeededIntentIndices) {
-        const entry = candidateIntents[intentIndex];
-        if (entry) entry.succeededCount += 1;
-      }
-      for (const step of batchSteps) {
-        steps.unshift(step);
+        } = outcome.value;
+        succeeded += batchSucceeded;
+        failed += batchFailed;
+        canUndo = canUndo && batchCanUndo;
+        if (batchFailureMessage) failureMessage = batchFailureMessage;
+        for (const intentIndex of succeededIntentIndices) {
+          const entry = candidateIntents[intentIndex];
+          if (entry) entry.succeededCount += 1;
+        }
+        for (const step of batchSteps) {
+          steps.unshift(step);
+        }
       }
     }
     if (succeeded > 0) {

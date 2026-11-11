@@ -26,8 +26,10 @@ import { stripCredentialFieldsFromStoredCopies, writeSettingsForStorage } from "
 import type { SettingsTab } from "./settingsViews.js";
 import {
   didMiExpiryKindChange,
+  hasPendingMiVaultDeletion,
   isUndoHoverPaused,
   resumeUndoHoverPause,
+  setPendingMiVaultDeletion,
   shouldKeepPopoverPinned,
 } from "./speechGuard.js";
 
@@ -66,13 +68,26 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
         host.settings.assistantLegacyKeyEndpoint = null;
         writeSettingsForStorage(host.settings);
       }
-      if (!hasCredentials(credentials)) return;
-      if (credentials.assistantApiKeys) {
-        host.assistantKeysByPreset = { ...credentials.assistantApiKeys, ...host.assistantKeysByPreset };
+      const pendingSignOut = !host.settings.miSession && hasPendingMiVaultDeletion();
+      if (pendingSignOut) {
+        try {
+          await host.credentialVault.deleteMiSession();
+          setPendingMiVaultDeletion(false);
+        } catch {
+          // Keep pendingSignOut flag so the user is not auto-signed back in and can still retry.
+        }
+      }
+      const effectiveCredentials = pendingSignOut ? { ...credentials, miSession: null } : credentials;
+      if (!hasCredentials(effectiveCredentials)) {
+        if (pendingSignOut) host.render();
+        return;
+      }
+      if (effectiveCredentials.assistantApiKeys) {
+        host.assistantKeysByPreset = { ...effectiveCredentials.assistantApiKeys, ...host.assistantKeysByPreset };
       }
       const current = credentialsFromSettings(host.settings, host.assistantKeysByPreset);
-      if (!current.miSession && credentials.miSession) host.settings.miSession = credentials.miSession;
-      if (current.haToken === "" && credentials.haToken !== "") host.settings.haToken = credentials.haToken;
+      if (!current.miSession && effectiveCredentials.miSession) host.settings.miSession = effectiveCredentials.miSession;
+      if (current.haToken === "" && effectiveCredentials.haToken !== "") host.settings.haToken = effectiveCredentials.haToken;
       const currentEndpoint = assistantEndpointIdentity(host.settings.assistantBaseURL);
       const boundCustomEndpoint =
         host.settings.assistantCustomKeyEndpoint ?? host.settings.assistantKeyEndpoint ?? currentEndpoint;
@@ -81,7 +96,7 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
           ? currentEndpoint !== null && currentEndpoint === boundCustomEndpoint
             ? host.assistantKeysByPreset.custom?.trim() ?? ""
             : ""
-          : host.assistantKeysByPreset[activePreset]?.trim() ?? credentials.assistantApiKey;
+          : host.assistantKeysByPreset[activePreset]?.trim() ?? effectiveCredentials.assistantApiKey;
       if (host.settings.openRouterApiKey.trim() === "" && activeSlotKey !== "") {
         host.settings.openRouterApiKey = activeSlotKey;
         if (activePreset !== "custom") {
@@ -123,7 +138,15 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
 
 export async function persistCredentials(host: MenuMijiaWindowsApp): Promise<void> {
     try {
+      if (host.settings.miSession) {
+        setPendingMiVaultDeletion(false);
+      }
       await host.credentialVault.persist(credentialsFromSettings(host.settings, host.assistantKeysByPreset));
+      if (!host.settings.miSession && hasPendingMiVaultDeletion()) {
+        await host.credentialVault.deleteMiSession();
+        setPendingMiVaultDeletion(false);
+        host.queueBackgroundRender();
+      }
       if (!host.credentialVault.hasLegacyAssistantKey() && host.settings.assistantLegacyKeyEndpoint !== null) {
         host.settings.assistantLegacyKeyEndpoint = null;
         writeSettingsForStorage(host.settings);
@@ -143,9 +166,11 @@ export async function persistCredentials(host: MenuMijiaWindowsApp): Promise<voi
   }
 
 export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
-    if (!host.settings.miSession && host.settings.cachedXiaomiDevices.length === 0) return;
+    const retryOnly = !host.settings.miSession && host.settings.cachedXiaomiDevices.length === 0;
+    if (retryOnly && !hasPendingMiVaultDeletion()) return;
+    setPendingMiVaultDeletion(true);
     const wasXiaomiMode = host.settings.connectionMode === "xiaomiCloud";
-    if (wasXiaomiMode) {
+    if (!retryOnly && wasXiaomiMode) {
       host.localControlRevision += 1;
       if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
         host.cameraLive.closeCameraLiveView();
@@ -173,16 +198,24 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
       text: trText("已退出米家账号", "Signed out of Xiaomi Home"),
       source: trText("账号管理", "Account"),
     };
-    host.saveSettings();
-    void host.credentialVault.deleteMiSession().catch((error: unknown) => {
-      const detail = error instanceof Error && error.message.trim() ? ` (${error.message.trim()})` : "";
-      host.replyBanner = {
-        text: `${trText("无法从系统凭据库移除米家登录，请重试", "Could not remove Xiaomi sign-in from the OS credential vault; please retry")}${detail}`,
-        source: t("出错提示"),
-        isError: true,
-      };
-      host.queueBackgroundRender();
-    });
+    writeSettingsForStorage(host.settings);
+    submitServiceEndpoints(host, false);
+    void (async () => {
+      try {
+        await host.credentialVault.persist(credentialsFromSettings(host.settings, host.assistantKeysByPreset));
+        await host.credentialVault.deleteMiSession();
+        setPendingMiVaultDeletion(false);
+        host.render();
+      } catch (error: unknown) {
+        const detail = error instanceof Error && error.message.trim() ? ` (${error.message.trim()})` : "";
+        host.replyBanner = {
+          text: `${trText("无法从系统凭据库移除米家登录，请重试", "Could not remove Xiaomi sign-in from the OS credential vault; please retry")}${detail}`,
+          source: t("出错提示"),
+          isError: true,
+        };
+        host.render();
+      }
+    })();
     host.render();
   }
 

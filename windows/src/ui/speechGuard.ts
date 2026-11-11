@@ -331,6 +331,29 @@ export function bindUndoBannerHoverGuard(host: MenuMijiaWindowsApp): void {
   });
 }
 
+export const MI_SIGNOUT_PENDING_KEY = "menumijia.windows.miSignOutPending.v1";
+
+export function hasPendingMiVaultDeletion(): boolean {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem(MI_SIGNOUT_PENDING_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setPendingMiVaultDeletion(pending: boolean): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    if (pending) {
+      localStorage.setItem(MI_SIGNOUT_PENDING_KEY, "1");
+    } else {
+      localStorage.removeItem(MI_SIGNOUT_PENDING_KEY);
+    }
+  } catch {
+    // Ignore storage quota errors.
+  }
+}
+
 export function didMiExpiryKindChange(host: MenuMijiaWindowsApp, now = Date.now()): boolean {
   const state = hostState(host);
   const current =

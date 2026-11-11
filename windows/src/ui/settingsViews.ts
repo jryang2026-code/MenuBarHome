@@ -2,6 +2,7 @@ import { ASSISTANT_PROVIDER_PRESETS, inferAssistantPreset } from "../core/assist
 import { speechLocale, t } from "../core/i18n.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { trText } from "../core/quickActions.js";
+import { hasPendingMiVaultDeletion } from "./speechGuard.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
 import type { QRLoginTicket } from "../core/miCloudClient.js";
 import {
@@ -373,7 +374,10 @@ function renderConnectionPanel(ctx: SettingsViewContext): string {
 }
 
 function renderMiSessionNoteAndSignOut(ctx: SettingsViewContext): string {
-  if (!ctx.settings.miSession) return "";
+  if (!ctx.settings.miSession) {
+    if (!hasPendingMiVaultDeletion()) return "";
+    return `<button type="button" class="cc-btn-secondary is-full" id="btn-signout-mi" ${ctx.isPollingQR ? "disabled" : ""}>${ctx.escapeHtml(trText("重试退出米家登录", "Retry sign-out"))}</button>`;
+  }
   const expiry = miSessionExpiryState(ctx.settings.miSession);
   let expiryHint = "";
   if (expiry.kind === "expiringSoon") {

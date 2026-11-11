@@ -487,6 +487,37 @@ describe("Concurrent multi-device intent execution & vacuum undo (#2)", () => {
     assert.deepEqual(app.lastUndoAction.steps[0]?.commands, [
       { kind: "vacuumAction", entityId: "vacuum.main", action: "returnToBase" },
     ]);
+
+    // Scene activations act as ordering barriers so subsequent device adjustments never race the scene.
+    app.scenes = [{ id: "scene.movie", name: "观影", entityId: "scene.movie" }];
+    const releaseScene = deferred<void>();
+    const barrierOrder: string[] = [];
+    app.applyCommand = async (cmd) => {
+      barrierOrder.push(`start:${cmd.entityId}`);
+      if (cmd.kind === "activateScene") {
+        await releaseScene.promise;
+      }
+      barrierOrder.push(`end:${cmd.entityId}`);
+      return true;
+    };
+    const scenePromise = app.executeIntents(
+      [
+        { targetId: "scene.movie", operation: { kind: "activateScene" } },
+        { targetId: "l1", operation: { kind: "power", isOn: false } },
+      ],
+      "观影后关灯",
+      "Jev SystemOne",
+    );
+    await setImmediate();
+    assert.deepEqual(barrierOrder, ["start:scene.movie"]);
+    releaseScene.resolve();
+    assert.equal(await scenePromise, true);
+    assert.deepEqual(barrierOrder, [
+      "start:scene.movie",
+      "end:scene.movie",
+      "start:light.l1",
+      "end:light.l1",
+    ]);
   });
 });
 
@@ -759,6 +790,68 @@ describe("Mi session Set-Cookie expiry, 3-day warning & Sign Out (#3)", () => {
     app.signOutXiaomiAccount();
     assert.equal(app.settings.miSession, null);
     assert.equal(app.lastUndoAction, demoUndo);
+  });
+
+  it("keeps Sign Out retryable and blocks auto-rehydration when vault deletion fails", async () => {
+    let failDelete = true;
+    let deleteAttempts = 0;
+    const retainedVaultSession = serializeMiSession({
+      userId: "98765432",
+      cUserId: "",
+      ssecurity: "AQIDBAUGBwgJCgsMDQ4PEA==",
+      serviceToken: "tok_retained",
+      passToken: "",
+      region: "cn",
+    });
+    const invoke = async (name: string, args: Record<string, unknown> = {}): Promise<unknown> => {
+      if (name === "secure_store_get" && args["name"] === "mi_session") {
+        return failDelete ? retainedVaultSession : null;
+      }
+      if (name === "secure_store_delete" && args["name"] === "mi_session") {
+        deleteAttempts += 1;
+        if (failDelete) throw new Error("Vault busy");
+      }
+      return null;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ connectionMode: "xiaomiCloud", hasCompletedOnboarding: true }),
+    );
+
+    const app = new MenuMijiaWindowsApp(element("#app"));
+    await setImmediate();
+    await setImmediate();
+    assert.ok(app.settings.miSession);
+
+    await click("#btn-settings");
+    await click('[data-settings-tab="connection"]');
+    await click("#btn-signout-mi");
+    await setImmediate();
+    await setImmediate();
+
+    assert.equal(app.settings.miSession, null);
+    assert.equal(app.replyBanner?.isError, true);
+    assert.ok(document.querySelector("#btn-signout-mi"), "retry Sign Out button must stay available");
+
+    // A restart while vault deletion is still failing must NOT auto-sign back in from the retained secret.
+    document.body.innerHTML = '<div id="app"></div>';
+    const restarted = new MenuMijiaWindowsApp(element("#app"));
+    await setImmediate();
+    await setImmediate();
+    assert.equal(restarted.settings.miSession, null);
+
+    // Once the vault recovers, clicking the retry button removes the secret and hides the retry button.
+    failDelete = false;
+    await click("#btn-settings");
+    await click('[data-settings-tab="connection"]');
+    assert.ok(document.querySelector("#btn-signout-mi"));
+    await click("#btn-signout-mi");
+    await setImmediate();
+    await setImmediate();
+
+    assert.ok(deleteAttempts >= 3);
+    assertMissing(document.querySelector("#btn-signout-mi"));
   });
 });
 
