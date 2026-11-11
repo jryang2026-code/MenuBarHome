@@ -124,14 +124,17 @@ function unwrapString(val) {
   return typeof s === "string" ? s : "";
 }
 
-function toRepoRelative(rawPath, roots) {
+function toRepoRelative(rawPath, roots, cwdHint = "") {
   const cleaned = unwrapString(rawPath);
   if (!cleaned) return null;
-  for (const root of roots) {
-    const abs = path.isAbsolute(cleaned) ? path.resolve(cleaned) : path.resolve(root, cleaned);
-    const rel = path.relative(root, abs);
-    if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
-      return { abs, rel: rel.replace(/\\/g, "/") };
+  const bases = cwdHint ? [path.resolve(cwdHint), ...roots] : roots;
+  for (const base of bases) {
+    const abs = path.isAbsolute(cleaned) ? path.resolve(cleaned) : path.resolve(base, cleaned);
+    for (const root of roots) {
+      const rel = path.relative(root, abs);
+      if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+        return { abs, rel: rel.replace(/\\/g, "/") };
+      }
     }
   }
   return null;
@@ -140,10 +143,23 @@ function toRepoRelative(rawPath, roots) {
 function extractPathsFromArgs(args) {
   if (!args || typeof args !== "object") return [];
   const candidates = [];
-  for (const key of ["Path", "TargetFile", "file_path", "path", "FilePath", "DirectoryPath", "SearchPath"]) {
+  for (const key of [
+    "Path",
+    "AbsolutePath",
+    "TargetFile",
+    "File",
+    "file_path",
+    "path",
+    "FilePath",
+    "DirectoryPath",
+    "SearchPath",
+    "SearchDirectory",
+  ]) {
     if (key in args && args[key]) candidates.push(args[key]);
   }
-  if (Array.isArray(args.Paths)) candidates.push(...args.Paths);
+  for (const arrKey of ["Paths", "AbsolutePaths", "SearchPaths"]) {
+    if (Array.isArray(args[arrKey])) candidates.push(...args[arrKey]);
+  }
   return candidates;
 }
 
@@ -251,7 +267,7 @@ function main() {
 
   if (mode === "claude-post-edit") {
     const raw = payload?.tool_input?.file_path || payload?.tool_input?.path || "";
-    const info = toRepoRelative(raw, roots);
+    const info = toRepoRelative(raw, roots, unwrapString(payload?.cwd));
     if (info && /^\.github\/workflows\/[^/]+\.yml$/.test(info.rel)) {
       const lintMsg = maybeRunActionlint(info.abs);
       if (lintMsg) {
