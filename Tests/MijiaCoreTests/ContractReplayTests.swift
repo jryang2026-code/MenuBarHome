@@ -96,6 +96,17 @@ struct ContractReplayTests {
             HomeOption(id: "home-1002", name: "Contract Beach House", deviceCount: 0),
             HomeOption(id: "home-1003", name: "Contract Shared Home", deviceCount: 1, isSharedHome: true),
         ])
+
+        let page = try MiCloudClient.unwrapResult(Self.decode("mi_dev_room_page.json"))
+        let merged = MiCloudClient.mergeRoomPage(page, into: rooms)
+        #expect(merged == [
+            MiRoom(id: "room-2001", name: "Living Room", dids: ["did-light-0001", "did-plug-0004"], homeId: "home-1001", homeName: "Contract Home"),
+            MiRoom(id: "room-2002", name: "Study", dids: ["did-camera-0003", "did-fan-0006"], homeId: "home-1001", homeName: "Contract Home"),
+            MiRoom(id: "home_home-1001", name: "", dids: ["did-light-0001", "did-switch-0002", "did-sensor-0005"], homeId: "home-1001", homeName: "Contract Home"),
+            MiRoom(id: "room-2003", name: "Kitchen", dids: ["did-fridge-0008"], homeId: "home-1002", homeName: "Contract Beach House"),
+            MiRoom(id: "room-2004", name: "Guest Room", dids: ["did-switch-0002.s2"], homeId: "home-1003", homeName: "Contract Shared Home", isSharedHome: true),
+            MiRoom(id: "home_home-1002", name: "", dids: ["did-kettle-0007"], homeId: "home-1002", homeName: "Contract Beach House"),
+        ])
     }
 
     @Test("Light-group status keeps the member dids and tolerates both membership spellings")
@@ -129,6 +140,14 @@ struct ContractReplayTests {
             .object(["did": .string("did-light-0001"), "model": .string("contract.light")]),
         ])])
         #expect(MiCloudClient.parseDeviceList(result).map(\.did) == ["42", "did-light-0001"])
+
+        // Int.min brightness delta uses unsigned `.magnitude` instead of trapping in `abs(Int.min)`.
+        let reply = IntentReply.describe(
+            [DeviceIntent(targetId: "did-light-0001", operation: .brightnessStep(Int.min))],
+            devices: [],
+            scenes: []
+        )
+        #expect(reply.contains(String(Int.min.magnitude)))
     }
 
     // MARK: - MIoT spec

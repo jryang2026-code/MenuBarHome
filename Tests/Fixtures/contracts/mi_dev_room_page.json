@@ -1,0 +1,52 @@
+{
+  "_fixture": {
+    "endpoint": "POST /app/v2/homeroom/get_dev_room_page",
+    "captured": "2026-11-11",
+    "sanitised": "home, room and device ids replaced with synthetic values matching mi_home_rooms_merged.json",
+    "shape": "decrypted response envelope {code, message, result}; result.info repeats {id, dids, roomlist}"
+  },
+  "code": 0,
+  "message": "ok",
+  "result": {
+    "info": [
+      {
+        "id": "home-1001",
+        "dids": [
+          "did-light-0001",
+          "did-sensor-0005"
+        ],
+        "roomlist": [
+          {
+            "id": "room-2001",
+            "dids": [
+              "did-light-0001",
+              "did-plug-0004"
+            ]
+          },
+          {
+            "id": "room-2002",
+            "dids": [
+              "did-fan-0006"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "home-1002",
+        "dids": [
+          "did-kettle-0007"
+        ],
+        "roomlist": [
+          {
+            "id": "room-2003",
+            "dids": [
+              "did-fridge-0008"
+            ]
+          }
+        ]
+      }
+    ],
+    "has_more": false,
+    "max_id": ""
+  }
+}
