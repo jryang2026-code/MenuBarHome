@@ -200,8 +200,9 @@ import { bindPanelInput } from "./panelKeyboard.js";
     host.root.querySelectorAll<HTMLElement>("[data-acstep]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const matched = matchDeviceColonAttr(btn.dataset.acstep);
-        if (!matched || matched.dev.kind.kind !== "climate") return;
+        if (!matched) return;
         const { dev, rest: dir } = matched;
+        if (dev.kind.kind !== "climate") return;
         const k = dev.kind;
         const step = stepCelsius(k.step || 1);
         const next = k.targetTemperature + Number(dir) * step;
@@ -229,8 +230,9 @@ import { bindPanelInput } from "./panelKeyboard.js";
     host.root.querySelectorAll<HTMLElement>("[data-acfan]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const matched = matchDeviceColonAttr(btn.dataset.acfan);
-        if (!matched || matched.dev.kind.kind !== "climate") return;
+        if (!matched) return;
         const { dev, rest: fanMode } = matched;
+        if (dev.kind.kind !== "climate") return;
         const command: DeviceCommand = { kind: "setClimateFanMode", entityId: dev.kind.entityId, fanMode };
         const intent: DeviceIntent = { targetId: dev.id, operation: { kind: "fanSpeed", speed: fanMode } };
         if (
@@ -781,9 +783,9 @@ import { bindPanelInput } from "./panelKeyboard.js";
     host.root.querySelectorAll<HTMLElement>("[data-acmode]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const matched = matchDeviceColonAttr(btn.dataset.acmode);
-        if (!matched || matched.dev.kind.kind !== "climate") return;
+        if (!matched) return;
         const { dev, rest: hvacMode } = matched;
-        if (!hvacMode) return;
+        if (!hvacMode || dev.kind.kind !== "climate") return;
         const command: DeviceCommand = { kind: "setClimateMode", entityId: dev.kind.entityId, hvacMode };
         const intent: DeviceIntent = { targetId: dev.id, operation: { kind: "hvacMode", mode: hvacMode } };
         if (
@@ -804,9 +806,9 @@ import { bindPanelInput } from "./panelKeyboard.js";
     host.root.querySelectorAll<HTMLElement>("[data-fanpreset]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const matched = matchDeviceColonAttr(btn.dataset.fanpreset);
-        if (!matched || matched.dev.kind.kind !== "fan") return;
+        if (!matched) return;
         const { dev, rest: presetMode } = matched;
-        if (!presetMode) return;
+        if (!presetMode || dev.kind.kind !== "fan") return;
         void host.executeSingleCommand(
           dev,
           { kind: "setFanPresetMode", entityId: dev.kind.entityId, presetMode },
@@ -912,9 +914,9 @@ import { bindPanelInput } from "./panelKeyboard.js";
     host.root.querySelectorAll<HTMLElement>("[data-cameranight]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const matched = matchDeviceColonAttr(btn.dataset.cameranight);
-        if (!matched || matched.dev.kind.kind !== "camera") return;
+        if (!matched) return;
         const { dev, rest: mode } = matched;
-        if (!mode) return;
+        if (!mode || dev.kind.kind !== "camera") return;
         void host.executeSingleCommand(
           dev,
           { kind: "setSelectOption", entityId: dev.kind.entityId, option: mode },
@@ -926,7 +928,7 @@ import { bindPanelInput } from "./panelKeyboard.js";
     host.root.querySelectorAll<HTMLElement>("[data-fridgemode]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const matched = matchDeviceColonAttr(btn.dataset.fridgemode);
-        if (!matched || matched.dev.kind.kind !== "fridge" || !matched.dev.kind.modeEntityId) return;
+        if (!matched) return;
         const { dev, rest: mode } = matched;
         if (!mode || dev.kind.kind !== "fridge" || !dev.kind.modeEntityId) return;
         void host.executeSingleCommand(
@@ -940,7 +942,7 @@ import { bindPanelInput } from "./panelKeyboard.js";
     host.root.querySelectorAll<HTMLElement>("[data-fridgestep]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const matched = matchDeviceColonAttr(btn.dataset.fridgestep);
-        if (!matched || matched.dev.kind.kind !== "fridge") return;
+        if (!matched) return;
         const { dev, rest } = matched;
         const [zone, deltaStr] = rest.split(":");
         const delta = Number(deltaStr);
