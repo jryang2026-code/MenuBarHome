@@ -201,6 +201,14 @@ public enum DiagnosticsReportBuilder {
         public var lastErrorAt: Date?
         public var recentCrashTimestamps: [Date]
         public var extraSettings: [String]
+        /// How many Mi Homes the account carries, or nil when the Mi source is not in use. Counts
+        /// only: a home id or name would be an account identifier, so it never enters the report.
+        public var miHomeCount: Int?
+        /// How many of those homes another account shared with this one.
+        public var miSharedHomeCount: Int?
+        /// True while the panel shows one home only, which is what makes an empty panel look
+        /// like an account with no devices at all (#76, #67).
+        public var isMiHomeFiltered: Bool
 
         public init(
             appVersion: String,
@@ -216,7 +224,10 @@ public enum DiagnosticsReportBuilder {
             recentErrorCount: Int = 0,
             lastErrorAt: Date? = nil,
             recentCrashTimestamps: [Date] = [],
-            extraSettings: [String] = []
+            extraSettings: [String] = [],
+            miHomeCount: Int? = nil,
+            miSharedHomeCount: Int? = nil,
+            isMiHomeFiltered: Bool = false
         ) {
             self.appVersion = appVersion
             self.buildNumber = buildNumber
@@ -232,6 +243,9 @@ public enum DiagnosticsReportBuilder {
             self.lastErrorAt = lastErrorAt
             self.recentCrashTimestamps = recentCrashTimestamps
             self.extraSettings = extraSettings
+            self.miHomeCount = miHomeCount
+            self.miSharedHomeCount = miSharedHomeCount
+            self.isMiHomeFiltered = isMiHomeFiltered
         }
     }
 
@@ -276,6 +290,16 @@ public enum DiagnosticsReportBuilder {
         lines.append("- macOS: \(input.macOSVersion)")
         lines.append("- \(L10n.tr("当前后端", "Backend")): \(input.backendTitle)")
         lines.append("- \(L10n.tr("米家地区", "Mi Cloud Region")): \(input.miCloudRegion)")
+        if let homeCount = input.miHomeCount {
+            var homeLine = "- \(L10n.tr("米家家庭", "Mi Homes")): \(homeCount)"
+            if let sharedCount = input.miSharedHomeCount, sharedCount > 0 {
+                homeLine += " (\(L10n.tr("共享 \(sharedCount)", "shared \(sharedCount)")))"
+            }
+            if input.isMiHomeFiltered {
+                homeLine += " · \(L10n.tr("已筛选单个家庭", "filtered to one home"))"
+            }
+            lines.append(homeLine)
+        }
         lines.append("- \(L10n.tr("设备", "Devices")): \(input.deviceCount) (\(L10n.tr("在线", "online")) \(input.onlineDeviceCount), \(L10n.tr("隐藏", "hidden")) \(input.hiddenDeviceCount))")
         if !input.extraSettings.isEmpty {
             lines.append("- \(L10n.tr("设置", "Settings")): \(input.extraSettings.joined(separator: " · "))")

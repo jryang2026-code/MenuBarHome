@@ -1242,7 +1242,12 @@ private struct PrivacySettingsTab: View {
             extraSettings: [
                 L10n.tr("快捷键", "Shortcut") + ": " + HotkeyPreferences.load().displayString,
                 L10n.tr("本机语音", "On-device speech") + ": " + (store.prefersOnDeviceSpeech ? "on" : "off"),
-            ]
+            ],
+            // Counts only: a home id or name would identify the account, and the report's privacy
+            // contract is structural (#76, #67).
+            miHomeCount: store.hasMiSource ? store.homes.count : nil,
+            miSharedHomeCount: store.hasMiSource ? store.homes.filter(\.isSharedHome).count : nil,
+            isMiHomeFiltered: store.hasMiSource && store.selectedMiHomeId != nil
         )
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()

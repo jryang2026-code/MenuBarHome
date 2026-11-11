@@ -21,6 +21,7 @@ export async function withSharedHomeDevices(
     listed: MiDeviceRecord[],
     rooms: MiRoom[],
     retryUnresolved: boolean,
+    onLookupError?: (err: unknown) => void,
   ): Promise<MiDeviceRecord[]> {
     if (retryUnresolved) host.unresolvedRoomDids.clear();
     const listedDids = new Set(listed.map((d) => d.did));
@@ -35,8 +36,95 @@ export async function withSharedHomeDevices(
       return [...listed, ...extra];
     } catch (err) {
       if (err instanceof MiCloudError && err.kind === "sessionExpired") throw err;
+      onLookupError?.(err);
       return listed;
     }
+  }
+
+/**
+   * A home shared with this account can list devices the unfiltered endpoint leaves out (#76).
+   * `home_device_list` answers per home, so homes whose dids produced nothing are asked directly;
+   * a home with no owner uid cannot use it. Rooms the newer listing adds are appended, because the
+   * synthesizer places a device by the room that names it.
+   */
+export async function withHomeDeviceLists(
+    host: MenuMijiaWindowsApp,
+    client: MiCloudClient,
+    listed: MiDeviceRecord[],
+    rooms: MiRoom[],
+    onLookupError?: (err: unknown) => void,
+  ): Promise<{ devices: MiDeviceRecord[]; rooms: MiRoom[] }> {
+    const ownerByHome = new Map<string, string>();
+    for (const room of rooms) {
+      const homeId = room.homeId ?? "";
+      if (homeId && room.ownerUid && !ownerByHome.has(homeId)) ownerByHome.set(homeId, room.ownerUid);
+    }
+    if (ownerByHome.size === 0) return { devices: listed, rooms };
+    const listedDids = new Set(listed.map((record) => record.did));
+    const devices = [...listed];
+    const workingRooms = [...rooms];
+    for (const [homeId, ownerUid] of ownerByHome) {
+      const homeDids = new Set(workingRooms.filter((room) => room.homeId === homeId).flatMap((room) => room.dids));
+      const resolved = [...homeDids].filter((did) => listedDids.has(did)).length;
+      const unresolved = [...homeDids].some((did) => !listedDids.has(did) && host.unresolvedRoomDids.has(did));
+      // Only ask a home whose devices the list (and the by-did lookup that already ran) left open.
+      if (!(homeDids.size === 0 || resolved === 0 || unresolved)) continue;
+      let found: MiDeviceRecord[];
+      try {
+        found = await client.homeDevices(homeId, ownerUid);
+      } catch (err) {
+        if (err instanceof MiCloudError && err.kind === "sessionExpired") throw err;
+        onLookupError?.(err);
+        continue;
+      }
+      const fresh = found.filter((record) => !listedDids.has(record.did));
+      for (const record of fresh) {
+        listedDids.add(record.did);
+        host.unresolvedRoomDids.delete(record.did);
+      }
+      devices.push(...fresh);
+      // Devices the home reports but no room names land in the home's room-less bucket, so
+      // selecting that home still shows them.
+      appendMissingRoomDids(workingRooms, found, homeId);
+    }
+    return { devices, rooms: workingRooms };
+  }
+
+  /**
+   * Adds each device neither named in `homeId` nor covered by a split parent in `homeId` to that
+   * home's `home_<id>` bucket, preserving parent-room inheritance for multi-key switch panels.
+   */
+function appendMissingRoomDids(rooms: MiRoom[], records: readonly MiDeviceRecord[], homeId: string): void {
+    if (records.length === 0) return;
+    const namedInHome = new Set(rooms.filter((room) => room.homeId === homeId).flatMap((room) => room.dids));
+    const seen = new Set<string>();
+    const missing: string[] = [];
+    for (const record of records) {
+      if (namedInHome.has(record.did)) continue;
+      if (record.splitParentDid && namedInHome.has(record.splitParentDid)) continue;
+      if (seen.has(record.did)) continue;
+      seen.add(record.did);
+      missing.push(record.did);
+    }
+    if (missing.length === 0) return;
+    const targetId = `home_${homeId}`;
+    const sibling = rooms.find((room) => room.homeId === homeId);
+    const index = rooms.findIndex((room) => room.id === targetId);
+    if (index >= 0) {
+      const room = rooms[index];
+      if (!room) return;
+      rooms[index] = { ...room, dids: [...room.dids, ...missing] };
+      return;
+    }
+    rooms.push({
+      id: targetId,
+      name: "",
+      dids: missing,
+      homeId,
+      homeName: sibling?.homeName ?? "",
+      ...(sibling?.isSharedHome === true ? { isSharedHome: true as const } : {}),
+      ...(sibling?.ownerUid ? { ownerUid: sibling.ownerUid } : {}),
+    });
   }
 
 export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false): Promise<void> {
@@ -58,11 +146,46 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
 
     try {
       const client = new MiCloudClient(session, host.transport);
-      const [listedDevices, allRooms] = await Promise.all([
+      const [listedDevices, roomResult] = await Promise.all([
         client.deviceList(),
-        client.homeRooms().catch(() => []),
+        client.homeRooms().then(
+          (rooms) => ({ rooms, error: null as unknown }),
+          (error: unknown) => ({ rooms: [] as MiRoom[], error }),
+        ),
       ]);
-      const allDevices = await withSharedHomeDevices(host, client, listedDevices, allRooms, !silent);
+      const homeRoomsError = roomResult.error;
+      // A dead session makes every later call fail the same way, so report it even when the device
+      // list answered from cache (#76).
+      if (homeRoomsError instanceof MiCloudError && homeRoomsError.kind === "sessionExpired") {
+        throw homeRoomsError;
+      }
+      // A shared home's devices live behind its own listing, so an empty list plus a failed room
+      // read would otherwise render as a real empty account (#76).
+      if (listedDevices.length === 0 && homeRoomsError) throw homeRoomsError;
+      // Shared-home dids resolve first so `home_device_list` only runs for a home still missing
+      // devices, which keeps a normal account to the two requests it always made.
+      let lookupError: unknown = null;
+      const recordLookupError = (err: unknown): void => {
+        if (lookupError === null) lookupError = err;
+      };
+      const withShared = await withSharedHomeDevices(
+        host,
+        client,
+        listedDevices,
+        roomResult.rooms,
+        !silent,
+        recordLookupError,
+      );
+      const completed = await withHomeDeviceLists(
+        host,
+        client,
+        withShared,
+        roomResult.rooms,
+        recordLookupError,
+      );
+      const allRooms = completed.rooms;
+      const allDevices = completed.devices;
+      if (allDevices.length === 0 && lookupError !== null) throw lookupError;
       const nextHomes = homeOptions(allRooms);
       if (cloudSnapshotIsStale(host, session, stateRevisionAtStart)) return;
       host.homes = applyOrder(host.homes.map((home) => home.id), nextHomes);

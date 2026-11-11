@@ -1192,6 +1192,23 @@ export class MenuMijiaWindowsApp {
         : `<div id="panel-search-results" class="cc-empty-state"><div class="cc-empty-title">${t("没有匹配的设备")}</div><div class="cc-empty-subtitle">${t("输入设备名、房间或拼音首字母；整句话按回车执行")}</div></div>`;
     }
     if (this.settings.connectionMode === "homeAssistant" && this.devices.length === 0) return `<div class="cc-empty-state"><div class="cc-empty-title">Home Assistant</div><div class="cc-empty-subtitle">${this.isSyncingCloud ? "Connecting…" : "No connected devices. Check the saved URL, token and endpoint permission."}</div><button class="cc-btn-secondary" id="btn-empty-settings">Settings</button></div>`;
+    // A selected home the cloud no longer returns devices for is not an empty account (#67):
+    // other homes still have devices, so offer the way back to all of them.
+    if (
+      this.settings.selectedHomeId !== null &&
+      this.devices.length === 0 &&
+      this.homes.some((home) => home.deviceCount > 0)
+    ) {
+      return `
+        <div class="cc-empty-state" id="empty-selected-home">
+          <div class="cc-empty-icon">${SF_ICONS.houseFill}</div>
+          <div class="cc-empty-title">${t("当前所选家庭暂无可显示的设备")}</div>
+          <div class="cc-empty-actions">
+            <button class="cc-btn-primary" id="btn-empty-all-homes">${t("显示全部家庭")}</button>
+          </div>
+        </div>
+      `;
+    }
     if (this.settings.connectionMode === "xiaomiCloud" && this.devices.length === 0) {
       if (this.isSyncingCloud) {
         return `

@@ -1850,7 +1850,7 @@ struct MiCloudClientTests {
         #expect(home.devices.first { $0.id == "7" }?.isSharedHome == true)
         #expect(MiCloudProvider.homeOptions(from: rooms) == [
             HomeOption(id: "h1", name: "我的家", deviceCount: 1),
-            HomeOption(id: "h2", name: "爸妈家", deviceCount: 1),
+            HomeOption(id: "h2", name: "爸妈家", deviceCount: 1, isSharedHome: true),
         ])
     }
 

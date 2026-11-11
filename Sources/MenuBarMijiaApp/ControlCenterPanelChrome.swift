@@ -472,6 +472,34 @@ extension ControlCenterPanel {
                     .buttonStyle(PillActionButtonStyle())
                 }
                 .padding(.top, 2)
+            } else if store.hasReceivedInitialSnapshot && store.devices.isEmpty,
+                      let otherCount = store.otherMiHomesDeviceCountWhenSelectedEmpty {
+                // The chosen home is empty but the account has devices elsewhere: offer the switch
+                // instead of the "synced, nothing came back" report (#76, #67).
+                Text(L10n.tr("当前所选家庭暂无可显示的设备", "No devices to show in the selected home"))
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                    .foregroundStyle(.primary)
+                Text(L10n.tr(
+                    "其他家庭共有 \(otherCount) 台设备，切换为「全部家庭」即可查看。",
+                    "There are \(otherCount) devices in other homes. Switch to All Homes to view them."
+                ))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                HStack(spacing: 8) {
+                    Button(L10n.tr("显示全部家庭", "Show All Homes")) {
+                        withAnimation(AppleMotion.snappySpring) { store.selectMiHome(nil) }
+                    }
+                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+
+                    Button {
+                        presentSettingsWindow()
+                    } label: {
+                        Text(L10n.tr("偏好设置", "Preferences"))
+                    }
+                    .buttonStyle(PillActionButtonStyle())
+                }
+                .padding(.top, 2)
             } else if store.hasReceivedInitialSnapshot && store.devices.isEmpty {
                 // Synced but nothing came back: say so instead of spinning on "syncing" forever (#134).
                 Text(L10n.tr("同步完成，但没有拉取到可显示的设备", "Synced, but no devices to show"))

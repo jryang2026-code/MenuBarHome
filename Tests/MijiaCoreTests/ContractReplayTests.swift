@@ -94,7 +94,7 @@ struct ContractReplayTests {
         #expect(MiCloudProvider.homeOptions(from: rooms) == [
             HomeOption(id: "home-1001", name: "Contract Home", deviceCount: 3),
             HomeOption(id: "home-1002", name: "Contract Beach House", deviceCount: 0),
-            HomeOption(id: "home-1003", name: "Contract Shared Home", deviceCount: 1),
+            HomeOption(id: "home-1003", name: "Contract Shared Home", deviceCount: 1, isSharedHome: true),
         ])
     }
 

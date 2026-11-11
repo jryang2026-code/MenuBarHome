@@ -94,6 +94,23 @@ public final class HomeStore {
     /// Mi Home 家庭 list from the cloud backend; empty elsewhere.
     public internal(set) var homes: [HomeOption] = []
     public internal(set) var selectedMiHomeId: String? = UserDefaults.standard.string(forKey: MiCloudProvider.selectedHomeKey)
+
+    /// Devices held by the other Mi Homes while the selected home shows none, or nil when the
+    /// panel is not in that state.
+    ///
+    /// The selected-home filter is remembered across launches, so an account whose chosen home has
+    /// no supported devices comes back to an empty panel with no hint that anything is there. This
+    /// is the number the empty state offers to reveal (#76, #67).
+    public var otherMiHomesDeviceCountWhenSelectedEmpty: Int? {
+        let _ = snapshotGeneration
+        guard hasReceivedInitialSnapshot, devices.isEmpty, let selected = selectedMiHomeId else {
+            return nil
+        }
+        let total = homes.reduce(0) { sum, home in
+            home.id == selected ? sum : sum + home.deviceCount
+        }
+        return total > 0 ? total : nil
+    }
     public internal(set) var devices: [SmartDevice] = [] {
         didSet { scheduleRaycastSnapshotExport() }
     }

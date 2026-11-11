@@ -195,13 +195,24 @@ public struct HomeOption: Equatable, Sendable, Identifiable {
     /// Set when the home belongs to one of several signed-in Mi accounts.
     public var accountId: String?
     public var accountLabel: String?
+    /// Another account shared this home with the signed-in one. Only such a home needs the
+    /// `home_device_list` fallback to show its devices (#76, #67).
+    public var isSharedHome: Bool
 
-    public init(id: String, name: String, deviceCount: Int, accountId: String? = nil, accountLabel: String? = nil) {
+    public init(
+        id: String,
+        name: String,
+        deviceCount: Int,
+        accountId: String? = nil,
+        accountLabel: String? = nil,
+        isSharedHome: Bool = false
+    ) {
         self.id = id
         self.name = name
         self.deviceCount = deviceCount
         self.accountId = accountId
         self.accountLabel = accountLabel
+        self.isSharedHome = isSharedHome
     }
 }
 

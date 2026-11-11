@@ -38,6 +38,34 @@ export interface MiRoom {
   readonly homeId?: string;
   readonly homeName?: string;
   readonly isSharedHome?: boolean;
+  /** Xiaomi uid of the home owner; `home_device_list` needs it beside the home id (#76). */
+  readonly ownerUid?: string;
+}
+
+/**
+ * Auth failures the cloud reports inside a 200 body instead of an HTTP status. Kept in one place
+ * so the plain-JSON and decrypted paths cannot drift apart (#76).
+ */
+const SESSION_EXPIRED_MARKERS: readonly string[] = [
+  "auth err",
+  "servicetoken_expired",
+  "token expired",
+  "invalid signature",
+  "invalid_token",
+  "unauthorized",
+];
+
+function responseMessage(json: Record<string, unknown>): string {
+  for (const key of ["message", "desc", "description", "error", "reason"]) {
+    const value = json[key];
+    if (typeof value === "string" && value.trim() !== "") return value;
+  }
+  return "";
+}
+
+function looksSessionExpired(text: string): boolean {
+  const lower = text.toLowerCase();
+  return SESSION_EXPIRED_MARKERS.some((marker) => lower.includes(marker));
 }
 
 export interface MiotPropKey {
@@ -115,7 +143,24 @@ export class MiCloudClient {
     }
     const plain = parseJsonObject(body);
     if (plain) {
-      return MiCloudClient.unwrapResult(plain);
+      if (typeof plain["code"] === "number") {
+        // `code` 0 means the cloud answered, so a non-200 status is an HTTP failure worth retrying.
+        if (Math.trunc(plain["code"]) === 0) {
+          if (statusCode !== 200) {
+            throw new MiCloudError("http", `米家云服务 HTTP ${statusCode}`, statusCode);
+          }
+          return plain["result"] ?? null;
+        }
+        return MiCloudClient.unwrapResult(plain);
+      }
+      const message = responseMessage(plain);
+      if (looksSessionExpired(message)) {
+        throw new MiCloudError("sessionExpired", "米家登录已过期，请重新扫码");
+      }
+      if (statusCode !== 200) {
+        throw new MiCloudError("http", `米家云服务 HTTP ${statusCode}`, statusCode);
+      }
+      throw new MiCloudError("badResponse", "米家云响应缺少状态码");
     }
     if (statusCode !== 200) {
       throw new MiCloudError("http", `米家云服务 HTTP ${statusCode}`, statusCode);
@@ -134,13 +179,17 @@ export class MiCloudClient {
   }
 
   static unwrapResult(json: Record<string, unknown>): unknown {
-    const code = typeof json["code"] === "number" ? Math.trunc(json["code"]) : 0;
-    const message =
-      typeof json["message"] === "string"
-        ? json["message"]
-        : typeof json["desc"] === "string"
-          ? json["desc"]
-          : "";
+    if (typeof json["code"] !== "number") {
+      // A body without `code` is not a successful answer. An auth word is still a dead session, so
+      // the user gets the QR hint instead of a generic parse error (#76).
+      const message = responseMessage(json);
+      if (looksSessionExpired(message)) {
+        throw new MiCloudError("sessionExpired", "米家登录已过期，请重新扫码");
+      }
+      throw new MiCloudError("badResponse", `米家云响应缺少状态码${message ? `：${message}` : ""}`);
+    }
+    const code = Math.trunc(json["code"]);
+    const message = responseMessage(json);
     if (code === 0) return json["result"] ?? null;
     const lower = message.toLowerCase();
     if (
@@ -159,26 +208,36 @@ export class MiCloudClient {
   static parseDeviceList(result: unknown): MiDeviceRecord[] {
     if (!result || typeof result !== "object") return [];
     const list = (result as Record<string, unknown>)["list"];
-    if (!Array.isArray(list)) return [];
+    return Array.isArray(list) ? MiCloudClient.parseDeviceRecordArray(list) : [];
+  }
+
+  /** One device entry of `home/device_list` / `home_device_list`, or `null` when unusable. */
+  static parseDeviceRecord(item: unknown): MiDeviceRecord | null {
+    if (!item || typeof item !== "object") return null;
+    const rec = item as Record<string, unknown>;
+    const did = asIdString(rec["did"]);
+    const model = typeof rec["model"] === "string" ? rec["model"] : null;
+    if (!did || !model) return null;
+    const extra = rec["extra"] && typeof rec["extra"] === "object" ? (rec["extra"] as Record<string, unknown>) : {};
+    const split = extra["split"] && typeof extra["split"] === "object" ? (extra["split"] as Record<string, unknown>) : null;
+    const splitParentDid = split ? asIdString(split["parentId"]) : null;
+    const splitSiid = split && typeof split["moduleId"] === "number" ? Math.trunc(split["moduleId"]) : null;
+    return {
+      did,
+      name: typeof rec["name"] === "string" ? rec["name"] : model,
+      model,
+      isOnline: typeof rec["isOnline"] === "boolean" ? rec["isOnline"] : true,
+      specType: typeof rec["spec_type"] === "string" ? rec["spec_type"] : null,
+      ...(splitParentDid && splitSiid !== null ? { splitParentDid, splitSiid } : {}),
+    };
+  }
+
+  /** `home_device_list` returns its rows directly, so `device_info` is already the record array. */
+  static parseDeviceRecordArray(items: readonly unknown[]): MiDeviceRecord[] {
     const out: MiDeviceRecord[] = [];
-    for (const item of list) {
-      if (!item || typeof item !== "object") continue;
-      const rec = item as Record<string, unknown>;
-      const did = asIdString(rec["did"]);
-      const model = typeof rec["model"] === "string" ? rec["model"] : null;
-      if (!did || !model) continue;
-      const extra = rec["extra"] && typeof rec["extra"] === "object" ? (rec["extra"] as Record<string, unknown>) : {};
-      const split = extra["split"] && typeof extra["split"] === "object" ? (extra["split"] as Record<string, unknown>) : null;
-      const splitParentDid = split ? asIdString(split["parentId"]) : null;
-      const splitSiid = split && typeof split["moduleId"] === "number" ? Math.trunc(split["moduleId"]) : null;
-      out.push({
-        did,
-        name: typeof rec["name"] === "string" ? rec["name"] : model,
-        model,
-        isOnline: typeof rec["isOnline"] === "boolean" ? rec["isOnline"] : true,
-        specType: typeof rec["spec_type"] === "string" ? rec["spec_type"] : null,
-        ...(splitParentDid && splitSiid !== null ? { splitParentDid, splitSiid } : {}),
-      });
+    for (const item of items) {
+      const record = MiCloudClient.parseDeviceRecord(item);
+      if (record) out.push(record);
     }
     return out;
   }
@@ -199,14 +258,18 @@ export class MiCloudClient {
           seenHomes.add(homeId);
         }
         const homeName = typeof h["name"] === "string" ? h["name"] : "";
+        const ownerUid = asIdString(h["uid"]) ?? undefined;
         const sharedFlag = shared ? { isSharedHome: true as const } : {};
+        const ownerFlag = ownerUid ? { ownerUid } : {};
         const roomlist = h["roomlist"];
+        let roomCount = 0;
         if (Array.isArray(roomlist)) {
           for (const rm of roomlist) {
             if (!rm || typeof rm !== "object") continue;
             const r = rm as Record<string, unknown>;
             const id = asIdString(r["id"]);
             if (!id) continue;
+            roomCount += 1;
             const rawDids = Array.isArray(r["dids"]) ? r["dids"] : [];
             const dids = rawDids.map(asIdString).filter((d): d is string => d !== null);
             rooms.push({
@@ -216,6 +279,7 @@ export class MiCloudClient {
               homeId,
               homeName,
               ...sharedFlag,
+              ...ownerFlag,
             });
           }
         }
@@ -223,7 +287,14 @@ export class MiCloudClient {
           ? h["dids"].map(asIdString).filter((d): d is string => d !== null)
           : [];
         if (homeId && homeDids.length > 0) {
-          rooms.push({ id: `home_${homeId}`, name: "", dids: homeDids, homeId, homeName, ...sharedFlag });
+          rooms.push({ id: `home_${homeId}`, name: "", dids: homeDids, homeId, homeName, ...sharedFlag, ...ownerFlag });
+          continue;
+        }
+        // A home with no rooms and no dids still matters when the cloud names its owner: only
+        // `withHomeDeviceLists` can list its devices, and it needs a room to learn the pair
+        // (home id, owner uid) from. Without this entry such a shared home is invisible (#76, #67).
+        if (homeId && roomCount === 0 && ownerUid) {
+          rooms.push({ id: `home_${homeId}`, name: "", dids: [], homeId, homeName, ...sharedFlag, ...ownerFlag });
         }
       }
     };
@@ -284,7 +355,12 @@ export class MiCloudClient {
     const records: MiDeviceRecord[] = [];
     let startDid = "";
     for (let page = 0; page < 20; page++) {
-      const data: Record<string, unknown> = { get_split_device: true, support_smart_home: true, limit: 200 };
+      const data: Record<string, unknown> = {
+        get_split_device: true,
+        support_smart_home: true,
+        get_third_device: true,
+        limit: 200,
+      };
       if (dids) data["dids"] = dids;
       if (startDid) data["start_did"] = startDid;
       const res = await this.request("v2/home/device_list_page", data);
@@ -308,28 +384,165 @@ export class MiCloudClient {
     return MiCloudClient.parseDeviceList(res);
   }
 
+  /**
+   * Homes and their rooms. An account with many homes answers the first page with `has_more` and a
+   * `max_id`, so the rest arrive from `get_dev_room_page` (#76). A failed page stops the walk
+   * instead of failing the whole listing: the homes already parsed stay usable.
+   */
   async homeRooms(): Promise<MiRoom[]> {
+    let result: unknown;
     try {
-      const merged = await this.request("v2/homeroom/gethome_merged", {
+      result = await this.request("v2/homeroom/gethome_merged", {
         fg: true,
         fetch_share: true,
         fetch_share_dev: true,
         limit: 300,
-        app_ver: 7,
+        app_ver: 9,
         plat_form: 0,
       });
-      return MiCloudClient.parseRooms(merged);
     } catch (err) {
       if (err instanceof MiCloudError && err.kind === "sessionExpired") throw err;
-      const fallback = await this.request("v2/homeroom/gethome", {
+      result = await this.request("v2/homeroom/gethome", {
         fg: true,
         fetch_share: true,
         fetch_share_dev: true,
         limit: 300,
-        app_ver: 7,
+        app_ver: 9,
+        plat_form: 0,
       });
-      return MiCloudClient.parseRooms(fallback);
     }
+    let rooms = MiCloudClient.parseRooms(result);
+    const visited = new Set<string>();
+    let maxId = MiCloudClient.homePageCursor(result);
+    for (let page = 0; page < 20; page++) {
+      if (MiCloudClient.hasMoreHomes(result) !== true || !maxId || visited.has(maxId)) break;
+      visited.add(maxId);
+      let next: unknown;
+      try {
+        next = await this.request("v2/homeroom/get_dev_room_page", { start_id: maxId, limit: 150 });
+      } catch (err) {
+        if (err instanceof MiCloudError && err.kind === "sessionExpired") throw err;
+        break;
+      }
+      rooms = MiCloudClient.mergeRoomPage(next, rooms);
+      result = next;
+      maxId = MiCloudClient.homePageCursor(next);
+    }
+    return rooms;
+  }
+
+  /**
+   * Merges one `v2/homeroom/get_dev_room_page` continuation (`result.info`) into the rooms parsed
+   * from `gethome_merged`, keeping every room of an existing home and deduplicating dids.
+   */
+  static mergeRoomPage(page: unknown, rooms: readonly MiRoom[]): MiRoom[] {
+    if (!page || typeof page !== "object") return [...rooms];
+    const obj = page as Record<string, unknown>;
+    const result = [...rooms];
+    const appendDids = (dids: readonly string[], roomId: string, homeId: string, roomName = ""): void => {
+      if (dids.length === 0 || !roomId) return;
+      const idx = result.findIndex((r) => r.id === roomId);
+      if (idx >= 0) {
+        const current = result[idx]!;
+        const seen = new Set(current.dids);
+        const merged = [...current.dids];
+        for (const did of dids) {
+          if (!seen.has(did)) {
+            seen.add(did);
+            merged.push(did);
+          }
+        }
+        result[idx] = { ...current, dids: merged };
+        return;
+      }
+      const sibling = result.find((r) => r.homeId === homeId);
+      result.push({
+        id: roomId,
+        name: roomName,
+        dids: [...new Set(dids)],
+        homeId,
+        homeName: sibling?.homeName ?? "",
+        ...(sibling?.isSharedHome === true ? { isSharedHome: true as const } : {}),
+        ...(sibling?.ownerUid ? { ownerUid: sibling.ownerUid } : {}),
+      });
+    };
+
+    const infoList = Array.isArray(obj["info"]) ? obj["info"] : [];
+    for (const entry of infoList) {
+      if (!entry || typeof entry !== "object") continue;
+      const info = entry as Record<string, unknown>;
+      const homeId = asIdString(info["id"]) ?? "";
+      if (!homeId) continue;
+      const homeDids = Array.isArray(info["dids"])
+        ? info["dids"].map(asIdString).filter((d): d is string => d !== null)
+        : [];
+      appendDids(homeDids, `home_${homeId}`, homeId);
+      const roomlist = Array.isArray(info["roomlist"]) ? info["roomlist"] : [];
+      for (const rm of roomlist) {
+        if (!rm || typeof rm !== "object") continue;
+        const r = rm as Record<string, unknown>;
+        const roomId = asIdString(r["id"]);
+        if (!roomId) continue;
+        const roomDids = Array.isArray(r["dids"])
+          ? r["dids"].map(asIdString).filter((d): d is string => d !== null)
+          : [];
+        appendDids(roomDids, roomId, homeId, typeof r["name"] === "string" ? r["name"] : "");
+      }
+    }
+    return result;
+  }
+
+  /** `has_more` comes back as a real boolean or as 1/0 depending on the endpoint. */
+  private static hasMoreHomes(result: unknown): boolean {
+    if (!result || typeof result !== "object") return false;
+    const value = (result as Record<string, unknown>)["has_more"];
+    return value === true || value === 1;
+  }
+
+  private static homePageCursor(result: unknown): string {
+    if (!result || typeof result !== "object") return "";
+    return asIdString((result as Record<string, unknown>)["max_id"]) ?? "";
+  }
+
+  /**
+   * Devices of one home, including the shared and third-party keys the unfiltered list omits
+   * (#76). Home and owner ids are sent as numbers when they fit, because the endpoint rejects
+   * oversized ids in JSON number form.
+   */
+  async homeDevices(homeId: string, ownerUid: string): Promise<MiDeviceRecord[]> {
+    const records: MiDeviceRecord[] = [];
+    const asNumericId = (raw: string): number | string => {
+      if (!/^\d+$/.test(raw)) return raw;
+      const parsed = Number(raw);
+      return Number.isSafeInteger(parsed) ? parsed : raw;
+    };
+    let startDid = "";
+    for (let page = 0; page < 20; page++) {
+      const data: Record<string, unknown> = {
+        home_owner: asNumericId(ownerUid),
+        home_id: asNumericId(homeId),
+        limit: 300,
+        get_split_device: true,
+        support_smart_home: true,
+        get_cariot_device: true,
+        get_third_device: true,
+      };
+      if (startDid) data["start_did"] = startDid;
+      const res = await this.request("v2/home/home_device_list", data);
+      const obj = res && typeof res === "object" ? (res as Record<string, unknown>) : {};
+      // `device_info` holds the rows; some regions answer with the older `list` field instead.
+      const rows = Array.isArray(obj["device_info"])
+        ? obj["device_info"]
+        : Array.isArray(obj["list"])
+          ? obj["list"]
+          : [];
+      records.push(...MiCloudClient.parseDeviceRecordArray(rows));
+      const next = asIdString(obj["max_did"]) ?? asIdString(obj["next_start_did"]) ?? "";
+      if (obj["has_more"] !== true || !next || next === startDid) break;
+      startDid = next;
+    }
+    const seen = new Set<string>();
+    return records.filter((r) => !seen.has(r.did) && (seen.add(r.did), true));
   }
 
   /** Maps each Xiaomi light group among `groupDids` to its member device dids, in first-seen order. */

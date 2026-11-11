@@ -441,6 +441,15 @@ import { bindPanelInput } from "./panelKeyboard.js";
       host.openSettingsSheet();
     });
 
+    // A home whose devices the cloud hid leaves the panel empty until the user goes back to all homes.
+    host.root.querySelector("#btn-empty-all-homes")?.addEventListener("click", () => {
+      host.settings.selectedHomeId = null;
+      host.selectRoom(null);
+      host.saveSettings();
+      host.render();
+      void host.refreshDevices(false);
+    });
+
     host.root.querySelector("#btn-settings")?.addEventListener("click", () => {
       host.openSettingsSheet();
     });
