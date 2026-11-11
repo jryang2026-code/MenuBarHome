@@ -135,7 +135,6 @@ extension MenuBarPanelController {
             fadePanel(to: 0, duration: Self.fadeOutDuration) { [weak self] in
                 guard let self, self.isClosing, generation == self.presentationGeneration else { return }
                 self.isClosing = false
-                self.clearImplicitDismissalStateOnShow()
                 panel.ignoresMouseEvents = false
                 self.hideBackdropShadow()
                 panel.orderOut(nil)

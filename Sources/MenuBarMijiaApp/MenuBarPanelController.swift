@@ -853,6 +853,9 @@ final class MenuBarPanelController: NSObject {
         case .none:
             break
         case .beginPress:
+            if (pressedMouseButtons & 0x1) != 0 {
+                suppressStatusItemReopenUntil = 0
+            }
             pressAllowsToggle = true
             setStatusItemHighlighted(true)
             beginPress()
@@ -936,6 +939,9 @@ final class MenuBarPanelController: NSObject {
     func beginHoldDetectionFromMonitor(allowsPostMenuToggle: Bool = false) {
         let now = ProcessInfo.processInfo.systemUptime
         guard !pressTriggered else { return }
+        if allowsPostMenuToggle || !isPanelVisible {
+            suppressStatusItemReopenUntil = 0
+        }
         if now < suppressReleaseUntil {
             guard allowsPostMenuToggle else { return }
             suppressReleaseUntil = 0
@@ -1014,9 +1020,10 @@ final class MenuBarPanelController: NSObject {
             pressAllowsToggle = false
             suppressReleaseUntil = now + 0.15
             performStatusItemToggle()
-        } else {
-            // A monitor-started press ended on physical release; keep deactivation suppression
-            // alive across the XPC hop until `NSMenuBarNavigateAction` reaches the status item.
+        } else if isPanelVisible {
+            // A monitor-started press while the panel is open ended on physical release; keep
+            // deactivation suppression alive across the XPC hop until `NSMenuBarNavigateAction`
+            // reaches the status item.
             suppressResignActiveHideUntil = max(
                 suppressResignActiveHideUntil,
                 now + ContextMenuSettle.fallback
@@ -1027,6 +1034,7 @@ final class MenuBarPanelController: NSObject {
 
     private func performStatusItemToggle() {
         let now = ProcessInfo.processInfo.systemUptime
+        suppressResignActiveHideUntil = 0
         if !isPanelVisible, now < suppressStatusItemReopenUntil {
             suppressStatusItemReopenUntil = 0
             traceStatusItem(
@@ -1236,10 +1244,14 @@ final class MenuBarPanelController: NSObject {
                 eventType: eventType
             ) {
                 let now = ProcessInfo.processInfo.systemUptime
-                suppressResignActiveHideUntil = max(
-                    suppressResignActiveHideUntil,
-                    now + ContextMenuSettle.fallback + 0.1
-                )
+                if isPanelVisible {
+                    suppressResignActiveHideUntil = max(
+                        suppressResignActiveHideUntil,
+                        now + ContextMenuSettle.fallback + 0.1
+                    )
+                } else {
+                    suppressStatusItemReopenUntil = 0
+                }
                 let eventName = Self.statusEventTypeName(eventType)
                 let buttons = "0x\(String(pressedMouseButtons, radix: 16))"
                 let uptimeText = String(format: "%.3f", now)
@@ -1270,6 +1282,9 @@ final class MenuBarPanelController: NSObject {
                 return
             }
         }
+        if eventType == .leftMouseDown, (pressedMouseButtons & 0x1) != 0, !isPanelVisible {
+            suppressStatusItemReopenUntil = 0
+        }
         guard isPanelVisible, let panel = panelWindow else { return }
         if let sidecar = grokBallSidecar, window === sidecar.panelWindow {
             if sidecar.containsScreenPoint(screenPoint) { return }
@@ -1290,7 +1305,11 @@ final class MenuBarPanelController: NSObject {
             || pressTriggered
             || pressTimer != nil
             || HotkeyAndNotificationManager.shared.isHotkeyPhysicallyDown { return }
-        noteImplicitDismissalForStatusItemReopenGuard()
+        if eventType == .leftMouseDown,
+           hostsStatusItemOutOfProcess,
+           Self.isMenuBarBandPoint(screenPoint) {
+            noteImplicitDismissalForStatusItemReopenGuard()
+        }
         hidePanel()
     }
 
@@ -1307,6 +1326,22 @@ final class MenuBarPanelController: NSObject {
         return statusRect.insetBy(dx: -6, dy: -6).contains(point)
     }
 
+    /// True when `point` lies in the menu-bar strip at the top of any screen. An out-of-process
+    /// status item (`NSMenuBarNavigationSceneExtension`) can keep its local scene window at `.zero`
+    /// while the user clicks the real menu bar, whereas clicks in the workspace below the menu bar
+    /// never belong to the status item.
+    static func isMenuBarBandPoint(_ point: NSPoint, screens: [NSScreen] = NSScreen.screens) -> Bool {
+        for screen in screens {
+            let frame = screen.frame
+            guard point.x >= frame.minX - 6, point.x <= frame.maxX + 6 else { continue }
+            let bandFloor = min(screen.visibleFrame.maxY, frame.maxY - 44) - 6
+            if point.y >= bandFloor, point.y <= frame.maxY + 6 {
+                return true
+            }
+        }
+        return false
+    }
+
     func handleApplicationResignActive() {
         guard isPanelVisible else { return }
         let now = ProcessInfo.processInfo.systemUptime
@@ -1320,12 +1355,15 @@ final class MenuBarPanelController: NSObject {
             || now < suppressResignActiveHideUntil
             || isStatusItemMouseDownAtCurrentLocation()
             || HotkeyAndNotificationManager.shared.isHotkeyPhysicallyDown { return }
-        noteImplicitDismissalForStatusItemReopenGuard(now: now)
+        if hostsStatusItemOutOfProcess {
+            noteImplicitDismissalForStatusItemReopenGuard(now: now)
+        }
         hidePanel()
     }
 
     func clearImplicitDismissalStateOnShow() {
         suppressStatusItemReopenUntil = 0
+        suppressResignActiveHideUntil = 0
     }
 
     func clearResignActiveSuppressionOnHide() {

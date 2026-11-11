@@ -1115,6 +1115,7 @@ struct MenuBarPanelControllerTests {
         let controller = MenuBarPanelController(statusItem: statusItem)
         controller.presentsActively = true
         controller.shouldReduceMotion = { true }
+        controller.statusItemHostsOutOfProcess = { true }
         controller.install(with: store)
         defer { controller.uninstall() }
 
@@ -1148,8 +1149,16 @@ struct MenuBarPanelControllerTests {
             return true
         }
 
-        // 1. First click opens the Liquid Glass panel.
-        controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0x1)
+        // 1. First click (monitor press -> release -> synthesized action) opens the panel and
+        // clears deactivation suppression so an immediate Command-Tab still closes it.
+        let insideStatusPoint = NSPoint(x: 140, y: 912)
+        controller.handleMouseDown(
+            in: hostWindow,
+            at: insideStatusPoint,
+            eventType: .leftMouseDown,
+            pressedMouseButtons: 0x1
+        )
+        controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0)
         controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
         let panel = try #require(controller.panelWindow)
         #expect(controller.isPanelVisible)
@@ -1178,9 +1187,45 @@ struct MenuBarPanelControllerTests {
         #expect(controller.isPanelVisible)
         #expect(shows == 2)
 
+        // 2c. A slower short click whose trailing synthesized action arrives after the 200 ms
+        // close animation completed is still suppressed rather than reopening the ordered-out panel.
+        controller.handleApplicationResignActive()
+        #expect(await waitUntil { !panel.isVisible })
+        #expect(controller.isClosing == false)
+        #expect(hides == 2)
+        controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0)
+        controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
+        #expect(controller.isPanelVisible == false, "close-animation completion must not clear suppression before the trailing action arrives")
+        #expect(shows == 2)
+
+        // 2d. An actual outside click below the menu bar (or a fresh physical press after
+        // deactivation) never swallows the user's next status-item click.
+        controller.showPanel()
+        #expect(controller.isPanelVisible)
+        #expect(shows == 3)
+        controller.handleMouseDown(
+            in: nil,
+            at: NSPoint(x: 20, y: 200),
+            eventType: .leftMouseDown,
+            pressedMouseButtons: 0x1
+        )
+        #expect(controller.isPanelVisible == false)
+        #expect(hides == 3)
+        controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0)
+        controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
+        #expect(controller.isPanelVisible, "an outside click below the menu bar must not suppress the next status-item open")
+        #expect(shows == 4)
+
+        controller.handleApplicationResignActive()
+        #expect(controller.isPanelVisible == false)
+        #expect(hides == 4)
+        controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0x1)
+        controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
+        #expect(controller.isPanelVisible, "a fresh physical press after deactivation must reopen on the first click")
+        #expect(shows == 5)
+
         // 3. When the global mouse monitor sees the status-item hit before `SETFRONT`, the
         // deactivation is ignored and the release action closes the panel once.
-        let insideStatusPoint = NSPoint(x: 140, y: 912)
         controller.handleMouseDown(
             in: hostWindow,
             at: insideStatusPoint,
@@ -1189,13 +1234,13 @@ struct MenuBarPanelControllerTests {
         )
         controller.handleApplicationResignActive()
         #expect(controller.isPanelVisible, "status-item mouse-down keeps the panel open until release")
-        #expect(hides == 1)
+        #expect(hides == 4)
 
         controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0)
         controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
         #expect(controller.isPanelVisible == false)
-        #expect(hides == 2)
-        #expect(shows == 2)
+        #expect(hides == 5)
+        #expect(shows == 5)
         #expect(await waitUntil { !panel.isVisible })
     }
 
