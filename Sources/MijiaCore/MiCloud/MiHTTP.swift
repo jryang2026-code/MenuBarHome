@@ -6,32 +6,40 @@ public protocol MiHTTPTransport: Sendable {
 }
 
 public struct URLSessionMiTransport: MiHTTPTransport {
-    private static let sharedSession: URLSession = {
+    private static let sessionsLock = NSLock()
+    nonisolated(unsafe) private static var sessionsByTimeoutMs: [Int: URLSession] = [:]
+    private static let noRedirectDelegate = NoRedirectDelegate()
+
+    private static func sharedSession(timeout: TimeInterval) -> URLSession {
+        let key = max(1, Int((timeout * 1000).rounded()))
+        sessionsLock.lock()
+        defer { sessionsLock.unlock() }
+        if let existing = sessionsByTimeoutMs[key] {
+            return existing
+        }
         let config = URLSessionConfiguration.ephemeral
         // Cookies are attached by hand per request; a shared jar would leak one account's token into another login.
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
-        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForRequest = timeout
         config.waitsForConnectivity = false
-        return URLSession(configuration: config)
-    }()
+        let created = URLSession(configuration: config)
+        sessionsByTimeoutMs[key] = created
+        return created
+    }
 
-    private static let noRedirectDelegate = NoRedirectDelegate()
-
-    private let timeout: TimeInterval
+    private let session: URLSession
     private let followRedirects: Bool
 
     public init(timeout: TimeInterval = 30, followRedirects: Bool = true) {
-        self.timeout = timeout
+        self.session = Self.sharedSession(timeout: timeout)
         self.followRedirects = followRedirects
     }
 
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        var configured = request
-        configured.timeoutInterval = timeout
         let (data, response) = followRedirects
-            ? try await Self.sharedSession.data(for: configured)
-            : try await Self.sharedSession.data(for: configured, delegate: Self.noRedirectDelegate)
+            ? try await session.data(for: request)
+            : try await session.data(for: request, delegate: Self.noRedirectDelegate)
         guard let http = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
