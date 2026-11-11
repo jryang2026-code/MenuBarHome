@@ -1095,6 +1095,110 @@ struct MenuBarPanelControllerTests {
         #expect(hides == 2)
     }
 
+    @Test("Out-of-process status-item click while open slides the liquid-glass panel closed instead of reopening mid-close")
+    func outOfProcessSecondClickSlidesLiquidGlassPanelClosed() async throws {
+        let themeScope = PanelPreferenceScope(theme: .liquidGlass)
+        defer { themeScope.restore() }
+        let (store, suite) = try await makeStore()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let statusItem = TestStatusItem()
+        let hostWindow = NSWindow(
+            contentRect: NSRect(x: 100, y: 900, width: 80, height: 24),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        defer { hostWindow.orderOut(nil) }
+        statusItem.testButton.frame = NSRect(x: 0, y: 0, width: 80, height: 24)
+        hostWindow.contentView = statusItem.testButton
+
+        let controller = MenuBarPanelController(statusItem: statusItem)
+        controller.presentsActively = true
+        controller.shouldReduceMotion = { true }
+        controller.install(with: store)
+        defer { controller.uninstall() }
+
+        var shows = 0
+        var hides = 0
+        let shown = NotificationCenter.default.addObserver(
+            forName: MenuBarPanelController.didShowNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { shows += 1 }
+        }
+        let hidden = NotificationCenter.default.addObserver(
+            forName: MenuBarPanelController.didHideNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { hides += 1 }
+        }
+        defer {
+            NotificationCenter.default.removeObserver(shown)
+            NotificationCenter.default.removeObserver(hidden)
+        }
+        func waitUntil(_ predicate: () -> Bool) async -> Bool {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while !predicate() {
+                guard ContinuousClock.now < deadline else { return false }
+                Self.pumpMainRunLoop(0.005)
+                await Task.yield()
+            }
+            return true
+        }
+
+        // 1. First click opens the Liquid Glass panel.
+        controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0x1)
+        controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
+        let panel = try #require(controller.panelWindow)
+        #expect(controller.isPanelVisible)
+        #expect(shows == 1)
+        #expect(hides == 0)
+
+        // 2a. Second click on macOS 26+ out-of-process menu bar where `MenuBarAgent` deactivates
+        // the app (`SETFRONT`) on mouse-down ~60-90 ms before `NSMenuBarNavigateAction` delivers
+        // the synthesized primary click pair upon release.
+        controller.handleApplicationResignActive()
+        #expect(controller.isClosing, "deactivation starts the slide-out transition")
+        #expect(controller.isPanelVisible == false)
+        #expect(hides == 1)
+
+        controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0)
+        controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
+        #expect(controller.isPanelVisible == false, "trailing status-item action for the same click must not reopen the closing panel")
+        #expect(shows == 1, "must not emit a second show notification mid-close")
+        #expect(statusItem.testButton.cell?.isHighlighted == false)
+        #expect(await waitUntil { !panel.isVisible })
+        #expect(controller.isClosing == false)
+
+        // 2b. Consuming the suppression lets the very next click reopen immediately.
+        controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0)
+        controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
+        #expect(controller.isPanelVisible)
+        #expect(shows == 2)
+
+        // 3. When the global mouse monitor sees the status-item hit before `SETFRONT`, the
+        // deactivation is ignored and the release action closes the panel once.
+        let insideStatusPoint = NSPoint(x: 140, y: 912)
+        controller.handleMouseDown(
+            in: hostWindow,
+            at: insideStatusPoint,
+            eventType: .leftMouseDown,
+            pressedMouseButtons: 0x1
+        )
+        controller.handleApplicationResignActive()
+        #expect(controller.isPanelVisible, "status-item mouse-down keeps the panel open until release")
+        #expect(hides == 1)
+
+        controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0)
+        controller.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
+        #expect(controller.isPanelVisible == false)
+        #expect(hides == 2)
+        #expect(shows == 2)
+        #expect(await waitUntil { !panel.isVisible })
+    }
+
     @Test("Showing the panel creates a key-capable 376 pt window and marks it visible", arguments: PanelTheme.allCases)
     func showPanelCreatesVisibleWindow(theme: PanelTheme) async throws {
         let themeScope = PanelPreferenceScope(theme: theme)
