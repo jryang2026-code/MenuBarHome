@@ -223,11 +223,23 @@ export class CredentialVault {
     this.remember("assistant_api_key", legacyTrimmed);
     if (!assistantApiKeys[activePresetId] && legacyTrimmed !== "") {
       const targetSlot = assistantApiKeyCredentialName(activePresetId);
-      await secureStoreSet(targetSlot, legacyTrimmed, this.invoke);
-      await secureStoreDelete("assistant_api_key", this.invoke);
       assistantApiKeys[activePresetId] = legacyTrimmed;
-      this.remember(targetSlot, legacyTrimmed);
-      this.remember("assistant_api_key", "");
+      let wroteTarget = false;
+      try {
+        await secureStoreSet(targetSlot, legacyTrimmed, this.invoke);
+        this.remember(targetSlot, legacyTrimmed);
+        wroteTarget = true;
+      } catch {
+        this.remember(targetSlot, "");
+      }
+      if (wroteTarget) {
+        try {
+          await secureStoreDelete("assistant_api_key", this.invoke);
+          this.remember("assistant_api_key", "");
+        } catch {
+          this.remember("assistant_api_key", legacyTrimmed);
+        }
+      }
     }
     const snapshot: CredentialSnapshot = {
       miSession,

@@ -135,9 +135,13 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       if (keyInput && keyInput.value.trim()) {
         const trimmed = keyInput.value.trim();
         const preset = inferAssistantPreset(host.settings.assistantBaseURL);
+        const endpoint = assistantEndpointIdentity(host.settings.assistantBaseURL);
         host.settings.openRouterApiKey = trimmed;
         host.assistantKeysByPreset[preset.id] = trimmed;
-        host.settings.assistantKeyEndpoint = assistantEndpointIdentity(host.settings.assistantBaseURL);
+        host.settings.assistantKeyEndpoint = endpoint;
+        if (preset.id === "custom") {
+          host.settings.assistantCustomKeyEndpoint = endpoint;
+        }
       }
       host.settings.hasCompletedOnboarding = true;
       host.saveSettings();
@@ -310,13 +314,15 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
         }
       }
       if (inferredPreset.id === "custom") {
+        const customEndpoint = host.settings.openRouterApiKey
+          ? assistantEndpointIdentity(host.settings.assistantBaseURL)
+          : null;
+        host.settings.assistantCustomKeyEndpoint = customEndpoint;
+        host.settings.assistantKeyEndpoint = customEndpoint;
+      } else {
         host.settings.assistantKeyEndpoint = host.settings.openRouterApiKey
           ? assistantEndpointIdentity(host.settings.assistantBaseURL)
           : null;
-      } else if (host.settings.openRouterApiKey) {
-        host.settings.assistantKeyEndpoint = assistantEndpointIdentity(host.settings.assistantBaseURL);
-      } else if (!host.assistantKeysByPreset.custom) {
-        host.settings.assistantKeyEndpoint = null;
       }
       const fallbackModel = inferredPreset.defaultModel || "gpt-4o-mini";
       if (modelEl) host.settings.assistantModel = modelEl.value.trim() || fallbackModel;

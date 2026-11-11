@@ -294,6 +294,34 @@ describe("Secure credential storage (#28 / #27 / #49)", () => {
     assert.equal(store.get("assistant_api_key_openrouter_jev"), "sk-or-new");
   });
 
+  it("still hydrates miSession and haToken when legacy key migration fails, and retries on persist", async () => {
+    const store = new Map<string, string>([
+      ["mi_session", serializeMiSession(session)],
+      ["ha_token", "ha-good"],
+      ["assistant_api_key", "sk-legacy"],
+    ]);
+    let failWrites = true;
+    const vault = new CredentialVault(async <T>(cmd: string, args: Record<string, unknown>): Promise<T | null> => {
+      const name = String(args.name ?? "");
+      if (cmd === "secure_store_get") return (store.get(name) ?? null) as T | null;
+      if (failWrites) throw new Error("credential store locked");
+      if (cmd === "secure_store_set") store.set(name, String(args.value ?? ""));
+      if (cmd === "secure_store_delete") store.delete(name);
+      return null;
+    });
+
+    const loaded = await vault.load("openrouter_jev");
+    assert.equal(loaded.miSession?.userId, "100");
+    assert.equal(loaded.haToken, "ha-good");
+    assert.equal(loaded.assistantApiKey, "sk-legacy");
+    assert.equal(store.get("assistant_api_key"), "sk-legacy");
+
+    failWrites = false;
+    await vault.persist(loaded);
+    assert.equal(store.get("assistant_api_key_openrouter_jev"), "sk-legacy");
+    assert.equal(store.has("assistant_api_key"), false);
+  });
+
   it("uses Web Crypto, not Math.random, for the MIoT nonce (#49)", () => {
     const original = Math.random;
     Math.random = () => {

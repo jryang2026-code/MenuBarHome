@@ -1521,9 +1521,12 @@ export class MenuMijiaWindowsApp {
     if (preset.id !== "custom") {
       const slotKey = this.assistantKeysByPreset[preset.id]?.trim() ?? "";
       if (slotKey) return slotKey;
-    } else if (identity === this.settings.assistantKeyEndpoint) {
-      const customKey = this.assistantKeysByPreset.custom?.trim() ?? "";
-      if (customKey) return customKey;
+    } else {
+      const customEndpoint = this.settings.assistantCustomKeyEndpoint ?? this.settings.assistantKeyEndpoint;
+      if (identity === customEndpoint) {
+        const customKey = this.assistantKeysByPreset.custom?.trim() ?? "";
+        if (customKey) return customKey;
+      }
     }
     const key = this.settings.openRouterApiKey.trim();
     if (!key) return "";

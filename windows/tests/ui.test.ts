@@ -1090,6 +1090,27 @@ describe("AI key stays with the server it was saved for (#19)", () => {
     assert.equal(keyField().value, "sk-or-1");
     await click('[data-ai-preset="deepseek"]');
     assert.equal(keyField().value, "sk-ds-2");
+
+    // Saving a custom endpoint and then saving a built-in provider keeps the custom endpoint's binding intact.
+    const base = element("#settings-base-url") as HTMLInputElement;
+    base.value = "https://llm.example.com/v1";
+    base.dispatchEvent(new Event("input", { bubbles: true }));
+    assert.equal(keyField().value, "");
+    keyField().value = "sk-custom-3";
+    await click("#btn-save-settings");
+    await setImmediate();
+
+    await click("#btn-settings");
+    await click('[data-ai-preset="deepseek"]');
+    assert.equal(keyField().value, "sk-ds-2");
+    await click("#btn-save-settings");
+    await setImmediate();
+
+    await click("#btn-settings");
+    const baseAgain = element("#settings-base-url") as HTMLInputElement;
+    baseAgain.value = "https://llm.example.com/v1";
+    baseAgain.dispatchEvent(new Event("input", { bubbles: true }));
+    assert.equal(keyField().value, "sk-custom-3");
   });
 });
 

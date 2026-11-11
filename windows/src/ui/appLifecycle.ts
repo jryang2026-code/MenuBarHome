@@ -66,7 +66,9 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
         if (activePreset !== "custom") {
           host.settings.assistantKeyEndpoint = assistantEndpointIdentity(host.settings.assistantBaseURL);
         } else {
-          host.settings.assistantKeyEndpoint ??= assistantEndpointIdentity(host.settings.assistantBaseURL);
+          const endpoint = assistantEndpointIdentity(host.settings.assistantBaseURL);
+          host.settings.assistantCustomKeyEndpoint ??= endpoint;
+          host.settings.assistantKeyEndpoint ??= host.settings.assistantCustomKeyEndpoint;
         }
       }
       if (host.settings.miSession) {
