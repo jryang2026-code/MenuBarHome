@@ -118,7 +118,7 @@ public enum AppURLParser {
     public static let maximumURLLength = 4096
     public static let brightnessRange = 0...100
     public static let colorTempRange = 1000...20000
-    public static let celsiusRange = -30.0...50.0
+    public static let celsiusRange = -30.0...100.0
 
     public static func parse(_ url: URL) -> AppURLCommand? {
         parseEnvelope(url)?.command

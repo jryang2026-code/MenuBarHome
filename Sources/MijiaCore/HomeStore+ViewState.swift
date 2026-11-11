@@ -52,11 +52,11 @@ extension HomeStore {
         }
 
         switch dev.kind {
-        case .light(let s):
+        case .light(let s) where s.brightnessWritable:
             let current = s.brightnessPercent ?? (s.isOn ? 80 : 0)
             let next = max(1, min(100, current + delta * 10))
             setLightBrightness(dev.id, percent: next)
-        case .climate:
+        case .climate(let s) where s.temperatureWritable:
             stepClimateTemperature(dev.id, delta: Double(delta) * 1.0)
         case .speaker(let s):
             setSpeakerVolume(dev.id, percent: max(0, min(100, s.volumePercent + delta * 10)))

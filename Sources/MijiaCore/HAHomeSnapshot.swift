@@ -68,7 +68,7 @@ struct HAHomeSnapshot {
                   let state = Self.parseState(newState) {
             if let timestamp = DoorbellRing.timestamp(state), timestamp != doorbellTimestamps[state.entityId] {
                 doorbellTimestamps[state.entityId] = timestamp
-                if pendingInitialResults.isEmpty {
+                if pendingInitialResults.isEmpty, isActiveEntity(state.entityId) {
                     let deviceId = entities.first { $0.entity_id == state.entityId }?.device_id ?? state.entityId
                     rings.append(DoorbellRing(deviceId: deviceId, entityId: state.entityId, firedAt: timestamp))
                 }
@@ -79,6 +79,17 @@ struct HAHomeSnapshot {
         }
         guard pendingInitialResults.isEmpty else { return nil }
         return DeviceSynthesizer.synthesize(areas: areas, devices: devices, entities: entities, states: states)
+    }
+
+    private func isActiveEntity(_ entityId: String) -> Bool {
+        guard let entry = entities.first(where: { $0.entity_id == entityId }) else { return true }
+        guard entry.disabled_by == nil, entry.hidden_by == nil else { return false }
+        if let deviceId = entry.device_id,
+           let device = devices.first(where: { $0.id == deviceId }),
+           device.disabled_by != nil {
+            return false
+        }
+        return true
     }
 
     private func decode<T: Decodable>(_ type: T.Type, from value: JSONValue) throws -> T {

@@ -686,7 +686,7 @@ def validate_color_temp(device: dict, raw_kelvin: object) -> int:
 
 
 def validate_temperature(device: dict, raw_celsius: object) -> float:
-    celsius = _require_float(raw_celsius, "目标温度（°C）", -30.0, 50.0)
+    celsius = _require_float(raw_celsius, "目标温度（°C）", -30.0, 100.0)
     caps = device.get("capabilities") or {}
     if not caps.get("temperatureWritable"):
         raise CliError(f"{_device_label(device)} 不支持设定目标温度")
@@ -1130,7 +1130,7 @@ MCP_TOOLS: tuple[McpToolSpec, ...] = (
     ),
     McpToolSpec(
         name="set_temperature",
-        description="设置空调、电暖器或温控设备的目标温度（°C），需在设备支持的 minTemp–maxTemp 范围内。",
+        description="设置空调、电暖器、热水器或温控设备的目标温度（°C），需在设备支持的 minTemp–maxTemp 范围内。",
         input_schema={
             "type": "object",
             "properties": {
@@ -1138,7 +1138,7 @@ MCP_TOOLS: tuple[McpToolSpec, ...] = (
                 "celsius": {
                     "type": "number",
                     "minimum": -30,
-                    "maximum": 50,
+                    "maximum": 100,
                     "description": "目标摄氏温度（°C）",
                 },
             },

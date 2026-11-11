@@ -141,9 +141,11 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     private var activeCameraEntityID: String?
     private var doorbellDismissTask: Task<Void, Never>?
     /// The window sits where a ring put it, so closing it must not overwrite the user's saved position.
-    private var isDoorbellPlacement = false
-    /// The ring still owns this window's closing; the user taking it over (PiP, reopening) ends that.
-    private var doorbellOwnsClose = false
+    private(set) var isDoorbellPlacement = false
+    /// The ring still owns this window's closing; the user taking it over (moving, resizing, PiP,
+    /// interacting, reopening) ends that.
+    private(set) var doorbellOwnsClose = false
+    var hasPendingDoorbellAutoDismiss: Bool { doorbellDismissTask != nil && doorbellOwnsClose }
     private var isClosing = false
     private let snapshotSession: URLSession = {
         let cfg = URLSessionConfiguration.ephemeral
@@ -194,9 +196,28 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled, let self else { return }
             self.doorbellDismissTask = nil
-            guard self.isVisible, self.activeDeviceId == deviceId, !self.isPictureInPictureActive else { return }
+            guard self.isVisible, self.doorbellOwnsClose, self.activeDeviceId == deviceId, !self.isPictureInPictureActive else { return }
             self.closePanel()
         }
+    }
+
+    func claimDoorbellWindowForUser(claimsPlacement: Bool) {
+        doorbellDismissTask?.cancel()
+        doorbellDismissTask = nil
+        doorbellOwnsClose = false
+        if claimsPlacement {
+            isDoorbellPlacement = false
+        }
+    }
+
+    public func windowWillMove(_ notification: Notification) {
+        guard (notification.object as? NSWindow) == nil || (notification.object as? NSWindow) === panelWindow else { return }
+        claimDoorbellWindowForUser(claimsPlacement: true)
+    }
+
+    public func windowWillStartLiveResize(_ notification: Notification) {
+        guard (notification.object as? NSWindow) == nil || (notification.object as? NSWindow) === panelWindow else { return }
+        claimDoorbellWindowForUser(claimsPlacement: true)
     }
 
     private static func topRightFrame(for size: NSSize) -> NSRect {
@@ -245,6 +266,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     public func selectLens(_ lens: CameraLens, for device: SmartDevice) {
         selectedLensByDevice[device.id] = lens.role
         guard activeDeviceId == device.id else { return }
+        claimDoorbellWindowForUser(claimsPlacement: false)
         reloadStream()
     }
 
@@ -567,6 +589,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     }
 
     public func toggleMute() {
+        claimDoorbellWindowForUser(claimsPlacement: false)
         isMuted.toggle()
     }
 
@@ -590,10 +613,12 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
 
     public func rotateVideo() {
         guard let deviceID = activeDeviceId else { return }
+        claimDoorbellWindowForUser(claimsPlacement: false)
         videoRotations[deviceID] = CameraVideoRotation.next(videoRotations[deviceID] ?? 0)
     }
 
     public func toggleExpandedSize() {
+        claimDoorbellWindowForUser(claimsPlacement: true)
         guard let panel = panelWindow else {
             isMaximized = false
             frameBeforeMaximize = nil
@@ -623,6 +648,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
 
     public func toggleMaximized() {
         guard let panel = panelWindow else { return }
+        claimDoorbellWindowForUser(claimsPlacement: true)
         if isMaximized {
             if let frameBeforeMaximize {
                 panel.setFrame(frameBeforeMaximize, display: true, animate: presentsActively)
@@ -638,6 +664,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     }
 
     public func setURLFieldActive(_ active: Bool) {
+        if active {
+            claimDoorbellWindowForUser(claimsPlacement: false)
+        }
         if active, presentsActively {
             panelWindow?.makeKeyAndOrderFront(nil)
             NSApp.activate()

@@ -416,7 +416,9 @@ extension HomeStore {
     // MARK: - Detail Drawer Controls (Debounced & Optimistic)
 
     public func setLightBrightness(_ deviceId: String, percent: Int) {
-        guard let previous = controllableDevice(deviceId), case .light(var s) = previous.kind else { return }
+        guard let previous = controllableDevice(deviceId),
+              case .light(var s) = previous.kind,
+              s.brightnessWritable else { return }
         var updated = previous
         s.isOn = percent > 0
         s.brightnessPercent = percent
@@ -431,7 +433,9 @@ extension HomeStore {
     }
 
     public func setLightColorTemp(_ deviceId: String, kelvin: Int) {
-        guard let previous = controllableDevice(deviceId), case .light(var s) = previous.kind else { return }
+        guard let previous = controllableDevice(deviceId),
+              case .light(var s) = previous.kind,
+              s.colorWritable else { return }
         var updated = previous
         s.isOn = true
         s.colorTempKelvin = kelvin
@@ -462,7 +466,9 @@ extension HomeStore {
     }
 
     public func stepClimateTemperature(_ deviceId: String, delta: Double) {
-        guard let previous = controllableDevice(deviceId), case .climate(var s) = previous.kind else { return }
+        guard let previous = controllableDevice(deviceId),
+              case .climate(var s) = previous.kind,
+              s.temperatureWritable else { return }
         let nextTemp = max(s.minTemp, min(s.maxTemp, s.targetTemperature + delta))
         guard allowManualControl(.targetTemperature(nextTemp), for: previous) else { return }
         var updated = previous

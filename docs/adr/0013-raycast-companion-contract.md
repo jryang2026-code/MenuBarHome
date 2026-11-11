@@ -14,7 +14,7 @@
 ## 决定
 
 1. **结果回写**：每条命令带 `id=<requestId>`，应用执行完把 `RaycastCommandFeedback{requestId, command, message, isError, completedAt}` 写回同一个快照并立即落盘。伴生端只认与自己 `requestId` 相同的反馈，过期结果不会冒充本次执行。`requestId` 是本地随机值，不参与授权。
-2. **精确值路由**：新增 `power` / `brightness` / `color-temp` / `temperature` / `fan`，参数在 URL 解析阶段校验（`percent ∈ 0…100`、`kelvin ∈ 1000…20000`、`celsius ∈ −30…50`），越界或非数字直接拒绝该链接，不在执行端夹紧——越界的滑条是客户端 bug，不该悄悄变成一次真实写入。
+2. **精确值路由**：新增 `power` / `brightness` / `color-temp` / `temperature` / `fan`，参数在 URL 解析阶段校验（`percent ∈ 0…100`、`kelvin ∈ 1000…20000`、`celsius ∈ −30…100`），越界或非数字直接拒绝该链接，不在执行端夹紧——越界的滑条是客户端 bug，不该悄悄变成一次真实写入。
 3. **关灯用 `power`**：`brightness=0` 也映射为关灯命令，不把 0 发给 Home Assistant（其 `brightness_pct` 会被夹到 1，反而把灯点亮）。
 4. **一条安全路径**：所有路由最终都走 `HomeStore` 的锁屏检查、`ManualControlPolicy` 高风险确认与乐观写入。`power` 对普通设备复用 `togglePrimary`，但窗帘 / 窗户 / 卷帘门 / 晾衣架改走显式的「开到 100% / 关到 0%」：三态磁贴的 `togglePrimary` 对移动中的窗帘语义是暂停，若 `on` / `off` 也照此执行，「关闭」会变成「停在半路」，与链接的字面承诺不符。按钮类触发与阀门仍走 `togglePrimary`。
 5. **`focus` 不算控制**：`menumijia://focus?device=<id>` 只切换房间筛选并展开抽屉，不写设备，因此不弹外部链接确认；但仍受锁屏拦截。
