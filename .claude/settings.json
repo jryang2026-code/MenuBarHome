@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/scripts/hooks/context-hook.mjs\" claude-post-edit",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

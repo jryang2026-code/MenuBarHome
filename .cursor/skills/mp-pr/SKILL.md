@@ -1,6 +1,7 @@
 ---
 name: mp-pr
 description: "Use when writing a PR body."
+disable-model-invocation: true
 metadata:
   credits:
     skill: show-me

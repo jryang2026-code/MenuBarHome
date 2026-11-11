@@ -1,0 +1,23 @@
+{
+  "path-scoped-rules-tracker": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ../scripts/hooks/context-hook.mjs post-tool",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node ../scripts/hooks/context-hook.mjs pre-invocation",
+        "timeout": 10
+      }
+    ]
+  }
+}
