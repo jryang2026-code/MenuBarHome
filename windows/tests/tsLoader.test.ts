@@ -119,9 +119,10 @@ describe("tsLoader", () => {
     assert.match(stripped, /export const answer\s*=\s*42/);
 
     const modes: string[] = [];
-    const fakeStrip = (code: string, options: { mode: string }) => {
-      modes.push(options.mode);
-      if (options.mode === "transform") {
+    const fakeStrip = (code: string, options?: { mode?: string }) => {
+      const mode = options?.mode ?? "strip";
+      modes.push(mode);
+      if (mode === "transform") {
         const err = new TypeError("options.mode must be strip") as TypeError & { code?: string };
         err.code = "ERR_INVALID_ARG_VALUE";
         throw err;

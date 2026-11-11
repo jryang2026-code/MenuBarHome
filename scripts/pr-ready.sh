@@ -240,7 +240,12 @@ if not wait_mode:
     sys.exit(0)
 
 # In --wait mode: 0 = ready, 1 = terminal blocker/finding, 10 = still waiting.
-has_findings = bool(inlines) or bool(latest_for_head and latest_for_head.get("has_unresolved_findings") is True)
+if latest_for_head and latest_for_head.get("has_unresolved_findings") is False:
+    has_findings = False
+else:
+    has_findings = bool(inlines) or bool(
+        latest_for_head and latest_for_head.get("has_unresolved_findings") is True
+    )
 if checks_failed or has_findings or merge in ("DIRTY", "CONFLICTING", "CLOSED"):
     sys.exit(1)
 

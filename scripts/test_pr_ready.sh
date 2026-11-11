@@ -344,6 +344,21 @@ else
     fail "--wait 超时退出码异常：$status"
 fi
 
+# 4) 同一 head 的历史 inline 已解决（has_unresolved_findings=false）时不阻塞 --wait
+rm -f "$wdir/calls"
+printf '{"headRefOid":"%s","mergeStateStatus":"CLEAN"}\n' "$head_sha" >"$wdir/meta-1.json"
+printf '[]\n' >"$wdir/checks-1.json"
+printf '0\n' >"$wdir/checks-exit-1"
+printf '[[{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"<!-- codex-review-state:v1 -->{\\"code_review\\":{\\"commit_sha\\":\\"%s\\",\\"status\\":\\"completed\\",\\"has_any_findings\\":true,\\"has_unresolved_findings\\":false}}"}]]\n' "$head_sha" >"$wdir/issues-1.json"
+printf '[[{"user":{"login":"chatgpt-codex-connector[bot]"},"original_commit_id":"%s","path":"a.swift","line":3,"body":"resolved"}]]\n' "$head_sha" >"$wdir/reviews-1.json"
+status=0
+output="$(PR_READY_WAIT_DIR="$wdir" PATH="$wait_bin:$PATH" bash "$root/scripts/pr-ready.sh" --wait --interval 0.02 --timeout 1 60 2>"$tmp/err")" || status=$?
+if [[ "$status" == 0 ]]; then
+    pass "--wait 在当前 head 审查标明已解决时忽略历史 inline 并退出 0"
+else
+    fail "--wait 被已解决的历史 inline 误拦，退出 $status"
+fi
+
 if [[ "$failures" -eq 0 ]]; then
     exit 0
 fi
