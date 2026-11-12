@@ -528,6 +528,34 @@ class MijiaCliTests(unittest.TestCase):
                 mijia.open_url("menumijia://toggle?device=dev_study_lamp")
         self.assertIn("系统没能打开 menumijia:// 链接", str(ctx.exception))
 
+    def test_open_failure_never_repeats_the_bridge_token(self) -> None:
+        from unittest import mock
+
+        url = mijia.build_url("toggle", [("device", "dev_study_lamp")], TOKEN, "req1")
+        # CPython puts the path on the OSError, so the OS text repeats the whole URL.
+        with (
+            mock.patch.object(mijia.sys, "platform", "win32"),
+            mock.patch.object(
+                mijia.os,
+                "startfile",
+                side_effect=OSError(1155, "No application is associated", url),
+                create=True,
+            ),
+        ):
+            with self.assertRaises(mijia.CliError) as ctx:
+                mijia.open_url(url)
+        self.assertNotIn(TOKEN, str(ctx.exception))
+
+        failed = mock.Mock(returncode=1, stderr=f"No application knows how to open URL {url}")
+        with (
+            mock.patch.object(mijia.sys, "platform", "darwin"),
+            mock.patch.object(mijia.subprocess, "run", return_value=failed),
+        ):
+            with self.assertRaises(mijia.CliError) as ctx:
+                mijia.open_url(url)
+        self.assertNotIn(TOKEN, str(ctx.exception))
+        self.assertIn("token=<redacted>", str(ctx.exception))
+
     def test_build_url_escapes_spaces_and_keeps_the_token_last(self) -> None:
         url = mijia.build_url("ask", [("text", "开 灯")], TOKEN, "req1")
         self.assertEqual(url, f"menumijia://ask?text=%E5%BC%80%20%E7%81%AF&id=req1&token={TOKEN}")

@@ -137,11 +137,11 @@ extension SmartDevice {
                 envParts.append(aq)
             }
             if let t = s.temperature, let h = s.humidity {
-                envParts.append("\(L10n.temperature(t, fractionDigits: 0)) \(Int(h.rounded()))%")
+                envParts.append("\(L10n.temperature(t, fractionDigits: 0)) \(DeviceSynthesizer.roundedInt(h) ?? 0)%")
             } else if let t = s.temperature {
                 envParts.append(L10n.temperature(t, fractionDigits: 1))
             } else if let h = s.humidity {
-                envParts.append("\(Int(h.rounded()))%")
+                envParts.append("\(DeviceSynthesizer.roundedInt(h) ?? 0)%")
             }
             if !s.isOn {
                 if envParts.isEmpty { return L10n.tr("已关闭", "Off") }
@@ -304,7 +304,7 @@ extension SmartDevice {
                 parts.append(L10n.tr("目标 \(target)%", "Target \(target)%"))
             }
             if let current = s.currentHumidity {
-                parts.append(L10n.tr("当前 \(Int(current.rounded()))%", "Now \(Int(current.rounded()))%"))
+                parts.append(L10n.tr("当前 \(DeviceSynthesizer.roundedInt(current) ?? 0)%", "Now \(DeviceSynthesizer.roundedInt(current) ?? 0)%"))
             }
             return parts.isEmpty ? L10n.tr("运行中", "Running") : parts.joined(separator: " · ")
 

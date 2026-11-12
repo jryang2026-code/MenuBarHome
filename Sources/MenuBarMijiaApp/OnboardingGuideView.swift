@@ -529,12 +529,12 @@ public struct OnboardingGuideView: View {
                     icon: "gearshape.2",
                     title: L10n.tr("自动化与 URL 直控", "Automation & URL Control"),
                     detail: L10n.tr(
-                        "设置 → 连接 → 自动化；URL 直控默认每次先确认。",
-                        "Settings → Connections → Automation. URL control asks first by default."
+                        "设置 → 通用 → 自动化与外部控制；URL 直控默认每次先确认。",
+                        "Settings → General → Automation & External Control. URL control asks first by default."
                     ),
                     actionTitle: L10n.tr("打开设置", "Open Settings")
                 ) {
-                    SettingsWindowOpener.shared.show(tab: .connection)
+                    SettingsWindowOpener.shared.show(tab: .general)
                 }
 
                 advancedVoiceAndShortcutsCard

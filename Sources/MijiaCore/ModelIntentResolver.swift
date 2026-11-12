@@ -652,8 +652,10 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
                 continue
             }
             let rawConf = number(from: item["confidence"]) ?? 80
-            let normalizedConf = rawConf <= 1.0 ? Int((rawConf * 100).rounded()) : Int(rawConf.rounded())
-            let pct = max(18, min(99, normalizedConf))
+            // The model's number is untrusted: clamp before converting, `Int(_:)` traps on NaN or a
+            // value beyond Int range.
+            let scaledConf = rawConf <= 1.0 ? rawConf * 100 : rawConf
+            let pct = scaledConf.isFinite ? Int(max(18, min(99, scaledConf)).rounded()) : 80
             scored.append((
                 pct,
                 AssistantSuggestion(

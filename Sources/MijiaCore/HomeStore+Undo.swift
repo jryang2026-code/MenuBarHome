@@ -245,7 +245,7 @@ extension HomeStore {
         guard let bannerId = undoBanner?.id else { return nil }
 
         let context = controlContextID
-        let deviceNames = Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0.name) })
+        let deviceNames = Dictionary(devices.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
         let task = Task { () -> BulkWriteOutcome in
             // Every exit drops the registration, so a later undo never waits on a finished batch.
             defer { runningBatches[bannerId] = nil }
@@ -467,7 +467,7 @@ extension HomeStore {
         guard let bannerId = undoBanner?.id else { return nil }
 
         let context = controlContextID
-        let deviceNames = Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0.name) })
+        let deviceNames = Dictionary(devices.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
         let task = Task { () -> BulkWriteOutcome in
             // Every exit drops the registration, so a later undo never waits on a finished batch.
             defer { runningBatches[bannerId] = nil }
@@ -753,7 +753,7 @@ extension HomeStore {
             Set(running.writes.filter { !ownsRow($0.value) }.keys)
         } ?? []
         let undoRevision = undoStateRevision
-        let preUndoById = Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0) })
+        let preUndoById = Dictionary(devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let preUndoFacetsById = deviceFacets
         let applicable = applyUndoCommands(
             banner.restoreCommands,

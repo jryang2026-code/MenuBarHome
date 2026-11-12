@@ -285,7 +285,7 @@ extension HomeStore {
 
             let now = ContinuousClock.now
             var merged: [SmartDevice] = []
-            let existingById = Dictionary(uniqueKeysWithValues: self.devices.map { ($0.id, $0) })
+            let existingById = Dictionary(self.devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
             for device in snapshot.devices {
                 var incoming = device
@@ -670,6 +670,8 @@ extension HomeStore {
             eventTask?.cancel()
             shutdownCurrentProvider()
             haPlaintextPrompt = nil
+            // `offerHAAddress` refuses in demo; an offer made before the switch must not stay on screen.
+            pendingHAAddressSuggestion = nil
             // Strictly offline: stop any LAN TV and update work started by the previous backend (#47).
             if let lgClient = lgWebOSClient {
                 Task { await lgClient.stop() }

@@ -312,8 +312,9 @@ def open_url(url: str) -> None:
         try:
             os.startfile(url)  # type: ignore[attr-defined]
         except OSError as error:
+            # The OS error text carries the URL, token included; never pass it on unredacted.
             raise CliError(
-                f"系统没能打开 menumijia:// 链接（{error}），请确认 MenuBarHome 已安装。"
+                f"系统没能打开 menumijia:// 链接（{_scrub_token(str(error))}），请确认 MenuBarHome 已安装。"
             ) from error
         return
     try:
@@ -325,9 +326,9 @@ def open_url(url: str) -> None:
             text=True,
         )
     except OSError as error:
-        raise CliError(f"无法调用 open 打开链接：{error}") from error
+        raise CliError(f"无法调用 open 打开链接：{_scrub_token(str(error))}") from error
     if completed.returncode != 0:
-        reason = (completed.stderr or "").strip() or f"退出码 {completed.returncode}"
+        reason = _scrub_token((completed.stderr or "").strip()) or f"退出码 {completed.returncode}"
         raise CliError(f"系统没能打开 menumijia:// 链接（{reason}），请确认 MenuBarHome 已安装。")
 
 
@@ -435,6 +436,13 @@ def send(
     else:
         print(message or ("完成" if not is_error else "执行失败"))
     return EXIT_COMMAND_FAILED if is_error else EXIT_OK
+
+
+def _scrub_token(text: str) -> str:
+    """Replaces every `token=<value>` in free text; `open` and `os.startfile` echo the URL."""
+    import re
+
+    return re.sub(r"token=[^&\s'\"<>]+", "token=<redacted>", text)
 
 
 def _redacted(url: str) -> str:

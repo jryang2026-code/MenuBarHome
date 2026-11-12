@@ -757,7 +757,7 @@ public struct IntentCatalog: Sendable {
         case .humidifier(let s):
             var parts: [String] = [s.isOn ? "开" : "关"]
             if let target = s.targetHumidity { parts.append("目标湿度\(target)%") }
-            if let current = s.currentHumidity { parts.append("当前湿度\(Int(current.rounded()))%") }
+            if let current = s.currentHumidity { parts.append("当前湿度\(DeviceSynthesizer.roundedInt(current) ?? 0)%") }
             if let mode = s.currentMode, !mode.isEmpty { parts.append(mode) }
             return parts.joined(separator: " ")
         case .valve(let s):

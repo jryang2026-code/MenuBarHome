@@ -1051,8 +1051,8 @@ public enum MiotSynthesizer {
         if let desc = status?.valueDescription {
             parts.append(genericApplianceStatusText(forDescription: desc))
         }
-        if let t = temp?.value?.doubleValue, t.isFinite {
-            parts.append("\(Int(t.rounded()))°C")
+        if let t = temp?.value?.doubleValue, let degrees = DeviceSynthesizer.roundedInt(t) {
+            parts.append("\(degrees)°C")
         }
         if let left = leftTime?.value?.intValue, left > 0 {
             parts.append(L10n.tr("剩余 \(left) 分", "\(left) min left"))
@@ -1271,8 +1271,8 @@ public enum MiotSynthesizer {
                 } else {
                     parts.append(L10n.tr("移动监测", "Motion Sensor"))
                 }
-                if let lx = lux?.value?.doubleValue, lx.isFinite {
-                    parts.append("\(Int(lx.rounded())) lx")
+                if let lx = lux?.value?.doubleValue, let rounded = DeviceSynthesizer.roundedInt(lx) {
+                    parts.append("\(rounded) lx")
                 }
                 statusText = parts.joined(separator: " · ")
             case "magnet-sensor":
@@ -1291,8 +1291,8 @@ public enum MiotSynthesizer {
                 }
             case "illumination-sensor":
                 let lux = r.ref("illumination", in: s)
-                if let lx = lux?.value?.doubleValue, lx.isFinite {
-                    statusText = "\(Int(lx.rounded())) lx"
+                if let lx = lux?.value?.doubleValue, let rounded = DeviceSynthesizer.roundedInt(lx) {
+                    statusText = "\(rounded) lx"
                 } else {
                     statusText = L10n.tr("光照监测", "Light Sensor")
                 }

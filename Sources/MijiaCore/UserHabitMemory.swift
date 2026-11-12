@@ -758,7 +758,7 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
                   Self.isActionable(intent, devices: devices, scenes: scenes),
                   let title = Self.suggestionTitle(for: intent, devices: devices, scenes: scenes) else { continue }
             seenTargets.insert(dev.id)
-            append("env:\(dev.id):temp:\(Int(temperature.rounded()))", title, [intent])
+            append("env:\(dev.id):temp:\(DeviceSynthesizer.roundedInt(temperature) ?? 0)", title, [intent])
             return
         }
     }
