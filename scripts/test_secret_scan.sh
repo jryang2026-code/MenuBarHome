@@ -126,6 +126,22 @@ run_suite() {
     expect_caught "拦截 windows/tests 调试端口" "windows/tests/leak.test.ts" "const u = 'http://${port_sample}';" "localhost:3425"
     expect_caught "拦截 raycast/src 调试端口" "raycast/src/leak.ts" "const u = 'http://${port_sample}';" "localhost:3425"
     expect_caught "拦截非豁免 Tests 调试端口" "Tests/OtherTests.swift" "let u = \"http://${port_sample}\"" "localhost:3425"
+
+    # 稀疏检出：缺一个扫描目录时，其余目录里的 JWT 仍须拦截，干净树仍须放行。
+    reset_fixture "$fx"
+    rm -rf "$fx/raycast"
+    expect_pass "缺少 raycast/src 时干净基线仍放行"
+    rm -rf "$fx/raycast"
+    printf '%s\n' "const t = '${jwt_sample}';" >"$fx/windows/src/leak.ts"
+    set +e
+    (cd "$fx" && PATH="$run_path" "$bash_bin" "$harness") >"$out" 2>&1
+    status=$?
+    set -e
+    if [ "$status" -eq 1 ] && grep -qF -- "JWT Token" "$out"; then
+        pass "${mode_label}: 缺少 raycast/src 时仍拦截 windows/src JWT"
+    else
+        fail "${mode_label}: 缺少 raycast/src 时仍拦截 windows/src JWT 应退出 1，实际退出 ${status}：$(cat "$out")"
+    fi
 }
 
 run_suite "default-path" "$PATH"

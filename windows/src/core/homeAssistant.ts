@@ -840,6 +840,16 @@ const HA_BRIGHTNESS_COLOR_MODES = new Set([
   "white",
 ]);
 
+// Home Assistant's `light.turn_on` emulates `color_temp_kelvin` on any colour-capable light
+// (`color_temperature_to_hs` / `_to_rgbww`), so these modes all accept a colour temperature.
+const HA_COLOR_TEMP_COLOR_MODES = new Set(["color_temp", "hs", "xy", "rgb", "rgbw", "rgbww"]);
+
+// Legacy `supported_features` bits: SUPPORT_BRIGHTNESS, SUPPORT_COLOR_TEMP, SUPPORT_COLOR, SUPPORT_WHITE_VALUE.
+const HA_LEGACY_SUPPORT_BRIGHTNESS = 1;
+const HA_LEGACY_SUPPORT_COLOR_TEMP = 2;
+const HA_LEGACY_SUPPORT_COLOR = 16;
+const HA_LEGACY_SUPPORT_WHITE_VALUE = 128;
+
 function haLightCapabilityFlags(a: Row): {
   readonly brightnessWritable?: false;
   readonly colorWritable?: false;
@@ -856,7 +866,7 @@ function haLightCapabilityFlags(a: Row): {
       .map((mode) => mode.trim().toLowerCase())
       .filter(Boolean);
     const brightnessWritable = colorModes.some((mode) => HA_BRIGHTNESS_COLOR_MODES.has(mode));
-    const colorWritable = colorModes.includes("color_temp");
+    const colorWritable = colorModes.some((mode) => HA_COLOR_TEMP_COLOR_MODES.has(mode));
     return {
       ...(brightnessWritable ? {} : { brightnessWritable: false as const }),
       ...(colorWritable ? {} : { colorWritable: false as const }),
@@ -871,15 +881,25 @@ function haLightCapabilityFlags(a: Row): {
     colorWritable = false;
   } else if (colorMode.length > 0 && colorMode !== "unknown") {
     brightnessWritable = HA_BRIGHTNESS_COLOR_MODES.has(colorMode);
-    colorWritable = colorMode === "color_temp" || hasColorTempAttr;
+    colorWritable = HA_COLOR_TEMP_COLOR_MODES.has(colorMode) || hasColorTempAttr;
   } else if (rawFeatures !== null) {
     const features = Math.trunc(rawFeatures);
     brightnessWritable =
-      (features & (1 | 2 | 16 | 128)) !== 0 || number(a.brightness) !== null || hasColorTempAttr;
-    colorWritable = (features & 2) !== 0 || hasColorTempAttr;
+      (features &
+        (HA_LEGACY_SUPPORT_BRIGHTNESS |
+          HA_LEGACY_SUPPORT_COLOR_TEMP |
+          HA_LEGACY_SUPPORT_COLOR |
+          HA_LEGACY_SUPPORT_WHITE_VALUE)) !==
+        0 ||
+      number(a.brightness) !== null ||
+      hasColorTempAttr;
+    colorWritable =
+      (features & (HA_LEGACY_SUPPORT_COLOR_TEMP | HA_LEGACY_SUPPORT_COLOR)) !== 0 || hasColorTempAttr;
   } else {
-    brightnessWritable = number(a.brightness) !== null || hasColorTempAttr;
-    colorWritable = hasColorTempAttr;
+    // Nothing advertised either way (legacy integration, light off): keep the controls rather
+    // than hide them on a guess.
+    brightnessWritable = true;
+    colorWritable = true;
   }
   return {
     ...(brightnessWritable ? {} : { brightnessWritable: false as const }),
