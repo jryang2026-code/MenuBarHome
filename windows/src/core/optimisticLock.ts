@@ -585,29 +585,74 @@ export function hasPendingReadBack(host: OptimisticLockHost, deviceId: string): 
 export function syncDirectCommandToFacets(
   deviceFacets: Readonly<Record<string, readonly FacetControl[]>>,
   command: DeviceCommand,
+  devices?: readonly SmartDevice[],
 ): string[] {
   const updatedDeviceIds: string[] = [];
   for (const [devId, controls] of Object.entries(deviceFacets)) {
     let touched = false;
     for (const control of controls) {
-      if (control.target?.kind !== "property" || control.target.entityId !== command.entityId) {
+      if (control.target?.kind !== "property") continue;
+      const targetId = control.target.entityId;
+      if (targetId === command.entityId) {
+        if (command.kind === "setSwitch") {
+          if (control.value !== command.isOn) {
+            control.value = command.isOn;
+            touched = true;
+          }
+        } else if (command.kind === "setSelectOption") {
+          const match = control.options.find((opt) => opt.label === command.option);
+          const nextVal = match ? match.value : command.option;
+          if (control.value !== nextVal) {
+            control.value = nextVal;
+            touched = true;
+          }
+        } else if (command.kind === "setNumberValue") {
+          if (control.value !== command.value) {
+            control.value = command.value;
+            touched = true;
+          }
+        }
         continue;
       }
-      if (command.kind === "setSwitch") {
-        if (control.value !== command.isOn) {
-          control.value = command.isOn;
-          touched = true;
-        }
-      } else if (command.kind === "setSelectOption") {
-        const match = control.options.find((opt) => opt.label === command.option);
-        const nextVal = match ? match.value : command.option;
+      if (
+        command.kind === "setNumberValue" &&
+        (targetId === `${command.entityId}#target_humidity` ||
+          targetId === `${command.entityId}#position`)
+      ) {
+        const nextVal = Math.max(0, Math.min(100, Math.round(command.value)));
         if (control.value !== nextVal) {
           control.value = nextVal;
           touched = true;
         }
-      } else if (command.kind === "setNumberValue") {
-        if (control.value !== command.value) {
-          control.value = command.value;
+      } else if (command.kind === "setSwitch" && targetId === `${command.entityId}#power`) {
+        if (control.value !== command.isOn) {
+          control.value = command.isOn;
+          touched = true;
+        }
+      } else if (
+        command.kind === "setSwitch" &&
+        !command.isOn &&
+        targetId === `${command.entityId}#play_pause`
+      ) {
+        if (control.value !== false) {
+          control.value = false;
+          touched = true;
+        }
+      } else if (command.kind === "pressButton" && targetId === `${command.entityId}#play_pause`) {
+        const dev = devices?.find((d) => d.id === devId);
+        const nextVal =
+          dev?.kind.kind === "speaker"
+            ? dev.kind.state === "playing"
+            : !(control.value === true || control.value === 1);
+        if (control.value !== nextVal) {
+          control.value = nextVal;
+          touched = true;
+        }
+      } else if (command.kind === "setSelectOption" && targetId === `${command.entityId}#source`) {
+        const match = control.options.find((opt) => opt.label === command.option);
+        const nextVal = match ? match.value : command.option;
+        if (control.value !== nextVal) {
+          control.value = nextVal;
           touched = true;
         }
       }
@@ -662,8 +707,10 @@ export function applyHAExtendedCommandEffect(
             ? Math.max(0, Math.min(100, Math.round(command.value * 100)))
             : Math.max(0, Math.min(100, Math.round(command.value)));
         k.volumePercent = pct;
-      } else if (command.kind === "setSwitch") {
-        k.state = command.isOn ? "playing" : "idle";
+      } else if (command.kind === "pressButton") {
+        k.state = k.state === "playing" ? "paused" : "playing";
+      } else if (command.kind === "setSwitch" && !command.isOn) {
+        k.state = "idle";
       }
     }
   }

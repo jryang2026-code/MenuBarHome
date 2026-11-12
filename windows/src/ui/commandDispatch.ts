@@ -79,7 +79,7 @@ export async function applyCommand(host: MenuMijiaWindowsApp, command: DeviceCom
     if (host.settings.connectionMode === "homeAssistant") {
       applyHAExtendedCommandEffect(host.devices, command);
     }
-    syncDirectCommandToFacets(facets, command);
+    syncDirectCommandToFacets(facets, command, host.devices);
 
     for (const change of cameraChanges) {
       if (host.cameraLive.activeLiveCameraId !== change.deviceId || host.cameraLive.liveCameraHidden) continue;

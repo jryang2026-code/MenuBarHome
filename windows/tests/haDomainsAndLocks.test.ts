@@ -92,17 +92,28 @@ describe("Home Assistant domain synthesis & golden fixtures", () => {
 
     const facets = home.deviceFacets?.["humidifier-full"] ?? [];
     assert.deepEqual(
-      new Set(facets.map((f) => f.id)),
-      new Set([
+      facets.map((f) => f.id),
+      [
+        "humidifier.living#target_humidity",
         "switch.living_led",
         "select.living_fan_mode",
         "number.target_level",
         "button.living_self_clean",
         "sensor.living_battery",
         "binary_sensor.living_water_shortage",
-      ]),
-      "skips claimed sensor.living_humidity, text.living_note, and config switch.living_reboot",
+      ],
+      "prepends synthetic target humidity slider and skips claimed sensor.living_humidity, text.living_note, and config switch.living_reboot",
     );
+
+    const humTargetSlider = facets.find((f) => f.id === "humidifier.living#target_humidity");
+    assert.equal(humTargetSlider?.kind, "slider");
+    assert.equal(humTargetSlider?.name, "target-humidity");
+    assert.equal(humTargetSlider?.serviceName, "humidifier");
+    assert.equal(humTargetSlider?.unit, "percentage");
+    assert.equal(humTargetSlider?.value, 55);
+    assert.deepEqual(humTargetSlider?.range, { min: 30, max: 80, step: 5 });
+    assert.equal(humTargetSlider?.writesByDefault, true);
+    assert.equal(humTargetSlider?.isHighValue, true);
 
     const led = facets.find((f) => f.id === "switch.living_led");
     assert.equal(led?.kind, "toggle");
@@ -264,6 +275,121 @@ describe("Home Assistant domain synthesis & golden fixtures", () => {
     assert.equal(valveMin.kind.kind, "appliance");
     assert.equal(valveMin.kind.isOn, false);
     assert.equal(valveMin.kind.powerWritable, true);
+
+    // 5. Parity edge cases: target-humidity-only humidifier, valve SET_POSITION / closing / powerWritable,
+    //    and media_player power / play-pause / source controls.
+    const parityHome = HomeAssistantSynthesizer.synthesize({
+      areas: [],
+      devices: [
+        { id: "hum_only_target", name: "卧室加湿器" },
+        { id: "valve_pos_dev", name: "总水阀" },
+        { id: "valve_closing_dev", name: "关闭中水阀" },
+        { id: "valve_close_only_dev", name: "单向关阀" },
+        { id: "valve_open_only_dev", name: "单向开阀" },
+        { id: "tv_speaker_dev", name: "客厅音响" },
+      ],
+      entities: [
+        { entity_id: "humidifier.only_target", device_id: "hum_only_target" },
+        { entity_id: "valve.pos_main", device_id: "valve_pos_dev" },
+        { entity_id: "valve.closing_one", device_id: "valve_closing_dev" },
+        { entity_id: "valve.close_only", device_id: "valve_close_only_dev" },
+        { entity_id: "valve.open_only", device_id: "valve_open_only_dev" },
+        { entity_id: "media_player.living_speaker", device_id: "tv_speaker_dev" },
+      ],
+      states: [
+        {
+          entity_id: "humidifier.only_target",
+          state: "on",
+          attributes: { humidity: 50, min_humidity: 35, max_humidity: 75, supported_features: 1 },
+        },
+        {
+          entity_id: "valve.pos_main",
+          state: "open",
+          attributes: { device_class: "water", current_position: 35, supported_features: 7 },
+        },
+        {
+          entity_id: "valve.closing_one",
+          state: "closing",
+          attributes: { device_class: "water", current_position: 40, supported_features: 3 },
+        },
+        {
+          entity_id: "valve.close_only",
+          state: "closed",
+          attributes: { device_class: "water", supported_features: 2 },
+        },
+        {
+          entity_id: "valve.open_only",
+          state: "open",
+          attributes: { device_class: "water", supported_features: 1 },
+        },
+        {
+          entity_id: "media_player.living_speaker",
+          state: "paused",
+          attributes: {
+            supported_features: 1 | 128 | 256 | 2048 | 16384,
+            source_list: ["Spotify", "AirPlay"],
+            source: "AirPlay",
+          },
+        },
+      ],
+    });
+    const parityMap = byId(parityHome.devices);
+
+    const humOnly = parityMap.get("hum_only_target")!;
+    const humOnlyFacets = parityHome.deviceFacets?.["hum_only_target"] ?? [];
+    assert.equal(humOnlyFacets.length, 1);
+    assert.equal(humOnlyFacets[0]?.id, "humidifier.only_target#target_humidity");
+    assert.equal(hasDetailDrawer(humOnly, humOnlyFacets), true, "target-humidity-only humidifier expands drawer");
+
+    const valvePos = parityMap.get("valve_pos_dev")!;
+    const valvePosFacets = parityHome.deviceFacets?.["valve_pos_dev"] ?? [];
+    assert.equal(valvePosFacets.length, 1);
+    assert.equal(valvePosFacets[0]?.id, "valve.pos_main#position");
+    assert.equal(valvePosFacets[0]?.serviceName, "water-valve");
+    assert.equal(valvePosFacets[0]?.writesByDefault, false);
+    assert.equal(valvePosFacets[0]?.isConfirmedWrite, true);
+    assert.equal(hasDetailDrawer(valvePos, valvePosFacets), true);
+    assert.equal(
+      ManualControlPolicy.facetRequiresConfirmation(valvePosFacets[0]!, 50, valvePos),
+      true,
+      "valve position write must always require confirmation",
+    );
+    const cachedRoundTrip = parseCachedHAHome(
+      JSON.parse(JSON.stringify({ identity: "http://192.168.1.8:8123|tok", home: parityHome })),
+    );
+    assert.equal(
+      cachedRoundTrip?.home.deviceFacets?.["valve_pos_dev"]?.[0]?.isConfirmedWrite,
+      true,
+      "parseCachedHAHome preserves isConfirmedWrite on synthetic valve position facet",
+    );
+
+    const valveClosing = parityMap.get("valve_closing_dev")!;
+    assert.equal(valveClosing.kind.kind, "appliance");
+    assert.equal(valveClosing.kind.isOn, false, "closing valve with current_position > 0 must have isOn: false");
+    assert.equal(valveClosing.kind.statusText, "正在关闭");
+
+    const valveCloseOnly = parityMap.get("valve_close_only_dev")!;
+    assert.equal(valveCloseOnly.kind.kind, "appliance");
+    assert.equal(valveCloseOnly.kind.powerWritable, false, "closed valve without OPEN bit cannot toggle on");
+
+    const valveOpenOnly = parityMap.get("valve_open_only_dev")!;
+    assert.equal(valveOpenOnly.kind.kind, "appliance");
+    assert.equal(valveOpenOnly.kind.powerWritable, false, "open valve without CLOSE bit cannot toggle off");
+
+    const tvSpeaker = parityMap.get("tv_speaker_dev")!;
+    const tvSpeakerFacets = parityHome.deviceFacets?.["tv_speaker_dev"] ?? [];
+    assert.deepEqual(
+      tvSpeakerFacets.map((f) => f.id),
+      [
+        "media_player.living_speaker#play_pause",
+        "media_player.living_speaker#power",
+        "media_player.living_speaker#source",
+      ],
+    );
+    assert.equal(tvSpeakerFacets[0]?.value, false);
+    assert.equal(tvSpeakerFacets[1]?.value, true);
+    assert.equal(tvSpeakerFacets[2]?.value, 1);
+    assert.equal(hasDetailDrawer(tvSpeaker, tvSpeakerFacets), true);
   });
 
   it("matches ha_cover_snapshot.json and splits dual-track covers sharing one HA device_id", () => {
@@ -760,7 +886,7 @@ describe("HA service mapping, subpath identity, and cache round-trip", () => {
     assert.ok(parsed);
     assert.equal(parsed.identity, idSub);
     assert.equal(parsed.home.devices.length, withExtra.devices.length);
-    assert.equal(parsed.home.deviceFacets?.["humidifier-full"]?.length, 6);
+    assert.equal(parsed.home.deviceFacets?.["humidifier-full"]?.length, 7);
     const parsedCam = parsed.home.devices.find((d) => d.id === "cam-1");
     assert.equal(parsedCam?.kind.kind === "camera" ? parsedCam.kind.snapshotPath : "bad", null);
   });
@@ -984,7 +1110,7 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
     const root = document.querySelector<HTMLElement>("#app")!;
     const app = new MenuMijiaWindowsApp(root);
     await refreshHADevices(app, true);
-    assert.equal(app.deviceFacets["humidifier-full"]?.length, 6);
+    assert.equal(app.deviceFacets["humidifier-full"]?.length, 7);
 
     // Toggle switch.living_led facet off via setMiotProperty -> switch.turn_off
     const ok = await applyCommand(app, {
@@ -1039,6 +1165,209 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
     assert.equal(crossWindowTicket.isCancelled(), true);
     await new Promise((resolveTimer) => setTimeout(resolveTimer, 50));
     assert.equal(staleSnapshotCalls, 0);
+
+    cancelDelayedReadBack(app);
+  });
+
+  it("dispatches humidifier target humidity, media_player play/pause/power/source, and confirmed valve position from mounted DOM", async () => {
+    activeDom = mountTestWindow({ stubInterval: true });
+    const { MenuMijiaWindowsApp } = await import("../src/ui/app.js");
+    const haBaseURL = "http://192.168.1.8:8123";
+    const haToken = "dom-parity-token";
+    const snapshot = {
+      areas: [{ area_id: "living", name: "客厅" }],
+      devices: [
+        { id: "hum-dom", name: "加湿器", area_id: "living" },
+        { id: "speaker-dom", name: "家庭音箱", area_id: "living" },
+        { id: "valve-dom", name: "总水阀", area_id: "living" },
+      ],
+      entities: [
+        { entity_id: "humidifier.dom", device_id: "hum-dom" },
+        { entity_id: "media_player.dom", device_id: "speaker-dom" },
+        { entity_id: "valve.dom", device_id: "valve-dom" },
+      ],
+      states: [
+        {
+          entity_id: "humidifier.dom",
+          state: "on",
+          attributes: {
+            humidity: 50,
+            current_humidity: 44,
+            min_humidity: 30,
+            max_humidity: 80,
+            target_humidity_step: 5,
+            supported_features: 1,
+          },
+        },
+        {
+          entity_id: "media_player.dom",
+          state: "paused",
+          attributes: {
+            supported_features: 1 | 4 | 8 | 128 | 256 | 2048 | 16384,
+            volume_level: 0.4,
+            is_volume_muted: false,
+            source_list: ["Spotify", "AirPlay"],
+            source: "AirPlay",
+          },
+        },
+        {
+          entity_id: "valve.dom",
+          state: "open",
+          attributes: {
+            device_class: "water",
+            current_position: 35,
+            supported_features: 7,
+          },
+        },
+      ],
+    };
+
+    const executedCalls: Array<{ domain: string; service: string; entity_id: string; data: Record<string, unknown> }> = [];
+    const invoke = async (command: string, args: Record<string, unknown> = {}): Promise<unknown> => {
+      if (command === "ha_execute") {
+        executedCalls.push(
+          args.command as { domain: string; service: string; entity_id: string; data: Record<string, unknown> },
+        );
+        return null;
+      }
+      if (command === "ha_snapshot") {
+        return structuredClone(snapshot);
+      }
+      return undefined;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem(
+      "menumijia.windows.settings.v2",
+      JSON.stringify({
+        connectionMode: "homeAssistant",
+        hasCompletedOnboarding: true,
+        allowAdvancedFacetWrites: false,
+        haBaseURL,
+        haToken,
+        cachedHAHome: {
+          identity: homeAssistantIdentity(haBaseURL, haToken),
+          home: HomeAssistantSynthesizer.synthesize(snapshot),
+        },
+      }),
+    );
+
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const app = new MenuMijiaWindowsApp(root);
+    await refreshHADevices(app, true);
+    const flushMicrotasks = () => new Promise((r) => setTimeout(r, 0));
+
+    const openDrawerMoreSettings = (deviceId: string) => {
+      const expandBtn =
+        root.querySelector<HTMLElement>(`[data-expand-device="${deviceId}"]`) ??
+        root.querySelector<HTMLElement>(`[data-body-device="${deviceId}"]`);
+      assert.ok(expandBtn, `expected expandable trigger for ${deviceId}`);
+      expandBtn.click();
+      const moreToggle = root.querySelector<HTMLElement>(`[data-more-settings-toggle="${deviceId}"]`);
+      assert.ok(moreToggle, `expected 更多设置 toggle for ${deviceId}`);
+      moreToggle.click();
+    };
+
+    // 1. Humidifier target humidity slider dispatches humidifier.set_humidity directly
+    openDrawerMoreSettings("hum-dom");
+    const humSlider = root.querySelector<HTMLInputElement>(
+      '[data-facet-number="hum-dom|humidifier.dom#target_humidity"]',
+    );
+    assert.ok(humSlider && !humSlider.disabled, "humidifier target humidity slider is enabled");
+    humSlider.value = "65";
+    humSlider.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await flushMicrotasks();
+    assert.deepEqual(executedCalls.at(-1), {
+      domain: "humidifier",
+      service: "set_humidity",
+      entity_id: "humidifier.dom",
+      data: { humidity: 65 },
+    });
+    const humDev = app.devices.find((d) => d.id === "hum-dom")!;
+    assert.ok(deviceStatusSummary(humDev).includes("65"), "optimistic humidifier status reflects 65%");
+
+    // 2. Speaker play/pause, source select, and power off controls
+    openDrawerMoreSettings("speaker-dom");
+    const playBtn = root.querySelector<HTMLButtonElement>(
+      '[data-facet-toggle="speaker-dom|media_player.dom#play_pause"]',
+    );
+    assert.ok(playBtn && !playBtn.disabled, "speaker play/pause toggle is enabled");
+    playBtn.click();
+    await flushMicrotasks();
+    assert.deepEqual(executedCalls.at(-1), {
+      domain: "media_player",
+      service: "media_play_pause",
+      entity_id: "media_player.dom",
+      data: {},
+    });
+    const speakerDev = app.devices.find((d) => d.id === "speaker-dom")!;
+    assert.equal(speakerDev.kind.kind, "speaker");
+    assert.equal(speakerDev.kind.state, "playing");
+    assert.equal(
+      app.deviceFacets["speaker-dom"]?.find((f) => f.id === "media_player.dom#play_pause")?.value,
+      true,
+    );
+
+    const sourceSpotifyBtn = root.querySelector<HTMLButtonElement>(
+      '[data-facet-select="speaker-dom|media_player.dom#source|0"]',
+    );
+    assert.ok(sourceSpotifyBtn && !sourceSpotifyBtn.disabled, "speaker source pill is enabled");
+    sourceSpotifyBtn.click();
+    await flushMicrotasks();
+    assert.deepEqual(executedCalls.at(-1), {
+      domain: "media_player",
+      service: "select_source",
+      entity_id: "media_player.dom",
+      data: { source: "Spotify" },
+    });
+
+    const powerBtn = root.querySelector<HTMLButtonElement>(
+      '[data-facet-toggle="speaker-dom|media_player.dom#power"]',
+    );
+    assert.ok(powerBtn && !powerBtn.disabled, "speaker power toggle is enabled");
+    powerBtn.click();
+    await flushMicrotasks();
+    assert.deepEqual(executedCalls.at(-1), {
+      domain: "media_player",
+      service: "turn_off",
+      entity_id: "media_player.dom",
+      data: {},
+    });
+    assert.equal(
+      (app.devices.find((d) => d.id === "speaker-dom")!.kind as { state: string }).state,
+      "idle",
+    );
+
+    // 3. Valve SET_POSITION slider stays enabled with allowAdvancedFacetWrites=false, arms high-risk
+    //    confirmation on the first change, and dispatches valve.set_valve_position on confirmation.
+    openDrawerMoreSettings("valve-dom");
+    const countBeforeValve = executedCalls.length;
+    const valveSlider1 = root.querySelector<HTMLInputElement>(
+      '[data-facet-number="valve-dom|valve.dom#position"]',
+    );
+    assert.ok(valveSlider1 && !valveSlider1.disabled, "valve position slider is enabled via isConfirmedWrite");
+    valveSlider1.value = "50";
+    valveSlider1.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await flushMicrotasks();
+    assert.equal(executedCalls.length, countBeforeValve, "first valve position write arms confirmation");
+    assert.ok(app.pendingHighRisk !== null, "pendingHighRisk is armed");
+
+    const valveSlider2 = root.querySelector<HTMLInputElement>(
+      '[data-facet-number="valve-dom|valve.dom#position"]',
+    );
+    assert.ok(valveSlider2);
+    valveSlider2.value = "50";
+    valveSlider2.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await flushMicrotasks();
+    assert.deepEqual(executedCalls.at(-1), {
+      domain: "valve",
+      service: "set_valve_position",
+      entity_id: "valve.dom",
+      data: { position: 50 },
+    });
+    assert.equal(
+      (app.devices.find((d) => d.id === "valve-dom")!.kind as { statusText: string | null }).statusText,
+      "开 50%",
+    );
 
     cancelDelayedReadBack(app);
   });

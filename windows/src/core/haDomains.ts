@@ -496,7 +496,7 @@ export function buildValveKind(
     online &&
     (stateLower === "open" ||
       stateLower === "opening" ||
-      (rawPos !== null && rawPos > 0 && stateLower !== "closed"));
+      (rawPos !== null && rawPos > 0 && stateLower !== "closed" && stateLower !== "closing"));
   const devClass = typeof a.device_class === "string" ? a.device_class.trim().toLowerCase() : "";
 
   let statusText: string | null = null;
@@ -517,7 +517,7 @@ export function buildValveKind(
       entityId: valveId,
       isOn: isOpen,
       powerPresent: true,
-      powerWritable: online && (openWritable || closeWritable),
+      powerWritable: online && (isOpen ? closeWritable : openWritable),
       currentMode: null,
       availableModes: [],
       modeWritable: false,
@@ -782,6 +782,143 @@ function isLowRiskHAFacetName(name: string, facetsProfile: DeviceProfiles["facet
   return LOW_RISK_HA_SUBSTRINGS.some((sub) => name.includes(sub));
 }
 
+function buildSyntheticPrimaryHAFacets(
+  device: SmartDevice,
+  states: ReadonlyMap<string, HAState>,
+): FacetControl[] {
+  const out: FacetControl[] = [];
+  const k = device.kind;
+
+  if (k.kind === "appliance" && k.entityId.startsWith("humidifier.")) {
+    const humId = k.entityId;
+    const st = states.get(humId);
+    if (st) {
+      const a = st.attributes;
+      const online = isHAStateAvailable(st);
+      const features = haIntFeatures(a.supported_features);
+      const targetHumidity = haRoundedInt(a.target_humidity) ?? haRoundedInt(a.humidity);
+      const minH = haRoundedInt(a.min_humidity) ?? 0;
+      const maxH = haRoundedInt(a.max_humidity) ?? 100;
+      const step = Math.max(1, haRoundedInt(a.target_humidity_step) ?? 1);
+      const supportsTargetHumidity = features !== null ? (features & 1) !== 0 : targetHumidity !== null;
+      if (supportsTargetHumidity && targetHumidity !== null && maxH > minH) {
+        out.push({
+          id: `${humId}#target_humidity`,
+          kind: "slider",
+          name: "target-humidity",
+          title: null,
+          serviceName: "humidifier",
+          unit: "percentage",
+          scale: null,
+          value: targetHumidity,
+          options: [],
+          range: { min: minH, max: maxH, step },
+          isWritable: online,
+          writesByDefault: true,
+          isHighValue: true,
+          target: { kind: "property", entityId: `${humId}#target_humidity`, piid: 0 },
+        });
+      }
+    }
+  } else if (k.kind === "appliance" && k.entityId.startsWith("valve.")) {
+    const valveId = k.entityId;
+    const st = states.get(valveId);
+    if (st) {
+      const a = st.attributes;
+      const online = isHAStateAvailable(st);
+      const features = haIntFeatures(a.supported_features);
+      const rawPos = haRoundedInt(a.current_position);
+      if (features !== null && (features & 4) !== 0 && rawPos !== null) {
+        out.push({
+          id: `${valveId}#position`,
+          kind: "slider",
+          name: "valve-position",
+          title: haTr("开度", "Position"),
+          serviceName: haText(a.device_class).toLowerCase() === "gas" ? "gas-valve" : "water-valve",
+          unit: "percentage",
+          scale: null,
+          value: Math.max(0, Math.min(100, rawPos)),
+          options: [],
+          range: { min: 0, max: 100, step: 1 },
+          isWritable: online,
+          writesByDefault: false,
+          isConfirmedWrite: true,
+          isHighValue: true,
+          target: { kind: "property", entityId: `${valveId}#position`, piid: 0 },
+        });
+      }
+    }
+  } else if (k.kind === "speaker" && k.mediaEntityId.startsWith("media_player.")) {
+    const mediaId = k.mediaEntityId;
+    const st = states.get(mediaId);
+    if (st) {
+      const a = st.attributes;
+      const online = isHAStateAvailable(st);
+      const stateLower = st.state.toLowerCase();
+      const features = haIntFeatures(a.supported_features);
+      if (features === null || (features & (1 | 16384)) !== 0) {
+        out.push({
+          id: `${mediaId}#play_pause`,
+          kind: "toggle",
+          name: "play-pause",
+          title: haTr("播放", "Play"),
+          serviceName: "speaker",
+          unit: null,
+          scale: null,
+          value: k.state === "playing",
+          options: [],
+          range: null,
+          isWritable: online,
+          writesByDefault: true,
+          isHighValue: true,
+          target: { kind: "property", entityId: `${mediaId}#play_pause`, piid: 0 },
+        });
+      }
+      if ((features !== null && (features & (128 | 256)) !== 0) || stateLower === "off" || stateLower === "standby") {
+        out.push({
+          id: `${mediaId}#power`,
+          kind: "toggle",
+          name: "on",
+          title: null,
+          serviceName: "speaker",
+          unit: null,
+          scale: null,
+          value: online && stateLower !== "off" && stateLower !== "standby",
+          options: [],
+          range: null,
+          isWritable: online,
+          writesByDefault: true,
+          isHighValue: true,
+          target: { kind: "property", entityId: `${mediaId}#power`, piid: 0 },
+        });
+      }
+      const sourceList = haStrings(a.source_list);
+      if (sourceList.length > 0 && (features === null || (features & 2048) !== 0)) {
+        const currentSource = typeof a.source === "string" ? a.source : "";
+        const selectedIdx = Math.max(0, sourceList.indexOf(currentSource));
+        out.push({
+          id: `${mediaId}#source`,
+          kind: "select",
+          name: "source",
+          title: haTr("音源", "Source"),
+          serviceName: "speaker",
+          unit: null,
+          scale: null,
+          value: selectedIdx,
+          options: sourceList.map((label, idx) => ({ value: idx, label })),
+          range: null,
+          isWritable: online,
+          writesByDefault: true,
+          isHighValue: true,
+          target: { kind: "property", entityId: `${mediaId}#source`, piid: 0 },
+        });
+      }
+    }
+  }
+
+  return out;
+}
+
 export function buildHAFacets(
   entities: readonly HARow[],
   states: ReadonlyMap<string, HAState>,
@@ -789,6 +926,7 @@ export function buildHAFacets(
   device: SmartDevice,
   profiles: DeviceProfiles = DEVICE_PROFILES,
 ): FacetControl[] {
+  const syntheticControls = buildSyntheticPrimaryHAFacets(device, states);
   const controls: FacetControl[] = [];
   for (const entity of entities) {
     const entityId = haText(entity.entity_id);
@@ -808,7 +946,7 @@ export function buildHAFacets(
       remaining -= 1;
     }
   }
-  return controls;
+  return [...syntheticControls, ...controls];
 }
 
 function buildSingleHAFacet(
@@ -957,41 +1095,75 @@ export function mapHAFacetCommand(
   if (command.entityId.startsWith("miot:")) {
     throw new Error("setMiotProperty is a Xiaomi-only command");
   }
-  const dot = command.entityId.indexOf(".");
-  const domain = dot > 0 ? command.entityId.slice(0, dot) : "";
+  const hashIdx = command.entityId.indexOf("#");
+  const baseEntityId = hashIdx >= 0 ? command.entityId.slice(0, hashIdx) : command.entityId;
+  const subKey = hashIdx >= 0 ? command.entityId.slice(hashIdx + 1) : "";
+  const dot = baseEntityId.indexOf(".");
+  const domain = dot > 0 ? baseEntityId.slice(0, dot) : "";
+
+  const resolveSelectOption = (): string => {
+    let option: string | null = typeof command.value === "string" ? command.value : null;
+    if (option === null && typeof command.value === "number" && deviceFacets) {
+      const idx = Math.trunc(command.value);
+      for (const list of Object.values(deviceFacets)) {
+        const matched = list.find(
+          (facet) => facet.target?.kind === "property" && facet.target.entityId === command.entityId,
+        );
+        const found = matched?.options.find((item) => item.value === idx);
+        if (found) {
+          option = found.label;
+          break;
+        }
+      }
+    }
+    if (!option) throw new Error(`Invalid Home Assistant select option for ${command.entityId}`);
+    return option;
+  };
+
   switch (domain) {
     case "switch":
     case "input_boolean":
-    case "valve":
       return {
         kind: "setSwitch",
-        entityId: command.entityId,
+        entityId: baseEntityId,
         isOn: command.value === true || command.value === 1 || command.value === "on",
       };
-    case "select": {
-      let option: string | null = typeof command.value === "string" ? command.value : null;
-      if (option === null && typeof command.value === "number" && deviceFacets) {
-        const idx = Math.trunc(command.value);
-        for (const list of Object.values(deviceFacets)) {
-          const matched = list.find(
-            (facet) => facet.target?.kind === "property" && facet.target.entityId === command.entityId,
-          );
-          const found = matched?.options.find((item) => item.value === idx);
-          if (found) {
-            option = found.label;
-            break;
-          }
-        }
+    case "valve": {
+      if (subKey === "position") {
+        const num = haNumber(command.value);
+        if (num === null) throw new Error(`Invalid Home Assistant numeric value for ${command.entityId}`);
+        return { kind: "setNumberValue", entityId: baseEntityId, value: num };
       }
-      if (!option) throw new Error(`Invalid Home Assistant select option for ${command.entityId}`);
-      return { kind: "setSelectOption", entityId: command.entityId, option };
+      return {
+        kind: "setSwitch",
+        entityId: baseEntityId,
+        isOn: command.value === true || command.value === 1 || command.value === "on",
+      };
     }
+    case "media_player": {
+      if (subKey === "play_pause") {
+        return { kind: "pressButton", entityId: baseEntityId };
+      }
+      if (subKey === "source") {
+        return { kind: "setSelectOption", entityId: baseEntityId, option: resolveSelectOption() };
+      }
+      if (subKey === "power" || subKey === "mute" || subKey === "") {
+        return {
+          kind: "setSwitch",
+          entityId: subKey === "mute" ? `${baseEntityId}#mute` : baseEntityId,
+          isOn: command.value === true || command.value === 1 || command.value === "on",
+        };
+      }
+      throw new Error(`Unsupported Home Assistant media_player facet for ${command.entityId}`);
+    }
+    case "select":
+      return { kind: "setSelectOption", entityId: baseEntityId, option: resolveSelectOption() };
     case "number":
     case "humidifier":
     case "water_heater": {
       const num = haNumber(command.value);
       if (num === null) throw new Error(`Invalid Home Assistant numeric value for ${command.entityId}`);
-      return { kind: "setNumberValue", entityId: command.entityId, value: num };
+      return { kind: "setNumberValue", entityId: baseEntityId, value: num };
     }
     default:
       throw new Error(`Unsupported Home Assistant property write for ${command.entityId}`);
@@ -1105,6 +1277,7 @@ export function cachedFacetControl(value: unknown): FacetControl {
     range,
     isWritable: reqBool(raw.isWritable),
     writesByDefault: reqBool(raw.writesByDefault),
+    ...(raw.isConfirmedWrite === true ? { isConfirmedWrite: true as const } : {}),
     isHighValue: reqBool(raw.isHighValue),
     target,
   };
