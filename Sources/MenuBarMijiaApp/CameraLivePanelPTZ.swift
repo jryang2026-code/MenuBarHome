@@ -37,7 +37,7 @@ extension CameraLivePanelController {
                 // session, leaving no token to stop it. A finished drag stops it below instead.
                 let begin = try await client.begin()
                 guard let self, self.ptzDragID == dragID else {
-                    try? await client.stop(token: begin.token)
+                    _ = try? await client.stop(token: begin.token)
                     return
                 }
                 self.ptzToken = begin.token

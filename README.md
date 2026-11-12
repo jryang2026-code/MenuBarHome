@@ -43,7 +43,7 @@ English | [简体中文](README.zh-CN.md)
 
 > **Renamed:** MenuBarMijia is now MenuBarHome. Quit and delete the old `MenuBarMijia` app after installing this one; your sign-in and settings carry over. On Windows, uninstall the old version.
 
-> **Back on GitHub (2026-11):** the original GitHub account was suspended, so the repository now lives at [github.com/jryang2026-code/MenuBarHome](https://github.com/jryang2026-code/MenuBarHome). Installed builds up to v1.1.7 keep working, but their update check still points at the old address, so install the next version by hand once.
+> **Back on GitHub (2026-11):** the original GitHub account was suspended, so the repository now lives at [github.com/jryang2026-code/MenuBarHome](https://github.com/jryang2026-code/MenuBarHome). Installed builds up to v1.1.7 keep working, but their update check still points at the old address, so install v1.2.0 or later by hand once.
 
 ---
 

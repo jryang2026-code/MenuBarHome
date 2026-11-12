@@ -43,7 +43,7 @@
 
 > **已改名：** MenuBarMijia 现在叫 MenuBarHome。装好新版后退出并删除旧的 `MenuBarMijia` 应用，登录和设置都会保留；Windows 用户请卸载旧版。
 
-> **已迁回 GitHub（2026-11）：** 项目原来的 GitHub 账号被停用，仓库现在在 [github.com/jryang2026-code/MenuBarHome](https://github.com/jryang2026-code/MenuBarHome)。已安装的 1.1.7 及更早版本照常使用，但检查更新时仍然访问旧地址，下一个版本需要手动下载安装一次。
+> **已迁回 GitHub（2026-11）：** 项目原来的 GitHub 账号被停用，仓库现在在 [github.com/jryang2026-code/MenuBarHome](https://github.com/jryang2026-code/MenuBarHome)。已安装的 1.1.7 及更早版本照常使用，但检查更新时仍然访问旧地址，需要手动下载安装一次 1.2.0 或更新版本。
 
 ---
 
