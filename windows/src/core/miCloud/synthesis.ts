@@ -839,7 +839,7 @@ export const MiotSynthesizer = {
 
         const kind =
           record.isOnline || built.kind !== "sensor" || !built.statusText || !AFFIRMATIVE_LOCK_STATUS.has(built.statusText)
-            ? attachCameraGateway(built, record, devices, rooms, roomByDid)
+            ? attachCameraGateway(built, record, devices, rooms)
             : { ...built, statusText: "锁状态未知" };
         const smartDevice: SmartDevice = {
           id: plan.id,

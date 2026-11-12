@@ -105,6 +105,8 @@ describe("CameraHubCatalog and gateway synthesis", () => {
     const cam = home.devices.find((d) => d.id === "cam-mwc11");
     assert.ok(cam && cam.kind.kind === "camera");
     assert.equal(cam.kind.subdid, "cam-mwc11");
+    assert.equal(cam.kind.gatewayDid, "hub-mwc10");
+    assert.equal(cam.kind.gatewayModel, "mxiang.camera.mwc10");
     assert.equal(cam.kind.gatewayLocalIp, "192.168.1.88");
   });
 
@@ -126,6 +128,8 @@ describe("CameraHubCatalog and gateway synthesis", () => {
     const cam = standalone.devices[0]!;
     assert.equal(cam.kind.kind, "camera");
     assert.equal("subdid" in cam.kind, false);
+    assert.equal("gatewayDid" in cam.kind, false);
+    assert.equal("gatewayModel" in cam.kind, false);
     assert.equal("gatewayLocalIp" in cam.kind, false);
 
     // Ambiguous when two online hubs exist in different rooms without parentDid
@@ -155,6 +159,21 @@ describe("CameraHubCatalog and gateway synthesis", () => {
     );
     assert.equal(byParent.hub?.did, "hub-b");
 
+    // Cross-home parentDid must be rejected
+    const crossHomeParent = resolveCameraHub(
+      { did: "cam-1", model: "mxiang.camera.mwc11", isOnline: true, parentDid: "hub-other" },
+      [
+        { did: "cam-1", model: "mxiang.camera.mwc11", isOnline: true, parentDid: "hub-other" },
+        { did: "hub-other", model: "mxiang.camera.mwc10", isOnline: true, localIp: "192.168.2.20" },
+      ],
+      [
+        { id: "r1", name: "玄关", dids: ["cam-1"], homeId: "home-a" },
+        { id: "r2", name: "玄关", dids: ["hub-other"], homeId: "home-b" },
+      ],
+    );
+    assert.equal(crossHomeParent.hub, null);
+    assert.equal(crossHomeParent.reason, "missing_hub");
+
     // Cross-home hub must not match
     const otherHome = resolveCameraHub(
       { did: "cam-1", model: "mxiang.camera.mwc11", isOnline: true },
@@ -169,6 +188,88 @@ describe("CameraHubCatalog and gateway synthesis", () => {
     );
     assert.equal(otherHome.hub, null);
     assert.equal(otherHome.reason, "missing_hub");
+  });
+
+  it("matches macOS hubRecord parity on offline own hub, earlier hubless room, and unlisted cross-home hubs", () => {
+    // 1. Offline own hub in camera's room must NOT hijack another room's online hub
+    const offlineOwn = resolveCameraHub(
+      { did: "cam-a", model: "mxiang.camera.mwc11", isOnline: true },
+      [
+        { did: "cam-a", model: "mxiang.camera.mwc11", isOnline: true },
+        { did: "hub-own", model: "mxiang.camera.mwc10", isOnline: false, localIp: "192.168.1.30" },
+        { did: "hub-other", model: "mxiang.camera.mwc10", isOnline: true, localIp: "192.168.1.31" },
+      ],
+      [
+        { id: "yard", name: "院子", dids: ["cam-a", "hub-own"], homeId: "home-a" },
+        { id: "hall", name: "客厅", dids: ["hub-other"], homeId: "home-a" },
+      ],
+    );
+    assert.equal(offlineOwn.hub, null);
+    assert.equal(offlineOwn.reason, "offline_hub");
+
+    // Two hubs in home outside camera's room where one is offline and one is online -> still ambiguous across rooms
+    const mixedOtherRooms = resolveCameraHub(
+      { did: "cam-a", model: "mxiang.camera.mwc11", isOnline: true },
+      [
+        { did: "cam-a", model: "mxiang.camera.mwc11", isOnline: true },
+        { did: "hub-1", model: "mxiang.camera.mwc10", isOnline: false },
+        { did: "hub-2", model: "mxiang.camera.mwc10", isOnline: true },
+      ],
+      [
+        { id: "yard", name: "院子", dids: ["cam-a"], homeId: "home-a" },
+        { id: "hall", name: "客厅", dids: ["hub-1", "hub-2"], homeId: "home-a" },
+      ],
+    );
+    assert.equal(mixedOtherRooms.hub, null);
+    assert.equal(mixedOtherRooms.reason, "ambiguous_hub");
+
+    // Two online hubs in the same room -> ambiguous_hub
+    const twoInSameRoom = resolveCameraHub(
+      { did: "cam-a", model: "mxiang.camera.mwc11", isOnline: true },
+      [
+        { did: "cam-a", model: "mxiang.camera.mwc11", isOnline: true },
+        { did: "hub-a", model: "mxiang.camera.mwc10", isOnline: true },
+        { did: "hub-b", model: "mxiang.camera.mwc10", isOnline: true },
+      ],
+      [{ id: "kids", name: "儿童房", dids: ["cam-a", "hub-a", "hub-b"], homeId: "home-a" }],
+    );
+    assert.equal(twoInSameRoom.hub, null);
+    assert.equal(twoInSameRoom.reason, "ambiguous_hub");
+
+    // 2. Earlier room without hub must not hide later room containing camera + hub (both resolveCameraHub and MiotSynthesizer)
+    const laterRoom = MiotSynthesizer.synthesize(
+      [
+        { did: "hub-living", name: "客厅室内机", model: "mxiang.camera.mwc10", isOnline: true, specType: null },
+        Object.assign(
+          { did: "hub-kids", name: "儿童房室内机", model: "mxiang.camera.mwc10", isOnline: true, specType: null },
+          { localIp: "192.168.1.42" },
+        ),
+        { did: "cam", name: "儿童房摄像机", model: "mxiang.camera.mwc11", isOnline: true, specType: cameraSpec.type },
+      ],
+      [
+        { id: "living", name: "客厅", dids: ["cam"], homeId: "home" },
+        { id: "kids", name: "儿童房", dids: ["cam", "hub-kids"], homeId: "home" },
+        { id: "hall", name: "大厅", dids: ["hub-living"], homeId: "home" },
+      ],
+      { "mxiang.camera.mwc11": cameraSpec },
+      new Map([["cam.2.1", true]]),
+    );
+    const synthesizedCam = laterRoom.devices.find((d) => d.id === "cam");
+    assert.ok(synthesizedCam && synthesizedCam.kind.kind === "camera");
+    assert.equal(synthesizedCam.kind.gatewayDid, "hub-kids");
+    assert.equal(synthesizedCam.kind.gatewayLocalIp, "192.168.1.42");
+
+    // 3. Unlisted hub from another home (absent from home-a's rooms when distinctHomeIds.size === 1) must NOT leak in
+    const unlistedOtherHome = resolveCameraHub(
+      { did: "cam-a", model: "mxiang.camera.mwc11", isOnline: true },
+      [
+        { did: "cam-a", model: "mxiang.camera.mwc11", isOnline: true },
+        { did: "hub-unlisted", model: "mxiang.camera.mwc10", isOnline: true, localIp: "192.168.9.10" },
+      ],
+      [{ id: "yard", name: "院子", dids: ["cam-a"], homeId: "home-a" }],
+    );
+    assert.equal(unlistedOtherHome.hub, null);
+    assert.equal(unlistedOtherHome.reason, "missing_hub");
   });
 });
 

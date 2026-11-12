@@ -8,13 +8,10 @@ import {
 import {
   CameraHubCatalog,
   cameraTr,
-  extractRecordLocalIp,
   parsePrivateLanIpv4,
-  resolveCameraHub,
-  type CameraRecordMetadata,
+  resolveLiveCameraTarget,
 } from "../core/miCloud/cameraHubs.js";
 import { cameraLensLabel } from "../core/miCloud/cameraLens.js";
-import type { MiRoom } from "../core/miCloud/client.js";
 import {
   MiCloudClient,
   type HttpTransport,
@@ -306,7 +303,9 @@ export class CameraLiveController {
     this.liveCameraRawMediaEl = null;
     this.liveCameraMode = null;
     if (this.activeLiveCameraId) {
-      invokeTauriVoid("stop_xiaomi_camera_bridge", this.buildStopBridgePayload(this.activeLiveCameraId));
+      const stopPayload = this.buildStopBridgePayload(this.activeLiveCameraId);
+      this.cameraBridgeBindings.delete(this.activeLiveCameraId);
+      invokeTauriVoid("stop_xiaomi_camera_bridge", stopPayload);
     }
   }
 
@@ -666,21 +665,6 @@ export class CameraLiveController {
     this.host.render();
   }
 
-  private buildHostRoomHints(): MiRoom[] {
-    const byRoom = new Map<string, { name: string; dids: string[] }>();
-    for (const item of this.host.devices) {
-      if (item.roomId === "other") continue;
-      const entry = byRoom.get(item.roomId) ?? { name: item.roomName, dids: [] };
-      entry.dids.push(item.id);
-      byRoom.set(item.roomId, entry);
-    }
-    return Array.from(byRoom.entries()).map(([id, info]) => ({
-      id,
-      name: info.name,
-      dids: info.dids,
-    }));
-  }
-
   public async resolveCloudCameraStream(dev: SmartDevice): Promise<void> {
     if (dev.kind.kind !== "camera" || !this.host.settings.miSession) return;
     if (CameraHubCatalog.isHub(dev.model)) {
@@ -811,71 +795,17 @@ export class CameraLiveController {
 
       // 3. Negotiate MISS CS2/TUTK P2P keys & start native Tauri bridge
       if (window.__TAURI_INTERNALS__?.invoke) {
-        const listRes = (await client.request("home/device_list", {
-          getVirtualModel: true,
-          getHuamiDevices: 1,
-          get_split_device: false,
-          support_smart_home: true,
-        })) as Record<string, unknown> | null;
+        const target = await resolveLiveCameraTarget(
+          client,
+          dev,
+          this.host.devices,
+          this.host.settings.selectedHomeId,
+        );
         if (stale()) {
           if (this.activeLiveCameraId !== dev.id) releaseIfStarted();
           return;
         }
-        const rawList = Array.isArray(listRes?.["list"]) ? (listRes["list"] as Array<Record<string, unknown>>) : [];
-        const rawDev = rawList.find((item) => String(item["did"] ?? "") === dev.id);
-        const ownCloudIp = extractRecordLocalIp(rawDev);
-
-        let bridgeDid = dev.id;
-        let bridgeModel = dev.model;
-        let subdid: string | null = dev.kind.subdid ?? null;
-        let cloudLocalIp = ownCloudIp || (dev.kind.gatewayLocalIp ?? "").trim();
-        let hubBlockedReason: string | null = null;
-
-        if (requiresHub && !ownCloudIp) {
-          const metadataList: CameraRecordMetadata[] = rawList
-            .map((item) => ({
-              did: String(item["did"] ?? ""),
-              model: typeof item["model"] === "string" ? item["model"] : "",
-              isOnline: typeof item["isOnline"] === "boolean" ? item["isOnline"] : true,
-              localip: typeof item["localip"] === "string" ? item["localip"] : null,
-              localIp: typeof item["localIp"] === "string" ? item["localIp"] : null,
-              parent_id:
-                typeof item["parent_id"] === "string" || typeof item["parent_id"] === "number"
-                  ? String(item["parent_id"])
-                  : null,
-              parentDid: typeof item["parentDid"] === "string" ? item["parentDid"] : null,
-              extra: item["extra"] && typeof item["extra"] === "object" ? (item["extra"] as Record<string, unknown>) : null,
-            }))
-            .filter((item) => item.did !== "" && item.model !== "");
-          const camMeta: CameraRecordMetadata =
-            metadataList.find((item) => item.did === dev.id) ?? {
-              did: dev.id,
-              model: dev.model,
-              isOnline: dev.isOnline,
-            };
-          const resolution = resolveCameraHub(camMeta, metadataList, this.buildHostRoomHints());
-          if (resolution.hub) {
-            bridgeDid = resolution.hub.did;
-            bridgeModel = resolution.hub.model;
-            subdid = dev.kind.subdid ?? dev.id;
-            cloudLocalIp = extractRecordLocalIp(resolution.hub) || (dev.kind.gatewayLocalIp ?? "").trim();
-          } else if (resolution.reason === "offline_hub") {
-            hubBlockedReason = cameraTr(
-              "配对的室内网关当前离线，请检查网关电源与网络后重试",
-              "The paired indoor gateway is offline; check its power and network, then retry",
-            );
-          } else if (resolution.reason === "ambiguous_hub") {
-            hubBlockedReason = cameraTr(
-              "检测到多个同型号室内网关，请将摄像机与对应网关放入同一房间后重试",
-              "Multiple indoor gateways found; place the camera and its gateway in the same room and retry",
-            );
-          } else {
-            hubBlockedReason = cameraTr(
-              "该电池摄像机需通过配对的室内网关连接，当前未找到可用室内网关",
-              "This battery camera connects through its paired indoor gateway, which could not be found",
-            );
-          }
-        }
+        const { bridgeDid, bridgeModel, subdid, cloudLocalIp, hubBlockedReason } = target;
 
         if (hubBlockedReason) {
           failureReason = hubBlockedReason;
@@ -1366,8 +1296,12 @@ export class CameraLiveController {
       this.commitCameraLocalIp();
     });
 
-    this.host.root.querySelector("#camera-local-ip-input")?.addEventListener("keydown", (event) => {
-      if ((event as KeyboardEvent).key === "Enter") {
+    const ipInput = this.host.root.querySelector<HTMLInputElement>("#camera-local-ip-input");
+    ipInput?.addEventListener("input", () => {
+      this.liveCameraDraftIp = ipInput.value;
+    });
+    ipInput?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
         event.preventDefault();
         this.commitCameraLocalIp();
       }

@@ -35,6 +35,10 @@ interface MockCameraDevice {
   readonly name: string;
   readonly model: string;
   readonly roomName?: string;
+  readonly homeId?: string;
+  readonly isSharedHome?: boolean;
+  readonly ownerUid?: string;
+  readonly omitFromUnfilteredList?: boolean;
   readonly localip?: string;
   readonly isOnline?: boolean;
   readonly parent_id?: string;
@@ -82,12 +86,15 @@ function makeCameraMiotSpec(modelSlug = "isa-500dh") {
 
 async function mountCloudCameraApp(options: {
   devices: readonly MockCameraDevice[];
+  selectedHomeId?: string | null;
   frame?: (src: string) => Promise<string>;
   bridgeResult?: (args: Record<string, unknown>) => string | Promise<string>;
+  hlsBridgeResult?: (args: Record<string, unknown>) => string | Promise<string>;
 }) {
   const security = "AQIDBAUGBwgJCgsMDQ4PEA==";
   const spec = makeCameraMiotSpec();
   const bridgeCalls: Array<Record<string, unknown>> = [];
+  const hlsBridgeCalls: Array<Record<string, unknown>> = [];
   const stopBridgeCalls: Array<Record<string, unknown>> = [];
   const vendorDids: string[] = [];
   const frameSrcs: string[] = [];
@@ -95,6 +102,12 @@ async function mountCloudCameraApp(options: {
   const p2pStopsByDid = new Map<string, number>();
 
   const invoke = async (name: string, args: Record<string, unknown> = {}): Promise<unknown> => {
+    if (name === "bridge_hls_camera_stream") {
+      hlsBridgeCalls.push(args);
+      if (options.hlsBridgeResult) return options.hlsBridgeResult(args);
+      const did = String(args["did"] ?? "").replace(/[^A-Za-z0-9_]/g, "");
+      return `cam_mjpeg_${did}`;
+    }
     if (name === "start_xiaomi_camera_bridge") {
       bridgeCalls.push(args);
       if (options.bridgeResult) return options.bridgeResult(args);
@@ -137,17 +150,36 @@ async function mountCloudCameraApp(options: {
     };
 
     let result: unknown = {};
-    if (url.includes("device_list")) {
+    if (url.includes("home_device_list")) {
+      const payload = decodeEncryptedBody();
+      const homeId = String(payload["home_id"] ?? "");
       result = {
-        list: options.devices.map((d) => ({
-          did: d.did,
-          name: d.name,
-          model: d.model,
-          isOnline: d.isOnline ?? true,
-          localip: d.localip ?? "",
-          ...(d.parent_id ? { parent_id: d.parent_id } : {}),
-          spec_type: d.model.startsWith("mxiang.camera.mwc10") ? null : spec.type,
-        })),
+        device_info: options.devices
+          .filter((d) => (d.homeId ?? "1") === homeId)
+          .map((d) => ({
+            did: d.did,
+            name: d.name,
+            model: d.model,
+            isOnline: d.isOnline ?? true,
+            localip: d.localip ?? "",
+            ...(d.parent_id ? { parent_id: d.parent_id } : {}),
+            spec_type: d.model.startsWith("mxiang.camera.mwc10") ? null : spec.type,
+          })),
+        has_more: false,
+      };
+    } else if (url.includes("device_list")) {
+      result = {
+        list: options.devices
+          .filter((d) => !d.omitFromUnfilteredList)
+          .map((d) => ({
+            did: d.did,
+            name: d.name,
+            model: d.model,
+            isOnline: d.isOnline ?? true,
+            localip: d.localip ?? "",
+            ...(d.parent_id ? { parent_id: d.parent_id } : {}),
+            spec_type: d.model.startsWith("mxiang.camera.mwc10") ? null : spec.type,
+          })),
         has_more: false,
       };
     } else if (url.includes("miss_get_vendor")) {
@@ -159,26 +191,46 @@ async function mountCloudCameraApp(options: {
         vendor: { vendor: 4, vendor_params: { p2p_id: "uid-1" } },
       };
     } else if (url.includes("homeroom/")) {
-      const roomMap = new Map<string, string[]>();
+      const homes = new Map<
+        string,
+        { shared: boolean; ownerUid?: string; rooms: Map<string, string[]> }
+      >();
       for (const d of options.devices) {
+        const hid = d.homeId ?? "1";
+        const entry = homes.get(hid) ?? {
+          shared: Boolean(d.isSharedHome),
+          ownerUid: d.ownerUid,
+          rooms: new Map<string, string[]>(),
+        };
+        if (d.isSharedHome) entry.shared = true;
+        if (d.ownerUid) entry.ownerUid = d.ownerUid;
         const rm = d.roomName ?? "客厅";
-        const arr = roomMap.get(rm) ?? [];
+        const arr = entry.rooms.get(rm) ?? [];
         arr.push(d.did);
-        roomMap.set(rm, arr);
+        entry.rooms.set(rm, arr);
+        homes.set(hid, entry);
+      }
+      const homelist: Array<Record<string, unknown>> = [];
+      const shareHomeList: Array<Record<string, unknown>> = [];
+      let roomSeq = 10;
+      for (const [hid, info] of homes.entries()) {
+        const homeObj: Record<string, unknown> = {
+          id: hid,
+          name: `家庭 ${hid}`,
+          dids: [],
+          ...(info.ownerUid ? { uid: info.ownerUid } : {}),
+          roomlist: Array.from(info.rooms.entries()).map(([name, dids]) => ({
+            id: String(roomSeq++),
+            name,
+            dids,
+          })),
+        };
+        if (info.shared) shareHomeList.push(homeObj);
+        else homelist.push(homeObj);
       }
       result = {
-        homelist: [
-          {
-            id: "1",
-            name: "家",
-            dids: [],
-            roomlist: Array.from(roomMap.entries()).map(([name, dids], idx) => ({
-              id: String(idx + 10),
-              name,
-              dids,
-            })),
-          },
-        ],
+        homelist,
+        ...(shareHomeList.length > 0 ? { share_home_list: shareHomeList } : {}),
       };
     } else if (url.includes("miotspec/prop/")) {
       result = options.devices
@@ -210,6 +262,7 @@ async function mountCloudCameraApp(options: {
     JSON.stringify({
       connectionMode: "xiaomiCloud",
       hasCompletedOnboarding: true,
+      ...(options.selectedHomeId !== undefined ? { selectedHomeId: options.selectedHomeId } : {}),
       miSession: {
         userId: "100",
         cUserId: "c100",
@@ -228,6 +281,7 @@ async function mountCloudCameraApp(options: {
   return {
     app,
     bridgeCalls,
+    hlsBridgeCalls,
     stopBridgeCalls,
     vendorDids,
     frameSrcs,
@@ -495,5 +549,148 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
 
     assert.equal(ctx.frameSrcs.includes("cam_mjpeg_camrace_c1"), false);
     assert.equal(ctx.app.cameraLive.liveCameraStreamURL, "cam_mjpeg_camrace");
+  });
+
+  it("preserves manual LAN IP draft across background renders and consumes bridge bindings when switching to custom HLS", async () => {
+    const ctx = await mountCloudCameraApp({
+      devices: [
+        {
+          did: "cam-mwc11",
+          name: "车库电池摄像机",
+          model: "mxiang.camera.mwc11",
+          roomName: "车库",
+          localip: "",
+        },
+        {
+          did: "hub-mwc10",
+          name: "车库室内网关",
+          model: "mxiang.camera.mwc10",
+          roomName: "车库",
+          localip: "",
+        },
+      ],
+    });
+    await waitFor(() => document.querySelector('[data-body-device="cam-mwc11"]') !== null);
+    await click('[data-body-device="cam-mwc11"]');
+    await waitFor(() => document.querySelector("#camera-local-ip-input") !== null);
+
+    // Typing an in-progress draft survives background host.render()
+    const draftInput = element<HTMLInputElement>("#camera-local-ip-input");
+    draftInput.value = "192.168.50.";
+    draftInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+    ctx.app.render();
+    assert.equal(element<HTMLInputElement>("#camera-local-ip-input").value, "192.168.50.");
+
+    // Save valid IP -> starts hub subdid bridge
+    const readyInput = element<HTMLInputElement>("#camera-local-ip-input");
+    readyInput.value = "192.168.50.88";
+    readyInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+    await click("#btn-save-camera-ip");
+    await waitFor(() => ctx.frameSrcs.includes("cam_mjpeg_hubmwc10_cammwc11"));
+
+    // Switch to custom HLS stream URL -> tears down hub subdid bridge AND consumes binding
+    await click("#btn-toggle-camera-url");
+    const urlInput = element<HTMLInputElement>("#camera-stream-url-input");
+    urlInput.value = "http://192.168.50.10:8080/live/cam.m3u8";
+    await click("#btn-save-camera-url");
+    await waitFor(() => ctx.hlsBridgeCalls.length === 1 && ctx.frameSrcs.includes("cam_mjpeg_cammwc11"));
+    assert.deepEqual(ctx.stopBridgeCalls.at(-1), { did: "hub-mwc10", subdid: "cam-mwc11" });
+
+    // Closing the custom HLS stream now stops { did: "cam-mwc11" }, NOT stale { did: "hub-mwc10", subdid }
+    ctx.app.cameraLive.closeCameraLiveView();
+    assert.deepEqual(ctx.stopBridgeCalls.at(-1), { did: "cam-mwc11" });
+  });
+
+  it("isolates multi-home hubs across rooms and avoids hijacking another home's hub", async () => {
+    // 2-home account: home-a has cam-a (yard) + hub-a (hall), home-b has hub-b (living)
+    const ctx = await mountCloudCameraApp({
+      selectedHomeId: "home-a",
+      devices: [
+        {
+          did: "cam-a",
+          name: "一楼院子电池机",
+          model: "mxiang.camera.mwc11",
+          roomName: "院子",
+          homeId: "home-a",
+          localip: "",
+        },
+        {
+          did: "hub-a",
+          name: "一楼大厅室内网关",
+          model: "mxiang.camera.mwc10",
+          roomName: "大厅",
+          homeId: "home-a",
+          localip: "192.168.1.91",
+        },
+        {
+          did: "hub-b",
+          name: "别墅客厅室内网关",
+          model: "mxiang.camera.mwc10",
+          roomName: "客厅",
+          homeId: "home-b",
+          localip: "192.168.2.91",
+        },
+      ],
+    });
+    await waitFor(() => document.querySelector('[data-body-device="cam-a"]') !== null);
+    await click('[data-body-device="cam-a"]');
+    await waitFor(() => ctx.bridgeCalls.length === 1 && ctx.frameSrcs.includes("cam_mjpeg_huba_cama"));
+    assert.equal(ctx.bridgeCalls[0]?.["did"], "hub-a");
+    assert.equal(ctx.bridgeCalls[0]?.["localIp"], "192.168.1.91");
+    assert.equal(ctx.bridgeCalls[0]?.["subdid"], "cam-a");
+  });
+
+  it("falls back to synthesized gatewayDid/gatewayModel on shared homes omitted from deviceList (#76)", async () => {
+    const ctx = await mountCloudCameraApp({
+      selectedHomeId: "home-shared",
+      devices: [
+        {
+          did: "hub-own",
+          name: "自家室内网关",
+          model: "mxiang.camera.mwc10",
+          roomName: "客厅",
+          homeId: "home-own",
+          localip: "192.168.1.22",
+        },
+        {
+          did: "cam-shared",
+          name: "父母家院子摄像机",
+          model: "mxiang.camera.mwc11",
+          roomName: "院子",
+          homeId: "home-shared",
+          isSharedHome: true,
+          ownerUid: "888",
+          omitFromUnfilteredList: true,
+          localip: "",
+        },
+        {
+          did: "hub-shared",
+          name: "父母家室内网关",
+          model: "mxiang.camera.mwc10",
+          roomName: "院子",
+          homeId: "home-shared",
+          isSharedHome: true,
+          ownerUid: "888",
+          omitFromUnfilteredList: true,
+          localip: "",
+        },
+      ],
+    });
+    await waitFor(() => document.querySelector('[data-body-device="cam-shared"]') !== null);
+    await click('[data-body-device="cam-shared"]');
+
+    // Shared home camera falls back to synthesized hub-shared (never hijacking hub-own and never failing with missing_hub)
+    await waitFor(() => document.querySelector("#camera-local-ip-input") !== null);
+    assert.equal(ctx.bridgeCalls.length, 0);
+
+    const input = element<HTMLInputElement>("#camera-local-ip-input");
+    input.value = "192.168.31.66";
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    await click("#btn-save-camera-ip");
+    await waitFor(() => ctx.bridgeCalls.length === 1 && ctx.frameSrcs.includes("cam_mjpeg_hubshared_camshared"));
+    assert.equal(ctx.bridgeCalls[0]?.["did"], "hub-shared");
+    assert.equal(ctx.bridgeCalls[0]?.["model"], "mxiang.camera.mwc10");
+    assert.equal(ctx.bridgeCalls[0]?.["localIp"], "192.168.31.66");
+    assert.equal(ctx.bridgeCalls[0]?.["subdid"], "cam-shared");
   });
 });

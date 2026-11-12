@@ -114,6 +114,8 @@ export interface CameraSpec {
   readonly powerWritable?: boolean;
   readonly lenses?: readonly CameraLens[];
   readonly subdid?: string | null;
+  readonly gatewayDid?: string | null;
+  readonly gatewayModel?: string | null;
   readonly gatewayLocalIp?: string | null;
 }
 

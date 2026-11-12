@@ -1,6 +1,7 @@
 import { speechLocale } from "../i18n.js";
-import type { DeviceKind } from "../models.js";
-import type { MiDeviceRecord, MiRoom } from "./client.js";
+import type { DeviceKind, SmartDevice } from "../models.js";
+import { MiCloudClient, type MiDeviceRecord, type MiRoom } from "./client.js";
+import { asIdString, MiCloudError } from "./session.js";
 
 /** Locale-aware inline text helper for camera gateway / HUD labels (`i18n.ts` stays untouched). */
 export function cameraTr(zh: string, en: string): string {
@@ -105,98 +106,419 @@ export interface CameraHubResolution<T> {
 }
 
 /**
- * Resolves the unambiguous online indoor gateway for a battery camera within the same home/room scope.
- * Explicit `parentDid` wins; otherwise requires either a single online hub in the home or a single
- * online hub in the camera's own room.
+ * Resolves the unambiguous online indoor gateway for a battery camera within the same home/room scope,
+ * matching macOS `MiCloudProvider.hubRecord`:
+ * - Prefers the first room containing `camera.did` that also contains a hub `did`.
+ * - Scopes candidate hubs strictly to `cameraRoom.homeId` when non-empty (else `[onlyHub]` if `allHubs.length === 1`,
+ *   else `cameraRoom.dids`).
+ * - Checks `cameraRoom` hubs first (`> 1` online -> `ambiguous_hub`; `1` online -> match; offline in room -> `offline_hub`),
+ *   and across rooms matches only when total hubs in that home (`scoped.length`) is `1`.
  */
 export function resolveCameraHub<T extends CameraRecordMetadata>(
   camera: CameraRecordMetadata,
   devices: readonly T[],
   rooms: readonly MiRoom[] = [],
-  roomByDid?: ReadonlyMap<string, MiRoom>,
 ): CameraHubResolution<T> {
   const hubPrefix = CameraHubCatalog.hubModel(camera.model);
   if (!hubPrefix) return { hub: null, reason: "not_required" };
 
-  const map =
-    roomByDid ??
-    (() => {
-      const built = new Map<string, MiRoom>();
-      for (const room of rooms) {
-        for (const did of room.dids) {
-          if (!built.has(did)) built.set(did, room);
-        }
-      }
-      return built;
-    })();
+  const allHubs = devices.filter(
+    (candidate) => candidate.did !== camera.did && matchesHubPrefix(candidate.model, hubPrefix),
+  );
+  if (allHubs.length === 0) return { hub: null, reason: "missing_hub" };
 
-  const distinctHomeIds = new Set<string>();
-  for (const room of rooms) {
-    const hid = room.homeId?.trim();
-    if (hid) distinctHomeIds.add(hid);
-  }
-  const cameraRoom = map.get(camera.did);
+  const hubDids = new Set(allHubs.map((hub) => hub.did));
+  const cameraRooms = rooms.filter((room) => room.dids.includes(camera.did));
+  const cameraRoom =
+    cameraRooms.find((room) => room.dids.some((did) => hubDids.has(did))) ?? cameraRooms[0];
   const cameraHomeId = cameraRoom?.homeId?.trim() ?? "";
-
-  const sameHomeCandidates = devices.filter((candidate) => {
-    if (candidate.did === camera.did || !matchesHubPrefix(candidate.model, hubPrefix)) return false;
-    const candidateHomeId = map.get(candidate.did)?.homeId?.trim() ?? "";
-    if (cameraHomeId && candidateHomeId) {
-      return candidateHomeId === cameraHomeId;
-    }
-    if (distinctHomeIds.size > 1 && (cameraHomeId || candidateHomeId)) {
-      return false;
-    }
-    return true;
-  });
 
   const parentDid = extractRecordParentDid(camera);
   if (parentDid) {
-    const parentHub = devices.find(
-      (candidate) => candidate.did === parentDid && matchesHubPrefix(candidate.model, hubPrefix),
-    );
+    const parentHub = allHubs.find((candidate) => candidate.did === parentDid);
     if (!parentHub) return { hub: null, reason: "missing_hub" };
+    const parentHomeIds = new Set(
+      rooms
+        .filter((room) => room.dids.includes(parentHub.did))
+        .map((room) => room.homeId?.trim() ?? "")
+        .filter((hid) => hid !== ""),
+    );
+    const distinctHomeIds = new Set(
+      rooms.map((room) => room.homeId?.trim() ?? "").filter((hid) => hid !== ""),
+    );
+    if (cameraHomeId) {
+      const homeDids = new Set(
+        rooms.filter((room) => (room.homeId?.trim() ?? "") === cameraHomeId).flatMap((room) => room.dids),
+      );
+      if ((parentHomeIds.size > 0 && !parentHomeIds.has(cameraHomeId)) || (!homeDids.has(parentHub.did) && distinctHomeIds.size > 1)) {
+        return { hub: null, reason: "missing_hub" };
+      }
+    } else if (parentHomeIds.size > 0 && distinctHomeIds.size > 1) {
+      return { hub: null, reason: "missing_hub" };
+    }
     if (!recordIsOnline(parentHub)) return { hub: null, reason: "offline_hub" };
     return { hub: parentHub, reason: "matched" };
   }
 
-  const onlineHubs = sameHomeCandidates.filter((candidate) => recordIsOnline(candidate));
-  if (onlineHubs.length === 1) {
-    return { hub: onlineHubs[0]!, reason: "matched" };
-  }
-  if (onlineHubs.length > 1) {
-    if (cameraRoom) {
-      const roomDids = new Set(cameraRoom.dids);
-      const roomHubs = onlineHubs.filter((candidate) => roomDids.has(candidate.did));
-      if (roomHubs.length === 1) {
-        return { hub: roomHubs[0]!, reason: "matched" };
-      }
-    }
-    return { hub: null, reason: "ambiguous_hub" };
+  let scoped: T[];
+  if (cameraRoom && cameraHomeId) {
+    const homeDids = new Set(
+      rooms.filter((room) => (room.homeId?.trim() ?? "") === cameraHomeId).flatMap((room) => room.dids),
+    );
+    scoped = allHubs.filter((hub) => homeDids.has(hub.did));
+  } else if (allHubs.length === 1) {
+    scoped = allHubs;
+  } else if (cameraRoom) {
+    const roomDids = new Set(cameraRoom.dids);
+    scoped = allHubs.filter((hub) => roomDids.has(hub.did));
+  } else {
+    scoped = [];
   }
 
-  return {
-    hub: null,
-    reason: sameHomeCandidates.length > 0 ? "offline_hub" : "missing_hub",
-  };
+  const online = scoped.filter((hub) => recordIsOnline(hub));
+  if (cameraRoom) {
+    const roomDids = new Set(cameraRoom.dids);
+    const allInRoom = scoped.filter((hub) => roomDids.has(hub.did));
+    const onlineInRoom = online.filter((hub) => roomDids.has(hub.did));
+    if (onlineInRoom.length > 1) return { hub: null, reason: "ambiguous_hub" };
+    if (onlineInRoom.length === 1) return { hub: onlineInRoom[0]!, reason: "matched" };
+    if (allInRoom.length > 0) return { hub: null, reason: "offline_hub" };
+  }
+
+  if (scoped.length === 0) {
+    return {
+      hub: null,
+      reason: allHubs.length > 1 && !cameraRoom ? "ambiguous_hub" : "missing_hub",
+    };
+  }
+  if (scoped.length > 1) {
+    return {
+      hub: null,
+      reason: online.length === 0 ? "offline_hub" : "ambiguous_hub",
+    };
+  }
+  const onlyScoped = scoped[0]!;
+  return recordIsOnline(onlyScoped)
+    ? { hub: onlyScoped, reason: "matched" }
+    : { hub: null, reason: "offline_hub" };
 }
 
-/** Attaches `subdid` and `gatewayLocalIp` onto a synthesized battery camera when an unambiguous online hub exists. */
+/** Attaches `subdid` and gateway metadata onto a synthesized battery camera when an unambiguous online hub exists. */
 export function attachCameraGateway(
   kind: DeviceKind,
   record: MiDeviceRecord,
   devices: readonly MiDeviceRecord[],
   rooms: readonly MiRoom[],
-  roomByDid: ReadonlyMap<string, MiRoom>,
 ): DeviceKind {
   if (kind.kind !== "camera") return kind;
   if (extractRecordLocalIp(record)) return kind;
-  const resolution = resolveCameraHub(record, devices, rooms, roomByDid);
+  const resolution = resolveCameraHub(record, devices, rooms);
   if (!resolution.hub) return kind;
   const gatewayLocalIp = extractRecordLocalIp(resolution.hub);
   return {
     ...kind,
     subdid: record.did,
+    gatewayDid: resolution.hub.did,
+    gatewayModel: resolution.hub.model,
     ...(gatewayLocalIp ? { gatewayLocalIp } : {}),
+  };
+}
+
+/** Builds fallback room hints from synthesized host devices stamped with `selectedHomeId` when `homeRooms()` is empty. */
+export function buildHostRoomHints(
+  hostDevices: readonly SmartDevice[],
+  selectedHomeId?: string | null,
+): MiRoom[] {
+  const homeId = selectedHomeId?.trim() ?? "";
+  const byRoom = new Map<string, { name: string; dids: string[]; isSharedHome: boolean }>();
+  const otherDids: string[] = [];
+  let anyShared = false;
+  for (const item of hostDevices) {
+    if (item.isSharedHome) anyShared = true;
+    if (item.roomId === "other") {
+      otherDids.push(item.id);
+      continue;
+    }
+    const entry = byRoom.get(item.roomId) ?? {
+      name: item.roomName,
+      dids: [],
+      isSharedHome: Boolean(item.isSharedHome),
+    };
+    entry.dids.push(item.id);
+    if (item.isSharedHome) entry.isSharedHome = true;
+    byRoom.set(item.roomId, entry);
+  }
+  const rooms: MiRoom[] = Array.from(byRoom.entries()).map(([id, info]) => ({
+    id,
+    name: info.name,
+    dids: info.dids,
+    ...(homeId ? { homeId } : {}),
+    ...(info.isSharedHome ? { isSharedHome: true as const } : {}),
+  }));
+  if (homeId && otherDids.length > 0) {
+    rooms.push({
+      id: `home_${homeId}`,
+      name: "",
+      dids: otherDids,
+      homeId,
+      ...(anyShared ? { isSharedHome: true as const } : {}),
+    });
+  }
+  return rooms;
+}
+
+function parseCameraMetadataItem(item: unknown): CameraRecordMetadata | null {
+  if (!item || typeof item !== "object") return null;
+  const rec = item as Record<string, unknown>;
+  const did = asIdString(rec["did"]);
+  const model = typeof rec["model"] === "string" ? rec["model"].trim() : "";
+  if (!did || !model) return null;
+  return {
+    did,
+    model,
+    isOnline: typeof rec["isOnline"] === "boolean" ? rec["isOnline"] : true,
+    localip: typeof rec["localip"] === "string" ? rec["localip"] : null,
+    localIp: typeof rec["localIp"] === "string" ? rec["localIp"] : null,
+    parent_id: asIdString(rec["parent_id"]),
+    parentDid: asIdString(rec["parentDid"]),
+    extra: rec["extra"] && typeof rec["extra"] === "object" ? (rec["extra"] as Record<string, unknown>) : null,
+  };
+}
+
+function parseCameraMetadataResponse(result: unknown): CameraRecordMetadata[] {
+  if (!result || typeof result !== "object") return [];
+  const list = (result as Record<string, unknown>)["list"];
+  if (!Array.isArray(list)) return [];
+  const out: CameraRecordMetadata[] = [];
+  for (const item of list) {
+    const parsed = parseCameraMetadataItem(item);
+    if (parsed) out.push(parsed);
+  }
+  return out;
+}
+
+async function fetchCameraMetadataPaged(
+  client: MiCloudClient,
+  dids?: readonly string[],
+): Promise<CameraRecordMetadata[]> {
+  const records: CameraRecordMetadata[] = [];
+  let startDid = "";
+  for (let page = 0; page < 20; page += 1) {
+    const data: Record<string, unknown> = {
+      get_split_device: true,
+      support_smart_home: true,
+      get_third_device: true,
+      limit: 200,
+    };
+    if (dids) data["dids"] = dids;
+    if (startDid) data["start_did"] = startDid;
+    const res = await client.request("v2/home/device_list_page", data);
+    records.push(...parseCameraMetadataResponse(res));
+    const obj = res && typeof res === "object" ? (res as Record<string, unknown>) : {};
+    const next = asIdString(obj["next_start_did"]) ?? "";
+    if (obj["has_more"] !== true || !next || next === startDid) break;
+    startDid = next;
+  }
+  const seen = new Set<string>();
+  return records.filter((r) => !seen.has(r.did) && (seen.add(r.did), true));
+}
+
+async function fetchCameraMetadataList(client: MiCloudClient): Promise<CameraRecordMetadata[]> {
+  const byDid = new Map<string, CameraRecordMetadata>();
+  const merge = (items: readonly CameraRecordMetadata[]) => {
+    for (const item of items) {
+      const prev = byDid.get(item.did);
+      if (!prev || (!extractRecordLocalIp(prev) && extractRecordLocalIp(item))) {
+        byDid.set(item.did, item);
+      }
+    }
+  };
+
+  if (typeof client.request === "function") {
+    try {
+      merge(await fetchCameraMetadataPaged(client));
+    } catch (err) {
+      if (err instanceof MiCloudError && err.kind === "sessionExpired") throw err;
+      const legacy = await client.request("home/device_list", {
+        getVirtualModel: true,
+        getHuamiDevices: 1,
+        get_split_device: false,
+        support_smart_home: true,
+      });
+      merge(parseCameraMetadataResponse(legacy));
+    }
+  }
+
+  if (
+    typeof client.deviceList === "function" &&
+    (typeof client.request !== "function" || client.deviceList !== MiCloudClient.prototype.deviceList)
+  ) {
+    const listed = await client.deviceList();
+    merge(
+      listed.map((r) => ({
+        did: r.did,
+        model: r.model,
+        isOnline: r.isOnline,
+        localIp: extractRecordLocalIp(r as unknown as Record<string, unknown>) || null,
+        parentDid: extractRecordParentDid(r as unknown as Record<string, unknown>) || null,
+      })),
+    );
+  }
+
+  return Array.from(byDid.values());
+}
+
+export interface LiveCameraBridgeTarget {
+  readonly bridgeDid: string;
+  readonly bridgeModel: string;
+  readonly subdid: string | null;
+  readonly cloudLocalIp: string;
+  readonly hubBlockedReason: string | null;
+}
+
+/**
+ * Resolves live camera bridge target (`bridgeDid`, `bridgeModel`, `subdid`, `cloudLocalIp`) using
+ * paged cloud device metadata + `client.homeRooms()`, isolating multi-home hubs and falling back
+ * to synthesized `gatewayDid` / `gatewayModel` / `gatewayLocalIp` for shared-home cameras (#76).
+ */
+export async function resolveLiveCameraTarget(
+  client: MiCloudClient,
+  dev: SmartDevice,
+  hostDevices: readonly SmartDevice[],
+  selectedHomeId?: string | null,
+): Promise<LiveCameraBridgeTarget> {
+  const camSpec = dev.kind.kind === "camera" ? dev.kind : null;
+  const requiresHub = CameraHubCatalog.hubModel(dev.model) !== null;
+
+  const [initialMetadata, cloudRooms] = await Promise.all([
+    fetchCameraMetadataList(client),
+    client.homeRooms().catch((err: unknown) => {
+      if (err instanceof MiCloudError && err.kind === "sessionExpired") throw err;
+      return [] as MiRoom[];
+    }),
+  ]);
+  const rooms = cloudRooms.length > 0 ? cloudRooms : buildHostRoomHints(hostDevices, selectedHomeId);
+
+  const byDid = new Map<string, CameraRecordMetadata>(initialMetadata.map((item) => [item.did, item]));
+  const wasListed = byDid.has(dev.id);
+
+  // Shared-home devices are omitted from unfiltered device_list; ask by did when missing (#134).
+  if (typeof client.request === "function") {
+    const wantedDids = new Set<string>();
+    if (!byDid.has(dev.id)) wantedDids.add(dev.id);
+    if (requiresHub && camSpec?.gatewayDid && !byDid.has(camSpec.gatewayDid)) {
+      wantedDids.add(camSpec.gatewayDid);
+    }
+    if (!wasListed) {
+      const camHomeIds = new Set(
+        rooms
+          .filter((r) => r.dids.includes(dev.id))
+          .map((r) => r.homeId?.trim() ?? "")
+          .filter((hid) => hid !== ""),
+      );
+      for (const room of rooms) {
+        if (camHomeIds.has(room.homeId?.trim() ?? "")) {
+          for (const did of room.dids) {
+            if (!byDid.has(did)) wantedDids.add(did);
+          }
+        }
+      }
+    }
+    if (wantedDids.size > 0) {
+      const extra = await fetchCameraMetadataPaged(client, Array.from(wantedDids).slice(0, 150)).catch(
+        (err: unknown) => {
+          if (err instanceof MiCloudError && err.kind === "sessionExpired") throw err;
+          return [] as CameraRecordMetadata[];
+        },
+      );
+      for (const item of extra) {
+        if (!byDid.has(item.did) || (!extractRecordLocalIp(byDid.get(item.did)) && extractRecordLocalIp(item))) {
+          byDid.set(item.did, item);
+        }
+      }
+    }
+  }
+
+  const metadataList = Array.from(byDid.values());
+  const rawDev = byDid.get(dev.id);
+  const ownCloudIp = extractRecordLocalIp(rawDev);
+
+  if (!requiresHub || ownCloudIp) {
+    return {
+      bridgeDid: dev.id,
+      bridgeModel: dev.model,
+      subdid: camSpec?.subdid ?? null,
+      cloudLocalIp: ownCloudIp || (camSpec?.gatewayLocalIp ?? "").trim(),
+      hubBlockedReason: null,
+    };
+  }
+
+  const camMeta: CameraRecordMetadata = rawDev ?? {
+    did: dev.id,
+    model: dev.model,
+    isOnline: dev.isOnline,
+  };
+  const resolution = resolveCameraHub(camMeta, metadataList, rooms);
+  if (resolution.hub) {
+    return {
+      bridgeDid: resolution.hub.did,
+      bridgeModel: resolution.hub.model,
+      subdid: camSpec?.subdid ?? dev.id,
+      cloudLocalIp: extractRecordLocalIp(resolution.hub) || (camSpec?.gatewayLocalIp ?? "").trim(),
+      hubBlockedReason: null,
+    };
+  }
+
+  const inSharedRoom = Boolean(dev.isSharedHome) || rooms.some((r) => r.isSharedHome && r.dids.includes(dev.id));
+  if (
+    (!rawDev || inSharedRoom) &&
+    resolution.reason === "missing_hub" &&
+    camSpec?.gatewayDid &&
+    camSpec.gatewayModel
+  ) {
+    const listedGateway = byDid.get(camSpec.gatewayDid);
+    if (listedGateway && !recordIsOnline(listedGateway)) {
+      return {
+        bridgeDid: dev.id,
+        bridgeModel: dev.model,
+        subdid: null,
+        cloudLocalIp: "",
+        hubBlockedReason: cameraTr(
+          "配对的室内网关当前离线，请检查网关电源与网络后重试",
+          "The paired indoor gateway is offline; check its power and network, then retry",
+        ),
+      };
+    }
+    return {
+      bridgeDid: camSpec.gatewayDid,
+      bridgeModel: listedGateway?.model ?? camSpec.gatewayModel,
+      subdid: camSpec.subdid ?? dev.id,
+      cloudLocalIp: extractRecordLocalIp(listedGateway) || (camSpec.gatewayLocalIp ?? "").trim(),
+      hubBlockedReason: null,
+    };
+  }
+
+  const hubBlockedReason =
+    resolution.reason === "offline_hub"
+      ? cameraTr(
+          "配对的室内网关当前离线，请检查网关电源与网络后重试",
+          "The paired indoor gateway is offline; check its power and network, then retry",
+        )
+      : resolution.reason === "ambiguous_hub"
+        ? cameraTr(
+            "检测到多个同型号室内网关，请将摄像机与对应网关放入同一房间后重试",
+            "Multiple indoor gateways found; place the camera and its gateway in the same room and retry",
+          )
+        : cameraTr(
+            "该电池摄像机需通过配对的室内网关连接，当前未找到可用室内网关",
+            "This battery camera connects through its paired indoor gateway, which could not be found",
+          );
+
+  return {
+    bridgeDid: dev.id,
+    bridgeModel: dev.model,
+    subdid: null,
+    cloudLocalIp: "",
+    hubBlockedReason,
   };
 }
