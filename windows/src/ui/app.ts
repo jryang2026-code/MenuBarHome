@@ -319,6 +319,11 @@ export class MenuMijiaWindowsApp {
       : this.settings.connectionMode === "homeAssistant" ? structuredClone(haCache?.devices ?? []) : demoDevices();
     this.scenes = this.settings.connectionMode === "homeAssistant" ? structuredClone(haCache?.scenes ?? []) : this.settings.connectionMode === "demo" ? demoScenes() : [];
     this.environmentReadings = this.settings.connectionMode === "homeAssistant" ? structuredClone(haCache?.environmentReadings ?? []) : [];
+    // 更多设置 rows come back with the cached cards: without them the restored panel shows every
+    // auxiliary control as missing until the first live snapshot lands.
+    this.deviceFacets = this.settings.connectionMode === "homeAssistant"
+      ? structuredClone(haCache?.deviceFacets ?? {})
+      : {};
     this.initializeCredentials();
     this.submitServiceEndpoints();
 

@@ -7,6 +7,7 @@ import { applyOrder, homeOptions, pageSections, scopedKey, spans, withAliases } 
 import { filterByListCut, foldGroupedLights, kindChips, memberGroupOwners, showsKindRow } from "./listCut.js";
 import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom.js";
 import { environmentReadingPriority, type SmartDevice } from "../core/models.js";
+import { isHostAttachedToActiveWindow, mergeHomeSnapshotRespectingLocks } from "../core/optimisticLock.js";
 import { availableQuickActions } from "../core/quickActions.js";
 
 export function foldGrouped(host: MenuMijiaWindowsApp, devices: readonly SmartDevice[]): SmartDevice[] {
@@ -129,6 +130,7 @@ function appendMissingRoomDids(rooms: MiRoom[], records: readonly MiDeviceRecord
   }
 
 export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false): Promise<void> {
+    if (!isHostAttachedToActiveWindow(host)) return;
     if (host.settings.connectionMode === "homeAssistant") return refreshHADevices(host, silent);
     if (!host.settings.miSession || host.settings.connectionMode !== "xiaomiCloud" || host.isSyncingCloud) return;
     const session = host.settings.miSession;
@@ -254,9 +256,11 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       host.markCloudValuesFresh();
       host.groupOwnerByMemberDid = memberGroupOwners(membersByGroup);
       // Cloud list order is not a layout preference. Keep known devices in their
-      // displayed order, use fresh values, drop removed ids and append new ones.
-      host.devices = applyOrder(host.devices.map((device) => device.id), home.devices);
-      host.deviceFacets = home.deviceFacets ?? {};
+      // displayed order, use fresh values (while respecting unexpired optimistic locks),
+      // drop removed ids and append new ones.
+      const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
+      host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
+      host.deviceFacets = merged.deviceFacets;
       const readingPriorityById = new Map(
         home.devices.map((device) => [device.id, environmentReadingPriority(device.kind)]),
       );
@@ -308,18 +312,20 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
     } finally {
       if (host.syncGeneration === syncGen) {
         host.isSyncingCloud = false;
-        const staleChanged = staleBefore !== host.cloudValuesStale;
-        const expiredChanged = expiredBefore !== host.miSessionExpired;
-        if (!silent) {
-          host.render();
-        } else if (staleChanged || expiredChanged) {
-          host.queueBackgroundRender();
-        } else if (presentationChanged) {
-          if (
-            cloudPanelStructureFingerprint(host) !== previousStructure ||
-            !patchCloudPresentation(host)
-          ) {
+        if (isHostAttachedToActiveWindow(host)) {
+          const staleChanged = staleBefore !== host.cloudValuesStale;
+          const expiredChanged = expiredBefore !== host.miSessionExpired;
+          if (!silent) {
+            host.render();
+          } else if (staleChanged || expiredChanged) {
             host.queueBackgroundRender();
+          } else if (presentationChanged) {
+            if (
+              cloudPanelStructureFingerprint(host) !== previousStructure ||
+              !patchCloudPresentation(host)
+            ) {
+              host.queueBackgroundRender();
+            }
           }
         }
       }
@@ -327,7 +333,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
   }
 
 export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false): Promise<void> {
-    if (host.settings.connectionMode !== "homeAssistant" || host.isSyncingCloud) return;
+    if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "homeAssistant" || host.isSyncingCloud) return;
     const endpoint = host.settings.haBaseURL;
     const token = host.settings.haToken;
     const revision = host.localControlRevision;
@@ -344,13 +350,14 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       const home = await new HomeAssistantClient(endpoint, token).snapshot();
       const identity = homeAssistantIdentity(endpoint, token);
       if (!identity) throw new Error("Invalid Home Assistant URL");
-      if (host.settings.connectionMode !== "homeAssistant" || host.settings.haBaseURL !== endpoint || host.settings.haToken !== token || host.localControlRevision !== revision || host.syncGeneration !== syncGen) return;
-      host.devices = applyOrder(host.devices.map((device) => device.id), home.devices);
-      host.deviceFacets = home.deviceFacets ?? {};
+      if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "homeAssistant" || host.settings.haBaseURL !== endpoint || host.settings.haToken !== token || host.localControlRevision !== revision || host.syncGeneration !== syncGen) return;
+      const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
+      host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
+      host.deviceFacets = merged.deviceFacets;
       host.scenes = home.scenes;
       markTimerSnapshotReady(host);
       const readingPriorityById = new Map(
-        home.devices.map((device) => [device.id, environmentReadingPriority(device.kind)]),
+        host.devices.map((device) => [device.id, environmentReadingPriority(device.kind)]),
       );
       host.environmentReadings = applyOrder(
         host.environmentReadings.map((reading) => reading.id),
@@ -361,20 +368,27 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       const hadValidCache = host.settings.cachedHAHome?.identity === identity;
       const presentationChanged =
         cloudPresentationFingerprint(host) !== previousPresentation || host.haConnectionError !== null;
-      host.settings.cachedHAHome = {identity,home:{...home,devices:host.devices,environmentReadings:host.environmentReadings}};
+      const cachedHome = {
+        devices: host.devices,
+        rooms: home.rooms,
+        environmentReadings: host.environmentReadings,
+        scenes: home.scenes,
+        ...(Object.keys(host.deviceFacets).length > 0 ? { deviceFacets: host.deviceFacets } : {}),
+      };
+      host.settings.cachedHAHome = { identity, home: cachedHome };
       if (host.haConnectionError !== null) failed = true;
       host.haConnectionError = null;
       if (presentationChanged || !hadValidCache) host.saveSettings();
       shouldUpdateView = !silent || presentationChanged;
     } catch (error) {
-      if (host.settings.connectionMode !== "homeAssistant" || host.settings.haBaseURL !== endpoint || host.settings.haToken !== token || host.localControlRevision !== revision || host.syncGeneration !== syncGen) return;
+      if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "homeAssistant" || host.settings.haBaseURL !== endpoint || host.settings.haToken !== token || host.localControlRevision !== revision || host.syncGeneration !== syncGen) return;
       failed = true;
       shouldUpdateView = true;
       host.haConnectionError = error instanceof Error ? error.message : String(error);
     } finally {
       if (host.syncGeneration === syncGen) {
         host.isSyncingCloud = false;
-        if (shouldUpdateView) {
+        if (shouldUpdateView && isHostAttachedToActiveWindow(host)) {
           if (failed || host.devices.length === 0 || cloudPanelStructureFingerprint(host) !== previousStructure || !patchCloudPresentation(host)) host.queueBackgroundRender();
         }
       }
@@ -395,6 +409,7 @@ export function cloudPresentationFingerprint(host: MenuMijiaWindowsApp): string 
 
 export function cloudSnapshotIsStale(host: MenuMijiaWindowsApp, session: MiSession, revision: number): boolean {
     return (
+      !isHostAttachedToActiveWindow(host) ||
       host.settings.connectionMode !== "xiaomiCloud" ||
       host.settings.miSession !== session ||
       host.localControlRevision !== revision
@@ -441,7 +456,35 @@ export function cloudPanelStructureFingerprint(host: MenuMijiaWindowsApp): strin
                   ? [kind.availableModes]
                   : kind.kind === "camera"
                     ? [kind.availableNightShots, kind.motionDetectionEntityId]
-                    : [];
+                    : kind.kind === "cover"
+                      ? [
+                          kind.subtype,
+                          kind.positionWritable,
+                          kind.openDescription,
+                          kind.closeDescription,
+                          kind.pauseDescription,
+                        ]
+                      : kind.kind === "appliance"
+                        ? [
+                            kind.powerPresent,
+                            kind.powerWritable,
+                            kind.availableModes,
+                            kind.modeWritable,
+                            kind.temperatureWritable,
+                            kind.minTemp,
+                            kind.maxTemp,
+                            kind.step,
+                            kind.symbolName,
+                            kind.heats,
+                          ]
+                        : kind.kind === "speaker"
+                          ? [kind.volumeWritable, kind.muteSwitchEntityId, kind.sleepModeEntityId]
+                          : [];
+        const facetIds = (host.deviceFacets[device.id] ?? []).map((facet) => [
+          facet.id,
+          facet.kind,
+          facet.isWritable,
+        ]);
         return {
           id: device.id,
           name: device.name,
@@ -450,6 +493,7 @@ export function cloudPanelStructureFingerprint(host: MenuMijiaWindowsApp): strin
           model: device.model,
           category: kind.kind,
           capabilities,
+          ...(facetIds.length > 0 ? { facetIds } : {}),
           sensorShape:
             kind.kind === "sensor"
               ? [kind.temperature !== null, kind.humidity !== null, kind.battery !== null]
