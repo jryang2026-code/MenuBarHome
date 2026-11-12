@@ -36,6 +36,14 @@ struct AutomationSettingsSection: View {
     @State private var newWiFiMode: WiFiConditionMode = .any
     @State private var newWiFiSSIDList = ""
 
+    // Time window. Hour granularity is what the editor offers today; the model stores minutes so a
+    // finer control can be added later without migrating stored rules.
+    @State private var newTimeWindowEnabled = false
+    @State private var newTimeStartHour = 22
+    @State private var newTimeEndHour = 7
+
+    private let hourChoices = Array(0...23)
+
     private enum WiFiConditionMode: String, CaseIterable, Identifiable {
         case any, only, exclude
 
@@ -327,6 +335,49 @@ struct AutomationSettingsSection: View {
             .labelsHidden()
             .frame(maxWidth: 170)
             .controlSize(.regular)
+        }
+
+        HStack(spacing: 6) {
+            Toggle(isOn: $newTimeWindowEnabled) {
+                Text(L10n.tr("限定时段", "Between"))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.secondary)
+            }
+            .toggleStyle(.checkbox)
+
+            if newTimeWindowEnabled {
+                Picker("", selection: $newTimeStartHour) {
+                    ForEach(hourChoices, id: \.self) { hour in
+                        Text(String(format: "%02d:00", hour)).tag(hour)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 90)
+                .controlSize(.regular)
+
+                Text("–")
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.secondary)
+
+                Picker("", selection: $newTimeEndHour) {
+                    ForEach(hourChoices, id: \.self) { hour in
+                        Text(String(format: "%02d:00", hour)).tag(hour)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 90)
+                .controlSize(.regular)
+
+                if newTimeStartHour == newTimeEndHour {
+                    Text(L10n.tr("起止相同 = 全天", "Same ends = all day"))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(.secondary)
+                } else if newTimeStartHour > newTimeEndHour {
+                    Text(L10n.tr("跨夜", "Overnight"))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
 
         if newWiFiMode != .any {
@@ -640,7 +691,14 @@ struct AutomationSettingsSection: View {
             trigger: newTrigger,
             action: action,
             triggerOptions: options,
-            conditions: AutomationConditions(wifi: wifi)
+            conditions: AutomationConditions(
+                wifi: wifi,
+                timeWindow: AutomationTimeWindow(
+                    isEnabled: newTimeWindowEnabled,
+                    startMinute: newTimeStartHour * 60,
+                    endMinute: newTimeEndHour * 60
+                )
+            )
         )
         if let confirmation = rule.highRiskConfirmation(devices: store.devices) {
             guard confirmHighRiskRule(confirmation) else { return }

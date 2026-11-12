@@ -531,46 +531,131 @@ extension AutomationWiFiCondition: Codable {
     }
 }
 
+/// A daily wall-clock window in which a rule may run.
+///
+/// `isEnabled == false` means "any time", so rules stored before time windows existed keep running
+/// exactly as before. Minute offsets from midnight keep the model independent of how the settings
+/// UI presents the window (hour pickers today, finer granularity later).
+///
+/// A window whose ends are equal means "all day", not "never": silently disabling a rule is never
+/// what the user meant when they only wanted to bound it.
+public struct AutomationTimeWindow: Codable, Equatable, Sendable {
+    public var isEnabled: Bool
+    /// Minutes from midnight, `0 ..< 1440`.
+    public var startMinute: Int
+    /// Minutes from midnight, `0 ..< 1440`. Exclusive.
+    public var endMinute: Int
+
+    public static let anytime = AutomationTimeWindow()
+
+    public init(isEnabled: Bool = false, startMinute: Int = 22 * 60, endMinute: Int = 7 * 60) {
+        self.isEnabled = isEnabled
+        self.startMinute = Self.clamp(startMinute)
+        self.endMinute = Self.clamp(endMinute)
+    }
+
+    /// Start inclusive, end exclusive. An overnight window (`22:00 → 07:00`) wraps past midnight.
+    public func contains(_ date: Date, calendar: Calendar = .current) -> Bool {
+        guard isEnabled else { return true }
+        // Equal ends read as "the whole day" rather than an empty window.
+        guard startMinute != endMinute else { return true }
+        let minute = calendar.component(.hour, from: date) * 60 + calendar.component(.minute, from: date)
+        if startMinute < endMinute {
+            return minute >= startMinute && minute < endMinute
+        }
+        return minute >= startMinute || minute < endMinute
+    }
+
+    /// Log-friendly verdict, kept ASCII so it is greppable next to the other automation logs.
+    public var logToken: String {
+        guard isEnabled else { return "any" }
+        return "window"
+    }
+
+    /// `22:00–07:00`, locale-neutral so the list reads the same in both languages.
+    public var summary: String {
+        Self.clock(startMinute) + "–" + Self.clock(endMinute)
+    }
+
+    private static func clamp(_ minute: Int) -> Int {
+        min(max(minute, 0), 24 * 60 - 1)
+    }
+
+    private static func clock(_ minute: Int) -> String {
+        String(format: "%02d:%02d", minute / 60, minute % 60)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case isEnabled, startMinute, endMinute
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            isEnabled: try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false,
+            startMinute: try container.decodeIfPresent(Int.self, forKey: .startMinute) ?? 22 * 60,
+            endMinute: try container.decodeIfPresent(Int.self, forKey: .endMinute) ?? 7 * 60
+        )
+    }
+}
+
 /// Every condition a rule must satisfy before its action runs. Empty means "trigger alone decides",
 /// which is how rules are stored before conditions existed.
 public struct AutomationConditions: Codable, Equatable, Sendable {
     public var wifi: AutomationWiFiCondition
+    public var timeWindow: AutomationTimeWindow
 
-    public init(wifi: AutomationWiFiCondition = .any) {
+    public init(wifi: AutomationWiFiCondition = .any, timeWindow: AutomationTimeWindow = .anytime) {
         self.wifi = wifi
+        self.timeWindow = timeWindow
     }
 
     private enum CodingKeys: String, CodingKey {
-        case wifi
+        case wifi, timeWindow
     }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         wifi = try container.decodeIfPresent(AutomationWiFiCondition.self, forKey: .wifi) ?? .any
+        timeWindow = try container.decodeIfPresent(AutomationTimeWindow.self, forKey: .timeWindow) ?? .anytime
     }
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(wifi, forKey: .wifi)
+        try container.encode(timeWindow, forKey: .timeWindow)
     }
 
     public func evaluate(wifiSSID: String?, isAuthorized: Bool) -> AutomationWiFiEvaluation {
         wifi.evaluate(wifiSSID: wifiSSID, isAuthorized: isAuthorized)
     }
 
+    /// Time windows are evaluated against the moment the trigger fired, not against "now" later in
+    /// the pipeline: a sleep trigger held for two seconds must still be judged by its own timestamp.
+    public func isWithinTimeWindow(at date: Date, calendar: Calendar = .current) -> Bool {
+        timeWindow.contains(date, calendar: calendar)
+    }
+
     /// One-line description for the settings list. `nil` when the rule has no conditions, so the
     /// row keeps showing only the trigger detail it showed before.
     public func summary() -> String? {
+        var parts: [String] = []
         switch wifi {
         case .any:
-            return nil
+            break
         case .inAny(let list):
-            guard !list.isEmpty else { return nil }
-            return L10n.format("Wi-Fi：%@", "Wi-Fi: %@", list.joined(separator: L10n.tr("、", ", ")))
+            if !list.isEmpty {
+                parts.append(L10n.format("Wi-Fi：%@", "Wi-Fi: %@", list.joined(separator: L10n.tr("、", ", "))))
+            }
         case .notIn(let list):
-            guard !list.isEmpty else { return nil }
-            return L10n.format("不在 Wi-Fi：%@", "Not on Wi-Fi: %@", list.joined(separator: L10n.tr("、", ", ")))
+            if !list.isEmpty {
+                parts.append(L10n.format("不在 Wi-Fi：%@", "Not on Wi-Fi: %@", list.joined(separator: L10n.tr("、", ", "))))
+            }
         }
+        if timeWindow.isEnabled {
+            parts.append(L10n.format("时段 %@", "Between %@", timeWindow.summary))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }
 
