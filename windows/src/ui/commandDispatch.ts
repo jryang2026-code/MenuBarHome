@@ -6,11 +6,18 @@ import { readMiotPower, type DeviceCommand, type DeviceKind, type FacetControl, 
 import { applyCommandToDevices } from "../core/commandEffects.js";
 import {
   applyHAExtendedCommandEffect,
+  claimDeviceWrite,
+  COVER_OPTIMISTIC_LOCK_DURATION_MS,
   lockOptimistic,
   OPTIMISTIC_LOCK_DURATION_MS,
+  ownsDeviceWrite,
   READ_BACK_DELAY_MS,
+  restoreOptimisticLock,
   scheduleDelayedReadBack,
+  snapshotOptimisticLock,
   syncDirectCommandToFacets,
+  type DeviceWriteClaim,
+  type OptimisticLockSnapshot,
 } from "../core/optimisticLock.js";
 
 function withReadPower(command: DeviceCommand, isOn: boolean): DeviceCommand {
@@ -25,10 +32,95 @@ function withReadPower(command: DeviceCommand, isOn: boolean): DeviceCommand {
   }
 }
 
+/**
+ * A cover command shown before its send. A cover is write-only — macOS locks it before the send so
+ * a pre-command parked snapshot cannot drop the commanded travel (`HomeStore+Controls.swift:
+ * togglePrimary`), and again after success, which bumps the revision.
+ */
+interface CoverOptimisticWrite {
+  readonly deviceId: string;
+  /** The position the motor started from; a snapshot parked there is pre-command, not confirmation. */
+  readonly originPosition: number | null;
+  readonly priorDevice: SmartDevice;
+  readonly priorFacets: readonly FacetControl[] | undefined;
+  readonly priorLock: OptimisticLockSnapshot | null;
+}
+
+/** The cover card a motor (`setSelectOption`) or position (`setNumberValue`) command addresses. */
+export function coverDeviceForCommand(
+  host: MenuMijiaWindowsApp,
+  command: DeviceCommand,
+): SmartDevice | null {
+  if (command.kind !== "setSelectOption" && command.kind !== "setNumberValue") return null;
+  const device = host.devices.find(
+    (item) => item.kind.kind === "cover" && item.kind.entityId === command.entityId,
+  );
+  return device ?? null;
+}
+
+/**
+ * Copies `source.kind` back onto `target.kind` without replacing the device object, so a view or a
+ * caller still holding that row sees the restored values.
+ */
+function restoreKindInPlace(target: SmartDevice, source: SmartDevice): void {
+  const kind = target.kind as unknown as Record<string, unknown>;
+  const from = source.kind as unknown as Record<string, unknown>;
+  for (const key of Object.keys(kind)) {
+    if (!(key in from)) delete kind[key];
+  }
+  for (const [key, value] of Object.entries(from)) {
+    kind[key] = typeof value === "object" && value !== null ? structuredClone(value) : value;
+  }
+}
+
+/**
+ * Shows a cover command before it goes out and locks the row for the length of its travel. The
+ * previous row, facets and lock are kept so a refused send can put them back.
+ */
+function beginCoverOptimisticWrite(
+  host: MenuMijiaWindowsApp,
+  command: DeviceCommand,
+): CoverOptimisticWrite | null {
+  const device = coverDeviceForCommand(host, command);
+  if (!device) return null;
+  const facets = host.deviceFacets ?? {};
+  const priorDevice = structuredClone(device);
+  const priorFacets = facets[device.id] ? structuredClone(facets[device.id]!) : undefined;
+  const priorLock = snapshotOptimisticLock(host, device.id);
+  const originPosition = device.kind.kind === "cover" ? device.kind.positionPercent : null;
+  applyCommandToDevices(host.devices, command, host.settings.connectionMode, facets);
+  lockOptimistic(host, device.id, COVER_OPTIMISTIC_LOCK_DURATION_MS, {
+    coverOriginPosition: originPosition,
+    baselineDevice: priorDevice,
+    baselineFacets: priorFacets,
+  });
+  return { deviceId: device.id, originPosition, priorDevice, priorFacets, priorLock };
+}
+
+/** Puts back a refused cover send: the row it displaced, and the lock it displaced. */
+function revertCoverOptimisticWrite(host: MenuMijiaWindowsApp, write: CoverOptimisticWrite): void {
+  const device = host.devices.find((item) => item.id === write.deviceId);
+  if (device) restoreKindInPlace(device, write.priorDevice);
+  restoreOptimisticLock(host, write.deviceId, write.priorLock);
+}
+
+/** True when no newer command has taken the row this command addresses. */
+function stillOwnsWrite(host: MenuMijiaWindowsApp, claim: DeviceWriteClaim | null): boolean {
+  return claim === null || ownsDeviceWrite(host, claim);
+}
 
 export async function applyCommand(host: MenuMijiaWindowsApp, command: DeviceCommand, readBackPower = false): Promise<boolean> {
     const sourceRevision = host.sourceRevision;
     const originalCommand = command;
+    // Claim the row before the request goes out: a later command that takes the same row makes this
+    // answer stale, so a slow reply must not overwrite the newer write (`§14`).
+    const targetDeviceId = deviceOwningEntityId(
+      host.devices,
+      host.deviceFacets ?? {},
+      command.entityId,
+    );
+    const claim = targetDeviceId !== null ? claimDeviceWrite(host, targetDeviceId) : null;
+    const coverWrite = beginCoverOptimisticWrite(host, command);
     try {
       if (host.settings.connectionMode === "homeAssistant") {
         command = homeAssistantCommand(command, host.devices, host.deviceFacets);
@@ -37,6 +129,8 @@ export async function applyCommand(host: MenuMijiaWindowsApp, command: DeviceCom
       if (typeof readPower === "boolean") command = withReadPower(command, readPower);
     } catch (error) {
       if (sourceRevision !== host.sourceRevision) return false;
+      // Only the cover was shown ahead of its send, so only the cover has a row to put back.
+      if (coverWrite && stillOwnsWrite(host, claim)) revertCoverOptimisticWrite(host, coverWrite);
       // A command refused for a dead login is the same evidence a refresh gets: the footer must
       // stay offline after the banner is dismissed, so record it before rendering.
       if (error instanceof MiCloudError && error.kind === "sessionExpired") host.miSessionExpired = true;
@@ -49,6 +143,8 @@ export async function applyCommand(host: MenuMijiaWindowsApp, command: DeviceCom
       return false;
     }
     if (sourceRevision !== host.sourceRevision) return false;
+    // A newer command owns this row now; its own optimistic state and lock are the ones to keep.
+    if (!stillOwnsWrite(host, claim)) return true;
     const facets = host.deviceFacets ?? {};
     const beforeById = new Map(
       host.devices.map((dev) => [
@@ -61,7 +157,26 @@ export async function applyCommand(host: MenuMijiaWindowsApp, command: DeviceCom
         },
       ]),
     );
+    // The cover was already shown and locked before its send, so its baseline is the pre-write row
+    // and its travel origin is the position the motor started from.
+    if (coverWrite) {
+      beforeById.set(coverWrite.deviceId, {
+        snapshot: JSON.stringify([coverWrite.priorDevice.kind, coverWrite.priorFacets ?? null]),
+        coverOrigin: coverWrite.originPosition,
+        baselineDevice: structuredClone(coverWrite.priorDevice),
+        baselineFacets: coverWrite.priorFacets
+          ? structuredClone(coverWrite.priorFacets)
+          : undefined,
+      });
+    }
     host.localControlRevision += 1;
+    // The cover has been showing its commanded travel since before the send, so re-apply the
+    // command from the row it started on: applying it to the already-moved row would read as
+    // "no change" and report the motor as stopped.
+    if (coverWrite) {
+      const device = host.devices.find((item) => item.id === coverWrite.deviceId);
+      if (device) restoreKindInPlace(device, coverWrite.priorDevice);
+    }
     const cameraChanges = applyCommandToDevices(
       host.devices,
       command,
@@ -97,15 +212,25 @@ export async function applyCommand(host: MenuMijiaWindowsApp, command: DeviceCom
       const after = JSON.stringify([dev.kind, facets[dev.id] ?? null]);
       if (prior && after !== prior.snapshot) {
         modifiedIds.add(dev.id);
-        lockOptimistic(host, dev.id, OPTIMISTIC_LOCK_DURATION_MS, {
-          coverOriginPosition: prior.coverOrigin,
-          baselineDevice: prior.baselineDevice,
-          baselineFacets: prior.baselineFacets,
-        });
+        lockOptimistic(
+          host,
+          dev.id,
+          dev.kind.kind === "cover" ? COVER_OPTIMISTIC_LOCK_DURATION_MS : OPTIMISTIC_LOCK_DURATION_MS,
+          {
+            coverOriginPosition: prior.coverOrigin,
+            baselineDevice: prior.baselineDevice,
+            baselineFacets: prior.baselineFacets,
+          },
+        );
         scheduleDelayedReadBack(host, dev.id, READ_BACK_DELAY_MS);
       }
     }
-    if (modifiedIds.size === 0 && command.kind === "pressButton") {
+    // A momentary trigger shows nothing to compare, so the card is still the one that must be
+    // re-read: an appliance action (`pressButton`) or a standalone Home Assistant button.
+    const isMomentaryTrigger =
+      command.kind === "pressButton" ||
+      (command.kind === "setSwitch" && command.entityId.startsWith("button."));
+    if (modifiedIds.size === 0 && isMomentaryTrigger) {
       const baseEntityId = command.entityId.split("#")[0] ?? command.entityId;
       const ownerId = deviceOwningEntityId(host.devices, facets, baseEntityId);
       if (ownerId) {

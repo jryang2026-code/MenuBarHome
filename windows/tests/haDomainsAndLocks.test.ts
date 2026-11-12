@@ -1371,4 +1371,126 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
 
     cancelDelayedReadBack(app);
   });
+
+  it("preserves composite sensor safety alerts, hardens URL identity, restores cached facets, and enforces §14 lock ownership", async () => {
+    setLanguage("zh-Hans");
+    // 1. Composite temperature + smoke binary_sensor keeps smoke alert statusText on sensor card
+    const comboHome = HomeAssistantSynthesizer.synthesize({
+      areas: [{ area_id: "kitchen", name: "厨房" }],
+      devices: [{ id: "combo-smoke", name: "复合探头", area_id: "kitchen" }],
+      entities: [
+        { entity_id: "sensor.kitchen_temp", device_id: "combo-smoke" },
+        { entity_id: "binary_sensor.kitchen_smoke", device_id: "combo-smoke" },
+      ],
+      states: [
+        { entity_id: "sensor.kitchen_temp", state: "23.5", attributes: { device_class: "temperature" } },
+        { entity_id: "binary_sensor.kitchen_smoke", state: "on", attributes: { device_class: "smoke" } },
+      ],
+    });
+    const comboDev = byId(comboHome.devices).get("combo-smoke");
+    assert.ok(comboDev && comboDev.kind.kind === "sensor");
+    assert.equal(comboDev.kind.temperature, 23.5);
+    assert.equal(comboDev.kind.statusText, "检测到烟雾");
+    assert.equal(comboHome.deviceFacets?.["combo-smoke"], undefined);
+
+    // 2. URL control-char rejection and exact lowercase /api normalization
+    assert.equal(homeAssistantIdentity("https://home.example.com/hass/.\t./admin", "tok"), null);
+    assert.equal(homeAssistantIdentity("https://home.example.com/hass\n/api", "tok"), null);
+    assert.equal(homeAssistantIdentity("https://home.example.com/hass/api", "tok"), homeAssistantIdentity("https://home.example.com/hass", "tok"));
+    assert.notEqual(homeAssistantIdentity("https://home.example.com/hass/API", "tok"), homeAssistantIdentity("https://home.example.com/hass", "tok"));
+
+    // 3. Rapid reverse off -> on -> off keeps lock against stale `on`, and revision survives clear
+    const mkPlug = (isOn: boolean): SmartDevice => ({
+      id: "plug-1", name: "插座", roomId: "r", roomName: "客厅", model: "m", isOnline: true,
+      kind: { kind: "plug", switchEntityId: "switch.p1", isOn, powerWatts: null, energyKwh: null, childLockEntityId: null, isChildLocked: false },
+    });
+    const lockHost: { sourceRevision: number; devices: SmartDevice[]; deviceFacets: Record<string, FacetControl[]> } = { sourceRevision: 1, devices: [mkPlug(true)], deviceFacets: {} };
+    lockOptimistic(lockHost, "plug-1", 3000, { baselineDevice: mkPlug(false), nowMs: 100 });
+    lockHost.devices = [mkPlug(false)];
+    const rev2 = lockOptimistic(lockHost, "plug-1", 3000, { baselineDevice: mkPlug(true), nowMs: 200 });
+    assert.equal(rev2, 2);
+    const staleOnMerged = mergeSnapshotRespectingLocks(lockHost, [mkPlug(true)], 300);
+    assert.equal((staleOnMerged[0]!.kind as { isOn: boolean }).isOn, false, "stale on must not revert off->on->off");
+    assert.equal(isOptimisticallyLocked(lockHost, "plug-1", 300), true);
+    const confirmedMerged = mergeSnapshotRespectingLocks(lockHost, [mkPlug(false)], 400);
+    assert.equal((confirmedMerged[0]!.kind as { isOn: boolean }).isOn, false);
+    assert.equal(isOptimisticallyLocked(lockHost, "plug-1", 400), false);
+    assert.equal(optimisticLockRevision(lockHost, "plug-1"), 2, "revision persists after lock clears");
+
+    // 4. Cached deviceFacets restore offline + cover pre-send lock + out-of-order write + read-back & button
+    activeDom = mountTestWindow({ stubInterval: true });
+    const { MenuMijiaWindowsApp } = await import("../src/ui/app.js");
+    const haBaseURL = "http://192.168.1.9:8123";
+    const haToken = "tok-" + "ab".repeat(8);
+    const liveSnap = {
+      areas: [{ area_id: "living", name: "客厅" }],
+      devices: [{ id: "hum-1", name: "加湿器", area_id: "living" }, { id: "cov-1", name: "窗帘", area_id: "living" }, { id: "btn-1", name: "门铃按钮", area_id: "living" }],
+      entities: [{ entity_id: "humidifier.h1", device_id: "hum-1" }, { entity_id: "cover.c1", device_id: "cov-1" }, { entity_id: "button.b1", device_id: "btn-1" }],
+      states: [
+        { entity_id: "humidifier.h1", state: "off", attributes: { humidity: 45, min_humidity: 30, max_humidity: 80, supported_features: 1 } },
+        { entity_id: "cover.c1", state: "closed", attributes: { current_position: 0, supported_features: 15 } },
+        { entity_id: "button.b1", state: "unknown", attributes: {} },
+      ],
+    };
+    let rejectSnapshot = true;
+    const gateQueue: Array<() => void> = [];
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {
+        invoke: async (cmd: string) => {
+          if (cmd === "ha_snapshot") {
+            if (rejectSnapshot) throw new Error("offline");
+            return structuredClone(liveSnap);
+          }
+          if (cmd === "ha_execute" && gateQueue.length > 0) {
+            await new Promise<void>((res) => { const g = gateQueue.shift(); if (g) g(); res(); });
+          }
+          return null;
+        },
+      },
+      configurable: true,
+    });
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "homeAssistant", hasCompletedOnboarding: true, haBaseURL, haToken,
+      cachedHAHome: { identity: homeAssistantIdentity(haBaseURL, haToken), home: HomeAssistantSynthesizer.synthesize(liveSnap) },
+    }));
+    const app = new MenuMijiaWindowsApp(document.querySelector<HTMLElement>("#app")!);
+    assert.ok((app.deviceFacets["hum-1"]?.length ?? 0) > 0, "cachedHAHome restores deviceFacets at startup");
+
+    rejectSnapshot = false;
+    await refreshHADevices(app, true);
+    // Cover locks before send finishes, keeping origin=0 even if mid-flight snapshot reports 40
+    let releaseCover: () => void = () => {};
+    const coverHold = new Promise<void>((r) => { releaseCover = r; });
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {
+        invoke: async (cmd: string) => {
+          if (cmd === "ha_execute") { await coverHold; return null; }
+          if (cmd === "ha_snapshot") return structuredClone(liveSnap);
+          return null;
+        },
+      },
+      configurable: true,
+    });
+    const coverSend = applyCommand(app, { kind: "setSelectOption", entityId: "cover.c1", option: "open" });
+    assert.equal(isOptimisticallyLocked(app, "cov-1"), true, "cover locked before send completes");
+    releaseCover();
+    await coverSend;
+    assert.equal((mergeSnapshotRespectingLocks(app, [byId(HomeAssistantSynthesizer.synthesize(liveSnap).devices).get("cov-1")!]).find((d) => d.id === "cov-1")!.kind as CoverSpec).motion, "opening");
+
+    // Standalone button schedules delayed read-back; busy sync retries read-back and read-back replaces locked non-cover row
+    await applyCommand(app, { kind: "setSwitch", entityId: "button.b1", isOn: true });
+    assert.equal(hasPendingReadBack(app, "btn-1"), true, "standalone button.* schedules 800ms read-back");
+
+    await applyCommand(app, { kind: "setSwitch", entityId: "humidifier.h1", isOn: true });
+    assert.equal((app.devices.find((d) => d.id === "hum-1")!.kind as { isOn: boolean }).isOn, true);
+    app.isSyncingCloud = true;
+    scheduleDelayedReadBack(app, "hum-1", 15);
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(hasPendingReadBack(app, "hum-1"), true, "busy sync re-arms read-back instead of dropping it");
+    app.isSyncingCloud = false;
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal((app.devices.find((d) => d.id === "hum-1")!.kind as { isOn: boolean }).isOn, false, "read-back replaces locked non-cover row with actual remote off");
+
+    cancelDelayedReadBack(app);
+  });
 });

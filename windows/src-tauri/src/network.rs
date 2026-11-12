@@ -235,6 +235,11 @@ pub(crate) fn parse_ha_endpoint_parts(raw: &str, allow_schemeless: bool) -> Resu
     if trimmed.is_empty() {
         return Err("Invalid Home Assistant URL".into());
     }
+    // A control character (`\t`, `\n`, `\0`) lets one string carry a second origin past a naive
+    // check, and no name a person types contains one.
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err("Invalid Home Assistant URL".into());
+    }
     if trimmed.contains('\\') {
         return Err("Invalid Home Assistant URL".into());
     }
@@ -273,7 +278,8 @@ pub(crate) fn parse_ha_endpoint_parts(raw: &str, allow_schemeless: bool) -> Resu
 
 pub(crate) fn ha_websocket_path(raw_path: &str) -> Result<String, String> {
     let lower = raw_path.to_ascii_lowercase();
-    if raw_path.contains('\\')
+    if raw_path.chars().any(|c| c.is_control())
+        || raw_path.contains('\\')
         || lower.contains("%2e")
         || lower.contains("%2f")
         || lower.contains("%5c")
@@ -580,6 +586,36 @@ mod subpath_tests {
         assert_eq!(
             parse_ha_endpoint_parts("http://192.0.2.10:8123/", false).unwrap(),
             ("http://192.0.2.10:8123".to_string(), "/api/websocket".to_string())
+        );
+
+        // A control character is never part of a URL a person types, so it is refused instead of
+        // letting one string carry a second origin.
+        assert_eq!(
+            ha_websocket_path("/hass/api").unwrap(),
+            "/hass/api/websocket".to_string()
+        );
+        assert!(ha_websocket_path("/hass/tab\there").is_err());
+        assert!(ha_websocket_path("/hass/new\nline").is_err());
+        assert!(ha_websocket_path("/ha\0ss").is_err());
+        for control in [
+            "https://home.example.com/hass\t/api",
+            "https://home.example.com/ha\nss",
+            "http://192.168.1.8:8123/\r\nha",
+        ] {
+            assert!(parse_ha_endpoint_parts(control, false).is_err(), "{control:?}");
+            assert!(requested_service_origins("", control).is_err(), "{control:?}");
+        }
+        // Only the real `/api` suffix is stripped: a reverse proxy whose subpath is `/API` keeps it.
+        assert_eq!(
+            ha_websocket_path("/hass/API").unwrap(),
+            "/hass/API/api/websocket".to_string()
+        );
+        assert_eq!(
+            parse_ha_endpoint_parts("https://home.example.com/hass/API", false).unwrap(),
+            (
+                "https://home.example.com:443".to_string(),
+                "/hass/API/api/websocket".to_string()
+            )
         );
 
         let requested = requested_service_origins("", "https://home.example.com/hass/").unwrap();

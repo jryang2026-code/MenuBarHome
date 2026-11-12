@@ -168,6 +168,9 @@ export function homeAssistantIdentity(baseURL: string, token: string): string | 
   try {
     const trimmed = baseURL.trim();
     if (!trimmed || trimmed.includes("\\")) return null;
+    // A raw control character (`\t`, `\n`, `\0`) smuggles a second origin past a naive comparison
+    // and is not part of any URL a person types, so the identity refuses it outright.
+    if (/[\x00-\x1f\x7f]/.test(trimmed)) return null;
     if (/%2e|%2f|%5c/i.test(trimmed)) return null;
     const schemeEnd = trimmed.indexOf("://");
     if (schemeEnd > 0) {
@@ -191,8 +194,10 @@ export function homeAssistantIdentity(baseURL: string, token: string): string | 
     if (/%2e|%2f|%5c/i.test(url.pathname)) return null;
     const segments = url.pathname.split("/").filter(Boolean);
     if (segments.some((seg) => seg === "." || seg === "..")) return null;
+    // Only the real `/api` suffix is stripped: a subpath that happens to end in `/API` is a
+    // reverse proxy's own prefix, and folding its case would rewrite the address it lives at.
     const normalizedSegments =
-      segments.length > 0 && segments[segments.length - 1]!.toLowerCase() === "api"
+      segments.length > 0 && segments[segments.length - 1] === "api"
         ? segments.slice(0, -1)
         : segments;
     const basePath = normalizedSegments.length > 0 ? `/${normalizedSegments.join("/")}` : "";
@@ -555,12 +560,16 @@ function buildKind(
     if (state) {
       if (temperature) claimed.add(temperature.entityId);
       if (humidity) claimed.add(humidity.entityId);
-      claimSafetyBinarySensors(entities, states, claimed);
+      // macOS `applyingSafetyObservations` keeps a leak/smoke/contact watch on the same card as the
+      // thermometer instead of dropping it, so the alert text rides along and the entities are
+      // claimed out of 更多设置 (a read-only alarm row there would be noise).
+      const safetyStatus = claimSafetyBinarySensors(entities, states, claimed);
       kind = {
         kind: "sensor",
         temperature: number(temperature?.state),
         humidity: number(humidity?.state),
         battery: reading("battery", true),
+        ...(safetyStatus !== null ? { statusText: safetyStatus } : {}),
       };
     } else {
       const batState = sensor("battery");

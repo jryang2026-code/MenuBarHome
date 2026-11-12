@@ -2,7 +2,15 @@ import { speechLocale } from "./i18n.js";
 import type { CoverSpec, DeviceCommand, FacetControl, SmartDevice } from "./models.js";
 
 export const OPTIMISTIC_LOCK_DURATION_MS = 3_000;
+/** A cover is write-only: its position is reported only after the motor moves (macOS `coverOptimisticLockDuration`). */
+export const COVER_OPTIMISTIC_LOCK_DURATION_MS = 8_000;
 export const READ_BACK_DELAY_MS = 800;
+/** How long a delayed read-back waits before trying again while a background sync owns the wire. */
+export const READ_BACK_BUSY_RETRY_MS = 250;
+/** Attempts a delayed read-back makes while a background sync is running before it gives up. */
+export const READ_BACK_BUSY_RETRY_LIMIT = 40;
+/** How long a fired read-back's confirmation snapshot may stand in for a locked row. */
+export const READ_BACK_CONFIRM_WINDOW_MS = 5_000;
 
 export interface OptimisticLockWindowLike {
   readonly closed?: boolean;
@@ -23,6 +31,8 @@ export interface OptimisticLockHost {
   readonly deviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   readonly settings?: { readonly connectionMode?: string };
   readonly root?: OptimisticLockRootLike;
+  /** A background sync already owns the wire, so a read-back must wait instead of burning its ticket. */
+  readonly isSyncingCloud?: boolean;
   refreshDevices?: (silent?: boolean) => Promise<void>;
 }
 
@@ -55,8 +65,25 @@ interface DeviceLockEntry {
   expiresAtMs: number;
   revision: number;
   coverOriginPosition: number | null;
-  baselineDevice: SmartDevice | null;
-  baselineFacets: readonly FacetControl[] | undefined;
+  /** Kind fields this lock cycle wrote, so an equal-to-baseline value still needs confirmation. */
+  dirtyFields: Set<string>;
+  /** 更多设置 facet ids this lock cycle wrote, for the same reason. */
+  dirtyFacetIds: Set<string>;
+}
+
+/** What a failed write puts back: the lock it displaced, if that lock was still unexpired. */
+export interface OptimisticLockSnapshot {
+  readonly expiresAtMs: number;
+  readonly coverOriginPosition: number | null;
+  readonly dirtyFields: readonly string[];
+  readonly dirtyFacetIds: readonly string[];
+}
+
+/** One command's claim on a device row; a newer claim makes every older answer stale. */
+export interface DeviceWriteClaim {
+  readonly deviceId: string;
+  readonly writeSeq: number;
+  readonly sourceRevision: number;
 }
 
 interface PendingTicketEntry {
@@ -65,9 +92,26 @@ interface PendingTicketEntry {
   readonly cancel: () => void;
 }
 
+interface ReadBackConfirmation {
+  /** The lock revision the read-back was started under; a newer write invalidates the answer. */
+  readonly revision: number;
+  /** When this answer stops standing in for the locked row (`READ_BACK_CONFIRM_WINDOW_MS` later). */
+  readonly expiresAtMs: number;
+}
+
 interface HostOptimisticState {
   sourceRevision: number;
   readonly locks: Map<string, DeviceLockEntry>;
+  /**
+   * Per-device lock revision. Only `lockOptimistic` bumps it and a source reset clears it; adopting
+   * a reported row clears the lock but leaves the revision, so the send that made it still owns it
+   * (`standards-store-locks-timers.md` §14).
+   */
+  readonly revisions: Map<string, number>;
+  /** Per-device write sequence, bumped by every command that addresses the row. */
+  readonly writeSeqs: Map<string, number>;
+  /** Device → lock revision whose read-back is in flight and may replace the locked row. */
+  readonly readBackInFlight: Map<string, ReadBackConfirmation>;
   nextTicketId: number;
   readonly activeTickets: Map<string, PendingTicketEntry>;
 }
@@ -80,6 +124,9 @@ function ensureHostState(host: OptimisticLockHost): HostOptimisticState {
     state = {
       sourceRevision: host.sourceRevision,
       locks: new Map(),
+      revisions: new Map(),
+      writeSeqs: new Map(),
+      readBackInFlight: new Map(),
       nextTicketId: 0,
       activeTickets: new Map(),
     };
@@ -92,15 +139,54 @@ function ensureHostState(host: OptimisticLockHost): HostOptimisticState {
     }
     state.activeTickets.clear();
     state.locks.clear();
+    state.revisions.clear();
+    state.writeSeqs.clear();
+    state.readBackInFlight.clear();
     state.sourceRevision = host.sourceRevision;
   }
   return state;
+}
+
+/** One value's identity for "did this field change" comparisons; object values compare by content. */
+function fieldSnapshot(value: unknown): string {
+  return value === undefined ? "\u0000undefined" : JSON.stringify(value) ?? "\u0000unserializable";
+}
+
+/** The `kind` fields `current` changed away from `baseline`. */
+function changedKindFields(baseline: SmartDevice, current: SmartDevice): string[] {
+  if (baseline.kind.kind !== current.kind.kind) return [];
+  const before = baseline.kind as unknown as Record<string, unknown>;
+  const after = current.kind as unknown as Record<string, unknown>;
+  const changed: string[] = [];
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (fieldSnapshot(before[key]) !== fieldSnapshot(after[key])) changed.push(key);
+  }
+  return changed;
+}
+
+/** The writable facet ids whose local value `current` changed away from `baseline`. */
+function changedFacetIds(
+  baseline: readonly FacetControl[] | undefined,
+  current: readonly FacetControl[] | undefined,
+): string[] {
+  if (!baseline || !current) return [];
+  const before = new Map(baseline.map((facet) => [facet.id, facet.value]));
+  const changed: string[] = [];
+  for (const facet of current) {
+    if (!facet.isWritable) continue;
+    if (fieldSnapshot(before.get(facet.id)) !== fieldSnapshot(facet.value)) changed.push(facet.id);
+  }
+  return changed;
 }
 
 /**
  * Locks `deviceId` on `host` for `durationMs` (default 3000ms) so background polls keep the
  * optimistic local row until confirmed or expired. Automatically invalidated when
  * `host.sourceRevision` changes.
+ *
+ * `baselineDevice` / `baselineFacets` are the rows the write is about to change. Every field they
+ * differ from joins the lock's dirty set, which is what later snapshots must confirm — a value that
+ * was written and then written back to the baseline still counts as dirty (§14).
  */
 export function lockOptimistic(
   host: OptimisticLockHost,
@@ -121,7 +207,8 @@ export function lockOptimistic(
   const nowMs = options?.nowMs ?? Date.now();
   const prev = state.locks.get(deviceId);
   const prevActive = prev !== undefined && nowMs < prev.expiresAtMs;
-  const revision = (prev?.revision ?? 0) + 1;
+  const revision = (state.revisions.get(deviceId) ?? 0) + 1;
+  state.revisions.set(deviceId, revision);
   let coverOriginPosition: number | null;
   if (prevActive && prev.coverOriginPosition !== null) {
     coverOriginPosition = prev.coverOriginPosition;
@@ -131,25 +218,86 @@ export function lockOptimistic(
     const existing = host.devices.find((item) => item.id === deviceId);
     coverOriginPosition = existing?.kind.kind === "cover" ? existing.kind.positionPercent : null;
   }
-  const baselineDevice =
-    prevActive && prev.baselineDevice !== null
-      ? prev.baselineDevice
-      : options?.baselineDevice !== undefined
-        ? options.baselineDevice
-        : null;
-  const baselineFacets =
-    prevActive && prev.baselineFacets !== undefined
-      ? prev.baselineFacets
-      : options?.baselineFacets;
+  const dirtyFields = new Set<string>(prevActive ? prev.dirtyFields : []);
+  const dirtyFacetIds = new Set<string>(prevActive ? prev.dirtyFacetIds : []);
+  const current = host.devices.find((item) => item.id === deviceId);
+  if (options?.baselineDevice && current) {
+    for (const key of changedKindFields(options.baselineDevice, current)) dirtyFields.add(key);
+  }
+  for (const id of changedFacetIds(options?.baselineFacets, host.deviceFacets?.[deviceId])) {
+    dirtyFacetIds.add(id);
+  }
   state.locks.set(deviceId, {
     expiresAtMs: nowMs + durationMs,
     revision,
     coverOriginPosition,
-    baselineDevice,
-    baselineFacets,
+    dirtyFields,
+    dirtyFacetIds,
   });
   return revision;
 }
+
+/**
+ * The lock this row holds now, for a write that must put it back when its send fails. `null` when
+ * the row is not locked, which is what an unsuccessful write releases.
+ */
+export function snapshotOptimisticLock(
+  host: OptimisticLockHost,
+  deviceId: string,
+  nowMs = Date.now(),
+): OptimisticLockSnapshot | null {
+  const state = ensureHostState(host);
+  const entry = state.locks.get(deviceId);
+  if (!entry || nowMs >= entry.expiresAtMs) return null;
+  return {
+    expiresAtMs: entry.expiresAtMs,
+    coverOriginPosition: entry.coverOriginPosition,
+    dirtyFields: [...entry.dirtyFields],
+    dirtyFacetIds: [...entry.dirtyFacetIds],
+  };
+}
+
+/**
+ * Puts back what `snapshotOptimisticLock` saved. The revision keeps climbing — a restored lock is
+ * still this write's, and no earlier send may take the row back (§14).
+ */
+export function restoreOptimisticLock(
+  host: OptimisticLockHost,
+  deviceId: string,
+  snapshot: OptimisticLockSnapshot | null,
+): void {
+  const state = ensureHostState(host);
+  if (!snapshot) {
+    state.locks.delete(deviceId);
+    return;
+  }
+  state.locks.set(deviceId, {
+    expiresAtMs: snapshot.expiresAtMs,
+    revision: state.revisions.get(deviceId) ?? 0,
+    coverOriginPosition: snapshot.coverOriginPosition,
+    dirtyFields: new Set(snapshot.dirtyFields),
+    dirtyFacetIds: new Set(snapshot.dirtyFacetIds),
+  });
+}
+
+/**
+ * Records that this command is now the newest write to `deviceId`, before its request goes out.
+ * A later command claims the row again, so the older answer must not overwrite it.
+ */
+export function claimDeviceWrite(host: OptimisticLockHost, deviceId: string): DeviceWriteClaim {
+  const state = ensureHostState(host);
+  const writeSeq = (state.writeSeqs.get(deviceId) ?? 0) + 1;
+  state.writeSeqs.set(deviceId, writeSeq);
+  return { deviceId, writeSeq, sourceRevision: host.sourceRevision };
+}
+
+/** True while no newer command has claimed `claim`'s row and the data source is unchanged. */
+export function ownsDeviceWrite(host: OptimisticLockHost, claim: DeviceWriteClaim): boolean {
+  if (claim.sourceRevision !== host.sourceRevision) return false;
+  const state = ensureHostState(host);
+  return (state.writeSeqs.get(claim.deviceId) ?? 0) === claim.writeSeq;
+}
+
 
 export function isOptimisticallyLocked(
   host: OptimisticLockHost,
@@ -166,9 +314,13 @@ export function isOptimisticallyLocked(
   return true;
 }
 
+/**
+ * The revision of the send that owns `deviceId`. Adopting a reported row clears the lock but keeps
+ * this value, so a later answer from an earlier send is still recognised as stale (§14).
+ */
 export function optimisticLockRevision(host: OptimisticLockHost, deviceId: string): number {
   const state = ensureHostState(host);
-  return state.locks.get(deviceId)?.revision ?? 0;
+  return state.revisions.get(deviceId) ?? 0;
 }
 
 /**
@@ -197,194 +349,64 @@ export function coverTravelTakesOver(
     : incoming.positionPercent <= local.positionPercent;
 }
 
+/**
+ * True while every facet this lock cycle wrote already reports the local value. A facet the user
+ * never touched — the colour temperature beside a power toggle, say — does not block the adoption
+ * of a reported row, so the lock clears as soon as the write it protects is visible.
+ */
 function facetsMatchOptimistic(
   localFacets: readonly FacetControl[] | undefined,
   incomingFacets: readonly FacetControl[] | undefined,
-  baselineFacets?: readonly FacetControl[],
+  dirtyFacetIds: ReadonlySet<string>,
 ): boolean {
-  if (!localFacets || localFacets.length === 0) return true;
+  if (dirtyFacetIds.size === 0) return true;
   if (!incomingFacets) return false;
-  const incomingById = new Map(incomingFacets.map((facet) => [facet.id, facet]));
-  const baselineById = baselineFacets
-    ? new Map(baselineFacets.map((facet) => [facet.id, facet]))
-    : null;
-  for (const local of localFacets) {
-    if (!local.isWritable) continue;
-    const base = baselineById?.get(local.id);
-    if (base && base.value === local.value) continue;
-    const incoming = incomingById.get(local.id);
-    if (!incoming || incoming.value !== local.value) return false;
+  const localById = new Map((localFacets ?? []).map((facet) => [facet.id, facet.value]));
+  const incomingById = new Map(incomingFacets.map((facet) => [facet.id, facet.value]));
+  for (const id of dirtyFacetIds) {
+    if (!localById.has(id)) continue;
+    if (fieldSnapshot(incomingById.get(id)) !== fieldSnapshot(localById.get(id))) return false;
   }
   return true;
 }
 
-function fieldMatches<T>(localVal: T, incomingVal: T, hasBase: boolean, baseVal: T): boolean {
-  if (hasBase && localVal === baseVal) return true;
-  return localVal === incomingVal;
+/**
+ * True while the reported row agrees with every kind field this lock cycle wrote.
+ *
+ * Equality with the first baseline is deliberately NOT the test: `off -> on -> off` ends back on
+ * the baseline value, so a rule of "unchanged from the baseline is fine" would accept the stale
+ * `on` snapshot and drop the lock mid-write. `dirtyFields` records what was written instead. A
+ * lock that never recorded which fields it changed (`dirtyFields` empty) keeps the older, stricter
+ * rule: every field must agree before the reported row replaces the row on screen.
+ */
+function fieldsMatchOptimistic(
+  local: SmartDevice["kind"],
+  incoming: SmartDevice["kind"],
+  dirtyFields: ReadonlySet<string>,
+): boolean {
+  const a = local as unknown as Record<string, unknown>;
+  const b = incoming as unknown as Record<string, unknown>;
+  const fields =
+    dirtyFields.size > 0
+      ? dirtyFields
+      : new Set([...Object.keys(a), ...Object.keys(b)].filter((key) => key !== "kind"));
+  for (const field of fields) {
+    if (field === "kind") continue;
+    if (fieldSnapshot(a[field]) !== fieldSnapshot(b[field])) return false;
+  }
+  return true;
 }
 
 function deviceMatchesOptimistic(
   local: SmartDevice,
   incoming: SmartDevice,
-  localFacets?: readonly FacetControl[],
-  incomingFacets?: readonly FacetControl[],
-  baselineDevice?: SmartDevice | null,
-  baselineFacets?: readonly FacetControl[],
+  localFacets: readonly FacetControl[] | undefined,
+  incomingFacets: readonly FacetControl[] | undefined,
+  lock: DeviceLockEntry,
 ): boolean {
-  if (!facetsMatchOptimistic(localFacets, incomingFacets, baselineFacets)) return false;
-  const a = local.kind;
-  const b = incoming.kind;
-  if (a.kind !== b.kind) return false;
-  const base = baselineDevice && baselineDevice.kind.kind === a.kind ? baselineDevice.kind : null;
-  switch (a.kind) {
-    case "light": {
-      if (b.kind !== "light") return false;
-      const bk = base?.kind === "light" ? base : null;
-      return (
-        fieldMatches(a.isOn, b.isOn, bk !== null, bk?.isOn ?? a.isOn) &&
-        (a.brightnessPercent === null ||
-          fieldMatches(
-            a.brightnessPercent,
-            b.brightnessPercent,
-            bk !== null,
-            bk?.brightnessPercent ?? null,
-          )) &&
-        (a.colorTempKelvin === null ||
-          fieldMatches(
-            a.colorTempKelvin,
-            b.colorTempKelvin,
-            bk !== null,
-            bk?.colorTempKelvin ?? null,
-          )) &&
-        fieldMatches(a.currentEffect, b.currentEffect, bk !== null, bk?.currentEffect ?? null)
-      );
-    }
-    case "climate": {
-      if (b.kind !== "climate") return false;
-      const bk = base?.kind === "climate" ? base : null;
-      return (
-        fieldMatches(a.isOn, b.isOn, bk !== null, bk?.isOn ?? a.isOn) &&
-        fieldMatches(a.hvacMode, b.hvacMode, bk !== null, bk?.hvacMode ?? a.hvacMode) &&
-        fieldMatches(
-          a.targetTemperature,
-          b.targetTemperature,
-          bk !== null,
-          bk?.targetTemperature ?? a.targetTemperature,
-        ) &&
-        fieldMatches(a.fanMode, b.fanMode, bk !== null, bk?.fanMode ?? null) &&
-        fieldMatches(a.swingMode ?? null, b.swingMode ?? null, bk !== null, bk?.swingMode ?? null)
-      );
-    }
-    case "fan": {
-      if (b.kind !== "fan") return false;
-      const bk = base?.kind === "fan" ? base : null;
-      return (
-        fieldMatches(a.isOn, b.isOn, bk !== null, bk?.isOn ?? a.isOn) &&
-        (a.percentage === null ||
-          fieldMatches(a.percentage, b.percentage, bk !== null, bk?.percentage ?? null)) &&
-        fieldMatches(a.presetMode, b.presetMode, bk !== null, bk?.presetMode ?? null) &&
-        fieldMatches(a.isOscillating, b.isOscillating, bk !== null, bk?.isOscillating ?? null)
-      );
-    }
-    case "plug": {
-      if (b.kind !== "plug") return false;
-      const bk = base?.kind === "plug" ? base : null;
-      return (
-        fieldMatches(a.isOn, b.isOn, bk !== null, bk?.isOn ?? a.isOn) &&
-        fieldMatches(a.isChildLocked, b.isChildLocked, bk !== null, bk?.isChildLocked ?? a.isChildLocked)
-      );
-    }
-    case "fridge": {
-      if (b.kind !== "fridge") return false;
-      const bk = base?.kind === "fridge" ? base : null;
-      return (
-        fieldMatches(a.currentMode, b.currentMode, bk !== null, bk?.currentMode ?? a.currentMode) &&
-        fieldMatches(
-          a.fridgeTargetTemp,
-          b.fridgeTargetTemp,
-          bk !== null,
-          bk?.fridgeTargetTemp ?? a.fridgeTargetTemp,
-        ) &&
-        fieldMatches(
-          a.freezerTargetTemp,
-          b.freezerTargetTemp,
-          bk !== null,
-          bk?.freezerTargetTemp ?? a.freezerTargetTemp,
-        )
-      );
-    }
-    case "vacuum": {
-      if (b.kind !== "vacuum") return false;
-      const bk = base?.kind === "vacuum" ? base : null;
-      return (
-        fieldMatches(a.status, b.status, bk !== null, bk?.status ?? a.status) &&
-        fieldMatches(a.currentMode, b.currentMode, bk !== null, bk?.currentMode ?? null)
-      );
-    }
-    case "camera": {
-      if (b.kind !== "camera") return false;
-      const bk = base?.kind === "camera" ? base : null;
-      return (
-        fieldMatches(a.isOn, b.isOn, bk !== null, bk?.isOn ?? a.isOn) &&
-        fieldMatches(a.nightShot, b.nightShot, bk !== null, bk?.nightShot ?? null) &&
-        fieldMatches(
-          a.isMotionDetectionOn,
-          b.isMotionDetectionOn,
-          bk !== null,
-          bk?.isMotionDetectionOn ?? null,
-        )
-      );
-    }
-    case "speaker": {
-      if (b.kind !== "speaker") return false;
-      const bk = base?.kind === "speaker" ? base : null;
-      return (
-        fieldMatches(a.state, b.state, bk !== null, bk?.state ?? a.state) &&
-        fieldMatches(a.volumePercent, b.volumePercent, bk !== null, bk?.volumePercent ?? a.volumePercent) &&
-        fieldMatches(a.isMuted, b.isMuted, bk !== null, bk?.isMuted ?? a.isMuted) &&
-        fieldMatches(a.isSleepMode, b.isSleepMode, bk !== null, bk?.isSleepMode ?? a.isSleepMode)
-      );
-    }
-    case "appliance": {
-      if (b.kind !== "appliance") return false;
-      const bk = base?.kind === "appliance" ? base : null;
-      return (
-        fieldMatches(a.isOn, b.isOn, bk !== null, bk?.isOn ?? a.isOn) &&
-        fieldMatches(a.currentMode, b.currentMode, bk !== null, bk?.currentMode ?? null) &&
-        fieldMatches(
-          a.targetTemperature,
-          b.targetTemperature,
-          bk !== null,
-          bk?.targetTemperature ?? null,
-        ) &&
-        fieldMatches(a.statusText, b.statusText, bk !== null, bk?.statusText ?? null) &&
-        fieldMatches(a.light?.isOn ?? null, b.light?.isOn ?? null, bk !== null, bk?.light?.isOn ?? null) &&
-        fieldMatches(
-          a.fanLevel?.current ?? null,
-          b.fanLevel?.current ?? null,
-          bk !== null,
-          bk?.fanLevel?.current ?? null,
-        )
-      );
-    }
-    case "generic": {
-      if (b.kind !== "generic") return false;
-      const bk = base?.kind === "generic" ? base : null;
-      return (
-        fieldMatches(a.isOn, b.isOn, bk !== null, bk?.isOn ?? a.isOn) &&
-        fieldMatches(
-          a.powerControl?.value ?? null,
-          b.powerControl?.value ?? null,
-          bk !== null,
-          bk?.powerControl?.value ?? null,
-        )
-      );
-    }
-    case "sensor":
-      return b.kind === "sensor" && (a.statusText ?? null) === (b.statusText ?? null);
-    case "cover":
-      return b.kind === "cover" && coverTravelTakesOver(null, a, b);
-  }
+  if (local.kind.kind !== incoming.kind.kind) return false;
+  if (!facetsMatchOptimistic(localFacets, incomingFacets, lock.dirtyFacetIds)) return false;
+  return fieldsMatchOptimistic(local.kind, incoming.kind, lock.dirtyFields);
 }
 
 export function mergeHomeSnapshotRespectingLocks(
@@ -433,12 +455,16 @@ export function mergeHomeSnapshotRespectingLocks(
     const local = existingById.get(incoming.id);
     if (!lock || nowMs >= lock.expiresAtMs || !local) {
       state.locks.delete(incoming.id);
+      state.readBackInFlight.delete(incoming.id);
       mergedDevices.push(incoming);
       adoptIncomingFacets(incoming.id);
       continue;
     }
 
     if (local.kind.kind === "cover" && incoming.kind.kind === "cover") {
+      // A cover is write-only: only its own travel confirms the command, and a snapshot cannot
+      // stand in for it (`standards-store-locks-timers.md` §14).
+      state.readBackInFlight.delete(incoming.id);
       if (coverTravelTakesOver(lock.coverOriginPosition, local.kind, incoming.kind)) {
         state.locks.delete(incoming.id);
         mergedDevices.push(incoming);
@@ -450,17 +476,29 @@ export function mergeHomeSnapshotRespectingLocks(
       continue;
     }
 
+    // A read-back this write started is the snapshot that decides whether the send landed, so it is
+    // adopted even when an unrelated field has moved on since the lock was taken. A write that took
+    // the row after that read-back went out invalidates the answer instead (§14).
+    const confirmation = state.readBackInFlight.get(incoming.id);
+    const readBackDecides =
+      confirmation !== undefined &&
+      nowMs <= confirmation.expiresAtMs &&
+      confirmation.revision === lock.revision &&
+      confirmation.revision === (state.revisions.get(incoming.id) ?? 0);
+    if (readBackDecides) state.readBackInFlight.delete(incoming.id);
+
     if (
+      readBackDecides ||
       deviceMatchesOptimistic(
         local,
         incoming,
         localFacetsById[incoming.id],
         incomingFacets?.[incoming.id],
-        lock.baselineDevice,
-        lock.baselineFacets,
+        lock,
       )
     ) {
       state.locks.delete(incoming.id);
+      state.readBackInFlight.delete(incoming.id);
       mergedDevices.push(incoming);
       adoptIncomingFacets(incoming.id);
     } else {
@@ -481,8 +519,15 @@ export function mergeSnapshotRespectingLocks(
 }
 
 /**
- * Schedules a non-blocking 800ms delayed read-back verification (`ReadBackTicket`).
+ * Schedules a non-blocking delayed read-back verification (`ReadBackTicket`).
  * Supersedes any earlier ticket for `deviceId` and cancels automatically on `sourceRevision` change.
+ *
+ * When the timer fires while a background sync already owns the wire, the read-back is re-armed
+ * `READ_BACK_BUSY_RETRY_MS` later instead of burning its one attempt, up to
+ * `READ_BACK_BUSY_RETRY_LIMIT` times. Before the request actually goes out, the current lock
+ * revision is recorded in `readBackInFlight` so that the snapshot this read-back pulls back is
+ * allowed to replace the optimistic row it was sent to check — unless a newer write raised the
+ * revision in the meantime, in which case the answer belongs to the older write and is ignored.
  */
 export function scheduleDelayedReadBack(
   host: OptimisticLockHost,
@@ -505,6 +550,15 @@ export function scheduleDelayedReadBack(
     typeof ownerWin.setTimeout === "function" &&
     typeof ownerWin.clearTimeout === "function";
   let cancelled = false;
+  let timer: unknown;
+  let busyRetriesLeft = READ_BACK_BUSY_RETRY_LIMIT;
+
+  const arm = (waitMs: number, handler: () => void) => {
+    timer = useOwnerWinTimers
+      ? ownerWin.setTimeout!(handler, waitMs)
+      : globalThis.setTimeout(handler, waitMs);
+    (timer as { unref?: () => void } | null)?.unref?.();
+  };
 
   const cancel = () => {
     if (cancelled) return;
@@ -527,8 +581,27 @@ export function scheduleDelayedReadBack(
     }
     const current = state.activeTickets.get(deviceId);
     if (!current || current.ticketId !== ticketId) return;
+    if (host.settings?.connectionMode === "demo") {
+      state.activeTickets.delete(deviceId);
+      return;
+    }
+    // A sync already on the wire would swallow this attempt, so wait for it rather than lose it.
+    if (host.isSyncingCloud === true && busyRetriesLeft > 0) {
+      busyRetriesLeft -= 1;
+      arm(READ_BACK_BUSY_RETRY_MS, runReadBack);
+      return;
+    }
     state.activeTickets.delete(deviceId);
-    if (host.settings?.connectionMode === "demo") return;
+    // This read-back is the snapshot that decides whether the send landed, so it may replace the
+    // locked row. Recorded before the request goes out: a newer write that raises the revision
+    // while it is in flight turns the answer into an older write's answer.
+    const revision = state.revisions.get(deviceId);
+    if (revision !== undefined && state.locks.has(deviceId)) {
+      state.readBackInFlight.set(deviceId, {
+        revision,
+        expiresAtMs: Date.now() + READ_BACK_CONFIRM_WINDOW_MS,
+      });
+    }
     if (onReadBack) {
       void Promise.resolve(onReadBack()).catch(() => {});
       return;
@@ -538,11 +611,7 @@ export function scheduleDelayedReadBack(
     }
   };
 
-  const timer = useOwnerWinTimers
-    ? ownerWin.setTimeout!(runReadBack, delayMs)
-    : globalThis.setTimeout(runReadBack, delayMs);
-
-  (timer as { unref?: () => void } | null)?.unref?.();
+  arm(delayMs, runReadBack);
 
   state.activeTickets.set(deviceId, { ticketId, timer, cancel });
 

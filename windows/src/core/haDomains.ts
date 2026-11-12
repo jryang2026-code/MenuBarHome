@@ -602,6 +602,42 @@ export function buildMediaPlayerKind(
   };
 }
 
+interface SafetyBinaryMatch {
+  readonly entityId: string;
+  readonly alertKind: HABinaryAlertKind;
+}
+
+/** Every safety `binary_sensor` on the device, whether or not Home Assistant has a state for it. */
+function collectSafetyBinarySensors(
+  entities: readonly HARow[],
+  states: ReadonlyMap<string, HAState>,
+  allowObjectIdFallback: boolean,
+): SafetyBinaryMatch[] {
+  const matched: SafetyBinaryMatch[] = [];
+  for (const entity of entities) {
+    const kind = haBinarySensorKind(entity, states, allowObjectIdFallback);
+    if (kind !== null) matched.push({ entityId: haText(entity.entity_id), alertKind: kind });
+  }
+  return matched;
+}
+
+/**
+ * The one safety observation the card subtitle shows. An alarming ("on") sensor wins over a clear
+ * one, a sensor with a reported state wins over one without, and otherwise registry order decides.
+ */
+function safetyStatusFromMatches(
+  matched: readonly SafetyBinaryMatch[],
+  states: ReadonlyMap<string, HAState>,
+): string | null {
+  const readable = matched.filter((item) => states.has(item.entityId));
+  if (readable.length === 0) return null;
+  const activeItem =
+    readable.find((item) => states.get(item.entityId)?.state.toLowerCase() === "on") ??
+    readable.find((item) => isHAStateAvailable(states.get(item.entityId))) ??
+    readable[0]!;
+  return haBinarySensorStatusText(activeItem.alertKind, states.get(activeItem.entityId));
+}
+
 export function buildBinarySensorKind(
   entities: readonly HARow[],
   states: ReadonlyMap<string, HAState>,
@@ -610,14 +646,9 @@ export function buildBinarySensorKind(
   batteryEntityId: string | null,
   allowObjectIdFallback = false,
 ): { kind: DeviceKind; online: boolean } | null {
-  const matched: Array<{ entityId: string; alertKind: HABinaryAlertKind }> = [];
-  for (const entity of entities) {
-    const kind = haBinarySensorKind(entity, states, allowObjectIdFallback);
-    const entityId = haText(entity.entity_id);
-    if (kind && states.has(entityId)) {
-      matched.push({ entityId, alertKind: kind });
-    }
-  }
+  const matched = collectSafetyBinarySensors(entities, states, allowObjectIdFallback).filter(
+    (item) => states.has(item.entityId),
+  );
   if (matched.length === 0) return null;
 
   for (const item of matched) claimed.add(item.entityId);
@@ -625,11 +656,7 @@ export function buildBinarySensorKind(
 
   const online = matched.some((item) => isHAStateAvailable(states.get(item.entityId)));
   // Alarming ("on") observations take priority on the card subtitle so an active leak/smoke/open state shows first.
-  const activeItem =
-    matched.find((item) => states.get(item.entityId)?.state.toLowerCase() === "on") ??
-    matched.find((item) => isHAStateAvailable(states.get(item.entityId))) ??
-    matched[0]!;
-  const statusText = haBinarySensorStatusText(activeItem.alertKind, states.get(activeItem.entityId));
+  const statusText = safetyStatusFromMatches(matched, states);
 
   return {
     online,
@@ -638,21 +665,29 @@ export function buildBinarySensorKind(
       temperature: null,
       humidity: null,
       battery: batteryReading,
-      statusText,
+      ...(statusText !== null ? { statusText } : {}),
     },
   };
 }
 
+/**
+ * Claims every safety `binary_sensor` on a device whose card is a temperature/humidity sensor, and
+ * returns the alert text that card must keep showing.
+ *
+ * macOS `DeviceSynthesizer.applyingSafetyObservations` attaches the alerts to the composite sensor
+ * spec instead of dropping them, so a smoke or leak sensor that lives on the same Home Assistant
+ * device as a thermometer still reaches the panel. Claiming also keeps those rows out of 更多设置,
+ * where a read-only alarm toggle would be noise.
+ */
 export function claimSafetyBinarySensors(
   entities: readonly HARow[],
   states: ReadonlyMap<string, HAState>,
   claimed: Set<string>,
-): void {
-  for (const entity of entities) {
-    if (haBinarySensorKind(entity, states, false) !== null) {
-      claimed.add(haText(entity.entity_id));
-    }
-  }
+): string | null {
+  const matched = collectSafetyBinarySensors(entities, states, false);
+  if (matched.length === 0) return null;
+  for (const item of matched) claimed.add(item.entityId);
+  return safetyStatusFromMatches(matched, states);
 }
 
 export function auxiliaryEntitiesForCover(
