@@ -57,7 +57,7 @@ extension HomeStore {
         guard let cmd = alert.turnOffCommand else { return nil }
         if rejectControlWhileLocked() { return nil }
         guard let deliveredScope = scope, deliveredScope == connectionScopeIdentifier,
-              let device = devices.first(where: { $0.id == alert.deviceId }) else {
+              devices.contains(where: { $0.id == alert.deviceId }) else {
             showToast(staleSafetyAlertMessage, isError: true)
             return nil
         }
