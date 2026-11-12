@@ -324,19 +324,31 @@ describe("Real-mode built-in QuickActions & bidirectional undo (#1)", () => {
     assert.ok(dimLight?.kind.kind === "light");
     assert.equal(dimLight.kind.brightnessWritable, undefined);
     assert.equal(dimLight.kind.colorWritable, false);
+    // HA emulates `color_temp_kelvin` on hs/xy/rgb lights, so an RGB-only strip keeps its
+    // colour-temperature control and can take Soft Night Light.
     assert.ok(rgbLight?.kind.kind === "light");
     assert.equal(rgbLight.kind.brightnessWritable, undefined);
-    assert.equal(rgbLight.kind.colorWritable, false);
-
-    // None of the three lights supports color_temp, so Soft Night Light must not be offered or planned.
+    assert.equal(rgbLight.kind.colorWritable, undefined);
     assert.deepEqual(
-      availableQuickActions(incapableHome.devices).map((a) => a.id),
+      planQuickAction("softNightLight", incapableHome.devices).targets.map((t) => t.deviceId),
+      ["ha_rgb"],
+    );
+
+    // On/off-only and brightness-only lights cannot take a colour temperature at all.
+    const incapableOnly = incapableHome.devices.filter((d) => d.id !== "ha_rgb");
+    assert.deepEqual(
+      availableQuickActions(incapableOnly).map((a) => a.id),
       ["lightsOff"],
     );
-    assert.equal(planQuickAction("softNightLight", incapableHome.devices).targets.length, 0);
+    assert.equal(planQuickAction("softNightLight", incapableOnly).targets.length, 0);
 
     // Add a tunable-white HA light (currently OFF while incapable lights are ON).
+    // Only the on/off and brightness-only lights stay on here; the RGB strip can take Soft Night
+    // Light and is covered above.
     const mixedSnapshot = structuredClone(baseSnapshot);
+    mixedSnapshot.devices = mixedSnapshot.devices.filter((d) => d.id !== "ha_rgb");
+    mixedSnapshot.entities = mixedSnapshot.entities.filter((e) => e.device_id !== "ha_rgb");
+    mixedSnapshot.states = mixedSnapshot.states.filter((s) => s.entity_id !== "light.strip_rgb");
     mixedSnapshot.devices.push({
       id: "ha_ct",
       name: "床头护眼灯",
