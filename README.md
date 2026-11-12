@@ -203,7 +203,7 @@ Click the menu bar or tray icon to reveal the panel, then open Settings `⚙️`
 | Type letters | Instant search by device name, room, or pinyin initials (e.g. `sftd`) |
 | `↑` / `↓` | Navigate through search matches and device cards |
 | `Return` / `Space` | Toggle the focused device; expand the detail drawer if not directly switchable |
-| `→` / `←` | Press Right to open details; then use Left and Right to adjust light brightness, AC temperature, fan speed, or volume |
+| `→` / `←` | Press Right to open details; then use Left and Right to adjust light brightness, AC temperature, cover position, or volume (Windows also adjusts fan speed) |
 | `Tab` | Switch between room tabs (macOS) |
 | `Esc` | Clear search query, close drawer, or dismiss panel |
 

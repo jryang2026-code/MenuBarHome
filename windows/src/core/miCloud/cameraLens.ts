@@ -1,3 +1,4 @@
+import { speechLocale } from "../i18n.js";
 import type { CameraLens } from "../models.js";
 
 const secondLensModels = new Set([
@@ -64,4 +65,12 @@ export function cameraLensesFor(model: string, name = ""): readonly CameraLens[]
     { role: "main", channel: 0 },
     { role: "secondary", channel: 1 },
   ];
+}
+
+export function cameraLensLabel(lens: CameraLens): string {
+  const explicit = lens.label?.trim();
+  if (explicit) return explicit;
+  const isEnglish = speechLocale().toLowerCase().startsWith("en");
+  if (lens.role === "secondary") return isEnglish ? "Telephoto" : "长焦";
+  return isEnglish ? "Wide" : "广角";
 }
