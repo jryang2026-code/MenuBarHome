@@ -721,8 +721,71 @@ public final class HomeStore {
     /// Undo tasks currently suspended on an in-flight batch. Tests wait on this instead of yielding.
     var undoInFlightWaiters = 0
     private var toastTimerTask: Task<Void, Never>?
-    var optimisticLockUntil: [String: ContinuousClock.Instant] = [:]
+    var optimisticFieldLocks: [OptimisticLockKey: OptimisticLockEntry] = [:]
+    var optimisticFacetLocks: [String: OptimisticLockEntry] = [:]
     var optimisticLockRevision: [String: UInt64] = [:]
+    @ObservationIgnored var hasCustomOptimisticNow = false
+    @ObservationIgnored var optimisticNow: @Sendable () -> Date = { Date() } {
+        didSet { hasCustomOptimisticNow = true }
+    }
+    @ObservationIgnored let optimisticClockAnchorInstant = ContinuousClock.now
+    @ObservationIgnored let optimisticClockAnchorDate = Date()
+
+    /// Legacy device-level view backed by per-field and per-facet optimistic lock entries so
+    /// existing diagnostics and test seams keep working without freezing unrelated fields.
+    var optimisticLockUntil: [String: ContinuousClock.Instant] {
+        get {
+            var maxInstantByDevice: [String: ContinuousClock.Instant] = [:]
+            for (key, entry) in optimisticFieldLocks {
+                let instant = entry.untilInstant ?? continuousInstant(from: entry.until)
+                if let current = maxInstantByDevice[key.deviceId], current >= instant { continue }
+                maxInstantByDevice[key.deviceId] = instant
+            }
+            for (facetKey, entry) in optimisticFacetLocks {
+                guard let deviceId = Self.deviceId(fromFacetWriteKey: facetKey) else { continue }
+                let instant = entry.untilInstant ?? continuousInstant(from: entry.until)
+                if let current = maxInstantByDevice[deviceId], current >= instant { continue }
+                maxInstantByDevice[deviceId] = instant
+            }
+            return maxInstantByDevice
+        }
+        set {
+            let currentDates = optimisticLockMaxDatesByDevice()
+            let currentInstants = optimisticLockMaxInstantsByDevice()
+            for (deviceId, oldMaxDate) in currentDates {
+                guard let updatedInstant = newValue[deviceId] else {
+                    clearOptimisticLockEntries(for: deviceId)
+                    continue
+                }
+                if let oldMaxInstant = currentInstants[deviceId], oldMaxInstant == updatedInstant {
+                    continue
+                }
+                let updatedDate = date(from: updatedInstant)
+                if currentInstants[deviceId] == nil && abs(updatedDate.timeIntervalSince(oldMaxDate)) <= 1e-6 {
+                    continue
+                }
+                setOptimisticLockExpiration(updatedDate, untilInstant: updatedInstant, for: deviceId)
+            }
+            for (deviceId, instant) in newValue where currentDates[deviceId] == nil {
+                let rev = optimisticLockRevision[deviceId] ?? 1
+                let fields: Set<OptimisticField>
+                if let kind = devices.first(where: { $0.id == deviceId })?.kind {
+                    let defaults = OptimisticField.primaryPowerFields(for: kind)
+                    fields = defaults.isEmpty ? [.power] : defaults
+                } else {
+                    fields = [.power]
+                }
+                let until = date(from: instant)
+                for field in fields {
+                    optimisticFieldLocks[.field(deviceId, field)] = OptimisticLockEntry(
+                        until: until,
+                        untilInstant: hasCustomOptimisticNow ? nil : instant,
+                        revision: rev
+                    )
+                }
+            }
+        }
+    }
     /// Position the card showed when the current cover travel started. A stopped report at that
     /// position is the pre-command snapshot; any other stopped position is the motor's real stop.
     var coverCommandOrigins: [String: Int] = [:]
