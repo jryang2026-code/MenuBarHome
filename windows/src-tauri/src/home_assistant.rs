@@ -131,7 +131,21 @@ fn validate_call(command: &HaServiceCall) -> Result<(), String> {
         ("light", &["turn_on", "turn_off"]),
         (
             "climate",
-            &["set_hvac_mode", "set_temperature", "set_fan_mode"],
+            &[
+                "set_hvac_mode",
+                "set_temperature",
+                "set_fan_mode",
+                "set_swing_mode",
+            ],
+        ),
+        (
+            "cover",
+            &[
+                "open_cover",
+                "close_cover",
+                "stop_cover",
+                "set_cover_position",
+            ],
         ),
         (
             "fan",
@@ -170,6 +184,8 @@ fn validate_call(command: &HaServiceCall) -> Result<(), String> {
         ("climate", "set_hvac_mode") => &["hvac_mode"],
         ("climate", "set_temperature") => &["temperature"],
         ("climate", "set_fan_mode") => &["fan_mode"],
+        ("climate", "set_swing_mode") => &["swing_mode"],
+        ("cover", "set_cover_position") => &["position"],
         ("fan", "set_percentage") => &["percentage"],
         ("fan", "set_preset_mode") => &["preset_mode"],
         ("fan", "oscillate") => &["oscillating"],
@@ -276,6 +292,43 @@ mod tests {
         assert!(validate_call(&call).is_ok());
         call.data.insert("entity_id".into(), json!("all"));
         assert!(validate_call(&call).is_err());
+    }
+
+    #[test]
+    fn allows_cover_and_climate_swing_services_and_rejects_extra_keys() {
+        let mut swing = HaServiceCall {
+            domain: "climate".into(),
+            service: "set_swing_mode".into(),
+            entity_id: "climate.living_room_ac".into(),
+            data: Default::default(),
+        };
+        swing.data.insert("swing_mode".into(), json!("vertical"));
+        assert!(validate_call(&swing).is_ok());
+        swing.data.insert("entity_id".into(), json!("all"));
+        assert!(validate_call(&swing).is_err());
+
+        for service in ["open_cover", "close_cover", "stop_cover"] {
+            let mut motor = HaServiceCall {
+                domain: "cover".into(),
+                service: service.into(),
+                entity_id: "cover.living_room_curtain".into(),
+                data: Default::default(),
+            };
+            assert!(validate_call(&motor).is_ok());
+            motor.data.insert("position".into(), json!(50));
+            assert!(validate_call(&motor).is_err());
+        }
+
+        let mut pos = HaServiceCall {
+            domain: "cover".into(),
+            service: "set_cover_position".into(),
+            entity_id: "cover.living_room_curtain".into(),
+            data: Default::default(),
+        };
+        pos.data.insert("position".into(), json!(45));
+        assert!(validate_call(&pos).is_ok());
+        pos.data.insert("tilt_position".into(), json!(20));
+        assert!(validate_call(&pos).is_err());
     }
 
     #[test]

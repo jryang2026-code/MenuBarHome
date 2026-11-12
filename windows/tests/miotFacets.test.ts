@@ -3,7 +3,20 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it } from "node:test";
 import { isDeepStrictEqual } from "node:util";
-import { DEVICE_PROFILES, buildMiotFacets, isMiotAlertLabel, matchesMiotFacetPattern } from "../src/core/miCloud/facets.js";
+import {
+  DEVICE_PROFILES,
+  buildMiotFacets,
+  facetControls,
+  isMiotAlertLabel,
+  matchesMiotFacetPattern,
+} from "../src/core/miCloud/facets.js";
+import {
+  MAXIMUM_PORTION_OPTIONS,
+  isAdvancedWriteLocked,
+  lockedControlIdForAlert,
+  portionOptionsForControl,
+  showsAdvancedViewOnlyCopy,
+} from "../src/core/miCloud/feedAction.js";
 import { MiotSynthesizer } from "../src/core/miCloud/synthesis.js";
 import { facetAlertText, facetTitle } from "../src/core/miotFacetText.js";
 import { setLanguage } from "../src/core/i18n.js";
@@ -261,5 +274,171 @@ describe("MIoT facet engine (shared fixture)", () => {
     const windows = readFileSync(resolve(process.cwd(), "src/core/miCloud/deviceProfiles.json"));
     const macos = readFileSync(resolve(fixtures, "..", "..", "Sources/MijiaCore/Resources/deviceProfiles.json"));
     assert.ok(windows.equals(macos));
+  });
+
+  it("synthesizes parameterized pet-food-out FeedAction with portions, fedToday, deduplication, and write-lock exemption (#7)", () => {
+    const feederSpec = parseSpec({
+      type: "urn:miot-spec-v2:device:pet-feeder:0000A06C:mmgg-feeder:1",
+      services: [
+        {
+          iid: 2,
+          type: "urn:miot-spec-v2:service:pet-feeder:00007847:mmgg-feeder:1",
+          properties: [
+            {
+              iid: 1,
+              type: "urn:miot-spec-v2:property:feeding-measure:00000080:mmgg-feeder:1",
+              format: "uint8",
+              access: ["write"],
+              "value-range": [1, 12, 1],
+            },
+            {
+              iid: 6,
+              type: "urn:miot-spec-v2:property:mode:00000008:mmgg-feeder:1",
+              format: "uint8",
+              access: ["read", "write"],
+              "value-list": [
+                { value: 0, description: "Normal" },
+                { value: 1, description: "Smart" },
+              ],
+            },
+          ],
+          actions: [
+            {
+              iid: 1,
+              type: "urn:miot-spec-v2:action:pet-food-out:0000282B:mmgg-feeder:1",
+              description: "Pet Food Out",
+              in: [1],
+            },
+            {
+              iid: 2,
+              type: "urn:miot-spec-v2:action:pet-food-out:0000282B:mmgg-feeder:1",
+              description: "Duplicate Feed",
+              in: [1],
+            },
+            {
+              iid: 3,
+              type: "urn:miot-spec-v2:action:set-level:00002800:mmgg-feeder:1",
+              description: "Non-feeding parameterized action",
+              in: [1],
+            },
+          ],
+        },
+        {
+          iid: 5,
+          type: "urn:miot-spec-v2:service:device-custom:00007800:mmgg-feeder:1",
+          properties: [
+            {
+              iid: 2,
+              type: "urn:miot-spec-v2:property:today-feeded-num:00000001:mmgg-feeder:1",
+              format: "uint8",
+              access: ["read"],
+              "value-range": [0, 50, 1],
+            },
+          ],
+        },
+      ],
+    });
+
+    const controls = facetControls(
+      feederSpec,
+      "did_feeder",
+      new Map<string, unknown>([
+        ["did_feeder.2.6", 0],
+        ["did_feeder.5.2", 3],
+      ]),
+      null,
+      new Set(),
+      "mmgg.feeder.inland",
+      DEVICE_PROFILES,
+    );
+
+    const buttons = controls.filter((c) => c.kind === "button");
+    assert.equal(buttons.length, 1, "keeps only the first matching pet-food-out action and drops other parameterized actions");
+    const feed = buttons[0]!;
+    assert.equal(feed.id, "2.a1");
+    assert.equal(feed.isConfirmedWrite, true);
+    assert.equal(feed.writesByDefault, false);
+    assert.equal(feed.portionArgumentIndex, 0);
+    assert.equal(feed.fedToday, "3");
+    assert.deepEqual(portionOptionsForControl(feed), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    assert.equal(isAdvancedWriteLocked(feed, false), false, "FeedAction is exempt from allowAdvancedFacetWrites");
+
+    // Bounds check: wide ranges truncate at MAXIMUM_PORTION_OPTIONS (64), and unsafe floats return [].
+    const wideFeed = {
+      ...feed,
+      arguments: [
+        {
+          propertyId: 1,
+          name: "feeding-measure",
+          format: "uint16",
+          range: { min: 1, max: MAXIMUM_PORTION_OPTIONS + 10, step: 1 },
+        },
+      ],
+    };
+    assert.equal(portionOptionsForControl(wideFeed).length, MAXIMUM_PORTION_OPTIONS);
+    const overflowFeed = {
+      ...feed,
+      arguments: [
+        {
+          propertyId: 1,
+          name: "feeding-measure",
+          format: "float",
+          range: { min: 1, max: 1e20, step: 1 },
+        },
+      ],
+    };
+    assert.deepEqual(portionOptionsForControl(overflowFeed), []);
+  });
+
+  it("matches lockedControlIdForAlert and showsAdvancedViewOnlyCopy across languages", () => {
+    const status = {
+      id: "2.4",
+      kind: "reading" as const,
+      serviceName: "fish-tank",
+      name: "water-pump-status",
+      title: null,
+      value: 4,
+      unit: null,
+      scale: null,
+      range: null,
+      options: [{ value: 4, label: "Blocked" }],
+      isWritable: false,
+      writesByDefault: false,
+      isHighValue: false,
+      target: null,
+    };
+    const pump = {
+      id: "2.2",
+      kind: "toggle" as const,
+      serviceName: "fish-tank",
+      name: "water-pump",
+      title: null,
+      value: true,
+      unit: null,
+      scale: null,
+      range: null,
+      options: [],
+      isWritable: true,
+      writesByDefault: false,
+      isHighValue: false,
+      target: { kind: "property" as const, entityId: "miot:tank:2", piid: 2 },
+    };
+
+    setLanguage("zh-Hans");
+    try {
+      const bakedAlert = facetAlertText(status, "Blocked");
+      assert.equal(bakedAlert, "水泵状态：堵塞");
+      assert.equal(lockedControlIdForAlert(bakedAlert, [status, pump], false), "2.2");
+      assert.equal(lockedControlIdForAlert(bakedAlert, [status, pump], true), null);
+      assert.equal(lockedControlIdForAlert(bakedAlert, [status, { ...pump, writesByDefault: true }], false), null);
+      assert.equal(lockedControlIdForAlert(bakedAlert, [status, { ...pump, isConfirmedWrite: true }], false), null);
+      assert.equal(showsAdvancedViewOnlyCopy([status, pump], false), true);
+      assert.equal(showsAdvancedViewOnlyCopy([status, pump], true), false);
+
+      setLanguage("en");
+      assert.equal(lockedControlIdForAlert(bakedAlert, [status, pump], false), "2.2");
+    } finally {
+      setLanguage("zh-Hans");
+    }
   });
 });
