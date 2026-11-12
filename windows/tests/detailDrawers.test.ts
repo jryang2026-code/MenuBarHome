@@ -96,7 +96,10 @@ async function mountWithHADevices(
     }),
   );
   const app = new MenuMijiaWindowsApp(element("#app"));
+  app.refreshDevices = async () => {};
   app.refreshHADevices = async () => {};
+  await setImmediate();
+  await setImmediate();
   app.settings.haToken = haToken;
   app.devices = structuredClone(devices);
   app.render();
