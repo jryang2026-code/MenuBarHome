@@ -646,8 +646,14 @@ async function runIntentOnDevice(
     };
   }
 
+  const aliasedDevices = host.devices.map((d) => {
+    const alias = host.layout.aliases[d.id]?.trim();
+    return alias ? { ...d, name: alias } : d;
+  });
+  const effectiveDev = aliasedDevices.find((d) => d.id === dev.id) ?? dev;
+
   // High-risk confirmation (`ManualControlPolicy`) always applies, even with a valid `bridgeToken`.
-  if (requiresHighRiskArm(dev, options.riskIntent ?? intent, firstCommand, host.devices)) {
+  if (requiresHighRiskArm(effectiveDev, options.riskIntent ?? intent, firstCommand, aliasedDevices)) {
     const actionKey = JSON.stringify(firstCommand);
     const armed = host.pendingHighRisk;
     const isArmedAndValid =

@@ -1287,6 +1287,68 @@
           "expectedReply": "已打开书房电暖器、书房暖风机"
         }
       ]
+    },
+    {
+      "name": "switched light on a wall switch responds to room and bare light commands without touching plugs",
+      "devices": [
+        {
+          "id": "dev_kitchen_switch_light",
+          "name": "厨房灯",
+          "roomId": "kitchen",
+          "roomName": "厨房",
+          "model": "lumi.switch.b1nacn02",
+          "isOnline": true,
+          "kind": {
+            "kind": "plug",
+            "switchEntityId": "miot:dev_kitchen_switch_light:2",
+            "isOn": true,
+            "powerWatts": null,
+            "energyKwh": null,
+            "childLockEntityId": null,
+            "isChildLocked": false
+          }
+        },
+        {
+          "id": "dev_kitchen_plug",
+          "name": "厨房插座",
+          "roomId": "kitchen",
+          "roomName": "厨房",
+          "model": "cuco.plug.cp1",
+          "isOnline": true,
+          "kind": {
+            "kind": "plug",
+            "switchEntityId": "miot:dev_kitchen_plug:2",
+            "isOn": true,
+            "powerWatts": null,
+            "energyKwh": null,
+            "childLockEntityId": null,
+            "isChildLocked": false
+          }
+        }
+      ],
+      "cases": [
+        {
+          "utterance": "关厨房灯",
+          "expected": [
+            { "targetId": "dev_kitchen_switch_light", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭厨房灯"
+        },
+        {
+          "utterance": "把厨房的灯关了",
+          "expected": [
+            { "targetId": "dev_kitchen_switch_light", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭厨房灯"
+        },
+        {
+          "utterance": "关灯",
+          "expected": [
+            { "targetId": "dev_kitchen_switch_light", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭厨房灯"
+        }
+      ]
     }
   ]
 }

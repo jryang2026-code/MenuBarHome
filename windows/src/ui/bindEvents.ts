@@ -705,7 +705,8 @@ import { bindPanelInput } from "./panelKeyboard.js";
         dev.kind.kind === "cover"
           ? !stopsMovingCover &&
             coverMotorRequiresConfirmation(dev.kind.subtype, nextOn ? "open" : "close")
-          : !stopsMovingCover && ManualControlPolicy.requiresConfirmation(powerIntent, host.devices);
+          : !stopsMovingCover &&
+            ManualControlPolicy.requiresConfirmation(powerIntent, withAliases(host.layout, host.devices));
       if (hazard && !confirmHighRisk(dev.id, firstCmd, `${nextOn ? t("打开") : t("关闭")}${dev.name}`)) return;
       host.poppedDeviceId = dev.id;
       const waitsForCloud = host.settings.connectionMode !== "demo";
