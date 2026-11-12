@@ -3,6 +3,7 @@ import AVFoundation
 import AVKit
 import MijiaCore
 import Observation
+import os
 import SwiftUI
 
 // MARK: - Floating Live Camera Window Controller (#97)
@@ -147,6 +148,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     private(set) var doorbellOwnsClose = false
     var hasPendingDoorbellAutoDismiss: Bool { doorbellDismissTask != nil && doorbellOwnsClose }
     private var isClosing = false
+    private let mjpegSessionLock = OSAllocatedUnfairLock<URLSession?>(initialState: nil)
     private let snapshotSession: URLSession = {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.connectionProxyDictionary = [:]
@@ -157,6 +159,16 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
 
     override private init() {
         super.init()
+    }
+
+    deinit {
+        let lingeringMJPEG = mjpegSessionLock.withLock { session -> URLSession? in
+            let current = session
+            session = nil
+            return current
+        }
+        lingeringMJPEG?.invalidateAndCancel()
+        snapshotSession.invalidateAndCancel()
     }
 
     public func install(with store: HomeStore) {
@@ -450,8 +462,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         resolveTask = nil
         snapshotLoopTask?.cancel()
         snapshotLoopTask = nil
-        mjpegSession?.invalidateAndCancel()
-        mjpegSession = nil
+        setMJPEGSession(nil)
         activePlayback?.stop()
         activePlayback = nil
         videoPlayer = nil
@@ -837,8 +848,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                 try? await Task.sleep(for: .milliseconds(900))
             }
             guard !Task.isCancelled else { return }
-            self.mjpegSession?.invalidateAndCancel()
-            self.mjpegSession = nil
+            self.setMJPEGSession(nil)
             self.snapshotImage = nil
             self.streamSource = nil
             self.errorMessage = L10n.tr(
@@ -913,11 +923,31 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         )
     }
 
+    private func setMJPEGSession(_ session: URLSession?) {
+        let previous = mjpegSession
+        mjpegSession = session
+        mjpegSessionLock.withLock { $0 = session }
+        if let previous, previous !== session {
+            previous.invalidateAndCancel()
+        }
+    }
+
+    private func clearMJPEGSessionIfMatching(_ session: URLSession) {
+        if mjpegSession === session {
+            mjpegSession = nil
+        }
+        mjpegSessionLock.withLock { current in
+            if current === session {
+                current = nil
+            }
+        }
+    }
+
     private func consumeMJPEGConnection(
         url: URL,
         onFrame: @escaping @MainActor (NSImage) -> Void
     ) async {
-        mjpegSession?.invalidateAndCancel()
+        setMJPEGSession(nil)
         let cfg = URLSessionConfiguration.ephemeral
         cfg.connectionProxyDictionary = [:]
         cfg.timeoutIntervalForRequest = 25
@@ -931,12 +961,16 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                     onFrame(image)
                 }
             },
-            onComplete: { _ in
+            onComplete: { [weak self] completedSession, _ in
+                completedSession.invalidateAndCancel()
+                Task { @MainActor [weak self] in
+                    self?.clearMJPEGSessionIfMatching(completedSession)
+                }
                 resumeGuard.resumeOnce()
             }
         )
         let session = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
-        self.mjpegSession = session
+        setMJPEGSession(session)
         var req = XiaomiCameraBridge.authorizedURLRequest(for: url)
         req.cachePolicy = .reloadIgnoringLocalCacheData
         let task = session.dataTask(with: req)
@@ -948,8 +982,13 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
             }
         } onCancel: {
             session.invalidateAndCancel()
+            Task { @MainActor [weak self] in
+                self?.clearMJPEGSessionIfMatching(session)
+            }
             resumeGuard.resumeOnce()
         }
+        session.invalidateAndCancel()
+        clearMJPEGSessionIfMatching(session)
     }
 
     private func fetchSnapshotFrame(from url: URL) async -> NSImage? {
@@ -1073,11 +1112,11 @@ private final class MJPEGStreamDelegate: NSObject, URLSessionDataDelegate, @unch
     private let lock = NSLock()
     private var buffer = Data()
     private let onFrame: @Sendable (NSImage) -> Void
-    private let onComplete: @Sendable (Error?) -> Void
+    private let onComplete: @Sendable (URLSession, Error?) -> Void
 
     init(
         onFrame: @escaping @Sendable (NSImage) -> Void,
-        onComplete: @escaping @Sendable (Error?) -> Void
+        onComplete: @escaping @Sendable (URLSession, Error?) -> Void
     ) {
         self.onFrame = onFrame
         self.onComplete = onComplete
@@ -1120,7 +1159,7 @@ private final class MJPEGStreamDelegate: NSObject, URLSessionDataDelegate, @unch
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        onComplete(error)
+        onComplete(session, error)
     }
 }
 

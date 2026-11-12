@@ -302,7 +302,13 @@ public final class HomeStore {
     }
 
     /// Set by `SystemActivityMonitor` from the distributed screen-lock notifications, not persisted.
-    public internal(set) var isScreenLocked = false
+    public internal(set) var isScreenLocked = false {
+        didSet {
+            if isScreenLocked != oldValue {
+                syncResumeScreenLocked(isScreenLocked)
+            }
+        }
+    }
 
     /// Presents the second confirmation for a manual high-risk action. The app installs an AppKit
     /// alert; tests inject a closure so no window is needed.
@@ -693,7 +699,13 @@ public final class HomeStore {
     var latestLGDevice: SmartDevice?
     var eventTask: Task<Void, Never>?
     /// Panel open, Mac awake, Low Power Mode; the provider paces polling with it (#26).
-    public internal(set) var pollingContext = PollingContext()
+    public internal(set) var pollingContext = PollingContext() {
+        didSet {
+            if pollingContext.systemActive != oldValue.systemActive {
+                syncResumeSystemActive(pollingContext.systemActive)
+            }
+        }
+    }
     var pollingContextSync: Task<Void, Never>?
     var debounceTasks: [String: Task<Void, Never>] = [:]
     struct FacetWriteState {
@@ -1126,4 +1138,15 @@ public final class HomeStore {
     @ObservationIgnored var raycastExportTask: Task<Void, Never>?
     /// Last snapshot written to disk, compared without `updatedAt` to skip identical writes.
     @ObservationIgnored var lastExportedRaycastSnapshot: RaycastSnapshot?
+
+    // MARK: - Debounced Resume State
+
+    @ObservationIgnored var debouncedResumeCoordinator: DebouncedResumeCoordinator?
+    @ObservationIgnored var resumeSyncTask: Task<Void, Never>?
+    @ObservationIgnored var isNetworkSatisfiedForResume: Bool = true
+    @ObservationIgnored var isResumeShutdown: Bool = false
+    @ObservationIgnored var resumeDebounceInterval: Duration = .milliseconds(300)
+    @ObservationIgnored var resumeMaxDelay: Duration = .seconds(5)
+    @ObservationIgnored var resumeScheduler: DebouncedResumeScheduler = .live
+    @ObservationIgnored var onDebouncedResumeHook: (@MainActor (Set<ResumeReason>) async -> Void)?
 }
