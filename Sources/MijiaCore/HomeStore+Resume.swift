@@ -146,6 +146,8 @@ extension HomeStore {
         scheduledTasks.removeAll()
         scheduledTaskTokens.removeAll()
 
+        clearOptimisticLocks()
+
         let currentProvider = provider
         let currentLG = lgWebOSClient
         lgWebOSClient = nil

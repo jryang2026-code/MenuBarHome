@@ -62,6 +62,10 @@ extension HomeStore {
                 }
             }
         )
+        let previousLG = self.lgWebOSClient
+        if let previousLG {
+            Task { await previousLG.shutdown() }
+        }
         self.lgWebOSClient = client
         if lgConfig.isEnabled && lgConfig.hasConfiguredHost {
             Task { await client.start() }
