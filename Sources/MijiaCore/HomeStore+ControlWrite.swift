@@ -19,11 +19,31 @@ struct OptimisticWrite: Sendable {
     let deviceId: String
     /// The row before the write; a failed send restores it.
     let previous: SmartDevice
-    /// The lock revision this write owns. A newer write on the same device bumps it.
+    /// The lock revision this write owns. A newer write on the same field/device bumps it.
     let revision: UInt64?
+    /// Specific card fields mutated and locked by this write. Empty means whole-row fallback.
+    let fields: Set<OptimisticField>
+    /// Specific facet control IDs locked by this write, if any.
+    let facetControlIds: Set<String>
     /// False when nothing was shown ahead of the device (a momentary button), so a failure has
     /// nothing to undo.
     let isShown: Bool
+
+    init(
+        deviceId: String,
+        previous: SmartDevice,
+        revision: UInt64?,
+        fields: Set<OptimisticField> = [],
+        facetControlIds: Set<String> = [],
+        isShown: Bool
+    ) {
+        self.deviceId = deviceId
+        self.previous = previous
+        self.revision = revision
+        self.fields = fields
+        self.facetControlIds = facetControlIds
+        self.isShown = isShown
+    }
 }
 
 /// A write refused because the only Mi session has expired. The persistent toast is already showing.
@@ -42,11 +62,217 @@ extension HomeStore {
         return LGWebOSProtocol.isLGEntity(spec.mediaEntityId)
     }
 
+    static func facetLockKey(_ deviceId: String, _ controlId: String) -> String {
+        "\(deviceId).facet.\(controlId)"
+    }
+
+    static func deviceId(fromFacetWriteKey key: String) -> String? {
+        guard let range = key.range(of: ".facet.") else { return nil }
+        return String(key[..<range.lowerBound])
+    }
+
+    static func controlId(fromFacetWriteKey key: String) -> String? {
+        guard let range = key.range(of: ".facet.") else { return nil }
+        return String(key[range.upperBound...])
+    }
+
+    func continuousInstant(from date: Date) -> ContinuousClock.Instant {
+        let delta = date.timeIntervalSince(optimisticClockAnchorDate)
+        return optimisticClockAnchorInstant.advanced(by: .nanoseconds(Int64((delta * 1_000_000_000).rounded())))
+    }
+
+    func date(from instant: ContinuousClock.Instant) -> Date {
+        let delta = optimisticClockAnchorInstant.duration(to: instant).optimisticTimeInterval
+        return optimisticClockAnchorDate.addingTimeInterval(delta)
+    }
+
+    func optimisticLockMaxDatesByDevice() -> [String: Date] {
+        var result: [String: Date] = [:]
+        for (key, entry) in optimisticFieldLocks {
+            if let existing = result[key.deviceId], existing >= entry.until { continue }
+            result[key.deviceId] = entry.until
+        }
+        for (facetKey, entry) in optimisticFacetLocks {
+            guard let deviceId = Self.deviceId(fromFacetWriteKey: facetKey) else { continue }
+            if let existing = result[deviceId], existing >= entry.until { continue }
+            result[deviceId] = entry.until
+        }
+        return result
+    }
+
+    func optimisticLockMaxInstantsByDevice() -> [String: ContinuousClock.Instant] {
+        var result: [String: ContinuousClock.Instant] = [:]
+        for (key, entry) in optimisticFieldLocks {
+            let instant = entry.untilInstant ?? continuousInstant(from: entry.until)
+            if let existing = result[key.deviceId], existing >= instant { continue }
+            result[key.deviceId] = instant
+        }
+        for (facetKey, entry) in optimisticFacetLocks {
+            guard let deviceId = Self.deviceId(fromFacetWriteKey: facetKey) else { continue }
+            let instant = entry.untilInstant ?? continuousInstant(from: entry.until)
+            if let existing = result[deviceId], existing >= instant { continue }
+            result[deviceId] = instant
+        }
+        return result
+    }
+
+    func clearOptimisticLockEntries(for deviceId: String) {
+        for key in optimisticFieldLocks.keys where key.deviceId == deviceId {
+            optimisticFieldLocks.removeValue(forKey: key)
+        }
+        let prefix = "\(deviceId).facet."
+        for key in optimisticFacetLocks.keys where key.hasPrefix(prefix) {
+            optimisticFacetLocks.removeValue(forKey: key)
+        }
+    }
+
+    func setOptimisticLockExpiration(
+        _ until: Date,
+        untilInstant: ContinuousClock.Instant? = nil,
+        for deviceId: String
+    ) {
+        let instant = hasCustomOptimisticNow ? nil : untilInstant
+        for key in optimisticFieldLocks.keys where key.deviceId == deviceId {
+            optimisticFieldLocks[key]?.until = until
+            optimisticFieldLocks[key]?.untilInstant = instant
+        }
+        let prefix = "\(deviceId).facet."
+        for key in optimisticFacetLocks.keys where key.hasPrefix(prefix) {
+            optimisticFacetLocks[key]?.until = until
+            optimisticFacetLocks[key]?.untilInstant = instant
+        }
+    }
+
+    func makeOptimisticEntry(duration: Duration, revision: UInt64) -> OptimisticLockEntry {
+        OptimisticLockEntry(
+            until: optimisticNow().addingTimeInterval(duration.optimisticTimeInterval),
+            untilInstant: hasCustomOptimisticNow ? nil : ContinuousClock.now.advanced(by: duration),
+            revision: revision
+        )
+    }
+
+    func isOptimisticEntryActive(
+        _ entry: OptimisticLockEntry,
+        at now: Date,
+        continuousNow: ContinuousClock.Instant
+    ) -> Bool {
+        if hasCustomOptimisticNow {
+            return entry.isActive(at: now)
+        }
+        if let untilInstant = entry.untilInstant {
+            return continuousNow < untilInstant
+        }
+        return entry.isActive(at: now)
+    }
+
+    /// Clears all optimistic field/facet lock leases, revisions, and cover travel origins
+    /// (for a single device when `deviceId` is given, or globally on backend switch / shutdown).
+    func clearOptimisticLocks(for deviceId: String? = nil) {
+        if let deviceId {
+            clearOptimisticLockEntries(for: deviceId)
+            optimisticLockRevision.removeValue(forKey: deviceId)
+            coverCommandOrigins.removeValue(forKey: deviceId)
+        } else {
+            optimisticFieldLocks.removeAll()
+            optimisticFacetLocks.removeAll()
+            optimisticLockRevision.removeAll()
+            coverCommandOrigins.removeAll()
+        }
+    }
+
+    /// Removes expired field and facet locks for `deviceId` at `now`.
+    func pruneExpiredOptimisticLocks(
+        for deviceId: String,
+        at now: Date,
+        continuousNow: ContinuousClock.Instant = .now
+    ) {
+        for (key, entry) in optimisticFieldLocks
+        where key.deviceId == deviceId && !isOptimisticEntryActive(entry, at: now, continuousNow: continuousNow) {
+            optimisticFieldLocks.removeValue(forKey: key)
+        }
+        let prefix = "\(deviceId).facet."
+        for (key, entry) in optimisticFacetLocks
+        where key.hasPrefix(prefix) && !isOptimisticEntryActive(entry, at: now, continuousNow: continuousNow) {
+            optimisticFacetLocks.removeValue(forKey: key)
+        }
+        if optimisticFieldLocks[.field(deviceId, .coverPosition)] == nil {
+            coverCommandOrigins.removeValue(forKey: deviceId)
+        }
+    }
+
+    /// Returns fields actively locked on `deviceId` at `now`.
+    func activeLockedFields(
+        for deviceId: String,
+        at now: Date,
+        continuousNow: ContinuousClock.Instant = .now
+    ) -> Set<OptimisticField> {
+        var fields: Set<OptimisticField> = []
+        for (key, entry) in optimisticFieldLocks
+        where key.deviceId == deviceId && isOptimisticEntryActive(entry, at: now, continuousNow: continuousNow) {
+            if let field = key.field {
+                fields.insert(field)
+            }
+        }
+        return fields
+    }
+
+    /// Returns facet control IDs actively locked on `deviceId` at `now`.
+    func activeLockedFacetControlIds(
+        for deviceId: String,
+        at now: Date,
+        continuousNow: ContinuousClock.Instant = .now
+    ) -> Set<String> {
+        let prefix = "\(deviceId).facet."
+        var controlIds: Set<String> = []
+        for (key, entry) in optimisticFacetLocks
+        where key.hasPrefix(prefix) && isOptimisticEntryActive(entry, at: now, continuousNow: continuousNow) {
+            if let controlId = Self.controlId(fromFacetWriteKey: key) {
+                controlIds.insert(controlId)
+            }
+        }
+        return controlIds
+    }
+
     @discardableResult
-    func lockOptimistic(_ deviceId: String, duration: Duration) -> UInt64 {
+    func lockOptimistic(
+        _ deviceId: String,
+        fields: Set<OptimisticField>? = nil,
+        duration: Duration
+    ) -> UInt64 {
         let rev = (optimisticLockRevision[deviceId] ?? 0) &+ 1
         optimisticLockRevision[deviceId] = rev
-        optimisticLockUntil[deviceId] = ContinuousClock.now.advanced(by: duration)
+        let targetFields: Set<OptimisticField>
+        if let fields, !fields.isEmpty {
+            targetFields = fields
+        } else if let device = devices.first(where: { $0.id == deviceId }) {
+            let defaults = OptimisticField.primaryPowerFields(for: device.kind)
+            targetFields = defaults.isEmpty ? [.power] : defaults
+        } else {
+            targetFields = [.power]
+        }
+        let entry = makeOptimisticEntry(duration: duration, revision: rev)
+        for field in targetFields {
+            optimisticFieldLocks[.field(deviceId, field)] = entry
+        }
+        return rev
+    }
+
+    @discardableResult
+    func lockOptimisticFacet(
+        _ deviceId: String,
+        controlId: String,
+        duration: Duration,
+        bumpDeviceRevision: Bool = false
+    ) -> UInt64 {
+        let rev: UInt64
+        if bumpDeviceRevision {
+            rev = (optimisticLockRevision[deviceId] ?? 0) &+ 1
+            optimisticLockRevision[deviceId] = rev
+        } else {
+            let key = Self.facetLockKey(deviceId, controlId)
+            rev = (optimisticFacetLocks[key]?.revision ?? optimisticLockRevision[deviceId] ?? 0) &+ 1
+        }
+        optimisticFacetLocks[Self.facetLockKey(deviceId, controlId)] = makeOptimisticEntry(duration: duration, revision: rev)
         return rev
     }
 
@@ -63,17 +289,28 @@ extension HomeStore {
         }
     }
 
-    /// Shows `updated` now. With a `lock`, stale snapshots cannot overwrite it until the lock
-    /// expires or the device reports the same state. Without one the row changes but an earlier
-    /// lock (if any) stays in charge. Pass `updated: nil` to send without showing anything.
+    /// Shows `updated` now. With a `lock`, stale snapshots cannot overwrite its changed fields until
+    /// the lock expires or the device reports the same state. Without one the row changes but an
+    /// earlier lock (if any) stays in charge. Pass `updated: nil` to send without showing anything.
     func beginOptimisticWrite(from previous: SmartDevice, to updated: SmartDevice?, lock: Duration?) -> OptimisticWrite {
         guard let updated, let idx = devices.firstIndex(where: { $0.id == previous.id }) else {
             return OptimisticWrite(deviceId: previous.id, previous: previous, revision: nil, isShown: false)
         }
         devices[idx] = updated
         syncGenericPowerFacet(updated)
-        let revision = lock.map { lockOptimistic(previous.id, duration: $0) } ?? optimisticLockRevision[previous.id]
-        return OptimisticWrite(deviceId: previous.id, previous: previous, revision: revision, isShown: true)
+        var changed = OptimisticField.changedFields(from: previous, to: updated)
+        if lock != nil && changed.isEmpty {
+            changed = OptimisticField.primaryPowerFields(for: updated.kind)
+        }
+        let revision = lock.map { lockOptimistic(previous.id, fields: changed, duration: $0) }
+            ?? optimisticLockRevision[previous.id]
+        return OptimisticWrite(
+            deviceId: previous.id,
+            previous: previous,
+            revision: revision,
+            fields: changed,
+            isShown: true
+        )
     }
 
     /// True while no newer write has taken this write's device.
@@ -100,15 +337,44 @@ extension HomeStore {
         try await send([command], for: write, context: context)
     }
 
-    /// Restores `restoring` (the write's previous row by default) when the write still owns the device.
+    /// Restores `restoring` (or `write.fields` from `write.previous`) when the write still owns its target.
     func revert(_ write: OptimisticWrite, restoring: SmartDevice? = nil) {
         guard write.isShown, ownsRow(write) else { return }
         if let idx = devices.firstIndex(where: { $0.id == write.deviceId }) {
-            devices[idx] = restoring ?? write.previous
+            if let restoring {
+                devices[idx] = restoring
+            } else if !write.fields.isEmpty {
+                devices[idx] = devices[idx].mergingOptimisticFields(from: write.previous, lockedFields: write.fields)
+            } else {
+                devices[idx] = write.previous
+            }
             syncGenericPowerFacet(devices[idx])
         }
-        optimisticLockUntil.removeValue(forKey: write.deviceId)
-        coverCommandOrigins.removeValue(forKey: write.deviceId)
+        if write.fields.isEmpty && write.facetControlIds.isEmpty {
+            clearOptimisticLockEntries(for: write.deviceId)
+            coverCommandOrigins.removeValue(forKey: write.deviceId)
+        } else {
+            for field in write.fields {
+                if let revision = write.revision,
+                   let entry = optimisticFieldLocks[.field(write.deviceId, field)],
+                   entry.revision != revision {
+                    continue
+                }
+                optimisticFieldLocks.removeValue(forKey: .field(write.deviceId, field))
+            }
+            for controlId in write.facetControlIds {
+                let key = Self.facetLockKey(write.deviceId, controlId)
+                if let revision = write.revision,
+                   let entry = optimisticFacetLocks[key],
+                   entry.revision != revision {
+                    continue
+                }
+                optimisticFacetLocks.removeValue(forKey: key)
+            }
+            if write.fields.contains(.coverPosition) {
+                coverCommandOrigins.removeValue(forKey: write.deviceId)
+            }
+        }
     }
 
     /// Puts back the cover travel origin a tap wrote before its command, for a tap that never
