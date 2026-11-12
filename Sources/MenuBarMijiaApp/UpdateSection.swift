@@ -33,14 +33,8 @@ struct UpdateSection: View {
                 actionButtons
             }
 
-            if case .downloading(_, let progress) = store.updateState {
-                if let fraction = progress.fractionCompleted {
-                    ProgressView(value: fraction)
-                        .controlSize(.regular)
-                } else {
-                    ProgressView()
-                        .controlSize(.regular)
-                }
+            if let progress = store.updateState.downloadProgress {
+                downloadProgressRow(progress)
             }
 
             if let release = store.updateState.associatedRelease {
@@ -167,22 +161,62 @@ struct UpdateSection: View {
                 .disabled(true)
 
         case .failed(let failure):
-            if failure.canRetryInstall {
+            // Branch on what the user can actually do, never on the raw error: retrying a rejected
+            // package fails identically, and checking again does nothing for a network drop.
+            switch failure.recovery {
+            case .retryInstall:
                 Button(L10n.tr("重试", "Retry")) {
                     startInstallAndRelaunchIfVisible()
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
-            } else {
-                Button(L10n.tr("重试", "Retry")) {
+            case .recheck:
+                Button(L10n.tr("重新检查", "Check Again")) {
                     Task { await store.checkForUpdates() }
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+            case .manualDownload:
+                Button(L10n.tr("手动下载", "Manual Download")) {
+                    NSWorkspace.shared.open(failure.fallbackURL)
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+            }
+            if failure.recovery != .manualDownload {
+                Button(L10n.tr("手动下载", "Manual Download")) {
+                    NSWorkspace.shared.open(failure.fallbackURL)
                 }
                 .buttonStyle(PillActionButtonStyle())
             }
-            Button(L10n.tr("手动下载", "Manual Download")) {
-                NSWorkspace.shared.open(failure.fallbackURL)
-            }
-            .buttonStyle(PillActionButtonStyle())
         }
+    }
+
+    /// Determinate bar while the server declared a length, plus the rate and time left underneath.
+    /// The speed line is dropped rather than shown as "—" while the first samples are still too
+    /// close together to measure.
+    @ViewBuilder
+    private func downloadProgressRow(_ progress: DownloadProgress) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let fraction = progress.fractionCompleted {
+                ProgressView(value: fraction)
+                    .controlSize(.regular)
+            } else {
+                // No declared length: a bar would sit at a meaningless fraction, so spin instead.
+                ProgressView()
+                    .controlSize(.regular)
+            }
+            if let detail = downloadDetail(progress) {
+                Text(detail)
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private func downloadDetail(_ progress: DownloadProgress) -> String? {
+        let parts = [progress.formattedSpeed, DownloadSectionCopy.timeRemaining(progress)]
+            .compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private func releaseNotes(_ notes: String, pageURL: URL) -> some View {
