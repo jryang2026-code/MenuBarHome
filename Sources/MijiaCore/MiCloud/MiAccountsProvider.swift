@@ -7,6 +7,7 @@ public actor MiAccountsProvider: HomeProvider {
     private let apiFactory: MiCloudProvider.APIFactory
     private let specSource: any MiotSpecSource
     private let cameraBridge: any XiaomiCameraBridging
+    private let localClientFactory: @Sendable () -> LocalMiIOClient?
     private let pollInterval: Duration
     private let closedPollInterval: Duration
     private let deviceRefreshEveryPolls: Int
@@ -32,6 +33,7 @@ public actor MiAccountsProvider: HomeProvider {
         apiFactory: @escaping MiCloudProvider.APIFactory = { MiCloudClient(session: $0) },
         specSource: any MiotSpecSource = MiotSpecStore(),
         cameraBridge: any XiaomiCameraBridging = XiaomiCameraBridge.shared,
+        localClientFactory: @escaping @Sendable () -> LocalMiIOClient? = { LocalMiIOClient() },
         pollInterval: Duration = PollingPolicy.panelOpenInterval,
         closedPollInterval: Duration = PollingPolicy.panelClosedInterval,
         deviceRefreshEveryPolls: Int = 20,
@@ -48,6 +50,7 @@ public actor MiAccountsProvider: HomeProvider {
         self.apiFactory = apiFactory
         self.specSource = specSource
         self.cameraBridge = cameraBridge
+        self.localClientFactory = localClientFactory
         self.pollInterval = pollInterval
         self.closedPollInterval = closedPollInterval
         self.deviceRefreshEveryPolls = deviceRefreshEveryPolls
@@ -83,6 +86,7 @@ public actor MiAccountsProvider: HomeProvider {
                 apiFactory: apiFactory,
                 specSource: specSource,
                 cameraBridge: cameraBridge,
+                localClient: localClientFactory(),
                 pollInterval: pollInterval,
                 closedPollInterval: closedPollInterval,
                 deviceRefreshEveryPolls: deviceRefreshEveryPolls,
@@ -182,8 +186,10 @@ public actor MiAccountsProvider: HomeProvider {
             if resetSelection(ownedBy: accountId) {
                 await refreshNow()
             }
-        case .sourceStatusesChanged, .doorbellRang:
+        case .sourceStatusesChanged:
             break
+        case .doorbellRang(let ring):
+            continuation?.yield(.doorbellRang(ring))
         case .snapshotUpdated(let home):
             snapshots[accountId] = home
             if home.closesAwayGap {

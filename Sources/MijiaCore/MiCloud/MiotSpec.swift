@@ -131,21 +131,56 @@ public struct MiotAction: Codable, Equatable, Sendable {
     public var shortName: String { miotShortName(type) }
 }
 
+public struct MiotEvent: Codable, Equatable, Sendable {
+    public var iid: Int
+    public var type: String
+    public var description: String?
+    public var arguments: [Int]
+
+    enum CodingKeys: String, CodingKey { case iid, type, description, arguments }
+
+    public init(iid: Int, type: String, description: String? = nil, arguments: [Int] = []) {
+        self.iid = iid
+        self.type = type
+        self.description = description
+        self.arguments = arguments
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        iid = try c.decode(Int.self, forKey: .iid)
+        type = try c.decode(String.self, forKey: .type)
+        description = try c.decodeIfPresent(String.self, forKey: .description)
+        arguments = try c.decodeIfPresent([Int].self, forKey: .arguments) ?? []
+    }
+
+    public var shortName: String { miotShortName(type) }
+}
+
 public struct MiotService: Codable, Equatable, Sendable {
     public var iid: Int
     public var type: String
     public var description: String?
     public var properties: [MiotProperty]
     public var actions: [MiotAction]
+    public var events: [MiotEvent]
 
-    enum CodingKeys: String, CodingKey { case iid, type, description, properties, actions }
+    enum CodingKeys: String, CodingKey { case iid, type, description, properties, actions, events }
 
-    public init(iid: Int, type: String, description: String? = nil, properties: [MiotProperty] = [], actions: [MiotAction] = []) {
+    public init(
+        iid: Int,
+        type: String,
+        description: String? = nil,
+        properties: [MiotProperty] = [],
+        actions: [MiotAction] = [],
+        events: [MiotEvent] = []
+    ) {
         self.iid = iid
         self.type = type
         self.description = description
         self.properties = properties
         self.actions = actions
+        self.events = events
     }
 
     public init(from decoder: Decoder) throws {
@@ -155,6 +190,7 @@ public struct MiotService: Codable, Equatable, Sendable {
         description = try? c.decode(String.self, forKey: .description)
         properties = (try? c.decode([MiotProperty].self, forKey: .properties)) ?? []
         actions = (try? c.decode([MiotAction].self, forKey: .actions)) ?? []
+        events = (try? c.decode([MiotEvent].self, forKey: .events)) ?? []
     }
 
     public var shortName: String { miotShortName(type) }
@@ -165,6 +201,10 @@ public struct MiotService: Codable, Equatable, Sendable {
 
     public func action(named name: String) -> MiotAction? {
         actions.first { $0.shortName == name }
+    }
+
+    public func event(named name: String) -> MiotEvent? {
+        events.first { $0.shortName == name }
     }
 }
 
@@ -207,13 +247,25 @@ public protocol MiotSpecSource: Sendable {
 }
 
 public actor MiotSpecStore: MiotSpecSource {
+    public static let defaultMirrorBaseURLs: [URL] = [
+        URL(string: "https://miot-spec.org")!,
+        URL(string: "https://spec.miot-spec.com")!,
+    ]
+
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "MiotSpec")
     private let transport: any MiHTTPTransport
     private let cacheDirectory: URL
     private let indexMaxAge: TimeInterval
+    private let specMaxAge: TimeInterval
+    private let ttlJitterFraction: Double
+    private let mirrorBaseURLs: [URL]
+    private let now: @Sendable () -> Date
+    private let jitterRandom: @Sendable () -> Double
+
     private var typeByModel: [String: String]?
     private var indexTask: Task<[String: String], any Error>?
     private var specByType: [String: MiotDeviceSpec] = [:]
+    private var jitteredTTLByKey: [String: TimeInterval] = [:]
 
     public static var defaultCacheDirectory: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -223,11 +275,21 @@ public actor MiotSpecStore: MiotSpecSource {
     public init(
         transport: any MiHTTPTransport = URLSessionMiTransport(timeout: 60),
         cacheDirectory: URL = MiotSpecStore.defaultCacheDirectory,
-        indexMaxAge: TimeInterval = 7 * 24 * 3600
+        indexMaxAge: TimeInterval = 7 * 24 * 3600,
+        specMaxAge: TimeInterval = 30 * 24 * 3600,
+        ttlJitterFraction: Double = 0.15,
+        mirrorBaseURLs: [URL] = MiotSpecStore.defaultMirrorBaseURLs,
+        now: @escaping @Sendable () -> Date = { Date() },
+        jitterRandom: @escaping @Sendable () -> Double = { Double.random(in: -1.0...1.0) }
     ) {
         self.transport = transport
         self.cacheDirectory = cacheDirectory
         self.indexMaxAge = indexMaxAge
+        self.specMaxAge = specMaxAge
+        self.ttlJitterFraction = ttlJitterFraction
+        self.mirrorBaseURLs = mirrorBaseURLs.isEmpty ? Self.defaultMirrorBaseURLs : mirrorBaseURLs
+        self.now = now
+        self.jitterRandom = jitterRandom
     }
 
     public func spec(model: String, specType: String?) async throws -> MiotDeviceSpec? {
@@ -243,6 +305,60 @@ public actor MiotSpecStore: MiotSpecSource {
             return loaded
         }
         return MiotDeviceSpec.inferFallbackSpec(model: model)
+    }
+
+    /// Prefetches MIoT specs for multiple models concurrently with a bounded `TaskGroup`.
+    public func getSpecs(for models: [String], maxConcurrency: Int = 6) async -> [String: MiotDeviceSpec] {
+        var seen: Set<String> = []
+        let uniqueModels = models.filter { !$0.isEmpty && seen.insert($0).inserted }
+        guard !uniqueModels.isEmpty else { return [:] }
+        _ = try? await typeIndex()
+        let limit = max(1, maxConcurrency)
+        return await withTaskGroup(of: (String, MiotDeviceSpec?).self) { group in
+            var iterator = uniqueModels.makeIterator()
+            for _ in 0..<min(limit, uniqueModels.count) {
+                if let model = iterator.next() {
+                    group.addTask {
+                        let loaded = try? await self.spec(model: model, specType: nil)
+                        return (model, loaded)
+                    }
+                }
+            }
+            var results: [String: MiotDeviceSpec] = [:]
+            for await (model, loaded) in group {
+                if let loaded {
+                    results[model] = loaded
+                }
+                if let nextModel = iterator.next() {
+                    group.addTask {
+                        let nextLoaded = try? await self.spec(model: nextModel, specType: nil)
+                        return (nextModel, nextLoaded)
+                    }
+                }
+            }
+            return results
+        }
+    }
+
+    func effectiveTTL(forKey cacheKey: String, base: TimeInterval) -> TimeInterval {
+        guard base > 0 else { return 0 }
+        if let cached = jitteredTTLByKey[cacheKey] { return cached }
+        let clampedFraction = min(0.5, max(0.0, ttlJitterFraction))
+        let delta = clampedFraction > 0 ? max(-1.0, min(1.0, jitterRandom())) * clampedFraction : 0.0
+        let ttl = max(1.0, base * (1.0 + delta))
+        jitteredTTLByKey[cacheKey] = ttl
+        return ttl
+    }
+
+    private func isFreshCacheFile(_ file: URL, cacheKey: String, baseMaxAge: TimeInterval) -> Bool {
+        let ttl = effectiveTTL(forKey: cacheKey, base: baseMaxAge)
+        guard ttl > 0 else { return false }
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: file.path),
+              let modified = attrs[.modificationDate] as? Date else {
+            return false
+        }
+        let age = now().timeIntervalSince(modified)
+        return age >= 0 && age < ttl
     }
 
     private func typeIndex() async throws -> [String: String] {
@@ -266,15 +382,16 @@ public actor MiotSpecStore: MiotSpecSource {
         var data: Data?
         // A modification date in the future (clock skew, copied file) would otherwise keep a stale
         // index forever, so only a non-negative age counts as fresh.
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: file.path),
-           let modified = attrs[.modificationDate] as? Date,
-           case let age = Date().timeIntervalSince(modified), age >= 0, age < indexMaxAge {
+        if isFreshCacheFile(file, cacheKey: "__index__", baseMaxAge: indexMaxAge) {
             data = try? Data(contentsOf: file)
         }
         if data == nil {
-            let url = URL(string: "https://miot-spec.org/miot-spec-v2/instances?status=released")!
-            let (fetched, http) = try await transport.send(URLRequest(url: url))
-            guard http.statusCode == 200 else { throw MiCloudError.http(http.statusCode) }
+            let fetched = try await fetchWithMirrorFallback(
+                path: "miot-spec-v2/instances",
+                queryItems: [URLQueryItem(name: "status", value: "released")]
+            ) { payload in
+                (try? JSONSerialization.jsonObject(with: payload)) != nil
+            }
             data = fetched
             writeCache(fetched, to: file)
         }
@@ -299,18 +416,52 @@ public actor MiotSpecStore: MiotSpecSource {
         if let cached = specByType[type] { return cached }
         let safeName = type.replacingOccurrences(of: ":", with: "_") + ".json"
         let file = cacheDirectory.appendingPathComponent("instances", isDirectory: true).appendingPathComponent(safeName)
-        if let data = try? Data(contentsOf: file), let spec = try? JSONDecoder().decode(MiotDeviceSpec.self, from: data) {
+        if isFreshCacheFile(file, cacheKey: type, baseMaxAge: specMaxAge),
+           let data = try? Data(contentsOf: file),
+           let spec = try? JSONDecoder().decode(MiotDeviceSpec.self, from: data) {
             specByType[type] = spec
             return spec
         }
-        var comps = URLComponents(string: "https://miot-spec.org/miot-spec-v2/instance")!
-        comps.queryItems = [URLQueryItem(name: "type", value: type)]
-        let (data, http) = try await transport.send(URLRequest(url: comps.url!))
-        guard http.statusCode == 200 else { throw MiCloudError.http(http.statusCode) }
-        let spec = try JSONDecoder().decode(MiotDeviceSpec.self, from: data)
-        writeCache(data, to: file)
+        let fetched = try await fetchWithMirrorFallback(
+            path: "miot-spec-v2/instance",
+            queryItems: [URLQueryItem(name: "type", value: type)]
+        ) { payload in
+            (try? JSONDecoder().decode(MiotDeviceSpec.self, from: payload)) != nil
+        }
+        let spec = try JSONDecoder().decode(MiotDeviceSpec.self, from: fetched)
+        writeCache(fetched, to: file)
         specByType[type] = spec
         return spec
+    }
+
+    private func fetchWithMirrorFallback(
+        path: String,
+        queryItems: [URLQueryItem],
+        validate: (Data) -> Bool
+    ) async throws -> Data {
+        var lastError: any Error = MiCloudError.badResponse("mirror unavailable")
+        for baseURL in mirrorBaseURLs {
+            var comps = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
+            comps?.queryItems = queryItems
+            guard let url = comps?.url else { continue }
+            do {
+                let (data, http) = try await transport.send(URLRequest(url: url))
+                guard http.statusCode == 200 else {
+                    lastError = MiCloudError.http(http.statusCode)
+                    continue
+                }
+                guard validate(data) else {
+                    lastError = MiCloudError.badResponse("invalid spec payload")
+                    continue
+                }
+                return data
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError
     }
 
     private func writeCache(_ data: Data, to file: URL) {
