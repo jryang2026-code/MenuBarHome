@@ -6,15 +6,47 @@ import {
   type CameraStreamQuality,
 } from "../core/cameraQuality.js";
 import {
+  CameraHubCatalog,
+  cameraTr,
+  parsePrivateLanIpv4,
+  resolveLiveCameraTarget,
+} from "../core/miCloud/cameraHubs.js";
+import { cameraLensLabel } from "../core/miCloud/cameraLens.js";
+import {
   MiCloudClient,
   type HttpTransport,
   type MiotSpecResolver,
 } from "../core/miCloudClient.js";
-import { localizeNightShot, type SmartDevice } from "../core/models.js";
+import { localizeNightShot, type CameraLens, type SmartDevice } from "../core/models.js";
 import { CAMERA_QUALITY_TITLES, SF_ICONS } from "./appConstants.js";
 import type { PersistedSettings } from "./appTypes.js";
 import { waitForCameraFrameGap } from "./dom.js";
 import { invokeTauriVoid } from "./transport.js";
+
+export type CameraRotationDeg = 0 | 90 | 180 | 270;
+
+export function normalizeCameraRotation(value: unknown): CameraRotationDeg {
+  return value === 90 || value === 180 || value === 270 ? value : 0;
+}
+
+export function nextCameraRotation(deg: CameraRotationDeg): CameraRotationDeg {
+  switch (deg) {
+    case 0:
+      return 90;
+    case 90:
+      return 180;
+    case 180:
+      return 270;
+    case 270:
+      return 0;
+  }
+}
+
+interface CameraBridgeBinding {
+  readonly did: string;
+  readonly channel: number;
+  readonly subdid: string | null;
+}
 
 export interface CameraLiveHost {
   readonly root: HTMLElement;
@@ -31,9 +63,16 @@ export interface CameraLiveHost {
 }
 
 export class CameraLiveController {
+  public static readonly CAMERA_CHANNELS_STORAGE_KEY = "menubarmijia.cameraChannels";
+  public static readonly CAMERA_ROTATIONS_STORAGE_KEY = "menubarmijia.cameraRotations";
+  public static readonly CAMERA_LOCAL_IPS_STORAGE_KEY = "menubarmijia.cameraLocalIPs";
+
   constructor(private readonly host: CameraLiveHost) {
     this.cameraStreamURLs = { ...(host.settings.cameraStreamURLs ?? {}) };
     this.cameraStreamQualities = { ...(host.settings.cameraStreamQualities ?? {}) };
+    this.cameraChannels = loadPersistedCameraChannels();
+    this.cameraRotations = loadPersistedCameraRotations();
+    this.cameraLocalIPs = loadPersistedCameraLocalIPs();
   }
 
   public activeLiveCameraId: string | null = null;
@@ -56,9 +95,15 @@ export class CameraLiveController {
   public liveCameraLoading = false;
   public liveCameraError: string | null = null;
   public liveCameraShowingURLInput = false;
+  public liveCameraNeedsManualIp = false;
+  public liveCameraLocalIpError: string | null = null;
+  public liveCameraDraftIp: string | null = null;
   public cameraStreamURLs: Record<string, string> = {};
   /** Per-camera Xiaomi stream quality; `hd` matches the macOS default (#193). */
   public cameraStreamQualities: Record<string, CameraStreamQuality> = {};
+  public cameraChannels: Record<string, number> = {};
+  public cameraRotations: Record<string, CameraRotationDeg> = {};
+  public cameraLocalIPs: Record<string, string> = {};
   /** The live picture arrives as MJPEG frames in a persistent `<img>`, which never restarts on re-render. */
   public liveCameraMode: "mjpeg" | null = null;
   /** Only a raw `<video>` element can carry audio; it starts muted like the macOS HLS player (#29). */
@@ -70,6 +115,7 @@ export class CameraLiveController {
   public ownedStreamOrigin: string | null = null;
   public liveCameraToken = 0;
   public readonly pendingCameraReleases = new Map<string, Promise<void>>();
+  private readonly cameraBridgeBindings = new Map<string, CameraBridgeBinding>();
 
   public openCameraLiveView(deviceId: string): void {
     const dev = this.host.devices.find((d) => d.id === deviceId);
@@ -88,7 +134,7 @@ export class CameraLiveController {
       return;
     }
     if (this.activeLiveCameraId !== null && this.activeLiveCameraId !== deviceId) {
-      this.closeCameraLiveView();
+      this.teardownActiveCameraForSwitch();
     }
     this.activeLiveCameraId = dev.id;
     this.liveCameraMuted = true;
@@ -97,6 +143,9 @@ export class CameraLiveController {
     this.clearCameraKeepAlive();
     this.liveCameraError = null;
     this.liveCameraShowingURLInput = false;
+    this.liveCameraNeedsManualIp = false;
+    this.liveCameraLocalIpError = null;
+    this.liveCameraDraftIp = null;
     this.liveCameraStreamURL = this.cameraStreamURLs[dev.id]
       ? this.normalizeWindowsCameraStreamUrl(this.cameraStreamURLs[dev.id]!)
       : this.resolveHaCameraStreamUrl(dev);
@@ -111,6 +160,18 @@ export class CameraLiveController {
       void this.resolveCloudCameraStream(dev);
     }
     this.host.render();
+  }
+
+  private teardownActiveCameraForSwitch(): void {
+    const closingId = this.activeLiveCameraId;
+    const closingDev = closingId ? this.host.devices.find((d) => d.id === closingId) : undefined;
+    this.clearCameraKeepAlive();
+    this.liveCameraHidden = false;
+    this.stopLiveTransport();
+    this.activeLiveCameraId = null;
+    if (closingId && this.host.settings.connectionMode === "xiaomiCloud" && closingDev) {
+      void this.releaseCameraP2PSession(closingDev, this.liveCameraToken);
+    }
   }
 
   public resolveHaCameraStreamUrl(dev: SmartDevice): string | null {
@@ -159,6 +220,9 @@ export class CameraLiveController {
     this.liveCameraLoading = false;
     this.liveCameraError = null;
     this.liveCameraShowingURLInput = false;
+    this.liveCameraNeedsManualIp = false;
+    this.liveCameraLocalIpError = null;
+    this.liveCameraDraftIp = null;
     if (closingId && this.host.settings.connectionMode === "xiaomiCloud" && closingDev) {
       void this.releaseCameraP2PSession(closingDev, this.liveCameraToken);
     }
@@ -208,6 +272,18 @@ export class CameraLiveController {
     return tracked;
   }
 
+  private buildStopBridgePayload(cameraId: string): Record<string, unknown> {
+    const binding = this.cameraBridgeBindings.get(cameraId);
+    const did = binding?.did ?? cameraId;
+    const channel = binding?.channel ?? 0;
+    const subdid = binding?.subdid ?? null;
+    return {
+      did,
+      ...(channel > 0 ? { channel } : {}),
+      ...(subdid ? { subdid } : {}),
+    };
+  }
+
   /** Drops the MJPEG image, any pending negotiation, and the backend stream bridge/reader. */
   public stopLiveTransport(): void {
     this.liveCameraToken += 1;
@@ -227,8 +303,46 @@ export class CameraLiveController {
     this.liveCameraRawMediaEl = null;
     this.liveCameraMode = null;
     if (this.activeLiveCameraId) {
-      invokeTauriVoid("stop_xiaomi_camera_bridge", { did: this.activeLiveCameraId });
+      const stopPayload = this.buildStopBridgePayload(this.activeLiveCameraId);
+      this.cameraBridgeBindings.delete(this.activeLiveCameraId);
+      invokeTauriVoid("stop_xiaomi_camera_bridge", stopPayload);
     }
+  }
+
+  public cameraRotation(deviceId: string | null = this.activeLiveCameraId): CameraRotationDeg {
+    if (!deviceId) return 0;
+    return normalizeCameraRotation(this.cameraRotations[deviceId]);
+  }
+
+  public rotateActiveCamera(): void {
+    const id = this.activeLiveCameraId;
+    if (!id) return;
+    const next = nextCameraRotation(this.cameraRotation(id));
+    this.cameraRotations = { ...this.cameraRotations, [id]: next };
+    savePersistedRecord(CameraLiveController.CAMERA_ROTATIONS_STORAGE_KEY, this.cameraRotations);
+    this.applyRotationToLiveMedia();
+    this.syncCameraRotateControl();
+  }
+
+  public applyRotationToLiveMedia(): void {
+    const el =
+      this.liveCameraImgEl ??
+      this.liveCameraRawMediaEl ??
+      this.host.root.querySelector<HTMLImageElement | HTMLVideoElement>("#cc-camera-live-img, #cc-camera-video");
+    if (!el) return;
+    const deg = this.cameraRotation(this.activeLiveCameraId);
+    el.dataset.rotation = String(deg);
+    if (deg === 0) {
+      el.style.transform = "";
+      return;
+    }
+    if (deg === 180) {
+      el.style.transform = "rotate(180deg)";
+      return;
+    }
+    const stage = el.parentElement ?? this.host.root.querySelector<HTMLElement>(".cc-camera-stage");
+    const scale = computeQuarterTurnScale(el, stage);
+    el.style.transform = `rotate(${deg}deg) scale(${scale})`;
   }
 
   /** Puts the live element back after `render()` rebuilds the panel markup. */
@@ -238,23 +352,35 @@ export class CameraLiveController {
     const el = this.liveCameraImgEl;
     if (el) {
       if (el.parentElement !== stage) stage.replaceChildren(el);
+      this.applyRotationToLiveMedia();
       return;
     }
     const rawMedia = stage.querySelector<HTMLImageElement | HTMLVideoElement>("#cc-camera-live-img, #cc-camera-video");
     if (!rawMedia) return;
     if (this.liveCameraRawMediaEl) {
-      rawMedia.replaceWith(this.liveCameraRawMediaEl);
+      if (this.liveCameraRawMediaEl !== rawMedia) {
+        rawMedia.replaceWith(this.liveCameraRawMediaEl);
+      }
+      this.applyRotationToLiveMedia();
       return;
     }
     this.liveCameraRawMediaEl = rawMedia;
     if (rawMedia.tagName === "VIDEO") {
+      rawMedia.addEventListener("loadedmetadata", () => {
+        if (this.liveCameraRawMediaEl === rawMedia) this.applyRotationToLiveMedia();
+      });
       rawMedia.addEventListener("volumechange", () => {
         if (this.liveCameraRawMediaEl !== rawMedia) return;
         const video = rawMedia as HTMLVideoElement;
         this.liveCameraMuted = video.muted || video.volume === 0;
         this.syncCameraMuteControl();
       });
+    } else {
+      rawMedia.addEventListener("load", () => {
+        if (this.liveCameraRawMediaEl === rawMedia) this.applyRotationToLiveMedia();
+      });
     }
+    this.applyRotationToLiveMedia();
   }
 
   public startMjpegTransport(name: string): void {
@@ -267,6 +393,9 @@ export class CameraLiveController {
     img.id = "cc-camera-live-img";
     img.alt = "";
     img.style.cssText = "max-width:100%;border-radius:10px;";
+    img.addEventListener("load", () => {
+      if (this.liveCameraImgEl === img) this.applyRotationToLiveMedia();
+    });
     const abort = new AbortController();
     this.liveCameraAbort = abort;
     void this.pumpAuthenticatedMjpeg(name, img, this.liveCameraToken, abort.signal);
@@ -462,6 +591,59 @@ export class CameraLiveController {
     this.host.saveSettings();
   }
 
+  public selectedCameraLens(dev: SmartDevice): CameraLens | null {
+    if (dev.kind.kind !== "camera") return null;
+    const lenses = dev.kind.lenses;
+    if (!lenses || lenses.length <= 1) return null;
+    const saved = this.cameraChannels[dev.id];
+    return lenses.find((lens) => lens.channel === saved) ?? lenses[0] ?? null;
+  }
+
+  public selectedCameraChannel(dev: SmartDevice): number {
+    return this.selectedCameraLens(dev)?.channel ?? 0;
+  }
+
+  public setCameraLensChannel(deviceId: string, channel: number): void {
+    const normalized = Math.max(0, Math.trunc(channel));
+    this.cameraChannels = { ...this.cameraChannels, [deviceId]: normalized };
+    savePersistedRecord(CameraLiveController.CAMERA_CHANNELS_STORAGE_KEY, this.cameraChannels);
+  }
+
+  public commitCameraLocalIp(): void {
+    const id = this.activeLiveCameraId;
+    if (!id) return;
+    const input = this.host.root.querySelector<HTMLInputElement>("#camera-local-ip-input");
+    const raw = input?.value ?? "";
+    this.liveCameraDraftIp = raw;
+    const parsed = parsePrivateLanIpv4(raw);
+    if (!parsed) {
+      this.liveCameraLocalIpError = cameraTr(
+        "请输入有效的局域网私有 IPv4 地址（192.168.x.x / 172.16-31.x.x / 10.x.x.x）",
+        "Enter a valid private IPv4 LAN address (192.168.x.x / 172.16-31.x.x / 10.x.x.x)",
+      );
+      this.host.render();
+      return;
+    }
+    this.liveCameraLocalIpError = null;
+    this.liveCameraDraftIp = null;
+    this.cameraLocalIPs = { ...this.cameraLocalIPs, [id]: parsed };
+    savePersistedRecord(CameraLiveController.CAMERA_LOCAL_IPS_STORAGE_KEY, this.cameraLocalIPs);
+    this.reconnectCameraLiveView();
+  }
+
+  public clearCameraLocalIp(deviceId = this.activeLiveCameraId): void {
+    if (!deviceId) return;
+    const next = { ...this.cameraLocalIPs };
+    delete next[deviceId];
+    this.cameraLocalIPs = next;
+    this.liveCameraLocalIpError = null;
+    this.liveCameraDraftIp = null;
+    savePersistedRecord(CameraLiveController.CAMERA_LOCAL_IPS_STORAGE_KEY, this.cameraLocalIPs);
+    if (deviceId === this.activeLiveCameraId) {
+      this.reconnectCameraLiveView();
+    }
+  }
+
   public reconnectCameraLiveView(): void {
     const dev = this.host.devices.find((d) => d.id === this.activeLiveCameraId);
     if (!dev || dev.kind.kind !== "camera") return;
@@ -485,7 +667,22 @@ export class CameraLiveController {
 
   public async resolveCloudCameraStream(dev: SmartDevice): Promise<void> {
     if (dev.kind.kind !== "camera" || !this.host.settings.miSession) return;
+    if (CameraHubCatalog.isHub(dev.model)) {
+      this.liveCameraQualityApplies = false;
+      this.liveCameraNeedsManualIp = false;
+      this.liveCameraLoading = false;
+      this.liveCameraError = cameraTr(
+        "室内网关本身不提供画面，请打开其配对的室外摄像机观看",
+        "The indoor gateway has no camera feed of its own; open its paired battery camera instead",
+      );
+      this.host.render();
+      return;
+    }
+
+    const channel = this.selectedCameraChannel(dev);
+    const requiresHub = CameraHubCatalog.hubModel(dev.model) !== null;
     this.liveCameraLoading = true;
+    this.liveCameraNeedsManualIp = false;
     this.host.render();
     // Closing/hiding bumps liveCameraToken via stopLiveTransport or full teardown;
     // a negotiation that outlives its modal must not start a bridge afterwards.
@@ -515,14 +712,12 @@ export class CameraLiveController {
       if (stale()) return;
       const client = new MiCloudClient(this.host.settings.miSession, this.host.transport);
 
-      // 1. Try cloud HLS action if supported by the model
+      // 1. Try cloud HLS action on primary standalone lens if supported by the model
       const streamSvc =
-        spec.services.find((s) =>
-          s.actions.some((a) => a.type.includes("start-hls-stream"))
-        ) ?? null;
-      const act = streamSvc?.actions.find(
-        (a) => a.type.includes("start-hls-stream")
-      );
+        !requiresHub && channel === 0
+          ? (spec.services.find((s) => s.actions.some((a) => a.type.includes("start-hls-stream"))) ?? null)
+          : null;
+      const act = streamSvc?.actions.find((a) => a.type.includes("start-hls-stream"));
       if (streamSvc && act) {
         // macOS parity (MiCloudProvider.resolveCameraStream): the documented action carries
         // typed inputs; try the bare call, then the codec-index variant, and treat every
@@ -570,9 +765,7 @@ export class CameraLiveController {
 
       if (stale()) return;
       // 2. Release any previous P2P session, then wake a fresh one (siid=9 p2p-stream service)
-      const p2pSvc = spec.services.find((s) =>
-        s.actions.some((a) => a.type.includes("start-p2p-stream"))
-      );
+      const p2pSvc = spec.services.find((s) => s.actions.some((a) => a.type.includes("start-p2p-stream")));
       const stopAct = p2pSvc?.actions.find((a) => a.type.includes("stop-stream"));
       const p2pAct = p2pSvc?.actions.find((a) => a.type.includes("start-p2p-stream"));
       if (p2pSvc && stopAct) {
@@ -602,97 +795,110 @@ export class CameraLiveController {
 
       // 3. Negotiate MISS CS2/TUTK P2P keys & start native Tauri bridge
       if (window.__TAURI_INTERNALS__?.invoke) {
-        const listRes = (await client.request("home/device_list", {
-          getVirtualModel: true,
-          getHuamiDevices: 1,
-          get_split_device: false,
-          support_smart_home: true,
-        })) as Record<string, unknown> | null;
+        const target = await resolveLiveCameraTarget(
+          client,
+          dev,
+          this.host.devices,
+          this.host.settings.selectedHomeId,
+        );
         if (stale()) {
           if (this.activeLiveCameraId !== dev.id) releaseIfStarted();
           return;
         }
-        const rawList = Array.isArray(listRes?.["list"]) ? (listRes["list"] as Array<Record<string, unknown>>) : [];
-        const rawDev = rawList.find((item) => String(item["did"] ?? "") === dev.id);
-        const localIp = typeof rawDev?.["localip"] === "string" ? rawDev["localip"] : "";
-        if (localIp) {
-          const kp = (await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"])) as CryptoKeyPair;
-          const spki = new Uint8Array(await crypto.subtle.exportKey("spki", kp.publicKey));
-          const pkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", kp.privateKey));
-          const clientPublic = Array.from(spki.slice(-32)).map((b) => b.toString(16).padStart(2, "0")).join("");
-          const clientPrivate = Array.from(pkcs8.slice(-32)).map((b) => b.toString(16).padStart(2, "0")).join("");
+        const { bridgeDid, bridgeModel, subdid, cloudLocalIp, hubBlockedReason } = target;
 
-          const vendorRes = (await client.request("v2/device/miss_get_vendor", {
-            did: dev.id,
-            app_pubkey: clientPublic,
-            support_vendors: "TUTK_CS2_MTP",
-          })) as Record<string, unknown> | null;
-          if (stale()) {
-            if (this.activeLiveCameraId !== dev.id) releaseIfStarted();
-            return;
-          }
-          const vendorObj = (vendorRes?.["vendor"] as Record<string, unknown> | undefined) ?? {};
-          const vendorId = Number(vendorObj["vendor"] ?? 4);
-          const vendorName = vendorId === 1 ? "tutk" : vendorId === 4 ? "cs2" : String(vendorId);
-          const vendorParams = (vendorObj["vendor_params"] as Record<string, unknown> | undefined) ?? {};
-          const p2pUid = typeof vendorParams["p2p_id"] === "string" ? vendorParams["p2p_id"] : null;
-          const devicePublic = typeof vendorRes?.["public_key"] === "string" ? vendorRes["public_key"] : "";
-          const sign = typeof vendorRes?.["sign"] === "string" ? vendorRes["sign"] : "";
+        if (hubBlockedReason) {
+          failureReason = hubBlockedReason;
+        } else {
+          this.cameraBridgeBindings.set(dev.id, { did: bridgeDid, channel, subdid });
+          const manualLocalIp = this.cameraLocalIPs[dev.id] ?? "";
+          const effectiveLocalIp = cloudLocalIp || manualLocalIp;
+          this.liveCameraNeedsManualIp = !cloudLocalIp;
+          if (effectiveLocalIp) {
+            const kp = (await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"])) as CryptoKeyPair;
+            const spki = new Uint8Array(await crypto.subtle.exportKey("spki", kp.publicKey));
+            const pkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", kp.privateKey));
+            const clientPublic = Array.from(spki.slice(-32)).map((b) => b.toString(16).padStart(2, "0")).join("");
+            const clientPrivate = Array.from(pkcs8.slice(-32)).map((b) => b.toString(16).padStart(2, "0")).join("");
 
-          if (devicePublic && sign) {
+            const vendorRes = (await client.request("v2/device/miss_get_vendor", {
+              did: bridgeDid,
+              app_pubkey: clientPublic,
+              support_vendors: "TUTK_CS2_MTP",
+            })) as Record<string, unknown> | null;
             if (stale()) {
               if (this.activeLiveCameraId !== dev.id) releaseIfStarted();
               return;
             }
-            this.liveCameraQualityApplies = true;
-            const bridge = await window.__TAURI_INTERNALS__.invoke<string>("start_xiaomi_camera_bridge", {
-              did: dev.id,
-              model: dev.model,
-              localIp,
-              clientPublic,
-              clientPrivate,
-              devicePublic,
-              sign,
-              vendor: vendorName,
-              uid: p2pUid,
-              quality: this.cameraStreamQualities[dev.id] ?? DEFAULT_CAMERA_STREAM_QUALITY,
-            });
-            if (stale()) {
-              // The close path already tore down once; this late start re-created a
-              // relay and stream registrations that nothing else will reclaim. Undo
-              // them — unless the same camera was re-opened, in which case the new
-              // negotiation's own stop_bridge replaces them and must not be killed.
-              if (this.activeLiveCameraId !== dev.id) {
-                invokeTauriVoid("stop_xiaomi_camera_bridge", { did: dev.id });
-                releaseIfStarted();
+            const vendorObj = (vendorRes?.["vendor"] as Record<string, unknown> | undefined) ?? {};
+            const vendorId = Number(vendorObj["vendor"] ?? 4);
+            const vendorName = vendorId === 1 ? "tutk" : vendorId === 4 ? "cs2" : String(vendorId);
+            const vendorParams = (vendorObj["vendor_params"] as Record<string, unknown> | undefined) ?? {};
+            const p2pUid = typeof vendorParams["p2p_id"] === "string" ? vendorParams["p2p_id"] : null;
+            const devicePublic = typeof vendorRes?.["public_key"] === "string" ? vendorRes["public_key"] : "";
+            const sign = typeof vendorRes?.["sign"] === "string" ? vendorRes["sign"] : "";
+
+            if (devicePublic && sign) {
+              if (stale()) {
+                if (this.activeLiveCameraId !== dev.id) releaseIfStarted();
+                return;
               }
-              return;
+              this.liveCameraQualityApplies = true;
+              const bridge = await window.__TAURI_INTERNALS__.invoke<string>("start_xiaomi_camera_bridge", {
+                did: bridgeDid,
+                model: bridgeModel,
+                localIp: effectiveLocalIp,
+                clientPublic,
+                clientPrivate,
+                devicePublic,
+                sign,
+                vendor: vendorName,
+                uid: p2pUid,
+                quality: this.cameraStreamQualities[dev.id] ?? DEFAULT_CAMERA_STREAM_QUALITY,
+                ...(channel > 0 ? { channel } : {}),
+                ...(subdid ? { subdid } : {}),
+              });
+              if (stale()) {
+                // The close path already tore down once; this late start re-created a
+                // relay and stream registrations that nothing else will reclaim. Undo
+                // them — unless the same camera was re-opened, in which case the new
+                // negotiation's own stop_bridge replaces them and must not be killed.
+                if (this.activeLiveCameraId !== dev.id) {
+                  invokeTauriVoid("stop_xiaomi_camera_bridge", {
+                    did: bridgeDid,
+                    ...(channel > 0 ? { channel } : {}),
+                    ...(subdid ? { subdid } : {}),
+                  });
+                  releaseIfStarted();
+                }
+                return;
+              }
+              const [h264Name, mjpegName] = (bridge ?? "").split("|");
+              if (mjpegName) {
+                this.liveCameraStreamURL = mjpegName;
+                this.liveCameraError = null;
+                this.liveCameraLoading = false;
+                this.startMjpegTransport(mjpegName);
+                this.host.render();
+                this.attachLiveMedia();
+                return;
+              }
+              if (h264Name) {
+                this.liveCameraQualityApplies = false;
+                releaseIfStarted();
+                this.liveCameraStreamURL = h264Name;
+                this.liveCameraError = t("实时画面连接失败，请点右上角重新连接");
+                this.liveCameraLoading = false;
+                this.host.render();
+                return;
+              }
+              failureReason = t("本地视频桥接未返回可用流，请检查网络后重试");
+            } else {
+              failureReason = t("该摄像机型号暂不支持自动获取局域网 P2P 密钥，可在下方填写本地 go2rtc / HLS 流地址观看");
             }
-            const [h264Name, mjpegName] = (bridge ?? "").split("|");
-            if (mjpegName) {
-              this.liveCameraStreamURL = mjpegName;
-              this.liveCameraError = null;
-              this.liveCameraLoading = false;
-              this.startMjpegTransport(mjpegName);
-              this.host.render();
-              this.attachLiveMedia();
-              return;
-            }
-            if (h264Name) {
-              this.liveCameraQualityApplies = false;
-              releaseIfStarted();
-              this.liveCameraStreamURL = h264Name;
-              this.liveCameraError = t("实时画面连接失败，请点右上角重新连接");
-              this.liveCameraLoading = false;
-              this.host.render();
-              return;
-            }
-            failureReason = t("本地视频桥接未返回可用流，请检查网络后重试");
           } else {
-            failureReason = t("该摄像机型号暂不支持自动获取局域网 P2P 密钥，可在下方填写本地 go2rtc / HLS 流地址观看");
+            failureReason = t("未获取到摄像机局域网 IP，请确认电脑与摄像机处于同一局域网");
           }
-        } else {
-          failureReason = t("未获取到摄像机局域网 IP，请确认电脑与摄像机处于同一局域网");
         }
       }
 
@@ -717,8 +923,13 @@ export class CameraLiveController {
     const k = dev.kind;
     const id = this.host.escapeHtml(dev.id);
     const customURL = this.cameraStreamURLs[dev.id] ?? "";
+    const savedManualIp = this.cameraLocalIPs[dev.id] ?? "";
     const isNight = k.nightShot?.toLowerCase() === "on";
     const motionOn = Boolean(k.isMotionDetectionOn);
+    const rotation = this.cameraRotation(dev.id);
+    const playableCameras = this.host.devices.filter(
+      (item) => item.kind.kind === "camera" && (item.id === dev.id || !CameraHubCatalog.isHub(item.model)),
+    );
 
     let viewportHtml = "";
     // One value drives both the viewport and the HUD audio affordance, so the "video only"
@@ -787,6 +998,11 @@ export class CameraLiveController {
         </div>
       `;
     } else {
+      const showManualIpFallback =
+        this.host.settings.connectionMode === "xiaomiCloud" &&
+        !customURL &&
+        (this.liveCameraNeedsManualIp || Boolean(savedManualIp) || Boolean(this.liveCameraLocalIpError));
+      const ipDraft = this.liveCameraDraftIp ?? savedManualIp;
       viewportHtml = `
         <div class="cc-camera-stage is-error" style="padding:16px;text-align:center;">
           <p style="margin-bottom:10px;">${this.host.escapeHtml(this.liveCameraError ?? t("可配置本地 go2rtc / HLS 流地址观看实时画面"))}</p>
@@ -794,6 +1010,27 @@ export class CameraLiveController {
             <button class="cc-btn-secondary" data-toggle-camera-url="1">${t("填写 go2rtc / HLS 流地址")}</button>
             <button class="cc-btn-secondary" id="btn-copy-camera-diag">${t("复制诊断")}</button>
           </div>
+          ${
+            showManualIpFallback
+              ? `<div class="cc-camera-ip-box">
+                  <label for="camera-local-ip-input">${cameraTr("手动填写局域网 IP（云端未返回时备用）", "Manual LAN IP fallback")}</label>
+                  <div class="cc-camera-ip-row">
+                    <input id="camera-local-ip-input" class="cc-input" type="text" value="${this.host.escapeHtml(ipDraft)}" placeholder="192.168.1.50" />
+                    <button type="button" class="cc-btn-primary" id="btn-save-camera-ip">${cameraTr("保存 IP", "Save IP")}</button>
+                    ${
+                      savedManualIp
+                        ? `<button type="button" class="cc-btn-secondary" id="btn-clear-camera-ip">${cameraTr("清除 IP", "Clear IP")}</button>`
+                        : ""
+                    }
+                  </div>
+                  ${
+                    this.liveCameraLocalIpError
+                      ? `<small class="cc-camera-ip-error" role="alert">${this.host.escapeHtml(this.liveCameraLocalIpError)}</small>`
+                      : ""
+                  }
+                </div>`
+              : ""
+          }
         </div>
       `;
     }
@@ -806,13 +1043,19 @@ export class CameraLiveController {
           ? `<span class="cc-pill-label" id="cc-camera-audio-badge" title="${t("当前视频流（米家 P2P / MJPEG / 抓拍）只传画面，不含音频")}">${t("仅画面")}</span>`
           : "";
 
+    const rotateLabel = this.rotateButtonTitle(rotation);
+    const activeLensChannel = this.selectedCameraChannel(dev);
+    const hasDualLenses =
+      this.host.settings.connectionMode === "xiaomiCloud" && !customURL && (k.lenses?.length ?? 0) > 1;
+
     return `
       <div class="cc-sheet-backdrop" ${this.liveCameraHidden ? 'style="display:none"' : ""}>
         <div class="cc-sheet cc-camera-live-sheet" role="dialog" aria-modal="true" aria-label="${this.host.escapeHtml(dev.name)} ${t("实时画面")}">
           <div class="cc-sheet-header">
             <strong>${this.host.escapeHtml(dev.name)} · ${t("实时画面小窗")}</strong>
-            <div style="display:flex;gap:6px;">
+            <div style="display:flex;gap:6px;align-items:center;">
               ${audioControl}
+              <button type="button" class="cc-circle-btn is-small cc-rotate-btn ${rotation !== 0 ? "is-active" : ""}" id="btn-rotate-camera-live" data-rotation="${rotation}" title="${this.host.escapeHtml(rotateLabel)}" aria-label="${this.host.escapeHtml(rotateLabel)}" aria-pressed="${rotation !== 0}">90°</button>
               <button class="cc-circle-btn is-small" id="btn-reload-camera-live" title="${t("重新连接")}" aria-label="${t("重新连接")}">${SF_ICONS.arrowClockwise}</button>
               <button class="cc-circle-btn is-small" id="btn-toggle-camera-url" title="${t("配置流地址")}" aria-label="${t("配置流地址")}">${SF_ICONS.link}</button>
               <button class="cc-circle-btn is-small" id="btn-close-camera-live" title="${t("关闭画面")}" aria-label="${t("关闭画面")}">
@@ -820,6 +1063,24 @@ export class CameraLiveController {
               </button>
             </div>
           </div>
+          ${
+            playableCameras.length >= 2
+              ? `<div class="cc-camera-switcher" role="tablist" aria-label="${cameraTr("切换摄像机", "Switch camera")}">
+                  ${playableCameras
+                    .map((cam) => {
+                      const selected = cam.id === dev.id;
+                      const camId = this.host.escapeHtml(cam.id);
+                      const dotClass =
+                        cam.isOnline && cam.kind.kind === "camera" && cam.kind.isOn ? "is-online" : "is-muted";
+                      return `<button type="button" role="tab" class="cc-seg-pill cc-camera-switch-pill ${selected ? "is-active" : ""}" data-cameraswitch="${camId}" aria-selected="${selected}" title="${this.host.escapeHtml(`${cam.roomName} · ${cam.name}`)}">
+                        <span class="cc-camera-switch-dot ${dotClass}"></span>
+                        <span class="cc-camera-switch-name">${this.host.escapeHtml(cam.name)}</span>
+                      </button>`;
+                    })
+                    .join("")}
+                </div>`
+              : ""
+          }
           ${
             this.liveCameraShowingURLInput
               ? `<div class="cc-field" style="margin-bottom:10px;">
@@ -832,6 +1093,21 @@ export class CameraLiveController {
           }
           ${viewportHtml}
           ${
+            hasDualLenses
+              ? `<div class="cc-segmented-pills cc-camera-lens-pills" style="margin-top:10px;">
+                  <span class="cc-pill-label">${cameraTr("镜头", "Lens")}</span>
+                  ${k.lenses!
+                    .map((lens) => {
+                      const selected = activeLensChannel === lens.channel;
+                      return `<button type="button" class="cc-seg-pill ${selected ? "is-active" : ""}" data-cameralens="${id}" data-cameralens-channel="${lens.channel}" aria-pressed="${selected}">
+                        ${this.host.escapeHtml(cameraLensLabel(lens))}
+                      </button>`;
+                    })
+                    .join("")}
+                </div>`
+              : ""
+          }
+          ${
             this.host.settings.connectionMode === "xiaomiCloud" && !customURL && this.liveCameraQualityApplies && !this.liveCameraLoading
               ? `<div class="cc-segmented-pills" style="margin-top:10px;">
                   <span class="cc-pill-label">${t("画质")}</span>
@@ -841,6 +1117,13 @@ export class CameraLiveController {
                       ${t(CAMERA_QUALITY_TITLES[quality])}
                     </button>`;
                   }).join("")}
+                  ${
+                    mediaKind !== "error" && savedManualIp
+                      ? `<button type="button" class="cc-seg-pill" id="btn-clear-camera-ip" title="${cameraTr("清除手动局域网 IP", "Clear manual LAN IP")}">
+                          IP ${this.host.escapeHtml(savedManualIp)} ×
+                        </button>`
+                      : ""
+                  }
                 </div>`
               : ""
           }
@@ -922,6 +1205,10 @@ export class CameraLiveController {
       this.reconnectCameraLiveView();
     });
 
+    this.host.root.querySelector("#btn-rotate-camera-live")?.addEventListener("click", () => {
+      this.rotateActiveCamera();
+    });
+
     // Toggle in place: a re-render would rebuild the <video> element and restart playback.
     this.host.root.querySelector("#cc-camera-mute")?.addEventListener("click", () => {
       const muted = !this.liveCameraMuted;
@@ -934,6 +1221,26 @@ export class CameraLiveController {
       }
       this.liveCameraMuted = muted;
       this.syncCameraMuteControl();
+    });
+
+    this.host.root.querySelectorAll<HTMLElement>("[data-cameraswitch]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const targetId = btn.dataset.cameraswitch ?? "";
+        if (!targetId || targetId === this.activeLiveCameraId) return;
+        this.openCameraLiveView(targetId);
+      });
+    });
+
+    this.host.root.querySelectorAll<HTMLElement>("[data-cameralens]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const deviceId = btn.dataset.cameralens ?? "";
+        const dev = this.host.devices.find((d) => d.id === deviceId);
+        if (!dev || dev.kind.kind !== "camera") return;
+        const channel = Number(btn.dataset.cameralensChannel ?? "0");
+        if (!Number.isFinite(channel) || channel === this.selectedCameraChannel(dev)) return;
+        this.setCameraLensChannel(deviceId, channel);
+        this.reconnectCameraLiveView();
+      });
     });
 
     this.host.root.querySelectorAll<HTMLElement>("[data-cameraquality]").forEach((btn) => {
@@ -972,6 +1279,8 @@ export class CameraLiveController {
         `isOn: ${dev.kind.isOn}`,
         `connectionMode: ${this.host.settings.connectionMode}`,
         `hasCustomURL: ${Boolean(this.cameraStreamURLs[dev.id])}`,
+        `hasManualIP: ${Boolean(this.cameraLocalIPs[dev.id])}`,
+        `channel: ${this.selectedCameraChannel(dev)}`,
         `error: ${redact(this.liveCameraError ?? "none")}`,
       ].join("\n");
       void navigator.clipboard?.writeText(report).catch(() => {});
@@ -982,6 +1291,45 @@ export class CameraLiveController {
     this.host.root.querySelector("#btn-save-camera-url")?.addEventListener("click", () => {
       void this.commitCameraStreamUrl();
     });
+
+    this.host.root.querySelector("#btn-save-camera-ip")?.addEventListener("click", () => {
+      this.commitCameraLocalIp();
+    });
+
+    const ipInput = this.host.root.querySelector<HTMLInputElement>("#camera-local-ip-input");
+    ipInput?.addEventListener("input", () => {
+      this.liveCameraDraftIp = ipInput.value;
+    });
+    ipInput?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        this.commitCameraLocalIp();
+      }
+    });
+
+    this.host.root.querySelectorAll<HTMLElement>("#btn-clear-camera-ip").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this.clearCameraLocalIp();
+      });
+    });
+  }
+
+  private rotateButtonTitle(rotation: CameraRotationDeg): string {
+    return rotation === 0
+      ? cameraTr("旋转画面 90°", "Rotate video 90°")
+      : cameraTr(`旋转画面 90°（当前 ${rotation}°）`, `Rotate video 90° (currently ${rotation}°)`);
+  }
+
+  private syncCameraRotateControl(): void {
+    const button = this.host.root.querySelector<HTMLElement>("#btn-rotate-camera-live");
+    if (!button) return;
+    const rotation = this.cameraRotation(this.activeLiveCameraId);
+    const label = this.rotateButtonTitle(rotation);
+    button.dataset.rotation = String(rotation);
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.setAttribute("aria-pressed", String(rotation !== 0));
+    button.classList.toggle("is-active", rotation !== 0);
   }
 
   private syncCameraMuteControl(): void {
@@ -993,7 +1341,84 @@ export class CameraLiveController {
     button.setAttribute("aria-label", label);
     button.setAttribute("aria-pressed", String(this.liveCameraMuted));
   }
+}
 
+function computeQuarterTurnScale(
+  el: HTMLImageElement | HTMLVideoElement,
+  stage: HTMLElement | null,
+): number {
+  const elW = el.clientWidth;
+  const elH = el.clientHeight;
+  const stageW = stage?.clientWidth ?? 0;
+  const stageH = stage?.clientHeight ?? 0;
+  if (elW > 0 && elH > 0) {
+    const boxW = stageW > 0 ? stageW : elW;
+    const boxH = stageH > 0 ? stageH : elH;
+    return Number(Math.min(boxW / elH, boxH / elW).toFixed(4));
+  }
+  const intrinsicW =
+    el.tagName === "VIDEO" ? (el as HTMLVideoElement).videoWidth : (el as HTMLImageElement).naturalWidth;
+  const intrinsicH =
+    el.tagName === "VIDEO" ? (el as HTMLVideoElement).videoHeight : (el as HTMLImageElement).naturalHeight;
+  if (intrinsicW > 0 && intrinsicH > 0) {
+    return Number(Math.min(intrinsicW / intrinsicH, intrinsicH / intrinsicW).toFixed(4));
+  }
+  return 0.5625;
+}
+
+function loadRawStorageMap(key: string): Record<string, unknown> {
+  try {
+    const raw = globalThis.localStorage?.getItem(key);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function savePersistedRecord(key: string, record: Readonly<Record<string, unknown>>): void {
+  try {
+    globalThis.localStorage?.setItem(key, JSON.stringify(record));
+  } catch {
+    // Ignore quota or sandboxed storage errors.
+  }
+}
+
+function loadPersistedCameraChannels(): Record<string, number> {
+  const raw = loadRawStorageMap(CameraLiveController.CAMERA_CHANNELS_STORAGE_KEY);
+  const out: Record<string, number> = {};
+  for (const [id, value] of Object.entries(raw)) {
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      out[id] = Math.trunc(value);
+    }
+  }
+  return out;
+}
+
+function loadPersistedCameraRotations(): Record<string, CameraRotationDeg> {
+  const raw = loadRawStorageMap(CameraLiveController.CAMERA_ROTATIONS_STORAGE_KEY);
+  const out: Record<string, CameraRotationDeg> = {};
+  for (const [id, value] of Object.entries(raw)) {
+    if (value === 0 || value === 90 || value === 180 || value === 270) {
+      out[id] = value;
+    }
+  }
+  return out;
+}
+
+function loadPersistedCameraLocalIPs(): Record<string, string> {
+  const raw = loadRawStorageMap(CameraLiveController.CAMERA_LOCAL_IPS_STORAGE_KEY);
+  const out: Record<string, string> = {};
+  for (const [id, value] of Object.entries(raw)) {
+    if (typeof value === "string") {
+      const valid = parsePrivateLanIpv4(value);
+      if (valid) out[id] = valid;
+    }
+  }
+  return out;
 }
 
 function liveFrameFailureText(err: unknown): string {
