@@ -1,5 +1,9 @@
 use super::*;
 
+#[path = "camera_stream.rs"]
+pub(crate) mod camera_stream;
+pub(crate) use camera_stream::*;
+
 #[tauri::command]
 pub(crate) async fn start_xiaomi_camera_bridge(
     app: AppHandle,
@@ -13,27 +17,21 @@ pub(crate) async fn start_xiaomi_camera_bridge(
     vendor: String,
     uid: Option<String>,
     quality: Option<String>,
+    channel: Option<u32>,
+    subdid: Option<String>,
 ) -> Result<String, String> {
     let _bridge_order = CAMERA_BRIDGE_LOCK.lock().await;
-    let cam_ip: std::net::Ipv4Addr = local_ip
-        .trim()
-        .parse()
-        .map_err(|_| format!("无效的局域网摄像机 IP：{local_ip}"))?;
-    if !cam_ip.is_private() && !cam_ip.is_loopback() {
-        return Err("仅允许局域网私有 IP 地址直连摄像机".to_string());
-    }
+    let cam_ip = parse_camera_lan_ip(&local_ip)?;
     let subtype = xiaomi_camera_subtype(quality.as_deref())?;
+    let channel = channel.unwrap_or(0);
 
     ensure_go2rtc_running(&app).await?;
     let session = current_go2rtc_session()?;
 
-    let clean_did: String = did
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-        .collect();
-    let raw_name = format!("cam_raw_{clean_did}");
-    let h264_name = format!("cam_h264_{clean_did}");
-    let mjpeg_name = format!("cam_mjpeg_{clean_did}");
+    let stream_key = camera_stream_key(&did, subdid.as_deref());
+    let (raw_name, h264_name, mjpeg_name) = camera_channel_stream_names(&stream_key, channel);
+    let stale_names = all_camera_stream_names(&stream_key, channel);
+    let stale_refs: Vec<&str> = stale_names.iter().map(String::as_str).collect();
 
     let http = reqwest::Client::builder()
         .no_proxy()
@@ -42,25 +40,24 @@ pub(crate) async fn start_xiaomi_camera_bridge(
         .map_err(|e| e.to_string())?;
 
     // A camera keeps exactly one P2P session, and the relay thread dies with its old port.
-    // Dropping the previous bridge first is what makes the second open work.
-    stop_bridge(&http, Some(&session), &clean_did, &[&raw_name, &h264_name, &mjpeg_name]).await;
+    // Dropping the previous bridge (across all lens channels) first is what makes lens switching
+    // and the second open work.
+    stop_bridge(&http, Some(&session), &stream_key, &stale_refs).await;
 
-    let relay_port = camera_relay_port(&clean_did, cam_ip)?;
-
-    let mut query = format!(
-        "client_public={}&client_private={}&device_public={}&sign={}&vendor={}&transport=udp&subtype={}&audio=0&model={}",
-        urlencoding_simple(&client_public),
-        urlencoding_simple(&client_private),
-        urlencoding_simple(&device_public),
-        urlencoding_simple(&sign),
-        urlencoding_simple(&vendor),
+    let relay_port = camera_relay_port(&stream_key, cam_ip)?;
+    let xiaomi_url = build_xiaomi_camera_url(
+        relay_port,
+        &client_public,
+        &client_private,
+        &device_public,
+        &sign,
+        &vendor,
         subtype,
-        urlencoding_simple(&model)
+        &model,
+        uid.as_deref(),
+        channel,
+        subdid.as_deref(),
     );
-    if let Some(u) = uid.as_deref().filter(|s| !s.is_empty()) {
-        query.push_str(&format!("&uid={}", urlencoding_simple(u)));
-    }
-    let xiaomi_url = format!("xiaomi://127.0.0.1:{relay_port}?{query}");
 
     put_stream(&http, &session, &raw_name, &xiaomi_url)
         .await
@@ -77,21 +74,6 @@ pub(crate) async fn start_xiaomi_camera_bridge(
     Ok(format!("{h264_name}|{mjpeg_name}"))
 }
 
-pub(crate) fn validate_hls_stream_url(hls_url: &str) -> Result<reqwest::Url, String> {
-    let trimmed = hls_url.trim();
-    if trimmed.contains('#') || trimmed.chars().any(|c| c.is_control() || c.is_whitespace()) {
-        return Err("HLS 流地址不能包含 # 片段或控制字符".to_string());
-    }
-    let parsed = reqwest::Url::parse(trimmed).map_err(|_| "无效的 HLS 流地址".to_string())?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err("HLS 流地址必须使用 http 或 https 协议".to_string());
-    }
-    if parsed.fragment().is_some() {
-        return Err("HLS 流地址不能包含 # 片段".to_string());
-    }
-    Ok(parsed)
-}
-
 #[tauri::command]
 pub(crate) async fn bridge_hls_camera_stream(
     app: AppHandle,
@@ -102,10 +84,7 @@ pub(crate) async fn bridge_hls_camera_stream(
     let parsed = validate_hls_stream_url(&hls_url)?;
     ensure_go2rtc_running(&app).await?;
     let session = current_go2rtc_session()?;
-    let clean_did: String = did
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-        .collect();
+    let clean_did = sanitize_camera_did(&did);
     let mjpeg_name = format!("cam_mjpeg_{clean_did}");
     let http = reqwest::Client::builder()
         .no_proxy()
@@ -138,14 +117,18 @@ pub(crate) async fn bridge_hls_camera_stream(
     Ok(mjpeg_name)
 }
 
-#[tauri::command]
 pub(crate) async fn stop_xiaomi_camera_bridge(did: String) -> Result<(), String> {
+    stop_xiaomi_camera_bridge_with_opts(did, 0, None).await
+}
+
+pub(crate) async fn stop_xiaomi_camera_bridge_with_opts(
+    did: String,
+    channel: u32,
+    subdid: Option<String>,
+) -> Result<(), String> {
     let _bridge_order = CAMERA_BRIDGE_LOCK.lock().await;
-    let clean_did: String = did
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-        .collect();
-    if clean_did.is_empty() {
+    let stream_key = camera_stream_key(&did, subdid.as_deref());
+    if stream_key.is_empty() {
         stop_all_mjpeg_streams();
     }
     let http = reqwest::Client::builder()
@@ -153,17 +136,10 @@ pub(crate) async fn stop_xiaomi_camera_bridge(did: String) -> Result<(), String>
         .timeout(Duration::from_secs(3))
         .build()
         .map_err(|e| e.to_string())?;
-    let raw_name = format!("cam_raw_{clean_did}");
-    let h264_name = format!("cam_h264_{clean_did}");
-    let mjpeg_name = format!("cam_mjpeg_{clean_did}");
+    let names = all_camera_stream_names(&stream_key, channel);
+    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
     let session = current_go2rtc_session().ok();
-    stop_bridge(
-        &http,
-        session.as_ref(),
-        &clean_did,
-        &[&raw_name, &h264_name, &mjpeg_name],
-    )
-    .await;
+    stop_bridge(&http, session.as_ref(), &stream_key, &name_refs).await;
     Ok(())
 }
 
@@ -370,18 +346,6 @@ pub(crate) fn camera_relay_port(clean_did: &str, cam_ip: std::net::Ipv4Addr) -> 
     Ok(port)
 }
 
-pub(crate) fn urlencoding_simple(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
-}
-
 const GO2RTC_DOWNLOAD_URL: &str =
     "https://github.com/AlexxIT/go2rtc/releases/download/v1.9.15/go2rtc_win64.zip";
 const GO2RTC_DOWNLOAD_SHA256: &str =
@@ -395,18 +359,6 @@ pub(crate) const GO2RTC_EXE_SHA256: &str =
 pub(crate) const CAMERA_COMPONENT_DIR: &str = "camera-bin";
 const CAMERA_MANUAL_BIN_HINT: &str =
     "或手动下载 go2rtc v1.9.15 的 go2rtc_win64.zip（必须是这个版本，其他版本校验不通过），解压后把 go2rtc.exe 放到 %LOCALAPPDATA%\\MenuBarMijia\\bin\\";
-
-/// go2rtc `subtype` for a Xiaomi MISS stream (#97). `max` is numeric subtype 3, which
-/// several 4K models require; `None` keeps the historical `hd` default.
-pub(crate) fn xiaomi_camera_subtype(quality: Option<&str>) -> Result<&'static str, String> {
-    match quality.unwrap_or("hd") {
-        "auto" => Ok("auto"),
-        "sd" => Ok("sd"),
-        "hd" => Ok("hd"),
-        "max" => Ok("3"),
-        other => Err(format!("不支持的摄像机画质：{other}")),
-    }
-}
 
 pub(crate) fn bundled_component_source(
     resource_dir: &std::path::Path,
@@ -1243,14 +1195,6 @@ pub(crate) async fn go2rtc_endpoint(app: AppHandle) -> Result<Go2RtcEndpoint, St
         return Err("本地流媒体地址无效".to_string());
     }
     Ok(Go2RtcEndpoint { origin })
-}
-
-pub(crate) fn is_go2rtc_stream_name(src: &str) -> bool {
-    !src.is_empty()
-        && src.len() <= 128
-        && src
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 #[cfg(test)]

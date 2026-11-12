@@ -79,8 +79,21 @@ check_secret_leaks() {
         windows/tests
         raycast/src
     )
-    if search_matches 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}' "${scan_dirs[@]}"; then
+    # 缺失的目录（稀疏检出、只拉一端）让 rg/grep 退出 2，`if search_matches` 会把它当成「没匹配」而放过真泄漏；
+    # 只扫存在的目录，并把退出码 1 以外的失败当作扫描本身出错。
+    local existing_dirs=() dir
+    for dir in "${scan_dirs[@]}"; do
+        [ -d "$dir" ] && existing_dirs+=("$dir")
+    done
+    scan_dirs=("${existing_dirs[@]}")
+
+    local jwt_status=0
+    search_matches 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}' "${scan_dirs[@]}" || jwt_status=$?
+    if [ "$jwt_status" -eq 0 ]; then
         echo "❌ 检测到疑似 JWT Token，请移除后再提交！"
+        return 1
+    elif [ "$jwt_status" -ne 1 ]; then
+        echo "❌ JWT 扫描本身失败（退出码 ${jwt_status}），无法确认没有泄漏！"
         return 1
     fi
 

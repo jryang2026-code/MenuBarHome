@@ -14,7 +14,7 @@ MenuBarMijia 处理的是住家设备清单、家庭房间、米家与 Home Assi
 
 现状有三个可以核实的事实：
 
-- 两个客户端都没有任何第三方统计或崩溃 SDK，也没有自建上报端点。仓库依赖只有 SwiftPM 与 npm 常规库，`scripts/check.sh` 的密钥扫描同样覆盖新增依赖。
+- 两个客户端都没有任何第三方统计或崩溃 SDK，也没有自建上报端点。仓库依赖只有 SwiftPM 与 npm 常规库，`scripts/check.sh` 的密钥扫描覆盖双端源码与测试目录，跳过 `node_modules` / `target` / `dist` 里的第三方依赖与构建产物。
 - 「复制诊断信息」（#45）已经是结构脱敏：`DiagnosticsReportBuilder.Input` 只接受版本、系统、后端、型号与未识别设备，设备 ID、令牌、服务器地址与账号信息在类型层面就进不了报告；`AppSupportDiagnosticsTests.diagnosticsMarkdown` 断言原始 `did` 不出现在输出里。
 - `Tests/Fixtures/miot_coverage_golden.json` 把「一份真实 MIoT 规格能合成到什么程度」逐型号钉死，`MiotCoverageBaselineTests` 与 `windows/tests/miotCoverage.test.ts` 两端断言。规格覆盖率在本地可测，不依赖任何使用数据。
 

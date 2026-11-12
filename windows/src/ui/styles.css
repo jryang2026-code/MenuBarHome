@@ -2065,6 +2065,126 @@ button.cc-footer-label.is-action {
   padding-bottom: 2px;
 }
 
+.cc-camera-stage {
+  position: relative;
+  overflow: hidden;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.cc-camera-stage > img,
+.cc-camera-stage > video {
+  display: block;
+  transform-origin: center center;
+  transition: transform 160ms var(--ease-out-quart);
+}
+
+.cc-rotate-btn {
+  width: auto;
+  min-width: 28px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.cc-rotate-btn.is-active {
+  background: var(--apple-blue);
+  color: #ffffff;
+}
+
+.cc-camera-switcher {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+
+.cc-camera-switcher::-webkit-scrollbar {
+  display: none;
+}
+
+.cc-camera-switch-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  max-width: 150px;
+}
+
+.cc-camera-switch-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cc-camera-switch-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.cc-camera-switch-dot.is-online {
+  background: #34c759;
+}
+
+.cc-camera-switch-pill.is-active .cc-camera-switch-dot.is-online {
+  background: #a7f3d0;
+}
+
+.cc-camera-ip-box {
+  margin-top: 10px;
+  padding: 9px 10px;
+  border-radius: var(--r-card);
+  background: rgba(255, 255, 255, 0.045);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+}
+
+.cc-camera-ip-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.cc-camera-ip-row .cc-input {
+  flex: 1;
+  min-width: 140px;
+}
+
+.cc-camera-ip-error {
+  color: #ff6b6b;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.cc-popover.scheme-light .cc-camera-ip-box {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.cc-popover.scheme-light .cc-camera-switch-dot {
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.cc-popover.scheme-light .cc-camera-switch-dot.is-online {
+  background: #28a745;
+}
+
+.cc-popover.scheme-light .cc-rotate-btn.is-active {
+  background: var(--apple-blue);
+  color: #ffffff;
+}
+
 .cc-sheet-badge {
   font-size: 10.5px;
   font-weight: 600;

@@ -19,6 +19,7 @@ import {
   type MiRoom,
   type MiotPropKey,
 } from "./client.js";
+import { attachCameraGateway } from "./cameraHubs.js";
 import { cameraLensesFor } from "./cameraLens.js";
 import {
   hvacModeFromDescription,
@@ -838,7 +839,7 @@ export const MiotSynthesizer = {
 
         const kind =
           record.isOnline || built.kind !== "sensor" || !built.statusText || !AFFIRMATIVE_LOCK_STATUS.has(built.statusText)
-            ? built
+            ? attachCameraGateway(built, record, devices, rooms)
             : { ...built, statusText: "锁状态未知" };
         const smartDevice: SmartDevice = {
           id: plan.id,
@@ -1656,16 +1657,10 @@ export const MiotSynthesizer = {
       const motionSvc = spec.services.find((s) => miotShortName(s.type) === "motion-detection");
       const motion = motionSvc ? readProp(motionSvc, "motion-detection") : null;
       const streamSvc = spec.services.find(
-        (s) =>
-          miotShortName(s.type) === "camera-stream-for-google-home" &&
-          s.actions.some((a) => miotShortName(a.type) === "start-hls-stream")
+        (s) => miotShortName(s.type) === "camera-stream-for-google-home" && s.actions.some((a) => miotShortName(a.type) === "start-hls-stream")
       );
       const nightVal = typeof nightShot?.val === "number" ? Math.trunc(nightShot.val) : null;
-      const currentNightShot =
-        nightVal !== null
-          ? (nightShot?.prop.valueList?.find((i) => i.value === nightVal)?.description ?? null)
-          : null;
-
+      const currentNightShot = nightVal !== null ? (nightShot?.prop.valueList?.find((i) => i.value === nightVal)?.description ?? null) : null;
       const onWritable = exposesWrite(on?.prop.access);
       const lenses = cameraLensesFor(model, name);
       return {
