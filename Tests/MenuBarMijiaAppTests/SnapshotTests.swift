@@ -62,6 +62,64 @@ struct SnapshotTests {
         }
     }
 
+    @Test("Liquid Glass Types view renders single-device categories directly without a section header")
+    func panelTypesGroupingSnapshot() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        UserDefaults.standard.set(PanelGrouping.kind.rawValue, forKey: PanelGrouping.storageKey)
+        // Pin two compact favorites so both single-device categories (TV = 1) and multi-device
+        // category stacks (Lights = 2, AC = 3, Plugs = 3) fit inside the 560 pt frame.
+        let favorites = ["demo_living_light", "demo_living_plug"]
+        fixture.store.favoriteDeviceIds = Set(favorites)
+        fixture.store.favoriteOrder = favorites
+        fixture.store.hasCompletedOnboarding = true
+        fixture.store.dismissLaunchAtLoginSuggestion()
+
+        assertRendered(
+            snapshotReady(themedPanel(.liquidGlass, store: fixture.store)),
+            size: CGSize(width: 376, height: 560),
+            named: themedName(.liquidGlass, "panel-types-zh-light")
+        )
+    }
+
+    @Test("Liquid Glass conditional grouping states: room cut auto-open, cut-only clear pill, and sole-favorites home", arguments: [
+        ("room-cut", "panel-room-cut-zh-light"),
+        ("single-unpinned-cut", "panel-single-unpinned-cut-zh-light"),
+        ("sole-favorites", "panel-sole-favorites-zh-light"),
+    ])
+    func panelConditionalGroupingSnapshots(variant: String, snapshotName: String) async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        fixture.store.hasCompletedOnboarding = true
+        fixture.store.dismissLaunchAtLoginSuggestion()
+
+        switch variant {
+        case "room-cut":
+            // Study has 4 non-favorite devices: `[按房间 | 按类型] [书房 ×]` shows and Study auto-opens headerless.
+            #expect(fixture.store.selectRoom("study"))
+        case "single-unpinned-cut":
+            // Living room has 4 favorites + 1 unpinned sensor: segments hide, leaving `[客厅 ×]` + headerless sensor.
+            #expect(fixture.store.selectRoom("living_room"))
+        case "sole-favorites":
+            // Every visible device is in Favorites (`totalStacks == 1`): both grouping bar and `"常用"` header hide.
+            let allIds = fixture.store.visibleDevices.map(\.id)
+            fixture.store.favoriteDeviceIds = Set(allIds)
+            fixture.store.favoriteOrder = allIds
+        default:
+            break
+        }
+
+        assertRendered(
+            snapshotReady(themedPanel(.liquidGlass, store: fixture.store)),
+            size: CGSize(width: 376, height: 560),
+            named: themedName(.liquidGlass, snapshotName)
+        )
+    }
+
     @Test("A panel with no configured source names that instead of connected")
     func panelNoSourceSnapshot() async throws {
         let fixture = try await SnapshotFixture(configuredHASource: false)
@@ -1905,6 +1963,10 @@ struct SnapshotFixture {
     private let previousTemperatureUnit: String?
     private let previousRoomOrder: String?
     private let previousRoomAliases: String?
+    private let previousKindOrder: String?
+    private let previousPanelGrouping: String?
+    private let previousGroups: String?
+    private let previousAliases: String?
     private let previousPanelTheme: String?
     private let previousPanelHeight: String?
 
@@ -1927,6 +1989,10 @@ struct SnapshotFixture {
         // clearing without restoring would wipe a developer's own room layout on every test run.
         previousRoomOrder = UserDefaults.standard.string(forKey: RoomPrefs.orderKey)
         previousRoomAliases = UserDefaults.standard.string(forKey: RoomPrefs.aliasesKey)
+        previousKindOrder = UserDefaults.standard.string(forKey: KindOrderPrefs.orderKey)
+        previousPanelGrouping = UserDefaults.standard.string(forKey: PanelGrouping.storageKey)
+        previousGroups = UserDefaults.standard.string(forKey: GroupPrefs.groupsKey)
+        previousAliases = UserDefaults.standard.string(forKey: GroupPrefs.aliasesKey)
         // Panel theme and height are real preferences too. Every render pins them so a developer's
         // own panel choice cannot leak into a baseline, and `restore()` puts them back.
         previousPanelTheme = UserDefaults.standard.string(forKey: PanelTheme.storageKey)
@@ -1935,8 +2001,12 @@ struct SnapshotFixture {
         UserDefaults.standard.set(TemperatureUnitPreference.celsius.rawValue, forKey: TemperatureUnitPreference.storageKey)
         UserDefaults.standard.set(PanelTheme.classic.rawValue, forKey: PanelTheme.storageKey)
         UserDefaults.standard.set(PanelHeight.standard.rawValue, forKey: PanelHeight.storageKey)
+        UserDefaults.standard.set(PanelGrouping.room.rawValue, forKey: PanelGrouping.storageKey)
         UserDefaults.standard.removeObject(forKey: RoomPrefs.orderKey)
         UserDefaults.standard.removeObject(forKey: RoomPrefs.aliasesKey)
+        UserDefaults.standard.removeObject(forKey: KindOrderPrefs.orderKey)
+        UserDefaults.standard.removeObject(forKey: GroupPrefs.groupsKey)
+        UserDefaults.standard.removeObject(forKey: GroupPrefs.aliasesKey)
         // The session state is a process-wide observable: a previous test's draft must not leak in.
         #if DEBUG
         LayoutUIState.shared.resetForTesting()
@@ -2070,6 +2140,26 @@ struct SnapshotFixture {
             UserDefaults.standard.set(previousRoomAliases, forKey: RoomPrefs.aliasesKey)
         } else {
             UserDefaults.standard.removeObject(forKey: RoomPrefs.aliasesKey)
+        }
+        if let previousKindOrder {
+            UserDefaults.standard.set(previousKindOrder, forKey: KindOrderPrefs.orderKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: KindOrderPrefs.orderKey)
+        }
+        if let previousPanelGrouping {
+            UserDefaults.standard.set(previousPanelGrouping, forKey: PanelGrouping.storageKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: PanelGrouping.storageKey)
+        }
+        if let previousGroups {
+            UserDefaults.standard.set(previousGroups, forKey: GroupPrefs.groupsKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: GroupPrefs.groupsKey)
+        }
+        if let previousAliases {
+            UserDefaults.standard.set(previousAliases, forKey: GroupPrefs.aliasesKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: GroupPrefs.aliasesKey)
         }
         // The panel theme and height are the developer's real preferences as well.
         if let previousPanelTheme {

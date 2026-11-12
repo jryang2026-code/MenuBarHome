@@ -286,7 +286,7 @@ public struct ControlCenterPanel: View {
                         .padding(.horizontal, Self.columnInset)
                         .padding(.bottom, 12)
                         .transition(.opacity)
-                } else {
+                } else if showsGroupingBar {
                     groupingBar
                         .padding(.horizontal, Self.columnInset)
                         .padding(.bottom, 12)
@@ -392,7 +392,7 @@ public struct ControlCenterPanel: View {
                         emptyStateView
                     } else {
                         ForEach(stacks) { stack in
-                            stackView(stack, quickIndexMap: quickIndexBadges)
+                            stackView(stack, totalStacks: stacks.count, quickIndexMap: quickIndexBadges)
                                 .transition(.opacity)
                         }
                     }

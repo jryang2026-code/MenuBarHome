@@ -176,8 +176,12 @@ struct SensorCardView: View {
                         .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                         .foregroundStyle(fg)
                         .lineLimit(1)
-                    if showRoomBadge {
-                        Text(L10n.displayRoomName(device.roomName))
+                    if let room = DeviceRoomBadge.label(
+                        roomName: device.roomName,
+                        title: displayName,
+                        showRoomBadge: showRoomBadge
+                    ) {
+                        Text(room)
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                             .foregroundStyle(muted)
                     }
