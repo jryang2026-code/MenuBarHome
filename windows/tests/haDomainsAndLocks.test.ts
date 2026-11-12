@@ -1026,6 +1026,20 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
     );
     assert.equal(isOptimisticallyLocked(app, "humidifier-full"), false);
 
+    // Replacing or closing the owning Window cancels delayed read-backs so earlier hosts never
+    // invoke `ha_snapshot` or overwrite `localStorage` on a subsequent window.
+    let staleSnapshotCalls = 0;
+    const crossWindowTicket = scheduleDelayedReadBack(app, "humidifier-full", 25, () => {
+      staleSnapshotCalls += 1;
+    });
+    assert.equal(crossWindowTicket.isCancelled(), false);
+    const previousDom = activeDom;
+    activeDom = mountTestWindow({ stubInterval: true });
+    await closeTestWindow(previousDom!);
+    assert.equal(crossWindowTicket.isCancelled(), true);
+    await new Promise((resolveTimer) => setTimeout(resolveTimer, 50));
+    assert.equal(staleSnapshotCalls, 0);
+
     cancelDelayedReadBack(app);
   });
 });

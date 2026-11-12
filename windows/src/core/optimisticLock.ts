@@ -4,13 +4,43 @@ import type { CoverSpec, DeviceCommand, FacetControl, SmartDevice } from "./mode
 export const OPTIMISTIC_LOCK_DURATION_MS = 3_000;
 export const READ_BACK_DELAY_MS = 800;
 
+export interface OptimisticLockWindowLike {
+  readonly closed?: boolean;
+  setTimeout?: (handler: () => void, timeout?: number) => number | ReturnType<typeof setTimeout>;
+  clearTimeout?: (id: number | undefined) => void;
+}
+
+export interface OptimisticLockRootLike {
+  readonly isConnected?: boolean;
+  readonly ownerDocument?: {
+    readonly defaultView?: OptimisticLockWindowLike | null;
+  } | null;
+}
+
 export interface OptimisticLockHost {
   readonly sourceRevision: number;
   readonly devices: readonly SmartDevice[];
   readonly deviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   readonly settings?: { readonly connectionMode?: string };
-  readonly root?: { readonly isConnected?: boolean };
+  readonly root?: OptimisticLockRootLike;
   refreshDevices?: (silent?: boolean) => Promise<void>;
+}
+
+export function isHostAttachedToActiveWindow(host: OptimisticLockHost): boolean {
+  const root = host.root;
+  if (!root) return true;
+  if (root.isConnected === false) return false;
+  if (root.ownerDocument !== undefined) {
+    const doc = root.ownerDocument;
+    if (!doc) return false;
+    const win = doc.defaultView;
+    if (!win || win.closed === true) return false;
+    const activeDoc = (globalThis as { document?: unknown }).document;
+    if (activeDoc !== undefined && activeDoc !== doc) return false;
+    const activeWin = (globalThis as { window?: unknown }).window;
+    if (activeWin !== undefined && activeWin !== win) return false;
+  }
+  return true;
 }
 
 export interface ReadBackTicket {
@@ -31,7 +61,7 @@ interface DeviceLockEntry {
 
 interface PendingTicketEntry {
   readonly ticketId: number;
-  readonly timer: ReturnType<typeof setTimeout>;
+  readonly timer: unknown;
   readonly cancel: () => void;
 }
 
@@ -469,20 +499,29 @@ export function scheduleDelayedReadBack(
 
   const ticketId = ++state.nextTicketId;
   const capturedRevision = host.sourceRevision;
+  const ownerWin = host.root?.ownerDocument?.defaultView ?? null;
+  const useOwnerWinTimers =
+    ownerWin !== null &&
+    typeof ownerWin.setTimeout === "function" &&
+    typeof ownerWin.clearTimeout === "function";
   let cancelled = false;
 
   const cancel = () => {
     if (cancelled) return;
     cancelled = true;
-    globalThis.clearTimeout(timer);
+    if (useOwnerWinTimers) {
+      ownerWin.clearTimeout!(timer as number | undefined);
+    } else {
+      globalThis.clearTimeout(timer as ReturnType<typeof setTimeout>);
+    }
     if (state.activeTickets.get(deviceId)?.ticketId === ticketId) {
       state.activeTickets.delete(deviceId);
     }
   };
 
-  const timer = globalThis.setTimeout(() => {
+  const runReadBack = () => {
     if (cancelled) return;
-    if (host.sourceRevision !== capturedRevision) {
+    if (host.sourceRevision !== capturedRevision || !isHostAttachedToActiveWindow(host)) {
       cancel();
       return;
     }
@@ -490,7 +529,6 @@ export function scheduleDelayedReadBack(
     if (!current || current.ticketId !== ticketId) return;
     state.activeTickets.delete(deviceId);
     if (host.settings?.connectionMode === "demo") return;
-    if (host.root && host.root.isConnected === false) return;
     if (onReadBack) {
       void Promise.resolve(onReadBack()).catch(() => {});
       return;
@@ -498,9 +536,13 @@ export function scheduleDelayedReadBack(
     if (typeof host.refreshDevices === "function") {
       void host.refreshDevices(true).catch(() => {});
     }
-  }, delayMs);
+  };
 
-  (timer as unknown as { unref?: () => void })?.unref?.();
+  const timer = useOwnerWinTimers
+    ? ownerWin.setTimeout!(runReadBack, delayMs)
+    : globalThis.setTimeout(runReadBack, delayMs);
+
+  (timer as { unref?: () => void } | null)?.unref?.();
 
   state.activeTickets.set(deviceId, { ticketId, timer, cancel });
 
@@ -508,7 +550,8 @@ export function scheduleDelayedReadBack(
     ticketId,
     deviceId,
     sourceRevision: capturedRevision,
-    isCancelled: () => cancelled || host.sourceRevision !== capturedRevision,
+    isCancelled: () =>
+      cancelled || host.sourceRevision !== capturedRevision || !isHostAttachedToActiveWindow(host),
     cancel,
   };
 }
