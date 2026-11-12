@@ -2,6 +2,8 @@
 
 mod home_assistant;
 mod camera;
+mod companion;
+mod desktop_shell;
 mod job_object;
 mod backdrop;
 mod credentials;
@@ -11,7 +13,9 @@ mod update;
 mod window;
 mod update_manifest;
 use camera::*;
+use companion::*;
 use credentials::*;
+use desktop_shell::*;
 use home_assistant::{ha_execute, ha_snapshot};
 use network::*;
 use placement::{
@@ -53,6 +57,7 @@ struct TrayAndHotkeyState {
     active_shortcut: Option<Shortcut>,
     shortcut_label: Option<String>,
     update_version: Option<String>,
+    live_summary: Option<String>,
 }
 
 static TRAY_AND_HOTKEY_STATE: LazyLock<RwLock<TrayAndHotkeyState>> = LazyLock::new(|| {
@@ -60,6 +65,7 @@ static TRAY_AND_HOTKEY_STATE: LazyLock<RwLock<TrayAndHotkeyState>> = LazyLock::n
         active_shortcut: None,
         shortcut_label: Some("Alt+M".to_string()),
         update_version: None,
+        live_summary: None,
     })
 });
 
@@ -154,7 +160,11 @@ fn refresh_tray_chrome(app: &AppHandle, shortcut_label: Option<&str>, update_ver
     let Some(tray) = app.tray_by_id("main-tray") else {
         return;
     };
-    let (_, tooltip) = tray_labels_for_shortcut(shortcut_label);
+    let live_summary = TRAY_AND_HOTKEY_STATE
+        .read()
+        .ok()
+        .and_then(|guard| guard.live_summary.clone());
+    let tooltip = format_tray_tooltip(shortcut_label, live_summary.as_deref());
     let _ = tray.set_tooltip(Some(tooltip));
     if let Ok(menu) = build_tray_menu(app, shortcut_label, update_version) {
         let _ = tray.set_menu(Some(menu));
@@ -216,6 +226,7 @@ fn set_global_shortcut(app: AppHandle, enabled: bool, shortcut: String) -> Resul
 }
 
 fn main() {
+    try_forward_startup_url_and_exit();
     let default_shortcut = Shortcut::new(Some(Modifiers::ALT), Code::KeyM);
     if let Ok(mut guard) = TRAY_AND_HOTKEY_STATE.write() {
         guard.active_shortcut = Some(default_shortcut);
@@ -259,6 +270,15 @@ fn main() {
             start_panel_drag,
             set_update_available,
             set_global_shortcut,
+            set_launch_at_login,
+            is_workstation_locked,
+            set_tray_tooltip,
+            write_raycast_snapshot,
+            remove_raycast_snapshot,
+            drain_pending_open_urls,
+            show_panel_for_url,
+            register_url_scheme,
+            unregister_url_scheme,
             open_release_page,
             install_update,
             start_xiaomi_camera_bridge,
@@ -269,6 +289,7 @@ fn main() {
         ])
         .setup(move |app| {
             sweep_stale_update_installers();
+            start_companion_runtime(app.handle().clone());
             if let Some(path) = authorization_store_path() {
                 if let Ok(mut guard) = EXTRA_ALLOWED_ORIGINS.write() {
                     *guard = read_origin_store(&path);
@@ -321,6 +342,7 @@ fn main() {
                         }
                     }
                     "quit" => {
+                        shutdown_companion_runtime();
                         shutdown_camera_daemons();
                         app.exit(0);
                     }
@@ -349,6 +371,7 @@ fn main() {
         .expect("error while building MenuBarHome Windows application")
         .run(|_app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                shutdown_companion_runtime();
                 shutdown_camera_daemons();
             }
         });

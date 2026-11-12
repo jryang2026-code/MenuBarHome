@@ -488,6 +488,46 @@ class MijiaCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("客厅吸顶灯", out.getvalue())
 
+    def test_snapshot_path_resolves_windows_localappdata_and_fallback(self) -> None:
+        win_local = Path("/tmp/win-localappdata")
+        self.assertEqual(
+            mijia.snapshot_path(env={"LOCALAPPDATA": str(win_local)}, platform="win32"),
+            win_local / "MenuBarMijia" / "raycast-snapshot.json",
+        )
+        fake_home = Path("/Users/alice")
+        self.assertEqual(
+            mijia.snapshot_path(env={}, platform="win32", home=fake_home),
+            fake_home / "AppData" / "Local" / "MenuBarMijia" / "raycast-snapshot.json",
+        )
+        self.assertEqual(
+            mijia.snapshot_path(env={}, platform="darwin", home=fake_home),
+            fake_home / "Library" / "Application Support" / "MenuBarMijia" / "raycast-snapshot.json",
+        )
+
+    def test_open_url_uses_os_startfile_on_win32_and_wraps_oserror(self) -> None:
+        from unittest import mock
+
+        started: list[str] = []
+        with (
+            mock.patch.object(mijia.sys, "platform", "win32"),
+            mock.patch.object(mijia.os, "startfile", side_effect=started.append, create=True),
+        ):
+            mijia.open_url("menumijia://toggle?device=dev_study_lamp")
+        self.assertEqual(started, ["menumijia://toggle?device=dev_study_lamp"])
+
+        with (
+            mock.patch.object(mijia.sys, "platform", "win32"),
+            mock.patch.object(
+                mijia.os,
+                "startfile",
+                side_effect=OSError("protocol handler missing"),
+                create=True,
+            ),
+        ):
+            with self.assertRaises(mijia.CliError) as ctx:
+                mijia.open_url("menumijia://toggle?device=dev_study_lamp")
+        self.assertIn("系统没能打开 menumijia:// 链接", str(ctx.exception))
+
     def test_build_url_escapes_spaces_and_keeps_the_token_last(self) -> None:
         url = mijia.build_url("ask", [("text", "开 灯")], TOKEN, "req1")
         self.assertEqual(url, f"menumijia://ask?text=%E5%BC%80%20%E7%81%AF&id=req1&token={TOKEN}")

@@ -1,13 +1,44 @@
+import {
+  onOpenURL,
+  type AppURLCommandHost,
+  type BuiltInURLSceneId,
+} from "../core/appUrlCommand.js";
 import { speechLocale, t } from "../core/i18n.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
-import type { SmartDevice } from "../core/models.js";
+import { allOffTargets, type SmartDevice } from "../core/models.js";
 import { planQuickAction, trText, type QuickActionId } from "../core/quickActions.js";
+import {
+  RaycastBridgeTokenManager,
+  buildRaycastSnapshot,
+  formatDynamicTraySummary,
+  type RaycastCommandFeedback,
+  type RaycastSnapshot,
+} from "../core/raycastSnapshot.js";
 import { undoBannerMs, undoDeviceCount, type MenuMijiaWindowsApp } from "./app.js";
-import type { SpeechRecognitionInstance, UndoAction, UndoStep } from "./appTypes.js";
+import type {
+  PersistedSettings,
+  SpeechRecognitionInstance,
+  UndoAction,
+  UndoStep,
+} from "./appTypes.js";
 import { foldGrouped } from "./cloudRefresh.js";
 import { recordHabits } from "./intentExecution.js";
 import { filterByListCut } from "./listCut.js";
 import { invokeTauriVoid } from "./transport.js";
+
+export interface UpdateDownloadProgress {
+  readonly downloadedBytes: number;
+  readonly totalBytes: number;
+  readonly bytesPerSec: number;
+}
+
+interface PendingUrlConfirmationEntry {
+  readonly description: string;
+  readonly commandLabel: string;
+  readonly requestId?: string;
+  readonly sourceRevision: number;
+  readonly resolve: (approved: boolean) => void;
+}
 
 interface UndoHoverPauseSnapshot {
   readonly action: UndoAction;
@@ -22,10 +53,45 @@ interface HostRuntimeGuardState {
   pointerInsideBanner: boolean;
   hoverPause: UndoHoverPauseSnapshot | null;
   lastMiExpiryKind: "valid" | "expiringSoon" | "expired";
+  bridgeTokens: RaycastBridgeTokenManager;
+  snapshotExportTimer: number | null;
+  lastExportedComparableJson: string | null;
+  lastCommandFeedback: RaycastCommandFeedback | undefined;
+  lastTraySummary: string | null | undefined;
+  pendingUrlConfirmation: PendingUrlConfirmationEntry | null;
+  urlQueue: Array<{ readonly url: string; readonly done: () => void }>;
+  isDrainingUrlQueue: boolean;
+  lockBlockCount: number;
 }
 
 const runtimeStateByHost = new WeakMap<MenuMijiaWindowsApp, HostRuntimeGuardState>();
 const undoKindSnapshots = new WeakMap<UndoAction, ReadonlyMap<string, SmartDevice["kind"]>>();
+const updateProgressBySettings = new WeakMap<PersistedSettings, UpdateDownloadProgress>();
+
+let scheduledTimerTickDepth = 0;
+
+export function runWithScheduledTimerTickExemption<T>(fn: () => T): T {
+  scheduledTimerTickDepth += 1;
+  try {
+    return fn();
+  } finally {
+    scheduledTimerTickDepth = Math.max(0, scheduledTimerTickDepth - 1);
+  }
+}
+
+export function isInsideScheduledTimerTick(): boolean {
+  return scheduledTimerTickDepth > 0;
+}
+
+export function getUpdateProgressForSettings(
+  settings: PersistedSettings,
+): UpdateDownloadProgress | null {
+  return updateProgressBySettings.get(settings) ?? null;
+}
+
+export function clearUpdateProgress(host: MenuMijiaWindowsApp): void {
+  updateProgressBySettings.delete(host.settings);
+}
 
 function hostState(host: MenuMijiaWindowsApp): HostRuntimeGuardState {
   let state = runtimeStateByHost.get(host);
@@ -37,10 +103,23 @@ function hostState(host: MenuMijiaWindowsApp): HostRuntimeGuardState {
       pointerInsideBanner: false,
       hoverPause: null,
       lastMiExpiryKind: "valid",
+      bridgeTokens: new RaycastBridgeTokenManager(),
+      snapshotExportTimer: null,
+      lastExportedComparableJson: null,
+      lastCommandFeedback: undefined,
+      lastTraySummary: undefined,
+      pendingUrlConfirmation: null,
+      urlQueue: [],
+      isDrainingUrlQueue: false,
+      lockBlockCount: 0,
     };
     runtimeStateByHost.set(host, state);
   }
   return state;
+}
+
+export function hasPendingUrlConfirmation(host: MenuMijiaWindowsApp): boolean {
+  return hostState(host).pendingUrlConfirmation !== null;
 }
 
 export function shouldKeepPopoverPinned(host: MenuMijiaWindowsApp): boolean {
@@ -49,6 +128,7 @@ export function shouldKeepPopoverPinned(host: MenuMijiaWindowsApp): boolean {
     host.activeSheet !== "none" ||
     host.isEditingLayout ||
     host.prompt !== null ||
+    hasPendingUrlConfirmation(host) ||
     host.isListeningVoice ||
     (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden)
   );
@@ -144,6 +224,11 @@ export function clearUndoHoverPause(host: MenuMijiaWindowsApp): void {
   if (state.undoBannerTimer !== null) {
     window.clearTimeout(state.undoBannerTimer);
     state.undoBannerTimer = null;
+  }
+  if (state.pendingUrlConfirmation !== null) {
+    const pending = state.pendingUrlConfirmation;
+    state.pendingUrlConfirmation = null;
+    pending.resolve(false);
   }
 }
 
@@ -266,6 +351,9 @@ export function reconcileUndoBannerHoverAfterRender(host: MenuMijiaWindowsApp): 
   if ((state.pointerInsideBanner || state.hoverPause !== null) && !host.root.querySelector(".cc-live-banner")) {
     resumeUndoHoverPause(host);
   }
+  bindUrlConfirmationEventsAfterRender(host);
+  syncDynamicTrayTooltip(host);
+  scheduleRaycastSnapshotExport(host);
 }
 
 function asElement(node: EventTarget | null | undefined): Element | null {
@@ -318,6 +406,7 @@ export function bindUndoBannerHoverGuard(host: MenuMijiaWindowsApp): void {
     (event) => {
       const target = asElement(event.target);
       if (target?.closest("#btn-hide-panel")) {
+        dismissPendingUrlConfirmation(host, false);
         resumeUndoHoverPause(host);
       }
     },
@@ -326,9 +415,11 @@ export function bindUndoBannerHoverGuard(host: MenuMijiaWindowsApp): void {
   window.addEventListener("blur", () => resumeUndoHoverPause(host));
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
+      dismissPendingUrlConfirmation(host, false);
       resumeUndoHoverPause(host);
     }
   });
+  bindCompanionAndUpdaterEvents(host);
 }
 
 export const MI_SIGNOUT_PENDING_KEY = "menumijia.windows.miSignOutPending.v1";
@@ -396,6 +487,7 @@ export async function executeBuiltInQuickAction(
   host: MenuMijiaWindowsApp,
   actionId: QuickActionId,
 ): Promise<void> {
+  if (await rejectIfControlBlockedWhileLocked(host)) return;
   const sourceRevision = host.sourceRevision;
   const planned = planQuickAction(actionId, quickActionScopeDevices(host), host.lastManuallyUsedLightId);
 
@@ -491,4 +583,475 @@ export async function executeBuiltInQuickAction(
           source: t("0ms 本地直达"),
         };
   host.render();
+}
+
+export async function isControlBlockedWhileLocked(host: MenuMijiaWindowsApp): Promise<boolean> {
+  if (!host.settings.blockControlWhileLocked) return false;
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (!invoke) return false;
+  try {
+    return Boolean(await invoke<boolean>("is_workstation_locked"));
+  } catch {
+    return false;
+  }
+}
+
+export async function rejectIfControlBlockedWhileLocked(
+  host: MenuMijiaWindowsApp,
+): Promise<boolean> {
+  if (!(await isControlBlockedWhileLocked(host))) return false;
+  hostState(host).lockBlockCount += 1;
+  host.replyBanner = {
+    text: t("屏幕已锁定，已拦截设备控制指令"),
+    source: t("锁屏保护"),
+    isError: true,
+  };
+  host.render();
+  return true;
+}
+
+export async function runScheduledCommandWithLockGuard(
+  host: MenuMijiaWindowsApp,
+  item: import("../core/models.js").ScheduledCommand,
+  runner: () => Promise<void>,
+): Promise<void> {
+  const state = hostState(host);
+  const exempt = isInsideScheduledTimerTick();
+  const beforeBlockedCount = state.lockBlockCount;
+  await runner();
+  if (!exempt && state.lockBlockCount > beforeBlockedCount) {
+    if (!host.missedScheduledCommands.some((entry) => entry.id === item.id)) {
+      host.missedScheduledCommands = [...host.missedScheduledCommands, item];
+      host.scheduledCommandStore.persist();
+      host.render();
+    }
+  }
+}
+
+export function dismissPendingUrlConfirmation(
+  host: MenuMijiaWindowsApp,
+  approved: boolean,
+): void {
+  const state = hostState(host);
+  const pending = state.pendingUrlConfirmation;
+  if (!pending) return;
+  state.pendingUrlConfirmation = null;
+  invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
+  pending.resolve(approved);
+  host.render();
+}
+
+export function renderUrlConfirmationPrompt(host: MenuMijiaWindowsApp): string {
+  const pending = hostState(host).pendingUrlConfirmation;
+  if (!pending) return "";
+  return `
+    <div class="cc-prompt-backdrop" data-url-confirm-cancel></div>
+    <div class="cc-prompt" role="alertdialog" aria-modal="true" aria-label="${t("允许外部链接控制设备？")}">
+      <strong>${t("允许外部链接控制设备？")}</strong>
+      <p style="margin: 6px 0; font-size: 13px; line-height: 1.45;">${host.escapeHtml(pending.description)}</p>
+      <small>${t("网页和其它应用都可以打开这个链接。确认后只执行这一次。")}</small>
+      <div class="cc-prompt-actions">
+        <button type="button" class="cc-btn-secondary" id="btn-url-confirm-cancel">${t("取消")}</button>
+        <button type="button" class="cc-btn-primary" id="btn-url-confirm-run">${t("执行一次")}</button>
+      </div>
+    </div>`;
+}
+
+function bindUrlConfirmationEventsAfterRender(host: MenuMijiaWindowsApp): void {
+  if (!hasPendingUrlConfirmation(host)) return;
+  const cancelBtn = host.root.querySelector<HTMLButtonElement>("#btn-url-confirm-cancel");
+  const runBtn = host.root.querySelector<HTMLButtonElement>("#btn-url-confirm-run");
+  cancelBtn?.addEventListener("click", () => dismissPendingUrlConfirmation(host, false));
+  runBtn?.addEventListener("click", () => dismissPendingUrlConfirmation(host, true));
+  host.root
+    .querySelectorAll<HTMLElement>("[data-url-confirm-cancel]")
+    .forEach((el) =>
+      el.addEventListener("click", () => dismissPendingUrlConfirmation(host, false)),
+    );
+  const promptEl = host.root.querySelector<HTMLElement>(".cc-prompt");
+  if (cancelBtn && promptEl && !promptEl.contains(document.activeElement)) {
+    cancelBtn.focus();
+  }
+}
+
+export function getActiveRaycastBridgeTokenForHost(
+  host: MenuMijiaWindowsApp,
+): string | undefined {
+  const state = hostState(host);
+  return state.bridgeTokens.getOrCreate(host.settings.enableRaycastIntegration);
+}
+
+export function getLatestRaycastSnapshotForHost(host: MenuMijiaWindowsApp): RaycastSnapshot {
+  const state = hostState(host);
+  const token = state.bridgeTokens.getOrCreate(host.settings.enableRaycastIntegration) ?? "";
+  const visibleDevices = foldGrouped(host, host.devices);
+  const rooms = host.roomOptions.map((r) => ({
+    id: r.id,
+    name: r.name,
+    deviceCount: visibleDevices.filter((d) => d.roomId === r.id).length,
+  }));
+  const activeUndo =
+    host.lastUndoAction && host.lastUndoAction.expiresAtMs > Date.now()
+      ? {
+          title: host.lastUndoAction.summary,
+          count: undoDeviceCount(host.lastUndoAction.steps),
+        }
+      : null;
+
+  return buildRaycastSnapshot({
+    connectionMode: host.settings.connectionMode,
+    selectedHomeId: host.settings.selectedHomeId,
+    connectionSummary: host.panelHealth().label,
+    bridgeToken: token,
+    isStale: host.valuesAreStale,
+    devices: visibleDevices,
+    rooms,
+    scenes: host.scenes,
+    environmentReadings: host.computedEnvironmentReadings,
+    hideOfflineDevices: host.settings.hideOfflineDevices,
+    aliases: host.layout.aliases,
+    allOffOverrides: host.settings.allOffOverrides,
+    undoSummary: activeUndo,
+    ...(state.lastCommandFeedback ? { lastCommandFeedback: state.lastCommandFeedback } : {}),
+  });
+}
+
+async function exportRaycastSnapshotNow(
+  host: MenuMijiaWindowsApp,
+  force = false,
+): Promise<void> {
+  const state = hostState(host);
+  if (!host.settings.enableRaycastIntegration) return;
+  if (state.snapshotExportTimer !== null) {
+    window.clearTimeout(state.snapshotExportTimer);
+    state.snapshotExportTimer = null;
+  }
+  const snapshot = getLatestRaycastSnapshotForHost(host);
+  const comparable = JSON.stringify({
+    ...snapshot,
+    generatedAt: "",
+    updatedAt: "",
+    environmentReadings: snapshot.environmentReadings.map((r) => ({ ...r, updatedAt: "" })),
+    climate: snapshot.climate.map((r) => ({ ...r, updatedAt: "" })),
+  });
+  if (!force && state.lastExportedComparableJson === comparable) return;
+  state.lastExportedComparableJson = comparable;
+
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (!invoke) return;
+  try {
+    await invoke("write_raycast_snapshot", {
+      contents: JSON.stringify(snapshot, null, 2),
+    });
+  } catch {
+    // Ignore transient filesystem errors; the next render retries.
+  }
+}
+
+export function scheduleRaycastSnapshotExport(host: MenuMijiaWindowsApp): void {
+  const state = hostState(host);
+  if (!host.settings.enableRaycastIntegration) return;
+  state.bridgeTokens.getOrCreate(true);
+  if (state.snapshotExportTimer !== null) {
+    window.clearTimeout(state.snapshotExportTimer);
+  }
+  state.snapshotExportTimer = window.setTimeout(() => {
+    state.snapshotExportTimer = null;
+    void exportRaycastSnapshotNow(host, false);
+  }, 300);
+}
+
+export function setRaycastIntegrationEnabled(
+  host: MenuMijiaWindowsApp,
+  enabled: boolean,
+): void {
+  const state = hostState(host);
+  host.settings.enableRaycastIntegration = enabled;
+  host.saveSettings();
+  if (enabled) {
+    state.bridgeTokens.getOrCreate(true);
+    void exportRaycastSnapshotNow(host, true);
+  } else {
+    if (state.snapshotExportTimer !== null) {
+      window.clearTimeout(state.snapshotExportTimer);
+      state.snapshotExportTimer = null;
+    }
+    state.bridgeTokens.revoke();
+    state.lastExportedComparableJson = null;
+    const invoke = window.__TAURI_INTERNALS__?.invoke;
+    if (invoke) {
+      void invoke("remove_raycast_snapshot").catch(() => undefined);
+    }
+  }
+  host.render();
+}
+
+function syncDynamicTrayTooltip(host: MenuMijiaWindowsApp): void {
+  const state = hostState(host);
+  const summary = formatDynamicTraySummary(
+    host.computedEnvironmentReadings,
+    foldGrouped(host, host.devices),
+  );
+  if (state.lastTraySummary === summary) return;
+  state.lastTraySummary = summary;
+  invokeTauriVoid("set_tray_tooltip", { summary });
+}
+
+function createUrlCommandHostAdapter(host: MenuMijiaWindowsApp): AppURLCommandHost {
+  const state = hostState(host);
+  return {
+    get devices() {
+      return host.devices;
+    },
+    get scenes() {
+      return host.scenes;
+    },
+    get sourceRevision() {
+      return host.sourceRevision;
+    },
+    get settings() {
+      return host.settings;
+    },
+    get layout() {
+      return host.layout;
+    },
+    get pendingHighRisk() {
+      return host.pendingHighRisk;
+    },
+    get replyBanner() {
+      return host.replyBanner;
+    },
+    get pendingConsent() {
+      return host.pendingCloudConsent;
+    },
+    get expandedDeviceId() {
+      return host.expandedDeviceId;
+    },
+    set expandedDeviceId(id: string | null) {
+      host.expandedDeviceId = id;
+    },
+
+    async waitForInitialSnapshotIfNeeded(): Promise<void> {
+      if (host.devices.length > 0 || !host.isSyncingCloud) return;
+      const deadline = Date.now() + 2000;
+      while (host.devices.length === 0 && host.isSyncingCloud && Date.now() < deadline) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 40));
+      }
+    },
+
+    getActiveRaycastBridgeToken(): string | undefined {
+      return getActiveRaycastBridgeTokenForHost(host);
+    },
+
+    isControlBlockedByScreenLock(): Promise<boolean> {
+      return isControlBlockedWhileLocked(host);
+    },
+
+    requestExternalUrlConfirmation(args): Promise<boolean> {
+      if (state.pendingUrlConfirmation !== null) {
+        const previous = state.pendingUrlConfirmation;
+        state.pendingUrlConfirmation = null;
+        previous.resolve(false);
+      }
+      return new Promise<boolean>((resolve) => {
+        state.pendingUrlConfirmation = {
+          description: args.description,
+          commandLabel: args.commandLabel,
+          ...(args.requestId ? { requestId: args.requestId } : {}),
+          sourceRevision: args.sourceRevision,
+          resolve,
+        };
+        invokeTauriVoid("set_pin_popover", { pin: true });
+        host.render();
+      });
+    },
+
+    async revealPanelForExternalUrl(): Promise<void> {
+      const invoke = window.__TAURI_INTERNALS__?.invoke;
+      if (!invoke) return;
+      try {
+        await invoke("show_panel_for_url");
+      } catch {
+        // Ignore in headless test harnesses.
+      }
+    },
+
+    setPendingHighRisk(next): void {
+      host.setPendingHighRisk(next);
+    },
+
+    clearPendingHighRisk(): void {
+      host.clearPendingHighRisk();
+    },
+
+    showExternalToast(message: string, isError: boolean): void {
+      host.replyBanner = {
+        text: message,
+        source: t("外部链接"),
+        ...(isError ? { isError: true } : {}),
+      };
+      host.render();
+    },
+
+    recordRaycastCommandFeedback(feedback): void {
+      state.lastCommandFeedback = {
+        ...feedback,
+        completedAt: new Date().toISOString(),
+      };
+      if (host.settings.enableRaycastIntegration) {
+        void exportRaycastSnapshotNow(host, true);
+      }
+    },
+
+    executeSingleCommand(device, command, summary, intent, readBackPower): Promise<void> {
+      return host.executeSingleCommand(device, command, summary, intent, readBackPower);
+    },
+
+    applyCommand(command, readBackPower): Promise<boolean> {
+      return host.applyCommand(command, readBackPower);
+    },
+
+    handleNaturalCommand(rawInput, fromScheduled): Promise<void> {
+      return host.handleNaturalCommand(rawInput, fromScheduled);
+    },
+
+    async executeBuiltInSceneFromUrl(
+      scene: BuiltInURLSceneId,
+    ): Promise<{ readonly message: string; readonly isError: boolean }> {
+      if (scene === "lightsOff" || scene === "softNightLight" || scene === "climateSleepOff") {
+        await executeBuiltInQuickAction(host, scene);
+        const banner = host.replyBanner;
+        return {
+          message: banner?.text ?? "",
+          isError: Boolean(banner?.isError),
+        };
+      }
+      if (scene === "allOff") {
+        const targets = allOffTargets(
+          foldGrouped(host, host.devices),
+          host.settings.allOffOverrides,
+        );
+        if (targets.length === 0) {
+          return {
+            message: trText("当前没有开启的设备", "No active devices are currently on"),
+            isError: false,
+          };
+        }
+        const ok = await host.executeIntents(
+          targets.map((d) => ({ targetId: d.id, operation: { kind: "power", isOn: false } })),
+          t("已关闭 {count} 台开启中的设备", { count: targets.length }),
+          t("一键全关"),
+          { recordHabits: true },
+        );
+        return {
+          message:
+            host.replyBanner?.text ??
+            t("已关闭 {count} 台开启中的设备", { count: targets.length }),
+          isError: !ok || Boolean(host.replyBanner?.isError),
+        };
+      }
+      await host.performUndo();
+      const banner = host.replyBanner;
+      const noUndo =
+        banner?.source === t("撤销提示") || Boolean(banner?.isError);
+      return {
+        message: banner?.text ?? trText("没有可以撤销的操作", "Nothing to undo"),
+        isError: noUndo,
+      };
+    },
+
+    focusDeviceFromUrl(deviceId: string): void {
+      host.activeSheet = "none";
+      host.selectRoom(null);
+      host.expandedDeviceId = deviceId;
+      host.panelSearch.selectedDeviceId = deviceId;
+      host.panelSearch.explicitSelection = true;
+      host.render();
+      const escapedId =
+        typeof CSS !== "undefined" && typeof CSS.escape === "function"
+          ? CSS.escape(deviceId)
+          : deviceId.replace(/["\\]/g, "\\$&");
+      const card = host.root.querySelector<HTMLElement>(
+        `[data-device-card="${escapedId}"]`,
+      );
+      card?.scrollIntoView?.({ block: "nearest" });
+    },
+  };
+}
+
+export function enqueueIncomingOpenUrl(
+  host: MenuMijiaWindowsApp,
+  rawUrl: string,
+): Promise<void> {
+  const state = hostState(host);
+  return new Promise<void>((done) => {
+    state.urlQueue.push({ url: rawUrl, done });
+    if (!state.isDrainingUrlQueue) {
+      state.isDrainingUrlQueue = true;
+      void (async () => {
+        try {
+          while (state.urlQueue.length > 0) {
+            const item = state.urlQueue.shift()!;
+            try {
+              await onOpenURL(item.url, createUrlCommandHostAdapter(host));
+            } finally {
+              item.done();
+            }
+          }
+        } finally {
+          state.isDrainingUrlQueue = false;
+        }
+      })();
+    }
+  });
+}
+
+function bindCompanionAndUpdaterEvents(host: MenuMijiaWindowsApp): void {
+  window.addEventListener("menumijia:open-url", (event: Event) => {
+    const detail = (event as CustomEvent<unknown>).detail;
+    if (typeof detail === "string" && detail.trim() !== "") {
+      void enqueueIncomingOpenUrl(host, detail);
+    }
+  });
+
+  window.addEventListener("menumijia:update-progress", (event: Event) => {
+    const detail = (event as CustomEvent<unknown>).detail;
+    if (!detail || typeof detail !== "object") return;
+    const rec = detail as Record<string, unknown>;
+    const downloadedBytes = Number(rec.downloadedBytes ?? 0);
+    const totalBytes = Number(rec.totalBytes ?? 0);
+    const bytesPerSec = Number(rec.bytesPerSec ?? 0);
+    if (!Number.isFinite(downloadedBytes) || downloadedBytes < 0) return;
+    updateProgressBySettings.set(host.settings, {
+      downloadedBytes,
+      totalBytes: Number.isFinite(totalBytes) && totalBytes >= 0 ? totalBytes : 0,
+      bytesPerSec: Number.isFinite(bytesPerSec) && bytesPerSec >= 0 ? bytesPerSec : 0,
+    });
+    if (host.isInstallingUpdate) {
+      host.render();
+    }
+  });
+
+  if (host.settings.enableRaycastIntegration) {
+    getActiveRaycastBridgeTokenForHost(host);
+    void exportRaycastSnapshotNow(host, true);
+  }
+
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (!invoke) return;
+
+  if (host.settings.launchAtLogin) {
+    void invoke("set_launch_at_login", { enabled: true }).catch(() => undefined);
+  }
+
+  void invoke<string[]>("drain_pending_open_urls")
+    .then((urls) => {
+      if (!Array.isArray(urls)) return;
+      for (const url of urls) {
+        if (typeof url === "string" && url.trim() !== "") {
+          void enqueueIncomingOpenUrl(host, url);
+        }
+      }
+    })
+    .catch(() => undefined);
 }

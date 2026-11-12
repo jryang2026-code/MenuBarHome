@@ -14,6 +14,8 @@ import { joinsAllOffByDefault, type AssistantSuggestion, type EnvironmentReading
 import { withAliases, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
 import type { ConnectionMode, PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
 import { demoDevices, demoScenes } from "./demo.js";
+import type { MenuMijiaWindowsApp } from "./app.js";
+import { setRaycastIntegrationEnabled } from "./speechGuard.js";
 import { invokeTauriVoid } from "./transport.js";
 import type { SettingsTab } from "./settingsViews.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
@@ -117,6 +119,48 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
 
     host.root.querySelector<HTMLInputElement>("#settings-auto-update")?.addEventListener("change", (event) => {
       host.settings.autoCheckUpdates = (event.target as HTMLInputElement).checked;
+      host.saveSettings();
+      host.render();
+    });
+
+    host.root.querySelector<HTMLInputElement>("#settings-launch-at-login")?.addEventListener("change", (event) => {
+      const enabled = (event.target as HTMLInputElement).checked;
+      host.settings.launchAtLogin = enabled;
+      host.saveSettings();
+      const invoke = window.__TAURI_INTERNALS__?.invoke;
+      if (!invoke) {
+        host.render();
+        return;
+      }
+      void invoke("set_launch_at_login", { enabled })
+        .then(() => {
+          host.render();
+        })
+        .catch(() => {
+          host.settings.launchAtLogin = !enabled;
+          host.saveSettings();
+          host.replyBanner = {
+            text: t("无法修改开机自启设置，请检查系统权限后重试"),
+            source: t("控制失败"),
+            isError: true,
+          };
+          host.render();
+        });
+    });
+
+    host.root.querySelector<HTMLInputElement>("#settings-block-while-locked")?.addEventListener("change", (event) => {
+      host.settings.blockControlWhileLocked = (event.target as HTMLInputElement).checked;
+      host.saveSettings();
+      host.render();
+    });
+
+    host.root.querySelector<HTMLInputElement>("#settings-raycast-integration")?.addEventListener("change", (event) => {
+      const checked = (event.target as HTMLInputElement).checked;
+      setRaycastIntegrationEnabled(host as unknown as MenuMijiaWindowsApp, checked);
+    });
+
+    host.root.querySelector<HTMLInputElement>("#settings-allow-direct-url")?.addEventListener("change", (event) => {
+      host.settings.allowDirectURLControl = (event.target as HTMLInputElement).checked;
       host.saveSettings();
       host.render();
     });

@@ -25,10 +25,14 @@ import { invokeTauriVoid } from "./transport.js";
 import { stripCredentialFieldsFromStoredCopies, writeSettingsForStorage } from "./settings.js";
 import type { SettingsTab } from "./settingsViews.js";
 import {
+  clearUpdateProgress,
   didMiExpiryKindChange,
+  dismissPendingUrlConfirmation,
   hasPendingMiVaultDeletion,
+  hasPendingUrlConfirmation,
   isUndoHoverPaused,
   resumeUndoHoverPause,
+  runWithScheduledTimerTickExemption,
   setPendingMiVaultDeletion,
   shouldKeepPopoverPinned,
 } from "./speechGuard.js";
@@ -387,6 +391,7 @@ export async function startUpdateInstall(host: MenuMijiaWindowsApp): Promise<voi
       openUpdatePage(host);
       return;
     }
+    clearUpdateProgress(host);
     host.isInstallingUpdate = true;
     host.updateStatusMessage = {
       text: t("正在下载并校验 v{version} 安装包，完成后将自动启动安装…", { version: host.availableUpdate.version }),
@@ -395,9 +400,11 @@ export async function startUpdateInstall(host: MenuMijiaWindowsApp): Promise<voi
     host.render();
     try {
       await invoke("install_update", { asset });
+      clearUpdateProgress(host);
       host.isInstallingUpdate = false;
       host.render();
     } catch (error) {
+      clearUpdateProgress(host);
       host.isInstallingUpdate = false;
       const message =
         typeof error === "string" && error.trim().length > 0
@@ -473,6 +480,10 @@ export function bindGlobalKeys(host: MenuMijiaWindowsApp): void {
           host.cameraLive.hideCameraLiveView();
           return;
         }
+        if (hasPendingUrlConfirmation(host)) {
+          dismissPendingUrlConfirmation(host, false);
+          return;
+        }
         if (host.activeSheet !== "none") {
           host.activeSheet = "none";
           host.isRecordingHotkey = false;
@@ -511,7 +522,7 @@ export function startTimerLoop(host: MenuMijiaWindowsApp): void {
       }
       const miExpiryChanged = didMiExpiryKindChange(host, now);
 
-      if (processScheduledCommands(host, now)) {
+      if (runWithScheduledTimerTickExemption(() => processScheduledCommands(host, now))) {
         host.render();
       } else if (undoExpired || miExpiryChanged) {
         host.queueBackgroundRender();

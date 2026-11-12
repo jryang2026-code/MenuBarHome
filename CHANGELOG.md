@@ -3,6 +3,7 @@
 ## 未发布
 
 ### 新功能
+- **Windows 补齐 `menumijia://` 链接控制、Raycast / 本地 CLI / MCP 伴生生态与桌面外壳体验**：开启「Raycast 与本地 CLI / MCP 集成」后原子写出 `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json`，关闭时立即删除快照并轮换作废本机 `bridgeToken`；注册 `HKCU\Software\Classes\menumijia` 协议并通过本地回环单实例转发 `toggle / power / brightness / color-temp / temperature / fan / scene / ask / focus` 九类路由，无令牌外部链接默认弹出面板内确认框（高风险设备二次确认与锁屏拦截始终生效）并将执行结果回写 `lastCommandFeedback`，`scripts/mijia`、`scripts/mijia-mcp` 与 `raycast/` 同步支持 Windows 默认路径与 `os.startfile` 派发；新增「开机自动启动」（即时读写 `Run` 注册表项）、「锁屏时禁止控制设备」（默认开启，拦截手动与链接操作并放行按时触发的本地定时任务）、托盘悬停实时环境读数与开启设备数摘要，以及应用内更新分块下载进度速度展示与更新说明 Markdown 安全渲染。
 - **macOS 偏好设置改为系统设置风格**：毛玻璃侧栏、彩色分类图标和分组卡片；搜索支持中英文关键词及同义词，选择结果可跳转并高亮对应设置。
 - **macOS 应用内更新显示下载速度与预计剩余时间**：按失败原因提供重试、重新检查或手动下载；安装替换期间禁止取消，重启超时会明确提示，替换失败后恢复并重新打开原应用。
 - **macOS 新增「液态玻璃」面板主题，默认「常规」**：在设置 → 外观切换；常规面板保留图标下方的位置与可选高度，液态玻璃面板在 macOS 26 及更新版本贴屏幕右侧展开。

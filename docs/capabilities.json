@@ -97,14 +97,14 @@
       "en": "URL Scheme Control",
       "zh": "URL Scheme 控制",
       "macos": "supported",
-      "windows": "unsupported"
+      "windows": "supported"
     },
     {
       "id": "raycast-cli",
       "en": "Raycast Extension, Local CLI & MCP Server",
       "zh": "Raycast 扩展、本地 CLI 与 MCP 服务",
       "macos": "supported",
-      "windows": "unsupported"
+      "windows": "supported"
     },
     {
       "id": "sensor-history",
@@ -230,7 +230,7 @@
       "en": "Fish Tanks & Pet Feeders",
       "zh": "智能鱼缸与宠物喂食器",
       "macos": "supported",
-      "windows": "partial"
+      "windows": "supported"
     },
     {
       "id": "camera-live",

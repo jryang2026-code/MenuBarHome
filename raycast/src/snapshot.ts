@@ -126,6 +126,10 @@ export function snapshotPath(): string {
   if (override) {
     return override.startsWith("~/") ? join(homedir(), override.slice(2)) : override;
   }
+  if (process.platform === "win32") {
+    const localAppData = (process.env.LOCALAPPDATA ?? "").trim() || join(homedir(), "AppData", "Local");
+    return join(localAppData, "MenuBarMijia", "raycast-snapshot.json");
+  }
   return join(homedir(), "Library", "Application Support", "MenuBarMijia", "raycast-snapshot.json");
 }
 
