@@ -118,7 +118,9 @@ public struct SettingsWindowView: View {
         }
         .onChange(of: opener.requestedTab) { _, requested in
             guard let requested else { return }
-            tab = requested
+            // A panel button asking for a pane is a category choice like a sidebar click, so it
+            // leaves search too; otherwise the result list keeps covering the rail.
+            selectCategory(requested)
             opener.requestedTab = nil
         }
         .task {

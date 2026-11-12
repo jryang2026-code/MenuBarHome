@@ -441,27 +441,51 @@ struct SettingsSearchTests {
     @Test("Every block reason names a condition the window actually branches on")
     func conditionalRowsAreDeclared() throws {
         // The availability model is a hand-written copy of the window's own `if` statements, so it
-        // can drift from them silently: dropping `if store.homeBackend != .demo` would leave search
-        // blocking rows that are on screen. Each reason has to name the source condition it mirrors,
-        // and this reads the source back to prove that condition is still there.
-        let gates: [SettingsSearchBlockReason: String] = [
-            .demoMode: "store.homeBackend == .demo",
-            .nothingHidden: "!store.hiddenDevices.isEmpty",
-            .needsMacOS26: "#available(macOS 26.0, *)",
-            .liquidGlassPanel: "panelTheme == .classic"
+        // can drift from them silently. Each reason names the exact `if` it mirrors in
+        // `SettingsWindowView.swift` and the rows that `if` must enclose; deleting or inverting the
+        // gate, or moving a row out of it, fails here.
+        let gates: [SettingsSearchBlockReason: (condition: String, encloses: [String])] = [
+            .demoMode: ("if store.homeBackend != .demo {",
+                        ["anchor: .haServerAddress", "anchor: .haDiscovery", "anchor: .miAccount",
+                         "homeAssistantForm", "LGWebOSSettingsSection("]),
+            .nothingHidden: ("if !store.hiddenDevices.isEmpty {", ["anchor: .hiddenDevices"]),
+            .needsMacOS26: ("if #available(macOS 26.0, *) {", ["anchor: .panelTheme"]),
+            .liquidGlassPanel: ("if panelTheme == .classic {", ["anchor: .panelHeight"])
         ]
         #expect(Set(gates.keys) == Set(SettingsSearchBlockReason.allCases),
                 "a block reason with no gate would never be reported")
 
-        let root = try Self.sourceRoot()
-        var source = ""
-        for path in try Self.swiftSources(under: root) {
-            source += try String(contentsOf: path, encoding: .utf8)
+        let path = try Self.sourceRoot().appendingPathComponent("SettingsWindowView.swift")
+        let source = try String(contentsOf: path, encoding: .utf8)
+        for (reason, gate) in gates {
+            let body = Self.blockBodies(opening: gate.condition, in: source)
+            #expect(!body.isEmpty,
+                    "\(reason.rawValue) mirrors `\(gate.condition)`, which no longer appears in SettingsWindowView.swift")
+            for marker in gate.encloses {
+                #expect(body.contains { $0.contains(marker) },
+                        "`\(marker)` must sit inside `\(gate.condition)` for \(reason.rawValue) to be true")
+            }
         }
-        for (reason, condition) in gates {
-            #expect(source.contains(condition),
-                    "\(reason.rawValue) mirrors `\(condition)`, which no longer appears in the settings sources")
-            #expect(!reason.explanation.isEmpty)
+    }
+
+    /// The text between each `opening` (which ends in `{`) and its matching `}`.
+    private static func blockBodies(opening: String, in source: String) -> [Substring] {
+        var bodies: [Substring] = []
+        var searchStart = source.startIndex
+        while let range = source.range(of: opening, range: searchStart..<source.endIndex) {
+            var depth = 1
+            var index = range.upperBound
+            while index < source.endIndex, depth > 0 {
+                switch source[index] {
+                case "{": depth += 1
+                case "}": depth -= 1
+                default: break
+                }
+                if depth > 0 { index = source.index(after: index) }
+            }
+            bodies.append(source[range.upperBound..<index])
+            searchStart = range.upperBound
         }
+        return bodies
     }
 }
