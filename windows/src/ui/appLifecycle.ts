@@ -126,6 +126,7 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
           host.devices = structuredClone(cache.home.devices);
           host.scenes = structuredClone(cache.home.scenes);
           host.environmentReadings = structuredClone(cache.home.environmentReadings);
+          host.deviceFacets = structuredClone(cache.home.deviceFacets ?? {});
         }
       }
       host.render();

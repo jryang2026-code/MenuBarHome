@@ -25,19 +25,15 @@ fn endpoint(base_url: &str, token: &str) -> Result<String, String> {
     if token.trim().is_empty() {
         return Err("Home Assistant token is required".into());
     }
-    let mut url = reqwest::Url::parse(base_url.trim()).map_err(|_| "Invalid Home Assistant URL")?;
-    if url.query().is_some() || url.fragment().is_some() || url.path() != "/" {
-        return Err("Home Assistant URL must be an origin".into());
-    }
-    let origin =
-        crate::url_origin(&url).ok_or("Home Assistant requires an HTTP or HTTPS origin")?;
+    let (origin, ws_path) = crate::network::parse_ha_endpoint_parts(base_url, false)?;
     if !crate::allowed_origins_snapshot()?.contains(&origin) {
         return Err("Home Assistant endpoint has not been approved".into());
     }
+    let mut url = reqwest::Url::parse(base_url.trim()).map_err(|_| "Invalid Home Assistant URL")?;
     let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
     url.set_scheme(scheme)
         .map_err(|_| "Invalid Home Assistant URL")?;
-    url.set_path("/api/websocket");
+    url.set_path(&ws_path);
     Ok(url.to_string())
 }
 
@@ -158,11 +154,44 @@ fn validate_call(command: &HaServiceCall) -> Result<(), String> {
             ],
         ),
         ("switch", &["turn_on", "turn_off"]),
+        ("input_boolean", &["turn_on", "turn_off"]),
         ("button", &["press"]),
         ("camera", &["turn_on", "turn_off"]),
         ("select", &["select_option"]),
         ("number", &["set_value"]),
-        ("media_player", &["volume_set"]),
+        (
+            "humidifier",
+            &["turn_on", "turn_off", "set_humidity", "set_mode"],
+        ),
+        (
+            "water_heater",
+            &[
+                "turn_on",
+                "turn_off",
+                "set_temperature",
+                "set_operation_mode",
+            ],
+        ),
+        (
+            "valve",
+            &[
+                "open_valve",
+                "close_valve",
+                "stop_valve",
+                "set_valve_position",
+            ],
+        ),
+        (
+            "media_player",
+            &[
+                "turn_on",
+                "turn_off",
+                "media_play_pause",
+                "volume_set",
+                "volume_mute",
+                "select_source",
+            ],
+        ),
         ("vacuum", &["start", "pause", "return_to_base"]),
         ("scene", &["turn_on"]),
         ("script", &["turn_on"]),
@@ -191,7 +220,14 @@ fn validate_call(command: &HaServiceCall) -> Result<(), String> {
         ("fan", "oscillate") => &["oscillating"],
         ("select", "select_option") => &["option"],
         ("number", "set_value") => &["value"],
+        ("humidifier", "set_humidity") => &["humidity"],
+        ("humidifier", "set_mode") => &["mode"],
+        ("water_heater", "set_temperature") => &["temperature"],
+        ("water_heater", "set_operation_mode") => &["operation_mode"],
+        ("valve", "set_valve_position") => &["position"],
         ("media_player", "volume_set") => &["volume_level"],
+        ("media_player", "volume_mute") => &["is_volume_muted"],
+        ("media_player", "select_source") => &["source"],
         _ => &[],
     };
     if command.data.keys().any(|key| !keys.contains(&key.as_str())) {
@@ -329,6 +365,90 @@ mod tests {
         assert!(validate_call(&pos).is_ok());
         pos.data.insert("tilt_position".into(), json!(20));
         assert!(validate_call(&pos).is_err());
+    }
+
+    #[test]
+    fn allows_subpath_websocket_endpoints_once_origin_is_authorized() {
+        let _guard = crate::ORIGIN_TEST_LOCK.lock().unwrap();
+        let origins = [
+            crate::normalize_extra_origin("https://home.example.com").unwrap(),
+            crate::normalize_extra_origin("http://192.168.1.8:8123").unwrap(),
+        ];
+        for origin in &origins {
+            crate::EXTRA_ALLOWED_ORIGINS
+                .write()
+                .unwrap()
+                .insert(origin.clone());
+        }
+        assert_eq!(
+            endpoint("https://home.example.com/hass", "tok").unwrap(),
+            "wss://home.example.com/hass/api/websocket"
+        );
+        assert_eq!(
+            endpoint("https://home.example.com/hass/api/", "tok").unwrap(),
+            "wss://home.example.com/hass/api/websocket"
+        );
+        assert_eq!(
+            endpoint("http://192.168.1.8:8123/ha/", "tok").unwrap(),
+            "ws://192.168.1.8:8123/ha/api/websocket"
+        );
+        assert!(endpoint("https://home.example.com/hass?token=abc", "tok").is_err());
+        assert!(endpoint("https://home.example.com/hass#frag", "tok").is_err());
+        assert!(endpoint("https://user:pw@home.example.com/hass", "tok").is_err());
+        assert!(endpoint("https://unapproved.example.com/hass", "tok").is_err());
+        for origin in &origins {
+            crate::EXTRA_ALLOWED_ORIGINS.write().unwrap().remove(origin);
+        }
+    }
+
+    #[test]
+    fn allows_humidifier_water_heater_valve_media_player_input_boolean_and_blocks_lock() {
+        let valid_cases: &[(&str, &str, &str, Option<(&str, Value)>)] = &[
+            ("humidifier", "turn_on", "humidifier.living", None),
+            ("humidifier", "turn_off", "humidifier.living", None),
+            ("humidifier", "set_humidity", "humidifier.living", Some(("humidity", json!(55)))),
+            ("humidifier", "set_mode", "humidifier.living", Some(("mode", json!("sleep")))),
+            ("water_heater", "turn_on", "water_heater.boiler", None),
+            ("water_heater", "turn_off", "water_heater.boiler", None),
+            ("water_heater", "set_temperature", "water_heater.boiler", Some(("temperature", json!(56)))),
+            ("water_heater", "set_operation_mode", "water_heater.boiler", Some(("operation_mode", json!("eco")))),
+            ("valve", "open_valve", "valve.water_main", None),
+            ("valve", "close_valve", "valve.water_main", None),
+            ("valve", "stop_valve", "valve.water_main", None),
+            ("valve", "set_valve_position", "valve.water_main", Some(("position", json!(50)))),
+            ("media_player", "turn_on", "media_player.speaker", None),
+            ("media_player", "turn_off", "media_player.speaker", None),
+            ("media_player", "media_play_pause", "media_player.speaker", None),
+            ("media_player", "volume_mute", "media_player.speaker", Some(("is_volume_muted", json!(true)))),
+            ("media_player", "select_source", "media_player.speaker", Some(("source", json!("HDMI 1")))),
+            ("input_boolean", "turn_on", "input_boolean.guest_mode", None),
+            ("input_boolean", "turn_off", "input_boolean.guest_mode", None),
+        ];
+        for (domain, service, entity_id, payload) in valid_cases {
+            let mut call = HaServiceCall {
+                domain: (*domain).into(),
+                service: (*service).into(),
+                entity_id: (*entity_id).into(),
+                data: Default::default(),
+            };
+            if let Some((k, v)) = payload {
+                call.data.insert((*k).into(), v.clone());
+            }
+            assert!(validate_call(&call).is_ok(), "{domain}.{service}");
+            call.data.insert("unexpected".into(), json!(1));
+            assert!(validate_call(&call).is_err(), "{domain}.{service} rejected unexpected key");
+        }
+
+        // Locks stay strictly read-only per ADR-0001.
+        for lock_service in ["unlock", "lock", "open"] {
+            let lock_call = HaServiceCall {
+                domain: "lock".into(),
+                service: lock_service.into(),
+                entity_id: "lock.front_door".into(),
+                data: Default::default(),
+            };
+            assert!(validate_call(&lock_call).is_err(), "lock.{lock_service} must be blocked");
+        }
     }
 
     #[test]

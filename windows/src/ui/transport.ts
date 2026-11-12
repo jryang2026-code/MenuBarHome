@@ -34,3 +34,16 @@ export function invokeTauriVoid(cmd: string, args?: Record<string, unknown>): vo
     void window.__TAURI_INTERNALS__.invoke(cmd, args);
   }
 }
+
+export async function isWorkstationLockBlockingControl(host: {
+  readonly settings: { readonly blockControlWhileLocked?: boolean };
+}): Promise<boolean> {
+  if (!host.settings.blockControlWhileLocked) return false;
+  const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
+  if (!invoke) return false;
+  try {
+    return Boolean(await invoke<boolean>("is_workstation_locked"));
+  } catch {
+    return false;
+  }
+}

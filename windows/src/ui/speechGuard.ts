@@ -26,7 +26,7 @@ import type {
 import { foldGrouped } from "./cloudRefresh.js";
 import { recordHabits } from "./intentExecution.js";
 import { filterByListCut } from "./listCut.js";
-import { invokeTauriVoid } from "./transport.js";
+import { invokeTauriVoid, isWorkstationLockBlockingControl } from "./transport.js";
 
 export interface UpdateDownloadProgress {
   readonly downloadedBytes: number;
@@ -623,15 +623,8 @@ export async function executeBuiltInQuickAction(
   host.render();
 }
 
-export async function isControlBlockedWhileLocked(host: MenuMijiaWindowsApp): Promise<boolean> {
-  if (!host.settings.blockControlWhileLocked) return false;
-  const invoke = window.__TAURI_INTERNALS__?.invoke;
-  if (!invoke) return false;
-  try {
-    return Boolean(await invoke<boolean>("is_workstation_locked"));
-  } catch {
-    return false;
-  }
+export function isControlBlockedWhileLocked(host: MenuMijiaWindowsApp): Promise<boolean> {
+  return isWorkstationLockBlockingControl(host);
 }
 
 export async function rejectIfControlBlockedWhileLocked(

@@ -4,7 +4,7 @@ import { normalizeMiCloudRegion } from "../core/miCloudClient.js";
 import { t } from "../core/i18n.js";
 import type { ScheduledCommand } from "../core/models.js";
 import type { PersistedSettings } from "./appTypes.js";
-import { isControlBlockedWhileLocked } from "./speechGuard.js";
+import { isWorkstationLockBlockingControl as isControlBlockedWhileLocked } from "./transport.js";
 
 export function scheduledCommandIdentity(settings: PersistedSettings): string | null {
   switch (settings.connectionMode) {
