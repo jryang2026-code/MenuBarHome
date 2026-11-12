@@ -7,6 +7,7 @@ import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { setLanguage } from "../src/core/i18n.js";
+import type { DeviceCommand, SmartDevice } from "../src/core/models.js";
 import {
   AppURLParser,
   BuiltInURLScene,
@@ -385,6 +386,137 @@ describe("menumijia:// execution, confirmation lifecycle & high-risk guard", () 
 
     assert.equal(app.expandedDeviceId, target.id);
     assert.equal(app.panelSearch.selectedDeviceId, target.id);
+  });
+
+  it("enforces fan percentage / preset parity, temperature step-snapping, color-temp clamping, cover power direction, and sensor focus", async () => {
+    const app = startDemoApp({ enableRaycastIntegration: true, allowDirectURLControl: true });
+    await flushAsync();
+    const token = getActiveRaycastBridgeTokenForHost(app)!;
+
+    // 1) Fan percent=60 sends setFanPercentage, not setFanPresetMode
+    const fan = app.devices.find((d) => d.kind.kind === "fan" && d.isOnline)!;
+    assert.ok(fan, "demo home has fan");
+    const fanCommands: DeviceCommand[] = [];
+    const origApplyCommand = app.applyCommand.bind(app);
+    app.applyCommand = async (cmd) => {
+      fanCommands.push(cmd);
+      return origApplyCommand(cmd);
+    };
+
+    await enqueueIncomingOpenUrl(
+      app,
+      `menumijia://fan?device=${encodeURIComponent(fan.id)}&percent=60&token=${token}`,
+    );
+    await flushAsync();
+    assert.ok(
+      fanCommands.some((c) => c.kind === "setFanPercentage" && (c as { percent: number }).percent === 60),
+      "fan percent=60 sends setFanPercentage",
+    );
+    assert.equal(
+      fanCommands.some((c) => c.kind === "setFanPresetMode" && (c as { presetMode: string }).presetMode === "60"),
+      false,
+      "does not send literal presetMode 60",
+    );
+
+    // 2) Fan preset matches case-insensitively
+    fanCommands.length = 0;
+    await enqueueIncomingOpenUrl(
+      app,
+      `menumijia://fan?device=${encodeURIComponent(fan.id)}&preset=level%201&token=${token}`,
+    );
+    await flushAsync();
+    assert.ok(
+      fanCommands.some((c) => c.kind === "setFanPresetMode"),
+      "fan preset dispatches setFanPresetMode",
+    );
+
+    // 3) Temperature step-snapping (25.3 -> 25.5 on step 0.5)
+    const climate = app.devices.find((d) => d.kind.kind === "climate" && d.isOnline)!;
+    assert.ok(climate, "demo home has climate");
+    const climateCommands: DeviceCommand[] = [];
+    app.applyCommand = async (cmd) => {
+      climateCommands.push(cmd);
+      return origApplyCommand(cmd);
+    };
+    await enqueueIncomingOpenUrl(
+      app,
+      `menumijia://temperature?device=${encodeURIComponent(climate.id)}&celsius=25.3&token=${token}`,
+    );
+    await flushAsync();
+    const tempCmd = climateCommands.find((c) => c.kind === "setClimateTemperature");
+    assert.ok(tempCmd, "setClimateTemperature dispatched");
+    assert.equal((tempCmd as { temperature: number }).temperature, 25.5, "snapped 25.3 to 25.5");
+
+    // 4) Color-temp clamping
+    const light = app.devices.find((d) => d.kind.kind === "light" && d.isOnline)!;
+    assert.ok(light, "demo home has light");
+    const lightCommands: DeviceCommand[] = [];
+    app.applyCommand = async (cmd) => {
+      lightCommands.push(cmd);
+      return origApplyCommand(cmd);
+    };
+    await enqueueIncomingOpenUrl(
+      app,
+      `menumijia://color-temp?device=${encodeURIComponent(light.id)}&kelvin=2000&token=${token}`,
+    );
+    await flushAsync();
+    const ctCmd = lightCommands.find((c) => c.kind === "setLightColorTemp");
+    assert.ok(ctCmd, "setLightColorTemp dispatched");
+    const spec = light.kind as { minKelvin: number; maxKelvin: number };
+    assert.equal((ctCmd as { kelvin: number }).kelvin, spec.minKelvin, "clamped to minKelvin");
+
+    // 5) Cover power?on=false while opening sends closeDescription (not pauseDescription!)
+    const cover: SmartDevice = {
+      id: "cover.living_curtain",
+      name: "客厅窗帘",
+      roomId: "r1",
+      roomName: "客厅",
+      model: "lumi.curtain.acn002",
+      isOnline: true,
+      kind: {
+        kind: "cover",
+        subtype: "curtain",
+        entityId: "cover.living_curtain",
+        positionPercent: 40,
+        positionWritable: false,
+        openDescription: "open",
+        closeDescription: "close",
+        pauseDescription: "pause",
+        batteryPercent: 100,
+        faultText: null,
+        motion: "opening",
+      },
+    };
+    app.devices.push(cover);
+    const coverCommands: DeviceCommand[] = [];
+    app.applyCommand = async (cmd) => {
+      coverCommands.push(cmd);
+      return origApplyCommand(cmd);
+    };
+    await enqueueIncomingOpenUrl(
+      app,
+      `menumijia://power?device=${encodeURIComponent(cover.id)}&on=false&token=${token}`,
+    );
+    await flushAsync();
+    const coverCmd = coverCommands.find((c) => c.kind === "setSelectOption");
+    assert.ok(coverCmd, "cover command sent");
+    assert.equal(
+      (coverCmd as { option: string }).option,
+      (cover.kind as { closeDescription: string }).closeDescription,
+      "closing while opening sends closeDescription, not pause",
+    );
+
+    // 6) Focus on a sensor card leaves expandedDeviceId === null (hasDetailDrawer === false)
+    const sensor = app.devices.find((d) => d.kind.kind === "sensor")!;
+    assert.ok(sensor, "demo home has sensor");
+    app.expandedDeviceId = "something_else";
+    window.dispatchEvent(
+      new window.CustomEvent("menumijia:open-url", {
+        detail: `menumijia://focus?device=${encodeURIComponent(sensor.id)}`,
+      }),
+    );
+    await flushAsync();
+    assert.equal(app.expandedDeviceId, null, "sensor card has no detail drawer so expandedDeviceId is null");
   });
 });
 

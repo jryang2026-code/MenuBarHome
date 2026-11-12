@@ -428,6 +428,8 @@ export interface AppURLCommandHost {
     scene: BuiltInURLSceneId,
   ): Promise<{ readonly message: string; readonly isError: boolean }>;
   focusDeviceFromUrl(deviceId: string): void;
+  /** False for cards the panel hides (e.g. offline devices while "hide offline" is on). */
+  isDeviceVisibleInPanel?(deviceId: string): boolean;
 }
 
 export function screenLockBlockedMessage(): string {
@@ -538,23 +540,32 @@ function describeResolvedTarget(resolved: ResolvedURLTarget, host: AppURLCommand
     }
     case "colorTemp": {
       const name = displayNameFor(resolved.device, host);
+      const spec = resolved.device.kind.kind === "light" ? resolved.device.kind : null;
+      const kelvin = spec
+        ? Math.max(spec.minKelvin, Math.min(spec.maxKelvin, Math.round(resolved.kelvin)))
+        : Math.round(resolved.kelvin);
       return trText(
         "把{name}色温调到 {kelvin}K",
         "Set {name} colour temperature to {kelvin}K",
-        { name, kelvin: resolved.kelvin },
+        { name, kelvin },
       );
     }
     case "temperature": {
       const name = displayNameFor(resolved.device, host);
-      const temp = formatTemperature(resolved.celsius);
+      const spec = resolved.device.kind.kind === "climate" ? resolved.device.kind : null;
+      const target = spec
+        ? snapTemperature(resolved.celsius, spec.minTemp, spec.maxTemp, spec.step)
+        : resolved.celsius;
+      const temp = formatTemperature(target);
       return trText("把{name}温度调到 {temp}", "Set {name} to {temp}", { name, temp });
     }
     case "fan": {
       const name = displayNameFor(resolved.device, host);
       if (resolved.percent !== null) {
+        const clamped = Math.max(1, Math.min(100, Math.round(resolved.percent)));
         return trText("把{name}风速调到 {percent}%", "Set {name} fan speed to {percent}%", {
           name,
-          percent: resolved.percent,
+          percent: clamped,
         });
       }
       return trText(
@@ -586,12 +597,32 @@ function requiresHighRiskArm(
   return ManualControlPolicy.requiresConfirmation(intent, devices);
 }
 
+/** Matches `RaycastControls.swift` fan presets: exact (case-insensitive) first, then substring. */
+export function matchFanPreset(presets: readonly string[], wanted: string): string | null {
+  const lowered = wanted.trim().toLowerCase();
+  if (lowered === "") return null;
+  return (
+    presets.find((p) => p.toLowerCase() === lowered) ??
+    presets.find((p) => p.toLowerCase().includes(lowered) || lowered.includes(p.toLowerCase())) ??
+    null
+  );
+}
+
+/** Snaps to the thermostat's step grid inside `[minTemp, maxTemp]` (`RaycastControls.swift`). */
+export function snapTemperature(celsius: number, min: number, max: number, step: number): number {
+  const clamped = Math.max(min, Math.min(max, celsius));
+  if (!(step > 0)) return clamped;
+  const snapped = min + Math.round((clamped - min) / step) * step;
+  return Math.round(Math.max(min, Math.min(max, snapped)) * 100) / 100;
+}
+
 async function runIntentOnDevice(
   host: AppURLCommandHost,
   deviceId: string,
   intent: DeviceIntent,
   summary: string,
   labelForHighRisk: string,
+  options: { readonly commands?: readonly DeviceCommand[]; readonly riskIntent?: DeviceIntent } = {},
 ): Promise<{ readonly message: string; readonly isError: boolean }> {
   const dev = host.devices.find((d) => d.id === deviceId);
   if (!dev) {
@@ -606,7 +637,7 @@ async function runIntentOnDevice(
       isError: true,
     };
   }
-  const commands = IntentValidator.commandsForIntent(intent, dev);
+  const commands = options.commands ?? IntentValidator.commandsForIntent(intent, dev);
   const firstCommand = commands[0];
   if (!firstCommand) {
     return {
@@ -616,7 +647,7 @@ async function runIntentOnDevice(
   }
 
   // High-risk confirmation (`ManualControlPolicy`) always applies, even with a valid `bridgeToken`.
-  if (requiresHighRiskArm(dev, intent, firstCommand, host.devices)) {
+  if (requiresHighRiskArm(dev, options.riskIntent ?? intent, firstCommand, host.devices)) {
     const actionKey = JSON.stringify(firstCommand);
     const armed = host.pendingHighRisk;
     const isArmedAndValid =
@@ -718,7 +749,8 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
   }
 
   const controlsDevice = appURLCommandControlsDevice(envelope.command);
-  if (controlsDevice && (await host.isControlBlockedByScreenLock())) {
+  // `focus` is gated too: a locked workstation must not reveal or scroll to a card (RaycastControls parity).
+  if (await host.isControlBlockedByScreenLock()) {
     finish(screenLockBlockedMessage(), true);
     return;
   }
@@ -770,8 +802,15 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
 
   switch (resolved.kind) {
     case "focus": {
-      host.focusDeviceFromUrl(resolved.device.id);
       const name = displayNameFor(resolved.device, host);
+      if (host.isDeviceVisibleInPanel && !host.isDeviceVisibleInPanel(resolved.device.id)) {
+        finish(
+          trText("{name} 在面板里被隐藏了", "{name} is hidden in the panel", { name }),
+          true,
+        );
+        return;
+      }
+      host.focusDeviceFromUrl(resolved.device.id);
       finish(trText("已定位到 {name}", "Focused {name}", { name }), false);
       await host.revealPanelForExternalUrl();
       return;
@@ -805,12 +844,93 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
     case "power": {
       const dev = resolved.device;
       const name = displayNameFor(dev, host);
-      const actionLabel = resolved.isOn
-        ? trText("打开 {name}", "Turn on {name}", { name })
-        : trText("关闭 {name}", "Turn off {name}", { name });
-      const summary = resolved.isOn
-        ? trText("已打开 {name}", "Turned on {name}", { name })
-        : trText("已关闭 {name}", "Turned off {name}", { name });
+      if (!deviceCanTogglePower(dev)) {
+        finish(
+          trText("{name} 没有可直接开关的功能", "{name} has no direct power switch", { name }),
+          true,
+        );
+        return;
+      }
+      const isMomentary =
+        dev.kind.kind === "plug" && dev.kind.switchEntityId.startsWith("button.");
+      if (isMomentary && !resolved.isOn) {
+        finish(
+          trText("{name} 是按钮类设备，只能触发", "{name} is a button device and can only be triggered", { name }),
+          true,
+        );
+        return;
+      }
+      if (dev.kind.kind === "cover") {
+        const spec = dev.kind;
+        const isOn = resolved.isOn;
+        // Already travelling the way the link asks for is satisfied; any other motion is a
+        // direction change the motor has to be told explicitly.
+        if ((isOn && spec.motion === "opening") || (!isOn && spec.motion === "closing")) {
+          const already = isOn
+            ? trText("{name} 正在打开", "{name} is already opening", { name })
+            : trText("{name} 正在关闭", "{name} is already closing", { name });
+          finish(already, false);
+          return;
+        }
+        if (
+          spec.motion === "stopped" &&
+          spec.positionPercent !== null &&
+          ((isOn && spec.positionPercent >= 100) || (!isOn && spec.positionPercent <= 0))
+        ) {
+          const already = isOn
+            ? trText("{name} 已经是打开状态", "{name} is already open", { name })
+            : trText("{name} 已经是关闭状态", "{name} is already closed", { name });
+          finish(already, false);
+          return;
+        }
+        const actionLabel = isOn
+          ? trText("打开 {name}", "Turn on {name}", { name })
+          : trText("关闭 {name}", "Turn off {name}", { name });
+        const summary = isOn
+          ? trText("已打开 {name}", "Turned on {name}", { name })
+          : trText("已关闭 {name}", "Turned off {name}", { name });
+
+        let command: DeviceCommand | null = null;
+        if (spec.positionWritable) {
+          command = { kind: "setNumberValue", entityId: spec.entityId, value: isOn ? 100 : 0 };
+        } else {
+          const option = isOn ? spec.openDescription : spec.closeDescription;
+          if (option) {
+            command = { kind: "setSelectOption", entityId: spec.entityId, option };
+          }
+        }
+        if (!command) {
+          finish(trText("该设备不支持此控制项", "This device does not support that control"), true);
+          return;
+        }
+        const outcome = await runIntentOnDevice(
+          host,
+          dev.id,
+          { targetId: dev.id, operation: { kind: "power", isOn } },
+          summary,
+          actionLabel,
+          { commands: [command], riskIntent: { targetId: dev.id, operation: { kind: "power", isOn } } },
+        );
+        finish(outcome.message, outcome.isError);
+        return;
+      }
+      if (!isMomentary && dev.isOnline && isDeviceActiveOn(dev) === resolved.isOn) {
+        const already = resolved.isOn
+          ? trText("{name} 已经是打开状态", "{name} is already on", { name })
+          : trText("{name} 已经是关闭状态", "{name} is already off", { name });
+        finish(already, false);
+        return;
+      }
+      const actionLabel = isMomentary
+        ? trText("触发 {name}", "Trigger {name}", { name })
+        : resolved.isOn
+          ? trText("打开 {name}", "Turn on {name}", { name })
+          : trText("关闭 {name}", "Turn off {name}", { name });
+      const summary = isMomentary
+        ? trText("已触发 {name}", "Triggered {name}", { name })
+        : resolved.isOn
+          ? trText("已打开 {name}", "Turned on {name}", { name })
+          : trText("已关闭 {name}", "Turned off {name}", { name });
       const outcome = await runIntentOnDevice(
         host,
         dev.id,
@@ -850,15 +970,27 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
     case "colorTemp": {
       const dev = resolved.device;
       const name = displayNameFor(dev, host);
+      if (dev.kind.kind !== "light") {
+        finish(trText("{name} 不是灯具", "{name} is not a light", { name }), true);
+        return;
+      }
+      if (dev.kind.colorWritable === false) {
+        finish(
+          trText("{name} 不支持调节色温", "{name} does not support colour temperature", { name }),
+          true,
+        );
+        return;
+      }
+      const clamped = Math.max(dev.kind.minKelvin, Math.min(dev.kind.maxKelvin, Math.round(resolved.kelvin)));
       const summary = trText(
         "已将{name}色温设为 {kelvin}K",
         "Set {name} colour temperature to {kelvin}K",
-        { name, kelvin: resolved.kelvin },
+        { name, kelvin: clamped },
       );
       const outcome = await runIntentOnDevice(
         host,
         dev.id,
-        { targetId: dev.id, operation: { kind: "colorTemperature", kelvin: resolved.kelvin } },
+        { targetId: dev.id, operation: { kind: "colorTemperature", kelvin: clamped } },
         summary,
         summary,
       );
@@ -868,15 +1000,38 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
     case "temperature": {
       const dev = resolved.device;
       const name = displayNameFor(dev, host);
-      const tempText = formatTemperature(resolved.celsius);
+      if (dev.kind.kind !== "climate") {
+        finish(trText("{name} 不是温控设备", "{name} is not a climate device", { name }), true);
+        return;
+      }
+      if (dev.kind.temperatureWritable === false) {
+        finish(
+          trText("{name} 不支持设定温度", "{name} does not accept a target temperature", { name }),
+          true,
+        );
+        return;
+      }
+      const target = snapTemperature(resolved.celsius, dev.kind.minTemp, dev.kind.maxTemp, dev.kind.step);
+      const targetText = formatTemperature(target);
+      if (target === dev.kind.targetTemperature) {
+        finish(
+          trText(
+            "{name} 的目标温度已经是 {targetText}°C",
+            "{name} is already set to {targetText} °C",
+            { name, targetText },
+          ),
+          false,
+        );
+        return;
+      }
       const summary = trText("已将{name}温度设为 {temp}", "Set {name} to {temp}", {
         name,
-        temp: tempText,
+        temp: targetText,
       });
       const outcome = await runIntentOnDevice(
         host,
         dev.id,
-        { targetId: dev.id, operation: { kind: "targetTemperature", celsius: resolved.celsius } },
+        { targetId: dev.id, operation: { kind: "targetTemperature", celsius: target } },
         summary,
         summary,
       );
@@ -886,23 +1041,88 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
     case "fan": {
       const dev = resolved.device;
       const name = displayNameFor(dev, host);
-      const speed = resolved.percent !== null ? String(resolved.percent) : (resolved.preset ?? "");
-      const summary =
-        resolved.percent !== null
-          ? trText("已将{name}风速设为 {percent}%", "Set {name} fan speed to {percent}%", {
-              name,
-              percent: resolved.percent,
-            })
-          : trText("已将{name}风速设为 {preset}", "Set {name} fan mode to {preset}", {
-              name,
-              preset: speed,
-            });
+      if (dev.kind.kind !== "fan") {
+        finish(
+          trText("{name} 不是风扇或空气净化器", "{name} is not a fan or purifier", { name }),
+          true,
+        );
+        return;
+      }
+      if (dev.kind.speedWritable === false) {
+        finish(
+          trText("{name} 不支持调节风速", "{name} does not support fan speed", { name }),
+          true,
+        );
+        return;
+      }
+      if (resolved.percent !== null) {
+        const clamped = Math.max(1, Math.min(100, Math.round(resolved.percent)));
+        const summary = trText("已将{name}风速设为 {percent}%", "Set {name} fan speed to {percent}%", {
+          name,
+          percent: clamped,
+        });
+        const cmd: DeviceCommand = {
+          kind: "setFanPercentage",
+          entityId: dev.kind.entityId,
+          percent: clamped,
+        };
+        const outcome = await runIntentOnDevice(
+          host,
+          dev.id,
+          { targetId: dev.id, operation: { kind: "fanSpeed", speed: String(clamped) } },
+          summary,
+          summary,
+          {
+            commands: [cmd],
+            riskIntent: { targetId: dev.id, operation: { kind: "power", isOn: true } },
+          },
+        );
+        finish(outcome.message, outcome.isError);
+        return;
+      }
+      if (resolved.preset === null) {
+        finish(
+          trText("缺少风速百分比或档位", "A fan speed or preset is required"),
+          true,
+        );
+        return;
+      }
+      const wanted = resolved.preset;
+      const normalizedOp = IntentValidator.normalize({ kind: "fanSpeed", speed: wanted }, dev);
+      const matched =
+        (normalizedOp?.kind === "fanSpeed" ? normalizedOp.speed : null) ??
+        matchFanPreset(dev.kind.availablePresetModes, wanted);
+      if (!matched) {
+        const options = dev.kind.availablePresetModes.slice(0, 6).join(", ");
+        finish(
+          trText(
+            "{name} 没有「{wanted}」档位，可选：{options}",
+            '{name} has no "{wanted}" mode; available: {options}',
+            { name, wanted, options },
+          ),
+          true,
+        );
+        return;
+      }
+      const summary = trText("已将{name}风速设为 {preset}", "Set {name} fan mode to {preset}", {
+        name,
+        preset: matched,
+      });
+      const cmd: DeviceCommand = {
+        kind: "setFanPresetMode",
+        entityId: dev.kind.entityId,
+        presetMode: matched,
+      };
       const outcome = await runIntentOnDevice(
         host,
         dev.id,
-        { targetId: dev.id, operation: { kind: "fanSpeed", speed } },
+        { targetId: dev.id, operation: { kind: "fanSpeed", speed: matched } },
         summary,
         summary,
+        {
+          commands: [cmd],
+          riskIntent: { targetId: dev.id, operation: { kind: "power", isOn: true } },
+        },
       );
       finish(outcome.message, outcome.isError);
       return;

@@ -5,7 +5,7 @@ import {
 } from "../core/appUrlCommand.js";
 import { speechLocale, t } from "../core/i18n.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
-import { allOffTargets, type SmartDevice } from "../core/models.js";
+import { allOffTargets, hasDetailDrawer, type SmartDevice } from "../core/models.js";
 import { planQuickAction, trText, type QuickActionId } from "../core/quickActions.js";
 import {
   RaycastBridgeTokenManager,
@@ -722,8 +722,18 @@ async function exportRaycastSnapshotNow(
 ): Promise<void> {
   const state = hostState(host);
   if (!host.settings.enableRaycastIntegration) return;
+  if (
+    host.isSyncingCloud &&
+    host.devices.length === 0 &&
+    host.scenes.length === 0 &&
+    host.computedEnvironmentReadings.length === 0 &&
+    state.lastCommandFeedback === undefined
+  ) {
+    return;
+  }
+  const ownerWin = host.root.ownerDocument?.defaultView ?? window;
   if (state.snapshotExportTimer !== null) {
-    window.clearTimeout(state.snapshotExportTimer);
+    ownerWin.clearTimeout(state.snapshotExportTimer);
     state.snapshotExportTimer = null;
   }
   const snapshot = getLatestRaycastSnapshotForHost(host);
@@ -752,11 +762,13 @@ export function scheduleRaycastSnapshotExport(host: MenuMijiaWindowsApp): void {
   const state = hostState(host);
   if (!host.settings.enableRaycastIntegration) return;
   state.bridgeTokens.getOrCreate(true);
+  const ownerWin = host.root.ownerDocument?.defaultView ?? window;
   if (state.snapshotExportTimer !== null) {
-    window.clearTimeout(state.snapshotExportTimer);
+    ownerWin.clearTimeout(state.snapshotExportTimer);
   }
-  state.snapshotExportTimer = window.setTimeout(() => {
+  state.snapshotExportTimer = ownerWin.setTimeout(() => {
     state.snapshotExportTimer = null;
+    if (!host.root.isConnected) return;
     void exportRaycastSnapshotNow(host, false);
   }, 300);
 }
@@ -772,8 +784,9 @@ export function setRaycastIntegrationEnabled(
     state.bridgeTokens.getOrCreate(true);
     void exportRaycastSnapshotNow(host, true);
   } else {
+    const ownerWin = host.root.ownerDocument?.defaultView ?? window;
     if (state.snapshotExportTimer !== null) {
-      window.clearTimeout(state.snapshotExportTimer);
+      ownerWin.clearTimeout(state.snapshotExportTimer);
       state.snapshotExportTimer = null;
     }
     state.bridgeTokens.revoke();
@@ -960,10 +973,21 @@ function createUrlCommandHostAdapter(host: MenuMijiaWindowsApp): AppURLCommandHo
       };
     },
 
+    isDeviceVisibleInPanel(deviceId: string): boolean {
+      const dev = host.devices.find((d) => d.id === deviceId);
+      if (!dev) return false;
+      const hiddenIds = (host.layout as { hiddenIds?: readonly string[] })?.hiddenIds;
+      if (hiddenIds && hiddenIds.includes(deviceId)) return false;
+      if (host.settings.hideOfflineDevices && !dev.isOnline) return false;
+      return true;
+    },
+
     focusDeviceFromUrl(deviceId: string): void {
       host.activeSheet = "none";
       host.selectRoom(null);
-      host.expandedDeviceId = deviceId;
+      const dev = host.devices.find((d) => d.id === deviceId);
+      host.expandedDeviceId =
+        dev && hasDetailDrawer(dev, host.deviceFacets?.[deviceId] ?? []) ? deviceId : null;
       host.panelSearch.selectedDeviceId = deviceId;
       host.panelSearch.explicitSelection = true;
       host.render();
@@ -1007,14 +1031,17 @@ export function enqueueIncomingOpenUrl(
 }
 
 function bindCompanionAndUpdaterEvents(host: MenuMijiaWindowsApp): void {
-  window.addEventListener("menumijia:open-url", (event: Event) => {
+  const ownerWin = host.root.ownerDocument?.defaultView ?? window;
+  ownerWin.addEventListener("menumijia:open-url", (event: Event) => {
+    if (!host.root.isConnected) return;
     const detail = (event as CustomEvent<unknown>).detail;
     if (typeof detail === "string" && detail.trim() !== "") {
       void enqueueIncomingOpenUrl(host, detail);
     }
   });
 
-  window.addEventListener("menumijia:update-progress", (event: Event) => {
+  ownerWin.addEventListener("menumijia:update-progress", (event: Event) => {
+    if (!host.root.isConnected) return;
     const detail = (event as CustomEvent<unknown>).detail;
     if (!detail || typeof detail !== "object") return;
     const rec = detail as Record<string, unknown>;
@@ -1028,13 +1055,18 @@ function bindCompanionAndUpdaterEvents(host: MenuMijiaWindowsApp): void {
       bytesPerSec: Number.isFinite(bytesPerSec) && bytesPerSec >= 0 ? bytesPerSec : 0,
     });
     if (host.isInstallingUpdate) {
-      host.render();
+      host.queueBackgroundRender();
     }
   });
 
   if (host.settings.enableRaycastIntegration) {
     getActiveRaycastBridgeTokenForHost(host);
     void exportRaycastSnapshotNow(host, true);
+  } else {
+    const invoke = window.__TAURI_INTERNALS__?.invoke;
+    if (invoke) {
+      void invoke("remove_raycast_snapshot").catch(() => undefined);
+    }
   }
 
   const invoke = window.__TAURI_INTERNALS__?.invoke;

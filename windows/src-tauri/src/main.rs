@@ -157,17 +157,12 @@ fn build_tray_menu(
 }
 
 fn refresh_tray_chrome(app: &AppHandle, shortcut_label: Option<&str>, update_version: Option<&str>) {
-    let Some(tray) = app.tray_by_id("main-tray") else {
-        return;
-    };
-    let live_summary = TRAY_AND_HOTKEY_STATE
-        .read()
-        .ok()
-        .and_then(|guard| guard.live_summary.clone());
-    let tooltip = format_tray_tooltip(shortcut_label, live_summary.as_deref());
-    let _ = tray.set_tooltip(Some(tooltip));
-    if let Ok(menu) = build_tray_menu(app, shortcut_label, update_version) {
-        let _ = tray.set_menu(Some(menu));
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        let live_summary = TRAY_AND_HOTKEY_STATE.read().ok().and_then(|g| g.live_summary.clone());
+        let _ = tray.set_tooltip(Some(format_tray_tooltip(shortcut_label, live_summary.as_deref())));
+        if let Ok(menu) = build_tray_menu(app, shortcut_label, update_version) {
+            let _ = tray.set_menu(Some(menu));
+        }
     }
 }
 
@@ -237,15 +232,13 @@ fn main() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
-                    if event.state() != ShortcutState::Pressed {
-                        return;
-                    }
-                    let matches = TRAY_AND_HOTKEY_STATE
-                        .read()
-                        .ok()
-                        .and_then(|guard| guard.active_shortcut)
-                        .is_some_and(|active| &active == shortcut);
-                    if matches {
+                    if event.state() == ShortcutState::Pressed
+                        && TRAY_AND_HOTKEY_STATE
+                            .read()
+                            .ok()
+                            .and_then(|guard| guard.active_shortcut)
+                            .is_some_and(|active| &active == shortcut)
+                    {
                         toggle_main_window(app, None, false);
                     }
                 })
