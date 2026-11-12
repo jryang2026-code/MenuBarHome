@@ -229,8 +229,8 @@ CODE_ANCHORS = (
             "symbol": "SensorHistoryPoint",
         },
         "windows": {
-            "path": "windows/src/ui/deviceViews.ts",
-            "symbol": "renderDeviceTile",
+            "roots": ("windows/src", "windows/src-tauri/src"),
+            "symbol": "SensorHistory",
         },
     },
     {
