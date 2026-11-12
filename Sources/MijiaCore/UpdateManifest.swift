@@ -35,7 +35,7 @@ public enum UpdateManifest {
         releaseVersion: String,
         runningVersion: String,
         packageName: String,
-        packageBytes: Data
+        packageDigest: SHA256Digest
     ) -> Result<VerifiedUpdate, Failure> {
         let signature = signatureText.trimmingCharacters(in: .whitespacesAndNewlines)
         if signature.isEmpty {
@@ -77,9 +77,8 @@ public enum UpdateManifest {
         guard let entry = parsed.files.first(where: { $0.file == packageName }) else {
             return .failure(.unexpectedPackage)
         }
-        let actual = SHA256Digest.hash(packageBytes).hex
-        guard actual == entry.sha256 else {
-            return .failure(.hashMismatch(expected: entry.sha256, actual: actual))
+        guard packageDigest.hex == entry.sha256 else {
+            return .failure(.hashMismatch(expected: entry.sha256, actual: packageDigest.hex))
         }
         return .success(VerifiedUpdate(
             version: signedVersion,

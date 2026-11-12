@@ -71,11 +71,12 @@ extension HomeStore {
         } catch {
             guard case .checking = updateState else { return }
             if userInitiated {
+                // The check itself failed; checking again is the only useful next step.
                 updateState = .failed(
                     AppUpdateFailure(
                         release: nil,
                         message: error.localizedDescription,
-                        canRetryInstall: false
+                        recovery: .recheck
                     )
                 )
             } else {
@@ -94,7 +95,9 @@ extension HomeStore {
         case .available(let availableRelease):
             release = availableRelease
         case .failed(let failure):
-            guard let failedRelease = failure.release else { return }
+            // A non-retryable failure would fail identically a second time; only re-checking or the
+            // release page can change the outcome, so refuse to start instead of looping.
+            guard let failedRelease = failure.release, failure.canRetryInstall else { return }
             release = failedRelease
         default:
             return
@@ -144,7 +147,7 @@ extension HomeStore {
                         AppUpdateFailure(
                             release: release,
                             message: error.localizedDescription,
-                            canRetryInstall: release.packageAsset != nil
+                            recovery: UpdateFailureClassifier.recovery(for: error)
                         )
                     )
                 }
@@ -155,6 +158,9 @@ extension HomeStore {
     }
 
     public func cancelUpdateInstallation() {
+        // `.installing` has already handed the staging root to the detached swap script. Reporting
+        // "cancelled" there would be false, and deleting the root would break the running swap.
+        guard !isInstallingUpdate else { return }
         activeUpdateAttemptID = nil
         updateTask?.cancel()
         updateTask = nil
@@ -174,14 +180,41 @@ extension HomeStore {
         KeychainHelper.migratePlaintextCredentialsToKeychain(defaults: userDefaults, vault: credentialVault ?? .shared)
         do {
             try updater.installStagedUpdateAndRelaunch(staged)
-            onTerminateForUpdate?()
         } catch {
             updater.cleanupStagedApp(staged)
             updateState = .failed(
                 AppUpdateFailure(
                     release: staged.release,
                     message: error.localizedDescription,
-                    canRetryInstall: true
+                    recovery: .retryInstall
+                )
+            )
+            return
+        }
+        scheduleRelaunchWatchdog(for: staged)
+        onTerminateForUpdate?()
+    }
+
+    /// Covers the case where the swap never terminates this process.
+    ///
+    /// The detached script waits at most 15 s for the app to exit; this fires after that. If we are
+    /// still alive, the update did not land, so the state must stop claiming "正在重启…" forever and
+    /// the user must be able to try again. `nil` freezes the watchdog for tests.
+    private func scheduleRelaunchWatchdog(for staged: VerifiedStagedApp) {
+        updateRelaunchWatchdogTask?.cancel()
+        guard let interval = updateRelaunchWatchdogInterval else { return }
+        updateRelaunchWatchdogTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: interval)
+            guard let self, !Task.isCancelled, self.isInstallingUpdate else { return }
+            self.updater.cleanupStagedApp(staged)
+            self.updateState = .failed(
+                AppUpdateFailure(
+                    release: staged.release,
+                    message: L10n.tr(
+                        "替换后的应用没有自动启动，请重试或手动下载安装",
+                        "The replaced app did not start; retry or install manually"
+                    ),
+                    recovery: .retryInstall
                 )
             )
         }

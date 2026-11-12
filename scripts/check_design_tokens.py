@@ -14,7 +14,7 @@ surfaces = (
     'AssistantCommandBar', 'AutomationSettingsSection', 'ClimatePanelModule',
     'ControlCenterPanel', 'ControlCenterPanelChrome', 'ControlCenterPanelLayout', 'DeviceCardView', 'EnergySettingsSection',
     'HotkeyShortcutRecorder', 'MiAccountSection', 'SensorCardView',
-    'SettingsWindowView', 'SettingsCategoryPicker', 'ThemeAndMotion', 'UpdateSection', 'PanelDesign',
+    'SettingsWindowView', 'SettingsSidebar', 'SettingsIconTiles', 'ThemeAndMotion', 'UpdateSection', 'PanelDesign',
 )
 rules = (
     (r'\.system\(size:\s*\d', '字号请使用 DesignTokens.TypeSize'),

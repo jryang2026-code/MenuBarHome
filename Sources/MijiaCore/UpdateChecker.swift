@@ -125,10 +125,14 @@ public struct AppRelease: Equatable, Sendable {
 public struct DownloadProgress: Equatable, Sendable {
     public let receivedBytes: Int64
     public let totalBytes: Int64?
+    /// Smoothed transfer rate supplied by `DownloadProgressSampler`. Nil until two samples are far
+    /// enough apart to measure, and always nil for a driver that reports a single final sample.
+    public let bytesPerSecond: Double?
 
-    public init(receivedBytes: Int64, totalBytes: Int64?) {
+    public init(receivedBytes: Int64, totalBytes: Int64?, bytesPerSecond: Double? = nil) {
         self.receivedBytes = receivedBytes
         self.totalBytes = totalBytes
+        self.bytesPerSecond = bytesPerSecond
     }
 
     public var fractionCompleted: Double? {
@@ -136,14 +140,132 @@ public struct DownloadProgress: Equatable, Sendable {
         return min(1.0, max(0.0, Double(receivedBytes) / Double(totalBytes)))
     }
 
+    /// `12.3 / 30.2 MB (41%)`, or `12.3 MB` while the server has not declared a length.
     public var formattedSummary: String {
-        let receivedMB = Double(receivedBytes) / (1024 * 1024)
-        if let totalBytes, totalBytes > 0 {
-            let totalMB = Double(totalBytes) / (1024 * 1024)
-            let percent = Int((fractionCompleted ?? 0) * 100)
-            return String(format: "%.1f / %.1f MB (%d%%)", receivedMB, totalMB, percent)
+        guard let totalBytes, totalBytes > 0 else {
+            return Self.formattedMegabytes(receivedBytes)
         }
-        return String(format: "%.1f MB", receivedMB)
+        let percent = Int((fractionCompleted ?? 0) * 100)
+        return "\(Self.formattedMegabytes(receivedBytes)) / \(Self.formattedMegabytes(totalBytes)) (\(percent)%)"
+    }
+
+    /// `3.9 MB/s`, or nil while the rate is still unmeasured or has dropped to zero.
+    public var formattedSpeed: String? {
+        guard let bytesPerSecond, bytesPerSecond > 0 else { return nil }
+        return Self.formattedMegabytes(Int64(bytesPerSecond.rounded())) + "/s"
+    }
+
+    /// Seconds left at the smoothed rate; nil when either side of the division is unknown.
+    public var estimatedSecondsRemaining: TimeInterval? {
+        guard let totalBytes, totalBytes > receivedBytes,
+              let bytesPerSecond, bytesPerSecond > 0 else {
+            return nil
+        }
+        return Double(totalBytes - receivedBytes) / bytesPerSecond
+    }
+
+    static func formattedMegabytes(_ bytes: Int64) -> String {
+        let value = Double(bytes) / (1024 * 1024)
+        // One decimal below 100 MB keeps the caption narrow; anything larger reads better whole.
+        return value >= 100 ? String(format: "%.0f MB", value) : String(format: "%.1f MB", value)
+    }
+}
+
+/// Wording for the download caption, kept beside `DownloadProgress` so the phrasing is testable
+/// without rendering SwiftUI.
+public enum DownloadSectionCopy {
+    /// `约剩 12 秒`, `约剩 3 分钟`, `约剩 1 小时 5 分钟`; nil while the rate is still unmeasured,
+    /// because a caption that guesses is worse than no caption at all.
+    public static func timeRemaining(_ progress: DownloadProgress) -> String? {
+        guard let remaining = progress.estimatedSecondsRemaining, remaining.isFinite else { return nil }
+        // Round up: a caption that says 3 s and then sits there for 4 s reads as stuck.
+        let seconds = max(1, Int(remaining.rounded(.up)))
+        if seconds < 10 {
+            return L10n.tr("约剩几秒", "A few seconds left")
+        }
+        if seconds < 60 {
+            return L10n.format("约剩 %@ 秒", "%@s left", String(seconds))
+        }
+        let minutes = max(1, (seconds + 30) / 60)
+        if minutes < 60 {
+            return L10n.format("约剩 %@ 分钟", "%@m left", String(minutes))
+        }
+        let hours = minutes / 60
+        let leftover = minutes % 60
+        guard leftover > 0 else {
+            return L10n.format("约剩 %@ 小时", "%@h left", String(hours))
+        }
+        return L10n.format("约剩 %@ 小时 %@ 分钟", "%@h %@m left", String(hours), String(leftover))
+    }
+}
+
+/// Turns the driver's raw byte counts into a transfer rate for the progress caption.
+///
+/// The download loop reports every ~60 ms, so a naive delta swings wildly. The rate is a
+/// time-weighted exponential average: the longer the gap between samples, the more the newest one
+/// counts. The clock is injectable so tests measure a deterministic rate instead of wall time.
+public final class DownloadProgressSampler: @unchecked Sendable {
+    private let now: @Sendable () -> ContinuousClock.Instant
+    private let lock = NSLock()
+    private var lastBytes: Int64?
+    private var lastInstant: ContinuousClock.Instant?
+    private var smoothedRate: Double?
+
+    /// Longer gaps are trusted more; this is the window over which a sample fully replaces the average.
+    private static let fullWeightWindow: TimeInterval = 1.5
+
+    public init(now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }) {
+        self.now = now
+    }
+
+    /// Stamps `progress` with the current smoothed rate. A restarted download (fewer bytes than the
+    /// previous sample) clears the history instead of reporting a negative rate.
+    public func decorate(_ progress: DownloadProgress) -> DownloadProgress {
+        lock.lock()
+        defer { lock.unlock() }
+        let instant = now()
+        defer {
+            lastBytes = progress.receivedBytes
+            lastInstant = instant
+        }
+        guard let previousBytes = lastBytes, let previousInstant = lastInstant,
+              progress.receivedBytes >= previousBytes else {
+            smoothedRate = nil
+            return DownloadProgress(
+                receivedBytes: progress.receivedBytes,
+                totalBytes: progress.totalBytes,
+                bytesPerSecond: nil
+            )
+        }
+        let seconds = Self.seconds(between: previousInstant, and: instant)
+        guard seconds > 0 else {
+            return DownloadProgress(
+                receivedBytes: progress.receivedBytes,
+                totalBytes: progress.totalBytes,
+                bytesPerSecond: smoothedRate
+            )
+        }
+        let instantRate = Double(progress.receivedBytes - previousBytes) / seconds
+        let weight = min(1.0, seconds / Self.fullWeightWindow)
+        if let existing = smoothedRate {
+            smoothedRate = existing + (instantRate - existing) * weight
+        } else {
+            smoothedRate = instantRate
+        }
+        return DownloadProgress(
+            receivedBytes: progress.receivedBytes,
+            totalBytes: progress.totalBytes,
+            bytesPerSecond: smoothedRate
+        )
+    }
+
+    private static func seconds(
+        between start: ContinuousClock.Instant,
+        and end: ContinuousClock.Instant
+    ) -> TimeInterval {
+        let duration = end - start
+        return Double(duration.components.seconds)
+            + Double(duration.components.attoseconds) / 1e18
     }
 }
 
@@ -161,18 +283,55 @@ public struct VerifiedStagedApp: Equatable, Sendable {
 }
 
 public struct AppUpdateFailure: Equatable, Sendable {
+    /// What the user can do about the failure. The UI branches on this, never on the raw error.
+    public enum Recovery: String, Equatable, Sendable {
+        /// Network, disk, unpack, or swap-script trouble: the identical download may succeed.
+        case retryInstall
+        /// The release metadata was stale or wrong: checking again is the useful next step.
+        case recheck
+        /// A signature, identity, version floor, or target-location refusal: the same package can
+        /// never install, so only the release page helps.
+        case manualDownload
+    }
+
     public let release: AppRelease?
     public let message: String
-    public let canRetryInstall: Bool
+    public let recovery: Recovery
 
-    public init(release: AppRelease?, message: String, canRetryInstall: Bool) {
+    public init(release: AppRelease?, message: String, recovery: Recovery) {
         self.release = release
         self.message = message
-        self.canRetryInstall = canRetryInstall
+        self.recovery = recovery
     }
+
+    /// Retrying re-runs the same download, which only makes sense when the failure was transient.
+    public var canRetryInstall: Bool { recovery == .retryInstall }
 
     public var fallbackURL: URL {
         release?.pageURL ?? UpdateChecker.releasesPage
+    }
+}
+
+/// Maps an installation error onto the recovery the user actually has.
+///
+/// Install errors that are decided by signed metadata or the target bundle (signature, code
+/// signature, bundle identity, version floor, unwritable location, not-an-app) cannot be fixed by
+/// downloading the same bytes again, so they must not offer a retry button.
+public enum UpdateFailureClassifier {
+    public static func recovery(for error: any Error) -> AppUpdateFailure.Recovery {
+        guard let installError = error as? UpdateInstallError else {
+            // Transport, disk, and cancellation-adjacent errors are worth another attempt.
+            return .retryInstall
+        }
+        switch installError {
+        case .checksumMismatch, .bundleIdentifierMismatch, .bundleVersionMismatch,
+             .codeSignatureInvalid, .updateSignatureMissing, .updateSignatureInvalid,
+             .updateBelowMinimum, .missingPackageAsset, .notRunningFromAppBundle,
+             .targetLocationNotWritable:
+            return .manualDownload
+        case .unpackFailed, .relaunchFailed:
+            return .retryInstall
+        }
     }
 }
 
@@ -224,6 +383,12 @@ public enum AppUpdateState: Equatable, Sendable {
     public var isFailure: Bool {
         if case .failed = self { return true }
         return false
+    }
+
+    /// True while bytes are moving, so the UI can show a determinate bar instead of a spinner.
+    public var downloadProgress: DownloadProgress? {
+        if case .downloading(_, let progress) = self { return progress }
+        return nil
     }
 }
 
@@ -498,31 +663,33 @@ public struct UpdateSystemDriver: Sendable {
             let handle = try FileHandle(forWritingTo: destination)
             defer { try? handle.close() }
 
-            var buffer = Data()
-            buffer.reserveCapacity(64 * 1024)
             var receivedBytes: Int64 = 0
             var lastReportedAt = ContinuousClock.now
-
+            // `AsyncBytes.lines`-style byte-at-a-time iteration costs one suspension per byte. This
+            // collects up to 256 KB per suspension, which is what makes a 30 MB DMG download in
+            // seconds rather than minutes.
+            var chunk = Data()
+            chunk.reserveCapacity(256 * 1024)
             for try await byte in asyncBytes {
-                buffer.append(byte)
-                if buffer.count >= 64 * 1024 {
+                chunk.append(byte)
+                if chunk.count >= 256 * 1024 {
                     try Task.checkCancellation()
-                    try handle.write(contentsOf: buffer)
-                    receivedBytes += Int64(buffer.count)
-                    buffer.removeAll(keepingCapacity: true)
+                    try handle.write(contentsOf: chunk)
+                    receivedBytes += Int64(chunk.count)
+                    chunk.removeAll(keepingCapacity: true)
                     let now = ContinuousClock.now
-                    if now - lastReportedAt >= .milliseconds(60) {
+                    if now - lastReportedAt >= .milliseconds(120) {
                         lastReportedAt = now
                         onProgress(DownloadProgress(receivedBytes: receivedBytes, totalBytes: totalBytes))
                     }
                 }
             }
 
-            if !buffer.isEmpty {
+            if !chunk.isEmpty {
                 try Task.checkCancellation()
-                try handle.write(contentsOf: buffer)
-                receivedBytes += Int64(buffer.count)
-                buffer.removeAll(keepingCapacity: false)
+                try handle.write(contentsOf: chunk)
+                receivedBytes += Int64(chunk.count)
+                chunk.removeAll(keepingCapacity: false)
             }
             onProgress(DownloadProgress(receivedBytes: receivedBytes, totalBytes: totalBytes))
             #else
@@ -564,33 +731,7 @@ public struct UpdateSystemDriver: Sendable {
         launchDetachedSwapAndRelaunch: { staged, targetBundleURL, currentPID in
             let parentDir = targetBundleURL.deletingLastPathComponent()
             let backupURL = parentDir.appendingPathComponent(".\(targetBundleURL.lastPathComponent).backup-\(currentPID)")
-            let script = """
-            i=0
-            while kill -0 "$WAIT_PID" 2>/dev/null; do
-                i=$((i + 1))
-                if [ "$i" -ge 150 ]; then
-                    break
-                fi
-                sleep 0.1
-            done
-            if kill -0 "$WAIT_PID" 2>/dev/null; then
-                exit 1
-            fi
-            rm -rf "$BACKUP_APP"
-            if [ -e "$TARGET_APP" ]; then
-                mv "$TARGET_APP" "$BACKUP_APP" || exit 1
-            fi
-            if mv "$STAGED_APP" "$TARGET_APP"; then
-                rm -rf "$BACKUP_APP" "$STAGING_ROOT"
-                /usr/bin/open "$TARGET_APP"
-            else
-                if [ -e "$BACKUP_APP" ]; then
-                    rm -rf "$TARGET_APP"
-                    mv "$BACKUP_APP" "$TARGET_APP"
-                fi
-                exit 1
-            fi
-            """
+            let script = swapScript
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
             process.arguments = ["-c", script]
@@ -610,6 +751,42 @@ public struct UpdateSystemDriver: Sendable {
             }
         }
     )
+
+    /// Waits for the running app to exit, swaps the staged bundle in, and reopens it.
+    ///
+    /// A constant string rather than an inline literal so tests can assert the guarantees without
+    /// executing it: it gives up after 15 s, restores the backup on a failed move, and **reopens the
+    /// original app** in that case. Restoring without reopening would leave the user with a closed
+    /// app and no way to tell whether the update landed.
+    static let swapScript = """
+    i=0
+    while kill -0 "$WAIT_PID" 2>/dev/null; do
+        i=$((i + 1))
+        if [ "$i" -ge 150 ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    if kill -0 "$WAIT_PID" 2>/dev/null; then
+        exit 1
+    fi
+    rm -rf "$BACKUP_APP"
+    if [ -e "$TARGET_APP" ]; then
+        mv "$TARGET_APP" "$BACKUP_APP" || exit 1
+    fi
+    if mv "$STAGED_APP" "$TARGET_APP"; then
+        rm -rf "$BACKUP_APP" "$STAGING_ROOT"
+        /usr/bin/open "$TARGET_APP"
+    else
+        if [ -e "$BACKUP_APP" ]; then
+            rm -rf "$TARGET_APP"
+            mv "$BACKUP_APP" "$TARGET_APP"
+            # Put the version the user already had back in front of them, not nothing.
+            /usr/bin/open "$TARGET_APP"
+        fi
+        exit 1
+    fi
+    """
 
     private struct ProcessOutput: Sendable {
         let exitCode: Int32
@@ -858,8 +1035,9 @@ public struct AppUpdater: Sendable {
         let initialTotal: Int64? = asset.sizeBytes > 0 ? asset.sizeBytes : nil
         onPhaseChange(.downloading(release, progress: DownloadProgress(receivedBytes: 0, totalBytes: initialTotal)))
 
+        let sampler = DownloadProgressSampler()
         try await driver.downloadFile(packageURL, archiveURL) { progress in
-            onPhaseChange(.downloading(release, progress: progress))
+            onPhaseChange(.downloading(release, progress: sampler.decorate(progress)))
         }
         try Task.checkCancellation()
 
@@ -875,9 +1053,10 @@ public struct AppUpdater: Sendable {
         guard let signatureText = String(data: signatureData, encoding: .utf8) else {
             throw UpdateInstallError.updateSignatureInvalid("signature file is not UTF-8")
         }
-        let packageBytes: Data
+        // Stream the archive through SHA-256 instead of loading a multi-megabyte DMG into one `Data`.
+        let packageDigest: SHA256Digest
         do {
-            packageBytes = try Data(contentsOf: archiveURL)
+            packageDigest = try SHA256Digest.hashFile(at: archiveURL)
         } catch {
             throw UpdateInstallError.updateSignatureInvalid("cannot read the downloaded package")
         }
@@ -888,7 +1067,7 @@ public struct AppUpdater: Sendable {
             releaseVersion: release.version,
             runningVersion: checker.currentVersion,
             packageName: asset.name,
-            packageBytes: packageBytes
+            packageDigest: packageDigest
         )
         let verified: UpdateManifest.VerifiedUpdate
         switch decision {

@@ -1437,6 +1437,23 @@ struct SnapshotTests {
         }
     }
 
+    @Test("Settings search suggestions remain readable in both appearances")
+    func settingsSearchSuggestions() async throws {
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                SettingsSearchResults(hits: SettingsSearch.search("设备"), selection: 0, onPick: { _ in })
+                    .padding(12)
+                    .frame(width: 240, height: 420, alignment: .top)
+                    .background(Color(nsColor: .windowBackgroundColor))
+                    .environment(\.colorScheme, scheme)
+                    .environment(\.reduceMotionOverride, true),
+                size: CGSize(width: 240, height: 420),
+                named: "settings-search-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
     @Test("Settings capsule fits English at minimum window size with glass enabled")
     func settingsCapsuleVariants() async throws {
         let fixture = try await SnapshotFixture(configuredHASource: false)
