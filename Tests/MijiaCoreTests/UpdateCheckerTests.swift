@@ -74,6 +74,50 @@ struct UpdateCheckerTests {
         #expect(try SHA256Digest.hashFile(at: tempFile) == fromInline)
     }
 
+    @Test("The swap script gives up, restores the backup, and reopens the app it did not replace")
+    func swapScriptKeepsTheUserRunning() {
+        // The script runs detached after this process exits, so a wrong branch here is unrecoverable
+        // and untestable at runtime. It is a constant string precisely so these guarantees can be
+        // read back: 150 × 0.1 s bounds the wait, a live PID aborts, and the failure branch puts the
+        // previous bundle back *and* opens it — restoring without reopening leaves the user with a
+        // closed app and no way to tell whether the update landed.
+        // Compared as trimmed lines so the assertions describe the script's control flow rather
+        // than the indentation of the Swift literal that carries it.
+        let lines = UpdateSystemDriver.swapScript
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+
+        #expect(lines.contains("if [ \"$i\" -ge 150 ]; then"), "the wait must be bounded")
+        #expect(lines.contains("sleep 0.1"), "the bound is 150 polls of 0.1 s")
+        let abortIndex = lines.firstIndex(of: "if kill -0 \"$WAIT_PID\" 2>/dev/null; then")
+        #expect(abortIndex != nil, "a PID that outlived the wait must abort before the swap")
+        if let abortIndex {
+            #expect(lines.dropFirst(abortIndex + 1).first == "exit 1",
+                    "the timed-out branch must exit instead of swapping under a live app")
+        }
+        #expect(lines.contains("mv \"$TARGET_APP\" \"$BACKUP_APP\" || exit 1"),
+                "a failed backup move must not continue into the swap")
+        #expect(lines.contains { $0.hasPrefix("if mv \"$STAGED_APP\" \"$TARGET_APP\"") },
+                "the staged bundle is moved into place and its failure handled")
+
+        // Both the swap and the rollback reopen the app; a third call site would mean a branch was
+        // added without deciding what the user sees.
+        let reopenIndices = lines.indices.filter { lines[$0] == "/usr/bin/open \"$TARGET_APP\"" }
+        #expect(reopenIndices.count == 2, "expected one reopen per outcome, got \(reopenIndices.count)")
+
+        // The rollback has to move the old bundle back *before* reopening it, or the user is left
+        // looking at whatever half-swapped bundle is on disk. Restoring without reopening leaves a
+        // closed app and no way to tell whether the update landed.
+        let restoreIndex = lines.firstIndex(of: "mv \"$BACKUP_APP\" \"$TARGET_APP\"")
+        #expect(restoreIndex != nil, "the rollback must move the backup back into place")
+        if let restoreIndex {
+            #expect(restoreIndex > 0 && lines[restoreIndex - 1] == "rm -rf \"$TARGET_APP\"",
+                    "the rollback must clear the half-swapped bundle before restoring the backup")
+            #expect(reopenIndices.contains { $0 > restoreIndex },
+                    "the rollback must reopen the restored app")
+        }
+    }
+
     @Test("checkRelease selects the DMG only when the update manifest is listed")
     func checkReleaseSelectsDMGWhenManifestIsListed() async throws {
         let zipOnly = """

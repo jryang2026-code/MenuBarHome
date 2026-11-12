@@ -19,7 +19,7 @@ struct EnergySettingsSection: View {
 
     var body: some View {
         let _ = store.effectiveLanguage
-        SettingsSection(title: L10n.tr("插座用电统计", "Plug Energy")) {
+        SettingsSection(title: L10n.tr("插座用电统计", "Plug Energy"), anchor: .energyHistory) {
             Text(L10n.tr(
                 "只保存在这台 Mac 上，来源是每个插座自己的累计电量计数，不用功率估算用电。记录从第一次收到读数开始，之前的用电不会补算；第一次读数只作为基线。跨零点的增量记在前一个采样日，不拆分也不猜测，因此「今天」不会把昨天可能用掉的电算进来。记录保留 31 天，可随时清除。",
                 "Stored on this Mac only. Every figure comes from each plug's own cumulative counter — usage is never estimated from wattage. Recording starts with the first reading; earlier usage is never backfilled, and the first reading only sets a baseline. A delta that spans midnight is credited to the earlier sample day instead of being split or guessed, so “today” cannot claim energy that may have been used yesterday. History keeps 31 days and can be cleared at any time."

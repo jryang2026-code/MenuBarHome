@@ -106,6 +106,7 @@ struct AutomationSettingsSection: View {
                 title: L10n.tr("允许 URL 直控（跳过确认）", "Allow URL control without confirmation"),
                 isOn: $allowDirectControl
             )
+            .settingsRow(anchor: .allowURLControl)
             Text(allowDirectControl
                 ? L10n.tr(
                     "已关闭确认：任何网页或 App 只要打开 menumijia:// 链接就能立即控制设备。仅在你完全信任来源时使用。",
@@ -126,6 +127,7 @@ struct AutomationSettingsSection: View {
             .onChange(of: raycastEnabled) { _, enabled in
                 store.setRaycastIntegration(enabled: enabled)
             }
+            .settingsRow(anchor: .raycast)
             Text(L10n.tr(
                 "开启后把设备与场景列表写到本机一个只有你能读的文件，供 Raycast 扩展搜索；扩展发来的链接带本机令牌，不再弹确认，高风险设备仍会确认。关闭即删除该文件并作废令牌。",
                 "Writes your device and scene list to a file only you can read, for the Raycast extension to search. Links from the extension carry a local token and skip confirmation; high-risk devices still ask. Turning this off deletes the file and revokes the token."
