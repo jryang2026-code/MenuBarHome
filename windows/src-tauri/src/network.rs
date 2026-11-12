@@ -228,9 +228,83 @@ pub(crate) fn origin_from_endpoint(raw: &str) -> Option<String> {
     url_origin(&url)
 }
 
-fn service_origin(raw: &str) -> Result<Option<String>, String> {
+/// Validates a Home Assistant base URL (allowing reverse-proxy subpaths like `/hass` or `/ha/`)
+/// and returns `(origin, websocket_path)` while rejecting credentials, query, fragment, and dot segments.
+pub(crate) fn parse_ha_endpoint_parts(raw: &str, allow_schemeless: bool) -> Result<(String, String), String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("Invalid Home Assistant URL".into());
+    }
+    if trimmed.contains('\\') {
+        return Err("Invalid Home Assistant URL".into());
+    }
+    let with_scheme = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else if allow_schemeless {
+        format!("https://{trimmed}")
+    } else {
+        return Err("Invalid Home Assistant URL".into());
+    };
+    if let Some((_scheme, rest)) = with_scheme.split_once("://") {
+        if let Some((_authority, raw_tail)) = rest.split_once('/') {
+            let raw_path = raw_tail.split(['?', '#']).next().unwrap_or("");
+            let raw_lower = raw_path.to_ascii_lowercase();
+            if raw_path.contains('\\')
+                || raw_lower.contains("%2e")
+                || raw_lower.contains("%2f")
+                || raw_lower.contains("%5c")
+                || raw_path.split('/').any(|seg| seg == "." || seg == "..")
+            {
+                return Err("Home Assistant URL path is invalid".into());
+            }
+        }
+    }
+    let url = reqwest::Url::parse(&with_scheme).map_err(|_| "Invalid Home Assistant URL".to_string())?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("Home Assistant URL must not include credentials".into());
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err("Home Assistant URL must not include query or fragment".into());
+    }
+    let ws_path = ha_websocket_path(url.path())?;
+    let origin = url_origin(&url).ok_or_else(|| "Home Assistant requires an HTTP or HTTPS origin".to_string())?;
+    Ok((origin, ws_path))
+}
+
+pub(crate) fn ha_websocket_path(raw_path: &str) -> Result<String, String> {
+    let lower = raw_path.to_ascii_lowercase();
+    if raw_path.contains('\\')
+        || lower.contains("%2e")
+        || lower.contains("%2f")
+        || lower.contains("%5c")
+    {
+        return Err("Home Assistant URL path is invalid".into());
+    }
+    for seg in raw_path.split('/') {
+        if seg == "." || seg == ".." {
+            return Err("Home Assistant URL path is invalid".into());
+        }
+    }
+    let mut trimmed = raw_path.trim_end_matches('/');
+    if let Some(without_api) = trimmed.strip_suffix("/api") {
+        trimmed = without_api.trim_end_matches('/');
+    }
+    let prefix: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
+    if prefix.is_empty() {
+        Ok("/api/websocket".to_string())
+    } else {
+        Ok(format!("/{}/api/websocket", prefix.join("/")))
+    }
+}
+
+fn service_origin(raw: &str, is_assistant: bool) -> Result<Option<String>, String> {
     if raw.trim().is_empty() {
         return Ok(None);
+    }
+    if !is_assistant {
+        return parse_ha_endpoint_parts(raw, true)
+            .map(|(origin, _)| Some(origin))
+            .map_err(|_| format!("invalid configured endpoint: {raw}"));
     }
     origin_from_endpoint(raw)
         .map(Some)
@@ -295,7 +369,7 @@ pub(crate) fn requested_service_origins(
 ) -> Result<ServiceOrigins, String> {
     let mut requested = ServiceOrigins::default();
     for (raw, is_assistant) in [(assistant_url, true), (ha_url, false)] {
-        let Some(origin) = service_origin(raw)? else {
+        let Some(origin) = service_origin(raw, is_assistant)? else {
             continue;
         };
         let plaintext_warning = origin.starts_with("http://") && !origin_is_local_network(&origin);
@@ -483,4 +557,46 @@ pub(crate) fn set_service_endpoints(
         &ha_url,
         user_confirms_origin,
     )
+}
+
+#[cfg(test)]
+mod subpath_tests {
+    use super::*;
+
+    #[test]
+    fn ha_subpath_urls_normalize_origin_and_websocket_path_while_rejecting_unsafe_components() {
+        assert_eq!(
+            parse_ha_endpoint_parts("https://home.example.com/hass", false).unwrap(),
+            ("https://home.example.com:443".to_string(), "/hass/api/websocket".to_string())
+        );
+        assert_eq!(
+            parse_ha_endpoint_parts("http://192.168.1.8:8123/ha/", false).unwrap(),
+            ("http://192.168.1.8:8123".to_string(), "/ha/api/websocket".to_string())
+        );
+        assert_eq!(
+            parse_ha_endpoint_parts("https://home.example.com/hass/api/", false).unwrap(),
+            ("https://home.example.com:443".to_string(), "/hass/api/websocket".to_string())
+        );
+        assert_eq!(
+            parse_ha_endpoint_parts("http://192.0.2.10:8123/", false).unwrap(),
+            ("http://192.0.2.10:8123".to_string(), "/api/websocket".to_string())
+        );
+
+        let requested = requested_service_origins("", "https://home.example.com/hass/").unwrap();
+        assert_eq!(requested.origins.get("https://home.example.com:443"), Some(&false));
+
+        let lan_requested = requested_service_origins("", "http://192.168.1.8:8123/ha/").unwrap();
+        assert_eq!(lan_requested.origins.get("http://192.168.1.8:8123"), Some(&false));
+
+        for invalid in [
+            "https://home.example.com/hass?token=secret",
+            "https://home.example.com/hass#frag",
+            "https://user:pass@home.example.com/hass",
+            "https://home.example.com/hass/../admin",
+            "https://home.example.com/hass/%2e%2e/admin",
+        ] {
+            assert!(parse_ha_endpoint_parts(invalid, false).is_err(), "{invalid}");
+            assert!(requested_service_origins("", invalid).is_err(), "{invalid}");
+        }
+    }
 }

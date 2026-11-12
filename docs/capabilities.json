@@ -163,7 +163,7 @@
       "en": "HA Humidifiers, Water Heaters & Valves",
       "zh": "HA 加湿器、热水器与阀门",
       "macos": "supported",
-      "windows": "unsupported"
+      "windows": "supported"
     },
     {
       "id": "bath-heaters-hoods",

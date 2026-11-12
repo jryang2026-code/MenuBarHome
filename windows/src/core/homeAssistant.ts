@@ -1,3 +1,25 @@
+import {
+  auxiliaryEntitiesForCover,
+  buildBinarySensorKind,
+  buildCoverKind,
+  buildHAFacets,
+  buildHumidifierKind,
+  buildMediaPlayerKind,
+  buildValveKind,
+  buildWaterHeaterKind,
+  cachedDeviceFacets,
+  cachedExtendedKind,
+  claimSafetyBinarySensors,
+  haLightCapabilityFlags,
+  haLockStatusText,
+  haNumber as number,
+  haStrings as strings,
+  haText as text,
+  isHAStateAvailable,
+  mapHAFacetCommand,
+  type HARow as Row,
+  type HAState,
+} from "./haDomains.js";
 import { sha256 } from "./miCloudCrypto.js";
 import {
   deviceEnvironmentReading,
@@ -5,16 +27,11 @@ import {
   type CoverSpec,
   type DeviceCommand,
   type DeviceKind,
+  type FacetControl,
   type SmartDevice,
   type SynthesizedHome,
 } from "./models.js";
 
-type Row = Record<string, unknown>;
-interface HAState {
-  entityId: string;
-  state: string;
-  attributes: Row;
-}
 interface HASnapshot {
   areas: Row[];
   devices: Row[];
@@ -41,20 +58,6 @@ function rows(value: unknown): Row[] {
   if (!Array.isArray(value)) throw new Error("Invalid Home Assistant list");
   return value.map(object);
 }
-function text(value: unknown, fallback = ""): string {
-  return typeof value === "string" ? value : fallback;
-}
-function number(value: unknown): number | null {
-  if (typeof value !== "number" && typeof value !== "string") return null;
-  if (value === "") return null;
-  const result = Number(value);
-  return Number.isFinite(result) ? result : null;
-}
-function strings(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
-}
 
 /** `clock` and `block` contain the letters "lock" but are not door locks. */
 function isLockModel(model: string): boolean {
@@ -64,24 +67,6 @@ function isLockModel(model: string): boolean {
   return lower.includes("lock");
 }
 
-function haLockStatusText(state: HAState | undefined): string {
-  if (!state || state.state === "unknown" || state.state === "unavailable") return "锁状态未知";
-  switch (state.state.toLowerCase()) {
-    case "locked":
-      return "已上锁";
-    case "unlocked":
-    case "open":
-      return "已开锁";
-    case "locking":
-      return "正在上锁";
-    case "unlocking":
-      return "正在开锁";
-    case "jammed":
-      return "门锁卡住";
-    default:
-      return "锁状态未知";
-  }
-}
 function decode(value: unknown): HASnapshot {
   const raw = object(value);
   return {
@@ -102,7 +87,6 @@ function decode(value: unknown): HASnapshot {
     }),
   };
 }
-
 
 function requiredText(value: unknown): string {
   if (typeof value !== "string") throw new Error("Invalid cached text");
@@ -128,37 +112,6 @@ function nullableBoolean(value: unknown): boolean | null {
 function requiredStrings(value: unknown): string[] {
   if (!Array.isArray(value)) throw new Error("Invalid cached string list");
   return value.map(requiredText);
-}
-function haCoverSubtype(deviceClass: string | null, name: string): CoverSpec["subtype"] {
-  const rawClass = (deviceClass ?? "").trim().toLowerCase();
-  switch (rawClass) {
-    case "curtain":
-    case "blind":
-    case "shade":
-    case "shutter":
-    case "awning":
-    case "damper":
-      return "curtain";
-    case "window":
-      return "window-opener";
-    case "garage":
-    case "gate":
-    case "door":
-      return "garage-door";
-    default:
-      break;
-  }
-  const lower = name.toLowerCase();
-  if (name.includes("帘") || lower.includes("curtain") || lower.includes("blind")) {
-    return "curtain";
-  }
-  if (name.includes("车库") || name.includes("大门") || lower.includes("garage") || lower.includes("gate")) {
-    return "garage-door";
-  }
-  if (name.includes("窗") || lower.includes("window")) {
-    return "window-opener";
-  }
-  return "window-opener";
 }
 
 function requiredCoverSubtype(value: unknown): CoverSpec["subtype"] {
@@ -187,7 +140,7 @@ function cachedKind(value: unknown): DeviceKind {
     case "camera": return { kind: "camera", entityId: requiredText(k.entityId), isOn: requiredBoolean(k.isOn), nightShot: nullableText(k.nightShot), availableNightShots: requiredStrings(k.availableNightShots), motionDetectionEntityId: nullableText(k.motionDetectionEntityId), isMotionDetectionOn: nullableBoolean(k.isMotionDetectionOn), streamEntityId: nullableText(k.streamEntityId), snapshotPath: null };
     case "cover": return { kind: "cover", entityId: requiredText(k.entityId), subtype: requiredCoverSubtype(k.subtype), positionPercent: nullableNumber(k.positionPercent), positionWritable: requiredBoolean(k.positionWritable), openDescription: nullableText(k.openDescription), closeDescription: nullableText(k.closeDescription), pauseDescription: nullableText(k.pauseDescription), batteryPercent: nullableNumber(k.batteryPercent), faultText: nullableText(k.faultText), motion: requiredCoverMotion(k.motion) };
     case "sensor": return { kind: "sensor", temperature: nullableNumber(k.temperature), humidity: nullableNumber(k.humidity), battery: nullableNumber(k.battery), ...(k.statusText !== undefined && k.statusText !== null ? { statusText: requiredText(k.statusText) } : {}) };
-    default: throw new Error("Invalid cached device kind");
+    default: return cachedExtendedKind(k);
   }
 }
 
@@ -195,6 +148,7 @@ export function parseCachedHAHome(value: unknown): { identity: string; home: Syn
   try {
     const cache = object(value);
     const home = object(cache.home);
+    const deviceFacets = cachedDeviceFacets(home.deviceFacets);
     return {
       identity: requiredText(cache.identity),
       home: {
@@ -202,6 +156,7 @@ export function parseCachedHAHome(value: unknown): { identity: string; home: Syn
         rooms: rows(home.rooms).map((r) => ({ id: requiredText(r.id), name: requiredText(r.name), deviceCount: requiredNumber(r.deviceCount) })),
         environmentReadings: rows(home.environmentReadings).map((r) => ({ id: requiredText(r.id), label: requiredText(r.label), roomName: requiredText(r.roomName), temperature: nullableNumber(r.temperature), humidity: nullableNumber(r.humidity), battery: nullableNumber(r.battery) })),
         scenes: rows(home.scenes).map((s) => ({ id: requiredText(s.id), name: requiredText(s.name), entityId: requiredText(s.entityId) })),
+        ...(deviceFacets !== undefined ? { deviceFacets } : {}),
       },
     };
   } catch {
@@ -211,16 +166,51 @@ export function parseCachedHAHome(value: unknown): { identity: string; home: Syn
 
 export function homeAssistantIdentity(baseURL: string, token: string): string | null {
   try {
-    const url = new URL(baseURL.trim());
-    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password || !url.hostname) return null;
+    const trimmed = baseURL.trim();
+    if (!trimmed || trimmed.includes("\\")) return null;
+    if (/%2e|%2f|%5c/i.test(trimmed)) return null;
+    const schemeEnd = trimmed.indexOf("://");
+    if (schemeEnd > 0) {
+      const afterHostSlash = trimmed.indexOf("/", schemeEnd + 3);
+      if (afterHostSlash >= 0) {
+        const rawPath = trimmed.slice(afterHostSlash).split(/[?#]/, 1)[0] ?? "";
+        if (rawPath.split("/").some((seg) => seg === "." || seg === "..")) return null;
+      }
+    }
+    const url = new URL(trimmed);
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      url.username ||
+      url.password ||
+      !url.hostname ||
+      url.search ||
+      url.hash
+    ) {
+      return null;
+    }
+    if (/%2e|%2f|%5c/i.test(url.pathname)) return null;
+    const segments = url.pathname.split("/").filter(Boolean);
+    if (segments.some((seg) => seg === "." || seg === "..")) return null;
+    const normalizedSegments =
+      segments.length > 0 && segments[segments.length - 1]!.toLowerCase() === "api"
+        ? segments.slice(0, -1)
+        : segments;
+    const basePath = normalizedSegments.length > 0 ? `/${normalizedSegments.join("/")}` : "";
     const digest = sha256(new TextEncoder().encode(token));
-    return `${url.origin}|${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    return `${url.origin}${basePath}|${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
   } catch {
     return null;
   }
 }
 
-export function homeAssistantCommand(command: DeviceCommand, devices: readonly SmartDevice[]): DeviceCommand {
+export function homeAssistantCommand(
+  command: DeviceCommand,
+  devices: readonly SmartDevice[],
+  deviceFacets?: Readonly<Record<string, readonly FacetControl[]>>,
+): DeviceCommand {
+  if (command.kind === "setMiotProperty") {
+    return mapHAFacetCommand(command, deviceFacets);
+  }
   if (command.kind !== "setClimatePower" || !command.isOn) return command;
   const device = devices.find((entry) => entry.kind.kind === "climate" && entry.kind.entityId === command.entityId);
   if (!device || device.kind.kind !== "climate") throw new Error("Home Assistant climate not found");
@@ -232,11 +222,25 @@ export function homeAssistantCommand(command: DeviceCommand, devices: readonly S
   return { ...command, resumeMode };
 }
 
+function cleanHADeviceName(name: string, roomName: string): string {
+  let cleanName = name
+    .trim()
+    .replace(/^(?:直流变频循环扇|米家踢脚线电暖器|Yeelight LED 彩光灯带)\s*/, "")
+    .replace(/(?:  灯|  电暖器|  风扇|  音箱|  电视|  开关 开关|  窗帘)$/, "")
+    .trim();
+  if (cleanName === "吸顶灯" && roomName !== "全屋") {
+    cleanName = `${roomName}吸顶灯`;
+  }
+  return cleanName || name.trim();
+}
+
 function buildKind(
   entities: Row[],
   states: Map<string, HAState>,
   model: string,
-  deviceName = "",
+  deviceName: string,
+  claimed: Set<string>,
+  allowBinaryFallback = false,
 ): { kind: DeviceKind; online: boolean } | null {
   const find = (
     domain: string,
@@ -248,12 +252,21 @@ function buildKind(
     );
     return entity ? states.get(text(entity.entity_id)) : undefined;
   };
+  const findByTranslationOrSubstring = (
+    domain: string,
+    translationKeys: readonly string[],
+    legacyContains: string,
+  ) =>
+    find(domain, (entry) => translationKeys.includes(text(entry.translation_key))) ??
+    find(domain, (entry) => text(entry.entity_id).includes(legacyContains));
+
   const sensor = (metric: string) =>
     find("sensor", (entry) => {
       const state = states.get(text(entry.entity_id));
       const entityId = text(entry.entity_id);
+      const tKey = text(entry.translation_key);
       if (metric === "air_quality") {
-        return state?.attributes.device_class === "aqi" || state?.attributes.device_class === "air_quality" || entityId.includes("air_quality");
+        return state?.attributes.device_class === "aqi" || state?.attributes.device_class === "air_quality" || tKey === "air_quality" || entityId.includes("air_quality");
       }
       if (state?.attributes.device_class === metric) return true;
       if (metric === "power") {
@@ -265,16 +278,25 @@ function buildKind(
         return entityId.includes("power_consumption") || entityId.includes("energy");
       }
       if (metric === "pm25") {
-        return /pm2[._]?5|pm25/.test(entityId);
+        return /pm2[._]?5|pm25/.test(tKey) || /pm2[._]?5|pm25/.test(entityId);
+      }
+      if (metric === "filter_life") {
+        return tKey.includes("filter_life") || entityId.includes("filter_life");
       }
       if (metric === "temperature") {
-        return entityId.includes("temperature") && !entityId.includes("color_temperature");
+        return (tKey.includes("temperature") || entityId.includes("temperature")) && !entityId.includes("color_temperature");
       }
-      return entityId.includes(metric);
+      return tKey.includes(metric) || entityId.includes(metric);
     });
-  const reading = (metric: string) => number(sensor(metric)?.state);
-  const sensorText = (metric: string) => {
+  const claimSensor = (metric: string): HAState | undefined => {
     const found = sensor(metric);
+    if (found) claimed.add(found.entityId);
+    return found;
+  };
+  const reading = (metric: string, claim = false) =>
+    number((claim ? claimSensor(metric) : sensor(metric))?.state);
+  const sensorText = (metric: string, claim = false) => {
+    const found = claim ? claimSensor(metric) : sensor(metric);
     return found && found.state !== "unknown" && found.state !== "unavailable" ? found.state : null;
   };
   const powerSwitch = find(
@@ -287,6 +309,7 @@ function buildKind(
   let state: HAState | undefined;
   let kind: DeviceKind;
   if ((state = find("climate"))) {
+    claimed.add(state.entityId);
     const a = state.attributes;
     const modes = strings(a.hvac_modes);
     const swingMode = typeof a.swing_mode === "string" ? a.swing_mode : undefined;
@@ -315,6 +338,7 @@ function buildKind(
         !text(entry.entity_id).endsWith("_indicator_light"),
     ))
   ) {
+    claimed.add(state.entityId);
     const a = state.attributes,
       brightness = number(a.brightness);
     kind = {
@@ -333,6 +357,7 @@ function buildKind(
       ...haLightCapabilityFlags(a),
     };
   } else if ((state = find("fan"))) {
+    claimed.add(state.entityId);
     const a = state.attributes;
     kind = {
       kind: "fan",
@@ -342,34 +367,45 @@ function buildKind(
       presetMode: typeof a.preset_mode === "string" ? a.preset_mode : null,
       availablePresetModes: strings(a.preset_modes),
       isOscillating: typeof a.oscillating === "boolean" ? a.oscillating : null,
-      temperature: reading("temperature") ?? number(a.temperature),
-      humidity: reading("humidity") ?? number(a.humidity),
-      pm25Density: reading("pm25") ?? number(a.pm25),
-      airQuality: sensorText("air_quality") ?? (typeof a.air_quality === "string" ? a.air_quality : null),
-      filterLifePercent: reading("filter_life") ?? number(a.filter_life_remaining),
+      temperature: reading("temperature", true) ?? number(a.temperature),
+      humidity: reading("humidity", true) ?? number(a.humidity),
+      pm25Density: reading("pm25", true) ?? number(a.pm25),
+      airQuality: sensorText("air_quality", true) ?? (typeof a.air_quality === "string" ? a.air_quality : null),
+      filterLifePercent: reading("filter_life", true) ?? number(a.filter_life_remaining),
     };
+  } else if (entities.some((e) => text(e.entity_id).startsWith("humidifier."))) {
+    return buildHumidifierKind(entities, states, claimed);
+  } else if (entities.some((e) => text(e.entity_id).startsWith("water_heater."))) {
+    return buildWaterHeaterKind(entities, states, claimed);
   } else if ((state = find("vacuum"))) {
+    claimed.add(state.entityId);
     const mode = find("select", (entry) =>
-      text(entry.entity_id).includes("mode"),
+      text(entry.translation_key) === "mode" || text(entry.entity_id).includes("mode"),
     );
+    if (mode) claimed.add(mode.entityId);
     kind = {
       kind: "vacuum",
       entityId: state.entityId,
       status: state.state,
-      battery: reading("battery") ?? number(state.attributes.battery_level),
+      battery: reading("battery", true) ?? number(state.attributes.battery_level),
       modeEntityId: mode?.entityId ?? null,
       currentMode: mode && mode.state !== "unknown" && mode.state !== "unavailable" ? mode.state : null,
       availableModes: strings(mode?.attributes.options),
     };
   } else if (
     model.includes("fridge") ||
-    entities.some((e) => text(e.entity_id).includes("midjd6"))
+    entities.some(
+      (e) => text(e.entity_id).includes("midjd6") || text(e.translation_key) === "temperature_p_3",
+    )
   ) {
-    const mode = find("select", (entry) => text(entry.entity_id).includes("mode"));
-    const fridgeTemp = find("sensor", (entry) => text(entry.entity_id).includes("temperature_p_3"));
-    const freezerTemp = find("sensor", (entry) => text(entry.entity_id).includes("temperature_p_4"));
-    const fridgeTarget = find("number", (entry) => text(entry.entity_id).includes("target_temperature_p_3"));
-    const freezerTarget = find("number", (entry) => text(entry.entity_id).includes("target_temperature_p_4"));
+    const mode = findByTranslationOrSubstring("select", ["mode"], "mode");
+    const fridgeTemp = findByTranslationOrSubstring("sensor", ["temperature_p_3"], "temperature_p_3");
+    const freezerTemp = findByTranslationOrSubstring("sensor", ["temperature_p_4"], "temperature_p_4");
+    const fridgeTarget = findByTranslationOrSubstring("number", ["target_temperature_p_3"], "target_temperature_p_3");
+    const freezerTarget = findByTranslationOrSubstring("number", ["target_temperature_p_4"], "target_temperature_p_4");
+    for (const item of [mode, fridgeTemp, freezerTemp, fridgeTarget, freezerTarget]) {
+      if (item) claimed.add(item.entityId);
+    }
     const fCur = number(fridgeTemp?.state);
     const zCur = number(freezerTemp?.state);
     const fTgt = number(fridgeTarget?.state) ?? 4;
@@ -391,7 +427,13 @@ function buildKind(
       },
       online,
     };
-  } else if ((state = find("camera") ?? (model.startsWith("chuangmi.camera") ? powerSwitch : undefined))) {
+  } else if (
+    (state =
+      find("camera") ??
+      (model.includes("camera") || model.includes("cateye") || model.includes("doorbell")
+        ? powerSwitch
+        : undefined))
+  ) {
     const camera = find("camera");
     const power = powerSwitch;
     const motion = find("switch", (entry) =>
@@ -400,6 +442,9 @@ function buildKind(
     const night = find("select", (entry) =>
       /night|ir_mode/.test(text(entry.entity_id)),
     );
+    for (const item of [camera, power, motion, night]) {
+      if (item) claimed.add(item.entityId);
+    }
     const powerId = power?.entityId ?? state.entityId;
     kind = {
       kind: "camera",
@@ -423,66 +468,38 @@ function buildKind(
       (entry) => entry.entity_category !== "config" && entry.entity_category !== "diagnostic",
     ))
   ) {
-    const a = state.attributes;
-    const coverEntry = entities.find((entry) => text(entry.entity_id) === state!.entityId);
-    const friendlyName =
-      typeof a.friendly_name === "string"
-        ? a.friendly_name
-        : text(coverEntry?.name, text(coverEntry?.original_name));
-    const nameForInference = !deviceName || deviceName === "智能设备" ? friendlyName : deviceName;
-    const rawPos = number(a.current_position);
-    const roundedPos =
-      rawPos !== null && Number.isSafeInteger(Math.round(rawPos))
-        ? Math.max(0, Math.min(100, Math.round(rawPos)))
-        : null;
-    const stateLower = state.state.toLowerCase();
-    const positionPercent =
-      roundedPos !== null
-        ? roundedPos
-        : stateLower === "open"
-          ? 100
-          : stateLower === "closed"
-            ? 0
-            : null;
-    const rawFeatures = number(a.supported_features);
-    const features =
-      rawFeatures !== null && Number.isSafeInteger(Math.trunc(rawFeatures)) ? Math.trunc(rawFeatures) : null;
-    const bat = reading("battery") ?? number(a.battery_level) ?? number(a.battery);
-    const batteryPercent =
-      bat !== null && Number.isSafeInteger(Math.round(bat)) ? Math.round(bat) : null;
-    kind = {
-      kind: "cover",
-      entityId: state.entityId,
-      subtype: haCoverSubtype(typeof a.device_class === "string" ? a.device_class : null, nameForInference),
-      positionPercent,
-      positionWritable: features !== null ? (features & 4) !== 0 : roundedPos !== null,
-      openDescription: features !== null ? ((features & 1) !== 0 ? "Open" : null) : "Open",
-      closeDescription: features !== null ? ((features & 2) !== 0 ? "Close" : null) : "Close",
-      pauseDescription: features !== null ? ((features & 8) !== 0 ? "Pause" : null) : "Pause",
-      batteryPercent,
-      faultText: null,
-      motion: stateLower === "opening" ? "opening" : stateLower === "closing" ? "closing" : "stopped",
-    };
+    return buildCoverKind(state, entities, deviceName, reading("battery", true), claimed);
+  } else if (
+    entities.some(
+      (entry) =>
+        text(entry.entity_id).startsWith("valve.") &&
+        entry.entity_category !== "config" &&
+        entry.entity_category !== "diagnostic",
+    )
+  ) {
+    return buildValveKind(entities, states, claimed);
   } else if (
     // Companion switch.* entities must not hide the real lock state.
     isLockModel(model) ||
     entities.some((entry) => text(entry.entity_id).startsWith("lock."))
   ) {
     const lockState = find("lock");
-    const battery = sensor("battery");
-    const batteryFresh = battery != null && battery.state !== "unknown" && battery.state !== "unavailable";
-    const lockFresh = lockState != null && lockState.state !== "unknown" && lockState.state !== "unavailable";
+    if (lockState) claimed.add(lockState.entityId);
+    const battery = claimSensor("battery");
+    const batteryFresh = isHAStateAvailable(battery);
+    const lockFresh = isHAStateAvailable(lockState);
     return {
       kind: {
         kind: "sensor",
         temperature: null,
         humidity: null,
-        battery: reading("battery"),
+        battery: number(battery?.state),
         statusText: haLockStatusText(lockFresh ? lockState : undefined),
       },
       online: lockFresh || batteryFresh,
     };
   } else if (
+    !entities.some((entry) => text(entry.entity_id).startsWith("media_player.")) &&
     (state = find(
       "switch",
       (entry) =>
@@ -495,36 +512,68 @@ function buildKind(
             (model.includes("plug") || (!sensor("temperature") && !sensor("humidity"))))),
     ))
   ) {
+    claimed.add(state.entityId);
     const lock = find("switch", (entry) =>
       /child_lock|physical_controls_locked/.test(text(entry.entity_id)),
     );
+    if (lock) claimed.add(lock.entityId);
     kind = {
       kind: "plug",
       switchEntityId: state.entityId,
       isOn: state.state === "on",
-      powerWatts: reading("power"),
-      energyKwh: reading("energy"),
+      powerWatts: reading("power", true),
+      energyKwh: reading("energy", true),
       childLockEntityId: lock?.entityId ?? null,
       isChildLocked: lock?.state === "on",
+    };
+  } else if (entities.some((entry) => text(entry.entity_id).startsWith("media_player."))) {
+    return buildMediaPlayerKind(entities, states, claimed);
+  } else if (
+    entities.length === 1 &&
+    (state = find(
+      "input_boolean",
+      (entry) => entry.entity_category !== "config" && entry.entity_category !== "diagnostic",
+    ))
+  ) {
+    claimed.add(state.entityId);
+    kind = {
+      kind: "plug",
+      switchEntityId: state.entityId,
+      isOn: state.state === "on",
+      powerWatts: null,
+      energyKwh: null,
+      childLockEntityId: null,
+      isChildLocked: false,
     };
   } else {
     const temperature = sensor("temperature"),
       humidity = sensor("humidity");
     state =
-      [temperature, humidity].find(
-        (entry) =>
-          entry && entry.state !== "unknown" && entry.state !== "unavailable",
-      ) ??
+      [temperature, humidity].find((entry) => isHAStateAvailable(entry)) ??
       temperature ??
       humidity;
     if (state) {
+      if (temperature) claimed.add(temperature.entityId);
+      if (humidity) claimed.add(humidity.entityId);
+      claimSafetyBinarySensors(entities, states, claimed);
       kind = {
         kind: "sensor",
-        temperature: reading("temperature"),
-        humidity: reading("humidity"),
-        battery: reading("battery"),
+        temperature: number(temperature?.state),
+        humidity: number(humidity?.state),
+        battery: reading("battery", true),
       };
     } else {
+      const batState = sensor("battery");
+      const binaryBuilt = buildBinarySensorKind(
+        entities,
+        states,
+        claimed,
+        number(batState?.state),
+        batState?.entityId ?? null,
+        allowBinaryFallback,
+      );
+      if (binaryBuilt) return binaryBuilt;
+
       const primaryButtons = entities.filter((entry) => {
         const entityId = text(entry.entity_id);
         if (!entityId.startsWith("button.") || entry.entity_category != null) return false;
@@ -538,6 +587,7 @@ function buildKind(
         primaryButtons[0];
       const buttonState = buttonEntity ? states.get(text(buttonEntity.entity_id)) : undefined;
       if (!buttonState) return null;
+      claimed.add(buttonState.entityId);
       return {
         kind: {
           kind: "plug",
@@ -554,7 +604,7 @@ function buildKind(
   }
   return {
     kind,
-    online: state.state !== "unavailable" && state.state !== "unknown",
+    online: isHAStateAvailable(state),
   };
 }
 
@@ -564,67 +614,173 @@ export class HomeAssistantSynthesizer {
     const states = new Map(
       snapshot.states.map((state) => [state.entityId, state]),
     );
-    const registry = new Map(
-      snapshot.entities.map((entity) => [text(entity.entity_id), entity]),
-    );
     const registered = new Set(
-      snapshot.devices.map((device) => text(device.id)),
+      snapshot.devices.map((device) => text(device.id)).filter(Boolean),
     );
-    const active = snapshot.entities.filter(
-      (entity) => entity.disabled_by == null && entity.hidden_by == null,
+    const disabledDeviceIds = new Set(
+      snapshot.devices
+        .filter((device) => device.disabled_by != null)
+        .map((device) => text(device.id))
+        .filter(Boolean),
     );
+
+    // CODING_STANDARDS.md §1: Record EVERY entity registry `entity_id` into `seenEntityIds`
+    // (and `seenSceneEntityIds`) BEFORE skipping `disabled_by != null || hidden_by != null`
+    // so disabled/hidden entities NEVER leak back through the `states` fallback pass.
+    const seenEntityIds = new Set<string>();
+    const seenSceneEntityIds = new Set<string>();
     const groups = new Map<string, Row[]>();
-    for (const entity of active) {
-      const id = text(entity.device_id);
-      if (id) groups.set(id, [...(groups.get(id) ?? []), entity]);
+    const standaloneEntities: Row[] = [];
+    const registryScenes: Array<{ id: string; entityId: string; name: string }> = [];
+
+    const nonEmpty = (value: unknown, fallback = ""): string =>
+      typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
+
+    for (const entity of snapshot.entities) {
+      const entityId = text(entity.entity_id);
+      if (!entityId) continue;
+      seenEntityIds.add(entityId);
+      const isSceneOrScript = /^(scene|script)\./.test(entityId);
+      if (isSceneOrScript) {
+        seenSceneEntityIds.add(entityId);
+      }
+      if (entity.disabled_by != null || entity.hidden_by != null) continue;
+      const devId = text(entity.device_id);
+      if (devId && disabledDeviceIds.has(devId)) continue;
+
+      if (isSceneOrScript) {
+        const sceneState = states.get(entityId);
+        if (sceneState && isHAStateAvailable(sceneState)) {
+          registryScenes.push({
+            id: entityId,
+            entityId,
+            name: nonEmpty(
+              entity.name,
+              nonEmpty(entity.original_name, nonEmpty(sceneState.attributes.friendly_name, entityId)),
+            ),
+          });
+        }
+        continue;
+      }
+
+      if (devId && registered.has(devId)) {
+        groups.set(devId, [...(groups.get(devId) ?? []), entity]);
+      } else {
+        standaloneEntities.push(entity);
+      }
     }
+
     const devices: SmartDevice[] = [];
-    const append = (
-      id: string,
-      name: string,
-      areaId: string,
-      model: string,
-      entities: Row[],
-    ) => {
+    const deviceFacets: Record<string, FacetControl[]> = {};
+    const roomIds: Record<string, string> = {
+      客厅: "ke_ting",
+      书房: "shu_fang",
+      卧室: "wo_shi",
+      主卧: "zhu_wo",
+      次卧: "ci_wo",
+      小卧室: "xiao_wo_shi",
+      厨房: "chu_fang",
+      阳台: "yang_tai",
+    };
+
+    const resolveRoom = (areaId: string): { roomId: string; roomName: string } => {
       const rawRoomName = text(
         snapshot.areas.find((area) => area.area_id === areaId)?.name,
         "全屋",
       ).trim();
-      const roomName =
-        !rawRoomName || rawRoomName === "默认房间"
-          ? "全屋"
-          : rawRoomName;
-      const roomIds: Record<string, string> = {
-        客厅: "ke_ting",
-        书房: "shu_fang",
-        卧室: "wo_shi",
-        主卧: "zhu_wo",
-        次卧: "ci_wo",
-        小卧室: "xiao_wo_shi",
-        厨房: "chu_fang",
-        阳台: "yang_tai",
-      };
-      let cleanName = name
-        .trim()
-        .replace(/^(?:直流变频循环扇|米家踢脚线电暖器|Yeelight LED 彩光灯带)\s*/, "")
-        .replace(/(?:  灯|  电暖器|  风扇|  音箱|  电视|  开关 开关|  窗帘)$/, "")
-        .trim();
-      if (cleanName === "吸顶灯" && roomName !== "全屋")
-        cleanName = `${roomName}吸顶灯`;
-      const built = buildKind(entities, states, model, cleanName || name.trim());
-      if (!built) return;
-      devices.push({
-        id,
-        name: cleanName || name.trim(),
+      const roomName = !rawRoomName || rawRoomName === "默认房间" ? "全屋" : rawRoomName;
+      return {
         roomId: areaId || roomIds[roomName] || "other",
+        roomName,
+      };
+    };
+
+    const appendSingle = (
+      id: string,
+      cleanName: string,
+      roomId: string,
+      roomName: string,
+      model: string,
+      entities: Row[],
+      allowBinaryFallback: boolean,
+    ) => {
+      const claimed = new Set<string>();
+      const built = buildKind(entities, states, model, cleanName, claimed, allowBinaryFallback);
+      if (!built) return;
+      const card: SmartDevice = {
+        id,
+        name: cleanName,
+        roomId,
         roomName,
         model,
         isOnline: built.online,
         kind: built.kind,
-      });
+      };
+      devices.push(card);
+      const facets = buildHAFacets(entities, states, claimed, card);
+      if (facets.length > 0) {
+        deviceFacets[card.id] = facets;
+      }
     };
-    const nonEmpty = (value: unknown, fallback = ""): string =>
-      typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
+
+    const append = (
+      id: string,
+      rawName: string,
+      areaId: string,
+      model: string,
+      entities: Row[],
+      allowBinaryFallback = false,
+    ) => {
+      const { roomId, roomName } = resolveRoom(areaId);
+      const cleanName = cleanHADeviceName(rawName, roomName);
+      const activeCovers = entities.filter((entity) => {
+        const eid = text(entity.entity_id);
+        return (
+          eid.startsWith("cover.") &&
+          entity.entity_category !== "config" &&
+          entity.entity_category !== "diagnostic" &&
+          states.has(eid)
+        );
+      });
+      if (activeCovers.length > 1) {
+        const probeClaimed = new Set<string>();
+        const probe = buildKind(entities, states, model, cleanName, probeClaimed, allowBinaryFallback);
+        if (probe?.kind.kind === "cover") {
+          const nonCoverEntities = entities.filter((e) => !text(e.entity_id).startsWith("cover."));
+          for (const coverEnt of activeCovers) {
+            const coverId = text(coverEnt.entity_id);
+            const trackId = `${id}#${coverId}`;
+            const coverState = states.get(coverId);
+            const rawTrackName = nonEmpty(
+              coverEnt.name,
+              nonEmpty(
+                coverState?.attributes.friendly_name,
+                nonEmpty(coverEnt.original_name, rawName),
+              ),
+            );
+            const trackName = cleanHADeviceName(rawTrackName, roomName);
+            const trackAux = auxiliaryEntitiesForCover(
+              coverEnt,
+              activeCovers,
+              nonCoverEntities,
+              states,
+            );
+            appendSingle(
+              trackId,
+              trackName,
+              roomId,
+              roomName,
+              model,
+              [coverEnt, ...trackAux],
+              allowBinaryFallback,
+            );
+          }
+          return;
+        }
+      }
+      appendSingle(id, cleanName, roomId, roomName, model, entities, allowBinaryFallback);
+    };
+
     for (const device of snapshot.devices) {
       const id = text(device.id),
         entities = groups.get(id) ?? [],
@@ -634,8 +790,9 @@ export class HomeAssistantSynthesizer {
         model === "hyperDLNA" ||
         model.startsWith("Apple TV") ||
         model.startsWith("lumi.gateway")
-      )
+      ) {
         continue;
+      }
       append(
         id,
         nonEmpty(device.name_by_user, nonEmpty(device.name, "智能设备")),
@@ -645,58 +802,53 @@ export class HomeAssistantSynthesizer {
         ),
         model,
         entities,
+        false,
       );
     }
+
+    for (const entity of standaloneEntities) {
+      const entityId = text(entity.entity_id);
+      const state = states.get(entityId);
+      if (!state) continue;
+      append(
+        entityId,
+        nonEmpty(
+          entity.name,
+          nonEmpty(entity.original_name, nonEmpty(state.attributes.friendly_name, entityId)),
+        ),
+        text(entity.area_id),
+        "",
+        [entity],
+        true,
+      );
+    }
+
     for (const state of snapshot.states) {
-      const entity = registry.get(state.entityId);
-      if (
-        entity &&
-        (entity.disabled_by != null ||
-          entity.hidden_by != null ||
-          registered.has(text(entity.device_id)))
-      )
-        continue;
+      if (seenEntityIds.has(state.entityId)) continue;
       append(
         state.entityId,
-        nonEmpty(
-          entity?.name,
-          nonEmpty(entity?.original_name, nonEmpty(state.attributes.friendly_name, state.entityId)),
-        ),
-        text(entity?.area_id),
+        nonEmpty(state.attributes.friendly_name, state.entityId),
         "",
-        [entity ?? { entity_id: state.entityId }],
+        "",
+        [{ entity_id: state.entityId }],
+        true,
       );
     }
-    const scenes = snapshot.states
+
+    const fallbackScenes = snapshot.states
       .filter(
         (state) =>
           /^(scene|script)\./.test(state.entityId) &&
-          state.state !== "unavailable" &&
-          state.state !== "unknown",
+          !seenSceneEntityIds.has(state.entityId) &&
+          isHAStateAvailable(state),
       )
-      .filter((state) => {
-        const entity = registry.get(state.entityId);
-        return (
-          !entity ||
-          (entity.disabled_by == null &&
-            entity.hidden_by == null &&
-            !snapshot.devices.some(
-              (device) =>
-                device.id === entity.device_id && device.disabled_by != null,
-            ))
-        );
-      })
-      .map((state) => {
-        const entity = registry.get(state.entityId);
-        return {
-          id: state.entityId,
-          entityId: state.entityId,
-          name: nonEmpty(
-            entity?.name,
-            nonEmpty(entity?.original_name, nonEmpty(state.attributes.friendly_name, state.entityId)),
-          ),
-        };
-      });
+      .map((state) => ({
+        id: state.entityId,
+        entityId: state.entityId,
+        name: nonEmpty(state.attributes.friendly_name, state.entityId),
+      }));
+
+    const scenes = [...registryScenes, ...fallbackScenes];
     const rooms = [...new Set(devices.map((device) => device.roomId))].map(
       (id) => ({
         id,
@@ -715,17 +867,24 @@ export class HomeAssistantSynthesizer {
           const reading = deviceEnvironmentReading(device);
           return reading ? [reading] : [];
         }),
+      ...(Object.keys(deviceFacets).length > 0 ? { deviceFacets } : {}),
     };
   }
 }
 
 export function haServiceCall(command: DeviceCommand): HaServiceCall {
   const [powerEntityId = "", selectEntityId] = command.entityId.split("|");
-  const entity_id =
+  const rawTarget =
     command.kind === "setSelectOption" && selectEntityId
       ? selectEntityId
       : powerEntityId;
+  const hashIdx = rawTarget.indexOf("#");
+  const suffix = hashIdx >= 0 ? rawTarget.slice(hashIdx + 1) : "";
+  const entity_id = hashIdx >= 0 ? rawTarget.slice(0, hashIdx) : rawTarget;
   const domain = entity_id.split(".")[0] ?? "";
+  if (domain === "lock") {
+    throw new Error("Home Assistant lock entities are read-only");
+  }
   const call = (service: string, data: Row = {}): HaServiceCall => ({
     domain,
     service,
@@ -737,6 +896,10 @@ export function haServiceCall(command: DeviceCommand): HaServiceCall {
     case "setFanPower":
     case "setSwitch":
       if (domain === "button") return call("press");
+      if (domain === "valve") return call(command.isOn ? "open_valve" : "close_valve");
+      if (domain === "media_player" && suffix === "mute") {
+        return call("volume_mute", { is_volume_muted: command.isOn });
+      }
       return call(command.isOn ? "turn_on" : "turn_off");
     case "setLightBrightness":
       return call("turn_on", { brightness_pct: command.percent });
@@ -764,6 +927,15 @@ export function haServiceCall(command: DeviceCommand): HaServiceCall {
       if (domain === "climate") {
         return call("set_swing_mode", { swing_mode: command.option });
       }
+      if (domain === "humidifier") {
+        return call("set_mode", { mode: command.option });
+      }
+      if (domain === "water_heater") {
+        return call("set_operation_mode", { operation_mode: command.option });
+      }
+      if (domain === "media_player") {
+        return call("select_source", { source: command.option });
+      }
       if (domain === "cover") {
         const lower = command.option.trim().toLowerCase();
         if (lower === "open" || lower === "up" || lower === "raise" || lower === "打开") {
@@ -777,6 +949,15 @@ export function haServiceCall(command: DeviceCommand): HaServiceCall {
         }
         throw new Error(`Unsupported cover motor option: ${command.option}`);
       }
+      if (domain === "valve") {
+        const lower = command.option.trim().toLowerCase();
+        if (lower === "open" || lower === "打开") return call("open_valve");
+        if (lower === "close" || lower === "关闭") return call("close_valve");
+        if (lower === "pause" || lower === "stop" || lower === "暂停" || lower === "停止") {
+          return call("stop_valve");
+        }
+        throw new Error(`Unsupported valve option: ${command.option}`);
+      }
       return call("select_option", { option: command.option });
     }
     case "setNumberValue":
@@ -785,19 +966,42 @@ export function haServiceCall(command: DeviceCommand): HaServiceCall {
           position: Math.max(0, Math.min(100, Math.round(command.value))),
         });
       }
+      if (domain === "valve") {
+        return call("set_valve_position", {
+          position: Math.max(0, Math.min(100, Math.round(command.value))),
+        });
+      }
+      if (domain === "humidifier") {
+        return call("set_humidity", {
+          humidity: Math.max(0, Math.min(100, Math.round(command.value))),
+        });
+      }
+      if (domain === "water_heater") {
+        return call("set_temperature", { temperature: command.value });
+      }
+      if (domain === "media_player") {
+        const level = command.value > 1 ? command.value / 100 : command.value;
+        return call("volume_set", { volume_level: Math.max(0, Math.min(1, level)) });
+      }
       return call("set_value", { value: command.value });
     case "vacuumAction":
       return call(
         command.action === "returnToBase" ? "return_to_base" : command.action,
       );
     case "mediaSetVolume":
-      return call("volume_set", { volume_level: command.level });
+      return call("volume_set", { volume_level: Math.max(0, Math.min(1, command.level)) });
     case "pressButton":
+      if (domain === "valve") return call("stop_valve");
+      if (domain === "media_player") return call("media_play_pause");
       return call("press");
     case "setMiotProperty":
+      if (!command.entityId.startsWith("miot:")) {
+        return haServiceCall(mapHAFacetCommand(command));
+      }
       // A generic MIoT property write has no Home Assistant entity behind it.
       throw new Error("setMiotProperty is a Xiaomi-only command");
     case "activateScene":
+      if (domain === "button") return call("press");
       return call("turn_on");
   }
 }
@@ -827,62 +1031,4 @@ export class HomeAssistantClient {
       command: haServiceCall(command),
     });
   }
-}
-
-const HA_BRIGHTNESS_COLOR_MODES = new Set([
-  "brightness",
-  "color_temp",
-  "hs",
-  "xy",
-  "rgb",
-  "rgbw",
-  "rgbww",
-  "white",
-]);
-
-function haLightCapabilityFlags(a: Row): {
-  readonly brightnessWritable?: false;
-  readonly colorWritable?: false;
-} {
-  const hasColorTempAttr =
-    number(a.color_temp_kelvin) !== null ||
-    number(a.min_color_temp_kelvin) !== null ||
-    number(a.max_color_temp_kelvin) !== null ||
-    number(a.color_temp) !== null ||
-    number(a.min_mireds) !== null ||
-    number(a.max_mireds) !== null;
-  if (Array.isArray(a.supported_color_modes)) {
-    const colorModes = strings(a.supported_color_modes)
-      .map((mode) => mode.trim().toLowerCase())
-      .filter(Boolean);
-    const brightnessWritable = colorModes.some((mode) => HA_BRIGHTNESS_COLOR_MODES.has(mode));
-    const colorWritable = colorModes.includes("color_temp");
-    return {
-      ...(brightnessWritable ? {} : { brightnessWritable: false as const }),
-      ...(colorWritable ? {} : { colorWritable: false as const }),
-    };
-  }
-  const colorMode = typeof a.color_mode === "string" ? a.color_mode.trim().toLowerCase() : "";
-  const rawFeatures = number(a.supported_features);
-  let brightnessWritable: boolean;
-  let colorWritable: boolean;
-  if (colorMode === "onoff") {
-    brightnessWritable = false;
-    colorWritable = false;
-  } else if (colorMode.length > 0 && colorMode !== "unknown") {
-    brightnessWritable = HA_BRIGHTNESS_COLOR_MODES.has(colorMode);
-    colorWritable = colorMode === "color_temp" || hasColorTempAttr;
-  } else if (rawFeatures !== null) {
-    const features = Math.trunc(rawFeatures);
-    brightnessWritable =
-      (features & (1 | 2 | 16 | 128)) !== 0 || number(a.brightness) !== null || hasColorTempAttr;
-    colorWritable = (features & 2) !== 0 || hasColorTempAttr;
-  } else {
-    brightnessWritable = number(a.brightness) !== null || hasColorTempAttr;
-    colorWritable = hasColorTempAttr;
-  }
-  return {
-    ...(brightnessWritable ? {} : { brightnessWritable: false as const }),
-    ...(colorWritable ? {} : { colorWritable: false as const }),
-  };
 }

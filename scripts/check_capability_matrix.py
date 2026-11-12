@@ -251,7 +251,7 @@ CODE_ANCHORS = (
             "symbol": "water_heater.",
         },
         "windows": {
-            "roots": ("windows/src", "windows/src-tauri/src"),
+            "path": "windows/src/core/haDomains.ts",
             "symbol": "water_heater.",
         },
     },

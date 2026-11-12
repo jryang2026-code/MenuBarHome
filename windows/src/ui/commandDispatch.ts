@@ -4,6 +4,14 @@ import { HomeAssistantClient, homeAssistantCommand } from "../core/homeAssistant
 import { MiCloudClient, MiCloudError, MiotCommandMapper, propKeyString } from "../core/miCloudClient.js";
 import { readMiotPower, type DeviceCommand, type DeviceKind, type FacetControl, type SmartDevice } from "../core/models.js";
 import { applyCommandToDevices } from "../core/commandEffects.js";
+import {
+  applyHAExtendedCommandEffect,
+  lockOptimistic,
+  OPTIMISTIC_LOCK_DURATION_MS,
+  READ_BACK_DELAY_MS,
+  scheduleDelayedReadBack,
+  syncDirectCommandToFacets,
+} from "../core/optimisticLock.js";
 
 function withReadPower(command: DeviceCommand, isOn: boolean): DeviceCommand {
   switch (command.kind) {
@@ -20,8 +28,11 @@ function withReadPower(command: DeviceCommand, isOn: boolean): DeviceCommand {
 
 export async function applyCommand(host: MenuMijiaWindowsApp, command: DeviceCommand, readBackPower = false): Promise<boolean> {
     const sourceRevision = host.sourceRevision;
+    const originalCommand = command;
     try {
-      if (host.settings.connectionMode === "homeAssistant") command = homeAssistantCommand(command, host.devices);
+      if (host.settings.connectionMode === "homeAssistant") {
+        command = homeAssistantCommand(command, host.devices, host.deviceFacets);
+      }
       const readPower = await dispatchCloudCommand(host, command, readBackPower);
       if (typeof readPower === "boolean") command = withReadPower(command, readPower);
     } catch (error) {
@@ -38,14 +49,67 @@ export async function applyCommand(host: MenuMijiaWindowsApp, command: DeviceCom
       return false;
     }
     if (sourceRevision !== host.sourceRevision) return false;
+    const facets = host.deviceFacets ?? {};
+    const beforeById = new Map(
+      host.devices.map((dev) => [
+        dev.id,
+        {
+          snapshot: JSON.stringify([dev.kind, facets[dev.id] ?? null]),
+          coverOrigin: dev.kind.kind === "cover" ? dev.kind.positionPercent : null,
+          baselineDevice: structuredClone(dev),
+          baselineFacets: facets[dev.id] ? structuredClone(facets[dev.id]) : undefined,
+        },
+      ]),
+    );
     host.localControlRevision += 1;
-    for (const change of applyCommandToDevices(host.devices, command, host.settings.connectionMode, host.deviceFacets)) {
+    const cameraChanges = applyCommandToDevices(
+      host.devices,
+      command,
+      host.settings.connectionMode,
+      facets,
+    );
+    if (originalCommand.kind === "setMiotProperty" && originalCommand !== command) {
+      applyCommandToDevices(
+        host.devices,
+        originalCommand,
+        host.settings.connectionMode,
+        facets,
+      );
+    }
+    if (host.settings.connectionMode === "homeAssistant") {
+      applyHAExtendedCommandEffect(host.devices, command);
+    }
+    syncDirectCommandToFacets(facets, command);
+
+    for (const change of cameraChanges) {
       if (host.cameraLive.activeLiveCameraId !== change.deviceId || host.cameraLive.liveCameraHidden) continue;
       if (change.isOn) {
         host.cameraLive.reconnectCameraLiveView();
       } else {
         host.cameraLive.stopLiveTransport();
         host.cameraLive.liveCameraLoading = false;
+      }
+    }
+
+    const modifiedIds = new Set<string>();
+    for (const dev of host.devices) {
+      const prior = beforeById.get(dev.id);
+      const after = JSON.stringify([dev.kind, facets[dev.id] ?? null]);
+      if (prior && after !== prior.snapshot) {
+        modifiedIds.add(dev.id);
+        lockOptimistic(host, dev.id, OPTIMISTIC_LOCK_DURATION_MS, {
+          coverOriginPosition: prior.coverOrigin,
+          baselineDevice: prior.baselineDevice,
+          baselineFacets: prior.baselineFacets,
+        });
+        scheduleDelayedReadBack(host, dev.id, READ_BACK_DELAY_MS);
+      }
+    }
+    if (modifiedIds.size === 0 && command.kind === "pressButton") {
+      const baseEntityId = command.entityId.split("#")[0] ?? command.entityId;
+      const ownerId = deviceOwningEntityId(host.devices, facets, baseEntityId);
+      if (ownerId) {
+        scheduleDelayedReadBack(host, ownerId, READ_BACK_DELAY_MS);
       }
     }
 
