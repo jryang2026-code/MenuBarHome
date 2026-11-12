@@ -37,6 +37,8 @@ export interface ClimateSpec {
   readonly step: number;
   fanMode: string | null;
   readonly availableFanModes: readonly string[];
+  swingMode?: string | null;
+  readonly availableSwingModes?: readonly string[];
   /** Absent means the control is writable. False follows a read-only MIoT property (#154). */
   readonly powerWritable?: boolean;
   readonly temperatureWritable?: boolean;
@@ -228,7 +230,15 @@ export interface FacetRange {
   readonly step: number;
 }
 
-/** Where a facet write goes: a MIoT property with the new value, or a no-argument action. */
+export interface FacetArgument {
+  readonly propertyId: number;
+  readonly name: string;
+  readonly format: string;
+  readonly range?: FacetRange;
+  readonly options?: readonly FacetOption[];
+}
+
+/** Where a facet write goes: a MIoT property with the new value, or an action. */
 export type FacetTarget =
   | { readonly kind: "property"; readonly entityId: string; readonly piid: number }
   | { readonly kind: "action"; readonly entityId: string };
@@ -255,6 +265,14 @@ export interface FacetControl {
   readonly writesByDefault: boolean;
   readonly isHighValue: boolean;
   readonly target: FacetTarget | null;
+  /** Action input properties in spec order (#7). Absent or empty for properties and 0-arg actions. */
+  readonly arguments?: readonly FacetArgument[];
+  /** Index in `arguments` the drawer asks the user for; set only on a feeding action (#7). */
+  readonly portionArgumentIndex?: number | null;
+  /** Portions already dispensed today, shown beside the button and in the confirmation (#7). */
+  fedToday?: string | null;
+  /** Offered without the advanced-writes opt-in because policy always confirms it first (#7). */
+  readonly isConfirmedWrite?: boolean;
 }
 
 /**
@@ -354,8 +372,8 @@ export type DeviceCommand =
   /** `level` is 0…1, scaled onto the volume property's range (macOS `mediaSetVolume`). */
   | { readonly kind: "mediaSetVolume"; readonly entityId: string; readonly level: number }
   | { readonly kind: "vacuumAction"; readonly entityId: string; readonly action: VacuumAction }
-  /** A no-argument MIoT action: an appliance start/pause/stop or a 更多设置 button (#300, #5). */
-  | { readonly kind: "pressButton"; readonly entityId: string }
+  /** A MIoT action: an appliance start/pause/stop, a 更多设置 button, or a portioned feed (#300, #5, #7). */
+  | { readonly kind: "pressButton"; readonly entityId: string; readonly arguments?: readonly unknown[] }
   /** A generic 更多设置 write (#5); `entityId` is the service address and `piid` its property. */
   | { readonly kind: "setMiotProperty"; readonly entityId: string; readonly piid: number; readonly value: unknown }
   | { readonly kind: "activateScene"; readonly entityId: string };
@@ -446,7 +464,8 @@ export function deviceAcceptsControlWrites(device: SmartDevice): boolean {
         kind.powerWritable !== false ||
         kind.temperatureWritable !== false ||
         kind.availableModes.length > 0 ||
-        kind.availableFanModes.length > 0
+        kind.availableFanModes.length > 0 ||
+        (kind.availableSwingModes?.length ?? 0) > 0
       );
     case "fan":
       return (
@@ -492,9 +511,7 @@ export function deviceAcceptsControlWrites(device: SmartDevice): boolean {
 /**
  * Whether a card opens a detail drawer, mirroring MijiaCore.SmartDevice.hasDetailDrawer plus the
  * facet rule of HomeStore.hasDetailDrawer(for:). A card opens only when the drawer has something
- * to show: an empty drawer is a dead tap. macOS renders plug energy/child lock, cover position and
- * generic card rows in its primary drawer; Windows does not yet, so those cards open only for
- * 更多设置 rows. Every other kind keeps the macOS table.
+ * to show: an empty drawer is a dead tap (§16).
  */
 export function hasDetailDrawer(device: SmartDevice, facets: readonly FacetControl[] = []): boolean {
   if (facets.length > 0) return true;
@@ -508,11 +525,16 @@ export function hasDetailDrawer(device: SmartDevice, facets: readonly FacetContr
       );
     case "climate": {
       // Mirrors the drawer's rows: the temperature stepper, a mode pill the renderer keeps
-      // (it drops "off"), and the fan-speed row added to `renderPrimaryDrawer`.
+      // (it drops "off"), fan-speed pills, and swing-mode pills.
       const showsModes =
         kind.availableModes.some((mode) => mode !== "off") ||
         (!kind.entityId.startsWith("miot:") && kind.powerWritable !== false);
-      return kind.temperatureWritable !== false || showsModes || kind.availableFanModes.length > 0;
+      return (
+        kind.temperatureWritable !== false ||
+        showsModes ||
+        kind.availableFanModes.length > 0 ||
+        (kind.availableSwingModes?.length ?? 0) > 0
+      );
     }
     case "fan": {
       const hasReadings =
@@ -556,10 +578,26 @@ export function hasDetailDrawer(device: SmartDevice, facets: readonly FacetContr
       );
     case "sensor":
       return false;
-    case "plug":
+    case "plug": {
+      const hasWatts = kind.powerWatts !== null && Number.isFinite(kind.powerWatts);
+      const hasEnergy =
+        kind.energyKwh !== undefined &&
+        kind.energyKwh !== null &&
+        Number.isFinite(kind.energyKwh) &&
+        kind.energyKwh >= 0;
+      return hasWatts || hasEnergy || kind.childLockEntityId !== null;
+    }
     case "cover":
+      return (
+        kind.positionWritable ||
+        kind.openDescription !== null ||
+        kind.closeDescription !== null ||
+        kind.pauseDescription !== null ||
+        kind.batteryPercent !== null ||
+        Boolean(kind.faultText)
+      );
     case "generic":
-      return false;
+      return (kind.alerts?.length ?? 0) > 0;
     default: {
       const _exhaustive: never = kind;
       return _exhaustive;
@@ -1194,4 +1232,34 @@ export function applianceModeStartsHeating(mode: string): boolean {
     "无",
   ];
   return !idleWords.some((word) => normalized.includes(word));
+}
+
+export function localizeSwingMode(mode: string): string {
+  switch (mode.trim().toLowerCase()) {
+    case "off":
+    case "none":
+    case "fixed":
+    case "关闭":
+      return t("关闭");
+    case "on":
+    case "开启":
+      return t("开启");
+    case "vertical":
+    case "up_down":
+    case "上下":
+      return t("上下扫风");
+    case "horizontal":
+    case "left_right":
+    case "左右":
+      return t("左右扫风");
+    case "both":
+    case "all":
+    case "立体":
+      return t("立体扫风");
+    case "auto":
+    case "自动":
+      return t("自动");
+    default:
+      return mode;
+  }
 }

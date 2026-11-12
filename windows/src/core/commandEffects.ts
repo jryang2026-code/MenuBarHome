@@ -112,6 +112,8 @@ export function applyCommandToDevices(
       case "setSwitch":
         if (k.kind === "plug" && k.switchEntityId === command.entityId && !command.entityId.startsWith("button.")) {
           k.isOn = command.isOn;
+        } else if (k.kind === "plug" && k.childLockEntityId === command.entityId && !command.entityId.startsWith("button.")) {
+          k.isChildLocked = command.isOn;
         } else if (k.kind === "camera") {
           if (k.entityId === command.entityId) {
             k.isOn = command.isOn;
@@ -142,6 +144,8 @@ export function applyCommandToDevices(
           k.currentMode = command.option;
         } else if (k.kind === "appliance" && k.modeEntityId === command.entityId) {
           k.currentMode = command.option;
+        } else if (k.kind === "climate" && k.entityId === command.entityId) {
+          k.swingMode = command.option;
         } else if (k.kind === "cover" && k.entityId === command.entityId) {
           const option = command.option.toLowerCase();
           if (k.openDescription?.toLowerCase() === option) {
@@ -156,7 +160,17 @@ export function applyCommandToDevices(
         }
         break;
       case "setNumberValue":
-        if (k.kind === "fridge") {
+        if (k.kind === "cover" && k.entityId === command.entityId) {
+          const clamped = Math.max(0, Math.min(100, Math.round(command.value)));
+          const displayed = clamped < 3 ? 0 : clamped > 97 ? 100 : clamped;
+          k.motion =
+            k.positionPercent !== null && displayed > k.positionPercent
+              ? "opening"
+              : k.positionPercent !== null && displayed < k.positionPercent
+                ? "closing"
+                : "stopped";
+          k.positionPercent = displayed;
+        } else if (k.kind === "fridge") {
           if (k.fridgeTargetEntityId === command.entityId) {
             k.fridgeTargetTemp = command.value;
           } else if (k.freezerTargetEntityId === command.entityId) {
@@ -293,8 +307,18 @@ export function inverseCommands(dev: SmartDevice, command: DeviceCommand): Devic
       if (k.kind === "fridge") {
         return [{ kind: "setSelectOption", entityId: command.entityId, option: k.currentMode }];
       }
+      if (k.kind === "climate" && k.entityId === command.entityId && k.swingMode != null && k.swingMode !== command.option) {
+        return [{ kind: "setSelectOption", entityId: command.entityId, option: k.swingMode }];
+      }
       return [];
     case "setNumberValue":
+      if (k.kind === "cover" && k.entityId === command.entityId && k.positionPercent !== null) {
+        const clamped = Math.max(0, Math.min(100, Math.round(command.value)));
+        const displayed = clamped < 3 ? 0 : clamped > 97 ? 100 : clamped;
+        return k.positionPercent !== displayed
+          ? [{ kind: "setNumberValue", entityId: command.entityId, value: k.positionPercent }]
+          : [];
+      }
       if (k.kind === "fridge") {
         if (command.entityId === k.fridgeTargetEntityId) {
           return [{ kind: "setNumberValue", entityId: command.entityId, value: k.fridgeTargetTemp }];

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -57,6 +58,37 @@ class CoverageErrorTests(unittest.TestCase):
 
     def test_rows_without_miot_types_stay_documentation_only(self):
         self.assertEqual(matrix.coverage_errors(GOLDEN, [{"id": "voice", "macos": "supported", "windows": "partial"}]), [])
+
+
+class CodeAnchorTests(unittest.TestCase):
+    def test_unsupported_anchor_rejects_symbol_appearance_in_scanned_roots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "Sources/MenuBarMijiaApp").mkdir(parents=True)
+            (root / "Sources/MenuBarMijiaApp/SensorCardView.swift").write_text(
+                "struct View { let points: [SensorHistoryPoint] = [] }\n",
+                encoding="utf-8",
+            )
+            (root / "windows/src/ui").mkdir(parents=True)
+            (root / "windows/src/ui/deviceViews.ts").write_text(
+                "export function renderDeviceTile() {}\n",
+                encoding="utf-8",
+            )
+            (root / "windows/src-tauri/src").mkdir(parents=True)
+            rows = [{"id": anchor["id"], "macos": "supported", "windows": "supported"} for anchor in matrix.CODE_ANCHORS]
+            for item in rows:
+                if item["id"] == "sensor-history":
+                    item["windows"] = "unsupported"
+            sensor_errors = [err for err in matrix.code_anchor_errors(root, rows) if "sensor-history" in err]
+            self.assertEqual(sensor_errors, [])
+
+            (root / "windows/src/ui/sensorChart.ts").write_text(
+                "export interface SensorHistory { points: number[] }\n",
+                encoding="utf-8",
+            )
+            sensor_errors = [err for err in matrix.code_anchor_errors(root, rows) if "sensor-history" in err]
+            self.assertEqual(len(sensor_errors), 1)
+            self.assertIn("SensorHistory", sensor_errors[0])
 
 
 if __name__ == "__main__":
