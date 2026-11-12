@@ -138,11 +138,10 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
 
 export async function persistCredentials(host: MenuMijiaWindowsApp): Promise<void> {
     try {
+      await host.credentialVault.persist(credentialsFromSettings(host.settings, host.assistantKeysByPreset));
       if (host.settings.miSession) {
         setPendingMiVaultDeletion(false);
-      }
-      await host.credentialVault.persist(credentialsFromSettings(host.settings, host.assistantKeysByPreset));
-      if (!host.settings.miSession && hasPendingMiVaultDeletion()) {
+      } else if (hasPendingMiVaultDeletion()) {
         await host.credentialVault.deleteMiSession();
         setPendingMiVaultDeletion(false);
         host.queueBackgroundRender();

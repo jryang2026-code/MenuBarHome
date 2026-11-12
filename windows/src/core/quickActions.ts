@@ -49,6 +49,26 @@ export function parseQuickActionCommand(raw: string): QuickActionId | null {
   return null;
 }
 
+export function supportsLightsOff(dev: SmartDevice): boolean {
+  return dev.isOnline && dev.kind.kind === "light" && dev.kind.powerWritable !== false;
+}
+
+export function supportsSoftNightLight(dev: SmartDevice): boolean {
+  return (
+    dev.isOnline &&
+    dev.kind.kind === "light" &&
+    dev.kind.brightnessWritable !== false &&
+    dev.kind.colorWritable !== false
+  );
+}
+
+export function supportsClimateSleepOff(dev: SmartDevice): boolean {
+  if (!dev.isOnline) return false;
+  if (dev.kind.kind === "climate") return dev.kind.powerWritable !== false;
+  if (dev.kind.kind === "fan") return dev.kind.powerWritable !== false;
+  return false;
+}
+
 /**
  * Built-in `QuickAction` pills visible in real modes (`xiaomiCloud` / `homeAssistant`),
  * mirroring macOS `QuickAction` availability rules (`Models.swift` / `HomeStore+Undo.swift`):
@@ -58,22 +78,9 @@ export function parseQuickActionCommand(raw: string): QuickActionId | null {
 export function availableQuickActions(
   devices: readonly SmartDevice[],
 ): BuiltInQuickActionDescriptor[] {
-  const hasControllableLight = devices.some(
-    (dev) => dev.isOnline && dev.kind.kind === "light" && dev.kind.powerWritable !== false,
-  );
-  const hasNightLightCandidate = devices.some(
-    (dev) =>
-      dev.isOnline &&
-      dev.kind.kind === "light" &&
-      dev.kind.brightnessWritable !== false &&
-      dev.kind.colorWritable !== false,
-  );
-  const hasControllableClimateOrFan = devices.some((dev) => {
-    if (!dev.isOnline) return false;
-    if (dev.kind.kind === "climate") return dev.kind.powerWritable !== false;
-    if (dev.kind.kind === "fan") return dev.kind.powerWritable !== false;
-    return false;
-  });
+  const hasControllableLight = devices.some(supportsLightsOff);
+  const hasNightLightCandidate = devices.some(supportsSoftNightLight);
+  const hasControllableClimateOrFan = devices.some(supportsClimateSleepOff);
 
   const out: BuiltInQuickActionDescriptor[] = [];
   if (hasControllableLight) {
@@ -135,9 +142,9 @@ export function planQuickAction(
   switch (action) {
     case "lightsOff": {
       for (const dev of devices) {
-        if (!dev.isOnline || dev.kind.kind !== "light") continue;
+        if (!supportsLightsOff(dev) || dev.kind.kind !== "light") continue;
         const s = dev.kind;
-        if (!s.isOn || s.powerWritable === false) continue;
+        if (!s.isOn) continue;
         targets.push({
           deviceId: dev.id,
           commands: [{ kind: "setLightPower", entityId: s.entityId, isOn: false }],
@@ -150,18 +157,14 @@ export function planQuickAction(
     }
 
     case "softNightLight": {
-      const canSoftNight = (dev: SmartDevice): boolean =>
-        dev.isOnline &&
-        dev.kind.kind === "light" &&
-        dev.kind.brightnessWritable !== false &&
-        dev.kind.colorWritable !== false;
-
-      let chosen = devices.filter((dev) => canSoftNight(dev) && dev.kind.kind === "light" && dev.kind.isOn);
+      let chosen = devices.filter(
+        (dev) => supportsSoftNightLight(dev) && dev.kind.kind === "light" && dev.kind.isOn,
+      );
       if (chosen.length === 0) {
         const preferred =
           (lastManuallyUsedLightId
-            ? devices.find((dev) => dev.id === lastManuallyUsedLightId && canSoftNight(dev))
-            : undefined) ?? devices.find((dev) => canSoftNight(dev));
+            ? devices.find((dev) => dev.id === lastManuallyUsedLightId && supportsSoftNightLight(dev))
+            : undefined) ?? devices.find(supportsSoftNightLight);
         if (preferred) {
           chosen = [preferred];
           if (lastManuallyUsedLightId === null) {
@@ -173,7 +176,10 @@ export function planQuickAction(
       for (const dev of chosen) {
         if (dev.kind.kind !== "light") continue;
         const s = dev.kind;
-        const targetKelvin = Math.max(s.minKelvin, 2700);
+        const targetKelvin =
+          s.maxKelvin >= s.minKelvin
+            ? Math.min(s.maxKelvin, Math.max(s.minKelvin, 2700))
+            : Math.max(s.minKelvin, 2700);
         const prevBri = s.brightnessPercent ?? 80;
         const prevKelvin = s.colorTempKelvin ?? 4000;
         const restoreCommands: DeviceCommand[] = s.isOn
@@ -205,10 +211,10 @@ export function planQuickAction(
 
     case "climateSleepOff": {
       for (const dev of devices) {
-        if (!dev.isOnline) continue;
+        if (!supportsClimateSleepOff(dev)) continue;
         if (dev.kind.kind === "climate") {
           const s = dev.kind;
-          if (!s.isOn || s.hvacMode === "off" || s.powerWritable === false) continue;
+          if (!s.isOn || s.hvacMode === "off") continue;
           const prevMode = s.hvacMode;
           targets.push({
             deviceId: dev.id,
@@ -219,7 +225,7 @@ export function planQuickAction(
           });
         } else if (dev.kind.kind === "fan") {
           const s = dev.kind;
-          if (!s.isOn || s.powerWritable === false) continue;
+          if (!s.isOn) continue;
           targets.push({
             deviceId: dev.id,
             commands: [{ kind: "setFanPower", entityId: s.entityId, isOn: false }],

@@ -178,7 +178,7 @@ function requiredCoverMotion(value: unknown): CoverSpec["motion"] {
 function cachedKind(value: unknown): DeviceKind {
   const k = object(value);
   switch (k.kind) {
-    case "light": return { kind: "light", entityId: requiredText(k.entityId), isOn: requiredBoolean(k.isOn), brightnessPercent: nullableNumber(k.brightnessPercent), colorTempKelvin: nullableNumber(k.colorTempKelvin), minKelvin: requiredNumber(k.minKelvin), maxKelvin: requiredNumber(k.maxKelvin), currentEffect: nullableText(k.currentEffect), availableEffects: requiredStrings(k.availableEffects) };
+    case "light": return { kind: "light", entityId: requiredText(k.entityId), isOn: requiredBoolean(k.isOn), brightnessPercent: nullableNumber(k.brightnessPercent), colorTempKelvin: nullableNumber(k.colorTempKelvin), minKelvin: requiredNumber(k.minKelvin), maxKelvin: requiredNumber(k.maxKelvin), currentEffect: nullableText(k.currentEffect), availableEffects: requiredStrings(k.availableEffects), ...(k.brightnessWritable !== undefined ? { brightnessWritable: requiredBoolean(k.brightnessWritable) } : {}), ...(k.colorWritable !== undefined ? { colorWritable: requiredBoolean(k.colorWritable) } : {}) };
     case "climate": return { kind: "climate", entityId: requiredText(k.entityId), isOn: requiredBoolean(k.isOn), hvacMode: requiredText(k.hvacMode), availableModes: requiredStrings(k.availableModes), targetTemperature: requiredNumber(k.targetTemperature), currentTemperature: nullableNumber(k.currentTemperature), minTemp: requiredNumber(k.minTemp), maxTemp: requiredNumber(k.maxTemp), step: requiredNumber(k.step), fanMode: nullableText(k.fanMode), availableFanModes: requiredStrings(k.availableFanModes), ...(k.swingMode !== undefined ? { swingMode: nullableText(k.swingMode) } : {}), ...(k.availableSwingModes !== undefined ? { availableSwingModes: requiredStrings(k.availableSwingModes) } : {}) };
     case "fan": return { kind: "fan", entityId: requiredText(k.entityId), isOn: requiredBoolean(k.isOn), percentage: nullableNumber(k.percentage), presetMode: nullableText(k.presetMode), availablePresetModes: requiredStrings(k.availablePresetModes), isOscillating: nullableBoolean(k.isOscillating), pm25Density: nullableNumber(k.pm25Density ?? null), airQuality: nullableText(k.airQuality ?? null), temperature: nullableNumber(k.temperature ?? null), humidity: nullableNumber(k.humidity ?? null), filterLifePercent: nullableNumber(k.filterLifePercent ?? null) };
     case "plug": return { kind: "plug", switchEntityId: requiredText(k.switchEntityId), isOn: requiredBoolean(k.isOn), powerWatts: nullableNumber(k.powerWatts), energyKwh: nullableNumber(k.energyKwh ?? null), childLockEntityId: nullableText(k.childLockEntityId), isChildLocked: requiredBoolean(k.isChildLocked) };
@@ -330,6 +330,7 @@ function buildKind(
       maxKelvin: number(a.max_color_temp_kelvin) ?? 6500,
       currentEffect: typeof a.effect === "string" ? a.effect : null,
       availableEffects: strings(a.effect_list),
+      ...haLightCapabilityFlags(a),
     };
   } else if ((state = find("fan"))) {
     const a = state.attributes;
@@ -826,4 +827,62 @@ export class HomeAssistantClient {
       command: haServiceCall(command),
     });
   }
+}
+
+const HA_BRIGHTNESS_COLOR_MODES = new Set([
+  "brightness",
+  "color_temp",
+  "hs",
+  "xy",
+  "rgb",
+  "rgbw",
+  "rgbww",
+  "white",
+]);
+
+function haLightCapabilityFlags(a: Row): {
+  readonly brightnessWritable?: false;
+  readonly colorWritable?: false;
+} {
+  const hasColorTempAttr =
+    number(a.color_temp_kelvin) !== null ||
+    number(a.min_color_temp_kelvin) !== null ||
+    number(a.max_color_temp_kelvin) !== null ||
+    number(a.color_temp) !== null ||
+    number(a.min_mireds) !== null ||
+    number(a.max_mireds) !== null;
+  if (Array.isArray(a.supported_color_modes)) {
+    const colorModes = strings(a.supported_color_modes)
+      .map((mode) => mode.trim().toLowerCase())
+      .filter(Boolean);
+    const brightnessWritable = colorModes.some((mode) => HA_BRIGHTNESS_COLOR_MODES.has(mode));
+    const colorWritable = colorModes.includes("color_temp");
+    return {
+      ...(brightnessWritable ? {} : { brightnessWritable: false as const }),
+      ...(colorWritable ? {} : { colorWritable: false as const }),
+    };
+  }
+  const colorMode = typeof a.color_mode === "string" ? a.color_mode.trim().toLowerCase() : "";
+  const rawFeatures = number(a.supported_features);
+  let brightnessWritable: boolean;
+  let colorWritable: boolean;
+  if (colorMode === "onoff") {
+    brightnessWritable = false;
+    colorWritable = false;
+  } else if (colorMode.length > 0 && colorMode !== "unknown") {
+    brightnessWritable = HA_BRIGHTNESS_COLOR_MODES.has(colorMode);
+    colorWritable = colorMode === "color_temp" || hasColorTempAttr;
+  } else if (rawFeatures !== null) {
+    const features = Math.trunc(rawFeatures);
+    brightnessWritable =
+      (features & (1 | 2 | 16 | 128)) !== 0 || number(a.brightness) !== null || hasColorTempAttr;
+    colorWritable = (features & 2) !== 0 || hasColorTempAttr;
+  } else {
+    brightnessWritable = number(a.brightness) !== null || hasColorTempAttr;
+    colorWritable = hasColorTempAttr;
+  }
+  return {
+    ...(brightnessWritable ? {} : { brightnessWritable: false as const }),
+    ...(colorWritable ? {} : { colorWritable: false as const }),
+  };
 }

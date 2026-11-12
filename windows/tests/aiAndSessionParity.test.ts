@@ -12,11 +12,16 @@ import {
   buildIntentCatalog,
 } from "../src/core/assistant.js";
 import { inverseCommands } from "../src/core/commandEffects.js";
+import {
+  HomeAssistantSynthesizer,
+  homeAssistantIdentity,
+  parseCachedHAHome,
+} from "../src/core/homeAssistant.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { MiAccountLogin } from "../src/core/miCloud/accountLogin.js";
 import { MI_SESSION_WARNING_LEAD_MS, miSessionExpiryState } from "../src/core/miCloud/session.js";
 import type { DeviceCommand, SmartDevice } from "../src/core/models.js";
-import { availableQuickActions } from "../src/core/quickActions.js";
+import { availableQuickActions, planQuickAction } from "../src/core/quickActions.js";
 import { CredentialVault, parseMiSession, serializeMiSession } from "../src/core/secureStore.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
@@ -177,6 +182,8 @@ describe("Real-mode built-in QuickActions & bidirectional undo (#1)", () => {
       }),
     );
     const app = new MenuMijiaWindowsApp(element("#app"));
+    app.refreshDevices = async () => {};
+    app.refreshHADevices = async () => {};
     app.devices = [light, ac];
     app.scenes = [{ id: "scene.movie", name: "观影模式", entityId: "scene.movie" }];
     app.render();
@@ -267,6 +274,182 @@ describe("Real-mode built-in QuickActions & bidirectional undo (#1)", () => {
     assert.equal(app.devices[1]!.kind.isOn, false);
     assert.equal(app.devices[1]!.kind.brightnessPercent, 65);
     assert.equal(app.devices[1]!.kind.colorTempKelvin, 4800);
+  });
+
+  it("gates Home Assistant Soft Night Light on advertised supported_color_modes and preserves cached capability flags", async () => {
+    const baseSnapshot = {
+      areas: [{ area_id: "living", name: "客厅" }],
+      devices: [
+        { id: "ha_onoff", name: "玄关筒灯", area_id: "living", model: "ha.light.onoff" },
+        { id: "ha_dim", name: "走廊调光灯", area_id: "living", model: "ha.light.dim" },
+        { id: "ha_rgb", name: "氛围灯带", area_id: "living", model: "ha.light.rgb" },
+      ],
+      entities: [
+        { entity_id: "light.entry_onoff", device_id: "ha_onoff" },
+        { entity_id: "light.hall_dim", device_id: "ha_dim" },
+        { entity_id: "light.strip_rgb", device_id: "ha_rgb" },
+      ],
+      states: [
+        {
+          entity_id: "light.entry_onoff",
+          state: "on",
+          attributes: { supported_color_modes: ["onoff"], color_mode: "onoff" } as Record<string, unknown>,
+        },
+        {
+          entity_id: "light.hall_dim",
+          state: "on",
+          attributes: {
+            supported_color_modes: ["brightness"],
+            color_mode: "brightness",
+            brightness: 204,
+          },
+        },
+        {
+          entity_id: "light.strip_rgb",
+          state: "on",
+          attributes: {
+            supported_color_modes: ["hs"],
+            color_mode: "hs",
+            brightness: 180,
+          },
+        },
+      ],
+    };
+
+    const incapableHome = HomeAssistantSynthesizer.synthesize(baseSnapshot);
+    const [onOffLight, dimLight, rgbLight] = incapableHome.devices;
+    assert.ok(onOffLight?.kind.kind === "light");
+    assert.equal(onOffLight.kind.brightnessWritable, false);
+    assert.equal(onOffLight.kind.colorWritable, false);
+    assert.ok(dimLight?.kind.kind === "light");
+    assert.equal(dimLight.kind.brightnessWritable, undefined);
+    assert.equal(dimLight.kind.colorWritable, false);
+    assert.ok(rgbLight?.kind.kind === "light");
+    assert.equal(rgbLight.kind.brightnessWritable, undefined);
+    assert.equal(rgbLight.kind.colorWritable, false);
+
+    // None of the three lights supports color_temp, so Soft Night Light must not be offered or planned.
+    assert.deepEqual(
+      availableQuickActions(incapableHome.devices).map((a) => a.id),
+      ["lightsOff"],
+    );
+    assert.equal(planQuickAction("softNightLight", incapableHome.devices).targets.length, 0);
+
+    // Add a tunable-white HA light (currently OFF while incapable lights are ON).
+    const mixedSnapshot = structuredClone(baseSnapshot);
+    mixedSnapshot.devices.push({
+      id: "ha_ct",
+      name: "床头护眼灯",
+      area_id: "living",
+      model: "ha.light.ct",
+    });
+    mixedSnapshot.entities.push({ entity_id: "light.bedside_ct", device_id: "ha_ct" });
+    mixedSnapshot.states.push({
+      entity_id: "light.bedside_ct",
+      state: "off",
+      attributes: {
+        supported_color_modes: ["color_temp", "hs"],
+        min_color_temp_kelvin: 2700,
+        max_color_temp_kelvin: 6500,
+      },
+    });
+
+    const mixedHome = HomeAssistantSynthesizer.synthesize(mixedSnapshot);
+    const identity = homeAssistantIdentity("http://localhost:8123", "ha-tok");
+    assert.ok(identity);
+    assert.deepEqual(parseCachedHAHome({ identity, home: mixedHome }), {
+      identity,
+      home: mixedHome,
+    });
+    assert.equal(
+      parseCachedHAHome({
+        identity,
+        home: {
+          ...mixedHome,
+          devices: [
+            {
+              ...mixedHome.devices[0]!,
+              kind: { ...mixedHome.devices[0]!.kind, brightnessWritable: "nope" },
+            },
+          ],
+        },
+      }),
+      null,
+    );
+
+    assert.deepEqual(
+      availableQuickActions(mixedHome.devices).map((a) => a.id),
+      ["lightsOff", "softNightLight"],
+    );
+    const planned = planQuickAction("softNightLight", mixedHome.devices);
+    assert.deepEqual(
+      planned.targets.map((t) => t.deviceId),
+      ["ha_ct"],
+      "softNightLight must skip active incapable lights and pick the tunable-white light",
+    );
+
+    // End-to-end Home Assistant app execution + failed quick-action undo preservation.
+    const executedCalls: Array<Record<string, unknown>> = [];
+    let failWrites = false;
+    const invoke = async (command: string, args: Record<string, unknown> = {}) => {
+      if (command === "secure_store_get") {
+        return args.name === "ha_token" ? "ha-tok" : null;
+      }
+      if (command === "ha_snapshot") {
+        return structuredClone(mixedSnapshot);
+      }
+      if (command === "ha_execute") {
+        if (failWrites) throw new Error("HA write rejected");
+        executedCalls.push(args.command as Record<string, unknown>);
+        return null;
+      }
+      return null;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: { invoke },
+      configurable: true,
+    });
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        connectionMode: "homeAssistant",
+        haBaseURL: "http://localhost:8123",
+        hasCompletedOnboarding: true,
+        showQuickActionsBar: true,
+      }),
+    );
+
+    const app = new MenuMijiaWindowsApp(element("#app"));
+    for (let i = 0; i < 6 && !document.querySelector('[data-scene-cmd="quick:softNightLight"]'); i += 1) {
+      await setImmediate();
+    }
+    assert.ok(document.querySelector('[data-scene-cmd="quick:softNightLight"]'));
+
+    await click('[data-scene-cmd="quick:softNightLight"]');
+    await setImmediate();
+
+    assert.deepEqual(executedCalls, [
+      {
+        domain: "light",
+        service: "turn_on",
+        entity_id: "light.bedside_ct",
+        data: { brightness_pct: 15 },
+      },
+      {
+        domain: "light",
+        service: "turn_on",
+        entity_id: "light.bedside_ct",
+        data: { color_temp_kelvin: 2700 },
+      },
+    ]);
+    const savedUndo = app.lastUndoAction;
+    assert.ok(savedUndo);
+
+    // If a subsequent QuickAction completely fails, the earlier valid undo action stays intact.
+    failWrites = true;
+    await click('[data-scene-cmd="quick:lightsOff"]');
+    await setImmediate();
+    assert.equal(app.lastUndoAction, savedUndo);
   });
 });
 

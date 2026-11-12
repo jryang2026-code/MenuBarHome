@@ -398,7 +398,6 @@ export async function executeBuiltInQuickAction(
 ): Promise<void> {
   const sourceRevision = host.sourceRevision;
   const planned = planQuickAction(actionId, quickActionScopeDevices(host), host.lastManuallyUsedLightId);
-  host.lastManuallyUsedLightId = planned.nextLastManuallyUsedLightId;
 
   if (planned.targets.length === 0) {
     host.replyBanner = {
@@ -465,6 +464,7 @@ export async function executeBuiltInQuickAction(
   }
   const habitReceipt = succeededHabitIntents.length > 0 ? recordHabits(host, succeededHabitIntents) : null;
   if (steps.length > 0) {
+    host.lastManuallyUsedLightId = planned.nextLastManuallyUsedLightId;
     const undoAction: UndoAction = {
       summary: trText("已执行「{title}」", "Executed \"{title}\"", { title: planned.title }),
       steps,
@@ -473,8 +473,6 @@ export async function executeBuiltInQuickAction(
     };
     recordUndoKindSnapshots(undoAction, kindMap);
     host.lastUndoAction = undoAction;
-  } else {
-    host.lastUndoAction = null;
   }
 
   host.replyBanner =

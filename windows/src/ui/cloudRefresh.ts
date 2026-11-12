@@ -4,9 +4,10 @@ import { t } from "../core/i18n.js";
 import { MiCloudClient, MiCloudError, MiotSynthesizer, type MiDeviceRecord, type MiRoom, type MiSession, type MiotPropKey } from "../core/miCloudClient.js";
 import { HomeAssistantClient, homeAssistantIdentity } from "../core/homeAssistant.js";
 import { applyOrder, homeOptions, pageSections, scopedKey, spans, withAliases } from "./panelPrefs.js";
-import { foldGroupedLights, kindChips, memberGroupOwners, showsKindRow } from "./listCut.js";
+import { filterByListCut, foldGroupedLights, kindChips, memberGroupOwners, showsKindRow } from "./listCut.js";
 import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom.js";
 import { environmentReadingPriority, type SmartDevice } from "../core/models.js";
+import { availableQuickActions } from "../core/quickActions.js";
 
 export function foldGrouped(host: MenuMijiaWindowsApp, devices: readonly SmartDevice[]): SmartDevice[] {
     return host.settings.hideGroupedLights
@@ -406,9 +407,16 @@ export function cloudPanelStructureFingerprint(host: MenuMijiaWindowsApp): strin
       host.listCut,
       host.settings.hideOfflineDevices,
     );
+    const quickActions =
+      host.settings.showQuickActionsBar && host.settings.connectionMode !== "demo"
+        ? availableQuickActions(foldGrouped(host, filterByListCut(host.devices, host.listCut, false))).map(
+            (action) => action.id,
+          )
+        : null;
     return JSON.stringify({
       homes: host.homes,
       scenes: host.scenes,
+      quickActions,
       kindChips: kindChipsForPanel,
       kindRowVisible: showsKindRow(kindChipsForPanel, host.listCut),
       groupOwners: [...host.groupOwnerByMemberDid],
@@ -417,7 +425,14 @@ export function cloudPanelStructureFingerprint(host: MenuMijiaWindowsApp): strin
         const kind = device.kind;
         const capabilities =
           kind.kind === "light"
-            ? [kind.availableEffects, kind.minKelvin, kind.maxKelvin]
+            ? [
+                kind.availableEffects,
+                kind.minKelvin,
+                kind.maxKelvin,
+                kind.powerWritable !== false,
+                kind.brightnessWritable !== false,
+                kind.colorWritable !== false,
+              ]
             : kind.kind === "climate"
               ? [kind.availableModes, kind.availableFanModes, kind.minTemp, kind.maxTemp, kind.step]
               : kind.kind === "fan"
