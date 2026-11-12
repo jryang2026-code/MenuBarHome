@@ -19,8 +19,11 @@ import {
   SNAPSHOT_SCHEMA_VERSION,
   buildRaycastSnapshot,
   formatDynamicTraySummary,
+  generateRandomHexToken,
   type RaycastSnapshot,
 } from "../src/core/raycastSnapshot.js";
+import { SCHEDULED_COMMANDS_STORAGE_KEY } from "../src/core/scheduledCommands.js";
+import { invalidateSourceControl } from "../src/ui/proactive.js";
 import {
   clearUndoHoverPause,
   enqueueIncomingOpenUrl,
@@ -42,20 +45,31 @@ let tauriCalls: TauriCall[] = [];
 let workstationLocked = false;
 let failLaunchAtLogin = false;
 let pendingStartupUrls: string[] = [];
+/** When set, `is_workstation_locked` stays pending until the test releases it. */
+let lockProbeGate: Promise<void> | null = null;
+/** Number of `write_raycast_snapshot` calls that should fail before the write lands. */
+let snapshotWritesToFail = 0;
 
 function installTauriStub(): void {
   tauriCalls = [];
   workstationLocked = false;
   failLaunchAtLogin = false;
   pendingStartupUrls = [];
+  lockProbeGate = null;
+  snapshotWritesToFail = 0;
   (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {
     invoke: async (cmd: string, args?: Record<string, unknown>) => {
       tauriCalls.push({ cmd, args });
       if (cmd === "is_workstation_locked") {
+        if (lockProbeGate) await lockProbeGate;
         return workstationLocked;
       }
       if (cmd === "set_launch_at_login" && failLaunchAtLogin) {
         throw new Error("registry write denied");
+      }
+      if (cmd === "write_raycast_snapshot" && snapshotWritesToFail > 0) {
+        snapshotWritesToFail -= 1;
+        throw new Error("snapshot write failed");
       }
       if (cmd === "drain_pending_open_urls") {
         const drained = [...pendingStartupUrls];
@@ -689,5 +703,213 @@ describe("Desktop shell polish: Lock-screen guard, Launch at Login, Tray tooltip
     assert.match(progressWrap.textContent ?? "", /5\.0 MB \/ 10\.0 MB \(50%\)/);
     assert.match(progressWrap.textContent ?? "", /2\.5 MB\/s/);
     assert.ok(element(".cc-update-notes").querySelector("ul.cc-md-list"));
+  });
+});
+
+describe("Queued external URLs: data-source switch, hidden panel & lock probes", () => {
+  it("drops a queued link when the data source switches, even with a valid bridgeToken", async () => {
+    const app = startDemoApp({ enableRaycastIntegration: true, allowDirectURLControl: false });
+    await flushAsync();
+    const token = getActiveRaycastBridgeTokenForHost(app)!;
+    const light = app.devices.find((d) => d.kind.kind === "light" && d.isOnline)!;
+    const initialOn = light.kind.kind === "light" ? light.kind.isOn : false;
+
+    // 1) The first link has no token, so it parks on the confirmation modal and holds the queue.
+    const firstRun = enqueueIncomingOpenUrl(
+      app,
+      `menumijia://power?device=${encodeURIComponent(light.id)}&on=${!initialOn}&id=req_sw_pending`,
+    );
+    await flushAsync();
+    assert.ok(document.querySelector(".cc-prompt"), "the first link is waiting on the prompt");
+
+    // 2) The second link arrives behind it with a valid token: it must not run against the new home.
+    const secondRun = enqueueIncomingOpenUrl(
+      app,
+      `menumijia://power?device=${encodeURIComponent(light.id)}&on=${!initialOn}&id=req_sw_tokened&token=${token}`,
+    );
+    await flushAsync();
+
+    invalidateSourceControl(app);
+    app.render();
+    await firstRun;
+    await secondRun;
+    await flushAsync();
+
+    assert.equal(document.querySelector(".cc-prompt"), null, "the prompt is cleared by the switch");
+    assert.equal(
+      (app.devices.find((d) => d.id === light.id)!.kind as { isOn: boolean }).isOn,
+      initialOn,
+      "neither queued link touched the device after the source switch",
+    );
+    const feedback = getLatestRaycastSnapshotForHost(app).lastCommandFeedback;
+    assert.equal(
+      feedback?.requestId,
+      "req_sw_tokened",
+      "the tokened link reports its own cancellation instead of running silently",
+    );
+    assert.equal(feedback?.isError, true);
+  });
+
+  it("refuses to park a confirmation prompt while the panel is already hidden", async () => {
+    const app = startDemoApp({ enableRaycastIntegration: true, allowDirectURLControl: false });
+    await flushAsync();
+    const light = app.devices.find((d) => d.kind.kind === "light" && d.isOnline)!;
+    const initialOn = light.kind.kind === "light" ? light.kind.isOn : false;
+
+    const firstRun = enqueueIncomingOpenUrl(
+      app,
+      `menumijia://power?device=${encodeURIComponent(light.id)}&on=${!initialOn}&id=req_hide_first`,
+    );
+    const secondRun = enqueueIncomingOpenUrl(
+      app,
+      `menumijia://toggle?device=${encodeURIComponent(light.id)}&id=req_hide_second`,
+    );
+    await flushAsync();
+    assert.ok(document.querySelector(".cc-prompt"), "the first link is waiting on the prompt");
+
+    // The panel goes away: the on-screen prompt and the link queued behind it both have to stop.
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    document.dispatchEvent(new window.Event("visibilitychange"));
+    app.render();
+    await firstRun;
+    await secondRun;
+    await flushAsync();
+
+    assert.equal(document.querySelector(".cc-prompt"), null, "no prompt survives the hidden panel");
+    assert.equal(
+      (app.devices.find((d) => d.id === light.id)!.kind as { isOn: boolean }).isOn,
+      initialOn,
+      "a link that needs confirmation never runs while the panel is hidden",
+    );
+
+    // A link arriving while the panel is *already* hidden must be refused outright rather than
+    // parked offscreen waiting for an answer that can never come.
+    const lateRun = enqueueIncomingOpenUrl(
+      app,
+      `menumijia://power?device=${encodeURIComponent(light.id)}&on=${!initialOn}&id=req_hide_late`,
+    );
+    await flushAsync();
+    assert.equal(document.querySelector(".cc-prompt"), null, "the late link never opened a prompt");
+    await lateRun;
+    await flushAsync();
+    assert.equal(document.querySelector(".cc-prompt"), null, "the late link left no prompt behind");
+    assert.equal(
+      (app.devices.find((d) => d.id === light.id)!.kind as { isOn: boolean }).isOn,
+      initialOn,
+      "the late link did not control a device behind an invisible prompt",
+    );
+    assert.equal(
+      getLatestRaycastSnapshotForHost(app).lastCommandFeedback?.requestId,
+      "req_hide_late",
+      "the refused late link still reports a result",
+    );
+  });
+
+  it("keeps a missed timer on screen and on disk while the lock probe is in flight or locked", async () => {
+    const app = startDemoApp({
+      enableRaycastIntegration: false,
+      blockControlWhileLocked: true,
+    });
+    await flushAsync();
+    const light = app.devices.find((d) => d.kind.kind === "light" && d.isOnline)!;
+    const initialOn = light.kind.kind === "light" ? light.kind.isOn : false;
+
+    app.missedScheduledCommands = [
+      {
+        id: "missed_gate",
+        command: `关闭${light.name}`,
+        delaySeconds: 60,
+        fireTimestampMs: Date.now() - 120_000,
+        reply: "已错过",
+        intents: [{ targetId: light.id, operation: { kind: "power" as const, isOn: !initialOn } }],
+      },
+    ];
+    assert.equal(app.scheduledCommandStore.persist(), true);
+    const persistedBefore = localStorage.getItem(SCHEDULED_COMMANDS_STORAGE_KEY);
+    assert.ok(persistedBefore?.includes("missed_gate"), "the timer starts persisted");
+
+    // 1) The lock probe never answers: nothing may be removed while it is still in flight.
+    let releaseLockProbe: () => void = () => {};
+    lockProbeGate = new Promise<void>((resolve) => {
+      releaseLockProbe = resolve;
+    });
+    const pendingConfirm = confirmMissedScheduledCommand(app, "missed_gate");
+    await flushAsync();
+    assert.equal(app.missedScheduledCommands.length, 1, "still listed while the probe hangs");
+    assert.equal(
+      localStorage.getItem(SCHEDULED_COMMANDS_STORAGE_KEY),
+      persistedBefore,
+      "still on disk while the probe hangs",
+    );
+
+    // 2) The probe answers "locked": the run is refused and the entry survives for a retry.
+    workstationLocked = true;
+    releaseLockProbe();
+    lockProbeGate = null;
+    await pendingConfirm;
+    await flushAsync();
+    assert.equal(app.missedScheduledCommands.map((c) => c.id).join(), "missed_gate");
+    assert.equal(
+      localStorage.getItem(SCHEDULED_COMMANDS_STORAGE_KEY),
+      persistedBefore,
+      "a locked refusal does not rewrite the stored timer away",
+    );
+    assert.equal(
+      (app.devices.find((d) => d.id === light.id)!.kind as { isOn: boolean }).isOn,
+      initialOn,
+      "a locked refusal never actuates the device",
+    );
+
+    // 3) Unlocked, the very same entry runs and leaves both the list and the disk.
+    workstationLocked = false;
+    await confirmMissedScheduledCommand(app, "missed_gate");
+    await flushAsync();
+    assert.equal(app.missedScheduledCommands.length, 0, "the confirmed timer is consumed");
+    assert.equal(
+      (app.devices.find((d) => d.id === light.id)!.kind as { isOn: boolean }).isOn,
+      !initialOn,
+      "confirming after unlock runs the timer",
+    );
+    assert.equal(
+      localStorage.getItem(SCHEDULED_COMMANDS_STORAGE_KEY)?.includes("missed_gate") ?? false,
+      false,
+      "the consumed timer is gone from disk too",
+    );
+  });
+
+  it("refuses to mint a bridgeToken without a CSPRNG and retries a failed snapshot write", async () => {
+    const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+    try {
+      Object.defineProperty(globalThis, "crypto", { value: undefined, configurable: true });
+      assert.throws(
+        () => generateRandomHexToken(),
+        /安全随机数源不可用/,
+        "a build without a CSPRNG must refuse instead of falling back to Math.random",
+      );
+    } finally {
+      if (originalCrypto) Object.defineProperty(globalThis, "crypto", originalCrypto);
+    }
+    const restored = generateRandomHexToken();
+    assert.match(restored, /^[0-9a-f]{64}$/, "a restored CSPRNG mints a 32-byte hex token");
+
+    // The dedupe stamp must only advance for a write that landed, so one transient failure cannot
+    // make every later render believe the snapshot is already current.
+    snapshotWritesToFail = 1;
+    const app = startDemoApp({ enableRaycastIntegration: true });
+    await flushAsync();
+    assert.equal(
+      tauriCalls.filter((c) => c.cmd === "write_raycast_snapshot").length,
+      1,
+      "the first render attempted the write and it failed",
+    );
+
+    tauriCalls = [];
+    app.render();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await flushAsync();
+    assert.ok(
+      tauriCalls.some((c) => c.cmd === "write_raycast_snapshot"),
+      "the next render retries the same content instead of treating it as exported",
+    );
   });
 });

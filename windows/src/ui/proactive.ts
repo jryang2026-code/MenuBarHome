@@ -265,8 +265,10 @@ export function maybeRefreshProactiveInBackground(host: MenuMijiaWindowsApp): vo
 
 export function invalidateSourceControl(host: MenuMijiaWindowsApp): void {
     abortVoiceInput(host);
-    clearUndoHoverPause(host);
+    // Bump sourceRevision before resolving any pending URL confirmation so the drain loop sees
+    // queued links as belonging to the previous source and cancels them cleanly.
     host.sourceRevision += 1;
+    clearUndoHoverPause(host);
     host.timerSnapshot = null;
     host.syncGeneration += 1;
     host.isSyncingCloud = false;

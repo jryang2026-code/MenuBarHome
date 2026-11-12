@@ -2,7 +2,9 @@ use super::*;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 const COMPANION_DIR_NAME: &str = "MenuBarMijia";
 const SNAPSHOT_FILE_NAME: &str = "raycast-snapshot.json";
@@ -12,6 +14,27 @@ const MAX_OPEN_URL_BYTES: usize = 4096;
 const MAX_HTTP_REQUEST_BYTES: usize = 8192;
 const MAX_PENDING_URLS: usize = 32;
 const IPC_SECRET_HEADER: &str = "x-menubarhome-secret";
+const IPC_OPEN_URL_ROUTE: &str = "/open-url";
+const IPC_ACTIVATE_ROUTE: &str = "/activate";
+/// A whole request (headers **and** body) must arrive inside this budget, so a client that drips
+/// one byte per second cannot pin a handler thread.
+const IPC_CONNECTION_DEADLINE_MS: u64 = 1500;
+const IPC_CLIENT_WRITE_TIMEOUT_MS: u64 = 500;
+/// Bounded fan-out: slow clients may never starve a real forward. Beyond this, a connection is
+/// closed immediately instead of being queued behind the others.
+const MAX_CONCURRENT_IPC_CLIENTS: usize = 4;
+/// A second launch waits this long in total for the primary instance to publish `ipc-endpoint.json`.
+#[cfg(not(test))]
+const STARTUP_FORWARD_TOTAL_TIMEOUT_MS: u64 = 2000;
+#[cfg(not(test))]
+const STARTUP_FORWARD_ATTEMPT_TIMEOUT_MS: u64 = 350;
+#[cfg(not(test))]
+const STARTUP_FORWARD_POLL_INTERVAL_MS: u64 = 60;
+/// `Local\` scopes the mutex to the signed-in session, so a second Windows user is not blocked.
+#[cfg(all(windows, not(test)))]
+const SINGLE_INSTANCE_MUTEX_NAME: &str = r"Local\MenuBarHome.SingleInstance.Mutex";
+#[cfg(all(windows, not(test)))]
+const WIN32_ERROR_ALREADY_EXISTS: u32 = 183;
 
 static SNAPSHOT_IO_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static SNAPSHOT_TMP_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -19,6 +42,10 @@ static WEBVIEW_URL_LISTENER_READY: AtomicBool = AtomicBool::new(false);
 static PENDING_OPEN_URLS: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 static ACTIVE_IPC_OWNERSHIP: LazyLock<Mutex<Option<(u16, String)>>> =
     LazyLock::new(|| Mutex::new(None));
+/// Handle of the session single-instance mutex, kept until the process exits so the object and the
+/// name stay alive for as long as this instance runs.
+#[cfg(all(windows, not(test)))]
+static SINGLE_INSTANCE_HANDLE: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct IpcEndpoint {
@@ -188,14 +215,29 @@ pub(crate) fn write_ipc_endpoint(dir: &Path, endpoint: &IpcEndpoint) -> Result<P
     write_atomic_file(dir, IPC_ENDPOINT_FILE_NAME, "ipc-endpoint", &body)
 }
 
-pub(crate) fn forward_url_to_endpoint(
-    endpoint: &IpcEndpoint,
-    url: &str,
-    timeout: Duration,
-) -> bool {
-    let Some(clean_url) = sanitize_menumijia_url(url) else {
-        return false;
-    };
+/// What a second launch asks the running primary instance to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum IpcRequest {
+    /// A `menumijia://` protocol activation carrying the URL to run.
+    OpenUrl(String),
+    /// A plain second launch: reveal and focus the main panel without any URL.
+    Activate,
+}
+
+const HTTP_200: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+const HTTP_400: &[u8] = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const HTTP_403: &[u8] = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const HTTP_404: &[u8] = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const HTTP_408: &[u8] = b"HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const HTTP_413: &[u8] = b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const HTTP_503: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+fn respond(stream: &mut TcpStream, status: &'static [u8]) {
+    let _ = stream.write_all(status);
+    let _ = stream.flush();
+}
+
+fn post_to_endpoint(endpoint: &IpcEndpoint, route: &str, body: &[u8], timeout: Duration) -> bool {
     if endpoint.port == 0 || endpoint.secret.is_empty() {
         return false;
     }
@@ -205,9 +247,8 @@ pub(crate) fn forward_url_to_endpoint(
     };
     let _ = stream.set_read_timeout(Some(timeout));
     let _ = stream.set_write_timeout(Some(timeout));
-    let body = clean_url.as_bytes();
     let request = format!(
-        "POST /open-url HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nX-MenuBarHome-Secret: {}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST {route} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{IPC_SECRET_HEADER}: {}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         endpoint.port,
         endpoint.secret,
         body.len()
@@ -224,6 +265,51 @@ pub(crate) fn forward_url_to_endpoint(
     head.starts_with("HTTP/1.1 200") || head.starts_with("HTTP/1.0 200")
 }
 
+pub(crate) fn forward_url_to_endpoint(
+    endpoint: &IpcEndpoint,
+    url: &str,
+    timeout: Duration,
+) -> bool {
+    let Some(clean_url) = sanitize_menumijia_url(url) else {
+        return false;
+    };
+    post_to_endpoint(endpoint, IPC_OPEN_URL_ROUTE, clean_url.as_bytes(), timeout)
+}
+
+pub(crate) fn forward_activate_to_endpoint(endpoint: &IpcEndpoint, timeout: Duration) -> bool {
+    post_to_endpoint(endpoint, IPC_ACTIVATE_ROUTE, b"", timeout)
+}
+
+/// Hands this launch over to the instance that already owns the session mutex.
+///
+/// A just-started primary may not have written `ipc-endpoint.json` yet, so the endpoint is polled
+/// until `total_timeout` runs out. The retry is what makes a double-click right after login land
+/// on the real instance instead of dying on a missing file.
+pub(crate) fn forward_to_primary_instance(
+    dir: &Path,
+    startup_url: Option<&str>,
+    total_timeout: Duration,
+    attempt_timeout: Duration,
+    poll_interval: Duration,
+) -> bool {
+    let deadline = Instant::now() + total_timeout;
+    loop {
+        if let Some(endpoint) = read_ipc_endpoint(dir) {
+            let delivered = match startup_url {
+                Some(url) => forward_url_to_endpoint(&endpoint, url, attempt_timeout),
+                None => forward_activate_to_endpoint(&endpoint, attempt_timeout),
+            };
+            if delivered {
+                return true;
+            }
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(poll_interval);
+    }
+}
+
 fn queue_pending_open_url(url: String) {
     if let Ok(mut guard) = PENDING_OPEN_URLS.lock() {
         if guard.len() >= MAX_PENDING_URLS {
@@ -233,128 +319,291 @@ fn queue_pending_open_url(url: String) {
     }
 }
 
+/// `true` when this process took the session mutex (i.e. it is the primary instance).
+///
+/// `CreateMutexW` reports an existing object through `ERROR_ALREADY_EXISTS`, which is the only
+/// signal Windows gives a second copy of the same executable. The handle is kept for the life of
+/// the process: dropping it would release the name and let a third launch become "primary".
+#[cfg(all(windows, not(test)))]
+fn acquire_single_instance() -> bool {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateMutexW(
+            lp_mutex_attributes: *const std::ffi::c_void,
+            b_initial_owner: i32,
+            lp_name: *const u16,
+        ) -> isize;
+        fn GetLastError() -> u32;
+        fn CloseHandle(h_object: isize) -> i32;
+    }
+
+    let name: Vec<u16> = SINGLE_INSTANCE_MUTEX_NAME
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    if handle == 0 {
+        // The mutex could not be created at all (e.g. a restricted desktop). Refusing to start
+        // would leave the user with no app, so fall through as the primary instance.
+        return true;
+    }
+    if unsafe { GetLastError() } == WIN32_ERROR_ALREADY_EXISTS {
+        unsafe {
+            let _ = CloseHandle(handle);
+        }
+        return false;
+    }
+    SINGLE_INSTANCE_HANDLE.store(handle as usize, Ordering::SeqCst);
+    true
+}
+
+#[cfg(all(not(windows), not(test)))]
+fn acquire_single_instance() -> bool {
+    true
+}
+
+/// Real startup path: claim the single-instance mutex, or hand the launch over and exit.
+///
+/// Runs only outside unit tests, because both branches either exit the process or hold a real
+/// kernel object.
+#[cfg(not(test))]
+fn claim_single_instance_or_forward(startup_url: Option<&str>) -> bool {
+    if acquire_single_instance() {
+        return true;
+    }
+    if let Some(dir) = companion_local_dir() {
+        // Best effort: a failed forward still exits, because a second tray instance would
+        // overwrite `ipc-endpoint.json` and race the primary on the snapshot and timers.
+        let _ = forward_to_primary_instance(
+            &dir,
+            startup_url,
+            Duration::from_millis(STARTUP_FORWARD_TOTAL_TIMEOUT_MS),
+            Duration::from_millis(STARTUP_FORWARD_ATTEMPT_TIMEOUT_MS),
+            Duration::from_millis(STARTUP_FORWARD_POLL_INTERVAL_MS),
+        );
+    }
+    false
+}
+
 pub(crate) fn try_forward_startup_url_and_exit() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let Some(startup_url) = extract_menumijia_arg(&args) else {
-        return;
-    };
-    if let Some(dir) = companion_local_dir() {
-        if let Some(endpoint) = read_ipc_endpoint(&dir) {
-            if forward_url_to_endpoint(&endpoint, &startup_url, Duration::from_millis(450)) {
-                std::process::exit(0);
+    let startup_url = extract_menumijia_arg(&args);
+    #[cfg(not(test))]
+    {
+        if !claim_single_instance_or_forward(startup_url.as_deref()) {
+            std::process::exit(0);
+        }
+    }
+    // The primary instance reads its own launch URL directly; a stale `ipc-endpoint.json` from a
+    // previous run is never trusted as a forwarding target.
+    if let Some(url) = startup_url {
+        queue_pending_open_url(url);
+    }
+}
+
+/// Parsed and authorized request head. Authorization happens the moment the head is complete, so
+/// an unauthenticated client never gets to stream a body into the only handler.
+struct AuthorizedHead {
+    request: AuthorizedRequest,
+    content_length: usize,
+}
+
+enum AuthorizedRequest {
+    OpenUrl,
+    Activate,
+}
+
+impl AuthorizedHead {
+    fn into_request(self, body: &str) -> Option<IpcRequest> {
+        match self.request {
+            AuthorizedRequest::OpenUrl => sanitize_menumijia_url(body).map(IpcRequest::OpenUrl),
+            AuthorizedRequest::Activate => {
+                if self.content_length == 0 {
+                    Some(IpcRequest::Activate)
+                } else {
+                    None
+                }
             }
         }
     }
-    queue_pending_open_url(startup_url);
 }
 
+fn parse_content_length(head: &str) -> Option<usize> {
+    let mut found: Option<usize> = None;
+    for line in head.lines().skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            // Chunked bodies would let a client drip forever without a usable Content-Length.
+            return None;
+        }
+        if !name.eq_ignore_ascii_case("content-length") {
+            continue;
+        }
+        let parsed = value.trim().parse::<usize>().ok()?;
+        if found.is_some_and(|existing| existing != parsed) {
+            return None;
+        }
+        found = Some(parsed);
+    }
+    Some(found.unwrap_or(0))
+}
+
+/// Returns the authorized head, or the status line to answer with.
+fn authorize_request_head(head: &str, expected_secret: &str) -> Result<AuthorizedHead, &'static [u8]> {
+    let mut lines = head.lines();
+    let request_line = lines.next().unwrap_or("");
+    let route = if request_line.starts_with(&format!("POST {IPC_OPEN_URL_ROUTE} HTTP/1.")) {
+        AuthorizedRequest::OpenUrl
+    } else if request_line.starts_with(&format!("POST {IPC_ACTIVATE_ROUTE} HTTP/1.")) {
+        AuthorizedRequest::Activate
+    } else {
+        return Err(HTTP_404);
+    };
+
+    let mut provided_secret: Option<&str> = None;
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.trim().eq_ignore_ascii_case(IPC_SECRET_HEADER) {
+                provided_secret = Some(value.trim());
+            }
+        }
+    }
+    let Some(candidate) = provided_secret else {
+        return Err(HTTP_403);
+    };
+    if !constant_time_secret_matches(expected_secret, candidate) {
+        return Err(HTTP_403);
+    }
+
+    let Some(content_length) = parse_content_length(head) else {
+        return Err(HTTP_400);
+    };
+    if content_length > MAX_OPEN_URL_BYTES {
+        return Err(HTTP_413);
+    }
+    if matches!(route, AuthorizedRequest::Activate) && content_length != 0 {
+        return Err(HTTP_400);
+    }
+    Ok(AuthorizedHead {
+        request: route,
+        content_length,
+    })
+}
+
+/// Reads one request inside a single wall-clock budget for the whole connection.
+///
+/// The head is authorized before any body byte is accepted, and every `read` is bounded by the
+/// time left, so a client trickling one byte per second is closed instead of parking the thread.
 fn handle_ipc_client(
     mut stream: TcpStream,
     expected_secret: &str,
-    on_url: &(dyn Fn(String) + Send + Sync),
+    on_request: &(dyn Fn(IpcRequest) + Send + Sync),
 ) {
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(1500)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(1500)));
+    let deadline = Instant::now() + Duration::from_millis(IPC_CONNECTION_DEADLINE_MS);
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(IPC_CLIENT_WRITE_TIMEOUT_MS)));
 
-    let mut buf = Vec::with_capacity(1024);
+    let mut buf: Vec<u8> = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
+    let mut authorized: Option<AuthorizedHead> = None;
     let mut header_end: Option<usize> = None;
-    let mut content_length: usize = 0;
 
     loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            respond(&mut stream, HTTP_408);
+            return;
+        }
+        if stream.set_read_timeout(Some(remaining)).is_err() {
+            respond(&mut stream, HTTP_400);
+            return;
+        }
         match stream.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => {
                 if buf.len() + n > MAX_HTTP_REQUEST_BYTES {
-                    let _ = stream.write_all(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    respond(&mut stream, HTTP_413);
                     return;
                 }
                 buf.extend_from_slice(&chunk[..n]);
                 if header_end.is_none() {
-                    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                        let end = pos + 4;
-                        header_end = Some(end);
-                        let head_str = match std::str::from_utf8(&buf[..pos]) {
-                            Ok(s) => s,
-                            Err(_) => {
-                                let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-                                return;
-                            }
-                        };
-                        for line in head_str.lines().skip(1) {
-                            if let Some((name, val)) = line.split_once(':') {
-                                if name.trim().eq_ignore_ascii_case("content-length") {
-                                    content_length = val.trim().parse::<usize>().unwrap_or(0);
-                                }
-                            }
+                    let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let Ok(head) = std::str::from_utf8(&buf[..pos]) else {
+                        respond(&mut stream, HTTP_400);
+                        return;
+                    };
+                    match authorize_request_head(head, expected_secret) {
+                        Ok(parsed) => {
+                            header_end = Some(pos + 4);
+                            authorized = Some(parsed);
                         }
-                        if content_length > MAX_OPEN_URL_BYTES {
-                            let _ = stream.write_all(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        Err(status) => {
+                            respond(&mut stream, status);
                             return;
                         }
                     }
                 }
-                if let Some(end) = header_end {
-                    if buf.len() >= end + content_length {
-                        break;
-                    }
+                let Some(end) = header_end else {
+                    continue;
+                };
+                let needed = authorized.as_ref().map_or(0, |head| head.content_length);
+                if buf.len() >= end + needed {
+                    break;
                 }
             }
-            Err(_) => break,
-        }
-    }
-
-    let Some(end) = header_end else {
-        let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-        return;
-    };
-    let Ok(head_str) = std::str::from_utf8(&buf[..end - 4]) else {
-        let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-        return;
-    };
-    let mut lines = head_str.lines();
-    let request_line = lines.next().unwrap_or("");
-    if !request_line.starts_with("POST /open-url HTTP/1.") {
-        let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-        return;
-    }
-
-    let mut provided_secret: Option<&str> = None;
-    for line in lines {
-        if let Some((name, val)) = line.split_once(':') {
-            if name.trim().eq_ignore_ascii_case(IPC_SECRET_HEADER) {
-                provided_secret = Some(val.trim());
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                respond(&mut stream, HTTP_408);
+                return;
             }
         }
     }
-    let Some(secret_candidate) = provided_secret else {
-        let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+
+    let (Some(end), Some(head)) = (header_end, authorized) else {
+        respond(&mut stream, HTTP_400);
         return;
     };
-    if !constant_time_secret_matches(expected_secret, secret_candidate) {
-        let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    // A client that closed mid-body leaves fewer bytes than it announced; the body is then
+    // untrustworthy, so nothing is dispatched.
+    let Some(body_end) = end.checked_add(head.content_length) else {
+        respond(&mut stream, HTTP_400);
+        return;
+    };
+    if buf.len() < body_end {
+        respond(&mut stream, HTTP_400);
         return;
     }
-
-    let body_end = (end + content_length).min(buf.len());
-    let body_str = std::str::from_utf8(&buf[end..body_end]).unwrap_or("");
-    let Some(valid_url) = sanitize_menumijia_url(body_str) else {
-        let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    let body = std::str::from_utf8(&buf[end..body_end]).unwrap_or("");
+    let Some(request) = head.into_request(body) else {
+        respond(&mut stream, HTTP_400);
         return;
     };
+    // Dispatch before acknowledging: a 200 means the primary instance took the request, so the
+    // launcher's "did the forward land?" answer is not a guess about a later event.
+    on_request(request);
+    respond(&mut stream, HTTP_200);
+}
 
-    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
-    let _ = stream.flush();
-    on_url(valid_url);
+/// Decrements the active-client counter on every exit path, including a panic in the handler.
+struct ClientSlot(Arc<AtomicUsize>);
+
+impl Drop for ClientSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 pub(crate) fn spawn_ipc_server_in_dir<F>(
     dir: &Path,
-    stop_flag: Option<std::sync::Arc<AtomicBool>>,
-    on_url: F,
+    stop_flag: Option<Arc<AtomicBool>>,
+    on_request: F,
 ) -> Result<IpcEndpoint, String>
 where
-    F: Fn(String) + Send + Sync + 'static,
+    F: Fn(IpcRequest) + Send + Sync + 'static,
 {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|err| format!("绑定本地单实例监听端口失败：{err}"))?;
@@ -374,27 +623,41 @@ where
         let _ = listener.set_nonblocking(true);
     }
 
-    std::thread::spawn(move || {
-        loop {
-            if stop_flag
-                .as_ref()
-                .is_some_and(|flag| flag.load(Ordering::SeqCst))
-            {
-                break;
-            }
-            match listener.accept() {
-                Ok((stream, peer)) => {
-                    if !peer.ip().is_loopback() {
-                        continue;
-                    }
-                    let _ = stream.set_nonblocking(false);
-                    handle_ipc_client(stream, &secret, &on_url);
+    let on_request = Arc::new(on_request);
+    let active_clients = Arc::new(AtomicUsize::new(0));
+    let clients_for_accept = active_clients.clone();
+
+    std::thread::spawn(move || loop {
+        if stop_flag
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        {
+            break;
+        }
+        match listener.accept() {
+            Ok((mut stream, peer)) => {
+                if !peer.ip().is_loopback() {
+                    continue;
                 }
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(15));
+                let _ = stream.set_nonblocking(false);
+                // Bounded fan-out: a shelf of slow clients must never starve a real forward.
+                if clients_for_accept.fetch_add(1, Ordering::SeqCst) >= MAX_CONCURRENT_IPC_CLIENTS {
+                    clients_for_accept.fetch_sub(1, Ordering::SeqCst);
+                    respond(&mut stream, HTTP_503);
+                    continue;
                 }
-                Err(_) => break,
+                let slot = ClientSlot(clients_for_accept.clone());
+                let handler = on_request.clone();
+                let client_secret = secret.clone();
+                std::thread::spawn(move || {
+                    let _slot = slot;
+                    handle_ipc_client(stream, &client_secret, handler.as_ref());
+                });
             }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(15));
+            }
+            Err(_) => break,
         }
     });
 
@@ -415,6 +678,17 @@ fn dispatch_open_url_to_webview(app: &AppHandle, url: String) {
         }
     }
     queue_pending_open_url(url);
+}
+
+/// A plain second launch (no `menumijia://` argument) asks the running instance to come forward.
+///
+/// The panel is revealed first so it works even before the webview registers its listener; the
+/// event afterwards lets the page repaint with fresh state.
+fn dispatch_activate_to_webview(app: &AppHandle) {
+    show_panel_for_url(app.clone());
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.eval("window.dispatchEvent(new CustomEvent('menumijia:activate'))");
+    }
 }
 
 #[tauri::command]
@@ -569,8 +843,10 @@ pub(crate) fn start_companion_runtime(app: AppHandle) {
         return;
     };
     let app_for_ipc = app.clone();
-    if let Ok(endpoint) = spawn_ipc_server_in_dir(&dir, None, move |url| {
-        dispatch_open_url_to_webview(&app_for_ipc, url);
+    if let Ok(endpoint) = spawn_ipc_server_in_dir(&dir, None, move |request| match request {
+        IpcRequest::OpenUrl(url) => dispatch_open_url_to_webview(&app_for_ipc, url),
+        // A bare second launch: bringing the panel forward is the whole request.
+        IpcRequest::Activate => dispatch_activate_to_webview(&app_for_ipc),
     }) {
         if let Ok(mut guard) = ACTIVE_IPC_OWNERSHIP.lock() {
             *guard = Some((endpoint.port, endpoint.secret));
@@ -598,10 +874,51 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    fn scratch_dir(label: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!("mbm-companion-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        base
+    }
+
+    fn read_status_line(stream: &mut TcpStream) -> String {
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(2500)));
+        let mut buf = [0u8; 128];
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => String::new(),
+            Ok(n) => String::from_utf8_lossy(&buf[..n])
+                .lines()
+                .next()
+                .unwrap_or("")
+                .to_string(),
+        }
+    }
+
+    fn request_head(secret: Option<&str>, route: &str, content_length: usize) -> String {
+        let mut head = format!(
+            "POST {route} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {content_length}\r\nConnection: close\r\n"
+        );
+        if let Some(secret) = secret {
+            head.push_str(&format!("{IPC_SECRET_HEADER}: {secret}\r\n"));
+        }
+        head.push_str("\r\n");
+        head
+    }
+
+    fn send_raw(endpoint: &IpcEndpoint, raw: &str) -> String {
+        let addr = SocketAddr::from(([127, 0, 0, 1], endpoint.port));
+        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(1000))
+            .expect("connect to the loopback IPC endpoint");
+        let _ = stream.set_write_timeout(Some(Duration::from_millis(1000)));
+        stream
+            .write_all(raw.as_bytes())
+            .expect("write the raw request");
+        let _ = stream.flush();
+        read_status_line(&mut stream)
+    }
+
     #[test]
     fn snapshot_write_and_remove_stay_atomic_and_confined() {
-        let base = std::env::temp_dir().join(format!("mbm-companion-snap-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = scratch_dir("snap");
         let dir = base.join("MenuBarMijia");
 
         let payload_one = r#"{"schemaVersion":1,"devices":[],"scenes":[],"quickActions":[]}"#;
@@ -630,15 +947,14 @@ mod tests {
 
     #[test]
     fn loopback_ipc_authenticates_secret_and_forwards_menumijia_urls() {
-        let base = std::env::temp_dir().join(format!("mbm-companion-ipc-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = scratch_dir("ipc");
         let dir = base.join("MenuBarMijia");
-        let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let received: Arc<Mutex<Vec<IpcRequest>>> = Arc::new(Mutex::new(Vec::new()));
         let received_sink = received.clone();
         let stop = Arc::new(AtomicBool::new(false));
 
-        let endpoint = spawn_ipc_server_in_dir(&dir, Some(stop.clone()), move |url| {
-            received_sink.lock().unwrap().push(url);
+        let endpoint = spawn_ipc_server_in_dir(&dir, Some(stop.clone()), move |request| {
+            received_sink.lock().unwrap().push(request);
         })
         .expect("spawn loopback IPC server");
 
@@ -646,11 +962,11 @@ mod tests {
         assert_eq!(persisted, endpoint);
 
         let wrong = IpcEndpoint {
-            secret: "0".repeat(64),
+            secret: "cd".repeat(32),
             ..endpoint.clone()
         };
         assert!(
-            !forward_url_to_endpoint(&wrong, "menumijia://toggle?name=desk", Duration::from_millis(400)),
+            !forward_url_to_endpoint(&wrong, "menumijia://focus", Duration::from_millis(400)),
             "mismatched secret must be rejected with 403"
         );
         assert!(received.lock().unwrap().is_empty());
@@ -660,21 +976,210 @@ mod tests {
             "non-menumijia scheme must be rejected"
         );
 
+        let url = format!("menumijia://power?device=light.desk&on=true&token={}", "ab".repeat(32));
         assert!(
-            forward_url_to_endpoint(
-                &endpoint,
-                "menumijia://power?id=light.desk&state=on&token=abc&request_id=req-1",
-                Duration::from_millis(400)
-            ),
+            forward_url_to_endpoint(&endpoint, &url, Duration::from_millis(400)),
             "valid secret and menumijia URL must succeed"
+        );
+        assert!(
+            forward_activate_to_endpoint(&endpoint, Duration::from_millis(400)),
+            "a bare second launch must reach the primary instance"
         );
         stop.store(true, Ordering::SeqCst);
 
         let got = received.lock().unwrap().clone();
-        assert_eq!(
-            got,
-            vec!["menumijia://power?id=light.desk&state=on&token=abc&request_id=req-1".to_string()]
+        assert_eq!(got, vec![IpcRequest::OpenUrl(url), IpcRequest::Activate]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn an_unauthenticated_head_is_refused_before_its_body_is_accepted() {
+        let base = scratch_dir("unauth");
+        let dir = base.join("MenuBarMijia");
+        let received: Arc<Mutex<Vec<IpcRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let received_sink = received.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let endpoint = spawn_ipc_server_in_dir(&dir, Some(stop.clone()), move |request| {
+            received_sink.lock().unwrap().push(request);
+        })
+        .expect("spawn loopback IPC server");
+
+        // The head announces a body the client never sends: authorization is decided from the head
+        // alone, so the 403 arrives without waiting for those bytes.
+        let status = send_raw(&endpoint, &request_head(None, IPC_OPEN_URL_ROUTE, 64));
+        assert_eq!(status, "HTTP/1.1 403 Forbidden");
+        assert!(received.lock().unwrap().is_empty(), "an unauthorized head dispatches nothing");
+
+        let unknown = send_raw(&endpoint, &request_head(Some(endpoint.secret.as_str()), "/open-url-evil", 0));
+        assert_eq!(unknown, "HTTP/1.1 404 Not Found");
+        stop.store(true, Ordering::SeqCst);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_slow_drip_client_is_closed_with_408() {
+        let base = scratch_dir("drip");
+        let dir = base.join("MenuBarMijia");
+        let stop = Arc::new(AtomicBool::new(false));
+        let endpoint = spawn_ipc_server_in_dir(&dir, Some(stop.clone()), |_request| {})
+            .expect("spawn loopback IPC server");
+
+        let addr = SocketAddr::from(([127, 0, 0, 1], endpoint.port));
+        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(1000))
+            .expect("connect dripper");
+        // A head that never terminates: the handler must stop waiting on its own deadline.
+        stream
+            .write_all(b"POST /open-url HTTP/1.1\r\nHost: 127.0.0.1\r\n")
+            .expect("write a partial head");
+        let _ = stream.flush();
+
+        let started = Instant::now();
+        assert_eq!(read_status_line(&mut stream), "HTTP/1.1 408 Request Timeout");
+        assert!(
+            started.elapsed() < Duration::from_millis(IPC_CONNECTION_DEADLINE_MS + 1500),
+            "the whole-connection deadline bounded the wait"
         );
+        stop.store(true, Ordering::SeqCst);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn an_oversized_content_length_is_refused_with_413() {
+        let base = scratch_dir("oversize");
+        let dir = base.join("MenuBarMijia");
+        let received: Arc<Mutex<Vec<IpcRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let received_sink = received.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let endpoint = spawn_ipc_server_in_dir(&dir, Some(stop.clone()), move |request| {
+            received_sink.lock().unwrap().push(request);
+        })
+        .expect("spawn loopback IPC server");
+
+        let status = send_raw(
+            &endpoint,
+            &request_head(Some(endpoint.secret.as_str()), IPC_OPEN_URL_ROUTE, MAX_OPEN_URL_BYTES * 4),
+        );
+        assert_eq!(status, "HTTP/1.1 413 Payload Too Large");
+        assert!(received.lock().unwrap().is_empty());
+        stop.store(true, Ordering::SeqCst);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_activate_route_needs_the_secret_and_takes_no_body() {
+        let base = scratch_dir("activate");
+        let dir = base.join("MenuBarMijia");
+        let received: Arc<Mutex<Vec<IpcRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let received_sink = received.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let endpoint = spawn_ipc_server_in_dir(&dir, Some(stop.clone()), move |request| {
+            received_sink.lock().unwrap().push(request);
+        })
+        .expect("spawn loopback IPC server");
+
+        assert_eq!(
+            send_raw(&endpoint, &request_head(None, IPC_ACTIVATE_ROUTE, 0)),
+            "HTTP/1.1 403 Forbidden",
+            "revealing the panel is as secret-gated as opening a URL"
+        );
+        assert_eq!(
+            send_raw(&endpoint, &request_head(Some(endpoint.secret.as_str()), IPC_ACTIVATE_ROUTE, 2)),
+            "HTTP/1.1 400 Bad Request",
+            "an activate request carries no body"
+        );
+        assert!(received.lock().unwrap().is_empty());
+
+        assert_eq!(
+            send_raw(&endpoint, &request_head(Some(endpoint.secret.as_str()), IPC_ACTIVATE_ROUTE, 0)),
+            "HTTP/1.1 200 OK"
+        );
+        assert_eq!(received.lock().unwrap().clone(), vec![IpcRequest::Activate]);
+        stop.store(true, Ordering::SeqCst);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn extra_concurrent_clients_are_shed_with_503() {
+        let base = scratch_dir("shed");
+        let dir = base.join("MenuBarMijia");
+        let stop = Arc::new(AtomicBool::new(false));
+        let endpoint = spawn_ipc_server_in_dir(&dir, Some(stop.clone()), |_request| {})
+            .expect("spawn loopback IPC server");
+        let addr = SocketAddr::from(([127, 0, 0, 1], endpoint.port));
+
+        // Occupy every handler slot with a client that never completes its head.
+        let mut held = Vec::new();
+        for _ in 0..MAX_CONCURRENT_IPC_CLIENTS {
+            let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(1000))
+                .expect("connect a held client");
+            stream
+                .write_all(b"POST /open-url HTTP/1.1\r\nHost: 127.0.0.1\r\n")
+                .expect("write a partial head");
+            let _ = stream.flush();
+            held.push(stream);
+        }
+        std::thread::sleep(Duration::from_millis(400));
+
+        // The accept loop is a separate thread, so give it a few tries to see all held clients
+        // before the excess one is judged.
+        let mut status = String::new();
+        for _ in 0..4 {
+            match TcpStream::connect_timeout(&addr, Duration::from_millis(1000)) {
+                Ok(mut extra) => {
+                    status = read_status_line(&mut extra);
+                    if status == "HTTP/1.1 503 Service Unavailable" {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => panic!("connect the excess client: {err}"),
+            }
+        }
+        assert_eq!(
+            status, "HTTP/1.1 503 Service Unavailable",
+            "a shelf of slow clients must never starve a real forward"
+        );
+        stop.store(true, Ordering::SeqCst);
+        drop(held);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn forward_to_primary_instance_retries_until_the_endpoint_appears() {
+        let base = scratch_dir("forward");
+        let dir = base.join("MenuBarMijia");
+        let received: Arc<Mutex<Vec<IpcRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_server = stop.clone();
+        let dir_for_server = dir.clone();
+        let received_sink = received.clone();
+        // A primary instance that is still starting: `ipc-endpoint.json` lands well after the
+        // second launch begins its poll.
+        let server = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            spawn_ipc_server_in_dir(&dir_for_server, Some(stop_for_server), move |request| {
+                received_sink.lock().unwrap().push(request);
+            })
+            .expect("late IPC server")
+        });
+
+        assert!(
+            forward_to_primary_instance(
+                &dir,
+                Some("menumijia://focus"),
+                Duration::from_millis(4000),
+                Duration::from_millis(350),
+                Duration::from_millis(50),
+            ),
+            "the retry loop must land on the endpoint that appears later"
+        );
+        let _endpoint = server.join().expect("server thread");
+        assert_eq!(
+            received.lock().unwrap().clone(),
+            vec![IpcRequest::OpenUrl("menumijia://focus".to_string())]
+        );
+
+        stop.store(true, Ordering::SeqCst);
         let _ = std::fs::remove_dir_all(&base);
     }
 

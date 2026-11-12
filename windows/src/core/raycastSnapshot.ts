@@ -172,15 +172,23 @@ export class RaycastBridgeTokenManager {
   }
 }
 
+/**
+ * Issues a 32-byte hex bridge token from a cryptographically secure source only.
+ *
+ * `Math.random()` is deliberately absent: the token is the whole authorization for
+ * `menumijia://` control, so a predictable value would let any page drive the user's devices.
+ * A build without a CSPRNG must refuse to mint a token instead of degrading to a weak one.
+ */
 export function generateRandomHexToken(): string {
-  const bytes = new Uint8Array(32);
-  if (typeof globalThis.crypto?.getRandomValues === "function") {
-    globalThis.crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < bytes.length; i += 1) {
-      bytes[i] = Math.floor(Math.random() * 256);
-    }
+  const webCrypto = globalThis.crypto;
+  if (typeof webCrypto?.getRandomValues !== "function") {
+    throw new Error(trText(
+      "安全随机数源不可用，无法生成 Raycast 桥接令牌",
+      "No secure random source is available; refusing to mint a Raycast bridge token",
+    ));
   }
+  const bytes = new Uint8Array(32);
+  webCrypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 

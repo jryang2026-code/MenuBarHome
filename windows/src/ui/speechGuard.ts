@@ -1,4 +1,6 @@
 import {
+  AppURLParser,
+  formatAppURLCommandLabel,
   onOpenURL,
   type AppURLCommandHost,
   type BuiltInURLSceneId,
@@ -40,6 +42,17 @@ interface PendingUrlConfirmationEntry {
   readonly resolve: (approved: boolean) => void;
 }
 
+/** One external link waiting its turn, stamped with the home it was opened against. */
+interface QueuedOpenUrl {
+  readonly url: string;
+  /**
+   * `host.sourceRevision` when the link entered the queue. A link captured against one data source
+   * must never run against another: its `bridgeToken` and device ids belong to the old home.
+   */
+  readonly sourceRevision: number;
+  readonly done: () => void;
+}
+
 interface UndoHoverPauseSnapshot {
   readonly action: UndoAction;
   readonly remainingActionMs: number;
@@ -59,9 +72,11 @@ interface HostRuntimeGuardState {
   lastCommandFeedback: RaycastCommandFeedback | undefined;
   lastTraySummary: string | null | undefined;
   pendingUrlConfirmation: PendingUrlConfirmationEntry | null;
-  urlQueue: Array<{ readonly url: string; readonly done: () => void }>;
+  urlQueue: QueuedOpenUrl[];
   isDrainingUrlQueue: boolean;
   lockBlockCount: number;
+  exportSeq: number;
+  bridgeTokenWarningShown: boolean;
 }
 
 const runtimeStateByHost = new WeakMap<MenuMijiaWindowsApp, HostRuntimeGuardState>();
@@ -112,6 +127,8 @@ function hostState(host: MenuMijiaWindowsApp): HostRuntimeGuardState {
       urlQueue: [],
       isDrainingUrlQueue: false,
       lockBlockCount: 0,
+      exportSeq: 0,
+      bridgeTokenWarningShown: false,
     };
     runtimeStateByHost.set(host, state);
   }
@@ -225,6 +242,20 @@ export function clearUndoHoverPause(host: MenuMijiaWindowsApp): void {
     window.clearTimeout(state.undoBannerTimer);
     state.undoBannerTimer = null;
   }
+  cancelPendingExternalUrlWork(host);
+}
+
+/**
+ * Drops every external link that has not run yet: the one on screen and everything queued behind
+ * it. Each rejected entry still resolves its `done()` Promise, so `enqueueIncomingOpenUrl` waiters
+ * cannot hang when the panel hides or the data source is replaced.
+ *
+ * The queue entries are cancelled in place (not via `done()` alone) because the drain loop owns the
+ * shift; a cancelled entry is skipped when the loop reaches it, and the loop exits once the queue
+ * is empty.
+ */
+export function cancelPendingExternalUrlWork(host: MenuMijiaWindowsApp): void {
+  const state = hostState(host);
   if (state.pendingUrlConfirmation !== null) {
     const pending = state.pendingUrlConfirmation;
     state.pendingUrlConfirmation = null;
@@ -414,12 +445,19 @@ export function bindUndoBannerHoverGuard(host: MenuMijiaWindowsApp): void {
   );
   window.addEventListener("blur", () => resumeUndoHoverPause(host));
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") {
-      dismissPendingUrlConfirmation(host, false);
+    if (isPanelHidden()) {
+      // A hidden panel cannot show a prompt, so neither the one on screen nor any queued link
+      // that would need one may stay pending.
+      cancelPendingExternalUrlWork(host);
       resumeUndoHoverPause(host);
     }
   });
   bindCompanionAndUpdaterEvents(host);
+}
+
+/** The panel is not on screen, so a modal confirmation would be invisible and unanswerable. */
+function isPanelHidden(): boolean {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
 }
 
 export const MI_SIGNOUT_PENDING_KEY = "menumijia.windows.miSignOutPending.v1";
@@ -674,16 +712,41 @@ function bindUrlConfirmationEventsAfterRender(host: MenuMijiaWindowsApp): void {
   }
 }
 
+/**
+ * The current bridge token, or `undefined` when the integration is off — or when no CSPRNG is
+ * available. A weak token is never minted (see `generateRandomHexToken`); the failure surfaces
+ * once through `warnBridgeTokenUnavailable` instead of throwing inside a render.
+ */
 export function getActiveRaycastBridgeTokenForHost(
   host: MenuMijiaWindowsApp,
 ): string | undefined {
   const state = hostState(host);
-  return state.bridgeTokens.getOrCreate(host.settings.enableRaycastIntegration);
+  try {
+    return state.bridgeTokens.getOrCreate(host.settings.enableRaycastIntegration);
+  } catch (error) {
+    warnBridgeTokenUnavailable(host, error);
+    return undefined;
+  }
+}
+
+function warnBridgeTokenUnavailable(host: MenuMijiaWindowsApp, error: unknown): void {
+  const state = hostState(host);
+  if (state.bridgeTokenWarningShown) return;
+  state.bridgeTokenWarningShown = true;
+  const detail = error instanceof Error ? error.message : String(error);
+  host.replyBanner = {
+    text: detail,
+    source: trText("Raycast 集成", "Raycast Integration"),
+    isError: true,
+  };
+  // Without a token nothing can be written safely, so the integration stays off until it works.
+  host.settings.enableRaycastIntegration = false;
+  host.saveSettings();
 }
 
 export function getLatestRaycastSnapshotForHost(host: MenuMijiaWindowsApp): RaycastSnapshot {
   const state = hostState(host);
-  const token = state.bridgeTokens.getOrCreate(host.settings.enableRaycastIntegration) ?? "";
+  const token = getActiveRaycastBridgeTokenForHost(host) ?? "";
   const visibleDevices = foldGrouped(host, host.devices);
   const rooms = host.roomOptions.map((r) => ({
     id: r.id,
@@ -745,23 +808,32 @@ async function exportRaycastSnapshotNow(
     climate: snapshot.climate.map((r) => ({ ...r, updatedAt: "" })),
   });
   if (!force && state.lastExportedComparableJson === comparable) return;
-  state.lastExportedComparableJson = comparable;
 
   const invoke = window.__TAURI_INTERNALS__?.invoke;
   if (!invoke) return;
+  // The dedupe stamp is only advanced by a write that actually landed. Recording it up front made
+  // one transient I/O failure permanent: every later render saw "already exported" and skipped.
+  const seq = ++state.exportSeq;
   try {
     await invoke("write_raycast_snapshot", {
       contents: JSON.stringify(snapshot, null, 2),
     });
   } catch {
-    // Ignore transient filesystem errors; the next render retries.
+    // Transient filesystem error: leaving `lastExportedComparableJson` stale lets the next render
+    // retry the same content.
+    return;
   }
+  // A newer export (or the integration being switched off) owns the stamp now.
+  if (seq !== state.exportSeq || !host.settings.enableRaycastIntegration) return;
+  state.lastExportedComparableJson = comparable;
 }
 
 export function scheduleRaycastSnapshotExport(host: MenuMijiaWindowsApp): void {
   const state = hostState(host);
   if (!host.settings.enableRaycastIntegration) return;
-  state.bridgeTokens.getOrCreate(true);
+  // A missing CSPRNG disables the integration inside the getter, so stop before scheduling a write
+  // that would publish a snapshot with an empty token.
+  if (getActiveRaycastBridgeTokenForHost(host) === undefined) return;
   const ownerWin = host.root.ownerDocument?.defaultView ?? window;
   if (state.snapshotExportTimer !== null) {
     ownerWin.clearTimeout(state.snapshotExportTimer);
@@ -781,7 +853,11 @@ export function setRaycastIntegrationEnabled(
   host.settings.enableRaycastIntegration = enabled;
   host.saveSettings();
   if (enabled) {
-    state.bridgeTokens.getOrCreate(true);
+    if (getActiveRaycastBridgeTokenForHost(host) === undefined) {
+      // No CSPRNG: `warnBridgeTokenUnavailable` already turned the integration back off.
+      host.render();
+      return;
+    }
     void exportRaycastSnapshotNow(host, true);
   } else {
     const ownerWin = host.root.ownerDocument?.defaultView ?? window;
@@ -791,6 +867,9 @@ export function setRaycastIntegrationEnabled(
     }
     state.bridgeTokens.revoke();
     state.lastExportedComparableJson = null;
+    // Any write still in flight belongs to the run that just ended; its completion must not
+    // reinstate a dedupe stamp for a snapshot that is being deleted.
+    state.exportSeq += 1;
     const invoke = window.__TAURI_INTERNALS__?.invoke;
     if (invoke) {
       void invoke("remove_raycast_snapshot").catch(() => undefined);
@@ -810,8 +889,20 @@ function syncDynamicTrayTooltip(host: MenuMijiaWindowsApp): void {
   invokeTauriVoid("set_tray_tooltip", { summary });
 }
 
-function createUrlCommandHostAdapter(host: MenuMijiaWindowsApp): AppURLCommandHost {
+/**
+ * Wraps the app for one external link, pinned to the data source it was opened against.
+ *
+ * `onOpenURL` awaits a prompt, a reveal and a device write; the user can switch Mi Home, sign out,
+ * or switch HA in any of those gaps. Once `host.sourceRevision` moves, the token and device ids in
+ * the link describe a home that is no longer on screen, so every mutating step refuses instead of
+ * controlling a same-id device in the new account.
+ */
+function createUrlCommandHostAdapter(
+  host: MenuMijiaWindowsApp,
+  expectedRevision: number,
+): AppURLCommandHost {
   const state = hostState(host);
+  const revisionStillMatches = () => host.sourceRevision === expectedRevision;
   return {
     get devices() {
       return host.devices;
@@ -861,6 +952,9 @@ function createUrlCommandHostAdapter(host: MenuMijiaWindowsApp): AppURLCommandHo
     },
 
     requestExternalUrlConfirmation(args): Promise<boolean> {
+      // A hidden panel cannot show this modal, so the request is refused outright rather than
+      // parked: an unseen prompt would hold the queue open forever.
+      if (!revisionStillMatches() || isPanelHidden()) return Promise.resolve(false);
       if (state.pendingUrlConfirmation !== null) {
         const previous = state.pendingUrlConfirmation;
         state.pendingUrlConfirmation = null;
@@ -916,21 +1010,30 @@ function createUrlCommandHostAdapter(host: MenuMijiaWindowsApp): AppURLCommandHo
       }
     },
 
-    executeSingleCommand(device, command, summary, intent, readBackPower): Promise<void> {
-      return host.executeSingleCommand(device, command, summary, intent, readBackPower);
+    async executeSingleCommand(device, command, summary, intent, readBackPower): Promise<void> {
+      if (!revisionStillMatches()) return;
+      await host.executeSingleCommand(device, command, summary, intent, readBackPower);
     },
 
-    applyCommand(command, readBackPower): Promise<boolean> {
+    async applyCommand(command, readBackPower): Promise<boolean> {
+      if (!revisionStillMatches()) return false;
       return host.applyCommand(command, readBackPower);
     },
 
-    handleNaturalCommand(rawInput, fromScheduled): Promise<void> {
-      return host.handleNaturalCommand(rawInput, fromScheduled);
+    async handleNaturalCommand(rawInput, fromScheduled): Promise<void> {
+      if (!revisionStillMatches()) return;
+      await host.handleNaturalCommand(rawInput, fromScheduled);
     },
 
     async executeBuiltInSceneFromUrl(
       scene: BuiltInURLSceneId,
     ): Promise<{ readonly message: string; readonly isError: boolean }> {
+      if (!revisionStillMatches()) {
+        return {
+          message: trText("数据源已切换，已取消外部链接执行", "Data source changed; external link cancelled"),
+          isError: true,
+        };
+      }
       if (scene === "lightsOff" || scene === "softNightLight" || scene === "climateSleepOff") {
         await executeBuiltInQuickAction(host, scene);
         const banner = host.replyBanner;
@@ -983,6 +1086,7 @@ function createUrlCommandHostAdapter(host: MenuMijiaWindowsApp): AppURLCommandHo
     },
 
     focusDeviceFromUrl(deviceId: string): void {
+      if (!revisionStillMatches()) return;
       host.activeSheet = "none";
       host.selectRoom(null);
       const dev = host.devices.find((d) => d.id === deviceId);
@@ -1008,8 +1112,10 @@ export function enqueueIncomingOpenUrl(
   rawUrl: string,
 ): Promise<void> {
   const state = hostState(host);
+  // The stamp is taken here, at the moment the link arrives, not when it is finally dequeued.
+  const sourceRevision = host.sourceRevision;
   return new Promise<void>((done) => {
-    state.urlQueue.push({ url: rawUrl, done });
+    state.urlQueue.push({ url: rawUrl, sourceRevision, done });
     if (!state.isDrainingUrlQueue) {
       state.isDrainingUrlQueue = true;
       void (async () => {
@@ -1017,7 +1123,14 @@ export function enqueueIncomingOpenUrl(
           while (state.urlQueue.length > 0) {
             const item = state.urlQueue.shift()!;
             try {
-              await onOpenURL(item.url, createUrlCommandHostAdapter(host));
+              if (host.sourceRevision !== item.sourceRevision) {
+                reportStaleExternalUrl(host, item.url);
+                continue;
+              }
+              await onOpenURL(
+                item.url,
+                createUrlCommandHostAdapter(host, item.sourceRevision),
+              );
             } finally {
               item.done();
             }
@@ -1028,6 +1141,31 @@ export function enqueueIncomingOpenUrl(
       })();
     }
   });
+}
+
+/**
+ * Answers a link that outlived its data source. Without this the user would see nothing at all:
+ * the device ids and `bridgeToken` in the link refer to the home that is no longer loaded.
+ */
+function reportStaleExternalUrl(host: MenuMijiaWindowsApp, rawUrl: string): void {
+  const state = hostState(host);
+  const envelope = AppURLParser.parseEnvelope(rawUrl);
+  host.replyBanner = {
+    text: trText("数据源已切换，已取消外部链接执行", "Data source changed; external link cancelled"),
+    source: t("外部链接"),
+    isError: true,
+  };
+  state.lastCommandFeedback = {
+    ...(envelope?.requestId ? { requestId: envelope.requestId } : {}),
+    command: envelope ? formatAppURLCommandLabel(envelope.command) : "invalid",
+    message: trText("数据源已切换，已取消外部链接执行", "Data source changed; external link cancelled"),
+    isError: true,
+    completedAt: new Date().toISOString(),
+  };
+  host.render();
+  if (host.settings.enableRaycastIntegration) {
+    void exportRaycastSnapshotNow(host, true);
+  }
 }
 
 function bindCompanionAndUpdaterEvents(host: MenuMijiaWindowsApp): void {
