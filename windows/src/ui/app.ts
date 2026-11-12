@@ -81,7 +81,7 @@ import { renderDeviceTile as renderDeviceTileView, renderEnvironmentStrip as ren
 import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt, renderSettingsModal } from "./menuViews.js";
 import { bindEvents as bindEventsImpl } from "./bindEvents.js";
 import { renderPanel } from "./panelView.js";
-import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, checkForAppUpdate, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
+import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
 import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground, renderGrokBallSidebar, setGrokBallStageExpanded, syncGrokBallEmotion } from "./proactive.js";
 import { applyCommand, markCloudValuesFresh, markCloudValuesStale } from "./commandDispatch.js";
@@ -262,6 +262,7 @@ export class MenuMijiaWindowsApp {
   /** True after a hold already ran All Off, so a later pointerup on the rebuilt button does not replace the result with the short-press hint. */
   private allOffHoldConsumed = false;
   private allOffHoldTimer: number | null = null;
+  private readonly appDisposers: Array<() => void> = [];
   public undoBannerUntilMs = 0;
   public qrTicket: QRLoginTicket | null = null;
   public qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");
@@ -327,24 +328,31 @@ export class MenuMijiaWindowsApp {
     this.bindGlobalKeys();
     bindUndoBannerHoverGuard(this);
     // Alt+Tab hides the popover without a button blur; a hold started before it must not finish.
-    window.addEventListener("blur", () => this.cancelAllOffHold());
-    window.addEventListener("pointermove", (event) => {
+    const onBlurCancelAllOff = () => this.cancelAllOffHold();
+    window.addEventListener("blur", onBlurCancelAllOff);
+    this.appDisposers.push(() => window.removeEventListener("blur", onBlurCancelAllOff));
+    const onPointerMove = (event: PointerEvent) => {
       const rect = this.grokBall.element.getBoundingClientRect();
       this.grokBallPointerUntil = Date.now() + 1500;
       this.grokBall.setGaze((event.clientX - rect.left - rect.width / 2) / 160,
         (event.clientY - rect.top - rect.height / 2) / 160);
       this.syncGrokBallEmotion();
-    });
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    this.appDisposers.push(() => window.removeEventListener("pointermove", onPointerMove));
     this.bindLayoutGestures();
     this.bindPanelDrag();
     this.bindOpenAnimation();
-    window.addEventListener("menumijia:open-update", () => {
+    const onOpenUpdate = () => {
       this.openSettingsSheet();
-    });
+    };
+    window.addEventListener("menumijia:open-update", onOpenUpdate);
+    this.appDisposers.push(() => window.removeEventListener("menumijia:open-update", onOpenUpdate));
     this.applyPanelHeight();
     this.syncPanelPlacement();
     this.syncPanelBackdrop();
     void this.applyGlobalHotkey();
+    this.bindLifecycleRecovery();
     this.startTimerLoop();
     this.restoreUpdateState();
     this.render();
@@ -406,8 +414,23 @@ export class MenuMijiaWindowsApp {
     bindGlobalKeys(this);
   }
 
+  private bindLifecycleRecovery(): void {
+    bindLifecycleRecovery(this, { onPageHide: () => this.dispose() });
+  }
+
   private startTimerLoop(): void {
     startTimerLoop(this);
+  }
+
+  /** Idempotently cancels lifecycle intervals, recovery timers, and global window listeners. */
+  public dispose(): void {
+    disposeAppLifecycle(this);
+    this.clearPendingHighRisk();
+    this.cancelAllOffHold();
+    for (const stop of this.appDisposers.splice(0)) stop();
+    if (this.cameraLive.activeLiveCameraId !== null || this.cameraLive.liveCameraKeepAliveTimer !== null) {
+      this.cameraLive.closeCameraLiveView();
+    }
   }
 
   /** The tray popover hides when it loses focus, so focus means it is on screen. */
@@ -1442,8 +1465,14 @@ export class MenuMijiaWindowsApp {
     };
     let hiddenAt = 0;
     if (window.__TAURI_INTERNALS__) {
-      window.addEventListener("blur", () => { hiddenAt = performance.now(); });
-      window.addEventListener("focus", () => { if (performance.now() - hiddenAt > 150) play(); });
+      const onOpenBlur = () => { hiddenAt = performance.now(); };
+      const onOpenFocus = () => { if (performance.now() - hiddenAt > 150) play(); };
+      window.addEventListener("blur", onOpenBlur);
+      window.addEventListener("focus", onOpenFocus);
+      this.appDisposers.push(
+        () => window.removeEventListener("blur", onOpenBlur),
+        () => window.removeEventListener("focus", onOpenFocus),
+      );
     }
     this.root.addEventListener("animationend", (e) => {
       const target = e.target as HTMLElement | null;
@@ -1453,11 +1482,13 @@ export class MenuMijiaWindowsApp {
     });
     if (typeof window.matchMedia === "function") {
       const mql = window.matchMedia("(prefers-color-scheme: light)");
-      mql.addEventListener?.("change", () => {
+      const onSchemeChange = () => {
         if (this.settings.appearance === "system") {
           this.render();
         }
-      });
+      };
+      mql.addEventListener?.("change", onSchemeChange);
+      this.appDisposers.push(() => mql.removeEventListener?.("change", onSchemeChange));
     }
     play();
   }
