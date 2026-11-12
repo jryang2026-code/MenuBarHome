@@ -15,8 +15,33 @@ import {
   timeBucketLabel,
 } from "../core/assistant.js";
 import type { AssistantSuggestion, DeviceIntent, SmartDevice } from "../core/models.js";
-import { withAliases } from "./panelPrefs.js";
+import { applyOrder, withAliases, type LayoutPrefs } from "./panelPrefs.js";
 import { inverseCommands } from "../core/commandEffects.js";
+import { abortVoiceInput, clearUndoHoverPause } from "./speechGuard.js";
+
+function proactiveFavoriteIds(layout: LayoutPrefs, devices: readonly SmartDevice[]): string[] {
+  const rawFavorites = (layout as LayoutPrefs & { readonly favorites?: unknown }).favorites;
+  const explicit = Array.isArray(rawFavorites)
+    ? rawFavorites.filter((id): id is string => typeof id === "string")
+    : [];
+  const knownGroups = new Set(layout.groups.map((g) => g.id));
+  const grouped: string[] = [];
+  for (const group of layout.groups) {
+    const members = applyOrder(
+      layout.order,
+      devices.filter((d) => {
+        const gid = layout.groupMap[d.id];
+        return gid === group.id && knownGroups.has(gid);
+      }),
+    );
+    for (const dev of members) {
+      if (!explicit.includes(dev.id) && !grouped.includes(dev.id)) {
+        grouped.push(dev.id);
+      }
+    }
+  }
+  return [...explicit, ...grouped];
+}
 
 export function proactiveSignature(host: MenuMijiaWindowsApp): string {
     const bucket = timeBucketLabel(new Date().getHours());
@@ -78,14 +103,21 @@ export function currentProactiveSuggestions(host: MenuMijiaWindowsApp): Assistan
     if (host.pendingSuggestions.length > 0 && !host.isGrokBallStageExpanded) return [];
     const signature = proactiveSignature(host);
     const aliasedDevices = withAliases(host.layout, host.devices);
+    const favoriteIds = proactiveFavoriteIds(host.layout, aliasedDevices);
     const local = new UserHabitMemory(host.settings.habitEntries, host.habitSequences(), host.lastHabitAction()).topSuggestions({
       devices: aliasedDevices,
       scenes: host.isGrokBallStageExpanded ? [] : host.scenes,
       environmentReadings: host.computedEnvironmentReadings,
+      favoriteIds,
     });
     const cached = host.aiProactiveSignature === signature ? host.aiProactiveSuggestions ?? [] : [];
     const fallback = host.isGrokBallStageExpanded
-      ? new UserHabitMemory([]).topSuggestions({ devices: aliasedDevices, scenes: [], limit: aliasedDevices.length + 4 })
+      ? new UserHabitMemory([]).topSuggestions({
+          devices: aliasedDevices,
+          scenes: [],
+          limit: aliasedDevices.length + 4,
+          favoriteIds,
+        })
       : [];
     const result: AssistantSuggestion[] = [];
     for (const item of [...cached, ...local, ...fallback]) {
@@ -188,14 +220,15 @@ export function maybeRefreshProactiveInBackground(host: MenuMijiaWindowsApp): vo
       { baseURL, model: host.settings.assistantModel, apiKey },
       host.transport,
     );
+    const aliasedDevices = withAliases(host.layout, host.devices);
     resolver
       .recommendProactiveSuggestions(
-        host.devices,
+        aliasedDevices,
         host.scenes,
         buildAssistantContext({
           now: new Date(),
           readings: host.computedEnvironmentReadings,
-          devices: host.devices,
+          devices: aliasedDevices,
           scenes: host.scenes,
           sharing: host.settings.habitShareEnabled ? "on" : "off",
           memory: new UserHabitMemory(host.settings.habitEntries, host.habitSequences(), host.lastHabitAction()),
@@ -231,6 +264,8 @@ export function maybeRefreshProactiveInBackground(host: MenuMijiaWindowsApp): vo
   }
 
 export function invalidateSourceControl(host: MenuMijiaWindowsApp): void {
+    abortVoiceInput(host);
+    clearUndoHoverPause(host);
     host.sourceRevision += 1;
     host.timerSnapshot = null;
     host.syncGeneration += 1;
@@ -247,5 +282,6 @@ export function invalidateSourceControl(host: MenuMijiaWindowsApp): void {
     host.lastUndoAction = null;
     host.pendingCloudConsent = null;
     host.clearPendingHighRisk();
+    host.lastManuallyUsedLightId = null;
     host.pendingSuggestions = [];
   }

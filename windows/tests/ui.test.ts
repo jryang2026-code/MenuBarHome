@@ -1975,7 +1975,7 @@ describe("Update notice (#39)", () => {
     };
     Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
-      connectionMode: "demo",
+      connectionMode: "xiaomiCloud",
       hasCompletedOnboarding: true,
     }));
 
@@ -2031,7 +2031,7 @@ describe("Update notice (#39)", () => {
     };
     Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
-      connectionMode: "demo",
+      connectionMode: "xiaomiCloud",
       hasCompletedOnboarding: true,
     }));
 
@@ -2056,7 +2056,7 @@ describe("Update notice (#39)", () => {
     };
     Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
-      connectionMode: "demo",
+      connectionMode: "xiaomiCloud",
       hasCompletedOnboarding: true,
       autoCheckUpdates: false,
     }));
@@ -6384,7 +6384,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     new MenuMijiaWindowsApp(element("#app"));
     await waitFor(() => !!document.querySelector("[data-body-device]"));
     assertMissing(document.querySelector("[data-ha-scene]"));
-    assertMissing(document.querySelector("[data-scene-cmd]"));
+    assert.ok(document.querySelector('[data-scene-cmd="quick:lightsOff"]'));
     assert.doesNotMatch(document.body.textContent ?? "", /全开主灯/);
     assert.doesNotMatch(document.body.textContent ?? "", /25°制冷/);
   });

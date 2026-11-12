@@ -98,6 +98,8 @@ export function parseMiSession(raw: unknown): MiSession | null {
   const ssecurity = stringField("ssecurity");
   const serviceToken = stringField("serviceToken");
   if (!userId || !ssecurity || !serviceToken) return null;
+  const rawExpiresAt = record["expiresAt"];
+  const expiresAt = typeof rawExpiresAt === "number" && Number.isFinite(rawExpiresAt) ? rawExpiresAt : undefined;
   // `passToken` is parsed from old sessions for compatibility but never stored (#27).
   return {
     userId,
@@ -106,6 +108,7 @@ export function parseMiSession(raw: unknown): MiSession | null {
     serviceToken,
     passToken: "",
     region: normalizeMiCloudRegion(stringField("region")),
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
   };
 }
 
@@ -117,6 +120,9 @@ export function serializeMiSession(session: MiSession): string {
     ssecurity: session.ssecurity,
     serviceToken: session.serviceToken,
     region: session.region,
+    ...(typeof session.expiresAt === "number" && Number.isFinite(session.expiresAt)
+      ? { expiresAt: session.expiresAt }
+      : {}),
   });
 }
 
@@ -129,6 +135,9 @@ export function sessionWithoutPassToken(session: MiSession): MiSession {
     serviceToken: session.serviceToken,
     passToken: "",
     region: session.region,
+    ...(typeof session.expiresAt === "number" && Number.isFinite(session.expiresAt)
+      ? { expiresAt: session.expiresAt }
+      : {}),
   };
 }
 
@@ -293,6 +302,12 @@ export class CredentialVault {
 
   hasLegacyAssistantKey(): boolean {
     return (this.known.get("assistant_api_key") ?? "") !== "";
+  }
+
+  /** Unconditionally removes `mi_session` from the OS credential store on explicit Sign Out. */
+  async deleteMiSession(): Promise<void> {
+    await secureStoreDelete("mi_session", this.invoke);
+    this.known.set("mi_session", "");
   }
 
   private remember(name: SecureCredentialName, value: string): void {

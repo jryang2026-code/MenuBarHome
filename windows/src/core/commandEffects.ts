@@ -231,16 +231,29 @@ export function inverseCommands(dev: SmartDevice, command: DeviceCommand): Devic
     case "setLightPower":
       return k.kind === "light" ? [{ kind: "setLightPower", entityId: k.entityId, isOn: k.isOn }] : [];
     case "setLightBrightness":
-      return k.kind === "light" && k.brightnessPercent !== null ? [
-        { kind: "setLightBrightness", entityId: k.entityId, percent: k.brightnessPercent },
-        { kind: "setLightPower", entityId: k.entityId, isOn: k.isOn },
-      ] : [];
+      if (k.kind !== "light") return [];
+      if (k.brightnessPercent !== null) {
+        return [
+          { kind: "setLightBrightness", entityId: k.entityId, percent: k.brightnessPercent },
+          { kind: "setLightPower", entityId: k.entityId, isOn: k.isOn },
+        ];
+      }
+      return !k.isOn ? [{ kind: "setLightPower", entityId: k.entityId, isOn: false }] : [];
     case "setLightColorTemp":
-      return k.kind === "light" && k.colorTempKelvin !== null ? [
-        { kind: "setLightColorTemp", entityId: k.entityId, kelvin: k.colorTempKelvin },
-        ...(k.currentEffect !== null ? [{ kind: "setLightEffect" as const, entityId: k.entityId, effect: k.currentEffect }] : []),
-        { kind: "setLightPower", entityId: k.entityId, isOn: k.isOn },
-      ] : [];
+      if (k.kind !== "light") return [];
+      if (k.colorTempKelvin !== null) {
+        return [
+          { kind: "setLightColorTemp", entityId: k.entityId, kelvin: k.colorTempKelvin },
+          ...(k.currentEffect !== null ? [{ kind: "setLightEffect" as const, entityId: k.entityId, effect: k.currentEffect }] : []),
+          { kind: "setLightPower", entityId: k.entityId, isOn: k.isOn },
+        ];
+      }
+      return !k.isOn
+        ? [
+            ...(k.currentEffect !== null ? [{ kind: "setLightEffect" as const, entityId: k.entityId, effect: k.currentEffect }] : []),
+            { kind: "setLightPower", entityId: k.entityId, isOn: false },
+          ]
+        : [];
     case "setLightEffect":
       if (k.kind !== "light") return [];
       if (k.currentEffect !== null) return [
@@ -331,10 +344,18 @@ export function inverseCommands(dev: SmartDevice, command: DeviceCommand): Devic
     case "mediaSetVolume":
       return k.kind === "speaker" ? [{ kind: "mediaSetVolume", entityId: k.mediaEntityId, level: k.volumePercent / 100 }] : [];
     case "vacuumAction":
+      // Mirrors macOS `HomeStore+Assistant.swift` vacuum undo: cleaning/on restores `start`, otherwise `returnToBase`.
+      return k.kind === "vacuum"
+        ? [{
+            kind: "vacuumAction",
+            entityId: k.entityId,
+            action: k.status === "cleaning" || k.status === "on" ? "start" : "returnToBase",
+          }]
+        : [];
     case "pressButton":
     case "setMiotProperty":
     case "activateScene":
-      // A cycle action, an appliance programme write and a 更多设置 write carry no previous
+      // An appliance programme write and a 更多设置 write carry no previous
       // value on the card, so undo does not offer them (#5).
       return [];
     default: {

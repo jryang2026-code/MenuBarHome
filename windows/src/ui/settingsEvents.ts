@@ -21,6 +21,11 @@ import type { GitHubRelease } from "../core/updateChecker.js";
 export interface SettingsEventsHost {
   readonly root: HTMLElement;
   readonly settings: PersistedSettings;
+  readonly cameraLive: {
+    readonly activeLiveCameraId: string | null;
+    readonly liveCameraKeepAliveTimer: number | null;
+    closeCameraLiveView(): void;
+  };
   assistantKeysByPreset: Record<string, string>;
   devices: SmartDevice[];
   scenes: HomeScene[];
@@ -56,6 +61,8 @@ export interface SettingsEventsHost {
   refreshHADevices(silent?: boolean): Promise<void>;
   render(): void;
   saveSettings(force?: boolean): void;
+  shouldKeepPopoverPinned(): boolean;
+  signOutXiaomiAccount(): void;
   startUpdateInstall(): Promise<void>;
   startXiaomiQRLogin(): Promise<void>;
   syncKeyFieldWithEndpoint(apiKeyEl: HTMLInputElement, baseURL: string): void;
@@ -145,6 +152,10 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       void host.startXiaomiQRLogin();
     });
 
+    host.root.querySelector("#btn-signout-mi")?.addEventListener("click", () => {
+      host.signOutXiaomiAccount();
+    });
+
     const closeOnboarding = () => {
       const keyInput = host.root.querySelector<HTMLInputElement>("#onboarding-api-key");
       if (keyInput && keyInput.value.trim()) {
@@ -161,7 +172,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       host.settings.hasCompletedOnboarding = true;
       host.saveSettings();
       host.activeSheet = "none";
-      invokeTauriVoid("set_pin_popover", { pin: false });
+      invokeTauriVoid("set_pin_popover", { pin: host.shouldKeepPopoverPinned() });
       host.render();
     };
 
@@ -173,7 +184,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       host.activeSheet = "none";
       host.isRecordingHotkey = false;
       host.hotkeyNeedsHint = false;
-      invokeTauriVoid("set_pin_popover", { pin: false });
+      invokeTauriVoid("set_pin_popover", { pin: host.shouldKeepPopoverPinned() });
       host.render();
     });
 
@@ -181,6 +192,9 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       btn.addEventListener("click", () => {
         const mode = btn.dataset.connMode as ConnectionMode | undefined;
         if (!mode) return;
+        if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
+          host.cameraLive.closeCameraLiveView();
+        }
         host.localControlRevision += 1;
         host.invalidateSourceControl();
         host.environmentReadings = [];
@@ -331,7 +345,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       host.activeSheet = "none";
       host.isRecordingHotkey = false;
       host.hotkeyNeedsHint = false;
-      invokeTauriVoid("set_pin_popover", { pin: false });
+      invokeTauriVoid("set_pin_popover", { pin: host.shouldKeepPopoverPinned() });
       host.render();
     });
 }

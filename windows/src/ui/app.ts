@@ -58,9 +58,9 @@ import {
   type HomeOption,
 } from "./panelPrefs.js";
 import {
-  speechLocale,
   t,
 } from "../core/i18n.js";
+import { miSessionExpiryState } from "../core/miCloud/session.js";
 import {
   KIND_CHIP,
   filterByListCut,
@@ -71,7 +71,7 @@ import {
   type RoomOption,
 } from "./listCut.js";
 
-import { SpeechRecognitionInstance, type LoadedSettings, type PendingHighRiskConfirmation, type PersistedSettings, type ReplyBannerState, type UndoAction, type UndoStep } from "./appTypes.js";
+import { type LoadedSettings, type PendingHighRiskConfirmation, type PersistedSettings, type ReplyBannerState, type UndoAction, type UndoStep } from "./appTypes.js";
 import { SF_ICONS } from "./appConstants.js";
 import { demoDevices, demoScenes } from "./demo.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
@@ -81,7 +81,7 @@ import { renderDeviceTile as renderDeviceTileView, renderEnvironmentStrip as ren
 import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt, renderSettingsModal } from "./menuViews.js";
 import { bindEvents as bindEventsImpl } from "./bindEvents.js";
 import { renderPanel } from "./panelView.js";
-import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, checkForAppUpdate, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
+import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, checkForAppUpdate, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
 import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground, renderGrokBallSidebar, setGrokBallStageExpanded, syncGrokBallEmotion } from "./proactive.js";
 import { applyCommand, markCloudValuesFresh, markCloudValuesStale } from "./commandDispatch.js";
@@ -90,6 +90,17 @@ import { executeIntents, executeSingleCommand, habitSequences, lastHabitAction, 
 import { bindLayoutGestures } from "./layoutGestures.js";
 import { bindSettingsEvents, refreshHabitSharePreview } from "./settingsEvents.js";
 import { captureSettingsDraft, restoreSettingsDraft, type SettingsTab } from "./settingsViews.js";
+import {
+  bindUndoBannerHoverGuard,
+  clearUndoHoverPause,
+  copyUndoKindSnapshots,
+  isUndoHoverPaused,
+  restoreUndoKindSnapshot,
+  shouldKeepPopoverPinned,
+  syncUndoBannerClock,
+  toggleVoiceInput,
+  undoButtonVisible,
+} from "./speechGuard.js";
 import { inputKeepsDraft } from "./dom.js";
 export { waitForCameraFrameGap } from "./dom.js";
 import { createPanelSearchState, normalizeSearch, PanelSearchIndex } from "../core/panelSearch.js";
@@ -251,13 +262,13 @@ export class MenuMijiaWindowsApp {
     this.scheduledCommandStore.queue(scheduledCommandIdentity(this.settings)).missedScheduledCommands = items;
   }
   public lastUndoAction: UndoAction | null = null;
+  /** Last light explicitly switched on or adjusted by the user; fallback target for `softNightLight` (#36). */
+  public lastManuallyUsedLightId: string | null = null;
   /** Set when a Xiaomi refresh fails because the login itself is dead. */
   public miSessionExpired = false;
-  private trackedUndoAction: UndoAction | null = null;
   /** True after a hold already ran All Off, so a later pointerup on the rebuilt button does not replace the result with the short-press hint. */
   private allOffHoldConsumed = false;
   private allOffHoldTimer: number | null = null;
-  private undoBannerTimer: number | null = null;
   public undoBannerUntilMs = 0;
   public qrTicket: QRLoginTicket | null = null;
   public qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");
@@ -274,7 +285,6 @@ export class MenuMijiaWindowsApp {
 
   get cameraKeepAliveMs(): number { return this.cameraLive.cameraKeepAliveMs; }
   set cameraKeepAliveMs(ms: number) { this.cameraLive.cameraKeepAliveMs = ms; }
-  private speechRecognition: SpeechRecognitionInstance | null = null;
 
   // Personalisation / layout editing state (see panelPrefs.ts).
   public homes: HomeOption[] = [];
@@ -317,6 +327,7 @@ export class MenuMijiaWindowsApp {
     }
 
     this.bindGlobalKeys();
+    bindUndoBannerHoverGuard(this);
     // Alt+Tab hides the popover without a button blur; a hold started before it must not finish.
     window.addEventListener("blur", () => this.cancelAllOffHold());
     window.addEventListener("pointermove", (event) => {
@@ -715,8 +726,18 @@ export class MenuMijiaWindowsApp {
     invalidateSourceControl(this);
   }
 
+  public signOutXiaomiAccount(): void {
+    signOutXiaomiAccount(this);
+  }
+
+  public shouldKeepPopoverPinned(): boolean {
+    return shouldKeepPopoverPinned(this);
+  }
+
   public async performUndo(): Promise<void> {
-    if (!this.lastUndoAction || this.lastUndoAction.expiresAtMs <= Date.now()) {
+    const paused = isUndoHoverPaused(this);
+    if (!this.lastUndoAction || (!paused && this.lastUndoAction.expiresAtMs <= Date.now())) {
+      clearUndoHoverPause(this);
       this.lastUndoAction = null;
       this.replyBanner = {
         text: t("没有可撤销的操作（仅支持 10 分钟内的操作撤销）"),
@@ -727,6 +748,7 @@ export class MenuMijiaWindowsApp {
     }
     const action = this.lastUndoAction;
     this.lastUndoAction = null;
+    clearUndoHoverPause(this);
     const sourceRevision = this.sourceRevision;
     const failedSteps: UndoStep[] = [];
     const blockedDevices = new Set<string>();
@@ -747,6 +769,9 @@ export class MenuMijiaWindowsApp {
       if (failed) {
         failedSteps.push(step);
         blockedDevices.add(step.deviceId);
+      } else {
+        const restoredDevice = this.devices.find((d) => d.id === step.deviceId);
+        if (restoredDevice) restoreUndoKindSnapshot(action, restoredDevice);
       }
     }
     if (sourceRevision !== this.sourceRevision) return;
@@ -764,7 +789,9 @@ export class MenuMijiaWindowsApp {
       }
     }
     if (failedSteps.length > 0 && this.lastUndoAction === null) {
-      this.lastUndoAction = { ...action, steps: failedSteps, habitReceipt: remainingReceipt };
+      const retryAction: UndoAction = { ...action, steps: failedSteps, habitReceipt: remainingReceipt };
+      copyUndoKindSnapshots(action, retryAction);
+      this.lastUndoAction = retryAction;
     }
     this.replyBanner = failedSteps.length > 0
       ? { text: t("撤销未完成，{count} 项待恢复。{message}", { count: failedSteps.length, message: failureMessage }), source: t("控制失败"), isError: true }
@@ -819,52 +846,7 @@ export class MenuMijiaWindowsApp {
   }
 
   public toggleVoiceInput(): void {
-    if (this.isListeningVoice) {
-      this.speechRecognition?.stop();
-      this.isListeningVoice = false;
-      this.render();
-      return;
-    }
-
-    const SpeechCtor = window.SpeechRecognition ?? window.webkitSpeechRecognition;
-    if (!SpeechCtor) {
-      this.isShowingAssistantBar = true;
-      this.replyBanner = {
-        text: t("当前系统环境不支持离线语音识别，请直接输入文字指令。"),
-        source: t("语音提示"),
-      };
-      this.render();
-      this.root.querySelector<HTMLInputElement>("#command-input")?.focus();
-      return;
-    }
-
-    this.isShowingAssistantBar = true;
-    const recognition = new SpeechCtor();
-    recognition.lang = speechLocale();
-    recognition.interimResults = false;
-    recognition.continuous = false;
-
-    recognition.onresult = (event) => {
-      const first = event.results[0]?.[0]?.transcript;
-      if (first) {
-        const inputEl = this.root.querySelector<HTMLInputElement>("#command-input");
-        if (inputEl) inputEl.value = "";
-        void this.handleNaturalCommand(first);
-      }
-    };
-    recognition.onerror = () => {
-      this.isListeningVoice = false;
-      this.render();
-    };
-    recognition.onend = () => {
-      this.isListeningVoice = false;
-      this.render();
-    };
-
-    this.speechRecognition = recognition;
-    this.isListeningVoice = true;
-    this.render();
-    recognition.start();
+    toggleVoiceInput(this);
   }
 
   public async startXiaomiQRLogin(): Promise<void> {
@@ -911,7 +893,7 @@ export class MenuMijiaWindowsApp {
       this.qrStatusText = t("扫码未完成：{message}", { message: msg });
     } finally {
       this.isPollingQR = false;
-      invokeTauriVoid("set_pin_popover", { pin: false });
+      invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
       this.render();
     }
   }
@@ -928,31 +910,11 @@ export class MenuMijiaWindowsApp {
 
   /** How long the 撤销 control stays up. Matches macOS `undoBannerSeconds`: 10s, or 15s from three devices. */
   public syncUndoBannerClock(now = Date.now()): void {
-    const action = this.lastUndoAction;
-    if (!action || action.expiresAtMs <= now) {
-      this.trackedUndoAction = null;
-      this.undoBannerUntilMs = 0;
-      if (this.undoBannerTimer !== null) {
-        window.clearTimeout(this.undoBannerTimer);
-        this.undoBannerTimer = null;
-      }
-      return;
-    }
-    if (this.trackedUndoAction === action) return;
-    this.trackedUndoAction = action;
-    const ms = undoBannerMs(undoDeviceCount(action.steps));
-    this.undoBannerUntilMs = now + ms;
-    if (this.undoBannerTimer !== null) window.clearTimeout(this.undoBannerTimer);
-    this.undoBannerTimer = window.setTimeout(() => {
-      this.undoBannerTimer = null;
-      // The button leaving must not rebuild the panel under a slider drag or an All Off hold.
-      if (this.trackedUndoAction === action) this.queueBackgroundRender();
-    }, ms);
+    syncUndoBannerClock(this, now);
   }
 
   public undoButtonVisible(now = Date.now()): boolean {
-    this.syncUndoBannerClock(now);
-    return this.lastUndoAction !== null && this.lastUndoAction.expiresAtMs > now && now < this.undoBannerUntilMs;
+    return undoButtonVisible(this, now);
   }
 
   public panelHealth(): PanelHealth {
@@ -960,7 +922,11 @@ export class MenuMijiaWindowsApp {
     if (mode === "demo") {
       return { kind: "demo", dot: "is-demo", label: t("演示模式 · 未连接米家云") };
     }
-    if (mode === "xiaomiCloud" && this.settings.miSession && this.miSessionExpired) {
+    if (
+      mode === "xiaomiCloud" &&
+      this.settings.miSession &&
+      (this.miSessionExpired || miSessionExpiryState(this.settings.miSession).kind === "expired")
+    ) {
       return { kind: "offline", dot: "is-offline", label: t("米家登录已过期 · 点此扫码"), recovery: "qr" };
     }
     if (mode === "homeAssistant") {
@@ -1343,7 +1309,7 @@ export class MenuMijiaWindowsApp {
     this.isEditingLayout = false;
     this.draggingId = null;
     this.dragPointer = null;
-    invokeTauriVoid("set_pin_popover", { pin: false });
+    invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
     this.render();
   }
 
@@ -1356,7 +1322,7 @@ export class MenuMijiaWindowsApp {
 
   public closePrompt(): void {
     this.prompt = null;
-    invokeTauriVoid("set_pin_popover", { pin: this.isEditingLayout });
+    invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
     this.render();
   }
 
