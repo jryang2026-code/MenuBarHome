@@ -564,7 +564,7 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
         switch parts.first {
         case "e" where parts.count == 5:
             // e|bucket|dayType|targetId|operationKey
-            let dayType = parts[2] == "any" ? nil : DayType(rawValue: parts[2] ?? "")
+            let dayType = parts[2] == "any" ? nil : DayType(rawValue: parts[2])
             entries.removeAll {
                 $0.bucket.rawValue == parts[1] && $0.dayType == dayType
                     && $0.targetId == parts[3] && $0.operationKey == parts[4]
@@ -579,7 +579,7 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
             phrases.removeAll { $0.phrase == phrase }
         case "s" where parts.count == 5:
             // s|prevTargetId|prevOperationKey|targetId|operationKey
-            let afterKey = "\(parts[1] ?? "")|\(parts[2] ?? "")"
+            let afterKey = "\(parts[1])|\(parts[2])"
             sequences.removeAll {
                 $0.afterKey == afterKey && $0.targetId == parts[3] && $0.operationKey == parts[4]
             }

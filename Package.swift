@@ -50,6 +50,8 @@ let package = Package(
                 "MijiaCore",
                 "KeychainTestSupport",
             ],
+            // Baselines are read through `#filePath` (SnapshotAssertion), never as bundle resources.
+            exclude: ["__Snapshots__"],
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]

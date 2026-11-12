@@ -913,7 +913,7 @@ public actor MiCloudProvider: HomeProvider {
     private func followUpPoll(did: String, taskId: UUID) async {
         followUpTasks.removeValue(forKey: taskId)
         guard let api else { return }
-        try? await poll(api, dids: [did])
+        _ = try? await poll(api, dids: [did])
     }
 
     public func fetchSensorHistory(
