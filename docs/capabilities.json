@@ -111,7 +111,7 @@
       "en": "Sensor Trend Line Charts",
       "zh": "传感器历史折线图",
       "macos": "supported",
-      "windows": "partial"
+      "windows": "unsupported"
     },
     {
       "id": "plug-energy",
