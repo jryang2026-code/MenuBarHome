@@ -113,11 +113,14 @@ export interface CameraSpec {
   readonly snapshotPath?: string | null;
   readonly powerWritable?: boolean;
   readonly lenses?: readonly CameraLens[];
+  readonly subdid?: string | null;
+  readonly gatewayLocalIp?: string | null;
 }
 
 export interface CameraLens {
   readonly role: "main" | "secondary";
   readonly channel: number;
+  readonly label?: string;
 }
 
 export interface SensorSpec {
