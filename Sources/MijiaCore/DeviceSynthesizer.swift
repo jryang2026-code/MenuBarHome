@@ -860,6 +860,7 @@ public enum DeviceSynthesizer {
             let maxK = st.attributes["max_color_temp_kelvin"]?.intValue ?? 6500
             let effect = st.attributes["effect"]?.stringValue
             let effects = st.attributes["effect_list"]?.stringArrayValue ?? []
+            let writable = Self.haLightWritability(st.attributes)
 
             return SmartDevice(
                 id: deviceId,
@@ -877,7 +878,9 @@ public enum DeviceSynthesizer {
                         minKelvin: minK,
                         maxKelvin: maxK,
                         currentEffect: effect,
-                        availableEffects: effects
+                        availableEffects: effects,
+                        brightnessWritable: writable.brightness,
+                        colorWritable: writable.colorTemperature
                     )
                 )
             )
@@ -1645,6 +1648,44 @@ public enum DeviceSynthesizer {
 
     /// External numbers (HA attributes, sensor states) can be non-finite or exceed `Int`;
     /// converting them directly traps, so an unusable number degrades to "no reading".
+    /// Home Assistant colour modes that dim (`onoff` is the only one that cannot).
+    static let haBrightnessColorModes: Set<String> = [
+        "brightness", "color_temp", "hs", "xy", "rgb", "rgbw", "rgbww", "white",
+    ]
+    /// Modes that accept `color_temp_kelvin`: `light.turn_on` emulates it on colour lights
+    /// (`color_temperature_to_hs` / `color_temperature_to_rgbww`).
+    static let haColorTemperatureColorModes: Set<String> = ["color_temp", "hs", "xy", "rgb", "rgbw", "rgbww"]
+
+    /// Whether an HA light can dim and take a colour temperature. Mirrors
+    /// `haLightCapabilityFlags` in `windows/src/core/homeAssistant.ts`; an entity that reports
+    /// nothing either way stays writable, as before.
+    static func haLightWritability(_ a: [String: JSONValue]) -> (brightness: Bool, colorTemperature: Bool) {
+        let hasColorTempAttr = ["color_temp_kelvin", "min_color_temp_kelvin", "max_color_temp_kelvin",
+                                "color_temp", "min_mireds", "max_mireds"]
+            .contains { a[$0]?.doubleValue != nil }
+        if case .array = a["supported_color_modes"] {
+            let modes = (a["supported_color_modes"]?.stringArrayValue ?? [])
+                .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            return (!haBrightnessColorModes.isDisjoint(with: modes),
+                    !haColorTemperatureColorModes.isDisjoint(with: modes))
+        }
+        let colorMode = (a["color_mode"]?.stringValue ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+        if colorMode == "onoff" { return (false, false) }
+        if !colorMode.isEmpty, colorMode != "unknown" {
+            return (haBrightnessColorModes.contains(colorMode),
+                    haColorTemperatureColorModes.contains(colorMode) || hasColorTempAttr)
+        }
+        let hasBrightness = a["brightness"]?.doubleValue != nil
+        if let raw = a["supported_features"]?.doubleValue, raw.isFinite {
+            // Legacy bits: SUPPORT_BRIGHTNESS 1, SUPPORT_COLOR_TEMP 2, SUPPORT_COLOR 16, SUPPORT_WHITE_VALUE 128.
+            let features = Int(raw)
+            return ((features & (1 | 2 | 16 | 128)) != 0 || hasBrightness || hasColorTempAttr,
+                    (features & (2 | 16)) != 0 || hasColorTempAttr)
+        }
+        // Nothing advertised either way: keep the controls rather than hide them on a guess.
+        return (true, true)
+    }
+
     static func roundedInt(_ value: Double) -> Int? {
         guard value.isFinite else { return nil }
         return Int(exactly: value.rounded())

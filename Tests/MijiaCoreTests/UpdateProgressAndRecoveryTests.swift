@@ -205,7 +205,10 @@ struct UpdateProgressAndRecoveryTests {
         #expect(harness.didTerminate.value)
 
         // It did not exit. The watchdog must stop claiming "正在重启…" and offer a retry.
-        try await waitUntil(timeout: .seconds(5)) {
+        // The deadline only bounds a real hang; it returns as soon as the state flips. On the
+        // parallel Linux run the main actor is busy enough that the 20 ms watchdog has taken
+        // 12 s to fire, so a tight deadline made this test fail on load rather than on behaviour.
+        try await waitUntil(timeout: .seconds(60)) {
             if case .failed = harness.store.updateState { return true }
             return false
         }
