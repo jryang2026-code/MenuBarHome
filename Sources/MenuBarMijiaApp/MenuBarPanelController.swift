@@ -55,6 +55,10 @@ final class MenuBarPanelController: NSObject {
 
     /// Fallback for hosts that do not expose an event number when AppKit dismisses a menu.
     private static let contextMenuSyntheticClickTail: TimeInterval = 0.08
+    /// Window after an outside-click or app-deactivation hide during which a trailing status-item
+    /// toggle from the out-of-process menu bar (`NSMenuBarNavigationSceneExtension`) is recognised
+    /// as the same click that just dismissed the panel rather than a request to reopen it.
+    static let statusItemReopenSuppressionWindow: TimeInterval = 0.35
     /// Press-and-hold on the icon starts dictation instead of toggling the panel. 0.5 s is long
     /// enough that an ordinary slow click toggles the panel instead of dictating.
     private static let holdThreshold: TimeInterval = 0.5
@@ -96,6 +100,9 @@ final class MenuBarPanelController: NSObject {
     }
     var statusItemTraceSink: ((String) -> Void)?
     var statusItemToggle: (() -> Void)?
+    var statusItemUptime: () -> TimeInterval = {
+        ProcessInfo.processInfo.systemUptime
+    }
     var statusItemEventNumber: () -> Int? = {
         MenuBarPanelController.statusEventNumber(for: NSApplication.shared.currentEvent)
     }
@@ -146,6 +153,9 @@ final class MenuBarPanelController: NSObject {
     private var pressAllowsToggle = true
     private var suppressReleaseUntil: TimeInterval = 0
     private var suppressContextMenuUntil: TimeInterval = 0
+    private var suppressResignActiveHideUntil: TimeInterval = 0
+    private var suppressStatusItemReopenUntil: TimeInterval = 0
+    private var resignActiveAwaitingMonitorMouseDown = false
     /// A context menu waiting for the out-of-process menu bar to finish its own handling of the
     /// same secondary click (see `requestStatusContextMenu`).
     private var pendingContextMenu: DispatchWorkItem?
@@ -217,6 +227,11 @@ final class MenuBarPanelController: NSObject {
         pendingContextMenu?.cancel()
         pendingContextMenu = nil
         stopPressTimer()
+        suppressReleaseUntil = 0
+        suppressContextMenuUntil = 0
+        suppressResignActiveHideUntil = 0
+        suppressStatusItemReopenUntil = 0
+        resignActiveAwaitingMonitorMouseDown = false
         for observer in observers {
             NotificationCenter.default.removeObserver(observer)
         }
@@ -432,7 +447,7 @@ final class MenuBarPanelController: NSObject {
         eventType: NSEvent.EventType? = nil,
         pressedMouseButtons: Int = NSEvent.pressedMouseButtons
     ) {
-        let now = ProcessInfo.processInfo.systemUptime
+        let now = statusItemUptime()
         let resolvedEventType = eventType ?? NSApp?.currentEvent?.type
         let eventName = Self.statusEventTypeName(resolvedEventType)
         let buttons = "0x\(String(pressedMouseButtons, radix: 16))"
@@ -495,7 +510,7 @@ final class MenuBarPanelController: NSObject {
     ) {
         pendingContextMenu?.cancel()
         pendingContextMenu = nil
-        let now = ProcessInfo.processInfo.systemUptime
+        let now = statusItemUptime()
         let eventName = Self.statusEventTypeName(eventType ?? NSApp?.currentEvent?.type)
         let buttons = "0x\(String(pressedMouseButtons, radix: 16))"
         let uptimeText = String(format: "%.3f", now)
@@ -525,6 +540,9 @@ final class MenuBarPanelController: NSObject {
         stopPressTimer()
         suppressContextMenuUntil = .infinity
         suppressReleaseUntil = .infinity
+        suppressResignActiveHideUntil = 0
+        suppressStatusItemReopenUntil = 0
+        resignActiveAwaitingMonitorMouseDown = false
 
         let menu = makeStatusContextMenu()
         if let statusContextMenuPresenter {
@@ -535,7 +553,7 @@ final class MenuBarPanelController: NSObject {
             Self.presentStatusMenu(menu, on: statusItem)
         }
 
-        let dismissedAt = ProcessInfo.processInfo.systemUptime
+        let dismissedAt = statusItemUptime()
         restoreStatusItemHighlight()
         contextMenuDismissalEventNumber = statusItemEventNumber()
         // Escape and keyboard activation expose no mouse event number, but the next physical click
@@ -816,7 +834,7 @@ final class MenuBarPanelController: NSObject {
 
     func handleStatusItemEvent(eventType: NSEvent.EventType?, pressedMouseButtons: Int) {
         let eventNumber = statusItemEventNumber()
-        let now = ProcessInfo.processInfo.systemUptime
+        let now = statusItemUptime()
         let decision = StatusItemEventDecision.decide(
             eventType: eventType,
             pressedMouseButtons: pressedMouseButtons,
@@ -841,6 +859,10 @@ final class MenuBarPanelController: NSObject {
         case .none:
             break
         case .beginPress:
+            resignActiveAwaitingMonitorMouseDown = false
+            if (pressedMouseButtons & 0x1) != 0 {
+                suppressStatusItemReopenUntil = 0
+            }
             pressAllowsToggle = true
             setStatusItemHighlighted(true)
             beginPress()
@@ -854,7 +876,7 @@ final class MenuBarPanelController: NSObject {
             finishPress()
         case .postMenuToggle:
             pressAllowsToggle = false
-            suppressReleaseUntil = ProcessInfo.processInfo.systemUptime + 0.15
+            suppressReleaseUntil = statusItemUptime() + 0.15
             performStatusItemToggle()
         case .toggle:
             performStatusItemToggle()
@@ -873,7 +895,7 @@ final class MenuBarPanelController: NSObject {
         eventType: NSEvent.EventType?,
         pressedMouseButtons: Int
     ) {
-        let now = ProcessInfo.processInfo.systemUptime
+        let now = statusItemUptime()
         let eventName = Self.statusEventTypeName(eventType)
         let buttons = "0x\(String(pressedMouseButtons, radix: 16))"
         let uptimeText = String(format: "%.3f", now)
@@ -899,6 +921,8 @@ final class MenuBarPanelController: NSObject {
             "handleStatusItemNativeLongPressEvent event=\(eventName) buttons=\(buttons) uptime=\(uptimeText) decision=primaryLongPress(finishImmediately=\((pressedMouseButtons & 0x1) == 0))"
         )
         clearPostMenuPrimaryMouseUp()
+        suppressStatusItemReopenUntil = 0
+        resignActiveAwaitingMonitorMouseDown = false
         if (pressedMouseButtons & 0x1) != 0 {
             setStatusItemHighlighted(true)
         }
@@ -920,9 +944,19 @@ final class MenuBarPanelController: NSObject {
     ///
     /// `allowsPostMenuToggle` is true only when the press landed on the button itself; the wider
     /// hold-tracking tolerance must not consume the pending post-menu click.
-    func beginHoldDetectionFromMonitor(allowsPostMenuToggle: Bool = false) {
-        let now = ProcessInfo.processInfo.systemUptime
-        guard now >= suppressReleaseUntil, !pressTriggered else { return }
+    func beginHoldDetectionFromMonitor(
+        allowsPostMenuToggle: Bool = false,
+        preservesDismissalReopenGuard: Bool = false
+    ) {
+        let now = statusItemUptime()
+        guard !pressTriggered else { return }
+        if !preservesDismissalReopenGuard, allowsPostMenuToggle || !isPanelVisible {
+            suppressStatusItemReopenUntil = 0
+        }
+        if now < suppressReleaseUntil {
+            guard allowsPostMenuToggle else { return }
+            suppressReleaseUntil = 0
+        }
         setStatusItemHighlighted(true)
         if pressTimer == nil {
             // The first physical press after the context menu closed is the click that dismissed it.
@@ -940,7 +974,7 @@ final class MenuBarPanelController: NSObject {
     }
 
     private func beginPress() {
-        let now = ProcessInfo.processInfo.systemUptime
+        let now = statusItemUptime()
         guard now >= suppressReleaseUntil, !pressTriggered else { return }
         if pressTimer == nil {
             pressStartedAt = now
@@ -964,7 +998,7 @@ final class MenuBarPanelController: NSObject {
     @objc private func handlePressTick(_ timer: Timer) {
         if (NSEvent.pressedMouseButtons & 0x1) != 0 {
             guard !pressTriggered,
-                  ProcessInfo.processInfo.systemUptime - pressStartedAt >= Self.holdThreshold else { return }
+                  statusItemUptime() - pressStartedAt >= Self.holdThreshold else { return }
             // Keep ticking so the release still stops dictation.
             pressTriggered = true
             beginHoldToTalk()
@@ -976,7 +1010,7 @@ final class MenuBarPanelController: NSObject {
 
     private func finishPress() {
         guard pressTimer != nil || pressTriggered else { return }
-        let now = ProcessInfo.processInfo.systemUptime
+        let now = statusItemUptime()
         stopPressTimer()
 
         if pressTriggered {
@@ -997,11 +1031,31 @@ final class MenuBarPanelController: NSObject {
             pressAllowsToggle = false
             suppressReleaseUntil = now + 0.15
             performStatusItemToggle()
+        } else if isPanelVisible {
+            // A monitor-started press while the panel is open ended on physical release; keep
+            // deactivation suppression alive across the XPC hop until `NSMenuBarNavigateAction`
+            // reaches the status item.
+            suppressResignActiveHideUntil = max(
+                suppressResignActiveHideUntil,
+                now + ContextMenuSettle.fallback
+            )
         }
         restoreStatusItemHighlight()
     }
 
     private func performStatusItemToggle() {
+        let now = statusItemUptime()
+        suppressResignActiveHideUntil = 0
+        resignActiveAwaitingMonitorMouseDown = false
+        if !isPanelVisible, now < suppressStatusItemReopenUntil {
+            suppressStatusItemReopenUntil = 0
+            traceStatusItem(
+                "performStatusItemToggle uptime=\(String(format: "%.3f", now)) guard=suppressStatusItemReopenUntil"
+            )
+            restoreStatusItemHighlight()
+            return
+        }
+        suppressStatusItemReopenUntil = 0
         if let statusItemToggle {
             statusItemToggle()
         } else {
@@ -1050,6 +1104,8 @@ final class MenuBarPanelController: NSObject {
 
     func beginHoldToTalk() {
         guard let store else { return }
+        suppressStatusItemReopenUntil = 0
+        resignActiveAwaitingMonitorMouseDown = false
         SpeechInputController.shared.startHoldToTalk(store: store)
         syncStatusItem()
         showPanel()
@@ -1200,7 +1256,19 @@ final class MenuBarPanelController: NSObject {
                 point: screenPoint,
                 eventType: eventType
             ) {
-                let now = ProcessInfo.processInfo.systemUptime
+                let now = statusItemUptime()
+                let isDelayedDismissalMouseDown = !isPanelVisible && resignActiveAwaitingMonitorMouseDown
+                resignActiveAwaitingMonitorMouseDown = false
+                if isPanelVisible {
+                    suppressResignActiveHideUntil = max(
+                        suppressResignActiveHideUntil,
+                        now + ContextMenuSettle.fallback + 0.1
+                    )
+                } else if isDelayedDismissalMouseDown {
+                    noteImplicitDismissalForStatusItemReopenGuard(now: now)
+                } else {
+                    suppressStatusItemReopenUntil = 0
+                }
                 let eventName = Self.statusEventTypeName(eventType)
                 let buttons = "0x\(String(pressedMouseButtons, radix: 16))"
                 let uptimeText = String(format: "%.3f", now)
@@ -1221,7 +1289,8 @@ final class MenuBarPanelController: NSObject {
                         "handleMouseDown event=\(eventName) buttons=\(buttons) uptime=\(uptimeText) decision=beginHoldDetectionFromMonitor(allowsPostMenuToggle=\(allowsPostMenuToggle))"
                     )
                     beginHoldDetectionFromMonitor(
-                        allowsPostMenuToggle: allowsPostMenuToggle
+                        allowsPostMenuToggle: allowsPostMenuToggle,
+                        preservesDismissalReopenGuard: isDelayedDismissalMouseDown
                     )
                 } else {
                     traceStatusItem(
@@ -1229,6 +1298,16 @@ final class MenuBarPanelController: NSObject {
                     )
                 }
                 return
+            }
+        }
+        if eventType == .leftMouseDown, !isPanelVisible {
+            let isMenuBarHit = hostsStatusItemOutOfProcess && Self.isMenuBarBandPoint(screenPoint)
+            if resignActiveAwaitingMonitorMouseDown, isMenuBarHit {
+                resignActiveAwaitingMonitorMouseDown = false
+                noteImplicitDismissalForStatusItemReopenGuard()
+            } else if (pressedMouseButtons & 0x1) != 0 || !isMenuBarHit {
+                resignActiveAwaitingMonitorMouseDown = false
+                suppressStatusItemReopenUntil = 0
             }
         }
         guard isPanelVisible, let panel = panelWindow else { return }
@@ -1251,6 +1330,11 @@ final class MenuBarPanelController: NSObject {
             || pressTriggered
             || pressTimer != nil
             || HotkeyAndNotificationManager.shared.isHotkeyPhysicallyDown { return }
+        if eventType == .leftMouseDown,
+           hostsStatusItemOutOfProcess,
+           Self.isMenuBarBandPoint(screenPoint) {
+            noteImplicitDismissalForStatusItemReopenGuard()
+        }
         hidePanel()
     }
 
@@ -1267,15 +1351,76 @@ final class MenuBarPanelController: NSObject {
         return statusRect.insetBy(dx: -6, dy: -6).contains(point)
     }
 
+    /// True when `point` lies in the menu-bar strip at the top of any screen. An out-of-process
+    /// status item (`NSMenuBarNavigationSceneExtension`) can keep its local scene window at `.zero`
+    /// while the user clicks the real menu bar, whereas clicks in the workspace below the menu bar
+    /// never belong to the status item.
+    static func isMenuBarBandPoint(_ point: NSPoint, screens: [NSScreen] = NSScreen.screens) -> Bool {
+        for screen in screens {
+            let frame = screen.frame
+            guard point.x >= frame.minX - 6, point.x <= frame.maxX + 6 else { continue }
+            let bandFloor = min(screen.visibleFrame.maxY, frame.maxY - 44) - 6
+            if point.y >= bandFloor, point.y <= frame.maxY + 6 {
+                return true
+            }
+        }
+        return false
+    }
+
     func handleApplicationResignActive() {
         guard isPanelVisible else { return }
+        let now = statusItemUptime()
         // A TCC prompt (microphone/speech) deactivates the app mid-dictation; keep the panel.
+        // An out-of-process menu bar (macOS 26+ MenuBarAgent) also deactivates the app on
+        // mouse-down ~60–90 ms before delivering `NSMenuBarNavigateAction` to the status item.
         if SpeechInputController.shared.isListening
             || SpeechInputController.shared.isHoldToTalk
             || pressTriggered
             || pressTimer != nil
+            || now < suppressResignActiveHideUntil
+            || isStatusItemMouseDownAtCurrentLocation()
             || HotkeyAndNotificationManager.shared.isHotkeyPhysicallyDown { return }
+        if hostsStatusItemOutOfProcess {
+            resignActiveAwaitingMonitorMouseDown = true
+            noteImplicitDismissalForStatusItemReopenGuard(now: now)
+        }
         hidePanel()
+    }
+
+    func clearImplicitDismissalStateOnShow() {
+        suppressStatusItemReopenUntil = 0
+        suppressResignActiveHideUntil = 0
+        resignActiveAwaitingMonitorMouseDown = false
+    }
+
+    func clearResignActiveSuppressionOnHide() {
+        suppressResignActiveHideUntil = 0
+        if !pressTriggered {
+            suppressReleaseUntil = 0
+        }
+    }
+
+    private func noteImplicitDismissalForStatusItemReopenGuard(
+        now: TimeInterval? = nil
+    ) {
+        let resolvedNow = now ?? statusItemUptime()
+        let holdHeadroom = (NSEvent.pressedMouseButtons & 0x1) != 0 ? Self.holdThreshold : 0
+        suppressStatusItemReopenUntil = max(
+            suppressStatusItemReopenUntil,
+            resolvedNow + Self.statusItemReopenSuppressionWindow + holdHeadroom
+        )
+    }
+
+    private func isStatusItemMouseDownAtCurrentLocation() -> Bool {
+        guard (NSEvent.pressedMouseButtons & 0x3) != 0,
+              let button = statusItem?.button,
+              let statusWindow = button.window else { return false }
+        let statusRect = statusWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        return Self.isStatusItemHit(
+            statusRect: statusRect,
+            point: NSEvent.mouseLocation,
+            eventType: .leftMouseDown
+        )
     }
 
     // MARK: - Control Center Readability Shadow

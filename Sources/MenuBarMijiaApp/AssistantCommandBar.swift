@@ -962,13 +962,16 @@ struct AssistantSettingsSection: View {
                 .frame(width: DesignTokens.Settings.fieldWidth)
                 .controlSize(.regular)
             }
+            .settingsRow(anchor: .assistantProvider)
 
             labeledField(AssistantSettingsCopy.apiKeyLabel) {
                 SecureField(AssistantSettingsCopy.apiKeyPlaceholder, text: $apiKeyDraft)
                     .textFieldStyle(.roundedBorder)
             }
+            .settingsRow(anchor: .assistantAPIKey)
 
             privacySection(habitItems: habitItems, habitCount: habitCount)
+                .settingsRow(anchor: .habitMemory)
 
             DisclosureGroup(isExpanded: $showsAdvanced) {
                 if showsAdvanced {
@@ -1002,6 +1005,7 @@ struct AssistantSettingsSection: View {
                 }
                 .buttonStyle(PillActionButtonStyle())
                 .disabled(isTestingConnection)
+                .settingsRow(anchor: .assistantTest)
 
                 Spacer()
 

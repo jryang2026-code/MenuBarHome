@@ -41,6 +41,7 @@ extension MenuBarPanelController {
         let wasVisible = panel.isVisible && !isClosing
         let wasOnScreen = panel.isVisible
         isClosing = false
+        clearImplicitDismissalStateOnShow()
         if !wasVisible { presentationGeneration &+= 1 }
         let generation = presentationGeneration
         panel.ignoresMouseEvents = false
@@ -115,6 +116,7 @@ extension MenuBarPanelController {
     /// tree is rebuilt for the other theme.
     func hidePanel(animated: Bool = true) {
         guard let panel = panelWindow, panel.isVisible, !isClosing else { return }
+        clearResignActiveSuppressionOnHide()
         // #146 §5.2：点面板外、⌘Tab、打开设置、Esc 阶梯都会走到这里，排序会话不能比面板活得久。
         // 必须在这里提交草稿，而不是依赖视图的 `onDisappear`——拖动中 `DragGesture.onEnded` 不保证执行。
         LayoutUIState.shared.commitRoomOrderIfNeeded()
