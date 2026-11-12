@@ -335,3 +335,38 @@ extension View {
 public enum PanelPrefs {
     public static let climatePanelKey = "climate_panel_module"
 }
+
+// MARK: - Room Badge Deduplication
+
+/// Decides whether a device card should render a room badge next to or beneath its title.
+///
+/// When a card's title already names the room ("客厅温湿度计", "客厅电视", "书房吸顶灯",
+/// "Living Room AC") or the device has no assigned room, repeating the room badge adds visual
+/// clutter or leaves an empty pill / leading separator.
+enum DeviceRoomBadge {
+    static func label(roomName: String, title: String, showRoomBadge: Bool) -> String? {
+        guard showRoomBadge else { return nil }
+        let raw = roomName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+        let display = L10n.displayRoomName(raw).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !display.isEmpty else { return nil }
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if mentionsRoom(display, in: trimmedTitle)
+            || (display != raw && mentionsRoom(raw, in: trimmedTitle)) {
+            return nil
+        }
+        return display
+    }
+
+    private static func mentionsRoom(_ room: String, in title: String) -> Bool {
+        guard !room.isEmpty, !title.isEmpty else { return false }
+        if title.caseInsensitiveCompare(room) == .orderedSame { return true }
+        if room.unicodeScalars.allSatisfy(\.isASCII) {
+            let escaped = NSRegularExpression.escapedPattern(for: room)
+            let pattern = "(?<![A-Za-z0-9])\(escaped)(?![A-Za-z0-9])"
+            return title.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
+        }
+        guard room.count >= 2 else { return false }
+        return title.localizedCaseInsensitiveContains(room)
+    }
+}

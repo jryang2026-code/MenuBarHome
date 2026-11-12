@@ -177,7 +177,15 @@ extension ControlCenterPanel {
                 LayoutUIState.shared.isEditingLayoutRequested = true
             }
             if canReorderRooms || canReorderKinds {
-                Button(L10n.tr("排序房间与类型…", "Reorder rooms and kinds…")) { beginRoomOrder() }
+                let reorderTitle: String = switch (canReorderRooms, canReorderKinds) {
+                case (true, true): L10n.tr("排序房间与类型…", "Reorder rooms and kinds…")
+                case (true, false): L10n.tr("排序房间…", "Reorder rooms…")
+                case (false, true): L10n.tr("排序类型…", "Reorder kinds…")
+                case (false, false): ""
+                }
+                Button(reorderTitle) {
+                    beginRoomOrder(target: grouping == .kind ? .kinds : .rooms)
+                }
             }
             Button(L10n.tr("偏好设置…", "Preferences…")) { presentSettingsWindow() }
             Divider()

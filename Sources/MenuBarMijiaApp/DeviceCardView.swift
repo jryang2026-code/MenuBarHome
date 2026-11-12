@@ -4,6 +4,7 @@ import MijiaCore
 public struct DeviceCardView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.isEditingLayout) private var isEditingLayout
+    @Environment(\.headerlessStackMenu) private var headerlessStackMenu
     @AppStorage(PanelPrefs.climatePanelKey) private var climatePanelModule: Bool = true
     @AppStorage(GroupPrefs.groupsKey) private var groupsRaw: String = "[]"
     /// Observed so a temperature-unit change in Settings re-renders open cards (#52).
@@ -98,15 +99,20 @@ public struct DeviceCardView: View {
     private var isLit: Bool { store.presentsAsActive(device) }
 
     private var shownStatus: String { store.presentedStatus(for: device) }
+
+    private var roomBadgeText: String? {
+        DeviceRoomBadge.label(roomName: device.roomName, title: device.name, showRoomBadge: showRoomBadge)
+    }
+
     /// Compact capsule status line: concise readout, falling back to the room name only when the
-    /// status is a plain On/Off word.
+    /// status is a plain On/Off word and the card title has not already named the room.
     private var compactStatusLine: String {
         let status = shownStatus.replacingOccurrences(of: " · ", with: L10n.tr("，", ", "))
-        guard showRoomBadge else { return status }
+        guard let room = roomBadgeText else { return status }
         let on = L10n.tr("已开启", "On")
         let off = L10n.tr("已关闭", "Off")
         if status == on || status == off {
-            return "\(L10n.displayRoomName(device.roomName)) · \(status)"
+            return "\(room) · \(status)"
         }
         return status
     }
@@ -323,6 +329,14 @@ public struct DeviceCardView: View {
                 }
             } label: {
                 Label(L10n.tr("移到分组", "Move to Group"), systemImage: "folder")
+            }
+
+            if let parentMenu = headerlessStackMenu {
+                Menu {
+                    parentMenu.makeContent()
+                } label: {
+                    Label(parentMenu.title, systemImage: parentMenu.symbol)
+                }
             }
 
             Divider()
@@ -560,8 +574,8 @@ public struct DeviceCardView: View {
                                 .foregroundStyle(nameColor)
                                 .lineLimit(1)
 
-                            if showRoomBadge {
-                                Text(L10n.displayRoomName(device.roomName))
+                            if let room = roomBadgeText {
+                                Text(room)
                                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                                     .foregroundStyle(nameColor.opacity(0.68))
                                     .padding(.horizontal, 5.5)
