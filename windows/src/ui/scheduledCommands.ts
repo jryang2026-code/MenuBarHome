@@ -4,6 +4,7 @@ import { normalizeMiCloudRegion } from "../core/miCloudClient.js";
 import { t } from "../core/i18n.js";
 import type { ScheduledCommand } from "../core/models.js";
 import type { PersistedSettings } from "./appTypes.js";
+import { isWorkstationLockBlockingControl as isControlBlockedWhileLocked } from "./transport.js";
 
 export function scheduledCommandIdentity(settings: PersistedSettings): string | null {
   switch (settings.connectionMode) {
@@ -44,14 +45,42 @@ export function processScheduledCommands(host: MenuMijiaWindowsApp, nowMs = Date
   return count > 0 || host.missedScheduledCommands.length !== missed;
 }
 
-export function confirmMissedScheduledCommand(host: MenuMijiaWindowsApp, id: string): void {
-  const item = host.missedScheduledCommands.find((entry) => entry.id === id);
-  if (!item) return;
-  if (!scheduledCommandsReady(host)) {
+/**
+ * Runs a missed timer the user just confirmed ("Run Now"), following the store rule in
+ * `.claude/rules/standards-store-locks-timers.md` §7.
+ *
+ * The screen-lock guard runs **before** the entry leaves the list: a refused run stays in
+ * `missedScheduledCommands` on screen and on disk, so the user can retry once the workstation is
+ * unlocked. (Removing first and re-adding after the await lost the timer if the process exited in
+ * between.) Once the guard passes, the entry is re-found by id in the same stretch without an
+ * `await` that removes and persists it — a cancel, dismiss, or source switch during the lock probe
+ * therefore makes this call a no-op instead of executing a stale copy.
+ */
+export async function confirmMissedScheduledCommand(
+  host: MenuMijiaWindowsApp,
+  id: string,
+): Promise<void> {
+  if (!host.missedScheduledCommands.some((entry) => entry.id === id)) return;
+  const identity = scheduledCommandIdentity(host.settings);
+
+  const needsNativeLockProbe =
+    host.settings.blockControlWhileLocked &&
+    typeof window.__TAURI_INTERNALS__?.invoke === "function";
+  if (needsNativeLockProbe && (await isControlBlockedWhileLocked(host))) {
+    host.replyBanner = { text: t("屏幕已锁定，已拦截设备控制指令"), source: t("锁屏保护"), isError: true };
+    host.render();
+    return;
+  }
+
+  // Everything below runs without an `await`, so nothing can change underneath the removal.
+  if (!scheduledCommandsReady(host) || scheduledCommandIdentity(host.settings) !== identity) {
     host.replyBanner = { text: t("请等待设备同步完成后再执行定时指令"), source: t("定时任务"), isError: true };
     host.render();
     return;
   }
+  const index = host.missedScheduledCommands.findIndex((entry) => entry.id === id);
+  if (index < 0) return;
+  const item = host.missedScheduledCommands[index]!;
   const previous = host.missedScheduledCommands;
   host.missedScheduledCommands = previous.filter((entry) => entry.id !== id);
   if (!host.scheduledCommandStore.persist()) {

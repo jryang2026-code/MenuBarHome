@@ -41,9 +41,24 @@ from typing import Callable
 
 SCHEMA_VERSION = 1
 SNAPSHOT_ENV = "MENUBARMIJIA_SNAPSHOT_PATH"
-DEFAULT_SNAPSHOT_PATH = (
-    Path.home() / "Library" / "Application Support" / "MenuBarMijia" / "raycast-snapshot.json"
-)
+
+
+def _default_snapshot_path(
+    platform: str | None = None,
+    env: dict | None = None,
+    home: Path | None = None,
+) -> Path:
+    resolved_platform = sys.platform if platform is None else platform
+    resolved_home = home or Path.home()
+    if resolved_platform == "win32":
+        env_map = os.environ if env is None else env
+        local_app_data = (env_map.get("LOCALAPPDATA") or "").strip()
+        base = Path(local_app_data) if local_app_data else (resolved_home / "AppData" / "Local")
+        return base / "MenuBarMijia" / "raycast-snapshot.json"
+    return resolved_home / "Library" / "Application Support" / "MenuBarMijia" / "raycast-snapshot.json"
+
+
+DEFAULT_SNAPSHOT_PATH = _default_snapshot_path()
 DEFAULT_TIMEOUT = 12.0
 POLL_INTERVAL = 0.15
 MAX_ASK_LENGTH = 500
@@ -72,13 +87,22 @@ class FeedbackTimeout(CliError):
     """链接已交给应用，但在超时内没有等到这条命令的结果。"""
 
 
-def snapshot_path(explicit: str | None = None, env: dict | None = None) -> Path:
+def snapshot_path(
+    explicit: str | None = None,
+    env: dict | None = None,
+    *,
+    platform: str | None = None,
+    home: Path | None = None,
+) -> Path:
     if explicit:
         return Path(explicit).expanduser()
-    override = ((env if env is not None else os.environ).get(SNAPSHOT_ENV) or "").strip()
+    env_map = env if env is not None else os.environ
+    override = (env_map.get(SNAPSHOT_ENV) or "").strip()
     if override:
         return Path(override).expanduser()
-    return DEFAULT_SNAPSHOT_PATH
+    if platform is None and env is None and home is None:
+        return DEFAULT_SNAPSHOT_PATH
+    return _default_snapshot_path(platform=platform, env=env_map, home=home)
 
 
 def load_snapshot(path: Path) -> dict:
@@ -284,6 +308,14 @@ def build_url(route: str, params: list[tuple[str, str]], token: str, request_id:
 
 
 def open_url(url: str) -> None:
+    if sys.platform == "win32":
+        try:
+            os.startfile(url)  # type: ignore[attr-defined]
+        except OSError as error:
+            raise CliError(
+                f"系统没能打开 menumijia:// 链接（{error}），请确认 MenuBarHome 已安装。"
+            ) from error
+        return
     try:
         completed = subprocess.run(
             ["open", url],

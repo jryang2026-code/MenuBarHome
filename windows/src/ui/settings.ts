@@ -167,6 +167,13 @@ export function loadSettings(): LoadedSettings {
               : "system",
           enableGlobalHotkey: typeof parsed.enableGlobalHotkey === "boolean" ? parsed.enableGlobalHotkey : true,
           globalHotkey: normalizeGlobalShortcut(parsed.globalHotkey),
+          launchAtLogin: typeof parsed.launchAtLogin === "boolean" ? parsed.launchAtLogin : false,
+          blockControlWhileLocked:
+            typeof parsed.blockControlWhileLocked === "boolean" ? parsed.blockControlWhileLocked : true,
+          enableRaycastIntegration:
+            typeof parsed.enableRaycastIntegration === "boolean" ? parsed.enableRaycastIntegration : false,
+          allowDirectURLControl:
+            typeof parsed.allowDirectURLControl === "boolean" ? parsed.allowDirectURLControl : false,
           cameraStreamURLs:
             parsed.cameraStreamURLs && typeof parsed.cameraStreamURLs === "object"
               ? Object.fromEntries(
@@ -226,6 +233,10 @@ export function loadSettings(): LoadedSettings {
       temperatureUnit: "system",
       enableGlobalHotkey: true,
       globalHotkey: DEFAULT_GLOBAL_SHORTCUT,
+      launchAtLogin: false,
+      blockControlWhileLocked: true,
+      enableRaycastIntegration: false,
+      allowDirectURLControl: false,
       cameraStreamURLs: {},
       cameraStreamQualities: {},
     },

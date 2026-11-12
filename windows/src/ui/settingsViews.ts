@@ -2,7 +2,11 @@ import { ASSISTANT_PROVIDER_PRESETS, inferAssistantPreset } from "../core/assist
 import { speechLocale, t } from "../core/i18n.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { trText } from "../core/quickActions.js";
-import { hasPendingMiVaultDeletion } from "./speechGuard.js";
+import {
+  getUpdateProgressForSettings,
+  hasPendingMiVaultDeletion,
+  type UpdateDownloadProgress,
+} from "./speechGuard.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
 import type { QRLoginTicket } from "../core/miCloudClient.js";
 import {
@@ -126,6 +130,7 @@ export interface SettingsViewContext {
   readonly isCheckingUpdate: boolean;
   readonly isInstallingUpdate: boolean;
   readonly updateStatusMessage: { text: string; isError: boolean } | null;
+  readonly updateProgress?: UpdateDownloadProgress | null;
   escapeHtml(value: string): string;
 }
 
@@ -268,6 +273,11 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
     <div class="cc-field cc-field-row">
       <label for="settings-grok-ball">${t("启用侧边情绪智能球")}</label>
       <input id="settings-grok-ball" type="checkbox" ${ctx.settings.enableGrokBall ? "checked" : ""} />
+    </div>
+
+    <div class="cc-field cc-field-row">
+      <label for="settings-launch-at-login">${t("开机自动启动")}</label>
+      <input id="settings-launch-at-login" type="checkbox" ${ctx.settings.launchAtLogin ? "checked" : ""} />
     </div>
 
     <div class="cc-field">
@@ -497,9 +507,30 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
   `;
 }
 
-/** 全关与更新: what 全关 switches off, plus the update card when none is waiting on the general tab. */
+/** 全关与更新: what 全关 switches off, companion/security controls, plus the update card when none is waiting on the general tab. */
 function renderSystemPanel(ctx: SettingsViewContext): string {
   return `
+    <div class="cc-field">
+      <label>${t("自动化与安全控制")}</label>
+      <div class="cc-field-row" style="margin-top: 4px;">
+        <label for="settings-block-while-locked">${t("锁屏时禁止控制设备")}</label>
+        <input id="settings-block-while-locked" type="checkbox" ${ctx.settings.blockControlWhileLocked ? "checked" : ""} />
+      </div>
+      <p class="cc-field-hint">${t("锁屏期间拦截手动与外部链接控制；已设好的定时任务仍按时执行。")}</p>
+
+      <div class="cc-field-row" style="margin-top: 8px;">
+        <label for="settings-raycast-integration">${t("Raycast 与本地 CLI / MCP 集成")}</label>
+        <input id="settings-raycast-integration" type="checkbox" ${ctx.settings.enableRaycastIntegration ? "checked" : ""} />
+      </div>
+      <p class="cc-field-hint">${t("在 %LOCALAPPDATA%\\MenuBarMijia 导出设备快照并签发本机令牌（不含账号凭据）；关闭后立即删除快照并吊销令牌。")}</p>
+
+      <div class="cc-field-row" style="margin-top: 8px;">
+        <label for="settings-allow-direct-url">${t("允许 menumijia:// 外部链接免确认直控")}</label>
+        <input id="settings-allow-direct-url" type="checkbox" ${ctx.settings.allowDirectURLControl ? "checked" : ""} />
+      </div>
+      <p class="cc-field-hint">${t("关闭时，未携带本机令牌的外部网页或快捷方式链接须先在面板中确认；高风险设备与锁屏拦截始终生效。")}</p>
+    </div>
+
     <div class="cc-field cc-field-row">
       <label for="settings-allow-advanced-facets">${t("允许写入高级/高风险设备属性")}</label>
       <input id="settings-allow-advanced-facets" type="checkbox" ${ctx.settings.allowAdvancedFacetWrites ? "checked" : ""} />
@@ -525,11 +556,103 @@ function renderSystemPanel(ctx: SettingsViewContext): string {
   `;
 }
 
+function defaultEscapeHtml(raw: string): string {
+  return raw
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function formatInlineReleaseNotes(escapedLine: string): string {
+  return escapedLine
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+}
+
+/**
+ * Renders GitHub release notes Markdown headings, bullet lists, inline code, and paragraphs
+ * safely after HTML-escaping every line upfront so raw HTML/scripts can never execute.
+ */
+export function renderReleaseNotesMarkdown(
+  rawNotes: string,
+  escapeFn: (value: string) => string = defaultEscapeHtml,
+): string {
+  const safeEscape = (value: string) => escapeFn(value).replace(/'/g, "&#39;");
+  const lines = rawNotes.replace(/\r\n?/g, "\n").split("\n");
+  const blocks: string[] = [];
+  let listItems: string[] = [];
+
+  const flushList = () => {
+    if (listItems.length === 0) return;
+    blocks.push(`<ul class="cc-md-list">${listItems.join("")}</ul>`);
+    listItems = [];
+  };
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) {
+      flushList();
+      continue;
+    }
+    const headingMatch = /^(#{1,3})\s+(.+)$/.exec(trimmed);
+    if (headingMatch) {
+      flushList();
+      const level = headingMatch[1]!.length;
+      const tag = level === 1 ? "h4" : level === 2 ? "h5" : "h6";
+      const content = formatInlineReleaseNotes(safeEscape(headingMatch[2]!.trim()));
+      blocks.push(`<${tag} class="cc-md-heading">${content}</${tag}>`);
+      continue;
+    }
+    const bulletMatch = /^[-*+]\s+(.+)$/.exec(trimmed);
+    if (bulletMatch) {
+      const content = formatInlineReleaseNotes(safeEscape(bulletMatch[1]!.trim()));
+      listItems.push(`<li>${content}</li>`);
+      continue;
+    }
+    flushList();
+    blocks.push(`<p class="cc-md-p">${formatInlineReleaseNotes(safeEscape(trimmed))}</p>`);
+  }
+  flushList();
+  return blocks.join("");
+}
+
+function formatBytesMegabytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0.0 MB";
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderUpdateDownloadProgress(
+  progress: UpdateDownloadProgress | null,
+  escapeHtml: (value: string) => string,
+): string {
+  if (!progress || progress.downloadedBytes <= 0) return "";
+  const hasTotal = progress.totalBytes > 0 && progress.totalBytes >= progress.downloadedBytes;
+  const percent = hasTotal
+    ? Math.min(100, Math.round((progress.downloadedBytes / progress.totalBytes) * 100))
+    : null;
+  const sizePart = hasTotal
+    ? `${formatBytesMegabytes(progress.downloadedBytes)} / ${formatBytesMegabytes(progress.totalBytes)} (${percent}%)`
+    : formatBytesMegabytes(progress.downloadedBytes);
+  const speedPart =
+    progress.bytesPerSec > 0 ? ` · ${formatBytesMegabytes(progress.bytesPerSec)}/s` : "";
+  return `
+    <div class="cc-update-progress" data-update-progress>
+      <progress max="100" ${percent !== null ? `value="${percent}"` : ""} style="width: 100%; height: 6px;"></progress>
+      <div class="cc-field-hint">${escapeHtml(`${sizePart}${speedPart}`)}</div>
+    </div>`;
+}
+
   export function renderUpdateSection(ctx: SettingsViewContext): string {
     const release = ctx.availableUpdate;
     const hasInstaller = Boolean(release?.installerAsset);
     const notes = release?.notes?.trim() ?? "";
     const statusText = ctx.updateStatusMessage?.text ?? (release && hasInstaller ? t("可直接下载并安装，无需打开浏览器") : "");
+    const activeProgress = ctx.isInstallingUpdate
+      ? (ctx.updateProgress ?? getUpdateProgressForSettings(ctx.settings))
+      : null;
     return `
       <div class="cc-field cc-update-card ${release ? "is-available" : ""}">
         <label>${release ? t("发现新版本 v{version}", { version: release.version }) : t("软件更新")}</label>
@@ -555,7 +678,8 @@ function renderSystemPanel(ctx: SettingsViewContext): string {
             ? `<div class="cc-update-status ${ctx.updateStatusMessage?.isError ? "is-error" : ""}">${ctx.escapeHtml(statusText)}</div>`
             : ""
         }
-        ${notes ? `<div class="cc-update-notes">${ctx.escapeHtml(notes)}</div>` : ""}
+        ${renderUpdateDownloadProgress(activeProgress, (v) => ctx.escapeHtml(v))}
+        ${notes ? `<div class="cc-update-notes">${renderReleaseNotesMarkdown(notes, (v) => ctx.escapeHtml(v))}</div>` : ""}
         <label class="cc-checkbox" style="margin-top: 6px;">
           <input type="checkbox" id="settings-auto-update" ${ctx.settings.autoCheckUpdates ? "checked" : ""} />
           <span>${t("每天自动检查更新（关闭后不再请求 GitHub）")}</span>

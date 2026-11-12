@@ -207,7 +207,7 @@ CODE_ANCHORS = (
             "symbol": "onOpenURL",
         },
         "windows": {
-            "roots": ("windows/src", "windows/src-tauri/src"),
+            "path": "windows/src/core/appUrlCommand.ts",
             "symbol": "onOpenURL",
         },
     },
@@ -218,7 +218,7 @@ CODE_ANCHORS = (
             "symbol": "RaycastSnapshot",
         },
         "windows": {
-            "roots": ("windows/src", "windows/src-tauri/src"),
+            "path": "windows/src/core/raycastSnapshot.ts",
             "symbol": "RaycastSnapshot",
         },
     },

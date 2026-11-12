@@ -374,7 +374,7 @@ pub(crate) async fn install_update(app: AppHandle, asset: InstallerAssetPayload)
         .await
         .map_err(|err| format!("读取 Ed25519 更新签名失败：{err}"))?;
 
-    let response = client
+    let mut response = client
         .get(pair.installer_url.clone())
         .send()
         .await
@@ -382,10 +382,49 @@ pub(crate) async fn install_update(app: AppHandle, asset: InstallerAssetPayload)
     if !response.status().is_success() {
         return Err(format!("下载更新安装包失败（HTTP {}）", response.status().as_u16()));
     }
-    let bytes = response
-        .bytes()
+    let reported_total = response.content_length().unwrap_or(asset.size_bytes);
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(reported_total)
+            .unwrap_or(0)
+            .min(64 * 1024 * 1024),
+    );
+    let started_at = std::time::Instant::now();
+    let mut last_emit_at: Option<std::time::Instant> = None;
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|err| format!("读取更新安装包数据失败：{err}"))?;
+        .map_err(|err| format!("读取更新安装包数据失败：{err}"))?
+    {
+        bytes.extend_from_slice(&chunk);
+        let downloaded = bytes.len() as u64;
+        let now = std::time::Instant::now();
+        let should_emit = last_emit_at
+            .map(|prev| now.duration_since(prev) >= Duration::from_millis(80))
+            .unwrap_or(true)
+            || (reported_total > 0 && downloaded >= reported_total);
+        if should_emit {
+            emit_update_progress(
+                &app,
+                &build_update_progress_payload(
+                    downloaded,
+                    reported_total,
+                    now.duration_since(started_at).as_secs_f64(),
+                ),
+            );
+            last_emit_at = Some(now);
+        }
+    }
+    if !bytes.is_empty() {
+        let downloaded = bytes.len() as u64;
+        emit_update_progress(
+            &app,
+            &build_update_progress_payload(
+                downloaded,
+                reported_total.max(downloaded),
+                started_at.elapsed().as_secs_f64(),
+            ),
+        );
+    }
 
     let trusted_public_keys = update_signing_public_keys();
     update_manifest::accept_update_manifest(
@@ -438,4 +477,61 @@ pub(crate) fn set_update_available(app: AppHandle, version: Option<String>) -> R
         .map_err(|error| error.to_string())?;
     tray.set_menu(Some(menu)).map_err(|error| error.to_string())
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateProgressPayload {
+    pub(crate) downloaded_bytes: u64,
+    pub(crate) total_bytes: u64,
+    pub(crate) bytes_per_sec: u64,
+}
+
+pub(crate) fn build_update_progress_payload(
+    downloaded_bytes: u64,
+    total_bytes: u64,
+    elapsed_secs: f64,
+) -> UpdateProgressPayload {
+    let bytes_per_sec = if downloaded_bytes > 0 && elapsed_secs >= 0.005 {
+        ((downloaded_bytes as f64) / elapsed_secs).round() as u64
+    } else {
+        0
+    };
+    UpdateProgressPayload {
+        downloaded_bytes,
+        total_bytes,
+        bytes_per_sec,
+    }
+}
+
+fn emit_update_progress(app: &AppHandle, payload: &UpdateProgressPayload) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(json) = serde_json::to_string(payload) else {
+        return;
+    };
+    let script = format!(
+        "window.dispatchEvent(new CustomEvent('menumijia:update-progress', {{ detail: {json} }}))"
+    );
+    let _ = window.eval(&script);
+}
+
+#[cfg(test)]
+mod update_progress_tests {
+    use super::*;
+
+    #[test]
+    fn update_progress_payload_serializes_camel_case_and_computes_throughput() {
+        let initial = build_update_progress_payload(65_536, 1_048_576, 0.0);
+        assert_eq!(initial.bytes_per_sec, 0);
+
+        let mid = build_update_progress_payload(524_288, 1_048_576, 0.5);
+        assert_eq!(mid.bytes_per_sec, 1_048_576);
+        let json = serde_json::to_value(&mid).expect("serialize progress payload");
+        assert_eq!(json["downloadedBytes"], 524_288);
+        assert_eq!(json["totalBytes"], 1_048_576);
+        assert_eq!(json["bytesPerSec"], 1_048_576);
+    }
+}
+
 

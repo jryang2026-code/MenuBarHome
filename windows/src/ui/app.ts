@@ -91,15 +91,8 @@ import { bindLayoutGestures } from "./layoutGestures.js";
 import { bindSettingsEvents, refreshHabitSharePreview } from "./settingsEvents.js";
 import { captureSettingsDraft, restoreSettingsDraft, type SettingsTab } from "./settingsViews.js";
 import {
-  bindUndoBannerHoverGuard,
-  clearUndoHoverPause,
-  copyUndoKindSnapshots,
-  isUndoHoverPaused,
-  restoreUndoKindSnapshot,
-  shouldKeepPopoverPinned,
-  syncUndoBannerClock,
-  toggleVoiceInput,
-  undoButtonVisible,
+  bindUndoBannerHoverGuard, clearUndoHoverPause, copyUndoKindSnapshots, isInsideScheduledTimerTick, isUndoHoverPaused,
+  rejectIfControlBlockedWhileLocked, renderUrlConfirmationPrompt, restoreUndoKindSnapshot, runScheduledCommandWithLockGuard, shouldKeepPopoverPinned, syncUndoBannerClock, toggleVoiceInput, undoButtonVisible,
 } from "./speechGuard.js";
 import { inputKeepsDraft } from "./dom.js";
 export { waitForCameraFrameGap } from "./dom.js";
@@ -667,11 +660,12 @@ export class MenuMijiaWindowsApp {
   }
 
   public async handleNaturalCommand(rawInput: string, fromScheduled = false): Promise<void> {
+    if (!isInsideScheduledTimerTick() && (await rejectIfControlBlockedWhileLocked(this))) return;
     return handleNaturalCommand(this, rawInput, fromScheduled);
   }
 
   public async runScheduledCommand(item: ScheduledCommand): Promise<void> {
-    return runScheduledCommand(this, item);
+    return runScheduledCommandWithLockGuard(this, item, () => runScheduledCommand(this, item));
   }
 
   public async executeIntents(
@@ -680,6 +674,7 @@ export class MenuMijiaWindowsApp {
     sourceLabel: string,
     options: { recordHabits?: boolean } = {},
   ): Promise<boolean> {
+    if (!isInsideScheduledTimerTick() && (await rejectIfControlBlockedWhileLocked(this))) return false;
     return executeIntents(this, intents, replyText, sourceLabel, options);
   }
 
@@ -690,6 +685,7 @@ export class MenuMijiaWindowsApp {
     intent?: DeviceIntent,
     readBackPower = false,
   ): Promise<void> {
+    if (await rejectIfControlBlockedWhileLocked(this)) return;
     return executeSingleCommand(this, device, command, summary, intent, readBackPower);
   }
 
@@ -740,6 +736,7 @@ export class MenuMijiaWindowsApp {
   }
 
   public async performUndo(): Promise<void> {
+    if (await rejectIfControlBlockedWhileLocked(this)) return;
     const paused = isUndoHoverPaused(this);
     if (!this.lastUndoAction || (!paused && this.lastUndoAction.expiresAtMs <= Date.now())) {
       clearUndoHoverPause(this);
@@ -1288,7 +1285,7 @@ export class MenuMijiaWindowsApp {
   }
 
   public renderPrompt(): string {
-    return renderPrompt(this);
+    return renderUrlConfirmationPrompt(this) || renderPrompt(this);
   }
 
   public renderOnboardingModal(): string {

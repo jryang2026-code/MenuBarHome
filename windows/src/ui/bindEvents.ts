@@ -528,7 +528,7 @@ import { bindPanelInput } from "./panelKeyboard.js";
       btn.addEventListener("click", () => {
         const item = host.missedScheduledCommands.find((c) => c.id === btn.dataset.runMissed);
         if (!item) return;
-        confirmMissedScheduledCommand(host, item.id);
+        void confirmMissedScheduledCommand(host, item.id);
       });
     });
 

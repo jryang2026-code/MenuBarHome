@@ -110,6 +110,14 @@ export interface PersistedSettings {
   enableGlobalHotkey: boolean;
   /** Canonical global shortcut string (default `"Alt+M"`, #43). */
   globalHotkey: string;
+  /** Registers `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\MenuBarHome` when on. */
+  launchAtLogin: boolean;
+  /** Blocks manual & external URL device control while the Windows workstation is locked. */
+  blockControlWhileLocked: boolean;
+  /** Exports `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json` and issues a local `bridgeToken`. */
+  enableRaycastIntegration: boolean;
+  /** Runs `menumijia://` links without the external-link confirmation prompt when on. */
+  allowDirectURLControl: boolean;
   /** Per-camera custom stream URLs (e.g. local go2rtc / HLS), persisted across restarts. */
   cameraStreamURLs?: Record<string, string>;
   /** Per-camera Xiaomi stream quality (#97); missing or unknown values mean `hd`. */

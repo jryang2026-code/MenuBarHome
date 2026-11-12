@@ -720,6 +720,48 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "允许修改…": ["允许修改…", "Allow changes…"],
   "收起次要设置": ["收起次要设置", "Hide secondary settings"],
   "还有 {count} 项次要设置": ["还有 {count} 项次要设置", "{count} more settings"],
+  "开机自动启动": ["开机自动启动", "Launch at login"],
+  "无法修改开机自启设置，请检查系统权限后重试": [
+    "无法修改开机自启设置，请检查系统权限后重试",
+    "Could not update launch-at-login; check system permissions and try again",
+  ],
+  "自动化与安全控制": ["自动化与安全控制", "Automation & Security"],
+  "锁屏时禁止控制设备": ["锁屏时禁止控制设备", "Block device control while locked"],
+  "锁屏期间拦截手动与外部链接控制；已设好的定时任务仍按时执行。": [
+    "锁屏期间拦截手动与外部链接控制；已设好的定时任务仍按时执行。",
+    "Blocks manual and external URL actions while Windows is locked; scheduled timers still run on time.",
+  ],
+  "Raycast 与本地 CLI / MCP 集成": [
+    "Raycast 与本地 CLI / MCP 集成",
+    "Raycast, Local CLI & MCP Integration",
+  ],
+  "在 %LOCALAPPDATA%\\MenuBarMijia 导出设备快照并签发本机令牌（不含账号凭据）；关闭后立即删除快照并吊销令牌。": [
+    "在 %LOCALAPPDATA%\\MenuBarMijia 导出设备快照并签发本机令牌（不含账号凭据）；关闭后立即删除快照并吊销令牌。",
+    "Exports a credential-free snapshot and local bridge token under %LOCALAPPDATA%\\MenuBarMijia; turning off deletes the snapshot and revokes the token immediately.",
+  ],
+  "允许 menumijia:// 外部链接免确认直控": [
+    "允许 menumijia:// 外部链接免确认直控",
+    "Allow menumijia:// links without confirmation",
+  ],
+  "关闭时，未携带本机令牌的外部网页或快捷方式链接须先在面板中确认；高风险设备与锁屏拦截始终生效。": [
+    "关闭时，未携带本机令牌的外部网页或快捷方式链接须先在面板中确认；高风险设备与锁屏拦截始终生效。",
+    "When off, untrusted web or shortcut links ask for confirmation first; high-risk device checks and lock-screen blocking always apply.",
+  ],
+  "允许外部链接控制设备？": [
+    "允许外部链接控制设备？",
+    "Allow an external link to control devices?",
+  ],
+  "网页和其它应用都可以打开这个链接。确认后只执行这一次。": [
+    "网页和其它应用都可以打开这个链接。确认后只执行这一次。",
+    "Web pages and other apps can open this link. It runs only once after you confirm.",
+  ],
+  "执行一次": ["执行一次", "Run Once"],
+  "屏幕已锁定，已拦截设备控制指令": [
+    "屏幕已锁定，已拦截设备控制指令",
+    "Workstation is locked; device control was blocked",
+  ],
+  "锁屏保护": ["锁屏保护", "Lock Guard"],
+  "外部链接": ["外部链接", "External Link"],
 };
 
 /** Every catalog key, for tests and tooling. */
