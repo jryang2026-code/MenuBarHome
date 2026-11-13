@@ -118,10 +118,11 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
     ) {
       return "";
     }
+    const action = pendingHighRisk.confirm.promptLabel ?? pendingHighRisk.confirm.summary;
     const promptText =
       pendingHighRisk.confirm.command.kind === "setClimateTemperature"
         ? t("设为 {temp}？", { temp: formatTemperature(pendingHighRisk.confirm.command.temperature) })
-        : `${pendingHighRisk.confirm.summary}？`;
+        : t("{action}？", { action });
     return `<div class="cc-slider-label">
       <span>${escapeHtml(promptText)}</span>
       <button class="cc-inline-pill" data-high-risk-confirm="${escapeHtml(devId)}">${t("确认执行")}</button>
@@ -390,7 +391,7 @@ function renderPrimaryDrawer(
             ${
               k.swingWritable !== false && k.isOscillating !== null
                 ? `<button class="cc-seg-pill ${k.isOscillating ? "is-active" : ""}" data-fanosc="${escapeHtml(dev.id)}" aria-pressed="${k.isOscillating}">
-                    摇头 ${k.isOscillating ? t("开") : t("关")}
+                    ${k.isOscillating ? t("摇头 开") : t("摇头 关")}
                   </button>`
                 : ""
             }
@@ -611,12 +612,13 @@ export function renderDeviceDrawer(
   allowAdvanced = false,
   pendingHighRisk: PendingHighRiskConfirmation | null = null,
 ): string {
+  const primary = renderPrimaryDrawer(dev, escapeHtml, pendingHighRisk, facets, allowAdvanced);
   const extraConfirm =
-    dev.kind.kind !== "climate"
+    dev.kind.kind !== "climate" || primary === ""
       ? renderPendingHighRiskRow(dev.id, pendingHighRisk, escapeHtml)
       : "";
   return (
-    renderPrimaryDrawer(dev, escapeHtml, pendingHighRisk, facets, allowAdvanced) +
+    primary +
     (extraConfirm ? `<div class="cc-tile-drawer">${extraConfirm}</div>` : "") +
     renderMoreSettings({
       deviceId: dev.id,

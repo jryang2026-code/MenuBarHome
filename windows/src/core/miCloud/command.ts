@@ -80,8 +80,10 @@ export const MiotCommandMapper = {
         }
         if (typeof rawArg === "number") {
           if (!Number.isFinite(rawArg)) throw new Error("Unsupported non-finite action input");
-          inputs.push(coercePropValue(prop, rawArg));
-        } else if (typeof rawArg === "boolean" || typeof rawArg === "string") {
+          inputs.push(prop.format === "bool" ? rawArg !== 0 : coercePropValue(prop, rawArg));
+        } else if (typeof rawArg === "boolean") {
+          inputs.push(coerceBoolPropValue(prop, rawArg));
+        } else if (typeof rawArg === "string") {
           inputs.push(rawArg);
         } else {
           throw new Error("Unsupported action input type");

@@ -158,6 +158,7 @@ export interface PendingHighRiskConfirmation {
     readonly command: DeviceCommand;
     readonly summary: string;
     readonly intent: DeviceIntent;
+    readonly promptLabel?: string;
   };
 }
 

@@ -764,6 +764,13 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "{m}分{s}秒": ["{m}分{s}秒", "{m}m {s}s"],
   "{m}分钟": ["{m}分钟", "{m}m"],
   "{secs}秒": ["{secs}秒", "{secs}s"],
+  "打开{name}": ["打开{name}", "Turn on {name}"],
+  "关闭{name}": ["关闭{name}", "Turn off {name}"],
+  "已打开{name}": ["已打开{name}", "Turned on {name}"],
+  "已关闭{name}": ["已关闭{name}", "Turned off {name}"],
+  "开始{name}": ["开始{name}", "Start {name}"],
+  "{action}{name}": ["{action}{name}", "{action} {name}"],
+  "{action}？": ["{action}？", "{action}?"],
 };
 
 /** Every catalog key, for tests and tooling. */

@@ -1087,6 +1087,12 @@ function createUrlCommandHostAdapter(
     focusDeviceFromUrl(deviceId: string): void {
       if (!revisionStillMatches()) return;
       host.activeSheet = "none";
+      if (host.cameraLive.activeLiveCameraId !== null) {
+        host.cameraLive.closeCameraLiveView();
+      }
+      host.panelSearch.query = "";
+      const searchInput = host.root.querySelector<HTMLInputElement>("#command-input");
+      if (searchInput) searchInput.value = "";
       host.selectRoom(null);
       const dev = host.devices.find((d) => d.id === deviceId);
       host.expandedDeviceId =
@@ -1099,7 +1105,7 @@ function createUrlCommandHostAdapter(
           ? CSS.escape(deviceId)
           : deviceId.replace(/["\\]/g, "\\$&");
       const card = host.root.querySelector<HTMLElement>(
-        `[data-device-card="${escapedId}"]`,
+        `[data-tile-id="${escapedId}"]`,
       );
       card?.scrollIntoView?.({ block: "nearest" });
     },

@@ -377,6 +377,7 @@ export interface AppURLCommandHost {
       readonly command: DeviceCommand;
       readonly summary: string;
       readonly intent: DeviceIntent;
+      readonly promptLabel?: string;
     };
   } | null;
   readonly replyBanner: {
@@ -641,7 +642,7 @@ async function runIntentOnDevice(
       actionKey,
       expiresAtMs: Date.now() + 8000,
       sourceRevision: host.sourceRevision,
-      confirm: { command: firstCommand, summary, intent },
+      confirm: { command: firstCommand, summary, intent, promptLabel: labelForHighRisk },
     });
     host.focusDeviceFromUrl(dev.id);
     const promptMsg = trText(

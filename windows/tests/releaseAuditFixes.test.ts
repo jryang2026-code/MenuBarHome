@@ -13,6 +13,10 @@ import {
   toggleMoreSettingsExpanded,
 } from "../src/ui/facetViews.js";
 import { persistCredentials } from "../src/ui/appLifecycle.js";
+import {
+  enqueueIncomingOpenUrl,
+  getActiveRaycastBridgeTokenForHost,
+} from "../src/ui/speechGuard.js";
 import { setLanguage } from "../src/core/i18n.js";
 import {
   MiCloudClient,
@@ -339,7 +343,9 @@ describe("Release audit fixes — Core & MIoT parity", () => {
             },
             { iid: 4, type: "urn:miot-spec-v2:property:eco:00000024:test-p10:1", format: "bool", access: ["read", "write"] },
           ],
-          actions: [],
+          actions: [
+            { iid: 1, type: "urn:miot-spec-v2:action:toggle-eco:00002800:test-p10:1", in: [1, 4] },
+          ],
         },
       ],
     };
@@ -364,6 +370,20 @@ describe("Release audit fixes — Core & MIoT parity", () => {
     );
     assert.equal(boolPropWrite.kind, "setProps");
     assert.equal(boolPropWrite.writes[0]?.value, true);
+
+    const actionCoercedOn = MiotCommandMapper.map(
+      { kind: "pressButton", entityId: "miot-action:ac1:2:1", arguments: [true, 1] },
+      spec,
+    );
+    assert.equal(actionCoercedOn.kind, "action");
+    assert.deepEqual(actionCoercedOn.call.inputs, [1, true]);
+
+    const actionCoercedOff = MiotCommandMapper.map(
+      { kind: "pressButton", entityId: "miot-action:ac1:2:1", arguments: [false, 0] },
+      spec,
+    );
+    assert.equal(actionCoercedOff.kind, "action");
+    assert.deepEqual(actionCoercedOff.call.inputs, [0, false]);
   });
 
   it("5-1: credentialsFromSettings preserves custom slot key across different custom endpoints and CredentialVault serializes concurrent persists", async () => {
@@ -881,5 +901,247 @@ describe("Release audit fixes — UI, cloud refresh, camera & localization", () 
 
     assert.equal(vaultStore.get("assistant_api_key_openai"), "sk-saved-openai");
     assert.equal(vaultStore.get("ha_token"), "ha-tok-early");
+  });
+
+  it("S1 (#21): external high-risk URL renders imperative prompt with localized '?', clears search/camera overlays, scrolls [data-tile-id], and renders confirm row on primary-empty half-width climate with facets", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string) => {
+          if (cmd === "is_workstation_locked") return false;
+          if (cmd === "drain_pending_open_urls") return [];
+          return null;
+        },
+      },
+    });
+
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        connectionMode: "demo",
+        hasCompletedOnboarding: true,
+        interfaceLanguage: "en",
+        enableRaycastIntegration: true,
+      }),
+    );
+    const app = new MenuMijiaWindowsApp(element("#app"));
+    await flushAsync();
+    const token = getActiveRaycastBridgeTokenForHost(app)!;
+    assert.ok(token, "raycast bridge token initialized");
+
+    const plug = app.devices.find((d) => d.kind.kind === "plug" && d.isOnline)!;
+    const cam = app.devices.find((d) => d.kind.kind === "camera")!;
+    assert.ok(plug && cam);
+    if (plug.kind.kind === "plug") {
+      plug.kind = { ...plug.kind, isOn: false };
+    }
+
+    // Set up obstructing overlays: active live camera + non-matching search query + input value.
+    app.cameraLive.openCameraLiveView(cam.id);
+    assert.equal(app.cameraLive.activeLiveCameraId, cam.id);
+    app.panelSearch.query = "nonexistent-filter";
+    app.render();
+    const searchInput = document.querySelector<HTMLInputElement>("#command-input");
+    if (searchInput) searchInput.value = "nonexistent-filter";
+
+    const scrolledTileIds: string[] = [];
+    const origScroll = window.HTMLElement.prototype.scrollIntoView;
+    window.HTMLElement.prototype.scrollIntoView = function scrollSpy(this: HTMLElement): void {
+      const tileId = this.getAttribute("data-tile-id");
+      if (tileId) scrolledTileIds.push(tileId);
+    };
+
+    try {
+      await enqueueIncomingOpenUrl(
+        app,
+        `menumijia://power?device=${encodeURIComponent(plug.id)}&on=true&token=${token}`,
+      );
+      await flushAsync();
+
+      assert.equal(app.cameraLive.activeLiveCameraId, null, "camera live overlay closed");
+      assert.equal(app.panelSearch.query, "", "search filter cleared");
+      assert.equal(
+        document.querySelector<HTMLInputElement>("#command-input")?.value ?? "",
+        "",
+        "search input value cleared",
+      );
+      assert.ok(scrolledTileIds.includes(plug.id), "scrollIntoView hit [data-tile-id]");
+
+      const confirmBtn = element(`[data-high-risk-confirm="${plug.id}"]`);
+      const promptLabelText = confirmBtn.parentElement?.querySelector("span")?.textContent?.trim() ?? "";
+      assert.equal(
+        promptLabelText,
+        `Turn on ${plug.name}?`,
+        "high-risk prompt uses imperative verb and ASCII question mark in English",
+      );
+      assert.doesNotMatch(promptLabelText, /Turned on|？/);
+
+      // Half-width heater (`climate`) with empty primary drawer + facets still renders confirm button!
+      const heater: SmartDevice = {
+        id: "climate.FacetOnlyHeater",
+        name: "Bedroom Heater",
+        roomId: "bedroom",
+        roomName: "Bedroom",
+        model: "zhimi.heater.zb1",
+        isOnline: true,
+        kind: {
+          kind: "climate",
+          entityId: "climate.FacetOnlyHeater",
+          isOn: false,
+          powerWritable: true,
+          hvacMode: "off",
+          availableModes: [],
+          currentTemperature: 21,
+          targetTemperature: 21,
+          temperatureWritable: false,
+          minTemp: 18,
+          maxTemp: 28,
+          step: 1,
+          fanMode: null,
+          availableFanModes: [],
+          swingMode: null,
+          availableSwingModes: [],
+        },
+      };
+      const childLockFacet: FacetControl = {
+        id: "3.1",
+        kind: "toggle",
+        name: "physical-controls-locked",
+        title: "Child Lock",
+        serviceName: "physical-controls-locked",
+        unit: null,
+        scale: null,
+        value: false,
+        options: [],
+        range: null,
+        isWritable: true,
+        writesByDefault: true,
+        isHighValue: false,
+        target: { kind: "property", entityId: "miot:heater:3", piid: 1 },
+      };
+      app.devices.push(heater);
+      app.deviceFacets = { ...app.deviceFacets, [heater.id]: [childLockFacet] };
+      app.layout.tileSizes[heater.id] = "half";
+      app.render();
+
+      await enqueueIncomingOpenUrl(
+        app,
+        `menumijia://power?device=${encodeURIComponent(heater.id)}&on=true&token=${token}`,
+      );
+      await flushAsync();
+
+      assert.equal(app.expandedDeviceId, heater.id);
+      const heaterConfirm = element(`[data-high-risk-confirm="${heater.id}"]`);
+      const heaterPrompt = heaterConfirm.parentElement?.querySelector("span")?.textContent?.trim() ?? "";
+      assert.equal(heaterPrompt, "Turn on Bedroom Heater?");
+    } finally {
+      window.HTMLElement.prototype.scrollIntoView = origScroll;
+    }
+  });
+
+  it("C5 (#21): English toggle, high-risk, cover, and fan oscillation strings have proper spacing and zero Chinese leakage", async () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        connectionMode: "demo",
+        hasCompletedOnboarding: true,
+        interfaceLanguage: "en",
+      }),
+    );
+    const app = new MenuMijiaWindowsApp(element("#app"));
+    const light = app.devices.find((d) => d.kind.kind === "light" && d.isOnline)!;
+    const plug = app.devices.find((d) => d.kind.kind === "plug" && d.isOnline)!;
+    const fan = app.devices.find((d) => d.kind.kind === "fan" && d.isOnline)!;
+    assert.ok(light && plug && fan);
+
+    // 1) Low-risk light toggle summary in English ("Turned on/off <name>", never "已Turn...")
+    element(`[data-toggle-device="${light.id}"]`).click();
+    await flushAsync();
+    assert.ok(app.replyBanner, "replyBanner populated after light toggle");
+    assert.match(app.replyBanner.text, /^Turned (on|off) /);
+    assert.doesNotMatch(app.replyBanner.text, /[\u4e00-\u9fff]/);
+
+    // 2) High-risk plug first tap (when off -> turning on) confirmation prompt has space ("Turn on <name>")
+    if (plug.kind.kind === "plug") {
+      plug.kind = { ...plug.kind, isOn: false };
+    }
+    app.render();
+    element(`[data-toggle-device="${plug.id}"]`).click();
+    await flushAsync();
+    assert.ok(app.replyBanner);
+    assert.match(app.replyBanner.text, /Turn on /);
+    assert.doesNotMatch(app.replyBanner.text, /[\u4e00-\u9fff]/);
+
+    // 3) Fan oscillation button renders "Oscillation on" / "Oscillation off" (no "摇头")
+    if (fan.kind.kind === "fan") {
+      fan.kind = { ...fan.kind, isOn: true, isOscillating: true, swingWritable: true };
+    }
+    app.expandedDeviceId = fan.id;
+    app.render();
+    const oscBtnOn = element(`[data-fanosc="${fan.id}"]`);
+    assert.equal(oscBtnOn.textContent?.trim(), "Oscillation on");
+    if (fan.kind.kind === "fan") {
+      fan.kind = { ...fan.kind, isOscillating: false };
+    }
+    app.render();
+    const oscBtnOff = element(`[data-fanosc="${fan.id}"]`);
+    assert.equal(oscBtnOff.textContent?.trim(), "Oscillation off");
+
+    // 4) Cover motor open/close: curtain summary & garage-door high-risk prompt in English
+    const curtain: SmartDevice = {
+      id: "cover.en_curtain",
+      name: "Bedroom Curtain",
+      roomId: "bedroom",
+      roomName: "Bedroom",
+      model: "lumi.curtain.v1",
+      isOnline: true,
+      kind: {
+        kind: "cover",
+        subtype: "curtain",
+        entityId: "cover.en_curtain",
+        positionPercent: 0,
+        positionWritable: true,
+        openDescription: "Open",
+        closeDescription: "Close",
+        pauseDescription: "Stop",
+        batteryPercent: null,
+        faultText: null,
+        motion: "stopped",
+      },
+    };
+    const garage: SmartDevice = {
+      id: "cover.en_garage",
+      name: "Main Garage Door",
+      roomId: "garage",
+      roomName: "Garage",
+      model: "ha.garage",
+      isOnline: true,
+      kind: {
+        kind: "cover",
+        subtype: "garage-door",
+        entityId: "cover.en_garage",
+        positionPercent: 0,
+        positionWritable: false,
+        openDescription: "Open",
+        closeDescription: "Close",
+        pauseDescription: null,
+        batteryPercent: null,
+        faultText: null,
+        motion: "stopped",
+      },
+    };
+    app.devices.push(curtain, garage);
+    app.expandedDeviceId = curtain.id;
+    app.render();
+    element(`[data-covermotor="${curtain.id}|open|Open"]`).click();
+    await flushAsync();
+    assert.equal(app.replyBanner?.text, "Turned on Bedroom Curtain");
+
+    app.expandedDeviceId = garage.id;
+    app.render();
+    element(`[data-covermotor="${garage.id}|open|Open"]`).click();
+    await flushAsync();
+    assert.match(app.replyBanner?.text ?? "", /Open Main Garage Door/);
+    assert.doesNotMatch(app.replyBanner?.text ?? "", /[\u4e00-\u9fff]/);
   });
 });
