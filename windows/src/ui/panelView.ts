@@ -388,7 +388,7 @@ function renderNotificationStack(host: MenuMijiaWindowsApp): string {
                   }
                   ${
                     canExpandCam
-                      ? `<button type="button" class="cc-inline-pill win-camera-icon-pill" data-expand-device="${camId}" title="${host.escapeHtml(t("展开 {name} 详细控制", { name: cam.name }))}" aria-label="${host.escapeHtml(t("展开 {name} 详细控制", { name: cam.name }))}">${SF_ICONS.sliderHorizontal}</button>`
+                      ? `<button type="button" class="cc-inline-pill win-camera-icon-pill" data-reveal-device="${camId}" title="${host.escapeHtml(t("展开 {name} 详细控制", { name: cam.name }))}" aria-label="${host.escapeHtml(t("展开 {name} 详细控制", { name: cam.name }))}">${SF_ICONS.sliderHorizontal}</button>`
                       : ""
                   }
                   <button type="button" class="cc-inline-pill ${camOn ? "" : "is-accent"}" data-open-camera="${camId}">${t("实时画面")}</button>

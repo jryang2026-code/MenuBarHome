@@ -1495,16 +1495,14 @@ details.win-notif-card > :not(summary) {
 
 /* Win+A In-Place Sub-Flyout Navigation (keeps all [data-tile-id] mounted in DOM) */
 .cc-scroll-area:has(.cc-tile.is-subpage) .cc-group-header,
-.win-island--bottom:has(.cc-tile.is-subpage) .win-island-controls:not(:has(#command-input:focus)),
-.win-island--bottom:has(.cc-tile.is-subpage) .cc-quick-strip,
-.win-island--bottom:has(.cc-tile.is-subpage) .cc-room-bar,
+.win-island--bottom:has(.cc-tile.is-subpage) .win-island-controls,
 .win-island--bottom:has(.cc-tile.is-subpage) .win-slider-deck,
 .cc-scroll-area:has(.cc-tile.is-subpage) .cc-tile:not(.is-subpage),
 .cc-scroll-area:has(.cc-tile.is-subpage) .cc-group:not(:has(.cc-tile.is-subpage)) {
   display: none !important;
 }
 
-.win-island--bottom:has(.cc-tile.is-subpage):not(:has(#command-input:focus)) .cc-scroll-area {
+.win-island--bottom:has(.cc-tile.is-subpage) .cc-scroll-area {
   padding: 0;
   gap: 0;
 }

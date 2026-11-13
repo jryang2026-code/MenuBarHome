@@ -6711,4 +6711,42 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     const standbyCard = element('.win-island--top details.win-camera-card');
     assert.match(standbyCard.textContent ?? "", /120s/);
   });
+
+  it("closes an open subpage on Ctrl+F or / search shortcuts and reveals filtered-out camera drawers from Top Island", async () => {
+    const app = startDemoApp();
+
+    await click('[data-tile-id="light.living_ceiling"] [data-expand-device]');
+    assert.equal(app.expandedDeviceId, "light.living_ceiling");
+    assert.ok(document.querySelector('.cc-tile.is-subpage[data-tile-id="light.living_ceiling"]'));
+
+    window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true }));
+    assert.equal(app.expandedDeviceId, null);
+    assertMissing(document.querySelector(".cc-tile.is-subpage"));
+    assert.equal(document.activeElement?.id, "command-input");
+
+    (document.activeElement as HTMLElement | null)?.blur();
+    await click('[data-tile-id="light.living_ceiling"] [data-expand-device]');
+    assert.equal(app.expandedDeviceId, "light.living_ceiling");
+
+    window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "/", bubbles: true }));
+    assert.equal(app.expandedDeviceId, null);
+    assertMissing(document.querySelector(".cc-tile.is-subpage"));
+    assert.equal(document.activeElement?.id, "command-input");
+
+    (document.activeElement as HTMLElement | null)?.blur();
+    await click('.win-island--bottom .cc-room-bar [data-kind="light"]');
+    app.panelSearch.query = "台灯";
+    app.render();
+    assertMissing(document.querySelector('[data-tile-id="camera.living_cam"]'));
+
+    await click('.win-island--top .win-camera-actions [data-reveal-device="camera.living_cam"]');
+    assert.equal(app.panelSearch.query, "");
+    assert.equal(app.listCut.kind, "all");
+    assert.equal(app.expandedDeviceId, "camera.living_cam");
+    assert.ok(document.querySelector('.cc-tile.is-subpage[data-tile-id="camera.living_cam"]'));
+
+    await click('.win-island--top .win-camera-actions [data-reveal-device="camera.living_cam"]');
+    assert.equal(app.expandedDeviceId, null);
+    assertMissing(document.querySelector(".cc-tile.is-subpage"));
+  });
 });

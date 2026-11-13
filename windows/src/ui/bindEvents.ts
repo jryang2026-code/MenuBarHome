@@ -57,7 +57,8 @@ import {
 import { facetTitle, facetValue } from "../core/miotFacetText.js";
 
 import type { MenuMijiaWindowsApp } from "./app.js";
-import { bindPanelInput } from "./panelKeyboard.js";
+import { normalizeSearch } from "../core/panelSearch.js";
+import { bindPanelInput, finishPanelComposition } from "./panelKeyboard.js";
 
 function confirmHighRiskForHost(
   host: MenuMijiaWindowsApp,
@@ -180,6 +181,9 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
 
     host.root.querySelector("#btn-toggle-assistant")?.addEventListener("click", () => {
       host.isShowingAssistantBar = !host.isShowingAssistantBar;
+      if (host.isShowingAssistantBar) {
+        host.expandedDeviceId = null;
+      }
       host.render();
       if (host.isShowingAssistantBar) {
         host.root.querySelector<HTMLInputElement>("#command-input")?.focus();
@@ -795,6 +799,39 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         e.stopPropagation();
         const id = btn.dataset.expandDevice ?? null;
         host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
+        host.render();
+      });
+    });
+
+    host.root.querySelectorAll<HTMLElement>("[data-reveal-device]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const id = btn.dataset.revealDevice ?? null;
+        if (!id) return;
+        const alreadyVisibleSubpage =
+          host.expandedDeviceId === id && host.presentationDevices.some((d) => d.id === id);
+        if (alreadyVisibleSubpage) {
+          host.expandedDeviceId = null;
+          host.render();
+          return;
+        }
+        if (host.panelSearch.isComposing) {
+          finishPanelComposition(host);
+        }
+        if (!host.presentationDevices.some((d) => d.id === id) && normalizeSearch(host.panelSearch.query)) {
+          host.panelSearch.query = "";
+          host.panelSearch.selectedDeviceId = null;
+          host.panelSearch.explicitSelection = false;
+          const searchInput = host.root.querySelector<HTMLInputElement>("#command-input");
+          if (searchInput) searchInput.value = "";
+        }
+        if (!host.presentationDevices.some((d) => d.id === id)) {
+          host.selectRoom(null);
+        }
+        if (!host.presentationDevices.some((d) => d.id === id)) {
+          return;
+        }
+        host.expandedDeviceId = id;
         host.render();
       });
     });
