@@ -992,14 +992,16 @@ public struct DeviceCardView: View {
     }
 
     private func fanEnvironmentReadout(_ spec: FanSpec) -> String {
-        if let t = spec.temperature, let h = spec.humidity {
-            return "\(L10n.temperature(t, fractionDigits: 1)) · \(Int(h.rounded()))%"
+        let validTemp = spec.temperature.flatMap { $0.isFinite ? $0 : nil }
+        let roundedHumidity = spec.humidity.flatMap(DeviceSynthesizer.roundedInt)
+        if let t = validTemp, let h = roundedHumidity {
+            return "\(L10n.temperature(t, fractionDigits: 1)) · \(h)%"
         }
-        if let t = spec.temperature {
+        if let t = validTemp {
             return L10n.temperature(t, fractionDigits: 1)
         }
-        if let h = spec.humidity {
-            return "\(Int(h.rounded()))%"
+        if let h = roundedHumidity {
+            return "\(h)%"
         }
         return "—"
     }

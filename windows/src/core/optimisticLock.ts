@@ -1,3 +1,4 @@
+import { haRoundedInt } from "./haDomains.js";
 import { speechLocale } from "./i18n.js";
 import type { CoverSpec, DeviceCommand, FacetControl, SmartDevice } from "./models.js";
 
@@ -749,7 +750,8 @@ export function applyHAExtendedCommandEffect(
         if (command.kind === "setNumberValue") {
           const pct = Math.max(0, Math.min(100, Math.round(command.value)));
           const parts: string[] = [];
-          if (k.currentHumidity !== null) parts.push(`${Math.round(k.currentHumidity)}%`);
+          const roundedCurrent = haRoundedInt(k.currentHumidity);
+          if (roundedCurrent !== null) parts.push(`${roundedCurrent}%`);
           parts.push(tr(`目标 ${pct}%`, `Target ${pct}%`));
           dev.kind = { ...k, statusText: parts.join(" · ") };
         }

@@ -1,3 +1,4 @@
+import { haRoundedInt } from "../haDomains.js";
 import type { EnvironmentReading } from "../models.js";
 
 // MARK: - Ambient Context & Jev SystemOne Request (#38)
@@ -42,8 +43,11 @@ export function buildEnvironmentSummary(readings: readonly EnvironmentReading[])
   return readings
     .map((reading) => {
       let text = reading.roomName;
-      if (reading.temperature !== null) text += ` ${reading.temperature.toFixed(1)}°C`;
-      if (reading.humidity !== null) text += ` ${Math.round(reading.humidity)}%`;
+      if (reading.temperature !== null && Number.isFinite(reading.temperature)) {
+        text += ` ${reading.temperature.toFixed(1)}°C`;
+      }
+      const roundedHumidity = haRoundedInt(reading.humidity);
+      if (roundedHumidity !== null) text += ` ${roundedHumidity}%`;
       return text;
     })
     .join("，");

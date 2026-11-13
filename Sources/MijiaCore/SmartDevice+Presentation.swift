@@ -136,12 +136,14 @@ extension SmartDevice {
             } else if let aq = Self.localizeAirQuality(s.airQuality, pm25: nil) {
                 envParts.append(aq)
             }
-            if let t = s.temperature, let h = s.humidity {
-                envParts.append("\(L10n.temperature(t, fractionDigits: 0)) \(DeviceSynthesizer.roundedInt(h) ?? 0)%")
-            } else if let t = s.temperature {
+            let validTemp = s.temperature.flatMap { $0.isFinite ? $0 : nil }
+            let roundedHumidity = s.humidity.flatMap(DeviceSynthesizer.roundedInt)
+            if let t = validTemp, let h = roundedHumidity {
+                envParts.append("\(L10n.temperature(t, fractionDigits: 0)) \(h)%")
+            } else if let t = validTemp {
                 envParts.append(L10n.temperature(t, fractionDigits: 1))
-            } else if let h = s.humidity {
-                envParts.append("\(DeviceSynthesizer.roundedInt(h) ?? 0)%")
+            } else if let h = roundedHumidity {
+                envParts.append("\(h)%")
             }
             if !s.isOn {
                 if envParts.isEmpty { return L10n.tr("已关闭", "Off") }
@@ -303,8 +305,8 @@ extension SmartDevice {
             if let target = s.targetHumidity {
                 parts.append(L10n.tr("目标 \(target)%", "Target \(target)%"))
             }
-            if let current = s.currentHumidity {
-                parts.append(L10n.tr("当前 \(DeviceSynthesizer.roundedInt(current) ?? 0)%", "Now \(DeviceSynthesizer.roundedInt(current) ?? 0)%"))
+            if let current = s.currentHumidity.flatMap(DeviceSynthesizer.roundedInt) {
+                parts.append(L10n.tr("当前 \(current)%", "Now \(current)%"))
             }
             return parts.isEmpty ? L10n.tr("运行中", "Running") : parts.joined(separator: " · ")
 

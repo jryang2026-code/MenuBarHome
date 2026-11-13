@@ -978,8 +978,9 @@ public enum DeviceSynthesizer {
                 $0.hasPrefix("sensor.")
                     && states[$0]?.attributes["device_class"]?.stringValue == "humidity"
             }
-            let current = st.attributes["current_humidity"]?.doubleValue
+            let rawCurrent = st.attributes["current_humidity"]?.doubleValue
                 ?? humiditySensorId.flatMap { states[$0] }.flatMap { $0.isAvailable ? Double($0.state) : nil }
+            let current = rawCurrent?.isFinite == true ? rawCurrent : nil
             // HumidifierEntityFeature: TARGET_HUMIDITY = 1, MODE = 2.
             let humidityWritable = features.map { $0 & 1 != 0 } ?? (target != nil)
             let modeWritable = features.map { $0 & 2 != 0 } ?? !modes.isEmpty
@@ -1685,7 +1686,7 @@ public enum DeviceSynthesizer {
         return (true, true)
     }
 
-    static func roundedInt(_ value: Double) -> Int? {
+    public static func roundedInt(_ value: Double) -> Int? {
         guard value.isFinite else { return nil }
         return Int(exactly: value.rounded())
     }
