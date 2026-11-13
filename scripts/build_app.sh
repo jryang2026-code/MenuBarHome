@@ -4,6 +4,22 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# Build configuration for the App Intents metadata step. The metadata comes from compile-time
+# constant values, which do not depend on optimization. CI's metadata check sets Debug: it skips
+# the optimizer and rebuilds only the files that changed. Packaging keeps Release.
+APP_INTENTS_CONFIGURATION="${APP_INTENTS_CONFIGURATION:-Release}"
+case "$APP_INTENTS_CONFIGURATION" in
+Release | Debug) ;;
+*)
+    echo "❌ APP_INTENTS_CONFIGURATION 只能是 Release 或 Debug（当前：$APP_INTENTS_CONFIGURATION）" >&2
+    exit 1
+    ;;
+esac
+if [ "$APP_INTENTS_CONFIGURATION" != "Release" ] && [ "${APP_INTENTS_ONLY:-0}" != "1" ]; then
+    echo "❌ APP_INTENTS_CONFIGURATION=$APP_INTENTS_CONFIGURATION 只用于 APP_INTENTS_ONLY=1 的检查，打包必须用 Release" >&2
+    exit 1
+fi
+
 # scripts/check.sh installs the shared pre-commit hook; keeping one owner avoids a stale link.
 
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || echo 1.0.0)"
@@ -336,7 +352,7 @@ _generate_app_intents_metadata_via_xcode() {
         if xcodebuild \
             -scheme "$scheme" \
             -destination 'platform=macOS' \
-            -configuration Release \
+            -configuration "$APP_INTENTS_CONFIGURATION" \
             -derivedDataPath "$derived" \
             COMPILER_INDEX_STORE_ENABLE=NO \
             ENABLE_INDEX_STORE=NO \
@@ -352,14 +368,15 @@ _generate_app_intents_metadata_via_xcode() {
     fi
 
     local bundle
-    bundle="$(app_intents_bundle_dir "$derived/Build/Products/Release/$APP_INTENTS_MODULE.appintents")"
+    bundle="$(app_intents_bundle_dir "$derived/Build/Products/$APP_INTENTS_CONFIGURATION/$APP_INTENTS_MODULE.appintents")"
     if [ -z "$bundle" ]; then
         local developer_dir toolchain sdk_root xcode_version
         developer_dir="$(xcode-select -p)"
         toolchain="$developer_dir/Toolchains/XcodeDefault.xctoolchain"
         sdk_root="$(xcrun --sdk macosx --show-sdk-path)"
         xcode_version="$(xcodebuild -version | awk '/Build/ {print $3; exit}')"
-        find "$derived" -path "*/${APP_INTENTS_MODULE}*.build/*" -name '*.swiftconstvalues' > "$derived/constvals.txt"
+        # The tree can hold both configurations; read constant values from the one just built.
+        find "$derived" -path "*/$APP_INTENTS_CONFIGURATION/${APP_INTENTS_MODULE}*.build/*" -name '*.swiftconstvalues' > "$derived/constvals.txt"
         find "$ROOT/Sources/$APP_INTENTS_MODULE" -name '*.swift' > "$derived/sources.txt"
         if [ ! -s "$derived/constvals.txt" ]; then
             echo "❌ Xcode 构建未产生 ${APP_INTENTS_MODULE} 的 swiftconstvalues，构建日志：$ROOT/.derived/appintents-build.log" >&2
@@ -376,7 +393,7 @@ _generate_app_intents_metadata_via_xcode() {
             --bundle-identifier "$APP_INTENTS_BUNDLE_ID" \
             --output "$derived/metadata" \
             --target-triple "$(uname -m)-apple-macos${APP_INTENTS_DEPLOYMENT_TARGET}" \
-            --binary-file "$derived/Build/Products/Release/$APP_INTENTS_MODULE" \
+            --binary-file "$derived/Build/Products/$APP_INTENTS_CONFIGURATION/$APP_INTENTS_MODULE" \
             --source-file-list "$derived/sources.txt" \
             --swift-const-vals-list "$derived/constvals.txt" \
             --force --compile-time-extraction --no-app-shortcuts-localization || return 1

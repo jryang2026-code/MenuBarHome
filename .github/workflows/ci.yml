@@ -379,14 +379,16 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .derived
-          # v2 discards derived data the local VM built with its own Xcode.
-          key: appintents-v2-${{ runner.os }}-${{ github.sha }}
+          # v3 discards the Release derived data from before this job built Debug.
+          key: appintents-v3-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
-            appintents-v2-${{ runner.os }}-
+            appintents-v3-${{ runner.os }}-
       - name: Restore source mtimes for the Xcode cache
         run: bash scripts/ci_restore_mtimes.sh
       - name: App Intents metadata
-        run: APP_INTENTS_ONLY=1 bash scripts/build_app.sh
+        # Debug: the check only needs the metadata to extract, and Release would run the optimizer
+        # over the whole app a second time (macos-release already builds it with -O).
+        run: APP_INTENTS_ONLY=1 APP_INTENTS_CONFIGURATION=Debug bash scripts/build_app.sh
       - name: Trim Xcode derived data
         if: success() && github.ref == 'refs/heads/main'
         run: |
