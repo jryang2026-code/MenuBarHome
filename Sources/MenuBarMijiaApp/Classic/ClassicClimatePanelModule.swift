@@ -124,7 +124,8 @@ struct ClassicClimatePanelModule: View {
                         .foregroundStyle(fg)
                         .lineLimit(1)
                     HStack(spacing: 3) {
-                        Text(showRoomBadge ? "\(L10n.displayRoomName(device.roomName))，\(statusLine)" : statusLine)
+                        let roomLabel = L10n.displayRoomName(device.roomName).trimmingCharacters(in: .whitespacesAndNewlines)
+                        Text(showRoomBadge && !roomLabel.isEmpty ? "\(roomLabel)\(L10n.tr("，", ", "))\(statusLine)" : statusLine)
                             .lineLimit(1)
 
                     }

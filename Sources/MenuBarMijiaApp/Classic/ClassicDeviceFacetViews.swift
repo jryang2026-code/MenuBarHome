@@ -357,7 +357,13 @@ struct ClassicDeviceFacetSection: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                if let range = control.range {
+                // The range is cloud data: `min...max` traps when it is inverted or not finite,
+                // and `max - min` can overflow to `+infinity` on extreme finite bounds.
+                if let range = control.range,
+                   range.min.isFinite,
+                   range.max.isFinite,
+                   range.min < range.max,
+                   (range.max - range.min).isFinite {
                     lockedControl(locked) {
                         ClassicDetailSliderControl(
                             value: control.numberValue ?? range.min,

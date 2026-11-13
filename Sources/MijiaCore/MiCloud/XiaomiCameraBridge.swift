@@ -159,6 +159,19 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
     /// True only when the running go2rtc build exposes the PTZ endpoint. The official v1.9.15
     /// binary returns 404 there, so the drag surface stays off and video behaviour is unchanged.
     private var ptzEndpointAvailable = false
+    private var startupTask: Task<Void, any Error>?
+    private var ensureRunningOverride: (@Sendable () async throws -> Void)?
+    private var onJoinedStartup: (@Sendable () async -> Void)?
+
+    var activeRelayCount: Int { relays.count }
+
+    func setEnsureRunningOverride(
+        _ override: (@Sendable () async throws -> Void)?,
+        onJoinedStartup: (@Sendable () async -> Void)? = nil
+    ) {
+        self.ensureRunningOverride = override
+        self.onJoinedStartup = onJoinedStartup
+    }
 
     private struct RelayHandle {
         let port: UInt16
@@ -216,6 +229,12 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
                 commandChannelDrained: ptzEndpointAvailable
             )
         }
+        var registeredStreams = false
+        defer {
+            if !registeredStreams {
+                endSharedRelay(relayKey: streamKey)
+            }
+        }
 
         let query = Self.xiaomiStreamQuery(
             clientPublic: clientPublic,
@@ -243,6 +262,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
               let mjpegURL = Self.streamURL(session: owner.session, path: "/api/stream.mjpeg", query: "src=\(Self.urlEncode(mjpegName))") else {
             throw HomeProviderError.serviceCallFailed(500, "Invalid go2rtc stream URL")
         }
+        registeredStreams = true
         return XiaomiCameraStreamEndpoints(mp4: mp4URL, mjpeg: mjpegURL)
     }
 
@@ -428,6 +448,24 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
     }
 
     private func ensureGo2RTCRunning() async throws {
+        if let existing = startupTask {
+            await onJoinedStartup?()
+            try await existing.value
+            return
+        }
+        let task = Task<Void, any Error> {
+            if let override = self.ensureRunningOverride {
+                try await override()
+            } else {
+                try await self.performEnsureGo2RTCRunning()
+            }
+        }
+        startupTask = task
+        defer { startupTask = nil }
+        try await task.value
+    }
+
+    private func performEnsureGo2RTCRunning() async throws {
         let appSupportBin = Self.supportBinDirectory()
         try FileManager.default.createDirectory(at: appSupportBin, withIntermediateDirectories: true)
 

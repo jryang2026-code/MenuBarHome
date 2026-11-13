@@ -1744,6 +1744,38 @@ struct MiCloudProviderTests {
         #expect(await log.wait { await $0.snapshots.last?.lightGroupOwners.isEmpty == true })
         await provider.shutdown()
     }
+
+    @Test("reconcileLightGroups clamps a virtual light group to offline/off or off based on members")
+    func reconcileLightGroupsTruth() {
+        func light(_ id: String, isOnline: Bool, isOn: Bool) -> SmartDevice {
+            SmartDevice(
+                id: id, name: id, roomId: "living", roomName: "客厅", model: "yeelink.light.ceiling19",
+                isOnline: isOnline, kind: .light(LightSpec(entityId: "miot:\(id):2", isOn: isOn))
+            )
+        }
+
+        // Case 1: all members offline -> group becomes offline and off
+        var offlineHome = SynthesizedHome(devices: [
+            light("group.1", isOnline: true, isOn: true),
+            light("m1", isOnline: false, isOn: false),
+            light("m2", isOnline: false, isOn: true),
+        ])
+        offlineHome.lightGroupOwners = ["m1": "group.1", "m2": "group.1"]
+        DeviceSynthesizer.reconcileLightGroups(&offlineHome)
+        #expect(!offlineHome.devices[0].isOnline)
+        #expect(!offlineHome.devices[0].isActiveOn)
+
+        // Case 2: online members all off -> group stays online but clears stale on
+        var allOffHome = SynthesizedHome(devices: [
+            light("group.1", isOnline: true, isOn: true),
+            light("m1", isOnline: true, isOn: false),
+            light("m2", isOnline: false, isOn: true),
+        ])
+        allOffHome.lightGroupOwners = ["m1": "group.1", "m2": "group.1"]
+        DeviceSynthesizer.reconcileLightGroups(&allOffHome)
+        #expect(allOffHome.devices[0].isOnline)
+        #expect(!allOffHome.devices[0].isActiveOn)
+    }
 }
 
 struct MiCloudClientTests {

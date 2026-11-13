@@ -191,15 +191,7 @@ export class MiCloudClient {
     const code = Math.trunc(json["code"]);
     const message = responseMessage(json);
     if (code === 0) return json["result"] ?? null;
-    const lower = message.toLowerCase();
-    if (
-      code === 2 ||
-      code === 3 ||
-      lower.includes("auth err") ||
-      lower.includes("servicetoken_expired") ||
-      lower.includes("token expired") ||
-      lower.includes("invalid signature")
-    ) {
+    if (code === 2 || code === 3 || looksSessionExpired(message)) {
       throw new MiCloudError("sessionExpired", "米家登录已过期，请重新扫码", code);
     }
     throw new MiCloudError("api", `米家云指令失败 (${code})：${message}`, code);
@@ -291,7 +283,7 @@ export class MiCloudClient {
           continue;
         }
         // A home with no rooms and no dids still matters when the cloud names its owner: only
-        // `withHomeDeviceLists` can list its devices, and it needs a room to learn the pair
+        // `withHomeDeviceLists` (`discovery.ts`) can list its devices, and it needs a room to learn the pair
         // (home id, owner uid) from. Without this entry such a shared home is invisible (#76, #67).
         if (homeId && roomCount === 0 && ownerUid) {
           rooms.push({ id: `home_${homeId}`, name: "", dids: [], homeId, homeName, ...sharedFlag, ...ownerFlag });

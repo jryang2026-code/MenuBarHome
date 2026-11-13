@@ -1,4 +1,5 @@
 import { t } from "../core/i18n.js";
+import { trText } from "../core/quickActions.js";
 import {
   lockedControlIdForAlert,
   showsAdvancedViewOnlyCopy,
@@ -51,10 +52,10 @@ export function coverActionTitle(
   switch (trimmed.toLowerCase()) {
     case "open":
     case "打开":
-      return t("打开");
+      return trText("打开", "Open");
     case "close":
     case "关闭":
-      return t("关闭");
+      return trText("关闭", "Close");
     case "up":
     case "raise":
     case "上升":
@@ -308,8 +309,12 @@ export function updateLiveSliderReadout(
   }
   if (slider.dataset.actemp !== undefined) {
     const raw = Number(slider.value);
-    const celsius = Number(toCelsius(raw).toFixed(2));
-    const formatted = formatTemperature(celsius);
+    let celsius = toCelsius(raw);
+    const minC = slider.dataset.minC !== undefined ? Number(slider.dataset.minC) : NaN;
+    const maxC = slider.dataset.maxC !== undefined ? Number(slider.dataset.maxC) : NaN;
+    if (Number.isFinite(minC)) celsius = Math.max(minC, celsius);
+    if (Number.isFinite(maxC)) celsius = Math.min(maxC, celsius);
+    const formatted = formatTemperature(Number(celsius.toFixed(2)));
     setGroupReadout(formatted, slider.value);
     return;
   }
@@ -451,7 +456,7 @@ export function bindDetailDrawerEvents(
       const actionLabel = coverActionTitle(description, dev.kind.subtype);
       if (
         coverMotorRequiresConfirmation(dev.kind.subtype, rawAction) &&
-        !confirmHighRisk(dev.id, command, `${actionLabel}${dev.name}`)
+        !confirmHighRisk(dev.id, command, t("{action}{name}", { action: actionLabel, name: dev.name }))
       ) {
         return;
       }
@@ -463,8 +468,8 @@ export function bindDetailDrawerEvents(
         rawAction === "stop"
           ? t("已暂停{name}", { name: dev.name })
           : rawAction === "open"
-            ? `已${t("打开")}${dev.name}`
-            : `已${t("关闭")}${dev.name}`;
+            ? t("已打开{name}", { name: dev.name })
+            : t("已关闭{name}", { name: dev.name });
       void host.executeSingleCommand(dev, command, summary, intent);
     });
   });

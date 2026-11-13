@@ -8,7 +8,7 @@ import { deviceAcceptsControlWrites, isActiveDevice } from "../models.js";
 import { deviceHeadInstruction, proactiveHeadInstruction } from "./actionPolicy.js";
 import type { AssistantContext } from "./context.js";
 import { buildEnvironmentSummary, buildTimeSummary, EMPTY_ASSISTANT_CONTEXT } from "./context.js";
-import { isAirPurifierDevice, isHeaterDevice } from "./deviceCategory.js";
+import { deviceCategory, isAssistantControllable } from "./deviceCategory.js";
 import type {
   CommandMention,
   HabitEntry,
@@ -62,30 +62,8 @@ export function buildAssistantContext(options: {
 
 /** Category used in the model catalog; sensors are not assistant-controllable. */
 export function assistantDeviceCategory(device: SmartDevice): string | null {
-  if (device.model.includes(".derh.") && device.kind.kind === "fan") return "dehumidifier";
-  if (device.model.includes(".diffuser.") && device.kind.kind === "plug") return "diffuser";
-  switch (device.kind.kind) {
-    case "light":
-      return "light";
-    case "climate":
-      return isHeaterDevice(device) ? "heater" : "climate";
-    case "plug":
-    case "vacuum":
-    case "camera":
-      return device.kind.kind;
-    case "fan":
-      // Same classification the local parser and the macOS catalog use (#98).
-      return isAirPurifierDevice(device) ? "airPurifier" : "fan";
-    case "fridge":
-    case "sensor":
-    case "cover":
-    case "speaker":
-    // An appliance or a generic fallback card is controlled from the panel, not by the
-    // assistant, the same rule macOS applies to those kinds (#3, #4, #6).
-    case "appliance":
-    case "generic":
-      return null;
-  }
+  const cat = deviceCategory(device);
+  return isAssistantControllable(cat) ? cat : null;
 }
 
 export function formatTemperatureValue(value: number): string {
@@ -169,7 +147,7 @@ export function buildIntentCatalog(
   const criteriaByAlias: Record<string, string> = {};
   const allLightIds: string[] = [];
   const allDeviceIds: string[] = [];
-  const roomLights = new Map<string, string[]>();
+  const roomLights = new Map<string, { roomName: string; ids: string[] }>();
   const aliasById = new Map<string, string>();
   const deviceRows: Array<Record<string, unknown>> = [];
 
@@ -185,9 +163,13 @@ export function buildIntentCatalog(
     allDeviceIds.push(device.id);
     if (category === "light" && device.roomName) {
       allLightIds.push(device.id);
-      const ids = roomLights.get(device.roomName) ?? [];
-      ids.push(device.id);
-      roomLights.set(device.roomName, ids);
+      const roomKey = device.roomId || device.roomName;
+      const existing = roomLights.get(roomKey);
+      if (existing) {
+        existing.ids.push(device.id);
+      } else {
+        roomLights.set(roomKey, { roomName: device.roomName, ids: [device.id] });
+      }
     } else if (category === "light") {
       allLightIds.push(device.id);
     }
@@ -205,7 +187,7 @@ export function buildIntentCatalog(
 
   let groupIndex = 0;
   const groupRows: Array<{ id: string; room: string; members: string[] }> = [];
-  for (const [room, ids] of roomLights) {
+  for (const { roomName, ids } of roomLights.values()) {
     if (ids.length < 2) continue;
     groupIndex += 1;
     const alias = `room_lights:${groupIndex}`;
@@ -213,7 +195,7 @@ export function buildIntentCatalog(
     criteriaByAlias[alias] = `灯组 ${ids.length}盏`;
     groupRows.push({
       id: alias,
-      room: sanitizePromptText(room, PROMPT_NAME_LIMIT),
+      room: sanitizePromptText(roomName, PROMPT_NAME_LIMIT),
       members: ids.map((id) => aliasById.get(id) ?? id),
     });
   }

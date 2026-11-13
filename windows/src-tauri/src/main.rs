@@ -271,8 +271,6 @@ fn main() {
             remove_raycast_snapshot,
             drain_pending_open_urls,
             show_panel_for_url,
-            register_url_scheme,
-            unregister_url_scheme,
             open_release_page,
             install_update,
             start_xiaomi_camera_bridge,
@@ -380,6 +378,8 @@ mod tests {
         assert!(validate_hls_stream_url("http://192.0.2.10/live.m3u8#raw=-f").is_err());
         assert!(validate_hls_stream_url("rtsp://192.0.2.10/live").is_err());
         assert!(validate_hls_stream_url("http://192.0.2.10/live\n.m3u8").is_err());
+        assert!(validate_hls_stream_url("http://user:pw@192.0.2.10/live.m3u8").is_err());
+        assert!(validate_hls_stream_url("http://user@192.0.2.10/live.m3u8").is_err());
     }
 
     #[test]

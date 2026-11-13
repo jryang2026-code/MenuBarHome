@@ -504,9 +504,28 @@ export function facetControls(
       if (!isFeeding && !isPlainAction) continue;
       if (isFeeding) feedingAssigned = true;
     }
-    const value = facet.propertyId !== undefined
+    const rawValue = facet.propertyId !== undefined
       ? (values.get(`${did}.${facet.serviceId}.${facet.propertyId}`) ?? null)
       : null;
+    const facetProp = facet.propertyId !== undefined
+      ? spec.services.find((s) => s.iid === facet.serviceId)?.properties.find((p) => p.iid === facet.propertyId)
+      : undefined;
+    const value =
+      typeof rawValue === "string" && rawValue.trim() !== "" && facetProp?.format !== "string"
+        ? facetProp?.format === "bool"
+          ? rawValue.trim().toLowerCase() === "true"
+            ? true
+            : rawValue.trim().toLowerCase() === "false"
+              ? false
+              : Number.isFinite(Number(rawValue))
+                ? Number(rawValue) !== 0
+                : rawValue
+          : Number.isFinite(Number(rawValue))
+            ? facetProp?.format.startsWith("int") || facetProp?.format.startsWith("uint")
+              ? Math.round(Number(rawValue))
+              : Number(rawValue)
+            : rawValue
+        : rawValue;
     let target: FacetTarget | null = null;
     if (facet.isWritable) {
       if (facet.propertyId !== undefined) {

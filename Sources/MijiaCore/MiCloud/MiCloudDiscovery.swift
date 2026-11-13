@@ -85,8 +85,20 @@ public enum MiCloudDiscovery {
         if fallback.devices.isEmpty, let firstLookupError {
             throw firstLookupError
         }
+        let sharedHomeDids = Set(fallback.rooms.lazy.filter(\.isSharedHome).flatMap(\.dids))
+        var resolvedDevices = fallback.devices
+        if !sharedHomeDids.isEmpty {
+            for i in resolvedDevices.indices {
+                let record = resolvedDevices[i]
+                if sharedHomeDids.contains(record.did)
+                    || sharedHomeDids.contains(record.miotDid)
+                    || (record.splitParentDid.map { sharedHomeDids.contains($0) } ?? false) {
+                    resolvedDevices[i].isShared = true
+                }
+            }
+        }
         return DeviceOutcome(
-            devices: fallback.devices,
+            devices: resolvedDevices,
             rooms: fallback.rooms,
             unresolvedRoomDids: unresolved
         )
@@ -119,8 +131,12 @@ public enum MiCloudDiscovery {
             guard resolved == 0 || stillMissing else { continue }
             do {
                 let found = try await api.homeDevices(homeId: home.homeId, ownerUid: home.ownerUid)
+                let isSharedHome = updatedRooms.contains { $0.homeId == home.homeId && $0.isSharedHome }
                 var added = 0
-                for record in found where !known.contains(record.did) {
+                for var record in found where !known.contains(record.did) {
+                    if isSharedHome {
+                        record.isShared = true
+                    }
                     known.insert(record.did)
                     list.append(record)
                     added += 1

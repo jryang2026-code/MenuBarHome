@@ -271,11 +271,23 @@ public enum DeviceSynthesizer {
         states: [String: HAEntityState]
     ) -> SynthesizedHome {
         let areaNameById = Dictionary(areas.map { ($0.area_id, $0.name) }, uniquingKeysWith: { _, latest in latest })
+        let entityById = Dictionary(entities.map { ($0.entity_id, $0) }, uniquingKeysWith: { _, latest in latest })
+        var seenEntityIds: Set<String> = []
+        let deduplicatedEntities = entities.compactMap { entry -> HAEntityEntry? in
+            guard seenEntityIds.insert(entry.entity_id).inserted else { return nil }
+            return entityById[entry.entity_id]
+        }
+        let deviceById = Dictionary(devices.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        var seenDeviceIds: Set<String> = []
+        let deduplicatedDevices = devices.compactMap { entry -> HADeviceEntry? in
+            guard seenDeviceIds.insert(entry.id).inserted else { return nil }
+            return deviceById[entry.id]
+        }
 
         // Group active entities by device_id
         var entitiesByDevice: [String: [HAEntityEntry]] = [:]
 
-        for entity in entities {
+        for entity in deduplicatedEntities {
             guard entity.disabled_by == nil, entity.hidden_by == nil else { continue }
             if let devId = entity.device_id {
                 entitiesByDevice[devId, default: []].append(entity)
@@ -287,7 +299,7 @@ public enum DeviceSynthesizer {
         var identities: [String: DeviceSourceIdentity] = [:]
         var deviceFacets: [String: [FacetControl]] = [:]
 
-        for dev in devices {
+        for dev in deduplicatedDevices {
             guard dev.disabled_by == nil else { continue }
             guard let devEntities = entitiesByDevice[dev.id], !devEntities.isEmpty else { continue }
 
@@ -400,8 +412,7 @@ public enum DeviceSynthesizer {
             }
         }
 
-        let registeredDeviceIds = Set(devices.map(\.id))
-        let entityById = Dictionary(entities.map { ($0.entity_id, $0) }, uniquingKeysWith: { _, latest in latest })
+        let registeredDeviceIds = Set(deduplicatedDevices.map(\.id))
         for (eid, state) in states {
             guard eid.hasPrefix("light.") || eid.hasPrefix("climate.")
                     || eid.hasPrefix("fan.") || eid.hasPrefix("vacuum.")
@@ -506,6 +517,60 @@ public enum DeviceSynthesizer {
         home.deviceIdentities = identities
         home.deviceFacets = deviceFacets
         return home
+    }
+
+    /// Reconciles virtual light-group cards against their visible member lights: if every member is
+    /// offline, the group card cannot actually turn anything on and becomes offline/off; if every
+    /// online member is off while the group still claims on, the group's power state clears to off.
+    public static func reconcileLightGroups(_ home: inout SynthesizedHome) {
+        guard !home.lightGroupOwners.isEmpty else { return }
+        var memberIndicesByGroup: [String: [Int]] = [:]
+        for idx in home.devices.indices {
+            guard let groupID = home.lightGroupOwners[home.devices[idx].id] else { continue }
+            memberIndicesByGroup[groupID, default: []].append(idx)
+        }
+        for groupIdx in home.devices.indices {
+            guard let memberIndices = memberIndicesByGroup[home.devices[groupIdx].id],
+                  !memberIndices.isEmpty else { continue }
+            let memberStates: [(isOnline: Bool, isOn: Bool)] = memberIndices.compactMap { idx in
+                let member = home.devices[idx]
+                guard case .light(let spec) = member.kind else { return nil }
+                return (member.isOnline, spec.isOn)
+            }
+            reconcileLightGroupDevice(&home.devices[groupIdx], memberStates: memberStates)
+        }
+    }
+
+    static func reconcileLightGroupDevice(
+        _ groupDevice: inout SmartDevice,
+        memberStates: [(isOnline: Bool, isOn: Bool)],
+        forceOfflineAndOff: Bool = false
+    ) {
+        if forceOfflineAndOff {
+            setLightGroupOfflineAndOff(&groupDevice)
+            return
+        }
+        guard !memberStates.isEmpty else { return }
+        if memberStates.allSatisfy({ !$0.isOnline }) {
+            setLightGroupOfflineAndOff(&groupDevice)
+            return
+        }
+        let onlineMembers = memberStates.filter(\.isOnline)
+        if !onlineMembers.isEmpty,
+           onlineMembers.allSatisfy({ !$0.isOn }),
+           case .light(var spec) = groupDevice.kind,
+           spec.isOn {
+            spec.isOn = false
+            groupDevice.kind = .light(spec)
+        }
+    }
+
+    static func setLightGroupOfflineAndOff(_ groupDevice: inout SmartDevice) {
+        groupDevice.isOnline = false
+        if case .light(var spec) = groupDevice.kind {
+            spec.isOn = false
+            groupDevice.kind = .light(spec)
+        }
     }
 
     private static func sourceIdentity(
@@ -640,11 +705,12 @@ public enum DeviceSynthesizer {
         states: [String: HAEntityState]
     ) -> [HAEntityEntry] {
         let coverTokensById: [String: Set<String>] = Dictionary(
-            uniqueKeysWithValues: allCovers.map { entry in
+            allCovers.map { entry in
                 let stem = entry.entity_id.dropFirst("cover.".count).lowercased()
                 let tokens = Set(stem.split(separator: "_").map(String.init))
                 return (entry.entity_id, tokens)
-            }
+            },
+            uniquingKeysWith: { first, _ in first }
         )
         let commonTokens: Set<String> = coverTokensById.values.reduce(into: coverTokensById.values.first ?? []) { acc, next in
             acc.formIntersection(next)
@@ -970,7 +1036,8 @@ public enum DeviceSynthesizer {
             let features = st.attributes["supported_features"]?.intValue
             let modes = st.attributes["available_modes"]?.stringArrayValue ?? []
             let mode = st.attributes["mode"]?.stringValue
-            let target = st.attributes["target_humidity"]?.doubleValue.flatMap(Self.roundedInt)
+            let target = (st.attributes["target_humidity"]?.doubleValue
+                ?? st.attributes["humidity"]?.doubleValue).flatMap(Self.roundedInt)
             let minH = st.attributes["min_humidity"]?.intValue ?? 0
             let maxH = st.attributes["max_humidity"]?.intValue ?? 100
             let step = max(1, st.attributes["target_humidity_step"]?.intValue ?? 1)
@@ -978,8 +1045,9 @@ public enum DeviceSynthesizer {
                 $0.hasPrefix("sensor.")
                     && states[$0]?.attributes["device_class"]?.stringValue == "humidity"
             }
-            let current = st.attributes["current_humidity"]?.doubleValue
+            let rawCurrent = st.attributes["current_humidity"]?.doubleValue
                 ?? humiditySensorId.flatMap { states[$0] }.flatMap { $0.isAvailable ? Double($0.state) : nil }
+            let current = rawCurrent?.isFinite == true ? rawCurrent : nil
             // HumidifierEntityFeature: TARGET_HUMIDITY = 1, MODE = 2.
             let humidityWritable = features.map { $0 & 1 != 0 } ?? (target != nil)
             let modeWritable = features.map { $0 & 2 != 0 } ?? !modes.isEmpty
@@ -1007,7 +1075,7 @@ public enum DeviceSynthesizer {
                         step: step,
                         humidityWritable: humidityWritable,
                         currentHumidity: current,
-                        powerWritable: st.isAvailable
+                        powerWritable: true
                     )
                 )
             )
@@ -1044,7 +1112,7 @@ public enum DeviceSynthesizer {
                         entityId: waterHeaterId,
                         isOn: st.isAvailable && st.state != "off",
                         powerPresent: true,
-                        powerWritable: st.isAvailable,
+                        powerWritable: true,
                         currentMode: mode,
                         availableModes: modes,
                         modeWritable: !modes.isEmpty,
@@ -1053,7 +1121,7 @@ public enum DeviceSynthesizer {
                         minTemp: minT,
                         maxTemp: maxT,
                         step: step,
-                        temperatureWritable: target != nil && st.isAvailable,
+                        temperatureWritable: target != nil,
                         powerEntityId: waterHeaterId,
                         modeEntityId: waterHeaterId,
                         temperatureEntityId: waterHeaterId,
@@ -1676,9 +1744,8 @@ public enum DeviceSynthesizer {
                     haColorTemperatureColorModes.contains(colorMode) || hasColorTempAttr)
         }
         let hasBrightness = a["brightness"]?.doubleValue != nil
-        if let raw = a["supported_features"]?.doubleValue, raw.isFinite {
+        if let features = a["supported_features"]?.intValue {
             // Legacy bits: SUPPORT_BRIGHTNESS 1, SUPPORT_COLOR_TEMP 2, SUPPORT_COLOR 16, SUPPORT_WHITE_VALUE 128.
-            let features = Int(raw)
             return ((features & (1 | 2 | 16 | 128)) != 0 || hasBrightness || hasColorTempAttr,
                     (features & (2 | 16)) != 0 || hasColorTempAttr)
         }
@@ -1686,7 +1753,7 @@ public enum DeviceSynthesizer {
         return (true, true)
     }
 
-    static func roundedInt(_ value: Double) -> Int? {
+    public static func roundedInt(_ value: Double) -> Int? {
         guard value.isFinite else { return nil }
         return Int(exactly: value.rounded())
     }

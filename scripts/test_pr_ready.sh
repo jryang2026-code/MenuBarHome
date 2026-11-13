@@ -359,6 +359,108 @@ else
     fail "--wait 被已解决的历史 inline 误拦，退出 $status"
 fi
 
+# 5) Codex status="failed" 且当前 head 无 inline finding 时（额度耗尽场景），CLEAN + 无检查失败应放行退出 0
+rm -f "$wdir/calls"
+printf '[[{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"<!-- codex-review-state:v1 {\\"code_review\\":{\\"commit_sha\\":\\"%s\\",\\"status\\":\\"failed\\",\\"has_any_findings\\":true,\\"has_unresolved_findings\\":true}} -->"}]]\n' "$head_sha" >"$wdir/issues-1.json"
+printf '[[]]\n' >"$wdir/reviews-1.json"
+status=0
+output="$(PR_READY_WAIT_DIR="$wdir" PATH="$wait_bin:$PATH" bash "$root/scripts/pr-ready.sh" --wait --interval 0.02 --timeout 30 60 2>"$tmp/err")" || status=$?
+if [[ "$status" == 0 ]]; then
+    pass "--wait 遇到 status=failed 且无 inline finding 时放行退出 0"
+else
+    fail "--wait 被 failed+无inline 误拦，退出 $status"
+fi
+
+# 6) Codex 配额耗尽提示（usage limits for code reviews）且当前 head 无 state 评论时直接退出 0
+rm -f "$wdir/calls"
+printf '[[{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"<!-- codex-review-state:v1 {\\"code_review\\":{\\"commit_sha\\":\\"%s\\",\\"status\\":\\"completed\\",\\"has_any_findings\\":false,\\"has_unresolved_findings\\":false}} -->"},{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"You have reached your Codex usage limits for code reviews."}]]\n' "$old_sha" >"$wdir/issues-1.json"
+status=0
+output="$(PR_READY_WAIT_DIR="$wdir" PATH="$wait_bin:$PATH" bash "$root/scripts/pr-ready.sh" --wait --interval 0.02 --timeout 30 60 2>"$tmp/err")" || status=$?
+if [[ "$status" == 0 ]] && printf '%s\n' "$output" | grep -q "codex review: unavailable (usage limit) for $head_sha"; then
+    pass "--wait 识别 Codex 额度耗尽提示并退出 0"
+else
+    fail "--wait 未能识别 Codex 额度耗尽提示，退出 $status：$output"
+fi
+
+# 7) --max-codex-rounds 2：已完成 2 轮审查后新 commit 不阻塞等待
+rm -f "$wdir/calls"
+old_sha2="cccccccccccccccccccccccccccccccccccccccc"
+printf '[[{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"<!-- codex-review-state:v1 {\\"code_review\\":{\\"commit_sha\\":\\"%s\\",\\"status\\":\\"completed\\",\\"has_any_findings\\":true,\\"has_unresolved_findings\\":true}} -->"},{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"<!-- codex-review-state:v1 {\\"code_review\\":{\\"commit_sha\\":\\"%s\\",\\"status\\":\\"completed\\",\\"has_any_findings\\":false,\\"has_unresolved_findings\\":false}} -->"}]]\n' "$old_sha" "$old_sha2" >"$wdir/issues-1.json"
+status=0
+output="$(PR_READY_WAIT_DIR="$wdir" PATH="$wait_bin:$PATH" bash "$root/scripts/pr-ready.sh" --wait --max-codex-rounds 2 --interval 0.02 --timeout 30 60 2>"$tmp/err")" || status=$?
+if [[ "$status" == 0 ]] && printf '%s\n' "$output" | grep -q "codex rounds: 2/2 (cap reached)"; then
+    pass "--max-codex-rounds 达到上限后不阻塞新 commit"
+else
+    fail "--max-codex-rounds 未能放行，退出 $status：$output"
+fi
+
+# 5) --wait 首轮遇 gh api 瞬时 502（不应崩溃或泄露 JSONDecodeError），下一轮恢复后退出 0；PR 404 则立即退出 1
+transient_bin="$tmp/transient-bin"
+mkdir -p "$transient_bin"
+cat >"$transient_bin/gh" <<'EOF'
+#!/bin/bash
+joined="$*"
+state_dir="${PR_READY_TRANSIENT_DIR:?}"
+count_file="$state_dir/api_calls"
+calls=0
+if [[ -f "$count_file" ]]; then
+    calls="$(cat "$count_file")"
+fi
+if [[ "$joined" == *"repo view"* ]]; then
+    printf '%s\n' '{"nameWithOwner":"jryang2026-code/MenuBarHome"}'
+    exit 0
+fi
+if [[ "$joined" == *"pr view"* ]]; then
+    if [[ "${PR_READY_NOT_FOUND:-}" == "1" ]]; then
+        echo "GraphQL: Could not resolve to a PullRequest with the number of 9999." >&2
+        exit 1
+    fi
+    cat "$state_dir/meta.json"
+    exit 0
+fi
+if [[ "$joined" == *"pr checks"* ]]; then
+    echo "[]"
+    exit 0
+fi
+if [[ "$joined" == *"/issues/"*"/comments"* ]]; then
+    calls=$((calls + 1))
+    printf '%s\n' "$calls" >"$count_file"
+    if [[ "$calls" -eq 1 ]]; then
+        echo "gh: HTTP 502 Bad Gateway" >&2
+        exit 1
+    fi
+    cat "$state_dir/issues.json"
+    exit 0
+fi
+if [[ "$joined" == *"/pulls/"*"/comments"* ]]; then
+    echo "[[]]"
+    exit 0
+fi
+exit 1
+EOF
+chmod +x "$transient_bin/gh"
+
+tdir="$tmp/transient-state"
+mkdir -p "$tdir"
+printf '{"headRefOid":"%s","mergeStateStatus":"CLEAN"}\n' "$head_sha" >"$tdir/meta.json"
+printf '[[{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"<!-- codex-review-state:v1 -->{\\"code_review\\":{\\"commit_sha\\":\\"%s\\",\\"status\\":\\"completed\\",\\"has_any_findings\\":false,\\"has_unresolved_findings\\":false}}"}]]\n' "$head_sha" >"$tdir/issues.json"
+
+status=0
+output="$(PR_READY_TRANSIENT_DIR="$tdir" PATH="$transient_bin:$PATH" bash "$root/scripts/pr-ready.sh" --wait --interval 0.02 --timeout 30 60 2>"$tmp/err")" || status=$?
+if [[ "$status" == 0 ]] && [[ "$(cat "$tdir/api_calls")" == 2 ]] && ! grep -q "Traceback" "$tmp/err"; then
+    pass "--wait 遇到 gh api 瞬时 502 自动重试并恢复"
+else
+    fail "--wait 遇到 gh api 瞬时 502 未恢复，退出 $status，stderr=$(cat "$tmp/err")"
+fi
+
+status=0
+output="$(PR_READY_NOT_FOUND=1 PR_READY_TRANSIENT_DIR="$tdir" PATH="$transient_bin:$PATH" bash "$root/scripts/pr-ready.sh" --wait --interval 0.02 --timeout 30 9999 2>"$tmp/err")" || status=$?
+if [[ "$status" == 1 ]] && printf '%s\n' "$output" | grep -q "Could not resolve"; then
+    pass "--wait 遇到不存在的 PR 立即返回退出码 1"
+else
+    fail "--wait 遇到不存在的 PR 未立即退出 1，实际 $status，output=$output"
+fi
+
 if [[ "$failures" -eq 0 ]]; then
     exit 0
 fi

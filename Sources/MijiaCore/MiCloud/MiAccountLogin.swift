@@ -143,6 +143,12 @@ public struct MiAccountLogin: Sendable {
             do {
                 let (data, http) = try await transport.send(req)
                 if http.statusCode == 200 {
+                    if String(data: data, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty == true {
+                        await Task.yield()
+                        continue
+                    }
                     scanned = try Self.parseScanResult(data)
                 } else {
                     try await Task.sleep(for: .seconds(1))

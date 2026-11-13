@@ -864,6 +864,10 @@ details.win-notif-card > :not(summary) {
   }
 }
 
+.cc-quick-pill.tint-blue .cc-quick-icon {
+  color: var(--win-accent);
+}
+
 .cc-quick-pill:active {
   background: var(--win-control-pressed);
 }
@@ -1350,6 +1354,21 @@ details.win-notif-card > :not(summary) {
 @media (prefers-reduced-motion: no-preference) {
   .cc-tile.is-subpage {
     animation: win-subpage-in 250ms var(--ease-decelerate) both;
+  }
+
+  .cc-empty-icon.is-pulsing {
+    animation: cc-empty-pulse 1.6s ease-in-out infinite;
+  }
+}
+
+@keyframes cc-empty-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.62;
+    transform: scale(0.95);
   }
 }
 
@@ -1848,6 +1867,17 @@ details.win-notif-card > :not(summary) {
   border-color: var(--win-accent);
   color: var(--win-text-on-accent);
   font-weight: 600;
+}
+
+.cc-seg-pill.is-high-risk:not(.is-active) {
+  border-color: rgba(252, 225, 0, 0.45);
+  color: var(--win-caution);
+}
+
+.cc-seg-pill.is-high-risk.is-active {
+  background: var(--win-caution);
+  border-color: var(--win-caution);
+  color: #1c1c1e;
 }
 
 .cc-pill-label {

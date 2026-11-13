@@ -3,6 +3,7 @@ import AVFoundation
 import AVKit
 import MijiaCore
 import Observation
+import os
 import SwiftUI
 
 // MARK: - Floating Live Camera Window Controller (#97)
@@ -79,7 +80,6 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     public internal(set) var hasLiveVideoFrame = false
     /// Native Picture-in-Picture for the live video layer.
     @ObservationIgnored private var pictureInPicture: CameraPictureInPicture?
-    public private(set) var isPictureInPicturePossible = false
     public private(set) var isPictureInPictureActive = false
     public var isPinnedOnTop = true {
         didSet { syncWindowLevel() }
@@ -138,6 +138,8 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     private var selectedLensByDevice: [String: CameraLens.Role] = [:]
     private var closeReleaseTask: Task<Void, Never>?
     private var closeReleaseGeneration = 0
+    private var pendingStopTasks: [String: Task<Void, Never>] = [:]
+    private var pendingStopGenerations: [String: Int] = [:]
     private var activeCameraEntityID: String?
     private var doorbellDismissTask: Task<Void, Never>?
     /// The window sits where a ring put it, so closing it must not overwrite the user's saved position.
@@ -147,6 +149,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     private(set) var doorbellOwnsClose = false
     var hasPendingDoorbellAutoDismiss: Bool { doorbellDismissTask != nil && doorbellOwnsClose }
     private var isClosing = false
+    private let mjpegSessionLock = OSAllocatedUnfairLock<URLSession?>(initialState: nil)
     private let snapshotSession: URLSession = {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.connectionProxyDictionary = [:]
@@ -157,6 +160,16 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
 
     override private init() {
         super.init()
+    }
+
+    deinit {
+        let lingeringMJPEG = mjpegSessionLock.withLock { session -> URLSession? in
+            let current = session
+            session = nil
+            return current
+        }
+        lingeringMJPEG?.invalidateAndCancel()
+        snapshotSession.invalidateAndCancel()
     }
 
     public func install(with store: HomeStore) {
@@ -274,6 +287,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         guard let store else { return }
         let online = cameraDevices.filter(\.isOnline)
         guard online.count > 1 else { return }
+        claimDoorbellWindowForUser(claimsPlacement: false)
         let index = online.firstIndex { $0.id == activeDeviceId } ?? -1
         let next = online[(index + 1) % online.count]
         store.openCameraLiveView(next.id)
@@ -329,7 +343,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                 )
             } else {
                 stopStreamTasks()
-                Task { await store.stopCameraStream(for: oldId) }
+                if oldId != device.id {
+                    scheduleStopCameraStream(for: oldId)
+                }
             }
             isMuted = true
         }
@@ -450,8 +466,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         resolveTask = nil
         snapshotLoopTask?.cancel()
         snapshotLoopTask = nil
-        mjpegSession?.invalidateAndCancel()
-        mjpegSession = nil
+        setMJPEGSession(nil)
         activePlayback?.stop()
         activePlayback = nil
         videoPlayer = nil
@@ -536,8 +551,22 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         warm.expiryTask = nil
         warmPlaybacks.removeAll { $0 === warm }
         warm.playback.stop()
+        guard activeDeviceId != warm.deviceID else { return }
+        scheduleStopCameraStream(for: warm.deviceID)
+    }
+
+    private func scheduleStopCameraStream(for deviceID: String) {
         guard let store else { return }
-        Task { await store.stopCameraStream(for: warm.deviceID) }
+        let prior = pendingStopTasks[deviceID]
+        let generation = (pendingStopGenerations[deviceID] ?? 0) &+ 1
+        pendingStopGenerations[deviceID] = generation
+        pendingStopTasks[deviceID] = Task { @MainActor [weak self] in
+            await prior?.value
+            await store.stopCameraStream(for: deviceID)
+            if self?.pendingStopGenerations[deviceID] == generation {
+                self?.pendingStopTasks.removeValue(forKey: deviceID)
+            }
+        }
     }
 
     // MARK: - Picture in Picture
@@ -561,7 +590,6 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         pip.onStateChange = { [weak self, weak pip] in
             guard let self, let pip, self.pictureInPicture === pip else { return }
             let wasActive = self.isPictureInPictureActive
-            self.isPictureInPicturePossible = pip.isPossible
             self.isPictureInPictureActive = pip.isActive
             if pip.isActive, !wasActive {
                 // The system PiP window replaces the floating panel; the stream stays live. Taking
@@ -584,7 +612,6 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     private func tearDownPictureInPicture() {
         pictureInPicture?.invalidate()
         pictureInPicture = nil
-        isPictureInPicturePossible = false
         isPictureInPictureActive = false
     }
 
@@ -593,7 +620,18 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         isMuted.toggle()
     }
 
+    public func togglePinnedOnTop() {
+        claimDoorbellWindowForUser(claimsPlacement: false)
+        isPinnedOnTop.toggle()
+    }
+
+    public func userReloadStream() {
+        claimDoorbellWindowForUser(claimsPlacement: false)
+        reloadStream()
+    }
+
     public func showVideoOnlyNotice() {
+        claimDoorbellWindowForUser(claimsPlacement: false)
         videoOnlyNotice = L10n.tr(
             "此画面流仅传输视频，没有音轨；自定义 HLS 流可开启声音",
             "This stream is video only; a custom HLS stream can carry sound"
@@ -699,8 +737,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         }
         activeCameraEntityID = spec.entityId
         guard spec.isOn else {
-            let deviceId = device.id
-            Task { await store.stopCameraStream(for: deviceId) }
+            scheduleStopCameraStream(for: device.id)
             return
         }
 
@@ -711,6 +748,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         let channel = lens?.channel ?? 0
         resolveTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            await self.closeReleaseTask?.value
+            await self.pendingStopTasks[deviceId]?.value
+            guard !Task.isCancelled else { return }
             do {
                 let resolved = try await store.resolveCameraStream(for: deviceId, channel: channel)
                 guard !Task.isCancelled else { return }
@@ -837,8 +877,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                 try? await Task.sleep(for: .milliseconds(900))
             }
             guard !Task.isCancelled else { return }
-            self.mjpegSession?.invalidateAndCancel()
-            self.mjpegSession = nil
+            self.setMJPEGSession(nil)
             self.snapshotImage = nil
             self.streamSource = nil
             self.errorMessage = L10n.tr(
@@ -905,6 +944,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     }
 
     public func copyDesensitizedDiagnostics() {
+        claimDoorbellWindowForUser(claimsPlacement: false)
         let report = desensitizedDiagnosticsReport()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(report, forType: .string)
@@ -913,11 +953,31 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         )
     }
 
+    private func setMJPEGSession(_ session: URLSession?) {
+        let previous = mjpegSession
+        mjpegSession = session
+        mjpegSessionLock.withLock { $0 = session }
+        if let previous, previous !== session {
+            previous.invalidateAndCancel()
+        }
+    }
+
+    private func clearMJPEGSessionIfMatching(_ session: URLSession) {
+        if mjpegSession === session {
+            mjpegSession = nil
+        }
+        mjpegSessionLock.withLock { current in
+            if current === session {
+                current = nil
+            }
+        }
+    }
+
     private func consumeMJPEGConnection(
         url: URL,
         onFrame: @escaping @MainActor (NSImage) -> Void
     ) async {
-        mjpegSession?.invalidateAndCancel()
+        setMJPEGSession(nil)
         let cfg = URLSessionConfiguration.ephemeral
         cfg.connectionProxyDictionary = [:]
         cfg.timeoutIntervalForRequest = 25
@@ -931,12 +991,16 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                     onFrame(image)
                 }
             },
-            onComplete: { _ in
+            onComplete: { [weak self] completedSession, _ in
+                completedSession.invalidateAndCancel()
+                Task { @MainActor [weak self] in
+                    self?.clearMJPEGSessionIfMatching(completedSession)
+                }
                 resumeGuard.resumeOnce()
             }
         )
         let session = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
-        self.mjpegSession = session
+        setMJPEGSession(session)
         var req = XiaomiCameraBridge.authorizedURLRequest(for: url)
         req.cachePolicy = .reloadIgnoringLocalCacheData
         let task = session.dataTask(with: req)
@@ -948,8 +1012,13 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
             }
         } onCancel: {
             session.invalidateAndCancel()
+            Task { @MainActor [weak self] in
+                self?.clearMJPEGSessionIfMatching(session)
+            }
             resumeGuard.resumeOnce()
         }
+        session.invalidateAndCancel()
+        clearMJPEGSessionIfMatching(session)
     }
 
     private func fetchSnapshotFrame(from url: URL) async -> NSImage? {
@@ -1073,11 +1142,11 @@ private final class MJPEGStreamDelegate: NSObject, URLSessionDataDelegate, @unch
     private let lock = NSLock()
     private var buffer = Data()
     private let onFrame: @Sendable (NSImage) -> Void
-    private let onComplete: @Sendable (Error?) -> Void
+    private let onComplete: @Sendable (URLSession, Error?) -> Void
 
     init(
         onFrame: @escaping @Sendable (NSImage) -> Void,
-        onComplete: @escaping @Sendable (Error?) -> Void
+        onComplete: @escaping @Sendable (URLSession, Error?) -> Void
     ) {
         self.onFrame = onFrame
         self.onComplete = onComplete
@@ -1120,7 +1189,7 @@ private final class MJPEGStreamDelegate: NSObject, URLSessionDataDelegate, @unch
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        onComplete(error)
+        onComplete(session, error)
     }
 }
 
@@ -1452,7 +1521,7 @@ struct CameraLivePanelView: View {
                     ? L10n.tr("已置顶（全屏看电视时保持最前）", "Pinned on top (stays above full-screen video)")
                     : L10n.tr("点击置顶小窗", "Pin window on top")
             ) {
-                controller.isPinnedOnTop.toggle()
+                controller.togglePinnedOnTop()
             }
 
             CameraHUDIconButton(
@@ -1542,7 +1611,7 @@ struct CameraLivePanelView: View {
                 )
             }
             Button {
-                controller.reloadStream()
+                controller.userReloadStream()
             } label: {
                 Label(L10n.tr("重新连接", "Reconnect"), systemImage: "arrow.clockwise")
             }
@@ -1671,6 +1740,7 @@ struct CameraLivePanelView: View {
                 if spec.powerWritable {
                     Button {
                         if let dev = device {
+                            controller.claimDoorbellWindowForUser(claimsPlacement: false)
                             _ = store.togglePrimary(dev)
                         }
                     } label: {
@@ -1763,6 +1833,7 @@ struct CameraLivePanelView: View {
                 HStack(spacing: 8) {
                     if offersMiSignIn {
                         Button {
+                            controller.claimDoorbellWindowForUser(claimsPlacement: false)
                             SettingsWindowOpener.shared.show(tab: .connection)
                         } label: {
                             Label(L10n.tr("登录米家观看", "Sign in to Mi Home to Watch"), systemImage: "qrcode.viewfinder")
@@ -1779,7 +1850,7 @@ struct CameraLivePanelView: View {
                     .buttonStyle(PillActionButtonStyle(isSelected: !offersMiSignIn, tintColor: .cyan))
 
                     Button {
-                        controller.reloadStream()
+                        controller.userReloadStream()
                     } label: {
                         Label(L10n.tr("重试", "Retry"), systemImage: "arrow.clockwise")
                     }

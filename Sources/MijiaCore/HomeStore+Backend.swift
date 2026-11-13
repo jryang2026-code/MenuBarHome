@@ -62,6 +62,10 @@ extension HomeStore {
                 }
             }
         )
+        let previousLG = self.lgWebOSClient
+        if let previousLG {
+            Task { await previousLG.shutdown() }
+        }
         self.lgWebOSClient = client
         if lgConfig.isEnabled && lgConfig.hasConfiguredHost {
             Task { await client.start() }
@@ -81,17 +85,19 @@ extension HomeStore {
         }
         latestLGDevice = dev
         rawDeviceNames[dev.id] = dev.name
-        let now = ContinuousClock.now
-        if let lockTime = optimisticLockUntil[dev.id], now < lockTime {
-            return
-        }
-        // Adopting the row is the same takeover an ordinary snapshot performs, so the lock entry
-        // must stop being evidence that the row is still an optimistic write of ours.
-        optimisticLockUntil.removeValue(forKey: dev.id)
-        if let idx = devices.firstIndex(where: { $0.id == dev.id }) {
-            devices[idx] = dev
+        let now = optimisticNow()
+        pruneExpiredOptimisticLocks(for: dev.id, at: now)
+        let lockedFields = activeLockedFields(for: dev.id, at: now)
+        let nextDev: SmartDevice
+        if !lockedFields.isEmpty, let idx = devices.firstIndex(where: { $0.id == dev.id }) {
+            nextDev = dev.mergingOptimisticFields(from: devices[idx], lockedFields: lockedFields)
         } else {
-            devices.append(dev)
+            nextDev = dev
+        }
+        if let idx = devices.firstIndex(where: { $0.id == dev.id }) {
+            devices[idx] = nextDev
+        } else {
+            devices.append(nextDev)
             if favoriteDeviceIds.contains(dev.id) == false && favoriteOrder.count < 8 {
                 favoriteDeviceIds.insert(dev.id)
                 favoriteOrder.insert(dev.id, at: 0)
@@ -283,9 +289,9 @@ extension HomeStore {
             }
             if scenes != snapshot.scenes { scenes = snapshot.scenes }
 
-            let now = ContinuousClock.now
+            let now = optimisticNow()
             var merged: [SmartDevice] = []
-            let existingById = Dictionary(uniqueKeysWithValues: self.devices.map { ($0.id, $0) })
+            let existingById = Dictionary(self.devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
             for device in snapshot.devices {
                 var incoming = device
@@ -308,21 +314,23 @@ extension HomeStore {
                     && previousBackends[incoming.id] != snapshot.deviceBackends[incoming.id]
                 if backendChanged {
                     cancelFacetWrites(for: incoming.id)
-                    optimisticLockUntil.removeValue(forKey: incoming.id)
+                    clearOptimisticLockEntries(for: incoming.id)
+                    clearOptimisticRevisions(for: incoming.id)
                     coverCommandOrigins.removeValue(forKey: incoming.id)
                     lastCoverPositions.removeValue(forKey: incoming.id)
+                    manualWriteSessions.removeValue(forKey: incoming.id)
                     optimisticLockRevision[incoming.id, default: 0] &+= 1
+                    cancelDebouncedWrites(for: incoming.id, recomputeRow: false)
                     let prefix = "\(incoming.id)."
                     for key in debounceTasks.keys where key == incoming.id || key.hasPrefix(prefix) {
                         debounceTasks.removeValue(forKey: key)?.cancel()
                     }
                 }
-                // A primary power toggle is waiting for this read-back, so the lock from an
-                // older command must not hide the device's own property snapshot. A cover tap
-                // has no property read-back to wait for: the motor reports its position only
-                // after it moves. Its commanded row and travel origin must therefore survive
-                // every snapshot that lands while the tap is in flight, or a parked report
-                // replaces the row and drops the origin the takeover rule needs.
+                pruneExpiredOptimisticLocks(for: incoming.id, at: now)
+                // A primary power toggle is waiting for this read-back, so an older primary-power
+                // lock must not hide the device's own property snapshot while unrelated field locks
+                // stay intact. A cover tap has no property read-back to wait for: its commanded
+                // row and travel origin survive until `coverTravelTakesOver` confirms travel.
                 let readBackNeedsSnapshot: Bool
                 if case .cover = incoming.kind {
                     readBackNeedsSnapshot = false
@@ -330,48 +338,74 @@ extension HomeStore {
                     readBackNeedsSnapshot = waitingDeviceIds.contains(incoming.id)
                         || readBackTickets.isInFlight(incoming.id)
                 }
-                if let lockTime = optimisticLockUntil[incoming.id], now < lockTime,
-                   let local = existingById[incoming.id],
-                   !readBackNeedsSnapshot {
-                    if coverTravelTakesOver(deviceId: incoming.id, local: local, incoming: incoming) {
-                        // The motor has confirmed the command, so its own report is authoritative.
-                        // Keeping the timed lock here would hide it and make the card jump when
-                        // the lock expired (#298).
-                        optimisticLockUntil.removeValue(forKey: incoming.id)
-                        coverCommandOrigins.removeValue(forKey: incoming.id)
-                        merged.append(incoming)
-                    } else {
-                        merged.append(local)
+                if readBackNeedsSnapshot {
+                    for field in OptimisticField.primaryPowerFields(for: incoming.kind) {
+                        optimisticFieldLocks.removeValue(forKey: .field(incoming.id, field))
                     }
-                } else {
-                    optimisticLockUntil.removeValue(forKey: incoming.id)
-                    coverCommandOrigins.removeValue(forKey: incoming.id)
-                    merged.append(incoming)
                 }
+                var lockedFields = activeLockedFields(for: incoming.id, at: now)
+                if lockedFields.contains(.coverPosition),
+                   let local = existingById[incoming.id],
+                   coverTravelTakesOver(deviceId: incoming.id, local: local, incoming: incoming) {
+                    // The motor has confirmed the command, so its own report is authoritative.
+                    // Keeping the timed lock here would hide it and make the card jump when
+                    // the lock expired (#298).
+                    optimisticFieldLocks.removeValue(forKey: .field(incoming.id, .coverPosition))
+                    coverCommandOrigins.removeValue(forKey: incoming.id)
+                    manualWriteSessions.removeValue(forKey: incoming.id)
+                    lockedFields.remove(.coverPosition)
+                }
+                if !lockedFields.contains(.coverPosition) {
+                    coverCommandOrigins.removeValue(forKey: incoming.id)
+                }
+                merged.append(
+                    reconcileManualWriteSessionWithSnapshot(
+                        incoming,
+                        local: existingById[incoming.id],
+                        lockedFields: lockedFields
+                    )
+                )
             }
             if let lgDev = latestLGDevice, lgConfig.isEnabled,
                !merged.contains(where: { $0.id == lgDev.id }) {
                 rawDeviceNames[lgDev.id] = lgDev.name
-                if let lockTime = optimisticLockUntil[lgDev.id], now < lockTime,
-                   let local = existingById[lgDev.id] {
-                    merged.insert(local, at: 0)
+                pruneExpiredOptimisticLocks(for: lgDev.id, at: now)
+                let lockedFields = activeLockedFields(for: lgDev.id, at: now)
+                if !lockedFields.isEmpty, let local = existingById[lgDev.id] {
+                    merged.insert(lgDev.mergingOptimisticFields(from: local, lockedFields: lockedFields), at: 0)
                 } else {
-                    // Taking the LG row is a takeover too, so a batch rollback can tell the row is
-                    // no longer an optimistic write of its own.
-                    optimisticLockUntil.removeValue(forKey: lgDev.id)
                     merged.insert(lgDev, at: 0)
                 }
             }
-            // 更多设置 rows follow the same optimistic lock as the card: a write in flight keeps
-            // the local value until the read-back snapshot can confirm it (#5).
+            // 更多设置 rows lock independently per controlId: a write in flight keeps only that
+            // facet's local value until the lock expires or a read-back confirms it (#5).
             var nextFacets: [String: [FacetControl]] = [:]
             for device in snapshot.devices {
-                let locked = optimisticLockUntil[device.id].map { now < $0 } ?? false
-                if locked, !waitingDeviceIds.contains(device.id),
-                   !readBackTickets.isInFlight(device.id) {
-                    if let local = deviceFacets[device.id] { nextFacets[device.id] = local }
-                } else if let incoming = snapshot.deviceFacets[device.id] {
-                    nextFacets[device.id] = incoming
+                var lockedControlIds = activeLockedFacetControlIds(for: device.id, at: now)
+                if case .generic(let spec) = device.kind,
+                   let powerControlId = spec.powerControl?.id,
+                   activeLockedFields(for: device.id, at: now).contains(.power) {
+                    lockedControlIds.insert(powerControlId)
+                }
+                if let incoming = snapshot.deviceFacets[device.id] {
+                    if lockedControlIds.isEmpty {
+                        nextFacets[device.id] = incoming
+                    } else {
+                        let localById = Dictionary(
+                            (deviceFacets[device.id] ?? []).map { ($0.id, $0) },
+                            uniquingKeysWith: { first, _ in first }
+                        )
+                        nextFacets[device.id] = incoming.map { facet in
+                            guard lockedControlIds.contains(facet.id), let local = localById[facet.id] else {
+                                return facet
+                            }
+                            var updated = facet
+                            updated.value = local.value
+                            return updated
+                        }
+                    }
+                } else if !lockedControlIds.isEmpty, let local = deviceFacets[device.id] {
+                    nextFacets[device.id] = local
                 }
             }
             if deviceFacets != nextFacets { deviceFacets = nextFacets }
@@ -389,10 +423,9 @@ extension HomeStore {
             offlineHistory.record(devices: devices, now: sampleNow)
 
             if enableSafetyAlerts {
+                // `evaluateSafetyAlerts` records into the activity stack whether or not the app
+                // installed a notification handler, so the panel still shows every fired alert.
                 let alerts = evaluateSafetyAlerts(now: Date())
-                // The activity stack keeps its own record whether or not the app installed a
-                // notification handler: the panel still has to show the alert.
-                recordSafetyAlerts(alerts)
                 if let handler = onSafetyAlert {
                     for alert in alerts {
                         handler(alert)
@@ -586,13 +619,14 @@ extension HomeStore {
         let mi: (any HomeProvider)? = (hasMiSource || (!hasHASource && homeBackend == .xiaomiCloud))
             ? makeMiAccountsProvider()
             : nil
-        return Self.makeComposite(homeAssistant: ha, xiaomiCloud: mi, defaults: userDefaults)
+        return Self.makeComposite(homeAssistant: ha, xiaomiCloud: mi, defaults: userDefaults, pinBox: pinnedDeviceSourcesBox)
     }
 
     static func makeComposite(
         homeAssistant: (any HomeProvider)?,
         xiaomiCloud: (any HomeProvider)?,
-        defaults: UserDefaults
+        defaults: UserDefaults,
+        pinBox: DeviceSourcePinBox? = nil
     ) -> DualSourceHomeProvider {
         let box = UncheckedUserDefaults(defaults)
         let stored = defaults.dictionary(forKey: ViewPreferenceKeys.canonicalDeviceIds) as? [String: String] ?? [:]
@@ -601,10 +635,17 @@ extension HomeStore {
             xiaomiCloud: xiaomiCloud,
             initialCanonicalIDs: stored,
             knownPreferenceIDs: {
-                DevicePreferenceIndex.referencedIDs(defaults: box.defaults)
+                var ids = DevicePreferenceIndex.referencedIDs(defaults: box.defaults)
+                if let pinBox {
+                    ids.formUnion(pinBox.get().keys)
+                }
+                return ids
             },
             pinnedBackends: {
-                DeviceSourcePinStorage.load(defaults: box.defaults)
+                if let pinBox {
+                    return pinBox.get()
+                }
+                return DeviceSourcePinStorage.load(defaults: box.defaults)
             },
             persistCanonicalIDs: { assignments in
                 box.defaults.set(assignments, forKey: ViewPreferenceKeys.canonicalDeviceIds)
@@ -670,6 +711,8 @@ extension HomeStore {
             eventTask?.cancel()
             shutdownCurrentProvider()
             haPlaintextPrompt = nil
+            // `offerHAAddress` refuses in demo; an offer made before the switch must not stay on screen.
+            pendingHAAddressSuggestion = nil
             // Strictly offline: stop any LAN TV and update work started by the previous backend (#47).
             if let lgClient = lgWebOSClient {
                 Task { await lgClient.stop() }
@@ -693,16 +736,19 @@ extension HomeStore {
                     .isEmpty
             }
             rebuildLiveProvider()
-            // Leaving demo mode resumes the LAN TV link that demo stopped; `start()` no-ops when the
-            // config is disabled or has no host. A launch in demo mode never created the client, so
-            // create it now instead of leaving a configured TV missing until relaunch.
-            if previousBackend == .demo {
-                if let lgClient = lgWebOSClient {
-                    Task { await lgClient.start() }
-                } else {
-                    startLGWebOSIfNeeded()
-                }
-            }
+            resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: previousBackend == .demo)
+        }
+    }
+
+    /// Leaving demo mode resumes the LAN TV link that demo stopped; `start()` no-ops when the
+    /// config is disabled or has no host. A launch in demo mode never created the client, so
+    /// create it now instead of leaving a configured TV missing until relaunch.
+    private func resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: Bool) {
+        guard wasDemo, homeBackend != .demo else { return }
+        if let lgClient = lgWebOSClient {
+            Task { await lgClient.start() }
+        } else {
+            startLGWebOSIfNeeded()
         }
     }
 
@@ -733,6 +779,7 @@ extension HomeStore {
         let superseded = miLoginStartBackend.map { $0 != homeBackend } ?? false
         miLoginStartBackend = nil
         if superseded { return }
+        let wasDemo = homeBackend == .demo
         invalidateUndoContext()
         self.hasHASource = !loadHAToken()
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -740,6 +787,7 @@ extension HomeStore {
         self.homeBackend = .xiaomiCloud
         self.completeOnboarding()
         rebuildLiveProvider()
+        resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: wasDemo)
         showToast(L10n.tr("已登录米家账号 (\(session.maskedUserId))", "Signed in to Xiaomi Home (\(session.maskedUserId))"))
     }
 
@@ -813,9 +861,20 @@ extension HomeStore {
         }
         hasHASource = false
         pendingHAAddressSuggestion = nil
+        haPlaintextPrompt = nil
         guard homeBackend != .demo,
               (provider is DualSourceHomeProvider || provider is HAWebSocketProvider) else { return true }
         invalidateUndoContext()
+        if hasMiSource {
+            homeBackend = .xiaomiCloud
+        } else {
+            devices = []
+            deviceFacets = [:]
+            rooms = []
+            environmentReadings = []
+            scenes = []
+            selectRoom(nil)
+        }
         rebuildLiveProvider()
         return true
     }
@@ -879,6 +938,7 @@ extension HomeStore {
             )
             return
         }
+        let wasDemo = homeBackend == .demo
         invalidateUndoContext()
         let normalized = HAWebSocketProvider.normalizeBaseURL(serverURL)
         if normalized != HAWebSocketProvider.normalizeBaseURL(serverURLString) {
@@ -892,6 +952,7 @@ extension HomeStore {
             self.completeOnboarding()
         }
         rebuildLiveProvider()
+        resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: wasDemo)
         showToast(L10n.tr("已保存并重新连接 Home Assistant", "Saved and reconnecting to Home Assistant"))
     }
 

@@ -30,6 +30,12 @@ jobs:
       macos: ${{ steps.filter.outputs.macos }}
       windows: ${{ steps.filter.outputs.windows }}
       core: ${{ steps.filter.outputs.core }}
+      raycast: ${{ steps.filter.outputs.raycast }}
+      scripts: ${{ steps.filter.outputs.scripts }}
+      macos_build: ${{ steps.filter.outputs.macos_build }}
+      appintents: ${{ steps.filter.outputs.appintents }}
+      windows_native: ${{ steps.filter.outputs.windows_native }}
+      nas: ${{ steps.filter.outputs.nas }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,7 +50,7 @@ jobs:
         run: |
           set -euo pipefail
           full_ci() {
-            printf 'code=true\nmacos=true\nwindows=true\ncore=true\n' >> "$GITHUB_OUTPUT"
+            printf 'code=true\nmacos=true\nwindows=true\ncore=true\nraycast=true\nscripts=true\nmacos_build=true\nappintents=true\nwindows_native=true\nnas=true\ngo2rtc=true\n' >> "$GITHUB_OUTPUT"
           }
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             full_ci
@@ -72,7 +78,7 @@ jobs:
           git diff --name-only --no-renames "$base" "$head" > "$RUNNER_TEMP/changed.txt"
           scope="$(bash scripts/ci_relevant_paths.sh < "$RUNNER_TEMP/changed.txt")"
           # 脚本输出异常时按全量 CI 处理，避免格式错误被误判成 docs-only 而跳过检查。
-          for key in code macos windows core; do
+          for key in code macos windows core raycast scripts macos_build appintents windows_native nas go2rtc; do
             if ! printf '%s\n' "$scope" | grep -Eq "^${key}=(true|false)$"; then
               full_ci
               echo "unexpected scope output; running full CI"
@@ -97,14 +103,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install ripgrep
         run: bash scripts/install_ripgrep.sh
-      - name: Secret, coding-standard, and design-token checks
+      - name: Secret, coding-standard, capability-matrix, and script checks
         # 这些检查与操作系统无关，放在 Ubuntu 上，避免占用 macOS 配额。
-        # swift:6.1 容器里没有 python3，设计令牌和公钥一致性以前只在 macOS 上跑。
-        run: bash scripts/check.sh --lint-only
-      - name: MIoT coverage report
+        # scripts 改动或 push main 时补跑完整脚本自检；常规 code PR 只跑快速 lint。
         run: |
-          { echo '```'; python3 scripts/miot_coverage_report.py; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ needs.changes.outputs.scripts }}" = "true" ] || [ "${{ github.event_name }}" != "pull_request" ]; then
+            bash scripts/check.sh --lint-only --script-tests
+          else
+            bash scripts/check.sh --lint-only
+          fi
       - name: Test NAS deployment safety
+        if: needs.changes.outputs.nas == 'true' || needs.changes.outputs.scripts == 'true' || github.event_name != 'pull_request'
         run: bash scripts/test_nas_setup.sh
 
   linux-core:
@@ -147,13 +156,14 @@ jobs:
 
   raycast:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.raycast == 'true'
     # 不放 macOS：这些测试不依赖系统，macOS 并发额度留给 Swift。
+    # 只测 Node 22（发布流程用的版本）：每多一个版本就多占一个并发名额。
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        node: [22, 24]
+        node: [22]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -171,12 +181,12 @@ jobs:
   windows-core:
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.windows == 'true'
-    # 验证 Windows 版 TypeScript 核心测试与前端打包
+    # 验证 Windows 版 TypeScript 核心测试与前端打包（Win32 复测放在 windows-rust-test 同机运行）
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        node: [22, 24]
+        os: [ubuntu-latest]
+        node: [22]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -194,15 +204,14 @@ jobs:
 
   windows-camera-bin:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.windows == 'true'
-    # 构建安装包内置的 go2rtc 与最小 LGPL ffmpeg；结果由 windows-installer 消费。
+    if: needs.changes.outputs.code == 'true' && ((github.event_name != 'pull_request' && needs.changes.outputs.windows == 'true') || needs.changes.outputs.windows_native == 'true')
+    # 构建安装包内置的 go2rtc 与最小 LGPL ffmpeg；结果由 windows-rust-test 与 windows-installer 消费。
     uses: ./.github/workflows/camera-bin.yml
 
   windows-rust-test:
     needs: [changes, windows-camera-bin]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.windows == 'true'
-    # 从安装包 job 拆出来并行：debug 和 release 是两套产物，串在一台机器上只是把时间相加。
-    # tauri_build 会校验 camera-bin/* 资源存在，所以这里同样要下载内置组件。
+    if: needs.changes.outputs.code == 'true' && ((github.event_name != 'pull_request' && needs.changes.outputs.windows == 'true') || needs.changes.outputs.windows_native == 'true')
+    # 原生层改动在 PR 上也运行（含 Win32 前端单测 + Cargo 测试）；纯前端 PR 只跑 Ubuntu windows-core。
     runs-on: windows-latest
     defaults:
       run:
@@ -225,6 +234,8 @@ jobs:
         with:
           name: camera-bin
           path: windows/src-tauri/camera-bin
+      - name: Run frontend unit tests on Windows (Win32)
+        run: npm test
       - name: Build the frontend that tauri::generate_context! embeds
         run: npm run build
       - name: Test native URL and credential policies
@@ -232,7 +243,8 @@ jobs:
 
   windows-installer:
     needs: [changes, windows-camera-bin]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.windows == 'true'
+    # 原生层 / 打包配置改动在 PR 上同步验证安装包，main 上凡 Windows 改动都出安装包产物。
+    if: needs.changes.outputs.code == 'true' && ((github.event_name != 'pull_request' && needs.changes.outputs.windows == 'true') || needs.changes.outputs.windows_native == 'true')
     # 安装包依赖 windows-camera-bin 的内置组件；前端测试由 windows-core 覆盖，
     # cargo test 在 windows-rust-test。前端由 tauri 的 beforeBuildCommand 构建。
     runs-on: windows-latest
@@ -305,15 +317,18 @@ jobs:
   macos-test:
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
-    # 全部 Swift 单测（快照比对留在本机门禁）。App Intents 与 Release 通用二进制各用一台机器，三路并行。
-    runs-on: macos-26
+    # 全部 Swift 单测（快照比对留在宿主机门禁）。三个 macOS job 里只有这个可以排到本地隔离 VM：
+    # VM 单任务串行，三个都排过去时一次运行占用约 20 分钟，后面的 PR 全在排队。
+    # Empty MACOS_CI_RUNNER keeps GitHub-hosted macOS; the local option is an isolated VM.
+    runs-on: ${{ fromJSON(vars.MACOS_CI_RUNNER || '"macos-26-intel"') }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      # macos-26 on 2026-11-09 printed Xcode 26.6 (17F113). Do not select latest.
+      # macos-26-intel ships Xcode 26.6 (17F113). Do not select latest.
       - name: Select Xcode 26.6
+        if: runner.environment == 'github-hosted'
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: "26.6"
@@ -324,10 +339,10 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build
-          # v3 discards caches built while merge commits were not stamped.
-          key: spm-debug-v3-${{ runner.os }}-${{ github.sha }}
+          # v4 + runner.arch separates hosted macos-26-intel (X64) from local VM (ARM64).
+          key: spm-debug-v4-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
           restore-keys: |
-            spm-debug-v3-${{ runner.os }}-
+            spm-debug-v4-${{ runner.os }}-${{ runner.arch }}-
       - name: Restore source mtimes for the Swift cache
         run: bash scripts/ci_restore_mtimes.sh
       - name: Match the maintainer's region
@@ -358,15 +373,17 @@ jobs:
 
   macos-appintents:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
+    # PR 只在 AppIntents / 打包入口 / CommandIntent / Package 变更时运行；main 在 macos=true 时运行。
+    if: needs.changes.outputs.code == 'true' && ((github.event_name != 'pull_request' && needs.changes.outputs.macos == 'true') || needs.changes.outputs.appintents == 'true')
     # xcodebuild 提取 App Intents。和 swift test 串在一台 3 核机器上时，冷启动会把两者相加。
-    runs-on: macos-26
+    # 固定在托管机，与本地 VM 上的 macos-test 并行，不读 MACOS_CI_RUNNER。
+    runs-on: macos-26-intel
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      # macos-26 on 2026-11-09 printed Xcode 26.6 (17F113). Do not select latest.
+      # macos-26-intel ships Xcode 26.6 (17F113). Do not select latest.
       - name: Select Xcode 26.6
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
@@ -375,13 +392,16 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .derived
-          key: appintents-v1-${{ runner.os }}-${{ github.sha }}
+          # v3 + runner.arch keeps hosted Intel caches separate from arm64 caches.
+          key: appintents-v3-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
           restore-keys: |
-            appintents-v1-${{ runner.os }}-
+            appintents-v3-${{ runner.os }}-${{ runner.arch }}-
       - name: Restore source mtimes for the Xcode cache
         run: bash scripts/ci_restore_mtimes.sh
       - name: App Intents metadata
-        run: APP_INTENTS_ONLY=1 bash scripts/build_app.sh
+        # Debug: the check only needs the metadata to extract, and Release would run the optimizer
+        # over the whole app a second time (macos-release already builds it with -O).
+        run: APP_INTENTS_ONLY=1 APP_INTENTS_CONFIGURATION=Debug bash scripts/build_app.sh
       - name: Trim Xcode derived data
         if: success() && github.ref == 'refs/heads/main'
         run: |
@@ -403,15 +423,17 @@ jobs:
 
   macos-release:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
+    # PR 只在 build_app.sh / go2rtc-ptz / release 脚本 / Resources / Package 变更时运行；main 在 macos=true 时运行。
+    if: needs.changes.outputs.code == 'true' && ((github.event_name != 'pull_request' && needs.changes.outputs.macos == 'true') || needs.changes.outputs.macos_build == 'true')
     # Release -O 通用二进制（#2 这类崩溃只在 -O 下出现）以及符号表路径泄露检查。
-    runs-on: macos-26
+    # 固定在托管机，与本地 VM 上的 macos-test 并行，不读 MACOS_CI_RUNNER。
+    runs-on: macos-26-intel
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      # macos-26 on 2026-11-09 printed Xcode 26.6 (17F113). Do not select latest.
+      # macos-26-intel ships Xcode 26.6 (17F113). Do not select latest.
       - name: Select Xcode 26.6
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
@@ -422,10 +444,10 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build
-          key: spm-release-v2-${{ runner.os }}-${{ github.sha }}
+          # v3 + runner.arch keeps hosted Intel caches separate from arm64 caches.
+          key: spm-release-v3-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
           restore-keys: |
-            spm-release-v2-${{ runner.os }}-
-            spm-release-v1-${{ runner.os }}-
+            spm-release-v3-${{ runner.os }}-${{ runner.arch }}-
       - name: Restore source mtimes for the Swift cache
         run: bash scripts/ci_restore_mtimes.sh
       - id: go2rtc-ptz-cache
@@ -456,38 +478,13 @@ jobs:
           path: .build
           key: ${{ steps.swift-release-cache.outputs.cache-primary-key }}
 
-  macos:
-    # 历史 required check 的名字。文档-only 或只改 Windows 时三个 macOS job 被跳过，这里仍成功，
-    # 避免 path filter 把 `CI / macos` 卡在 Pending。任一应有的 macOS job 失败则这里失败。
-    needs: [changes, macos-test, macos-release, macos-appintents]
-    if: always() && !cancelled()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Require macOS tests and the release build
-        env:
-          CHANGES: ${{ needs.changes.result }}
-          CODE: ${{ needs.changes.outputs.code }}
-          MACOS: ${{ needs.changes.outputs.macos }}
-          TESTS: ${{ needs.macos-test.result }}
-          RELEASE: ${{ needs.macos-release.result }}
-          INTENTS: ${{ needs.macos-appintents.result }}
-        run: >-
-          bash scripts/ci_require_jobs.sh
-          "macos-test:$TESTS:$MACOS"
-          "macos-release:$RELEASE:$MACOS"
-          "macos-appintents:$INTENTS:$MACOS"
-
   ci:
-    # 始终运行的汇总检查。文档-only 或未受影响的平台任务被跳过时，这里成功；
-    # 任何一个实际失败（不是预期跳过）则失败。适合作为唯一的 required check。
+    # 始终运行的汇总检查。无需 checkout；仅核对本次实际命中的面是否全绿。
     needs: [changes, nas-safety, linux-core, raycast, windows-core, windows-camera-bin, windows-rust-test, windows-installer, macos-test, macos-release, macos-appintents]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Fail the workflow unless every required job succeeded
         env:
           CHANGES: ${{ needs.changes.result }}
@@ -495,9 +492,10 @@ jobs:
           MACOS: ${{ needs.changes.outputs.macos }}
           WINDOWS: ${{ needs.changes.outputs.windows }}
           CORE: ${{ needs.changes.outputs.core }}
+          RAYCAST: ${{ needs.changes.outputs.raycast }}
           NAS: ${{ needs.nas-safety.result }}
           LINUX: ${{ needs.linux-core.result }}
-          RAYCAST: ${{ needs.raycast.result }}
+          RAYCAST_RES: ${{ needs.raycast.result }}
           WINDOWS_CORE: ${{ needs.windows-core.result }}
           WINDOWS_CAMERA: ${{ needs.windows-camera-bin.result }}
           WINDOWS_RUST_TEST: ${{ needs.windows-rust-test.result }}
@@ -505,15 +503,44 @@ jobs:
           MACOS_TEST: ${{ needs.macos-test.result }}
           MACOS_RELEASE: ${{ needs.macos-release.result }}
           MACOS_INTENTS: ${{ needs.macos-appintents.result }}
-        run: >-
-          bash scripts/ci_require_jobs.sh
-          "nas-safety:$NAS:always"
-          "linux-core:$LINUX:$CORE"
-          "raycast:$RAYCAST:always"
-          "windows-core:$WINDOWS_CORE:$WINDOWS"
-          "windows-camera-bin:$WINDOWS_CAMERA:$WINDOWS"
-          "windows-rust-test:$WINDOWS_RUST_TEST:$WINDOWS"
-          "windows-installer:$WINDOWS_INSTALLER:$WINDOWS"
-          "macos-test:$MACOS_TEST:$MACOS"
-          "macos-release:$MACOS_RELEASE:$MACOS"
-          "macos-appintents:$MACOS_INTENTS:$MACOS"
+          WINDOWS_NATIVE_ACTIVE: ${{ ((github.event_name != 'pull_request' && needs.changes.outputs.windows == 'true') || needs.changes.outputs.windows_native == 'true') && 'true' || 'false' }}
+          MACOS_BUILD_ACTIVE: ${{ ((github.event_name != 'pull_request' && needs.changes.outputs.macos == 'true') || needs.changes.outputs.macos_build == 'true') && 'true' || 'false' }}
+          APPINTENTS_ACTIVE: ${{ ((github.event_name != 'pull_request' && needs.changes.outputs.macos == 'true') || needs.changes.outputs.appintents == 'true') && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          if [ "${CHANGES:-}" != "success" ]; then
+            echo "❌ changes=${CHANGES:-<unset>}"
+            exit 1
+          fi
+          strict=0
+          [ "${CODE:-}" = "true" ] && strict=1
+          fail=0
+          check_job() {
+            local name="$1" result="$2" relevant="${3:-always}"
+            case "$result" in
+              success) echo "✅ $name success" ;;
+              skipped)
+                if [ "$strict" -eq 1 ] && [ "$relevant" = "true" ] || { [ "$strict" -eq 1 ] && [ "$relevant" = "always" ]; }; then
+                  echo "❌ $name skipped while required"
+                  fail=1
+                else
+                  echo "✅ $name skipped (not affected)"
+                fi
+                ;;
+              *)
+                echo "❌ $name ${result:-<empty>}"
+                fail=1
+                ;;
+            esac
+          }
+          check_job "nas-safety" "$NAS" "always"
+          check_job "linux-core" "$LINUX" "$CORE"
+          check_job "raycast" "$RAYCAST_RES" "$RAYCAST"
+          check_job "windows-core" "$WINDOWS_CORE" "$WINDOWS"
+          check_job "windows-camera-bin" "$WINDOWS_CAMERA" "$WINDOWS_NATIVE_ACTIVE"
+          check_job "windows-rust-test" "$WINDOWS_RUST_TEST" "$WINDOWS_NATIVE_ACTIVE"
+          check_job "windows-installer" "$WINDOWS_INSTALLER" "$WINDOWS_NATIVE_ACTIVE"
+          check_job "macos-test" "$MACOS_TEST" "$MACOS"
+          check_job "macos-release" "$MACOS_RELEASE" "$MACOS_BUILD_ACTIVE"
+          check_job "macos-appintents" "$MACOS_INTENTS" "$APPINTENTS_ACTIVE"
+          exit "$fail"

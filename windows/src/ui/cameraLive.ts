@@ -76,6 +76,7 @@ export class CameraLiveController {
   }
 
   public activeLiveCameraId: string | null = null;
+  private activeLiveCameraSnapshot: SmartDevice | null = null;
   /**
    * The camera frees a used P2P session on its own schedule (measured: a fresh
    * session streams fine, but one that carried video needs well over a minute
@@ -137,6 +138,7 @@ export class CameraLiveController {
       this.teardownActiveCameraForSwitch();
     }
     this.activeLiveCameraId = dev.id;
+    this.activeLiveCameraSnapshot = dev;
     this.liveCameraMuted = true;
     this.liveCameraQualityApplies = true;
     this.liveCameraHidden = false;
@@ -164,11 +166,15 @@ export class CameraLiveController {
 
   private teardownActiveCameraForSwitch(): void {
     const closingId = this.activeLiveCameraId;
-    const closingDev = closingId ? this.host.devices.find((d) => d.id === closingId) : undefined;
+    const closingDev = closingId
+      ? this.host.devices.find((d) => d.id === closingId) ??
+        (this.activeLiveCameraSnapshot?.id === closingId ? this.activeLiveCameraSnapshot : undefined)
+      : undefined;
     this.clearCameraKeepAlive();
     this.liveCameraHidden = false;
     this.stopLiveTransport();
     this.activeLiveCameraId = null;
+    this.activeLiveCameraSnapshot = null;
     if (closingId && this.host.settings.connectionMode === "xiaomiCloud" && closingDev) {
       void this.releaseCameraP2PSession(closingDev, this.liveCameraToken);
     }
@@ -180,7 +186,10 @@ export class CameraLiveController {
     if (!rawPath) return null;
     const streamPath = rawPath.replace(/^\/api\/camera_proxy\//i, "/api/camera_proxy_stream/");
     if (/^https?:\/\//i.test(streamPath)) return streamPath;
-    const base = this.host.settings.haBaseURL.trim().replace(/\/+$/, "");
+    const rawBase = this.host.settings.haBaseURL.trim().replace(/\/+$/, "");
+    const base = /^\/api(?:\/|$)/i.test(streamPath)
+      ? rawBase.replace(/\/api$/i, "")
+      : rawBase;
     if (!base) return null;
     return `${base}${streamPath.startsWith("/") ? "" : "/"}${streamPath}`;
   }
@@ -209,11 +218,15 @@ export class CameraLiveController {
 
   public closeCameraLiveView(): void {
     const closingId = this.activeLiveCameraId;
-    const closingDev = closingId ? this.host.devices.find((d) => d.id === closingId) : undefined;
+    const closingDev = closingId
+      ? this.host.devices.find((d) => d.id === closingId) ??
+        (this.activeLiveCameraSnapshot?.id === closingId ? this.activeLiveCameraSnapshot : undefined)
+      : undefined;
     this.clearCameraKeepAlive();
     this.liveCameraHidden = false;
     this.stopLiveTransport();
     this.activeLiveCameraId = null;
+    this.activeLiveCameraSnapshot = null;
     this.liveCameraMuted = true;
     this.liveCameraQualityApplies = true;
     this.liveCameraStreamURL = null;

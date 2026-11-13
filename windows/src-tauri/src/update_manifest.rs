@@ -38,12 +38,22 @@ pub(crate) fn accept_failure_message(failure: AcceptFailure) -> String {
         AcceptFailure::BelowMinimum { current, minimum } => format!(
             "当前版本 {current} 低于此更新要求的最低版本 {minimum}，已中止安装"
         ),
-        AcceptFailure::SignatureInvalid
-        | AcceptFailure::Malformed
-        | AcceptFailure::KeyIdMismatch
-        | AcceptFailure::ReleaseVersionMismatch
-        | AcceptFailure::NotNewer
-        | AcceptFailure::UnexpectedPackage => {
+        AcceptFailure::Malformed => {
+            "更新发布清单格式无效或字段缺失，已中止安装".to_string()
+        }
+        AcceptFailure::KeyIdMismatch => {
+            "更新包签名密钥标识不在受信任公钥列表中，已中止安装".to_string()
+        }
+        AcceptFailure::ReleaseVersionMismatch => {
+            "发布清单版本与所请求的更新包版本不一致，已中止安装".to_string()
+        }
+        AcceptFailure::NotNewer => {
+            "当前运行版本已是最新或高于目标更新版本，无需重复安装".to_string()
+        }
+        AcceptFailure::UnexpectedPackage => {
+            "已签名的发布清单未收录当前安装包文件名，已中止安装".to_string()
+        }
+        AcceptFailure::SignatureInvalid => {
             "更新包 Ed25519 数字签名校验失败：签名与发布清单不匹配，已中止安装".to_string()
         }
     }
@@ -512,5 +522,22 @@ mod tests {
             "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.2.1/MenuBarHome-1.2.1.update.json",
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn accept_failure_messages_distinguish_non_signature_rejections() {
+        let sig_msg = accept_failure_message(AcceptFailure::SignatureInvalid);
+        assert!(sig_msg.contains("签名与发布清单不匹配"));
+        for non_sig in [
+            AcceptFailure::Malformed,
+            AcceptFailure::KeyIdMismatch,
+            AcceptFailure::ReleaseVersionMismatch,
+            AcceptFailure::NotNewer,
+            AcceptFailure::UnexpectedPackage,
+        ] {
+            let msg = accept_failure_message(non_sig);
+            assert!(!msg.is_empty());
+            assert_ne!(msg, sig_msg);
+        }
     }
 }

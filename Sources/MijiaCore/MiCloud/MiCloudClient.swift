@@ -15,10 +15,12 @@ public struct MiDeviceRecord: Equatable, Sendable {
     public var splitSiid: Int?
     public var localIp: String?
     public var mac: String?
+    public var token: String?
+    public var isShared: Bool
 
     public init(did: String, name: String, model: String, isOnline: Bool, specType: String? = nil,
                 splitParentDid: String? = nil, splitSiid: Int? = nil, localIp: String? = nil,
-                mac: String? = nil) {
+                mac: String? = nil, token: String? = nil, isShared: Bool = false) {
         self.did = did
         self.name = name
         self.model = model
@@ -28,6 +30,8 @@ public struct MiDeviceRecord: Equatable, Sendable {
         self.splitSiid = splitSiid
         self.localIp = localIp
         self.mac = mac
+        self.token = token
+        self.isShared = isShared
     }
 
     /// The did MIoT property and action calls address.
@@ -167,6 +171,8 @@ public protocol MiCloudAPI: Sendable {
     ) async throws -> [SensorHistorySample]
     func cameraLocalIP(did: String) async throws -> String?
     func cameraP2PVendor(did: String, appPublicKey: String) async throws -> MiCameraP2PVendor
+    func doorbellLatestEventTimestamp(did: String, eventKey: String, since: Date, now: Date) async throws -> Date?
+    func shutdown() async
 }
 
 extension MiCloudAPI {
@@ -193,6 +199,10 @@ extension MiCloudAPI {
     public func cameraP2PVendor(did: String, appPublicKey: String) async throws -> MiCameraP2PVendor {
         MiCameraP2PVendor(vendorName: "cs2", p2pId: nil, devicePublicKey: "", sign: "")
     }
+    public func doorbellLatestEventTimestamp(did: String, eventKey: String, since: Date, now: Date) async throws -> Date? {
+        nil
+    }
+    public func shutdown() async {}
 }
 
 // MARK: - Live Client
@@ -210,7 +220,11 @@ public actor MiCloudClient: MiCloudAPI {
     private let transport: any MiHTTPTransport
     private let userAgent: String
     public static let propChunkSize = 100
+    private static let emptyHistoryCooldown: TimeInterval = 300
     private var resolvedHistoryRouteByMetric: [String: HistoryRoute] = [:]
+    private var emptyHistoryRetryAfterByMetric: [String: Date] = [:]
+    private var activeTasks: [UUID: Task<(Data, HTTPURLResponse), any Error>] = [:]
+    private var isShutDown = false
 
     private struct HistoryRoute: Equatable, Sendable {
         enum Endpoint: Equatable, Sendable {
@@ -235,8 +249,20 @@ public actor MiCloudClient: MiCloudAPI {
         return "\(a)-\(b) APP/com.xiaomi.mihome APPV/10.5.201"
     }
 
+    public func shutdown() async {
+        guard !isShutDown else { return }
+        isShutDown = true
+        for task in activeTasks.values {
+            task.cancel()
+        }
+        activeTasks.removeAll()
+        resolvedHistoryRouteByMetric.removeAll()
+    }
+
     /// Signed RC4 POST to `<apiBase>/<api>`; returns the decrypted `result` payload.
     public func request(_ api: String, data: JSONValue) async throws -> JSONValue {
+        try Task.checkCancellation()
+        guard !isShutDown else { throw CancellationError() }
         let path = "/" + api.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: session.apiBaseURL + path) else { throw MiCloudError.badResponse("URL") }
         let nonce = MiCloudCrypto.makeNonce()
@@ -253,7 +279,19 @@ public actor MiCloudClient: MiCloudAPI {
         req.setValue(cookieHeader(), forHTTPHeaderField: "Cookie")
         req.httpBody = Data(MiCloudCrypto.formURLEncode(fields).utf8)
 
-        let (body, http) = try await transport.send(req)
+        let httpTransport = transport
+        let taskID = UUID()
+        let sendTask = Task<(Data, HTTPURLResponse), any Error> {
+            try await httpTransport.send(req)
+        }
+        activeTasks[taskID] = sendTask
+        defer { activeTasks.removeValue(forKey: taskID) }
+
+        let (body, http) = try await withTaskCancellationHandler {
+            try await sendTask.value
+        } onCancel: {
+            sendTask.cancel()
+        }
         do {
             return try Self.decodeResponse(body, statusCode: http.statusCode, signedNonce: signed)
         } catch let error as MiCloudError {
@@ -295,8 +333,18 @@ public actor MiCloudClient: MiCloudAPI {
         }
         guard statusCode == 200 else { throw MiCloudError.http(statusCode) }
         guard let text = String(data: body, encoding: .utf8),
-              let decrypted = try? MiCloudCrypto.decryptResponse(text, signedNonce: signedNonce),
-              let json = try? JSONDecoder().decode(JSONValue.self, from: decrypted) else {
+              let decrypted = try? MiCloudCrypto.decryptResponse(text, signedNonce: signedNonce) else {
+            throw MiCloudError.badResponse("无法解密")
+        }
+        let json: JSONValue
+        if let direct = try? JSONDecoder().decode(JSONValue.self, from: decrypted) {
+            json = direct
+        } else if let decryptedText = String(data: decrypted, encoding: .utf8),
+                  case let cleaned = cleanMalformedFirmwareJSON(decryptedText),
+                  !cleaned.isEmpty,
+                  let sanitized = try? JSONDecoder().decode(JSONValue.self, from: Data(cleaned.utf8)) {
+            json = sanitized
+        } else {
             throw MiCloudError.badResponse("无法解密")
         }
         return try unwrapResult(json)
@@ -490,16 +538,30 @@ public actor MiCloudClient: MiCloudAPI {
         (result["list"]?.arrayValue ?? []).compactMap { item in
             guard let did = item["did"]?.idString, let model = item["model"]?.stringValue else { return nil }
             let split = item["extra"]?["split"]
+            let rawSplitParent = split?["parentId"]?.idString
+            let rawSplitSiid = split?["moduleId"]?.intValue
+            let rawToken = item["token"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let token = (rawToken?.isEmpty == false) ? rawToken : nil
+            let shareFlag: Bool? = {
+                if let n = item["share_flag"]?.intValue { return n != 0 }
+                return item["share_flag"]?.boolValue
+            }()
+            let isShared = shareFlag
+                ?? item["isShared"]?.boolValue
+                ?? item["is_shared"]?.boolValue
+                ?? false
             return MiDeviceRecord(
                 did: did,
                 name: item["name"]?.stringValue ?? model,
                 model: model,
                 isOnline: item["isOnline"]?.boolValue ?? true,
                 specType: item["spec_type"]?.stringValue,
-                splitParentDid: split?["parentId"]?.idString,
-                splitSiid: split?["moduleId"]?.intValue,
+                splitParentDid: rawSplitSiid != nil ? rawSplitParent : nil,
+                splitSiid: rawSplitParent != nil ? rawSplitSiid : nil,
                 localIp: item["localip"]?.stringValue,
-                mac: item["mac"]?.stringValue
+                mac: item["mac"]?.stringValue,
+                token: token,
+                isShared: isShared
             )
         }
     }
@@ -554,7 +616,7 @@ public actor MiCloudClient: MiCloudAPI {
         // them the device list names dids no room owns, and the panel shows nothing (#76, #67).
         var visited: Set<String> = []
         var maxId = merged["max_id"]?.idString ?? ""
-        guard merged["has_more"]?.boolValue == true, !maxId.isEmpty else { return rooms }
+        guard Self.hasMoreRooms(merged), !maxId.isEmpty else { return rooms }
         for _ in 0..<20 {
             guard visited.insert(maxId).inserted else { break }
             let page: JSONValue
@@ -570,10 +632,20 @@ public actor MiCloudClient: MiCloudAPI {
             }
             rooms = Self.mergeRoomPage(page, into: rooms)
             let nextMaxId = page["max_id"]?.idString ?? ""
-            guard page["has_more"]?.boolValue == true, !nextMaxId.isEmpty else { break }
+            guard Self.hasMoreRooms(page), !nextMaxId.isEmpty else { break }
             maxId = nextMaxId
         }
         return rooms
+    }
+
+    /// `has_more` comes back as a real boolean or as 1/0 depending on the endpoint; Windows
+    /// (`client.ts:hasMoreHomes`) accepts both, so a `1` must not end the room pages early.
+    static func hasMoreRooms(_ result: JSONValue) -> Bool {
+        switch result["has_more"] {
+        case .bool(let flag)?: return flag
+        case .number(let number)?: return number == 1
+        default: return false
+        }
     }
 
     /// Merges one `v2/homeroom/get_dev_room_page` page into the rooms already parsed from
@@ -581,25 +653,28 @@ public actor MiCloudClient: MiCloudAPI {
     /// omits the names, so it only adds dids — never a second room, and never a did twice.
     static func mergeRoomPage(_ page: JSONValue, into rooms: [MiRoom]) -> [MiRoom] {
         var result = rooms
-        func appendDids(_ dids: [String], toRoom roomId: String, homeId: String) {
+        func appendDids(_ dids: [String], toRoom roomId: String, homeId: String, roomName: String = "") {
             guard !dids.isEmpty, !roomId.isEmpty else { return }
             guard let index = result.firstIndex(where: { $0.id == roomId }) else {
-                // The page can name a home whose first page carried no dids at all, so no
-                // `home_<id>` room exists yet. Take the label from a sibling room of the home.
+                // The page can name a home or room whose first page omitted it. Preserve any room
+                // name carried by the continuation page and inherit home metadata from a sibling.
                 let sibling = result.first { $0.homeId == homeId }
                 result.append(MiRoom(
                     id: roomId,
-                    name: "",
+                    name: roomName,
                     dids: [],
                     homeId: homeId,
                     homeName: sibling?.homeName ?? "",
                     isSharedHome: sibling?.isSharedHome ?? false,
                     ownerUid: sibling?.ownerUid
                 ))
-                appendDids(dids, toRoom: roomId, homeId: homeId)
+                appendDids(dids, toRoom: roomId, homeId: homeId, roomName: roomName)
                 return
             }
             var room = result[index]
+            if room.name.isEmpty, !roomName.isEmpty {
+                room.name = roomName
+            }
             for did in dids where !room.dids.contains(did) {
                 room.dids.append(did)
             }
@@ -618,7 +693,8 @@ public actor MiCloudClient: MiCloudAPI {
                 appendDids(
                     (room["dids"]?.arrayValue ?? []).compactMap(\.idString),
                     toRoom: roomId,
-                    homeId: homeId
+                    homeId: homeId,
+                    roomName: room["name"]?.stringValue ?? ""
                 )
             }
         }
@@ -778,7 +854,8 @@ public actor MiCloudClient: MiCloudAPI {
             isTemperature: true,
             window: window,
             timeStart: timeStart,
-            timeEnd: timeEnd
+            timeEnd: timeEnd,
+            now: now
         )
         let humPoints = try await fetchMetricSeries(
             did: did,
@@ -786,7 +863,8 @@ public actor MiCloudClient: MiCloudAPI {
             isTemperature: false,
             window: window,
             timeStart: timeStart,
-            timeEnd: timeEnd
+            timeEnd: timeEnd,
+            now: now
         )
         return Self.combineMetricSeries(temperature: tempPoints, humidity: humPoints)
     }
@@ -797,10 +875,12 @@ public actor MiCloudClient: MiCloudAPI {
         isTemperature: Bool,
         window: SensorHistoryWindow,
         timeStart: Int,
-        timeEnd: Int
+        timeEnd: Int,
+        now: Date
     ) async throws -> [MetricSamplePoint] {
         let cacheId = "\(did)|\(isTemperature ? "temp" : "hum")|\(window.rawValue)"
-        if let cachedRoute = resolvedHistoryRouteByMetric[cacheId] {
+        let cachedRoute = resolvedHistoryRouteByMetric[cacheId]
+        if let cachedRoute {
             let pts = try await queryHistoryRoute(
                 cachedRoute,
                 did: did,
@@ -810,11 +890,16 @@ public actor MiCloudClient: MiCloudAPI {
                 timeEnd: timeEnd
             )
             if !pts.isEmpty { return pts }
+            resolvedHistoryRouteByMetric.removeValue(forKey: cacheId)
+        } else if let retryAfter = emptyHistoryRetryAfterByMetric[cacheId] {
+            if now < retryAfter { return [] }
+            emptyHistoryRetryAfterByMetric.removeValue(forKey: cacheId)
         }
 
         let statCandidates = Self.candidateKeysForStatistics(miotKey: miotKey, isTemperature: isTemperature)
         for key in statCandidates {
             let route = HistoryRoute(endpoint: .statistics, key: key)
+            if route == cachedRoute { continue }
             let pts = try await queryHistoryRoute(
                 route,
                 did: did,
@@ -824,6 +909,7 @@ public actor MiCloudClient: MiCloudAPI {
                 timeEnd: timeEnd
             )
             if !pts.isEmpty {
+                emptyHistoryRetryAfterByMetric.removeValue(forKey: cacheId)
                 resolvedHistoryRouteByMetric[cacheId] = route
                 return pts
             }
@@ -834,6 +920,7 @@ public actor MiCloudClient: MiCloudAPI {
         for group in groups {
             for key in dataCandidates {
                 let route = HistoryRoute(endpoint: .deviceData(group: group), key: key)
+                if route == cachedRoute { continue }
                 let pts = try await queryHistoryRoute(
                     route,
                     did: did,
@@ -843,11 +930,13 @@ public actor MiCloudClient: MiCloudAPI {
                     timeEnd: timeEnd
                 )
                 if !pts.isEmpty {
+                    emptyHistoryRetryAfterByMetric.removeValue(forKey: cacheId)
                     resolvedHistoryRouteByMetric[cacheId] = route
                     return pts
                 }
             }
         }
+        emptyHistoryRetryAfterByMetric[cacheId] = now.addingTimeInterval(Self.emptyHistoryCooldown)
         return []
     }
 
@@ -1090,5 +1179,83 @@ public actor MiCloudClient: MiCloudAPI {
             ))
         }
         return samples
+    }
+
+    // MARK: - Doorbell Event History (`user/get_user_device_data`)
+
+    /// Upper bound `2^53 - 2`: exact in IEEE-754 `Double`, fits in `Int`, and leaves headroom for `timeStart + 1`.
+    private static let maxSafeEpochSeconds: Double = 9_007_199_254_740_990
+
+    static func checkedEpochSeconds(_ interval: TimeInterval) -> Int? {
+        guard interval.isFinite, interval >= 0, interval <= maxSafeEpochSeconds else {
+            return nil
+        }
+        let truncated = interval.rounded(.towardZero)
+        guard let whole = Int(exactly: truncated), whole >= 0, whole < Int.max else {
+            return nil
+        }
+        return whole
+    }
+
+    public func doorbellLatestEventTimestamp(
+        did: String,
+        eventKey: String,
+        since: Date,
+        now: Date
+    ) async throws -> Date? {
+        guard let nowSeconds = Self.checkedEpochSeconds(now.timeIntervalSince1970) else {
+            return nil
+        }
+        let sinceInterval = since.timeIntervalSince1970
+        guard sinceInterval.isFinite else { return nil }
+        let timeStart: Int
+        if sinceInterval <= 0 {
+            timeStart = 0
+        } else if let sinceSeconds = Self.checkedEpochSeconds(sinceInterval) {
+            timeStart = sinceSeconds
+        } else {
+            return nil
+        }
+        let timeEnd = max(timeStart + 1, nowSeconds)
+        let result = try await request("user/get_user_device_data", data: .object([
+            "uid": .string(session.userId),
+            "did": .string(did),
+            "type": .string("event"),
+            "key": .string(eventKey),
+            "time_start": .number(Double(timeStart)),
+            "time_end": .number(Double(timeEnd)),
+            "limit": .number(5),
+        ]))
+        return Self.parseLatestEventTimestamp(result)
+    }
+
+    public static func parseLatestEventTimestamp(_ result: JSONValue) -> Date? {
+        let items: [JSONValue]
+        if let array = result.arrayValue {
+            items = array
+        } else if let nested = result["list"]?.arrayValue ?? result["data"]?.arrayValue ?? result["result"]?.arrayValue {
+            items = nested
+        } else {
+            return nil
+        }
+
+        var latest: Date?
+        for item in items {
+            guard let rawTime = item["time"]?.doubleValue ?? item["timestamp"]?.doubleValue ?? item["ts"]?.doubleValue,
+                  rawTime.isFinite,
+                  rawTime > 0 else { continue }
+            let seconds = rawTime > 10_000_000_000 ? rawTime / 1000.0 : rawTime
+            guard seconds.isFinite,
+                  seconds > 0,
+                  let wholeSeconds = Self.checkedEpochSeconds(seconds),
+                  wholeSeconds > 0 else { continue }
+            let date = Date(timeIntervalSince1970: seconds)
+            if let current = latest {
+                if date > current { latest = date }
+            } else {
+                latest = date
+            }
+        }
+        return latest
     }
 }

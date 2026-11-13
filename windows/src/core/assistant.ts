@@ -1,5 +1,6 @@
 export * from "./assistant/actionPolicy.js";
 export * from "./assistant/context.js";
+export { isSwitchedLightDevice } from "./assistant/deviceCategory.js";
 export * from "./assistant/grokBall.js";
 export * from "./assistant/habits.js";
 export * from "./assistant/intent.js";

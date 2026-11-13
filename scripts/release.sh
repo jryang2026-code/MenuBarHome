@@ -69,7 +69,21 @@ if ! printf '%s' "$PINNED" | grep -Eq '^[0-9a-f]{40}$'; then
     exit 1
 fi
 if [ "$PINNED" != "$MACOS_CERT_SHA1" ]; then
-    echo "❌ App 内钉住的证书 SHA-1（${PINNED}）与本次签名证书（${MACOS_CERT_SHA1}）不一致。" >&2
+    echo "❌ App 内钉住的证书 SHA-1（${PINNED}）与期望签名证书（${MACOS_CERT_SHA1}）不一致。" >&2
+    exit 1
+fi
+CERT_TMP="$(mktemp -d "${TMPDIR:-/tmp}/mmb-release-cert.XXXXXX")"
+if ! (cd "$CERT_TMP" && codesign -d --extract-certificates "$APP" >/dev/null 2>&1) \
+    || [ ! -s "$CERT_TMP/codesign0" ]; then
+    rm -rf "$CERT_TMP"
+    echo "❌ 无法从已签名的 App 提取实际签名叶证书（codesign0）。" >&2
+    exit 1
+fi
+ACTUAL_CERT_SHA1="$(openssl x509 -inform DER -in "$CERT_TMP/codesign0" -noout -fingerprint -sha1 2>/dev/null \
+    | sed 's/^.*=//' | tr -d ':' | tr 'A-F' 'a-f' || true)"
+rm -rf "$CERT_TMP"
+if [ "$ACTUAL_CERT_SHA1" != "$PINNED" ]; then
+    echo "❌ App 实际签名叶证书 SHA-1（${ACTUAL_CERT_SHA1:-<空>}）与 Info.plist 钉住的 MijiaCodeSignCertSHA1（${PINNED}）不一致！" >&2
     exit 1
 fi
 
@@ -98,7 +112,7 @@ else
 
     echo "▶ [4/5] 盖章（离线也能通过系统检查）"
     xcrun stapler staple "$DMG"
-    spctl -a -t open --context context:primary-signature -v "$DMG" || true
+    spctl -a -t open --context context:primary-signature -v "$DMG"
 fi
 
 echo "▶ [5/5] 最终检查"
@@ -117,13 +131,44 @@ if ! strings "$APP/Contents/Resources/bin/go2rtc" | grep -F "api/xiaomi/ptz" >/d
     echo "❌ 发布包内置 go2rtc 缺少 /api/xiaomi/ptz 云台补丁路由或版本头，已中止发布！" >&2
     exit 1
 fi
-for file in "$APP/Contents/MacOS/MenuBarMijiaApp" "$DMG"; do
+for file in "$APP/Contents/MacOS/MenuBarMijiaApp" "$APP/Contents/Resources/bin/go2rtc"; do
     if grep -aq "/Users/" "$file"; then
         echo "❌ 检测到 $(basename "$file") 内残留本机路径 (/Users/)，已中止发布！" >&2
         grep -aob "/Users/" "$file" | head -n 5 >&2
         exit 1
     fi
 done
+
+# UDZO DMG 是压缩镜像，直接 grep DMG 文件无法检出内部路径泄漏；挂载后直接校验镜像内实际分发的 .app。
+DMG_MNT="$(mktemp -d "${TMPDIR:-/tmp}/mmb-release-dmg.XXXXXX")"
+detach_dmg() {
+    if [ -n "${DMG_MNT:-}" ] && [ -d "$DMG_MNT" ]; then
+        hdiutil detach "$DMG_MNT" -force >/dev/null 2>&1 || true
+        rmdir "$DMG_MNT" >/dev/null 2>&1 || true
+    fi
+}
+trap detach_dmg EXIT
+if ! hdiutil attach -readonly -nobrowse -noverify -mountpoint "$DMG_MNT" "$DMG" >/dev/null 2>&1; then
+    sleep 1
+    hdiutil attach -readonly -nobrowse -noverify -mountpoint "$DMG_MNT" "$DMG" >/dev/null
+fi
+MOUNTED_APP="$DMG_MNT/MenuBarHome.app"
+[ -d "$MOUNTED_APP" ] || { echo "❌ DMG 挂载后未找到 MenuBarHome.app！" >&2; exit 1; }
+codesign --verify --deep --strict "$MOUNTED_APP"
+MOUNTED_PIN="$(/usr/libexec/PlistBuddy -c "Print :MijiaCodeSignCertSHA1" "$MOUNTED_APP/Contents/Info.plist" 2>/dev/null || true)"
+if [ "$MOUNTED_PIN" != "$PINNED" ]; then
+    echo "❌ DMG 内 MenuBarHome.app 的 MijiaCodeSignCertSHA1（${MOUNTED_PIN:-<空>}）与预期（${PINNED}）不一致！" >&2
+    exit 1
+fi
+for file in "$MOUNTED_APP/Contents/MacOS/MenuBarMijiaApp" "$MOUNTED_APP/Contents/Resources/bin/go2rtc"; do
+    if grep -aq "/Users/" "$file"; then
+        echo "❌ 检测到 DMG 内 $(basename "$file") 残留本机路径 (/Users/)，已中止发布！" >&2
+        grep -aob "/Users/" "$file" | head -n 5 >&2
+        exit 1
+    fi
+done
+detach_dmg
+trap - EXIT
 (cd "$DIST" && shasum -a 256 "$(basename "$DMG")" | tee "$(basename "$DMG").sha256")
 
 echo "✅ 完成：$DMG"

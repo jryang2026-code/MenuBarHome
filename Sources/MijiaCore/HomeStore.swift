@@ -302,7 +302,13 @@ public final class HomeStore {
     }
 
     /// Set by `SystemActivityMonitor` from the distributed screen-lock notifications, not persisted.
-    public internal(set) var isScreenLocked = false
+    public internal(set) var isScreenLocked = false {
+        didSet {
+            if isScreenLocked != oldValue {
+                syncResumeScreenLocked(isScreenLocked)
+            }
+        }
+    }
 
     /// Presents the second confirmation for a manual high-risk action. The app installs an AppKit
     /// alert; tests inject a closure so no window is needed.
@@ -536,13 +542,32 @@ public final class HomeStore {
     public internal(set) var sourceStatuses: [HomeBackend: ConnectionStatus] = [:]
     /// Explicit per-card source choices, keyed by canonical card id (#111).
     public internal(set) var pinnedDeviceSources: [String: HomeBackend] = [:] {
-        didSet { DeviceSourcePinStorage.save(pinnedDeviceSources, defaults: userDefaults) }
+        didSet {
+            pinnedDeviceSourcesBox.set(pinnedDeviceSources)
+            DeviceSourcePinStorage.save(pinnedDeviceSources, defaults: userDefaults)
+        }
     }
+    @ObservationIgnored let pinnedDeviceSourcesBox: DeviceSourcePinBox
     /// Sources that contributed the latest merged snapshot.
     public internal(set) var connectedBackends: Set<HomeBackend> = []
 
     public func deviceBackend(for deviceId: String) -> HomeBackend {
         deviceBackends[deviceId] ?? homeBackend
+    }
+
+    /// Header shown in the card context menu for dual-source cards; explains temporary fallback when
+    /// the user's pinned source is offline and the other source is serving the card instead.
+    public func currentSourceMenuTitle(for deviceId: String) -> String {
+        let active = deviceBackend(for: deviceId)
+        if let pinned = pinnedSource(for: deviceId), pinned != active {
+            return L10n.format(
+                "当前来源：%@（%@离线，临时兜底）",
+                "Current source: %@ (%@ offline, fallback)",
+                active.shortTitle,
+                pinned.shortTitle
+            )
+        }
+        return L10n.format("当前来源：%@", "Current source: %@", active.shortTitle)
     }
 
     /// A card is pinnable only when both sources supplied the same physical device.
@@ -693,9 +718,42 @@ public final class HomeStore {
     var latestLGDevice: SmartDevice?
     var eventTask: Task<Void, Never>?
     /// Panel open, Mac awake, Low Power Mode; the provider paces polling with it (#26).
-    public internal(set) var pollingContext = PollingContext()
+    public internal(set) var pollingContext = PollingContext() {
+        didSet {
+            if pollingContext.systemActive != oldValue.systemActive {
+                syncResumeSystemActive(pollingContext.systemActive)
+            }
+        }
+    }
     var pollingContextSync: Task<Void, Never>?
     var debounceTasks: [String: Task<Void, Never>] = [:]
+    struct DebouncedWriteState {
+        let token: UUID
+        let deviceId: String
+        let origin: SmartDevice
+    }
+    var debouncedWrites: [String: DebouncedWriteState] = [:]
+    struct ManualWritePatch {
+        enum Phase {
+            case debouncing
+            case inFlight
+            case succeeded
+        }
+        let slotKey: String
+        let token: UUID
+        var phase: Phase
+        let fields: Set<OptimisticField>
+        var lockEntry: OptimisticLockEntry?
+        let apply: @Sendable (inout SmartDevice) -> Void
+    }
+    struct ManualWriteSession {
+        var revision: UInt64
+        var base: SmartDevice
+        var baseCoverOrigin: Int?
+        var baseFieldLocks: [OptimisticField: OptimisticLockEntry]
+        var patches: [ManualWritePatch]
+    }
+    var manualWriteSessions: [String: ManualWriteSession] = [:]
     struct FacetWriteState {
         let token: UUID
         let origin: JSONValue?
@@ -709,8 +767,73 @@ public final class HomeStore {
     /// Undo tasks currently suspended on an in-flight batch. Tests wait on this instead of yielding.
     var undoInFlightWaiters = 0
     private var toastTimerTask: Task<Void, Never>?
-    var optimisticLockUntil: [String: ContinuousClock.Instant] = [:]
+    var optimisticFieldLocks: [OptimisticLockKey: OptimisticLockEntry] = [:]
+    var optimisticFacetLocks: [String: OptimisticLockEntry] = [:]
     var optimisticLockRevision: [String: UInt64] = [:]
+    var optimisticFieldRevisions: [OptimisticLockKey: UInt64] = [:]
+    var optimisticFacetRevisions: [String: UInt64] = [:]
+    @ObservationIgnored var hasCustomOptimisticNow = false
+    @ObservationIgnored var optimisticNow: @Sendable () -> Date = { Date() } {
+        didSet { hasCustomOptimisticNow = true }
+    }
+    @ObservationIgnored let optimisticClockAnchorInstant = ContinuousClock.now
+    @ObservationIgnored let optimisticClockAnchorDate = Date()
+
+    /// Legacy device-level view backed by per-field and per-facet optimistic lock entries so
+    /// existing diagnostics and test seams keep working without freezing unrelated fields.
+    var optimisticLockUntil: [String: ContinuousClock.Instant] {
+        get {
+            var maxInstantByDevice: [String: ContinuousClock.Instant] = [:]
+            for (key, entry) in optimisticFieldLocks {
+                let instant = entry.untilInstant ?? continuousInstant(from: entry.until)
+                if let current = maxInstantByDevice[key.deviceId], current >= instant { continue }
+                maxInstantByDevice[key.deviceId] = instant
+            }
+            for (facetKey, entry) in optimisticFacetLocks {
+                guard let deviceId = Self.deviceId(fromFacetWriteKey: facetKey) else { continue }
+                let instant = entry.untilInstant ?? continuousInstant(from: entry.until)
+                if let current = maxInstantByDevice[deviceId], current >= instant { continue }
+                maxInstantByDevice[deviceId] = instant
+            }
+            return maxInstantByDevice
+        }
+        set {
+            let currentDates = optimisticLockMaxDatesByDevice()
+            let currentInstants = optimisticLockMaxInstantsByDevice()
+            for (deviceId, oldMaxDate) in currentDates {
+                guard let updatedInstant = newValue[deviceId] else {
+                    clearOptimisticLockEntries(for: deviceId)
+                    continue
+                }
+                if let oldMaxInstant = currentInstants[deviceId], oldMaxInstant == updatedInstant {
+                    continue
+                }
+                let updatedDate = date(from: updatedInstant)
+                if currentInstants[deviceId] == nil && abs(updatedDate.timeIntervalSince(oldMaxDate)) <= 1e-6 {
+                    continue
+                }
+                setOptimisticLockExpiration(updatedDate, untilInstant: updatedInstant, for: deviceId)
+            }
+            for (deviceId, instant) in newValue where currentDates[deviceId] == nil {
+                let rev = optimisticLockRevision[deviceId] ?? 1
+                let fields: Set<OptimisticField>
+                if let kind = devices.first(where: { $0.id == deviceId })?.kind {
+                    let defaults = OptimisticField.primaryPowerFields(for: kind)
+                    fields = defaults.isEmpty ? [.power] : defaults
+                } else {
+                    fields = [.power]
+                }
+                let until = date(from: instant)
+                for field in fields {
+                    optimisticFieldLocks[.field(deviceId, field)] = OptimisticLockEntry(
+                        until: until,
+                        untilInstant: hasCustomOptimisticNow ? nil : instant,
+                        revision: rev
+                    )
+                }
+            }
+        }
+    }
     /// Position the card showed when the current cover travel started. A stopped report at that
     /// position is the pre-command snapshot; any other stopped position is the motor's real stop.
     var coverCommandOrigins: [String: Int] = [:]
@@ -739,7 +862,9 @@ public final class HomeStore {
         let ud = defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.userDefaults = ud
         self.credentialVault = credentialVault
-        self.pinnedDeviceSources = DeviceSourcePinStorage.load(defaults: ud)
+        let initialPins = DeviceSourcePinStorage.load(defaults: ud)
+        self.pinnedDeviceSourcesBox = DeviceSourcePinBox(initialPins)
+        self.pinnedDeviceSources = initialPins
         let isTestEnvironment = (provider != nil || dualSource != nil || defaultsSuiteName != nil)
         self.isTestEnvironment = isTestEnvironment
         self.updater = updater ?? AppUpdater()
@@ -881,7 +1006,8 @@ public final class HomeStore {
             initialProvider = Self.makeComposite(
                 homeAssistant: dualSource.homeAssistant,
                 xiaomiCloud: dualSource.xiaomiCloud,
-                defaults: ud
+                defaults: ud,
+                pinBox: pinnedDeviceSourcesBox
             )
         } else {
             initialProvider = DemoHomeProvider()
@@ -1126,4 +1252,15 @@ public final class HomeStore {
     @ObservationIgnored var raycastExportTask: Task<Void, Never>?
     /// Last snapshot written to disk, compared without `updatedAt` to skip identical writes.
     @ObservationIgnored var lastExportedRaycastSnapshot: RaycastSnapshot?
+
+    // MARK: - Debounced Resume State
+
+    @ObservationIgnored var debouncedResumeCoordinator: DebouncedResumeCoordinator?
+    @ObservationIgnored var resumeSyncTask: Task<Void, Never>?
+    @ObservationIgnored var isNetworkSatisfiedForResume: Bool = true
+    @ObservationIgnored var isResumeShutdown: Bool = false
+    @ObservationIgnored var resumeDebounceInterval: Duration = .milliseconds(300)
+    @ObservationIgnored var resumeMaxDelay: Duration = .seconds(5)
+    @ObservationIgnored var resumeScheduler: DebouncedResumeScheduler = .live
+    @ObservationIgnored var onDebouncedResumeHook: (@MainActor (Set<ResumeReason>) async -> Void)?
 }

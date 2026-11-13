@@ -47,7 +47,7 @@ export function processScheduledCommands(host: MenuMijiaWindowsApp, nowMs = Date
 
 /**
  * Runs a missed timer the user just confirmed ("Run Now"), following the store rule in
- * `.claude/rules/standards-store-locks-timers.md` §7.
+ * `CODING_STANDARDS.md` §7.
  *
  * The screen-lock guard runs **before** the entry leaves the list: a refused run stays in
  * `missedScheduledCommands` on screen and on disk, so the user can retry once the workstation is

@@ -48,7 +48,7 @@ public enum DeviceDeduplicator {
         knownPreferenceIDs: Set<String> = [],
         pinnedBackends: [String: HomeBackend] = [:]
     ) -> DeviceMergeResult {
-        let haCandidates = candidates(in: homeAssistant, backend: .homeAssistant)
+        var haCandidates = candidates(in: homeAssistant, backend: .homeAssistant)
         let miCandidates = candidates(in: xiaomiCloud, backend: .xiaomiCloud)
         let haFallbackCounts = fallbackKeyCounts(in: haCandidates)
         let miFallbackCounts = fallbackKeyCounts(in: miCandidates)
@@ -71,6 +71,12 @@ public enum DeviceDeduplicator {
             miCandidates: miCandidates,
             pairing: &pairing,
             key: nameFallbackKey
+        )
+        reconcilePairedHALightGroups(
+            haCandidates: &haCandidates,
+            miCandidates: miCandidates,
+            pairing: pairing,
+            miLightGroupOwners: xiaomiCloud?.lightGroupOwners ?? [:]
         )
 
         var draftCards: [DraftCard] = []
@@ -152,20 +158,37 @@ public enum DeviceDeduplicator {
             }
         }
 
-        let cards: [Card] = draftCards.map { draft in
+        var memberCardIndicesByID: [String: Set<Int>] = [:]
+        for (index, draft) in draftCards.enumerated() {
+            memberCardIndicesByID[draft.winner.device.id, default: []].insert(index)
+            if let other = draft.other {
+                memberCardIndicesByID[other.device.id, default: []].insert(index)
+            }
+        }
+
+        let cards: [Card] = draftCards.enumerated().map { index, draft in
             let validFallbackKeys = draft.fallbackKeys.filter { cardFallbackCounts[$0] == 1 }
-            let strongMatch = canonical.canonicalID(forKeys: draft.strongKeys)
-            let fallbackMatch = strongMatch == nil
-                ? canonical.canonicalID(forKeys: validFallbackKeys).flatMap {
-                    strongClaimedCanonicals.contains($0) ? nil : $0
-                }
+            let isFreeOfForeignMember: (String) -> Bool = { candidate in
+                (memberCardIndicesByID[candidate] ?? []).subtracting([index]).isEmpty
+            }
+            let rawStrongMatch = canonical.canonicalID(forKeys: draft.strongKeys)
+            let strongMatch = rawStrongMatch.flatMap { isFreeOfForeignMember($0) ? $0 : nil }
+            let rawFallbackMatch = rawStrongMatch == nil
+                ? canonical.canonicalID(forKeys: validFallbackKeys)
                 : nil
-            let chosen = strongMatch ?? fallbackMatch ?? draft.defaultPairedCanonical
+            let fallbackMatch = rawFallbackMatch.flatMap {
+                (strongClaimedCanonicals.contains($0) || !isFreeOfForeignMember($0)) ? nil : $0
+            }
+            let hadStaleCanonicalConflict = (rawStrongMatch != nil && strongMatch == nil)
+                || (rawFallbackMatch != nil && fallbackMatch == nil)
+            let defaultPaired = draft.defaultPairedCanonical.flatMap { isFreeOfForeignMember($0) ? $0 : nil }
+            let chosen = strongMatch ?? fallbackMatch ?? defaultPaired
             return Card(
                 winner: draft.winner,
                 other: draft.other,
                 canonicalKeys: draft.strongKeys + validFallbackKeys,
-                chosenCanonical: chosen
+                chosenCanonical: chosen,
+                hadStaleCanonicalConflict: hadStaleCanonicalConflict
             )
         }
 
@@ -202,33 +225,47 @@ public enum DeviceDeduplicator {
         var miCanonicalIDs: [String: String] = [:]
         var haCanonicalIDs: [String: String] = [:]
 
+        var usedCanonicalIDs: Set<String> = []
+
         for card in cards {
             var card = card
             let canonicalID: String
             let canUseCanonical: Bool
             if card.other != nil {
-                canUseCanonical = card.chosenCanonical.map { pairedClaims[$0] == 1 } ?? false
+                canUseCanonical = card.chosenCanonical.map {
+                    pairedClaims[$0] == 1 && !usedCanonicalIDs.contains($0)
+                } ?? false
             } else {
                 canUseCanonical = card.chosenCanonical.map {
-                    unpairedClaims[$0] == 1 && pairedClaims[$0] == nil
+                    unpairedClaims[$0] == 1 && pairedClaims[$0] == nil && !usedCanonicalIDs.contains($0)
                 } ?? false
             }
             if let chosen = card.chosenCanonical, canUseCanonical {
                 updatedCanonical.assign(chosen, toKeys: card.canonicalKeys)
                 canonicalID = chosen
-            } else {
+            } else if !usedCanonicalIDs.contains(card.winner.device.id) {
+                if (card.other != nil || card.chosenCanonical != nil || card.hadStaleCanonicalConflict),
+                   !card.canonicalKeys.isEmpty {
+                    updatedCanonical.assign(card.winner.device.id, toKeys: card.canonicalKeys)
+                }
                 canonicalID = card.winner.device.id
+            } else if let otherID = card.other?.device.id, !usedCanonicalIDs.contains(otherID) {
+                canonicalID = otherID
+            } else {
+                canonicalID = "\(card.winner.backend.rawValue):\(card.winner.device.id)"
             }
+            usedCanonicalIDs.insert(canonicalID)
 
             let wasPaired = card.other != nil
             if let pinned = pinnedBackends[canonicalID],
                let other = card.other,
                let pinnedCandidate = [card.winner, other].first(where: {
-                   $0.backend == pinned && $0.device.isOnline
+                   $0.backend == pinned && ($0.device.isOnline || !card.winner.device.isOnline)
                }),
                pinnedCandidate.backend != card.winner.backend {
-                // A pin wins only while that source can actually drive the card; offline keeps the
-                // automatic online/capability fallback (#111).
+                // A pin wins whenever that source is online, or when both sources are offline so a
+                // user pin never stays stuck on an unwanted backend; an online source still takes over
+                // when the pinned source is offline (#111).
                 card.other = card.winner
                 card.winner = pinnedCandidate
             }
@@ -347,6 +384,7 @@ public enum DeviceDeduplicator {
                   mergedIDs.contains(groupID) else { return }
             owners[memberID] = groupID
         }
+        DeviceSynthesizer.reconcileLightGroups(&home)
 
         return DeviceMergeResult(
             home: home,
@@ -476,8 +514,79 @@ public enum DeviceDeduplicator {
 
     private struct Candidate {
         let backend: HomeBackend
-        let device: SmartDevice
+        var device: SmartDevice
         let identity: DeviceSourceIdentity?
+    }
+
+    /// HA's `xiaomi_home` virtual light groups (`cn_group_*`, paired to Mi `group.*`) often remain
+    /// `isOnline: true` / `on` after members turn off outside HA or lose wall-switch mains power.
+    /// Clamp paired HA group candidates from their paired HA members and Mi group/member truth
+    /// before automatic winner selection runs.
+    private static func reconcilePairedHALightGroups(
+        haCandidates: inout [Candidate],
+        miCandidates: [Candidate],
+        pairing: PairingState,
+        miLightGroupOwners: [String: String]
+    ) {
+        guard !miLightGroupOwners.isEmpty, !pairing.miIndexForHA.isEmpty else { return }
+        var memberMiIDsByGroup: [String: [String]] = [:]
+        for (memberID, groupID) in miLightGroupOwners {
+            memberMiIDsByGroup[groupID, default: []].append(memberID)
+        }
+        let miIndexByID = Dictionary(
+            miCandidates.enumerated().map { ($0.element.device.id, $0.offset) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let haIndexForMi = Dictionary(
+            pairing.miIndexForHA.map { ($0.value, $0.key) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        for (haIndex, miIndex) in pairing.miIndexForHA {
+            let groupMiDevice = miCandidates[miIndex].device
+            guard groupMiDevice.id.hasPrefix("group."),
+                  let memberMiIDs = memberMiIDsByGroup[groupMiDevice.id],
+                  !memberMiIDs.isEmpty else { continue }
+
+            var haLightMembers: [(isOnline: Bool, isOn: Bool)] = []
+            var miLightMembers: [(isOnline: Bool, isOn: Bool)] = []
+            for memberMiID in memberMiIDs {
+                guard let miMemberIdx = miIndexByID[memberMiID] else { continue }
+                let miMember = miCandidates[miMemberIdx].device
+                if case .light(let spec) = miMember.kind {
+                    miLightMembers.append((miMember.isOnline, spec.isOn))
+                }
+                if let haMemberIdx = haIndexForMi[miMemberIdx],
+                   case .light(let haSpec) = haCandidates[haMemberIdx].device.kind {
+                    haLightMembers.append((haCandidates[haMemberIdx].device.isOnline, haSpec.isOn))
+                }
+            }
+
+            if !haLightMembers.isEmpty {
+                DeviceSynthesizer.reconcileLightGroupDevice(
+                    &haCandidates[haIndex].device,
+                    memberStates: haLightMembers
+                )
+            }
+            if !groupMiDevice.isOnline,
+               !miLightMembers.isEmpty,
+               miLightMembers.allSatisfy({ !$0.isOnline }) {
+                DeviceSynthesizer.reconcileLightGroupDevice(
+                    &haCandidates[haIndex].device,
+                    memberStates: [],
+                    forceOfflineAndOff: true
+                )
+            } else if haLightMembers.isEmpty,
+                      case .light(let miGroupSpec) = groupMiDevice.kind,
+                      !miGroupSpec.isOn,
+                      !miLightMembers.isEmpty,
+                      miLightMembers.filter(\.isOnline).allSatisfy({ !$0.isOn }) {
+                DeviceSynthesizer.reconcileLightGroupDevice(
+                    &haCandidates[haIndex].device,
+                    memberStates: miLightMembers
+                )
+            }
+        }
     }
 
     private struct PairingState {
@@ -505,6 +614,7 @@ public enum DeviceDeduplicator {
         var other: Candidate?
         let canonicalKeys: [String]
         let chosenCanonical: String?
+        let hadStaleCanonicalConflict: Bool
     }
 
     private static func candidates(in home: SynthesizedHome?, backend: HomeBackend) -> [Candidate] {

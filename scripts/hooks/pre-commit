@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Local commit gate: `scripts/check.sh`, snapshots included (this Mac records the baselines; the
-# GitHub-hosted CI skips the snapshot comparison).
+# Local commit gate: `scripts/check.sh --lint-only` (secret scan, mechanical lints, script
+# self-tests). The test suites and the snapshot comparison do not run on every commit: run
+# `bash scripts/check.sh` once before opening or updating a PR (CI skips the snapshot comparison,
+# so that run is the only one that compares pixels). MMB_HOOK_FULL=1 runs the full gate here.
 #
-# The full gate prints every test line (~180 KB). A commit only needs the verdict, so the run goes
-# to a log file: success prints the summary lines, including the long-file list, failure prints
-# the failing cases plus the log's tail and keeps the log. MMB_HOOK_VERBOSE=1 streams everything.
+# A commit only needs the verdict, so the run goes to a log file: success prints the summary
+# lines, including the long-file list, failure prints the failing cases plus the log's tail and
+# keeps the log. MMB_HOOK_VERBOSE=1 streams everything.
 set -euo pipefail
 
 ROOT_DIR="$(git rev-parse --show-toplevel)"
@@ -14,6 +16,9 @@ ROOT_DIR="$(git rev-parse --show-toplevel)"
 # the worktree, so it runs without them; the unstaged-snapshot check above keeps the real index.
 CHECK=(env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE -u GIT_PREFIX -u GIT_COMMON_DIR
     bash "$ROOT_DIR/scripts/check.sh")
+if [ "${MMB_HOOK_FULL:-0}" != "1" ]; then
+    CHECK+=(--lint-only)
+fi
 
 bash "$ROOT_DIR/scripts/gate_report.sh" unstaged-snapshots
 
@@ -29,6 +34,9 @@ status=0
 if [ "$status" -eq 0 ]; then
     bash "$ROOT_DIR/scripts/gate_report.sh" hook-success "$LOG" || true
     rm -f "$LOG"
+    if [ "${MMB_HOOK_FULL:-0}" != "1" ]; then
+        echo "ℹ️  提交钩子只跑快速 lint；推送前请按需跑 bash scripts/check.sh --changed（UI 改动需含快照验证）。"
+    fi
     exit 0
 fi
 

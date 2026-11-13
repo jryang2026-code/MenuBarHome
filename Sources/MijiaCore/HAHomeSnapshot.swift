@@ -35,9 +35,9 @@ struct HAHomeSnapshot {
         return rings
     }
 
-    mutating func receive(_ message: [String: JSONValue]) throws -> SynthesizedHome? {
+    mutating func receive(_ message: [String: JSONValue], isRefreshStatesResult: Bool = false) throws -> SynthesizedHome? {
         if message["type"]?.stringValue == "result", let id = message["id"]?.intValue {
-            guard (1...4).contains(id) || (1000...9999).contains(id) else { return nil }
+            guard (1...4).contains(id) || (1000...9999).contains(id) || isRefreshStatesResult else { return nil }
             guard message["success"]?.boolValue == true else { throw ReadError.rejected }
             guard let result = message["result"] else { throw ReadError.invalidResponse }
             switch id {
@@ -47,7 +47,7 @@ struct HAHomeSnapshot {
                 devices = try decode([HADeviceEntry].self, from: result)
             case 3:
                 entities = try decode([HAEntityEntry].self, from: result)
-            case 4, 1000...9999:
+            case let stateResultID where stateResultID == 4 || (1000...9999).contains(stateResultID) || isRefreshStatesResult:
                 guard case .array(let entries) = result else { throw ReadError.invalidResponse }
                 var nextStates: [String: HAEntityState] = [:]
                 for value in entries {
@@ -63,17 +63,25 @@ struct HAHomeSnapshot {
         } else if message["type"]?.stringValue == "event",
                   case .object(let event) = message["event"],
                   event["event_type"]?.stringValue == "state_changed",
-                  case .object(let data) = event["data"],
-                  let newState = data["new_state"],
-                  let state = Self.parseState(newState) {
-            if let timestamp = DoorbellRing.timestamp(state), timestamp != doorbellTimestamps[state.entityId] {
-                doorbellTimestamps[state.entityId] = timestamp
-                if pendingInitialResults.isEmpty, isActiveEntity(state.entityId) {
-                    let deviceId = entities.first { $0.entity_id == state.entityId }?.device_id ?? state.entityId
-                    rings.append(DoorbellRing(deviceId: deviceId, entityId: state.entityId, firedAt: timestamp))
+                  case .object(let data) = event["data"] {
+            if let newState = data["new_state"], let state = Self.parseState(newState) {
+                if let timestamp = DoorbellRing.timestamp(state), timestamp != doorbellTimestamps[state.entityId] {
+                    doorbellTimestamps[state.entityId] = timestamp
+                    if pendingInitialResults.isEmpty, isActiveEntity(state.entityId) {
+                        let deviceId = entities.first { $0.entity_id == state.entityId }?.device_id ?? state.entityId
+                        rings.append(DoorbellRing(deviceId: deviceId, entityId: state.entityId, firedAt: timestamp))
+                    }
                 }
+                states[state.entityId] = state
+            } else if data["new_state"] == .null {
+                let entityId = data["entity_id"]?.stringValue ?? data["old_state"]?["entity_id"]?.stringValue
+                guard let entityId, states.removeValue(forKey: entityId) != nil else {
+                    return nil
+                }
+                doorbellTimestamps.removeValue(forKey: entityId)
+            } else {
+                return nil
             }
-            states[state.entityId] = state
         } else {
             return nil
         }

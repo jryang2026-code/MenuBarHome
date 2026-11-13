@@ -1,7 +1,8 @@
 import { markTimerSnapshotReady } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
-import { MiCloudClient, MiCloudError, MiotSynthesizer, type MiDeviceRecord, type MiRoom, type MiSession, type MiotPropKey } from "../core/miCloudClient.js";
+import { MiCloudClient, MiCloudError, MiotSynthesizer, normalizeMiCloudRegion, type MiRoom, type MiSession, type MiotPropKey } from "../core/miCloudClient.js";
+import { discoverMiHome } from "../core/miCloud/discovery.js";
 import { HomeAssistantClient, homeAssistantIdentity } from "../core/homeAssistant.js";
 import { applyOrder, homeOptions, pageSections, scopedKey, spans, withAliases } from "./panelPrefs.js";
 import { filterByListCut, foldGroupedLights, kindChips, memberGroupOwners, showsKindRow } from "./listCut.js";
@@ -18,128 +19,28 @@ export function foldGrouped(host: MenuMijiaWindowsApp, devices: readonly SmartDe
   }
 
 
-export async function withSharedHomeDevices(
-    host: MenuMijiaWindowsApp,
-    client: MiCloudClient,
-    listed: MiDeviceRecord[],
-    rooms: MiRoom[],
-    retryUnresolved: boolean,
-    onLookupError?: (err: unknown) => void,
-  ): Promise<MiDeviceRecord[]> {
-    if (retryUnresolved) host.unresolvedRoomDids.clear();
-    const listedDids = new Set(listed.map((d) => d.did));
-    const missing = [...new Set(rooms.flatMap((r) => r.dids))]
-      .filter((did) => !listedDids.has(did) && !host.unresolvedRoomDids.has(did))
-      .sort();
-    if (missing.length === 0) return listed;
-    try {
-      const extra = (await client.devicesByDids(missing)).filter((d) => !listedDids.has(d.did));
-      const found = new Set(extra.map((d) => d.did));
-      for (const did of missing) if (!found.has(did)) host.unresolvedRoomDids.add(did);
-      return [...listed, ...extra];
-    } catch (err) {
-      if (err instanceof MiCloudError && err.kind === "sessionExpired") throw err;
-      onLookupError?.(err);
-      return listed;
-    }
+const lastGoodXiaomiRoomsByHost = new WeakMap<
+  MenuMijiaWindowsApp,
+  {
+    readonly sourceRevision: number;
+    readonly userId: string;
+    readonly region: string;
+    readonly rooms: readonly MiRoom[];
   }
-
-/**
-   * A home shared with this account can list devices the unfiltered endpoint leaves out (#76).
-   * `home_device_list` answers per home, so homes whose dids produced nothing are asked directly;
-   * a home with no owner uid cannot use it. Rooms the newer listing adds are appended, because the
-   * synthesizer places a device by the room that names it.
-   */
-export async function withHomeDeviceLists(
-    host: MenuMijiaWindowsApp,
-    client: MiCloudClient,
-    listed: MiDeviceRecord[],
-    rooms: MiRoom[],
-    onLookupError?: (err: unknown) => void,
-  ): Promise<{ devices: MiDeviceRecord[]; rooms: MiRoom[] }> {
-    const ownerByHome = new Map<string, string>();
-    for (const room of rooms) {
-      const homeId = room.homeId ?? "";
-      if (homeId && room.ownerUid && !ownerByHome.has(homeId)) ownerByHome.set(homeId, room.ownerUid);
-    }
-    if (ownerByHome.size === 0) return { devices: listed, rooms };
-    const listedDids = new Set(listed.map((record) => record.did));
-    const devices = [...listed];
-    const workingRooms = [...rooms];
-    for (const [homeId, ownerUid] of ownerByHome) {
-      const homeDids = new Set(workingRooms.filter((room) => room.homeId === homeId).flatMap((room) => room.dids));
-      const resolved = [...homeDids].filter((did) => listedDids.has(did)).length;
-      const unresolved = [...homeDids].some((did) => !listedDids.has(did) && host.unresolvedRoomDids.has(did));
-      // Only ask a home whose devices the list (and the by-did lookup that already ran) left open.
-      if (!(homeDids.size === 0 || resolved === 0 || unresolved)) continue;
-      let found: MiDeviceRecord[];
-      try {
-        found = await client.homeDevices(homeId, ownerUid);
-      } catch (err) {
-        if (err instanceof MiCloudError && err.kind === "sessionExpired") throw err;
-        onLookupError?.(err);
-        continue;
-      }
-      const fresh = found.filter((record) => !listedDids.has(record.did));
-      for (const record of fresh) {
-        listedDids.add(record.did);
-        host.unresolvedRoomDids.delete(record.did);
-      }
-      devices.push(...fresh);
-      // Devices the home reports but no room names land in the home's room-less bucket, so
-      // selecting that home still shows them.
-      appendMissingRoomDids(workingRooms, found, homeId);
-    }
-    return { devices, rooms: workingRooms };
-  }
-
-  /**
-   * Adds each device neither named in `homeId` nor covered by a split parent in `homeId` to that
-   * home's `home_<id>` bucket, preserving parent-room inheritance for multi-key switch panels.
-   */
-function appendMissingRoomDids(rooms: MiRoom[], records: readonly MiDeviceRecord[], homeId: string): void {
-    if (records.length === 0) return;
-    const namedInHome = new Set(rooms.filter((room) => room.homeId === homeId).flatMap((room) => room.dids));
-    const seen = new Set<string>();
-    const missing: string[] = [];
-    for (const record of records) {
-      if (namedInHome.has(record.did)) continue;
-      if (record.splitParentDid && namedInHome.has(record.splitParentDid)) continue;
-      if (seen.has(record.did)) continue;
-      seen.add(record.did);
-      missing.push(record.did);
-    }
-    if (missing.length === 0) return;
-    const targetId = `home_${homeId}`;
-    const sibling = rooms.find((room) => room.homeId === homeId);
-    const index = rooms.findIndex((room) => room.id === targetId);
-    if (index >= 0) {
-      const room = rooms[index];
-      if (!room) return;
-      rooms[index] = { ...room, dids: [...room.dids, ...missing] };
-      return;
-    }
-    rooms.push({
-      id: targetId,
-      name: "",
-      dids: missing,
-      homeId,
-      homeName: sibling?.homeName ?? "",
-      ...(sibling?.isSharedHome === true ? { isSharedHome: true as const } : {}),
-      ...(sibling?.ownerUid ? { ownerUid: sibling.ownerUid } : {}),
-    });
-  }
+>();
 
 export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false): Promise<void> {
     if (!isHostAttachedToActiveWindow(host)) return;
     if (host.settings.connectionMode === "homeAssistant") return refreshHADevices(host, silent);
     if (!host.settings.miSession || host.settings.connectionMode !== "xiaomiCloud" || host.isSyncingCloud) return;
     const session = host.settings.miSession;
+    const normalizedRegion = normalizeMiCloudRegion(session.region);
     const previousPresentation = cloudPresentationFingerprint(host);
     const previousStructure = cloudPanelStructureFingerprint(host);
     const staleBefore = host.cloudValuesStale;
     const expiredBefore = host.miSessionExpired;
     const stateRevisionAtStart = host.localControlRevision;
+    const selectedHomeAtStart = host.settings.selectedHomeId;
     const syncGen = ++host.syncGeneration;
     let presentationChanged = false;
     host.isSyncingCloud = true;
@@ -150,49 +51,35 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
 
     try {
       const client = new MiCloudClient(session, host.transport);
-      const [listedDevices, roomResult] = await Promise.all([
-        client.deviceList(),
-        client.homeRooms().then(
-          (rooms) => ({ rooms, error: null as unknown }),
-          (error: unknown) => ({ rooms: [] as MiRoom[], error }),
-        ),
-      ]);
-      const homeRoomsError = roomResult.error;
-      // A dead session makes every later call fail the same way, so report it even when the device
-      // list answered from cache (#76).
-      if (homeRoomsError instanceof MiCloudError && homeRoomsError.kind === "sessionExpired") {
-        throw homeRoomsError;
-      }
-      // A shared home's devices live behind its own listing, so an empty list plus a failed room
-      // read would otherwise render as a real empty account (#76).
-      if (listedDevices.length === 0 && homeRoomsError) throw homeRoomsError;
-      // Shared-home dids resolve first so `home_device_list` only runs for a home still missing
-      // devices, which keeps a normal account to the two requests it always made.
-      let lookupError: unknown = null;
-      const recordLookupError = (err: unknown): void => {
-        if (lookupError === null) lookupError = err;
-      };
-      const withShared = await withSharedHomeDevices(
-        host,
-        client,
-        listedDevices,
-        roomResult.rooms,
-        !silent,
-        recordLookupError,
-      );
-      const completed = await withHomeDeviceLists(
-        host,
-        client,
-        withShared,
-        roomResult.rooms,
-        recordLookupError,
-      );
-      const allRooms = completed.rooms;
-      const allDevices = completed.devices;
-      if (allDevices.length === 0 && lookupError !== null) throw lookupError;
+      const discovery = await discoverMiHome(client, {
+        unresolvedDids: host.unresolvedRoomDids,
+        retryUnresolved: !silent,
+        cachedRooms: () => {
+          const cached = lastGoodXiaomiRoomsByHost.get(host);
+          return cached &&
+            cached.sourceRevision === host.sourceRevision &&
+            cached.userId === session.userId &&
+            cached.region === normalizedRegion
+            ? cached.rooms
+            : null;
+        },
+        onRoomsRead: (rooms) => {
+          lastGoodXiaomiRoomsByHost.set(host, {
+            sourceRevision: host.sourceRevision,
+            userId: session.userId,
+            region: normalizedRegion,
+            rooms,
+          });
+        },
+      });
+      const homeRoomsError = discovery.roomsError;
+      const allRooms = discovery.rooms;
+      const allDevices = discovery.devices;
       const nextHomes = homeOptions(allRooms);
-      if (cloudSnapshotIsStale(host, session, stateRevisionAtStart)) return;
-      host.homes = applyOrder(host.homes.map((home) => home.id), nextHomes);
+      if (cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) return;
+      if (homeRoomsError === null || nextHomes.length > 0) {
+        host.homes = applyOrder(host.homes.map((home) => home.id), nextHomes);
+      }
       const { devices: rawDevices, rooms } = filterBySelectedHome(host, allDevices, allRooms);
       const groupDids = rawDevices.map((device) => device.did).filter((did) => did.startsWith("group."));
       const membershipByGroup = groupDids.length > 0
@@ -243,7 +130,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
             : new Map<string, unknown>();
       } catch (error) {
         // A failed property read must not rebuild every device from defaults.
-        if (!cloudSnapshotIsStale(host, session, stateRevisionAtStart)) {
+        if (!cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) {
           host.markCloudValuesStale();
         }
         throw error;
@@ -252,7 +139,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       const home = MiotSynthesizer.synthesize(rawDevices, rooms, specs, values);
       const membersByGroup = await membershipByGroup;
       // An old refresh must not clear or set freshness for the connection that replaced it.
-      if (cloudSnapshotIsStale(host, session, stateRevisionAtStart)) return;
+      if (cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) return;
       host.miSessionExpired = false;
       host.markCloudValuesFresh();
       host.groupOwnerByMemberDid = memberGroupOwners(membersByGroup);
@@ -262,6 +149,12 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
       host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
       host.deviceFacets = merged.deviceFacets;
+      if (
+        host.cameraLive.activeLiveCameraId !== null &&
+        !host.devices.some((device) => device.id === host.cameraLive.activeLiveCameraId)
+      ) {
+        host.cameraLive.closeCameraLiveView();
+      }
       const readingPriorityById = new Map(
         home.devices.map((device) => [device.id, environmentReadingPriority(device.kind)]),
       );
@@ -296,7 +189,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         };
       }
     } catch (err) {
-      if (!cloudSnapshotIsStale(host, session, stateRevisionAtStart)) {
+      if (!cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) {
         host.markCloudValuesStale();
         if (err instanceof MiCloudError && err.kind === "sessionExpired") {
           host.miSessionExpired = true;
@@ -356,6 +249,12 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
       host.deviceFacets = merged.deviceFacets;
       host.scenes = home.scenes;
+      if (
+        host.cameraLive.activeLiveCameraId !== null &&
+        !host.devices.some((device) => device.id === host.cameraLive.activeLiveCameraId)
+      ) {
+        host.cameraLive.closeCameraLiveView();
+      }
       markTimerSnapshotReady(host);
       const readingPriorityById = new Map(
         host.devices.map((device) => [device.id, environmentReadingPriority(device.kind)]),
@@ -408,12 +307,20 @@ export function cloudPresentationFingerprint(host: MenuMijiaWindowsApp): string 
     });
   }
 
-export function cloudSnapshotIsStale(host: MenuMijiaWindowsApp, session: MiSession, revision: number): boolean {
+export function cloudSnapshotIsStale(
+  host: MenuMijiaWindowsApp,
+  session: MiSession,
+  revision: number,
+  syncGen?: number,
+  selectedHomeId?: string | null,
+): boolean {
     return (
       !isHostAttachedToActiveWindow(host) ||
       host.settings.connectionMode !== "xiaomiCloud" ||
       host.settings.miSession !== session ||
-      host.localControlRevision !== revision
+      host.localControlRevision !== revision ||
+      (syncGen !== undefined && host.syncGeneration !== syncGen) ||
+      (selectedHomeId !== undefined && host.settings.selectedHomeId !== selectedHomeId)
     );
   }
 

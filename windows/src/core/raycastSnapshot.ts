@@ -1,5 +1,5 @@
 import { pinyin } from "pinyin-pro";
-import { ManualControlPolicy } from "./assistant.js";
+import { ManualControlPolicy, isSwitchedLightDevice } from "./assistant.js";
 import {
   allOffTargets,
   deviceCanTogglePower,
@@ -213,7 +213,9 @@ function categoryTitleForDevice(device: SmartDevice): string {
     case "fan":
       return trText("风扇", "Fans");
     case "plug":
-      return trText("插座", "Plugs");
+      return isSwitchedLightDevice(device)
+        ? trText("照明", "Lights")
+        : trText("插座", "Plugs");
     case "fridge":
       return trText("冰箱", "Fridge");
     case "vacuum":
@@ -488,6 +490,8 @@ export function buildRaycastSnapshot(input: BuildRaycastSnapshotInput): RaycastS
     const isFav = favoriteRankMap.has(dev.id);
     const favRank = isFav ? favCounter++ : undefined;
     const displayName = aliases[dev.id]?.trim() || dev.name;
+    const effectiveDev = displayName === dev.name ? dev : { ...dev, name: displayName };
+    const switchedLight = isSwitchedLightDevice(effectiveDev);
     const displayRoom = roomAliases[dev.roomId]?.trim() || dev.roomName;
     const roomOrder = roomRanks.get(dev.roomId) ?? roomRanks.get(dev.roomName) ?? 999;
     const namePinyin = pinyinPair(displayName);
@@ -499,8 +503,8 @@ export function buildRaycastSnapshot(input: BuildRaycastSnapshotInput): RaycastS
       roomId: dev.roomId,
       roomName: displayRoom,
       roomSortOrder: roomOrder,
-      category: dev.kind.kind,
-      categoryTitle: categoryTitleForDevice(dev),
+      category: switchedLight ? "light" : dev.kind.kind,
+      categoryTitle: switchedLight ? trText("照明", "Lights") : categoryTitleForDevice(effectiveDev),
       model: dev.model,
       stateText: deviceStatusSummary(dev),
       isOnline: dev.isOnline,
@@ -511,7 +515,7 @@ export function buildRaycastSnapshot(input: BuildRaycastSnapshotInput): RaycastS
       pinyinInitials: namePinyin.initials,
       pinyinFull: namePinyin.full,
       roomPinyinInitials: roomPinyin.initials,
-      capabilities: buildDeviceCapabilities(dev),
+      capabilities: buildDeviceCapabilities(effectiveDev),
     };
   });
 

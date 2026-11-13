@@ -12,8 +12,10 @@ struct GrokBallSidecarPlacement {
     }
 
     static let ballDiameter: CGFloat = 72
+    static let ballRadius: CGFloat = ballDiameter / 2
     static let outerInset: CGFloat = 6
     static let collapsedWidth: CGFloat = ballDiameter + 2 * outerInset
+    static let collapsedRadius: CGFloat = collapsedWidth / 2
     static let expandedWidth: CGFloat = ballDiameter + GrokBallSuggestionMetrics.gapToBall + GrokBallSuggestionMetrics.columnWidth + 2 * outerInset
     static let expandedHeight: CGFloat = GrokBallSuggestionMetrics.columnHeight + 2 * outerInset
     static let gap: CGFloat = 8
@@ -34,20 +36,20 @@ struct GrokBallSidecarPlacement {
     }
 
     static func resolve(parent: NSRect, visible: NSRect, expanded: Bool, ballCenter requested: NSPoint? = nil) -> Self {
-        let safe = visible.insetBy(dx: 8, dy: 8)
+        let safe = visible.insetBy(dx: gap, dy: gap)
         let defaultRight = safe.maxX - parent.maxX - gap >= expandedWidth
         let initial = requested ?? NSPoint(
-            x: defaultRight ? parent.maxX + gap + 42 : parent.minX - gap - 42,
-            y: parent.maxY - topInset - 42
+            x: defaultRight ? parent.maxX + gap + collapsedRadius : parent.minX - gap - collapsedRadius,
+            y: parent.maxY - topInset - collapsedRadius
         )
         let center = NSPoint(
-            x: clamp(initial.x, lower: safe.minX + 42, upper: safe.maxX - 42),
-            y: clamp(initial.y, lower: safe.minY + 42, upper: safe.maxY - 42)
+            x: clamp(initial.x, lower: safe.minX + collapsedRadius, upper: safe.maxX - collapsedRadius),
+            y: clamp(initial.y, lower: safe.minY + collapsedRadius, upper: safe.maxY - collapsedRadius)
         )
         let dx = (center.x - parent.midX) / max(1, parent.width / 2)
         let dy = (center.y - parent.midY) / max(1, parent.height / 2)
         let preferred: Side = abs(dx) > abs(dy) ? (dx < 0 ? .left : .right) : (dy < 0 ? .below : .above)
-        let ball = NSRect(x: center.x - 36, y: center.y - 36, width: 72, height: 72)
+        let ball = NSRect(x: center.x - ballRadius, y: center.y - ballRadius, width: ballDiameter, height: ballDiameter)
         var side = preferred
         var suggestions = suggestionLayout(side: preferred, ball: ball, safe: safe)
         var bestScore = score(suggestions.frame, side: preferred, preferred: preferred, safe: safe, parent: parent)
@@ -60,7 +62,7 @@ struct GrokBallSidecarPlacement {
                 bestScore = candidateScore
             }
         }
-        let frame = (expanded ? ball.union(suggestions.frame) : ball).insetBy(dx: -6, dy: -6)
+        let frame = (expanded ? ball.union(suggestions.frame) : ball).insetBy(dx: -outerInset, dy: -outerInset)
         return Self(side: side, frame: frame, ballCenter: center,
                     suggestionsFrame: expanded ? suggestions.frame : nil, suggestionColumns: suggestions.columns)
     }
@@ -71,22 +73,22 @@ struct GrokBallSidecarPlacement {
             let x = side == .right ? ball.maxX + metrics.gapToBall
                 : ball.minX - metrics.gapToBall - metrics.columnWidth
             let y = clamp(ball.maxY - metrics.columnHeight,
-                          lower: safe.minY + 6, upper: safe.maxY - metrics.columnHeight - 6)
+                          lower: safe.minY + outerInset, upper: safe.maxY - metrics.columnHeight - outerInset)
             return (NSRect(x: x, y: y, width: metrics.columnWidth, height: metrics.columnHeight), 1)
         }
         let available = side == .above
-            ? safe.maxY - 6 - ball.maxY - metrics.gapToBall
-            : ball.minY - metrics.gapToBall - safe.minY - 6
-        let columns = available < metrics.rowHeight && safe.width >= metrics.singleRowWidth + 12 ? 4 : 2
+            ? safe.maxY - outerInset - ball.maxY - metrics.gapToBall
+            : ball.minY - metrics.gapToBall - safe.minY - outerInset
+        let columns = available < metrics.rowHeight && safe.width >= metrics.singleRowWidth + 2 * outerInset ? 4 : 2
         let width = columns == 4 ? metrics.singleRowWidth : metrics.rowWidth
         let height = columns == 4 ? metrics.pillHeight : metrics.rowHeight
-        let x = clamp(ball.midX - width / 2, lower: safe.minX + 6, upper: safe.maxX - width - 6)
+        let x = clamp(ball.midX - width / 2, lower: safe.minX + outerInset, upper: safe.maxX - width - outerInset)
         let y = side == .above ? ball.maxY + metrics.gapToBall : ball.minY - metrics.gapToBall - height
         return (NSRect(x: x, y: y, width: width, height: height), columns)
     }
 
     private static func score(_ rect: NSRect, side: Side, preferred: Side, safe: NSRect, parent: NSRect) -> (CGFloat, CGFloat, Int) {
-        let footprint = rect.insetBy(dx: -6, dy: -6)
+        let footprint = rect.insetBy(dx: -outerInset, dy: -outerInset)
         let clipped = max(0, area(footprint) - area(footprint.intersection(safe)))
         return (clipped, area(rect.intersection(parent)), side == preferred ? 0 : 1)
     }
@@ -131,7 +133,8 @@ final class GrokBallSidecarController {
         self.parent = parent
         self.beginVoice = beginVoice
         self.endVoice = endVoice
-        let panel = GrokBallSidecarPanel(contentRect: NSRect(x: 0, y: 0, width: 84, height: 84),
+        let initialSide = GrokBallSidecarPlacement.collapsedWidth
+        let panel = GrokBallSidecarPanel(contentRect: NSRect(x: 0, y: 0, width: initialSide, height: initialSide),
                                          styleMask: [.borderless], backing: .buffered, defer: false)
         panelWindow = panel
         panel.isFloatingPanel = true
@@ -249,9 +252,12 @@ final class GrokBallSidecarController {
 
     func containsScreenPoint(_ point: NSPoint) -> Bool {
         guard state.isVisible, let placement = state.placement else { return false }
-        let ballRect = NSRect(x: placement.ballCenter.x - 42, y: placement.ballCenter.y - 42, width: 84, height: 84)
+        let radius = GrokBallSidecarPlacement.collapsedRadius
+        let side = GrokBallSidecarPlacement.collapsedWidth
+        let inset = GrokBallSidecarPlacement.outerInset
+        let ballRect = NSRect(x: placement.ballCenter.x - radius, y: placement.ballCenter.y - radius, width: side, height: side)
         if ballRect.contains(point) { return true }
-        if let suggestions = placement.suggestionsFrame?.insetBy(dx: -6, dy: -6), suggestions.contains(point) {
+        if let suggestions = placement.suggestionsFrame?.insetBy(dx: -inset, dy: -inset), suggestions.contains(point) {
             return true
         }
         return false
@@ -260,8 +266,9 @@ final class GrokBallSidecarController {
     private func handlePointer(_ event: NSEvent, at point: NSPoint) -> Bool {
         switch event.type {
         case .leftMouseDown:
+            let hitRadius = GrokBallSidecarPlacement.collapsedRadius
             guard event.window === panelWindow, let placement = state.placement,
-                  abs(point.x - placement.ballCenter.x) <= 42, abs(point.y - placement.ballCenter.y) <= 42 else { return false }
+                  abs(point.x - placement.ballCenter.x) <= hitRadius, abs(point.y - placement.ballCenter.y) <= hitRadius else { return false }
             gesture = .pressed(origin: point, center: placement.ballCenter)
             if panelWindow.alphaValue > 0 {
                 panelWindow.makeKey()
@@ -348,7 +355,7 @@ private struct GrokBallSidecarView: View {
         ZStack(alignment: .topLeading) {
             if let placement = state.placement {
                 GrokBallControl(store: store, pointer: state.pointer, center: placement.localBallCenter, isVisible: state.isVisible)
-                    .frame(width: 72, height: 72)
+                    .frame(width: GrokBallSidecarPlacement.ballDiameter, height: GrokBallSidecarPlacement.ballDiameter)
                     .position(placement.localBallCenter)
                 if let suggestions = placement.suggestionsFrame {
                     GrokBallSuggestions(store: store, columnCount: placement.suggestionColumns)

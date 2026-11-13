@@ -121,13 +121,13 @@ public enum MacContextAutomation {
 
         case .powerConnected:
             guard let previous,
-                  previous.powerSource != .ac,
+                  previous.powerSource == .battery,
                   current.powerSource == .ac else { return [] }
             return [transitionEvent(rule)]
         case .powerDisconnected:
             guard let previous,
                   previous.powerSource == .ac,
-                  current.powerSource != .ac else { return [] }
+                  current.powerSource == .battery else { return [] }
             return [transitionEvent(rule)]
         case .batteryBelowThreshold:
             guard let previous,

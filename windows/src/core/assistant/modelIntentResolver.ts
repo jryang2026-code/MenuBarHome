@@ -38,34 +38,11 @@ export class ModelIntentResolver {
   }
 
   static extractFirstJSONObject(text: string): string | null {
-    const start = text.indexOf("{");
-    if (start < 0) return null;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let i = start; i < text.length; i++) {
-      const ch = text[i]!;
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-        } else if (ch === "\\") {
-          escaped = true;
-        } else if (ch === '"') {
-          inString = false;
-        }
-        continue;
-      }
-      if (ch === '"') {
-        inString = true;
-      } else if (ch === "{") {
-        depth += 1;
-      } else if (ch === "}") {
-        depth -= 1;
-        if (depth === 0) {
-          return text.slice(start, i + 1);
-        }
-      }
-    }
+    const closeThinkIdx = text.toLowerCase().lastIndexOf("</think>");
+    const stripped = closeThinkIdx >= 0 ? text.slice(closeThinkIdx + "</think>".length) : text;
+    const found = extractBalancedJSONObject(stripped);
+    if (found !== null) return found;
+    if (stripped !== text) return extractBalancedJSONObject(text);
     return null;
   }
 
@@ -122,13 +99,11 @@ export class ModelIntentResolver {
       headers,
       buildProactiveChatRequestBody(this.config.model, context, catalog),
     );
-    const root = JSON.parse(resp.body) as Record<string, unknown>;
-    const choices = (root["choices"] as Array<Record<string, Record<string, unknown>>>) ?? [];
-    let content = String(choices[0]?.["message"]?.["content"] ?? "");
-    const closeThinkIdx = content.toLowerCase().lastIndexOf("</think>");
-    if (closeThinkIdx >= 0) {
-      content = content.slice(closeThinkIdx + "</think>".length);
-    }
+    const root = parseJSONObject(resp.body);
+    const choices = Array.isArray(root["choices"]) ? root["choices"] : [];
+    const firstChoice = isPlainObject(choices[0]) ? choices[0] : null;
+    const message = firstChoice && isPlainObject(firstChoice["message"]) ? firstChoice["message"] : null;
+    const content = String(message?.["content"] ?? "");
     return proactiveSuggestionsFromChat(content, catalog, devices, scenes);
   }
 
@@ -224,19 +199,22 @@ export class ModelIntentResolver {
             ...buildIntentCatalog(devices, scenes),
             aliasToIds: catalogOrAliasMap,
           };
-    const parsed = JSON.parse(bodyText) as Record<string, unknown>;
-    const answers = (parsed["answers"] ?? {}) as Record<string, Record<string, unknown>>;
-    const targetChoice = String(answers["target"]?.["choice"] ?? "none");
-    const opChoice = String(answers["op"]?.["choice"] ?? "");
-    const tempChoice = String(answers["temp"]?.["choice"] ?? "none");
+    const parsed = parseJSONObject(bodyText);
+    const rawAnswers = isPlainObject(parsed["answers"]) ? parsed["answers"] : {};
+    const targetHead = isPlainObject(rawAnswers["target"]) ? rawAnswers["target"] : undefined;
+    const opHead = isPlainObject(rawAnswers["op"]) ? rawAnswers["op"] : undefined;
+    const tempHead = isPlainObject(rawAnswers["temp"]) ? rawAnswers["temp"] : undefined;
+    const targetChoice = String(targetHead?.["choice"] ?? "none");
+    const opChoice = String(opHead?.["choice"] ?? "");
+    const tempChoice = String(tempHead?.["choice"] ?? "none");
 
     const targetIds = targetChoice !== "none" ? (catalog.aliasToIds.get(targetChoice) ?? []) : [];
     const primaryOp = this.decodeSystemOneOp(opChoice);
     const hasTemp = tempChoice !== "none" && Number.isFinite(Number(tempChoice));
 
-    let confidence = ModelActionPolicy.probabilityOf(answers["target"], targetChoice);
-    if (primaryOp) confidence = Math.min(confidence, ModelActionPolicy.probabilityOf(answers["op"], opChoice));
-    if (hasTemp) confidence = Math.min(confidence, ModelActionPolicy.probabilityOf(answers["temp"], tempChoice));
+    let confidence = ModelActionPolicy.probabilityOf(targetHead, targetChoice);
+    if (primaryOp) confidence = Math.min(confidence, ModelActionPolicy.probabilityOf(opHead, opChoice));
+    if (hasTemp) confidence = Math.min(confidence, ModelActionPolicy.probabilityOf(tempHead, tempChoice));
 
     const actions: ChosenAction[] = [];
     const runnerUps: Array<{ prob: number; suggestion: AssistantSuggestion }> = [];
@@ -254,10 +232,10 @@ export class ModelIntentResolver {
     }
 
     for (const { alias, device } of catalog.aliasDevices) {
-      const answer = answers[`dev_${alias}`];
-      if (!answer) continue;
+      const answer = rawAnswers[`dev_${alias}`];
+      if (!isPlainObject(answer)) continue;
       const choice = String(answer["choice"] ?? "none");
-      const probs = (answer["probabilities"] ?? {}) as Record<string, unknown>;
+      const probs = isPlainObject(answer["probabilities"]) ? answer["probabilities"] : {};
       const choiceProb = ModelActionPolicy.probabilityOf(answer, choice);
       const isFallbackPowerOnForEffect =
         opChoice.startsWith("effect_") && choice === "power_on" && !targetIds.includes(device.id);
@@ -294,8 +272,7 @@ export class ModelIntentResolver {
             first.operation.kind === "hvacMode" && second?.operation.kind === "targetTemperature"
               ? `${firstTitle} · ${formatTemperatureValue(second.operation.celsius)}°C`
               : firstTitle;
-          const pct =
-            candidate.prob > 0 ? Math.max(20, Math.min(99, Math.round(candidate.prob * 100))) : null;
+          const pct = clampedProbabilityPercent(candidate.prob, 20);
           runnerUps.push({
             prob: candidate.prob,
             suggestion: {
@@ -435,17 +412,15 @@ export class ModelIntentResolver {
       },
     );
 
-    const root = JSON.parse(resp.body) as Record<string, unknown>;
-    const choices = (root["choices"] as Array<Record<string, Record<string, unknown>>>) ?? [];
-    let content = String(choices[0]?.["message"]?.["content"] ?? "");
-    const closeThinkIdx = content.toLowerCase().lastIndexOf("</think>");
-    if (closeThinkIdx >= 0) {
-      content = content.slice(closeThinkIdx + "</think>".length);
-    }
+    const root = parseJSONObject(resp.body);
+    const choices = Array.isArray(root["choices"]) ? root["choices"] : [];
+    const firstChoice = isPlainObject(choices[0]) ? choices[0] : null;
+    const message = firstChoice && isPlainObject(firstChoice["message"]) ? firstChoice["message"] : null;
+    const content = String(message?.["content"] ?? "");
     const jsonSlice = ModelIntentResolver.extractFirstJSONObject(content);
     if (!jsonSlice) throw new Error("AI 返回格式无法解析");
-    const payload = JSON.parse(jsonSlice) as Record<string, unknown>;
-    const actions = (payload["actions"] as Array<Record<string, unknown>>) ?? [];
+    const payload = parseJSONObject(jsonSlice);
+    const actions = Array.isArray(payload["actions"]) ? payload["actions"].filter(isPlainObject) : [];
 
     const chosen: ChosenAction[] = [];
     for (const act of actions) {
@@ -461,7 +436,7 @@ export class ModelIntentResolver {
       }
     }
     const rawSuggestions = Array.isArray(payload["suggestions"])
-      ? (payload["suggestions"] as Array<Record<string, unknown>>)
+      ? payload["suggestions"].filter(isPlainObject)
       : [];
     const decision = ModelActionPolicy.decide(devices, scenes, { actions: chosen });
     const confirmChips = decision.suggestions;
@@ -485,18 +460,21 @@ export class ModelIntentResolver {
   }
 
   static decodeChatOp(name: string, val: unknown): IntentOperation | null {
-    const numVal = typeof val === "number" ? val : typeof val === "string" ? Number(val.replace(/[%°CcKk\s]/g, "")) : NaN;
-    const boolVal =
-      typeof val === "boolean"
-        ? val
-        : typeof val === "number"
-          ? val !== 0
-          : typeof val === "string"
-            ? ["true", "on", "1", "开"].includes(val.trim().toLowerCase())
-            : false;
+    // The model's value is untrusted. An unrecognised word must drop the action, not switch the
+    // device off, and an empty string is not zero (`ModelIntentResolver.swift:bool(from:)`).
+    const numText = typeof val === "string" ? val.replace(/[%°CcKk\s]/g, "") : "";
+    const numVal = typeof val === "number" ? val : numText !== "" ? Number(numText) : NaN;
+    let boolVal: boolean | null = null;
+    if (typeof val === "boolean") boolVal = val;
+    else if (typeof val === "number") boolVal = val !== 0;
+    else if (typeof val === "string") {
+      const word = val.trim().toLowerCase();
+      if (["true", "on", "1", "开"].includes(word)) boolVal = true;
+      else if (["false", "off", "0", "关"].includes(word)) boolVal = false;
+    }
 
     switch (name.toLowerCase()) {
-      case "power": return { kind: "power", isOn: boolVal };
+      case "power": return boolVal === null ? null : { kind: "power", isOn: boolVal };
       case "brightness": return Number.isFinite(numVal) ? { kind: "brightness", percent: Math.round(numVal) } : null;
       case "brightness_step": return Number.isFinite(numVal) ? { kind: "brightnessStep", delta: Math.round(numVal) } : null;
       case "color_temp":
@@ -519,7 +497,7 @@ export class ModelIntentResolver {
         return typeof val === "string" ? { kind: "fanSpeed", speed: val } : null;
       case "oscillation":
       case "swing":
-        return { kind: "oscillation", enabled: boolVal };
+        return boolVal === null ? null : { kind: "oscillation", enabled: boolVal };
       case "scene":
         return { kind: "activateScene" };
       default: return null;
@@ -556,9 +534,86 @@ export class ModelIntentResolver {
   }
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseJSONObject(raw: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("AI 返回格式无法解析");
+  }
+  if (!isPlainObject(parsed)) {
+    throw new Error("AI 返回格式无法解析");
+  }
+  return parsed;
+}
+
+function extractBalancedJSONObject(text: string): string | null {
+  let searchStart = 0;
+  let firstBalanced: string | null = null;
+  while (searchStart < text.length) {
+    const start = text.indexOf("{", searchStart);
+    if (start < 0) break;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let matchedEnd = -1;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i]!;
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === "\\") escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+      } else if (ch === "{") {
+        depth += 1;
+      } else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          matchedEnd = i;
+          break;
+        }
+      }
+    }
+    if (matchedEnd >= 0) {
+      const candidate = text.slice(start, matchedEnd + 1);
+      if (firstBalanced === null) firstBalanced = candidate;
+      try {
+        const parsed: unknown = JSON.parse(candidate);
+        if (isPlainObject(parsed)) return candidate;
+      } catch {
+        // Prose braces such as `{dev_study}` are not JSON objects; keep scanning.
+      }
+      searchStart = matchedEnd + 1;
+    } else {
+      break;
+    }
+  }
+  return firstBalanced;
+}
+
 function numberFromValue(value: unknown): number | null {
-  const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
-  return Number.isFinite(n) ? n : null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string") {
+    const cleaned = value.replace(/[%°CcKk\s]/g, "");
+    if (cleaned === "") return null;
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function clampedProbabilityPercent(prob: number, floor: number): number | null {
+  if (!Number.isFinite(prob) || prob <= 0) return null;
+  const scaled = Math.round(prob * 100);
+  if (!Number.isFinite(scaled)) return 99;
+  return Math.max(floor, Math.min(99, scaled));
 }
 
 /** Best scored non-none probability in a decision head's `probabilities` map. */
@@ -578,15 +633,15 @@ export function proactiveSuggestionsFromSystemOne(
   devices: readonly SmartDevice[],
   scenes: readonly HomeScene[],
 ): AssistantSuggestion[] {
-  const parsed = JSON.parse(bodyText) as Record<string, unknown>;
-  const answers = (parsed["answers"] ?? {}) as Record<string, Record<string, unknown>>;
+  const parsed = parseJSONObject(bodyText);
+  const rawAnswers = isPlainObject(parsed["answers"]) ? parsed["answers"] : {};
   const catalog = buildIntentCatalog(devices, scenes);
   const scored: Array<{ prob: number; suggestion: AssistantSuggestion }> = [];
 
   for (const { alias, device } of catalog.aliasDevices) {
-    const answer = answers[`dev_${alias}`];
-    if (!answer) continue;
-    const probabilities = (answer["probabilities"] ?? {}) as Record<string, unknown>;
+    const answer = rawAnswers[`dev_${alias}`];
+    if (!isPlainObject(answer)) continue;
+    const probabilities = isPlainObject(answer["probabilities"]) ? answer["probabilities"] : {};
     const topChoice = String(answer["choice"] ?? "none");
 
     let chosenKey: string;
@@ -621,7 +676,7 @@ export function proactiveSuggestionsFromSystemOne(
       suggestion: {
         id: `proactive:${device.id}:${chosenKey}`,
         title,
-        confidencePercent: Math.max(18, Math.min(99, Math.round(chosenProb * 100))),
+        confidencePercent: clampedProbabilityPercent(chosenProb, 18) ?? 65,
         intents: ops,
       },
     });
@@ -639,7 +694,7 @@ function parseChatSuggestionItems(
   devices: readonly SmartDevice[],
   scenes: readonly HomeScene[],
 ): AssistantSuggestion[] {
-  const scored: Array<{ pct: number; suggestion: AssistantSuggestion }> = [];
+  const scored: Array<{ pct: number; key: string; suggestion: AssistantSuggestion }> = [];
   items.forEach((item, idx) => {
     const alias = String(item["device"] ?? "").trim();
     const opName = String(item["op"] ?? "").trim();
@@ -653,23 +708,36 @@ function parseChatSuggestionItems(
     );
     const primary = sanitized[0];
     if (!primary) return;
-    const title = habitSuggestionTitle(primary, devices, scenes);
-    if (title === null) return;
+    const baseTitle = habitSuggestionTitle(primary, devices, scenes);
+    if (baseTitle === null) return;
+    const targetCount = new Set(sanitized.map((intent) => intent.targetId)).size;
+    const title = targetCount > 1 ? `${baseTitle} 等 ${targetCount} 台` : baseTitle;
     const rawConf = numberFromValue(item["confidence"]) ?? 80;
-    const normalizedConf = rawConf <= 1.0 ? Math.round(rawConf * 100) : Math.round(rawConf);
-    const pct = Math.max(18, Math.min(99, normalizedConf));
+    const scaledConf = rawConf <= 1.0 ? rawConf * 100 : rawConf;
+    const pct = Number.isFinite(scaledConf) ? Math.max(18, Math.min(99, Math.round(scaledConf))) : 80;
+    const key = sanitized
+      .map((intent) => `${intent.targetId}|${JSON.stringify(intent.operation)}`)
+      .sort()
+      .join(",");
     scored.push({
       pct,
+      key,
       suggestion: {
         id: `chat:${primary.targetId}:${idx}`,
         title,
         confidencePercent: pct,
-        intents: [primary],
+        intents: sanitized,
       },
     });
   });
+  const seenKeys = new Set<string>();
   return scored
     .sort((a, b) => b.pct - a.pct)
+    .filter((entry) => {
+      if (seenKeys.has(entry.key)) return false;
+      seenKeys.add(entry.key);
+      return true;
+    })
     .slice(0, 3)
     .map((item) => item.suggestion);
 }
@@ -683,7 +751,11 @@ export function proactiveSuggestionsFromChat(
 ): AssistantSuggestion[] {
   const jsonSlice = ModelIntentResolver.extractFirstJSONObject(content);
   if (!jsonSlice) throw new Error("AI 返回格式无法解析");
-  const payload = JSON.parse(jsonSlice) as Record<string, unknown>;
-  const items = (payload["suggestions"] as Array<Record<string, unknown>>) ?? (payload["actions"] as Array<Record<string, unknown>>) ?? [];
-  return parseChatSuggestionItems(items, catalog, devices, scenes);
+  const payload = parseJSONObject(jsonSlice);
+  const rawItems = Array.isArray(payload["suggestions"])
+    ? payload["suggestions"]
+    : Array.isArray(payload["actions"])
+      ? payload["actions"]
+      : [];
+  return parseChatSuggestionItems(rawItems.filter(isPlainObject), catalog, devices, scenes);
 }

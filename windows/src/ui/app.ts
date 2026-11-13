@@ -80,7 +80,7 @@ import { renderDeviceTile as renderDeviceTileView, renderEnvironmentStrip as ren
 import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt, renderSettingsModal } from "./menuViews.js";
 import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
 import { renderPanel } from "./panelView.js";
-import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, checkForAppUpdate, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
+import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
 import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground } from "./proactive.js";
 import { applyCommand, markCloudValuesFresh, markCloudValuesStale } from "./commandDispatch.js";
@@ -258,6 +258,7 @@ export class MenuMijiaWindowsApp {
   /** True after a hold already ran All Off, so a later pointerup on the rebuilt button does not replace the result with the short-press hint. */
   private allOffHoldConsumed = false;
   private allOffHoldTimer: number | null = null;
+  private readonly appDisposers: Array<() => void> = [];
   public undoBannerUntilMs = 0;
   public qrTicket: QRLoginTicket | null = null;
   public qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");
@@ -323,17 +324,22 @@ export class MenuMijiaWindowsApp {
     this.bindGlobalKeys();
     bindUndoBannerHoverGuard(this);
     // Alt+Tab hides the popover without a button blur; a hold started before it must not finish.
-    window.addEventListener("blur", () => this.cancelAllOffHold());
+    const onBlurCancelAllOff = () => this.cancelAllOffHold();
+    window.addEventListener("blur", onBlurCancelAllOff);
+    this.appDisposers.push(() => window.removeEventListener("blur", onBlurCancelAllOff));
     this.bindLayoutGestures();
     this.bindPanelDrag();
     this.bindOpenAnimation();
-    window.addEventListener("menumijia:open-update", () => {
+    const onOpenUpdate = () => {
       this.openSettingsSheet();
-    });
+    };
+    window.addEventListener("menumijia:open-update", onOpenUpdate);
+    this.appDisposers.push(() => window.removeEventListener("menumijia:open-update", onOpenUpdate));
     this.applyPanelHeight();
     this.syncPanelPlacement();
     this.syncPanelBackdrop();
     void this.applyGlobalHotkey();
+    this.bindLifecycleRecovery();
     this.startTimerLoop();
     this.restoreUpdateState();
     this.render();
@@ -395,8 +401,23 @@ export class MenuMijiaWindowsApp {
     bindGlobalKeys(this);
   }
 
+  private bindLifecycleRecovery(): void {
+    bindLifecycleRecovery(this, { onPageHide: () => this.dispose() });
+  }
+
   private startTimerLoop(): void {
     startTimerLoop(this);
+  }
+
+  /** Idempotently cancels lifecycle intervals, recovery timers, and global window listeners. */
+  public dispose(): void {
+    disposeAppLifecycle(this);
+    this.clearPendingHighRisk();
+    this.cancelAllOffHold();
+    for (const stop of this.appDisposers.splice(0)) stop();
+    if (this.cameraLive.activeLiveCameraId !== null || this.cameraLive.liveCameraKeepAliveTimer !== null) {
+      this.cameraLive.closeCameraLiveView();
+    }
   }
 
   /** The tray popover hides when it loses focus, so focus means it is on screen. */
@@ -515,6 +536,10 @@ export class MenuMijiaWindowsApp {
     this.settings.selectedHomeId = id;
     this.isHomeMenuOpen = false;
     this.selectRoom(null);
+    // Invalidate any in-flight cloud refresh from the previous home so it cannot overwrite the new selection.
+    this.localControlRevision += 1;
+    this.syncGeneration += 1;
+    this.isSyncingCloud = false;
     // A different home is a different suggestion context even at the same ambient signature (Codex #116 review).
     this.aiProactiveSuggestions = null;
     this.aiProactiveSignature = null;
@@ -827,6 +852,7 @@ export class MenuMijiaWindowsApp {
 
   public async startXiaomiQRLogin(): Promise<void> {
     if (this.isPollingQR) return;
+    const sourceRevAtStart = this.sourceRevision;
     this.isPollingQR = true;
     this.qrStatusText = t("正在获取小米安全登录二维码...");
     invokeTauriVoid("set_pin_popover", { pin: true });
@@ -835,11 +861,13 @@ export class MenuMijiaWindowsApp {
     try {
       const login = new MiAccountLogin(this.transport, this.settings.miCloudRegion);
       const ticket = await login.start();
+      if (this.sourceRevision !== sourceRevAtStart) return;
       this.qrTicket = ticket;
       this.qrStatusText = t("请打开手机「米家 App → 我的 → 右上角扫一扫」确认登录");
       this.render();
 
       const session = await login.waitForScan(ticket);
+      if (this.sourceRevision !== sourceRevAtStart) return;
       this.invalidateSourceControl();
       // The account-level passToken is never persisted (#27).
       this.settings.miSession = sessionWithoutPassToken(session);
@@ -865,12 +893,16 @@ export class MenuMijiaWindowsApp {
 
       await this.refreshDevices(false);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.qrStatusText = t("扫码未完成：{message}", { message: msg });
+      if (this.sourceRevision === sourceRevAtStart) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.qrStatusText = t("扫码未完成：{message}", { message: msg });
+      }
     } finally {
-      this.isPollingQR = false;
-      invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
-      this.render();
+      if (this.sourceRevision === sourceRevAtStart) {
+        this.isPollingQR = false;
+        invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
+        this.render();
+      }
     }
   }
 
@@ -879,9 +911,9 @@ export class MenuMijiaWindowsApp {
     if (secs >= 60) {
       const m = Math.floor(secs / 60);
       const s = secs % 60;
-      return s > 0 ? `${m}分${s}秒` : `${m}分钟`;
+      return s > 0 ? t("{m}分{s}秒", { m, s }) : t("{m}分钟", { m });
     }
-    return `${secs}秒`;
+    return t("{secs}秒", { secs });
   }
 
   /** How long the 撤销 control stays up. Matches macOS `undoBannerSeconds`: 10s, or 15s from three devices. */
@@ -1188,7 +1220,7 @@ export class MenuMijiaWindowsApp {
         <div class="cc-empty-state">
           <div class="cc-empty-icon">${SF_ICONS.houseFill}</div>
           <div class="cc-empty-title">${t("尚未同步到米家设备")}</div>
-          <div class="cc-empty-subtitle">当前地区（${this.escapeHtml(normalizeMiCloudRegion(this.settings.miSession?.region ?? this.settings.miCloudRegion))}）没有设备，可尝试切换地区</div>
+          <div class="cc-empty-subtitle">${this.escapeHtml(t("当前地区（{region}）没有设备，可尝试切换地区", { region: normalizeMiCloudRegion(this.settings.miSession?.region ?? this.settings.miCloudRegion) }))}</div>
           <div class="cc-empty-actions">
             <button class="cc-btn-primary" id="btn-empty-resync">${t("重新同步设备")}</button>
             <button class="cc-btn-secondary" id="btn-empty-settings">${t("切换账号 / 设置")}</button>
@@ -1483,7 +1515,6 @@ export class MenuMijiaWindowsApp {
         this.root.classList.remove("is-opening");
       }, 260);
     };
-
     const finishDismiss = (seq: number): void => {
       if (activeDismissSeq !== seq) return;
       clearDismissTimer();
@@ -1509,18 +1540,25 @@ export class MenuMijiaWindowsApp {
       }, 175);
     };
 
-    ownerWin.addEventListener("menumijia:panel-present", (event: Event) => {
+    const onPanelPresent = (event: Event) => {
       if (!this.root.isConnected) return;
       const detail = (event as CustomEvent<{ edge?: unknown } | undefined>).detail;
       playPresent(detail?.edge);
-    });
-
-    ownerWin.addEventListener("menumijia:panel-dismiss", (event: Event) => {
+    };
+    const onPanelDismiss = (event: Event) => {
       if (!this.root.isConnected) return;
       const detail = (event as CustomEvent<{ seq?: unknown; edge?: unknown } | undefined>).detail;
       const seq = typeof detail?.seq === "number" ? detail.seq : 0;
       playDismiss(seq, detail?.edge);
-    });
+    };
+    ownerWin.addEventListener("menumijia:panel-present", onPanelPresent);
+    ownerWin.addEventListener("menumijia:panel-dismiss", onPanelDismiss);
+    this.appDisposers.push(
+      () => ownerWin.removeEventListener("menumijia:panel-present", onPanelPresent),
+      () => ownerWin.removeEventListener("menumijia:panel-dismiss", onPanelDismiss),
+      () => clearOpenTimer(),
+      () => clearDismissTimer(),
+    );
 
     this.root.addEventListener("animationend", (e) => {
       const target = e.target as HTMLElement | null;
@@ -1536,11 +1574,13 @@ export class MenuMijiaWindowsApp {
 
     if (typeof ownerWin.matchMedia === "function") {
       const mql = ownerWin.matchMedia("(prefers-color-scheme: light)");
-      mql.addEventListener?.("change", () => {
+      const onSchemeChange = () => {
         if (this.settings.appearance === "system" && this.root.isConnected) {
           this.render();
         }
-      });
+      };
+      mql.addEventListener?.("change", onSchemeChange);
+      this.appDisposers.push(() => mql.removeEventListener?.("change", onSchemeChange));
     }
 
     this.root.dataset.flyoutEdge = "bottom";

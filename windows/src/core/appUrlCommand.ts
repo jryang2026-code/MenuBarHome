@@ -14,7 +14,6 @@ import {
 import {
   quickActionTitle,
   trText,
-  type QuickActionId,
 } from "./quickActions.js";
 import type { RaycastCommandFeedback } from "./raycastSnapshot.js";
 import { formatTemperature } from "./temperature.js";
@@ -81,19 +80,6 @@ export const BuiltInURLScene = {
         return null;
     }
   },
-
-  quickAction(scene: BuiltInURLSceneId): QuickActionId | null {
-    switch (scene) {
-      case "lightsOff":
-      case "softNightLight":
-      case "climateSleepOff":
-        return scene;
-      case "allOff":
-      case "undo":
-        return null;
-    }
-  },
-
   displayTitle(scene: BuiltInURLSceneId): string {
     switch (scene) {
       case "lightsOff":
@@ -391,6 +377,7 @@ export interface AppURLCommandHost {
       readonly command: DeviceCommand;
       readonly summary: string;
       readonly intent: DeviceIntent;
+      readonly promptLabel?: string;
     };
   } | null;
   readonly replyBanner: {
@@ -646,35 +633,32 @@ async function runIntentOnDevice(
     };
   }
 
+  const aliasedDevices = host.devices.map((d) => {
+    const alias = host.layout.aliases[d.id]?.trim();
+    return alias ? { ...d, name: alias } : d;
+  });
+  const effectiveDev = aliasedDevices.find((d) => d.id === dev.id) ?? dev;
+
   // High-risk confirmation (`ManualControlPolicy`) always applies, even with a valid `bridgeToken`.
-  if (requiresHighRiskArm(dev, options.riskIntent ?? intent, firstCommand, host.devices)) {
+  // External URLs may only arm the confirmation in the panel and must never consume it themselves (ADR-0013).
+  if (requiresHighRiskArm(effectiveDev, options.riskIntent ?? intent, firstCommand, aliasedDevices)) {
     const actionKey = JSON.stringify(firstCommand);
-    const armed = host.pendingHighRisk;
-    const isArmedAndValid =
-      armed !== null &&
-      armed.deviceId === dev.id &&
-      armed.actionKey === actionKey &&
-      armed.sourceRevision === host.sourceRevision &&
-      armed.expiresAtMs > Date.now();
-    if (!isArmedAndValid) {
-      host.setPendingHighRisk({
-        deviceId: dev.id,
-        actionKey,
-        expiresAtMs: Date.now() + 8000,
-        sourceRevision: host.sourceRevision,
-        confirm: { command: firstCommand, summary, intent },
-      });
-      host.expandedDeviceId = dev.id;
-      const promptMsg = trText(
-        "「{action}」属于高风险设备，请在面板中确认或再次触发",
-        '"{action}" is high-risk; confirm in the panel or trigger once more',
-        { action: labelForHighRisk },
-      );
-      host.showExternalToast(promptMsg, false);
-      await host.revealPanelForExternalUrl();
-      return { message: promptMsg, isError: true };
-    }
-    host.clearPendingHighRisk();
+    host.setPendingHighRisk({
+      deviceId: dev.id,
+      actionKey,
+      expiresAtMs: Date.now() + 8000,
+      sourceRevision: host.sourceRevision,
+      confirm: { command: firstCommand, summary, intent, promptLabel: labelForHighRisk },
+    });
+    host.focusDeviceFromUrl(dev.id);
+    const promptMsg = trText(
+      "「{action}」属于高风险设备，请在面板中确认",
+      '"{action}" is high-risk; confirm in the panel',
+      { action: labelForHighRisk },
+    );
+    host.showExternalToast(promptMsg, false);
+    await host.revealPanelForExternalUrl();
+    return { message: promptMsg, isError: true };
   }
 
   for (let i = 0; i < commands.length; i += 1) {
@@ -944,6 +928,12 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
     case "brightness": {
       const dev = resolved.device;
       const name = displayNameFor(dev, host);
+      // `percent=0` maps to power-off below, so without this a stray slider value would switch
+      // off a plug or heater (`RaycastControls.executeRaycastBrightness` refuses the same way).
+      if (dev.kind.kind !== "light") {
+        finish(trText("{name} 不是灯具", "{name} is not a light", { name }), true);
+        return;
+      }
       const summary =
         resolved.percent === 0
           ? trText("已关闭 {name}", "Turned off {name}", { name })
@@ -1016,8 +1006,8 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
       if (target === dev.kind.targetTemperature) {
         finish(
           trText(
-            "{name} 的目标温度已经是 {targetText}°C",
-            "{name} is already set to {targetText} °C",
+            "{name} 的目标温度已经是 {targetText}",
+            "{name} is already set to {targetText}",
             { name, targetText },
           ),
           false,

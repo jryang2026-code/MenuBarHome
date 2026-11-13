@@ -22,6 +22,8 @@ struct FacetWriteLifecycleTests {
     private func makeStore() async throws -> (HomeStore, MockHomeProvider) {
         let provider = MockHomeProvider(snapshot: snapshot())
         let store = HomeStore(provider: provider, defaultsSuiteName: "test.facet.lifecycle.\(UUID())")
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+        store.optimisticNow = { fixedNow }
         try await store.waitForTestSnapshot()
         store.controlDebounceInterval = .zero
         return (store, provider)
@@ -92,10 +94,7 @@ struct FacetWriteLifecycleTests {
         let pending = store.debounceTasks["light.facet.3.1"]
         let generation = store.snapshotGeneration
         await provider.updateSnapshot(snapshot(backend: .homeAssistant))
-        for _ in 0..<200 {
-            if store.snapshotGeneration > generation { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await waitUntil { store.snapshotGeneration > generation }
         #expect(store.snapshotGeneration > generation)
         await pending?.value
         #expect(store.facetWrites.isEmpty)
@@ -141,10 +140,7 @@ struct FacetWriteLifecycleTests {
         #expect(store.optimisticLockUntil["light"] != nil)
         let generation = store.snapshotGeneration
         await provider.updateSnapshot(snapshot())
-        for _ in 0..<200 {
-            if store.snapshotGeneration > generation { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await waitUntil { store.snapshotGeneration > generation }
         #expect(store.snapshotGeneration > generation)
         #expect(store.deviceFacets["light"]?[0].value == .number(10))
         #expect(store.deviceFacets["light"]?[1].value == .number(0))

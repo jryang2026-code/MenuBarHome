@@ -611,6 +611,9 @@ export function hasDetailDrawer(device: SmartDevice, facets: readonly FacetContr
 }
 
 export function joinsAllOffByDefault(device: SmartDevice): boolean {
+  if (device.kind.kind === "appliance" && device.kind.entityId.startsWith("humidifier.")) {
+    return true;
+  }
   return (
     device.kind.kind !== "plug" &&
     device.kind.kind !== "fridge" &&

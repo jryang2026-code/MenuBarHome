@@ -92,6 +92,124 @@ spdx_document "MenuBarHome-${version}-windows-x64" > "$good/MenuBarHome-${versio
 printf 'tampered\n' > "$good/$dmg"
 expect_draft 1 'draft-assets rejects an installer whose SHA-256 does not match'
 
+# check_release.sh tag 版本一致性自测（含 scripts/mijia、package-lock.json 与 Cargo.lock）
+tag_repo="$workdir/tag-repo"
+mkdir -p "$tag_repo/windows/src-tauri" "$tag_repo/scripts"
+git -C "$tag_repo" init -q
+git -C "$tag_repo" config user.email t@example.com
+git -C "$tag_repo" config user.name t
+git -C "$tag_repo" config commit.gpgsign false
+
+write_tag_repo_files() {
+    local ver="$1" mijia_ver="$2" lock_ver="$3" cargo_lock_ver="$4"
+    printf '%s\n' "$ver" > "$tag_repo/VERSION"
+    printf '{"version":"%s","bundle":{"active":true,"targets":["nsis","msi"]}}\n' "$ver" \
+        > "$tag_repo/windows/src-tauri/tauri.conf.json"
+    printf '{"name":"menubarmijia-windows","version":"%s"}\n' "$ver" \
+        > "$tag_repo/windows/package.json"
+    printf '{"name":"menubarmijia-windows","version":"%s","packages":{"":{"version":"%s"}}}\n' \
+        "$lock_ver" "$lock_ver" > "$tag_repo/windows/package-lock.json"
+    cat > "$tag_repo/windows/src-tauri/Cargo.toml" <<EOF
+[package]
+name = "menubarmijia-windows"
+version = "$ver"
+EOF
+    cat > "$tag_repo/windows/src-tauri/Cargo.lock" <<EOF
+[[package]]
+name = "menubarmijia-windows"
+version = "$cargo_lock_ver"
+EOF
+    cat > "$tag_repo/scripts/mijia" <<EOF
+MCP_SERVER_INFO = {"name": "menubarmijia", "version": "$mijia_ver"}
+EOF
+    git -C "$tag_repo" add -A
+    git -C "$tag_repo" commit -q -m "release $ver" --allow-empty
+    git -C "$tag_repo" tag -f "v$ver"
+}
+
+expect_tag() {
+    local expected="$1" req_tag="$2" message="$3" expected_pattern="${4:-}"
+    local event_name="${5:-}" ref="${6:-}" ref_type="${7:-}" actual=0
+    local -a env_args=(env -u GITHUB_EVENT_NAME -u GITHUB_REF -u GITHUB_REF_TYPE -u GITHUB_OUTPUT)
+    [ -n "$event_name" ] && env_args+=("GITHUB_EVENT_NAME=$event_name")
+    [ -n "$ref" ] && env_args+=("GITHUB_REF=$ref")
+    [ -n "$ref_type" ] && env_args+=("GITHUB_REF_TYPE=$ref_type")
+    "${env_args[@]}" CHECK_RELEASE_ROOT="$tag_repo" \
+        bash scripts/check_release.sh tag "$req_tag" >"$workdir/tag.log" 2>&1 || actual=1
+    if [ "$actual" = "$expected" ] && { [ -z "$expected_pattern" ] || grep -Fq "$expected_pattern" "$workdir/tag.log"; }; then
+        pass "$message"
+    else
+        printf 'FAIL %s\n' "$message"
+        sed 's/^/    /' "$workdir/tag.log"
+        failures=$((failures + 1))
+    fi
+}
+
+write_tag_repo_files "1.2.5" "1.2.5" "1.2.5" "1.2.5"
+expect_tag 0 "v1.2.5" "tag accepts matching VERSION, package/lock, Cargo.toml/lock, and scripts/mijia"
+expect_tag 0 "v1.2.5" "tag accepts push ref refs/tags/v1.2.5" "" "push" "refs/tags/v1.2.5" "tag"
+expect_tag 1 "v1.2.5" "tag rejects push ref refs/heads/main" "推送触发的 ref refs/heads/main 不是 refs/tags/v1.2.5" "push" "refs/heads/main" "branch"
+
+write_tag_repo_files "1.2.5" "1.2.0" "1.2.5" "1.2.5"
+expect_tag 1 "v1.2.5" "tag rejects stale scripts/mijia MCP_SERVER_INFO version" "scripts/mijia MCP_SERVER_INFO"
+
+write_tag_repo_files "1.2.5" "1.2.5" "1.2.0" "1.2.5"
+expect_tag 1 "v1.2.5" "tag rejects stale windows/package-lock.json version" "windows/package-lock.json"
+
+write_tag_repo_files "1.2.5" "1.2.5" "1.2.5" "1.2.0"
+expect_tag 1 "v1.2.5" "tag rejects stale windows/src-tauri/Cargo.lock version" "windows/src-tauri/Cargo.lock"
+
+# 若当前环境 openssl 支持 Ed25519，额外实测 assets 模式拒绝仅含 DMG 的单平台签名清单
+openssl_bin=""
+for cand in openssl /opt/homebrew/opt/openssl@3/bin/openssl /usr/local/opt/openssl@3/bin/openssl; do
+    if command -v "$cand" >/dev/null 2>&1 && "$cand" genpkey -algorithm ed25519 -out "$workdir/test-ed25519.pem" >/dev/null 2>&1; then
+        openssl_bin="$cand"
+        break
+    fi
+done
+if [ -n "$openssl_bin" ]; then
+    assets_repo="$workdir/assets-repo"
+    mkdir -p "$assets_repo/Sources/MijiaCore"
+    printf '%s\n' "$version" > "$assets_repo/VERSION"
+    pub_b64="$(python3 - "$openssl_bin" "$workdir/test-ed25519.pem" <<'PY'
+import base64, subprocess, sys
+der = subprocess.check_output([sys.argv[1], "pkey", "-in", sys.argv[2], "-pubout", "-outform", "DER"])
+assert len(der) == 44 and der[:12] == bytes.fromhex("302a300506032b6570032100")
+print(base64.b64encode(der[12:]).decode("ascii"))
+PY
+)"
+    printf 'let updateSigningPublicKeyBase64 = "%s"\n' "$pub_b64" > "$assets_repo/Sources/MijiaCore/UpdateChecker.swift"
+    assets_dir="$workdir/signed-assets"
+    new_assets "$assets_dir" "$dmg" "$exe" "$msi"
+
+    # 1) 仅签 DMG（1 个 files 条目）的清单在完整双端 assets 模式下必须被拒绝
+    python3 - "$version" "$pub_b64" "$assets_dir" "$openssl_bin" "$workdir/test-ed25519.pem" <<'PY'
+import base64, subprocess, sys
+from pathlib import Path
+sys.path.insert(0, "scripts")
+import update_manifest
+
+version, pub_b64, directory, openssl_bin, key_pem = sys.argv[1:]
+d = Path(directory)
+dmg_sha = update_manifest.read_sidecar(d / f"MenuBarHome-{version}.dmg")
+body = update_manifest.canonical_bytes(version, "1.0.0", pub_b64, (dmg_sha,))
+manifest = d / f"MenuBarHome-{version}.update.json"
+manifest.write_bytes(body)
+sig = subprocess.check_output([openssl_bin, "pkeyutl", "-sign", "-inkey", key_pem, "-rawin", "-in", str(manifest)])
+Path(str(manifest) + ".ed25519.sig").write_text(base64.b64encode(sig).decode("ascii") + "\n", encoding="utf-8")
+PY
+    actual=0
+    PATH="$(dirname "$openssl_bin"):$PATH" CHECK_RELEASE_ROOT="$assets_repo" \
+        bash scripts/check_release.sh assets "$version" "$assets_dir" >"$workdir/assets.log" 2>&1 || actual=1
+    if [ "$actual" = 1 ] && grep -q "全部 3 个安装包" "$workdir/assets.log"; then
+        pass "assets rejects a macOS-only (1-file) update manifest on a full release"
+    else
+        printf 'FAIL assets should reject 1-file manifest\n'
+        sed 's/^/    /' "$workdir/assets.log"
+        failures=$((failures + 1))
+    fi
+fi
+
 if [ "$failures" -ne 0 ]; then
     printf '❌ %d 项发布附件校验自测失败\n' "$failures" >&2
     exit 1

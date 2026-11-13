@@ -162,7 +162,11 @@ export function abortVoiceInput(host: MenuMijiaWindowsApp): void {
   }
   if (current) {
     try {
-      current.stop();
+      if (typeof current.abort === "function") {
+        current.abort();
+      } else {
+        current.stop();
+      }
     } catch {
       // Already stopped or aborted.
     }
@@ -190,12 +194,14 @@ export function toggleVoiceInput(host: MenuMijiaWindowsApp): void {
   }
 
   host.isShowingAssistantBar = true;
+  const startedRevision = host.sourceRevision;
   const recognition = new SpeechCtor();
   recognition.lang = speechLocale();
   recognition.interimResults = false;
   recognition.continuous = false;
 
   recognition.onresult = (event) => {
+    if (state.speechRecognition !== recognition || host.sourceRevision !== startedRevision) return;
     const first = event.results[0]?.[0]?.transcript;
     if (first) {
       const inputEl = host.root.querySelector<HTMLInputElement>("#command-input");
@@ -204,10 +210,9 @@ export function toggleVoiceInput(host: MenuMijiaWindowsApp): void {
     }
   };
   const finishRecognition = () => {
-    if (state.speechRecognition !== recognition && !host.isListeningVoice) return;
-    if (state.speechRecognition === recognition) {
-      state.speechRecognition = null;
-    }
+    // A recognizer that was stopped and replaced must not end the session that replaced it.
+    if (state.speechRecognition !== recognition) return;
+    state.speechRecognition = null;
     host.isListeningVoice = false;
     invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
     host.render();
@@ -260,6 +265,9 @@ export function cancelPendingExternalUrlWork(host: MenuMijiaWindowsApp): void {
     const pending = state.pendingUrlConfirmation;
     state.pendingUrlConfirmation = null;
     pending.resolve(false);
+    // The prompt pinned the popover and is still in the DOM; without this its buttons are dead.
+    invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
+    host.queueBackgroundRender();
   }
 }
 
@@ -1069,8 +1077,6 @@ function createUrlCommandHostAdapter(
     isDeviceVisibleInPanel(deviceId: string): boolean {
       const dev = host.devices.find((d) => d.id === deviceId);
       if (!dev) return false;
-      const hiddenIds = (host.layout as { hiddenIds?: readonly string[] })?.hiddenIds;
-      if (hiddenIds && hiddenIds.includes(deviceId)) return false;
       if (host.settings.hideOfflineDevices && !dev.isOnline) return false;
       return true;
     },
@@ -1078,6 +1084,12 @@ function createUrlCommandHostAdapter(
     focusDeviceFromUrl(deviceId: string): void {
       if (!revisionStillMatches()) return;
       host.activeSheet = "none";
+      if (host.cameraLive.activeLiveCameraId !== null) {
+        host.cameraLive.closeCameraLiveView();
+      }
+      host.panelSearch.query = "";
+      const searchInput = host.root.querySelector<HTMLInputElement>("#command-input");
+      if (searchInput) searchInput.value = "";
       host.selectRoom(null);
       const dev = host.devices.find((d) => d.id === deviceId);
       host.expandedDeviceId =
@@ -1090,7 +1102,7 @@ function createUrlCommandHostAdapter(
           ? CSS.escape(deviceId)
           : deviceId.replace(/["\\]/g, "\\$&");
       const card = host.root.querySelector<HTMLElement>(
-        `[data-device-card="${escapedId}"]`,
+        `[data-tile-id="${escapedId}"]`,
       );
       card?.scrollIntoView?.({ block: "nearest" });
     },

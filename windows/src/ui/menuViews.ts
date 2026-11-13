@@ -8,7 +8,7 @@ import { renderSettingsModal as renderSettingsModalView } from "./settingsViews.
 export function renderHomeMenu(host: MenuMijiaWindowsApp): string {
     if (!host.isHomeMenuOpen || host.homes.length < 2) return "";
     const item = (id: string | null, label: string, count?: number) => `
-      <button class="cc-menu-item ${host.settings.selectedHomeId === id ? "is-checked" : ""}" data-home="${id ?? ""}">
+      <button class="cc-menu-item ${host.settings.selectedHomeId === id ? "is-checked" : ""}" data-home="${host.escapeHtml(id ?? "")}">
         <span>${host.escapeHtml(label)}</span>${count !== undefined ? `<small>${count}</small>` : ""}
       </button>`;
     return `
@@ -32,11 +32,11 @@ export function renderContextMenu(host: MenuMijiaWindowsApp): string {
         <div class="cc-menu-scrim" data-close-menus></div>
         <div class="cc-menu" style="${pos}">
           <div class="cc-menu-title">${host.escapeHtml(g.name)}</div>
-          <button class="cc-menu-item" data-group-action="rename:${gid}">重命名</button>
-          <button class="cc-menu-item" data-group-action="up:${gid}">上移分组</button>
-          <button class="cc-menu-item" data-group-action="down:${gid}">下移分组</button>
+          <button class="cc-menu-item" data-group-action="rename:${gid}">${t("重命名")}</button>
+          <button class="cc-menu-item" data-group-action="up:${gid}">${t("上移分组")}</button>
+          <button class="cc-menu-item" data-group-action="down:${gid}">${t("下移分组")}</button>
           <div class="cc-menu-sep"></div>
-          <button class="cc-menu-item is-danger" data-group-action="delete:${gid}">删除分组</button>
+          <button class="cc-menu-item is-danger" data-group-action="delete:${gid}">${t("删除分组")}</button>
         </div>`;
     }
     const dev = host.devices.find((d) => d.id === m.deviceId);
@@ -50,16 +50,16 @@ export function renderContextMenu(host: MenuMijiaWindowsApp): string {
         <div class="cc-menu-title">${host.escapeHtml(host.layout.aliases[dev.id] ?? dev.name)}</div>
         <div class="cc-menu-label">${t("卡片大小（本页）")}</div>
         <div class="cc-menu-chips">
-          ${TILE_SIZES.map((t) => `<button class="cc-menu-chip ${size === t.id ? "is-active" : ""}" data-set-size="${id}:${t.id}">${t.title}</button>`).join("")}
+          ${TILE_SIZES.map((sz) => `<button class="cc-menu-chip ${size === sz.id ? "is-active" : ""}" data-set-size="${id}:${sz.id}">${sz.title}</button>`).join("")}
         </div>
         <div class="cc-menu-label">${t("移到分组")}</div>
         <div class="cc-menu-chips">
           ${host.layout.groups.map((g) => `<button class="cc-menu-chip ${current === g.id ? "is-active" : ""}" data-set-group="${id}:${host.escapeHtml(g.id)}">${host.escapeHtml(g.name)}</button>`).join("")}
-          ${current ? `<button class="cc-menu-chip" data-set-group="${id}:">不分组</button>` : ""}
-          <button class="cc-menu-chip is-add" data-new-group="${id}">＋ 新建</button>
+          ${current ? `<button class="cc-menu-chip" data-set-group="${id}:">${t("不分组")}</button>` : ""}
+          <button class="cc-menu-chip is-add" data-new-group="${id}">${t("＋ 新建")}</button>
         </div>
         <div class="cc-menu-sep"></div>
-        <button class="cc-menu-item" data-rename-device="${id}">重命名…</button>
+        <button class="cc-menu-item" data-rename-device="${id}">${t("重命名…")}</button>
         <button class="cc-menu-item" data-start-editing>${t("编辑布局")}</button>
       </div>`;
   }

@@ -414,13 +414,17 @@ public actor DualSourceHomeProvider: HomeProvider {
         }
     }
 
-    public func shutdown() {
+    public func shutdown() async {
         for task in tasks { task.cancel() }
         tasks.removeAll()
         continuation?.finish()
         continuation = nil
-        if let homeAssistant { Task { await homeAssistant.shutdown() } }
-        if let xiaomiCloud { Task { await xiaomiCloud.shutdown() } }
+        let ha = homeAssistant
+        let mi = xiaomiCloud
+        await withTaskGroup(of: Void.self) { group in
+            if let ha { group.addTask { await ha.shutdown() } }
+            if let mi { group.addTask { await mi.shutdown() } }
+        }
     }
 }
 

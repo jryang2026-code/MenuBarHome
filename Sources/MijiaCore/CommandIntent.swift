@@ -117,6 +117,65 @@ public struct PendingCloudConsent: Equatable, Sendable {
 
 // MARK: - Device Category Used by Both Resolvers
 
+extension SmartDevice {
+    private static let switchedLightExcludedModels: [String] = [
+        ".diffuser.", "kettle", "waterdispenser", "cooker", "fryer", "oven",
+        "microwave", "healthpot", "heater", "blanket", "bhf_light", "ptc",
+        "steril", "germicid", "disinfect", "mosquito", "inskil", "valve", "lock",
+    ]
+
+    private static let switchedLightExcludedSubstrings: [String] = [
+        "插座", "插排", "排插", "插线板", "转换器",
+        "power strip", "powerstrip", "smart plug", "smartplug",
+        "杀菌", "消毒", "紫外", "臭氧", "浴霸", "取暖", "电暖", "暖风", "暖气", "暖灯",
+        "加热", "发热", "电热", "热水", "保温", "烤", "红外",
+        "灭蚊", "驱蚊", "诱蚊", "捕蚊", "指示灯", "信号灯",
+        "车库", "门锁", "阀门", "水壶", "饮水", "饭煲", "电锅", "炸锅", "烤箱", "微波", "养生壶",
+        "晾衣", "开窗", "摄像", "监控", "扫地", "路由", "网关",
+    ]
+
+    private static let switchedLightExcludedAsciiWords: Set<String> = [
+        "plug", "plugs", "outlet", "outlets", "socket", "sockets",
+        "uv", "ultraviolet", "germicidal", "sterilizer", "steriliser", "sterilization", "sterilisation",
+        "disinfect", "disinfection", "ozone",
+        "heat", "heater", "heating", "warmer", "warming", "infrared", "ir", "ptc", "bath",
+        "mosquito", "insect", "bug", "zapper", "indicator",
+        "garage", "lock", "valve", "kettle", "cooker", "oven", "fryer", "microwave",
+        "camera", "vacuum", "router", "gateway",
+    ]
+
+    private static let switchedLightPositiveAsciiWords: Set<String> = [
+        "light", "lights", "lighting", "lamp", "lamps", "bulb", "bulbs",
+        "downlight", "downlights", "spotlight", "spotlights", "lightstrip", "lightstrips",
+        "chandelier", "sconce", "lantern", "pendant",
+    ]
+
+    /// True when a writable wall-switch or relay `.plug` card represents a room light rather than a hazardous load.
+    public var isSwitchedLight: Bool {
+        guard case .plug(let spec) = kind,
+              spec.powerWritable,
+              !spec.switchEntityId.hasPrefix("button.") else {
+            return false
+        }
+        let lowerModel = model.lowercased()
+        if Self.switchedLightExcludedModels.contains(where: { lowerModel.contains($0) }) {
+            return false
+        }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowerName = trimmed.lowercased()
+        let asciiWords = Set(lowerName.split { !($0.isASCII && $0.isLetter) }.map(String.init))
+        if Self.switchedLightExcludedSubstrings.contains(where: { lowerName.contains($0) }) {
+            return false
+        }
+        if !asciiWords.isDisjoint(with: Self.switchedLightExcludedAsciiWords) {
+            return false
+        }
+        return lowerName.contains("灯")
+            || lowerName.contains("照明")
+            || !asciiWords.isDisjoint(with: Self.switchedLightPositiveAsciiWords)
+    }
+}
+
 public enum IntentDeviceCategory: String, Equatable, Sendable, CaseIterable {
     case light, climate, heater, fan, airPurifier, dehumidifier, diffuser, plug, vacuum, speaker, tv, fridge, camera, sensor, cover, appliance, generic, valve
     private static let heaterNameHints = ["电暖", "暖气", "取暖", "暖风"]
@@ -141,7 +200,14 @@ public enum IntentDeviceCategory: String, Equatable, Sendable, CaseIterable {
                 || s.airQuality != nil
                 || s.filterLifePercent != nil
             self = isPurifier ? .airPurifier : .fan
-        case .plug: self = device.model.contains(".diffuser.") ? .diffuser : .plug
+        case .plug:
+            if device.model.contains(".diffuser.") {
+                self = .diffuser
+            } else if device.isSwitchedLight {
+                self = .light
+            } else {
+                self = .plug
+            }
         case .vacuum: self = .vacuum
         case .speaker: self = .speaker
         case .tv: self = .tv
@@ -401,7 +467,10 @@ public enum IntentReply {
 
     /// Formats 26 → "26" and 25.5 → "25.5"; URL-command replies and assistant text share one style.
     public static func formatTemperature(_ t: Double) -> String {
-        t.rounded() == t ? String(Int(t)) : String(format: "%.1f", t)
+        if let exact = DeviceSynthesizer.roundedInt(t), Double(exact) == t {
+            return String(exact)
+        }
+        return String(format: "%.1f", t)
     }
 }
 
@@ -448,7 +517,7 @@ public struct IntentCatalog: Sendable {
         var allLightIds: [String] = []
         var allDeviceIds: [String] = []
         var roomOrder: [String] = []
-        var roomLights: [String: [String]] = [:]
+        var roomLights: [String: (roomName: String, ids: [String])] = [:]
         var aliasById: [String: String] = [:]
         var deviceRows: [String] = []
         var deviceEntries: [DeviceEntry] = []
@@ -465,8 +534,13 @@ public struct IntentCatalog: Sendable {
             if category == .light {
                 allLightIds.append(device.id)
                 if !device.roomName.isEmpty {
-                    if roomLights[device.roomName] == nil { roomOrder.append(device.roomName) }
-                    roomLights[device.roomName, default: []].append(device.id)
+                    let roomKey = device.roomId.isEmpty ? device.roomName : device.roomId
+                    if roomLights[roomKey] == nil {
+                        roomOrder.append(roomKey)
+                        roomLights[roomKey] = (roomName: device.roomName, ids: [device.id])
+                    } else {
+                        roomLights[roomKey]?.ids.append(device.id)
+                    }
                 }
             }
             criteria[alias] = Self.choiceCriterion(category: category, state: state)
@@ -493,16 +567,16 @@ public struct IntentCatalog: Sendable {
         var groupIndex = 0
         var groupRows: [String] = []
         var groupEntries: [GroupEntry] = []
-        for room in roomOrder {
-            let ids = roomLights[room] ?? []
-            guard ids.count >= 2 else { continue }
+        for roomKey in roomOrder {
+            guard let group = roomLights[roomKey], group.ids.count >= 2 else { continue }
+            let ids = group.ids
             groupIndex += 1
             let alias = "room_lights:\(groupIndex)"
             map[alias] = ids
             criteria[alias] = Self.roomGroupCriterion(lightCount: ids.count)
             let memberAliases = ids.compactMap { aliasById[$0] }
             let members = memberAliases.map { CatalogJSON.quote($0) }
-            let sanitizedRoom = PromptText.sanitize(room, limit: PromptText.nameLimit)
+            let sanitizedRoom = PromptText.sanitize(group.roomName, limit: PromptText.nameLimit)
             let row = CatalogJSON.object([
                 ("id", CatalogJSON.quote(alias)),
                 ("room", CatalogJSON.quote(sanitizedRoom)),
@@ -757,7 +831,7 @@ public struct IntentCatalog: Sendable {
         case .humidifier(let s):
             var parts: [String] = [s.isOn ? "开" : "关"]
             if let target = s.targetHumidity { parts.append("目标湿度\(target)%") }
-            if let current = s.currentHumidity { parts.append("当前湿度\(Int(current.rounded()))%") }
+            if let current = s.currentHumidity.flatMap(DeviceSynthesizer.roundedInt) { parts.append("当前湿度\(current)%") }
             if let mode = s.currentMode, !mode.isEmpty { parts.append(mode) }
             return parts.joined(separator: " ")
         case .valve(let s):
