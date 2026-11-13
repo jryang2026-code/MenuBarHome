@@ -6,6 +6,12 @@ name: Snapshot Guard
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
+    paths:
+      - 'Sources/MenuBarMijiaApp/**'
+      - 'Resources/**'
+      - 'Tests/MenuBarMijiaAppTests/__Snapshots__/**'
+      - 'scripts/check_snapshot_baselines.sh'
+      - '.github/workflows/snapshot-guard.yml'
 
 permissions:
   contents: read
