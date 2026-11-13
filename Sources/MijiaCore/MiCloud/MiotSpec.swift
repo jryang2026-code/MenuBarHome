@@ -382,35 +382,36 @@ public actor MiotSpecStore: MiotSpecSource {
 
     private func loadTypeIndex() async throws -> ([String: String], Bool) {
         let file = cacheDirectory.appendingPathComponent("miot-instances.json")
-        let cachedData = (try? Data(contentsOf: file)).flatMap { payload in
-            (try? JSONSerialization.jsonObject(with: payload)) != nil ? payload : nil
-        }
+        let cachedIndex = (try? Data(contentsOf: file)).flatMap(Self.decodeValidInstanceIndex)
         // A modification date in the future (clock skew, copied file) would otherwise keep a stale
         // index forever, so only a non-negative age counts as fresh.
-        if let cachedData, isFreshCacheFile(file, cacheKey: "__index__", baseMaxAge: indexMaxAge) {
-            let index = Self.parseInstanceIndex(cachedData)
-            logger.info("MIoT instance index loaded from fresh cache: \(index.count, privacy: .public) models")
-            return (index, true)
+        if let cachedIndex, isFreshCacheFile(file, cacheKey: "__index__", baseMaxAge: indexMaxAge) {
+            logger.info("MIoT instance index loaded from fresh cache: \(cachedIndex.count, privacy: .public) models")
+            return (cachedIndex, true)
         }
         do {
             let fetched = try await fetchWithMirrorFallback(
                 path: "miot-spec-v2/instances",
                 queryItems: [URLQueryItem(name: "status", value: "released")]
             ) { payload in
-                (try? JSONSerialization.jsonObject(with: payload)) != nil
+                Self.decodeValidInstanceIndex(payload) != nil
             }
-            writeCache(fetched, to: file)
             let index = Self.parseInstanceIndex(fetched)
+            writeCache(fetched, to: file)
             logger.info("MIoT instance index loaded: \(index.count, privacy: .public) models")
             return (index, true)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            guard let cachedData else { throw error }
-            let index = Self.parseInstanceIndex(cachedData)
-            logger.warning("MIoT instance index refresh failed, using stale cached index (\(index.count, privacy: .public) models): \(error.localizedDescription, privacy: .public)")
-            return (index, false)
+            guard let cachedIndex else { throw error }
+            logger.warning("MIoT instance index refresh failed, using stale cached index (\(cachedIndex.count, privacy: .public) models): \(error.localizedDescription, privacy: .public)")
+            return (cachedIndex, false)
         }
+    }
+
+    private static func decodeValidInstanceIndex(_ data: Data) -> [String: String]? {
+        let index = parseInstanceIndex(data)
+        return index.isEmpty ? nil : index
     }
 
     /// Highest released version per model.
@@ -419,7 +420,7 @@ public actor MiotSpecStore: MiotSpecSource {
         struct Root: Decodable { let instances: [Entry] }
         guard let root = try? JSONDecoder().decode(Root.self, from: data) else { return [:] }
         var best: [String: Entry] = [:]
-        for e in root.instances where (best[e.model]?.version ?? Int.min) < e.version {
+        for e in root.instances where !e.model.isEmpty && !e.type.isEmpty && (best[e.model]?.version ?? Int.min) < e.version {
             best[e.model] = e
         }
         return best.mapValues(\.type)

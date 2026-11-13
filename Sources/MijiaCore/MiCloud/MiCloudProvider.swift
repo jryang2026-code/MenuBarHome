@@ -46,6 +46,7 @@ public actor MiCloudProvider: HomeProvider {
     private var cameraBridgeBindings: [String: (did: String, subdid: String?)] = [:]
     private var lanHealthByDid: [String: LANHealthState] = [:]
     private var knownLANEndpointsByDid: [String: (ip: String, token: String)] = [:]
+    private var sharedHomeDids: Set<String> = []
     private var doorbellBaselineTime: [String: Date] = [:]
     private var lastDoorbellTimestamp: [String: Date] = [:]
 
@@ -281,6 +282,7 @@ public actor MiCloudProvider: HomeProvider {
         guard account != nil else { return }
         devices = []
         rooms = []
+        sharedHomeDids.removeAll()
         values = [:]
         emitSnapshot()
     }
@@ -574,6 +576,7 @@ public actor MiCloudProvider: HomeProvider {
     // MARK: - Hybrid LAN Eligibility & Cooldown
 
     private func reconcileLANEndpoints(_ records: [MiDeviceRecord]) {
+        sharedHomeDids = Set(rooms.lazy.filter(\.isSharedHome).flatMap(\.dids))
         for record in records where record.splitParentDid == nil {
             let did = record.miotDid
             let ip = record.localIp?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -593,6 +596,8 @@ public actor MiCloudProvider: HomeProvider {
         guard localClient != nil,
               record.isOnline,
               !record.isShared,
+              !sharedHomeDids.contains(record.did),
+              !sharedHomeDids.contains(record.miotDid),
               record.splitParentDid == nil,
               !record.did.hasPrefix("group."),
               let ip = record.localIp?.trimmingCharacters(in: .whitespacesAndNewlines),

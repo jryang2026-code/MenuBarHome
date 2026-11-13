@@ -38,6 +38,7 @@ private actor HybridMockCloudAPI: MiCloudAPI {
     var devicesList: [MiDeviceRecord]
     var roomsList: [MiRoom]
     var propsByKey: [MiotPropKey: JSONValue]
+    var homeDevicesByHomeId: [String: [MiDeviceRecord]]
     var doorbellLatest: [String: Date] = [:]
 
     private(set) var getPropsCalls: [[MiotPropKey]] = []
@@ -49,11 +50,13 @@ private actor HybridMockCloudAPI: MiCloudAPI {
     init(
         devices: [MiDeviceRecord],
         rooms: [MiRoom],
-        props: [MiotPropKey: JSONValue] = [:]
+        props: [MiotPropKey: JSONValue] = [:],
+        homeDevicesByHomeId: [String: [MiDeviceRecord]] = [:]
     ) {
         self.devicesList = devices
         self.roomsList = rooms
         self.propsByKey = props
+        self.homeDevicesByHomeId = homeDevicesByHomeId
     }
 
     func setDoorbellLatest(did: String, eventKey: String, date: Date?) {
@@ -67,6 +70,9 @@ private actor HybridMockCloudAPI: MiCloudAPI {
 
     func deviceList() async throws -> [MiDeviceRecord] { devicesList }
     func homeRooms() async throws -> [MiRoom] { roomsList }
+    func homeDevices(homeId: String, ownerUid: String) async throws -> [MiDeviceRecord] {
+        homeDevicesByHomeId[homeId] ?? []
+    }
 
     func getProps(_ keys: [MiotPropKey]) async throws -> [MiotPropKey: JSONValue] {
         getPropsCalls.append(keys)
@@ -683,15 +689,20 @@ struct MiCloudAndSpecEnhancementsTests {
         let transport = MirrorHTTPStub { req in
             let url = req.url!.absoluteString
             if url.hasPrefix("https://miot-spec.org") {
+                if url.contains("/instances?status=released") {
+                    // HTTP 200 with wrong JSON shape ({}) must be rejected, not memoized/cached as fresh.
+                    let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                    return (Data("{}".utf8), resp)
+                }
                 let resp = HTTPURLResponse(url: req.url!, statusCode: 503, httpVersion: nil, headerFields: nil)!
                 return (Data(), resp)
             }
             if url.contains("/instances?status=released") {
                 let body = Data(#"""
                 {"instances":[
-                    {"model":"acme.bulb.v1","type":"urn:miot-spec-v2:device:light:0000A001:acme-bulb:1","status":"released"},
-                    {"model":"acme.bulb.v2","type":"urn:miot-spec-v2:device:light:0000A001:acme-bulb:2","status":"released"},
-                    {"model":"acme.bulb.v3","type":"urn:miot-spec-v2:device:light:0000A001:acme-bulb:3","status":"released"}
+                    {"model":"acme.bulb.v1","version":1,"type":"urn:miot-spec-v2:device:light:0000A001:acme-bulb:1","status":"released"},
+                    {"model":"acme.bulb.v2","version":1,"type":"urn:miot-spec-v2:device:light:0000A001:acme-bulb:2","status":"released"},
+                    {"model":"acme.bulb.v3","version":1,"type":"urn:miot-spec-v2:device:light:0000A001:acme-bulb:3","status":"released"}
                 ]}
                 """#.utf8)
                 let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
@@ -727,6 +738,20 @@ struct MiCloudAndSpecEnhancementsTests {
         #expect(await transport.maxConcurrent <= 2)
         let urls = await transport.requestedURLs
         #expect(urls.contains { $0.hasPrefix("https://spec.miot-spec.com/") })
+
+        // If all mirrors return 200 {}, no index file should be written to disk.
+        let badDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MiotSpecBadIndex-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: badDir) }
+        let badTransport = MirrorHTTPStub { req in
+            let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (Data("{}".utf8), resp)
+        }
+        let badStore = MiotSpecStore(transport: badTransport, cacheDirectory: badDir)
+        await #expect(throws: MiCloudError.badResponse("invalid spec payload")) {
+            _ = try await badStore.spec(model: "acme.bulb.v1", specType: nil)
+        }
+        #expect(!FileManager.default.fileExists(atPath: badDir.appendingPathComponent("miot-instances.json").path))
     }
 
     @Test("Expired cached spec and index fall back to stale disk cache when all mirrors fail, then refresh once mirrors recover")
@@ -1201,6 +1226,74 @@ struct HybridProviderAndDoorbellTests {
         }
         #expect(actionPacketCount.withValue { $0 } == 1)
         #expect(await api.actionCalls.isEmpty)
+
+        await provider.shutdown()
+    }
+
+    @Test("Shared-home homeFallback devices never route polling or actions over LAN even if share_flag is omitted")
+    func sharedHomeFallbackDevicesNeverRouteOverLAN() async throws {
+        let udpTransport = MockUDPTransport { _, _, _ in
+            Issue.record("Unexpected LAN UDP send for shared-home device")
+            throw MiIOError.timeout
+        }
+
+        let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 0)
+        let sharedHomeDevice = MiDeviceRecord(
+            did: "505",
+            name: "Shared Home Light",
+            model: "yeelink.light.color4",
+            isOnline: true,
+            localIp: "192.0.2.55",
+            token: tokenHex,
+            isShared: false
+        )
+        let sharedRoom = MiRoom(
+            id: "r-shared",
+            name: "Shared Living",
+            dids: [],
+            homeId: "h-shared",
+            homeName: "Family Home",
+            isSharedHome: true,
+            ownerUid: "99999"
+        )
+        let api = HybridMockCloudAPI(
+            devices: [],
+            rooms: [sharedRoom],
+            props: [
+                MiotPropKey(did: "505", siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: "505", siid: 2, piid: 2): .number(88),
+            ],
+            homeDevicesByHomeId: ["h-shared": [sharedHomeDevice]]
+        )
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession },
+            apiFactory: { _ in api },
+            specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightWithNotifyActionSpec()]),
+            localClient: localClient,
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+
+        let collector = EventCollector()
+        let stream = provider.events()
+        let task = Task {
+            for await event in stream {
+                await collector.append(event)
+            }
+            await collector.finish()
+        }
+        defer { task.cancel() }
+
+        #expect(await collector.wait { !$0.snapshots.isEmpty })
+        let light = await collector.snapshots.last?.devices.first { $0.id == "505" }
+        #expect(lightBrightness(light) == 88)
+        #expect(await udpTransport.sends.isEmpty)
+        #expect((await api.getPropsCalls.first ?? []).map(\.did) == ["505", "505"])
+
+        try await provider.execute(.sendNotifyMessage(entityId: "miot-action:505:7:3", message: "cloud-only"))
+        #expect(await udpTransport.sends.isEmpty)
+        #expect(await api.actionCalls == [MiotActionCall(did: "505", siid: 7, aiid: 3, inputs: [.string("cloud-only")])])
 
         await provider.shutdown()
     }
