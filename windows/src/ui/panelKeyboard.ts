@@ -162,6 +162,7 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
     if (isEditable && !inInput) return false;
     event.preventDefault();
     host.isShowingAssistantBar = true;
+    host.expandedDeviceId = null;
     host.render();
     host.root.querySelector<HTMLInputElement>("#command-input")?.focus();
     return true;
@@ -215,6 +216,7 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
   if (!inInput && !isEditable && event.key === "/") {
     event.preventDefault();
     host.isShowingAssistantBar = true;
+    host.expandedDeviceId = null;
     host.render();
     const field = host.root.querySelector<HTMLInputElement>("#command-input");
     field?.focus();
@@ -231,7 +233,9 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
     }
   }
   if (!inInput && !isEditable && event.key.length === 1 && event.key !== " " && !/^[1-9/]$/.test(event.key)) {
-    event.preventDefault(); host.isShowingAssistantBar = true;
+    event.preventDefault();
+    host.isShowingAssistantBar = true;
+    host.expandedDeviceId = null;
     updateQuery(host, host.panelSearch.query + event.key);
     const field = host.root.querySelector<HTMLInputElement>("#command-input");
     field?.focus(); field?.setSelectionRange(field.value.length, field.value.length);

@@ -739,6 +739,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
   const fill = kind === "light" && !isExpanded
     ? dim ?? (isOn && dev.kind.kind === "light" ? dev.kind.brightnessPercent ?? 100 : 0)
     : 0;
+  const capsuleFill = kind === "light" && !isExpanded && dim !== null ? dim : 0;
   const shownSubtitle = readout === "waiting"
     ? t("等待中")
     : readout === "possiblyStale"
@@ -752,11 +753,11 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
 
   if (isCapsule) {
     return `
-      <div class="cc-tile is-capsule ${palette} ${isOn ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" ${attrs}>
+      <div class="cc-tile is-capsule ${palette} ${isOn ? "is-active" : ""} ${dim !== null ? "is-dimming" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" ${attrs}>
         ${badge}
         <div class="cc-tile-header win-capsule-stack">
           <div class="win-split-pill ${hasDrawer ? "has-expand" : ""}">
-            ${fill > 0 ? `<span class="cc-tile-fill" style="width:${fill}%"></span>` : ""}
+            ${capsuleFill > 0 ? `<span class="cc-tile-fill" style="width:${capsuleFill}%"></span>` : ""}
             ${
               dev.kind.kind === "generic" && dev.kind.isReadOnly
                 ? `<span class="cc-readonly-badge">${t("只读")}</span>`

@@ -1,7 +1,7 @@
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { speechLocale, t } from "../core/i18n.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
-import { hasDetailDrawer, isDeviceActiveOn, type SmartDevice } from "../core/models.js";
+import { deviceCanTogglePower, hasDetailDrawer, isDeviceActiveOn, type SmartDevice } from "../core/models.js";
 import { normalizeSearch } from "../core/panelSearch.js";
 import { availableQuickActions, trText, type QuickActionId } from "../core/quickActions.js";
 import { SF_ICONS } from "./appConstants.js";
@@ -126,7 +126,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
                   </button>
                 `;
                   })
-                  .join("")}
+                  .join("")}${host.renderKindBar()}
               </div>
             </div>
             <div class="cc-room-tools">
@@ -150,7 +150,6 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
               </button>
             </div>
           </div>
-          ${host.renderKindBar()}
         </div>
 
         <main class="cc-scroll-area" aria-label="${t("设备列表")}">
@@ -320,24 +319,81 @@ function renderNotificationStack(host: MenuMijiaWindowsApp): string {
       );
     }
 
-    if (host.cameraLive.activeLiveCameraId === null) {
+    if (host.cameraLive.activeLiveCameraId === null || host.cameraLive.liveCameraHidden) {
       const onlineCameras = withAliases(host.layout, host.devices).filter(
         (d) => d.kind.kind === "camera" && d.isOnline,
       );
-      const cam = onlineCameras[0];
-      if (cam) {
+      const cam =
+        onlineCameras.find((d) => d.id === host.cameraLive.activeLiveCameraId) ?? onlineCameras[0];
+      if (cam && cam.kind.kind === "camera") {
+        const camId = host.escapeHtml(cam.id);
+        const camOn = isDeviceActiveOn(cam);
+        const isWarmStandby =
+          host.cameraLive.activeLiveCameraId === cam.id && host.cameraLive.liveCameraHidden;
+        const canToggleCam = deviceCanTogglePower(cam);
+        const canExpandCam = hasDetailDrawer(cam, host.deviceFacets[cam.id] ?? []);
+        const summaryState = isWarmStandby
+          ? trText("120s 保活", "120s warm")
+          : camOn
+            ? trText("实时 · 高清", "Live · HD")
+            : trText("镜头休眠", "Sleeping");
+        const summaryMeta = cam.roomName ? `${cam.roomName} · ${summaryState}` : summaryState;
+        const detailStatus = isWarmStandby
+          ? trText("P2P 120s 保活就绪", "P2P 120s warm standby")
+          : !camOn
+            ? trText("镜头隐私休眠中", "Privacy sleep active")
+            : cam.kind.isMotionDetectionOn
+              ? trText("移动侦测开启 · 点击速览", "Motion alert on · Tap to view")
+              : trText("实时画面就绪 · 点击速览", "Live stream ready · Tap to view");
+        const liveBadge = isWarmStandby
+          ? trText("120s 保活", "120s warm")
+          : camOn
+            ? trText("高清", "HD")
+            : trText("已休眠", "Asleep");
         const openAttr = host.collapsedNotifCards.has("camera") ? "" : "open";
         cards.push(
           `<details class="win-notif-card cc-feedback-card win-camera-card" data-notif-card="camera" ${openAttr}>
             <summary class="win-notif-summary">
               <span class="win-notif-icon">${SF_ICONS.videoFill}</span>
-              <span class="win-notif-app">${t("摄像机速览")}</span>
-              <span class="win-notif-meta">${host.escapeHtml(cam.roomName)}</span>
+              <span class="win-notif-app">${host.escapeHtml(cam.name)}</span>
+              <span class="win-notif-meta">${host.escapeHtml(summaryMeta)}</span>
               <span class="win-notif-chevron">${SF_ICONS.chevronDown}</span>
             </summary>
-            <div class="win-camera-quick-row">
-              <span class="win-camera-quick-name">${host.escapeHtml(cam.name)}</span>
-              <button type="button" class="cc-inline-pill is-accent" data-open-camera="${host.escapeHtml(cam.id)}">${t("查看实时画面")}</button>
+            <div class="win-camera-deck">
+              <button
+                type="button"
+                class="win-camera-preview ${camOn ? "is-live-ready" : "is-sleeping"} ${isWarmStandby ? "is-warm" : ""}"
+                data-open-camera="${camId}"
+                aria-label="${host.escapeHtml(t("查看实时画面"))} · ${host.escapeHtml(cam.name)}"
+              >
+                <svg class="win-camera-wireframe" viewBox="0 0 160 90" aria-hidden="true">
+                  <rect x="14" y="18" width="44" height="34" rx="2" />
+                  <line x1="36" y1="18" x2="36" y2="52" />
+                  <rect x="68" y="42" width="76" height="30" rx="3" stroke-dasharray="3 2" />
+                  <line x1="8" y1="74" x2="152" y2="74" />
+                </svg>
+                <span class="win-camera-live-pill">
+                  <span class="win-camera-live-dot"></span>
+                  <span>${host.escapeHtml(liveBadge)}</span>
+                </span>
+                ${cam.roomName ? `<span class="win-camera-room-tag">${host.escapeHtml(cam.roomName)}</span>` : ""}
+              </button>
+              <div class="win-camera-side">
+                <div class="win-camera-status" title="${host.escapeHtml(detailStatus)}">${host.escapeHtml(detailStatus)}</div>
+                <div class="win-camera-actions">
+                  ${
+                    canToggleCam
+                      ? `<button type="button" class="cc-inline-pill ${camOn ? "is-accent" : ""}" data-toggle-device="${camId}" aria-pressed="${camOn}">${camOn ? trText("休眠", "Sleep") : trText("唤醒", "Wake")}</button>`
+                      : ""
+                  }
+                  ${
+                    canExpandCam
+                      ? `<button type="button" class="cc-inline-pill win-camera-icon-pill" data-reveal-device="${camId}" title="${host.escapeHtml(t("展开 {name} 详细控制", { name: cam.name }))}" aria-label="${host.escapeHtml(t("展开 {name} 详细控制", { name: cam.name }))}">${SF_ICONS.sliderHorizontal}</button>`
+                      : ""
+                  }
+                  <button type="button" class="cc-inline-pill ${camOn ? "" : "is-accent"}" data-open-camera="${camId}">${t("实时画面")}</button>
+                </div>
+              </div>
             </div>
           </details>`,
         );
@@ -483,10 +539,11 @@ function miExpiryWarningBanner(host: MenuMijiaWindowsApp): string {
 function footerStatus(host: MenuMijiaWindowsApp): string {
   const health = host.panelHealth();
   const dot = `<span class="cc-status-dot ${health.dot}"></span>`;
+  const escaped = host.escapeHtml(health.label);
   if (health.kind === "offline" && health.recovery === "qr") {
-    return `${dot}<button type="button" class="cc-footer-label is-action" id="btn-footer-health">${host.escapeHtml(health.label)}</button>`;
+    return `${dot}<button type="button" class="cc-footer-label is-action" id="btn-footer-health" title="${escaped}">${escaped}</button>`;
   }
-  return `${dot}<span class="cc-footer-label">${host.escapeHtml(health.label)}</span>`;
+  return `${dot}<span class="cc-footer-label" title="${escaped}">${escaped}</span>`;
 }
 
 function liveBanner(host: MenuMijiaWindowsApp): string {

@@ -588,9 +588,9 @@ export class MenuMijiaWindowsApp {
       const chip = KIND_CHIP[tag];
       const active = this.listCut.kind === "deviceKind" && this.listCut.tag === tag;
       const hint = chip.hint ? ` title="${this.escapeHtml(t(chip.hint))}"` : "";
-      return `<button class="cc-room-pill${active ? " is-active" : ""}" data-kind="${tag}" aria-pressed="${active}"${hint}>${this.escapeHtml(t(chip.title))}</button>`;
+      return `<button class="cc-room-pill is-kind${active ? " is-active" : ""}" data-kind="${tag}" aria-pressed="${active}"${hint}>${this.escapeHtml(t(chip.title))}</button>`;
     }).join("");
-    return `<div class="cc-room-bar"><div class="cc-room-track"><div class="cc-room-scroll">${buttons}</div></div></div>`;
+    return `<span class="cc-filter-sep" aria-hidden="true"></span>${buttons}`;
   }
 
   private allOffButtonText(count: number): string {
@@ -948,7 +948,7 @@ export class MenuMijiaWindowsApp {
   public panelHealth(): PanelHealth {
     const mode = this.settings.connectionMode;
     if (mode === "demo") {
-      return { kind: "demo", dot: "is-demo", label: t("演示模式 · 未连接米家云") };
+      return { kind: "demo", dot: "is-demo", label: t("演示模式") };
     }
     if (
       mode === "xiaomiCloud" &&
@@ -993,7 +993,7 @@ export class MenuMijiaWindowsApp {
     if (this.settings.connectionMode === "homeAssistant") {
       return `Home Assistant · ${this.devices.length}`;
     }
-    return t("演示模式 · 未连接米家云");
+    return t("演示模式");
   }
 
   private sourceIsMissing(): boolean {
@@ -1495,9 +1495,9 @@ export class MenuMijiaWindowsApp {
 
   /**
    * Windows 11 native taskbar flyout choreography:
-   * - Present (`menumijia:panel-present`): 220ms `cubic-bezier(0, 0, 0, 1)` decelerate slide out
+   * - Present (`menumijia:panel-present`): 250ms `cubic-bezier(0, 0, 0, 1)` decelerate slide out
    *   from the docked taskbar edge (`bottom` / `top` / `left` / `right`), clearing transform at rest.
-   * - Dismiss (`menumijia:panel-dismiss`): 160ms `cubic-bezier(1, 0, 1, 1)` accelerate slide back
+   * - Dismiss (`menumijia:panel-dismiss`): 167ms `cubic-bezier(1, 0, 1, 1)` accelerate slide back
    *   into the taskbar edge, then `finish_hide_panel({ seq })` hides the HWND without bounce or flash.
    */
   private bindOpenAnimation(): void {
@@ -1559,7 +1559,7 @@ export class MenuMijiaWindowsApp {
       openClearTimer = ownerWin.setTimeout(() => {
         openClearTimer = null;
         this.root.classList.remove("is-opening");
-      }, 260);
+      }, 275);
     };
     const finishDismiss = (seq: number): void => {
       if (activeDismissSeq !== seq) return;
@@ -1587,7 +1587,7 @@ export class MenuMijiaWindowsApp {
       this.root.classList.add("is-closing");
       dismissTimer = ownerWin.setTimeout(() => {
         finishDismiss(seq);
-      }, 175);
+      }, 185);
     };
 
     const onPanelPresent = (event: Event) => {

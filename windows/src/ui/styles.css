@@ -120,6 +120,7 @@ body {
   display: flex;
   justify-content: center;
   align-items: stretch;
+  overflow: hidden;
   background: transparent;
 }
 
@@ -151,7 +152,7 @@ body {
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   background: transparent;
   border-radius: var(--r-flyout);
   position: relative;
@@ -228,12 +229,20 @@ body {
 
 .win-island--top {
   flex: 0 0 auto;
-  max-height: min(224px, 36%);
+  max-height: min(198px, 32%);
+}
+
+.win-island--top:has(details.win-camera-card[open]) {
+  max-height: min(268px, 42%);
 }
 
 @media (max-height: 600px) {
   .win-island--top {
-    max-height: 33%;
+    max-height: 30%;
+  }
+
+  .win-island--top:has(details.win-camera-card[open]) {
+    max-height: 38%;
   }
 }
 
@@ -246,10 +255,10 @@ body {
    Top Island: Header & Quiet Environment Readout (Win+N)
    ========================================================================= */
 .cc-header {
-  padding: 12px 14px 10px;
+  padding: 9px 12px 7px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   flex-shrink: 0;
   min-width: 0;
 }
@@ -502,7 +511,7 @@ body {
    Top Island: Win+N Stacked Notification & Dynamic Cards
    ========================================================================= */
 .win-notif-stack {
-  padding: 0 12px 12px;
+  padding: 0 10px 9px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -549,7 +558,7 @@ details.win-notif-card {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 10px;
+  padding: 6px 10px;
   cursor: pointer;
   font-size: 12px;
   line-height: 16px;
@@ -624,19 +633,138 @@ details.win-notif-card > :not(summary) {
   padding: 0 10px 8px;
 }
 
-.win-camera-quick-row {
+.win-camera-deck {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
+  gap: 10px;
+  min-width: 0;
 }
 
-.win-camera-quick-name {
+.win-camera-preview {
+  position: relative;
+  width: 132px;
+  aspect-ratio: 16 / 9;
+  flex: 0 0 132px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background:
+    radial-gradient(120% 90% at 80% 15%, rgba(96, 205, 255, 0.22), transparent 62%),
+    linear-gradient(160deg, #1b2432 0%, #0f141d 100%);
+  overflow: hidden;
+  cursor: pointer;
+  padding: 0;
+  color: #ffffff;
+  transition: border-color 120ms ease, filter 120ms ease;
+}
+
+.cc-popover.scheme-light .win-camera-preview {
+  border-color: rgba(0, 0, 0, 0.14);
+}
+
+.win-camera-preview.is-sleeping {
+  background: linear-gradient(160deg, #1c1f24 0%, #121418 100%);
+  opacity: 0.82;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .win-camera-preview:hover {
+    border-color: var(--win-accent);
+    filter: brightness(1.07);
+  }
+}
+
+.win-camera-wireframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  fill: rgba(96, 205, 255, 0.08);
+  stroke: rgba(164, 212, 255, 0.28);
+  stroke-width: 1.25;
+}
+
+.win-camera-preview.is-sleeping .win-camera-wireframe {
+  fill: rgba(255, 255, 255, 0.03);
+  stroke: rgba(255, 255, 255, 0.14);
+}
+
+.win-camera-live-pill {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(12, 16, 22, 0.72);
+  color: rgba(255, 255, 255, 0.94);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 600;
+}
+
+.win-camera-live-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #6ccb5f;
+}
+
+.win-camera-preview.is-warm .win-camera-live-dot {
+  background: #fce100;
+}
+
+.win-camera-preview.is-sleeping .win-camera-live-dot {
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.win-camera-room-tag {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(12, 16, 22, 0.62);
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.win-camera-side {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.win-camera-status {
+  font-size: 11.5px;
+  line-height: 15px;
   color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.win-camera-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.win-camera-icon-pill {
+  padding: 3px 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.win-camera-icon-pill svg {
+  width: 13px;
+  height: 13px;
 }
 
 .cc-feedback-card.is-error {
@@ -720,6 +848,25 @@ details.win-notif-card > :not(summary) {
   gap: 5px;
 }
 
+.cc-suggestion-row[data-proactive-bar] {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-right: 10px;
+  scroll-padding-inline-end: 14px;
+  mask-image: linear-gradient(to right, #000 calc(100% - 14px), transparent);
+}
+
+.cc-suggestion-row[data-proactive-bar]::-webkit-scrollbar {
+  display: none;
+}
+
+.cc-suggestion-row[data-proactive-bar] .cc-inline-pill {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  padding: 2px 7px;
+}
+
 .cc-timers-stack {
   display: flex;
   flex-direction: column;
@@ -740,10 +887,10 @@ details.win-notif-card > :not(summary) {
    Bottom Island: Fluent TextBox, Quick Scenes & Room Tabs (Win+A)
    ========================================================================= */
 .win-island-controls {
-  padding: 12px 14px 6px;
+  padding: 10px 12px 4px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   flex-shrink: 0;
 }
 
@@ -756,9 +903,9 @@ details.win-notif-card > :not(summary) {
 .cc-spotlight-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 34px;
-  padding: 0 6px 0 10px;
+  gap: 7px;
+  height: 31px;
+  padding: 0 5px 0 9px;
   border-radius: var(--r-control);
   background: var(--win-control-bg);
   border: 1px solid var(--win-control-stroke);
@@ -836,7 +983,7 @@ details.win-notif-card > :not(summary) {
 .cc-quick-strip {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -846,20 +993,21 @@ details.win-notif-card > :not(summary) {
 }
 
 .cc-quick-pill {
-  height: 30px;
-  padding: 0 10px;
+  height: 27px;
+  padding: 0 7px;
   border-radius: var(--r-control);
   border: 1px solid var(--win-control-stroke);
   background: var(--win-control-bg);
   color: var(--text-primary);
   font: inherit;
-  font-size: 12px;
-  line-height: 16px;
+  font-size: 11.5px;
+  line-height: 15px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  gap: 4px;
   white-space: nowrap;
-  flex-shrink: 0;
+  flex: 1 0 auto;
   cursor: pointer;
   transition: background-color 120ms ease, border-color 120ms ease;
 }
@@ -879,8 +1027,8 @@ details.win-notif-card > :not(summary) {
 }
 
 .cc-quick-icon {
-  width: 13px;
-  height: 13px;
+  width: 12px;
+  height: 12px;
   color: var(--win-accent);
   display: inline-flex;
   flex-shrink: 0;
@@ -912,10 +1060,18 @@ details.win-notif-card > :not(summary) {
   display: none;
 }
 
+.cc-filter-sep {
+  width: 1px;
+  height: 13px;
+  margin: 0 3px;
+  background: var(--win-divider);
+  flex-shrink: 0;
+}
+
 .cc-room-pill {
   position: relative;
-  height: 28px;
-  padding: 0 10px;
+  height: 26px;
+  padding: 0 8px;
   border-radius: var(--r-control);
   border: none;
   background: transparent;
@@ -924,8 +1080,13 @@ details.win-notif-card > :not(summary) {
   font-size: 12px;
   line-height: 16px;
   white-space: nowrap;
+  flex-shrink: 0;
   cursor: pointer;
   transition: background-color 120ms ease, color 120ms ease;
+}
+
+.cc-room-pill.is-kind:not(.is-active) {
+  color: var(--text-tertiary);
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -947,9 +1108,8 @@ details.win-notif-card > :not(summary) {
   left: 8px;
   right: 8px;
   bottom: 0;
-  height: 3px;
+  border-block-end: 3px solid var(--win-accent);
   border-radius: var(--r-pill);
-  background: var(--win-accent);
 }
 
 .cc-room-tools {
@@ -968,10 +1128,10 @@ details.win-notif-card > :not(summary) {
   min-width: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 6px 14px 12px;
+  padding: 4px 12px 10px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .cc-group {
@@ -1032,7 +1192,7 @@ details.win-notif-card > :not(summary) {
 /* 9-column grid: span 3 = 3 Win+A capsules per row; .is-span-row = full width */
 .cc-devices-grid {
   display: grid;
-  gap: 12px 8px;
+  gap: 10px 8px;
 }
 
 .cc-devices-grid.is-flow {
@@ -1074,14 +1234,14 @@ details.win-notif-card > :not(summary) {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 5px;
+  gap: 4px;
   padding: 0;
   width: 100%;
 }
 
 .win-split-pill {
   position: relative;
-  height: 48px;
+  height: 44px;
   width: 100%;
   border-radius: var(--r-control);
   background: var(--win-control-bg);
@@ -1335,24 +1495,47 @@ details.win-notif-card > :not(summary) {
 
 /* Win+A In-Place Sub-Flyout Navigation (keeps all [data-tile-id] mounted in DOM) */
 .cc-scroll-area:has(.cc-tile.is-subpage) .cc-group-header,
-.win-island--bottom:has(.cc-tile.is-subpage) .cc-quick-strip,
-.win-island--bottom:has(.cc-tile.is-subpage) .cc-room-bar,
-.win-island--bottom:has(.cc-tile.is-subpage) [data-kind-strip],
+.win-island--bottom:has(.cc-tile.is-subpage) .win-island-controls,
 .win-island--bottom:has(.cc-tile.is-subpage) .win-slider-deck,
 .cc-scroll-area:has(.cc-tile.is-subpage) .cc-tile:not(.is-subpage),
 .cc-scroll-area:has(.cc-tile.is-subpage) .cc-group:not(:has(.cc-tile.is-subpage)) {
   display: none !important;
 }
 
+.win-island--bottom:has(.cc-tile.is-subpage) .cc-scroll-area {
+  padding: 0;
+  gap: 0;
+}
+
+.cc-scroll-area:has(.cc-tile.is-subpage) .cc-group:has(.cc-tile.is-subpage),
+.cc-scroll-area:has(.cc-tile.is-subpage) .cc-devices-grid:has(.cc-tile.is-subpage) {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
 .cc-tile.is-subpage {
-  background: var(--win-card-bg);
-  border: 1px solid var(--win-card-stroke);
-  border-radius: var(--r-card);
+  flex: 1 1 auto;
+  background: transparent;
+  border: none;
+  border-radius: 0;
 }
 
 .win-subpage-header {
-  padding: 10px 12px;
+  min-height: 48px;
+  padding: 8px 14px 8px 10px;
+  background: var(--win-card-secondary);
   border-bottom: 1px solid var(--win-divider);
+}
+
+.cc-tile.is-subpage .cc-tile-drawer {
+  padding: 14px 16px 16px;
+  gap: 12px;
+}
+
+.cc-tile.is-subpage .cc-facet-section {
+  padding: 12px 16px 14px;
 }
 
 .win-subpage-back svg {
@@ -1768,13 +1951,13 @@ details.win-notif-card > :not(summary) {
   border-width: 5px;
 }
 
-/* Win+A Compound Slider Deck (pinned above 48px footer strip) */
+/* Win+A Compound Slider Deck (pinned above footer strip) */
 .win-slider-deck {
-  padding: 6px 14px 8px;
+  padding: 5px 12px 6px;
   border-top: 1px solid var(--win-divider);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   flex-shrink: 0;
 }
 
@@ -1782,13 +1965,13 @@ details.win-notif-card > :not(summary) {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 28px;
+  min-height: 26px;
 }
 
 .win-deck-btn,
 .win-deck-more {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   border-radius: var(--r-control);
   border: none;
   background: transparent;
@@ -1896,8 +2079,8 @@ details.win-notif-card > :not(summary) {
    Climate Strip & Sensor Card (Fluent 2 Card Surfaces)
    ========================================================================= */
 .cc-climate {
-  padding: 10px 12px;
-  gap: 8px;
+  padding: 8px 10px;
+  gap: 6px;
 }
 
 .cc-climate-strip {
@@ -2307,15 +2490,15 @@ details.win-notif-card > :not(summary) {
 }
 
 /* =========================================================================
-   Bottom Island: 48px Win+A Utility Footer Strip
+   Bottom Island: Win+A Utility Footer Strip
    ========================================================================= */
 .cc-footer {
-  height: 48px;
-  padding: 0 12px;
+  height: 44px;
+  padding: 0 10px 0 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   flex-shrink: 0;
   min-width: 0;
   background: var(--win-card-secondary);
@@ -2325,7 +2508,7 @@ details.win-notif-card > :not(summary) {
 .cc-footer-status {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
   flex: 1 1 0;
 }
@@ -2443,13 +2626,13 @@ button.cc-footer-label.is-action {
 .cc-footer-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
   flex-shrink: 0;
 }
 
 .cc-footer-icon-btn {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   border-radius: var(--r-control);
   border: none;
   background: transparent;
@@ -2463,8 +2646,8 @@ button.cc-footer-label.is-action {
 }
 
 .cc-footer-icon-btn svg {
-  width: 15px;
-  height: 15px;
+  width: 14px;
+  height: 14px;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -3354,30 +3537,34 @@ input[type="checkbox"]:checked::after {
 
 #app[data-flyout-edge="bottom"] {
   --flyout-dx: 0px;
-  --flyout-dy: 28px;
+  --flyout-dy: calc(100% + var(--panel-inset, 16px) + 8px);
 }
 
 #app[data-flyout-edge="top"] {
   --flyout-dx: 0px;
-  --flyout-dy: -28px;
+  --flyout-dy: calc(-100% - var(--panel-inset, 16px) - 8px);
 }
 
 #app[data-flyout-edge="right"] {
-  --flyout-dx: 28px;
+  --flyout-dx: calc(100% + var(--panel-inset, 16px) + 8px);
   --flyout-dy: 0px;
 }
 
 #app[data-flyout-edge="left"] {
-  --flyout-dx: -28px;
+  --flyout-dx: calc(-100% - var(--panel-inset, 16px) - 8px);
   --flyout-dy: 0px;
 }
 
 @keyframes win-flyout-enter {
   from {
     opacity: 0;
-    transform: translate3d(var(--flyout-dx, 0px), var(--flyout-dy, 28px), 0);
+    transform: translate3d(
+      var(--flyout-dx, 0px),
+      var(--flyout-dy, calc(100% + var(--panel-inset, 16px) + 8px)),
+      0
+    );
   }
-  38% {
+  12% {
     opacity: 1;
   }
   to {
@@ -3391,12 +3578,16 @@ input[type="checkbox"]:checked::after {
     opacity: 1;
     transform: translate3d(0, 0, 0);
   }
-  75% {
-    opacity: 0;
+  86% {
+    opacity: 1;
   }
   to {
     opacity: 0;
-    transform: translate3d(var(--flyout-dx, 0px), var(--flyout-dy, 28px), 0);
+    transform: translate3d(
+      var(--flyout-dx, 0px),
+      var(--flyout-dy, calc(100% + var(--panel-inset, 16px) + 8px)),
+      0
+    );
   }
 }
 
@@ -3437,11 +3628,11 @@ input[type="checkbox"]:checked::after {
 
 @media (prefers-reduced-motion: no-preference) {
   #app:not(.is-parked).is-opening > .cc-popover {
-    animation: win-flyout-enter 220ms var(--ease-decelerate) both;
+    animation: win-flyout-enter 250ms var(--ease-decelerate) both;
   }
 
   #app:not(.is-parked).is-closing > .cc-popover {
-    animation: win-flyout-exit 160ms var(--ease-accelerate) forwards;
+    animation: win-flyout-exit 167ms var(--ease-accelerate) forwards;
     pointer-events: none;
   }
 
