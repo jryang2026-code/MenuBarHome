@@ -107,6 +107,7 @@ final class URLCommandHandler {
             expectedToken: store.raycastBridgeToken
         )
 
+        var didConfirm = false
         if resolved.controlsDevice,
            URLDirectControl.requiresConfirmation(
                in: store.userDefaults,
@@ -124,6 +125,7 @@ final class URLCommandHandler {
                 )
                 return
             }
+            didConfirm = true
         }
 
         // Keep Raycast/Tinycast keyboard focus when invoked with a valid local bridgeToken;
@@ -132,7 +134,13 @@ final class URLCommandHandler {
         if !isTrustedBridge, resolved.controlsDevice {
             openMenuBarWindowIfNeeded()
         }
-        await execute(resolved, envelope: envelope, isTrustedBridge: isTrustedBridge, store: store)
+        await execute(
+            resolved,
+            envelope: envelope,
+            isTrustedBridge: isTrustedBridge,
+            didConfirm: didConfirm,
+            store: store
+        )
     }
 
     private func openMenuBarWindowIfNeeded() {
@@ -282,6 +290,7 @@ final class URLCommandHandler {
         _ resolved: Resolved,
         envelope: AppURLCommandEnvelope,
         isTrustedBridge: Bool,
+        didConfirm: Bool,
         store: HomeStore
     ) async {
         switch resolved {
@@ -300,9 +309,20 @@ final class URLCommandHandler {
                 )
                 return
             }
-            // `togglePrimary` flips whatever the device is doing now, so report the result rather
-            // than a prediction made before the confirmation sheet appeared.
             let isMomentary = device.isMomentaryButton
+            // When the user explicitly approved "Turn off X" or "Turn on X" on the confirmation
+            // sheet and a poll already flipped the device into that state while the sheet was open,
+            // calling `togglePrimary` would reverse the action the user just confirmed.
+            if didConfirm, !isMomentary, device.isActiveOn != snapshot.isActiveOn {
+                finish(
+                    device.isActiveOn
+                        ? L10n.format("%@ 已经开启", "%@ is already on", device.name)
+                        : L10n.format("%@ 已经关闭", "%@ is already off", device.name),
+                    envelope: envelope,
+                    store: store
+                )
+                return
+            }
             let previousToastId = store.toastNotice?.id
             guard let task = store.togglePrimary(device) else {
                 let cancellationOrRejection = (store.toastNotice?.id != previousToastId)

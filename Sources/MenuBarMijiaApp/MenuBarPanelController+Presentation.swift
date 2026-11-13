@@ -120,6 +120,7 @@ extension MenuBarPanelController {
         // #146 §5.2：点面板外、⌘Tab、打开设置、Esc 阶梯都会走到这里，排序会话不能比面板活得久。
         // 必须在这里提交草稿，而不是依赖视图的 `onDisappear`——拖动中 `DragGesture.onEnded` 不保证执行。
         LayoutUIState.shared.commitRoomOrderIfNeeded()
+        LayoutUIState.shared.dismissActivePrompt()
         if hostedPanelTheme == .classic {
             grokBallSidecar?.hide()
         } else {

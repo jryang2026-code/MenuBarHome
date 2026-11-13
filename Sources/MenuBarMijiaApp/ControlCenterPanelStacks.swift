@@ -134,7 +134,7 @@ struct HeaderlessStackMenu {
 }
 
 private struct HeaderlessStackMenuKey: EnvironmentKey {
-    nonisolated(unsafe) static let defaultValue: HeaderlessStackMenu? = nil
+    static let defaultValue: HeaderlessStackMenu? = nil
 }
 
 extension EnvironmentValues {

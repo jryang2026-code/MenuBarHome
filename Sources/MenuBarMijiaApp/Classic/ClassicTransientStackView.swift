@@ -67,7 +67,7 @@ struct ClassicTransientStackView: View {
                 } else if let newestCardID, !newIDs.contains(newestCardID) {
                     self.newestCardID = newIDs.first
                 }
-                isExpanded = ClassicTransientStackExpansion.isExpanded(isHovered: isHovered, cardCount: newIDs.count)
+                isExpanded = TransientStackExpansion.isExpanded(isHovered: isHovered, cardCount: newIDs.count)
                 if newIDs.isEmpty {
                     isHovered = false
                     newestCardID = nil
@@ -257,7 +257,7 @@ struct ClassicTransientStackView: View {
             store.resumeUndoBannerCountdown()
         }
         withAnimation(animation) {
-            isExpanded = ClassicTransientStackExpansion.isExpanded(isHovered: hovering, cardCount: cards.count)
+            isExpanded = TransientStackExpansion.isExpanded(isHovered: hovering, cardCount: cards.count)
         }
     }
 
@@ -279,11 +279,4 @@ struct ClassicTransientStackView: View {
 private struct ClassicTransientStackHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
-}
-
-
-enum ClassicTransientStackExpansion {
-    static func isExpanded(isHovered: Bool, cardCount: Int) -> Bool {
-        isHovered && cardCount > 1
-    }
 }
