@@ -127,7 +127,7 @@ function adjustSelection(host: MenuMijiaWindowsApp, direction: number): void {
 export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent): boolean {
   if (event.defaultPrevented) return true;
   if (event.isComposing || event.keyCode === 229 || host.panelSearch.isComposing) return true;
-  if (host.activeSheet !== "none" || (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) || host.isGrokBallStageExpanded) return false;
+  if (host.activeSheet !== "none" || (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden)) return false;
   if (host.prompt) {
     if (event.key === "Escape") { event.preventDefault(); host.closePrompt(); }
     return true;

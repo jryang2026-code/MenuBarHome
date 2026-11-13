@@ -56,7 +56,7 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
     if (valuesAreStale) {
       const label = t("可能过期");
       return `
-        <div class="cc-tile cc-sensor is-stale ${motion}" ${attrs} role="group" aria-label="${escapeHtml(`${name}，${label}`)}">
+        <div class="cc-tile cc-sensor ${compact ? "is-compact" : "is-span-row"} is-stale ${motion}" ${attrs} role="group" aria-label="${escapeHtml(`${name}，${label}`)}">
           ${badge}
           <div class="cc-sensor-top"><span class="cc-sensor-name">${escapeHtml(name)}</span></div>
           <div class="cc-sensor-main"><span class="cc-sensor-temp">${label}</span></div>
@@ -89,7 +89,7 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
         </div>`
       : "";
     return `
-      <div class="cc-tile cc-sensor ${dev.isOnline ? "" : "is-offline"} ${motion}" ${attrs} role="group" aria-label="${escapeHtml(sensorAria)}">
+      <div class="cc-tile cc-sensor is-span-row ${dev.isOnline ? "" : "is-offline"} ${motion}" ${attrs} role="group" aria-label="${escapeHtml(sensorAria)}">
         ${badge}
         <div class="cc-sensor-wide">
           <div class="cc-sensor-info">
@@ -167,7 +167,7 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
           <button class="cc-climate-step" data-acstep="${id}:1" title="${t("升高温度")}" aria-label="${t("升高目标温度")}">＋</button>`
       : `<span class="cc-climate-temp" aria-label="${t("目标温度 {temp}", { temp: formatTemperature(k.targetTemperature) })}">${temp}<small>${temperatureSymbol(unit)}</small></span>`;
     return `
-      <div class="cc-tile cc-climate ${running ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${readout === "possiblyStale" ? "is-stale" : ""} ${motion}" ${attrs}>
+      <div class="cc-tile cc-climate is-span-row ${running ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${readout === "possiblyStale" ? "is-stale" : ""} ${motion}" ${attrs}>
         ${badge}
         <div class="cc-climate-strip">
           ${power}
@@ -712,8 +712,113 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
         ? t("亮度 {percent}%", { percent: dim })
         : subtitle;
   const staleClass = readout === "possiblyStale" ? "is-stale" : "";
+  const isSubpage = state.expandedDeviceId === dev.id && size !== "panel" && hasDrawer;
+  const isCapsule = state.span < 6 && !isExpanded;
+
+  if (isCapsule) {
+    return `
+      <div class="cc-tile is-capsule ${palette} ${isOn ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" ${attrs}>
+        ${badge}
+        <div class="cc-tile-header win-capsule-stack">
+          <div class="win-split-pill ${hasDrawer ? "has-expand" : ""}">
+            ${fill > 0 ? `<span class="cc-tile-fill" style="width:${fill}%"></span>` : ""}
+            ${
+              dev.kind.kind === "generic" && dev.kind.isReadOnly
+                ? `<span class="cc-readonly-badge">${t("只读")}</span>`
+                : ""
+            }
+            ${
+              writable
+                ? `<button
+              class="cc-tile-orb win-pill-toggle"
+              data-toggle-device="${escape(dev.id)}"
+              title="${kind === "sensor" ? escape(dev.name) : t("点击直接切换开关")}"
+              aria-label="${escape(t("{name} 开关", { name: dev.name }))}"
+              aria-pressed="${isOn}"
+            >
+              ${svg}
+            </button>`
+                : `<span class="cc-tile-orb win-pill-toggle" title="${escape(dev.name)}" aria-hidden="true">${svg}</span>`
+            }
+            ${
+              hasDrawer
+                ? `<button
+                    class="cc-tile-chevron win-pill-expand"
+                    data-expand-device="${escape(dev.id)}"
+                    title="${t("展开详细控制")}"
+                    aria-label="${t("展开")} ${escape(t("{name} 详细控制", { name: dev.name }))}"
+                    aria-expanded="false"
+                  >
+                    ${SF_ICONS.chevronRight}
+                  </button>`
+                : ""
+            }
+          </div>
+          <button
+            class="cc-tile-body win-pill-caption"
+            data-body-device="${escape(dev.id)}"
+            title="${kind === "camera" ? t("点击放大打开摄像机实时画面") : hasDrawer ? t("点击展开精细调节") : t("点击切换开关")}"
+            aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
+            aria-pressed="${isOn}"
+          >
+            <div class="cc-tile-name">${escape(dev.name)}</div>
+            <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  if (isSubpage) {
+    return `
+      <div class="cc-tile is-expanded is-subpage is-span-row ${palette} ${isOn ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" ${attrs}>
+        ${badge}
+        <div class="cc-tile-header win-subpage-header">
+          <button
+            class="cc-tile-chevron win-subpage-back is-open"
+            data-expand-device="${escape(dev.id)}"
+            title="${t("收起详细控制")}"
+            aria-label="${t("收起")} ${escape(t("{name} 详细控制", { name: dev.name }))}"
+            aria-expanded="true"
+          >
+            ${SF_ICONS.chevronLeft}
+          </button>
+          <button
+            class="cc-tile-body win-subpage-title"
+            data-body-device="${escape(dev.id)}"
+            title="${t("点击收起精细调节")}"
+            aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
+            aria-pressed="${isOn}"
+          >
+            <div class="cc-tile-name">${escape(dev.name)}</div>
+            <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>
+          </button>
+          ${
+            dev.kind.kind === "generic" && dev.kind.isReadOnly
+              ? `<span class="cc-readonly-badge">${t("只读")}</span>`
+              : ""
+          }
+          ${
+            writable
+              ? `<button
+            class="cc-tile-orb win-subpage-power"
+            data-toggle-device="${escape(dev.id)}"
+            title="${t("点击直接切换开关")}"
+            aria-label="${escape(t("{name} 开关", { name: dev.name }))}"
+            aria-pressed="${isOn}"
+          >
+            ${svg}
+          </button>`
+              : `<span class="cc-tile-orb win-subpage-power" title="${escape(dev.name)}" aria-hidden="true">${svg}</span>`
+          }
+        </div>
+        ${renderDeviceDrawer(dev, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk)}
+      </div>
+    `;
+  }
+
   return `
-      <div class="cc-tile ${palette} ${isOn ? "is-active" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" ${attrs}>
+      <div class="cc-tile is-span-row ${palette} ${isOn ? "is-active" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" ${attrs}>
         ${fill > 0 ? `<span class="cc-tile-fill" style="width:${fill}%"></span>` : ""}
         ${badge}
         <div class="cc-tile-header">

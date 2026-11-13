@@ -717,13 +717,12 @@ describe("Concurrent multi-device intent execution & vacuum undo (#2)", () => {
 });
 
 describe("Proactive favorites/aliases, collapsed assistant bar & missed timers (#2)", () => {
-  it("applies favoriteIds and custom aliases in proactive suggestions and surfaces chips when GrokBall is off or collapsed", () => {
+  it("applies favoriteIds and custom aliases in proactive suggestions inside the top notification island", () => {
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
         connectionMode: "demo",
         hasCompletedOnboarding: true,
-        enableGrokBall: false,
       }),
     );
     const app = new MenuMijiaWindowsApp(element("#app"));
@@ -737,17 +736,16 @@ describe("Proactive favorites/aliases, collapsed assistant bar & missed timers (
     app.isShowingAssistantBar = true;
     app.render();
 
-    const barChips = [...document.querySelectorAll<HTMLElement>("[data-proactive-bar] [data-proactive-id]")];
+    const barChips = [...document.querySelectorAll<HTMLElement>(".win-island--top [data-proactive-bar] [data-proactive-id]")];
     assert.ok(barChips.length > 0);
     assert.equal(barChips[0]?.dataset.proactiveId, "fav:l1:on");
     assert.match(barChips[0]?.textContent ?? "", /老杨阅读灯/);
+    assertMissing(document.querySelector(".cc-grok-stage"));
+    assertMissing(document.querySelector(".cc-grok-sidebar"));
 
-    // Expanding GrokBall moves proactive pills to .cc-grok-stage without duplicating them in assistantExtras.
-    app.settings.enableGrokBall = true;
-    app.isGrokBallStageExpanded = true;
+    app.isShowingAssistantBar = false;
     app.render();
     assertMissing(document.querySelector("[data-proactive-bar]"));
-    assert.ok(document.querySelector(".cc-grok-stage [data-proactive-id]"));
   });
 
   it("keeps missedScheduledCommands visible even when !isShowingAssistantBar", () => {

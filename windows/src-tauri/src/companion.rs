@@ -703,9 +703,7 @@ pub(crate) fn drain_pending_open_urls() -> Vec<String> {
 #[tauri::command]
 pub(crate) fn show_panel_for_url(app: AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        position_popover(&window, None);
-        let _ = window.show();
-        let _ = window.set_focus();
+        present_panel(&window, None);
     }
 }
 

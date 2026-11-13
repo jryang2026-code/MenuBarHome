@@ -61,9 +61,12 @@ import { bindPanelInput } from "./panelKeyboard.js";
 
   export function bindEvents(host: MenuMijiaWindowsApp): void {
     ensureDrawerLifecycleListeners(host);
-    host.root.querySelectorAll<HTMLElement>("[data-grok-toggle]").forEach((button) => {
-      button.addEventListener("click", () => {
-        host.setGrokBallStageExpanded(!host.isGrokBallStageExpanded);
+    host.root.querySelectorAll<HTMLDetailsElement>("details[data-notif-card]").forEach((details) => {
+      details.addEventListener("toggle", () => {
+        const key = details.dataset.notifCard;
+        if (!key) return;
+        if (details.open) host.collapsedNotifCards.delete(key);
+        else host.collapsedNotifCards.add(key);
       });
     });
     bindPanelInput(host);
@@ -384,15 +387,6 @@ import { bindPanelInput } from "./panelKeyboard.js";
       host.saveSettings();
       host.render();
     });
-    host.root.querySelector<HTMLInputElement>("#settings-grok-ball")?.addEventListener("change", (e) => {
-      host.settings.enableGrokBall = (e.target as HTMLInputElement).checked;
-      if (!host.settings.enableGrokBall) {
-        host.isGrokBallStageExpanded = false;
-      }
-      host.saveSettings();
-      host.applyPanelHeight();
-      host.render();
-    });
 
     host.root.querySelector<HTMLInputElement>("#settings-enable-hotkey")?.addEventListener("change", (e) => {
       host.settings.enableGlobalHotkey = (e.target as HTMLInputElement).checked;
@@ -571,8 +565,21 @@ import { bindPanelInput } from "./panelKeyboard.js";
         const intents = IntentValidator.sanitize(suggestion.intents, aliasedDevices, host.scenes);
         if (intents.length === 0) return;
         host.isShowingAssistantBar = true;
-        host.setGrokBallStageExpanded(false);
         void host.executeIntents(intents, IntentReply.describe(intents, aliasedDevices, host.scenes), t("猜你想控"), { recordHabits: true });
+      });
+    });
+
+    host.root.querySelectorAll<HTMLElement>("[data-open-camera]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.openCamera;
+        if (!id) return;
+        const dev = host.devices.find((d) => d.id === id);
+        if (dev && dev.kind.kind === "camera" && deviceCanTogglePower(dev) && dev.isOnline && !dev.kind.isOn) {
+          const toggle = Array.from(host.root.querySelectorAll<HTMLElement>("[data-toggle-device]"))
+            .find((el) => el.dataset.toggleDevice === id);
+          toggle?.click();
+        }
+        host.cameraLive.openCameraLiveView(id);
       });
     });
 
@@ -1294,5 +1301,105 @@ import { bindPanelInput } from "./panelKeyboard.js";
     host.cameraLive.bindEvents();
 
     host.bindSettingsEvents();
+
+    syncAllRanges(host.root);
+    bindDeckEvents(host);
+  }
+
+  function syncRangeFill(slider: HTMLInputElement): void {
+    const min = Number(slider.min || 0);
+    const max = Number(slider.max || 100);
+    const val = Number(slider.value || 0);
+    const pct = max > min ? Math.max(0, Math.min(100, ((val - min) / (max - min)) * 100)) : 0;
+    slider.style.setProperty("--val", `${pct}%`);
+  }
+
+  function syncAllRanges(scope: ParentNode): void {
+    scope.querySelectorAll<HTMLInputElement>("input.cc-range").forEach((slider) => {
+      if (!slider.hasAttribute("data-deck-brightness") && !slider.hasAttribute("data-deck-volume")) {
+        syncRangeFill(slider);
+      }
+      slider.addEventListener("input", () => {
+        syncRangeFill(slider);
+      });
+    });
+  }
+
+  export function bindDeckEvents(host: MenuMijiaWindowsApp): void {
+    const deck = host.root.querySelector<HTMLElement>(".win-slider-deck");
+    if (!deck) return;
+
+    deck.querySelectorAll<HTMLInputElement>("input.cc-range").forEach((slider) => {
+      slider.addEventListener("input", () => {
+        syncRangeFill(slider);
+        const valLabel = slider.closest(".win-slider-row")?.querySelector(".win-deck-val");
+        if (valLabel) valLabel.textContent = `${Math.round(Number(slider.value))}%`;
+      });
+    });
+
+    deck.querySelectorAll<HTMLInputElement>("[data-deck-brightness]").forEach((slider) => {
+      slider.addEventListener("change", () => {
+        const id = slider.dataset.deckBrightness;
+        if (!id) return;
+        const dev = host.devices.find((d) => d.id === id);
+        if (!dev || dev.kind.kind !== "light" || dev.kind.brightnessWritable === false) return;
+        const percent = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
+        void host.executeSingleCommand(
+          dev,
+          { kind: "setLightBrightness", entityId: dev.kind.entityId, percent },
+          t("已将{name}亮度设为 {percent}%", { name: dev.name, percent }),
+          { targetId: dev.id, operation: { kind: "brightness", percent } },
+        );
+      });
+    });
+
+    deck.querySelectorAll<HTMLInputElement>("[data-deck-volume]").forEach((slider) => {
+      slider.addEventListener("change", () => {
+        const id = slider.dataset.deckVolume;
+        if (!id) return;
+        const dev = host.devices.find((d) => d.id === id);
+        if (!dev || dev.kind.kind !== "speaker" || !dev.kind.volumeWritable) return;
+        const percent = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
+        void host.executeSingleCommand(
+          dev,
+          { kind: "mediaSetVolume", entityId: dev.kind.mediaEntityId, level: percent / 100 },
+          t("已将{name}音量设为 {percent}%", { name: dev.name, percent }),
+        );
+      });
+    });
+
+    deck.querySelectorAll<HTMLElement>("[data-deck-toggle]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.deckToggle;
+        if (!id) return;
+        const target = Array.from(host.root.querySelectorAll<HTMLElement>("[data-toggle-device]"))
+          .find((el) => el.dataset.toggleDevice === id);
+        target?.click();
+      });
+    });
+
+    deck.querySelectorAll<HTMLElement>("[data-deck-mute]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.deckMute;
+        if (!id) return;
+        const dev = host.devices.find((d) => d.id === id);
+        if (!dev || dev.kind.kind !== "speaker" || !dev.kind.muteSwitchEntityId) return;
+        const next = !dev.kind.isMuted;
+        void host.executeSingleCommand(
+          dev,
+          { kind: "setSwitch", entityId: dev.kind.muteSwitchEntityId, isOn: next },
+          t("已{action}{name}静音", { action: next ? t("开启") : t("关闭"), name: dev.name }),
+        );
+      });
+    });
+
+    deck.querySelectorAll<HTMLElement>("[data-deck-expand]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.deckExpand;
+        if (!id) return;
+        host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
+        host.render();
+      });
+    });
   }
 

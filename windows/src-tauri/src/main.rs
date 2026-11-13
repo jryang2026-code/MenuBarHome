@@ -21,7 +21,7 @@ use network::*;
 use placement::{
     drag_settle_finished, fit_panel_height, key_state_is_down, move_is_user_driven,
     move_suppression_deadline, place, primary_button_virtual_key, resized_top, taskbar_edge,
-    PanelAnchor, PanelPlacement, PlacementInput, Rect, DRAG_SETTLE_MS,
+    PanelAnchor, PanelPlacement, PlacementInput, Rect, TaskbarEdge, DRAG_SETTLE_MS,
 };
 use update::*;
 use window::*;
@@ -254,6 +254,7 @@ fn main() {
             secure_store_set,
             secure_store_delete,
             hide_panel,
+            finish_hide_panel,
             quit_app,
             panel_backdrop,
             set_panel_height,
@@ -292,18 +293,17 @@ fn main() {
             load_panel_placement();
             if let Some(main_win) = app.get_webview_window("main") {
                 apply_panel_backdrop(&main_win);
-                position_popover(&main_win, None);
-                let win_for_event = main_win.clone();
+                let _ = position_popover(&main_win, None);
                 let app_for_events = app.handle().clone();
                 main_win.on_window_event(move |event| match event {
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
-                        let _ = win_for_event.hide();
+                        request_hide_panel(&app_for_events);
                     }
                     WindowEvent::Focused(false) => {
                         if !PIN_POPOVER.load(Ordering::SeqCst) {
                             LAST_FOCUS_LOSS_MS.store(now_epoch_ms(), Ordering::SeqCst);
-                            let _ = win_for_event.hide();
+                            request_hide_panel(&app_for_events);
                         }
                     }
                     // Drag-to-move: a header press hands over to the OS move loop, and the resulting
@@ -324,9 +324,7 @@ fn main() {
                     "update" => {
                         if let Some(window) = app.get_webview_window("main") {
                             PIN_POPOVER.store(true, Ordering::SeqCst);
-                            position_popover(&window, None);
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                            present_panel(&window, None);
                             let _ = window.eval(
                                 "window.dispatchEvent(new CustomEvent('menumijia:open-update'))",
                             );
@@ -385,24 +383,26 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_reserves_the_complete_expanded_footprint_at_each_scale() {
-        for scale in [1.0, 1.25, 1.5, 2.0] {
-            assert!(panel_sidecar_on_left(1178.0 * scale, 246.0 * scale, scale));
-            assert!(!panel_sidecar_on_left(1178.0 * scale, 252.0 * scale, scale));
-            assert!(panel_sidecar_on_left(244.0 * scale, 251.0 * scale, scale));
-        }
+    fn flyout_edge_follows_taskbar_when_auto_and_corner_when_pinned() {
+        assert_eq!(flyout_edge_name(TaskbarEdge::Bottom, PanelAnchor::Auto), "bottom");
+        assert_eq!(flyout_edge_name(TaskbarEdge::None, PanelAnchor::Auto), "bottom");
+        assert_eq!(flyout_edge_name(TaskbarEdge::Top, PanelAnchor::Auto), "top");
+        assert_eq!(flyout_edge_name(TaskbarEdge::Left, PanelAnchor::Auto), "left");
+        assert_eq!(flyout_edge_name(TaskbarEdge::Right, PanelAnchor::Auto), "right");
+        assert_eq!(flyout_edge_name(TaskbarEdge::Bottom, PanelAnchor::TopRight), "top");
+        assert_eq!(flyout_edge_name(TaskbarEdge::Top, PanelAnchor::BottomLeft), "bottom");
+        assert!(should_complete_hide(true, 4, 4));
+        assert!(!should_complete_hide(false, 4, 4));
+        assert!(!should_complete_hide(true, 5, 4));
     }
 
     #[test]
     fn the_panel_window_carries_the_padding_its_shadow_is_drawn_in() {
-        // `#app` pads `--panel-inset: 16px` on every side, then 12 px of column gap before the rail.
-        assert_eq!(panel_window_width(0.0), 504.0);
-        assert_eq!(panel_window_width(84.0), 600.0);
-        assert_eq!(panel_window_width(232.0), 748.0);
-        // The card column starts one padding in, then the rail and its gap.
-        assert_eq!(main_column_offset(600, 1.0), 112);
-        assert_eq!(main_column_offset(504, 1.0), 16);
-        assert_eq!(main_column_offset(750, 1.25), 140);
+        // `#app` pads `--panel-inset: 16px` on every side around the 380 px Win11 two-island column.
+        assert_eq!(panel_window_width(), 412.0);
+        assert_eq!(main_column_offset(412, 1.0), 16);
+        assert_eq!(main_column_offset(515, 1.25), 20);
+        assert_eq!(main_column_inset(412, 1.0), 16);
     }
 
 

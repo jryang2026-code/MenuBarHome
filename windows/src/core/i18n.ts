@@ -762,6 +762,18 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   ],
   "锁屏保护": ["锁屏保护", "Lock Guard"],
   "外部链接": ["外部链接", "External Link"],
+  "点击收起精细调节": ["点击收起精细调节", "Click to close detailed controls"],
+  "家庭状态与动态通知": ["家庭状态与动态通知", "Home status & notifications"],
+  "快速设置与设备控制": ["快速设置与设备控制", "Quick settings & device controls"],
+  "切换为胶囊控制网格": ["切换为胶囊控制网格", "Switch to capsule control grid"],
+  "定时指令": ["定时指令", "Scheduled timers"],
+  "摄像机速览": ["摄像机速览", "Camera preview"],
+  "查看实时画面": ["查看实时画面", "Open live view"],
+  "{name} 亮度": ["{name} 亮度", "{name} brightness"],
+  "展开 {name} 详细控制": ["展开 {name} 详细控制", "Expand {name} controls"],
+  "取消静音": ["取消静音", "Unmute"],
+  "{name} 音量": ["{name} 音量", "{name} volume"],
+  "快捷滑杆": ["快捷滑杆", "Quick sliders"],
 };
 
 /** Every catalog key, for tests and tooling. */

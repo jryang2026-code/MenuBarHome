@@ -271,11 +271,6 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
     </div>
 
     <div class="cc-field cc-field-row">
-      <label for="settings-grok-ball">${t("启用侧边情绪智能球")}</label>
-      <input id="settings-grok-ball" type="checkbox" ${ctx.settings.enableGrokBall ? "checked" : ""} />
-    </div>
-
-    <div class="cc-field cc-field-row">
       <label for="settings-launch-at-login">${t("开机自动启动")}</label>
       <input id="settings-launch-at-login" type="checkbox" ${ctx.settings.launchAtLogin ? "checked" : ""} />
     </div>

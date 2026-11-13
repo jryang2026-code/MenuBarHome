@@ -1,5 +1,4 @@
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
-import { GrokBallView } from "./grokBall.js";
 import {
   assistantEndpointIdentity,
   endpointAllowsSendingSecrets,
@@ -79,11 +78,11 @@ import { loadSettings } from "./settings.js";
 import { CameraLiveController } from "./cameraLive.js";
 import { renderDeviceTile as renderDeviceTileView, renderEnvironmentStrip as renderEnvironmentStripView } from "./deviceViews.js";
 import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt, renderSettingsModal } from "./menuViews.js";
-import { bindEvents as bindEventsImpl } from "./bindEvents.js";
+import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
 import { renderPanel } from "./panelView.js";
 import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, checkForAppUpdate, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
-import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground, renderGrokBallSidebar, setGrokBallStageExpanded, syncGrokBallEmotion } from "./proactive.js";
+import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground } from "./proactive.js";
 import { applyCommand, markCloudValuesFresh, markCloudValuesStale } from "./commandDispatch.js";
 import { foldGrouped, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
 import { executeIntents, executeSingleCommand, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
@@ -218,11 +217,8 @@ export class MenuMijiaWindowsApp {
   public aiProactiveSuggestions: AssistantSuggestion[] | null = null;
   public aiProactiveSignature: string | null = null;
   public isRefreshingProactive = false;
-  public isGrokBallStageExpanded = false;
-  public readonly grokBall = new GrokBallView();
-  public grokBallCelebrationUntil = 0;
-  public grokBallPointerUntil = 0;
-  public grokBallOnLeft = false;
+  /** Collapsible Win+N notification cards in the Top Island; quick camera starts compact. */
+  public collapsedNotifCards = new Set<string>(["camera"]);
   public panelGeometryUpdates: Promise<void> = Promise.resolve();
   /** Panel anchor the backend persists (#204); the window position itself is owned by Rust. */
   public panelAnchor: PanelAnchor = "auto";
@@ -328,13 +324,6 @@ export class MenuMijiaWindowsApp {
     bindUndoBannerHoverGuard(this);
     // Alt+Tab hides the popover without a button blur; a hold started before it must not finish.
     window.addEventListener("blur", () => this.cancelAllOffHold());
-    window.addEventListener("pointermove", (event) => {
-      const rect = this.grokBall.element.getBoundingClientRect();
-      this.grokBallPointerUntil = Date.now() + 1500;
-      this.grokBall.setGaze((event.clientX - rect.left - rect.width / 2) / 160,
-        (event.clientY - rect.top - rect.height / 2) / 160);
-      this.syncGrokBallEmotion();
-    });
     this.bindLayoutGestures();
     this.bindPanelDrag();
     this.bindOpenAnimation();
@@ -531,8 +520,6 @@ export class MenuMijiaWindowsApp {
     this.aiProactiveSignature = null;
     this.isRefreshingProactive = false;
     this.proactiveRetryAfterMs = null;
-    this.isGrokBallStageExpanded = false;
-    this.grokBallCelebrationUntil = 0;
     this.applyPanelHeight();
     this.saveSettings();
     this.render();
@@ -704,19 +691,6 @@ export class MenuMijiaWindowsApp {
 
   public currentProactiveSuggestions(): AssistantSuggestion[] {
     return currentProactiveSuggestions(this);
-  }
-
-  public syncGrokBallEmotion(): void {
-    syncGrokBallEmotion(this);
-  }
-
-
-  public renderGrokBallSidebar(): string {
-    return renderGrokBallSidebar(this);
-  }
-
-  public setGrokBallStageExpanded(expanded: boolean): void {
-    setGrokBallStageExpanded(this, expanded);
   }
 
   public maybeRefreshProactiveInBackground(): void {
@@ -1074,8 +1048,15 @@ export class MenuMijiaWindowsApp {
     if (hasMountedPopover) {
       this.root.classList.remove("is-opening");
     }
+    const hadSubpage = this.root.querySelector(".cc-tile.is-subpage") !== null;
     const tiles = Array.from(this.root.querySelectorAll<HTMLElement>("[data-tile-id]"));
-    const before = new Map(tiles.map((el) => [el.dataset.tileId as string, el.getBoundingClientRect()]));
+    const before = new Map<string, DOMRect>();
+    for (const el of tiles) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0 && el.dataset.tileId) {
+        before.set(el.dataset.tileId, rect);
+      }
+    }
     const scrollTop = this.root.querySelector(".cc-scroll-area")?.scrollTop ?? 0;
     const roomLeft = this.root.querySelector(".cc-room-scroll")?.scrollLeft ?? 0;
     // The settings sheet scrolls its middle body, so that is the node whose offset has to survive.
@@ -1085,12 +1066,8 @@ export class MenuMijiaWindowsApp {
     const settingsDraft = captureSettingsDraft(this.root);
 
     this.pendingCloudRender = false;
-    this.grokBall.prepareMove();
     this.renderNow();
     syncPanelSelection(this);
-    const grokSlot = this.root.querySelector<HTMLElement>("[data-grok-slot]");
-    if (grokSlot) this.grokBall.mount(grokSlot, this.grokBall.element.dataset.emotion ?? "02");
-    this.syncGrokBallEmotion();
 
     const area = this.root.querySelector(".cc-scroll-area");
     if (area) area.scrollTop = scrollTop;
@@ -1132,18 +1109,25 @@ export class MenuMijiaWindowsApp {
     }
 
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (!reduce && before.size > 0) {
+    const hasSubpage = this.root.querySelector(".cc-tile.is-subpage") !== null;
+    if (!reduce && hadSubpage && !hasSubpage) {
+      this.root.querySelector<HTMLElement>(".cc-scroll-area")?.animate(
+        [{ opacity: 0, transform: "translateX(-14px)" }, { opacity: 1, transform: "translateX(0)" }],
+        { duration: 220, easing: "cubic-bezier(0, 0, 0, 1)" },
+      );
+    } else if (!reduce && !hadSubpage && !hasSubpage && before.size > 0) {
       this.root.querySelectorAll<HTMLElement>("[data-tile-id]").forEach((el) => {
         const id = el.dataset.tileId as string;
         const old = before.get(id);
         if (!old || id === this.draggingId) return;
         const now = el.getBoundingClientRect();
+        if (now.width === 0 || now.height === 0) return;
         const dx = old.left - now.left;
         const dy = old.top - now.top;
         if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
         el.animate(
           [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }],
-          { duration: 340, easing: "cubic-bezier(0.2, 0.9, 0.3, 1.15)" },
+          { duration: 240, easing: "cubic-bezier(0, 0, 0, 1)" },
         );
       });
     }
@@ -1300,6 +1284,10 @@ export class MenuMijiaWindowsApp {
     bindEventsImpl(this);
   }
 
+  public bindDeckEvents(): void {
+    bindDeckEvents(this);
+  }
+
   public startEditing(): void {
     this.isEditingLayout = true;
     this.expandedDeviceId = null;
@@ -1429,37 +1417,134 @@ export class MenuMijiaWindowsApp {
     });
   }
 
-  /** Drop-in animation each time the tray popover is shown. */
+  /**
+   * Windows 11 native taskbar flyout choreography:
+   * - Present (`menumijia:panel-present`): 220ms `cubic-bezier(0, 0, 0, 1)` decelerate slide out
+   *   from the docked taskbar edge (`bottom` / `top` / `left` / `right`), clearing transform at rest.
+   * - Dismiss (`menumijia:panel-dismiss`): 160ms `cubic-bezier(1, 0, 1, 1)` accelerate slide back
+   *   into the taskbar edge, then `finish_hide_panel({ seq })` hides the HWND without bounce or flash.
+   */
   private bindOpenAnimation(): void {
-    const play = () => {
+    const ownerWin = this.root.ownerDocument?.defaultView ?? window;
+    let openClearTimer: number | null = null;
+    let dismissTimer: number | null = null;
+    let activeDismissSeq: number | null = null;
+
+    const normalizeEdge = (raw: unknown): "bottom" | "top" | "left" | "right" =>
+      raw === "top" || raw === "left" || raw === "right" ? raw : "bottom";
+
+    const prefersReducedMotion = (): boolean =>
+      typeof ownerWin.matchMedia === "function" &&
+      ownerWin.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    const clearOpenTimer = (): void => {
+      if (openClearTimer !== null) {
+        ownerWin.clearTimeout(openClearTimer);
+        openClearTimer = null;
+      }
+    };
+
+    const clearDismissTimer = (): void => {
+      if (dismissTimer !== null) {
+        ownerWin.clearTimeout(dismissTimer);
+        dismissTimer = null;
+      }
+      activeDismissSeq = null;
+    };
+
+    const scrollActiveRoomIntoView = (): void => {
+      const strip = this.root.querySelector<HTMLElement>(".cc-room-scroll");
+      const active = strip?.querySelector<HTMLElement>(".cc-room-pill.is-active");
+      if (strip && active) {
+        strip.scrollLeft =
+          this.selectedRoom === "全部"
+            ? 0
+            : active.offsetLeft - (strip.clientWidth - active.offsetWidth) / 2;
+      }
+    };
+
+    const playPresent = (edge?: unknown): void => {
+      clearDismissTimer();
+      clearOpenTimer();
+      this.root.dataset.flyoutEdge = normalizeEdge(edge ?? this.root.dataset.flyoutEdge);
+      this.root.classList.remove("is-closing");
       this.applyPanelHeight();
+      this.syncPanelPlacement();
+      scrollActiveRoomIntoView();
+      if (prefersReducedMotion()) {
+        this.root.classList.remove("is-opening");
+        return;
+      }
       this.root.classList.remove("is-opening");
       void this.root.offsetWidth;
       this.root.classList.add("is-opening");
-      const strip = this.root.querySelector<HTMLElement>(".cc-room-scroll");
-      const active = strip?.querySelector<HTMLElement>(".cc-room-pill.is-active");
-      if (strip && active) strip.scrollLeft = this.selectedRoom === "全部" ? 0 : active.offsetLeft - (strip.clientWidth - active.offsetWidth) / 2;
+      openClearTimer = ownerWin.setTimeout(() => {
+        openClearTimer = null;
+        this.root.classList.remove("is-opening");
+      }, 260);
     };
-    let hiddenAt = 0;
-    if (window.__TAURI_INTERNALS__) {
-      window.addEventListener("blur", () => { hiddenAt = performance.now(); });
-      window.addEventListener("focus", () => { if (performance.now() - hiddenAt > 150) play(); });
-    }
+
+    const finishDismiss = (seq: number): void => {
+      if (activeDismissSeq !== seq) return;
+      clearDismissTimer();
+      invokeTauriVoid("finish_hide_panel", { seq });
+    };
+
+    const playDismiss = (seq: number, edge?: unknown): void => {
+      clearOpenTimer();
+      clearDismissTimer();
+      this.root.dataset.flyoutEdge = normalizeEdge(edge ?? this.root.dataset.flyoutEdge);
+      this.root.classList.remove("is-opening");
+      activeDismissSeq = seq;
+      if (prefersReducedMotion()) {
+        this.root.classList.remove("is-closing");
+        finishDismiss(seq);
+        return;
+      }
+      this.root.classList.remove("is-closing");
+      void this.root.offsetWidth;
+      this.root.classList.add("is-closing");
+      dismissTimer = ownerWin.setTimeout(() => {
+        finishDismiss(seq);
+      }, 175);
+    };
+
+    ownerWin.addEventListener("menumijia:panel-present", (event: Event) => {
+      if (!this.root.isConnected) return;
+      const detail = (event as CustomEvent<{ edge?: unknown } | undefined>).detail;
+      playPresent(detail?.edge);
+    });
+
+    ownerWin.addEventListener("menumijia:panel-dismiss", (event: Event) => {
+      if (!this.root.isConnected) return;
+      const detail = (event as CustomEvent<{ seq?: unknown; edge?: unknown } | undefined>).detail;
+      const seq = typeof detail?.seq === "number" ? detail.seq : 0;
+      playDismiss(seq, detail?.edge);
+    });
+
     this.root.addEventListener("animationend", (e) => {
       const target = e.target as HTMLElement | null;
       if (target === this.root || target?.classList?.contains("cc-popover")) {
-        this.root.classList.remove("is-opening");
+        if (this.root.classList.contains("is-opening")) {
+          clearOpenTimer();
+          this.root.classList.remove("is-opening");
+        } else if (this.root.classList.contains("is-closing") && activeDismissSeq !== null) {
+          finishDismiss(activeDismissSeq);
+        }
       }
     });
-    if (typeof window.matchMedia === "function") {
-      const mql = window.matchMedia("(prefers-color-scheme: light)");
+
+    if (typeof ownerWin.matchMedia === "function") {
+      const mql = ownerWin.matchMedia("(prefers-color-scheme: light)");
       mql.addEventListener?.("change", () => {
-        if (this.settings.appearance === "system") {
+        if (this.settings.appearance === "system" && this.root.isConnected) {
           this.render();
         }
       });
     }
-    play();
+
+    this.root.dataset.flyoutEdge = "bottom";
+    playPresent("bottom");
   }
 
   /**
@@ -1498,16 +1583,7 @@ export class MenuMijiaWindowsApp {
     if (!invoke) return;
     this.panelGeometryUpdates = this.panelGeometryUpdates.then(async () => {
       const h = PANEL_HEIGHTS.find((item) => item.id === this.settings.panelHeight) ?? PANEL_HEIGHTS[1]!;
-      const side = await invoke<boolean>("set_panel_height", {
-        height: h.px,
-        expanded: this.isGrokBallStageExpanded,
-        sideLeft: this.grokBallOnLeft,
-        grokEnabled: this.settings.enableGrokBall,
-      });
-      if (typeof side === "boolean") {
-        this.grokBallOnLeft = side;
-        this.root.dataset.grokSide = side ? "left" : "right";
-      }
+      await invoke("set_panel_height", { height: h.px });
     }).catch((error: unknown) => console.error("Panel geometry update failed", error));
   }
 
@@ -1559,9 +1635,11 @@ export class MenuMijiaWindowsApp {
   }
 }
 
-document.addEventListener("DOMContentLoaded", () => {
-  const root = document.getElementById("app");
-  if (root) {
-    new MenuMijiaWindowsApp(root);
-  }
-});
+if (typeof document !== "undefined") {
+  document.addEventListener("DOMContentLoaded", () => {
+    const root = document.getElementById("app");
+    if (root) {
+      new MenuMijiaWindowsApp(root);
+    }
+  });
+}

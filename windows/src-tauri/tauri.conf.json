@@ -14,8 +14,8 @@
       {
         "label": "main",
         "title": "MenuBarHome",
-        "width": 504,
-        "height": 652,
+        "width": 412,
+        "height": 680,
         "resizable": false,
         "decorations": false,
         "transparent": true,

@@ -1,27 +1,28 @@
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { speechLocale, t } from "../core/i18n.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
+import { hasDetailDrawer, isDeviceActiveOn, type SmartDevice } from "../core/models.js";
+import { normalizeSearch } from "../core/panelSearch.js";
 import { availableQuickActions, trText, type QuickActionId } from "../core/quickActions.js";
 import { SF_ICONS } from "./appConstants.js";
-import { applyPanelOpacity } from "./panelPrefs.js";
+import { applyPanelOpacity, withAliases } from "./panelPrefs.js";
 import { quickActions } from "./demo.js";
 import { quickActionScopeDevices, reconcileUndoBannerHoverAfterRender } from "./speechGuard.js";
 
-  export function renderPanel(host: MenuMijiaWindowsApp): void {
-    const isDemo = host.settings.connectionMode === "demo";
-    const scheme = host.effectiveAppearance;
-    host.root.dataset.scheme = scheme;
-    applyPanelOpacity(host.root, host.settings.panelOpacity);
-    host.root.classList.toggle("is-grok-enabled", host.settings.enableGrokBall);
-    host.root.classList.toggle("is-grok-expanded", host.settings.enableGrokBall && host.isGrokBallStageExpanded);
-    host.root.classList.toggle("is-native-host", Boolean(window.__TAURI_INTERNALS__));
-    host.root.dataset.grokSide = host.grokBallOnLeft ? "left" : "right";
-    const popoverClass = `cc-popover cc-rim scheme-${scheme} ${host.isEditingLayout ? "is-editing" : ""}`.trim();
-    const innerContent = `
+export function renderPanel(host: MenuMijiaWindowsApp): void {
+  const isDemo = host.settings.connectionMode === "demo";
+  const scheme = host.effectiveAppearance;
+  host.root.dataset.scheme = scheme;
+  applyPanelOpacity(host.root, host.settings.panelOpacity);
+  host.root.classList.toggle("is-native-host", Boolean(window.__TAURI_INTERNALS__));
+  const popoverClass = `cc-popover scheme-${scheme} ${host.isEditingLayout ? "is-editing" : ""}`.trim();
+  const notifStack = renderNotificationStack(host);
+  const innerContent = `
+      <section class="win-island win-island--top" aria-label="${t("家庭状态与动态通知")}">
         <header class="cc-header">
           <div class="cc-header-top">
             <div class="cc-title-group">
-              <div class="cc-home-emblem" aria-hidden="true">${SF_ICONS.houseFill}</div>
+              <div class="cc-home-emblem cc-home-badge ${host.activeDeviceCount > 0 ? "is-active" : ""}" aria-hidden="true">${SF_ICONS.houseFill}</div>
               <div class="cc-title-stack">
                 <div class="cc-title-row">
                   ${
@@ -59,7 +60,6 @@ import { quickActionScopeDevices, reconcileUndoBannerHoverAfterRender } from "./
               >
                 ${SF_ICONS.sparkles}
               </button>
-              ${host.renderAllOffControl()}
               <button
                 class="cc-circle-btn"
                 id="btn-hide-panel"
@@ -73,102 +73,96 @@ import { quickActionScopeDevices, reconcileUndoBannerHoverAfterRender } from "./
 
           ${host.renderEnvironmentStrip()}
         </header>
+        ${notifStack}
+      </section>
 
-        <section class="cc-assistant-section">
-          <div class="cc-spotlight-bar">
-            <span class="cc-spotlight-icon">${SF_ICONS.sparkles}</span>
-            <input
-              id="command-input"
-              class="cc-spotlight-input"
-              type="text"
-              placeholder="${t("搜索设备，或直接说一句话")}"
-              value="${host.escapeHtml(host.panelSearch.query)}"
-              autocomplete="off"
-              aria-description="${t("Ctrl+F 聚焦，↑↓ 选择，回车开关或执行口令，→ 展开，Esc 清空")}"
-              aria-label="${t("搜索设备或输入指令")}"
-              ${host.isResolvingIntent ? "disabled" : ""}
-            />
-            ${host.panelSearch.query ? `<span class="cc-search-count" role="status">${host.presentationDevices.length}</span><button class="cc-circle-btn is-small" id="btn-clear-search" aria-label="${t("清空输入")}">×</button>` : ""}
-            <button
-              id="btn-send"
-              class="cc-spotlight-send"
-              title="${t("执行指令 (Enter)")}"
-              aria-label="${t("执行指令")}"
-              ${host.isResolvingIntent ? "disabled" : ""}
-            >
-              ${SF_ICONS.arrowUpCircle}
-            </button>
-          </div>
-          ${assistantExtras(host)}
-        </section>
-
-        ${liveBanner(host)}
-
-        ${host.haConnectionError ? `<div class="cc-feedback-card is-error" role="alert" data-ha-error><span class="cc-feedback-badge">Home Assistant</span><span class="cc-feedback-text">${host.escapeHtml(host.haConnectionError)}</span></div>` : ""}
-
-        ${miExpiryWarningBanner(host)}
-
-        ${quickStrip(host)}
-
-
-        <div class="cc-room-bar">
-          <div class="cc-room-track">
-          <div class="cc-room-scroll">
-            ${[{ id: null, name: t("全部") }, ...host.roomOptions]
-              .map(
-                (room) => {
-                  const pressed = room.id === null
-                    ? host.listCut.kind === "all"
-                    : host.listCut.kind === "room" && host.listCut.roomId === room.id;
-                  return `
+      <section class="win-island win-island--bottom" aria-label="${t("快速设置与设备控制")}">
+        <div class="win-island-controls">
+          <div class="cc-assistant-section">
+            <div class="cc-spotlight-bar">
+              <span class="cc-spotlight-icon">${SF_ICONS.search}</span>
+              <input
+                id="command-input"
+                class="cc-spotlight-input"
+                type="text"
+                placeholder="${t("搜索设备，或直接说一句话")}"
+                value="${host.escapeHtml(host.panelSearch.query)}"
+                autocomplete="off"
+                aria-description="${t("Ctrl+F 聚焦，↑↓ 选择，回车开关或执行口令，→ 展开，Esc 清空")}"
+                aria-label="${t("搜索设备或输入指令")}"
+                ${host.isResolvingIntent ? "disabled" : ""}
+              />
+              ${host.panelSearch.query ? `<span class="cc-search-count" role="status">${host.presentationDevices.length}</span><button class="cc-circle-btn is-small" id="btn-clear-search" aria-label="${t("清空输入")}">×</button>` : ""}
               <button
-                class="cc-room-pill ${pressed ? "is-active" : ""}"
-                data-room="${host.escapeHtml(room.id === null ? "全部" : room.name)}"
-                ${room.id === null ? "" : `data-room-id="${host.escapeHtml(room.id)}"`}
-                aria-pressed="${pressed}"
+                id="btn-send"
+                class="cc-spotlight-send"
+                title="${t("执行指令 (Enter)")}"
+                aria-label="${t("执行指令")}"
+                ${host.isResolvingIntent ? "disabled" : ""}
               >
-                ${host.escapeHtml(room.id === null ? t("全部") : room.name)}
+                ${SF_ICONS.arrowUpCircle}
               </button>
-            `;
-                },
-              )
-              .join("")}
+            </div>
           </div>
-          </div>
-          <div class="cc-room-tools">
-          <button
-            class="cc-circle-btn is-small"
-            id="btn-toggle-grid"
-            title="${host.settings.isCompactGridMode ? t("切换为单列详情视图") : t("切换为双列控制中心磁贴")}"
-            aria-label="${host.settings.isCompactGridMode ? t("切换为单列详情视图") : t("切换为双列控制中心磁贴")}"
-            aria-pressed="${host.settings.isCompactGridMode}"
-          >
-            ${host.settings.isCompactGridMode ? SF_ICONS.grid2x2 : SF_ICONS.grid1x2}
-          </button>
-          <button
-            class="cc-circle-btn is-small ${host.settings.hideOfflineDevices ? "is-selected" : ""}"
-            id="btn-toggle-hide-offline"
-            title="${host.settings.hideOfflineDevices ? t("当前只显示在线设备（点击显示全部）") : t("点击隐藏未通电/离线设备")}"
-            aria-label="${t("只显示在线设备")}"
-            aria-pressed="${host.settings.hideOfflineDevices}"
-          >
-            ${host.settings.hideOfflineDevices ? SF_ICONS.wifi : SF_ICONS.wifiSlash}
-          </button>
-          </div>
-        </div>
-        ${host.renderKindBar()}
 
-        <div class="cc-divider"></div>
+          ${quickStrip(host)}
+
+          <div class="cc-room-bar">
+            <div class="cc-room-track">
+              <div class="cc-room-scroll">
+                ${[{ id: null, name: t("全部") }, ...host.roomOptions]
+                  .map((room) => {
+                    const pressed = room.id === null
+                      ? host.listCut.kind === "all"
+                      : host.listCut.kind === "room" && host.listCut.roomId === room.id;
+                    return `
+                  <button
+                    class="cc-room-pill ${pressed ? "is-active" : ""}"
+                    data-room="${host.escapeHtml(room.id === null ? "全部" : room.name)}"
+                    ${room.id === null ? "" : `data-room-id="${host.escapeHtml(room.id)}"`}
+                    aria-pressed="${pressed}"
+                  >
+                    ${host.escapeHtml(room.id === null ? t("全部") : room.name)}
+                  </button>
+                `;
+                  })
+                  .join("")}
+              </div>
+            </div>
+            <div class="cc-room-tools">
+              <button
+                class="cc-circle-btn is-small"
+                id="btn-toggle-grid"
+                title="${host.settings.isCompactGridMode ? t("切换为单列详情视图") : t("切换为胶囊控制网格")}"
+                aria-label="${host.settings.isCompactGridMode ? t("切换为单列详情视图") : t("切换为胶囊控制网格")}"
+                aria-pressed="${host.settings.isCompactGridMode}"
+              >
+                ${host.settings.isCompactGridMode ? SF_ICONS.grid2x2 : SF_ICONS.grid1x2}
+              </button>
+              <button
+                class="cc-circle-btn is-small ${host.settings.hideOfflineDevices ? "is-selected" : ""}"
+                id="btn-toggle-hide-offline"
+                title="${host.settings.hideOfflineDevices ? t("当前只显示在线设备（点击显示全部）") : t("点击隐藏未通电/离线设备")}"
+                aria-label="${t("只显示在线设备")}"
+                aria-pressed="${host.settings.hideOfflineDevices}"
+              >
+                ${host.settings.hideOfflineDevices ? SF_ICONS.wifi : SF_ICONS.wifiSlash}
+              </button>
+            </div>
+          </div>
+          ${host.renderKindBar()}
+        </div>
 
         <main class="cc-scroll-area" aria-label="${t("设备列表")}">
           ${host.renderDeviceGrid()}
         </main>
 
-        <div class="cc-divider"></div>
+        ${renderSliderDeck(host)}
 
         <footer class="cc-footer">
           <div class="cc-footer-status">
             ${footerStatus(host)}
+            ${host.renderAllOffControl()}
           </div>
 
           <div class="cc-footer-actions">
@@ -212,38 +206,256 @@ import { quickActionScopeDevices, reconcileUndoBannerHoverAfterRender } from "./
               ${SF_ICONS.sliderHorizontal}
             </button>
             <button
-              class="cc-footer-pill is-danger"
+              class="cc-footer-icon-btn is-danger"
               id="btn-quit-app"
               title="${t("完全退出 MenuBarHome")}"
+              aria-label="${t("退出")}"
             >
               ${SF_ICONS.power}
-              <span>${t("退出")}</span>
             </button>
           </div>
         </footer>
+      </section>
 
-        ${host.activeSheet === "onboarding" ? host.renderOnboardingModal() : ""}
-        ${host.activeSheet === "settings" ? host.renderSettingsModal() : ""}
-        ${host.cameraLive.activeLiveCameraId !== null ? host.cameraLive.renderCameraLiveModal() : ""}
-        ${host.renderHomeMenu()}
-        ${host.renderContextMenu()}
-        ${host.renderPrompt()}
-    `;
-    const existingPopover = host.root.querySelector<HTMLElement>(":scope > .cc-popover");
-    if (existingPopover) {
-      if (existingPopover.className !== popoverClass) {
-        existingPopover.className = popoverClass;
-      }
-      existingPopover.innerHTML = innerContent;
-    } else {
-      host.root.innerHTML = `<div class="${popoverClass}">${innerContent}</div>`;
+      ${host.activeSheet === "onboarding" ? host.renderOnboardingModal() : ""}
+      ${host.activeSheet === "settings" ? host.renderSettingsModal() : ""}
+      ${host.cameraLive.activeLiveCameraId !== null ? host.cameraLive.renderCameraLiveModal() : ""}
+      ${host.renderHomeMenu()}
+      ${host.renderContextMenu()}
+      ${host.renderPrompt()}
+  `;
+  const existingPopover = host.root.querySelector<HTMLElement>(":scope > .cc-popover");
+  if (existingPopover) {
+    if (existingPopover.className !== popoverClass) {
+      existingPopover.className = popoverClass;
     }
-    host.root.querySelector(":scope > .cc-grok-sidebar")?.remove();
-    host.root.insertAdjacentHTML("beforeend", host.renderGrokBallSidebar());
-
-    host.bindEvents();
-    reconcileUndoBannerHoverAfterRender(host);
+    existingPopover.innerHTML = innerContent;
+  } else {
+    host.root.innerHTML = `<div class="${popoverClass}">${innerContent}</div>`;
   }
+
+  host.bindEvents();
+  reconcileUndoBannerHoverAfterRender(host);
+}
+
+function renderNotificationStack(host: MenuMijiaWindowsApp): string {
+  const cards: string[] = [];
+  const live = liveBanner(host);
+  if (live) cards.push(live);
+
+  if (host.haConnectionError) {
+    cards.push(
+      `<div class="win-notif-card cc-feedback-card is-error" role="alert" data-ha-error><div class="cc-feedback-row"><span class="cc-feedback-badge">Home Assistant</span><span class="cc-feedback-text">${host.escapeHtml(host.haConnectionError)}</span></div></div>`,
+    );
+  }
+
+  const miExpiry = miExpiryWarningBanner(host);
+  if (miExpiry) cards.push(miExpiry);
+
+  if (host.pendingSuggestions.length > 0) {
+    cards.push(
+      `<div class="win-notif-card cc-feedback-card"><div class="cc-suggestion-row">${host.pendingSuggestions
+        .map(
+          (item) => `<button class="cc-inline-pill" data-suggestion-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${
+            item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""
+          }</button>`,
+        )
+        .join("")}</div></div>`,
+    );
+  }
+
+  if (host.missedScheduledCommands.length > 0) {
+    cards.push(
+      `<div class="win-notif-card cc-feedback-card is-warning"><div class="cc-timers-stack">${host.missedScheduledCommands
+        .map(
+          (item) => `<div class="cc-timer-row"><span>${t("已错过定时：{command}（没有自动执行，请确认后运行）", { command: host.escapeHtml(item.command) })}</span><button class="cc-inline-pill" data-run-missed="${host.escapeHtml(item.id)}">${t("立即执行")}</button><button class="cc-inline-pill" data-dismiss-missed="${host.escapeHtml(item.id)}">${t("忽略")}</button></div>`,
+        )
+        .join("")}</div></div>`,
+    );
+  }
+
+  // Active timers, proactive AI suggestions, and quick camera card follow Win+N collapsible groups
+  // when the assistant bar toggle is active.
+  if (host.isShowingAssistantBar) {
+    if (host.pendingSuggestions.length === 0) {
+      const items = host.currentProactiveSuggestions();
+      if (items.length > 0) {
+        const openAttr = host.collapsedNotifCards.has("proactive") ? "" : "open";
+        cards.push(
+          `<details class="win-notif-card cc-feedback-card" data-notif-card="proactive" ${openAttr}>
+            <summary class="win-notif-summary">
+              <span class="win-notif-icon">${SF_ICONS.sparkles}</span>
+              <span class="win-notif-app">${t("猜你想控")}</span>
+              <span class="win-notif-count">${items.length}</span>
+              <span class="win-notif-chevron">${SF_ICONS.chevronDown}</span>
+            </summary>
+            <div class="cc-suggestion-row" data-proactive-bar>${items
+              .map(
+                (item) => `<button class="cc-inline-pill" data-proactive-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${
+                  item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""
+                }</button>`,
+              )
+              .join("")}</div>
+          </details>`,
+        );
+      }
+    }
+
+    if (host.scheduledCommands.length > 0) {
+      const openAttr = host.collapsedNotifCards.has("timers") ? "" : "open";
+      cards.push(
+        `<details class="win-notif-card cc-feedback-card" data-notif-card="timers" ${openAttr}>
+          <summary class="win-notif-summary">
+            <span class="win-notif-icon">${SF_ICONS.clock}</span>
+            <span class="win-notif-app">${t("定时指令")}</span>
+            <span class="win-notif-count">${host.scheduledCommands.length}</span>
+            <span class="win-notif-chevron">${SF_ICONS.chevronDown}</span>
+          </summary>
+          <div class="cc-timers-stack">${host.scheduledCommands
+            .map(
+              (item) => `<div class="cc-timer-row"><span>${host.escapeHtml(item.command)} ${t("· 剩余 {remaining}", { remaining: host.formatRemainingMs(item.fireTimestampMs - Date.now()) })}</span><button class="cc-inline-pill" data-cancel-timer="${host.escapeHtml(item.id)}">${t("取消")}</button></div>`,
+            )
+            .join("")}</div>
+        </details>`,
+      );
+    }
+
+    if (host.cameraLive.activeLiveCameraId === null) {
+      const onlineCameras = withAliases(host.layout, host.devices).filter(
+        (d) => d.kind.kind === "camera" && d.isOnline,
+      );
+      const cam = onlineCameras[0];
+      if (cam) {
+        const openAttr = host.collapsedNotifCards.has("camera") ? "" : "open";
+        cards.push(
+          `<details class="win-notif-card cc-feedback-card win-camera-card" data-notif-card="camera" ${openAttr}>
+            <summary class="win-notif-summary">
+              <span class="win-notif-icon">${SF_ICONS.videoFill}</span>
+              <span class="win-notif-app">${t("摄像机速览")}</span>
+              <span class="win-notif-meta">${host.escapeHtml(cam.roomName)}</span>
+              <span class="win-notif-chevron">${SF_ICONS.chevronDown}</span>
+            </summary>
+            <div class="win-camera-quick-row">
+              <span class="win-camera-quick-name">${host.escapeHtml(cam.name)}</span>
+              <button type="button" class="cc-inline-pill is-accent" data-open-camera="${host.escapeHtml(cam.id)}">${t("查看实时画面")}</button>
+            </div>
+          </details>`,
+        );
+      }
+    }
+  }
+
+  if (cards.length === 0) return "";
+  return `<div class="win-notif-stack">${cards.join("")}</div>`;
+}
+
+export function renderSliderDeck(host: MenuMijiaWindowsApp): string {
+  if (
+    host.isEditingLayout ||
+    Boolean(normalizeSearch(host.panelSearch.query)) ||
+    host.expandedDeviceId !== null ||
+    host.valuesAreStale
+  ) {
+    return "";
+  }
+  const scoped = withAliases(host.layout, host.presentationDevices);
+  const dimmableLights = scoped.filter(
+    (d): d is SmartDevice & { kind: Extract<SmartDevice["kind"], { kind: "light" }> } =>
+      d.kind.kind === "light" && d.isOnline && d.kind.brightnessWritable !== false,
+  );
+  const primaryLight =
+    (host.lastManuallyUsedLightId
+      ? dimmableLights.find((d) => d.id === host.lastManuallyUsedLightId)
+      : undefined) ??
+    dimmableLights.find((d) => isDeviceActiveOn(d)) ??
+    dimmableLights[0];
+
+  const writableSpeakers = scoped.filter(
+    (d): d is SmartDevice & { kind: Extract<SmartDevice["kind"], { kind: "speaker" }> } =>
+      d.kind.kind === "speaker" && d.isOnline && d.kind.volumeWritable,
+  );
+  const primarySpeaker = writableSpeakers[0];
+
+  if (!primaryLight && !primarySpeaker) return "";
+
+  const rows: string[] = [];
+  if (primaryLight) {
+    const bri = primaryLight.kind.isOn ? (primaryLight.kind.brightnessPercent ?? 80) : 0;
+    const id = host.escapeHtml(primaryLight.id);
+    const name = host.escapeHtml(primaryLight.name);
+    const canToggle = primaryLight.kind.powerWritable !== false;
+    const canExpand = hasDetailDrawer(primaryLight, host.deviceFacets[primaryLight.id] ?? []);
+    rows.push(
+      `<div class="win-slider-row">
+        ${
+          canToggle
+            ? `<button type="button" class="win-deck-btn ${primaryLight.kind.isOn ? "is-active" : ""}" data-deck-toggle="${id}" title="${name}" aria-label="${host.escapeHtml(t("{name} 开关", { name: primaryLight.name }))}" aria-pressed="${primaryLight.kind.isOn}">${SF_ICONS.sunMaxFill}</button>`
+            : `<span class="win-deck-btn" title="${name}" aria-hidden="true">${SF_ICONS.sunMaxFill}</span>`
+        }
+        <input
+          class="cc-range win-deck-range"
+          type="range"
+          min="1"
+          max="100"
+          value="${Math.max(1, bri || 80)}"
+          style="--val:${bri}%"
+          data-deck-brightness="${id}"
+          title="${name}"
+          aria-label="${host.escapeHtml(t("{name} 亮度", { name: primaryLight.name }))}"
+          aria-valuemin="1"
+          aria-valuemax="100"
+          aria-valuenow="${Math.max(1, bri || 80)}"
+        />
+        <span class="win-deck-val">${bri}%</span>
+        ${
+          canExpand
+            ? `<button type="button" class="win-deck-more" data-deck-expand="${id}" title="${name}" aria-label="${host.escapeHtml(t("展开 {name} 详细控制", { name: primaryLight.name }))}">${SF_ICONS.chevronRight}</button>`
+            : ""
+        }
+      </div>`,
+    );
+  }
+
+  if (primarySpeaker) {
+    const vol = primarySpeaker.kind.volumePercent;
+    const muted = Boolean(primarySpeaker.kind.isMuted);
+    const id = host.escapeHtml(primarySpeaker.id);
+    const name = host.escapeHtml(primarySpeaker.name);
+    const canMute = Boolean(primarySpeaker.kind.muteSwitchEntityId);
+    const canExpand = hasDetailDrawer(primarySpeaker, host.deviceFacets[primarySpeaker.id] ?? []);
+    rows.push(
+      `<div class="win-slider-row">
+        ${
+          canMute
+            ? `<button type="button" class="win-deck-btn ${!muted ? "is-active" : ""}" data-deck-mute="${id}" title="${name}" aria-label="${host.escapeHtml(muted ? t("取消静音") : t("静音"))}" aria-pressed="${muted}">${muted ? SF_ICONS.speakerSlash : SF_ICONS.speakerWave}</button>`
+            : `<span class="win-deck-btn" title="${name}" aria-hidden="true">${muted ? SF_ICONS.speakerSlash : SF_ICONS.speakerWave}</span>`
+        }
+        <input
+          class="cc-range win-deck-range"
+          type="range"
+          min="0"
+          max="100"
+          value="${vol}"
+          style="--val:${muted ? 0 : vol}%"
+          data-deck-volume="${id}"
+          title="${name}"
+          aria-label="${host.escapeHtml(t("{name} 音量", { name: primarySpeaker.name }))}"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="${vol}"
+        />
+        <span class="win-deck-val">${vol}%</span>
+        ${
+          canExpand
+            ? `<button type="button" class="win-deck-more" data-deck-expand="${id}" title="${name}" aria-label="${host.escapeHtml(t("展开 {name} 详细控制", { name: primarySpeaker.name }))}">${SF_ICONS.chevronRight}</button>`
+            : ""
+        }
+      </div>`,
+    );
+  }
+
+  return `<section class="win-slider-deck" aria-label="${t("快捷滑杆")}">${rows.join("")}</section>`;
+}
 
 function miExpiryWarningBanner(host: MenuMijiaWindowsApp): string {
   if (
@@ -259,7 +471,7 @@ function miExpiryWarningBanner(host: MenuMijiaWindowsApp): string {
     month: "short",
     day: "numeric",
   }).format(new Date(expiry.expiresAtMs));
-  return `<div class="cc-feedback-card" role="status" data-mi-expiry-warning>
+  return `<div class="win-notif-card cc-feedback-card is-warning" role="status" data-mi-expiry-warning>
     <div class="cc-feedback-row">
       <span class="cc-feedback-badge">${host.escapeHtml(trText("即将过期", "Expiring Soon"))}</span>
       <span class="cc-feedback-text">${host.escapeHtml(trText("米家登录将在 {date} 到期", "Xiaomi Home sign-in expires {date}", { date: dateText }))}</span>
@@ -282,7 +494,7 @@ function liveBanner(host: MenuMijiaWindowsApp): string {
   const undo = host.undoButtonVisible();
   if (!reply && !undo && !host.pendingCloudConsent) return "";
   const role = reply?.isError ? "alert" : "status";
-  return `<div class="cc-live-banner cc-feedback-card ${reply?.isError ? "is-error" : ""}" role="${role}">
+  return `<div class="win-notif-card cc-live-banner cc-feedback-card ${reply?.isError ? "is-error" : ""}" role="${role}">
     <div class="cc-feedback-row">
       ${reply ? `<span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>` : ""}
       ${
@@ -294,55 +506,6 @@ function liveBanner(host: MenuMijiaWindowsApp): string {
       ${reply?.isError ? `<button type="button" class="cc-inline-pill" id="btn-dismiss-banner" aria-label="${t("忽略")}">×</button>` : ""}
     </div>
   </div>`;
-}
-
-function assistantExtras(host: MenuMijiaWindowsApp): string {
-  const suggestions = host.pendingSuggestions.length > 0
-    ? `<div class="cc-suggestion-row">${host.pendingSuggestions
-        .map(
-          (item) => `<button class="cc-inline-pill" data-suggestion-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${
-            item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""
-          }</button>`,
-        )
-        .join("")}</div>`
-    : "";
-  const missed = host.missedScheduledCommands.length > 0
-    ? `<div class="cc-timers-stack">${host.missedScheduledCommands
-        .map(
-          (item) => `<div class="cc-timer-row"><span>${t("已错过定时：{command}（没有自动执行，请确认后运行）", { command: host.escapeHtml(item.command) })}</span><button class="cc-inline-pill" data-run-missed="${host.escapeHtml(item.id)}">${t("立即执行")}</button><button class="cc-inline-pill" data-dismiss-missed="${host.escapeHtml(item.id)}">${t("忽略")}</button></div>`,
-        )
-        .join("")}</div>`
-    : "";
-  // The search box stays available while the extras are collapsed, so pending confirmations,
-  // disambiguations, and missed scheduled commands stay visible; active timers and proactive
-  // chips stay hidden until the area is opened.
-  if (!host.isShowingAssistantBar) {
-    return suggestions || missed ? `<div class="cc-feedback-card">${suggestions}${missed}</div>` : "";
-  }
-  const proactive =
-    host.pendingSuggestions.length === 0 &&
-    (!host.settings.enableGrokBall || !host.isGrokBallStageExpanded)
-      ? (() => {
-          const items = host.currentProactiveSuggestions();
-          if (items.length === 0) return "";
-          return `<div class="cc-suggestion-row" data-proactive-bar>${items
-            .map(
-              (item) => `<button class="cc-inline-pill" data-proactive-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${
-                item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""
-              }</button>`,
-            )
-            .join("")}</div>`;
-        })()
-      : "";
-  const timers = host.scheduledCommands.length > 0
-    ? `<div class="cc-timers-stack">${host.scheduledCommands
-        .map(
-          (item) => `<div class="cc-timer-row"><span>${host.escapeHtml(item.command)} ${t("· 剩余 {remaining}", { remaining: host.formatRemainingMs(item.fireTimestampMs - Date.now()) })}</span><button class="cc-inline-pill" data-cancel-timer="${host.escapeHtml(item.id)}">${t("取消")}</button></div>`,
-        )
-        .join("")}</div>`
-    : "";
-  if (!suggestions && !proactive && !missed && !timers) return "";
-  return `<div class="cc-feedback-card">${suggestions}${proactive}${missed}${timers}</div>`;
 }
 
 function quickActionIcon(id: QuickActionId): string {
