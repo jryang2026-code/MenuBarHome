@@ -128,9 +128,15 @@ EOF
 }
 
 expect_tag() {
-    local expected="$1" req_tag="$2" message="$3" actual=0
-    CHECK_RELEASE_ROOT="$tag_repo" bash scripts/check_release.sh tag "$req_tag" >"$workdir/tag.log" 2>&1 || actual=1
-    if [ "$actual" = "$expected" ]; then
+    local expected="$1" req_tag="$2" message="$3" expected_pattern="${4:-}"
+    local event_name="${5:-}" ref="${6:-}" ref_type="${7:-}" actual=0
+    local -a env_args=(env -u GITHUB_EVENT_NAME -u GITHUB_REF -u GITHUB_REF_TYPE -u GITHUB_OUTPUT)
+    [ -n "$event_name" ] && env_args+=("GITHUB_EVENT_NAME=$event_name")
+    [ -n "$ref" ] && env_args+=("GITHUB_REF=$ref")
+    [ -n "$ref_type" ] && env_args+=("GITHUB_REF_TYPE=$ref_type")
+    "${env_args[@]}" CHECK_RELEASE_ROOT="$tag_repo" \
+        bash scripts/check_release.sh tag "$req_tag" >"$workdir/tag.log" 2>&1 || actual=1
+    if [ "$actual" = "$expected" ] && { [ -z "$expected_pattern" ] || grep -Fq "$expected_pattern" "$workdir/tag.log"; }; then
         pass "$message"
     else
         printf 'FAIL %s\n' "$message"
@@ -141,15 +147,17 @@ expect_tag() {
 
 write_tag_repo_files "1.2.5" "1.2.5" "1.2.5" "1.2.5"
 expect_tag 0 "v1.2.5" "tag accepts matching VERSION, package/lock, Cargo.toml/lock, and scripts/mijia"
+expect_tag 0 "v1.2.5" "tag accepts push ref refs/tags/v1.2.5" "" "push" "refs/tags/v1.2.5" "tag"
+expect_tag 1 "v1.2.5" "tag rejects push ref refs/heads/main" "推送触发的 ref refs/heads/main 不是 refs/tags/v1.2.5" "push" "refs/heads/main" "branch"
 
 write_tag_repo_files "1.2.5" "1.2.0" "1.2.5" "1.2.5"
-expect_tag 1 "v1.2.5" "tag rejects stale scripts/mijia MCP_SERVER_INFO version"
+expect_tag 1 "v1.2.5" "tag rejects stale scripts/mijia MCP_SERVER_INFO version" "scripts/mijia MCP_SERVER_INFO"
 
 write_tag_repo_files "1.2.5" "1.2.5" "1.2.0" "1.2.5"
-expect_tag 1 "v1.2.5" "tag rejects stale windows/package-lock.json version"
+expect_tag 1 "v1.2.5" "tag rejects stale windows/package-lock.json version" "windows/package-lock.json"
 
 write_tag_repo_files "1.2.5" "1.2.5" "1.2.5" "1.2.0"
-expect_tag 1 "v1.2.5" "tag rejects stale windows/src-tauri/Cargo.lock version"
+expect_tag 1 "v1.2.5" "tag rejects stale windows/src-tauri/Cargo.lock version" "windows/src-tauri/Cargo.lock"
 
 # 若当前环境 openssl 支持 Ed25519，额外实测 assets 模式拒绝仅含 DMG 的单平台签名清单
 openssl_bin=""
