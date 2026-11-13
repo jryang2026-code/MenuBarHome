@@ -61,10 +61,7 @@ struct MiotPercentScaleTests {
     /// Every percent-scaled property in the 177 real coverage specs: a written-back percent reads
     /// back as the same percent, and a level list lands on the exact level.
     @Test func everyCoverageSpecPropertyIsStableUnderWriteBack() throws {
-        let specs = try JSONDecoder().decode(
-            [String: MiotDeviceSpec].self,
-            from: Data(contentsOf: fixture("Tests/Fixtures/miot_coverage_specs.json"))
-        )
+        let specs = try MiotCoverageBaselineTests.coverageSpecs()
         let scaled: [String: MiotPercentScale.Curve] = [
             "brightness": .proportional, "volume": .proportional, "target-position": .proportional,
             "fan-level": .speed, "favorite-fan-level": .speed, "favorite-level": .speed, "favorite-speed": .speed,

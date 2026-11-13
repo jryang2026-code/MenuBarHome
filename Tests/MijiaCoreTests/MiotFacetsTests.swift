@@ -235,10 +235,7 @@ struct MiotFacetsTests {
     }
 
     private func coverageSpecs() throws -> [String: MiotDeviceSpec] {
-        try JSONDecoder().decode(
-            [String: MiotDeviceSpec].self,
-            from: Data(contentsOf: repoFile("Tests/Fixtures/miot_coverage_specs.json"))
-        )
+        try MiotCoverageBaselineTests.coverageSpecs()
     }
 
     private func measureCoverage() throws -> CoverageGolden {

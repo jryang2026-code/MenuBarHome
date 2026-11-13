@@ -10,10 +10,11 @@ struct DebouncedResumeAndLifecycleTests {
     @Test("Burst wake, display-wake, unlock, and network-restore notifications coalesce into one callback")
     @MainActor
     func burstNotificationsCoalesceIntoSingleResume() async throws {
+        let clock = VirtualClock()
         let gate = SleepGate()
         let recorder = ResumeRecorder()
         let scheduler = DebouncedResumeScheduler(
-            now: { ContinuousClock.now },
+            now: { clock.now },
             sleep: { _ in await gate.sleep() }
         )
         let coordinator = DebouncedResumeCoordinator(
@@ -50,10 +51,11 @@ struct DebouncedResumeAndLifecycleTests {
     @Test("Re-sleep, screen lock, or network loss cancels pending wake work")
     @MainActor
     func sleepLockAndNetworkDropCancelPendingResume() async throws {
+        let clock = VirtualClock()
         let gate = SleepGate()
         let recorder = ResumeRecorder()
         let scheduler = DebouncedResumeScheduler(
-            now: { ContinuousClock.now },
+            now: { clock.now },
             sleep: { _ in await gate.sleep() }
         )
         let coordinator = DebouncedResumeCoordinator(
@@ -101,10 +103,11 @@ struct DebouncedResumeAndLifecycleTests {
     @Test("shutdown cancels pending debounce work, is idempotent, and ignores subsequent notifications")
     @MainActor
     func coordinatorShutdownCancelsAndIsIdempotent() async throws {
+        let clock = VirtualClock()
         let gate = SleepGate()
         let recorder = ResumeRecorder()
         let scheduler = DebouncedResumeScheduler(
-            now: { ContinuousClock.now },
+            now: { clock.now },
             sleep: { _ in await gate.sleep() }
         )
         let coordinator = DebouncedResumeCoordinator(
@@ -180,9 +183,10 @@ struct DebouncedResumeAndLifecycleTests {
         defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
         try await store.waitForTestSnapshot()
 
+        let clock = VirtualClock()
         let gate = SleepGate()
         store.resumeScheduler = DebouncedResumeScheduler(
-            now: { ContinuousClock.now },
+            now: { clock.now },
             sleep: { _ in await gate.sleep() }
         )
 

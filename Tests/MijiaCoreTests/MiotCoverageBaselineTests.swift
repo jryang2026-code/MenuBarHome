@@ -99,6 +99,15 @@ struct MiotCoverageBaselineTests {
         )
     }
 
+    static func coverageSpecs() throws -> [String: MiotDeviceSpec] {
+        try cachedSpecsResult.get()
+    }
+
+    static func coverageSpec(_ model: String) throws -> MiotDeviceSpec {
+        let specs = try coverageSpecs()
+        return try #require(specs[model], Comment(rawValue: model))
+    }
+
     static func measure() throws -> Golden {
         try cachedMeasureResult.get()
     }
