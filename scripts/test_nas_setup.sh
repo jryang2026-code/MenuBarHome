@@ -126,6 +126,18 @@ esac
     result = deploy()
     check(result.returncode == 0, 'verified local tar archives produce a package')
 
+    # 手动从 GitHub 下载的 archive/refs/tags/<tag>.tar.gz 结构为 <repo>-<tag>/custom_components/<comp>/manifest.json
+    for component in ('xiaomi_home', 'midea_ac_lan'):
+        tar_path = components / (component + '.tar.gz')
+        with tarfile.open(tar_path, 'w:gz') as tar:
+            payload = b'{"version":"gh-tag"}'
+            info = tarfile.TarInfo(f'repo-1.0.0/custom_components/{component}/manifest.json')
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+        Path(str(tar_path) + '.sha256').write_text(hashlib.sha256(tar_path.read_bytes()).hexdigest() + '\n')
+    result = deploy()
+    check(result.returncode == 0, 'verified GitHub tag source tarballs in nas/components also produce a package')
+
     work = task / 'remote-work'
     work.mkdir(mode=0o700)
     archive_path = work / 'components.tar.gz'

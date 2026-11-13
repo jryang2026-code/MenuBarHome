@@ -145,7 +145,7 @@ export async function loadSnapshot(): Promise<RaycastSnapshot> {
     raw = await readFile(path, "utf8");
   } catch {
     throw new Error(
-      `Cannot read ${path}. Turn on Settings → 自动化与外部控制 → Raycast 集成 in MenuBarHome.`,
+      `Cannot read ${path}. Turn on Settings → 通用 → 自动化与外部控制 → Raycast 集成 in MenuBarHome.`,
     );
   }
   let parsed: unknown;

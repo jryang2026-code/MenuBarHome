@@ -6,7 +6,7 @@ links, so the same parsing, high-risk confirmation and lock-screen rules apply.
 
 ## Setup
 
-1. In MenuBarHome: **Settings → 自动化与外部控制 → Raycast 集成** (Settings → Automation & External
+1. In MenuBarHome: **Settings → 通用 → 自动化与外部控制 → Raycast 集成** (Settings → General → Automation & External
    Control → Raycast integration). The app then writes
    `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json` (mode `0600`) and issues a local
    bridge token.

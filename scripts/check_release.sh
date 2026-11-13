@@ -7,7 +7,8 @@
 set -euo pipefail
 export LC_ALL=C
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="${CHECK_RELEASE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 cd "$ROOT"
 
 fail() {
@@ -86,6 +87,59 @@ cargo_package_version() {
     ' windows/src-tauri/Cargo.toml
 }
 
+cargo_lock_version() {
+    awk '
+        /^\[\[package\]\]/ { in_pkg = 1; is_self = 0; ver = ""; next }
+        /^\[/ { in_pkg = 0; is_self = 0 }
+        in_pkg && /^name[[:space:]]*=[[:space:]]*"menubarmijia-windows"/ { is_self = 1; next }
+        in_pkg && /^version[[:space:]]*=/ {
+            line = $0
+            sub(/^version[[:space:]]*=[[:space:]]*"/, "", line)
+            sub(/".*$/, "", line)
+            ver = line
+            if (is_self) {
+                print ver
+                exit
+            }
+        }
+    ' windows/src-tauri/Cargo.lock
+}
+
+package_lock_versions() {
+    python3 - windows/package-lock.json <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+top = str(data.get("version") or "").strip()
+root_pkg = str(((data.get("packages") or {}).get("") or {}).get("version") or "").strip()
+if not top or not root_pkg:
+    raise SystemExit(f"无法读取 {sys.argv[1]} 的顶层或根包 version")
+print(f"{top} {root_pkg}")
+PY
+}
+
+mijia_mcp_version() {
+    python3 - scripts/mijia <<'PY'
+import ast
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    tree = ast.parse(handle.read(), filename=sys.argv[1])
+for node in tree.body:
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "MCP_SERVER_INFO":
+                info = ast.literal_eval(node.value)
+                version = info.get("version") if isinstance(info, dict) else None
+                if isinstance(version, str) and version.strip():
+                    print(version.strip())
+                    raise SystemExit(0)
+raise SystemExit(f"无法从 {sys.argv[1]} 读取 MCP_SERVER_INFO['version']")
+PY
+}
+
 if command -v sha256sum >/dev/null 2>&1; then
     HASH_CMD=(sha256sum)
 elif command -v shasum >/dev/null 2>&1; then
@@ -161,6 +215,25 @@ validate_tag() {
 
     [ -s windows/package-lock.json ] \
         || fail "缺少 windows/package-lock.json；发布构建用 npm ci 安装依赖"
+    local lock_top="" lock_root=""
+    read -r lock_top lock_root < <(package_lock_versions) \
+        || fail "无法读取 windows/package-lock.json 的版本号"
+    [ "$lock_top" = "$version" ] && [ "$lock_root" = "$version" ] \
+        || fail "windows/package-lock.json 的版本（version=$lock_top, packages[''].version=$lock_root）与 VERSION=$version 不一致"
+
+    if [ -s windows/src-tauri/Cargo.lock ]; then
+        local cargo_lock_ver
+        cargo_lock_ver="$(cargo_lock_version)"
+        [ "$cargo_lock_ver" = "$version" ] \
+            || fail "windows/src-tauri/Cargo.lock 中 menubarmijia-windows 的版本 ${cargo_lock_ver:-<缺失>} 与 VERSION=$version 不一致"
+    fi
+
+    if [ -f scripts/mijia ]; then
+        local mcp_version
+        mcp_version="$(mijia_mcp_version)" || fail "无法读取 scripts/mijia 的 MCP_SERVER_INFO 版本"
+        [ "$mcp_version" = "$version" ] \
+            || fail "scripts/mijia MCP_SERVER_INFO 的版本 $mcp_version 与 VERSION=$version 不一致"
+    fi
 
     info "标签与版本校验通过：$tag @ $head_sha"
     if [ -n "${GITHUB_OUTPUT:-}" ]; then
@@ -375,7 +448,7 @@ validate_assets() {
 
     if [ "$with_signature" -eq 1 ]; then
         verify_ed25519 "$dir" "$version"
-        python3 scripts/update_manifest.py check-fields "$version" "$dir"
+        python3 "$SCRIPT_DIR/update_manifest.py" check-fields --require-all-platforms "$version" "$dir"
     fi
 
     info "发布附件完整：$expect"
