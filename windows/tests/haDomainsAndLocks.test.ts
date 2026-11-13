@@ -1513,13 +1513,16 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
       ],
     };
     const dev = HomeAssistantSynthesizer.synthesize(snap).devices.find((d) => d.id === "hum_huge");
-    assert.ok(dev && dev.kind.kind === "appliance");
-    assert.equal(dev.kind.statusText, "目标 50%");
+    assert.ok(dev);
+    assert.equal(dev.kind.kind, "appliance");
+    if (dev.kind.kind === "appliance") {
+      assert.equal(dev.kind.statusText, "目标 50%");
+    }
 
     assert.equal(
       buildEnvironmentSummary([
-        { roomName: "客厅", temperature: 23.5, humidity: 1e300 },
-        { roomName: "卧室", temperature: Number.NaN, humidity: 48 },
+        { id: "env-living", label: "客厅温湿度", roomName: "客厅", temperature: 23.5, humidity: 1e300, battery: null },
+        { id: "env-bed", label: "卧室温湿度", roomName: "卧室", temperature: Number.NaN, humidity: 48, battery: null },
       ]),
       "客厅 23.5°C，卧室 48%",
     );
