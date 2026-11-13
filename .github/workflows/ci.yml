@@ -327,10 +327,10 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build
-          # v3 discards caches built while merge commits were not stamped.
-          key: spm-debug-v3-${{ runner.os }}-${{ github.sha }}
+          # v4 discards caches the local VM built with its own Xcode.
+          key: spm-debug-v4-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
-            spm-debug-v3-${{ runner.os }}-
+            spm-debug-v4-${{ runner.os }}-
       - name: Restore source mtimes for the Swift cache
         run: bash scripts/ci_restore_mtimes.sh
       - name: Match the maintainer's region
