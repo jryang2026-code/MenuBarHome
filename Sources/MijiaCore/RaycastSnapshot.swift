@@ -304,6 +304,25 @@ public struct RaycastSnapshot: Codable, Equatable, Sendable {
         self.environmentReadings = environmentReadings
         self.lastCommandFeedback = lastCommandFeedback
     }
+
+    func hasSameExportedContent(as other: RaycastSnapshot) -> Bool {
+        var lhs = self
+        lhs.updatedAt = other.updatedAt
+        for index in lhs.climate.indices {
+            lhs.climate[index].updatedAt = other.updatedAt
+        }
+        for index in lhs.environmentReadings.indices {
+            lhs.environmentReadings[index].updatedAt = other.updatedAt
+        }
+        var rhs = other
+        for index in rhs.climate.indices {
+            rhs.climate[index].updatedAt = other.updatedAt
+        }
+        for index in rhs.environmentReadings.indices {
+            rhs.environmentReadings[index].updatedAt = other.updatedAt
+        }
+        return lhs == rhs
+    }
 }
 
 /// Writes `RaycastSnapshot` atomically with `0600` owner-only permissions.
@@ -664,9 +683,9 @@ extension HomeStore {
             return
         }
         let snapshot = buildRaycastSnapshot(now: now)
-        if customURL == nil, var previous = lastExportedRaycastSnapshot {
-            previous.updatedAt = snapshot.updatedAt
-            if previous == snapshot { return }
+        if customURL == nil, let previous = lastExportedRaycastSnapshot,
+           previous.hasSameExportedContent(as: snapshot) {
+            return
         }
         raycastExportTask?.cancel()
         lastExportedRaycastSnapshot = snapshot

@@ -696,6 +696,12 @@ public final class HomeStore {
     public internal(set) var pollingContext = PollingContext()
     var pollingContextSync: Task<Void, Never>?
     var debounceTasks: [String: Task<Void, Never>] = [:]
+    struct DebouncedWriteState {
+        let token: UUID
+        let deviceId: String
+        let origin: SmartDevice
+    }
+    var debouncedWrites: [String: DebouncedWriteState] = [:]
     struct FacetWriteState {
         let token: UUID
         let origin: JSONValue?

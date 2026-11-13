@@ -251,34 +251,34 @@ public actor MiotSpecStore: MiotSpecSource {
         if let indexTask { return try await indexTask.value }
         let task = Task { try await self.loadTypeIndex() }
         indexTask = task
-        do {
-            let index = try await task.value
-            typeByModel = index
-            return index
-        } catch {
-            indexTask = nil
-            throw error
-        }
+        defer { indexTask = nil }
+        let index = try await task.value
+        typeByModel = index
+        return index
     }
 
     private func loadTypeIndex() async throws -> [String: String] {
         let file = cacheDirectory.appendingPathComponent("miot-instances.json")
-        var data: Data?
         // A modification date in the future (clock skew, copied file) would otherwise keep a stale
         // index forever, so only a non-negative age counts as fresh.
         if let attrs = try? FileManager.default.attributesOfItem(atPath: file.path),
            let modified = attrs[.modificationDate] as? Date,
-           case let age = Date().timeIntervalSince(modified), age >= 0, age < indexMaxAge {
-            data = try? Data(contentsOf: file)
+           case let age = Date().timeIntervalSince(modified), age >= 0, age < indexMaxAge,
+           let cached = try? Data(contentsOf: file) {
+            let cachedIndex = Self.parseInstanceIndex(cached)
+            if !cachedIndex.isEmpty {
+                logger.info("MIoT instance index loaded from cache: \(cachedIndex.count, privacy: .public) models")
+                return cachedIndex
+            }
         }
-        if data == nil {
-            let url = URL(string: "https://miot-spec.org/miot-spec-v2/instances?status=released")!
-            let (fetched, http) = try await transport.send(URLRequest(url: url))
-            guard http.statusCode == 200 else { throw MiCloudError.http(http.statusCode) }
-            data = fetched
-            writeCache(fetched, to: file)
+        let url = URL(string: "https://miot-spec.org/miot-spec-v2/instances?status=released")!
+        let (fetched, http) = try await transport.send(URLRequest(url: url))
+        guard http.statusCode == 200 else { throw MiCloudError.http(http.statusCode) }
+        let index = Self.parseInstanceIndex(fetched)
+        guard !index.isEmpty else {
+            throw MiCloudError.badResponse("Empty or invalid MIoT instance index")
         }
-        let index = Self.parseInstanceIndex(data ?? Data())
+        writeCache(fetched, to: file)
         logger.info("MIoT instance index loaded: \(index.count, privacy: .public) models")
         return index
     }

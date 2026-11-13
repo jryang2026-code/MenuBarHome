@@ -383,12 +383,30 @@ public enum MiotCommandMapper {
         func coerce(_ value: JSONValue, for p: MiotProperty) -> JSONValue {
             if p.format == "bool" { return .bool(value.miotBool ?? false) }
             guard var n = value.doubleValue else { return value }
-            if let lo = p.rangeMin, let hi = p.rangeMax { n = Swift.min(hi, Swift.max(lo, n)) }
+            let bounds: (lo: Double, hi: Double)? = {
+                guard let lo = p.rangeMin, let hi = p.rangeMax, lo <= hi else { return nil }
+                return (lo, hi)
+            }()
+            if let bounds { n = Swift.min(bounds.hi, Swift.max(bounds.lo, n)) }
             if p.isIntegerFormat {
+                if let step = p.rangeStep, step > 1 {
+                    let base = p.rangeMin ?? 0
+                    n = base + ((n - base) / step).rounded() * step
+                    if let bounds, n > bounds.hi, n - step >= bounds.lo {
+                        n -= step
+                    }
+                }
                 n = n.rounded()
+                if let bounds { n = Swift.min(bounds.hi, Swift.max(bounds.lo, n)) }
             } else if let step = p.rangeStep, step > 0 {
                 let base = p.rangeMin ?? 0
                 n = base + ((n - base) / step).rounded() * step
+                if let bounds {
+                    if n > bounds.hi, n - step >= bounds.lo {
+                        n -= step
+                    }
+                    n = Swift.min(bounds.hi, Swift.max(bounds.lo, n))
+                }
             }
             return .number(n)
         }

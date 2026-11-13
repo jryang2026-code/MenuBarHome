@@ -252,6 +252,7 @@ extension HomeStore {
             self.discardCoverOrigin(coverOrigin, deviceId: device.id, revision: lockRevision)
             return nil
         }
+        self.cancelDebouncedWrites(for: device.id)
 
         // A cover is write-only: the motor reports its position only after it moves, so the
         // commanded row and travel origin are shown and locked before the send. A snapshot that

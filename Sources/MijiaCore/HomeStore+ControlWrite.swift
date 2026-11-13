@@ -43,11 +43,26 @@ extension HomeStore {
     }
 
     @discardableResult
-    func lockOptimistic(_ deviceId: String, duration: Duration) -> UInt64 {
+    func lockOptimistic(
+        _ deviceId: String,
+        duration: Duration,
+        preserveManualDebounces: Bool = false
+    ) -> UInt64 {
+        if !preserveManualDebounces {
+            cancelDebouncedWrites(for: deviceId)
+        }
         let rev = (optimisticLockRevision[deviceId] ?? 0) &+ 1
         optimisticLockRevision[deviceId] = rev
         optimisticLockUntil[deviceId] = ContinuousClock.now.advanced(by: duration)
         return rev
+    }
+
+    func cancelDebouncedWrites(for deviceId: String?, exceptKey: String? = nil) {
+        for (key, state) in Array(debouncedWrites)
+        where (deviceId == nil || state.deviceId == deviceId) && key != exceptKey {
+            debouncedWrites.removeValue(forKey: key)
+            debounceTasks.removeValue(forKey: key)?.cancel()
+        }
     }
 
     func executeDeviceCommand(_ command: DeviceCommand) async throws {
@@ -66,13 +81,20 @@ extension HomeStore {
     /// Shows `updated` now. With a `lock`, stale snapshots cannot overwrite it until the lock
     /// expires or the device reports the same state. Without one the row changes but an earlier
     /// lock (if any) stays in charge. Pass `updated: nil` to send without showing anything.
-    func beginOptimisticWrite(from previous: SmartDevice, to updated: SmartDevice?, lock: Duration?) -> OptimisticWrite {
+    func beginOptimisticWrite(
+        from previous: SmartDevice,
+        to updated: SmartDevice?,
+        lock: Duration?,
+        preserveManualDebounces: Bool = false
+    ) -> OptimisticWrite {
         guard let updated, let idx = devices.firstIndex(where: { $0.id == previous.id }) else {
             return OptimisticWrite(deviceId: previous.id, previous: previous, revision: nil, isShown: false)
         }
         devices[idx] = updated
         syncGenericPowerFacet(updated)
-        let revision = lock.map { lockOptimistic(previous.id, duration: $0) } ?? optimisticLockRevision[previous.id]
+        let revision = lock.map {
+            lockOptimistic(previous.id, duration: $0, preserveManualDebounces: preserveManualDebounces)
+        } ?? optimisticLockRevision[previous.id]
         return OptimisticWrite(deviceId: previous.id, previous: previous, revision: revision, isShown: true)
     }
 
@@ -162,27 +184,67 @@ extension HomeStore {
         debounceKey: String? = nil,
         habitIntents: [DeviceIntent] = []
     ) {
-        let write = beginOptimisticWrite(from: previous, to: updated, lock: lock)
+        let context = controlContextID
+        let staysActive = updated?.isActiveOn != false
         guard let debounceKey else {
-            Task {
+            let write = beginOptimisticWrite(
+                from: previous,
+                to: updated,
+                lock: lock,
+                preserveManualDebounces: staysActive
+            )
+            if let updated, !updated.isActiveOn {
+                cancelDebouncedWrites(for: previous.id)
+            }
+            Task { [weak self] in
+                guard let self else { return }
                 do {
-                    try await self.send(command, for: write)
+                    try await self.send(command, for: write, context: context)
+                    guard self.controlContextID == context else { return }
                     self.confirmManualControl(intents: habitIntents)
                 } catch {
+                    guard self.controlContextID == context else { return }
                     self.showControlFailure(error, device: previous, adjustment: false)
                 }
             }
             return
         }
+        let origin = debouncedWrites[debounceKey]?.origin ?? previous
+        let token = UUID()
+        let write = beginOptimisticWrite(
+            from: origin,
+            to: updated,
+            lock: lock,
+            preserveManualDebounces: staysActive
+        )
+        if let updated, !updated.isActiveOn {
+            cancelDebouncedWrites(for: previous.id, exceptKey: debounceKey)
+        }
+        debouncedWrites[debounceKey] = DebouncedWriteState(
+            token: token,
+            deviceId: previous.id,
+            origin: origin
+        )
         debounceTasks[debounceKey]?.cancel()
         debounceTasks[debounceKey] = Task { [weak self] in
+            defer {
+                if let self, self.debouncedWrites[debounceKey]?.token == token {
+                    self.debouncedWrites.removeValue(forKey: debounceKey)
+                    self.debounceTasks.removeValue(forKey: debounceKey)
+                }
+            }
             try? await Task.sleep(for: self?.controlDebounceInterval ?? .milliseconds(280))
-            guard !Task.isCancelled, let self, self.ownsRow(write) else { return }
+            guard !Task.isCancelled,
+                  let self,
+                  self.controlContextID == context,
+                  self.debouncedWrites[debounceKey]?.token == token else { return }
             do {
-                try await self.send(command, for: write)
+                try await self.send(command, for: write, context: context)
+                guard self.controlContextID == context else { return }
                 self.confirmManualControl(intents: habitIntents)
             } catch {
-                self.showControlFailure(error, device: previous, adjustment: true)
+                guard self.controlContextID == context else { return }
+                self.showControlFailure(error, device: origin, adjustment: true)
             }
         }
     }
