@@ -5,7 +5,7 @@
 ## 隔离边界
 
 - 单台虚拟机，4 核、12GB 内存，不共享宿主目录、钥匙串、剪贴板、USB 或 SSH agent。
-- Softnet 阻断虚拟机主动访问宿主、其他虚拟机和私有网络；系统 DNS 使用公共解析器。
+- Softnet 阻断虚拟机主动访问宿主、其他虚拟机和私有网络；DNS 由 VM 内的回环服务转发到公共 HTTPS 解析器，不开放宿主 DNS 端口。
 - GitHub 管理凭据留在宿主，只有用于单个 job 的 JIT 配置传入虚拟机。
 - 控制脚本固定运行宿主安装目录中的副本，不从 PR 或 job 的 checkout 加载代码。
 - macOS 虚拟机渲染不同于维护者宿主机，继续沿用 CI 跳过快照像素比对的约定。
@@ -21,6 +21,8 @@
 `runner.py` 来自 `scripts/local_macos_runner.py`，更新前先停止服务，再审核并复制新版本。`manifest.json` 记录安装范围，`vm.log` 和 `job.log` 记录当前一次运行。`state.json` 只记录 runner ID、名称和时间，不保存 JIT 配置。
 
 Tart 基础镜像名为 `menubarhome-ci-base`，每次任务的副本名为 `menubarhome-ci-job`。只可销毁任务副本，保留基础镜像。基础镜像包含独立的 macOS、Xcode 和 GitHub Actions runner，不能导入 Apple ID 或签名证书。
+
+本机网络的普通公网 DNS 查询超时，因此基础 VM 还安装了 `scripts/local_ci_dns.py` 到 `/usr/local/libexec/menubarhome-ci-dns.py`，由 `com.menubarhome.ci-dns` 系统 LaunchDaemon 启动，并将 Ethernet DNS 设为 `127.0.0.1`。服务只监听 VM 回环地址的 UDP 53，固定使用 `https://1.1.1.1/dns-query`，不依赖宿主代理或目录。
 
 ## 启停和检查
 
