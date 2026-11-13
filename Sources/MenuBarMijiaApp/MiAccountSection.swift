@@ -14,10 +14,51 @@ public struct MiAccountSection: View {
         case failed(String)
     }
 
+    enum LogoutConfirmation: Equatable {
+        case account(MiAccount)
+        case all
+
+        func title(accountCount: Int) -> String {
+            switch self {
+            case .account:
+                return L10n.tr("移除米家账号？", "Remove Xiaomi Home account?")
+            case .all:
+                return accountCount > 1
+                    ? L10n.tr("退出全部米家账号？", "Sign out of all Xiaomi Home accounts?")
+                    : L10n.tr("退出米家账号？", "Sign out of Xiaomi Home?")
+            }
+        }
+
+        func confirmButtonTitle(accountCount: Int) -> String {
+            switch self {
+            case .account:
+                return L10n.tr("移除", "Remove")
+            case .all:
+                return accountCount > 1
+                    ? L10n.tr("全部退出", "Sign Out of All")
+                    : L10n.tr("退出登录", "Sign Out")
+            }
+        }
+
+        var messageText: String {
+            switch self {
+            case .account(let account):
+                return L10n.tr(
+                    "将从本机移除账号「\(account.displayName)」的米家会话；需要时可重新扫码登录。",
+                    "Removes the Xiaomi Home session for \"\(account.displayName)\" from this Mac. You can scan again anytime."
+                )
+            case .all:
+                return L10n.tr(
+                    "米家会话将从本机移除；需要时可重新扫码登录。",
+                    "Xiaomi Home sessions will be removed from this Mac. You can scan again anytime."
+                )
+            }
+        }
+    }
+
     @State private var phase: ScanPhase
     @State private var loginTask: Task<Void, Never>?
-    @State private var pendingLogoutAccount: MiAccount?
-    @State private var confirmsLogoutAll = false
+    @State private var pendingLogoutConfirmation: LogoutConfirmation?
     private let autoStartsQRLogin: Bool
     private let showsRegionPicker: Bool
 
@@ -136,51 +177,35 @@ public struct MiAccountSection: View {
             }
         }
         .onDisappear {
+            pendingLogoutConfirmation = nil
             cancelLogin()
         }
         .alert(
-            L10n.tr("移除米家账号？", "Remove Xiaomi Home account?"),
+            pendingLogoutConfirmation?.title(accountCount: store.miAccounts.count) ?? "",
             isPresented: Binding(
-                get: { pendingLogoutAccount != nil },
-                set: { if !$0 { pendingLogoutAccount = nil } }
+                get: { pendingLogoutConfirmation != nil },
+                set: { if !$0 { pendingLogoutConfirmation = nil } }
             ),
-            presenting: pendingLogoutAccount
-        ) { account in
+            presenting: pendingLogoutConfirmation
+        ) { confirmation in
             Button(L10n.tr("取消", "Cancel"), role: .cancel) {
-                pendingLogoutAccount = nil
+                pendingLogoutConfirmation = nil
             }
-            Button(L10n.tr("移除", "Remove"), role: .destructive) {
-                pendingLogoutAccount = nil
-                UnsupportedDeviceScanner.shared.reset()
-                store.logoutMiAccount(id: account.id)
-            }
-        } message: { account in
-            Text(L10n.tr(
-                "将从本机移除账号「\(account.displayName)」的米家会话；需要时可重新扫码登录。",
-                "Removes the Xiaomi Home session for \"\(account.displayName)\" from this Mac. You can scan again anytime."
-            ))
-        }
-        .alert(
-            store.miAccounts.count > 1
-                ? L10n.tr("退出全部米家账号？", "Sign out of all Xiaomi Home accounts?")
-                : L10n.tr("退出米家账号？", "Sign out of Xiaomi Home?"),
-            isPresented: $confirmsLogoutAll
-        ) {
-            Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
             Button(
-                store.miAccounts.count > 1
-                    ? L10n.tr("全部退出", "Sign Out of All")
-                    : L10n.tr("退出登录", "Sign Out"),
+                confirmation.confirmButtonTitle(accountCount: store.miAccounts.count),
                 role: .destructive
             ) {
+                pendingLogoutConfirmation = nil
                 UnsupportedDeviceScanner.shared.reset()
-                store.logoutMiAccount()
+                switch confirmation {
+                case .account(let account):
+                    store.logoutMiAccount(id: account.id)
+                case .all:
+                    store.logoutMiAccount()
+                }
             }
-        } message: {
-            Text(L10n.tr(
-                "米家会话将从本机移除；需要时可重新扫码登录。",
-                "Xiaomi Home sessions will be removed from this Mac. You can scan again anytime."
-            ))
+        } message: { confirmation in
+            Text(confirmation.messageText)
         }
     }
 
@@ -249,7 +274,7 @@ public struct MiAccountSection: View {
                 Spacer()
 
                 Button(L10n.tr("退出登录", "Sign Out")) {
-                    confirmsLogoutAll = true
+                    pendingLogoutConfirmation = .all
                 }
                 .buttonStyle(PillActionButtonStyle())
             }
@@ -290,7 +315,7 @@ public struct MiAccountSection: View {
                             .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
                         }
                         Button(L10n.tr("移除", "Remove")) {
-                            pendingLogoutAccount = account
+                            pendingLogoutConfirmation = .account(account)
                         }
                         .buttonStyle(PillActionButtonStyle())
                     }
@@ -322,7 +347,7 @@ public struct MiAccountSection: View {
                 Spacer()
 
                 Button(L10n.tr("全部退出", "Sign Out of All")) {
-                    confirmsLogoutAll = true
+                    pendingLogoutConfirmation = .all
                 }
                 .buttonStyle(PillActionButtonStyle())
             }
