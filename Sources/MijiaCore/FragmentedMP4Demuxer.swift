@@ -375,6 +375,11 @@ public struct FragmentedMP4Demuxer: Sendable {
                 guard o + perSample * count <= run.upperBound else {
                     throw FMP4DemuxError.malformedBox("trun")
                 }
+                // Without per-sample fields the check above passes for any count. More samples
+                // than payload bytes can only be empty ones, so a huge count would loop for nothing.
+                guard perSample > 0 || count <= mdat.count else {
+                    throw FMP4DemuxError.malformedBox("trun")
+                }
 
                 for index in 0..<count {
                     var duration = defaults.duration
@@ -401,7 +406,7 @@ public struct FragmentedMP4Demuxer: Sendable {
                         compositionOffset: cto,
                         isKeyframe: sampleFlags & 0x0001_0000 == 0
                     )))
-                    decodeTime += UInt64(duration)
+                    decodeTime &+= UInt64(duration)
                     dataOffset = end + mdatPayloadOffset
                 }
                 nextDataOffset = dataOffset

@@ -182,7 +182,7 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
           open
             ? `<div class="cc-climate-more">
                 ${modes.length > 0 ? `<div class="cc-segmented-pills is-even">
-                  ${modes.map((m) => `<button class="cc-seg-pill ${running && k.hvacMode === m ? "is-active" : ""}" data-acmode="${id}:${m}" aria-pressed="${running && k.hvacMode === m}">${modeLabel[m] ?? m}</button>`).join("")}
+                  ${modes.map((m) => `<button class="cc-seg-pill ${running && k.hvacMode === m ? "is-active" : ""}" data-acmode="${id}:${escapeHtml(m)}" aria-pressed="${running && k.hvacMode === m}">${escapeHtml(Object.hasOwn(modeLabel, m) ? (modeLabel[m] ?? m) : m)}</button>`).join("")}
                 </div>` : ""}
                 ${
                   k.availableFanModes.length > 0

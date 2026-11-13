@@ -8,7 +8,7 @@ import { renderSettingsModal as renderSettingsModalView } from "./settingsViews.
 export function renderHomeMenu(host: MenuMijiaWindowsApp): string {
     if (!host.isHomeMenuOpen || host.homes.length < 2) return "";
     const item = (id: string | null, label: string, count?: number) => `
-      <button class="cc-menu-item ${host.settings.selectedHomeId === id ? "is-checked" : ""}" data-home="${id ?? ""}">
+      <button class="cc-menu-item ${host.settings.selectedHomeId === id ? "is-checked" : ""}" data-home="${host.escapeHtml(id ?? "")}">
         <span>${host.escapeHtml(label)}</span>${count !== undefined ? `<small>${count}</small>` : ""}
       </button>`;
     return `

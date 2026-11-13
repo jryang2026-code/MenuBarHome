@@ -28,6 +28,10 @@ while IFS= read -r path || [ -n "$path" ]; do
         docs/assets/*.svg)
             code=true
             ;;
+        # check_model_tables.py reads the patch SHA-256 row from this README inside the lint job.
+        scripts/go2rtc-ptz/README.md)
+            code=true
+            ;;
         *.md|docs/*|LICENSE|.github/ISSUE_TEMPLATE/*)
             ;;
         # Each of these has its own workflow that tests it; nothing in ci.yml builds or reads them.
@@ -37,9 +41,21 @@ while IFS= read -r path || [ -n "$path" ]; do
         # *.md is already docs-only. This arm covers the other skill files, including scripts and licenses.
         .cursor/skills/*)
             ;;
-        # The raycast and nas-safety jobs run on code=true; no macOS, Windows or core suite reads them.
-        raycast/*|nas/*)
+        # windows/tests/companionBridge.test.ts imports raycast/src/snapshot-validation.ts.
+        raycast/*)
             code=true
+            windows=true
+            ;;
+        # The nas-safety job runs on code=true; no macOS, Windows or core suite reads these.
+        nas/*)
+            code=true
+            ;;
+        # MiotFacetsTests and MiotFallbackSpecTests compare these byte for byte with the macOS copies.
+        windows/src/core/miCloud/*.json)
+            code=true
+            windows=true
+            macos=true
+            core=true
             ;;
         windows/*)
             code=true

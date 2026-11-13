@@ -357,7 +357,8 @@ struct DeviceFacetSection: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                if let range = control.range {
+                // The range is cloud data: `min...max` traps when it is inverted or not finite.
+                if let range = control.range, range.min.isFinite, range.max.isFinite, range.min < range.max {
                     lockedControl(locked) {
                         DetailSliderControl(
                             value: control.numberValue ?? range.min,

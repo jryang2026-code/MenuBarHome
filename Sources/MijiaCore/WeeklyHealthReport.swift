@@ -337,13 +337,13 @@ extension WeeklyHealthReport {
 
     private static func number(_ value: Double) -> String {
         let rounded = (value * 10).rounded() / 10
-        return rounded == rounded.rounded() ? String(Int(rounded)) : String(format: "%.1f", rounded)
+        return rounded == rounded.rounded() ? String(format: "%.0f", rounded) : String(format: "%.1f", rounded)
     }
 
     private static func kwh(_ value: Double) -> String { "\(number(value)) kWh" }
 
     private static func signed(_ percent: Double) -> String {
-        let rounded = Int(percent.rounded())
+        let rounded = DeviceSynthesizer.roundedInt(percent) ?? 0
         return rounded > 0 ? "+\(rounded)%" : "\(rounded)%"
     }
 }

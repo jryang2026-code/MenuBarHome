@@ -147,7 +147,7 @@ extension HomeStore {
         let envParts = environmentReadings.map { reading -> String in
             var text = "\(reading.roomName)"
             if let t = reading.temperature { text += " \(String(format: "%.1f°C", t))" }
-            if let h = reading.humidity { text += " \(Int(h.rounded()))%" }
+            if let h = reading.humidity { text += " \(DeviceSynthesizer.roundedInt(h) ?? 0)%" }
             return text
         }
         let environmentSummary = envParts.joined(separator: "，")
@@ -489,7 +489,7 @@ extension HomeStore {
         undoTimerTask?.cancel()
         undoBanner = nil
         let undoRevision = undoStateRevision
-        let preUndoById = Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0) })
+        let preUndoById = Dictionary(devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let preUndoFacetsById = deviceFacets
         let applicable = applyUndoCommands(last.restore, previousDevices: last.previous)
         if applicable.isEmpty, !last.restore.isEmpty {

@@ -485,18 +485,21 @@ export class ModelIntentResolver {
   }
 
   static decodeChatOp(name: string, val: unknown): IntentOperation | null {
-    const numVal = typeof val === "number" ? val : typeof val === "string" ? Number(val.replace(/[%°CcKk\s]/g, "")) : NaN;
-    const boolVal =
-      typeof val === "boolean"
-        ? val
-        : typeof val === "number"
-          ? val !== 0
-          : typeof val === "string"
-            ? ["true", "on", "1", "开"].includes(val.trim().toLowerCase())
-            : false;
+    // The model's value is untrusted. An unrecognised word must drop the action, not switch the
+    // device off, and an empty string is not zero (`ModelIntentResolver.swift:bool(from:)`).
+    const numText = typeof val === "string" ? val.replace(/[%°CcKk\s]/g, "") : "";
+    const numVal = typeof val === "number" ? val : numText !== "" ? Number(numText) : NaN;
+    let boolVal: boolean | null = null;
+    if (typeof val === "boolean") boolVal = val;
+    else if (typeof val === "number") boolVal = val !== 0;
+    else if (typeof val === "string") {
+      const word = val.trim().toLowerCase();
+      if (["true", "on", "1", "开"].includes(word)) boolVal = true;
+      else if (["false", "off", "0", "关"].includes(word)) boolVal = false;
+    }
 
     switch (name.toLowerCase()) {
-      case "power": return { kind: "power", isOn: boolVal };
+      case "power": return boolVal === null ? null : { kind: "power", isOn: boolVal };
       case "brightness": return Number.isFinite(numVal) ? { kind: "brightness", percent: Math.round(numVal) } : null;
       case "brightness_step": return Number.isFinite(numVal) ? { kind: "brightnessStep", delta: Math.round(numVal) } : null;
       case "color_temp":
@@ -519,7 +522,7 @@ export class ModelIntentResolver {
         return typeof val === "string" ? { kind: "fanSpeed", speed: val } : null;
       case "oscillation":
       case "swing":
-        return { kind: "oscillation", enabled: boolVal };
+        return boolVal === null ? null : { kind: "oscillation", enabled: boolVal };
       case "scene":
         return { kind: "activateScene" };
       default: return null;

@@ -950,6 +950,12 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
     case "brightness": {
       const dev = resolved.device;
       const name = displayNameFor(dev, host);
+      // `percent=0` maps to power-off below, so without this a stray slider value would switch
+      // off a plug or heater (`RaycastControls.executeRaycastBrightness` refuses the same way).
+      if (dev.kind.kind !== "light") {
+        finish(trText("{name} 不是灯具", "{name} is not a light", { name }), true);
+        return;
+      }
       const summary =
         resolved.percent === 0
           ? trText("已关闭 {name}", "Turned off {name}", { name })
@@ -1022,8 +1028,8 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
       if (target === dev.kind.targetTemperature) {
         finish(
           trText(
-            "{name} 的目标温度已经是 {targetText}°C",
-            "{name} is already set to {targetText} °C",
+            "{name} 的目标温度已经是 {targetText}",
+            "{name} is already set to {targetText}",
             { name, targetText },
           ),
           false,

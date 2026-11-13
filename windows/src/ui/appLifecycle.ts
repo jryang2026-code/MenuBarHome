@@ -330,7 +330,11 @@ export async function checkForAppUpdate(host: MenuMijiaWindowsApp, manual: boole
     host.isCheckingUpdate = false;
     if (!result.requested) return;
 
-    host.updateState = { lastCheckedAtMs: result.checkedAtMs, release: result.release };
+    // A failed check (offline, rate limit) knows nothing new: keep the release found earlier.
+    host.updateState = {
+      lastCheckedAtMs: result.checkedAtMs,
+      release: result.failed ? host.updateState.release : result.release,
+    };
     saveUpdateState(host);
     if (result.updateAvailable && result.release) {
       host.availableUpdate = result.release;

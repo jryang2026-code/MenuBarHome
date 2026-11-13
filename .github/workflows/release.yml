@@ -23,7 +23,8 @@ permissions:
   actions: write
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+  # One group per tag for both triggers: github.ref is refs/tags/<tag>, inputs.tag is the bare tag.
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:

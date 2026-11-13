@@ -1676,9 +1676,8 @@ public enum DeviceSynthesizer {
                     haColorTemperatureColorModes.contains(colorMode) || hasColorTempAttr)
         }
         let hasBrightness = a["brightness"]?.doubleValue != nil
-        if let raw = a["supported_features"]?.doubleValue, raw.isFinite {
+        if let features = a["supported_features"]?.intValue {
             // Legacy bits: SUPPORT_BRIGHTNESS 1, SUPPORT_COLOR_TEMP 2, SUPPORT_COLOR 16, SUPPORT_WHITE_VALUE 128.
-            let features = Int(raw)
             return ((features & (1 | 2 | 16 | 128)) != 0 || hasBrightness || hasColorTempAttr,
                     (features & (2 | 16)) != 0 || hasColorTempAttr)
         }
