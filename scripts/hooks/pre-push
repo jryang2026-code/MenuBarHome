@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Shared push guard: when pushing directly to refs/heads/main, run scripts/check.sh --changed
+# against the remote main ref so unreviewed snapshots or broken tests never land on main.
+# Pushing to any feature branch is an instant 0s no-op. Set MMB_SKIP_PRE_PUSH=1 to bypass.
+set -euo pipefail
+
+if [ "${MMB_SKIP_PRE_PUSH:-0}" = "1" ]; then
+    exit 0
+fi
+
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+ZERO_SHA="0000000000000000000000000000000000000000"
+
+need_main_check=0
+base_sha=""
+
+while read -r _local_ref local_sha remote_ref remote_sha; do
+    [ -n "${remote_ref:-}" ] || continue
+    if [ "$remote_ref" = "refs/heads/main" ] && [ "${local_sha:-$ZERO_SHA}" != "$ZERO_SHA" ]; then
+        need_main_check=1
+        if [ -n "${remote_sha:-}" ] && [ "$remote_sha" != "$ZERO_SHA" ] \
+            && git -C "$ROOT_DIR" cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
+            base_sha="$remote_sha"
+        fi
+    fi
+done
+
+if [ "$need_main_check" -eq 0 ]; then
+    exit 0
+fi
+
+echo "🚦 直推 main 前运行增量门禁（scripts/check.sh --changed）..."
+if [ -n "$base_sha" ]; then
+    exec bash "$ROOT_DIR/scripts/check.sh" --changed --base "$base_sha"
+fi
+exec bash "$ROOT_DIR/scripts/check.sh" --changed

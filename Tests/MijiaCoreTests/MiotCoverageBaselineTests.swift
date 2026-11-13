@@ -75,11 +75,15 @@ struct MiotCoverageBaselineTests {
         return Entry(deviceType: deviceType, category: readable ? .droppedReadOnly : .noUsableProperties)
     }
 
-    static func measure() throws -> Golden {
-        let specs = try JSONDecoder().decode(
+    private static let cachedSpecsResult: Result<[String: MiotDeviceSpec], Error> = Result {
+        try JSONDecoder().decode(
             [String: MiotDeviceSpec].self,
             from: Data(contentsOf: coverageFixture("Tests/Fixtures/miot_coverage_specs.json"))
         )
+    }
+
+    private static let cachedMeasureResult: Result<Golden, Error> = Result {
+        let specs = try cachedSpecsResult.get()
         let models = specs.mapValues(classify)
         var categories = Dictionary(uniqueKeysWithValues: Category.allCases.map { ($0.rawValue, 0) })
         for entry in models.values { categories[entry.category.rawValue, default: 0] += 1 }
@@ -93,6 +97,19 @@ struct MiotCoverageBaselineTests {
             models: models,
             windowsDivergences: [:]
         )
+    }
+
+    static func coverageSpecs() throws -> [String: MiotDeviceSpec] {
+        try cachedSpecsResult.get()
+    }
+
+    static func coverageSpec(_ model: String) throws -> MiotDeviceSpec {
+        let specs = try coverageSpecs()
+        return try #require(specs[model], Comment(rawValue: model))
+    }
+
+    static func measure() throws -> Golden {
+        try cachedMeasureResult.get()
     }
 
     @Test func coverageMatchesBaseline() throws {
@@ -156,10 +173,7 @@ struct MiotCoverageBaselineTests {
         #expect(measured.summary.deviceTypes == 177)
         #expect(measured.models["czmydz.curtain.myf5"]?.deviceType == "curtain")
         #expect(measured.models["xiaomi.fishbowl.m200"]?.deviceType == "fish-tank")
-        let specs = try JSONDecoder().decode(
-            [String: MiotDeviceSpec].self,
-            from: Data(contentsOf: coverageFixture("Tests/Fixtures/miot_coverage_specs.json"))
-        )
+        let specs = try Self.cachedSpecsResult.get()
         let curtainServices = specs["czmydz.curtain.myf5"]?.services(named: "curtain").count
         #expect(curtainServices == 2)
         let withoutOwnService = specs.values.filter { $0.services(named: $0.shortName).isEmpty }

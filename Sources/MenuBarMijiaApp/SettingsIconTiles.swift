@@ -11,8 +11,8 @@ import MijiaCore
 /// and stroked at a weight derived from the frame, so one shape serves both the sidebar's 11 pt and
 /// the pane header's 22 pt.
 ///
-/// They are also load-free: no asset catalogue, no image decode when the window opens. Why not
-/// kubai-icons is recorded in `docs/agents/settings-icons.md`.
+/// They are also load-free: no asset catalogue, no image decode when the window opens. Native paths
+/// were chosen over external SVG icon packs to avoid extra runtime dependencies.
 enum SettingsGlyph: Sendable {
     case general
     case connection

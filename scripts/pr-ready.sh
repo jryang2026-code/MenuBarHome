@@ -2,19 +2,20 @@
 # One screen for a pull request: head and merge state, failing or pending checks,
 # the latest Codex review state for this head, and Codex inline comments on this head.
 #
-# Usage: bash scripts/pr-ready.sh [--wait] [--timeout <sec>] [--interval <sec>] <pr>
+# Usage: bash scripts/pr-ready.sh [--wait] [--timeout <sec>] [--interval <sec>] [--max-codex-rounds <n>] <pr>
 # Needs `gh` logged in to the repository. Review comments are read past the first 100.
 set -euo pipefail
 export LC_ALL=C
 
 usage() {
-    echo "用法：bash scripts/pr-ready.sh [--wait] [--timeout <sec>] [--interval <sec>] <pr>" >&2
+    echo "用法：bash scripts/pr-ready.sh [--wait] [--timeout <sec>] [--interval <sec>] [--max-codex-rounds <n>] <pr>" >&2
     exit 2
 }
 
 wait_mode=0
 timeout_sec=600
 interval_sec=20
+max_codex_rounds=0
 pr_number=""
 
 while [ "$#" -gt 0 ]; do
@@ -31,6 +32,11 @@ while [ "$#" -gt 0 ]; do
         --interval)
             [ "$#" -ge 2 ] || usage
             interval_sec="$2"
+            shift 2
+            ;;
+        --max-codex-rounds)
+            [ "$#" -ge 2 ] || usage
+            max_codex_rounds="$2"
             shift 2
             ;;
         -*)
@@ -50,7 +56,8 @@ if [ -z "$pr_number" ] || ! printf '%s\n' "$pr_number" | grep -Eq '^[0-9]+$'; th
     usage
 fi
 if ! printf '%s\n' "$timeout_sec" | grep -Eq '^[0-9]+(\.[0-9]+)?$' \
-    || ! printf '%s\n' "$interval_sec" | grep -Eq '^[0-9]+(\.[0-9]+)?$'; then
+    || ! printf '%s\n' "$interval_sec" | grep -Eq '^[0-9]+(\.[0-9]+)?$' \
+    || ! printf '%s\n' "$max_codex_rounds" | grep -Eq '^[0-9]+$'; then
     usage
 fi
 
@@ -116,7 +123,7 @@ inspect_once() {
     fi
 
     local verdict_status=0
-    "$python_bin" -I - "$tmp" "$wait_flag" <<'PY' || verdict_status=$?
+    "$python_bin" -I - "$tmp" "$wait_flag" "$max_codex_rounds" <<'PY' || verdict_status=$?
 import json
 import re
 import sys
@@ -127,6 +134,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 tmp = Path(sys.argv[1])
 wait_mode = sys.argv[2] == "1"
+max_codex_rounds = int(sys.argv[3])
 meta = json.loads((tmp / "meta.json").read_text(encoding="utf-8"))
 head = meta["headRefOid"]
 merge = meta["mergeStateStatus"]
@@ -233,16 +241,49 @@ elif checks_status == 8:
 else:
     print("checks: none")
 
-states = review_states(flatten_pages(issue_pages))
+def codex_unavailable_after_last_state(comments):
+    last_state_idx = -1
+    for idx, comment in enumerate(comments):
+        user = (comment.get("user") or {}).get("login") or ""
+        body = comment.get("body") or ""
+        if user == "chatgpt-codex-connector[bot]" and "codex-review-state:v1" in body:
+            last_state_idx = idx
+    for comment in comments[last_state_idx + 1:]:
+        user = (comment.get("user") or {}).get("login") or ""
+        if user != "chatgpt-codex-connector[bot]":
+            continue
+        lower = (comment.get("body") or "").lower()
+        if (
+            "usage limits for code reviews" in lower
+            or "couldn't complete this review" in lower
+            or "couldn\u2019t complete this review" in lower
+        ):
+            return True
+    return False
+
+
+issue_comments = flatten_pages(issue_pages)
+states = review_states(issue_comments)
 matched = [state for state in states if state.get("commit_sha") == head]
 latest_for_head = matched[-1] if matched else None
+codex_quota_blocked = False
 if latest_for_head is not None:
     print("codex review: " + json.dumps(latest_for_head, separators=(",", ":"), ensure_ascii=False))
+elif codex_unavailable_after_last_state(issue_comments):
+    codex_quota_blocked = True
+    print(f"codex review: unavailable (usage limit) for {head}")
 elif states:
     last = states[-1]
     print(f"codex review: none for {head} (latest {last.get('commit_sha')} {last.get('status')})")
 else:
     print(f"codex review: none for {head}")
+
+completed_rounds = len(
+    {s.get("commit_sha") for s in states if s.get("commit_sha") and s.get("status") == "completed"}
+)
+codex_cap_reached = max_codex_rounds > 0 and completed_rounds >= max_codex_rounds
+if codex_cap_reached and latest_for_head is None:
+    print(f"codex rounds: {completed_rounds}/{max_codex_rounds} (cap reached)")
 
 inlines = []
 for comment in flatten_pages(review_pages):
@@ -277,7 +318,12 @@ if not wait_mode:
     sys.exit(0)
 
 # In --wait mode: 0 = ready, 1 = terminal blocker/finding, 10 = still waiting.
+latest_failed_empty = bool(
+    latest_for_head and latest_for_head.get("status") == "failed" and not inlines
+)
 if latest_for_head and latest_for_head.get("has_unresolved_findings") is False:
+    has_findings = False
+elif latest_failed_empty:
     has_findings = False
 else:
     has_findings = bool(inlines) or bool(
@@ -286,10 +332,15 @@ else:
 if checks_failed or has_findings or merge in ("DIRTY", "CONFLICTING", "CLOSED"):
     sys.exit(1)
 
-codex_done = bool(
-    latest_for_head
-    and latest_for_head.get("status") == "completed"
-    and latest_for_head.get("has_unresolved_findings") is False
+codex_done = (
+    bool(
+        latest_for_head
+        and latest_for_head.get("status") == "completed"
+        and latest_for_head.get("has_unresolved_findings") is False
+    )
+    or latest_failed_empty
+    or codex_quota_blocked
+    or (codex_cap_reached and not has_findings)
 )
 if merge == "CLEAN" and not checks_pending and codex_done:
     sys.exit(0)

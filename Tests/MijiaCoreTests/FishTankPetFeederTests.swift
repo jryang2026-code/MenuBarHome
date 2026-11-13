@@ -18,9 +18,7 @@ struct FishTankPetFeederTests {
     }
 
     private static func coverageSpec(_ model: String) throws -> MiotDeviceSpec {
-        let data = try Data(contentsOf: repoFile("Tests/Fixtures/miot_coverage_specs.json"))
-        let specs = try JSONDecoder().decode([String: MiotDeviceSpec].self, from: data)
-        return try #require(specs[model], "\(model)")
+        try MiotCoverageBaselineTests.coverageSpec(model)
     }
 
     private static func home(
