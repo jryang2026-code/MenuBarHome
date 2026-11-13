@@ -195,12 +195,14 @@ export class MenuMijiaWindowsApp {
   }
 
   public selectRoom(roomId: string | null, roomName?: string): void {
+    this.savedGridScrollTop = 0;
     this.listCut = roomId === null
       ? { kind: "all" }
       : { kind: "room", roomId, roomName: roomName ?? roomId };
   }
 
   public selectDeviceKind(tag: DeviceKindTag): void {
+    this.savedGridScrollTop = 0;
     this.listCut = { kind: "deviceKind", tag };
   }
 
@@ -211,6 +213,7 @@ export class MenuMijiaWindowsApp {
   public readonly panelSearch = createPanelSearchState();
   private readonly panelSearchIndex = new PanelSearchIndex();
   public expandedDeviceId: string | null = null;
+  private savedGridScrollTop = 0;
   /**
    * A high-risk manual write that needs one more tap on the same card within a few seconds.
    * `actionKey` binds the arm to one exact command, so tapping a different high-risk control
@@ -1119,8 +1122,21 @@ export class MenuMijiaWindowsApp {
     this.renderNow();
     syncPanelSelection(this);
 
+    const nextSubpageEl = this.root.querySelector<HTMLElement>(".cc-tile.is-subpage");
+    const nextSubpageId = nextSubpageEl?.dataset.tileId ?? null;
     const area = this.root.querySelector(".cc-scroll-area");
-    if (area) area.scrollTop = scrollTop;
+    if (area) {
+      if (prevSubpageId === null && nextSubpageId !== null) {
+        this.savedGridScrollTop = scrollTop;
+        area.scrollTop = 0;
+      } else if (prevSubpageId !== null && nextSubpageId === null) {
+        area.scrollTop = this.savedGridScrollTop;
+      } else if (prevSubpageId !== nextSubpageId) {
+        area.scrollTop = 0;
+      } else {
+        area.scrollTop = scrollTop;
+      }
+    }
     const strip = this.root.querySelector<HTMLElement>(".cc-room-scroll");
     if (strip) strip.scrollLeft = roomLeft;
     const sheet = this.root.querySelector<HTMLElement>(".cc-sheet-body") ?? this.root.querySelector<HTMLElement>(".cc-sheet");
@@ -1159,8 +1175,6 @@ export class MenuMijiaWindowsApp {
     }
 
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const nextSubpageEl = this.root.querySelector<HTMLElement>(".cc-tile.is-subpage");
-    const nextSubpageId = nextSubpageEl?.dataset.tileId ?? null;
     const nextSheet = visibleTopSheet(this.root);
     const nextSheetKey = activeSheetKey(this.root);
     const nextMenu = this.root.querySelector<HTMLElement>(".cc-menu");
@@ -1533,7 +1547,7 @@ export class MenuMijiaWindowsApp {
       const active = strip?.querySelector<HTMLElement>(".cc-room-pill.is-active");
       if (strip && active) {
         strip.scrollLeft =
-          this.selectedRoom === "全部"
+          this.listCut.kind === "all"
             ? 0
             : active.offsetLeft - (strip.clientWidth - active.offsetWidth) / 2;
       }

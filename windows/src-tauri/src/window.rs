@@ -1,7 +1,10 @@
 use super::*;
 use crate::placement::*;
 
-const SAME_CLICK_FOCUS_LOSS_MS: u64 = 65;
+const SAME_CLICK_FALLBACK_MS: u64 = 65;
+const SAME_CLICK_SPATIAL_MS: u64 = 250;
+const TRAY_ICON_SLOP_PX: i32 = 36;
+const MAX_TRAY_HOLD_MS: u64 = 5_000;
 
 pub(crate) static PIN_POPOVER: AtomicBool = AtomicBool::new(false);
 /// Whether the window manager granted the panel a native backdrop (§1.4 of the control center spec).
@@ -14,29 +17,55 @@ pub(crate) enum TrayToggleAction {
     Noop,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FocusLossMark {
+    at_ms: u64,
+    cursor: Option<(i32, i32)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TrayPressMark {
+    at_ms: u64,
+    dismissed: bool,
+}
+
+fn is_same_tray_click_focus_loss(
+    mark: FocusLossMark,
+    now_ms: u64,
+    tray_cursor: Option<(i32, i32)>,
+) -> bool {
+    let elapsed = now_ms.saturating_sub(mark.at_ms);
+    match (mark.cursor, tray_cursor) {
+        (Some((fx, fy)), Some((tx, ty))) => {
+            elapsed <= SAME_CLICK_SPATIAL_MS
+                && (fx - tx).abs() <= TRAY_ICON_SLOP_PX
+                && (fy - ty).abs() <= TRAY_ICON_SLOP_PX
+        }
+        _ => elapsed <= SAME_CLICK_FALLBACK_MS,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PanelVisibilityState {
     pub(crate) seq: u64,
     pub(crate) closing: bool,
-    pub(crate) focus_loss_ms: Option<u64>,
-    pub(crate) saw_tray_press_down: bool,
-    pub(crate) dismissed_by_tray_press: bool,
+    focus_loss: Option<FocusLossMark>,
+    tray_press: Option<TrayPressMark>,
 }
 
 impl PanelVisibilityState {
     pub(crate) fn begin_present(&mut self) -> u64 {
         self.seq = self.seq.wrapping_add(1);
         self.closing = false;
-        self.focus_loss_ms = None;
-        self.saw_tray_press_down = false;
-        self.dismissed_by_tray_press = false;
+        self.focus_loss = None;
+        self.tray_press = None;
         self.seq
     }
 
     pub(crate) fn begin_hide(&mut self, is_visible: bool) -> Option<u64> {
         if !is_visible {
             self.closing = false;
-            self.focus_loss_ms = None;
+            self.focus_loss = None;
             return None;
         }
         if self.closing {
@@ -52,35 +81,57 @@ impl PanelVisibilityState {
             return false;
         }
         self.closing = false;
-        self.focus_loss_ms = None;
+        self.focus_loss = None;
         true
     }
 
     pub(crate) fn abort_hide(&mut self) {
         self.closing = false;
-        self.focus_loss_ms = None;
+        self.focus_loss = None;
     }
 
-    pub(crate) fn note_focus_loss(&mut self, now_ms: u64) {
-        self.focus_loss_ms = Some(now_ms);
+    pub(crate) fn clear_tray_press(&mut self) {
+        self.tray_press = None;
     }
 
-    pub(crate) fn note_tray_press_down(&mut self, is_open: bool, now_ms: u64) {
+    pub(crate) fn note_focus_loss(&mut self, now_ms: u64, cursor: Option<(i32, i32)>) {
+        self.focus_loss = Some(FocusLossMark {
+            at_ms: now_ms,
+            cursor,
+        });
+    }
+
+    pub(crate) fn note_tray_press_down(
+        &mut self,
+        is_open: bool,
+        now_ms: u64,
+        cursor: Option<(i32, i32)>,
+    ) {
         let same_click_focus_loss = self
-            .focus_loss_ms
+            .focus_loss
             .take()
-            .is_some_and(|ms| self.closing && now_ms.saturating_sub(ms) <= SAME_CLICK_FOCUS_LOSS_MS);
-        self.saw_tray_press_down = true;
-        self.dismissed_by_tray_press = is_open || same_click_focus_loss;
+            .is_some_and(|mark| self.closing && is_same_tray_click_focus_loss(mark, now_ms, cursor));
+        self.tray_press = Some(TrayPressMark {
+            at_ms: now_ms,
+            dismissed: is_open || same_click_focus_loss,
+        });
     }
 
-    pub(crate) fn decide_tray_release(&mut self, is_open: bool, now_ms: u64) -> TrayToggleAction {
-        let saw_down = std::mem::replace(&mut self.saw_tray_press_down, false);
-        let was_dismiss_press = std::mem::replace(&mut self.dismissed_by_tray_press, false);
-        let recent_focus_loss = self
-            .focus_loss_ms
+    pub(crate) fn decide_tray_release(
+        &mut self,
+        is_open: bool,
+        now_ms: u64,
+        cursor: Option<(i32, i32)>,
+    ) -> TrayToggleAction {
+        let active_press = self
+            .tray_press
             .take()
-            .is_some_and(|ms| !saw_down && self.closing && now_ms.saturating_sub(ms) <= SAME_CLICK_FOCUS_LOSS_MS);
+            .filter(|press| now_ms.saturating_sub(press.at_ms) <= MAX_TRAY_HOLD_MS);
+        let saw_down = active_press.is_some();
+        let was_dismiss_press = active_press.is_some_and(|press| press.dismissed);
+        let recent_focus_loss = self.focus_loss.take().is_some_and(|mark| {
+            !saw_down && self.closing && is_same_tray_click_focus_loss(mark, now_ms, cursor)
+        });
         if is_open {
             TrayToggleAction::Hide
         } else if was_dismiss_press || recent_focus_loss {
@@ -154,13 +205,43 @@ pub(crate) fn panel_is_visible(app: AppHandle) -> bool {
     visible && !closing
 }
 
-pub(crate) fn note_panel_focus_loss() {
-    if let Ok(mut state) = PANEL_VISIBILITY.lock() {
-        state.note_focus_loss(now_epoch_ms());
+fn physical_point(pos: Option<PhysicalPosition<f64>>) -> Option<(i32, i32)> {
+    pos.map(|p| (p.x.round() as i32, p.y.round() as i32))
+}
+
+#[cfg(all(windows, not(test)))]
+fn current_cursor_position() -> Option<(i32, i32)> {
+    #[repr(C)]
+    struct WinPoint {
+        x: i32,
+        y: i32,
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetCursorPos(point: *mut WinPoint) -> i32;
+    }
+    let mut point = WinPoint { x: 0, y: 0 };
+    if unsafe { GetCursorPos(&mut point) } != 0 {
+        Some((point.x, point.y))
+    } else {
+        None
     }
 }
 
-pub(crate) fn handle_tray_mouse_down(app: &AppHandle) {
+#[cfg(any(not(windows), test))]
+fn current_cursor_position() -> Option<(i32, i32)> {
+    None
+}
+
+pub(crate) fn note_panel_focus_loss() {
+    let cursor = current_cursor_position();
+    if let Ok(mut state) = PANEL_VISIBILITY.lock() {
+        state.note_focus_loss(now_epoch_ms(), cursor);
+    }
+}
+
+pub(crate) fn handle_tray_mouse_down(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>) {
+    let cursor = physical_point(anchor);
     let app_clone = app.clone();
     let _ = app.run_on_main_thread(move || {
         let is_visible = app_clone
@@ -169,7 +250,7 @@ pub(crate) fn handle_tray_mouse_down(app: &AppHandle) {
             .unwrap_or(false);
         if let Ok(mut state) = PANEL_VISIBILITY.lock() {
             let is_open = is_visible && !state.closing;
-            state.note_tray_press_down(is_open, now_epoch_ms());
+            state.note_tray_press_down(is_open, now_epoch_ms(), cursor);
         }
     });
 }
@@ -628,6 +709,7 @@ pub(crate) fn present_panel_and_eval(
 }
 
 pub(crate) fn toggle_main_window(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>, from_tray_click: bool) {
+    let cursor = physical_point(anchor);
     let app_clone = app.clone();
     let _ = app.run_on_main_thread(move || {
         let Some(window) = app_clone.get_webview_window("main") else {
@@ -637,11 +719,14 @@ pub(crate) fn toggle_main_window(app: &AppHandle, anchor: Option<PhysicalPositio
         let action = if let Ok(mut state) = PANEL_VISIBILITY.lock() {
             let is_open = is_visible && !state.closing;
             if from_tray_click {
-                state.decide_tray_release(is_open, now_epoch_ms())
-            } else if is_open {
-                TrayToggleAction::Hide
+                state.decide_tray_release(is_open, now_epoch_ms(), cursor)
             } else {
-                TrayToggleAction::Present
+                state.clear_tray_press();
+                if is_open {
+                    TrayToggleAction::Hide
+                } else {
+                    TrayToggleAction::Present
+                }
             }
         } else if is_visible {
             TrayToggleAction::Hide

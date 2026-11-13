@@ -153,7 +153,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "打开设置": ["打开设置", "Open settings"],
   "完全退出 MenuBarHome": ["完全退出 MenuBarHome", "Quit MenuBarHome"],
   "退出": ["退出", "Quit"],
-  "扫码直连": ["扫码直连", "Scan to connect"],
+  "扫码直连": ["扫码直连", "QR Login"],
   "用手机米家 App 扫码直连真实设备": ["用手机米家 App 扫码直连真实设备", "Scan with the Mi Home app to connect real devices"],
   "切换卡片大小": ["切换卡片大小", "Change card size"],
   "拖拽或点击调整卡片大小": ["拖拽或点击调整卡片大小", "Drag or click to resize"],
@@ -177,7 +177,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   // Status summaries
   "{count} 台开启中 · 共 {online} 台在线": ["{count} 台开启中 · 共 {online} 台在线", "{count} on · {online} online"],
   "全屋待机 · {online} 台实时在线": ["全屋待机 · {online} 台实时在线", "All idle · {online} online"],
-  "演示预览 · 点击下方「扫码直连」同步你的真机": ["演示预览 · 点击下方「扫码直连」同步你的真机", "Demo preview · use “Scan to connect” to sync your devices"],
+  "演示预览 · 点击下方「扫码直连」同步你的真机": ["演示预览 · 点击下方「扫码直连」同步你的真机", "Demo preview · use “QR Login” to sync your devices"],
   "正在从小米云端同步真实设备...": ["正在从小米云端同步真实设备...", "Syncing devices from Xiaomi Cloud…"],
   "米家账号 {user} · {count} 台设备": ["米家账号 {user} · {count} 台设备", "Mi account {user} · {count} devices"],
   "演示模式": ["演示模式", "Demo mode"],

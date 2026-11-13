@@ -809,11 +809,14 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         const id = btn.dataset.revealDevice ?? null;
         if (!id) return;
         const alreadyVisibleSubpage =
-          host.expandedDeviceId === id && host.presentationDevices.some((d) => d.id === id);
+          host.root.querySelector<HTMLElement>(".cc-tile.is-subpage")?.dataset.tileId === id;
         if (alreadyVisibleSubpage) {
           host.expandedDeviceId = null;
           host.render();
           return;
+        }
+        if (host.isEditingLayout) {
+          host.stopEditing();
         }
         if (host.panelSearch.isComposing) {
           finishPanelComposition(host);
@@ -833,6 +836,12 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         }
         host.expandedDeviceId = id;
         host.render();
+        if (!host.root.querySelector(".cc-tile.is-subpage")) {
+          const inlineTile = Array.from(host.root.querySelectorAll<HTMLElement>("[data-tile-id]")).find(
+            (tile) => tile.dataset.tileId === id,
+          );
+          inlineTile?.scrollIntoView?.({ block: "nearest" });
+        }
       });
     });
 
@@ -1461,6 +1470,12 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         if (!id) return;
         host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
         host.render();
+        if (host.expandedDeviceId === id && !host.root.querySelector(".cc-tile.is-subpage")) {
+          const inlineTile = Array.from(host.root.querySelectorAll<HTMLElement>("[data-tile-id]")).find(
+            (tile) => tile.dataset.tileId === id,
+          );
+          inlineTile?.scrollIntoView?.({ block: "nearest" });
+        }
       });
     });
   }
