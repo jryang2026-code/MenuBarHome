@@ -305,8 +305,9 @@ jobs:
   macos-test:
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
-    # 全部 Swift 单测（快照比对留在本机门禁）。App Intents 与 Release 通用二进制各用一台机器，三路并行。
-    runs-on: macos-26
+    # 全部 Swift 单测（快照比对留在宿主机门禁）。托管机三路并行，本地隔离 VM 单任务串行。
+    # Empty MACOS_CI_RUNNER keeps GitHub-hosted macOS; the local option is an isolated VM.
+    runs-on: ${{ fromJSON(vars.MACOS_CI_RUNNER || '"macos-26"') }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -314,6 +315,7 @@ jobs:
           fetch-depth: 0
       # macos-26 on 2026-11-09 printed Xcode 26.6 (17F113). Do not select latest.
       - name: Select Xcode 26.6
+        if: runner.environment == 'github-hosted'
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: "26.6"
@@ -360,7 +362,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
     # xcodebuild 提取 App Intents。和 swift test 串在一台 3 核机器上时，冷启动会把两者相加。
-    runs-on: macos-26
+    # Empty MACOS_CI_RUNNER keeps GitHub-hosted macOS; the local option is an isolated VM.
+    runs-on: ${{ fromJSON(vars.MACOS_CI_RUNNER || '"macos-26"') }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -368,6 +371,7 @@ jobs:
           fetch-depth: 0
       # macos-26 on 2026-11-09 printed Xcode 26.6 (17F113). Do not select latest.
       - name: Select Xcode 26.6
+        if: runner.environment == 'github-hosted'
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: "26.6"
@@ -405,7 +409,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
     # Release -O 通用二进制（#2 这类崩溃只在 -O 下出现）以及符号表路径泄露检查。
-    runs-on: macos-26
+    # Empty MACOS_CI_RUNNER keeps GitHub-hosted macOS; the local option is an isolated VM.
+    runs-on: ${{ fromJSON(vars.MACOS_CI_RUNNER || '"macos-26"') }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -413,6 +418,7 @@ jobs:
           fetch-depth: 0
       # macos-26 on 2026-11-09 printed Xcode 26.6 (17F113). Do not select latest.
       - name: Select Xcode 26.6
+        if: runner.environment == 'github-hosted'
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: "26.6"
