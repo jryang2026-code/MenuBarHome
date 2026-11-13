@@ -181,11 +181,6 @@ select_python_bin() {
             return 0
         fi
     done
-    if command -v python3 >/dev/null 2>&1; then
-        printf '%s\n' "python3"
-    elif command -v python >/dev/null 2>&1; then
-        printf '%s\n' "python"
-    fi
 }
 
 PYTHON_BIN="$(select_python_bin)"
@@ -201,15 +196,26 @@ if ! cmp -s Resources/AppIcon/AppIcon-Dark.svg docs/assets/logo-dark.svg || ! cm
     exit 1
 fi
 
+# Shell-only self-tests do not require Python 3.
+bash scripts/repeat_test.sh --self-test
+bash scripts/red-check.sh --self-test
+bash scripts/ci_swift_test.sh --self-test
+bash scripts/test_ci_relevant_paths.sh
+bash scripts/test_secret_scan.sh
+bash scripts/test_install_ripgrep.sh
+bash scripts/test_tauri_cache_key.sh
+if command -v node >/dev/null 2>&1; then
+    node windows/scripts/test-file.mjs --self-test
+fi
+
 # Design-token and Ed25519 checks need Python 3. CI runs them on ubuntu-latest
-# (the Swift container image does not ship python3).
+# (the Swift container image does not ship python3). Missing Python is recorded as a skip
+# so neither --lint-only nor the full gate silently claims an all-green pass.
+PYTHON_LINT_SKIPPED=0
 if [ -n "$PYTHON_BIN" ]; then
     "$PYTHON_BIN" scripts/check_design_tokens.py
     "$PYTHON_BIN" scripts/check_timer_render.py
     "$PYTHON_BIN" scripts/check_swift_harness_lints.py
-    bash scripts/repeat_test.sh --self-test
-    bash scripts/red-check.sh --self-test
-    node windows/scripts/test-file.mjs --self-test
     "$PYTHON_BIN" scripts/test_check_capability_matrix.py
     "$PYTHON_BIN" scripts/test_mijia_cli.py
     "$PYTHON_BIN" scripts/check_capability_matrix.py
@@ -267,15 +273,15 @@ PY
     # 多个会话靠 issue-frontier.sh 挑票，判定规则放宽会导致重复认领（#338）。
     bash scripts/test_issue_frontier.sh
     bash scripts/test_gate_report.sh
-    bash scripts/test_secret_scan.sh
-    bash scripts/test_install_ripgrep.sh
     bash scripts/test_go2rtc_gate.sh
-    bash scripts/test_tauri_cache_key.sh
     bash scripts/test_ci_errors.sh
     bash scripts/test_pr_ready.sh
     if command -v pwsh >/dev/null 2>&1; then
         bash scripts/test_build_installer.sh
     fi
+else
+    PYTHON_LINT_SKIPPED=1
+    echo "⏭️  跳过 Python 门禁检查：未找到 Python 3.10+"
 fi
 
 large_files=""
@@ -296,6 +302,10 @@ else
 fi
 
 if [ "$LINT_ONLY" = "1" ]; then
+    if [ "$PYTHON_LINT_SKIPPED" = "1" ]; then
+        bash "$ROOT_DIR/scripts/gate_report.sh" summary "PythonLint=skip"
+        exit $?
+    fi
     echo "✅ 密钥与机械性编码规范检查通过！"
     exit 0
 fi
@@ -311,6 +321,9 @@ add_gate_step() {
 record_gate_result() {
     gate_results[${#gate_results[@]}]="$1"
 }
+if [ "$PYTHON_LINT_SKIPPED" = "1" ]; then
+    record_gate_result "PythonLint=skip"
+fi
 
 run_logged() {
     local title="$1"

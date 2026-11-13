@@ -50,6 +50,25 @@ fetch() { # fetch <url> <out>：先直连官方，失败且设置了 GH_PROXY �
   return 1
 }
 
+extract_component_tree() { # extract_component_tree <解压临时目录> <组件名> <目标目录>
+  local src_root="$1" comp="$2" dst="$3" candidate
+  if [ -f "$src_root/manifest.json" ]; then
+    cp -R "$src_root"/. "$dst/"
+    return 0
+  fi
+  if [ -f "$src_root/custom_components/$comp/manifest.json" ]; then
+    cp -R "$src_root/custom_components/$comp"/. "$dst/"
+    return 0
+  fi
+  for candidate in "$src_root"/*/custom_components/"$comp" "$src_root"/"$comp" "$src_root"/*; do
+    if [ -d "$candidate" ] && [ -f "$candidate/manifest.json" ]; then
+      cp -R "$candidate"/. "$dst/"
+      return 0
+    fi
+  done
+  return 1
+}
+
 build_components() { # build_components <工作目录>：产出 <工作目录>/components.tar.gz
   local pkg="$1" pair comp repo tag want got dl
   while IFS= read -r pair; do
@@ -60,16 +79,22 @@ build_components() { # build_components <工作目录>：产出 <工作目录>/c
     if [ -f "$HERE/components/$comp.zip" ]; then
       verify_local_archive "$HERE/components/$comp.zip" || return 1
       echo "▶ 使用本地 nas/components/$comp.zip（SHA256 已校验）"
-      unzip -q "$HERE/components/$comp.zip" -d "$pkg/$comp" || return 1
+      dl="$(mktemp -d)"
+      unzip -q "$HERE/components/$comp.zip" -d "$dl" || { rm -rf "$dl"; return 1; }
+      extract_component_tree "$dl" "$comp" "$pkg/$comp" || { rm -rf "$dl"; echo "✘ $comp.zip 内未找到 manifest.json（支持组件目录或 GitHub 源码包结构）"; return 1; }
+      rm -rf "$dl"
     elif [ -f "$HERE/components/$comp.tar.gz" ]; then
       verify_local_archive "$HERE/components/$comp.tar.gz" || return 1
       echo "▶ 使用本地 nas/components/$comp.tar.gz（SHA256 已校验）"
-      tar -xzf "$HERE/components/$comp.tar.gz" -C "$pkg/$comp" --strip-components=1 || return 1
+      dl="$(mktemp -d)"
+      tar -xzf "$HERE/components/$comp.tar.gz" -C "$dl" || { rm -rf "$dl"; return 1; }
+      extract_component_tree "$dl" "$comp" "$pkg/$comp" || { rm -rf "$dl"; echo "✘ $comp.tar.gz 内未找到 manifest.json（支持组件目录或 GitHub 源码包结构）"; return 1; }
+      rm -rf "$dl"
     else
       echo "▶ 下载 $repo ${tag}（钉住版本，SHA256 必须匹配）"
       dl="$(mktemp -d)"
       fetch "https://github.com/$repo/archive/refs/tags/$tag.tar.gz" "$dl/src.tar.gz" \
-        || { echo "✘ 下载 $repo 失败。可设置 GH_PROXY，或手动下载后放到 nas/components/$comp.tar.gz + .sha256"; rm -rf "$dl"; return 1; }
+        || { echo "✘ 下载 $repo 失败。可设置 GH_PROXY，或手动下载 https://github.com/$repo/archive/refs/tags/$tag.tar.gz 保存为 nas/components/$comp.tar.gz 并生成同名 .sha256"; rm -rf "$dl"; return 1; }
       got=$(sha256_of "$dl/src.tar.gz")
       [ "$got" = "$want" ] || { echo "✘ $repo $tag 的 SHA256 不匹配：期望 ${want}，实际 ${got}。内容可能被替换，已中止。"; rm -rf "$dl"; return 1; }
       tar -xzf "$dl/src.tar.gz" -C "$dl" || { rm -rf "$dl"; return 1; }

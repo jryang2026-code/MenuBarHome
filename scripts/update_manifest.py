@@ -121,7 +121,7 @@ def encode(min_from: str, dmg: pathlib.Path, exe: pathlib.Path | None, msi: path
     dmg.with_name(f"MenuBarHome-{version}.update.json").write_bytes(body)
 
 
-def check_fields(version: str, directory: pathlib.Path) -> None:
+def check_fields(version: str, directory: pathlib.Path, *, require_all_platforms: bool = False) -> None:
     if not VERSION_RE.fullmatch(version):
         raise SystemExit("版本必须是 x.y.z")
     manifest_path = directory / f"MenuBarHome-{version}.update.json"
@@ -135,6 +135,10 @@ def check_fields(version: str, directory: pathlib.Path) -> None:
         raise SystemExit("清单缺少 min_from")
     files = parsed.get("files")
     count = len(files) if isinstance(files, list) else 0
+    if require_all_platforms and count != 3:
+        raise SystemExit(
+            f"完整双端发布的更新清单必须包含全部 3 个安装包（DMG/EXE/MSI），当前 files 数量为 {count}"
+        )
     packages = [directory / name for name in package_names(version)][: 1 if count == 1 else 3]
     expected = canonical_bytes(version, min_from, public_key(), tuple(read_sidecar(path) for path in packages))
     if raw != expected:
@@ -195,6 +199,13 @@ def self_test() -> None:
         if [entry["platform"] for entry in manifest["files"]] != ["macos"]:
             raise SystemExit("仅 macOS 清单应只含 DMG 一项")
         check_fields("1.2.4", directory)
+        try:
+            check_fields("1.2.4", directory, require_all_platforms=True)
+        except SystemExit as error:
+            if "全部 3 个安装包" not in str(error):
+                raise
+        else:
+            raise SystemExit("require_all_platforms=True 不应接受仅含 DMG 的单平台更新清单")
 
 
 def main() -> None:
@@ -206,6 +217,7 @@ def main() -> None:
     encode_parser.add_argument("--exe", type=pathlib.Path, help="省略 --exe 与 --msi 即仅 macOS 发布")
     encode_parser.add_argument("--msi", type=pathlib.Path)
     check_parser = sub.add_parser("check-fields")
+    check_parser.add_argument("--require-all-platforms", action="store_true")
     check_parser.add_argument("version")
     check_parser.add_argument("directory", type=pathlib.Path)
     sub.add_parser("self-test")
@@ -213,7 +225,7 @@ def main() -> None:
     if args.command == "encode":
         encode(args.min_from, args.dmg, args.exe, args.msi)
     elif args.command == "check-fields":
-        check_fields(args.version, args.directory)
+        check_fields(args.version, args.directory, require_all_platforms=args.require_all_platforms)
     else:
         self_test()
 

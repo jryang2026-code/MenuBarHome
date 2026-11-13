@@ -222,7 +222,7 @@ macOS 默认按 `⌥M` 呼出面板，Windows 默认按 `Alt+M`。打字盲搜�
 
 ## Raycast 扩展、本地 CLI 与 MCP 服务
 
-在 macOS 打开 **设置 → 自动化与外部控制 → Raycast 集成**（或在 Windows 打开 **设置 → 全关与更新 → Raycast 与本地 CLI / MCP 集成**）后，应用会把设备、场景、快捷动作、环境读数、上一条命令结果和一个本机随机令牌写到 `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json`（macOS，权限 `0600`）或 `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json`（Windows）。带令牌的 `menumijia://` 链接不再弹外部链接确认；双端的高风险设备仍会先问，锁屏拦截照旧。关闭该开关会立即删除文件并作废令牌，伴生端拿不到任何米家或 Home Assistant 凭据；契约与取舍见 [ADR-0013](docs/adr/0013-raycast-companion-contract.md)。
+在 macOS 打开 **设置 → 通用 → 自动化与外部控制 → Raycast 集成**（或在 Windows 打开 **设置 → 全关与更新 → Raycast 与本地 CLI / MCP 集成**）后，应用会把设备、场景、快捷动作、环境读数、上一条命令结果和一个本机随机令牌写到 `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json`（macOS，权限 `0600`）或 `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json`（Windows）。带令牌的 `menumijia://` 链接不再弹外部链接确认；双端的高风险设备仍会先问，锁屏拦截照旧。关闭该开关会立即删除文件并作废令牌，伴生端拿不到任何米家或 Home Assistant 凭据；契约与取舍见 [ADR-0013](docs/adr/0013-raycast-companion-contract.md)。
 
 ### 本地 CLI
 
@@ -344,6 +344,73 @@ npm run build
 - **商标声明：** 「小米」「米家」「Xiaomi」「Mijia」等为小米科技有限责任公司注册商标；「美的」为美的集团股份有限公司注册商标。本文档与本项目仅用于描述设备兼容性。
 
 感谢所有为 MenuBarHome 提交代码、报告缺陷与改进建议的贡献者！如果这个小工具让你在工作时少掏了几次手机，欢迎在 GitHub 上点一个 ⭐ Star。
+
+---
+
+## 常见问题（FAQ）
+
+### MenuBarHome 占用多少内存和 CPU？
+
+macOS 版是单个原生 AppKit / SwiftUI 进程，没有内嵌浏览器内核。以下为 2026-11-07 在 Apple 芯片 Mac（10 核，macOS 27.0.1）上使用 MenuBarHome 1.1.7 (426) 的实测值（已接入十余台设备，含 1 台摄像机）：
+
+| 状态 | RSS 常驻内存 | CPU（单核占比） |
+| --- | --- | --- |
+| 后台静置（面板关闭） | 159 MB | 0.1% |
+| 面板展开（无操作） | 147 MB | 0.1% |
+| 按住 Option-M 语音输入 | 152 MB | 26% |
+
+- **RSS** 来自 `ps` 的常驻集大小；活动监视器「内存」列（物理内存占用）同一状态下约为 146 MB。
+- **CPU** 为单核占比，由连续三个采样窗口（默认每段 5 秒）的 CPU 时间增量计算得出。`ps %cpu` 是进程全生命周期平均值，忙碌结束后很长时间仍会偏高，因此测量脚本不采用它。
+- 展开面板复用同一进程，无交互时 RSS 基本不变，CPU 接近于零。
+- 只有语音输入期间有明显 CPU 占用：`AVAudioEngine` 采集麦克风音频并交由系统语音框架识别；系统进程 `corespeechd` 负责底层识别，其 CPU 不计入应用自身数字。
+- 实际内存取决于已接入内容：摄像机实时流、大量 MIoT 设备规格书与复杂场景都会增加占用。
+
+### Windows 11 端占用如何？
+
+Windows 版基于 Tauri v2 与系统 WebView2：一个宿主进程运行托盘程序（安装版为 `MenuBarHome.exe`，本地 Tauri 构建为 `menubarmijia-windows.exe`），并由一个或多个 `msedgewebview2.exe` 子进程渲染界面。`scripts/measure_footprint.py` 会汇总宿主进程及其所属渲染子进程，自动忽略其他应用的 WebView2 进程。
+
+表格暂未收录 Windows 11 实机数据，需在 Windows 机器上托盘程序运行时执行同一脚本采集：
+
+```powershell
+python scripts\measure_footprint.py --state idle
+python scripts\measure_footprint.py --state panel
+python scripts\measure_footprint.py --state voice
+```
+
+### 接入 20 台以上设备时，首次展开要多久？
+
+| 平台 | 设备数 | 状态合成（中位数） | 范围 | 轮数 |
+| --- | --- | --- | --- | --- |
+| macOS (MijiaCore) | 24 | 2.10 ms | 2.02–2.69 ms | 31 |
+| Windows (TypeScript core) | 24 | 0.10 ms | 0.07–0.13 ms | 31 |
+
+双端对同一份快照（6 个房间共 18 盏灯与 6 个开关）执行状态合成。设备合成是纯函数，耗时仅毫秒级；首次打开若感觉慢，主要来自网络拉取与视图构建，而非状态合成。
+
+### 如何复现这些测量数据？
+
+`scripts/measure_footprint.py` 只对已在运行的进程采样，不会自行启动应用，也无法自动判断界面处于哪种状态，因此请先将应用置于对应状态再运行：
+
+```bash
+# 静置状态：关闭面板，静置一分钟后采样
+python3 scripts/measure_footprint.py --state idle
+
+# 面板展开：按 Option-M 展开面板后采样
+python3 scripts/measure_footprint.py --state panel
+
+# 语音输入：按住 Option-M 出现麦克风提示期间采样
+python3 scripts/measure_footprint.py --state voice
+
+# 输出仓库已记录基线的机器可读 JSON
+python3 scripts/measure_footprint.py --no-live --json
+```
+
+实测行在 `Source` 列标记为 `live`；应用未运行时脚本会打印已提交基线并标为 `recorded`。采样前请先退出多开的副本（脚本默认采样找到的第一个 `MenuBarMijiaApp` 进程）。
+
+解析与报告逻辑的单元测试位于 `scripts/test_measure_footprint.py`：
+
+```bash
+python3 -m unittest discover -s scripts -p 'test_measure_footprint.py'
+```
 
 ---
 
