@@ -2,29 +2,43 @@
 
 macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeScript）双端智能家居控制中心，支持 Home Assistant 与米家云端直连。
 
-## Issue、领域与按需文档
+## Issue 与仓库边界
 
-- **唯一问题与 PR 源**：GitHub（`https://github.com/jryang2026-code/MenuBarHome`，`origin`）经 `gh` CLI（登录账号 `jryang2026-code`）操作。旧账号 `jryang1997` 已封禁；`gitlab` 与 `nas`（NAS Forgejo）仅作备份，**严禁在两处提单或写入**（file nothing there）。
-- **文档路由（命中对应分支时读取）**：
-  - 操作 Issue/PR、查 CI 失败（`ci_errors.sh`）、判 PR 合入（`pr-ready.sh`）、盘点分支/工作树（`pending-work.sh`）、挑票（`issue-frontier.sh`）或遇旧编号（`[GH#304]`、`!54`）：读 `docs/agents/issue-tracker.md`。
-  - 命名领域概念对齐 `GLOSSARY.md`；改动架构边界核对 `docs/adr/`（冲突须显式指出，见 `docs/agents/domain.md`）。
-  - 审阅 diff（`/code-review`）或回溯规范（`/retro`）：查 `CODING_STANDARDS.md`（日常读写源码由 `.claude/rules/*.md` 与 `.agents/hooks.json` 按路径自动注入）。排查门禁跳步、快照差异、`hdiutil attach` 锁竞争或改 `scripts/` 时读 `docs/agents/gates.md`。
-  - Windows 摄像机实时流排障、go2rtc/FFmpeg 内置或 Tauri 安装包构建：读 `docs/agents/windows-camera.md`。
-  - 应用内更新链路、Ed25519 清单验签、失败恢复分类或替换脚本（`Update*.swift` / `scripts/release.sh`）：读 `docs/agents/in-app-update.md`。
-  - 在 Cursor Cloud 或 Linux 容器工作：读 `docs/agents/cursor-cloud.md`。维护 `.cursor/skills/` 副本时读 `.cursor/skills/README.md`。
+- **唯一问题与 PR 源**：GitHub（`https://github.com/jryang2026-code/MenuBarHome`，`origin`），通过 `gh` CLI（账号 `jryang2026-code`）操作。旧账号 `jryang1997` 已停用；`gitlab` 与 `nas` 仅作镜像备份，**严禁向两处提单或写入**。
 
-## 验证完成判据与环境边界
+## 交付分流：默认直接 push `main`，仅高风险面走 PR
 
-- **门禁判据**：`bash scripts/check.sh` 覆盖密钥扫描、机械 lint 与 `swift test`（含快照），**不跑 Rust 测试**。有跳过项时打印 `⚠️ 部分通过：跳过 <名称>` 且**退出码仍为 0**（缺本工作树 `windows/node_modules` 时会尝试复用锁文件匹配的兄弟工作树跑 `windows/tests/*.test.ts`，`tsc && vite build` 与 `raycast` 无本地 `node_modules` 仍跳过且不自动 `npm ci`）——确认输出无非预期跳过才算通过。提交钩子只跑 `--lint-only`：开 PR 或向 PR 推送前须跑一次完整的 `bash scripts/check.sh`。PR 上的 CI 不跑 `macos-release`、`macos-appintents`、`windows-installer`（`main` 与手动触发才跑），改打包链路的 PR 合并前用 `gh workflow run CI --ref <分支>` 补跑。
-- **渲染与实机边界**：快照基线以维护者这台 Mac 渲染为准，`--skip-snapshots` 仅限非维护者 Mac。面向用户的界面改动单靠单元测试不算完成，须附快照或实机验证证据。
-- **Windows 与检索环境**：Windows 本机无 Swift 工具链，本地跑 `bash scripts/check.sh --lint-only`，Swift 测试交 CI 或局域网 Mac（`bash scripts/remote-swift-test.sh --host <user>@<mac>`，配置见脚本头）。本仓 Swift 与 Rust 无语言服务器，引用与定义检索用 `grep`。macOS 本机打包安装、图标重生成、工作流 `actionlint` 均由 `.claude/rules/` 按路径加载。
+在用户已授权提交的范围内，按**改动影响面**决定直接推 `main` 还是开 PR：
 
-## 提交、PR 与并发安全
+- **默认直接 push `main`（快车道）**：文案、文档、图标、样式/布局微调、局部 UI/交互修复、测试补充、内部重构或脚手架脚本改进。推送前跑过对应验证，推送后确认云端 CI 全绿，交付时明确区分「已推送」与「CI 已通过」。`git push origin main` 会触发 `pre-push` 钩子自动跑 `check.sh --changed`。
+- **必须走 PR（checks 全绿后合入）的 5 类高风险面**：
+  1. 登录、凭据、钥匙串与网络传输边界（`MiSession`、`KeychainHelper`、`secureStore`、明文 HTTP 同意与局域网端点校验）
+  2. 设备控制写入与安全策略（真实控制指令、二次确认、`AllOffTarget`、锁屏拦截、`ScheduledCommand` 作用域/定时）
+  3. 数据迁移、跨源设备去重（`DeviceDeduplicator`）与跨端黄金语料语义变更
+  4. 自动更新与代码签名/发版（`Update*.swift`、`release.sh`、Ed25519 验签）
+  5. 跨平台契约或包构建/发布链路变更（`.github/workflows/` 打包链、Windows MSI/NSIS 安装器）
+- **PR 纪律**：单 PR 代码改动控制在约 800 行以内（PNG、夹具、锁文件不计）；Codex 自动评审最多 2 轮（`bash scripts/pr-ready.sh --wait --max-codex-rounds 2 <pr>`），2 轮后仅修可达的安全、数据丢失或崩溃问题，其余转 issue 后合入；已开 PR 跟进 `main` 用 `git merge origin/main`（**严禁 rebase 强推**）；多代理并行时逐个合入，见 `main` 红即停、先修 `main`；多行提交说明用 `git commit -F`。
+- **`CHANGELOG.md`**：仅发版整理，不要求每个 PR 手动维护（已在 `git tag` 的版本段严禁追加）。
 
-在用户已授权提交的范围内，按改动影响范围（不按代码行数）选择直接 push 或开 PR：
+## 本地门禁与验证环境
 
-- **可直接 push `main`**：文案、文档、图标、样式微调，及范围明确的局部交互修复（须有针对性验证与用户实机确认）。直接 push 不等于发版；推送后有 runner 时须确认云端检查结果，交付时明确区分「已推送」与「检查已通过」。
-- **必须走 PR 且检查全绿后再合并**：登录、凭据与钥匙串、安全权限、设备控制、撤销、定时任务、数据迁移、自动更新、签名、打包发布、跨平台逻辑、多模块改动，以及原因未明的检查失败（已复现确认与本轮无关的既有失败须记录证据与例外原因，禁止默认跳过检查）。
-- **PR 与分支纪律**：一题对应一次提交或一个 PR，后续调整继续走原 PR；单个 PR 的改动控制在约 800 行以内（快照 PNG、夹具、锁文件不计），超出先拆题再开工；自动评审（Codex）最多跟两轮，两轮后只有可达的安全、数据丢失或崩溃问题才继续在本 PR 修，其余转 GitHub issue 后合并；多代理并行时一次合一个，PR 自身检查全绿即可合，不必等上一个合入后的 `main` 流水线跑完，但 `main` 流水线变红时停止合并、先修复；已开 PR 跟进 `main` 用 `git merge main`，**严禁 `rebase` 强推**；多行提交说明写文件用 `git commit -F`；提交只含本轮改动；`CHANGELOG.md` 只写未发版段（已在 `git tag` 的版本段严禁追加）。
-- **Runner 安全红线**：严禁把维护者这台含签名私钥的 Mac 宿主机注册为自托管 runner。CI 可通过 `MACOS_CI_RUNNER` 使用本机隔离的 macOS 虚拟机：单任务、任务后销毁、不共享宿主目录、钥匙串或剪贴板，并阻断宿主与局域网访问；发布签名仍用原流程。安装、启停与回退见 `docs/agents/local-macos-runner.md`。`gh pr checks <n>` 首次为空时按退避重试。
-- **工作树与子代理责任**：`git worktree list` 中登记给其他会话的工作树（如 `wt/dev`）审计只读、严禁改文件；接管前先确认无新提交且 `git status` 干净（对方仍在迭代时在独立分支副本修改）；审计途中若有新提交落地，按最新提交重读后再下结论。主代理对子代理产出负全责，须亲自审 diff、对照 `HEAD` 核实每处引用的 `path:symbol` 存在后再写交接或总结，不透传子代理原话。
+- **`git commit`（约 4s）**：自动跑 `bash scripts/check.sh --lint-only`（密钥扫描、机械 lint、能力矩阵、云台型号表）。全量脚本自检加 `--script-tests`。
+- **推 `main` / 开 PR 前**：非 UI 改动跑 `bash scripts/check.sh --changed`；**macOS 界面改动**须在本机跑完整 `bash scripts/check.sh`（快照基线以维护者 Mac 为准；CI 托管机用 `macos-26-intel` 且跳过像素比对，未改视觉才贴 `no-snapshot-change`）。确认输出无非预期 `⚠️ 部分通过：跳过 ...` 才算通过。
+- **专项检查**：工作流改动跑 `actionlint .github/workflows/ci.yml .github/workflows/snapshot-guard.yml`；Windows Rust 在 CI `windows-rust-test` 或 `cargo test --locked --manifest-path windows/src-tauri/Cargo.toml`；单测提速用 `node windows/scripts/test-file.mjs tests/<file>.test.ts`、`scripts/repeat_test.sh <filter>`、`scripts/red-check.sh`。
+- **检索与跨端**：Windows 无 Swift 工具链时本机跑 `--lint-only`（或 `scripts/remote-swift-test.sh`）；本仓 Swift/Rust 无 LSP，引用检索用 `grep`。
+
+## 领域约定与按需文档
+
+- 领域术语对齐 [`GLOSSARY.md`](GLOSSARY.md)；改动架构边界先查 [`docs/adr/INDEX.md`](docs/adr/INDEX.md)，与已接受 ADR 冲突时须显式声明。
+- 非机械编码/并发/UI/测试规范见 [`CODING_STANDARDS.md`](CODING_STANDARDS.md)。
+- 专项 Runbook（仅命中对应任务时读取）：
+  - Issue/PR 编号、老号映射与协同脚本：[`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md)
+  - Windows 摄像机实时流、go2rtc/FFmpeg 与 Tauri 打包：[`docs/agents/windows-camera.md`](docs/agents/windows-camera.md)
+  - 应用内自更新链路与 Ed25519 验签：[`docs/agents/in-app-update.md`](docs/agents/in-app-update.md)
+  - Linux 容器与 Cursor Cloud 检查：[`docs/agents/cursor-cloud.md`](docs/agents/cursor-cloud.md)
+  - 本地隔离 macOS CI VM 运维：[`docs/agents/local-macos-runner.md`](docs/agents/local-macos-runner.md)
+
+## 并发与 Runner 安全红线
+
+- **严禁**把维护者这台含签名私钥的 Mac 宿主机注册为自托管 runner（CI `MACOS_CI_RUNNER` 仅允许指向隔离 VM）。
+- `git worktree list` 中其他会话的工作树仅审计只读、严禁改文件；主代理核对 diff 与实际 `path:symbol` 后再交付。
