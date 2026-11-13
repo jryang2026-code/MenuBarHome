@@ -1,8 +1,14 @@
 import { normalizeSearch, panelQueryKind } from "../core/panelSearch.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 
-function tiles(host: MenuMijiaWindowsApp): HTMLElement[] {
+function allTiles(host: MenuMijiaWindowsApp): HTMLElement[] {
   return [...host.root.querySelectorAll<HTMLElement>("[data-tile-id]")];
+}
+
+function tiles(host: MenuMijiaWindowsApp): HTMLElement[] {
+  const subpage = host.root.querySelector<HTMLElement>(".cc-tile.is-subpage[data-tile-id]");
+  if (subpage) return [subpage];
+  return allTiles(host);
 }
 
 function selectedTile(host: MenuMijiaWindowsApp): HTMLElement | undefined {
@@ -15,6 +21,14 @@ export function syncPanelSelection(host: MenuMijiaWindowsApp): void {
     host.panelSearch.selectedDeviceId = normalizeSearch(host.panelSearch.query) ? cards[0]?.dataset.tileId ?? null : null;
     host.panelSearch.explicitSelection = false;
   }
+  const visibleCards = new Set(cards);
+  allTiles(host).forEach((card) => {
+    if (!visibleCards.has(card)) {
+      card.removeAttribute("id");
+      card.classList.remove("is-keyboard-selected");
+      card.removeAttribute("aria-current");
+    }
+  });
   cards.forEach((card, index) => {
     card.id = `panel-device-${index}`;
     const selected = card.dataset.tileId === host.panelSearch.selectedDeviceId;

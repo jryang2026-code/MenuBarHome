@@ -3,10 +3,50 @@ use crate::placement::*;
 
 pub(crate) static LAST_FOCUS_LOSS_MS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static PIN_POPOVER: AtomicBool = AtomicBool::new(false);
-static PANEL_VISIBILITY_SEQ: AtomicU64 = AtomicU64::new(0);
-static PANEL_CLOSING: AtomicBool = AtomicBool::new(false);
 /// Whether the window manager granted the panel a native backdrop (§1.4 of the control center spec).
 static PANEL_BACKDROP_ACRYLIC: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PanelVisibilityState {
+    pub(crate) seq: u64,
+    pub(crate) closing: bool,
+}
+
+impl PanelVisibilityState {
+    pub(crate) fn begin_present(&mut self) -> u64 {
+        self.seq = self.seq.wrapping_add(1);
+        self.closing = false;
+        self.seq
+    }
+
+    pub(crate) fn begin_hide(&mut self, is_visible: bool) -> Option<u64> {
+        if !is_visible {
+            self.closing = false;
+            return None;
+        }
+        if self.closing {
+            return None;
+        }
+        self.closing = true;
+        self.seq = self.seq.wrapping_add(1);
+        Some(self.seq)
+    }
+
+    pub(crate) fn complete_hide(&mut self, requested_seq: u64) -> bool {
+        if !should_complete_hide(self.closing, self.seq, requested_seq) {
+            return false;
+        }
+        self.closing = false;
+        true
+    }
+
+    pub(crate) fn abort_hide(&mut self) {
+        self.closing = false;
+    }
+}
+
+static PANEL_VISIBILITY: LazyLock<std::sync::Mutex<PanelVisibilityState>> =
+    LazyLock::new(|| std::sync::Mutex::new(PanelVisibilityState::default()));
 
 /// Window pixels reserved around the card column for the panel's own drop shadow. `#app { padding }`
 /// in `styles.css` carries the same value on all four sides.
@@ -53,36 +93,39 @@ pub(crate) fn panel_backdrop() -> &'static str {
     }
 }
 
-pub(crate) fn complete_hide_panel(app: &AppHandle, seq: u64) {
-    let active_seq = PANEL_VISIBILITY_SEQ.load(Ordering::SeqCst);
-    let closing = PANEL_CLOSING.load(Ordering::SeqCst);
-    if !should_complete_hide(closing, active_seq, seq) {
+fn complete_hide_panel_on_main_thread(app: &AppHandle, seq: u64) {
+    let should_hide = PANEL_VISIBILITY
+        .lock()
+        .map(|mut state| state.complete_hide(seq))
+        .unwrap_or(false);
+    if !should_hide {
         return;
     }
-    PANEL_CLOSING.store(false, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
     }
 }
 
-pub(crate) fn request_hide_panel(app: &AppHandle) {
+fn request_hide_panel_on_main_thread(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
-    if !window.is_visible().unwrap_or(false) {
-        PANEL_CLOSING.store(false, Ordering::SeqCst);
+    let is_visible = window.is_visible().unwrap_or(false);
+    let Some(seq) = PANEL_VISIBILITY
+        .lock()
+        .ok()
+        .and_then(|mut state| state.begin_hide(is_visible))
+    else {
         return;
-    }
-    if PANEL_CLOSING.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let seq = PANEL_VISIBILITY_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+    };
     let edge = current_flyout_edge(&window, None);
     let script = format!(
         "window.dispatchEvent(new CustomEvent('menumijia:panel-dismiss', {{ detail: {{ seq: {seq}, edge: '{edge}' }} }}))"
     );
     if window.eval(&script).is_err() {
-        PANEL_CLOSING.store(false, Ordering::SeqCst);
+        if let Ok(mut state) = PANEL_VISIBILITY.lock() {
+            state.abort_hide();
+        }
         let _ = window.hide();
         return;
     }
@@ -90,6 +133,20 @@ pub(crate) fn request_hide_panel(app: &AppHandle) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(200));
         complete_hide_panel(&app_clone, seq);
+    });
+}
+
+pub(crate) fn complete_hide_panel(app: &AppHandle, seq: u64) {
+    let app_clone = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        complete_hide_panel_on_main_thread(&app_clone, seq);
+    });
+}
+
+pub(crate) fn request_hide_panel(app: &AppHandle) {
+    let app_clone = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        request_hide_panel_on_main_thread(&app_clone);
     });
 }
 
@@ -452,10 +509,15 @@ pub(crate) fn snap_panel_to_work_area(window: &WebviewWindow) {
     let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
-pub(crate) fn present_panel(window: &WebviewWindow, anchor: Option<PhysicalPosition<f64>>) {
-    let seq = PANEL_VISIBILITY_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
-    PANEL_CLOSING.store(false, Ordering::SeqCst);
-    let edge = position_popover(window, anchor);
+fn present_panel_on_main_thread(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let seq = PANEL_VISIBILITY
+        .lock()
+        .map(|mut state| state.begin_present())
+        .unwrap_or(1);
+    let edge = position_popover(&window, anchor);
     let script = format!(
         "window.dispatchEvent(new CustomEvent('menumijia:panel-present', {{ detail: {{ seq: {seq}, edge: '{edge}' }} }}))"
     );
@@ -464,20 +526,48 @@ pub(crate) fn present_panel(window: &WebviewWindow, anchor: Option<PhysicalPosit
     let _ = window.set_focus();
 }
 
+pub(crate) fn present_panel(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>) {
+    present_panel_and_eval(app, anchor, None);
+}
+
+pub(crate) fn present_panel_and_eval(
+    app: &AppHandle,
+    anchor: Option<PhysicalPosition<f64>>,
+    after_present_script: Option<&'static str>,
+) {
+    let app_clone = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        present_panel_on_main_thread(&app_clone, anchor);
+        if let Some(script) = after_present_script {
+            if let Some(window) = app_clone.get_webview_window("main") {
+                let _ = window.eval(script);
+            }
+        }
+    });
+}
+
 pub(crate) fn toggle_main_window(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>, from_tray_click: bool) {
-    if let Some(window) = app.get_webview_window("main") {
+    let app_clone = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Some(window) = app_clone.get_webview_window("main") else {
+            return;
+        };
         let is_visible = window.is_visible().unwrap_or(false);
-        let is_closing = PANEL_CLOSING.load(Ordering::SeqCst);
+        let is_closing = PANEL_VISIBILITY
+            .lock()
+            .map(|state| state.closing)
+            .unwrap_or(false);
         if is_visible && !is_closing {
-            request_hide_panel(app);
+            request_hide_panel_on_main_thread(&app_clone);
         } else {
             if from_tray_click {
-                let elapsed = now_epoch_ms().saturating_sub(LAST_FOCUS_LOSS_MS.load(Ordering::SeqCst));
+                let elapsed =
+                    now_epoch_ms().saturating_sub(LAST_FOCUS_LOSS_MS.load(Ordering::SeqCst));
                 if elapsed < 280 {
                     return;
                 }
             }
-            present_panel(&window, anchor);
+            present_panel_on_main_thread(&app_clone, anchor);
         }
-    }
+    });
 }

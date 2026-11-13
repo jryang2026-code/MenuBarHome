@@ -1251,6 +1251,8 @@ export class MenuMijiaWindowsApp {
     return sections
       .map((section) => {
         const collapsed = this.layout.collapsed.includes(scopedKey(this.pageKey, section.id));
+        const hasActiveSubpage =
+          this.expandedDeviceId !== null && section.devices.some((d) => d.id === this.expandedDeviceId);
         const spanMap = spans(section.devices, (d) => (this.expandedDeviceId === d.id ? "full" : this.tileSize(d)));
         const header =
           section.title === null
@@ -1261,7 +1263,7 @@ export class MenuMijiaWindowsApp {
                 <span class="cc-group-count">${section.devices.length}</span>
                 <span class="cc-group-rule"></span>
               </button>`;
-        const body = collapsed
+        const body = collapsed && !hasActiveSubpage
           ? ""
           : `<div class="cc-devices-grid is-flow">
               ${section.devices.map((dev) => this.renderDeviceTile(dev, spanMap.get(dev.id) ?? 6, index++)).join("")}

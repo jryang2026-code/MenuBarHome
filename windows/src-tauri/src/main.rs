@@ -320,11 +320,12 @@ fn main() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "toggle" => toggle_main_window(app, None, false),
                     "update" => {
-                        if let Some(window) = app.get_webview_window("main") {
+                        if app.get_webview_window("main").is_some() {
                             PIN_POPOVER.store(true, Ordering::SeqCst);
-                            present_panel(&window, None);
-                            let _ = window.eval(
-                                "window.dispatchEvent(new CustomEvent('menumijia:open-update'))",
+                            present_panel_and_eval(
+                                app,
+                                None,
+                                Some("window.dispatchEvent(new CustomEvent('menumijia:open-update'))"),
                             );
                         } else if let Ok(url) = validated_release_url(RELEASE_PAGE_URL) {
                             open_url_in_browser(&url);
@@ -394,6 +395,22 @@ mod tests {
         assert!(should_complete_hide(true, 4, 4));
         assert!(!should_complete_hide(false, 4, 4));
         assert!(!should_complete_hide(true, 5, 4));
+
+        let mut vis = PanelVisibilityState::default();
+        assert_eq!(vis.begin_present(), 1);
+        assert_eq!(vis.begin_hide(false), None);
+        let dismiss_seq = vis.begin_hide(true).expect("visible panel begins dismissal");
+        assert_eq!(dismiss_seq, 2);
+        assert_eq!(vis.begin_hide(true), None);
+        // Reopening while the 200 ms fallback timer is in flight invalidates the pending hide.
+        assert_eq!(vis.begin_present(), 3);
+        assert!(!vis.complete_hide(dismiss_seq));
+        let second_dismiss = vis.begin_hide(true).expect("reopened panel can dismiss again");
+        assert!(vis.complete_hide(second_dismiss));
+        assert!(!vis.complete_hide(second_dismiss));
+        let aborted = vis.begin_hide(true).expect("starts hide before eval error");
+        vis.abort_hide();
+        assert!(!vis.complete_hide(aborted));
     }
 
     #[test]

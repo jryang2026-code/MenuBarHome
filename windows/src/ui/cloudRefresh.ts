@@ -441,7 +441,9 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
     const unmatchedTileIds = new Set(tileElementsById.keys());
     let index = 0;
     for (const section of sections) {
-      if (host.layout.collapsed.includes(scopedKey(host.pageKey, section.id))) continue;
+      const hasActiveSubpage =
+        host.expandedDeviceId !== null && section.devices.some((device) => device.id === host.expandedDeviceId);
+      if (host.layout.collapsed.includes(scopedKey(host.pageKey, section.id)) && !hasActiveSubpage) continue;
       const spanMap = spans(
         section.devices,
         (device) => (host.expandedDeviceId === device.id ? "full" : host.tileSize(device)),

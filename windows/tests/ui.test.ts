@@ -6448,4 +6448,30 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.doesNotMatch(document.body.textContent ?? "", /全开主灯/);
     assert.doesNotMatch(document.body.textContent ?? "", /25°制冷/);
   });
+
+  it("toggles and expands the slider deck primary light even when its custom group is collapsed", async () => {
+    const app = startDemoApp();
+    app.layout.groups = [{ id: "g-lights", name: "主灯" }];
+    app.layout.groupMap = {
+      "light.living_ceiling": "g-lights",
+      "light.study_desk": "g-lights",
+    };
+    app.layout.collapsed = ["all|g-lights"];
+    app.render();
+    assert.ok(document.querySelector('[data-collapse="g-lights"].is-collapsed'));
+    assertMissing(document.querySelector('[data-tile-id="light.living_ceiling"]'));
+    const deckToggle = document.querySelector<HTMLElement>('[data-deck-toggle="light.living_ceiling"]');
+    assert.ok(deckToggle, "slider deck still mounts for the collapsed group's primary light");
+    deckToggle.click();
+    await setImmediate();
+    const livingLight = app.devices.find((d) => d.id === "light.living_ceiling")!;
+    assert.equal(livingLight.kind.kind === "light" && livingLight.kind.isOn, false);
+
+    // Toggle light.study_desk off too or expand whichever primary light is now on the deck (both are in collapsed g-lights).
+    const deckExpand = document.querySelector<HTMLElement>('[data-deck-expand="light.study_desk"]');
+    assert.ok(deckExpand);
+    deckExpand.click();
+    await setImmediate();
+    assert.ok(document.querySelector('.cc-tile.is-subpage[data-tile-id="light.study_desk"]'));
+  });
 });
