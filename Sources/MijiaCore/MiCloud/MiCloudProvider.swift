@@ -501,9 +501,12 @@ public actor MiCloudProvider: HomeProvider {
             // getProps omits items with a non-zero code. A missing door-state must not keep the
             // previous locked/unlocked claim while the device list still says online (#149).
             let requestedLocks = doorStateKeys(requested: outcome.completedKeys)
+            let clearedCachedLock = requestedLocks.contains { outcome.values[$0] == nil && values[$0] != nil }
             Self.applyPropRead(&values, fresh: outcome.values, requestedLockKeys: requestedLocks)
             if let cloudError = outcome.cloudError {
-                emitSnapshot(closesAwayGap: false)
+                if !outcome.values.isEmpty || clearedCachedLock {
+                    emitSnapshot(closesAwayGap: false)
+                }
                 return (freshKeys, cloudError)
             }
         }
@@ -581,8 +584,10 @@ public actor MiCloudProvider: HomeProvider {
                     if !resultValues.isEmpty || outcome.keys.isEmpty {
                         recordLANSuccess(did: outcome.did)
                         combined.merge(resultValues) { _, new in new }
-                        lanAnsweredKeys.append(contentsOf: outcome.keys)
                     }
+                    // Even an all-nonzero reply completed the read attempt; keep its keys in
+                    // completedKeys so failed cloud fallback still clears stale door-state claims.
+                    lanAnsweredKeys.append(contentsOf: outcome.keys)
                     if !missingKeys.isEmpty {
                         cloudKeys.append(contentsOf: missingKeys)
                     }
@@ -599,7 +604,7 @@ public actor MiCloudProvider: HomeProvider {
             } catch MiCloudError.sessionExpired {
                 throw MiCloudError.sessionExpired
             } catch {
-                if combined.isEmpty {
+                if combined.isEmpty && lanAnsweredKeys.isEmpty {
                     throw error
                 }
                 return HybridPropReadOutcome(

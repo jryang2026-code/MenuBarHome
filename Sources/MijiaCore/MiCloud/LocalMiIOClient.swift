@@ -392,14 +392,15 @@ public actor LocalMiIOClient {
         }
     }
 
-    private static func parsePropValues(_ result: JSONValue, defaultDid: String) -> [MiotPropKey: JSONValue] {
+    static func parsePropValues(_ result: JSONValue, defaultDid: String) -> [MiotPropKey: JSONValue] {
         var values: [MiotPropKey: JSONValue] = [:]
         for item in result.arrayValue ?? [] {
             let did = item["did"]?.idString ?? defaultDid
             guard let siid = item["siid"]?.intValue,
                   let piid = item["piid"]?.intValue,
-                  (item["code"]?.intValue ?? 0) == 0,
-                  let value = item["value"] else { continue }
+                  item["code"].map({ $0.intValue == 0 }) ?? true,
+                  let value = item["value"],
+                  value != .null else { continue }
             values[MiotPropKey(did: did, siid: siid, piid: piid)] = value
         }
         return values
