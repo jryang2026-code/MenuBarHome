@@ -6,9 +6,9 @@ export function demoDevices(): SmartDevice[] {
   return [
   {
     id: "light.living_ceiling",
-    name: t(t("客厅吸顶灯")),
+    name: t("客厅吸顶灯"),
     roomId: "room_living",
-    roomName: t(t("客厅")),
+    roomName: t("客厅"),
     model: "yeelink.light.ceiling22",
     isOnline: true,
     kind: {
@@ -25,9 +25,9 @@ export function demoDevices(): SmartDevice[] {
   },
   {
     id: "climate.living_ac",
-    name: t(t("客厅立式空调")),
+    name: t("客厅立式空调"),
     roomId: "room_living",
-    roomName: t(t("客厅")),
+    roomName: t("客厅"),
     model: "xiaomi.aircondition.mc5",
     isOnline: true,
     kind: {
@@ -47,9 +47,9 @@ export function demoDevices(): SmartDevice[] {
   },
   {
     id: "light.study_desk",
-    name: t(t("书房台灯")),
+    name: t("书房台灯"),
     roomId: "room_study",
-    roomName: t(t("书房")),
+    roomName: t("书房"),
     model: "yeelink.light.lamp15",
     isOnline: true,
     kind: {
@@ -66,9 +66,9 @@ export function demoDevices(): SmartDevice[] {
   },
   {
     id: "fan.bedroom_standing",
-    name: t(t("主卧直流风扇")),
+    name: t("主卧直流风扇"),
     roomId: "room_bedroom",
-    roomName: t(t("主卧")),
+    roomName: t("主卧"),
     model: "zhimi.fan.za5",
     isOnline: true,
     kind: {
@@ -83,9 +83,9 @@ export function demoDevices(): SmartDevice[] {
   },
   {
     id: "plug.entry_socket",
-    name: t(t("玄关智能插座")),
+    name: t("玄关智能插座"),
     roomId: "room_entry",
-    roomName: t(t("玄关")),
+    roomName: t("玄关"),
     model: "cuco.plug.cp1",
     isOnline: true,
     kind: {
@@ -99,9 +99,9 @@ export function demoDevices(): SmartDevice[] {
   },
   {
     id: "vacuum.roborock",
-    name: t(t("全屋扫拖机器人")),
+    name: t("全屋扫拖机器人"),
     roomId: "room_living",
-    roomName: t(t("客厅")),
+    roomName: t("客厅"),
     model: "roborock.vacuum.a15",
     isOnline: true,
     kind: {
@@ -116,9 +116,9 @@ export function demoDevices(): SmartDevice[] {
   },
   {
     id: "sensor.living_env",
-    name: t(t("客厅温湿度计")),
+    name: t("客厅温湿度计"),
     roomId: "room_living",
-    roomName: t(t("客厅")),
+    roomName: t("客厅"),
     model: "miaomiaoce.sensor_ht.t2",
     isOnline: true,
     kind: {
@@ -130,9 +130,9 @@ export function demoDevices(): SmartDevice[] {
   },
   {
     id: "camera.living_cam",
-    name: t(t("客厅摄像机")),
+    name: t("客厅摄像机"),
     roomId: "room_living",
-    roomName: t(t("客厅")),
+    roomName: t("客厅"),
     model: "chuangmi.camera.81ac1",
     isOnline: true,
     kind: {

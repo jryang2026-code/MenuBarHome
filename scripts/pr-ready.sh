@@ -69,17 +69,51 @@ fi
 inspect_once() {
     local n="$1"
     local wait_flag="$2"
-    local tmp
+    local tmp gh_err
     tmp="$(mktemp -d "${TMPDIR:-/tmp}/pr-ready.XXXXXX")"
-    gh repo view --json nameWithOwner >"$tmp/repo.json"
-    gh pr view "$n" --json headRefOid,mergeStateStatus >"$tmp/meta.json"
+
+    handle_gh_failure() {
+        local step="$1"
+        gh_err="$(tail -n 1 "$tmp/gh.err" 2>/dev/null || true)"
+        echo "gh error (${step}): ${gh_err:-unknown failure}"
+        rm -rf "$tmp"
+        if [ "$wait_flag" = "1" ]; then
+            case "$gh_err" in
+                *"Could not resolve"*|*"not found"*|*"Not Found"*|*"HTTP 401"*|*"HTTP 403"*|*"HTTP 404"*|*"authentication"*|*"auth login"*)
+                    return 1
+                    ;;
+                *)
+                    return 10
+                    ;;
+            esac
+        fi
+        return 1
+    }
+
+    if ! gh repo view --json nameWithOwner >"$tmp/repo.json" 2>"$tmp/gh.err"; then
+        handle_gh_failure "repo view"
+        return $?
+    fi
+    if ! gh pr view "$n" --json headRefOid,mergeStateStatus >"$tmp/meta.json" 2>"$tmp/gh.err"; then
+        handle_gh_failure "pr view"
+        return $?
+    fi
     local checks_status=0
     env -u GH_FORCE_TTY gh pr checks "$n" --json name,state,bucket >"$tmp/checks.json" 2>"$tmp/checks.err" || checks_status=$?
     printf '%s\n' "$checks_status" >"$tmp/checks.status"
     local repo
-    repo="$("$python_bin" -I -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["nameWithOwner"])' "$tmp/repo.json")"
-    gh api --paginate --slurp "repos/${repo}/issues/${n}/comments?per_page=100" >"$tmp/issues.json"
-    gh api --paginate --slurp "repos/${repo}/pulls/${n}/comments?per_page=100" >"$tmp/reviews.json"
+    if ! repo="$("$python_bin" -I -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["nameWithOwner"])' "$tmp/repo.json" 2>"$tmp/gh.err")"; then
+        handle_gh_failure "parse repo"
+        return $?
+    fi
+    if ! gh api --paginate --slurp "repos/${repo}/issues/${n}/comments?per_page=100" >"$tmp/issues.json" 2>"$tmp/gh.err"; then
+        handle_gh_failure "issues comments"
+        return $?
+    fi
+    if ! gh api --paginate --slurp "repos/${repo}/pulls/${n}/comments?per_page=100" >"$tmp/reviews.json" 2>"$tmp/gh.err"; then
+        handle_gh_failure "review comments"
+        return $?
+    fi
 
     local verdict_status=0
     "$python_bin" -I - "$tmp" "$wait_flag" <<'PY' || verdict_status=$?
@@ -234,6 +268,9 @@ else:
             print(body[:900])
 
 if checks_error:
+    # In --wait mode, "no checks reported" right after a push or a transient HTTP 5xx should retry until timeout.
+    if wait_mode and re.search(r"no checks reported|HTTP 5\d\d|timeout|EOF|connection reset", checks_err, re.I):
+        sys.exit(10)
     sys.exit(1)
 
 if not wait_mode:

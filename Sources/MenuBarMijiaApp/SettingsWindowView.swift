@@ -843,10 +843,95 @@ enum WeeklyHealthReportExport {
 
 // MARK: - Connections
 
+enum HAConnectionSaveGuard {
+    static let haTokenAccount = "ha_access_token"
+
+    enum Decision: Equatable {
+        case proceed(token: String, clearUnavailableFlag: Bool)
+        case blockedKeychainUnavailable
+    }
+
+    @MainActor
+    static func vault(for store: HomeStore) -> CredentialVault? {
+        store.credentialVault ?? (store.userDefaults === UserDefaults.standard ? .shared : nil)
+    }
+
+    @MainActor
+    static func isInitialLookupUnavailable(loadedToken: String, vault: CredentialVault?) -> Bool {
+        loadedToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && vault?.lookup(haTokenAccount) == .unavailable
+    }
+
+    @MainActor
+    static func loadInitialToken(from store: HomeStore) -> (token: String, lookupWasUnavailable: Bool) {
+        let loaded = store.loadHAToken()
+        let unavailable = isInitialLookupUnavailable(loadedToken: loaded, vault: vault(for: store))
+        return (loaded, unavailable)
+    }
+
+    /// Protects a stored Home Assistant token when the user opened Settings while the Keychain was
+    /// temporarily unreadable (`loadHAToken()` returned `""`) and then saved an edited URL without
+    /// typing a replacement token.
+    static func resolve(
+        draftToken: String,
+        initialLookupWasUnavailable: Bool,
+        retryLookup: () -> CredentialVault.Lookup
+    ) -> Decision {
+        let trimmed = draftToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty, initialLookupWasUnavailable else {
+            return .proceed(token: draftToken, clearUnavailableFlag: !trimmed.isEmpty)
+        }
+        switch retryLookup() {
+        case .value(let data):
+            let recovered = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return .proceed(token: recovered, clearUnavailableFlag: true)
+        case .missing:
+            return .proceed(token: "", clearUnavailableFlag: true)
+        case .unavailable:
+            return .blockedKeychainUnavailable
+        }
+    }
+
+    @MainActor
+    static func save(
+        serverURL: String,
+        tokenDraft: inout String,
+        initialLookupWasUnavailable: inout Bool,
+        in store: HomeStore
+    ) {
+        let activeVault = vault(for: store)
+        let decision = resolve(
+            draftToken: tokenDraft,
+            initialLookupWasUnavailable: initialLookupWasUnavailable,
+            retryLookup: { activeVault?.lookup(haTokenAccount, retryingUnavailable: true) ?? .missing }
+        )
+        switch decision {
+        case .proceed(let resolvedToken, let clearFlag):
+            if clearFlag {
+                initialLookupWasUnavailable = false
+            }
+            if tokenDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !resolvedToken.isEmpty {
+                tokenDraft = resolvedToken
+            }
+            store.updateConnection(serverURL: serverURL, token: resolvedToken)
+        case .blockedKeychainUnavailable:
+            store.showToast(
+                L10n.tr(
+                    "无法访问钥匙串，已保留原有 Home Assistant 令牌",
+                    "Keychain access was denied; kept existing Home Assistant token"
+                ),
+                isError: true
+            )
+        }
+    }
+}
+
 private struct ConnectionSettingsTab: View {
     let store: HomeStore
     @State private var urlDraft: String = ""
     @State private var tokenDraft: String = ""
+    @State private var tokenLookupWasUnavailable = false
 
     var body: some View {
         let _ = store.effectiveLanguage
@@ -921,6 +1006,7 @@ private struct ConnectionSettingsTab: View {
                             Button(L10n.tr("断开连接", "Disconnect")) {
                                 if store.disconnectHomeAssistant() {
                                     tokenDraft = ""
+                                    tokenLookupWasUnavailable = false
                                     store.showToast(L10n.tr("已断开 Home Assistant", "Disconnected from Home Assistant"))
                                 } else {
                                     store.showToast(
@@ -933,7 +1019,12 @@ private struct ConnectionSettingsTab: View {
                         }
 
                         Button(L10n.tr("保存并重新连接", "Save & Reconnect")) {
-                            store.updateConnection(serverURL: urlDraft, token: tokenDraft)
+                            HAConnectionSaveGuard.save(
+                                serverURL: urlDraft,
+                                tokenDraft: &tokenDraft,
+                                initialLookupWasUnavailable: &tokenLookupWasUnavailable,
+                                in: store
+                            )
                         }
                         .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
                     }
@@ -949,7 +1040,9 @@ private struct ConnectionSettingsTab: View {
         }
         .onAppear {
             urlDraft = store.serverURLString
-            tokenDraft = store.loadHAToken()
+            let initialHAToken = HAConnectionSaveGuard.loadInitialToken(from: store)
+            tokenDraft = initialHAToken.token
+            tokenLookupWasUnavailable = initialHAToken.lookupWasUnavailable
             if store.discoveredHAInstances.isEmpty {
                 Task {
                     let found = await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: true)
@@ -1384,9 +1477,14 @@ private struct PrivacySettingsTab: View {
                 .settingsRow(anchor: .signOut)
             }
         }
+        .onAppear { scanner.invalidateIfContextChanged(for: store) }
+        .onChange(of: store.homeBackend) { _, _ in scanner.reset() }
+        .onChange(of: store.miAccounts.map(\.id)) { _, _ in scanner.reset() }
+        .onChange(of: store.serverURLString) { _, _ in scanner.reset() }
         .alert(L10n.tr("退出并吊销所有令牌？", "Sign out and revoke all tokens?"), isPresented: $confirmsRevoke) {
             Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
             Button(L10n.tr("退出并吊销", "Sign Out & Revoke"), role: .destructive) {
+                scanner.reset()
                 store.signOutAndRevokeAll()
             }
         } message: {
@@ -1411,6 +1509,7 @@ private struct PrivacySettingsTab: View {
     }
 
     private func copyDiagnostics() {
+        scanner.invalidateIfContextChanged(for: store)
         let info = Bundle.main.infoDictionary
         let models = Dictionary(grouping: store.devices, by: { $0.model })
             .map { DiagnosticsReportBuilder.ModelCount(model: $0.key, count: $0.value.count) }

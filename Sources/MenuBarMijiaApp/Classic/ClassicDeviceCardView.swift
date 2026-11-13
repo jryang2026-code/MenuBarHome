@@ -80,7 +80,7 @@ public struct ClassicDeviceCardView: View {
         quickIndex != nil && (store.isOptionKeyPressed || store.focusedDeviceId != nil)
     }
 
-    private var accent: Color { DevicePalette.accentColor(for: device) }
+    var accent: Color { DevicePalette.accentColor(for: device) }
 
     /// Climate tiles wear their family colour when on; every other kind keeps the plain well.
     private var tileTint: Color? {
@@ -371,11 +371,16 @@ public struct ClassicDeviceCardView: View {
                     if device.isOnline, device.kind.canTogglePower { SoundFeedback.playSuccess() }
                     return
                 }
-                guard device.isPrimaryToggleable else { return }
-                withAnimation(AppleMotion.snappySpring) {
-                    _ = store.togglePrimary(device)
+                if device.isPrimaryToggleable {
+                    withAnimation(AppleMotion.snappySpring) {
+                        _ = store.togglePrimary(device)
+                    }
+                    if device.isOnline { SoundFeedback.playSuccess() }
+                } else if store.hasDetailDrawer(for: device) {
+                    withAnimation(AppleMotion.snappySpring) {
+                        store.toggleExpanded(device.id)
+                    }
                 }
-                if device.isOnline { SoundFeedback.playSuccess() }
             } label: {
                 iconBadge
             }
@@ -388,20 +393,22 @@ public struct ClassicDeviceCardView: View {
                     ? L10n.tr("点击打开摄像头实时小窗", "Click to open live camera window")
                     : device.isPrimaryToggleable
                         ? L10n.tr("点击直接切换开关", "Click to toggle power")
-                        : L10n.tr("只读状态", "Read only")
+                        : store.hasDetailDrawer(for: device)
+                            ? L10n.tr("点击展开详细控制", "Click to expand controls")
+                            : L10n.tr("只读状态", "Read only")
             )
 
             Button {
                 guard !isEditingLayout else { return }
                 withAnimation(AppleMotion.snappySpring) {
-                    if case .camera(let cam) = device.kind {
+                    if store.hasDetailDrawer(for: device) {
+                        store.toggleExpanded(device.id)
+                    } else if case .camera(let cam) = device.kind {
                         if device.kind.canTogglePower, !cam.isOn {
                             _ = store.togglePrimary(device)
                         }
                         store.openCameraLiveView(device.id)
                         if device.isOnline, device.kind.canTogglePower { SoundFeedback.playSuccess() }
-                    } else if store.hasDetailDrawer(for: device) {
-                        store.toggleExpanded(device.id)
                     } else if device.kind.canTogglePower {
                         _ = store.togglePrimary(device)
                         if device.isOnline { SoundFeedback.playSuccess() }
@@ -497,8 +504,9 @@ public struct ClassicDeviceCardView: View {
                                 .foregroundStyle(nameColor)
                                 .lineLimit(1)
 
-                            if showRoomBadge {
-                                Text(L10n.displayRoomName(device.roomName))
+                            let roomLabel = L10n.displayRoomName(device.roomName).trimmingCharacters(in: .whitespacesAndNewlines)
+                            if showRoomBadge, !roomLabel.isEmpty {
+                                Text(roomLabel)
                                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                                     .foregroundStyle(nameColor.opacity(0.68))
                                     .padding(.horizontal, 5.5)
@@ -1303,30 +1311,37 @@ public struct ClassicDeviceCardView: View {
                         .padding(.vertical, 5.5)
                         .classicAdaptiveGlass(in: RoundedRectangle(cornerRadius: DesignTokens.Radius.inset, style: .continuous))
                         .onSubmit {
-                            guard !speakerInputText.isEmpty else { return }
-                            store.sendSpeakerText(device.id, text: speakerInputText, asDirective: true)
-                            speakerInputText = ""
+                            submitSpeakerInput(spec, asDirective: spec.directiveNotifyEntityId != nil)
                         }
 
                     if spec.ttsNotifyEntityId != nil {
                         Button(L10n.tr("播报", "Speak")) {
-                            store.sendSpeakerText(device.id, text: speakerInputText, asDirective: false)
-                            speakerInputText = ""
+                            submitSpeakerInput(spec, asDirective: false)
                         }
                         .buttonStyle(ClassicPillActionButtonStyle(tintColor: accent))
-                        .disabled(speakerInputText.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(speakerInputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
 
                     if spec.directiveNotifyEntityId != nil {
                         Button(L10n.tr("执行", "Run")) {
-                            store.sendSpeakerText(device.id, text: speakerInputText, asDirective: true)
-                            speakerInputText = ""
+                            submitSpeakerInput(spec, asDirective: true)
                         }
                         .buttonStyle(ClassicPillActionButtonStyle(isSelected: true, tintColor: accent))
-                        .disabled(speakerInputText.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(speakerInputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
             }
+        }
+    }
+
+    private func submitSpeakerInput(_ spec: SpeakerSpec, asDirective: Bool) {
+        let trimmed = speakerInputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let hasEntity = (asDirective ? spec.directiveNotifyEntityId : spec.ttsNotifyEntityId) != nil
+        let canDispatch = !store.miSessionBlocksControl && !store.isControlBlockedByScreenLock && hasEntity
+        store.sendSpeakerText(device.id, text: speakerInputText, asDirective: asDirective)
+        if canDispatch {
+            speakerInputText = ""
         }
     }
 
@@ -1416,78 +1431,6 @@ public struct ClassicDeviceCardView: View {
                 .padding(6)
             }
             .padding(-6)
-        }
-    }
-
-    // MARK: - 9. Smart Camera Controls & Live View Popout (#97)
-
-    private func cameraDrawer(_ spec: CameraSpec) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                AdaptiveGlassContainer(spacing: 6) {
-                    HStack(spacing: 6) {
-                        Button {
-                            if spec.powerWritable, !spec.isOn {
-                                _ = store.togglePrimary(device)
-                            }
-                            store.openCameraLiveView(device.id)
-                        } label: {
-                            Label(L10n.tr("放大实时画面", "Open Live View"), systemImage: "pip.enter")
-                        }
-                        .buttonStyle(ClassicPillActionButtonStyle(isSelected: true, tintColor: accent))
-                        .disabled(!device.isOnline)
-
-                        if spec.powerWritable {
-                        Button {
-                            _ = store.togglePrimary(device)
-                            if device.isOnline { SoundFeedback.playSuccess() }
-                        } label: {
-                            Label(
-                                spec.isOn ? L10n.tr("镜头休眠", "Sleep") : L10n.tr("唤醒镜头", "Wake"),
-                                systemImage: spec.isOn ? "moon.zzz.fill" : "video.fill"
-                            )
-                        }
-                        .buttonStyle(ClassicPillActionButtonStyle(isSelected: !spec.isOn, tintColor: accent))
-                        .disabled(!device.isOnline)
-                        }
-
-                        if spec.motionDetectionEntityId != nil {
-                            let motionOn = spec.isMotionDetectionOn ?? false
-                            Button {
-                                store.setCameraMotionDetection(device.id, enabled: !motionOn)
-                            } label: {
-                                Label(
-                                    motionOn ? L10n.tr("移动侦测：开", "Motion: On") : L10n.tr("移动侦测：关", "Motion: Off"),
-                                    systemImage: "figure.walk.motion"
-                                )
-                            }
-                            .buttonStyle(ClassicPillActionButtonStyle(isSelected: motionOn, tintColor: accent))
-                            .disabled(!device.isOnline)
-                        }
-                    }
-                }
-                .padding(6)
-            }
-            .padding(-6)
-
-            if !spec.availableNightShots.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    AdaptiveGlassContainer(spacing: 6) {
-                        HStack(spacing: 6) {
-                            ForEach(spec.availableNightShots, id: \.self) { mode in
-                                let selected = (spec.nightShot == mode)
-                                Button(SmartDevice.localizeNightShot(mode)) {
-                                    store.setCameraNightShot(device.id, mode: mode)
-                                }
-                                .buttonStyle(ClassicPillActionButtonStyle(isSelected: selected, tintColor: accent))
-                                .disabled(!device.isOnline)
-                            }
-                        }
-                    }
-                    .padding(6)
-                }
-                .padding(-6)
-            }
         }
     }
 }

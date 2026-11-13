@@ -42,6 +42,7 @@ export interface SpeechRecognitionInstance {
   onend: (() => void) | null;
   start(): void;
   stop(): void;
+  abort?(): void;
 }
 
 export type ConnectionMode = "demo" | "xiaomiCloud" | "homeAssistant";
@@ -157,6 +158,7 @@ export interface PendingHighRiskConfirmation {
     readonly command: DeviceCommand;
     readonly summary: string;
     readonly intent: DeviceIntent;
+    readonly promptLabel?: string;
   };
 }
 

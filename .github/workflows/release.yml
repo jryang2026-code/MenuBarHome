@@ -399,28 +399,39 @@ jobs:
           set -euo pipefail
           if [ -z "${WINDOWS_CERT_THUMBPRINT:-}" ]; then
             echo "▶ 未配置 Authenticode 证书，构建未签名安装包"
-            npx tauri build -- --locked
+            pwsh -NoProfile -File scripts/build-installer.ps1
             exit 0
           fi
           if ! printf '%s' "$WINDOWS_CERT_THUMBPRINT" | grep -Eq '^[0-9A-Fa-f]{40}$'; then
             echo "❌ 证书指纹格式错误：$WINDOWS_CERT_THUMBPRINT" >&2
             exit 1
           fi
-          config='{"bundle":{"windows":{"certificateThumbprint":"'"${WINDOWS_CERT_THUMBPRINT}"'","digestAlgorithm":"sha256"'
-          if [ -n "${WINDOWS_TIMESTAMP_URL:-}" ]; then
-            config="${config}"',"timestampUrl":"'"${WINDOWS_TIMESTAMP_URL}"'"'
-            if [ "${WINDOWS_TIMESTAMP_TSP:-}" = "true" ]; then
-              config="${config}"',"tsp":true'
-            fi
-          else
+          if [ -z "${WINDOWS_TIMESTAMP_URL:-}" ]; then
             echo "::warning::未设置 WINDOWS_TIMESTAMP_URL，安装包签名不带时间戳，证书到期后签名将失效。"
           fi
-          close='}}}'
-          config="${config}${close}"
-          node -e 'JSON.parse(process.argv[1])' "$config" \
-            || { echo "❌ 生成的 Tauri 配置覆盖不合法：$config" >&2; exit 1; }
+          # 写入 Tauri 平台覆盖文件 src-tauri/tauri.windows.conf.json，使 scripts/build-installer.ps1
+          # 在保留打包工具 HTTP 5xx 自动重试的同时透传签名配置，且不经命令行拼接 JSON。
+          trap 'rm -f src-tauri/tauri.windows.conf.json' EXIT
+          node - <<'JS'
+          const fs = require("node:fs");
+          const win = {
+            certificateThumbprint: process.env.WINDOWS_CERT_THUMBPRINT,
+            digestAlgorithm: "sha256",
+          };
+          if (process.env.WINDOWS_TIMESTAMP_URL) {
+            win.timestampUrl = process.env.WINDOWS_TIMESTAMP_URL;
+            if (process.env.WINDOWS_TIMESTAMP_TSP === "true") {
+              win.tsp = true;
+            }
+          }
+          fs.writeFileSync(
+            "src-tauri/tauri.windows.conf.json",
+            JSON.stringify({ bundle: { windows: win } }) + "\n",
+            "utf8",
+          );
+          JS
           echo "▶ 使用证书 $WINDOWS_CERT_THUMBPRINT 签名安装包"
-          npx tauri build -c "$config" -- --locked
+          pwsh -NoProfile -File scripts/build-installer.ps1
 
       - name: Collect installers with checksums
         run: |

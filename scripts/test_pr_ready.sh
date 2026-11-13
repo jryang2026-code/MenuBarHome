@@ -359,6 +359,73 @@ else
     fail "--wait 被已解决的历史 inline 误拦，退出 $status"
 fi
 
+# 5) --wait 首轮遇 gh api 瞬时 502（不应崩溃或泄露 JSONDecodeError），下一轮恢复后退出 0；PR 404 则立即退出 1
+transient_bin="$tmp/transient-bin"
+mkdir -p "$transient_bin"
+cat >"$transient_bin/gh" <<'EOF'
+#!/bin/bash
+joined="$*"
+state_dir="${PR_READY_TRANSIENT_DIR:?}"
+count_file="$state_dir/api_calls"
+calls=0
+if [[ -f "$count_file" ]]; then
+    calls="$(cat "$count_file")"
+fi
+if [[ "$joined" == *"repo view"* ]]; then
+    printf '%s\n' '{"nameWithOwner":"jryang2026-code/MenuBarHome"}'
+    exit 0
+fi
+if [[ "$joined" == *"pr view"* ]]; then
+    if [[ "${PR_READY_NOT_FOUND:-}" == "1" ]]; then
+        echo "GraphQL: Could not resolve to a PullRequest with the number of 9999." >&2
+        exit 1
+    fi
+    cat "$state_dir/meta.json"
+    exit 0
+fi
+if [[ "$joined" == *"pr checks"* ]]; then
+    echo "[]"
+    exit 0
+fi
+if [[ "$joined" == *"/issues/"*"/comments"* ]]; then
+    calls=$((calls + 1))
+    printf '%s\n' "$calls" >"$count_file"
+    if [[ "$calls" -eq 1 ]]; then
+        echo "gh: HTTP 502 Bad Gateway" >&2
+        exit 1
+    fi
+    cat "$state_dir/issues.json"
+    exit 0
+fi
+if [[ "$joined" == *"/pulls/"*"/comments"* ]]; then
+    echo "[[]]"
+    exit 0
+fi
+exit 1
+EOF
+chmod +x "$transient_bin/gh"
+
+tdir="$tmp/transient-state"
+mkdir -p "$tdir"
+printf '{"headRefOid":"%s","mergeStateStatus":"CLEAN"}\n' "$head_sha" >"$tdir/meta.json"
+printf '[[{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"<!-- codex-review-state:v1 -->{\\"code_review\\":{\\"commit_sha\\":\\"%s\\",\\"status\\":\\"completed\\",\\"has_any_findings\\":false,\\"has_unresolved_findings\\":false}}"}]]\n' "$head_sha" >"$tdir/issues.json"
+
+status=0
+output="$(PR_READY_TRANSIENT_DIR="$tdir" PATH="$transient_bin:$PATH" bash "$root/scripts/pr-ready.sh" --wait --interval 0.02 --timeout 30 60 2>"$tmp/err")" || status=$?
+if [[ "$status" == 0 ]] && [[ "$(cat "$tdir/api_calls")" == 2 ]] && ! grep -q "Traceback" "$tmp/err"; then
+    pass "--wait 遇到 gh api 瞬时 502 自动重试并恢复"
+else
+    fail "--wait 遇到 gh api 瞬时 502 未恢复，退出 $status，stderr=$(cat "$tmp/err")"
+fi
+
+status=0
+output="$(PR_READY_NOT_FOUND=1 PR_READY_TRANSIENT_DIR="$tdir" PATH="$transient_bin:$PATH" bash "$root/scripts/pr-ready.sh" --wait --interval 0.02 --timeout 30 9999 2>"$tmp/err")" || status=$?
+if [[ "$status" == 1 ]] && printf '%s\n' "$output" | grep -q "Could not resolve"; then
+    pass "--wait 遇到不存在的 PR 立即返回退出码 1"
+else
+    fail "--wait 遇到不存在的 PR 未立即退出 1，实际 $status，output=$output"
+fi
+
 if [[ "$failures" -eq 0 ]]; then
     exit 0
 fi

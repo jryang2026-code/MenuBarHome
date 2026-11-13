@@ -518,12 +518,9 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
             guard let op = Self.decodeOperation(entry.operationKey) else { continue }
             let intent = DeviceIntent(targetId: entry.targetId, operation: op)
             let title = Self.suggestionTitle(for: intent, devices: devices, scenes: scenes) ?? entry.targetId
-            let dayTypeSuffix: String
-            switch entry.dayType {
-            case .weekday: dayTypeSuffix = "（工作日）"
-            case .weekend: dayTypeSuffix = "（周末）"
-            case nil: dayTypeSuffix = ""
-            }
+            let dayTypeSuffix = entry.dayType.map {
+                L10n.isEnglish ? " (\($0.localizedName))" : "（\($0.localizedName)）"
+            } ?? ""
             items.append(ReadableItem(
                 id: "e|\(entry.bucket.rawValue)|\(entry.dayType?.rawValue ?? "any")|\(entry.targetId)|\(entry.operationKey)",
                 text: L10n.tr(
@@ -810,7 +807,9 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
         case .brightness(let pct): return "brightness:\(pct)"
         case .colorTemperature(let k): return "ct:\(k)"
         case .hvacMode(let mode): return "hvac:\(mode)"
-        case .targetTemperature(let t): return "temp:\(Int(t.rounded()))"
+        case .targetTemperature(let t):
+            guard let rounded = DeviceSynthesizer.roundedInt(t) else { return nil }
+            return "temp:\(rounded)"
         case .activateScene: return "scene:activate"
         case .fanSpeed(let v): return "fan:\(v)"
         case .oscillation(let on): return on ? "swing:on" : "swing:off"

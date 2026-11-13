@@ -1569,9 +1569,14 @@ struct MenuBarPanelControllerTests {
         #expect(controller.isPanelVisible)
         #expect(controller.hostedPanelTheme == .liquidGlass)
         let liquidContent = try #require(panel.contentView)
+        let liquidVisible = try #require(panel.screen ?? NSScreen.main).visibleFrame
         #expect(liquidContent !== classicContent)
-        #expect(panel.frame.height > visible.height - 30, "liquid glass uses the full-height column")
-        #expect(abs(panel.frame.maxX - (visible.maxX - 16)) <= 0.5)
+        // With an auto-hidden or notch menu bar, `pumpMainRunLoop()` lets WindowServer place the
+        // status-item window ~24-38 pt below `visibleFrame.maxY`; `liquidFrame` anchors 6 pt under
+        // that item down to `visible.minY + 8`, so allow up to 60 pt of top chrome + margins.
+        #expect(panel.frame.height > liquidVisible.height - 60, "liquid glass uses the full-height column")
+        #expect(abs(panel.frame.minY - (liquidVisible.minY + 8)) <= 1)
+        #expect(abs(panel.frame.maxX - (liquidVisible.maxX - 16)) <= 0.5)
         #expect(controller.grokBallSidecarWindow?.isVisible == true, "the ball returns with the liquid panel")
 
         // Switching back while open closes it again and the next show restores the classic frame.
@@ -2580,6 +2585,32 @@ struct MenuBarPanelControllerTests {
         #expect(cameraController.hasPendingDoorbellAutoDismiss)
         cameraController.windowWillStartLiveResize(Notification(name: NSWindow.willStartLiveResizeNotification, object: panel))
         #expect(!cameraController.isDoorbellPlacement)
+        #expect(!cameraController.hasPendingDoorbellAutoDismiss)
+
+        // Pin, reconnect, and video-only badge clicks also claim close ownership while keeping doorbell placement.
+        let savedPinned = cameraController.isPinnedOnTop
+        defer { cameraController.isPinnedOnTop = savedPinned }
+
+        cameraController.closePanel()
+        store.handleDoorbellRing(DoorbellRing(deviceId: camera.id, entityId: "event.door_ring", firedAt: "2026-11-11T06:04:00Z"))
+        #expect(cameraController.hasPendingDoorbellAutoDismiss)
+        cameraController.togglePinnedOnTop()
+        #expect(!cameraController.doorbellOwnsClose)
+        #expect(!cameraController.hasPendingDoorbellAutoDismiss)
+        #expect(cameraController.isDoorbellPlacement)
+
+        cameraController.closePanel()
+        store.handleDoorbellRing(DoorbellRing(deviceId: camera.id, entityId: "event.door_ring", firedAt: "2026-11-11T06:05:00Z"))
+        #expect(cameraController.hasPendingDoorbellAutoDismiss)
+        cameraController.userReloadStream()
+        #expect(!cameraController.doorbellOwnsClose)
+        #expect(!cameraController.hasPendingDoorbellAutoDismiss)
+
+        cameraController.closePanel()
+        store.handleDoorbellRing(DoorbellRing(deviceId: camera.id, entityId: "event.door_ring", firedAt: "2026-11-11T06:06:00Z"))
+        #expect(cameraController.hasPendingDoorbellAutoDismiss)
+        cameraController.showVideoOnlyNotice()
+        #expect(!cameraController.doorbellOwnsClose)
         #expect(!cameraController.hasPendingDoorbellAutoDismiss)
     }
 

@@ -62,8 +62,41 @@ const EMPTY_VALUES: ReadonlyMap<string, unknown> = new Map<string, unknown>();
 
 export function miotBool(val: unknown): boolean | null {
   if (typeof val === "boolean") return val;
-  if (typeof val === "number") return val !== 0;
+  if (typeof val === "number") return Number.isFinite(val) ? val !== 0 : null;
+  if (typeof val === "string") {
+    const trimmed = val.trim().toLowerCase();
+    if (trimmed === "true") return true;
+    if (trimmed === "false") return false;
+    if (trimmed !== "") {
+      const n = Number(trimmed);
+      if (Number.isFinite(n)) return n !== 0;
+    }
+  }
   return null;
+}
+
+/** Normalizes MIoT `prop/get` string-encoded numbers/booleans to match Swift `JSONValue.doubleValue`. */
+export function normalizeMiotPropValue(
+  prop: Pick<MiotProperty, "format"> | null | undefined,
+  val: unknown,
+): unknown {
+  if (val === undefined || val === null || prop?.format === "string") return val;
+  if (prop?.format === "bool") {
+    const parsed = miotBool(val);
+    return parsed !== null ? parsed : val;
+  }
+  if (typeof val === "string") {
+    const trimmed = val.trim();
+    if (trimmed !== "") {
+      const n = Number(trimmed);
+      if (Number.isFinite(n)) {
+        return prop?.format.startsWith("int") || prop?.format.startsWith("uint")
+          ? Math.round(n)
+          : n;
+      }
+    }
+  }
+  return val;
 }
 
 interface MiotBuildPlan {
@@ -1082,7 +1115,7 @@ export const MiotSynthesizer = {
       );
       if (!prop) return null;
       touched?.add(`${s.iid}.${prop.iid}`);
-      const val = values.get(propKeyString({ did, siid: s.iid, piid: prop.iid }));
+      const val = normalizeMiotPropValue(prop, values.get(propKeyString({ did, siid: s.iid, piid: prop.iid })));
       return { service: s, prop, val };
     };
 
@@ -1094,7 +1127,7 @@ export const MiotSynthesizer = {
           return {
             service: s,
             prop,
-            val: values.get(propKeyString({ did, siid: s.iid, piid: prop.iid })),
+            val: normalizeMiotPropValue(prop, values.get(propKeyString({ did, siid: s.iid, piid: prop.iid }))),
           };
         });
 

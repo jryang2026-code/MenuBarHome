@@ -63,7 +63,11 @@ export function initializeCredentials(host: MenuMijiaWindowsApp): void {
     void hydrateCredentials(host);
   }
 
+const hydratingHosts = new WeakSet<MenuMijiaWindowsApp>();
+const pendingPersistDuringHydration = new WeakSet<MenuMijiaWindowsApp>();
+
 export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<void> {
+    hydratingHosts.add(host);
     try {
       const activePreset = inferAssistantPreset(host.settings.assistantBaseURL).id;
       const legacyOwnerEndpoint = host.settings.assistantLegacyKeyEndpoint ?? host.settings.assistantKeyEndpoint;
@@ -137,11 +141,21 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
         host.render();
       }
     } finally {
+      hydratingHosts.delete(host);
       host.timerCredentialsReady = true;
+      if (pendingPersistDuringHydration.has(host)) {
+        pendingPersistDuringHydration.delete(host);
+        void persistCredentials(host);
+      }
     }
   }
 
 export async function persistCredentials(host: MenuMijiaWindowsApp): Promise<void> {
+    if (hydratingHosts.has(host)) {
+      pendingPersistDuringHydration.add(host);
+      return;
+    }
+    pendingPersistDuringHydration.delete(host);
     try {
       await host.credentialVault.persist(credentialsFromSettings(host.settings, host.assistantKeysByPreset));
       if (host.settings.miSession) {

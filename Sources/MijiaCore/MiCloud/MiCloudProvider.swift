@@ -92,11 +92,23 @@ public actor MiCloudProvider: HomeProvider {
     }
 
     /// Stops polling and finishes the event stream; used when the user switches backends.
-    public func shutdown() {
+    public func shutdown() async {
         loopTask?.cancel()
         loopTask = nil
+        waitTask?.cancel()
+        waitTask = nil
+        for releaseTask in pendingCameraReleases.values {
+            releaseTask.cancel()
+        }
+        pendingCameraReleases.removeAll()
+        api = nil
+        let bindings = Array(cameraBridgeBindings.values)
+        cameraBridgeBindings.removeAll()
         continuation?.finish()
         continuation = nil
+        for binding in bindings {
+            await cameraBridge.stopBridge(did: binding.did, subdid: binding.subdid)
+        }
     }
 
     public func refreshNow() async {
@@ -440,7 +452,7 @@ public actor MiCloudProvider: HomeProvider {
             pollRequested = false
             pollsSinceContextChange += 1
         }
-        emitSnapshot()
+        emitSnapshot(closesAwayGap: dids == nil)
         return freshKeys
     }
 

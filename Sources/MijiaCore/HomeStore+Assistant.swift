@@ -196,14 +196,18 @@ extension HomeStore {
         isProactiveRecommending = true
         defer { isProactiveRecommending = false }
 
+        let controlContext = controlContextID
+        let snapshotDevices = devices
+        let snapshotScenes = scenes
         let resolver = makeAssistantResolver(config: config)
         let context = buildAssistantContext(mention: .none)
         do {
             let inferred = try await resolver.recommendProactiveSuggestions(
-                devices: devices,
-                scenes: scenes,
+                devices: snapshotDevices,
+                scenes: snapshotScenes,
                 context: context
             )
+            guard controlContext == controlContextID else { return }
             if !inferred.isEmpty {
                 assistantSuggestions = inferred
                 let label = ModelIntentResolver.isSystemOneModel(config.model) ? "Jev" : "AI"
@@ -214,6 +218,7 @@ extension HomeStore {
                 setAssistantState(.done(L10n.tr("当前居家状态已处于理想区间", "Home environment is already in an ideal range")))
             }
         } catch {
+            guard controlContext == controlContextID else { return }
             setAssistantState(.failed(AssistantError.userMessage(for: error)))
         }
     }

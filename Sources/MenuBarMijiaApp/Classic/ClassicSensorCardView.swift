@@ -146,8 +146,9 @@ struct ClassicSensorCardView: View {
                         .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                         .foregroundStyle(fg)
                         .lineLimit(1)
-                    if showRoomBadge {
-                        Text(L10n.displayRoomName(device.roomName))
+                    let roomLabel = L10n.displayRoomName(device.roomName).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if showRoomBadge, !roomLabel.isEmpty {
+                        Text(roomLabel)
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                             .foregroundStyle(muted)
                     }

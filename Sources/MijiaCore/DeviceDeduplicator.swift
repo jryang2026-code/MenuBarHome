@@ -158,20 +158,37 @@ public enum DeviceDeduplicator {
             }
         }
 
-        let cards: [Card] = draftCards.map { draft in
+        var memberCardIndicesByID: [String: Set<Int>] = [:]
+        for (index, draft) in draftCards.enumerated() {
+            memberCardIndicesByID[draft.winner.device.id, default: []].insert(index)
+            if let other = draft.other {
+                memberCardIndicesByID[other.device.id, default: []].insert(index)
+            }
+        }
+
+        let cards: [Card] = draftCards.enumerated().map { index, draft in
             let validFallbackKeys = draft.fallbackKeys.filter { cardFallbackCounts[$0] == 1 }
-            let strongMatch = canonical.canonicalID(forKeys: draft.strongKeys)
-            let fallbackMatch = strongMatch == nil
-                ? canonical.canonicalID(forKeys: validFallbackKeys).flatMap {
-                    strongClaimedCanonicals.contains($0) ? nil : $0
-                }
+            let isFreeOfForeignMember: (String) -> Bool = { candidate in
+                (memberCardIndicesByID[candidate] ?? []).subtracting([index]).isEmpty
+            }
+            let rawStrongMatch = canonical.canonicalID(forKeys: draft.strongKeys)
+            let strongMatch = rawStrongMatch.flatMap { isFreeOfForeignMember($0) ? $0 : nil }
+            let rawFallbackMatch = rawStrongMatch == nil
+                ? canonical.canonicalID(forKeys: validFallbackKeys)
                 : nil
-            let chosen = strongMatch ?? fallbackMatch ?? draft.defaultPairedCanonical
+            let fallbackMatch = rawFallbackMatch.flatMap {
+                (strongClaimedCanonicals.contains($0) || !isFreeOfForeignMember($0)) ? nil : $0
+            }
+            let hadStaleCanonicalConflict = (rawStrongMatch != nil && strongMatch == nil)
+                || (rawFallbackMatch != nil && fallbackMatch == nil)
+            let defaultPaired = draft.defaultPairedCanonical.flatMap { isFreeOfForeignMember($0) ? $0 : nil }
+            let chosen = strongMatch ?? fallbackMatch ?? defaultPaired
             return Card(
                 winner: draft.winner,
                 other: draft.other,
                 canonicalKeys: draft.strongKeys + validFallbackKeys,
-                chosenCanonical: chosen
+                chosenCanonical: chosen,
+                hadStaleCanonicalConflict: hadStaleCanonicalConflict
             )
         }
 
@@ -208,23 +225,36 @@ public enum DeviceDeduplicator {
         var miCanonicalIDs: [String: String] = [:]
         var haCanonicalIDs: [String: String] = [:]
 
+        var usedCanonicalIDs: Set<String> = []
+
         for card in cards {
             var card = card
             let canonicalID: String
             let canUseCanonical: Bool
             if card.other != nil {
-                canUseCanonical = card.chosenCanonical.map { pairedClaims[$0] == 1 } ?? false
+                canUseCanonical = card.chosenCanonical.map {
+                    pairedClaims[$0] == 1 && !usedCanonicalIDs.contains($0)
+                } ?? false
             } else {
                 canUseCanonical = card.chosenCanonical.map {
-                    unpairedClaims[$0] == 1 && pairedClaims[$0] == nil
+                    unpairedClaims[$0] == 1 && pairedClaims[$0] == nil && !usedCanonicalIDs.contains($0)
                 } ?? false
             }
             if let chosen = card.chosenCanonical, canUseCanonical {
                 updatedCanonical.assign(chosen, toKeys: card.canonicalKeys)
                 canonicalID = chosen
-            } else {
+            } else if !usedCanonicalIDs.contains(card.winner.device.id) {
+                if (card.other != nil || card.chosenCanonical != nil || card.hadStaleCanonicalConflict),
+                   !card.canonicalKeys.isEmpty {
+                    updatedCanonical.assign(card.winner.device.id, toKeys: card.canonicalKeys)
+                }
                 canonicalID = card.winner.device.id
+            } else if let otherID = card.other?.device.id, !usedCanonicalIDs.contains(otherID) {
+                canonicalID = otherID
+            } else {
+                canonicalID = "\(card.winner.backend.rawValue):\(card.winner.device.id)"
             }
+            usedCanonicalIDs.insert(canonicalID)
 
             let wasPaired = card.other != nil
             if let pinned = pinnedBackends[canonicalID],
@@ -584,6 +614,7 @@ public enum DeviceDeduplicator {
         var other: Candidate?
         let canonicalKeys: [String]
         let chosenCanonical: String?
+        let hadStaleCanonicalConflict: Bool
     }
 
     private static func candidates(in home: SynthesizedHome?, backend: HomeBackend) -> [Candidate] {

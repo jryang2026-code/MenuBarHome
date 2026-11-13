@@ -48,6 +48,7 @@ struct SettingsSearchTests {
             ("双列紧凑", .compactGrid),
             ("快捷键", .globalHotkey),
             ("门铃", .doorbellAutoView),
+            ("自动化", .automationRules),
             ("令牌", .haToken),
             ("米家", .miAccount),
             ("电视", .lgTV),
@@ -57,6 +58,7 @@ struct SettingsSearchTests {
             ("面板高度", .panelHeight),
             ("诊断", .copyDiagnostics),
             ("锁屏时禁止", .blockControlWhileLocked),
+            ("检查更新", .softwareUpdate),
             ("更新", .aboutVersion),
             ("退出", .quitApp)
         ]

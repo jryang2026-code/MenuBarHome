@@ -11,8 +11,8 @@ extension HomeStore {
         togglePrimary(list[idx])
     }
 
-    public func moveFocus(delta: Int) {
-        let list = orderedVisibleDevices
+    public func moveFocus(delta: Int, in orderedIds: [String]? = nil) {
+        let list = resolvedNavigationDevices(orderedIds)
         guard !list.isEmpty else {
             focusedDeviceId = nil
             return
@@ -26,14 +26,24 @@ extension HomeStore {
         focusedDeviceId = list[nextIdx].id
     }
 
-    public func toggleFocusedDevice() {
-        let list = orderedVisibleDevices
+    public func toggleFocusedDevice(in orderedIds: [String]? = nil) {
+        let list = resolvedNavigationDevices(orderedIds)
         guard !list.isEmpty else { return }
         if let fid = focusedDeviceId, let dev = list.first(where: { $0.id == fid }) {
             togglePrimary(dev)
         } else if let first = list.first {
             focusedDeviceId = first.id
             togglePrimary(first)
+        }
+    }
+
+    private func resolvedNavigationDevices(_ orderedIds: [String]?) -> [SmartDevice] {
+        guard let orderedIds else { return orderedVisibleDevices }
+        let byId = Dictionary(visibleDevices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var seen = Set<String>()
+        return orderedIds.compactMap { id in
+            guard seen.insert(id).inserted else { return nil }
+            return byId[id]
         }
     }
 
@@ -132,15 +142,25 @@ extension HomeStore {
     }
 
     public func moveFavorite(deviceId: String, direction: Int) {
-        var currentIds = favoriteDevices.map(\.id)
-        for id in favoriteOrder where favoriteDeviceIds.contains(id) && !currentIds.contains(id) {
-            currentIds.append(id)
+        let visibleIds = favoriteDevices.map(\.id)
+        guard let visibleIdx = visibleIds.firstIndex(of: deviceId) else { return }
+        let targetVisibleIdx = visibleIdx + direction
+        guard visibleIds.indices.contains(targetVisibleIdx) else { return }
+        let neighborId = visibleIds[targetVisibleIdx]
+
+        var allIds: [String] = []
+        var seen = Set<String>()
+        for id in favoriteOrder where favoriteDeviceIds.contains(id) && seen.insert(id).inserted {
+            allIds.append(id)
         }
-        guard let idx = currentIds.firstIndex(of: deviceId) else { return }
-        let targetIdx = idx + direction
-        guard targetIdx >= 0 && targetIdx < currentIds.count else { return }
-        currentIds.swapAt(idx, targetIdx)
-        favoriteOrder = currentIds
+        for id in devices.map(\.id) where favoriteDeviceIds.contains(id) && seen.insert(id).inserted {
+            allIds.append(id)
+        }
+        guard allIds.contains(deviceId), allIds.contains(neighborId) else { return }
+        allIds.removeAll { $0 == deviceId }
+        guard let neighborIdx = allIds.firstIndex(of: neighborId) else { return }
+        allIds.insert(deviceId, at: direction > 0 ? neighborIdx + 1 : neighborIdx)
+        favoriteOrder = allIds
     }
 
     public func hideDevice(_ deviceId: String) {

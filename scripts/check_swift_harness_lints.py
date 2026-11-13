@@ -133,31 +133,66 @@ def line_no(src: str, index: int) -> int:
     return src.count("\n", 0, index) + 1
 
 
+def _find_header_brace(src: str, code: bytearray, start: int, limit: int) -> int | None:
+    """Return the opening `{` of a statement header starting at `start`, or None if `start` is inside `(...)`."""
+    paren_depth = 0
+    j = start
+    while j < limit:
+        if code[j]:
+            ch = src[j]
+            if ch == "(":
+                paren_depth += 1
+            elif ch == ")":
+                paren_depth -= 1
+                if paren_depth < 0:
+                    return None
+            elif ch == ";" and paren_depth == 0:
+                return None
+            elif ch == "{" and paren_depth == 0:
+                return j
+        j += 1
+    return None
+
+
+def _own_loop_body(src: str, code: bytearray, brace: int, end: int) -> str:
+    """Return masked loop body with nested loop/switch bodies blanked out so inner `break` cannot mask outer loops."""
+    chars = list(masked(src, code, brace, end + 1))
+    k = brace + 1
+    while k < end:
+        blanked = False
+        for kw in ("for", "while", "repeat", "switch"):
+            if is_name(src, code, k, kw):
+                inner_brace = _find_header_brace(src, code, k + len(kw), end)
+                if inner_brace is not None:
+                    inner_end = matching_brace(src, code, inner_brace)
+                    if inner_end is not None:
+                        for idx in range(inner_brace, min(inner_end + 1, end + 1)):
+                            if chars[idx - brace] != "\n":
+                                chars[idx - brace] = " "
+                        k = inner_end + 1
+                        blanked = True
+                break
+        if not blanked:
+            k += 1
+    return "".join(chars)
+
+
 def yield_loops(path: str, src: str) -> list[tuple[str, int, str]]:
     code = code_mask(src)
     hits: list[tuple[str, int, str]] = []
     i = 0
     n = len(src)
     while i < n:
-        if code[i] and src.startswith("for", i) and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] == "_")):
+        if is_name(src, code, i, "for"):
             after = i + 3
-            if after < n and (src[after].isalnum() or src[after] == "_"):
-                i += 1
-                continue
-            brace = None
-            j = i
-            while j < n:
-                if code[j] and src[j] == "{":
-                    brace = j
-                    break
-                j += 1
+            brace = _find_header_brace(src, code, after, n)
             if brace is None:
-                break
+                i = after
+                continue
             header = collapse(masked(src, code, i, brace))
             end = matching_brace(src, code, brace)
             if end is None:
                 break
-            body = masked(src, code, brace, end + 1)
             integer_range = False
             parts = header.split()
             if (
@@ -168,9 +203,11 @@ def yield_loops(path: str, src: str) -> list[tuple[str, int, str]]:
             ):
                 bounds = parts[3]
                 integer_range = ".." in bounds and bounds.replace(".", "").replace("<", "").replace("_", "").isdigit()
-            if integer_range and "Task.yield" in body and "break" not in body.split():
-                hits.append((path, line_no(src, i), header))
-            i = end + 1
+            if integer_range:
+                own_body = _own_loop_body(src, code, brace, end)
+                if "Task.yield" in own_body and "break" not in own_body.split():
+                    hits.append((path, line_no(src, i), header))
+            i = brace + 1
             continue
         i += 1
     return hits
@@ -308,10 +345,26 @@ def self_test() -> None:
             "    await Task.yield()",
             "}",
             "let note = \"for _ in 0..<3 { await Task.yield() }\"",
+            "func helper(for count: Int) async {",
+            "    for _ in 0..<20 { await Task.yield() }",
+            "}",
+            "for item in items {",
+            "    for _ in 0..<30 { await Task.yield() }",
+            "}",
+            "for _ in 0..<40 {",
+            "    for inner in items { if inner { break } }",
+            "    await Task.yield()",
+            "}",
         ]
     )
     yield_hits = [text for _, _, text in yield_loops("fixture.swift", yield_src)]
-    if yield_hits != ["for _ in 0..<50", "for attempt in 0..<400"]:
+    if yield_hits != [
+        "for _ in 0..<50",
+        "for attempt in 0..<400",
+        "for _ in 0..<20",
+        "for _ in 0..<30",
+        "for _ in 0..<40",
+    ]:
         raise SystemExit(f"self-test yield loops: {yield_hits}")
 
     expect_src = "\n".join(

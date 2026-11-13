@@ -190,6 +190,24 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
   if (!inInput && !isEditable && event.key === " " && host.panelSearch.selectedDeviceId) {
     event.preventDefault(); if (!event.repeat) toggleSelection(host); return true;
   }
+  if (!inInput && !isEditable && event.key === "/") {
+    event.preventDefault();
+    host.isShowingAssistantBar = true;
+    host.render();
+    const field = host.root.querySelector<HTMLInputElement>("#command-input");
+    field?.focus();
+    field?.setSelectionRange(field.value.length, field.value.length);
+    return true;
+  }
+  if (!inInput && !isEditable && /^[1-9]$/.test(event.key) && !hasQuery) {
+    const roomPills = host.root.querySelectorAll<HTMLButtonElement>(".cc-room-pill");
+    const targetPill = roomPills[Number(event.key) - 1];
+    if (targetPill) {
+      event.preventDefault();
+      if (!event.repeat) targetPill.click();
+      return true;
+    }
+  }
   if (!inInput && !isEditable && event.key.length === 1 && event.key !== " " && !/^[1-9/]$/.test(event.key)) {
     event.preventDefault(); host.isShowingAssistantBar = true;
     updateQuery(host, host.panelSearch.query + event.key);

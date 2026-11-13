@@ -707,7 +707,12 @@ import { bindPanelInput } from "./panelKeyboard.js";
             coverMotorRequiresConfirmation(dev.kind.subtype, nextOn ? "open" : "close")
           : !stopsMovingCover &&
             ManualControlPolicy.requiresConfirmation(powerIntent, withAliases(host.layout, host.devices));
-      if (hazard && !confirmHighRisk(dev.id, firstCmd, `${nextOn ? t("打开") : t("关闭")}${dev.name}`)) return;
+      if (
+        hazard &&
+        !confirmHighRisk(dev.id, firstCmd, t(nextOn ? "打开{name}" : "关闭{name}", { name: dev.name }))
+      ) {
+        return;
+      }
       host.poppedDeviceId = dev.id;
       const waitsForCloud = host.settings.connectionMode !== "demo";
       if (waitsForCloud) {
@@ -717,7 +722,7 @@ import { bindPanelInput } from "./panelKeyboard.js";
       void host.executeSingleCommand(
         dev,
         firstCmd,
-        `已${nextOn ? t("打开") : t("关闭")}${dev.name}`,
+        t(nextOn ? "已打开{name}" : "已关闭{name}", { name: dev.name }),
         { targetId: dev.id, operation: { kind: "power", isOn: nextOn } },
         waitsForCloud,
       ).finally(() => {
@@ -820,9 +825,11 @@ import { bindPanelInput } from "./panelKeyboard.js";
         if (!id) return;
         const dev = host.devices.find((d) => d.id === id);
         if (!dev || dev.kind.kind !== "climate") return;
-        // The slider works in display units; the command carries Celsius (#52). A refusal loses
-        // the slider position on the next render, so this prompt carries the exact command.
-        const temperature = Number(toCelsius(Number(slider.value)).toFixed(2));
+        // The slider works in display units; the command carries Celsius (#52). Clamp to the
+        // device's supported Celsius bounds so rounded Fahrenheit limits never exceed [minTemp, maxTemp].
+        const rawCelsius = toCelsius(Number(slider.value));
+        const clampedCelsius = Math.min(dev.kind.maxTemp, Math.max(dev.kind.minTemp, rawCelsius));
+        const temperature = Number(clampedCelsius.toFixed(2));
         const command: DeviceCommand = { kind: "setClimateTemperature", entityId: dev.kind.entityId, temperature };
         const intent: DeviceIntent = { targetId: dev.id, operation: { kind: "targetTemperature", celsius: temperature } };
         const summary = t("已将{name}设为 {temp}", { name: dev.name, temp: formatTemperature(temperature) });
@@ -1135,7 +1142,7 @@ import { bindPanelInput } from "./panelKeyboard.js";
         if (!action) return;
         const command: DeviceCommand = { kind: "pressButton", entityId: action.entityId };
         // Starting a cycle is the hazardous direction; pausing and stopping wind it down.
-        if (kind === "start" && !confirmHighRisk(dev.id, command, `${t("开始")}${dev.name}`)) return;
+        if (kind === "start" && !confirmHighRisk(dev.id, command, t("开始{name}", { name: dev.name }))) return;
         void host.executeSingleCommand(
           dev,
           command,

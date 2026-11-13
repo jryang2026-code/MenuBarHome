@@ -194,6 +194,14 @@ struct AssistantScheduleTests {
         #expect(store.missedScheduledCommands.isEmpty)
         #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
     }
+
+    @Test("DelayPhrase.describe preserves leftover seconds when delay is over one minute (F19)")
+    func describePreservesRemainingSeconds() {
+        #expect(DelayPhrase.describe(90) == "1 分钟 30 秒后")
+        #expect(DelayPhrase.describe(3630) == "1 小时 30 秒后")
+        #expect(DelayPhrase.describe(3690) == "1 小时 1 分钟 30 秒后")
+        #expect(DelayPhrase.describe(5400) == "1 小时 30 分钟后")
+    }
 }
 
 /// 方案 v1 第 2 步：语音撤销（"撤销"、"刚才那个撤销"）。
@@ -206,6 +214,33 @@ struct AssistantUndoTests {
         #expect(UndoPhrase.isUndo("撤回！"))
         #expect(!UndoPhrase.isUndo("打开书房灯"))
         #expect(!UndoPhrase.isUndo("取消定时"))
+        #expect(!UndoPhrase.isUndo("撤销定时"))
+        #expect(!UndoPhrase.isUndo("取消刚才的定时"))
+        #expect(!UndoPhrase.isUndo("undo timer"))
+        #expect(DelayPhrase.isCancel("撤销定时"))
+        #expect(DelayPhrase.isCancel("取消刚才的定时"))
+        #expect(DelayPhrase.isCancel("undo timer"))
+    }
+
+    @Test("撤销定时 cancels pending timer without undoing the previous device action (F16)")
+    @MainActor
+    func undoTimerDoesNotUndoDeviceAction() async throws {
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [AssistantScheduleTests.ceiling], scenes: []))
+        let store = HomeStore(provider: mock, defaultsSuiteName: "test.undo.timer.\(UUID().uuidString)")
+        try await store.waitForTestSnapshot()
+        _ = await store.runAssistantCommand("关闭书房吸顶灯")
+        #expect(store.devices.first?.isActiveOn == false)
+
+        _ = await store.runAssistantCommand("10分钟后打开书房吸顶灯")
+        #expect(store.scheduledCommands.count == 1)
+
+        _ = await store.runAssistantCommand("撤销定时")
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(store.assistantState == .done("已取消 1 个定时"))
+        #expect(store.devices.first?.isActiveOn == false)
+
+        _ = await store.runAssistantCommand("撤销")
+        #expect(store.devices.first?.isActiveOn == true)
     }
 
     @Test("撤销 restores a single-device assistant action, once")
