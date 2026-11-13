@@ -169,7 +169,7 @@ export function buildIntentCatalog(
   const criteriaByAlias: Record<string, string> = {};
   const allLightIds: string[] = [];
   const allDeviceIds: string[] = [];
-  const roomLights = new Map<string, string[]>();
+  const roomLights = new Map<string, { roomName: string; ids: string[] }>();
   const aliasById = new Map<string, string>();
   const deviceRows: Array<Record<string, unknown>> = [];
 
@@ -185,9 +185,13 @@ export function buildIntentCatalog(
     allDeviceIds.push(device.id);
     if (category === "light" && device.roomName) {
       allLightIds.push(device.id);
-      const ids = roomLights.get(device.roomName) ?? [];
-      ids.push(device.id);
-      roomLights.set(device.roomName, ids);
+      const roomKey = device.roomId || device.roomName;
+      const existing = roomLights.get(roomKey);
+      if (existing) {
+        existing.ids.push(device.id);
+      } else {
+        roomLights.set(roomKey, { roomName: device.roomName, ids: [device.id] });
+      }
     } else if (category === "light") {
       allLightIds.push(device.id);
     }
@@ -205,7 +209,7 @@ export function buildIntentCatalog(
 
   let groupIndex = 0;
   const groupRows: Array<{ id: string; room: string; members: string[] }> = [];
-  for (const [room, ids] of roomLights) {
+  for (const { roomName, ids } of roomLights.values()) {
     if (ids.length < 2) continue;
     groupIndex += 1;
     const alias = `room_lights:${groupIndex}`;
@@ -213,7 +217,7 @@ export function buildIntentCatalog(
     criteriaByAlias[alias] = `灯组 ${ids.length}盏`;
     groupRows.push({
       id: alias,
-      room: sanitizePromptText(room, PROMPT_NAME_LIMIT),
+      room: sanitizePromptText(roomName, PROMPT_NAME_LIMIT),
       members: ids.map((id) => aliasById.get(id) ?? id),
     });
   }
