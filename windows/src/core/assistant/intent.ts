@@ -967,7 +967,8 @@ export const LocalIntentParser = {
     }
 
     const hasOpen = clean.includes("打开") || clean.includes("开启") || clean.startsWith("开");
-    const hasClose = clean.includes("关闭") || clean.includes("关掉") || clean.startsWith("关");
+    const hasClose =
+      clean.includes("关闭") || clean.includes("关掉") || clean.includes("关了") || clean.startsWith("关");
     if (hasOpen && hasClose) return null;
     if (ops.length === 0) {
       if (hasOpen) ops = [{ kind: "power", isOn: true }];

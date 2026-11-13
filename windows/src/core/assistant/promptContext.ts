@@ -8,7 +8,7 @@ import { deviceAcceptsControlWrites, isActiveDevice } from "../models.js";
 import { deviceHeadInstruction, proactiveHeadInstruction } from "./actionPolicy.js";
 import type { AssistantContext } from "./context.js";
 import { buildEnvironmentSummary, buildTimeSummary, EMPTY_ASSISTANT_CONTEXT } from "./context.js";
-import { isAirPurifierDevice, isHeaterDevice } from "./deviceCategory.js";
+import { deviceCategory, isAssistantControllable } from "./deviceCategory.js";
 import type {
   CommandMention,
   HabitEntry,
@@ -62,30 +62,8 @@ export function buildAssistantContext(options: {
 
 /** Category used in the model catalog; sensors are not assistant-controllable. */
 export function assistantDeviceCategory(device: SmartDevice): string | null {
-  if (device.model.includes(".derh.") && device.kind.kind === "fan") return "dehumidifier";
-  if (device.model.includes(".diffuser.") && device.kind.kind === "plug") return "diffuser";
-  switch (device.kind.kind) {
-    case "light":
-      return "light";
-    case "climate":
-      return isHeaterDevice(device) ? "heater" : "climate";
-    case "plug":
-    case "vacuum":
-    case "camera":
-      return device.kind.kind;
-    case "fan":
-      // Same classification the local parser and the macOS catalog use (#98).
-      return isAirPurifierDevice(device) ? "airPurifier" : "fan";
-    case "fridge":
-    case "sensor":
-    case "cover":
-    case "speaker":
-    // An appliance or a generic fallback card is controlled from the panel, not by the
-    // assistant, the same rule macOS applies to those kinds (#3, #4, #6).
-    case "appliance":
-    case "generic":
-      return null;
-  }
+  const cat = deviceCategory(device);
+  return isAssistantControllable(cat) ? cat : null;
 }
 
 export function formatTemperatureValue(value: number): string {
