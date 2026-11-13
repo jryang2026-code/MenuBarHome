@@ -999,7 +999,7 @@ export class CameraLiveController {
     } else if (mediaKind === "demo") {
       viewportHtml = `
         <div class="cc-camera-stage is-demo" style="padding:18px;border-radius:12px;background:${isNight ? "linear-gradient(135deg,#072219,#03110c)" : "linear-gradient(135deg,#10233d,#091224)"};color:#fff;text-align:center;">
-          <div style="display:flex;justify-content:space-between;font-size:11px;opacity:0.85;margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;width:100%;gap:12px;font-size:11px;opacity:0.85;margin-bottom:16px;">
             <span>● ${isNight ? "LIVE · IR NIGHT 2K" : "LIVE · 2K HDR · 25fps"}</span>
             <span>${this.host.escapeHtml(dev.roomName)}</span>
           </div>
@@ -1314,6 +1314,7 @@ export class CameraLiveController {
       this.liveCameraDraftIp = ipInput.value;
     });
     ipInput?.addEventListener("keydown", (event) => {
+      if (event.isComposing || event.keyCode === 229) return;
       if (event.key === "Enter") {
         event.preventDefault();
         this.commitCameraLocalIp();

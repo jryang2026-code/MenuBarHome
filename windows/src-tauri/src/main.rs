@@ -257,6 +257,7 @@ fn main() {
             finish_hide_panel,
             quit_app,
             panel_backdrop,
+            panel_is_visible,
             set_panel_height,
             set_pin_popover,
             panel_placement,
@@ -300,7 +301,7 @@ fn main() {
                     }
                     WindowEvent::Focused(false) => {
                         if !PIN_POPOVER.load(Ordering::SeqCst) {
-                            LAST_FOCUS_LOSS_MS.store(now_epoch_ms(), Ordering::SeqCst);
+                            note_panel_focus_loss();
                             request_hide_panel(&app_for_events);
                         }
                     }
@@ -338,16 +339,23 @@ fn main() {
                     }
                     _ => {}
                 })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
+                .on_tray_icon_event(|tray, event| match event {
+                    TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Down,
+                        ..
+                    } => {
+                        handle_tray_mouse_down(tray.app_handle());
+                    }
+                    TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
                         position,
                         ..
-                    } = event
-                    {
+                    } => {
                         toggle_main_window(tray.app_handle(), Some(position), true);
                     }
+                    _ => {}
                 });
 
             if let Some(icon) = app.default_window_icon() {
@@ -411,6 +419,32 @@ mod tests {
         let aborted = vis.begin_hide(true).expect("starts hide before eval error");
         vis.abort_hide();
         assert!(!vis.complete_hide(aborted));
+
+        let mut tray = PanelVisibilityState::default();
+        tray.note_tray_press_down(false, 1_000);
+        assert_eq!(tray.decide_tray_release(false, 1_060), TrayToggleAction::Present);
+        let _ = tray.begin_present();
+
+        // Fast tray click while open: focus loss starts hide, release stays Noop, and an immediate
+        // second click within 280 ms reopens cleanly instead of being swallowed.
+        tray.note_focus_loss(2_000);
+        let _ = tray.begin_hide(true);
+        tray.note_tray_press_down(false, 2_005);
+        assert_eq!(tray.decide_tray_release(false, 2_060), TrayToggleAction::Noop);
+        tray.note_tray_press_down(false, 2_170);
+        assert_eq!(tray.decide_tray_release(false, 2_220), TrayToggleAction::Present);
+        let _ = tray.begin_present();
+
+        // Slow >280 ms press-and-hold on tray while open must keep the panel closed on release.
+        tray.note_focus_loss(3_000);
+        let _ = tray.begin_hide(true);
+        tray.note_tray_press_down(false, 3_005);
+        assert_eq!(tray.decide_tray_release(false, 3_620), TrayToggleAction::Noop);
+
+        // Pinned popover stays open across focus loss and closes on tray release.
+        let _ = tray.begin_present();
+        tray.note_tray_press_down(true, 4_000);
+        assert_eq!(tray.decide_tray_release(true, 4_080), TrayToggleAction::Hide);
     }
 
     #[test]

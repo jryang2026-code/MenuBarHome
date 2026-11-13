@@ -296,7 +296,11 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       promptInput.select();
     }
     promptInput?.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") host.savePrompt(promptInput.value);
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        host.savePrompt(promptInput.value);
+      }
       if (e.key === "Escape") { e.stopPropagation(); host.closePrompt(); }
     });
     host.root.querySelector("#btn-prompt-save")?.addEventListener("click", () => host.savePrompt(promptInput?.value ?? ""));

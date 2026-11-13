@@ -678,13 +678,13 @@ function deviceSvgIcon(dev: SmartDevice): string {
     case "sensor":
       return SF_ICONS.sensorFill;
     case "cover":
-      return SF_ICONS.sensorFill;
+      return SF_ICONS.blindsHorizontal;
     case "speaker":
       return SF_ICONS.speakerFill;
     case "appliance":
-      return SF_ICONS.sensorFill;
+      return SF_ICONS.washer;
     case "generic":
-      return SF_ICONS.sensorFill;
+      return SF_ICONS.switchToggle;
   }
 }
 

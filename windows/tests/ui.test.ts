@@ -9,6 +9,8 @@ import type { Window } from "happy-dom";
 import { assertMissing } from "./dom.js";
 import { closeTestWindow, installCssEscape, mountTestWindow, setWindowFocused } from "./uiHarness.js";
 import { MenuMijiaWindowsApp, waitForCameraFrameGap } from "../src/ui/app.js";
+import { SF_ICONS } from "../src/ui/appConstants.js";
+import { PANEL_HEIGHTS } from "../src/ui/panelPrefs.js";
 import { cloudFixture } from "./cloudFixture.js";
 import { MiCloudClient, MiotSynthesizer, inferFallbackSpec, parseMiotDeviceSpec } from "../src/core/miCloudClient.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
@@ -6473,5 +6475,193 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     deckExpand.click();
     await setImmediate();
     assert.ok(document.querySelector('.cc-tile.is-subpage[data-tile-id="light.study_desk"]'));
+  });
+
+  it("aligns standard panel height with the 680px two-island Tauri window", async () => {
+    const heights: number[] = [];
+    const invoke = async (name: string, args?: { height?: number }) => {
+      if (name === "set_panel_height" && typeof args?.height === "number") heights.push(args.height);
+      if (name === "panel_is_visible") return true;
+      return undefined;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    startDemoApp();
+    await setImmediate();
+    assert.equal(PANEL_HEIGHTS.find((item) => item.id === "compact")?.px, 580);
+    assert.equal(PANEL_HEIGHTS.find((item) => item.id === "standard")?.px, 680);
+    assert.equal(PANEL_HEIGHTS.find((item) => item.id === "tall")?.px, 780);
+    assert.ok(heights.length > 0 && heights.every((h) => h === 680));
+  });
+
+  it("preserves is-opening across programmatic renders and parks swapchain when Tauri HWND is hidden", async () => {
+    const invoke = async (name: string) => {
+      if (name === "panel_is_visible") return false;
+      return undefined;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    const root = element("#app");
+    const app = startDemoApp();
+    await setImmediate();
+    assert.equal(root.classList.contains("is-parked"), true);
+    assert.equal(root.classList.contains("is-opening"), false);
+
+    window.dispatchEvent(new window.CustomEvent("menumijia:panel-present", { detail: { edge: "bottom" } }));
+    assert.equal(root.classList.contains("is-parked"), false);
+    assert.equal(root.classList.contains("is-opening"), true);
+
+    app.render();
+    assert.equal(root.classList.contains("is-opening"), true);
+
+    window.dispatchEvent(new window.CustomEvent("menumijia:panel-dismiss", { detail: { seq: 9, edge: "bottom" } }));
+    root.querySelector(".cc-popover")!.dispatchEvent(new window.Event("animationend", { bubbles: true }));
+    await setImmediate();
+    assert.equal(root.classList.contains("is-parked"), true);
+  });
+
+  it("animates subpages and sheets only on entrance instead of re-flashing on internal clicks", async () => {
+    const animatedTargets: string[] = [];
+    const proto = window.HTMLElement.prototype as HTMLElement & { animate?: typeof HTMLElement.prototype.animate };
+    const origAnimate = proto.animate;
+    proto.animate = function mockAnimate() {
+      animatedTargets.push(this.className || this.tagName);
+      return {} as Animation;
+    };
+    try {
+      const app = startDemoApp();
+      animatedTargets.length = 0;
+
+      await click('[data-expand-device="light.living_ceiling"]');
+      assert.equal(animatedTargets.some((cls) => cls.includes("is-subpage")), true);
+      animatedTargets.length = 0;
+
+      await click('[data-tile-id="light.living_ceiling"] [data-effect="Night"]');
+      assert.equal(animatedTargets.some((cls) => cls.includes("is-subpage")), false);
+
+      await click("#btn-settings");
+      assert.equal(animatedTargets.some((cls) => cls.includes("cc-settings-sheet")), true);
+      animatedTargets.length = 0;
+
+      await click('[data-appearance="light"]');
+      assert.equal(animatedTargets.some((cls) => cls.includes("cc-settings-sheet")), false);
+      app.render();
+      assert.equal(animatedTargets.some((cls) => cls.includes("cc-settings-sheet")), false);
+    } finally {
+      proto.animate = origAnimate!;
+    }
+  });
+
+  it("renders distinct monochrome icons for cover, appliance, and generic capsules and tracks keyboard modality", () => {
+    const app = startDemoApp();
+    app.devices = [
+      {
+        id: "cover.curtain",
+        name: "客厅窗帘",
+        roomId: "r1",
+        roomName: "客厅",
+        model: "lumi.curtain.v1",
+        isOnline: true,
+        kind: {
+          kind: "cover",
+          entityId: "c1",
+          subtype: "curtain",
+          positionPercent: 80,
+          positionWritable: true,
+          openDescription: "open",
+          closeDescription: "close",
+          pauseDescription: "pause",
+          batteryPercent: null,
+          faultText: null,
+          motion: "stopped",
+        },
+      },
+      {
+        id: "appliance.washer",
+        name: "洗衣机",
+        roomId: "r1",
+        roomName: "客厅",
+        model: "mibx5.washer.v1",
+        isOnline: true,
+        kind: {
+          kind: "appliance",
+          entityId: "a1",
+          isOn: true,
+          powerPresent: true,
+          powerWritable: true,
+          currentMode: null,
+          availableModes: [],
+          modeWritable: false,
+          targetTemperature: null,
+          currentTemperature: null,
+          minTemp: 30,
+          maxTemp: 60,
+          step: 1,
+          temperatureWritable: false,
+          statusText: "洗涤中",
+          faultText: null,
+          remainingMinutes: null,
+          startAction: null,
+          pauseAction: null,
+          stopAction: null,
+          powerEntityId: "a1",
+          modeEntityId: "a1",
+          temperatureEntityId: "a1",
+          light: null,
+          fanLevel: null,
+          currentHumidity: null,
+          symbolName: null,
+          roomReading: false,
+          heats: false,
+        },
+      },
+      {
+        id: "generic.switch",
+        name: "墙壁开关",
+        roomId: "r1",
+        roomName: "客厅",
+        model: "lumi.switch.v1",
+        isOnline: true,
+        kind: {
+          kind: "generic",
+          deviceType: "switch",
+          typeTitle: "智能开关",
+          isOn: false,
+          powerControl: null,
+          isReadOnly: false,
+          readouts: [],
+          symbolName: null,
+        },
+      },
+    ];
+    app.render();
+    for (const id of ["cover.curtain", "appliance.washer", "generic.switch"]) {
+      const iconHtml = element(`[data-tile-id="${id}"] .cc-tile-orb`).innerHTML.trim();
+      assert.notEqual(iconHtml, SF_ICONS.sensorFill);
+    }
+    const icons = ["cover.curtain", "appliance.washer", "generic.switch"].map(
+      (id) => element(`[data-tile-id="${id}"] .cc-tile-orb`).innerHTML.trim(),
+    );
+    assert.equal(new Set(icons).size, 3);
+
+    window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    assert.equal(app.root.dataset.keyboardNav, "true");
+    element('[data-tile-id="cover.curtain"]').dispatchEvent(new window.Event("pointerdown", { bubbles: true }));
+    assert.equal(app.root.dataset.keyboardNav, undefined);
+  });
+
+  it("ignores Enter during CJK IME composition in the rename prompt dialog", () => {
+    const app = startDemoApp();
+    app.prompt = { kind: "renameDevice", deviceId: "light.living_ceiling" };
+    app.render();
+
+    const input = element("#prompt-input") as HTMLInputElement;
+    input.value = "keting";
+    input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true }));
+    assert.notEqual(app.prompt, null);
+    assert.equal(app.layout.aliases["light.living_ceiling"], undefined);
+
+    input.value = "主卧吊灯";
+    input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", isComposing: false, bubbles: true }));
+    assert.equal(app.prompt, null);
+    assert.equal(app.layout.aliases["light.living_ceiling"], "主卧吊灯");
   });
 });
