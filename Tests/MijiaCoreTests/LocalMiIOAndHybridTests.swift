@@ -728,6 +728,83 @@ struct MiCloudAndSpecEnhancementsTests {
         let urls = await transport.requestedURLs
         #expect(urls.contains { $0.hasPrefix("https://spec.miot-spec.com/") })
     }
+
+    @Test("Expired cached spec and index fall back to stale disk cache when all mirrors fail, then refresh once mirrors recover")
+    func staleCacheFallbackWhenMirrorsFail() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MiotSpecStaleTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let clock = MutableClock(Date())
+        let failMirrors = LockedBox(false)
+        let serveUpdatedSpec = LockedBox(false)
+        let transport = MirrorHTTPStub { req in
+            if failMirrors.withValue({ $0 }) {
+                let resp = HTTPURLResponse(url: req.url!, statusCode: 503, httpVersion: nil, headerFields: nil)!
+                return (Data(), resp)
+            }
+            let url = req.url!.absoluteString
+            if url.contains("/instances?status=released") {
+                let body = Data(#"""
+                {"instances":[
+                    {"model":"acme.bulb.v1","type":"urn:miot-spec-v2:device:light:0000A001:acme-bulb:1","version":1,"status":"released"}
+                ]}
+                """#.utf8)
+                let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (body, resp)
+            }
+            let extraBrightness = serveUpdatedSpec.withValue({ $0 })
+                ? #",{"iid":2,"type":"urn:miot-spec-v2:property:brightness:0000000D:acme-bulb:1","format":"uint8","access":["read","write"]}"#
+                : ""
+            let body = Data(#"""
+            {"type":"urn:miot-spec-v2:device:light:0000A001:acme-bulb:1","services":[
+                {"iid":2,"type":"urn:miot-spec-v2:service:light:00007802:acme-bulb:1","properties":[
+                    {"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:acme-bulb:1","format":"bool","access":["read","write"]}\#(extraBrightness)
+                ]},
+                {"iid":7,"type":"urn:miot-spec-v2:service:notify:000078FF:acme-bulb:1","actions":[
+                    {"iid":3,"type":"urn:miot-spec-v2:action:notify:000028FF:acme-bulb:1","in":[1]}
+                ]}
+            ]}
+            """#.utf8)
+            let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (body, resp)
+        }
+
+        // Prime disk cache while fresh.
+        let primer = MiotSpecStore(
+            transport: transport,
+            cacheDirectory: tempDir,
+            indexMaxAge: 100,
+            specMaxAge: 100,
+            ttlJitterFraction: 0.0,
+            now: { clock.now() }
+        )
+        let primed = try await primer.spec(model: "acme.bulb.v1", specType: nil)
+        #expect(primed?.services.first(where: { $0.iid == 7 }) != nil)
+        #expect(primed?.services.first(where: { $0.iid == 2 })?.properties.contains(where: { $0.iid == 2 }) == false)
+
+        // Expire both index and spec TTLs while all mirrors return 503.
+        clock.advance(by: 200)
+        failMirrors.withValue { $0 = true }
+
+        let offlineStore = MiotSpecStore(
+            transport: transport,
+            cacheDirectory: tempDir,
+            indexMaxAge: 100,
+            specMaxAge: 100,
+            ttlJitterFraction: 0.0,
+            now: { clock.now() }
+        )
+        let staleSpec = try await offlineStore.spec(model: "acme.bulb.v1", specType: nil)
+        #expect(staleSpec?.services.first(where: { $0.iid == 7 }) != nil)
+        #expect(staleSpec?.services.first(where: { $0.iid == 2 })?.properties.contains(where: { $0.iid == 2 }) == false)
+
+        // Once mirrors recover, the same store must still refresh rather than pinning stale data forever.
+        failMirrors.withValue { $0 = false }
+        serveUpdatedSpec.withValue { $0 = true }
+        let refreshedSpec = try await offlineStore.spec(model: "acme.bulb.v1", specType: nil)
+        #expect(refreshedSpec?.services.first(where: { $0.iid == 2 })?.properties.contains(where: { $0.iid == 2 }) == true)
+    }
 }
 
 // MARK: - Hybrid Provider & Doorbell Bridging Tests
@@ -1047,6 +1124,83 @@ struct HybridProviderAndDoorbellTests {
         try await provider.execute(.sendNotifyMessage(entityId: "miot-action:101:7:3", message: "fallback"))
         #expect(actionPacketCount.withValue { $0 } == 1)
         #expect(await api.actionCalls == [MiotActionCall(did: "101", siid: 7, aiid: 3, inputs: [.string("fallback")])])
+
+        await provider.shutdown()
+    }
+
+    @Test("Shutdown overlapping or preceding LAN action never falls back to cloud")
+    func shutDownActionNeverFallsBackToCloud() async throws {
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let dropActionWithShutDown = LockedBox(false)
+        let actionPacketCount = LockedBox(0)
+
+        let udpTransport = MockUDPTransport { packet, _, _ in
+            if packet == MiIOPacket.helloPacket {
+                return makeHelloResponse(deviceId: 0x3333_4445, stamp: 31)
+            }
+            let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+            let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+            let reqId = req["id"]?.intValue ?? 0
+            let method = req["method"]?.stringValue ?? ""
+            if method == "action" {
+                actionPacketCount.withValue { $0 += 1 }
+                if dropActionWithShutDown.withValue({ $0 }) {
+                    throw MiIOError.shutDown
+                }
+                let reply = #"{"id":\#(reqId),"result":{"code":0}}"#
+                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+            }
+            let reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":50,"code":0}]}"#
+            return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+        }
+
+        let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 2)
+        let ownWifi = MiDeviceRecord(did: "101", name: "Living Room Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.0.2.32", token: tokenHex, isShared: false)
+        let api = HybridMockCloudAPI(
+            devices: [ownWifi],
+            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101"])],
+            props: [
+                MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: "101", siid: 2, piid: 2): .number(50),
+            ]
+        )
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession },
+            apiFactory: { _ in api },
+            specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightWithNotifyActionSpec()]),
+            localClient: localClient,
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+
+        let collector = EventCollector()
+        let stream = provider.events()
+        let task = Task {
+            for await event in stream {
+                await collector.append(event)
+            }
+            await collector.finish()
+        }
+        defer { task.cancel() }
+
+        #expect(await collector.wait { !$0.snapshots.isEmpty })
+
+        // Case 1: Post-dispatch .shutDown during action -> ambiguousActionOutcome, 1 UDP send, 0 cloud calls.
+        dropActionWithShutDown.withValue { $0 = true }
+        await #expect(throws: MiIOError.ambiguousActionOutcome) {
+            try await provider.execute(.sendNotifyMessage(entityId: "miot-action:101:7:3", message: "in-flight"))
+        }
+        #expect(actionPacketCount.withValue { $0 } == 1)
+        #expect(await api.actionCalls.isEmpty)
+
+        // Case 2: localClient already shut down before action -> throws .shutDown, 0 new UDP sends, 0 cloud calls.
+        await localClient.shutdown()
+        await #expect(throws: MiIOError.shutDown) {
+            try await provider.execute(.sendNotifyMessage(entityId: "miot-action:101:7:3", message: "after-shutdown"))
+        }
+        #expect(actionPacketCount.withValue { $0 } == 1)
+        #expect(await api.actionCalls.isEmpty)
 
         await provider.shutdown()
     }

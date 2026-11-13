@@ -263,7 +263,7 @@ public actor MiotSpecStore: MiotSpecSource {
     private let jitterRandom: @Sendable () -> Double
 
     private var typeByModel: [String: String]?
-    private var indexTask: Task<[String: String], any Error>?
+    private var indexTask: Task<([String: String], Bool), any Error>?
     private var specByType: [String: MiotDeviceSpec] = [:]
     private var jitteredTTLByKey: [String: TimeInterval] = [:]
 
@@ -364,12 +364,15 @@ public actor MiotSpecStore: MiotSpecSource {
     private func typeIndex() async throws -> [String: String] {
         if let typeByModel { return typeByModel }
         // Actor reentrancy: concurrent spec lookups would otherwise each download the 2 MB index.
-        if let indexTask { return try await indexTask.value }
+        if let indexTask { return try await indexTask.value.0 }
         let task = Task { try await self.loadTypeIndex() }
         indexTask = task
         do {
-            let index = try await task.value
-            typeByModel = index
+            let (index, isFresh) = try await task.value
+            if isFresh {
+                typeByModel = index
+            }
+            indexTask = nil
             return index
         } catch {
             indexTask = nil
@@ -377,27 +380,37 @@ public actor MiotSpecStore: MiotSpecSource {
         }
     }
 
-    private func loadTypeIndex() async throws -> [String: String] {
+    private func loadTypeIndex() async throws -> ([String: String], Bool) {
         let file = cacheDirectory.appendingPathComponent("miot-instances.json")
-        var data: Data?
+        let cachedData = (try? Data(contentsOf: file)).flatMap { payload in
+            (try? JSONSerialization.jsonObject(with: payload)) != nil ? payload : nil
+        }
         // A modification date in the future (clock skew, copied file) would otherwise keep a stale
         // index forever, so only a non-negative age counts as fresh.
-        if isFreshCacheFile(file, cacheKey: "__index__", baseMaxAge: indexMaxAge) {
-            data = try? Data(contentsOf: file)
+        if let cachedData, isFreshCacheFile(file, cacheKey: "__index__", baseMaxAge: indexMaxAge) {
+            let index = Self.parseInstanceIndex(cachedData)
+            logger.info("MIoT instance index loaded from fresh cache: \(index.count, privacy: .public) models")
+            return (index, true)
         }
-        if data == nil {
+        do {
             let fetched = try await fetchWithMirrorFallback(
                 path: "miot-spec-v2/instances",
                 queryItems: [URLQueryItem(name: "status", value: "released")]
             ) { payload in
                 (try? JSONSerialization.jsonObject(with: payload)) != nil
             }
-            data = fetched
             writeCache(fetched, to: file)
+            let index = Self.parseInstanceIndex(fetched)
+            logger.info("MIoT instance index loaded: \(index.count, privacy: .public) models")
+            return (index, true)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            guard let cachedData else { throw error }
+            let index = Self.parseInstanceIndex(cachedData)
+            logger.warning("MIoT instance index refresh failed, using stale cached index (\(index.count, privacy: .public) models): \(error.localizedDescription, privacy: .public)")
+            return (index, false)
         }
-        let index = Self.parseInstanceIndex(data ?? Data())
-        logger.info("MIoT instance index loaded: \(index.count, privacy: .public) models")
-        return index
     }
 
     /// Highest released version per model.
@@ -416,22 +429,29 @@ public actor MiotSpecStore: MiotSpecSource {
         if let cached = specByType[type] { return cached }
         let safeName = type.replacingOccurrences(of: ":", with: "_") + ".json"
         let file = cacheDirectory.appendingPathComponent("instances", isDirectory: true).appendingPathComponent(safeName)
-        if isFreshCacheFile(file, cacheKey: type, baseMaxAge: specMaxAge),
-           let data = try? Data(contentsOf: file),
-           let spec = try? JSONDecoder().decode(MiotDeviceSpec.self, from: data) {
+        let cachedSpec = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode(MiotDeviceSpec.self, from: $0) }
+        if let cachedSpec, isFreshCacheFile(file, cacheKey: type, baseMaxAge: specMaxAge) {
+            specByType[type] = cachedSpec
+            return cachedSpec
+        }
+        do {
+            let fetched = try await fetchWithMirrorFallback(
+                path: "miot-spec-v2/instance",
+                queryItems: [URLQueryItem(name: "type", value: type)]
+            ) { payload in
+                (try? JSONDecoder().decode(MiotDeviceSpec.self, from: payload)) != nil
+            }
+            let spec = try JSONDecoder().decode(MiotDeviceSpec.self, from: fetched)
+            writeCache(fetched, to: file)
             specByType[type] = spec
             return spec
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            guard let cachedSpec else { throw error }
+            logger.warning("MIoT spec refresh failed for \(type, privacy: .public), using stale cached spec: \(error.localizedDescription, privacy: .public)")
+            return cachedSpec
         }
-        let fetched = try await fetchWithMirrorFallback(
-            path: "miot-spec-v2/instance",
-            queryItems: [URLQueryItem(name: "type", value: type)]
-        ) { payload in
-            (try? JSONDecoder().decode(MiotDeviceSpec.self, from: payload)) != nil
-        }
-        let spec = try JSONDecoder().decode(MiotDeviceSpec.self, from: fetched)
-        writeCache(fetched, to: file)
-        specByType[type] = spec
-        return spec
     }
 
     private func fetchWithMirrorFallback(

@@ -862,6 +862,8 @@ public actor MiCloudProvider: HomeProvider {
                 recordLANFailure(did: record.miotDid, error: MiIOError.ambiguousActionOutcome)
                 scheduleFollowUpPoll(for: record)
                 throw MiIOError.ambiguousActionOutcome
+            } catch MiIOError.shutDown {
+                throw MiIOError.shutDown
             } catch is CancellationError {
                 throw CancellationError()
             } catch {

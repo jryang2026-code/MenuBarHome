@@ -569,7 +569,7 @@ public actor LocalMiIOClient {
                 if error is CancellationError || error is MiCloudError {
                     throw error
                 }
-                if let miio = error as? MiIOError, miio == .transportUnavailable || miio == .shutDown {
+                if let miio = error as? MiIOError, miio == .transportUnavailable {
                     throw error
                 }
                 // Clear session after ambiguous UDP send/reply loss so the next request re-handshakes,
