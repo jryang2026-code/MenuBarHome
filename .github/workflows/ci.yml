@@ -149,11 +149,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     # 不放 macOS：这些测试不依赖系统，macOS 并发额度留给 Swift。
+    # 只测 Node 22（发布流程用的版本）：每多一个版本就多占一个并发名额。
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        node: [22, 24]
+        node: [22]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -176,7 +177,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        node: [22, 24]
+        node: [22]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -232,7 +233,9 @@ jobs:
 
   windows-installer:
     needs: [changes, windows-camera-bin]
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.windows == 'true'
+    # PR 上不跑：安装包只在 main 与手动触发（workflow_dispatch）时构建，PR 由 windows-core 和
+    # windows-rust-test 把关。要在合并前验证安装包，对该分支手动触发本工作流。
+    if: github.event_name != 'pull_request' && needs.changes.outputs.code == 'true' && needs.changes.outputs.windows == 'true'
     # 安装包依赖 windows-camera-bin 的内置组件；前端测试由 windows-core 覆盖，
     # cargo test 在 windows-rust-test。前端由 tauri 的 beforeBuildCommand 构建。
     runs-on: windows-latest
@@ -361,7 +364,8 @@ jobs:
 
   macos-appintents:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
+    # PR 上不跑（同 macos-release）：每个 PR 只占一个 macOS 并发名额。
+    if: github.event_name != 'pull_request' && needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
     # xcodebuild 提取 App Intents。和 swift test 串在一台 3 核机器上时，冷启动会把两者相加。
     # 固定在托管机，与本地 VM 上的 macos-test 并行，不读 MACOS_CI_RUNNER。
     runs-on: macos-26
@@ -410,7 +414,9 @@ jobs:
 
   macos-release:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
+    # PR 上不跑：托管 macOS 并发只有 5 个，三个 macOS job 都跑时并行的 PR 要排队几十分钟。
+    # main 与手动触发（workflow_dispatch）仍跑；改打包脚本的 PR 合并前对该分支手动触发本工作流。
+    if: github.event_name != 'pull_request' && needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
     # Release -O 通用二进制（#2 这类崩溃只在 -O 下出现）以及符号表路径泄露检查。
     # 固定在托管机，与本地 VM 上的 macos-test 并行，不读 MACOS_CI_RUNNER。
     runs-on: macos-26
@@ -464,32 +470,10 @@ jobs:
           path: .build
           key: ${{ steps.swift-release-cache.outputs.cache-primary-key }}
 
-  macos:
-    # 历史 required check 的名字。文档-only 或只改 Windows 时三个 macOS job 被跳过，这里仍成功，
-    # 避免 path filter 把 `CI / macos` 卡在 Pending。任一应有的 macOS job 失败则这里失败。
-    needs: [changes, macos-test, macos-release, macos-appintents]
-    if: always() && !cancelled()
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Require macOS tests and the release build
-        env:
-          CHANGES: ${{ needs.changes.result }}
-          CODE: ${{ needs.changes.outputs.code }}
-          MACOS: ${{ needs.changes.outputs.macos }}
-          TESTS: ${{ needs.macos-test.result }}
-          RELEASE: ${{ needs.macos-release.result }}
-          INTENTS: ${{ needs.macos-appintents.result }}
-        run: >-
-          bash scripts/ci_require_jobs.sh
-          "macos-test:$TESTS:$MACOS"
-          "macos-release:$RELEASE:$MACOS"
-          "macos-appintents:$INTENTS:$MACOS"
-
   ci:
     # 始终运行的汇总检查。文档-only 或未受影响的平台任务被跳过时，这里成功；
     # 任何一个实际失败（不是预期跳过）则失败。适合作为唯一的 required check。
+    # PR 上 windows-installer、macos-release、macos-appintents 不跑，按「不受影响」记为跳过。
     needs: [changes, nas-safety, linux-core, raycast, windows-core, windows-camera-bin, windows-rust-test, windows-installer, macos-test, macos-release, macos-appintents]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
@@ -513,6 +497,8 @@ jobs:
           MACOS_TEST: ${{ needs.macos-test.result }}
           MACOS_RELEASE: ${{ needs.macos-release.result }}
           MACOS_INTENTS: ${{ needs.macos-appintents.result }}
+          WINDOWS_BUILD: ${{ github.event_name != 'pull_request' && needs.changes.outputs.windows || 'false' }}
+          MACOS_BUILD: ${{ github.event_name != 'pull_request' && needs.changes.outputs.macos || 'false' }}
         run: >-
           bash scripts/ci_require_jobs.sh
           "nas-safety:$NAS:always"
@@ -521,7 +507,7 @@ jobs:
           "windows-core:$WINDOWS_CORE:$WINDOWS"
           "windows-camera-bin:$WINDOWS_CAMERA:$WINDOWS"
           "windows-rust-test:$WINDOWS_RUST_TEST:$WINDOWS"
-          "windows-installer:$WINDOWS_INSTALLER:$WINDOWS"
+          "windows-installer:$WINDOWS_INSTALLER:$WINDOWS_BUILD"
           "macos-test:$MACOS_TEST:$MACOS"
-          "macos-release:$MACOS_RELEASE:$MACOS"
-          "macos-appintents:$MACOS_INTENTS:$MACOS"
+          "macos-release:$MACOS_RELEASE:$MACOS_BUILD"
+          "macos-appintents:$MACOS_INTENTS:$MACOS_BUILD"
