@@ -40,10 +40,26 @@ enum UnsupportedDeviceScanError: LocalizedError {
 final class UnsupportedDeviceScanner {
     static let shared = UnsupportedDeviceScanner()
 
+    struct ScanContext: Equatable {
+        let backend: HomeBackend
+        let hasHASource: Bool
+        let normalizedServerURL: String
+        let miAccountIds: [String]
+
+        @MainActor
+        init(store: HomeStore) {
+            self.backend = store.homeBackend
+            self.hasHASource = store.hasHASource
+            self.normalizedServerURL = HAWebSocketProvider.normalizeBaseURL(store.serverURLString)
+            self.miAccountIds = store.miAccounts.map(\.id)
+        }
+    }
+
     private(set) var devices: [UnsupportedDevice] = []
     private(set) var isScanning = false
     private(set) var errorMessage: String?
     private(set) var lastScannedAt: Date?
+    private var lastScanContext: ScanContext?
     private var scanGeneration = 0
 
     private init() {}
@@ -55,11 +71,24 @@ final class UnsupportedDeviceScanner {
         devices = []
         errorMessage = nil
         lastScannedAt = nil
+        lastScanContext = nil
         isScanning = false
     }
 
+    /// Drops cached results when the active account, backend, or Home Assistant URL changed while
+    /// the Privacy tab was not mounted.
+    func invalidateIfContextChanged(for store: HomeStore) {
+        guard let recorded = lastScanContext else { return }
+        if recorded != ScanContext(store: store) {
+            reset()
+        }
+    }
+
     func scan(store: HomeStore) async {
+        invalidateIfContextChanged(for: store)
         guard !isScanning else { return }
+        let context = ScanContext(store: store)
+        lastScanContext = context
         let generation = scanGeneration
         isScanning = true
         errorMessage = nil

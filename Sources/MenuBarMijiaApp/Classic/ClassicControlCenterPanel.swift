@@ -189,9 +189,8 @@ public struct ClassicControlCenterPanel: View {
         }
         // Room preferences survive a room disappearing; only the open prompt cannot.
         .onChange(of: store.rooms.map(\.id)) { _, ids in handleRoomIds(ids) }
-        // Another home or account brings another room set: a draft or open prompt must never cross that boundary.
-        .onChange(of: store.selectedMiHomeId) { _, _ in handleHomeContextChange() }
-        .onChange(of: store.homeBackend) { _, _ in handleHomeContextChange() }
+        // Another home, account, or server brings another room set: a draft or open prompt must never cross that boundary.
+        .onChange(of: homeContextSignature) { _, _ in handleHomeContextChange() }
         // The saved key caught up with the commit (or something else rewrote it): drop the mirror.
         .onChange(of: roomOrderRaw) { _, _ in liveRoomOrder = nil }
         .onChange(of: kindOrderRaw) { _, _ in liveKindOrder = nil }
@@ -244,6 +243,22 @@ public struct ClassicControlCenterPanel: View {
         search.end()
         isSearchFieldFocused = false
         isDrawerHovered = false
+    }
+
+    private struct HomeContextSignature: Equatable {
+        let selectedMiHomeId: String?
+        let homeBackend: HomeBackend
+        let miAccountIds: [String]
+        let serverURLString: String
+    }
+
+    private var homeContextSignature: HomeContextSignature {
+        HomeContextSignature(
+            selectedMiHomeId: store.selectedMiHomeId,
+            homeBackend: store.homeBackend,
+            miAccountIds: store.miAccounts.map(\.id),
+            serverURLString: store.serverURLString
+        )
     }
 
     private func handleHomeContextChange() {

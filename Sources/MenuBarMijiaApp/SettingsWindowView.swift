@@ -852,9 +852,21 @@ enum HAConnectionSaveGuard {
     }
 
     @MainActor
-    static func isInitialLookupUnavailable(in store: HomeStore) -> Bool {
-        guard store.userDefaults === UserDefaults.standard else { return false }
-        return CredentialVault.shared.lookup(haTokenAccount) == .unavailable
+    static func vault(for store: HomeStore) -> CredentialVault? {
+        store.credentialVault ?? (store.userDefaults === UserDefaults.standard ? .shared : nil)
+    }
+
+    @MainActor
+    static func isInitialLookupUnavailable(loadedToken: String, vault: CredentialVault?) -> Bool {
+        loadedToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && vault?.lookup(haTokenAccount) == .unavailable
+    }
+
+    @MainActor
+    static func loadInitialToken(from store: HomeStore) -> (token: String, lookupWasUnavailable: Bool) {
+        let loaded = store.loadHAToken()
+        let unavailable = isInitialLookupUnavailable(loadedToken: loaded, vault: vault(for: store))
+        return (loaded, unavailable)
     }
 
     /// Protects a stored Home Assistant token when the user opened Settings while the Keychain was
@@ -888,10 +900,11 @@ enum HAConnectionSaveGuard {
         initialLookupWasUnavailable: inout Bool,
         in store: HomeStore
     ) {
+        let activeVault = vault(for: store)
         let decision = resolve(
             draftToken: tokenDraft,
             initialLookupWasUnavailable: initialLookupWasUnavailable,
-            retryLookup: { CredentialVault.shared.lookup(haTokenAccount, retryingUnavailable: true) }
+            retryLookup: { activeVault?.lookup(haTokenAccount, retryingUnavailable: true) ?? .missing }
         )
         switch decision {
         case .proceed(let resolvedToken, let clearFlag):
@@ -1011,8 +1024,9 @@ private struct ConnectionSettingsTab: View {
         }
         .onAppear {
             urlDraft = store.serverURLString
-            tokenLookupWasUnavailable = HAConnectionSaveGuard.isInitialLookupUnavailable(in: store)
-            tokenDraft = store.loadHAToken()
+            let initialHAToken = HAConnectionSaveGuard.loadInitialToken(from: store)
+            tokenDraft = initialHAToken.token
+            tokenLookupWasUnavailable = initialHAToken.lookupWasUnavailable
             if store.discoveredHAInstances.isEmpty {
                 Task {
                     let found = await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: true)
@@ -1447,6 +1461,7 @@ private struct PrivacySettingsTab: View {
                 .settingsRow(anchor: .signOut)
             }
         }
+        .onAppear { scanner.invalidateIfContextChanged(for: store) }
         .onChange(of: store.homeBackend) { _, _ in scanner.reset() }
         .onChange(of: store.miAccounts.map(\.id)) { _, _ in scanner.reset() }
         .onChange(of: store.serverURLString) { _, _ in scanner.reset() }
@@ -1478,6 +1493,7 @@ private struct PrivacySettingsTab: View {
     }
 
     private func copyDiagnostics() {
+        scanner.invalidateIfContextChanged(for: store)
         let info = Bundle.main.infoDictionary
         let models = Dictionary(grouping: store.devices, by: { $0.model })
             .map { DiagnosticsReportBuilder.ModelCount(model: $0.key, count: $0.value.count) }

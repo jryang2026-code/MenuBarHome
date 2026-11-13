@@ -71,8 +71,9 @@ public struct OnboardingGuideView: View {
         .onAppear {
             launchAtLogin.refresh()
             haURLDraft = store.serverURLString
-            haTokenLookupWasUnavailable = HAConnectionSaveGuard.isInitialLookupUnavailable(in: store)
-            haTokenDraft = store.loadHAToken()
+            let initialHAToken = HAConnectionSaveGuard.loadInitialToken(from: store)
+            haTokenDraft = initialHAToken.token
+            haTokenLookupWasUnavailable = initialHAToken.lookupWasUnavailable
             let config = store.assistantConfig
             let initialPreset = AssistantProviderPreset.infer(baseURL: config.baseURL)
             if let initialPresetOverride {

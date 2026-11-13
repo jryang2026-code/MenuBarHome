@@ -627,10 +627,12 @@ enum SliderStepSnap {
     /// Snaps `raw` onto `range.lowerBound + k * step` while keeping `range.upperBound` reachable
     /// when `(upperBound - lowerBound)` is not an exact multiple of `step` (e.g. `2000...6535`, step `100`).
     static func snap(_ raw: Double, in range: ClosedRange<Double>, step: Double?) -> Double {
-        guard range.lowerBound < range.upperBound else { return range.lowerBound }
+        let span = range.upperBound - range.lowerBound
+        guard span > 0, span.isFinite, raw.isFinite else { return range.lowerBound }
         let clampedRaw = min(max(raw, range.lowerBound), range.upperBound)
         guard let step, step > 0, step.isFinite else { return clampedRaw }
-        let maxSteps = ((range.upperBound - range.lowerBound) / step).rounded(.down)
+        let maxSteps = (span / step).rounded(.down)
+        guard maxSteps.isFinite else { return clampedRaw }
         let lastGrid = range.lowerBound + maxSteps * step
         if clampedRaw > lastGrid {
             let midpoint = lastGrid + (range.upperBound - lastGrid) * 0.5
@@ -638,6 +640,24 @@ enum SliderStepSnap {
         }
         let steps = ((clampedRaw - range.lowerBound) / step).rounded()
         return min(max(range.lowerBound + steps * step, range.lowerBound), range.upperBound)
+    }
+
+    /// Advances one keyboard or VoiceOver step without skipping `lastGrid` when stepping down from
+    /// a non-divisible `upperBound` (e.g. `6535 -> 6500` on `2000...6535`, step `100`).
+    static func step(from value: Double, by delta: Double, in range: ClosedRange<Double>, step: Double?) -> Double {
+        let span = range.upperBound - range.lowerBound
+        guard span > 0, span.isFinite, value.isFinite, delta.isFinite else { return range.lowerBound }
+        let clampedValue = min(max(value, range.lowerBound), range.upperBound)
+        if let step, step > 0, step.isFinite, delta < 0 {
+            let maxSteps = (span / step).rounded(.down)
+            if maxSteps.isFinite {
+                let lastGrid = range.lowerBound + maxSteps * step
+                if clampedValue > lastGrid {
+                    return min(max(lastGrid, range.lowerBound), range.upperBound)
+                }
+            }
+        }
+        return snap(clampedValue + delta, in: range, step: step)
     }
 }
 
@@ -680,7 +700,7 @@ public struct LiquidGlassSlider: View {
 
     private var normalizedProgress: CGFloat {
         let span = range.upperBound - range.lowerBound
-        guard span > 0 else { return 0 }
+        guard span > 0, span.isFinite else { return 0 }
         let clamped = min(max(value, range.lowerBound), range.upperBound)
         return CGFloat((clamped - range.lowerBound) / span)
     }
@@ -714,14 +734,16 @@ public struct LiquidGlassSlider: View {
 
     /// Ten percent of the range, snapped to the declared step when there is one.
     private var unitStep: Double {
-        if let step, step > 0 { return step }
+        if let step, step > 0, step.isFinite { return step }
         let span = range.upperBound - range.lowerBound
+        guard span > 0, span.isFinite else { return 0 }
         return max(span * 0.1, 0.1)
     }
 
     private func adjust(by delta: Double) {
-        guard isEnabled else { return }
-        let clamped = SliderStepSnap.snap(value + delta, in: range, step: step)
+        let span = range.upperBound - range.lowerBound
+        guard isEnabled, span > 0, span.isFinite, delta != 0 else { return }
+        let clamped = SliderStepSnap.step(from: value, by: delta, in: range, step: step)
         guard clamped != value else { return }
         value = clamped
         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
@@ -730,9 +752,12 @@ public struct LiquidGlassSlider: View {
     /// One `.alignment` tick every 10 % of the track (0 %, 50 % and 100 % included), not per pixel.
     private func hapticTick(from old: Double, to new: Double) {
         let span = range.upperBound - range.lowerBound
-        guard span > 0 else { return }
-        let oldBucket = Int((((old - range.lowerBound) / span) * 10).rounded(.down))
-        let newBucket = Int((((new - range.lowerBound) / span) * 10).rounded(.down))
+        guard span > 0, span.isFinite else { return }
+        let oldScaled = ((old - range.lowerBound) / span) * 10
+        let newScaled = ((new - range.lowerBound) / span) * 10
+        guard oldScaled.isFinite, newScaled.isFinite else { return }
+        let oldBucket = Int(oldScaled.rounded(.down))
+        let newBucket = Int(newScaled.rounded(.down))
         guard oldBucket != newBucket else { return }
         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
     }
@@ -816,11 +841,13 @@ public struct LiquidGlassSlider: View {
     }
 
     private func updateValue(at x: CGFloat, in totalWidth: CGFloat, thumbWidth: CGFloat) {
+        let span = range.upperBound - range.lowerBound
+        guard span > 0, span.isFinite else { return }
         let minX = 2 + thumbWidth / 2
         let maxX = max(totalWidth - 2 - thumbWidth / 2, minX + 1)
         let clampedX = min(max(x, minX), maxX)
         let ratio = Double((clampedX - minX) / (maxX - minX))
-        let raw = range.lowerBound + ratio * (range.upperBound - range.lowerBound)
+        let raw = range.lowerBound + ratio * span
         let finalValue = SliderStepSnap.snap(raw, in: range, step: step)
         if finalValue != value {
             let previous = value

@@ -70,9 +70,9 @@ struct PreReleaseMacOSUIFixesTests {
         #expect(commands.last == .setLightPower(entityId: "light.d11", isOn: false))
     }
 
-    // MARK: - F13: Slider step snapping from range.lowerBound with reachable upperBound
+    // MARK: - F13 & PR #103 #7: Slider step snapping, symmetric downward step, and finite overflow guard
 
-    @Test("SliderStepSnap steps from lowerBound and keeps non-divisible upperBound reachable")
+    @Test("SliderStepSnap steps symmetrically from lowerBound/upperBound and guards extreme finite span overflow")
     func sliderStepSnapFromLowerBoundAndUpperBound() {
         // Odd step starting at 1: steps land on 1, 3, 5, ..., 99 (never 0, 2, 4).
         #expect(SliderStepSnap.snap(1.0, in: 1...99, step: 2) == 1)
@@ -85,9 +85,22 @@ struct PreReleaseMacOSUIFixesTests {
         #expect(SliderStepSnap.snap(6510, in: 2000...6535, step: 100) == 6500)
         #expect(SliderStepSnap.snap(6520, in: 2000...6535, step: 100) == 6535)
         #expect(SliderStepSnap.snap(6535, in: 2000...6535, step: 100) == 6535)
-        // One keyboard step up from 6500 (`6500 + 100`) reaches 6535; one step down (`6535 - 100`) returns to 6400.
-        #expect(SliderStepSnap.snap(6500 + 100, in: 2000...6535, step: 100) == 6535)
-        #expect(SliderStepSnap.snap(6535 - 100, in: 2000...6535, step: 100) == 6400)
+
+        // Keyboard / VoiceOver discrete stepping does not skip `lastGrid` (`6500` / `8`) when stepping down from `upperBound`.
+        #expect(SliderStepSnap.step(from: 6500, by: 100, in: 2000...6535, step: 100) == 6535)
+        #expect(SliderStepSnap.step(from: 6535, by: -100, in: 2000...6535, step: 100) == 6500)
+        #expect(SliderStepSnap.step(from: 6500, by: -100, in: 2000...6535, step: 100) == 6400)
+
+        #expect(SliderStepSnap.step(from: 0, by: 8, in: 0...10, step: 8) == 8)
+        #expect(SliderStepSnap.step(from: 8, by: 8, in: 0...10, step: 8) == 10)
+        #expect(SliderStepSnap.step(from: 10, by: -8, in: 0...10, step: 8) == 8)
+        #expect(SliderStepSnap.step(from: 8, by: -8, in: 0...10, step: 8) == 0)
+
+        // Extreme finite bounds whose difference overflows to `+infinity` must never produce `NaN`.
+        let extreme: ClosedRange<Double> = -1e308...1e308
+        #expect((extreme.upperBound - extreme.lowerBound).isInfinite)
+        #expect(SliderStepSnap.snap(0, in: extreme, step: 1) == -1e308)
+        #expect(SliderStepSnap.step(from: 0, by: 1, in: extreme, step: 1) == -1e308)
     }
 
     // MARK: - F23: Confirmed URL toggle does not invert when device already flipped
@@ -146,12 +159,35 @@ struct PreReleaseMacOSUIFixesTests {
         }
     }
 
-    // MARK: - F30a: UnsupportedDeviceScanner.reset clears cached scan output
+    // MARK: - F30a: UnsupportedDeviceScanner invalidates cached findings when context changes offscreen
 
-    @Test("UnsupportedDeviceScanner.reset clears stale unsupported findings on account or backend switch")
-    func unsupportedScannerResetClearsState() {
+    @Test("UnsupportedDeviceScanner.invalidateIfContextChanged clears stale scan findings after offscreen context change")
+    func unsupportedScannerResetClearsState() async throws {
+        let suite = "test.prerelease.scanner.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
         let scanner = UnsupportedDeviceScanner.shared
-        scanner.reset()
+        defer {
+            scanner.reset()
+            defaults.removePersistentDomain(forName: suite)
+        }
+        defaults.set(true, forKey: "has_completed_onboarding")
+        defaults.set(false, forKey: "automatically_checks_for_updates")
+
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: []))
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        store.homeBackend = .demo
+
+        await scanner.scan(store: store)
+        #expect(scanner.lastScannedAt != nil)
+
+        // Same context -> keeps cached scan timestamp.
+        scanner.invalidateIfContextChanged(for: store)
+        #expect(scanner.lastScannedAt != nil)
+
+        // Changing backend or HA server URL while PrivacySettingsTab is unmounted invalidates the stale scan.
+        store.serverURLString = "https://other-ha.example:8123"
+        scanner.invalidateIfContextChanged(for: store)
         #expect(scanner.devices.isEmpty)
         #expect(scanner.errorMessage == nil)
         #expect(scanner.lastScannedAt == nil)
@@ -273,6 +309,90 @@ struct PreReleaseMacOSUIFixesTests {
             retryLookup: { .unavailable }
         )
         #expect(intentionalClear == .proceed(token: "", clearUnavailableFlag: false))
+    }
+
+    @Test("HAConnectionSaveGuard protects an injected CredentialVault on HomeStore and recovers once unlocked")
+    func haConnectionSaveGuardProtectsInjectedVaultEndToEnd() async throws {
+        final class ToggleableVaultBox: @unchecked Sendable {
+            private let lock = NSLock()
+            var blob: Data?
+            var isReadable: Bool
+
+            init(blob: Data?, isReadable: Bool) {
+                self.blob = blob
+                self.isReadable = isReadable
+            }
+
+            var storage: CredentialVault.Storage {
+                CredentialVault.Storage(
+                    read: { [self] in
+                        lock.withLock {
+                            guard isReadable else { return .unavailable }
+                            return blob.map(CredentialVault.Storage.ReadResult.found) ?? .notFound
+                        }
+                    },
+                    write: { [self] data in
+                        lock.withLock {
+                            guard isReadable else { return false }
+                            blob = data
+                            return true
+                        }
+                    }
+                )
+            }
+        }
+
+        let suite = "test.prerelease.havault.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "has_completed_onboarding")
+        defaults.set(false, forKey: "automatically_checks_for_updates")
+
+        let seeded = try #require(CredentialVault.encode([
+            HAConnectionSaveGuard.haTokenAccount: Data("secret-ha-token".utf8)
+        ]))
+        let box = ToggleableVaultBox(blob: seeded, isReadable: false)
+        let vault = CredentialVault(storage: box.storage)
+
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: []))
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        store.credentialVault = vault
+        store.toastAutoDismissInterval = nil
+        try await store.waitForTestSnapshot()
+
+        // 1. Settings opens while injected vault is unreadable: draft is empty, unavailable flag is latched.
+        //    Conversely, if an environment override (`HA_ACCESS_TOKEN`) supplied a non-empty token while
+        //    the vault was unreadable, `isInitialLookupUnavailable` stays false so an explicit clear is honored.
+        #expect(HAConnectionSaveGuard.isInitialLookupUnavailable(loadedToken: "env-token", vault: vault) == false)
+        let initial = HAConnectionSaveGuard.loadInitialToken(from: store)
+        #expect(initial.token == "")
+        #expect(initial.lookupWasUnavailable == true)
+
+        // 2. Saving a new URL while vault is still unreadable refuses to overwrite the vault with `""`.
+        var draft = initial.token
+        var wasUnavailable = initial.lookupWasUnavailable
+        HAConnectionSaveGuard.save(
+            serverURL: "https://new-ha.example:8123",
+            tokenDraft: &draft,
+            initialLookupWasUnavailable: &wasUnavailable,
+            in: store
+        )
+        #expect(wasUnavailable == true)
+        #expect(store.toastNotice?.isError == true)
+        #expect(box.blob == seeded)
+
+        // 3. Once the user unlocks Keychain, clicking Save again recovers `secret-ha-token` and saves the new URL.
+        box.isReadable = true
+        HAConnectionSaveGuard.save(
+            serverURL: "https://new-ha.example:8123",
+            tokenDraft: &draft,
+            initialLookupWasUnavailable: &wasUnavailable,
+            in: store
+        )
+        #expect(wasUnavailable == false)
+        #expect(draft == "secret-ha-token")
+        #expect(store.serverURLString == "https://new-ha.example:8123")
+        #expect(store.loadHAToken() == "secret-ha-token")
     }
 }
 }
