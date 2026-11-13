@@ -35,9 +35,9 @@ struct HAHomeSnapshot {
         return rings
     }
 
-    mutating func receive(_ message: [String: JSONValue]) throws -> SynthesizedHome? {
+    mutating func receive(_ message: [String: JSONValue], isRefreshStatesResult: Bool = false) throws -> SynthesizedHome? {
         if message["type"]?.stringValue == "result", let id = message["id"]?.intValue {
-            guard (1...4).contains(id) || (1000...9999).contains(id) else { return nil }
+            guard (1...4).contains(id) || (1000...9999).contains(id) || isRefreshStatesResult else { return nil }
             guard message["success"]?.boolValue == true else { throw ReadError.rejected }
             guard let result = message["result"] else { throw ReadError.invalidResponse }
             switch id {
@@ -47,7 +47,7 @@ struct HAHomeSnapshot {
                 devices = try decode([HADeviceEntry].self, from: result)
             case 3:
                 entities = try decode([HAEntityEntry].self, from: result)
-            case 4, 1000...9999:
+            case let stateResultID where stateResultID == 4 || (1000...9999).contains(stateResultID) || isRefreshStatesResult:
                 guard case .array(let entries) = result else { throw ReadError.invalidResponse }
                 var nextStates: [String: HAEntityState] = [:]
                 for value in entries {

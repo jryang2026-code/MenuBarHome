@@ -78,21 +78,27 @@ struct LightGroupFoldTests {
 
     @Test("A hidden group card leaves its member lights visible")
     func hiddenGroupLeavesMembers() async throws {
-        let (store, _) = try await makeStore(makeHome())
+        let suite = "test.lightgroup.\(UUID().uuidString)"
+        let (store, _) = try await makeStore(makeHome(), suite: suite)
+        defer { store.userDefaults.removePersistentDomain(forName: suite) }
         store.hideDevice("group.living")
         #expect(ids(store.visibleDevices) == ["123", "456", "789", "999"])
     }
 
     @Test("An offline group card leaves its online member lights visible")
     func offlineGroupLeavesMembers() async throws {
-        let (store, _) = try await makeStore(makeHome(groupOnline: false))
+        let suite = "test.lightgroup.\(UUID().uuidString)"
+        let (store, _) = try await makeStore(makeHome(groupOnline: false), suite: suite)
+        defer { store.userDefaults.removePersistentDomain(forName: suite) }
         store.hideOfflineDevices = true
         #expect(ids(store.visibleDevices) == ["123", "456", "789", "999"])
     }
 
     @Test("An offline group card never folds members even while offline devices are shown")
     func visibleOfflineGroupDoesNotFold() async throws {
-        let (store, _) = try await makeStore(makeHome(groupOnline: false))
+        let suite = "test.lightgroup.\(UUID().uuidString)"
+        let (store, _) = try await makeStore(makeHome(groupOnline: false), suite: suite)
+        defer { store.userDefaults.removePersistentDomain(forName: suite) }
         #expect(!store.hideOfflineDevices)
         #expect(ids(store.filteredDevices).contains("group.living"))
         #expect(ids(store.visibleDevices) == ["group.living", "123", "456", "789", "999"])
@@ -100,7 +106,9 @@ struct LightGroupFoldTests {
 
     @Test("A room or kind cut that drops the group card keeps its members visible")
     func filteredGroupLeavesMembers() async throws {
-        let (store, _) = try await makeStore(makeHome())
+        let suite = "test.lightgroup.\(UUID().uuidString)"
+        let (store, _) = try await makeStore(makeHome(), suite: suite)
+        defer { store.userDefaults.removePersistentDomain(forName: suite) }
         #expect(store.selectRoom("shu_fang"))
         #expect(ids(store.visibleDevices) == ["789"])
         #expect(ids(store.filteredDevices) == ["789"])
@@ -112,15 +120,19 @@ struct LightGroupFoldTests {
 
     @Test("A stale owner whose group card is not in the list never hides the light")
     func ownerWithoutGroupCardDoesNotFold() async throws {
+        let suite = "test.lightgroup.\(UUID().uuidString)"
         var home = makeHome()
         home.lightGroupOwners = ["999": "group.gone", "123": "group.living"]
-        let (store, _) = try await makeStore(home)
+        let (store, _) = try await makeStore(home, suite: suite)
+        defer { store.userDefaults.removePersistentDomain(forName: suite) }
         #expect(ids(store.visibleDevices) == ["group.living", "456", "789", "999"])
     }
 
     @Test("All Off still targets folded members and the group card")
     func allOffTargetsEveryMember() async throws {
-        let (store, mock) = try await makeStore(makeHome(groupOn: true))
+        let suite = "test.lightgroup.\(UUID().uuidString)"
+        let (store, mock) = try await makeStore(makeHome(groupOn: true), suite: suite)
+        defer { store.userDefaults.removePersistentDomain(forName: suite) }
         #expect(ids(store.visibleDevices) == ["group.living", "999"])
         #expect(ids(store.allOffTargets) == ["group.living", "123", "456", "789", "999"])
 
@@ -140,7 +152,9 @@ struct LightGroupFoldTests {
 
     @Test("A refreshed owner map changes the folded results")
     func refreshingOwnersRefolds() async throws {
-        let (store, mock) = try await makeStore(makeHome())
+        let suite = "test.lightgroup.\(UUID().uuidString)"
+        let (store, mock) = try await makeStore(makeHome(), suite: suite)
+        defer { store.userDefaults.removePersistentDomain(forName: suite) }
         #expect(ids(store.visibleDevices) == ["group.living", "999"])
 
         var next = makeHome()

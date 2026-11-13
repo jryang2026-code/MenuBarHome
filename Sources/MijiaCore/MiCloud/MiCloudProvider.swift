@@ -517,6 +517,7 @@ public actor MiCloudProvider: HomeProvider {
         home.closesAwayGap = closesAwayGap
         home.homes = Self.homeOptions(from: rooms)
         home.lightGroupOwners = Self.deviceGroupOwners(membersByGroup: groupMembersByGroup, devices: visibleDevices)
+        DeviceSynthesizer.reconcileLightGroups(&home)
         // Light groups advertise `mode` but their members reject it; hide scenes there too.
         for i in home.devices.indices {
             guard case .light(var spec) = home.devices[i].kind,
