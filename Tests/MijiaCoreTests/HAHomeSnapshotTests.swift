@@ -107,6 +107,25 @@ struct HAHomeSnapshotTests {
         let recovered = try projection.receive(Self.initialReply(3))
         #expect(recovered?.devices.map(\.id) == ["light.visible"])
     }
+
+    @Test("Monotonic refresh get_states ids above 100_000 update the state snapshot")
+    func acceptsMonotonicRefreshStateIDs() throws {
+        var projection = HAHomeSnapshot()
+        _ = try projection.receive(Self.reply(1, .array([.object(["area_id": .string("office"), "name": .string("Office")])])))
+        _ = try projection.receive(Self.reply(2, .array([])))
+        _ = try projection.receive(Self.reply(3, Self.entities))
+        let initial = try #require(try projection.receive(Self.reply(4, Self.states)))
+        #expect(initial.devices.first?.isActiveOn == true)
+
+        let offStates: JSONValue = .array([
+            .object(["entity_id": .string("light.visible"), "state": .string("off"), "attributes": .object(["friendly_name": .string("Desk light")])]),
+        ])
+        let ignoredWithoutFlag = try projection.receive(Self.reply(100_002, offStates))
+        #expect(ignoredWithoutFlag == nil)
+
+        let refreshed = try #require(try projection.receive(Self.reply(500_005, offStates), isRefreshStatesResult: true))
+        #expect(refreshed.devices.first?.isActiveOn == false)
+    }
 }
 
 /// Deterministic fuzz pass over Home Assistant WebSocket frames (#186). A frame is untrusted
