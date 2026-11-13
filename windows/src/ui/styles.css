@@ -24,8 +24,8 @@
   --win-island-stroke: rgba(117, 117, 117, 0.4);
   --win-island-catchlight: rgba(255, 255, 255, 0.075);
   --win-island-shadow:
-    0 14px 32px rgba(0, 0, 0, 0.36),
-    0 2px 6px rgba(0, 0, 0, 0.22);
+    0 6px 14px rgba(0, 0, 0, 0.34),
+    0 1px 4px rgba(0, 0, 0, 0.22);
 
   --win-card-bg: rgba(255, 255, 255, 0.051);
   --win-card-secondary: rgba(255, 255, 255, 0.033);
@@ -176,8 +176,8 @@ body {
   --win-island-stroke: rgba(0, 0, 0, 0.09);
   --win-island-catchlight: rgba(255, 255, 255, 0.78);
   --win-island-shadow:
-    0 12px 28px rgba(0, 0, 0, 0.14),
-    0 2px 6px rgba(0, 0, 0, 0.07);
+    0 5px 14px rgba(0, 0, 0, 0.13),
+    0 1px 4px rgba(0, 0, 0, 0.07);
 
   --win-card-bg: rgba(255, 255, 255, 0.72);
   --win-card-secondary: rgba(246, 246, 246, 0.72);
@@ -1052,8 +1052,11 @@ details.win-notif-card > :not(summary) {
   display: flex;
   align-items: center;
   gap: 2px;
+  padding-right: 10px;
+  scroll-padding-inline-end: 12px;
   overflow-x: auto;
   scrollbar-width: none;
+  mask-image: linear-gradient(to right, #000 calc(100% - 10px), transparent);
 }
 
 .cc-room-scroll::-webkit-scrollbar {
@@ -2494,11 +2497,11 @@ details.win-notif-card > :not(summary) {
    ========================================================================= */
 .cc-footer {
   height: 44px;
-  padding: 0 10px 0 12px;
+  padding: 0 8px 0 10px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 4px;
   flex-shrink: 0;
   min-width: 0;
   background: var(--win-card-secondary);
@@ -2510,7 +2513,7 @@ details.win-notif-card > :not(summary) {
   align-items: center;
   gap: 5px;
   min-width: 0;
-  flex: 1 1 0;
+  flex: 1 1 78px;
 }
 
 .cc-status-dot {
@@ -2538,7 +2541,7 @@ details.win-notif-card > :not(summary) {
 }
 
 .cc-footer-label {
-  font-size: 12px;
+  font-size: 11.5px;
   line-height: 16px;
   color: var(--text-secondary);
   white-space: nowrap;
@@ -2565,7 +2568,7 @@ button.cc-footer-label.is-action {
 /* Scoped 0.6s Hold All-Off Pill & Edit Done Pill */
 .cc-all-off-pill {
   height: 26px;
-  padding: 0 8px;
+  padding: 0 6px;
   border-radius: var(--r-control);
   border: 1px solid var(--win-control-stroke);
   background: var(--win-control-bg);
@@ -2576,8 +2579,10 @@ button.cc-footer-label.is-action {
   font-weight: 600;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
+  gap: 3px;
+  flex: 0 1 auto;
+  min-width: 56px;
+  max-width: 94px;
   cursor: pointer;
   position: relative;
   overflow: hidden;
@@ -2596,11 +2601,15 @@ button.cc-footer-label.is-action {
 
 .cc-all-off-pill > span:not(.cc-hold-fill) {
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .cc-all-off-pill svg {
   width: 11px;
   height: 11px;
+  flex-shrink: 0;
 }
 
 .cc-hold-fill {
@@ -2621,18 +2630,20 @@ button.cc-footer-label.is-action {
   border-color: var(--win-accent);
   color: var(--win-text-on-accent);
   padding: 0 12px;
+  flex-shrink: 0;
+  max-width: none;
 }
 
 .cc-footer-actions {
   display: flex;
   align-items: center;
-  gap: 1px;
+  gap: 0;
   flex-shrink: 0;
 }
 
 .cc-footer-icon-btn {
-  width: 28px;
-  height: 28px;
+  width: 25px;
+  height: 25px;
   border-radius: var(--r-control);
   border: none;
   background: transparent;
@@ -2664,7 +2675,7 @@ button.cc-footer-label.is-action {
 
 .cc-footer-pill {
   height: 26px;
-  padding: 0 8px;
+  padding: 0 6px;
   border-radius: var(--r-control);
   border: 1px solid var(--win-control-stroke);
   background: var(--win-control-bg);
@@ -2675,7 +2686,7 @@ button.cc-footer-label.is-action {
   font-weight: 600;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   flex-shrink: 0;
   cursor: pointer;
   transition: background-color 120ms ease, border-color 120ms ease;

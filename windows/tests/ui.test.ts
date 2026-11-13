@@ -6749,4 +6749,60 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.equal(app.expandedDeviceId, null);
     assertMissing(document.querySelector(".cc-tile.is-subpage"));
   });
+
+  it("isolates subpage scrollTop from grid scroll, preserves active kind scroll on reopen, and reveals cameras from edit or panel mode", async () => {
+    const app = startDemoApp();
+    const scrollArea = element(".cc-scroll-area");
+    scrollArea.scrollTop = 74;
+
+    await click('[data-tile-id="camera.living_cam"] [data-expand-device]');
+    assert.equal(element(".cc-scroll-area").scrollTop, 0);
+
+    element(".cc-scroll-area").scrollTop = 28;
+    await click(".win-subpage-back");
+    assert.equal(element(".cc-scroll-area").scrollTop, 74);
+
+    await click('.win-island--bottom .cc-room-bar [data-kind="sensor"]');
+    assert.equal(app.listCut.kind, "deviceKind");
+    const strip = element(".cc-room-scroll");
+    const activeKind = element('.cc-room-pill.is-kind.is-active[data-kind="sensor"]');
+    Object.defineProperty(strip, "clientWidth", { value: 260, configurable: true });
+    Object.defineProperty(activeKind, "offsetLeft", { value: 360, configurable: true });
+    Object.defineProperty(activeKind, "offsetWidth", { value: 52, configurable: true });
+    strip.scrollLeft = 240;
+
+    window.dispatchEvent(new window.CustomEvent("menumijia:panel-present", { detail: { seq: 9, edge: "bottom" } }));
+    assert.ok(strip.scrollLeft > 0, "reopening flyout must keep active kind chip scrolled into view");
+
+    app.startEditing();
+    assert.equal(app.isEditingLayout, true);
+    await click('.win-island--top .win-camera-actions [data-reveal-device="camera.living_cam"]');
+    assert.equal(app.isEditingLayout, false);
+    assert.equal(app.expandedDeviceId, "camera.living_cam");
+    assert.ok(document.querySelector('.cc-tile.is-subpage[data-tile-id="camera.living_cam"]'));
+
+    app.expandedDeviceId = null;
+    app.layout.tileSizes["camera.living_cam"] = "panel";
+    app.render();
+    let scrolledTileId: string | null = null;
+    const prevScrollIntoView = window.HTMLElement.prototype.scrollIntoView;
+    window.HTMLElement.prototype.scrollIntoView = function () {
+      scrolledTileId = (this as HTMLElement).dataset?.tileId ?? null;
+    };
+    try {
+      await click('.win-island--top .win-camera-actions [data-reveal-device="camera.living_cam"]');
+    } finally {
+      window.HTMLElement.prototype.scrollIntoView = prevScrollIntoView;
+    }
+    assert.equal(scrolledTileId, "camera.living_cam");
+
+    localStorage.setItem(
+      "menumijia.windows.settings.v2",
+      JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true, interfaceLanguage: "en" }),
+    );
+    document.body.innerHTML = '<div id="app"></div>';
+    new MenuMijiaWindowsApp(element("#app"));
+    assert.equal(textOf(".cc-footer-label"), "Demo mode");
+    assert.equal(textOf("#btn-footer-qr span"), "QR Login");
+  });
 });

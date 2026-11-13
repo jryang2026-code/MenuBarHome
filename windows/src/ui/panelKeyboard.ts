@@ -157,7 +157,12 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
   const input = host.root.querySelector<HTMLInputElement>("#command-input");
   const active = document.activeElement;
   const inInput = active === input;
-  const isEditable = active?.matches("input, textarea, select, [contenteditable='true']");
+  const isEditable = Boolean(
+    active?.matches(
+      "input:not([type='range']):not([type='checkbox']):not([type='radio']):not([type='button']), textarea, select, [contenteditable='true']",
+    ),
+  );
+  const isNonTextInput = Boolean(active?.matches("input")) && !inInput && !isEditable;
   if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "f") {
     if (isEditable && !inInput) return false;
     event.preventDefault();
@@ -171,6 +176,10 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
   if (isEditable && !inInput) return true;
   if (active?.closest("button, a[href], [role='button'], [role='link']") &&
       [" ", "Enter", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return true;
+  const hasSubpage = Boolean(host.root.querySelector(".cc-tile.is-subpage"));
+  if (event.key === "Escape" && host.expandedDeviceId && (hasSubpage || !inInput)) {
+    event.preventDefault(); host.expandedDeviceId = null; host.render(); return true;
+  }
   if (event.key === "Escape" && (host.panelSearch.query || inInput)) {
     event.preventDefault();
     if (input) input.value = "";
@@ -184,6 +193,7 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
   if (event.key === "Escape" && host.panelSearch.selectedDeviceId) {
     event.preventDefault(); host.panelSearch.selectedDeviceId = null; syncPanelSelection(host); return true;
   }
+  if (isNonTextInput) return event.key !== "Escape";
   const hasQuery = Boolean(normalizeSearch(host.panelSearch.query));
   if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     const cards = tiles(host);
@@ -223,8 +233,8 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
     field?.setSelectionRange(field.value.length, field.value.length);
     return true;
   }
-  if (!inInput && !isEditable && /^[1-9]$/.test(event.key) && !hasQuery) {
-    const roomPills = host.root.querySelectorAll<HTMLButtonElement>(".cc-room-pill");
+  if (!hasSubpage && !inInput && !isEditable && /^[1-9]$/.test(event.key) && !hasQuery) {
+    const roomPills = host.root.querySelectorAll<HTMLButtonElement>(".cc-room-pill[data-room]");
     const targetPill = roomPills[Number(event.key) - 1];
     if (targetPill) {
       event.preventDefault();
