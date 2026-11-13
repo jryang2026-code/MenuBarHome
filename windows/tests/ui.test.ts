@@ -6664,4 +6664,51 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.equal(app.prompt, null);
     assert.equal(app.layout.aliases["light.living_ceiling"], "主卧吊灯");
   });
+
+  it("keeps resting active light capsules uniform without a .cc-tile-fill seam while showing fill during drag-to-dim", () => {
+    const app = startDemoApp();
+    assertMissing(
+      document.querySelector('[data-tile-id="light.living_ceiling"] .win-split-pill .cc-tile-fill'),
+    );
+    assertMissing(
+      document.querySelector('[data-tile-id="light.study_desk"] .win-split-pill .cc-tile-fill'),
+    );
+
+    app.dimPreview = { id: "light.living_ceiling", percent: 42 };
+    app.render();
+    assert.match(
+      document.querySelector('[data-tile-id="light.living_ceiling"] .win-split-pill .cc-tile-fill')?.getAttribute("style") ?? "",
+      /width:42%/,
+    );
+
+    app.dimPreview = null;
+    app.render();
+    assertMissing(
+      document.querySelector('[data-tile-id="light.living_ceiling"] .win-split-pill .cc-tile-fill'),
+    );
+  });
+
+  it("consolidates room and kind filters into one strip, keeps demo footer concise, and renders Variant B camera preview", async () => {
+    const app = startDemoApp();
+    assert.equal(document.querySelectorAll(".win-island--bottom .cc-room-bar").length, 1);
+    assert.ok(document.querySelector('.win-island--bottom .cc-room-bar [data-room="全部"]'));
+    assert.ok(document.querySelector('.win-island--bottom .cc-room-bar [data-kind="light"]'));
+    assert.equal(textOf(".cc-footer-label"), "演示模式");
+
+    const camCard = element('.win-island--top details.win-camera-card') as HTMLDetailsElement;
+    camCard.open = true;
+    assert.ok(camCard.querySelector('.win-camera-preview[data-open-camera="camera.living_cam"]'));
+    assert.ok(camCard.querySelector('.win-camera-actions [data-toggle-device="camera.living_cam"]'));
+    assert.ok(camCard.querySelector('.win-camera-actions [data-open-camera="camera.living_cam"]'));
+
+    await click('.win-island--top .win-camera-actions [data-toggle-device="camera.living_cam"]');
+    const cam = app.devices.find((d) => d.id === "camera.living_cam")!;
+    assert.equal(cam.kind.kind === "camera" && cam.kind.isOn, false);
+
+    app.cameraLive.activeLiveCameraId = "camera.living_cam";
+    app.cameraLive.liveCameraHidden = true;
+    app.render();
+    const standbyCard = element('.win-island--top details.win-camera-card');
+    assert.match(standbyCard.textContent ?? "", /120s/);
+  });
 });

@@ -180,6 +180,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "演示预览 · 点击下方「扫码直连」同步你的真机": ["演示预览 · 点击下方「扫码直连」同步你的真机", "Demo preview · use “Scan to connect” to sync your devices"],
   "正在从小米云端同步真实设备...": ["正在从小米云端同步真实设备...", "Syncing devices from Xiaomi Cloud…"],
   "米家账号 {user} · {count} 台设备": ["米家账号 {user} · {count} 台设备", "Mi account {user} · {count} devices"],
+  "演示模式": ["演示模式", "Demo mode"],
   "演示模式 · 未连接米家云": ["演示模式 · 未连接米家云", "Demo mode · Mi Cloud not connected"],
   "已同步 {count} 台真实米家设备": ["已同步 {count} 台真实米家设备", "Synced {count} devices"],
   "当前小米账号下暂未发现米家设备": ["当前小米账号下暂未发现米家设备", "No Mi Home devices in this account"],

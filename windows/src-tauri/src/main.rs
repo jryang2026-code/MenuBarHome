@@ -435,16 +435,43 @@ mod tests {
         assert_eq!(tray.decide_tray_release(false, 2_220), TrayToggleAction::Present);
         let _ = tray.begin_present();
 
-        // Slow >280 ms press-and-hold on tray while open must keep the panel closed on release.
+        // Slow >280 ms press-and-hold on tray while open must keep the panel closed on release,
+        // even if the hide animation completed while the button was still held down.
         tray.note_focus_loss(3_000);
-        let _ = tray.begin_hide(true);
+        let slow_seq = tray.begin_hide(true).expect("starts hide on slow tray hold");
         tray.note_tray_press_down(false, 3_005);
+        assert!(tray.complete_hide(slow_seq));
         assert_eq!(tray.decide_tray_release(false, 3_620), TrayToggleAction::Noop);
+
+        // Press-down arriving slightly before Focused(false) still dismisses cleanly without
+        // poisoning the next click.
+        let _ = tray.begin_present();
+        tray.note_tray_press_down(true, 3_700);
+        tray.note_focus_loss(3_704);
+        let _ = tray.begin_hide(true);
+        assert_eq!(tray.decide_tray_release(false, 3_750), TrayToggleAction::Noop);
+        tray.note_tray_press_down(false, 3_840);
+        assert_eq!(tray.decide_tray_release(false, 3_890), TrayToggleAction::Present);
+
+        // Clicking the desktop outside the flyout (<280 ms earlier) and then clicking the tray
+        // icon must reopen the flyout, both mid-dismiss and right after complete_hide.
+        let _ = tray.begin_present();
+        tray.note_focus_loss(5_000);
+        let _ = tray.begin_hide(true);
+        tray.note_tray_press_down(false, 5_120);
+        assert_eq!(tray.decide_tray_release(false, 5_165), TrayToggleAction::Present);
+
+        let _ = tray.begin_present();
+        tray.note_focus_loss(6_000);
+        let desktop_hide = tray.begin_hide(true).expect("desktop click starts hide");
+        assert!(tray.complete_hide(desktop_hide));
+        tray.note_tray_press_down(false, 6_180);
+        assert_eq!(tray.decide_tray_release(false, 6_220), TrayToggleAction::Present);
 
         // Pinned popover stays open across focus loss and closes on tray release.
         let _ = tray.begin_present();
-        tray.note_tray_press_down(true, 4_000);
-        assert_eq!(tray.decide_tray_release(true, 4_080), TrayToggleAction::Hide);
+        tray.note_tray_press_down(true, 7_000);
+        assert_eq!(tray.decide_tray_release(true, 7_080), TrayToggleAction::Hide);
     }
 
     #[test]

@@ -164,8 +164,12 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       details.addEventListener("toggle", () => {
         const key = details.dataset.notifCard;
         if (!key) return;
-        if (details.open) host.collapsedNotifCards.delete(key);
-        else host.collapsedNotifCards.add(key);
+        if (details.open) {
+          host.collapsedNotifCards.delete(key);
+          details.scrollIntoView?.({ block: "nearest" });
+        } else {
+          host.collapsedNotifCards.add(key);
+        }
       });
     });
     bindPanelInput(host);
