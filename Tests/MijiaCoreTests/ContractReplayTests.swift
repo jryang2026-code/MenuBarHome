@@ -416,14 +416,14 @@ struct ContractReplayTests {
         #expect(initialSensor.statusText == L10n.tr("已上锁", "Locked"))
 
         // Poll 2: LAN replies with all-nonzero fixture codes for did-lock-0001, then cloud fallback returns 503.
+        // `.statusChanged(.disconnected)` is yielded after `pollOutcome` emits its partial snapshot on the same
+        // FIFO AsyncStream, so waiting for `.disconnected` drains Poll 2 deterministically without racing snapshot counts.
         replayFailure.withValue { $0 = true }
         await api.setGetPropsError(MiCloudError.http(503))
         await provider.refreshNow()
 
-        let expectedSnapshotCount = await collector.snapshots.count + 1
         #expect(await collector.wait { state in
-            guard state.snapshots.count >= expectedSnapshotCount,
-                  let lastStatus = state.statuses.last,
+            guard let lastStatus = state.statuses.last,
                   case .disconnected = lastStatus else { return false }
             return true
         })
