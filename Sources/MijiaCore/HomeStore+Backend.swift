@@ -311,8 +311,9 @@ extension HomeStore {
                     optimisticLockUntil.removeValue(forKey: incoming.id)
                     coverCommandOrigins.removeValue(forKey: incoming.id)
                     lastCoverPositions.removeValue(forKey: incoming.id)
+                    manualWriteSessions.removeValue(forKey: incoming.id)
                     optimisticLockRevision[incoming.id, default: 0] &+= 1
-                    cancelDebouncedWrites(for: incoming.id)
+                    cancelDebouncedWrites(for: incoming.id, recomputeRow: false)
                     let prefix = "\(incoming.id)."
                     for key in debounceTasks.keys where key == incoming.id || key.hasPrefix(prefix) {
                         debounceTasks.removeValue(forKey: key)?.cancel()
@@ -340,6 +341,7 @@ extension HomeStore {
                         // the lock expired (#298).
                         optimisticLockUntil.removeValue(forKey: incoming.id)
                         coverCommandOrigins.removeValue(forKey: incoming.id)
+                        manualWriteSessions.removeValue(forKey: incoming.id)
                         merged.append(incoming)
                     } else {
                         merged.append(local)
@@ -347,7 +349,7 @@ extension HomeStore {
                 } else {
                     optimisticLockUntil.removeValue(forKey: incoming.id)
                     coverCommandOrigins.removeValue(forKey: incoming.id)
-                    merged.append(incoming)
+                    merged.append(reconcileManualWriteSessionWithSnapshot(incoming))
                 }
             }
             if let lgDev = latestLGDevice, lgConfig.isEnabled,

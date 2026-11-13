@@ -1170,4 +1170,414 @@ struct CoreReleaseAuditTests {
         #expect(snap1 != snap2)
         #expect(snap1.hasSameExportedContent(as: snap2))
     }
+
+    // MARK: - Round 2 Review Regressions (#33)
+
+    private actor SelectiveCommandProvider: HomeProvider {
+        private let initialSnapshot: SynthesizedHome
+        private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
+        private var failingCommands: [DeviceCommand] = []
+        private(set) var executedCommands: [DeviceCommand] = []
+
+        init(snapshot: SynthesizedHome) {
+            self.initialSnapshot = snapshot
+        }
+
+        func setFailingCommands(_ commands: [DeviceCommand]) {
+            failingCommands = commands
+        }
+
+        nonisolated func events() -> AsyncStream<HomeProviderEvent> {
+            AsyncStream { cont in
+                Task { await self.attach(cont) }
+            }
+        }
+
+        private func attach(_ cont: AsyncStream<HomeProviderEvent>.Continuation) {
+            self.continuation = cont
+            cont.yield(.statusChanged(.connected))
+            cont.yield(.snapshotUpdated(initialSnapshot))
+        }
+
+        func refreshNow() async {}
+
+        func execute(_ command: DeviceCommand) async throws {
+            executedCommands.append(command)
+            if failingCommands.contains(command) {
+                throw HomeProviderError.serviceCallFailed(503, "Simulated command failure")
+            }
+        }
+
+        func triggerScene(_ sceneId: String) async throws {}
+    }
+
+    @Test("Round2 #1a: Sibling manual writes roll back independently on partial or dual failure without dropping surviving locks")
+    @MainActor
+    func siblingManualAdjustmentsRollbackIndependently() async throws {
+        func makeLamp(_ id: String, brightness: Int, kelvin: Int) -> SmartDevice {
+            SmartDevice(
+                id: id,
+                name: "台灯-\(id)",
+                roomId: "study",
+                roomName: "书房",
+                model: "yeelink.light.lamp4",
+                isOnline: true,
+                kind: .light(LightSpec(
+                    entityId: "light.\(id)",
+                    isOn: true,
+                    brightnessPercent: brightness,
+                    colorTempKelvin: kelvin,
+                    minKelvin: 2700,
+                    maxKelvin: 6500
+                ))
+            )
+        }
+        let ac = SmartDevice(
+            id: "ac",
+            name: "书房空调",
+            roomId: "study",
+            roomName: "书房",
+            model: "xiaomi.aircondition.mt0",
+            isOnline: true,
+            kind: .climate(ClimateSpec(
+                entityId: "climate.ac",
+                isOn: true,
+                hvacMode: "cool",
+                availableModes: ["off", "cool", "heat"],
+                targetTemperature: 24
+            ))
+        )
+
+        let provider = SelectiveCommandProvider(snapshot: SynthesizedHome(devices: [
+            makeLamp("l1", brightness: 20, kelvin: 3000),
+            makeLamp("l2", brightness: 25, kelvin: 3200),
+            makeLamp("l3", brightness: 30, kelvin: 3500),
+            ac,
+        ]))
+        let suite = "test.audit.r2.sibling.\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        store.toastAutoDismissInterval = nil
+        try await store.waitForTestSnapshot()
+        store.controlDebounceInterval = .zero
+
+        // (i) First write fails, second write succeeds -> brightness rolls back to 20, kelvin stays 4500, lock stays active.
+        await provider.setFailingCommands([
+            .setLightBrightness(entityId: "light.l1", percent: 70),
+        ])
+        store.setLightBrightness("l1", percent: 70)
+        let l1BrightnessTask = store.debounceTasks["l1.brightness"]
+        store.setLightColorTemp("l1", kelvin: 4500)
+        let l1ColorTask = store.debounceTasks["l1.colortemp"]
+        await l1BrightnessTask?.value
+        await l1ColorTask?.value
+
+        if case .light(let spec1) = try #require(store.devices.first { $0.id == "l1" }).kind {
+            #expect(spec1.brightnessPercent == 20)
+            #expect(spec1.colorTempKelvin == 4500)
+        } else {
+            Issue.record("Expected light l1")
+        }
+        #expect(store.optimisticLockUntil["l1"] != nil)
+
+        // (ii-a) First write succeeds, second write fails -> brightness stays 80, kelvin rolls back to 3200, lock stays active.
+        await provider.setFailingCommands([
+            .setLightColorTemp(entityId: "light.l2", kelvin: 5000),
+        ])
+        store.setLightBrightness("l2", percent: 80)
+        let l2BrightnessTask = store.debounceTasks["l2.brightness"]
+        store.setLightColorTemp("l2", kelvin: 5000)
+        let l2ColorTask = store.debounceTasks["l2.colortemp"]
+        await l2BrightnessTask?.value
+        await l2ColorTask?.value
+
+        if case .light(let spec2) = try #require(store.devices.first { $0.id == "l2" }).kind {
+            #expect(spec2.brightnessPercent == 80)
+            #expect(spec2.colorTempKelvin == 3200)
+        } else {
+            Issue.record("Expected light l2")
+        }
+        #expect(store.optimisticLockUntil["l2"] != nil)
+
+        // (ii-b) Debouncing write1 + immediate failing non-debounced write2 -> write2 rolls back without dropping write1's lock.
+        store.controlDebounceInterval = .milliseconds(90)
+        await provider.setFailingCommands([
+            .setClimateMode(entityId: "climate.ac", hvacMode: "heat"),
+        ])
+        store.stepClimateTemperature("ac", delta: 2)
+        let acTempTask = store.debounceTasks["ac.temp"]
+        store.setClimateMode("ac", mode: "heat")
+        await waitUntil { store.toastNotice?.message.contains("书房空调") == true }
+        if case .climate(let midAC) = try #require(store.devices.first { $0.id == "ac" }).kind {
+            #expect(midAC.hvacMode == "cool")
+            #expect(midAC.targetTemperature == 26)
+        } else {
+            Issue.record("Expected climate ac")
+        }
+        #expect(store.optimisticLockUntil["ac"] != nil, "pending debounced write1 must keep its optimistic lock")
+        await acTempTask?.value
+        if case .climate(let finalAC) = try #require(store.devices.first { $0.id == "ac" }).kind {
+            #expect(finalAC.hvacMode == "cool")
+            #expect(finalAC.targetTemperature == 26)
+        }
+
+        // (iii) Both writes fail -> card rolls all the way back to pre-session base and releases optimistic lock.
+        store.controlDebounceInterval = .zero
+        await provider.setFailingCommands([
+            .setLightBrightness(entityId: "light.l3", percent: 75),
+            .setLightColorTemp(entityId: "light.l3", kelvin: 5500),
+        ])
+        store.setLightBrightness("l3", percent: 75)
+        let l3BrightnessTask = store.debounceTasks["l3.brightness"]
+        store.setLightColorTemp("l3", kelvin: 5500)
+        let l3ColorTask = store.debounceTasks["l3.colortemp"]
+        await l3BrightnessTask?.value
+        await l3ColorTask?.value
+
+        if case .light(let spec3) = try #require(store.devices.first { $0.id == "l3" }).kind {
+            #expect(spec3.brightnessPercent == 30)
+            #expect(spec3.colorTempKelvin == 3500)
+        } else {
+            Issue.record("Expected light l3")
+        }
+        #expect(store.optimisticLockUntil["l3"] == nil)
+    }
+
+    @Test("Round2 #1b: Mutually exclusive manual controls cancel conflicting pending slider debounces")
+    @MainActor
+    func mutuallyExclusiveControlsCancelPendingDebounces() async throws {
+        let lamp = SmartDevice(
+            id: "lamp",
+            name: "氛围灯",
+            roomId: "living",
+            roomName: "客厅",
+            model: "yeelink.light.strip6",
+            isOnline: true,
+            kind: .light(LightSpec(
+                entityId: "light.lamp",
+                isOn: true,
+                brightnessPercent: 60,
+                colorTempKelvin: 3000,
+                minKelvin: 2700,
+                maxKelvin: 6500,
+                currentEffect: "Day",
+                availableEffects: ["Day", "Night"]
+            ))
+        )
+        let fan = SmartDevice(
+            id: "fan",
+            name: "净化器",
+            roomId: "living",
+            roomName: "客厅",
+            model: "zhimi.airpurifier.mb5",
+            isOnline: true,
+            kind: .fan(FanSpec(
+                entityId: "fan.purifier",
+                isOn: true,
+                percentage: 35,
+                presetMode: "Auto",
+                availablePresetModes: ["Auto", "Sleep", "Favorite"]
+            ))
+        )
+        let curtain = SmartDevice(
+            id: "curtain",
+            name: "客厅窗帘",
+            roomId: "living",
+            roomName: "客厅",
+            model: "lumi.curtain.hagl04",
+            isOnline: true,
+            kind: .cover(CoverSpec(
+                entityId: "cover.curtain",
+                subtype: .curtain,
+                positionPercent: 20,
+                positionWritable: true,
+                openDescription: "Open",
+                closeDescription: "Close",
+                pauseDescription: "Pause"
+            ))
+        )
+
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(devices: [lamp, fan, curtain]))
+        let suite = "test.audit.r2.mutex.\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        store.controlDebounceInterval = .milliseconds(70)
+
+        // 1) setLightEffect cancels pending colortemp debounce (but keeps unrelated brightness if any).
+        store.setLightColorTemp("lamp", kelvin: 4800)
+        let lampColorTask = try #require(store.debounceTasks["lamp.colortemp"])
+        #expect(store.debouncedWrites["lamp.colortemp"] != nil)
+        store.setLightEffect("lamp", effect: "Night")
+        #expect(store.debouncedWrites["lamp.colortemp"] == nil)
+
+        // 2) setFanPresetMode cancels pending fanpercent debounce.
+        store.setFanPercentage("fan", percent: 85)
+        let fanPercentTask = try #require(store.debounceTasks["fan.fanpercent"])
+        #expect(store.debouncedWrites["fan.fanpercent"] != nil)
+        store.setFanPresetMode("fan", preset: "Sleep")
+        #expect(store.debouncedWrites["fan.fanpercent"] == nil)
+
+        // 3) setCoverMotor("Pause") cancels pending cover position debounce.
+        store.setCoverPosition("curtain", percent: 80)
+        let coverPosTask = try #require(store.debounceTasks["curtain.cover"])
+        #expect(store.debouncedWrites["curtain.cover"] != nil)
+        store.setCoverMotor("curtain", description: "Pause")
+        #expect(store.debouncedWrites["curtain.cover"] == nil)
+
+        await lampColorTask.value
+        await fanPercentTask.value
+        await coverPosTask.value
+        await waitUntil { await provider.executedCommands.count >= 3 }
+        let cmds = await provider.executedCommands
+        #expect(cmds.contains(.setLightEffect(entityId: "light.lamp", effect: "Night")))
+        #expect(!cmds.contains(.setLightColorTemp(entityId: "light.lamp", kelvin: 4800)))
+        #expect(cmds.contains(.setFanPresetMode(entityId: "fan.purifier", presetMode: "Sleep")))
+        #expect(!cmds.contains(.setFanPercentage(entityId: "fan.purifier", percent: 85)))
+        #expect(cmds.contains(.setSelectOption(entityId: "cover.curtain", option: "Pause")))
+        #expect(!cmds.contains(.setNumberValue(entityId: "cover.curtain", value: 80)))
+
+        if case .light(let lampSpec) = try #require(store.devices.first { $0.id == "lamp" }).kind {
+            #expect(lampSpec.currentEffect == "Night")
+            #expect(lampSpec.colorTempKelvin == 3000)
+        }
+        if case .fan(let fanSpec) = try #require(store.devices.first { $0.id == "fan" }).kind {
+            #expect(fanSpec.presetMode == "Sleep")
+            #expect(fanSpec.percentage == 35)
+        }
+        if case .cover(let coverSpec) = try #require(store.devices.first { $0.id == "curtain" }).kind {
+            #expect(coverSpec.positionPercent == 20)
+            #expect(coverSpec.motion == .stopped)
+        }
+    }
+
+    @Test("Round2 #2: MiotCommandMapper.coerce guards non-finite valueRange/step and inputs so JSONSerialization never sees NaN/Inf")
+    func miotCommandMapperGuardsNonFiniteNumbersAndSteps() throws {
+        let nonFiniteSpec = MiotDeviceSpec(
+            type: "urn:miot-spec-v2:device:air-conditioner:0000A004:test-nonfinite:1",
+            services: [
+                MiotService(
+                    iid: 2,
+                    type: "urn:miot-spec-v2:service:air-conditioner:0000780F:test-nonfinite:1",
+                    properties: [
+                        MiotProperty(
+                            iid: 1,
+                            type: "urn:miot-spec-v2:property:target-temperature:00000021:test-nonfinite:1",
+                            format: "float",
+                            access: ["read", "write"],
+                            valueRange: [0, .infinity, .infinity]
+                        ),
+                        MiotProperty(
+                            iid: 2,
+                            type: "urn:miot-spec-v2:property:brightness:0000000D:test-nonfinite:1",
+                            format: "int32",
+                            access: ["read", "write"],
+                            valueRange: [-1e308, 1e308, .infinity]
+                        ),
+                    ]
+                )
+            ]
+        )
+
+        let cases: [(piid: Int, input: Double)] = [
+            (1, 24.5),
+            (1, .nan),
+            (1, .infinity),
+            (2, 50),
+            (2, -.infinity),
+        ]
+        for (piid, input) in cases {
+            let op = try MiotCommandMapper.map(
+                .setMiotProperty(entityId: "miot:1:2", piid: piid, value: .number(input)),
+                spec: nonFiniteSpec
+            )
+            guard case .setProps(let writes) = op,
+                  let write = writes.first,
+                  let out = write.value.doubleValue else {
+                Issue.record("Expected numeric setProps for piid=\(piid)")
+                continue
+            }
+            #expect(out.isFinite)
+            let payload = try JSONSerialization.data(withJSONObject: ["value": out])
+            #expect(!payload.isEmpty)
+        }
+    }
+
+    @Test("Round2 #3: DualSourceHomeProvider.shutdown awaits child MiCloudProvider bridge teardown before returning")
+    func dualSourceShutdownAwaitsChildProviders() async throws {
+        actor DelayedCameraBridge: XiaomiCameraBridging {
+            private(set) var stopCompleted: [String] = []
+
+            func startBridge(
+                did: String,
+                model: String,
+                localIP: String,
+                clientPublic: String,
+                clientPrivate: String,
+                devicePublic: String,
+                sign: String,
+                vendor: String,
+                uid: String?,
+                quality: XiaomiCameraStreamQuality,
+                channel: Int,
+                subdid: String?
+            ) async throws -> XiaomiCameraStreamEndpoints {
+                XiaomiCameraStreamEndpoints(
+                    mp4: URL(string: "http://127.0.0.1:43123/api/stream.mp4?src=cam_\(did)")!,
+                    mjpeg: URL(string: "http://127.0.0.1:43123/api/stream.mjpeg?src=cam_\(did)")!
+                )
+            }
+
+            func stopBridge(did: String, subdid: String?) async {
+                try? await Task.sleep(for: .milliseconds(50))
+                stopCompleted.append(did)
+            }
+        }
+
+        let camSpec = MiotFixtures.decode(#"""
+        {"type":"urn:miot-spec-v2:device:camera:0000A01C:chuangmi-061a01:1","services":[
+          {"iid":2,"type":"urn:miot-spec-v2:service:camera-control:0000782F:chuangmi-061a01:1","properties":[
+            {"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:chuangmi-061a01:1","format":"bool","access":["read","write","notify"]}
+          ]}
+        ]}
+        """#)
+        let camRecord = MiDeviceRecord(
+            did: "9902",
+            name: "门口摄像机",
+            model: "chuangmi.camera.061a01",
+            isOnline: true,
+            localIp: "192.168.50.11"
+        )
+        let session = MiSession(userId: "42", cUserId: "c", ssecurity: "c2VjcmV0", serviceToken: "tok")
+        let api = StubMiCloudAPI(
+            devices: [camRecord],
+            rooms: [MiRoom(id: "r1", name: "玄关", dids: ["9902"])],
+            values: [MiotPropKey(did: "9902", siid: 2, piid: 1): .bool(true)]
+        )
+        struct SingleSpec: MiotSpecSource {
+            let spec: MiotDeviceSpec
+            func spec(model: String, specType: String?) async throws -> MiotDeviceSpec? { spec }
+        }
+        let bridge = DelayedCameraBridge()
+        let miProvider = MiCloudProvider(
+            sessionLoader: { session },
+            apiFactory: { _ in api },
+            specSource: SingleSpec(spec: camSpec),
+            cameraBridge: bridge,
+            pollInterval: .seconds(60),
+            followUpDelay: .seconds(60)
+        )
+        let dualProvider = DualSourceHomeProvider(homeAssistant: nil, xiaomiCloud: miProvider)
+        let (log, task) = consume(dualProvider)
+        defer { task.cancel() }
+
+        #expect(await log.wait { await !$0.snapshots.isEmpty })
+        let camDevice = try #require(await log.snapshots.first?.devices.first { $0.id == "9902" })
+        _ = try await dualProvider.resolveCameraStream(for: camDevice)
+        #expect(await bridge.stopCompleted.isEmpty)
+
+        // Must await the 50ms stopBridge inside miProvider before returning.
+        await dualProvider.shutdown()
+        #expect(await bridge.stopCompleted == ["9902"])
+    }
 }
