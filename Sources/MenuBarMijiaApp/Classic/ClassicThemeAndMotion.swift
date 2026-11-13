@@ -226,6 +226,7 @@ public struct ClassicLiquidGlassSlider: View {
     public let formattedValue: String
 
     @State private var isDragging: Bool = false
+    @FocusState private var isFocused: Bool
 
     public init<S: ShapeStyle>(
         value: Binding<Double>,
@@ -272,7 +273,8 @@ public struct ClassicLiquidGlassSlider: View {
             }
         }
         .focusable()
-        // The classic lens draws its own rim; the system focus ring would fight the card.
+        .focused($isFocused)
+        // The capsule draws its own visible keyboard focus ring.
         .focusEffectDisabled()
         .onKeyPress(.upArrow) { adjust(by: unitStep); return .handled }
         .onKeyPress(.rightArrow) { adjust(by: unitStep); return .handled }
@@ -289,11 +291,7 @@ public struct ClassicLiquidGlassSlider: View {
 
     private func adjust(by delta: Double) {
         guard isEnabled else { return }
-        var next = value + delta
-        if let step, step > 0 {
-            next = (next / step).rounded() * step
-        }
-        let clamped = min(max(next, range.lowerBound), range.upperBound)
+        let clamped = SliderStepSnap.snap(value + delta, in: range, step: step)
         guard clamped != value else { return }
         value = clamped
         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
@@ -368,6 +366,11 @@ public struct ClassicLiquidGlassSlider: View {
                         )
                         .position(x: thumbCenterX, y: geo.size.height / 2)
                 }
+                .overlay {
+                    Capsule(style: .continuous)
+                        .strokeBorder(isFocused ? Color.accentColor.opacity(0.85) : Color.clear, lineWidth: 1.5)
+                        .allowsHitTesting(false)
+                }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
                 .gesture(
@@ -404,11 +407,8 @@ public struct ClassicLiquidGlassSlider: View {
         let maxX = max(totalWidth - 2 - thumbWidth / 2, minX + 1)
         let clampedX = min(max(x, minX), maxX)
         let ratio = Double((clampedX - minX) / (maxX - minX))
-        var raw = range.lowerBound + ratio * (range.upperBound - range.lowerBound)
-        if let step, step > 0 {
-            raw = (raw / step).rounded() * step
-        }
-        let finalValue = min(max(raw, range.lowerBound), range.upperBound)
+        let raw = range.lowerBound + ratio * (range.upperBound - range.lowerBound)
+        let finalValue = SliderStepSnap.snap(raw, in: range, step: step)
         if finalValue != value {
             let previous = value
             value = finalValue

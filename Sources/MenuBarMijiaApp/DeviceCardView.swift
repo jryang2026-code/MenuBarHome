@@ -435,11 +435,16 @@ public struct DeviceCardView: View {
                     if device.isOnline, device.kind.canTogglePower { SoundFeedback.playSuccess() }
                     return
                 }
-                guard device.isPrimaryToggleable else { return }
-                withAnimation(AppleMotion.snappySpring) {
-                    _ = store.togglePrimary(device)
+                if device.isPrimaryToggleable {
+                    withAnimation(AppleMotion.snappySpring) {
+                        _ = store.togglePrimary(device)
+                    }
+                    if device.isOnline { SoundFeedback.playSuccess() }
+                } else if store.hasDetailDrawer(for: device) {
+                    withAnimation(AppleMotion.snappySpring) {
+                        store.toggleExpanded(device.id)
+                    }
                 }
-                if device.isOnline { SoundFeedback.playSuccess() }
             } label: {
                 iconBadge
             }
@@ -452,7 +457,9 @@ public struct DeviceCardView: View {
                     ? L10n.tr("点击打开摄像头实时小窗", "Click to open live camera window")
                     : device.isPrimaryToggleable
                         ? L10n.tr("点击直接切换开关", "Click to toggle power")
-                        : L10n.tr("只读状态", "Read only")
+                        : store.hasDetailDrawer(for: device)
+                            ? L10n.tr("点击展开详细控制", "Click to expand controls")
+                            : L10n.tr("只读状态", "Read only")
             )
 
             Button {
@@ -540,6 +547,8 @@ public struct DeviceCardView: View {
                         store.openCameraLiveView(device.id)
                     } else if device.kind.canTogglePower {
                         _ = store.togglePrimary(device)
+                    } else if store.hasDetailDrawer(for: device) {
+                        store.toggleExpanded(device.id)
                     }
                 }
                 if device.isOnline, device.isPrimaryToggleable { SoundFeedback.playSuccess() }
@@ -552,7 +561,9 @@ public struct DeviceCardView: View {
                 ? L10n.tr("打开实时画面", "Open live view")
                 : device.isPrimaryToggleable
                     ? L10n.tr("切换开关", "Toggle power")
-                    : L10n.tr("只读状态", "Read only")))
+                    : store.hasDetailDrawer(for: device)
+                        ? L10n.tr("展开详细控制", "Expand controls")
+                        : L10n.tr("只读状态", "Read only")))
 
             // The text block opens the drawer; only a card without one falls back to the switch.
             Button {
@@ -1266,30 +1277,37 @@ public struct DeviceCardView: View {
                         .padding(.vertical, 5.5)
                         .adaptiveGlass(in: RoundedRectangle(cornerRadius: DesignTokens.Radius.inset, style: .continuous))
                         .onSubmit {
-                            guard !speakerInputText.isEmpty else { return }
-                            store.sendSpeakerText(device.id, text: speakerInputText, asDirective: true)
-                            speakerInputText = ""
+                            submitSpeakerInput(spec, asDirective: spec.directiveNotifyEntityId != nil)
                         }
 
                     if spec.ttsNotifyEntityId != nil {
                         Button(L10n.tr("播报", "Speak")) {
-                            store.sendSpeakerText(device.id, text: speakerInputText, asDirective: false)
-                            speakerInputText = ""
+                            submitSpeakerInput(spec, asDirective: false)
                         }
                         .buttonStyle(PillActionButtonStyle(tintColor: accent))
-                        .disabled(speakerInputText.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(speakerInputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
 
                     if spec.directiveNotifyEntityId != nil {
                         Button(L10n.tr("执行", "Run")) {
-                            store.sendSpeakerText(device.id, text: speakerInputText, asDirective: true)
-                            speakerInputText = ""
+                            submitSpeakerInput(spec, asDirective: true)
                         }
                         .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: accent))
-                        .disabled(speakerInputText.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(speakerInputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
             }
+        }
+    }
+
+    private func submitSpeakerInput(_ spec: SpeakerSpec, asDirective: Bool) {
+        let trimmed = speakerInputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let hasEntity = (asDirective ? spec.directiveNotifyEntityId : spec.ttsNotifyEntityId) != nil
+        let canDispatch = !store.miSessionBlocksControl && !store.isControlBlockedByScreenLock && hasEntity
+        store.sendSpeakerText(device.id, text: speakerInputText, asDirective: asDirective)
+        if canDispatch {
+            speakerInputText = ""
         }
     }
 

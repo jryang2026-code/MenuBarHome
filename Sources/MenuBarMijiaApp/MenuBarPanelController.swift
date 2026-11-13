@@ -775,7 +775,14 @@ final class MenuBarPanelController: NSObject {
             hideBackdropShadow()
         }
         panel.contentView = nil
+        panel.contentMinSize = .zero
+        panel.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         let hosting = NSHostingView(rootView: Self.panelRoot(store: store, theme: theme))
+        // Neither theme delegates window sizing to AppKit's intrinsic-content constraints: `.classic`
+        // sizes explicitly via `updatePanelSize`, and `.liquidGlass` spans the screen height. Leaving
+        // `sizingOptions` at its default stamps fixed min/max content constraints onto the reused
+        // `NSPanel`, clamping a subsequent `.liquidGlass` frame to the classic height.
+        hosting.sizingOptions = []
         hosting.frame = NSRect(origin: .zero, size: panel.frame.size)
         hosting.autoresizingMask = [.width, .height]
         hosting.wantsLayer = true
@@ -785,9 +792,6 @@ final class MenuBarPanelController: NSObject {
             hosting.layer?.cornerRadius = Self.panelCornerRadius
             hosting.layer?.masksToBounds = true
         case .liquidGlass:
-            // The column's size comes from the screen, not the SwiftUI content; without this the
-            // hosting view shrinks the window to the content's ideal height on every layout.
-            hosting.sizingOptions = []
             hosting.layer?.cornerRadius = 0
             hosting.layer?.masksToBounds = false
         }
@@ -804,6 +808,8 @@ final class MenuBarPanelController: NSObject {
     func dropPanelContent() {
         hideBackdropShadow()
         panelWindow?.contentView = nil
+        panelWindow?.contentMinSize = .zero
+        panelWindow?.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         hostedPanelTheme = nil
     }
 

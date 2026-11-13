@@ -138,6 +138,8 @@ public struct ControlCenterPanel: View {
 
             groupPromptOverlay
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onChange(of: store.devices.map(\.id)) { _, _ in pruneStalePrompts() }
+                .onChange(of: groupsRaw) { _, _ in pruneStalePrompts() }
 
             if store.isShowingMiReauth {
                 miReauthOverlay
@@ -182,9 +184,9 @@ public struct ControlCenterPanel: View {
         }
         // Room preferences survive a room disappearing; only the open prompt cannot.
         .onChange(of: store.rooms.map(\.id)) { _, ids in handleRoomIds(ids) }
-        // Another home or account brings another room set: a draft must never cross that boundary.
-        .onChange(of: store.selectedMiHomeId) { _, _ in layoutUI.commitRoomOrderIfNeeded() }
-        .onChange(of: store.homeBackend) { _, _ in layoutUI.commitRoomOrderIfNeeded() }
+        // Another home or account brings another room set: a draft or open prompt must never cross that boundary.
+        .onChange(of: store.selectedMiHomeId) { _, _ in handleHomeContextChange() }
+        .onChange(of: store.homeBackend) { _, _ in handleHomeContextChange() }
         // The saved key caught up with the commit (or something else rewrote it): drop the mirror.
         .onChange(of: roomOrderRaw) { _, _ in liveRoomOrder = nil }
         .onChange(of: kindOrderRaw) { _, _ in liveKindOrder = nil }
@@ -223,10 +225,28 @@ public struct ControlCenterPanel: View {
     }
 
     private func handlePanelDidHide() {
+        layoutUI.dismissActivePrompt()
+        draggingId = nil
+        dragLocation = nil
+        activeResize = nil
+        lastSwapTarget = nil
         search.end()
         isSearchFieldFocused = false
         isSearchRevealed = false
         isDrawerHovered = false
+    }
+
+    private func handleHomeContextChange() {
+        layoutUI.commitRoomOrderIfNeeded()
+        layoutUI.dismissActivePrompt()
+    }
+
+    private func pruneStalePrompts() {
+        layoutUI.pruneStalePrompts(
+            deviceIds: Set(store.devices.map(\.id)),
+            groupIds: Set(groups.map(\.id)),
+            roomIds: Set(store.rooms.map(\.id))
+        )
     }
 
     private func handleSearching(_ searching: Bool) {
@@ -376,9 +396,11 @@ public struct ControlCenterPanel: View {
     private var deviceColumn: some View {
         ScrollViewReader { scrollProxy in
             let stacks = deviceStacks
-            // The one order both the card badges and the digit shortcuts read: only cards that are
-            // actually drawn take a number, in the order they are drawn.
-            let quickIndex = quickIndexOrder(stacks)
+            // The one order both the card badges and the digit/navigation shortcuts read: only cards
+            // that are actually drawn take a number, in the order they are drawn.
+            let quickIndex = search.isSearching
+                ? PanelQuickIndexOrder(deviceIds: searchResults.map(\.id))
+                : quickIndexOrder(stacks)
             let quickIndexBadges = quickIndex.badges
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 16) {
@@ -430,9 +452,9 @@ public struct ControlCenterPanel: View {
             }
             // The digit shortcuts run in the app-wide key monitor, which cannot read this view's
             // state: publish the drawn order it must follow, and withdraw it with the column.
-            .onAppear { PanelQuickIndexState.shared.register(quickIndex) }
-            .onChange(of: quickIndex) { _, next in PanelQuickIndexState.shared.register(next) }
-            .onDisappear { PanelQuickIndexState.shared.clear() }
+            .onAppear { PanelQuickIndexState.shared.register(quickIndex, theme: .liquidGlass) }
+            .onChange(of: quickIndex) { _, next in PanelQuickIndexState.shared.register(next, theme: .liquidGlass) }
+            .onDisappear { PanelQuickIndexState.shared.clear(theme: .liquidGlass) }
         }
     }
 

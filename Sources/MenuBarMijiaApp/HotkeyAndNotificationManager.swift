@@ -17,6 +17,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     private var hotKeyRef: EventHotKeyRef?
     private var eventHandlerRef: EventHandlerRef?
     private var hotkeyHoldTask: Task<Void, Never>?
+    private var hotkeyPressedAt: Date?
     public private(set) var isHotkeyPhysicallyDown = false
     public private(set) var isHotkeyHoldTriggered = false
     private var localKeyMonitor: Any?
@@ -204,8 +205,15 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     /// the menu-bar icon press/hold gesture.
     func handleGlobalHotKeyPressed(holdThreshold: TimeInterval = HotkeyAndNotificationManager.hotkeyHoldThreshold) {
         guard let store, store.enableGlobalHotkey else { return }
-        guard !isHotkeyPhysicallyDown else { return }
+        if isHotkeyPhysicallyDown {
+            // Carbon can miss `kEventHotKeyReleased` across sleep, secure-input transitions, or
+            // screen lock; recover if a prior press was left latched without active hold-to-talk.
+            let elapsed = hotkeyPressedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+            guard elapsed > 2.0, !SpeechInputController.shared.isHoldToTalk else { return }
+            cancelHotkeyHold()
+        }
         isHotkeyPhysicallyDown = true
+        hotkeyPressedAt = Date()
         isHotkeyHoldTriggered = false
         hotkeyHoldTask?.cancel()
         hotkeyHoldTask = Task { @MainActor [weak self] in
@@ -219,6 +227,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     func handleGlobalHotKeyReleased() {
         guard isHotkeyPhysicallyDown else { return }
         isHotkeyPhysicallyDown = false
+        hotkeyPressedAt = nil
         hotkeyHoldTask?.cancel()
         hotkeyHoldTask = nil
 
@@ -234,6 +243,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     private func cancelHotkeyHold() {
         hotkeyHoldTask?.cancel()
         hotkeyHoldTask = nil
+        hotkeyPressedAt = nil
         let wasHoldTriggered = isHotkeyHoldTriggered
         isHotkeyPhysicallyDown = false
         isHotkeyHoldTriggered = false
@@ -454,14 +464,16 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             NSApp.keyWindow?.makeFirstResponder(nil)
         case .roomOrder(let action):
             performRoomOrder(action, store: store)
+        case .endDeviceLayoutEditing:
+            LayoutUIState.shared.endDeviceLayoutEditing()
         case .presentAssistant(let voice):
             store.presentAssistantBar(startVoice: voice)
         case .moveFocus(let delta):
-            store.moveFocus(delta: delta)
+            PanelQuickIndexState.shared.moveFocus(delta: delta, store: store)
         case .adjustFocusedDevice(let delta):
             store.adjustFocusedDevice(delta: delta)
         case .toggleFocusedDevice:
-            store.toggleFocusedDevice()
+            PanelQuickIndexState.shared.toggleFocusedDevice(store: store)
         case .cycleRoom(let delta):
             // #146: follow the same order the room strip shows, not the provider order.
             store.cycleRoom(delta: delta, order: RoomPrefs.displayIds(order: RoomPrefs.storedOrder(), rooms: store.rooms))
@@ -475,8 +487,8 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         case .hidePanel:
             MenuBarPanelController.shared.hidePanel()
         case .selectQuickIndex(let digit):
-            // The Liquid Glass column numbers only the cards it draws; it publishes that order for
-            // this monitor. Classic has no registration and keeps the store's own list.
+            // Both themes publish the order of the cards they actually draw; when no panel is
+            // mounted, `PanelQuickIndexState` falls back to the store's own list.
             PanelQuickIndexState.shared.select(digit, store: store)
         }
         return true

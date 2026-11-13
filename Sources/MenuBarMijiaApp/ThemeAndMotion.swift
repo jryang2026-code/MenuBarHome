@@ -623,6 +623,24 @@ extension View {
 
 // MARK: - Apple Control Center Liquid Glass Slider
 
+enum SliderStepSnap {
+    /// Snaps `raw` onto `range.lowerBound + k * step` while keeping `range.upperBound` reachable
+    /// when `(upperBound - lowerBound)` is not an exact multiple of `step` (e.g. `2000...6535`, step `100`).
+    static func snap(_ raw: Double, in range: ClosedRange<Double>, step: Double?) -> Double {
+        guard range.lowerBound < range.upperBound else { return range.lowerBound }
+        let clampedRaw = min(max(raw, range.lowerBound), range.upperBound)
+        guard let step, step > 0, step.isFinite else { return clampedRaw }
+        let maxSteps = ((range.upperBound - range.lowerBound) / step).rounded(.down)
+        let lastGrid = range.lowerBound + maxSteps * step
+        if clampedRaw > lastGrid {
+            let midpoint = lastGrid + (range.upperBound - lastGrid) * 0.5
+            return clampedRaw >= midpoint ? range.upperBound : lastGrid
+        }
+        let steps = ((clampedRaw - range.lowerBound) / step).rounded()
+        return min(max(range.lowerBound + steps * step, range.lowerBound), range.upperBound)
+    }
+}
+
 public struct LiquidGlassSlider: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.isEnabled) private var isEnabled
@@ -703,11 +721,7 @@ public struct LiquidGlassSlider: View {
 
     private func adjust(by delta: Double) {
         guard isEnabled else { return }
-        var next = value + delta
-        if let step, step > 0 {
-            next = (next / step).rounded() * step
-        }
-        let clamped = min(max(next, range.lowerBound), range.upperBound)
+        let clamped = SliderStepSnap.snap(value + delta, in: range, step: step)
         guard clamped != value else { return }
         value = clamped
         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
@@ -806,11 +820,8 @@ public struct LiquidGlassSlider: View {
         let maxX = max(totalWidth - 2 - thumbWidth / 2, minX + 1)
         let clampedX = min(max(x, minX), maxX)
         let ratio = Double((clampedX - minX) / (maxX - minX))
-        var raw = range.lowerBound + ratio * (range.upperBound - range.lowerBound)
-        if let step, step > 0 {
-            raw = (raw / step).rounded() * step
-        }
-        let finalValue = min(max(raw, range.lowerBound), range.upperBound)
+        let raw = range.lowerBound + ratio * (range.upperBound - range.lowerBound)
+        let finalValue = SliderStepSnap.snap(raw, in: range, step: step)
         if finalValue != value {
             let previous = value
             value = finalValue

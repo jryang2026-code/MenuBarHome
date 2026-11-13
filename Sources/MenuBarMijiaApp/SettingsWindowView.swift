@@ -843,10 +843,82 @@ enum WeeklyHealthReportExport {
 
 // MARK: - Connections
 
+enum HAConnectionSaveGuard {
+    static let haTokenAccount = "ha_access_token"
+
+    enum Decision: Equatable {
+        case proceed(token: String, clearUnavailableFlag: Bool)
+        case blockedKeychainUnavailable
+    }
+
+    @MainActor
+    static func isInitialLookupUnavailable(in store: HomeStore) -> Bool {
+        guard store.userDefaults === UserDefaults.standard else { return false }
+        return CredentialVault.shared.lookup(haTokenAccount) == .unavailable
+    }
+
+    /// Protects a stored Home Assistant token when the user opened Settings while the Keychain was
+    /// temporarily unreadable (`loadHAToken()` returned `""`) and then saved an edited URL without
+    /// typing a replacement token.
+    static func resolve(
+        draftToken: String,
+        initialLookupWasUnavailable: Bool,
+        retryLookup: () -> CredentialVault.Lookup
+    ) -> Decision {
+        let trimmed = draftToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty, initialLookupWasUnavailable else {
+            return .proceed(token: draftToken, clearUnavailableFlag: !trimmed.isEmpty)
+        }
+        switch retryLookup() {
+        case .value(let data):
+            let recovered = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return .proceed(token: recovered, clearUnavailableFlag: true)
+        case .missing:
+            return .proceed(token: "", clearUnavailableFlag: true)
+        case .unavailable:
+            return .blockedKeychainUnavailable
+        }
+    }
+
+    @MainActor
+    static func save(
+        serverURL: String,
+        tokenDraft: inout String,
+        initialLookupWasUnavailable: inout Bool,
+        in store: HomeStore
+    ) {
+        let decision = resolve(
+            draftToken: tokenDraft,
+            initialLookupWasUnavailable: initialLookupWasUnavailable,
+            retryLookup: { CredentialVault.shared.lookup(haTokenAccount, retryingUnavailable: true) }
+        )
+        switch decision {
+        case .proceed(let resolvedToken, let clearFlag):
+            if clearFlag {
+                initialLookupWasUnavailable = false
+            }
+            if tokenDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !resolvedToken.isEmpty {
+                tokenDraft = resolvedToken
+            }
+            store.updateConnection(serverURL: serverURL, token: resolvedToken)
+        case .blockedKeychainUnavailable:
+            store.showToast(
+                L10n.tr(
+                    "无法访问钥匙串，已保留原有 Home Assistant 令牌",
+                    "Keychain access was denied; kept existing Home Assistant token"
+                ),
+                isError: true
+            )
+        }
+    }
+}
+
 private struct ConnectionSettingsTab: View {
     let store: HomeStore
     @State private var urlDraft: String = ""
     @State private var tokenDraft: String = ""
+    @State private var tokenLookupWasUnavailable = false
 
     var body: some View {
         let _ = store.effectiveLanguage
@@ -918,7 +990,12 @@ private struct ConnectionSettingsTab: View {
                         Spacer()
 
                         Button(L10n.tr("保存并重新连接", "Save & Reconnect")) {
-                            store.updateConnection(serverURL: urlDraft, token: tokenDraft)
+                            HAConnectionSaveGuard.save(
+                                serverURL: urlDraft,
+                                tokenDraft: &tokenDraft,
+                                initialLookupWasUnavailable: &tokenLookupWasUnavailable,
+                                in: store
+                            )
                         }
                         .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
                     }
@@ -934,6 +1011,7 @@ private struct ConnectionSettingsTab: View {
         }
         .onAppear {
             urlDraft = store.serverURLString
+            tokenLookupWasUnavailable = HAConnectionSaveGuard.isInitialLookupUnavailable(in: store)
             tokenDraft = store.loadHAToken()
             if store.discoveredHAInstances.isEmpty {
                 Task {
@@ -1369,9 +1447,13 @@ private struct PrivacySettingsTab: View {
                 .settingsRow(anchor: .signOut)
             }
         }
+        .onChange(of: store.homeBackend) { _, _ in scanner.reset() }
+        .onChange(of: store.miAccounts.map(\.id)) { _, _ in scanner.reset() }
+        .onChange(of: store.serverURLString) { _, _ in scanner.reset() }
         .alert(L10n.tr("退出并吊销所有令牌？", "Sign out and revoke all tokens?"), isPresented: $confirmsRevoke) {
             Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
             Button(L10n.tr("退出并吊销", "Sign Out & Revoke"), role: .destructive) {
+                scanner.reset()
                 store.signOutAndRevokeAll()
             }
         } message: {

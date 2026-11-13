@@ -53,6 +53,7 @@ enum PanelKeyRouter {
         /// Esc in a text field: leave the field, and close the assistant bar when it is open.
         case leaveTextField(dismissAssistant: Bool)
         case roomOrder(HotkeyAndNotificationManager.RoomOrderKeyAction)
+        case endDeviceLayoutEditing
         case presentAssistant(voice: Bool)
         case moveFocus(Int)
         case adjustFocusedDevice(Int)
@@ -112,8 +113,21 @@ enum PanelKeyRouter {
             return .roomOrder(action)
         }
 
-        // Return triggers the Done button's default action in device-layout mode.
-        if context.editMode == .deviceLayout, key.code == kVK_Return { return .passThrough }
+        if context.editMode == .deviceLayout {
+            switch key.code {
+            case kVK_Return, kVK_ANSI_KeypadEnter:
+                // Return triggers the Done button's default action in device-layout mode.
+                return .passThrough
+            case kVK_Escape:
+                return .endDeviceLayoutEditing
+            case kVK_UpArrow, kVK_DownArrow, kVK_LeftArrow, kVK_RightArrow, kVK_Space, kVK_Tab:
+                return .consume
+            default:
+                if let chars = key.characters, chars.count == 1, let digit = Int(chars), (1...9).contains(digit) {
+                    return .consume
+                }
+            }
+        }
 
         let plain = !key.command && !key.option && !key.control
         if plain, key.characters == "/" { return .presentAssistant(voice: false) }

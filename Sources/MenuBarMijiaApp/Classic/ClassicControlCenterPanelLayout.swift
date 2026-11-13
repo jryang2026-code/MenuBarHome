@@ -122,8 +122,8 @@ extension ClassicControlCenterPanel {
         let draft = layoutUI.roomOrderDraft
         let kindDraft = layoutUI.kindOrderDraft
         let nothingToWrite = exit == .commit
-            && draft?.isDirty(currentRooms: store.rooms) != true
-            && kindDraft?.isDirty(currentRooms: kindItems) != true
+            && draft?.hasChanges != true
+            && kindDraft?.hasChanges != true
         withAnimation(AppleMotion.snappySpring) {
             if exit == .commit, !nothingToWrite {
                 // `@AppStorage` republishes a moment after the write; without this mirror the strip
@@ -775,13 +775,18 @@ extension ClassicControlCenterPanel {
         sortByUserOrder: Bool = true
     ) -> some View {
         let aliases = GroupPrefs.map(aliasesRaw)
+        let currentRoomAliases = roomAliases
         let source = sortByUserOrder
             ? DeviceLayoutPrefs.apply(order: currentOrder, to: devices)
             : devices
         let ordered = source.map { dev -> SmartDevice in
-            guard let alias = aliases[dev.id] else { return dev }
             var d = dev
-            d.name = alias
+            if let alias = aliases[dev.id] {
+                d.name = alias
+            }
+            if let roomAlias = RoomPrefs.alias(for: dev.roomId, in: currentRoomAliases) {
+                d.roomName = roomAlias
+            }
             return d
         }
         let spanMap = spans(for: ordered)
@@ -816,15 +821,23 @@ extension ClassicControlCenterPanel {
                 .background {
                     GeometryReader { geo in
                         let f = geo.frame(in: .named(TileSpace.name))
+                        #if DEBUG
                         let g = geo.frame(in: .global)
+                        #else
+                        let g: CGRect? = panelFoldRecord != nil ? geo.frame(in: .global) : nil
+                        #endif
                         Color.clear
                             .preference(
                                 key: TileFramesKey.self,
                                 value: [dev.id: CGRect(x: f.minX.rounded(), y: f.minY.rounded(), width: f.width.rounded(), height: f.height.rounded())]
                             )
+                            #if DEBUG
                             .preference(key: CardGlobalTopKey.self, value: [dev.id: g.minY])
                             .onAppear { LayoutUIState.shared.cardGlobalFrames[dev.id] = g }
                             .onChange(of: g) { _, newFrame in LayoutUIState.shared.cardGlobalFrames[dev.id] = newFrame }
+                            #else
+                            .preference(key: CardGlobalTopKey.self, value: g.map { [dev.id: $0.minY] } ?? [:])
+                            #endif
                     }
                 }
                 .layoutValue(key: ClassicTileSpanKey.self, value: span)

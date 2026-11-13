@@ -11,6 +11,7 @@ public struct OnboardingGuideView: View {
 
     @State private var haURLDraft: String = ""
     @State private var haTokenDraft: String = ""
+    @State private var haTokenLookupWasUnavailable: Bool = false
     @State private var selectedPreset: AssistantProviderPreset = .openRouterJev
     @State private var baseURLDraft: String = ""
     @State private var modelDraft: String = ""
@@ -70,6 +71,7 @@ public struct OnboardingGuideView: View {
         .onAppear {
             launchAtLogin.refresh()
             haURLDraft = store.serverURLString
+            haTokenLookupWasUnavailable = HAConnectionSaveGuard.isInitialLookupUnavailable(in: store)
             haTokenDraft = store.loadHAToken()
             let config = store.assistantConfig
             let initialPreset = AssistantProviderPreset.infer(baseURL: config.baseURL)
@@ -336,7 +338,12 @@ public struct OnboardingGuideView: View {
                             .font(.system(size: 11, design: .monospaced))
 
                         Button(L10n.tr("连接", "Connect")) {
-                            store.updateConnection(serverURL: haURLDraft, token: haTokenDraft)
+                            HAConnectionSaveGuard.save(
+                                serverURL: haURLDraft,
+                                tokenDraft: &haTokenDraft,
+                                initialLookupWasUnavailable: &haTokenLookupWasUnavailable,
+                                in: store
+                            )
                         }
                         .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
                     }

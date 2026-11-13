@@ -44,14 +44,30 @@ final class UnsupportedDeviceScanner {
     private(set) var isScanning = false
     private(set) var errorMessage: String?
     private(set) var lastScannedAt: Date?
+    private var scanGeneration = 0
 
     private init() {}
 
+    /// Clears cached scan results when the signed-in account, server URL, or backend changes so
+    /// Diagnostics never includes skipped devices from a previous account.
+    func reset() {
+        scanGeneration &+= 1
+        devices = []
+        errorMessage = nil
+        lastScannedAt = nil
+        isScanning = false
+    }
+
     func scan(store: HomeStore) async {
         guard !isScanning else { return }
+        let generation = scanGeneration
         isScanning = true
         errorMessage = nil
-        defer { isScanning = false }
+        defer {
+            if scanGeneration == generation {
+                isScanning = false
+            }
+        }
 
         if store.homeBackend == .demo {
             // Strictly offline: nothing is skipped, and nothing may be requested (#47).
@@ -89,6 +105,7 @@ final class UnsupportedDeviceScanner {
             }
         }
 
+        guard scanGeneration == generation else { return }
         devices = results
         errorMessage = errors.first
         lastScannedAt = Date()

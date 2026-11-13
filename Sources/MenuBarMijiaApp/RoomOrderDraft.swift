@@ -38,12 +38,20 @@ struct RoomOrderDraft: Equatable {
     private(set) var aliases: [String: String]
     let initialOrder: [String]
     let initialAliases: [String: String]
+    private var baselineOrder: [String]
 
     init(order: [String], aliases: [String: String]) {
         self.order = RoomPrefs.deduped(order)
         self.aliases = aliases.filter { RoomPrefs.alias(for: $0.key, in: [$0.key: $0.value]) != nil }
         self.initialOrder = self.order
-        self.initialAliases = aliases
+        self.initialAliases = self.aliases
+        self.baselineOrder = self.order
+    }
+
+    /// Whether the user mutated order or aliases during this session (snapshot reconciliations that
+    /// append newly discovered rooms do not count as user edits).
+    var hasChanges: Bool {
+        order != baselineOrder || aliases != initialAliases
     }
 
     /// The saved `alias` for that room, or `nil` when unset or blank.
@@ -66,6 +74,7 @@ struct RoomOrderDraft: Equatable {
     /// temporarily missing keep their slot. Never deletes an id.
     mutating func reconcile(rooms: [RoomArea]) {
         order = RoomPrefs.seededOrder(order, rooms: rooms)
+        baselineOrder = RoomPrefs.seededOrder(baselineOrder, rooms: rooms)
     }
 
     /// Places `id` next to `target` (drag reorder). Unknown ids are a no-op.
@@ -238,13 +247,16 @@ extension LayoutUIState {
     func exitRoomOrder(_ exit: RoomOrderExit, defaults: UserDefaults = .standard) {
         guard editMode == .roomOrder else { return }
         if exit == .commit {
-            if let draft = roomOrderDraft {
+            var didPersist = false
+            if let draft = roomOrderDraft, draft.hasChanges {
                 RoomPrefs.persist(order: draft.order, aliases: draft.aliases, to: defaults)
+                didPersist = true
             }
-            if let draft = kindOrderDraft {
+            if let draft = kindOrderDraft, draft.hasChanges {
                 KindOrderPrefs.persist(order: draft.order, to: defaults)
+                didPersist = true
             }
-            if defaults === UserDefaults.standard {
+            if didPersist, defaults === UserDefaults.standard {
                 HomeStore.shared.scheduleRaycastSnapshotExport()
             }
         }
@@ -321,6 +333,22 @@ extension LayoutUIState {
 
     var hasActivePrompt: Bool {
         newGroupForDevice != nil || renamingGroupId != nil || renamingDeviceId != nil || renamingRoomId != nil
+    }
+
+    /// Drops any open prompt whose target device, group, or room vanished from the current snapshot.
+    func pruneStalePrompts(deviceIds: Set<String>, groupIds: Set<String>, roomIds: Set<String>) {
+        if let devId = newGroupForDevice, !deviceIds.contains(devId) {
+            newGroupForDevice = nil
+        }
+        if let devId = renamingDeviceId, !deviceIds.contains(devId) {
+            renamingDeviceId = nil
+        }
+        if let groupId = renamingGroupId, !groupIds.contains(groupId) {
+            renamingGroupId = nil
+        }
+        if let roomId = renamingRoomId, !roomIds.contains(roomId) {
+            renamingRoomId = nil
+        }
     }
 
     #if DEBUG
