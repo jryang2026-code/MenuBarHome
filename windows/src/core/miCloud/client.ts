@@ -283,7 +283,7 @@ export class MiCloudClient {
           continue;
         }
         // A home with no rooms and no dids still matters when the cloud names its owner: only
-        // `withHomeDeviceLists` can list its devices, and it needs a room to learn the pair
+        // `withHomeDeviceLists` (`discovery.ts`) can list its devices, and it needs a room to learn the pair
         // (home id, owner uid) from. Without this entry such a shared home is invisible (#76, #67).
         if (homeId && roomCount === 0 && ownerUid) {
           rooms.push({ id: `home_${homeId}`, name: "", dids: [], homeId, homeName, ...sharedFlag, ...ownerFlag });
