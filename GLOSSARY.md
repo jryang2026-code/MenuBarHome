@@ -122,7 +122,7 @@ _Avoid_: Analytics（统计）、Telemetry（遥测）
 _Avoid_: Automation（后台自动化规则）、Macro（宏）
 
 **QuickAction（内置快捷动作）**：
-基于设备类别自动聚合的批量领域指令（如「全屋关灯」「柔和夜灯」「睡眠关温控」），无需在 Home Assistant 预置场景即可一键执行。执行后按设备数给出撤销横幅：1–2 台 10 秒、3 台及以上 15 秒（`HomeStore.undoBannerSeconds(forDeviceCount:)`，指针悬停时暂停）；横幅消失后，助手的最后一次动作仍可用「撤销上一步」在 10 分钟内回滚。
+基于设备类别自动聚合的批量领域指令（如「全屋关灯」「柔和夜灯」「关温控风扇」），无需在 Home Assistant 预置场景即可一键执行。执行后按设备数给出撤销横幅：1–2 台 10 秒、3 台及以上 15 秒（`HomeStore.undoBannerSeconds(forDeviceCount:)`，指针悬停时暂停）；横幅消失后，助手的最后一次动作仍可用「撤销上一步」在 10 分钟内回滚。
 _Avoid_: Local scene（本地场景）、Custom script（自定义脚本）
 
 **AllOffTarget（全关目标）**：

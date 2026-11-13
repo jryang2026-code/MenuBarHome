@@ -657,7 +657,10 @@ where
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(15));
             }
-            Err(_) => break,
+            // A transient accept failure (a client that reset before accept, a brief resource
+            // shortage) must not end forwarding for the rest of the session: second launches
+            // would then exit without reaching this instance.
+            Err(_) => std::thread::sleep(Duration::from_millis(50)),
         }
     });
 

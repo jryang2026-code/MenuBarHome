@@ -245,7 +245,7 @@ public struct DeviceCardView: View {
     @ViewBuilder
     private var contextMenuItems: some View {
             if store.isPairedDualSourceDevice(device.id) {
-                Text(L10n.tr("当前来源：", "Current source: ") + store.deviceBackend(for: device.id).shortTitle)
+                Text(store.currentSourceMenuTitle(for: device.id))
                 Menu {
                     Button {
                         store.pinDeviceSource(device.id, to: nil)

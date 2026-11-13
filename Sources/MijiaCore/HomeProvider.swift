@@ -139,7 +139,8 @@ public actor HAWebSocketProvider: HomeProvider {
     private var pingTask: Task<Void, Never>?
     private var receiveTask: Task<Void, Error>?
     private var activeWebSocket: URLSessionWebSocketTask?
-    private var nextStreamRequestId: Int = 500_000
+    private var nextWebSocketMessageId: Int = 5
+    private var pendingRefreshStateIds: Set<Int> = []
     private var pendingStreamRequests: [Int: CheckedContinuation<String?, Never>] = [:]
     private var startupReplies: [Int: [String: JSONValue]] = [:]
     private var startupWaiters: [Int: CheckedContinuation<[String: JSONValue], Error>] = [:]
@@ -257,11 +258,23 @@ public actor HAWebSocketProvider: HomeProvider {
     }
 
     private func failPendingStreamRequests() {
+        pendingRefreshStateIds.removeAll()
         let waiters = pendingStreamRequests.values
         pendingStreamRequests.removeAll()
         for waiter in waiters {
             waiter.resume(returning: nil)
         }
+    }
+
+    private func allocateWebSocketMessageId() -> Int {
+        nextWebSocketMessageId += 1
+        return nextWebSocketMessageId
+    }
+
+    private func sendWebSocketPing(ws: URLSessionWebSocketTask) async {
+        guard activeWebSocket === ws else { return }
+        let pingId = allocateWebSocketMessageId()
+        try? await sendJSON(ws: ws, ["id": pingId, "type": "ping"])
     }
 
     public nonisolated func events() -> AsyncStream<HomeProviderEvent> {
@@ -279,7 +292,13 @@ public actor HAWebSocketProvider: HomeProvider {
 
     public func refreshNow() async {
         if let ws = activeWebSocket {
-            try? await sendJSON(ws: ws, ["id": Int.random(in: 1000...9999), "type": "get_states"])
+            let id = allocateWebSocketMessageId()
+            pendingRefreshStateIds.insert(id)
+            do {
+                try await sendJSON(ws: ws, ["id": id, "type": "get_states"])
+            } catch {
+                pendingRefreshStateIds.remove(id)
+            }
         } else {
             restartLoop()
         }
@@ -400,6 +419,8 @@ public actor HAWebSocketProvider: HomeProvider {
         }
 
         snapshot = HAHomeSnapshot()
+        nextWebSocketMessageId = 5
+        pendingRefreshStateIds.removeAll()
         resetStartupReplyState()
         logger.info("Connected to Home Assistant WebSocket: \(self.baseURLString, privacy: .public)")
 
@@ -407,12 +428,10 @@ public actor HAWebSocketProvider: HomeProvider {
 
         // 3. Periodic 25-second ping task to keep connection alive forever
         let startedPingTask = Task { [weak self] in
-            var pingId = 100_000
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(25))
                 guard !Task.isCancelled else { break }
-                pingId += 1
-                try? await self?.sendJSON(ws: ws, ["id": pingId, "type": "ping"])
+                await self?.sendWebSocketPing(ws: ws)
             }
         }
         localPingTask = startedPingTask
@@ -447,8 +466,11 @@ public actor HAWebSocketProvider: HomeProvider {
                     if (1...5).contains(id) {
                         deliverStartupReply(id: id, message: msg)
                     }
-                }
-                if let home = try snapshot.receive(msg) {
+                    let isRefresh = pendingRefreshStateIds.remove(id) != nil
+                    if let home = try snapshot.receive(msg, isRefreshStatesResult: isRefresh) {
+                        continuation?.yield(.snapshotUpdated(home))
+                    }
+                } else if let home = try snapshot.receive(msg) {
                     continuation?.yield(.snapshotUpdated(home))
                 }
                 for ring in snapshot.takeDoorbellRings() {
@@ -591,8 +613,7 @@ public actor HAWebSocketProvider: HomeProvider {
         }
         if let streamEntityId = spec.streamEntityId,
            let ws = activeWebSocket {
-            nextStreamRequestId += 1
-            let reqId = nextStreamRequestId
+            let reqId = allocateWebSocketMessageId()
             let timeoutTask = Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(3500))
                 await self?.completeStreamRequest(id: reqId, urlPath: nil)

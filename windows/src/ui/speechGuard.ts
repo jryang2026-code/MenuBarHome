@@ -204,10 +204,9 @@ export function toggleVoiceInput(host: MenuMijiaWindowsApp): void {
     }
   };
   const finishRecognition = () => {
-    if (state.speechRecognition !== recognition && !host.isListeningVoice) return;
-    if (state.speechRecognition === recognition) {
-      state.speechRecognition = null;
-    }
+    // A recognizer that was stopped and replaced must not end the session that replaced it.
+    if (state.speechRecognition !== recognition) return;
+    state.speechRecognition = null;
     host.isListeningVoice = false;
     invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
     host.render();
@@ -260,6 +259,9 @@ export function cancelPendingExternalUrlWork(host: MenuMijiaWindowsApp): void {
     const pending = state.pendingUrlConfirmation;
     state.pendingUrlConfirmation = null;
     pending.resolve(false);
+    // The prompt pinned the popover and is still in the DOM; without this its buttons are dead.
+    invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
+    host.queueBackgroundRender();
   }
 }
 

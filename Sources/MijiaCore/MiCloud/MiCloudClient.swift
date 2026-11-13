@@ -612,7 +612,7 @@ public actor MiCloudClient: MiCloudAPI {
         // them the device list names dids no room owns, and the panel shows nothing (#76, #67).
         var visited: Set<String> = []
         var maxId = merged["max_id"]?.idString ?? ""
-        guard merged["has_more"]?.boolValue == true, !maxId.isEmpty else { return rooms }
+        guard Self.hasMoreRooms(merged), !maxId.isEmpty else { return rooms }
         for _ in 0..<20 {
             guard visited.insert(maxId).inserted else { break }
             let page: JSONValue
@@ -628,10 +628,20 @@ public actor MiCloudClient: MiCloudAPI {
             }
             rooms = Self.mergeRoomPage(page, into: rooms)
             let nextMaxId = page["max_id"]?.idString ?? ""
-            guard page["has_more"]?.boolValue == true, !nextMaxId.isEmpty else { break }
+            guard Self.hasMoreRooms(page), !nextMaxId.isEmpty else { break }
             maxId = nextMaxId
         }
         return rooms
+    }
+
+    /// `has_more` comes back as a real boolean or as 1/0 depending on the endpoint; Windows
+    /// (`client.ts:hasMoreHomes`) accepts both, so a `1` must not end the room pages early.
+    static func hasMoreRooms(_ result: JSONValue) -> Bool {
+        switch result["has_more"] {
+        case .bool(let flag)?: return flag
+        case .number(let number)?: return number == 1
+        default: return false
+        }
     }
 
     /// Merges one `v2/homeroom/get_dev_room_page` page into the rooms already parsed from

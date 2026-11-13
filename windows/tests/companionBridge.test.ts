@@ -386,6 +386,69 @@ describe("menumijia:// execution, confirmation lifecycle & high-risk guard", () 
     assert.equal(getLatestRaycastSnapshotForHost(app).lastCommandFeedback?.isError, true);
   });
 
+  it("treats a plug aliased to a switched light (左键 -> 厨房灯) as low-risk across URL, panel toggle, and snapshot", async () => {
+    const app = startDemoApp({ enableRaycastIntegration: true, allowDirectURLControl: true });
+    await flushAsync();
+    const token = getActiveRaycastBridgeTokenForHost(app)!;
+
+    const wallSwitch: SmartDevice = {
+      id: "sw_kitchen_key",
+      name: "左键",
+      roomId: "kitchen",
+      roomName: "厨房",
+      model: "lumi.switch.b1nacn02",
+      isOnline: true,
+      kind: {
+        kind: "plug",
+        switchEntityId: "switch.kitchen_left",
+        isOn: false,
+        powerWatts: null,
+        childLockEntityId: null,
+        isChildLocked: false,
+      },
+    };
+    app.devices.push(wallSwitch);
+    app.layout.aliases[wallSwitch.id] = "厨房灯";
+    app.render();
+    await flushAsync();
+
+    // 1) Snapshot reflects alias as light with isHighRisk === false
+    const snap = getLatestRaycastSnapshotForHost(app);
+    const snapItem = snap.devices.find((d) => d.id === wallSwitch.id);
+    assert.ok(snapItem, "aliased switched light present in Raycast snapshot");
+    assert.equal(snapItem.name, "厨房灯");
+    assert.equal(snapItem.category, "light");
+    assert.equal(snapItem.categoryTitle, "照明");
+    assert.equal(snapItem.capabilities.isHighRisk, false);
+
+    // 2) onOpenURL executes directly without pendingHighRisk when aliased to 厨房灯
+    await enqueueIncomingOpenUrl(
+      app,
+      `menumijia://power?device=${encodeURIComponent(wallSwitch.id)}&on=true&id=req_sw_light&token=${token}`,
+    );
+    await flushAsync();
+    assert.equal(app.pendingHighRisk, null, "aliased switched light skips URL high-risk arming");
+    assert.equal(
+      (app.devices.find((d) => d.id === wallSwitch.id)?.kind as { isOn: boolean }).isOn,
+      true,
+      "aliased switched light turned on directly via URL",
+    );
+    assert.equal(getLatestRaycastSnapshotForHost(app).lastCommandFeedback?.requestId, "req_sw_light");
+    assert.equal(getLatestRaycastSnapshotForHost(app).lastCommandFeedback?.isError, false);
+
+    // 3) Manual panel toggle executes directly without pendingHighRisk when aliased to 厨房灯
+    const toggleBtn = document.querySelector<HTMLElement>(`[data-toggle-device="${wallSwitch.id}"]`);
+    assert.ok(toggleBtn, "toggle button rendered for aliased switched light");
+    toggleBtn.click();
+    await flushAsync();
+    assert.equal(app.pendingHighRisk, null, "manual panel toggle on aliased switched light does not arm high risk");
+    assert.equal(
+      (app.devices.find((d) => d.id === wallSwitch.id)?.kind as { isOn: boolean }).isOn,
+      false,
+      "aliased switched light toggled off directly from panel",
+    );
+  });
+
   it("focuses a device without confirmation via menumijia://focus", async () => {
     const app = startDemoApp({ enableRaycastIntegration: false, allowDirectURLControl: false });
     await flushAsync();

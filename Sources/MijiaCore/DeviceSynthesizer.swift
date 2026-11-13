@@ -508,6 +508,60 @@ public enum DeviceSynthesizer {
         return home
     }
 
+    /// Reconciles virtual light-group cards against their visible member lights: if every member is
+    /// offline, the group card cannot actually turn anything on and becomes offline/off; if every
+    /// online member is off while the group still claims on, the group's power state clears to off.
+    public static func reconcileLightGroups(_ home: inout SynthesizedHome) {
+        guard !home.lightGroupOwners.isEmpty else { return }
+        var memberIndicesByGroup: [String: [Int]] = [:]
+        for idx in home.devices.indices {
+            guard let groupID = home.lightGroupOwners[home.devices[idx].id] else { continue }
+            memberIndicesByGroup[groupID, default: []].append(idx)
+        }
+        for groupIdx in home.devices.indices {
+            guard let memberIndices = memberIndicesByGroup[home.devices[groupIdx].id],
+                  !memberIndices.isEmpty else { continue }
+            let memberStates: [(isOnline: Bool, isOn: Bool)] = memberIndices.compactMap { idx in
+                let member = home.devices[idx]
+                guard case .light(let spec) = member.kind else { return nil }
+                return (member.isOnline, spec.isOn)
+            }
+            reconcileLightGroupDevice(&home.devices[groupIdx], memberStates: memberStates)
+        }
+    }
+
+    static func reconcileLightGroupDevice(
+        _ groupDevice: inout SmartDevice,
+        memberStates: [(isOnline: Bool, isOn: Bool)],
+        forceOfflineAndOff: Bool = false
+    ) {
+        if forceOfflineAndOff {
+            setLightGroupOfflineAndOff(&groupDevice)
+            return
+        }
+        guard !memberStates.isEmpty else { return }
+        if memberStates.allSatisfy({ !$0.isOnline }) {
+            setLightGroupOfflineAndOff(&groupDevice)
+            return
+        }
+        let onlineMembers = memberStates.filter(\.isOnline)
+        if !onlineMembers.isEmpty,
+           onlineMembers.allSatisfy({ !$0.isOn }),
+           case .light(var spec) = groupDevice.kind,
+           spec.isOn {
+            spec.isOn = false
+            groupDevice.kind = .light(spec)
+        }
+    }
+
+    static func setLightGroupOfflineAndOff(_ groupDevice: inout SmartDevice) {
+        groupDevice.isOnline = false
+        if case .light(var spec) = groupDevice.kind {
+            spec.isOn = false
+            groupDevice.kind = .light(spec)
+        }
+    }
+
     private static func sourceIdentity(
         device: SmartDevice,
         registry: HADeviceEntry?,
@@ -1676,9 +1730,8 @@ public enum DeviceSynthesizer {
                     haColorTemperatureColorModes.contains(colorMode) || hasColorTempAttr)
         }
         let hasBrightness = a["brightness"]?.doubleValue != nil
-        if let raw = a["supported_features"]?.doubleValue, raw.isFinite {
+        if let features = a["supported_features"]?.intValue {
             // Legacy bits: SUPPORT_BRIGHTNESS 1, SUPPORT_COLOR_TEMP 2, SUPPORT_COLOR 16, SUPPORT_WHITE_VALUE 128.
-            let features = Int(raw)
             return ((features & (1 | 2 | 16 | 128)) != 0 || hasBrightness || hasColorTempAttr,
                     (features & (2 | 16)) != 0 || hasColorTempAttr)
         }

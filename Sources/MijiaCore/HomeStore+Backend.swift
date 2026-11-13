@@ -291,7 +291,7 @@ extension HomeStore {
 
             let now = optimisticNow()
             var merged: [SmartDevice] = []
-            let existingById = Dictionary(uniqueKeysWithValues: self.devices.map { ($0.id, $0) })
+            let existingById = Dictionary(self.devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
             for device in snapshot.devices {
                 var incoming = device
@@ -387,7 +387,8 @@ extension HomeStore {
                         nextFacets[device.id] = incoming
                     } else {
                         let localById = Dictionary(
-                            uniqueKeysWithValues: (deviceFacets[device.id] ?? []).map { ($0.id, $0) }
+                            (deviceFacets[device.id] ?? []).map { ($0.id, $0) },
+                            uniquingKeysWith: { first, _ in first }
                         )
                         nextFacets[device.id] = incoming.map { facet in
                             guard lockedControlIds.contains(facet.id), let local = localById[facet.id] else {
@@ -614,13 +615,14 @@ extension HomeStore {
         let mi: (any HomeProvider)? = (hasMiSource || (!hasHASource && homeBackend == .xiaomiCloud))
             ? makeMiAccountsProvider()
             : nil
-        return Self.makeComposite(homeAssistant: ha, xiaomiCloud: mi, defaults: userDefaults)
+        return Self.makeComposite(homeAssistant: ha, xiaomiCloud: mi, defaults: userDefaults, pinBox: pinnedDeviceSourcesBox)
     }
 
     static func makeComposite(
         homeAssistant: (any HomeProvider)?,
         xiaomiCloud: (any HomeProvider)?,
-        defaults: UserDefaults
+        defaults: UserDefaults,
+        pinBox: DeviceSourcePinBox? = nil
     ) -> DualSourceHomeProvider {
         let box = UncheckedUserDefaults(defaults)
         let stored = defaults.dictionary(forKey: ViewPreferenceKeys.canonicalDeviceIds) as? [String: String] ?? [:]
@@ -629,10 +631,17 @@ extension HomeStore {
             xiaomiCloud: xiaomiCloud,
             initialCanonicalIDs: stored,
             knownPreferenceIDs: {
-                DevicePreferenceIndex.referencedIDs(defaults: box.defaults)
+                var ids = DevicePreferenceIndex.referencedIDs(defaults: box.defaults)
+                if let pinBox {
+                    ids.formUnion(pinBox.get().keys)
+                }
+                return ids
             },
             pinnedBackends: {
-                DeviceSourcePinStorage.load(defaults: box.defaults)
+                if let pinBox {
+                    return pinBox.get()
+                }
+                return DeviceSourcePinStorage.load(defaults: box.defaults)
             },
             persistCanonicalIDs: { assignments in
                 box.defaults.set(assignments, forKey: ViewPreferenceKeys.canonicalDeviceIds)
@@ -698,6 +707,8 @@ extension HomeStore {
             eventTask?.cancel()
             shutdownCurrentProvider()
             haPlaintextPrompt = nil
+            // `offerHAAddress` refuses in demo; an offer made before the switch must not stay on screen.
+            pendingHAAddressSuggestion = nil
             // Strictly offline: stop any LAN TV and update work started by the previous backend (#47).
             if let lgClient = lgWebOSClient {
                 Task { await lgClient.stop() }
@@ -841,9 +852,20 @@ extension HomeStore {
         }
         hasHASource = false
         pendingHAAddressSuggestion = nil
+        haPlaintextPrompt = nil
         guard homeBackend != .demo,
               (provider is DualSourceHomeProvider || provider is HAWebSocketProvider) else { return true }
         invalidateUndoContext()
+        if hasMiSource {
+            homeBackend = .xiaomiCloud
+        } else {
+            devices = []
+            deviceFacets = [:]
+            rooms = []
+            environmentReadings = []
+            scenes = []
+            selectRoom(nil)
+        }
         rebuildLiveProvider()
         return true
     }

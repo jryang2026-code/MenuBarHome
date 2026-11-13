@@ -155,11 +155,16 @@ public struct ClassicControlCenterPanel: View {
             guard !favOrder.isEmpty else { return }
             var order = currentOrder
             guard !order.isEmpty else { return }
-            let favSet = Set(favOrder)
+            // Permute only the favorites the saved order already holds. A favorite that is not in
+            // it yet (a card that appeared after the last drag) would otherwise take another
+            // favorite's slot and push that card out of the saved order.
+            let known = Set(order)
+            let favorites = favOrder.filter(known.contains)
+            let favSet = Set(favorites)
             var favIdx = 0
             for i in order.indices where favSet.contains(order[i]) {
-                if favIdx < favOrder.count {
-                    order[i] = favOrder[favIdx]
+                if favIdx < favorites.count {
+                    order[i] = favorites[favIdx]
                     favIdx += 1
                 }
             }

@@ -20,14 +20,46 @@ export interface ParsedDelay {
 }
 
 const CN_DIGITS: Readonly<Record<string, number>> = {
-  一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
-  十五: 15, 二十: 20, 三十: 30, 四十五: 45,
+  零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9,
 };
 
-function parseCnOrArabicNumber(s: string): number | null {
-  const n = Number(s);
-  if (Number.isFinite(n) && n > 0) return n;
-  return CN_DIGITS[s] ?? null;
+/** Arabic digits or Chinese numerals up to 99 (十五, 二十, 四十五); `AssistantSchedule.spokenNumber`. */
+function spokenNumber(s: string): number | null {
+  if (/^[0-9]+$/.test(s)) return Number(s);
+  const chars = Array.from(s);
+  const tenIndex = chars.indexOf("十");
+  if (tenIndex >= 0) {
+    if (tenIndex > 1 || chars.length - tenIndex > 2) return null;
+    const tens = tenIndex === 0 ? 1 : CN_DIGITS[chars[0] ?? ""];
+    const ones = tenIndex === chars.length - 1 ? 0 : CN_DIGITS[chars[tenIndex + 1] ?? ""];
+    if (tens === undefined || ones === undefined) return null;
+    return tens * 10 + ones;
+  }
+  if (chars.length !== 1) return null;
+  return CN_DIGITS[chars[0] ?? ""] ?? null;
+}
+
+// Same grammar as `AssistantSchedule.swift:DelayPhrase`: number, optional 个 / 个半, unit, optional 半.
+const CN_DELAY_NUMBER = "([0-9]+|[零一二两三四五六七八九十]+|半)";
+const CN_DELAY_UNIT = "(个半|个)?(秒钟|秒|分钟|分|小时|钟头)(半)?";
+const CN_DELAY_LEADING = new RegExp(`^(过|等)?${CN_DELAY_NUMBER}\\s*${CN_DELAY_UNIT}(以后|之后|后)?`);
+const CN_DELAY_TRAILING = new RegExp(`[，,\\s]*${CN_DELAY_NUMBER}\\s*${CN_DELAY_UNIT}(以后|之后|后)$`);
+
+/** Seconds for one Chinese delay match; `g` is the index of the number group. */
+function chineseDelaySeconds(m: RegExpExecArray, g: number): number | null {
+  const rawNumber = m[g];
+  const unitWord = m[g + 2];
+  if (!rawNumber || !unitWord) return null;
+  const unitSeconds = unitWord.startsWith("秒") ? 1 : unitWord.startsWith("分") ? 60 : 3600;
+  let value = rawNumber === "半" ? 0.5 : spokenNumber(rawNumber);
+  if (value === null) return null;
+  if (m[g + 1] === "个半" || m[g + 3] === "半") value += 0.5;
+  return value * unitSeconds;
+}
+
+function stripDelayMatch(text: string, m: RegExpExecArray): string {
+  const rest = text.slice(0, m.index) + text.slice(m.index + m[0].length);
+  return rest.replace(/^[，,。\s]+|[，,。\s]+$/g, "");
 }
 
 const EN_CANCEL_PHRASES = [
@@ -49,10 +81,6 @@ function englishUnitMultiplier(unitRaw: string): number {
   return u.startsWith("h") ? 3600 : u.startsWith("m") ? 60 : 1;
 }
 
-function chineseUnitMultiplier(unitRaw: string): number {
-  return unitRaw.startsWith("小") || unitRaw.startsWith("钟") ? 3600 : unitRaw.startsWith("分") ? 60 : 1;
-}
-
 export const DelayPhrase = {
   isCancel(utterance: string): boolean {
     const lower = utterance.toLowerCase().trim();
@@ -71,19 +99,16 @@ export const DelayPhrase = {
     if (enTrail) {
       return buildDelay(Number(enTrail[2]), englishUnitMultiplier(enTrail[3] ?? ""), enTrail[1] ?? "");
     }
-    if (/^半小时(?:以)?后(.+)$/.test(trimmed)) {
-      const m = /^半小时(?:以)?后(.+)$/.exec(trimmed);
-      return buildDelay(1800, 1, m?.[1] ?? "");
+    const leading = CN_DELAY_LEADING.exec(trimmed);
+    if (leading) {
+      // Without 过 / 等 in front or 后 behind, "10分钟" is not a delay ("10分钟关灯" is left alone).
+      const seconds = leading[1] !== undefined || leading[6] !== undefined ? chineseDelaySeconds(leading, 2) : null;
+      if (seconds !== null) return buildDelay(seconds, 1, stripDelayMatch(trimmed, leading));
     }
-    const regex = /^(?:过|等)?([0-9]+|[一二两三四五六七八九十]+)\s*(秒钟?|分钟?|小时|钟头)(?:以)?后?[，,\s]*(.+)$/;
-    const front = regex.exec(trimmed);
-    if (front) {
-      return buildDelay(parseCnOrArabicNumber(front[1] ?? ""), chineseUnitMultiplier(front[2] ?? ""), front[3] ?? "");
-    }
-    const backRegex = /^(.+?)[，,\s]*(?:过|等)?([0-9]+|[一二两三四五六七八九十]+)\s*(秒钟?|分钟?|小时|钟头)(?:以)?后$/;
-    const back = backRegex.exec(trimmed);
-    if (back) {
-      return buildDelay(parseCnOrArabicNumber(back[2] ?? ""), chineseUnitMultiplier(back[3] ?? ""), back[1] ?? "");
+    const trailing = CN_DELAY_TRAILING.exec(trimmed);
+    if (trailing) {
+      const seconds = chineseDelaySeconds(trailing, 1);
+      if (seconds !== null) return buildDelay(seconds, 1, stripDelayMatch(trimmed, trailing));
     }
     return null;
   },
@@ -944,9 +969,10 @@ export const LocalIntentParser = {
     else if (clean.includes("除湿") && !clean.includes("除湿机")) ops.push({ kind: "hvacMode", mode: "dry" });
     else if (clean.includes("送风")) ops.push({ kind: "hvacMode", mode: "fan_only" });
 
-    if (clean.includes("停止摇头") || clean.includes("关闭摇头") || clean.includes("不摇头")) {
+    // Every off phrase `LocalIntentParser.oscillationWords` knows; "关掉摇头" must not turn it on.
+    if (/(?:停止|关闭|关掉|不要|别|不)(?:摇头|摆头|摆风)/.test(clean)) {
       ops.push({ kind: "oscillation", enabled: false });
-    } else if (clean.includes("摇头") || clean.includes("摆风")) {
+    } else if (clean.includes("摇头") || clean.includes("摆头") || clean.includes("摆风")) {
       ops.push({ kind: "oscillation", enabled: true });
     }
 
@@ -967,8 +993,15 @@ export const LocalIntentParser = {
     }
 
     const hasOpen = clean.includes("打开") || clean.includes("开启") || clean.startsWith("开");
-    const hasClose = clean.includes("关闭") || clean.includes("关掉") || clean.startsWith("关");
+    const hasClose =
+      clean.includes("关闭") || clean.includes("关掉") || clean.includes("关了") || clean.startsWith("关");
     if (hasOpen && hasClose) return null;
+    // A close verb beside another operation ("关闭月光模式", "关掉暖光", "关闭空调制冷") does not mean
+    // "do that operation": running it would switch the device on. macOS refuses the mix
+    // (`LocalIntentParser.reconcile`), so leave the sentence to the model.
+    if (hasClose && ops.length > 0 && !ops.every((op) => op.kind === "oscillation" && !op.enabled)) {
+      return null;
+    }
     if (ops.length === 0) {
       if (hasOpen) ops = [{ kind: "power", isOn: true }];
       else if (hasClose) ops = [{ kind: "power", isOn: false }];

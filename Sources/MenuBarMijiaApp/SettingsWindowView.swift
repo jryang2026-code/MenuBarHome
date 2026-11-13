@@ -917,6 +917,21 @@ private struct ConnectionSettingsTab: View {
 
                         Spacer()
 
+                        if store.hasHASource {
+                            Button(L10n.tr("断开连接", "Disconnect")) {
+                                if store.disconnectHomeAssistant() {
+                                    tokenDraft = ""
+                                    store.showToast(L10n.tr("已断开 Home Assistant", "Disconnected from Home Assistant"))
+                                } else {
+                                    store.showToast(
+                                        L10n.tr("无法更新钥匙串，请授权钥匙串访问后重试", "Could not update Keychain; allow Keychain access and try again"),
+                                        isError: true
+                                    )
+                                }
+                            }
+                            .buttonStyle(PillActionButtonStyle())
+                        }
+
                         Button(L10n.tr("保存并重新连接", "Save & Reconnect")) {
                             store.updateConnection(serverURL: urlDraft, token: tokenDraft)
                         }
