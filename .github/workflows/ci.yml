@@ -320,13 +320,13 @@ jobs:
     # 全部 Swift 单测（快照比对留在宿主机门禁）。三个 macOS job 里只有这个可以排到本地隔离 VM：
     # VM 单任务串行，三个都排过去时一次运行占用约 20 分钟，后面的 PR 全在排队。
     # Empty MACOS_CI_RUNNER keeps GitHub-hosted macOS; the local option is an isolated VM.
-    runs-on: ${{ fromJSON(vars.MACOS_CI_RUNNER || '"macos-26"') }}
+    runs-on: ${{ fromJSON(vars.MACOS_CI_RUNNER || '"macos-26-intel"') }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      # macos-26 on 2026-11-09 printed Xcode 26.6 (17F113). Do not select latest.
+      # macos-26-intel ships Xcode 26.6 (17F113). Do not select latest.
       - name: Select Xcode 26.6
         if: runner.environment == 'github-hosted'
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
@@ -339,10 +339,10 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build
-          # v4 discards caches the local VM built with its own Xcode.
-          key: spm-debug-v4-${{ runner.os }}-${{ github.sha }}
+          # v4 + runner.arch separates hosted macos-26-intel (X64) from local VM (ARM64).
+          key: spm-debug-v4-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
           restore-keys: |
-            spm-debug-v4-${{ runner.os }}-
+            spm-debug-v4-${{ runner.os }}-${{ runner.arch }}-
       - name: Restore source mtimes for the Swift cache
         run: bash scripts/ci_restore_mtimes.sh
       - name: Match the maintainer's region
@@ -377,13 +377,13 @@ jobs:
     if: needs.changes.outputs.code == 'true' && ((github.event_name != 'pull_request' && needs.changes.outputs.macos == 'true') || needs.changes.outputs.appintents == 'true')
     # xcodebuild 提取 App Intents。和 swift test 串在一台 3 核机器上时，冷启动会把两者相加。
     # 固定在托管机，与本地 VM 上的 macos-test 并行，不读 MACOS_CI_RUNNER。
-    runs-on: macos-26
+    runs-on: macos-26-intel
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      # macos-26 on 2026-11-09 printed Xcode 26.6 (17F113). Do not select latest.
+      # macos-26-intel ships Xcode 26.6 (17F113). Do not select latest.
       - name: Select Xcode 26.6
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
@@ -392,10 +392,10 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .derived
-          # v3 discards the Release derived data from before this job built Debug.
-          key: appintents-v3-${{ runner.os }}-${{ github.sha }}
+          # v3 + runner.arch keeps hosted Intel caches separate from arm64 caches.
+          key: appintents-v3-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
           restore-keys: |
-            appintents-v3-${{ runner.os }}-
+            appintents-v3-${{ runner.os }}-${{ runner.arch }}-
       - name: Restore source mtimes for the Xcode cache
         run: bash scripts/ci_restore_mtimes.sh
       - name: App Intents metadata
@@ -427,13 +427,13 @@ jobs:
     if: needs.changes.outputs.code == 'true' && ((github.event_name != 'pull_request' && needs.changes.outputs.macos == 'true') || needs.changes.outputs.macos_build == 'true')
     # Release -O 通用二进制（#2 这类崩溃只在 -O 下出现）以及符号表路径泄露检查。
     # 固定在托管机，与本地 VM 上的 macos-test 并行，不读 MACOS_CI_RUNNER。
-    runs-on: macos-26
+    runs-on: macos-26-intel
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      # macos-26 on 2026-11-09 printed Xcode 26.6 (17F113). Do not select latest.
+      # macos-26-intel ships Xcode 26.6 (17F113). Do not select latest.
       - name: Select Xcode 26.6
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
@@ -444,10 +444,10 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build
-          # v3 discards caches the local VM built with its own Xcode.
-          key: spm-release-v3-${{ runner.os }}-${{ github.sha }}
+          # v3 + runner.arch keeps hosted Intel caches separate from arm64 caches.
+          key: spm-release-v3-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
           restore-keys: |
-            spm-release-v3-${{ runner.os }}-
+            spm-release-v3-${{ runner.os }}-${{ runner.arch }}-
       - name: Restore source mtimes for the Swift cache
         run: bash scripts/ci_restore_mtimes.sh
       - id: go2rtc-ptz-cache
