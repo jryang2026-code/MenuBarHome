@@ -18,6 +18,8 @@ Reference for modifying `scripts/check.sh`, `scripts/record_snapshots.sh`, `scri
 - When local `windows/node_modules` is absent, `check.sh` reuses a lockfile-matching sibling git worktree's `windows/node_modules` to run the `windows/tests/*.test.ts` suite (`MMB_DISABLE_SHARED_NODE_MODULES=1` forces a skip); full `tsc --noEmit && vite build` runs when local `windows/node_modules` is present, and always runs in CI.
 - `scripts/go2rtc-ptz/verify.sh` runs whenever `go version` succeeds within 5 s; a broken or missing `go` skips, while a patch/test failure fails the gate.
 - `--lint-only` returns before the test suites while still running secret scans, design-token/harness lints, capability matrix checks, `scripts/go2rtc-ptz/check_model_tables.py`, and script self-tests.
+- The pre-commit hook runs `check.sh --lint-only`; `MMB_HOOK_FULL=1 git commit` runs the full gate. Tests and the snapshot comparison run in the full `bash scripts/check.sh` before a PR is opened or updated (CI never compares pixels, so that run is the only snapshot check).
+- On pull requests CI skips `macos-release`, `macos-appintents`, and `windows-installer`; they run on `main` and on `workflow_dispatch`. A PR that changes packaging (`scripts/build_app.sh`, `windows/scripts/build-installer.ps1`, App Intents) runs them before merge with `gh workflow run CI --ref <branch>`.
 - Pre-commit hook path: `git rev-parse --git-path hooks/pre-commit`. `scripts/check.sh` installs a wrapper in the shared git hooks directory that delegates to the active worktree's `scripts/hooks/pre-commit`.
 
 ## Lints, Workflows & Disk Images

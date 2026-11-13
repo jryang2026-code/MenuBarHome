@@ -15,7 +15,7 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
 
 ## 验证完成判据与环境边界
 
-- **门禁判据**：`bash scripts/check.sh` 覆盖密钥扫描、机械 lint 与 `swift test`（含快照），**不跑 Rust 测试**。有跳过项时打印 `⚠️ 部分通过：跳过 <名称>` 且**退出码仍为 0**（缺本工作树 `windows/node_modules` 时会尝试复用锁文件匹配的兄弟工作树跑 `windows/tests/*.test.ts`，`tsc && vite build` 与 `raycast` 无本地 `node_modules` 仍跳过且不自动 `npm ci`）——确认输出无非预期跳过才算通过。
+- **门禁判据**：`bash scripts/check.sh` 覆盖密钥扫描、机械 lint 与 `swift test`（含快照），**不跑 Rust 测试**。有跳过项时打印 `⚠️ 部分通过：跳过 <名称>` 且**退出码仍为 0**（缺本工作树 `windows/node_modules` 时会尝试复用锁文件匹配的兄弟工作树跑 `windows/tests/*.test.ts`，`tsc && vite build` 与 `raycast` 无本地 `node_modules` 仍跳过且不自动 `npm ci`）——确认输出无非预期跳过才算通过。提交钩子只跑 `--lint-only`：开 PR 或向 PR 推送前须跑一次完整的 `bash scripts/check.sh`。PR 上的 CI 不跑 `macos-release`、`macos-appintents`、`windows-installer`（`main` 与手动触发才跑），改打包链路的 PR 合并前用 `gh workflow run CI --ref <分支>` 补跑。
 - **渲染与实机边界**：快照基线以维护者这台 Mac 渲染为准，`--skip-snapshots` 仅限非维护者 Mac。面向用户的界面改动单靠单元测试不算完成，须附快照或实机验证证据。
 - **Windows 与检索环境**：Windows 本机无 Swift 工具链，本地跑 `bash scripts/check.sh --lint-only`，Swift 测试交 CI 或局域网 Mac（`bash scripts/remote-swift-test.sh --host <user>@<mac>`，配置见脚本头）。本仓 Swift 与 Rust 无语言服务器，引用与定义检索用 `grep`。macOS 本机打包安装、图标重生成、工作流 `actionlint` 均由 `.claude/rules/` 按路径加载。
 
