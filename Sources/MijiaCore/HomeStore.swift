@@ -696,6 +696,32 @@ public final class HomeStore {
     public internal(set) var pollingContext = PollingContext()
     var pollingContextSync: Task<Void, Never>?
     var debounceTasks: [String: Task<Void, Never>] = [:]
+    struct DebouncedWriteState {
+        let token: UUID
+        let deviceId: String
+        let origin: SmartDevice
+    }
+    var debouncedWrites: [String: DebouncedWriteState] = [:]
+    struct ManualWritePatch {
+        enum Phase {
+            case debouncing
+            case inFlight
+            case succeeded
+        }
+        let slotKey: String
+        let token: UUID
+        var phase: Phase
+        var lockUntil: ContinuousClock.Instant?
+        let apply: @Sendable (inout SmartDevice) -> Void
+    }
+    struct ManualWriteSession {
+        var revision: UInt64
+        var base: SmartDevice
+        var baseCoverOrigin: Int?
+        var baseLockUntil: ContinuousClock.Instant?
+        var patches: [ManualWritePatch]
+    }
+    var manualWriteSessions: [String: ManualWriteSession] = [:]
     struct FacetWriteState {
         let token: UUID
         let origin: JSONValue?

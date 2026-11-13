@@ -118,10 +118,10 @@ public enum HAFacetEngine {
         case "select":
             let options = state.attributes["options"]?.stringArrayValue ?? []
             guard !options.isEmpty else { return nil }
-            let selected = options.firstIndex(of: state.state) ?? 0
+            let selected = options.firstIndex(of: state.state)
             return make(
                 kind: .select,
-                value: .number(Double(selected)),
+                value: selected.map { .number(Double($0)) },
                 options: options.enumerated().map { MiotFacetOption(value: $0.offset, label: $0.element) },
                 target: .haProperty(entityId: entity.entity_id)
             )

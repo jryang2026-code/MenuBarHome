@@ -64,7 +64,7 @@ public enum MiotPercentScale {
         return hi != 100 ? p * hi : p * 100
     }
 
-    private static func clampPercent(_ value: Double) -> Int {
+    static func clampPercent(_ value: Double) -> Int {
         guard value.isFinite else { return 0 }
         // Clamp before converting: `Int(_:)` traps on a finite value beyond Int range.
         return Int(Swift.max(0, Swift.min(100, value)).rounded())

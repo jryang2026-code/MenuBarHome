@@ -665,9 +665,8 @@ public struct UpdateSystemDriver: Sendable {
 
             var receivedBytes: Int64 = 0
             var lastReportedAt = ContinuousClock.now
-            // `AsyncBytes.lines`-style byte-at-a-time iteration costs one suspension per byte. This
-            // collects up to 256 KB per suspension, which is what makes a 30 MB DMG download in
-            // seconds rather than minutes.
+            // Batch disk writes and progress callbacks in 256 KB chunks; `URLSession.AsyncBytes`
+            // buffers network reads internally and only suspends when refilling its buffer.
             var chunk = Data()
             chunk.reserveCapacity(256 * 1024)
             for try await byte in asyncBytes {

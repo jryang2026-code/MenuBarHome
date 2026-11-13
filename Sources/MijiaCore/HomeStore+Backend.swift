@@ -311,7 +311,9 @@ extension HomeStore {
                     optimisticLockUntil.removeValue(forKey: incoming.id)
                     coverCommandOrigins.removeValue(forKey: incoming.id)
                     lastCoverPositions.removeValue(forKey: incoming.id)
+                    manualWriteSessions.removeValue(forKey: incoming.id)
                     optimisticLockRevision[incoming.id, default: 0] &+= 1
+                    cancelDebouncedWrites(for: incoming.id, recomputeRow: false)
                     let prefix = "\(incoming.id)."
                     for key in debounceTasks.keys where key == incoming.id || key.hasPrefix(prefix) {
                         debounceTasks.removeValue(forKey: key)?.cancel()
@@ -339,6 +341,7 @@ extension HomeStore {
                         // the lock expired (#298).
                         optimisticLockUntil.removeValue(forKey: incoming.id)
                         coverCommandOrigins.removeValue(forKey: incoming.id)
+                        manualWriteSessions.removeValue(forKey: incoming.id)
                         merged.append(incoming)
                     } else {
                         merged.append(local)
@@ -346,7 +349,7 @@ extension HomeStore {
                 } else {
                     optimisticLockUntil.removeValue(forKey: incoming.id)
                     coverCommandOrigins.removeValue(forKey: incoming.id)
-                    merged.append(incoming)
+                    merged.append(reconcileManualWriteSessionWithSnapshot(incoming))
                 }
             }
             if let lgDev = latestLGDevice, lgConfig.isEnabled,
@@ -695,16 +698,19 @@ extension HomeStore {
                     .isEmpty
             }
             rebuildLiveProvider()
-            // Leaving demo mode resumes the LAN TV link that demo stopped; `start()` no-ops when the
-            // config is disabled or has no host. A launch in demo mode never created the client, so
-            // create it now instead of leaving a configured TV missing until relaunch.
-            if previousBackend == .demo {
-                if let lgClient = lgWebOSClient {
-                    Task { await lgClient.start() }
-                } else {
-                    startLGWebOSIfNeeded()
-                }
-            }
+            resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: previousBackend == .demo)
+        }
+    }
+
+    /// Leaving demo mode resumes the LAN TV link that demo stopped; `start()` no-ops when the
+    /// config is disabled or has no host. A launch in demo mode never created the client, so
+    /// create it now instead of leaving a configured TV missing until relaunch.
+    private func resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: Bool) {
+        guard wasDemo, homeBackend != .demo else { return }
+        if let lgClient = lgWebOSClient {
+            Task { await lgClient.start() }
+        } else {
+            startLGWebOSIfNeeded()
         }
     }
 
@@ -735,6 +741,7 @@ extension HomeStore {
         let superseded = miLoginStartBackend.map { $0 != homeBackend } ?? false
         miLoginStartBackend = nil
         if superseded { return }
+        let wasDemo = homeBackend == .demo
         invalidateUndoContext()
         self.hasHASource = !loadHAToken()
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -742,6 +749,7 @@ extension HomeStore {
         self.homeBackend = .xiaomiCloud
         self.completeOnboarding()
         rebuildLiveProvider()
+        resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: wasDemo)
         showToast(L10n.tr("已登录米家账号 (\(session.maskedUserId))", "Signed in to Xiaomi Home (\(session.maskedUserId))"))
     }
 
@@ -881,6 +889,7 @@ extension HomeStore {
             )
             return
         }
+        let wasDemo = homeBackend == .demo
         invalidateUndoContext()
         let normalized = HAWebSocketProvider.normalizeBaseURL(serverURL)
         if normalized != HAWebSocketProvider.normalizeBaseURL(serverURLString) {
@@ -894,6 +903,7 @@ extension HomeStore {
             self.completeOnboarding()
         }
         rebuildLiveProvider()
+        resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: wasDemo)
         showToast(L10n.tr("已保存并重新连接 Home Assistant", "Saved and reconnecting to Home Assistant"))
     }
 

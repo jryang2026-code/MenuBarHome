@@ -271,11 +271,23 @@ public enum DeviceSynthesizer {
         states: [String: HAEntityState]
     ) -> SynthesizedHome {
         let areaNameById = Dictionary(areas.map { ($0.area_id, $0.name) }, uniquingKeysWith: { _, latest in latest })
+        let entityById = Dictionary(entities.map { ($0.entity_id, $0) }, uniquingKeysWith: { _, latest in latest })
+        var seenEntityIds: Set<String> = []
+        let deduplicatedEntities = entities.compactMap { entry -> HAEntityEntry? in
+            guard seenEntityIds.insert(entry.entity_id).inserted else { return nil }
+            return entityById[entry.entity_id]
+        }
+        let deviceById = Dictionary(devices.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        var seenDeviceIds: Set<String> = []
+        let deduplicatedDevices = devices.compactMap { entry -> HADeviceEntry? in
+            guard seenDeviceIds.insert(entry.id).inserted else { return nil }
+            return deviceById[entry.id]
+        }
 
         // Group active entities by device_id
         var entitiesByDevice: [String: [HAEntityEntry]] = [:]
 
-        for entity in entities {
+        for entity in deduplicatedEntities {
             guard entity.disabled_by == nil, entity.hidden_by == nil else { continue }
             if let devId = entity.device_id {
                 entitiesByDevice[devId, default: []].append(entity)
@@ -287,7 +299,7 @@ public enum DeviceSynthesizer {
         var identities: [String: DeviceSourceIdentity] = [:]
         var deviceFacets: [String: [FacetControl]] = [:]
 
-        for dev in devices {
+        for dev in deduplicatedDevices {
             guard dev.disabled_by == nil else { continue }
             guard let devEntities = entitiesByDevice[dev.id], !devEntities.isEmpty else { continue }
 
@@ -400,8 +412,7 @@ public enum DeviceSynthesizer {
             }
         }
 
-        let registeredDeviceIds = Set(devices.map(\.id))
-        let entityById = Dictionary(entities.map { ($0.entity_id, $0) }, uniquingKeysWith: { _, latest in latest })
+        let registeredDeviceIds = Set(deduplicatedDevices.map(\.id))
         for (eid, state) in states {
             guard eid.hasPrefix("light.") || eid.hasPrefix("climate.")
                     || eid.hasPrefix("fan.") || eid.hasPrefix("vacuum.")
@@ -640,11 +651,12 @@ public enum DeviceSynthesizer {
         states: [String: HAEntityState]
     ) -> [HAEntityEntry] {
         let coverTokensById: [String: Set<String>] = Dictionary(
-            uniqueKeysWithValues: allCovers.map { entry in
+            allCovers.map { entry in
                 let stem = entry.entity_id.dropFirst("cover.".count).lowercased()
                 let tokens = Set(stem.split(separator: "_").map(String.init))
                 return (entry.entity_id, tokens)
-            }
+            },
+            uniquingKeysWith: { first, _ in first }
         )
         let commonTokens: Set<String> = coverTokensById.values.reduce(into: coverTokensById.values.first ?? []) { acc, next in
             acc.formIntersection(next)
@@ -970,7 +982,8 @@ public enum DeviceSynthesizer {
             let features = st.attributes["supported_features"]?.intValue
             let modes = st.attributes["available_modes"]?.stringArrayValue ?? []
             let mode = st.attributes["mode"]?.stringValue
-            let target = st.attributes["target_humidity"]?.doubleValue.flatMap(Self.roundedInt)
+            let target = (st.attributes["target_humidity"]?.doubleValue
+                ?? st.attributes["humidity"]?.doubleValue).flatMap(Self.roundedInt)
             let minH = st.attributes["min_humidity"]?.intValue ?? 0
             let maxH = st.attributes["max_humidity"]?.intValue ?? 100
             let step = max(1, st.attributes["target_humidity_step"]?.intValue ?? 1)
@@ -1007,7 +1020,7 @@ public enum DeviceSynthesizer {
                         step: step,
                         humidityWritable: humidityWritable,
                         currentHumidity: current,
-                        powerWritable: st.isAvailable
+                        powerWritable: true
                     )
                 )
             )
@@ -1044,7 +1057,7 @@ public enum DeviceSynthesizer {
                         entityId: waterHeaterId,
                         isOn: st.isAvailable && st.state != "off",
                         powerPresent: true,
-                        powerWritable: st.isAvailable,
+                        powerWritable: true,
                         currentMode: mode,
                         availableModes: modes,
                         modeWritable: !modes.isEmpty,
@@ -1053,7 +1066,7 @@ public enum DeviceSynthesizer {
                         minTemp: minT,
                         maxTemp: maxT,
                         step: step,
-                        temperatureWritable: target != nil && st.isAvailable,
+                        temperatureWritable: target != nil,
                         powerEntityId: waterHeaterId,
                         modeEntityId: waterHeaterId,
                         temperatureEntityId: waterHeaterId,

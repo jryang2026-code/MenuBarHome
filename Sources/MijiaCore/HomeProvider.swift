@@ -151,6 +151,26 @@ public actor HAWebSocketProvider: HomeProvider {
     /// Told when the address needs plaintext consent; nothing carrying the token is sent until then.
     private let onPlaintextConsentNeeded: (@Sendable (String) -> Void)?
 
+    enum ConnectTestOutcome: Sendable {
+        case failedBeforeAuth(any Error)
+        case authenticatedThenDisconnected(any Error)
+        case authenticatedStayConnected
+    }
+
+    /// Test seams for deterministic retry/backoff verification without wall-clock sleeps or sockets.
+    private var connectOverride: (@Sendable () async throws -> ConnectTestOutcome)?
+    private var reconnectSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+
+    func setTestSeams(
+        connectOverride: (@Sendable () async throws -> ConnectTestOutcome)?,
+        reconnectSleep: (@Sendable (Duration) async throws -> Void)? = nil
+    ) {
+        self.connectOverride = connectOverride
+        if let reconnectSleep {
+            self.reconnectSleep = reconnectSleep
+        }
+    }
+
     public init(
         baseURLString: String,
         token: String,
@@ -248,15 +268,37 @@ public actor HAWebSocketProvider: HomeProvider {
             }
             continuation?.yield(.statusChanged(.connecting))
             do {
-                try await connectAndListen()
+                if let connectOverride {
+                    switch try await connectOverride() {
+                    case .failedBeforeAuth(let error):
+                        throw error
+                    case .authenticatedThenDisconnected(let error):
+                        backoffSeconds = 0.8
+                        consecutiveFailures = 0
+                        continuation?.yield(.statusChanged(.connected))
+                        throw error
+                    case .authenticatedStayConnected:
+                        backoffSeconds = 0.8
+                        consecutiveFailures = 0
+                        continuation?.yield(.statusChanged(.connected))
+                        return
+                    }
+                } else {
+                    try await connectAndListen {
+                        backoffSeconds = 0.8
+                        consecutiveFailures = 0
+                    }
+                }
                 backoffSeconds = 0.8
                 consecutiveFailures = 0
             } catch {
                 if Task.isCancelled { break }
                 if case HomeProviderError.unauthorized = error {
+                    activeWebSocket = nil
                     let msg = Self.describeConnectionError(error, baseURLString: baseURLString)
                     logger.error("WebSocket unauthorized: \(msg, privacy: .public)")
                     continuation?.yield(.statusChanged(.disconnected(msg)))
+                    return
                 } else {
                     consecutiveFailures += 1
                     await suggestOtherAddressIfDue(consecutiveFailures: consecutiveFailures)
@@ -264,7 +306,7 @@ public actor HAWebSocketProvider: HomeProvider {
                     logger.error("WebSocket disconnected: \(msg, privacy: .public)")
                     continuation?.yield(.statusChanged(.disconnected(msg)))
                 }
-                try? await Task.sleep(for: .seconds(backoffSeconds))
+                try? await reconnectSleep(.seconds(backoffSeconds))
                 backoffSeconds = min(backoffSeconds * 1.8, 10.0)
             }
         }
@@ -282,7 +324,7 @@ public actor HAWebSocketProvider: HomeProvider {
         onAddressSuggestion(candidate)
     }
 
-    private func connectAndListen() async throws {
+    private func connectAndListen(onAuthenticated: () -> Void = {}) async throws {
         guard let wsURL = Self.makeWebSocketURL(from: baseURLString) else {
             throw HomeProviderError.invalidURL(baseURLString)
         }
@@ -290,6 +332,11 @@ public actor HAWebSocketProvider: HomeProvider {
         let ws = session.webSocketTask(with: wsURL)
         ws.maximumMessageSize = 16 * 1024 * 1024
         self.activeWebSocket = ws
+        defer {
+            if self.activeWebSocket === ws {
+                self.activeWebSocket = nil
+            }
+        }
         ws.resume()
 
         // 1. Expect auth_required
@@ -308,6 +355,7 @@ public actor HAWebSocketProvider: HomeProvider {
             throw HomeProviderError.unauthorized
         }
 
+        onAuthenticated()
         snapshot = HAHomeSnapshot()
         logger.info("Connected to Home Assistant WebSocket: \(self.baseURLString, privacy: .public)")
 
@@ -625,7 +673,7 @@ public actor HAWebSocketProvider: HomeProvider {
             if eid.hasPrefix("cover.") {
                 return ("cover", "set_cover_position", [
                     "entity_id": eid,
-                    "position": max(0, min(100, Int(value.rounded())))
+                    "position": MiotPercentScale.clampPercent(value)
                 ])
             }
             return ("number", "set_value", [

@@ -63,17 +63,25 @@ struct HAHomeSnapshot {
         } else if message["type"]?.stringValue == "event",
                   case .object(let event) = message["event"],
                   event["event_type"]?.stringValue == "state_changed",
-                  case .object(let data) = event["data"],
-                  let newState = data["new_state"],
-                  let state = Self.parseState(newState) {
-            if let timestamp = DoorbellRing.timestamp(state), timestamp != doorbellTimestamps[state.entityId] {
-                doorbellTimestamps[state.entityId] = timestamp
-                if pendingInitialResults.isEmpty, isActiveEntity(state.entityId) {
-                    let deviceId = entities.first { $0.entity_id == state.entityId }?.device_id ?? state.entityId
-                    rings.append(DoorbellRing(deviceId: deviceId, entityId: state.entityId, firedAt: timestamp))
+                  case .object(let data) = event["data"] {
+            if let newState = data["new_state"], let state = Self.parseState(newState) {
+                if let timestamp = DoorbellRing.timestamp(state), timestamp != doorbellTimestamps[state.entityId] {
+                    doorbellTimestamps[state.entityId] = timestamp
+                    if pendingInitialResults.isEmpty, isActiveEntity(state.entityId) {
+                        let deviceId = entities.first { $0.entity_id == state.entityId }?.device_id ?? state.entityId
+                        rings.append(DoorbellRing(deviceId: deviceId, entityId: state.entityId, firedAt: timestamp))
+                    }
                 }
+                states[state.entityId] = state
+            } else if data["new_state"] == .null {
+                let entityId = data["entity_id"]?.stringValue ?? data["old_state"]?["entity_id"]?.stringValue
+                guard let entityId, states.removeValue(forKey: entityId) != nil else {
+                    return nil
+                }
+                doorbellTimestamps.removeValue(forKey: entityId)
+            } else {
+                return nil
             }
-            states[state.entityId] = state
         } else {
             return nil
         }

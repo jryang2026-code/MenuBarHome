@@ -572,12 +572,18 @@ public enum CoverSubtype: String, Equatable, Sendable {
             case "garage", "gate", "door":
                 self = .garageDoor
                 return
+            case "airer", "clothes_airer":
+                self = .clothesAirer
+                return
             default:
                 break
             }
         }
         let lower = name.lowercased()
-        if name.contains("帘") || lower.contains("curtain") || lower.contains("blind") {
+        if name.contains("晾衣") || name.contains("晒衣") || lower.contains("airer") {
+            self = .clothesAirer
+        } else if name.contains("帘") || lower.contains("curtain") || lower.contains("blind")
+                    || lower.contains("shade") || lower.contains("shutter") {
             self = .curtain
         } else if name.contains("车库") || name.contains("大门")
                     || lower.contains("garage") || lower.contains("gate") {
