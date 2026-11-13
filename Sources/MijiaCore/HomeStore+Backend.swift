@@ -392,10 +392,9 @@ extension HomeStore {
             offlineHistory.record(devices: devices, now: sampleNow)
 
             if enableSafetyAlerts {
+                // `evaluateSafetyAlerts` records into the activity stack whether or not the app
+                // installed a notification handler, so the panel still shows every fired alert.
                 let alerts = evaluateSafetyAlerts(now: Date())
-                // The activity stack keeps its own record whether or not the app installed a
-                // notification handler: the panel still has to show the alert.
-                recordSafetyAlerts(alerts)
                 if let handler = onSafetyAlert {
                     for alert in alerts {
                         handler(alert)

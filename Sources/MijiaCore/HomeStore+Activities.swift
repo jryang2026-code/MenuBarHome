@@ -49,9 +49,8 @@ extension HomeStore {
         }
     }
 
-    /// Records the alerts a snapshot just raised. A repeated id keeps one row with the newest time,
-    /// and the list stops at `recentSafetyAlertLimit`. Called from the same place that hands the
-    /// alert to the notification handler (`HomeStore+Backend.swift`), which may not be installed.
+    /// Records alerts raised by `evaluateSafetyAlerts(now:)`. A repeated id keeps one row with the
+    /// newest time, and the list stops at `recentSafetyAlertLimit`.
     func recordSafetyAlerts(_ alerts: [SafetyAlert], now: Date = Date()) {
         guard !alerts.isEmpty else { return }
         let scope = connectionScopeIdentifier

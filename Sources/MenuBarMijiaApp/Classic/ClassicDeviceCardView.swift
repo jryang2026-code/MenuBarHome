@@ -764,13 +764,13 @@ public struct ClassicDeviceCardView: View {
                 .padding(-6)
             }
 
-            if let current = spec.currentHumidity {
+            if let current = spec.currentHumidity.flatMap(DeviceSynthesizer.roundedInt) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(L10n.tr("当前湿度", "Current humidity"))
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 8)
-                    ClassicDetailValueText(text: "\(Int(current.rounded()))%", color: statusColor)
+                    ClassicDetailValueText(text: "\(current)%", color: statusColor)
                 }
                 .padding(.horizontal, 8)
             }
@@ -1035,14 +1035,16 @@ public struct ClassicDeviceCardView: View {
     }
 
     private func fanEnvironmentReadout(_ spec: FanSpec) -> String {
-        if let t = spec.temperature, let h = spec.humidity {
-            return "\(L10n.temperature(t, fractionDigits: 1)) · \(Int(h.rounded()))%"
+        let validTemp = spec.temperature.flatMap { $0.isFinite ? $0 : nil }
+        let roundedHumidity = spec.humidity.flatMap(DeviceSynthesizer.roundedInt)
+        if let t = validTemp, let h = roundedHumidity {
+            return "\(L10n.temperature(t, fractionDigits: 1)) · \(h)%"
         }
-        if let t = spec.temperature {
+        if let t = validTemp {
             return L10n.temperature(t, fractionDigits: 1)
         }
-        if let h = spec.humidity {
-            return "\(Int(h.rounded()))%"
+        if let h = roundedHumidity {
+            return "\(h)%"
         }
         return "—"
     }

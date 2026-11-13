@@ -397,12 +397,7 @@ public struct ClassicControlCenterPanel: View {
         kindChipsRevealed.toggle()
     }
 
-    private var showsLessonRow: Bool {
-        store.showsOnboardingChecklistCard && !store.panelActivities.contains { activity in
-            if case .notice(let kind) = activity.kind { return kind.hidesChecklist }
-            return false
-        }
-    }
+    private var showsLessonRow: Bool { store.showsLessonRow }
 
     private var showsScrollPreface: Bool { showsLessonRow }
 

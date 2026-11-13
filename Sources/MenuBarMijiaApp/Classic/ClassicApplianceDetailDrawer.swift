@@ -71,10 +71,10 @@ struct ClassicApplianceDetailDrawer: View {
                 .padding(.horizontal, 8)
             }
 
-            if spec.roomReading, let humidity = spec.currentHumidity {
+            if spec.roomReading, let humidity = spec.currentHumidity.flatMap(DeviceSynthesizer.roundedInt) {
                 statusRow(
                     title: L10n.tr("湿度", "Humidity"),
-                    value: "\(Int(humidity.rounded()))%"
+                    value: "\(humidity)%"
                 )
             }
 

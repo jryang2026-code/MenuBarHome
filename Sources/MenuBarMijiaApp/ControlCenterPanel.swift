@@ -393,12 +393,7 @@ public struct ControlCenterPanel: View {
         }
     }
 
-    private var showsLessonRow: Bool {
-        store.showsOnboardingChecklistCard && !store.panelActivities.contains { activity in
-            if case .notice(let kind) = activity.kind { return kind.hidesChecklist }
-            return false
-        }
-    }
+    private var showsLessonRow: Bool { store.showsLessonRow }
 
     /// The toast the panel actually draws. A pinned blocked notice already carries the same
     /// message and Scan action, so #47's persistent expiry toast must not repeat it.

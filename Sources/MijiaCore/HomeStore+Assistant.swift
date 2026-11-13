@@ -146,8 +146,8 @@ extension HomeStore {
 
         let envParts = environmentReadings.map { reading -> String in
             var text = "\(reading.roomName)"
-            if let t = reading.temperature { text += " \(String(format: "%.1f°C", t))" }
-            if let h = reading.humidity { text += " \(DeviceSynthesizer.roundedInt(h) ?? 0)%" }
+            if let t = reading.temperature, t.isFinite { text += " \(String(format: "%.1f°C", t))" }
+            if let h = reading.humidity.flatMap(DeviceSynthesizer.roundedInt) { text += " \(h)%" }
             return text
         }
         let environmentSummary = envParts.joined(separator: "，")
