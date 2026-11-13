@@ -401,7 +401,10 @@ public enum IntentReply {
 
     /// Formats 26 → "26" and 25.5 → "25.5"; URL-command replies and assistant text share one style.
     public static func formatTemperature(_ t: Double) -> String {
-        t.rounded() == t ? String(Int(t)) : String(format: "%.1f", t)
+        if let exact = DeviceSynthesizer.roundedInt(t), Double(exact) == t {
+            return String(exact)
+        }
+        return String(format: "%.1f", t)
     }
 }
 
@@ -448,7 +451,7 @@ public struct IntentCatalog: Sendable {
         var allLightIds: [String] = []
         var allDeviceIds: [String] = []
         var roomOrder: [String] = []
-        var roomLights: [String: [String]] = [:]
+        var roomLights: [String: (roomName: String, ids: [String])] = [:]
         var aliasById: [String: String] = [:]
         var deviceRows: [String] = []
         var deviceEntries: [DeviceEntry] = []
@@ -465,8 +468,13 @@ public struct IntentCatalog: Sendable {
             if category == .light {
                 allLightIds.append(device.id)
                 if !device.roomName.isEmpty {
-                    if roomLights[device.roomName] == nil { roomOrder.append(device.roomName) }
-                    roomLights[device.roomName, default: []].append(device.id)
+                    let roomKey = device.roomId.isEmpty ? device.roomName : device.roomId
+                    if roomLights[roomKey] == nil {
+                        roomOrder.append(roomKey)
+                        roomLights[roomKey] = (roomName: device.roomName, ids: [device.id])
+                    } else {
+                        roomLights[roomKey]?.ids.append(device.id)
+                    }
                 }
             }
             criteria[alias] = Self.choiceCriterion(category: category, state: state)
@@ -493,16 +501,16 @@ public struct IntentCatalog: Sendable {
         var groupIndex = 0
         var groupRows: [String] = []
         var groupEntries: [GroupEntry] = []
-        for room in roomOrder {
-            let ids = roomLights[room] ?? []
-            guard ids.count >= 2 else { continue }
+        for roomKey in roomOrder {
+            guard let group = roomLights[roomKey], group.ids.count >= 2 else { continue }
+            let ids = group.ids
             groupIndex += 1
             let alias = "room_lights:\(groupIndex)"
             map[alias] = ids
             criteria[alias] = Self.roomGroupCriterion(lightCount: ids.count)
             let memberAliases = ids.compactMap { aliasById[$0] }
             let members = memberAliases.map { CatalogJSON.quote($0) }
-            let sanitizedRoom = PromptText.sanitize(room, limit: PromptText.nameLimit)
+            let sanitizedRoom = PromptText.sanitize(group.roomName, limit: PromptText.nameLimit)
             let row = CatalogJSON.object([
                 ("id", CatalogJSON.quote(alias)),
                 ("room", CatalogJSON.quote(sanitizedRoom)),
