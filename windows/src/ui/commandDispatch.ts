@@ -1,8 +1,15 @@
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
 import { HomeAssistantClient, homeAssistantCommand } from "../core/homeAssistant.js";
-import { MiCloudClient, MiCloudError, MiotCommandMapper, propKeyString } from "../core/miCloudClient.js";
-import { readMiotPower, type DeviceCommand, type DeviceKind, type FacetControl, type SmartDevice } from "../core/models.js";
+import {
+  DemoHomeProvider,
+  HomeAssistantProvider,
+  MiCloudProvider,
+  PowerReadBackError,
+  type HomeProvider,
+} from "../core/homeProvider.js";
+import { MiCloudClient, MiCloudError } from "../core/miCloudClient.js";
+import type { DeviceCommand, DeviceKind, FacetControl, SmartDevice } from "../core/models.js";
 import { applyCommandToDevices } from "../core/commandEffects.js";
 import {
   applyHAExtendedCommandEffect,
@@ -299,56 +306,39 @@ function kindOwnsEntity(kind: DeviceKind, entityId: string): boolean {
 
 export async function dispatchCloudCommand(host: MenuMijiaWindowsApp, command: DeviceCommand, readBackPower = false): Promise<boolean | null> {
     const sourceRevision = host.sourceRevision;
-    if (host.settings.connectionMode === "demo") return null;
+    const provider = homeProviderFor(host);
+    try {
+      return await provider.execute(command, {
+        readBackPower,
+        beforeSend: () => {
+          if (sourceRevision !== host.sourceRevision) throw new Error("Connection source changed");
+        },
+      });
+    } catch (error) {
+      if (!(error instanceof PowerReadBackError)) throw error;
+      if (sourceRevision === host.sourceRevision) markCloudValuesStale(host);
+      throw error.reason;
+    }
+  }
+
+/** The provider for the backend the panel is connected to right now (ADR-0020). */
+export function homeProviderFor(host: MenuMijiaWindowsApp): HomeProvider {
+    if (host.settings.connectionMode === "demo") return new DemoHomeProvider();
     if (host.settings.connectionMode === "homeAssistant") {
-      const client = new HomeAssistantClient(host.settings.haBaseURL, host.settings.haToken);
-      await host.endpointSubmission;
-      if (sourceRevision !== host.sourceRevision) throw new Error("Connection source changed");
-      await client.execute(command);
-      return null;
+      return new HomeAssistantProvider(
+        new HomeAssistantClient(host.settings.haBaseURL, host.settings.haToken),
+        host.endpointSubmission,
+      );
     }
     if (!host.settings.miSession) throw new Error(t("请先扫码登录米家"));
-    const session = host.settings.miSession;
-    const deviceId = deviceOwningEntityId(host.devices, host.deviceFacets, command.entityId);
-    const dev = host.devices.find((d) => d.id === deviceId);
-    if (!dev) throw new Error(t("无法找到指令对应的设备"));
-
-    const spec = await host.specResolver.resolve({
-      did: dev.id,
-      name: dev.name,
-      model: dev.model,
-      isOnline: dev.isOnline,
-      specType: null,
+    return new MiCloudProvider({
+      client: new MiCloudClient(host.settings.miSession, host.transport),
+      specResolver: host.specResolver,
+      deviceForEntity: (entityId) => {
+        const deviceId = deviceOwningEntityId(host.devices, host.deviceFacets, entityId);
+        return host.devices.find((device) => device.id === deviceId);
+      },
     });
-    const mapped = MiotCommandMapper.map(command, spec);
-    if (sourceRevision !== host.sourceRevision) throw new Error("Connection source changed");
-    const client = new MiCloudClient(session, host.transport);
-    if (mapped.kind === "setProps") {
-      await client.setProps(mapped.writes);
-      if (readBackPower) {
-        const power = mapped.writes.find((write) => typeof write.value === "boolean");
-        if (power) {
-          let read: Map<string, unknown>;
-          try {
-            read = await client.getProps([power]);
-          } catch (error) {
-            if (sourceRevision === host.sourceRevision) markCloudValuesStale(host);
-            throw error;
-          }
-          const value = read.get(propKeyString(power));
-          const isOn = readMiotPower(value);
-          if (isOn === null) {
-            // The write may have landed; the old row is no longer a trusted reading.
-            if (sourceRevision === host.sourceRevision) markCloudValuesStale(host);
-            throw new Error(t("未能读回设备状态"));
-          }
-          return isOn;
-        }
-      }
-    } else {
-      await client.action(mapped.call);
-    }
-    return null;
   }
 
 export function markCloudValuesStale(host: MenuMijiaWindowsApp): void {
