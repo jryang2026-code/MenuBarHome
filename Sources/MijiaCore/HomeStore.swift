@@ -536,13 +536,32 @@ public final class HomeStore {
     public internal(set) var sourceStatuses: [HomeBackend: ConnectionStatus] = [:]
     /// Explicit per-card source choices, keyed by canonical card id (#111).
     public internal(set) var pinnedDeviceSources: [String: HomeBackend] = [:] {
-        didSet { DeviceSourcePinStorage.save(pinnedDeviceSources, defaults: userDefaults) }
+        didSet {
+            pinnedDeviceSourcesBox.set(pinnedDeviceSources)
+            DeviceSourcePinStorage.save(pinnedDeviceSources, defaults: userDefaults)
+        }
     }
+    @ObservationIgnored let pinnedDeviceSourcesBox: DeviceSourcePinBox
     /// Sources that contributed the latest merged snapshot.
     public internal(set) var connectedBackends: Set<HomeBackend> = []
 
     public func deviceBackend(for deviceId: String) -> HomeBackend {
         deviceBackends[deviceId] ?? homeBackend
+    }
+
+    /// Header shown in the card context menu for dual-source cards; explains temporary fallback when
+    /// the user's pinned source is offline and the other source is serving the card instead.
+    public func currentSourceMenuTitle(for deviceId: String) -> String {
+        let active = deviceBackend(for: deviceId)
+        if let pinned = pinnedSource(for: deviceId), pinned != active {
+            return L10n.format(
+                "当前来源：%@（%@离线，临时兜底）",
+                "Current source: %@ (%@ offline, fallback)",
+                active.shortTitle,
+                pinned.shortTitle
+            )
+        }
+        return L10n.format("当前来源：%@", "Current source: %@", active.shortTitle)
     }
 
     /// A card is pinnable only when both sources supplied the same physical device.
@@ -765,7 +784,9 @@ public final class HomeStore {
         let ud = defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.userDefaults = ud
         self.credentialVault = credentialVault
-        self.pinnedDeviceSources = DeviceSourcePinStorage.load(defaults: ud)
+        let initialPins = DeviceSourcePinStorage.load(defaults: ud)
+        self.pinnedDeviceSourcesBox = DeviceSourcePinBox(initialPins)
+        self.pinnedDeviceSources = initialPins
         let isTestEnvironment = (provider != nil || dualSource != nil || defaultsSuiteName != nil)
         self.isTestEnvironment = isTestEnvironment
         self.updater = updater ?? AppUpdater()
@@ -907,7 +928,8 @@ public final class HomeStore {
             initialProvider = Self.makeComposite(
                 homeAssistant: dualSource.homeAssistant,
                 xiaomiCloud: dualSource.xiaomiCloud,
-                defaults: ud
+                defaults: ud,
+                pinBox: pinnedDeviceSourcesBox
             )
         } else {
             initialProvider = DemoHomeProvider()

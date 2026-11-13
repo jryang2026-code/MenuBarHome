@@ -589,13 +589,14 @@ extension HomeStore {
         let mi: (any HomeProvider)? = (hasMiSource || (!hasHASource && homeBackend == .xiaomiCloud))
             ? makeMiAccountsProvider()
             : nil
-        return Self.makeComposite(homeAssistant: ha, xiaomiCloud: mi, defaults: userDefaults)
+        return Self.makeComposite(homeAssistant: ha, xiaomiCloud: mi, defaults: userDefaults, pinBox: pinnedDeviceSourcesBox)
     }
 
     static func makeComposite(
         homeAssistant: (any HomeProvider)?,
         xiaomiCloud: (any HomeProvider)?,
-        defaults: UserDefaults
+        defaults: UserDefaults,
+        pinBox: DeviceSourcePinBox? = nil
     ) -> DualSourceHomeProvider {
         let box = UncheckedUserDefaults(defaults)
         let stored = defaults.dictionary(forKey: ViewPreferenceKeys.canonicalDeviceIds) as? [String: String] ?? [:]
@@ -604,10 +605,17 @@ extension HomeStore {
             xiaomiCloud: xiaomiCloud,
             initialCanonicalIDs: stored,
             knownPreferenceIDs: {
-                DevicePreferenceIndex.referencedIDs(defaults: box.defaults)
+                var ids = DevicePreferenceIndex.referencedIDs(defaults: box.defaults)
+                if let pinBox {
+                    ids.formUnion(pinBox.get().keys)
+                }
+                return ids
             },
             pinnedBackends: {
-                DeviceSourcePinStorage.load(defaults: box.defaults)
+                if let pinBox {
+                    return pinBox.get()
+                }
+                return DeviceSourcePinStorage.load(defaults: box.defaults)
             },
             persistCanonicalIDs: { assignments in
                 box.defaults.set(assignments, forKey: ViewPreferenceKeys.canonicalDeviceIds)
@@ -823,9 +831,20 @@ extension HomeStore {
         }
         hasHASource = false
         pendingHAAddressSuggestion = nil
+        haPlaintextPrompt = nil
         guard homeBackend != .demo,
               (provider is DualSourceHomeProvider || provider is HAWebSocketProvider) else { return true }
         invalidateUndoContext()
+        if hasMiSource {
+            homeBackend = .xiaomiCloud
+        } else {
+            devices = []
+            deviceFacets = [:]
+            rooms = []
+            environmentReadings = []
+            scenes = []
+            selectRoom(nil)
+        }
         rebuildLiveProvider()
         return true
     }

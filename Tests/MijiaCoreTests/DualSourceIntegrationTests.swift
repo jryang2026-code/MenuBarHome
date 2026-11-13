@@ -580,4 +580,129 @@ struct DualSourceIntegrationTests {
             "HA connecting · Xiaomi Cloud offline"
         ))
     }
+
+    @MainActor
+    @Test("Source pin propagates in memory even when UserDefaults loses the persisted value")
+    func pinPropagatesViaInMemoryBoxWhenDefaultsDropWrite() async throws {
+        let suite = "test.dual.pinbox.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let haDevice = light(
+            id: haID,
+            name: "客厅吸顶灯",
+            roomID: "ha-living",
+            roomName: "客厅",
+            entityId: "light.living_ceiling"
+        )
+        let miDevice = light(
+            id: did,
+            name: "吸顶灯",
+            roomID: "mi-living",
+            roomName: "客厅",
+            entityId: "miot:\(did):2"
+        )
+        let haHome = home(
+            [haDevice],
+            identities: [
+                haID: DeviceSourceIdentity(dids: [did], model: "yeelink.light.ceiling22", name: "客厅吸顶灯", roomName: "客厅", kindTag: .light)
+            ]
+        )
+        let miHome = home(
+            [miDevice],
+            identities: [
+                did: DeviceSourceIdentity(dids: [did], model: "yeelink.light.ceiling22", name: "吸顶灯", roomName: "客厅", kindTag: .light)
+            ]
+        )
+
+        let haMock = MockHomeProvider(snapshot: haHome)
+        let miMock = MockHomeProvider(snapshot: miHome)
+        let store = HomeStore(
+            dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
+            defaultsSuiteName: suite
+        )
+
+        await waitUntil {
+            store.connectedBackends == Set([.homeAssistant, .xiaomiCloud]) && store.devices.count == 1
+        }
+        let cardID = try #require(store.devices.first?.id)
+        #expect(store.deviceBackend(for: cardID) == .homeAssistant)
+
+        // Simulate UserDefaults dropping the write (e.g. cfprefsd FD exhaustion); remove the key
+        // directly from defaults, then re-pin `.xiaomiCloud`.
+        store.pinDeviceSource(cardID, to: .xiaomiCloud)
+        defaults.removeObject(forKey: ViewPreferenceKeys.pinnedDeviceSources)
+        (store.provider as? any DualSourceRecomputing)?.requestRecompute()
+
+        await waitUntil {
+            store.deviceBackend(for: cardID) == .xiaomiCloud
+        }
+        #expect(store.pinnedSource(for: cardID) == .xiaomiCloud)
+        #expect(store.deviceBackend(for: cardID) == .xiaomiCloud)
+        #expect(store.currentSourceMenuTitle(for: cardID) == L10n.format("当前来源：%@", "Current source: %@", HomeBackend.xiaomiCloud.shortTitle))
+
+        // When pinned source goes offline while HA is online, menu title surfaces the fallback.
+        let offlineMi = light(id: did, name: "吸顶灯", roomID: "mi-living", roomName: "客厅", entityId: "miot:\(did):2", online: false)
+        await miMock.updateSnapshot(home([offlineMi], identities: miHome.deviceIdentities))
+        await waitUntil {
+            store.deviceBackend(for: cardID) == .homeAssistant
+        }
+        #expect(store.currentSourceMenuTitle(for: cardID) == L10n.format(
+            "当前来源：%@（%@离线，临时兜底）",
+            "Current source: %@ (%@ offline, fallback)",
+            HomeBackend.homeAssistant.shortTitle,
+            HomeBackend.xiaomiCloud.shortTitle
+        ))
+    }
+
+    @MainActor
+    @Test("disconnectHomeAssistant drops HA, switches live backend to Xiaomi Cloud, or clears when Mi is absent")
+    func disconnectHomeAssistantTransitionsCleanly() async throws {
+        let suite = "test.dual.disconnect_ha.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let session = MiSession(
+            userId: "42", cUserId: "c", ssecurity: "s", serviceToken: "token",
+            expiresAt: Date().addingTimeInterval(86_400)
+        )
+        #expect(MiSessionStore.save(session, defaults: defaults))
+        #expect(KeychainHelper.saveToken("ha-token", defaults: defaults))
+
+        let storeWithMi = HomeStore(
+            dualSource: (homeAssistant: MockHomeProvider(), xiaomiCloud: MockHomeProvider()),
+            defaultsSuiteName: suite
+        )
+        defer { storeWithMi.logoutMiAccount() }
+        storeWithMi.hasHASource = true
+        #expect(storeWithMi.hasHASource)
+        #expect(storeWithMi.hasMiSource)
+        storeWithMi.haPlaintextPrompt = .asking("http://example.invalid:8123")
+
+        #expect(storeWithMi.disconnectHomeAssistant())
+        #expect(!storeWithMi.hasHASource)
+        #expect(storeWithMi.haPlaintextPrompt == nil)
+        #expect(storeWithMi.homeBackend == .xiaomiCloud)
+        #expect(KeychainHelper.loadToken(defaults: defaults).isEmpty)
+
+        // When no Mi account exists, disconnecting HA clears the stale HA devices/scenes.
+        let suiteNoMi = "test.dual.disconnect_ha_only.\(UUID().uuidString)"
+        let defaultsNoMi = try #require(UserDefaults(suiteName: suiteNoMi))
+        defer { defaultsNoMi.removePersistentDomain(forName: suiteNoMi) }
+        #expect(KeychainHelper.saveToken("ha-token", defaults: defaultsNoMi))
+        let haMock = MockHomeProvider(snapshot: home([
+            light(id: haID, name: "客厅灯", roomID: "ha-living", roomName: "客厅", entityId: "light.living")
+        ], identities: [:]))
+        let miMock = MockHomeProvider()
+        let haOnlyStore = HomeStore(
+            dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
+            defaultsSuiteName: suiteNoMi
+        )
+        defer { haOnlyStore.switchBackend(.demo) }
+        await waitUntil { !haOnlyStore.devices.isEmpty }
+        haOnlyStore.hasHASource = true
+        #expect(haOnlyStore.disconnectHomeAssistant())
+        #expect(haOnlyStore.devices.isEmpty)
+        #expect(haOnlyStore.rooms.isEmpty)
+    }
 }
