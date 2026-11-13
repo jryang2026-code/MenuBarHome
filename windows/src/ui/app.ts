@@ -117,6 +117,26 @@ export function undoDeviceCount(steps: readonly { readonly deviceId: string }[])
   return new Set(steps.map((step) => step.deviceId)).size;
 }
 
+function visibleTopSheet(root: ParentNode): HTMLElement | undefined {
+  return Array.from(root.querySelectorAll<HTMLElement>(".cc-sheet"))
+    .filter((sheet) => sheet.closest<HTMLElement>(".cc-sheet-backdrop")?.style.display !== "none")
+    .at(-1);
+}
+
+function activeSheetKey(root: ParentNode): string | null {
+  const topSheet = visibleTopSheet(root);
+  if (!topSheet) return null;
+  if (topSheet.classList.contains("cc-camera-live-sheet")) return "camera";
+  if (topSheet.classList.contains("cc-settings-sheet")) return "settings";
+  return "onboarding";
+}
+
+function activeMenuKey(root: ParentNode): string | null {
+  const menu = root.querySelector<HTMLElement>(".cc-menu");
+  if (!menu) return null;
+  return menu.classList.contains("cc-home-menu") ? "home" : "context";
+}
+
 export type HaConnectionBlock = "plaintext" | "auth" | "stale" | "none";
 
 function endpointOrigin(raw: string): string | null {
@@ -1076,11 +1096,9 @@ export class MenuMijiaWindowsApp {
             selectionEnd: keepsFocusedDraft ? focusedInput?.selectionEnd ?? null : null,
           }
         : null;
-    const hasMountedPopover = this.root.querySelector(":scope > .cc-popover") !== null;
-    if (hasMountedPopover) {
-      this.root.classList.remove("is-opening");
-    }
-    const hadSubpage = this.root.querySelector(".cc-tile.is-subpage") !== null;
+    const prevSubpageId = this.root.querySelector<HTMLElement>(".cc-tile.is-subpage")?.dataset.tileId ?? null;
+    const prevSheetKey = activeSheetKey(this.root);
+    const prevMenuKey = activeMenuKey(this.root);
     const tiles = Array.from(this.root.querySelectorAll<HTMLElement>("[data-tile-id]"));
     const before = new Map<string, DOMRect>();
     for (const el of tiles) {
@@ -1141,27 +1159,51 @@ export class MenuMijiaWindowsApp {
     }
 
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const hasSubpage = this.root.querySelector(".cc-tile.is-subpage") !== null;
-    if (!reduce && hadSubpage && !hasSubpage) {
-      this.root.querySelector<HTMLElement>(".cc-scroll-area")?.animate(
-        [{ opacity: 0, transform: "translateX(-14px)" }, { opacity: 1, transform: "translateX(0)" }],
-        { duration: 220, easing: "cubic-bezier(0, 0, 0, 1)" },
-      );
-    } else if (!reduce && !hadSubpage && !hasSubpage && before.size > 0) {
-      this.root.querySelectorAll<HTMLElement>("[data-tile-id]").forEach((el) => {
-        const id = el.dataset.tileId as string;
-        const old = before.get(id);
-        if (!old || id === this.draggingId) return;
-        const now = el.getBoundingClientRect();
-        if (now.width === 0 || now.height === 0) return;
-        const dx = old.left - now.left;
-        const dy = old.top - now.top;
-        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
-        el.animate(
-          [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }],
+    const nextSubpageEl = this.root.querySelector<HTMLElement>(".cc-tile.is-subpage");
+    const nextSubpageId = nextSubpageEl?.dataset.tileId ?? null;
+    const nextSheet = visibleTopSheet(this.root);
+    const nextSheetKey = activeSheetKey(this.root);
+    const nextMenu = this.root.querySelector<HTMLElement>(".cc-menu");
+    const nextMenuKey = activeMenuKey(this.root);
+    if (!reduce) {
+      if (nextSheet && nextSheetKey !== null && nextSheetKey !== prevSheetKey) {
+        nextSheet.animate?.(
+          [{ transform: "translateY(10px)" }, { transform: "translateY(0)" }],
+          { duration: 180, easing: "cubic-bezier(0, 0, 0, 1)" },
+        );
+      }
+      if (nextMenu && nextMenuKey !== null && nextMenuKey !== prevMenuKey) {
+        nextMenu.animate?.(
+          [{ transform: "translateY(-4px)" }, { transform: "translateY(0)" }],
+          { duration: 120, easing: "cubic-bezier(0, 0, 0, 1)" },
+        );
+      }
+      if (nextSubpageEl && nextSubpageId !== null && nextSubpageId !== prevSubpageId) {
+        nextSubpageEl.animate?.(
+          [{ opacity: 0.75, transform: "translateX(16px)" }, { opacity: 1, transform: "translateX(0)" }],
           { duration: 240, easing: "cubic-bezier(0, 0, 0, 1)" },
         );
-      });
+      } else if (prevSubpageId !== null && nextSubpageId === null) {
+        this.root.querySelector<HTMLElement>(".cc-scroll-area")?.animate?.(
+          [{ opacity: 0.75, transform: "translateX(-12px)" }, { opacity: 1, transform: "translateX(0)" }],
+          { duration: 200, easing: "cubic-bezier(0, 0, 0, 1)" },
+        );
+      } else if (prevSubpageId === null && nextSubpageId === null && before.size > 0) {
+        this.root.querySelectorAll<HTMLElement>("[data-tile-id]").forEach((el) => {
+          const id = el.dataset.tileId as string;
+          const old = before.get(id);
+          if (!old || id === this.draggingId) return;
+          const now = el.getBoundingClientRect();
+          if (now.width === 0 || now.height === 0) return;
+          const dx = old.left - now.left;
+          const dy = old.top - now.top;
+          if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+          el.animate?.(
+            [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }],
+            { duration: 240, easing: "cubic-bezier(0, 0, 0, 1)" },
+          );
+        });
+      }
     }
     this.applyDragOffset();
     this.animateEntrance = false;
@@ -1497,11 +1539,13 @@ export class MenuMijiaWindowsApp {
       }
     };
 
+    let hasExplicitPresent = false;
+
     const playPresent = (edge?: unknown): void => {
       clearDismissTimer();
       clearOpenTimer();
       this.root.dataset.flyoutEdge = normalizeEdge(edge ?? this.root.dataset.flyoutEdge);
-      this.root.classList.remove("is-closing");
+      this.root.classList.remove("is-parked", "is-closing");
       this.applyPanelHeight();
       this.syncPanelPlacement();
       scrollActiveRoomIntoView();
@@ -1520,6 +1564,10 @@ export class MenuMijiaWindowsApp {
     const finishDismiss = (seq: number): void => {
       if (activeDismissSeq !== seq) return;
       clearDismissTimer();
+      this.root.classList.remove("is-closing");
+      if (window.__TAURI_INTERNALS__?.invoke) {
+        this.root.classList.add("is-parked");
+      }
       invokeTauriVoid("finish_hide_panel", { seq });
     };
 
@@ -1527,7 +1575,7 @@ export class MenuMijiaWindowsApp {
       clearOpenTimer();
       clearDismissTimer();
       this.root.dataset.flyoutEdge = normalizeEdge(edge ?? this.root.dataset.flyoutEdge);
-      this.root.classList.remove("is-opening");
+      this.root.classList.remove("is-parked", "is-opening");
       activeDismissSeq = seq;
       if (prefersReducedMotion()) {
         this.root.classList.remove("is-closing");
@@ -1544,6 +1592,7 @@ export class MenuMijiaWindowsApp {
 
     const onPanelPresent = (event: Event) => {
       if (!this.root.isConnected) return;
+      hasExplicitPresent = true;
       const detail = (event as CustomEvent<{ edge?: unknown } | undefined>).detail;
       playPresent(detail?.edge);
     };
@@ -1553,11 +1602,19 @@ export class MenuMijiaWindowsApp {
       const seq = typeof detail?.seq === "number" ? detail.seq : 0;
       playDismiss(seq, detail?.edge);
     };
+    const onInteractiveClick = () => {
+      if (this.root.classList.contains("is-opening")) {
+        clearOpenTimer();
+        this.root.classList.remove("is-opening");
+      }
+    };
     ownerWin.addEventListener("menumijia:panel-present", onPanelPresent);
     ownerWin.addEventListener("menumijia:panel-dismiss", onPanelDismiss);
+    this.root.addEventListener("click", onInteractiveClick, true);
     this.appDisposers.push(
       () => ownerWin.removeEventListener("menumijia:panel-present", onPanelPresent),
       () => ownerWin.removeEventListener("menumijia:panel-dismiss", onPanelDismiss),
+      () => this.root.removeEventListener("click", onInteractiveClick, true),
       () => clearOpenTimer(),
       () => clearDismissTimer(),
     );
@@ -1587,6 +1644,20 @@ export class MenuMijiaWindowsApp {
 
     this.root.dataset.flyoutEdge = "bottom";
     playPresent("bottom");
+    const invoke = window.__TAURI_INTERNALS__?.invoke;
+    if (invoke) {
+      // Park the WebView2 swapchain at opacity 0 while the cold-launched HWND is hidden so the
+      // first ShowWindow never flashes a resting frame before menumijia:panel-present arrives.
+      void invoke<boolean>("panel_is_visible")
+        .then((visible) => {
+          if (visible === false && !hasExplicitPresent && activeDismissSeq === null && this.root.isConnected) {
+            clearOpenTimer();
+            this.root.classList.remove("is-opening");
+            this.root.classList.add("is-parked");
+          }
+        })
+        .catch(() => undefined);
+    }
   }
 
   /**

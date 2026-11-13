@@ -1,21 +1,33 @@
 use super::*;
 use crate::placement::*;
 
-pub(crate) static LAST_FOCUS_LOSS_MS: AtomicU64 = AtomicU64::new(0);
+const FOCUS_LOSS_TRAY_GRACE_MS: u64 = 280;
+
 pub(crate) static PIN_POPOVER: AtomicBool = AtomicBool::new(false);
 /// Whether the window manager granted the panel a native backdrop (§1.4 of the control center spec).
 static PANEL_BACKDROP_ACRYLIC: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrayToggleAction {
+    Present,
+    Hide,
+    Noop,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PanelVisibilityState {
     pub(crate) seq: u64,
     pub(crate) closing: bool,
+    pub(crate) focus_loss_ms: Option<u64>,
+    pub(crate) dismissed_by_tray_press: bool,
 }
 
 impl PanelVisibilityState {
     pub(crate) fn begin_present(&mut self) -> u64 {
         self.seq = self.seq.wrapping_add(1);
         self.closing = false;
+        self.focus_loss_ms = None;
+        self.dismissed_by_tray_press = false;
         self.seq
     }
 
@@ -42,6 +54,33 @@ impl PanelVisibilityState {
 
     pub(crate) fn abort_hide(&mut self) {
         self.closing = false;
+    }
+
+    pub(crate) fn note_focus_loss(&mut self, now_ms: u64) {
+        self.focus_loss_ms = Some(now_ms);
+    }
+
+    pub(crate) fn note_tray_press_down(&mut self, is_open: bool, now_ms: u64) {
+        let recent_focus_loss = self
+            .focus_loss_ms
+            .take()
+            .is_some_and(|ms| now_ms.saturating_sub(ms) < FOCUS_LOSS_TRAY_GRACE_MS);
+        self.dismissed_by_tray_press = is_open || recent_focus_loss;
+    }
+
+    pub(crate) fn decide_tray_release(&mut self, is_open: bool, now_ms: u64) -> TrayToggleAction {
+        let was_dismiss_press = std::mem::replace(&mut self.dismissed_by_tray_press, false);
+        let recent_focus_loss = self
+            .focus_loss_ms
+            .take()
+            .is_some_and(|ms| now_ms.saturating_sub(ms) < FOCUS_LOSS_TRAY_GRACE_MS);
+        if is_open {
+            TrayToggleAction::Hide
+        } else if was_dismiss_press || recent_focus_loss {
+            TrayToggleAction::Noop
+        } else {
+            TrayToggleAction::Present
+        }
     }
 }
 
@@ -91,6 +130,41 @@ pub(crate) fn panel_backdrop() -> &'static str {
     } else {
         "none"
     }
+}
+
+/// Reports whether the flyout is currently open so cold-launched WebView2 can park its swapchain
+/// at opacity 0 before the very first Win32 `ShowWindow`.
+#[tauri::command]
+pub(crate) fn panel_is_visible(app: AppHandle) -> bool {
+    let visible = app
+        .get_webview_window("main")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    let closing = PANEL_VISIBILITY
+        .lock()
+        .map(|state| state.closing)
+        .unwrap_or(false);
+    visible && !closing
+}
+
+pub(crate) fn note_panel_focus_loss() {
+    if let Ok(mut state) = PANEL_VISIBILITY.lock() {
+        state.note_focus_loss(now_epoch_ms());
+    }
+}
+
+pub(crate) fn handle_tray_mouse_down(app: &AppHandle) {
+    let app_clone = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let is_visible = app_clone
+            .get_webview_window("main")
+            .and_then(|window| window.is_visible().ok())
+            .unwrap_or(false);
+        if let Ok(mut state) = PANEL_VISIBILITY.lock() {
+            let is_open = is_visible && !state.closing;
+            state.note_tray_press_down(is_open, now_epoch_ms());
+        }
+    });
 }
 
 fn complete_hide_panel_on_main_thread(app: &AppHandle, seq: u64) {
@@ -553,21 +627,24 @@ pub(crate) fn toggle_main_window(app: &AppHandle, anchor: Option<PhysicalPositio
             return;
         };
         let is_visible = window.is_visible().unwrap_or(false);
-        let is_closing = PANEL_VISIBILITY
-            .lock()
-            .map(|state| state.closing)
-            .unwrap_or(false);
-        if is_visible && !is_closing {
-            request_hide_panel_on_main_thread(&app_clone);
-        } else {
+        let action = if let Ok(mut state) = PANEL_VISIBILITY.lock() {
+            let is_open = is_visible && !state.closing;
             if from_tray_click {
-                let elapsed =
-                    now_epoch_ms().saturating_sub(LAST_FOCUS_LOSS_MS.load(Ordering::SeqCst));
-                if elapsed < 280 {
-                    return;
-                }
+                state.decide_tray_release(is_open, now_epoch_ms())
+            } else if is_open {
+                TrayToggleAction::Hide
+            } else {
+                TrayToggleAction::Present
             }
-            present_panel_on_main_thread(&app_clone, anchor);
+        } else if is_visible {
+            TrayToggleAction::Hide
+        } else {
+            TrayToggleAction::Present
+        };
+        match action {
+            TrayToggleAction::Hide => request_hide_panel_on_main_thread(&app_clone),
+            TrayToggleAction::Present => present_panel_on_main_thread(&app_clone, anchor),
+            TrayToggleAction::Noop => {}
         }
     });
 }

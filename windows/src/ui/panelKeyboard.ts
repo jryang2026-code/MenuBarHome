@@ -36,9 +36,15 @@ export function syncPanelSelection(host: MenuMijiaWindowsApp): void {
     if (selected) card.setAttribute("aria-current", "true");
     else card.removeAttribute("aria-current");
   });
+  const hasQuery = Boolean(normalizeSearch(host.panelSearch.query));
+  if (hasQuery && host.panelSearch.selectedDeviceId) {
+    host.root.dataset.keyboardNav = "true";
+  } else if (!host.panelSearch.selectedDeviceId) {
+    delete host.root.dataset.keyboardNav;
+  }
   const input = host.root.querySelector<HTMLInputElement>("#command-input");
   const selected = selectedTile(host);
-  if (selected && normalizeSearch(host.panelSearch.query)) input?.setAttribute("aria-activedescendant", selected.id);
+  if (selected && hasQuery) input?.setAttribute("aria-activedescendant", selected.id);
   else input?.removeAttribute("aria-activedescendant");
 }
 
@@ -71,6 +77,7 @@ export function bindPanelInput(host: MenuMijiaWindowsApp): void {
   tiles(host).forEach((tile) => tile.addEventListener("pointerdown", () => {
     host.panelSearch.selectedDeviceId = tile.dataset.tileId ?? null;
     host.panelSearch.explicitSelection = true;
+    delete host.root.dataset.keyboardNav;
     syncPanelSelection(host);
   }));
 }
@@ -184,6 +191,7 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
       : Math.max(0, Math.min(cards.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)));
     host.panelSearch.selectedDeviceId = cards[next]?.dataset.tileId ?? null;
     host.panelSearch.explicitSelection = true;
+    host.root.dataset.keyboardNav = "true";
     event.preventDefault(); syncPanelSelection(host);
     selectedTile(host)?.scrollIntoView?.({ block: "nearest" });
     return true;

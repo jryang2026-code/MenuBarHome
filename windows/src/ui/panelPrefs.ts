@@ -41,9 +41,9 @@ export function applyPanelOpacity(root: HTMLElement, percent: number): void {
 export type PanelHeight = "compact" | "standard" | "tall" | "max";
 
 export const PANEL_HEIGHTS: ReadonlyArray<{ readonly id: PanelHeight; readonly title: string; readonly px: number }> = [
-  { id: "compact", get title() { return t("紧凑"); }, px: 520 },
-  { id: "standard", get title() { return t("标准"); }, px: 620 },
-  { id: "tall", get title() { return t("加高"); }, px: 740 },
+  { id: "compact", get title() { return t("紧凑"); }, px: 580 },
+  { id: "standard", get title() { return t("标准"); }, px: 680 },
+  { id: "tall", get title() { return t("加高"); }, px: 780 },
   { id: "max", get title() { return t("最大"); }, px: 0 },
 ];
 

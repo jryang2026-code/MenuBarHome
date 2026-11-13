@@ -228,7 +228,13 @@ body {
 
 .win-island--top {
   flex: 0 0 auto;
-  max-height: 44%;
+  max-height: min(224px, 36%);
+}
+
+@media (max-height: 600px) {
+  .win-island--top {
+    max-height: 33%;
+  }
 }
 
 .win-island--bottom {
@@ -1329,6 +1335,9 @@ details.win-notif-card > :not(summary) {
 
 /* Win+A In-Place Sub-Flyout Navigation (keeps all [data-tile-id] mounted in DOM) */
 .cc-scroll-area:has(.cc-tile.is-subpage) .cc-group-header,
+.win-island--bottom:has(.cc-tile.is-subpage) .cc-quick-strip,
+.win-island--bottom:has(.cc-tile.is-subpage) .cc-room-bar,
+.win-island--bottom:has(.cc-tile.is-subpage) [data-kind-strip],
 .win-island--bottom:has(.cc-tile.is-subpage) .win-slider-deck,
 .cc-scroll-area:has(.cc-tile.is-subpage) .cc-tile:not(.is-subpage),
 .cc-scroll-area:has(.cc-tile.is-subpage) .cc-group:not(:has(.cc-tile.is-subpage)) {
@@ -1352,10 +1361,6 @@ details.win-notif-card > :not(summary) {
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .cc-tile.is-subpage {
-    animation: win-subpage-in 250ms var(--ease-decelerate) both;
-  }
-
   .cc-empty-icon.is-pulsing {
     animation: cc-empty-pulse 1.6s ease-in-out infinite;
   }
@@ -2568,13 +2573,42 @@ button.cc-footer-label.is-action {
 .cc-camera-stage {
   position: relative;
   overflow: hidden;
+  min-height: 188px;
   border-radius: var(--r-card);
   background: #0d0d0d;
+  color: rgba(255, 255, 255, 0.92);
   border: 1px solid var(--win-card-stroke);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+}
+
+.cc-camera-stage.is-sleeping {
+  padding: 24px 18px;
+  gap: 8px;
+  text-align: center;
+}
+
+.cc-camera-stage.is-sleeping > p,
+.cc-camera-stage.is-error > p {
+  font-size: 12px;
+  line-height: 18px;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.cc-camera-stage > .cc-btn-secondary,
+.cc-camera-stage > div > .cc-btn-secondary {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .cc-camera-stage > .cc-btn-secondary:hover,
+  .cc-camera-stage > div > .cc-btn-secondary:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
 }
 
 .cc-camera-stage > img,
@@ -2642,11 +2676,16 @@ button.cc-footer-label.is-action {
   padding: 10px;
   border-radius: var(--r-card);
   background: var(--win-card-bg);
+  color: var(--text-primary);
   border: 1px solid var(--win-card-stroke);
   display: flex;
   flex-direction: column;
   gap: 6px;
   text-align: left;
+}
+
+.cc-popover.scheme-light .cc-camera-ip-box {
+  background: rgba(255, 255, 255, 0.94);
 }
 
 .cc-camera-ip-row {
@@ -3232,8 +3271,12 @@ input[type="checkbox"]:checked::after {
   background: rgba(var(--win-island-rgb), var(--panel-alpha));
 }
 
-.cc-tile.is-keyboard-selected:not(.is-capsule),
-.cc-tile.is-capsule.is-keyboard-selected .win-split-pill {
+#app[data-keyboard-nav="true"] .cc-tile.is-keyboard-selected:not(.is-capsule) {
+  outline: 2px solid var(--win-accent);
+  outline-offset: -2px;
+}
+
+#app[data-keyboard-nav="true"] .cc-tile.is-capsule.is-keyboard-selected .win-split-pill {
   outline: 2px solid var(--win-accent);
   outline-offset: 2px;
 }
@@ -3386,22 +3429,20 @@ input[type="checkbox"]:checked::after {
   }
 }
 
+#app.is-parked > .cc-popover {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  animation: none !important;
+}
+
 @media (prefers-reduced-motion: no-preference) {
-  #app.is-opening > .cc-popover {
+  #app:not(.is-parked).is-opening > .cc-popover {
     animation: win-flyout-enter 220ms var(--ease-decelerate) both;
   }
 
-  #app.is-closing > .cc-popover {
+  #app:not(.is-parked).is-closing > .cc-popover {
     animation: win-flyout-exit 160ms var(--ease-accelerate) forwards;
     pointer-events: none;
-  }
-
-  .cc-sheet {
-    animation: win-sheet-in 180ms var(--ease-decelerate) both;
-  }
-
-  .cc-menu {
-    animation: win-fade 120ms var(--ease-decelerate) both;
   }
 
   .cc-popover.is-editing .cc-tile:not(.is-dragging):not(.is-resizing) {
