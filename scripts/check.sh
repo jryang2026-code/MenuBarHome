@@ -212,6 +212,7 @@ if [ -n "$PYTHON_BIN" ]; then
     node windows/scripts/test-file.mjs --self-test
     "$PYTHON_BIN" scripts/test_check_capability_matrix.py
     "$PYTHON_BIN" scripts/test_mijia_cli.py
+    "$PYTHON_BIN" scripts/test_local_macos_runner.py
     "$PYTHON_BIN" scripts/check_capability_matrix.py
     "$PYTHON_BIN" scripts/go2rtc-ptz/check_model_tables.py
     # Swift 与 Windows 测试都断言合成结果等于这份基线，所以这里直接读基线出报告（#295）。
