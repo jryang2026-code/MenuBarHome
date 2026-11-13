@@ -28,18 +28,26 @@ evaluate_swift_test_log() {
         return 1
     fi
 
-    # Read only the LAST Swift Testing summary line, and reject any trailing test failure recorded
-    # after it (e.g. a second test target that recorded an issue and deadlocked before summarizing).
-    local last_summary trailing_failure
-    last_summary="$(grep -E 'Test run with [0-9]+ tests? in [0-9]+ suites?' "$log_file" | tail -n 1 || true)"
-    trailing_failure="$(awk '
-        /Test run with [0-9]+ tests? in [0-9]+ suites?/ { after_summary = 0; next }
-        /✘ Test |recorded an issue/ { after_summary = 1 }
-        END { print (after_summary ? "1" : "0") }
+    # Every Swift Testing target summary must pass, no test issue may be recorded in any target,
+    # and no subsequent target (`Test run started.`) may hang before printing its own summary.
+    local summary_verdict
+    summary_verdict="$(awk '
+        /(^|◇ )Test run started\./ { pending_target = 1; next }
+        /Test run with [0-9]+ tests? in [0-9]+ suites?/ {
+            summaries++
+            pending_target = 0
+            if ($0 !~ /Test run with [0-9]+ tests? in [0-9]+ suites? passed/) {
+                failed = 1
+            }
+            next
+        }
+        /✘ Test |recorded an issue/ { failed = 1 }
+        END {
+            print (summaries > 0 && !failed && !pending_target) ? "pass" : "fail"
+        }
     ' "$log_file")"
 
-    if [ "$trailing_failure" = "0" ] \
-        && printf '%s\n' "$last_summary" | grep -qE 'Test run with [0-9]+ tests? in [0-9]+ suites? passed'; then
+    if [ "$summary_verdict" = "pass" ]; then
         if [ "$run_stalled" -eq 1 ] || [ "$run_exit" -ne 0 ]; then
             echo "::warning::the suite passed but swift test did not exit cleanly (exit ${run_exit}, stalled=${run_stalled}); accepting the passing summary"
         fi
@@ -78,6 +86,16 @@ run_self_test() {
     assert_verdict "前一套件通过、后一套件失败必须拒绝" 1 1 0 \
         "✔ Test run with 10 tests in 2 suites passed after 0.2 seconds." \
         "✘ Test run with 4 tests in 1 suite failed after 0.3 seconds."
+    assert_verdict "前一套件失败、后一套件通过必须拒绝" 1 1 0 \
+        "✘ Test run with 10 tests in 2 suites failed after 0.2 seconds." \
+        "✔ Test run with 4 tests in 1 suite passed after 0.3 seconds."
+    assert_verdict "前一套件报错无汇总、后一套件通过必须拒绝" 1 1 0 \
+        "✘ Test brokenCase() recorded an issue at BarTests.swift:12:5: Expectation failed" \
+        "✔ Test run with 4 tests in 1 suite passed after 0.3 seconds."
+    assert_verdict "前一套件通过、后一套件启动后静默死锁无汇总必须拒绝" 1 143 1 \
+        "◇ Test run started." \
+        "✔ Test run with 10 tests in 2 suites passed after 0.2 seconds." \
+        "◇ Test run started."
     assert_verdict "前一套件通过、后一进程信号崩溃必须拒绝" 1 1 0 \
         "✔ Test run with 10 tests in 2 suites passed after 0.2 seconds." \
         "error: Exited with unexpected signal code 5"
