@@ -276,11 +276,24 @@ EOF
 chmod +x "$py_stub/python3" "$py_stub/python3.15"
 bash_bin="$(command -v bash)"
 chosen="$(PATH="$py_stub" "$bash_bin" -c "$(sed -n '/^select_python_bin()/,/^}/p' scripts/check.sh); select_python_bin")"
+rm -f "$py_stub/python3.15"
+none_chosen="$(PATH="$py_stub" "$bash_bin" -c "$(sed -n '/^select_python_bin()/,/^}/p' scripts/check.sh); select_python_bin || true")"
 rm -rf "$py_stub"
 if [ "$chosen" = "python3.15" ]; then
     pass "select_python_bin 跳过低于 3.10 的 python3 并优先选高版本"
 else
     fail "select_python_bin 未选 python3.15，实际：$chosen"
+fi
+if [ -z "$none_chosen" ]; then
+    pass "select_python_bin 在仅有不可用 python3 桩时返回空串"
+else
+    fail "select_python_bin 不应退回不可用的 python3，实际：$none_chosen"
+fi
+if grep -qF 'record_gate_result "PythonLint=skip"' scripts/check.sh \
+    && grep -qF 'summary "PythonLint=skip"' scripts/check.sh; then
+    pass "check.sh 缺少 Python 3.10+ 时显式登记 PythonLint=skip"
+else
+    fail "check.sh 缺少 Python 3.10+ 时未显式登记 PythonLint=skip"
 fi
 
 if [ "$failures" -ne 0 ]; then

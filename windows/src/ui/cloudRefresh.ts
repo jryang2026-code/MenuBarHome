@@ -1,7 +1,7 @@
 import { markTimerSnapshotReady } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
-import { MiCloudClient, MiCloudError, MiotSynthesizer, type MiDeviceRecord, type MiRoom, type MiSession, type MiotPropKey } from "../core/miCloudClient.js";
+import { MiCloudClient, MiCloudError, MiotSynthesizer, normalizeMiCloudRegion, type MiDeviceRecord, type MiRoom, type MiSession, type MiotPropKey } from "../core/miCloudClient.js";
 import { HomeAssistantClient, homeAssistantIdentity } from "../core/homeAssistant.js";
 import { applyOrder, homeOptions, pageSections, scopedKey, spans, withAliases } from "./panelPrefs.js";
 import { filterByListCut, foldGroupedLights, kindChips, memberGroupOwners, showsKindRow } from "./listCut.js";
@@ -129,16 +129,28 @@ function appendMissingRoomDids(rooms: MiRoom[], records: readonly MiDeviceRecord
     });
   }
 
+const lastGoodXiaomiRoomsByHost = new WeakMap<
+  MenuMijiaWindowsApp,
+  {
+    readonly sourceRevision: number;
+    readonly userId: string;
+    readonly region: string;
+    readonly rooms: readonly MiRoom[];
+  }
+>();
+
 export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false): Promise<void> {
     if (!isHostAttachedToActiveWindow(host)) return;
     if (host.settings.connectionMode === "homeAssistant") return refreshHADevices(host, silent);
     if (!host.settings.miSession || host.settings.connectionMode !== "xiaomiCloud" || host.isSyncingCloud) return;
     const session = host.settings.miSession;
+    const normalizedRegion = normalizeMiCloudRegion(session.region);
     const previousPresentation = cloudPresentationFingerprint(host);
     const previousStructure = cloudPanelStructureFingerprint(host);
     const staleBefore = host.cloudValuesStale;
     const expiredBefore = host.miSessionExpired;
     const stateRevisionAtStart = host.localControlRevision;
+    const selectedHomeAtStart = host.settings.selectedHomeId;
     const syncGen = ++host.syncGeneration;
     let presentationChanged = false;
     host.isSyncingCloud = true;
@@ -165,6 +177,25 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       // A shared home's devices live behind its own listing, so an empty list plus a failed room
       // read would otherwise render as a real empty account (#76).
       if (listedDevices.length === 0 && homeRoomsError) throw homeRoomsError;
+      let effectiveRooms: MiRoom[];
+      if (homeRoomsError === null) {
+        effectiveRooms = roomResult.rooms;
+        lastGoodXiaomiRoomsByHost.set(host, {
+          sourceRevision: host.sourceRevision,
+          userId: session.userId,
+          region: normalizedRegion,
+          rooms: roomResult.rooms,
+        });
+      } else {
+        const cached = lastGoodXiaomiRoomsByHost.get(host);
+        effectiveRooms =
+          cached &&
+          cached.sourceRevision === host.sourceRevision &&
+          cached.userId === session.userId &&
+          cached.region === normalizedRegion
+            ? [...cached.rooms]
+            : [];
+      }
       // Shared-home dids resolve first so `home_device_list` only runs for a home still missing
       // devices, which keeps a normal account to the two requests it always made.
       let lookupError: unknown = null;
@@ -175,7 +206,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         host,
         client,
         listedDevices,
-        roomResult.rooms,
+        effectiveRooms,
         !silent,
         recordLookupError,
       );
@@ -183,15 +214,17 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         host,
         client,
         withShared,
-        roomResult.rooms,
+        effectiveRooms,
         recordLookupError,
       );
       const allRooms = completed.rooms;
       const allDevices = completed.devices;
       if (allDevices.length === 0 && lookupError !== null) throw lookupError;
       const nextHomes = homeOptions(allRooms);
-      if (cloudSnapshotIsStale(host, session, stateRevisionAtStart)) return;
-      host.homes = applyOrder(host.homes.map((home) => home.id), nextHomes);
+      if (cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) return;
+      if (homeRoomsError === null || nextHomes.length > 0) {
+        host.homes = applyOrder(host.homes.map((home) => home.id), nextHomes);
+      }
       const { devices: rawDevices, rooms } = filterBySelectedHome(host, allDevices, allRooms);
       const groupDids = rawDevices.map((device) => device.did).filter((did) => did.startsWith("group."));
       const membershipByGroup = groupDids.length > 0
@@ -242,7 +275,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
             : new Map<string, unknown>();
       } catch (error) {
         // A failed property read must not rebuild every device from defaults.
-        if (!cloudSnapshotIsStale(host, session, stateRevisionAtStart)) {
+        if (!cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) {
           host.markCloudValuesStale();
         }
         throw error;
@@ -251,7 +284,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       const home = MiotSynthesizer.synthesize(rawDevices, rooms, specs, values);
       const membersByGroup = await membershipByGroup;
       // An old refresh must not clear or set freshness for the connection that replaced it.
-      if (cloudSnapshotIsStale(host, session, stateRevisionAtStart)) return;
+      if (cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) return;
       host.miSessionExpired = false;
       host.markCloudValuesFresh();
       host.groupOwnerByMemberDid = memberGroupOwners(membersByGroup);
@@ -261,6 +294,12 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
       host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
       host.deviceFacets = merged.deviceFacets;
+      if (
+        host.cameraLive.activeLiveCameraId !== null &&
+        !host.devices.some((device) => device.id === host.cameraLive.activeLiveCameraId)
+      ) {
+        host.cameraLive.closeCameraLiveView();
+      }
       const readingPriorityById = new Map(
         home.devices.map((device) => [device.id, environmentReadingPriority(device.kind)]),
       );
@@ -295,7 +334,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         };
       }
     } catch (err) {
-      if (!cloudSnapshotIsStale(host, session, stateRevisionAtStart)) {
+      if (!cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) {
         host.markCloudValuesStale();
         if (err instanceof MiCloudError && err.kind === "sessionExpired") {
           host.miSessionExpired = true;
@@ -355,6 +394,12 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
       host.deviceFacets = merged.deviceFacets;
       host.scenes = home.scenes;
+      if (
+        host.cameraLive.activeLiveCameraId !== null &&
+        !host.devices.some((device) => device.id === host.cameraLive.activeLiveCameraId)
+      ) {
+        host.cameraLive.closeCameraLiveView();
+      }
       markTimerSnapshotReady(host);
       const readingPriorityById = new Map(
         host.devices.map((device) => [device.id, environmentReadingPriority(device.kind)]),
@@ -407,12 +452,20 @@ export function cloudPresentationFingerprint(host: MenuMijiaWindowsApp): string 
     });
   }
 
-export function cloudSnapshotIsStale(host: MenuMijiaWindowsApp, session: MiSession, revision: number): boolean {
+export function cloudSnapshotIsStale(
+  host: MenuMijiaWindowsApp,
+  session: MiSession,
+  revision: number,
+  syncGen?: number,
+  selectedHomeId?: string | null,
+): boolean {
     return (
       !isHostAttachedToActiveWindow(host) ||
       host.settings.connectionMode !== "xiaomiCloud" ||
       host.settings.miSession !== session ||
-      host.localControlRevision !== revision
+      host.localControlRevision !== revision ||
+      (syncGen !== undefined && host.syncGeneration !== syncGen) ||
+      (selectedHomeId !== undefined && host.settings.selectedHomeId !== selectedHomeId)
     );
   }
 

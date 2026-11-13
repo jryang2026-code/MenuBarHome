@@ -120,6 +120,7 @@ extension MenuBarPanelController {
         // #146 §5.2：点面板外、⌘Tab、打开设置、Esc 阶梯都会走到这里，排序会话不能比面板活得久。
         // 必须在这里提交草稿，而不是依赖视图的 `onDisappear`——拖动中 `DragGesture.onEnded` 不保证执行。
         LayoutUIState.shared.commitRoomOrderIfNeeded()
+        LayoutUIState.shared.dismissActivePrompt()
         if hostedPanelTheme == .classic {
             grokBallSidecar?.hide()
         } else {
@@ -358,5 +359,51 @@ extension MenuBarPanelController {
         let top = (anchorTop > bottom + 320 && anchorTop <= visible.maxY + 1 ? anchorTop : visible.maxY) - topGap
         let height = max(min(size.height, top - bottom), 320)
         return NSRect(x: x.rounded(), y: (top - height).rounded(), width: width, height: height.rounded())
+    }
+
+    static func makeBackdropWindow(frame: NSRect) -> NSPanel {
+        let w = NSPanel(
+            contentRect: frame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        w.isFloatingPanel = true
+        w.level = .statusBar
+        w.hidesOnDeactivate = false
+        w.isReleasedWhenClosed = false
+        w.becomesKeyOnlyIfNeeded = true
+        w.isOpaque = false
+        w.backgroundColor = .clear
+        w.hasShadow = false
+        w.ignoresMouseEvents = true
+        w.animationBehavior = .none
+        w.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient, .ignoresCycle]
+        let hosting = NSHostingView(rootView: ControlCenterReadabilityBackdrop())
+        hosting.frame = NSRect(origin: .zero, size: frame.size)
+        hosting.autoresizingMask = [.width, .height]
+        w.contentView = hosting
+        return w
+    }
+}
+
+/// Borderless panels are not key windows by default; the control center needs key status for arrow
+/// keys, Esc, ⌘, and its text fields, as the `MenuBarExtra` window had.
+final class MenuBarPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+/// A soft, panel-local shadow maintains text readability over light and dark wallpaper.
+private struct ControlCenterReadabilityBackdrop: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: DesignTokens.Radius.panel + 6, style: .continuous)
+            .fill(Color.black.opacity(colorScheme == .dark ? 0.38 : 0.30))
+            .padding(MenuBarPanelController.backdropBleed)
+            .blur(radius: 32)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }

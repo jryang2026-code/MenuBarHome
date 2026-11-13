@@ -70,9 +70,21 @@ struct PanelKeyRouterTests {
         #expect(route(Key(code: kVK_ANSI_Slash, characters: "/"), ordering) == .presentAssistant(voice: false))
     }
 
-    @Test("Device-layout mode leaves Return to the Done button")
+    @Test("Device-layout mode leaves Return to the Done button, Esc exits editing, and device shortcuts are swallowed")
     func deviceLayoutReturn() {
-        #expect(route(Key(code: kVK_Return), Context(editMode: .deviceLayout)) == .passThrough)
+        let layout = Context(editMode: .deviceLayout, hasFocusedDevice: true)
+        #expect(route(Key(code: kVK_Return), layout) == .passThrough)
+        #expect(route(Key(code: kVK_ANSI_KeypadEnter), layout) == .passThrough)
+        #expect(route(Key(code: kVK_Escape), layout) == .endDeviceLayoutEditing)
+        #expect(route(Key(code: kVK_Space, characters: " "), layout) == .consume)
+        #expect(route(Key(code: kVK_UpArrow), layout) == .consume)
+        #expect(route(Key(code: kVK_DownArrow), layout) == .consume)
+        #expect(route(Key(code: kVK_LeftArrow), layout) == .consume)
+        #expect(route(Key(code: kVK_RightArrow), layout) == .consume)
+        #expect(route(Key(code: kVK_Tab), layout) == .consume)
+        #expect(route(Key(code: kVK_ANSI_1, characters: "1"), layout) == .consume)
+        #expect(route(Key(code: kVK_ANSI_9, characters: "9"), layout) == .consume)
+        #expect(route(Key(code: kVK_ANSI_Slash, characters: "/"), layout) == .presentAssistant(voice: false))
     }
 
     @Test("Plain / and v open the assistant; with ⌘ they do not")

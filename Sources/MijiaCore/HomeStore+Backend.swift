@@ -318,7 +318,9 @@ extension HomeStore {
                     clearOptimisticRevisions(for: incoming.id)
                     coverCommandOrigins.removeValue(forKey: incoming.id)
                     lastCoverPositions.removeValue(forKey: incoming.id)
+                    manualWriteSessions.removeValue(forKey: incoming.id)
                     optimisticLockRevision[incoming.id, default: 0] &+= 1
+                    cancelDebouncedWrites(for: incoming.id, recomputeRow: false)
                     let prefix = "\(incoming.id)."
                     for key in debounceTasks.keys where key == incoming.id || key.hasPrefix(prefix) {
                         debounceTasks.removeValue(forKey: key)?.cancel()
@@ -350,16 +352,19 @@ extension HomeStore {
                     // the lock expired (#298).
                     optimisticFieldLocks.removeValue(forKey: .field(incoming.id, .coverPosition))
                     coverCommandOrigins.removeValue(forKey: incoming.id)
+                    manualWriteSessions.removeValue(forKey: incoming.id)
                     lockedFields.remove(.coverPosition)
                 }
                 if !lockedFields.contains(.coverPosition) {
                     coverCommandOrigins.removeValue(forKey: incoming.id)
                 }
-                if !lockedFields.isEmpty, let local = existingById[incoming.id] {
-                    merged.append(incoming.mergingOptimisticFields(from: local, lockedFields: lockedFields))
-                } else {
-                    merged.append(incoming)
-                }
+                merged.append(
+                    reconcileManualWriteSessionWithSnapshot(
+                        incoming,
+                        local: existingById[incoming.id],
+                        lockedFields: lockedFields
+                    )
+                )
             }
             if let lgDev = latestLGDevice, lgConfig.isEnabled,
                !merged.contains(where: { $0.id == lgDev.id }) {
@@ -418,10 +423,9 @@ extension HomeStore {
             offlineHistory.record(devices: devices, now: sampleNow)
 
             if enableSafetyAlerts {
+                // `evaluateSafetyAlerts` records into the activity stack whether or not the app
+                // installed a notification handler, so the panel still shows every fired alert.
                 let alerts = evaluateSafetyAlerts(now: Date())
-                // The activity stack keeps its own record whether or not the app installed a
-                // notification handler: the panel still has to show the alert.
-                recordSafetyAlerts(alerts)
                 if let handler = onSafetyAlert {
                     for alert in alerts {
                         handler(alert)
@@ -732,16 +736,19 @@ extension HomeStore {
                     .isEmpty
             }
             rebuildLiveProvider()
-            // Leaving demo mode resumes the LAN TV link that demo stopped; `start()` no-ops when the
-            // config is disabled or has no host. A launch in demo mode never created the client, so
-            // create it now instead of leaving a configured TV missing until relaunch.
-            if previousBackend == .demo {
-                if let lgClient = lgWebOSClient {
-                    Task { await lgClient.start() }
-                } else {
-                    startLGWebOSIfNeeded()
-                }
-            }
+            resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: previousBackend == .demo)
+        }
+    }
+
+    /// Leaving demo mode resumes the LAN TV link that demo stopped; `start()` no-ops when the
+    /// config is disabled or has no host. A launch in demo mode never created the client, so
+    /// create it now instead of leaving a configured TV missing until relaunch.
+    private func resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: Bool) {
+        guard wasDemo, homeBackend != .demo else { return }
+        if let lgClient = lgWebOSClient {
+            Task { await lgClient.start() }
+        } else {
+            startLGWebOSIfNeeded()
         }
     }
 
@@ -772,6 +779,7 @@ extension HomeStore {
         let superseded = miLoginStartBackend.map { $0 != homeBackend } ?? false
         miLoginStartBackend = nil
         if superseded { return }
+        let wasDemo = homeBackend == .demo
         invalidateUndoContext()
         self.hasHASource = !loadHAToken()
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -779,6 +787,7 @@ extension HomeStore {
         self.homeBackend = .xiaomiCloud
         self.completeOnboarding()
         rebuildLiveProvider()
+        resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: wasDemo)
         showToast(L10n.tr("已登录米家账号 (\(session.maskedUserId))", "Signed in to Xiaomi Home (\(session.maskedUserId))"))
     }
 
@@ -929,6 +938,7 @@ extension HomeStore {
             )
             return
         }
+        let wasDemo = homeBackend == .demo
         invalidateUndoContext()
         let normalized = HAWebSocketProvider.normalizeBaseURL(serverURL)
         if normalized != HAWebSocketProvider.normalizeBaseURL(serverURLString) {
@@ -942,6 +952,7 @@ extension HomeStore {
             self.completeOnboarding()
         }
         rebuildLiveProvider()
+        resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: wasDemo)
         showToast(L10n.tr("已保存并重新连接 Home Assistant", "Saved and reconnecting to Home Assistant"))
     }
 

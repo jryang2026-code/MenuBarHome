@@ -41,6 +41,9 @@ struct SafetyMonitor {
         calendar: Calendar = .current
     ) -> [SafetyAlert] {
         var emitted: [SafetyAlert] = []
+        let presentIds = Set(devices.map(\.id))
+        activeSinceByDeviceId = activeSinceByDeviceId.filter { presentIds.contains($0.key) }
+        longRunAlertedForSession.formIntersection(presentIds)
 
         for dev in devices {
             // 1. Starred device offline transition check

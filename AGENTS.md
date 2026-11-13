@@ -10,6 +10,7 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
   - 命名领域概念对齐 `GLOSSARY.md`；改动架构边界核对 `docs/adr/`（冲突须显式指出，见 `docs/agents/domain.md`）。
   - 审阅 diff（`/code-review`）或回溯规范（`/retro`）：查 `CODING_STANDARDS.md`（日常读写源码由 `.claude/rules/*.md` 与 `.agents/hooks.json` 按路径自动注入）。排查门禁跳步、快照差异、`hdiutil attach` 锁竞争或改 `scripts/` 时读 `docs/agents/gates.md`。
   - Windows 摄像机实时流排障、go2rtc/FFmpeg 内置或 Tauri 安装包构建：读 `docs/agents/windows-camera.md`。
+  - 应用内更新链路、Ed25519 清单验签、失败恢复分类或替换脚本（`Update*.swift` / `scripts/release.sh`）：读 `docs/agents/in-app-update.md`。
   - 在 Cursor Cloud 或 Linux 容器工作：读 `docs/agents/cursor-cloud.md`。维护 `.cursor/skills/` 副本时读 `.cursor/skills/README.md`。
 
 ## 验证完成判据与环境边界

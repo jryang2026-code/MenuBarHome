@@ -367,17 +367,12 @@ public actor MiotSpecStore: MiotSpecSource {
         if let indexTask { return try await indexTask.value.0 }
         let task = Task { try await self.loadTypeIndex() }
         indexTask = task
-        do {
-            let (index, isFresh) = try await task.value
-            if isFresh {
-                typeByModel = index
-            }
-            indexTask = nil
-            return index
-        } catch {
-            indexTask = nil
-            throw error
+        defer { indexTask = nil }
+        let (index, isFresh) = try await task.value
+        if isFresh {
+            typeByModel = index
         }
+        return index
     }
 
     private func loadTypeIndex() async throws -> ([String: String], Bool) {

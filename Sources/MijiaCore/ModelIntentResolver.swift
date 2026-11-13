@@ -634,7 +634,7 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
         devices: [SmartDevice],
         scenes: [HomeScene]
     ) -> [AssistantSuggestion] {
-        var scored: [(pct: Int, suggestion: AssistantSuggestion)] = []
+        var scored: [(pct: Int, key: String, suggestion: AssistantSuggestion)] = []
         for (idx, item) in items.enumerated() {
             guard let alias = item["device"] as? String,
                   let opName = item["op"] as? String,
@@ -648,26 +648,37 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
                 scenes: scenes
             )
             guard let primary = sanitized.first,
-                  let title = UserHabitMemory.suggestionTitle(for: primary, devices: devices, scenes: scenes) else {
+                  let baseTitle = UserHabitMemory.suggestionTitle(for: primary, devices: devices, scenes: scenes) else {
                 continue
             }
+            let targetCount = Set(sanitized.map(\.targetId)).count
+            let title = targetCount > 1
+                ? baseTitle + L10n.tr(" 等 \(targetCount) 台", " +\(targetCount - 1)")
+                : baseTitle
             let rawConf = number(from: item["confidence"]) ?? 80
             // The model's number is untrusted: clamp before converting, `Int(_:)` traps on NaN or a
             // value beyond Int range.
             let scaledConf = rawConf <= 1.0 ? rawConf * 100 : rawConf
             let pct = scaledConf.isFinite ? Int(max(18, min(99, scaledConf)).rounded()) : 80
+            let dedupKey = sanitized
+                .map { "\($0.targetId)|\(UserHabitMemory.encodeOperation($0.operation) ?? "\($0.operation)")" }
+                .sorted()
+                .joined(separator: ",")
             scored.append((
                 pct,
+                dedupKey,
                 AssistantSuggestion(
                     id: "chat:\(primary.targetId):\(idx)",
                     title: title,
                     confidencePercent: pct,
-                    intents: [primary]
+                    intents: sanitized
                 )
             ))
         }
+        var seenKeys: Set<String> = []
         return scored
             .sorted { $0.pct > $1.pct }
+            .filter { seenKeys.insert($0.key).inserted }
             .prefix(3)
             .map(\.suggestion)
     }
@@ -747,7 +758,7 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
                 )
                 if let first = ops.first,
                    let title = UserHabitMemory.suggestionTitle(for: first, devices: devices, scenes: scenes) {
-                    let pct: Int? = runnerUpProb > 0 ? max(20, min(99, Int((runnerUpProb * 100).rounded()))) : nil
+                    let pct = clampedProbabilityPercent(runnerUpProb, floor: 20)
                     runnerUps.append((
                         runnerUpProb,
                         AssistantSuggestion(
@@ -837,7 +848,7 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
             } else {
                 title = firstTitle
             }
-            let pct = max(18, min(99, Int((chosenProb * 100).rounded())))
+            let pct = clampedProbabilityPercent(chosenProb, floor: 18) ?? 65
             scored.append((
                 chosenProb,
                 AssistantSuggestion(
@@ -1014,7 +1025,7 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
         case let b as Bool: return b
         case let n as NSNumber: return n.intValue != 0
         case let s as String:
-            switch s.lowercased() {
+            switch s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
             case "true", "on", "1", "开": return true
             case "false", "off", "0", "关": return false
             default: return nil
@@ -1040,6 +1051,14 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
         if rounded >= Double(Int.max) { return Int.max }
         if rounded <= Double(Int.min) { return Int.min }
         return Int(rounded)
+    }
+
+    private static func clampedProbabilityPercent(_ prob: Double, floor: Int) -> Int? {
+        guard prob.isFinite, prob > 0 else { return nil }
+        let scaled = (prob * 100).rounded()
+        guard scaled.isFinite else { return 99 }
+        let bounded = max(Double(floor), min(99, scaled))
+        return Int(bounded)
     }
 
     /// Extracts the first balanced `{...}` JSON object, tolerating `<think>...</think>` blocks,

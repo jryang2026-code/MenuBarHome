@@ -241,8 +241,9 @@ describe("Tauri backgroundThrottling configuration", () => {
         windows?: Array<Record<string, unknown>>;
       };
     };
+    const cliEntry = fileURLToPath(import.meta.resolve("@tauri-apps/cli"));
     const schema = JSON.parse(
-      readFileSync(resolve(WINDOWS_DIR, "node_modules/@tauri-apps/cli/config.schema.json"), "utf8"),
+      readFileSync(resolve(dirname(cliEntry), "config.schema.json"), "utf8"),
     ) as {
       definitions: {
         WindowConfig: {

@@ -134,7 +134,7 @@ struct HeaderlessStackMenu {
 }
 
 private struct HeaderlessStackMenuKey: EnvironmentKey {
-    nonisolated(unsafe) static let defaultValue: HeaderlessStackMenu? = nil
+    static let defaultValue: HeaderlessStackMenu? = nil
 }
 
 extension EnvironmentValues {
@@ -485,7 +485,7 @@ extension ControlCenterPanel {
            let room = store.rooms.first(where: { $0.id == id }),
            let reading = store.environmentReadings.first(where: { $0.roomName == room.name && $0.temperature != nil }) {
             var climate = reading.temperature.map { L10n.temperature($0, fractionDigits: 1) } ?? ""
-            if let humidity = reading.humidity { climate += " \(Int(humidity.rounded()))%" }
+            if let humidity = reading.humidity.flatMap(DeviceSynthesizer.roundedInt) { climate += " \(humidity)%" }
             parts.append(climate)
         }
         return parts.joined(separator: " · ")

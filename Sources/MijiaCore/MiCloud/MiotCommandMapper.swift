@@ -383,14 +383,52 @@ public enum MiotCommandMapper {
         func coerce(_ value: JSONValue, for p: MiotProperty) -> JSONValue {
             if p.format == "bool" { return .bool(value.miotBool ?? false) }
             guard var n = value.doubleValue else { return value }
-            if let lo = p.rangeMin, let hi = p.rangeMax { n = Swift.min(hi, Swift.max(lo, n)) }
-            if p.isIntegerFormat {
-                n = n.rounded()
-            } else if let step = p.rangeStep, step > 0 {
-                let base = p.rangeMin ?? 0
-                n = base + ((n - base) / step).rounded() * step
+            let bounds: (lo: Double, hi: Double)? = {
+                guard let lo = p.rangeMin, let hi = p.rangeMax,
+                      lo.isFinite, hi.isFinite, lo <= hi else { return nil }
+                return (lo, hi)
+            }()
+            guard n.isFinite else {
+                if let bounds { return .number(bounds.lo) }
+                if let lo = p.rangeMin, lo.isFinite { return .number(lo) }
+                return .number(0)
             }
-            return .number(n)
+            if let bounds { n = Swift.min(bounds.hi, Swift.max(bounds.lo, n)) }
+            if p.isIntegerFormat {
+                if let step = p.rangeStep, step.isFinite, step > 1 {
+                    let rawBase = p.rangeMin ?? 0
+                    let base = rawBase.isFinite ? rawBase : 0
+                    let steps = (n - base) / step
+                    if steps.isFinite {
+                        let snapped = base + steps.rounded() * step
+                        if snapped.isFinite {
+                            n = snapped
+                            if let bounds, n > bounds.hi, (n - step).isFinite, n - step >= bounds.lo {
+                                n -= step
+                            }
+                        }
+                    }
+                }
+                n = n.rounded()
+                if let bounds { n = Swift.min(bounds.hi, Swift.max(bounds.lo, n)) }
+            } else if let step = p.rangeStep, step.isFinite, step > 0 {
+                let rawBase = p.rangeMin ?? 0
+                let base = rawBase.isFinite ? rawBase : 0
+                let steps = (n - base) / step
+                if steps.isFinite {
+                    let snapped = base + steps.rounded() * step
+                    if snapped.isFinite {
+                        n = snapped
+                        if let bounds {
+                            if n > bounds.hi, (n - step).isFinite, n - step >= bounds.lo {
+                                n -= step
+                            }
+                            n = Swift.min(bounds.hi, Swift.max(bounds.lo, n))
+                        }
+                    }
+                }
+            }
+            return .number(n.isFinite ? n : (bounds?.lo ?? 0))
         }
     }
 }

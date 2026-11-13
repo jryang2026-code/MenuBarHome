@@ -35,6 +35,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case notificationPermission
     case hiddenDevices
     case setupGuide
+    case automationRules
     case allowURLControl
     case raycast
     case energyHistory
@@ -70,6 +71,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
 
     // 关于
     case aboutVersion
+    case softwareUpdate
     case quitApp
 
     /// The category page that renders this row.
@@ -80,7 +82,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
              .launchAtLogin, .advancedDeviceWrites, .globalHotkey, .safetyAlerts, .sensorAlerts,
              .alertsOnlyWhenAway, .doorbellAutoView, .doorbellChime, .doorbellAutoCloseSeconds,
              .weeklyReport, .notificationPermission, .hiddenDevices, .setupGuide,
-             .allowURLControl, .raycast, .energyHistory:
+             .automationRules, .allowURLControl, .raycast, .energyHistory:
             return .general
         case .demoMode, .haServerAddress, .haToken, .haDiscovery, .miAccount, .lgTV:
             return .connection
@@ -92,7 +94,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
         case .copyDiagnostics, .scanUnsupportedDevices, .privacyNotes, .blockControlWhileLocked,
              .signOut:
             return .privacy
-        case .aboutVersion, .quitApp:
+        case .aboutVersion, .softwareUpdate, .quitApp:
             return .about
         }
     }
@@ -325,6 +327,11 @@ enum SettingsSearch {
             entry(.setupGuide, section: generalSection, zhTitle: "首次设置与新手引导",
                   enTitle: "Setup Guide",
                   synonyms: ["新手引导", "引导", "教程", "onboarding", "guide", "tutorial", "setup"]),
+            entry(.automationRules, section: automationSection,
+                  zhTitle: "Mac 状态自动化规则", enTitle: "Mac State Automation Rules",
+                  synonyms: ["自动化", "规则", "合盖", "休眠", "唤醒", "外接显示器", "专注模式", "日历",
+                             "电量阈值", "wifi", "automation", "rule", "trigger", "lid", "sleep",
+                             "wake", "focus", "calendar"]),
             entry(.allowURLControl, section: automationSection,
                   zhTitle: "允许 URL 直控（跳过确认）", enTitle: "Allow URL Control Without Confirmation",
                   synonyms: ["url", "直控", "链接", "menumijia", "deeplink", "confirmation"]),
@@ -404,6 +411,10 @@ enum SettingsSearch {
                   enTitle: "Version & Updates",
                   synonyms: ["版本", "更新", "升级", "新版本", "version", "update", "upgrade",
                              "release", "changelog"]),
+            entry(.softwareUpdate, section: aboutSection, zhTitle: "自动检查更新与安装包升级",
+                  enTitle: "Check for Updates Automatically",
+                  synonyms: ["检查更新", "自动更新", "软件更新", "下载安装", "check for updates",
+                             "auto update", "software update", "download"]),
             entry(.quitApp, section: aboutSection, zhTitle: "退出应用", enTitle: "Quit the App",
                   synonyms: ["退出", "关闭应用", "quit", "exit", "terminate"])
         ]

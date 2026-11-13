@@ -28,7 +28,7 @@ extension HomeStore {
     public func evaluateSafetyAlerts(now: Date = Date()) -> [SafetyAlert] {
         guard enableSafetyAlerts else { return [] }
         let enabled = Dictionary(uniqueKeysWithValues: SensorAlertKind.allCases.map { ($0, isSensorAlertEnabled($0)) })
-        return safetyMonitor.evaluate(
+        let alerts = safetyMonitor.evaluate(
             devices: devices,
             favorites: favoriteDeviceIds,
             sensorPolicy: SensorAlertPolicy(
@@ -38,6 +38,10 @@ extension HomeStore {
             ),
             now: now
         )
+        // Every evaluation advances `SafetyMonitor` session state (`longRunAlertedForSession`,
+        // cooldowns), so both snapshot evaluation and the periodic 60 s timer record here.
+        recordSafetyAlerts(alerts, now: now)
+        return alerts
     }
 
     /// Shown when a notification's target no longer belongs to the home on screen.

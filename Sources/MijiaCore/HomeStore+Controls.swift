@@ -252,6 +252,7 @@ extension HomeStore {
             self.discardCoverOrigin(coverOrigin, deviceId: device.id, revision: lockRevision)
             return nil
         }
+        self.clearManualWriteSession(for: device.id, bumpRevision: coverOrigin == nil)
 
         // A cover is write-only: the motor reports its position only after it moves, so the
         // commanded row and travel origin are shown and locked before the send. A snapshot that
@@ -422,16 +423,24 @@ extension HomeStore {
         guard let previous = controllableDevice(deviceId),
               case .light(var s) = previous.kind,
               s.brightnessWritable else { return }
+        let isOn = percent > 0
         var updated = previous
-        s.isOn = percent > 0
+        s.isOn = isOn
         s.brightnessPercent = percent
         updated.kind = .light(s)
-        if s.isOn { recordManualLightUse(deviceId) }
+        if isOn { recordManualLightUse(deviceId) }
         commitManualWrite(
             from: previous, to: updated,
             command: .setLightBrightness(entityId: s.entityId, percent: percent),
             lock: .seconds(2.5), debounceKey: "\(deviceId).brightness",
-            habitIntents: [.init(targetId: deviceId, operation: .brightness(percent))]
+            powersOffDevice: !isOn,
+            habitIntents: [.init(targetId: deviceId, operation: .brightness(percent))],
+            mutate: { device in
+                guard case .light(var spec) = device.kind else { return }
+                spec.isOn = isOn
+                spec.brightnessPercent = percent
+                device.kind = .light(spec)
+            }
         )
     }
 
@@ -449,12 +458,22 @@ extension HomeStore {
             from: previous, to: updated,
             command: .setLightColorTemp(entityId: s.entityId, kelvin: kelvin),
             lock: .seconds(2.5), debounceKey: "\(deviceId).colortemp",
-            habitIntents: [.init(targetId: deviceId, operation: .colorTemperature(kelvin))]
+            habitIntents: [.init(targetId: deviceId, operation: .colorTemperature(kelvin))],
+            mutate: { device in
+                guard case .light(var spec) = device.kind else { return }
+                spec.isOn = true
+                spec.colorTempKelvin = kelvin
+                spec.currentEffect = nil
+                device.kind = .light(spec)
+            }
         )
     }
 
     public func setLightEffect(_ deviceId: String, effect: String) {
-        guard let previous = controllableDevice(deviceId), case .light(var s) = previous.kind else { return }
+        guard let check = controllableDevice(deviceId), case .light = check.kind else { return }
+        cancelDebouncedWrites(for: deviceId, keys: ["\(deviceId).colortemp"])
+        guard let previous = devices.first(where: { $0.id == deviceId }),
+              case .light(var s) = previous.kind else { return }
         var updated = previous
         s.isOn = true
         s.currentEffect = effect
@@ -464,7 +483,13 @@ extension HomeStore {
             from: previous, to: updated,
             command: .setLightEffect(entityId: s.entityId, effect: effect),
             lock: .seconds(2.2),
-            habitIntents: [.init(targetId: deviceId, operation: .lightEffect(effect))]
+            habitIntents: [.init(targetId: deviceId, operation: .lightEffect(effect))],
+            mutate: { device in
+                guard case .light(var spec) = device.kind else { return }
+                spec.isOn = true
+                spec.currentEffect = effect
+                device.kind = .light(spec)
+            }
         )
     }
 
@@ -481,22 +506,35 @@ extension HomeStore {
             from: previous, to: updated,
             command: .setClimateTemperature(entityId: s.entityId, temperature: nextTemp),
             lock: .seconds(2.5), debounceKey: "\(deviceId).temp",
-            habitIntents: [.init(targetId: deviceId, operation: .targetTemperature(nextTemp))]
+            habitIntents: [.init(targetId: deviceId, operation: .targetTemperature(nextTemp))],
+            mutate: { device in
+                guard case .climate(var spec) = device.kind else { return }
+                spec.targetTemperature = nextTemp
+                device.kind = .climate(spec)
+            }
         )
     }
 
     public func setClimateMode(_ deviceId: String, mode: String) {
         guard let previous = controllableDevice(deviceId), case .climate(var s) = previous.kind else { return }
         guard allowManualControl(.hvacMode(mode), for: previous) else { return }
+        let isOn = (mode != "off")
         var updated = previous
         s.hvacMode = mode
-        s.isOn = (mode != "off")
+        s.isOn = isOn
         updated.kind = .climate(s)
         commitManualWrite(
             from: previous, to: updated,
             command: .setClimateMode(entityId: s.entityId, hvacMode: mode),
             lock: .seconds(2.2),
-            habitIntents: [.init(targetId: deviceId, operation: .hvacMode(mode))]
+            powersOffDevice: !isOn,
+            habitIntents: [.init(targetId: deviceId, operation: .hvacMode(mode))],
+            mutate: { device in
+                guard case .climate(var spec) = device.kind else { return }
+                spec.hvacMode = mode
+                spec.isOn = isOn
+                device.kind = .climate(spec)
+            }
         )
     }
 
@@ -516,7 +554,12 @@ extension HomeStore {
         commitManualWrite(
             from: previous, to: updated,
             command: .setSelectOption(entityId: s.modeEntityId, option: mode),
-            lock: .seconds(2.2)
+            lock: .seconds(2.2),
+            mutate: { device in
+                guard case .appliance(var spec) = device.kind else { return }
+                spec.currentMode = mode
+                device.kind = .appliance(spec)
+            }
         )
     }
 
@@ -540,7 +583,12 @@ extension HomeStore {
         commitManualWrite(
             from: previous, to: updated,
             command: .setClimateTemperature(entityId: s.temperatureEntityId, temperature: nextTemp),
-            lock: .seconds(2.5), debounceKey: "\(deviceId).appliance-temp"
+            lock: .seconds(2.5), debounceKey: "\(deviceId).appliance-temp",
+            mutate: { device in
+                guard case .appliance(var spec) = device.kind else { return }
+                spec.targetTemperature = nextTemp
+                device.kind = .appliance(spec)
+            }
         )
     }
 
@@ -554,7 +602,13 @@ extension HomeStore {
         commitManualWrite(
             from: previous, to: updated,
             command: .setSwitch(entityId: light.entityId, isOn: isOn),
-            lock: .seconds(2)
+            lock: .seconds(2),
+            mutate: { device in
+                guard case .appliance(var spec) = device.kind, var lightSpec = spec.light else { return }
+                lightSpec.isOn = isOn
+                spec.light = lightSpec
+                device.kind = .appliance(spec)
+            }
         )
     }
 
@@ -569,7 +623,13 @@ extension HomeStore {
         commitManualWrite(
             from: previous, to: updated,
             command: .setClimateFanMode(entityId: fan.entityId, fanMode: level),
-            lock: .seconds(2.2)
+            lock: .seconds(2.2),
+            mutate: { device in
+                guard case .appliance(var spec) = device.kind, var fanSpec = spec.fanLevel else { return }
+                fanSpec.current = level
+                spec.fanLevel = fanSpec
+                device.kind = .appliance(spec)
+            }
         )
     }
 
@@ -592,7 +652,12 @@ extension HomeStore {
         commitManualWrite(
             from: previous, to: updated,
             command: .setSelectOption(entityId: s.entityId, option: mode),
-            lock: .seconds(2.2)
+            lock: .seconds(2.2),
+            mutate: { device in
+                guard case .humidifier(var spec) = device.kind else { return }
+                spec.currentMode = mode
+                device.kind = .humidifier(spec)
+            }
         )
     }
 
@@ -607,7 +672,12 @@ extension HomeStore {
         commitManualWrite(
             from: previous, to: updated,
             command: .setHumidity(entityId: s.entityId, percent: clamped),
-            lock: .seconds(2.5), debounceKey: "\(deviceId).humidifier-humidity"
+            lock: .seconds(2.5), debounceKey: "\(deviceId).humidifier-humidity",
+            mutate: { device in
+                guard case .humidifier(var spec) = device.kind else { return }
+                spec.targetHumidity = clamped
+                device.kind = .humidifier(spec)
+            }
         )
     }
 
@@ -621,7 +691,12 @@ extension HomeStore {
             from: previous, to: updated,
             command: .setClimateFanMode(entityId: s.entityId, fanMode: fanMode),
             lock: .seconds(2.2),
-            habitIntents: [.init(targetId: deviceId, operation: .fanSpeed(fanMode))]
+            habitIntents: [.init(targetId: deviceId, operation: .fanSpeed(fanMode))],
+            mutate: { device in
+                guard case .climate(var spec) = device.kind else { return }
+                spec.fanMode = fanMode
+                device.kind = .climate(spec)
+            }
         )
     }
 
@@ -634,7 +709,12 @@ extension HomeStore {
         commitManualWrite(
             from: previous, to: updated,
             command: .setClimateSwingMode(entityId: s.entityId, swingMode: swingMode),
-            lock: .seconds(2.2)
+            lock: .seconds(2.2),
+            mutate: { device in
+                guard case .climate(var spec) = device.kind else { return }
+                spec.swingMode = swingMode
+                device.kind = .climate(spec)
+            }
         )
     }
 
@@ -645,7 +725,12 @@ extension HomeStore {
             from: previous, to: change.updated,
             command: change.command,
             lock: .seconds(2.5), debounceKey: "\(deviceId).fanpercent",
-            habitIntents: change.favoritePreset.map { [DeviceIntent(targetId: deviceId, operation: .fanSpeed($0))] } ?? []
+            habitIntents: change.favoritePreset.map { [DeviceIntent(targetId: deviceId, operation: .fanSpeed($0))] } ?? [],
+            mutate: { device in
+                if let next = Self.fanPercentageChange(device, percent: percent)?.updated {
+                    device = next
+                }
+            }
         )
     }
 
@@ -667,7 +752,10 @@ extension HomeStore {
     }
 
     public func setFanPresetMode(_ deviceId: String, preset: String) {
-        guard let previous = controllableDevice(deviceId), case .fan(var s) = previous.kind else { return }
+        guard let check = controllableDevice(deviceId), case .fan = check.kind else { return }
+        cancelDebouncedWrites(for: deviceId, keys: ["\(deviceId).fanpercent"])
+        guard let previous = devices.first(where: { $0.id == deviceId }),
+              case .fan(var s) = previous.kind else { return }
         var updated = previous
         s.isOn = true
         s.presetMode = preset
@@ -676,18 +764,28 @@ extension HomeStore {
             from: previous, to: updated,
             command: .setFanPresetMode(entityId: s.entityId, presetMode: preset),
             lock: .seconds(2.2),
-            habitIntents: [.init(targetId: deviceId, operation: .fanSpeed(preset))]
+            habitIntents: [.init(targetId: deviceId, operation: .fanSpeed(preset))],
+            mutate: { device in
+                guard case .fan(var spec) = device.kind else { return }
+                spec.isOn = true
+                spec.presetMode = preset
+                device.kind = .fan(spec)
+            }
         )
     }
 
     public func setCoverMotor(_ deviceId: String, description: String) {
-        guard let previous = controllableDevice(deviceId), case .cover(var s) = previous.kind else { return }
-        let opening = s.openDescription.map { description.caseInsensitiveCompare($0) == .orderedSame } ?? false
-        let closing = s.closeDescription.map { description.caseInsensitiveCompare($0) == .orderedSame } ?? false
-        let pausing = s.pauseDescription.map { description.caseInsensitiveCompare($0) == .orderedSame } ?? false
+        guard let check = controllableDevice(deviceId), case .cover(let checkSpec) = check.kind else { return }
+        let opening = checkSpec.openDescription.map { description.caseInsensitiveCompare($0) == .orderedSame } ?? false
+        let closing = checkSpec.closeDescription.map { description.caseInsensitiveCompare($0) == .orderedSame } ?? false
+        let pausing = checkSpec.pauseDescription.map { description.caseInsensitiveCompare($0) == .orderedSame } ?? false
         if opening || closing {
-            guard allowManualControl(opening ? .power(true) : .power(false), for: previous) else { return }
+            guard allowManualControl(opening ? .power(true) : .power(false), for: check) else { return }
         }
+        cancelDebouncedWrites(for: deviceId, keys: ["\(deviceId).cover"])
+        guard let previous = devices.first(where: { $0.id == deviceId }),
+              case .cover(var s) = previous.kind else { return }
+        let priorCoverOrigin = coverCommandOrigins[deviceId]
         let origin = activeCoverOrigin(for: deviceId, fallback: s.positionPercent)
         if opening {
             coverCommandOrigins[deviceId] = s.positionPercent
@@ -706,12 +804,23 @@ extension HomeStore {
             s.motion = .stopped
             s.motionIsInferred = false
         }
+        let targetPosition = s.positionPercent
+        let targetMotion = s.motion
+        let targetInferred = s.motionIsInferred
         var updated = previous
         updated.kind = .cover(s)
         commitManualWrite(
             from: previous, to: updated,
             command: .setSelectOption(entityId: s.entityId, option: description),
-            lock: (opening || closing || pausing) ? coverOptimisticLockDuration : nil
+            lock: (opening || closing || pausing) ? coverOptimisticLockDuration : nil,
+            priorCoverOrigin: priorCoverOrigin,
+            mutate: { device in
+                guard case .cover(var spec) = device.kind else { return }
+                spec.positionPercent = targetPosition
+                spec.motion = targetMotion
+                spec.motionIsInferred = targetInferred
+                device.kind = .cover(spec)
+            }
         )
     }
 
@@ -719,10 +828,21 @@ extension HomeStore {
     public func setCoverPosition(_ deviceId: String, percent: Int) {
         guard let previous = controllableDevice(deviceId), case .cover(var s) = previous.kind,
               s.positionWritable else { return }
+        let key = "\(deviceId).cover"
+        let priorCoverOrigin = coverCommandOrigins[deviceId]
         let clamped = max(0, min(100, percent))
         let displayed = CoverSpec.snappedPosition(clamped)
-        let previousPosition = s.positionPercent ?? displayed
+        let baselineCover: CoverSpec? = if case .cover(let baseSpec) = debouncedWrites[key]?.origin.kind {
+            baseSpec
+        } else {
+            nil
+        }
+        let previousPosition = (baselineCover ?? s).positionPercent ?? displayed
         let origin = activeCoverOrigin(for: deviceId, fallback: previousPosition) ?? previousPosition
+        if let baselineCover {
+            s.motion = baselineCover.motion
+            s.motionIsInferred = baselineCover.motionIsInferred
+        }
         s.positionPercent = displayed
         if displayed > previousPosition {
             s.motion = .opening
@@ -731,6 +851,8 @@ extension HomeStore {
             s.motion = .closing
             s.motionIsInferred = false
         }
+        let targetMotion = s.motion
+        let targetInferred = s.motionIsInferred
         var updated = previous
         updated.kind = .cover(s)
         if s.isMoving {
@@ -741,7 +863,16 @@ extension HomeStore {
         commitManualWrite(
             from: previous, to: updated,
             command: .setNumberValue(entityId: s.entityId, value: Double(clamped)),
-            lock: s.isMoving ? coverOptimisticLockDuration : nil, debounceKey: "\(deviceId).cover"
+            lock: s.isMoving ? coverOptimisticLockDuration : nil,
+            debounceKey: key,
+            priorCoverOrigin: priorCoverOrigin,
+            mutate: { device in
+                guard case .cover(var spec) = device.kind else { return }
+                spec.positionPercent = displayed
+                spec.motion = targetMotion
+                spec.motionIsInferred = targetInferred
+                device.kind = .cover(spec)
+            }
         )
     }
 
@@ -996,7 +1127,12 @@ extension HomeStore {
         commitManualWrite(
             from: previous, to: updated,
             command: .setSwitch(entityId: lockEid, isOn: locked),
-            lock: .seconds(2.0)
+            lock: .seconds(2.0),
+            mutate: { device in
+                guard case .plug(var spec) = device.kind else { return }
+                spec.isChildLocked = locked
+                device.kind = .plug(spec)
+            }
         )
     }
 
@@ -1009,7 +1145,12 @@ extension HomeStore {
         commitManualWrite(
             from: previous, to: updated,
             command: .setSelectOption(entityId: modeEid, option: mode),
-            lock: .seconds(2.0)
+            lock: .seconds(2.0),
+            mutate: { device in
+                guard case .fridge(var spec) = device.kind else { return }
+                spec.currentMode = mode
+                device.kind = .fridge(spec)
+            }
         )
     }
 
@@ -1033,7 +1174,16 @@ extension HomeStore {
         commitManualWrite(
             from: previous, to: updated,
             command: .setNumberValue(entityId: entityId, value: next),
-            lock: .seconds(2.5), debounceKey: "\(deviceId).\(isFreezer ? "freezer" : "fridge")"
+            lock: .seconds(2.5), debounceKey: "\(deviceId).\(isFreezer ? "freezer" : "fridge")",
+            mutate: { device in
+                guard case .fridge(var spec) = device.kind else { return }
+                if isFreezer {
+                    spec.freezerTargetTemp = next
+                } else {
+                    spec.fridgeTargetTemp = next
+                }
+                device.kind = .fridge(spec)
+            }
         )
     }
 
@@ -1041,7 +1191,17 @@ extension HomeStore {
         guard let previous = controllableDevice(deviceId), case .vacuum = previous.kind else { return }
         guard allowManualControl(action == .start ? .power(true) : .power(false), for: previous),
               let change = Self.vacuumActionChange(previous, action: action) else { return }
-        commitManualWrite(from: previous, to: change.updated, command: change.command, lock: .seconds(2.5))
+        commitManualWrite(
+            from: previous,
+            to: change.updated,
+            command: change.command,
+            lock: .seconds(2.5),
+            mutate: { device in
+                if let next = Self.vacuumActionChange(device, action: action)?.updated {
+                    device = next
+                }
+            }
+        )
     }
 
     /// The status a vacuum shows while `action` runs. Shared by the card and Raycast.
@@ -1080,48 +1240,81 @@ extension HomeStore {
         commitManualWrite(
             from: previous, to: updated,
             command: .mediaSetVolume(entityId: mediaEid, volumeLevel: Double(clamped) / 100.0),
-            lock: .seconds(2.5), debounceKey: "\(deviceId).volume"
+            lock: .seconds(2.5), debounceKey: "\(deviceId).volume",
+            mutate: { device in
+                switch device.kind {
+                case .speaker(var spec):
+                    spec.volumePercent = clamped
+                    device.kind = .speaker(spec)
+                case .tv(var spec):
+                    spec.volumePercent = clamped
+                    device.kind = .tv(spec)
+                default:
+                    break
+                }
+            }
         )
     }
 
     public func toggleSpeakerMute(_ deviceId: String) {
         guard let previous = controllableDevice(deviceId), case .speaker(var s) = previous.kind,
               let muteEid = s.muteSwitchEntityId else { return }
+        let nextMuted = !s.isMuted
         var updated = previous
-        s.isMuted.toggle()
+        s.isMuted = nextMuted
         updated.kind = .speaker(s)
         commitManualWrite(
             from: previous, to: updated,
-            command: .setSwitch(entityId: muteEid, isOn: s.isMuted),
-            lock: .seconds(2.0)
+            command: .setSwitch(entityId: muteEid, isOn: nextMuted),
+            lock: .seconds(2.0),
+            mutate: { device in
+                guard case .speaker(var spec) = device.kind else { return }
+                spec.isMuted = nextMuted
+                device.kind = .speaker(spec)
+            }
         )
     }
 
     public func toggleTVMute(_ deviceId: String) {
         guard let previous = controllableDevice(deviceId), case .tv(var s) = previous.kind else { return }
+        let nextMuted = !s.isMuted
         var updated = previous
-        s.isMuted.toggle()
+        s.isMuted = nextMuted
         updated.kind = .tv(s)
         let entityId = LGWebOSProtocol.isLGEntity(s.mediaEntityId) ? LGWebOSProtocol.muteEntityId : s.mediaEntityId
         commitManualWrite(
             from: previous, to: updated,
-            command: .setSwitch(entityId: entityId, isOn: s.isMuted),
-            lock: .seconds(2.0)
+            command: .setSwitch(entityId: entityId, isOn: nextMuted),
+            lock: .seconds(2.0),
+            mutate: { device in
+                guard case .tv(var spec) = device.kind else { return }
+                spec.isMuted = nextMuted
+                device.kind = .tv(spec)
+            }
         )
     }
 
     public func toggleTVScreenOff(_ deviceId: String) {
         guard let previous = controllableDevice(deviceId), case .tv(var s) = previous.kind else { return }
+        let nextScreenOff = !s.isScreenOff
         var updated = previous
-        s.isScreenOff.toggle()
-        if !s.isScreenOff && (s.state == "off" || s.state == "standby") {
+        s.isScreenOff = nextScreenOff
+        if !nextScreenOff && (s.state == "off" || s.state == "standby") {
             s.state = "on"
         }
         updated.kind = .tv(s)
         commitManualWrite(
             from: previous, to: updated,
-            command: .setSwitch(entityId: LGWebOSProtocol.screenOffEntityId, isOn: s.isScreenOff),
-            lock: .seconds(2.2)
+            command: .setSwitch(entityId: LGWebOSProtocol.screenOffEntityId, isOn: nextScreenOff),
+            lock: .seconds(2.2),
+            mutate: { device in
+                guard case .tv(var spec) = device.kind else { return }
+                spec.isScreenOff = nextScreenOff
+                if !nextScreenOff && (spec.state == "off" || spec.state == "standby") {
+                    spec.state = "on"
+                }
+                device.kind = .tv(spec)
+            }
         )
     }
 
@@ -1135,7 +1328,14 @@ extension HomeStore {
         commitManualWrite(
             from: previous, to: updated,
             command: .mediaSelectSource(entityId: s.mediaEntityId, source: source),
-            lock: .seconds(2.5)
+            lock: .seconds(2.5),
+            mutate: { device in
+                guard case .tv(var spec) = device.kind else { return }
+                spec.currentSource = source
+                spec.state = "on"
+                spec.isScreenOff = false
+                device.kind = .tv(spec)
+            }
         )
     }
 
@@ -1191,7 +1391,12 @@ extension HomeStore {
         commitManualWrite(
             from: previous, to: updated,
             command: .setSwitch(entityId: motionEid, isOn: enabled),
-            lock: .seconds(2.2)
+            lock: .seconds(2.2),
+            mutate: { device in
+                guard case .camera(var spec) = device.kind else { return }
+                spec.isMotionDetectionOn = enabled
+                device.kind = .camera(spec)
+            }
         )
     }
 
@@ -1204,7 +1409,12 @@ extension HomeStore {
         commitManualWrite(
             from: previous, to: updated,
             command: .setSelectOption(entityId: s.entityId, option: mode),
-            lock: .seconds(2.2)
+            lock: .seconds(2.2),
+            mutate: { device in
+                guard case .camera(var spec) = device.kind else { return }
+                spec.nightShot = mode
+                device.kind = .camera(spec)
+            }
         )
     }
 

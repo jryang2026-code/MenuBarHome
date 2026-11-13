@@ -1,30 +1,20 @@
 import { open, showToast, Toast } from "@raycast/api";
 import { readFile, stat } from "node:fs/promises";
 import { loadSnapshot, resultTimeoutSeconds, snapshotPath, type RaycastFeedback } from "./snapshot";
+import {
+  buildCommandURL,
+  MAX_ASK_LENGTH,
+  MAX_COMMAND_URL_LENGTH,
+  validateAskText,
+  type CommandParams,
+} from "./url-builder";
 
-export type CommandParams = Array<[string, string]>;
+export { buildCommandURL, MAX_ASK_LENGTH, MAX_COMMAND_URL_LENGTH, validateAskText, type CommandParams };
 
 export interface CommandResult {
   requestId: string;
   message: string;
   isError: boolean;
-}
-
-/**
- * `menumijia://<route>?…` with the local bridge token and a request id. `encodeURIComponent` writes
- * spaces as %20; the app reads a literal "+" as part of the text, so never use `URLSearchParams`.
- */
-export function buildCommandURL(
-  route: string,
-  params: CommandParams,
-  token: string,
-  requestId: string,
-): string {
-  const query = [...params, ["id", requestId], ["token", token]] as CommandParams;
-  const encoded = query
-    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
-    .join("&");
-  return `menumijia://${route}?${encoded}`;
 }
 
 export async function runCommand(

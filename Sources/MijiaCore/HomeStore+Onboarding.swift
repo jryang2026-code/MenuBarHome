@@ -99,12 +99,26 @@ extension HomeStore {
         return turnAllOff()
     }
 
+    /// Whether a currently visible activity-stack notice hides the getting-started checklist.
+    /// Dismissing `.haPlaintext(.declined)` removes it from `panelActivities` while leaving it in
+    /// `panelNoticeKinds`, so row visibility and rehearsal eligibility must share this check.
+    public var hasChecklistHidingNotice: Bool {
+        panelActivities.contains { activity in
+            if case .notice(let kind) = activity.kind { return kind.hidesChecklist }
+            return false
+        }
+    }
+
+    /// Whether the getting-started or launch-at-login card is currently shown in the panel.
+    public var showsLessonRow: Bool {
+        showsOnboardingChecklistCard && !hasChecklistHidingNotice
+    }
+
     /// The All Off lesson is on screen and is the next step, so a hold must not change the home.
     /// `showsOnboardingChecklist` and not `showsOnboardingChecklistCard`: the card also appears for
     /// the standalone launch-at-login reminder, and that row is not the lesson.
     var allOffLessonIsActive: Bool {
-        guard showsOnboardingChecklist else { return false }
-        if panelNoticeKinds.contains(where: { $0.hidesChecklist }) { return false }
+        guard showsOnboardingChecklist, !hasChecklistHidingNotice else { return false }
         return onboardingChecklist.nextStep == .allOffAndUndo
     }
 

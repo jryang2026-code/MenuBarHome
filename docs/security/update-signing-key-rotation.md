@@ -67,7 +67,7 @@ and writes a detached base64 signature plus a trailing newline to:
 MenuBarHome-<version>.update.json.ed25519.sig
 ```
 
-The manifest is produced by `scripts/update_manifest.py canonical_bytes`: one-line JSON with the keys in this order and exactly three `files` entries.
+The manifest is produced by `scripts/update_manifest.py canonical_bytes`: one-line JSON with the keys in this order and three `files` entries for a full dual-platform release (or a single `macos` entry for a standalone macOS-only release; `scripts/check_release.sh assets` enforces all three on full GitHub releases). Client staging, failure recovery, and swap-script invariants are documented in [`docs/agents/in-app-update.md`](../agents/in-app-update.md).
 
 | Field | Meaning | Enforced by |
 | --- | --- | --- |

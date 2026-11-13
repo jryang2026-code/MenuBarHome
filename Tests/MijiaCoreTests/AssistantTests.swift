@@ -826,6 +826,87 @@ struct AssistantTests {
         }
     }
 
+    @Test("Chat group suggestions retain all sanitized targets instead of only first (F20)")
+    func chatGroupSuggestionsKeepAllSanitizedTargets() async throws {
+        let content = #"{"suggestions":[{"device":"room_lights:1","op":"power","value":true,"confidence":88},{"device":"room_lights:1","op":"power","value":true,"confidence":75}]}"#
+        let data = try JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": content]]]])
+        let resolver = ModelIntentResolver(
+            config: AssistantConfig(baseURL: "https://api.deepseek.com/v1", model: "deepseek-chat", apiKey: "sk-test"),
+            transport: { request in
+                (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }
+        )
+        let suggestions = try await resolver.recommendProactiveSuggestions(
+            devices: Self.devices,
+            scenes: Self.scenes,
+            context: AssistantContext()
+        )
+        #expect(suggestions == [
+            AssistantSuggestion(
+                id: "chat:dev_study_ceiling:0",
+                title: "打开书房吸顶灯 等 2 台",
+                confidencePercent: 88,
+                intents: [
+                    DeviceIntent(targetId: "dev_study_ceiling", operation: .power(true)),
+                    DeviceIntent(targetId: "dev_study_desk", operation: .power(true))
+                ]
+            )
+        ])
+    }
+
+    @Test("SystemOne extreme probabilities clamp to 99 instead of trapping at runtime (PR #103 #5)")
+    func systemOneExtremeProbabilitiesDoNotTrap() async throws {
+        let rawJSON = """
+        {"answers":{"target":{"choice":"none","confidence":0.5},"op":{"choice":"power_on","confidence":0.5},"temp":{"choice":"none","confidence":0.5},"dev_d1":{"choice":"none","probabilities":{"none":0.55,"power_on":1e300},"confidence":0.55},"sug_1":{"choice":"d1|power_on","probabilities":{"d1|power_on":1e300},"confidence":1e300}}}
+        """
+        let data = Data(rawJSON.utf8)
+        let resolver = ModelIntentResolver(
+            config: AssistantConfig(baseURL: "https://openrouter.ai/api/v1", model: "~typesafe/jev-latest", apiKey: "test-token"),
+            transport: { request in
+                (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }
+        )
+        let plan = try await resolver.resolve("随便看看", devices: Self.devices, scenes: Self.scenes)
+        #expect(plan.suggestions.first?.confidencePercent == 99)
+
+        let proactive = try await resolver.recommendProactiveSuggestions(
+            devices: Self.devices,
+            scenes: Self.scenes,
+            context: AssistantContext()
+        )
+        #expect(proactive.first?.confidencePercent == 99)
+    }
+
+    @Test("IntentCatalog keeps same-named rooms from distinct Mi accounts separate (F18)")
+    func intentCatalogSeparatesSameNamedRoomsAcrossAccounts() throws {
+        let cn1 = SmartDevice(
+            id: "cn_l1", name: "吸顶灯", roomId: "account-cn/ke_ting", roomName: "客厅",
+            model: "yeelink.light.ceiling20", isOnline: true,
+            kind: .light(LightSpec(entityId: "miot:cn_l1:2", isOn: true))
+        )
+        let de1 = SmartDevice(
+            id: "de_l1", name: "吸顶灯", roomId: "account-de/ke_ting", roomName: "客厅",
+            model: "yeelink.light.ceiling20", isOnline: true,
+            kind: .light(LightSpec(entityId: "miot:de_l1:2", isOn: true))
+        )
+        let singlePerHome = IntentCatalog(devices: [cn1, de1], scenes: [])
+        #expect(singlePerHome.realIds(forTargetChoice: "room_lights:1").isEmpty)
+
+        let cn2 = SmartDevice(
+            id: "cn_l2", name: "落地灯", roomId: "account-cn/ke_ting", roomName: "客厅",
+            model: "yeelink.light.lamp4", isOnline: true,
+            kind: .light(LightSpec(entityId: "miot:cn_l2:2", isOn: true))
+        )
+        let de2 = SmartDevice(
+            id: "de_l2", name: "落地灯", roomId: "account-de/ke_ting", roomName: "客厅",
+            model: "yeelink.light.lamp4", isOnline: true,
+            kind: .light(LightSpec(entityId: "miot:de_l2:2", isOn: true))
+        )
+        let pairPerHome = IntentCatalog(devices: [cn1, cn2, de1, de2], scenes: [])
+        #expect(pairPerHome.realIds(forTargetChoice: "room_lights:1") == ["cn_l1", "cn_l2"])
+        #expect(pairPerHome.realIds(forTargetChoice: "room_lights:2") == ["de_l1", "de_l2"])
+    }
+
     // MARK: - Live (opt-in)
 
     @Test("ModelIntentResolver resolves against live OpenRouter ~typesafe/jev-latest when ASSISTANT_RUN_LIVE_TEST=1")

@@ -71,10 +71,10 @@ struct ClassicApplianceDetailDrawer: View {
                 .padding(.horizontal, 8)
             }
 
-            if spec.roomReading, let humidity = spec.currentHumidity {
+            if spec.roomReading, let humidity = spec.currentHumidity.flatMap(DeviceSynthesizer.roundedInt) {
                 statusRow(
                     title: L10n.tr("湿度", "Humidity"),
-                    value: "\(Int(humidity.rounded()))%"
+                    value: "\(humidity)%"
                 )
             }
 
@@ -136,14 +136,21 @@ struct ClassicApplianceDetailDrawer: View {
     }
 
     private var modeMenu: some View {
-        HStack(spacing: 8) {
+        let activeMode = spec.currentMode.flatMap { spec.availableModes.contains($0) ? $0 : nil }
+        return HStack(spacing: 8) {
             Text(L10n.tr("模式", "Mode"))
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
             Spacer(minLength: 8)
             Picker(L10n.tr("模式", "Mode"), selection: Binding(
-                get: { spec.currentMode ?? spec.availableModes.first ?? "" },
-                set: { store.setApplianceMode(device.id, mode: $0) }
+                get: { activeMode ?? "" },
+                set: { selected in
+                    guard !selected.isEmpty else { return }
+                    store.setApplianceMode(device.id, mode: selected)
+                }
             )) {
+                if activeMode == nil {
+                    Text(L10n.tr("未选择", "Not Selected")).tag("")
+                }
                 ForEach(spec.availableModes, id: \.self) { mode in
                     Text(SmartDevice.localizeApplianceMode(mode)).tag(mode)
                 }

@@ -220,7 +220,9 @@ public actor MiCloudClient: MiCloudAPI {
     private let transport: any MiHTTPTransport
     private let userAgent: String
     public static let propChunkSize = 100
+    private static let emptyHistoryCooldown: TimeInterval = 300
     private var resolvedHistoryRouteByMetric: [String: HistoryRoute] = [:]
+    private var emptyHistoryRetryAfterByMetric: [String: Date] = [:]
     private var activeTasks: [UUID: Task<(Data, HTTPURLResponse), any Error>] = [:]
     private var isShutDown = false
 
@@ -536,6 +538,8 @@ public actor MiCloudClient: MiCloudAPI {
         (result["list"]?.arrayValue ?? []).compactMap { item in
             guard let did = item["did"]?.idString, let model = item["model"]?.stringValue else { return nil }
             let split = item["extra"]?["split"]
+            let rawSplitParent = split?["parentId"]?.idString
+            let rawSplitSiid = split?["moduleId"]?.intValue
             let rawToken = item["token"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
             let token = (rawToken?.isEmpty == false) ? rawToken : nil
             let shareFlag: Bool? = {
@@ -552,8 +556,8 @@ public actor MiCloudClient: MiCloudAPI {
                 model: model,
                 isOnline: item["isOnline"]?.boolValue ?? true,
                 specType: item["spec_type"]?.stringValue,
-                splitParentDid: split?["parentId"]?.idString,
-                splitSiid: split?["moduleId"]?.intValue,
+                splitParentDid: rawSplitSiid != nil ? rawSplitParent : nil,
+                splitSiid: rawSplitParent != nil ? rawSplitSiid : nil,
                 localIp: item["localip"]?.stringValue,
                 mac: item["mac"]?.stringValue,
                 token: token,
@@ -649,25 +653,28 @@ public actor MiCloudClient: MiCloudAPI {
     /// omits the names, so it only adds dids — never a second room, and never a did twice.
     static func mergeRoomPage(_ page: JSONValue, into rooms: [MiRoom]) -> [MiRoom] {
         var result = rooms
-        func appendDids(_ dids: [String], toRoom roomId: String, homeId: String) {
+        func appendDids(_ dids: [String], toRoom roomId: String, homeId: String, roomName: String = "") {
             guard !dids.isEmpty, !roomId.isEmpty else { return }
             guard let index = result.firstIndex(where: { $0.id == roomId }) else {
-                // The page can name a home whose first page carried no dids at all, so no
-                // `home_<id>` room exists yet. Take the label from a sibling room of the home.
+                // The page can name a home or room whose first page omitted it. Preserve any room
+                // name carried by the continuation page and inherit home metadata from a sibling.
                 let sibling = result.first { $0.homeId == homeId }
                 result.append(MiRoom(
                     id: roomId,
-                    name: "",
+                    name: roomName,
                     dids: [],
                     homeId: homeId,
                     homeName: sibling?.homeName ?? "",
                     isSharedHome: sibling?.isSharedHome ?? false,
                     ownerUid: sibling?.ownerUid
                 ))
-                appendDids(dids, toRoom: roomId, homeId: homeId)
+                appendDids(dids, toRoom: roomId, homeId: homeId, roomName: roomName)
                 return
             }
             var room = result[index]
+            if room.name.isEmpty, !roomName.isEmpty {
+                room.name = roomName
+            }
             for did in dids where !room.dids.contains(did) {
                 room.dids.append(did)
             }
@@ -686,7 +693,8 @@ public actor MiCloudClient: MiCloudAPI {
                 appendDids(
                     (room["dids"]?.arrayValue ?? []).compactMap(\.idString),
                     toRoom: roomId,
-                    homeId: homeId
+                    homeId: homeId,
+                    roomName: room["name"]?.stringValue ?? ""
                 )
             }
         }
@@ -846,7 +854,8 @@ public actor MiCloudClient: MiCloudAPI {
             isTemperature: true,
             window: window,
             timeStart: timeStart,
-            timeEnd: timeEnd
+            timeEnd: timeEnd,
+            now: now
         )
         let humPoints = try await fetchMetricSeries(
             did: did,
@@ -854,7 +863,8 @@ public actor MiCloudClient: MiCloudAPI {
             isTemperature: false,
             window: window,
             timeStart: timeStart,
-            timeEnd: timeEnd
+            timeEnd: timeEnd,
+            now: now
         )
         return Self.combineMetricSeries(temperature: tempPoints, humidity: humPoints)
     }
@@ -865,10 +875,12 @@ public actor MiCloudClient: MiCloudAPI {
         isTemperature: Bool,
         window: SensorHistoryWindow,
         timeStart: Int,
-        timeEnd: Int
+        timeEnd: Int,
+        now: Date
     ) async throws -> [MetricSamplePoint] {
         let cacheId = "\(did)|\(isTemperature ? "temp" : "hum")|\(window.rawValue)"
-        if let cachedRoute = resolvedHistoryRouteByMetric[cacheId] {
+        let cachedRoute = resolvedHistoryRouteByMetric[cacheId]
+        if let cachedRoute {
             let pts = try await queryHistoryRoute(
                 cachedRoute,
                 did: did,
@@ -878,11 +890,16 @@ public actor MiCloudClient: MiCloudAPI {
                 timeEnd: timeEnd
             )
             if !pts.isEmpty { return pts }
+            resolvedHistoryRouteByMetric.removeValue(forKey: cacheId)
+        } else if let retryAfter = emptyHistoryRetryAfterByMetric[cacheId] {
+            if now < retryAfter { return [] }
+            emptyHistoryRetryAfterByMetric.removeValue(forKey: cacheId)
         }
 
         let statCandidates = Self.candidateKeysForStatistics(miotKey: miotKey, isTemperature: isTemperature)
         for key in statCandidates {
             let route = HistoryRoute(endpoint: .statistics, key: key)
+            if route == cachedRoute { continue }
             let pts = try await queryHistoryRoute(
                 route,
                 did: did,
@@ -892,6 +909,7 @@ public actor MiCloudClient: MiCloudAPI {
                 timeEnd: timeEnd
             )
             if !pts.isEmpty {
+                emptyHistoryRetryAfterByMetric.removeValue(forKey: cacheId)
                 resolvedHistoryRouteByMetric[cacheId] = route
                 return pts
             }
@@ -902,6 +920,7 @@ public actor MiCloudClient: MiCloudAPI {
         for group in groups {
             for key in dataCandidates {
                 let route = HistoryRoute(endpoint: .deviceData(group: group), key: key)
+                if route == cachedRoute { continue }
                 let pts = try await queryHistoryRoute(
                     route,
                     did: did,
@@ -911,11 +930,13 @@ public actor MiCloudClient: MiCloudAPI {
                     timeEnd: timeEnd
                 )
                 if !pts.isEmpty {
+                    emptyHistoryRetryAfterByMetric.removeValue(forKey: cacheId)
                     resolvedHistoryRouteByMetric[cacheId] = route
                     return pts
                 }
             }
         }
+        emptyHistoryRetryAfterByMetric[cacheId] = now.addingTimeInterval(Self.emptyHistoryCooldown)
         return []
     }
 

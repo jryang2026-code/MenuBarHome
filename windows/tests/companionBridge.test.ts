@@ -384,6 +384,35 @@ describe("menumijia:// execution, confirmation lifecycle & high-risk guard", () 
     assert.equal(app.pendingHighRisk?.deviceId, plug.id);
     assert.equal(getLatestRaycastSnapshotForHost(app).lastCommandFeedback?.requestId, "req_plug_risk");
     assert.equal(getLatestRaycastSnapshotForHost(app).lastCommandFeedback?.isError, true);
+
+    // S1 regression: firing a second external URL within 8s must NEVER consume pendingHighRisk or bypass panel confirmation (ADR-0013).
+    await enqueueIncomingOpenUrl(
+      app,
+      `menumijia://power?device=${encodeURIComponent(plug.id)}&on=true&id=req_plug_risk_repeat&token=${token}`,
+    );
+    await flushAsync();
+    const plugAfterRepeatUrl = app.devices.find((d) => d.id === plug.id)!;
+    assert.equal(
+      plugAfterRepeatUrl.kind.kind === "plug" ? plugAfterRepeatUrl.kind.isOn : true,
+      false,
+      "repeated external URL within 8s must not bypass panel confirmation",
+    );
+    assert.equal(app.pendingHighRisk?.deviceId, plug.id);
+    assert.equal(getLatestRaycastSnapshotForHost(app).lastCommandFeedback?.requestId, "req_plug_risk_repeat");
+    assert.equal(getLatestRaycastSnapshotForHost(app).lastCommandFeedback?.isError, true);
+
+    // Confirming directly inside the panel executes the armed high-risk action and clears pendingHighRisk.
+    const confirmBtn = document.querySelector<HTMLButtonElement>(`[data-high-risk-confirm="${plug.id}"]`);
+    assert.ok(confirmBtn, "panel renders explicit high-risk confirmation button on the focused card");
+    confirmBtn.click();
+    await flushAsync();
+    const plugAfterPanelConfirm = app.devices.find((d) => d.id === plug.id)!;
+    assert.equal(
+      plugAfterPanelConfirm.kind.kind === "plug" ? plugAfterPanelConfirm.kind.isOn : false,
+      true,
+      "panel confirmation executes the armed high-risk action",
+    );
+    assert.equal(app.pendingHighRisk, null);
   });
 
   it("treats a plug aliased to a switched light (左键 -> 厨房灯) as low-risk across URL, panel toggle, and snapshot", async () => {

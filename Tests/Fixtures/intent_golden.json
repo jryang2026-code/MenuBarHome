@@ -478,6 +478,31 @@
       "utterance": "开灯",
       "expected": [],
       "expectedReply": "灯都开着"
+    },
+    {
+      "utterance": "客厅空调自动模式",
+      "expected": null
+    },
+    {
+      "utterance": "书房空气净化器高档",
+      "expected": null
+    },
+    {
+      "utterance": "关台灯",
+      "expected": [
+        { "targetId": "dev_desk", "kind": "power", "value": false }
+      ],
+      "expectedReply": "已关闭书房台灯"
+    },
+    {
+      "utterance": "如果没人就关闭书房吸顶灯",
+      "expected": null
+    },
+    {
+      "utterance": "风扇不要摆风",
+      "expected": [
+        { "targetId": "dev_fan", "kind": "oscillation", "value": false }
+      ]
     }
   ],
   "commandValidationCases": [
@@ -513,14 +538,23 @@
   ],
   "cancelCases": [
     { "utterance": "取消定时", "isCancel": true },
+    { "utterance": "撤销定时", "isCancel": true },
+    { "utterance": "取消刚才的定时", "isCancel": true },
+    { "utterance": "不要定时", "isCancel": true },
     { "utterance": "cancel timer", "isCancel": true },
+    { "utterance": "undo timer", "isCancel": true },
+    { "utterance": "撤销", "isCancel": false },
     { "utterance": "打开空调", "isCancel": false }
   ],
   "undoCases": [
     { "utterance": "撤销", "isUndo": true },
     { "utterance": "刚才那个撤销", "isUndo": true },
+    { "utterance": "还原", "isUndo": true },
     { "utterance": "undo", "isUndo": true },
     { "utterance": "revert", "isUndo": true },
+    { "utterance": "撤销定时", "isUndo": false },
+    { "utterance": "取消刚才的定时", "isUndo": false },
+    { "utterance": "undo timer", "isUndo": false },
     { "utterance": "打开书房灯", "isUndo": false }
   ],
   "catalogCases": [
@@ -1291,6 +1325,593 @@
             { "targetId": "dev_run_heater_study_desk", "kind": "power", "value": true }
           ],
           "expectedReply": "已打开书房电暖器、书房暖风机"
+        }
+      ]
+    },
+    {
+      "name": "substring device name collision and empty device name safety",
+      "devices": [
+        {
+          "id": "dev_study_light",
+          "name": "书房灯",
+          "roomId": "study",
+          "roomName": "书房",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_study_light:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_study_strip",
+          "name": "书房灯带",
+          "roomId": "study",
+          "roomName": "书房",
+          "model": "yeelink.light.strip4",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_study_strip:2",
+            "isOn": true,
+            "brightnessPercent": 60,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_empty_name",
+          "name": "",
+          "roomId": "study",
+          "roomName": "书房",
+          "model": "yeelink.light.lamp4",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_empty_name:2",
+            "isOn": true,
+            "brightnessPercent": 50,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        }
+      ],
+      "cases": [
+        {
+          "utterance": "关闭书房灯带",
+          "expected": [
+            { "targetId": "dev_study_strip", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭书房灯带"
+        },
+        {
+          "utterance": "关闭书房灯",
+          "expected": [
+            { "targetId": "dev_study_light", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭书房灯"
+        }
+      ]
+    },
+    {
+      "name": "four-level fan speed fallback and climate auto mode",
+      "devices": [
+        {
+          "id": "dev_fan_4level",
+          "name": "客厅风扇",
+          "roomId": "living",
+          "roomName": "客厅",
+          "model": "dmaker.fan.p15",
+          "isOnline": true,
+          "kind": {
+            "kind": "fan",
+            "entityId": "miot:dev_fan_4level:2",
+            "isOn": true,
+            "percentage": null,
+            "presetMode": "Level1",
+            "availablePresetModes": ["Auto", "Level1", "Level2", "Level3", "Level4"],
+            "isOscillating": false
+          }
+        },
+        {
+          "id": "dev_ac_auto",
+          "name": "客厅空调",
+          "roomId": "living",
+          "roomName": "客厅",
+          "model": "xiaomi.aircondition.mc5",
+          "isOnline": true,
+          "kind": {
+            "kind": "climate",
+            "entityId": "miot:dev_ac_auto:2",
+            "isOn": true,
+            "hvacMode": "cool",
+            "availableModes": ["cool", "heat", "auto", "off"],
+            "targetTemperature": 26,
+            "currentTemperature": 27,
+            "minTemp": 16,
+            "maxTemp": 31,
+            "step": 0.5,
+            "fanMode": "low",
+            "availableFanModes": ["low", "high", "auto"],
+            "swingMode": "off",
+            "availableSwingModes": ["on", "off"]
+          }
+        }
+      ],
+      "cases": [
+        {
+          "utterance": "风扇中档",
+          "expected": [
+            { "targetId": "dev_fan_4level", "kind": "fanSpeed", "value": "Level3" }
+          ]
+        },
+        {
+          "utterance": "客厅空调自动模式",
+          "expected": [
+            { "targetId": "dev_ac_auto", "kind": "hvacMode", "value": "auto" }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "bare category command when all controllable devices are offline",
+      "devices": [
+        {
+          "id": "dev_off_study",
+          "name": "书房吸顶灯",
+          "roomId": "study",
+          "roomName": "书房",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": false,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_off_study:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_off_living",
+          "name": "客厅吸顶灯",
+          "roomId": "living",
+          "roomName": "客厅",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": false,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_off_living:2",
+            "isOn": false,
+            "brightnessPercent": 50,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        }
+      ],
+      "cases": [
+        {
+          "utterance": "关灯",
+          "expected": [],
+          "expectedReply": "灯当前离线"
+        },
+        {
+          "utterance": "开灯",
+          "panelRoom": { "id": "study", "name": "书房" },
+          "expected": [],
+          "expectedReply": "书房的灯当前离线"
+        }
+      ]
+    },
+    {
+      "name": "multi-account colliding room names refuse cross-home execution without panelRoom",
+      "devices": [
+        {
+          "id": "dev_cn_living_light",
+          "name": "主灯",
+          "roomId": "account-cn/ke_ting",
+          "roomName": "客厅",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_cn_living_light:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_de_living_light",
+          "name": "主灯",
+          "roomId": "account-de/ke_ting",
+          "roomName": "客厅",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_de_living_light:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        }
+      ],
+      "cases": [
+        {
+          "utterance": "关客厅的灯",
+          "expected": null
+        },
+        {
+          "utterance": "关客厅的灯",
+          "panelRoom": { "id": "account-cn/ke_ting", "name": "客厅" },
+          "expected": [
+            { "targetId": "dev_cn_living_light", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭主灯"
+        },
+        {
+          "utterance": "turn off living room lights",
+          "expected": null
+        },
+        {
+          "utterance": "turn off living room lights",
+          "panelRoom": { "id": "account-de/ke_ting", "name": "客厅" },
+          "expected": [
+            { "targetId": "dev_de_living_light", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭主灯"
+        }
+      ]
+    },
+    {
+      "name": "multi-account colliding rooms narrow unambiguous study targets and reject partial multi-room collisions",
+      "devices": [
+        {
+          "id": "dev_cn_living_main",
+          "name": "主灯",
+          "roomId": "account-cn/ke_ting",
+          "roomName": "客厅",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_cn_living_main:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_de_living_main",
+          "name": "主灯",
+          "roomId": "account-de/ke_ting",
+          "roomName": "客厅",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_de_living_main:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_cn_study_main",
+          "name": "主灯",
+          "roomId": "account-cn/shu_fang",
+          "roomName": "书房",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_cn_study_main:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_cn_living_desk",
+          "name": "客厅台灯",
+          "roomId": "account-cn/ke_ting",
+          "roomName": "客厅",
+          "model": "yeelink.light.lamp4",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_cn_living_desk:2",
+            "isOn": true,
+            "brightnessPercent": 70,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_de_living_desk",
+          "name": "客厅台灯",
+          "roomId": "account-de/ke_ting",
+          "roomName": "客厅",
+          "model": "yeelink.light.lamp4",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_de_living_desk:2",
+            "isOn": true,
+            "brightnessPercent": 70,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_cn_study_desk",
+          "name": "书房台灯",
+          "roomId": "account-cn/shu_fang",
+          "roomName": "书房",
+          "model": "yeelink.light.lamp4",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_cn_study_desk:2",
+            "isOn": true,
+            "brightnessPercent": 70,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_cn_living_en_lamp",
+          "name": "Lamp",
+          "roomId": "account-cn/ke_ting",
+          "roomName": "客厅",
+          "model": "yeelink.light.lamp4",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_cn_living_en_lamp:2",
+            "isOn": true,
+            "brightnessPercent": 70,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_de_living_en_lamp",
+          "name": "Lamp",
+          "roomId": "account-de/ke_ting",
+          "roomName": "客厅",
+          "model": "yeelink.light.lamp4",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_de_living_en_lamp:2",
+            "isOn": true,
+            "brightnessPercent": 70,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_cn_study_en_lamp",
+          "name": "Lamp",
+          "roomId": "account-cn/shu_fang",
+          "roomName": "书房",
+          "model": "yeelink.light.lamp4",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_cn_study_en_lamp:2",
+            "isOn": true,
+            "brightnessPercent": 70,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        }
+      ],
+      "cases": [
+        {
+          "utterance": "关闭书房的台灯",
+          "expected": [
+            { "targetId": "dev_cn_study_desk", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭书房台灯"
+        },
+        {
+          "utterance": "关闭书房的主灯",
+          "expected": [
+            { "targetId": "dev_cn_study_main", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭主灯"
+        },
+        {
+          "utterance": "turn off study lamp",
+          "expected": [
+            { "targetId": "dev_cn_study_en_lamp", "kind": "power", "value": false }
+          ]
+        },
+        {
+          "utterance": "关闭客厅和书房的灯",
+          "expected": null
+        },
+        {
+          "utterance": "turn off living room and study lights",
+          "expected": null
+        },
+        {
+          "utterance": "关闭全部台灯",
+          "expected": null
+        }
+      ]
+    },
+    {
+      "name": "bare category command with offline panelRoom devices never touches or answers from online devices elsewhere (active)",
+      "devices": [
+        {
+          "id": "dev_study_offline_on",
+          "name": "书房吸顶灯",
+          "roomId": "study",
+          "roomName": "书房",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": false,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_study_offline_on:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_living_online_on",
+          "name": "客厅吸顶灯",
+          "roomId": "living",
+          "roomName": "客厅",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_living_online_on:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        }
+      ],
+      "cases": [
+        {
+          "utterance": "关灯",
+          "panelRoom": { "id": "study", "name": "书房" },
+          "expected": [],
+          "expectedReply": "书房的灯当前离线"
+        },
+        {
+          "utterance": "开灯",
+          "panelRoom": { "id": "study", "name": "书房" },
+          "expected": [],
+          "expectedReply": "书房的灯当前离线"
+        }
+      ]
+    },
+    {
+      "name": "bare category command with offline panelRoom devices never touches or answers from online devices elsewhere (inactive)",
+      "devices": [
+        {
+          "id": "dev_study_offline_off",
+          "name": "书房吸顶灯",
+          "roomId": "study",
+          "roomName": "书房",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": false,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_study_offline_off:2",
+            "isOn": false,
+            "brightnessPercent": 50,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_living_online_off",
+          "name": "客厅吸顶灯",
+          "roomId": "living",
+          "roomName": "客厅",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_living_online_off:2",
+            "isOn": false,
+            "brightnessPercent": 50,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        }
+      ],
+      "cases": [
+        {
+          "utterance": "关灯",
+          "panelRoom": { "id": "study", "name": "书房" },
+          "expected": [],
+          "expectedReply": "书房的灯当前离线"
+        },
+        {
+          "utterance": "开灯",
+          "panelRoom": { "id": "study", "name": "书房" },
+          "expected": [],
+          "expectedReply": "书房的灯当前离线"
         }
       ]
     },

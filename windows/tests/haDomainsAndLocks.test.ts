@@ -5,6 +5,7 @@ import { afterEach, describe, it } from "node:test";
 import type { Window } from "happy-dom";
 
 import { ManualControlPolicy } from "../src/core/assistant/actionPolicy.js";
+import { buildEnvironmentSummary } from "../src/core/assistant/context.js";
 import {
   HomeAssistantSynthesizer,
   haServiceCall,
@@ -1492,5 +1493,38 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
     assert.equal((app.devices.find((d) => d.id === "hum-1")!.kind as { isOn: boolean }).isOn, false, "read-back replaces locked non-cover row with actual remote off");
 
     cancelDelayedReadBack(app);
+  });
+
+  it("omits non-finite or unsafe-integer humidifier and environment humidity instead of rendering NaN/Infinity", () => {
+    const snap = {
+      areas: [{ area_id: "living", name: "客厅" }],
+      devices: [{ id: "hum_huge", name: "加湿器", area_id: "living" }],
+      entities: [{ entity_id: "humidifier.huge", device_id: "hum_huge" }],
+      states: [
+        {
+          entity_id: "humidifier.huge",
+          state: "on",
+          attributes: {
+            current_humidity: 1e300,
+            target_humidity: 50,
+            supported_features: 1,
+          },
+        },
+      ],
+    };
+    const dev = HomeAssistantSynthesizer.synthesize(snap).devices.find((d) => d.id === "hum_huge");
+    assert.ok(dev);
+    assert.equal(dev.kind.kind, "appliance");
+    if (dev.kind.kind === "appliance") {
+      assert.equal(dev.kind.statusText, "目标 50%");
+    }
+
+    assert.equal(
+      buildEnvironmentSummary([
+        { id: "env-living", label: "客厅温湿度", roomName: "客厅", temperature: 23.5, humidity: 1e300, battery: null },
+        { id: "env-bed", label: "卧室温湿度", roomName: "卧室", temperature: Number.NaN, humidity: 48, battery: null },
+      ]),
+      "客厅 23.5°C，卧室 48%",
+    );
   });
 });

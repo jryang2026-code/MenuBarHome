@@ -1,7 +1,5 @@
 import { Action, ActionPanel, Form, Icon, showToast, Toast } from "@raycast/api";
-import { runCommandWithToast } from "./url";
-
-const MAX_ASK_LENGTH = 500;
+import { runCommandWithToast, validateAskText } from "./url";
 
 export default function Ask() {
   return (
@@ -12,20 +10,16 @@ export default function Ask() {
             title="Send Command"
             icon={Icon.ArrowRight}
             onSubmit={async (values: { text?: string }) => {
-              const text = (values.text ?? "").trim();
-              if (text.length === 0) {
-                await showToast({ style: Toast.Style.Failure, title: "Enter a command first" });
-                return;
-              }
-              if (text.length > MAX_ASK_LENGTH) {
+              const checked = validateAskText(values.text ?? "");
+              if (!checked.ok) {
                 await showToast({
                   style: Toast.Style.Failure,
-                  title: "Command is too long",
-                  message: `MenuBarHome accepts up to ${MAX_ASK_LENGTH} characters.`,
+                  title: checked.title,
+                  message: checked.message,
                 });
                 return;
               }
-              return runCommandWithToast("ask", [["text", text]]);
+              return runCommandWithToast("ask", [["text", checked.text]]);
             }}
           />
         </ActionPanel>

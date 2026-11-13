@@ -359,7 +359,8 @@ export function buildHumidifierKind(
   if (tempSensorId && currentTemp !== null) claimed.add(tempSensorId);
 
   const statusParts: string[] = [];
-  if (currentHumidity !== null) statusParts.push(`${Math.round(currentHumidity)}%`);
+  const roundedCurrent = haRoundedInt(currentHumidity);
+  if (roundedCurrent !== null) statusParts.push(`${roundedCurrent}%`);
   if (targetHumidity !== null) {
     statusParts.push(haTr(`目标 ${targetHumidity}%`, `Target ${targetHumidity}%`));
   }

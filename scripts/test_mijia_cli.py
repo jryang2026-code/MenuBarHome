@@ -985,6 +985,80 @@ class MijiaMcpTests(unittest.TestCase):
         self.assertFalse(replies[2]["result"]["isError"])
         self.assertNotIn(TOKEN, completed.stdout)
 
+    def test_mcp_catches_unexpected_snapshot_shape_without_crashing_or_leaking_token(self) -> None:
+        corrupt = make_snapshot()
+        # devices 为整数会触发 TypeError；capabilities 为字符串会触发 AttributeError；缺少 id 触发 KeyError
+        corrupt["devices"] = 42
+        self.path.write_text(json.dumps(corrupt), encoding="utf-8")
+        ctx, _ = self.make_ctx()
+
+        read_resp = mijia.handle_mcp_message(
+            ctx,
+            {"jsonrpc": "2.0", "id": 21, "method": "resources/read", "params": {"uri": "mijia://devices"}},
+        )
+        assert read_resp is not None
+        self.assertEqual(read_resp["error"]["code"], -32603)
+        self.assertNotIn(TOKEN, json.dumps(read_resp, ensure_ascii=False))
+
+        corrupt["devices"] = [
+            {
+                "name": "无ID台灯",
+                "isOnline": True,
+                "capabilities": {"canTogglePower": True},
+            },
+            {
+                "id": "bad_caps",
+                "name": "坏能力灯",
+                "isOnline": True,
+                "capabilities": f"corrupt?token={TOKEN}",
+            },
+        ]
+        self.path.write_text(json.dumps(corrupt), encoding="utf-8")
+        for target_name in ("无ID台灯", "坏能力灯"):
+            tool_resp = mijia.handle_mcp_message(
+                ctx,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 22,
+                    "method": "tools/call",
+                    "params": {"name": "toggle_device", "arguments": {"device": target_name}},
+                },
+            )
+            assert tool_resp is not None
+            self.assertTrue(tool_resp["result"]["isError"])
+            self.assertNotIn(TOKEN, json.dumps(tool_resp, ensure_ascii=False))
+
+    def test_overlong_encoded_chinese_ask_is_rejected_before_opening_url(self) -> None:
+        # 460 个汉字 <= MAX_ASK_LENGTH (500)，但 UTF-8 URL 编码后 > 4096 字节；应在本地立即报错，不等 12 秒超时
+        long_zh = "把" * 460
+        res, app = self.call_tool("ask_home", {"text": long_zh})
+        self.assertTrue(res["isError"])
+        self.assertIn("4096", res["content"][0]["text"])
+        self.assertEqual(app.opened, [])
+
+        err_buf = io.StringIO()
+        with contextlib.redirect_stderr(err_buf):
+            code = mijia.main(
+                ["ask", long_zh, "--snapshot", str(self.path)],
+                opener=app.opener,
+            )
+        self.assertEqual(code, mijia.EXIT_LOCAL_ERROR)
+        self.assertEqual(app.opened, [])
+        self.assertIn("4096", err_buf.getvalue())
+
+    def test_ensure_utf8_stdio_reconfigures_non_utf8_windows_pipe(self) -> None:
+        raw_out = io.BytesIO()
+        cp1252_out = io.TextIOWrapper(raw_out, encoding="cp1252", errors="strict")
+        orig_stdout = sys.stdout
+        try:
+            sys.stdout = cp1252_out
+            code = mijia.main(["list", "--room", "书房", "--snapshot", str(self.path)])
+            sys.stdout.flush()
+        finally:
+            sys.stdout = orig_stdout
+        self.assertEqual(code, mijia.EXIT_OK)
+        self.assertIn("书房台灯", raw_out.getvalue().decode("utf-8"))
+
 
 if __name__ == "__main__":
     sys.exit(unittest.main())

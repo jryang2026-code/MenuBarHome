@@ -12,4 +12,6 @@ paths:
 
 Run `bash scripts/install_local_app.sh` to build, verify, and install into the bundle the user launches (it keeps the previous version for rollback); `bash scripts/build_app.sh` only packages the bundle inside the worktree.
 
+应用内自更新的校验顺序、流式哈希、失败恢复分类与替换守护脚本契约见 `docs/agents/in-app-update.md`，更新签名密钥轮换见 `docs/security/update-signing-key-rotation.md`。
+
 `hdiutil attach` 报 `Resource temporarily unavailable` 时先重试这一次。应用内挂载已经按退避重试（`UpdateSystemDriver.retryingAttach`）。测试里重复 attach 的串行要求见 `.claude/rules/standards-swift-tests.md`。

@@ -2,8 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Hardened Runtime 下使用麦克风必须声明 -->
+    <!-- Hardened Runtime 下使用麦克风、日历（会议前规则）与定位（读取当前 Wi-Fi SSID 触发网络规则）必须声明对应资源访问权限，否则 TCC 会静默拒绝而不弹窗 -->
     <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>com.apple.security.personal-information.calendars</key>
+    <true/>
+    <key>com.apple.security.personal-information.location</key>
     <true/>
 </dict>
 </plist>

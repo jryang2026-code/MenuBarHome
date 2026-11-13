@@ -14,8 +14,51 @@ public struct MiAccountSection: View {
         case failed(String)
     }
 
+    enum LogoutConfirmation: Equatable {
+        case account(MiAccount)
+        case all
+
+        func title(accountCount: Int) -> String {
+            switch self {
+            case .account:
+                return L10n.tr("移除米家账号？", "Remove Xiaomi Home account?")
+            case .all:
+                return accountCount > 1
+                    ? L10n.tr("退出全部米家账号？", "Sign out of all Xiaomi Home accounts?")
+                    : L10n.tr("退出米家账号？", "Sign out of Xiaomi Home?")
+            }
+        }
+
+        func confirmButtonTitle(accountCount: Int) -> String {
+            switch self {
+            case .account:
+                return L10n.tr("移除", "Remove")
+            case .all:
+                return accountCount > 1
+                    ? L10n.tr("全部退出", "Sign Out of All")
+                    : L10n.tr("退出登录", "Sign Out")
+            }
+        }
+
+        var messageText: String {
+            switch self {
+            case .account(let account):
+                return L10n.tr(
+                    "将从本机移除账号「\(account.displayName)」的米家会话；需要时可重新扫码登录。",
+                    "Removes the Xiaomi Home session for \"\(account.displayName)\" from this Mac. You can scan again anytime."
+                )
+            case .all:
+                return L10n.tr(
+                    "米家会话将从本机移除；需要时可重新扫码登录。",
+                    "Xiaomi Home sessions will be removed from this Mac. You can scan again anytime."
+                )
+            }
+        }
+    }
+
     @State private var phase: ScanPhase
     @State private var loginTask: Task<Void, Never>?
+    @State private var pendingLogoutConfirmation: LogoutConfirmation?
     private let autoStartsQRLogin: Bool
     private let showsRegionPicker: Bool
 
@@ -134,23 +177,76 @@ public struct MiAccountSection: View {
             }
         }
         .onDisappear {
+            pendingLogoutConfirmation = nil
             cancelLogin()
+        }
+        .alert(
+            pendingLogoutConfirmation?.title(accountCount: store.miAccounts.count) ?? "",
+            isPresented: Binding(
+                get: { pendingLogoutConfirmation != nil },
+                set: { if !$0 { pendingLogoutConfirmation = nil } }
+            ),
+            presenting: pendingLogoutConfirmation
+        ) { confirmation in
+            Button(L10n.tr("取消", "Cancel"), role: .cancel) {
+                pendingLogoutConfirmation = nil
+            }
+            Button(
+                confirmation.confirmButtonTitle(accountCount: store.miAccounts.count),
+                role: .destructive
+            ) {
+                pendingLogoutConfirmation = nil
+                UnsupportedDeviceScanner.shared.reset()
+                switch confirmation {
+                case .account(let account):
+                    store.logoutMiAccount(id: account.id)
+                case .all:
+                    store.logoutMiAccount()
+                }
+            }
+        } message: { confirmation in
+            Text(confirmation.messageText)
         }
     }
 
     private func loggedInView(maskedUserId: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let account = store.miAccounts.first
+        let expiryState = account?.session.expiryState() ?? .valid
+        let disconnectReason: String? = {
+            if let account,
+               case .disconnected(let reason) = store.miAccountStatuses[account.id],
+               !reason.isEmpty {
+                return reason
+            }
+            if case .disconnected(let reason) = store.connectionStatus, !reason.isEmpty {
+                return reason
+            }
+            if expiryState == .expired {
+                return MiCloudError.sessionExpired.localizedDescription
+            }
+            return nil
+        }()
+        let needsRescan = disconnectReason != nil || expiryState != .valid
+
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: "person.crop.circle.badge.checkmark")
+                Image(systemName: needsRescan
+                    ? "exclamationmark.triangle.fill"
+                    : "person.crop.circle.badge.checkmark")
                     .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                    .foregroundStyle(.green)
+                    .foregroundStyle(needsRescan ? .orange : .green)
                 Text(L10n.tr("已登录米家账号：\(maskedUserId)", "Signed in to Xiaomi Home: \(maskedUserId)"))
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                 Spacer()
             }
 
-            if case .disconnected(let reason) = store.connectionStatus, !reason.isEmpty {
+            if let reason = disconnectReason {
                 Text(reason)
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.orange)
+            } else if case .expiringSoon(let date) = expiryState {
+                let dateText = date.formatted(date: .abbreviated, time: .omitted)
+                Text(L10n.tr("米家登录将在 \(dateText) 到期", "Xiaomi Home sign-in expires \(dateText)"))
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(.orange)
             }
@@ -163,19 +259,22 @@ public struct MiAccountSection: View {
                 .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
 
                 Button(L10n.tr("重新扫码", "Rescan QR")) {
+                    if let account {
+                        store.miCloudRegion = account.region
+                    }
                     startQRLogin()
                 }
-                .buttonStyle(PillActionButtonStyle())
+                .buttonStyle(PillActionButtonStyle(isSelected: needsRescan, tintColor: .accentColor))
 
                 Button(L10n.tr("添加账号", "Add Account")) {
                     startQRLogin()
                 }
-                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+                .buttonStyle(PillActionButtonStyle(isSelected: !needsRescan, tintColor: .accentColor))
 
                 Spacer()
 
                 Button(L10n.tr("退出登录", "Sign Out")) {
-                    store.logoutMiAccount()
+                    pendingLogoutConfirmation = .all
                 }
                 .buttonStyle(PillActionButtonStyle())
             }
@@ -216,7 +315,7 @@ public struct MiAccountSection: View {
                             .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
                         }
                         Button(L10n.tr("移除", "Remove")) {
-                            store.logoutMiAccount(id: account.id)
+                            pendingLogoutConfirmation = .account(account)
                         }
                         .buttonStyle(PillActionButtonStyle())
                     }
@@ -248,7 +347,7 @@ public struct MiAccountSection: View {
                 Spacer()
 
                 Button(L10n.tr("全部退出", "Sign Out of All")) {
-                    store.logoutMiAccount()
+                    pendingLogoutConfirmation = .all
                 }
                 .buttonStyle(PillActionButtonStyle())
             }

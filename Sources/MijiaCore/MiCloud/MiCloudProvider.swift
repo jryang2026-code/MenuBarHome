@@ -130,11 +130,16 @@ public actor MiCloudProvider: HomeProvider {
         pendingCameraReleases.removeAll()
         doorbellBaselineTime.removeAll()
         lastDoorbellTimestamp.removeAll()
+        let bindings = Array(cameraBridgeBindings.values)
+        cameraBridgeBindings.removeAll()
         await localClient?.shutdown()
         await api?.shutdown()
         api = nil
         continuation?.finish()
         continuation = nil
+        for binding in bindings {
+            await cameraBridge.stopBridge(did: binding.did, subdid: binding.subdid)
+        }
     }
 
     public func refreshNow() async {
@@ -516,7 +521,7 @@ public actor MiCloudProvider: HomeProvider {
             pollRequested = false
             pollsSinceContextChange += 1
         }
-        emitSnapshot()
+        emitSnapshot(closesAwayGap: dids == nil)
         return (freshKeys, nil)
     }
 

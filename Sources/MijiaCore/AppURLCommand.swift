@@ -132,9 +132,15 @@ public enum AppURLParser {
         }
 
         // `menumijia://toggle?...` puts the route in the host; also accept `menumijia:/toggle?...`.
+        // Extra path segments (`menumijia://toggle/extra`) are rejected across platforms.
         // `color-temp` and `color_temp` reach the same route as `colortemp`.
-        let route = (components.host ?? components.path)
+        if components.host != nil, !components.path.isEmpty, components.path != "/" {
+            return nil
+        }
+        let rawRoute = (components.host ?? components.path)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !rawRoute.contains("/") else { return nil }
+        let route = rawRoute
             .lowercased()
             .replacingOccurrences(of: "-", with: "")
             .replacingOccurrences(of: "_", with: "")
@@ -235,8 +241,12 @@ public enum AppURLParser {
     }
 
     static func decimal(_ raw: String?) -> Double? {
-        guard let raw,
-              let value = Double(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.contains("e"),
+              !trimmed.contains("E"),
+              let value = Double(trimmed),
               value.isFinite else { return nil }
         return value
     }

@@ -5,7 +5,7 @@ import MijiaCore
 
 public struct ClassicControlCenterPanel: View {
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.panelFoldRecord) private var panelFoldRecord
+    @Environment(\.panelFoldRecord) var panelFoldRecord
     @AppStorage(PanelPrefs.climatePanelKey) var climatePanelModule: Bool = true
     @State var draggingId: String?
     @State var activeResize: ActiveTileResize?
@@ -143,6 +143,8 @@ public struct ClassicControlCenterPanel: View {
 
             groupPromptOverlay
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onChange(of: store.devices.map(\.id)) { _, _ in pruneStalePrompts() }
+                .onChange(of: groupsRaw) { _, _ in pruneStalePrompts() }
 
             if store.isShowingMiReauth {
                 miReauthOverlay
@@ -187,9 +189,8 @@ public struct ClassicControlCenterPanel: View {
         }
         // Room preferences survive a room disappearing; only the open prompt cannot.
         .onChange(of: store.rooms.map(\.id)) { _, ids in handleRoomIds(ids) }
-        // Another home or account brings another room set: a draft must never cross that boundary.
-        .onChange(of: store.selectedMiHomeId) { _, _ in layoutUI.commitRoomOrderIfNeeded() }
-        .onChange(of: store.homeBackend) { _, _ in layoutUI.commitRoomOrderIfNeeded() }
+        // Another home, account, or server brings another room set: a draft or open prompt must never cross that boundary.
+        .onChange(of: homeContextSignature) { _, _ in handleHomeContextChange() }
         // The saved key caught up with the commit (or something else rewrote it): drop the mirror.
         .onChange(of: roomOrderRaw) { _, _ in liveRoomOrder = nil }
         .onChange(of: kindOrderRaw) { _, _ in liveKindOrder = nil }
@@ -231,9 +232,46 @@ public struct ClassicControlCenterPanel: View {
 
     private func handlePanelDidHide() {
         isPresented = false
+        pressTask?.cancel()
+        pressTask = nil
+        pressCancelled = false
+        draggingId = nil
+        dragLocation = nil
+        activeResize = nil
+        lastSwapTarget = nil
+        layoutUI.dismissActivePrompt()
         search.end()
         isSearchFieldFocused = false
         isDrawerHovered = false
+    }
+
+    private struct HomeContextSignature: Equatable {
+        let selectedMiHomeId: String?
+        let homeBackend: HomeBackend
+        let miAccountIds: [String]
+        let serverURLString: String
+    }
+
+    private var homeContextSignature: HomeContextSignature {
+        HomeContextSignature(
+            selectedMiHomeId: store.selectedMiHomeId,
+            homeBackend: store.homeBackend,
+            miAccountIds: store.miAccounts.map(\.id),
+            serverURLString: store.serverURLString
+        )
+    }
+
+    private func handleHomeContextChange() {
+        layoutUI.commitRoomOrderIfNeeded()
+        layoutUI.dismissActivePrompt()
+    }
+
+    private func pruneStalePrompts() {
+        layoutUI.pruneStalePrompts(
+            deviceIds: Set(store.devices.map(\.id)),
+            groupIds: Set(groups.map(\.id)),
+            roomIds: Set(store.rooms.map(\.id))
+        )
     }
 
     private func handleSearching(_ searching: Bool) {
@@ -359,12 +397,7 @@ public struct ClassicControlCenterPanel: View {
         kindChipsRevealed.toggle()
     }
 
-    private var showsLessonRow: Bool {
-        store.showsOnboardingChecklistCard && !store.panelActivities.contains { activity in
-            if case .notice(let kind) = activity.kind { return kind.hidesChecklist }
-            return false
-        }
-    }
+    private var showsLessonRow: Bool { store.showsLessonRow }
 
     private var showsScrollPreface: Bool { showsLessonRow }
 
@@ -405,12 +438,10 @@ public struct ClassicControlCenterPanel: View {
     private var deviceGrid: some View {
         Group {
             ScrollViewReader { scrollProxy in
+                let sections = pageSections
+                let quickIndex = classicQuickIndexOrder(sections)
+                let quickIndexMap = quickIndex.badges
                 ScrollView(.vertical, showsIndicators: false) {
-                    let sections = pageSections
-                    let quickIndexMap = Dictionary(
-                        uniqueKeysWithValues: sections.flatMap(\.devices).prefix(9).enumerated().map { ($1.id, $0 + 1) }
-                    )
-
                     VStack(alignment: .leading, spacing: 0) {
                         if showsScrollPreface {
                             scrollPreface
@@ -464,8 +495,22 @@ public struct ClassicControlCenterPanel: View {
                         }
                     }
                 }
+                .onAppear { PanelQuickIndexState.shared.register(quickIndex, theme: .classic) }
+                .onChange(of: quickIndex) { _, next in PanelQuickIndexState.shared.register(next, theme: .classic) }
+                .onDisappear { PanelQuickIndexState.shared.clear(theme: .classic) }
             }
         }
+    }
+
+    private func classicQuickIndexOrder(_ sections: [PageSection]) -> PanelQuickIndexOrder {
+        if search.isSearching {
+            return PanelQuickIndexOrder(deviceIds: searchResults.map(\.id))
+        }
+        let ids = sections
+            .filter { !collapsedGroups.contains(collapseKey($0)) }
+            .flatMap { DeviceLayoutPrefs.apply(order: currentOrder, to: $0.devices) }
+            .map(\.id)
+        return PanelQuickIndexOrder(deviceIds: ids)
     }
 
     // MARK: - Search (#60)

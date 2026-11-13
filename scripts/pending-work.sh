@@ -14,10 +14,21 @@ git rev-parse --verify --quiet "$base^{commit}" >/dev/null || {
     exit 1
 }
 
+gh_err_file="$(mktemp "${TMPDIR:-/tmp}/pending-work-gh.XXXXXX")"
+trap 'rm -f "$gh_err_file"' EXIT
+gh_ok=1
 prs="$(gh pr list --state all --limit 200 --json headRefName,state,number \
-    --jq '.[] | "\(.headRefName)\t\(.state)\t\(.number)"' 2>/dev/null || true)"
+    --jq '.[] | "\(.headRefName)\t\(.state)\t\(.number)"' 2>"$gh_err_file")" || gh_ok=0
+if [ "$gh_ok" -eq 0 ]; then
+    gh_reason="$(tail -n 1 "$gh_err_file" 2>/dev/null || true)"
+    echo "⚠️ gh pr list 查询失败（${gh_reason:-未知错误}），PR 列将显示为 unknown（请检查网络或 gh auth status）" >&2
+fi
 
 pr_state() {
+    if [ "$gh_ok" -eq 0 ]; then
+        echo "unknown"
+        return 0
+    fi
     printf '%s\n' "$prs" | awk -F'\t' -v b="$1" '!found && $1 == b { print $2 " #" $3; found = 1 } END { if (!found) print "no PR" }'
 }
 
