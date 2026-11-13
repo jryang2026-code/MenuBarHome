@@ -6,7 +6,12 @@ GitHub numbers issues and pull requests from one sequence.
 
 ## Triage labels
 
-Default five canonical roles (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+Canonical GitHub issue triage labels in this repository:
+- `needs-triage` — Maintainer needs to evaluate this issue
+- `needs-info` — Waiting on reporter for more information
+- `ready-for-agent` — Fully specified, ready for an autonomous agent
+- `ready-for-human` — Requires human implementation
+- `wontfix` — Will not be actioned
 
 ## Repo helper scripts
 

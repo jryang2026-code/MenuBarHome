@@ -1,6 +1,6 @@
 ## Cursor Cloud specific instructions
 
-Cloud agents are Linux. `scripts/build_app.sh`, `scripts/install_local_app.sh`, and a repo-root `swift test` need the macOS SDK (CI uses macos-26). The Windows Tauri installer (`cargo test`, `npx tauri build`) stays on Windows CI.
+Cloud agents are Linux. `scripts/build_app.sh`, `scripts/install_local_app.sh`, and a repo-root `swift test` need the macOS SDK (CI uses `macos-26-intel`). The Windows Tauri installer (`cargo test`, `npx tauri build`) stays on Windows CI.
 
 On Linux, `bash scripts/check.sh --skip-snapshots` (the full gate; the pre-commit hook only runs `--lint-only`) runs `scripts/linux-check/run.sh` instead of `swift test`. That is the same MijiaCore suite as CI's `linux-core` job (Swift 6.1). It still runs the Windows frontend tests when `windows/node_modules` is present.
 
