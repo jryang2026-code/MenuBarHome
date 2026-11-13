@@ -227,7 +227,9 @@ public actor LocalMiIOClient {
         var lastSentStamp: UInt32?
 
         mutating func nextStamp(at currentTime: Date) -> UInt32 {
-            let elapsed = UInt32(max(0, Int64(currentTime.timeIntervalSince(handshakeAt))))
+            let rawDelta = currentTime.timeIntervalSince(handshakeAt)
+            let clampedSeconds = rawDelta.isFinite && rawDelta > 0 ? min(rawDelta, Double(UInt32.max)) : 0
+            let elapsed = UInt32(clampedSeconds.rounded(.towardZero))
             let computed = baseStamp &+ elapsed
             let stamp: UInt32
             if let prev = lastSentStamp, computed <= prev {

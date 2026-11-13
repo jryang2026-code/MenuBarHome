@@ -1152,14 +1152,40 @@ public actor MiCloudClient: MiCloudAPI {
 
     // MARK: - Doorbell Event History (`user/get_user_device_data`)
 
+    /// Upper bound `2^53 - 2`: exact in IEEE-754 `Double`, fits in `Int`, and leaves headroom for `timeStart + 1`.
+    private static let maxSafeEpochSeconds: Double = 9_007_199_254_740_990
+
+    static func checkedEpochSeconds(_ interval: TimeInterval) -> Int? {
+        guard interval.isFinite, interval >= 0, interval <= maxSafeEpochSeconds else {
+            return nil
+        }
+        let truncated = interval.rounded(.towardZero)
+        guard let whole = Int(exactly: truncated), whole >= 0, whole < Int.max else {
+            return nil
+        }
+        return whole
+    }
+
     public func doorbellLatestEventTimestamp(
         did: String,
         eventKey: String,
         since: Date,
         now: Date
     ) async throws -> Date? {
-        let timeStart = max(0, Int(since.timeIntervalSince1970))
-        let timeEnd = max(timeStart + 1, Int(now.timeIntervalSince1970))
+        guard let nowSeconds = Self.checkedEpochSeconds(now.timeIntervalSince1970) else {
+            return nil
+        }
+        let sinceInterval = since.timeIntervalSince1970
+        guard sinceInterval.isFinite else { return nil }
+        let timeStart: Int
+        if sinceInterval <= 0 {
+            timeStart = 0
+        } else if let sinceSeconds = Self.checkedEpochSeconds(sinceInterval) {
+            timeStart = sinceSeconds
+        } else {
+            return nil
+        }
+        let timeEnd = max(timeStart + 1, nowSeconds)
         let result = try await request("user/get_user_device_data", data: .object([
             "uid": .string(session.userId),
             "did": .string(did),
@@ -1188,6 +1214,10 @@ public actor MiCloudClient: MiCloudAPI {
                   rawTime.isFinite,
                   rawTime > 0 else { continue }
             let seconds = rawTime > 10_000_000_000 ? rawTime / 1000.0 : rawTime
+            guard seconds.isFinite,
+                  seconds > 0,
+                  let wholeSeconds = Self.checkedEpochSeconds(seconds),
+                  wholeSeconds > 0 else { continue }
             let date = Date(timeIntervalSince1970: seconds)
             if let current = latest {
                 if date > current { latest = date }

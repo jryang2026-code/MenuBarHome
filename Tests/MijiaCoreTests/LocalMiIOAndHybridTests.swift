@@ -690,6 +690,91 @@ struct MiCloudAndSpecEnhancementsTests {
         #expect(latest == Date(timeIntervalSince1970: 1_700_000_123))
     }
 
+    @Test("Doorbell event timestamps reject out-of-range numbers without trapping under seeded fuzzing")
+    func doorbellEventTimestampOverflowAndSeededFuzz() async throws {
+        let outOfRangePayload: JSONValue = .object([
+            "list": .array([
+                .object(["time": .number(1e300)]),
+                .object(["time": .number(1e25)]),
+                .object(["time": .number(Double.greatestFiniteMagnitude)]),
+                .object(["time": .number(.infinity)]),
+                .object(["time": .number(.nan)]),
+                .object(["time": .number(-100)]),
+                .object(["time": .number(0)]),
+                .object(["time": .number(0.5)]),
+            ])
+        ])
+        #expect(MiCloudClient.parseLatestEventTimestamp(outOfRangePayload) == nil)
+
+        let mixedPayload: JSONValue = .object([
+            "list": .array([
+                .object(["time": .number(1e300)]),
+                .object(["time": .number(1_700_000_999)]),
+                .object(["time": .number(Double.greatestFiniteMagnitude)]),
+            ])
+        ])
+        #expect(MiCloudClient.parseLatestEventTimestamp(mixedPayload) == Date(timeIntervalSince1970: 1_700_000_999))
+
+        let transport = MirrorHTTPStub { req in
+            let form = String(data: req.httpBody ?? Data(), encoding: .utf8) ?? ""
+            var fields: [String: String] = [:]
+            for pair in form.split(separator: "&") {
+                let kv = pair.split(separator: "=", maxSplits: 1).map { String($0).removingPercentEncoding ?? "" }
+                if kv.count == 2 { fields[kv[0]] = kv[1] }
+            }
+            let signed = try MiCloudCrypto.signedNonce(ssecurity: self.stubSession.ssecurity, nonce: fields["_nonce"] ?? "")
+            let reply = #"{"code":0,"message":"ok","result":{"list":[{"time":1700000123}]}}"#
+            let encrypted = try MiCloudCrypto.encrypt(reply, signedNonce: signed)
+            let response = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (Data(encrypted.utf8), response)
+        }
+        let client = MiCloudClient(session: stubSession, transport: transport)
+
+        #expect(try await client.doorbellLatestEventTimestamp(
+            did: "doorbell-1",
+            eventKey: "2.1",
+            since: Date(timeIntervalSince1970: 1e100),
+            now: Date(timeIntervalSince1970: 1_700_000_200)
+        ) == nil)
+        #expect(try await client.doorbellLatestEventTimestamp(
+            did: "doorbell-1",
+            eventKey: "2.1",
+            since: Date(timeIntervalSince1970: 1_700_000_000),
+            now: Date(timeIntervalSince1970: 1e100)
+        ) == nil)
+        #expect(await transport.requestedURLs.isEmpty)
+
+        // Negative finite `since` clamps `time_start` to 0 and proceeds safely.
+        let clampedResult = try await client.doorbellLatestEventTimestamp(
+            did: "doorbell-1",
+            eventKey: "2.1",
+            since: Date(timeIntervalSince1970: -500),
+            now: Date(timeIntervalSince1970: 1_700_000_200)
+        )
+        #expect(clampedResult == Date(timeIntervalSince1970: 1_700_000_123))
+        #expect(await transport.requestedURLs.count == 1)
+
+        // Seeded IEEE-754 bit-pattern fuzzing never produces a timestamp that can trap on next-poll query.
+        for iteration in 0..<64 {
+            let seed = FuzzSupport.iterationSeed(FuzzSupport.baseSeed, iteration)
+            var rng = SeededFuzzGenerator(seed: seed)
+            let rawBytes = rng.bytes(count: 8)
+            var bits: UInt64 = 0
+            for byte in rawBytes {
+                bits = (bits << 8) | UInt64(byte)
+            }
+            let candidate = Double(bitPattern: bits)
+            let payload: JSONValue = .object(["list": .array([.object(["time": .number(candidate)])])])
+            if let parsed = MiCloudClient.parseLatestEventTimestamp(payload) {
+                let nextPollSince = parsed.addingTimeInterval(-1).timeIntervalSince1970
+                guard MiCloudClient.checkedEpochSeconds(nextPollSince) != nil else {
+                    Issue.record("seed=\(FuzzSupport.baseSeed) iteration=\(iteration) input=\(FuzzSupport.hex(rawBytes)) candidate=\(candidate)")
+                    return
+                }
+            }
+        }
+    }
+
     @Test("MiotSpecStore falls back to secondary mirror, applies TTL jitter, and prefetches concurrently")
     func specStoreMirrorFallbackJitterAndPrefetch() async throws {
         let tempDir = FileManager.default.temporaryDirectory
