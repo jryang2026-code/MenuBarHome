@@ -342,6 +342,33 @@ struct PanelActivityStoreTests {
         #expect(store.dismissedActivityIds.isEmpty)
     }
 
+    @Test("Periodic safety evaluation records long-run alerts into the activity stack without a new snapshot")
+    func periodicSafetyEvaluationRecordsLongRunAlert() async throws {
+        let plug = SmartDevice(
+            id: "heater_plug",
+            name: "取暖器插座",
+            roomId: "room",
+            roomName: "书房",
+            model: "cuco.plug.cp1",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.heater_plug", isOn: true, powerWatts: 1800))
+        )
+        let store = try await makeStore(devices: [plug])
+        store.favoriteDeviceIds = [plug.id]
+        store.enableSafetyAlerts = true
+
+        let baseNow = Date()
+        #expect(store.evaluateSafetyAlerts(now: baseNow).isEmpty)
+        #expect(store.recentSafetyAlerts.isEmpty)
+
+        let fireAt = baseNow.addingTimeInterval(46 * 60)
+        let emitted = store.evaluateSafetyAlerts(now: fireAt)
+        #expect(emitted.count == 1)
+        #expect(store.recentSafetyAlerts.count == 1)
+        #expect(store.panelActivities.map(\.id) == [emitted[0].id])
+        #expect(store.panelActivities.first?.date == fireAt)
+    }
+
     private let lamp = SmartDevice(
         id: "lamp",
         name: "台灯",

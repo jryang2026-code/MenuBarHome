@@ -20,6 +20,10 @@ struct TransientStackView: View {
     @State private var isExpanded: Bool
     /// Cleared on leave, an empty feed, panel hide and view disappearance.
     @State private var isHovered = false
+    /// Keyboard / VoiceOver / tap expansion for multi-card stacks; cleared on single-card collapse,
+    /// hover leave, panel hide and disappearance.
+    @State private var isManuallyExpanded: Bool
+    @FocusState private var isExpandButtonFocused: Bool
     /// Newest first. A card that arrives later takes the front, so a fresh toast never hides behind
     /// a banner that is about to expire.
     @State private var newestCardID: String?
@@ -34,6 +38,7 @@ struct TransientStackView: View {
         self.toast = toast
         self.onHeightChange = onHeightChange
         _isExpanded = State(initialValue: initialExpanded)
+        _isManuallyExpanded = State(initialValue: initialExpanded)
     }
 
     private var animation: Animation { reduceMotion ? .easeOut(duration: 0.2) : AppleMotion.stack }
@@ -67,27 +72,32 @@ struct TransientStackView: View {
                 } else if let newestCardID, !newIDs.contains(newestCardID) {
                     self.newestCardID = newIDs.first
                 }
-                isExpanded = TransientStackExpansion.isExpanded(isHovered: isHovered, cardCount: newIDs.count)
+                if newIDs.count <= 1 {
+                    isExpandButtonFocused = false
+                }
                 if newIDs.isEmpty {
                     isHovered = false
+                    isManuallyExpanded = false
                     newestCardID = nil
-                    store.resumeUndoBannerCountdown()
                 }
+                syncExpansionAndCountdown(cardCount: newIDs.count, animated: false)
             }
             .onChange(of: store.undoBanner?.id) { _, _ in
-                if isHovered { store.pauseUndoBannerCountdown() }
+                if TransientStackExpansion.pausesUndoCountdown(
+                    isHovered: isHovered,
+                    isManuallyExpanded: isManuallyExpanded,
+                    cardCount: cards.count
+                ) {
+                    store.pauseUndoBannerCountdown()
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: MenuBarPanelController.didHideNotification)) { _ in
-                // The window closing mid-hover never sends the leave event that resumes the window.
-                store.resumeUndoBannerCountdown()
-                isHovered = false
-                isExpanded = false
+                // The window closing mid-hover or mid-expansion never sends a leave event.
+                resetInteractionState()
             }
             .onDisappear {
-                // A panel that goes away mid-hover must not leave the undo window paused.
-                store.resumeUndoBannerCountdown()
-                isHovered = false
-                isExpanded = false
+                // A panel that goes away mid-hover or mid-expansion must not leave the undo window paused.
+                resetInteractionState()
                 newestCardID = nil
                 onHeightChange(0)
             }
@@ -141,14 +151,58 @@ struct TransientStackView: View {
         if let first = cards.first {
             cardView(first, stacked: true)
                 .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 4)
+                .background { expandStackButton(cardCount: cards.count) }
+                .overlay {
+                    if isExpandButtonFocused {
+                        stackShape.strokeBorder(Color.accentColor, lineWidth: 2)
+                            .allowsHitTesting(false)
+                    }
+                }
                 .background {
                     GeometryReader { proxy in
                         if !reduceMotion { StackedCardBackplate(depth: 1, size: proxy.size) }
                     }
                     .allowsHitTesting(false)
                 }
+                .background { hiddenUndoShortcut(for: cards) }
                 .padding(.bottom, peekOffset)
                 .transition(cardTransition)
+                .accessibilityActions {
+                    Button(L10n.tr("展开", "Expand")) { setManuallyExpanded(true) }
+                    if cards.dropFirst().contains(where: { if case .undo = $0 { return true }; return false }) {
+                        Button(L10n.tr("撤销", "Undo")) {
+                            withAnimation(AppleMotion.snappySpring) { _ = store.undoTurnAllOff() }
+                        }
+                    }
+                }
+        }
+    }
+
+    private func expandStackButton(cardCount: Int) -> some View {
+        Button {
+            setManuallyExpanded(true)
+        } label: {
+            Color.clear.contentShape(stackShape)
+        }
+        .buttonStyle(.plain)
+        .focused($isExpandButtonFocused)
+        .focusEffectDisabled()
+        .accessibilityLabel(Text(L10n.tr(
+            "展开全部 \(cardCount) 条提示",
+            "Expand all \(cardCount) notifications"
+        )))
+    }
+
+    @ViewBuilder
+    private func hiddenUndoShortcut(for cards: [Card]) -> some View {
+        if cards.dropFirst().contains(where: { if case .undo = $0 { return true }; return false }) {
+            Button("") {
+                withAnimation(AppleMotion.snappySpring) { _ = store.undoTurnAllOff() }
+            }
+            .keyboardShortcut("z", modifiers: .command)
+            .opacity(0)
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
         }
     }
 
@@ -158,6 +212,11 @@ struct TransientStackView: View {
                 cardView(card, stacked: true)
                     .shadow(color: .black.opacity(depth == 0 ? 0.18 : 0), radius: 10, x: 0, y: 4)
                     .transition(cardTransition)
+            }
+        }
+        .accessibilityActions {
+            if isManuallyExpanded && !isHovered {
+                Button(L10n.tr("收起", "Collapse")) { setManuallyExpanded(false) }
             }
         }
     }
@@ -192,6 +251,7 @@ struct TransientStackView: View {
                     _ = store.undoTurnAllOff()
                 }
             }
+            .keyboardShortcut("z", modifiers: .command)
             .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: DesignTokens.active))
         }
         .padding(.horizontal, 12)
@@ -247,17 +307,54 @@ struct TransientStackView: View {
         return ordered
     }
 
-    // MARK: - Hover
+    // MARK: - Expansion
 
     private func handleHover(_ hovering: Bool) {
         isHovered = hovering
-        if hovering {
+        if !hovering {
+            isManuallyExpanded = false
+        }
+        syncExpansionAndCountdown(cardCount: cards.count, animated: true)
+    }
+
+    private func setManuallyExpanded(_ expanded: Bool) {
+        guard cards.count > 1 || !expanded else { return }
+        isManuallyExpanded = expanded
+        if expanded { isExpandButtonFocused = false }
+        syncExpansionAndCountdown(cardCount: cards.count, animated: true)
+    }
+
+    private func resetInteractionState() {
+        store.resumeUndoBannerCountdown()
+        isHovered = false
+        isManuallyExpanded = false
+        isExpandButtonFocused = false
+        isExpanded = false
+    }
+
+    private func syncExpansionAndCountdown(cardCount: Int, animated: Bool) {
+        isManuallyExpanded = TransientStackExpansion.sanitizedManualExpansion(
+            isManuallyExpanded: isManuallyExpanded,
+            cardCount: cardCount
+        )
+        let nextExpanded = TransientStackExpansion.isExpanded(
+            isHovered: isHovered,
+            isManuallyExpanded: isManuallyExpanded,
+            cardCount: cardCount
+        )
+        if TransientStackExpansion.pausesUndoCountdown(
+            isHovered: isHovered,
+            isManuallyExpanded: isManuallyExpanded,
+            cardCount: cardCount
+        ) {
             store.pauseUndoBannerCountdown()
         } else {
             store.resumeUndoBannerCountdown()
         }
-        withAnimation(animation) {
-            isExpanded = TransientStackExpansion.isExpanded(isHovered: hovering, cardCount: cards.count)
+        if animated {
+            withAnimation(animation) { isExpanded = nextExpanded }
+        } else {
+            isExpanded = nextExpanded
         }
     }
 
@@ -283,7 +380,26 @@ private struct TransientStackHeightKey: PreferenceKey {
 
 
 enum TransientStackExpansion {
-    static func isExpanded(isHovered: Bool, cardCount: Int) -> Bool {
-        isHovered && cardCount > 1
+    static func isExpanded(
+        isHovered: Bool,
+        isManuallyExpanded: Bool = false,
+        cardCount: Int
+    ) -> Bool {
+        (isHovered || isManuallyExpanded) && cardCount > 1
+    }
+
+    static func sanitizedManualExpansion(
+        isManuallyExpanded: Bool,
+        cardCount: Int
+    ) -> Bool {
+        cardCount > 1 ? isManuallyExpanded : false
+    }
+
+    static func pausesUndoCountdown(
+        isHovered: Bool,
+        isManuallyExpanded: Bool = false,
+        cardCount: Int
+    ) -> Bool {
+        isHovered || (isManuallyExpanded && cardCount > 1)
     }
 }

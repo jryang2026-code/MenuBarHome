@@ -1,3 +1,4 @@
+import { haRoundedInt } from "../core/haDomains.js";
 import { t } from "../core/i18n.js";
 import { IntentReply } from "../core/assistant.js";
 import {
@@ -477,8 +478,9 @@ function renderPrimaryDrawer(
           </button>
         </div>`);
       }
-      if (k.roomReading && k.currentHumidity !== null) {
-        rows.push(`<div class="cc-slider-label"><span>${t("湿度")}</span><strong>${Math.round(k.currentHumidity)}%</strong></div>`);
+      const roundedHumidity = k.roomReading ? haRoundedInt(k.currentHumidity) : null;
+      if (roundedHumidity !== null) {
+        rows.push(`<div class="cc-slider-label"><span>${t("湿度")}</span><strong>${roundedHumidity}%</strong></div>`);
       }
       if (k.statusText) {
         rows.push(`<div class="cc-slider-label"><span>${t("状态")}</span><span>${escapeHtml(k.statusText)}</span></div>`);

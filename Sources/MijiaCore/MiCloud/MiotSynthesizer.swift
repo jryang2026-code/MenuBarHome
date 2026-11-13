@@ -1163,7 +1163,7 @@ public enum MiotSynthesizer {
                     writable: $0.property.isWritable
                 )
             },
-            currentHumidity: humidity?.value?.doubleValue,
+            currentHumidity: humidity?.value?.doubleValue.flatMap { $0.isFinite ? $0 : nil },
             symbolName: profile?.symbol,
             roomReading: profile?.roomReading == true,
             heats: profile?.heats ?? (r.spec.shortName == "water-heater"),

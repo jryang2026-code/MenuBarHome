@@ -1297,8 +1297,8 @@ export const MiotSynthesizer = {
         aqVal !== null
           ? (aq?.prop.valueList?.find((i) => i.value === aqVal)?.description ?? null)
           : null;
-      const temperature = typeof temp?.val === "number" ? temp.val : null;
-      const humidity = typeof hum?.val === "number" ? hum.val : null;
+      const temperature = typeof temp?.val === "number" && Number.isFinite(temp.val) ? temp.val : null;
+      const humidity = typeof hum?.val === "number" && Number.isFinite(hum.val) ? hum.val : null;
       const filterLifePercent = typeof filterLife?.val === "number" ? Math.round(filterLife.val) : null;
 
       const onWritable = exposesWrite(on?.prop.access);
@@ -1602,7 +1602,7 @@ export const MiotSynthesizer = {
                 options: fan.prop.valueList?.map((i) => i.description) ?? [],
                 writable: exposesWrite(fan.prop.access),
               },
-        currentHumidity: typeof humidity?.val === "number" ? humidity.val : null,
+        currentHumidity: typeof humidity?.val === "number" && Number.isFinite(humidity.val) ? humidity.val : null,
         symbolName: applianceProfile?.symbol ?? null,
         roomReading: applianceProfile?.roomReading === true,
         heats: applianceProfile?.heats ?? deviceType === "water-heater",

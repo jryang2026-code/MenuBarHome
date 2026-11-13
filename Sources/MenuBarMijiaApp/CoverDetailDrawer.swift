@@ -247,13 +247,13 @@ struct HumidifierDetailDrawer: View {
                 .padding(-6)
             }
 
-            if let current = spec.currentHumidity {
+            if let current = spec.currentHumidity.flatMap(DeviceSynthesizer.roundedInt) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(L10n.tr("当前湿度", "Current humidity"))
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 8)
-                    DetailValueText(text: "\(Int(current.rounded()))%", color: statusColor)
+                    DetailValueText(text: "\(current)%", color: statusColor)
                 }
                 .padding(.horizontal, 8)
             }
