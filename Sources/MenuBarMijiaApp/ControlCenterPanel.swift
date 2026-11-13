@@ -5,7 +5,7 @@ import MijiaCore
 
 public struct ControlCenterPanel: View {
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.panelFoldRecord) private var panelFoldRecord
+    @Environment(\.panelFoldRecord) var panelFoldRecord
     @AppStorage(PanelPrefs.climatePanelKey) var climatePanelModule: Bool = true
     @State var draggingId: String?
     @State var activeResize: ActiveTileResize?
