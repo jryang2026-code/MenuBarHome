@@ -565,6 +565,7 @@ extension HomeStore {
             let pinyinFull = PanelSearch.Pinyin.syllables(dev.name)?.joined() ?? ""
             let roomPinyin = Self.pinyinInitials(of: displayRoom)
             let capabilities = Self.buildCapabilities(for: dev)
+            let snapshotTag: DeviceKindTag = dev.isSwitchedLight ? .light : dev.kind.tag
 
             return RaycastDeviceItem(
                 id: dev.id,
@@ -572,8 +573,8 @@ extension HomeStore {
                 roomId: dev.roomId,
                 roomName: displayRoom,
                 roomSortOrder: roomOrder,
-                category: dev.kind.tag.rawValue,
-                categoryTitle: dev.kind.tag.chipTitle,
+                category: snapshotTag.rawValue,
+                categoryTitle: snapshotTag.chipTitle,
                 model: dev.model,
                 stateText: dev.statusSubtitle,
                 isOnline: dev.isOnline,

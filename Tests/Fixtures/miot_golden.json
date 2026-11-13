@@ -4865,13 +4865,31 @@
       ]
     },
     {
+      "utterance": "关闭所有灯",
+      "isOn": false,
+      "ids": [
+        "did_light",
+        "group.living_lights",
+        "did_panel.s2",
+        "did_panel.s3"
+      ]
+    },
+    {
+      "utterance": "turn off all lights",
+      "isOn": false,
+      "ids": [
+        "did_light",
+        "group.living_lights",
+        "did_panel.s2",
+        "did_panel.s3"
+      ]
+    },
+    {
       "utterance": "关闭所有插座",
       "isOn": false,
       "ids": [
         "did_plug",
         "did_plug_unit",
-        "did_panel.s2",
-        "did_panel.s3",
         "did_power_centiwatt",
         "did_power_watt",
         "did_power_kw",
@@ -4887,8 +4905,6 @@
       "ids": [
         "did_plug",
         "did_plug_unit",
-        "did_panel.s2",
-        "did_panel.s3",
         "did_power_centiwatt",
         "did_power_watt",
         "did_power_kw",

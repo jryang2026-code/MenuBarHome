@@ -153,4 +153,107 @@ struct ManualControlPolicyTests {
         let lock = try #require(MiotDeviceSpec.inferFallbackSpec(model: "loock.lock.v1"))
         #expect(lock.services(named: "battery").first?.properties.first?.shortName == "battery-level")
     }
+
+    @Test("Switched lights skip manual confirmation, export as low-risk light in RaycastSnapshot, and allow low-risk HA companion switches")
+    @MainActor
+    func switchedLightsManualSnapshotAndHAFacets() async throws {
+        func makePlug(
+            id: String,
+            name: String,
+            model: String,
+            switchEntityId: String? = nil,
+            powerWritable: Bool = true
+        ) -> SmartDevice {
+            SmartDevice(
+                id: id,
+                name: name,
+                roomId: "kitchen",
+                roomName: "厨房",
+                model: model,
+                isOnline: true,
+                kind: .plug(PlugSpec(
+                    switchEntityId: switchEntityId ?? "switch.\(id)",
+                    isOn: false,
+                    powerWritable: powerWritable
+                ))
+            )
+        }
+
+        let positives: [SmartDevice] = [
+            makePlug(id: "sw_kitchen", name: "厨房灯", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "sw_downlight", name: "筒灯", model: "lemesh.switch.sw2f12"),
+            makePlug(id: "sw_en_light", name: "Kitchen Light", model: "lumi.switch.b1nacn02", switchEntityId: "switch.kitchen_light"),
+            makePlug(id: "sw_warm_strip", name: "暖光灯带", model: "cuco.plug.cp1"),
+            makePlug(id: "sw_lighting", name: "厨房照明", model: "090615.switch.09dh1")
+        ]
+
+        for dev in positives {
+            #expect(!ManualControlPolicy.requiresConfirmation(.power(true), for: dev), "\(dev.name) on should not confirm")
+            #expect(!ManualControlPolicy.requiresConfirmation(.power(false), for: dev), "\(dev.name) off should not confirm")
+        }
+
+        let negatives: [SmartDevice] = [
+            makePlug(id: "neg_steril", name: "杀菌灯", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "neg_uv_zh", name: "紫外线消毒灯", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "neg_uv_en", name: "UV灯", model: "cuco.plug.v3"),
+            makePlug(id: "neg_bath_heat", name: "浴霸取暖灯", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "neg_ir", name: "红外烤灯", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "neg_mosquito", name: "灭蚊灯", model: "cuco.plug.v3"),
+            makePlug(id: "neg_indicator", name: "路由器指示灯", model: "cuco.plug.v3"),
+            makePlug(id: "neg_desk_outlet_zh", name: "台灯插座", model: "cuco.plug.v3"),
+            makePlug(id: "neg_desk_outlet_en", name: "Desk Lamp Outlet", model: "cuco.plug.v3"),
+            makePlug(id: "neg_button", name: "厨房灯", model: "lumi.switch.b1nacn02", switchEntityId: "button.kitchen_light"),
+            makePlug(id: "neg_breaker", name: "厨房灯", model: "lumi.switch.b1nacn02", powerWritable: false),
+            makePlug(id: "neg_oven", name: "厨房灯", model: "chunmi.oven.s1")
+        ]
+
+        for dev in negatives {
+            #expect(ManualControlPolicy.requiresConfirmation(.power(true), for: dev), "\(dev.name) (\(dev.model)) should confirm")
+        }
+
+        let kitchenLight = positives[0]
+        let uvLamp = negatives[1]
+        let kitchenPlug = makePlug(id: "kitchen_plug", name: "厨房插座", model: "cuco.plug.cp1")
+
+        let suite = "test.switched.light.snapshot.\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        let provider = MockHomeProvider(
+            snapshot: SynthesizedHome(
+                rooms: [RoomArea(id: "kitchen", name: "厨房", sortOrder: 0)],
+                devices: [kitchenLight, uvLamp, kitchenPlug]
+            )
+        )
+        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        let snapshot = store.buildRaycastSnapshot()
+
+        let lightItem = try #require(snapshot.devices.first { $0.id == kitchenLight.id })
+        #expect(lightItem.capabilities.isHighRisk == false)
+        #expect(lightItem.category == "light")
+
+        let uvItem = try #require(snapshot.devices.first { $0.id == uvLamp.id })
+        #expect(uvItem.capabilities.isHighRisk == true)
+        #expect(uvItem.category == "plug")
+
+        let entity = HAEntityEntry(entity_id: "switch.kitchen_led", translation_key: "led")
+        let states = ["switch.kitchen_led": HAEntityState(entityId: "switch.kitchen_led", state: "on")]
+
+        let lightFacets = HAFacetEngine.controls(
+            entities: [entity],
+            states: states,
+            excluding: [],
+            device: kitchenLight
+        )
+        let lightFacet = try #require(lightFacets.first)
+        #expect(lightFacet.writesByDefault == true)
+
+        let plugFacets = HAFacetEngine.controls(
+            entities: [entity],
+            states: states,
+            excluding: [],
+            device: kitchenPlug
+        )
+        let plugFacet = try #require(plugFacets.first)
+        #expect(plugFacet.writesByDefault == false)
+    }
 }

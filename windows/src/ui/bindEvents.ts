@@ -705,7 +705,8 @@ import { bindPanelInput } from "./panelKeyboard.js";
         dev.kind.kind === "cover"
           ? !stopsMovingCover &&
             coverMotorRequiresConfirmation(dev.kind.subtype, nextOn ? "open" : "close")
-          : !stopsMovingCover && ManualControlPolicy.requiresConfirmation(powerIntent, host.devices);
+          : !stopsMovingCover &&
+            ManualControlPolicy.requiresConfirmation(powerIntent, withAliases(host.layout, host.devices));
       if (
         hazard &&
         !confirmHighRisk(dev.id, firstCmd, t(nextOn ? "打开{name}" : "关闭{name}", { name: dev.name }))

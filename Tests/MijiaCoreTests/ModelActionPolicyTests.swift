@@ -236,4 +236,107 @@ struct ModelActionPolicyTests {
         )
         #expect(strict.intents.map(\.targetId) == ["dev_study_desk"])
     }
+
+    @Test("Switched lights classified as .light auto-run and parse lighting commands, while hazardous or non-light plugs stay .plug")
+    func switchedLightsClassificationAndParsing() throws {
+        func makePlug(
+            id: String,
+            name: String,
+            model: String,
+            switchEntityId: String = "switch.\(UUID().uuidString.prefix(8))",
+            isOn: Bool = true,
+            powerWritable: Bool = true
+        ) -> SmartDevice {
+            SmartDevice(
+                id: id,
+                name: name,
+                roomId: "chu_fang",
+                roomName: "厨房",
+                model: model,
+                isOnline: true,
+                kind: .plug(PlugSpec(
+                    switchEntityId: switchEntityId,
+                    isOn: isOn,
+                    powerWritable: powerWritable
+                ))
+            )
+        }
+
+        let positives: [SmartDevice] = [
+            makePlug(id: "sw_kitchen", name: "厨房灯", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "sw_downlight", name: "筒灯", model: "lemesh.switch.sw2f12"),
+            makePlug(id: "sw_en_light", name: "Kitchen Light", model: "lumi.switch.b1nacn02", switchEntityId: "switch.kitchen_light"),
+            makePlug(id: "sw_warm_strip", name: "暖光灯带", model: "cuco.plug.cp1"),
+            makePlug(id: "sw_lighting", name: "厨房照明", model: "090615.switch.09dh1")
+        ]
+
+        for dev in positives {
+            #expect(IntentDeviceCategory(dev) == .light, "\(dev.name) should be .light")
+            #expect(
+                !ModelActionPolicy.needsConfirmation(
+                    DeviceIntent(targetId: dev.id, operation: .power(false)),
+                    devices: [dev]
+                ),
+                "\(dev.name) off should not need confirmation"
+            )
+            #expect(
+                !ModelActionPolicy.needsConfirmation(
+                    DeviceIntent(targetId: dev.id, operation: .power(true)),
+                    devices: [dev]
+                ),
+                "\(dev.name) on should not need confirmation"
+            )
+        }
+
+        let kitchenLight = positives[0]
+        let kitchenPlug = makePlug(id: "plug_kitchen", name: "厨房插座", model: "cuco.plug.cp1")
+
+        let offDecision = ModelActionPolicy.decide(
+            devices: [kitchenLight, kitchenPlug],
+            scenes: [],
+            payload: ModelDecisionPayload(actions: [
+                ChosenAction(
+                    intent: DeviceIntent(targetId: kitchenLight.id, operation: .power(false)),
+                    confidence: 0.95,
+                    primaryChoice: true
+                )
+            ])
+        )
+        #expect(offDecision.intents == [DeviceIntent(targetId: kitchenLight.id, operation: .power(false))])
+        #expect(offDecision.suggestions.isEmpty)
+
+        for utterance in ["关厨房灯", "把厨房的灯关了", "关灯"] {
+            let plan = try #require(
+                LocalIntentParser.parse(utterance, devices: [kitchenLight, kitchenPlug], scenes: []),
+                "LocalIntentParser should resolve \(utterance)"
+            )
+            #expect(plan.intents == [DeviceIntent(targetId: kitchenLight.id, operation: .power(false))], "\(utterance)")
+        }
+
+        let negatives: [SmartDevice] = [
+            makePlug(id: "neg_steril", name: "杀菌灯", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "neg_uv_zh", name: "紫外线消毒灯", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "neg_uv_en", name: "UV灯", model: "cuco.plug.v3"),
+            makePlug(id: "neg_bath_heat", name: "浴霸取暖灯", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "neg_ir", name: "红外烤灯", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "neg_mosquito", name: "灭蚊灯", model: "cuco.plug.v3"),
+            makePlug(id: "neg_indicator", name: "路由器指示灯", model: "cuco.plug.v3"),
+            makePlug(id: "neg_desk_outlet_zh", name: "台灯插座", model: "cuco.plug.v3"),
+            makePlug(id: "neg_desk_outlet_en", name: "Desk Lamp Outlet", model: "cuco.plug.v3"),
+            makePlug(id: "neg_button", name: "厨房灯", model: "lumi.switch.b1nacn02", switchEntityId: "button.kitchen_light"),
+            makePlug(id: "neg_breaker", name: "厨房灯", model: "lumi.switch.b1nacn02", powerWritable: false),
+            makePlug(id: "neg_oven", name: "厨房灯", model: "chunmi.oven.s1")
+        ]
+
+        for dev in negatives {
+            #expect(IntentDeviceCategory(dev) == .plug, "\(dev.name) (\(dev.model)) should stay .plug")
+            #expect(
+                ModelActionPolicy.needsConfirmation(
+                    DeviceIntent(targetId: dev.id, operation: .power(true)),
+                    devices: [dev]
+                ),
+                "\(dev.name) (\(dev.model)) power(true) should require confirmation"
+            )
+        }
+    }
 }
