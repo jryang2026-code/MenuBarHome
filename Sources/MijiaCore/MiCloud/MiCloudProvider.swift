@@ -472,19 +472,40 @@ public actor MiCloudProvider: HomeProvider {
         spec.type.split(separator: ":").dropFirst(5).first == "fallback"
     }
 
+    private struct HybridPropReadOutcome {
+        let values: [MiotPropKey: JSONValue]
+        let completedKeys: [MiotPropKey]
+        let cloudError: (any Error)?
+    }
+
     /// Reads the selected home's devices only (all homes when none is selected) (#26).
     @discardableResult
     private func poll(_ api: any MiCloudAPI, dids: Set<String>?) async throws -> Set<MiotPropKey> {
+        let outcome = try await pollOutcome(api, dids: dids)
+        if let cloudError = outcome.cloudError {
+            throw cloudError
+        }
+        return outcome.freshKeys
+    }
+
+    private func pollOutcome(
+        _ api: any MiCloudAPI,
+        dids: Set<String>?
+    ) async throws -> (freshKeys: Set<MiotPropKey>, cloudError: (any Error)?) {
         let scopedDevices = scopedDevicesAndRooms().devices
         let keys = propKeys(of: scopedDevices, dids: dids)
         var freshKeys: Set<MiotPropKey> = []
         if !keys.isEmpty {
-            let fresh = try await fetchPropsHybrid(api: api, keys: keys, scopedDevices: scopedDevices)
-            freshKeys = Set(fresh.keys)
+            let outcome = try await fetchPropsHybrid(api: api, keys: keys, scopedDevices: scopedDevices)
+            freshKeys = Set(outcome.values.keys)
             // getProps omits items with a non-zero code. A missing door-state must not keep the
             // previous locked/unlocked claim while the device list still says online (#149).
-            let requestedLocks = doorStateKeys(requested: keys)
-            Self.applyPropRead(&values, fresh: fresh, requestedLockKeys: requestedLocks)
+            let requestedLocks = doorStateKeys(requested: outcome.completedKeys)
+            Self.applyPropRead(&values, fresh: outcome.values, requestedLockKeys: requestedLocks)
+            if let cloudError = outcome.cloudError {
+                emitSnapshot(closesAwayGap: false)
+                return (freshKeys, cloudError)
+            }
         }
         if dids == nil {
             try await pollDoorbellEvents(api, scopedDevices: scopedDevices)
@@ -493,16 +514,17 @@ public actor MiCloudProvider: HomeProvider {
             pollsSinceContextChange += 1
         }
         emitSnapshot()
-        return freshKeys
+        return (freshKeys, nil)
     }
 
     private func fetchPropsHybrid(
         api: any MiCloudAPI,
         keys: [MiotPropKey],
         scopedDevices: [MiDeviceRecord]
-    ) async throws -> [MiotPropKey: JSONValue] {
+    ) async throws -> HybridPropReadOutcome {
         guard let localClient else {
-            return try await api.getProps(keys)
+            let cloudValues = try await api.getProps(keys)
+            return HybridPropReadOutcome(values: cloudValues, completedKeys: keys, cloudError: nil)
         }
 
         var recordByDid: [String: MiDeviceRecord] = [:]
@@ -524,6 +546,7 @@ public actor MiCloudProvider: HomeProvider {
         }
 
         var combined: [MiotPropKey: JSONValue] = [:]
+        var lanAnsweredKeys: [MiotPropKey] = []
         if !lanKeysByDid.isEmpty {
             struct LANPollResult: Sendable {
                 let did: String
@@ -558,6 +581,7 @@ public actor MiCloudProvider: HomeProvider {
                     if !resultValues.isEmpty || outcome.keys.isEmpty {
                         recordLANSuccess(did: outcome.did)
                         combined.merge(resultValues) { _, new in new }
+                        lanAnsweredKeys.append(contentsOf: outcome.keys)
                     }
                     if !missingKeys.isEmpty {
                         cloudKeys.append(contentsOf: missingKeys)
@@ -567,10 +591,25 @@ public actor MiCloudProvider: HomeProvider {
         }
 
         if !cloudKeys.isEmpty {
-            let cloudValues = try await api.getProps(cloudKeys)
-            combined.merge(cloudValues) { _, new in new }
+            do {
+                let cloudValues = try await api.getProps(cloudKeys)
+                combined.merge(cloudValues) { _, new in new }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch MiCloudError.sessionExpired {
+                throw MiCloudError.sessionExpired
+            } catch {
+                if combined.isEmpty {
+                    throw error
+                }
+                return HybridPropReadOutcome(
+                    values: combined,
+                    completedKeys: lanAnsweredKeys,
+                    cloudError: error
+                )
+            }
         }
-        return combined
+        return HybridPropReadOutcome(values: combined, completedKeys: keys, cloudError: nil)
     }
 
     // MARK: - Hybrid LAN Eligibility & Cooldown
@@ -919,11 +958,14 @@ public actor MiCloudProvider: HomeProvider {
         let did = record.miotDid
         do {
             // Only a full poll may clear home-wide staleness; this read refreshes one device.
-            let fresh = try await poll(api, dids: [did])
+            let outcome = try await pollOutcome(api, dids: [did])
+            if let cloudError = outcome.cloudError {
+                report(cloudError)
+            }
             let powerKeys = service.properties.filter { ["on", "status"].contains($0.shortName) }.map {
                 MiotPropKey(did: did, siid: service.iid, piid: $0.iid)
             }
-            guard powerKeys.contains(where: { fresh.contains($0) }) else { return .failed }
+            guard powerKeys.contains(where: { outcome.freshKeys.contains($0) }) else { return .failed }
             return .published
         } catch {
             report(error)

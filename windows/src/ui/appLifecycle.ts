@@ -580,6 +580,10 @@ export class ResumeRecoveryController {
     this.sawOffline = true;
     this.pendingTriggers.delete("visibility");
     this.pendingTriggers.delete("focus");
+    this.pendingTriggers.delete("online");
+    if (this.host.settings.connectionMode === "xiaomiCloud") {
+      this.pendingTriggers.delete("resume");
+    }
     if (this.pendingTriggers.size === 0) {
       this.clearPendingTimer();
       this.burstStartedAtMs = null;
@@ -598,6 +602,15 @@ export class ResumeRecoveryController {
       return;
     }
     if (kind === "online") {
+      if (!this.isNavigatorOnline()) {
+        this.sawOffline = true;
+        this.pendingTriggers.delete("online");
+        if (this.pendingTriggers.size === 0) {
+          this.clearPendingTimer();
+          this.burstStartedAtMs = null;
+        }
+        return;
+      }
       this.sawOffline = false;
     } else if (kind === "resume" && this.isNavigatorOnline()) {
       this.sawOffline = false;
@@ -624,6 +637,9 @@ export class ResumeRecoveryController {
     this.burstStartedAtMs = null;
 
     if (this.disposed || !isLifecycleHostAttached(this.host)) return;
+    if (this.sawOffline || !this.isNavigatorOnline()) {
+      triggers.delete("online");
+    }
     if (triggers.size === 0 || !canRefreshDevicesInBackground(this.host)) return;
 
     const hasNetworkOrSystemResume = triggers.has("online") || triggers.has("resume");
@@ -633,7 +649,6 @@ export class ResumeRecoveryController {
     // A show/focus burst that already hid again before debounce settled needs no refresh.
     if (!hasNetworkOrSystemResume && !docVisible) return;
     if (
-      !hasNetworkOrSystemResume &&
       this.host.settings.connectionMode === "xiaomiCloud" &&
       (this.sawOffline || !this.isNavigatorOnline())
     ) {

@@ -416,6 +416,63 @@ describe("ResumeRecoveryController deterministic lifecycle hardening", () => {
     assert.deepEqual(host.refreshCalls, [true, true]);
   });
 
+  it("drops queued online/resume recovery when connectivity goes offline before debounce, preserving cooldown for real reconnect", () => {
+    const scheduler = new FakeLifecycleScheduler(10_000);
+    let navOnline = true;
+    const cloudHost = createMockHost({
+      lastCloudRefreshAt: 9_800,
+      cloudValuesStale: true,
+    });
+    const cloudController = new ResumeRecoveryController(cloudHost, {
+      scheduler,
+      isDocumentVisible: () => false,
+      isWindowFocused: () => false,
+      isNavigatorOnline: () => navOnline,
+    });
+
+    cloudController.trigger("online");
+    cloudController.trigger("resume");
+    scheduler.advanceBy(50);
+    navOnline = false;
+    cloudController.noteOffline();
+    assert.equal(cloudController.hasPendingFlush, false);
+
+    scheduler.advanceBy(RESUME_BURST_DEBOUNCE_MS);
+    assert.equal(cloudHost.refreshCalls.length, 0);
+
+    // Real reconnect within cooldown still fires immediately after debounce because cooldown was not poisoned.
+    scheduler.advanceBy(500);
+    navOnline = true;
+    cloudController.trigger("online");
+    scheduler.advanceBy(RESUME_BURST_DEBOUNCE_MS);
+    assert.deepEqual(cloudHost.refreshCalls, [true]);
+
+    const haHost = createMockHost({
+      settings: { connectionMode: "homeAssistant", miSession: null },
+      lastCloudRefreshAt: 9_800,
+      cloudValuesStale: true,
+    });
+    const haController = new ResumeRecoveryController(haHost, {
+      scheduler,
+      isDocumentVisible: () => false,
+      isWindowFocused: () => false,
+      isNavigatorOnline: () => navOnline,
+    });
+
+    haController.trigger("online");
+    scheduler.advanceBy(50);
+    // Simulate connectivity dropping without noteOffline() before flush executes.
+    navOnline = false;
+    scheduler.advanceBy(RESUME_BURST_DEBOUNCE_MS);
+    assert.equal(haHost.refreshCalls.length, 0);
+
+    scheduler.advanceBy(500);
+    navOnline = true;
+    haController.trigger("online");
+    scheduler.advanceBy(RESUME_BURST_DEBOUNCE_MS);
+    assert.deepEqual(haHost.refreshCalls, [true]);
+  });
+
   it("respects onboarding/settings/QR/syncing guards and cancels pending debounce on dispose", () => {
     const scheduler = new FakeLifecycleScheduler(50_000);
     const host = createMockHost({ lastCloudRefreshAt: 0, activeSheet: "settings" });
