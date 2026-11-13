@@ -281,6 +281,13 @@ describe("Panel keyboard on the rendered demo", () => {
     assert.ok(range);
     range.focus();
 
+    key(" ");
+    key("q");
+    await setImmediate();
+    const beforeEscLight = app.devices.find((item) => item.id === "one")!;
+    assert.equal(beforeEscLight.kind.kind === "light" && beforeEscLight.kind.isOn, false);
+    assert.equal(app.panelSearch.query, "书房");
+
     key("Escape");
     assert.equal(app.expandedDeviceId, null);
     assert.equal(app.panelSearch.query, "书房");

@@ -157,12 +157,12 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
   const input = host.root.querySelector<HTMLInputElement>("#command-input");
   const active = document.activeElement;
   const inInput = active === input;
-  const isRange = Boolean(active?.matches("input[type='range']"));
   const isEditable = Boolean(
     active?.matches(
       "input:not([type='range']):not([type='checkbox']):not([type='radio']):not([type='button']), textarea, select, [contenteditable='true']",
     ),
   );
+  const isNonTextInput = Boolean(active?.matches("input")) && !inInput && !isEditable;
   if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "f") {
     if (isEditable && !inInput) return false;
     event.preventDefault();
@@ -174,7 +174,6 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
   }
   if (event.ctrlKey || event.metaKey || event.altKey) return false;
   if (isEditable && !inInput) return true;
-  if (isRange && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return true;
   if (active?.closest("button, a[href], [role='button'], [role='link']") &&
       [" ", "Enter", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return true;
   const hasSubpage = Boolean(host.root.querySelector(".cc-tile.is-subpage"));
@@ -194,6 +193,7 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
   if (event.key === "Escape" && host.panelSearch.selectedDeviceId) {
     event.preventDefault(); host.panelSearch.selectedDeviceId = null; syncPanelSelection(host); return true;
   }
+  if (isNonTextInput) return event.key !== "Escape";
   const hasQuery = Boolean(normalizeSearch(host.panelSearch.query));
   if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     const cards = tiles(host);
