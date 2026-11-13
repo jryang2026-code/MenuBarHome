@@ -532,11 +532,12 @@ struct CoreReleaseAuditTests {
         let indexFile = cacheDir.appendingPathComponent("miot-instances.json")
         try Data(#"{"instances":[]}"#.utf8).write(to: indexFile)
 
+        let mirrorCount = MiotSpecStore.defaultMirrorBaseURLs.count
         let indexCalls = ScriptedTransport.Counter()
         let transport = ScriptedTransport { req in
             let url = req.url!.absoluteString
             if url.contains("instances?status=released") {
-                if indexCalls.increment() == 1 {
+                if indexCalls.increment() <= mirrorCount {
                     return (200, [:], "<html>Captive Portal Login</html>")
                 }
                 return (
@@ -558,7 +559,7 @@ struct CoreReleaseAuditTests {
         // Subsequent call retries cleanly instead of staying stuck on an empty memoized dictionary.
         let loaded = try await store.spec(model: "acme.light.test1", specType: nil)
         #expect(loaded != nil)
-        #expect(indexCalls.increment() == 3)
+        #expect(indexCalls.increment() == mirrorCount + 2)
     }
 
     // MARK: - F28: MiAccountLogin Empty Long-Poll Keepalive

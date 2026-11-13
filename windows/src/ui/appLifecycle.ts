@@ -2,6 +2,7 @@ import { finishPanelComposition, handlePanelKey } from "./panelKeyboard.js";
 import { processScheduledCommands } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
+import { isHostAttachedToActiveWindow, type OptimisticLockRootLike } from "../core/optimisticLock.js";
 import {
   UPDATE_RELEASES_PAGE,
   UPDATE_RELEASES_URL,
@@ -463,98 +464,547 @@ export async function applyGlobalHotkey(host: MenuMijiaWindowsApp): Promise<void
     }
   }
 
-export function bindGlobalKeys(host: MenuMijiaWindowsApp): void {
-    window.addEventListener("blur", () => finishPanelComposition(host));
-    window.addEventListener("keydown", (e) => {
-      if (host.isRecordingHotkey) {
-        e.preventDefault();
-        e.stopPropagation();
-        const outcome = recordShortcutFromKeyEvent(e);
-        if (outcome.kind === "cancel") {
-          host.isRecordingHotkey = false;
-          host.hotkeyNeedsHint = false;
-          host.render();
-        } else if (outcome.kind === "invalid") {
-          host.hotkeyNeedsHint = true;
-          host.render();
-        } else if (outcome.kind === "recorded") {
-          host.isRecordingHotkey = false;
-          host.hotkeyNeedsHint = false;
-          host.settings.globalHotkey = outcome.shortcut;
-          host.saveSettings();
-          void host.applyGlobalHotkey();
-          host.render();
+export const RESUME_BURST_DEBOUNCE_MS = 180;
+export const RESUME_MAX_DELAY_MS = 1_000;
+export const RESUME_RECOVERY_COOLDOWN_MS = 2_000;
+
+export interface LifecycleScheduler {
+  readonly now: () => number;
+  readonly setTimeout: (handler: () => void, delayMs: number) => unknown;
+  readonly clearTimeout: (handle: unknown) => void;
+  readonly setInterval: (handler: () => void, intervalMs: number) => unknown;
+  readonly clearInterval: (handle: unknown) => void;
+}
+
+/** Reads timer globals on the target window dynamically so test stubs continue to intercept them. */
+export function createWindowLifecycleScheduler(win: Window = window): LifecycleScheduler {
+  return {
+    now: () => Date.now(),
+    setTimeout: (handler, delayMs) => win.setTimeout(handler, delayMs),
+    clearTimeout: (handle) => win.clearTimeout(handle as number),
+    setInterval: (handler, intervalMs) => win.setInterval(handler, intervalMs),
+    clearInterval: (handle) => win.clearInterval(handle as number),
+  };
+}
+
+export interface LifecycleEventTarget {
+  addEventListener(type: string, listener: (event: Event) => void): void;
+  removeEventListener(type: string, listener: (event: Event) => void): void;
+}
+
+export type ResumeTrigger = "visibility" | "focus" | "online" | "resume";
+
+export interface ResumeRecoveryHost {
+  readonly settings: {
+    readonly connectionMode: string;
+    readonly miSession: unknown;
+  };
+  readonly activeSheet: string;
+  readonly isSyncingCloud: boolean;
+  readonly isPollingQR: boolean;
+  readonly lastCloudRefreshAt: number | null;
+  readonly cloudValuesStale: boolean;
+  readonly haConnectionError: string | null;
+  readonly root?: OptimisticLockRootLike;
+  isPanelVisible(): boolean;
+  refreshDevices(silent?: boolean): Promise<void>;
+}
+
+export interface ResumeRecoveryOptions {
+  readonly scheduler?: LifecycleScheduler;
+  readonly debounceMs?: number;
+  readonly maxDelayMs?: number;
+  readonly recoveryCooldownMs?: number;
+  readonly isDocumentVisible?: () => boolean;
+  readonly isWindowFocused?: () => boolean;
+  readonly isNavigatorOnline?: () => boolean;
+}
+
+export interface BindLifecycleRecoveryOptions extends ResumeRecoveryOptions {
+  readonly window?: LifecycleEventTarget;
+  readonly document?: LifecycleEventTarget;
+  readonly onPageHide?: () => void;
+}
+
+function isLifecycleHostAttached(host: { readonly root?: OptimisticLockRootLike }): boolean {
+  return isHostAttachedToActiveWindow({
+    sourceRevision: 0,
+    devices: [],
+    ...(host.root ? { root: host.root } : {}),
+  });
+}
+
+export function canRefreshDevicesInBackground(host: ResumeRecoveryHost): boolean {
+  const hasActiveSource =
+    host.settings.connectionMode === "homeAssistant" ||
+    (host.settings.connectionMode === "xiaomiCloud" && Boolean(host.settings.miSession));
+  return (
+    hasActiveSource &&
+    host.activeSheet === "none" &&
+    !host.isSyncingCloud &&
+    !host.isPollingQR
+  );
+}
+
+/**
+ * Coalesces `visibilitychange` / `focus` / `online` / `resume` bursts into a single
+ * bounded recovery refresh while preventing duplicate backend storms and stale hidden timers.
+ */
+export class ResumeRecoveryController {
+  private readonly scheduler: LifecycleScheduler;
+  private readonly debounceMs: number;
+  private readonly maxDelayMs: number;
+  private readonly recoveryCooldownMs: number;
+  private readonly isDocumentVisible: () => boolean;
+  private readonly isWindowFocused: () => boolean;
+  private readonly isNavigatorOnline: () => boolean;
+
+  private disposed = false;
+  private pendingTimer: unknown | null = null;
+  private burstStartedAtMs: number | null = null;
+  private readonly pendingTriggers = new Set<ResumeTrigger>();
+  private lastRecoveryTriggeredAtMs: number | null = null;
+  private sawOffline = false;
+
+  constructor(
+    private readonly host: ResumeRecoveryHost,
+    options: ResumeRecoveryOptions = {},
+  ) {
+    this.scheduler = options.scheduler ?? createWindowLifecycleScheduler();
+    this.debounceMs = Math.max(0, options.debounceMs ?? RESUME_BURST_DEBOUNCE_MS);
+    this.maxDelayMs = Math.max(this.debounceMs, options.maxDelayMs ?? RESUME_MAX_DELAY_MS);
+    this.recoveryCooldownMs = Math.max(0, options.recoveryCooldownMs ?? RESUME_RECOVERY_COOLDOWN_MS);
+    this.isDocumentVisible =
+      options.isDocumentVisible ??
+      (() => (typeof document === "undefined" ? true : document.visibilityState !== "hidden"));
+    this.isWindowFocused =
+      options.isWindowFocused ??
+      (() => (typeof document === "undefined" ? true : document.hasFocus()));
+    this.isNavigatorOnline =
+      options.isNavigatorOnline ??
+      (() => (typeof navigator === "undefined" || typeof navigator.onLine !== "boolean" ? true : navigator.onLine));
+  }
+
+  public get isDisposed(): boolean {
+    return this.disposed;
+  }
+
+  public get hasPendingFlush(): boolean {
+    return this.pendingTimer !== null;
+  }
+
+  public noteOffline(): void {
+    if (this.disposed) return;
+    this.sawOffline = true;
+    this.pendingTriggers.delete("visibility");
+    this.pendingTriggers.delete("focus");
+    this.pendingTriggers.delete("online");
+    if (this.host.settings.connectionMode === "xiaomiCloud") {
+      this.pendingTriggers.delete("resume");
+    }
+    if (this.pendingTriggers.size === 0) {
+      this.clearPendingTimer();
+      this.burstStartedAtMs = null;
+    }
+  }
+
+  public trigger(kind: ResumeTrigger): void {
+    if (this.disposed || !isLifecycleHostAttached(this.host)) return;
+    if (kind === "visibility" && !this.isDocumentVisible()) {
+      this.pendingTriggers.delete("visibility");
+      this.pendingTriggers.delete("focus");
+      if (this.pendingTriggers.size === 0) {
+        this.clearPendingTimer();
+        this.burstStartedAtMs = null;
+      }
+      return;
+    }
+    if (kind === "online") {
+      if (!this.isNavigatorOnline()) {
+        this.sawOffline = true;
+        this.pendingTriggers.delete("online");
+        if (this.pendingTriggers.size === 0) {
+          this.clearPendingTimer();
+          this.burstStartedAtMs = null;
         }
         return;
       }
+      this.sawOffline = false;
+    } else if (kind === "resume" && this.isNavigatorOnline()) {
+      this.sawOffline = false;
+    }
 
-      if (handlePanelKey(host, e)) return;
+    this.pendingTriggers.add(kind);
+    const now = this.scheduler.now();
+    if (this.burstStartedAtMs === null) {
+      this.burstStartedAtMs = now;
+    }
+    const maxDeadline = this.burstStartedAtMs + this.maxDelayMs;
+    const delay = Math.max(0, Math.min(this.debounceMs, maxDeadline - now));
 
-      if (e.key === "Escape") {
-        if (host.isGrokBallStageExpanded) {
-          host.setGrokBallStageExpanded(false);
-          return;
-        }
-        if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
-          host.cameraLive.hideCameraLiveView();
-          return;
-        }
-        if (hasPendingUrlConfirmation(host)) {
-          dismissPendingUrlConfirmation(host, false);
-          return;
-        }
-        if (host.activeSheet !== "none") {
-          host.activeSheet = "none";
-          host.isRecordingHotkey = false;
-          host.hotkeyNeedsHint = false;
-          invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
-          host.render();
-        } else {
-          resumeUndoHoverPause(host);
-          invokeTauriVoid("hide_panel");
-        }
-      } else if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && document.activeElement?.tagName !== "INPUT") {
-        e.preventDefault();
-        host.isShowingAssistantBar = true;
-        host.render();
-        host.root.querySelector<HTMLInputElement>("#command-input")?.focus();
-      }
-    });
+    this.clearPendingTimer();
+    this.pendingTimer = this.scheduler.setTimeout(() => {
+      this.flush();
+    }, delay);
   }
 
-export function startTimerLoop(host: MenuMijiaWindowsApp): void {
-    window.setInterval(() => {
-      if (host.pendingCloudRender && !host.hasBlockingPanelInteraction()) {
-        host.render();
-      }
+  public flush(): void {
+    this.pendingTimer = null;
+    const triggers = new Set(this.pendingTriggers);
+    this.pendingTriggers.clear();
+    this.burstStartedAtMs = null;
 
-      host.maybeRefreshProactiveInBackground();
+    if (this.disposed || !isLifecycleHostAttached(this.host)) return;
+    if (this.sawOffline || !this.isNavigatorOnline()) {
+      triggers.delete("online");
+    }
+    if (triggers.size === 0 || !canRefreshDevicesInBackground(this.host)) return;
 
-      const now = Date.now();
-      host.syncGrokBallEmotion();
-      // An expired undo row is a background change: defer its paint past a gesture. Scheduled
-      // commands that just ran may render at once (CODING_STANDARDS.md section 16).
-      let undoExpired = false;
-      if (!isUndoHoverPaused(host) && host.lastUndoAction && host.lastUndoAction.expiresAtMs <= now) {
-        host.lastUndoAction = null;
-        undoExpired = true;
-      }
-      const miExpiryChanged = didMiExpiryKindChange(host, now);
+    const hasNetworkOrSystemResume = triggers.has("online") || triggers.has("resume");
+    const docVisible = this.isDocumentVisible();
+    const winFocused = this.isWindowFocused();
 
-      if (runWithScheduledTimerTickExemption(() => processScheduledCommands(host, now))) {
-        host.render();
-      } else if (undoExpired || miExpiryChanged) {
-        host.queueBackgroundRender();
-      }
+    // A show/focus burst that already hid again before debounce settled needs no refresh.
+    if (!hasNetworkOrSystemResume && !docVisible) return;
+    if (
+      this.host.settings.connectionMode === "xiaomiCloud" &&
+      (this.sawOffline || !this.isNavigatorOnline())
+    ) {
+      return;
+    }
 
+    const now = this.scheduler.now();
+    if (
+      this.lastRecoveryTriggeredAtMs !== null &&
+      now - this.lastRecoveryTriggeredAtMs < this.recoveryCooldownMs
+    ) {
+      return;
+    }
+
+    const isStaleOrErrored = this.host.cloudValuesStale || this.host.haConnectionError !== null;
+    if (hasNetworkOrSystemResume) {
       if (
-        (host.settings.connectionMode === "homeAssistant" || host.settings.connectionMode === "xiaomiCloud" && host.settings.miSession) &&
-        host.activeSheet === "none" &&
-        !host.isSyncingCloud &&
-        !host.isPollingQR &&
-        cloudRefreshDue(now, host.lastCloudRefreshAt, host.isPanelVisible())
+        !isStaleOrErrored &&
+        this.host.lastCloudRefreshAt !== null &&
+        now - this.host.lastCloudRefreshAt < this.recoveryCooldownMs
       ) {
-        void host.refreshDevices(true);
+        return;
       }
-    }, 1000);
+    } else {
+      const panelVisible = docVisible && (winFocused || triggers.has("visibility") || this.host.isPanelVisible());
+      const due = cloudRefreshDue(now, this.host.lastCloudRefreshAt, panelVisible);
+      if (!due && !isStaleOrErrored) {
+        return;
+      }
+      if (
+        isStaleOrErrored &&
+        this.host.lastCloudRefreshAt !== null &&
+        now - this.host.lastCloudRefreshAt < this.recoveryCooldownMs
+      ) {
+        return;
+      }
+    }
+
+    this.lastRecoveryTriggeredAtMs = now;
+    void Promise.resolve(this.host.refreshDevices(true)).catch(() => undefined);
   }
+
+  public dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.clearPendingTimer();
+    this.pendingTriggers.clear();
+    this.burstStartedAtMs = null;
+  }
+
+  private clearPendingTimer(): void {
+    if (this.pendingTimer !== null) {
+      this.scheduler.clearTimeout(this.pendingTimer);
+      this.pendingTimer = null;
+    }
+  }
+}
+
+interface HostLifecycleState {
+  disposed: boolean;
+  timerIntervalHandle: unknown | null;
+  timerScheduler: LifecycleScheduler | null;
+  keyDisposers: Array<() => void>;
+  recoveryController: ResumeRecoveryController | null;
+  recoveryDisposers: Array<() => void>;
+}
+
+const hostLifecycles = new WeakMap<object, HostLifecycleState>();
+
+function ensureLifecycleState(host: object): HostLifecycleState {
+  let state = hostLifecycles.get(host);
+  if (!state) {
+    state = {
+      disposed: false,
+      timerIntervalHandle: null,
+      timerScheduler: null,
+      keyDisposers: [],
+      recoveryController: null,
+      recoveryDisposers: [],
+    };
+    hostLifecycles.set(host, state);
+  }
+  return state;
+}
+
+function clearKeyListeners(state: HostLifecycleState): void {
+  for (const stop of state.keyDisposers.splice(0)) stop();
+}
+
+function clearRecoveryListeners(state: HostLifecycleState): void {
+  state.recoveryController?.dispose();
+  state.recoveryController = null;
+  for (const stop of state.recoveryDisposers.splice(0)) stop();
+}
+
+function clearTimerInterval(state: HostLifecycleState): void {
+  if (state.timerIntervalHandle !== null && state.timerScheduler) {
+    state.timerScheduler.clearInterval(state.timerIntervalHandle);
+  }
+  state.timerIntervalHandle = null;
+  state.timerScheduler = null;
+}
+
+/** Idempotently cancels all tracked timers, debounce tasks, and global listeners for `host`. */
+export function disposeAppLifecycle(host: object): void {
+  const state = hostLifecycles.get(host);
+  if (!state || state.disposed) return;
+  state.disposed = true;
+  clearTimerInterval(state);
+  clearRecoveryListeners(state);
+  clearKeyListeners(state);
+}
+
+function listen(
+  target: LifecycleEventTarget,
+  type: string,
+  handler: (event: Event) => void,
+): () => void {
+  target.addEventListener(type, handler);
+  return () => target.removeEventListener(type, handler);
+}
+
+export function bindLifecycleRecovery(
+  host: ResumeRecoveryHost,
+  options: BindLifecycleRecoveryOptions = {},
+): () => void {
+  const state = ensureLifecycleState(host);
+  clearRecoveryListeners(state);
+  state.disposed = false;
+
+  const ownerWin = (options.window ??
+    host.root?.ownerDocument?.defaultView ??
+    window) as LifecycleEventTarget;
+  const ownerDoc = (options.document ??
+    host.root?.ownerDocument ??
+    document) as LifecycleEventTarget;
+
+  const controller = new ResumeRecoveryController(host, options);
+  state.recoveryController = controller;
+
+  const onVisibilityChange = () => {
+    if (state.disposed || !isLifecycleHostAttached(host)) {
+      disposeAppLifecycle(host);
+      return;
+    }
+    controller.trigger("visibility");
+  };
+  const onFocus = () => {
+    if (state.disposed || !isLifecycleHostAttached(host)) {
+      disposeAppLifecycle(host);
+      return;
+    }
+    controller.trigger("focus");
+  };
+  const onOnline = () => {
+    if (state.disposed || !isLifecycleHostAttached(host)) {
+      disposeAppLifecycle(host);
+      return;
+    }
+    controller.trigger("online");
+  };
+  const onOffline = () => {
+    if (state.disposed || !isLifecycleHostAttached(host)) {
+      disposeAppLifecycle(host);
+      return;
+    }
+    controller.noteOffline();
+  };
+  const onResume = () => {
+    if (state.disposed || !isLifecycleHostAttached(host)) {
+      disposeAppLifecycle(host);
+      return;
+    }
+    controller.trigger("resume");
+  };
+  const onPageHide = () => {
+    if (options.onPageHide) {
+      options.onPageHide();
+    } else {
+      disposeAppLifecycle(host);
+    }
+  };
+
+  state.recoveryDisposers.push(
+    listen(ownerDoc, "visibilitychange", onVisibilityChange),
+    listen(ownerDoc, "resume", onResume),
+    listen(ownerWin, "focus", onFocus),
+    listen(ownerWin, "online", onOnline),
+    listen(ownerWin, "offline", onOffline),
+    listen(ownerWin, "menumijia:resume", onResume),
+    listen(ownerWin, "pagehide", onPageHide),
+  );
+
+  return () => {
+    clearRecoveryListeners(state);
+  };
+}
+
+export function bindGlobalKeys(
+  host: MenuMijiaWindowsApp,
+  options: { readonly window?: LifecycleEventTarget } = {},
+): () => void {
+  const state = ensureLifecycleState(host);
+  clearKeyListeners(state);
+  state.disposed = false;
+
+  const ownerWin = (options.window ??
+    host.root.ownerDocument?.defaultView ??
+    window) as LifecycleEventTarget;
+
+  const onBlur = () => {
+    if (state.disposed || !isLifecycleHostAttached(host)) {
+      disposeAppLifecycle(host);
+      return;
+    }
+    finishPanelComposition(host);
+  };
+
+  const onKeyDown = (event: Event) => {
+    if (state.disposed || !isLifecycleHostAttached(host)) {
+      disposeAppLifecycle(host);
+      return;
+    }
+    const e = event as KeyboardEvent;
+    if (host.isRecordingHotkey) {
+      e.preventDefault();
+      e.stopPropagation();
+      const outcome = recordShortcutFromKeyEvent(e);
+      if (outcome.kind === "cancel") {
+        host.isRecordingHotkey = false;
+        host.hotkeyNeedsHint = false;
+        host.render();
+      } else if (outcome.kind === "invalid") {
+        host.hotkeyNeedsHint = true;
+        host.render();
+      } else if (outcome.kind === "recorded") {
+        host.isRecordingHotkey = false;
+        host.hotkeyNeedsHint = false;
+        host.settings.globalHotkey = outcome.shortcut;
+        host.saveSettings();
+        void host.applyGlobalHotkey();
+        host.render();
+      }
+      return;
+    }
+
+    if (handlePanelKey(host, e)) return;
+
+    if (e.key === "Escape") {
+      if (host.isGrokBallStageExpanded) {
+        host.setGrokBallStageExpanded(false);
+        return;
+      }
+      if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
+        host.cameraLive.hideCameraLiveView();
+        return;
+      }
+      if (hasPendingUrlConfirmation(host)) {
+        dismissPendingUrlConfirmation(host, false);
+        return;
+      }
+      if (host.activeSheet !== "none") {
+        host.activeSheet = "none";
+        host.isRecordingHotkey = false;
+        host.hotkeyNeedsHint = false;
+        invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
+        host.render();
+      } else {
+        resumeUndoHoverPause(host);
+        invokeTauriVoid("hide_panel");
+      }
+    } else if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && document.activeElement?.tagName !== "INPUT") {
+      e.preventDefault();
+      host.isShowingAssistantBar = true;
+      host.render();
+      host.root.querySelector<HTMLInputElement>("#command-input")?.focus();
+    }
+  };
+
+  state.keyDisposers.push(
+    listen(ownerWin, "blur", onBlur),
+    listen(ownerWin, "keydown", onKeyDown),
+  );
+
+  return () => {
+    clearKeyListeners(state);
+  };
+}
+
+export function startTimerLoop(
+  host: MenuMijiaWindowsApp,
+  options: { readonly scheduler?: LifecycleScheduler; readonly intervalMs?: number } = {},
+): () => void {
+  const state = ensureLifecycleState(host);
+  clearTimerInterval(state);
+  state.disposed = false;
+
+  const ownerWin = host.root.ownerDocument?.defaultView ?? window;
+  const scheduler = options.scheduler ?? createWindowLifecycleScheduler(ownerWin);
+  state.timerScheduler = scheduler;
+  state.timerIntervalHandle = scheduler.setInterval(() => {
+    if (state.disposed || !isLifecycleHostAttached(host)) {
+      disposeAppLifecycle(host);
+      return;
+    }
+
+    if (host.pendingCloudRender && !host.hasBlockingPanelInteraction()) {
+      host.render();
+    }
+
+    host.maybeRefreshProactiveInBackground();
+
+    const now = scheduler.now();
+    host.syncGrokBallEmotion();
+    // An expired undo row is a background change: defer its paint past a gesture. Scheduled
+    // commands that just ran may render at once (CODING_STANDARDS.md section 16).
+    let undoExpired = false;
+    if (!isUndoHoverPaused(host) && host.lastUndoAction && host.lastUndoAction.expiresAtMs <= now) {
+      host.lastUndoAction = null;
+      undoExpired = true;
+    }
+    const miExpiryChanged = didMiExpiryKindChange(host, now);
+
+    if (runWithScheduledTimerTickExemption(() => processScheduledCommands(host, now))) {
+      host.render();
+    } else if (undoExpired || miExpiryChanged) {
+      host.queueBackgroundRender();
+    }
+
+    if (
+      canRefreshDevicesInBackground(host) &&
+      cloudRefreshDue(now, host.lastCloudRefreshAt, host.isPanelVisible())
+    ) {
+      void host.refreshDevices(true);
+    }
+  }, options.intervalMs ?? 1000);
+
+  return () => {
+    clearTimerInterval(state);
+  };
+}

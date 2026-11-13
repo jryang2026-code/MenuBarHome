@@ -1,0 +1,24 @@
+{
+  "_fixture": {
+    "endpoint": "UDP miIO get_properties (port 54321)",
+    "captured": "2026-11-13",
+    "sanitised": "dids replaced with synthetic values; representative mixed code-0 and all-nonzero MIoT property envelopes",
+    "shape": "decrypted miIO JSON-RPC envelopes {id, result} with code-0 values, default-did omission, and non-zero MIoT error codes"
+  },
+  "mixedReply": {
+    "id": 101,
+    "result": [
+      {"did": "did-light-0001", "siid": 2, "piid": 1, "value": true, "code": 0},
+      {"did": "did-light-0001", "siid": 2, "piid": 2, "value": 80, "code": 0},
+      {"siid": 2, "piid": 3, "value": 4200, "code": 0},
+      {"did": "did-light-0001", "siid": 2, "piid": 99, "value": null, "code": -4004}
+    ]
+  },
+  "allNonzeroLockReply": {
+    "id": 102,
+    "result": [
+      {"did": "did-lock-0001", "siid": 2, "piid": 1, "code": -4004},
+      {"did": "did-lock-0001", "siid": 3, "piid": 1, "value": null, "code": -704042011}
+    ]
+  }
+}

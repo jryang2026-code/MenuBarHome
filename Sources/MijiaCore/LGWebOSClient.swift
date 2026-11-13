@@ -419,7 +419,8 @@ final class LGWebOSTrustDelegate: NSObject, URLSessionDelegate, Sendable {
 public actor LGWebOSClient {
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "LGWebOS")
     private var config: LGWebOSConfig
-    private let session: URLSession
+    private var session: URLSession?
+    private var isShutDown = false
     private let onDeviceUpdated: @Sendable (SmartDevice) -> Void
     private let onClientKeyRegistered: @Sendable (String) -> Void
     private let onSecurityFailure: @Sendable (String) -> Void
@@ -427,6 +428,15 @@ public actor LGWebOSClient {
     private var loopTask: Task<Void, Never>?
     private var activeWebSocket: URLSessionWebSocketTask?
     private var nextRequestId: Int = 1
+
+    var hasActiveSessionForTesting: Bool { session != nil }
+    var isShutDownForTesting: Bool { isShutDown }
+    private(set) var createdSessionCountForTesting: Int = 0
+    private(set) var invalidatedSessionCountForTesting: Int = 0
+
+    func prepareSessionForTesting() {
+        _ = replaceSession()
+    }
 
     private var isConnected: Bool = false
     private var isWaitingForPairing: Bool = false
@@ -447,19 +457,47 @@ public actor LGWebOSClient {
         self.onDeviceUpdated = onDeviceUpdated
         self.onClientKeyRegistered = onClientKeyRegistered
         self.onSecurityFailure = onSecurityFailure
-        self.session = Self.sharedSession
     }
 
-    private static let sharedSession: URLSession = {
+    private static func makeURLSession() -> URLSession {
         let urlConfig = URLSessionConfiguration.ephemeral
         urlConfig.connectionProxyDictionary = [:]
         urlConfig.timeoutIntervalForRequest = 30
         urlConfig.waitsForConnectivity = false
         return URLSession(configuration: urlConfig, delegate: LGWebOSTrustDelegate(), delegateQueue: nil)
-    }()
+    }
+
+    private func replaceSession() -> URLSession? {
+        guard !isShutDown else { return nil }
+        let previous = self.session
+        let created = Self.makeURLSession()
+        self.session = created
+        createdSessionCountForTesting += 1
+        if let previous {
+            invalidatedSessionCountForTesting += 1
+            previous.invalidateAndCancel()
+        }
+        return created
+    }
+
+    private func invalidateSession(ifMatching target: URLSession? = nil) {
+        if let target {
+            guard self.session === target else { return }
+            self.session = nil
+            invalidatedSessionCountForTesting += 1
+            target.invalidateAndCancel()
+        } else {
+            let old = self.session
+            self.session = nil
+            if let old {
+                invalidatedSessionCountForTesting += 1
+                old.invalidateAndCancel()
+            }
+        }
+    }
 
     public func start() {
-        guard config.isEnabled, config.hasConfiguredHost else { return }
+        guard !isShutDown, config.isEnabled, config.hasConfiguredHost else { return }
         emitCurrentDevice()
         loopTask?.cancel()
         loopTask = Task { [weak self] in
@@ -472,17 +510,24 @@ public actor LGWebOSClient {
         loopTask = nil
         activeWebSocket?.cancel(with: .goingAway, reason: nil)
         activeWebSocket = nil
+        invalidateSession()
+    }
+
+    public func shutdown() async {
+        isShutDown = true
+        stop()
     }
 
     public func updateConfig(_ newConfig: LGWebOSConfig) {
         self.config = newConfig
         stop()
-        if newConfig.isEnabled && newConfig.hasConfiguredHost {
+        if !isShutDown && newConfig.isEnabled && newConfig.hasConfiguredHost {
             start()
         }
     }
 
     public func triggerPairing() async {
+        guard !isShutDown else { return }
         if let ws = activeWebSocket {
             let packet = LGWebOSProtocol.registrationPacket(id: "reg_manual", clientKey: config.clientKey)
             try? await ws.send(.string(packet))
@@ -492,6 +537,7 @@ public actor LGWebOSClient {
     }
 
     func resetTrustAndPair() throws {
+        guard !isShutDown else { return }
         stop()
         guard LGCertificateTrust.shared.reset(host: config.host) else {
             throw LGCertificateTrust.Failure.unavailable
@@ -624,11 +670,11 @@ public actor LGWebOSClient {
     // MARK: - Connection & Subscription Loop
 
     private func runConnectionLoop() async {
-        while !Task.isCancelled && config.isEnabled && config.hasConfiguredHost {
+        while !Task.isCancelled && !isShutDown && config.isEnabled && config.hasConfiguredHost {
             do {
                 try await connectAndListen()
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled && !isShutDown else { return }
                 isConnected = false
                 isWaitingForPairing = false
                 emitCurrentDevice()
@@ -642,9 +688,19 @@ public actor LGWebOSClient {
     }
 
     private func connectAndListen() async throws {
+        guard !isShutDown else { return }
         guard let url = URL(string: "wss://\(config.host):3001/") else { return }
-        let ws = session.webSocketTask(with: url)
+        guard let currentSession = replaceSession() else { return }
+        let ws = currentSession.webSocketTask(with: url)
+        ws.maximumMessageSize = 16 * 1024 * 1024
         self.activeWebSocket = ws
+        defer {
+            ws.cancel(with: .goingAway, reason: nil)
+            if self.activeWebSocket === ws {
+                self.activeWebSocket = nil
+            }
+            invalidateSession(ifMatching: currentSession)
+        }
         ws.resume()
 
         let reg = LGWebOSProtocol.registrationPacket(id: "register_0", clientKey: config.clientKey)

@@ -69,8 +69,7 @@ extension HomeStore {
         isGrokBallStageExpanded = false
         grokBallCelebrationTask?.cancel()
         grokBallCelebrationUntil = nil
-        optimisticLockUntil.removeAll()
-        coverCommandOrigins.removeAll()
+        clearOptimisticLocks()
         lastCoverPositions.removeAll()
         cancelFacetWrites(for: nil)
         // A different home is a different suggestion context even at the same ambient signature (Codex #116 review).
@@ -641,7 +640,13 @@ extension HomeStore {
         writes: [String: OptimisticWrite]
     ) {
         for deviceId in refusedDeviceIds {
-            guard let write = writes[deviceId], optimisticLockUntil[deviceId] != nil else { continue }
+            guard let write = writes[deviceId] else { continue }
+            let hasLock = if write.fields.isEmpty {
+                optimisticLockUntil[deviceId] != nil
+            } else {
+                write.fields.contains { optimisticFieldLocks[.field(deviceId, $0)] != nil }
+            }
+            guard hasLock else { continue }
             revert(write)
         }
     }
@@ -767,12 +772,25 @@ extension HomeStore {
             return nil
         }
         if !applicable.isEmpty, banner.isAllOff { recordOnboardingMilestone(.undidAllOff) }
-        // The 3 s row locks `applyUndoCommands` took are shorter than a stalled command can be. Hold
-        // these rows for as long as the wait can last, so no snapshot can overwrite the restored
-        // card; the ceiling means a command that never returns still releases them.
+        // The 3 s locks `applyUndoCommands` took are shorter than a stalled command can be. Hold
+        // these fields/facets for as long as the wait can last, so no snapshot can overwrite the
+        // restored state; the ceiling means a command that never returns still releases them.
         if batchTask != nil {
-            let until = ContinuousClock.now.advanced(by: Self.undoWaitLockCeiling)
-            for item in applicable { optimisticLockUntil[item.deviceId] = until }
+            let until = optimisticNow().addingTimeInterval(Self.undoWaitLockCeiling.optimisticTimeInterval)
+            let untilInstant: ContinuousClock.Instant? = hasCustomOptimisticNow
+                ? nil
+                : ContinuousClock.now.advanced(by: Self.undoWaitLockCeiling)
+            for item in applicable {
+                for field in item.lockedFields {
+                    optimisticFieldLocks[.field(item.deviceId, field)]?.until = until
+                    optimisticFieldLocks[.field(item.deviceId, field)]?.untilInstant = untilInstant
+                }
+                for controlId in item.lockedFacetControlIds {
+                    let key = Self.facetLockKey(item.deviceId, controlId)
+                    optimisticFacetLocks[key]?.until = until
+                    optimisticFacetLocks[key]?.untilInstant = untilInstant
+                }
+            }
         }
 
         let context = controlContextID
@@ -792,9 +810,9 @@ extension HomeStore {
                 // during the wait gets neither its lock refreshed nor a restore command.
                 var held: [String: UInt64] = [:]
                 for item in applicable { held[item.deviceId] = item.lockRevision }
-                let owned = held.compactMap { deviceId, revision in
+                let owned = Set(held.compactMap { deviceId, revision in
                     optimisticLockRevision[deviceId] == revision ? deviceId : nil
-                }
+                })
                 restorable = applicable.filter { owned.contains($0.deviceId) }
                 guard !restorable.isEmpty else {
                     // Every row is the newer action's now, so there is nothing left to restore and
@@ -802,8 +820,21 @@ extension HomeStore {
                     return
                 }
                 // Back to the normal lease.
-                let normal = ContinuousClock.now.advanced(by: .seconds(3.0))
-                for deviceId in owned { optimisticLockUntil[deviceId] = normal }
+                let normal = optimisticNow().addingTimeInterval(3.0)
+                let normalInstant: ContinuousClock.Instant? = hasCustomOptimisticNow
+                    ? nil
+                    : ContinuousClock.now.advanced(by: .seconds(3.0))
+                for item in restorable {
+                    for field in item.lockedFields {
+                        optimisticFieldLocks[.field(item.deviceId, field)]?.until = normal
+                        optimisticFieldLocks[.field(item.deviceId, field)]?.untilInstant = normalInstant
+                    }
+                    for controlId in item.lockedFacetControlIds {
+                        let key = Self.facetLockKey(item.deviceId, controlId)
+                        optimisticFacetLocks[key]?.until = normal
+                        optimisticFacetLocks[key]?.untilInstant = normalInstant
+                    }
+                }
             }
             // A device this batch never sent to is still where the action found it: its row is back
             // above, and a restore command would re-apply a change that never happened.
@@ -853,6 +884,8 @@ extension HomeStore {
         let deviceId: String
         let deviceName: String
         let lockRevision: UInt64
+        let lockedFields: Set<OptimisticField>
+        let lockedFacetControlIds: Set<String>
     }
 
     /// What replaying an undo stack did: the devices that refused, and the habit records that still
@@ -954,21 +987,29 @@ extension HomeStore {
                        && !excludingDeviceIds.contains(device.id)
                }),
                device.isOnline {
+                var lockedControlIds: Set<String> = []
+                let rev: UInt64
                 if var facets = deviceFacets[device.id],
                    let index = facets.firstIndex(where: { $0.target == target }) {
-                    cancelFacetWrite(deviceId: device.id, controlId: facets[index].id)
+                    let controlId = facets[index].id
+                    cancelFacetWrite(deviceId: device.id, controlId: controlId)
                     if let value = Self.facetValue(for: command, control: facets[index]) {
                         facets[index].value = value
                     }
                     deviceFacets[device.id] = facets
+                    lockedControlIds.insert(controlId)
+                    rev = lockOptimisticFacet(device.id, controlId: controlId, duration: .seconds(3.0), bumpDeviceRevision: true)
+                } else {
+                    rev = lockOptimistic(device.id, duration: .seconds(3.0))
                 }
-                let rev = lockOptimistic(device.id, duration: .seconds(3.0))
                 applicable.append(
                     UndoApplicableCommand(
                         command: command,
                         deviceId: device.id,
                         deviceName: device.name,
-                        lockRevision: rev
+                        lockRevision: rev,
+                        lockedFields: [],
+                        lockedFacetControlIds: lockedControlIds
                     )
                 )
                 continue
@@ -984,19 +1025,29 @@ extension HomeStore {
                       !excludingDeviceIds.contains(device.id) else {
                     continue
                 }
+                var lockedControlIds: Set<String> = []
+                var lockedFields: Set<OptimisticField> = []
+                let rev: UInt64
                 if var facets = deviceFacets[device.id],
                    let index = facets.firstIndex(where: { $0.target == .property(entityId: entityId, piid: piid) }) {
-                    cancelFacetWrite(deviceId: device.id, controlId: facets[index].id)
+                    let controlId = facets[index].id
+                    cancelFacetWrite(deviceId: device.id, controlId: controlId)
                     facets[index].value = value
                     deviceFacets[device.id] = facets
+                    lockedControlIds.insert(controlId)
+                    rev = lockOptimisticFacet(device.id, controlId: controlId, duration: .seconds(3.0), bumpDeviceRevision: true)
+                } else {
+                    lockedFields = [.power]
+                    rev = lockOptimistic(device.id, fields: lockedFields, duration: .seconds(3.0))
                 }
-                let rev = lockOptimistic(device.id, duration: .seconds(3.0))
                 applicable.append(
                     UndoApplicableCommand(
                         command: command,
                         deviceId: device.id,
                         deviceName: device.name,
-                        lockRevision: rev
+                        lockRevision: rev,
+                        lockedFields: lockedFields,
+                        lockedFacetControlIds: lockedControlIds
                     )
                 )
                 continue
@@ -1006,15 +1057,23 @@ extension HomeStore {
                        && Self.undoEffect(of: command, on: devices[$0]) != nil
                }),
                let restored = Self.undoEffect(of: command, on: devices[idx]) {
-                let name = devices[idx].name
+                let previous = devices[idx]
+                let name = previous.name
                 devices[idx] = restored
-                let rev = lockOptimistic(restored.id, duration: .seconds(3.0))
+                syncGenericPowerFacet(restored)
+                var fields = OptimisticField.changedFields(from: previous, to: restored)
+                if fields.isEmpty {
+                    fields = OptimisticField.primaryPowerFields(for: restored.kind)
+                }
+                let rev = lockOptimistic(restored.id, fields: fields, duration: .seconds(3.0))
                 applicable.append(
                     UndoApplicableCommand(
                         command: command,
                         deviceId: restored.id,
                         deviceName: name,
-                        lockRevision: rev
+                        lockRevision: rev,
+                        lockedFields: fields,
+                        lockedFacetControlIds: []
                     )
                 )
                 continue
@@ -1028,15 +1087,23 @@ extension HomeStore {
                   let retargeted = Self.retargetedUndoEffect(of: command, on: devices[idx]) else {
                 continue
             }
-            let name = devices[idx].name
+            let previous = devices[idx]
+            let name = previous.name
             devices[idx] = retargeted.updated
-            let rev = lockOptimistic(retargeted.updated.id, duration: .seconds(3.0))
+            syncGenericPowerFacet(retargeted.updated)
+            var fields = OptimisticField.changedFields(from: previous, to: retargeted.updated)
+            if fields.isEmpty {
+                fields = OptimisticField.primaryPowerFields(for: retargeted.updated.kind)
+            }
+            let rev = lockOptimistic(retargeted.updated.id, fields: fields, duration: .seconds(3.0))
             applicable.append(
                 UndoApplicableCommand(
                     command: retargeted.command,
                     deviceId: retargeted.updated.id,
                     deviceName: name,
-                    lockRevision: rev
+                    lockRevision: rev,
+                    lockedFields: fields,
+                    lockedFacetControlIds: []
                 )
             )
         }
@@ -1050,8 +1117,20 @@ extension HomeStore {
         preUndoFacetsById: [String: [FacetControl]]
     ) {
         var expectedRevisions: [String: UInt64] = [:]
+        var fieldsByDevice: [String: Set<OptimisticField>] = [:]
+        var fieldRevisionsByDevice: [String: [OptimisticField: UInt64]] = [:]
+        var facetsByDevice: [String: Set<String>] = [:]
+        var facetRevisionsByDevice: [String: [String: UInt64]] = [:]
         for item in applicable {
             expectedRevisions[item.deviceId] = item.lockRevision
+            fieldsByDevice[item.deviceId, default: []].formUnion(item.lockedFields)
+            for field in item.lockedFields {
+                fieldRevisionsByDevice[item.deviceId, default: [:]][field] = item.lockRevision
+            }
+            facetsByDevice[item.deviceId, default: []].formUnion(item.lockedFacetControlIds)
+            for controlId in item.lockedFacetControlIds {
+                facetRevisionsByDevice[item.deviceId, default: [:]][controlId] = item.lockRevision
+            }
         }
         for failedId in failedDeviceIds {
             guard let current = devices.first(where: { $0.id == failedId }) else { continue }
@@ -1059,9 +1138,16 @@ extension HomeStore {
                 deviceId: failedId,
                 previous: preUndoById[failedId] ?? current,
                 revision: expectedRevisions[failedId],
+                fields: fieldsByDevice[failedId] ?? [],
+                fieldRevisions: fieldRevisionsByDevice[failedId],
+                facetControlIds: facetsByDevice[failedId] ?? [],
+                facetRevisions: facetRevisionsByDevice[failedId],
                 isShown: true
             )
-            guard ownsRow(write) else { continue }
+            guard ownsRow(write) else {
+                revert(write)
+                continue
+            }
             deviceFacets[failedId] = preUndoFacetsById[failedId]
             revert(write)
         }

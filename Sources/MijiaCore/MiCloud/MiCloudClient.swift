@@ -15,10 +15,12 @@ public struct MiDeviceRecord: Equatable, Sendable {
     public var splitSiid: Int?
     public var localIp: String?
     public var mac: String?
+    public var token: String?
+    public var isShared: Bool
 
     public init(did: String, name: String, model: String, isOnline: Bool, specType: String? = nil,
                 splitParentDid: String? = nil, splitSiid: Int? = nil, localIp: String? = nil,
-                mac: String? = nil) {
+                mac: String? = nil, token: String? = nil, isShared: Bool = false) {
         self.did = did
         self.name = name
         self.model = model
@@ -28,6 +30,8 @@ public struct MiDeviceRecord: Equatable, Sendable {
         self.splitSiid = splitSiid
         self.localIp = localIp
         self.mac = mac
+        self.token = token
+        self.isShared = isShared
     }
 
     /// The did MIoT property and action calls address.
@@ -167,6 +171,8 @@ public protocol MiCloudAPI: Sendable {
     ) async throws -> [SensorHistorySample]
     func cameraLocalIP(did: String) async throws -> String?
     func cameraP2PVendor(did: String, appPublicKey: String) async throws -> MiCameraP2PVendor
+    func doorbellLatestEventTimestamp(did: String, eventKey: String, since: Date, now: Date) async throws -> Date?
+    func shutdown() async
 }
 
 extension MiCloudAPI {
@@ -193,6 +199,10 @@ extension MiCloudAPI {
     public func cameraP2PVendor(did: String, appPublicKey: String) async throws -> MiCameraP2PVendor {
         MiCameraP2PVendor(vendorName: "cs2", p2pId: nil, devicePublicKey: "", sign: "")
     }
+    public func doorbellLatestEventTimestamp(did: String, eventKey: String, since: Date, now: Date) async throws -> Date? {
+        nil
+    }
+    public func shutdown() async {}
 }
 
 // MARK: - Live Client
@@ -213,6 +223,8 @@ public actor MiCloudClient: MiCloudAPI {
     private static let emptyHistoryCooldown: TimeInterval = 300
     private var resolvedHistoryRouteByMetric: [String: HistoryRoute] = [:]
     private var emptyHistoryRetryAfterByMetric: [String: Date] = [:]
+    private var activeTasks: [UUID: Task<(Data, HTTPURLResponse), any Error>] = [:]
+    private var isShutDown = false
 
     private struct HistoryRoute: Equatable, Sendable {
         enum Endpoint: Equatable, Sendable {
@@ -237,8 +249,20 @@ public actor MiCloudClient: MiCloudAPI {
         return "\(a)-\(b) APP/com.xiaomi.mihome APPV/10.5.201"
     }
 
+    public func shutdown() async {
+        guard !isShutDown else { return }
+        isShutDown = true
+        for task in activeTasks.values {
+            task.cancel()
+        }
+        activeTasks.removeAll()
+        resolvedHistoryRouteByMetric.removeAll()
+    }
+
     /// Signed RC4 POST to `<apiBase>/<api>`; returns the decrypted `result` payload.
     public func request(_ api: String, data: JSONValue) async throws -> JSONValue {
+        try Task.checkCancellation()
+        guard !isShutDown else { throw CancellationError() }
         let path = "/" + api.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: session.apiBaseURL + path) else { throw MiCloudError.badResponse("URL") }
         let nonce = MiCloudCrypto.makeNonce()
@@ -255,7 +279,19 @@ public actor MiCloudClient: MiCloudAPI {
         req.setValue(cookieHeader(), forHTTPHeaderField: "Cookie")
         req.httpBody = Data(MiCloudCrypto.formURLEncode(fields).utf8)
 
-        let (body, http) = try await transport.send(req)
+        let httpTransport = transport
+        let taskID = UUID()
+        let sendTask = Task<(Data, HTTPURLResponse), any Error> {
+            try await httpTransport.send(req)
+        }
+        activeTasks[taskID] = sendTask
+        defer { activeTasks.removeValue(forKey: taskID) }
+
+        let (body, http) = try await withTaskCancellationHandler {
+            try await sendTask.value
+        } onCancel: {
+            sendTask.cancel()
+        }
         do {
             return try Self.decodeResponse(body, statusCode: http.statusCode, signedNonce: signed)
         } catch let error as MiCloudError {
@@ -297,8 +333,18 @@ public actor MiCloudClient: MiCloudAPI {
         }
         guard statusCode == 200 else { throw MiCloudError.http(statusCode) }
         guard let text = String(data: body, encoding: .utf8),
-              let decrypted = try? MiCloudCrypto.decryptResponse(text, signedNonce: signedNonce),
-              let json = try? JSONDecoder().decode(JSONValue.self, from: decrypted) else {
+              let decrypted = try? MiCloudCrypto.decryptResponse(text, signedNonce: signedNonce) else {
+            throw MiCloudError.badResponse("无法解密")
+        }
+        let json: JSONValue
+        if let direct = try? JSONDecoder().decode(JSONValue.self, from: decrypted) {
+            json = direct
+        } else if let decryptedText = String(data: decrypted, encoding: .utf8),
+                  case let cleaned = cleanMalformedFirmwareJSON(decryptedText),
+                  !cleaned.isEmpty,
+                  let sanitized = try? JSONDecoder().decode(JSONValue.self, from: Data(cleaned.utf8)) {
+            json = sanitized
+        } else {
             throw MiCloudError.badResponse("无法解密")
         }
         return try unwrapResult(json)
@@ -494,6 +540,16 @@ public actor MiCloudClient: MiCloudAPI {
             let split = item["extra"]?["split"]
             let rawSplitParent = split?["parentId"]?.idString
             let rawSplitSiid = split?["moduleId"]?.intValue
+            let rawToken = item["token"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let token = (rawToken?.isEmpty == false) ? rawToken : nil
+            let shareFlag: Bool? = {
+                if let n = item["share_flag"]?.intValue { return n != 0 }
+                return item["share_flag"]?.boolValue
+            }()
+            let isShared = shareFlag
+                ?? item["isShared"]?.boolValue
+                ?? item["is_shared"]?.boolValue
+                ?? false
             return MiDeviceRecord(
                 did: did,
                 name: item["name"]?.stringValue ?? model,
@@ -503,7 +559,9 @@ public actor MiCloudClient: MiCloudAPI {
                 splitParentDid: rawSplitSiid != nil ? rawSplitParent : nil,
                 splitSiid: rawSplitParent != nil ? rawSplitSiid : nil,
                 localIp: item["localip"]?.stringValue,
-                mac: item["mac"]?.stringValue
+                mac: item["mac"]?.stringValue,
+                token: token,
+                isShared: isShared
             )
         }
     }
@@ -1121,5 +1179,83 @@ public actor MiCloudClient: MiCloudAPI {
             ))
         }
         return samples
+    }
+
+    // MARK: - Doorbell Event History (`user/get_user_device_data`)
+
+    /// Upper bound `2^53 - 2`: exact in IEEE-754 `Double`, fits in `Int`, and leaves headroom for `timeStart + 1`.
+    private static let maxSafeEpochSeconds: Double = 9_007_199_254_740_990
+
+    static func checkedEpochSeconds(_ interval: TimeInterval) -> Int? {
+        guard interval.isFinite, interval >= 0, interval <= maxSafeEpochSeconds else {
+            return nil
+        }
+        let truncated = interval.rounded(.towardZero)
+        guard let whole = Int(exactly: truncated), whole >= 0, whole < Int.max else {
+            return nil
+        }
+        return whole
+    }
+
+    public func doorbellLatestEventTimestamp(
+        did: String,
+        eventKey: String,
+        since: Date,
+        now: Date
+    ) async throws -> Date? {
+        guard let nowSeconds = Self.checkedEpochSeconds(now.timeIntervalSince1970) else {
+            return nil
+        }
+        let sinceInterval = since.timeIntervalSince1970
+        guard sinceInterval.isFinite else { return nil }
+        let timeStart: Int
+        if sinceInterval <= 0 {
+            timeStart = 0
+        } else if let sinceSeconds = Self.checkedEpochSeconds(sinceInterval) {
+            timeStart = sinceSeconds
+        } else {
+            return nil
+        }
+        let timeEnd = max(timeStart + 1, nowSeconds)
+        let result = try await request("user/get_user_device_data", data: .object([
+            "uid": .string(session.userId),
+            "did": .string(did),
+            "type": .string("event"),
+            "key": .string(eventKey),
+            "time_start": .number(Double(timeStart)),
+            "time_end": .number(Double(timeEnd)),
+            "limit": .number(5),
+        ]))
+        return Self.parseLatestEventTimestamp(result)
+    }
+
+    public static func parseLatestEventTimestamp(_ result: JSONValue) -> Date? {
+        let items: [JSONValue]
+        if let array = result.arrayValue {
+            items = array
+        } else if let nested = result["list"]?.arrayValue ?? result["data"]?.arrayValue ?? result["result"]?.arrayValue {
+            items = nested
+        } else {
+            return nil
+        }
+
+        var latest: Date?
+        for item in items {
+            guard let rawTime = item["time"]?.doubleValue ?? item["timestamp"]?.doubleValue ?? item["ts"]?.doubleValue,
+                  rawTime.isFinite,
+                  rawTime > 0 else { continue }
+            let seconds = rawTime > 10_000_000_000 ? rawTime / 1000.0 : rawTime
+            guard seconds.isFinite,
+                  seconds > 0,
+                  let wholeSeconds = Self.checkedEpochSeconds(seconds),
+                  wholeSeconds > 0 else { continue }
+            let date = Date(timeIntervalSince1970: seconds)
+            if let current = latest {
+                if date > current { latest = date }
+            } else {
+                latest = date
+            }
+        }
+        return latest
     }
 }

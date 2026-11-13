@@ -260,10 +260,12 @@ extension HomeStore {
         // dropping the origin the takeover rule needs (#298 follow-up). The unexpired lock this
         // tap replaces is kept so a failed send can put it back.
         var coverWrite: OptimisticWrite?
-        var coverPriorLockUntil: ContinuousClock.Instant?
+        var coverPriorLockEntry: OptimisticLockEntry?
         if case .cover = updated.kind {
-            let now = ContinuousClock.now
-            coverPriorLockUntil = optimisticLockUntil[device.id].flatMap { $0 > now ? $0 : nil }
+            let now = optimisticNow()
+            let continuousNow = ContinuousClock.now
+            coverPriorLockEntry = optimisticFieldLocks[.field(device.id, .coverPosition)]
+                .flatMap { isOptimisticEntryActive($0, at: now, continuousNow: continuousNow) ? $0 : nil }
             coverWrite = beginOptimisticWrite(from: previous, to: updated, lock: coverOptimisticLockDuration)
         }
 
@@ -303,10 +305,11 @@ extension HomeStore {
                         // the revision, so the entry must still exist for this write to own the
                         // row; the same rule guards the batch rollback. Only then does the tap
                         // restore its pre-tap row, the lock it displaced, and that lock's origin.
-                        if self.ownsRow(coverWrite), self.optimisticLockUntil[device.id] != nil {
+                        if self.ownsRow(coverWrite), self.optimisticFieldLocks[.field(device.id, .coverPosition)] != nil {
                             self.revert(coverWrite)
-                            if let coverPriorLockUntil {
-                                self.optimisticLockUntil[device.id] = coverPriorLockUntil
+                            if var coverPriorLockEntry {
+                                coverPriorLockEntry.revision = self.optimisticLockRevision[device.id] ?? coverPriorLockEntry.revision
+                                self.optimisticFieldLocks[.field(device.id, .coverPosition)] = coverPriorLockEntry
                                 if let prior = coverOrigin?.prior {
                                     self.coverCommandOrigins[device.id] = prior
                                 }
@@ -341,14 +344,14 @@ extension HomeStore {
             // lock holds the accepted state until the device reports the same travel (or a stop
             // after a pause), then `coverTravelTakesOver` ends it.
             applyConfirmedPower(from: requested, deviceId: deviceId)
-            lockOptimistic(deviceId, duration: coverOptimisticLockDuration)
+            lockOptimistic(deviceId, fields: [.coverPosition], duration: coverOptimisticLockDuration)
             return .matched
         }
         if case .tv(let spec) = requested.kind, LGWebOSProtocol.isLGEntity(spec.mediaEntityId) {
             // The LAN client confirms TV writes; the cloud has no row for this device, and a
             // stale provider snapshot must not revert the accepted power.
             applyConfirmedPower(from: requested, deviceId: deviceId)
-            lockOptimistic(deviceId, duration: .seconds(2.0))
+            lockOptimistic(deviceId, fields: OptimisticField.primaryPowerFields(for: requested.kind), duration: .seconds(2.0))
             return powerMatches(deviceId, requested: requested) ? .matched : .unmatched
         }
         let before = snapshotGeneration
@@ -363,7 +366,7 @@ extension HomeStore {
             applyConfirmedPower(from: requested, deviceId: deviceId)
             // HA rebuilds the whole home on every state_changed event, so an unrelated sensor
             // update could restore the old power before the device's own update arrives.
-            lockOptimistic(deviceId, duration: .seconds(2.0))
+            lockOptimistic(deviceId, fields: OptimisticField.primaryPowerFields(for: requested.kind), duration: .seconds(2.0))
             return powerMatches(deviceId, requested: requested) ? .matched : .unmatched
         case .published:
             guard snapshotGeneration != before else { return .unmatched }
@@ -874,7 +877,8 @@ extension HomeStore {
     }
 
     func activeCoverOrigin(for deviceId: String, fallback: Int?) -> Int? {
-        if let lockUntil = optimisticLockUntil[deviceId], ContinuousClock.now < lockUntil,
+        if let entry = optimisticFieldLocks[.field(deviceId, .coverPosition)],
+           isOptimisticEntryActive(entry, at: optimisticNow(), continuousNow: ContinuousClock.now),
            let origin = coverCommandOrigins[deviceId] {
             return origin
         }
@@ -904,7 +908,7 @@ extension HomeStore {
         var pending = FacetWriteState(token: UUID(), origin: origin, bannerID: previous?.bannerID)
         facets[index].value = value
         deviceFacets[deviceId] = facets
-        extendFacetLock(deviceId, duration: .seconds(2.2))
+        extendFacetLock(deviceId, controlId: controlId, duration: .seconds(2.2))
         if previous == nil, let origin, let restore = Self.facetCommand(for: control, value: origin) {
             let rawTitle = control.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let title = rawTitle.isEmpty ? control.name : rawTitle
@@ -942,7 +946,7 @@ extension HomeStore {
             return
         }
         guard allowManualControl(facet: control, value: nil, portion: portion, for: device) else { return }
-        extendFacetLock(deviceId, duration: .seconds(2.0))
+        extendFacetLock(deviceId, controlId: controlId, duration: .seconds(2.0))
         let pending = FacetWriteState(token: UUID(), origin: nil, bannerID: nil)
         facetWrites[facetWriteKey(deviceId, controlId)] = pending
         dispatchFacetWrite(device: device, controlId: controlId, pending: pending,
@@ -1041,9 +1045,38 @@ extension HomeStore {
         }
     }
 
-    private func extendFacetLock(_ deviceId: String, duration: Duration) {
-        let until = ContinuousClock.now.advanced(by: duration)
-        optimisticLockUntil[deviceId] = max(optimisticLockUntil[deviceId] ?? until, until)
+    func extendFacetLock(_ deviceId: String, controlId: String, duration: Duration) {
+        let key = Self.facetLockKey(deviceId, controlId)
+        let candidate = makeOptimisticEntry(
+            duration: duration,
+            revision: optimisticFacetLocks[key]?.revision ?? optimisticLockRevision[deviceId] ?? 1
+        )
+        if let existing = optimisticFacetLocks[key] {
+            let maxUntil = max(existing.until, candidate.until)
+            let maxInstant: ContinuousClock.Instant? = if let a = existing.untilInstant, let b = candidate.untilInstant {
+                max(a, b)
+            } else {
+                candidate.untilInstant ?? existing.untilInstant
+            }
+            optimisticFacetLocks[key] = OptimisticLockEntry(
+                until: maxUntil,
+                untilInstant: hasCustomOptimisticNow ? nil : maxInstant,
+                revision: existing.revision
+            )
+        } else {
+            optimisticFacetLocks[key] = candidate
+        }
+    }
+
+    func extendFacetLock(_ deviceId: String, duration: Duration) {
+        let facets = deviceFacets[deviceId] ?? []
+        if facets.isEmpty {
+            lockOptimistic(deviceId, duration: duration)
+            return
+        }
+        for facet in facets {
+            extendFacetLock(deviceId, controlId: facet.id, duration: duration)
+        }
     }
 
     private func dispatchFacetWrite(
@@ -1075,6 +1108,7 @@ extension HomeStore {
                    self.deviceFacets[deviceId]?[index].target?.isAction == false {
                     self.deviceFacets[deviceId]?[index].value = pending.origin
                 }
+                self.optimisticFacetLocks.removeValue(forKey: key)
                 if let bannerID = pending.bannerID, self.undoBanner?.id == bannerID {
                     self.undoTimerTask?.cancel()
                     self.undoBanner = nil
