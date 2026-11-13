@@ -315,6 +315,7 @@ extension HomeStore {
                 if backendChanged {
                     cancelFacetWrites(for: incoming.id)
                     clearOptimisticLockEntries(for: incoming.id)
+                    clearOptimisticRevisions(for: incoming.id)
                     coverCommandOrigins.removeValue(forKey: incoming.id)
                     lastCoverPositions.removeValue(forKey: incoming.id)
                     optimisticLockRevision[incoming.id, default: 0] &+= 1

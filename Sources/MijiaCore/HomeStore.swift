@@ -724,6 +724,8 @@ public final class HomeStore {
     var optimisticFieldLocks: [OptimisticLockKey: OptimisticLockEntry] = [:]
     var optimisticFacetLocks: [String: OptimisticLockEntry] = [:]
     var optimisticLockRevision: [String: UInt64] = [:]
+    var optimisticFieldRevisions: [OptimisticLockKey: UInt64] = [:]
+    var optimisticFacetRevisions: [String: UInt64] = [:]
     @ObservationIgnored var hasCustomOptimisticNow = false
     @ObservationIgnored var optimisticNow: @Sendable () -> Date = { Date() } {
         didSet { hasCustomOptimisticNow = true }

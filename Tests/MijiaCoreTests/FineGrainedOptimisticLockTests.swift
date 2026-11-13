@@ -422,6 +422,8 @@ struct FineGrainedOptimisticLockTests {
         #expect(store.optimisticFieldLocks.isEmpty)
         #expect(store.optimisticFacetLocks.isEmpty)
         #expect(store.optimisticLockRevision.isEmpty)
+        #expect(store.optimisticFieldRevisions.isEmpty)
+        #expect(store.optimisticFacetRevisions.isEmpty)
         #expect(store.coverCommandOrigins.isEmpty)
         #expect(store.optimisticLockUntil.isEmpty)
 
@@ -432,6 +434,8 @@ struct FineGrainedOptimisticLockTests {
         #expect(store.optimisticFieldLocks.isEmpty)
         #expect(store.optimisticFacetLocks.isEmpty)
         #expect(store.optimisticLockRevision.isEmpty)
+        #expect(store.optimisticFieldRevisions.isEmpty)
+        #expect(store.optimisticFacetRevisions.isEmpty)
         #expect(store.coverCommandOrigins.isEmpty)
     }
 
@@ -489,5 +493,68 @@ struct FineGrainedOptimisticLockTests {
         #expect(mergedSpec.isOn == true)
         #expect(mergedSpec.brightnessPercent == 88)
         #expect(mergedSpec.colorTempKelvin == 4500)
+    }
+
+    @Test("Disjoint debounced writes on one device both proceed, while partial takeover skips send and reverts only orphaned fields")
+    func disjointDebouncedWritesBothProceedAndPartialTakeoverCleansUp() async throws {
+        let clock = ManualClock()
+        let onLight = SmartDevice(
+            id: "light-1",
+            name: "吸顶灯",
+            roomId: "room-1",
+            roomName: "客厅",
+            model: "yeelink.light.ceiling1",
+            isOnline: true,
+            kind: .light(LightSpec(
+                entityId: "light.living_ceiling",
+                isOn: true,
+                brightnessPercent: 40,
+                colorTempKelvin: 3000
+            ))
+        )
+        let (store, provider) = try await makeStore(devices: [onLight], clock: clock)
+
+        // Two disjoint debounced adjustments on the same device must both retain ownership and send.
+        store.setLightBrightness("light-1", percent: 80)
+        store.setLightColorTemp("light-1", kelvin: 4800)
+        await provider.waitForCommandCount(2)
+
+        let commandsAfterDisjoint = await provider.executedCommands
+        #expect(commandsAfterDisjoint.count == 2)
+        guard case .light(let specAfterDisjoint)? = store.devices.first(where: { $0.id == "light-1" })?.kind else {
+            Issue.record("Missing light-1 after disjoint writes")
+            return
+        }
+        #expect(specAfterDisjoint.isOn == true)
+        #expect(specAfterDisjoint.brightnessPercent == 80)
+        #expect(specAfterDisjoint.colorTempKelvin == 4800)
+
+        // Debounced brightness change on an OFF light claims [.power, .brightness].
+        // When turnAllOff immediately claims [.power], the debounced brightness write must not send,
+        // keeps isOn == false, reverts brightnessPercent to 40, and clears the .brightness lock.
+        let (offStore, offProvider) = try await makeStore(devices: [Self.lightDevice], clock: clock)
+        offStore.setLightBrightness("light-1", percent: 85)
+        let batchTask = try #require(offStore.turnAllOff())
+        _ = await batchTask.value
+        await offProvider.waitForCommandCount(1)
+
+        await waitUntil {
+            offStore.optimisticFieldLocks[.field("light-1", .brightness)] == nil
+        }
+
+        let offCommands = await offProvider.executedCommands
+        #expect(offCommands.count == 1)
+        if case .setLightPower(entityId: "light.living_ceiling", isOn: false) = offCommands[0] {
+        } else {
+            Issue.record("Expected only turnAllOff power command, got \(offCommands)")
+        }
+
+        guard case .light(let specAfterTakeover)? = offStore.devices.first(where: { $0.id == "light-1" })?.kind else {
+            Issue.record("Missing light-1 after partial takeover")
+            return
+        }
+        #expect(specAfterTakeover.isOn == false)
+        #expect(specAfterTakeover.brightnessPercent == 40)
+        #expect(offStore.optimisticFieldLocks[.field("light-1", .brightness)] == nil)
     }
 }

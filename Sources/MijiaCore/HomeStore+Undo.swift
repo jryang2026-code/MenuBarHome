@@ -1116,11 +1116,19 @@ extension HomeStore {
     ) {
         var expectedRevisions: [String: UInt64] = [:]
         var fieldsByDevice: [String: Set<OptimisticField>] = [:]
+        var fieldRevisionsByDevice: [String: [OptimisticField: UInt64]] = [:]
         var facetsByDevice: [String: Set<String>] = [:]
+        var facetRevisionsByDevice: [String: [String: UInt64]] = [:]
         for item in applicable {
             expectedRevisions[item.deviceId] = item.lockRevision
             fieldsByDevice[item.deviceId, default: []].formUnion(item.lockedFields)
+            for field in item.lockedFields {
+                fieldRevisionsByDevice[item.deviceId, default: [:]][field] = item.lockRevision
+            }
             facetsByDevice[item.deviceId, default: []].formUnion(item.lockedFacetControlIds)
+            for controlId in item.lockedFacetControlIds {
+                facetRevisionsByDevice[item.deviceId, default: [:]][controlId] = item.lockRevision
+            }
         }
         for failedId in failedDeviceIds {
             guard let current = devices.first(where: { $0.id == failedId }) else { continue }
@@ -1129,10 +1137,15 @@ extension HomeStore {
                 previous: preUndoById[failedId] ?? current,
                 revision: expectedRevisions[failedId],
                 fields: fieldsByDevice[failedId] ?? [],
+                fieldRevisions: fieldRevisionsByDevice[failedId],
                 facetControlIds: facetsByDevice[failedId] ?? [],
+                facetRevisions: facetRevisionsByDevice[failedId],
                 isShown: true
             )
-            guard ownsRow(write) else { continue }
+            guard ownsRow(write) else {
+                revert(write)
+                continue
+            }
             deviceFacets[failedId] = preUndoFacetsById[failedId]
             revert(write)
         }

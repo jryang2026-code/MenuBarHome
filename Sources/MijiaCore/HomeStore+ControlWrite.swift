@@ -23,8 +23,12 @@ struct OptimisticWrite: Sendable {
     let revision: UInt64?
     /// Specific card fields mutated and locked by this write. Empty means whole-row fallback.
     let fields: Set<OptimisticField>
+    /// Per-field lock revisions owned by this write.
+    let fieldRevisions: [OptimisticField: UInt64]
     /// Specific facet control IDs locked by this write, if any.
     let facetControlIds: Set<String>
+    /// Per-facet lock revisions owned by this write.
+    let facetRevisions: [String: UInt64]
     /// False when nothing was shown ahead of the device (a momentary button), so a failure has
     /// nothing to undo.
     let isShown: Bool
@@ -34,14 +38,30 @@ struct OptimisticWrite: Sendable {
         previous: SmartDevice,
         revision: UInt64?,
         fields: Set<OptimisticField> = [],
+        fieldRevisions: [OptimisticField: UInt64]? = nil,
         facetControlIds: Set<String> = [],
+        facetRevisions: [String: UInt64]? = nil,
         isShown: Bool
     ) {
         self.deviceId = deviceId
         self.previous = previous
         self.revision = revision
         self.fields = fields
+        if let fieldRevisions {
+            self.fieldRevisions = fieldRevisions
+        } else if let revision {
+            self.fieldRevisions = Dictionary(uniqueKeysWithValues: fields.map { ($0, revision) })
+        } else {
+            self.fieldRevisions = [:]
+        }
         self.facetControlIds = facetControlIds
+        if let facetRevisions {
+            self.facetRevisions = facetRevisions
+        } else if let revision {
+            self.facetRevisions = Dictionary(uniqueKeysWithValues: facetControlIds.map { ($0, revision) })
+        } else {
+            self.facetRevisions = [:]
+        }
         self.isShown = isShown
     }
 }
@@ -126,6 +146,16 @@ extension HomeStore {
         }
     }
 
+    func clearOptimisticRevisions(for deviceId: String) {
+        for key in optimisticFieldRevisions.keys where key.deviceId == deviceId {
+            optimisticFieldRevisions.removeValue(forKey: key)
+        }
+        let prefix = "\(deviceId).facet."
+        for key in optimisticFacetRevisions.keys where key.hasPrefix(prefix) {
+            optimisticFacetRevisions.removeValue(forKey: key)
+        }
+    }
+
     func setOptimisticLockExpiration(
         _ until: Date,
         untilInstant: ContinuousClock.Instant? = nil,
@@ -170,11 +200,14 @@ extension HomeStore {
     func clearOptimisticLocks(for deviceId: String? = nil) {
         if let deviceId {
             clearOptimisticLockEntries(for: deviceId)
+            clearOptimisticRevisions(for: deviceId)
             optimisticLockRevision.removeValue(forKey: deviceId)
             coverCommandOrigins.removeValue(forKey: deviceId)
         } else {
             optimisticFieldLocks.removeAll()
             optimisticFacetLocks.removeAll()
+            optimisticFieldRevisions.removeAll()
+            optimisticFacetRevisions.removeAll()
             optimisticLockRevision.removeAll()
             coverCommandOrigins.removeAll()
         }
@@ -253,6 +286,7 @@ extension HomeStore {
         let entry = makeOptimisticEntry(duration: duration, revision: rev)
         for field in targetFields {
             optimisticFieldLocks[.field(deviceId, field)] = entry
+            optimisticFieldRevisions[.field(deviceId, field)] = rev
         }
         return rev
     }
@@ -264,15 +298,14 @@ extension HomeStore {
         duration: Duration,
         bumpDeviceRevision: Bool = false
     ) -> UInt64 {
-        let rev: UInt64
+        let key = Self.facetLockKey(deviceId, controlId)
+        let baseline = max(optimisticFacetRevisions[key] ?? 0, optimisticLockRevision[deviceId] ?? 0)
+        let rev = baseline &+ 1
         if bumpDeviceRevision {
-            rev = (optimisticLockRevision[deviceId] ?? 0) &+ 1
             optimisticLockRevision[deviceId] = rev
-        } else {
-            let key = Self.facetLockKey(deviceId, controlId)
-            rev = (optimisticFacetLocks[key]?.revision ?? optimisticLockRevision[deviceId] ?? 0) &+ 1
         }
-        optimisticFacetLocks[Self.facetLockKey(deviceId, controlId)] = makeOptimisticEntry(duration: duration, revision: rev)
+        optimisticFacetLocks[key] = makeOptimisticEntry(duration: duration, revision: rev)
+        optimisticFacetRevisions[key] = rev
         return rev
     }
 
@@ -300,22 +333,66 @@ extension HomeStore {
         syncGenericPowerFacet(updated)
         var changed = OptimisticField.changedFields(from: previous, to: updated)
         if lock != nil && changed.isEmpty {
-            changed = OptimisticField.primaryPowerFields(for: updated.kind)
+            let defaults = OptimisticField.primaryPowerFields(for: updated.kind)
+            changed = defaults.isEmpty ? [.power] : defaults
         }
-        let revision = lock.map { lockOptimistic(previous.id, fields: changed, duration: $0) }
-            ?? optimisticLockRevision[previous.id]
+        let revision: UInt64?
+        let fieldRevisions: [OptimisticField: UInt64]
+        if let lock {
+            let locked = lockOptimistic(previous.id, fields: changed, duration: lock)
+            revision = locked
+            fieldRevisions = Dictionary(uniqueKeysWithValues: changed.map { ($0, locked) })
+        } else if !changed.isEmpty {
+            let bumped = (optimisticLockRevision[previous.id] ?? 0) &+ 1
+            optimisticLockRevision[previous.id] = bumped
+            for field in changed {
+                optimisticFieldRevisions[.field(previous.id, field)] = bumped
+            }
+            revision = bumped
+            fieldRevisions = Dictionary(uniqueKeysWithValues: changed.map { ($0, bumped) })
+        } else {
+            revision = optimisticLockRevision[previous.id]
+            fieldRevisions = [:]
+        }
         return OptimisticWrite(
             deviceId: previous.id,
             previous: previous,
             revision: revision,
             fields: changed,
+            fieldRevisions: fieldRevisions,
             isShown: true
         )
     }
 
-    /// True while no newer write has taken this write's device.
+    private func ownedFields(for write: OptimisticWrite) -> Set<OptimisticField> {
+        guard !write.fieldRevisions.isEmpty else { return [] }
+        var owned: Set<OptimisticField> = []
+        for (field, rev) in write.fieldRevisions where optimisticFieldRevisions[.field(write.deviceId, field)] == rev {
+            owned.insert(field)
+        }
+        return owned
+    }
+
+    private func ownedFacetControlIds(for write: OptimisticWrite) -> Set<String> {
+        guard !write.facetRevisions.isEmpty else { return [] }
+        var owned: Set<String> = []
+        for (controlId, rev) in write.facetRevisions
+        where optimisticFacetRevisions[Self.facetLockKey(write.deviceId, controlId)] == rev {
+            owned.insert(controlId)
+        }
+        return owned
+    }
+
+    /// True while no newer write has superseded any field or facet owned by `write`.
     func ownsRow(_ write: OptimisticWrite) -> Bool {
-        optimisticLockRevision[write.deviceId] == write.revision
+        if !write.fieldRevisions.isEmpty || !write.facetRevisions.isEmpty {
+            return write.fieldRevisions.allSatisfy { field, rev in
+                optimisticFieldRevisions[.field(write.deviceId, field)] == rev
+            } && write.facetRevisions.allSatisfy { controlId, rev in
+                optimisticFacetRevisions[Self.facetLockKey(write.deviceId, controlId)] == rev
+            }
+        }
+        return optimisticLockRevision[write.deviceId] == write.revision
     }
 
     /// Sends `commands` in order for `write`. On failure the row is rolled back (see `revert`)
@@ -337,43 +414,55 @@ extension HomeStore {
         try await send([command], for: write, context: context)
     }
 
-    /// Restores `restoring` (or `write.fields` from `write.previous`) when the write still owns its target.
+    /// Restores `restoring` (or still-owned fields from `write.previous`) when `write` still owns target fields/facets.
     func revert(_ write: OptimisticWrite, restoring: SmartDevice? = nil) {
-        guard write.isShown, ownsRow(write) else { return }
+        guard write.isShown else { return }
+        if write.fieldRevisions.isEmpty && write.facetRevisions.isEmpty {
+            guard optimisticLockRevision[write.deviceId] == write.revision else { return }
+            if let idx = devices.firstIndex(where: { $0.id == write.deviceId }) {
+                devices[idx] = restoring ?? write.previous
+                syncGenericPowerFacet(devices[idx])
+            }
+            clearOptimisticLockEntries(for: write.deviceId)
+            coverCommandOrigins.removeValue(forKey: write.deviceId)
+            return
+        }
+
+        let stillOwnedFields = ownedFields(for: write)
+        let stillOwnedFacets = ownedFacetControlIds(for: write)
+        guard !stillOwnedFields.isEmpty || !stillOwnedFacets.isEmpty else { return }
+
         if let idx = devices.firstIndex(where: { $0.id == write.deviceId }) {
-            if let restoring {
+            if let restoring, ownsRow(write) {
                 devices[idx] = restoring
-            } else if !write.fields.isEmpty {
-                devices[idx] = devices[idx].mergingOptimisticFields(from: write.previous, lockedFields: write.fields)
-            } else {
-                devices[idx] = write.previous
+            } else if !stillOwnedFields.isEmpty {
+                devices[idx] = devices[idx].mergingOptimisticFields(
+                    from: restoring ?? write.previous,
+                    lockedFields: stillOwnedFields
+                )
             }
             syncGenericPowerFacet(devices[idx])
         }
-        if write.fields.isEmpty && write.facetControlIds.isEmpty {
-            clearOptimisticLockEntries(for: write.deviceId)
+
+        for field in stillOwnedFields {
+            if let expected = write.fieldRevisions[field],
+               let entry = optimisticFieldLocks[.field(write.deviceId, field)],
+               entry.revision != expected {
+                continue
+            }
+            optimisticFieldLocks.removeValue(forKey: .field(write.deviceId, field))
+        }
+        for controlId in stillOwnedFacets {
+            let key = Self.facetLockKey(write.deviceId, controlId)
+            if let expected = write.facetRevisions[controlId],
+               let entry = optimisticFacetLocks[key],
+               entry.revision != expected {
+                continue
+            }
+            optimisticFacetLocks.removeValue(forKey: key)
+        }
+        if stillOwnedFields.contains(.coverPosition) {
             coverCommandOrigins.removeValue(forKey: write.deviceId)
-        } else {
-            for field in write.fields {
-                if let revision = write.revision,
-                   let entry = optimisticFieldLocks[.field(write.deviceId, field)],
-                   entry.revision != revision {
-                    continue
-                }
-                optimisticFieldLocks.removeValue(forKey: .field(write.deviceId, field))
-            }
-            for controlId in write.facetControlIds {
-                let key = Self.facetLockKey(write.deviceId, controlId)
-                if let revision = write.revision,
-                   let entry = optimisticFacetLocks[key],
-                   entry.revision != revision {
-                    continue
-                }
-                optimisticFacetLocks.removeValue(forKey: key)
-            }
-            if write.fields.contains(.coverPosition) {
-                coverCommandOrigins.removeValue(forKey: write.deviceId)
-            }
         }
     }
 
@@ -443,7 +532,11 @@ extension HomeStore {
         debounceTasks[debounceKey]?.cancel()
         debounceTasks[debounceKey] = Task { [weak self] in
             try? await Task.sleep(for: self?.controlDebounceInterval ?? .milliseconds(280))
-            guard !Task.isCancelled, let self, self.ownsRow(write) else { return }
+            guard !Task.isCancelled, let self else { return }
+            guard self.ownsRow(write) else {
+                self.revert(write)
+                return
+            }
             do {
                 try await self.send(command, for: write)
                 self.confirmManualControl(intents: habitIntents)
