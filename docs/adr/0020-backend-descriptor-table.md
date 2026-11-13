@@ -1,6 +1,6 @@
 # ADR-0020：连接后端保持封闭集合，把散落的后端分支收进一张描述表；Windows 补上 `HomeProvider` 接缝
 
-日期：2026-11-13　状态：提议（待维护者确认；关联 ADR-0002、ADR-0003、ADR-0006、ADR-0008、ADR-0017、ADR-0019）
+日期：2026-11-13　状态：已接受（关联 ADR-0002、ADR-0003、ADR-0006、ADR-0008、ADR-0017、ADR-0019）
 
 ## 背景
 
@@ -103,4 +103,4 @@ grep -rcE "\"(homeAssistant|xiaomiCloud)\"" windows/src | grep -v ":0" | sort -t
 
 - `Sources/MijiaCore/HomeProvider.swift`（`HomeBackend`、`HomeProvider`）、`Sources/MijiaCore/HomeStore+Backend.swift`（`makeLiveProvider`、`makeComposite`、`applyLGDeviceUpdate`）、`Sources/MijiaCore/DualSourceHomeProvider.swift`、`Sources/MijiaCore/LGWebOSClient.swift`
 - `windows/src/core/homeAssistant.ts`（`HomeAssistantClient`）、`windows/src/core/miCloudClient.ts`、`windows/src/core/models.ts`（`HomeBackend`）、`windows/src/ui/app.ts`
-- `GLOSSARY.md`：`HomeBackend（连接后端）`、`deviceBackends（卡片数据源表）`。`HomeBackendDescriptor` 是新词，接受本 ADR 后补入术语表。
+- `GLOSSARY.md`：`HomeBackend（连接后端）`、`deviceBackends（卡片数据源表）`。`HomeBackendDescriptor（后端描述）`。

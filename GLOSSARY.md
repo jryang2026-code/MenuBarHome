@@ -22,6 +22,10 @@ _Avoid_: Data mapping（数据映射）、Parsing（解析）
 驱动 `HomeStore` 的底层数据源配置，支持局域网 `Home Assistant`（`HAWebSocketProvider`）与免网关的 `米家云端直连`（`MiCloudProvider`）；当 macOS 客户端同时配置并登录两端时自动并行连接并合并设备，仅配置一端时单源运行，演示模式由 `DemoHomeProvider` 提供。Windows 采用互斥数据源选择，HA 通过原生 `ha_snapshot`、`ha_execute` 与 `HomeAssistantClient` 接入，不进行双源合并。
 _Avoid_: Server type（服务器类型）、Mode（模式）
 
+**HomeBackendDescriptor（后端描述）**：
+每个 `HomeBackend` 取值对应的一条集中描述：显示名、是否已配置、连接源标识与 provider 工厂。`HomeBackend` 仍是封闭枚举，描述由穷尽 `switch` 给出，漏写一个取值会编译失败。它只把散落的按后端分支收到一处，不是运行时可加载的扩展点；加后端仍要改代码并发版。由 ADR-0020 引入，代码尚未落地。
+_Avoid_: Plugin（插件）、Registry（注册表）
+
 **RaycastSnapshot（伴生快照）**：
 启用「Raycast 集成」后由 `MenuBarHome` 写到 `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json`（`0600`）的只读设备、场景、快捷动作、环境读数与 `lastCommandFeedback`，供 `raycast/` 扩展、`scripts/mijia` CLI 与 `scripts/mijia-mcp` 本地 MCP 服务搜索与展示，伴生端因此不需要接触米家或 Home Assistant 凭据。字段随 `RaycastSnapshot.currentSchemaVersion` 演进，改名即破坏契约。
 _Avoid_: 缓存文件、数据库
