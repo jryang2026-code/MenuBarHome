@@ -62,7 +62,7 @@
       "en": "GrokBall & Side Suggestions",
       "zh": "GrokBall 情绪球与侧边推荐",
       "macos": "supported",
-      "windows": "supported"
+      "windows": "unsupported"
     },
     {
       "id": "quick-actions",

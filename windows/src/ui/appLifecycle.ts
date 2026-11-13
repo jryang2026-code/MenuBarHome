@@ -916,10 +916,6 @@ export function bindGlobalKeys(
     if (handlePanelKey(host, e)) return;
 
     if (e.key === "Escape") {
-      if (host.isGrokBallStageExpanded) {
-        host.setGrokBallStageExpanded(false);
-        return;
-      }
       if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
         host.cameraLive.hideCameraLiveView();
         return;
@@ -980,7 +976,6 @@ export function startTimerLoop(
     host.maybeRefreshProactiveInBackground();
 
     const now = scheduler.now();
-    host.syncGrokBallEmotion();
     // An expired undo row is a background change: defer its paint past a gesture. Scheduled
     // commands that just ran may render at once (CODING_STANDARDS.md section 16).
     let undoExpired = false;

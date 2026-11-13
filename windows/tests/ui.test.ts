@@ -3706,16 +3706,14 @@ describe("Manual habit learning and proactive Top-4 (#113)", () => {
     assert.deepEqual(habitEntries().map((e) => e.operationKey), ["brightness:30", "brightness:42"]);
   });
 
-  it("shows four zero-delay proactive suggestions when opening the ball", async () => {
+  it("shows four zero-delay proactive suggestions in the top notification island", () => {
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
       connectionMode: "demo",
       hasCompletedOnboarding: true,
-      enableGrokBall: true,
     }));
     new MenuMijiaWindowsApp(element("#app"));
-    await click("#btn-grok-ball");
     // Demo home: two lights on (全屋关灯), then running AC, plug, and camera power-offs.
-    const pills = [...document.querySelectorAll<HTMLElement>("[data-proactive-id]")];
+    const pills = [...document.querySelectorAll<HTMLElement>(".win-island--top [data-proactive-bar] [data-proactive-id]")];
     assert.equal(pills.length, 4);
     assert.match(pills[0]?.textContent ?? "", /全屋关灯/);
   });
@@ -3724,16 +3722,12 @@ describe("Manual habit learning and proactive Top-4 (#113)", () => {
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
       connectionMode: "demo",
       hasCompletedOnboarding: true,
-      enableGrokBall: true,
     }));
     new MenuMijiaWindowsApp(element("#app"));
-    await click("#btn-grok-ball");
     await click('[data-proactive-id^="builtin:lightsOff"]');
     await waitFor(() => habitEntries().length > 0);
     assert.ok(habitEntries().every((e) => e.operationKey === "power:off"));
-    // Reopening filters out the completed action because the lights are now off.
-    await waitFor(() => document.querySelector(".cc-grok-stage") === null);
-    await click("#btn-grok-ball");
+    // Completed action is filtered out immediately because the lights are now off.
     assertMissing(document.querySelector('[data-proactive-id^="builtin:lightsOff"]'));
   });
 
@@ -4023,10 +4017,9 @@ describe("Home Assistant source", () => {
         return undefined;
       };
       Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
-      localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, enableGrokBall: true, assistantBaseURL: "http://localhost:1234/v1", assistantModel: "controlled-model" }));
+      localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, assistantBaseURL: "http://localhost:1234/v1", assistantModel: "controlled-model" }));
       new MenuMijiaWindowsApp(element("#app"));
       await waitFor(() => !!document.querySelector('[data-tile-id="light.study"]'));
-      await click("#btn-grok-ball");
       for (const tick of ticks) tick();
       await waitFor(() => modelRequests === 1);
       if (responseState === "cached") await waitFor(() => !!document.querySelector('[data-proactive-id^="chat:"]'));
@@ -4036,7 +4029,6 @@ describe("Home Assistant source", () => {
       url.value = "http://localhost:8124";
       await click("#btn-save-settings");
       await waitFor(() => tile("light.study").includes("Source B lamp"));
-      if (!document.querySelector(".cc-grok-stage")) await click("#btn-grok-ball");
       assert.doesNotMatch(document.body.textContent ?? "", /Source A lamp/);
       for (const tick of ticks) tick();
       await setImmediate();
@@ -4389,42 +4381,49 @@ describe("Home Assistant source", () => {
   });
 });
 
-describe("GrokBall side attachment (#114)", () => {
-  it("stays hidden by default and opens four side actions when enabled", async () => {
+describe("Windows 11 Fluent 2 two-island flyout, Quick Settings capsules & taskbar motion", () => {
+  it("renders Win+N notification island + Win+A Quick Settings island without GrokBall UI", async () => {
     startDemo();
+    assert.ok(document.querySelector(".win-island--top .cc-header"));
+    assert.ok(document.querySelector(".win-island--top .win-notif-stack"));
+    assert.ok(document.querySelector(".win-island--bottom .win-island-controls #command-input"));
+    assert.ok(document.querySelector(".win-island--bottom .cc-footer"));
     assertMissing(document.querySelector("#btn-grok-ball"));
-    await click("#btn-settings");
-    const toggle = element("#settings-grok-ball") as HTMLInputElement;
-    assert.equal(toggle.checked, false);
-    toggle.checked = true;
-    toggle.dispatchEvent(new Event("change", { bubbles: true }));
-    await setImmediate();
-    await click("#btn-close-settings");
+    assertMissing(document.querySelector(".cc-grok-sidebar"));
+    assertMissing(document.querySelector(".cc-grok-stage"));
 
-    await click("#btn-grok-ball");
-    assert.equal(document.querySelectorAll(".cc-grok-sidebar [data-proactive-id]").length, 4);
-    await click(".cc-grok-pill");
-    await waitFor(() => document.querySelector("#btn-undo") !== null);
-    assertMissing(document.querySelector(".cc-grok-stage"));
-    assert.equal(element(".cc-grok-ball").dataset.emotion, "33");
-    await click("#btn-undo");
-    await click("#btn-grok-ball");
-    dom.dispatchEvent(new dom.KeyboardEvent("keydown", { key: "Escape" }));
-    assertMissing(document.querySelector(".cc-grok-stage"));
+    const proactiveDetails = element('.win-island--top details[data-notif-card="proactive"]') as HTMLDetailsElement;
+    assert.equal(proactiveDetails.open, true);
+    proactiveDetails.open = false;
+    proactiveDetails.dispatchEvent(new Event("toggle"));
+    await click("#btn-toggle-appearance");
+    const afterRender = element('.win-island--top details[data-notif-card="proactive"]') as HTMLDetailsElement;
+    assert.equal(afterRender.open, false, "Win+N notification group collapse state persists across renders");
   });
 
-  it("keeps learned scenes outside the reversible side attachment", async () => {
-    localStorage.setItem(["menumijia", "windows", "settings", "v2"].join("."), JSON.stringify({
-      connectionMode: "demo", hasCompletedOnboarding: true, enableGrokBall: true,
-      habitEntries: [{ bucket: "深夜", targetId: "scene.home", operationKey: "scene:activate", count: 99 }],
-    }));
-    new MenuMijiaWindowsApp(element("#app"));
-    await click("#btn-grok-ball");
-    assertMissing(document.querySelector('[data-proactive-id*="scene.home"]'));
-    assert.equal(document.querySelectorAll(".cc-grok-pill").length, 4);
+  it("drills down Win+A split-pill capsules into in-place sub-flyouts and drives the WinUI 3 slider deck", async () => {
+    startDemo();
+    const ceiling = element('[data-tile-id="light.living_ceiling"]');
+    assert.ok(ceiling.classList.contains("is-capsule"), "Compact device tiles render as Win+A split-pill capsules");
+    assert.ok(ceiling.querySelector(".win-split-pill .win-pill-toggle"));
+    assert.ok(ceiling.querySelector(".win-split-pill .win-pill-expand"));
+
+    // WinUI 3 bottom slider deck updates active light brightness and --val track fill.
+    const deckBri = element('[data-deck-brightness="light.living_ceiling"]') as HTMLInputElement;
+    assert.ok(deckBri.style.getPropertyValue("--val").endsWith("%"));
+    await setRange('[data-deck-brightness="light.living_ceiling"]', "55");
+    assert.match(tile("light.living_ceiling"), /55%/);
+
+    // Expanding a capsule opens the in-place Win+A sub-flyout with a Back button.
+    await click('[data-expand-device="light.living_ceiling"]');
+    const subpage = element('[data-tile-id="light.living_ceiling"]');
+    assert.ok(subpage.classList.contains("is-subpage"));
+    assert.ok(subpage.querySelector(".win-subpage-back"));
+    await click('[data-tile-id="light.living_ceiling"] .win-subpage-back');
+    assert.ok(element('[data-tile-id="light.living_ceiling"]').classList.contains("is-capsule"));
   });
 
-  it("shows emotion 34 on the ball when a Home Assistant refresh fails", async () => {
+  it("surfaces Home Assistant connection errors in the top Win+N notification island", async () => {
     const invoke = async (name: string) => {
       if (name === "secure_store_get") return "controlled-token";
       if (name === "ha_snapshot") throw new Error("Home Assistant unreachable");
@@ -4432,11 +4431,72 @@ describe("GrokBall side attachment (#114)", () => {
     };
     Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
     localStorage.setItem(["menumijia", "windows", "settings", "v2"].join("."), JSON.stringify({
-      connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, enableGrokBall: true,
+      connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true,
     }));
     new MenuMijiaWindowsApp(element("#app"));
-    await waitFor(() => !!document.querySelector("[data-ha-error]"));
-    assert.equal(element(".cc-grok-ball").dataset.emotion, "34");
+    await waitFor(() => !!document.querySelector(".win-island--top .win-notif-stack [data-ha-error]"));
+    assertMissing(document.querySelector(".cc-grok-ball"));
+  });
+
+  it("slides out from and back into the taskbar edge and cancels hide if reopened mid-dismiss", async () => {
+    const finishCalls: Array<{ seq?: number }> = [];
+    const invoke = async (name: string, args?: { seq?: number }) => {
+      if (name === "finish_hide_panel") finishCalls.push({ seq: args?.seq });
+      if (name === "panel_backdrop") return "none";
+      if (name === "panel_placement") return { anchor: "tray", customPosition: false };
+      return undefined;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    const root = element("#app");
+    startDemo();
+
+    for (const edge of ["right", "top", "left", "bottom"] as const) {
+      window.dispatchEvent(new window.CustomEvent("menumijia:panel-present", { detail: { edge } }));
+      assert.equal(root.dataset.flyoutEdge, edge);
+      assert.equal(root.classList.contains("is-opening"), true);
+      assert.equal(root.classList.contains("is-closing"), false);
+    }
+
+    // Reopening mid-dismiss cancels the stale sequence so the HWND is never hidden under the user.
+    window.dispatchEvent(new window.CustomEvent("menumijia:panel-dismiss", { detail: { seq: 41, edge: "bottom" } }));
+    assert.equal(root.classList.contains("is-closing"), true);
+    window.dispatchEvent(new window.CustomEvent("menumijia:panel-present", { detail: { edge: "bottom" } }));
+    assert.equal(root.classList.contains("is-closing"), false);
+    await new Promise((resolve) => setTimeout(resolve, 210));
+    assert.deepEqual(finishCalls, []);
+
+    // Completing dismiss notifies Rust with the exact sequence number.
+    window.dispatchEvent(new window.CustomEvent("menumijia:panel-dismiss", { detail: { seq: 42, edge: "right" } }));
+    assert.equal(root.dataset.flyoutEdge, "right");
+    assert.equal(root.classList.contains("is-closing"), true);
+    const animEnd = new window.Event("animationend", { bubbles: true });
+    root.querySelector(".cc-popover")!.dispatchEvent(animEnd);
+    await setImmediate();
+    assert.deepEqual(finishCalls, [{ seq: 42 }]);
+
+    // Under prefers-reduced-motion: reduce, dismiss completes immediately without .is-closing.
+    const origMatchMedia = window.matchMedia;
+    window.matchMedia = ((query: string) =>
+      ({
+        matches: query.includes("prefers-reduced-motion"),
+        media: query,
+        onchange: null,
+        addListener: () => undefined,
+        removeListener: () => undefined,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+        dispatchEvent: () => false,
+      }) as MediaQueryList) as typeof window.matchMedia;
+    try {
+      window.dispatchEvent(new window.CustomEvent("menumijia:panel-present", { detail: { edge: "top" } }));
+      assert.equal(root.classList.contains("is-opening"), false);
+      window.dispatchEvent(new window.CustomEvent("menumijia:panel-dismiss", { detail: { seq: 43, edge: "top" } }));
+      assert.equal(root.classList.contains("is-closing"), false);
+      await setImmediate();
+      assert.deepEqual(finishCalls, [{ seq: 42 }, { seq: 43 }]);
+    } finally {
+      window.matchMedia = origMatchMedia;
+    }
   });
 });
 
@@ -6387,5 +6447,31 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.ok(document.querySelector('[data-scene-cmd="quick:lightsOff"]'));
     assert.doesNotMatch(document.body.textContent ?? "", /全开主灯/);
     assert.doesNotMatch(document.body.textContent ?? "", /25°制冷/);
+  });
+
+  it("toggles and expands the slider deck primary light even when its custom group is collapsed", async () => {
+    const app = startDemoApp();
+    app.layout.groups = [{ id: "g-lights", name: "主灯" }];
+    app.layout.groupMap = {
+      "light.living_ceiling": "g-lights",
+      "light.study_desk": "g-lights",
+    };
+    app.layout.collapsed = ["all|g-lights"];
+    app.render();
+    assert.ok(document.querySelector('[data-collapse="g-lights"].is-collapsed'));
+    assertMissing(document.querySelector('[data-tile-id="light.living_ceiling"]'));
+    const deckToggle = document.querySelector<HTMLElement>('[data-deck-toggle="light.living_ceiling"]');
+    assert.ok(deckToggle, "slider deck still mounts for the collapsed group's primary light");
+    deckToggle.click();
+    await setImmediate();
+    const livingLight = app.devices.find((d) => d.id === "light.living_ceiling")!;
+    assert.equal(livingLight.kind.kind === "light" && livingLight.kind.isOn, false);
+
+    // Toggle light.study_desk off too or expand whichever primary light is now on the deck (both are in collapsed g-lights).
+    const deckExpand = document.querySelector<HTMLElement>('[data-deck-expand="light.study_desk"]');
+    assert.ok(deckExpand);
+    deckExpand.click();
+    await setImmediate();
+    assert.ok(document.querySelector('.cc-tile.is-subpage[data-tile-id="light.study_desk"]'));
   });
 });

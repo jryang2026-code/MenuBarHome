@@ -10,6 +10,7 @@ import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom
 import { environmentReadingPriority, type SmartDevice } from "../core/models.js";
 import { isHostAttachedToActiveWindow, mergeHomeSnapshotRespectingLocks } from "../core/optimisticLock.js";
 import { availableQuickActions } from "../core/quickActions.js";
+import { renderSliderDeck } from "./panelView.js";
 
 export function foldGrouped(host: MenuMijiaWindowsApp, devices: readonly SmartDevice[]): SmartDevice[] {
     return host.settings.hideGroupedLights
@@ -440,7 +441,9 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
     const unmatchedTileIds = new Set(tileElementsById.keys());
     let index = 0;
     for (const section of sections) {
-      if (host.layout.collapsed.includes(scopedKey(host.pageKey, section.id))) continue;
+      const hasActiveSubpage =
+        host.expandedDeviceId !== null && section.devices.some((device) => device.id === host.expandedDeviceId);
+      if (host.layout.collapsed.includes(scopedKey(host.pageKey, section.id)) && !hasActiveSubpage) continue;
       const spanMap = spans(
         section.devices,
         (device) => (host.expandedDeviceId === device.id ? "full" : host.tileSize(device)),
@@ -465,7 +468,7 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
       } else if (current) {
         current.remove();
       } else if (desired) {
-        host.root.querySelector("#btn-hide-panel")?.before(desired);
+        host.root.querySelector(".cc-footer-status")?.append(desired);
         host.bindAllOffControl();
       }
     }
@@ -485,6 +488,25 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
       host.root.querySelector(".cc-header-top")?.insertAdjacentHTML("afterend", envHTML);
     }
 
+    if (!host.root.querySelector(".win-slider-deck:focus-within")) {
+      const deckHTML = renderSliderDeck(host);
+      const currentDeck = host.root.querySelector<HTMLElement>(".win-slider-deck");
+      const desiredDeck = parseSingleElement(deckHTML);
+      if (currentDeck && !desiredDeck) {
+        currentDeck.remove();
+      } else if (currentDeck && desiredDeck) {
+        if (hasMatchingDomShape(currentDeck, desiredDeck)) {
+          morphMatchingDom(currentDeck, desiredDeck);
+        } else {
+          currentDeck.replaceWith(desiredDeck);
+          host.bindDeckEvents();
+        }
+      } else if (!currentDeck && desiredDeck) {
+        host.root.querySelector(".cc-footer")?.before(desiredDeck);
+        host.bindDeckEvents();
+      }
+    }
+
     const subtitle = host.root.querySelector<HTMLElement>(".cc-subtitle");
     if (subtitle) subtitle.textContent = host.statusSummaryText;
     host.root
@@ -497,7 +519,6 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
     const wantsButton = health.kind === "offline" && health.recovery === "qr";
     if (footerLabel && (footerLabel.tagName === "BUTTON") !== wantsButton) return false;
     if (footerLabel) footerLabel.textContent = health.label;
-    host.syncGrokBallEmotion();
     return true;
   }
 

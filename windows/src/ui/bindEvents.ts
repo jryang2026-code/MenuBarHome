@@ -59,11 +59,113 @@ import { facetTitle, facetValue } from "../core/miotFacetText.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { bindPanelInput } from "./panelKeyboard.js";
 
+function confirmHighRiskForHost(
+  host: MenuMijiaWindowsApp,
+  deviceId: string,
+  command: DeviceCommand,
+  label: string,
+  explicit?: { readonly summary: string; readonly intent: DeviceIntent },
+  bannerOverride?: string,
+): boolean {
+  const actionKey = JSON.stringify(command);
+  const armed = host.pendingHighRisk;
+  if (
+    armed &&
+    armed.deviceId === deviceId &&
+    armed.actionKey === actionKey &&
+    armed.sourceRevision === host.sourceRevision &&
+    armed.expiresAtMs > Date.now()
+  ) {
+    host.clearPendingHighRisk();
+    return true;
+  }
+  host.setPendingHighRisk({
+    deviceId,
+    actionKey,
+    expiresAtMs: Date.now() + 8000,
+    sourceRevision: host.sourceRevision,
+    ...(explicit
+      ? { confirm: { command, summary: explicit.summary, intent: explicit.intent } }
+      : {}),
+  });
+  host.replyBanner = {
+    text:
+      bannerOverride ??
+      (explicit
+        ? t("「{action}」属于高风险设备，确认后执行", { action: label })
+        : t("「{action}」属于高风险设备，再点一次确认执行", { action: label })),
+    source: t("需要确认"),
+  };
+  host.render();
+  return false;
+}
+
+export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void {
+  const dev = host.devices.find((d) => d.id === id);
+  if (!dev || dev.kind.kind === "sensor" || !deviceCanTogglePower(dev)) return;
+  if (dev.kind.kind === "fridge") {
+    host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
+    host.render();
+    return;
+  }
+  if (host.waitingDeviceIds.has(id)) return;
+  // A momentary plug button only fires an activation; macOS always sends `.power(true)`,
+  // even when Home Assistant still reports the button as on (#9).
+  const isMomentaryPlug =
+    dev.kind.kind === "plug" && dev.kind.switchEntityId.startsWith("button.");
+  const nextOn = isMomentaryPlug || !isDeviceActiveOn(dev);
+  const powerIntent: DeviceIntent = { targetId: dev.id, operation: { kind: "power", isOn: nextOn } };
+  const cmds = IntentValidator.commandsForIntent(powerIntent, dev);
+  const firstCmd = cmds[0];
+  if (!firstCmd) return;
+  // Every manual toggle goes through the hazard table: a heater, plug, camera, vacuum or
+  // generic card asks exactly like macOS `togglePrimary`. Stopping a moving cover is the one
+  // cover de-escalation and never asks (#298, #143).
+  const stopsMovingCover =
+    dev.kind.kind === "cover" &&
+    dev.kind.motion !== "stopped" &&
+    dev.kind.pauseDescription !== null &&
+    firstCmd.kind === "setSelectOption" &&
+    firstCmd.option === dev.kind.pauseDescription;
+  const hazard =
+    dev.kind.kind === "cover"
+      ? !stopsMovingCover &&
+        coverMotorRequiresConfirmation(dev.kind.subtype, nextOn ? "open" : "close")
+      : !stopsMovingCover &&
+        ManualControlPolicy.requiresConfirmation(powerIntent, withAliases(host.layout, host.devices));
+  if (
+    hazard &&
+    !confirmHighRiskForHost(host, dev.id, firstCmd, t(nextOn ? "打开{name}" : "关闭{name}", { name: dev.name }))
+  ) {
+    return;
+  }
+  host.poppedDeviceId = dev.id;
+  const waitsForCloud = host.settings.connectionMode !== "demo";
+  if (waitsForCloud) {
+    host.waitingDeviceIds.add(id);
+    host.render();
+  }
+  void host.executeSingleCommand(
+    dev,
+    firstCmd,
+    t(nextOn ? "已打开{name}" : "已关闭{name}", { name: dev.name }),
+    { targetId: dev.id, operation: { kind: "power", isOn: nextOn } },
+    waitsForCloud,
+  ).finally(() => {
+    if (!waitsForCloud) return;
+    host.waitingDeviceIds.delete(id);
+    host.render();
+  });
+}
+
   export function bindEvents(host: MenuMijiaWindowsApp): void {
     ensureDrawerLifecycleListeners(host);
-    host.root.querySelectorAll<HTMLElement>("[data-grok-toggle]").forEach((button) => {
-      button.addEventListener("click", () => {
-        host.setGrokBallStageExpanded(!host.isGrokBallStageExpanded);
+    host.root.querySelectorAll<HTMLDetailsElement>("details[data-notif-card]").forEach((details) => {
+      details.addEventListener("toggle", () => {
+        const key = details.dataset.notifCard;
+        if (!key) return;
+        if (details.open) host.collapsedNotifCards.delete(key);
+        else host.collapsedNotifCards.add(key);
       });
     });
     bindPanelInput(host);
@@ -384,15 +486,6 @@ import { bindPanelInput } from "./panelKeyboard.js";
       host.saveSettings();
       host.render();
     });
-    host.root.querySelector<HTMLInputElement>("#settings-grok-ball")?.addEventListener("change", (e) => {
-      host.settings.enableGrokBall = (e.target as HTMLInputElement).checked;
-      if (!host.settings.enableGrokBall) {
-        host.isGrokBallStageExpanded = false;
-      }
-      host.saveSettings();
-      host.applyPanelHeight();
-      host.render();
-    });
 
     host.root.querySelector<HTMLInputElement>("#settings-enable-hotkey")?.addEventListener("change", (e) => {
       host.settings.enableGlobalHotkey = (e.target as HTMLInputElement).checked;
@@ -571,8 +664,19 @@ import { bindPanelInput } from "./panelKeyboard.js";
         const intents = IntentValidator.sanitize(suggestion.intents, aliasedDevices, host.scenes);
         if (intents.length === 0) return;
         host.isShowingAssistantBar = true;
-        host.setGrokBallStageExpanded(false);
         void host.executeIntents(intents, IntentReply.describe(intents, aliasedDevices, host.scenes), t("猜你想控"), { recordHabits: true });
+      });
+    });
+
+    host.root.querySelectorAll<HTMLElement>("[data-open-camera]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.openCamera;
+        if (!id) return;
+        const dev = host.devices.find((d) => d.id === id);
+        if (dev && dev.kind.kind === "camera" && deviceCanTogglePower(dev) && dev.isOnline && !dev.kind.isOn) {
+          toggleDeviceForHost(host, id);
+        }
+        host.cameraLive.openCameraLiveView(id);
       });
     });
 
@@ -611,39 +715,7 @@ import { bindPanelInput } from "./panelKeyboard.js";
       label: string,
       explicit?: { readonly summary: string; readonly intent: DeviceIntent },
       bannerOverride?: string,
-    ): boolean => {
-      const actionKey = JSON.stringify(command);
-      const armed = host.pendingHighRisk;
-      if (
-        armed &&
-        armed.deviceId === deviceId &&
-        armed.actionKey === actionKey &&
-        armed.sourceRevision === host.sourceRevision &&
-        armed.expiresAtMs > Date.now()
-      ) {
-        host.clearPendingHighRisk();
-        return true;
-      }
-      host.setPendingHighRisk({
-        deviceId,
-        actionKey,
-        expiresAtMs: Date.now() + 8000,
-        sourceRevision: host.sourceRevision,
-        ...(explicit
-          ? { confirm: { command, summary: explicit.summary, intent: explicit.intent } }
-          : {}),
-      });
-      host.replyBanner = {
-        text:
-          bannerOverride ??
-          (explicit
-            ? t("「{action}」属于高风险设备，确认后执行", { action: label })
-            : t("「{action}」属于高风险设备，再点一次确认执行", { action: label })),
-        source: t("需要确认"),
-      };
-      host.render();
-      return false;
-    };
+    ): boolean => confirmHighRiskForHost(host, deviceId, command, label, explicit, bannerOverride);
 
     host.root.querySelectorAll<HTMLElement>("[data-high-risk-confirm]").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -675,61 +747,7 @@ import { bindPanelInput } from "./panelKeyboard.js";
     };
 
     const toggleDeviceById = (id: string) => {
-      const dev = host.devices.find((d) => d.id === id);
-      if (!dev || dev.kind.kind === "sensor" || !deviceCanTogglePower(dev)) return;
-      if (dev.kind.kind === "fridge") {
-        host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
-        host.render();
-        return;
-      }
-      if (host.waitingDeviceIds.has(id)) return;
-      // A momentary plug button only fires an activation; macOS always sends `.power(true)`,
-      // even when Home Assistant still reports the button as on (#9).
-      const isMomentaryPlug =
-        dev.kind.kind === "plug" && dev.kind.switchEntityId.startsWith("button.");
-      const nextOn = isMomentaryPlug || !isDeviceActiveOn(dev);
-      const powerIntent: DeviceIntent = { targetId: dev.id, operation: { kind: "power", isOn: nextOn } };
-      const cmds = IntentValidator.commandsForIntent(powerIntent, dev);
-      const firstCmd = cmds[0];
-      if (!firstCmd) return;
-      // Every manual toggle goes through the hazard table: a heater, plug, camera, vacuum or
-      // generic card asks exactly like macOS `togglePrimary`. Stopping a moving cover is the one
-      // cover de-escalation and never asks (#298, #143).
-      const stopsMovingCover =
-        dev.kind.kind === "cover" &&
-        dev.kind.motion !== "stopped" &&
-        dev.kind.pauseDescription !== null &&
-        firstCmd.kind === "setSelectOption" &&
-        firstCmd.option === dev.kind.pauseDescription;
-      const hazard =
-        dev.kind.kind === "cover"
-          ? !stopsMovingCover &&
-            coverMotorRequiresConfirmation(dev.kind.subtype, nextOn ? "open" : "close")
-          : !stopsMovingCover &&
-            ManualControlPolicy.requiresConfirmation(powerIntent, withAliases(host.layout, host.devices));
-      if (
-        hazard &&
-        !confirmHighRisk(dev.id, firstCmd, t(nextOn ? "打开{name}" : "关闭{name}", { name: dev.name }))
-      ) {
-        return;
-      }
-      host.poppedDeviceId = dev.id;
-      const waitsForCloud = host.settings.connectionMode !== "demo";
-      if (waitsForCloud) {
-        host.waitingDeviceIds.add(id);
-        host.render();
-      }
-      void host.executeSingleCommand(
-        dev,
-        firstCmd,
-        t(nextOn ? "已打开{name}" : "已关闭{name}", { name: dev.name }),
-        { targetId: dev.id, operation: { kind: "power", isOn: nextOn } },
-        waitsForCloud,
-      ).finally(() => {
-        if (!waitsForCloud) return;
-        host.waitingDeviceIds.delete(id);
-        host.render();
-      });
+      toggleDeviceForHost(host, id);
     };
 
     host.root.querySelectorAll<HTMLElement>("[data-toggle-device]").forEach((btn) => {
@@ -1302,5 +1320,103 @@ import { bindPanelInput } from "./panelKeyboard.js";
     host.cameraLive.bindEvents();
 
     host.bindSettingsEvents();
+
+    syncAllRanges(host.root);
+    bindDeckEvents(host);
+  }
+
+  function syncRangeFill(slider: HTMLInputElement): void {
+    const min = Number(slider.min || 0);
+    const max = Number(slider.max || 100);
+    const val = Number(slider.value || 0);
+    const pct = max > min ? Math.max(0, Math.min(100, ((val - min) / (max - min)) * 100)) : 0;
+    slider.style.setProperty("--val", `${pct}%`);
+  }
+
+  function syncAllRanges(scope: ParentNode): void {
+    scope.querySelectorAll<HTMLInputElement>("input.cc-range").forEach((slider) => {
+      if (!slider.hasAttribute("data-deck-brightness") && !slider.hasAttribute("data-deck-volume")) {
+        syncRangeFill(slider);
+      }
+      slider.addEventListener("input", () => {
+        syncRangeFill(slider);
+      });
+    });
+  }
+
+  export function bindDeckEvents(host: MenuMijiaWindowsApp): void {
+    const deck = host.root.querySelector<HTMLElement>(".win-slider-deck");
+    if (!deck) return;
+
+    deck.querySelectorAll<HTMLInputElement>("input.cc-range").forEach((slider) => {
+      slider.addEventListener("input", () => {
+        syncRangeFill(slider);
+        const valLabel = slider.closest(".win-slider-row")?.querySelector(".win-deck-val");
+        if (valLabel) valLabel.textContent = `${Math.round(Number(slider.value))}%`;
+      });
+    });
+
+    deck.querySelectorAll<HTMLInputElement>("[data-deck-brightness]").forEach((slider) => {
+      slider.addEventListener("change", () => {
+        const id = slider.dataset.deckBrightness;
+        if (!id) return;
+        const dev = host.devices.find((d) => d.id === id);
+        if (!dev || dev.kind.kind !== "light" || dev.kind.brightnessWritable === false) return;
+        const percent = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
+        void host.executeSingleCommand(
+          dev,
+          { kind: "setLightBrightness", entityId: dev.kind.entityId, percent },
+          t("已将{name}亮度设为 {percent}%", { name: dev.name, percent }),
+          { targetId: dev.id, operation: { kind: "brightness", percent } },
+        );
+      });
+    });
+
+    deck.querySelectorAll<HTMLInputElement>("[data-deck-volume]").forEach((slider) => {
+      slider.addEventListener("change", () => {
+        const id = slider.dataset.deckVolume;
+        if (!id) return;
+        const dev = host.devices.find((d) => d.id === id);
+        if (!dev || dev.kind.kind !== "speaker" || !dev.kind.volumeWritable) return;
+        const percent = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
+        void host.executeSingleCommand(
+          dev,
+          { kind: "mediaSetVolume", entityId: dev.kind.mediaEntityId, level: percent / 100 },
+          t("已将{name}音量设为 {percent}%", { name: dev.name, percent }),
+        );
+      });
+    });
+
+    deck.querySelectorAll<HTMLElement>("[data-deck-toggle]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.deckToggle;
+        if (!id) return;
+        toggleDeviceForHost(host, id);
+      });
+    });
+
+    deck.querySelectorAll<HTMLElement>("[data-deck-mute]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.deckMute;
+        if (!id) return;
+        const dev = host.devices.find((d) => d.id === id);
+        if (!dev || dev.kind.kind !== "speaker" || !dev.kind.muteSwitchEntityId) return;
+        const next = !dev.kind.isMuted;
+        void host.executeSingleCommand(
+          dev,
+          { kind: "setSwitch", entityId: dev.kind.muteSwitchEntityId, isOn: next },
+          t("已{action}{name}静音", { action: next ? t("开启") : t("关闭"), name: dev.name }),
+        );
+      });
+    });
+
+    deck.querySelectorAll<HTMLElement>("[data-deck-expand]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.deckExpand;
+        if (!id) return;
+        host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
+        host.render();
+      });
+    });
   }
 

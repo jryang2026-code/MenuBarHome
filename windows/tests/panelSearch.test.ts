@@ -244,4 +244,23 @@ describe("Panel keyboard on the rendered demo", () => {
     input("书房"); key("Escape"); assert.ok(!calls.includes("hide_panel"));
     key("Escape"); await setImmediate(); assert.ok(calls.includes("hide_panel"));
   });
+  it("excludes hidden sibling cards from keyboard navigation while a device subpage is open", async () => {
+    app.devices = [light("one", "书房主灯"), light("two", "书房台灯")];
+    app.render();
+    input("书房");
+    assert.deepEqual(ids(), ["one", "two"]);
+    key("ArrowRight");
+    assert.equal(app.expandedDeviceId, "one");
+    assert.equal(app.panelSearch.selectedDeviceId, "one");
+    assert.ok(document.querySelector('.cc-tile.is-subpage[data-tile-id="one"]'));
+    key("ArrowDown");
+    assert.equal(app.panelSearch.selectedDeviceId, "one");
+    assert.equal(document.querySelector('[data-tile-id="two"]')?.classList.contains("is-keyboard-selected"), false);
+    key("Enter");
+    await setImmediate();
+    const first = app.devices.find((item) => item.id === "one")!;
+    const second = app.devices.find((item) => item.id === "two")!;
+    assert.equal(first.kind.kind === "light" && first.kind.isOn, true);
+    assert.equal(second.kind.kind === "light" && second.kind.isOn, false);
+  });
 });

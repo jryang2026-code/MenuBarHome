@@ -597,9 +597,6 @@ export async function executeBuiltInQuickAction(
     }
   }
 
-  if (succeededCount > 0 && failedCount === 0) {
-    host.grokBallCelebrationUntil = Date.now() + 2400;
-  }
   const habitReceipt = succeededHabitIntents.length > 0 ? recordHabits(host, succeededHabitIntents) : null;
   if (steps.length > 0) {
     host.lastManuallyUsedLightId = planned.nextLastManuallyUsedLightId;

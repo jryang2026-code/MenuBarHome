@@ -1,9 +1,13 @@
-//! Native window backdrop: the material the compositor paints behind the webview (§1.4).
+//! Native window backdrop policy (§1.4).
 //!
-//! `set_effects` only reports that the call was scheduled, not that the material appeared, so the
-//! panel must never lower its own fill on that answer alone — a machine without the material would
-//! show an unblurred desktop through a half-transparent panel. This module decides from the OS build
-//! and the user's transparency switch, and lets the DWM result have the last word when there is one.
+//! Because the Win11 `Win+N` + `Win+A` two-island flyout renders two distinct `8px`-rounded floating
+//! islands separated by a `12px` transparent desktop gap (and slides out from / into the taskbar edge),
+//! enabling a rectangular HWND-wide DWM backdrop (`DWMSBT_MAINWINDOW` / `DWMSBT_TRANSIENTWINDOW`) would
+//! paint an opaque/blurred rectangular slab across both the `12px` inter-island gap and the outer margin
+//! while animating. `apply` therefore explicitly keeps the HWND backdrop clear (`DWMSBT_NONE` = `1` on
+//! Win11 22H2+) and returns `false` so each `.win-island` paints its own Fluent 2 Acrylic surface, stroke,
+//! and elevation shadow cleanly. `backdrop_for` remains available as the pure build/transparency classifier.
+#![allow(dead_code)]
 
 use super::*;
 
@@ -45,10 +49,15 @@ pub(crate) fn backdrop_for(build: u32, transparency: bool) -> Backdrop {
     }
 }
 
-/// Applies the material the gate allows and reports whether the panel may lower its fill.
+/// Clears any HWND-wide DWM backdrop so the `12px` gap between the Top (`Win+N`) and Bottom (`Win+A`)
+/// islands and the taskbar slide transition stay transparent to the desktop.
 #[cfg(windows)]
 pub(crate) fn apply(window: &WebviewWindow) -> bool {
-    material(window, backdrop_for(os_build(), transparency_enabled()))
+    const DWMSBT_NONE_KIND: i32 = 1;
+    if os_build() >= MICA_MIN_BUILD {
+        let _ = set_system_backdrop(window, DWMSBT_NONE_KIND);
+    }
+    false
 }
 
 #[cfg(not(windows))]

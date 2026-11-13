@@ -99,13 +99,12 @@ export function renderOnboardingModal(host: MenuMijiaWindowsApp): string {
       <div class="cc-sheet-backdrop">
         <div class="cc-sheet" role="dialog" aria-modal="true" aria-label="${t("首次设置")}">
           <div class="cc-sheet-header">
-            <div class="cc-sheet-badge">${t("MenuBarHome 控制中心")}</div>
+            <h2 class="cc-sheet-title">${t("扫码直连你的真实米家设备")}</h2>
             <button class="cc-circle-btn is-small" id="btn-close-onboarding" title="${t("关闭引导")}" aria-label="${t("关闭引导")}">
               ${SF_ICONS.xmark}
             </button>
           </div>
 
-          <h2 class="cc-sheet-title">${t("扫码直连你的真实米家设备")}</h2>
           <p class="cc-sheet-desc">
             ${t("手机打开「米家 App → 扫一扫」即可直接同步全屋真实设备；常驻 Windows 右下角系统托盘，点击图标或按 Alt+M 随时弹出，点击外部自动收起。")}
           </p>

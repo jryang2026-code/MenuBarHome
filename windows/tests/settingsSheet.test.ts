@@ -169,7 +169,6 @@ describe("Settings sheet three-zone layout (#78)", () => {
       "#settings-hide-offline",
       "#settings-hide-grouped-lights",
       "#settings-quick-actions",
-      "#settings-grok-ball",
       "#settings-enable-hotkey",
       "#settings-panel-opacity",
       '[data-appearance="dark"]',
@@ -180,6 +179,7 @@ describe("Settings sheet three-zone layout (#78)", () => {
     ]) {
       assert.ok(general.querySelector(selector), `${selector} belongs to 外观与面板`);
     }
+    assert.equal(document.querySelector("#settings-grok-ball"), null, "GrokBall setting is removed on Windows");
 
     const connection = panel("connection");
     for (const selector of ["#settings-ha-url", "#settings-ha-token", "select[data-mi-region]", "#btn-start-qr", ".cc-qr-box", '[data-conn-mode="xiaomiCloud"]', '[data-conn-mode="homeAssistant"]', '[data-conn-mode="demo"]']) {
