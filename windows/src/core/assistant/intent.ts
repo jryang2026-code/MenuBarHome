@@ -831,15 +831,24 @@ function bareCategoryOutcome(
   });
   const sameCategory = allControllable.filter((dev) => dev.isOnline);
   const panelRoom = options.panelRoom ?? null;
+  if (panelRoom && panelRoom.id) {
+    const roomControllable = allControllable.filter((dev) => dev.roomId === panelRoom.id);
+    if (roomControllable.length > 0 && roomControllable.every((dev) => !dev.isOnline)) {
+      return {
+        plan: {
+          intents: [],
+          reply: bareCategoryOfflineReply(category, panelRoom.name),
+          source: "local",
+          suggestions: [],
+        },
+      };
+    }
+  }
   if (allControllable.length > 0 && sameCategory.length === 0) {
-    const scopedRoom =
-      panelRoom && panelRoom.id && allControllable.some((dev) => dev.roomId === panelRoom.id)
-        ? panelRoom.name
-        : null;
     return {
       plan: {
         intents: [],
-        reply: bareCategoryOfflineReply(category, scopedRoom),
+        reply: bareCategoryOfflineReply(category, null),
         source: "local",
         suggestions: [],
       },
@@ -869,20 +878,7 @@ function bareCategoryOutcome(
   }
   const resolution = resolveBareCategory(switchable, panelRoom, options.usageOrder ?? []);
   switch (resolution.kind) {
-    case "none": {
-      if (panelRoom && panelRoom.id && resolution.room !== null) {
-        const roomControllable = allControllable.filter((dev) => dev.roomId === panelRoom.id);
-        if (roomControllable.length > 0 && roomControllable.every((dev) => !dev.isOnline)) {
-          return {
-            plan: {
-              intents: [],
-              reply: bareCategoryOfflineReply(category, panelRoom.name),
-              source: "local",
-              suggestions: [],
-            },
-          };
-        }
-      }
+    case "none":
       return {
         plan: {
           intents: [],
@@ -891,7 +887,6 @@ function bareCategoryOutcome(
           suggestions: [],
         },
       };
-    }
     case "candidates":
       return {
         plan: {
@@ -1046,19 +1041,14 @@ function parseChineseDeviceCommand(
   const rawOps: IntentOperation[] = extractChineseNumericOps(state);
 
   const devById = new Map(devices.map((d) => [d.id, d]));
-  const explicitIds: string[] = [];
-  const nameGroups: string[][] = [];
+  const explicitGroups: ReadonlyArray<string>[] = [];
+  const nameGroups: ReadonlyArray<string>[] = [];
   for (const entry of buildDevicePhrases(devices)) {
     if (!consumeChinesePhrase(entry.phrase, state)) continue;
-    const matched = entry.ids.map((id) => devById.get(id)).filter((d): d is SmartDevice => d !== undefined);
-    const resolved = disambiguateRoomDevices(matched, panelRoom);
-    if (resolved.length === 0) return null;
     if (entry.kind === "full") {
-      for (const id of resolved) {
-        if (!explicitIds.includes(id)) explicitIds.push(id);
-      }
+      explicitGroups.push(entry.ids);
     } else {
-      nameGroups.push(resolved);
+      nameGroups.push(entry.ids);
     }
   }
 
@@ -1112,22 +1102,45 @@ function parseChineseDeviceCommand(
   const ops = reconcileOps(rawOps);
   if (!ops) return null;
 
-  const roomDeviceIds = new Set<string>(
-    matchedRooms.flatMap((w) => chineseRoomDeviceIds(w, devices, panelRoom)),
-  );
+  const roomDeviceIds = new Set<string>();
+  for (const w of matchedRooms) {
+    const ids = chineseRoomDeviceIds(w, devices, panelRoom);
+    if (ids === null) return null;
+    for (const id of ids) roomDeviceIds.add(id);
+  }
   const isTurningOff = ops.length === 1 && ops[0]?.kind === "power" && !ops[0].isOn;
-  const mustAcceptIds = new Set<string>(explicitIds);
+  const mustAcceptIds = new Set<string>();
   let candidates: SmartDevice[] = [];
 
-  if (explicitIds.length > 0 || nameGroups.length > 0) {
-    const targetIds = [...explicitIds];
+  if (explicitGroups.length > 0 || nameGroups.length > 0) {
+    const targetIds: string[] = [];
+    for (const group of explicitGroups) {
+      const narrowedIds =
+        group.length > 1 && matchedRooms.length > 0
+          ? group.filter((id) => roomDeviceIds.has(id))
+          : group;
+      if (narrowedIds.length === 0) return null;
+      const resolved = disambiguateRoomDevices(
+        narrowedIds.map((id) => devById.get(id)).filter((d): d is SmartDevice => d !== undefined),
+        panelRoom,
+      );
+      if (resolved.length === 0) return null;
+      for (const id of resolved) {
+        if (!targetIds.includes(id)) targetIds.push(id);
+        mustAcceptIds.add(id);
+      }
+    }
     for (const group of nameGroups) {
-      const narrowed = matchedRooms.length === 0 ? group : group.filter((id) => roomDeviceIds.has(id));
-      if (narrowed.length === 0 || (narrowed.length !== 1 && !hasScope)) return null;
-      for (const id of narrowed) {
+      const narrowedIds = matchedRooms.length === 0 ? group : group.filter((id) => roomDeviceIds.has(id));
+      const resolved = disambiguateRoomDevices(
+        narrowedIds.map((id) => devById.get(id)).filter((d): d is SmartDevice => d !== undefined),
+        panelRoom,
+      );
+      if (resolved.length === 0 || (resolved.length !== 1 && !hasScope)) return null;
+      for (const id of resolved) {
         if (!targetIds.includes(id)) targetIds.push(id);
       }
-      if (narrowed.length === 1 && narrowed[0]) mustAcceptIds.add(narrowed[0]);
+      if (resolved.length === 1 && resolved[0]) mustAcceptIds.add(resolved[0]);
     }
     candidates = targetIds.map((id) => devById.get(id)).filter((d): d is SmartDevice => d !== undefined);
   } else {
@@ -1237,7 +1250,7 @@ export const LocalIntentParser = {
     const state = { rest: ` ${lower} ` };
     const rawOps: IntentOperation[] = extractEnglishNumericOps(state);
 
-    const explicitIds: string[] = [];
+    const explicitGroups: SmartDevice[][] = [];
     const byLowerName = new Map<string, SmartDevice[]>();
     for (const dev of devices) {
       if (!dev.name) continue;
@@ -1250,11 +1263,7 @@ export const LocalIntentParser = {
     for (const devLower of sortedLowerNames) {
       if (consumeEnglishPhrase(devLower, state)) {
         const matched = byLowerName.get(devLower) ?? [];
-        const resolved = disambiguateRoomDevices(matched, panelRoom);
-        if (resolved.length === 0) return null;
-        for (const id of resolved) {
-          if (!explicitIds.includes(id)) explicitIds.push(id);
-        }
+        if (matched.length > 0) explicitGroups.push(matched);
       }
     }
 
@@ -1386,8 +1395,26 @@ export const LocalIntentParser = {
         const rLower = dev.roomName.toLowerCase();
         return aliases.some((a) => rLower === a.toLowerCase() || rLower.includes(a.toLowerCase()));
       });
-      for (const id of disambiguateRoomDevices(matched, panelRoom)) {
-        roomDeviceIds.add(id);
+      if (matched.length > 0) {
+        const resolved = disambiguateRoomDevices(matched, panelRoom);
+        if (resolved.length === 0) return null;
+        for (const id of resolved) {
+          roomDeviceIds.add(id);
+        }
+      }
+    }
+
+    const explicitIds: string[] = [];
+    for (const group of explicitGroups) {
+      const narrowed =
+        group.length > 1 && matchedRoomKeys.length > 0
+          ? group.filter((dev) => roomDeviceIds.has(dev.id))
+          : group;
+      if (narrowed.length === 0) return null;
+      const resolved = disambiguateRoomDevices(narrowed, panelRoom);
+      if (resolved.length === 0) return null;
+      for (const id of resolved) {
+        if (!explicitIds.includes(id)) explicitIds.push(id);
       }
     }
 

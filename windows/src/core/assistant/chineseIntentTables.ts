@@ -245,14 +245,23 @@ export function disambiguateRoomDevices(
   return [];
 }
 
+/**
+ * Returns `null` when `word` matched at least one device whose room name collides across
+ * distinct `roomId`s without a matching `panelRoom` (refuses partial cross-account execution).
+ */
 export function chineseRoomDeviceIds(
   word: string,
   devices: readonly SmartDevice[],
   panelRoom: RoomScope | null,
-): string[] {
+): string[] | null {
   const exact = devices.filter((dev) => dev.roomName === word);
-  if (exact.length > 0) return disambiguateRoomDevices(exact, panelRoom);
+  if (exact.length > 0) {
+    const resolved = disambiguateRoomDevices(exact, panelRoom);
+    return resolved.length === 0 ? null : resolved;
+  }
   const aliases = CN_ROOM_ALIASES[word] ?? [word];
   const matched = devices.filter((dev) => aliases.some((a) => dev.roomName.includes(a)));
-  return disambiguateRoomDevices(matched, panelRoom);
+  if (matched.length === 0) return [];
+  const resolved = disambiguateRoomDevices(matched, panelRoom);
+  return resolved.length === 0 ? null : resolved;
 }

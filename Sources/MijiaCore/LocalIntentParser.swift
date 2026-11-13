@@ -178,20 +178,14 @@ public enum LocalIntentParser {
 
         // 1. Device names (full name such as 书房台灯, or name without room prefix such as 台灯)
         let deviceById = Dictionary(devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        var explicitIds: [String] = []
+        var explicitGroups: [[String]] = []
         var nameGroups: [[String]] = []
         for (phrase, match) in devicePhrases(devices) where consume(phrase, from: &rest) {
             switch match {
             case .full(let ids):
-                let matched = ids.compactMap { deviceById[$0] }
-                let resolved = disambiguateRoomDevices(matched, panelRoom: panelRoom)
-                guard !resolved.isEmpty else { return nil }
-                explicitIds.append(contentsOf: resolved.filter { !explicitIds.contains($0) })
+                explicitGroups.append(ids)
             case .base(let ids):
-                let matched = ids.compactMap { deviceById[$0] }
-                let resolved = disambiguateRoomDevices(matched, panelRoom: panelRoom)
-                guard !resolved.isEmpty else { return nil }
-                nameGroups.append(resolved)
+                nameGroups.append(ids)
             }
         }
 
@@ -238,18 +232,40 @@ public enum LocalIntentParser {
 
         guard let ops = reconcile(ops) else { return nil }
 
-        let roomDeviceIds = Set(matchedRooms.flatMap { deviceIds(inRoom: $0, devices: devices, panelRoom: panelRoom) })
+        var roomDeviceIds: Set<String> = []
+        for word in matchedRooms {
+            guard let ids = deviceIds(inRoom: word, devices: devices, panelRoom: panelRoom) else {
+                return nil
+            }
+            roomDeviceIds.formUnion(ids)
+        }
         let isTurningOff = ops == [.power(false)]
-        var targetIds: [String]
-        var mustAcceptAll: Set<String> = Set(explicitIds)
+        var targetIds: [String] = []
+        var mustAcceptAll: Set<String> = []
 
-        if !explicitIds.isEmpty || !nameGroups.isEmpty {
-            targetIds = explicitIds
+        if !explicitGroups.isEmpty || !nameGroups.isEmpty {
+            for group in explicitGroups {
+                let narrowedIds = (group.count > 1 && !matchedRooms.isEmpty)
+                    ? group.filter(roomDeviceIds.contains)
+                    : group
+                guard !narrowedIds.isEmpty else { return nil }
+                let resolved = disambiguateRoomDevices(
+                    narrowedIds.compactMap { deviceById[$0] },
+                    panelRoom: panelRoom
+                )
+                guard !resolved.isEmpty else { return nil }
+                targetIds.append(contentsOf: resolved.filter { !targetIds.contains($0) })
+                mustAcceptAll.formUnion(resolved)
+            }
             for group in nameGroups {
-                let narrowed = matchedRooms.isEmpty ? group : group.filter(roomDeviceIds.contains)
-                guard !narrowed.isEmpty, narrowed.count == 1 || hasScope else { return nil }
-                targetIds.append(contentsOf: narrowed.filter { !targetIds.contains($0) })
-                if narrowed.count == 1 { mustAcceptAll.formUnion(narrowed) }
+                let narrowedIds = matchedRooms.isEmpty ? group : group.filter(roomDeviceIds.contains)
+                let resolved = disambiguateRoomDevices(
+                    narrowedIds.compactMap { deviceById[$0] },
+                    panelRoom: panelRoom
+                )
+                guard !resolved.isEmpty, resolved.count == 1 || hasScope else { return nil }
+                targetIds.append(contentsOf: resolved.filter { !targetIds.contains($0) })
+                if resolved.count == 1 { mustAcceptAll.formUnion(resolved) }
             }
         } else {
             let implied = impliedCategories(for: ops)
@@ -347,17 +363,20 @@ public enum LocalIntentParser {
             return deviceCategory.isAssistantControllable && wanted.contains(deviceCategory)
         }
         let sameCategory = allControllable.filter(\.isOnline)
-        if !allControllable.isEmpty, sameCategory.isEmpty {
-            let scopedRoom: String?
-            if let panelRoom, !panelRoom.id.isEmpty,
-               allControllable.contains(where: { $0.roomId == panelRoom.id }) {
-                scopedRoom = panelRoom.name
-            } else {
-                scopedRoom = nil
+        if let panelRoom, !panelRoom.id.isEmpty {
+            let roomControllable = allControllable.filter { $0.roomId == panelRoom.id }
+            if !roomControllable.isEmpty, roomControllable.allSatisfy({ !$0.isOnline }) {
+                return .plan(IntentPlan(
+                    intents: [],
+                    reply: offlineBareCategoryReply(category: category, room: panelRoom.name),
+                    source: .local
+                ))
             }
+        }
+        if !allControllable.isEmpty, sameCategory.isEmpty {
             return .plan(IntentPlan(
                 intents: [],
-                reply: offlineBareCategoryReply(category: category, room: scopedRoom),
+                reply: offlineBareCategoryReply(category: category, room: nil),
                 source: .local
             ))
         }
@@ -379,16 +398,6 @@ public enum LocalIntentParser {
         }
         switch BareCategoryCommand.resolve(candidates: switchable, panelRoom: panelRoom, usageOrder: usageOrder) {
         case .none(let room):
-            if let panelRoom, !panelRoom.id.isEmpty, room != nil {
-                let roomControllable = allControllable.filter { $0.roomId == panelRoom.id }
-                if !roomControllable.isEmpty, roomControllable.allSatisfy({ !$0.isOnline }) {
-                    return .plan(IntentPlan(
-                        intents: [],
-                        reply: offlineBareCategoryReply(category: category, room: panelRoom.name),
-                        source: .local
-                    ))
-                }
-            }
             return .plan(IntentPlan(
                 intents: [],
                 reply: BareCategoryCommand.answerReply(
@@ -470,18 +479,23 @@ public enum LocalIntentParser {
         return []
     }
 
+    /// Returns `nil` when `word` matched at least one device whose room name collides across
+    /// distinct `roomId`s without a matching `panelRoom` (refuses partial cross-account execution).
     private static func deviceIds(
         inRoom word: String,
         devices: [SmartDevice],
         panelRoom: BareCategoryCommand.Room?
-    ) -> [String] {
+    ) -> [String]? {
         let exact = devices.filter { $0.roomName == word }
         if !exact.isEmpty {
-            return disambiguateRoomDevices(exact, panelRoom: panelRoom)
+            let resolved = disambiguateRoomDevices(exact, panelRoom: panelRoom)
+            return resolved.isEmpty ? nil : resolved
         }
         let aliases = roomAliases[word] ?? [word]
         let matched = devices.filter { dev in aliases.contains { dev.roomName.contains($0) } }
-        return disambiguateRoomDevices(matched, panelRoom: panelRoom)
+        guard !matched.isEmpty else { return [] }
+        let resolved = disambiguateRoomDevices(matched, panelRoom: panelRoom)
+        return resolved.isEmpty ? nil : resolved
     }
 
     private static func impliedCategories(for ops: [IntentOperation]) -> Set<IntentDeviceCategory>? {
@@ -663,7 +677,7 @@ public enum LocalIntentParser {
         var ops: [IntentOperation] = extractEnglishNumericOperations(&rest)
 
         // 1. Explicit device names (supports both English and Chinese names inside an English sentence)
-        var explicitIds: [String] = []
+        var explicitGroups: [[SmartDevice]] = []
         var byLowerName: [String: [SmartDevice]] = [:]
         var lowerNameOrder: [String] = []
         for dev in devices where !dev.name.isEmpty {
@@ -672,11 +686,9 @@ public enum LocalIntentParser {
             byLowerName[devLower, default: []].append(dev)
         }
         for devLower in lowerNameOrder.sorted(by: { $0.count > $1.count }) {
-            if consumeEnglishPhrase(devLower, from: &rest) {
-                let matched = byLowerName[devLower] ?? []
-                let resolved = disambiguateRoomDevices(matched, panelRoom: panelRoom)
-                guard !resolved.isEmpty else { return nil }
-                explicitIds.append(contentsOf: resolved.filter { !explicitIds.contains($0) })
+            if consumeEnglishPhrase(devLower, from: &rest),
+               let matched = byLowerName[devLower], !matched.isEmpty {
+                explicitGroups.append(matched)
             }
         }
 
@@ -792,14 +804,30 @@ public enum LocalIntentParser {
         guard rest.allSatisfy({ $0 == consumed || $0.isWhitespace }) else { return nil }
         guard let ops = reconcile(ops) else { return nil }
 
-        let roomDeviceIds: Set<String> = Set(matchedRoomKeys.flatMap { key -> [String] in
+        var roomDeviceIds: Set<String> = []
+        for key in matchedRoomKeys {
             let aliases = englishRoomAliases[key] ?? [key]
             let matched = devices.filter { dev in
                 let rLower = dev.roomName.lowercased()
                 return aliases.contains { rLower == $0.lowercased() || rLower.contains($0.lowercased()) }
             }
-            return disambiguateRoomDevices(matched, panelRoom: panelRoom)
-        })
+            if !matched.isEmpty {
+                let resolved = disambiguateRoomDevices(matched, panelRoom: panelRoom)
+                guard !resolved.isEmpty else { return nil }
+                roomDeviceIds.formUnion(resolved)
+            }
+        }
+
+        var explicitIds: [String] = []
+        for group in explicitGroups {
+            let narrowed = (group.count > 1 && !matchedRoomKeys.isEmpty)
+                ? group.filter { roomDeviceIds.contains($0.id) }
+                : group
+            guard !narrowed.isEmpty else { return nil }
+            let resolved = disambiguateRoomDevices(narrowed, panelRoom: panelRoom)
+            guard !resolved.isEmpty else { return nil }
+            explicitIds.append(contentsOf: resolved.filter { !explicitIds.contains($0) })
+        }
 
         let isTurningOff = ops == [.power(false)]
         var targetIds: [String]
