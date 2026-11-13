@@ -431,6 +431,12 @@ public actor LGWebOSClient {
 
     var hasActiveSessionForTesting: Bool { session != nil }
     var isShutDownForTesting: Bool { isShutDown }
+    private(set) var createdSessionCountForTesting: Int = 0
+    private(set) var invalidatedSessionCountForTesting: Int = 0
+
+    func prepareSessionForTesting() {
+        _ = replaceSession()
+    }
 
     private var isConnected: Bool = false
     private var isWaitingForPairing: Bool = false
@@ -466,7 +472,11 @@ public actor LGWebOSClient {
         let previous = self.session
         let created = Self.makeURLSession()
         self.session = created
-        previous?.invalidateAndCancel()
+        createdSessionCountForTesting += 1
+        if let previous {
+            invalidatedSessionCountForTesting += 1
+            previous.invalidateAndCancel()
+        }
         return created
     }
 
@@ -474,11 +484,15 @@ public actor LGWebOSClient {
         if let target {
             guard self.session === target else { return }
             self.session = nil
+            invalidatedSessionCountForTesting += 1
             target.invalidateAndCancel()
         } else {
             let old = self.session
             self.session = nil
-            old?.invalidateAndCancel()
+            if let old {
+                invalidatedSessionCountForTesting += 1
+                old.invalidateAndCancel()
+            }
         }
     }
 

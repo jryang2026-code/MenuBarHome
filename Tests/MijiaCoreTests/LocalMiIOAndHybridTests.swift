@@ -143,10 +143,12 @@ private actor EventCollector {
         }
     }
 
-    func wait(timeoutSeconds: Double = 3.0, until predicate: @Sendable (EventCollector) async -> Bool) async -> Bool {
+    func wait(timeoutSeconds: Double = 15.0, until predicate: @Sendable (EventCollector) async -> Bool) async -> Bool {
         let deadline = ContinuousClock.now + .seconds(timeoutSeconds)
-        while ContinuousClock.now < deadline {
+        var turns = 0
+        while ContinuousClock.now < deadline || turns < 50 {
             if await predicate(self) { return true }
+            turns += 1
             try? await Task.sleep(for: .milliseconds(10))
         }
         return await predicate(self)

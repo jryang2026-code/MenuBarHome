@@ -258,18 +258,27 @@ struct DebouncedResumeAndLifecycleTests {
             return collected
         }
 
-        // Wait until the connection attempt creates an active URLSession or emits connecting.
+        // Wait until the connection loop creates at least one session (deterministic even when Linux fails ENETUNREACH in <1ms).
         await waitUntil {
-            await provider.hasActiveSessionForTesting
+            await provider.createdSessionCountForTesting >= 1
         }
+        await provider.prepareSessionForTesting()
+        #expect(await provider.hasActiveSessionForTesting)
+        let baselineInvalidations = await provider.invalidatedSessionCountForTesting
 
         await provider.shutdown()
         #expect(await provider.isShutDownForTesting)
         #expect(await provider.hasActiveSessionForTesting == false)
+        #expect(await provider.invalidatedSessionCountForTesting >= baselineInvalidations + 1)
 
-        // Second shutdown is idempotent
+        // Second shutdown & credential update after shutdown are idempotent no-ops
+        let postShutdownInvalidations = await provider.invalidatedSessionCountForTesting
+        let postShutdownCreations = await provider.createdSessionCountForTesting
         await provider.shutdown()
+        await provider.updateCredentials(baseURLString: "http://192.0.2.11:8123", token: "test-token")
         #expect(await provider.hasActiveSessionForTesting == false)
+        #expect(await provider.createdSessionCountForTesting == postShutdownCreations)
+        #expect(await provider.invalidatedSessionCountForTesting == postShutdownInvalidations)
 
         let received = await consumer.value
         #expect(!received.isEmpty)
@@ -329,17 +338,25 @@ struct DebouncedResumeAndLifecycleTests {
         )
         await client.start()
         await waitUntil {
-            await client.hasActiveSessionForTesting
+            await client.createdSessionCountForTesting >= 1
         }
+        await client.prepareSessionForTesting()
+        #expect(await client.hasActiveSessionForTesting)
+        let baselineInvalidations = await client.invalidatedSessionCountForTesting
 
         await client.shutdown()
         #expect(await client.isShutDownForTesting)
         #expect(await client.hasActiveSessionForTesting == false)
+        #expect(await client.invalidatedSessionCountForTesting >= baselineInvalidations + 1)
 
         // Second shutdown is idempotent and start() after shutdown is a no-op
+        let postShutdownInvalidations = await client.invalidatedSessionCountForTesting
+        let postShutdownCreations = await client.createdSessionCountForTesting
         await client.shutdown()
         await client.start()
         #expect(await client.hasActiveSessionForTesting == false)
+        #expect(await client.createdSessionCountForTesting == postShutdownCreations)
+        #expect(await client.invalidatedSessionCountForTesting == postShutdownInvalidations)
     }
 
     @Test("DualSourceHomeProvider shutdown awaits both sources in parallel and is idempotent")
