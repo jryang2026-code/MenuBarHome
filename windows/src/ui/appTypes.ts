@@ -42,6 +42,7 @@ export interface SpeechRecognitionInstance {
   onend: (() => void) | null;
   start(): void;
   stop(): void;
+  abort?(): void;
 }
 
 export type ConnectionMode = "demo" | "xiaomiCloud" | "homeAssistant";

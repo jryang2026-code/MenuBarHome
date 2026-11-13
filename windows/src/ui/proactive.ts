@@ -272,6 +272,8 @@ export function invalidateSourceControl(host: MenuMijiaWindowsApp): void {
     host.timerSnapshot = null;
     host.syncGeneration += 1;
     host.isSyncingCloud = false;
+    host.isPollingQR = false;
+    host.qrTicket = null;
     host.isResolvingIntent = false;
     host.aiProactiveSuggestions = null;
     host.aiProactiveSignature = null;

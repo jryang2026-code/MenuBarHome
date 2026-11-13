@@ -308,8 +308,12 @@ export function updateLiveSliderReadout(
   }
   if (slider.dataset.actemp !== undefined) {
     const raw = Number(slider.value);
-    const celsius = Number(toCelsius(raw).toFixed(2));
-    const formatted = formatTemperature(celsius);
+    let celsius = toCelsius(raw);
+    const minC = slider.dataset.minC !== undefined ? Number(slider.dataset.minC) : NaN;
+    const maxC = slider.dataset.maxC !== undefined ? Number(slider.dataset.maxC) : NaN;
+    if (Number.isFinite(minC)) celsius = Math.max(minC, celsius);
+    if (Number.isFinite(maxC)) celsius = Math.min(maxC, celsius);
+    const formatted = formatTemperature(Number(celsius.toFixed(2)));
     setGroupReadout(formatted, slider.value);
     return;
   }

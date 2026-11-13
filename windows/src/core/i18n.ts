@@ -173,7 +173,6 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "我的米家": ["我的米家", "My Mi Home"],
   "关闭引导": ["关闭引导", "Close guide"],
   "返回控制中心": ["返回控制中心", "Back to control center"],
-  "切換家庭": ["切換家庭", "Switch home"],
 
   // Status summaries
   "{count} 台开启中 · 共 {online} 台在线": ["{count} 台开启中 · 共 {online} 台在线", "{count} on · {online} online"],
@@ -762,6 +761,9 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   ],
   "锁屏保护": ["锁屏保护", "Lock Guard"],
   "外部链接": ["外部链接", "External Link"],
+  "{m}分{s}秒": ["{m}分{s}秒", "{m}m {s}s"],
+  "{m}分钟": ["{m}分钟", "{m}m"],
+  "{secs}秒": ["{secs}秒", "{secs}s"],
 };
 
 /** Every catalog key, for tests and tooling. */

@@ -333,14 +333,14 @@ function renderConnectionPanel(ctx: SettingsViewContext): string {
           class="cc-seg-pill ${ctx.settings.connectionMode === "xiaomiCloud" ? "is-active" : ""}"
           data-conn-mode="xiaomiCloud"
         >
-          米家云真实设备
+          ${t("米家云真实设备")}
         </button>
         <button class="cc-seg-pill ${ctx.settings.connectionMode === "homeAssistant" ? "is-active" : ""}" data-conn-mode="homeAssistant">Home Assistant</button>
         <button
           class="cc-seg-pill ${ctx.settings.connectionMode === "demo" ? "is-active" : ""}"
           data-conn-mode="demo"
         >
-          演示设备预览
+          ${t("演示设备预览")}
         </button>
       </div>
     </div>
@@ -358,7 +358,7 @@ function renderConnectionPanel(ctx: SettingsViewContext): string {
           (region) => `<option value="${region.code}" ${normalizeMiCloudRegion(ctx.settings.miCloudRegion) === region.code ? "selected" : ""}>${ctx.escapeHtml(region.label)}</option>`,
         ).join("")}
       </select>
-      <p class="cc-field-hint">当前选择：${ctx.escapeHtml(miCloudRegionLabel(ctx.settings.miCloudRegion))}。切换后请重新扫码登录该地区的米家账号；已登录会话仍使用登录时的地区。</p>
+      <p class="cc-field-hint">${ctx.escapeHtml(t("当前选择：{region}。切换后请重新扫码登录该地区的米家账号；已登录会话仍使用登录时的地区。", { region: miCloudRegionLabel(ctx.settings.miCloudRegion) }))}</p>
     </div>
 
     <div class="cc-qr-box">
@@ -482,7 +482,7 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
                   (s, idx) => `
                 <div class="cc-timer-row">
                   <span>「${ctx.escapeHtml(s.phrase)}」→ ${ctx.escapeHtml(s.reply)}</span>
-                  <button class="cc-inline-pill" data-del-habit="${idx}">删除</button>
+                  <button class="cc-inline-pill" data-del-habit="${idx}">${t("删除")}</button>
                 </div>
               `,
                 )

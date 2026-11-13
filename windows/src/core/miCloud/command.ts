@@ -30,9 +30,16 @@ function coercePropValue(prop: MiotProperty, val: number): number {
   const step = prop.valueRange?.[2];
   if (step && step > 0) {
     const base = prop.valueRange?.[0] ?? 0;
-    n = base + Math.round((n - base) / step) * step;
+    n = Number((base + Math.round((n - base) / step) * step).toFixed(6));
   }
   return n;
+}
+
+function coerceBoolPropValue(prop: MiotProperty, val: boolean): boolean | number {
+  if (prop.format.startsWith("int") || prop.format.startsWith("uint") || prop.format === "float") {
+    return coercePropValue(prop, val ? 1 : 0);
+  }
+  return val;
 }
 
 export const MiotCommandMapper = {
@@ -170,7 +177,7 @@ export const MiotCommandMapper = {
 
     const powerOnPrefix = (): MiotPropWrite[] => {
       const onP = service.properties.find((p) => miotShortName(p.type) === "on" && p.access.includes("write"));
-      return onP ? [{ did: addr.did, siid: service.iid, piid: onP.iid, value: true }] : [];
+      return onP ? [{ did: addr.did, siid: service.iid, piid: onP.iid, value: coerceBoolPropValue(onP, true) }] : [];
     };
 
     switch (command.kind) {
@@ -180,7 +187,7 @@ export const MiotCommandMapper = {
         const { prop } = findProp("on");
         return {
           kind: "setProps",
-          writes: [{ did: addr.did, siid: service.iid, piid: prop.iid, value: command.isOn }],
+          writes: [{ did: addr.did, siid: service.iid, piid: prop.iid, value: coerceBoolPropValue(prop, command.isOn) }],
         };
       }
       case "setLightBrightness": {
@@ -188,7 +195,7 @@ export const MiotCommandMapper = {
           const { prop } = findProp("on");
           return {
             kind: "setProps",
-            writes: [{ did: addr.did, siid: service.iid, piid: prop.iid, value: false }],
+            writes: [{ did: addr.did, siid: service.iid, piid: prop.iid, value: coerceBoolPropValue(prop, false) }],
           };
         }
         const { prop } = findProp("brightness");
@@ -227,14 +234,14 @@ export const MiotCommandMapper = {
         if (command.hvacMode === "off") {
           return {
             kind: "setProps",
-            writes: [{ did: addr.did, siid: service.iid, piid: onProp.iid, value: false }],
+            writes: [{ did: addr.did, siid: service.iid, piid: onProp.iid, value: coerceBoolPropValue(onProp, false) }],
           };
         }
         const writes: MiotPropWrite[] = [
-          { did: addr.did, siid: service.iid, piid: onProp.iid, value: true },
+          { did: addr.did, siid: service.iid, piid: onProp.iid, value: coerceBoolPropValue(onProp, true) },
         ];
         const modeProp = service.properties.find(
-          (p) => miotShortName(p.type) === "mode" && p.access.includes("write")
+          (p) => miotShortName(p.type) === "mode" && p.access.includes("write") && (p.valueList?.length ?? 0) > 0
         );
         const item = modeProp?.valueList?.find(
           (i) => hvacModeFromDescription(i.description) === command.hvacMode
@@ -274,7 +281,7 @@ export const MiotCommandMapper = {
           const { prop } = findProp("on");
           return {
             kind: "setProps",
-            writes: [{ did: addr.did, siid: service.iid, piid: prop.iid, value: false }],
+            writes: [{ did: addr.did, siid: service.iid, piid: prop.iid, value: coerceBoolPropValue(prop, false) }],
           };
         }
         let speedFound: { service: MiotService; prop: MiotProperty } | null = null;
@@ -342,7 +349,7 @@ export const MiotCommandMapper = {
         const { prop } = findProp("horizontal-swing");
         return {
           kind: "setProps",
-          writes: [{ did: addr.did, siid: service.iid, piid: prop.iid, value: command.oscillating }],
+          writes: [{ did: addr.did, siid: service.iid, piid: prop.iid, value: coerceBoolPropValue(prop, command.oscillating) }],
         };
       }
       case "setSwitch": {
@@ -370,7 +377,7 @@ export const MiotCommandMapper = {
         if (targetProp) {
           return {
             kind: "setProps",
-            writes: [{ did: addr.did, siid: service.iid, piid: targetProp.iid, value: command.isOn }],
+            writes: [{ did: addr.did, siid: service.iid, piid: targetProp.iid, value: coerceBoolPropValue(targetProp, command.isOn) }],
           };
         }
         // A bath heater publishes its heat as `heating` instead of `on` (#4), and an appliance's
@@ -384,7 +391,7 @@ export const MiotCommandMapper = {
                 did: addr.did,
                 siid: appliancePower.service.iid,
                 piid: appliancePower.prop.iid,
-                value: command.isOn,
+                value: coerceBoolPropValue(appliancePower.prop, command.isOn),
               },
             ],
           };
@@ -452,9 +459,11 @@ export const MiotCommandMapper = {
         if (!prop || !prop.access.includes("write")) throw new Error(`Unsupported property: ${command.piid}`);
         const value =
           typeof command.value === "boolean"
-            ? command.value
+            ? coerceBoolPropValue(prop, command.value)
             : typeof command.value === "number"
-              ? coerce(prop, command.value)
+              ? prop.format === "bool"
+                ? command.value !== 0
+                : coerce(prop, command.value)
               : command.value;
         return { kind: "setProps", writes: [{ did: addr.did, siid: service.iid, piid: prop.iid, value }] };
       }

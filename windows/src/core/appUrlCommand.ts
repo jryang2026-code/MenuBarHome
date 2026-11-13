@@ -14,7 +14,6 @@ import {
 import {
   quickActionTitle,
   trText,
-  type QuickActionId,
 } from "./quickActions.js";
 import type { RaycastCommandFeedback } from "./raycastSnapshot.js";
 import { formatTemperature } from "./temperature.js";
@@ -81,19 +80,6 @@ export const BuiltInURLScene = {
         return null;
     }
   },
-
-  quickAction(scene: BuiltInURLSceneId): QuickActionId | null {
-    switch (scene) {
-      case "lightsOff":
-      case "softNightLight":
-      case "climateSleepOff":
-        return scene;
-      case "allOff":
-      case "undo":
-        return null;
-    }
-  },
-
   displayTitle(scene: BuiltInURLSceneId): string {
     switch (scene) {
       case "lightsOff":
@@ -647,34 +633,25 @@ async function runIntentOnDevice(
   }
 
   // High-risk confirmation (`ManualControlPolicy`) always applies, even with a valid `bridgeToken`.
+  // External URLs may only arm the confirmation in the panel and must never consume it themselves (ADR-0013).
   if (requiresHighRiskArm(dev, options.riskIntent ?? intent, firstCommand, host.devices)) {
     const actionKey = JSON.stringify(firstCommand);
-    const armed = host.pendingHighRisk;
-    const isArmedAndValid =
-      armed !== null &&
-      armed.deviceId === dev.id &&
-      armed.actionKey === actionKey &&
-      armed.sourceRevision === host.sourceRevision &&
-      armed.expiresAtMs > Date.now();
-    if (!isArmedAndValid) {
-      host.setPendingHighRisk({
-        deviceId: dev.id,
-        actionKey,
-        expiresAtMs: Date.now() + 8000,
-        sourceRevision: host.sourceRevision,
-        confirm: { command: firstCommand, summary, intent },
-      });
-      host.expandedDeviceId = dev.id;
-      const promptMsg = trText(
-        "「{action}」属于高风险设备，请在面板中确认或再次触发",
-        '"{action}" is high-risk; confirm in the panel or trigger once more',
-        { action: labelForHighRisk },
-      );
-      host.showExternalToast(promptMsg, false);
-      await host.revealPanelForExternalUrl();
-      return { message: promptMsg, isError: true };
-    }
-    host.clearPendingHighRisk();
+    host.setPendingHighRisk({
+      deviceId: dev.id,
+      actionKey,
+      expiresAtMs: Date.now() + 8000,
+      sourceRevision: host.sourceRevision,
+      confirm: { command: firstCommand, summary, intent },
+    });
+    host.focusDeviceFromUrl(dev.id);
+    const promptMsg = trText(
+      "「{action}」属于高风险设备，请在面板中确认",
+      '"{action}" is high-risk; confirm in the panel',
+      { action: labelForHighRisk },
+    );
+    host.showExternalToast(promptMsg, false);
+    await host.revealPanelForExternalUrl();
+    return { message: promptMsg, isError: true };
   }
 
   for (let i = 0; i < commands.length; i += 1) {
