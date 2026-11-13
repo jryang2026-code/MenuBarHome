@@ -2,6 +2,7 @@
 # go2rtc 门禁只在 go version 成功时跑 verify.sh。目录和失败桩必须跳过。
 set -euo pipefail
 cd "$(dirname "$0")/.."
+export GO2RTC_VERSION_TIMEOUT=1
 
 failures=0
 pass() { printf 'PASS %s\n' "$1"; }
@@ -99,12 +100,12 @@ fi
 if [ "$status" -eq 2 ] \
     && [ "$(cat "$err")" = "go version 超时" ] \
     && [ "$gate_status" -eq 0 ] \
-    && [ "$elapsed" -ge 4 ] \
-    && [ "$elapsed" -lt 8 ] \
+    && [ "$elapsed" -ge 1 ] \
+    && [ "$elapsed" -lt 4 ] \
     && [ ! -s "$out" ]; then
     printf 'PASS go version 超时的桩在 %ss 内跳过：%s\n' "$elapsed" "$gate_line"
 else
-    fail "挂起的桩应在约 5s 内以退出 2 跳过且门禁返回 0，实际探针退出 ${status}，门禁 ${gate_status}，用时 ${elapsed}s，stderr「$(cat "$err")」，stdout「$(cat "$out")」"
+    fail "挂起的桩应在约 ${GO2RTC_VERSION_TIMEOUT}s 内以退出 2 跳过且门禁返回 0，实际探针退出 ${status}，门禁 ${gate_status}，用时 ${elapsed}s，stderr「$(cat "$err")」，stdout「$(cat "$out")」"
 fi
 rm -f "$out" "$err"
 

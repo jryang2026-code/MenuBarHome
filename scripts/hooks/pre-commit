@@ -35,7 +35,7 @@ if [ "$status" -eq 0 ]; then
     bash "$ROOT_DIR/scripts/gate_report.sh" hook-success "$LOG" || true
     rm -f "$LOG"
     if [ "${MMB_HOOK_FULL:-0}" != "1" ]; then
-        echo "ℹ️  提交钩子只跑 lint；开 PR 或推送前跑一次 bash scripts/check.sh（含测试与快照）。"
+        echo "ℹ️  提交钩子只跑快速 lint；推送前请按需跑 bash scripts/check.sh --changed（UI 改动需含快照验证）。"
     fi
     exit 0
 fi

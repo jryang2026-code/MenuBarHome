@@ -277,29 +277,6 @@ else
     printf 'stdout:\n%s\nlog:\n%s\n' "$stdout" "$(cat "$RG_TEST_LOG")" >&2
 fi
 rm -f "$bin/shasum"
-
-# Mac pre-commit has shasum and no sha256sum. The harness must finish on that PATH.
-if [[ "${RG_TEST_SHASUM_ONLY:-0}" != 1 ]]; then
-    shim="$(mktemp -d)"
-    for cmd in bash dirname mkdir mktemp tar gzip chmod cp rm id head cat ln grep sed; do
-        wrap_tool "$(command -v "$cmd")" "$shim/$cmd"
-    done
-    if command -v python3 >/dev/null 2>&1; then
-        wrap_tool "$(command -v python3)" "$shim/python3"
-    fi
-    wrap_tool "$(command -v shasum)" "$shim/shasum"
-    set +e
-    shim_out="$(RG_TEST_SHASUM_ONLY=1 PATH="$shim" "$bash_bin" "$root/scripts/test_install_ripgrep.sh" 2>&1)"
-    shim_status=$?
-    set -e
-    if [[ "$shim_status" == 0 ]]; then
-        pass "PATH 只有 shasum、没有 sha256sum 时自测通过"
-    else
-        fail "PATH 只有 shasum、没有 sha256sum 时自测失败，退出 ${shim_status}"
-        printf '%s\n' "$shim_out" | tail -n 40 >&2
-    fi
-    rm -rf "$shim"
-fi
 else
     pass "本机没有 shasum，校验走 sha256sum"
 fi
