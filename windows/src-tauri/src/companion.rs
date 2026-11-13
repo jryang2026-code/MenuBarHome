@@ -792,7 +792,7 @@ pub(crate) fn register_url_scheme_under_root(
     cmd_res
 }
 
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 pub(crate) fn unregister_url_scheme_under_root(classes_subkey: &str) -> Result<(), String> {
     use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
     use windows_sys::Win32::System::Registry::{RegDeleteKeyW, HKEY_CURRENT_USER};
@@ -821,25 +821,13 @@ pub(crate) fn register_url_scheme_under_root(
     Ok(())
 }
 
-#[cfg(not(windows))]
-pub(crate) fn unregister_url_scheme_under_root(_classes_subkey: &str) -> Result<(), String> {
-    Ok(())
-}
-
-#[tauri::command]
-pub(crate) fn register_url_scheme() -> Result<(), String> {
+fn register_url_scheme() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|err| format!("无法读取当前程序路径：{err}"))?;
     register_url_scheme_under_root(r"Software\Classes\menumijia", &exe)
 }
 
-#[tauri::command]
-pub(crate) fn unregister_url_scheme() -> Result<(), String> {
-    unregister_url_scheme_under_root(r"Software\Classes\menumijia")
-}
-
 pub(crate) fn start_companion_runtime(app: AppHandle) {
-    #[cfg(not(test))]
-    {
+    if !cfg!(test) && !cfg!(debug_assertions) {
         let _ = register_url_scheme();
     }
     let Some(dir) = companion_local_dir() else {

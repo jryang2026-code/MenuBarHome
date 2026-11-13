@@ -78,6 +78,11 @@ pub(crate) fn update_signing_public_keys() -> Vec<&'static str> {
 }
 
 const STAGED_INSTALLER_PREFIX: &str = "MenuBarMijia-update-";
+const UPDATE_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const UPDATE_METADATA_TIMEOUT: Duration = Duration::from_secs(30);
+const UPDATE_DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_INSTALLER_DOWNLOAD_BYTES: usize = 256 * 1024 * 1024;
+static STAGED_INSTALLER_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -246,8 +251,14 @@ pub(crate) fn verify_ed25519_signature(
         .map_err(|_| "更新包 Ed25519 数字签名校验失败：签名与安装包内容不匹配，已中止安装".to_string())
 }
 
-pub(crate) fn sweep_stale_update_installers() {
-    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+fn update_staging_dir() -> std::path::PathBuf {
+    companion_local_dir()
+        .map(|dir| dir.join("updates"))
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+fn sweep_stale_installers_in_dir(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
@@ -259,6 +270,47 @@ pub(crate) fn sweep_stale_update_installers() {
             let _ = std::fs::remove_file(entry.path());
         }
     }
+}
+
+pub(crate) fn sweep_stale_update_installers() {
+    let staging_dir = update_staging_dir();
+    sweep_stale_installers_in_dir(&staging_dir);
+    let legacy_temp = std::env::temp_dir();
+    if legacy_temp != staging_dir {
+        sweep_stale_installers_in_dir(&legacy_temp);
+    }
+}
+
+fn write_staged_installer_in_dir(
+    staging_dir: &std::path::Path,
+    asset_name: &str,
+    bytes: &[u8],
+) -> Result<std::path::PathBuf, String> {
+    use std::io::Write;
+
+    std::fs::create_dir_all(staging_dir)
+        .map_err(|err| format!("创建更新暂存目录失败：{err}"))?;
+    let meta = std::fs::symlink_metadata(staging_dir)
+        .map_err(|err| format!("校验更新暂存目录失败：{err}"))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err("更新暂存目录异常（拒绝符号链接或非目录路径），已中止安装".to_string());
+    }
+    let seq = STAGED_INSTALLER_SEQ.fetch_add(1, Ordering::Relaxed);
+    let installer_path = staging_dir.join(format!(
+        "{STAGED_INSTALLER_PREFIX}{}-{seq}-{asset_name}",
+        std::process::id()
+    ));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&installer_path)
+        .map_err(|err| format!("创建暂存安装程序失败：{err}"))?;
+    if let Err(err) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = std::fs::remove_file(&installer_path);
+        return Err(format!("写入临时安装程序失败：{err}"));
+    }
+    Ok(installer_path)
 }
 
 pub(crate) fn elevated_launch_powershell_command(is_msi: bool) -> &'static str {
@@ -334,32 +386,36 @@ pub(crate) async fn install_update(app: AppHandle, asset: InstallerAssetPayload)
                 attempt.stop()
             }
         }))
-        .timeout(Duration::from_secs(120))
+        .connect_timeout(UPDATE_HTTP_CONNECT_TIMEOUT)
         .user_agent("MenuBarHome-Windows")
         .build()
         .map_err(|err| format!("无法初始化下载客户端：{err}"))?;
 
-    let manifest_resp = client
-        .get(pair.manifest_url.clone())
-        .send()
-        .await
-        .map_err(|err| format!("下载更新清单失败：{err}"))?;
+    let manifest_resp = tokio::time::timeout(
+        UPDATE_METADATA_TIMEOUT,
+        client.get(pair.manifest_url.clone()).send(),
+    )
+    .await
+    .map_err(|_| "下载更新清单超时".to_string())?
+    .map_err(|err| format!("下载更新清单失败：{err}"))?;
     if !manifest_resp.status().is_success() {
         return Err(format!(
             "下载更新清单失败（HTTP {}）",
             manifest_resp.status().as_u16()
         ));
     }
-    let manifest_bytes = manifest_resp
-        .bytes()
+    let manifest_bytes = tokio::time::timeout(UPDATE_METADATA_TIMEOUT, manifest_resp.bytes())
         .await
+        .map_err(|_| "读取更新清单超时".to_string())?
         .map_err(|err| format!("读取更新清单失败：{err}"))?;
 
-    let sig_resp = client
-        .get(pair.signature_url.clone())
-        .send()
-        .await
-        .map_err(|err| format!("下载 Ed25519 更新签名失败：{err}"))?;
+    let sig_resp = tokio::time::timeout(
+        UPDATE_METADATA_TIMEOUT,
+        client.get(pair.signature_url.clone()).send(),
+    )
+    .await
+    .map_err(|_| "下载 Ed25519 更新签名超时".to_string())?
+    .map_err(|err| format!("下载 Ed25519 更新签名失败：{err}"))?;
     if sig_resp.status().as_u16() == 404 {
         return Err("更新包缺少 Ed25519 数字签名（.update.json.ed25519.sig），已中止安装".to_string());
     }
@@ -369,16 +425,18 @@ pub(crate) async fn install_update(app: AppHandle, asset: InstallerAssetPayload)
             sig_resp.status().as_u16()
         ));
     }
-    let sig_text = sig_resp
-        .text()
+    let sig_text = tokio::time::timeout(UPDATE_METADATA_TIMEOUT, sig_resp.text())
         .await
+        .map_err(|_| "读取 Ed25519 更新签名超时".to_string())?
         .map_err(|err| format!("读取 Ed25519 更新签名失败：{err}"))?;
 
-    let mut response = client
-        .get(pair.installer_url.clone())
-        .send()
-        .await
-        .map_err(|err| format!("下载更新安装包失败：{err}"))?;
+    let mut response = tokio::time::timeout(
+        UPDATE_METADATA_TIMEOUT,
+        client.get(pair.installer_url.clone()).send(),
+    )
+    .await
+    .map_err(|_| "连接更新安装包下载地址超时".to_string())?
+    .map_err(|err| format!("下载更新安装包失败：{err}"))?;
     if !response.status().is_success() {
         return Err(format!("下载更新安装包失败（HTTP {}）", response.status().as_u16()));
     }
@@ -390,11 +448,14 @@ pub(crate) async fn install_update(app: AppHandle, asset: InstallerAssetPayload)
     );
     let started_at = std::time::Instant::now();
     let mut last_emit_at: Option<std::time::Instant> = None;
-    while let Some(chunk) = response
-        .chunk()
+    while let Some(chunk) = tokio::time::timeout(UPDATE_DOWNLOAD_IDLE_TIMEOUT, response.chunk())
         .await
+        .map_err(|_| "下载更新安装包空闲超时（60 秒未收到数据），请检查网络后重试".to_string())?
         .map_err(|err| format!("读取更新安装包数据失败：{err}"))?
     {
+        if bytes.len().saturating_add(chunk.len()) > MAX_INSTALLER_DOWNLOAD_BYTES {
+            return Err("更新安装包体积超出安全上限，已中止下载".to_string());
+        }
         bytes.extend_from_slice(&chunk);
         let downloaded = bytes.len() as u64;
         let now = std::time::Instant::now();
@@ -439,13 +500,8 @@ pub(crate) async fn install_update(app: AppHandle, asset: InstallerAssetPayload)
     .map_err(update_manifest::accept_failure_message)?;
 
     sweep_stale_update_installers();
-    let installer_path = std::env::temp_dir().join(format!(
-        "{STAGED_INSTALLER_PREFIX}{}-{}",
-        std::process::id(),
-        asset.name
-    ));
-    std::fs::write(&installer_path, &bytes)
-        .map_err(|err| format!("写入临时安装程序失败：{err}"))?;
+    let staging_dir = update_staging_dir();
+    let installer_path = write_staged_installer_in_dir(&staging_dir, &asset.name, &bytes)?;
 
     if let Err(err) = launch_installer(&installer_path) {
         let _ = std::fs::remove_file(&installer_path);
@@ -531,6 +587,32 @@ mod update_progress_tests {
         assert_eq!(json["downloadedBytes"], 524_288);
         assert_eq!(json["totalBytes"], 1_048_576);
         assert_eq!(json["bytesPerSec"], 1_048_576);
+    }
+
+    #[test]
+    fn staged_installer_writes_with_create_new_and_sweeps_stale_files() {
+        let root = std::env::temp_dir().join(format!(
+            "menubarmijia-update-stage-test-{}-{}",
+            std::process::id(),
+            STAGED_INSTALLER_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let staged = write_staged_installer_in_dir(
+            &root,
+            "MenuBarHome-1.2.5-windows-x64-setup.exe",
+            b"verified-installer-bytes",
+        )
+        .expect("write staged installer");
+        assert_eq!(
+            std::fs::read(&staged).expect("read staged installer"),
+            b"verified-installer-bytes"
+        );
+        let keep_file = root.join("unrelated.txt");
+        std::fs::write(&keep_file, b"keep").expect("write unrelated file");
+        sweep_stale_installers_in_dir(&root);
+        assert!(!staged.exists());
+        assert!(keep_file.exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 
