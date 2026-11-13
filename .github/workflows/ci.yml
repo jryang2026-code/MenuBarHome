@@ -320,13 +320,15 @@ jobs:
     # 全部 Swift 单测（快照比对留在宿主机门禁）。三个 macOS job 里只有这个可以排到本地隔离 VM：
     # VM 单任务串行，三个都排过去时一次运行占用约 20 分钟，后面的 PR 全在排队。
     # Empty MACOS_CI_RUNNER keeps GitHub-hosted macOS; the local option is an isolated VM.
-    runs-on: ${{ fromJSON(vars.MACOS_CI_RUNNER || '"macos-26-intel"') }}
+    # Stays on arm64: on macos-26-intel this job took 8-12 minutes instead of 2 and the
+    # wait-based tests timed out, a different handful each run (main run 43441839269).
+    runs-on: ${{ fromJSON(vars.MACOS_CI_RUNNER || '"macos-26"') }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      # macos-26-intel ships Xcode 26.6 (17F113). Do not select latest.
+      # macos-26 on 2026-11-09 printed Xcode 26.6 (17F113). Do not select latest.
       - name: Select Xcode 26.6
         if: runner.environment == 'github-hosted'
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
@@ -339,7 +341,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build
-          # v4 + runner.arch separates hosted macos-26-intel (X64) from local VM (ARM64).
+          # runner.arch keeps this arm64 cache apart from the Intel jobs' caches.
           key: spm-debug-v4-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
           restore-keys: |
             spm-debug-v4-${{ runner.os }}-${{ runner.arch }}-
