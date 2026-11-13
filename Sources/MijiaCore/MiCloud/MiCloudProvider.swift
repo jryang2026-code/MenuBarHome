@@ -552,8 +552,14 @@ public actor MiCloudProvider: HomeProvider {
                     recordLANFailure(did: outcome.did, error: err)
                     cloudKeys.append(contentsOf: outcome.keys)
                 } else if let resultValues = outcome.values {
-                    recordLANSuccess(did: outcome.did)
-                    combined.merge(resultValues) { _, new in new }
+                    let missingKeys = outcome.keys.filter { resultValues[$0] == nil }
+                    if !resultValues.isEmpty || outcome.keys.isEmpty {
+                        recordLANSuccess(did: outcome.did)
+                        combined.merge(resultValues) { _, new in new }
+                    }
+                    if !missingKeys.isEmpty {
+                        cloudKeys.append(contentsOf: missingKeys)
+                    }
                 }
             }
         }
@@ -852,6 +858,10 @@ public actor MiCloudProvider: HomeProvider {
                     emitSnapshot()
                 }
                 throw MiCloudError.deviceError(code: code, message: message)
+            } catch MiIOError.ambiguousActionOutcome {
+                recordLANFailure(did: record.miotDid, error: MiIOError.ambiguousActionOutcome)
+                scheduleFollowUpPoll(for: record)
+                throw MiIOError.ambiguousActionOutcome
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -877,6 +887,10 @@ public actor MiCloudProvider: HomeProvider {
             }
         }
 
+        scheduleFollowUpPoll(for: record)
+    }
+
+    private func scheduleFollowUpPoll(for record: MiDeviceRecord) {
         let delay = followUpDelay
         // Split cards address `100.s2`; property reads are keyed by the parent `100`.
         let followUpDid = record.miotDid

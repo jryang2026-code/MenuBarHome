@@ -378,7 +378,8 @@ public actor LocalMiIOClient {
                 host: host,
                 tokenData: tokenData,
                 method: "action",
-                params: params
+                params: params,
+                allowPostSendRetry: false
             )
             if case .array(let items) = result {
                 try Self.checkWriteCodes(items)
@@ -496,7 +497,8 @@ public actor LocalMiIOClient {
         host: String,
         tokenData: Data,
         method: String,
-        params: JSONValue
+        params: JSONValue,
+        allowPostSendRetry: Bool = true
     ) async throws -> JSONValue {
         var lastError: any Error = MiIOError.timeout
         for attempt in 0...maxRetries {
@@ -508,7 +510,8 @@ public actor LocalMiIOClient {
                     host: host,
                     tokenData: tokenData,
                     method: method,
-                    params: params
+                    params: params,
+                    allowPostSendRetry: allowPostSendRetry
                 )
             } catch {
                 lastError = error
@@ -528,7 +531,8 @@ public actor LocalMiIOClient {
         host: String,
         tokenData: Data,
         method: String,
-        params: JSONValue
+        params: JSONValue,
+        allowPostSendRetry: Bool
     ) async throws -> JSONValue {
         var session = try await ensureSession(did: did, host: host, tokenData: tokenData)
         let stamp = session.nextStamp(at: now())
@@ -547,17 +551,39 @@ public actor LocalMiIOClient {
             token: tokenData,
             payload: payloadData
         )
-        let responsePacket = try await transport.send(packet, to: host, port: port, timeout: requestTimeout)
-        let (_, responsePlaintext) = try MiIOPacket.decode(responsePacket, token: tokenData)
-        guard let rawText = String(data: responsePlaintext, encoding: .utf8) else {
-            throw MiIOError.malformedPacket
-        }
-        let cleaned = cleanMalformedFirmwareJSON(rawText)
-        guard !cleaned.isEmpty,
-              let json = try? JSONDecoder().decode(JSONValue.self, from: Data(cleaned.utf8)) else {
-            throw MiIOError.malformedPacket
+        let json: JSONValue
+        do {
+            let responsePacket = try await transport.send(packet, to: host, port: port, timeout: requestTimeout)
+            let (_, responsePlaintext) = try MiIOPacket.decode(responsePacket, token: tokenData)
+            guard let rawText = String(data: responsePlaintext, encoding: .utf8) else {
+                throw MiIOError.malformedPacket
+            }
+            let cleaned = cleanMalformedFirmwareJSON(rawText)
+            guard !cleaned.isEmpty,
+                  let decoded = try? JSONDecoder().decode(JSONValue.self, from: Data(cleaned.utf8)) else {
+                throw MiIOError.malformedPacket
+            }
+            json = decoded
+        } catch {
+            if !allowPostSendRetry {
+                if error is CancellationError || error is MiCloudError {
+                    throw error
+                }
+                if let miio = error as? MiIOError, miio == .transportUnavailable || miio == .shutDown {
+                    throw error
+                }
+                // Clear session after ambiguous UDP send/reply loss so the next request re-handshakes,
+                // without automatically replaying a potentially executed action.
+                sessions.removeValue(forKey: did)
+                throw MiIOError.ambiguousActionOutcome
+            }
+            throw error
         }
         if let respId = json["id"]?.intValue, respId != reqId {
+            if !allowPostSendRetry {
+                sessions.removeValue(forKey: did)
+                throw MiIOError.ambiguousActionOutcome
+            }
             throw MiIOError.malformedPacket
         }
         if let errObj = json["error"], case .object = errObj {
@@ -594,7 +620,7 @@ public actor LocalMiIOClient {
                 return true
             case .invalidToken, .invalidAddress, .payloadTooLarge, .checksumMismatch,
                  .unsupportedNonNumericDeviceId, .shutDown, .encryptionFailed,
-                 .decryptionFailed, .transportUnavailable, .deviceError:
+                 .decryptionFailed, .transportUnavailable, .ambiguousActionOutcome, .deviceError:
                 return false
             }
         }

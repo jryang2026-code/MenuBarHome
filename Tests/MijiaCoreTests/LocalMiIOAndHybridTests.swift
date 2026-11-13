@@ -129,29 +129,114 @@ private final class MutableClock: @unchecked Sendable {
 }
 
 private actor EventCollector {
-    var snapshots: [SynthesizedHome] = []
-    var doorbellRings: [DoorbellRing] = []
+    struct State: Sendable {
+        var snapshots: [SynthesizedHome] = []
+        var doorbellRings: [DoorbellRing] = []
+        var isFinished = false
+    }
+
+    private struct Waiter {
+        let id: UUID
+        let predicate: @Sendable (State) -> Bool
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
+    private var state = State()
+    private var waiters: [Waiter] = []
+
+    var snapshots: [SynthesizedHome] { state.snapshots }
+    var doorbellRings: [DoorbellRing] { state.doorbellRings }
 
     func append(_ event: HomeProviderEvent) {
         switch event {
         case .snapshotUpdated(let home):
-            snapshots.append(home)
+            state.snapshots.append(home)
         case .doorbellRang(let ring):
-            doorbellRings.append(ring)
+            state.doorbellRings.append(ring)
         case .statusChanged, .sessionExpired, .sourceStatusesChanged:
             break
         }
+        resolveMatchingWaiters()
     }
 
-    func wait(timeoutSeconds: Double = 15.0, until predicate: @Sendable (EventCollector) async -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(timeoutSeconds)
-        var turns = 0
-        while ContinuousClock.now < deadline || turns < 50 {
-            if await predicate(self) { return true }
-            turns += 1
-            try? await Task.sleep(for: .milliseconds(10))
+    func finish() {
+        state.isFinished = true
+        resolveMatchingWaiters()
+        let remaining = waiters
+        waiters.removeAll()
+        for waiter in remaining {
+            waiter.continuation.resume(returning: waiter.predicate(state))
         }
-        return await predicate(self)
+    }
+
+    /// Parks deterministically on a continuation until `predicate` holds (zero wall-clock polling).
+    func wait(until predicate: @escaping @Sendable (State) -> Bool) async -> Bool {
+        if predicate(state) { return true }
+        if state.isFinished { return false }
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if predicate(state) {
+                    continuation.resume(returning: true)
+                    return
+                }
+                if state.isFinished {
+                    continuation.resume(returning: false)
+                    return
+                }
+                waiters.append(Waiter(id: id, predicate: predicate, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id: id) }
+        }
+    }
+
+    private func resolveMatchingWaiters() {
+        var stillWaiting: [Waiter] = []
+        for waiter in waiters {
+            if waiter.predicate(state) {
+                waiter.continuation.resume(returning: true)
+            } else {
+                stillWaiting.append(waiter)
+            }
+        }
+        waiters = stillWaiting
+    }
+
+    private func cancelWaiter(id: UUID) {
+        guard let idx = waiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = waiters.remove(at: idx)
+        waiter.continuation.resume(returning: false)
+    }
+}
+
+private actor SpecConcurrencyGate {
+    private let targetConcurrency: Int
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var released = false
+
+    init(targetConcurrency: Int) {
+        self.targetConcurrency = targetConcurrency
+    }
+
+    func enterAndSync() async {
+        if released { return }
+        if waiters.count + 1 >= targetConcurrency {
+            released = true
+            let parked = waiters
+            waiters.removeAll()
+            for waiter in parked {
+                waiter.resume()
+            }
+            return
+        }
+        await withCheckedContinuation { continuation in
+            if released {
+                continuation.resume()
+                return
+            }
+            waiters.append(continuation)
+        }
     }
 }
 
@@ -200,6 +285,23 @@ private func lightSpec() -> MiotDeviceSpec {
             )
         ]
     )
+}
+
+private func lightWithNotifyActionSpec() -> MiotDeviceSpec {
+    var spec = lightSpec()
+    spec.services.append(
+        MiotService(
+            iid: 7,
+            type: "urn:miot-spec-v2:service:intelligent-speaker:0000789B:yeelink-color4:1",
+            properties: [
+                MiotProperty(iid: 1, type: "urn:miot-spec-v2:property:text-content:000000FA:yeelink-color4:1", format: "string", access: [])
+            ],
+            actions: [
+                MiotAction(iid: 3, type: "urn:miot-spec-v2:action:play-text:00002841:yeelink-color4:1", description: "Play Text", inputProperties: [1])
+            ]
+        )
+    )
+    return spec
 }
 
 private func doorbellSpec() -> MiotDeviceSpec {
@@ -577,6 +679,7 @@ struct MiCloudAndSpecEnhancementsTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
+        let concurrencyGate = SpecConcurrencyGate(targetConcurrency: 2)
         let transport = MirrorHTTPStub { req in
             let url = req.url!.absoluteString
             if url.hasPrefix("https://miot-spec.org") {
@@ -594,7 +697,7 @@ struct MiCloudAndSpecEnhancementsTests {
                 let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
                 return (body, resp)
             }
-            try? await Task.sleep(for: .milliseconds(30))
+            await concurrencyGate.enterAndSync()
             let body = Data(#"""
             {"type":"urn:miot-spec-v2:device:light:0000A001:acme-bulb:1","services":[
                 {"iid":2,"type":"urn:miot-spec-v2:service:light:00007802:acme-bulb:1","properties":[
@@ -707,10 +810,11 @@ struct HybridProviderAndDoorbellTests {
             for await event in stream {
                 await collector.append(event)
             }
+            await collector.finish()
         }
         defer { task.cancel() }
 
-        let initialReady = await collector.wait { await !$0.snapshots.isEmpty }
+        let initialReady = await collector.wait { !$0.snapshots.isEmpty }
         #expect(initialReady)
 
         // Own Wi-Fi device received LAN values (brightness 75, on true); shared/BLE came from cloud.
@@ -735,7 +839,7 @@ struct HybridProviderAndDoorbellTests {
         #expect(await udpTransport.sends.count == sendCountAtCooldown)
 
         let gotCooldownSnapshot = await collector.wait {
-            await lightBrightness($0.snapshots.last?.devices.first { $0.id == "101" }) == 33
+            lightBrightness($0.snapshots.last?.devices.first { $0.id == "101" }) == 33
         }
         #expect(gotCooldownSnapshot)
 
@@ -744,7 +848,7 @@ struct HybridProviderAndDoorbellTests {
         lanModeShouldFail.withValue { $0 = false }
         await provider.refreshNow()
         let gotRecoveredSnapshot = await collector.wait {
-            await lightBrightness($0.snapshots.last?.devices.first { $0.id == "101" }) == 75
+            lightBrightness($0.snapshots.last?.devices.first { $0.id == "101" }) == 75
         }
         #expect(gotRecoveredSnapshot)
 
@@ -783,10 +887,11 @@ struct HybridProviderAndDoorbellTests {
             for await event in stream {
                 await collector.append(event)
             }
+            await collector.finish()
         }
         defer { task.cancel() }
 
-        let launched = await collector.wait { await !$0.snapshots.isEmpty }
+        let launched = await collector.wait { !$0.snapshots.isEmpty }
         #expect(launched)
         #expect(await collector.doorbellRings.isEmpty)
 
@@ -795,7 +900,7 @@ struct HybridProviderAndDoorbellTests {
         await api.setDoorbellLatest(did: "db-1", eventKey: "2.1", date: ringDate)
         await accountsProvider.refreshNow()
 
-        let gotRing = await collector.wait { await $0.doorbellRings.count == 1 }
+        let gotRing = await collector.wait { $0.doorbellRings.count == 1 }
         #expect(gotRing)
         let ring = await collector.doorbellRings.first
         #expect(ring?.deviceId == "db-1")
@@ -807,6 +912,143 @@ struct HybridProviderAndDoorbellTests {
 
         await accountsProvider.shutdown()
         #expect(await api.shutdownCount == 1)
+    }
+
+    @Test("Incomplete LAN get_properties sends missing/nonzero keys through cloud fallback")
+    func partialLANReadFallsBackToCloudForMissingKeys() async throws {
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let udpTransport = MockUDPTransport { packet, _, _ in
+            if packet == MiIOPacket.helloPacket {
+                return makeHelloResponse(deviceId: 0x2222_3333, stamp: 20)
+            }
+            let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+            let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+            let reqId = req["id"]?.intValue ?? 0
+            // Return code 0 for piid 1 (`on = true`), but nonzero code -4004 for piid 2 (`brightness`).
+            let reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"code":-4004}]}"#
+            return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+        }
+
+        let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 0)
+        let ownWifi = MiDeviceRecord(did: "101", name: "Partial Bulb", model: "yeelink.light.color4", isOnline: true, localIp: "192.0.2.30", token: tokenHex, isShared: false)
+        let api = HybridMockCloudAPI(
+            devices: [ownWifi],
+            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101"])],
+            props: [
+                MiotPropKey(did: "101", siid: 2, piid: 1): .bool(false),
+                MiotPropKey(did: "101", siid: 2, piid: 2): .number(64),
+            ]
+        )
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession },
+            apiFactory: { _ in api },
+            specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightWithNotifyActionSpec()]),
+            localClient: localClient,
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+
+        let collector = EventCollector()
+        let stream = provider.events()
+        let task = Task {
+            for await event in stream {
+                await collector.append(event)
+            }
+            await collector.finish()
+        }
+        defer { task.cancel() }
+
+        #expect(await collector.wait { !$0.snapshots.isEmpty })
+        let light = await collector.snapshots.last?.devices.first { $0.id == "101" }
+        #expect(light?.isActiveOn == true)
+        #expect(lightBrightness(light) == 64)
+
+        // Cloud fallback must have been asked ONLY for the missing key (2.2), never the satisfied LAN key (2.1).
+        let cloudKeysRequested = await api.getPropsCalls.first ?? []
+        #expect(cloudKeysRequested == [MiotPropKey(did: "101", siid: 2, piid: 2)])
+        await provider.shutdown()
+    }
+
+    @Test("Ambiguous post-send MIoT action does not retry or fall back to cloud, while pre-send timeout falls back")
+    func ambiguousActionOutcomeVsPreSendFallback() async throws {
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let dropAfterSend = LockedBox(false)
+        let dropHandshake = LockedBox(false)
+        let actionPacketCount = LockedBox(0)
+
+        let udpTransport = MockUDPTransport { packet, _, _ in
+            if packet == MiIOPacket.helloPacket {
+                if dropHandshake.withValue({ $0 }) {
+                    throw MiIOError.timeout
+                }
+                return makeHelloResponse(deviceId: 0x3333_4444, stamp: 30)
+            }
+            let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+            let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+            let reqId = req["id"]?.intValue ?? 0
+            let method = req["method"]?.stringValue ?? ""
+            if method == "action" {
+                actionPacketCount.withValue { $0 += 1 }
+                if dropAfterSend.withValue({ $0 }) {
+                    throw MiIOError.timeout
+                }
+                let reply = #"{"id":\#(reqId),"result":{"code":0}}"#
+                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+            }
+            let reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":50,"code":0}]}"#
+            return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+        }
+
+        // maxRetries: 2 proves action never retries even when retries are configured.
+        let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 2)
+        let ownWifi = MiDeviceRecord(did: "101", name: "Living Room Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.0.2.31", token: tokenHex, isShared: false)
+        let api = HybridMockCloudAPI(
+            devices: [ownWifi],
+            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101"])],
+            props: [
+                MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: "101", siid: 2, piid: 2): .number(50),
+            ]
+        )
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession },
+            apiFactory: { _ in api },
+            specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightWithNotifyActionSpec()]),
+            localClient: localClient,
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+
+        let collector = EventCollector()
+        let stream = provider.events()
+        let task = Task {
+            for await event in stream {
+                await collector.append(event)
+            }
+            await collector.finish()
+        }
+        defer { task.cancel() }
+
+        #expect(await collector.wait { !$0.snapshots.isEmpty })
+
+        // Case 1: Action UDP datagram is sent, reply times out -> ambiguousActionOutcome, 1 UDP send total, 0 cloud calls.
+        dropAfterSend.withValue { $0 = true }
+        await #expect(throws: MiIOError.ambiguousActionOutcome) {
+            try await provider.execute(.sendNotifyMessage(entityId: "miot-action:101:7:3", message: "hello"))
+        }
+        #expect(actionPacketCount.withValue { $0 } == 1)
+        #expect(await api.actionCalls.isEmpty)
+
+        // Case 2: Pre-send HELLO fails -> 0 new UDP action datagrams sent, safe fallback to cloud action.
+        dropAfterSend.withValue { $0 = false }
+        dropHandshake.withValue { $0 = true }
+        try await provider.execute(.sendNotifyMessage(entityId: "miot-action:101:7:3", message: "fallback"))
+        #expect(actionPacketCount.withValue { $0 } == 1)
+        #expect(await api.actionCalls == [MiotActionCall(did: "101", siid: 7, aiid: 3, inputs: [.string("fallback")])])
+
+        await provider.shutdown()
     }
 }
 
