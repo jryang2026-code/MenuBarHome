@@ -5,7 +5,7 @@ import {
   isAdvancedWriteLocked,
   portionOptionsForControl,
 } from "../core/miCloud/feedAction.js";
-import { facetTitle, facetValue, formatReading } from "../core/miotFacetText.js";
+import { facetTitle, facetValue } from "../core/miotFacetText.js";
 import type { FacetControl } from "../core/models.js";
 import { SF_ICONS } from "./appConstants.js";
 import type { DeviceListCut } from "./listCut.js";
@@ -283,17 +283,19 @@ function row(
   }
   if (control.kind === "slider" && control.range) {
     const current = typeof control.value === "number" ? control.value : control.range.min;
+    const formatRangeAttr = (n: number): string =>
+      Number.isInteger(n) ? String(n) : String(Number(n.toFixed(6)));
     return `<div id="${rowDomId}" class="${rowClasses("is-slider")}">
       <div class="cc-slider-label">
         <span class="cc-facet-label">${label}</span>
         <span class="cc-facet-slider-meta"><strong class="cc-facet-value">${value}</strong>${lockBadge}</span>
       </div>
       <input class="cc-range is-blue" type="range"
-        min="${formatReading(control.range.min)}" max="${formatReading(control.range.max)}"
-        step="${formatReading(control.range.step)}" value="${formatReading(current)}"
+        min="${formatRangeAttr(control.range.min)}" max="${formatRangeAttr(control.range.max)}"
+        step="${formatRangeAttr(control.range.step)}" value="${formatRangeAttr(current)}"
         data-facet-number="${id}|${controlId}" aria-label="${label}"
-        aria-valuemin="${formatReading(control.range.min)}" aria-valuemax="${formatReading(control.range.max)}"
-        aria-valuenow="${formatReading(current)}" aria-valuetext="${value}"${disabledAttr} />
+        aria-valuemin="${formatRangeAttr(control.range.min)}" aria-valuemax="${formatRangeAttr(control.range.max)}"
+        aria-valuenow="${formatRangeAttr(current)}" aria-valuetext="${value}"${disabledAttr} />
     </div>`;
   }
   if (control.kind === "button") {

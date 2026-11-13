@@ -13,7 +13,7 @@
  * the store refuses, the app never falls back to writing plaintext.
  */
 
-import { ASSISTANT_PROVIDER_PRESETS, inferAssistantPreset } from "./assistant/provider.js";
+import { ASSISTANT_PROVIDER_PRESETS, assistantEndpointIdentity, inferAssistantPreset } from "./assistant/provider.js";
 import { normalizeMiCloudRegion, type MiSession } from "./miCloudClient.js";
 
 export type AssistantPresetCredentialName = `assistant_api_key_${string}`;
@@ -39,6 +39,8 @@ export interface CredentialFields {
   readonly haToken?: string;
   readonly openRouterApiKey?: string;
   readonly assistantBaseURL?: string;
+  readonly assistantCustomKeyEndpoint?: string | null;
+  readonly assistantKeyEndpoint?: string | null;
 }
 
 const CREDENTIAL_SETTINGS_FIELDS = ["miSession", "haToken", "openRouterApiKey"] as const;
@@ -157,6 +159,12 @@ export function credentialsFromSettings(
   }
   if (activeKey !== "") {
     assistantApiKeys[activePreset] = activeKey;
+  } else if (activePreset === "custom") {
+    const currentEndpoint = assistantEndpointIdentity(settings.assistantBaseURL ?? "");
+    const boundCustomEndpoint = settings.assistantCustomKeyEndpoint ?? settings.assistantKeyEndpoint ?? null;
+    if (boundCustomEndpoint === null || currentEndpoint === boundCustomEndpoint) {
+      delete assistantApiKeys[activePreset];
+    }
   } else {
     delete assistantApiKeys[activePreset];
   }
@@ -209,10 +217,27 @@ export async function secureStoreDelete(
  */
 export class CredentialVault {
   private readonly known = new Map<SecureCredentialName, string>();
+  private opChain: Promise<void> = Promise.resolve();
 
   constructor(private readonly invoke: SecureInvoke = tauriInvoke) {}
 
+  private serialize<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.opChain.then(work, work);
+    this.opChain = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
   async load(activePresetId = "openrouter_jev", legacyKeyEndpoint?: string | null): Promise<CredentialSnapshot> {
+    return this.serialize(() => this.loadInternal(activePresetId, legacyKeyEndpoint));
+  }
+
+  private async loadInternal(
+    activePresetId: string,
+    legacyKeyEndpoint?: string | null,
+  ): Promise<CredentialSnapshot> {
     const presetIds = ASSISTANT_PROVIDER_PRESETS.map((preset) => preset.id);
     const [sessionRaw, haToken, legacyAssistantKey, ...presetValues] = await Promise.all([
       secureStoreGet("mi_session", this.invoke).catch(() => null),
@@ -279,25 +304,27 @@ export class CredentialVault {
 
   /** Rejects when the credential manager refused a write; callers must not retry via plaintext. */
   async persist(credentials: CredentialSnapshot): Promise<void> {
-    const keyWrites =
-      credentials.assistantApiKeys !== undefined
-        ? ASSISTANT_PROVIDER_PRESETS.map((preset) =>
-            this.sync(
-              assistantApiKeyCredentialName(preset.id),
-              credentials.assistantApiKeys?.[preset.id]?.trim() ?? ""
+    return this.serialize(async () => {
+      const keyWrites =
+        credentials.assistantApiKeys !== undefined
+          ? ASSISTANT_PROVIDER_PRESETS.map((preset) =>
+              this.sync(
+                assistantApiKeyCredentialName(preset.id),
+                credentials.assistantApiKeys?.[preset.id]?.trim() ?? ""
+              )
             )
-          )
-        : [this.sync(assistantApiKeyCredentialName("openrouter_jev"), credentials.assistantApiKey)];
-    const results = await Promise.allSettled([
-      this.sync("mi_session", credentials.miSession ? serializeMiSession(credentials.miSession) : ""),
-      this.sync("ha_token", credentials.haToken),
-      ...keyWrites,
-    ]);
-    const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-    if (failure) throw failure.reason;
-    if (credentials.assistantApiKeys !== undefined) {
-      await this.sync("assistant_api_key", "");
-    }
+          : [this.sync(assistantApiKeyCredentialName("openrouter_jev"), credentials.assistantApiKey)];
+      const results = await Promise.allSettled([
+        this.sync("mi_session", credentials.miSession ? serializeMiSession(credentials.miSession) : ""),
+        this.sync("ha_token", credentials.haToken),
+        ...keyWrites,
+      ]);
+      const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failure) throw failure.reason;
+      if (credentials.assistantApiKeys !== undefined) {
+        await this.sync("assistant_api_key", "");
+      }
+    });
   }
 
   hasLegacyAssistantKey(): boolean {
@@ -306,8 +333,10 @@ export class CredentialVault {
 
   /** Unconditionally removes `mi_session` from the OS credential store on explicit Sign Out. */
   async deleteMiSession(): Promise<void> {
-    await secureStoreDelete("mi_session", this.invoke);
-    this.known.set("mi_session", "");
+    return this.serialize(async () => {
+      await secureStoreDelete("mi_session", this.invoke);
+      this.known.set("mi_session", "");
+    });
   }
 
   private remember(name: SecureCredentialName, value: string): void {

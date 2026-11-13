@@ -105,6 +105,30 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
       </div>`;
   }
 
+  function renderPendingHighRiskRow(
+    devId: string,
+    pendingHighRisk: PendingHighRiskConfirmation | null,
+    escapeHtml: (value: string) => string,
+  ): string {
+    if (
+      !pendingHighRisk ||
+      pendingHighRisk.deviceId !== devId ||
+      pendingHighRisk.expiresAtMs <= Date.now() ||
+      !pendingHighRisk.confirm
+    ) {
+      return "";
+    }
+    const action = pendingHighRisk.confirm.promptLabel ?? pendingHighRisk.confirm.summary;
+    const promptText =
+      pendingHighRisk.confirm.command.kind === "setClimateTemperature"
+        ? t("设为 {temp}？", { temp: formatTemperature(pendingHighRisk.confirm.command.temperature) })
+        : t("{action}？", { action });
+    return `<div class="cc-slider-label">
+      <span>${escapeHtml(promptText)}</span>
+      <button class="cc-inline-pill" data-high-risk-confirm="${escapeHtml(devId)}">${t("确认执行")}</button>
+    </div>`;
+  }
+
   export function renderClimateStrip(
     dev: SmartDevice,
     k: Extract<SmartDevice["kind"], { kind: "climate" }>,
@@ -119,6 +143,7 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
     escapeHtml: (value: string) => string,
     facets: readonly FacetControl[] = [],
     allowAdvancedFacetWrites = false,
+    pendingHighRisk: PendingHighRiskConfirmation | null = null,
   ): string {
     const readout = deviceReadout(waitingDeviceIds.has(dev.id), valuesAreStale);
     const running = readout !== "possiblyStale" && dev.isOnline && k.isOn && k.hvacMode !== "off";
@@ -178,9 +203,11 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
           ${steps}
         </div>
         ${readout === "possiblyStale" ? "" : `<div class="cc-climate-gauge" role="progressbar" aria-label="${t("目标温度进度")}" aria-valuemin="${k.minTemp}" aria-valuemax="${k.maxTemp}" aria-valuenow="${k.targetTemperature}"><span style="width:${progress}%"></span></div>`}
+        ${!canExpand ? renderPendingHighRiskRow(dev.id, pendingHighRisk, escapeHtml) : ""}
         ${
           open
             ? `<div class="cc-climate-more">
+                ${renderPendingHighRiskRow(dev.id, pendingHighRisk, escapeHtml)}
                 ${modes.length > 0 ? `<div class="cc-segmented-pills is-even">
                   ${modes.map((m) => `<button class="cc-seg-pill ${running && k.hvacMode === m ? "is-active" : ""}" data-acmode="${id}:${escapeHtml(m)}" aria-pressed="${running && k.hvacMode === m}">${escapeHtml(Object.hasOwn(modeLabel, m) ? (modeLabel[m] ?? m) : m)}</button>`).join("")}
                 </div>` : ""}
@@ -277,12 +304,12 @@ function renderPrimaryDrawer(
               <span>${t("目标温度")}</span>
               <strong>${formatTemperature(k.targetTemperature)}</strong>
             </div>
-            <input class="cc-range is-blue" type="range" min="${formatTemperatureValue(k.minTemp)}" max="${formatTemperatureValue(k.maxTemp)}" step="${displayStep(k.step)}" value="${formatTemperatureValue(k.targetTemperature)}" data-actemp="${escapeHtml(dev.id)}" aria-label="${t("目标温度")}" aria-valuemin="${formatTemperatureValue(k.minTemp)}" aria-valuemax="${formatTemperatureValue(k.maxTemp)}" aria-valuetext="${formatTemperature(k.targetTemperature)}" />
+            <input class="cc-range is-blue" type="range" min="${formatTemperatureValue(k.minTemp)}" max="${formatTemperatureValue(k.maxTemp)}" step="${displayStep(k.step)}" value="${formatTemperatureValue(k.targetTemperature)}" data-actemp="${escapeHtml(dev.id)}" data-min-c="${k.minTemp}" data-max-c="${k.maxTemp}" aria-label="${t("目标温度")}" aria-valuemin="${formatTemperatureValue(k.minTemp)}" aria-valuemax="${formatTemperatureValue(k.maxTemp)}" aria-valuetext="${formatTemperature(k.targetTemperature)}" />
           </div>` : ""}
           ${confirmTemperature !== null ? `<div class="cc-slider-label">
             <span>${t("设为 {temp}？", { temp: formatTemperature(confirmTemperature) })}</span>
             <button class="cc-inline-pill" data-high-risk-confirm="${escapeHtml(dev.id)}">${t("确认执行")}</button>
-          </div>` : ""}
+          </div>` : renderPendingHighRiskRow(dev.id, pendingHighRisk, escapeHtml)}
           ${showModes ? `<div class="cc-segmented-pills">
             ${modes
               .map(
@@ -364,7 +391,7 @@ function renderPrimaryDrawer(
             ${
               k.swingWritable !== false && k.isOscillating !== null
                 ? `<button class="cc-seg-pill ${k.isOscillating ? "is-active" : ""}" data-fanosc="${escapeHtml(dev.id)}" aria-pressed="${k.isOscillating}">
-                    摇头 ${k.isOscillating ? t("开") : t("关")}
+                    ${k.isOscillating ? t("摇头 开") : t("摇头 关")}
                   </button>`
                 : ""
             }
@@ -585,8 +612,14 @@ export function renderDeviceDrawer(
   allowAdvanced = false,
   pendingHighRisk: PendingHighRiskConfirmation | null = null,
 ): string {
+  const primary = renderPrimaryDrawer(dev, escapeHtml, pendingHighRisk, facets, allowAdvanced);
+  const extraConfirm =
+    dev.kind.kind !== "climate" || primary === ""
+      ? renderPendingHighRiskRow(dev.id, pendingHighRisk, escapeHtml)
+      : "";
   return (
-    renderPrimaryDrawer(dev, escapeHtml, pendingHighRisk, facets, allowAdvanced) +
+    primary +
+    (extraConfirm ? `<div class="cc-tile-drawer">${extraConfirm}</div>` : "") +
     renderMoreSettings({
       deviceId: dev.id,
       facets,
@@ -685,7 +718,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
     return renderSensorCard(dev, dev.kind, state.span < 6, attrs, motion, badge, state.selectedRoom, state.valuesAreStale, escape);
   }
   if (dev.kind.kind === "climate" && size !== "half") {
-    return renderClimateStrip(dev, dev.kind, size === "panel", attrs, motion, badge, state.expandedDeviceId, state.selectedRoom, state.valuesAreStale, state.waitingDeviceIds, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites);
+    return renderClimateStrip(dev, dev.kind, size === "panel", attrs, motion, badge, state.expandedDeviceId, state.selectedRoom, state.valuesAreStale, state.waitingDeviceIds, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk);
   }
   const isExpanded = state.expandedDeviceId === dev.id || size === "panel";
   const readout = deviceReadout(state.waitingDeviceIds.has(dev.id), state.valuesAreStale);
@@ -764,6 +797,11 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
         ${
           isExpanded && hasDrawer
             ? renderDeviceDrawer(dev, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk)
+            : ""
+        }
+        ${
+          !hasDrawer
+            ? renderPendingHighRiskRow(dev.id, state.pendingHighRisk, escape)
             : ""
         }
       </div>

@@ -203,7 +203,24 @@ export function formatReading(value: number): string {
 
 /** The value a row shows: an option label, 开/关, a scaled reading, or the raw value. */
 export function facetValue(control: FacetControl): string {
-  const raw = control.value;
+  let raw = control.value;
+  if (
+    typeof raw === "string" &&
+    raw.trim() !== "" &&
+    (control.options.length > 0 ||
+      control.kind === "slider" ||
+      control.kind === "toggle" ||
+      control.scale !== null ||
+      control.unit !== null)
+  ) {
+    const trimmed = raw.trim().toLowerCase();
+    if (control.kind === "toggle" && (trimmed === "true" || trimmed === "false")) {
+      raw = trimmed === "true";
+    } else {
+      const parsed = Number(trimmed);
+      if (Number.isFinite(parsed)) raw = parsed;
+    }
+  }
   if (typeof raw === "number") {
     const option = control.options.find((item) => item.value === Math.trunc(raw));
     if (option) return option.label;
