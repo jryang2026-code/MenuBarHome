@@ -59,7 +59,6 @@
   /* Fluent 2 Motion Curves */
   --ease-decelerate: cubic-bezier(0, 0, 0, 1);
   --ease-accelerate: cubic-bezier(1, 0, 1, 1);
-  --ease-standard: cubic-bezier(0.33, 0, 0.67, 1);
 
   font-family: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
   font-size: 14px;
@@ -1560,17 +1559,6 @@ details.win-notif-card > :not(summary) {
   50% {
     opacity: 0.62;
     transform: scale(0.95);
-  }
-}
-
-@keyframes win-subpage-in {
-  from {
-    opacity: 0;
-    transform: translateX(18px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
   }
 }
 
@@ -3599,26 +3587,6 @@ input[type="checkbox"]:checked::after {
       var(--flyout-dy, calc(100% + var(--panel-inset, 16px) + 8px)),
       0
     );
-  }
-}
-
-@keyframes win-fade {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes win-sheet-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
   }
 }
 

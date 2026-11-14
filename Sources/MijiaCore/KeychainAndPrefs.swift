@@ -29,7 +29,6 @@ public enum KeychainHelper {
     /// `migratePlaintextCredentialsToKeychain`; nothing writes it any more (#16).
     static let legacyPlaintextTokenKey = "ha_fallback_token"
 
-    public static let defaultHomeName = "我的家"
     public static var localizedDefaultHomeName: String {
         L10n.tr("我的家", "My Home")
     }

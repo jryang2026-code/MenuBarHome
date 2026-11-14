@@ -903,7 +903,11 @@ extension HomeStore {
               let command = Self.facetCommand(for: control, value: value) else { return }
         let key = facetWriteKey(deviceId, controlId)
         let previous = facetWrites[key]
-        guard previous != nil || allowManualControl(facet: control, value: value, for: device) else { return }
+        // Only a slider still being dragged rides on the confirmation its first tick got. A
+        // toggle or select tapped again while the earlier write is pending is a new decision
+        // (off -> on of a heater) and is judged on its own value.
+        let continuesConfirmedDrag = previous != nil && control.kind == .slider
+        guard continuesConfirmedDrag || allowManualControl(facet: control, value: value, for: device) else { return }
         let origin = if let previous { previous.origin } else { control.value }
         var pending = FacetWriteState(token: UUID(), origin: origin, bannerID: previous?.bannerID)
         facets[index].value = value

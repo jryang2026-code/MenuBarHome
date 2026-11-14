@@ -97,6 +97,12 @@ expect_flags "windows/src-tauri 原生改动触发 code + windows + windows_nati
     "$(build_expected code windows windows_native)" \
     "windows/src-tauri/src/lib.rs"
 
+expect_flags "camera-bin 构建脚本改动触发 windows_native" \
+    "$(build_expected code windows windows_native)" \
+    "windows/scripts/build-ffmpeg-min.sh" \
+    "windows/scripts/prepare-camera-bin.sh" \
+    "windows/scripts/patch_pe_subsystem.py"
+
 # 8. 脚本与 NAS 精准路由
 expect_flags "scripts/pr-ready.sh 只触发 code + scripts" \
     "$(build_expected code scripts)" \

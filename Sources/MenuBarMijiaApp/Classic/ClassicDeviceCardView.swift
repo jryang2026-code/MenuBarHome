@@ -541,7 +541,9 @@ public struct ClassicDeviceCardView: View {
                 ? L10n.tr("打开实时画面", "Open live view")
                 : device.isPrimaryToggleable
                     ? L10n.tr("切换开关", "Toggle power")
-                    : L10n.tr("只读状态", "Read only")))
+                    : store.hasDetailDrawer(for: device)
+                        ? L10n.tr("展开详细控制", "Expand controls")
+                        : L10n.tr("只读状态", "Read only")))
 
             // Quick Index Pill + Favorite Star + Drawer Chevron
             HStack(spacing: 4) {

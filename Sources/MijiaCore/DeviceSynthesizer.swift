@@ -1250,7 +1250,11 @@ public enum DeviceSynthesizer {
                 }
                 let motionSw = eids.first { $0.hasPrefix("switch.") && $0.lowercased().contains("motion") }
                 let motionEntityId = motionSw ?? (camSt?.attributes["motion_detection"]?.boolValue != nil && cameraEntityId != nil ? "\(cameraEntityId!)#motion" : nil)
-                let isMotionOn = motionSw.flatMap { states[$0]?.state == "on" } ?? camSt?.attributes["motion_detection"]?.boolValue
+                let isMotionOn = motionSw.flatMap { id -> Bool? in
+                    // An unavailable switch is unknown, not "off".
+                    guard let state = states[id], state.isAvailable else { return nil }
+                    return state.state == "on"
+                } ?? camSt?.attributes["motion_detection"]?.boolValue
 
                 let nightSelectId = eids.first {
                     $0.hasPrefix("select.") && ($0.lowercased().contains("night") || $0.lowercased().contains("ir_mode"))

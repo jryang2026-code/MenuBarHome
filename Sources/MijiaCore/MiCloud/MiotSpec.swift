@@ -234,8 +234,7 @@ public struct MiotDeviceSpec: Codable, Equatable, Sendable {
     /// The table lives in `Resources/fallbackSpecs.json`, shared byte-for-byte with Windows, and
     /// every guessed property stays read-only (#154, #26).
     public static func inferFallbackSpec(model: String) -> MiotDeviceSpec? {
-        guard MiotFallbackSpec.inferMatchingRule(model: model) else { return nil }
-        return MiotFallbackSpec.spec(for: model)
+        MiotFallbackSpec.spec(for: model)
     }
 }
 

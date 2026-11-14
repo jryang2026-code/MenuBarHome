@@ -102,6 +102,13 @@ while IFS= read -r path || [ -n "$path" ]; do
             windows_native=true
             scripts=true
             ;;
+        # Inputs of the camera-bin build and its cache key: a PR that edits them must run the
+        # native jobs, not only the TypeScript ones.
+        windows/scripts/build-ffmpeg-min.sh|windows/scripts/prepare-camera-bin.sh|windows/scripts/patch_pe_subsystem.py)
+            code=true
+            windows=true
+            windows_native=true
+            ;;
         windows/package.json|windows/package-lock.json|windows/vite.config.*|windows/tsconfig*.json|windows/index.html)
             code=true
             windows=true

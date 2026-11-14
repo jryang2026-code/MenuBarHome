@@ -322,7 +322,10 @@ public enum IntentValidator {
         case (.brightnessStep(let delta), .light(let s)):
             guard s.brightnessWritable else { return nil }
             let base = s.isOn ? (s.brightnessPercent ?? 100) : 0
-            return .brightness(min(100, max(1, base + delta)))
+            // The model's step is untrusted and may be `Int.max` (`clampedInt`); bound it before
+            // adding so `base + delta` cannot overflow and trap.
+            let step = min(100, max(-100, delta))
+            return .brightness(min(100, max(1, base + step)))
 
         case (.temperatureStep(let delta), .climate(let s)):
             guard s.temperatureWritable, delta.isFinite else { return nil }

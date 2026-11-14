@@ -25,6 +25,16 @@ function coercePropValue(prop: MiotProperty, val: number): number {
     n = Math.min(hi, Math.max(lo, n));
   }
   if (prop.format.startsWith("int") || prop.format.startsWith("uint")) {
+    // Same grid snap as `MiotCommandMapper.coerce` on macOS: an integer range with a step above
+    // 1 (e.g. [16, 32, 2]) only accepts values on that grid.
+    const intStep = prop.valueRange?.[2];
+    if (intStep !== undefined && Number.isFinite(intStep) && intStep > 1) {
+      const base = prop.valueRange?.[0] ?? 0;
+      const hi = prop.valueRange?.[1];
+      let snapped = base + Math.round((n - base) / intStep) * intStep;
+      if (hi !== undefined && snapped > hi && snapped - intStep >= base) snapped -= intStep;
+      if (Number.isFinite(snapped)) n = snapped;
+    }
     return Math.round(n);
   }
   const step = prop.valueRange?.[2];

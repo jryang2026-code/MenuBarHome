@@ -123,7 +123,7 @@ extension ClassicControlCenterPanel {
                         .transition(.scale(scale: 0.8).combined(with: .opacity))
                 } else if !store.allOffTargets.isEmpty {
                     // The label says what will be switched off (#23); a hold confirms.
-                    let copy = PanelHeaderCopy.allOff(store: store, scopeName: allOffScopeDisplayName)
+                    let copy = store.allOffHeaderCopy(scopeName: allOffScopeDisplayName)
                     VStack(alignment: .trailing, spacing: 1) {
                         ClassicHoldToConfirmButton(
                             title: copy.title,

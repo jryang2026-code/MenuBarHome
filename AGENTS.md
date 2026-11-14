@@ -13,7 +13,7 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
 - **默认直接 push `main`（快车道）**：文案、文档、图标、样式/布局微调、局部 UI/交互修复、测试补充、内部重构或脚手架脚本改进。推送前跑过对应验证，推送后确认云端 CI 全绿，交付时明确区分「已推送」与「CI 已通过」。`git push origin main` 会触发 `pre-push` 钩子自动跑 `check.sh --changed`。
 - **必须走 PR（checks 全绿后合入）的 5 类高风险面**：
   1. 登录、凭据、钥匙串与网络传输边界（`MiSession`、`KeychainHelper`、`secureStore`、明文 HTTP 同意与局域网端点校验）
-  2. 设备控制写入与安全策略（真实控制指令、二次确认、`AllOffTarget`、锁屏拦截、`ScheduledCommand` 作用域/定时）
+  2. 设备控制写入与安全策略（真实控制指令、二次确认、`allOffTargets`、锁屏拦截、`ScheduledCommand` 作用域/定时）
   3. 数据迁移、跨源设备去重（`DeviceDeduplicator`）与跨端黄金语料语义变更
   4. 自动更新与代码签名/发版（`Update*.swift`、`release.sh`、Ed25519 验签）
   5. 跨平台契约或包构建/发布链路变更（`.github/workflows/` 打包链、Windows MSI/NSIS 安装器）

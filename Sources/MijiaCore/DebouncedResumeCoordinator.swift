@@ -46,7 +46,6 @@ public actor DebouncedResumeCoordinator {
     private var generation: UInt64 = 0
 
     public var hasPendingResume: Bool { debounceTask != nil }
-    public var currentPendingReasons: Set<ResumeReason> { pendingReasons }
 
     private var isEligibleToResume: Bool {
         !isShutdown && isSystemActive && !isScreenLocked && isNetworkSatisfied

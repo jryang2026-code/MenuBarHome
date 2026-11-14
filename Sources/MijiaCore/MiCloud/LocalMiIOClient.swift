@@ -291,10 +291,6 @@ public actor LocalMiIOClient {
         await transport.shutdown()
     }
 
-    public func resetSession(did: String) {
-        sessions.removeValue(forKey: did)
-    }
-
     public func handshake(for endpoint: MiIODeviceEndpoint) async throws -> MiIOHandshakeInfo {
         let tokenData = try validatedToken(endpoint.token)
         let host = try validatedHost(endpoint.ip)
