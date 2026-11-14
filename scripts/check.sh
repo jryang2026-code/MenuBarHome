@@ -225,13 +225,14 @@ if ! cmp -s Resources/AppIcon/AppIcon-Dark.svg docs/assets/logo-dark.svg || ! cm
     exit 1
 fi
 
-# Design-token, matrix, and Ed25519 checks (< 0.6s). CI runs them on ubuntu-latest
+# Fast static checks run locally on every commit and on ubuntu-latest in CI
 # (the Swift container image does not ship python3). Missing Python is recorded as a skip.
 PYTHON_LINT_SKIPPED=0
 if [ -n "$PYTHON_BIN" ]; then
     "$PYTHON_BIN" scripts/check_design_tokens.py
     "$PYTHON_BIN" scripts/check_timer_render.py
     "$PYTHON_BIN" scripts/check_swift_harness_lints.py
+    "$PYTHON_BIN" scripts/check_workflows.py
     "$PYTHON_BIN" scripts/check_capability_matrix.py
     "$PYTHON_BIN" scripts/go2rtc-ptz/check_model_tables.py
     "$PYTHON_BIN" scripts/miot_coverage_report.py
@@ -303,7 +304,9 @@ else
 fi
 
 run_clean_env() {
-    env -u GITHUB_EVENT_NAME -u GITHUB_REF -u GITHUB_REF_TYPE -u GITHUB_OUTPUT -u GITHUB_SHA -u GITHUB_ACTIONS "$@"
+    env -u GITHUB_EVENT_NAME -u GITHUB_REF -u GITHUB_REF_TYPE -u GITHUB_OUTPUT -u GITHUB_SHA -u GITHUB_ACTIONS \
+        -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR -u GIT_PREFIX \
+        "$@"
 }
 
 run_script_self_tests() {
@@ -314,11 +317,11 @@ run_script_self_tests() {
     run_clean_env bash scripts/test_ci_relevant_paths.sh
     run_clean_env bash scripts/test_secret_scan.sh
     run_clean_env bash scripts/test_install_ripgrep.sh
-    run_clean_env bash scripts/test_tauri_cache_key.sh
     if command -v node >/dev/null 2>&1; then
         run_clean_env node windows/scripts/test-file.mjs --self-test
     fi
     if [ -n "$PYTHON_BIN" ]; then
+        run_clean_env "$PYTHON_BIN" scripts/check_workflows.py --self-test
         run_clean_env "$PYTHON_BIN" scripts/test_check_capability_matrix.py
         run_clean_env "$PYTHON_BIN" scripts/test_mijia_cli.py
         run_clean_env "$PYTHON_BIN" scripts/test_local_macos_runner.py

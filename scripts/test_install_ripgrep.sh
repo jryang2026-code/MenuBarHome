@@ -55,13 +55,16 @@ cat >"$bin/curl" <<'EOF'
 #!/bin/bash
 out=""
 prev=""
+url=""
 for arg in "$@"; do
     if [[ "$prev" == "-o" ]]; then
         out="$arg"
+    elif [[ "$arg" == https://* ]]; then
+        url="$arg"
     fi
     prev="$arg"
 done
-printf 'curl\n' >> "${RG_TEST_LOG:?}"
+printf 'curl %s\n' "$url" >> "${RG_TEST_LOG:?}"
 case "${RG_TEST_CURL:?}" in
     fail) exit 1 ;;
     bad)
@@ -217,6 +220,16 @@ if grep -q 'brew install ripgrep' "$RG_TEST_LOG" && ! grep -q 'apt-get' "$RG_TES
     pass "Darwin 回退走 brew"
 else
     fail "Darwin 回退没有只调用 brew：$(cat "$RG_TEST_LOG")"
+fi
+
+run_install Darwin x86_64 fail ok
+assert_case "macOS x86_64 下载失败后 brew 成功" 0
+if grep -q 'ripgrep-14.1.1-x86_64-apple-darwin.tar.gz' "$RG_TEST_LOG" \
+    && grep -q 'brew install ripgrep' "$RG_TEST_LOG" \
+    && ! grep -q 'apt-get' "$RG_TEST_LOG"; then
+    pass "Darwin x86_64 选择 x86_64 预编译包并在失败时回退 brew"
+else
+    fail "Darwin x86_64 预编译包或 brew 回退不正确：$(cat "$RG_TEST_LOG")"
 fi
 
 printf '%s\n' '#!/bin/bash' 'cat >/dev/null' 'exit 0' >"$bin/sha256sum"

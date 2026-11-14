@@ -49,13 +49,13 @@ launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.menubarhome.ci.pli
 
 ## 切换 CI 执行位置
 
-`MACOS_CI_RUNNER` 是仓库 Actions 变量，内容是 JSON。设置为以下值后，新的 CI 运行会把 `macos-test` 排到本机。`macos-release` 和 `macos-appintents` 固定在 GitHub 的 `macos-26` 托管机，与它并行：三个都排到单台 VM 时一次运行占用约 20 分钟，其他 PR 只能排队。
+`MACOS_CI_RUNNER` 是仓库 Actions 变量，内容是 JSON。设置为以下值后，新的 CI 运行会把 `macos-test` 排到本机。`macos-release` 和 `macos-appintents` 固定在 GitHub 的 `macos-26-intel` 托管机，与它并行：三个都排到单台 VM 时一次运行占用约 20 分钟，其他 PR 只能排队。
 
 ```bash
 gh variable set MACOS_CI_RUNNER --repo jryang2026-code/MenuBarHome --body '["self-hosted","macOS","ARM64","menubarhome-vm"]'
 ```
 
-删除变量后，新的 CI 运行恢复 GitHub 的 `macos-26` 托管机：
+删除变量后，新的 CI 运行恢复 GitHub 的 `macos-26-intel` 托管机：
 
 ```bash
 gh variable delete MACOS_CI_RUNNER --repo jryang2026-code/MenuBarHome
