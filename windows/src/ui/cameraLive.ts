@@ -1,6 +1,5 @@
 import { t } from "../core/i18n.js";
 import {
-  CAMERA_STREAM_QUALITIES,
   DEFAULT_CAMERA_STREAM_QUALITY,
   normalizeCameraStreamQuality,
   type CameraStreamQuality,
@@ -11,16 +10,18 @@ import {
   parsePrivateLanIpv4,
   resolveLiveCameraTarget,
 } from "../core/miCloud/cameraHubs.js";
-import { cameraLensLabel } from "../core/miCloud/cameraLens.js";
 import {
   MiCloudClient,
   type HttpTransport,
   type MiotSpecResolver,
 } from "../core/miCloudClient.js";
-import { localizeNightShot, type CameraLens, type SmartDevice } from "../core/models.js";
-import { CAMERA_QUALITY_TITLES, SF_ICONS } from "./appConstants.js";
+import type { CameraLens, SmartDevice } from "../core/models.js";
+import type { MenuMijiaWindowsApp } from "./app.js";
+import { SF_ICONS } from "./appConstants.js";
 import type { PersistedSettings } from "./appTypes.js";
+import { computeQuarterTurnScale, renderCameraLiveModalView } from "./cameraLiveModalView.js";
 import { waitForCameraFrameGap } from "./dom.js";
+import { hasPendingUrlConfirmation } from "./speechGuard.js";
 import { invokeTauriVoid } from "./transport.js";
 
 export type CameraRotationDeg = 0 | 90 | 180 | 270;
@@ -55,11 +56,22 @@ export interface CameraLiveHost {
   readonly transport: HttpTransport;
   readonly specResolver: MiotSpecResolver;
   readonly endpointSubmission: Promise<unknown>;
+  readonly prompt?: unknown;
+  readonly ctxMenu?: unknown;
+  readonly isRecordingHotkey?: boolean;
+  readonly activeSheet?: string;
   replyBanner: { text: string; source: string; isError?: boolean } | null;
   render(): void;
   escapeHtml(value: string): string;
   saveSettings(): void;
   shouldKeepPopoverPinned(): boolean;
+  readonly pipeline?: {
+    readonly cameraStandby: {
+      resumeFromStandby(root: HTMLElement): void;
+      enterWarmStandby(root: HTMLElement): void;
+      cancel(): void;
+    };
+  };
 }
 
 export class CameraLiveController {
@@ -67,7 +79,7 @@ export class CameraLiveController {
   public static readonly CAMERA_ROTATIONS_STORAGE_KEY = "menubarmijia.cameraRotations";
   public static readonly CAMERA_LOCAL_IPS_STORAGE_KEY = "menubarmijia.cameraLocalIPs";
 
-  constructor(private readonly host: CameraLiveHost) {
+  constructor(public readonly host: CameraLiveHost) {
     this.cameraStreamURLs = { ...(host.settings.cameraStreamURLs ?? {}) };
     this.cameraStreamQualities = { ...(host.settings.cameraStreamQualities ?? {}) };
     this.cameraChannels = loadPersistedCameraChannels();
@@ -90,8 +102,17 @@ export class CameraLiveController {
   /** Tests pin this short to watch the teardown without waiting two minutes. */
   cameraKeepAliveMs = CameraLiveController.CAMERA_KEEP_ALIVE_MS;
   public static readonly CAMERA_FRAME_GIVE_UP_MS = 20_000;
+  public static readonly CAMERA_ACTIVE_FRAME_GAP_MS = 45;
+  public static readonly CAMERA_IDLE_FRAME_GAP_MS = 250;
+  public static readonly CAMERA_HIDDEN_FRAME_GAP_MS = 400;
+  public static readonly CAMERA_MAX_IDLE_FRAME_GAP_MS = 500;
+  public static readonly CAMERA_SAME_SESSION_COOLDOWN_MS = 2_500;
   cameraFrameGiveUpMs = CameraLiveController.CAMERA_FRAME_GIVE_UP_MS;
   cameraFrameRetryMs = 800;
+  cameraActiveFrameGapMs = CameraLiveController.CAMERA_ACTIVE_FRAME_GAP_MS;
+  cameraIdleFrameGapMs = CameraLiveController.CAMERA_IDLE_FRAME_GAP_MS;
+  cameraHiddenFrameGapMs = CameraLiveController.CAMERA_HIDDEN_FRAME_GAP_MS;
+  cameraSameSessionCooldownMs = CameraLiveController.CAMERA_SAME_SESSION_COOLDOWN_MS;
   public liveCameraStreamURL: string | null = null;
   public liveCameraLoading = false;
   public liveCameraError: string | null = null;
@@ -111,12 +132,59 @@ export class CameraLiveController {
   public liveCameraMuted = true;
   public liveCameraQualityApplies = true;
   public liveCameraImgEl: HTMLImageElement | null = null;
-  private liveCameraRawMediaEl: HTMLImageElement | HTMLVideoElement | null = null;
+  public liveCameraRawMediaEl: HTMLImageElement | HTMLVideoElement | null = null;
   public liveCameraAbort: AbortController | null = null;
   public ownedStreamOrigin: string | null = null;
   public liveCameraToken = 0;
   public readonly pendingCameraReleases = new Map<string, Promise<void>>();
   private readonly cameraBridgeBindings = new Map<string, CameraBridgeBinding>();
+  private readonly recentP2PSessionActivityMs = new Map<string, number>();
+  private reconnectingP2PSessionId: string | null = null;
+  private escapeKeyDisposer: (() => void) | null = null;
+
+  private p2pSessionKeyForDevice(dev: SmartDevice): string {
+    const bound = this.cameraBridgeBindings.get(dev.id);
+    if (bound?.did) return bound.did;
+    if (dev.kind.kind === "camera" && dev.kind.gatewayDid) return dev.kind.gatewayDid;
+    return dev.id;
+  }
+
+  private hasHigherPriorityOverlayOpen(): boolean {
+    return (
+      (this.host.prompt !== undefined && this.host.prompt !== null) ||
+      (this.host.ctxMenu !== undefined && this.host.ctxMenu !== null) ||
+      Boolean(this.host.isRecordingHotkey) ||
+      (typeof this.host.activeSheet === "string" && this.host.activeSheet !== "none") ||
+      hasPendingUrlConfirmation(this.host as unknown as MenuMijiaWindowsApp)
+    );
+  }
+
+  private syncModalEscapeListener(): void {
+    const shouldListen = this.activeLiveCameraId !== null && !this.liveCameraHidden;
+    if (!shouldListen) {
+      this.escapeKeyDisposer?.();
+      this.escapeKeyDisposer = null;
+      return;
+    }
+    if (this.escapeKeyDisposer) return;
+    const ownerWin = this.host.root.ownerDocument?.defaultView ?? window;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.key !== "Escape") return;
+      if (this.activeLiveCameraId === null || this.liveCameraHidden || !this.host.root.isConnected) {
+        this.syncModalEscapeListener();
+        return;
+      }
+      if (this.hasHigherPriorityOverlayOpen()) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      this.hideCameraLiveView();
+    };
+    ownerWin.addEventListener("keydown", onKeyDown, true);
+    this.escapeKeyDisposer = () => {
+      ownerWin.removeEventListener("keydown", onKeyDown, true);
+    };
+  }
 
   public openCameraLiveView(deviceId: string): void {
     const dev = this.host.devices.find((d) => d.id === deviceId);
@@ -124,8 +192,10 @@ export class CameraLiveController {
     // Opening is idempotent even before the first frame or while cloud negotiation is
     // pending. Only the explicit reconnect action may replace this camera's session.
     if (this.activeLiveCameraId === deviceId) {
+      this.host.pipeline?.cameraStandby.resumeFromStandby(this.host.root);
       this.liveCameraHidden = false;
       this.clearCameraKeepAlive();
+      this.syncModalEscapeListener();
       invokeTauriVoid("set_pin_popover", { pin: true });
       // A power-on while hidden skips the reconnect, so this is the first chance to start it.
       if (dev.kind.isOn && !this.liveCameraImgEl && !this.liveCameraRawMediaEl && !this.liveCameraLoading && !this.liveCameraError) {
@@ -137,12 +207,15 @@ export class CameraLiveController {
     if (this.activeLiveCameraId !== null && this.activeLiveCameraId !== deviceId) {
       this.teardownActiveCameraForSwitch();
     }
+    this.host.pipeline?.cameraStandby.cancel();
+    this.reconnectingP2PSessionId = null;
     this.activeLiveCameraId = dev.id;
     this.activeLiveCameraSnapshot = dev;
     this.liveCameraMuted = true;
     this.liveCameraQualityApplies = true;
     this.liveCameraHidden = false;
     this.clearCameraKeepAlive();
+    this.syncModalEscapeListener();
     this.liveCameraError = null;
     this.liveCameraShowingURLInput = false;
     this.liveCameraNeedsManualIp = false;
@@ -168,11 +241,15 @@ export class CameraLiveController {
       ? this.host.devices.find((d) => d.id === closingId) ??
         (this.activeLiveCameraSnapshot?.id === closingId ? this.activeLiveCameraSnapshot : undefined)
       : undefined;
+    if (closingDev && this.host.settings.connectionMode === "xiaomiCloud") {
+      this.recentP2PSessionActivityMs.set(this.p2pSessionKeyForDevice(closingDev), Date.now());
+    }
     this.clearCameraKeepAlive();
     this.liveCameraHidden = false;
     this.stopLiveTransport();
     this.activeLiveCameraId = null;
     this.activeLiveCameraSnapshot = null;
+    this.syncModalEscapeListener();
     if (closingId && this.host.settings.connectionMode === "xiaomiCloud" && closingDev) {
       void this.releaseCameraP2PSession(closingDev, this.liveCameraToken);
     }
@@ -196,6 +273,7 @@ export class CameraLiveController {
   public hideCameraLiveView(): void {
     if (this.activeLiveCameraId === null) return;
     this.liveCameraHidden = true;
+    this.syncModalEscapeListener();
     invokeTauriVoid("set_pin_popover", { pin: this.host.shouldKeepPopoverPinned() });
     this.clearCameraKeepAlive();
     this.liveCameraKeepAliveTimer = window.setTimeout(() => {
@@ -205,6 +283,7 @@ export class CameraLiveController {
       if (this.liveCameraHidden) this.closeCameraLiveView();
     }, this.cameraKeepAliveMs);
     this.host.render();
+    this.host.pipeline?.cameraStandby.enterWarmStandby(this.host.root);
   }
 
   public clearCameraKeepAlive(): void {
@@ -215,16 +294,22 @@ export class CameraLiveController {
   }
 
   public closeCameraLiveView(): void {
+    this.host.pipeline?.cameraStandby.cancel();
     const closingId = this.activeLiveCameraId;
     const closingDev = closingId
       ? this.host.devices.find((d) => d.id === closingId) ??
         (this.activeLiveCameraSnapshot?.id === closingId ? this.activeLiveCameraSnapshot : undefined)
       : undefined;
+    if (closingDev && this.host.settings.connectionMode === "xiaomiCloud") {
+      this.recentP2PSessionActivityMs.set(this.p2pSessionKeyForDevice(closingDev), Date.now());
+    }
+    this.reconnectingP2PSessionId = null;
     this.clearCameraKeepAlive();
     this.liveCameraHidden = false;
     this.stopLiveTransport();
     this.activeLiveCameraId = null;
     this.activeLiveCameraSnapshot = null;
+    this.syncModalEscapeListener();
     this.liveCameraMuted = true;
     this.liveCameraQualityApplies = true;
     this.liveCameraStreamURL = null;
@@ -430,6 +515,29 @@ export class CameraLiveController {
     }
   }
 
+  public computeNextFrameGapMs(options: {
+    readonly isNewFrame: boolean;
+    readonly unchangedCount: number;
+    readonly hidden: boolean;
+    readonly elapsedMs: number;
+  }): number {
+    if (options.hidden) {
+      return Math.max(0, this.cameraHiddenFrameGapMs);
+    }
+    if (!options.isNewFrame) {
+      const baseIdle = Math.max(0, this.cameraIdleFrameGapMs);
+      const step = Math.max(0, options.unchangedCount - 1) * 75;
+      return Math.min(CameraLiveController.CAMERA_MAX_IDLE_FRAME_GAP_MS, baseIdle + step);
+    }
+    const target = Math.max(0, this.cameraActiveFrameGapMs);
+    if (target === 0) return 0;
+    const elapsed = Math.max(0, options.elapsedMs);
+    if (elapsed <= target) {
+      return Math.max(Math.min(12, target), Math.round(target - elapsed));
+    }
+    return Math.min(Math.max(target, this.cameraIdleFrameGapMs), Math.max(12, Math.round(elapsed * 0.35)));
+  }
+
   public async pumpAuthenticatedMjpeg(
     name: string,
     img: HTMLImageElement,
@@ -440,14 +548,23 @@ export class CameraLiveController {
     if (!invoke) return;
     let failureStarted: number | null = null;
     let lastJpeg = "";
+    let unchangedCount = 0;
     while (token === this.liveCameraToken && !signal.aborted) {
+      let isNewFrame = false;
+      let elapsedMs = 0;
       try {
+        const startedAt = performance.now();
         const jpeg = await invoke<string>("go2rtc_jpeg_frame", { src: name });
+        elapsedMs = Math.max(0, performance.now() - startedAt);
         if (token !== this.liveCameraToken || signal.aborted) return;
         if (!jpeg) throw new Error(t("go2rtc 未返回画面"));
-        if (jpeg !== lastJpeg) {
+        isNewFrame = jpeg !== lastJpeg;
+        if (isNewFrame) {
+          unchangedCount = 0;
           img.src = `data:image/jpeg;base64,${jpeg}`;
           lastJpeg = jpeg;
+        } else {
+          unchangedCount += 1;
         }
         failureStarted = null;
         if (this.liveCameraImgEl !== img) {
@@ -468,7 +585,13 @@ export class CameraLiveController {
         await waitForCameraFrameGap(signal, this.cameraFrameRetryMs);
         continue;
       }
-      await waitForCameraFrameGap(signal, 200);
+      const nextGapMs = this.computeNextFrameGapMs({
+        isNewFrame,
+        unchangedCount,
+        hidden: this.liveCameraHidden,
+        elapsedMs,
+      });
+      await waitForCameraFrameGap(signal, nextGapMs);
     }
   }
 
@@ -556,6 +679,9 @@ export class CameraLiveController {
             probe.canPlayType("application/x-mpegURL"),
         );
       return !canPlayNative;
+    }
+    if (!/\/api\/camera_proxy/i.test(url) && /\.(mp4|webm|ogv|ogg|mov)(\?|$|#)/i.test(url)) {
+      return false;
     }
     return /^https?:\/\//i.test(url);
   }
@@ -658,6 +784,9 @@ export class CameraLiveController {
   public reconnectCameraLiveView(): void {
     const dev = this.host.devices.find((d) => d.id === this.activeLiveCameraId);
     if (!dev || dev.kind.kind !== "camera") return;
+    if (this.host.settings.connectionMode === "xiaomiCloud") {
+      this.reconnectingP2PSessionId = this.p2pSessionKeyForDevice(dev);
+    }
     this.stopLiveTransport();
     this.liveCameraQualityApplies = true;
     this.liveCameraStreamURL = this.cameraStreamURLs[dev.id]
@@ -774,6 +903,18 @@ export class CameraLiveController {
 
       if (stale()) return;
       // 2. Release any previous P2P session, then wake a fresh one (siid=9 p2p-stream service)
+      const sessionKey = this.p2pSessionKeyForDevice(dev);
+      const isSameSessionReconnect = this.reconnectingP2PSessionId === sessionKey;
+      if (isSameSessionReconnect) {
+        this.reconnectingP2PSessionId = null;
+      }
+      const lastSessionAt = this.recentP2PSessionActivityMs.get(sessionKey);
+      const recentlyUsedSameSession =
+        lastSessionAt !== undefined &&
+        Date.now() - lastSessionAt < Math.max(this.cameraKeepAliveMs, this.cameraSameSessionCooldownMs);
+      const needsSameSessionCooldown =
+        isSameSessionReconnect || Boolean(pendingRelease) || recentlyUsedSameSession;
+
       const p2pSvc = spec.services.find((s) => s.actions.some((a) => a.type.includes("start-p2p-stream")));
       const stopAct = p2pSvc?.actions.find((a) => a.type.includes("stop-stream"));
       const p2pAct = p2pSvc?.actions.find((a) => a.type.includes("start-p2p-stream"));
@@ -783,11 +924,9 @@ export class CameraLiveController {
           .then(() => true)
           .catch(() => false);
         if (stale()) return;
-        // The camera needs a moment to actually free its single P2P session; requesting a
-        // new one immediately yields a session that stalls after the first frame (measured
-        // 0-14 fps vs 326 fps once the release settles).
-        if (released) {
-          await new Promise((resolve) => setTimeout(resolve, 2500));
+        if (released && needsSameSessionCooldown && this.cameraSameSessionCooldownMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, this.cameraSameSessionCooldownMs));
+          if (stale()) return;
         }
       }
       if (stale()) return;
@@ -796,6 +935,9 @@ export class CameraLiveController {
           .callAction({ did: dev.id, siid: p2pSvc.iid, aiid: p2pAct.iid, inputs: [] })
           .then(() => true)
           .catch(() => false);
+        if (startedP2PSession) {
+          this.recentP2PSessionActivityMs.set(sessionKey, Date.now());
+        }
       }
       if (stale()) {
         if (this.activeLiveCameraId !== dev.id) releaseIfStarted();
@@ -882,6 +1024,7 @@ export class CameraLiveController {
                 }
                 return;
               }
+              this.recentP2PSessionActivityMs.set(bridgeDid, Date.now());
               const [h264Name, mjpegName] = (bridge ?? "").split("|");
               if (mjpegName) {
                 this.liveCameraStreamURL = mjpegName;
@@ -927,237 +1070,7 @@ export class CameraLiveController {
   }
 
   public renderCameraLiveModal(): string {
-    const dev = this.host.devices.find((d) => d.id === this.activeLiveCameraId);
-    if (!dev || dev.kind.kind !== "camera") return "";
-    const k = dev.kind;
-    const id = this.host.escapeHtml(dev.id);
-    const customURL = this.cameraStreamURLs[dev.id] ?? "";
-    const savedManualIp = this.cameraLocalIPs[dev.id] ?? "";
-    const isNight = k.nightShot?.toLowerCase() === "on";
-    const motionOn = Boolean(k.isMotionDetectionOn);
-    const rotation = this.cameraRotation(dev.id);
-    const playableCameras = this.host.devices.filter(
-      (item) => item.kind.kind === "camera" && (item.id === dev.id || !CameraHubCatalog.isHub(item.model)),
-    );
-
-    let viewportHtml = "";
-    // One value drives both the viewport and the HUD audio affordance, so the "video only"
-    // label can never disagree with what is actually on screen.
-    let mediaKind: "sleeping" | "frames" | "image" | "loading" | "video" | "demo" | "error";
-    if (!k.isOn) {
-      mediaKind = "sleeping";
-    } else if (this.liveCameraMode) {
-      mediaKind = "frames";
-    } else if (this.liveCameraLoading) {
-      mediaKind = "loading";
-    } else if (this.liveCameraStreamURL && this.isOwnedGo2rtcApiUrl(this.liveCameraStreamURL)) {
-      mediaKind = "loading";
-    } else if (this.liveCameraStreamURL && /^https?:/i.test(this.liveCameraStreamURL)) {
-      mediaKind = /\.(jpg|jpeg|png)|snapshot|camera_proxy|frame\.jpeg|mjpeg/i.test(this.liveCameraStreamURL)
-        ? "image"
-        : "video";
-    } else if (this.host.settings.connectionMode === "demo") {
-      mediaKind = "demo";
-    } else {
-      mediaKind = "error";
-    }
-    if (mediaKind === "sleeping") {
-      const canWake = k.powerWritable !== false;
-      viewportHtml = `
-        <div class="cc-camera-stage is-sleeping">
-          <strong>${t("摄像机处于物理休眠状态")}</strong>
-          ${
-            canWake
-              ? `<p>${t("镜头已遮蔽，点击下方唤醒后即可查看实时画面")}</p>
-          <button class="cc-btn-primary" data-toggle-device="${id}">${t("唤醒镜头并观看")}</button>`
-              : ""
-          }
-        </div>
-      `;
-    } else if (mediaKind === "frames") {
-      // The media element is created once and re-attached here, so polling renders never
-      // restart the stream.
-      viewportHtml = `<div class="cc-camera-stage" id="cc-camera-stage"></div>`;
-    } else if (mediaKind === "image") {
-      const safeURL = this.host.escapeHtml(this.liveCameraStreamURL ?? "");
-      const source = this.liveCameraRawMediaEl ? "" : ` src="${safeURL}"`;
-      viewportHtml = `<div class="cc-camera-stage"><img id="cc-camera-live-img"${source} alt="${this.host.escapeHtml(dev.name)}" style="max-width:100%;border-radius:10px;" /></div>`;
-    } else if (mediaKind === "loading") {
-      viewportHtml = `
-        <div class="cc-camera-stage" style="padding:28px 16px;text-align:center;">
-          <strong>${t("正在握手并连接摄像机实时画面…")}</strong>
-        </div>
-      `;
-    } else if (mediaKind === "video") {
-      const safeURL = this.host.escapeHtml(this.liveCameraStreamURL ?? "");
-      const source = this.liveCameraRawMediaEl ? "" : ` src="${safeURL}"`;
-      viewportHtml = `<div class="cc-camera-stage"><video id="cc-camera-video"${source} controls autoplay${this.liveCameraMuted ? " muted" : ""} playsinline preload="auto" style="width:100%;border-radius:10px;background:#090d16;"></video></div>`;
-    } else if (mediaKind === "demo") {
-      viewportHtml = `
-        <div class="cc-camera-stage is-demo" style="padding:18px;border-radius:12px;background:${isNight ? "linear-gradient(135deg,#072219,#03110c)" : "linear-gradient(135deg,#10233d,#091224)"};color:#fff;text-align:center;">
-          <div style="display:flex;justify-content:space-between;width:100%;gap:12px;font-size:11px;opacity:0.85;margin-bottom:16px;">
-            <span>● ${isNight ? "LIVE · IR NIGHT 2K" : "LIVE · 2K HDR · 25fps"}</span>
-            <span>${this.host.escapeHtml(dev.roomName)}</span>
-          </div>
-          <div style="padding:20px 8px;">
-            <div style="width:36px;height:36px;margin:0 auto 10px;color:${isNight ? "#4ade80" : "#38bdf8"};">${SF_ICONS.videoFill}</div>
-            <strong style="display:block;font-size:14px;margin-bottom:4px;">${this.host.escapeHtml(dev.name)} · ${t("实时看护小窗预览")}</strong>
-            <small style="opacity:0.76;">${motionOn ? t("AI 移动与看护侦测中 · 画面正常") : t("实时画面流已就绪 · 窗口已置顶")}</small>
-          </div>
-        </div>
-      `;
-    } else {
-      const showManualIpFallback =
-        this.host.settings.connectionMode === "xiaomiCloud" &&
-        !customURL &&
-        (this.liveCameraNeedsManualIp || Boolean(savedManualIp) || Boolean(this.liveCameraLocalIpError));
-      const ipDraft = this.liveCameraDraftIp ?? savedManualIp;
-      viewportHtml = `
-        <div class="cc-camera-stage is-error" style="padding:16px;text-align:center;">
-          <p style="margin-bottom:10px;">${this.host.escapeHtml(this.liveCameraError ?? t("可配置本地 go2rtc / HLS 流地址观看实时画面"))}</p>
-          <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
-            <button class="cc-btn-secondary" data-toggle-camera-url="1">${t("填写 go2rtc / HLS 流地址")}</button>
-            <button class="cc-btn-secondary" id="btn-copy-camera-diag">${t("复制诊断")}</button>
-          </div>
-          ${
-            showManualIpFallback
-              ? `<div class="cc-camera-ip-box">
-                  <label for="camera-local-ip-input">${cameraTr("手动填写局域网 IP（云端未返回时备用）", "Manual LAN IP fallback")}</label>
-                  <div class="cc-camera-ip-row">
-                    <input id="camera-local-ip-input" class="cc-input" type="text" value="${this.host.escapeHtml(ipDraft)}" placeholder="192.168.1.50" />
-                    <button type="button" class="cc-btn-primary" id="btn-save-camera-ip">${cameraTr("保存 IP", "Save IP")}</button>
-                    ${
-                      savedManualIp
-                        ? `<button type="button" class="cc-btn-secondary" id="btn-clear-camera-ip">${cameraTr("清除 IP", "Clear IP")}</button>`
-                        : ""
-                    }
-                  </div>
-                  ${
-                    this.liveCameraLocalIpError
-                      ? `<small class="cc-camera-ip-error" role="alert">${this.host.escapeHtml(this.liveCameraLocalIpError)}</small>`
-                      : ""
-                  }
-                </div>`
-              : ""
-          }
-        </div>
-      `;
-    }
-
-    const muteLabel = t(this.liveCameraMuted ? "开启声音" : "关闭声音");
-    const audioControl =
-      mediaKind === "video"
-        ? `<button type="button" class="cc-circle-btn is-small" id="cc-camera-mute" title="${muteLabel}" aria-label="${muteLabel}" aria-pressed="${this.liveCameraMuted}">${this.liveCameraMuted ? SF_ICONS.speakerSlash : SF_ICONS.speakerWave}</button>`
-        : mediaKind === "frames" || mediaKind === "image" || mediaKind === "demo"
-          ? `<span class="cc-pill-label" id="cc-camera-audio-badge" title="${t("当前视频流（米家 P2P / MJPEG / 抓拍）只传画面，不含音频")}">${t("仅画面")}</span>`
-          : "";
-
-    const rotateLabel = this.rotateButtonTitle(rotation);
-    const activeLensChannel = this.selectedCameraChannel(dev);
-    const hasDualLenses =
-      this.host.settings.connectionMode === "xiaomiCloud" && !customURL && (k.lenses?.length ?? 0) > 1;
-
-    return `
-      <div class="cc-sheet-backdrop" ${this.liveCameraHidden ? 'style="display:none"' : ""}>
-        <div class="cc-sheet cc-camera-live-sheet" role="dialog" aria-modal="true" aria-label="${this.host.escapeHtml(dev.name)} ${t("实时画面")}">
-          <div class="cc-sheet-header">
-            <strong>${this.host.escapeHtml(dev.name)} · ${t("实时画面小窗")}</strong>
-            <div style="display:flex;gap:6px;align-items:center;">
-              ${audioControl}
-              <button type="button" class="cc-circle-btn is-small cc-rotate-btn ${rotation !== 0 ? "is-active" : ""}" id="btn-rotate-camera-live" data-rotation="${rotation}" title="${this.host.escapeHtml(rotateLabel)}" aria-label="${this.host.escapeHtml(rotateLabel)}" aria-pressed="${rotation !== 0}">90°</button>
-              <button class="cc-circle-btn is-small" id="btn-reload-camera-live" title="${t("重新连接")}" aria-label="${t("重新连接")}">${SF_ICONS.arrowClockwise}</button>
-              <button class="cc-circle-btn is-small" id="btn-toggle-camera-url" title="${t("配置流地址")}" aria-label="${t("配置流地址")}">${SF_ICONS.link}</button>
-              <button class="cc-circle-btn is-small" id="btn-close-camera-live" title="${t("关闭画面")}" aria-label="${t("关闭画面")}">
-                ${SF_ICONS.xmark}
-              </button>
-            </div>
-          </div>
-          ${
-            playableCameras.length >= 2
-              ? `<div class="cc-camera-switcher" role="tablist" aria-label="${cameraTr("切换摄像机", "Switch camera")}">
-                  ${playableCameras
-                    .map((cam) => {
-                      const selected = cam.id === dev.id;
-                      const camId = this.host.escapeHtml(cam.id);
-                      const dotClass =
-                        cam.isOnline && cam.kind.kind === "camera" && cam.kind.isOn ? "is-online" : "is-muted";
-                      return `<button type="button" role="tab" class="cc-seg-pill cc-camera-switch-pill ${selected ? "is-active" : ""}" data-cameraswitch="${camId}" aria-selected="${selected}" title="${this.host.escapeHtml(`${cam.roomName} · ${cam.name}`)}">
-                        <span class="cc-camera-switch-dot ${dotClass}"></span>
-                        <span class="cc-camera-switch-name">${this.host.escapeHtml(cam.name)}</span>
-                      </button>`;
-                    })
-                    .join("")}
-                </div>`
-              : ""
-          }
-          ${
-            this.liveCameraShowingURLInput
-              ? `<div class="cc-field" style="margin-bottom:10px;">
-                  <input id="camera-stream-url-input" class="cc-input" type="text" value="${this.host.escapeHtml(customURL)}" placeholder="http://127.0.0.1:<port>/api/stream.m3u8?src=camera" />
-                  <div style="display:flex;gap:6px;margin-top:6px;">
-                    <button class="cc-btn-primary" id="btn-save-camera-url">${t("连接流地址")}</button>
-                  </div>
-                </div>`
-              : ""
-          }
-          ${viewportHtml}
-          ${
-            hasDualLenses
-              ? `<div class="cc-segmented-pills cc-camera-lens-pills" style="margin-top:10px;">
-                  <span class="cc-pill-label">${cameraTr("镜头", "Lens")}</span>
-                  ${k.lenses!
-                    .map((lens) => {
-                      const selected = activeLensChannel === lens.channel;
-                      return `<button type="button" class="cc-seg-pill ${selected ? "is-active" : ""}" data-cameralens="${id}" data-cameralens-channel="${lens.channel}" aria-pressed="${selected}">
-                        ${this.host.escapeHtml(cameraLensLabel(lens))}
-                      </button>`;
-                    })
-                    .join("")}
-                </div>`
-              : ""
-          }
-          ${
-            this.host.settings.connectionMode === "xiaomiCloud" && !customURL && this.liveCameraQualityApplies && !this.liveCameraLoading
-              ? `<div class="cc-segmented-pills" style="margin-top:10px;">
-                  <span class="cc-pill-label">${t("画质")}</span>
-                  ${CAMERA_STREAM_QUALITIES.map((quality) => {
-                    const selected = (this.cameraStreamQualities[dev.id] ?? DEFAULT_CAMERA_STREAM_QUALITY) === quality;
-                    return `<button class="cc-seg-pill ${selected ? "is-active" : ""}" data-cameraquality="${id}" data-cameraquality-value="${quality}" aria-pressed="${selected}">
-                      ${t(CAMERA_QUALITY_TITLES[quality])}
-                    </button>`;
-                  }).join("")}
-                  ${
-                    mediaKind !== "error" && savedManualIp
-                      ? `<button type="button" class="cc-seg-pill" id="btn-clear-camera-ip" title="${cameraTr("清除手动局域网 IP", "Clear manual LAN IP")}">
-                          IP ${this.host.escapeHtml(savedManualIp)} ×
-                        </button>`
-                      : ""
-                  }
-                </div>`
-              : ""
-          }
-          <div class="cc-segmented-pills" style="margin-top:12px;">
-            ${k.powerWritable === false ? "" : `<button class="cc-seg-pill ${!k.isOn ? "is-active" : ""}" data-toggle-device="${id}" aria-pressed="${!k.isOn}">
-              ${k.isOn ? t("镜头休眠") : t("唤醒镜头")}
-            </button>`}
-            ${
-              k.motionDetectionEntityId
-                ? `<button class="cc-seg-pill ${motionOn ? "is-active" : ""}" data-cameramotion="${id}" aria-pressed="${motionOn}">
-                    ${motionOn ? t("移动侦测：开") : t("移动侦测：关")}
-                  </button>`
-                : ""
-            }
-            ${k.availableNightShots
-              .map(
-                (mode) => `<button class="cc-seg-pill ${k.nightShot === mode ? "is-active" : ""}" data-cameranight="${id}:${this.host.escapeHtml(mode)}" aria-pressed="${k.nightShot === mode}">
-                  ${this.host.escapeHtml(localizeNightShot(mode))}
-                </button>`
-              )
-              .join("")}
-          </div>
-        </div>
-      </div>
-    `;
+    return renderCameraLiveModalView(this);
   }
 
   public async commitCameraStreamUrl(): Promise<void> {
@@ -1203,9 +1116,15 @@ export class CameraLiveController {
     if (this.liveCameraMode === "mjpeg") this.attachLiveMedia();
   }
 
-  // MARK: Layout editing
-
   bindEvents(): void {
+    this.syncModalEscapeListener();
+    this.host.root.querySelector<HTMLElement>(".cc-camera-live-sheet")?.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !this.liveCameraHidden && !this.hasHigherPriorityOverlayOpen()) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.hideCameraLiveView();
+      }
+    });
     this.host.root.querySelector("#btn-close-camera-live")?.addEventListener("click", () => {
       this.hideCameraLiveView();
     });
@@ -1324,7 +1243,7 @@ export class CameraLiveController {
     });
   }
 
-  private rotateButtonTitle(rotation: CameraRotationDeg): string {
+  public rotateButtonTitle(rotation: CameraRotationDeg): string {
     return rotation === 0
       ? cameraTr("旋转画面 90°", "Rotate video 90°")
       : cameraTr(`旋转画面 90°（当前 ${rotation}°）`, `Rotate video 90° (currently ${rotation}°)`);
@@ -1346,34 +1265,19 @@ export class CameraLiveController {
     const button = this.host.root.querySelector<HTMLElement>("#cc-camera-mute");
     if (!button) return;
     const label = t(this.liveCameraMuted ? "开启声音" : "关闭声音");
-    button.innerHTML = this.liveCameraMuted ? SF_ICONS.speakerSlash : SF_ICONS.speakerWave;
+    const icon = button.querySelector<HTMLElement>("[data-camera-mute-icon]");
+    const text = button.querySelector<HTMLElement>("[data-camera-mute-text]");
+    if (icon) {
+      icon.innerHTML = this.liveCameraMuted ? SF_ICONS.speakerSlash : SF_ICONS.speakerWave;
+    } else {
+      button.innerHTML = this.liveCameraMuted ? SF_ICONS.speakerSlash : SF_ICONS.speakerWave;
+    }
+    if (text) text.textContent = label;
     button.title = label;
     button.setAttribute("aria-label", label);
     button.setAttribute("aria-pressed", String(this.liveCameraMuted));
+    button.classList.toggle("is-active", !this.liveCameraMuted);
   }
-}
-
-function computeQuarterTurnScale(
-  el: HTMLImageElement | HTMLVideoElement,
-  stage: HTMLElement | null,
-): number {
-  const elW = el.clientWidth;
-  const elH = el.clientHeight;
-  const stageW = stage?.clientWidth ?? 0;
-  const stageH = stage?.clientHeight ?? 0;
-  if (elW > 0 && elH > 0) {
-    const boxW = stageW > 0 ? stageW : elW;
-    const boxH = stageH > 0 ? stageH : elH;
-    return Number(Math.min(boxW / elH, boxH / elW).toFixed(4));
-  }
-  const intrinsicW =
-    el.tagName === "VIDEO" ? (el as HTMLVideoElement).videoWidth : (el as HTMLImageElement).naturalWidth;
-  const intrinsicH =
-    el.tagName === "VIDEO" ? (el as HTMLVideoElement).videoHeight : (el as HTMLImageElement).naturalHeight;
-  if (intrinsicW > 0 && intrinsicH > 0) {
-    return Number(Math.min(intrinsicW / intrinsicH, intrinsicH / intrinsicW).toFixed(4));
-  }
-  return 0.5625;
 }
 
 function loadRawStorageMap(key: string): Record<string, unknown> {

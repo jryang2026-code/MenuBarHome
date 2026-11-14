@@ -93,12 +93,16 @@ expect_flags "普通 windows/src/ui 改动只触发 code + windows（不触发 w
     "$(build_expected code windows)" \
     "windows/src/ui/panel.ts"
 
+expect_flags "windows/scripts 改动触发 code + windows + scripts" \
+    "$(build_expected code windows scripts)" \
+    "windows/scripts/verify-flyout-layout.mjs"
+
 expect_flags "windows/src-tauri 原生改动触发 code + windows + windows_native" \
     "$(build_expected code windows windows_native)" \
     "windows/src-tauri/src/lib.rs"
 
 expect_flags "camera-bin 构建脚本改动触发 windows_native" \
-    "$(build_expected code windows windows_native)" \
+    "$(build_expected code windows windows_native scripts)" \
     "windows/scripts/build-ffmpeg-min.sh" \
     "windows/scripts/prepare-camera-bin.sh" \
     "windows/scripts/patch_pe_subsystem.py"

@@ -1,4 +1,4 @@
-import { t } from "./i18n.js";
+import { catalogEntry, currentLanguage, t } from "./i18n.js";
 import { formatTemperature } from "./temperature.js";
 
 export interface LightSpec {
@@ -140,7 +140,7 @@ export interface CoverSpec {
   motion: "stopped" | "opening" | "closing";
 }
 
-/** Media card for a MIoT `speaker` service; TTS and play-music actions stay macOS-only. */
+/** Media card for a MIoT `speaker` service, with optional TTS / directive action slots. */
 export interface SpeakerSpec {
   readonly kind: "speaker";
   readonly mediaEntityId: string;
@@ -151,6 +151,8 @@ export interface SpeakerSpec {
   readonly sleepModeEntityId: string | null;
   isSleepMode: boolean;
   readonly volumeWritable: boolean;
+  readonly ttsActionId?: string | null;
+  readonly directiveActionId?: string | null;
 }
 
 export type ApplianceActionKind = "start" | "pause" | "stop";
@@ -483,7 +485,13 @@ export function deviceAcceptsControlWrites(device: SmartDevice): boolean {
     case "fridge":
       return kind.modeEntityId !== null || kind.fridgeTargetEntityId !== null || kind.freezerTargetEntityId !== null;
     case "speaker":
-      return kind.volumeWritable || kind.muteSwitchEntityId !== null || kind.sleepModeEntityId !== null;
+      return (
+        kind.volumeWritable ||
+        kind.muteSwitchEntityId !== null ||
+        kind.sleepModeEntityId !== null ||
+        Boolean(kind.ttsActionId) ||
+        Boolean(kind.directiveActionId)
+      );
     case "appliance":
       return (
         kind.powerWritable ||
@@ -554,7 +562,13 @@ export function hasDetailDrawer(device: SmartDevice, facets: readonly FacetContr
     case "vacuum":
       return kind.actionsWritable !== false;
     case "speaker":
-      return kind.volumeWritable || kind.muteSwitchEntityId !== null || kind.sleepModeEntityId !== null;
+      return (
+        kind.volumeWritable ||
+        kind.muteSwitchEntityId !== null ||
+        kind.sleepModeEntityId !== null ||
+        Boolean(kind.ttsActionId) ||
+        Boolean(kind.directiveActionId)
+      );
     case "fridge":
       return true;
     case "appliance":
@@ -692,6 +706,38 @@ export function isDeviceActiveOn(device: SmartDevice): boolean {
 /** GLOSSARY ActiveDevice: an open cover is not switched on, so it stays out of counts and summaries. */
 export function isActiveDevice(device: SmartDevice): boolean {
   return device.kind.kind !== "cover" && isDeviceActiveOn(device);
+}
+
+/**
+ * Total home power in Watts, matching macOS `HomeStore.totalPowerWatts` (`HomeStore+Metrics.swift:17`):
+ * only online, switched-on plugs that count toward total power (`countsInTotalPower !== false`)
+ * with a positive `powerWatts` reading are summed.
+ */
+export function computeTotalPowerWatts(devices: readonly SmartDevice[]): number {
+  let watts = 0;
+  for (const d of devices) {
+    if (
+      d.isOnline &&
+      d.kind.kind === "plug" &&
+      d.kind.isOn &&
+      d.kind.countsInTotalPower !== false &&
+      d.kind.powerWatts !== null &&
+      Number.isFinite(d.kind.powerWatts) &&
+      d.kind.powerWatts > 0
+    ) {
+      watts += d.kind.powerWatts;
+    }
+  }
+  return watts;
+}
+
+/**
+ * Whether a card may present its lit active highlight, matching macOS `HomeStore.presentsAsActive`
+ * (`DeviceReadout.swift:45-48`): a stale cloud snapshot or an offline device never claims to be on.
+ */
+export function devicePresentsAsActive(device: SmartDevice, valuesAreStale = false): boolean {
+  if (valuesAreStale || !device.isOnline) return false;
+  return isDeviceActiveOn(device);
 }
 
 /** Dedicated sensors sort ahead of air purifiers and AC return-air thermistors (#103). */
@@ -1073,9 +1119,9 @@ export function deviceStatusSummary(device: SmartDevice): string {
       }
       if (k.currentMode) parts.push(localizeApplianceMode(k.currentMode));
       if (k.fanLevel?.current) parts.push(localizeApplianceFanLevel(k.fanLevel.current));
-      if (k.statusText) parts.push(k.statusText);
+      if (k.statusText) parts.push(localizeApplianceStatus(k.statusText));
       if (k.remainingMinutes !== null) parts.push(t("剩余 {minutes} 分", { minutes: k.remainingMinutes }));
-      if (k.faultText) parts.push(t("故障 {fault}", { fault: k.faultText }));
+      if (k.faultText) parts.push(applianceFaultSubtitle(k.faultText));
       if (parts.length > 0) return parts.join(" · ");
       return k.isOn ? t("运行中") : t("已关闭");
     }
@@ -1092,93 +1138,212 @@ export function deviceStatusSummary(device: SmartDevice): string {
   }
 }
 
-/** An appliance programme word; a word this table does not know is shown as the spec wrote it. */
+export interface FaultNotice {
+  readonly message: string;
+  readonly copyText: string;
+}
+
+function normalizeMiotText(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/-/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(" ");
+}
+
+const MIOT_PROGRAMMES: Readonly<Record<string, string>> = {
+  mix: "混合",
+  "quick wash": "快速洗",
+  "delicate wash": "轻柔洗",
+  "heavy wash": "大件洗",
+  "rinse spin": "漂加脱",
+  spin: "单脱水",
+  intensive: "强力",
+  "baby care": "婴童",
+  "drum clean": "筒清洁",
+  wool: "羊毛",
+  "down coat": "羽绒",
+  cotton: "棉麻",
+  synthetic: "化纤",
+  underwear: "内衣",
+  jacket: "冲锋衣",
+  smart: "智能",
+  sportswear: "运动服",
+  "new clothes wash": "新衣洗",
+  silk: "真丝",
+  jeans: "牛仔服",
+  "pleased wash": "随心洗",
+  turban: "头巾",
+  "user define": "自定义",
+  bedding: "被子",
+  shirt: "衬衣",
+  rinse: "漂洗",
+  day: "白天",
+  night: "夜晚",
+  "night light": "夜灯",
+  auto: "自动",
+  sleep: "睡眠",
+  favorite: "最爱",
+  favourite: "最爱",
+  silent: "静音",
+  strong: "强力",
+};
+
+export const PROGRAMME_KEYS: readonly string[] = Object.keys(MIOT_PROGRAMMES).sort();
+
+/**
+ * MIoT value-list display text (`MiotValueText.display`): English passes through;
+ * Simplified and Traditional Chinese translate known programmes and `LevelN`.
+ */
+export function displayMiotValue(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed || currentLanguage() === "en") return trimmed;
+  const key = normalizeMiotText(trimmed);
+  const hansKey = MIOT_PROGRAMMES[key];
+  if (hansKey) return t(hansKey);
+  const levelMatch = /^level\s*(\d+)$/.exec(key);
+  if (levelMatch?.[1]) {
+    return t("{level} 档", { level: Number(levelMatch[1]) });
+  }
+  return trimmed;
+}
+
+const MIOT_FAULTS: Readonly<Record<string, { readonly hansKey: string; readonly code?: string }>> = {
+  "dehydration fault": { hansKey: "衣物分布不平衡", code: "E3" },
+  "door lock malfunction": { hansKey: "门未关好", code: "E2" },
+  "motor driver board communication malfunction": { hansKey: "电脑板通讯异常", code: "FC2" },
+  "overflow malfunction": { hansKey: "水位过高", code: "E6" },
+  "water level sensor malfunction": { hansKey: "水位异常", code: "F1" },
+  "water temperature sensor malfunction": { hansKey: "水温异常", code: "E8" },
+  "water weating tube malfunction": { hansKey: "洗涤加热管异常", code: "E7" },
+  aquastopoccured: { hansKey: "防漏水系统已激活" },
+  containerfull: { hansKey: "冷凝水盒已满" },
+  doornotlock: { hansKey: "门锁无法使用" },
+  errors: { hansKey: "家电故障" },
+  "excessive vibration": { hansKey: "整机震动过大" },
+  "fan fault": { hansKey: "风机故障" },
+  faults: { hansKey: "出现异常" },
+  "light panel fault": { hansKey: "灯板开合故障" },
+  lintfilter: { hansKey: "绒毛收集器已满" },
+  "low power": { hansKey: "低电量" },
+  "abnormal voltage": { hansKey: "电源电压异常" },
+  "power error": { hansKey: "电源故障" },
+  "temp humidity sensor fault": { hansKey: "温湿度传感器故障" },
+  "the pump is short circuited or disconnected": { hansKey: "水泵短路或断路" },
+  "uneven load": { hansKey: "衣物分布不均" },
+  "motor fault": { hansKey: "电机故障" },
+  "water draining malfunction": { hansKey: "排水故障" },
+  "water intake malfunction": { hansKey: "进水故障" },
+  "encounter obstacles": { hansKey: "遇阻" },
+  overweight: { hansKey: "超重" },
+};
+
+export const FAULT_KEYS: readonly string[] = Object.keys(MIOT_FAULTS).sort();
+
+function bareFaultCode(text: string): string | null {
+  if (!text) return null;
+  if (/^\d+$/.test(text) || /^[A-Za-z]{1,4}\d{1,4}$/.test(text)) return text;
+  return null;
+}
+
+/**
+ * Structured fault notice for the appliance fault banner + copy button (`MiotValueText.faultNotice`).
+ */
+export function applianceFaultNotice(raw: string): FaultNotice {
+  const text = raw.trim();
+  const code = bareFaultCode(text);
+  if (code) {
+    return {
+      message: t("设备上报故障代码 {code}，请查看说明书或米家 App", { code }),
+      copyText: code,
+    };
+  }
+  const phrase = MIOT_FAULTS[normalizeMiotText(text)];
+  if (phrase) {
+    if (currentLanguage() === "en") {
+      return phrase.code
+        ? { message: `Fault ${phrase.code} · ${text}`, copyText: phrase.code }
+        : { message: `Fault · ${text}`, copyText: text };
+    }
+    const detail = t(phrase.hansKey);
+    return phrase.code
+      ? { message: t("故障 {code} · {detail}", { code: phrase.code, detail }), copyText: phrase.code }
+      : { message: t("故障 · {detail}", { detail }), copyText: text };
+  }
+  return {
+    message: t("设备上报故障「{text}」，请查看说明书或米家 App", { text }),
+    copyText: text,
+  };
+}
+
+function applianceFaultSubtitle(raw: string): string {
+  const text = raw.trim();
+  if (MIOT_FAULTS[normalizeMiotText(text)]) {
+    return applianceFaultNotice(text).message;
+  }
+  return t("故障 {fault}", { fault: text });
+}
+
+/** Localizes an appliance `statusText` across cached Chinese snapshots and raw MIoT/HA status words. */
+export function localizeApplianceStatus(status: string): string {
+  const trimmed = status.trim();
+  if (!trimmed) return "";
+  if (catalogEntry(trimmed)) return t(trimmed);
+  switch (normalizeMiotText(trimmed)) {
+    case "washing": return t("洗涤中");
+    case "rinsing": return t("漂洗中");
+    case "spinning": return t("脱水中");
+    case "draining": return t("排水中");
+    case "drying": return t("烘干中");
+    case "prewash": case "prewashing": return t("预洗中");
+    case "soaking": return t("浸泡中");
+    case "weighing": return t("称重中");
+    case "sterilizing": case "sterilization": return t("除菌中");
+    case "paused": case "pause": return t("已暂停");
+    case "completed": case "complete": case "finished": case "done": return t("已完成");
+    case "scheduled": case "reservation": case "delay": case "delayed": return t("预约中");
+    case "keep warm": case "warming": case "insulation": return t("保温中");
+    case "preheat": case "preheating": return t("预热中");
+    case "cleaning": return t("清洗中");
+    case "bathing": return t("洗浴中");
+    case "running": case "busy": return t("运行中");
+    case "working": return t("工作中");
+    case "standby": case "idle": case "ready": return t("待机");
+    default: return localizeApplianceMode(trimmed);
+  }
+}
+
+/** An appliance programme word; a word this table does not know delegates to `displayMiotValue`. */
 export function localizeApplianceMode(mode: string): string {
-  switch (mode.trim().toLowerCase()) {
-    case "standard":
-    case "normal":
-    case "标准":
-      return t("标准");
-    case "energy1":
-    case "eco":
-    case "节能":
-      return t("节能①");
-    case "energy2":
-      return t("节能②");
-    case "quick":
-    case "fast":
-    case "快速":
-      return t("快速");
-    case "electricheating":
-    case "electric heating":
-    case "电加热":
-      return t("电加热");
-    case "auto":
-    case "automatic":
-    case "自动":
-      return t("自动");
-    case "sleep":
-    case "night":
-    case "睡眠":
-      return t("睡眠");
-    case "strong":
-    case "high":
-    case "强力":
-    case "强":
-      return t("强力");
-    case "baby":
-    case "婴儿":
-      return t("婴儿");
-    case "manual":
-    case "手动":
-      return t("手动");
-    case "off":
-    case "关闭":
-      return t("关闭");
-    case "idle":
-    case "待机":
-      return t("待机");
-    case "working":
-    case "工作中":
-      return t("工作中");
-    case "shower":
-    case "bath":
-    case "洗浴":
-    case "沐浴":
-      return t("洗浴");
-    case "dry":
-    case "dryer":
-    case "干燥":
-      return t("干燥");
-    case "defog":
-    case "除雾":
-      return t("除雾");
-    case "quick defog":
-    case "快速除雾":
-      return t("快速除雾");
-    case "heat":
-      return t("弱暖");
-    case "quick heat":
-      return t("强暖");
-    case "ventilate":
-    case "ventilation":
-    case "换气":
-      return t("换气");
-    case "fan":
-    case "blow":
-    case "吹风":
-      return t("吹风");
-    case "cool":
-    case "凉风":
-      return t("凉风");
-    case "deodorize":
-    case "除味":
-      return t("除味");
-    case "other":
-    case "其他":
-      return t("其他");
-    default:
-      return mode;
+  const trimmed = mode.trim();
+  switch (trimmed.toLowerCase()) {
+    case "standard": case "normal": case "标准": return t("标准");
+    case "energy1": case "eco": case "节能": return t("节能①");
+    case "energy2": return t("节能②");
+    case "quick": case "fast": case "快速": return t("快速");
+    case "electricheating": case "electric heating": case "电加热": return t("电加热");
+    case "auto": case "automatic": case "自动": return t("自动");
+    case "sleep": case "睡眠": return t("睡眠");
+    case "strong": case "high": case "强力": case "强": return t("强力");
+    case "baby": case "婴儿": return t("婴儿");
+    case "manual": case "手动": return t("手动");
+    case "off": case "关闭": return t("关闭");
+    case "idle": case "待机": return t("待机");
+    case "working": case "工作中": return t("工作中");
+    case "shower": case "bath": case "洗浴": case "沐浴": return t("洗浴");
+    case "dry": case "dryer": case "干燥": return t("干燥");
+    case "defog": case "除雾": return t("除雾");
+    case "quick defog": case "快速除雾": return t("快速除雾");
+    case "heat": return t("弱暖");
+    case "quick heat": return t("强暖");
+    case "ventilate": case "ventilation": case "换气": return t("换气");
+    case "fan": case "blow": case "吹风": return t("吹风");
+    case "cool": case "凉风": return t("凉风");
+    case "deodorize": case "除味": return t("除味");
+    case "other": case "其他": return t("其他");
+    default: return catalogEntry(trimmed) ? t(trimmed) : displayMiotValue(mode);
   }
 }
 
@@ -1186,20 +1351,10 @@ export function localizeApplianceMode(mode: string): string {
 export function localizeApplianceFanLevel(level: string): string {
   const trimmed = level.trim();
   switch (trimmed.toLowerCase()) {
-    case "low":
-    case "低速":
-      return t("低速");
-    case "mid":
-    case "middle":
-    case "中速":
-      return t("中速");
-    case "high":
-    case "高速":
-      return t("高速");
-    case "stir fry":
-    case "stir-fry":
-    case "爆炒":
-      return t("爆炒");
+    case "low": case "低速": return t("低速");
+    case "mid": case "middle": case "中速": return t("中速");
+    case "high": case "高速": return t("高速");
+    case "stir fry": case "stir-fry": case "爆炒": return t("爆炒");
     default: {
       const match = /^level\s*([0-9]+)$/i.exec(trimmed);
       return match?.[1] ? t("{level}档", { level: match[1] }) : trimmed;
@@ -1214,53 +1369,20 @@ export function localizeApplianceFanLevel(level: string): string {
 export function applianceModeStartsHeating(mode: string): boolean {
   const normalized = mode.trim().toLowerCase();
   const idleWords = [
-    "idle",
-    "off",
-    "standby",
-    "close",
-    "closed",
-    "none",
-    "fan",
-    "ventilate",
-    "ventilation",
-    "blow",
-    "cool",
-    "吹风",
-    "换气",
-    "凉风",
-    "待机",
-    "关闭",
-    "无",
+    "idle", "off", "standby", "close", "closed", "none", "fan", "ventilate", "ventilation",
+    "blow", "cool", "吹风", "换气", "凉风", "待机", "关闭", "无",
   ];
   return !idleWords.some((word) => normalized.includes(word));
 }
 
 export function localizeSwingMode(mode: string): string {
   switch (mode.trim().toLowerCase()) {
-    case "off":
-    case "none":
-    case "fixed":
-    case "关闭":
-      return t("关闭");
-    case "on":
-    case "开启":
-      return t("开启");
-    case "vertical":
-    case "up_down":
-    case "上下":
-      return t("上下扫风");
-    case "horizontal":
-    case "left_right":
-    case "左右":
-      return t("左右扫风");
-    case "both":
-    case "all":
-    case "立体":
-      return t("立体扫风");
-    case "auto":
-    case "自动":
-      return t("自动");
-    default:
-      return mode;
+    case "off": case "none": case "fixed": case "关闭": return t("关闭");
+    case "on": case "开启": return t("开启");
+    case "vertical": case "up_down": case "上下": return t("上下扫风");
+    case "horizontal": case "left_right": case "左右": return t("左右扫风");
+    case "both": case "all": case "立体": return t("立体扫风");
+    case "auto": case "自动": return t("自动");
+    default: return mode;
   }
 }

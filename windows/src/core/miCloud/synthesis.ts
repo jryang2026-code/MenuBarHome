@@ -1,4 +1,4 @@
-import { t } from "../i18n.js";
+import { currentLanguage, t } from "../i18n.js";
 import {
   deviceEnvironmentReading,
   environmentReadingPriority,
@@ -44,6 +44,7 @@ import {
 } from "./facets.js";
 import { facetAlertText, facetValue, genericSymbolName, genericTypeTitle } from "../miotFacetText.js";
 import { percentFromRaw } from "./percentScale.js";
+import { resolveSpeakerActionIds } from "./speakerActions.js";
 
 export function exposesWrite(access: readonly string[] | undefined): boolean {
   return Boolean(access?.includes("write"));
@@ -300,19 +301,19 @@ function faultDescription(code: number | null, description: string | null): stri
 /** A track card takes its service description, localized like macOS `trackName`. */
 function curtainTrackName(description: string | undefined, fallback: string): string {
   const value = (description ?? "").trim();
+  if (value === "") return fallback;
+  if (currentLanguage() === "en") return value;
   switch (value.toLowerCase()) {
     case "drape curtain":
-      return "布帘";
+      return t("布帘");
     case "lace curtain":
-      return "纱帘";
+      return t("纱帘");
     case "left curtain":
-      return "左帘";
+      return t("左帘");
     case "right curtain":
-      return "右帘";
+      return t("右帘");
     case "curtain":
-      return "窗帘";
-    case "":
-      return fallback;
+      return t("窗帘");
     default:
       return value;
   }
@@ -608,8 +609,7 @@ export function energyScale(prop: MiotProperty): number | null {
   return null;
 }
 
-/** Descriptions that claim a door security state. Offline devices must not keep one of these. */
-export const AFFIRMATIVE_LOCK_STATUS = new Set([
+const AFFIRMATIVE_LOCK_KEYS = [
   "已上锁",
   "已开锁",
   "门虚掩",
@@ -618,7 +618,15 @@ export const AFFIRMATIVE_LOCK_STATUS = new Set([
   "正在上锁",
   "正在开锁",
   "守护中",
-]);
+] as const;
+
+/** Descriptions that claim a door security state. Offline devices must not keep one of these. */
+export const AFFIRMATIVE_LOCK_STATUS = new Set<string>(AFFIRMATIVE_LOCK_KEYS);
+
+function isAffirmativeLockStatus(statusText: string): boolean {
+  if (AFFIRMATIVE_LOCK_STATUS.has(statusText)) return true;
+  return AFFIRMATIVE_LOCK_KEYS.some((key) => t(key) === statusText);
+}
 
 /**
  * Map a MIoT `door-state` value-list description to a lock status.
@@ -642,7 +650,7 @@ export function interpretLockStatus(description: string): string | null {
     lower.includes("not locked") ||
     lower.includes("未锁")
   ) {
-    return "已开锁";
+    return t("已开锁");
   }
   if (
     (lower.includes("ajar") || lower.includes("虚掩")) &&
@@ -650,16 +658,16 @@ export function interpretLockStatus(description: string): string | null {
     !lower.includes("clear") &&
     !lower.includes("release")
   ) {
-    return "门虚掩";
+    return t("门虚掩");
   }
   if (lower.includes("not closed") || lower.includes("not close") || lower.includes("未关") || lower.includes("没关")) {
-    return "门未关";
+    return t("门未关");
   }
   if (lower.includes("jam") || lower.includes("卡住")) {
-    return "门锁卡住";
+    return t("门锁卡住");
   }
   if (lower.includes("locked") || lower.includes("已上锁") || lower.includes("已锁")) {
-    return "已上锁";
+    return t("已上锁");
   }
   return null;
 }
@@ -834,7 +842,7 @@ export const MiotSynthesizer = {
       const room =
         roomByDid.get(record.did) ??
         (record.splitParentDid ? roomByDid.get(record.splitParentDid) : undefined);
-      const roomName = room?.name.trim() || "全屋";
+      const roomName = room?.name.trim() || t("全屋");
       const roomId = room ? `room_${room.id}` : "other";
 
       const plans = this.buildPlans(record, spec);
@@ -871,9 +879,9 @@ export const MiotSynthesizer = {
         }
 
         const kind =
-          record.isOnline || built.kind !== "sensor" || !built.statusText || !AFFIRMATIVE_LOCK_STATUS.has(built.statusText)
+          record.isOnline || built.kind !== "sensor" || !built.statusText || !isAffirmativeLockStatus(built.statusText)
             ? attachCameraGateway(built, record, devices, rooms)
-            : { ...built, statusText: "锁状态未知" };
+            : { ...built, statusText: t("锁状态未知") };
         const smartDevice: SmartDevice = {
           id: plan.id,
           name: plan.name,
@@ -908,7 +916,7 @@ export const MiotSynthesizer = {
 
     const roomOrderByName = new Map<string, number>();
     rooms.forEach((r, idx) => {
-      const name = r.name.trim() || "全屋";
+      const name = r.name.trim() || t("全屋");
       if (!roomOrderByName.has(name)) roomOrderByName.set(name, idx);
     });
     const firstSeenRoom = new Map<string, number>();
@@ -1436,6 +1444,7 @@ export const MiotSynthesizer = {
           ? "paused"
           : "idle";
       const speakerAddress = makeMiotAddress(did, primaryService.iid);
+      const speakerActions = resolveSpeakerActionIds(did, spec);
       return {
         kind: "speaker",
         mediaEntityId: speakerAddress,
@@ -1447,6 +1456,8 @@ export const MiotSynthesizer = {
           intelligent && exposesWrite(sleep?.prop.access) ? makeMiotAddress(did, intelligent.iid) : null,
         isSleepMode: miotBool(sleep?.val) ?? false,
         volumeWritable: exposesWrite(volume?.prop.access),
+        ttsActionId: speakerActions.ttsActionId,
+        directiveActionId: speakerActions.directiveActionId,
       };
     }
 
@@ -1763,21 +1774,21 @@ export const MiotSynthesizer = {
       const parts: string[] = [];
       if (statusDesc) {
         const lower = statusDesc.toLowerCase();
-        if (lower.includes("idle") || lower.includes("standby") || lower.includes("off")) parts.push("待机");
-        else if (lower.includes("warm") || lower.includes("insulation")) parts.push("保温中");
-        else if (lower.includes("cook") || lower.includes("work") || lower.includes("busy") || lower.includes("boil") || lower.includes("heat")) parts.push("运行中");
-        else if (lower.includes("preheat")) parts.push("预热中");
-        else if (lower.includes("delay") || lower.includes("appoint") || lower.includes("reservation")) parts.push("预约中");
-        else if (lower.includes("paus")) parts.push("已暂停");
+        if (lower.includes("idle") || lower.includes("standby") || lower.includes("off")) parts.push(t("待机"));
+        else if (lower.includes("warm") || lower.includes("insulation")) parts.push(t("保温中"));
+        else if (lower.includes("cook") || lower.includes("work") || lower.includes("busy") || lower.includes("boil") || lower.includes("heat")) parts.push(t("运行中"));
+        else if (lower.includes("preheat")) parts.push(t("预热中"));
+        else if (lower.includes("delay") || lower.includes("appoint") || lower.includes("reservation")) parts.push(t("预约中"));
+        else if (lower.includes("paus")) parts.push(t("已暂停"));
         else parts.push(statusDesc);
       }
       if (typeof temp?.val === "number" && Number.isFinite(temp.val)) {
         parts.push(`${Math.round(temp.val)}°C`);
       }
       if (typeof leftTime?.val === "number" && leftTime.val > 0) {
-        parts.push(`剩余 ${Math.round(leftTime.val)} 分`);
+        parts.push(t("剩余 {minutes} 分", { minutes: Math.round(leftTime.val) }));
       }
-      const fallback = ["kettle", "ble-kettle", "water-dispenser"].includes(sName) ? "保温监控" : "待机";
+      const fallback = ["kettle", "ble-kettle", "water-dispenser"].includes(sName) ? t("保温监控") : t("待机");
       return {
         kind: "sensor",
         temperature: null,
@@ -1824,7 +1835,7 @@ export const MiotSynthesizer = {
             doorValue !== null
               ? (door?.prop.valueList?.find((item) => item.value === doorValue)?.description ?? null)
               : null;
-          statusText = (description && interpretLockStatus(description)) || "锁状态未知";
+          statusText = (description && interpretLockStatus(description)) || t("锁状态未知");
         } else if (sName === "motion-sensor" || sName === "occupancy-sensor") {
           const motion = readProp(primaryService, "motion-state") ?? readProp(primaryService, "occupancy-status");
           const lux = readFirst(
@@ -1832,20 +1843,20 @@ export const MiotSynthesizer = {
             "illumination"
           );
           const mBool = miotBool(motion?.val);
-          const parts = [mBool === true ? "有人移动" : mBool === false ? "无人移动" : "移动监测"];
+          const parts = [mBool === true ? t("有人移动") : mBool === false ? t("无人移动") : t("移动监测")];
           if (typeof lux?.val === "number" && Number.isFinite(lux.val)) {
             parts.push(`${Math.round(lux.val)} lx`);
           }
           statusText = parts.join(" · ");
         } else if (sName === "magnet-sensor") {
           const contact = miotBool(readProp(primaryService, "contact-state")?.val);
-          statusText = contact === true ? "已闭合" : contact === false ? "已打开" : "门窗监测";
+          statusText = contact === true ? t("已闭合") : contact === false ? t("已打开") : t("门窗监测");
         } else if (sName === "submersion-sensor") {
           const wet = miotBool(readProp(primaryService, "submersion-state")?.val);
-          statusText = wet === true ? "浸水告警" : wet === false ? "正常" : "水浸监测";
+          statusText = wet === true ? t("浸水告警") : wet === false ? t("正常") : t("水浸监测");
         } else if (sName === "illumination-sensor") {
           const lux = readProp(primaryService, "illumination");
-          statusText = typeof lux?.val === "number" && Number.isFinite(lux.val) ? `${Math.round(lux.val)} lx` : "光照监测";
+          statusText = typeof lux?.val === "number" && Number.isFinite(lux.val) ? `${Math.round(lux.val)} lx` : t("光照监测");
         }
       }
       return {

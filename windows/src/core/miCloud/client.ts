@@ -18,6 +18,35 @@ export interface MiDeviceRecord {
   /** Split key of a multi-key panel (did like `<parent>.s2`): MIoT calls go to the parent did, switch service `splitSiid`. */
   readonly splitParentDid?: string | null;
   readonly splitSiid?: number | null;
+  readonly localIp?: string | null;
+  readonly mac?: string | null;
+}
+
+export function normalizeDeviceLocalIp(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(trimmed);
+  if (!match) return null;
+  const octets: number[] = [];
+  for (let i = 1; i <= 4; i += 1) {
+    const part = match[i]!;
+    if (part.length > 1 && part.startsWith("0")) return null;
+    const value = Number(part);
+    if (!Number.isInteger(value) || value < 0 || value > 255) return null;
+    octets.push(value);
+  }
+  const [a, b, c, d] = octets as [number, number, number, number];
+  if (a === 0 || a === 127 || a >= 224) return null;
+  return `${a}.${b}.${c}.${d}`;
+}
+
+export function normalizeDeviceMac(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!/^[0-9a-fA-F]{2}(?:[:-][0-9a-fA-F]{2}){5}$/.test(trimmed)) return null;
+  const normalized = trimmed.replaceAll("-", ":").toUpperCase();
+  if (normalized === "00:00:00:00:00:00" || normalized === "FF:FF:FF:FF:FF:FF") return null;
+  return normalized;
 }
 
 /** The did MIoT property and action calls address. */
@@ -141,6 +170,9 @@ export class MiCloudClient {
     if (statusCode === 401 || statusCode === 403) {
       throw new MiCloudError("sessionExpired", "米家登录已过期，请重新扫码");
     }
+    if (statusCode === 429) {
+      throw new MiCloudError("http", `米家云服务 HTTP ${statusCode}`, statusCode);
+    }
     const plain = parseJsonObject(body);
     if (plain) {
       if (typeof plain["code"] === "number") {
@@ -214,6 +246,8 @@ export class MiCloudClient {
     const split = extra["split"] && typeof extra["split"] === "object" ? (extra["split"] as Record<string, unknown>) : null;
     const splitParentDid = split ? asIdString(split["parentId"]) : null;
     const splitSiid = split && typeof split["moduleId"] === "number" ? Math.trunc(split["moduleId"]) : null;
+    const localIp = normalizeDeviceLocalIp(rec["localip"] ?? rec["localIp"]);
+    const mac = normalizeDeviceMac(rec["mac"]);
     return {
       did,
       name: typeof rec["name"] === "string" ? rec["name"] : model,
@@ -221,6 +255,8 @@ export class MiCloudClient {
       isOnline: typeof rec["isOnline"] === "boolean" ? rec["isOnline"] : true,
       specType: typeof rec["spec_type"] === "string" ? rec["spec_type"] : null,
       ...(splitParentDid && splitSiid !== null ? { splitParentDid, splitSiid } : {}),
+      ...(localIp !== null ? { localIp } : {}),
+      ...(mac !== null ? { mac } : {}),
     };
   }
 

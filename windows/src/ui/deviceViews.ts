@@ -1,19 +1,22 @@
-import { haRoundedInt } from "../core/haDomains.js";
 import { t } from "../core/i18n.js";
 import { IntentReply } from "../core/assistant.js";
+import { trText } from "../core/quickActions.js";
+import type { SpeakerTextMode } from "../core/miCloud/speakerActions.js";
 import {
+  renderApplianceDrawer,
   renderClimateSwingRow,
   renderCoverDrawer,
   renderGenericDrawer,
   renderPlugDrawer,
+  renderSpeakerCommandBar,
 } from "./detailDrawers.js";
 import { renderMoreSettings } from "./facetViews.js";
 import {
   deviceCanTogglePower,
+  devicePresentsAsActive,
   deviceReadout,
   deviceStatusSummary,
   hasDetailDrawer,
-  isDeviceActiveOn,
   localizeAirQuality,
   localizeFanPreset,
   localizeFridgeMode,
@@ -21,14 +24,13 @@ import {
   type EnvironmentReading,
   type FacetControl,
   type SmartDevice,
-  localizeApplianceFanLevel,
-  localizeApplianceMode,
 } from "../core/models.js";
 import {
   TILE_SIZES,
   comfort,
   localizeEffect,
   localizeFanMode,
+  tr3,
   type TileSize,
 } from "./panelPrefs.js";
 import {
@@ -146,13 +148,19 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
     allowAdvancedFacetWrites = false,
     pendingHighRisk: PendingHighRiskConfirmation | null = null,
   ): string {
-    const readout = deviceReadout(waitingDeviceIds.has(dev.id), valuesAreStale);
-    const running = readout !== "possiblyStale" && dev.isOnline && k.isOn && k.hvacMode !== "off";
+    const isWaiting = waitingDeviceIds.has(dev.id);
+    const readout = deviceReadout(isWaiting, valuesAreStale);
+    const running = devicePresentsAsActive(dev, readout === "possiblyStale") && k.hvacMode !== "off";
     const powerWritable = k.powerWritable !== false;
     const temperatureWritable = k.temperatureWritable !== false;
     const canExpand = hasDetailDrawer(dev, facets);
     const open = canExpand && (forceOpen || expandedDeviceId === dev.id);
     const id = escapeHtml(dev.id);
+    const hasActiveHighRisk =
+      pendingHighRisk !== null &&
+      pendingHighRisk.deviceId === dev.id &&
+      pendingHighRisk.expiresAtMs > Date.now();
+    const isTwoTapArmed = hasActiveHighRisk && pendingHighRisk?.confirm === undefined;
     const modeLabel: Record<string, string> = { cool: t("制冷"), heat: t("制热"), dry: t("除湿"), fan_only: t("送风"), auto: t("自动") };
     const status = readout === "waiting"
       ? t("等待中")
@@ -166,7 +174,8 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
                 : "",
             ].filter(Boolean).join(" · ")
           : t("已关闭");
-    const subtitle = selectedRoom === "全部" ? `${dev.roomName} · ${status}` : status;
+    const baseSubtitle = selectedRoom === "全部" ? `${dev.roomName} · ${status}` : status;
+    const subtitle = isTwoTapArmed && !open ? trText("再点一次确认", "Tap again to confirm") : baseSubtitle;
     const span = Math.max(k.maxTemp - k.minTemp, 1);
     const progress = Math.min(Math.max((k.targetTemperature - k.minTemp) / span, 0), 1) * 100;
     const modes = (
@@ -193,7 +202,7 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
           <button class="cc-climate-step" data-acstep="${id}:1" title="${t("升高温度")}" aria-label="${t("升高目标温度")}">＋</button>`
       : `<span class="cc-climate-temp" aria-label="${t("目标温度 {temp}", { temp: formatTemperature(k.targetTemperature) })}">${temp}<small>${temperatureSymbol(unit)}</small></span>`;
     return `
-      <div class="cc-tile cc-climate is-span-row ${running ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${readout === "possiblyStale" ? "is-stale" : ""} ${motion}" ${attrs}>
+      <div class="cc-tile cc-climate is-span-row ${running ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dev.isOnline ? "" : "is-offline"} ${readout === "possiblyStale" ? "is-stale" : ""} ${motion}" ${attrs}>
         ${badge}
         <div class="cc-climate-strip">
           ${power}
@@ -203,11 +212,11 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
           </button>
           ${steps}
         </div>
-        ${readout === "possiblyStale" ? "" : `<div class="cc-climate-gauge" role="progressbar" aria-label="${t("目标温度进度")}" aria-valuemin="${k.minTemp}" aria-valuemax="${k.maxTemp}" aria-valuenow="${k.targetTemperature}"><span style="width:${progress}%"></span></div>`}
+        ${readout === "possiblyStale" ? "" : `<div class="cc-climate-gauge" role="progressbar" aria-label="${t("目标温度进度")}" aria-valuemin="${k.minTemp}" aria-valuemax="${k.maxTemp}" aria-valuenow="${k.targetTemperature}"><span style="width:${progress}%;--fill-scale:${(progress / 100).toFixed(3)}"></span></div>`}
         ${!canExpand ? renderPendingHighRiskRow(dev.id, pendingHighRisk, escapeHtml) : ""}
         ${
           open
-            ? `<div class="cc-climate-more">
+            ? `<div class="cc-expander-grid"><div class="cc-expander-clip"><div class="cc-climate-more">
                 ${renderPendingHighRiskRow(dev.id, pendingHighRisk, escapeHtml)}
                 ${modes.length > 0 ? `<div class="cc-segmented-pills is-even">
                   ${modes.map((m) => `<button class="cc-seg-pill ${running && k.hvacMode === m ? "is-active" : ""}" data-acmode="${id}:${escapeHtml(m)}" aria-pressed="${running && k.hvacMode === m}">${escapeHtml(Object.hasOwn(modeLabel, m) ? (modeLabel[m] ?? m) : m)}</button>`).join("")}
@@ -221,11 +230,21 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
                 }
                 ${renderClimateSwingRow(dev.id, k, escapeHtml)}
                 ${renderMoreSettings({ deviceId: dev.id, facets, allowAdvanced: allowAdvancedFacetWrites, isOnline: dev.isOnline, escapeHtml })}
-              </div>`
+              </div></div></div>`
             : ""
         }
       </div>`;
   }
+
+function filterSupportedEffects(
+  effects: readonly string[],
+  unsupported?: ReadonlySet<string>,
+): string[] {
+  if (!unsupported || unsupported.size === 0) return [...effects];
+  const lowerUnsupported = new Set<string>();
+  for (const item of unsupported) lowerUnsupported.add(item.trim().toLowerCase());
+  return effects.filter((effect) => !lowerUnsupported.has(effect.trim().toLowerCase()));
+}
 
 /** The card's own detailed controls; 更多设置 is appended by `renderDeviceDrawer` (#5). */
 function renderPrimaryDrawer(
@@ -234,12 +253,15 @@ function renderPrimaryDrawer(
   pendingHighRisk: PendingHighRiskConfirmation | null = null,
   facets: readonly FacetControl[] = [],
   allowAdvanced = false,
+  unsupportedLightEffects?: ReadonlySet<string>,
+  speakerDrawerState?: { readonly mode?: SpeakerTextMode; readonly draft?: string },
 ): string {
     const k = dev.kind;
     if (k.kind === "light") {
       const showBrightness = k.brightnessWritable !== false;
       const showColor = k.colorWritable !== false;
-      if (!showBrightness && !showColor && k.availableEffects.length === 0) return "";
+      const visibleEffects = filterSupportedEffects(k.availableEffects, unsupportedLightEffects);
+      if (!showBrightness && !showColor && visibleEffects.length === 0) return "";
       const bri = k.brightnessPercent ?? 80;
       const ct = k.colorTempKelvin ?? 4000;
       return `
@@ -258,9 +280,9 @@ function renderPrimaryDrawer(
             </div>
             <input class="cc-range is-kelvin" type="range" min="${k.minKelvin}" max="${k.maxKelvin}" step="100" value="${ct}" data-colortemp="${escapeHtml(dev.id)}" aria-label="${t("色温")}" aria-valuemin="${k.minKelvin}" aria-valuemax="${k.maxKelvin}" aria-valuenow="${ct}" />
           </div>` : ""}
-          ${k.availableEffects.length > 0 ? `
+          ${visibleEffects.length > 0 ? `
             <div class="cc-segmented-pills">
-              ${k.availableEffects.map((effect) => `
+              ${visibleEffects.map((effect) => `
                 <button class="cc-seg-pill ${k.currentEffect === effect ? "is-active" : ""}"
                   data-lighteffect="${escapeHtml(dev.id)}" data-effect="${escapeHtml(effect)}"
                   aria-pressed="${k.currentEffect === effect}">
@@ -404,6 +426,8 @@ function renderPrimaryDrawer(
     }
     if (k.kind === "speaker") {
       const id = escapeHtml(dev.id);
+      const commandBar = renderSpeakerCommandBar(dev, k, escapeHtml, speakerDrawerState);
+      if (!k.volumeWritable && !k.muteSwitchEntityId && !k.sleepModeEntityId && !commandBar) return "";
       return `
         <div class="cc-tile-drawer">
           ${k.volumeWritable ? `<div class="cc-slider-group">
@@ -421,6 +445,7 @@ function renderPrimaryDrawer(
               ${k.isSleepMode ? t("睡眠模式：开") : t("睡眠模式：关")}
             </button>` : ""}
           </div>` : ""}
+          ${commandBar ? `<div class="cc-speaker-command-wrap" data-speaker-command-wrap="${id}" style="display:flex;flex-direction:column;gap:6px;">${commandBar}</div>` : ""}
         </div>
       `;
     }
@@ -462,78 +487,7 @@ function renderPrimaryDrawer(
       `;
     }
     if (k.kind === "appliance") {
-      const id = escapeHtml(dev.id);
-      const rows: string[] = [];
-      if (k.faultText) {
-        rows.push(`<div class="cc-appliance-fault">${escapeHtml(k.faultText)}</div>`);
-      }
-      if (k.temperatureWritable && k.targetTemperature !== null) {
-        rows.push(`<div class="cc-segmented-pills">
-          <button class="cc-seg-pill" data-appliancetemp="${id}|-1" aria-label="${t("降低目标温度")}">−</button>
-          <span class="cc-pill-label">${formatTemperature(k.targetTemperature)}</span>
-          <button class="cc-seg-pill" data-appliancetemp="${id}|1" aria-label="${t("升高目标温度")}">＋</button>
-        </div>`);
-      }
-      if (k.modeWritable && k.availableModes.length > 0) {
-        rows.push(`<div class="cc-segmented-pills">
-          ${k.availableModes
-            .map(
-              (mode) => `<button class="cc-seg-pill ${k.currentMode === mode ? "is-active" : ""}"
-                data-appliancemode="${id}|${escapeHtml(mode)}" aria-pressed="${k.currentMode === mode}">
-                ${escapeHtml(localizeApplianceMode(mode))}
-              </button>`,
-            )
-            .join("")}
-        </div>`);
-      }
-      if (k.fanLevel?.writable && k.fanLevel.options.length > 0) {
-        rows.push(`<div class="cc-segmented-pills">
-          ${k.fanLevel.options
-            .map(
-              (level) => `<button class="cc-seg-pill ${k.fanLevel?.current === level ? "is-active" : ""}"
-                data-appliancefan="${id}|${escapeHtml(level)}" aria-pressed="${k.fanLevel?.current === level}">
-                ${escapeHtml(localizeApplianceFanLevel(level))}
-              </button>`,
-            )
-            .join("")}
-        </div>`);
-      }
-      if (k.light?.writable) {
-        rows.push(`<div class="cc-segmented-pills">
-          <button class="cc-seg-pill ${k.light.isOn ? "is-active" : ""}" data-appliancelight="${id}" aria-pressed="${k.light.isOn}">
-            ${k.light.isOn ? t("灯光：开") : t("灯光：关")}
-          </button>
-        </div>`);
-      }
-      const roundedHumidity = k.roomReading ? haRoundedInt(k.currentHumidity) : null;
-      if (roundedHumidity !== null) {
-        rows.push(`<div class="cc-slider-label"><span>${t("湿度")}</span><strong>${roundedHumidity}%</strong></div>`);
-      }
-      if (k.statusText) {
-        rows.push(`<div class="cc-slider-label"><span>${t("状态")}</span><span>${escapeHtml(k.statusText)}</span></div>`);
-      }
-      if (k.remainingMinutes !== null) {
-        rows.push(`<div class="cc-slider-label"><span>${t("剩余时间")}</span><span>${t("{minutes} 分钟", { minutes: k.remainingMinutes })}</span></div>`);
-      }
-      const actions = (
-        [
-          ["start", k.startAction, t("开始")],
-          ["pause", k.pauseAction, t("暂停")],
-          ["stop", k.stopAction, t("停止")],
-        ] as const
-      ).filter(([, action]) => action !== null);
-      if (actions.length > 0) {
-        rows.push(`<div class="cc-segmented-pills">
-          ${actions
-            .map(
-              ([kind, , label]) =>
-                `<button class="cc-seg-pill" data-applianceaction="${id}|${kind}">${label}</button>`,
-            )
-            .join("")}
-        </div>`);
-      }
-      if (rows.length === 0) return "";
-      return `<div class="cc-tile-drawer">${rows.join("")}</div>`;
+      return renderApplianceDrawer(dev, k, escapeHtml);
     }
     if (k.kind === "vacuum") {
       // macOS vacuumDrawer: start / pause / dock, with the reported status picked.
@@ -613,13 +567,23 @@ export function renderDeviceDrawer(
   facets: readonly FacetControl[] = [],
   allowAdvanced = false,
   pendingHighRisk: PendingHighRiskConfirmation | null = null,
+  unsupportedLightEffects?: ReadonlySet<string>,
+  speakerDrawerState?: { readonly mode?: SpeakerTextMode; readonly draft?: string },
 ): string {
-  const primary = renderPrimaryDrawer(dev, escapeHtml, pendingHighRisk, facets, allowAdvanced);
+  const primary = renderPrimaryDrawer(
+    dev,
+    escapeHtml,
+    pendingHighRisk,
+    facets,
+    allowAdvanced,
+    unsupportedLightEffects,
+    speakerDrawerState,
+  );
   const extraConfirm =
     dev.kind.kind !== "climate" || primary === ""
       ? renderPendingHighRiskRow(dev.id, pendingHighRisk, escapeHtml)
       : "";
-  return (
+  const inner =
     primary +
     (extraConfirm ? `<div class="cc-tile-drawer">${extraConfirm}</div>` : "") +
     renderMoreSettings({
@@ -628,8 +592,8 @@ export function renderDeviceDrawer(
       allowAdvanced,
       isOnline: dev.isOnline,
       escapeHtml,
-    })
-  );
+    });
+  return inner ? `<div class="cc-expander-grid"><div class="cc-expander-clip">${inner}</div></div>` : "";
 }
 
 function devicePaletteClass(dev: SmartDevice): string {
@@ -660,31 +624,378 @@ function devicePaletteClass(dev: SmartDevice): string {
   }
 }
 
-function deviceSvgIcon(dev: SmartDevice): string {
-  switch (dev.kind.kind) {
+const DEVICE_ICONS = {
+  lightbulbOutline: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2.5a5.3 5.3 0 00-3.4 9.37c.88.74 1.4 1.56 1.4 2.53v.6h4v-.6c0-.97.52-1.79 1.4-2.53A5.3 5.3 0 0010 2.5zM8.3 17.3h3.4"/></svg>`,
+  lightStrip: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3 6.5c3-2 5 2 8 0s4-2 6 0"/><path d="M3 12.5c3-2 5 2 8 0s4-2 6 0"/><circle cx="5" cy="9.5" r="0.9" fill="currentColor" stroke="none"/><circle cx="10" cy="9.5" r="0.9" fill="currentColor" stroke="none"/><circle cx="15" cy="9.5" r="0.9" fill="currentColor" stroke="none"/></svg>`,
+  acUnit: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4.5h12a1.8 1.8 0 011.8 1.8v3.2A1.8 1.8 0 0116 11.3H4a1.8 1.8 0 01-1.8-1.8V6.3A1.8 1.8 0 014 4.5zM5 9.2h10M6 13.5c0 1.4-.8 2.2-1.5 2.7M10 13.5v3M14 13.5c0 1.4.8 2.2 1.5 2.7"/></svg>`,
+  heaterVertical: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="2.5" width="11" height="14" rx="2"/><path d="M7.5 5.5v8M10 5.5v8M12.5 5.5v8M6.5 18h7"/></svg>`,
+  bedDouble: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 11.5h15v4h-15z"/><path d="M3.5 11.5V6.5a1.5 1.5 0 011.5-1.5h10a1.5 1.5 0 011.5 1.5v5"/><path d="M5.5 9h3.5M11 9h3.5M2.5 15.5v2M17.5 15.5v2"/></svg>`,
+  dehumidifier: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M7.8 3.2c2.3 2.6 4 4.7 4 6.7a4 4 0 11-8 0c0-2 1.7-4.1 4-6.7z"/><path d="M13.5 7.5h4M13.5 11h4M13.5 14.5h3"/></svg>`,
+  humidifier: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="9" width="11" height="8" rx="2.2"/><path d="M7.5 6.8c0-1.1 1-1.6 1-2.7M10.5 6.8c0-1.1 1-1.6 1-2.7M13.2 6.8c0-1.1.8-1.6.8-2.7M7 13h6"/></svg>`,
+  wind: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3 7.5h9.5a2 2 0 10-1.8-2.8"/><path d="M3 10.8h12.2a2.1 2.1 0 11-1.9 3"/><path d="M3 14h6.5"/></svg>`,
+  airPurifier: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2.5" width="10" height="15" rx="2.2"/><circle cx="10" cy="7.5" r="2.1"/><path d="M7.5 12.5h5M7.5 14.8h5"/></svg>`,
+  diffuser: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 10.5h7l1.2 5.2a1.5 1.5 0 01-1.46 1.8H6.76a1.5 1.5 0 01-1.46-1.8l1.2-5.2z"/><path d="M8.5 8.5h3v2h-3zM9 6.2c0-1.1 1.2-1.5 1.2-2.7M11.6 6.5c0-.9.9-1.3.9-2.3"/></svg>`,
+  desktopComputer: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="3.5" width="15" height="10" rx="1.6"/><path d="M7 16.8h6M10 13.5v3.3"/></svg>`,
+  coffeeCup: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h9.5v4.2a4.3 4.3 0 01-4.3 4.3H8.3A4.3 4.3 0 014 12.2V8z"/><path d="M13.5 9h1.3a2 2 0 010 4h-1.3M3.5 18h11M7.2 5.6c0-.9.8-1.3.8-2.2M10.2 5.6c0-.9.8-1.3.8-2.2"/></svg>`,
+  wallSwitch: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="13" height="13" rx="2.2"/><path d="M10 6v8M7.2 6.5v7M12.8 6.5v7"/></svg>`,
+  refrigerator: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="2.2" width="11" height="15.6" rx="2"/><path d="M4.5 9.2h11M7.2 5.2v2.2M7.2 11.4v3"/></svg>`,
+  robotVacuum: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7.2"/><circle cx="10" cy="8.2" r="1.7"/><path d="M6.2 13.2a5.2 5.2 0 007.6 0"/></svg>`,
+  cameraSleep: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4.8 5h6.8a2 2 0 012 2v6a2 2 0 01-2 2H4.8a2 2 0 01-2-2V7a2 2 0 012-2zM13.6 8.3l3.6-2v7.4l-3.6-2M4.5 4.2l11 11.6"/></svg>`,
+  doorbell: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="5.2" y="2.5" width="9.6" height="15" rx="2.8"/><circle cx="10" cy="7.3" r="1.8"/><circle cx="10" cy="13.2" r="1.1" fill="currentColor" stroke="none"/></svg>`,
+  lockShield: `<svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 2.2l6 2.3v4.7c0 4.2-2.55 7.95-6 9.3-3.45-1.35-6-5.1-6-9.3V4.5l6-2.3zm0 4.3a2 2 0 00-2 2v1h-.5a.75.75 0 00-.75.75v3c0 .41.34.75.75.75h5a.75.75 0 00.75-.75v-3a.75.75 0 00-.75-.75H12v-1a2 2 0 00-2-2zm-1 3v-1a1 1 0 112 0v1H9z"/></svg>`,
+  kettle: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 6.5h7.5l1 9a1.5 1.5 0 01-1.5 1.7H6a1.5 1.5 0 01-1.5-1.7l1-9z"/><path d="M4 7.5l1.7-.8M13.2 8.2h1.8a2 2 0 010 4.2h-1.3M7.5 4.5h3.5"/></svg>`,
+  ovenFryer: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3.5" width="14" height="13" rx="2"/><rect x="5.5" y="8" width="9" height="6" rx="1"/><circle cx="7" cy="5.8" r="0.8" fill="currentColor" stroke="none"/><circle cx="10" cy="5.8" r="0.8" fill="currentColor" stroke="none"/><circle cx="13" cy="5.8" r="0.8" fill="currentColor" stroke="none"/></svg>`,
+  riceCooker: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h12v4.5a3.5 3.5 0 01-3.5 3.5h-5A3.5 3.5 0 014 13.5V9z"/><path d="M3 9h14M6.5 9V7.3a3.5 3.5 0 017 0V9M8.5 12.5h3"/></svg>`,
+  motionSensor: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><circle cx="9.5" cy="4.3" r="1.5" fill="currentColor" stroke="none"/><path d="M6.5 9.2l2.5-1.7 2.2 1.8 2 1M8.8 7.5l-.8 4.2 2.6 2.2.8 3.3M8 11.7l-2.3 3.8"/><path d="M15 5.8a4.2 4.2 0 010 5.6"/></svg>`,
+  magnetSensor: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3.5" width="5" height="13" rx="1.6"/><rect x="11.5" y="5.5" width="4.5" height="9" rx="1.5"/><path d="M9.5 8.5h1.5M9.5 11.5h1.5"/></svg>`,
+  waterLeak: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3c2.4 2.7 4 4.8 4 6.8a4 4 0 11-8 0c0-2 1.6-4.1 4-6.8z"/><path d="M3.5 15.8c1.8 1.2 4 1.8 6.5 1.8s4.7-.6 6.5-1.8"/></svg>`,
+  smokeDetector: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4.5h12l-1.4 3.2H5.4L4 4.5z"/><path d="M7.2 10.5c-.8 1.2.8 2.2 0 3.5M10 10.5c-.8 1.2.8 2.2 0 3.5M12.8 10.5c-.8 1.2.8 2.2 0 3.5"/></svg>`,
+  radarSensor: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round"><circle cx="10" cy="10" r="1.8" fill="currentColor" stroke="none"/><path d="M6.5 6.5a5 5 0 000 7M13.5 6.5a5 5 0 010 7M4 4a8.5 8.5 0 000 12M16 4a8.5 8.5 0 010 12"/></svg>`,
+  curtainOpen: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h15M3.5 4v12c2.2-.6 3.5-2.5 3.8-5.5L4 9.5M16.5 4v12c-2.2-.6-3.5-2.5-3.8-5.5L16 9.5"/></svg>`,
+  curtainClosed: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h15M3.8 4h5.6v12H3.8zM10.6 4h5.6v12h-5.6zM6.6 4v12M13.4 4v12"/></svg>`,
+  windowOpener: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3.5" width="14" height="13" rx="1.6"/><path d="M10 3.5v13M10 5.5l4.5 1.8v5.4L10 14.5"/></svg>`,
+  garageDoor: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8L10 3.2 17.5 8v8.8h-15V8z"/><rect x="5.2" y="9.2" width="9.6" height="7.6"/><path d="M5.2 11.7h9.6M5.2 14.2h9.6"/></svg>`,
+  clothesAirer: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M10 6.5a1.6 1.6 0 111.5-2.1c.2.8-.5 1.4-1.5 2.1zm0 0L3 12.2a1 1 0 00.63 1.78h12.74A1 1 0 0017 12.2L10 6.5z"/><path d="M6.5 14v2.5M13.5 14v2.5"/></svg>`,
+  washer: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="2.5" width="13" height="15" rx="2"/><path d="M3.5 6.2h13"/><circle cx="6.2" cy="4.4" r="0.7" fill="currentColor" stroke="none"/><circle cx="10" cy="11.8" r="3.5"/><path d="M7.3 11.8c1-.9 2-.9 2.7 0s1.7.9 2.7 0"/></svg>`,
+  dryer: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="2.5" width="13" height="15" rx="2"/><path d="M3.5 6.2h13"/><circle cx="10" cy="11.8" r="3.5"/><path d="M9 10.2c-.6.8.6 1.6 0 2.6M11 10.2c-.6.8.6 1.6 0 2.6"/></svg>`,
+  dishwasher: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="2.5" width="13" height="15" rx="2"/><path d="M3.5 6.2h13M6.2 13.8h7.6"/><circle cx="8.3" cy="10.8" r="1.8"/><circle cx="11.9" cy="10.8" r="1.8"/></svg>`,
+  waterHeater: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="4.8" y="2.5" width="10.4" height="13" rx="2.4"/><path d="M10 6.5c1.5 1.8 2.4 3 2.4 4.2a2.4 2.4 0 11-4.8 0c0-1.2.9-2.4 2.4-4.2z"/><path d="M8 15.5v2M12 15.5v2"/></svg>`,
+  bathHeater: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3.5" width="14" height="5" rx="1.5"/><path d="M6.2 11c-.5 1.3.5 2.4 0 3.8M10 11c-.5 1.3.5 2.4 0 3.8M13.8 11c-.5 1.3.5 2.4 0 3.8"/></svg>`,
+  rangeHood: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 3h5v4.5l4.5 3.8v2.2H3v-2.2l4.5-3.8V3z"/><path d="M7 16c0 .9-.5 1.5-.5 2M10 16v2M13 16c0 .9.5 1.5.5 2"/></svg>`,
+  fishTank: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 10c2.2-3 5.2-4.2 8.8-3.2 1.2.3 2.3 1.2 3.2 3.2-.9 2-2 2.9-3.2 3.2-3.6 1-6.6-.2-8.8-3.2z"/><path d="M3.5 10L1.8 7.5v5L3.5 10z"/><circle cx="12.2" cy="9.4" r="0.8" fill="currentColor" stroke="none"/></svg>`,
+  petPaw: `<svg viewBox="0 0 20 20" fill="currentColor"><circle cx="6" cy="7.2" r="1.6"/><circle cx="8.8" cy="5" r="1.6"/><circle cx="12.2" cy="5.2" r="1.6"/><circle cx="14.5" cy="7.8" r="1.5"/><path d="M10 9.2c-2.6 0-4.6 2-4.6 4.1 0 1.5 1.2 2.5 2.7 2.5.8 0 1.4-.3 1.9-.3s1.1.3 1.9.3c1.5 0 2.7-1 2.7-2.5 0-2.1-2-4.1-4.6-4.1z"/></svg>`,
+  television: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="15" height="10" rx="1.6"/><path d="M6.5 17h7"/></svg>`,
+  applianceDial: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3" width="13" height="14" rx="2.4"/><circle cx="10" cy="10.5" r="3.4"/><path d="M10 10.5l1.8-1.8M7 5.8h6"/></svg>`,
+} as const;
+
+function applianceOrGenericIcon(
+  symbolName: string | null | undefined,
+  model: string,
+  name: string,
+  fallback: string,
+): string {
+  const sym = (symbolName ?? "").toLowerCase();
+  const haystack = `${model} ${name}`.toLowerCase();
+  if (sym.includes("washer") || haystack.includes("washer") || haystack.includes("洗衣")) {
+    return DEVICE_ICONS.washer;
+  }
+  if (
+    sym.includes("dryer") ||
+    haystack.includes("dryer") ||
+    haystack.includes("干衣") ||
+    haystack.includes("乾衣") ||
+    haystack.includes("烘干") ||
+    haystack.includes("烘乾")
+  ) {
+    return DEVICE_ICONS.dryer;
+  }
+  if (sym.includes("dishwasher") || haystack.includes("dishwasher") || haystack.includes("洗碗")) {
+    return DEVICE_ICONS.dishwasher;
+  }
+  if (
+    haystack.includes("hood") ||
+    haystack.includes("油烟机") ||
+    haystack.includes("油煙機") ||
+    haystack.includes("烟机")
+  ) {
+    return DEVICE_ICONS.rangeHood;
+  }
+  if (haystack.includes("bath") || haystack.includes("浴霸") || sym.includes("sun.max")) {
+    return DEVICE_ICONS.bathHeater;
+  }
+  if (
+    haystack.includes("water-heater") ||
+    haystack.includes("waterheater") ||
+    haystack.includes("boiler") ||
+    haystack.includes("热水器") ||
+    haystack.includes("熱水器") ||
+    haystack.includes("壁挂炉") ||
+    haystack.includes("壁掛爐") ||
+    sym === "water.waves"
+  ) {
+    return DEVICE_ICONS.waterHeater;
+  }
+  if (
+    sym.includes("bed") ||
+    haystack.includes("blanket") ||
+    haystack.includes("mattress") ||
+    haystack.includes("水暖毯") ||
+    haystack.includes("电热毯") ||
+    haystack.includes("電熱毯") ||
+    haystack.includes("床垫")
+  ) {
+    return DEVICE_ICONS.bedDouble;
+  }
+  if (
+    sym.includes("heater") ||
+    haystack.includes("heater") ||
+    haystack.includes("取暖") ||
+    haystack.includes("电暖")
+  ) {
+    return DEVICE_ICONS.heaterVertical;
+  }
+  if (sym === "wind" || haystack.includes("airfresh") || haystack.includes("新风") || haystack.includes("新風")) {
+    return DEVICE_ICONS.wind;
+  }
+  if (sym.includes("humidity") || haystack.includes("dehumid") || haystack.includes("除湿") || haystack.includes("除溼")) {
+    return DEVICE_ICONS.dehumidifier;
+  }
+  if (sym.includes("humidifier") || haystack.includes("humidifier") || haystack.includes("加湿") || haystack.includes("加溼")) {
+    return DEVICE_ICONS.humidifier;
+  }
+  if (
+    sym.includes("mug") ||
+    haystack.includes("kettle") ||
+    haystack.includes("health-pot") ||
+    haystack.includes("waterdispenser") ||
+    haystack.includes("水壶") ||
+    haystack.includes("水壺") ||
+    haystack.includes("养生壶") ||
+    haystack.includes("養生壺") ||
+    haystack.includes("饮水") ||
+    haystack.includes("飲水")
+  ) {
+    return DEVICE_ICONS.kettle;
+  }
+  if (
+    sym.includes("frying") ||
+    haystack.includes("fryer") ||
+    haystack.includes("oven") ||
+    haystack.includes("microwave") ||
+    haystack.includes("炸锅") ||
+    haystack.includes("炸鍋") ||
+    haystack.includes("烤箱") ||
+    haystack.includes("微波炉") ||
+    haystack.includes("微波爐")
+  ) {
+    return DEVICE_ICONS.ovenFryer;
+  }
+  if (haystack.includes("cooker") || haystack.includes("饭煲") || haystack.includes("飯煲") || haystack.includes("电锅")) {
+    return DEVICE_ICONS.riceCooker;
+  }
+  if (sym.includes("cup.and") || haystack.includes("coffee") || haystack.includes("咖啡")) {
+    return DEVICE_ICONS.coffeeCup;
+  }
+  if (sym.includes("fish") || haystack.includes("fish") || haystack.includes("鱼缸") || haystack.includes("魚缸")) {
+    return DEVICE_ICONS.fishTank;
+  }
+  if (
+    sym.includes("pawprint") ||
+    haystack.includes("feeder") ||
+    haystack.includes("litter") ||
+    haystack.includes("喂食") ||
+    haystack.includes("餵食") ||
+    haystack.includes("猫砂") ||
+    haystack.includes("貓砂") ||
+    haystack.includes("宠物") ||
+    haystack.includes("寵物")
+  ) {
+    return DEVICE_ICONS.petPaw;
+  }
+  if (sym.includes("lock") || haystack.includes(".lock.") || haystack.includes("门锁") || haystack.includes("門鎖")) {
+    return DEVICE_ICONS.lockShield;
+  }
+  if (sym === "wifi" || haystack.includes("router") || haystack.includes("gateway") || haystack.includes("路由")) {
+    return SF_ICONS.wifi;
+  }
+  if (sym === "tv" || sym.includes("projector") || haystack.includes("television") || haystack.includes("电视") || haystack.includes("投影")) {
+    return DEVICE_ICONS.television;
+  }
+  if (sym.includes("flame")) {
+    return SF_ICONS.flameFill;
+  }
+  if (sym.includes("drop")) {
+    return SF_ICONS.dropFill;
+  }
+  return fallback;
+}
+
+/**
+ * Semantic inline SVG icon for every device family, sensor/cover subtype, and appliance profile,
+ * aligned with macOS `SmartDevice.sfSymbolName` (`SmartDevice+Presentation.swift:9-95`).
+ */
+export function deviceSvgIcon(dev: SmartDevice): string {
+  const model = dev.model.toLowerCase();
+  const name = dev.name.toLowerCase();
+  const k = dev.kind;
+  switch (k.kind) {
     case "light":
-      return SF_ICONS.lightbulbFill;
+      if (model.includes("strip") || name.includes("灯带") || name.includes("燈帶")) {
+        return DEVICE_ICONS.lightStrip;
+      }
+      return k.isOn ? SF_ICONS.lightbulbFill : DEVICE_ICONS.lightbulbOutline;
     case "climate":
-    case "fridge":
-      return SF_ICONS.snowflake;
+      if (model.includes("blanket") || name.includes("水暖毯") || name.includes("电热毯") || name.includes("電熱毯")) {
+        return DEVICE_ICONS.bedDouble;
+      }
+      if (model.includes("heater") || name.includes("取暖") || name.includes("电暖") || name.includes("電暖")) {
+        return DEVICE_ICONS.heaterVertical;
+      }
+      return k.isOn ? SF_ICONS.snowflake : DEVICE_ICONS.acUnit;
     case "fan":
+      if (model.includes(".derh.") || model.includes("dehumid") || name.includes("除湿") || name.includes("除溼")) {
+        return DEVICE_ICONS.dehumidifier;
+      }
+      if (model.includes("humidifier") || name.includes("加湿") || name.includes("加溼")) {
+        return DEVICE_ICONS.humidifier;
+      }
+      if (model.includes("airfresh") || model.includes("air-fresh") || name.includes("新风") || name.includes("新風")) {
+        return DEVICE_ICONS.wind;
+      }
+      if (
+        model.includes("airp") ||
+        model.includes("purifier") ||
+        name.includes("净化") ||
+        name.includes("淨化") ||
+        k.pm25Density != null ||
+        k.airQuality != null ||
+        k.filterLifePercent != null
+      ) {
+        return DEVICE_ICONS.airPurifier;
+      }
       return SF_ICONS.fanbladesFill;
     case "plug":
+      if (model.includes(".diffuser.") || name.includes("香薰") || name.includes("香氛")) {
+        return DEVICE_ICONS.diffuser;
+      }
+      if (k.switchEntityId.startsWith("button.")) {
+        if (
+          k.switchEntityId.includes("wake_on_lan") ||
+          name.includes("电脑") ||
+          name.includes("電腦") ||
+          name.includes("pc") ||
+          name.includes("mac")
+        ) {
+          return DEVICE_ICONS.desktopComputer;
+        }
+        return SF_ICONS.power;
+      }
+      if (name.includes("咖啡") || model.includes("coffee")) {
+        return DEVICE_ICONS.coffeeCup;
+      }
+      if (name.includes("灯") || name.includes("燈")) {
+        return k.isOn ? SF_ICONS.lightbulbFill : DEVICE_ICONS.lightbulbOutline;
+      }
+      if (model.includes(".switch.") || name.includes("开关") || name.includes("開關")) {
+        return DEVICE_ICONS.wallSwitch;
+      }
       return SF_ICONS.powerplugFill;
+    case "fridge":
+      return DEVICE_ICONS.refrigerator;
     case "vacuum":
-      return SF_ICONS.sparkles;
-    case "camera":
-      return SF_ICONS.videoFill;
-    case "sensor":
-      return SF_ICONS.sensorFill;
-    case "cover":
-      return SF_ICONS.blindsHorizontal;
+      return DEVICE_ICONS.robotVacuum;
     case "speaker":
-      return SF_ICONS.speakerFill;
+      return k.isMuted ? SF_ICONS.speakerSlash : SF_ICONS.speakerFill;
+    case "camera":
+      if (
+        model.includes("doorbell") ||
+        model.includes("cateye") ||
+        name.includes("门铃") ||
+        name.includes("門鈴") ||
+        name.includes("猫眼") ||
+        name.includes("貓眼")
+      ) {
+        return DEVICE_ICONS.doorbell;
+      }
+      return k.isOn ? SF_ICONS.videoFill : DEVICE_ICONS.cameraSleep;
+    case "sensor": {
+      const status = (k.statusText ?? "").toLowerCase();
+      if (name.includes("门锁") || name.includes("門鎖") || model.includes(".lock.")) {
+        return DEVICE_ICONS.lockShield;
+      }
+      if (
+        model.includes("kettle") ||
+        model.includes("waterdispenser") ||
+        model.includes("health-pot") ||
+        name.includes("水壶") ||
+        name.includes("水壺") ||
+        name.includes("养生壶") ||
+        name.includes("養生壺") ||
+        name.includes("饮水") ||
+        name.includes("飲水")
+      ) {
+        return DEVICE_ICONS.kettle;
+      }
+      if (
+        model.includes("fryer") ||
+        model.includes("oven") ||
+        model.includes("microwave") ||
+        name.includes("炸锅") ||
+        name.includes("炸鍋") ||
+        name.includes("烤箱") ||
+        name.includes("微波炉")
+      ) {
+        return DEVICE_ICONS.ovenFryer;
+      }
+      if (model.includes("cooker") || name.includes("饭煲") || name.includes("飯煲") || name.includes("电锅")) {
+        return DEVICE_ICONS.riceCooker;
+      }
+      if (
+        model.includes("motion") ||
+        model.includes("occupancy") ||
+        name.includes("人体") ||
+        name.includes("人體") ||
+        name.includes("存在") ||
+        name.includes("移动") ||
+        status.includes("移动") ||
+        status.includes("motion")
+      ) {
+        return DEVICE_ICONS.motionSensor;
+      }
+      if (
+        model.includes("magnet") ||
+        model.includes("contact") ||
+        name.includes("门磁") ||
+        name.includes("門磁") ||
+        name.includes("门窗") ||
+        name.includes("門窗") ||
+        status.includes("已闭合") ||
+        status.includes("門窗") ||
+        status.includes("contact")
+      ) {
+        return DEVICE_ICONS.magnetSensor;
+      }
+      if (
+        model.includes("submersion") ||
+        model.includes("waterleak") ||
+        model.includes("leak") ||
+        name.includes("水浸") ||
+        name.includes("漏水") ||
+        status.includes("浸水") ||
+        status.includes("漏水") ||
+        status.includes("leak")
+      ) {
+        return DEVICE_ICONS.waterLeak;
+      }
+      if (model.includes("smoke") || name.includes("烟雾") || name.includes("煙霧") || status.includes("烟雾")) {
+        return DEVICE_ICONS.smokeDetector;
+      }
+      if (model.includes("gas") || name.includes("燃气") || name.includes("燃氣") || name.includes("天然气")) {
+        return SF_ICONS.flameFill;
+      }
+      if (
+        model.includes("illumination") ||
+        name.includes("光照") ||
+        name.includes("光线") ||
+        status.endsWith(" lx") ||
+        status.includes("光照")
+      ) {
+        return SF_ICONS.sunMaxFill;
+      }
+      if (k.temperature !== null || k.humidity !== null) {
+        return SF_ICONS.sensorFill;
+      }
+      return DEVICE_ICONS.radarSensor;
+    }
+    case "cover":
+      if (k.subtype === "clothes-airer") return DEVICE_ICONS.clothesAirer;
+      if (k.subtype === "garage-door") return DEVICE_ICONS.garageDoor;
+      if (k.subtype === "window-opener") return DEVICE_ICONS.windowOpener;
+      return (k.positionPercent ?? 0) > 0 ? DEVICE_ICONS.curtainOpen : DEVICE_ICONS.curtainClosed;
     case "appliance":
-      return SF_ICONS.washer;
+      return applianceOrGenericIcon(k.symbolName, dev.model, dev.name, DEVICE_ICONS.applianceDial);
     case "generic":
-      return SF_ICONS.switchToggle;
+      return applianceOrGenericIcon(k.symbolName, `${dev.model} ${k.deviceType}`, dev.name, SF_ICONS.grid2x2);
   }
 }
 
@@ -704,32 +1015,215 @@ export interface DeviceTileViewState {
   readonly dimPreview: { readonly id: string; readonly percent: number } | null;
   readonly deviceFacets: Readonly<Record<string, readonly FacetControl[]>>;
   readonly allowAdvancedFacetWrites: boolean;
+  readonly isPinned?: boolean;
+  readonly unsupportedLightEffects?: ReadonlySet<string>;
+  readonly speakerDrawerState?: { readonly mode?: SpeakerTextMode; readonly draft?: string };
   readonly escapeHtml: (value: string) => string;
+}
+
+function renderPinStarBadge(pinned: boolean, escape: (value: string) => string): string {
+  if (!pinned) return "";
+  const label = tr3("常用设备", "常用設備", "Favorite");
+  return `<span class="cc-tile-pin-badge" title="${escape(label)}" aria-label="${escape(label)}">★</span>`;
+}
+
+function renderInlineRangeRow(options: {
+  readonly id: string;
+  readonly icon: string;
+  readonly rangeClass: string;
+  readonly min: number;
+  readonly max: number;
+  readonly val: number;
+  readonly dataAttr: string;
+  readonly ariaLabel: string;
+  readonly disabledAttr: string;
+}): string {
+  const { id, icon, rangeClass, min, max, val, dataAttr, ariaLabel, disabledAttr } = options;
+  return `<div class="cc-inline-slider-wrap" data-inline-slider-wrap="${id}">
+      <span class="cc-inline-slider-icon" aria-hidden="true">${icon}</span>
+      <input class="cc-range cc-inline-range ${rangeClass}" type="range" min="${min}" max="${max}" step="1" value="${val}" data-inline-slider="${id}" ${dataAttr}="${id}" aria-label="${ariaLabel}" aria-valuemin="${min}" aria-valuemax="${max}" aria-valuenow="${val}" aria-valuetext="${val}%"${disabledAttr} />
+      <strong class="cc-inline-slider-val">${val}%</strong>
+    </div>`;
+}
+
+function renderCollapsedInlineSlider(options: {
+  readonly dev: SmartDevice;
+  readonly size: Exclude<TileSize, "auto">;
+  readonly isExpanded: boolean;
+  readonly isOn: boolean;
+  readonly readout: string;
+  readonly dim: number | null;
+  readonly isEditingLayout: boolean;
+  readonly escape: (value: string) => string;
+}): string {
+  const { dev, size, isExpanded, isOn, readout, dim, isEditingLayout, escape } = options;
+  if ((size !== "full" && size !== "hero") || isExpanded || !dev.isOnline || readout === "possiblyStale") {
+    return "";
+  }
+  const id = escape(dev.id);
+  const disabledAttr = isEditingLayout ? ' disabled aria-disabled="true"' : "";
+  const k = dev.kind;
+
+  if (k.kind === "light" && isOn && k.brightnessWritable !== false) {
+    const val = Math.max(1, Math.min(100, Math.round(dim ?? (k.brightnessPercent ?? 80))));
+    return renderInlineRangeRow({
+      id,
+      icon: SF_ICONS.sunMaxFill,
+      rangeClass: "is-amber",
+      min: 1,
+      max: 100,
+      val,
+      dataAttr: "data-inline-brightness",
+      ariaLabel: escape(`${dev.name} ${t("亮度")}`),
+      disabledAttr,
+    });
+  }
+
+  if (k.kind === "cover" && k.positionWritable && k.subtype !== "garage-door") {
+    const pos = Math.max(0, Math.min(100, Math.round(k.positionPercent ?? 0)));
+    const posTitle = k.subtype === "clothes-airer" ? t("升降高度") : t("开合位置");
+    const icon = k.subtype === "clothes-airer" ? DEVICE_ICONS.clothesAirer : DEVICE_ICONS.curtainOpen;
+    return renderInlineRangeRow({
+      id,
+      icon,
+      rangeClass: "is-blue",
+      min: 0,
+      max: 100,
+      val: pos,
+      dataAttr: "data-inline-coverpos",
+      ariaLabel: escape(`${dev.name} ${posTitle}`),
+      disabledAttr,
+    });
+  }
+
+  if (size === "hero") {
+    if (k.kind === "fan" && isOn && k.speedWritable !== false && k.percentage !== null) {
+      const pct = Math.max(1, Math.min(100, Math.round(k.percentage)));
+      return renderInlineRangeRow({
+        id,
+        icon: SF_ICONS.fanbladesFill,
+        rangeClass: "is-blue",
+        min: 1,
+        max: 100,
+        val: pct,
+        dataAttr: "data-inline-fanpercent",
+        ariaLabel: escape(`${dev.name} ${t("风速")}`),
+        disabledAttr,
+      });
+    }
+    if (k.kind === "speaker" && isOn && k.volumeWritable) {
+      const vol = Math.max(0, Math.min(100, Math.round(k.volumePercent)));
+      return renderInlineRangeRow({
+        id,
+        icon: SF_ICONS.speakerFill,
+        rangeClass: "",
+        min: 0,
+        max: 100,
+        val: vol,
+        dataAttr: "data-inline-volume",
+        ariaLabel: escape(`${dev.name} ${t("音量")}`),
+        disabledAttr,
+      });
+    }
+    if (k.kind === "vacuum" && k.actionsWritable !== false) {
+      const status = k.status.toLowerCase();
+      return `<div class="cc-hero-primary-bar"><div class="cc-segmented-pills">
+          <button class="cc-seg-pill ${status === "cleaning" ? "is-active" : ""}" data-vacuumaction="${id}|start"${disabledAttr}>${t("开始清扫")}</button>
+          <button class="cc-seg-pill ${status === "paused" ? "is-active" : ""}" data-vacuumaction="${id}|pause"${disabledAttr}>${t("暂停")}</button>
+          <button class="cc-seg-pill ${status === "returning" ? "is-active" : ""}" data-vacuumaction="${id}|returnToBase"${disabledAttr}>${t("回充")}</button>
+        </div></div>`;
+    }
+  }
+  return "";
+}
+
+function renderSmallDeviceTile(options: {
+  readonly dev: SmartDevice;
+  readonly state: DeviceTileViewState;
+  readonly attrs: string;
+  readonly motion: string;
+  readonly badge: string;
+  readonly pinned: boolean;
+  readonly readout: string;
+  readonly isOn: boolean;
+  readonly palette: string;
+  readonly svg: string;
+  readonly writable: boolean;
+  readonly hasDrawer: boolean;
+  readonly shownSubtitle: string;
+}): string {
+  const { dev, state, attrs, motion, badge, pinned, readout, isOn, palette, svg, writable, hasDrawer, shownSubtitle } = options;
+  const escape = state.escapeHtml;
+  const id = escape(dev.id);
+  const kind = dev.kind.kind;
+  const actionHint =
+    kind === "camera"
+      ? t("点击放大打开摄像机实时画面")
+      : writable && kind !== "fridge"
+        ? t("点击直接切换开关")
+        : hasDrawer
+          ? t("点击展开精细调节")
+          : t("只读");
+  const tooltip = `${dev.name} · ${shownSubtitle}（${actionHint}）`;
+  const ariaLabel = `${dev.name}，${shownSubtitle}`;
+  const staleClass = readout === "possiblyStale" ? "is-stale" : "";
+  const actionAttr =
+    kind === "camera"
+      ? `data-body-device="${id}"`
+      : writable && kind !== "fridge"
+        ? `data-toggle-device="${id}"`
+        : hasDrawer
+          ? `data-expand-device="${id}"`
+          : "";
+
+  const inner = actionAttr
+    ? `<button type="button" class="cc-small-tile-btn" ${actionAttr} title="${escape(tooltip)}" aria-label="${escape(ariaLabel)}" aria-pressed="${isOn}"><span class="cc-tile-orb">${svg}</span><span class="cc-small-tile-dot" aria-hidden="true"></span></button>`
+    : `<span class="cc-small-tile-btn is-readonly" role="img" title="${escape(tooltip)}" aria-label="${escape(ariaLabel)}"><span class="cc-tile-orb">${svg}</span></span>`;
+
+  const isWaiting = state.waitingDeviceIds.has(dev.id);
+  const hasActiveHighRisk =
+    state.pendingHighRisk !== null &&
+    state.pendingHighRisk.deviceId === dev.id &&
+    state.pendingHighRisk.expiresAtMs > Date.now();
+  return `<div class="cc-tile is-size-small ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="small" ${attrs}>${renderPinStarBadge(pinned, escape)}${badge}${inner}</div>`;
 }
 
 export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): string {
   const size = state.size;
   const escape = state.escapeHtml;
-  const attrs = `data-tile-id="${escape(dev.id)}" style="grid-column: span ${state.span}; --i: ${Math.min(state.index, 12)}; --jd: -${Math.round((performance.now() + (state.index * 137) % 560) % 560)}ms"`;
-  const motion = `${state.animateEntrance ? "is-entering" : ""} ${state.poppedDeviceId === dev.id ? "is-popped" : ""} ${state.draggingId === dev.id ? "is-dragging" : ""}`;
+  const isExpanded = state.expandedDeviceId === dev.id || size === "panel";
+  const pinned = state.isPinned ?? false;
+  const effectiveSpan = size === "small" && !isExpanded ? 3 : state.span;
+  const attrs = `data-tile-id="${escape(dev.id)}" style="grid-column: span ${effectiveSpan}; --i: ${Math.min(state.index, 12)}; --jd: -${Math.round((performance.now() + (state.index * 137) % 560) % 560)}ms"`;
+  const sizeClass = `is-size-${size}`;
+  const motion = `${sizeClass} ${state.animateEntrance ? "is-entering" : ""} ${state.poppedDeviceId === dev.id ? "is-popped" : ""} ${state.draggingId === dev.id ? "is-dragging" : ""}`;
   const sizeTitle = TILE_SIZES.find((item) => item.id === size)?.title ?? "";
   const badge = state.isEditingLayout
     ? `<button class="cc-resize-handle" data-resize-handle="${escape(dev.id)}" data-cycle-size="${escape(dev.id)}" data-tile-size="${size}" title="${t("切换卡片大小")}：${sizeTitle}" aria-label="${t("切换卡片大小")}，${sizeTitle}"><svg class="cc-resize-arc" viewBox="0 0 28 28" aria-hidden="true"><path d="M 22 10 A 12 12 0 0 1 10 22" /></svg></button>`
     : "";
-  if (dev.kind.kind === "sensor" && (dev.kind.temperature !== null || dev.kind.humidity !== null)) {
-    return renderSensorCard(dev, dev.kind, state.span < 6, attrs, motion, badge, state.selectedRoom, state.valuesAreStale, escape);
-  }
-  if (dev.kind.kind === "climate" && size !== "half") {
-    return renderClimateStrip(dev, dev.kind, size === "panel", attrs, motion, badge, state.expandedDeviceId, state.selectedRoom, state.valuesAreStale, state.waitingDeviceIds, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk);
-  }
-  const isExpanded = state.expandedDeviceId === dev.id || size === "panel";
-  const readout = deviceReadout(state.waitingDeviceIds.has(dev.id), state.valuesAreStale);
-  const isOn = readout === "possiblyStale" ? false : isDeviceActiveOn(dev);
+  const isWaiting = state.waitingDeviceIds.has(dev.id);
+  const readout = deviceReadout(isWaiting, state.valuesAreStale);
+  const isOn = devicePresentsAsActive(dev, readout === "possiblyStale");
   const kind = dev.kind.kind;
   const palette = devicePaletteClass(dev);
   const svg = deviceSvgIcon(dev);
   const writable = deviceCanTogglePower(dev);
-  const hasDrawer = hasDetailDrawer(dev, state.deviceFacets[dev.id] ?? []);
+  const effectiveDevForDrawer =
+    dev.kind.kind === "light" && state.unsupportedLightEffects && state.unsupportedLightEffects.size > 0
+      ? {
+          ...dev,
+          kind: {
+            ...dev.kind,
+            availableEffects: filterSupportedEffects(dev.kind.availableEffects, state.unsupportedLightEffects),
+          },
+        }
+      : dev;
+  const hasDrawer = hasDetailDrawer(effectiveDevForDrawer, state.deviceFacets[dev.id] ?? []);
+  const hasActiveHighRisk =
+    state.pendingHighRisk !== null &&
+    state.pendingHighRisk.deviceId === dev.id &&
+    state.pendingHighRisk.expiresAtMs > Date.now();
+  const isTwoTapArmed = hasActiveHighRisk && state.pendingHighRisk?.confirm === undefined;
   const subtitle =
     state.selectedRoom === "全部"
       ? `${dev.roomName} · ${deviceStatusSummary(dev)}`
@@ -746,18 +1240,51 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
       ? t("可能过期")
       : dim !== null
         ? t("亮度 {percent}%", { percent: dim })
-        : subtitle;
+        : isTwoTapArmed && !isExpanded
+          ? trText("再点一次确认", "Tap again to confirm")
+          : subtitle;
+
+  if (size === "small" && !isExpanded) {
+    return renderSmallDeviceTile({
+      dev,
+      state,
+      attrs,
+      motion: `${state.animateEntrance ? "is-entering" : ""} ${state.poppedDeviceId === dev.id ? "is-popped" : ""} ${state.draggingId === dev.id ? "is-dragging" : ""}`,
+      badge,
+      pinned,
+      readout,
+      isOn,
+      palette,
+      svg,
+      writable,
+      hasDrawer,
+      shownSubtitle,
+    });
+  }
+
+  if (dev.kind.kind === "sensor" && (dev.kind.temperature !== null || dev.kind.humidity !== null)) {
+    return renderSensorCard(dev, dev.kind, state.span < 6, `data-tile-size="${size}" ${attrs}`, motion, `${renderPinStarBadge(pinned, escape)}${badge}`, state.selectedRoom, state.valuesAreStale, escape);
+  }
+  if (dev.kind.kind === "climate" && size !== "half") {
+    return renderClimateStrip(dev, dev.kind, size === "panel", `data-tile-size="${size}" ${attrs}`, motion, `${renderPinStarBadge(pinned, escape)}${badge}`, state.expandedDeviceId, state.selectedRoom, state.valuesAreStale, state.waitingDeviceIds, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk);
+  }
+
   const staleClass = readout === "possiblyStale" ? "is-stale" : "";
   const isSubpage = state.expandedDeviceId === dev.id && size !== "panel" && hasDrawer;
   const isCapsule = state.span < 6 && !isExpanded;
+  const roomHeroPill =
+    size === "hero" && dev.roomName
+      ? `<span class="cc-hero-room-pill">${escape(dev.roomName)}</span>`
+      : "";
 
   if (isCapsule) {
     return `
-      <div class="cc-tile is-capsule ${palette} ${isOn ? "is-active" : ""} ${dim !== null ? "is-dimming" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" ${attrs}>
+      <div class="cc-tile is-capsule ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dim !== null ? "is-dimming" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" ${attrs}>
+        ${renderPinStarBadge(pinned, escape)}
         ${badge}
         <div class="cc-tile-header win-capsule-stack">
           <div class="win-split-pill ${hasDrawer ? "has-expand" : ""}">
-            ${capsuleFill > 0 ? `<span class="cc-tile-fill" style="width:${capsuleFill}%"></span>` : ""}
+            ${capsuleFill > 0 ? `<span class="cc-tile-fill" style="width:${capsuleFill}%;--fill-scale:${(capsuleFill / 100).toFixed(3)}"></span>` : ""}
             ${
               dev.kind.kind === "generic" && dev.kind.isReadOnly
                 ? `<span class="cc-readonly-badge">${t("只读")}</span>`
@@ -801,13 +1328,15 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
             <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>
           </button>
         </div>
+        ${!hasDrawer ? renderPendingHighRiskRow(dev.id, state.pendingHighRisk, escape) : ""}
       </div>
     `;
   }
 
   if (isSubpage) {
     return `
-      <div class="cc-tile is-expanded is-subpage is-span-row ${palette} ${isOn ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" ${attrs}>
+      <div class="cc-tile is-expanded is-subpage is-span-row ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" ${attrs}>
+        ${renderPinStarBadge(pinned, escape)}
         ${badge}
         <div class="cc-tile-header win-subpage-header">
           <button
@@ -826,7 +1355,10 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
             aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
             aria-pressed="${isOn}"
           >
-            <div class="cc-tile-name">${escape(dev.name)}</div>
+            <div class="cc-tile-title-row">
+              <div class="cc-tile-name">${escape(dev.name)}</div>
+              ${roomHeroPill}
+            </div>
             <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>
           </button>
           ${
@@ -848,14 +1380,26 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
               : `<span class="cc-tile-orb win-subpage-power" title="${escape(dev.name)}" aria-hidden="true">${svg}</span>`
           }
         </div>
-        ${renderDeviceDrawer(dev, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk)}
+        ${renderDeviceDrawer(dev, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk, state.unsupportedLightEffects, state.speakerDrawerState)}
       </div>
     `;
   }
 
+  const inlineSlider = renderCollapsedInlineSlider({
+    dev,
+    size,
+    isExpanded,
+    isOn,
+    readout,
+    dim,
+    isEditingLayout: state.isEditingLayout,
+    escape,
+  });
+
   return `
-      <div class="cc-tile is-span-row ${palette} ${isOn ? "is-active" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" ${attrs}>
-        ${fill > 0 ? `<span class="cc-tile-fill" style="width:${fill}%"></span>` : ""}
+      <div class="cc-tile is-span-row ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${inlineSlider ? "has-inline-slider" : ""} ${motion}" data-tile-size="${size}" ${attrs}>
+        ${fill > 0 ? `<span class="cc-tile-fill" style="width:${fill}%;--fill-scale:${(fill / 100).toFixed(3)}"></span>` : ""}
+        ${renderPinStarBadge(pinned, escape)}
         ${badge}
         <div class="cc-tile-header">
           ${
@@ -884,7 +1428,10 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
             aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
             aria-pressed="${isOn}"
           >
-            <div class="cc-tile-name">${escape(dev.name)}</div>
+            <div class="cc-tile-title-row">
+              <div class="cc-tile-name">${escape(dev.name)}</div>
+              ${roomHeroPill}
+            </div>
             <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>
           </button>
 
@@ -902,9 +1449,10 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
               : ""
           }
         </div>
+        ${inlineSlider}
         ${
           isExpanded && hasDrawer
-            ? renderDeviceDrawer(dev, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk)
+            ? renderDeviceDrawer(dev, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk, state.unsupportedLightEffects, state.speakerDrawerState)
             : ""
         }
         ${

@@ -2059,4 +2059,20 @@ struct GoldenCorpusTests {
             }
         }
     }
+
+    @Test("Scene-name collisions across Traditional and Simplified Chinese preserve exact script or reject ambiguity")
+    func sceneNameScriptCollisionParity() {
+        let simpScene = HomeScene(id: "scene_simp", name: "晚间", entityId: "scene.simp")
+        let tradScene = HomeScene(id: "scene_trad", name: "晚間", entityId: "scene.trad")
+        let tradPlan = LocalIntentParser.parse("执行晚間", devices: [], scenes: [simpScene, tradScene])
+        #expect(tradPlan?.intents == [DeviceIntent(targetId: "scene_trad", operation: .activateScene)])
+        let simpPlan = LocalIntentParser.parse("执行晚间", devices: [], scenes: [simpScene, tradScene])
+        #expect(simpPlan?.intents == [DeviceIntent(targetId: "scene_simp", operation: .activateScene)])
+        let fallbackPlan = LocalIntentParser.parse("執行晚間", devices: [], scenes: [simpScene])
+        #expect(fallbackPlan?.intents == [DeviceIntent(targetId: "scene_simp", operation: .activateScene)])
+        let dupA = HomeScene(id: "scene_a", name: "晚間模式", entityId: "scene.a")
+        let dupB = HomeScene(id: "scene_b", name: "晚間場景", entityId: "scene.b")
+        #expect(LocalIntentParser.parse("执行晚間", devices: [], scenes: [dupA, dupB]) == nil)
+        #expect(LocalIntentParser.parse("执行晚间", devices: [], scenes: [dupA, dupB]) == nil)
+    }
 }

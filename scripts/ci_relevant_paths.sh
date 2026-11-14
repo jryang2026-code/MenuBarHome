@@ -108,6 +108,12 @@ while IFS= read -r path || [ -n "$path" ]; do
             code=true
             windows=true
             windows_native=true
+            scripts=true
+            ;;
+        windows/scripts/*)
+            code=true
+            windows=true
+            scripts=true
             ;;
         windows/package.json|windows/package-lock.json|windows/vite.config.*|windows/tsconfig*.json|windows/index.html)
             code=true

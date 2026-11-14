@@ -37,6 +37,16 @@ export function invokeTauriVoid(cmd: string, args?: Record<string, unknown>): vo
   }
 }
 
+export async function isWorkstationLocked(): Promise<boolean> {
+  const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
+  if (!invoke) return false;
+  try {
+    return Boolean(await invoke<boolean>("is_workstation_locked"));
+  } catch {
+    return false;
+  }
+}
+
 export async function isWorkstationLockBlockingControl(host: {
   readonly settings: { readonly blockControlWhileLocked?: boolean };
 }): Promise<boolean> {
@@ -46,6 +56,6 @@ export async function isWorkstationLockBlockingControl(host: {
   try {
     return Boolean(await invoke<boolean>("is_workstation_locked"));
   } catch {
-    return false;
+    return true;
   }
 }

@@ -37,23 +37,25 @@ public enum DelayPhrase {
 
     public static func extract(_ utterance: String) -> (delay: TimeInterval, remainder: String)? {
         let text = utterance.trimmingCharacters(in: .whitespacesAndNewlines)
+        let norm = LocalIntentParser.toSimplifiedChinese(text)
         let ns = text as NSString
-        let full = NSRange(location: 0, length: ns.length)
+        let nsNorm = norm as NSString
+        let full = NSRange(location: 0, length: nsNorm.length)
 
-        if let m = leading.firstMatch(in: text, range: full) {
+        if let m = leading.firstMatch(in: norm, range: full) {
             let hasPrefix = m.range(at: 1).location != NSNotFound
             let hasSuffix = m.range(at: 6).location != NSNotFound
-            if hasPrefix || hasSuffix, let seconds = seconds(ns, m, numberGroup: 2) {
-                return finish(seconds, ns.replacingCharacters(in: m.range, with: ""))
+            if hasPrefix || hasSuffix, let seconds = seconds(nsNorm, m, numberGroup: 2) {
+                return finish(seconds, (ns.length == nsNorm.length ? ns : nsNorm).replacingCharacters(in: m.range, with: ""))
             }
         }
-        if let m = trailing.firstMatch(in: text, range: full), let seconds = seconds(ns, m, numberGroup: 1) {
-            return finish(seconds, ns.replacingCharacters(in: m.range, with: ""))
+        if let m = trailing.firstMatch(in: norm, range: full), let seconds = seconds(nsNorm, m, numberGroup: 1) {
+            return finish(seconds, (ns.length == nsNorm.length ? ns : nsNorm).replacingCharacters(in: m.range, with: ""))
         }
-        if let m = enLeading.firstMatch(in: text, range: full), let secs = enSeconds(ns, m) {
+        if let m = enLeading.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)), let secs = enSeconds(ns, m) {
             return finish(secs, ns.replacingCharacters(in: m.range, with: ""))
         }
-        if let m = enTrailing.firstMatch(in: text, range: full), let secs = enSeconds(ns, m) {
+        if let m = enTrailing.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)), let secs = enSeconds(ns, m) {
             return finish(secs, ns.replacingCharacters(in: m.range, with: ""))
         }
         return nil
@@ -62,7 +64,7 @@ public enum DelayPhrase {
     public static func isCancel(_ utterance: String) -> Bool {
         let lower = utterance.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         if enCancelPhrases.contains(where: { lower.contains($0) }) { return true }
-        let compact = utterance.filter { !$0.isWhitespace && !"，。！？,.!?了吧".contains($0) }
+        let compact = LocalIntentParser.toSimplifiedChinese(utterance).filter { !$0.isWhitespace && !"，。！？,.!?了吧".contains($0) }
         return cancelPhrases.contains { compact.contains($0) }
     }
 
@@ -134,14 +136,19 @@ public enum DelayPhrase {
 
     /// Arabic digits or Chinese numerals up to 99 (十五, 二十, 四十五).
     static func spokenNumber(_ s: String) -> Int? {
-        if let n = Int(s) { return n }
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let n = Int(trimmed) { return n }
         let digits: [Character: Int] = ["零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9]
-        let chars = Array(s)
+        let chars = Array(trimmed)
+        if chars.count == 2, chars[0] == "零", let ones = digits[chars[1]] {
+            return ones
+        }
         if let tenIndex = chars.firstIndex(of: "十") {
             guard tenIndex <= 1, chars.count - tenIndex <= 2 else { return nil }
             let tens = tenIndex == 0 ? 1 : digits[chars[0]]
             let ones = tenIndex == chars.count - 1 ? 0 : digits[chars[tenIndex + 1]]
-            guard let tens, let ones else { return nil }
+            guard let tens, tens > 0, let ones else { return nil }
             return tens * 10 + ones
         }
         guard chars.count == 1 else { return nil }
@@ -236,7 +243,7 @@ public enum UndoPhrase {
             return false
         }
         if enKeywords.contains(lower) { return true }
-        let compact = utterance.filter { !$0.isWhitespace && !"，。！？、,.!?".contains($0) }
+        let compact = LocalIntentParser.toSimplifiedChinese(utterance).filter { !$0.isWhitespace && !"，。！？、,.!?".contains($0) }
         guard compact.count <= 10,
               !timerExcludeWords.contains(where: { compact.contains($0) }) else { return false }
         return keywords.contains { compact.contains($0) }

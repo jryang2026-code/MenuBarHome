@@ -916,24 +916,57 @@ export function bindGlobalKeys(
     if (handlePanelKey(host, e)) return;
 
     if (e.key === "Escape") {
-      if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
-        host.cameraLive.hideCameraLiveView();
+      if (host.prompt !== null) {
+        e.preventDefault();
+        host.closePrompt();
         return;
       }
       if (hasPendingUrlConfirmation(host)) {
+        e.preventDefault();
         dismissPendingUrlConfirmation(host, false);
         return;
       }
+      if (host.ctxMenu !== null || host.isHomeMenuOpen) {
+        e.preventDefault();
+        host.ctxMenu = null;
+        host.isHomeMenuOpen = false;
+        invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
+        host.render();
+        return;
+      }
+      if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
+        e.preventDefault();
+        host.cameraLive.hideCameraLiveView();
+        return;
+      }
       if (host.activeSheet !== "none") {
+        e.preventDefault();
         host.activeSheet = "none";
         host.isRecordingHotkey = false;
         host.hotkeyNeedsHint = false;
         invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
         host.render();
-      } else {
-        resumeUndoHoverPause(host);
-        invokeTauriVoid("hide_panel");
+        return;
       }
+      if (host.isEditingLayout) {
+        e.preventDefault();
+        host.stopEditing();
+        return;
+      }
+      if (host.pendingHighRisk !== null) {
+        e.preventDefault();
+        host.clearPendingHighRisk();
+        host.render();
+        return;
+      }
+      if (host.expandedDeviceId !== null) {
+        e.preventDefault();
+        host.expandedDeviceId = null;
+        host.render();
+        return;
+      }
+      resumeUndoHoverPause(host);
+      invokeTauriVoid("hide_panel");
     } else if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && document.activeElement?.tagName !== "INPUT") {
       e.preventDefault();
       host.isShowingAssistantBar = true;

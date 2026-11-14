@@ -26,11 +26,16 @@ import {
   CN_TEMPERATURE_STEP_WORDS,
   CONSUMED_MARKER,
   consumeChinesePhrase,
+  disambiguateDeviceScriptCollision,
   disambiguateRoomDevices,
   extractChineseNumericOps,
   longestFirst,
   normalizeChineseUtterance,
+  spokenChineseNumber,
+  strippedRawSceneText,
   strippedSceneText,
+  toSimplifiedChinese,
+  type DevicePhraseEntry,
 } from "./chineseIntentTables.js";
 import { deviceCategory, isAssistantControllable, type IntentCategory } from "./deviceCategory.js";
 
@@ -41,33 +46,15 @@ export interface ParsedDelay {
   readonly remainder: string;
 }
 
-const CN_DIGITS: Readonly<Record<string, number>> = {
-  零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9,
-};
-
-/** Arabic digits or Chinese numerals up to 99 (十五, 二十, 四十五); `AssistantSchedule.spokenNumber`. */
 function spokenNumber(s: string): number | null {
-  if (/^[0-9]+$/.test(s)) return Number(s);
-  const chars = Array.from(s);
-  const tenIndex = chars.indexOf("十");
-  if (tenIndex >= 0) {
-    if (tenIndex > 1 || chars.length - tenIndex > 2) return null;
-    const tens = tenIndex === 0 ? 1 : CN_DIGITS[chars[0] ?? ""];
-    const ones = tenIndex === chars.length - 1 ? 0 : CN_DIGITS[chars[tenIndex + 1] ?? ""];
-    if (tens === undefined || ones === undefined) return null;
-    return tens * 10 + ones;
-  }
-  if (chars.length !== 1) return null;
-  return CN_DIGITS[chars[0] ?? ""] ?? null;
+  return spokenChineseNumber(s);
 }
 
-// Same grammar as `AssistantSchedule.swift:DelayPhrase`: number, optional 个 / 个半, unit, optional 半.
 const CN_DELAY_NUMBER = "([0-9]+|[零一二两三四五六七八九十]+|半)";
 const CN_DELAY_UNIT = "(个半|个)?(秒钟|秒|分钟|分|小时|钟头)(半)?";
 const CN_DELAY_LEADING = new RegExp(`^(过|等)?${CN_DELAY_NUMBER}\\s*${CN_DELAY_UNIT}(以后|之后|后)?`);
 const CN_DELAY_TRAILING = new RegExp(`[，,\\s]*${CN_DELAY_NUMBER}\\s*${CN_DELAY_UNIT}(以后|之后|后)$`);
 
-/** Seconds for one Chinese delay match; `g` is the index of the number group. */
 function chineseDelaySeconds(m: RegExpExecArray, g: number): number | null {
   const rawNumber = m[g];
   const unitWord = m[g + 2];
@@ -116,7 +103,7 @@ export const DelayPhrase = {
   isCancel(utterance: string): boolean {
     const lower = utterance.toLowerCase().trim();
     if (EN_CANCEL_PHRASES.some((p) => lower.includes(p))) return true;
-    const compact = utterance.replace(/[\s，。！？、,.!?了吧]/g, "");
+    const compact = toSimplifiedChinese(utterance).replace(/[\s，。！？、,.!?了吧]/g, "");
     return CN_CANCEL_PHRASES.some((p) => compact.includes(p));
   },
 
@@ -130,13 +117,14 @@ export const DelayPhrase = {
     if (enTrail) {
       return buildDelay(Number(enTrail[2]), englishUnitMultiplier(enTrail[3] ?? ""), enTrail[1] ?? "");
     }
-    const leading = CN_DELAY_LEADING.exec(trimmed);
+    const simplified = toSimplifiedChinese(trimmed);
+    const leading = CN_DELAY_LEADING.exec(simplified);
     if (leading) {
       // Without 过 / 等 in front or 后 behind, "10分钟" is not a delay ("10分钟关灯" is left alone).
       const seconds = leading[1] !== undefined || leading[6] !== undefined ? chineseDelaySeconds(leading, 2) : null;
       if (seconds !== null) return buildDelay(seconds, 1, stripDelayMatch(trimmed, leading));
     }
-    const trailing = CN_DELAY_TRAILING.exec(trimmed);
+    const trailing = CN_DELAY_TRAILING.exec(simplified);
     if (trailing) {
       const seconds = chineseDelaySeconds(trailing, 1);
       if (seconds !== null) return buildDelay(seconds, 1, stripDelayMatch(trimmed, trailing));
@@ -169,7 +157,7 @@ export const UndoPhrase = {
     const lower = utterance.toLowerCase().replace(/^[，。！？、,.!?\s]+|[，。！？、,.!?\s]+$/g, "");
     if (EN_TIMER_EXCLUDE_REGEX.test(lower)) return false;
     if (EN_UNDO_SET.has(lower)) return true;
-    const compact = utterance.replace(/[\s，。！？、,.!?]/g, "");
+    const compact = toSimplifiedChinese(utterance).replace(/[\s，。！？、,.!?]/g, "");
     if (compact.length > 10) return false;
     if (CN_TIMER_EXCLUDE.some((w) => compact.includes(w))) return false;
     return CN_UNDO_KEYWORDS.some((w) => compact.includes(w));
@@ -706,6 +694,7 @@ const BARE_CATEGORY_NOUNS: Readonly<Record<IntentCategory, string>> = {
   vacuum: "扫地机",
   tv: "电视",
   camera: "摄像机",
+  valve: "阀门",
   other: "设备",
 };
 
@@ -937,6 +926,9 @@ const EN_CATEGORY_WORDS: ReadonlyArray<readonly [string, IntentCategory]> = [
   ["vacuum", "vacuum"],
   ["television", "tv"], ["tv", "tv"],
   ["cameras", "camera"], ["camera", "camera"],
+  ["water valves", "valve"], ["water valve", "valve"],
+  ["gas valves", "valve"], ["gas valve", "valve"],
+  ["valves", "valve"], ["valve", "valve"],
 ];
 
 const EN_FILLERS = [
@@ -1035,26 +1027,22 @@ function parseChineseDeviceCommand(
   devices: readonly SmartDevice[],
   scenes: readonly HomeScene[],
   options: LocalIntentParseOptions,
+  rawUtterance: string = text,
 ): IntentPlan | null {
   const panelRoom = options.panelRoom ?? null;
   const state = { rest: text };
   const rawOps: IntentOperation[] = extractChineseNumericOps(state);
 
   const devById = new Map(devices.map((d) => [d.id, d]));
-  const explicitGroups: ReadonlyArray<string>[] = [];
-  const nameGroups: ReadonlyArray<string>[] = [];
+  const matchedEntries: DevicePhraseEntry[] = [];
   for (const entry of buildDevicePhrases(devices)) {
     if (!consumeChinesePhrase(entry.phrase, state)) continue;
-    if (entry.kind === "full") {
-      explicitGroups.push(entry.ids);
-    } else {
-      nameGroups.push(entry.ids);
-    }
+    matchedEntries.push(entry);
   }
 
   const roomWordSet = new Set<string>(Object.keys(CN_ROOM_ALIASES));
   for (const d of devices) {
-    if (d.roomName) roomWordSet.add(d.roomName);
+    if (d.roomName) roomWordSet.add(toSimplifiedChinese(d.roomName));
   }
   const matchedRooms = longestFirst(roomWordSet).filter((w) => consumeChinesePhrase(w, state));
   const hasScope = longestFirst(CN_SCOPE_WORDS).filter((w) => consumeChinesePhrase(w, state)).length > 0;
@@ -1112,35 +1100,39 @@ function parseChineseDeviceCommand(
   const mustAcceptIds = new Set<string>();
   let candidates: SmartDevice[] = [];
 
-  if (explicitGroups.length > 0 || nameGroups.length > 0) {
+  if (matchedEntries.length > 0) {
     const targetIds: string[] = [];
-    for (const group of explicitGroups) {
-      const narrowedIds =
-        group.length > 1 && matchedRooms.length > 0
-          ? group.filter((id) => roomDeviceIds.has(id))
-          : group;
-      if (narrowedIds.length === 0) return null;
-      const resolved = disambiguateRoomDevices(
-        narrowedIds.map((id) => devById.get(id)).filter((d): d is SmartDevice => d !== undefined),
-        panelRoom,
+    for (const entry of matchedEntries) {
+      const preScript = disambiguateDeviceScriptCollision(entry.candidates, rawUtterance);
+      const initialCandidates = preScript.length > 0 ? preScript : entry.candidates;
+      const hasFullCandidate = initialCandidates.some((c) => c.kind === "full");
+      const narrowedCandidates = hasFullCandidate
+        ? initialCandidates.length > 1 && matchedRooms.length > 0
+          ? initialCandidates.filter((c) => roomDeviceIds.has(c.id))
+          : initialCandidates
+        : matchedRooms.length === 0
+          ? initialCandidates
+          : initialCandidates.filter((c) => roomDeviceIds.has(c.id));
+      if (narrowedCandidates.length === 0) return null;
+      const roomResolvedSet = new Set(
+        disambiguateRoomDevices(
+          narrowedCandidates.map((c) => devById.get(c.id)).filter((d): d is SmartDevice => d !== undefined),
+          panelRoom,
+        ),
       );
-      if (resolved.length === 0) return null;
-      for (const id of resolved) {
-        if (!targetIds.includes(id)) targetIds.push(id);
-        mustAcceptIds.add(id);
+      const roomResolvedCandidates = narrowedCandidates.filter((c) => roomResolvedSet.has(c.id));
+      if (roomResolvedCandidates.length === 0) return null;
+      const finalCandidates = disambiguateDeviceScriptCollision(roomResolvedCandidates, rawUtterance);
+      if (finalCandidates.length === 0) return null;
+      const isFullMatch = finalCandidates.some((c) => c.kind === "full");
+      if (!isFullMatch && finalCandidates.length !== 1 && !hasScope) return null;
+      for (const c of finalCandidates) {
+        if (!targetIds.includes(c.id)) targetIds.push(c.id);
+        if (isFullMatch) mustAcceptIds.add(c.id);
       }
-    }
-    for (const group of nameGroups) {
-      const narrowedIds = matchedRooms.length === 0 ? group : group.filter((id) => roomDeviceIds.has(id));
-      const resolved = disambiguateRoomDevices(
-        narrowedIds.map((id) => devById.get(id)).filter((d): d is SmartDevice => d !== undefined),
-        panelRoom,
-      );
-      if (resolved.length === 0 || (resolved.length !== 1 && !hasScope)) return null;
-      for (const id of resolved) {
-        if (!targetIds.includes(id)) targetIds.push(id);
+      if (!isFullMatch && finalCandidates.length === 1 && finalCandidates[0]) {
+        mustAcceptIds.add(finalCandidates[0].id);
       }
-      if (resolved.length === 1 && resolved[0]) mustAcceptIds.add(resolved[0]);
     }
     candidates = targetIds.map((id) => devById.get(id)).filter((d): d is SmartDevice => d !== undefined);
   } else {
@@ -1168,6 +1160,7 @@ function parseChineseDeviceCommand(
       candidates = devices.filter((dev) => {
         const cat = deviceCategory(dev);
         if (!dev.isOnline || !isAssistantControllable(cat) || !deviceAcceptsControlWrites(dev)) return false;
+        if (cat === "valve" && !wanted?.has("valve")) return false;
         if (onlyActive && !isDeviceActiveOn(dev)) return false;
         if (matchedRooms.length > 0 && !roomDeviceIds.has(dev.id)) return false;
         if (wanted && !wanted.has(cat)) return false;
@@ -1196,21 +1189,40 @@ export const LocalIntentParser = {
       return this.parseEnglish(utterance, devices, scenes, options);
     }
 
+    const rawSceneCore = strippedRawSceneText(utterance);
     const sceneCore = strippedSceneText(text);
-    const exactScene = scenes.find((scene) => scene.name && strippedSceneText(scene.name) === sceneCore);
-    if (exactScene) {
-      return scenePlan(exactScene, devices, scenes);
+    const rawExactScenes = scenes.filter(
+      (scene) => scene.name && strippedRawSceneText(scene.name) === rawSceneCore,
+    );
+    if (rawExactScenes.length === 1 && rawExactScenes[0]) {
+      return scenePlan(rawExactScenes[0], devices, scenes);
+    }
+    if (rawExactScenes.length === 0) {
+      const exactScenes = scenes.filter(
+        (scene) => scene.name && strippedSceneText(scene.name) === sceneCore,
+      );
+      if (exactScenes.length === 1 && exactScenes[0]) {
+        return scenePlan(exactScenes[0], devices, scenes);
+      }
     }
 
-    const devicePlan = parseChineseDeviceCommand(text, devices, scenes, options);
+    const devicePlan = parseChineseDeviceCommand(text, devices, scenes, options, utterance);
     if (devicePlan) return devicePlan;
 
     if (Array.from(sceneCore).length >= 2) {
-      const containing = scenes.filter(
-        (scene) => scene.name && strippedSceneText(scene.name).includes(sceneCore),
+      const rawContaining = scenes.filter(
+        (scene) => scene.name && strippedRawSceneText(scene.name).includes(rawSceneCore),
       );
-      if (containing.length === 1 && containing[0]) {
-        return scenePlan(containing[0], devices, scenes);
+      if (rawContaining.length === 1 && rawContaining[0]) {
+        return scenePlan(rawContaining[0], devices, scenes);
+      }
+      if (rawContaining.length === 0) {
+        const containing = scenes.filter(
+          (scene) => scene.name && strippedSceneText(scene.name).includes(sceneCore),
+        );
+        if (containing.length === 1 && containing[0]) {
+          return scenePlan(containing[0], devices, scenes);
+        }
       }
     }
 
@@ -1451,6 +1463,7 @@ export const LocalIntentParser = {
         candidates = devices.filter((dev) => {
           const cat = deviceCategory(dev);
           if (!dev.isOnline || !isAssistantControllable(cat) || !deviceAcceptsControlWrites(dev)) return false;
+          if (cat === "valve" && !wanted?.has("valve")) return false;
           if (onlyActive && !isDeviceActiveOn(dev)) return false;
           if (matchedRoomKeys.length > 0 && !roomDeviceIds.has(dev.id)) return false;
           if (wanted && !wanted.has(cat)) return false;

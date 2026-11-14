@@ -92,156 +92,171 @@ export function loadSettings(): LoadedSettings {
         typeof parsed.assistantLegacyKeyEndpoint === "string" || parsed.assistantLegacyKeyEndpoint === null
           ? parsed.assistantLegacyKeyEndpoint
           : resolvedKeyEndpoint;
+      const askWhenUnsure = typeof parsed.askWhenUnsure === "boolean" ? parsed.askWhenUnsure : true;
+      const settings: PersistedSettings = {
+        connectionMode: mode,
+        miSession,
+        miCloudRegion: normalizeMiCloudRegion(parsed.miCloudRegion ?? miSession?.region),
+        autoCheckUpdates: parsed.autoCheckUpdates ?? true,
+        haBaseURL: parsed.haBaseURL ?? "",
+        haToken: rawHaToken,
+        assistantBaseURL: parsed.assistantBaseURL ?? "https://openrouter.ai/api/v1",
+        openRouterApiKey: rawApiKey,
+        // Keys saved before binding existed belong to the URL saved alongside them.
+        assistantKeyEndpoint: resolvedKeyEndpoint,
+        assistantCustomKeyEndpoint,
+        assistantLegacyKeyEndpoint,
+        cloudConsentEndpoints: Array.isArray(parsed.cloudConsentEndpoints)
+          ? parsed.cloudConsentEndpoints.filter((e): e is string => typeof e === "string")
+          : [],
+        allOffOverrides:
+          parsed.allOffOverrides && typeof parsed.allOffOverrides === "object"
+            ? Object.fromEntries(
+                Object.entries(parsed.allOffOverrides).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"),
+              )
+            : {},
+        assistantModel: parsed.assistantModel ?? "~typesafe/jev-latest",
+        askWhenUnsure,
+        habitLearningEnabled: parsed.habitLearningEnabled ?? true,
+        habitShareEnabled: habitShare.sharing === "on",
+        learnedShortcuts: parsed.learnedShortcuts ?? [],
+        habitEntries: Array.isArray(parsed.habitEntries)
+          ? parsed.habitEntries.filter(
+              (e): e is HabitEntry =>
+                typeof e?.bucket === "string" &&
+                typeof e?.targetId === "string" &&
+                typeof e?.operationKey === "string" &&
+                typeof e?.count === "number",
+            )
+          : [],
+        hasCompletedOnboarding: parsed.hasCompletedOnboarding ?? Boolean(miSession),
+        isCompactGridMode: parsed.isCompactGridMode ?? true,
+        hideOfflineDevices: typeof parsed.hideOfflineDevices === "boolean" ? parsed.hideOfflineDevices : false,
+        hideGroupedLights: typeof parsed.hideGroupedLights === "boolean" ? parsed.hideGroupedLights : true,
+        allowAdvancedFacetWrites:
+          typeof parsed.allowAdvancedFacetWrites === "boolean" ? parsed.allowAdvancedFacetWrites : false,
+        cachedXiaomiDevices: Array.isArray(parsed.cachedXiaomiDevices)
+          ? upgradeCachedDevices(
+              parsed.cachedXiaomiDevices,
+              cachedDevicesVersion < CACHED_DEVICES_VERSION,
+            )
+          : [],
+        cachedDevicesVersion: Math.max(cachedDevicesVersion, CACHED_DEVICES_VERSION),
+        cachedHAHome: parseCachedHAHome(parsed.cachedHAHome),
+        cachedModelTypes:
+          parsed.cachedModelTypes && typeof parsed.cachedModelTypes === "object"
+            ? parsed.cachedModelTypes
+            : {},
+        // A stored `skin` from builds before the redesign is simply not read; every surface today
+        // is the same glass panel.
+        appearance:
+          parsed.appearance === "light" || parsed.appearance === "dark"
+            ? parsed.appearance
+            : "system",
+        panelHeight: PANEL_HEIGHTS.some((h) => h.id === parsed.panelHeight) ? (parsed.panelHeight as PanelHeight) : "standard",
+        panelOpacity: normalizePanelOpacity(parsed.panelOpacity),
+        climatePanel: parsed.climatePanel ?? true,
+        showQuickActionsBar: parsed.showQuickActionsBar ?? true,
+        enableGrokBall: parsed.enableGrokBall ?? false,
+        interfaceLanguage:
+          parsed.interfaceLanguage === "zh-Hans" ||
+          parsed.interfaceLanguage === "zh-Hant" ||
+          parsed.interfaceLanguage === "en"
+            ? parsed.interfaceLanguage
+            : "system",
+        temperatureUnit:
+          parsed.temperatureUnit === "celsius" || parsed.temperatureUnit === "fahrenheit"
+            ? parsed.temperatureUnit
+            : "system",
+        enableGlobalHotkey: typeof parsed.enableGlobalHotkey === "boolean" ? parsed.enableGlobalHotkey : true,
+        globalHotkey: normalizeGlobalShortcut(parsed.globalHotkey),
+        launchAtLogin: typeof parsed.launchAtLogin === "boolean" ? parsed.launchAtLogin : false,
+        blockControlWhileLocked:
+          typeof parsed.blockControlWhileLocked === "boolean" ? parsed.blockControlWhileLocked : true,
+        enableRaycastIntegration:
+          typeof parsed.enableRaycastIntegration === "boolean" ? parsed.enableRaycastIntegration : false,
+        allowDirectURLControl:
+          typeof parsed.allowDirectURLControl === "boolean" ? parsed.allowDirectURLControl : false,
+        cameraStreamURLs:
+          parsed.cameraStreamURLs && typeof parsed.cameraStreamURLs === "object"
+            ? Object.fromEntries(
+                Object.entries(parsed.cameraStreamURLs as Record<string, unknown>).filter(
+                  (entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].trim().length > 0,
+                ),
+              )
+            : {},
+        cameraStreamQualities: normalizeCameraStreamQualityMap(parsed.cameraStreamQualities),
+        layout: { ...emptyLayoutPrefs(), ...(parsed.layout ?? {}) },
+        selectedHomeId: parsed.selectedHomeId ?? null,
+      };
       return {
-        settings: {
-          connectionMode: mode,
-          miSession,
-          miCloudRegion: normalizeMiCloudRegion(parsed.miCloudRegion ?? miSession?.region),
-          autoCheckUpdates: parsed.autoCheckUpdates ?? true,
-          haBaseURL: parsed.haBaseURL ?? "",
-          haToken: rawHaToken,
-          assistantBaseURL: parsed.assistantBaseURL ?? "https://openrouter.ai/api/v1",
-          openRouterApiKey: rawApiKey,
-          // Keys saved before binding existed belong to the URL saved alongside them.
-          assistantKeyEndpoint: resolvedKeyEndpoint,
-          assistantCustomKeyEndpoint,
-          assistantLegacyKeyEndpoint,
-          cloudConsentEndpoints: Array.isArray(parsed.cloudConsentEndpoints)
-            ? parsed.cloudConsentEndpoints.filter((e): e is string => typeof e === "string")
-            : [],
-          allOffOverrides:
-            parsed.allOffOverrides && typeof parsed.allOffOverrides === "object"
-              ? Object.fromEntries(
-                  Object.entries(parsed.allOffOverrides).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"),
-                )
-              : {},
-          assistantModel: parsed.assistantModel ?? "~typesafe/jev-latest",
-          habitLearningEnabled: parsed.habitLearningEnabled ?? true,
-          habitShareEnabled: habitShare.sharing === "on",
-          learnedShortcuts: parsed.learnedShortcuts ?? [],
-          habitEntries: Array.isArray(parsed.habitEntries)
-            ? parsed.habitEntries.filter(
-                (e): e is HabitEntry =>
-                  typeof e?.bucket === "string" &&
-                  typeof e?.targetId === "string" &&
-                  typeof e?.operationKey === "string" &&
-                  typeof e?.count === "number",
-              )
-            : [],
-          hasCompletedOnboarding: parsed.hasCompletedOnboarding ?? Boolean(miSession),
-          isCompactGridMode: parsed.isCompactGridMode ?? true,
-          hideOfflineDevices: typeof parsed.hideOfflineDevices === "boolean" ? parsed.hideOfflineDevices : false,
-          hideGroupedLights: typeof parsed.hideGroupedLights === "boolean" ? parsed.hideGroupedLights : true,
-          allowAdvancedFacetWrites:
-            typeof parsed.allowAdvancedFacetWrites === "boolean" ? parsed.allowAdvancedFacetWrites : false,
-          cachedXiaomiDevices: Array.isArray(parsed.cachedXiaomiDevices)
-            ? upgradeCachedDevices(
-                parsed.cachedXiaomiDevices,
-                cachedDevicesVersion < CACHED_DEVICES_VERSION,
-              )
-            : [],
-          cachedDevicesVersion: Math.max(cachedDevicesVersion, CACHED_DEVICES_VERSION),
-          cachedHAHome: parseCachedHAHome(parsed.cachedHAHome),
-          cachedModelTypes:
-            parsed.cachedModelTypes && typeof parsed.cachedModelTypes === "object"
-              ? parsed.cachedModelTypes
-              : {},
-          // A stored `skin` from builds before the redesign is simply not read; every surface today
-          // is the same glass panel.
-          appearance:
-            parsed.appearance === "light" || parsed.appearance === "dark"
-              ? parsed.appearance
-              : "system",
-          panelHeight: PANEL_HEIGHTS.some((h) => h.id === parsed.panelHeight) ? (parsed.panelHeight as PanelHeight) : "standard",
-          panelOpacity: normalizePanelOpacity(parsed.panelOpacity),
-          climatePanel: parsed.climatePanel ?? true,
-          showQuickActionsBar: parsed.showQuickActionsBar ?? true,
-          enableGrokBall: parsed.enableGrokBall ?? false,
-          interfaceLanguage:
-            parsed.interfaceLanguage === "zh-Hans" || parsed.interfaceLanguage === "en"
-              ? parsed.interfaceLanguage
-              : "system",
-          temperatureUnit:
-            parsed.temperatureUnit === "celsius" || parsed.temperatureUnit === "fahrenheit"
-              ? parsed.temperatureUnit
-              : "system",
-          enableGlobalHotkey: typeof parsed.enableGlobalHotkey === "boolean" ? parsed.enableGlobalHotkey : true,
-          globalHotkey: normalizeGlobalShortcut(parsed.globalHotkey),
-          launchAtLogin: typeof parsed.launchAtLogin === "boolean" ? parsed.launchAtLogin : false,
-          blockControlWhileLocked:
-            typeof parsed.blockControlWhileLocked === "boolean" ? parsed.blockControlWhileLocked : true,
-          enableRaycastIntegration:
-            typeof parsed.enableRaycastIntegration === "boolean" ? parsed.enableRaycastIntegration : false,
-          allowDirectURLControl:
-            typeof parsed.allowDirectURLControl === "boolean" ? parsed.allowDirectURLControl : false,
-          cameraStreamURLs:
-            parsed.cameraStreamURLs && typeof parsed.cameraStreamURLs === "object"
-              ? Object.fromEntries(
-                  Object.entries(parsed.cameraStreamURLs as Record<string, unknown>).filter(
-                    (entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].trim().length > 0,
-                  ),
-                )
-              : {},
-          cameraStreamQualities: normalizeCameraStreamQualityMap(parsed.cameraStreamQualities),
-          layout: { ...emptyLayoutPrefs(), ...(parsed.layout ?? {}) },
-          selectedHomeId: parsed.selectedHomeId ?? null,
-        },
+        settings,
         hasLegacyCredentials,
       };
     }
   } catch {
     // ignore corrupt localStorage
   }
+  const defaultSettings: PersistedSettings = {
+    connectionMode: "demo",
+    miSession: null,
+    miCloudRegion: "cn",
+    autoCheckUpdates: true,
+    haBaseURL: "",
+    haToken: "",
+    assistantBaseURL: "https://openrouter.ai/api/v1",
+    openRouterApiKey: "",
+    assistantKeyEndpoint: null,
+    assistantCustomKeyEndpoint: null,
+    assistantLegacyKeyEndpoint: null,
+    cloudConsentEndpoints: [],
+    allOffOverrides: {},
+    assistantModel: "~typesafe/jev-latest",
+    askWhenUnsure: true,
+    habitLearningEnabled: true,
+    habitShareEnabled: false,
+    learnedShortcuts: [],
+    habitEntries: [],
+    hasCompletedOnboarding: false,
+    isCompactGridMode: true,
+    hideOfflineDevices: false,
+    hideGroupedLights: true,
+    allowAdvancedFacetWrites: false,
+    cachedXiaomiDevices: [],
+    cachedDevicesVersion: CACHED_DEVICES_VERSION,
+    cachedHAHome: null,
+    cachedModelTypes: {},
+    appearance: "system",
+    panelHeight: "standard",
+    panelOpacity: DEFAULT_PANEL_OPACITY,
+    climatePanel: true,
+    showQuickActionsBar: true,
+    enableGrokBall: false,
+    layout: emptyLayoutPrefs(),
+    selectedHomeId: null,
+    interfaceLanguage: "system",
+    temperatureUnit: "system",
+    enableGlobalHotkey: true,
+    globalHotkey: DEFAULT_GLOBAL_SHORTCUT,
+    launchAtLogin: false,
+    blockControlWhileLocked: true,
+    enableRaycastIntegration: false,
+    allowDirectURLControl: false,
+    cameraStreamURLs: {},
+    cameraStreamQualities: {},
+  };
   return {
-    settings: {
-      connectionMode: "demo",
-      miSession: null,
-      miCloudRegion: "cn",
-      autoCheckUpdates: true,
-      haBaseURL: "",
-      haToken: "",
-      assistantBaseURL: "https://openrouter.ai/api/v1",
-      openRouterApiKey: "",
-      assistantKeyEndpoint: null,
-      assistantCustomKeyEndpoint: null,
-      assistantLegacyKeyEndpoint: null,
-      cloudConsentEndpoints: [],
-      allOffOverrides: {},
-      assistantModel: "~typesafe/jev-latest",
-      habitLearningEnabled: true,
-      habitShareEnabled: false,
-      learnedShortcuts: [],
-      habitEntries: [],
-      hasCompletedOnboarding: false,
-      isCompactGridMode: true,
-      hideOfflineDevices: false,
-      hideGroupedLights: true,
-      allowAdvancedFacetWrites: false,
-      cachedXiaomiDevices: [],
-      cachedDevicesVersion: CACHED_DEVICES_VERSION,
-      cachedHAHome: null,
-      cachedModelTypes: {},
-      appearance: "system",
-      panelHeight: "standard",
-      panelOpacity: DEFAULT_PANEL_OPACITY,
-      climatePanel: true,
-      showQuickActionsBar: true,
-      enableGrokBall: false,
-      layout: emptyLayoutPrefs(),
-      selectedHomeId: null,
-      interfaceLanguage: "system",
-      temperatureUnit: "system",
-      enableGlobalHotkey: true,
-      globalHotkey: DEFAULT_GLOBAL_SHORTCUT,
-      launchAtLogin: false,
-      blockControlWhileLocked: true,
-      enableRaycastIntegration: false,
-      allowDirectURLControl: false,
-      cameraStreamURLs: {},
-      cameraStreamQualities: {},
-    },
+    settings: defaultSettings,
     hasLegacyCredentials: false,
   };
+}
+
+export function readAskWhenUnsure(settings: { readonly askWhenUnsure?: boolean }): boolean {
+  return typeof settings.askWhenUnsure === "boolean" ? settings.askWhenUnsure : true;
+}
+
+export function writeAskWhenUnsure(settings: { askWhenUnsure?: boolean }, enabled: boolean): void {
+  settings.askWhenUnsure = enabled;
 }
 
 /** Writes settings without credentials; secrets belong to the Windows Credential Manager (#28). */

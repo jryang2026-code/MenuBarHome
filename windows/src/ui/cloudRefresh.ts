@@ -1,7 +1,7 @@
 import { markTimerSnapshotReady } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
-import { MiCloudClient, MiCloudError, MiotSynthesizer, normalizeMiCloudRegion, type MiRoom, type MiSession, type MiotPropKey } from "../core/miCloudClient.js";
+import { MiCloudClient, MiCloudError, MiotSynthesizer, normalizeMiCloudRegion, type MiDeviceRecord, type MiRoom, type MiSession, type MiotDeviceSpec, type MiotPropKey } from "../core/miCloudClient.js";
 import { discoverMiHome } from "../core/miCloud/discovery.js";
 import { HomeAssistantClient, homeAssistantIdentity } from "../core/homeAssistant.js";
 import { applyOrder, homeOptions, pageSections, scopedKey, spans, withAliases } from "./panelPrefs.js";
@@ -9,8 +9,23 @@ import { filterByListCut, foldGroupedLights, kindChips, memberGroupOwners, shows
 import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom.js";
 import { environmentReadingPriority, type SmartDevice } from "../core/models.js";
 import { isHostAttachedToActiveWindow, mergeHomeSnapshotRespectingLocks } from "../core/optimisticLock.js";
+import { getUnsupportedLightEffects } from "./commandDispatch.js";
 import { availableQuickActions } from "../core/quickActions.js";
 import { renderSliderDeck } from "./panelView.js";
+import { isWorkstationLocked } from "./transport.js";
+import {
+  clearCachedXiaomiTopology,
+  clearPersistedMiSessionExpired,
+  clearXiaomiRateLimitBackoff,
+  isPersistedMiSessionExpired,
+  isXiaomiRateLimitError,
+  miSessionFingerprint,
+  persistMiSessionExpired,
+  recordXiaomiRateLimit,
+  shouldSkipSilentPollForBackoff,
+  storeCachedXiaomiTopology,
+  takeCachedXiaomiTopologyForPoll,
+} from "../core/pollingPolicy.js";
 
 export function foldGrouped(host: MenuMijiaWindowsApp, devices: readonly SmartDevice[]): SmartDevice[] {
     return host.settings.hideGroupedLights
@@ -29,98 +44,184 @@ const lastGoodXiaomiRoomsByHost = new WeakMap<
   }
 >();
 
+const initialSessionCheckHosts = new WeakSet<MenuMijiaWindowsApp>();
+const lockProbeInFlightHosts = new WeakSet<MenuMijiaWindowsApp>();
+const lastSessionFingerprintByHost = new WeakMap<MenuMijiaWindowsApp, string>();
+
+function collectMiotPropKeys(
+  rawDevices: readonly MiDeviceRecord[],
+  specs: Readonly<Record<string, MiotDeviceSpec>>,
+): MiotPropKey[] {
+  const propKeys: MiotPropKey[] = [];
+  const propKeySeen = new Set<string>();
+  const addPropKeys = (keys: readonly MiotPropKey[]) => {
+    for (const key of keys) {
+      const id = `${key.did}.${key.siid}.${key.piid}`;
+      if (propKeySeen.has(id)) continue;
+      propKeySeen.add(id);
+      propKeys.push(key);
+    }
+  };
+  for (const dev of rawDevices) {
+    const spec = specs[dev.model];
+    if (spec) {
+      addPropKeys(MiotSynthesizer.requiredProps(dev, spec));
+      addPropKeys(MiotSynthesizer.facetProps(dev, spec));
+    }
+  }
+  return propKeys;
+}
+
 export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false): Promise<void> {
     if (!isHostAttachedToActiveWindow(host)) return;
     if (host.settings.connectionMode === "homeAssistant") return refreshHADevices(host, silent);
     if (!host.settings.miSession || host.settings.connectionMode !== "xiaomiCloud" || host.isSyncingCloud) return;
     const session = host.settings.miSession;
+    const currentFingerprint = miSessionFingerprint(session);
+    const previousFingerprint = lastSessionFingerprintByHost.get(host);
+    lastSessionFingerprintByHost.set(host, currentFingerprint);
+    const isInitialStartupCheck = !initialSessionCheckHosts.has(host);
+    initialSessionCheckHosts.add(host);
+    const expiredBefore = host.miSessionExpired;
+    const persistedExpired = isPersistedMiSessionExpired(session);
+    if (previousFingerprint !== undefined && previousFingerprint !== currentFingerprint && !persistedExpired) {
+      host.miSessionExpired = false;
+    } else if (persistedExpired && !host.miSessionExpired) {
+      host.miSessionExpired = true;
+    }
+    if (silent && host.miSessionExpired) {
+      if (!expiredBefore && isHostAttachedToActiveWindow(host)) {
+        host.queueBackgroundRender();
+      }
+      return;
+    }
+    if (!silent && isInitialStartupCheck && !host.isPollingQR && persistedExpired) {
+      host.render();
+      return;
+    }
+    const refreshStartedAt = Date.now();
+    if (silent && shouldSkipSilentPollForBackoff(host, session, refreshStartedAt)) {
+      return;
+    }
+    if (silent && typeof window !== "undefined" && window.__TAURI_INTERNALS__?.invoke) {
+      if (lockProbeInFlightHosts.has(host)) return;
+      lockProbeInFlightHosts.add(host);
+      let locked = false;
+      try {
+        locked = await isWorkstationLocked();
+      } finally {
+        lockProbeInFlightHosts.delete(host);
+      }
+      if (locked) {
+        host.lastCloudRefreshAt = null;
+        return;
+      }
+      if (
+        !isHostAttachedToActiveWindow(host) ||
+        host.settings.connectionMode !== "xiaomiCloud" ||
+        host.settings.miSession !== session ||
+        host.isSyncingCloud
+      ) {
+        return;
+      }
+    }
     const normalizedRegion = normalizeMiCloudRegion(session.region);
     const previousPresentation = cloudPresentationFingerprint(host);
     const previousStructure = cloudPanelStructureFingerprint(host);
     const staleBefore = host.cloudValuesStale;
-    const expiredBefore = host.miSessionExpired;
     const stateRevisionAtStart = host.localControlRevision;
     const selectedHomeAtStart = host.settings.selectedHomeId;
+    const sourceRevisionAtStart = host.sourceRevision;
     const syncGen = ++host.syncGeneration;
     let presentationChanged = false;
     host.isSyncingCloud = true;
-    host.lastCloudRefreshAt = Date.now();
+    host.lastCloudRefreshAt = refreshStartedAt;
     if (!silent) {
       host.render();
     }
 
     try {
       const client = new MiCloudClient(session, host.transport);
-      const discovery = await discoverMiHome(client, {
-        unresolvedDids: host.unresolvedRoomDids,
-        retryUnresolved: !silent,
-        cachedRooms: () => {
-          const cached = lastGoodXiaomiRoomsByHost.get(host);
-          return cached &&
-            cached.sourceRevision === host.sourceRevision &&
-            cached.userId === session.userId &&
-            cached.region === normalizedRegion
-            ? cached.rooms
-            : null;
-        },
-        onRoomsRead: (rooms) => {
-          lastGoodXiaomiRoomsByHost.set(host, {
-            sourceRevision: host.sourceRevision,
-            userId: session.userId,
-            region: normalizedRegion,
-            rooms,
-          });
-        },
-      });
-      const homeRoomsError = discovery.roomsError;
-      const allRooms = discovery.rooms;
-      const allDevices = discovery.devices;
-      const nextHomes = homeOptions(allRooms);
-      if (cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) return;
-      if (homeRoomsError === null || nextHomes.length > 0) {
-        host.homes = applyOrder(host.homes.map((home) => home.id), nextHomes);
-      }
-      const { devices: rawDevices, rooms } = filterBySelectedHome(host, allDevices, allRooms);
-      const groupDids = rawDevices.map((device) => device.did).filter((did) => did.startsWith("group."));
-      const membershipByGroup = groupDids.length > 0
-        ? client.lightGroupMembers(groupDids).catch(() => new Map<string, string[]>())
-        : Promise.resolve(new Map<string, string[]>());
-
-      // Stage 1: Instant synthesis with cached/fallback specs so user sees their real devices immediately
-      const stage1Specs = host.specResolver.exportCachedSpecs();
-      const stage1Home = MiotSynthesizer.synthesize(
-        rawDevices,
-        rooms,
-        stage1Specs,
-        new Map<string, unknown>(),
+      const cachedTopology = takeCachedXiaomiTopologyForPoll(
+        host,
+        session,
+        sourceRevisionAtStart,
+        selectedHomeAtStart ?? null,
+        silent,
       );
-      if (stage1Home.devices.length > 0 && host.devices.length === 0) {
-        host.devices = stage1Home.devices;
-        host.deviceFacets = stage1Home.deviceFacets ?? {};
-        presentationChanged = true;
-        host.render();
+
+      let rawDevices: readonly MiDeviceRecord[];
+      let rooms: readonly MiRoom[];
+      let specs: Readonly<Record<string, MiotDeviceSpec>>;
+      let membersByGroup: ReadonlyMap<string, readonly string[]>;
+      let allDevicesForCache: readonly MiDeviceRecord[] | null = null;
+      let allRoomsForCache: readonly MiRoom[] | null = null;
+
+      if (cachedTopology) {
+        rawDevices = cachedTopology.rawDevices;
+        rooms = cachedTopology.rooms;
+        specs = cachedTopology.specs;
+        membersByGroup = cachedTopology.membersByGroup;
+      } else {
+        const discovery = await discoverMiHome(client, {
+          unresolvedDids: host.unresolvedRoomDids,
+          retryUnresolved: !silent,
+          cachedRooms: () => {
+            const cached = lastGoodXiaomiRoomsByHost.get(host);
+            return cached &&
+              cached.sourceRevision === host.sourceRevision &&
+              cached.userId === session.userId &&
+              cached.region === normalizedRegion
+              ? cached.rooms
+              : null;
+          },
+          onRoomsRead: (fetchedRooms) => {
+            lastGoodXiaomiRoomsByHost.set(host, {
+              sourceRevision: host.sourceRevision,
+              userId: session.userId,
+              region: normalizedRegion,
+              rooms: fetchedRooms,
+            });
+          },
+        });
+        const homeRoomsError = discovery.roomsError;
+        const allRooms = discovery.rooms;
+        const allDevices = discovery.devices;
+        const nextHomes = homeOptions(allRooms);
+        if (cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) return;
+        if (homeRoomsError === null || nextHomes.length > 0) {
+          host.homes = applyOrder(host.homes.map((home) => home.id), nextHomes);
+        }
+        const filtered = filterBySelectedHome(host, allDevices, allRooms);
+        rawDevices = filtered.devices;
+        rooms = filtered.rooms;
+        allDevicesForCache = allDevices;
+        allRoomsForCache = allRooms;
+        const groupDids = rawDevices.map((device) => device.did).filter((did) => did.startsWith("group."));
+        const membershipPromise = groupDids.length > 0
+          ? client.lightGroupMembers(groupDids).catch(() => new Map<string, string[]>())
+          : Promise.resolve(new Map<string, string[]>());
+
+        const stage1Specs = host.specResolver.exportCachedSpecs();
+        const stage1Home = MiotSynthesizer.synthesize(
+          rawDevices,
+          rooms,
+          stage1Specs,
+          new Map<string, unknown>(),
+        );
+        if (stage1Home.devices.length > 0 && host.devices.length === 0) {
+          host.devices = stage1Home.devices;
+          host.deviceFacets = stage1Home.deviceFacets ?? {};
+          presentationChanged = true;
+          host.render();
+        }
+
+        specs = await host.specResolver.resolveForDevices(rawDevices);
+        membersByGroup = await membershipPromise;
       }
 
-      // Stage 2: Resolve exact MIoT specs + fetch live device properties
-      const specs = await host.specResolver.resolveForDevices(rawDevices);
       // Card properties plus the 更多设置 rows (#5), deduped so one snapshot covers both.
-      const propKeys: MiotPropKey[] = [];
-      const propKeySeen = new Set<string>();
-      const addPropKeys = (keys: readonly MiotPropKey[]) => {
-        for (const key of keys) {
-          const id = `${key.did}.${key.siid}.${key.piid}`;
-          if (propKeySeen.has(id)) continue;
-          propKeySeen.add(id);
-          propKeys.push(key);
-        }
-      };
-      for (const dev of rawDevices) {
-        const spec = specs[dev.model];
-        if (spec) {
-          addPropKeys(MiotSynthesizer.requiredProps(dev, spec));
-          addPropKeys(MiotSynthesizer.facetProps(dev, spec));
-        }
-      }
+      const propKeys = collectMiotPropKeys(rawDevices, specs);
 
       let values: Map<string, unknown>;
       try {
@@ -137,12 +238,26 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       }
 
       const home = MiotSynthesizer.synthesize(rawDevices, rooms, specs, values);
-      const membersByGroup = await membershipByGroup;
       // An old refresh must not clear or set freshness for the connection that replaced it.
       if (cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) return;
+      if (allDevicesForCache !== null && allRoomsForCache !== null) {
+        storeCachedXiaomiTopology(host, {
+          sessionFingerprint: miSessionFingerprint(session),
+          sourceRevision: sourceRevisionAtStart,
+          selectedHomeId: selectedHomeAtStart ?? null,
+          allDevices: allDevicesForCache,
+          allRooms: allRoomsForCache,
+          rawDevices,
+          rooms,
+          specs,
+          membersByGroup,
+        });
+      }
+      clearXiaomiRateLimitBackoff(host);
       host.miSessionExpired = false;
+      clearPersistedMiSessionExpired();
       host.markCloudValuesFresh();
-      host.groupOwnerByMemberDid = memberGroupOwners(membersByGroup);
+      host.groupOwnerByMemberDid = memberGroupOwners(membersByGroup as Map<string, string[]>);
       // Cloud list order is not a layout preference. Keep known devices in their
       // displayed order, use fresh values (while respecting unexpired optimistic locks),
       // drop removed ids and append new ones.
@@ -193,6 +308,10 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         host.markCloudValuesStale();
         if (err instanceof MiCloudError && err.kind === "sessionExpired") {
           host.miSessionExpired = true;
+          persistMiSessionExpired(session, true);
+          clearCachedXiaomiTopology(host);
+        } else if (isXiaomiRateLimitError(err)) {
+          recordXiaomiRateLimit(host, session, Date.now());
         }
       }
       if (!silent) {
@@ -329,10 +448,11 @@ export function cloudPanelStructureFingerprint(host: MenuMijiaWindowsApp): strin
       host.devices,
       host.listCut,
       host.settings.hideOfflineDevices,
+      { layout: host.layout },
     );
     const quickActions =
       host.settings.showQuickActionsBar && host.settings.connectionMode !== "demo"
-        ? availableQuickActions(foldGrouped(host, filterByListCut(host.devices, host.listCut, false))).map(
+        ? availableQuickActions(foldGrouped(host, filterByListCut(host.devices, host.listCut, false, { layout: host.layout }))).map(
             (action) => action.id,
           )
         : null;
@@ -350,6 +470,7 @@ export function cloudPanelStructureFingerprint(host: MenuMijiaWindowsApp): strin
           kind.kind === "light"
             ? [
                 kind.availableEffects,
+                [...getUnsupportedLightEffects(host, device.id)],
                 kind.minKelvin,
                 kind.maxKelvin,
                 kind.powerWritable !== false,
@@ -386,7 +507,13 @@ export function cloudPanelStructureFingerprint(host: MenuMijiaWindowsApp): strin
                             kind.heats,
                           ]
                         : kind.kind === "speaker"
-                          ? [kind.volumeWritable, kind.muteSwitchEntityId, kind.sleepModeEntityId]
+                          ? [
+                              kind.volumeWritable,
+                              kind.muteSwitchEntityId,
+                              kind.sleepModeEntityId,
+                              kind.ttsActionId,
+                              kind.directiveActionId,
+                            ]
                           : [];
         const facetIds = (host.deviceFacets[device.id] ?? []).map((facet) => [
           facet.id,

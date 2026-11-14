@@ -63,7 +63,10 @@ public enum LocalIntentParser {
         "制冷": "cool", "制热": "heat", "除湿": "dry", "送风": "fan_only", "自动": "auto"
     ]
 
-    private static let scopeWords: Set<String> = ["全部", "所有", "全屋", "全家", "家里", "整个家"]
+    private static let scopeWords: Set<String> = [
+        "所有设备", "全部设备", "全屋设备",
+        "全部", "所有", "全屋", "全家", "家里", "整个家"
+    ]
 
     private static let categoryWords: [String: IntentDeviceCategory] = [
         "灯": .light, "灯光": .light, "电灯": .light,
@@ -76,7 +79,8 @@ public enum LocalIntentParser {
         "插座": .plug,
         "扫地机": .vacuum, "扫地机器人": .vacuum,
         "电视": .tv, "电视机": .tv,
-        "摄像头": .camera, "摄像机": .camera, "监控": .camera
+        "摄像头": .camera, "摄像机": .camera, "监控": .camera,
+        "阀门": .valve, "水阀": .valve, "气阀": .valve, "燃气阀": .valve, "总阀": .valve
     ]
 
     /// Generic room words users say, mapped to room names they may correspond to in HA.
@@ -101,6 +105,22 @@ public enum LocalIntentParser {
     private static let ignorable = CharacterSet.whitespacesAndNewlines
         .union(CharacterSet(charactersIn: "，。！？、；：,!?;:~～\"'“”‘’"))
 
+    private static let tradToSimpMap: [Character: Character] = {
+        let trad = Array("開關啟啓閉滅調變設為換執動進運場燈電氣機風熱涼溫濕溼乾淨掃視攝頭監閥門總鎖簾紗捲葉車庫揚聲魚寵餵煙霧應傳臥廳書廚陽臺檯衛間裡裏內頂帶環點黃藍綠紅檔擋級強靜愛搖擺別製備個盞隻條請幫煩給將兩過時鐘鍾後銷剛暫還計")
+        let simp = Array("开关启启闭灭调变设为换执动进运场灯电气机风热凉温湿湿干净扫视摄头监阀门总锁帘纱卷叶车库扬声鱼宠喂烟雾应传卧厅书厨阳台台卫间里里内顶带环点黄蓝绿红档档级强静爱摇摆别制备个盏只条请帮烦给将两过时钟钟后销刚暂还计")
+        var map: [Character: Character] = [:]
+        for (idx, ch) in trad.enumerated() where idx < simp.count {
+            map[ch] = simp[idx]
+        }
+        return map
+    }()
+
+    public static func toSimplifiedChinese(_ input: String) -> String {
+        guard !input.isEmpty else { return input }
+        let replaced = input.replacingOccurrences(of: "裝置", with: "设备")
+        return String(replaced.map { tradToSimpMap[$0] ?? $0 })
+    }
+
     // MARK: - Entry Point
 
     public static func parse(
@@ -110,16 +130,26 @@ public enum LocalIntentParser {
         panelRoom: BareCategoryCommand.Room? = nil,
         usageOrder: [String] = []
     ) -> IntentPlan? {
-        let text = String(String.UnicodeScalarView(utterance.unicodeScalars.filter { !ignorable.contains($0) }))
+        let normalizedUtterance = toSimplifiedChinese(utterance)
+        let text = String(String.UnicodeScalarView(normalizedUtterance.unicodeScalars.filter { !ignorable.contains($0) }))
             .trimmingCharacters(in: CharacterSet(charactersIn: "."))
         guard !text.isEmpty else { return nil }
 
+        let rawSceneCore = strippedRawSceneText(utterance)
         let sceneCore = strippedSceneText(text)
-        if let scene = scenes.first(where: { strippedSceneText($0.name) == sceneCore }) {
+        let rawExactScenes = scenes.filter { !$0.name.isEmpty && strippedRawSceneText($0.name) == rawSceneCore }
+        if rawExactScenes.count == 1, let scene = rawExactScenes.first {
             return scenePlan(scene)
+        }
+        if rawExactScenes.isEmpty {
+            let exactScenes = scenes.filter { !$0.name.isEmpty && strippedSceneText($0.name) == sceneCore }
+            if exactScenes.count == 1, let scene = exactScenes.first {
+                return scenePlan(scene)
+            }
         }
         if let plan = parseDeviceCommand(
             text,
+            rawUtterance: utterance,
             devices: devices,
             scenes: scenes,
             panelRoom: panelRoom,
@@ -127,9 +157,17 @@ public enum LocalIntentParser {
         ) {
             return plan
         }
-        let containing = scenes.filter { sceneCore.count >= 2 && strippedSceneText($0.name).contains(sceneCore) }
-        if containing.count == 1, let scene = containing.first {
-            return scenePlan(scene)
+        if sceneCore.count >= 2 {
+            let rawContaining = scenes.filter { !$0.name.isEmpty && strippedRawSceneText($0.name).contains(rawSceneCore) }
+            if rawContaining.count == 1, let scene = rawContaining.first {
+                return scenePlan(scene)
+            }
+            if rawContaining.isEmpty {
+                let containing = scenes.filter { !$0.name.isEmpty && strippedSceneText($0.name).contains(sceneCore) }
+                if containing.count == 1, let scene = containing.first {
+                    return scenePlan(scene)
+                }
+            }
         }
         if utterance.unicodeScalars.contains(where: { $0.isASCII && CharacterSet.letters.contains($0) }) {
             return parseEnglishCommand(
@@ -152,8 +190,29 @@ public enum LocalIntentParser {
         )
     }
 
+    private static func strippedRawSceneText(_ raw: String) -> String {
+        let cleaned = String(String.UnicodeScalarView(raw.unicodeScalars.filter { !ignorable.contains($0) }))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        var chars = Array(cleaned)
+        var normChars = Array(toSimplifiedChinese(cleaned))
+        let normJoined = String(normChars)
+        for verb in sceneVerbs.sorted(by: { $0.count > $1.count }) where normJoined.hasPrefix(verb) {
+            chars.removeFirst(verb.count)
+            normChars.removeFirst(verb.count)
+            break
+        }
+        let normAfterVerb = String(normChars)
+        for suffix in sceneSuffixes where normAfterVerb.hasSuffix(suffix) && chars.count > suffix.count {
+            chars.removeLast(suffix.count)
+            break
+        }
+        return String(chars)
+    }
+
     private static func strippedSceneText(_ raw: String) -> String {
-        var s = raw
+        let normalized = toSimplifiedChinese(raw)
+        var s = String(String.UnicodeScalarView(normalized.unicodeScalars.filter { !ignorable.contains($0) }))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
         for verb in sceneVerbs.sorted(by: { $0.count > $1.count }) where s.hasPrefix(verb) {
             s.removeFirst(verb.count)
             break
@@ -168,6 +227,7 @@ public enum LocalIntentParser {
 
     private static func parseDeviceCommand(
         _ text: String,
+        rawUtterance: String,
         devices: [SmartDevice],
         scenes: [HomeScene],
         panelRoom: BareCategoryCommand.Room?,
@@ -178,19 +238,13 @@ public enum LocalIntentParser {
 
         // 1. Device names (full name such as 书房台灯, or name without room prefix such as 台灯)
         let deviceById = Dictionary(devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        var explicitGroups: [[String]] = []
-        var nameGroups: [[String]] = []
-        for (phrase, match) in devicePhrases(devices) where consume(phrase, from: &rest) {
-            switch match {
-            case .full(let ids):
-                explicitGroups.append(ids)
-            case .base(let ids):
-                nameGroups.append(ids)
-            }
+        var matchedEntries: [[DevicePhraseCandidate]] = []
+        for (phrase, candidates) in devicePhrases(devices) where consume(phrase, from: &rest) {
+            matchedEntries.append(candidates)
         }
 
         // 2. Rooms, scope, and category words
-        let roomWords = Set(devices.map(\.roomName)).union(roomAliases.keys).filter { !$0.isEmpty }
+        let roomWords = Set(devices.map { toSimplifiedChinese($0.roomName) }).union(roomAliases.keys).filter { !$0.isEmpty }
         let matchedRooms = longestFirst(roomWords).filter { consume($0, from: &rest) }
         let hasScope = !longestFirst(scopeWords).filter { consume($0, from: &rest) }.isEmpty
         let categories = Set(longestFirst(Set(categoryWords.keys)).filter { consume($0, from: &rest) }.compactMap { categoryWords[$0] })
@@ -243,29 +297,39 @@ public enum LocalIntentParser {
         var targetIds: [String] = []
         var mustAcceptAll: Set<String> = []
 
-        if !explicitGroups.isEmpty || !nameGroups.isEmpty {
-            for group in explicitGroups {
-                let narrowedIds = (group.count > 1 && !matchedRooms.isEmpty)
-                    ? group.filter(roomDeviceIds.contains)
-                    : group
-                guard !narrowedIds.isEmpty else { return nil }
-                let resolved = disambiguateRoomDevices(
-                    narrowedIds.compactMap { deviceById[$0] },
+        if !matchedEntries.isEmpty {
+            for candidates in matchedEntries {
+                let preScript = disambiguateDeviceScriptCollision(candidates, rawUtterance: rawUtterance)
+                let initialCandidates = preScript.isEmpty ? candidates : preScript
+                let hasFullCandidate = initialCandidates.contains { $0.isFull }
+                let narrowedCandidates: [DevicePhraseCandidate]
+                if hasFullCandidate {
+                    narrowedCandidates = (initialCandidates.count > 1 && !matchedRooms.isEmpty)
+                        ? initialCandidates.filter { roomDeviceIds.contains($0.id) }
+                        : initialCandidates
+                } else {
+                    narrowedCandidates = matchedRooms.isEmpty
+                        ? initialCandidates
+                        : initialCandidates.filter { roomDeviceIds.contains($0.id) }
+                }
+                guard !narrowedCandidates.isEmpty else { return nil }
+                let roomResolvedIds = Set(disambiguateRoomDevices(
+                    narrowedCandidates.compactMap { deviceById[$0.id] },
                     panelRoom: panelRoom
-                )
-                guard !resolved.isEmpty else { return nil }
-                targetIds.append(contentsOf: resolved.filter { !targetIds.contains($0) })
-                mustAcceptAll.formUnion(resolved)
-            }
-            for group in nameGroups {
-                let narrowedIds = matchedRooms.isEmpty ? group : group.filter(roomDeviceIds.contains)
-                let resolved = disambiguateRoomDevices(
-                    narrowedIds.compactMap { deviceById[$0] },
-                    panelRoom: panelRoom
-                )
-                guard !resolved.isEmpty, resolved.count == 1 || hasScope else { return nil }
-                targetIds.append(contentsOf: resolved.filter { !targetIds.contains($0) })
-                if resolved.count == 1 { mustAcceptAll.formUnion(resolved) }
+                ))
+                let roomResolvedCandidates = narrowedCandidates.filter { roomResolvedIds.contains($0.id) }
+                guard !roomResolvedCandidates.isEmpty else { return nil }
+                let finalCandidates = disambiguateDeviceScriptCollision(roomResolvedCandidates, rawUtterance: rawUtterance)
+                guard !finalCandidates.isEmpty else { return nil }
+                let isFullMatch = finalCandidates.contains { $0.isFull }
+                if !isFullMatch && finalCandidates.count != 1 && !hasScope { return nil }
+                for c in finalCandidates {
+                    if !targetIds.contains(c.id) { targetIds.append(c.id) }
+                    if isFullMatch { mustAcceptAll.insert(c.id) }
+                }
+                if !isFullMatch, finalCandidates.count == 1, let only = finalCandidates.first {
+                    mustAcceptAll.insert(only.id)
+                }
             }
         } else {
             let implied = impliedCategories(for: ops)
@@ -293,6 +357,7 @@ public enum LocalIntentParser {
                 let candidates = devices.filter { dev in
                     let category = IntentDeviceCategory(dev)
                     guard dev.isOnline, category.isAssistantControllable, dev.kind.acceptsControlWrites else { return false }
+                    if category == .valve && !(wanted?.contains(.valve) ?? false) { return false }
                     if onlyActive && !dev.isActiveOn { return false }
                     if !matchedRooms.isEmpty && !roomDeviceIds.contains(dev.id) { return false }
                     if let wanted, !wanted.contains(category) { return false }
@@ -437,27 +502,59 @@ public enum LocalIntentParser {
         )
     }
 
-    private enum PhraseMatch {
-        case full([String])
-        case base([String])
+    private struct DevicePhraseCandidate {
+        let id: String
+        let rawPhrase: String
+        let isFull: Bool
     }
 
-    private static func devicePhrases(_ devices: [SmartDevice]) -> [(String, PhraseMatch)] {
-        var full: [String: [String]] = [:]
-        var base: [String: [String]] = [:]
+    private static func cleanRawText(_ raw: String) -> String {
+        String(String.UnicodeScalarView(raw.unicodeScalars.filter { !ignorable.contains($0) }))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    }
+
+    private static func devicePhrases(_ devices: [SmartDevice]) -> [(String, [DevicePhraseCandidate])] {
+        var full: [String: [DevicePhraseCandidate]] = [:]
+        var base: [String: [DevicePhraseCandidate]] = [:]
         for dev in devices where !dev.name.isEmpty {
-            full[dev.name, default: []].append(dev.id)
-            if !dev.roomName.isEmpty, dev.name.hasPrefix(dev.roomName) {
-                let stripped = String(dev.name.dropFirst(dev.roomName.count))
+            let rawName = cleanRawText(dev.name)
+            let rawRoom = cleanRawText(dev.roomName)
+            let devName = toSimplifiedChinese(rawName)
+            let roomName = toSimplifiedChinese(rawRoom)
+            guard !devName.isEmpty else { continue }
+            full[devName, default: []].append(DevicePhraseCandidate(id: dev.id, rawPhrase: rawName, isFull: true))
+            if !roomName.isEmpty, devName.hasPrefix(roomName) {
+                let stripped = String(devName.dropFirst(roomName.count))
+                let rawStripped = String(rawName.dropFirst(roomName.count))
                 // 「关空调」 is a category command even when a device is literally named 客厅空调 (#273).
                 if stripped.count >= 2, categoryWords[stripped] == nil {
-                    base[stripped, default: []].append(dev.id)
+                    base[stripped, default: []].append(DevicePhraseCandidate(id: dev.id, rawPhrase: rawStripped, isFull: false))
                 }
             }
         }
-        var phrases: [(String, PhraseMatch)] = full.map { ($0.key, .full($0.value)) }
-        phrases += base.filter { full[$0.key] == nil }.map { ($0.key, .base($0.value)) }
+        var phrases: [(String, [DevicePhraseCandidate])] = []
+        for (phrase, fullCandidates) in full {
+            let fullRawSet = Set(fullCandidates.map(\.rawPhrase))
+            let extraBase = (base[phrase] ?? []).filter { !fullRawSet.contains($0.rawPhrase) }
+            phrases.append((phrase, fullCandidates + extraBase))
+        }
+        for (phrase, baseCandidates) in base where full[phrase] == nil {
+            phrases.append((phrase, baseCandidates))
+        }
         return phrases.sorted { $0.0.count > $1.0.count }
+    }
+
+    private static func disambiguateDeviceScriptCollision(
+        _ candidates: [DevicePhraseCandidate],
+        rawUtterance: String
+    ) -> [DevicePhraseCandidate] {
+        let distinctRaw = Set(candidates.map(\.rawPhrase))
+        guard distinctRaw.count > 1 else { return candidates }
+        let rawCleaned = cleanRawText(rawUtterance)
+        let rawMatched = candidates.filter { !$0.rawPhrase.isEmpty && rawCleaned.contains($0.rawPhrase) }
+        let matchedRaw = Set(rawMatched.map(\.rawPhrase))
+        guard matchedRaw.count == 1 else { return [] }
+        return rawMatched
     }
 
     /// When two homes/accounts share a display room name (e.g. two 客厅 with distinct roomIds),
@@ -468,7 +565,7 @@ public enum LocalIntentParser {
     ) -> [String] {
         var roomIdsByName: [String: Set<String>] = [:]
         for dev in matched where !dev.roomName.isEmpty && !dev.roomId.isEmpty {
-            roomIdsByName[dev.roomName, default: []].insert(dev.roomId)
+            roomIdsByName[toSimplifiedChinese(dev.roomName), default: []].insert(dev.roomId)
         }
         let hasCollision = roomIdsByName.values.contains { $0.count > 1 }
         guard hasCollision else { return matched.map(\.id) }
@@ -486,13 +583,17 @@ public enum LocalIntentParser {
         devices: [SmartDevice],
         panelRoom: BareCategoryCommand.Room?
     ) -> [String]? {
-        let exact = devices.filter { $0.roomName == word }
+        let normWord = toSimplifiedChinese(word)
+        let exact = devices.filter { toSimplifiedChinese($0.roomName) == normWord }
         if !exact.isEmpty {
             let resolved = disambiguateRoomDevices(exact, panelRoom: panelRoom)
             return resolved.isEmpty ? nil : resolved
         }
-        let aliases = roomAliases[word] ?? [word]
-        let matched = devices.filter { dev in aliases.contains { dev.roomName.contains($0) } }
+        let aliases = roomAliases[normWord] ?? [normWord]
+        let matched = devices.filter { dev in
+            let room = toSimplifiedChinese(dev.roomName)
+            return aliases.contains { room.contains($0) }
+        }
         guard !matched.isEmpty else { return [] }
         let resolved = disambiguateRoomDevices(matched, panelRoom: panelRoom)
         return resolved.isEmpty ? nil : resolved
@@ -543,9 +644,23 @@ public enum LocalIntentParser {
     }
 
     private static func spokenNumber(_ s: String) -> Int? {
-        if let n = Int(s) { return n }
-        let digits: [String: Int] = ["一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10]
-        return digits[s]
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let n = Int(trimmed) { return n }
+        let digits: [Character: Int] = ["零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9]
+        let chars = Array(trimmed)
+        if chars.count == 2, chars[0] == "零", let ones = digits[chars[1]] {
+            return ones
+        }
+        if let tenIndex = chars.firstIndex(of: "十") {
+            guard tenIndex <= 1, chars.count - tenIndex <= 2 else { return nil }
+            let tens = tenIndex == 0 ? 1 : digits[chars[0]]
+            let ones = tenIndex == chars.count - 1 ? 0 : digits[chars[tenIndex + 1]]
+            guard let tens, tens > 0, let ones else { return nil }
+            return tens * 10 + ones
+        }
+        guard chars.count == 1 else { return nil }
+        return digits[chars[0]]
     }
 
     private static func longestFirst(_ words: Set<String>) -> [String] {
@@ -562,18 +677,21 @@ public enum LocalIntentParser {
 
     private static func extractNumericOperations(_ text: inout String) -> [IntentOperation] {
         // Relative degrees first, otherwise "调高2度" would read as an absolute 2°C.
-        let stepPattern = #"(调高|调低|升高|降低|升|降|高|低)(\d{1,2}|[一二两三四五六七八九十])(?:度|℃|°C|°)"#
+        let stepPattern = #"(调高|调低|升高|降低|升|降|高|低)(\d{1,2}|[零一二两三四五六七八九十]+)(?:度|℃|°C|°)"#
         var ops: [IntentOperation] = []
         if let regex = try? NSRegularExpression(pattern: stepPattern) {
             let ns = text as NSString
             let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+            var stepMatched = false
             for match in matches {
                 let direction = ns.substring(with: match.range(at: 1))
-                guard let amount = spokenNumber(ns.substring(with: match.range(at: 2))) else { continue }
+                guard let amount = spokenNumber(ns.substring(with: match.range(at: 2))),
+                      amount > 0, amount <= 99 else { continue }
                 let sign: Double = (direction.contains("高") || direction.contains("升")) ? 1 : -1
                 ops.append(.temperatureStep(sign * Double(amount)))
+                stepMatched = true
             }
-            if !matches.isEmpty {
+            if stepMatched {
                 text = regex.stringByReplacingMatches(
                     in: text, range: NSRange(location: 0, length: ns.length), withTemplate: String(consumed)
                 )
@@ -642,7 +760,10 @@ public enum LocalIntentParser {
         ("plugs", .plug), ("plug", .plug), ("socket", .plug), ("outlet", .plug),
         ("vacuum", .vacuum),
         ("television", .tv), ("tv", .tv),
-        ("cameras", .camera), ("camera", .camera)
+        ("cameras", .camera), ("camera", .camera),
+        ("water valves", .valve), ("water valve", .valve),
+        ("gas valves", .valve), ("gas valve", .valve),
+        ("valves", .valve), ("valve", .valve)
     ]
 
     private static let englishFillers: [String] = [
@@ -860,6 +981,7 @@ public enum LocalIntentParser {
                 let candidates = devices.filter { dev in
                     let category = IntentDeviceCategory(dev)
                     guard dev.isOnline, category.isAssistantControllable, dev.kind.acceptsControlWrites else { return false }
+                    if category == .valve && !(wanted?.contains(.valve) ?? false) { return false }
                     if onlyActive && !dev.isActiveOn { return false }
                     if !matchedRoomKeys.isEmpty && !roomDeviceIds.contains(dev.id) { return false }
                     if let wanted, !wanted.contains(category) { return false }
