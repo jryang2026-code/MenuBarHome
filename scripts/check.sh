@@ -320,6 +320,7 @@ run_script_self_tests() {
     run_clean_env bash scripts/test_install_ripgrep.sh
     if command -v node >/dev/null 2>&1; then
         run_clean_env node windows/scripts/test-file.mjs --self-test
+        run_clean_env node windows/scripts/verify-flyout-layout.mjs --self-test
     fi
     if [ -n "$PYTHON_BIN" ]; then
         run_clean_env "$PYTHON_BIN" scripts/check_workflows.py --self-test
