@@ -16,7 +16,8 @@ import {
   type RaycastCommandFeedback,
   type RaycastSnapshot,
 } from "../core/raycastSnapshot.js";
-import { undoBannerMs, undoDeviceCount, type MenuMijiaWindowsApp } from "./app.js";
+import type { MenuMijiaWindowsApp } from "./app.js";
+import { undoBannerMs, undoDeviceCount } from "./undoTracker.js";
 import type {
   PersistedSettings,
   SpeechRecognitionInstance,

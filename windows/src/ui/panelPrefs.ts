@@ -3,10 +3,6 @@ import type { SmartDevice } from "../core/models.js";
 import { currentLanguage, resolveLanguage, t } from "../core/i18n.js";
 import { LEGACY_STORAGE_KEY, STORAGE_KEY } from "./appConstants.js";
 
-/**
- * Tri-lingual inline helper (`zh-Hans` / `zh-Hant` / `en`) aligned with the active UI language,
- * avoiding uncatalogued `t(...)` keys while covering Simplified Chinese, Traditional Chinese, and English.
- */
 export function tr3(zhHans: string, zhHant: string, en: string): string {
   const lang = resolveLanguage(currentLanguage(), []);
   if (lang === "en") return en;
@@ -85,14 +81,6 @@ export function parsePanelPlacement(value: unknown): PanelPlacement {
   return { anchor: known?.id ?? "auto" };
 }
 
-/**
- * Card sizes shared across macOS and Windows (#A14):
- * - `small`: 1×1 compact round/squircle icon tile
- * - `half`: 2×1 half-width capsule
- * - `full`: 1×2 full-row wide strip (with collapsed inline quick slider)
- * - `hero`: 2×2 large platter card (with inline primary control)
- * - `panel`: permanently expanded detail drawer
- */
 export type TileSize = "auto" | "small" | "half" | "hero" | "full" | "panel";
 
 export function normalizeTileSize(raw: unknown): TileSize {
@@ -127,15 +115,10 @@ export interface LayoutPrefs {
   /** `<page>|<sectionId>` of folded sections. */
   collapsed: string[];
   aliases: Record<string, string>;
-  /** Favorite / pinned device IDs in display priority order (#A14). */
   pinnedDeviceIds?: string[];
-  /** Hidden single-device IDs excluded from normal grid, search, and All Off (#A14). */
   hiddenDeviceIds?: string[];
-  /** Custom room pill order (preserving unseen rooms across homes like `RoomOrderDraft`). */
   roomOrder?: string[];
-  /** Local room display name overrides keyed by `roomId` (blank restores original name). */
   roomAliases?: Record<string, string>;
-  /** Custom device-kind filter chip order (`DeviceKindTag[]`). */
   kindOrder?: string[];
 }
 
@@ -188,7 +171,6 @@ function liveLayoutHosts(): ActiveLayoutHostRef[] {
   return out;
 }
 
-/** Finds the active host owning `devices` by array reference identity (never matches standalone test arrays). */
 export function layoutForDevices(devices: readonly SmartDevice[]): LayoutPrefs | null {
   const hosts = liveLayoutHosts();
   for (let i = hosts.length - 1; i >= 0; i--) {
@@ -240,7 +222,7 @@ function writeStoredLayoutPatch(patch: Partial<LayoutPrefs>): void {
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch {
-    // Ignore storage quota or non-DOM test environments without localStorage.
+    return;
   }
 }
 
@@ -419,7 +401,6 @@ export function setRoomAlias(
   prefs.roomAliases = aliases;
 }
 
-/** Saved order seeded with every visible ID so unseen rooms from other homes keep their slot. */
 export function seededRoomOrder(savedOrder: readonly string[] | undefined, visibleIds: readonly string[]): string[] {
   const next = dedupeStrings(savedOrder);
   const seen = new Set(next);
@@ -432,7 +413,6 @@ export function seededRoomOrder(savedOrder: readonly string[] | undefined, visib
   return next;
 }
 
-/** Applies saved `roomOrder` and `roomAliases` to a room list while keeping unknown rooms in incoming order. */
 export function applyRoomOrder<T extends { readonly id: string; readonly name: string }>(
   prefs: Pick<LayoutPrefs, "roomOrder" | "roomAliases"> | null | undefined,
   rooms: readonly T[],
@@ -446,7 +426,6 @@ export function applyRoomOrder<T extends { readonly id: string; readonly name: s
   });
 }
 
-/** Applies saved `kindOrder` on top of fallback rank order. */
 export function applyKindOrder<T extends string>(
   savedKindOrder: readonly string[] | undefined,
   tags: readonly T[],
@@ -600,7 +579,7 @@ export interface PageSection {
 }
 
 /**
- * Favorites ("常用") first on the All page (#A14), then user groups, then the ungrouped rest.
+ * Favorites ("常用") first on the All page, then user groups, then the ungrouped rest.
  * A page without any pinned or grouped device remains a single untitled section.
  */
 export function pageSections(prefs: LayoutPrefs, devices: readonly SmartDevice[], isAllPage: boolean): PageSection[] {

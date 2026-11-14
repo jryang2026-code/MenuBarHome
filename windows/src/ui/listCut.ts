@@ -151,7 +151,6 @@ export function kindChips(
   return applyKindOrder(customKindOrder, [...tags], KIND_RANK);
 }
 
-/** Applies saved `roomOrder` and local `roomAliases` to `RoomOption[]`. */
 export function orderAndAliasRooms(
   rooms: readonly RoomOption[],
   prefs: Pick<LayoutPrefs, "roomOrder" | "roomAliases"> | null | undefined,

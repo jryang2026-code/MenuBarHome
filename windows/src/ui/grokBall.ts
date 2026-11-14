@@ -1,51 +1,28 @@
 import { GrokBall } from "../vendor/grok-ball/grok-ball.js";
 import type { GrokBallEngine } from "../vendor/grok-ball/grok-ball.js";
+import {
+  GROK_BALL_BASE_MARGIN_TOP_PX,
+  GROK_BALL_DEFAULT_MAX_OFFSET_Y_PX,
+  GROK_BALL_DRAG_THRESHOLD_PX,
+  GROK_BALL_MIN_OFFSET_Y_PX,
+  GROK_BALL_OFFSET_STORAGE_KEY,
+  GROK_BALL_VOICE_HOLD_MS,
+  clampGrokBallOffsetY,
+  loadGrokBallOffsetY,
+  saveGrokBallOffsetY,
+} from "./proactive.js";
 
-export const GROK_BALL_OFFSET_STORAGE_KEY = "menubarmijia.grokBallOffsetY";
-export const GROK_BALL_BASE_MARGIN_TOP_PX = 44;
-export const GROK_BALL_MIN_OFFSET_Y_PX = -38;
-export const GROK_BALL_DEFAULT_MAX_OFFSET_Y_PX = 480;
-export const GROK_BALL_DRAG_THRESHOLD_PX = 6;
-export const GROK_BALL_VOICE_HOLD_MS = 500;
-
-export function clampGrokBallOffsetY(offsetY: number, container?: HTMLElement | null): number {
-  if (!Number.isFinite(offsetY)) return 0;
-  const popover = container?.querySelector<HTMLElement>(":scope > .cc-popover") ?? container ?? null;
-  const measuredHeight = Math.max(
-    popover?.clientHeight ?? 0,
-    Math.round(popover?.getBoundingClientRect().height ?? 0),
-  );
-  const maxOffset =
-    measuredHeight > 160
-      ? Math.max(0, measuredHeight - GROK_BALL_BASE_MARGIN_TOP_PX - 84)
-      : GROK_BALL_DEFAULT_MAX_OFFSET_Y_PX;
-  return Math.round(Math.min(maxOffset, Math.max(GROK_BALL_MIN_OFFSET_Y_PX, offsetY)));
-}
-
-export function loadGrokBallOffsetY(container?: HTMLElement | null): number {
-  try {
-    const raw = globalThis.localStorage?.getItem(GROK_BALL_OFFSET_STORAGE_KEY);
-    if (raw === null || raw === undefined || raw.trim() === "") return 0;
-    const parsed = Number(raw);
-    if (!Number.isFinite(parsed)) return 0;
-    return clampGrokBallOffsetY(parsed, container);
-  } catch {
-    return 0;
-  }
-}
-
-export function saveGrokBallOffsetY(offsetY: number): void {
-  try {
-    const normalized = Math.round(Number.isFinite(offsetY) ? offsetY : 0);
-    if (normalized === 0) {
-      globalThis.localStorage?.removeItem(GROK_BALL_OFFSET_STORAGE_KEY);
-    } else {
-      globalThis.localStorage?.setItem(GROK_BALL_OFFSET_STORAGE_KEY, String(normalized));
-    }
-  } catch {
-    return;
-  }
-}
+export {
+  GROK_BALL_BASE_MARGIN_TOP_PX,
+  GROK_BALL_DEFAULT_MAX_OFFSET_Y_PX,
+  GROK_BALL_DRAG_THRESHOLD_PX,
+  GROK_BALL_MIN_OFFSET_Y_PX,
+  GROK_BALL_OFFSET_STORAGE_KEY,
+  GROK_BALL_VOICE_HOLD_MS,
+  clampGrokBallOffsetY,
+  loadGrokBallOffsetY,
+  saveGrokBallOffsetY,
+};
 
 export class GrokBallView {
   readonly element = document.createElement("span");

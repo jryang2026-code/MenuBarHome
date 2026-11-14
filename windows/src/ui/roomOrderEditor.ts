@@ -37,10 +37,6 @@ export function getCustomContextMenuTarget(host: object): CustomContextMenuTarge
   return customCtxTargets.get(host) ?? null;
 }
 
-/**
- * Moves and default-order resets write only into the slots of currently visible items,
- * preserving unseen rooms from other homes or accounts untouched (`RoomOrderDraft.swift`).
- */
 export class RoomOrderDraft {
   public readonly originalOrder: readonly string[];
   public readonly originalAliases: Readonly<Record<string, string>>;
@@ -172,7 +168,6 @@ export interface RoomOrderEditorSession {
 
 const editorSessions = new WeakMap<MenuMijiaWindowsApp, RoomOrderEditorSession>();
 
-/** Snapshot rooms in raw device-discovery order (default order before custom `roomOrder`). */
 export function snapshotRoomsForHost(devices: readonly SmartDevice[]): RoomOption[] {
   const seen = new Set<string>();
   const out: RoomOption[] = [];
@@ -184,7 +179,6 @@ export function snapshotRoomsForHost(devices: readonly SmartDevice[]): RoomOptio
   return out;
 }
 
-/** Default device-kind tags present in `devices` sorted by `KIND_RANK` (falls back to all tags if < 2). */
 export function snapshotKindsForHost(devices: readonly SmartDevice[]): DeviceKindTag[] {
   const present = new Set<DeviceKindTag>();
   for (const dev of devices) present.add(dev.kind.kind);

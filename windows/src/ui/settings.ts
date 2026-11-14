@@ -255,13 +255,11 @@ export function loadSettings(): LoadedSettings {
   };
 }
 
-/** Reads `askWhenUnsure` from settings (defaults to `true`, matching macOS `assistant_ask_when_unsure`). */
 export function readAskWhenUnsure(settings: object): boolean {
   const raw = (settings as Record<string, unknown>).askWhenUnsure;
   return typeof raw === "boolean" ? raw : true;
 }
 
-/** Persists `askWhenUnsure` onto the runtime settings record without touching `appTypes.ts`. */
 export function writeAskWhenUnsure(settings: object, enabled: boolean): void {
   (settings as Record<string, unknown>).askWhenUnsure = enabled;
 }

@@ -444,10 +444,6 @@ export class UserHabitMemory {
     }
   }
 
-  /**
-   * Everything the habit memory holds, rendered in plain words for the Settings screen
-   * (`UserHabitMemory.swift:509-557` parity).
-   */
   readableItems(
     devices: readonly SmartDevice[],
     scenes: readonly HomeScene[],
@@ -464,10 +460,6 @@ export class UserHabitMemory {
     });
   }
 
-  /**
-   * Removes a single habit item by its stable readable ID (`e|...`, `s|...`, or `p|...`),
-   * leaving all other learned habits intact (`UserHabitMemory.swift:559-586` parity).
-   */
   forget(itemId: string): boolean {
     const before = this.entries.length + this.sequences.length;
     const updated = forgetHabitItem(
@@ -868,8 +860,6 @@ function hasAsciiWordBoundary(haystack: string, needle: string, start: number): 
   const rightOk = !isWordUnit(needle.charCodeAt(needle.length - 1)) || end === haystack.length || !isWordUnit(haystack.charCodeAt(end));
   return leftOk && rightOk;
 }
-
-// MARK: - Viewing & Forgetting Individual Habits (UserHabitMemory.swift:509-586 parity)
 
 export interface ReadableHabitItem {
   readonly id: string;

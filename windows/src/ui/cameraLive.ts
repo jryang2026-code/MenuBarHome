@@ -103,13 +103,9 @@ export class CameraLiveController {
   public static readonly CAMERA_SAME_SESSION_COOLDOWN_MS = 2_500;
   cameraFrameGiveUpMs = CameraLiveController.CAMERA_FRAME_GIVE_UP_MS;
   cameraFrameRetryMs = 800;
-  /** Target frame interval (~20fps ceiling) when visible and receiving fresh frames. */
   cameraActiveFrameGapMs = CameraLiveController.CAMERA_ACTIVE_FRAME_GAP_MS;
-  /** Power-saving interval when consecutive frames are unchanged. */
   cameraIdleFrameGapMs = CameraLiveController.CAMERA_IDLE_FRAME_GAP_MS;
-  /** Background keep-alive interval while the live modal is hidden. */
   cameraHiddenFrameGapMs = CameraLiveController.CAMERA_HIDDEN_FRAME_GAP_MS;
-  /** Cooldown before re-negotiating the SAME camera's single P2P session; skipped on cross-camera switch. */
   cameraSameSessionCooldownMs = CameraLiveController.CAMERA_SAME_SESSION_COOLDOWN_MS;
   public liveCameraStreamURL: string | null = null;
   public liveCameraLoading = false;

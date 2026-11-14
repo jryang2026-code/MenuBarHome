@@ -173,10 +173,6 @@ function storedKeyForURL(host: SettingsEventsHost, baseURL: string): string {
   return "";
 }
 
-/**
- * Queries the OS launch-at-login registration state when Settings opens via Tauri IPC.
- * Gracefully retains the local setting with zero errors when the backend command is absent.
- */
 export async function syncLaunchAtLoginFromSystem(host: SettingsEventsHost): Promise<boolean> {
   const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
   if (!invoke) return host.settings.launchAtLogin;
@@ -197,9 +193,6 @@ export async function syncLaunchAtLoginFromSystem(host: SettingsEventsHost): Pro
   }
 }
 
-/**
- * Detects whether any deferred-save Settings draft field differs from persisted settings.
- */
 export function hasUnsavedSettingsChanges(host: SettingsEventsHost): boolean {
   const root = host.root;
   if (!root.querySelector(".cc-settings-sheet")) return false;
@@ -254,10 +247,6 @@ export function hasUnsavedSettingsChanges(host: SettingsEventsHost): boolean {
   return false;
 }
 
-/**
- * Minimal probe against the configured AI endpoint (`ModelIntentResolver.swift:178-194` parity).
- * Returns latency in milliseconds on success or a concrete error reason.
- */
 export async function probeAssistantConnection(
   config: AssistantConfig,
   transport: HttpTransport = createTransport(),
@@ -364,10 +353,6 @@ export async function probeAssistantConnection(
   }
 }
 
-/**
- * Signs out of Xiaomi Home, clears Home Assistant URL & token, wipes all AI provider API keys
- * and cloud consents, and revokes any local Raycast/CLI snapshot & bridge token.
- */
 export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<void> {
   setPendingMiVaultDeletion(true);
   if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
@@ -417,8 +402,6 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   const appHost = host as unknown as MenuMijiaWindowsApp;
   const vault = (host as unknown as Partial<MenuMijiaWindowsApp>).credentialVault;
 
-  // Revoke local bridge tokens and remove any exported Raycast/CLI snapshot file without
-  // queueing a duplicate background persistCredentials onto vault.opChain.
   const hadOwnSave = Object.prototype.hasOwnProperty.call(host, "saveSettings");
   const origSave = host.saveSettings;
   host.saveSettings = () => {

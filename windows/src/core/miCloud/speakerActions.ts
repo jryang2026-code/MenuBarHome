@@ -18,10 +18,6 @@ export interface ResolvedSpeakerActionIds {
   readonly directiveActionId: string | null;
 }
 
-/**
- * Trims surrounding whitespace from speaker TTS / directive text and enforces non-empty and
- * maximum length bounds so blank or oversized payloads are never sent to MIoT cloud.
- */
 export function normalizeSpeakerText(
   raw: unknown,
   maxLength = SPEAKER_TEXT_MAX_LENGTH,
@@ -126,10 +122,6 @@ function findDirectiveAction(
   return null;
 }
 
-/**
- * Resolves Xiaomi speaker TTS (`play-text`) and silent directive (`execute-text-directive`)
- * action addresses across `intelligent-speaker` (preferred) and `speaker` services.
- */
 export function resolveSpeakerActionIds(
   did: string,
   spec: MiotDeviceSpec,
@@ -215,9 +207,6 @@ function coerceSilentExecutionArg(
   return rawNum;
 }
 
-/**
- * Validates and maps arguments for MIoT `play-text` and `execute-text-directive` actions.
- */
 export function mapSpeakerActionInputs(
   service: MiotService,
   action: MiotAction,

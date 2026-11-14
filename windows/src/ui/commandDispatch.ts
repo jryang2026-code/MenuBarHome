@@ -53,10 +53,8 @@ import {
 } from "../core/optimisticLock.js";
 import { localizeEffect } from "./panelPrefs.js";
 
-/** MIoT per-property write rejection code (`MiCloudProvider.propertyUnsupportedCode` on macOS). */
 export const MIOT_PROPERTY_UNSUPPORTED_CODE = -704002000;
 
-/** Secondary single-device echo verification delay (`HomeStore+Controls.swift` ~2.2s parity). */
 export const ECHO_READ_BACK_DELAY_MS = 2_200;
 
 const UNDO_EXPIRY_MS = 10 * 60 * 1000;

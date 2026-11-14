@@ -11,6 +11,14 @@ import { isUndoHoverPaused } from "./speechGuard.js";
 
 export const UNDO_AVAILABILITY_WINDOW_MS = 10 * 60 * 1000;
 
+export function undoBannerMs(deviceCount: number): number {
+  return (deviceCount >= 3 ? 15 : 10) * 1000;
+}
+
+export function undoDeviceCount(steps: readonly { readonly deviceId: string }[]): number {
+  return new Set(steps.map((step) => step.deviceId)).size;
+}
+
 function fillParams(
   template: string,
   params?: Readonly<Record<string, string | number>>,

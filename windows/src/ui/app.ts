@@ -112,14 +112,7 @@ export type PanelHealth =
   | { readonly kind: "degraded"; readonly dot: "is-degraded"; readonly label: string }
   | { readonly kind: "offline"; readonly dot: "is-offline"; readonly label: string; readonly recovery: "qr" | "none" };
 
-/** 10s for one or two devices, 15s from three. Same rule as macOS `HomeStore.undoBannerSeconds`. */
-export function undoBannerMs(deviceCount: number): number {
-  return (deviceCount >= 3 ? 15 : 10) * 1000;
-}
-
-export function undoDeviceCount(steps: readonly { readonly deviceId: string }[]): number {
-  return new Set(steps.map((step) => step.deviceId)).size;
-}
+export { undoBannerMs, undoDeviceCount } from "./undoTracker.js";
 
 function visibleTopSheet(root: ParentNode): HTMLElement | undefined {
   return Array.from(root.querySelectorAll<HTMLElement>(".cc-sheet"))

@@ -742,7 +742,6 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       session.assistantDraft,
       (url) => storedKeyForHost(host, url),
     );
-    // Update active pill, model input, and key input in place without re-rendering so focus/caret stay intact!
     const updated = session.assistantDraft;
     const preset = findPreset(updated.selectedPreset);
     sheet.querySelectorAll<HTMLElement>("[data-onboarding-ai-preset]").forEach((pill) => {
