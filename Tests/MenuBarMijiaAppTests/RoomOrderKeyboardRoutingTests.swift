@@ -198,19 +198,6 @@ struct RoomOrderKeyboardRoutingTests {
         #expect(ui.renamingRoomId == nil)
     }
 
-    @Test("The lifecycle hook is a no-op outside a session")
-    func lifecycleHookOutsideSessionDoesNothing() {
-        let (defaults, name) = makeSuite()
-        defer { defaults.removePersistentDomain(forName: name) }
-        let ui = LayoutUIState()
-
-        ui.commitRoomOrderIfNeeded(defaults: defaults)
-
-        #expect(ui.editMode == .none)
-        #expect(defaults.string(forKey: RoomPrefs.orderKey) == nil)
-        #expect(defaults.string(forKey: RoomPrefs.aliasesKey) == nil)
-    }
-
     @Test("Committing keeps rooms of another home in the saved order")
     func commitKeepsOtherHomeSlots() {
         let (defaults, name) = makeSuite()

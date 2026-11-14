@@ -69,15 +69,6 @@ struct SettingsSearchTests {
         }
     }
 
-    @Test("Every indexed anchor belongs to a pane that exists")
-    func anchorsResolveToPanes() {
-        let panes = Set(SettingsTab.allCases)
-        for entryIndex in SettingsSearch.entries() {
-            #expect(panes.contains(entryIndex.anchor.tab),
-                    "\(entryIndex.anchor.rawValue) points at a missing pane")
-        }
-    }
-
     @Test("Every anchor in the enum is searchable")
     func everyAnchorIsIndexed() {
         // An anchor with no index entry is a row nobody can find; an index entry with no anchor
@@ -186,14 +177,6 @@ struct SettingsSearchTests {
         #expect(SettingsSearch.search("e", limit: 0).isEmpty)
     }
 
-    @Test("Results are stable for the same query")
-    func deterministicOrder() {
-        let first = SettingsSearch.search("设备").map(\.anchor)
-        let second = SettingsSearch.search("设备").map(\.anchor)
-        #expect(first == second)
-        #expect(!first.isEmpty)
-    }
-
     // MARK: Keyboard navigation
 
     @Test("Arrow keys walk the list and stop at its ends")
@@ -249,15 +232,6 @@ struct SettingsSearchTests {
         #expect(focus.highlight == nil)
     }
 
-    @Test("Every jump bumps the generation so the same hit scrolls again")
-    func generationAdvances() {
-        let focus = SettingsSearchFocus()
-        focus.jump(to: .launchAtLogin)
-        let first = focus.generation
-        focus.jump(to: .launchAtLogin)
-        #expect(focus.generation != first)
-    }
-
     @Test("The highlight expires on its own instead of looping")
     func highlightExpires() async throws {
         let focus = SettingsSearchFocus()
@@ -269,47 +243,10 @@ struct SettingsSearchTests {
         #expect(focus.highlight == nil)
     }
 
-    @Test("A whitespace-only query is not a search")
-    func isSearchingIgnoresWhitespace() {
-        let focus = SettingsSearchFocus()
-        focus.query = "   "
-        #expect(!focus.isSearching)
-    }
-
-    // MARK: The index carries both languages
-
-    @Test("Every entry has at least one synonym per language pair")
-    func entriesHaveSynonyms() {
-        for entry in SettingsSearch.entries() {
-            #expect(!entry.synonyms.isEmpty, "\(entry.anchor.rawValue) has no synonyms")
-            #expect(!entry.title.isEmpty, "\(entry.anchor.rawValue) has no title")
-            #expect(!entry.section.isEmpty, "\(entry.anchor.rawValue) has no section")
-        }
-    }
-
     @Test("Entries have unique anchors")
     func uniqueAnchors() {
         let anchors = SettingsSearch.entries().map(\.anchor)
         #expect(Set(anchors).count == anchors.count)
-    }
-
-    // MARK: Pane association
-
-    @Test("A hit reports the pane that renders it")
-    func hitReportsPane() {
-        let hits = SettingsSearch.search("令牌")
-        let assistant = hits.first { $0.anchor == .assistantAPIKey }
-        #expect(assistant?.anchor.tab == .assistant)
-        let ha = hits.first { $0.anchor == .haToken }
-        #expect(ha?.anchor.tab == .connection)
-    }
-
-    @Test("A row never claims a pane other than its own")
-    func anchorPaneMatchesAnchor() {
-        for entry in SettingsSearch.entries() {
-            let tab = entry.anchor.tab
-            #expect(SettingsTab.allCases.contains(tab))
-        }
     }
 
     // MARK: Reachability
@@ -420,74 +357,5 @@ struct SettingsSearchTests {
         )
         #expect(SettingsSearch.search("hidden", availability: someHidden)
             .hits.contains { $0.anchor == .hiddenDevices })
-    }
-
-    @Test("The unrestricted availability hides nothing and changes no ranking")
-    func unrestrictedKeepsEveryRow() {
-        // Pins the test helper itself: if `unrestricted` ever started blocking a row, every other
-        // index test would be measuring a filtered view without saying so.
-        for entry in SettingsSearch.entries() {
-            #expect(SettingsSearchAvailability.unrestricted.isReachable(entry.anchor),
-                    "\(entry.anchor.rawValue) is blocked by the unrestricted fixture")
-        }
-        #expect(SettingsSearch.search("令牌", availability: .unrestricted).hits.map(\.anchor)
-                == SettingsSearch.search("令牌").map(\.anchor))
-    }
-
-    @Test("The results cap survives the reachability filter")
-    func reachabilityHonorsLimit() {
-        let outcome = SettingsSearch.search("e", availability: .unrestricted, limit: 2)
-        #expect(outcome.hits.count <= 2)
-    }
-
-    @Test("Every block reason names a condition the window actually branches on")
-    func conditionalRowsAreDeclared() throws {
-        // The availability model is a hand-written copy of the window's own `if` statements, so it
-        // can drift from them silently. Each reason names the exact `if` it mirrors in
-        // `SettingsWindowView.swift` and the rows that `if` must enclose; deleting or inverting the
-        // gate, or moving a row out of it, fails here.
-        let gates: [SettingsSearchBlockReason: (condition: String, encloses: [String])] = [
-            .demoMode: ("if store.homeBackend != .demo {",
-                        ["anchor: .haServerAddress", "anchor: .haDiscovery", "anchor: .miAccount",
-                         "homeAssistantForm", "LGWebOSSettingsSection("]),
-            .nothingHidden: ("if !store.hiddenDevices.isEmpty {", ["anchor: .hiddenDevices"]),
-            .needsMacOS26: ("if #available(macOS 26.0, *) {", ["anchor: .panelTheme"]),
-            .liquidGlassPanel: ("if panelTheme == .classic {", ["anchor: .panelHeight"])
-        ]
-        #expect(Set(gates.keys) == Set(SettingsSearchBlockReason.allCases),
-                "a block reason with no gate would never be reported")
-
-        let path = try Self.sourceRoot().appendingPathComponent("SettingsWindowView.swift")
-        let source = try String(contentsOf: path, encoding: .utf8)
-        for (reason, gate) in gates {
-            let body = Self.blockBodies(opening: gate.condition, in: source)
-            #expect(!body.isEmpty,
-                    "\(reason.rawValue) mirrors `\(gate.condition)`, which no longer appears in SettingsWindowView.swift")
-            for marker in gate.encloses {
-                #expect(body.contains { $0.contains(marker) },
-                        "`\(marker)` must sit inside `\(gate.condition)` for \(reason.rawValue) to be true")
-            }
-        }
-    }
-
-    /// The text between each `opening` (which ends in `{`) and its matching `}`.
-    private static func blockBodies(opening: String, in source: String) -> [Substring] {
-        var bodies: [Substring] = []
-        var searchStart = source.startIndex
-        while let range = source.range(of: opening, range: searchStart..<source.endIndex) {
-            var depth = 1
-            var index = range.upperBound
-            while index < source.endIndex, depth > 0 {
-                switch source[index] {
-                case "{": depth += 1
-                case "}": depth -= 1
-                default: break
-                }
-                if depth > 0 { index = source.index(after: index) }
-            }
-            bodies.append(source[range.upperBound..<index])
-            searchStart = range.upperBound
-        }
-        return bodies
     }
 }

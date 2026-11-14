@@ -958,10 +958,3 @@ export function t(template: string, params?: Readonly<Record<string, string | nu
         : (entry ? entry[0] : template);
   return params ? fill(text, params) : text;
 }
-
-/** Marker used by the catalog tests: `true` when a key is translated and differs from Chinese. */
-export function isTranslated(key: string): boolean {
-  const entry = CATALOG[key];
-  if (!entry) return false;
-  return entry[0] !== entry[1] || entry[0] === "English" || entry[0] === "繁體中文";
-}

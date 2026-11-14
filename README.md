@@ -406,10 +406,4 @@ python3 scripts/measure_footprint.py --no-live --json
 
 Live rows are marked `live` in the Source column. Without a running app the script prints the committed baseline and marks every row `recorded`. Quit any second copy of the app first. The script measures the first `MenuBarMijiaApp` it finds.
 
-The unit tests for the parser and report live in `scripts/test_measure_footprint.py`:
-
-```bash
-python3 -m unittest discover -s scripts -p 'test_measure_footprint.py'
-```
-
 ---

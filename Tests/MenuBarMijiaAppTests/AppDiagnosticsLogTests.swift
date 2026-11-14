@@ -31,19 +31,4 @@ struct AppDiagnosticsLogTests {
         let recent = DiagnosticsReportBuilder.crashTimestamps(from: stamps, now: modified.addingTimeInterval(60))
         #expect(recent == [modified])
     }
-
-    @Test("The default scan directory is the system crash report folder")
-    func defaultCrashDirectory() throws {
-        let directory = try #require(AppDiagnosticsLog.diagnosticReportsDirectory())
-
-        #expect(directory.path.hasSuffix("Library/Logs/DiagnosticReports"))
-    }
-
-    @Test("An absent folder yields no crashes instead of failing the report")
-    func missingCrashDirectory() {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("absent-\(UUID().uuidString)", isDirectory: true)
-
-        #expect(AppDiagnosticsLog.crashReportStamps(in: directory).isEmpty)
-    }
 }

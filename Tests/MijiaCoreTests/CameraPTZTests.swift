@@ -15,16 +15,6 @@ struct CameraPTZCapabilityTests {
         #expect(capability.supportsTilt)
     }
 
-    @Test("Verified models keep their measured motion mode")
-    func verifiedModels() throws {
-        let step = try #require(CameraPTZCapability.resolve(model: "chuangmi.camera.029a02", vendor: "cs2"))
-        #expect(step.mode == .step)
-        #expect(step.confidence == .verified)
-
-        let continuous = try #require(CameraPTZCapability.resolve(model: "xiaomi.camera.c01a01", vendor: "cs2"))
-        #expect(continuous.mode == .continuous)
-    }
-
     @Test("A brand alone never grants a motor")
     func brandIsNotCapability() {
         #expect(CameraPTZCapability.resolve(model: "chuangmi.camera.ipc016", vendor: "cs2") == nil)

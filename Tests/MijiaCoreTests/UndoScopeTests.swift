@@ -128,19 +128,6 @@ struct UndoScopeTests {
         #expect(store.grokBallCelebrationUntil == nil)
     }
 
-    @Test("Selecting a home in a private store leaves production preferences alone")
-    func homeSelectionUsesItsOwnPreferences() async throws {
-        let (store, _, suite) = try await makeStore()
-        defer { store.userDefaults.removePersistentDomain(forName: suite) }
-        let previous = UserDefaults.standard.string(forKey: MiCloudProvider.selectedHomeKey)
-        store.selectMiHome("test-home")
-        #expect(store.userDefaults.string(forKey: MiCloudProvider.selectedHomeKey) == "test-home")
-        #expect(UserDefaults.standard.string(forKey: MiCloudProvider.selectedHomeKey) == previous)
-        store.selectMiHome(nil)
-        #expect(store.userDefaults.string(forKey: MiCloudProvider.selectedHomeKey) == nil)
-        #expect(UserDefaults.standard.string(forKey: MiCloudProvider.selectedHomeKey) == previous)
-    }
-
     @Test("A queued bulk action cannot dispatch into a replacement backend")
     func queuedBulkActionCannotEnterNewBackend() async throws {
         let (store, _, suite) = try await makeStore()

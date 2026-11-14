@@ -2,7 +2,7 @@
 
 审阅与编码规范总纲。引用证据时以 `path:symbol` 标注决定性符号并摘出关键行（如 `HomeStore+ControlWrite.swift:lockOptimistic`）。
 
-> **机械检查已由 `scripts/check.sh` 自动拦截（不在此赘述）**：密钥与私网扫描、Git 提交账号与镜像远端推送、`kVK_*` 常量、`UNUserNotificationCenter` `.app` 守卫、macOS 字号/圆角/颜色变量、Windows Fluent 2 曲线变量与退场幽灵类同步、Windows 飞出面板几何与阴影留白预算、`.glassEffect` 隔离、定时器回调裸 `render()`、`Task.yield` 固定循环、`#expect(...allSatisfy(\.))`、`withAnimation` 丢弃 `Task` 返回值、`L10n.currentLanguage =`、`#require` 嵌套、PTZ 型号表与补丁 SHA-256、能力矩阵同步。
+> **机械检查已由 `scripts/check.sh` 自动拦截（不在此赘述）**：密钥与私网扫描、Git 提交账号与镜像远端推送、`UNUserNotificationCenter` `.app` 守卫、Windows Fluent 2 曲线变量与退场幽灵类同步、Windows 飞出面板几何与阴影留白预算、`.glassEffect` 隔离、定时器回调裸 `render()`、`Task.yield` 固定循环、`#expect(...allSatisfy(\.))`、`withAnimation` 丢弃 `Task` 返回值、`L10n.currentLanguage =`、`#require` 嵌套、PTZ 型号表与补丁 SHA-256、能力矩阵同步。
 
 ---
 

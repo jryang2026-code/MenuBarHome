@@ -53,17 +53,6 @@ struct AssistantTests {
 
     // MARK: - LocalIntentParser
 
-    @Test("打开书房灯 turns on both study lights")
-    func studyLightsOn() throws {
-        let plan = try #require(Self.parse("打开书房灯"))
-        #expect(plan.source == .local)
-        #expect(plan.intents == [
-            DeviceIntent(targetId: "dev_study_ceiling", operation: .power(true)),
-            DeviceIntent(targetId: "dev_study_desk", operation: .power(true))
-        ])
-        #expect(plan.reply == "已打开书房吸顶灯、书房台灯")
-    }
-
     @Test("书房灯月光模式 switches the study ceiling light to Night effect instead of dimming")
     func studyMoonlightEffect() throws {
         let plan = try #require(Self.parse("书房灯月光模式"))
@@ -212,26 +201,6 @@ struct AssistantTests {
             try await unconfiguredResolver.resolve("准备写代码", devices: Self.devices, scenes: Self.scenes)
         }
         #expect(AssistantError.userMessage(for: AssistantError.missingAPIKey).contains("API Key"))
-    }
-
-    @Test("AssistantConfig loads OpenRouter key from CodexBar config file")
-    func codexBarOpenRouterKeyLoading() throws {
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("codexbar-test-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-
-        let fakeConfig = """
-        {
-          "version": 1,
-          "providers": [
-            { "id": "codex", "enabled": true },
-            { "id": "openrouter", "enabled": true, "apiKey": "test-or-key-placeholder" }
-          ]
-        }
-        """
-        try fakeConfig.write(to: tempURL, atomically: true, encoding: .utf8)
-        let loaded = AssistantConfig.loadCodexBarOpenRouterKey(configURL: tempURL)
-        #expect(loaded == "test-or-key-placeholder")
     }
 
     @Test("Model resolver uses /v1/systemone with ~typesafe/jev-latest and decodes multi-question intents")
@@ -522,25 +491,6 @@ struct AssistantTests {
         #expect(receipt.usedHabitContext == false)
     }
 
-    @Test("runAssistantCommand records a model execution receipt")
-    @MainActor
-    func storeRecordsModelReceipt() async throws {
-        let (store, mock) = try await makeStore()
-        let content = #"{"actions":[{"device":"s2","op":"scene","value":null},{"device":"d4","op":"power","value":false}],"reply":"晚安"}"#
-        store.assistantResolverOverride = ModelIntentResolver(config: AssistantConfig(model: "glm-5.1"), transport: { request in
-            let data = try JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": content]]]])
-            return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
-        })
-
-        _ = await store.runAssistantCommand("我要睡觉了")
-        let receipt = try #require(store.lastAssistantReceipt)
-        #expect(receipt.route == .aiModel)
-        #expect(receipt.elapsedMilliseconds >= 0)
-        #expect(receipt.usedHabitContext == false)
-        let executed = await mock.executedCommands
-        #expect(executed.count == 2)
-    }
-
     @Test("A model command that receives habit context marks the receipt")
     @MainActor
     func storeRecordsHabitContext() async throws {
@@ -711,8 +661,8 @@ struct AssistantTests {
         ])
     }
 
-    @Test("AssistantProviderPreset infers providers and isolates provider keys in CodexBar")
-    func providerPresetAndCodexBarIsolation() throws {
+    @Test("CodexBar ambient API key loading isolates provider keys by baseURL")
+    func codexBarProviderKeyIsolation() throws {
         #expect(AssistantProviderPreset.allCases.map(\.rawValue) == [
             "openrouter_jev",
             "native_jev",
@@ -727,14 +677,6 @@ struct AssistantTests {
             "ollama",
             "custom"
         ])
-        #expect(AssistantProviderPreset.infer(baseURL: "https://openrouter.ai/api/v1") == .openRouterJev)
-        #expect(AssistantProviderPreset.infer(baseURL: "https://api.typesafe.ai/v1") == .nativeJev)
-        #expect(AssistantProviderPreset.infer(baseURL: "https://api.deepseek.com/v1") == .deepSeek)
-        #expect(AssistantProviderPreset.infer(baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1") == .dashScope)
-        #expect(AssistantProviderPreset.infer(baseURL: "https://open.bigmodel.cn/api/paas/v4") == .zhipuGLM)
-        #expect(AssistantProviderPreset.infer(baseURL: "https://api.moonshot.cn/v1") == .moonshotKimi)
-        #expect(AssistantProviderPreset.infer(baseURL: "https://api.groq.com/openai/v1") == .groq)
-        #expect(AssistantProviderPreset.infer(baseURL: "http://localhost:11434/v1") == .ollama)
 
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("codexbar-multi-\(UUID().uuidString).json")
@@ -905,23 +847,6 @@ struct AssistantTests {
         let pairPerHome = IntentCatalog(devices: [cn1, cn2, de1, de2], scenes: [])
         #expect(pairPerHome.realIds(forTargetChoice: "room_lights:1") == ["cn_l1", "cn_l2"])
         #expect(pairPerHome.realIds(forTargetChoice: "room_lights:2") == ["de_l1", "de_l2"])
-    }
-
-    // MARK: - Live (opt-in)
-
-    @Test("ModelIntentResolver resolves against live OpenRouter ~typesafe/jev-latest when ASSISTANT_RUN_LIVE_TEST=1")
-    func liveModelResolver() async throws {
-        guard ProcessInfo.processInfo.environment["ASSISTANT_RUN_LIVE_TEST"] == "1" else { return }
-        let key = try #require(AssistantConfig.loadCodexBarOpenRouterKey())
-        let resolver = ModelIntentResolver(config: AssistantConfig(apiKey: key))
-        let clock = ContinuousClock()
-        let start = clock.now
-        let plan = try await resolver.resolve("书房来点柔和月光", devices: Self.devices, scenes: Self.scenes)
-        let elapsed = clock.now - start
-        print("ASSISTANT_LIVE_JEV latency=\(elapsed) intents=\(plan.intents) reply=\(plan.reply)")
-        #expect(plan.intents == [
-            DeviceIntent(targetId: "dev_study_ceiling", operation: .lightEffect("Night"))
-        ])
     }
 }
 

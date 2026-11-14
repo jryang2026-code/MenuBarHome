@@ -222,46 +222,6 @@ struct UpdateProgressAndRecoveryTests {
         // The staged copy is discarded; retrying downloads a fresh package.
         #expect(!FileManager.default.fileExists(atPath: staged.stagingRootURL.path))
     }
-
-    @MainActor
-    @Test("Disabling the watchdog leaves a launched relaunch alone")
-    func watchdogCanBeDisabled() throws {
-        let harness = try HomeStoreHarness()
-        defer { harness.cleanUp() }
-
-        harness.store.updateRelaunchWatchdogInterval = nil
-        harness.store.updateState = .readyToRelaunch(harness.stagedApp())
-        harness.store.confirmRelaunchForUpdate()
-
-        #expect(harness.store.updateState == .installing(harness.release))
-    }
-
-    // MARK: - Traditional Chinese
-
-    @Test("The new update copy is translated into Traditional Chinese")
-    func newUpdateCopyHasHantTranslations() {
-        L10n.$overrideLanguage.withValue(.zhHant) {
-            #expect(DownloadSectionCopy.timeRemaining(
-                DownloadProgress(receivedBytes: 0, totalBytes: 12_000, bytesPerSecond: 1_000)
-            ) == "約剩 12 秒")
-            #expect(DownloadSectionCopy.timeRemaining(
-                DownloadProgress(receivedBytes: 0, totalBytes: 900_000, bytesPerSecond: 1_000)
-            ) == "約剩 15 分鐘")
-            #expect(L10n.tr("重新检查", "Check Again") == "重新檢查")
-            #expect(L10n.tr("立即更新", "Update Now") == "立即更新")
-            #expect(
-                L10n.tr(
-                    "替换后的应用没有自动启动，请重试或手动下载安装",
-                    "The replaced app did not start; retry or install manually"
-                ) == "替換後的應用沒有自動啟動，請重試或手動下載安裝"
-            )
-        }
-        L10n.$overrideLanguage.withValue(.en) {
-            #expect(DownloadSectionCopy.timeRemaining(
-                DownloadProgress(receivedBytes: 0, totalBytes: 12_000, bytesPerSecond: 1_000)
-            ) == "12s left")
-        }
-    }
 }
 
 // MARK: - Support

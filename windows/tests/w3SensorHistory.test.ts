@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
 
-import { assertMissing, assertPresent } from "./dom.js";
+import { assertMissing } from "./dom.js";
 import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.js";
 import { setLanguage } from "../src/core/i18n.js";
 import type { MiSession } from "../src/core/miCloudClient.js";
@@ -540,7 +540,7 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
     const app = new MenuMijiaWindowsApp(root);
 
     const cardCollapsed = root.querySelector<HTMLElement>('[data-sensor-card="sensor.living_env"]');
-    assertPresent(cardCollapsed);
+    assert.ok(cardCollapsed);
     assertMissing(cardCollapsed.querySelector("[data-expand-device]"));
     assertMissing(root.querySelector("[data-sensor-history-drawer]"));
 
@@ -548,14 +548,14 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
     assert.equal(app.expandedDeviceId, "sensor.living_env");
 
     const drawer = root.querySelector<HTMLElement>('[data-sensor-history-drawer="sensor.living_env"]');
-    assertPresent(drawer);
+    assert.ok(drawer);
     const expandedCard = root.querySelector<HTMLElement>('[data-sensor-card="sensor.living_env"]')!;
     assert.match(expandedCard.getAttribute("style") ?? "", /span 6/);
 
     const linePath = drawer.querySelector<SVGPathElement>("[data-sensor-line-path]");
     const areaPath = drawer.querySelector<SVGPathElement>("[data-sensor-area-path]");
-    assertPresent(linePath);
-    assertPresent(areaPath);
+    assert.ok(linePath);
+    assert.ok(areaPath);
     assert.match(linePath.getAttribute("d") ?? "", /^M [\d.]+ [\d.]+ C /);
     assert.match(areaPath.getAttribute("d") ?? "", /Z$/);
     assert.equal(drawer.querySelectorAll("[data-sensor-slot]").length, 24);
@@ -567,17 +567,17 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
     assert.equal(app.expandedDeviceId, "sensor.living_env");
 
     const btn7d = drawer.querySelector<HTMLButtonElement>('[data-sensor-window="sensor.living_env:7d"]');
-    assertPresent(btn7d);
+    assert.ok(btn7d);
     btn7d.click();
     assert.equal(app.expandedDeviceId, "sensor.living_env");
 
     const drawer7d = root.querySelector<HTMLElement>('[data-sensor-history-drawer="sensor.living_env"]')!;
     assert.equal(drawer7d.querySelectorAll("[data-sensor-slot]").length, 7);
-    assertPresent(drawer7d.querySelector("[data-sensor-band-path]"));
+    assert.ok(drawer7d.querySelector("[data-sensor-band-path]"));
     assert.match(drawer7d.textContent ?? "", /今天/);
 
     const btnHum = drawer7d.querySelector<HTMLButtonElement>('[data-sensor-metric="sensor.living_env:humidity"]');
-    assertPresent(btnHum);
+    assert.ok(btnHum);
     btnHum.click();
     const plotHum = root.querySelector<SVGElement>('[data-sensor-plot="sensor.living_env"]')!;
     assert.equal(plotHum.getAttribute("data-sensor-metric-active"), "humidity");
@@ -622,7 +622,7 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
     assertMissing(root.querySelector('[data-sensor-card="sensor.front_lock"]'));
 
     const luxCard = root.querySelector<HTMLElement>('[data-sensor-card="sensor.study_lux"]');
-    assertPresent(luxCard);
+    assert.ok(luxCard);
     luxCard.click();
     assert.equal(app.expandedDeviceId, "sensor.study_lux");
     assert.match(root.querySelector("[data-sensor-readout-value]")?.textContent ?? "", /320 lx/);
@@ -747,7 +747,7 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
     await setImmediate();
     assert.equal(historyCalls, 1);
     const linePath = root.querySelector<SVGPathElement>("[data-sensor-line-path]");
-    assertPresent(linePath);
+    assert.ok(linePath);
     assert.match(linePath.getAttribute("d") ?? "", /^M [\d.]+ [\d.]+ C /);
 
     app.haConnectionError = "Connection timed out";
@@ -834,9 +834,9 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
     await setImmediate();
     assert.ok(miStatCalls >= 1);
     const plot = root.querySelector<SVGElement>('[data-sensor-plot="mi_sensor_1"]');
-    assertPresent(plot);
+    assert.ok(plot);
     assert.equal(plot.getAttribute("data-sensor-window-active"), "24h");
-    assertPresent(root.querySelector("[data-sensor-line-path]"));
+    assert.ok(root.querySelector("[data-sensor-line-path]"));
     assert.match(root.querySelector("[data-sensor-source-badge]")?.textContent ?? "", /云端\+本机/);
   });
 
@@ -1040,7 +1040,7 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
 
     assert.ok(requestedDids.length >= 1);
     assert.ok(requestedDids.every((did) => did === "998877"));
-    assertPresent(root.querySelector('[data-sensor-plot="acct_2/mi:998877"]'));
+    assert.ok(root.querySelector('[data-sensor-plot="acct_2/mi:998877"]'));
   });
 
   it("discovers all registered HA sensor entities via ha_snapshot even when illuminance is in deviceFacets", async () => {

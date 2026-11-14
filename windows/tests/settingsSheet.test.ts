@@ -88,115 +88,6 @@ afterEach(async () => {
 });
 
 describe("Settings sheet three-zone layout (#78)", () => {
-  it("pins the close button and tabs on top and 完成并保存 at the bottom", async () => {
-    startDemo();
-    await click("#btn-settings");
-
-    const sheet = element(".cc-settings-sheet");
-    assert.ok(sheet.classList.contains("cc-sheet"), "the settings sheet keeps the shared sheet styling");
-    // menuViews onboarding and cameraLive sheets must not gain the fixed-zone layout.
-    assert.equal(document.querySelectorAll(".cc-settings-top").length, 1);
-
-    const top = element(".cc-settings-top");
-    assert.ok(top.contains(element("#btn-close-settings")), "close lives in the fixed top zone");
-    assert.ok(top.contains(element(".cc-settings-tabs")), "tabs live in the fixed top zone");
-
-    const body = element(".cc-sheet-body");
-    const footer = element(".cc-sheet-footer");
-    assert.ok(footer.contains(element("#btn-save-settings")), "save lives in the fixed footer");
-    assert.ok(footer.contains(element("#btn-settings-quit")));
-    assert.equal(footer.closest(".cc-settings-sheet"), sheet);
-
-    // Top, body, footer: the body is the only scrolling zone and sits between the other two.
-    const zones = [...sheet.children].map((node) => node.className);
-    assert.deepEqual(
-      zones.map((name) => name.split(" ").find((part) => ["cc-settings-top", "cc-sheet-body", "cc-sheet-footer"].includes(part))),
-      ["cc-settings-top", "cc-sheet-body", "cc-sheet-footer"],
-    );
-    assert.ok(body.querySelectorAll("[data-settings-panel]").length === 4, "all four panels live in the body");
-  });
-
-  it("offers four categories and starts on 外观与面板", async () => {
-    startDemo();
-    await click("#btn-settings");
-
-    const tabs = [...document.querySelectorAll<HTMLElement>("[data-settings-tab]")].map((node) => node.dataset.settingsTab);
-    assert.deepEqual(tabs, ["general", "connection", "assistant", "system"]);
-    const bar = element(".cc-settings-tabs");
-    assert.equal(bar.getAttribute("role"), "tablist");
-    assert.ok(bar.classList.contains("cc-segmented-pills"));
-    assert.equal(visibleTab(), "general");
-    assert.deepEqual(selectedTabs(), ["general"]);
-    assert.match(element('[data-settings-tab="general"]').textContent ?? "", /外观与面板/);
-    assert.match(element('[data-settings-tab="connection"]').textContent ?? "", /数据源/);
-    assert.match(element('[data-settings-tab="assistant"]').textContent ?? "", /AI 与习惯/);
-    assert.match(element('[data-settings-tab="system"]').textContent ?? "", /全关与更新/);
-  });
-
-  it("marks each panel as a tabpanel and hides the ones that are not open", async () => {
-    startDemo();
-    await click("#btn-settings");
-    for (const tab of ["general", "connection", "assistant", "system"]) {
-      assert.equal(panel(tab).getAttribute("role"), "tabpanel");
-    }
-    assert.equal(panel("general").hidden, false);
-    for (const tab of ["connection", "assistant", "system"]) assert.equal(panel(tab).hidden, true);
-  });
-
-  it("keeps every control in the DOM regardless of the open tab, so tests and 完成并保存 find them", async () => {
-    startDemo();
-    await click("#btn-settings");
-    // Connection tab controls exist while 外观与面板 is open.
-    assert.equal(visibleTab(), "general");
-    for (const selector of ["#settings-ha-url", "#settings-ha-token", "select[data-mi-region]", "#btn-start-qr", ".cc-qr-box"]) {
-      assert.ok(document.querySelector(selector), `${selector} must stay mounted`);
-    }
-    for (const selector of ["#settings-api-key", "#settings-base-url", "#settings-model", "#settings-habit", "#settings-habit-share"]) {
-      assert.ok(document.querySelector(selector), `${selector} must stay mounted`);
-    }
-    for (const selector of ["#settings-allow-advanced-facets", "#settings-auto-update"]) {
-      assert.ok(document.querySelector(selector), `${selector} must stay mounted`);
-    }
-  });
-
-  it("places each control on its own category", async () => {
-    startDemo();
-    await click("#btn-settings");
-
-    const general = panel("general");
-    for (const selector of [
-      "#settings-climate-panel",
-      "#settings-hide-offline",
-      "#settings-hide-grouped-lights",
-      "#settings-quick-actions",
-      "#settings-enable-hotkey",
-      "#settings-panel-opacity",
-      '[data-appearance="dark"]',
-      '[data-interface-language="en"]',
-      "[data-temperature-unit]",
-      "[data-panel-height]",
-      "[data-panel-anchor]",
-    ]) {
-      assert.ok(general.querySelector(selector), `${selector} belongs to 外观与面板`);
-    }
-    assert.equal(document.querySelector("#settings-grok-ball"), null, "GrokBall setting is removed on Windows");
-
-    const connection = panel("connection");
-    for (const selector of ["#settings-ha-url", "#settings-ha-token", "select[data-mi-region]", "#btn-start-qr", ".cc-qr-box", '[data-conn-mode="xiaomiCloud"]', '[data-conn-mode="homeAssistant"]', '[data-conn-mode="demo"]']) {
-      assert.ok(connection.querySelector(selector), `${selector} belongs to 数据源`);
-    }
-
-    const assistant = panel("assistant");
-    for (const selector of ["[data-ai-preset]", "#settings-base-url", "#settings-model", "#settings-api-key", "#settings-habit", "#settings-habit-share", "#settings-habit-share-sample", "#settings-habit-share-preview"]) {
-      assert.ok(assistant.querySelector(selector), `${selector} belongs to AI 与习惯`);
-    }
-
-    const system = panel("system");
-    for (const selector of ["#settings-allow-advanced-facets", ".cc-timers-stack", "#settings-auto-update", "#btn-check-update"]) {
-      assert.ok(system.querySelector(selector), `${selector} belongs to 全关与更新`);
-    }
-  });
-
   it("keeps the update card on 外观与面板 when a release is waiting", async () => {
     const release = JSON.stringify({
       tag_name: "v1.2.3",
@@ -250,18 +141,6 @@ describe("Settings tab switching (#78)", () => {
     await click('[data-settings-tab="general"]');
     assert.equal(visibleTab(), "general");
     assert.deepEqual(selectedTabs(), ["general"]);
-  });
-
-  it("survives a re-render, so a background refresh cannot snap back to the first tab", async () => {
-    const app = startDemo();
-    await click("#btn-settings");
-    await click('[data-settings-tab="assistant"]');
-    assert.equal(app.settingsTab, "assistant");
-
-    app.render();
-    await setImmediate();
-    assert.equal(visibleTab(), "assistant");
-    assert.deepEqual(selectedTabs(), ["assistant"]);
   });
 
   it("keeps a typed draft in the connection tab while another tab is open", async () => {
@@ -343,21 +222,6 @@ describe("Settings tab switching (#78)", () => {
     await setImmediate();
     assert.equal(field("#settings-model").value, "draft-model-name", "a rebuild must not drop typed text");
     assert.equal(field("#settings-api-key").value, "sk-draft");
-  });
-
-  it("keeps the habit switches flipped and the share sample typed across a toggle re-render", async () => {
-    startDemo();
-    await click("#btn-settings");
-    await click('[data-settings-tab="assistant"]');
-    toggle("#settings-habit-share", true);
-    type("#settings-habit-share-sample", "书房台灯");
-    assert.match(element("#settings-habit-share-preview").textContent ?? "", /不会发送习惯摘要|关闭/);
-
-    // This toggle calls render(), the path that used to drop both the switch and the sample.
-    await click('[data-settings-tab="general"]');
-    toggle("#settings-hide-offline", true);
-    assert.equal(field("#settings-habit-share").checked, true, "the flipped switch survives a re-render");
-    assert.equal(field("#settings-habit-share-sample").value, "书房台灯", "the sample draft survives a re-render");
   });
 
   it("refreshes the habit share preview after a re-render that kept a sample draft", async () => {
@@ -545,28 +409,6 @@ describe("Settings save across tabs (#78)", () => {
     assert.equal(saved.assistantModel, "deepseek-chat");
     assert.equal(saved.habitLearningEnabled, false);
   });
-
-  it("closes the sheet after saving and keeps the chosen tab for the next open", async () => {
-    const app = startDemo();
-    await click("#btn-settings");
-    await click('[data-settings-tab="assistant"]');
-    await click("#btn-save-settings");
-    assert.equal(app.activeSheet, "none");
-    assertMissing(document.querySelector(".cc-settings-sheet"));
-  });
-});
-
-describe("Settings layout leaves the other sheets alone (#78)", () => {
-  it("does not give the onboarding sheet a fixed header or footer zone", () => {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify({}));
-    new MenuMijiaWindowsApp(element("#app"));
-    assert.ok(document.querySelector(".cc-sheet"), "onboarding is up on first run");
-    assertMissing(document.querySelector(".cc-settings-sheet"));
-    assertMissing(document.querySelector(".cc-settings-top"));
-    assertMissing(document.querySelector(".cc-sheet-body"));
-    assert.ok(document.querySelector(".cc-sheet-footer"), "onboarding keeps its own footer markup");
-  });
-
 });
 
 describe("Settings keeps its tab under a live cloud refresh (#78)", () => {

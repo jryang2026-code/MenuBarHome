@@ -139,21 +139,6 @@ struct CurtainDeviceTests {
             == .setProps([.init(did: "dual1", siid: 2, piid: 4, value: .number(55))]))
     }
 
-    @Test("The unsupported-device scan no longer lists a curtain")
-    func curtainIsNotUnsupported() throws {
-        let single = try spec(Self.singleModel)
-        let dual = try spec(Self.dualModel)
-        let records = [
-            MiDeviceRecord(did: "curtain1", name: "客厅窗帘", model: Self.singleModel, isOnline: true),
-            MiDeviceRecord(did: "dual1", name: "卧室窗帘", model: Self.dualModel, isOnline: true),
-        ]
-        let specs = [Self.singleModel: single, Self.dualModel: dual]
-        let home = MiotSynthesizer.synthesize(devices: records, rooms: [], specs: specs, values: [:])
-
-        #expect(MiotSynthesizer.supportedServiceName(for: single) == "curtain")
-        #expect(UnsupportedDeviceCollector.miCloud(devices: records, specs: specs, synthesized: home).isEmpty)
-    }
-
     // MARK: Card tap
 
     @MainActor
@@ -296,21 +281,6 @@ struct CurtainDeviceTests {
         #expect(await store.togglePrimary(moved)?.value == true)
         #expect(store.devices.first?.coverPosition == 70)
         #expect(await mock.executedCommands.last == .setSelectOption(entityId: "miot:curtain1:2", option: "Pause"))
-    }
-
-    @Test("A curtain card shows the position the device reports after a poll")
-    @MainActor
-    func curtainCardShowsReadBackPosition() async throws {
-        let (closed, _, _) = try singleTrackHome(position: 0, status: 0)
-        let (store, mock) = try await makeStore([closed])
-        #expect(store.devices.first?.coverPosition == 0)
-
-        let (opened, _, _) = try singleTrackHome(position: 73, status: 0)
-        await mock.updateSnapshot(SynthesizedHome(devices: [opened]))
-        await waitUntil { store.devices.first?.coverPosition == 73 }
-
-        #expect(store.devices.first?.coverPosition == 73)
-        #expect(store.devices.first?.statusSubtitle == "开 73%")
     }
 
     @Test("A dual-track motor reached through both sources shows only its two track cards")

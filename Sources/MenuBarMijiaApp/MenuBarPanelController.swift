@@ -37,8 +37,8 @@ import MijiaCore
 final class MenuBarPanelController: NSObject {
     static let shared = MenuBarPanelController()
 
-    static let statusItemLogSubsystem = "com.jryang1997.MenuBarMijia"
-    static let statusItemLogCategory = "StatusItem"
+    private static let statusItemLogSubsystem = "com.jryang1997.MenuBarMijia"
+    private static let statusItemLogCategory = "StatusItem"
     private static let statusItemLogger = Logger(
         subsystem: statusItemLogSubsystem,
         category: statusItemLogCategory
@@ -98,7 +98,6 @@ final class MenuBarPanelController: NSObject {
     var statusContextMenuScheduler: (TimeInterval, DispatchWorkItem) -> Void = { delay, work in
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
-    var statusItemTraceSink: ((String) -> Void)?
     var statusItemToggle: (() -> Void)?
     var statusItemUptime: () -> TimeInterval = {
         ProcessInfo.processInfo.systemUptime
@@ -109,7 +108,6 @@ final class MenuBarPanelController: NSObject {
 
     private func traceStatusItem(_ message: @autoclosure () -> String) {
         let line = message()
-        statusItemTraceSink?(line)
         Self.statusItemLogger.debug("\(line, privacy: .public)")
     }
 
@@ -131,7 +129,7 @@ final class MenuBarPanelController: NSObject {
     /// Reads the current event's number only when it is a mouse event. `NSEvent.eventNumber` raises
     /// `NSInternalInconsistencyException` for keyboard events, which reach the status item when the
     /// context menu is dismissed with Escape or the item is activated by keyboard navigation.
-    static func statusEventNumber(for event: NSEvent?) -> Int? {
+    private static func statusEventNumber(for event: NSEvent?) -> Int? {
         guard let event else { return nil }
         switch event.type {
         case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
@@ -673,14 +671,14 @@ final class MenuBarPanelController: NSObject {
 
     /// Resolves the status-bar SF Symbol image with a safe fallback so an unavailable symbol name
     /// never leaves the menu-bar button blank or stuck on the previous icon.
-    static func statusBarImage(symbolName: String) -> NSImage? {
+    private static func statusBarImage(symbolName: String) -> NSImage? {
         NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
             ?? NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: nil)
             ?? NSImage(systemSymbolName: "house", accessibilityDescription: nil)
     }
 
     /// Last ten characters of the live transcript, or "聆听中…" before the first words arrive.
-    static func speechLabel(_ draft: String) -> String {
+    private static func speechLabel(_ draft: String) -> String {
         let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return L10n.tr("聆听中…", "Listening…") }
         if trimmed.count > 10 {
@@ -1081,10 +1079,6 @@ final class MenuBarPanelController: NSObject {
 
     static func setStatusItemHighlight(on button: NSButton?, highlighted: Bool) {
         button?.highlight(highlighted)
-    }
-
-    static func clearStatusItemHighlight(on button: NSButton?) {
-        setStatusItemHighlight(on: button, highlighted: false)
     }
 
     private func isContextMenuDismissalEvent(_ eventNumber: Int?) -> Bool {

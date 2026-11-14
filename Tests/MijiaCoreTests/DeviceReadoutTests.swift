@@ -28,14 +28,6 @@ struct DeviceReadoutTests {
         return (store, mock)
     }
 
-    @Test("Waiting wins over a stale cloud, and a live card is neither")
-    func deciderPrefersWaitingOverStale() {
-        #expect(DeviceReadoutDecider.readout(isWaiting: false, valuesAreStale: false) == .live)
-        #expect(DeviceReadoutDecider.readout(isWaiting: true, valuesAreStale: false) == .waiting)
-        #expect(DeviceReadoutDecider.readout(isWaiting: false, valuesAreStale: true) == .possiblyStale)
-        #expect(DeviceReadoutDecider.readout(isWaiting: true, valuesAreStale: true) == .waiting)
-    }
-
     @Test("A switch tap stays waiting until the device is read back, and a second tap sends nothing")
     func toggleShowsWaitingUntilReadBackAndIgnoresASecondTap() async throws {
         let (store, mock) = try await makeStore(device: light())

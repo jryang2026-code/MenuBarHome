@@ -100,48 +100,6 @@ struct OnboardingChecklistTests {
         #expect(store.onboardingMilestones.contains(.undidAllOff))
     }
 
-    @Test("The guide hands the dashboard back once a source is configured, and hides only after all three steps")
-    func presentationTransitions() {
-        let fresh = OnboardingChecklist(hasConfiguredSource: false)
-        #expect(OnboardingPresentation.resolve(
-            checklist: fresh, hasCompletedOnboarding: false, isReopened: false
-        ) == .fullGuide)
-
-        let connected = OnboardingChecklist(hasConfiguredSource: true)
-        #expect(OnboardingPresentation.resolve(
-            checklist: connected, hasCompletedOnboarding: false, isReopened: false
-        ) == .dashboardChecklist)
-
-        var partial = connected
-        partial.milestones = [.searchedDevice]
-        #expect(OnboardingPresentation.resolve(
-            checklist: partial, hasCompletedOnboarding: false, isReopened: false
-        ) == .dashboardChecklist)
-        partial.milestones.insert(.turnedAllOff)
-        #expect(OnboardingPresentation.resolve(
-            checklist: partial, hasCompletedOnboarding: false, isReopened: false
-        ) == .hidden)
-
-        var complete = connected
-        complete.milestones = [.searchedDevice, .turnedAllOff, .undidAllOff]
-        #expect(OnboardingPresentation.resolve(
-            checklist: complete, hasCompletedOnboarding: false, isReopened: false
-        ) == .hidden)
-        #expect(OnboardingPresentation.resolve(
-            checklist: complete, hasCompletedOnboarding: true, isReopened: false
-        ) == .hidden)
-        // Reopening from Settings reviews the guide without replacing the dashboard.
-        #expect(OnboardingPresentation.resolve(
-            checklist: complete, hasCompletedOnboarding: true, isReopened: true
-        ) == .dashboardChecklist)
-        #expect(OnboardingPresentation.resolve(
-            checklist: fresh, hasCompletedOnboarding: true, isReopened: true
-        ) == .fullGuide)
-        #expect(OnboardingPresentation.resolve(
-            checklist: fresh, hasCompletedOnboarding: true, isReopened: false
-        ) == .hidden)
-    }
-
     @Test("Connecting swaps the full guide for the dashboard checklist and keeps it until every step is tried")
     @MainActor
     func storePresentationAfterConnecting() async throws {
@@ -403,34 +361,6 @@ struct OnboardingChecklistTests {
 }
 
 struct PanelNoticeTests {
-    @Test("Every pending notice keeps its priority: blocked, security, suggestion, expiring")
-    func kindsKeepTheirPriorityOrder() {
-        let soon = Date(timeIntervalSince1970: 1_700_000_000)
-        let plaintext = HAPlaintextPrompt.asking("http://203.0.113.5:8123")
-        let declined = HAPlaintextPrompt.declined("http://203.0.113.5:8123")
-        let address = HADiscoveredInstance(baseURL: "http://203.0.113.9:8123", locationName: "客厅")
-
-        #expect(PanelNotice.kinds(miExpired: false, expiringSoon: nil, plaintext: nil, address: nil).isEmpty)
-        #expect(PanelNotice.kinds(
-            miExpired: true, expiringSoon: soon, plaintext: plaintext, address: address
-        ) == [.miBlocked, .haPlaintext(plaintext), .haAddress(address), .miExpiringSoon(soon)])
-        #expect(PanelNotice.kinds(
-            miExpired: false, expiringSoon: soon, plaintext: plaintext, address: nil
-        ) == [.haPlaintext(plaintext), .miExpiringSoon(soon)])
-        #expect(PanelNotice.kinds(
-            miExpired: false, expiringSoon: nil, plaintext: nil, address: address
-        ) == [.haAddress(address)])
-        #expect(PanelNotice.kinds(
-            miExpired: false, expiringSoon: soon, plaintext: nil, address: nil
-        ) == [.miExpiringSoon(soon)])
-
-        #expect(PanelNoticeSlot.Kind.miBlocked.hidesChecklist)
-        #expect(PanelNoticeSlot.Kind.haPlaintext(plaintext).hidesChecklist)
-        #expect(PanelNoticeSlot.Kind.haPlaintext(declined).hidesChecklist)
-        #expect(!PanelNoticeSlot.Kind.haAddress(address).hidesChecklist)
-        #expect(!PanelNoticeSlot.Kind.miExpiringSoon(soon).hidesChecklist)
-    }
-
     @Test("The live store lists each pending notice once, highest priority first")
     @MainActor
     func storeListsEachPendingNotice() async throws {

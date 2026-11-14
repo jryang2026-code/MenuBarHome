@@ -250,19 +250,6 @@ struct DoorbellRingTests {
             #expect(climateSpec.targetTemperature == 26)
         }
     }
-
-    @Test("HAHomeSnapshot.parseLastChanged parses fractional and whole-second ISO8601 timestamps")
-    func parsesFractionalAndWholeSecondTimestamps() {
-        let fractional = HAHomeSnapshot.parseLastChanged(.string("2026-11-11T08:00:00.500+00:00"))
-        let whole = HAHomeSnapshot.parseLastChanged(.string("2026-11-11T08:00:00Z"))
-        #expect(fractional != nil)
-        #expect(whole != nil)
-        if let fractional, let whole {
-            #expect(abs(fractional.timeIntervalSince(whole) - 0.5) < 0.001)
-        }
-        #expect(HAHomeSnapshot.parseLastChanged(.string("not-a-date")) == nil)
-        #expect(HAHomeSnapshot.parseLastChanged(nil) == nil)
-    }
 }
 
 @MainActor

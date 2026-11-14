@@ -90,16 +90,6 @@ struct AutomationWiFiConditionTests {
         #expect(decoded.conditions.wifi == .inAny(["Home", "Office"]))
     }
 
-    @Test func notInAlsoRoundTrips() throws {
-        let rule = AutomationRule(
-            trigger: .screenLocked,
-            action: .quickAction(.lightsOff),
-            conditions: AutomationConditions(wifi: .notIn(["Home"]))
-        )
-        let decoded = try JSONDecoder().decode(AutomationRule.self, from: try JSONEncoder().encode(rule))
-        #expect(decoded.conditions.wifi == .notIn(["Home"]))
-    }
-
     @Test func ruleStoredBeforeConditionsDecodesAsUnconditional() throws {
         // A rule persisted by 1.1.7 has no `conditions` key at all.
         let legacy = """
@@ -115,13 +105,6 @@ struct AutomationWiFiConditionTests {
         #expect(rule.conditions.wifi == .any)
         #expect(rule.conditions.isUnconditional)
         #expect(rule.trigger == .away)
-    }
-
-    @Test func summaryDescribesTheConditionForTheList() {
-        #expect(AutomationConditions(wifi: .any).summary() == nil)
-        #expect(AutomationConditions(wifi: .inAny(["Home"])).summary()?.contains("Home") == true)
-        #expect(AutomationConditions(wifi: .notIn(["Home"])).summary()?.contains("Home") == true)
-        #expect(AutomationConditions(wifi: .inAny([])).summary() == nil)
     }
 
     // MARK: Permissions

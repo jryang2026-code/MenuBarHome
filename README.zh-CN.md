@@ -406,11 +406,5 @@ python3 scripts/measure_footprint.py --no-live --json
 
 实测行在 `Source` 列标记为 `live`；应用未运行时脚本会打印已提交基线并标为 `recorded`。采样前请先退出多开的副本（脚本默认采样找到的第一个 `MenuBarMijiaApp` 进程）。
 
-解析与报告逻辑的单元测试位于 `scripts/test_measure_footprint.py`：
-
-```bash
-python3 -m unittest discover -s scripts -p 'test_measure_footprint.py'
-```
-
 ---
 

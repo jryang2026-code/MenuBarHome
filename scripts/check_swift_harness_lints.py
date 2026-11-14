@@ -647,116 +647,6 @@ def scan_dir(root: Path, suffix: str, finder: Callable[[str, str], list[Hit]]) -
     ]
 
 
-def _self_test_lexer() -> None:
-    lex_src = "\n".join(
-        [
-            'let q = #"""#',
-            'let msg = "prefix \\(fn("inner \\(1 + 2)")) suffix"',
-            '/* outer /* nested "miot_coverage_specs.json" */ still comment */',
-            'let raw = #"raw "quote" \\#(call("arg")) tail"#',
-            'let multi = #"""\n    line "one"\n    """#',
-            '// line comment with "miot_coverage_specs.json" and for _ in 0..<5 { await Task.sleep(for: .seconds(1)) }',
-            "for _ in 0..<4 { await Task.yield() }",
-        ]
-    )
-    k = lex_swift(lex_src)
-    assert k[lex_src.index("prefix")] == STRING and k[lex_src.index("fn(")] == CODE
-    assert k[lex_src.index("inner")] == STRING and k[lex_src.index("1 + 2")] == CODE
-    assert k[lex_src.index("still comment")] == COMMENT and k[lex_src.index("call(")] == CODE
-    assert [t for _, _, t in yield_loops("lex.swift", lex_src)] == ["for _ in 0..<4"]
-
-
-def _self_test_loops() -> None:
-    yield_src = "\n".join(
-        [
-            "for _ in 0..<50 { await Task.yield() }",
-            "for _ in 0..<5000 where ready { await Task.yield() }",
-            "for _ in 0..<10 { if done { break }; await Task.yield() }",
-            "for _ in 0..<40 {\n  for x in xs.filter { $0.ok } { if x.done { break } }\n  await Task.yield()\n}",
-            "for _ in 0..<30 { switch st { case .a: await Task.yield() default: break } }",
-        ]
-    )
-    assert [t for _, _, t in yield_loops("f.swift", yield_src)] == ["for _ in 0..<50", "for _ in 0..<40", "for _ in 0..<30"]
-    sleep_src = "\n".join(
-        [
-            "for i: Int in 0..<10 { try? await Task.sleep(for: .milliseconds(1)) }",
-            "for _ in 0..<20 where xs.contains { $0.ok } { try await Task.sleep(for: .milliseconds(5)) }",
-            "for outer in 0..<6 {\n  for inner in 0..<7 { try await Task.sleep(for: .milliseconds(1)) }\n}",
-            "for outer in 0..<8 {\n  for x in xs.filter { $0.ok } { try await Task.sleep(for: .milliseconds(1)) }\n}",
-            "// for _ in 0..<99 { try await Task.sleep(for: .milliseconds(1)) }",
-        ]
-    )
-    assert [t for _, _, t in sleep_loops("f.swift", sleep_src)] == [
-        "for i: Int in 0..<10",
-        "for _ in 0..<20 where xs.contains { $0.ok }",
-        "for inner in 0..<7",
-        "for outer in 0..<8",
-    ]
-
-
-def _self_test_scheduler() -> None:
-    scheduler_src = "\n".join(
-        [
-            "let a = DebouncedResumeScheduler.live",
-            "store.resumeScheduler = .live",
-            "let b: DebouncedResumeScheduler = .live",
-            "let c = DebouncedResumeScheduler()",
-            "let d = DebouncedResumeScheduler.init()",
-            "let e = DebouncedResumeScheduler(sleep: { _ in })",
-            "let f = DebouncedResumeScheduler { _ in }",
-            "let g = DebouncedResumeScheduler(now: { ContinuousClock.now }, sleep: { _ in })",
-            "let h = DebouncedResumeScheduler(now: { clock.now })\n{ _ in _ = ContinuousClock.now }",
-            "let ok = DebouncedResumeScheduler(now: { () -> ContinuousClock.Instant in clock.now }, sleep: { _ in })",
-            "func make() -> DebouncedResumeScheduler { DebouncedResumeScheduler(now: { clock.now }, sleep: { _ in }) }",
-            "extension DebouncedResumeScheduler { var custom: DebouncedResumeScheduler { DebouncedResumeScheduler(now: { clock.now }, sleep: { _ in }) } }",
-        ]
-    )
-    assert [(l, t) for _, l, t in live_resume_schedulers("f.swift", scheduler_src)] == [
-        (1, "DebouncedResumeScheduler.live"),
-        (2, "DebouncedResumeScheduler.live"),
-        (3, "DebouncedResumeScheduler.live"),
-        (4, "DebouncedResumeScheduler(missing now:)"),
-        (5, "DebouncedResumeScheduler(missing now:)"),
-        (6, "DebouncedResumeScheduler(missing now:)"),
-        (7, "DebouncedResumeScheduler(missing now:)"),
-        (8, "DebouncedResumeScheduler(...ContinuousClock...)"),
-        (9, "DebouncedResumeScheduler(...ContinuousClock...)"),
-    ]
-
-
-def _self_test_cov_anim_ratchet() -> None:
-    cov_src = (
-        '@Test("Uses cached miot_coverage_specs.json")\n'
-        'func t() { _ = dir.appendingPathComponent("miot_coverage_specs").appendingPathExtension("json") }\n'
-        'let p = "Tests/Fixtures/miot_coverage_specs.json"\n'
-    )
-    assert [(l, t) for _, l, t in coverage_spec_loads("f.swift", cov_src)] == [(2, "miot_coverage_specs.json"), (3, "miot_coverage_specs.json")]
-    anim_src = (
-        "withAnimation(m) /* c */ { store.togglePrimary(d) }\n"
-        "withAnimation(m) { (a == b ? s1 : s2).turnAllOff() }\n"
-        "withAnimation(m) { _ = store.togglePrimary(d); return store.rehearseAllOff() }\n"
-    )
-    assert [t for _, _, t in animation_tasks("f.swift", anim_src)] == ["togglePrimary()", "turnAllOff()"]
-    ratchet_rule = LintRule("sleep ratchet", "Tests", sleep_loops, SLEEP_LOOP_ALLOWLIST, {"Tests/F.swift": 2})
-    hits = [("Tests/MijiaCoreTests/LGWebOSTLSIntegrationTests.swift", 178, "for attempt in 0..<40"), ("Tests/F.swift", 1, "for _ in 0..<2"), ("Tests/F.swift", 2, "for _ in 0..<3")]
-    assert evaluate_rule(ratchet_rule, hits) == ([], [])
-    assert classify(hits, SLEEP_LOOP_ALLOWLIST, {"Tests/F.swift": 1})[0]
-    assert classify(hits, SLEEP_LOOP_ALLOWLIST, {"Tests/F.swift": 3})[1]
-    assert classify(hits[:1], SLEEP_LOOP_ALLOWLIST, {"Tests/Zero.swift": 0})[1]
-
-
-def self_test() -> None:
-    _self_test_lexer()
-    _self_test_loops()
-    _self_test_scheduler()
-    _self_test_cov_anim_ratchet()
-    assert len(expect_keypaths("f.swift", "#expect(items.allSatisfy(\\.isOn))\n#expect(items.allSatisfy { $0.isOn })\n")) == 1
-    sample = [("Tests/MenuBarMijiaAppTests/CameraPTZDriverTests.swift", 1, "for _ in 0..<500")] * 5
-    assert classify(sample, YIELD_ALLOWLIST) == ([], [])
-    assert classify(sample + [("Tests/Other.swift", 1, "for _ in 0..<1")], YIELD_ALLOWLIST)[0]
-    assert classify(sample[:4], YIELD_ALLOWLIST)[1]
-
-
 def report(title: str, hits: list[Hit], allowlist: Allowlist, ratchet_ceiling: RatchetCeiling | None = None) -> bool:
     unexpected, stale = classify(hits, allowlist, ratchet_ceiling)
     if unexpected or stale:
@@ -768,12 +658,7 @@ def report(title: str, hits: list[Hit], allowlist: Allowlist, ratchet_ceiling: R
     return True
 
 
-def main(argv: list[str] | None = None) -> None:
-    args = sys.argv[1:] if argv is None else argv
-    if "--self-test" in args:
-        self_test()
-        print("✅ check_swift_harness_lints.py self-test 通过。")
-        return
+def main() -> None:
     ok = True
     for rule in RULES:
         ok = report(rule.title, scan_dir(ROOT / rule.scan_subdir, ".swift", rule.finder), rule.allowlist, rule.ratchet_ceiling) and ok

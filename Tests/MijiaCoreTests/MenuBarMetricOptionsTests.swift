@@ -119,10 +119,4 @@ struct MenuBarMetricOptionsTests {
         store.menuBarTargetId = "power:off"
         #expect(store.menuBarText == "0W")
     }
-
-    @Test("A device without a name of its own is labelled by its room alone")
-    func emptyLabelUsesRoom() {
-        #expect(HomeStore.roomQualifiedLabel("  ", room: "书房") == "书房")
-        #expect(HomeStore.roomQualifiedLabel("台灯", room: "") == "台灯")
-    }
 }

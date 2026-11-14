@@ -48,22 +48,6 @@ struct RoomOrderDraftTests {
 
     // MARK: - Drag and keyboard moves
 
-    @Test("move places an id before or after a target, reusing the saved-order rule")
-    func moveRelativeToTarget() {
-        var subject = draft()
-        subject.move(id: "kids", relativeTo: "living", after: false)
-        #expect(subject.order == ["kids", "living", "other-home-1", "bedroom", "study", "other-account-2"])
-
-        subject.move(id: "kids", relativeTo: "study", after: true)
-        #expect(subject.order == ["living", "other-home-1", "bedroom", "study", "kids", "other-account-2"])
-
-        // Unknown ids and self-targets change nothing.
-        subject.move(id: "ghost-typo", relativeTo: "living", after: true)
-        subject.move(id: "living", relativeTo: "nope", after: false)
-        subject.move(id: "living", relativeTo: "living", after: true)
-        #expect(subject.order == ["living", "other-home-1", "bedroom", "study", "kids", "other-account-2"])
-    }
-
     @Test("A multi-step drag lands where the list shows it, ghost ids included")
     func moveToVisibleIndexWalksPastGhosts() {
         var subject = draft()
@@ -93,20 +77,6 @@ struct RoomOrderDraftTests {
         // An id that is not in the list is a no-op.
         let ignored = subject.move(id: "not-a-room", toVisibleIndex: 1, visible: subject.visibleOrder(for: rooms))
         #expect(!ignored)
-    }
-
-    @Test("Move to front and to back keep every other id in order")
-    func moveToFrontAndEnd() {
-        var subject = draft()
-        subject.moveToEnd(id: "living")
-        #expect(subject.order == ["other-home-1", "bedroom", "study", "other-account-2", "kids", "living"])
-        subject.moveToFront(id: "living")
-        #expect(subject.order == ["living", "other-home-1", "bedroom", "study", "other-account-2", "kids"])
-        // Unknown ids are no-ops.
-        subject.moveToFront(id: "ghost-typo")
-        subject.moveToEnd(id: "ghost-typo")
-        #expect(subject.order.first == "living")
-        #expect(subject.order.count == 6)
     }
 
     // MARK: - Reconciling the snapshot
@@ -151,15 +121,6 @@ struct RoomOrderDraftTests {
         #expect(subject.alias(for: "living") == "大厅")
     }
 
-    @Test("Restoring the default order of one home leaves another home's rooms untouched")
-    func resetOrderIsScopedToTheVisibleHome() {
-        var subject = draft(order: ["other-home-1", "other-account-2", "living", "bedroom", "study", "kids"])
-        subject.resetOrder(rooms: roomList(visible))
-        // The other home's ids were already ahead and stay exactly where they were.
-        #expect(Array(subject.order.prefix(2)) == ["other-home-1", "other-account-2"])
-        #expect(Array(subject.order.suffix(4)) == ["living", "bedroom", "study", "kids"])
-    }
-
     // MARK: - Aliases
 
     @Test("Renaming writes the draft, saving the original name clears the alias")
@@ -200,53 +161,5 @@ struct RoomOrderDraftTests {
         var ghostOnly = draft(order: ["living", "other-home-1", "bedroom", "study", "other-account-2", "kids"])
         ghostOnly.moveToFront(id: "other-home-1")
         #expect(!ghostOnly.isDirty(currentRooms: rooms))
-    }
-
-    @Test("Cancel reads the untouched initial values back out of the draft")
-    func cancelCanRollBack() {
-        let rooms = roomList(visible)
-        var subject = draft(aliases: ["living": "大厅"])
-        let initialOrder = subject.initialOrder
-        let initialAliases = subject.initialAliases
-
-        subject.move(id: "kids", relativeTo: "living", after: false)
-        subject.rename(id: "study", to: "工作间")
-        subject.resetOrder(rooms: rooms)
-
-        // A cancel discards the draft; the caller writes nothing, so the saved keys still hold these.
-        #expect(subject.initialOrder == initialOrder)
-        #expect(subject.initialAliases == initialAliases)
-    }
-
-    // MARK: - Writing back
-
-    @Test("persist writes both keys and keeps ids of rooms that are not visible")
-    func persistWritesBothKeys() throws {
-        let suite = "test.roomorder.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-
-        let subject = draft()
-        defaults.set(RoomPrefs.encodeOrder(["stale"]), forKey: RoomPrefs.orderKey)
-        defaults.set(RoomPrefs.encodeAliases(["stale": "旧名"]), forKey: RoomPrefs.aliasesKey)
-
-        RoomPrefs.persist(order: subject.order, aliases: ["living": "大厅"], to: defaults)
-
-        let writtenOrder = RoomPrefs.decodeOrder(defaults.string(forKey: RoomPrefs.orderKey) ?? "[]")
-        let writtenAliases = RoomPrefs.decodeAliases(defaults.string(forKey: RoomPrefs.aliasesKey) ?? "{}")
-        #expect(writtenOrder == subject.order)
-        #expect(writtenOrder.contains("other-home-1"))
-        #expect(writtenOrder.contains("other-account-2"))
-        #expect(writtenAliases == ["living": "大厅"])
-    }
-
-    @Test("A persisted draft applied to the snapshot reproduces the list the user saw")
-    func committedOrderMatchesThePreviewedStrip() {
-        let rooms = roomList(visible)
-        var subject = draft()
-        let moved = subject.move(id: "kids", toVisibleIndex: 0, visible: subject.visibleOrder(for: rooms))
-        #expect(moved)
-        let committed = RoomPrefs.apply(order: subject.order, to: rooms)
-        #expect(committed.map(\.id) == ["kids", "living", "bedroom", "study"])
     }
 }

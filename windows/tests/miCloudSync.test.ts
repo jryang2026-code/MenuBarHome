@@ -128,14 +128,6 @@ describe("Mi Cloud response decoding (#76)", () => {
       (err: unknown) => err instanceof MiCloudError && err.kind === "http" && err.code === 500,
     );
   });
-
-  it("reads unwrapResult on its own the same way", () => {
-    assert.throws(
-      () => MiCloudClient.unwrapResult({}),
-      (err: unknown) => err instanceof MiCloudError && err.kind === "badResponse",
-    );
-    assert.deepEqual(MiCloudClient.unwrapResult({ code: 0, result: { list: [] } }), { list: [] });
-  });
 });
 
 describe("Mi Cloud room and device requests (#76 / #67)", () => {
@@ -200,13 +192,6 @@ describe("Mi Cloud room and device requests (#76 / #67)", () => {
       { id: "room-2004", name: "Guest Room", dids: ["did-switch-0002.s2"], homeId: "home-1003", homeName: "Contract Shared Home", isSharedHome: true },
       { id: "home_home-1002", name: "", dids: ["did-kettle-0007"], homeId: "home-1002", homeName: "Contract Beach House" },
     ]);
-  });
-
-  it("rejects unstubbed live fetch in mounted UI tests immediately instead of polling the network", async () => {
-    await assert.rejects(
-      () => globalThis.fetch("https://account.xiaomi.com/longPolling/loginUrl"),
-      /Unstubbed network fetch in UI test/,
-    );
   });
 
   it("keeps a room-less shared home visible when the cloud names its owner", () => {

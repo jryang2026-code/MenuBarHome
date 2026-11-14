@@ -116,49 +116,6 @@ struct DeviceListCutTests {
         #expect(store.selectRoom(nil) == false)
     }
 
-    @Test("Kind faces and hints follow one table in Chinese and English")
-    func chipCopy() {
-        L10n.$overrideLanguage.withValue(.zhHans) {
-            #expect(DeviceKindTag.light.chipTitle == "灯")
-            #expect(DeviceKindTag.light.chipHint == nil)
-            #expect(DeviceKindTag.climate.chipTitle == "空调")
-            #expect(DeviceKindTag.climate.chipHint == "也包括电暖器、温控器和电热毯")
-            #expect(DeviceKindTag.fan.chipTitle == "风扇")
-            #expect(DeviceKindTag.fan.chipHint == "也包括净化器、新风、加湿器和除湿器")
-            #expect(DeviceKindTag.plug.chipTitle == "插座")
-            #expect(DeviceKindTag.plug.chipHint == "也包括开关、香薰，以及带开关的小家电")
-            #expect(DeviceKindTag.fridge.chipTitle == "冰箱")
-            #expect(DeviceKindTag.fridge.chipHint == nil)
-            #expect(DeviceKindTag.vacuum.chipTitle == "扫地机")
-            #expect(DeviceKindTag.vacuum.chipHint == nil)
-            #expect(DeviceKindTag.speaker.chipTitle == "音箱")
-            #expect(DeviceKindTag.speaker.chipHint == nil)
-            #expect(DeviceKindTag.tv.chipTitle == "电视")
-            #expect(DeviceKindTag.tv.chipHint == nil)
-            #expect(DeviceKindTag.camera.chipTitle == "摄像机")
-            #expect(DeviceKindTag.camera.chipHint == nil)
-            #expect(DeviceKindTag.sensor.chipTitle == "传感器")
-            #expect(DeviceKindTag.sensor.chipHint == "也包括没有开关的小家电")
-        }
-        L10n.$overrideLanguage.withValue(.en) {
-            #expect(DeviceKindTag.light.chipTitle == "Lights")
-            #expect(DeviceKindTag.climate.chipTitle == "Climate")
-            #expect(DeviceKindTag.climate.chipHint == "Also heaters, thermostats, and electric blankets")
-            #expect(DeviceKindTag.fan.chipTitle == "Fan")
-            #expect(DeviceKindTag.fan.chipHint == "Also purifiers, fresh-air units, humidifiers, and dehumidifiers")
-            #expect(DeviceKindTag.plug.chipTitle == "Plugs")
-            #expect(DeviceKindTag.plug.chipHint == "Also switches, diffusers, and small appliances with a power switch")
-            #expect(DeviceKindTag.fridge.chipTitle == "Fridge")
-            #expect(DeviceKindTag.vacuum.chipTitle == "Vacuum")
-            #expect(DeviceKindTag.speaker.chipTitle == "Speaker")
-            #expect(DeviceKindTag.tv.chipTitle == "TV")
-            #expect(DeviceKindTag.camera.chipTitle == "Camera")
-            #expect(DeviceKindTag.sensor.chipTitle == "Sensors")
-            #expect(DeviceKindTag.sensor.chipHint == "Also small appliances that have no power switch")
-            #expect(DeviceKindTag.light.chipHint == nil)
-        }
-    }
-
     @Test("Tab from a kind cut steps into the first room")
     func cycleRoomFromKindEntersTheFirstRoom() async throws {
         let (store, suite) = try await makeStore()

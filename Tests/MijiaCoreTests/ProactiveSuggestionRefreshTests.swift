@@ -167,16 +167,6 @@ struct ProactiveSuggestionRefreshTests {
         #expect(store.maybeRefreshProactiveSuggestionsInBackground() != nil, "retries after the cooldown")
     }
 
-    @Test("Switching homes invalidates the proactive signature")
-    func invalidateUndoContextResetsProactiveSignature() async throws {
-        let (store, _) = try await makeStore()
-        store.lastProactiveRefreshSignature = "夜晚|29/60"
-
-        store.invalidateUndoContext()
-
-        #expect(store.lastProactiveRefreshSignature == nil, "a different home must refresh again")
-    }
-
     @Test("Switching homes invalidates the proactive signature for a fresh refresh")
     func homeSwitchInvalidatesProactiveSignature() async throws {
         let (store, _) = try await makeStore()
@@ -232,16 +222,6 @@ struct ProactiveSuggestionRefreshTests {
         #expect(!executed.isEmpty)
         #expect(store.undoBanner != nil, "executing a radial proactive suggestion must show an undo banner")
         #expect(store.grokBallEmotionId(speechListening: false, isPointerTracking: false) == "33")
-    }
-
-    @Test("Toggling GrokBall again or dismissing collapses the stage")
-    func grokBallStageDismiss() async throws {
-        let (store, _) = try await makeStore()
-        store.presentGrokBallStage()
-        #expect(store.isGrokBallStageExpanded == true)
-
-        store.dismissGrokBallStage()
-        #expect(store.isGrokBallStageExpanded == false)
     }
 
     @Test("A successful manual card control celebrates with 33, and an error toast shows 34")

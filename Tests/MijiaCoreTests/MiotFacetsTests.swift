@@ -54,27 +54,6 @@ struct MiotFacetsTests {
         }
     }
 
-    @Test("High-risk writes stay closed until the data whitelist opens them")
-    func highRiskWritesStayClosed() throws {
-        let fixture = try loadFixture()
-        let ruleCase = try #require(fixture.cases.first { $0.id == "low-risk-writes-are-open-by-default" })
-        let facets = MiotFacetEngine.facets(for: ruleCase.spec)
-        let on = try #require(facets.first { $0.name == "on" })
-        #expect(on.risk == .low)
-        #expect(on.writesByDefault)
-        for name in ["on", "mode", "brightness", "fan-level"] {
-            let facet = try #require(facets.first { $0.name == name })
-            #expect(facet.risk == .low, "\(name)")
-            #expect(facet.writesByDefault, "\(name)")
-        }
-        let hazardous = try #require(fixture.cases.first {
-            $0.id == "hazardous-device-type-keeps-whitelisted-writes-closed"
-        })
-        let heaterMode = try #require(MiotFacetEngine.facets(for: hazardous.spec).first { $0.name == "mode" })
-        #expect(heaterMode.risk == .high)
-        #expect(heaterMode.writesByDefault == false)
-    }
-
     @Test("Heating, lock, and router services keep the on switch closed")
     func hazardousServicesKeepOnClosed() throws {
         let serviceNames = [

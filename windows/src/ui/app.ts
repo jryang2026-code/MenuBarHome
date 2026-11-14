@@ -118,7 +118,6 @@ import {
   bindUndoBannerHoverGuard, clearUndoHoverPause, copyUndoKindSnapshots, isInsideScheduledTimerTick, isUndoHoverPaused,
   rejectIfControlBlockedWhileLocked, renderUrlConfirmationPrompt, restoreUndoKindSnapshot, runScheduledCommandWithLockGuard, shouldKeepPopoverPinned, syncUndoBannerClock, toggleVoiceInput, undoButtonVisible,
 } from "./speechGuard.js";
-export { waitForCameraFrameGap } from "./dom.js";
 import { createPanelSearchState, normalizeSearch, PanelSearchIndex } from "../core/panelSearch.js";
 import { focusPanelOnActivate } from "./panelKeyboard.js";
 import { PanelRenderPipeline, prefersReducedMotion, syncDocumentLanguage } from "./reconciler.js";

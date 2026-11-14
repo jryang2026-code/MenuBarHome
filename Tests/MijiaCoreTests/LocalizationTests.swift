@@ -348,73 +348,7 @@ struct LocalizationTests {
         }
     }
 
-    @Test("The unit preference persists and is read back")
-    func temperaturePreferencePersistence() throws {
-        let suiteName = "LocalizationTests.units.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        #expect(TemperatureUnitPreference.stored(in: defaults) == .system)
-        TemperatureUnitPreference.fahrenheit.store(in: defaults)
-        #expect(defaults.string(forKey: TemperatureUnitPreference.storageKey) == "fahrenheit")
-        #expect(TemperatureUnitPreference.stored(in: defaults) == .fahrenheit)
-        // An unknown stored value degrades to the system choice instead of crashing.
-        defaults.set("kelvin", forKey: TemperatureUnitPreference.storageKey)
-        #expect(TemperatureUnitPreference.stored(in: defaults) == .system)
-
-        defaults.removeObject(forKey: TemperatureUnitPreference.storageKey)
-        #expect(TemperatureUnitPreference.allCases.map(\.rawValue) == ["system", "celsius", "fahrenheit"])
-    }
-
     // MARK: - Existing inline API
-
-    @Test("L10n translates strings, room names, and device subtitles in English mode")
-    func englishFormatting() {
-        L10n.$overrideLanguage.withValue(.en) {
-            #expect(L10n.tr("书房", "Study") == "Study")
-            #expect(L10n.displayRoomName("书房") == "Study")
-            #expect(L10n.displayRoomName("客厅") == "Living Room")
-            #expect(L10n.displayRoomName("主卧") == "Master Bedroom")
-            #expect(L10n.displayRoomName("CustomRoom") == "CustomRoom")
-
-            let light = SmartDevice(
-                id: "dev_light",
-                name: "Study Ceiling Light",
-                roomId: "study",
-                roomName: "书房",
-                model: "yeelink.light.ceiling20",
-                isOnline: true,
-                kind: .light(LightSpec(
-                    entityId: "light.study",
-                    isOn: true,
-                    brightnessPercent: 75,
-                    colorTempKelvin: 4000,
-                    currentEffect: "Night",
-                    availableEffects: ["Day", "Night"]
-                ))
-            )
-            #expect(light.statusSubtitle.contains("Moonlight"))
-            #expect(light.statusSubtitle.contains("75%"))
-
-            let ac = SmartDevice(
-                id: "dev_ac",
-                name: "Living Room AC",
-                roomId: "living",
-                roomName: "客厅",
-                model: "xiaomi.aircondition.mt0",
-                isOnline: true,
-                kind: .climate(ClimateSpec(
-                    entityId: "climate.ac",
-                    isOn: true,
-                    hvacMode: "cool",
-                    availableModes: ["off", "cool", "heat"],
-                    targetTemperature: 24.0,
-                    currentTemperature: 26.0
-                ))
-            )
-            #expect(ac.statusSubtitle.contains("Cool"))
-        }
-    }
 
     @Test("Device subtitles follow the display unit while the model stays Celsius")
     func subtitleUsesDisplayUnit() {

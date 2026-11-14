@@ -452,16 +452,6 @@ struct ScheduledCommandScopeTests {
 
     // MARK: - The stamp is the connected source set (ADR-0019)
 
-    @Test("Scope matching needs an intersection and never crosses Home Assistant servers")
-    @MainActor
-    func scopeMatchingRule() {
-        #expect(HomeStore.sourceScopesMatch(["ha:a", "mi:x"], active: ["mi:x"]))
-        #expect(!HomeStore.sourceScopesMatch(["ha:a", "mi:x"], active: ["ha:b", "mi:x"]))
-        #expect(!HomeStore.sourceScopesMatch(["mi:x"], active: ["ha:a", "mi:x"]))
-        #expect(!HomeStore.sourceScopesMatch(["mi:x"], active: ["mi:y"]))
-        #expect(HomeStore.sourceScopesMatch(["demo"], active: ["demo"]))
-    }
-
     @Test("A Xiaomi-device timer keeps running after Home Assistant is removed")
     @MainActor
     func xiaomiTimerSurvivesHARemoval() async throws {

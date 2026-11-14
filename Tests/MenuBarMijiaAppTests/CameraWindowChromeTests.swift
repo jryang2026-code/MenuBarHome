@@ -59,20 +59,10 @@ struct CameraWindowChromeTests {
         }
     }
 
-    @Test("The camera name keeps at least half the toolbar")
-    func titleKeepsHalfTheToolbar() {
-        let crowded = CameraTitleBarSplit.split(barWidth: 360, trailingIdeal: 500, spacing: 6)
-        #expect(crowded.leadingWidth == 177)
-        #expect(crowded.trailingWidth == 177)
-
-        let roomy = CameraTitleBarSplit.split(barWidth: 360, trailingIdeal: 120, spacing: 6)
-        #expect(roomy.trailingWidth == 120)
-        #expect(roomy.leadingWidth == 234)
-    }
-
     @MainActor
     @Test("The trailing toolbar fits the half reserved at the 360 pt compact width in both languages")
     func trailingToolbarFitsCompactWidth() {
+        SnapshotWindow.pinOverlayScrollers()
         let reserved = CameraTitleBarSplit.split(barWidth: 360, trailingIdeal: 500, spacing: 6).trailingWidth
         #expect(reserved == 177)
 

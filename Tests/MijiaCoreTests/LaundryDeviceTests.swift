@@ -390,20 +390,6 @@ struct LaundryDeviceTests {
         #expect(ApplianceActionKind.matching("stop-dry") == .stop)
     }
 
-    @Test("The appliance card's strings are translated into Traditional Chinese")
-    func traditionalChineseCardStrings() {
-        L10n.$overrideLanguage.withValue(.zhHant) {
-            #expect(L10n.tr("状态", "Status") == "狀態")
-            #expect(L10n.tr("剩余时间", "Remaining") == "剩餘時間")
-            #expect(L10n.tr("开始", "Start") == "開始")
-            #expect(L10n.tr("剩余 42 分", "42 min left") == "剩餘 42 分")
-            #expect(L10n.tr("42 分钟", "42 min") == "42 分鐘")
-            #expect(L10n.tr("目标温度", "Target Temp") == "目標溫度")
-            #expect(L10n.format("当前 %@", "Now %@", "52.0°C") == "目前 52.0°C")
-            #expect(L10n.format("目标 %@", "Target %@", "60.0°C") == "目標 60.0°C")
-        }
-    }
-
     private static func wordSpec(
         status: [MiotValueListItem],
         runStatus: [MiotValueListItem]?

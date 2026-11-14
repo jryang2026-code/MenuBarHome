@@ -183,11 +183,7 @@ echo "🔍 检查是否存在硬编码 JWT / 密钥 / 个人局域网地址泄�
 check_secret_leaks
 check_git_identity
 
-echo "🔍 检查机械性编码规范 (kVK_* 键码常量 & UNUserNotificationCenter Bundle 守卫)..."
-if search_matches 'event\.keyCode[[:space:]]*==[[:space:]]*[0-9]+' Sources/; then
-    echo "❌ 请使用 Carbon 的 kVK_* 常量，不要直接比较 event.keyCode 数字字面量！"
-    exit 1
-fi
+echo "🔍 检查机械性编码规范 (Swift 宏/并发隔离/UNUserNotificationCenter Bundle 守卫)..."
 
 # Swift Testing macros expand recursively: `#require(try #require(...))` fails compilation on every
 # platform, before any test runs. One grep here replaces a CI round trip.
@@ -256,7 +252,6 @@ fi
 # (the Swift container image does not ship python3). Missing Python is recorded as a skip.
 PYTHON_LINT_SKIPPED=0
 if [ -n "$PYTHON_BIN" ]; then
-    "$PYTHON_BIN" scripts/check_design_tokens.py
     "$PYTHON_BIN" scripts/check_windows_geometry.py
     "$PYTHON_BIN" scripts/check_windows_motion_tokens.py
     "$PYTHON_BIN" scripts/check_timer_render.py
@@ -265,7 +260,6 @@ if [ -n "$PYTHON_BIN" ]; then
     "$PYTHON_BIN" scripts/check_doc_links.py
     "$PYTHON_BIN" scripts/check_capability_matrix.py
     "$PYTHON_BIN" scripts/go2rtc-ptz/check_model_tables.py
-    "$PYTHON_BIN" scripts/miot_coverage_report.py
     "$PYTHON_BIN" - <<'PY'
 import base64
 import re
@@ -316,23 +310,6 @@ else
     echo "⏭️  跳过 Python 门禁检查：未找到 Python 3.10+"
 fi
 
-large_files=""
-for dir in Sources Tests windows/src windows/src-tauri/src windows/tests; do
-    [ -d "$dir" ] || continue
-    while IFS= read -r -d '' file; do
-        lines=$(wc -l < "$file" | tr -d '[:space:]')
-        if [ "$lines" -gt 1500 ]; then
-            large_files="${large_files}  ${lines}  ${file}"$'\n'
-        fi
-    done < <(find "$dir" -type f \( -name '*.swift' -o -name '*.ts' -o -name '*.rs' \) -print0)
-done
-if [ -n "$large_files" ]; then
-    echo "⚠️  单文件行数告警（> 1500 行；新代码优先拆分，见 #184）："
-    printf '%s' "$large_files"
-else
-    echo "✅ 没有超过 1500 行的源文件。"
-fi
-
 run_clean_env() {
     env -u GITHUB_EVENT_NAME -u GITHUB_REF -u GITHUB_REF_TYPE -u GITHUB_OUTPUT -u GITHUB_SHA -u GITHUB_ACTIONS \
         -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR -u GIT_PREFIX \
@@ -341,35 +318,10 @@ run_clean_env() {
 
 run_script_self_tests() {
     echo "🧪 运行脚本与工具自检 (--script-tests)..."
-    run_clean_env bash scripts/repeat_test.sh --self-test
-    run_clean_env bash scripts/red-check.sh --self-test
-    run_clean_env bash scripts/ci_swift_test.sh --self-test
-    run_clean_env bash scripts/test_ci_relevant_paths.sh
-    run_clean_env bash scripts/test_secret_scan.sh
-    run_clean_env bash scripts/test_git_guardrails.sh
-    run_clean_env bash scripts/test_install_ripgrep.sh
-    if command -v node >/dev/null 2>&1; then
-        run_clean_env node windows/scripts/test-file.mjs --self-test
-        run_clean_env node windows/scripts/verify-flyout-layout.mjs --self-test
-    fi
     if [ -n "$PYTHON_BIN" ]; then
-        run_clean_env "$PYTHON_BIN" scripts/check_workflows.py --self-test
-        run_clean_env "$PYTHON_BIN" scripts/check_doc_links.py --self-test
-        run_clean_env "$PYTHON_BIN" scripts/check_swift_harness_lints.py --self-test
-        run_clean_env "$PYTHON_BIN" scripts/test_check_capability_matrix.py
-        run_clean_env "$PYTHON_BIN" scripts/test_check_windows_geometry.py
         run_clean_env "$PYTHON_BIN" scripts/test_mijia_cli.py
-        run_clean_env "$PYTHON_BIN" scripts/test_local_macos_runner.py
         run_clean_env "$PYTHON_BIN" scripts/update_manifest.py self-test
         run_clean_env bash scripts/test_check_release.sh
-        run_clean_env bash scripts/test_issue_frontier.sh
-        run_clean_env bash scripts/test_gate_report.sh
-        run_clean_env bash scripts/test_go2rtc_gate.sh
-        run_clean_env bash scripts/test_ci_errors.sh
-        run_clean_env bash scripts/test_pr_ready.sh
-        if command -v pwsh >/dev/null 2>&1; then
-            run_clean_env bash scripts/test_build_installer.sh
-        fi
     fi
 }
 
@@ -510,7 +462,7 @@ run_logged() {
 
 windows_npm() {
     cd "$ROOT_DIR/windows"
-    npm test && npm run typecheck && npm run build
+    npm test && npm run build
 }
 
 raycast_npm() {

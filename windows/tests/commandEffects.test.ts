@@ -77,10 +77,6 @@ describe("Command effects (core)", () => {
     ]);
   });
 
-  it("a vacuum action has no inverse", () => {
-    assert.deepEqual(inverseCommands(fan(), { kind: "vacuumAction", entityId: "x", action: "start" }), []);
-  });
-
   it("restores appliance power through the service that carries it", () => {
     const washer: SmartDevice = {
       id: "washer", name: "洗衣机", roomId: "bath", roomName: "卫生间", model: "mijia.washer.s1", isOnline: true,

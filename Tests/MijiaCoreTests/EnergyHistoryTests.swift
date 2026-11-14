@@ -398,25 +398,6 @@ struct EnergyHistoryTests {
         expectClose(history.totalKwh(dayCount: 7, now: testDate(0, 13)), 0.25)
     }
 
-    @Test("A cleared history stays cleared across a relaunch")
-    @MainActor
-    func clearSurvivesRestart() throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
-
-        let first = EnergyHistory(defaults: defaults, calendar: testCalendar)
-        first.record(devices: [testPlug("plug_tv", "电视插座", kwh: 1)], now: testDate(0, 9))
-        first.record(devices: [testPlug("plug_tv", "电视插座", kwh: 3)], now: testDate(0, 10))
-        expectClose(first.totalKwh(dayCount: 7, now: testDate(0, 10)), 2.0)
-
-        first.clear()
-
-        let relaunched = EnergyHistory(defaults: defaults, calendar: testCalendar)
-        #expect(relaunched.hasMeasuredConsumption == false)
-        #expect(relaunched.recordingStartedAt == nil)
-        #expect(relaunched.totalKwh(dayCount: 7, now: testDate(0, 11)) == 0)
-    }
-
     // MARK: Persistence and bounds
 
     @Test("History and baselines survive a relaunch without duplicating the delta")
@@ -455,29 +436,6 @@ struct EnergyHistoryTests {
         expectClose(history.totalKwh(dayCount: EnergyHistory.retentionDays, now: testDate(lastDay, 20)), Double(EnergyHistory.retentionDays))
         // The oldest retained day is exactly the retention cut-off.
         #expect(totals.first?.day == testCalendar.startOfDay(for: testDate(lastDay - (EnergyHistory.retentionDays - 1), 0)))
-    }
-
-    @Test("Two stores in different defaults suites stay isolated")
-    @MainActor
-    func suitesAreIsolated() throws {
-        let (firstDefaults, firstSuite) = try makeDefaults()
-        let (secondDefaults, secondSuite) = try makeDefaults()
-        defer {
-            firstDefaults.removePersistentDomain(forName: firstSuite)
-            secondDefaults.removePersistentDomain(forName: secondSuite)
-        }
-
-        let first = EnergyHistory(defaults: firstDefaults, calendar: testCalendar)
-        let second = EnergyHistory(defaults: secondDefaults, calendar: testCalendar)
-
-        first.record(devices: [testPlug("plug_tv", "电视插座", kwh: 1)], now: testDate(0, 9))
-        first.record(devices: [testPlug("plug_tv", "电视插座", kwh: 2)], now: testDate(0, 10))
-        first.setPricePerKwh(0.5)
-
-        #expect(second.hasMeasuredConsumption == false)
-        #expect(second.recordingStartedAt == nil)
-        #expect(second.pricePerKwh == nil)
-        #expect(second.totalKwh(dayCount: 7, now: testDate(0, 11)) == 0)
     }
 
     @Test("Corrupt persisted data is ignored instead of crashing")

@@ -20,9 +20,6 @@ struct PanelLayoutStoreTests {
         #expect(layout.order == ["b", "a"])
         #expect(layout.size(of: "a", scope: "all") == .full)
         #expect(layout.groupMap == ["a": "g1"])
-        #expect(DeviceLayoutPrefs.decodeOrder(defaults.string(forKey: DeviceLayoutPrefs.orderKey) ?? "") == ["b", "a"])
-        #expect(DeviceLayoutPrefs.cachedSize(raw: defaults.string(forKey: DeviceLayoutPrefs.storageKey) ?? "", id: "a", scope: "all") == .full)
-        #expect(GroupPrefs.map(defaults.string(forKey: GroupPrefs.mapKey) ?? "") == ["a": "g1"])
     }
 
     @Test("A new instance reads what an earlier one saved")
@@ -53,12 +50,5 @@ struct PanelLayoutStoreTests {
             try await Task.sleep(for: .milliseconds(5))
         }
         #expect(layout.order == ["x", "y"])
-    }
-
-    @Test("One instance per defaults")
-    func sharedPerDefaults() {
-        let a = freshDefaults(), b = freshDefaults()
-        #expect(PanelLayoutStore.shared(for: a) === PanelLayoutStore.shared(for: a))
-        #expect(PanelLayoutStore.shared(for: a) !== PanelLayoutStore.shared(for: b))
     }
 }

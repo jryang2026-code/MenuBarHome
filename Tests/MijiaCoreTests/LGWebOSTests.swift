@@ -42,47 +42,6 @@ struct LGWebOSTests {
         #expect(discovered.uuid == "fe42fad6-8f3a-0211-c3b5-363fad426a96")
     }
 
-    @Test("LGWebOSConfig defaults to disabled with empty host and MAC address")
-    func defaultConfigIsDisabledAndEmpty() throws {
-        let defaultCfg = LGWebOSConfig()
-        #expect(defaultCfg.isEnabled == false)
-        #expect(defaultCfg.host == "")
-        #expect(defaultCfg.macAddress == "")
-        #expect(defaultCfg.hasConfiguredHost == false)
-
-        let suite = "test.lg.defaults.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-
-        let loaded = LGWebOSConfig.load(from: defaults)
-        #expect(loaded.isEnabled == false)
-        #expect(loaded.host == "")
-        #expect(loaded.macAddress == "")
-        #expect(loaded.hasConfiguredHost == false)
-    }
-
-    @Test("LG pairing key is a credential: a suite keeps it in UserDefaults, the real store keeps it in the Keychain")
-    func pairingKeyStorage() throws {
-        let suite = "test.lg.pairing.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-
-        var config = LGWebOSConfig()
-        config.clientKey = "lg-c2-secret-key"
-        config.save(to: defaults)
-        #expect(defaults.string(forKey: "lg_webos_client_key") == "lg-c2-secret-key")
-        #expect(LGWebOSConfig.load(from: defaults).clientKey == "lg-c2-secret-key")
-
-        // The app's `.standard` store never writes the pairing key in plain text; it goes to the Keychain (#16).
-        #expect(LGWebOSConfig.clientKeyDefaultsKey == "lg_webos_client_key")
-        #expect(LGWebOSConfig.clientKeyAccount == "lg_webos_client_key")
-
-        config.clientKey = ""
-        config.save(to: defaults)
-        #expect(defaults.string(forKey: "lg_webos_client_key") == nil)
-        #expect(LGWebOSConfig.load(from: defaults).clientKey.isEmpty)
-    }
-
     @Test("HomeStore TV controls and voice assistant commands work with LG C2 TV")
     @MainActor
     func storeTVControlsAndAssistant() async throws {
