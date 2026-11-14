@@ -3,6 +3,7 @@ import {
   ManualControlPolicy,
 } from "./assistant.js";
 import { inverseCommands, mergeInverseCommands } from "./commandEffects.js";
+import { runTrackedDevicePresetCommands } from "./optimisticLock.js";
 import {
   allOffTargets,
   deviceCanTogglePower,
@@ -357,6 +358,7 @@ type ResolvedURLTarget =
   | { readonly kind: "focus"; readonly device: SmartDevice };
 
 export interface AppURLCommandHost {
+  readonly lockHost?: object;
   readonly devices: SmartDevice[];
   readonly scenes: HomeScene[];
   readonly sourceRevision: number;
@@ -687,57 +689,18 @@ async function runIntentOnDevice(
   }
 
   const preSnapshot = structuredClone(dev);
-  const appliedInverses: DeviceCommand[][] = [];
-  interface InlineUndoAction {
-    readonly summary: string;
-    readonly steps: ReadonlyArray<{ readonly deviceId: string; readonly commands: readonly DeviceCommand[] }>;
-    readonly expiresAtMs: number;
-  }
-  const maybeUndoHost = host as unknown as {
-    lastUndoAction?: InlineUndoAction | null;
-  };
-  let trackedUndoAction: InlineUndoAction | null = null;
-  for (let i = 0; i < commands.length; i += 1) {
-    const cmd = commands[i]!;
-    if (i === 0) {
-      const prevBanner = host.replyBanner;
-      const prevUndo = maybeUndoHost.lastUndoAction;
-      await host.executeSingleCommand(dev, cmd, summary, intent);
-      if (host.replyBanner !== prevBanner && host.replyBanner?.isError) { return { message: host.replyBanner.text, isError: true }; }
-      trackedUndoAction =
-        maybeUndoHost.lastUndoAction && maybeUndoHost.lastUndoAction !== prevUndo
-          ? maybeUndoHost.lastUndoAction
-          : null;
-      appliedInverses.push(inverseCommands(preSnapshot, cmd));
-    } else {
-      const ok = await host.applyCommand(cmd);
-      if (!ok) {
-        return {
-          message:
-            host.replyBanner?.text ??
-            trText("{name} 响应失败", "{name} failed to respond", { name: displayNameFor(dev, host) }),
-          isError: true,
-        };
-      }
-      appliedInverses.push(inverseCommands(preSnapshot, cmd));
-      const merged = mergeInverseCommands(appliedInverses);
-      if (merged.length > 0) {
-        if (typeof host.updateUndoCommandsForDevice === "function") {
-          host.updateUndoCommandsForDevice(dev.id, merged, preSnapshot.kind);
-        } else if (trackedUndoAction && maybeUndoHost.lastUndoAction === trackedUndoAction) {
-          const nextUndo: InlineUndoAction = {
-            ...trackedUndoAction,
-            steps: trackedUndoAction.steps.map((step) =>
-              step.deviceId === dev.id ? { ...step, commands: merged } : step,
-            ),
-          };
-          maybeUndoHost.lastUndoAction = nextUndo;
-          trackedUndoAction = nextUndo;
-        }
-      }
-    }
-  }
-  return { message: summary, isError: false };
+  return runTrackedDevicePresetCommands({
+    host,
+    device: dev,
+    commands,
+    intent,
+    summary,
+    preSnapshot,
+    computeInverses: (cmd) => inverseCommands(preSnapshot, cmd),
+    mergeInverses: mergeInverseCommands,
+    failureFallbackText: () =>
+      trText("{name} 响应失败", "{name} failed to respond", { name: displayNameFor(dev, host) }),
+  });
 }
 
 function firstCaptureInText(text: string, patterns: readonly RegExp[]): string | null {

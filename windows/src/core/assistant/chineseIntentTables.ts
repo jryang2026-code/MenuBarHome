@@ -268,10 +268,11 @@ export function disambiguateRoomDevices(
   const roomIdsByName = new Map<string, Set<string>>();
   for (const dev of matched) {
     if (!dev.roomName || !dev.roomId) continue;
-    let ids = roomIdsByName.get(dev.roomName);
+    const normRoomName = toSimplifiedChinese(dev.roomName);
+    let ids = roomIdsByName.get(normRoomName);
     if (!ids) {
       ids = new Set<string>();
-      roomIdsByName.set(dev.roomName, ids);
+      roomIdsByName.set(normRoomName, ids);
     }
     ids.add(dev.roomId);
   }

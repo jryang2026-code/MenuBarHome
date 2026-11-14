@@ -1976,6 +1976,71 @@
           "expectedReply": "已关闭厨房灯"
         }
       ]
+    },
+    {
+      "name": "Traditional and Simplified Chinese room names with distinct roomIds disambiguate via panelRoom or refuse collision",
+      "devices": [
+        {
+          "id": "dev_living_simp_light",
+          "name": "客厅吸顶灯",
+          "roomId": "living_simp",
+          "roomName": "客厅",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_living_simp_light:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_living_trad_light",
+          "name": "客廳吸頂燈",
+          "roomId": "living_trad",
+          "roomName": "客廳",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_living_trad_light:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        }
+      ],
+      "cases": [
+        {
+          "utterance": "关闭客厅灯",
+          "expected": null
+        },
+        {
+          "utterance": "關閉客廳燈",
+          "panelRoom": { "id": "living_simp", "name": "客厅" },
+          "expected": [
+            { "targetId": "dev_living_simp_light", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭客厅吸顶灯"
+        },
+        {
+          "utterance": "關閉客廳燈",
+          "panelRoom": { "id": "living_trad", "name": "客廳" },
+          "expected": [
+            { "targetId": "dev_living_trad_light", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭客廳吸頂燈"
+        }
+      ]
     }
   ]
 }

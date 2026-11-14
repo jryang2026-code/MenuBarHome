@@ -24,11 +24,15 @@ import { inverseCommands } from "../core/commandEffects.js";
 import {
   claimDeviceWrite,
   currentDeviceWriteClaim,
+  getRegisteredUndoActionBatch,
   ownsDeviceWrite,
   peekDeviceWriteSeq,
+  registerUndoActionBatch,
   type DeviceWriteClaim,
   type OptimisticLockHost,
+  type UndoActionBatch,
 } from "../core/optimisticLock.js";
+import { recordUndoKindSnapshots } from "./speechGuard.js";
 import { trText } from "../core/quickActions.js";
 
 export type BatchStopReason = "undo" | "preempted" | "sourceChanged" | "cancelled";
@@ -52,7 +56,7 @@ let nextBatchSeq = 1;
  * interruption via Undo or a newer batch halts remaining devices immediately and never sends
  * restore commands to devices whose turn had not arrived.
  */
-export class RunningBatch {
+export class RunningBatch implements UndoActionBatch {
   public readonly id: string;
   public readonly summary: string;
   public readonly sourceRevision: number;
@@ -234,7 +238,7 @@ export class RunningBatch {
         steps: this.liveSteps,
         expiresAtMs: Date.now() + 10 * 60 * 1000,
       };
-      batchByUndoAction.set(this.trackedUndoAction, this);
+      registerUndoActionBatch(this.trackedUndoAction, this);
     }
     return this.trackedUndoAction;
   }
@@ -248,14 +252,14 @@ export class RunningBatch {
 
 const runningBatchByHost = new WeakMap<object, RunningBatch>();
 const activeBatchesByHost = new WeakMap<object, Set<RunningBatch>>();
-const batchByUndoAction = new WeakMap<UndoAction, RunningBatch>();
 
-export function getUndoActionBatch(action: UndoAction | null | undefined): RunningBatch | null {
-  return action ? batchByUndoAction.get(action) ?? null : null;
+export function getUndoActionBatch(action: UndoAction | null | undefined): UndoActionBatch | null {
+  return getRegisteredUndoActionBatch(action);
 }
 
 export function getRunningBatch(host: object, action?: UndoAction | null): RunningBatch | null {
-  if (action) {
+  if (action !== undefined) {
+    if (!action) return null;
     const activeSet = activeBatchesByHost.get(host);
     if (activeSet) {
       for (const item of activeSet) {
@@ -264,6 +268,7 @@ export function getRunningBatch(host: object, action?: UndoAction | null): Runni
         }
       }
     }
+    return null;
   }
   const batch = runningBatchByHost.get(host) ?? null;
   return batch && !batch.isFinished ? batch : null;
@@ -683,7 +688,7 @@ export async function executeIntents(
                 expiresAtMs: Date.now() + 10 * 60 * 1000,
               }
             : null;
-        if (stoppedUndo) batchByUndoAction.set(stoppedUndo, runningBatch);
+        if (stoppedUndo) registerUndoActionBatch(stoppedUndo, runningBatch);
         host.lastUndoAction = stoppedUndo;
         if (typeof host.render === "function") host.render();
       }
@@ -712,7 +717,7 @@ export async function executeIntents(
               habitReceipt: habitReceipt ?? undefined,
             }
           : null;
-      if (finishedUndo) batchByUndoAction.set(finishedUndo, runningBatch);
+      if (finishedUndo) registerUndoActionBatch(finishedUndo, runningBatch);
       host.lastUndoAction = finishedUndo;
     } else if (host.lastUndoAction && runningBatch.ownsUndoAction(host.lastUndoAction)) {
       host.lastUndoAction = null;
@@ -768,6 +773,7 @@ export async function executeSingleCommand(
   readBackPower = false,
 ): Promise<void> {
   const sourceRevision = host.sourceRevision;
+  const preKind = structuredClone(device.kind);
   const inverses = inverseCommands(device, command);
   const prevBanner = host.replyBanner;
   const devName = deviceDisplayName(host, device);
@@ -850,7 +856,7 @@ export async function executeSingleCommand(
     host.lastManuallyUsedLightId = device.id;
   }
   const habitReceipt = intent ? recordHabits(host, [intent]) : null;
-  host.lastUndoAction =
+  const nextUndo: UndoAction | null =
     inverses.length > 0
       ? {
           summary,
@@ -859,6 +865,10 @@ export async function executeSingleCommand(
           habitReceipt: habitReceipt ?? undefined,
         }
       : null;
+  if (nextUndo) {
+    recordUndoKindSnapshots(nextUndo, new Map([[device.id, preKind]]));
+  }
+  host.lastUndoAction = nextUndo;
   host.replyBanner = { text: summary, source: t("实时控制") };
   if (typeof host.render === "function") host.render();
 }

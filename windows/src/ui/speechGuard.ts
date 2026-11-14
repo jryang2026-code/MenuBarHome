@@ -956,6 +956,7 @@ function createUrlCommandHostAdapter(
   const revisionStillMatches = () => host.sourceRevision === expectedRevision;
   let createdUndoAction: UndoAction | null = null;
   return {
+    lockHost: host,
     get devices() {
       return host.devices;
     },
@@ -1086,18 +1087,16 @@ function createUrlCommandHostAdapter(
     },
 
     updateUndoCommandsForDevice(deviceId, commands, previousKind): void {
-      if (!revisionStillMatches() || !createdUndoAction || host.lastUndoAction !== createdUndoAction) {
+      if (!revisionStillMatches() || !createdUndoAction) {
         return;
       }
-      const nextAction: UndoAction = {
-        ...createdUndoAction,
-        steps: createdUndoAction.steps.map((step) =>
-          step.deviceId === deviceId ? { ...step, commands: [...commands] } : step,
-        ),
-      };
-      recordUndoKindSnapshots(nextAction, new Map([[deviceId, structuredClone(previousKind)]]));
-      host.lastUndoAction = nextAction;
-      createdUndoAction = nextAction;
+      const mutableSteps = createdUndoAction.steps as UndoStep[];
+      for (let i = 0; i < mutableSteps.length; i += 1) {
+        if (mutableSteps[i]!.deviceId === deviceId) {
+          mutableSteps[i] = { deviceId, commands: [...commands] };
+        }
+      }
+      recordUndoKindSnapshots(createdUndoAction, new Map([[deviceId, structuredClone(previousKind)]]));
     },
 
     async handleNaturalCommand(rawInput, fromScheduled): Promise<void> {

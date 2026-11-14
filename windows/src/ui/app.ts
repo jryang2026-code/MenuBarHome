@@ -786,12 +786,14 @@ export class MenuMijiaWindowsApp {
     clearUndoHoverPause(this);
     const sourceRevision = this.sourceRevision;
     const activeBatch = getRunningBatch(this, action);
-    if (activeBatch?.ownsUndoAction(action)) {
-      activeBatch.stop("undo");
-      await activeBatch.waitForInFlight();
+    const ownerBatch =
+      getUndoActionBatch(action) ??
+      (activeBatch?.ownsUndoAction(action) ? activeBatch : null);
+    if (ownerBatch && !ownerBatch.isFinished) {
+      ownerBatch.stop("undo");
+      await ownerBatch.waitForInFlight();
       if (sourceRevision !== this.sourceRevision) return;
     }
-    const ownerBatch = activeBatch ?? getUndoActionBatch(action);
     const takenOverDevices = new Set<string>();
     const stepsToRestore = action.steps.filter((step) => {
       if (ownerBatch && !ownerBatch.ownsDeviceWrite(this, step.deviceId)) {

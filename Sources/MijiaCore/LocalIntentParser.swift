@@ -101,6 +101,22 @@ public enum LocalIntentParser {
     private static let ignorable = CharacterSet.whitespacesAndNewlines
         .union(CharacterSet(charactersIn: "，。！？、；：,!?;:~～\"'“”‘’"))
 
+    private static let tradToSimpMap: [Character: Character] = {
+        let trad = Array("開關啟啓閉滅調變設為換執動進運場燈電氣機風熱涼溫濕溼乾淨掃視攝頭監閥門總鎖簾紗捲葉車庫揚聲魚寵餵煙霧應傳臥廳書廚陽臺檯衛間裡裏內頂帶環點黃藍綠紅檔擋級強靜愛搖擺別製備個盞隻條請幫煩給將兩過時鐘鍾後銷剛暫還計")
+        let simp = Array("开关启启闭灭调变设为换执动进运场灯电气机风热凉温湿湿干净扫视摄头监阀门总锁帘纱卷叶车库扬声鱼宠喂烟雾应传卧厅书厨阳台台卫间里里内顶带环点黄蓝绿红档档级强静爱摇摆别制备个盏只条请帮烦给将两过时钟钟后销刚暂还计")
+        var map: [Character: Character] = [:]
+        for (idx, ch) in trad.enumerated() where idx < simp.count {
+            map[ch] = simp[idx]
+        }
+        return map
+    }()
+
+    public static func toSimplifiedChinese(_ input: String) -> String {
+        guard !input.isEmpty else { return input }
+        let replaced = input.replacingOccurrences(of: "裝置", with: "设备")
+        return String(replaced.map { tradToSimpMap[$0] ?? $0 })
+    }
+
     // MARK: - Entry Point
 
     public static func parse(
@@ -110,7 +126,8 @@ public enum LocalIntentParser {
         panelRoom: BareCategoryCommand.Room? = nil,
         usageOrder: [String] = []
     ) -> IntentPlan? {
-        let text = String(String.UnicodeScalarView(utterance.unicodeScalars.filter { !ignorable.contains($0) }))
+        let normalizedUtterance = toSimplifiedChinese(utterance)
+        let text = String(String.UnicodeScalarView(normalizedUtterance.unicodeScalars.filter { !ignorable.contains($0) }))
             .trimmingCharacters(in: CharacterSet(charactersIn: "."))
         guard !text.isEmpty else { return nil }
 
@@ -153,7 +170,9 @@ public enum LocalIntentParser {
     }
 
     private static func strippedSceneText(_ raw: String) -> String {
-        var s = raw
+        let normalized = toSimplifiedChinese(raw)
+        var s = String(String.UnicodeScalarView(normalized.unicodeScalars.filter { !ignorable.contains($0) }))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
         for verb in sceneVerbs.sorted(by: { $0.count > $1.count }) where s.hasPrefix(verb) {
             s.removeFirst(verb.count)
             break
@@ -190,7 +209,7 @@ public enum LocalIntentParser {
         }
 
         // 2. Rooms, scope, and category words
-        let roomWords = Set(devices.map(\.roomName)).union(roomAliases.keys).filter { !$0.isEmpty }
+        let roomWords = Set(devices.map { toSimplifiedChinese($0.roomName) }).union(roomAliases.keys).filter { !$0.isEmpty }
         let matchedRooms = longestFirst(roomWords).filter { consume($0, from: &rest) }
         let hasScope = !longestFirst(scopeWords).filter { consume($0, from: &rest) }.isEmpty
         let categories = Set(longestFirst(Set(categoryWords.keys)).filter { consume($0, from: &rest) }.compactMap { categoryWords[$0] })
@@ -446,9 +465,11 @@ public enum LocalIntentParser {
         var full: [String: [String]] = [:]
         var base: [String: [String]] = [:]
         for dev in devices where !dev.name.isEmpty {
-            full[dev.name, default: []].append(dev.id)
-            if !dev.roomName.isEmpty, dev.name.hasPrefix(dev.roomName) {
-                let stripped = String(dev.name.dropFirst(dev.roomName.count))
+            let devName = toSimplifiedChinese(dev.name)
+            let roomName = toSimplifiedChinese(dev.roomName)
+            full[devName, default: []].append(dev.id)
+            if !roomName.isEmpty, devName.hasPrefix(roomName) {
+                let stripped = String(devName.dropFirst(roomName.count))
                 // 「关空调」 is a category command even when a device is literally named 客厅空调 (#273).
                 if stripped.count >= 2, categoryWords[stripped] == nil {
                     base[stripped, default: []].append(dev.id)
@@ -468,7 +489,7 @@ public enum LocalIntentParser {
     ) -> [String] {
         var roomIdsByName: [String: Set<String>] = [:]
         for dev in matched where !dev.roomName.isEmpty && !dev.roomId.isEmpty {
-            roomIdsByName[dev.roomName, default: []].insert(dev.roomId)
+            roomIdsByName[toSimplifiedChinese(dev.roomName), default: []].insert(dev.roomId)
         }
         let hasCollision = roomIdsByName.values.contains { $0.count > 1 }
         guard hasCollision else { return matched.map(\.id) }
@@ -486,13 +507,17 @@ public enum LocalIntentParser {
         devices: [SmartDevice],
         panelRoom: BareCategoryCommand.Room?
     ) -> [String]? {
-        let exact = devices.filter { $0.roomName == word }
+        let normWord = toSimplifiedChinese(word)
+        let exact = devices.filter { toSimplifiedChinese($0.roomName) == normWord }
         if !exact.isEmpty {
             let resolved = disambiguateRoomDevices(exact, panelRoom: panelRoom)
             return resolved.isEmpty ? nil : resolved
         }
-        let aliases = roomAliases[word] ?? [word]
-        let matched = devices.filter { dev in aliases.contains { dev.roomName.contains($0) } }
+        let aliases = roomAliases[normWord] ?? [normWord]
+        let matched = devices.filter { dev in
+            let room = toSimplifiedChinese(dev.roomName)
+            return aliases.contains { room.contains($0) }
+        }
         guard !matched.isEmpty else { return [] }
         let resolved = disambiguateRoomDevices(matched, panelRoom: panelRoom)
         return resolved.isEmpty ? nil : resolved

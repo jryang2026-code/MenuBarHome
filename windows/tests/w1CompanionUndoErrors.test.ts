@@ -679,6 +679,46 @@ describe("A11 RunningBatch mid-flight undo & preemption (#2)", () => {
       "untaken d2 must still be restored to 80%",
     );
 
+    const d2ManualUndoGate = deferred<boolean>();
+    const manualUndoSent: Array<{ entityId: string; percent: number }> = [];
+    app.applyCommand = async (cmd) => {
+      if (cmd.kind !== "setLightBrightness") return true;
+      manualUndoSent.push({ entityId: cmd.entityId, percent: cmd.percent });
+      const target = app.devices.find((d) => `light.${d.id}` === cmd.entityId);
+      if (cmd.entityId === "light.d2" && cmd.percent === 15) {
+        return d2ManualUndoGate.promise;
+      }
+      if (target && target.kind.kind === "light") {
+        target.kind = { ...target.kind, brightnessPercent: cmd.percent };
+      }
+      return true;
+    };
+    const pendingBatchForManual = executeIntents(
+      app,
+      [
+        { targetId: "d1", operation: { kind: "brightness", percent: 15 } },
+        { targetId: "d2", operation: { kind: "brightness", percent: 15 } },
+      ],
+      "调暗两盏灯",
+      "一键全关",
+    );
+    await setImmediate();
+    await setImmediate();
+    await app.executeSingleCommand(
+      d1,
+      { kind: "setLightBrightness", entityId: "light.d1", percent: 60 },
+      "已将灯一亮度设为 60%",
+      { targetId: "d1", operation: { kind: "brightness", percent: 60 } },
+    );
+    await app.performUndo();
+    assert.equal(
+      (app.devices.find((d) => d.id === "d1")!.kind as { brightnessPercent: number }).brightnessPercent,
+      15,
+      "undoing a newer manual single-device command must restore d1 instead of consulting the unrelated pending batch",
+    );
+    d2ManualUndoGate.resolve(false);
+    await pendingBatchForManual;
+
     const holdSourceSwitch = deferred<boolean>();
     app.applyCommand = async (cmd) => {
       if (cmd.kind === "setLightPower" && cmd.entityId === "light.d1" && !cmd.isOn) {
@@ -1217,6 +1257,51 @@ describe("A15 Companion URL high-risk confirm, Zero-AI presets, group folding & 
     ctGate.resolve(true);
     await moonRace;
     assert.equal(app.lastUndoAction, newerManualUndo);
+
+    if (lamp.kind.kind === "light") {
+      lamp.kind.isOn = false;
+      lamp.kind.brightnessPercent = 80;
+      lamp.kind.colorTempKelvin = 4500;
+    }
+    const moonMidUndoCtGate = deferred<boolean>();
+    const moonMidUndoSent: DeviceCommand[] = [];
+    app.applyCommand = async (cmd) => {
+      moonMidUndoSent.push(cmd);
+      if (cmd.kind === "setLightColorTemp" && cmd.kelvin === 2700) {
+        const ok = await moonMidUndoCtGate.promise;
+        if (ok && lamp.kind.kind === "light") {
+          lamp.kind.isOn = true;
+          lamp.kind.colorTempKelvin = 2700;
+        }
+        return ok;
+      }
+      if (lamp.kind.kind === "light") {
+        if (cmd.kind === "setLightBrightness") {
+          lamp.kind.isOn = true;
+          lamp.kind.brightnessPercent = cmd.percent;
+        }
+        if (cmd.kind === "setLightColorTemp") {
+          lamp.kind.colorTempKelvin = cmd.kelvin;
+        }
+        if (cmd.kind === "setLightPower") {
+          lamp.kind.isOn = cmd.isOn;
+        }
+      }
+      return true;
+    };
+    const moonMidRun = enqueueIncomingOpenUrl(
+      app,
+      `menumijia://ask?text=${encodeURIComponent("把书房台灯设为柔和月光模式")}&id=req_moon_mid_undo&token=${token}`,
+    );
+    await setImmediate();
+    await setImmediate();
+    const moonUndoPromise = app.performUndo();
+    await setImmediate();
+    moonMidUndoCtGate.resolve(true);
+    await Promise.all([moonMidRun, moonUndoPromise]);
+    assert.equal(lamp.kind.kind === "light" && lamp.kind.isOn, false);
+    assert.equal(lamp.kind.kind === "light" && lamp.kind.brightnessPercent, 80);
+    assert.equal(lamp.kind.kind === "light" && lamp.kind.colorTempKelvin, 4500);
 
     if (dom) {
       closeTestWindow(dom);
