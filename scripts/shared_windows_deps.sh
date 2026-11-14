@@ -2,7 +2,7 @@
 : "${ROOT_DIR:=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 cleanup_shared_windows_deps() {
-    if [ -L "$ROOT_DIR/windows/node_modules" ] || [ -f "$ROOT_DIR/windows/node_modules/.mmb-shared-link" ]; then
+    if [ ! -L "$ROOT_DIR/windows/node_modules" ] && [ -f "$ROOT_DIR/windows/node_modules/.mmb-shared-link" ]; then
         rm -rf "$ROOT_DIR/windows/node_modules"
     fi
 }

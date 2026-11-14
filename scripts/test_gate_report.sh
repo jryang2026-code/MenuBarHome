@@ -363,6 +363,21 @@ if [ -d "$consumer_wt/windows/node_modules/real-pkg" ]; then
 else
     fail "cleanup_shared_windows_deps 误删了真实 node_modules"
 fi
+rm -rf "$consumer_wt/windows/node_modules"
+
+mkdir -p "$wt_sandbox/ext_nm/.bin"
+printf '#!/bin/sh\nexit 0\n' >"$wt_sandbox/ext_nm/.bin/tsc"
+printf '#!/bin/sh\nexit 0\n' >"$wt_sandbox/ext_nm/.bin/vite"
+chmod +x "$wt_sandbox/ext_nm/.bin/tsc" "$wt_sandbox/ext_nm/.bin/vite"
+ln -s "$wt_sandbox/ext_nm" "$consumer_wt/windows/node_modules"
+ROOT_DIR="$consumer_wt" cleanup_shared_windows_deps
+ext_out="$(MMB_DISABLE_SHARED_NODE_MODULES=1 ROOT_DIR="$consumer_wt" "$bash_bin" "$root/scripts/shared_windows_deps.sh" run "$bash_bin" -c '[ -x "$0/windows/node_modules/.bin/tsc" ] && printf ext-ok' "$consumer_wt")"
+if [ -L "$consumer_wt/windows/node_modules" ] && [ "$ext_out" = "ext-ok" ]; then
+    pass "cleanup_shared_windows_deps 与 shared_windows_deps.sh run 保留外部 node_modules 软链"
+else
+    fail "外部 node_modules 软链被误删或未复用: out=${ext_out}"
+fi
+rm -f "$consumer_wt/windows/node_modules"
 
 chmod -R u+w "$donor_wt/windows/node_modules"
 rm -rf "$wt_sandbox"

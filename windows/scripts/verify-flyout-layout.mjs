@@ -34,6 +34,11 @@ export function evaluateSnapshot(snapshot, sc) {
   const failures = [];
   const expectedWidth = sc.width ?? 412, expectedHeight = sc.height, inset = 16;
   const expectedPopoverWidth = expectedWidth - inset * 2, expectedPopoverHeight = expectedHeight - inset * 2;
+  const expectedLight = sc.appearance === "light";
+  if (snapshot.scenarioId !== sc.id) failures.push(`scenarioId must be ${sc.id} (got ${String(snapshot.scenarioId)})`);
+  if (snapshot.locationScenario !== sc.id) failures.push(`location scenario query must be ${sc.id} (got ${String(snapshot.locationScenario)})`);
+  if (snapshot.readyState !== "complete") failures.push(`document.readyState must be complete (got ${String(snapshot.readyState)})`);
+  if (snapshot.schemeLight !== expectedLight) failures.push(`.cc-popover.scheme-light must be ${String(expectedLight)} for appearance=${sc.appearance} (got ${String(snapshot.schemeLight)})`);
   if (snapshot.isNativeHost !== true) failures.push(`#app.is-native-host must be true (got ${String(snapshot.isNativeHost)})`);
   if (snapshot.isParked !== false) failures.push(`#app.is-parked must be false (got ${String(snapshot.isParked)})`);
   if (Array.isArray(snapshot.errors) && snapshot.errors.length > 0) failures.push(`console or page errors: ${snapshot.errors.join("; ")}`);
@@ -95,8 +100,9 @@ export function parseArgs(argv) {
   return options;
 }
 
-function runSelfTest() {
+async function runSelfTest() {
   const validStandard = {
+    scenarioId: SCENARIOS[0].id, locationScenario: SCENARIOS[0].id, readyState: "complete", schemeLight: false,
     isNativeHost: true, isParked: false, errors: [],
     appRect: { left: 0, top: 0, right: 412, bottom: 680, width: 412, height: 680 },
     popoverRect: { left: 16, top: 16, right: 396, bottom: 664, width: 380, height: 648 },
@@ -106,9 +112,15 @@ function runSelfTest() {
   };
   const passAll = evaluateSnapshot(validStandard, SCENARIOS[0]);
   if (passAll.length !== 0) { console.error("self-test failed on valid standard snapshot:", passAll); process.exit(1); }
+  const wrongScenarioAndTheme = evaluateSnapshot({ ...validStandard, scenarioId: "stale-scenario", schemeLight: true }, SCENARIOS[0]);
+  if (!wrongScenarioAndTheme.some((msg) => msg.includes("scenarioId")) || !wrongScenarioAndTheme.some((msg) => msg.includes("scheme-light"))) {
+    console.error("self-test expected evaluateSnapshot to catch stale scenarioId and mismatched schemeLight, got:", wrongScenarioAndTheme);
+    process.exit(1);
+  }
   const hiddenZero = { width: 0, height: 0, display: "none" };
   const validSubpage = {
     ...validStandard,
+    scenarioId: SCENARIOS[4].id, locationScenario: SCENARIOS[4].id, readyState: "complete", schemeLight: false,
     appRect: { left: 0, top: 0, right: 412, bottom: 580, width: 412, height: 580 },
     popoverRect: { left: 16, top: 16, right: 396, bottom: 564, width: 380, height: 548 },
     islands: [{ className: "win-island win-island--top", left: 16, top: 16, right: 396, bottom: 140 }, { className: "win-island win-island--bottom", left: 16, top: 150, right: 396, bottom: 564 }],
@@ -132,6 +144,24 @@ function runSelfTest() {
   };
   const failures = evaluateSnapshot(broken, SCENARIOS[4]);
   if (failures.length < 6) { console.error("self-test expected at least 6 failures on broken snapshot, got:", failures); process.exit(1); }
+  const fakeWs = Object.assign(new EventTarget(), { readyState: 1, send() {}, close() {} });
+  const fakeSession = new CdpSession(fakeWs, 5000);
+  const pendingSend = fakeSession.send("Runtime.evaluate").then(() => null, (err) => err);
+  const pendingEvent = fakeSession.waitForEvent("Page.loadEventFired").then(() => null, (err) => err);
+  fakeWs.readyState = 3;
+  fakeWs.dispatchEvent(new Event("close"));
+  const [sendErr, eventErr] = await Promise.all([pendingSend, pendingEvent]);
+  if (!(sendErr instanceof Error) || !(eventErr instanceof Error)) {
+    console.error("self-test expected CdpSession close to reject in-flight send and waitForEvent, got:", { sendErr, eventErr });
+    process.exit(1);
+  }
+  const timeoutWs = Object.assign(new EventTarget(), { readyState: 1, send() {}, close() {} });
+  const timeoutSession = new CdpSession(timeoutWs, 5000);
+  const timeoutErr = await timeoutSession.send("Runtime.evaluate", {}, 15).then(() => null, (err) => err);
+  if (!(timeoutErr instanceof Error) || !timeoutErr.message.includes("timed out")) {
+    console.error("self-test expected CdpSession per-command timeout rejection, got:", timeoutErr);
+    process.exit(1);
+  }
   const defaultOpts = parseArgs([]), customOpts = parseArgs(["--no-build", "--dist", "/tmp/custom-dist"]);
   if (!defaultOpts || defaultOpts.customDist !== false || defaultOpts.noBuild !== false || !customOpts || customOpts.customDist !== true || customOpts.noBuild !== true || customOpts.distDir !== path.resolve("/tmp/custom-dist")) {
     console.error("self-test failed on parseArgs customDist/noBuild flags:", { defaultOpts, customOpts }); process.exit(1);
@@ -212,18 +242,37 @@ async function waitForPageWebSocketUrl(debugPort, timeoutMs = 8000) {
   throw new Error(`Timed out waiting for Chrome page target on port ${debugPort}`);
 }
 
-class CdpSession {
-  constructor(ws) {
+export class CdpSession {
+  constructor(ws, defaultTimeoutMs = 10000) {
     this.ws = ws;
+    this.defaultTimeoutMs = defaultTimeoutMs;
     this.nextId = 1;
     this.pending = new Map();
+    this.eventWaiters = new Set();
     this.errors = [];
+    this.closedError = null;
+    const failAll = (reason) => {
+      if (!this.closedError) this.closedError = reason instanceof Error ? reason : new Error(String(reason));
+      for (const [, entry] of this.pending) {
+        clearTimeout(entry.timer);
+        entry.reject(this.closedError);
+      }
+      this.pending.clear();
+      for (const waiter of this.eventWaiters) {
+        clearTimeout(waiter.timer);
+        waiter.reject(this.closedError);
+      }
+      this.eventWaiters.clear();
+    };
+    ws.addEventListener("close", () => failAll(new Error("CDP WebSocket closed")));
+    ws.addEventListener("error", (event) => failAll(event?.error instanceof Error ? event.error : new Error("CDP WebSocket error")));
     ws.addEventListener("message", (event) => {
       const msg = JSON.parse(typeof event.data === "string" ? event.data : String(event.data));
       if (typeof msg.id === "number") {
         const entry = this.pending.get(msg.id);
         if (!entry) return;
         this.pending.delete(msg.id);
+        clearTimeout(entry.timer);
         if (msg.error) entry.reject(new Error(msg.error.message || JSON.stringify(msg.error)));
         else entry.resolve(msg.result);
         return;
@@ -236,23 +285,78 @@ class CdpSession {
       } else if (msg.method === "Log.entryAdded" && msg.params?.entry?.level === "error") {
         if (!String(msg.params.entry.url ?? "").endsWith("/favicon.ico")) this.errors.push(`Log.error: ${String(msg.params.entry.text ?? "")}`);
       }
+      if (msg.method) {
+        for (const waiter of [...this.eventWaiters]) {
+          if (waiter.method !== msg.method) continue;
+          let matched = false;
+          try { matched = Boolean(waiter.predicate(msg.params)); } catch (err) {
+            clearTimeout(waiter.timer);
+            this.eventWaiters.delete(waiter);
+            waiter.reject(err);
+            continue;
+          }
+          if (matched) {
+            clearTimeout(waiter.timer);
+            this.eventWaiters.delete(waiter);
+            waiter.resolve(msg.params);
+          }
+        }
+      }
     });
   }
-  send(method, params = {}) {
+  send(method, params = {}, timeoutMs = this.defaultTimeoutMs) {
+    if (this.closedError) return Promise.reject(this.closedError);
+    if (typeof this.ws.readyState === "number" && this.ws.readyState !== 1) {
+      return Promise.reject(new Error(`CDP WebSocket is not open (readyState=${this.ws.readyState})`));
+    }
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.ws.send(JSON.stringify({ id, method, params }));
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`CDP command ${method} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        this.ws.send(JSON.stringify({ id, method, params }));
+      } catch (err) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  }
+  waitForEvent(method, predicate = () => true, timeoutMs = this.defaultTimeoutMs) {
+    if (this.closedError) return Promise.reject(this.closedError);
+    if (typeof this.ws.readyState === "number" && this.ws.readyState !== 1) {
+      return Promise.reject(new Error(`CDP WebSocket is not open (readyState=${this.ws.readyState})`));
+    }
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        method,
+        predicate,
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          this.eventWaiters.delete(waiter);
+          reject(new Error(`Timed out waiting for CDP event ${method} after ${timeoutMs}ms`));
+        }, timeoutMs),
+      };
+      this.eventWaiters.add(waiter);
     });
   }
   close() { try { this.ws.close(); } catch {} }
 }
 
-async function connectCdpPage(wsUrl) {
+async function connectCdpPage(wsUrl, timeoutMs = 8000) {
   const ws = new globalThis.WebSocket(wsUrl);
   await new Promise((resolve, reject) => {
-    ws.addEventListener("open", () => resolve(), { once: true });
-    ws.addEventListener("error", (err) => reject(err), { once: true });
+    const timer = setTimeout(() => {
+      try { ws.close(); } catch {}
+      reject(new Error(`Timed out connecting to CDP WebSocket ${wsUrl} after ${timeoutMs}ms`));
+    }, timeoutMs);
+    ws.addEventListener("open", () => { clearTimeout(timer); resolve(); }, { once: true });
+    ws.addEventListener("error", (err) => { clearTimeout(timer); reject(err instanceof Error ? err : new Error(`CDP WebSocket error connecting to ${wsUrl}`)); }, { once: true });
+    ws.addEventListener("close", () => { clearTimeout(timer); reject(new Error(`CDP WebSocket closed before open (${wsUrl})`)); }, { once: true });
   });
   return new CdpSession(ws);
 }
@@ -262,12 +366,20 @@ function buildInitScript(sc) {
     connectionMode: "demo", hasCompletedOnboarding: true,
     interfaceLanguage: sc.interfaceLanguage, appearance: sc.appearance, panelHeight: sc.panelHeight,
   });
-  return `window.__TAURI_INTERNALS__ = { invoke: async (cmd) => (cmd === "panel_is_visible" ? true : undefined) };
+  return `window.__MMB_SCENARIO_ID__ = ${JSON.stringify(sc.id)};
+    window.__TAURI_INTERNALS__ = { invoke: async (cmd) => (cmd === "panel_is_visible" ? true : undefined) };
     try { localStorage.clear(); localStorage.setItem("menumijia.windows.settings.v2", ${JSON.stringify(settingsJson)}); } catch {}`;
 }
 
 function buildSnapshotExpression(sc) {
   return `(() => {
+    const expectedScenarioId = ${JSON.stringify(sc.id)};
+    const scenarioId = window.__MMB_SCENARIO_ID__ ?? null;
+    const locationScenario = new URLSearchParams(window.location.search).get("scenario");
+    const readyState = document.readyState;
+    if (scenarioId !== expectedScenarioId || locationScenario !== expectedScenarioId || readyState !== "complete") {
+      return { ready: false, scenarioId, locationScenario, readyState };
+    }
     const round = (n) => Math.round(n * 100) / 100;
     const roundRect = (el) => {
       if (!el) return null;
@@ -314,7 +426,9 @@ function buildSnapshotExpression(sc) {
       subpage = { mounted: Boolean(subEl && effectiveDisplay(subEl) !== "none" && subEl.getBoundingClientRect().height > 0), hiddenControls, visibleSiblingTileCount, backButton: roundRect(backBtn) };
     }
     return {
-      ready: Boolean(app && popover && scrollArea), isNativeHost: Boolean(app && app.classList.contains("is-native-host")),
+      ready: Boolean(app && popover && scrollArea), scenarioId, locationScenario, readyState,
+      schemeLight: Boolean(popover && popover.classList.contains("scheme-light")),
+      isNativeHost: Boolean(app && app.classList.contains("is-native-host")),
       isParked: Boolean(app && app.classList.contains("is-parked")), appRect: roundRect(app), popoverRect: roundRect(popover), islands,
       documentElementScrollWidth: document.documentElement.scrollWidth, chromeLabels,
       scrollAreaHeight: scrollArea ? round(scrollArea.getBoundingClientRect().height) : 0,
@@ -358,7 +472,7 @@ async function terminateChrome(proc, tmpDir) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (!options) { console.error(usageText); process.exit(2); }
-  if (options.selfTest) { runSelfTest(); return; }
+  if (options.selfTest) { await runSelfTest(); return; }
   const chromeBin = findChromeBinary(options.chromeBin);
   if (!chromeBin) {
     if (options.requireChrome) { console.error("❌ Chrome/Chromium/Edge binary not found (--require-chrome specified)"); process.exit(1); }
@@ -385,13 +499,33 @@ async function main() {
       await cdp.send("Emulation.setEmulatedMedia", {
         features: [{ name: "prefers-reduced-motion", value: "reduce" }, { name: "prefers-color-scheme", value: sc.appearance }],
       });
-      await cdp.send("Page.navigate", { url: `${origin}/?scenario=${encodeURIComponent(sc.id)}` });
+      const loaded = cdp.waitForEvent("Page.loadEventFired", undefined, 5000);
+      await Promise.all([
+        loaded,
+        (async () => {
+          const nav = await cdp.send("Page.navigate", { url: `${origin}/?scenario=${encodeURIComponent(sc.id)}` });
+          if (nav?.errorText) throw new Error(`Page.navigate failed for ${sc.id}: ${nav.errorText}`);
+        })(),
+      ]);
       let snapshot = null;
       const deadline = Date.now() + 5000;
       while (Date.now() < deadline) {
-        const evalRes = await cdp.send("Runtime.evaluate", { expression: buildSnapshotExpression(sc), returnByValue: true });
-        snapshot = evalRes?.result?.value ?? null;
-        if (snapshot?.ready && snapshot.popoverRect?.height > 0) break;
+        try {
+          const evalRes = await cdp.send("Runtime.evaluate", { expression: buildSnapshotExpression(sc), returnByValue: true });
+          snapshot = evalRes?.result?.value ?? null;
+        } catch (err) {
+          if (cdp.closedError) throw err;
+          snapshot = null;
+        }
+        if (
+          snapshot?.ready &&
+          snapshot.scenarioId === sc.id &&
+          snapshot.locationScenario === sc.id &&
+          snapshot.readyState === "complete" &&
+          snapshot.popoverRect?.height > 0 &&
+          (sc.view !== "room" || snapshot.activeRoomId === "room_living") &&
+          (sc.view !== "subpage" || snapshot.subpage?.mounted === true)
+        ) break;
         await new Promise((r) => setTimeout(r, 35));
       }
       const fullSnapshot = { ...(snapshot ?? {}), errors: [...cdp.errors] };
