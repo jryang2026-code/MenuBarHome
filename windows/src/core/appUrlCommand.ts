@@ -688,12 +688,26 @@ async function runIntentOnDevice(
 
   const preSnapshot = structuredClone(dev);
   const appliedInverses: DeviceCommand[][] = [];
+  interface InlineUndoAction {
+    readonly summary: string;
+    readonly steps: ReadonlyArray<{ readonly deviceId: string; readonly commands: readonly DeviceCommand[] }>;
+    readonly expiresAtMs: number;
+  }
+  const maybeUndoHost = host as unknown as {
+    lastUndoAction?: InlineUndoAction | null;
+  };
+  let trackedUndoAction: InlineUndoAction | null = null;
   for (let i = 0; i < commands.length; i += 1) {
     const cmd = commands[i]!;
     if (i === 0) {
       const prevBanner = host.replyBanner;
+      const prevUndo = maybeUndoHost.lastUndoAction;
       await host.executeSingleCommand(dev, cmd, summary, intent);
       if (host.replyBanner !== prevBanner && host.replyBanner?.isError) { return { message: host.replyBanner.text, isError: true }; }
+      trackedUndoAction =
+        maybeUndoHost.lastUndoAction && maybeUndoHost.lastUndoAction !== prevUndo
+          ? maybeUndoHost.lastUndoAction
+          : null;
       appliedInverses.push(inverseCommands(preSnapshot, cmd));
     } else {
       const ok = await host.applyCommand(cmd);
@@ -710,22 +724,15 @@ async function runIntentOnDevice(
       if (merged.length > 0) {
         if (typeof host.updateUndoCommandsForDevice === "function") {
           host.updateUndoCommandsForDevice(dev.id, merged, preSnapshot.kind);
-        } else {
-          const maybeUndoHost = host as unknown as {
-            lastUndoAction?: {
-              readonly summary: string;
-              readonly steps: ReadonlyArray<{ readonly deviceId: string; readonly commands: readonly DeviceCommand[] }>;
-              readonly expiresAtMs: number;
-            } | null;
+        } else if (trackedUndoAction && maybeUndoHost.lastUndoAction === trackedUndoAction) {
+          const nextUndo: InlineUndoAction = {
+            ...trackedUndoAction,
+            steps: trackedUndoAction.steps.map((step) =>
+              step.deviceId === dev.id ? { ...step, commands: merged } : step,
+            ),
           };
-          if (maybeUndoHost.lastUndoAction) {
-            maybeUndoHost.lastUndoAction = {
-              ...maybeUndoHost.lastUndoAction,
-              steps: maybeUndoHost.lastUndoAction.steps.map((step) =>
-                step.deviceId === dev.id ? { ...step, commands: merged } : step,
-              ),
-            };
-          }
+          maybeUndoHost.lastUndoAction = nextUndo;
+          trackedUndoAction = nextUndo;
         }
       }
     }

@@ -5,6 +5,8 @@ import { t } from "../core/i18n.js";
 import type { ScheduledCommand } from "../core/models.js";
 import { missingScheduledCommandTargets } from "../core/scheduledCommands.js";
 import type { PersistedSettings } from "./appTypes.js";
+import { getRunningBatch } from "./intentExecution.js";
+import { isInsideScheduledTimerTick, runWithScheduledTimerTickExemption } from "./speechGuard.js";
 import { isWorkstationLockBlockingControl as isControlBlockedWhileLocked } from "./transport.js";
 
 export function scheduledCommandIdentity(settings: PersistedSettings): string | null {
@@ -34,24 +36,85 @@ export function markTimerSnapshotReady(host: MenuMijiaWindowsApp): void {
 
 const scheduledRunChainByHost = new WeakMap<MenuMijiaWindowsApp, Promise<void>>();
 
-function enqueueScheduledRun(host: MenuMijiaWindowsApp, item: ScheduledCommand): void {
-  const prev = scheduledRunChainByHost.get(host) ?? Promise.resolve();
-  const next = prev
+function parkQueuedTimerUnderOwner(
+  host: MenuMijiaWindowsApp,
+  ownerIdentity: string | null,
+  item: ScheduledCommand,
+): void {
+  const ownerQueue = host.scheduledCommandStore.queue(ownerIdentity);
+  if (!ownerQueue.missedScheduledCommands.some((entry) => entry.id === item.id)) {
+    ownerQueue.missedScheduledCommands = [...ownerQueue.missedScheduledCommands, item];
+    if (!host.scheduledCommandStore.persist()) {
+      timerStorageFailure(host);
+    }
+  }
+  if (scheduledCommandIdentity(host.settings) === ownerIdentity) {
+    host.isShowingAssistantBar = true;
+    host.queueBackgroundRender();
+  }
+}
+
+async function dispatchScheduledItem(
+  host: MenuMijiaWindowsApp,
+  item: ScheduledCommand,
+  ownerIdentity: string | null,
+  ownerRevision: number,
+  exemptTick: boolean,
+): Promise<void> {
+  let activeBatch = getRunningBatch(host);
+  while (activeBatch && !activeBatch.isFinished) {
+    await activeBatch.finishedPromise;
+    activeBatch = getRunningBatch(host);
+  }
+  if (
+    host.sourceRevision !== ownerRevision ||
+    scheduledCommandIdentity(host.settings) !== ownerIdentity ||
+    !scheduledCommandsReady(host)
+  ) {
+    parkQueuedTimerUnderOwner(host, ownerIdentity, item);
+    return;
+  }
+  await (exemptTick
+    ? runWithScheduledTimerTickExemption(() => host.runScheduledCommand(item))
+    : host.runScheduledCommand(item));
+}
+
+function enqueueScheduledRun(
+  host: MenuMijiaWindowsApp,
+  item: ScheduledCommand,
+  ownerIdentity: string | null,
+  ownerRevision: number,
+  exemptTick: boolean,
+): void {
+  const prev = scheduledRunChainByHost.get(host);
+  const next = (
+    prev
+      ? prev
+          .catch(() => undefined)
+          .then(() => dispatchScheduledItem(host, item, ownerIdentity, ownerRevision, exemptTick))
+      : dispatchScheduledItem(host, item, ownerIdentity, ownerRevision, exemptTick)
+  )
     .catch(() => undefined)
-    .then(() => host.runScheduledCommand(item))
-    .catch(() => undefined);
+    .finally(() => {
+      if (scheduledRunChainByHost.get(host) === next) {
+        scheduledRunChainByHost.delete(host);
+      }
+    });
   scheduledRunChainByHost.set(host, next);
 }
 
 export function processScheduledCommands(host: MenuMijiaWindowsApp, nowMs = Date.now()): boolean {
   const count = host.scheduledCommands.length;
   const missed = host.missedScheduledCommands.length;
+  const ownerIdentity = scheduledCommandIdentity(host.settings);
+  const ownerRevision = host.sourceRevision;
+  const exemptTick = isInsideScheduledTimerTick();
   const knownTargetIds = new Set<string>([
     ...host.devices.map((device) => device.id),
     ...host.scenes.map((scene) => scene.id),
   ]);
   const run = host.scheduledCommandStore.takeDue(
-    scheduledCommandIdentity(host.settings),
+    ownerIdentity,
     scheduledCommandsReady(host),
     nowMs,
     knownTargetIds,
@@ -64,7 +127,9 @@ export function processScheduledCommands(host: MenuMijiaWindowsApp, nowMs = Date
     host.isShowingAssistantBar = true;
     host.queueBackgroundRender();
   }
-  for (const item of run) enqueueScheduledRun(host, item);
+  for (const item of run) {
+    enqueueScheduledRun(host, item, ownerIdentity, ownerRevision, exemptTick);
+  }
   return count > 0 || host.missedScheduledCommands.length !== missed;
 }
 

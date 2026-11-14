@@ -954,6 +954,7 @@ function createUrlCommandHostAdapter(
 ): AppURLCommandHost {
   const state = hostState(host);
   const revisionStillMatches = () => host.sourceRevision === expectedRevision;
+  let createdUndoAction: UndoAction | null = null;
   return {
     get devices() {
       return host.devices;
@@ -1024,25 +1025,16 @@ function createUrlCommandHostAdapter(
       });
     },
 
-    openExternalUrlConfirmPrompt(args): Promise<boolean> {
-      if (!revisionStillMatches() || isPanelHidden()) return Promise.resolve(false);
-      if (state.pendingUrlConfirmation !== null) {
-        const previous = state.pendingUrlConfirmation;
-        state.pendingUrlConfirmation = null;
-        previous.resolve(false);
-      }
-      return new Promise<boolean>((resolve) => {
-        state.pendingUrlConfirmation = {
-          description: args.description,
-          commandLabel: args.commandLabel,
-          ...(args.requestId ? { requestId: args.requestId } : {}),
-          sourceRevision: args.sourceRevision,
-          resolve,
-        };
-        invokeTauriVoid("set_pin_popover", { pin: true });
-        host.render();
-      });
-    },
+    ...(typeof host.openExternalUrlConfirmPrompt === "function"
+      ? {
+          openExternalUrlConfirmPrompt(
+            args: Parameters<NonNullable<AppURLCommandHost["openExternalUrlConfirmPrompt"]>>[0],
+          ): Promise<boolean> {
+            if (!revisionStillMatches() || isPanelHidden()) return Promise.resolve(false);
+            return host.openExternalUrlConfirmPrompt!(args);
+          },
+        }
+      : {}),
 
     async revealPanelForExternalUrl(): Promise<void> {
       const invoke = window.__TAURI_INTERNALS__?.invoke;
@@ -1083,7 +1075,9 @@ function createUrlCommandHostAdapter(
 
     async executeSingleCommand(device, command, summary, intent, readBackPower): Promise<void> {
       if (!revisionStillMatches()) return;
+      const beforeUndo = host.lastUndoAction;
       await host.executeSingleCommand(device, command, summary, intent, readBackPower);
+      createdUndoAction = host.lastUndoAction !== beforeUndo ? host.lastUndoAction : null;
     },
 
     async applyCommand(command, readBackPower): Promise<boolean> {
@@ -1092,15 +1086,18 @@ function createUrlCommandHostAdapter(
     },
 
     updateUndoCommandsForDevice(deviceId, commands, previousKind): void {
-      if (!revisionStillMatches() || !host.lastUndoAction) return;
+      if (!revisionStillMatches() || !createdUndoAction || host.lastUndoAction !== createdUndoAction) {
+        return;
+      }
       const nextAction: UndoAction = {
-        ...host.lastUndoAction,
-        steps: host.lastUndoAction.steps.map((step) =>
+        ...createdUndoAction,
+        steps: createdUndoAction.steps.map((step) =>
           step.deviceId === deviceId ? { ...step, commands: [...commands] } : step,
         ),
       };
       recordUndoKindSnapshots(nextAction, new Map([[deviceId, structuredClone(previousKind)]]));
       host.lastUndoAction = nextAction;
+      createdUndoAction = nextAction;
     },
 
     async handleNaturalCommand(rawInput, fromScheduled): Promise<void> {

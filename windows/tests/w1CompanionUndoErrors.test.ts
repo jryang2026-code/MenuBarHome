@@ -31,7 +31,9 @@ import {
 import {
   enqueueIncomingOpenUrl,
   getActiveRaycastBridgeTokenForHost,
+  runWithScheduledTimerTickExemption,
 } from "../src/ui/speechGuard.js";
+import { processScheduledCommands } from "../src/ui/scheduledCommands.js";
 import {
   buildRaycastSnapshot,
   resolveRaycastVisibleDevices,
@@ -667,6 +669,46 @@ describe("A11 RunningBatch mid-flight undo & preemption (#2)", () => {
     const undoAfterPartial = app.lastUndoAction as MenuMijiaWindowsApp["lastUndoAction"];
     assert.equal(undoAfterPartial?.steps.length, 1);
     assert.equal(undoAfterPartial?.steps[0]?.deviceId, "l_ok");
+
+    const holdTimer1 = deferred<boolean>();
+    const timerSent: string[] = [];
+    app.applyCommand = async (cmd) => {
+      timerSent.push(`${cmd.kind}:${cmd.entityId}`);
+      if (cmd.entityId === "light.l_ok") return holdTimer1.promise;
+      return true;
+    };
+    const nowMs = Date.now();
+    app.scheduledCommands = [
+      {
+        id: "t_due_1",
+        command: "关闭客厅灯",
+        delaySeconds: 10,
+        fireTimestampMs: nowMs - 200,
+        reply: "关闭客厅灯",
+        intents: [{ targetId: "l_ok", operation: { kind: "power", isOn: false } }],
+      },
+      {
+        id: "t_due_2",
+        command: "打开走廊灯",
+        delaySeconds: 10,
+        fireTimestampMs: nowMs - 100,
+        reply: "打开走廊灯",
+        intents: [{ targetId: "l_noundo", operation: { kind: "power", isOn: true } }],
+      },
+    ];
+    runWithScheduledTimerTickExemption(() => processScheduledCommands(app, nowMs));
+    await setImmediate();
+    assert.deepEqual(timerSent, ["setLightPower:light.l_ok"]);
+    app.invalidateSourceControl();
+    holdTimer1.resolve(true);
+    await setImmediate();
+    await setImmediate();
+    await setImmediate();
+    assert.equal(timerSent.includes("setLightPower:light.l_noundo"), false);
+    assert.equal(
+      app.scheduledCommandStore.queue("demo").missedScheduledCommands.some((item) => item.id === "t_due_2"),
+      true,
+    );
   });
 });
 
@@ -1083,20 +1125,43 @@ describe("A15 Companion URL high-risk confirm, Zero-AI presets, group folding & 
     const heater = makeHighRiskHeater("plug.heater", "卧室电暖器");
     app.devices = [lamp, heater];
     const token = getActiveRaycastBridgeTokenForHost(app)!;
-    const urlPromise = enqueueIncomingOpenUrl(
+    app.openExternalUrlConfirmPrompt = async () => true;
+    await enqueueIncomingOpenUrl(
       app,
       `menumijia://power?device=plug.heater&on=true&id=req_prod_modal&token=${token}`,
     );
-    await setImmediate();
-    await setImmediate();
-    const confirmBtn = document.querySelector<HTMLButtonElement>("#btn-url-confirm-run");
-    assert.ok(confirmBtn, "production URL adapter must render in-panel confirmation modal for trusted high-risk link");
-    confirmBtn.click();
-    await urlPromise;
+    app.openExternalUrlConfirmPrompt = undefined;
     assert.equal(
       sent.some((cmd) => cmd.kind === "setSwitch" && cmd.entityId === "switch.plug.heater" && cmd.isOn === true),
       true,
     );
+
+    const ctGate = deferred<boolean>();
+    app.applyCommand = async (cmd) => {
+      if (cmd.kind === "setLightColorTemp") {
+        return ctGate.promise;
+      }
+      if (lamp.kind.kind === "light" && cmd.kind === "setLightBrightness") {
+        lamp.kind.brightnessPercent = cmd.percent;
+      }
+      return true;
+    };
+    const moonRace = enqueueIncomingOpenUrl(
+      app,
+      `menumijia://ask?text=${encodeURIComponent("把书房台灯设为柔和月光模式")}&id=req_moon_race&token=${token}`,
+    );
+    await setImmediate();
+    await setImmediate();
+    const newerManualUndo = {
+      summary: "已将书房台灯亮度设为 90%",
+      steps: [{ deviceId: "lamp.study", commands: [{ kind: "setLightBrightness" as const, entityId: "light.lamp.study", percent: 15 }] }],
+      expiresAtMs: Date.now() + 10_000,
+    };
+    app.lastUndoAction = newerManualUndo;
+    ctGate.resolve(true);
+    await moonRace;
+    assert.equal(app.lastUndoAction, newerManualUndo);
+
     if (dom) {
       closeTestWindow(dom);
       dom = null;
