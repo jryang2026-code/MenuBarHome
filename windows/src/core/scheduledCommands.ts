@@ -3,6 +3,27 @@ import { partitionDueTimers } from "./models.js";
 
 export const SCHEDULED_COMMANDS_STORAGE_KEY = "menumijia.windows.scheduledCommands.v1";
 
+/**
+ * Returns target IDs referenced by `item.intents` that exist in neither `devices` nor `scenes`
+ * of the active home (`HomeStore+Assistant.swift:missingPlanTargets`, ADR-0019).
+ */
+export function missingScheduledCommandTargets(
+  item: ScheduledCommand,
+  devices: readonly { readonly id: string }[],
+  scenes: readonly { readonly id: string }[],
+): string[] {
+  if (!item.intents || item.intents.length === 0) return [];
+  const deviceIds = new Set(devices.map((device) => device.id));
+  const sceneIds = new Set(scenes.map((scene) => scene.id));
+  const missing: string[] = [];
+  for (const intent of item.intents) {
+    if (!deviceIds.has(intent.targetId) && !sceneIds.has(intent.targetId)) {
+      missing.push(intent.targetId);
+    }
+  }
+  return missing;
+}
+
 export interface TimerQueue {
   scheduledCommands: ScheduledCommand[];
   missedScheduledCommands: ScheduledCommand[];
@@ -161,7 +182,12 @@ export class ScheduledCommandStore {
     } catch { return false; }
   }
 
-  takeDue(identity: string | null, ready: boolean, nowMs: number): ScheduledCommand[] | null {
+  takeDue(
+    identity: string | null,
+    ready: boolean,
+    nowMs: number,
+    knownTargetIds?: ReadonlySet<string>,
+  ): ScheduledCommand[] | null {
     const runnable: ScheduledCommand[] = [];
     let changed = false;
     for (const [owner, queue] of this.sources) {
@@ -169,8 +195,17 @@ export class ScheduledCommandStore {
       if (run.length === 0 && missed.length === 0) continue;
       queue.scheduledCommands = remaining;
       queue.missedScheduledCommands.push(...missed);
-      if (owner === identity && ready) runnable.push(...run);
-      else queue.missedScheduledCommands.push(...run);
+      if (owner === identity && ready) {
+        for (const item of run) {
+          const missingTarget =
+            knownTargetIds !== undefined &&
+            Boolean(item.intents?.some((intent) => !knownTargetIds.has(intent.targetId)));
+          if (missingTarget) queue.missedScheduledCommands.push(item);
+          else runnable.push(item);
+        }
+      } else {
+        queue.missedScheduledCommands.push(...run);
+      }
       changed = true;
     }
     if (changed && !this.persist()) {

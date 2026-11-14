@@ -1,6 +1,11 @@
 import type { HttpTransport } from "../miCloudClient.js";
 import type { AssistantSuggestion, HomeScene, IntentOperation, IntentPlan, SmartDevice } from "../models.js";
-import { ModelActionPolicy, type ChosenAction } from "./actionPolicy.js";
+import {
+  DEFAULT_CONFIRMATION_POLICY,
+  ModelActionPolicy,
+  type ChosenAction,
+  type ConfirmationPolicy,
+} from "./actionPolicy.js";
 import type { AssistantContext } from "./context.js";
 import { EMPTY_ASSISTANT_CONTEXT } from "./context.js";
 import { habitActionable, habitSuggestionTitle } from "./habits.js";
@@ -25,10 +30,19 @@ import { cleanPromptField } from "./promptText.js";
 export class ModelIntentResolver {
   private readonly config: AssistantConfig;
   private readonly transport: HttpTransport;
+  private readonly confirmationPolicy: ConfirmationPolicy;
 
-  constructor(config: AssistantConfig, transport: HttpTransport) {
+  constructor(
+    config: AssistantConfig,
+    transport: HttpTransport,
+    confirmationPolicy: Partial<ConfirmationPolicy> = {},
+  ) {
     this.config = config;
     this.transport = transport;
+    this.confirmationPolicy = {
+      askWhenUnsure: confirmationPolicy.askWhenUnsure ?? DEFAULT_CONFIRMATION_POLICY.askWhenUnsure,
+      threshold: confirmationPolicy.threshold ?? DEFAULT_CONFIRMATION_POLICY.threshold,
+    };
   }
 
   static isSystemOneModel(model: string): boolean {
@@ -54,12 +68,13 @@ export class ModelIntentResolver {
     utterance: string,
     devices: readonly SmartDevice[],
     scenes: readonly HomeScene[],
-    context: AssistantContext = EMPTY_ASSISTANT_CONTEXT
+    context: AssistantContext = EMPTY_ASSISTANT_CONTEXT,
+    policy: Partial<ConfirmationPolicy> = this.confirmationPolicy,
   ): Promise<IntentPlan> {
     if (this.usesSystemOne) {
-      return this.resolveViaSystemOne(utterance, devices, scenes, context);
+      return this.resolveViaSystemOne(utterance, devices, scenes, context, policy);
     }
-    return this.resolveViaChatCompletions(utterance, devices, scenes, context);
+    return this.resolveViaChatCompletions(utterance, devices, scenes, context, policy);
   }
 
   /**
@@ -163,7 +178,8 @@ export class ModelIntentResolver {
     utterance: string,
     devices: readonly SmartDevice[],
     scenes: readonly HomeScene[],
-    context: AssistantContext
+    context: AssistantContext,
+    policy: Partial<ConfirmationPolicy> = this.confirmationPolicy,
   ): Promise<IntentPlan> {
     const url = this.endpointURL("/systemone");
     const model = this.resolvedSystemOneModel(url);
@@ -183,14 +199,15 @@ export class ModelIntentResolver {
       throw new Error(this.friendlyHttpError(resp.status));
     }
 
-    return ModelIntentResolver.planFromSystemOne(resp.body, request.catalog, devices, scenes);
+    return ModelIntentResolver.planFromSystemOne(resp.body, request.catalog, devices, scenes, policy);
   }
 
   static planFromSystemOne(
     bodyText: string,
     catalogOrAliasMap: IntentCatalog | ReadonlyMap<string, readonly string[]>,
     devices: readonly SmartDevice[],
-    scenes: readonly HomeScene[]
+    scenes: readonly HomeScene[],
+    policy: Partial<ConfirmationPolicy> = DEFAULT_CONFIRMATION_POLICY,
   ): IntentPlan {
     const catalog: IntentCatalog =
       "aliasToIds" in catalogOrAliasMap
@@ -286,7 +303,7 @@ export class ModelIntentResolver {
       }
     }
 
-    const decision = ModelActionPolicy.decide(devices, scenes, { actions });
+    const decision = ModelActionPolicy.decide(devices, scenes, { actions }, policy);
     const taken = new Set(
       [...decision.intents, ...decision.suggestions.flatMap((item) => item.intents)].map((intent) => intent.targetId),
     );
@@ -390,7 +407,8 @@ export class ModelIntentResolver {
     utterance: string,
     devices: readonly SmartDevice[],
     scenes: readonly HomeScene[],
-    context: AssistantContext = EMPTY_ASSISTANT_CONTEXT
+    context: AssistantContext = EMPTY_ASSISTANT_CONTEXT,
+    policy: Partial<ConfirmationPolicy> = this.confirmationPolicy,
   ): Promise<IntentPlan> {
     const url = this.endpointURL("/chat/completions");
     const catalog = buildIntentCatalog(devices, scenes);
@@ -417,6 +435,16 @@ export class ModelIntentResolver {
     const firstChoice = isPlainObject(choices[0]) ? choices[0] : null;
     const message = firstChoice && isPlainObject(firstChoice["message"]) ? firstChoice["message"] : null;
     const content = String(message?.["content"] ?? "");
+    return ModelIntentResolver.planFromChat(content, catalog, devices, scenes, policy);
+  }
+
+  static planFromChat(
+    content: string,
+    catalog: IntentCatalog,
+    devices: readonly SmartDevice[],
+    scenes: readonly HomeScene[],
+    policy: Partial<ConfirmationPolicy> = DEFAULT_CONFIRMATION_POLICY,
+  ): IntentPlan {
     const jsonSlice = ModelIntentResolver.extractFirstJSONObject(content);
     if (!jsonSlice) throw new Error("AI 返回格式无法解析");
     const payload = parseJSONObject(jsonSlice);
@@ -429,16 +457,24 @@ export class ModelIntentResolver {
       const val = act["value"];
       const op = ModelIntentResolver.decodeChatOp(opName, val);
       const targetIds = catalog.aliasToIds.get(alias) ?? [];
+      const explicitConfidence =
+        act["confidence"] !== undefined && act["confidence"] !== null
+          ? ModelActionPolicy.probabilityOf(act, "")
+          : null;
       if (op) {
         for (const targetId of targetIds) {
-          chosen.push({ intent: { targetId, operation: op }, confidence: null, primaryChoice: false });
+          chosen.push({
+            intent: { targetId, operation: op },
+            confidence: explicitConfidence,
+            primaryChoice: false,
+          });
         }
       }
     }
     const rawSuggestions = Array.isArray(payload["suggestions"])
       ? payload["suggestions"].filter(isPlainObject)
       : [];
-    const decision = ModelActionPolicy.decide(devices, scenes, { actions: chosen });
+    const decision = ModelActionPolicy.decide(devices, scenes, { actions: chosen }, policy);
     const confirmChips = decision.suggestions;
     const primaryTargetIds = new Set(
       [...decision.intents, ...confirmChips.flatMap((chip) => chip.intents)].map((intent) => intent.targetId),

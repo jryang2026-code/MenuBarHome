@@ -1,6 +1,33 @@
 import type { SmartDevice } from "../models.js";
 
-export type IntentCategory = "light" | "climate" | "heater" | "fan" | "airPurifier" | "dehumidifier" | "diffuser" | "plug" | "vacuum" | "tv" | "camera" | "other";
+export type IntentCategory = "light" | "climate" | "heater" | "fan" | "airPurifier" | "dehumidifier" | "diffuser" | "plug" | "vacuum" | "tv" | "camera" | "valve" | "other";
+
+export function isHumidifierAppliance(dev: SmartDevice): boolean {
+  if (dev.kind.kind !== "appliance") return false;
+  const eid = dev.kind.entityId.toLowerCase();
+  const m = dev.model.toLowerCase();
+  return (
+    eid.startsWith("humidifier.") ||
+    m.includes("humidifier") ||
+    dev.kind.symbolName === "humidity.fill"
+  );
+}
+
+export function isValveDevice(dev: SmartDevice): boolean {
+  if (dev.kind.kind !== "appliance") return false;
+  const eid = dev.kind.entityId.toLowerCase();
+  const m = dev.model.toLowerCase();
+  return (
+    eid.startsWith("valve.") ||
+    m.includes("valve") ||
+    (!dev.kind.temperatureWritable &&
+      dev.kind.availableModes.length === 0 &&
+      (dev.name.includes("水阀") ||
+        dev.name.includes("气阀") ||
+        dev.name.includes("燃气阀") ||
+        dev.name.includes("阀门")))
+  );
+}
 
 
 export function isAirPurifierDevice(dev: SmartDevice): boolean {
@@ -225,6 +252,10 @@ export function deviceCategory(dev: SmartDevice): IntentCategory {
   if (dev.kind.kind === "plug") return "plug";
   if (dev.kind.kind === "vacuum") return "vacuum";
   if (dev.kind.kind === "camera") return "camera";
+  if (dev.kind.kind === "appliance") {
+    if (isHumidifierAppliance(dev)) return "airPurifier";
+    if (isValveDevice(dev)) return "valve";
+  }
   return "other";
 }
 

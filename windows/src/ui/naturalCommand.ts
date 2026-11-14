@@ -2,6 +2,7 @@ import { cancelScheduledCommands, enqueueScheduledCommand } from "./scheduledCom
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
 import { parseQuickActionCommand } from "../core/quickActions.js";
+import { missingScheduledCommandTargets } from "../core/scheduledCommands.js";
 import {
   DelayPhrase,
   INSECURE_ENDPOINT_MESSAGE,
@@ -17,6 +18,7 @@ import {
   buildAssistantContext,
   endpointAllowsSendingSecrets,
   isLocalAssistantEndpoint,
+  type ConfirmationPolicy,
   type LocalIntentParseOptions,
 } from "../core/assistant.js";
 import type { DeviceIntent, IntentPlan, ScheduledCommand } from "../core/models.js";
@@ -165,6 +167,15 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
           host.render();
           return;
         }
+        const settingsRecord = host.settings as unknown as Record<string, unknown>;
+        const confirmationPolicy: Partial<ConfirmationPolicy> = {
+          ...(typeof settingsRecord.askWhenUnsure === "boolean"
+            ? { askWhenUnsure: settingsRecord.askWhenUnsure }
+            : {}),
+          ...(typeof settingsRecord.confirmationThreshold === "number"
+            ? { threshold: settingsRecord.confirmationThreshold }
+            : {}),
+        };
         const resolver = new ModelIntentResolver(
           {
             baseURL,
@@ -172,6 +183,7 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
             apiKey,
           },
           host.transport,
+          confirmationPolicy,
         );
         // Same ambient context macOS sends with Jev requests (#38); the getter falls
         // back to sensor devices when no refreshed EnvironmentReading list exists.
@@ -302,6 +314,19 @@ function queueScheduledCommand(
 
 export async function runScheduledCommand(host: MenuMijiaWindowsApp, item: ScheduledCommand): Promise<void> {
   if (item.intents && item.intents.length > 0) {
+    const missingTargets = missingScheduledCommandTargets(item, host.devices, host.scenes);
+    if (missingTargets.length > 0) {
+      // Selecting another home under the same account swaps the device/scene list while keeping
+      // the connection identity (ADR-0019 / HomeStore+Assistant.swift:628-633): park the timer in
+      // missedScheduledCommands instead of failing or acting on the wrong home.
+      if (!host.missedScheduledCommands.some((entry) => entry.id === item.id)) {
+        host.missedScheduledCommands = [...host.missedScheduledCommands, item];
+        host.scheduledCommandStore.persist();
+      }
+      host.isShowingAssistantBar = true;
+      host.queueBackgroundRender();
+      return;
+    }
     const aliasedDevices = withAliases(host.layout, host.devices);
     const intents = IntentValidator.sanitize(item.intents, aliasedDevices, host.scenes);
     await host.executeIntents(

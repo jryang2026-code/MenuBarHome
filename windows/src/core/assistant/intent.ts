@@ -30,6 +30,7 @@ import {
   extractChineseNumericOps,
   longestFirst,
   normalizeChineseUtterance,
+  spokenChineseNumber,
   strippedSceneText,
 } from "./chineseIntentTables.js";
 import { deviceCategory, isAssistantControllable, type IntentCategory } from "./deviceCategory.js";
@@ -41,42 +42,50 @@ export interface ParsedDelay {
   readonly remainder: string;
 }
 
-const CN_DIGITS: Readonly<Record<string, number>> = {
-  零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9,
-};
-
-/** Arabic digits or Chinese numerals up to 99 (十五, 二十, 四十五); `AssistantSchedule.spokenNumber`. */
+/** Arabic digits or Chinese numerals up to 99 (十五, 二十五, 四十五); `AssistantSchedule.spokenNumber`. */
 function spokenNumber(s: string): number | null {
-  if (/^[0-9]+$/.test(s)) return Number(s);
-  const chars = Array.from(s);
-  const tenIndex = chars.indexOf("十");
-  if (tenIndex >= 0) {
-    if (tenIndex > 1 || chars.length - tenIndex > 2) return null;
-    const tens = tenIndex === 0 ? 1 : CN_DIGITS[chars[0] ?? ""];
-    const ones = tenIndex === chars.length - 1 ? 0 : CN_DIGITS[chars[tenIndex + 1] ?? ""];
-    if (tens === undefined || ones === undefined) return null;
-    return tens * 10 + ones;
-  }
-  if (chars.length !== 1) return null;
-  return CN_DIGITS[chars[0] ?? ""] ?? null;
+  return spokenChineseNumber(s);
 }
 
-// Same grammar as `AssistantSchedule.swift:DelayPhrase`: number, optional 个 / 个半, unit, optional 半.
-const CN_DELAY_NUMBER = "([0-9]+|[零一二两三四五六七八九十]+|半)";
-const CN_DELAY_UNIT = "(个半|个)?(秒钟|秒|分钟|分|小时|钟头)(半)?";
-const CN_DELAY_LEADING = new RegExp(`^(过|等)?${CN_DELAY_NUMBER}\\s*${CN_DELAY_UNIT}(以后|之后|后)?`);
-const CN_DELAY_TRAILING = new RegExp(`[，,\\s]*${CN_DELAY_NUMBER}\\s*${CN_DELAY_UNIT}(以后|之后|后)$`);
+// Supports single and compound Chinese durations (e.g. 二十五分钟后, 四十五秒后, 一小时二十分钟后, 把空调关掉 30分钟后).
+const CN_DELAY_SEG_SOURCE = "([0-9]+|[零一二两三四五六七八九十]+|半)\\s*(个半|个)?(秒钟|秒|分钟|分|小时|钟头)(半)?";
+const CN_DELAY_DURATION_SOURCE = `${CN_DELAY_SEG_SOURCE}(?:\\s*(?:零(?=[0-9]))?\\s*${CN_DELAY_SEG_SOURCE})?(?:\\s*(?:零(?=[0-9]))?\\s*${CN_DELAY_SEG_SOURCE})?`;
+const CN_DELAY_LEADING = new RegExp(
+  `^(?<prefix>过|等)?\\s*(?<duration>${CN_DELAY_DURATION_SOURCE})\\s*(?<suffix>以后|之后|后)?`,
+);
+const CN_DELAY_TRAILING = new RegExp(
+  `(?:[，,。\\s]+(?<prefix>过|等)\\s*|[，,。\\s]*)(?<![0-9零一二两三四五六七八九十])(?<duration>${CN_DELAY_DURATION_SOURCE})\\s*(?<suffix>以后|之后|后)?$`,
+);
+const CN_DELAY_SEG_GLOBAL = new RegExp(CN_DELAY_SEG_SOURCE, "g");
 
-/** Seconds for one Chinese delay match; `g` is the index of the number group. */
-function chineseDelaySeconds(m: RegExpExecArray, g: number): number | null {
-  const rawNumber = m[g];
-  const unitWord = m[g + 2];
-  if (!rawNumber || !unitWord) return null;
-  const unitSeconds = unitWord.startsWith("秒") ? 1 : unitWord.startsWith("分") ? 60 : 3600;
-  let value = rawNumber === "半" ? 0.5 : spokenNumber(rawNumber);
-  if (value === null) return null;
-  if (m[g + 1] === "个半" || m[g + 3] === "半") value += 0.5;
-  return value * unitSeconds;
+function parseChineseDurationSeconds(durationRaw: string): number | null {
+  let totalSeconds = 0;
+  let prevUnitSeconds = Number.POSITIVE_INFINITY;
+  let hadFractional = false;
+  let segmentCount = 0;
+  for (const seg of durationRaw.matchAll(CN_DELAY_SEG_GLOBAL)) {
+    if (hadFractional) return null;
+    const rawNumber = seg[1];
+    const classifier = seg[2];
+    const unitWord = seg[3];
+    const trailingHalf = seg[4];
+    if (!rawNumber || !unitWord) return null;
+    const unitSeconds = unitWord.startsWith("秒") ? 1 : unitWord.startsWith("分") ? 60 : 3600;
+    if (unitSeconds >= prevUnitSeconds) return null;
+    let value = rawNumber === "半" ? 0.5 : spokenNumber(rawNumber);
+    if (value === null) return null;
+    if (segmentCount > 0 && value >= 60) return null;
+    if (classifier === "个半" || trailingHalf === "半") {
+      value += 0.5;
+      hadFractional = true;
+    } else if (rawNumber === "半") {
+      hadFractional = true;
+    }
+    totalSeconds += value * unitSeconds;
+    prevUnitSeconds = unitSeconds;
+    segmentCount += 1;
+  }
+  return segmentCount > 0 ? totalSeconds : null;
 }
 
 function stripDelayMatch(text: string, m: RegExpExecArray): string {
@@ -133,12 +142,14 @@ export const DelayPhrase = {
     const leading = CN_DELAY_LEADING.exec(trimmed);
     if (leading) {
       // Without 过 / 等 in front or 后 behind, "10分钟" is not a delay ("10分钟关灯" is left alone).
-      const seconds = leading[1] !== undefined || leading[6] !== undefined ? chineseDelaySeconds(leading, 2) : null;
+      const hasMarker = leading.groups?.prefix !== undefined || leading.groups?.suffix !== undefined;
+      const seconds = hasMarker ? parseChineseDurationSeconds(leading.groups?.duration ?? "") : null;
       if (seconds !== null) return buildDelay(seconds, 1, stripDelayMatch(trimmed, leading));
     }
     const trailing = CN_DELAY_TRAILING.exec(trimmed);
     if (trailing) {
-      const seconds = chineseDelaySeconds(trailing, 1);
+      const hasMarker = trailing.groups?.prefix !== undefined || trailing.groups?.suffix !== undefined;
+      const seconds = hasMarker ? parseChineseDurationSeconds(trailing.groups?.duration ?? "") : null;
       if (seconds !== null) return buildDelay(seconds, 1, stripDelayMatch(trimmed, trailing));
     }
     return null;
@@ -706,6 +717,7 @@ const BARE_CATEGORY_NOUNS: Readonly<Record<IntentCategory, string>> = {
   vacuum: "扫地机",
   tv: "电视",
   camera: "摄像机",
+  valve: "阀门",
   other: "设备",
 };
 
@@ -937,6 +949,9 @@ const EN_CATEGORY_WORDS: ReadonlyArray<readonly [string, IntentCategory]> = [
   ["vacuum", "vacuum"],
   ["television", "tv"], ["tv", "tv"],
   ["cameras", "camera"], ["camera", "camera"],
+  ["water valves", "valve"], ["water valve", "valve"],
+  ["gas valves", "valve"], ["gas valve", "valve"],
+  ["valves", "valve"], ["valve", "valve"],
 ];
 
 const EN_FILLERS = [
@@ -1168,6 +1183,7 @@ function parseChineseDeviceCommand(
       candidates = devices.filter((dev) => {
         const cat = deviceCategory(dev);
         if (!dev.isOnline || !isAssistantControllable(cat) || !deviceAcceptsControlWrites(dev)) return false;
+        if (cat === "valve" && !wanted?.has("valve")) return false;
         if (onlyActive && !isDeviceActiveOn(dev)) return false;
         if (matchedRooms.length > 0 && !roomDeviceIds.has(dev.id)) return false;
         if (wanted && !wanted.has(cat)) return false;
@@ -1451,6 +1467,7 @@ export const LocalIntentParser = {
         candidates = devices.filter((dev) => {
           const cat = deviceCategory(dev);
           if (!dev.isOnline || !isAssistantControllable(cat) || !deviceAcceptsControlWrites(dev)) return false;
+          if (cat === "valve" && !wanted?.has("valve")) return false;
           if (onlyActive && !isDeviceActiveOn(dev)) return false;
           if (matchedRoomKeys.length > 0 && !roomDeviceIds.has(dev.id)) return false;
           if (wanted && !wanted.has(cat)) return false;

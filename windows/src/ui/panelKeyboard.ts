@@ -1,5 +1,7 @@
 import { normalizeSearch, panelQueryKind } from "../core/panelSearch.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
+import { hasPendingUrlConfirmation, resumeUndoHoverPause } from "./speechGuard.js";
+import { invokeTauriVoid } from "./transport.js";
 
 function allTiles(host: MenuMijiaWindowsApp): HTMLElement[] {
   return [...host.root.querySelectorAll<HTMLElement>("[data-tile-id]")];
@@ -148,7 +150,13 @@ function adjustSelection(host: MenuMijiaWindowsApp, direction: number): void {
 export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent): boolean {
   if (event.defaultPrevented) return true;
   if (event.isComposing || event.keyCode === 229 || host.panelSearch.isComposing) return true;
-  if (host.activeSheet !== "none" || (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden)) return false;
+  if (
+    host.activeSheet !== "none" ||
+    hasPendingUrlConfirmation(host) ||
+    (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden)
+  ) {
+    return false;
+  }
   if (host.prompt) {
     if (event.key === "Escape") { event.preventDefault(); host.closePrompt(); }
     return true;
@@ -163,6 +171,11 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
     ),
   );
   const isNonTextInput = Boolean(active?.matches("input")) && !inInput && !isEditable;
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key === ",") {
+    event.preventDefault();
+    if (!event.repeat) host.openSettingsSheet();
+    return true;
+  }
   if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "f") {
     if (isEditable && !inInput) return false;
     event.preventDefault();
@@ -174,9 +187,29 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
   }
   if (event.ctrlKey || event.metaKey || event.altKey) return false;
   if (isEditable && !inInput) return true;
+  const hasSubpage = Boolean(host.root.querySelector(".cc-tile.is-subpage"));
+  if (!hasSubpage && !inInput && !isEditable && !isNonTextInput && event.key === "Tab") {
+    const roomPills = [...host.root.querySelectorAll<HTMLButtonElement>(".cc-room-pill[data-room]")];
+    if (roomPills.length > 0) {
+      event.preventDefault();
+      if (!event.repeat) {
+        const activeIdx = roomPills.findIndex(
+          (pill) => pill.classList.contains("is-active") || pill.getAttribute("aria-pressed") === "true",
+        );
+        const delta = event.shiftKey ? -1 : 1;
+        const nextIdx =
+          activeIdx < 0
+            ? event.shiftKey
+              ? roomPills.length - 1
+              : 0
+            : (activeIdx + delta + roomPills.length) % roomPills.length;
+        roomPills[nextIdx]?.click();
+      }
+      return true;
+    }
+  }
   if (active?.closest("button, a[href], [role='button'], [role='link']") &&
       [" ", "Enter", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return true;
-  const hasSubpage = Boolean(host.root.querySelector(".cc-tile.is-subpage"));
   if (event.key === "Escape" && host.expandedDeviceId && (hasSubpage || !inInput)) {
     event.preventDefault(); host.expandedDeviceId = null; host.render(); return true;
   }
@@ -193,7 +226,13 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
   if (event.key === "Escape" && host.panelSearch.selectedDeviceId) {
     event.preventDefault(); host.panelSearch.selectedDeviceId = null; syncPanelSelection(host); return true;
   }
-  if (isNonTextInput) return event.key !== "Escape";
+  if (event.key === "Escape" && !isEditable) {
+    event.preventDefault();
+    resumeUndoHoverPause(host);
+    invokeTauriVoid("hide_panel");
+    return true;
+  }
+  if (isNonTextInput) return true;
   const hasQuery = Boolean(normalizeSearch(host.panelSearch.query));
   if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     const cards = tiles(host);

@@ -8,7 +8,12 @@ import { deviceAcceptsControlWrites, isActiveDevice } from "../models.js";
 import { deviceHeadInstruction, proactiveHeadInstruction } from "./actionPolicy.js";
 import type { AssistantContext } from "./context.js";
 import { buildEnvironmentSummary, buildTimeSummary, EMPTY_ASSISTANT_CONTEXT } from "./context.js";
-import { deviceCategory, isAssistantControllable } from "./deviceCategory.js";
+import {
+  deviceCategory,
+  isAssistantControllable,
+  isHumidifierAppliance,
+  isValveDevice,
+} from "./deviceCategory.js";
 import type {
   CommandMention,
   HabitEntry,
@@ -117,6 +122,19 @@ export function catalogStateSummary(device: SmartDevice): string {
     case "cover":
       return kind.positionPercent === null ? "" : `开${kind.positionPercent}%`;
     case "appliance": {
+      if (isValveDevice(device)) {
+        return kind.isOn ? "开" : "关";
+      }
+      if (isHumidifierAppliance(device)) {
+        const parts = [kind.isOn ? "开" : "关"];
+        const targetMatch = kind.statusText?.match(/(?:目标|Target)\s*(\d+)%/i);
+        if (targetMatch?.[1]) parts.push(`目标湿度${targetMatch[1]}%`);
+        if (kind.currentHumidity !== null && Number.isFinite(kind.currentHumidity)) {
+          parts.push(`当前湿度${Math.round(kind.currentHumidity)}%`);
+        }
+        if (kind.currentMode) parts.push(kind.currentMode);
+        return parts.join(" ");
+      }
       const parts = [kind.isOn ? "开" : "关"];
       if (kind.statusText) parts.push(kind.statusText);
       if (kind.targetTemperature !== null) parts.push(`${formatTemperatureValue(kind.targetTemperature)}°C`);
@@ -160,7 +178,10 @@ export function buildIntentCatalog(
     aliasToIds.set(alias, [device.id]);
     aliasById.set(device.id, alias);
     if (!aliasToIds.has(device.id)) aliasToIds.set(device.id, [device.id]);
-    allDeviceIds.push(device.id);
+    // Household water/gas valves stay normally open; exclude them from whole-home `all_devices` batches.
+    if (category !== "valve") {
+      allDeviceIds.push(device.id);
+    }
     if (category === "light" && device.roomName) {
       allLightIds.push(device.id);
       const roomKey = device.roomId || device.roomName;

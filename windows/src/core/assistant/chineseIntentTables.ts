@@ -62,7 +62,10 @@ export const CN_HVAC_MODE_WORDS: Readonly<Record<string, string>> = {
   制冷: "cool", 制热: "heat", 除湿: "dry", 送风: "fan_only", 自动: "auto",
 };
 
-export const CN_SCOPE_WORDS = ["全部", "所有", "全屋", "全家", "家里", "整个家"];
+export const CN_SCOPE_WORDS = [
+  "所有设备", "全部设备", "全屋设备",
+  "全部", "所有", "全屋", "全家", "家里", "整个家",
+];
 
 export const CN_CATEGORY_WORDS: Readonly<Record<string, IntentCategory>> = {
   灯: "light", 灯光: "light", 电灯: "light",
@@ -76,6 +79,7 @@ export const CN_CATEGORY_WORDS: Readonly<Record<string, IntentCategory>> = {
   扫地机: "vacuum", 扫地机器人: "vacuum",
   电视: "tv", 电视机: "tv",
   摄像头: "camera", 摄像机: "camera", 监控: "camera",
+  阀门: "valve", 水阀: "valve", 气阀: "valve", 燃气阀: "valve", 总阀: "valve",
 };
 
 export const CN_ROOM_ALIASES: Readonly<Record<string, readonly string[]>> = {
@@ -132,23 +136,43 @@ export function consumeChinesePhrase(phrase: string, state: { rest: string }): b
   return true;
 }
 
-const CN_STEP_DIGITS: Readonly<Record<string, number>> = {
-  一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
+const CN_NUMERAL_DIGITS: Readonly<Record<string, number>> = {
+  零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9,
 };
 
-function spokenStepNumber(s: string): number | null {
+/**
+ * Parses Arabic digits or general Chinese numerals up to 99 (e.g. 十=10, 十五=15,
+ * 二十=20, 二十五=25, 四十五=45, 九十九=99, 零五=5), mirroring macOS `spokenNumber`.
+ */
+export function spokenChineseNumber(raw: string): number | null {
+  const s = raw.trim();
+  if (!s) return null;
   if (/^[0-9]+$/.test(s)) return Number(s);
-  return CN_STEP_DIGITS[s] ?? null;
+  const chars = Array.from(s);
+  if (chars.length === 2 && chars[0] === "零") {
+    const ones = CN_NUMERAL_DIGITS[chars[1] ?? ""];
+    return ones !== undefined ? ones : null;
+  }
+  const tenIndex = chars.indexOf("十");
+  if (tenIndex >= 0) {
+    if (tenIndex > 1 || chars.length - tenIndex > 2) return null;
+    const tens = tenIndex === 0 ? 1 : CN_NUMERAL_DIGITS[chars[0] ?? ""];
+    const ones = tenIndex === chars.length - 1 ? 0 : CN_NUMERAL_DIGITS[chars[tenIndex + 1] ?? ""];
+    if (tens === undefined || tens === 0 || ones === undefined) return null;
+    return tens * 10 + ones;
+  }
+  if (chars.length !== 1) return null;
+  return CN_NUMERAL_DIGITS[chars[0] ?? ""] ?? null;
 }
 
 export function extractChineseNumericOps(state: { rest: string }): IntentOperation[] {
   const ops: IntentOperation[] = [];
-  const stepRegex = /(调高|调低|升高|降低|升|降|高|低)(\d{1,2}|[一二两三四五六七八九十])(?:度|℃|°C|°)/gi;
+  const stepRegex = /(调高|调低|升高|降低|升|降|高|低)(\d{1,2}|[零一二两三四五六七八九十]+)(?:度|℃|°C|°)/gi;
   let stepMatched = false;
   for (const m of state.rest.matchAll(stepRegex)) {
     const direction = m[1] ?? "";
-    const amount = spokenStepNumber(m[2] ?? "");
-    if (amount !== null) {
+    const amount = spokenChineseNumber(m[2] ?? "");
+    if (amount !== null && amount > 0 && amount <= 99) {
       const sign = direction.includes("高") || direction.includes("升") ? 1 : -1;
       ops.push({ kind: "temperatureStep", delta: sign * amount });
       stepMatched = true;
