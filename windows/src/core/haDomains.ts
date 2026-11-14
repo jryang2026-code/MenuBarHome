@@ -169,7 +169,7 @@ export function haLightCapabilityFlags(a: HARow): {
     };
   }
   const colorMode = typeof a.color_mode === "string" ? a.color_mode.trim().toLowerCase() : "";
-  const rawFeatures = haNumber(a.supported_features);
+  const features = haIntFeatures(a.supported_features);
   let brightnessWritable: boolean;
   let colorWritable: boolean;
   if (colorMode === "onoff") {
@@ -178,8 +178,7 @@ export function haLightCapabilityFlags(a: HARow): {
   } else if (colorMode.length > 0 && colorMode !== "unknown") {
     brightnessWritable = HA_BRIGHTNESS_COLOR_MODES.has(colorMode);
     colorWritable = HA_COLOR_TEMP_COLOR_MODES.has(colorMode) || hasColorTempAttr;
-  } else if (rawFeatures !== null) {
-    const features = Math.trunc(rawFeatures);
+  } else if (features !== null) {
     brightnessWritable =
       (features &
         (HA_LEGACY_SUPPORT_BRIGHTNESS |

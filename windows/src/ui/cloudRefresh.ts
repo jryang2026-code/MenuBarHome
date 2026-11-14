@@ -713,7 +713,13 @@ export interface HostMultiAccountState {
   readonly children: Readonly<Record<string, AccountChildSnapshot>>;
 }
 
-export function getHostMiAccountsStore(host: MenuMijiaWindowsApp): MiAccountsStore {
+export interface MiAccountsConfigurableHost {
+  miAccountsStore?: MiAccountsStore | null;
+  miAccountsOverride?: readonly MiAccount[] | null;
+  readonly credentialVault?: import("../core/secureStore.js").CredentialVault;
+}
+
+export function getHostMiAccountsStore(host: MiAccountsConfigurableHost): MiAccountsStore {
   if (!host.miAccountsStore) {
     host.miAccountsStore = new MiAccountsStore(host.credentialVault);
   }
@@ -721,7 +727,7 @@ export function getHostMiAccountsStore(host: MenuMijiaWindowsApp): MiAccountsSto
 }
 
 export function setHostMiAccounts(
-  host: MenuMijiaWindowsApp,
+  host: MiAccountsConfigurableHost,
   accounts: readonly (MiAccount | MiSession)[] | null,
 ): void {
   if (accounts === null) {
@@ -975,8 +981,15 @@ export function isDualSourceEnabled(host: DualSourceInspectableHost): boolean {
   }
 }
 
+export interface DualSourceMutableHost extends DualSourceInspectableHost {
+  dualSourceEnabledOverride?: boolean | null;
+  readonly settings: DualSourceInspectableHost["settings"] & {
+    dualSourceEnabled?: boolean;
+  };
+}
+
 export function setHostDualSourceEnabled(
-  host: MenuMijiaWindowsApp,
+  host: DualSourceMutableHost,
   enabled: boolean,
   options: { readonly persist?: boolean } = {},
 ): void {

@@ -621,6 +621,7 @@ export interface MergedMiAccountsSnapshot {
   readonly specsByModel: Readonly<Record<string, MiotDeviceSpec>>;
   readonly lightGroupOwners: Map<string, string>;
   readonly resetSelectedHome: boolean;
+  readonly staleDeviceIds: ReadonlySet<string>;
 }
 
 export function buildHomeOptionsFromMiRooms(rooms: readonly MiRoom[],
@@ -770,6 +771,7 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
   const homes: AccountScopedHomeOption[] = [];
   const roomIds = new Set<string>();
   const deviceIds = new Set<string>();
+  const staleDeviceIds = new Set<string>();
   const seenPhysicalDids = new Set<string>();
   const deviceIndexById = new Map<string, number>();
   const deviceConnectedById = new Map<string, boolean>();
@@ -818,11 +820,15 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
     }
 
     for (const device of child.home.devices) { const baseDid = device.id;
+      const nextDevice: AccountScopedSmartDevice = isConnected
+        ? (device.telemetryStale ? { ...device, telemetryStale: false } : device)
+        : { ...device, telemetryStale: true };
       const existingIdx = deviceIndexById.get(device.id);
       if (existingIdx !== undefined || seenPhysicalDids.has(baseDid)) {
         if (existingIdx !== undefined && isConnected && !deviceConnectedById.get(device.id)) {
-          devices[existingIdx] = device;
+          devices[existingIdx] = nextDevice;
           deviceConnectedById.set(device.id, true);
+          staleDeviceIds.delete(device.id);
           const facets = childFacets[device.id];
           if (facets && facets.length > 0) { facetsByDevice[device.id] = facets;
           } else { delete facetsByDevice[device.id]; }
@@ -839,7 +845,8 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
       seenPhysicalDids.add(baseDid);
       deviceIndexById.set(device.id, devices.length);
       deviceConnectedById.set(device.id, isConnected);
-      devices.push(device);
+      if (!isConnected) staleDeviceIds.add(device.id);
+      devices.push(nextDevice);
       const facets = childFacets[device.id];
       if (facets && facets.length > 0) { facetsByDevice[device.id] = facets;
       }
@@ -907,6 +914,7 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
     specsByModel,
     lightGroupOwners: filteredGroupOwners,
     resetSelectedHome,
+    staleDeviceIds,
   };
 }
 

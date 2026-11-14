@@ -1,4 +1,5 @@
 import { currentLanguage, type AppLanguage } from "../core/i18n.js";
+import { CONNECTIONS_DIAG_SEARCH_ANCHORS, type ConnectionsDiagAnchorId } from "./connectionsAndDiagView.js";
 import type { SettingsTab } from "./settingsViews.js";
 
 export type SettingsAnchor =
@@ -22,6 +23,7 @@ export type SettingsAnchor =
   | "haToken"
   | "miCloudRegion"
   | "miAccount"
+  | ConnectionsDiagAnchorId
   | "assistantProvider"
   | "assistantBaseURL"
   | "assistantModel"
@@ -37,6 +39,11 @@ export type SettingsAnchor =
   | "allowURLControl"
   | "advancedDeviceWrites"
   | "energyHistory"
+  | "automationRules"
+  | "safetyAlerts"
+  | "sensorAlerts"
+  | "doorbellAutoView"
+  | "weeklyReport"
   | "allOffDevices"
   | "signOut"
   | "softwareUpdate"
@@ -142,6 +149,12 @@ export function resolveSettingsAnchorTab(anchor: SettingsAnchor, hasAvailableUpd
     case "haToken":
     case "miCloudRegion":
     case "miAccount":
+    case "miMultiAccounts":
+    case "haDisconnect":
+    case "dualSourceFusion":
+    case "dashboardTitle":
+    case "scanUnsupportedDevices":
+    case "copyDiagnostics":
       return "connection";
     case "assistantProvider":
     case "assistantBaseURL":
@@ -159,6 +172,11 @@ export function resolveSettingsAnchorTab(anchor: SettingsAnchor, hasAvailableUpd
     case "allowURLControl":
     case "advancedDeviceWrites":
     case "energyHistory":
+    case "automationRules":
+    case "safetyAlerts":
+    case "sensorAlerts":
+    case "doorbellAutoView":
+    case "weeklyReport":
     case "allOffDevices":
     case "signOut":
     case "quitApp":
@@ -178,6 +196,11 @@ const SEC_CONNECTION: readonly [string, string, string] = ["数据源", "資料�
 const SEC_ASSISTANT: readonly [string, string, string] = ["AI 与习惯", "AI 與習慣", "AI & Habits"];
 const SEC_SYSTEM: readonly [string, string, string] = ["全关与更新", "全關與更新", "All Off & Updates"];
 const SEC_SECURITY: readonly [string, string, string] = ["安全与权限", "安全與權限", "Security & Permissions"];
+const SEC_AUTOMATION: readonly [string, string, string] = [
+  "状态自动化与主动守护",
+  "狀態自動化與主動守護",
+  "Context Automation & Safety Guard",
+];
 
 const RAW_SPECS: readonly RawAnchorSpec[] = [
   {
@@ -300,6 +323,12 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
     title: ["米家扫码登录与账号", "米家掃碼登入與帳號", "Xiaomi Home QR Login & Account"],
     synonyms: ["米家", "小米", "扫码", "掃碼", "二维码", "登录", "账号", "退出米家", "xiaomi", "mijia", "mi home", "qr", "qrcode", "login", "sign in", "account", "saoma"],
   },
+  ...CONNECTIONS_DIAG_SEARCH_ANCHORS.map((spec) => ({
+    anchor: spec.anchor,
+    section: spec.section,
+    title: spec.title,
+    synonyms: spec.synonyms,
+  })),
   {
     anchor: "assistantProvider",
     section: SEC_ASSISTANT,
@@ -417,6 +446,149 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
       "dianliang",
       "dianfei",
       "dianjia",
+    ],
+  },
+  {
+    anchor: "automationRules",
+    section: SEC_AUTOMATION,
+    title: ["本机状态自动化规则", "本機狀態自動化規則", "PC Context Automation Rules"],
+    synonyms: [
+      "自动化",
+      "自动化规则",
+      "自動",
+      "鎖屏自動關燈",
+      "锁屏自动关灯",
+      "离开",
+      "回来",
+      "离开回来",
+      "锁屏",
+      "解锁",
+      "深夜",
+      "定时",
+      "日程",
+      "开会",
+      "专注",
+      "勿扰",
+      "传感器联动",
+      "automation",
+      "automation rules",
+      "away",
+      "back",
+      "lock",
+      "unlock",
+      "late night",
+      "schedule",
+      "meeting",
+      "focus",
+      "wifi",
+      "ssid",
+      "zidonghua",
+    ],
+  },
+  {
+    anchor: "safetyAlerts",
+    section: SEC_AUTOMATION,
+    title: ["主动安全守护与低电量提醒", "主動安全守護與低電量提醒", "Active Safety Guard & Low Battery Alerts"],
+    synonyms: [
+      "安全守护",
+      "主动安全",
+      "安全提醒",
+      "長開",
+      "长开",
+      "大功率",
+      "插座长开",
+      "空调未关",
+      "取暖器",
+      "掉线提醒",
+      "离线提醒",
+      "低电量",
+      "电池",
+      "safety",
+      "safety guard",
+      "long running",
+      "high power",
+      "offline alert",
+      "low battery",
+      "anquan",
+      "didianliang",
+    ],
+  },
+  {
+    anchor: "sensorAlerts",
+    section: SEC_AUTOMATION,
+    title: ["安防传感器告警", "安防感測器告警", "Security Sensor Alerts"],
+    synonyms: [
+      "传感器提醒",
+      "传感器告警",
+      "安防告警",
+      "漏水",
+      "水浸",
+      "烟雾",
+      "烟感",
+      "漏水烟雾提醒",
+      "燃气",
+      "煤气",
+      "门磁",
+      "门窗",
+      "人体移动",
+      "震动",
+      "门锁异常",
+      "仅在离开",
+      "sensor alert",
+      "smoke",
+      "gas",
+      "water leak",
+      "contact",
+      "motion",
+      "vibration",
+      "lock",
+      "away only",
+      "angan",
+      "chuanganqi",
+    ],
+  },
+  {
+    anchor: "doorbellAutoView",
+    section: SEC_AUTOMATION,
+    title: ["Home Assistant 门铃响铃联动", "Home Assistant 門鈴響鈴聯動", "Home Assistant Doorbell Auto-Popup"],
+    synonyms: [
+      "门铃",
+      "門鈴",
+      "响铃",
+      "按门铃",
+      "门铃自动弹窗",
+      "门口画面",
+      "提示音",
+      "自动收起",
+      "doorbell",
+      "doorbell popup",
+      "ring",
+      "chime",
+      "live camera",
+      "menling",
+    ],
+  },
+  {
+    anchor: "weeklyReport",
+    section: SEC_AUTOMATION,
+    title: ["每周日家庭健康周报", "每週日家庭健康週報", "Weekly Home Health Report"],
+    synonyms: [
+      "健康周报",
+      "家庭健康周报",
+      "健康週報",
+      "周报",
+      "週報",
+      "每周报告",
+      "待机耗电",
+      "温湿度区间",
+      "复制周报",
+      "weekly report",
+      "weekly health report",
+      "health report",
+      "sunday report",
+      "markdown",
+      "zhoubao",
+      "jiankang",
     ],
   },
   {

@@ -21,6 +21,7 @@ import type { MenuMijiaWindowsApp } from "./app.js";
 import { normalizeSearch } from "../core/panelSearch.js";
 import { bindPanelInput, finishPanelComposition } from "./panelKeyboard.js";
 import { bindRoomOrderEditorEvents } from "./roomOrderEditor.js";
+import { bindConnectionsAndDiagPanelEvents } from "./connectionsAndDiagView.js";
 import { bindSensorHistoryEvents } from "./sensorHistoryView.js";
 import { syncSettingsSaveHint } from "./settingsEvents.js";
 import { shouldKeepPopoverPinned } from "./speechGuard.js";
@@ -126,6 +127,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
 
   export function bindEvents(host: MenuMijiaWindowsApp): void {
     ensureDrawerLifecycleListeners(host);
+    bindConnectionsAndDiagPanelEvents(host);
     host.root.querySelectorAll<HTMLDetailsElement>("details[data-notif-card]").forEach((details) => {
       details.addEventListener("toggle", () => {
         const key = details.dataset.notifCard;

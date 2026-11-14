@@ -58,6 +58,8 @@ import {
 } from "./settingsSearch.js";
 import { setPendingMiVaultDeletion, setRaycastIntegrationEnabled } from "./speechGuard.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
+import { bindAutomationSettingsEvents } from "./automationSettingsView.js";
+import { bindConnectionsAndDiagEvents } from "./connectionsAndDiagView.js";
 import { bindEnergySettingsEvents } from "./energySettingsView.js";
 import type { SettingsTab } from "./settingsViews.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
@@ -689,6 +691,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     session.aiTestStatus = null;
     session.envImportStatus = null;
     clearSettingsHighlight(host.root);
+    bindAutomationSettingsEvents(host);
   } else if (!session.launchAtLoginSynced) {
     session.launchAtLoginSynced = true;
     void syncLaunchAtLoginFromSystem(host);
@@ -1385,6 +1388,8 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   });
   refreshHabitSharePreview(host);
   bindEnergySettingsEvents(host);
+  bindAutomationSettingsEvents(host);
+  bindConnectionsAndDiagEvents(host);
 
   host.root.querySelector("#btn-save-settings")?.addEventListener("click", () => {
     commitSettingsSave(host);

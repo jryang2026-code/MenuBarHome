@@ -111,10 +111,14 @@ export function notifyEnergyDevicesMutated(host: EnergyTrackableHost): void {
   session.lastRecordedSig = null;
 }
 
-function plugCounterSignature(devices: readonly SmartDevice[]): string {
+function isLiveEnergyTelemetryDevice(dev: SmartDevice, staleIds?: ReadonlySet<string>): boolean {
+  return !dev.telemetryStale && !staleIds?.has(dev.id);
+}
+
+function plugCounterSignature(devices: readonly SmartDevice[], staleIds?: ReadonlySet<string>): string {
   const parts: string[] = [];
   for (const dev of devices) {
-    if (!dev.isOnline || dev.kind.kind !== "plug") continue;
+    if (!dev.isOnline || !isLiveEnergyTelemetryDevice(dev, staleIds) || dev.kind.kind !== "plug") continue;
     const kwh = dev.kind.energyKwh;
     if (typeof kwh === "number" && Number.isFinite(kwh) && kwh >= 0) {
       parts.push(`${dev.id}:${kwh}`);
@@ -162,14 +166,16 @@ function recordHostSnapshotIfLive(host: EnergyTrackableHost): void {
     return;
   }
 
-  const currentSig = plugCounterSignature(host.devices);
+  const staleIds = getHostMiAccountsState(host)?.merged?.staleDeviceIds;
+  const liveHostDevices = host.devices.filter((d) => isLiveEnergyTelemetryDevice(d, staleIds));
+  const currentSig = plugCounterSignature(liveHostDevices, staleIds);
   if (host.settings.connectionMode !== "demo") {
     const snapshotReady =
       host.timerSnapshot !== undefined &&
       host.timerSnapshot !== null &&
       host.timerSnapshot.sourceRevision === (host.sourceRevision ?? 0);
     if (!snapshotReady) {
-      const cachedSig = plugCounterSignature(cachedDevicesForMode(host.settings));
+      const cachedSig = plugCounterSignature(cachedDevicesForMode(host.settings), staleIds);
       if (cachedSig !== "" && cachedSig === currentSig) {
         return;
       }
@@ -194,7 +200,7 @@ function recordHostSnapshotIfLive(host: EnergyTrackableHost): void {
     return;
   }
   const effectiveDevices = devicesWithLayoutAliases(
-    host.devices,
+    liveHostDevices,
     host.layout ?? host.settings.layout,
   );
   history.record(effectiveDevices);

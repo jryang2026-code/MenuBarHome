@@ -112,7 +112,7 @@ function parseStrictInt(raw: string | undefined, min: number, max: number): numb
   if (!/^[+-]?\d+$/.test(trimmed)) return null;
   const value = Number(trimmed);
   if (!Number.isSafeInteger(value) || value < min || value > max) return null;
-  return value;
+  return Object.is(value, -0) ? 0 : value;
 }
 
 function parseStrictDecimal(raw: string | undefined, min: number, max: number): number | null {
@@ -121,7 +121,11 @@ function parseStrictDecimal(raw: string | undefined, min: number, max: number): 
   if (!/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(trimmed)) return null;
   const value = Number(trimmed);
   if (!Number.isFinite(value) || value < min || value > max) return null;
-  return value;
+  return Object.is(value, -0) ? 0 : value;
+}
+
+function hasControlChars(value: string): boolean {
+  return /[\x00-\x1f\x7f]/.test(value);
 }
 
 function parseRawQuery(rawQuery: string | undefined): Record<string, string> | null {
@@ -139,6 +143,7 @@ function parseRawQuery(rawQuery: string | undefined): Record<string, string> | n
     } catch {
       return null;
     }
+    if (hasControlChars(key) || hasControlChars(val)) return null;
     if (!key || !val || Object.prototype.hasOwnProperty.call(out, key)) continue;
     out[key] = val;
   }
@@ -164,7 +169,7 @@ export const AppURLParser = {
     if (typeof rawUrl !== "string") return null;
     const trimmedUrl = rawUrl.trim();
     if (!trimmedUrl || trimmedUrl.length > this.maximumURLLength) return null;
-    if (/[\r\n\0]/.test(trimmedUrl)) return null;
+    if (hasControlChars(trimmedUrl)) return null;
 
     const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):(?:\/\/|\/)?([^?#]*)(?:\?([^#]*))?(?:#.*)?$/.exec(
       trimmedUrl,

@@ -38,6 +38,7 @@ import { resolveSensorHistoryScope, sharedSensorHistoryStore } from "../core/sen
 import type { SmartDevice } from "../core/models.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { SF_ICONS } from "./appConstants.js";
+import { filterSafetyAlertsByGuardPrefs, loadSafetyGuardPrefs } from "./automationSettingsView.js";
 import { getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
 import { energyScopeForHost } from "./energySettingsView.js";
 import { withAliases } from "./panelPrefs.js";
@@ -159,7 +160,12 @@ function isLiveSnapshotReadyForTelemetry(host: MenuMijiaWindowsApp): boolean {
 }
 
 export function computeActivityScopeKey(
-  host: Pick<MenuMijiaWindowsApp, "settings" | "miAccountsOverride" | "multiAccountState" | "dualSourceEnabledOverride">,
+  host: {
+    readonly settings: MenuMijiaWindowsApp["settings"];
+    readonly miAccountsOverride?: MenuMijiaWindowsApp["miAccountsOverride"] | undefined;
+    readonly multiAccountState?: MenuMijiaWindowsApp["multiAccountState"] | undefined;
+    readonly dualSourceEnabledOverride?: boolean | null | undefined;
+  },
 ): string {
   const s = host.settings;
   const mode = s.connectionMode;
@@ -773,6 +779,7 @@ export async function ingestHostHASnapshotForDoorbell(
     center.dismissedActivityIds.delete(`doorbell:${ring.key}`);
   }
 
+  const guardPrefs = loadSafetyGuardPrefs(center.storage);
   const responses = center.doorbellCoordinator.handleRings({
     rings,
     devices: aliased,
@@ -780,9 +787,9 @@ export async function ingestHostHASnapshotForDoorbell(
     isLocked,
     scope: center.scopeKey,
     nowMs,
-    autoPopup: options.autoPopup,
-    popupSeconds: options.popupSeconds,
-    playChime: options.playChime,
+    autoPopup: options.autoPopup ?? guardPrefs.doorbellAutoPopup,
+    popupSeconds: options.popupSeconds ?? guardPrefs.doorbellPopupSeconds,
+    playChime: options.playChime ?? guardPrefs.doorbellChime,
   });
 
   for (const ring of rings) {
@@ -894,15 +901,18 @@ export function tickSafetyHealthAndAutomation(
 
   if (isLiveSnapshotReadyForTelemetry(host)) {
     const aliased = aliasedHostDevices(host);
+    const guardPrefs = loadSafetyGuardPrefs(center.storage);
     const effectivePolicy: SensorAlertPolicy = {
       ...baseSensorPolicy,
       includesAway: baseSensorPolicy.includesAway || isLockedSnapshot,
     };
-    const favorites = new Set<string>([
+    const rawFavorites = new Set<string>([
       ...(host.layout?.pinnedDeviceIds ?? []),
       ...(host.settings.layout?.pinnedDeviceIds ?? []),
     ]);
-    const newAlerts = center.safetyMonitor.evaluate({
+    const favorites =
+      guardPrefs.enableSafetyAlerts && guardPrefs.favoriteOffline ? rawFavorites : new Set<string>();
+    const rawAlerts = center.safetyMonitor.evaluate({
       devices: aliased,
       favorites,
       sensorPolicy: effectivePolicy,
@@ -912,16 +922,19 @@ export function tickSafetyHealthAndAutomation(
       observationsByDeviceId: center.observationsOverride ?? undefined,
       language: host.settings.interfaceLanguage,
     });
+    const newAlerts = filterSafetyAlertsByGuardPrefs(rawAlerts, aliased, guardPrefs);
     if (recordSafetyAlerts(host, newAlerts, nowMs)) {
       needsRender = true;
     }
 
     center.offlineHistory.record(aliased, nowMs);
 
-    const lastDelivered = WeeklyHealthReportSchedule.loadLastDeliveredAtMs(center.storage);
-    if (WeeklyHealthReportSchedule.isDue(nowMs, lastDelivered)) {
-      deliverWeeklyHealthReport(host, nowMs, { storage: center.storage });
-      needsRender = true;
+    if (guardPrefs.enableWeeklyHealthReport) {
+      const lastDelivered = WeeklyHealthReportSchedule.loadLastDeliveredAtMs(center.storage);
+      if (WeeklyHealthReportSchedule.isDue(nowMs, lastDelivered)) {
+        deliverWeeklyHealthReport(host, nowMs, { storage: center.storage });
+        needsRender = true;
+      }
     }
   }
 

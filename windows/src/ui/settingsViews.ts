@@ -32,8 +32,11 @@ import {
   type PanelAnchor,
 } from "./panelPrefs.js";
 import type { EnergyScopeSource } from "../core/energyHistory.js";
+import type { HostActivityCenter } from "./activityStackView.js";
 import type { PersistedSettings } from "./appTypes.js";
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
+import { renderAutomationAndSafetySettingsSections, type HostAutoSafetySession } from "./automationSettingsView.js";
+import { renderConnectionsAndDiagSection, type ConnectionsAndDiagHost } from "./connectionsAndDiagView.js";
 import { renderEnergySettingsSection, type HostEnergySession } from "./energySettingsView.js";
 import { readAskWhenUnsure } from "./settings.js";
 
@@ -161,6 +164,10 @@ export interface SettingsViewContext {
   readonly updateProgress?: UpdateDownloadProgress | null;
   readonly energyScope?: EnergyScopeSource;
   readonly energySession?: HostEnergySession;
+  readonly autoSafetySession?: HostAutoSafetySession;
+  readonly activityCenter?: HostActivityCenter | null;
+  readonly sourceRevision?: number;
+  readonly connDiagHost?: ConnectionsAndDiagHost;
   readonly layout?: LayoutPrefs;
   escapeHtml(value: string): string;
 }
@@ -545,6 +552,7 @@ function renderConnectionPanel(ctx: SettingsViewContext): string {
       </div>
     </div>
     ${modeBlocks}
+    ${renderConnectionsAndDiagSection(ctx)}
   `;
 }
 
@@ -820,6 +828,7 @@ function renderSystemPanel(ctx: SettingsViewContext): string {
     </div>
 
     ${renderEnergySettingsSection(ctx)}
+    ${renderAutomationAndSafetySettingsSections(ctx)}
 
     <div class="cc-field" data-settings-anchor="allOffDevices">
       <label>${t("「全关」包含哪些设备（插座、扫地机默认不包含）")}</label>

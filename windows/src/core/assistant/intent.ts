@@ -90,7 +90,7 @@ function buildDelay(val: number | null, unitMultiplier: number, remainder: strin
   const rem = remainder.trim();
   if (val === null || !Number.isFinite(val) || val <= 0 || !rem) return null;
   const seconds = Math.round(val * unitMultiplier);
-  if (seconds <= 0 || seconds > 86400) return null;
+  if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 86400) return null;
   return { seconds, remainder: rem };
 }
 
@@ -277,15 +277,16 @@ export const IntentValidator = {
       }
       case "brightnessStep": {
         if (k.kind !== "light" || k.brightnessWritable === false || !Number.isFinite(op.delta)) return null;
-        const base = k.isOn ? (k.brightnessPercent ?? 100) : 0;
-        return { kind: "brightness", percent: Math.max(1, Math.min(100, Math.round(base + op.delta))) };
+        const rawBase = k.isOn ? (k.brightnessPercent ?? 100) : 0;
+        const base = Number.isFinite(rawBase) ? rawBase : 100;
+        const stepped = base + op.delta;
+        const clamped = !Number.isFinite(stepped) ? (op.delta >= 0 ? 100 : 1) : Math.max(1, Math.min(100, Math.round(stepped)));
+        return { kind: "brightness", percent: clamped };
       }
       case "colorTemperature": {
         if (k.kind !== "light" || k.colorWritable === false || !Number.isFinite(op.kelvin) || op.kelvin <= 0) return null;
-        return {
-          kind: "colorTemperature",
-          kelvin: Math.max(k.minKelvin, Math.min(k.maxKelvin, Math.round(op.kelvin))),
-        };
+        const a = Number.isFinite(k.minKelvin) ? k.minKelvin : 2700, b = Number.isFinite(k.maxKelvin) ? k.maxKelvin : 6500;
+        return { kind: "colorTemperature", kelvin: Math.max(Math.min(a, b), Math.min(Math.max(a, b), Math.round(op.kelvin))) };
       }
       case "lightEffect": {
         if (k.kind !== "light") return null;
@@ -323,21 +324,20 @@ export const IntentValidator = {
       }
       case "targetTemperature": {
         if (k.kind !== "climate" || k.temperatureWritable === false || !Number.isFinite(op.celsius)) return null;
-        const clamped = Math.max(k.minTemp, Math.min(k.maxTemp, op.celsius));
-        return { kind: "targetTemperature", celsius: clamped };
+        const a = Number.isFinite(k.minTemp) ? k.minTemp : 16, b = Number.isFinite(k.maxTemp) ? k.maxTemp : 30;
+        const clamped = Math.max(Math.min(a, b), Math.min(Math.max(a, b), op.celsius));
+        return { kind: "targetTemperature", celsius: Object.is(clamped, -0) ? 0 : clamped };
       }
       case "temperatureStep": {
         if (k.kind !== "climate" || k.temperatureWritable === false || !Number.isFinite(op.delta)) return null;
-        const next = Math.max(k.minTemp, Math.min(k.maxTemp, k.targetTemperature + op.delta));
-        return { kind: "targetTemperature", celsius: next };
+        const a = Number.isFinite(k.minTemp) ? k.minTemp : 16, b = Number.isFinite(k.maxTemp) ? k.maxTemp : 30;
+        const lo = Math.min(a, b), hi = Math.max(a, b);
+        const stepped = (Number.isFinite(k.targetTemperature) ? k.targetTemperature : 26) + op.delta;
+        const next = !Number.isFinite(stepped) ? (op.delta >= 0 ? hi : lo) : Math.max(lo, Math.min(hi, stepped));
+        return { kind: "targetTemperature", celsius: Object.is(next, -0) ? 0 : next };
       }
       case "fanSpeed": {
-        const list =
-          k.kind === "fan"
-            ? k.availablePresetModes
-            : k.kind === "climate"
-              ? k.availableFanModes
-              : null;
+        const list = k.kind === "fan" ? k.availablePresetModes : k.kind === "climate" ? k.availableFanModes : null;
         if (!list || list.length === 0) return null;
         const matched = matchFanSpeed(op.speed, list);
         return matched ? { kind: "fanSpeed", speed: matched } : null;
@@ -943,7 +943,7 @@ function escapeRegex(s: string): string {
 }
 
 function consumeEnglishPhrase(phrase: string, state: { rest: string }): boolean {
-  if (!phrase) return false;
+  if (!phrase || phrase.includes(CONSUMED_MARKER)) return false;
   const escaped = escapeRegex(phrase);
   const isAscii = /^[\x00-\x7f]+$/.test(phrase);
   const pattern = isAscii ? `(?<![a-z0-9])${escaped}(?![a-z0-9])` : escaped;
@@ -1241,6 +1241,7 @@ export const LocalIntentParser = {
     const panelRoom = options.panelRoom ?? null;
     const lower = utterance
       .toLowerCase()
+      .replace(/[\x00-\x1f\x7f]+/g, " ")
       .replace(/[,!?;:'"“”‘’。，！？、]+/g, " ")
       .replace(/\s+/g, " ")
       .trim();

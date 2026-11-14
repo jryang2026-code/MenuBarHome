@@ -18,19 +18,70 @@ import {
   renderRoomOrderEditorModal,
   snapshotRoomsForHost,
 } from "./roomOrderEditor.js";
+import type { HomeBackend } from "../core/models.js";
+import { MiAccountScope } from "../core/miAccountsStore.js";
+import {
+  currentSourceMenuTitle,
+  offlineFallbackBadgeText,
+} from "../core/dualSourceProvider.js";
+import { getHostActivityCenter } from "./activityStackView.js";
+import { getHostAutoSafetySession } from "./automationSettingsView.js";
+import {
+  getHostDualSourceCoordinator,
+  getHostDualSourceState,
+  isDualSourceEnabled,
+} from "./cloudRefresh.js";
+import {
+  isConnectionsAndDiagModalOpen,
+  renderConnectionsAndDiagModal,
+  resolveHostMiAccounts,
+} from "./connectionsAndDiagView.js";
 
 export function renderHomeMenu(host: MenuMijiaWindowsApp): string {
-    if (!host.isHomeMenuOpen || host.homes.length < 2) return "";
+    if (!host.isHomeMenuOpen) return "";
     const item = (id: string | null, label: string, count?: number) => `
       <button class="cc-menu-item ${host.settings.selectedHomeId === id ? "is-checked" : ""}" data-home="${host.escapeHtml(id ?? "")}">
         <span>${host.escapeHtml(label)}</span>${count !== undefined ? `<small>${count}</small>` : ""}
       </button>`;
+    const accounts = resolveHostMiAccounts(host);
+    const hasScopedHomes =
+      accounts.length > 1 &&
+      host.homes.some((h) => accounts.some((acc) => MiAccountScope.isOwned(h.id, acc.id)));
+    const homesBlock =
+      host.homes.length >= 2
+        ? `${item(null, t("全部家庭"))}
+           <div class="cc-menu-sep"></div>
+           ${
+             hasScopedHomes
+               ? accounts
+                   .map((acc) => {
+                     const owned = host.homes.filter((h) => MiAccountScope.isOwned(h.id, acc.id));
+                     if (owned.length === 0) return "";
+                     return `<div class="cc-menu-label">${host.escapeHtml(acc.displayName)}</div>${owned
+                       .map((h) => item(h.id, h.name, h.deviceCount))
+                       .join("")}`;
+                   })
+                   .join("")
+               : host.homes.map((h) => item(h.id, h.name, h.deviceCount)).join("")
+           }
+           <div class="cc-menu-sep"></div>`
+        : "";
     return `
       <div class="cc-menu-scrim" data-close-menus></div>
       <div class="cc-menu cc-home-menu">
-        ${item(null, t("全部家庭"))}
-        <div class="cc-menu-sep"></div>
-        ${host.homes.map((h) => item(h.id, h.name, h.deviceCount)).join("")}
+        ${homesBlock}
+        <button class="cc-menu-item" data-open-conn-diag="accounts">
+          <span>${host.escapeHtml(tr3("多账号与双源连接…", "多帳號與雙源連線…", "Multi-Account & Dual-Source…"))}</span>
+        </button>
+        <button class="cc-menu-item" data-open-conn-diag="title">
+          <span>${host.escapeHtml(tr3("自定义面板标题…", "自訂面板標題…", "Custom Panel Title…"))}</span>
+        </button>
+        <button class="cc-menu-item" data-open-conn-diag="scanner">
+          <span>${host.escapeHtml(tr3("扫描未能显示的设备…", "掃描未能顯示的裝置…", "Scan Hidden Devices…"))}</span>
+        </button>
+        <button class="cc-menu-item" data-open-conn-diag="diagnostics">
+          <span>${host.escapeHtml(tr3("复制脱敏诊断报告…", "複製去識別化診斷報告…", "Copy Diagnostics Report…"))}</span>
+        </button>
       </div>`;
   }
 
@@ -100,10 +151,71 @@ export function renderContextMenu(host: MenuMijiaWindowsApp): string {
     const pinned = isDevicePinned(dev.id, host.layout);
     const pinnedList = pinnedDeviceIds(host.layout);
     const pinIdx = pinnedList.indexOf(dev.id);
+    const dualState = getHostDualSourceState(host);
+    const dualEnabled = isDualSourceEnabled(host);
+    const route = dualState?.routes[dev.id] ?? null;
+    const mergedMeta = dev as typeof dev & {
+      readonly sourceBackend?: HomeBackend;
+      readonly pinnedBackend?: HomeBackend | null;
+      readonly fallbackActive?: boolean;
+    };
+    const activeBackend: HomeBackend | null =
+      route?.backend ??
+      (mergedMeta.sourceBackend === "homeAssistant" || mergedMeta.sourceBackend === "xiaomiCloud"
+        ? mergedMeta.sourceBackend
+        : null);
+    const storedPin =
+      dualEnabled || dualState !== null
+        ? getHostDualSourceCoordinator(host).pinStorage.get(dev.id)
+        : null;
+    const pinnedBackend: HomeBackend | null =
+      storedPin ?? route?.pinnedBackend ?? mergedMeta.pinnedBackend ?? null;
+    const fallbackActive = Boolean(route?.fallbackActive ?? mergedMeta.fallbackActive);
+    const showDualSourcePin =
+      activeBackend !== null &&
+      (Boolean(dualState?.pairedDeviceIds.has(dev.id)) ||
+        (route !== null && route.alternateBackend !== null) ||
+        pinnedBackend !== null ||
+        fallbackActive);
+    const dualSourceSection =
+      showDualSourcePin && activeBackend
+        ? `
+          <div class="cc-menu-label" data-dual-source-header="${id}">
+            <span>${host.escapeHtml(tr3("数据源锁定", "資料來源鎖定", "Data Source Pin"))}</span>
+            ${
+              fallbackActive
+                ? `<span class="cc-inline-pill" data-dual-source-fallback="true" style="margin-left:6px;font-size:10.5px;padding:1px 6px;color:#e67e22;background:rgba(230,126,34,0.16);border:1px solid rgba(230,126,34,0.35);">${host.escapeHtml(
+                    offlineFallbackBadgeText(host.settings.interfaceLanguage),
+                  )}</span>`
+                : ""
+            }
+          </div>
+          <div class="cc-field-hint" data-dual-source-status="${id}" style="padding:0 10px 4px;margin:0;font-size:11px;">
+            ${host.escapeHtml(
+              currentSourceMenuTitle(
+                activeBackend,
+                pinnedBackend,
+                fallbackActive,
+                host.settings.interfaceLanguage,
+              ),
+            )}
+          </div>
+          <button class="cc-menu-item ${pinnedBackend === null ? "is-checked" : ""}" data-pin-device-id="${id}" data-pin-device-source="auto">
+            <span>${host.escapeHtml(tr3("自动优先（HA）", "自動優先（HA）", "Automatic (Prefer HA)"))}</span>
+          </button>
+          <button class="cc-menu-item ${pinnedBackend === "homeAssistant" ? "is-checked" : ""}" data-pin-device-id="${id}" data-pin-device-source="homeAssistant">
+            <span>${host.escapeHtml(tr3("固定走 Home Assistant", "固定走 Home Assistant", "Pin to Home Assistant"))}</span>
+          </button>
+          <button class="cc-menu-item ${pinnedBackend === "xiaomiCloud" ? "is-checked" : ""}" data-pin-device-id="${id}" data-pin-device-source="xiaomiCloud">
+            <span>${host.escapeHtml(tr3("固定走米家云端", "固定走米家雲端", "Pin to Xiaomi Cloud"))}</span>
+          </button>
+          <div class="cc-menu-sep"></div>`
+        : "";
     return `
       <div class="cc-menu-scrim" data-close-menus></div>
       <div class="cc-menu" style="${pos}">
         <div class="cc-menu-title">${host.escapeHtml(host.layout.aliases[dev.id] ?? dev.name)}</div>
+        ${dualSourceSection}
         <div class="cc-menu-label">${t("卡片大小（本页）")}</div>
         <div class="cc-menu-chips">
           ${TILE_SIZES.map((sz) => `<button class="cc-menu-chip ${size === sz.id ? "is-active" : ""}" data-set-size="${id}:${sz.id}">${sz.title}</button>`).join("")}
@@ -137,6 +249,9 @@ export function renderContextMenu(host: MenuMijiaWindowsApp): string {
 export function renderPrompt(host: MenuMijiaWindowsApp): string {
     if (isRoomOrderEditorOpen(host)) {
       return renderRoomOrderEditorModal(host);
+    }
+    if (isConnectionsAndDiagModalOpen(host)) {
+      return renderConnectionsAndDiagModal(host);
     }
     const p = host.prompt;
     if (!p) return "";
@@ -232,6 +347,7 @@ export function renderSettingsModal(host: MenuMijiaWindowsApp): string {
     return renderSettingsModalView({
       settings: host.settings,
       devices: host.devices,
+      scenes: host.scenes,
       availableUpdate: host.availableUpdate,
       activeTab: host.settingsTab,
       apiKeyFor: (baseURL) => host.apiKeyFor(baseURL),
@@ -248,6 +364,10 @@ export function renderSettingsModal(host: MenuMijiaWindowsApp): string {
       updateStatusMessage: host.updateStatusMessage,
       energyScope: energyScopeForHost(host),
       energySession: host.energySession,
+      autoSafetySession: getHostAutoSafetySession(host),
+      activityCenter: getHostActivityCenter(host),
+      sourceRevision: host.sourceRevision,
+      connDiagHost: host,
       layout: host.layout,
       escapeHtml: (value) => host.escapeHtml(value),
     });

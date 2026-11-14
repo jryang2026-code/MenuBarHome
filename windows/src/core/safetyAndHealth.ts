@@ -417,6 +417,7 @@ export function evaluateSensorAlerts(
   const alerts: SafetyAlert[] = [];
 
   for (const device of devices) {
+    if (device.telemetryStale) continue;
     const observations = extractSensorObservations(
       device,
       options.deviceFacets?.[device.id] ?? [],
@@ -557,6 +558,7 @@ export class SafetyMonitor {
     }
 
     for (const dev of args.devices) {
+      if (dev.telemetryStale) { this.activeSinceByDeviceId.delete(dev.id); continue; }
       const roomLabel = dev.roomName.trim() || tr3("当前家庭", "目前家庭", "Home", undefined, args.language);
 
       if (this.hasEvaluatedSnapshot && args.favorites.has(dev.id)) {
@@ -696,7 +698,7 @@ export class SafetyMonitor {
     }
     emitted.push(...evaluated.alerts);
 
-    this.previousOnlineDeviceIds = new Set(args.devices.filter((d) => d.isOnline).map((d) => d.id));
+    this.previousOnlineDeviceIds = new Set(args.devices.filter((d) => d.isOnline && !d.telemetryStale).map((d) => d.id));
     this.hasEvaluatedSnapshot = true;
     return emitted;
   }
@@ -708,25 +710,18 @@ export class SafetyMonitor {
       const parsed = JSON.parse(raw) as Record<string, unknown>;
       const out: Record<string, number> = {};
       for (const [k, v] of Object.entries(parsed)) {
-        if (typeof v === "number" && Number.isFinite(v)) {
-          out[k] = v < 1e11 ? v * 1000 : v;
-        }
+        if (typeof v === "number" && Number.isFinite(v)) out[k] = v < 1e11 ? v * 1000 : v;
       }
       return out;
-    } catch {
-      return {};
-    }
+    } catch { return {}; }
   }
 
   private persistNumberMap(key: string, map: Readonly<Record<string, number>>): void {
     try {
       const secondsMap: Record<string, number> = {};
-      for (const [k, ms] of Object.entries(map)) {
-        secondsMap[k] = Math.floor(ms / 1000);
-      }
+      for (const [k, ms] of Object.entries(map)) secondsMap[k] = Math.floor(ms / 1000);
       this.storage.setItem(key, JSON.stringify(secondsMap));
-    } catch {
-    }
+    } catch {}
   }
 
   private loadBooleanMap(key: string): Record<string, boolean> {
@@ -739,16 +734,11 @@ export class SafetyMonitor {
         if (typeof v === "boolean") out[k] = v;
       }
       return out;
-    } catch {
-      return {};
-    }
+    } catch { return {}; }
   }
 
   private persistBooleanMap(key: string, map: Readonly<Record<string, boolean>>): void {
-    try {
-      this.storage.setItem(key, JSON.stringify(map));
-    } catch {
-    }
+    try { this.storage.setItem(key, JSON.stringify(map)); } catch {}
   }
 }
 
@@ -810,6 +800,7 @@ export class OfflineHistory {
     let changed = this.trim(nowMs);
 
     for (const dev of devices) {
+      if (dev.telemetryStale) continue;
       if (!dev.isOnline) {
         let daySet = this.daysByDevice.get(dev.id);
         if (!daySet) {

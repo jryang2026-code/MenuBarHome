@@ -413,7 +413,8 @@ function triggerRemoteHistoryFetchIfNeeded(
   window: SensorHistoryWindow,
   store: SensorHistoryStore,
 ): void {
-  if (!dev.isOnline || host.valuesAreStale || dev.kind.kind !== "sensor") return;
+  const staleIds = getHostMiAccountsState(host)?.merged?.staleDeviceIds;
+  if (!dev.isOnline || dev.telemetryStale || staleIds?.has(dev.id) || host.valuesAreStale || dev.kind.kind !== "sensor") return;
   if (host.settings.connectionMode === "demo") return;
   if (!store.shouldFetchCloud(dev.id, window)) return;
 
@@ -539,10 +540,14 @@ export function syncSensorHistoryHost(host?: MenuMijiaWindowsApp): void {
     ) {
       ui.lastRecordedDevicesRef = host.devices;
       ui.recordedBatchSeq += 1;
-      store.record(host.devices, {
-        facetsByDevice: host.deviceFacets,
-        snapshotKey: `${scope}#${ui.recordedBatchSeq}`,
-      });
+      const staleIds = getHostMiAccountsState(host)?.merged?.staleDeviceIds;
+      const liveDevices = host.devices.filter((d) => !d.telemetryStale && !staleIds?.has(d.id));
+      if (liveDevices.length > 0) {
+        store.record(liveDevices, {
+          facetsByDevice: host.deviceFacets,
+          snapshotKey: `${scope}#${ui.recordedBatchSeq}`,
+        });
+      }
     }
 
     if (host.expandedDeviceId && !host.valuesAreStale) {

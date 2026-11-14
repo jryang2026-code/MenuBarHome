@@ -392,8 +392,10 @@ function facetOptions(list: readonly MiotValueListItem[]): MiotFacetOption[] | u
 function facetRange(raw?: readonly number[]): MiotFacetRange | undefined {
   if (!raw || raw.length < 2) return undefined;
   const [min, max, rawStep] = raw;
-  if (min === undefined || max === undefined) return undefined;
-  const step = rawStep !== undefined && rawStep > 0 ? rawStep : 1;
+  if (min === undefined || max === undefined || !Number.isFinite(min) || !Number.isFinite(max)) {
+    return undefined;
+  }
+  const step = rawStep !== undefined && Number.isFinite(rawStep) && rawStep > 0 ? rawStep : 1;
   return { min, max, step };
 }
 
@@ -511,21 +513,23 @@ export function facetControls(
       ? spec.services.find((s) => s.iid === facet.serviceId)?.properties.find((p) => p.iid === facet.propertyId)
       : undefined;
     const value =
-      typeof rawValue === "string" && rawValue.trim() !== "" && facetProp?.format !== "string"
-        ? facetProp?.format === "bool"
-          ? rawValue.trim().toLowerCase() === "true"
-            ? true
-            : rawValue.trim().toLowerCase() === "false"
-              ? false
-              : Number.isFinite(Number(rawValue))
-                ? Number(rawValue) !== 0
-                : rawValue
-          : Number.isFinite(Number(rawValue))
-            ? facetProp?.format.startsWith("int") || facetProp?.format.startsWith("uint")
-              ? Math.round(Number(rawValue))
-              : Number(rawValue)
-            : rawValue
-        : rawValue;
+      typeof rawValue === "number" && !Number.isFinite(rawValue)
+        ? null
+        : typeof rawValue === "string" && rawValue.trim() !== "" && facetProp?.format !== "string"
+          ? facetProp?.format === "bool"
+            ? rawValue.trim().toLowerCase() === "true"
+              ? true
+              : rawValue.trim().toLowerCase() === "false"
+                ? false
+                : Number.isFinite(Number(rawValue))
+                  ? Number(rawValue) !== 0
+                  : rawValue
+            : Number.isFinite(Number(rawValue))
+              ? facetProp?.format.startsWith("int") || facetProp?.format.startsWith("uint")
+                ? Math.round(Number(rawValue))
+                : Number(rawValue)
+              : rawValue
+          : rawValue;
     let target: FacetTarget | null = null;
     if (facet.isWritable) {
       if (facet.propertyId !== undefined) {

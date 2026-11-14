@@ -592,6 +592,45 @@ export class MiCloudClient {
     return members;
   }
 
+  static parsePropValues(
+    result: unknown,
+    options?: { readonly defaultDid?: string; readonly dropNullValues?: boolean },
+  ): Map<string, unknown> {
+    const values = new Map<string, unknown>();
+    if (!Array.isArray(result)) return values;
+    const fallbackDid = options?.defaultDid && options.defaultDid.length > 0 ? options.defaultDid : null;
+    const dropNull = options?.dropNullValues === true;
+    for (const item of result) {
+      if (!item || typeof item !== "object") continue;
+      const obj = item as Record<string, unknown>;
+      const did = asIdString(obj["did"]) ?? fallbackDid;
+      const rawSiid = obj["siid"];
+      const rawPiid = obj["piid"];
+      const siid = typeof rawSiid === "number" && Number.isFinite(rawSiid) ? Math.trunc(rawSiid) : NaN;
+      const piid = typeof rawPiid === "number" && Number.isFinite(rawPiid) ? Math.trunc(rawPiid) : NaN;
+      if (!did || !Number.isSafeInteger(siid) || !Number.isSafeInteger(piid)) continue;
+      let code = 0;
+      if ("code" in obj && obj["code"] !== undefined && obj["code"] !== null) {
+        const rawCode = obj["code"];
+        if (typeof rawCode !== "number" || !Number.isFinite(rawCode)) continue;
+        const truncatedCode = Math.trunc(rawCode);
+        if (!Number.isSafeInteger(truncatedCode)) continue;
+        code = truncatedCode;
+      }
+      if (code !== 0 || !("value" in obj) || obj["value"] === undefined) continue;
+      if (dropNull && obj["value"] === null) continue;
+      values.set(
+        propKeyString({
+          did,
+          siid: Object.is(siid, -0) ? 0 : siid,
+          piid: Object.is(piid, -0) ? 0 : piid,
+        }),
+        obj["value"],
+      );
+    }
+    return values;
+  }
+
   async getProps(keys: readonly MiotPropKey[]): Promise<Map<string, unknown>> {
     const values = new Map<string, unknown>();
     const chunkSize = 100;
@@ -599,18 +638,8 @@ export class MiCloudClient {
       const chunk = keys.slice(start, start + chunkSize);
       const params = chunk.map((k) => ({ did: k.did, siid: k.siid, piid: k.piid }));
       const result = await this.request("miotspec/prop/get", { params });
-      if (Array.isArray(result)) {
-        for (const item of result) {
-          if (!item || typeof item !== "object") continue;
-          const obj = item as Record<string, unknown>;
-          const did = asIdString(obj["did"]);
-          const siid = typeof obj["siid"] === "number" ? Math.trunc(obj["siid"]) : null;
-          const piid = typeof obj["piid"] === "number" ? Math.trunc(obj["piid"]) : null;
-          const code = typeof obj["code"] === "number" ? Math.trunc(obj["code"]) : 0;
-          if (did && siid !== null && piid !== null && code === 0 && "value" in obj) {
-            values.set(propKeyString({ did, siid, piid }), obj["value"]);
-          }
-        }
+      for (const [key, val] of MiCloudClient.parsePropValues(result)) {
+        values.set(key, val);
       }
     }
     return values;

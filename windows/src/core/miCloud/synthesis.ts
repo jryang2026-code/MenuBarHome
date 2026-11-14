@@ -81,7 +81,9 @@ export function normalizeMiotPropValue(
   prop: Pick<MiotProperty, "format"> | null | undefined,
   val: unknown,
 ): unknown {
-  if (val === undefined || val === null || prop?.format === "string") return val;
+  if (val === undefined || val === null) return val;
+  if (typeof val === "number" && !Number.isFinite(val)) return null;
+  if (prop?.format === "string") return val;
   if (prop?.format === "bool") {
     const parsed = miotBool(val);
     return parsed !== null ? parsed : val;
@@ -1150,6 +1152,15 @@ export const MiotSynthesizer = {
       return null;
     };
 
+    const finiteRangeAt = (prop: MiotProperty | undefined, idx: number, fallback: number): number => {
+      const v = prop?.valueRange?.[idx];
+      return v !== undefined && Number.isFinite(v) ? v : fallback;
+    };
+    const finitePositiveStep = (prop: MiotProperty | undefined, fallback = 1): number => {
+      const v = prop?.valueRange?.[2];
+      return v !== undefined && Number.isFinite(v) && v > 0 ? v : fallback;
+    };
+
     const sName = miotShortName(primaryService.type);
     if (sName === "light") {
       const on = readProp(primaryService, "on");
@@ -1166,14 +1177,16 @@ export const MiotSynthesizer = {
 
       const isLightGroup = did.startsWith("group.");
       const onWritable = exposesWrite(on?.prop.access);
+      const rawMinK = Math.round(finiteRangeAt(ct?.prop, 0, 2700));
+      const rawMaxK = Math.round(finiteRangeAt(ct?.prop, 1, 6500));
       return {
         kind: "light",
         entityId: makeMiotAddress(did, primaryService.iid),
         isOn: miotBool(on?.val) ?? false,
         brightnessPercent: briPct,
-        colorTempKelvin: typeof ct?.val === "number" ? Math.round(ct.val) : null,
-        minKelvin: Math.round(ct?.prop.valueRange?.[0] ?? 2700),
-        maxKelvin: Math.round(ct?.prop.valueRange?.[1] ?? 6500),
+        colorTempKelvin: typeof ct?.val === "number" && Number.isFinite(Math.round(ct.val)) ? Math.round(ct.val) : null,
+        minKelvin: Number.isFinite(rawMinK) ? rawMinK : 2700,
+        maxKelvin: Number.isFinite(rawMaxK) ? rawMaxK : 6500,
         currentEffect: isLightGroup ? null : currentEffect,
         availableEffects:
           isLightGroup || !exposesWrite(mode?.prop.access)
@@ -1229,11 +1242,11 @@ export const MiotSynthesizer = {
         isOn,
         hvacMode: isOn ? activeMode : "off",
         availableModes: exposeModes ? [...haModes, "off"] : [],
-        targetTemperature: typeof target?.val === "number" ? target.val : 26,
-        currentTemperature: typeof current?.val === "number" ? current.val : null,
-        minTemp: target?.prop.valueRange?.[0] ?? 16,
-        maxTemp: target?.prop.valueRange?.[1] ?? 30,
-        step: target?.prop.valueRange?.[2] ?? 1,
+        targetTemperature: typeof target?.val === "number" && Number.isFinite(target.val) ? target.val : 26,
+        currentTemperature: typeof current?.val === "number" && Number.isFinite(current.val) ? current.val : null,
+        minTemp: finiteRangeAt(target?.prop, 0, 16),
+        maxTemp: finiteRangeAt(target?.prop, 1, 30),
+        step: finitePositiveStep(target?.prop, 1),
         fanMode: fanDesc,
         availableFanModes: exposesWrite(fanLevel?.prop.access)
           ? (fanLevel?.prop.valueList?.map((i) => i.description) ?? [])
@@ -1614,11 +1627,11 @@ export const MiotSynthesizer = {
         currentMode: description(mode),
         availableModes: mode?.prop.valueList?.map((i) => i.description) ?? [],
         modeWritable: exposesWrite(mode?.prop.access),
-        targetTemperature: typeof target?.val === "number" ? target.val : null,
-        currentTemperature: typeof current?.val === "number" ? current.val : null,
-        minTemp: target?.prop.valueRange?.[0] ?? 0,
-        maxTemp: target?.prop.valueRange?.[1] ?? 100,
-        step: target?.prop.valueRange?.[2] ?? 1,
+        targetTemperature: typeof target?.val === "number" && Number.isFinite(target.val) ? target.val : null,
+        currentTemperature: typeof current?.val === "number" && Number.isFinite(current.val) ? current.val : null,
+        minTemp: finiteRangeAt(target?.prop, 0, 0),
+        maxTemp: finiteRangeAt(target?.prop, 1, 100),
+        step: finitePositiveStep(target?.prop, 1),
         temperatureWritable: exposesWrite(target?.prop.access),
         statusText: applianceStatusText(sName, description(status), description(runStatus)),
         faultText: faultDescription(faultCode, faultWord),
@@ -1905,10 +1918,11 @@ export const MiotSynthesizer = {
       const watts = typeof power?.val === "number" && power.val >= 0 && powerScaleVal !== null ? power.val * powerScaleVal : NaN;
       const energy = readFirst(consumptionServices, "power-consumption", (p) => energyScale(p) !== null);
       const energyScaleVal = energy ? energyScale(energy.prop) : null;
-      const energyKwh =
+      const rawEnergyKwh =
         energy && typeof energy.val === "number" && Number.isFinite(energy.val) && energy.val >= 0 && energyScaleVal !== null
           ? Math.round(energy.val * energyScaleVal * 1000) / 1000
-          : null;
+          : Number.NaN;
+      const energyKwh = Number.isFinite(rawEnergyKwh) ? rawEnergyKwh : null;
       const lockSvc = spec.services.find((s) => miotShortName(s.type) === "physical-controls-locked");
       const lock = lockSvc ? readProp(lockSvc, "physical-controls-locked") : null;
 
