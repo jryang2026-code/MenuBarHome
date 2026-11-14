@@ -661,6 +661,7 @@ export function mergeHomeSnapshotRespectingLocks(
   incomingDevices: readonly SmartDevice[],
   incomingFacets: Readonly<Record<string, readonly FacetControl[]>> | undefined,
   nowMs = Date.now(),
+  onlyDeviceIds?: ReadonlySet<string>,
 ): {
   devices: SmartDevice[];
   deviceFacets: Record<string, FacetControl[]>;
@@ -668,11 +669,13 @@ export function mergeHomeSnapshotRespectingLocks(
   const state = ensureHostState(host);
   const incomingIds = new Set(incomingDevices.map((device) => device.id));
   for (const lockedId of [...state.locks.keys()]) {
+    if (onlyDeviceIds && !onlyDeviceIds.has(lockedId)) continue;
     if (!incomingIds.has(lockedId)) {
       state.locks.delete(lockedId);
     }
   }
   for (const [ticketDevId, pending] of [...state.activeTickets.entries()]) {
+    if (onlyDeviceIds && !onlyDeviceIds.has(ticketDevId)) continue;
     if (!incomingIds.has(ticketDevId)) {
       pending.cancel();
       state.activeTickets.delete(ticketDevId);
@@ -698,6 +701,12 @@ export function mergeHomeSnapshotRespectingLocks(
   };
 
   for (const incoming of incomingDevices) {
+    if (onlyDeviceIds && !onlyDeviceIds.has(incoming.id)) {
+      const local = existingById.get(incoming.id);
+      mergedDevices.push(local ?? incoming);
+      keepLocalFacets(incoming.id);
+      continue;
+    }
     const lock = state.locks.get(incoming.id);
     const local = existingById.get(incoming.id);
     if (!lock || nowMs >= lock.expiresAtMs || !local) {

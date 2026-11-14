@@ -23,13 +23,13 @@ import {
 } from "../core/models.js";
 import {
   type PanelHeight,
-  type TileSize,
   DEFAULT_GLOBAL_SHORTCUT,
   PANEL_ANCHORS,
   applyPanelOpacity,
   localizeFanMode,
   nextSize,
   normalizePanelOpacity,
+  normalizeTileSize,
   scopedKey,
   withAliases,
 } from "./panelPrefs.js";
@@ -59,6 +59,7 @@ import { facetTitle, facetValue } from "../core/miotFacetText.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { normalizeSearch } from "../core/panelSearch.js";
 import { bindPanelInput, finishPanelComposition } from "./panelKeyboard.js";
+import { bindRoomOrderEditorEvents } from "./roomOrderEditor.js";
 import { syncSettingsSaveHint } from "./settingsEvents.js";
 import { shouldKeepPopoverPinned } from "./speechGuard.js";
 
@@ -261,13 +262,14 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         const id = sep > 0 ? raw.slice(0, sep) : "";
         const size = sep > 0 ? raw.slice(sep + 1) : "";
         if (!id || !size) return;
-        host.layout.tileSizes[scopedKey(host.pageKey, id)] = size as TileSize;
+        host.layout.tileSizes[scopedKey(host.pageKey, id)] = normalizeTileSize(size);
         host.saveLayout();
         host.ctxMenu = null;
         invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
         host.render();
       });
     });
+    bindRoomOrderEditorEvents(host);
     host.root.querySelectorAll<HTMLElement>("[data-set-group]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const raw = btn.dataset.setGroup ?? "";
@@ -523,12 +525,6 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
     host.root.querySelector<HTMLInputElement>("#settings-hide-grouped-lights")?.addEventListener("change", (e) => {
       host.settings.hideGroupedLights = (e.target as HTMLInputElement).checked;
-      syncSettingsSaveHint(host, "auto-saved");
-      host.saveSettings();
-      host.render();
-    });
-    host.root.querySelector<HTMLInputElement>("#settings-allow-advanced-facets")?.addEventListener("change", (e) => {
-      host.settings.allowAdvancedFacetWrites = (e.target as HTMLInputElement).checked;
       syncSettingsSaveHint(host, "auto-saved");
       host.saveSettings();
       host.render();

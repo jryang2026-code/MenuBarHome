@@ -22,6 +22,10 @@ import {
 import type { UndoAction, UndoStep } from "./appTypes.js";
 import { inverseCommands } from "../core/commandEffects.js";
 import {
+  buildReversibleFacetUndo,
+  captureReversibleFacetBeforeWrite,
+} from "./commandDispatch.js";
+import {
   claimDeviceWrite,
   currentDeviceWriteClaim,
   getRegisteredUndoActionBatch,
@@ -775,6 +779,8 @@ export async function executeSingleCommand(
   const sourceRevision = host.sourceRevision;
   const preKind = structuredClone(device.kind);
   const inverses = inverseCommands(device, command);
+  const capturedFacet =
+    inverses.length === 0 ? captureReversibleFacetBeforeWrite(host, command) : null;
   const prevBanner = host.replyBanner;
   const devName = deviceDisplayName(host, device);
   const adjustment = isAdjustmentCommand(command);
@@ -856,17 +862,23 @@ export async function executeSingleCommand(
     host.lastManuallyUsedLightId = device.id;
   }
   const habitReceipt = intent ? recordHabits(host, [intent]) : null;
-  const nextUndo: UndoAction | null =
-    inverses.length > 0
-      ? {
-          summary,
-          steps: [{ deviceId: device.id, commands: inverses }],
-          expiresAtMs: Date.now() + 10 * 60 * 1000,
-          habitReceipt: habitReceipt ?? undefined,
-        }
-      : null;
-  if (nextUndo) {
+  let nextUndo: UndoAction | null = null;
+  if (inverses.length > 0) {
+    nextUndo = {
+      summary,
+      steps: [{ deviceId: device.id, commands: inverses }],
+      expiresAtMs: Date.now() + 10 * 60 * 1000,
+      habitReceipt: habitReceipt ?? undefined,
+    };
     recordUndoKindSnapshots(nextUndo, new Map([[device.id, preKind]]));
+  } else if (capturedFacet) {
+    const latestControl = host.deviceFacets?.[capturedFacet.dev.id]?.find(
+      (item) => item.id === capturedFacet.control.id,
+    );
+    if (latestControl && latestControl.value === capturedFacet.restoreValue) {
+      latestControl.value = capturedFacet.nextValue;
+    }
+    nextUndo = buildReversibleFacetUndo(host, capturedFacet, summary, habitReceipt);
   }
   host.lastUndoAction = nextUndo;
   host.replyBanner = { text: summary, source: t("实时控制") };

@@ -357,6 +357,13 @@ describe("Fluent UX & Interaction Holistic Contract", () => {
     const haSecondaryDetails = updatedConnPanel.querySelector<HTMLDetailsElement>("details.cc-conn-secondary");
     assert.ok(haSecondaryDetails);
     assert.equal(haSecondaryDetails.dataset.connSection, "homeAssistant");
+    assert.equal(haSecondaryDetails.open, false);
     assert.ok(haSecondaryDetails.querySelector("#settings-ha-url"));
+
+    const searchInput = element<HTMLInputElement>("#settings-search-input");
+    searchInput.value = "Home Assistant URL";
+    searchInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+    element<HTMLButtonElement>('[data-settings-search-hit="haServerAddress"]').click();
+    assert.equal(haSecondaryDetails.open, true);
   });
 });

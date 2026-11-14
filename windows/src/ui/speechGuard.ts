@@ -16,7 +16,8 @@ import {
   type RaycastCommandFeedback,
   type RaycastSnapshot,
 } from "../core/raycastSnapshot.js";
-import { undoBannerMs, undoDeviceCount, type MenuMijiaWindowsApp } from "./app.js";
+import type { MenuMijiaWindowsApp } from "./app.js";
+import { undoBannerMs, undoDeviceCount } from "./undoTracker.js";
 import type {
   PersistedSettings,
   SpeechRecognitionInstance,
@@ -582,7 +583,7 @@ export function restoreUndoKindSnapshot(action: UndoAction, device: SmartDevice)
 }
 
 export function quickActionScopeDevices(host: MenuMijiaWindowsApp): SmartDevice[] {
-  return foldGrouped(host, filterByListCut(host.devices, host.listCut, false));
+  return foldGrouped(host, filterByListCut(host.devices, host.listCut, false, { layout: host.layout }));
 }
 
 export async function executeBuiltInQuickAction(
@@ -902,14 +903,19 @@ export function scheduleRaycastSnapshotExport(host: MenuMijiaWindowsApp): void {
 export function setRaycastIntegrationEnabled(
   host: MenuMijiaWindowsApp,
   enabled: boolean,
+  options?: { readonly persistSettings?: boolean; readonly render?: boolean },
 ): void {
+  const persistSettings = options?.persistSettings ?? true;
+  const shouldRender = options?.render ?? true;
   const state = hostState(host);
   host.settings.enableRaycastIntegration = enabled;
-  host.saveSettings();
+  if (persistSettings) {
+    host.saveSettings();
+  }
   if (enabled) {
     if (getActiveRaycastBridgeTokenForHost(host) === undefined) {
       // No CSPRNG: `warnBridgeTokenUnavailable` already turned the integration back off.
-      host.render();
+      if (shouldRender) host.render();
       return;
     }
     void exportRaycastSnapshotNow(host, true);
@@ -929,7 +935,9 @@ export function setRaycastIntegrationEnabled(
       void invoke("remove_raycast_snapshot").catch(() => undefined);
     }
   }
-  host.render();
+  if (shouldRender) {
+    host.render();
+  }
 }
 
 function syncDynamicTrayTooltip(host: MenuMijiaWindowsApp): void {

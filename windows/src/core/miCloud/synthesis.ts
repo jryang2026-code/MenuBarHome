@@ -44,6 +44,7 @@ import {
 } from "./facets.js";
 import { facetAlertText, facetValue, genericSymbolName, genericTypeTitle } from "../miotFacetText.js";
 import { percentFromRaw } from "./percentScale.js";
+import { resolveSpeakerActionIds } from "./speakerActions.js";
 
 export function exposesWrite(access: readonly string[] | undefined): boolean {
   return Boolean(access?.includes("write"));
@@ -1443,6 +1444,7 @@ export const MiotSynthesizer = {
           ? "paused"
           : "idle";
       const speakerAddress = makeMiotAddress(did, primaryService.iid);
+      const speakerActions = resolveSpeakerActionIds(did, spec);
       return {
         kind: "speaker",
         mediaEntityId: speakerAddress,
@@ -1454,6 +1456,8 @@ export const MiotSynthesizer = {
           intelligent && exposesWrite(sleep?.prop.access) ? makeMiotAddress(did, intelligent.iid) : null,
         isSleepMode: miotBool(sleep?.val) ?? false,
         volumeWritable: exposesWrite(volume?.prop.access),
+        ttsActionId: speakerActions.ttsActionId,
+        directiveActionId: speakerActions.directiveActionId,
       };
     }
 

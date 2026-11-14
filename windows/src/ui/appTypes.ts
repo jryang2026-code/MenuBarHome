@@ -76,6 +76,7 @@ export interface PersistedSettings {
   /** Per-device choice for 全关; missing means the default (plugs and vacuums stay out) (#23). */
   allOffOverrides: Record<string, boolean>;
   assistantModel: string;
+  askWhenUnsure: boolean;
   habitLearningEnabled: boolean;
   habitShareEnabled: boolean;
   learnedShortcuts: LearnedShortcut[];

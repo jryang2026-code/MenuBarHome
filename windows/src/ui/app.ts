@@ -47,6 +47,7 @@ import {
   PANEL_HEIGHTS,
   applyOrder,
   chosenSize,
+  isDevicePinned,
   moveInOrder,
   pageSections,
   parsePanelPlacement,
@@ -83,7 +84,10 @@ import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
 import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
 import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground } from "./proactive.js";
-import { getHostApplyCommand, markCloudValuesFresh, markCloudValuesStale, setCustomApplyCommand } from "./commandDispatch.js";
+import { bindPersistentUndoEvents, undoTrackerFor } from "./undoTracker.js";
+import { getHostApplyCommand, getUnsupportedLightEffects, markCloudValuesFresh, markCloudValuesStale, pruneUnsupportedLightEffectsOnHost, setCustomApplyCommand } from "./commandDispatch.js";
+import { getSpeakerDrawerItemState } from "./detailDrawers.js";
+import { activeRoomOptions } from "./roomOrderEditor.js";
 import { foldGrouped, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
 import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
 import { clearPersistedMiSessionExpired, persistMiSessionExpired } from "../core/pollingPolicy.js";
@@ -108,14 +112,7 @@ export type PanelHealth =
   | { readonly kind: "degraded"; readonly dot: "is-degraded"; readonly label: string }
   | { readonly kind: "offline"; readonly dot: "is-offline"; readonly label: string; readonly recovery: "qr" | "none" };
 
-/** 10s for one or two devices, 15s from three. Same rule as macOS `HomeStore.undoBannerSeconds`. */
-export function undoBannerMs(deviceCount: number): number {
-  return (deviceCount >= 3 ? 15 : 10) * 1000;
-}
-
-export function undoDeviceCount(steps: readonly { readonly deviceId: string }[]): number {
-  return new Set(steps.map((step) => step.deviceId)).size;
-}
+export { undoBannerMs, undoDeviceCount } from "./undoTracker.js";
 
 export type HaConnectionBlock = "plaintext" | "auth" | "stale" | "none";
 
@@ -164,14 +161,7 @@ export class MenuMijiaWindowsApp {
 
   /** Room buttons keyed by id: two homes may both have a 客厅. */
   public get roomOptions(): RoomOption[] {
-    const seen = new Set<string>();
-    const options: RoomOption[] = [];
-    for (const device of this.devices) {
-      if (!device.roomId || seen.has(device.roomId)) continue;
-      seen.add(device.roomId);
-      options.push({ id: device.roomId, name: device.roomName });
-    }
-    return options;
+    return activeRoomOptions(this);
   }
 
   public selectRoom(roomId: string | null, roomName?: string): void {
@@ -300,8 +290,21 @@ export class MenuMijiaWindowsApp {
   public draggingId: string | null = null;
   public dragPointer: { x: number; y: number; grabX: number; grabY: number } | null = null;
   public lastSwap: { slot: string; at: number } | null = null;
-  public ctxMenu: { x: number; y: number; deviceId?: string; groupId?: string } | null = null;
-  public prompt: { kind: "newGroup"; deviceId: string } | { kind: "renameGroup"; groupId: string } | { kind: "renameDevice"; deviceId: string } | null = null;
+  public ctxMenu: {
+    x: number;
+    y: number;
+    deviceId?: string;
+    groupId?: string;
+    roomTarget?: { readonly roomId: string; readonly originalName: string };
+    kindTarget?: DeviceKindTag;
+    roomBar?: boolean;
+  } | null = null;
+  public prompt:
+    | { kind: "newGroup"; deviceId: string }
+    | { kind: "renameGroup"; groupId: string }
+    | { kind: "renameDevice"; deviceId: string }
+    | { kind: "roomOrderEditor" }
+    | null = null;
   public animateEntrance = false;
   public poppedDeviceId: string | null = null;
   public dimPreview: { id: string; percent: number } | null = null;
@@ -344,7 +347,10 @@ export class MenuMijiaWindowsApp {
     // Alt+Tab hides the popover without a button blur; a hold started before it must not finish.
     const onBlurCancelAllOff = () => this.cancelAllOffHold();
     window.addEventListener("blur", onBlurCancelAllOff);
-    this.appDisposers.push(() => window.removeEventListener("blur", onBlurCancelAllOff));
+    this.appDisposers.push(
+      () => window.removeEventListener("blur", onBlurCancelAllOff),
+      () => undoTrackerFor(this).dispose(),
+    );
     this.bindLayoutGestures();
     this.bindPanelDrag();
     this.bindOpenAnimation();
@@ -483,8 +489,8 @@ export class MenuMijiaWindowsApp {
 
   private get filteredDevices(): SmartDevice[] {
     const query = normalizeSearch(this.panelSearch.query);
-    if (!query) return filterByListCut(this.devices, this.listCut, this.settings.hideOfflineDevices);
-    const candidates = filterByListCut(this.devices, { kind: "all" }, this.settings.hideOfflineDevices);
+    if (!query) return filterByListCut(this.devices, this.listCut, this.settings.hideOfflineDevices, { layout: this.layout });
+    const candidates = filterByListCut(this.devices, { kind: "all" }, this.settings.hideOfflineDevices, { layout: this.layout });
     const byId = new Map(candidates.map((device) => [device.id, device]));
     return this.panelSearchIndex.matches(query, candidates, this.layout.aliases).flatMap((entry) => {
       const device = byId.get(entry.deviceId);
@@ -562,6 +568,8 @@ export class MenuMijiaWindowsApp {
     this.settings.selectedHomeId = id;
     this.isHomeMenuOpen = false;
     this.selectRoom(null);
+    this.lastUndoAction = null;
+    clearUndoHoverPause(this);
     // Invalidate any in-flight cloud refresh from the previous home so it cannot overwrite the new selection.
     this.localControlRevision += 1;
     this.syncGeneration += 1;
@@ -588,7 +596,7 @@ export class MenuMijiaWindowsApp {
   }
 
   public renderKindBar(): string {
-    const chips = kindChips(this.devices, this.listCut, this.settings.hideOfflineDevices);
+    const chips = kindChips(this.devices, this.listCut, this.settings.hideOfflineDevices, { layout: this.layout });
     if (!showsKindRow(chips, this.listCut)) return "";
     const buttons = chips.map((tag) => {
       const chip = KIND_CHIP[tag];
@@ -1127,6 +1135,7 @@ export class MenuMijiaWindowsApp {
   }
 
   public renderDeviceGrid(): string {
+    pruneUnsupportedLightEffectsOnHost(this);
     if (normalizeSearch(this.panelSearch.query)) {
       const results = withAliases(this.layout, this.presentationDevices);
       return results.length
@@ -1235,6 +1244,9 @@ export class MenuMijiaWindowsApp {
       dimPreview: this.dimPreview,
       deviceFacets: this.deviceFacets,
       allowAdvancedFacetWrites: this.settings.allowAdvancedFacetWrites,
+      isPinned: isDevicePinned(dev.id, this.layout),
+      unsupportedLightEffects: getUnsupportedLightEffects(this, dev.id),
+      speakerDrawerState: getSpeakerDrawerItemState(this, dev.id),
       escapeHtml: (v) => this.escapeHtml(v),
     });
   }
@@ -1261,6 +1273,7 @@ export class MenuMijiaWindowsApp {
 
   public bindEvents(): void {
     bindEventsImpl(this);
+    bindPersistentUndoEvents(this);
   }
 
   public bindDeckEvents(): void {
@@ -1298,7 +1311,7 @@ export class MenuMijiaWindowsApp {
   public savePrompt(raw: string): void {
     const name = raw.trim();
     const p = this.prompt;
-    if (!p) return;
+    if (!p || p.kind === "roomOrderEditor") return;
     if (p.kind === "newGroup") {
       if (!name) return;
       const id = `g${Date.now().toString(36)}`;
@@ -1327,8 +1340,9 @@ export class MenuMijiaWindowsApp {
     el.style.translate = `${p.x - p.grabX - r.left}px ${p.y - p.grabY - r.top}px`;
   }
 
-  /** Section of a device on the current page: a user group id or "rest". */
+  /** Section of a device on the current page: "pinned", a user group id, or "rest". */
   private sectionOf(id: string): string {
+    if (this.selectedRoom === "全部" && isDevicePinned(id, this.layout)) return "pinned";
     const g = this.layout.groupMap[id];
     return g && this.layout.groups.some((x) => x.id === g) ? g : "rest";
   }
@@ -1358,9 +1372,9 @@ export class MenuMijiaWindowsApp {
     const slot = `${target}|${after}`;
     if (this.lastSwap?.slot === slot) return;
     this.lastSwap = { slot, at: now };
-    // Dropping beside a card in another group files the dragged card into that group.
     const to = this.sectionOf(target);
-    if (to !== this.sectionOf(dragged)) {
+    const from = this.sectionOf(dragged);
+    if (to !== from && to !== "pinned" && from !== "pinned") {
       if (to === "rest") delete this.layout.groupMap[dragged]; else this.layout.groupMap[dragged] = to;
     }
     this.layout.order = moveInOrder(this.layout.order, this.devices.map((d) => d.id), dragged, target, after);

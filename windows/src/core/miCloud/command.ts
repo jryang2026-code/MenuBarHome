@@ -11,6 +11,7 @@ import {
   type MiotService,
 } from "./spec.js";
 import { rawFromPercent } from "./percentScale.js";
+import { isSpeakerTextAction, mapSpeakerActionInputs } from "./speakerActions.js";
 import { APPLIANCE_SERVICE_NAMES, coverSubtype } from "./synthesis.js";
 
 export type MiotWrite =
@@ -53,8 +54,15 @@ export const MiotCommandMapper = {
       const actionService = spec.services.find((s) => s.iid === action.siid);
       const declared = actionService?.actions.find((a) => a.iid === action.aiid);
       if (!actionService || !declared) throw new Error(`Unsupported action: ${command.entityId}`);
-      const declaredInputs = declared.in ?? [];
       const supplied = command.arguments ?? [];
+      if (isSpeakerTextAction(declared)) {
+        const inputs = mapSpeakerActionInputs(actionService, declared, supplied, command.entityId);
+        return {
+          kind: "action",
+          call: { did: action.did, siid: action.siid, aiid: action.aiid, inputs },
+        };
+      }
+      const declaredInputs = declared.in ?? [];
       if (declaredInputs.length !== supplied.length) {
         throw new Error(
           declaredInputs.length > 0 && supplied.length === 0
