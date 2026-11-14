@@ -35,8 +35,13 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
   - Issue/PR 编号、老号映射与协同脚本：[`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md)
   - Windows 摄像机实时流、go2rtc/FFmpeg 与 Tauri 打包：[`docs/agents/windows-camera.md`](docs/agents/windows-camera.md)
   - 应用内自更新链路与 Ed25519 验签：[`docs/agents/in-app-update.md`](docs/agents/in-app-update.md)
-  - Linux 容器与 Cursor Cloud 检查：[`docs/agents/cursor-cloud.md`](docs/agents/cursor-cloud.md)
+  - Linux 容器与云端环境（Antigravity Cloud / Cursor Cloud）：[`docs/agents/cursor-cloud.md`](docs/agents/cursor-cloud.md)
   - 本地隔离 macOS CI VM 运维：[`docs/agents/local-macos-runner.md`](docs/agents/local-macos-runner.md)
+
+## 技能路由（`pstack` & Matt Pocock `mp-*`）
+
+- **工程执行默认路由 `poteto-mode`**：涉及多文件修改、跨函数/模块签名调整、架构设计、根因未明的 Bug 或性能问题时，先调 `lookup_skill("poteto-mode")` 按对应 Playbook 与原则推进；单文件明确小改或纯问答直接执行并在真实产物上验证。意图已明确时直入专项技能（`how`、`why`、`architect`、`arena`、`swarm`、`interrogate`、`tdd`、`no-comments`、`deslop`、`technical-writing`、`reflect`）。Antigravity Cloud 派发子代理一律使用 `Workspace: "inherit"`、默认 `Model: "inherit"`。
+- **议题分拣、规划拆票与双轴审查**：使用 `mp-*` 套件（`mp-triage`、`mp-wayfinder`、`mp-grill-with-docs`、`mp-to-spec`、`mp-to-tickets`、`mp-implement`、`mp-diagnosing-bugs`、`mp-code-review`、`mp-retro`），与 [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md) 联动。
 
 ## 并发与 Runner 安全红线
 
