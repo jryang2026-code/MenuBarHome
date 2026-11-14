@@ -1,4 +1,11 @@
 import type { DeviceKind, SmartDevice } from "../core/models.js";
+import {
+  applyKindOrder,
+  applyRoomOrder,
+  hiddenDeviceIds,
+  layoutForDevices,
+  type LayoutPrefs,
+} from "./panelPrefs.js";
 
 export type DeviceKindTag = DeviceKind["kind"];
 
@@ -11,6 +18,14 @@ export type DeviceListCut =
 export interface RoomOption {
   readonly id: string;
   readonly name: string;
+}
+
+export interface ListCutFilterOptions {
+  readonly layout?: LayoutPrefs;
+  readonly hiddenIds?: Iterable<string>;
+  readonly includeHidden?: boolean;
+  readonly kindOrder?: readonly string[];
+  readonly roomAliases?: Readonly<Record<string, string>>;
 }
 
 export const KIND_RANK: Record<DeviceKindTag, number> = {
@@ -46,19 +61,51 @@ export const KIND_CHIP: Record<
   generic: { title: "通用", hint: "没有专用卡片、但仍有可用控件的设备" },
 };
 
-function visible(devices: readonly SmartDevice[], hideOffline: boolean): SmartDevice[] {
-  return hideOffline ? devices.filter((dev) => dev.isOnline) : [...devices];
+function resolveHiddenSet(
+  devices: readonly SmartDevice[],
+  options?: ListCutFilterOptions,
+): ReadonlySet<string> | null {
+  if (options?.includeHidden) return null;
+  if (options?.hiddenIds !== undefined) {
+    const set = new Set(options.hiddenIds);
+    return set.size > 0 ? set : null;
+  }
+  const layout = options?.layout ?? layoutForDevices(devices);
+  if (!layout) return null;
+  const ids = hiddenDeviceIds(layout);
+  return ids.length > 0 ? new Set(ids) : null;
+}
+
+function visible(
+  devices: readonly SmartDevice[],
+  hideOffline: boolean,
+  hiddenSet: ReadonlySet<string> | null,
+): SmartDevice[] {
+  return devices.filter((dev) => {
+    if (hiddenSet?.has(dev.id)) return false;
+    if (hideOffline && !dev.isOnline) return false;
+    return true;
+  });
 }
 
 export function filterByListCut(
   devices: readonly SmartDevice[],
   cut: DeviceListCut,
   hideOffline: boolean,
+  options?: ListCutFilterOptions,
 ): SmartDevice[] {
-  return visible(devices, hideOffline).filter((dev) => {
+  const hiddenSet = resolveHiddenSet(devices, options);
+  const layout = options?.roomAliases !== undefined ? null : (options?.layout ?? layoutForDevices(devices));
+  const roomAliases = options?.roomAliases ?? layout?.roomAliases;
+  const filtered = visible(devices, hideOffline, hiddenSet).filter((dev) => {
     if (cut.kind === "room") return dev.roomId === cut.roomId;
     if (cut.kind === "deviceKind") return dev.kind.kind === cut.tag;
     return true;
+  });
+  if (!roomAliases || Object.keys(roomAliases).length === 0) return filtered;
+  return filtered.map((dev) => {
+    const alias = dev.roomId ? roomAliases[dev.roomId]?.trim() : undefined;
+    return alias && alias !== dev.roomName ? { ...dev, roomName: alias } : dev;
   });
 }
 
@@ -94,10 +141,22 @@ export function kindChips(
   devices: readonly SmartDevice[],
   cut: DeviceListCut,
   hideOffline: boolean,
+  options?: ListCutFilterOptions,
 ): DeviceKindTag[] {
-  const tags = new Set(visible(devices, hideOffline).map((dev) => dev.kind.kind));
+  const hiddenSet = resolveHiddenSet(devices, options);
+  const tags = new Set(visible(devices, hideOffline, hiddenSet).map((dev) => dev.kind.kind));
   if (cut.kind === "deviceKind") tags.add(cut.tag);
-  return [...tags].sort((a, b) => KIND_RANK[a] - KIND_RANK[b]);
+  const layout = options?.kindOrder !== undefined ? null : (options?.layout ?? layoutForDevices(devices));
+  const customKindOrder = options?.kindOrder ?? layout?.kindOrder;
+  return applyKindOrder(customKindOrder, [...tags], KIND_RANK);
+}
+
+/** Applies saved `roomOrder` and local `roomAliases` to `RoomOption[]`. */
+export function orderAndAliasRooms(
+  rooms: readonly RoomOption[],
+  prefs: Pick<LayoutPrefs, "roomOrder" | "roomAliases"> | null | undefined,
+): RoomOption[] {
+  return applyRoomOrder(prefs, rooms);
 }
 
 export function showsKindRow(chips: readonly DeviceKindTag[], cut: DeviceListCut): boolean {

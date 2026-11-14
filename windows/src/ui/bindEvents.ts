@@ -23,13 +23,13 @@ import {
 } from "../core/models.js";
 import {
   type PanelHeight,
-  type TileSize,
   DEFAULT_GLOBAL_SHORTCUT,
   PANEL_ANCHORS,
   applyPanelOpacity,
   localizeFanMode,
   nextSize,
   normalizePanelOpacity,
+  normalizeTileSize,
   scopedKey,
   withAliases,
 } from "./panelPrefs.js";
@@ -59,6 +59,10 @@ import { facetTitle, facetValue } from "../core/miotFacetText.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { normalizeSearch } from "../core/panelSearch.js";
 import { bindPanelInput, finishPanelComposition } from "./panelKeyboard.js";
+import {
+  bindRoomOrderEditorEvents,
+  setCustomContextMenuTarget,
+} from "./roomOrderEditor.js";
 
 function confirmHighRiskForHost(
   host: MenuMijiaWindowsApp,
@@ -204,6 +208,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     host.root.querySelectorAll<HTMLElement>("[data-close-menus]").forEach((el) => {
       el.addEventListener("pointerdown", (e) => {
         e.preventDefault();
+        setCustomContextMenuTarget(host, null);
         host.isHomeMenuOpen = false;
         host.ctxMenu = null;
         host.render();
@@ -224,6 +229,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         const gid = btn.dataset.groupId;
         if (!gid) return;
         e.preventDefault();
+        setCustomContextMenuTarget(host, null);
         host.ctxMenu = { x: e.clientX, y: e.clientY, groupId: gid };
         host.render();
       });
@@ -251,12 +257,13 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         const id = sep > 0 ? raw.slice(0, sep) : "";
         const size = sep > 0 ? raw.slice(sep + 1) : "";
         if (!id || !size) return;
-        host.layout.tileSizes[scopedKey(host.pageKey, id)] = size as TileSize;
+        host.layout.tileSizes[scopedKey(host.pageKey, id)] = normalizeTileSize(size);
         host.saveLayout();
         host.ctxMenu = null;
         host.render();
       });
     });
+    bindRoomOrderEditorEvents(host);
     host.root.querySelectorAll<HTMLElement>("[data-set-group]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const raw = btn.dataset.setGroup ?? "";

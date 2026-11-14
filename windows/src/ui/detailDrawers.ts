@@ -767,6 +767,107 @@ export function bindDetailDrawerEvents(
 
   filterUnsupportedLightEffectPills(host);
   mountAndBindSpeakerCommandBars(host);
+  bindCollapsedInlineSliders(host);
+}
+
+function bindCollapsedInlineSliders(host: MenuMijiaWindowsApp): void {
+  host.root.querySelectorAll<HTMLElement>("[data-inline-slider-wrap]").forEach((wrap) => {
+    wrap.addEventListener("pointerdown", (e) => {
+      host.pointerIsDown = true;
+      e.stopPropagation();
+    });
+    wrap.addEventListener("click", (e) => {
+      e.stopPropagation();
+    });
+  });
+
+  host.root
+    .querySelectorAll<HTMLInputElement>('input[type="range"][data-inline-slider]')
+    .forEach((slider) => {
+      slider.addEventListener("pointerdown", () => {
+        host.pointerIsDown = true;
+      });
+      slider.addEventListener("click", (e) => {
+        e.stopPropagation();
+      });
+      slider.addEventListener("input", () => {
+        host.pointerIsDown = true;
+        const min = Number(slider.min || "0");
+        const max = Number(slider.max || "100");
+        const pct = Math.max(min, Math.min(max, Math.round(Number(slider.value))));
+        slider.setAttribute("aria-valuenow", String(pct));
+        slider.setAttribute("aria-valuetext", `${pct}%`);
+        const wrap = slider.closest<HTMLElement>(".cc-inline-slider-wrap");
+        const valEl = wrap?.querySelector<HTMLElement>(".cc-inline-slider-val");
+        if (valEl) valEl.textContent = `${pct}%`;
+        if (slider.dataset.inlineBrightness) {
+          const tile = slider.closest<HTMLElement>("[data-tile-id]");
+          const fillEl = tile?.querySelector<HTMLElement>(".cc-tile-fill");
+          if (fillEl) fillEl.style.width = `${pct}%`;
+        }
+      });
+      slider.addEventListener("change", () => {
+        host.pointerIsDown = false;
+        queueMicrotask(() => {
+          if (!host.pointerIsDown && host.pendingCloudRender) {
+            host.queueBackgroundRender();
+          }
+        });
+        const id = slider.dataset.inlineSlider ?? "";
+        const dev = host.devices.find((d) => d.id === id);
+        if (!dev || !dev.isOnline) return;
+        if (
+          slider.dataset.inlineBrightness &&
+          dev.kind.kind === "light" &&
+          dev.kind.brightnessWritable !== false
+        ) {
+          const percent = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
+          void host.executeSingleCommand(
+            dev,
+            { kind: "setLightBrightness", entityId: dev.kind.entityId, percent },
+            t("已将{name}亮度设为 {percent}%", { name: dev.name, percent }),
+            { targetId: dev.id, operation: { kind: "brightness", percent } },
+          );
+          return;
+        }
+        if (slider.dataset.inlineCoverpos && dev.kind.kind === "cover" && dev.kind.positionWritable) {
+          const clamped = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
+          const displayed = snapCoverPosition(clamped);
+          const command: DeviceCommand = {
+            kind: "setNumberValue",
+            entityId: dev.kind.entityId,
+            value: clamped,
+          };
+          const summary = t("已将{name}位置设为 {percent}%", {
+            name: dev.name,
+            percent: displayed,
+          });
+          void host.executeSingleCommand(dev, command, summary);
+          return;
+        }
+        if (
+          slider.dataset.inlineFanpercent &&
+          dev.kind.kind === "fan" &&
+          dev.kind.speedWritable !== false
+        ) {
+          const percent = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
+          void host.executeSingleCommand(
+            dev,
+            { kind: "setFanPercentage", entityId: dev.kind.entityId, percent },
+            t("已将{name}风速设为 {speed}", { name: dev.name, speed: `${percent}%` }),
+          );
+          return;
+        }
+        if (slider.dataset.inlineVolume && dev.kind.kind === "speaker" && dev.kind.volumeWritable) {
+          const percent = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
+          void host.executeSingleCommand(
+            dev,
+            { kind: "mediaSetVolume", entityId: dev.kind.mediaEntityId, level: percent / 100 },
+            t("已将{name}音量设为 {percent}%", { name: dev.name, percent }),
+          );
+        }
+      });
+    });
 }
 
 function tr3(

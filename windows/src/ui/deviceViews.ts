@@ -25,8 +25,10 @@ import {
 import {
   TILE_SIZES,
   comfort,
+  isRenderedDevicePinned,
   localizeEffect,
   localizeFanMode,
+  tr3,
   type TileSize,
 } from "./panelPrefs.js";
 import {
@@ -978,25 +980,186 @@ export interface DeviceTileViewState {
   readonly dimPreview: { readonly id: string; readonly percent: number } | null;
   readonly deviceFacets: Readonly<Record<string, readonly FacetControl[]>>;
   readonly allowAdvancedFacetWrites: boolean;
+  readonly isPinned?: boolean;
   readonly escapeHtml: (value: string) => string;
+}
+
+function renderPinStarBadge(pinned: boolean, escape: (value: string) => string): string {
+  if (!pinned) return "";
+  const label = tr3("常用设备", "常用設備", "Favorite");
+  return `<span class="cc-tile-pin-badge" title="${escape(label)}" aria-label="${escape(label)}">★</span>`;
+}
+
+function renderInlineRangeRow(options: {
+  readonly id: string;
+  readonly icon: string;
+  readonly rangeClass: string;
+  readonly min: number;
+  readonly max: number;
+  readonly val: number;
+  readonly dataAttr: string;
+  readonly ariaLabel: string;
+  readonly disabledAttr: string;
+}): string {
+  const { id, icon, rangeClass, min, max, val, dataAttr, ariaLabel, disabledAttr } = options;
+  return `<div class="cc-inline-slider-wrap" data-inline-slider-wrap="${id}">
+      <span class="cc-inline-slider-icon" aria-hidden="true">${icon}</span>
+      <input class="cc-range cc-inline-range ${rangeClass}" type="range" min="${min}" max="${max}" step="1" value="${val}" data-inline-slider="${id}" ${dataAttr}="${id}" aria-label="${ariaLabel}" aria-valuemin="${min}" aria-valuemax="${max}" aria-valuenow="${val}" aria-valuetext="${val}%"${disabledAttr} />
+      <strong class="cc-inline-slider-val">${val}%</strong>
+    </div>`;
+}
+
+function renderCollapsedInlineSlider(options: {
+  readonly dev: SmartDevice;
+  readonly size: Exclude<TileSize, "auto">;
+  readonly isExpanded: boolean;
+  readonly isOn: boolean;
+  readonly readout: string;
+  readonly dim: number | null;
+  readonly isEditingLayout: boolean;
+  readonly escape: (value: string) => string;
+}): string {
+  const { dev, size, isExpanded, isOn, readout, dim, isEditingLayout, escape } = options;
+  if ((size !== "full" && size !== "hero") || isExpanded || !dev.isOnline || readout === "possiblyStale") {
+    return "";
+  }
+  const id = escape(dev.id);
+  const disabledAttr = isEditingLayout ? ' disabled aria-disabled="true"' : "";
+  const k = dev.kind;
+
+  if (k.kind === "light" && isOn && k.brightnessWritable !== false) {
+    const val = Math.max(1, Math.min(100, Math.round(dim ?? (k.brightnessPercent ?? 80))));
+    return renderInlineRangeRow({
+      id,
+      icon: SF_ICONS.sunMaxFill,
+      rangeClass: "is-amber",
+      min: 1,
+      max: 100,
+      val,
+      dataAttr: "data-inline-brightness",
+      ariaLabel: escape(`${dev.name} ${t("亮度")}`),
+      disabledAttr,
+    });
+  }
+
+  if (k.kind === "cover" && k.positionWritable && k.subtype !== "garage-door") {
+    const pos = Math.max(0, Math.min(100, Math.round(k.positionPercent ?? 0)));
+    const posTitle = k.subtype === "clothes-airer" ? t("升降高度") : t("开合位置");
+    const icon = k.subtype === "clothes-airer" ? DEVICE_ICONS.clothesAirer : DEVICE_ICONS.curtainOpen;
+    return renderInlineRangeRow({
+      id,
+      icon,
+      rangeClass: "is-blue",
+      min: 0,
+      max: 100,
+      val: pos,
+      dataAttr: "data-inline-coverpos",
+      ariaLabel: escape(`${dev.name} ${posTitle}`),
+      disabledAttr,
+    });
+  }
+
+  if (size === "hero") {
+    if (k.kind === "fan" && isOn && k.speedWritable !== false && k.percentage !== null) {
+      const pct = Math.max(1, Math.min(100, Math.round(k.percentage)));
+      return renderInlineRangeRow({
+        id,
+        icon: SF_ICONS.fanbladesFill,
+        rangeClass: "is-blue",
+        min: 1,
+        max: 100,
+        val: pct,
+        dataAttr: "data-inline-fanpercent",
+        ariaLabel: escape(`${dev.name} ${t("风速")}`),
+        disabledAttr,
+      });
+    }
+    if (k.kind === "speaker" && isOn && k.volumeWritable) {
+      const vol = Math.max(0, Math.min(100, Math.round(k.volumePercent)));
+      return renderInlineRangeRow({
+        id,
+        icon: SF_ICONS.speakerFill,
+        rangeClass: "",
+        min: 0,
+        max: 100,
+        val: vol,
+        dataAttr: "data-inline-volume",
+        ariaLabel: escape(`${dev.name} ${t("音量")}`),
+        disabledAttr,
+      });
+    }
+    if (k.kind === "vacuum" && k.actionsWritable !== false) {
+      const status = k.status.toLowerCase();
+      return `<div class="cc-hero-primary-bar"><div class="cc-segmented-pills">
+          <button class="cc-seg-pill ${status === "cleaning" ? "is-active" : ""}" data-vacuumaction="${id}|start"${disabledAttr}>${t("开始清扫")}</button>
+          <button class="cc-seg-pill ${status === "paused" ? "is-active" : ""}" data-vacuumaction="${id}|pause"${disabledAttr}>${t("暂停")}</button>
+          <button class="cc-seg-pill ${status === "returning" ? "is-active" : ""}" data-vacuumaction="${id}|returnToBase"${disabledAttr}>${t("回充")}</button>
+        </div></div>`;
+    }
+  }
+  return "";
+}
+
+function renderSmallDeviceTile(options: {
+  readonly dev: SmartDevice;
+  readonly state: DeviceTileViewState;
+  readonly attrs: string;
+  readonly motion: string;
+  readonly badge: string;
+  readonly pinned: boolean;
+  readonly readout: string;
+  readonly isOn: boolean;
+  readonly palette: string;
+  readonly svg: string;
+  readonly writable: boolean;
+  readonly hasDrawer: boolean;
+  readonly shownSubtitle: string;
+}): string {
+  const { dev, state, attrs, motion, badge, pinned, readout, isOn, palette, svg, writable, hasDrawer, shownSubtitle } = options;
+  const escape = state.escapeHtml;
+  const id = escape(dev.id);
+  const kind = dev.kind.kind;
+  const actionHint =
+    kind === "camera"
+      ? t("点击放大打开摄像机实时画面")
+      : writable && kind !== "fridge"
+        ? t("点击直接切换开关")
+        : hasDrawer
+          ? t("点击展开精细调节")
+          : t("只读");
+  const tooltip = `${dev.name} · ${shownSubtitle}（${actionHint}）`;
+  const ariaLabel = `${dev.name}，${shownSubtitle}`;
+  const staleClass = readout === "possiblyStale" ? "is-stale" : "";
+  const actionAttr =
+    kind === "camera"
+      ? `data-body-device="${id}"`
+      : writable && kind !== "fridge"
+        ? `data-toggle-device="${id}"`
+        : hasDrawer
+          ? `data-expand-device="${id}"`
+          : "";
+
+  const inner = actionAttr
+    ? `<button type="button" class="cc-small-tile-btn" ${actionAttr} title="${escape(tooltip)}" aria-label="${escape(ariaLabel)}" aria-pressed="${isOn}"><span class="cc-tile-orb">${svg}</span><span class="cc-small-tile-dot" aria-hidden="true"></span></button>`
+    : `<span class="cc-small-tile-btn is-readonly" role="img" title="${escape(tooltip)}" aria-label="${escape(ariaLabel)}"><span class="cc-tile-orb">${svg}</span></span>`;
+
+  return `<div class="cc-tile is-size-small ${palette} ${isOn ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="small" ${attrs}>${renderPinStarBadge(pinned, escape)}${badge}${inner}</div>`;
 }
 
 export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): string {
   const size = state.size;
   const escape = state.escapeHtml;
-  const attrs = `data-tile-id="${escape(dev.id)}" style="grid-column: span ${state.span}; --i: ${Math.min(state.index, 12)}; --jd: -${Math.round((performance.now() + (state.index * 137) % 560) % 560)}ms"`;
-  const motion = `${state.animateEntrance ? "is-entering" : ""} ${state.poppedDeviceId === dev.id ? "is-popped" : ""} ${state.draggingId === dev.id ? "is-dragging" : ""}`;
+  const isExpanded = state.expandedDeviceId === dev.id || size === "panel";
+  const pinned = state.isPinned ?? isRenderedDevicePinned(dev);
+  const effectiveSpan = size === "small" && !isExpanded ? 2 : state.span;
+  const attrs = `data-tile-id="${escape(dev.id)}" style="grid-column: span ${effectiveSpan}; --i: ${Math.min(state.index, 12)}; --jd: -${Math.round((performance.now() + (state.index * 137) % 560) % 560)}ms"`;
+  const sizeClass = `is-size-${size}`;
+  const motion = `${sizeClass} ${state.animateEntrance ? "is-entering" : ""} ${state.poppedDeviceId === dev.id ? "is-popped" : ""} ${state.draggingId === dev.id ? "is-dragging" : ""}`;
   const sizeTitle = TILE_SIZES.find((item) => item.id === size)?.title ?? "";
   const badge = state.isEditingLayout
     ? `<button class="cc-resize-handle" data-resize-handle="${escape(dev.id)}" data-cycle-size="${escape(dev.id)}" data-tile-size="${size}" title="${t("切换卡片大小")}：${sizeTitle}" aria-label="${t("切换卡片大小")}，${sizeTitle}"><svg class="cc-resize-arc" viewBox="0 0 28 28" aria-hidden="true"><path d="M 22 10 A 12 12 0 0 1 10 22" /></svg></button>`
     : "";
-  if (dev.kind.kind === "sensor" && (dev.kind.temperature !== null || dev.kind.humidity !== null)) {
-    return renderSensorCard(dev, dev.kind, state.span < 6, attrs, motion, badge, state.selectedRoom, state.valuesAreStale, escape);
-  }
-  if (dev.kind.kind === "climate" && size !== "half") {
-    return renderClimateStrip(dev, dev.kind, size === "panel", attrs, motion, badge, state.expandedDeviceId, state.selectedRoom, state.valuesAreStale, state.waitingDeviceIds, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk);
-  }
-  const isExpanded = state.expandedDeviceId === dev.id || size === "panel";
+
   const readout = deviceReadout(state.waitingDeviceIds.has(dev.id), state.valuesAreStale);
   const isOn = devicePresentsAsActive(dev, readout === "possiblyStale");
   const kind = dev.kind.kind;
@@ -1021,13 +1184,44 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
       : dim !== null
         ? t("亮度 {percent}%", { percent: dim })
         : subtitle;
+
+  if (size === "small" && !isExpanded) {
+    return renderSmallDeviceTile({
+      dev,
+      state,
+      attrs,
+      motion: `${state.animateEntrance ? "is-entering" : ""} ${state.poppedDeviceId === dev.id ? "is-popped" : ""} ${state.draggingId === dev.id ? "is-dragging" : ""}`,
+      badge,
+      pinned,
+      readout,
+      isOn,
+      palette,
+      svg,
+      writable,
+      hasDrawer,
+      shownSubtitle,
+    });
+  }
+
+  if (dev.kind.kind === "sensor" && (dev.kind.temperature !== null || dev.kind.humidity !== null)) {
+    return renderSensorCard(dev, dev.kind, state.span < 6, `data-tile-size="${size}" ${attrs}`, motion, `${renderPinStarBadge(pinned, escape)}${badge}`, state.selectedRoom, state.valuesAreStale, escape);
+  }
+  if (dev.kind.kind === "climate" && size !== "half") {
+    return renderClimateStrip(dev, dev.kind, size === "panel", `data-tile-size="${size}" ${attrs}`, motion, `${renderPinStarBadge(pinned, escape)}${badge}`, state.expandedDeviceId, state.selectedRoom, state.valuesAreStale, state.waitingDeviceIds, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk);
+  }
+
   const staleClass = readout === "possiblyStale" ? "is-stale" : "";
   const isSubpage = state.expandedDeviceId === dev.id && size !== "panel" && hasDrawer;
   const isCapsule = state.span < 6 && !isExpanded;
+  const roomHeroPill =
+    size === "hero" && dev.roomName
+      ? `<span class="cc-hero-room-pill">${escape(dev.roomName)}</span>`
+      : "";
 
   if (isCapsule) {
     return `
-      <div class="cc-tile is-capsule ${palette} ${isOn ? "is-active" : ""} ${dim !== null ? "is-dimming" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" ${attrs}>
+      <div class="cc-tile is-capsule ${palette} ${isOn ? "is-active" : ""} ${dim !== null ? "is-dimming" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" ${attrs}>
+        ${renderPinStarBadge(pinned, escape)}
         ${badge}
         <div class="cc-tile-header win-capsule-stack">
           <div class="win-split-pill ${hasDrawer ? "has-expand" : ""}">
@@ -1081,7 +1275,8 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
 
   if (isSubpage) {
     return `
-      <div class="cc-tile is-expanded is-subpage is-span-row ${palette} ${isOn ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" ${attrs}>
+      <div class="cc-tile is-expanded is-subpage is-span-row ${palette} ${isOn ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" ${attrs}>
+        ${renderPinStarBadge(pinned, escape)}
         ${badge}
         <div class="cc-tile-header win-subpage-header">
           <button
@@ -1100,7 +1295,10 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
             aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
             aria-pressed="${isOn}"
           >
-            <div class="cc-tile-name">${escape(dev.name)}</div>
+            <div class="cc-tile-title-row">
+              <div class="cc-tile-name">${escape(dev.name)}</div>
+              ${roomHeroPill}
+            </div>
             <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>
           </button>
           ${
@@ -1127,9 +1325,21 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
     `;
   }
 
+  const inlineSlider = renderCollapsedInlineSlider({
+    dev,
+    size,
+    isExpanded,
+    isOn,
+    readout,
+    dim,
+    isEditingLayout: state.isEditingLayout,
+    escape,
+  });
+
   return `
-      <div class="cc-tile is-span-row ${palette} ${isOn ? "is-active" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" ${attrs}>
+      <div class="cc-tile is-span-row ${palette} ${isOn ? "is-active" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${inlineSlider ? "has-inline-slider" : ""} ${motion}" data-tile-size="${size}" ${attrs}>
         ${fill > 0 ? `<span class="cc-tile-fill" style="width:${fill}%"></span>` : ""}
+        ${renderPinStarBadge(pinned, escape)}
         ${badge}
         <div class="cc-tile-header">
           ${
@@ -1158,7 +1368,10 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
             aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
             aria-pressed="${isOn}"
           >
-            <div class="cc-tile-name">${escape(dev.name)}</div>
+            <div class="cc-tile-title-row">
+              <div class="cc-tile-name">${escape(dev.name)}</div>
+              ${roomHeroPill}
+            </div>
             <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>
           </button>
 
@@ -1176,6 +1389,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
               : ""
           }
         </div>
+        ${inlineSlider}
         ${
           isExpanded && hasDrawer
             ? renderDeviceDrawer(dev, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk)

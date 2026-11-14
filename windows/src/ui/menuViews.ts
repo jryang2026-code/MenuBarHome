@@ -1,9 +1,23 @@
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
 import { MI_CLOUD_REGIONS, normalizeMiCloudRegion } from "../core/miCloudClient.js";
-import { TILE_SIZES, chosenSize } from "./panelPrefs.js";
+import {
+  TILE_SIZES,
+  chosenSize,
+  isDevicePinned,
+  pinnedDeviceIds,
+  roomDisplayName,
+  tr3,
+} from "./panelPrefs.js";
+import { KIND_CHIP } from "./listCut.js";
 import { SF_ICONS } from "./appConstants.js";
 import { renderSettingsModal as renderSettingsModalView } from "./settingsViews.js";
+import {
+  getCustomContextMenuTarget,
+  isRoomOrderEditorOpen,
+  renderRoomOrderEditorModal,
+  snapshotRoomsForHost,
+} from "./roomOrderEditor.js";
 
 export function renderHomeMenu(host: MenuMijiaWindowsApp): string {
     if (!host.isHomeMenuOpen || host.homes.length < 2) return "";
@@ -23,7 +37,7 @@ export function renderHomeMenu(host: MenuMijiaWindowsApp): string {
 export function renderContextMenu(host: MenuMijiaWindowsApp): string {
     const m = host.ctxMenu;
     if (!m) return "";
-    const pos = `left:${Math.min(m.x, window.innerWidth - 230)}px; top:${Math.min(m.y, window.innerHeight - 260)}px`;
+    const pos = `left:${Math.max(8, Math.min(m.x, window.innerWidth - 246))}px; top:${Math.max(8, Math.min(m.y, window.innerHeight - 350))}px`;
     if (m.groupId) {
       const g = host.layout.groups.find((x) => x.id === m.groupId);
       if (!g) return "";
@@ -39,11 +53,54 @@ export function renderContextMenu(host: MenuMijiaWindowsApp): string {
           <button class="cc-menu-item is-danger" data-group-action="delete:${gid}">${t("删除分组")}</button>
         </div>`;
     }
+    if (!m.deviceId) {
+      const target = getCustomContextMenuTarget(host);
+      if (!target) return "";
+      if (target.kind === "room") {
+        const rid = host.escapeHtml(target.roomId);
+        const shown = roomDisplayName(host.layout, target.roomId, target.originalName);
+        const canMove = snapshotRoomsForHost(host.devices).length >= 2;
+        return `
+          <div class="cc-menu-scrim" data-close-menus></div>
+          <div class="cc-menu" style="${pos}">
+            <div class="cc-menu-title">${host.escapeHtml(shown)}</div>
+            <button class="cc-menu-item" data-open-room-rename="${rid}">${host.escapeHtml(tr3("重命名房间…", "重新命名房間…", "Rename Room…"))}</button>
+            ${
+              canMove
+                ? `<button class="cc-menu-item" data-quick-room-move="${rid}:-1">${host.escapeHtml(tr3("向前移动房间", "向前移動房間", "Move Room Earlier"))}</button>
+                   <button class="cc-menu-item" data-quick-room-move="${rid}:1">${host.escapeHtml(tr3("向后移动房间", "向後移動房間", "Move Room Later"))}</button>`
+                : ""
+            }
+            <div class="cc-menu-sep"></div>
+            <button class="cc-menu-item" data-open-room-editor="rooms">${host.escapeHtml(tr3("调整房间与分类顺序…", "調整房間與分類順序…", "Reorder Rooms & Categories…"))}</button>
+          </div>`;
+      }
+      if (target.kind === "kind") {
+        const chipTitle = t(KIND_CHIP[target.tag].title);
+        return `
+          <div class="cc-menu-scrim" data-close-menus></div>
+          <div class="cc-menu" style="${pos}">
+            <div class="cc-menu-title">${host.escapeHtml(chipTitle)}</div>
+            <button class="cc-menu-item" data-open-room-editor="kinds">${host.escapeHtml(tr3("调整设备分类顺序…", "調整設備分類順序…", "Reorder Category Pills…"))}</button>
+            <button class="cc-menu-item" data-open-room-editor="rooms">${host.escapeHtml(tr3("调整房间与重命名…", "調整房間與重新命名…", "Reorder & Rename Rooms…"))}</button>
+          </div>`;
+      }
+      return `
+        <div class="cc-menu-scrim" data-close-menus></div>
+        <div class="cc-menu" style="${pos}">
+          <div class="cc-menu-title">${host.escapeHtml(tr3("房间与分类栏", "房間與分類欄", "Rooms & Categories"))}</div>
+          <button class="cc-menu-item" data-open-room-editor="rooms">${host.escapeHtml(tr3("调整房间与重命名…", "調整房間與重新命名…", "Reorder & Rename Rooms…"))}</button>
+          <button class="cc-menu-item" data-open-room-editor="kinds">${host.escapeHtml(tr3("调整设备分类顺序…", "調整設備分類順序…", "Reorder Category Pills…"))}</button>
+        </div>`;
+    }
     const dev = host.devices.find((d) => d.id === m.deviceId);
     if (!dev) return "";
     const id = host.escapeHtml(dev.id);
     const size = chosenSize(host.layout, host.pageKey, dev.id);
     const current = host.layout.groupMap[dev.id];
+    const pinned = isDevicePinned(dev.id, host.layout);
+    const pinnedList = pinnedDeviceIds(host.layout);
+    const pinIdx = pinnedList.indexOf(dev.id);
     return `
       <div class="cc-menu-scrim" data-close-menus></div>
       <div class="cc-menu" style="${pos}">
@@ -59,12 +116,29 @@ export function renderContextMenu(host: MenuMijiaWindowsApp): string {
           <button class="cc-menu-chip is-add" data-new-group="${id}">${t("＋ 新建")}</button>
         </div>
         <div class="cc-menu-sep"></div>
+        <button class="cc-menu-item ${pinned ? "is-checked" : ""}" data-toggle-pin="${id}">
+          <span>${host.escapeHtml(pinned ? tr3("取消常用（置顶）", "取消常用（置頂）", "Remove from Favorites") : tr3("设为常用（置顶）", "設為常用（置頂）", "Pin to Favorites"))}</span>
+        </button>
+        ${
+          pinned && pinnedList.length > 1
+            ? `<div class="cc-menu-chips">
+                <button class="cc-menu-chip" data-move-pin="${id}:-1" ${pinIdx <= 0 ? "disabled" : ""}>${host.escapeHtml(tr3("↑ 常用前移", "↑ 常用前移", "↑ Move Earlier"))}</button>
+                <button class="cc-menu-chip" data-move-pin="${id}:1" ${pinIdx >= pinnedList.length - 1 ? "disabled" : ""}>${host.escapeHtml(tr3("↓ 常用后移", "↓ 常用後移", "↓ Move Later"))}</button>
+              </div>`
+            : ""
+        }
         <button class="cc-menu-item" data-rename-device="${id}">${t("重命名…")}</button>
+        <button class="cc-menu-item" data-open-room-editor="rooms">${host.escapeHtml(tr3("调整房间与分类顺序…", "調整房間與分類順序…", "Reorder Rooms & Categories…"))}</button>
         <button class="cc-menu-item" data-start-editing>${t("编辑布局")}</button>
+        <div class="cc-menu-sep"></div>
+        <button class="cc-menu-item is-danger" data-hide-device="${id}">${host.escapeHtml(tr3("隐藏此设备", "隱藏此設備", "Hide This Device"))}</button>
       </div>`;
   }
 
 export function renderPrompt(host: MenuMijiaWindowsApp): string {
+    if (isRoomOrderEditorOpen(host)) {
+      return renderRoomOrderEditorModal(host);
+    }
     const p = host.prompt;
     if (!p) return "";
     let title = t("新建分组");

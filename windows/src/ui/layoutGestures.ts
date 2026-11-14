@@ -1,7 +1,12 @@
 import { t } from "../core/i18n.js";
 import type { DeviceCommand, DeviceIntent, SmartDevice } from "../core/models.js";
+import { KIND_CHIP, type DeviceKindTag } from "./listCut.js";
 import {
+  isDevicePinned,
+  moveInOrder,
+  pinnedDeviceIds,
   projectedOffset,
+  registerLayoutHost,
   releaseVelocity,
   scopedKey,
   targetSize,
@@ -9,6 +14,7 @@ import {
   type TileSize,
 } from "./panelPrefs.js";
 import type { PersistedSettings } from "./appTypes.js";
+import { setCustomContextMenuTarget, snapshotRoomsForHost } from "./roomOrderEditor.js";
 
 export interface LayoutGestureHost {
   readonly root: HTMLElement;
@@ -41,6 +47,7 @@ export interface LayoutGestureHost {
 }
 
   export function bindLayoutGestures(host: LayoutGestureHost): void {
+    registerLayoutHost(host);
     let press: { id: string; x: number; y: number; timer: number; dimming: boolean; el: HTMLElement } | null = null;
     let resizing: {
       id: string;
@@ -139,7 +146,7 @@ export interface LayoutGestureHost {
         return;
       }
       const el = (e.target as HTMLElement).closest<HTMLElement>("[data-tile-id]");
-      if (!el || (e.target as HTMLElement).closest(".cc-resize-handle, input")) return;
+      if (!el || (e.target as HTMLElement).closest(".cc-resize-handle, .cc-inline-slider-wrap, .cc-hero-primary-bar, input")) return;
       const id = el.dataset.tileId as string;
       const timer = host.isEditingLayout
         ? 0
@@ -185,7 +192,21 @@ export interface LayoutGestureHost {
       if (host.draggingId) {
         if (host.dragPointer) { host.dragPointer.x = e.clientX; host.dragPointer.y = e.clientY; }
         host.applyDragOffset();
+        const prevSlot = host.lastSwap?.slot ?? null;
+        const draggedId = host.draggingId;
         host.swapIfNeeded(e.clientX, e.clientY);
+        const nextSlot = host.lastSwap?.slot ?? null;
+        if (nextSlot && nextSlot !== prevSlot && isDevicePinned(draggedId, host.layout)) {
+          const sep = nextSlot.lastIndexOf("|");
+          const targetId = sep > 0 ? nextSlot.slice(0, sep) : "";
+          const after = sep > 0 && nextSlot.slice(sep + 1) === "true";
+          if (targetId && isDevicePinned(targetId, host.layout)) {
+            const pins = pinnedDeviceIds(host.layout);
+            host.layout.pinnedDeviceIds = moveInOrder(pins, pins, draggedId, targetId, after);
+            host.saveLayout();
+            host.render();
+          }
+        }
         return;
       }
       if (host.isEditingLayout) {
@@ -196,9 +217,11 @@ export interface LayoutGestureHost {
         return;
       }
       const dev = host.devices.find((d) => d.id === press?.id);
-      const isExpanded = dev ? (host.expandedDeviceId === dev.id || host.tileSize(dev) === "panel") : false;
+      const tileSz = dev ? host.tileSize(dev) : "half";
+      const isExpanded = dev ? (host.expandedDeviceId === dev.id || tileSz === "panel") : false;
       const canDim =
         !isExpanded &&
+        tileSz !== "small" &&
         dev?.kind.kind === "light" &&
         dev.isOnline &&
         dev.kind.brightnessWritable !== false;
@@ -284,10 +307,44 @@ export interface LayoutGestureHost {
     }, true);
 
     host.root.addEventListener("contextmenu", (e) => {
-      const el = (e.target as HTMLElement).closest<HTMLElement>("[data-tile-id]");
-      if (!el) return;
-      e.preventDefault();
-      host.ctxMenu = { x: e.clientX, y: e.clientY, deviceId: el.dataset.tileId as string };
-      host.render();
+      const target = e.target as HTMLElement;
+      const el = target.closest<HTMLElement>("[data-tile-id]");
+      if (el) {
+        e.preventDefault();
+        setCustomContextMenuTarget(host, null);
+        host.ctxMenu = { x: e.clientX, y: e.clientY, deviceId: el.dataset.tileId as string };
+        host.render();
+        return;
+      }
+      const roomPill = target.closest<HTMLElement>(".cc-room-pill[data-room-id]");
+      if (roomPill) {
+        const roomId = roomPill.dataset.roomId ?? "";
+        if (!roomId) return;
+        e.preventDefault();
+        const originalName =
+          snapshotRoomsForHost(host.devices).find((r) => r.id === roomId)?.name ??
+          roomPill.dataset.room ??
+          roomId;
+        setCustomContextMenuTarget(host, { kind: "room", roomId, originalName });
+        host.ctxMenu = { x: e.clientX, y: e.clientY };
+        host.render();
+        return;
+      }
+      const kindPill = target.closest<HTMLElement>(".cc-room-pill[data-kind]");
+      if (kindPill) {
+        const rawKind = kindPill.dataset.kind ?? "";
+        if (!rawKind || !(rawKind in KIND_CHIP)) return;
+        e.preventDefault();
+        setCustomContextMenuTarget(host, { kind: "kind", tag: rawKind as DeviceKindTag });
+        host.ctxMenu = { x: e.clientX, y: e.clientY };
+        host.render();
+        return;
+      }
+      if (target.closest(".cc-room-bar")) {
+        e.preventDefault();
+        setCustomContextMenuTarget(host, { kind: "roomBar" });
+        host.ctxMenu = { x: e.clientX, y: e.clientY };
+        host.render();
+      }
     });
   }
