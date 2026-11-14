@@ -32,6 +32,7 @@ import {
 import { formatTemperature, toCelsius } from "../core/temperature.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { SF_ICONS } from "./appConstants.js";
+import { plugTodaySummaryForDrawer, syncEnergyHostOnRender } from "./energySettingsView.js";
 import {
   facetRowDomId,
   resetMoreSettingsState,
@@ -339,7 +340,8 @@ export function renderPlugDrawer(
     k.energyKwh >= 0;
   const rows: string[] = [];
 
-  if (hasPower || hasEnergy) {
+  const todaySummary = plugTodaySummaryForDrawer(dev, hasEnergy);
+  if (hasPower || hasEnergy || todaySummary !== null) {
     const cells: string[] = [];
     if (hasPower) {
       const watts = Number.isInteger(k.powerWatts!)
@@ -354,6 +356,16 @@ export function renderPlugDrawer(
       cells.push(`<div class="cc-plug-metric">
         <span class="cc-plug-metric-label">${t("累计电量")}</span>
         <strong class="cc-plug-metric-val">${k.energyKwh!.toFixed(2)} kWh</strong>
+      </div>`);
+    }
+    if (todaySummary !== null) {
+      cells.push(`<div class="cc-plug-metric" data-plug-today="${id}">
+        <span class="cc-plug-metric-label">${escapeHtml(todaySummary.label)}</span>
+        <strong class="cc-plug-metric-val">${escapeHtml(todaySummary.kwhText)}</strong>${
+          todaySummary.costText !== null
+            ? `<span class="cc-plug-metric-label" data-plug-today-cost="${id}">${escapeHtml(todaySummary.costText)}</span>`
+            : ""
+        }
       </div>`);
     }
     rows.push(`<div class="cc-plug-metrics">${cells.join("")}</div>`);
@@ -509,6 +521,7 @@ const boundDrawerLifecycleHosts = new WeakSet<MenuMijiaWindowsApp>();
 
 export function ensureDrawerLifecycleListeners(host: MenuMijiaWindowsApp): void {
   syncMoreSettingsHost(host);
+  syncEnergyHostOnRender(host);
   if (boundDrawerLifecycleHosts.has(host)) return;
   boundDrawerLifecycleHosts.add(host);
   const flushDeferredAfterRelease = (): void => {

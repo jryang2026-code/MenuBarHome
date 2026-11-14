@@ -10,6 +10,7 @@ import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom
 import { environmentReadingPriority, type SmartDevice } from "../core/models.js";
 import { isHostAttachedToActiveWindow, mergeHomeSnapshotRespectingLocks } from "../core/optimisticLock.js";
 import { getUnsupportedLightEffects } from "./commandDispatch.js";
+import { plugTodaySummaryForDrawer, syncEnergyHostOnRender } from "./energySettingsView.js";
 import { structuralSensorHistoryKey, syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { availableQuickActions } from "../core/quickActions.js";
 import { renderSliderDeck } from "./panelView.js";
@@ -516,7 +517,20 @@ export function cloudPanelStructureFingerprint(host: MenuMijiaWindowsApp): strin
                               kind.ttsActionId,
                               kind.directiveActionId,
                             ]
-                          : [];
+                          : kind.kind === "plug"
+                            ? (() => {
+                                const hasEnergy =
+                                  kind.energyKwh !== null &&
+                                  kind.energyKwh !== undefined &&
+                                  Number.isFinite(kind.energyKwh);
+                                const todaySummary = plugTodaySummaryForDrawer(device, hasEnergy);
+                                return [
+                                  hasEnergy,
+                                  todaySummary !== null,
+                                  todaySummary?.costText !== null,
+                                ];
+                              })()
+                            : [];
         const facetIds = (host.deviceFacets[device.id] ?? []).map((facet) => [
           facet.id,
           facet.kind,
@@ -550,6 +564,7 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
       return false;
     }
     syncSensorHistoryHost(host);
+    syncEnergyHostOnRender(host);
 
     const isAll = host.selectedRoom === "全部";
     const ordered = withAliases(host.layout, applyOrder(host.layout.order, host.presentationDevices));

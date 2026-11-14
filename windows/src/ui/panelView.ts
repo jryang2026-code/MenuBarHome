@@ -10,11 +10,13 @@ import { quickActions } from "./demo.js";
 import { quickActionScopeDevices, reconcileUndoBannerHoverAfterRender } from "./speechGuard.js";
 import { renderProactiveInlinePill } from "./proactive.js";
 import { renderEditLayoutToolbar, renderHiddenDevicesTray } from "./roomOrderEditor.js";
+import { syncEnergyHostOnRender } from "./energySettingsView.js";
 import { syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { renderPersistentUndoPill, tr3 } from "./undoTracker.js";
 
 export function renderPanel(host: MenuMijiaWindowsApp): void {
   syncSensorHistoryHost(host);
+  syncEnergyHostOnRender(host);
   const isDemo = host.settings.connectionMode === "demo";
   const scheme = host.effectiveAppearance;
   host.root.dataset.scheme = scheme;

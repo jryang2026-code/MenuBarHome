@@ -81,6 +81,7 @@ import { CameraLiveController } from "./cameraLive.js";
 import { renderDeviceTile as renderDeviceTileView, renderEnvironmentStrip as renderEnvironmentStripView } from "./deviceViews.js";
 import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt, renderSettingsModal } from "./menuViews.js";
 import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
+import { createDefaultHostEnergySession, notifyEnergyDevicesMutated, syncEnergyHostOnRender, type HostEnergySession } from "./energySettingsView.js";
 import { syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { renderPanel } from "./panelView.js";
 import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
@@ -173,17 +174,20 @@ export class MenuMijiaWindowsApp {
   // generated per language (#52), so a field initializer would freeze the module default.
   private _devices: SmartDevice[] = [];
   private devicesMutationScheduled = false;
+  public energySession: HostEnergySession = createDefaultHostEnergySession();
   public get devices(): SmartDevice[] {
     return this._devices;
   }
   public set devices(next: SmartDevice[]) {
     this._devices = next;
+    notifyEnergyDevicesMutated(this);
     if (!this.devicesMutationScheduled) {
       this.devicesMutationScheduled = true;
       queueMicrotask(() => {
         this.devicesMutationScheduled = false;
         if (this.root.isConnected) {
           syncSensorHistoryHost(this);
+          syncEnergyHostOnRender(this);
         }
       });
     }

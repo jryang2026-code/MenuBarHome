@@ -31,6 +31,7 @@ import {
 } from "./panelPrefs.js";
 import type { PersistedSettings } from "./appTypes.js";
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
+import { renderEnergySettingsSection } from "./energySettingsView.js";
 import { readAskWhenUnsure } from "./settings.js";
 
 function tr3(zhHans: string, zhHant: string, en: string, lang: AppLanguage = currentLanguage()): string {
@@ -750,6 +751,8 @@ function renderSystemPanel(ctx: SettingsViewContext): string {
         </div>
       </div>
     </div>
+
+    ${renderEnergySettingsSection(ctx)}
 
     <div class="cc-field" data-settings-anchor="allOffDevices">
       <label>${t("「全关」包含哪些设备（插座、扫地机默认不包含）")}</label>

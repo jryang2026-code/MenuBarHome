@@ -57,6 +57,7 @@ import {
 } from "./settingsSearch.js";
 import { setPendingMiVaultDeletion, setRaycastIntegrationEnabled } from "./speechGuard.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
+import { bindEnergySettingsEvents } from "./energySettingsView.js";
 import type { SettingsTab } from "./settingsViews.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
 
@@ -1300,6 +1301,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   host.root.querySelector("#settings-habit-share")?.addEventListener("change", refreshPreview);
   host.root.querySelector("#settings-habit-share-sample")?.addEventListener("input", refreshPreview);
   refreshPreview();
+  bindEnergySettingsEvents(host);
 
   host.root.querySelector("#btn-save-settings")?.addEventListener("click", () => {
     commitSettingsSave(host);
