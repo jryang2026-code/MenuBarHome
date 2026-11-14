@@ -65,8 +65,8 @@ class CodeAnchorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             (root / "Sources/MenuBarMijiaApp").mkdir(parents=True)
-            (root / "Sources/MenuBarMijiaApp/SensorCardView.swift").write_text(
-                "struct View { let points: [SensorHistoryPoint] = [] }\n",
+            (root / "Sources/MenuBarMijiaApp/AppIntents.swift").write_text(
+                "struct ToggleDeviceIntent: AppIntent {}\n",
                 encoding="utf-8",
             )
             (root / "windows/src/ui").mkdir(parents=True)
@@ -77,18 +77,18 @@ class CodeAnchorTests(unittest.TestCase):
             (root / "windows/src-tauri/src").mkdir(parents=True)
             rows = [{"id": anchor["id"], "macos": "supported", "windows": "supported"} for anchor in matrix.CODE_ANCHORS]
             for item in rows:
-                if item["id"] == "sensor-history":
+                if item["id"] == "app-intents":
                     item["windows"] = "unsupported"
-            sensor_errors = [err for err in matrix.code_anchor_errors(root, rows) if "sensor-history" in err]
-            self.assertEqual(sensor_errors, [])
+            intent_errors = [err for err in matrix.code_anchor_errors(root, rows) if "app-intents" in err]
+            self.assertEqual(intent_errors, [])
 
-            (root / "windows/src/ui/sensorChart.ts").write_text(
-                "export interface SensorHistory { points: number[] }\n",
+            (root / "windows/src/ui/shortcutsBridge.ts").write_text(
+                "export interface AppIntent { id: string }\n",
                 encoding="utf-8",
             )
-            sensor_errors = [err for err in matrix.code_anchor_errors(root, rows) if "sensor-history" in err]
-            self.assertEqual(len(sensor_errors), 1)
-            self.assertIn("SensorHistory", sensor_errors[0])
+            intent_errors = [err for err in matrix.code_anchor_errors(root, rows) if "app-intents" in err]
+            self.assertEqual(len(intent_errors), 1)
+            self.assertIn("AppIntent", intent_errors[0])
 
 
 if __name__ == "__main__":

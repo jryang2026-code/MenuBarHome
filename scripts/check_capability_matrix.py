@@ -229,8 +229,8 @@ CODE_ANCHORS = (
             "symbol": "SensorHistoryPoint",
         },
         "windows": {
-            "roots": ("windows/src", "windows/src-tauri/src"),
-            "symbol": "SensorHistory",
+            "path": "windows/src/core/sensorHistory.ts",
+            "symbol": "SensorHistoryStore",
         },
     },
     {
@@ -240,7 +240,7 @@ CODE_ANCHORS = (
             "symbol": "EnergyHistory",
         },
         "windows": {
-            "roots": ("windows/src", "windows/src-tauri/src"),
+            "path": "windows/src/core/energyHistory.ts",
             "symbol": "EnergyHistory",
         },
     },
