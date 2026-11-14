@@ -26,6 +26,7 @@ import {
   CN_TEMPERATURE_STEP_WORDS,
   CONSUMED_MARKER,
   consumeChinesePhrase,
+  disambiguateDeviceScriptCollision,
   disambiguateRoomDevices,
   extractChineseNumericOps,
   longestFirst,
@@ -34,6 +35,7 @@ import {
   strippedRawSceneText,
   strippedSceneText,
   toSimplifiedChinese,
+  type DevicePhraseEntry,
 } from "./chineseIntentTables.js";
 import { deviceCategory, isAssistantControllable, type IntentCategory } from "./deviceCategory.js";
 
@@ -1025,21 +1027,17 @@ function parseChineseDeviceCommand(
   devices: readonly SmartDevice[],
   scenes: readonly HomeScene[],
   options: LocalIntentParseOptions,
+  rawUtterance: string = text,
 ): IntentPlan | null {
   const panelRoom = options.panelRoom ?? null;
   const state = { rest: text };
   const rawOps: IntentOperation[] = extractChineseNumericOps(state);
 
   const devById = new Map(devices.map((d) => [d.id, d]));
-  const explicitGroups: ReadonlyArray<string>[] = [];
-  const nameGroups: ReadonlyArray<string>[] = [];
+  const matchedEntries: DevicePhraseEntry[] = [];
   for (const entry of buildDevicePhrases(devices)) {
     if (!consumeChinesePhrase(entry.phrase, state)) continue;
-    if (entry.kind === "full") {
-      explicitGroups.push(entry.ids);
-    } else {
-      nameGroups.push(entry.ids);
-    }
+    matchedEntries.push(entry);
   }
 
   const roomWordSet = new Set<string>(Object.keys(CN_ROOM_ALIASES));
@@ -1102,35 +1100,39 @@ function parseChineseDeviceCommand(
   const mustAcceptIds = new Set<string>();
   let candidates: SmartDevice[] = [];
 
-  if (explicitGroups.length > 0 || nameGroups.length > 0) {
+  if (matchedEntries.length > 0) {
     const targetIds: string[] = [];
-    for (const group of explicitGroups) {
-      const narrowedIds =
-        group.length > 1 && matchedRooms.length > 0
-          ? group.filter((id) => roomDeviceIds.has(id))
-          : group;
-      if (narrowedIds.length === 0) return null;
-      const resolved = disambiguateRoomDevices(
-        narrowedIds.map((id) => devById.get(id)).filter((d): d is SmartDevice => d !== undefined),
-        panelRoom,
+    for (const entry of matchedEntries) {
+      const preScript = disambiguateDeviceScriptCollision(entry.candidates, rawUtterance);
+      const initialCandidates = preScript.length > 0 ? preScript : entry.candidates;
+      const hasFullCandidate = initialCandidates.some((c) => c.kind === "full");
+      const narrowedCandidates = hasFullCandidate
+        ? initialCandidates.length > 1 && matchedRooms.length > 0
+          ? initialCandidates.filter((c) => roomDeviceIds.has(c.id))
+          : initialCandidates
+        : matchedRooms.length === 0
+          ? initialCandidates
+          : initialCandidates.filter((c) => roomDeviceIds.has(c.id));
+      if (narrowedCandidates.length === 0) return null;
+      const roomResolvedSet = new Set(
+        disambiguateRoomDevices(
+          narrowedCandidates.map((c) => devById.get(c.id)).filter((d): d is SmartDevice => d !== undefined),
+          panelRoom,
+        ),
       );
-      if (resolved.length === 0) return null;
-      for (const id of resolved) {
-        if (!targetIds.includes(id)) targetIds.push(id);
-        mustAcceptIds.add(id);
+      const roomResolvedCandidates = narrowedCandidates.filter((c) => roomResolvedSet.has(c.id));
+      if (roomResolvedCandidates.length === 0) return null;
+      const finalCandidates = disambiguateDeviceScriptCollision(roomResolvedCandidates, rawUtterance);
+      if (finalCandidates.length === 0) return null;
+      const isFullMatch = finalCandidates.some((c) => c.kind === "full");
+      if (!isFullMatch && finalCandidates.length !== 1 && !hasScope) return null;
+      for (const c of finalCandidates) {
+        if (!targetIds.includes(c.id)) targetIds.push(c.id);
+        if (isFullMatch) mustAcceptIds.add(c.id);
       }
-    }
-    for (const group of nameGroups) {
-      const narrowedIds = matchedRooms.length === 0 ? group : group.filter((id) => roomDeviceIds.has(id));
-      const resolved = disambiguateRoomDevices(
-        narrowedIds.map((id) => devById.get(id)).filter((d): d is SmartDevice => d !== undefined),
-        panelRoom,
-      );
-      if (resolved.length === 0 || (resolved.length !== 1 && !hasScope)) return null;
-      for (const id of resolved) {
-        if (!targetIds.includes(id)) targetIds.push(id);
+      if (!isFullMatch && finalCandidates.length === 1 && finalCandidates[0]) {
+        mustAcceptIds.add(finalCandidates[0].id);
       }
-      if (resolved.length === 1 && resolved[0]) mustAcceptIds.add(resolved[0]);
     }
     candidates = targetIds.map((id) => devById.get(id)).filter((d): d is SmartDevice => d !== undefined);
   } else {
@@ -1204,7 +1206,7 @@ export const LocalIntentParser = {
       }
     }
 
-    const devicePlan = parseChineseDeviceCommand(text, devices, scenes, options);
+    const devicePlan = parseChineseDeviceCommand(text, devices, scenes, options, utterance);
     if (devicePlan) return devicePlan;
 
     if (Array.from(sceneCore).length >= 2) {

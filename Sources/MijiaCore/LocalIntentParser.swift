@@ -145,6 +145,7 @@ public enum LocalIntentParser {
         }
         if let plan = parseDeviceCommand(
             text,
+            rawUtterance: utterance,
             devices: devices,
             scenes: scenes,
             panelRoom: panelRoom,
@@ -222,6 +223,7 @@ public enum LocalIntentParser {
 
     private static func parseDeviceCommand(
         _ text: String,
+        rawUtterance: String,
         devices: [SmartDevice],
         scenes: [HomeScene],
         panelRoom: BareCategoryCommand.Room?,
@@ -232,15 +234,9 @@ public enum LocalIntentParser {
 
         // 1. Device names (full name such as 书房台灯, or name without room prefix such as 台灯)
         let deviceById = Dictionary(devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        var explicitGroups: [[String]] = []
-        var nameGroups: [[String]] = []
-        for (phrase, match) in devicePhrases(devices) where consume(phrase, from: &rest) {
-            switch match {
-            case .full(let ids):
-                explicitGroups.append(ids)
-            case .base(let ids):
-                nameGroups.append(ids)
-            }
+        var matchedEntries: [[DevicePhraseCandidate]] = []
+        for (phrase, candidates) in devicePhrases(devices) where consume(phrase, from: &rest) {
+            matchedEntries.append(candidates)
         }
 
         // 2. Rooms, scope, and category words
@@ -297,29 +293,39 @@ public enum LocalIntentParser {
         var targetIds: [String] = []
         var mustAcceptAll: Set<String> = []
 
-        if !explicitGroups.isEmpty || !nameGroups.isEmpty {
-            for group in explicitGroups {
-                let narrowedIds = (group.count > 1 && !matchedRooms.isEmpty)
-                    ? group.filter(roomDeviceIds.contains)
-                    : group
-                guard !narrowedIds.isEmpty else { return nil }
-                let resolved = disambiguateRoomDevices(
-                    narrowedIds.compactMap { deviceById[$0] },
+        if !matchedEntries.isEmpty {
+            for candidates in matchedEntries {
+                let preScript = disambiguateDeviceScriptCollision(candidates, rawUtterance: rawUtterance)
+                let initialCandidates = preScript.isEmpty ? candidates : preScript
+                let hasFullCandidate = initialCandidates.contains { $0.isFull }
+                let narrowedCandidates: [DevicePhraseCandidate]
+                if hasFullCandidate {
+                    narrowedCandidates = (initialCandidates.count > 1 && !matchedRooms.isEmpty)
+                        ? initialCandidates.filter { roomDeviceIds.contains($0.id) }
+                        : initialCandidates
+                } else {
+                    narrowedCandidates = matchedRooms.isEmpty
+                        ? initialCandidates
+                        : initialCandidates.filter { roomDeviceIds.contains($0.id) }
+                }
+                guard !narrowedCandidates.isEmpty else { return nil }
+                let roomResolvedIds = Set(disambiguateRoomDevices(
+                    narrowedCandidates.compactMap { deviceById[$0.id] },
                     panelRoom: panelRoom
-                )
-                guard !resolved.isEmpty else { return nil }
-                targetIds.append(contentsOf: resolved.filter { !targetIds.contains($0) })
-                mustAcceptAll.formUnion(resolved)
-            }
-            for group in nameGroups {
-                let narrowedIds = matchedRooms.isEmpty ? group : group.filter(roomDeviceIds.contains)
-                let resolved = disambiguateRoomDevices(
-                    narrowedIds.compactMap { deviceById[$0] },
-                    panelRoom: panelRoom
-                )
-                guard !resolved.isEmpty, resolved.count == 1 || hasScope else { return nil }
-                targetIds.append(contentsOf: resolved.filter { !targetIds.contains($0) })
-                if resolved.count == 1 { mustAcceptAll.formUnion(resolved) }
+                ))
+                let roomResolvedCandidates = narrowedCandidates.filter { roomResolvedIds.contains($0.id) }
+                guard !roomResolvedCandidates.isEmpty else { return nil }
+                let finalCandidates = disambiguateDeviceScriptCollision(roomResolvedCandidates, rawUtterance: rawUtterance)
+                guard !finalCandidates.isEmpty else { return nil }
+                let isFullMatch = finalCandidates.contains { $0.isFull }
+                if !isFullMatch && finalCandidates.count != 1 && !hasScope { return nil }
+                for c in finalCandidates {
+                    if !targetIds.contains(c.id) { targetIds.append(c.id) }
+                    if isFullMatch { mustAcceptAll.insert(c.id) }
+                }
+                if !isFullMatch, finalCandidates.count == 1, let only = finalCandidates.first {
+                    mustAcceptAll.insert(only.id)
+                }
             }
         } else {
             let implied = impliedCategories(for: ops)
@@ -491,29 +497,59 @@ public enum LocalIntentParser {
         )
     }
 
-    private enum PhraseMatch {
-        case full([String])
-        case base([String])
+    private struct DevicePhraseCandidate {
+        let id: String
+        let rawPhrase: String
+        let isFull: Bool
     }
 
-    private static func devicePhrases(_ devices: [SmartDevice]) -> [(String, PhraseMatch)] {
-        var full: [String: [String]] = [:]
-        var base: [String: [String]] = [:]
+    private static func cleanRawText(_ raw: String) -> String {
+        String(String.UnicodeScalarView(raw.unicodeScalars.filter { !ignorable.contains($0) }))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    }
+
+    private static func devicePhrases(_ devices: [SmartDevice]) -> [(String, [DevicePhraseCandidate])] {
+        var full: [String: [DevicePhraseCandidate]] = [:]
+        var base: [String: [DevicePhraseCandidate]] = [:]
         for dev in devices where !dev.name.isEmpty {
-            let devName = toSimplifiedChinese(dev.name)
-            let roomName = toSimplifiedChinese(dev.roomName)
-            full[devName, default: []].append(dev.id)
+            let rawName = cleanRawText(dev.name)
+            let rawRoom = cleanRawText(dev.roomName)
+            let devName = toSimplifiedChinese(rawName)
+            let roomName = toSimplifiedChinese(rawRoom)
+            guard !devName.isEmpty else { continue }
+            full[devName, default: []].append(DevicePhraseCandidate(id: dev.id, rawPhrase: rawName, isFull: true))
             if !roomName.isEmpty, devName.hasPrefix(roomName) {
                 let stripped = String(devName.dropFirst(roomName.count))
+                let rawStripped = String(rawName.dropFirst(roomName.count))
                 // 「关空调」 is a category command even when a device is literally named 客厅空调 (#273).
                 if stripped.count >= 2, categoryWords[stripped] == nil {
-                    base[stripped, default: []].append(dev.id)
+                    base[stripped, default: []].append(DevicePhraseCandidate(id: dev.id, rawPhrase: rawStripped, isFull: false))
                 }
             }
         }
-        var phrases: [(String, PhraseMatch)] = full.map { ($0.key, .full($0.value)) }
-        phrases += base.filter { full[$0.key] == nil }.map { ($0.key, .base($0.value)) }
+        var phrases: [(String, [DevicePhraseCandidate])] = []
+        for (phrase, fullCandidates) in full {
+            let fullRawSet = Set(fullCandidates.map(\.rawPhrase))
+            let extraBase = (base[phrase] ?? []).filter { !fullRawSet.contains($0.rawPhrase) }
+            phrases.append((phrase, fullCandidates + extraBase))
+        }
+        for (phrase, baseCandidates) in base where full[phrase] == nil {
+            phrases.append((phrase, baseCandidates))
+        }
         return phrases.sorted { $0.0.count > $1.0.count }
+    }
+
+    private static func disambiguateDeviceScriptCollision(
+        _ candidates: [DevicePhraseCandidate],
+        rawUtterance: String
+    ) -> [DevicePhraseCandidate] {
+        let distinctRaw = Set(candidates.map(\.rawPhrase))
+        guard distinctRaw.count > 1 else { return candidates }
+        let rawCleaned = cleanRawText(rawUtterance)
+        let rawMatched = candidates.filter { !$0.rawPhrase.isEmpty && rawCleaned.contains($0.rawPhrase) }
+        let matchedRaw = Set(rawMatched.map(\.rawPhrase))
+        guard matchedRaw.count == 1 else { return [] }
+        return rawMatched
     }
 
     /// When two homes/accounts share a display room name (e.g. two 客厅 with distinct roomIds),

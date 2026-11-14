@@ -121,12 +121,16 @@ export function toSimplifiedChinese(input: string): string {
   return out;
 }
 
+export function cleanRawChineseText(raw: string): string {
+  return raw.replace(CN_IGNORABLE_REGEX, "").replace(/^\.+|\.+$/g, "");
+}
+
 export function normalizeChineseUtterance(utterance: string): string {
-  return toSimplifiedChinese(utterance).replace(CN_IGNORABLE_REGEX, "").replace(/^\.+|\.+$/g, "");
+  return cleanRawChineseText(toSimplifiedChinese(utterance));
 }
 
 export function strippedRawSceneText(raw: string): string {
-  let chars = Array.from(raw.replace(CN_IGNORABLE_REGEX, "").replace(/^\.+|\.+$/g, ""));
+  let chars = Array.from(cleanRawChineseText(raw));
   let normChars = Array.from(toSimplifiedChinese(chars.join("")));
   const normJoined = normChars.join("");
   for (const verb of CN_SCENE_VERBS) {
@@ -245,39 +249,79 @@ export function extractChineseNumericOps(state: { rest: string }): IntentOperati
   return ops;
 }
 
-export type DevicePhraseEntry =
-  | { readonly phrase: string; readonly kind: "full"; readonly ids: readonly string[] }
-  | { readonly phrase: string; readonly kind: "base"; readonly ids: readonly string[] };
+export interface DevicePhraseCandidate {
+  readonly id: string;
+  readonly rawPhrase: string;
+  readonly kind: "full" | "base";
+}
+
+export interface DevicePhraseEntry {
+  readonly phrase: string;
+  readonly kind: "full" | "base";
+  readonly ids: readonly string[];
+  readonly candidates: readonly DevicePhraseCandidate[];
+}
 
 export function buildDevicePhrases(devices: readonly SmartDevice[]): DevicePhraseEntry[] {
-  const full = new Map<string, string[]>();
-  const base = new Map<string, string[]>();
+  const full = new Map<string, DevicePhraseCandidate[]>();
+  const base = new Map<string, DevicePhraseCandidate[]>();
   for (const dev of devices) {
     if (!dev.name) continue;
-    const devName = toSimplifiedChinese(dev.name);
-    const roomName = toSimplifiedChinese(dev.roomName);
-    const fullIds = full.get(devName) ?? [];
-    fullIds.push(dev.id);
-    full.set(devName, fullIds);
+    const rawName = cleanRawChineseText(dev.name);
+    const rawRoom = cleanRawChineseText(dev.roomName);
+    const devName = toSimplifiedChinese(rawName);
+    const roomName = toSimplifiedChinese(rawRoom);
+    if (!devName) continue;
+    const fullList = full.get(devName) ?? [];
+    fullList.push({ id: dev.id, rawPhrase: rawName, kind: "full" });
+    full.set(devName, fullList);
     if (roomName && devName.startsWith(roomName)) {
-      const stripped = devName.slice(roomName.length);
+      const roomCharLen = Array.from(roomName).length;
+      const stripped = Array.from(devName).slice(roomCharLen).join("");
+      const rawStripped = Array.from(rawName).slice(roomCharLen).join("");
       if (Array.from(stripped).length >= 2 && !(stripped in CN_CATEGORY_WORDS)) {
-        const baseIds = base.get(stripped) ?? [];
-        baseIds.push(dev.id);
-        base.set(stripped, baseIds);
+        const baseList = base.get(stripped) ?? [];
+        baseList.push({ id: dev.id, rawPhrase: rawStripped, kind: "base" });
+        base.set(stripped, baseList);
       }
     }
   }
   const phrases: DevicePhraseEntry[] = [];
-  for (const [phrase, ids] of full) {
-    phrases.push({ phrase, kind: "full", ids });
+  for (const [phrase, fullCandidates] of full) {
+    const fullRawSet = new Set(fullCandidates.map((c) => c.rawPhrase));
+    const extraBase = (base.get(phrase) ?? []).filter((c) => !fullRawSet.has(c.rawPhrase));
+    const candidates = [...fullCandidates, ...extraBase];
+    phrases.push({
+      phrase,
+      kind: "full",
+      ids: candidates.map((c) => c.id),
+      candidates,
+    });
   }
-  for (const [phrase, ids] of base) {
+  for (const [phrase, baseCandidates] of base) {
     if (!full.has(phrase)) {
-      phrases.push({ phrase, kind: "base", ids });
+      phrases.push({
+        phrase,
+        kind: "base",
+        ids: baseCandidates.map((c) => c.id),
+        candidates: baseCandidates,
+      });
     }
   }
   return phrases.sort((a, b) => Array.from(b.phrase).length - Array.from(a.phrase).length);
+}
+
+export function disambiguateDeviceScriptCollision(
+  candidates: readonly DevicePhraseCandidate[],
+  rawUtterance: string,
+): DevicePhraseCandidate[] {
+  const distinctRaw = new Set(candidates.map((c) => c.rawPhrase));
+  if (distinctRaw.size <= 1) return [...candidates];
+  const rawCleaned = cleanRawChineseText(rawUtterance);
+  const rawMatched = candidates.filter((c) => c.rawPhrase && rawCleaned.includes(c.rawPhrase));
+  const matchedRaw = new Set(rawMatched.map((c) => c.rawPhrase));
+  if (matchedRaw.size !== 1) return [];
+  return rawMatched;
 }
 
 /**

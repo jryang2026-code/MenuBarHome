@@ -2053,6 +2053,114 @@
           "expectedReply": "已关闭客廳吸頂燈"
         }
       ]
+    },
+    {
+      "name": "Same-room Traditional and Simplified Chinese device names preserve exact script or reject ambiguous normalized collisions",
+      "devices": [
+        {
+          "id": "dev_lamp_simp",
+          "name": "台灯",
+          "roomId": "study",
+          "roomName": "书房",
+          "model": "yeelink.light.lamp4",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_lamp_simp:2",
+            "isOn": true,
+            "brightnessPercent": 60,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_lamp_trad",
+          "name": "檯燈",
+          "roomId": "study",
+          "roomName": "书房",
+          "model": "yeelink.light.lamp4",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_lamp_trad:2",
+            "isOn": true,
+            "brightnessPercent": 60,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_ceiling_simp",
+          "name": "书房吸顶灯",
+          "roomId": "study",
+          "roomName": "书房",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_ceiling_simp:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_ceiling_trad",
+          "name": "書房吸頂燈",
+          "roomId": "study",
+          "roomName": "书房",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_ceiling_trad:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        }
+      ],
+      "cases": [
+        {
+          "utterance": "关闭檯燈",
+          "expected": [
+            { "targetId": "dev_lamp_trad", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭檯燈"
+        },
+        {
+          "utterance": "关闭台灯",
+          "expected": [
+            { "targetId": "dev_lamp_simp", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭台灯"
+        },
+        {
+          "utterance": "关闭書房吸頂燈",
+          "expected": [
+            { "targetId": "dev_ceiling_trad", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭書房吸頂燈"
+        },
+        {
+          "utterance": "关闭書房吸顶灯",
+          "expected": null
+        }
+      ]
     }
   ]
 }
