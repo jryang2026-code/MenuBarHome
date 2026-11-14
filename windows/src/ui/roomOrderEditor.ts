@@ -7,6 +7,7 @@ import {
   applyRoomOrder,
   hiddenDeviceIds,
   hideDevice,
+  migrateRoomScopedLayoutKeys,
   movePinnedDevice,
   normalizeRoomAliases,
   roomDisplayName,
@@ -240,13 +241,25 @@ export function saveRoomOrderEditor(host: MenuMijiaWindowsApp): void {
     session.roomDraft.setAlias(roomId, input.value, roomsById.get(roomId));
   });
 
+  const nextAliases = { ...session.roomDraft.aliases };
+  for (const [roomId, originalName] of roomsById) {
+    const prevName = roomDisplayName(host.layout, roomId, originalName);
+    const nextName = roomDisplayName({ roomAliases: nextAliases }, roomId, originalName);
+    if (prevName !== nextName) {
+      migrateRoomScopedLayoutKeys(host.layout, prevName, nextName);
+    }
+  }
+
   host.layout.roomOrder = [...session.roomDraft.order];
-  host.layout.roomAliases = { ...session.roomDraft.aliases };
+  host.layout.roomAliases = nextAliases;
   host.layout.kindOrder = [...session.kindDraft.order];
 
   if (host.listCut.kind === "room") {
     const original = roomsById.get(host.listCut.roomId) ?? host.listCut.roomName;
     const updatedName = roomDisplayName(host.layout, host.listCut.roomId, original);
+    if (host.listCut.roomName !== updatedName) {
+      migrateRoomScopedLayoutKeys(host.layout, host.listCut.roomName, updatedName);
+    }
     host.selectRoom(host.listCut.roomId, updatedName);
   }
 

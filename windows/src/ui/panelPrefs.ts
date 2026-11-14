@@ -243,6 +243,37 @@ export function roomDisplayName(
   return alias ? alias : originalName;
 }
 
+export function migrateRoomScopedLayoutKeys(
+  prefs: LayoutPrefs,
+  oldPageKey: string,
+  newPageKey: string,
+): void {
+  const from = oldPageKey.trim();
+  const to = newPageKey.trim();
+  if (!from || !to || from === to || from === "all" || to === "all") return;
+  const prefix = `${from}|`;
+  for (const [key, size] of Object.entries(prefs.tileSizes)) {
+    if (!key.startsWith(prefix)) continue;
+    const nextKey = `${to}|${key.slice(prefix.length)}`;
+    if (prefs.tileSizes[nextKey] === undefined) {
+      prefs.tileSizes[nextKey] = size;
+    }
+    delete prefs.tileSizes[key];
+  }
+  if (Array.isArray(prefs.collapsed) && prefs.collapsed.length > 0) {
+    const nextCollapsed: string[] = [];
+    const seen = new Set<string>();
+    for (const entry of prefs.collapsed) {
+      const mapped = entry.startsWith(prefix) ? `${to}|${entry.slice(prefix.length)}` : entry;
+      if (!seen.has(mapped)) {
+        seen.add(mapped);
+        nextCollapsed.push(mapped);
+      }
+    }
+    prefs.collapsed = nextCollapsed;
+  }
+}
+
 export function setRoomAlias(
   prefs: LayoutPrefs,
   roomId: string,
@@ -250,6 +281,7 @@ export function setRoomAlias(
   originalName?: string,
 ): void {
   if (!roomId) return;
+  const prevDisplay = originalName !== undefined ? roomDisplayName(prefs, roomId, originalName) : null;
   const aliases = normalizeRoomAliases(prefs.roomAliases);
   const trimmed = rawAlias.trim();
   if (!trimmed || (originalName !== undefined && trimmed === originalName.trim())) {
@@ -258,6 +290,12 @@ export function setRoomAlias(
     aliases[roomId] = trimmed;
   }
   prefs.roomAliases = aliases;
+  if (prevDisplay !== null && originalName !== undefined) {
+    const nextDisplay = roomDisplayName(prefs, roomId, originalName);
+    if (prevDisplay !== nextDisplay) {
+      migrateRoomScopedLayoutKeys(prefs, prevDisplay, nextDisplay);
+    }
+  }
 }
 
 export function seededRoomOrder(savedOrder: readonly string[] | undefined, visibleIds: readonly string[]): string[] {

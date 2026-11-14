@@ -200,15 +200,26 @@ export interface LayoutGestureHost {
         host.applyDragOffset();
         const prevSlot = host.lastSwap?.slot ?? null;
         const draggedId = host.draggingId;
+        const hadPrevGroup = Object.prototype.hasOwnProperty.call(host.layout.groupMap, draggedId);
+        const prevGroup = host.layout.groupMap[draggedId];
         host.swapIfNeeded(e.clientX, e.clientY);
         const nextSlot = host.lastSwap?.slot ?? null;
-        if (nextSlot && nextSlot !== prevSlot && isDevicePinned(draggedId, host.layout)) {
+        if (nextSlot && nextSlot !== prevSlot) {
           const sep = nextSlot.lastIndexOf("|");
           const targetId = sep > 0 ? nextSlot.slice(0, sep) : "";
           const after = sep > 0 && nextSlot.slice(sep + 1) === "true";
-          if (targetId && isDevicePinned(targetId, host.layout)) {
-            const pins = pinnedDeviceIds(host.layout);
-            host.layout.pinnedDeviceIds = moveInOrder(pins, pins, draggedId, targetId, after);
+          const draggedPinned = isDevicePinned(draggedId, host.layout);
+          const targetPinned = Boolean(targetId && isDevicePinned(targetId, host.layout));
+          if (draggedPinned || targetPinned) {
+            if (hadPrevGroup && prevGroup !== undefined) {
+              host.layout.groupMap[draggedId] = prevGroup;
+            } else {
+              delete host.layout.groupMap[draggedId];
+            }
+            if (draggedPinned && targetPinned) {
+              const pins = pinnedDeviceIds(host.layout);
+              host.layout.pinnedDeviceIds = moveInOrder(pins, pins, draggedId, targetId, after);
+            }
             host.saveLayout();
             host.render();
           }

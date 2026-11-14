@@ -667,11 +667,18 @@ describe("Wave 2 · A9 AI Assistant Enhancements (askWhenUnsure, Connection Prob
     assert.match(insecureResult.message, /HTTPS/);
 
     const invokeOrder: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
+    let holdNativeHttp = false;
+    let releaseNativeHttp = (): void => {};
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       value: {
         invoke: async (cmd: string, args?: Record<string, unknown>) => {
           invokeOrder.push({ cmd, args });
           if (cmd === "native_http") {
+            if (holdNativeHttp) {
+              await new Promise<void>((resolve) => {
+                releaseNativeHttp = resolve;
+              });
+            }
             return {
               status: 200,
               headers: {},
@@ -719,6 +726,20 @@ describe("Wave 2 · A9 AI Assistant Enhancements (askWhenUnsure, Connection Prob
     );
     assert.ok(authIdx >= 0 && authIdx < httpIdx, "Draft endpoint must be authorized before native_http probe");
     assert.ok(restoreIdx > httpIdx, "Saved endpoint authorization must be restored after draft probe");
+
+    holdNativeHttp = true;
+    invokeOrder.length = 0;
+    await click("#btn-test-ai-connection");
+    await click("#btn-save-settings");
+    releaseNativeHttp();
+    await setImmediate();
+    await setImmediate();
+    const endpointCalls = invokeOrder.filter((c) => c.cmd === "set_service_endpoints");
+    assert.equal(
+      endpointCalls.at(-1)?.args?.assistantUrl,
+      "https://api.deepseek.com/v1",
+      "Finishing an in-flight probe after Save must not revert the newly saved endpoint allowlist",
+    );
   });
 
   it("imports provider API keys from environment variables", async () => {

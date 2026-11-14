@@ -252,6 +252,10 @@ export async function probeAssistantConnection(
     readonly haUrl?: string;
     readonly restoreAssistantUrl?: string;
     readonly restoreHaUrl?: string;
+    readonly resolveRestoreEndpoints?: () => {
+      readonly assistantUrl: string;
+      readonly haUrl: string;
+    };
   },
   transport?: HttpTransport,
 ): Promise<{ readonly ok: boolean; readonly latencyMs: number | null; readonly message: string }> {
@@ -351,10 +355,17 @@ export async function probeAssistantConnection(
       if (
         shouldAuthorizeDraft &&
         invoke &&
-        (config.restoreAssistantUrl !== undefined || config.restoreHaUrl !== undefined)
+        (config.resolveRestoreEndpoints !== undefined ||
+          config.restoreAssistantUrl !== undefined ||
+          config.restoreHaUrl !== undefined)
       ) {
-        const savedAssistant = (config.restoreAssistantUrl ?? trimmedBase).trim();
-        const savedHa = (config.restoreHaUrl ?? activeHaUrl).trim();
+        const currentSaved = config.resolveRestoreEndpoints?.();
+        const savedAssistant = (
+          currentSaved?.assistantUrl ??
+          config.restoreAssistantUrl ??
+          trimmedBase
+        ).trim();
+        const savedHa = (currentSaved?.haUrl ?? config.restoreHaUrl ?? activeHaUrl).trim();
         if (savedAssistant !== trimmedBase || savedHa !== activeHaUrl) {
           await invoke("set_service_endpoints", {
             assistantUrl: savedAssistant,
@@ -1267,6 +1278,10 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
         haUrl: savedHaUrl,
         restoreAssistantUrl: savedAssistantUrl,
         restoreHaUrl: savedHaUrl,
+        resolveRestoreEndpoints: () => ({
+          assistantUrl: host.settings.assistantBaseURL,
+          haUrl: host.settings.haBaseURL,
+        }),
       });
       const state = result.ok ? "ok" : "error";
       session.aiTestStatus = { text: result.message, state };

@@ -1505,8 +1505,9 @@ export class MenuMijiaWindowsApp {
     el.style.translate = `${p.x - p.grabX - r.left}px ${p.y - p.grabY - r.top}px`;
   }
 
-  /** Section of a device on the current page: a user group id or "rest". */
+  /** Section of a device on the current page: "pinned", a user group id, or "rest". */
   private sectionOf(id: string): string {
+    if (this.selectedRoom === "全部" && isDevicePinned(id, this.layout)) return "pinned";
     const g = this.layout.groupMap[id];
     return g && this.layout.groups.some((x) => x.id === g) ? g : "rest";
   }
@@ -1536,9 +1537,9 @@ export class MenuMijiaWindowsApp {
     const slot = `${target}|${after}`;
     if (this.lastSwap?.slot === slot) return;
     this.lastSwap = { slot, at: now };
-    // Dropping beside a card in another group files the dragged card into that group.
     const to = this.sectionOf(target);
-    if (to !== this.sectionOf(dragged)) {
+    const from = this.sectionOf(dragged);
+    if (to !== from && to !== "pinned" && from !== "pinned") {
       if (to === "rest") delete this.layout.groupMap[dragged]; else this.layout.groupMap[dragged] = to;
     }
     this.layout.order = moveInOrder(this.layout.order, this.devices.map((d) => d.id), dragged, target, after);

@@ -376,6 +376,11 @@ describe("Wave 2 A14: RoomOrderDraft, Favorites, Hidden Devices, 4-Step Sizes & 
       assert.deepEqual(roomPillIds(), ["r_living:客厅", "r_study:书房", "r_bed:主卧"]);
       assert.equal(app.layout.roomAliases?.r_living, undefined);
 
+      app.selectRoom("r_living", "客厅");
+      app.layout.tileSizes["客厅|light_living"] = "hero";
+      app.layout.collapsed = ["客厅|rest"];
+      app.render();
+
       el<HTMLButtonElement>("#btn-room-order-editor").click();
       assert.equal(isRoomOrderEditorOpen(app), true);
       el<HTMLButtonElement>('[data-room-order-up="r_study"]').click();
@@ -390,6 +395,13 @@ describe("Wave 2 A14: RoomOrderDraft, Favorites, Hidden Devices, 4-Step Sizes & 
 
       saveRoomOrderEditor(app);
       assert.equal(isRoomOrderEditorOpen(app), false);
+      assert.equal(app.pageKey, "阳光客厅");
+      assert.equal(app.layout.tileSizes["阳光客厅|light_living"], "hero");
+      assert.equal(app.layout.tileSizes["客厅|light_living"], undefined);
+      assert.deepEqual(app.layout.collapsed, ["阳光客厅|rest"]);
+      assert.equal(app.tileSize(app.devices[0]!), "hero");
+      app.selectRoom(null);
+      app.render();
 
       assert.deepEqual(roomPillIds(), ["r_study:书房", "r_living:阳光客厅", "r_bed:主卧"]);
       const kindOrderDom = [...document.querySelectorAll<HTMLButtonElement>("[data-kind]")].map(
@@ -426,6 +438,8 @@ describe("Wave 2 A14: RoomOrderDraft, Favorites, Hidden Devices, 4-Step Sizes & 
       clearInput.dispatchEvent(new window.Event("input", { bubbles: true }));
       el<HTMLButtonElement>("#btn-room-editor-save").click();
       assert.deepEqual(roomPillIds(), ["r_study:书房", "r_living:客厅", "r_bed:主卧"]);
+      assert.equal(app.layout.tileSizes["客厅|light_living"], "hero");
+      assert.deepEqual(app.layout.collapsed, ["客厅|rest"]);
     });
 
     it("pins Favorites to top on All view and hides/restores single devices across grid, edit mode, and panelPrefs API", async () => {
@@ -618,6 +632,11 @@ describe("Wave 2 A14: RoomOrderDraft, Favorites, Hidden Devices, 4-Step Sizes & 
       const app = new MenuMijiaWindowsApp(el("#app"));
       await setImmediate();
 
+      app.layout.groups = [{ id: "g_clean", name: "清洁区" }];
+      app.layout.groupMap.vac_bed = "g_clean";
+      app.saveLayout();
+      app.render();
+
       for (const id of ["light_living", "vac_bed"]) {
         el(`[data-tile-id="${id}"]`).dispatchEvent(
           new window.MouseEvent("contextmenu", { bubbles: true, clientX: 60, clientY: 60 }),
@@ -647,6 +666,8 @@ describe("Wave 2 A14: RoomOrderDraft, Favorites, Hidden Devices, 4-Step Sizes & 
       app.stopEditing();
 
       assert.deepEqual(pinnedDeviceIds(app.layout), ["vac_bed", "light_living"]);
+      assert.equal(app.layout.groupMap.vac_bed, "g_clean");
+      assert.equal(app.layout.groupMap.light_living, undefined);
 
       setLanguage("en");
       app.render();
