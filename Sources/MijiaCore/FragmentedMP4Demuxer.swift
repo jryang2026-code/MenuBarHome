@@ -64,10 +64,6 @@ public struct FragmentedMP4Demuxer: Sendable {
         self.maxBufferedBytes = maxBufferedBytes
     }
 
-    public var videoTracks: [FMP4VideoTrack] {
-        tracks.values.sorted { $0.trackID < $1.trackID }
-    }
-
     public mutating func append(_ chunk: Data) throws -> [FMP4DemuxEvent] {
         buffer.append(chunk)
         var events: [FMP4DemuxEvent] = []

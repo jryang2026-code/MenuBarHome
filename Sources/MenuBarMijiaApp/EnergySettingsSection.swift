@@ -311,6 +311,9 @@ struct EnergySettingsSection: View {
     /// An empty field clears the price; text that is not a positive number keeps the saved price
     /// and restores the field, so a typo never erases a configured price.
     private func applyPrice() {
+        // Return on an untouched field must not replace the stored price with its 2-decimal
+        // display rounding.
+        guard priceDraft != Self.priceDraftText(history.pricePerKwh) else { return }
         let normalized = priceDraft
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: ",", with: ".")

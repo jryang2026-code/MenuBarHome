@@ -34,7 +34,6 @@ public enum MiCloudCrypto {
 
     public enum CryptoError: Error, Equatable {
         case invalidBase64(String)
-        case invalidUTF8
     }
 
     /// 8 random bytes followed by the big-endian minute counter.

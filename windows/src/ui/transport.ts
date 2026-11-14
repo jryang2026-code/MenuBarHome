@@ -31,7 +31,9 @@ export function createTransport(): HttpTransport {
 
 export function invokeTauriVoid(cmd: string, args?: Record<string, unknown>): void {
   if (window.__TAURI_INTERNALS__?.invoke) {
-    void window.__TAURI_INTERNALS__.invoke(cmd, args);
+    void window.__TAURI_INTERNALS__.invoke(cmd, args).catch((error: unknown) => {
+      console.error(`[tauri] ${cmd} failed`, error);
+    });
   }
 }
 

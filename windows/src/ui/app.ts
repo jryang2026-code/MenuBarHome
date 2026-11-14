@@ -1023,6 +1023,10 @@ export class MenuMijiaWindowsApp {
       this.selectRoom(null);
       this.activeSheet = "none";
       this.qrTicket = null;
+      this.isPollingQR = false;
+      // invalidateSourceControl() moved sourceRevision on, so the `finally` below no longer
+      // matches; release the pin taken at the start here or the flyout stops dismissing.
+      invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
       this.saveSettings();
 
       this.qrStatusText = t("已连接小米账号 {user}", { user: maskedMiUserId(session.userId) });

@@ -172,6 +172,7 @@ trap - EXIT
 (cd "$DIST" && shasum -a 256 "$(basename "$DMG")" | tee "$(basename "$DMG").sha256")
 
 echo "✅ 完成：$DMG"
-echo "   下一步：先人工创建并推送 tag v${VERSION}，再由 .github/workflows/release.yml 统一发布。"
+echo "   下一步：先人工创建并推送 tag v${VERSION}；.github/workflows/release.yml 只构建 draft，"
+echo "   离线用 scripts/sign_update.swift 签好清单后，再运行 Finalize Release（finalize.yml）正式发布。"
 echo "   手动补发时（仅限不存在的附件）：gh release upload v${VERSION} \"$DMG\" \"$DMG.sha256\""
 echo "   已发布的 release 不要用 --clobber 覆盖附件；发布流程会拒绝覆盖，请升版本号。"

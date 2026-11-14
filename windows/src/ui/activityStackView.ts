@@ -692,6 +692,7 @@ export async function executeAutomationCardUndo(
       if (!isUndoContextValid()) return false;
       if (!ok) {
         allOk = false;
+      } else {
         const dev = host.devices.find((d) => d.id === step.deviceId);
         const prevKind = run.kindSnapshots.get(step.deviceId);
         if (dev && prevKind) {
