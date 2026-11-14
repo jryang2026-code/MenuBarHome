@@ -711,5 +711,119 @@ describe("Wave 3 · B3 Energy Settings Panel, Plug Drawer Today Cell & Settings 
     assert.deepEqual(scope.activeAccountIds, []);
     syncEnergyHostOnRender(narrowHost);
     assert.ok(narrowHost);
+
+    const rebaseHistory = new EnergyHistory({ scope: "dual-rebase-test", storage: makeMemoryStorage() });
+    const d0 = new Date(2026, 10, 14, 10, 0, 0, 0);
+    const d1 = new Date(2026, 10, 14, 10, 5, 0, 0);
+    const d2 = new Date(2026, 10, 14, 10, 10, 0, 0);
+    const d3 = new Date(2026, 10, 14, 10, 15, 0, 0);
+    const haPlug10: SmartDevice = {
+      ...makePlug("shared_plug", "客厅插座", 10.0),
+      sourceBackend: "homeAssistant",
+    };
+    const haPlug10_5: SmartDevice = {
+      ...makePlug("shared_plug", "客厅插座", 10.5),
+      sourceBackend: "homeAssistant",
+    };
+    const miPlug100: SmartDevice = {
+      ...makePlug("shared_plug", "客厅插座", 100.0),
+      sourceBackend: "xiaomiCloud",
+      accountId: "mi:cn:1",
+    };
+    const miPlug100_3: SmartDevice = {
+      ...makePlug("shared_plug", "客厅插座", 100.3),
+      sourceBackend: "xiaomiCloud",
+      accountId: "mi:cn:1",
+    };
+    rebaseHistory.record([haPlug10], d0);
+    rebaseHistory.record([haPlug10_5], d1);
+    assert.ok(Math.abs((rebaseHistory.todayKwh("shared_plug", d1) ?? 0) - 0.5) < 1e-6);
+    rebaseHistory.record([miPlug100], d2);
+    assert.ok(Math.abs((rebaseHistory.todayKwh("shared_plug", d2) ?? 0) - 0.5) < 1e-6);
+    rebaseHistory.record([miPlug100_3], d3);
+    assert.ok(Math.abs((rebaseHistory.todayKwh("shared_plug", d3) ?? 0) - 0.8) < 1e-6);
+
+    const { MultiAccountMiCloudProvider, makeMiAccount } = await import("../src/core/miAccountsStore.js");
+    const { MiCloudError } = await import("../src/core/miCloudClient.js");
+    const acc1 = makeMiAccount({
+      userId: "1001",
+      cUserId: "c1",
+      ssecurity: "AQIDBAUGBwgJCgsMDQ4PEA==",
+      serviceToken: "tok1",
+      passToken: "",
+      region: "cn",
+    });
+    const acc2 = makeMiAccount({
+      userId: "2002",
+      cUserId: "c2",
+      ssecurity: "AQIDBAUGBwgJCgsMDQ4PEA==",
+      serviceToken: "tok2",
+      passToken: "",
+      region: "cn",
+    });
+    let currentRev = 0;
+    let transportCalls = 0;
+    const provider = new MultiAccountMiCloudProvider({
+      accounts: [acc1, acc2],
+      deviceOwners: { "100200300": [acc1.id, acc2.id] },
+      specsByModel: {
+        "cuco.plug.cp1": {
+          type: "urn:miot-spec-v2:device:outlet:0000A002:cuco-cp1:1",
+          services: [
+            {
+              iid: 2,
+              type: "urn:miot-spec-v2:service:switch:0000780C:cuco-cp1:1",
+              description: "Switch",
+              properties: [
+                {
+                  iid: 1,
+                  type: "urn:miot-spec-v2:property:on:00000006:cuco-cp1:1",
+                  description: "Switch Status",
+                  format: "bool",
+                  access: ["read", "write", "notify"],
+                },
+              ],
+              actions: [],
+            },
+          ],
+        },
+      },
+      devices: [
+        {
+          ...miPlug100,
+          id: "100200300",
+          model: "cuco.plug.cp1",
+          kind: {
+            kind: "plug",
+            switchEntityId: "miot:100200300:2",
+            isOn: false,
+            powerWatts: 0,
+            energyKwh: 100,
+            childLockEntityId: null,
+            isChildLocked: false,
+          },
+        },
+      ],
+      specResolver: { resolve: async () => ({ type: "", services: [] }) },
+      deviceForEntity: () => undefined,
+      transport: async () => {
+        transportCalls += 1;
+        currentRev = 1;
+        throw new MiCloudError("sessionExpired", "401");
+      },
+    });
+    await assert.rejects(
+      () =>
+        provider.execute(
+          { kind: "setSwitch", entityId: "miot:100200300:2", isOn: true },
+          {
+            beforeSend: () => {
+              if (currentRev !== 0) throw new Error("stale source");
+            },
+          },
+        ),
+      /stale source/,
+    );
+    assert.equal(transportCalls, 1);
   });
 });

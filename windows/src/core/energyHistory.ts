@@ -55,6 +55,7 @@ interface EnergyBucketRecord {
 interface EnergyHistoryStored {
   recordingStartedAtMs: number | null;
   baselines: Record<string, number>;
+  baselineSources: Record<string, string>;
   lastSampleAtMs: Record<string, number>;
   names: Record<string, string>;
   rooms: Record<string, string>;
@@ -73,6 +74,7 @@ function emptyStored(): EnergyHistoryStored {
   return {
     recordingStartedAtMs: null,
     baselines: {},
+    baselineSources: {},
     lastSampleAtMs: {},
     names: {},
     rooms: {},
@@ -191,6 +193,14 @@ function sanitizeStored(raw: unknown): EnergyHistoryStored {
         val <= MAX_ENERGY_COUNTER_KWH
       ) {
         result.baselines[deviceId] = val;
+      }
+    }
+  }
+
+  if (obj.baselineSources && typeof obj.baselineSources === "object") {
+    for (const [deviceId, val] of Object.entries(obj.baselineSources as Record<string, unknown>)) {
+      if (deviceId && typeof val === "string" && val.trim() !== "") {
+        result.baselineSources[deviceId] = val.trim();
       }
     }
   }
@@ -468,8 +478,17 @@ export class EnergyHistory {
         shouldPersist = true;
       }
 
+      const sourceBackend =
+        device.sourceBackend ?? (device.id.startsWith("ha:") ? "homeAssistant" : "xiaomiCloud");
+      const sourceSig = `${sourceBackend}|${device.accountId?.trim() ?? ""}|${device.kind.switchEntityId.trim()}`;
+      const prevSourceSig = this.stored.baselineSources[device.id];
+      if (prevSourceSig !== sourceSig) {
+        this.stored.baselineSources[device.id] = sourceSig;
+        shouldPersist = true;
+      }
+
       const baseline = this.stored.baselines[device.id];
-      if (baseline === undefined) {
+      if (baseline === undefined || (prevSourceSig !== undefined && prevSourceSig !== sourceSig)) {
         this.stored.baselines[device.id] = reading;
         if (this.stored.recordingStartedAtMs === null) {
           this.stored.recordingStartedAtMs = nowMs;

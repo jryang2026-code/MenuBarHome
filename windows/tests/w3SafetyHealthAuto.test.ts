@@ -1221,46 +1221,44 @@ describe("B1 + B5 PC Context Automation Engine, AwayArbitrator, 5m Undo & HA Doo
     assert.equal(undoSent.length, 1);
 
     const { HomeAssistantSynthesizer } = await import("../src/core/homeAssistant.js");
-    const makeGenericSmokeSnap = (state: "on" | "off") => ({
+    const makeMultiSafetySnap = (smokeState: "on" | "off", gasState: "on" | "off") => ({
       areas: [{ area_id: "kitchen", name: "厨房" }],
-      devices: [{ id: "generic_smoke_dev", name: "Kitchen", model: "TS0205", area_id: "kitchen" }],
-      entities: [{ entity_id: "binary_sensor.kitchen_detector", device_id: "generic_smoke_dev" }],
+      devices: [{ id: "generic_combo_dev", name: "Kitchen", model: "TS0205", area_id: "kitchen" }],
+      entities: [
+        { entity_id: "sensor.kitchen_temp", device_id: "generic_combo_dev" },
+        { entity_id: "binary_sensor.kitchen_smoke", device_id: "generic_combo_dev" },
+        { entity_id: "binary_sensor.kitchen_gas", device_id: "generic_combo_dev" },
+      ],
       states: [
-        {
-          entity_id: "binary_sensor.kitchen_detector",
-          state,
-          attributes: { device_class: "smoke" },
-        },
+        { entity_id: "sensor.kitchen_temp", state: "24.0", attributes: { device_class: "temperature" } },
+        { entity_id: "binary_sensor.kitchen_smoke", state: smokeState, attributes: { device_class: "smoke" } },
+        { entity_id: "binary_sensor.kitchen_gas", state: gasState, attributes: { device_class: "gas" } },
       ],
     });
-    const smokeOn1 = HomeAssistantSynthesizer.synthesize(makeGenericSmokeSnap("on")).devices[0]!;
-    const smokeOff = HomeAssistantSynthesizer.synthesize(makeGenericSmokeSnap("off")).devices[0]!;
-    const smokeOn2 = HomeAssistantSynthesizer.synthesize(makeGenericSmokeSnap("on")).devices[0]!;
-    assert.equal(smokeOff.kind.kind === "sensor" ? smokeOff.kind.alertKind : null, "smoke");
+    const gasOn1 = HomeAssistantSynthesizer.synthesize(makeMultiSafetySnap("off", "on")).devices[0]!;
+    const gasOff = HomeAssistantSynthesizer.synthesize(makeMultiSafetySnap("off", "off")).devices[0]!;
+    const gasOn2 = HomeAssistantSynthesizer.synthesize(makeMultiSafetySnap("off", "on")).devices[0]!;
 
-    const monitor = new SafetyMonitor(new MemoryKV());
+    const monitor = new SafetyMonitor(new MemoryKV(), "ha:home-1");
     const policy = createDefaultSensorAlertPolicy();
-    const alerts1 = monitor.evaluate({
-      devices: [smokeOn1],
-      favorites: new Set(),
-      sensorPolicy: policy,
-      nowMs: t0,
-    });
-    assert.equal(alerts1.length, 1);
-    const alertsClear = monitor.evaluate({
-      devices: [smokeOff],
-      favorites: new Set(),
-      sensorPolicy: policy,
-      nowMs: t0 + 5_000,
-    });
-    assert.equal(alertsClear.length, 0);
-    const alerts2 = monitor.evaluate({
-      devices: [smokeOn2],
-      favorites: new Set(),
-      sensorPolicy: policy,
-      nowMs: t0 + 10_000,
-    });
-    assert.equal(alerts2.length, 1);
+    assert.equal(
+      monitor.evaluate({ devices: [gasOn1], favorites: new Set(), sensorPolicy: policy, nowMs: t0 }).length,
+      1,
+    );
+    assert.equal(
+      monitor.evaluate({ devices: [gasOff], favorites: new Set(), sensorPolicy: policy, nowMs: t0 + 5_000 }).length,
+      0,
+    );
+    assert.equal(
+      monitor.evaluate({ devices: [gasOn2], favorites: new Set(), sensorPolicy: policy, nowMs: t0 + 10_000 }).length,
+      1,
+    );
+
+    monitor.resetSessionState("ha:home-2");
+    assert.equal(
+      monitor.evaluate({ devices: [gasOn2], favorites: new Set(), sensorPolicy: policy, nowMs: t0 + 15_000 }).length,
+      1,
+    );
 
     const r1 = createAutomationRule({
       id: "r-dispatch-1",

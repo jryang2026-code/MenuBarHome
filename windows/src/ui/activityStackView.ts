@@ -192,9 +192,10 @@ function createHostActivityCenter(
   storage: KeyValueStorageLike = defaultSafetyStorage(),
   doorbellScheduler?: DoorbellCoordinatorScheduler,
 ): HostActivityCenter {
+  const scopeKey = computeActivityScopeKey(host);
   return {
     storage,
-    scopeKey: computeActivityScopeKey(host),
+    scopeKey,
     lastSourceRevision: host.sourceRevision ?? 0,
     hasObservedNonEmptyDevices: host.devices.length > 0,
     isExpanded: false,
@@ -203,7 +204,7 @@ function createHostActivityCenter(
     weeklyReportCard: null,
     dismissedActivityIds: new Set<string>(),
     dispatchedNotifications: [],
-    safetyMonitor: new SafetyMonitor(storage),
+    safetyMonitor: new SafetyMonitor(storage, scopeKey),
     offlineHistory: new OfflineHistory(storage),
     automationEngine: new AutomationEngine(storage),
     doorbellDetector: new DoorbellDetector(),
@@ -264,7 +265,7 @@ function clearCenterActivities(center: HostActivityCenter): void {
   center.dismissedActivityIds.clear();
   center.doorbellCoordinator.clearAll();
   center.doorbellDetector.reset();
-  center.safetyMonitor.resetSessionState();
+  center.safetyMonitor.resetSessionState(center.scopeKey);
   center.automationEngine.resetTransientState();
   center.lastSampledLockState = null;
 }
@@ -273,6 +274,7 @@ export function clearHostActivitiesOnSignOut(host: unknown): void {
   if (!isFullPanelHost(host)) return;
   const center = (host as HostWithActivity).activityCenter;
   if (!center) return;
+  center.safetyMonitor.resetSessionState();
   center.scopeKey = computeActivityScopeKey(host);
   center.lastSourceRevision = host.sourceRevision ?? 0;
   center.hasObservedNonEmptyDevices = false;
@@ -892,6 +894,7 @@ export function tickSafetyHealthAndAutomation(
       favorites,
       sensorPolicy: effectivePolicy,
       nowMs,
+      scope: center.scopeKey,
       deviceFacets: host.deviceFacets,
       observationsByDeviceId: center.observationsOverride ?? undefined,
       language: host.settings.interfaceLanguage,

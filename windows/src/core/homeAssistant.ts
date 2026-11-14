@@ -30,6 +30,7 @@ import {
   type DeviceCommand,
   type DeviceKind,
   type FacetControl,
+  type SensorSafetyObservationSpec,
   type SensorSpec,
   type SmartDevice,
   type SynthesizedHome,
@@ -165,6 +166,35 @@ function resolveHASafetyAlertKind(
   return active.alertKind;
 }
 
+function resolveHASafetyObservations(
+  entities: readonly Row[],
+  states: ReadonlyMap<string, HAState>,
+  allowObjectIdFallback: boolean,
+): SensorSafetyObservationSpec[] {
+  const out: SensorSafetyObservationSpec[] = [];
+  for (const entity of entities) {
+    const kind = haBinarySensorKind(entity, states, allowObjectIdFallback);
+    const entityId = text(entity.entity_id);
+    const st = entityId ? states.get(entityId) : undefined;
+    if (kind !== null && st && isHAStateAvailable(st)) {
+      out.push({ entityId, kind, alarming: st.state.toLowerCase() === "on" });
+    }
+  }
+  return out;
+}
+
+function requiredSafetyObservations(value: unknown): SensorSafetyObservationSpec[] {
+  if (!Array.isArray(value)) throw new Error("Invalid cached safety observations");
+  return value.map((item) => {
+    const rec = object(item);
+    return {
+      entityId: requiredText(rec.entityId),
+      kind: requiredSensorAlertKind(rec.kind),
+      alarming: requiredBoolean(rec.alarming),
+    };
+  });
+}
+
 function cachedKind(value: unknown): DeviceKind {
   const k = object(value);
   switch (k.kind) {
@@ -176,7 +206,7 @@ function cachedKind(value: unknown): DeviceKind {
     case "vacuum": return { kind: "vacuum", entityId: requiredText(k.entityId), status: requiredText(k.status), battery: nullableNumber(k.battery), modeEntityId: nullableText(k.modeEntityId), currentMode: nullableText(k.currentMode), availableModes: requiredStrings(k.availableModes) };
     case "camera": return { kind: "camera", entityId: requiredText(k.entityId), isOn: requiredBoolean(k.isOn), nightShot: nullableText(k.nightShot), availableNightShots: requiredStrings(k.availableNightShots), motionDetectionEntityId: nullableText(k.motionDetectionEntityId), isMotionDetectionOn: nullableBoolean(k.isMotionDetectionOn), streamEntityId: nullableText(k.streamEntityId), snapshotPath: null };
     case "cover": return { kind: "cover", entityId: requiredText(k.entityId), subtype: requiredCoverSubtype(k.subtype), positionPercent: nullableNumber(k.positionPercent), positionWritable: requiredBoolean(k.positionWritable), openDescription: nullableText(k.openDescription), closeDescription: nullableText(k.closeDescription), pauseDescription: nullableText(k.pauseDescription), batteryPercent: nullableNumber(k.batteryPercent), faultText: nullableText(k.faultText), motion: requiredCoverMotion(k.motion) };
-    case "sensor": return { kind: "sensor", temperature: nullableNumber(k.temperature), humidity: nullableNumber(k.humidity), battery: nullableNumber(k.battery), ...(k.statusText !== undefined && k.statusText !== null ? { statusText: requiredText(k.statusText) } : {}), ...(k.alertKind !== undefined && k.alertKind !== null ? { alertKind: requiredSensorAlertKind(k.alertKind) } : {}) };
+    case "sensor": return { kind: "sensor", temperature: nullableNumber(k.temperature), humidity: nullableNumber(k.humidity), battery: nullableNumber(k.battery), ...(k.statusText !== undefined && k.statusText !== null ? { statusText: requiredText(k.statusText) } : {}), ...(k.alertKind !== undefined && k.alertKind !== null ? { alertKind: requiredSensorAlertKind(k.alertKind) } : {}), ...(k.safetyObservations !== undefined ? { safetyObservations: requiredSafetyObservations(k.safetyObservations) } : {}) };
     default: return cachedExtendedKind(k);
   }
 }
@@ -603,6 +633,7 @@ function buildKind(
       // claimed out of 更多设置 (a read-only alarm row there would be noise).
       const safetyStatus = claimSafetyBinarySensors(entities, states, claimed);
       const alertKind = resolveHASafetyAlertKind(entities, states, false);
+      const safetyObservations = resolveHASafetyObservations(entities, states, false);
       kind = {
         kind: "sensor",
         temperature: number(temperature?.state),
@@ -610,6 +641,7 @@ function buildKind(
         battery: reading("battery", true),
         ...(safetyStatus !== null ? { statusText: safetyStatus } : {}),
         ...(alertKind ? { alertKind } : {}),
+        ...(safetyObservations.length > 0 ? { safetyObservations } : {}),
       };
     } else {
       const batState = sensor("battery");
@@ -623,8 +655,16 @@ function buildKind(
       );
       if (binaryBuilt) {
         const alertKind = resolveHASafetyAlertKind(entities, states, allowBinaryFallback);
-        return alertKind && binaryBuilt.kind.kind === "sensor"
-          ? { ...binaryBuilt, kind: { ...binaryBuilt.kind, alertKind } }
+        const safetyObservations = resolveHASafetyObservations(entities, states, allowBinaryFallback);
+        return binaryBuilt.kind.kind === "sensor" && (alertKind || safetyObservations.length > 0)
+          ? {
+              ...binaryBuilt,
+              kind: {
+                ...binaryBuilt.kind,
+                ...(alertKind ? { alertKind } : {}),
+                ...(safetyObservations.length > 0 ? { safetyObservations } : {}),
+              },
+            }
           : binaryBuilt;
       }
 

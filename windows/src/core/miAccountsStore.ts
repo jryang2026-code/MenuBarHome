@@ -1206,6 +1206,7 @@ export async function executeMultiAccountMiotCommand(command: DeviceCommand,
     readonly devices: readonly SmartDevice[];
     readonly transport: HttpTransport;
     readonly storage?: Storage | null;
+    readonly beforeSend?: () => void;
     readonly clientFactory?: (session: MiSession, transport: HttpTransport) => MiCloudClient;
   },
 ): Promise<{ readonly executedByAccountId: string }> { const parsed =
@@ -1224,11 +1225,15 @@ export async function executeMultiAccountMiotCommand(command: DeviceCommand,
   }
 
   const write = MiotCommandMapper.map(command, spec);
+  options.beforeSend?.();
   const clientFactory = options.clientFactory ?? ((session, tp) => new MiCloudClient(session, tp));
   let sawExpired = false;
+  let attemptCount = 0;
 
   for (const ownerId of owners) { const accountIdx = options.accounts.findIndex((acc) => acc.id === ownerId);
     if (accountIdx < 0) continue;
+    if (attemptCount > 0) { options.beforeSend?.(); }
+    attemptCount += 1;
     const account = options.accounts[accountIdx]!;
     const client = clientFactory(account.session, options.transport);
     try { if (write.kind === "setProps") { await client.setProps(write.writes);
@@ -1300,9 +1305,14 @@ export class MultiAccountMiCloudProvider implements HomeProvider {
             ...this.dependencies.accounts.map((acc) => acc.id),
           ];
     let sawExpired = false;
+    let attemptCount = 0;
     for (const ownerId of new Set(candidateIds)) {
       const accountIdx = this.dependencies.accounts.findIndex((acc) => acc.id === ownerId);
       if (accountIdx < 0) continue;
+      if (attemptCount > 0) {
+        options.beforeSend?.();
+      }
+      attemptCount += 1;
       const account = this.dependencies.accounts[accountIdx]!;
       const client = new MiCloudClient(account.session, this.dependencies.transport);
       try {

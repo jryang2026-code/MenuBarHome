@@ -310,25 +310,35 @@ export function extractSensorObservations(
   };
 
   if (device.kind.kind === "sensor") {
-    const statusText = device.kind.statusText?.trim() ?? "";
-    const explicitOrMetaKind =
-      device.kind.alertKind ??
-      inferSensorKindFromMetadata(`${device.model} ${device.name} ${statusText}`) ??
-      null;
-    if (explicitOrMetaKind !== null) {
-      lastKnownSensorKindByDeviceId.set(device.id, explicitOrMetaKind);
-    }
-    const inferredKind =
-      explicitOrMetaKind ??
-      (statusText !== "" && isStatusTextCleared(statusText)
-        ? (lastKnownSensorKindByDeviceId.get(device.id) ?? null)
-        : null);
-    if (inferredKind !== null && statusText !== "") {
-      pushObs({
-        kind: inferredKind,
-        sourceId: `${device.id}:${inferredKind}`,
-        alarming: isStatusTextAlarming(inferredKind, statusText),
-      });
+    if (device.kind.safetyObservations && device.kind.safetyObservations.length > 0) {
+      for (const item of device.kind.safetyObservations) {
+        pushObs({
+          kind: item.kind,
+          sourceId: `${device.id}:${item.entityId}:${item.kind}`,
+          alarming: item.alarming,
+        });
+      }
+    } else {
+      const statusText = device.kind.statusText?.trim() ?? "";
+      const explicitOrMetaKind =
+        device.kind.alertKind ??
+        inferSensorKindFromMetadata(`${device.model} ${device.name} ${statusText}`) ??
+        null;
+      if (explicitOrMetaKind !== null) {
+        lastKnownSensorKindByDeviceId.set(device.id, explicitOrMetaKind);
+      }
+      const inferredKind =
+        explicitOrMetaKind ??
+        (statusText !== "" && isStatusTextCleared(statusText)
+          ? (lastKnownSensorKindByDeviceId.get(device.id) ?? null)
+          : null);
+      if (inferredKind !== null && statusText !== "") {
+        pushObs({
+          kind: inferredKind,
+          sourceId: `${device.id}:${inferredKind}`,
+          alarming: isStatusTextAlarming(inferredKind, statusText),
+        });
+      }
     }
   } else if (device.kind.kind === "generic" && device.kind.alerts && device.kind.alerts.length > 0) {
     for (let idx = 0; idx < device.kind.alerts.length; idx += 1) {
@@ -466,6 +476,7 @@ export class SafetyMonitor {
   public static readonly sensorEdgeKey = "safety_sensor_edge_v1";
 
   private readonly storage: KeyValueStorageLike;
+  private activeScope: string;
   private previousOnlineDeviceIds = new Set<string>();
   private hasEvaluatedSnapshot = false;
   private lowBatteryAlertedAtMs: Record<string, number> = {};
@@ -473,17 +484,46 @@ export class SafetyMonitor {
   private longRunAlertedForSession = new Set<string>();
   private sensorEdge: Record<string, boolean> = {};
 
-  constructor(storage: KeyValueStorageLike = defaultSafetyStorage()) {
+  constructor(storage: KeyValueStorageLike = defaultSafetyStorage(), scope = "default") {
     this.storage = storage;
+    this.activeScope = scope.trim() || "default";
     this.lowBatteryAlertedAtMs = this.loadNumberMap(SafetyMonitor.lowBatteryAlertedAtKey);
-    this.sensorEdge = this.loadBooleanMap(SafetyMonitor.sensorEdgeKey);
+    this.sensorEdge = this.loadBooleanMap(this.currentSensorEdgeStorageKey());
   }
 
-  public resetSessionState(): void {
+  private currentSensorEdgeStorageKey(): string {
+    return this.activeScope === "default"
+      ? SafetyMonitor.sensorEdgeKey
+      : `${SafetyMonitor.sensorEdgeKey}:${this.activeScope}`;
+  }
+
+  public setScope(scope: string): void {
+    const normalized = scope.trim() || "default";
+    if (normalized === this.activeScope) return;
+    this.activeScope = normalized;
+    this.sensorEdge = this.loadBooleanMap(this.currentSensorEdgeStorageKey());
     this.previousOnlineDeviceIds.clear();
     this.hasEvaluatedSnapshot = false;
     this.activeSinceByDeviceId.clear();
     this.longRunAlertedForSession.clear();
+  }
+
+  public resetSessionState(nextScope?: string): void {
+    this.previousOnlineDeviceIds.clear();
+    this.hasEvaluatedSnapshot = false;
+    this.activeSinceByDeviceId.clear();
+    this.longRunAlertedForSession.clear();
+    if (nextScope !== undefined) {
+      const normalized = nextScope.trim() || "default";
+      this.activeScope = normalized;
+      this.sensorEdge = this.loadBooleanMap(this.currentSensorEdgeStorageKey());
+    } else {
+      this.sensorEdge = {};
+      try {
+        this.storage.removeItem(this.currentSensorEdgeStorageKey());
+      } catch {
+      }
+    }
   }
 
   public evaluate(args: {
@@ -491,10 +531,14 @@ export class SafetyMonitor {
     readonly favorites: ReadonlySet<string>;
     readonly sensorPolicy: SensorAlertPolicy;
     readonly nowMs?: number;
+    readonly scope?: string;
     readonly deviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
     readonly observationsByDeviceId?: Readonly<Record<string, readonly SensorObservation[]>>;
     readonly language?: LanguagePreference;
   }): SafetyAlert[] {
+    if (args.scope !== undefined) {
+      this.setScope(args.scope);
+    }
     const nowMs = args.nowMs ?? Date.now();
     const emitted: SafetyAlert[] = [];
     const presentIds = new Set(args.devices.map((d) => d.id));
@@ -641,7 +685,7 @@ export class SafetyMonitor {
     });
     if (!shallowEqualBooleanMap(evaluated.ledger, this.sensorEdge)) {
       this.sensorEdge = evaluated.ledger;
-      this.persistBooleanMap(SafetyMonitor.sensorEdgeKey, this.sensorEdge);
+      this.persistBooleanMap(this.currentSensorEdgeStorageKey(), this.sensorEdge);
     }
     emitted.push(...evaluated.alerts);
 

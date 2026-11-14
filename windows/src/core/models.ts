@@ -125,6 +125,12 @@ export interface CameraLens {
   readonly label?: string;
 }
 
+export interface SensorSafetyObservationSpec {
+  readonly entityId: string;
+  readonly kind: "smoke" | "gas" | "leak" | "contact" | "motion" | "vibration" | "lock";
+  readonly alarming: boolean;
+}
+
 export interface SensorSpec {
   readonly kind: "sensor";
   readonly temperature: number | null;
@@ -132,6 +138,7 @@ export interface SensorSpec {
   readonly battery: number | null;
   readonly statusText?: string | null;
   readonly alertKind?: "smoke" | "gas" | "leak" | "contact" | "motion" | "vibration" | "lock" | null;
+  readonly safetyObservations?: readonly SensorSafetyObservationSpec[];
 }
 
 export interface CoverSpec {
