@@ -105,6 +105,7 @@ export interface PersistedSettings {
   layout: LayoutPrefs;
   /** Selected Mi Home id; null shows every home. */
   selectedHomeId: string | null;
+  customHomeTitle?: string;
   /** UI language (#52); `system` follows the OS language, and the speech recognizer follows the UI. */
   interfaceLanguage: LanguagePreference;
   /** °C/°F display (#52); stored/command values stay Celsius. */

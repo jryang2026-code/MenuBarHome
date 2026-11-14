@@ -532,10 +532,24 @@ describe("W4 Multi-Account UI: account cards, token health badges, non-overwriti
     app.settings.interfaceLanguage = "zh-Hans";
     app.render();
 
+    const cnDeviceId = app.devices.find((d) => d.name === "北京吸顶灯")!.id;
+    app.expandedDeviceId = cnDeviceId;
+    app.waitingDeviceIds.add(cnDeviceId);
+    app.cameraLive.activeLiveCameraId = cnDeviceId;
+    let cameraClosedCount = 0;
+    const origCloseCam = app.cameraLive.closeCameraLiveView.bind(app.cameraLive);
+    app.cameraLive.closeCameraLiveView = () => {
+      cameraClosedCount += 1;
+      origCloseCam();
+    };
+
     const signOutCnBtn = app.root.querySelector<HTMLButtonElement>(`[data-mi-account-signout="${cnAcc.id}"]`)!;
     signOutCnBtn.click();
     await settleUi(10);
 
+    assert.equal(cameraClosedCount, 1);
+    assert.equal(app.expandedDeviceId, null);
+    assert.equal(app.waitingDeviceIds.has(cnDeviceId), false);
     assert.equal(app.settings.miSession?.userId, SESSION_SG_SECONDARY.userId);
     assert.equal(app.settings.miCloudRegion, "sg");
     assert.equal(app.root.querySelectorAll("[data-mi-account-card]").length, 1);
@@ -982,6 +996,19 @@ describe("W4 Scanner & Diagnostics UI: cross-account scan, context-switch auto-c
       assert.ok(!href.includes(secretHomeName));
       assert.ok(!href.includes(SESSION_CN_PRIMARY.userId));
     }
+    const openedUrls: string[] = [];
+    window.__TAURI_INTERNALS__ = {
+      invoke: async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
+        if (cmd === "open_release_page" && typeof args?.["url"] === "string") {
+          openedUrls.push(args["url"]);
+        }
+        return null as unknown as T;
+      },
+    };
+    issueLinks[0]!.click();
+    assert.equal(openedUrls.length, 1);
+    assert.equal(openedUrls[0], issueLinks[0]!.getAttribute("href"));
+    delete window.__TAURI_INTERNALS__;
 
     app.root.querySelector<HTMLButtonElement>("#btn-copy-diagnostics-report")!.click();
     await settleUi(6);

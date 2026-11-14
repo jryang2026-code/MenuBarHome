@@ -691,7 +691,6 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     session.aiTestStatus = null;
     session.envImportStatus = null;
     clearSettingsHighlight(host.root);
-    bindAutomationSettingsEvents(host);
   } else if (!session.launchAtLoginSynced) {
     session.launchAtLoginSynced = true;
     void syncLaunchAtLoginFromSystem(host);
@@ -717,6 +716,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   });
 
   if (host.activeSheet === "onboarding") {
+    bindAutomationSettingsEvents(host);
     return;
   }
 

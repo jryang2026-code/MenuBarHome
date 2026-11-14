@@ -575,6 +575,41 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
     center.weeklyReportCard = null;
     app.render();
     assert.equal(document.querySelector("#settings-health-report-preview"), null);
+
+    const dualAcc1 = makeMiAccount({
+      userId: "10001",
+      cUserId: "c1",
+      ssecurity: "AQIDBAUGBwgJCgsMDQ4PEA==",
+      serviceToken: "tok1",
+      passToken: "pass1",
+      region: "cn",
+    });
+    const dualAcc2 = makeMiAccount({
+      userId: "20002",
+      cUserId: "c2",
+      ssecurity: "AQIDBAUGBwgJCgsMDQ4PEA==",
+      serviceToken: "tok2",
+      passToken: "pass2",
+      region: "sg",
+    });
+    app.miAccountsOverride = [dualAcc1, dualAcc2];
+    app.dualSourceEnabledOverride = true;
+    app.settings.haBaseURL = "https://ha.local:8123";
+    app.settings.haToken = "ha-tok";
+    const dualEnergy = getScopedEnergyHistory({
+      connectionMode: app.settings.connectionMode,
+      dualSourceEnabled: true,
+      activeAccountIds: [dualAcc1.id, dualAcc2.id],
+      miSession: app.settings.miSession,
+      haBaseURL: app.settings.haBaseURL,
+      haToken: app.settings.haToken,
+    });
+    const nowMs = Date.now();
+    dualEnergy.record([makePlug({ id: "plug.tv", name: "电视柜插座", isOn: true, powerWatts: 200, energyKwh: 30 })], new Date(nowMs - 2 * 86_400_000));
+    dualEnergy.record([makePlug({ id: "plug.tv", name: "电视柜插座", isOn: true, powerWatts: 200, energyKwh: 36.2 })], new Date(nowMs - 86_400_000));
+    await click("#btn-generate-copy-health-report");
+    await setImmediate();
+    assert.match(copiedText, /本周 6\.2 kWh/);
   });
 
   it("finds automation, safety guard, sensor alert, doorbell, and weekly health report anchors in search and jumps to highlight", async () => {

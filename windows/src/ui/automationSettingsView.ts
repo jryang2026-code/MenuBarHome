@@ -41,7 +41,8 @@ import {
   type SensorAlertKind,
   type WeeklyHealthReport,
 } from "../core/safetyAndHealth.js";
-import { sharedSensorHistoryStore } from "../core/sensorHistory.js";
+import { resolveSensorHistoryScope, sharedSensorHistoryStore } from "../core/sensorHistory.js";
+import { getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
 import {
   MAX_RECENT_AUTOMATION_RUNS,
   computeActivityScopeKey,
@@ -131,6 +132,7 @@ export interface AutoSafetySettingsHost {
   readonly miAccountsOverride?: readonly import("../core/miAccountsStore.js").MiAccount[] | null;
   readonly multiAccountState?: import("./cloudRefresh.js").HostMultiAccountState | null;
   readonly dualSourceEnabledOverride?: boolean | null;
+  readonly dualSourceCoordinator?: import("../core/dualSourceProvider.js").DualSourceCoordinator | null;
   autoSafetySession?: HostAutoSafetySession;
   activityCenter?: HostActivityCenter | null;
   applyCommand?(cmd: DeviceCommand, silent?: boolean): Promise<boolean>;
@@ -341,11 +343,11 @@ function aliasedDevicesFor(devices: readonly SmartDevice[], layout: LayoutPrefs 
   });
 }
 
-function resolveScenesForContext(ctx: SettingsViewContext): readonly HomeScene[] {
-  if (ctx.scenes) return ctx.scenes;
+function resolveScenesForContext(ctx: Pick<SettingsViewContext, "settings" | "scenes">): readonly HomeScene[] {
+  if (ctx.scenes && ctx.scenes.length > 0) return ctx.scenes;
   if (ctx.settings.connectionMode === "homeAssistant") return ctx.settings.cachedHAHome?.home.scenes ?? [];
   if (ctx.settings.connectionMode === "demo") return demoScenes();
-  return [];
+  return ctx.scenes ?? [];
 }
 
 function isDeviceControllableForRule(device: SmartDevice): boolean {
@@ -377,20 +379,43 @@ export function generateLiveWeeklyHealthReport(
     readonly settings: PersistedSettings & EnergyScopeSource;
     readonly devices: readonly SmartDevice[];
     readonly layout?: LayoutPrefs;
+    readonly miAccountsOverride?: readonly import("../core/miAccountsStore.js").MiAccount[] | null;
+    readonly multiAccountState?: import("./cloudRefresh.js").HostMultiAccountState | null;
+    readonly dualSourceEnabledOverride?: boolean | null;
+    readonly dualSourceCoordinator?: import("../core/dualSourceProvider.js").DualSourceCoordinator | null;
   },
-  storage: KeyValueStorageLike = defaultSafetyStorage(),
+  _storage: KeyValueStorageLike = defaultSafetyStorage(),
   offlineHistory?: import("../core/safetyAndHealth.js").OfflineHistory,
   nowMs = Date.now(),
 ): WeeklyHealthReport {
   const aliased = aliasedDevicesFor(source.devices, source.layout ?? source.settings.layout);
   const nowDate = new Date(nowMs);
-  const energyHistory = getScopedEnergyHistory(source.settings);
+  const dual = isDualSourceEnabled(source) || Boolean(source.settings.dualSourceEnabled);
+  const accounts = source.miAccountsOverride ?? getHostMiAccountsState(source)?.accounts ?? [];
+  const activeAccountIds = accounts.length > 0 ? accounts.map((a) => a.id) : source.settings.activeAccountIds;
+  const energyHistory = getScopedEnergyHistory({
+    connectionMode: source.settings.connectionMode,
+    dualSourceEnabled: dual,
+    ...(activeAccountIds ? { activeAccountIds } : {}),
+    miSession: source.settings.miSession,
+    haBaseURL: source.settings.haBaseURL,
+    haToken: source.settings.haToken,
+  });
   const dailyEnergy = energyHistory.dailyTotals(14, nowDate).map((d) => ({ kwh: d.kwh, isObserved: d.isObserved }));
   const energyByDevice = energyHistory
     .topDevices(7, WEEKLY_HEALTH_CONSTANTS.topConsumerCount, aliased, nowDate)
     .map((item) => ({ id: item.deviceId, name: item.name, kwh: item.kwh }));
 
   const sensorStore = sharedSensorHistoryStore();
+  sensorStore.setConnectionScope(
+    resolveSensorHistoryScope({
+      connectionMode: source.settings.connectionMode,
+      haBaseURL: source.settings.haBaseURL ?? "",
+      miSession: source.settings.miSession ?? null,
+      dualSourceEnabled: dual,
+      ...(activeAccountIds ? { activeAccountIds } : {}),
+    }),
+  );
   const climate: Record<string, HealthClimateRange> = {};
   for (const dev of aliased) {
     const tempSum = sensorStore.summary(dev.id, "7d", "temperature", nowMs);
@@ -1048,6 +1073,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
   const draft = session.draft;
   const lang = effectiveLanguage(host.settings.interfaceLanguage);
   const aliasedDevices = aliasedDevicesFor(host.devices, host.layout);
+  const effectiveScenes = resolveScenesForContext(host);
 
   const autoSection = host.root.querySelector<HTMLElement>("#settings-automation-section");
   autoSection?.addEventListener("change", (event) => {
@@ -1113,7 +1139,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
       if (addBtn) {
         const actionInvalid =
           (draft.actionKind === "devices" && draft.selectedDeviceIds.size === 0) ||
-          (draft.actionKind === "scene" && host.scenes.length === 0);
+          (draft.actionKind === "scene" && effectiveScenes.length === 0);
         addBtn.disabled = !valid || actionInvalid;
       }
     } else if (target.id === "settings-auto-battery-threshold") {
@@ -1157,17 +1183,23 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
     if (runId) {
       const rule = ruleStore.load().find((r) => r.id === runId);
       if (!rule || typeof host.applyCommand !== "function") return;
+      const scopeAtStart = center?.scopeKey ?? computeActivityScopeKey(host);
+      const sourceRevisionAtStart = host.sourceRevision ?? 0;
+      const isSameScope = (): boolean =>
+        (host.sourceRevision ?? 0) === sourceRevisionAtStart &&
+        (center?.scopeKey ?? computeActivityScopeKey(host)) === scopeAtStart;
       void (async () => {
         if (isFullPanelHost(host) && (await rejectIfControlBlockedWhileLocked(host))) return;
+        if (!isSameScope()) return;
         const execHost = host as AutoSafetySettingsHost & {
           applyCommand(cmd: DeviceCommand, silent?: boolean): Promise<boolean>;
         };
         const run = await executeAutomationRule(execHost, rule, {
-          scope: center?.scopeKey ?? computeActivityScopeKey(host),
+          scope: scopeAtStart,
           displayDevices: aliasedDevices,
           recordUndoKindSnapshots,
           onUndoRecorded: (recorded) => {
-            if (!center) return;
+            if (!center || !isSameScope()) return;
             center.dismissedActivityIds.delete(`auto:${recorded.id}`);
             center.recentAutomationRuns = [
               recorded,
@@ -1175,6 +1207,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
             ].slice(0, MAX_RECENT_AUTOMATION_RUNS);
           },
         });
+        if (!isSameScope()) return;
         if (!run) {
           host.replyBanner = {
             text: uiText(
@@ -1198,7 +1231,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
     }
 
     if (btn.id === "btn-add-auto-rule") {
-      const action = buildActionFromDraft(draft, host.scenes);
+      const action = buildActionFromDraft(draft, effectiveScenes);
       if (!action) return;
       let wifiCond: AutomationWiFiCondition = { kind: "any" };
       if (draft.wifiKind !== "any") {
@@ -1245,7 +1278,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
           "已儲存自動化規則：{summary}",
           "Saved automation rule: {summary}",
           {
-            summary: summarizeAutomationAction(created.action, aliasedDevices, host.scenes, lang),
+            summary: summarizeAutomationAction(created.action, aliasedDevices, effectiveScenes, lang),
           },
         ),
         source: uiText(lang, "状态感知自动化", "狀態感知自動化", "Context Automation"),

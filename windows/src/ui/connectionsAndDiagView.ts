@@ -7,7 +7,7 @@ import { MiAccountScope, MiAccountsStore, formatAccountTokenNotice, getAccountTo
 import { DiagnosticsReportBuilder, UnsupportedDeviceScanner, appDiagnosticsLog, deriveCameraDiagnostics, derivePollingBackoffDiagnostics, formatSpecSummaryText, summarizeModelCounts, type ScanUnsupportedOptions, type UnsupportedDevice } from "../core/diagnosticsAndScanner.js";
 import type { DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import type { EnvironmentReading, FacetControl, HomeBackend, HomeScene, SmartDevice } from "../core/models.js";
-import { isFullPanelHost } from "./activityStackView.js";
+import { clearHostActivitiesOnSignOut, isFullPanelHost } from "./activityStackView.js";
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
 import { canUseDualSource, getHostDualSourceState, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, recomputeHostDualSource, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
@@ -255,6 +255,8 @@ export interface ConnectionsAndDiagHost {
   isHomeMenuOpen?: boolean;
   ctxMenu?: unknown;
   prompt?: unknown;
+  expandedDeviceId?: string | null;
+  waitingDeviceIds?: Set<string>;
   miAccountsStore?: MiAccountsStore | null;
   miAccountsOverride?: readonly MiAccount[] | null;
   dualSourceEnabledOverride?: boolean | null;
@@ -324,13 +326,10 @@ export function resetHostUnsupportedScanner(host: ConnectionsAndDiagHost): void 
 }
 
 export function readCustomHomeTitle(settings: PersistedSettings): string {
-  const record = settings as unknown as Record<string, unknown>;
-  if (typeof record["customHomeTitle"] === "string") return record["customHomeTitle"].trim();
+  if (typeof settings.customHomeTitle === "string") return settings.customHomeTitle.trim();
   try {
     if (typeof localStorage !== "undefined") {
-      const stored = localStorage.getItem(CUSTOM_HOME_TITLE_STORAGE_KEY)?.trim() ?? "";
-      record["customHomeTitle"] = stored;
-      return stored;
+      return localStorage.getItem(CUSTOM_HOME_TITLE_STORAGE_KEY)?.trim() ?? "";
     }
   } catch {
   }
@@ -339,7 +338,7 @@ export function readCustomHomeTitle(settings: PersistedSettings): string {
 
 export function writeCustomHomeTitle(host: ConnectionsAndDiagHost, rawTitle: string): string {
   const normalized = rawTitle.trim();
-  (host.settings as unknown as Record<string, unknown>)["customHomeTitle"] = normalized;
+  host.settings.customHomeTitle = normalized;
   getHostConnDiagSession(host).titleDraft = null;
   try {
     if (typeof localStorage !== "undefined") {
@@ -488,14 +487,18 @@ export async function signOutSingleMiAccountOnHost(
 
     const removedIds = new Set(
       host.devices
-        .filter(
-          (d) =>
-            MiAccountScope.isOwned(d.id, accountId) ||
-            (d as SmartDevice & { readonly accountId?: string }).accountId === accountId,
-        )
+        .filter((d) => MiAccountScope.isOwned(d.id, accountId) || d.accountId === accountId)
         .map((d) => d.id),
     );
+    const activeCamId = host.cameraLive?.activeLiveCameraId;
+    if (activeCamId && (removedIds.has(activeCamId) || MiAccountScope.isOwned(activeCamId, accountId))) {
+      host.cameraLive?.closeCameraLiveView();
+    }
+    if (host.expandedDeviceId && (removedIds.has(host.expandedDeviceId) || MiAccountScope.isOwned(host.expandedDeviceId, accountId))) {
+      host.expandedDeviceId = null;
+    }
     if (removedIds.size > 0) {
+      for (const id of removedIds) host.waitingDeviceIds?.delete(id);
       host.devices = host.devices.filter((d) => !removedIds.has(d.id));
       host.environmentReadings = host.environmentReadings.filter((r) => !removedIds.has(r.id));
       const nextFacets = { ...host.deviceFacets };
@@ -503,7 +506,16 @@ export async function signOutSingleMiAccountOnHost(
       host.deviceFacets = nextFacets;
     }
 
+    if (removal.accounts.length <= 1) {
+      host.multiAccountState = null;
+    }
+
     if (removal.accounts.length === 0) {
+      if (host.cameraLive?.activeLiveCameraId || host.cameraLive?.liveCameraKeepAliveTimer) {
+        host.cameraLive.closeCameraLiveView();
+      }
+      host.expandedDeviceId = null;
+      host.waitingDeviceIds?.clear();
       host.settings.cachedXiaomiDevices = [];
       host.miSessionExpired = false;
       host.cloudValuesStale = false;
@@ -527,9 +539,6 @@ export async function signOutSingleMiAccountOnHost(
         await host.refreshHADevices(false);
       } else {
         if (host.settings.connectionMode === "xiaomiCloud") {
-          if (host.cameraLive?.activeLiveCameraId || host.cameraLive?.liveCameraKeepAliveTimer) {
-            host.cameraLive.closeCameraLiveView();
-          }
           host.devices = [];
           host.scenes = [];
           host.environmentReadings = [];
@@ -537,6 +546,7 @@ export async function signOutSingleMiAccountOnHost(
           host.groupOwnerByMemberDid = new Map();
           host.deviceFacets = {};
           host.selectRoom(null);
+          if (isFullPanelHost(host)) clearHostActivitiesOnSignOut(host);
         }
         if (host.credentialVault) await host.credentialVault.deleteMiSession();
         host.saveSettings();
@@ -601,6 +611,8 @@ export async function disconnectHomeAssistantOnHost(host: ConnectionsAndDiagHost
   if (host.cameraLive?.activeLiveCameraId || host.cameraLive?.liveCameraKeepAliveTimer) {
     host.cameraLive.closeCameraLiveView();
   }
+  host.expandedDeviceId = null;
+  host.waitingDeviceIds?.clear();
   host.localControlRevision += 1;
   host.invalidateSourceControl();
   host.clearPendingHighRisk();
@@ -648,6 +660,7 @@ export async function disconnectHomeAssistantOnHost(host: ConnectionsAndDiagHost
     host.deviceFacets = {};
     host.groupOwnerByMemberDid = new Map();
     host.selectRoom(null);
+    if (isFullPanelHost(host)) clearHostActivitiesOnSignOut(host);
   }
 
   host.replyBanner = {
@@ -882,7 +895,7 @@ export function buildDesensitizedDiagnosticsMarkdown(host: ConnectionsAndDiagHos
       deviceBackends: {
         ...Object.fromEntries(
           host.devices.flatMap((d) => {
-            const sb = (d as SmartDevice & { readonly sourceBackend?: HomeBackend }).sourceBackend;
+            const sb = d.sourceBackend;
             if (sb === "homeAssistant" || sb === "xiaomiCloud") return [[d.id, sb] as const];
             if (d.kind.kind === "camera" && d.kind.entityId.startsWith("camera.")) {
               return [[d.id, "homeAssistant"] as const];
@@ -1264,62 +1277,16 @@ export function renderConnectionsAndDiagModal(host: ConnectionsAndDiagHost): str
     </div>`;
 }
 
-type ListenerMapElement = HTMLElement & {
-  __connDiagBound?: Record<string, EventListener>;
-};
-
 function bindElementListener<E extends HTMLElement, K extends keyof HTMLElementEventMap>(
   node: E | null | undefined,
   type: K,
   handler: (el: E, event: HTMLElementEventMap[K]) => void,
 ): void {
   if (!node) return;
-  const target = node as ListenerMapElement;
-  const map = (target.__connDiagBound ??= {});
-  const previous = map[type];
-  if (previous) node.removeEventListener(type, previous);
-  const next: EventListener = (rawEvent) => {
+  node.addEventListener(type, (rawEvent) => {
     const evTarget = rawEvent.target as HTMLElement | null;
     if (evTarget?.closest?.("[data-exit-ghost]")) return;
     handler(node, rawEvent as HTMLElementEventMap[K]);
-  };
-  map[type] = next;
-  node.addEventListener(type, next);
-}
-
-export function syncPanelHeaderDom(host: ConnectionsAndDiagHost): void {
-  const lang = activeLanguage(host.settings.interfaceLanguage);
-  const effectiveTitle = effectivePanelHomeTitle(host);
-  const existingSwitch = host.root.querySelector<HTMLButtonElement>("#btn-home-menu");
-  if (existingSwitch) {
-    const titleSpan = existingSwitch.querySelector<HTMLElement>(".cc-home-title");
-    if (titleSpan) titleSpan.textContent = effectiveTitle;
-    return;
-  }
-  const plainTitle = host.root.querySelector<HTMLElement>(
-    ".cc-title-row > .cc-home-title, .cc-title-group .cc-home-title",
-  );
-  if (!plainTitle) return;
-  const btn = Object.assign(document.createElement("button"), {
-    type: "button",
-    className: "cc-home-switch",
-    id: "btn-home-menu",
-  });
-  btn.setAttribute("aria-expanded", String(Boolean(host.isHomeMenuOpen)));
-  btn.setAttribute("aria-label", tr3("家庭与连接菜单", "家庭與連線選單", "Home & Connections Menu", lang));
-  const span = Object.assign(document.createElement("span"), {
-    className: "cc-home-title",
-    textContent: effectiveTitle,
-  });
-  const caret = Object.assign(document.createElement("span"), {
-    className: `cc-home-caret ${host.isHomeMenuOpen ? "is-open" : ""}`.trim(),
-    innerHTML: SF_ICONS.chevronDown,
-  });
-  btn.append(span, caret);
-  plainTitle.replaceWith(btn);
-  bindElementListener(btn, "click", () => {
-    host.isHomeMenuOpen = !host.isHomeMenuOpen;
-    host.render();
   });
 }
 
@@ -1396,8 +1363,6 @@ export function bindConnectionsAndDiagEvents(host: ConnectionsAndDiagHost): void
 }
 
 export function bindConnectionsAndDiagPanelEvents(host: ConnectionsAndDiagHost): void {
-  syncPanelHeaderDom(host);
-
   host.root.querySelectorAll<HTMLButtonElement>("[data-open-conn-diag]").forEach((btn) => {
     bindElementListener(btn, "click", (el) => {
       const raw = el.dataset.openConnDiag;
@@ -1448,6 +1413,4 @@ export function bindConnectionsAndDiagPanelEvents(host: ConnectionsAndDiagHost):
       }
     },
   );
-
-  bindConnectionsAndDiagEvents(host);
 }
