@@ -6,6 +6,7 @@
   "icon": "icon.png",
   "author": "jryang1997",
   "license": "MIT",
+  "platforms": ["macOS", "Windows"],
   "categories": ["Applications", "Productivity"],
   "keywords": ["smart home", "mijia", "xiaomi", "home assistant", "menubar"],
   "commands": [
