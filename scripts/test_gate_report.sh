@@ -296,6 +296,77 @@ else
     fail "check.sh 缺少 Python 3.10+ 时未显式登记 PythonLint=skip"
 fi
 
+if grep -qF 'WindowsBuild=skip' scripts/check.sh; then
+    fail "check.sh 仍在共享工作树依赖路径下登记 WindowsBuild=skip"
+else
+    pass "check.sh 共享工作树依赖不再跳过 WindowsBuild"
+fi
+
+source "$root/scripts/shared_windows_deps.sh"
+
+wt_sandbox="$(mktemp -d)"
+donor_wt="$wt_sandbox/donor"
+ephem_wt="$wt_sandbox/ephem"
+consumer_wt="$wt_sandbox/consumer"
+git -C "$wt_sandbox" init -q "$donor_wt"
+git -C "$donor_wt" config user.email t@example.com
+git -C "$donor_wt" config user.name t
+git -C "$donor_wt" config commit.gpgsign false
+mkdir -p "$donor_wt/windows"
+printf '{"lockfileVersion":3}\n' >"$donor_wt/windows/package-lock.json"
+git -C "$donor_wt" add windows/package-lock.json
+git -C "$donor_wt" commit -q -m init
+git -C "$donor_wt" worktree add -q -b ephem "$ephem_wt"
+git -C "$donor_wt" worktree add -q -b consumer "$consumer_wt"
+
+mkdir -p "$ephem_wt/windows/node_modules/.bin"
+printf '#!/bin/sh\nexit 0\n' >"$ephem_wt/windows/node_modules/.bin/tsc"
+printf '#!/bin/sh\nexit 0\n' >"$ephem_wt/windows/node_modules/.bin/vite"
+chmod +x "$ephem_wt/windows/node_modules/.bin/tsc" "$ephem_wt/windows/node_modules/.bin/vite"
+printf 'ephemeral\n' >"$ephem_wt/windows/node_modules/.mmb-shared-link"
+
+mkdir -p "$donor_wt/windows/node_modules/.bin" "$donor_wt/windows/node_modules/typescript" "$donor_wt/windows/node_modules/.vite"
+printf '#!/bin/sh\nexit 0\n' >"$donor_wt/windows/node_modules/.bin/tsc"
+printf '#!/bin/sh\nexit 0\n' >"$donor_wt/windows/node_modules/.bin/vite"
+chmod +x "$donor_wt/windows/node_modules/.bin/tsc" "$donor_wt/windows/node_modules/.bin/vite"
+chmod -R a-w "$donor_wt/windows/node_modules"
+
+found_nm="$(ROOT_DIR="$consumer_wt" find_shared_windows_node_modules)"
+expected_nm="$(cd "$donor_wt/windows/node_modules" && pwd -P)"
+actual_nm="$(cd "$found_nm" && pwd -P)"
+if [ "$actual_nm" = "$expected_nm" ]; then
+    pass "find_shared_windows_node_modules 跳过 .mmb-shared-link 工作树并命中只读真实依赖"
+else
+    fail "find_shared_windows_node_modules 应命中 ${expected_nm}，实际 ${actual_nm}"
+fi
+
+mkdir -p "$consumer_wt/windows/dist"
+printf 'keep-dist' >"$consumer_wt/windows/dist/index.html"
+farm_out="$(ROOT_DIR="$consumer_wt" with_shared_windows_deps "$found_nm" "$bash_bin" -c 'mkdir -p "$0/windows/node_modules/.vite-temp" && printf ok > "$0/windows/node_modules/.vite-temp/stamp" && [ -x "$0/windows/node_modules/.bin/tsc" ] && [ ! -e "$0/windows/node_modules/.vite" ] && cat "$0/windows/node_modules/.vite-temp/stamp"' "$consumer_wt")"
+if [ "$farm_out" = "ok" ] && [ ! -e "$consumer_wt/windows/node_modules" ] && [ -f "$consumer_wt/windows/dist/index.html" ] && [ ! -e "$donor_wt/windows/node_modules/.vite-temp" ]; then
+    pass "with_shared_windows_deps 支持本地写入 .vite-temp、保留 windows/dist、不污染只读 donor 并在退出后清理"
+else
+    fail "with_shared_windows_deps 行为异常: out=${farm_out} consumer=$(ls -la "$consumer_wt/windows" 2>&1)"
+fi
+
+run_out="$(ROOT_DIR="$consumer_wt" "$bash_bin" "$root/scripts/shared_windows_deps.sh" run "$bash_bin" -c '[ -x "$0/windows/node_modules/.bin/vite" ] && printf run-ok' "$consumer_wt")"
+if [ "$run_out" = "run-ok" ] && [ ! -e "$consumer_wt/windows/node_modules" ]; then
+    pass "shared_windows_deps.sh run 自动挂载并清理共享依赖"
+else
+    fail "shared_windows_deps.sh run 行为异常: out=${run_out}"
+fi
+
+mkdir -p "$consumer_wt/windows/node_modules/real-pkg"
+ROOT_DIR="$consumer_wt" cleanup_shared_windows_deps
+if [ -d "$consumer_wt/windows/node_modules/real-pkg" ]; then
+    pass "cleanup_shared_windows_deps 绝不删除无 .mmb-shared-link 标记的真实 node_modules"
+else
+    fail "cleanup_shared_windows_deps 误删了真实 node_modules"
+fi
+
+chmod -R u+w "$donor_wt/windows/node_modules"
+rm -rf "$wt_sandbox"
+
 if [ "$failures" -ne 0 ]; then
     echo "❌ 门禁文案自测失败 ${failures} 项" >&2
     exit 1

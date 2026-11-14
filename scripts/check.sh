@@ -518,39 +518,20 @@ run_swift_gate() {
     [ "$status" -eq 0 ]
 }
 
-has_shared_windows_deps() {
-    [ "${MMB_DISABLE_SHARED_NODE_MODULES:-0}" = "1" ] && return 1
-    [ -f "$ROOT_DIR/windows/package-lock.json" ] || return 1
-    local wt
-    while IFS= read -r line; do
-        case "$line" in
-            "worktree "*)
-                wt="${line#worktree }"
-                [ "$wt" = "$ROOT_DIR" ] && continue
-                if [ -d "$wt/windows/node_modules/typescript" ] \
-                    && [ -f "$wt/windows/package-lock.json" ] \
-                    && cmp -s "$ROOT_DIR/windows/package-lock.json" "$wt/windows/package-lock.json"; then
-                    return 0
-                fi
-                ;;
-        esac
-    done < <(git worktree list --porcelain 2>/dev/null || true)
-    return 1
-}
-
-windows_shared_tests() {
-    cd "$ROOT_DIR/windows"
-    npm test
-}
+source "$ROOT_DIR/scripts/shared_windows_deps.sh"
 
 run_windows_gate() {
-    if [ ! -x "windows/node_modules/.bin/tsc" ]; then
-        if command -v npm >/dev/null 2>&1 && has_shared_windows_deps; then
+    cleanup_shared_windows_deps
+    if [ ! -x "$ROOT_DIR/windows/node_modules/.bin/tsc" ]; then
+        local shared_nm=""
+        if command -v npm >/dev/null 2>&1 && shared_nm="$(find_shared_windows_node_modules)"; then
             local status=0
-            echo "ℹ️  复用同锁文件的兄弟工作树依赖运行 Windows 单元测试（跳过 Vite 打包）..."
-            run_logged "Windows 单元测试" windows_shared_tests || status=$?
-            record_gate_result "WindowsTests=${status}"
-            record_gate_result "WindowsBuild=skip"
+            trap 'cleanup_shared_windows_deps' EXIT INT TERM HUP
+            echo "ℹ️  复用同锁文件的兄弟工作树依赖运行完整 Windows 前端门禁（单测 + 类型检查 + Vite 打包）..."
+            run_logged "Windows 前端" with_shared_windows_deps "$shared_nm" windows_npm || status=$?
+            cleanup_shared_windows_deps
+            trap - EXIT INT TERM HUP
+            record_gate_result "Windows=${status}"
             [ "$status" -eq 0 ]
             return $?
         fi
