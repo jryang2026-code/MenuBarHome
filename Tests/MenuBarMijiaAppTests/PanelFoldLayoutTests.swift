@@ -16,6 +16,10 @@ extension PanelPresentationTests {
 @MainActor
 @Suite(.serialized)
 struct PanelFoldLayoutTests {
+    init() {
+        SnapshotWindow.pinOverlayScrollers()
+    }
+
     @Test("The first device card sits right under the header and grouping capsule", arguments: [
         (PanelTheme.classic, AppLanguage.zhHans, false),
         (PanelTheme.classic, AppLanguage.en, false),

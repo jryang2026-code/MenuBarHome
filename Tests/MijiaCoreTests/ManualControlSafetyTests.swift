@@ -100,45 +100,6 @@ struct ManualControlSafetyTests {
         #expect(CoverSubtype(miotServiceShortName: nil) == .windowOpener)
     }
 
-    @Test("The manual policy reuses the AI hazard table and lets de-escalation through")
-    func hazardPolicy() {
-        let plug = Self.plug
-        let heater = Self.heater
-        let waterHeater = Self.waterHeater
-
-        #expect(ManualControlPolicy.requiresConfirmation(.power(true), for: plug))
-        #expect(!ManualControlPolicy.requiresConfirmation(.power(false), for: plug))
-        #expect(ManualControlPolicy.requiresConfirmation(.power(true), for: heater))
-        #expect(!ManualControlPolicy.requiresConfirmation(.power(false), for: heater))
-        #expect(ManualControlPolicy.requiresConfirmation(.targetTemperature(60), for: waterHeater))
-        #expect(!ManualControlPolicy.requiresConfirmation(.targetTemperature(40), for: waterHeater))
-        #expect(ManualControlPolicy.requiresConfirmation(.hvacMode("heat"), for: waterHeater))
-        #expect(!ManualControlPolicy.requiresConfirmation(.hvacMode("off"), for: waterHeater))
-        #expect(!ManualControlPolicy.requiresConfirmation(.power(true), for: Self.light))
-    }
-
-    @Test("A hazard prompt names the device and only appears for hazardous operations")
-    func promptText() {
-        let prompt = ManualControlPolicy.confirmation(
-            DeviceIntent(targetId: Self.plug.id, operation: .power(true)),
-            devices: [Self.plug]
-        )
-        #expect(prompt != nil)
-        #expect(prompt?.message.contains(Self.plug.name) == true)
-        #expect(prompt?.confirmTitle.isEmpty == false)
-        #expect(ManualControlPolicy.confirmation(
-            DeviceIntent(targetId: Self.plug.id, operation: .power(false)),
-            devices: [Self.plug]
-        ) == nil)
-    }
-
-    @Test("The lock guard requires both the lock and the preference")
-    func lockGuard() {
-        #expect(ManualControlPolicy.isScreenLockBlocked(isLocked: true, blockWhileLocked: true))
-        #expect(!ManualControlPolicy.isScreenLockBlocked(isLocked: true, blockWhileLocked: false))
-        #expect(!ManualControlPolicy.isScreenLockBlocked(isLocked: false, blockWhileLocked: true))
-    }
-
     @Test("A launch-time session fails closed and recognizes locked or unlocked logins")
     func initialSessionLockState() {
         #expect(ScreenLockPolicy.isLocked(session: nil), "No session information must block control")

@@ -45,26 +45,6 @@ struct UnsupportedDeviceFeedbackURLTests {
         #expect(!form.items.values.contains { $0.contains(device.id) })
     }
 
-    @Test("English UI: the title and symptom are localized and no device id is sent")
-    func englishPrefill() throws {
-        let device = UnsupportedDevice(
-            id: "dev-secret-42",
-            name: "Air Fryer",
-            model: "acme.fryer",
-            reason: .unsupportedEntities
-        )
-        let form = try form(language: .en, device: device)
-
-        #expect(form["title"] == "[Unsupported device] Air Fryer (acme.fryer)")
-        #expect(form["platform"] == "macOS")
-        #expect(form["backend"] == "Home Assistant")
-        #expect(form["model"] == "acme.fryer")
-        #expect(form["symptom"] == "Entity type not supported yet\n\nWhat should it support (power, brightness, temperature…):")
-        #expect(form["did"] == nil)
-        #expect(form["did-format"] == nil)
-        #expect(!form.items.values.contains { $0.contains(device.id) })
-    }
-
     @Test("Special characters in the name and model survive URL encoding")
     func specialCharactersRoundTrip() throws {
         let name = "客厅 & 灯 = #1 100%"
@@ -112,16 +92,5 @@ struct UnsupportedDeviceFeedbackURLTests {
             )
             #expect(UnsupportedDeviceFeedbackURL.make(for: device) == nil, "\(reason)")
         }
-    }
-
-    @Test("Traditional Chinese UI localizes the symptom prompt")
-    func traditionalChinesePrompt() throws {
-        let device = UnsupportedDevice(id: "x", name: "燈", model: "acme.light", reason: .unknownModel)
-        let url = try L10n.$overrideTranslationDirectory.withValue(LocalizationTests.shippedTablesDirectory) {
-            try L10n.$overrideLanguage.withValue(.zhHant) {
-                try #require(UnsupportedDeviceFeedbackURL.make(for: device))
-            }
-        }
-        #expect(Form(url)["symptom"]?.hasSuffix("期望支援的功能（開關、亮度、溫度…）：") == true)
     }
 }

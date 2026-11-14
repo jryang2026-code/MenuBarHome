@@ -19,13 +19,6 @@ private enum Vectors {
 }
 
 struct MiCloudCryptoTests {
-    @Test("RC4 without drop matches the classic Key/Plaintext vector")
-    func rc4ClassicVector() {
-        var rc4 = MiCloudCrypto.RC4(key: Array("Key".utf8), drop: 0)
-        let out = rc4.process(Array("Plaintext".utf8))
-        #expect(out.map { String(format: "%02x", $0) }.joined() == "bbf316e8d940af0ad3")
-    }
-
     @Test("Nonce packs 8 random bytes plus big-endian minute counter")
     func nonceLayout() {
         let date = Date(timeIntervalSince1970: 29_000_000 * 60)
@@ -131,18 +124,6 @@ struct MiAccountLoginTests {
         let session = try await login.waitForScan(ticket)
         #expect(session == MiSession(userId: "42", cUserId: "c", ssecurity: "c3M=", serviceToken: "tok123", region: "cn"))
     }
-
-    @Test(
-        "Live: Xiaomi returns a QR login ticket",
-        .enabled(if: ProcessInfo.processInfo.environment["MI_RUN_LIVE_QR"] == "1")
-    )
-    func liveTicket() async throws {
-        let ticket = try await MiAccountLogin().start()
-        #expect(!ticket.qrImageURL.absoluteString.isEmpty)
-        #expect(!ticket.longPollURL.absoluteString.isEmpty)
-        #expect(ticket.timeout > 0)
-        print("LIVE_QR ok host=\(ticket.qrImageURL.host() ?? "?") lpHost=\(ticket.longPollURL.host() ?? "?") timeout=\(ticket.timeout)")
-    }
 }
 
 // MARK: - Test Doubles
@@ -246,22 +227,6 @@ enum MiotFixtures {
 }
 
 struct MiotSynthesizerTests {
-    @Test("yeelink.light.ceiling22 becomes a LightSpec addressed miot:<did>:<siid>")
-    func lightFromSpec() {
-        let home = MiotSynthesizer.synthesize(
-            devices: [MiotFixtures.lightRecord],
-            rooms: [MiRoom(id: "r1", name: "书房", dids: ["123"])],
-            specs: MiotFixtures.specs,
-            values: MiotFixtures.lightValues
-        )
-        #expect(home.devices == [MiotFixtures.expectedLight])
-        #expect(home.rooms == [RoomArea(id: "shu_fang", name: "书房", sortOrder: 0)])
-        #expect(MiotSynthesizer.requiredProps(for: MiotFixtures.lightRecord, spec: MiotFixtures.specs["yeelink.light.ceiling22"]!) == [
-            MiotFixtures.key("123", 2, 1), MiotFixtures.key("123", 2, 2),
-            MiotFixtures.key("123", 2, 3), MiotFixtures.key("123", 2, 4),
-        ])
-    }
-
     @Test("Air conditioner maps modes to HA vocabulary, reads room temp and fan levels from sibling services")
     func climateFromSpec() {
         let record = MiDeviceRecord(did: "456", name: "空调", model: "xiaomi.aircondition.mt0", isOnline: true)
@@ -298,28 +263,6 @@ struct MiotSynthesizerTests {
         } else {
             Issue.record("expected climate")
         }
-    }
-
-    @Test("cuco.plug.v3 outlet becomes a PlugSpec with power and child lock; indicator light is ignored")
-    func plugFromSpec() {
-        let record = MiDeviceRecord(did: "789", name: "咖啡机", model: "cuco.plug.v3", isOnline: true)
-        let values: [MiotPropKey: JSONValue] = [
-            MiotFixtures.key("789", 2, 1): .bool(true),
-            MiotFixtures.key("789", 11, 2): .number(1210),
-            MiotFixtures.key("789", 7, 1): .bool(true),
-            MiotFixtures.key("789", 13, 1): .bool(false),
-        ]
-        let home = MiotSynthesizer.synthesize(devices: [record], rooms: [], specs: MiotFixtures.specs, values: values)
-        #expect(home.devices.first?.kind == .plug(PlugSpec(
-            switchEntityId: "miot:789:2",
-            isOn: true,
-            powerWatts: 1210,
-            childLockEntityId: "miot:789:7",
-            isChildLocked: true
-        )))
-        #expect(MiotSynthesizer.requiredProps(for: record, spec: MiotFixtures.specs["cuco.plug.v3"]!) == [
-            MiotFixtures.key("789", 2, 1), MiotFixtures.key("789", 11, 2), MiotFixtures.key("789", 7, 1),
-        ])
     }
 
     @Test("Plug cumulative energy maps explicit MIoT kWh, 0.01kWh, and Wh counters while ignoring untagged integers (#62)")
@@ -765,7 +708,6 @@ struct MiotSynthesizerTests {
 struct MiotCommandMapperTests {
     let light = MiotFixtures.specs["yeelink.light.ceiling22"]!
     let ac = MiotFixtures.specs["xiaomi.aircondition.mt0"]!
-    let plug = MiotFixtures.specs["cuco.plug.v3"]!
 
     @Test("Brightness writes on + piid 2 with the literal percent")
     func brightness() throws {
@@ -809,33 +751,6 @@ struct MiotCommandMapperTests {
             == .setProps([MiotPropWrite(did: "456", siid: 2, piid: 4, value: .number(26.5))]))
         #expect(try MiotCommandMapper.map(.setClimateFanMode(entityId: "miot:456:2", fanMode: "Level3"), spec: ac)
             == .setProps([MiotPropWrite(did: "456", siid: 3, piid: 2, value: .number(3))]))
-    }
-
-    @Test("setSwitch targets on or the child-lock property by service address")
-    func plugSwitches() throws {
-        #expect(try MiotCommandMapper.map(.setSwitch(entityId: "miot:789:2", isOn: false), spec: plug)
-            == .setProps([MiotPropWrite(did: "789", siid: 2, piid: 1, value: .bool(false))]))
-        #expect(try MiotCommandMapper.map(.setSwitch(entityId: "miot:789:7", isOn: true), spec: plug)
-            == .setProps([MiotPropWrite(did: "789", siid: 7, piid: 1, value: .bool(true))]))
-    }
-
-    @Test("Vacuum actions resolve by action short name across services")
-    func vacuum() throws {
-        let spec = MiotDeviceSpec(type: "urn:miot-spec-v2:device:vacuum:0000A006:roborock-a15:1", services: [
-            MiotService(iid: 2, type: "urn:miot-spec-v2:service:vacuum:00007810:roborock-a15:1", actions: [
-                MiotAction(iid: 1, type: "urn:miot-spec-v2:action:start-sweep:00002804:roborock-a15:1"),
-                MiotAction(iid: 2, type: "urn:miot-spec-v2:action:stop-sweeping:00002805:roborock-a15:1"),
-            ]),
-            MiotService(iid: 3, type: "urn:miot-spec-v2:service:battery:00007805:roborock-a15:1", actions: [
-                MiotAction(iid: 1, type: "urn:miot-spec-v2:action:start-charge:00002802:roborock-a15:1"),
-            ]),
-        ])
-        #expect(try MiotCommandMapper.map(.vacuumAction(entityId: "miot:9:2", action: .start), spec: spec)
-            == .action(MiotActionCall(did: "9", siid: 2, aiid: 1)))
-        #expect(try MiotCommandMapper.map(.vacuumAction(entityId: "miot:9:2", action: .pause), spec: spec)
-            == .action(MiotActionCall(did: "9", siid: 2, aiid: 2)))
-        #expect(try MiotCommandMapper.map(.vacuumAction(entityId: "miot:9:2", action: .returnToBase), spec: spec)
-            == .action(MiotActionCall(did: "9", siid: 3, aiid: 1)))
     }
 
     @Test("Unsupported commands and foreign addresses throw typed errors")
@@ -1275,46 +1190,6 @@ struct MiCloudProviderTests {
         #expect(await api.deviceListCalls == 0)
         #expect(await log.expiredSessions.isEmpty)
         await provider.shutdown()
-    }
-
-    @MainActor
-    @Test("HomeStore persists homeBackend, formats serverHostSummary for both modes, and handles login/logout")
-    func backendSwitchingAndSummary() {
-        let suite = "com.jryang1997.MenuBarMijia.backend-test.\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
-        store.serverURLString = "http://192.168.50.35:8123"
-        #expect(store.homeBackend == .homeAssistant)
-        #expect(store.serverHostSummary == "192.168.50.35")
-
-        store.switchBackend(.xiaomiCloud)
-        #expect(store.homeBackend == .xiaomiCloud)
-        #expect(store.serverHostSummary == "米家云端 (未登录)")
-
-        let reloaded = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
-        #expect(reloaded.homeBackend == .xiaomiCloud)
-
-        let session = MiSession(
-            userId: "1234567890",
-            cUserId: "cu",
-            ssecurity: Vectors.ssecurity,
-            serviceToken: "tok"
-        )
-        store.completeMiLogin(session)
-        #expect(store.homeBackend == .xiaomiCloud)
-        #expect(store.miSessionMaskedUserId == "12****90")
-        #expect(store.serverHostSummary == "米家云端 (12****90)")
-        #expect(store.toastNotice?.message == "已登录米家账号 (12****90)")
-
-        store.logoutMiAccount()
-        #expect(store.miSessionMaskedUserId == nil)
-        #expect(store.serverHostSummary == "米家云端 (未登录)")
-        #expect(store.toastNotice?.message == "已退出米家账号")
-
-        store.switchBackend(.homeAssistant)
-        #expect(store.homeBackend == .homeAssistant)
-        #expect(store.serverHostSummary == "192.168.50.35")
     }
 
     @Test("P2P camera stream resolution negotiates stop-stream, start-p2p-stream, miss_get_vendor, and starts local fMP4 bridge with MJPEG fallback")

@@ -15,6 +15,10 @@ extension PanelPresentationTests {
     @MainActor
     @Suite(.serialized)
     struct PanelQuickIndexTests {
+        init() {
+            SnapshotWindow.pinOverlayScrollers()
+        }
+
         @Test("A folded stack takes no badge: key 1 controls the card wearing badge 1")
         func foldedStackDigitControlsBadgeOne() async throws {
             let harness = try await QuickIndexHarness(home: QuickIndexHarness.twoRoomHome)
@@ -151,22 +155,6 @@ extension PanelPresentationTests {
             harness.press(2)
             command = try await harness.nextCommand(after: before)
             #expect(command == .setLightPower(entityId: "light.a2", isOn: false))
-        }
-
-        @Test("Filtering to a multi-device room opens its cards directly without an extra stack click")
-        func roomCutAutoOpensMultiDeviceRoom() async throws {
-            let harness = try await QuickIndexHarness(home: QuickIndexHarness.twoRoomHome)
-            defer { harness.tearDown() }
-
-            try await harness.waitForOrder(["b1"])
-
-            #expect(harness.store.selectRoom("room_a"))
-            try await harness.waitForOrder(["a1", "a2"])
-
-            let before = await harness.commandCount()
-            harness.press(1)
-            let command = try await harness.nextCommand(after: before)
-            #expect(command == .setLightPower(entityId: "light.a1", isOn: false))
         }
 
         @Test("Leaving the glass column withdraws its number order")

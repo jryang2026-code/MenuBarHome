@@ -34,18 +34,6 @@ struct AssistantLocalModelTests {
         ) == .configuredEndpoint)
     }
 
-    @Test("The shipped defaults still count as unconfigured")
-    func defaultConfigIsUnconfigured() {
-        #expect(AssistantConfig().hasConfiguredProvider == false)
-        #expect(AssistantConfig(baseURL: "https://openrouter.ai/api/v1/").hasConfiguredProvider == false)
-        #expect(AssistantConfig(model: AssistantConfig.defaultModel).hasConfiguredProvider == false)
-
-        #expect(AssistantConfig(apiKey: "sk-test").hasConfiguredProvider)
-        #expect(AssistantConfig(baseURL: "https://api.deepseek.com/v1").hasConfiguredProvider)
-        #expect(AssistantConfig(model: "gpt-4o-mini").hasConfiguredProvider)
-        #expect(AssistantConfig(baseURL: "http://127.0.0.1:11434/v1").hasConfiguredProvider)
-    }
-
     // MARK: - Prompt
 
     @Test("The local prompt carries the catalog, context, and data-not-instructions notice")
@@ -447,33 +435,6 @@ struct AssistantLocalModelTests {
         #expect(plan == nil)
         #expect(store.assistantState == .failed(AssistantLocalModelError.failed.errorDescription ?? ""))
         #expect(await cloud.count == 0)
-    }
-
-    // MARK: - Live Smoke Test
-
-    /// Opt-in only: `RUN_FOUNDATION_MODEL_SMOKE=1 swift test --filter ...`. CI runners do not have
-    /// Apple Intelligence enabled, and the guard returns without failing when the model is absent.
-    @Test("Live on-device model smoke test (opt-in)")
-    @MainActor
-    func liveOnDeviceModelSmoke() async throws {
-        guard ProcessInfo.processInfo.environment["RUN_FOUNDATION_MODEL_SMOKE"] == "1" else { return }
-        #if canImport(FoundationModels)
-        guard #available(macOS 26.0, *) else { return }
-        guard FoundationModelIntentResolver.availability == .available else { return }
-
-        let phrase = "make the bedroom cozy for sleeping"
-        #expect(LocalIntentParser.parse(phrase, devices: AssistantTests.devices, scenes: AssistantTests.scenes) == nil)
-
-        let suite = "test.assistant.local.live.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-        let (store, mock) = try await makeStore(suite: suite)
-
-        let resolved = try #require(await store.runAssistantCommand(phrase))
-        #expect(resolved.source == .model)
-        #expect(!resolved.intents.isEmpty)
-        let executed = await mock.executedCommands
-        #expect(!executed.isEmpty)
-        #endif
     }
 
     // MARK: - Fixtures

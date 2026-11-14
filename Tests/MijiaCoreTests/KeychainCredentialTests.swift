@@ -211,43 +211,6 @@ struct KeychainCredentialTests {
         }
     }
 
-    @Test("A custom suite keeps the test store in UserDefaults and leaves the Keychain alone")
-    func suiteSeamStaysOutOfTheKeychain() throws {
-        let suite = "com.jryang1997.MenuBarMijia.keychain-seam.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-
-        let account = "test.suite"
-        #expect(KeychainHelper.saveSecret("suite-value", account: account, defaults: defaults))
-        #expect(defaults.string(forKey: KeychainHelper.secretFallbackKey(for: account)) == "suite-value")
-        #expect(KeychainHelper.loadSecret(account: account, defaults: defaults) == "suite-value")
-        #expect(KeychainHelper.saveSecret("suite-ha-token", account: "ha_access_token", defaults: defaults))
-        #expect(KeychainHelper.loadToken(defaults: defaults) == "suite-ha-token")
-
-        #expect(KeychainHelper.saveSecret("", account: account, defaults: defaults))
-        #expect(defaults.string(forKey: KeychainHelper.secretFallbackKey(for: account)) == nil)
-    }
-
-    @Test("Suite sessions round-trip through the test store as a v2 envelope without passToken")
-    func suiteSessionRoundTrip() throws {
-        let suite = "com.jryang1997.MenuBarMijia.session-seam.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-
-        let session = MiSession(userId: "987654321", cUserId: "cid", ssecurity: "ssec", serviceToken: "stoken")
-        #expect(MiSessionStore.saveAccounts([MiAccount(session: session)], defaults: defaults))
-        let data = try #require(defaults.data(forKey: MiSessionStore.fallbackDefaultsKey))
-        let stored = try envelope(data)
-        #expect(stored.version == 2)
-        #expect(stored.accounts.count == 1)
-        #expect(stored.accounts[0]["serviceToken"] as? String == "stoken")
-        #expect(stored.accounts[0]["passToken"] == nil)
-        #expect(MiSessionStore.loadAccounts(defaults: defaults) == [MiAccount(session: session)])
-
-        MiSessionStore.clear(defaults: defaults)
-        #expect(MiSessionStore.loadAccounts(defaults: defaults).isEmpty)
-    }
-
     @Test("Loading a ≤1.0.6 session migrates it into the v2 envelope once (#27)")
     func legacySessionIsRewrittenOnLoad() throws {
         let suite = "com.jryang1997.MenuBarMijia.session-rewrite.\(UUID().uuidString)"

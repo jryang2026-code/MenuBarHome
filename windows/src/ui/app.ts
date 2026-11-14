@@ -95,7 +95,6 @@ import {
   rejectIfControlBlockedWhileLocked, renderUrlConfirmationPrompt, restoreUndoKindSnapshot, runScheduledCommandWithLockGuard, shouldKeepPopoverPinned, syncUndoBannerClock, toggleVoiceInput, undoButtonVisible,
 } from "./speechGuard.js";
 import { inputKeepsDraft } from "./dom.js";
-export { waitForCameraFrameGap } from "./dom.js";
 import { createPanelSearchState, normalizeSearch, PanelSearchIndex } from "../core/panelSearch.js";
 import { syncPanelSelection } from "./panelKeyboard.js";
 

@@ -13,7 +13,7 @@ export interface RoomOption {
   readonly name: string;
 }
 
-export const KIND_RANK: Record<DeviceKindTag, number> = {
+const KIND_RANK: Record<DeviceKindTag, number> = {
   climate: 0,
   light: 1,
   plug: 2,

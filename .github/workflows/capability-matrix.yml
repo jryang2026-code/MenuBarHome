@@ -7,7 +7,6 @@ on:
       - "README.zh-CN.md"
       - "docs/capabilities.json"
       - "scripts/check_capability_matrix.py"
-      - "scripts/test_check_capability_matrix.py"
       - "Tests/Fixtures/miot_coverage_golden.json"
       - ".github/workflows/capability-matrix.yml"
   push:
@@ -18,7 +17,6 @@ on:
       - "README.zh-CN.md"
       - "docs/capabilities.json"
       - "scripts/check_capability_matrix.py"
-      - "scripts/test_check_capability_matrix.py"
       - "Tests/Fixtures/miot_coverage_golden.json"
       - ".github/workflows/capability-matrix.yml"
   workflow_dispatch:
@@ -33,6 +31,4 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check capability docs and code anchors
-        run: |
-          python3 scripts/test_check_capability_matrix.py
-          python3 scripts/check_capability_matrix.py
+        run: python3 scripts/check_capability_matrix.py

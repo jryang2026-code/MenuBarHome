@@ -297,12 +297,6 @@ class MijiaCliTests(unittest.TestCase):
         self.assertEqual(len(query["id"]), 32)
         self.assertIn("已执行", out)
 
-    def test_toggle_accepts_room_prefix_and_pinyin_initials(self) -> None:
-        _, _, _, app = self.run_cli(["toggle", "书房书房台灯"])
-        self.assertEqual(app.query()["device"], "dev_study_lamp")
-        _, _, _, app = self.run_cli(["toggle", "sftd"])
-        self.assertEqual(app.query()["device"], "dev_study_lamp")
-
     def test_toggle_refuses_a_device_without_a_power_switch(self) -> None:
         code, _, err, app = self.run_cli(["toggle", "阳台灯"])
         self.assertEqual(code, mijia.EXIT_LOCAL_ERROR)
@@ -360,19 +354,6 @@ class MijiaCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(app.opened[-1].startswith("menumijia://focus?"))
         self.assertEqual(app.query()["device"], "dev_study_ac")
-
-    def test_scene_uses_quick_prefix_for_builtin_and_id_for_remote_scenes(self) -> None:
-        code, _, _, app = self.run_cli(["scene", "全屋关灯"])
-        self.assertEqual(code, 0)
-        self.assertEqual(app.query()["name"], "quick:lightsOff")
-
-        code, _, _, app = self.run_cli(["scene", "观影模式"])
-        self.assertEqual(code, 0)
-        self.assertEqual(app.query()["name"], "scene_movie")
-
-        code, _, _, app = self.run_cli(["scene", "undo"])
-        self.assertEqual(code, 0)
-        self.assertEqual(app.query()["name"], "quick:undo")
 
     def test_exact_quick_action_name_beats_a_scene_that_only_contains_it(self) -> None:
         snapshot = make_snapshot()
@@ -504,34 +485,6 @@ class MijiaCliTests(unittest.TestCase):
             fake_home / "Library" / "Application Support" / "MenuBarMijia" / "raycast-snapshot.json",
         )
 
-    def test_open_url_uses_os_startfile_on_win32_and_wraps_oserror(self) -> None:
-        from unittest import mock
-
-        started: list[str] = []
-        with (
-            mock.patch.object(mijia.sys, "platform", "win32"),
-            mock.patch.object(mijia.os, "startfile", side_effect=started.append, create=True),
-        ):
-            mijia.open_url("menumijia://toggle?device=dev_study_lamp")
-        self.assertEqual(started, ["menumijia://toggle?device=dev_study_lamp"])
-
-        with (
-            mock.patch.object(mijia.sys, "platform", "win32"),
-            mock.patch.object(
-                mijia.os,
-                "startfile",
-                side_effect=OSError("protocol handler missing"),
-                create=True,
-            ),
-        ):
-            with self.assertRaises(mijia.CliError) as ctx:
-                mijia.open_url("menumijia://toggle?device=dev_study_lamp")
-        self.assertIn("系统没能打开 menumijia:// 链接", str(ctx.exception))
-
-    def test_build_url_escapes_spaces_and_keeps_the_token_last(self) -> None:
-        url = mijia.build_url("ask", [("text", "开 灯")], TOKEN, "req1")
-        self.assertEqual(url, f"menumijia://ask?text=%E5%BC%80%20%E7%81%AF&id=req1&token={TOKEN}")
-
     def test_room_filter_merges_devices_sharing_a_room_name_across_room_ids(self) -> None:
         snapshot = make_snapshot()
         snapshot["devices"].append(
@@ -565,7 +518,7 @@ class MijiaCliTests(unittest.TestCase):
             if dev["id"] == "dev_study_lamp":
                 dev["pinyinFull"] = "shufangtaideng"
         self.write_snapshot(snapshot)
-        for query in ("书房 台灯", "shufangtaideng"):
+        for query in ("书房书房台灯", "书房 台灯", "sftd", "shufangtaideng"):
             code, _, err, app = self.run_cli(["toggle", query])
             self.assertEqual(code, 0, err)
             self.assertEqual(app.query()["device"], "dev_study_lamp")
@@ -578,6 +531,7 @@ class MijiaCliTests(unittest.TestCase):
             ("lights_off", "quick:lightsOff"),
             ("quick:全屋关灯", "quick:lightsOff"),
             ("睡眠关空调", "quick:climateSleepOff"),
+            ("undo", "quick:undo"),
             ("撤销", "quick:undo"),
         ):
             code, _, err, app = self.run_cli(["scene", alias])

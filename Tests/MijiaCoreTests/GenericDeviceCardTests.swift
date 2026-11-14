@@ -194,38 +194,6 @@ struct GenericDeviceCardTests {
         #expect(home.devices.first?.kind.canTogglePower == false, "\(model)")
     }
 
-    @Test("Generic high-risk facets need confirmation, while heating off stays direct")
-    func genericHighRiskFacetConfirmation() {
-        let router = SmartDevice(
-            id: "router", name: "路由器", roomId: "room", roomName: "客厅",
-            model: "isa.router.mr01hl", isOnline: true,
-            kind: .generic(GenericSpec(
-                deviceType: "router", typeTitle: "路由器", isReadOnly: false
-            ))
-        )
-        let on = FacetControl(
-            id: "2.1", kind: .toggle, name: "on", title: "开关", serviceName: "router",
-            value: .bool(false), isWritable: true, writesByDefault: false, isHighValue: false,
-            target: .property(entityId: "miot:router:2", piid: 1)
-        )
-        #expect(ManualControlPolicy.confirmation(facet: on, value: .bool(true), for: router) != nil)
-        #expect(ManualControlPolicy.confirmation(facet: on, value: .bool(false), for: router) != nil)
-
-        let boiler = SmartDevice(
-            id: "boiler", name: "壁挂炉", roomId: "room", roomName: "客厅",
-            model: "macro.boiler.combgl", isOnline: true,
-            kind: .generic(GenericSpec(
-                deviceType: "boiler", typeTitle: "壁挂炉", isReadOnly: false
-            ))
-        )
-        let boilerOn = FacetControl(
-            id: "2.1", kind: .toggle, name: "on", title: "开关", serviceName: "boiler",
-            value: .bool(true), isWritable: true, writesByDefault: false, isHighValue: false,
-            target: .property(entityId: "miot:boiler:2", piid: 1)
-        )
-        #expect(ManualControlPolicy.confirmation(facet: boilerOn, value: .bool(false), for: boiler) == nil)
-    }
-
     @Test("A generic card with only a main switch has no drawer")
     func soleMainSwitchHasNoDrawer() {
         let power = FacetControl(

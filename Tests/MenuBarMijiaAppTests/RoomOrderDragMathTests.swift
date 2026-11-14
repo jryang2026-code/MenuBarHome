@@ -90,34 +90,4 @@ struct RoomOrderDragMathTests {
         #expect(Set(visible) == Set(rooms.map(\.id)))
         #expect(presses > 100, "the drag should have travelled the full height")
     }
-
-    @Test("Keyboard-style single-slot moves walk a row to the front one step at a time")
-    func commandArrowWalksToTheFront() {
-        var draft = RoomOrderDraft(order: rooms.map(\.id), aliases: [:])
-        let id = "room_15"
-        for _ in 0..<15 {
-            var visible = draft.visibleOrder(for: rooms)
-            let from = visible.firstIndex(of: id) ?? 0
-            draft.move(id: id, toVisibleIndex: from - 1, visible: visible)
-            visible = draft.visibleOrder(for: rooms)
-            #expect(visible.firstIndex(of: id) == max(from - 1, 0))
-        }
-        #expect(draft.visibleOrder(for: rooms).first == id)
-        // Everything else kept its relative order.
-        #expect(Array(draft.visibleOrder(for: rooms).dropFirst()) == rooms.map(\.id).filter { $0 != id })
-    }
-
-    @Test("A room that vanishes mid-drag leaves the draft's slot intact")
-    func vanishingRoomKeepsItsSlot() {
-        var draft = RoomOrderDraft(order: rooms.map(\.id), aliases: [:])
-        draft.move(id: "room_3", toVisibleIndex: 0, visible: rooms.map(\.id))
-        let withoutThree = rooms.filter { $0.id != "room_3" }
-        draft.reconcile(rooms: withoutThree)
-        // Hidden from the list, not deleted from the order: it returns to the same place.
-        #expect(draft.visibleOrder(for: withoutThree).first != "room_3")
-        let threeIndex = draft.order.firstIndex(of: "room_3") ?? 0
-        #expect(draft.order[(threeIndex + 1)...].contains("room_0"))
-        draft.reconcile(rooms: rooms)
-        #expect(draft.visibleOrder(for: rooms).first == "room_3")
-    }
 }

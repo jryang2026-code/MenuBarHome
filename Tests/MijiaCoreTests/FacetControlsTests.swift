@@ -106,16 +106,6 @@ struct FacetControlsTests {
         #expect(!lightIDs.contains("2.3"), "color temperature is the card's slider")
     }
 
-    @Test("An action with inputs is not offered as a generic button")
-    func argumentedActionsStayOnTheirCard() throws {
-        let home = try Self.home(model: "careco.camera.650", did: "cam1")
-        let facets = try #require(home.deviceFacets["cam1"])
-        #expect(MiotFacetEngine.facets(for: try Self.coverageSpec("careco.camera.650"))
-            .contains { $0.arguments?.isEmpty == false }, "the engine does synthesize this action")
-        #expect(!facets.contains { $0.id == "20.a2" })
-        #expect(facets.contains { $0.name == "pop-up" }, "a no-argument action remains")
-    }
-
     // MARK: - Command mapping
 
     private func map(_ command: DeviceCommand, model: String) throws -> MiotWrite {

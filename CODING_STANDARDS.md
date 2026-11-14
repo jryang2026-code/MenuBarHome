@@ -1,6 +1,6 @@
 # Coding Standards
 
-Reviewed by `/code-review` (Standards axis) and updated by `/retro`. Mechanical rules (secret scanning, `kVK_*` key constants, `UNUserNotificationCenter` `.app` bundle guard, `#require` macro nesting, `L10n.currentLanguage` assignment, `ThemeAndMotion.swift` glass isolation, Swift 6.4 tuple `await`, timer-callback `render()`, and Swift harness lints) are enforced deterministically by `scripts/check.sh`.
+Reviewed by `/code-review` (Standards axis) and updated by `/retro`. Mechanical rules (secret scanning, `UNUserNotificationCenter` `.app` bundle guard, `#require` macro nesting, `L10n.currentLanguage` assignment, `ThemeAndMotion.swift` glass isolation, Swift 6.4 tuple `await`, timer-callback `render()`, and Swift harness lints) are enforced deterministically by `scripts/check.sh`.
 
 A review citation names the deciding symbol as `path:symbol` and quotes those lines (`HomeStore+ControlWrite.swift:lockOptimistic`).
 

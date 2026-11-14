@@ -136,14 +136,6 @@ python3 scripts/probe_lan_gateway.py --ip 192.168.1.10 --token <32 位十六进�
 
 退出码 0 表示探测到 UDP 应答或 8883 有 TLS 监听，1 表示两项都没探到，2 表示参数错误。
 
-回归测试：
-
-```bash
-python3 -m unittest discover -s scripts -p 'test_probe_lan_gateway.py'
-```
-
-覆盖 FIPS-197 与 NIST SP 800-38A 的 AES 向量、Hello 报文与校验、token 派生的固定向量、PKCS#7 边界、写方法拦截、脱敏输出，以及 127.0.0.1 上的假设备端到端读写与 TLS 端口分类。
-
 ## 重开条件
 
 只有以下情况之一出现才重新评估：
@@ -155,6 +147,6 @@ python3 -m unittest discover -s scripts -p 'test_probe_lan_gateway.py'
 ## 相关
 
 - ADR-0007（局域网直连暂缓）、ADR-0014（不迁往私有 OAuth2 与 MQTT 通道）、ADR-0008（双源去重合并）、ADR-0001（Home Assistant 作为单一事实来源）。
-- `scripts/probe_lan_gateway.py`（只读探测工具）、`scripts/test_probe_lan_gateway.py`（回归测试）。
+- `scripts/probe_lan_gateway.py`（只读探测工具）。
 - 一手来源：[`XiaoMi/ha_xiaomi_home`](https://github.com/XiaoMi/ha_xiaomi_home) 的 `miot/miot_lan.py`、`miot/miot_mips.py`、`miot/miot_mdns.py`、`miot/miot_cloud.py`、`miot/miot_storage.py`、`miot/const.py` 与该仓库 wiki 的 [Central hub gateway device models](https://github.com/XiaoMi/ha_xiaomi_home/wiki/Central-hub-gateway-device-models)；[`python-miio`](https://github.com/rytilahti/python-miio) 的 `miio/miioprotocol.py` 与 `miio/protocol.py`；[Aqara LUMI Gateway LAN Communication API](https://aqara.gitbooks.io/lumi-gateway-lan-communication-api/content/) 与 [Home Assistant `xiaomi_aqara` 支持的网关型号](https://www.home-assistant.io/integrations/xiaomi_aqara/)；多模网关的侵入式本地通道见 [`AlexxIT/XiaomiGateway3`](https://github.com/AlexxIT/XiaomiGateway3) 与 [`AlexxIT/openmiio_agent`](https://github.com/AlexxIT/openmiio_agent) 的安装说明；[`lumi.gateway.mgl03` 的 MIoT 规格](https://home.miot-spec.com/spec/lumi.gateway.mgl03) 与 [`xiaomi.gateway.hub1` 的 MIoT 规格](https://home.miot-spec.com/spec/xiaomi.gateway.hub1)。
 - #10（云端会话轮询猫眼事件真机探测）、#22（OAuth2 与 MQTT 通道评估）、#308（Home Assistant 门铃事件自动弹窗）。

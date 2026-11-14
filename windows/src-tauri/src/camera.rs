@@ -1197,20 +1197,6 @@ pub(crate) async fn go2rtc_endpoint(app: AppHandle) -> Result<Go2RtcEndpoint, St
     Ok(Go2RtcEndpoint { origin })
 }
 
-#[cfg(test)]
-pub(crate) fn go2rtc_jpeg_frame_url(session: &Go2RtcSession, src: &str) -> Result<String, String> {
-    if !is_go2rtc_stream_name(src) {
-        return Err("无效的摄像机流名称".to_string());
-    }
-    if !is_acceptable_go2rtc_listen(&session.api_listen) {
-        return Err("本地流媒体地址无效".to_string());
-    }
-    Ok(api_url(
-        session,
-        &format!("/api/frame.jpeg?src={}", urlencoding_simple(src)),
-    ))
-}
-
 pub(crate) fn go2rtc_mjpeg_stream_url(session: &Go2RtcSession, src: &str) -> Result<String, String> {
     if !is_go2rtc_stream_name(src) {
         return Err("无效的摄像机流名称".to_string());

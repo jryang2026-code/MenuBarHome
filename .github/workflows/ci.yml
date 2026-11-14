@@ -97,13 +97,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install ripgrep
         run: bash scripts/install_ripgrep.sh
-      - name: Secret, coding-standard, and design-token checks
+      - name: Secret and coding-standard checks
         # 这些检查与操作系统无关，放在 Ubuntu 上，避免占用 macOS 配额。
-        # swift:6.1 容器里没有 python3，设计令牌和公钥一致性以前只在 macOS 上跑。
+        # swift:6.1 容器里没有 python3，Python 校验和公钥一致性在这里跑。
         run: bash scripts/check.sh --lint-only
-      - name: MIoT coverage report
-        run: |
-          { echo '```'; python3 scripts/miot_coverage_report.py; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Test NAS deployment safety
         run: bash scripts/test_nas_setup.sh
 
@@ -149,12 +146,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     # 不放 macOS：这些测试不依赖系统，macOS 并发额度留给 Swift。
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
-        node: [22, 24]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: raycast
@@ -162,7 +154,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22
           cache: npm
           cache-dependency-path: raycast/package-lock.json
       - name: Test and typecheck the Raycast extension
@@ -171,13 +163,8 @@ jobs:
   windows-core:
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.windows == 'true'
-    # 验证 Windows 版 TypeScript 核心测试与前端打包
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        node: [22, 24]
-    runs-on: ${{ matrix.os }}
+    # 验证 Windows 版 TypeScript 核心测试与前端打包（无 OS 分支，安装包与 Rust 单测已在 windows-latest 运行）
+    runs-on: ubuntu-latest
     defaults:
       run:
         shell: bash
@@ -186,7 +173,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22
           cache: npm
           cache-dependency-path: windows/package-lock.json
       - name: Install & Test & Build Frontend

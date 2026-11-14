@@ -1287,6 +1287,95 @@
           "expectedReply": "已打开书房电暖器、书房暖风机"
         }
       ]
+    },
+    {
+      "name": "a panel room whose lights are already on answers instead of opening another room",
+      "devices": [
+        {
+          "id": "dev_lit_study_ceiling",
+          "name": "书房吸顶灯",
+          "roomId": "study",
+          "roomName": "书房",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_lit_study_ceiling:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": ["Day", "Night"]
+          }
+        },
+        {
+          "id": "dev_lit_study_desk",
+          "name": "书房台灯",
+          "roomId": "study",
+          "roomName": "书房",
+          "model": "yeelink.light.lamp4",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_lit_study_desk:2",
+            "isOn": true,
+            "brightnessPercent": 50,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_dark_bedroom_lamp",
+          "name": "主卧床头灯",
+          "roomId": "bedroom",
+          "roomName": "主卧",
+          "model": "yeelink.light.lamp4",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_dark_bedroom_lamp:2",
+            "isOn": false,
+            "brightnessPercent": 50,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_dark_kitchen_light",
+          "name": "厨房灯",
+          "roomId": "kitchen",
+          "roomName": "厨房",
+          "model": "yeelink.light.lamp4",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_dark_kitchen_light:2",
+            "isOn": false,
+            "brightnessPercent": 50,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        }
+      ],
+      "cases": [
+        {
+          "utterance": "开灯",
+          "panelRoom": { "id": "study", "name": "书房" },
+          "expected": [],
+          "expectedReply": "书房的灯都开着"
+        }
+      ]
     }
   ]
 }

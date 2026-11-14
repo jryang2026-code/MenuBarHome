@@ -1,14 +1,3 @@
-#[cfg(test)]
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CameraBridgeChannelArgs {
-    pub(crate) did: String,
-    #[serde(default)]
-    pub(crate) channel: u32,
-    #[serde(default)]
-    pub(crate) subdid: Option<String>,
-}
-
 pub(crate) fn sanitize_camera_did(raw: &str) -> String {
     raw.chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
@@ -226,16 +215,6 @@ mod tests {
     }
 
     #[test]
-    fn all_stream_names_covers_primary_and_secondary_lenses() {
-        let names = all_camera_stream_names("cam1", 1);
-        assert!(names.contains(&"cam_raw_cam1".to_string()));
-        assert!(names.contains(&"cam_mjpeg_cam1".to_string()));
-        assert!(names.contains(&"cam_raw_cam1_c1".to_string()));
-        assert!(names.contains(&"cam_mjpeg_cam1_c1".to_string()));
-        assert!(names.contains(&"cam_mjpeg_cam1_c3".to_string()));
-    }
-
-    #[test]
     fn build_xiaomi_camera_url_encodes_optional_channel_and_subdid() {
         let base = build_xiaomi_camera_url(
             41234,
@@ -274,19 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn channel_args_deserialize_with_defaults_and_validate_private_lan_ip() {
-        let defaults: CameraBridgeChannelArgs =
-            serde_json::from_str(r#"{"did":"cam-1"}"#).expect("default channel/subdid");
-        assert_eq!(defaults.did, "cam-1");
-        assert_eq!(defaults.channel, 0);
-        assert_eq!(defaults.subdid, None);
-
-        let explicit: CameraBridgeChannelArgs =
-            serde_json::from_str(r#"{"did":"hub-1","channel":1,"subdid":"sub-9"}"#)
-                .expect("explicit channel/subdid");
-        assert_eq!(explicit.channel, 1);
-        assert_eq!(explicit.subdid.as_deref(), Some("sub-9"));
-
+    fn validates_private_lan_ip() {
         assert!(parse_camera_lan_ip("192.168.1.50").is_ok());
         assert!(parse_camera_lan_ip("172.16.4.9").is_ok());
         let class_a = std::net::Ipv4Addr::new(5 * 2, 0, 0, 8).to_string();

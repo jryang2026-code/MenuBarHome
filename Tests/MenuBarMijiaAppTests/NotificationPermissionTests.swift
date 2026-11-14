@@ -5,6 +5,10 @@ import Testing
 @MainActor
 @Suite(.serialized)
 struct NotificationPermissionTests {
+    init() {
+        SnapshotWindow.pinOverlayScrollers()
+    }
+
     @Test("Returning to the app refreshes notification permission without requesting it")
     func activationRefreshesPermission() async throws {
         // An unbundled test runner must query no system notification APIs.

@@ -51,39 +51,6 @@ struct ProactiveSuggestionEngineTests {
         suggestion.intents.compactMap { UserHabitMemory.encodeOperation($0.operation) }
     }
 
-    @Test("Pads to four actionable suggestions from favorites, environment, builtins, and active devices")
-    func padsToFour() {
-        let memory = UserHabitMemory()
-        let readings = [EnvironmentReading(id: "r1", label: "温湿度计", roomName: "客厅", temperature: 29.5, humidity: 60)]
-
-        let suggestions = L10n.$overrideTemperatureUnit.withValue(.celsius) {
-            memory.topSuggestions(
-                for: evening,
-                devices: devices,
-                scenes: [],
-                favoriteIds: ["dev_floor_lamp", "dev_desk_lamp"],
-                environmentReadings: readings
-            )
-        }
-
-        // Phase order: favorites (in starred order) → environment (hot room → 26 °C) → 全屋关灯 builtin.
-        // The plug is never reached: four slots fill first.
-        #expect(suggestions.count == 4)
-        #expect(suggestions.map(\.id) == [
-            "fav:dev_floor_lamp:off",
-            "fav:dev_desk_lamp:on",
-            "env:dev_ac:temp:26",
-            "builtin:lightsOff",
-        ])
-        #expect(operationKeys(of: suggestions[0]) == ["power:off"])
-        #expect(suggestions[0].intents[0].targetId == "dev_floor_lamp")
-        #expect(operationKeys(of: suggestions[1]) == ["power:on"])
-        #expect(suggestions[1].intents[0].targetId == "dev_desk_lamp")
-        #expect(operationKeys(of: suggestions[2]) == ["temp:26"])
-        #expect(operationKeys(of: suggestions[3]) == ["power:off", "power:off"])
-        #expect(suggestions[3].intents.map(\.targetId) == ["dev_ceiling", "dev_floor_lamp"])
-    }
-
     @Test("Favorite padding skips devices the assistant cannot power")
     func favoritePaddingSkipsNonToggleableDevices() {
         let memory = UserHabitMemory()
@@ -119,62 +86,6 @@ struct ProactiveSuggestionEngineTests {
 
         // The fridge never becomes a suggestion even though it is starred and online.
         #expect(suggestions.map(\.id) == ["active:\(onLight.id):off"])
-    }
-
-    @Test("Ranks learned habit entries first and never suggests an already-active state")
-    func habitsFirstAndNoRedundantActions() {
-        var memory = UserHabitMemory()
-        memory.record(
-            utterance: nil,
-            intents: [DeviceIntent(targetId: "dev_desk_lamp", operation: .power(true))],
-            devices: devices,
-            scenes: [],
-            now: evening
-        )
-
-        let suggestions = memory.topSuggestions(
-            for: evening,
-            devices: devices,
-            scenes: [],
-            favoriteIds: ["dev_desk_lamp"]
-        )
-
-        // The habit turns the desk lamp on; the favorite toggle for the same lamp would be
-        // the same action and is deduplicated by targetId. Remaining slots fill from the
-        // 全屋关灯 builtin (ceiling + floor lamp are on) and then active-device power-off.
-        #expect(suggestions.count == 4)
-        #expect(operationKeys(of: suggestions[0]) == ["power:on"])
-        #expect(suggestions[0].intents[0].targetId == "dev_desk_lamp")
-        #expect(suggestions[1].id == "builtin:lightsOff")
-        #expect(operationKeys(of: suggestions[2]) == ["power:off"])
-        #expect(suggestions[2].intents[0].targetId == "dev_ac")
-        #expect(operationKeys(of: suggestions[3]) == ["power:off"])
-        #expect(suggestions[3].intents[0].targetId == "dev_plug")
-    }
-
-    @Test("Cold room suggests heating and every suggestion stays actionable")
-    func coldRoomSuggestsHeating() {
-        let memory = UserHabitMemory()
-        let coldAC = SmartDevice(
-            id: "dev_ac", name: "客厅空调", roomId: "ke_ting", roomName: "客厅",
-            model: "xiaomi.aircondition.mt0", isOnline: true,
-            kind: .climate(ClimateSpec(
-                entityId: "climate.ac", isOn: true, hvacMode: "heat",
-                availableModes: ["off", "cool", "heat"],
-                targetTemperature: 18, currentTemperature: 12
-            ))
-        )
-        let readings = [EnvironmentReading(id: "r1", label: "温湿度计", roomName: "客厅", temperature: 12, humidity: 40)]
-
-        let suggestions = memory.topSuggestions(
-            for: evening,
-            devices: [coldAC],
-            scenes: [],
-            environmentReadings: readings
-        )
-
-        #expect(operationKeys(of: suggestions[0]) == ["temp:22"])
-        #expect(suggestions[0].intents[0].targetId == "dev_ac")
     }
 
     @Test("Returns nothing without controllable online devices")

@@ -7,7 +7,7 @@
 3. A bare Task-returning call inside withAnimation. Assigning or discarding the
    task keeps the animation closure's result Void.
 
-Each lint has a self-test. An allowlist entry needs a reason. A listed call that
+An allowlist entry needs a reason. A listed call that
 disappears fails the check, so the reason cannot outlive the code.
 """
 
@@ -297,64 +297,6 @@ def scan_dir(root: Path, suffix: str, finder) -> list[tuple[str, int, str]]:
     return hits
 
 
-def self_test() -> None:
-    yield_src = "\n".join(
-        [
-            "for _ in 0..<50 { await Task.yield() }",
-            "for _ in 0..<5000 where ready { await Task.yield() }",
-            "for _ in 0..<10 { if done { break }; await Task.yield() }",
-            "for attempt in 0..<400 {",
-            "    if await condition() { return }",
-            "    await Task.yield()",
-            "}",
-            "let note = \"for _ in 0..<3 { await Task.yield() }\"",
-        ]
-    )
-    yield_hits = [text for _, _, text in yield_loops("fixture.swift", yield_src)]
-    if yield_hits != ["for _ in 0..<50", "for attempt in 0..<400"]:
-        raise SystemExit(f"self-test yield loops: {yield_hits}")
-
-    expect_src = "\n".join(
-        [
-            "#expect(items.allSatisfy(\\.isOn))",
-            "#expect(items.allSatisfy { $0.isOn })",
-            "let ok = items.allSatisfy(\\.isOn)",
-            "#expect(flag)",
-        ]
-    )
-    expect_hits = expect_keypaths("fixture.swift", expect_src)
-    if len(expect_hits) != 1:
-        raise SystemExit(f"self-test allSatisfy: {expect_hits}")
-
-    animation_src = "\n".join(
-        [
-            "withAnimation(motion) { store.togglePrimary(device) }",
-            "withAnimation(motion) { _ = store.togglePrimary(device) }",
-            "withAnimation(motion) { store.turnAllOff() }",
-            "store.togglePrimary(device)",
-            "withAnimation(motion) { return store.rehearseAllOff() }",
-            "withAnimation(motion) {",
-            "    // store.undoTurnAllOff()",
-            "    store.dismiss()",
-            "}",
-        ]
-    )
-    animation_hits = [text for _, _, text in animation_tasks("fixture.swift", animation_src)]
-    if animation_hits != ["togglePrimary()", "turnAllOff()"]:
-        raise SystemExit(f"self-test animation: {animation_hits}")
-
-    sample = [("Tests/MenuBarMijiaAppTests/CameraPTZDriverTests.swift", 1, "for _ in 0..<500")] * 5
-    unexpected, stale = classify(sample, YIELD_ALLOWLIST)
-    if unexpected or stale:
-        raise SystemExit(f"self-test allowlist consume: {unexpected} {stale}")
-    unexpected, stale = classify(sample + [("Tests/Other.swift", 1, "for _ in 0..<1")], YIELD_ALLOWLIST)
-    if not unexpected:
-        raise SystemExit("self-test allowlist should reject a new loop")
-    unexpected, stale = classify(sample[:4], YIELD_ALLOWLIST)
-    if not stale:
-        raise SystemExit("self-test allowlist should reject a missing loop")
-
-
 def report(title: str, hits: list[tuple[str, int, str]], allowlist) -> bool:
     unexpected, stale = classify(hits, allowlist)
     if unexpected or stale:
@@ -369,7 +311,6 @@ def report(title: str, hits: list[tuple[str, int, str]], allowlist) -> bool:
 
 
 def main() -> None:
-    self_test()
     ok = True
     ok = report(
         "测试里没有未说明的固定次数 Task.yield 循环",

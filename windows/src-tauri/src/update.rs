@@ -128,40 +128,6 @@ pub(crate) fn release_asset_redirect_allowed(next: &reqwest::Url) -> bool {
         || host.ends_with(".githubusercontent.com")
 }
 
-#[cfg(test)]
-pub(crate) fn parse_sha256_hex(raw: &str) -> Option<String> {
-    let token = raw.split_whitespace().next()?;
-    let candidate = token
-        .strip_prefix("sha256:")
-        .or_else(|| token.strip_prefix("SHA256:"))
-        .unwrap_or(token)
-        .to_ascii_lowercase();
-    if candidate.len() == 64 && candidate.chars().all(|c| c.is_ascii_hexdigit()) {
-        Some(candidate)
-    } else {
-        None
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn sanitize_installer_filename(raw: &str) -> Result<String, String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty()
-        || trimmed.contains('/')
-        || trimmed.contains('\\')
-        || trimmed.contains(':')
-        || trimmed.contains("..")
-        || trimmed.chars().any(|c| c.is_control())
-    {
-        return Err("更新安装包文件名无效".to_string());
-    }
-    let lower = trimmed.to_ascii_lowercase();
-    if !lower.ends_with(".exe") && !lower.ends_with(".msi") {
-        return Err("仅支持 .exe 或 .msi 安装包".to_string());
-    }
-    Ok(trimmed.to_string())
-}
-
 pub(crate) fn compute_sha256_hex(bytes: &[u8]) -> String {
     let sum = digest(&SHA256, bytes);
     let mut out = String::with_capacity(64);

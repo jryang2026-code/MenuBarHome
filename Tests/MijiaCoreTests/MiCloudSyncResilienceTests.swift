@@ -243,34 +243,6 @@ struct MiCloudSyncResilienceTests {
         #expect(store.otherMiHomesDeviceCountWhenSelectedEmpty == nil)
     }
 
-    @Test("The report names the home count, the shared ones and the filter, in both Chinese tables")
-    func diagnosticsHomeLine() {
-        let input = DiagnosticsReportBuilder.Input(
-            appVersion: "1.0.6",
-            buildNumber: "42",
-            macOSVersion: "Version 14.5.0 (Build 23F79)",
-            backendTitle: "Xiaomi Cloud",
-            miCloudRegion: "cn",
-            deviceCount: 0,
-            onlineDeviceCount: 0,
-            hiddenDeviceCount: 0,
-            models: [],
-            miHomeCount: 2,
-            miSharedHomeCount: 1,
-            isMiHomeFiltered: true
-        )
-        L10n.$overrideTranslationDirectory.withValue(LocalizationTests.shippedTablesDirectory) {
-            L10n.$overrideLanguage.withValue(.zhHans) {
-                let report = DiagnosticsReportBuilder.markdown(input) 
-                #expect(report.contains("- 米家家庭: 2 (共享 1) · 已筛选单个家庭"))
-            }
-            L10n.$overrideLanguage.withValue(.zhHant) {
-                let report = DiagnosticsReportBuilder.markdown(input)
-                #expect(report.contains("- 米家家庭: 2 (共享 1) · 已篩選單一家庭"))
-            }
-        }
-    }
-
     // MARK: - Fixtures
 
     fileprivate static let sessionSsecurity = Data(repeating: 7, count: 16).base64EncodedString()

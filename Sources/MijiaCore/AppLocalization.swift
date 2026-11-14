@@ -75,10 +75,6 @@ public enum TemperatureUnitPreference: String, CaseIterable, Identifiable, Codab
     public static func stored(in defaults: UserDefaults = .standard) -> TemperatureUnitPreference {
         defaults.string(forKey: storageKey).flatMap(TemperatureUnitPreference.init(rawValue:)) ?? .system
     }
-
-    public func store(in defaults: UserDefaults = .standard) {
-        defaults.set(rawValue, forKey: Self.storageKey)
-    }
 }
 
 // MARK: - App Language
@@ -457,12 +453,6 @@ public enum L10n {
     public static var temperatureUnit: TemperatureUnit {
         if let override = overrideTemperatureUnit { return override }
         return TemperatureUnitPreference.stored().resolved(localeIdentifier: Locale.current.identifier)
-    }
-
-    /// The persisted preference: settings UI binds to this (or to `TemperatureUnitPreference.storageKey`).
-    public static var temperatureUnitPreference: TemperatureUnitPreference {
-        get { TemperatureUnitPreference.stored() }
-        set { newValue.store() }
     }
 
     /// The number the user should see, in display units.

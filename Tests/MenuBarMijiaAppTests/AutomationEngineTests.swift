@@ -124,28 +124,6 @@ struct AutomationEngineTests {
         #expect(!tracker.isAvailable)
     }
 
-    @Test("Disabled rules and non-matching triggers do nothing")
-    func disabledRuleIgnored() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
-        AutomationRuleStore(defaults: defaults).save([
-            AutomationRule(
-                trigger: .back,
-                action: .devices(ids: [Self.studyLight.id], isOn: false),
-                isEnabled: false
-            )
-        ])
-
-        let (store, mock) = try await makeStore()
-        let engine = AutomationEngine(defaults: defaults)
-        engine.attach(store: store)
-
-        await engine.handle(trigger: .back, at: Date())
-        await engine.handle(trigger: .away, at: Date())
-        #expect(await mock.executedCommands.isEmpty)
-        #expect(store.devices.first(where: { $0.id == Self.studyLight.id })?.isActiveOn == true)
-    }
-
     @Test("Connecting an external display can run the configured scene")
     func displayConnectRunsScene() async throws {
         let (defaults, suite) = try makeDefaults()

@@ -131,42 +131,6 @@ struct MijiaCoreTests {
         #expect(store.undoBanner == nil)
     }
 
-    @Test("HAWebSocketProvider connects to live NAS when HA_RUN_LIVE_TEST=1 is set")
-    func liveNASConnectionAndSynthesis() async throws {
-        guard ProcessInfo.processInfo.environment["HA_RUN_LIVE_TEST"] == "1" else {
-            return
-        }
-        let token = ProcessInfo.processInfo.environment["HA_ACCESS_TOKEN"] ?? ""
-        guard !token.isEmpty else {
-            return
-        }
-        let serverURL = ProcessInfo.processInfo.environment["HA_SERVER_URL"]
-            ?? UserDefaults.standard.string(forKey: "ha_server_url")
-            ?? KeychainHelper.defaultNASURL
-
-        let provider = HAWebSocketProvider(
-            baseURLString: serverURL,
-            token: token
-        )
-        var receivedHome: SynthesizedHome?
-        for await event in provider.events() {
-            switch event {
-            case .statusChanged(let status):
-                if case .disconnected = status {
-                    return
-                }
-            case .snapshotUpdated(let home):
-                receivedHome = home
-                break
-            case .sessionExpired, .sourceStatusesChanged, .doorbellRang:
-                break
-            }
-            if receivedHome != nil { break }
-        }
-        let home = try #require(receivedHome)
-        #expect(!home.devices.isEmpty)
-    }
-
     @Test("Slice 1: Scene synthesis and QuickAction execution with 5-second undo")
     @MainActor
     func scenesAndQuickActions() async throws {

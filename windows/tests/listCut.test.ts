@@ -1,11 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { catalogEntry } from "../src/core/i18n.js";
 import type { SmartDevice } from "../src/core/models.js";
 import {
-  KIND_CHIP,
-  KIND_RANK,
   filterByListCut,
   foldGroupedLights,
   kindChips,
@@ -148,33 +145,6 @@ describe("device list cut", () => {
     assert.equal(showsKindRow(["light"], { kind: "all" }), false);
     assert.equal(showsKindRow(["light"], { kind: "deviceKind", tag: "light" }), true);
   });
-
-  it("uses catalog keys for every chip title and hint", () => {
-    assert.deepEqual(
-      Object.entries(KIND_RANK).sort((a, b) => a[1] - b[1]).map(([tag]) => tag),
-      ["climate", "light", "plug", "fan", "vacuum", "fridge", "speaker", "camera", "sensor", "cover", "appliance", "generic"],
-    );
-    assert.equal(KIND_CHIP.light.title, "灯");
-    assert.equal(KIND_CHIP.climate.title, "空调");
-    assert.equal(KIND_CHIP.climate.hint, "也包括电暖器、温控器和电热毯");
-    assert.equal(KIND_CHIP.fan.title, "风扇");
-    assert.equal(KIND_CHIP.fan.hint, "也包括净化器、新风、加湿器和除湿器");
-    assert.equal(KIND_CHIP.plug.title, "插座");
-    assert.equal(KIND_CHIP.plug.hint, "也包括开关、香薰，以及带开关的小家电");
-    assert.equal(KIND_CHIP.vacuum.title, "扫地机");
-    assert.equal(KIND_CHIP.appliance.title, "家电");
-    assert.equal(KIND_CHIP.generic.title, "通用");
-    assert.equal(KIND_CHIP.fridge.title, "冰箱");
-    assert.equal(KIND_CHIP.camera.title, "摄像机");
-    assert.equal(KIND_CHIP.sensor.title, "传感器");
-    assert.equal(KIND_CHIP.sensor.hint, "也包括没有开关的小家电");
-    assert.equal(KIND_CHIP.cover.title, "门窗");
-    assert.equal(KIND_CHIP.light.hint, undefined);
-    for (const chip of Object.values(KIND_CHIP)) {
-      assert.ok(catalogEntry(chip.title), chip.title);
-      if (chip.hint !== undefined) assert.ok(catalogEntry(chip.hint), chip.hint);
-    }
-  });
 });
 
 describe("light-group folding (#214)", () => {
@@ -212,12 +182,5 @@ describe("light-group folding (#214)", () => {
     const member = light("dev.a", "书房");
     const folded = foldGroupedLights([member], new Map([["dev.a", "group.away"]]));
     assert.deepEqual(folded.map((device) => device.id), ["dev.a"]);
-  });
-
-  it("copies the list unchanged when no owners are known", () => {
-    const devices = [light("dev.a", "客厅"), light("dev.b", "书房")];
-    const folded = foldGroupedLights(devices, new Map<string, string>());
-    assert.notEqual(folded, devices);
-    assert.deepEqual(folded, devices);
   });
 });

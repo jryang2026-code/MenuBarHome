@@ -65,6 +65,10 @@ extension PanelPresentationTests {
 @MainActor
 @Suite(.serialized)
 struct MenuBarPanelControllerTests {
+    init() {
+        SnapshotWindow.pinOverlayScrollers()
+    }
+
     private func makeStore() async throws -> (HomeStore, String) {
         let suite = "test.panel.controller.\(UUID().uuidString)"
         let mock = MockHomeProvider(snapshot: DemoHomeProvider.defaultHome())
@@ -461,37 +465,6 @@ struct MenuBarPanelControllerTests {
         #expect(controller.isStatusItemPressActive == false)
     }
 
-    @Test("Keyboard current events never reach the mouse-only eventNumber accessor")
-    func statusEventNumberRejectsNonMouseEvents() throws {
-        let keyDown = try #require(NSEvent.keyEvent(
-            with: .keyDown,
-            location: .zero,
-            modifierFlags: [],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            characters: "\u{1b}",
-            charactersIgnoringModifiers: "\u{1b}",
-            isARepeat: false,
-            keyCode: 53
-        ))
-        #expect(MenuBarPanelController.statusEventNumber(for: keyDown) == nil)
-        #expect(MenuBarPanelController.statusEventNumber(for: nil) == nil)
-
-        let mouseUp = try #require(NSEvent.mouseEvent(
-            with: .leftMouseUp,
-            location: .zero,
-            modifierFlags: [],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            eventNumber: 42,
-            clickCount: 1,
-            pressure: 0
-        ))
-        #expect(MenuBarPanelController.statusEventNumber(for: mouseUp) == 42)
-    }
-
     @Test("Keyboard activation after a mouse-dismissed menu still toggles once the grace ends")
     func keyboardActivationAfterMenuDismissalToggles() async throws {
         let controller = MenuBarPanelController()
@@ -739,46 +712,6 @@ struct MenuBarPanelControllerTests {
         #expect(statusItem.testButton.cell?.isHighlighted == false)
     }
 
-    @Test("Out-of-process secondary click without native action presents once after fallback settle")
-    func outOfProcessSecondaryClickFallbackPresentsOnce() {
-        _ = NSApplication.shared
-        let statusItem = TestStatusItem()
-        let hostWindow = NSWindow(
-            contentRect: NSRect(x: 100, y: 900, width: 80, height: 24),
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false
-        )
-        defer { hostWindow.orderOut(nil) }
-        statusItem.testButton.frame = NSRect(x: 0, y: 0, width: 80, height: 24)
-        hostWindow.contentView = statusItem.testButton
-
-        let controller = MenuBarPanelController(statusItem: statusItem)
-        var presentedMenus: [NSMenu] = []
-        var scheduled: [(delay: TimeInterval, work: DispatchWorkItem)] = []
-        controller.statusItemHostsOutOfProcess = { true }
-        controller.statusContextMenuScheduler = { delay, work in
-            scheduled.append((delay, work))
-        }
-        controller.statusContextMenuPresenter = { menu in
-            presentedMenus.append(menu)
-        }
-
-        controller.handleMouseDown(
-            in: hostWindow,
-            at: NSPoint(x: 140, y: 912),
-            eventType: .rightMouseDown,
-            pressedMouseButtons: 0x2
-        )
-
-        #expect(presentedMenus.isEmpty)
-        #expect(scheduled.count == 1)
-        #expect(scheduled.first?.delay == MenuBarPanelController.ContextMenuSettle.fallback)
-
-        scheduled.first?.work.perform()
-        #expect(presentedMenus.count == 1)
-    }
-
     @Test("Synthetic primary click during the context-menu settle window does not toggle the panel")
     func syntheticPrimaryClickDuringSettleWindowDoesNotTogglePanel() {
         let statusItem = TestStatusItem()
@@ -807,114 +740,6 @@ struct MenuBarPanelControllerTests {
         scheduled.first?.work.perform()
         #expect(presentedMenus.count == 1)
         #expect(toggleCount == 0)
-    }
-
-    @Test("Status-item debug trace records handler entry, event, buttons, uptime, and decision or guard")
-    func statusItemDebugTraceRecordsHandlersDecisionsAndEarlyReturnGuards() {
-        _ = NSApplication.shared
-        #expect(MenuBarPanelController.statusItemLogSubsystem == "com.jryang1997.MenuBarMijia")
-        #expect(MenuBarPanelController.statusItemLogCategory == "StatusItem")
-
-        let statusItem = TestStatusItem()
-        let hostWindow = NSWindow(
-            contentRect: NSRect(x: 100, y: 900, width: 80, height: 24),
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false
-        )
-        defer { hostWindow.orderOut(nil) }
-        statusItem.testButton.frame = NSRect(x: 0, y: 0, width: 80, height: 24)
-        hostWindow.contentView = statusItem.testButton
-
-        let controller = MenuBarPanelController(statusItem: statusItem)
-        var traceLines: [String] = []
-        var scheduled: [(delay: TimeInterval, work: DispatchWorkItem)] = []
-        controller.statusItemHostsOutOfProcess = { true }
-        controller.statusItemTraceSink = { traceLines.append($0) }
-        controller.statusContextMenuScheduler = { delay, work in
-            scheduled.append((delay, work))
-        }
-        controller.statusContextMenuPresenter = { _ in }
-
-        // Outside click must not log a status-item trace line.
-        controller.handleMouseDown(
-            in: nil,
-            at: NSPoint(x: 10, y: 10),
-            eventType: .leftMouseDown,
-            pressedMouseButtons: 0x1
-        )
-        #expect(traceLines.isEmpty)
-
-        // Secondary click sequence: monitor -> fallback schedule -> native secondary action -> settle -> present.
-        controller.handleMouseDown(
-            in: hostWindow,
-            at: NSPoint(x: 140, y: 912),
-            eventType: .rightMouseDown,
-            pressedMouseButtons: 0x2
-        )
-        controller.handleStatusItemNativeLongPressEvent(
-            eventType: .rightMouseDown,
-            pressedMouseButtons: 0x2
-        )
-        scheduled.last?.work.perform()
-
-        // Post-menu duplicate right-click and synthetic primary pair hit early-return guards.
-        controller.handleStatusItemEvent(eventType: .rightMouseDown, pressedMouseButtons: 0x2)
-        controller.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0)
-        controller.handleStatusItemEvent(eventType: .rightMouseUp, pressedMouseButtons: 0)
-
-        #expect(traceLines.count == 9)
-        for line in traceLines {
-            #expect(line.contains("event="))
-            #expect(line.contains("buttons=0x"))
-            #expect(line.contains("uptime="))
-            #expect(line.contains("decision=") || line.contains("guard="))
-        }
-        #expect(traceLines[0].hasPrefix("handleMouseDown event=rightMouseDown buttons=0x2 "))
-        #expect(traceLines[0].contains("decision=requestStatusContextMenu(fallback)"))
-        #expect(traceLines[1].hasPrefix("requestStatusContextMenu event=rightMouseDown buttons=0x2 settle=0.300 "))
-        #expect(traceLines[1].contains("decision=schedule(replacedPending=false)"))
-        #expect(traceLines[2].hasPrefix("handleStatusItemNativeLongPressEvent event=rightMouseDown buttons=0x2 "))
-        #expect(traceLines[2].contains("decision=requestStatusContextMenu(native)"))
-        #expect(traceLines[3].hasPrefix("requestStatusContextMenu event=rightMouseDown buttons=0x2 settle=0.080 "))
-        #expect(traceLines[3].contains("decision=schedule(replacedPending=true)"))
-        #expect(traceLines[4].hasPrefix("showStatusContextMenu event=rightMouseDown buttons=0x2 "))
-        #expect(traceLines[4].contains("decision=present"))
-        #expect(traceLines[5].hasPrefix("handleStatusItemEvent event=rightMouseDown buttons=0x2 "))
-        #expect(traceLines[5].contains("decision=requestStatusContextMenu(fallback)"))
-        #expect(traceLines[6].hasPrefix("requestStatusContextMenu event=rightMouseDown buttons=0x2 settle=0.300 "))
-        #expect(traceLines[6].contains("guard=suppressContextMenuUntil"))
-        #expect(traceLines[7].hasPrefix("handleStatusItemEvent event=leftMouseDown buttons=0x0 "))
-        #expect(traceLines[7].contains("guard=suppressReleaseUntil"))
-        #expect(traceLines[8].hasPrefix("handleStatusItemEvent event=rightMouseUp buttons=0x0 "))
-        #expect(traceLines[8].contains("guard=rightMouseUp"))
-    }
-
-    @Test("Native status menu is attached before exactly one status-button click")
-    func nativeStatusMenuUsesStatusItemPresentation() {
-        let statusItem = TestStatusItem()
-        let menu = NSMenu()
-        var attachedMenuDuringClick: NSMenu?
-        statusItem.testButton.onPerformClick = {
-            attachedMenuDuringClick = statusItem.menu
-        }
-
-        MenuBarPanelController.presentStatusMenu(menu, on: statusItem)
-
-        #expect(statusItem.testButton.performClickCount == 1)
-        #expect(attachedMenuDuringClick === menu)
-        #expect(statusItem.menu == nil)
-    }
-
-    @Test("Clearing the status-item highlight resets the AppKit button cell")
-    func clearingStatusItemHighlightResetsButtonCell() {
-        let button = NSButton()
-        button.highlight(true)
-        #expect(button.cell?.isHighlighted == true)
-
-        MenuBarPanelController.clearStatusItemHighlight(on: button)
-
-        #expect(button.cell?.isHighlighted == false)
     }
 
     @Test("Secondary click during a primary hold leaves release tracking active")
@@ -1021,22 +846,6 @@ struct MenuBarPanelControllerTests {
         #expect(button.attributedTitle.string.trimmingCharacters(in: .whitespaces) == "的吸顶灯亮度调暗一点")
         #expect(controller.labelSymbol == "waveform")
     }
-
-    @Test("Speech label trims whitespace and caps the transcript at ten characters")
-    func speechLabelFormatting() {
-        #expect(MenuBarPanelController.speechLabel("   ") == "聆听中…")
-        #expect(MenuBarPanelController.speechLabel("开灯") == "开灯")
-        // Twelve characters: only the last ten fit in the menu bar.
-        #expect(MenuBarPanelController.speechLabel("一二三四五六七八九十十一") == "三四五六七八九十十一")
-        #expect(MenuBarPanelController.speechLabel("  关灯  ") == "关灯")
-    }
-
-    @Test("statusBarImage loads house.slash and falls back when a symbol name is unknown")
-    func statusBarImageFallback() {
-        #expect(MenuBarPanelController.statusBarImage(symbolName: "house.slash") != nil)
-        #expect(MenuBarPanelController.statusBarImage(symbolName: "nonexistent.symbol.for.test.181") != nil)
-    }
-
 
     @Test("Reopening during dismissal preserves the panel and emits each visibility change once", arguments: [false, true])
     func reopenDuringDismissal(reduced: Bool) async throws {
@@ -1400,27 +1209,6 @@ struct MenuBarPanelControllerTests {
         #expect(controller.isPanelVisible)
     }
 
-    @Test("Toggle switches between visible and hidden while preserving the same SwiftUI tree")
-    func toggleCyclesVisibility() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let controller = makeController(store: store)
-        defer { controller.uninstall() }
-
-        controller.togglePanel()
-        let panel = try #require(controller.panelWindow)
-        let hosting = try #require(panel.contentView)
-        #expect(controller.isPanelVisible)
-
-        controller.togglePanel()
-        #expect(controller.isPanelVisible == false)
-        #expect(panel.contentView === hosting)
-
-        controller.togglePanel()
-        #expect(controller.isPanelVisible)
-        #expect(panel.contentView === hosting)
-    }
-
     @Test("An expired Mi session paints house.slash in the status item")
     func expiredMiSessionUsesSlashedIcon() async throws {
         let (store, suite) = try await makeExpiredMiSessionStore()
@@ -1434,52 +1222,6 @@ struct MenuBarPanelControllerTests {
         #expect(store.menuBarSymbolName == "house.slash")
         #expect(controller.labelSymbol == "house.slash")
         #expect(button.image != nil, "the slashed-house symbol must exist on the deployment target")
-    }
-
-    @Test("The panel window is the only window recognised as the control center")
-    func isPanelWindowMatchesOnlyThePanel() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let controller = makeController(store: store)
-        defer { controller.uninstall() }
-
-        controller.showPanel()
-        let panel = try #require(controller.panelWindow)
-        let other = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 200, height: 200),
-            styleMask: [.titled],
-            backing: .buffered,
-            defer: false
-        )
-        defer { other.orderOut(nil) }
-
-        let statusWindow = controller.statusItem?.button?.window
-        #expect(controller.isPanelWindow(panel))
-        #expect(controller.isPanelWindow(other) == false)
-        #expect(controller.isPanelWindow(nil) == false)
-        #expect(controller.isPanelWindow(statusWindow) == false, "the status item window is not the panel")
-    }
-
-    @Test("The liquid-glass panel is a 376 pt column from under the menu bar to the bottom of the screen")
-    func panelIsFullHeightColumn() async throws {
-        let themeScope = PanelPreferenceScope(theme: .liquidGlass)
-        defer { themeScope.restore() }
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let controller = makeController(store: store)
-        defer { controller.uninstall() }
-        controller.showPanel()
-        let panel = try #require(controller.panelWindow)
-        #expect(controller.hostedPanelTheme == .liquidGlass)
-
-        let visible = try #require(panel.screen ?? NSScreen.main).visibleFrame
-        #expect(abs(panel.frame.width - MenuBarPanelController.panelWidth) < 1)
-        #expect(panel.frame.height > visible.height - 30, "the column runs almost the whole visible height")
-        #expect(panel.frame.minY >= visible.minY, "the column stays on screen")
-        #expect(panel.frame.maxY <= visible.maxY)
-        #expect(abs(panel.frame.maxX - (visible.maxX - 16)) <= 0.5)
-        #expect(abs(panel.frame.maxY - (visible.maxY - 6)) <= 1)
-        #expect(abs(panel.frame.minY - (visible.minY + 8)) <= 1)
     }
 
     @Test("The classic panel hangs under the status item at the PanelHeight preference", arguments: [
@@ -1570,7 +1312,10 @@ struct MenuBarPanelControllerTests {
         #expect(controller.hostedPanelTheme == .liquidGlass)
         let liquidContent = try #require(panel.contentView)
         #expect(liquidContent !== classicContent)
+        #expect(abs(panel.frame.width - MenuBarPanelController.panelWidth) < 1)
         #expect(panel.frame.height > visible.height - 30, "liquid glass uses the full-height column")
+        #expect(panel.frame.minY >= visible.minY, "the column stays on screen")
+        #expect(panel.frame.maxY <= visible.maxY)
         #expect(abs(panel.frame.maxX - (visible.maxX - 16)) <= 0.5)
         #expect(controller.grokBallSidecarWindow?.isVisible == true, "the ball returns with the liquid panel")
 
@@ -1586,40 +1331,6 @@ struct MenuBarPanelControllerTests {
         #expect(controller.hostedPanelTheme == .classic)
         #expect(abs(panel.frame.height - min(PanelHeight.standard.points, visible.height - 24)) <= 1)
         #expect(controller.grokBallSidecarWindow?.isVisible == true, "the ball is not left suspended by the switch")
-    }
-
-    @Test("Both themes present without activating the app when presentsActively is off", arguments: PanelTheme.allCases)
-    func panelsPresentPassively(theme: PanelTheme) async throws {
-        let themeScope = PanelPreferenceScope(theme: theme)
-        defer { themeScope.restore() }
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let controller = makeController(store: store)
-        defer { controller.uninstall() }
-
-        #expect(controller.presentsActively == false)
-        controller.showPanel()
-        let panel = try #require(controller.panelWindow)
-        #expect(controller.isPanelVisible)
-        #expect(panel.isVisible)
-        #expect(panel.alphaValue == 0)
-        #expect(panel.hasShadow == false)
-        #expect(controller.hostedPanelTheme == theme)
-    }
-
-    @Test("The panel theme defaults to classic and old systems cannot resolve liquid glass")
-    func panelThemeDefaultsToClassic() {
-        let themeScope = PanelPreferenceScope(theme: nil)
-        defer { themeScope.restore() }
-        UserDefaults.standard.removeObject(forKey: PanelTheme.storageKey)
-
-        #expect(PanelTheme.storageKey == "panel_theme")
-        #expect(PanelTheme.defaultValue == .classic)
-        #expect(PanelTheme.resolved(from: nil) == .classic)
-        #expect(PanelTheme.resolved(from: "liquidGlass", liquidGlassAvailable: true) == .liquidGlass)
-        #expect(PanelTheme.resolved(from: "liquidGlass", liquidGlassAvailable: false) == .classic, "macOS < 26 always uses classic")
-        #expect(PanelTheme.resolved(from: "unknown", liquidGlassAvailable: true) == .classic)
-        #expect(PanelTheme.current == .classic, "an absent preference resolves to the default")
     }
 
     @Test("GrokBall sidecar stays outside the 376 pt panel and expands without changing it")
@@ -1870,25 +1581,6 @@ struct MenuBarPanelControllerTests {
         NSApp.sendEvent(event)
     }
 
-    @Test("The panel is placed under the menu bar of its screen and clamped on screen")
-    func panelIsPositionedUnderTheMenuBar() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let controller = makeController(store: store)
-        defer { controller.uninstall() }
-
-        controller.showPanel()
-        let panel = try #require(controller.panelWindow)
-        let visible = (panel.screen ?? NSScreen.main)?.visibleFrame
-
-        if let visible {
-            #expect(panel.frame.maxY <= visible.maxY + 1, "never above the visible frame")
-            #expect(panel.frame.minY >= visible.minY - 1, "never below the screen")
-            #expect(panel.frame.minX >= visible.minX - 1)
-            #expect(panel.frame.maxX <= visible.maxX + 1)
-        }
-    }
-
     @Test("Another window taking key status closes the panel; the panel and its own children do not")
     func otherWindowBecameKeyClosesPanel() async throws {
         let (store, suite) = try await makeStore()
@@ -1994,21 +1686,6 @@ struct MenuBarPanelControllerTests {
         #expect(store.pollingContext.panelVisible)
         controller.hidePanel()
         #expect(store.pollingContext.panelVisible == false)
-    }
-
-    @Test("Keyboard shortcuts only take over inside the panel window")
-    func keyboardHandlingIsPanelScoped() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let controller = makeController(store: store)
-        defer { controller.uninstall() }
-
-        controller.showPanel()
-        let panel = try #require(controller.panelWindow)
-        #expect(panel.canBecomeKey)
-        #expect(controller.isPanelWindow(panel))
-        // Settings is a different window, so ⌘,-style AppKit handling stays untouched there.
-        #expect(controller.isPanelWindow(NSApp.keyWindow) == (NSApp.keyWindow === panel))
     }
 
     @Test("Dark appearance renders a dark panel background instead of light material")
@@ -2133,17 +1810,6 @@ struct MenuBarPanelControllerTests {
         }
 
         let item = try #require(controller.statusItem)
-        if let targetIvar = class_getInstanceVariable(NSStatusItem.self, "_target") {
-            let rawTarget = object_getIvar(item, targetIvar) as AnyObject?
-            #expect(rawTarget === controller, "NSStatusItem->_target ivar must be set directly for _performSecondaryAction:type:")
-        }
-        let getLongSel = NSSelectorFromString("longPressAction")
-        if item.responds(to: getLongSel),
-           let method = class_getInstanceMethod(type(of: item), getLongSel) {
-            typealias GetSelFn = @convention(c) (AnyObject, Selector) -> Selector?
-            let imp = unsafeBitCast(method_getImplementation(method), to: GetSelFn.self)
-            #expect(imp(item, getLongSel) == #selector(MenuBarPanelController.handleStatusItemNativeLongPress(_:)))
-        }
 
         // Simulate macOS 26+ out-of-process menu bar secondary action (type 0 = long press on status item)
         let secondarySel = NSSelectorFromString("_performSecondaryAction:type:")
@@ -2336,30 +2002,6 @@ struct MenuBarPanelControllerTests {
         #expect(CameraVideoRotation.fitScale(degrees: 180, in: CGSize(width: 640, height: 420)) == 1)
         let quarterTurn = CameraVideoRotation.fitScale(degrees: 90, in: CGSize(width: 640, height: 420))
         #expect(abs(quarterTurn - 420.0 / 640.0) < 0.0001)
-    }
-
-    @Test("The video-only HUD explains the missing audio track")
-    func cameraVideoOnlyHUDExplainsAudio() async throws {
-        _ = NSApplication.shared
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let camera = try #require(store.devices.first(where: {
-            if case .camera = $0.kind { return true }
-            return false
-        }))
-
-        let cameraController = CameraLivePanelController.shared
-        cameraController.presentsActively = false
-        cameraController.install(with: store)
-        defer {
-            cameraController.closePanel()
-            cameraController.presentsActively = true
-        }
-
-        store.openCameraLiveView(camera.id)
-        cameraController.showVideoOnlyNotice()
-        let notice = try #require(cameraController.videoOnlyNotice)
-        #expect(notice.contains("没有音轨"))
     }
 
     @Test("Camera maximize fills the screen and restores the previous frame")

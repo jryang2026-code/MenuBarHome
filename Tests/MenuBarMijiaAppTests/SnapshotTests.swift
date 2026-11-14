@@ -2,6 +2,7 @@ import Testing
 import Foundation
 import SwiftUI
 import AppKit
+import KeychainTestSupport
 @testable import MijiaCore
 @testable import MenuBarMijiaApp
 
@@ -39,6 +40,10 @@ extension PanelPresentationTests {
 @MainActor
 @Suite(.serialized)
 struct SnapshotTests {
+    init() {
+        SnapshotWindow.pinOverlayScrollers()
+    }
+
     private var recordAll: Bool {
         ProcessInfo.processInfo.environment["SNAPSHOT_RECORD"] == "1"
     }
@@ -1569,33 +1574,6 @@ struct SnapshotTests {
         )
     }
 
-    @Test("Scene icons map to one visual category per family")
-    func sceneVisualCategoriesMapFromSymbols() {
-        // Quick actions own their category outright; no symbol parsing involved.
-        #expect(QuickAction.lightsOff.visualCategory == .light)
-        #expect(QuickAction.softNightLight.visualCategory == .night)
-        #expect(QuickAction.climateSleepOff.visualCategory == .climate)
-        // Externally supplied scene icons resolve through the centralised keyword map.
-        #expect(SceneVisualCategory(iconSymbol: "moon.stars.fill") == .night)
-        #expect(SceneVisualCategory(iconSymbol: "wind.snow") == .climate)
-        #expect(SceneVisualCategory(iconSymbol: "drop.fill") == .water)
-        #expect(SceneVisualCategory(iconSymbol: "flame.fill") == .heat)
-        #expect(SceneVisualCategory(iconSymbol: "tv.fill") == .media)
-        // Unknown symbols land on the warm default instead of vanishing.
-        #expect(SceneVisualCategory(iconSymbol: "sparkles") == .light)
-    }
-
-    @Test("Menu-bar tooltip summarises devices, temperature and backend")
-    func menuBarSummaryDescribesCurrentState() async throws {
-        let fixture = try await SnapshotFixture()
-        defer { fixture.restore() }
-
-        let text = MenuBarStatusSummary.text(for: fixture.store)
-        #expect(text.hasPrefix("MenuBarHome · "))
-        #expect(text.contains("台开启"))
-        #expect(text.contains("已连接 Home Assistant"))
-    }
-
     // MARK: - Camera live HUD audio states (#29)
 
     @Test("Camera HUD labels video-only streams and offers unmute for HLS")
@@ -2200,7 +2178,7 @@ enum SnapshotWindow {
     /// mouse, a beat after launch; every scroll view in a capture then gives 17 pt to a scroller and the
     /// layout no longer matches the baselines, which were drawn with overlay scrollers. Pin the setting
     /// in the argument domain, which outranks the user's global one, so attached hardware cannot matter.
-    private static func pinOverlayScrollers() {
+    static func pinOverlayScrollers() {
         let defaults = UserDefaults.standard
         var arguments = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
         guard arguments["AppleShowScrollBars"] as? String != "WhenScrolling" else { return }
@@ -2217,14 +2195,32 @@ enum SnapshotWindow {
         }
     }
 
-    /// Takes keyboard focus away, then lays the window out and draws it, so a ring drawn for an earlier
-    /// focus is repainted before the capture (#323). Call it immediately before `cacheDisplay`.
+    /// Clearing focus before display repaints any ring left by an earlier responder for #323.
+    /// A second pass settles `ScrollView` subviews whose first display runs `.onAppear` and `NSTextField`
+    /// font updates that dirty descendant `needsLayout` while root `NSHostingView.needsLayout` stays false.
+    /// Synchronous passes avoid spinning `RunLoop.main`, which would advance motion-enabled snapshots.
     static func prepareForCapture(_ window: NSWindow) {
+        for _ in 0..<2 {
+            flushLayoutAndDisplay(window)
+        }
+        var extraPasses = 0
+        while extraPasses < 2, let contentView = window.contentView, subtreeNeedsLayout(contentView) {
+            flushLayoutAndDisplay(window)
+            extraPasses += 1
+        }
+        window.makeFirstResponder(nil)
+    }
+
+    private static func flushLayoutAndDisplay(_ window: NSWindow) {
         window.makeFirstResponder(nil)
         window.layoutIfNeeded()
         window.contentView?.layoutSubtreeIfNeeded()
         window.contentView?.displayIfNeeded()
         window.displayIfNeeded()
-        window.makeFirstResponder(nil)
+    }
+
+    /// Frame-sized `NSHostingView` leaves `needsUpdateConstraints` permanently true, while `invalidateIntrinsicContentSize()` sets `needsLayout`.
+    private static func subtreeNeedsLayout(_ view: NSView) -> Bool {
+        view.needsLayout || view.subviews.contains(where: subtreeNeedsLayout)
     }
 }

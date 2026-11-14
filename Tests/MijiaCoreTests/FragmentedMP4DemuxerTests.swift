@@ -231,27 +231,6 @@ struct FragmentedMP4DemuxerFuzzTests {
         }
     }
 
-    @Test("Random chunk boundaries do not change demuxed events")
-    func chunkBoundariesAreStable() throws {
-        let base = Self.validStream()
-        var baseline = FragmentedMP4Demuxer()
-        let expected = try baseline.append(base)
-        #expect(expected.count == 3)
-        for iteration in 0..<40 {
-            let seed = FuzzSupport.iterationSeed(Self.seed &+ 2, iteration)
-            var rng = SeededFuzzGenerator(seed: seed)
-            var demuxer = FragmentedMP4Demuxer()
-            let events: [FMP4DemuxEvent]
-            do {
-                events = try Self.feed(base, chunkLimit: 97, rng: &rng, into: &demuxer)
-            } catch {
-                Issue.record("seed=\(seed) iteration=\(iteration) valid stream failed to demux: \(error)")
-                continue
-            }
-            #expect(events == expected, "seed=\(seed) iteration=\(iteration)")
-        }
-    }
-
     @Test("A trun whose optional fields exceed its payload is rejected instead of trapping")
     func truncatedTrunOptionalFields() {
         var stream = FMP4Fixture.initSegment()

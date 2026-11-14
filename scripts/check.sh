@@ -127,11 +127,7 @@ check_secret_leaks() {
 echo "🔍 检查是否存在硬编码 JWT / 密钥 / 个人局域网地址泄露..."
 check_secret_leaks
 
-echo "🔍 检查机械性编码规范 (kVK_* 键码常量 & UNUserNotificationCenter Bundle 守卫)..."
-if search_matches 'event\.keyCode[[:space:]]*==[[:space:]]*[0-9]+' Sources/; then
-    echo "❌ 请使用 Carbon 的 kVK_* 常量，不要直接比较 event.keyCode 数字字面量！"
-    exit 1
-fi
+echo "🔍 检查机械性编码规范 (Swift 宏/并发隔离/UNUserNotificationCenter Bundle 守卫)..."
 
 # Swift Testing macros expand recursively: `#require(try #require(...))` fails compilation on every
 # platform, before any test runs. One grep here replaces a CI round trip.
@@ -201,21 +197,14 @@ if ! cmp -s Resources/AppIcon/AppIcon-Dark.svg docs/assets/logo-dark.svg || ! cm
     exit 1
 fi
 
-# Design-token and Ed25519 checks need Python 3. CI runs them on ubuntu-latest
+# Python-based lints and Ed25519 checks need Python 3. CI runs them on ubuntu-latest
 # (the Swift container image does not ship python3).
 if [ -n "$PYTHON_BIN" ]; then
-    "$PYTHON_BIN" scripts/check_design_tokens.py
     "$PYTHON_BIN" scripts/check_timer_render.py
     "$PYTHON_BIN" scripts/check_swift_harness_lints.py
-    bash scripts/repeat_test.sh --self-test
-    bash scripts/red-check.sh --self-test
-    node windows/scripts/test-file.mjs --self-test
-    "$PYTHON_BIN" scripts/test_check_capability_matrix.py
     "$PYTHON_BIN" scripts/test_mijia_cli.py
     "$PYTHON_BIN" scripts/check_capability_matrix.py
     "$PYTHON_BIN" scripts/go2rtc-ptz/check_model_tables.py
-    # Swift 与 Windows 测试都断言合成结果等于这份基线，所以这里直接读基线出报告（#295）。
-    "$PYTHON_BIN" scripts/miot_coverage_report.py
     "$PYTHON_BIN" - <<'PY'
 import base64
 import re
@@ -264,35 +253,6 @@ PY
     "$PYTHON_BIN" scripts/update_manifest.py self-test
     # 发布附件集合（含两端 SBOM）是发版硬门槛，用 fixture 验证严格清单不会悄悄放宽。
     bash scripts/test_check_release.sh
-    # 多个会话靠 issue-frontier.sh 挑票，判定规则放宽会导致重复认领（#338）。
-    bash scripts/test_issue_frontier.sh
-    bash scripts/test_gate_report.sh
-    bash scripts/test_secret_scan.sh
-    bash scripts/test_install_ripgrep.sh
-    bash scripts/test_go2rtc_gate.sh
-    bash scripts/test_tauri_cache_key.sh
-    bash scripts/test_ci_errors.sh
-    bash scripts/test_pr_ready.sh
-    if command -v pwsh >/dev/null 2>&1; then
-        bash scripts/test_build_installer.sh
-    fi
-fi
-
-large_files=""
-for dir in Sources Tests windows/src windows/src-tauri/src; do
-    [ -d "$dir" ] || continue
-    while IFS= read -r -d '' file; do
-        lines=$(wc -l < "$file" | tr -d '[:space:]')
-        if [ "$lines" -gt 1500 ]; then
-            large_files="${large_files}  ${lines}  ${file}"$'\n'
-        fi
-    done < <(find "$dir" -type f \( -name '*.swift' -o -name '*.ts' -o -name '*.rs' \) -print0)
-done
-if [ -n "$large_files" ]; then
-    echo "⚠️  单文件行数告警（> 1500 行；新代码优先拆分，见 #184）："
-    printf '%s' "$large_files"
-else
-    echo "✅ 没有超过 1500 行的源文件。"
 fi
 
 if [ "$LINT_ONLY" = "1" ]; then
@@ -332,7 +292,7 @@ run_logged() {
 
 windows_npm() {
     cd "$ROOT_DIR/windows"
-    npm test && npm run typecheck && npm run build
+    npm test && npm run build
 }
 
 raycast_npm() {

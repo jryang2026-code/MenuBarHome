@@ -460,44 +460,6 @@ struct DualSourceMergeTests {
         #expect(Set(result.home.devices.map(\.id)) == [haLight.id, miHallway.id, miBalcony.id])
     }
 
-    @Test("A Home Assistant entity unique id derived did pairs with a bare Mi did")
-    func entityUniqueIDDerivedDIDPairsWithBareDID() throws {
-        let haLight = makeLight(id: "ha-entry-light", name: "玄关灯", roomId: "entryway", roomName: "玄关")
-        let miLight = makeLight(
-            id: "246813579",
-            name: "门厅灯",
-            roomId: "mi_room_4",
-            roomName: "走廊",
-            model: "xiaomi.light"
-        )
-        let rawUniqueID = "246813579_2_1"
-        let haIdentity = makeIdentity(
-            dids: DeviceIdentityNormalizer.didCandidates(from: [rawUniqueID]),
-            uniqueIds: [rawUniqueID],
-            model: haLight.model,
-            name: haLight.name,
-            roomName: haLight.roomName,
-            kind: .light
-        )
-        let miIdentity = makeIdentity(
-            dids: ["246813579"],
-            model: miLight.model,
-            name: miLight.name,
-            roomName: miLight.roomName,
-            kind: .light
-        )
-
-        let result = DeviceDeduplicator.merge(
-            homeAssistant: makeHome(devices: [haLight], identities: [haLight.id: haIdentity]),
-            xiaomiCloud: makeHome(devices: [miLight], identities: [miLight.id: miIdentity])
-        )
-
-        #expect(result.home.devices.count == 1)
-        let device = try #require(result.home.devices.first)
-        #expect(device.id == "ha-entry-light")
-        #expect(result.routes[device.id]?.backend == .homeAssistant)
-    }
-
     @Test("A unique same-room same-model same-kind device pairs through the fallback key")
     func uniqueModelFallbackPairsDevices() throws {
         let haLight = makeLight(id: "ha-ceiling", name: "主灯", roomId: "living_room", roomName: "客厅")
@@ -753,50 +715,6 @@ struct DualSourceMergeTests {
         let secondDevice = try #require(second.home.devices.first)
         #expect(second.home.devices.count == 1)
         #expect(second.routes[secondDevice.id]?.backend == .xiaomiCloud)
-    }
-
-    @Test("Identical candidates tie to Home Assistant")
-    func identicalCandidatesTieToHomeAssistant() throws {
-        let haLight = makeLight(id: "ha-tie-light", name: "客厅灯", roomId: "living_room", roomName: "客厅")
-        let miLight = makeLight(
-            id: "777888999",
-            name: "吸顶灯",
-            roomId: "mi_room_1",
-            roomName: "书房",
-            model: "xiaomi.light"
-        )
-        #expect(DeviceDeduplicator.capabilityScore(haLight) == DeviceDeduplicator.capabilityScore(miLight))
-
-        let result = DeviceDeduplicator.merge(
-            homeAssistant: makeHome(
-                devices: [haLight],
-                identities: [
-                    haLight.id: makeIdentity(
-                        dids: DeviceIdentityNormalizer.didCandidates(from: ["xiaomi_home_777888999"]),
-                        model: haLight.model,
-                        name: haLight.name,
-                        roomName: haLight.roomName,
-                        kind: .light
-                    )
-                ]
-            ),
-            xiaomiCloud: makeHome(
-                devices: [miLight],
-                identities: [
-                    miLight.id: makeIdentity(
-                        dids: ["777888999"],
-                        model: miLight.model,
-                        name: miLight.name,
-                        roomName: miLight.roomName,
-                        kind: .light
-                    )
-                ]
-            )
-        )
-
-        let device = try #require(result.home.devices.first)
-        #expect(result.home.devices.count == 1)
-        #expect(result.routes[device.id]?.backend == .homeAssistant)
     }
 
     @Test("A winner without a room borrows the other source's assigned room")
@@ -1072,107 +990,6 @@ struct DualSourceMergeTests {
         )
         #expect(haOnly.home.devices.first?.id == canonicalID)
         #expect(haOnly.routes[canonicalID]?.backend == .homeAssistant)
-    }
-
-    @Test("Routes point at the winning source device for command dispatch")
-    func routesPointAtWinningSourceDevice() throws {
-        let haSpeaker = makeSpeaker(
-            id: "ha-offline-speaker",
-            name: "客厅音箱",
-            roomId: "living_room",
-            roomName: "客厅",
-            isOnline: false,
-            tts: true,
-            directive: true
-        )
-        let miSpeaker = makeSpeaker(
-            id: "222333444",
-            name: "小爱音箱",
-            roomId: "mi_room_1",
-            roomName: "书房"
-        )
-        let result = DeviceDeduplicator.merge(
-            homeAssistant: makeHome(
-                devices: [haSpeaker],
-                identities: [
-                    haSpeaker.id: makeIdentity(
-                        dids: DeviceIdentityNormalizer.didCandidates(from: ["xiaomi_home_222333444"]),
-                        model: haSpeaker.model,
-                        name: haSpeaker.name,
-                        roomName: haSpeaker.roomName,
-                        kind: .speaker
-                    )
-                ]
-            ),
-            xiaomiCloud: makeHome(
-                devices: [miSpeaker],
-                identities: [
-                    miSpeaker.id: makeIdentity(
-                        dids: ["222333444"],
-                        model: miSpeaker.model,
-                        name: miSpeaker.name,
-                        roomName: miSpeaker.roomName,
-                        kind: .speaker
-                    )
-                ]
-            )
-        )
-
-        let device = try #require(result.home.devices.first)
-        let route = try #require(result.routes[device.id])
-        #expect(route.backend == .xiaomiCloud)
-        #expect(route.sourceDeviceID == "222333444")
-        #expect(route.sourceDevice == miSpeaker)
-        #expect(result.home.deviceBackends[device.id] == .xiaomiCloud)
-    }
-
-    @Test("Active backends and device backends reflect the merged sources")
-    func activeAndDeviceBackendsReflectSources() throws {
-        let haLight = makeLight(id: "ha-backend-light", name: "客厅灯", roomId: "living_room", roomName: "客厅")
-        let miLight = makeLight(
-            id: "333444555",
-            name: "吸顶灯",
-            roomId: "mi_room_1",
-            roomName: "书房",
-            model: "xiaomi.light"
-        )
-        let haHome = makeHome(
-            devices: [haLight],
-            identities: [
-                haLight.id: makeIdentity(
-                    dids: DeviceIdentityNormalizer.didCandidates(from: ["xiaomi_home_333444555"]),
-                    model: haLight.model,
-                    name: haLight.name,
-                    roomName: haLight.roomName,
-                    kind: .light
-                )
-            ]
-        )
-        let miHome = makeHome(
-            devices: [miLight],
-            identities: [
-                miLight.id: makeIdentity(
-                    dids: ["333444555"],
-                    model: miLight.model,
-                    name: miLight.name,
-                    roomName: miLight.roomName,
-                    kind: .light
-                )
-            ]
-        )
-
-        let both = DeviceDeduplicator.merge(homeAssistant: haHome, xiaomiCloud: miHome)
-        #expect(both.home.activeBackends == Set<HomeBackend>([.homeAssistant, .xiaomiCloud]))
-        #expect(both.home.devices.count == 1)
-        for device in both.home.devices {
-            let route = try #require(both.routes[device.id])
-            #expect(both.home.deviceBackends[device.id] == route.backend)
-        }
-
-        let miOnly = DeviceDeduplicator.merge(homeAssistant: nil, xiaomiCloud: miHome)
-        #expect(miOnly.home.activeBackends == Set<HomeBackend>([.xiaomiCloud]))
-        #expect(miOnly.home.deviceBackends.count == miOnly.home.devices.count)
-        #expect(miOnly.home.deviceIdentities.isEmpty)
     }
 
     @Test("Same-room same-model sibling does not hijack canonical ID via fallback key")

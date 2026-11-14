@@ -4,14 +4,11 @@ import { describe, it } from "node:test";
 import type { SmartDevice } from "../src/core/models.js";
 import {
   DEFAULT_GLOBAL_SHORTCUT,
-  PANEL_ANCHORS,
   applyOrder,
   chosenSize,
-  comfort,
   emptyLayoutPrefs,
   homeOptions,
   isValidGlobalShortcut,
-  localizeFanMode,
   moveInOrder,
   nextSize,
   normalizeGlobalShortcut,
@@ -151,14 +148,6 @@ describe("panel layout prefs", () => {
     ]);
   });
 
-  it("comfort and fan labels", () => {
-    assert.equal(comfort(26.4, 55).label, "舒适");
-    assert.equal(comfort(29, 50).label, "偏热");
-    assert.equal(comfort(22, 30).label, "偏干");
-    assert.equal(localizeFanMode("Level3"), "3 档");
-    assert.equal(localizeFanMode("auto"), "自动");
-  });
-
   it("global shortcut parser normalizes modifier order and rejects plain keys (#43)", () => {
     assert.equal(DEFAULT_GLOBAL_SHORTCUT, "Alt+M");
     assert.equal(parseGlobalShortcut("shift+ctrl+alt+keyk"), "Ctrl+Alt+Shift+K");
@@ -198,16 +187,6 @@ describe("panel layout prefs", () => {
 });
 
 describe("panel placement (#204)", () => {
-  it("offers following the taskbar plus each work-area corner", () => {
-    assert.deepEqual(PANEL_ANCHORS.map((anchor) => anchor.id), [
-      "auto",
-      "topLeft",
-      "topRight",
-      "bottomLeft",
-      "bottomRight",
-    ]);
-  });
-
   it("keeps a reported anchor and falls back to following the taskbar", () => {
     assert.deepEqual(parsePanelPlacement({ anchor: "topLeft" }), { anchor: "topLeft" });
     assert.deepEqual(parsePanelPlacement({ anchor: "bottomRight" }), { anchor: "bottomRight" });

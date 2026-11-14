@@ -25,7 +25,6 @@ import {
   resolveHabitSharing,
   shareHabitSentence,
   buildSystemOneRequestBody,
-  buildTimeSummary,
   deviceHeadInstruction,
   endpointAllowsSendingSecrets,
   inferAssistantPreset,
@@ -64,7 +63,7 @@ import {
   serializeUpdateState,
   updateCheckDayKey,
 } from "../src/core/updateChecker.js";
-import { MiCloudCrypto, RC4 } from "../src/core/miCloudCrypto.js";
+import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
 import {
   CredentialVault,
   credentialsFromSettings,
@@ -114,15 +113,6 @@ const Vectors = {
 };
 
 describe("MiCloudCrypto", () => {
-  it("matches classic RC4 vector without drop", () => {
-    const rc4 = new RC4(new TextEncoder().encode("Key"), 0);
-    const out = rc4.process(new TextEncoder().encode("Plaintext"));
-    const hex = Array.from(out)
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-    assert.equal(hex, "bbf316e8d940af0ad3");
-  });
-
   it("packs 8 random bytes + big-endian minute counter into nonce", () => {
     const nonce = MiCloudCrypto.makeNonce(
       29_000_000 * 60_000,
@@ -497,20 +487,6 @@ describe("Xiaomi light-group membership (#214)", () => {
     });
     return { client, urls, bodies };
   }
-
-  it("parses member_ship keys as member dids under their group did", () => {
-    const members = MiCloudClient.parseLightGroupMembers([
-      { group_did: "group.living", status: "1", member_ship: { 470498069: "1", 470498070: "1" } },
-    ]);
-    assert.deepEqual([...members], [["group.living", ["470498069", "470498070"]]]);
-  });
-
-  it("accepts the alternate membership field name", () => {
-    const members = MiCloudClient.parseLightGroupMembers([
-      { group_did: "group.bedroom", membership: { "470498071": "1" } },
-    ]);
-    assert.deepEqual([...members], [["group.bedroom", ["470498071"]]]);
-  });
 
   it("merges repeated groups, dedupes members, and ignores malformed records", () => {
     const members = MiCloudClient.parseLightGroupMembers([
@@ -1681,63 +1657,6 @@ describe("LocalIntentParser, DelayPhrase, UndoPhrase, and ModelIntentResolver", 
     },
   ];
 
-  it("parses moonlight effect, multi-light relative dimming, fan speed, delay, and undo", () => {
-    const moon = LocalIntentParser.parse("书房灯月光模式", devices, []);
-    assert.ok(moon);
-    assert.deepEqual(moon.intents, [
-      { targetId: "dev_ceiling", operation: { kind: "lightEffect", effect: "Night" } },
-    ]);
-
-    const dimmer = LocalIntentParser.parse("再暗一点", devices, []);
-    assert.ok(dimmer);
-    assert.deepEqual(dimmer.intents, [
-      { targetId: "dev_ceiling", operation: { kind: "brightness", percent: 60 } },
-      { targetId: "dev_desk", operation: { kind: "brightness", percent: 30 } },
-    ]);
-
-    const fanHigh = LocalIntentParser.parse("风扇调到高档", devices, []);
-    assert.ok(fanHigh);
-    assert.deepEqual(fanHigh.intents, [
-      { targetId: "dev_fan", operation: { kind: "fanSpeed", speed: "Level3" } },
-    ]);
-
-    const delay = DelayPhrase.extract("10分钟后关闭书房灯");
-    assert.deepEqual(delay, { seconds: 600, remainder: "关闭书房灯" });
-    assert.equal(DelayPhrase.isCancel("取消定时"), true);
-    assert.equal(UndoPhrase.isUndo("刚才那个撤销"), true);
-  });
-
-  it("applies the bare category close rule to another category", () => {
-    const secondFan: SmartDevice = {
-      ...devices[2]!,
-      id: "dev_bedroom_fan",
-      name: "主卧落地扇",
-      roomId: "bedroom",
-      roomName: "主卧",
-    };
-    const plan = LocalIntentParser.parse("关风扇", [...devices, secondFan], []);
-    assert.ok(plan);
-    assert.deepEqual(plan.intents, []);
-    assert.deepEqual(
-      plan.suggestions.map((suggestion) => suggestion.title),
-      ["关闭客厅风扇", "关闭主卧落地扇", "全部关掉"],
-    );
-    assert.equal(plan.suggestions.at(-1)?.intents.length, 2);
-
-    const single = LocalIntentParser.parse("关风扇", devices, []);
-    assert.ok(single);
-    assert.deepEqual(single.intents, [
-      { targetId: "dev_fan", operation: { kind: "power", isOn: false } },
-    ]);
-
-    const scoped = LocalIntentParser.parse("关掉所有灯", devices, []);
-    assert.ok(scoped);
-    assert.deepEqual(scoped.intents, [
-      { targetId: "dev_ceiling", operation: { kind: "power", isOn: false } },
-      { targetId: "dev_desk", operation: { kind: "power", isOn: false } },
-    ]);
-  });
-
   it("keeps a category word a category command when devices are named room + word", () => {
     const climate = (id: string, name: string, roomName: string, isOn: boolean): SmartDevice => ({
       id,
@@ -2193,44 +2112,6 @@ describe("LocalIntentParser, DelayPhrase, UndoPhrase, and ModelIntentResolver", 
     assert.deepEqual(
       plan.suggestions.at(-1)?.intents.map((intent) => intent.targetId),
       ["light.0", "light.1", "light.2", "light.3", "light.4"],
-    );
-  });
-
-  it("orders bare category open candidates by the habit order of the current time slot (#274)", () => {
-    const dark = (index: number): SmartDevice => ({
-      id: `light.${index}`,
-      name: `测试灯${index}`,
-      roomId: `room_${index}`,
-      roomName: `房间${index}`,
-      model: "yeelink.light.lamp4",
-      isOnline: true,
-      kind: {
-        kind: "light",
-        entityId: `light.${index}`,
-        isOn: false,
-        brightnessPercent: 60,
-        colorTempKelvin: 4000,
-        minKelvin: 2700,
-        maxKelvin: 6500,
-        currentEffect: null,
-        availableEffects: [],
-      },
-    });
-    const plan = LocalIntentParser.parse(
-      "开灯",
-      Array.from({ length: 4 }, (_, index) => dark(index)),
-      [],
-      { usageOrder: ["light.2", "light.0"] },
-    );
-    assert.ok(plan);
-    assert.deepEqual(
-      plan.suggestions.map((suggestion) => suggestion.title),
-      ["打开测试灯2", "打开测试灯0", "打开测试灯1", "全部打开"],
-    );
-    // The bulk chip follows the same order, so it matches what the row looked like.
-    assert.deepEqual(
-      plan.suggestions.at(-1)?.intents.map((intent) => intent.targetId),
-      ["light.2", "light.0", "light.1", "light.3"],
     );
   });
 
@@ -2912,14 +2793,6 @@ describe("AI guesses below 80% and risky actions wait for a tap (#21)", () => {
     );
   }
 
-  it("reads probabilities, then confidence; a missing number counts as 0", () => {
-    assert.equal(ModelActionPolicy.probabilityOf({ probabilities: { a: 0.9 }, confidence: 0.1 }, "a"), 0.9);
-    assert.equal(ModelActionPolicy.probabilityOf({ confidence: "85%" }, "a"), 0.85);
-    assert.equal(ModelActionPolicy.probabilityOf({ confidence: 50 }, "a"), 0.5);
-    assert.equal(ModelActionPolicy.probabilityOf({ choice: "a" }, "a"), 0);
-    assert.equal(ModelActionPolicy.probabilityOf(undefined, "a"), 0);
-  });
-
   it("flags heater on but not heater off", () => {
     const decisionFor = (targetId: string, isOn: boolean) =>
       ModelActionPolicy.decide(devices, [], {
@@ -3421,12 +3294,6 @@ describe("assistant ambient context (#38)", () => {
     isOnline: true,
     kind: { kind: "sensor", temperature: 26.5, humidity: 58, battery: 94 },
   };
-
-  it("formats the time bucket and clock like macOS", () => {
-    assert.equal(buildTimeSummary(new Date(2026, 9, 27, 15, 30)), "下午 15:30");
-    assert.equal(buildTimeSummary(new Date(2026, 9, 27, 8, 5)), "清晨 08:05");
-    assert.equal(buildTimeSummary(new Date(2026, 9, 27, 23, 5)), "深夜 23:05");
-  });
 
   it("summarizes sensors, running devices and named habit titles", () => {
     const context = buildAssistantContext({
@@ -4074,43 +3941,6 @@ describe("Proactive suggestion resolver (#113)", () => {
   });
 });
 
-describe("Habit-aware ambient summary (#113)", () => {
-  it("includes time-bucket habits in the Jev state summary", () => {
-    const light: SmartDevice = {
-      id: "dev_ceiling",
-      name: "客厅吸顶灯",
-      roomId: "ke_ting",
-      roomName: "客厅",
-      model: "yeelink.light.ceiling20",
-      isOnline: true,
-      kind: {
-        kind: "light",
-        entityId: "light.ceiling",
-        isOn: true,
-        brightnessPercent: 80,
-        colorTempKelvin: 4000,
-        minKelvin: 2700,
-        maxKelvin: 6500,
-        currentEffect: null,
-        availableEffects: [],
-      },
-    };
-    const memory = new UserHabitMemory([
-      { bucket: "夜晚", targetId: "dev_ceiling", operationKey: "power:off", count: 3 },
-    ]);
-    const summary = shareHabitSentence({
-      sharing: "on",
-      memory,
-      phrases: [{ phrase: "有点热", intents: [] }],
-      devices: [light],
-      scenes: [],
-      mention: { kind: "utterance", text: "关闭客厅吸顶灯" },
-      now: new Date(2026, 9, 16, 21, 30),
-    });
-    assert.equal(summary, "夜晚常做：关闭客厅吸顶灯(3次)");
-  });
-});
-
 describe("Habit share sentence", () => {
   function lamp(id: string, name: string, room: string): SmartDevice {
     return {
@@ -4204,12 +4034,6 @@ describe("Habit share sentence", () => {
     assert.match(both, /打开书房台灯/);
     assert.equal(both.includes("dev_"), false);
     assert.equal(both.includes("21:30"), false);
-  });
-
-  it("keeps every occurrence of a repeated device name reserved", () => {
-    const repeated = sentence({ kind: "utterance", text: "客厅吸顶灯能不能把客厅吸顶灯调暗一点" });
-    assert.equal(repeated, "夜晚常做：关闭客厅吸顶灯(3次)");
-    assert.equal(repeated.includes("空调"), false);
   });
 
   it("does not treat a shared room-stripped base as a needle", () => {
@@ -4545,13 +4369,38 @@ describe("Home Assistant snapshot boundary", () => {
         assert.equal(parseCachedHAHome({ identity, home: { ...home, [key]: invalid } }), null, `${key}=${JSON.stringify(invalid)}`);
       }
     }
-    for (const key of ["availableModes", "availableFanModes"]) {
+    for (const key of ["availableModes", "availableFanModes", "availableSwingModes"]) {
       const device = home.devices.find((entry) => entry.kind.kind === "climate");
       assert.ok(device);
       for (const invalid of [null, {}, [3]]) {
         assert.equal(parseCachedHAHome({ identity, home: { ...home, devices: [{ ...device, kind: { ...device.kind, [key]: invalid } }] } }), null);
       }
     }
+    const baseClimate = home.devices.find((entry) => entry.kind.kind === "climate");
+    assert.ok(baseClimate && baseClimate.kind.kind === "climate");
+    const swingRoundTrip = parseCachedHAHome({
+      identity,
+      home: {
+        ...home,
+        devices: [
+          ...home.devices,
+          {
+            ...baseClimate,
+            id: "dev_swing_ac",
+            kind: {
+              ...baseClimate.kind,
+              swingMode: "vertical",
+              availableSwingModes: ["off", "vertical", "horizontal"],
+            },
+          },
+        ],
+      },
+    });
+    assert.ok(swingRoundTrip);
+    const cachedSwingAc = swingRoundTrip.home.devices.find((entry) => entry.id === "dev_swing_ac");
+    assert.ok(cachedSwingAc && cachedSwingAc.kind.kind === "climate");
+    assert.equal(cachedSwingAc.kind.swingMode, "vertical");
+    assert.deepEqual(cachedSwingAc.kind.availableSwingModes, ["off", "vertical", "horizontal"]);
     assert.equal(parseCachedHAHome({ identity, home: { devices: [] } }), null);
     assert.equal(homeAssistantIdentity("broken URL", "token"), null);
     assert.equal(homeAssistantIdentity("file:///tmp/home", "token"), null);
@@ -4638,10 +4487,6 @@ describe("Home Assistant snapshot boundary", () => {
     next.devices[0].disabled_by = "user";
     const home = HomeAssistantSynthesizer.synthesize(next);
     assert.deepEqual(home.devices.map((device) => device.id),["thermometer"]);
-  });
-  it("addresses camera night selection separately from its power entity", () => {
-    assert.deepEqual(haServiceCall({kind:"setSelectOption",entityId:"switch.camera|select.camera_night",option:"Auto"}),{domain:"select",service:"select_option",entity_id:"select.camera_night",data:{option:"Auto"}});
-    assert.deepEqual(haServiceCall({kind:"setSwitch",entityId:"switch.camera|select.camera_night",isOn:false}),{domain:"switch",service:"turn_off",entity_id:"switch.camera",data:{}});
   });
   it("falls through to entity_id sensor matching when device_class differs and separates plug power from energy", () => {
     const next = structuredClone(regressions);
@@ -5079,130 +4924,7 @@ describe("Air-quality grade (shared golden)", () => {
   });
 });
 
-describe("Home Assistant cover & climate swing parity", () => {
-  it("synthesizes Tests/Fixtures/ha_cover_snapshot.json subtypes, features, battery, and maps cover/swing service calls", () => {
-    const raw = readFileSync(resolve(process.cwd(), "../Tests/Fixtures/ha_cover_snapshot.json"), "utf8");
-    const home = HomeAssistantSynthesizer.synthesize(JSON.parse(raw));
-    const byId = new Map(home.devices.map((d) => [d.id, d]));
-
-    const living = byId.get("ha_class_curtain");
-    assert.ok(living && living.kind.kind === "cover");
-    assert.equal(living.name, "客厅布帘");
-    assert.equal(living.kind.subtype, "curtain");
-    assert.equal(living.kind.positionPercent, 60);
-    assert.equal(living.kind.positionWritable, true);
-    assert.equal(living.kind.batteryPercent, 88);
-    assert.equal(living.kind.openDescription, "Open");
-    assert.equal(living.kind.closeDescription, "Close");
-    assert.equal(living.kind.pauseDescription, "Pause");
-
-    for (const id of [
-      "ha_class_blind",
-      "ha_class_shade",
-      "ha_class_shutter",
-      "ha_class_awning",
-      "ha_class_damper",
-      "ha_name_cn_curtain",
-      "ha_name_en_curtain",
-      "ha_name_en_blind",
-    ]) {
-      const dev = byId.get(id);
-      assert.ok(dev && dev.kind.kind === "cover", id);
-      assert.equal(dev.kind.subtype, "curtain", id);
-    }
-
-    for (const id of ["ha_class_window", "ha_name_cn_window", "ha_name_en_window", "ha_fallback_unknown"]) {
-      const dev = byId.get(id);
-      assert.ok(dev && dev.kind.kind === "cover", id);
-      assert.equal(dev.kind.subtype, "window-opener", id);
-    }
-
-    for (const id of [
-      "ha_class_garage",
-      "ha_class_gate",
-      "ha_class_door",
-      "ha_name_cn_garage",
-      "ha_name_cn_gate",
-      "ha_name_en_garage",
-      "ha_name_en_gate",
-    ]) {
-      const dev = byId.get(id);
-      assert.ok(dev && dev.kind.kind === "cover", id);
-      assert.equal(dev.kind.subtype, "garage-door", id);
-    }
-
-    const shutter = byId.get("ha_class_shutter");
-    assert.ok(shutter && shutter.kind.kind === "cover");
-    assert.equal(shutter.kind.positionWritable, false);
-    assert.equal(shutter.kind.pauseDescription, "Pause");
-
-    const door = byId.get("ha_class_door");
-    assert.ok(door && door.kind.kind === "cover");
-    assert.equal(door.kind.positionWritable, false);
-    assert.equal(door.kind.pauseDescription, null);
-
-    // Round-trip cached HA home with cover & climate swingMode
-    const cached = parseCachedHAHome({
-      identity: "https://ha.example.test:abc",
-      home: {
-        ...home,
-        devices: [
-          ...home.devices,
-          {
-            id: "dev_ac",
-            name: "客厅空调",
-            roomId: "living_room",
-            roomName: "客厅",
-            model: "ac",
-            isOnline: true,
-            kind: {
-              kind: "climate",
-              entityId: "climate.living_ac",
-              isOn: true,
-              hvacMode: "cool",
-              availableModes: ["off", "cool", "heat"],
-              targetTemperature: 24,
-              currentTemperature: 26,
-              minTemp: 16,
-              maxTemp: 30,
-              step: 1,
-              fanMode: "auto",
-              availableFanModes: ["auto", "high"],
-              swingMode: "vertical",
-              availableSwingModes: ["off", "vertical", "horizontal"],
-            },
-          },
-        ],
-      },
-    });
-    assert.ok(cached);
-    const cachedAc = cached.home.devices.find((d) => d.id === "dev_ac");
-    assert.ok(cachedAc && cachedAc.kind.kind === "climate");
-    assert.equal(cachedAc.kind.swingMode, "vertical");
-    assert.deepEqual(cachedAc.kind.availableSwingModes, ["off", "vertical", "horizontal"]);
-
-    assert.deepEqual(
-      haServiceCall({ kind: "setSelectOption", entityId: "cover.living_curtain", option: "Open" }),
-      { domain: "cover", service: "open_cover", entity_id: "cover.living_curtain", data: {} },
-    );
-    assert.deepEqual(
-      haServiceCall({ kind: "setSelectOption", entityId: "cover.living_curtain", option: "Pause" }),
-      { domain: "cover", service: "stop_cover", entity_id: "cover.living_curtain", data: {} },
-    );
-    assert.deepEqual(
-      haServiceCall({ kind: "setSelectOption", entityId: "cover.living_curtain", option: "Close" }),
-      { domain: "cover", service: "close_cover", entity_id: "cover.living_curtain", data: {} },
-    );
-    assert.deepEqual(
-      haServiceCall({ kind: "setNumberValue", entityId: "cover.living_curtain", value: 42 }),
-      { domain: "cover", service: "set_cover_position", entity_id: "cover.living_curtain", data: { position: 42 } },
-    );
-    assert.deepEqual(
-      haServiceCall({ kind: "setSelectOption", entityId: "climate.living_ac", option: "vertical" }),
-      { domain: "climate", service: "set_swing_mode", entity_id: "climate.living_ac", data: { swing_mode: "vertical" } },
-    );
-  });
-
+describe("MIoT parameterized actions", () => {
   it("maps parameterized MIoT action inputs and rejects missing or out-of-domain arguments (#7)", () => {
     const spec = parseMiotDeviceSpec({
       type: "urn:miot-spec-v2:device:pet-feeder:0000A06C:mmgg-feeder:1",

@@ -34,17 +34,4 @@ export function assertMissing(node: Node | null | undefined, message?: string): 
   });
 }
 
-export function assertPresent<T extends Node>(
-  node: T | null | undefined,
-  message?: string,
-): asserts node is T {
-  if (node != null) return;
-  throw new assert.AssertionError({
-    message: message ?? "expected a node",
-    operator: "assertPresent",
-    actual: node === undefined ? "undefined" : "null",
-    expected: "node",
-  });
-}
-
 installWindow(new Window());

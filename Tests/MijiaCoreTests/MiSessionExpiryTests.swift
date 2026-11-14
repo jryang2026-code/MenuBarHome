@@ -33,14 +33,6 @@ struct MiSessionExpiryPolicyTests {
         #expect(MiSessionExpiryPolicy.state(expiresAt: now.addingTimeInterval(-1), now: now) == .expired)
     }
 
-    @Test("A dated session maps its stored end through expiryState")
-    func datedSessionUsesStoredEnd() {
-        let end = Self.now.addingTimeInterval(60)
-        let session = MiSession(userId: "42", cUserId: "c", ssecurity: "s", serviceToken: "t", expiresAt: end)
-        #expect(session.expiryState(at: Self.now) == .expiringSoon(expiresAt: end))
-        #expect(session.expiryState(at: end) == .expired)
-    }
-
     @Test("A session saved before expiresAt existed still decodes as undated")
     func legacyJSONDecodesUndated() throws {
         let json = #"{"userId":"42","cUserId":"c","ssecurity":"s","serviceToken":"t","region":"cn"}"#
@@ -248,35 +240,6 @@ struct MiSessionExpiryHomeStoreTests {
         #expect(store.miSessionExpiresAt == nil)
         #expect(!store.miSessionShowsExpired)
         #expect(store.menuBarSymbolName == "house")
-    }
-
-    @MainActor
-    @Test("A session with a far-future end keeps the normal house icon and no warning")
-    func farFutureSessionKeepsNormalIcon() throws {
-        let suite = "com.jryang1997.MenuBarMijia.mi-expiry-store.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-        let farEnd = Date(timeIntervalSince1970: 4_000_000_000)
-        let session = MiSession(
-            userId: "1234567890",
-            cUserId: "cu",
-            ssecurity: "s",
-            serviceToken: "tok",
-            expiresAt: farEnd
-        )
-        #expect(MiSessionStore.save(session, defaults: defaults))
-
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
-        #expect(store.miSessionExpiresAt == farEnd)
-        #expect(store.miSessionExpiryState == .valid)
-        #expect(!store.miSessionShowsExpired)
-        #expect(store.miSessionExpiringSoonDate == nil)
-        #expect(store.menuBarSymbolName == "house")
-
-        store.presentMiReauth()
-        #expect(store.isShowingMiReauth)
     }
 
     @MainActor

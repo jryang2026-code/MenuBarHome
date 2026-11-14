@@ -17,7 +17,7 @@ Reference for modifying `scripts/check.sh`, `scripts/record_snapshots.sh`, `scri
 - Skipped steps print `⚠️ 部分通过：跳过 <名称>` and exit `0`; any failed step prints `❌ 门禁未通过` and exits with that step's non-zero status.
 - When local `windows/node_modules` is absent, `check.sh` reuses a lockfile-matching sibling git worktree's `windows/node_modules` to run the `windows/tests/*.test.ts` suite (`MMB_DISABLE_SHARED_NODE_MODULES=1` forces a skip); full `tsc --noEmit && vite build` runs when local `windows/node_modules` is present, and always runs in CI.
 - `scripts/go2rtc-ptz/verify.sh` runs whenever `go version` succeeds within 5 s; a broken or missing `go` skips, while a patch/test failure fails the gate.
-- `--lint-only` returns before the test suites while still running secret scans, design-token/harness lints, capability matrix checks, `scripts/go2rtc-ptz/check_model_tables.py`, and script self-tests.
+- `--lint-only` returns before the test suites while still running secret scans, timer-render/harness lints, CLI and capability matrix checks, `scripts/go2rtc-ptz/check_model_tables.py`, and release/manifest checks (`scripts/update_manifest.py self-test`, `scripts/test_check_release.sh`).
 - Pre-commit hook path: `git rev-parse --git-path hooks/pre-commit`. `scripts/check.sh` installs a wrapper in the shared git hooks directory that delegates to the active worktree's `scripts/hooks/pre-commit`.
 
 ## Lints, Workflows & Disk Images

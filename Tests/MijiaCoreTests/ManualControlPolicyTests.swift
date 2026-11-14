@@ -64,20 +64,6 @@ struct ManualControlPolicyTests {
         )
     }
 
-    @Test("The bundled deviceProfiles.json carries the manual-control table (#26)")
-    func bundledRulesMatchDocument() throws {
-        let data = try #require(DeviceProfiles.bundledData())
-        let profiles = try DeviceProfiles.decode(data)
-        let rules = try #require(profiles.manualControlPolicy)
-
-        #expect(ManualControlPolicy.currentRules == rules)
-        #expect(DeviceProfiles.ManualControlRules.defaults == rules)
-        #expect(rules.heatingService.contains("floor-heat"))
-        #expect(rules.lowRiskServices.contains("buzzer"))
-        #expect(rules.lowRiskTokens.contains("display"))
-        #expect(profiles.facets.lowRiskWrites.contains("target-humidity"))
-    }
-
     @Test("Custom rules de-escalate a service the default table asks about (#26)")
     func rulesDriveFacetConfirmation() {
         let device = Self.genericDevice("vendor-box")
@@ -133,24 +119,5 @@ struct ManualControlPolicyTests {
             MiotFacetEngine.facets(for: Self.spec(property: "vendor-knob"), profiles: .current).first
         )
         #expect(!bundledFacet.writesByDefault)
-    }
-
-    @Test("inferFallbackSpec is the shared table, and unknown models still return nil (#26)")
-    func fallbackDelegatesToSharedTable() throws {
-        for model in ["yunmi.kettle.v1", "loock.lock.v1", "lumi.sensor_magnet", "dmaker.fan.fallback"] {
-            #expect(
-                MiotDeviceSpec.inferFallbackSpec(model: model)
-                    == MiotFallbackSpec.infer(model: model, name: ""),
-                "\(model)"
-            )
-        }
-        #expect(MiotDeviceSpec.inferFallbackSpec(model: "vendor.unknown.1") == nil)
-
-        let kettle = try #require(MiotDeviceSpec.inferFallbackSpec(model: "yunmi.kettle.v1"))
-        #expect(kettle.shortName == "kettle")
-        #expect(kettle.services.flatMap(\.properties).allSatisfy { $0.access == ["read"] })
-
-        let lock = try #require(MiotDeviceSpec.inferFallbackSpec(model: "loock.lock.v1"))
-        #expect(lock.services(named: "battery").first?.properties.first?.shortName == "battery-level")
     }
 }

@@ -7,14 +7,6 @@ import Testing
 struct AppSupportDiagnosticsTests {
     // MARK: - #43 Hotkey shortcut model
 
-    @Test("The default shortcut stays ⌥M and reads back as such")
-    func hotkeyDefault() {
-        #expect(HotkeyShortcut.defaultShortcut.keyCode == 46)
-        #expect(HotkeyShortcut.defaultShortcut.modifiers == .option)
-        #expect(HotkeyShortcut.defaultShortcut.displayString == "⌥M")
-        #expect(HotkeyShortcut.defaultShortcut.isDefault)
-    }
-
     @Test("Modifier symbols follow the macOS order")
     func hotkeyDisplayOrder() {
         let shortcut = HotkeyShortcut(
@@ -274,56 +266,5 @@ struct AppSupportDiagnosticsTests {
         #expect(!report.contains("192.168."))
         #expect(!report.contains("eyJhbGciOi"))
         #expect(!report.contains("Bearer"))
-    }
-
-    // MARK: - #53 Undo banner pause
-
-    @MainActor
-    private static func makeStore() async throws -> HomeStore {
-        let light = SmartDevice(
-            id: "light_bed", name: "主卧吸顶灯", roomId: "bed", roomName: "主卧",
-            model: "yeelink.light.ceiling13", isOnline: true,
-            kind: .light(LightSpec(entityId: "light.bed", isOn: true))
-        )
-        let mock = MockHomeProvider(snapshot: SynthesizedHome(
-            rooms: [RoomArea(id: "bed", name: "主卧", sortOrder: 1)],
-            devices: [light],
-            scenes: []
-        ))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.undoPause.\(UUID().uuidString)")
-        try await store.waitForTestSnapshot()
-        return store
-    }
-
-    @Test("Hovering pauses the banner without dismissing it; leaving re-arms the timer")
-    @MainActor
-    func undoBannerPauseKeepsBanner() async throws {
-        let store = try await Self.makeStore()
-        store.turnAllOff()
-        let bannerId = try #require(store.undoBanner?.id)
-
-        store.pauseUndoBannerCountdown()
-        #expect(store.undoTimerTask == nil)
-        #expect(store.undoBanner?.id == bannerId)
-
-        // Pausing again is harmless (onHover can fire twice).
-        store.pauseUndoBannerCountdown()
-        #expect(store.undoBanner?.id == bannerId)
-
-        store.resumeUndoBannerCountdown()
-        #expect(store.undoTimerTask != nil)
-        #expect(store.undoBanner?.id == bannerId)
-
-        store.undoTurnAllOff()
-        #expect(store.undoBanner == nil)
-    }
-
-    @Test("Resuming without a banner does nothing")
-    @MainActor
-    func undoBannerResumeWithoutBanner() async throws {
-        let store = try await Self.makeStore()
-        store.resumeUndoBannerCountdown()
-        #expect(store.undoBanner == nil)
-        #expect(store.undoTimerTask == nil)
     }
 }

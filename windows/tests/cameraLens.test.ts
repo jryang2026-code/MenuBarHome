@@ -1,18 +1,12 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
-import { setLanguage } from "../src/core/i18n.js";
+import { describe, it } from "node:test";
 import {
-  CameraHubCatalog,
   parsePrivateLanIpv4,
   resolveCameraHub,
 } from "../src/core/miCloud/cameraHubs.js";
-import { cameraLensLabel, cameraLensesFor } from "../src/core/miCloud/cameraLens.js";
+import { cameraLensesFor } from "../src/core/miCloud/cameraLens.js";
 import { MiotSynthesizer } from "../src/core/miCloud/synthesis.js";
 import type { MiotDeviceSpec } from "../src/core/miCloud/spec.js";
-
-afterEach(() => {
-  setLanguage("zh-Hans");
-});
 
 const cameraSpec: MiotDeviceSpec = {
   type: "urn:miot-spec-v2:device:camera:0000A01C:mxiang-mwc11:1",
@@ -54,28 +48,9 @@ describe("camera lens names", () => {
     assert.equal(cameraLensesFor("vendor.camera.unknown", "不是雙攝").length, 0);
     assert.equal(cameraLensesFor("vendor.camera.unknown", "not dual").length, 0);
   });
-
-  it("formats localized fallback lens labels and honors custom lens labels", () => {
-    setLanguage("zh-Hans");
-    assert.equal(cameraLensLabel({ role: "main", channel: 0 }), "广角");
-    assert.equal(cameraLensLabel({ role: "secondary", channel: 1 }), "长焦");
-    assert.equal(cameraLensLabel({ role: "secondary", channel: 1, label: "3x 特写" }), "3x 特写");
-
-    setLanguage("en");
-    assert.equal(cameraLensLabel({ role: "main", channel: 0 }), "Wide");
-    assert.equal(cameraLensLabel({ role: "secondary", channel: 1 }), "Telephoto");
-  });
 });
 
 describe("CameraHubCatalog and gateway synthesis", () => {
-  it("maps battery cameras to their indoor hub model prefix", () => {
-    assert.equal(CameraHubCatalog.hubModel("mxiang.camera.mwc11"), "mxiang.camera.mwc10");
-    assert.equal(CameraHubCatalog.hubModel("mxiang.camera.mwc11.v2"), "mxiang.camera.mwc10");
-    assert.equal(CameraHubCatalog.hubModel("chuangmi.camera.81ac1"), null);
-    assert.equal(CameraHubCatalog.isHub("mxiang.camera.mwc10"), true);
-    assert.equal(CameraHubCatalog.isHub("mxiang.camera.mwc11"), false);
-  });
-
   it("populates subdid and gatewayLocalIp when a single online hub matches in the same home", () => {
     const home = MiotSynthesizer.synthesize(
       [

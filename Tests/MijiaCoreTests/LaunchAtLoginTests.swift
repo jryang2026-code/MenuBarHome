@@ -43,57 +43,6 @@ struct LaunchAtLoginTests {
         )
     }
 
-    @Test("The connect-step checkbox starts checked and applies exactly what the user chose")
-    func onboardingChoiceDefaultsOn() {
-        var policy = LaunchAtLoginPolicy()
-        #expect(policy.connectStepToggleIsOn)
-        #expect(policy.leaveConnectStepAction == .register)
-        #expect(!policy.showsChecklistSuggestion(hasCompletedOnboarding: false))
-
-        policy.onboardingChoice = false
-        #expect(!policy.connectStepToggleIsOn)
-        #expect(policy.leaveConnectStepAction == .unregister)
-    }
-
-    @Test("Settings only shows the toggle on when macOS reports the login item enabled")
-    func settingsToggleFollowsSystem() {
-        for status in [LaunchAtLoginStatus.notRegistered, .requiresApproval, .notFound] {
-            #expect(!LaunchAtLoginPolicy(status: status).settingsToggleIsOn)
-        }
-        #expect(LaunchAtLoginPolicy(status: .enabled).settingsToggleIsOn)
-    }
-
-    @Test("A failed registration shows the manual hint and a checklist row")
-    func failedRegistrationOffersSystemSettings() {
-        let policy = LaunchAtLoginPolicy(
-            status: .notRegistered,
-            onboardingChoice: true,
-            appliedOnboardingChoice: true,
-            registrationFailed: true
-        )
-        #expect(policy.needsManualApproval)
-        #expect(policy.showsChecklistSuggestion(hasCompletedOnboarding: false))
-        #expect(policy.showsChecklistSuggestion(hasCompletedOnboarding: true))
-    }
-
-    @Test("Existing installs get one skippable checklist row, and enabling it clears the row")
-    func existingInstallSuggestionIsSkippable() {
-        let old = LaunchAtLoginPolicy(status: .notRegistered)
-        #expect(old.showsChecklistSuggestion(hasCompletedOnboarding: true))
-
-        var dismissed = old
-        dismissed.dismissedSuggestion = true
-        #expect(!dismissed.showsChecklistSuggestion(hasCompletedOnboarding: true))
-
-        let enabled = LaunchAtLoginPolicy(status: .enabled)
-        #expect(!enabled.showsChecklistSuggestion(hasCompletedOnboarding: true))
-
-        var optedOut = old
-        optedOut.onboardingChoice = false
-        optedOut.appliedOnboardingChoice = true
-        #expect(!optedOut.showsChecklistSuggestion(hasCompletedOnboarding: true))
-    }
-
     @Test("New users register when they leave the connect step unless they cleared the checkbox")
     @MainActor
     func leavingConnectStepAppliesTheCheckbox() {

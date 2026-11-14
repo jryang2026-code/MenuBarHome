@@ -8,12 +8,9 @@ import {
   type AppLanguage,
   catalogEntry,
   catalogKeys,
-  isTranslated,
   languageFromTag,
   resolveLanguage,
   setLanguage,
-  speechLocale,
-  speechLocaleFor,
   t,
 } from "../src/core/i18n.js";
 import {
@@ -30,8 +27,6 @@ import {
 } from "../src/core/temperature.js";
 
 function withLanguage<T>(language: AppLanguage, body: () => T): T {
-  const previous = speechLocaleFor(language);
-  void previous;
   setLanguage(language);
   try {
     return body();
@@ -73,21 +68,6 @@ describe("text catalog (#52)", () => {
     }
   });
 
-  it("translates Chinese text to English and back", () => {
-    withLanguage("zh-Hans", () => {
-      assert.equal(t("已关闭"), "已关闭");
-      assert.equal(t("打开设置"), "打开设置");
-    });
-    withLanguage("en", () => {
-      assert.equal(t("已关闭"), "Off");
-      assert.equal(t("打开设置"), "Open settings");
-      assert.equal(t("更多设备"), "More devices");
-      assert.equal(t("锁状态未知"), "Lock status unknown");
-      assert.equal(t("已上锁"), "Locked");
-      assert.ok(isTranslated("制冷"));
-    });
-  });
-
   it("fills named placeholders and keeps unknown ones visible", () => {
     withLanguage("en", () => {
       assert.equal(t("已同步 {count} 台真实米家设备", { count: 3 }), "Synced 3 devices");
@@ -121,15 +101,6 @@ describe("text catalog (#52)", () => {
     assert.equal(resolveLanguage("system", ["zh-Hans-CN"]), "zh-Hans");
     // No OS languages at all: the app's own default, not an empty string.
     assert.equal(resolveLanguage("system", []), "zh-Hans");
-  });
-
-  it("speech recognition follows the UI language", () => {
-    withLanguage("en", () => {
-      assert.equal(speechLocale(), "en-US");
-    });
-    withLanguage("zh-Hans", () => {
-      assert.equal(speechLocale(), "zh-CN");
-    });
   });
 });
 

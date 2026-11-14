@@ -41,9 +41,6 @@ public struct LaunchAtLoginPolicy: Equatable, Sendable {
     /// Settings binds its toggle here, so it never shows a state macOS is not in.
     public var settingsToggleIsOn: Bool { status.isEnabled }
 
-    /// The connect-step checkbox is checked until the user clears it.
-    public var connectStepToggleIsOn: Bool { onboardingChoice }
-
     /// Registration failed (common on ad-hoc builds) or macOS waits for manual approval.
     /// Both turn into one inline sentence and the System Settings button.
     public var needsManualApproval: Bool {
