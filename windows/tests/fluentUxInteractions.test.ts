@@ -372,6 +372,16 @@ describe("Fluent UX & Interaction Holistic Contract", () => {
     hideOfflineBox.dispatchEvent(new window.Event("change", { bubbles: true }));
     assert.equal(element(".cc-settings-save-hint").dataset.saveState, "saved");
 
+    secondaryDetails.open = true;
+    const regionSelect = secondaryDetails.querySelector<HTMLSelectElement>("select[data-mi-region]");
+    assert.ok(regionSelect);
+    regionSelect.value = "sg";
+    regionSelect.dispatchEvent(new window.Event("change", { bubbles: true }));
+    assert.equal(
+      element<HTMLDetailsElement>('details.cc-conn-secondary[data-conn-section="xiaomiCloud"]').open,
+      true,
+    );
+
     element<HTMLButtonElement>('[data-conn-mode="xiaomiCloud"]').click();
     const updatedConnPanel = element('[data-settings-panel="connection"]');
     const miActiveCard = updatedConnPanel.querySelector<HTMLElement>(".cc-conn-card.is-active-mode");
@@ -388,5 +398,11 @@ describe("Fluent UX & Interaction Holistic Contract", () => {
     searchInput.dispatchEvent(new window.Event("input", { bubbles: true }));
     element<HTMLButtonElement>('[data-settings-search-hit="haServerAddress"]').click();
     assert.equal(haSecondaryDetails.open, true);
+
+    app.render();
+    assert.equal(
+      element<HTMLDetailsElement>('details.cc-conn-secondary[data-conn-section="homeAssistant"]').open,
+      true,
+    );
   });
 });

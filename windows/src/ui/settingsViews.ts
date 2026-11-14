@@ -70,6 +70,7 @@ const DRAFT_CHECK_IDS: readonly string[] = ["settings-habit", "settings-habit-sh
 export interface SettingsDraft {
   readonly values: ReadonlyArray<readonly [string, string]>;
   readonly checks: ReadonlyArray<readonly [string, boolean]>;
+  readonly openConnSections?: ReadonlyArray<string>;
 }
 
 /** Captures the drafts of an open Settings sheet; `null` when no settings sheet is mounted. */
@@ -85,7 +86,13 @@ export function captureSettingsDraft(root: HTMLElement): SettingsDraft | null {
     const field = root.querySelector<HTMLInputElement>(`#${id}`);
     if (field && field.checked !== field.defaultChecked) checks.push([id, field.checked]);
   }
-  return { values, checks };
+  const openConnSections: string[] = [];
+  root.querySelectorAll<HTMLDetailsElement>("details.cc-conn-secondary[data-conn-section]").forEach((details) => {
+    if (details.open && details.dataset.connSection) {
+      openConnSections.push(details.dataset.connSection);
+    }
+  });
+  return { values, checks, openConnSections };
 }
 
 /**
@@ -106,6 +113,12 @@ export function restoreSettingsDraft(
   for (const [id, checked] of draft.checks) {
     const field = root.querySelector<HTMLInputElement>(`#${id}`);
     if (field) field.checked = checked;
+  }
+  for (const section of draft.openConnSections ?? []) {
+    const details = root.querySelector<HTMLDetailsElement>(
+      `details.cc-conn-secondary[data-conn-section="${section}"]`,
+    );
+    if (details) details.open = true;
   }
   const baseEl = root.querySelector<HTMLInputElement>("#settings-base-url");
   if (baseEl) {

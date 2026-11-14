@@ -214,6 +214,15 @@ function retainsLiveCameraMediaAttr(
   return isProtectedMedia && (attrName === "src" || attrName === "style") && !desired.hasAttribute(attrName);
 }
 
+function preservesLocalDetailsOpen(current: Element, desired: Element): boolean {
+  return (
+    current.tagName.toUpperCase() === "DETAILS" &&
+    current.classList.contains("cc-conn-secondary") &&
+    desired.classList.contains("cc-conn-secondary") &&
+    current.getAttribute("data-conn-section") === desired.getAttribute("data-conn-section")
+  );
+}
+
 function syncElementAttributesAndProps(
   current: Element,
   desired: Element,
@@ -225,9 +234,11 @@ function syncElementAttributesAndProps(
     (tag === "INPUT" || tag === "TEXTAREA") &&
     inputKeepsDraft(current as HTMLInputElement | HTMLTextAreaElement);
   const isProtectedMedia = isProtectedCameraMedia(current, options);
+  const keepDetailsOpen = preservesLocalDetailsOpen(current, desired);
 
   for (const attr of Array.from(current.attributes)) {
     if (attr.name === "value" && isDraftOwner) continue;
+    if (attr.name === "open" && keepDetailsOpen) continue;
     if (retainsLiveCameraMediaAttr(isProtectedMedia, attr.name, desired)) {
       continue;
     }
@@ -286,9 +297,11 @@ function syncElementAttributesAndProps(
   } else if (tag === "DETAILS") {
     const currentDetails = current as HTMLDetailsElement;
     const desiredDetails = desired as HTMLDetailsElement;
-    const desiredOpen = desiredDetails.hasAttribute("open");
-    if (currentDetails.open !== desiredOpen) {
-      currentDetails.open = desiredOpen;
+    if (!keepDetailsOpen) {
+      const desiredOpen = desiredDetails.hasAttribute("open");
+      if (currentDetails.open !== desiredOpen) {
+        currentDetails.open = desiredOpen;
+      }
     }
   }
 }
