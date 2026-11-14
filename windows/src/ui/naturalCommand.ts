@@ -320,8 +320,18 @@ export async function runScheduledCommand(host: MenuMijiaWindowsApp, item: Sched
       // the connection identity (ADR-0019 / HomeStore+Assistant.swift:628-633): park the timer in
       // missedScheduledCommands instead of failing or acting on the wrong home.
       if (!host.missedScheduledCommands.some((entry) => entry.id === item.id)) {
-        host.missedScheduledCommands = [...host.missedScheduledCommands, item];
-        host.scheduledCommandStore.persist();
+        const previous = host.missedScheduledCommands;
+        host.missedScheduledCommands = [...previous, item];
+        if (!host.scheduledCommandStore.persist()) {
+          host.missedScheduledCommands = previous;
+          host.replyBanner = {
+            text: t("定时指令无法保存，请重试"),
+            source: t("定时任务"),
+            isError: true,
+          };
+          host.render();
+          return;
+        }
       }
       host.isShowingAssistantBar = true;
       host.queueBackgroundRender();

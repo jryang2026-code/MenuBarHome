@@ -2,6 +2,7 @@ import {
   IntentValidator,
   ManualControlPolicy,
 } from "./assistant.js";
+import { inverseCommands, mergeInverseCommands } from "./commandEffects.js";
 import {
   allOffTargets,
   deviceCanTogglePower,
@@ -427,6 +428,11 @@ export interface AppURLCommandHost {
     readBackPower?: boolean,
   ): Promise<void>;
   applyCommand(command: DeviceCommand, readBackPower?: boolean): Promise<boolean>;
+  updateUndoCommandsForDevice?(
+    deviceId: string,
+    commands: readonly DeviceCommand[],
+    previousKind: SmartDevice["kind"],
+  ): void;
   handleNaturalCommand(rawInput: string, fromScheduled?: boolean): Promise<void>;
   executeBuiltInSceneFromUrl(
     scene: BuiltInURLSceneId,
@@ -680,12 +686,15 @@ async function runIntentOnDevice(
     }
   }
 
+  const preSnapshot = structuredClone(dev);
+  const appliedInverses: DeviceCommand[][] = [];
   for (let i = 0; i < commands.length; i += 1) {
     const cmd = commands[i]!;
     if (i === 0) {
       const prevBanner = host.replyBanner;
       await host.executeSingleCommand(dev, cmd, summary, intent);
       if (host.replyBanner !== prevBanner && host.replyBanner?.isError) { return { message: host.replyBanner.text, isError: true }; }
+      appliedInverses.push(inverseCommands(preSnapshot, cmd));
     } else {
       const ok = await host.applyCommand(cmd);
       if (!ok) {
@@ -695,6 +704,29 @@ async function runIntentOnDevice(
             trText("{name} 响应失败", "{name} failed to respond", { name: displayNameFor(dev, host) }),
           isError: true,
         };
+      }
+      appliedInverses.push(inverseCommands(preSnapshot, cmd));
+      const merged = mergeInverseCommands(appliedInverses);
+      if (merged.length > 0) {
+        if (typeof host.updateUndoCommandsForDevice === "function") {
+          host.updateUndoCommandsForDevice(dev.id, merged, preSnapshot.kind);
+        } else {
+          const maybeUndoHost = host as unknown as {
+            lastUndoAction?: {
+              readonly summary: string;
+              readonly steps: ReadonlyArray<{ readonly deviceId: string; readonly commands: readonly DeviceCommand[] }>;
+              readonly expiresAtMs: number;
+            } | null;
+          };
+          if (maybeUndoHost.lastUndoAction) {
+            maybeUndoHost.lastUndoAction = {
+              ...maybeUndoHost.lastUndoAction,
+              steps: maybeUndoHost.lastUndoAction.steps.map((step) =>
+                step.deviceId === dev.id ? { ...step, commands: merged } : step,
+              ),
+            };
+          }
+        }
       }
     }
   }

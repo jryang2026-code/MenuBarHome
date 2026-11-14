@@ -103,8 +103,26 @@ const CN_SCENE_VERBS = ["执行", "启动", "打开", "开启", "激活", "切�
 const CN_SCENE_SUFFIXES = ["场景", "模式"];
 const CN_IGNORABLE_REGEX = /[\s，。！？、；：,!?;:~～"'“”‘’]+/g;
 
+const TRAD_CHARS =
+  "開關啟啓閉滅調變設為換執動進運場燈電氣機風熱涼溫濕溼乾淨掃視攝頭監閥門總鎖簾紗捲葉車庫揚聲魚寵餵煙霧應傳臥廳書廚陽臺檯衛間裡裏內頂帶環點黃藍綠紅檔擋級強靜愛搖擺別製備個盞隻條請幫煩給將兩過時鐘鍾後銷剛暫還計";
+const SIMP_CHARS =
+  "开关启启闭灭调变设为换执动进运场灯电气机风热凉温湿湿干净扫视摄头监阀门总锁帘纱卷叶车库扬声鱼宠喂烟雾应传卧厅书厨阳台台卫间里里内顶带环点黄蓝绿红档档级强静爱摇摆别制备个盏只条请帮烦给将两过时钟钟后销刚暂还计";
+const TRAD_TO_SIMP_MAP: ReadonlyMap<string, string> = new Map(
+  Array.from(TRAD_CHARS).map((ch, idx) => [ch, SIMP_CHARS[idx] ?? ch]),
+);
+
+export function toSimplifiedChinese(input: string): string {
+  if (!input) return input;
+  const replaced = input.replaceAll("裝置", "设备");
+  let out = "";
+  for (const ch of replaced) {
+    out += TRAD_TO_SIMP_MAP.get(ch) ?? ch;
+  }
+  return out;
+}
+
 export function normalizeChineseUtterance(utterance: string): string {
-  return utterance.replace(CN_IGNORABLE_REGEX, "").replace(/^\.+|\.+$/g, "");
+  return toSimplifiedChinese(utterance).replace(CN_IGNORABLE_REGEX, "").replace(/^\.+|\.+$/g, "");
 }
 
 export function strippedSceneText(raw: string): string {
@@ -213,11 +231,13 @@ export function buildDevicePhrases(devices: readonly SmartDevice[]): DevicePhras
   const base = new Map<string, string[]>();
   for (const dev of devices) {
     if (!dev.name) continue;
-    const fullIds = full.get(dev.name) ?? [];
+    const devName = toSimplifiedChinese(dev.name);
+    const roomName = toSimplifiedChinese(dev.roomName);
+    const fullIds = full.get(devName) ?? [];
     fullIds.push(dev.id);
-    full.set(dev.name, fullIds);
-    if (dev.roomName && dev.name.startsWith(dev.roomName)) {
-      const stripped = dev.name.slice(dev.roomName.length);
+    full.set(devName, fullIds);
+    if (roomName && devName.startsWith(roomName)) {
+      const stripped = devName.slice(roomName.length);
       if (Array.from(stripped).length >= 2 && !(stripped in CN_CATEGORY_WORDS)) {
         const baseIds = base.get(stripped) ?? [];
         baseIds.push(dev.id);
@@ -278,13 +298,17 @@ export function chineseRoomDeviceIds(
   devices: readonly SmartDevice[],
   panelRoom: RoomScope | null,
 ): string[] | null {
-  const exact = devices.filter((dev) => dev.roomName === word);
+  const normWord = toSimplifiedChinese(word);
+  const exact = devices.filter((dev) => toSimplifiedChinese(dev.roomName) === normWord);
   if (exact.length > 0) {
     const resolved = disambiguateRoomDevices(exact, panelRoom);
     return resolved.length === 0 ? null : resolved;
   }
-  const aliases = CN_ROOM_ALIASES[word] ?? [word];
-  const matched = devices.filter((dev) => aliases.some((a) => dev.roomName.includes(a)));
+  const aliases = CN_ROOM_ALIASES[normWord] ?? [normWord];
+  const matched = devices.filter((dev) => {
+    const room = toSimplifiedChinese(dev.roomName);
+    return aliases.some((a) => room.includes(a));
+  });
   if (matched.length === 0) return [];
   const resolved = disambiguateRoomDevices(matched, panelRoom);
   return resolved.length === 0 ? null : resolved;

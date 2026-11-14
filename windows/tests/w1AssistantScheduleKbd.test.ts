@@ -423,6 +423,29 @@ describe("A10 Chinese numeral delays (1..99, compound, trailing) & cross-home sc
     assert.equal(DelayPhrase.extract("关灯 二十五小时后"), null);
     assert.equal(DelayPhrase.extract("关灯 90000秒后"), null);
     assert.equal(DelayPhrase.extract("10分钟关灯"), null);
+
+    const tradDevices: SmartDevice[] = [
+      makeLight("living-light", "客厅主灯", "客厅", true),
+      makeLight("study-lamp", "书房台灯", "书房", false),
+    ];
+    assert.deepEqual(LocalIntentParser.parse("關閉客廳燈", tradDevices, [])?.intents, [
+      { targetId: "living-light", operation: { kind: "power", isOn: false } },
+    ]);
+    assert.deepEqual(LocalIntentParser.parse("打開書房檯燈", tradDevices, [])?.intents, [
+      { targetId: "study-lamp", operation: { kind: "power", isOn: true } },
+    ]);
+    assert.deepEqual(DelayPhrase.extract("二十分鐘後關閉書房檯燈"), {
+      seconds: 1200,
+      remainder: "關閉書房檯燈",
+    });
+    assert.deepEqual(
+      LocalIntentParser.parse(
+        DelayPhrase.extract("二十分鐘後關閉書房檯燈")!.remainder,
+        tradDevices,
+        [],
+      )?.intents,
+      [{ targetId: "study-lamp", operation: { kind: "power", isOn: false } }],
+    );
   });
 
   it("parks due cross-home timers into missedScheduledCommands instead of dispatching or erroring (ADR-0019)", async () => {

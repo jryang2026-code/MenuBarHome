@@ -3,6 +3,7 @@ import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { normalizeMiCloudRegion } from "../core/miCloudClient.js";
 import { t } from "../core/i18n.js";
 import type { ScheduledCommand } from "../core/models.js";
+import { missingScheduledCommandTargets } from "../core/scheduledCommands.js";
 import type { PersistedSettings } from "./appTypes.js";
 import { isWorkstationLockBlockingControl as isControlBlockedWhileLocked } from "./transport.js";
 
@@ -34,12 +35,23 @@ export function markTimerSnapshotReady(host: MenuMijiaWindowsApp): void {
 export function processScheduledCommands(host: MenuMijiaWindowsApp, nowMs = Date.now()): boolean {
   const count = host.scheduledCommands.length;
   const missed = host.missedScheduledCommands.length;
+  const knownTargetIds = new Set<string>([
+    ...host.devices.map((device) => device.id),
+    ...host.scenes.map((scene) => scene.id),
+  ]);
   const run = host.scheduledCommandStore.takeDue(
-    scheduledCommandIdentity(host.settings), scheduledCommandsReady(host), nowMs,
+    scheduledCommandIdentity(host.settings),
+    scheduledCommandsReady(host),
+    nowMs,
+    knownTargetIds,
   );
   if (run === null) {
     timerStorageFailure(host);
     return true;
+  }
+  if (host.missedScheduledCommands.length > missed) {
+    host.isShowingAssistantBar = true;
+    host.queueBackgroundRender();
   }
   for (const item of run) void host.runScheduledCommand(item);
   return count > 0 || host.missedScheduledCommands.length !== missed;
@@ -81,6 +93,11 @@ export async function confirmMissedScheduledCommand(
   const index = host.missedScheduledCommands.findIndex((entry) => entry.id === id);
   if (index < 0) return;
   const item = host.missedScheduledCommands[index]!;
+  if (missingScheduledCommandTargets(item, host.devices, host.scenes).length > 0) {
+    host.isShowingAssistantBar = true;
+    host.render();
+    return;
+  }
   const previous = host.missedScheduledCommands;
   host.missedScheduledCommands = previous.filter((entry) => entry.id !== id);
   if (!host.scheduledCommandStore.persist()) {

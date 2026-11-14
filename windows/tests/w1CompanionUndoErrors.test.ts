@@ -539,7 +539,7 @@ describe("A11 RunningBatch mid-flight undo & preemption (#2)", () => {
     assert.equal(secondSent.includes("setLightPower:light.l3"), true);
   });
 
-  it("still restores d1 when in-flight d2 fails while performUndo is awaiting d2 restore (no liveSteps splice race)", async () => {
+  it("waits for in-flight batch writes to settle on performUndo, excludes failed in-flight writes, and rejects stale sourceRevision batches", async () => {
     const app = mountApp();
     await setImmediate();
     const d1 = makeLight("d1", "灯一", { isOn: true });
@@ -548,7 +548,6 @@ describe("A11 RunningBatch mid-flight undo & preemption (#2)", () => {
     app.devices = [d1, d2, d3];
 
     const d2OffGate = deferred<boolean>();
-    const d2RestoreGate = deferred<boolean>();
     const dispatched: Array<{ entityId: string; isOn: boolean }> = [];
 
     app.applyCommand = async (cmd) => {
@@ -559,13 +558,6 @@ describe("A11 RunningBatch mid-flight undo & preemption (#2)", () => {
         const ok = await d2OffGate.promise;
         if (ok && target && target.kind.kind === "light") {
           target.kind = { ...target.kind, isOn: false };
-        }
-        return ok;
-      }
-      if (cmd.entityId === "light.d2" && cmd.isOn === true) {
-        const ok = await d2RestoreGate.promise;
-        if (ok && target && target.kind.kind === "light") {
-          target.kind = { ...target.kind, isOn: true };
         }
         return ok;
       }
@@ -588,24 +580,31 @@ describe("A11 RunningBatch mid-flight undo & preemption (#2)", () => {
     );
     await setImmediate();
     await setImmediate();
-    assert.equal(app.devices.find((d) => d.id === "d1")?.kind.kind === "light" && (app.devices.find((d) => d.id === "d1")!.kind as { isOn: boolean }).isOn, false);
+    assert.equal(
+      app.devices.find((d) => d.id === "d1")?.kind.kind === "light" &&
+        (app.devices.find((d) => d.id === "d1")!.kind as { isOn: boolean }).isOn,
+      false,
+    );
     const undoPromise = app.performUndo();
     await setImmediate();
     await setImmediate();
-    assert.ok(
-      dispatched.some((c) => c.entityId === "light.d2" && c.isOn === true),
-      "performUndo should be awaiting d2 restore at index 0",
+    assert.equal(
+      dispatched.some((c) => c.isOn === true),
+      false,
+      "performUndo must wait for in-flight d2 write to settle before sending any inverse command",
     );
     d2OffGate.resolve(false);
-    await setImmediate();
-    await setImmediate();
-    d2RestoreGate.resolve(true);
     await Promise.all([batchPromise, undoPromise]);
 
     assert.equal(
+      dispatched.some((c) => c.entityId === "light.d2" && c.isOn === true),
+      false,
+      "failed in-flight d2 must not receive a restore command",
+    );
+    assert.equal(
       dispatched.some((c) => c.entityId === "light.d1" && c.isOn === true),
       true,
-      "d1 must receive its restore command even when d2 fails mid-undo",
+      "d1 must receive its restore command after in-flight d2 settles",
     );
     assert.equal(
       (app.devices.find((d) => d.id === "d1")!.kind as { isOn: boolean }).isOn,
@@ -616,6 +615,30 @@ describe("A11 RunningBatch mid-flight undo & preemption (#2)", () => {
       dispatched.some((c) => c.entityId === "light.d3"),
       false,
       "d3 was never reached and must receive no commands",
+    );
+
+    const holdSourceSwitch = deferred<boolean>();
+    app.applyCommand = async (cmd) => {
+      if (cmd.kind === "setLightPower" && cmd.entityId === "light.d1" && !cmd.isOn) {
+        return holdSourceSwitch.promise;
+      }
+      return true;
+    };
+    const staleBatchPromise = executeIntents(
+      app,
+      [{ targetId: "d1", operation: { kind: "power", isOn: false } }],
+      "即将过期批次",
+      "一键全关",
+    );
+    await setImmediate();
+    app.invalidateSourceControl();
+    assert.equal(app.lastUndoAction, null);
+    holdSourceSwitch.resolve(true);
+    await staleBatchPromise;
+    assert.equal(
+      app.lastUndoAction,
+      null,
+      "stale batch settling after invalidateSourceControl must never republish its undo action",
     );
   });
 });
@@ -992,5 +1015,46 @@ describe("A15 Companion URL high-risk confirm, Zero-AI presets, group folding & 
     const pkgPath = fileURLToPath(new URL("../../raycast/package.json", import.meta.url));
     const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { platforms?: string[] };
     assert.deepEqual(pkg.platforms, ["macOS", "Windows"]);
+  });
+
+  it("includes both brightness and colorTemperature in Moonlight undo action and restores both on performUndo", async () => {
+    const app = mountApp();
+    const lamp = makeLight("lamp.study", "书房台灯");
+    app.devices = [lamp];
+    const sent: DeviceCommand[] = [];
+    app.applyCommand = async (cmd) => {
+      sent.push(cmd);
+      if (lamp.kind.kind === "light") {
+        if (cmd.kind === "setLightBrightness") lamp.kind.brightnessPercent = cmd.percent;
+        if (cmd.kind === "setLightColorTemp") lamp.kind.colorTempKelvin = cmd.kelvin;
+        if (cmd.kind === "setLightPower") lamp.kind.isOn = cmd.isOn;
+      }
+      return true;
+    };
+
+    const res = await executeDirectAskPreset("把书房台灯设为柔和月光模式", app as unknown as AppURLCommandHost);
+    assert.equal(res.handled, true);
+    assert.equal(res.isError, false);
+    assert.equal(lamp.kind.kind === "light" && lamp.kind.brightnessPercent, 15);
+    assert.equal(lamp.kind.kind === "light" && lamp.kind.colorTempKelvin, 2700);
+    assert.deepEqual(app.lastUndoAction?.steps[0]?.commands, [
+      { kind: "setLightBrightness", entityId: "light.lamp.study", percent: 80 },
+      { kind: "setLightColorTemp", entityId: "light.lamp.study", kelvin: 4500 },
+      { kind: "setLightPower", entityId: "light.lamp.study", isOn: true },
+    ]);
+
+    sent.length = 0;
+    await app.performUndo();
+    assert.deepEqual(sent, [
+      { kind: "setLightBrightness", entityId: "light.lamp.study", percent: 80 },
+      { kind: "setLightColorTemp", entityId: "light.lamp.study", kelvin: 4500 },
+      { kind: "setLightPower", entityId: "light.lamp.study", isOn: true },
+    ]);
+    assert.equal(lamp.kind.kind === "light" && lamp.kind.brightnessPercent, 80);
+    assert.equal(lamp.kind.kind === "light" && lamp.kind.colorTempKelvin, 4500);
+    if (dom) {
+      closeTestWindow(dom);
+      dom = null;
+    }
   });
 });

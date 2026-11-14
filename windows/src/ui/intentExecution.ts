@@ -58,6 +58,7 @@ export class RunningBatch {
   private readonly liveSteps: UndoStep[] = [];
   private trackedUndoAction: UndoAction | null = null;
   private readonly stopListeners = new Set<(reason: BatchStopReason) => void>();
+  private readonly inFlightPromises = new Set<Promise<void>>();
 
   constructor(args: { readonly summary: string; readonly sourceRevision: number; readonly id?: string }) {
     this.id = args.id ?? `batch_${nextBatchSeq++}`;
@@ -129,7 +130,6 @@ export class RunningBatch {
   }
 
   public recordSuccess(deviceId: string): void {
-    if (this.stopped) return;
     this.attemptedIds.add(deviceId);
     this.succeededIds.add(deviceId);
     this.acceptedCountByDevice.set(deviceId, (this.acceptedCountByDevice.get(deviceId) ?? 0) + 1);
@@ -139,7 +139,6 @@ export class RunningBatch {
     if (!isCancelled) {
       this.failedIds.add(deviceId);
     }
-    if (this.stopped) return;
     if (attemptedStep) {
       const idx = this.liveSteps.indexOf(attemptedStep);
       if (idx >= 0) {
@@ -148,6 +147,26 @@ export class RunningBatch {
     }
     if ((this.acceptedCountByDevice.get(deviceId) ?? 0) === 0) {
       this.attemptedIds.delete(deviceId);
+    }
+  }
+
+  public async trackInFlight<T>(fn: () => Promise<T>): Promise<T> {
+    let settle!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    this.inFlightPromises.add(gate);
+    try {
+      return await fn();
+    } finally {
+      this.inFlightPromises.delete(gate);
+      settle();
+    }
+  }
+
+  public async waitForInFlight(): Promise<void> {
+    while (this.inFlightPromises.size > 0) {
+      await Promise.allSettled([...this.inFlightPromises]);
     }
   }
 
@@ -191,7 +210,13 @@ export function cancelRunningBatch(host: object, reason: BatchStopReason = "canc
 }
 
 function syncHostLiveUndo(host: MenuMijiaWindowsApp, batch: RunningBatch, canUndo: boolean): void {
-  if (batch.isStopped || runningBatchByHost.get(host) !== batch) return;
+  if (
+    batch.isStopped ||
+    batch.sourceRevision !== host.sourceRevision ||
+    runningBatchByHost.get(host) !== batch
+  ) {
+    return;
+  }
   const prev = host.lastUndoAction;
   const live = batch.ensureLiveUndoAction(canUndo);
   if (live) {
@@ -456,26 +481,54 @@ export async function executeIntents(
           const devName = deviceDisplayName(host, device);
           const adjustment = isAdjustmentCommand(command);
 
-          try {
-            const ok = await host.applyCommand(command);
-            if (ok) {
-              succeeded += 1;
-              runningBatch.recordSuccess(deviceId);
-              const entry = candidateIntents[intentIndex];
-              if (entry) entry.succeededCount += 1;
-              if (
-                device.kind.kind === "light" &&
-                (command.kind !== "setLightPower" || command.isOn)
-              ) {
-                host.lastManuallyUsedLightId = device.id;
+          await runningBatch.trackInFlight(async () => {
+            try {
+              const ok = await host.applyCommand(command);
+              if (sourceRevision !== host.sourceRevision) {
+                runningBatch.stop("sourceChanged");
+                return;
               }
-              syncHostLiveUndo(host, runningBatch, canUndo);
-            } else {
-              const rawBanner =
-                host.replyBanner !== prevBanner && host.replyBanner?.isError
-                  ? host.replyBanner.text
-                  : undefined;
-              if (rawBanner !== undefined && isCancellationError(rawBanner)) {
+              if (ok) {
+                succeeded += 1;
+                runningBatch.recordSuccess(deviceId);
+                const entry = candidateIntents[intentIndex];
+                if (entry) entry.succeededCount += 1;
+                if (
+                  device.kind.kind === "light" &&
+                  (command.kind !== "setLightPower" || command.isOn)
+                ) {
+                  host.lastManuallyUsedLightId = device.id;
+                }
+                syncHostLiveUndo(host, runningBatch, canUndo);
+              } else {
+                const rawBanner =
+                  host.replyBanner !== prevBanner && host.replyBanner?.isError
+                    ? host.replyBanner.text
+                    : undefined;
+                if (rawBanner !== undefined && isCancellationError(rawBanner)) {
+                  runningBatch.recordFailure(deviceId, attemptedStep, true);
+                  host.replyBanner = prevBanner;
+                  cancelledCount += 1;
+                  syncHostLiveUndo(host, runningBatch, canUndo);
+                } else {
+                  runningBatch.recordFailure(deviceId, attemptedStep, false);
+                  failed += 1;
+                  failureMessage = formatAppliedCommandFailure(
+                    rawBanner,
+                    devName,
+                    device.isOnline,
+                    adjustment,
+                    "设备未响应",
+                  );
+                  syncHostLiveUndo(host, runningBatch, canUndo);
+                }
+              }
+            } catch (err) {
+              if (sourceRevision !== host.sourceRevision) {
+                runningBatch.stop("sourceChanged");
+                return;
+              }
+              if (isCancellationError(err)) {
                 runningBatch.recordFailure(deviceId, attemptedStep, true);
                 host.replyBanner = prevBanner;
                 cancelledCount += 1;
@@ -484,34 +537,16 @@ export async function executeIntents(
                 runningBatch.recordFailure(deviceId, attemptedStep, false);
                 failed += 1;
                 failureMessage = formatAppliedCommandFailure(
-                  rawBanner,
+                  err,
                   devName,
                   device.isOnline,
                   adjustment,
-                  "设备未响应",
+                  err instanceof Error ? err.message : String(err),
                 );
                 syncHostLiveUndo(host, runningBatch, canUndo);
               }
             }
-          } catch (err) {
-            if (isCancellationError(err)) {
-              runningBatch.recordFailure(deviceId, attemptedStep, true);
-              host.replyBanner = prevBanner;
-              cancelledCount += 1;
-              syncHostLiveUndo(host, runningBatch, canUndo);
-            } else {
-              runningBatch.recordFailure(deviceId, attemptedStep, false);
-              failed += 1;
-              failureMessage = formatAppliedCommandFailure(
-                err,
-                devName,
-                device.isOnline,
-                adjustment,
-                err instanceof Error ? err.message : String(err),
-              );
-              syncHostLiveUndo(host, runningBatch, canUndo);
-            }
-          }
+          });
         }
       };
 

@@ -780,13 +780,16 @@ export class MenuMijiaWindowsApp {
       return;
     }
     const action = this.lastUndoAction;
-    if (getRunningBatch(this)?.ownsUndoAction(action)) {
-      cancelRunningBatch(this, "undo");
-    }
-    const stepsToRestore = [...action.steps];
     this.lastUndoAction = null;
     clearUndoHoverPause(this);
     const sourceRevision = this.sourceRevision;
+    const activeBatch = getRunningBatch(this);
+    if (activeBatch?.ownsUndoAction(action)) {
+      cancelRunningBatch(this, "undo");
+      await activeBatch.waitForInFlight();
+      if (sourceRevision !== this.sourceRevision) return;
+    }
+    const stepsToRestore = [...action.steps];
     const failedSteps: UndoStep[] = [];
     const blockedDevices = new Set<string>();
     let failureMessage = "";

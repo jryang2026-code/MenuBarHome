@@ -1071,6 +1071,18 @@ function createUrlCommandHostAdapter(
       return host.applyCommand(command, readBackPower);
     },
 
+    updateUndoCommandsForDevice(deviceId, commands, previousKind): void {
+      if (!revisionStillMatches() || !host.lastUndoAction) return;
+      const nextAction: UndoAction = {
+        ...host.lastUndoAction,
+        steps: host.lastUndoAction.steps.map((step) =>
+          step.deviceId === deviceId ? { ...step, commands: [...commands] } : step,
+        ),
+      };
+      recordUndoKindSnapshots(nextAction, new Map([[deviceId, structuredClone(previousKind)]]));
+      host.lastUndoAction = nextAction;
+    },
+
     async handleNaturalCommand(rawInput, fromScheduled): Promise<void> {
       if (!revisionStillMatches()) return;
       await host.handleNaturalCommand(rawInput, fromScheduled);

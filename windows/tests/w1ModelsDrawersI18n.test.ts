@@ -36,6 +36,9 @@ import {
 } from "../src/core/models.js";
 import { parseMiotDeviceSpec } from "../src/core/miCloud/spec.js";
 import { MiotSynthesizer } from "../src/core/miCloud/synthesis.js";
+import { facetServiceTitle, lockedControlIdForAlert } from "../src/core/miCloud/feedAction.js";
+import { facetAlertText } from "../src/core/miotFacetText.js";
+import type { FacetControl } from "../src/core/models.js";
 
 let dom: Window | null = null;
 
@@ -1057,5 +1060,52 @@ describe("SpeakerSpec optional ttsActionId and directiveActionId fields", () => 
     assert.equal(extendedSpeaker.directiveActionId, "miot:did_sp:5:4");
     assert.equal(nullActionSpeaker.ttsActionId, null);
     assert.equal(deviceStatusSummary(makeDevice("sp", extendedSpeaker)), "播放中 · 音量 35%");
+  });
+
+  it("preserves zh-Hant language setting when matching MIoT alert controls in lockedControlIdForAlert", () => {
+    withLang("zh-Hant", () => {
+      const controls: FacetControl[] = [
+        {
+          id: "did.2.1",
+          serviceName: "physical-controls-locked",
+          name: "physical-controls-locked-status",
+          title: "Physical Control Locked Status",
+          kind: "reading",
+          value: 1,
+          unit: null,
+          scale: null,
+          range: null,
+          options: [{ value: 1, label: "Abnormal" }],
+          isWritable: false,
+          writesByDefault: false,
+          isHighValue: true,
+          isConfirmedWrite: false,
+          target: null,
+        },
+        {
+          id: "did.2.2",
+          serviceName: "physical-controls-locked",
+          name: "physical-controls-locked",
+          title: "Physical Control Locked",
+          kind: "toggle",
+          value: false,
+          unit: null,
+          scale: null,
+          range: null,
+          options: [],
+          isWritable: true,
+          writesByDefault: false,
+          isHighValue: true,
+          isConfirmedWrite: false,
+          target: { kind: "property", entityId: "miot.did", piid: 2 },
+        },
+      ];
+      const alertText = facetAlertText(controls[0]!, "Abnormal");
+      assert.equal(currentLanguage(), "zh-Hant");
+      const lockedId = lockedControlIdForAlert(alertText, controls, false);
+      assert.equal(lockedId, "did.2.2");
+      assert.equal(currentLanguage(), "zh-Hant");
+      assert.equal(facetServiceTitle("physical-controls-locked"), "按鍵鎖");
+    });
   });
 });

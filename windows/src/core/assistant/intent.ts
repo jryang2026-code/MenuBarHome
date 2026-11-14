@@ -32,6 +32,7 @@ import {
   normalizeChineseUtterance,
   spokenChineseNumber,
   strippedSceneText,
+  toSimplifiedChinese,
 } from "./chineseIntentTables.js";
 import { deviceCategory, isAssistantControllable, type IntentCategory } from "./deviceCategory.js";
 
@@ -123,7 +124,7 @@ export const DelayPhrase = {
   isCancel(utterance: string): boolean {
     const lower = utterance.toLowerCase().trim();
     if (EN_CANCEL_PHRASES.some((p) => lower.includes(p))) return true;
-    const compact = utterance.replace(/[\s，。！？、,.!?了吧]/g, "");
+    const compact = toSimplifiedChinese(utterance).replace(/[\s，。！？、,.!?了吧]/g, "");
     return CN_CANCEL_PHRASES.some((p) => compact.includes(p));
   },
 
@@ -137,14 +138,15 @@ export const DelayPhrase = {
     if (enTrail) {
       return buildDelay(Number(enTrail[2]), englishUnitMultiplier(enTrail[3] ?? ""), enTrail[1] ?? "");
     }
-    const leading = CN_DELAY_LEADING.exec(trimmed);
+    const simplified = toSimplifiedChinese(trimmed);
+    const leading = CN_DELAY_LEADING.exec(simplified);
     if (leading) {
       // Without 过 / 等 in front or 后 behind, "10分钟" is not a delay ("10分钟关灯" is left alone).
       const hasMarker = leading.groups?.prefix !== undefined || leading.groups?.suffix !== undefined;
       const seconds = hasMarker ? parseChineseDurationSeconds(leading.groups?.duration ?? "") : null;
       if (seconds !== null) return buildDelay(seconds, 1, stripDelayMatch(trimmed, leading));
     }
-    const trailing = CN_DELAY_TRAILING.exec(trimmed);
+    const trailing = CN_DELAY_TRAILING.exec(simplified);
     if (trailing) {
       const hasMarker = trailing.groups?.prefix !== undefined || trailing.groups?.suffix !== undefined;
       const seconds = hasMarker ? parseChineseDurationSeconds(trailing.groups?.duration ?? "") : null;
@@ -178,7 +180,7 @@ export const UndoPhrase = {
     const lower = utterance.toLowerCase().replace(/^[，。！？、,.!?\s]+|[，。！？、,.!?\s]+$/g, "");
     if (EN_TIMER_EXCLUDE_REGEX.test(lower)) return false;
     if (EN_UNDO_SET.has(lower)) return true;
-    const compact = utterance.replace(/[\s，。！？、,.!?]/g, "");
+    const compact = toSimplifiedChinese(utterance).replace(/[\s，。！？、,.!?]/g, "");
     if (compact.length > 10) return false;
     if (CN_TIMER_EXCLUDE.some((w) => compact.includes(w))) return false;
     return CN_UNDO_KEYWORDS.some((w) => compact.includes(w));
@@ -1067,7 +1069,7 @@ function parseChineseDeviceCommand(
 
   const roomWordSet = new Set<string>(Object.keys(CN_ROOM_ALIASES));
   for (const d of devices) {
-    if (d.roomName) roomWordSet.add(d.roomName);
+    if (d.roomName) roomWordSet.add(toSimplifiedChinese(d.roomName));
   }
   const matchedRooms = longestFirst(roomWordSet).filter((w) => consumeChinesePhrase(w, state));
   const hasScope = longestFirst(CN_SCOPE_WORDS).filter((w) => consumeChinesePhrase(w, state)).length > 0;
