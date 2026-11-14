@@ -8,14 +8,8 @@ import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
-import type { SpeechRecognitionEventLike, SpeechRecognitionInstance } from "../src/ui/appTypes.js";
-import {
-  GROK_BALL_OFFSET_STORAGE_KEY,
-  GROK_BALL_VOICE_HOLD_MS,
-} from "../src/ui/grokBall.js";
 import {
   classifyProactiveSuggestionSource,
-  isGrokBallOnLeft,
   maybeRefreshProactiveInBackground,
 } from "../src/ui/proactive.js";
 import {
@@ -220,7 +214,7 @@ describe("Wave 2 — A11 Persistent 10-Minute Undo Pill", () => {
   });
 });
 
-describe("Wave 2 — A12 GrokBall Gestures, Edge Avoidance & Suggestion Metadata", () => {
+describe("Wave 2 — A12 Proactive Suggestion Source Icons, Confidence Badges & Layout Weighting", () => {
   let app: MenuMijiaWindowsApp | null = null;
 
   beforeEach(() => {
@@ -230,7 +224,6 @@ describe("Wave 2 — A12 GrokBall Gestures, Edge Avoidance & Suggestion Metadata
       JSON.stringify({
         connectionMode: "demo",
         hasCompletedOnboarding: true,
-        enableGrokBall: true,
       }),
     );
   });
@@ -242,180 +235,13 @@ describe("Wave 2 — A12 GrokBall Gestures, Edge Avoidance & Suggestion Metadata
     await closeTestWindow(dom);
   });
 
-  it("drags GrokBall vertically without toggling stage, clamps offset, and persists to localStorage", async () => {
-    app = new MenuMijiaWindowsApp(element("#app"));
-    assert.equal(app.isGrokBallStageExpanded, false);
-
-    const ballBtn = element("#btn-grok-ball");
-    ballBtn.dispatchEvent(
-      new window.PointerEvent("pointerdown", {
-        bubbles: true,
-        button: 0,
-        pointerId: 1,
-        clientX: 390,
-        clientY: 80,
-      }),
-    );
-    window.dispatchEvent(
-      new window.PointerEvent("pointermove", {
-        bubbles: true,
-        pointerId: 1,
-        clientX: 392,
-        clientY: 148,
-      }),
-    );
-    window.dispatchEvent(
-      new window.PointerEvent("pointerup", {
-        bubbles: true,
-        pointerId: 1,
-        clientX: 392,
-        clientY: 148,
-      }),
-    );
-    element("#btn-grok-ball").click();
-    await setImmediate();
-
-    assert.equal(app.isGrokBallStageExpanded, false, "drag release must not toggle suggestion stage");
-    assert.equal(app.grokBall.offsetY, 68);
-    assert.equal(localStorage.getItem(GROK_BALL_OFFSET_STORAGE_KEY), "68");
-    const sidebar = element(".cc-grok-sidebar");
-    assert.equal(sidebar.dataset.grokOffsetY, "68");
-    assert.equal(sidebar.style.marginTop, "112px");
-
-    app.dispose();
-    app = new MenuMijiaWindowsApp(element("#app"));
-    assert.equal(app.grokBall.offsetY, 68);
-    assert.equal(element(".cc-grok-sidebar").dataset.grokOffsetY, "68");
-
-    const nextBallBtn = element("#btn-grok-ball");
-    nextBallBtn.dispatchEvent(
-      new window.PointerEvent("pointerdown", {
-        bubbles: true,
-        button: 0,
-        pointerId: 2,
-        clientX: 390,
-        clientY: 148,
-      }),
-    );
-    window.dispatchEvent(
-      new window.PointerEvent("pointerup", {
-        bubbles: true,
-        pointerId: 2,
-        clientX: 391,
-        clientY: 150,
-      }),
-    );
-    nextBallBtn.click();
-    await setImmediate();
-    assert.equal(app.isGrokBallStageExpanded, true, "short click opens suggestion stage");
-  });
-
-  it("starts push-to-talk voice input on 500ms hold and submits interim speech once on release", async () => {
-    const instances: FakeSpeechRecognition[] = [];
-    class FakeSpeechRecognition implements SpeechRecognitionInstance {
-      lang = "";
-      interimResults = false;
-      continuous = false;
-      onresult: ((event: SpeechRecognitionEventLike) => void) | null = null;
-      onerror: (() => void) | null = null;
-      onend: (() => void) | null = null;
-      constructor() {
-        instances.push(this);
-      }
-      start(): void {}
-      stop(): void {}
-      abort(): void {
-        this.onend?.();
-      }
-    }
-    (window as { SpeechRecognition?: unknown }).SpeechRecognition = FakeSpeechRecognition;
-
-    app = new MenuMijiaWindowsApp(element("#app"));
-    assert.equal(GROK_BALL_VOICE_HOLD_MS, 500);
-    assert.equal(app.grokBall.voiceHoldMs, 500);
-    app.grokBall.voiceHoldMs = 35;
-
-    const submitted: string[] = [];
-    app.handleNaturalCommand = async (raw: string) => {
-      submitted.push(raw);
-    };
-
-    const ballBtn = element("#btn-grok-ball");
-    ballBtn.dispatchEvent(
-      new window.PointerEvent("pointerdown", {
-        bubbles: true,
-        button: 0,
-        pointerId: 7,
-        clientX: 390,
-        clientY: 90,
-      }),
-    );
-
-    await waitFor(() => app?.isListeningVoice === true, 500);
-    assert.equal(instances.length, 1);
-    assert.equal(app.isGrokBallStageExpanded, false);
-
-    instances[0]!.onresult?.({
-      results: [{ 0: { transcript: "打开客厅主灯" }, isFinal: false }],
-    });
-    assert.equal(element<HTMLInputElement>("#command-input").value, "打开客厅主灯");
-
-    window.dispatchEvent(
-      new window.PointerEvent("pointerup", {
-        bubbles: true,
-        pointerId: 7,
-        clientX: 390,
-        clientY: 90,
-      }),
-    );
-    element("#btn-grok-ball").click();
-    await setImmediate();
-
-    assert.equal(app.isListeningVoice, false);
-    assert.equal(app.isGrokBallStageExpanded, false);
-    assert.deepEqual(submitted, ["打开客厅主灯"]);
-  });
-
-  it("flips GrokBall sidebar to the left when panelAnchor is topRight or bottomRight", async () => {
-    const heightCalls: Array<Record<string, unknown>> = [];
-    const invoke = async (command: string, args: Record<string, unknown> = {}): Promise<unknown> => {
-      if (command === "panel_placement") return { anchor: "topRight" };
-      if (command === "set_panel_height") {
-        heightCalls.push(args);
-        return false;
-      }
-      return undefined;
-    };
-    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
-
-    app = new MenuMijiaWindowsApp(element("#app"));
-    await setImmediate();
-
-    assert.equal(app.panelAnchor, "topRight");
-    assert.equal(isGrokBallOnLeft(app), true);
-    assert.equal(app.root.dataset.grokSide, "left");
-
-    app.panelAnchor = "bottomRight";
-    app.applyPanelHeight();
-    await app.panelGeometryUpdates;
-    assert.equal(app.root.dataset.grokSide, "left");
-    assert.equal(heightCalls.at(-1)?.["sideLeft"], true);
-
-    app.panelAnchor = "bottomLeft";
-    app.render();
-    assert.equal(isGrokBallOnLeft(app), false);
-    assert.equal(app.root.dataset.grokSide, "right");
-  });
-
-  it("renders source icons, confidence badges, empty-state card, and drops proactive paint during active gestures (§16)", async () => {
+  it("renders source icons, confidence badges in Top Island notification bar, and drops proactive paint during active gestures (§16)", async () => {
     app = new MenuMijiaWindowsApp(element("#app"));
     const light = app.devices.find((d) => d.kind.kind === "light" && d.isOnline);
     assert.ok(light && light.kind.kind === "light");
     const lightIsOn = light.kind.isOn;
     const climate = app.devices.find((d) => d.kind.kind === "climate" && d.isOnline) ?? light;
 
-    app.isGrokBallStageExpanded = true;
-    app.render();
     const habitItem = {
       id: "habit:light-1",
       title: "打开客厅主灯",
@@ -452,30 +278,13 @@ describe("Wave 2 — A12 GrokBall Gestures, Edge Avoidance & Suggestion Metadata
     app.aiProactiveSuggestions = [habitItem, seqItem, envItem];
     app.render();
 
-    const stagePills = Array.from(document.querySelectorAll<HTMLElement>(".cc-grok-stage .cc-grok-pill"));
-    assert.ok(stagePills.length >= 2);
-    assert.ok(document.querySelector('.cc-grok-stage [data-grok-source="habit"]'));
-    assert.ok(document.querySelector('.cc-grok-stage [data-grok-source="sequence"]'));
-    assert.equal(
-      document.querySelector('.cc-grok-stage [data-grok-confidence="88"]')?.textContent,
-      "88%",
+    assertMissing(document.querySelector(".cc-grok-sidebar"));
+    assert.ok(document.querySelector('[data-proactive-bar] [data-grok-source="habit"]'));
+    assert.ok(document.querySelector('[data-proactive-bar] [data-grok-source="sequence"]'));
+    assert.match(
+      document.querySelector('[data-proactive-bar] [data-grok-confidence="88"]')?.textContent ?? "",
+      /88%/,
     );
-    app.isGrokBallStageExpanded = false;
-    app.render();
-    assert.ok(document.querySelector('[data-proactive-bar] [data-grok-confidence="88"]'));
-    app.isGrokBallStageExpanded = true;
-
-    app.devices = [];
-    app.scenes = [];
-    app.aiProactiveSuggestions = [];
-    app.render();
-    const emptyCard = element(".cc-grok-stage [data-grok-empty]");
-    assert.match(emptyCard.textContent ?? "", /暂无可用建议/);
-
-    setLanguage("en");
-    app.render();
-    assert.match(element(".cc-grok-stage [data-grok-empty]").textContent ?? "", /No suggestions yet/i);
-    setLanguage("zh-Hans");
 
     app.settings.connectionMode = "homeAssistant";
     app.settings.haBaseURL = "http://127.0.0.1:8123";
@@ -513,7 +322,6 @@ describe("Wave 2 — A12 GrokBall Gestures, Edge Avoidance & Suggestion Metadata
 
     app.settings.habitEntries = [];
     app.scenes = [];
-    app.isGrokBallStageExpanded = true;
 
     const extLayout = app.layout as typeof app.layout & {
       pinnedDeviceIds?: string[];
@@ -547,7 +355,7 @@ describe("Wave 2 — A12 GrokBall Gestures, Edge Avoidance & Suggestion Metadata
     const afterHide = app.currentProactiveSuggestions();
     assert.ok(
       afterHide.every((item) => item.intents.every((i) => i.targetId !== pinnedLight.id)),
-      "hiddenDeviceIds must never appear in currentProactiveSuggestions or GrokBall pills",
+      "hiddenDeviceIds must never appear in currentProactiveSuggestions",
     );
 
     let capturedRequestBody = "";
@@ -865,18 +673,15 @@ describe("Wave 2 — A1 Camera Adaptive Frame Pacing (>5fps), Fast Switch, HUD M
     assert.equal(snapBadge.dataset.videoOnlyReason, "snapshot");
     assert.match(snapBadge.title, /抓拍|MJPEG/);
 
-    app.setGrokBallStageExpanded(true);
-    await app.panelGeometryUpdates;
-    await setImmediate();
-    assert.equal(app.isGrokBallStageExpanded, true);
+    app.ctxMenu = { x: 10, y: 10, roomBar: true };
+    app.render();
     assert.equal(app.cameraLive.liveCameraHidden, false);
 
     const hidePanelBefore = tauriCalls.filter((c) => c === "hide_panel").length;
     window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-    await app.panelGeometryUpdates;
     await setImmediate();
 
-    assert.equal(app.isGrokBallStageExpanded, false, "first Escape collapses GrokBall stage");
+    assert.equal(app.ctxMenu, null, "first Escape closes higher-priority context menu");
     assert.equal(app.cameraLive.liveCameraHidden, false, "first Escape leaves camera modal open");
     assert.equal(tauriCalls.filter((c) => c === "hide_panel").length, hidePanelBefore);
 

@@ -255,7 +255,6 @@ function renderSettingsTabPanel(
   return `<div class="cc-settings-tab-panel" role="tabpanel" data-settings-panel="${tabId}" ${hidden}>${renderBody(ctx)}</div>`;
 }
 
-/** 外观与面板: the update card when there is one, then the panel's own look, hotkey, voice tip, and setup guide. */
 function renderGeneralPanel(ctx: SettingsViewContext): string {
   return `
     ${ctx.availableUpdate ? renderUpdateSection(ctx) : ""}

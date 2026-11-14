@@ -402,20 +402,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   const appHost = host as unknown as MenuMijiaWindowsApp;
   const vault = (host as unknown as Partial<MenuMijiaWindowsApp>).credentialVault;
 
-  const hadOwnSave = Object.prototype.hasOwnProperty.call(host, "saveSettings");
-  const origSave = host.saveSettings;
-  host.saveSettings = () => {
-    writeSettingsForStorage(host.settings);
-  };
-  try {
-    setRaycastIntegrationEnabled(appHost, false);
-  } finally {
-    if (hadOwnSave) {
-      host.saveSettings = origSave;
-    } else {
-      delete (host as Partial<SettingsEventsHost>).saveSettings;
-    }
-  }
+  setRaycastIntegrationEnabled(appHost, false, { persistSettings: false, render: false });
 
   const successBanner: ReplyBannerState = {
     text: tr3(
@@ -1038,9 +1025,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
             lastAction: host.lastHabitAction(),
           }),
         );
-      } catch {
-        // Ignore storage quota errors on sequence persistence.
-      }
+      } catch {}
       host.aiProactiveSuggestions = null;
       host.aiProactiveSignature = null;
       host.saveSettings();

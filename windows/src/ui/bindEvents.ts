@@ -59,10 +59,7 @@ import { facetTitle, facetValue } from "../core/miotFacetText.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { normalizeSearch } from "../core/panelSearch.js";
 import { bindPanelInput, finishPanelComposition } from "./panelKeyboard.js";
-import {
-  bindRoomOrderEditorEvents,
-  setCustomContextMenuTarget,
-} from "./roomOrderEditor.js";
+import { bindRoomOrderEditorEvents } from "./roomOrderEditor.js";
 
 function confirmHighRiskForHost(
   host: MenuMijiaWindowsApp,
@@ -208,7 +205,6 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     host.root.querySelectorAll<HTMLElement>("[data-close-menus]").forEach((el) => {
       el.addEventListener("pointerdown", (e) => {
         e.preventDefault();
-        setCustomContextMenuTarget(host, null);
         host.isHomeMenuOpen = false;
         host.ctxMenu = null;
         host.render();
@@ -229,7 +225,6 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         const gid = btn.dataset.groupId;
         if (!gid) return;
         e.preventDefault();
-        setCustomContextMenuTarget(host, null);
         host.ctxMenu = { x: e.clientX, y: e.clientY, groupId: gid };
         host.render();
       });
@@ -677,7 +672,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         const aliasedDevices = withAliases(host.layout, host.devices);
         const intents = IntentValidator.sanitize(suggestion.intents, aliasedDevices, host.scenes);
         if (intents.length === 0) return;
-        host.isShowingAssistantBar = true; host.setGrokBallStageExpanded(false);
+        host.isShowingAssistantBar = true;
         void host.executeIntents(intents, IntentReply.describe(intents, aliasedDevices, host.scenes), t("猜你想控"), { recordHabits: true });
       });
     });

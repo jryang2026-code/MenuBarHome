@@ -13,7 +13,6 @@ import { KIND_CHIP } from "./listCut.js";
 import { SF_ICONS } from "./appConstants.js";
 import { renderSettingsModal as renderSettingsModalView } from "./settingsViews.js";
 import {
-  getCustomContextMenuTarget,
   isRoomOrderEditorOpen,
   renderRoomOrderEditorModal,
   snapshotRoomsForHost,
@@ -54,11 +53,9 @@ export function renderContextMenu(host: MenuMijiaWindowsApp): string {
         </div>`;
     }
     if (!m.deviceId) {
-      const target = getCustomContextMenuTarget(host);
-      if (!target) return "";
-      if (target.kind === "room") {
-        const rid = host.escapeHtml(target.roomId);
-        const shown = roomDisplayName(host.layout, target.roomId, target.originalName);
+      if (m.roomTarget) {
+        const rid = host.escapeHtml(m.roomTarget.roomId);
+        const shown = roomDisplayName(host.layout, m.roomTarget.roomId, m.roomTarget.originalName);
         const canMove = snapshotRoomsForHost(host.devices).length >= 2;
         return `
           <div class="cc-menu-scrim" data-close-menus></div>
@@ -75,8 +72,8 @@ export function renderContextMenu(host: MenuMijiaWindowsApp): string {
             <button class="cc-menu-item" data-open-room-editor="rooms">${host.escapeHtml(tr3("调整房间与分类顺序…", "調整房間與分類順序…", "Reorder Rooms & Categories…"))}</button>
           </div>`;
       }
-      if (target.kind === "kind") {
-        const chipTitle = t(KIND_CHIP[target.tag].title);
+      if (m.kindTarget) {
+        const chipTitle = t(KIND_CHIP[m.kindTarget].title);
         return `
           <div class="cc-menu-scrim" data-close-menus></div>
           <div class="cc-menu" style="${pos}">
@@ -85,6 +82,7 @@ export function renderContextMenu(host: MenuMijiaWindowsApp): string {
             <button class="cc-menu-item" data-open-room-editor="rooms">${host.escapeHtml(tr3("调整房间与重命名…", "調整房間與重新命名…", "Reorder & Rename Rooms…"))}</button>
           </div>`;
       }
+      if (!m.roomBar) return "";
       return `
         <div class="cc-menu-scrim" data-close-menus></div>
         <div class="cc-menu" style="${pos}">

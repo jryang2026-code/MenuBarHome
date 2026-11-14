@@ -9,6 +9,7 @@ import { filterByListCut, foldGroupedLights, kindChips, memberGroupOwners, shows
 import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom.js";
 import { environmentReadingPriority, type SmartDevice } from "../core/models.js";
 import { isHostAttachedToActiveWindow, mergeHomeSnapshotRespectingLocks } from "../core/optimisticLock.js";
+import { getUnsupportedLightEffects } from "./commandDispatch.js";
 import { availableQuickActions } from "../core/quickActions.js";
 import { renderSliderDeck } from "./panelView.js";
 import { isWorkstationLocked } from "./transport.js";
@@ -447,10 +448,11 @@ export function cloudPanelStructureFingerprint(host: MenuMijiaWindowsApp): strin
       host.devices,
       host.listCut,
       host.settings.hideOfflineDevices,
+      { layout: host.layout },
     );
     const quickActions =
       host.settings.showQuickActionsBar && host.settings.connectionMode !== "demo"
-        ? availableQuickActions(foldGrouped(host, filterByListCut(host.devices, host.listCut, false))).map(
+        ? availableQuickActions(foldGrouped(host, filterByListCut(host.devices, host.listCut, false, { layout: host.layout }))).map(
             (action) => action.id,
           )
         : null;
@@ -468,6 +470,7 @@ export function cloudPanelStructureFingerprint(host: MenuMijiaWindowsApp): strin
           kind.kind === "light"
             ? [
                 kind.availableEffects,
+                [...getUnsupportedLightEffects(host, device.id)],
                 kind.minKelvin,
                 kind.maxKelvin,
                 kind.powerWritable !== false,
@@ -504,7 +507,13 @@ export function cloudPanelStructureFingerprint(host: MenuMijiaWindowsApp): strin
                             kind.heats,
                           ]
                         : kind.kind === "speaker"
-                          ? [kind.volumeWritable, kind.muteSwitchEntityId, kind.sleepModeEntityId]
+                          ? [
+                              kind.volumeWritable,
+                              kind.muteSwitchEntityId,
+                              kind.sleepModeEntityId,
+                              kind.ttsActionId,
+                              kind.directiveActionId,
+                            ]
                           : [];
         const facetIds = (host.deviceFacets[device.id] ?? []).map((facet) => [
           facet.id,

@@ -916,12 +916,14 @@ export function bindGlobalKeys(
     if (handlePanelKey(host, e)) return;
 
     if (e.key === "Escape") {
-      if (host.isGrokBallStageExpanded) {
-        host.setGrokBallStageExpanded(false);
+      if (host.prompt) {
+        host.closePrompt();
         return;
       }
-      if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
-        host.cameraLive.hideCameraLiveView();
+      if (host.ctxMenu || host.isHomeMenuOpen) {
+        host.ctxMenu = null;
+        host.isHomeMenuOpen = false;
+        host.render();
         return;
       }
       if (hasPendingUrlConfirmation(host)) {
@@ -934,10 +936,14 @@ export function bindGlobalKeys(
         host.hotkeyNeedsHint = false;
         invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
         host.render();
-      } else {
-        resumeUndoHoverPause(host);
-        invokeTauriVoid("hide_panel");
+        return;
       }
+      if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
+        host.cameraLive.hideCameraLiveView();
+        return;
+      }
+      resumeUndoHoverPause(host);
+      invokeTauriVoid("hide_panel");
     } else if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && document.activeElement?.tagName !== "INPUT") {
       e.preventDefault();
       host.isShowingAssistantBar = true;

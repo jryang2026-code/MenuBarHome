@@ -1,11 +1,13 @@
 import { t } from "../core/i18n.js";
 import { IntentReply } from "../core/assistant.js";
+import type { SpeakerTextMode } from "../core/miCloud/speakerActions.js";
 import {
   renderApplianceDrawer,
   renderClimateSwingRow,
   renderCoverDrawer,
   renderGenericDrawer,
   renderPlugDrawer,
+  renderSpeakerCommandBar,
 } from "./detailDrawers.js";
 import { renderMoreSettings } from "./facetViews.js";
 import {
@@ -25,7 +27,6 @@ import {
 import {
   TILE_SIZES,
   comfort,
-  isRenderedDevicePinned,
   localizeEffect,
   localizeFanMode,
   tr3,
@@ -227,6 +228,16 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
       </div>`;
   }
 
+function filterSupportedEffects(
+  effects: readonly string[],
+  unsupported?: ReadonlySet<string>,
+): string[] {
+  if (!unsupported || unsupported.size === 0) return [...effects];
+  const lowerUnsupported = new Set<string>();
+  for (const item of unsupported) lowerUnsupported.add(item.trim().toLowerCase());
+  return effects.filter((effect) => !lowerUnsupported.has(effect.trim().toLowerCase()));
+}
+
 /** The card's own detailed controls; 更多设置 is appended by `renderDeviceDrawer` (#5). */
 function renderPrimaryDrawer(
   dev: SmartDevice,
@@ -234,12 +245,15 @@ function renderPrimaryDrawer(
   pendingHighRisk: PendingHighRiskConfirmation | null = null,
   facets: readonly FacetControl[] = [],
   allowAdvanced = false,
+  unsupportedLightEffects?: ReadonlySet<string>,
+  speakerDrawerState?: { readonly mode?: SpeakerTextMode; readonly draft?: string },
 ): string {
     const k = dev.kind;
     if (k.kind === "light") {
       const showBrightness = k.brightnessWritable !== false;
       const showColor = k.colorWritable !== false;
-      if (!showBrightness && !showColor && k.availableEffects.length === 0) return "";
+      const visibleEffects = filterSupportedEffects(k.availableEffects, unsupportedLightEffects);
+      if (!showBrightness && !showColor && visibleEffects.length === 0) return "";
       const bri = k.brightnessPercent ?? 80;
       const ct = k.colorTempKelvin ?? 4000;
       return `
@@ -258,9 +272,9 @@ function renderPrimaryDrawer(
             </div>
             <input class="cc-range is-kelvin" type="range" min="${k.minKelvin}" max="${k.maxKelvin}" step="100" value="${ct}" data-colortemp="${escapeHtml(dev.id)}" aria-label="${t("色温")}" aria-valuemin="${k.minKelvin}" aria-valuemax="${k.maxKelvin}" aria-valuenow="${ct}" />
           </div>` : ""}
-          ${k.availableEffects.length > 0 ? `
+          ${visibleEffects.length > 0 ? `
             <div class="cc-segmented-pills">
-              ${k.availableEffects.map((effect) => `
+              ${visibleEffects.map((effect) => `
                 <button class="cc-seg-pill ${k.currentEffect === effect ? "is-active" : ""}"
                   data-lighteffect="${escapeHtml(dev.id)}" data-effect="${escapeHtml(effect)}"
                   aria-pressed="${k.currentEffect === effect}">
@@ -404,6 +418,8 @@ function renderPrimaryDrawer(
     }
     if (k.kind === "speaker") {
       const id = escapeHtml(dev.id);
+      const commandBar = renderSpeakerCommandBar(dev, k, escapeHtml, speakerDrawerState);
+      if (!k.volumeWritable && !k.muteSwitchEntityId && !k.sleepModeEntityId && !commandBar) return "";
       return `
         <div class="cc-tile-drawer">
           ${k.volumeWritable ? `<div class="cc-slider-group">
@@ -421,6 +437,7 @@ function renderPrimaryDrawer(
               ${k.isSleepMode ? t("睡眠模式：开") : t("睡眠模式：关")}
             </button>` : ""}
           </div>` : ""}
+          ${commandBar ? `<div class="cc-speaker-command-wrap" data-speaker-command-wrap="${id}" style="display:flex;flex-direction:column;gap:6px;">${commandBar}</div>` : ""}
         </div>
       `;
     }
@@ -542,8 +559,18 @@ export function renderDeviceDrawer(
   facets: readonly FacetControl[] = [],
   allowAdvanced = false,
   pendingHighRisk: PendingHighRiskConfirmation | null = null,
+  unsupportedLightEffects?: ReadonlySet<string>,
+  speakerDrawerState?: { readonly mode?: SpeakerTextMode; readonly draft?: string },
 ): string {
-  const primary = renderPrimaryDrawer(dev, escapeHtml, pendingHighRisk, facets, allowAdvanced);
+  const primary = renderPrimaryDrawer(
+    dev,
+    escapeHtml,
+    pendingHighRisk,
+    facets,
+    allowAdvanced,
+    unsupportedLightEffects,
+    speakerDrawerState,
+  );
   const extraConfirm =
     dev.kind.kind !== "climate" || primary === ""
       ? renderPendingHighRiskRow(dev.id, pendingHighRisk, escapeHtml)
@@ -981,6 +1008,8 @@ export interface DeviceTileViewState {
   readonly deviceFacets: Readonly<Record<string, readonly FacetControl[]>>;
   readonly allowAdvancedFacetWrites: boolean;
   readonly isPinned?: boolean;
+  readonly unsupportedLightEffects?: ReadonlySet<string>;
+  readonly speakerDrawerState?: { readonly mode?: SpeakerTextMode; readonly draft?: string };
   readonly escapeHtml: (value: string) => string;
 }
 
@@ -1150,8 +1179,8 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
   const size = state.size;
   const escape = state.escapeHtml;
   const isExpanded = state.expandedDeviceId === dev.id || size === "panel";
-  const pinned = state.isPinned ?? isRenderedDevicePinned(dev);
-  const effectiveSpan = size === "small" && !isExpanded ? 2 : state.span;
+  const pinned = state.isPinned ?? false;
+  const effectiveSpan = size === "small" && !isExpanded ? 3 : state.span;
   const attrs = `data-tile-id="${escape(dev.id)}" style="grid-column: span ${effectiveSpan}; --i: ${Math.min(state.index, 12)}; --jd: -${Math.round((performance.now() + (state.index * 137) % 560) % 560)}ms"`;
   const sizeClass = `is-size-${size}`;
   const motion = `${sizeClass} ${state.animateEntrance ? "is-entering" : ""} ${state.poppedDeviceId === dev.id ? "is-popped" : ""} ${state.draggingId === dev.id ? "is-dragging" : ""}`;
@@ -1166,7 +1195,17 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
   const palette = devicePaletteClass(dev);
   const svg = deviceSvgIcon(dev);
   const writable = deviceCanTogglePower(dev);
-  const hasDrawer = hasDetailDrawer(dev, state.deviceFacets[dev.id] ?? []);
+  const effectiveDevForDrawer =
+    dev.kind.kind === "light" && state.unsupportedLightEffects && state.unsupportedLightEffects.size > 0
+      ? {
+          ...dev,
+          kind: {
+            ...dev.kind,
+            availableEffects: filterSupportedEffects(dev.kind.availableEffects, state.unsupportedLightEffects),
+          },
+        }
+      : dev;
+  const hasDrawer = hasDetailDrawer(effectiveDevForDrawer, state.deviceFacets[dev.id] ?? []);
   const subtitle =
     state.selectedRoom === "全部"
       ? `${dev.roomName} · ${deviceStatusSummary(dev)}`
@@ -1320,7 +1359,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
               : `<span class="cc-tile-orb win-subpage-power" title="${escape(dev.name)}" aria-hidden="true">${svg}</span>`
           }
         </div>
-        ${renderDeviceDrawer(dev, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk)}
+        ${renderDeviceDrawer(dev, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk, state.unsupportedLightEffects, state.speakerDrawerState)}
       </div>
     `;
   }
@@ -1392,7 +1431,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
         ${inlineSlider}
         ${
           isExpanded && hasDrawer
-            ? renderDeviceDrawer(dev, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk)
+            ? renderDeviceDrawer(dev, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk, state.unsupportedLightEffects, state.speakerDrawerState)
             : ""
         }
         ${

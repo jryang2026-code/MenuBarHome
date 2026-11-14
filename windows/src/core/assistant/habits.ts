@@ -970,7 +970,9 @@ export function listReadableHabits(input: {
     const text =
       lang === "en"
         ? `After "${prevTitle}": ${nextTitle} (${sequence.count}x)`
-        : `「${prevTitle}」之后常做：${nextTitle}（${sequence.count} 次）`;
+        : lang === "zh-Hant"
+          ? `「${prevTitle}」之後常做：${nextTitle}（${sequence.count} 次）`
+          : `「${prevTitle}」之后常做：${nextTitle}（${sequence.count} 次）`;
     items.push({
       id: `s|${sequence.afterKey}|${sequence.targetId}|${sequence.operationKey}`,
       kind: "sequence",

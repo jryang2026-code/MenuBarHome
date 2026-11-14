@@ -701,7 +701,6 @@ export async function executeIntents(
 
     const finalSteps = runningBatch.untakenSteps(host);
     if (succeeded > 0) {
-      if (failed === 0) host.grokBallCelebrationUntil = Date.now() + 2400;
       const succeededIntents = candidateIntents
         .filter((entry) => entry.succeededCount === entry.commandCount && entry.commandCount > 0)
         .map((entry) => entry.intent);
@@ -862,7 +861,6 @@ export async function executeSingleCommand(
   if (device.kind.kind === "light" && (command.kind !== "setLightPower" || command.isOn)) {
     host.lastManuallyUsedLightId = device.id;
   }
-  host.grokBallCelebrationUntil = Date.now() + 2400;
   const habitReceipt = intent ? recordHabits(host, [intent]) : null;
   let nextUndo: UndoAction | null = null;
   if (inverses.length > 0) {

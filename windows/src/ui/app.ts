@@ -47,6 +47,7 @@ import {
   PANEL_HEIGHTS,
   applyOrder,
   chosenSize,
+  isDevicePinned,
   moveInOrder,
   pageSections,
   parsePanelPlacement,
@@ -83,10 +84,11 @@ import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
 import { renderPanel } from "./panelView.js";
 import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
-import { GrokBallView } from "./grokBall.js";
-import { bindGrokBallGestures, currentProactiveSuggestions, invalidateSourceControl, isGrokBallOnLeft, maybeRefreshProactiveInBackground, renderGrokBallSidebar, setGrokBallStageExpanded, syncGrokBallEmotion } from "./proactive.js";
+import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground } from "./proactive.js";
 import { bindPersistentUndoEvents, undoTrackerFor } from "./undoTracker.js";
-import { getHostApplyCommand, markCloudValuesFresh, markCloudValuesStale, setCustomApplyCommand } from "./commandDispatch.js";
+import { getHostApplyCommand, getUnsupportedLightEffects, markCloudValuesFresh, markCloudValuesStale, pruneUnsupportedLightEffectsOnHost, setCustomApplyCommand } from "./commandDispatch.js";
+import { getSpeakerDrawerItemState } from "./detailDrawers.js";
+import { activeRoomOptions } from "./roomOrderEditor.js";
 import { foldGrouped, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
 import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
 import { clearPersistedMiSessionExpired, persistMiSessionExpired } from "../core/pollingPolicy.js";
@@ -181,14 +183,7 @@ export class MenuMijiaWindowsApp {
 
   /** Room buttons keyed by id: two homes may both have a 客厅. */
   public get roomOptions(): RoomOption[] {
-    const seen = new Set<string>();
-    const options: RoomOption[] = [];
-    for (const device of this.devices) {
-      if (!device.roomId || seen.has(device.roomId)) continue;
-      seen.add(device.roomId);
-      options.push({ id: device.roomId, name: device.roomName });
-    }
-    return options;
+    return activeRoomOptions(this);
   }
 
   public selectRoom(roomId: string | null, roomName?: string): void {
@@ -237,11 +232,6 @@ export class MenuMijiaWindowsApp {
   public aiProactiveSuggestions: AssistantSuggestion[] | null = null;
   public aiProactiveSignature: string | null = null;
   public isRefreshingProactive = false;
-  public isGrokBallStageExpanded = false;
-  public readonly grokBall = new GrokBallView();
-  public grokBallCelebrationUntil = 0;
-  public grokBallPointerUntil = 0;
-  public grokBallOnLeft = false;
   /** Collapsible Win+N notification cards in the Top Island; quick camera starts compact. */
   public collapsedNotifCards = new Set<string>(["camera"]);
   public panelGeometryUpdates: Promise<void> = Promise.resolve();
@@ -320,8 +310,21 @@ export class MenuMijiaWindowsApp {
   public draggingId: string | null = null;
   public dragPointer: { x: number; y: number; grabX: number; grabY: number } | null = null;
   public lastSwap: { slot: string; at: number } | null = null;
-  public ctxMenu: { x: number; y: number; deviceId?: string; groupId?: string } | null = null;
-  public prompt: { kind: "newGroup"; deviceId: string } | { kind: "renameGroup"; groupId: string } | { kind: "renameDevice"; deviceId: string } | null = null;
+  public ctxMenu: {
+    x: number;
+    y: number;
+    deviceId?: string;
+    groupId?: string;
+    roomTarget?: { readonly roomId: string; readonly originalName: string };
+    kindTarget?: DeviceKindTag;
+    roomBar?: boolean;
+  } | null = null;
+  public prompt:
+    | { kind: "newGroup"; deviceId: string }
+    | { kind: "renameGroup"; groupId: string }
+    | { kind: "renameDevice"; deviceId: string }
+    | { kind: "roomOrderEditor" }
+    | null = null;
   public animateEntrance = false;
   public poppedDeviceId: string | null = null;
   public dimPreview: { id: string; percent: number } | null = null;
@@ -364,17 +367,10 @@ export class MenuMijiaWindowsApp {
     // Alt+Tab hides the popover without a button blur; a hold started before it must not finish.
     const onBlurCancelAllOff = () => this.cancelAllOffHold();
     window.addEventListener("blur", onBlurCancelAllOff);
-    this.appDisposers.push(() => window.removeEventListener("blur", onBlurCancelAllOff));
-    const onPointerMove = (event: PointerEvent) => {
-      const rect = this.grokBall.element.getBoundingClientRect();
-      this.grokBallPointerUntil = Date.now() + 1500;
-      this.grokBall.setGaze((event.clientX - rect.left - rect.width / 2) / 160,
-        (event.clientY - rect.top - rect.height / 2) / 160);
-      this.syncGrokBallEmotion();
-    };
-    window.addEventListener("pointermove", onPointerMove);
-    this.appDisposers.push(() => window.removeEventListener("pointermove", onPointerMove));
-    this.appDisposers.push(bindGrokBallGestures(this), () => undoTrackerFor(this).dispose());
+    this.appDisposers.push(
+      () => window.removeEventListener("blur", onBlurCancelAllOff),
+      () => undoTrackerFor(this).dispose(),
+    );
     this.bindLayoutGestures();
     this.bindPanelDrag();
     this.bindOpenAnimation();
@@ -499,8 +495,8 @@ export class MenuMijiaWindowsApp {
 
   private get filteredDevices(): SmartDevice[] {
     const query = normalizeSearch(this.panelSearch.query);
-    if (!query) return filterByListCut(this.devices, this.listCut, this.settings.hideOfflineDevices);
-    const candidates = filterByListCut(this.devices, { kind: "all" }, this.settings.hideOfflineDevices);
+    if (!query) return filterByListCut(this.devices, this.listCut, this.settings.hideOfflineDevices, { layout: this.layout });
+    const candidates = filterByListCut(this.devices, { kind: "all" }, this.settings.hideOfflineDevices, { layout: this.layout });
     const byId = new Map(candidates.map((device) => [device.id, device]));
     return this.panelSearchIndex.matches(query, candidates, this.layout.aliases).flatMap((entry) => {
       const device = byId.get(entry.deviceId);
@@ -589,8 +585,6 @@ export class MenuMijiaWindowsApp {
     this.aiProactiveSignature = null;
     this.isRefreshingProactive = false;
     this.proactiveRetryAfterMs = null;
-    this.isGrokBallStageExpanded = false;
-    this.grokBallCelebrationUntil = 0;
     this.applyPanelHeight();
     this.saveSettings();
     this.render();
@@ -608,7 +602,7 @@ export class MenuMijiaWindowsApp {
   }
 
   public renderKindBar(): string {
-    const chips = kindChips(this.devices, this.listCut, this.settings.hideOfflineDevices);
+    const chips = kindChips(this.devices, this.listCut, this.settings.hideOfflineDevices, { layout: this.layout });
     if (!showsKindRow(chips, this.listCut)) return "";
     const buttons = chips.map((tag) => {
       const chip = KIND_CHIP[tag];
@@ -1187,11 +1181,7 @@ export class MenuMijiaWindowsApp {
     const settingsDraft = captureSettingsDraft(this.root);
 
     this.pendingCloudRender = false;
-    this.grokBall.prepareMove();
     this.renderNow();
-    const grokSlot = this.root.querySelector<HTMLElement>("[data-grok-slot]");
-    if (grokSlot) this.grokBall.mount(grokSlot, this.grokBall.element.dataset.emotion ?? "02");
-    this.syncGrokBallEmotion();
     syncPanelSelection(this);
 
     const nextSubpageEl = this.root.querySelector<HTMLElement>(".cc-tile.is-subpage");
@@ -1310,6 +1300,7 @@ export class MenuMijiaWindowsApp {
   }
 
   public renderDeviceGrid(): string {
+    pruneUnsupportedLightEffectsOnHost(this);
     if (normalizeSearch(this.panelSearch.query)) {
       const results = withAliases(this.layout, this.presentationDevices);
       return results.length
@@ -1418,6 +1409,9 @@ export class MenuMijiaWindowsApp {
       dimPreview: this.dimPreview,
       deviceFacets: this.deviceFacets,
       allowAdvancedFacetWrites: this.settings.allowAdvancedFacetWrites,
+      isPinned: isDevicePinned(dev.id, this.layout),
+      unsupportedLightEffects: getUnsupportedLightEffects(this, dev.id),
+      speakerDrawerState: getSpeakerDrawerItemState(this, dev.id),
       escapeHtml: (v) => this.escapeHtml(v),
     });
   }
@@ -1440,18 +1434,6 @@ export class MenuMijiaWindowsApp {
 
   public renderSettingsModal(): string {
     return renderSettingsModal(this);
-  }
-
-  public syncGrokBallEmotion(): void {
-    syncGrokBallEmotion(this);
-  }
-
-  public renderGrokBallSidebar(): string {
-    return renderGrokBallSidebar(this);
-  }
-
-  public setGrokBallStageExpanded(expanded: boolean): void {
-    setGrokBallStageExpanded(this, expanded);
   }
 
   public bindEvents(): void {
@@ -1494,7 +1476,7 @@ export class MenuMijiaWindowsApp {
   public savePrompt(raw: string): void {
     const name = raw.trim();
     const p = this.prompt;
-    if (!p) return;
+    if (!p || p.kind === "roomOrderEditor") return;
     if (p.kind === "newGroup") {
       if (!name) return;
       const id = `g${Date.now().toString(36)}`;
@@ -1785,7 +1767,6 @@ export class MenuMijiaWindowsApp {
         const { anchor } = parsePanelPlacement(value);
         if (anchor === this.panelAnchor) return;
         this.panelAnchor = anchor;
-        this.root.dataset.grokSide = isGrokBallOnLeft(this) ? "left" : "right";
         if (this.activeSheet === "settings") this.render();
       })
       .catch(() => undefined);
@@ -1796,16 +1777,7 @@ export class MenuMijiaWindowsApp {
     if (!invoke) return;
     this.panelGeometryUpdates = this.panelGeometryUpdates.then(async () => {
       const h = PANEL_HEIGHTS.find((item) => item.id === this.settings.panelHeight) ?? PANEL_HEIGHTS[1]!;
-      const side = await invoke<boolean>("set_panel_height", {
-        height: h.px,
-        expanded: this.isGrokBallStageExpanded,
-        sideLeft: isGrokBallOnLeft(this),
-        grokEnabled: this.settings.enableGrokBall,
-      });
-      if (typeof side === "boolean") {
-        this.grokBallOnLeft = side;
-      }
-      this.root.dataset.grokSide = isGrokBallOnLeft(this) ? "left" : "right";
+      await invoke("set_panel_height", { height: h.px });
     }).catch((error: unknown) => console.error("Panel geometry update failed", error));
   }
 

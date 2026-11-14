@@ -3,7 +3,6 @@ import {
   applyKindOrder,
   applyRoomOrder,
   hiddenDeviceIds,
-  layoutForDevices,
   type LayoutPrefs,
 } from "./panelPrefs.js";
 
@@ -62,7 +61,6 @@ export const KIND_CHIP: Record<
 };
 
 function resolveHiddenSet(
-  devices: readonly SmartDevice[],
   options?: ListCutFilterOptions,
 ): ReadonlySet<string> | null {
   if (options?.includeHidden) return null;
@@ -70,7 +68,7 @@ function resolveHiddenSet(
     const set = new Set(options.hiddenIds);
     return set.size > 0 ? set : null;
   }
-  const layout = options?.layout ?? layoutForDevices(devices);
+  const layout = options?.layout;
   if (!layout) return null;
   const ids = hiddenDeviceIds(layout);
   return ids.length > 0 ? new Set(ids) : null;
@@ -94,9 +92,8 @@ export function filterByListCut(
   hideOffline: boolean,
   options?: ListCutFilterOptions,
 ): SmartDevice[] {
-  const hiddenSet = resolveHiddenSet(devices, options);
-  const layout = options?.roomAliases !== undefined ? null : (options?.layout ?? layoutForDevices(devices));
-  const roomAliases = options?.roomAliases ?? layout?.roomAliases;
+  const hiddenSet = resolveHiddenSet(options);
+  const roomAliases = options?.roomAliases ?? options?.layout?.roomAliases;
   const filtered = visible(devices, hideOffline, hiddenSet).filter((dev) => {
     if (cut.kind === "room") return dev.roomId === cut.roomId;
     if (cut.kind === "deviceKind") return dev.kind.kind === cut.tag;
@@ -143,11 +140,10 @@ export function kindChips(
   hideOffline: boolean,
   options?: ListCutFilterOptions,
 ): DeviceKindTag[] {
-  const hiddenSet = resolveHiddenSet(devices, options);
+  const hiddenSet = resolveHiddenSet(options);
   const tags = new Set(visible(devices, hideOffline, hiddenSet).map((dev) => dev.kind.kind));
   if (cut.kind === "deviceKind") tags.add(cut.tag);
-  const layout = options?.kindOrder !== undefined ? null : (options?.layout ?? layoutForDevices(devices));
-  const customKindOrder = options?.kindOrder ?? layout?.kindOrder;
+  const customKindOrder = options?.kindOrder ?? options?.layout?.kindOrder;
   return applyKindOrder(customKindOrder, [...tags], KIND_RANK);
 }
 

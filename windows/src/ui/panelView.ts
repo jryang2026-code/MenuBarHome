@@ -8,18 +8,16 @@ import { SF_ICONS } from "./appConstants.js";
 import { applyPanelOpacity, withAliases } from "./panelPrefs.js";
 import { quickActions } from "./demo.js";
 import { quickActionScopeDevices, reconcileUndoBannerHoverAfterRender } from "./speechGuard.js";
-import { isGrokBallOnLeft, renderProactiveInlinePill } from "./proactive.js";
-import { renderPersistentUndoPill } from "./undoTracker.js";
+import { renderProactiveInlinePill } from "./proactive.js";
+import { renderEditLayoutToolbar, renderHiddenDevicesTray } from "./roomOrderEditor.js";
+import { renderPersistentUndoPill, tr3 } from "./undoTracker.js";
 
 export function renderPanel(host: MenuMijiaWindowsApp): void {
   const isDemo = host.settings.connectionMode === "demo";
   const scheme = host.effectiveAppearance;
   host.root.dataset.scheme = scheme;
   applyPanelOpacity(host.root, host.settings.panelOpacity);
-  host.root.classList.toggle("is-grok-enabled", host.settings.enableGrokBall);
-  host.root.classList.toggle("is-grok-expanded", host.settings.enableGrokBall && host.isGrokBallStageExpanded);
   host.root.classList.toggle("is-native-host", Boolean(window.__TAURI_INTERNALS__));
-  host.root.dataset.grokSide = isGrokBallOnLeft(host) ? "left" : "right";
   const popoverClass = `cc-popover scheme-${scheme} ${host.isEditingLayout ? "is-editing" : ""}`.trim();
   const notifStack = renderNotificationStack(host);
   const innerContent = `
@@ -154,12 +152,22 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
               >
                 ${host.settings.hideOfflineDevices ? SF_ICONS.wifi : SF_ICONS.wifiSlash}
               </button>
+              <button
+                class="cc-circle-btn is-small"
+                id="btn-room-order-editor"
+                title="${tr3("房间与类别顺序", "房間與類別順序", "Room & Category Order")}"
+                aria-label="${tr3("房间与类别顺序", "房間與類別順序", "Room & Category Order")}"
+              >
+                ${SF_ICONS.sliderHorizontal}
+              </button>
             </div>
           </div>
         </div>
 
         <main class="cc-scroll-area" aria-label="${t("设备列表")}">
+          ${renderEditLayoutToolbar(host)}
           ${host.renderDeviceGrid()}
+          ${renderHiddenDevicesTray(host)}
         </main>
 
         ${renderSliderDeck(host)}
@@ -238,13 +246,6 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
   } else {
     host.root.innerHTML = `<div class="${popoverClass}">${innerContent}</div>`;
   }
-  host.root.querySelector(":scope > .cc-grok-sidebar")?.remove();
-  if (host.settings.enableGrokBall) {
-    host.root.insertAdjacentHTML("beforeend", host.renderGrokBallSidebar());
-    host.root.querySelector<HTMLElement>("[data-grok-toggle]")?.addEventListener("click", () => {
-      host.setGrokBallStageExpanded(!host.isGrokBallStageExpanded);
-    });
-  }
 
   host.bindEvents();
   reconcileUndoBannerHoverAfterRender(host);
@@ -289,10 +290,7 @@ function renderNotificationStack(host: MenuMijiaWindowsApp): string {
   // Active timers, proactive AI suggestions, and quick camera card follow Win+N collapsible groups
   // when the assistant bar toggle is active.
   if (host.isShowingAssistantBar) {
-    if (
-      host.pendingSuggestions.length === 0 &&
-      (!host.settings.enableGrokBall || !host.isGrokBallStageExpanded)
-    ) {
+    if (host.pendingSuggestions.length === 0) {
       const items = host.currentProactiveSuggestions();
       if (items.length > 0) {
         const openAttr = host.collapsedNotifCards.has("proactive") ? "" : "open";

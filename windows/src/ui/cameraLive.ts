@@ -56,7 +56,6 @@ export interface CameraLiveHost {
   readonly transport: HttpTransport;
   readonly specResolver: MiotSpecResolver;
   readonly endpointSubmission: Promise<unknown>;
-  readonly isGrokBallStageExpanded?: boolean;
   readonly prompt?: unknown;
   readonly ctxMenu?: unknown;
   readonly isRecordingHotkey?: boolean;
@@ -145,7 +144,6 @@ export class CameraLiveController {
 
   private hasHigherPriorityOverlayOpen(): boolean {
     return (
-      Boolean(this.host.isGrokBallStageExpanded) ||
       (this.host.prompt !== undefined && this.host.prompt !== null) ||
       (this.host.ctxMenu !== undefined && this.host.ctxMenu !== null) ||
       Boolean(this.host.isRecordingHotkey) ||
@@ -919,8 +917,6 @@ export class CameraLiveController {
           .then(() => true)
           .catch(() => false);
         if (stale()) return;
-        // Re-negotiating the SAME camera's single P2P session needs a cooldown so the firmware
-        // finishes freeing the slot; switching to a different camera (distinct P2P session) skips it.
         if (released && needsSameSessionCooldown && this.cameraSameSessionCooldownMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, this.cameraSameSessionCooldownMs));
           if (stale()) return;

@@ -1,8 +1,6 @@
 import type { MenuMijiaWindowsApp } from "./app.js";
-import { t } from "../core/i18n.js";
 import {
   HABIT_SEQUENCE_BOOST_WINDOW_MS,
-  IntentValidator,
   ModelIntentResolver,
   UserHabitMemory,
   assistantEndpointIdentity,
@@ -11,62 +9,14 @@ import {
   endpointAllowsSendingSecrets,
   habitActionable,
   isLocalAssistantEndpoint,
-  resolveGrokBallEmotion,
   timeBucketLabel,
 } from "../core/assistant.js";
-import { inverseCommands } from "../core/commandEffects.js";
-import type { AssistantSuggestion, DeviceIntent, SmartDevice } from "../core/models.js";
+import type { AssistantSuggestion, SmartDevice } from "../core/models.js";
 import { SF_ICONS } from "./appConstants.js";
 import { applyOrder, withAliases, type LayoutPrefs } from "./panelPrefs.js";
 import { cancelRunningBatch } from "./intentExecution.js";
 import { abortVoiceInput, clearUndoHoverPause } from "./speechGuard.js";
 import { tr3 } from "./undoTracker.js";
-
-export const GROK_BALL_OFFSET_STORAGE_KEY = "menubarmijia.grokBallOffsetY";
-export const GROK_BALL_BASE_MARGIN_TOP_PX = 44;
-export const GROK_BALL_MIN_OFFSET_Y_PX = -38;
-export const GROK_BALL_DEFAULT_MAX_OFFSET_Y_PX = 480;
-export const GROK_BALL_DRAG_THRESHOLD_PX = 6;
-export const GROK_BALL_VOICE_HOLD_MS = 500;
-
-export function clampGrokBallOffsetY(offsetY: number, container?: HTMLElement | null): number {
-  if (!Number.isFinite(offsetY)) return 0;
-  const popover = container?.querySelector<HTMLElement>(":scope > .cc-popover") ?? container ?? null;
-  const measuredHeight = Math.max(
-    popover?.clientHeight ?? 0,
-    Math.round(popover?.getBoundingClientRect().height ?? 0),
-  );
-  const maxOffset =
-    measuredHeight > 160
-      ? Math.max(0, measuredHeight - GROK_BALL_BASE_MARGIN_TOP_PX - 84)
-      : GROK_BALL_DEFAULT_MAX_OFFSET_Y_PX;
-  return Math.round(Math.min(maxOffset, Math.max(GROK_BALL_MIN_OFFSET_Y_PX, offsetY)));
-}
-
-export function loadGrokBallOffsetY(container?: HTMLElement | null): number {
-  try {
-    const raw = globalThis.localStorage?.getItem(GROK_BALL_OFFSET_STORAGE_KEY);
-    if (raw === null || raw === undefined || raw.trim() === "") return 0;
-    const parsed = Number(raw);
-    if (!Number.isFinite(parsed)) return 0;
-    return clampGrokBallOffsetY(parsed, container);
-  } catch {
-    return 0;
-  }
-}
-
-export function saveGrokBallOffsetY(offsetY: number): void {
-  try {
-    const normalized = Math.round(Number.isFinite(offsetY) ? offsetY : 0);
-    if (normalized === 0) {
-      globalThis.localStorage?.removeItem(GROK_BALL_OFFSET_STORAGE_KEY);
-    } else {
-      globalThis.localStorage?.setItem(GROK_BALL_OFFSET_STORAGE_KEY, String(normalized));
-    }
-  } catch {
-    return;
-  }
-}
 
 const PROACTIVE_RETRY_COOLDOWN_MS = 5 * 60_000;
 
@@ -84,47 +34,6 @@ const SOURCE_ICONS: Readonly<Record<ProactiveSuggestionSourceKind, string>> = {
   ambient: `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 14.76V5a2 2 0 1 0-4 0v9.76a4 4 0 1 0 4 0Z"/><path d="M12 9v6"/></svg>`,
   smart: SF_ICONS.sparkles,
 };
-
-interface GrokBallGestureState {
-  phase: "idle" | "pressed" | "dragging" | "voice";
-  pointerId: number | null;
-  startX: number;
-  startY: number;
-  startOffsetY: number;
-  wasListeningBeforePress: boolean;
-  holdTimer: number | null;
-  suppressClick: boolean;
-  suppressResetTimer: number | null;
-}
-
-const gestureStateByHost = new WeakMap<MenuMijiaWindowsApp, GrokBallGestureState>();
-
-function ensureGrokGestureState(host: MenuMijiaWindowsApp): GrokBallGestureState {
-  let state = gestureStateByHost.get(host);
-  if (!state) {
-    state = {
-      phase: "idle",
-      pointerId: null,
-      startX: 0,
-      startY: 0,
-      startOffsetY: 0,
-      wasListeningBeforePress: false,
-      holdTimer: null,
-      suppressClick: false,
-      suppressResetTimer: null,
-    };
-    gestureStateByHost.set(host, state);
-  }
-  return state;
-}
-
-export function isGrokBallOnLeft(
-  host: Pick<MenuMijiaWindowsApp, "grokBallOnLeft" | "panelAnchor">,
-): boolean {
-  if (host.panelAnchor === "topRight" || host.panelAnchor === "bottomRight") return true;
-  if (host.panelAnchor === "topLeft" || host.panelAnchor === "bottomLeft") return false;
-  return host.grokBallOnLeft;
-}
 
 export function classifyProactiveSuggestionSource(
   host: Pick<MenuMijiaWindowsApp, "habitSequences" | "lastHabitAction">,
@@ -251,118 +160,29 @@ export function proactiveSignature(host: MenuMijiaWindowsApp): string {
   return `${bucket}|${readings}`;
 }
 
-export function isIntentReversibleOnDevice(
-  host: MenuMijiaWindowsApp,
-  intent: DeviceIntent,
-  device: SmartDevice,
-): { reversible: boolean; nextDevice: SmartDevice } {
-  if (!device.isOnline || (device.kind.kind === "plug" && device.kind.switchEntityId.startsWith("button."))) {
-    return { reversible: false, nextDevice: device };
-  }
-  const normalized = IntentValidator.normalize(intent.operation, device);
-  if (!normalized) return { reversible: false, nextDevice: device };
-  if (
-    host.settings.connectionMode === "homeAssistant" &&
-    normalized.kind === "power" &&
-    normalized.isOn &&
-    device.kind.kind === "climate" &&
-    !device.kind.availableModes.some((mode) => mode !== "off" && mode !== "unknown" && mode !== "unavailable")
-  ) {
-    return { reversible: false, nextDevice: device };
-  }
-  const normalizedIntent: DeviceIntent = { targetId: intent.targetId, operation: normalized };
-  const commands = IntentValidator.commandsForIntent(normalizedIntent, device);
-  if (commands.length === 0 || !commands.every((command) => inverseCommands(device, command).length > 0)) {
-    return { reversible: false, nextDevice: device };
-  }
-  const k = device.kind;
-  let nextKind = k;
-  if (k.kind === "light") {
-    if (normalized.kind === "power") nextKind = { ...k, isOn: normalized.isOn };
-    else if (normalized.kind === "brightness") nextKind = { ...k, isOn: true, brightnessPercent: normalized.percent };
-    else if (normalized.kind === "colorTemperature") nextKind = { ...k, isOn: true, colorTempKelvin: normalized.kelvin, currentEffect: null };
-    else if (normalized.kind === "lightEffect") nextKind = { ...k, isOn: true, currentEffect: normalized.effect };
-  } else if (k.kind === "climate") {
-    if (normalized.kind === "power") {
-      const resumeMode = k.hvacMode === "off" ? (k.availableModes.find((m) => m !== "off") ?? "cool") : k.hvacMode;
-      nextKind = { ...k, isOn: normalized.isOn, hvacMode: normalized.isOn ? resumeMode : "off" };
-    } else if (normalized.kind === "hvacMode") {
-      nextKind = { ...k, isOn: normalized.mode !== "off", hvacMode: normalized.mode };
-    } else if (normalized.kind === "targetTemperature") {
-      nextKind = { ...k, targetTemperature: normalized.celsius };
-    } else if (normalized.kind === "fanSpeed") {
-      nextKind = { ...k, fanMode: normalized.speed };
-    }
-  }
-  return { reversible: true, nextDevice: { ...device, kind: nextKind } };
-}
-
 /** The Top-4 zero-delay suggestions: the AI cache when fresh, otherwise ranked locally (#113). */
 export function currentProactiveSuggestions(host: MenuMijiaWindowsApp): AssistantSuggestion[] {
-  if (host.pendingSuggestions.length > 0 && !host.isGrokBallStageExpanded) return [];
+  if (host.pendingSuggestions.length > 0) return [];
   const signature = proactiveSignature(host);
   const aliasedDevices = proactiveVisibleDevices(host);
   const favoriteIds = proactiveFavoriteIds(host.layout, aliasedDevices);
   const local = new UserHabitMemory(host.settings.habitEntries, host.habitSequences(), host.lastHabitAction()).topSuggestions({
     devices: aliasedDevices,
-    scenes: host.isGrokBallStageExpanded ? [] : host.scenes,
+    scenes: host.scenes,
     environmentReadings: host.computedEnvironmentReadings,
     favoriteIds,
   });
   const cached = host.aiProactiveSignature === signature ? host.aiProactiveSuggestions ?? [] : [];
-  const fallback = host.isGrokBallStageExpanded
-    ? new UserHabitMemory([]).topSuggestions({
-        devices: aliasedDevices,
-        scenes: [],
-        limit: aliasedDevices.length + 4,
-        favoriteIds,
-      })
-    : [];
   const result: AssistantSuggestion[] = [];
-  for (const item of [...cached, ...local, ...fallback]) {
-    if (host.isGrokBallStageExpanded && item.intents.some((intent) => intent.operation.kind === "activateScene")) continue;
+  for (const item of [...cached, ...local]) {
     const actionableIntents = item.intents.filter((intent) => habitActionable(intent, aliasedDevices, host.scenes));
     if (actionableIntents.length === 0) continue;
-    if (host.isGrokBallStageExpanded) {
-      if (!item.intents.every((intent) => aliasedDevices.some((entry) => entry.id === intent.targetId && entry.isOnline))) continue;
-      const stateByTarget = new Map<string, SmartDevice>();
-      let allReversible = true;
-      for (const intent of actionableIntents) {
-        const current = stateByTarget.get(intent.targetId) ?? aliasedDevices.find((entry) => entry.id === intent.targetId);
-        if (!current) {
-          allReversible = false;
-          break;
-        }
-        const check = isIntentReversibleOnDevice(host, intent, current);
-        if (!check.reversible) {
-          allReversible = false;
-          break;
-        }
-        stateByTarget.set(intent.targetId, check.nextDevice);
-      }
-      if (!allReversible) continue;
-    }
     const candidate: AssistantSuggestion = { ...item, intents: actionableIntents };
     if (result.some((existing) => JSON.stringify(existing.intents) === JSON.stringify(candidate.intents))) continue;
     result.push(candidate);
     if (result.length === 4) break;
   }
   return result;
-}
-
-export function syncGrokBallEmotion(host: MenuMijiaWindowsApp): void {
-  const now = Date.now();
-  host.grokBall.setEmotion(resolveGrokBallEmotion({
-    timeBucket: timeBucketLabel(new Date(now).getHours()),
-    activeDeviceCount: host.activeDeviceCount,
-    speechListening: host.isListeningVoice,
-    assistantState: host.isResolvingIntent ? "thinking" : host.pendingSuggestions.length > 0 ? "awaitingChoice" : "idle",
-    isRecommending: host.isRefreshingProactive,
-    hasErrorToast: host.replyBanner?.isError === true || Boolean(host.haConnectionError),
-    isStageExpanded: host.isGrokBallStageExpanded,
-    isPointerTracking: now < host.grokBallPointerUntil,
-    hasRecentCelebration: now < host.grokBallCelebrationUntil,
-  }));
 }
 
 export function renderProactiveInlinePill(host: MenuMijiaWindowsApp, item: AssistantSuggestion): string {
@@ -372,278 +192,6 @@ export function renderProactiveInlinePill(host: MenuMijiaWindowsApp, item: Assis
   return `<button class="cc-inline-pill" data-proactive-id="${host.escapeHtml(item.id)}" title="${host.escapeHtml(tooltip)}" style="display:inline-flex;align-items:center;gap:4px;"><span data-grok-source="${source.kind}" aria-hidden="true" style="width:12px;height:12px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;">${source.icon}</span><span>${host.escapeHtml(item.title)}</span>${
     pct !== null ? `<span class="cc-grok-confidence" data-grok-confidence="${pct}" style="opacity:0.78;font-variant-numeric:tabular-nums;">· ${pct}%</span>` : ""
   }</button>`;
-}
-
-export function renderGrokBallStage(host: MenuMijiaWindowsApp): string {
-  if (!host.isGrokBallStageExpanded) return "";
-  const items = currentProactiveSuggestions(host).slice(0, 4);
-  if (items.length === 0) {
-    const emptyText = tr3(
-      "暂无可用建议，先试着控制设备",
-      "暫無可用建議，先試著控制設備",
-      "No suggestions yet. Try controlling a device first.",
-    );
-    return `<section class="cc-grok-stage" aria-label="${t("猜你想控")}">
-      <div class="cc-grok-empty" data-grok-empty role="status" style="width:148px;padding:10px 12px;border-radius:var(--r-module,12px);background:var(--glass-elevated);color:var(--text-secondary);font-size:11px;line-height:1.4;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.16);">${host.escapeHtml(emptyText)}</div>
-    </section>`;
-  }
-  return `<section class="cc-grok-stage" aria-label="${t("猜你想控")}">
-    ${items
-      .map((item) => {
-        const source = classifyProactiveSuggestionSource(host, item);
-        const pct = normalizeConfidencePercent(item.confidencePercent);
-        const tooltip = `${source.label} · ${item.title}${pct !== null ? ` (${pct}%)` : ""}`;
-        const safeTooltip = host.escapeHtml(tooltip);
-        return `<button class="cc-grok-pill" data-proactive-id="${host.escapeHtml(item.id)}" title="${safeTooltip}" aria-label="${safeTooltip}" style="display:flex;align-items:center;gap:6px;padding:6px 10px;">
-          <span class="cc-grok-source-icon" data-grok-source="${source.kind}" title="${host.escapeHtml(source.label)}" aria-hidden="true" style="width:13px;height:13px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;color:var(--apple-amber);">${source.icon}</span>
-          <span class="cc-grok-pill-title" style="flex:1 1 auto;min-width:0;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;">${host.escapeHtml(item.title)}</span>${
-            pct !== null
-              ? `<span class="cc-grok-confidence" data-grok-confidence="${pct}" style="flex-shrink:0;font-size:10px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text-secondary);">${pct}%</span>`
-              : ""
-          }</button>`;
-      })
-      .join("")}
-  </section>`;
-}
-
-export function renderGrokBallSidebar(host: MenuMijiaWindowsApp): string {
-  if (!host.settings.enableGrokBall) return "";
-  const offsetY = clampGrokBallOffsetY(host.grokBall.offsetY, host.root);
-  const ballHint = tr3(
-    "点击展开建议 · 上下拖拽调整位置 · 长按语音控制",
-    "點擊展開建議 · 上下拖曳調整位置 · 長按語音控制",
-    "Click for suggestions · Drag vertically to reposition · Hold for voice",
-  );
-  return `<aside class="cc-grok-sidebar" aria-label="${t("猜你想控")}" data-grok-offset-y="${offsetY}" style="margin-top:${GROK_BALL_BASE_MARGIN_TOP_PX + offsetY}px;">
-    <button class="cc-grok-toggle" id="btn-grok-ball" data-grok-toggle title="${host.escapeHtml(ballHint)}" aria-label="${t("猜你想控")}" aria-expanded="${host.isGrokBallStageExpanded}"><span data-grok-slot></span></button>
-    ${renderGrokBallStage(host)}
-  </aside>`;
-}
-
-export function setGrokBallStageExpanded(host: MenuMijiaWindowsApp, expanded: boolean): void {
-  if (host.isGrokBallStageExpanded === expanded) return;
-  host.isGrokBallStageExpanded = expanded;
-  host.applyPanelHeight();
-  if (window.__TAURI_INTERNALS__) {
-    void host.panelGeometryUpdates.then(() => host.render());
-  } else {
-    host.render();
-  }
-}
-
-export function cancelGrokBallGesture(host: MenuMijiaWindowsApp): void {
-  const state = gestureStateByHost.get(host);
-  if (!state) return;
-  const ownerWin = host.root.ownerDocument?.defaultView ?? window;
-  if (state.holdTimer !== null) {
-    ownerWin.clearTimeout(state.holdTimer);
-    state.holdTimer = null;
-  }
-  if (state.suppressResetTimer !== null) {
-    ownerWin.clearTimeout(state.suppressResetTimer);
-    state.suppressResetTimer = null;
-  }
-  state.suppressClick = false;
-  if (state.phase === "idle") return;
-  const prevPhase = state.phase;
-  const wasListening = state.wasListeningBeforePress;
-  state.phase = "idle";
-  state.pointerId = null;
-  host.pointerIsDown = false;
-  host.root.querySelector<HTMLElement>(":scope > .cc-grok-sidebar")?.removeAttribute("data-dragging");
-  if (prevPhase === "dragging") {
-    saveGrokBallOffsetY(host.grokBall.offsetY);
-  }
-  if (prevPhase === "voice" && !wasListening && host.isListeningVoice) {
-    abortVoiceInput(host);
-    host.queueBackgroundRender();
-  } else if (host.pendingCloudRender && !host.hasBlockingPanelInteraction()) {
-    host.queueBackgroundRender();
-  }
-}
-
-function asElement(target: EventTarget | null): Element | null {
-  return target && typeof (target as Element).closest === "function" ? (target as Element) : null;
-}
-
-export function bindGrokBallGestures(host: MenuMijiaWindowsApp): () => void {
-  const state = ensureGrokGestureState(host);
-  const ownerWin = host.root.ownerDocument?.defaultView ?? window;
-
-  const clearHoldTimer = () => {
-    if (state.holdTimer !== null) {
-      ownerWin.clearTimeout(state.holdTimer);
-      state.holdTimer = null;
-    }
-  };
-
-  const armClickSuppression = () => {
-    state.suppressClick = true;
-    if (state.suppressResetTimer !== null) {
-      ownerWin.clearTimeout(state.suppressResetTimer);
-    }
-    state.suppressResetTimer = ownerWin.setTimeout(() => {
-      state.suppressResetTimer = null;
-      state.suppressClick = false;
-    }, 0);
-  };
-
-  const collapseStageInPlaceForDrag = () => {
-    if (!host.isGrokBallStageExpanded) return;
-    host.isGrokBallStageExpanded = false;
-    host.root.classList.remove("is-grok-expanded");
-    host.root.querySelector(":scope > .cc-grok-sidebar .cc-grok-stage")?.remove();
-    host.root.querySelector("#btn-grok-ball")?.setAttribute("aria-expanded", "false");
-    host.applyPanelHeight();
-    syncGrokBallEmotion(host);
-  };
-
-  const onPointerDown = (event: PointerEvent) => {
-    if (event.button !== 0 || !host.settings.enableGrokBall) return;
-    const target = asElement(event.target);
-    const toggle = target?.closest<HTMLElement>("[data-grok-toggle]");
-    if (!toggle) return;
-
-    clearHoldTimer();
-    if (state.suppressResetTimer !== null) {
-      ownerWin.clearTimeout(state.suppressResetTimer);
-      state.suppressResetTimer = null;
-    }
-    state.suppressClick = false;
-    state.phase = "pressed";
-    state.pointerId = typeof event.pointerId === "number" ? event.pointerId : null;
-    state.startX = event.clientX;
-    state.startY = event.clientY;
-    state.startOffsetY = clampGrokBallOffsetY(host.grokBall.offsetY, host.root);
-    state.wasListeningBeforePress = host.isListeningVoice;
-    host.pointerIsDown = true;
-
-    const holdMs = Math.max(0, host.grokBall.voiceHoldMs);
-    state.holdTimer = ownerWin.setTimeout(() => {
-      state.holdTimer = null;
-      if (state.phase !== "pressed") return;
-      if (!host.root.isConnected || document.visibilityState === "hidden" || !document.hasFocus()) {
-        cancelGrokBallGesture(host);
-        return;
-      }
-      state.phase = "voice";
-      state.suppressClick = true;
-      if (host.isGrokBallStageExpanded) {
-        host.setGrokBallStageExpanded(false);
-      }
-      if (!state.wasListeningBeforePress) {
-        if (!host.isListeningVoice) {
-          host.toggleVoiceInput();
-        }
-      } else {
-        host.toggleVoiceInput();
-      }
-    }, holdMs);
-  };
-
-  const onPointerMove = (event: PointerEvent) => {
-    if (state.phase === "idle") return;
-    if (
-      state.pointerId !== null &&
-      typeof event.pointerId === "number" &&
-      event.pointerId !== state.pointerId
-    ) {
-      return;
-    }
-    const dx = event.clientX - state.startX;
-    const dy = event.clientY - state.startY;
-    if (state.phase === "pressed") {
-      if (Math.hypot(dx, dy) < GROK_BALL_DRAG_THRESHOLD_PX) return;
-      clearHoldTimer();
-      state.phase = "dragging";
-      state.suppressClick = true;
-      collapseStageInPlaceForDrag();
-      host.root.querySelector<HTMLElement>(":scope > .cc-grok-sidebar")?.setAttribute("data-dragging", "true");
-    }
-    if (state.phase === "dragging") {
-      host.grokBall.setOffsetY(state.startOffsetY + dy, host.root, false);
-    }
-  };
-
-  const onPointerUp = (event: PointerEvent) => {
-    if (state.phase === "idle") return;
-    if (
-      state.pointerId !== null &&
-      typeof event.pointerId === "number" &&
-      event.pointerId !== state.pointerId
-    ) {
-      return;
-    }
-    clearHoldTimer();
-    const finishedPhase = state.phase;
-    const wasListeningBeforePress = state.wasListeningBeforePress;
-    state.phase = "idle";
-    state.pointerId = null;
-    host.pointerIsDown = false;
-    host.root.querySelector<HTMLElement>(":scope > .cc-grok-sidebar")?.removeAttribute("data-dragging");
-
-    if (finishedPhase === "pressed") {
-      if (host.pendingCloudRender && !host.hasBlockingPanelInteraction()) {
-        host.queueBackgroundRender();
-      }
-      return;
-    }
-    armClickSuppression();
-    if (finishedPhase === "dragging") {
-      saveGrokBallOffsetY(host.grokBall.offsetY);
-      if (host.pendingCloudRender && !host.hasBlockingPanelInteraction()) {
-        host.queueBackgroundRender();
-      }
-      return;
-    }
-    if (finishedPhase === "voice") {
-      if (!wasListeningBeforePress && host.isListeningVoice) {
-        const pendingInterim = !host.panelSearch.query
-          ? (host.root.querySelector<HTMLInputElement>("#command-input")?.value.trim() ?? "")
-          : "";
-        host.toggleVoiceInput();
-        if (pendingInterim) {
-          void host.handleNaturalCommand(pendingInterim);
-        }
-      } else if (host.pendingCloudRender && !host.hasBlockingPanelInteraction()) {
-        host.queueBackgroundRender();
-      }
-    }
-  };
-
-  const onRootClickCapture = (event: MouseEvent) => {
-    const target = asElement(event.target);
-    if (!target?.closest("[data-grok-toggle]")) return;
-    if (!state.suppressClick) return;
-    state.suppressClick = false;
-    if (state.suppressResetTimer !== null) {
-      ownerWin.clearTimeout(state.suppressResetTimer);
-      state.suppressResetTimer = null;
-    }
-    event.preventDefault();
-    event.stopImmediatePropagation();
-  };
-
-  const onAbortGesture = () => {
-    cancelGrokBallGesture(host);
-  };
-
-  host.root.addEventListener("pointerdown", onPointerDown as EventListener);
-  host.root.addEventListener("click", onRootClickCapture as EventListener, true);
-  ownerWin.addEventListener("pointermove", onPointerMove as EventListener);
-  ownerWin.addEventListener("pointerup", onPointerUp as EventListener);
-  ownerWin.addEventListener("pointercancel", onAbortGesture);
-  ownerWin.addEventListener("blur", onAbortGesture);
-
-  return () => {
-    cancelGrokBallGesture(host);
-    host.root.removeEventListener("pointerdown", onPointerDown as EventListener);
-    host.root.removeEventListener("click", onRootClickCapture as EventListener, true);
-    ownerWin.removeEventListener("pointermove", onPointerMove as EventListener);
-    ownerWin.removeEventListener("pointerup", onPointerUp as EventListener);
-    ownerWin.removeEventListener("pointercancel", onAbortGesture);
-    ownerWin.removeEventListener("blur", onAbortGesture);
-  };
 }
 
 /**
@@ -695,10 +243,13 @@ export function maybeRefreshProactiveInBackground(host: MenuMijiaWindowsApp): vo
       if (sourceRevision !== host.sourceRevision || host.settings.selectedHomeId !== selectedHomeId) return;
       host.isRefreshingProactive = false;
       if (proactiveSignature(host) === signature) {
+        // The context counts as served only once a usable result landed (Codex #116 review).
         host.aiProactiveSignature = signature;
         if (suggestions.length > 0) {
           host.aiProactiveSuggestions = suggestions;
         } else {
+          // An empty result is a valid "home is ideal" answer: drop any older cache so the
+          // local ranking takes over instead of stale suggestions (Codex #116 re-review).
           host.aiProactiveSuggestions = null;
         }
         if (!host.hasBlockingPanelInteraction()) host.render();
@@ -706,14 +257,16 @@ export function maybeRefreshProactiveInBackground(host: MenuMijiaWindowsApp): vo
     })
     .catch(() => {
       if (sourceRevision !== host.sourceRevision || host.settings.selectedHomeId !== selectedHomeId) return;
+      // Silent: the previous cache keeps showing; retry after a cooldown (Codex #116 review).
       host.isRefreshingProactive = false;
       host.proactiveRetryAfterMs = Date.now() + PROACTIVE_RETRY_COOLDOWN_MS;
     });
 }
 
 export function invalidateSourceControl(host: MenuMijiaWindowsApp): void {
-  cancelGrokBallGesture(host);
   abortVoiceInput(host);
+  // Bump sourceRevision before resolving any pending URL confirmation so the drain loop sees
+  // queued links as belonging to the previous source and cancels them cleanly.
   host.sourceRevision += 1;
   cancelRunningBatch(host, "sourceChanged");
   clearUndoHoverPause(host);
@@ -727,8 +280,6 @@ export function invalidateSourceControl(host: MenuMijiaWindowsApp): void {
   host.aiProactiveSignature = null;
   host.isRefreshingProactive = false;
   host.proactiveRetryAfterMs = null;
-  host.isGrokBallStageExpanded = false;
-  host.grokBallCelebrationUntil = 0;
   host.applyPanelHeight();
   host.haConnectionError = null;
   host.lastUndoAction = null;

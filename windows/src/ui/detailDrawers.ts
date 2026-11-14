@@ -33,10 +33,6 @@ import { formatTemperature, toCelsius } from "../core/temperature.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { SF_ICONS } from "./appConstants.js";
 import {
-  isLightEffectUnsupported,
-  pruneUnsupportedLightEffectsOnHost,
-} from "./commandDispatch.js";
-import {
   facetRowDomId,
   resetMoreSettingsState,
   revealFacetRow,
@@ -765,8 +761,7 @@ export function bindDetailDrawerEvents(
     });
   });
 
-  filterUnsupportedLightEffectPills(host);
-  mountAndBindSpeakerCommandBars(host);
+  bindSpeakerCommandBars(host);
   bindCollapsedInlineSliders(host);
 }
 
@@ -982,67 +977,30 @@ function ensureSpeakerDrawerState(host: MenuMijiaWindowsApp): HostSpeakerDrawerS
   return state;
 }
 
-function filterUnsupportedLightEffectPills(host: MenuMijiaWindowsApp): void {
-  pruneUnsupportedLightEffectsOnHost(host);
-  host.root.querySelectorAll<HTMLElement>("[data-lighteffect]").forEach((btn) => {
-    const devId = btn.dataset.lighteffect;
-    const effect = btn.dataset.effect;
-    if (!devId || !effect) return;
-    if (!isLightEffectUnsupported(host, devId, effect)) return;
-    const pillGroup = btn.closest<HTMLElement>(".cc-segmented-pills");
-    const drawer = btn.closest<HTMLElement>(".cc-tile-drawer");
-    btn.remove();
-    if (pillGroup && pillGroup.querySelectorAll("button").length === 0) {
-      pillGroup.remove();
-    }
-    if (drawer && drawer.children.length === 0) {
-      drawer.remove();
-    }
-  });
+export function getSpeakerDrawerItemState(
+  host: MenuMijiaWindowsApp,
+  deviceId: string,
+): { readonly mode?: SpeakerTextMode; readonly draft?: string } {
+  const state = ensureSpeakerDrawerState(host);
+  return {
+    mode: state.modes.get(deviceId),
+    draft: state.drafts.get(deviceId),
+  };
 }
 
-function mountAndBindSpeakerCommandBars(host: MenuMijiaWindowsApp): void {
+function bindSpeakerCommandBars(host: MenuMijiaWindowsApp): void {
   const state = ensureSpeakerDrawerState(host);
   for (const dev of host.devices) {
     if (dev.kind.kind !== "speaker") continue;
     const spec = dev.kind;
     if (!spec.ttsActionId && !spec.directiveActionId) continue;
 
-    const tile = host.root.querySelector<HTMLElement>(`[data-tile-id="${cssEscape(dev.id)}"]`);
-    if (!tile) continue;
-
-    let drawer = tile.querySelector<HTMLElement>(".cc-tile-drawer");
-    if (!drawer) {
-      const isPanel = tile.classList.contains("size-panel") || tile.dataset.size === "panel";
-      const isOpen = isPanel || host.expandedDeviceId === dev.id;
-      if (!isOpen) continue;
-      drawer = document.createElement("div");
-      drawer.className = "cc-tile-drawer";
-      const facetSection = tile.querySelector(".cc-facet-section");
-      if (facetSection) {
-        tile.insertBefore(drawer, facetSection);
-      } else {
-        tile.appendChild(drawer);
-      }
-    }
-    if (drawer.querySelector(`[data-speaker-command-wrap="${cssEscape(dev.id)}"]`)) continue;
+    const wrap = host.root.querySelector<HTMLElement>(`[data-speaker-command-wrap="${cssEscape(dev.id)}"]`);
+    if (!wrap) continue;
 
     const currentMode = resolveSpeakerDrawerMode(spec, state.modes.get(dev.id));
     if (!currentMode) continue;
     state.modes.set(dev.id, currentMode);
-    const currentDraft = state.drafts.get(dev.id) ?? "";
-
-    const wrap = document.createElement("div");
-    wrap.className = "cc-speaker-command-wrap";
-    wrap.dataset.speakerCommandWrap = dev.id;
-    wrap.style.display = "flex";
-    wrap.style.flexDirection = "column";
-    wrap.style.gap = "6px";
-    wrap.innerHTML = renderSpeakerCommandBar(dev, spec, escapeAttr, {
-      mode: currentMode,
-      draft: currentDraft,
-    });
-    drawer.appendChild(wrap);
 
     const inputEl = wrap.querySelector<HTMLInputElement>(`[data-speaker-input="${cssEscape(dev.id)}"]`);
     const sendBtn = wrap.querySelector<HTMLButtonElement>(`[data-speaker-send="${cssEscape(dev.id)}"]`);

@@ -274,7 +274,6 @@ describe("Wave 2 A14: RoomOrderDraft, Favorites, Hidden Devices, 4-Step Sizes & 
         ["l1"],
       );
 
-      // Single-room pages do not split out a separate Favorites header.
       const roomSections = pageSections(prefs, withAliases(prefs, [d1, d2]), false);
       assert.equal(roomSections.length, 1);
       assert.equal(roomSections[0]?.title, null);
@@ -419,7 +418,7 @@ describe("Wave 2 A14: RoomOrderDraft, Favorites, Hidden Devices, 4-Step Sizes & 
           { id: "r_living", name: "阳光客厅" },
         ],
       );
-      assert.equal(kindChips(app.devices, { kind: "all" }, false)[0], "vacuum");
+      assert.equal(kindChips(app.devices, { kind: "all" }, false, { layout: app.layout })[0], "vacuum");
 
       openRoomOrderEditor(app, { focusRoomId: "r_living" });
       const clearInput = el<HTMLInputElement>('[data-room-alias-input="r_living"]');
@@ -465,7 +464,7 @@ describe("Wave 2 A14: RoomOrderDraft, Favorites, Hidden Devices, 4-Step Sizes & 
       );
       el<HTMLButtonElement>('[data-hide-device="curtain_living"]').click();
       assertMissing(document.querySelector('[data-tile-id="curtain_living"]'));
-      assert.deepEqual(hiddenDeviceIds(), ["curtain_living"]);
+      assert.deepEqual(hiddenDeviceIds(app.layout), ["curtain_living"]);
       assert.equal(
         app.allOffTargets.some((d) => d.id === "curtain_living"),
         false,
@@ -479,14 +478,16 @@ describe("Wave 2 A14: RoomOrderDraft, Favorites, Hidden Devices, 4-Step Sizes & 
       assertMissing(document.querySelector(".cc-hidden-devices-tray"));
       app.stopEditing();
       assert.ok(document.querySelector('[data-tile-id="curtain_living"]'));
-      assert.deepEqual(hiddenDeviceIds(), []);
+      assert.deepEqual(hiddenDeviceIds(app.layout), []);
 
-      hideDevice("light_living");
-      hideDevice("fan_study");
+      hideDevice("light_living", app.layout);
+      hideDevice("fan_study", app.layout);
+      app.saveLayout();
       app.render();
       assertMissing(document.querySelector('[data-tile-id="light_living"]'));
       assertMissing(document.querySelector('[data-tile-id="fan_study"]'));
-      unhideAllDevices();
+      unhideAllDevices(app.layout);
+      app.saveLayout();
       app.render();
       assert.ok(document.querySelector('[data-tile-id="light_living"]'));
       assert.ok(document.querySelector('[data-tile-id="fan_study"]'));
@@ -512,7 +513,7 @@ describe("Wave 2 A14: RoomOrderDraft, Favorites, Hidden Devices, 4-Step Sizes & 
       const smallTile = el('[data-tile-id="light_living"]');
       assert.equal(smallTile.dataset.tileSize, "small");
       assert.equal(smallTile.classList.contains("is-size-small"), true);
-      assert.match(smallTile.getAttribute("style") ?? "", /grid-column:\s*span 2/);
+      assert.match(smallTile.getAttribute("style") ?? "", /grid-column:\s*span 3/);
       assertMissing(smallTile.querySelector(".cc-tile-name"));
       const smallBtn = el<HTMLButtonElement>('[data-tile-id="light_living"] .cc-small-tile-btn');
       assert.match(smallBtn.title, /客厅吸顶灯/);

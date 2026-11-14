@@ -1,7 +1,6 @@
 import type { MiRoom } from "../core/miCloudClient.js";
 import type { SmartDevice } from "../core/models.js";
 import { currentLanguage, resolveLanguage, t } from "../core/i18n.js";
-import { LEGACY_STORAGE_KEY, STORAGE_KEY } from "./appConstants.js";
 
 export function tr3(zhHans: string, zhHant: string, en: string): string {
   const lang = resolveLanguage(currentLanguage(), []);
@@ -136,50 +135,6 @@ export const emptyLayoutPrefs = (): LayoutPrefs => ({
   kindOrder: [],
 });
 
-export interface ActiveLayoutHostRef {
-  readonly root: HTMLElement;
-  readonly devices: readonly SmartDevice[];
-  readonly layout: LayoutPrefs;
-  saveLayout(): void;
-  render(): void;
-}
-
-const activeLayoutHosts = new Set<WeakRef<ActiveLayoutHostRef>>();
-
-export function registerLayoutHost(host: ActiveLayoutHostRef): void {
-  for (const ref of activeLayoutHosts) {
-    const existing = ref.deref();
-    if (!existing) {
-      activeLayoutHosts.delete(ref);
-      continue;
-    }
-    if (existing === host) return;
-  }
-  activeLayoutHosts.add(new WeakRef(host));
-}
-
-function liveLayoutHosts(): ActiveLayoutHostRef[] {
-  const out: ActiveLayoutHostRef[] = [];
-  for (const ref of activeLayoutHosts) {
-    const host = ref.deref();
-    if (!host) {
-      activeLayoutHosts.delete(ref);
-      continue;
-    }
-    out.push(host);
-  }
-  return out;
-}
-
-export function layoutForDevices(devices: readonly SmartDevice[]): LayoutPrefs | null {
-  const hosts = liveLayoutHosts();
-  for (let i = hosts.length - 1; i >= 0; i--) {
-    const host = hosts[i]!;
-    if (host.devices === devices) return host.layout;
-  }
-  return null;
-}
-
 function dedupeStrings(items: readonly unknown[] | undefined): string[] {
   if (!Array.isArray(items)) return [];
   const seen = new Set<string>();
@@ -194,153 +149,62 @@ function dedupeStrings(items: readonly unknown[] | undefined): string[] {
   return out;
 }
 
-function readStoredLayoutPrefs(): LayoutPrefs | null {
-  if (typeof localStorage === "undefined") return null;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as { layout?: Partial<LayoutPrefs> } | null;
-    if (!parsed || typeof parsed !== "object") return null;
-    return { ...emptyLayoutPrefs(), ...(parsed.layout ?? {}) };
-  } catch {
-    return null;
-  }
+export function hiddenDeviceIds(prefs?: Pick<LayoutPrefs, "hiddenDeviceIds"> | null): string[] {
+  return dedupeStrings(prefs?.hiddenDeviceIds);
 }
 
-function writeStoredLayoutPatch(patch: Partial<LayoutPrefs>): void {
-  if (typeof localStorage === "undefined") return;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-    const prevLayout =
-      parsed && typeof parsed === "object" && parsed.layout && typeof parsed.layout === "object"
-        ? (parsed.layout as Record<string, unknown>)
-        : {};
-    const next = {
-      ...(parsed && typeof parsed === "object" ? parsed : {}),
-      layout: { ...emptyLayoutPrefs(), ...prevLayout, ...patch },
-    };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    return;
-  }
-}
-
-function isCurrentDocumentHost(host: ActiveLayoutHostRef): boolean {
-  if (!host.root.isConnected) return false;
-  return typeof document === "undefined" || host.root.ownerDocument === document;
-}
-
-function currentConnectedHost(): ActiveLayoutHostRef | undefined {
-  const hosts = liveLayoutHosts();
-  for (let i = hosts.length - 1; i >= 0; i--) {
-    const candidate = hosts[i]!;
-    if (isCurrentDocumentHost(candidate)) return candidate;
-  }
-  return undefined;
-}
-
-function syncMountedHostsField<K extends "pinnedDeviceIds" | "hiddenDeviceIds">(
-  key: K,
-  nextValue: string[],
-  mutatedPrefs?: LayoutPrefs,
-): void {
-  for (const host of liveLayoutHosts()) {
-    if (mutatedPrefs && host.layout !== mutatedPrefs) continue;
-    if (!mutatedPrefs && !isCurrentDocumentHost(host)) continue;
-    host.layout[key] = [...nextValue];
-  }
-}
-
-export function hiddenDeviceIds(prefs?: LayoutPrefs): string[] {
-  if (prefs) return dedupeStrings(prefs.hiddenDeviceIds);
-  const connected = currentConnectedHost();
-  if (connected) return dedupeStrings(connected.layout.hiddenDeviceIds);
-  const stored = readStoredLayoutPrefs();
-  return stored ? dedupeStrings(stored.hiddenDeviceIds) : [];
-}
-
-export function isDeviceHidden(deviceId: string, prefs?: LayoutPrefs): boolean {
+export function isDeviceHidden(deviceId: string, prefs?: Pick<LayoutPrefs, "hiddenDeviceIds"> | null): boolean {
   return hiddenDeviceIds(prefs).includes(deviceId);
 }
 
-export function hideDevice(deviceId: string, prefs?: LayoutPrefs): string[] {
+export function hideDevice(deviceId: string, prefs: LayoutPrefs): string[] {
   const id = deviceId.trim();
   if (!id) return hiddenDeviceIds(prefs);
   const current = hiddenDeviceIds(prefs);
   const next = current.includes(id) ? current : [...current, id];
-  if (prefs) {
-    prefs.hiddenDeviceIds = next;
-  } else {
-    syncMountedHostsField("hiddenDeviceIds", next);
-  }
-  writeStoredLayoutPatch({ hiddenDeviceIds: next });
+  prefs.hiddenDeviceIds = next;
   return next;
 }
 
-export function unhideDevice(deviceId: string, prefs?: LayoutPrefs): string[] {
+export function unhideDevice(deviceId: string, prefs: LayoutPrefs): string[] {
   const id = deviceId.trim();
   const current = hiddenDeviceIds(prefs);
   const next = current.filter((item) => item !== id);
-  if (prefs) {
-    prefs.hiddenDeviceIds = next;
-  } else {
-    syncMountedHostsField("hiddenDeviceIds", next);
-  }
-  writeStoredLayoutPatch({ hiddenDeviceIds: next });
+  prefs.hiddenDeviceIds = next;
   return next;
 }
 
-export function unhideAllDevices(prefs?: LayoutPrefs): string[] {
-  if (prefs) {
-    prefs.hiddenDeviceIds = [];
-  } else {
-    syncMountedHostsField("hiddenDeviceIds", []);
-  }
-  writeStoredLayoutPatch({ hiddenDeviceIds: [] });
+export function unhideAllDevices(prefs: LayoutPrefs): string[] {
+  prefs.hiddenDeviceIds = [];
   return [];
 }
 
-export function pinnedDeviceIds(prefs?: LayoutPrefs): string[] {
-  if (prefs) return dedupeStrings(prefs.pinnedDeviceIds);
-  const connected = currentConnectedHost();
-  if (connected) return dedupeStrings(connected.layout.pinnedDeviceIds);
-  const stored = readStoredLayoutPrefs();
-  return stored ? dedupeStrings(stored.pinnedDeviceIds) : [];
+export function pinnedDeviceIds(prefs?: Pick<LayoutPrefs, "pinnedDeviceIds"> | null): string[] {
+  return dedupeStrings(prefs?.pinnedDeviceIds);
 }
 
-export function isDevicePinned(deviceId: string, prefs?: LayoutPrefs): boolean {
+export function isDevicePinned(deviceId: string, prefs?: Pick<LayoutPrefs, "pinnedDeviceIds"> | null): boolean {
   return pinnedDeviceIds(prefs).includes(deviceId);
 }
 
-export function pinDevice(deviceId: string, prefs?: LayoutPrefs): string[] {
+export function pinDevice(deviceId: string, prefs: LayoutPrefs): string[] {
   const id = deviceId.trim();
   if (!id) return pinnedDeviceIds(prefs);
   const current = pinnedDeviceIds(prefs);
   const next = current.includes(id) ? current : [...current, id];
-  if (prefs) {
-    prefs.pinnedDeviceIds = next;
-  } else {
-    syncMountedHostsField("pinnedDeviceIds", next);
-  }
-  writeStoredLayoutPatch({ pinnedDeviceIds: next });
+  prefs.pinnedDeviceIds = next;
   return next;
 }
 
-export function unpinDevice(deviceId: string, prefs?: LayoutPrefs): string[] {
+export function unpinDevice(deviceId: string, prefs: LayoutPrefs): string[] {
   const id = deviceId.trim();
   const current = pinnedDeviceIds(prefs);
   const next = current.filter((item) => item !== id);
-  if (prefs) {
-    prefs.pinnedDeviceIds = next;
-  } else {
-    syncMountedHostsField("pinnedDeviceIds", next);
-  }
-  writeStoredLayoutPatch({ pinnedDeviceIds: next });
+  prefs.pinnedDeviceIds = next;
   return next;
 }
 
-export function togglePinnedDevice(deviceId: string, prefs?: LayoutPrefs): boolean {
+export function togglePinnedDevice(deviceId: string, prefs: LayoutPrefs): boolean {
   if (isDevicePinned(deviceId, prefs)) {
     unpinDevice(deviceId, prefs);
     return false;
@@ -349,18 +213,13 @@ export function togglePinnedDevice(deviceId: string, prefs?: LayoutPrefs): boole
   return true;
 }
 
-export function movePinnedDevice(deviceId: string, direction: -1 | 1, prefs?: LayoutPrefs): string[] {
+export function movePinnedDevice(deviceId: string, direction: -1 | 1, prefs: LayoutPrefs): string[] {
   const next = [...pinnedDeviceIds(prefs)];
   const idx = next.indexOf(deviceId);
   const targetIdx = idx + direction;
   if (idx < 0 || targetIdx < 0 || targetIdx >= next.length) return next;
   [next[idx], next[targetIdx]] = [next[targetIdx]!, next[idx]!];
-  if (prefs) {
-    prefs.pinnedDeviceIds = next;
-  } else {
-    syncMountedHostsField("pinnedDeviceIds", next);
-  }
-  writeStoredLayoutPatch({ pinnedDeviceIds: next });
+  prefs.pinnedDeviceIds = next;
   return next;
 }
 
@@ -463,8 +322,6 @@ export function resolvedSize(size: TileSize, device: SmartDevice, compactGrid: b
 }
 
 export function nextSize(size: Exclude<TileSize, "auto">): Exclude<TileSize, "auto"> {
-  // Windows still packs a 6-column grid without 2×2 rows, so its tap cycle keeps the original
-  // three steps; `small`/`hero` arrive through the explicit 4-size picker or a saved macOS layout.
   if (size === "small") return "half";
   return size === "half" ? "full" : size === "full" ? "panel" : "half";
 }
@@ -578,10 +435,6 @@ export interface PageSection {
   readonly groupId: string | null;
 }
 
-/**
- * Favorites ("常用") first on the All page, then user groups, then the ungrouped rest.
- * A page without any pinned or grouped device remains a single untitled section.
- */
 export function pageSections(prefs: LayoutPrefs, devices: readonly SmartDevice[], isAllPage: boolean): PageSection[] {
   const pinnedOrder = isAllPage ? pinnedDeviceIds(prefs) : [];
   const pinnedSet = new Set(pinnedOrder);
@@ -618,29 +471,19 @@ export function pageSections(prefs: LayoutPrefs, devices: readonly SmartDevice[]
   return sections;
 }
 
-const renderedPinnedDevices = new WeakMap<SmartDevice, boolean>();
-
-export function isRenderedDevicePinned(device: SmartDevice): boolean {
-  return renderedPinnedDevices.get(device) === true;
-}
-
 export function withAliases(prefs: LayoutPrefs, devices: readonly SmartDevice[]): SmartDevice[] {
-  const pinnedSet = new Set(pinnedDeviceIds(prefs));
   const roomAliases = prefs.roomAliases;
   return devices.map((d) => {
     const devAlias = prefs.aliases[d.id];
     const roomAlias = d.roomId && roomAliases ? roomAliases[d.roomId]?.trim() : undefined;
     const nextRoomName = roomAlias && roomAlias !== d.roomName ? roomAlias : d.roomName;
-    const next =
-      devAlias || nextRoomName !== d.roomName
-        ? {
-            ...d,
-            ...(devAlias ? { name: devAlias } : {}),
-            ...(nextRoomName !== d.roomName ? { roomName: nextRoomName } : {}),
-          }
-        : d;
-    renderedPinnedDevices.set(next, pinnedSet.has(d.id));
-    return next;
+    return devAlias || nextRoomName !== d.roomName
+      ? {
+          ...d,
+          ...(devAlias ? { name: devAlias } : {}),
+          ...(nextRoomName !== d.roomName ? { roomName: nextRoomName } : {}),
+        }
+      : d;
   });
 }
 

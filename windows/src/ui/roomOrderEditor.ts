@@ -4,11 +4,11 @@ import type { MenuMijiaWindowsApp } from "./app.js";
 import { KIND_CHIP, KIND_RANK, type DeviceKindTag, type RoomOption } from "./listCut.js";
 import {
   applyKindOrder,
+  applyRoomOrder,
   hiddenDeviceIds,
   hideDevice,
   movePinnedDevice,
   normalizeRoomAliases,
-  registerLayoutHost,
   roomDisplayName,
   seededRoomOrder,
   togglePinnedDevice,
@@ -17,25 +17,7 @@ import {
   unhideDevice,
 } from "./panelPrefs.js";
 
-export const ROOM_EDITOR_PROMPT_SENTINEL = "__room_order_editor__";
-
 export type RoomOrderEditorTab = "rooms" | "kinds";
-
-export type CustomContextMenuTarget =
-  | { readonly kind: "room"; readonly roomId: string; readonly originalName: string }
-  | { readonly kind: "kind"; readonly tag: DeviceKindTag }
-  | { readonly kind: "roomBar" };
-
-const customCtxTargets = new WeakMap<object, CustomContextMenuTarget>();
-
-export function setCustomContextMenuTarget(host: object, target: CustomContextMenuTarget | null): void {
-  if (target === null) customCtxTargets.delete(host);
-  else customCtxTargets.set(host, target);
-}
-
-export function getCustomContextMenuTarget(host: object): CustomContextMenuTarget | null {
-  return customCtxTargets.get(host) ?? null;
-}
 
 export class RoomOrderDraft {
   public readonly originalOrder: readonly string[];
@@ -188,11 +170,7 @@ export function snapshotKindsForHost(devices: readonly SmartDevice[]): DeviceKin
 }
 
 export function isRoomOrderEditorPrompt(host: MenuMijiaWindowsApp): boolean {
-  return (
-    host.prompt !== null &&
-    host.prompt.kind === "renameDevice" &&
-    host.prompt.deviceId === ROOM_EDITOR_PROMPT_SENTINEL
-  );
+  return host.prompt !== null && host.prompt.kind === "roomOrderEditor";
 }
 
 export function isRoomOrderEditorOpen(host: MenuMijiaWindowsApp): boolean {
@@ -207,11 +185,18 @@ export function getRoomOrderEditorSession(host: MenuMijiaWindowsApp): RoomOrderE
   return isRoomOrderEditorOpen(host) ? (editorSessions.get(host) ?? null) : null;
 }
 
+export function activeRoomOptions(host: MenuMijiaWindowsApp): RoomOption[] {
+  const session = getRoomOrderEditorSession(host);
+  const prefs = session
+    ? { roomOrder: session.roomDraft.order, roomAliases: session.roomDraft.aliases }
+    : host.layout;
+  return applyRoomOrder(prefs, snapshotRoomsForHost(host.devices));
+}
+
 export function openRoomOrderEditor(
   host: MenuMijiaWindowsApp,
   options?: { readonly tab?: RoomOrderEditorTab; readonly focusRoomId?: string | null },
 ): RoomOrderEditorSession {
-  setCustomContextMenuTarget(host, null);
   const rooms = snapshotRoomsForHost(host.devices);
   const kinds = snapshotKindsForHost(host.devices);
   const session: RoomOrderEditorSession = {
@@ -229,7 +214,7 @@ export function openRoomOrderEditor(
     draggingRowId: null,
   };
   editorSessions.set(host, session);
-  host.openPrompt({ kind: "renameDevice", deviceId: ROOM_EDITOR_PROMPT_SENTINEL });
+  host.openPrompt({ kind: "roomOrderEditor" });
   return session;
 }
 
@@ -410,98 +395,23 @@ export function renderRoomOrderEditorModal(host: MenuMijiaWindowsApp): string {
     </div>`;
 }
 
-export function syncRoomBarDom(host: MenuMijiaWindowsApp): void {
-  const session = getRoomOrderEditorSession(host);
-  const activeOrder = session ? session.roomDraft.order : (host.layout.roomOrder ?? []);
-  const activeAliases = session ? session.roomDraft.aliases : (host.layout.roomAliases ?? {});
-  const roomsById = new Map(snapshotRoomsForHost(host.devices).map((r) => [r.id, r.name]));
-
-  if (!session && host.listCut.kind === "room") {
-    const original = roomsById.get(host.listCut.roomId) ?? host.listCut.roomName;
-    const expected = roomDisplayName({ roomAliases: activeAliases }, host.listCut.roomId, original);
-    if (expected !== host.listCut.roomName) {
-      host.selectRoom(host.listCut.roomId, expected);
-    }
-  }
-
-  const firstRoomBar = host.root.querySelector<HTMLElement>(".cc-room-bar");
-  const scroll = firstRoomBar?.querySelector<HTMLElement>(".cc-room-scroll");
-  if (scroll) {
-    const roomButtons = [...scroll.querySelectorAll<HTMLButtonElement>(".cc-room-pill[data-room-id]")];
-    if (roomButtons.length > 0) {
-      const buttonById = new Map<string, HTMLButtonElement>();
-      const visibleIds: string[] = [];
-      for (const btn of roomButtons) {
-        const rid = btn.dataset.roomId ?? "";
-        if (!rid) continue;
-        visibleIds.push(rid);
-        buttonById.set(rid, btn);
-      }
-      const orderedIds = seededRoomOrder(activeOrder, visibleIds).filter((id) => buttonById.has(id));
-      const filterSep = scroll.querySelector(".cc-filter-sep, [data-kind]");
-      for (const rid of orderedIds) {
-        const btn = buttonById.get(rid);
-        if (!btn) continue;
-        const originalName = roomsById.get(rid) ?? btn.textContent?.trim() ?? rid;
-        const shownName = roomDisplayName({ roomAliases: activeAliases }, rid, originalName);
-        btn.dataset.room = shownName;
-        btn.textContent = shownName;
-        if (shownName !== originalName) {
-          btn.title = tr3(`原名：${originalName}`, `原名：${originalName}`, `Original: ${originalName}`);
-        } else {
-          btn.removeAttribute("title");
-        }
-        if (filterSep) {
-          scroll.insertBefore(btn, filterSep);
-        } else {
-          scroll.appendChild(btn);
-        }
-      }
-    }
-  }
-
-  const tools = firstRoomBar?.querySelector<HTMLElement>(".cc-room-tools");
-  if (tools && !tools.querySelector("#btn-room-order-editor")) {
-    const label = tr3("调整房间与分类顺序 / 重命名房间", "調整房間與分類順序 / 重新命名房間", "Reorder & rename rooms / categories");
-    const btn = host.root.ownerDocument.createElement("button");
-    btn.type = "button";
-    btn.className = "cc-circle-btn is-small";
-    btn.id = "btn-room-order-editor";
-    btn.title = label;
-    btn.setAttribute("aria-label", label);
-    btn.innerHTML = `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h8M4 10h8M4 14h5M15 5v10M12.8 7.4L15 5l2.2 2.4"/></svg>`;
-    tools.prepend(btn);
-  }
-
-  const scrollArea = host.root.querySelector<HTMLElement>(".cc-scroll-area");
-  if (host.isEditingLayout && scrollArea && !scrollArea.querySelector(".cc-edit-layout-toolbar")) {
-    const bar = host.root.ownerDocument.createElement("div");
-    bar.className = "cc-edit-layout-toolbar";
-    bar.innerHTML = `
-      <button type="button" class="cc-inline-pill cc-edit-rooms-btn" id="btn-edit-room-order" data-open-room-editor="rooms">
-        ${host.escapeHtml(tr3("调整房间与分类顺序 / 重命名房间", "調整房間與分類順序 / 重新命名房間", "Reorder & Rename Rooms / Categories"))}
-      </button>`;
-    scrollArea.prepend(bar);
-  }
+export function renderEditLayoutToolbar(host: MenuMijiaWindowsApp): string {
+  if (!host.isEditingLayout) return "";
+  return `<div class="cc-edit-layout-toolbar">
+    <button type="button" class="cc-inline-pill cc-edit-rooms-btn" id="btn-edit-room-order" data-open-room-editor="rooms">
+      ${host.escapeHtml(tr3("调整房间与分类顺序 / 重命名房间", "調整房間與分類順序 / 重新命名房間", "Reorder & Rename Rooms / Categories"))}
+    </button>
+  </div>`;
 }
 
-export function mountHiddenDevicesEditTray(host: MenuMijiaWindowsApp): void {
+export function renderHiddenDevicesTray(host: MenuMijiaWindowsApp): string {
+  if (!host.isEditingLayout && host.presentationDevices.length > 0) return "";
   const hiddenIds = new Set(hiddenDeviceIds(host.layout));
-  if (hiddenIds.size === 0) return;
+  if (hiddenIds.size === 0) return "";
   const hiddenDevices = host.devices.filter((d) => hiddenIds.has(d.id));
-  if (hiddenDevices.length === 0) return;
-  const scrollArea = host.root.querySelector<HTMLElement>(".cc-scroll-area");
-  if (!scrollArea || scrollArea.querySelector(".cc-hidden-devices-tray")) return;
-  if (!host.isEditingLayout && scrollArea.children.length > 0) return;
-
+  if (hiddenDevices.length === 0) return "";
   const escape = (v: string) => host.escapeHtml(v);
-  const tray = host.root.ownerDocument.createElement("section");
-  tray.className = "cc-hidden-devices-tray";
-  tray.setAttribute(
-    "aria-label",
-    tr3("已隐藏的设备", "已隱藏的設備", "Hidden devices"),
-  );
-  tray.innerHTML = `
+  return `<section class="cc-hidden-devices-tray" aria-label="${escape(tr3("已隐藏的设备", "已隱藏的設備", "Hidden devices"))}">
     <div class="cc-hidden-devices-header">
       <span class="cc-group-title">${escape(tr3(`已隐藏设备 (${hiddenDevices.length})`, `已隱藏設備 (${hiddenDevices.length})`, `Hidden Devices (${hiddenDevices.length})`))}</span>
       ${
@@ -528,14 +438,11 @@ export function mountHiddenDevicesEditTray(host: MenuMijiaWindowsApp): void {
             </div>`;
         })
         .join("")}
-    </div>`;
-  scrollArea.appendChild(tray);
+    </div>
+  </section>`;
 }
 
 export function bindRoomOrderEditorEvents(host: MenuMijiaWindowsApp): void {
-  registerLayoutHost(host);
-  syncRoomBarDom(host);
-  mountHiddenDevicesEditTray(host);
 
   host.root.querySelectorAll<HTMLElement>("[data-toggle-pin]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -612,7 +519,6 @@ export function bindRoomOrderEditorEvents(host: MenuMijiaWindowsApp): void {
         host.layout.roomOrder = [...draft.order];
         host.saveLayout();
       }
-      setCustomContextMenuTarget(host, null);
       host.ctxMenu = null;
       host.render();
     });
@@ -678,8 +584,18 @@ export function bindRoomOrderEditorEvents(host: MenuMijiaWindowsApp): void {
     input.addEventListener("input", () => {
       const roomId = input.dataset.roomAliasInput ?? "";
       if (!roomId) return;
-      session.roomDraft.setAlias(roomId, input.value, roomsById.get(roomId));
-      syncRoomBarDom(host);
+      const originalName = roomsById.get(roomId) ?? roomId;
+      session.roomDraft.setAlias(roomId, input.value, originalName);
+      const shownName = roomDisplayName({ roomAliases: session.roomDraft.aliases }, roomId, originalName);
+      const escapedRoomId =
+        typeof CSS !== "undefined" && typeof CSS.escape === "function"
+          ? CSS.escape(roomId)
+          : roomId.replace(/(["\\])/g, "\\$1");
+      const pill = host.root.querySelector<HTMLButtonElement>(`.cc-room-pill[data-room-id="${escapedRoomId}"]`);
+      if (pill) {
+        pill.dataset.room = shownName;
+        pill.textContent = shownName;
+      }
     });
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {

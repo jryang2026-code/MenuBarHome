@@ -6,7 +6,6 @@ import {
   moveInOrder,
   pinnedDeviceIds,
   projectedOffset,
-  registerLayoutHost,
   releaseVelocity,
   scopedKey,
   targetSize,
@@ -14,7 +13,7 @@ import {
   type TileSize,
 } from "./panelPrefs.js";
 import type { PersistedSettings } from "./appTypes.js";
-import { setCustomContextMenuTarget, snapshotRoomsForHost } from "./roomOrderEditor.js";
+import { snapshotRoomsForHost } from "./roomOrderEditor.js";
 
 export interface LayoutGestureHost {
   readonly root: HTMLElement;
@@ -26,7 +25,15 @@ export interface LayoutGestureHost {
   draggingId: string | null;
   dragPointer: { x: number; y: number; grabX: number; grabY: number } | null;
   lastSwap: { slot: string; at: number } | null;
-  ctxMenu: { x: number; y: number; deviceId?: string; groupId?: string } | null;
+  ctxMenu: {
+    x: number;
+    y: number;
+    deviceId?: string;
+    groupId?: string;
+    roomTarget?: { readonly roomId: string; readonly originalName: string };
+    kindTarget?: DeviceKindTag;
+    roomBar?: boolean;
+  } | null;
   dimPreview: { id: string; percent: number } | null;
   suppressNextClick: boolean;
   pointerIsDown: boolean;
@@ -47,7 +54,6 @@ export interface LayoutGestureHost {
 }
 
   export function bindLayoutGestures(host: LayoutGestureHost): void {
-    registerLayoutHost(host);
     let press: { id: string; x: number; y: number; timer: number; dimming: boolean; el: HTMLElement } | null = null;
     let resizing: {
       id: string;
@@ -311,7 +317,6 @@ export interface LayoutGestureHost {
       const el = target.closest<HTMLElement>("[data-tile-id]");
       if (el) {
         e.preventDefault();
-        setCustomContextMenuTarget(host, null);
         host.ctxMenu = { x: e.clientX, y: e.clientY, deviceId: el.dataset.tileId as string };
         host.render();
         return;
@@ -325,8 +330,7 @@ export interface LayoutGestureHost {
           snapshotRoomsForHost(host.devices).find((r) => r.id === roomId)?.name ??
           roomPill.dataset.room ??
           roomId;
-        setCustomContextMenuTarget(host, { kind: "room", roomId, originalName });
-        host.ctxMenu = { x: e.clientX, y: e.clientY };
+        host.ctxMenu = { x: e.clientX, y: e.clientY, roomTarget: { roomId, originalName } };
         host.render();
         return;
       }
@@ -335,15 +339,13 @@ export interface LayoutGestureHost {
         const rawKind = kindPill.dataset.kind ?? "";
         if (!rawKind || !(rawKind in KIND_CHIP)) return;
         e.preventDefault();
-        setCustomContextMenuTarget(host, { kind: "kind", tag: rawKind as DeviceKindTag });
-        host.ctxMenu = { x: e.clientX, y: e.clientY };
+        host.ctxMenu = { x: e.clientX, y: e.clientY, kindTarget: rawKind as DeviceKindTag };
         host.render();
         return;
       }
       if (target.closest(".cc-room-bar")) {
         e.preventDefault();
-        setCustomContextMenuTarget(host, { kind: "roomBar" });
-        host.ctxMenu = { x: e.clientX, y: e.clientY };
+        host.ctxMenu = { x: e.clientX, y: e.clientY, roomBar: true };
         host.render();
       }
     });

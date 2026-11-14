@@ -1192,15 +1192,23 @@ details.win-notif-card > :not(summary) {
   background: var(--win-divider);
 }
 
-/* 9-column grid: span 3 = 3 Win+A capsules per row; .is-span-row = full width */
 .cc-devices-grid {
   display: grid;
   gap: 10px 8px;
 }
 
 .cc-devices-grid.is-flow {
-  grid-template-columns: repeat(9, minmax(0, 1fr));
+  grid-template-columns: repeat(12, minmax(0, 1fr));
   grid-auto-flow: dense;
+}
+
+.cc-devices-grid.is-flow > .cc-tile.is-size-small:not(.is-expanded) {
+  grid-column: span 3 !important;
+}
+
+.cc-devices-grid.is-flow > .cc-tile.is-capsule,
+.cc-devices-grid.is-flow > .cc-sensor.is-compact {
+  grid-column: span 4 !important;
 }
 
 .cc-devices-grid.is-flow > .is-span-row,
@@ -3722,10 +3730,6 @@ input[type="checkbox"]:checked::after {
   }
 }
 
-/* =========================================================================
-   A14: 4-Step Card Sizes, Inline Quick Sliders, Favorites, Hidden & Room Editor
-   ========================================================================= */
-
 .cc-tile > .cc-tile-pin-badge {
   position: absolute;
   top: 5px;
@@ -3733,13 +3737,12 @@ input[type="checkbox"]:checked::after {
   z-index: 2;
   font-size: 9.5px;
   line-height: 1;
-  color: var(--apple-amber);
+  color: var(--win-caution);
   opacity: 0.92;
   pointer-events: none;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
 }
 
-/* 1×1 Compact Tile (`size === "small"`) */
 .cc-tile.is-size-small {
   min-height: 62px;
   align-items: center;
@@ -3776,14 +3779,13 @@ input[type="checkbox"]:checked::after {
   height: 5px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.18);
-  transition: background 180ms var(--ease-out-quart);
+  transition: background 180ms var(--ease-decelerate);
 }
 
 .cc-tile.is-size-small.is-active .cc-small-tile-dot {
-  background: var(--tint, var(--apple-amber));
+  background: var(--win-accent);
 }
 
-/* 2×2 Large Platter Card (`size === "hero"`) */
 .cc-tile.is-size-hero:not(.is-expanded) {
   min-height: 108px;
   justify-content: space-between;
@@ -3829,7 +3831,6 @@ input[type="checkbox"]:checked::after {
   gap: 6px;
 }
 
-/* Collapsed Card Inline Quick Slider (`full` & `hero`) */
 .cc-tile.has-inline-slider:not(.is-expanded) .cc-tile-header {
   padding-bottom: 5px;
 }
@@ -3873,7 +3874,6 @@ input[type="checkbox"]:checked::after {
   flex-shrink: 0;
 }
 
-/* Layout Edit Toolbar & Semi-Transparent Hidden Devices Recovery Tray */
 .cc-edit-layout-toolbar {
   display: flex;
   align-items: center;
@@ -3884,7 +3884,7 @@ input[type="checkbox"]:checked::after {
 .cc-hidden-devices-tray {
   margin-top: 12px;
   padding: 10px 11px;
-  border-radius: var(--r-module);
+  border-radius: var(--r-card);
   background: rgba(255, 255, 255, 0.04);
   border: 0.5px dashed rgba(255, 255, 255, 0.16);
   display: flex;
@@ -3915,7 +3915,7 @@ input[type="checkbox"]:checked::after {
   gap: 8px;
   padding: 7px 10px;
   border-radius: var(--r-card);
-  background: var(--tile-bg);
+  background: var(--win-card-bg);
   opacity: 0.62;
 }
 
@@ -3946,7 +3946,6 @@ input[type="checkbox"]:checked::after {
   flex-shrink: 0;
 }
 
-/* Room & Device-Kind Order + Local Rename Modal */
 .cc-prompt.cc-room-editor {
   top: 50%;
   width: min(364px, calc(100% - 26px));
@@ -4023,7 +4022,7 @@ input[type="checkbox"]:checked::after {
   width: 100%;
   font-size: 12px;
   padding: 5px 25px 5px 8px;
-  border-radius: var(--r-inset);
+  border-radius: var(--r-control);
 }
 
 .cc-room-alias-reset {
@@ -4065,7 +4064,7 @@ input[type="checkbox"]:checked::after {
 .cc-room-order-btn {
   width: 24px;
   height: 24px;
-  border-radius: var(--r-inset);
+  border-radius: var(--r-control);
   border: none;
   background: rgba(255, 255, 255, 0.08);
   color: var(--text-primary);
@@ -4095,7 +4094,7 @@ input[type="checkbox"]:checked::after {
   flex-direction: column;
   gap: 5px;
   padding-top: 6px;
-  border-top: 0.5px solid var(--hairline);
+  border-top: 0.5px solid var(--win-divider);
 }
 
 .cc-room-editor-hidden-head {
