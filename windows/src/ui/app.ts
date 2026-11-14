@@ -83,7 +83,9 @@ import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
 import { renderPanel } from "./panelView.js";
 import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
-import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground } from "./proactive.js";
+import { GrokBallView } from "./grokBall.js";
+import { bindGrokBallGestures, currentProactiveSuggestions, invalidateSourceControl, isGrokBallOnLeft, maybeRefreshProactiveInBackground, renderGrokBallSidebar, setGrokBallStageExpanded, syncGrokBallEmotion } from "./proactive.js";
+import { bindPersistentUndoEvents, undoTrackerFor } from "./undoTracker.js";
 import { getHostApplyCommand, markCloudValuesFresh, markCloudValuesStale, setCustomApplyCommand } from "./commandDispatch.js";
 import { foldGrouped, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
 import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
@@ -242,6 +244,11 @@ export class MenuMijiaWindowsApp {
   public aiProactiveSuggestions: AssistantSuggestion[] | null = null;
   public aiProactiveSignature: string | null = null;
   public isRefreshingProactive = false;
+  public isGrokBallStageExpanded = false;
+  public readonly grokBall = new GrokBallView();
+  public grokBallCelebrationUntil = 0;
+  public grokBallPointerUntil = 0;
+  public grokBallOnLeft = false;
   /** Collapsible Win+N notification cards in the Top Island; quick camera starts compact. */
   public collapsedNotifCards = new Set<string>(["camera"]);
   public panelGeometryUpdates: Promise<void> = Promise.resolve();
@@ -365,6 +372,16 @@ export class MenuMijiaWindowsApp {
     const onBlurCancelAllOff = () => this.cancelAllOffHold();
     window.addEventListener("blur", onBlurCancelAllOff);
     this.appDisposers.push(() => window.removeEventListener("blur", onBlurCancelAllOff));
+    const onPointerMove = (event: PointerEvent) => {
+      const rect = this.grokBall.element.getBoundingClientRect();
+      this.grokBallPointerUntil = Date.now() + 1500;
+      this.grokBall.setGaze((event.clientX - rect.left - rect.width / 2) / 160,
+        (event.clientY - rect.top - rect.height / 2) / 160);
+      this.syncGrokBallEmotion();
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    this.appDisposers.push(() => window.removeEventListener("pointermove", onPointerMove));
+    this.appDisposers.push(bindGrokBallGestures(this), () => undoTrackerFor(this).dispose());
     this.bindLayoutGestures();
     this.bindPanelDrag();
     this.bindOpenAnimation();
@@ -568,6 +585,8 @@ export class MenuMijiaWindowsApp {
     this.settings.selectedHomeId = id;
     this.isHomeMenuOpen = false;
     this.selectRoom(null);
+    this.lastUndoAction = null;
+    clearUndoHoverPause(this);
     // Invalidate any in-flight cloud refresh from the previous home so it cannot overwrite the new selection.
     this.localControlRevision += 1;
     this.syncGeneration += 1;
@@ -577,6 +596,8 @@ export class MenuMijiaWindowsApp {
     this.aiProactiveSignature = null;
     this.isRefreshingProactive = false;
     this.proactiveRetryAfterMs = null;
+    this.isGrokBallStageExpanded = false;
+    this.grokBallCelebrationUntil = 0;
     this.applyPanelHeight();
     this.saveSettings();
     this.render();
@@ -1173,7 +1194,11 @@ export class MenuMijiaWindowsApp {
     const settingsDraft = captureSettingsDraft(this.root);
 
     this.pendingCloudRender = false;
+    this.grokBall.prepareMove();
     this.renderNow();
+    const grokSlot = this.root.querySelector<HTMLElement>("[data-grok-slot]");
+    if (grokSlot) this.grokBall.mount(grokSlot, this.grokBall.element.dataset.emotion ?? "02");
+    this.syncGrokBallEmotion();
     syncPanelSelection(this);
 
     const nextSubpageEl = this.root.querySelector<HTMLElement>(".cc-tile.is-subpage");
@@ -1424,8 +1449,21 @@ export class MenuMijiaWindowsApp {
     return renderSettingsModal(this);
   }
 
+  public syncGrokBallEmotion(): void {
+    syncGrokBallEmotion(this);
+  }
+
+  public renderGrokBallSidebar(): string {
+    return renderGrokBallSidebar(this);
+  }
+
+  public setGrokBallStageExpanded(expanded: boolean): void {
+    setGrokBallStageExpanded(this, expanded);
+  }
+
   public bindEvents(): void {
     bindEventsImpl(this);
+    bindPersistentUndoEvents(this);
   }
 
   public bindDeckEvents(): void {
@@ -1754,6 +1792,7 @@ export class MenuMijiaWindowsApp {
         const { anchor } = parsePanelPlacement(value);
         if (anchor === this.panelAnchor) return;
         this.panelAnchor = anchor;
+        this.root.dataset.grokSide = isGrokBallOnLeft(this) ? "left" : "right";
         if (this.activeSheet === "settings") this.render();
       })
       .catch(() => undefined);
@@ -1764,7 +1803,16 @@ export class MenuMijiaWindowsApp {
     if (!invoke) return;
     this.panelGeometryUpdates = this.panelGeometryUpdates.then(async () => {
       const h = PANEL_HEIGHTS.find((item) => item.id === this.settings.panelHeight) ?? PANEL_HEIGHTS[1]!;
-      await invoke("set_panel_height", { height: h.px });
+      const side = await invoke<boolean>("set_panel_height", {
+        height: h.px,
+        expanded: this.isGrokBallStageExpanded,
+        sideLeft: isGrokBallOnLeft(this),
+        grokEnabled: this.settings.enableGrokBall,
+      });
+      if (typeof side === "boolean") {
+        this.grokBallOnLeft = side;
+      }
+      this.root.dataset.grokSide = isGrokBallOnLeft(this) ? "left" : "right";
     }).catch((error: unknown) => console.error("Panel geometry update failed", error));
   }
 

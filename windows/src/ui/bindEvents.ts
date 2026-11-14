@@ -677,7 +677,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         const aliasedDevices = withAliases(host.layout, host.devices);
         const intents = IntentValidator.sanitize(suggestion.intents, aliasedDevices, host.scenes);
         if (intents.length === 0) return;
-        host.isShowingAssistantBar = true;
+        host.isShowingAssistantBar = true; host.setGrokBallStageExpanded(false);
         void host.executeIntents(intents, IntentReply.describe(intents, aliasedDevices, host.scenes), t("猜你想控"), { recordHabits: true });
       });
     });

@@ -152,7 +152,7 @@ CODE_ANCHORS = (
             "symbol": "GrokBallRenderer",
         },
         "windows": {
-            "roots": ("windows/src", "windows/src-tauri/src"),
+            "path": "windows/src/ui/grokBall.ts",
             "symbol": "GrokBallView",
         },
     },

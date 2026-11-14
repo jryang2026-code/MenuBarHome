@@ -916,6 +916,10 @@ export function bindGlobalKeys(
     if (handlePanelKey(host, e)) return;
 
     if (e.key === "Escape") {
+      if (host.isGrokBallStageExpanded) {
+        host.setGrokBallStageExpanded(false);
+        return;
+      }
       if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
         host.cameraLive.hideCameraLiveView();
         return;

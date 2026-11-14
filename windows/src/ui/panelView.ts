@@ -8,13 +8,18 @@ import { SF_ICONS } from "./appConstants.js";
 import { applyPanelOpacity, withAliases } from "./panelPrefs.js";
 import { quickActions } from "./demo.js";
 import { quickActionScopeDevices, reconcileUndoBannerHoverAfterRender } from "./speechGuard.js";
+import { isGrokBallOnLeft, renderProactiveInlinePill } from "./proactive.js";
+import { renderPersistentUndoPill } from "./undoTracker.js";
 
 export function renderPanel(host: MenuMijiaWindowsApp): void {
   const isDemo = host.settings.connectionMode === "demo";
   const scheme = host.effectiveAppearance;
   host.root.dataset.scheme = scheme;
   applyPanelOpacity(host.root, host.settings.panelOpacity);
+  host.root.classList.toggle("is-grok-enabled", host.settings.enableGrokBall);
+  host.root.classList.toggle("is-grok-expanded", host.settings.enableGrokBall && host.isGrokBallStageExpanded);
   host.root.classList.toggle("is-native-host", Boolean(window.__TAURI_INTERNALS__));
+  host.root.dataset.grokSide = isGrokBallOnLeft(host) ? "left" : "right";
   const popoverClass = `cc-popover scheme-${scheme} ${host.isEditingLayout ? "is-editing" : ""}`.trim();
   const notifStack = renderNotificationStack(host);
   const innerContent = `
@@ -42,6 +47,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
             </div>
 
             <div class="cc-header-controls">
+              ${renderPersistentUndoPill(host)}
               <button
                 class="cc-circle-btn ${host.isListeningVoice ? "is-recording" : ""}"
                 id="btn-mic"
@@ -232,6 +238,13 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
   } else {
     host.root.innerHTML = `<div class="${popoverClass}">${innerContent}</div>`;
   }
+  host.root.querySelector(":scope > .cc-grok-sidebar")?.remove();
+  if (host.settings.enableGrokBall) {
+    host.root.insertAdjacentHTML("beforeend", host.renderGrokBallSidebar());
+    host.root.querySelector<HTMLElement>("[data-grok-toggle]")?.addEventListener("click", () => {
+      host.setGrokBallStageExpanded(!host.isGrokBallStageExpanded);
+    });
+  }
 
   host.bindEvents();
   reconcileUndoBannerHoverAfterRender(host);
@@ -276,7 +289,10 @@ function renderNotificationStack(host: MenuMijiaWindowsApp): string {
   // Active timers, proactive AI suggestions, and quick camera card follow Win+N collapsible groups
   // when the assistant bar toggle is active.
   if (host.isShowingAssistantBar) {
-    if (host.pendingSuggestions.length === 0) {
+    if (
+      host.pendingSuggestions.length === 0 &&
+      (!host.settings.enableGrokBall || !host.isGrokBallStageExpanded)
+    ) {
       const items = host.currentProactiveSuggestions();
       if (items.length > 0) {
         const openAttr = host.collapsedNotifCards.has("proactive") ? "" : "open";
@@ -289,11 +305,7 @@ function renderNotificationStack(host: MenuMijiaWindowsApp): string {
               <span class="win-notif-chevron">${SF_ICONS.chevronDown}</span>
             </summary>
             <div class="cc-suggestion-row" data-proactive-bar>${items
-              .map(
-                (item) => `<button class="cc-inline-pill" data-proactive-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${
-                  item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""
-                }</button>`,
-              )
+              .map((item) => renderProactiveInlinePill(host, item))
               .join("")}</div>
           </details>`,
         );
