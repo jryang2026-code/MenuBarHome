@@ -100,11 +100,13 @@ const GHOST_CLASS_RENAMES: ReadonlyArray<readonly [string, string]> = [
   ["cc-live-banner", "cc-live-banner-ghost"],
 ];
 
+function hasStableControlId(id: string): boolean {
+  return Boolean(id && !id.startsWith("panel-device-"));
+}
+
 export function extractControlIdentityKey(el: Element): ControlIdentityKey | null {
   if (el.hasAttribute("data-exit-ghost")) return null;
 
-  // Check data-tile-id before element.id because syncPanelSelection stamps
-  // positional id="panel-device-N" onto live tiles after render.
   const tileId = el.getAttribute("data-tile-id");
   if (tileId) {
     return el.classList.contains("is-subpage") ? `subpage:${tileId}` : `tile:${tileId}`;
@@ -139,7 +141,7 @@ export function extractControlIdentityKey(el: Element): ControlIdentityKey | nul
     if (el.querySelector(".cc-timers-stack")) return "notif:missed-timers";
   }
 
-  if (el.id) return `id:${el.id}`;
+  if (hasStableControlId(el.id)) return `id:${el.id}`;
   if (el.hasAttribute("data-overlay-key")) return `overlay:${el.getAttribute("data-overlay-key")}`;
   if (el.hasAttribute("data-room")) return `room:${el.getAttribute("data-room")}`;
   if (el.hasAttribute("data-kind")) return `kind:${el.getAttribute("data-kind")}`;
@@ -204,6 +206,14 @@ function isProtectedCameraMedia(el: Element, options?: ReconcileOptions): boolea
   return Boolean(options?.protectedMediaNodes?.has(el));
 }
 
+function retainsLiveCameraMediaAttr(
+  isProtectedMedia: boolean,
+  attrName: string,
+  desired: Element,
+): boolean {
+  return isProtectedMedia && (attrName === "src" || attrName === "style") && !desired.hasAttribute(attrName);
+}
+
 function syncElementAttributesAndProps(
   current: Element,
   desired: Element,
@@ -218,9 +228,7 @@ function syncElementAttributesAndProps(
 
   for (const attr of Array.from(current.attributes)) {
     if (attr.name === "value" && isDraftOwner) continue;
-    // renderCameraLiveModal omits src from the template when a live media element is cached,
-    // so never strip an active src or inline rotation transform from the live camera element.
-    if (isProtectedMedia && (attr.name === "src" || attr.name === "style") && !desired.hasAttribute(attr.name)) {
+    if (retainsLiveCameraMediaAttr(isProtectedMedia, attr.name, desired)) {
       continue;
     }
     if (!desired.hasAttribute(attr.name)) {
@@ -392,8 +400,6 @@ export function reconcileElementTree(
     }
   }
 
-  // Remove unused nodes before cursor reconciliation so surviving siblings are never
-  // detached and re-inserted when an earlier sibling is removed.
   for (const cNode of currentNodes) {
     if (!usedCurrent.has(cNode)) {
       if (cNode.nodeType === 1 && isProtectedCameraMedia(cNode as Element, options)) {
@@ -504,9 +510,7 @@ export class RenderEventScope {
       for (const item of list) {
         try {
           item.target.removeEventListener(item.type, item.listener, item.capture);
-        } catch {
-          // Ignore removal errors on detached nodes.
-        }
+        } catch {}
       }
     }
   }
@@ -644,9 +648,7 @@ export class CameraStandbyController {
       try {
         sheetAnim.cancel?.();
         backdropAnim?.cancel?.();
-      } catch {
-        // Ignore cancellation errors on settled animations.
-      }
+      } catch {}
       backdrop.style.pointerEvents = "";
       if (applyDisplayNone) {
         backdrop.style.display = "none";
@@ -705,7 +707,7 @@ interface StagedDepartureGhost {
 function selectorForTriggerElement(el: Element | null, root: HTMLElement): string | null {
   if (!el || !root.contains(el) || el === root) return null;
   const target = el.closest<HTMLElement>("button, [tabindex], summary, input, select, textarea") ?? (el as HTMLElement);
-  if (target.id && !target.id.startsWith("panel-device-")) {
+  if (hasStableControlId(target.id)) {
     return `#${target.id}`;
   }
   const priorityAttrs = [
@@ -772,9 +774,7 @@ export class PanelRenderPipeline {
           target.focus();
           return true;
         }
-      } catch {
-        // Ignore invalid selector fallbacks.
-      }
+      } catch {}
     }
     return false;
   }
@@ -987,9 +987,7 @@ export class PanelRenderPipeline {
       this.activeGhostCleanups.delete(cleanup);
       try {
         anim.cancel?.();
-      } catch {
-        // Ignore cancellation errors on settled animations.
-      }
+      } catch {}
       ghost.remove();
     };
     this.activeGhostCleanups.add(cleanup);

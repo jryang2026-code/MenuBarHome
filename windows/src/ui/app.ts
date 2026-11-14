@@ -1396,13 +1396,6 @@ export class MenuMijiaWindowsApp {
     });
   }
 
-  /**
-   * Windows 11 native taskbar flyout choreography:
-   * - Present (`menumijia:panel-present`): 250ms `cubic-bezier(0, 0, 0, 1)` decelerate slide out
-   *   from the docked taskbar edge (`bottom` / `top` / `left` / `right`), clearing transform at rest.
-   * - Dismiss (`menumijia:panel-dismiss`): 167ms `cubic-bezier(1, 0, 1, 1)` accelerate slide back
-   *   into the taskbar edge, then `finish_hide_panel({ seq })` hides the HWND without bounce or flash.
-   */
   private bindOpenAnimation(): void {
     const ownerWin = this.root.ownerDocument?.defaultView ?? window;
     let openClearTimer: number | null = null;
