@@ -711,7 +711,14 @@ describe("Wave 2 · A9 AI Assistant Enhancements (askWhenUnsure, Connection Prob
       (c) => c.cmd === "set_service_endpoints" && c.args?.assistantUrl === "https://api.deepseek.com/v1",
     );
     const httpIdx = invokeOrder.findIndex((c) => c.cmd === "native_http");
+    const restoreIdx = invokeOrder.findIndex(
+      (c, idx) =>
+        idx > httpIdx &&
+        c.cmd === "set_service_endpoints" &&
+        c.args?.assistantUrl === "https://openrouter.ai/api/v1",
+    );
     assert.ok(authIdx >= 0 && authIdx < httpIdx, "Draft endpoint must be authorized before native_http probe");
+    assert.ok(restoreIdx > httpIdx, "Saved endpoint authorization must be restored after draft probe");
   });
 
   it("imports provider API keys from environment variables", async () => {

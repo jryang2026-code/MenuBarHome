@@ -248,7 +248,11 @@ export function hasUnsavedSettingsChanges(host: SettingsEventsHost): boolean {
 }
 
 export async function probeAssistantConnection(
-  config: AssistantConfig & { readonly haUrl?: string },
+  config: AssistantConfig & {
+    readonly haUrl?: string;
+    readonly restoreAssistantUrl?: string;
+    readonly restoreHaUrl?: string;
+  },
   transport?: HttpTransport,
 ): Promise<{ readonly ok: boolean; readonly latencyMs: number | null; readonly message: string }> {
   const trimmedBase = config.baseURL.trim();
@@ -333,13 +337,32 @@ export async function probeAssistantConnection(
   const start = performance.now();
   try {
     const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
-    if (!transport && invoke) {
+    const shouldAuthorizeDraft = !transport && Boolean(invoke);
+    const activeHaUrl = (config.haUrl ?? "").trim();
+    if (shouldAuthorizeDraft && invoke) {
       await invoke("set_service_endpoints", {
         assistantUrl: trimmedBase,
-        haUrl: (config.haUrl ?? "").trim(),
+        haUrl: activeHaUrl,
       });
     }
-    await resolver.resolve("打开书房灯", [probeDevice], []);
+    try {
+      await resolver.resolve("打开书房灯", [probeDevice], []);
+    } finally {
+      if (
+        shouldAuthorizeDraft &&
+        invoke &&
+        (config.restoreAssistantUrl !== undefined || config.restoreHaUrl !== undefined)
+      ) {
+        const savedAssistant = (config.restoreAssistantUrl ?? trimmedBase).trim();
+        const savedHa = (config.restoreHaUrl ?? activeHaUrl).trim();
+        if (savedAssistant !== trimmedBase || savedHa !== activeHaUrl) {
+          await invoke("set_service_endpoints", {
+            assistantUrl: savedAssistant,
+            haUrl: savedHa,
+          }).catch(() => {});
+        }
+      }
+    }
     const latencyMs = Math.max(1, Math.round(performance.now() - start));
     const label = preset.id === "custom" ? tr3("自定义", "自訂", "Custom") : preset.shortTitle;
     return {
@@ -1217,11 +1240,14 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     const baseEl = host.root.querySelector<HTMLInputElement>("#settings-base-url");
     const modelEl = host.root.querySelector<HTMLInputElement>("#settings-model");
     const apiKeyEl = host.root.querySelector<HTMLInputElement>("#settings-api-key");
-    const haUrlEl = host.root.querySelector<HTMLInputElement>("#settings-ha-url");
     const baseURL = baseEl ? baseEl.value : host.settings.assistantBaseURL;
     const model = modelEl ? modelEl.value : host.settings.assistantModel;
     const apiKey = apiKeyEl ? apiKeyEl.value : storedKeyForURL(host, baseURL);
-    const haUrl = haUrlEl ? haUrlEl.value : host.settings.haBaseURL;
+    const savedAssistantUrl = host.settings.assistantBaseURL;
+    const savedHaUrl = host.settings.haBaseURL;
+    if (baseURL.trim() !== savedAssistantUrl.trim()) {
+      (host as { lastSubmittedEndpoints?: string }).lastSubmittedEndpoints = "";
+    }
 
     const testingText = tr3("正在测试连接…", "正在測試連線…", "Testing connection…");
     session.aiTestStatus = { text: testingText, state: "testing" };
@@ -1234,7 +1260,14 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     }
 
     void (async () => {
-      const result = await probeAssistantConnection({ baseURL, model, apiKey, haUrl });
+      const result = await probeAssistantConnection({
+        baseURL,
+        model,
+        apiKey,
+        haUrl: savedHaUrl,
+        restoreAssistantUrl: savedAssistantUrl,
+        restoreHaUrl: savedHaUrl,
+      });
       const state = result.ok ? "ok" : "error";
       session.aiTestStatus = { text: result.message, state };
       const btnNow = host.root.querySelector<HTMLButtonElement>("#btn-test-ai-connection");
