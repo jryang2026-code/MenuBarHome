@@ -9,7 +9,9 @@
  * `{name}` placeholders are filled by name, so a translation may reorder them.
  */
 
-export type AppLanguage = "zh-Hans" | "en";
+import { ZH_HANT_CATALOG } from "./zhHantCatalog.js";
+
+export type AppLanguage = "zh-Hans" | "zh-Hant" | "en";
 export type LanguagePreference = "system" | AppLanguage;
 
 /** Chinese key → [Simplified Chinese, English]. */
@@ -784,6 +786,95 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "开始{name}": ["开始{name}", "Start {name}"],
   "{action}{name}": ["{action}{name}", "{action} {name}"],
   "{action}？": ["{action}？", "{action}?"],
+  "繁體中文": ["繁體中文", "Traditional Chinese"],
+  "未选择": ["未选择", "Not Selected"],
+  "复制代码": ["复制代码", "Copy code"],
+  "已复制": ["已复制", "Copied"],
+  "灯光": ["灯光", "Light"],
+  "混合": ["混合", "Mix"],
+  "快速洗": ["快速洗", "Quick Wash"],
+  "轻柔洗": ["轻柔洗", "Delicate Wash"],
+  "大件洗": ["大件洗", "Heavy Wash"],
+  "漂加脱": ["漂加脱", "Rinse & Spin"],
+  "单脱水": ["单脱水", "Spin"],
+  "婴童": ["婴童", "Baby Care"],
+  "筒清洁": ["筒清洁", "Drum Clean"],
+  "羊毛": ["羊毛", "Wool"],
+  "羽绒": ["羽绒", "Down Coat"],
+  "棉麻": ["棉麻", "Cotton"],
+  "化纤": ["化纤", "Synthetic"],
+  "内衣": ["内衣", "Underwear"],
+  "冲锋衣": ["冲锋衣", "Jacket"],
+  "运动服": ["运动服", "Sportswear"],
+  "新衣洗": ["新衣洗", "New Clothes Wash"],
+  "真丝": ["真丝", "Silk"],
+  "牛仔服": ["牛仔服", "Jeans"],
+  "随心洗": ["随心洗", "Pleased Wash"],
+  "头巾": ["头巾", "Turban"],
+  "自定义": ["自定义", "Custom"],
+  "被子": ["被子", "Bedding"],
+  "衬衣": ["衬衣", "Shirt"],
+  "漂洗": ["漂洗", "Rinse"],
+  "白天": ["白天", "Day"],
+  "夜晚": ["夜晚", "Night"],
+  "夜灯": ["夜灯", "Night Light"],
+  "故障 {code} · {detail}": ["故障 {code} · {detail}", "Fault {code} · {detail}"],
+  "故障 · {detail}": ["故障 · {detail}", "Fault · {detail}"],
+  "设备上报故障代码 {code}，请查看说明书或米家 App": [
+    "设备上报故障代码 {code}，请查看说明书或米家 App",
+    "The device reported fault code {code}. Check the manual or the Mi Home app.",
+  ],
+  "设备上报故障「{text}」，请查看说明书或米家 App": [
+    "设备上报故障「{text}」，请查看说明书或米家 App",
+    "The device reported a fault ({text}). Check the manual or the Mi Home app.",
+  ],
+  "衣物分布不平衡": ["衣物分布不平衡", "Dehydration Fault"],
+  "门未关好": ["门未关好", "Door Lock Malfunction"],
+  "电脑板通讯异常": ["电脑板通讯异常", "Motor Driver Board Communication Malfunction"],
+  "水位过高": ["水位过高", "Overflow Malfunction"],
+  "水位异常": ["水位异常", "Water Level Sensor Malfunction"],
+  "水温异常": ["水温异常", "Water Temperature Sensor Malfunction"],
+  "洗涤加热管异常": ["洗涤加热管异常", "Water Heating Tube Malfunction"],
+  "防漏水系统已激活": ["防漏水系统已激活", "AquaStop Activated"],
+  "冷凝水盒已满": ["冷凝水盒已满", "Condensate Tank Full"],
+  "门锁无法使用": ["门锁无法使用", "Door Lock Unavailable"],
+  "家电故障": ["家电故障", "Appliance Error"],
+  "整机震动过大": ["整机震动过大", "Excessive Vibration"],
+  "风机故障": ["风机故障", "Fan Fault"],
+  "出现异常": ["出现异常", "Fault"],
+  "灯板开合故障": ["灯板开合故障", "Light Panel Fault"],
+  "绒毛收集器已满": ["绒毛收集器已满", "Lint Filter Full"],
+  "低电量": ["低电量", "Low Power"],
+  "电源电压异常": ["电源电压异常", "Abnormal Voltage"],
+  "电源故障": ["电源故障", "Power Error"],
+  "温湿度传感器故障": ["温湿度传感器故障", "Temp/Humidity Sensor Fault"],
+  "水泵短路或断路": ["水泵短路或断路", "The Pump Is Short Circuited or Disconnected"],
+  "衣物分布不均": ["衣物分布不均", "Uneven Load"],
+  "电机故障": ["电机故障", "Motor Fault"],
+  "排水故障": ["排水故障", "Water Draining Malfunction"],
+  "进水故障": ["进水故障", "Water Intake Malfunction"],
+  "遇阻": ["遇阻", "Encounter Obstacles"],
+  "超重": ["超重", "Overweight"],
+  "全屋": ["全屋", "Whole Home"],
+  "有人移动": ["有人移动", "Motion"],
+  "无人移动": ["无人移动", "Clear"],
+  "移动监测": ["移动监测", "Motion Sensor"],
+  "已闭合": ["已闭合", "Closed"],
+  "门窗监测": ["门窗监测", "Contact Sensor"],
+  "浸水告警": ["浸水告警", "Leak Detected"],
+  "正常": ["正常", "Dry"],
+  "水浸监测": ["水浸监测", "Leak Sensor"],
+  "光照监测": ["光照监测", "Light Sensor"],
+  "保温监控": ["保温监控", "Water Monitor"],
+  "守护中": ["守护中", "Guarding"],
+  "布帘": ["布帘", "Drape Curtain"],
+  "纱帘": ["纱帘", "Lace Curtain"],
+  "左帘": ["左帘", "Left Curtain"],
+  "右帘": ["右帘", "Right Curtain"],
+  "窗帘": ["窗帘", "Curtain"],
+  "重试退出米家登录": ["重试退出米家登录", "Retry sign-out"],
+  "米家登录将在 {date} 到期": ["米家登录将在 {date} 到期", "Xiaomi Home sign-in expires {date}"],
+  "退出米家登录": ["退出米家登录", "Sign out"],
 };
 
 /** Every catalog key, for tests and tooling. */
@@ -795,16 +886,34 @@ export function catalogEntry(key: string): readonly [string, string] | undefined
   return CATALOG[key];
 }
 
+export function zhHantEntry(key: string): string | undefined {
+  return ZH_HANT_CATALOG[key];
+}
+
 let current: AppLanguage = "zh-Hans";
+
+export function currentLanguage(): AppLanguage {
+  return current;
+}
 
 export function setLanguage(language: AppLanguage): void {
   current = language;
 }
 
-/** `zh-Hans`, `zh-Hant` and bare `zh` are Chinese; everything else is English. */
+/**
+ * Maps a BCP-47 tag onto a supported language, honouring the Hant/Hans script and the
+ * TW/HK/MO regions that imply Traditional Chinese (macOS `AppLanguage.match`).
+ */
 export function languageFromTag(tag: string): AppLanguage {
-  const lower = tag.toLowerCase();
-  return lower === "zh" || lower.startsWith("zh-") || lower.startsWith("zh_") ? "zh-Hans" : "en";
+  const lower = tag.trim().toLowerCase();
+  if (lower === "zh" || lower.startsWith("zh-") || lower.startsWith("zh_")) {
+    const traditionalMarkers = ["hant", "-tw", "_tw", "-hk", "_hk", "-mo", "_mo"];
+    if (traditionalMarkers.some((marker) => lower.includes(marker))) {
+      return "zh-Hant";
+    }
+    return "zh-Hans";
+  }
+  return "en";
 }
 
 /** Resolves the picker value against the OS languages (`navigator.languages`). */
@@ -818,7 +927,9 @@ export function resolveLanguage(preference: LanguagePreference, navigatorLanguag
 
 /** BCP-47 tag handed to the speech recognizer so dictation speaks the UI's language (#52). */
 export function speechLocaleFor(language: AppLanguage): string {
-  return language === "en" ? "en-US" : "zh-CN";
+  if (language === "en") return "en-US";
+  if (language === "zh-Hant") return "zh-TW";
+  return "zh-CN";
 }
 
 /** UI language of the running panel; used for speech, locale-aware formatting and the picker. */
@@ -839,7 +950,12 @@ function fill(template: string, params: Readonly<Record<string, string | number>
  */
 export function t(template: string, params?: Readonly<Record<string, string | number>>): string {
   const entry = CATALOG[template];
-  const text = entry ? (current === "en" ? entry[1] : entry[0]) : template;
+  const text =
+    current === "en"
+      ? (entry ? entry[1] : template)
+      : current === "zh-Hant"
+        ? (ZH_HANT_CATALOG[template] ?? (entry ? entry[0] : template))
+        : (entry ? entry[0] : template);
   return params ? fill(text, params) : text;
 }
 
@@ -847,5 +963,5 @@ export function t(template: string, params?: Readonly<Record<string, string | nu
 export function isTranslated(key: string): boolean {
   const entry = CATALOG[key];
   if (!entry) return false;
-  return entry[0] !== entry[1] || entry[0] === "English";
+  return entry[0] !== entry[1] || entry[0] === "English" || entry[0] === "繁體中文";
 }

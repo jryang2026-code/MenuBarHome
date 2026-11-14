@@ -1845,6 +1845,46 @@ details.win-notif-card > :not(summary) {
   white-space: nowrap;
 }
 
+.cc-appliance-fault .cc-icon-inline {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+}
+
+.cc-appliance-fault-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.cc-appliance-fault-copy {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.cc-appliance-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.cc-appliance-select {
+  max-width: 72%;
+  min-width: 112px;
+  padding: 4px 10px;
+  border-radius: var(--r-control);
+  border: 1px solid var(--win-control-stroke);
+  background: var(--win-control-bg);
+  color: var(--text-primary);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
 .cc-slider-group {
   display: flex;
   flex-direction: column;

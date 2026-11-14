@@ -1,7 +1,6 @@
 import { ASSISTANT_PROVIDER_PRESETS, inferAssistantPreset } from "../core/assistant.js";
 import { speechLocale, t } from "../core/i18n.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
-import { trText } from "../core/quickActions.js";
 import {
   getUpdateProgressForSettings,
   hasPendingMiVaultDeletion,
@@ -214,7 +213,7 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
     <div class="cc-field">
       <label>${t("界面语言 / 语言")}</label>
       <div class="cc-segmented-pills">
-        ${([["system", t("跟随系统")], ["zh-Hans", t("简体中文")], ["en", "English"]] as const)
+        ${([["system", t("跟随系统")], ["zh-Hans", t("简体中文")], ["zh-Hant", t("繁體中文")], ["en", "English"]] as const)
           .map(
             ([value, label]) =>
               `<button class="cc-seg-pill ${ctx.settings.interfaceLanguage === value ? "is-active" : ""}" data-interface-language="${value}" aria-pressed="${ctx.settings.interfaceLanguage === value}">${ctx.escapeHtml(label)}</button>`,
@@ -350,10 +349,10 @@ function renderConnectionPanel(ctx: SettingsViewContext): string {
       <label>${t("云端服务器地区")}</label>
       <select class="cc-input" data-mi-region>
         ${MI_CLOUD_REGIONS.map(
-          (region) => `<option value="${region.code}" ${normalizeMiCloudRegion(ctx.settings.miCloudRegion) === region.code ? "selected" : ""}>${ctx.escapeHtml(region.label)}</option>`,
+          (region) => `<option value="${region.code}" ${normalizeMiCloudRegion(ctx.settings.miCloudRegion) === region.code ? "selected" : ""}>${ctx.escapeHtml(t(region.label))}</option>`,
         ).join("")}
       </select>
-      <p class="cc-field-hint">${ctx.escapeHtml(t("当前选择：{region}。切换后请重新扫码登录该地区的米家账号；已登录会话仍使用登录时的地区。", { region: miCloudRegionLabel(ctx.settings.miCloudRegion) }))}</p>
+      <p class="cc-field-hint">${ctx.escapeHtml(t("当前选择：{region}。切换后请重新扫码登录该地区的米家账号；已登录会话仍使用登录时的地区。", { region: t(miCloudRegionLabel(ctx.settings.miCloudRegion)) }))}</p>
     </div>
 
     <div class="cc-qr-box">
@@ -381,7 +380,7 @@ function renderConnectionPanel(ctx: SettingsViewContext): string {
 function renderMiSessionNoteAndSignOut(ctx: SettingsViewContext): string {
   if (!ctx.settings.miSession) {
     if (!hasPendingMiVaultDeletion()) return "";
-    return `<button type="button" class="cc-btn-secondary is-full" id="btn-signout-mi" ${ctx.isPollingQR ? "disabled" : ""}>${ctx.escapeHtml(trText("重试退出米家登录", "Retry sign-out"))}</button>`;
+    return `<button type="button" class="cc-btn-secondary is-full" id="btn-signout-mi" ${ctx.isPollingQR ? "disabled" : ""}>${ctx.escapeHtml(t("重试退出米家登录"))}</button>`;
   }
   const expiry = miSessionExpiryState(ctx.settings.miSession);
   let expiryHint = "";
@@ -390,11 +389,11 @@ function renderMiSessionNoteAndSignOut(ctx: SettingsViewContext): string {
       month: "short",
       day: "numeric",
     }).format(new Date(expiry.expiresAtMs));
-    expiryHint = `<div class="cc-qr-status" data-mi-settings-expiry>${ctx.escapeHtml(trText("米家登录将在 {date} 到期", "Xiaomi Home sign-in expires {date}", { date: dateText }))}</div>`;
+    expiryHint = `<div class="cc-qr-status" data-mi-settings-expiry>${ctx.escapeHtml(t("米家登录将在 {date} 到期", { date: dateText }))}</div>`;
   } else if (expiry.kind === "expired") {
     expiryHint = `<div class="cc-qr-status" data-mi-settings-expiry>${ctx.escapeHtml(t("米家登录已过期 · 点此扫码"))}</div>`;
   }
-  return `${expiryHint}<button type="button" class="cc-btn-secondary is-full" id="btn-signout-mi" ${ctx.isPollingQR ? "disabled" : ""}>${ctx.escapeHtml(trText("退出米家登录", "Sign out"))}</button>`;
+  return `${expiryHint}<button type="button" class="cc-btn-secondary is-full" id="btn-signout-mi" ${ctx.isPollingQR ? "disabled" : ""}>${ctx.escapeHtml(t("退出米家登录"))}</button>`;
 }
 
 /** AI 与习惯: the decision model endpoint and everything the app learns from the user. */

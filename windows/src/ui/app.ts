@@ -34,6 +34,7 @@ import {
   type ScheduledCommand,
   type SmartDevice,
   allOffTargets,
+  computeTotalPowerWatts,
   deviceEnvironmentReading,
   environmentReadingPriority,
   isActiveDevice,
@@ -71,7 +72,7 @@ import {
 } from "./listCut.js";
 
 import { type LoadedSettings, type PendingHighRiskConfirmation, type PersistedSettings, type ReplyBannerState, type UndoAction, type UndoStep } from "./appTypes.js";
-import { SF_ICONS } from "./appConstants.js";
+import { LEGACY_STORAGE_KEY, SF_ICONS, STORAGE_KEY } from "./appConstants.js";
 import { demoDevices, demoScenes } from "./demo.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
 import { loadSettings } from "./settings.js";
@@ -324,7 +325,19 @@ export class MenuMijiaWindowsApp {
     );
     this.cameraLive = new CameraLiveController(this);
 
+    const storedRaw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (storedRaw) {
+      try {
+        const parsed = JSON.parse(storedRaw) as { interfaceLanguage?: unknown } | null;
+        if (parsed?.interfaceLanguage === "zh-Hant") {
+          this.settings.interfaceLanguage = "zh-Hant";
+        }
+      } catch {
+        // Malformed storage already fell back in loadSettings().
+      }
+    }
     this.applyInterfaceLanguage();
+    this.qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");
     this.applyTemperatureSetting();
     const haCache = this.settings.cachedHAHome?.identity === homeAssistantIdentity(this.settings.haBaseURL, this.settings.haToken) ? this.settings.cachedHAHome.home : null;
     this.devices = this.settings.connectionMode === "xiaomiCloud"
@@ -501,13 +514,7 @@ export class MenuMijiaWindowsApp {
   }
 
   private get totalPowerWatts(): number {
-    let watts = 0;
-    for (const d of this.devices) {
-      if (d.kind.kind === "plug" && d.kind.countsInTotalPower !== false && d.kind.powerWatts && d.kind.powerWatts > 0) {
-        watts += d.kind.powerWatts;
-      }
-    }
-    return watts;
+    return computeTotalPowerWatts(this.devices);
   }
 
   public get computedEnvironmentReadings(): EnvironmentReading[] {
@@ -787,7 +794,7 @@ export class MenuMijiaWindowsApp {
         if (sourceRevision !== this.sourceRevision) return;
         if (!(await this.applyCommand(command))) {
           failed = true;
-          failureMessage = this.replyBanner?.text ?? "设备未响应";
+          failureMessage = this.replyBanner?.text ?? t("设备未响应");
         }
       }
       if (failed) {
@@ -1371,6 +1378,15 @@ export class MenuMijiaWindowsApp {
   }
 
   public bindEvents(): void {
+    this.root.querySelectorAll<HTMLElement>('[data-interface-language="zh-Hant"]').forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.stopImmediatePropagation();
+        this.settings.interfaceLanguage = "zh-Hant";
+        this.applyInterfaceLanguage();
+        this.saveSettings();
+        this.render();
+      });
+    });
     bindEventsImpl(this);
   }
 
