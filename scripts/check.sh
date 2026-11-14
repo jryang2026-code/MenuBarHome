@@ -324,6 +324,7 @@ run_script_self_tests() {
     if [ -n "$PYTHON_BIN" ]; then
         run_clean_env "$PYTHON_BIN" scripts/check_workflows.py --self-test
         run_clean_env "$PYTHON_BIN" scripts/check_doc_links.py --self-test
+        run_clean_env "$PYTHON_BIN" scripts/check_swift_harness_lints.py --self-test
         run_clean_env "$PYTHON_BIN" scripts/test_check_capability_matrix.py
         run_clean_env "$PYTHON_BIN" scripts/test_mijia_cli.py
         run_clean_env "$PYTHON_BIN" scripts/test_local_macos_runner.py
