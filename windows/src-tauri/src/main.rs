@@ -266,6 +266,8 @@ fn main() {
             set_update_available,
             set_global_shortcut,
             set_launch_at_login,
+            get_launch_at_login,
+            get_env_var,
             is_workstation_locked,
             set_tray_tooltip,
             write_raycast_snapshot,

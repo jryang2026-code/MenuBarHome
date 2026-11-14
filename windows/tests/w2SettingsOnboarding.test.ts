@@ -423,6 +423,14 @@ describe("Wave 2 · A16 Safety Guards (Unsaved Draft, Advanced Facets, Revoke Al
     };
 
     await click("#btn-settings");
+    await click('[data-settings-tab="connection"]');
+    const haUrlInput = element<HTMLInputElement>("#settings-ha-url");
+    const haTokenInput = element<HTMLInputElement>("#settings-ha-token");
+    haUrlInput.value = "http://192.168.1.99:8123";
+    haTokenInput.value = "dirty-ha-token";
+    await click('[data-settings-tab="assistant"]');
+    const apiKeyInput = element<HTMLInputElement>("#settings-api-key");
+    apiKeyInput.value = "dirty-sk-key";
     await click('[data-settings-tab="system"]');
 
     await click("#btn-revoke-all-credentials");
@@ -442,6 +450,10 @@ describe("Wave 2 · A16 Safety Guards (Unsaved Draft, Advanced Facets, Revoke Al
       "Expected OS credential deletions",
     );
 
+    assert.equal(element<HTMLInputElement>("#settings-ha-url").value, "");
+    assert.equal(element<HTMLInputElement>("#settings-ha-token").value, "");
+    assert.equal(element<HTMLInputElement>("#settings-api-key").value, "");
+    await click("#btn-save-settings");
     assert.equal(app.settings.miSession, null);
     assert.equal(app.miSessionExpired, false);
     assert.equal(localStorage.getItem(MI_SESSION_EXPIRED_STORAGE_KEY), null);

@@ -353,6 +353,16 @@ export async function probeAssistantConnection(
   }
 }
 
+function clearRevokedCredentialInputs(root: HTMLElement): void {
+  for (const selector of ["#settings-ha-url", "#settings-ha-token", "#settings-api-key"]) {
+    const field = root.querySelector<HTMLInputElement>(selector);
+    if (field) {
+      field.value = "";
+      field.defaultValue = "";
+    }
+  }
+}
+
 export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<void> {
   setPendingMiVaultDeletion(true);
   if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
@@ -390,6 +400,10 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   host.assistantKeysByPreset = {};
   host.settings.cloudConsentEndpoints = [];
 
+  const session = getSettingsSession(host);
+  session.aiTestStatus = null;
+  session.envImportStatus = null;
+
   host.settings.connectionMode = "demo";
   host.devices = demoDevices();
   host.scenes = demoScenes();
@@ -420,6 +434,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   } else if (!vault) {
     host.saveSettings(true);
   }
+  clearRevokedCredentialInputs(host.root);
   host.render();
 
   try {
@@ -441,6 +456,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
 
     setPendingMiVaultDeletion(false);
     host.replyBanner = successBanner;
+    clearRevokedCredentialInputs(host.root);
     host.render();
   } catch (error: unknown) {
     const detail = error instanceof Error && error.message.trim() ? ` (${error.message.trim()})` : "";
@@ -453,6 +469,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
       source: t("出错提示"),
       isError: true,
     };
+    clearRevokedCredentialInputs(host.root);
     host.render();
   }
 }

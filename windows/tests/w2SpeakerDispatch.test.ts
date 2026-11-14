@@ -19,7 +19,11 @@ import { MiotCommandMapper } from "../src/core/miCloud/command.js";
 import { MiotSynthesizer } from "../src/core/miCloud/synthesis.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
 import type { FacetControl, SmartDevice } from "../src/core/models.js";
-import { cancelDelayedReadBack } from "../src/core/optimisticLock.js";
+import {
+  cancelDelayedReadBack,
+  isOptimisticallyLocked,
+  lockOptimistic,
+} from "../src/core/optimisticLock.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import {
   ECHO_READ_BACK_DELAY_MS,
@@ -1166,9 +1170,17 @@ describe("Wave 2 A11: classifyControlFailure, 2200ms echo read-back, and Facet U
       ],
     };
 
+    lockOptimistic(app, "split_gen_1", 10_000);
     scheduleEchoReadBack(app, "split_key_2", null, 15);
+    await new Promise((r) => setTimeout(r, 35));
+    assert.equal(
+      isOptimisticallyLocked(app, "split_gen_1"),
+      true,
+      "single-device echo read-back for split_key_2 must not clear split_gen_1's optimistic lock",
+    );
+
     scheduleEchoReadBack(app, "split_gen_1", null, 15);
-    await new Promise((r) => setTimeout(r, 45));
+    await new Promise((r) => setTimeout(r, 35));
 
     assert.deepEqual(getPropsParams[0], [{ did: "parent_1", siid: 3, piid: 1 }]);
     const updatedSplit = app.devices.find((d) => d.id === "split_key_2")!;

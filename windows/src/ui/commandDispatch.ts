@@ -668,6 +668,8 @@ export function scheduleEchoReadBack(
         host,
         nextIncomingDevices,
         nextIncomingFacets,
+        Date.now(),
+        new Set([deviceId]),
       );
       host.devices = merged.devices;
       host.deviceFacets = merged.deviceFacets;
