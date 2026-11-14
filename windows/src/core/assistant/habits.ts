@@ -6,6 +6,7 @@ import type {
   IntentOperation,
   SmartDevice,
 } from "../models.js";
+import { currentLanguage, type AppLanguage } from "../i18n.js";
 import { deviceAcceptsControlWrites, deviceCanTogglePower, isDeviceActiveOn } from "../models.js";
 import { timeBucketLabel } from "./context.js";
 import { IntentReply } from "./intent.js";
@@ -443,6 +444,37 @@ export class UserHabitMemory {
     }
   }
 
+  readableItems(
+    devices: readonly SmartDevice[],
+    scenes: readonly HomeScene[],
+    phrases: readonly LearnedPhraseSummary[] = [],
+    lang: AppLanguage = currentLanguage(),
+  ): ReadableHabitItem[] {
+    return listReadableHabits({
+      entries: this.entries,
+      sequences: this.sequences,
+      phrases,
+      devices,
+      scenes,
+      lang,
+    });
+  }
+
+  forget(itemId: string): boolean {
+    const before = this.entries.length + this.sequences.length;
+    const updated = forgetHabitItem(
+      {
+        entries: this.entries,
+        sequences: this.sequences,
+        phrases: [],
+      },
+      itemId,
+    );
+    this.entries = updated.entries;
+    this.sequences = updated.sequences;
+    return this.entries.length + this.sequences.length !== before;
+  }
+
   /**
    * Devices the user controls most often in this time bucket, most used first. Bare-category
    * candidate chips follow it so the likely target is the first tap (#273).
@@ -827,4 +859,188 @@ function hasAsciiWordBoundary(haystack: string, needle: string, start: number): 
   const leftOk = !isWordUnit(needle.charCodeAt(0)) || start === 0 || !isWordUnit(haystack.charCodeAt(start - 1));
   const rightOk = !isWordUnit(needle.charCodeAt(needle.length - 1)) || end === haystack.length || !isWordUnit(haystack.charCodeAt(end));
   return leftOk && rightOk;
+}
+
+export interface ReadableHabitItem {
+  readonly id: string;
+  readonly kind: "entry" | "phrase" | "sequence";
+  readonly text: string;
+}
+
+export interface LearnedPhraseSummary {
+  readonly phrase: string;
+  readonly summary: string;
+  readonly count?: number;
+}
+
+function localizedHabitBucket(bucket: string, lang: AppLanguage): string {
+  if (lang === "en") {
+    switch (bucket) {
+      case "清晨": return "Morning";
+      case "午间": return "Midday";
+      case "下午": return "Afternoon";
+      case "夜晚": return "Evening";
+      case "深夜": return "Late Night";
+      default: return bucket;
+    }
+  }
+  if (lang === "zh-Hant") {
+    if (bucket === "午间") return "午間";
+    return bucket;
+  }
+  return bucket;
+}
+
+function localizedHabitDayTypeSuffix(dayType: HabitDayType | undefined, lang: AppLanguage): string {
+  if (!dayType) return "";
+  if (lang === "en") {
+    return dayType === "weekend" ? " (Weekends)" : " (Weekdays)";
+  }
+  if (lang === "zh-Hant") {
+    return dayType === "weekend" ? "（週末）" : "（工作日）";
+  }
+  return dayType === "weekend" ? "（周末）" : "（工作日）";
+}
+
+function decodeSequencePair(pairKey: string): { targetId: string; operation: IntentOperation } | null {
+  const sep = pairKey.lastIndexOf("|");
+  if (sep <= 0) return null;
+  const targetId = pairKey.slice(0, sep);
+  const opKey = pairKey.slice(sep + 1);
+  const operation = decodeHabitOperation(opKey);
+  if (!operation) return null;
+  return { targetId, operation };
+}
+
+export function listReadableHabits(input: {
+  readonly entries: readonly HabitEntry[];
+  readonly sequences?: readonly HabitSequenceEntry[];
+  readonly phrases?: readonly LearnedPhraseSummary[];
+  readonly devices: readonly SmartDevice[];
+  readonly scenes: readonly HomeScene[];
+  readonly lang?: AppLanguage;
+}): ReadableHabitItem[] {
+  const lang = input.lang ?? currentLanguage();
+  const items: ReadableHabitItem[] = [];
+
+  for (const entry of input.entries) {
+    const op = decodeHabitOperation(entry.operationKey);
+    if (!op) continue;
+    const intent: DeviceIntent = { targetId: entry.targetId, operation: op };
+    const title = habitSuggestionTitle(intent, input.devices, input.scenes) ?? entry.targetId;
+    const bucketText = localizedHabitBucket(entry.bucket, lang);
+    const daySuffix = localizedHabitDayTypeSuffix(entry.dayType, lang);
+    const text =
+      lang === "en"
+        ? `${bucketText}${daySuffix}: ${title} (${entry.count}x)`
+        : `${bucketText}常做${daySuffix}：${title}（${entry.count} 次）`;
+    items.push({
+      id: `e|${entry.bucket}|${entry.dayType ?? "any"}|${entry.targetId}|${entry.operationKey}`,
+      kind: "entry",
+      text,
+    });
+  }
+
+  for (const phrase of input.phrases ?? []) {
+    const countSuffixEn = phrase.count !== undefined ? ` (${phrase.count}x)` : "";
+    const countSuffixZh = phrase.count !== undefined ? `（${phrase.count} 次）` : "";
+    const text =
+      lang === "en"
+        ? `Phrase "${phrase.phrase}" → ${phrase.summary}${countSuffixEn}`
+        : lang === "zh-Hant"
+          ? `口頭禪「${phrase.phrase}」→ ${phrase.summary}${countSuffixZh}`
+          : `口头禅「${phrase.phrase}」→ ${phrase.summary}${countSuffixZh}`;
+    items.push({
+      id: `p|${phrase.phrase}`,
+      kind: "phrase",
+      text,
+    });
+  }
+
+  for (const sequence of input.sequences ?? []) {
+    const prev = decodeSequencePair(sequence.afterKey);
+    const nextOp = decodeHabitOperation(sequence.operationKey);
+    if (!prev || !nextOp) continue;
+    const prevTitle =
+      habitSuggestionTitle({ targetId: prev.targetId, operation: prev.operation }, input.devices, input.scenes) ??
+      prev.targetId;
+    const nextTitle =
+      habitSuggestionTitle({ targetId: sequence.targetId, operation: nextOp }, input.devices, input.scenes) ??
+      sequence.targetId;
+    const text =
+      lang === "en"
+        ? `After "${prevTitle}": ${nextTitle} (${sequence.count}x)`
+        : lang === "zh-Hant"
+          ? `「${prevTitle}」之後常做：${nextTitle}（${sequence.count} 次）`
+          : `「${prevTitle}」之后常做：${nextTitle}（${sequence.count} 次）`;
+    items.push({
+      id: `s|${sequence.afterKey}|${sequence.targetId}|${sequence.operationKey}`,
+      kind: "sequence",
+      text,
+    });
+  }
+
+  return items;
+}
+
+export function forgetHabitItem<TPhrase extends { readonly phrase: string }>(
+  state: {
+    readonly entries: readonly HabitEntry[];
+    readonly sequences?: readonly HabitSequenceEntry[];
+    readonly phrases?: readonly TPhrase[];
+  },
+  itemId: string,
+): {
+  entries: HabitEntry[];
+  sequences: HabitSequenceEntry[];
+  phrases: TPhrase[];
+  removed: boolean;
+} {
+  const parts = itemId.split("|");
+  const head = parts[0];
+  let entries = [...state.entries];
+  let sequences = [...(state.sequences ?? [])];
+  let phrases = [...(state.phrases ?? [])];
+  const beforeCount = entries.length + sequences.length + phrases.length;
+
+  if (head === "e" && parts.length === 5) {
+    const bucket = parts[1]!;
+    const rawDayType = parts[2]!;
+    const dayType: HabitDayType | undefined =
+      rawDayType === "weekday" || rawDayType === "weekend" ? rawDayType : undefined;
+    const targetId = parts[3]!;
+    const operationKey = parts[4]!;
+    entries = entries.filter(
+      (e) =>
+        !(
+          e.bucket === bucket &&
+          (e.dayType ?? undefined) === (rawDayType === "any" ? undefined : dayType) &&
+          e.targetId === targetId &&
+          e.operationKey === operationKey
+        ),
+    );
+  } else if (head === "e" && parts.length === 4) {
+    const [, bucket, targetId, operationKey] = parts;
+    entries = entries.filter(
+      (e) => !(e.bucket === bucket && e.targetId === targetId && e.operationKey === operationKey),
+    );
+  } else if (head === "p" && parts.length >= 2) {
+    const phrase = parts.slice(1).join("|");
+    phrases = phrases.filter((p) => p.phrase !== phrase);
+  } else if (head === "s" && parts.length === 5) {
+    const afterKey = `${parts[1]}|${parts[2]}`;
+    const targetId = parts[3]!;
+    const operationKey = parts[4]!;
+    sequences = sequences.filter(
+      (s) => !(s.afterKey === afterKey && s.targetId === targetId && s.operationKey === operationKey),
+    );
+  }
+
+  const afterCount = entries.length + sequences.length + phrases.length;
+  return {
+    entries,
+    sequences,
+    phrases,
+    removed: afterCount !== beforeCount,
+  };
 }

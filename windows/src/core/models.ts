@@ -492,7 +492,13 @@ export function deviceAcceptsControlWrites(device: SmartDevice): boolean {
     case "fridge":
       return kind.modeEntityId !== null || kind.fridgeTargetEntityId !== null || kind.freezerTargetEntityId !== null;
     case "speaker":
-      return kind.volumeWritable || kind.muteSwitchEntityId !== null || kind.sleepModeEntityId !== null;
+      return (
+        kind.volumeWritable ||
+        kind.muteSwitchEntityId !== null ||
+        kind.sleepModeEntityId !== null ||
+        Boolean(kind.ttsActionId) ||
+        Boolean(kind.directiveActionId)
+      );
     case "appliance":
       return (
         kind.powerWritable ||
@@ -563,7 +569,13 @@ export function hasDetailDrawer(device: SmartDevice, facets: readonly FacetContr
     case "vacuum":
       return kind.actionsWritable !== false;
     case "speaker":
-      return kind.volumeWritable || kind.muteSwitchEntityId !== null || kind.sleepModeEntityId !== null;
+      return (
+        kind.volumeWritable ||
+        kind.muteSwitchEntityId !== null ||
+        kind.sleepModeEntityId !== null ||
+        Boolean(kind.ttsActionId) ||
+        Boolean(kind.directiveActionId)
+      );
     case "fridge":
       return true;
     case "appliance":

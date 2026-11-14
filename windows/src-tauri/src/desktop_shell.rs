@@ -4,6 +4,43 @@ use std::path::Path;
 const RUN_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_VALUE_NAME: &str = "MenuBarHome";
 const MAX_TRAY_TOOLTIP_UTF16_UNITS: usize = 120;
+const ALLOWED_PROVIDER_ENV_VARS: &[&str] = &[
+    "OPENROUTER_API_KEY",
+    "TYPESAFE_API_KEY",
+    "JEV_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "SILICONFLOW_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "ZHIPU_API_KEY",
+    "GLM_API_KEY",
+    "MOONSHOT_API_KEY",
+    "KIMI_API_KEY",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GROQ_API_KEY",
+];
+
+pub(crate) fn read_allowed_provider_env_var_with<F>(name: &str, reader: F) -> Option<String>
+where
+    F: FnOnce(&str) -> Option<String>,
+{
+    let trimmed_name = name.trim();
+    if !ALLOWED_PROVIDER_ENV_VARS.contains(&trimmed_name) {
+        return None;
+    }
+    let raw = reader(trimmed_name)?;
+    let trimmed_val = raw.trim();
+    if trimmed_val.is_empty() {
+        return None;
+    }
+    Some(trimmed_val.to_string())
+}
+
+#[tauri::command]
+pub(crate) fn get_env_var(name: String) -> Option<String> {
+    read_allowed_provider_env_var_with(&name, |key| std::env::var(key).ok())
+}
 
 pub(crate) fn format_launch_at_login_value(exe_path: &Path) -> Result<String, String> {
     let raw = exe_path
@@ -87,6 +124,51 @@ pub(crate) fn apply_run_registry_entry(
         let _ = format_launch_at_login_value(path)?;
     }
     Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn has_run_registry_entry(subkey: &str, value_name: &str) -> Result<bool, String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+
+    let subkey_wide: Vec<u16> = std::ffi::OsStr::new(subkey)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let value_wide: Vec<u16> = std::ffi::OsStr::new(value_name)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut size: u32 = 0;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            subkey_wide.as_ptr(),
+            value_wide.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    };
+    if status == 0 {
+        return Ok(size > 2);
+    }
+    if status == ERROR_FILE_NOT_FOUND {
+        return Ok(false);
+    }
+    Err(format!("读取开机自启注册表项失败（Win32 错误码 {status}）"))
+}
+
+#[cfg(not(windows))]
+pub(crate) fn has_run_registry_entry(_subkey: &str, _value_name: &str) -> Result<bool, String> {
+    Err("非 Windows 平台不支持注册表自启查询".to_string())
+}
+
+#[tauri::command]
+pub(crate) fn get_launch_at_login() -> Result<bool, String> {
+    has_run_registry_entry(RUN_SUBKEY, RUN_VALUE_NAME)
 }
 
 /// Immediately writes or deletes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\MenuBarHome`
@@ -242,14 +324,17 @@ mod tests {
             use windows_sys::Win32::System::Registry::{RegDeleteKeyW, HKEY_CURRENT_USER};
 
             let subkey = format!(r"Software\MenuBarHomeTestRun-{}", std::process::id());
+            assert_eq!(has_run_registry_entry(&subkey, "MenuBarHome"), Ok(false));
             apply_run_registry_entry(
                 &subkey,
                 "MenuBarHome",
                 Some(Path::new(r"C:\Apps\MenuBarHome\MenuBarHome.exe")),
             )
             .expect("write test Run entry");
+            assert_eq!(has_run_registry_entry(&subkey, "MenuBarHome"), Ok(true));
             apply_run_registry_entry(&subkey, "MenuBarHome", None)
                 .expect("delete test Run entry");
+            assert_eq!(has_run_registry_entry(&subkey, "MenuBarHome"), Ok(false));
             apply_run_registry_entry(&subkey, "MenuBarHome", None)
                 .expect("idempotent delete missing Run entry");
 
@@ -261,5 +346,35 @@ mod tests {
                 let _ = RegDeleteKeyW(HKEY_CURRENT_USER, wide.as_ptr());
             }
         }
+    }
+
+    #[test]
+    fn provider_env_var_reader_allowlists_known_keys_and_trims_values() {
+        assert_eq!(
+            read_allowed_provider_env_var_with("OPENROUTER_API_KEY", |_| Some(
+                "  sk-or-test-123  ".to_string()
+            )),
+            Some("sk-or-test-123".to_string())
+        );
+        assert_eq!(
+            read_allowed_provider_env_var_with("  GEMINI_API_KEY  ", |_| Some(
+                "AIza-test".to_string()
+            )),
+            Some("AIza-test".to_string())
+        );
+        assert_eq!(
+            read_allowed_provider_env_var_with("OPENROUTER_API_KEY", |_| Some("   ".to_string())),
+            None
+        );
+        assert_eq!(
+            read_allowed_provider_env_var_with("PATH", |_| Some("/usr/bin".to_string())),
+            None
+        );
+        assert_eq!(
+            read_allowed_provider_env_var_with("AWS_SECRET_ACCESS_KEY", |_| Some(
+                "secret".to_string()
+            )),
+            None
+        );
     }
 }

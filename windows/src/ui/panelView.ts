@@ -8,6 +8,9 @@ import { SF_ICONS } from "./appConstants.js";
 import { applyPanelOpacity, withAliases } from "./panelPrefs.js";
 import { quickActions } from "./demo.js";
 import { quickActionScopeDevices, reconcileUndoBannerHoverAfterRender } from "./speechGuard.js";
+import { renderProactiveInlinePill } from "./proactive.js";
+import { renderEditLayoutToolbar, renderHiddenDevicesTray } from "./roomOrderEditor.js";
+import { renderPersistentUndoPill, tr3 } from "./undoTracker.js";
 
 export function renderPanel(host: MenuMijiaWindowsApp): void {
   const isDemo = host.settings.connectionMode === "demo";
@@ -42,6 +45,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
             </div>
 
             <div class="cc-header-controls">
+              ${renderPersistentUndoPill(host)}
               <button
                 class="cc-circle-btn ${host.isListeningVoice ? "is-recording" : ""}"
                 id="btn-mic"
@@ -148,12 +152,22 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
               >
                 ${host.settings.hideOfflineDevices ? SF_ICONS.wifi : SF_ICONS.wifiSlash}
               </button>
+              <button
+                class="cc-circle-btn is-small"
+                id="btn-room-order-editor"
+                title="${tr3("房间与类别顺序", "房間與類別順序", "Room & Category Order")}"
+                aria-label="${tr3("房间与类别顺序", "房間與類別順序", "Room & Category Order")}"
+              >
+                ${SF_ICONS.sliderHorizontal}
+              </button>
             </div>
           </div>
         </div>
 
         <main class="cc-scroll-area" aria-label="${t("设备列表")}">
+          ${renderEditLayoutToolbar(host)}
           ${host.renderDeviceGrid()}
+          ${renderHiddenDevicesTray(host)}
         </main>
 
         ${renderSliderDeck(host)}
@@ -289,11 +303,7 @@ function renderNotificationStack(host: MenuMijiaWindowsApp): string {
               <span class="win-notif-chevron">${SF_ICONS.chevronDown}</span>
             </summary>
             <div class="cc-suggestion-row" data-proactive-bar>${items
-              .map(
-                (item) => `<button class="cc-inline-pill" data-proactive-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${
-                  item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""
-                }</button>`,
-              )
+              .map((item) => renderProactiveInlinePill(host, item))
               .join("")}</div>
           </details>`,
         );
