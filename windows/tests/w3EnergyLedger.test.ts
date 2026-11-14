@@ -825,5 +825,68 @@ describe("Wave 3 · B3 Energy Settings Panel, Plug Drawer Today Cell & Settings 
       /stale source/,
     );
     assert.equal(transportCalls, 1);
+
+    const { getScopedEnergyHistory } = await import("../src/core/energyHistory.js");
+    const midnightHost = {
+      root: element("#app"),
+      settings: {
+        connectionMode: "demo" as const,
+      },
+      devices: [makePlug("midnight_plug", "跨夜插座", 10)],
+      render() {},
+    };
+    const scopedHist = getScopedEnergyHistory({ connectionMode: "demo" });
+    scopedHist.clear();
+    const RealDate = globalThis.Date;
+    const yesterdayMorning = localAt(-1, 22);
+    const todayMorning = localAt(0, 8);
+    const todayAfternoon = localAt(0, 14);
+    try {
+      globalThis.Date = class extends RealDate {
+        constructor(...args: unknown[]) {
+          if (args.length === 0) {
+            super(yesterdayMorning.getTime());
+          } else {
+            super(...(args as [number]));
+          }
+        }
+        static override now(): number {
+          return yesterdayMorning.getTime();
+        }
+      } as DateConstructor;
+      syncEnergyHostOnRender(midnightHost);
+
+      globalThis.Date = class extends RealDate {
+        constructor(...args: unknown[]) {
+          if (args.length === 0) {
+            super(todayMorning.getTime());
+          } else {
+            super(...(args as [number]));
+          }
+        }
+        static override now(): number {
+          return todayMorning.getTime();
+        }
+      } as DateConstructor;
+      syncEnergyHostOnRender(midnightHost);
+
+      midnightHost.devices = [makePlug("midnight_plug", "跨夜插座", 10.5)];
+      globalThis.Date = class extends RealDate {
+        constructor(...args: unknown[]) {
+          if (args.length === 0) {
+            super(todayAfternoon.getTime());
+          } else {
+            super(...(args as [number]));
+          }
+        }
+        static override now(): number {
+          return todayAfternoon.getTime();
+        }
+      } as DateConstructor;
+      syncEnergyHostOnRender(midnightHost);
+    } finally {
+      globalThis.Date = RealDate;
+    }
+    assert.ok(Math.abs((scopedHist.todayKwh("midnight_plug", todayAfternoon) ?? 0) - 0.5) < 1e-6);
   });
 });

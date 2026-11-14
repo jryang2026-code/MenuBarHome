@@ -1,15 +1,5 @@
-import {
-  currentLanguage,
-  resolveLanguage,
-  type AppLanguage,
-  type LanguagePreference,
-} from "./i18n.js";
-import {
-  isDeviceActiveOn,
-  type DeviceCommand,
-  type FacetControl,
-  type SmartDevice,
-} from "./models.js";
+import { currentLanguage, resolveLanguage, type AppLanguage, type LanguagePreference } from "./i18n.js";
+import { isDeviceActiveOn, type DeviceCommand, type FacetControl, type SmartDevice } from "./models.js";
 import { formatTemperature } from "./temperature.js";
 
 export interface KeyValueStorageLike {
@@ -20,15 +10,9 @@ export interface KeyValueStorageLike {
 
 class MemoryStorage implements KeyValueStorageLike {
   private readonly map = new Map<string, string>();
-  public getItem(key: string): string | null {
-    return this.map.get(key) ?? null;
-  }
-  public setItem(key: string, value: string): void {
-    this.map.set(key, value);
-  }
-  public removeItem(key: string): void {
-    this.map.delete(key);
-  }
+  public getItem(key: string): string | null { return this.map.get(key) ?? null; }
+  public setItem(key: string, value: string): void { this.map.set(key, value); }
+  public removeItem(key: string): void { this.map.delete(key); }
 }
 
 const fallbackStorage = new MemoryStorage();
@@ -38,15 +22,11 @@ export function defaultSafetyStorage(): KeyValueStorageLike {
     if (typeof globalThis.localStorage !== "undefined" && globalThis.localStorage !== null) {
       return globalThis.localStorage;
     }
-  } catch {
-  }
+  } catch {}
   return fallbackStorage;
 }
 
-function fillTemplate(
-  template: string,
-  params?: Readonly<Record<string, string | number>>,
-): string {
+function fillTemplate(template: string, params?: Readonly<Record<string, string | number>>): string {
   if (!params) return template;
   return template.replace(/\{(\w+)\}/g, (whole, name: string) =>
     Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : whole,
@@ -90,17 +70,7 @@ export interface SensorAlertPolicy {
 export const SENSOR_POLICY_STORAGE_KEY = "safety_sensor_policy_v1";
 
 export function sensorAlertEnabledByDefault(kind: SensorAlertKind): boolean {
-  switch (kind) {
-    case "smoke":
-    case "gas":
-    case "leak":
-    case "lock":
-      return true;
-    case "contact":
-    case "motion":
-    case "vibration":
-      return false;
-  }
+  return kind === "smoke" || kind === "gas" || kind === "leak" || kind === "lock";
 }
 
 export function sensorAlertIsHazard(kind: SensorAlertKind): boolean {
@@ -115,49 +85,28 @@ export function sensorAlertNotifiesOnFirstSample(kind: SensorAlertKind): boolean
   return sensorAlertIsHazard(kind);
 }
 
-export function sensorAlertSettingsTitle(
-  kind: SensorAlertKind,
-  preference?: LanguagePreference,
-): string {
+export function sensorAlertSettingsTitle(kind: SensorAlertKind, preference?: LanguagePreference): string {
   switch (kind) {
-    case "smoke":
-      return tr3("烟雾告警", "煙霧告警", "Smoke", undefined, preference);
-    case "gas":
-      return tr3("燃气告警", "燃氣告警", "Gas", undefined, preference);
-    case "leak":
-      return tr3("水浸漏水告警", "水浸漏水告警", "Water leak", undefined, preference);
-    case "contact":
-      return tr3("门窗打开", "門窗打開", "Door and window", undefined, preference);
-    case "motion":
-      return tr3("人体移动", "人體移動", "Motion", undefined, preference);
-    case "vibration":
-      return tr3("异动震动", "異動震動", "Vibration / Tamper", undefined, preference);
-    case "lock":
-      return tr3("门锁异常", "門鎖異常", "Door lock alert", undefined, preference);
+    case "smoke": return tr3("烟雾告警", "煙霧告警", "Smoke", undefined, preference);
+    case "gas": return tr3("燃气告警", "燃氣告警", "Gas", undefined, preference);
+    case "leak": return tr3("水浸漏水告警", "水浸漏水告警", "Water leak", undefined, preference);
+    case "contact": return tr3("门窗打开", "門窗打開", "Door and window", undefined, preference);
+    case "motion": return tr3("人体移动", "人體移動", "Motion", undefined, preference);
+    case "vibration": return tr3("异动震动", "異動震動", "Vibration / Tamper", undefined, preference);
+    case "lock": return tr3("门锁异常", "門鎖異常", "Door lock alert", undefined, preference);
   }
 }
 
-export function sensorAlertNotificationTitle(
-  kind: SensorAlertKind,
-  deviceName: string,
-  preference?: LanguagePreference,
-): string {
+export function sensorAlertNotificationTitle(kind: SensorAlertKind, deviceName: string, preference?: LanguagePreference): string {
   const p = { name: deviceName };
   switch (kind) {
-    case "smoke":
-      return tr3("{name} 烟雾告警", "{name} 煙霧告警", "{name} Smoke Alert", p, preference);
-    case "gas":
-      return tr3("{name} 燃气告警", "{name} 燃氣告警", "{name} Gas Alert", p, preference);
-    case "leak":
-      return tr3("{name} 浸水告警", "{name} 浸水告警", "{name} Water Leak", p, preference);
-    case "contact":
-      return tr3("{name} 已打开", "{name} 已打開", "{name} Opened", p, preference);
-    case "motion":
-      return tr3("{name} 检测到移动", "{name} 偵測到移動", "{name} Motion Detected", p, preference);
-    case "vibration":
-      return tr3("{name} 检测到震动异动", "{name} 偵測到震動異動", "{name} Vibration Detected", p, preference);
-    case "lock":
-      return tr3("{name} 门锁异常告警", "{name} 門鎖異常告警", "{name} Lock Alert", p, preference);
+    case "smoke": return tr3("{name} 烟雾告警", "{name} 煙霧告警", "{name} Smoke Alert", p, preference);
+    case "gas": return tr3("{name} 燃气告警", "{name} 燃氣告警", "{name} Gas Alert", p, preference);
+    case "leak": return tr3("{name} 浸水告警", "{name} 浸水告警", "{name} Water Leak", p, preference);
+    case "contact": return tr3("{name} 已打开", "{name} 已打開", "{name} Opened", p, preference);
+    case "motion": return tr3("{name} 检测到移动", "{name} 偵測到移動", "{name} Motion Detected", p, preference);
+    case "vibration": return tr3("{name} 检测到震动异动", "{name} 偵測到震動異動", "{name} Vibration Detected", p, preference);
+    case "lock": return tr3("{name} 门锁异常告警", "{name} 門鎖異常告警", "{name} Lock Alert", p, preference);
   }
 }
 
@@ -253,31 +202,49 @@ function inferSensorKindFromMetadata(text: string): SensorAlertKind | null {
 }
 
 const CLEAR_STATUS_TOKENS = [
-  "normal", "clear", "closed", "locked", "dry", "safe", "no motion", "nobody",
-  "unoccupied", "idle", "off", "false", "正常", "安全", "无异常", "無異常",
+  "normal", "clear", "cleared", "closed", "locked", "dry", "safe", "none", "no motion",
+  "no smoke", "no gas", "no leak", "no fault", "no alarm", "release", "dust", "nobody",
+  "unoccupied", "idle", "off", "false", "正常", "安全", "无异常", "無異常", "解除", "恢复", "恢復",
   "已关闭", "已關閉", "已闭合", "已閉合", "关闭", "關閉", "已上锁", "已上鎖", "已锁", "无人", "無人",
-  "无移动", "干燥", "乾燥", "未触发", "未檢測", "未检测",
+  "无移动", "干燥", "乾燥", "未触发", "未檢測", "未检测", "积灰", "積灰", "无烟雾", "無煙霧",
 ];
 
 const lastKnownSensorKindByDeviceId = new Map<string, SensorAlertKind>();
 
 const LOCK_ALARM_TOKENS = [
-  "unlocked", "jammed", "ajar", "tamper", "forced", "未上锁", "未上鎖",
-  "未关好", "虚掩", "撬", "异常", "異常", "告警", "报警",
+  "unlocked", "unlock", "jammed", "ajar", "tamper", "forced", "damaged", "broken", "failed", "coerce",
+  "timed out", "未上锁", "未上鎖", "已开锁", "已開鎖", "未关", "未關", "虚掩", "撬", "异常", "異常", "告警", "报警",
 ];
 
 const GENERAL_ALARM_TOKENS = [
-  "on", "true", "open", "opened", "detected", "alarm", "alert", "wet", "leak",
+  "on", "true", "open", "opened", "detected", "alarm", "alert", "fire", "wet", "leak",
   "smoke", "gas", "motion", "occupied", "moving", "vibrat", "tamper", "triggered",
-  "告警", "报警", "報警", "异常", "異常", "打开", "打開", "开启", "開啟", "未关",
+  "告警", "报警", "報警", "火灾", "火災", "异常", "異常", "打开", "打開", "开启", "開啟", "未关",
   "未關", "有人", "移动", "移動", "漏水", "浸水", "水浸", "烟雾", "煙霧", "燃气",
   "燃氣", "震动", "振動", "触发", "觸發",
 ];
 
+const NON_SAFETY_FACET_PROP_TOKENS = [
+  "mute", "volume", "duration", "timeout", "interval", "sensitivity", "battery", "voltage",
+  "version", "language", "angle", "direction", "illumination", "temperature", "humidity",
+  "disturb", "child-lock", "indicator", "led", "buzzer", "ringtone", "hour-system",
+  "operation-position", "operation-method", "operation-id", "current-time", "history",
+  "user-", "credential", "error-code", "reminder", "power-supply", "charge", "usage", "eco",
+];
+
+function matchesStatusToken(lower: string, token: string): boolean {
+  if (/[^\x00-\x7f]/.test(token) || token.includes(" ")) return lower.includes(token);
+  if ((token === "false" || token === "true") && lower.endsWith(token)) return true;
+  if (token === "vibrat") return /\bvibrat/i.test(lower);
+  const idx = lower.indexOf(token);
+  if (idx < 0) return false;
+  return new RegExp(`\\b${token}\\b`, "i").test(lower);
+}
+
 function isStatusTextCleared(status: string): boolean {
   const lower = status.trim().toLowerCase();
   if (!lower) return true;
-  return CLEAR_STATUS_TOKENS.some((token) => lower === token || lower.includes(token));
+  return CLEAR_STATUS_TOKENS.some((token) => matchesStatusToken(lower, token));
 }
 
 function isStatusTextAlarming(kind: SensorAlertKind, status: string): boolean {
@@ -285,10 +252,54 @@ function isStatusTextAlarming(kind: SensorAlertKind, status: string): boolean {
   if (!trimmed) return false;
   const lower = trimmed.toLowerCase();
   if (kind === "lock") {
-    return LOCK_ALARM_TOKENS.some((token) => lower.includes(token));
+    if (matchesStatusToken(lower, "locked") || lower.includes("已上锁") || lower.includes("已上鎖")) return false;
+    return LOCK_ALARM_TOKENS.some((token) => matchesStatusToken(lower, token));
   }
   if (isStatusTextCleared(trimmed)) return false;
-  return GENERAL_ALARM_TOKENS.some((token) => lower === token || lower.includes(token));
+  return GENERAL_ALARM_TOKENS.some((token) => matchesStatusToken(lower, token));
+}
+
+function evaluateSafetyFacetValue(kind: SensorAlertKind, facet: FacetControl, hasDirectKind: boolean): boolean | null {
+  if (facet.target?.kind === "action" || facet.value === null || facet.value === undefined) return null;
+  const propLower = `${facet.name} ${facet.title ?? ""}`.toLowerCase();
+  if (NON_SAFETY_FACET_PROP_TOKENS.some((t) => propLower.includes(t))) return null;
+  const nameLower = facet.name.toLowerCase();
+  const isStateProp =
+    hasDirectKind ||
+    nameLower === "status" ||
+    nameLower === "state" ||
+    nameLower === "alarm" ||
+    nameLower === "event-type" ||
+    nameLower === "abnormal-condition" ||
+    nameLower.endsWith("-state") ||
+    nameLower.endsWith("-alarm") ||
+    nameLower.endsWith("-status");
+  if (facet.options && facet.options.length > 0) {
+    const anyOptionAlarming = facet.options.some((opt) => isStatusTextAlarming(kind, opt.label));
+    if (!isStateProp && !anyOptionAlarming) return null;
+    if (typeof facet.value === "number" || (typeof facet.value === "string" && facet.value.trim() !== "" && Number.isFinite(Number(facet.value)))) {
+      const code = Number(facet.value);
+      const matched = facet.options.find((opt) => opt.value === code);
+      if (matched) return isStatusTextAlarming(kind, matched.label);
+      if (code === 0) return false;
+      return facet.options.every((opt) => opt.value > 0 && isStatusTextAlarming(kind, opt.label)) ? code > 0 : false;
+    }
+    if (typeof facet.value === "string") {
+      const trimmed = facet.value.trim();
+      if (!trimmed) return null;
+      const matched = facet.options.find((opt) => opt.label.toLowerCase() === trimmed.toLowerCase());
+      return isStatusTextAlarming(kind, matched ? matched.label : trimmed);
+    }
+    if (typeof facet.value === "boolean") return facet.value;
+    return null;
+  }
+  if (!isStateProp) return null;
+  if (typeof facet.value === "boolean") return facet.value;
+  if (typeof facet.value === "number") return facet.value > 0;
+  if (typeof facet.value === "string") {
+    return facet.value.trim() ? isStatusTextAlarming(kind, facet.value) : null;
+  }
+  return null;
 }
 
 export function extractSensorObservations(
@@ -296,9 +307,7 @@ export function extractSensorObservations(
   facets: readonly FacetControl[] = [],
   explicitObservations?: readonly SensorObservation[],
 ): SensorObservation[] {
-  if (explicitObservations && explicitObservations.length > 0) {
-    return [...explicitObservations];
-  }
+  if (explicitObservations && explicitObservations.length > 0) return [...explicitObservations];
   if (!device.isOnline) return [];
 
   const results: SensorObservation[] = [];
@@ -312,64 +321,49 @@ export function extractSensorObservations(
   if (device.kind.kind === "sensor") {
     if (device.kind.safetyObservations && device.kind.safetyObservations.length > 0) {
       for (const item of device.kind.safetyObservations) {
-        pushObs({
-          kind: item.kind,
-          sourceId: `${device.id}:${item.entityId}:${item.kind}`,
-          alarming: item.alarming,
-        });
+        pushObs({ kind: item.kind, sourceId: `${device.id}:${item.entityId}:${item.kind}`, alarming: item.alarming });
       }
     } else {
       const statusText = device.kind.statusText?.trim() ?? "";
       const explicitOrMetaKind =
-        device.kind.alertKind ??
-        inferSensorKindFromMetadata(`${device.model} ${device.name} ${statusText}`) ??
-        null;
-      if (explicitOrMetaKind !== null) {
-        lastKnownSensorKindByDeviceId.set(device.id, explicitOrMetaKind);
-      }
+        device.kind.alertKind ?? inferSensorKindFromMetadata(`${device.model} ${device.name} ${statusText}`) ?? null;
+      if (explicitOrMetaKind !== null) lastKnownSensorKindByDeviceId.set(device.id, explicitOrMetaKind);
       const inferredKind =
-        explicitOrMetaKind ??
-        (statusText !== "" && isStatusTextCleared(statusText)
-          ? (lastKnownSensorKindByDeviceId.get(device.id) ?? null)
-          : null);
+        explicitOrMetaKind ?? (statusText !== "" && isStatusTextCleared(statusText) ? (lastKnownSensorKindByDeviceId.get(device.id) ?? null) : null);
       if (inferredKind !== null && statusText !== "") {
-        pushObs({
-          kind: inferredKind,
-          sourceId: `${device.id}:${inferredKind}`,
-          alarming: isStatusTextAlarming(inferredKind, statusText),
-        });
-      }
-    }
-  } else if (device.kind.kind === "generic" && device.kind.alerts && device.kind.alerts.length > 0) {
-    for (let idx = 0; idx < device.kind.alerts.length; idx += 1) {
-      const alertText = device.kind.alerts[idx] ?? "";
-      const kind = inferSensorKindFromMetadata(`${device.model} ${device.name} ${alertText}`);
-      if (kind) {
-        pushObs({
-          kind,
-          sourceId: `${device.id}:generic:${kind}:${idx}`,
-          alarming: isStatusTextAlarming(kind, alertText),
-        });
+        pushObs({ kind: inferredKind, sourceId: `${device.id}:${inferredKind}`, alarming: isStatusTextAlarming(inferredKind, statusText) });
       }
     }
   }
 
+  const facetObservedKinds = new Set<SensorAlertKind>();
   for (const facet of facets) {
-    const kind = inferSensorKindFromMetadata(`${facet.serviceName} ${facet.name} ${facet.title ?? ""}`);
+    const directKind = inferSensorKindFromMetadata(`${facet.name} ${facet.title ?? ""}`);
+    const kind = directKind ?? inferSensorKindFromMetadata(`${facet.serviceName} ${device.model} ${device.name}`);
     if (!kind) continue;
-    let alarming = false;
-    if (typeof facet.value === "boolean") {
-      alarming = facet.value;
-    } else if (typeof facet.value === "number") {
-      alarming = facet.value > 0;
-    } else if (typeof facet.value === "string") {
-      alarming = isStatusTextAlarming(kind, facet.value);
+    const alarming = evaluateSafetyFacetValue(kind, facet, directKind !== null);
+    if (alarming === null) continue;
+    facetObservedKinds.add(kind);
+    pushObs({ kind, sourceId: `${device.id}:facet:${facet.id}:${kind}`, alarming });
+  }
+
+  if (device.kind.kind === "generic") {
+    const genericMeta = `${device.model} ${device.name} ${device.kind.deviceType} ${device.kind.typeTitle}`;
+    const genericKindsSeen = new Set<SensorAlertKind>();
+    for (let idx = 0; idx < (device.kind.alerts?.length ?? 0); idx += 1) {
+      const alertText = device.kind.alerts?.[idx] ?? "";
+      const kind = inferSensorKindFromMetadata(`${genericMeta} ${alertText}`);
+      if (kind && !facetObservedKinds.has(kind)) {
+        lastKnownSensorKindByDeviceId.set(device.id, kind);
+        genericKindsSeen.add(kind);
+        pushObs({ kind, sourceId: `${device.id}:generic:${kind}:${idx}`, alarming: isStatusTextAlarming(kind, alertText) });
+      }
     }
-    pushObs({
-      kind,
-      sourceId: `${device.id}:facet:${facet.id}:${kind}`,
-      alarming,
-    });
+    const fallbackKind = inferSensorKindFromMetadata(genericMeta) ?? lastKnownSensorKindByDeviceId.get(device.id) ?? null;
+    if (fallbackKind && !facetObservedKinds.has(fallbackKind) && !genericKindsSeen.has(fallbackKind)) {
+      lastKnownSensorKindByDeviceId.set(device.id, fallbackKind);
+      pushObs({ kind: fallbackKind, sourceId: `${device.id}:generic:${fallbackKind}:0`, alarming: false });
+    }
   }
 
   return results;

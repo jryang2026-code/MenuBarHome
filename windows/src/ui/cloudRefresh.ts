@@ -806,17 +806,36 @@ export async function refreshMultiAccountXiaomiDevices(
   if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "xiaomiCloud" || host.isSyncingCloud) {
     return;
   }
+  const stateRevisionAtStart = host.localControlRevision;
+  const sourceRevisionAtStart = host.sourceRevision;
   if (silent && (await isWorkstationLocked())) return;
+  if (
+    !isHostAttachedToActiveWindow(host) ||
+    host.settings.connectionMode !== "xiaomiCloud" ||
+    host.localControlRevision !== stateRevisionAtStart ||
+    host.sourceRevision !== sourceRevisionAtStart ||
+    host.isSyncingCloud
+  ) {
+    return;
+  }
   const loadedFromStore = host.miAccountsOverride ?? (await getHostMiAccountsStore(host).load());
+  if (
+    !isHostAttachedToActiveWindow(host) ||
+    host.settings.connectionMode !== "xiaomiCloud" ||
+    host.localControlRevision !== stateRevisionAtStart ||
+    host.sourceRevision !== sourceRevisionAtStart ||
+    host.isSyncingCloud
+  ) {
+    return;
+  }
   const accounts =
     loadedFromStore.length > 0
       ? loadedFromStore
       : host.settings.miSession
         ? [makeMiAccount(host.settings.miSession)]
         : [];
-  if (accounts.length === 0 || !isHostAttachedToActiveWindow(host) || host.isSyncingCloud) return;
+  if (accounts.length === 0) return;
 
-  const stateRevisionAtStart = host.localControlRevision;
   const syncGen = ++host.syncGeneration;
   const previousPresentation = cloudPresentationFingerprint(host);
   const previousStructure = cloudPanelStructureFingerprint(host);
@@ -840,6 +859,7 @@ export async function refreshMultiAccountXiaomiDevices(
       !isHostAttachedToActiveWindow(host) ||
       host.settings.connectionMode !== "xiaomiCloud" ||
       host.localControlRevision !== stateRevisionAtStart ||
+      host.sourceRevision !== sourceRevisionAtStart ||
       host.syncGeneration !== syncGen
     ) {
       return;
@@ -1028,7 +1048,18 @@ export async function refreshDualSourceDevices(
   silent = false,
 ): Promise<void> {
   if (!isHostAttachedToActiveWindow(host) || host.isSyncingCloud) return;
+  const revision = host.localControlRevision;
+  const sourceRevisionAtStart = host.sourceRevision;
   if (silent && (await isWorkstationLocked())) return;
+  if (
+    !isHostAttachedToActiveWindow(host) ||
+    !isDualSourceEnabled(host) ||
+    host.localControlRevision !== revision ||
+    host.sourceRevision !== sourceRevisionAtStart ||
+    host.isSyncingCloud
+  ) {
+    return;
+  }
 
   const endpoint = host.settings.haBaseURL;
   const token = host.settings.haToken;
@@ -1038,6 +1069,15 @@ export async function refreshDualSourceDevices(
     (host.settings.miSession && !hasSecondaryMiAccountsInIndex()
       ? [makeMiAccount(host.settings.miSession)]
       : await getHostMiAccountsStore(host).load());
+  if (
+    !isHostAttachedToActiveWindow(host) ||
+    !isDualSourceEnabled(host) ||
+    host.localControlRevision !== revision ||
+    host.sourceRevision !== sourceRevisionAtStart ||
+    host.isSyncingCloud
+  ) {
+    return;
+  }
   const accounts =
     loadedAccounts.length > 0
       ? loadedAccounts
@@ -1046,7 +1086,6 @@ export async function refreshDualSourceDevices(
         : [];
   if (accounts.length === 0) return;
 
-  const revision = host.localControlRevision;
   const syncGen = ++host.syncGeneration;
   const previousPresentation = cloudPresentationFingerprint(host);
   const previousStructure = cloudPanelStructureFingerprint(host);
@@ -1061,6 +1100,7 @@ export async function refreshDualSourceDevices(
     const prevMiState = host.multiAccountState;
     const haInvoke = host.haInvokeOverride ?? undefined;
     let haRawSnapshot: unknown = null;
+    let nextMultiAccountState: typeof host.multiAccountState = null;
 
     const outcome = await coordinator.refreshParallel({
       knownPreferenceIds: knownPreferenceIdsForHost(host),
@@ -1079,7 +1119,7 @@ export async function refreshDualSourceDevices(
           silent,
           previousSnapshots: prevMiState?.children,
         });
-        host.multiAccountState = { accounts, merged, children };
+        nextMultiAccountState = { accounts, merged, children };
         if (merged.aggregateStatus.kind === "disconnected") {
           throw new Error(merged.aggregateStatus.reason);
         }
@@ -1105,10 +1145,15 @@ export async function refreshDualSourceDevices(
 
     if (
       !isHostAttachedToActiveWindow(host) ||
+      !isDualSourceEnabled(host) ||
       host.localControlRevision !== revision ||
+      host.sourceRevision !== sourceRevisionAtStart ||
       host.syncGeneration !== syncGen
     ) {
       return;
+    }
+    if (nextMultiAccountState) {
+      host.multiAccountState = nextMultiAccountState;
     }
 
     if (outcome.haError) {

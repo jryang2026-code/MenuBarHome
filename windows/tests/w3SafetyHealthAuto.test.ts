@@ -1260,6 +1260,60 @@ describe("B1 + B5 PC Context Automation Engine, AwayArbitrator, 5m Undo & HA Doo
       1,
     );
 
+    const { MiotSynthesizer, parseMiotDeviceSpec } = await import("../src/core/miCloudClient.js");
+    const smokeSpec = parseMiotDeviceSpec({
+      type: "urn:miot-spec-v2:device:smoke-sensor:0000A023:bkxh-s1:1:0000D020",
+      services: [
+        {
+          iid: 2,
+          type: "urn:miot-spec-v2:service:smoke-sensor:00007838:bkxh-s1:1:0000D020",
+          description: "Smoke Sensor",
+          properties: [
+            {
+              iid: 1004,
+              type: "urn:miot-spec-v2:property:status:00000007:bkxh-s1:1:0000D020",
+              description: "Status",
+              format: "uint8",
+              access: ["read", "notify"],
+              "value-list": [
+                { value: 1, description: "Normal Monitoring" },
+                { value: 2, description: "In Fire Alarm" },
+              ],
+            },
+          ],
+          actions: [],
+        },
+      ],
+    });
+    const smokeRec = {
+      did: "smoke-1",
+      name: "厨房烟感",
+      model: "bkxh.sensor_smoke.s1",
+      isOnline: true,
+      specType: smokeSpec?.type ?? null,
+    };
+    assert.ok(smokeSpec);
+    const miotMonitor = new SafetyMonitor(new MemoryKV(), "mi:home-1");
+    const evalSmokeStatus = (statusVal: number, atMs: number): number => {
+      const synth = MiotSynthesizer.synthesize(
+        [smokeRec],
+        [],
+        { "bkxh.sensor_smoke.s1": smokeSpec },
+        new Map([["smoke-1.2.1004", statusVal]]),
+      );
+      return miotMonitor.evaluate({
+        devices: synth.devices,
+        deviceFacets: synth.deviceFacets,
+        favorites: new Set(),
+        sensorPolicy: policy,
+        nowMs: atMs,
+      }).length;
+    };
+    assert.equal(evalSmokeStatus(1, t0 + 20_000), 0);
+    assert.equal(evalSmokeStatus(2, t0 + 25_000), 1);
+    assert.equal(evalSmokeStatus(1, t0 + 30_000), 0);
+    assert.equal(evalSmokeStatus(2, t0 + 35_000), 1);
+
     const r1 = createAutomationRule({
       id: "r-dispatch-1",
       trigger: "screenUnlocked",

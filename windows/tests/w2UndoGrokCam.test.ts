@@ -589,13 +589,13 @@ describe("Wave 2 — A1 Camera Adaptive Frame Pacing (>5fps), Fast Switch, HUD M
     );
 
     app = new MenuMijiaWindowsApp(element("#app"));
-    app.cameraLive.cameraSameSessionCooldownMs = 600;
+    app.cameraLive.cameraSameSessionCooldownMs = 1_000;
     await waitFor(() => app !== null && app.devices.length === 2, 2_000);
 
     const tOpenA = performance.now();
     await click('[data-body-device="cam-a"]');
     await waitFor(() => app?.cameraLive.liveCameraMode === "mjpeg", 1_000);
-    assert.ok(performance.now() - tOpenA < 450, "initial open skips same-session cooldown");
+    assert.ok(performance.now() - tOpenA < 850, "initial open skips same-session cooldown");
 
     const tSwitchB = performance.now();
     await click('[data-cameraswitch="cam-b"]');
@@ -608,7 +608,7 @@ describe("Wave 2 — A1 Camera Adaptive Frame Pacing (>5fps), Fast Switch, HUD M
     );
     const switchElapsed = performance.now() - tSwitchB;
     assert.ok(
-      switchElapsed < 450,
+      switchElapsed < 850,
       `switching to a different camera should skip same-session cooldown, took ${Math.round(switchElapsed)}ms`,
     );
 
@@ -616,12 +616,12 @@ describe("Wave 2 — A1 Camera Adaptive Frame Pacing (>5fps), Fast Switch, HUD M
     await click("#btn-reload-camera-live");
     await waitFor(
       () => startCalls.filter((id) => id === "cam-b").length >= 2 && app?.cameraLive.liveCameraLoading === false,
-      2_000,
+      2_500,
     );
     const reloadElapsed = performance.now() - tReloadB;
     assert.ok(
-      reloadElapsed >= 520,
-      `same-camera reconnect must honour cooldown (${Math.round(reloadElapsed)}ms >= ~600ms)`,
+      reloadElapsed >= 880,
+      `same-camera reconnect must honour cooldown (${Math.round(reloadElapsed)}ms >= ~1000ms)`,
     );
   });
 

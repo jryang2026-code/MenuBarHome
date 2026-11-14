@@ -188,15 +188,11 @@ function recordHostSnapshotIfLive(host: EnergyTrackableHost): void {
 
   const scope = energyScopeForHost(host);
   const history = getScopedEnergyHistory(scope);
-  if (
-    session.lastRecordedSig === currentSig &&
-    session.lastRecordedScope === history.scope &&
-    (currentSig === "" || history.recordingStartedAt !== null)
-  ) {
-    return;
-  }
   session.lastRecordedSig = currentSig;
   session.lastRecordedScope = history.scope;
+  if (currentSig === "") {
+    return;
+  }
   const effectiveDevices = devicesWithLayoutAliases(
     host.devices,
     host.layout ?? host.settings.layout,
