@@ -292,6 +292,20 @@ export function claimDeviceWrite(host: OptimisticLockHost, deviceId: string): De
   return { deviceId, writeSeq, sourceRevision: host.sourceRevision };
 }
 
+export function peekDeviceWriteSeq(host: OptimisticLockHost, deviceId: string): number {
+  const state = ensureHostState(host);
+  return state.writeSeqs.get(deviceId) ?? 0;
+}
+
+export function currentDeviceWriteClaim(host: OptimisticLockHost, deviceId: string): DeviceWriteClaim {
+  const state = ensureHostState(host);
+  return {
+    deviceId,
+    writeSeq: state.writeSeqs.get(deviceId) ?? 0,
+    sourceRevision: host.sourceRevision,
+  };
+}
+
 /** True while no newer command has claimed `claim`'s row and the data source is unchanged. */
 export function ownsDeviceWrite(host: OptimisticLockHost, claim: DeviceWriteClaim): boolean {
   if (claim.sourceRevision !== host.sourceRevision) return false;

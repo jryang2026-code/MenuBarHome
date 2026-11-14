@@ -84,9 +84,9 @@ import { renderPanel } from "./panelView.js";
 import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
 import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground } from "./proactive.js";
-import { applyCommand, markCloudValuesFresh, markCloudValuesStale } from "./commandDispatch.js";
+import { getHostApplyCommand, markCloudValuesFresh, markCloudValuesStale, setCustomApplyCommand } from "./commandDispatch.js";
 import { foldGrouped, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
-import { executeIntents, executeSingleCommand, getRunningBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
+import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
 import { clearPersistedMiSessionExpired, persistMiSessionExpired } from "../core/pollingPolicy.js";
 import { bindLayoutGestures } from "./layoutGestures.js";
 import { bindSettingsEvents, refreshHabitSharePreview } from "./settingsEvents.js";
@@ -791,11 +791,24 @@ export class MenuMijiaWindowsApp {
       await activeBatch.waitForInFlight();
       if (sourceRevision !== this.sourceRevision) return;
     }
-    const stepsToRestore = [...action.steps];
+    const ownerBatch = activeBatch ?? getUndoActionBatch(action);
+    const takenOverDevices = new Set<string>();
+    const stepsToRestore = action.steps.filter((step) => {
+      if (ownerBatch && !ownerBatch.ownsDeviceWrite(this, step.deviceId)) {
+        takenOverDevices.add(step.deviceId);
+        return false;
+      }
+      return true;
+    });
+    if (stepsToRestore.length === 0 && action.steps.length > 0) return;
     const failedSteps: UndoStep[] = [];
     const blockedDevices = new Set<string>();
     let failureMessage = "";
     for (const step of stepsToRestore) {
+      if (ownerBatch && !ownerBatch.ownsDeviceWrite(this, step.deviceId)) {
+        takenOverDevices.add(step.deviceId);
+        continue;
+      }
       if (blockedDevices.has(step.deviceId)) {
         failedSteps.push(step);
         continue;
@@ -803,30 +816,49 @@ export class MenuMijiaWindowsApp {
       let failed = false;
       for (const command of step.commands) {
         if (sourceRevision !== this.sourceRevision) return;
-        if (!(await this.applyCommand(command))) {
+        if (ownerBatch && !ownerBatch.ownsDeviceWrite(this, step.deviceId)) {
+          takenOverDevices.add(step.deviceId);
+          break;
+        }
+        const ok = ownerBatch
+          ? await ownerBatch.applyRestoreCommand(this, step.deviceId, command)
+          : await this.applyCommand(command);
+        if (!ok) {
           failed = true;
           failureMessage = this.replyBanner?.text ?? t("设备未响应");
         }
       }
+      if (takenOverDevices.has(step.deviceId)) continue;
       if (failed) {
         failedSteps.push(step);
         blockedDevices.add(step.deviceId);
       } else {
         const restoredDevice = this.devices.find((d) => d.id === step.deviceId);
-        if (restoredDevice) restoreUndoKindSnapshot(action, restoredDevice);
+        if (restoredDevice && (!ownerBatch || ownerBatch.ownsDeviceWrite(this, step.deviceId))) {
+          restoreUndoKindSnapshot(action, restoredDevice);
+        }
       }
     }
     if (sourceRevision !== this.sourceRevision) return;
+    if (
+      failedSteps.length === 0 &&
+      takenOverDevices.size > 0 &&
+      takenOverDevices.size === new Set(action.steps.map((s) => s.deviceId)).size
+    ) {
+      return;
+    }
     let remainingReceipt = action.habitReceipt;
     if (action.habitReceipt) {
-      if (failedSteps.length === 0) {
+      const notRestoredDevices = new Set([...blockedDevices, ...takenOverDevices]);
+      if (notRestoredDevices.size === 0) {
         this.unrecordHabits(action.habitReceipt);
         remainingReceipt = undefined;
       } else {
-        const { succeeded, remaining } = partitionHabitReceipt(action.habitReceipt, blockedDevices);
+        const { succeeded } = partitionHabitReceipt(action.habitReceipt, notRestoredDevices);
         if (succeeded) {
           this.unrecordHabits(succeeded);
         }
+        const { remaining } = partitionHabitReceipt(action.habitReceipt, blockedDevices);
         remainingReceipt = remaining ?? undefined;
       }
     }
@@ -841,8 +873,12 @@ export class MenuMijiaWindowsApp {
     this.render();
   }
 
-  public async applyCommand(command: DeviceCommand, readBackPower = false): Promise<boolean> {
-    return applyCommand(this, command, readBackPower);
+  public get applyCommand(): (command: DeviceCommand, readBackPower?: boolean) => Promise<boolean> {
+    return getHostApplyCommand(this);
+  }
+
+  public set applyCommand(fn: (command: DeviceCommand, readBackPower?: boolean) => Promise<boolean>) {
+    setCustomApplyCommand(this, fn);
   }
 
   /** Arms a high-risk confirmation and its own expiry timer, replacing any previous arm. */

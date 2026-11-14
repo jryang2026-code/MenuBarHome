@@ -18,6 +18,7 @@ import {
   lockOptimistic,
   OPTIMISTIC_LOCK_DURATION_MS,
   ownsDeviceWrite,
+  peekDeviceWriteSeq,
   READ_BACK_DELAY_MS,
   restoreOptimisticLock,
   scheduleDelayedReadBack,
@@ -26,6 +27,41 @@ import {
   type DeviceWriteClaim,
   type OptimisticLockSnapshot,
 } from "../core/optimisticLock.js";
+
+const customApplyCommandByHost = new WeakMap<
+  object,
+  (command: DeviceCommand, readBackPower?: boolean) => Promise<boolean>
+>();
+
+export function setCustomApplyCommand(
+  host: MenuMijiaWindowsApp,
+  fn: (command: DeviceCommand, readBackPower?: boolean) => Promise<boolean>,
+): void {
+  customApplyCommandByHost.set(host, fn);
+}
+
+export function getHostApplyCommand(
+  host: MenuMijiaWindowsApp,
+): (command: DeviceCommand, readBackPower?: boolean) => Promise<boolean> {
+  const custom = customApplyCommandByHost.get(host);
+  if (!custom) {
+    return (command: DeviceCommand, readBackPower = false) =>
+      applyCommand(host, command, readBackPower);
+  }
+  return (command: DeviceCommand, readBackPower = false) => {
+    const targetDeviceId = deviceOwningEntityId(
+      host.devices,
+      host.deviceFacets ?? {},
+      command.entityId,
+    );
+    const seqBefore = targetDeviceId !== null ? peekDeviceWriteSeq(host, targetDeviceId) : 0;
+    const promise = custom.call(host, command, readBackPower);
+    if (targetDeviceId !== null && peekDeviceWriteSeq(host, targetDeviceId) === seqBefore) {
+      claimDeviceWrite(host, targetDeviceId);
+    }
+    return promise;
+  };
+}
 
 function withReadPower(command: DeviceCommand, isOn: boolean): DeviceCommand {
   switch (command.kind) {
@@ -258,11 +294,19 @@ export function deviceOwningEntityId(
   facets: Readonly<Record<string, readonly FacetControl[]>>,
   entityId: string,
 ): string | null {
+  const baseEntityId = entityId.split("#")[0] ?? entityId;
   const owner = devices.find((device) => {
-    if (kindOwnsEntity(device.kind, entityId)) return true;
-    return (facets[device.id] ?? []).some((facet) => facet.target?.entityId === entityId);
+    if (
+      kindOwnsEntity(device.kind, entityId) ||
+      (baseEntityId !== entityId && kindOwnsEntity(device.kind, baseEntityId))
+    ) {
+      return true;
+    }
+    return (facets[device.id] ?? []).some(
+      (facet) => facet.target?.entityId === entityId || facet.target?.entityId === baseEntityId,
+    );
   });
-  return owner?.id ?? null;
+  return owner?.id ?? devices.find((device) => device.id === entityId || device.id === baseEntityId)?.id ?? null;
 }
 
 /** The entity ids a card's own controls address, before 更多设置 rows are considered. */
@@ -278,8 +322,16 @@ function kindOwnsEntity(kind: DeviceKind, entityId: string): boolean {
         kind.fridgeTargetEntityId === entityId ||
         kind.freezerTargetEntityId === entityId
       );
+    case "vacuum":
+      return kind.entityId === entityId || kind.modeEntityId === entityId;
     case "speaker":
-      return [kind.mediaEntityId, kind.muteSwitchEntityId, kind.sleepModeEntityId].includes(entityId);
+      return [
+        kind.mediaEntityId,
+        kind.muteSwitchEntityId,
+        kind.sleepModeEntityId,
+        kind.ttsActionId,
+        kind.directiveActionId,
+      ].includes(entityId);
     case "appliance":
       // An appliance card addresses several services: main function, power, mode, temperature,
       // light, fan speed and the no-argument actions (#300, #3, #4).

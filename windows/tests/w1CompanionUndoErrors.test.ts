@@ -623,6 +623,62 @@ describe("A11 RunningBatch mid-flight undo & preemption (#2)", () => {
       "d3 was never reached and must receive no commands",
     );
 
+    const d2DimGate = deferred<boolean>();
+    const dimDispatched: Array<{ entityId: string; percent: number }> = [];
+    app.applyCommand = async (cmd) => {
+      if (cmd.kind !== "setLightBrightness") return true;
+      dimDispatched.push({ entityId: cmd.entityId, percent: cmd.percent });
+      const target = app.devices.find((d) => `light.${d.id}` === cmd.entityId);
+      if (cmd.entityId === "light.d2" && cmd.percent === 15) {
+        const ok = await d2DimGate.promise;
+        if (ok && target && target.kind.kind === "light") {
+          target.kind = { ...target.kind, brightnessPercent: 15 };
+        }
+        return ok;
+      }
+      if (target && target.kind.kind === "light") {
+        target.kind = { ...target.kind, brightnessPercent: cmd.percent };
+      }
+      return true;
+    };
+
+    const dimBatchPromise = executeIntents(
+      app,
+      [
+        { targetId: "d1", operation: { kind: "brightness", percent: 15 } },
+        { targetId: "d2", operation: { kind: "brightness", percent: 15 } },
+      ],
+      "已调暗 2 盏灯",
+      "一键全关",
+    );
+    await setImmediate();
+    await setImmediate();
+    assert.equal(
+      (app.devices.find((d) => d.id === "d1")!.kind as { brightnessPercent: number }).brightnessPercent,
+      15,
+    );
+    const dimUndoPromise = app.performUndo();
+    await setImmediate();
+    await setImmediate();
+    await app.applyCommand({ kind: "setLightBrightness", entityId: "light.d1", percent: 40 });
+    d2DimGate.resolve(true);
+    await Promise.all([dimBatchPromise, dimUndoPromise]);
+
+    assert.equal(
+      dimDispatched.some((c) => c.entityId === "light.d1" && c.percent === 80),
+      false,
+      "d1 received a newer 40% write while Undo waited and must not be overwritten with 80%",
+    );
+    assert.equal(
+      (app.devices.find((d) => d.id === "d1")!.kind as { brightnessPercent: number }).brightnessPercent,
+      40,
+    );
+    assert.equal(
+      dimDispatched.some((c) => c.entityId === "light.d2" && c.percent === 80),
+      true,
+      "untaken d2 must still be restored to 80%",
+    );
+
     const holdSourceSwitch = deferred<boolean>();
     app.applyCommand = async (cmd) => {
       if (cmd.kind === "setLightPower" && cmd.entityId === "light.d1" && !cmd.isOn) {

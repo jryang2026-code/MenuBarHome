@@ -21,6 +21,14 @@ import {
 } from "../core/models.js";
 import type { UndoAction, UndoStep } from "./appTypes.js";
 import { inverseCommands } from "../core/commandEffects.js";
+import {
+  claimDeviceWrite,
+  currentDeviceWriteClaim,
+  ownsDeviceWrite,
+  peekDeviceWriteSeq,
+  type DeviceWriteClaim,
+  type OptimisticLockHost,
+} from "../core/optimisticLock.js";
 import { trText } from "../core/quickActions.js";
 
 export type BatchStopReason = "undo" | "preempted" | "sourceChanged" | "cancelled";
@@ -56,6 +64,7 @@ export class RunningBatch {
   private readonly succeededIds = new Set<string>();
   private readonly failedIds = new Set<string>();
   private readonly acceptedCountByDevice = new Map<string, number>();
+  private readonly writeClaimsByDevice = new Map<string, DeviceWriteClaim>();
   private readonly liveSteps: UndoStep[] = [];
   private trackedUndoAction: UndoAction | null = null;
   private readonly stopListeners = new Set<(reason: BatchStopReason) => void>();
@@ -186,6 +195,34 @@ export class RunningBatch {
     return action !== null && (action === this.trackedUndoAction || action.steps === this.liveSteps);
   }
 
+  public recordWriteClaim(deviceId: string, claim: DeviceWriteClaim): void {
+    this.writeClaimsByDevice.set(deviceId, claim);
+  }
+
+  public ownsDeviceWrite(host: OptimisticLockHost, deviceId: string): boolean {
+    const claim = this.writeClaimsByDevice.get(deviceId);
+    return claim === undefined || ownsDeviceWrite(host, claim);
+  }
+
+  public untakenSteps(host: OptimisticLockHost): UndoStep[] {
+    return this.liveSteps.filter((step) => this.ownsDeviceWrite(host, step.deviceId));
+  }
+
+  public async applyRestoreCommand(
+    host: MenuMijiaWindowsApp,
+    deviceId: string,
+    command: DeviceCommand,
+  ): Promise<boolean> {
+    const seqBefore = peekDeviceWriteSeq(host, deviceId);
+    const sendPromise = host.applyCommand(command);
+    const restoreClaim =
+      peekDeviceWriteSeq(host, deviceId) === seqBefore
+        ? claimDeviceWrite(host, deviceId)
+        : currentDeviceWriteClaim(host, deviceId);
+    this.recordWriteClaim(deviceId, restoreClaim);
+    return sendPromise;
+  }
+
   public ensureLiveUndoAction(canUndo: boolean): UndoAction | null {
     if (!canUndo || this.liveSteps.length === 0) {
       this.trackedUndoAction = null;
@@ -197,6 +234,7 @@ export class RunningBatch {
         steps: this.liveSteps,
         expiresAtMs: Date.now() + 10 * 60 * 1000,
       };
+      batchByUndoAction.set(this.trackedUndoAction, this);
     }
     return this.trackedUndoAction;
   }
@@ -210,6 +248,11 @@ export class RunningBatch {
 
 const runningBatchByHost = new WeakMap<object, RunningBatch>();
 const activeBatchesByHost = new WeakMap<object, Set<RunningBatch>>();
+const batchByUndoAction = new WeakMap<UndoAction, RunningBatch>();
+
+export function getUndoActionBatch(action: UndoAction | null | undefined): RunningBatch | null {
+  return action ? batchByUndoAction.get(action) ?? null : null;
+}
 
 export function getRunningBatch(host: object, action?: UndoAction | null): RunningBatch | null {
   if (action) {
@@ -532,7 +575,14 @@ export async function executeIntents(
 
           await runningBatch.trackInFlight(async () => {
             try {
-              const ok = await host.applyCommand(command);
+              const seqBefore = peekDeviceWriteSeq(host, deviceId);
+              const sendPromise = host.applyCommand(command);
+              const claim =
+                peekDeviceWriteSeq(host, deviceId) === seqBefore
+                  ? claimDeviceWrite(host, deviceId)
+                  : currentDeviceWriteClaim(host, deviceId);
+              runningBatch.recordWriteClaim(deviceId, claim);
+              const ok = await sendPromise;
               if (sourceRevision !== host.sourceRevision) {
                 runningBatch.stop("sourceChanged");
                 return;
@@ -624,8 +674,8 @@ export async function executeIntents(
 
     if (runningBatch.isStopped) {
       if (runningBatch.stopReason === "cancelled" && runningBatchByHost.get(host) === runningBatch) {
-        const finalSteps = [...runningBatch.steps];
-        host.lastUndoAction =
+        const finalSteps = runningBatch.untakenSteps(host);
+        const stoppedUndo: UndoAction | null =
           canUndo && finalSteps.length > 0
             ? {
                 summary: replyText,
@@ -633,12 +683,14 @@ export async function executeIntents(
                 expiresAtMs: Date.now() + 10 * 60 * 1000,
               }
             : null;
+        if (stoppedUndo) batchByUndoAction.set(stoppedUndo, runningBatch);
+        host.lastUndoAction = stoppedUndo;
         if (typeof host.render === "function") host.render();
       }
       return false;
     }
 
-    const finalSteps = [...runningBatch.steps];
+    const finalSteps = runningBatch.untakenSteps(host);
     if (succeeded > 0) {
       const succeededIntents = candidateIntents
         .filter((entry) => entry.succeededCount === entry.commandCount && entry.commandCount > 0)
@@ -651,7 +703,7 @@ export async function executeIntents(
       // Scene activations have no inverse: an undo action must exist only when at least one
       // device step is restorable, otherwise Undo would report success without doing anything
       // (Codex #116 re-review).
-      host.lastUndoAction =
+      const finishedUndo: UndoAction | null =
         canUndo && finalSteps.length > 0
           ? {
               summary: replyText,
@@ -660,6 +712,8 @@ export async function executeIntents(
               habitReceipt: habitReceipt ?? undefined,
             }
           : null;
+      if (finishedUndo) batchByUndoAction.set(finishedUndo, runningBatch);
+      host.lastUndoAction = finishedUndo;
     } else if (host.lastUndoAction && runningBatch.ownsUndoAction(host.lastUndoAction)) {
       host.lastUndoAction = null;
     }
@@ -721,7 +775,12 @@ export async function executeSingleCommand(
 
   let applied = false;
   try {
-    applied = await host.applyCommand(command, readBackPower);
+    const seqBefore = peekDeviceWriteSeq(host, device.id);
+    const sendPromise = host.applyCommand(command, readBackPower);
+    if (peekDeviceWriteSeq(host, device.id) === seqBefore) {
+      claimDeviceWrite(host, device.id);
+    }
+    applied = await sendPromise;
   } catch (err) {
     if (isCancellationError(err)) {
       host.replyBanner = prevBanner;
