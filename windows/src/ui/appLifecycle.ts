@@ -916,21 +916,31 @@ export function bindGlobalKeys(
     if (handlePanelKey(host, e)) return;
 
     if (e.key === "Escape") {
-      if (host.prompt) {
+      if (host.prompt !== null) {
+        e.preventDefault();
         host.closePrompt();
         return;
       }
-      if (host.ctxMenu || host.isHomeMenuOpen) {
-        host.ctxMenu = null;
-        host.isHomeMenuOpen = false;
-        host.render();
-        return;
-      }
       if (hasPendingUrlConfirmation(host)) {
+        e.preventDefault();
         dismissPendingUrlConfirmation(host, false);
         return;
       }
+      if (host.ctxMenu !== null || host.isHomeMenuOpen) {
+        e.preventDefault();
+        host.ctxMenu = null;
+        host.isHomeMenuOpen = false;
+        invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
+        host.render();
+        return;
+      }
+      if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
+        e.preventDefault();
+        host.cameraLive.hideCameraLiveView();
+        return;
+      }
       if (host.activeSheet !== "none") {
+        e.preventDefault();
         host.activeSheet = "none";
         host.isRecordingHotkey = false;
         host.hotkeyNeedsHint = false;
@@ -938,8 +948,21 @@ export function bindGlobalKeys(
         host.render();
         return;
       }
-      if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
-        host.cameraLive.hideCameraLiveView();
+      if (host.isEditingLayout) {
+        e.preventDefault();
+        host.stopEditing();
+        return;
+      }
+      if (host.pendingHighRisk !== null) {
+        e.preventDefault();
+        host.clearPendingHighRisk();
+        host.render();
+        return;
+      }
+      if (host.expandedDeviceId !== null) {
+        e.preventDefault();
+        host.expandedDeviceId = null;
+        host.render();
         return;
       }
       resumeUndoHoverPause(host);

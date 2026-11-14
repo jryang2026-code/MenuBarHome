@@ -1,5 +1,6 @@
 import { t } from "../core/i18n.js";
 import { IntentReply } from "../core/assistant.js";
+import { trText } from "../core/quickActions.js";
 import type { SpeakerTextMode } from "../core/miCloud/speakerActions.js";
 import {
   renderApplianceDrawer,
@@ -147,13 +148,19 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
     allowAdvancedFacetWrites = false,
     pendingHighRisk: PendingHighRiskConfirmation | null = null,
   ): string {
-    const readout = deviceReadout(waitingDeviceIds.has(dev.id), valuesAreStale);
+    const isWaiting = waitingDeviceIds.has(dev.id);
+    const readout = deviceReadout(isWaiting, valuesAreStale);
     const running = devicePresentsAsActive(dev, readout === "possiblyStale") && k.hvacMode !== "off";
     const powerWritable = k.powerWritable !== false;
     const temperatureWritable = k.temperatureWritable !== false;
     const canExpand = hasDetailDrawer(dev, facets);
     const open = canExpand && (forceOpen || expandedDeviceId === dev.id);
     const id = escapeHtml(dev.id);
+    const hasActiveHighRisk =
+      pendingHighRisk !== null &&
+      pendingHighRisk.deviceId === dev.id &&
+      pendingHighRisk.expiresAtMs > Date.now();
+    const isTwoTapArmed = hasActiveHighRisk && pendingHighRisk?.confirm === undefined;
     const modeLabel: Record<string, string> = { cool: t("制冷"), heat: t("制热"), dry: t("除湿"), fan_only: t("送风"), auto: t("自动") };
     const status = readout === "waiting"
       ? t("等待中")
@@ -167,7 +174,8 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
                 : "",
             ].filter(Boolean).join(" · ")
           : t("已关闭");
-    const subtitle = selectedRoom === "全部" ? `${dev.roomName} · ${status}` : status;
+    const baseSubtitle = selectedRoom === "全部" ? `${dev.roomName} · ${status}` : status;
+    const subtitle = isTwoTapArmed && !open ? trText("再点一次确认", "Tap again to confirm") : baseSubtitle;
     const span = Math.max(k.maxTemp - k.minTemp, 1);
     const progress = Math.min(Math.max((k.targetTemperature - k.minTemp) / span, 0), 1) * 100;
     const modes = (
@@ -194,7 +202,7 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
           <button class="cc-climate-step" data-acstep="${id}:1" title="${t("升高温度")}" aria-label="${t("升高目标温度")}">＋</button>`
       : `<span class="cc-climate-temp" aria-label="${t("目标温度 {temp}", { temp: formatTemperature(k.targetTemperature) })}">${temp}<small>${temperatureSymbol(unit)}</small></span>`;
     return `
-      <div class="cc-tile cc-climate is-span-row ${running ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${readout === "possiblyStale" ? "is-stale" : ""} ${motion}" ${attrs}>
+      <div class="cc-tile cc-climate is-span-row ${running ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dev.isOnline ? "" : "is-offline"} ${readout === "possiblyStale" ? "is-stale" : ""} ${motion}" ${attrs}>
         ${badge}
         <div class="cc-climate-strip">
           ${power}
@@ -204,11 +212,11 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
           </button>
           ${steps}
         </div>
-        ${readout === "possiblyStale" ? "" : `<div class="cc-climate-gauge" role="progressbar" aria-label="${t("目标温度进度")}" aria-valuemin="${k.minTemp}" aria-valuemax="${k.maxTemp}" aria-valuenow="${k.targetTemperature}"><span style="width:${progress}%"></span></div>`}
+        ${readout === "possiblyStale" ? "" : `<div class="cc-climate-gauge" role="progressbar" aria-label="${t("目标温度进度")}" aria-valuemin="${k.minTemp}" aria-valuemax="${k.maxTemp}" aria-valuenow="${k.targetTemperature}"><span style="width:${progress}%;--fill-scale:${(progress / 100).toFixed(3)}"></span></div>`}
         ${!canExpand ? renderPendingHighRiskRow(dev.id, pendingHighRisk, escapeHtml) : ""}
         ${
           open
-            ? `<div class="cc-climate-more">
+            ? `<div class="cc-expander-grid"><div class="cc-expander-clip"><div class="cc-climate-more">
                 ${renderPendingHighRiskRow(dev.id, pendingHighRisk, escapeHtml)}
                 ${modes.length > 0 ? `<div class="cc-segmented-pills is-even">
                   ${modes.map((m) => `<button class="cc-seg-pill ${running && k.hvacMode === m ? "is-active" : ""}" data-acmode="${id}:${escapeHtml(m)}" aria-pressed="${running && k.hvacMode === m}">${escapeHtml(Object.hasOwn(modeLabel, m) ? (modeLabel[m] ?? m) : m)}</button>`).join("")}
@@ -222,7 +230,7 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
                 }
                 ${renderClimateSwingRow(dev.id, k, escapeHtml)}
                 ${renderMoreSettings({ deviceId: dev.id, facets, allowAdvanced: allowAdvancedFacetWrites, isOnline: dev.isOnline, escapeHtml })}
-              </div>`
+              </div></div></div>`
             : ""
         }
       </div>`;
@@ -575,7 +583,7 @@ export function renderDeviceDrawer(
     dev.kind.kind !== "climate" || primary === ""
       ? renderPendingHighRiskRow(dev.id, pendingHighRisk, escapeHtml)
       : "";
-  return (
+  const inner =
     primary +
     (extraConfirm ? `<div class="cc-tile-drawer">${extraConfirm}</div>` : "") +
     renderMoreSettings({
@@ -584,8 +592,8 @@ export function renderDeviceDrawer(
       allowAdvanced,
       isOnline: dev.isOnline,
       escapeHtml,
-    })
-  );
+    });
+  return inner ? `<div class="cc-expander-grid"><div class="cc-expander-clip">${inner}</div></div>` : "";
 }
 
 function devicePaletteClass(dev: SmartDevice): string {
@@ -1172,7 +1180,12 @@ function renderSmallDeviceTile(options: {
     ? `<button type="button" class="cc-small-tile-btn" ${actionAttr} title="${escape(tooltip)}" aria-label="${escape(ariaLabel)}" aria-pressed="${isOn}"><span class="cc-tile-orb">${svg}</span><span class="cc-small-tile-dot" aria-hidden="true"></span></button>`
     : `<span class="cc-small-tile-btn is-readonly" role="img" title="${escape(tooltip)}" aria-label="${escape(ariaLabel)}"><span class="cc-tile-orb">${svg}</span></span>`;
 
-  return `<div class="cc-tile is-size-small ${palette} ${isOn ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="small" ${attrs}>${renderPinStarBadge(pinned, escape)}${badge}${inner}</div>`;
+  const isWaiting = state.waitingDeviceIds.has(dev.id);
+  const hasActiveHighRisk =
+    state.pendingHighRisk !== null &&
+    state.pendingHighRisk.deviceId === dev.id &&
+    state.pendingHighRisk.expiresAtMs > Date.now();
+  return `<div class="cc-tile is-size-small ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="small" ${attrs}>${renderPinStarBadge(pinned, escape)}${badge}${inner}</div>`;
 }
 
 export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): string {
@@ -1188,8 +1201,8 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
   const badge = state.isEditingLayout
     ? `<button class="cc-resize-handle" data-resize-handle="${escape(dev.id)}" data-cycle-size="${escape(dev.id)}" data-tile-size="${size}" title="${t("切换卡片大小")}：${sizeTitle}" aria-label="${t("切换卡片大小")}，${sizeTitle}"><svg class="cc-resize-arc" viewBox="0 0 28 28" aria-hidden="true"><path d="M 22 10 A 12 12 0 0 1 10 22" /></svg></button>`
     : "";
-
-  const readout = deviceReadout(state.waitingDeviceIds.has(dev.id), state.valuesAreStale);
+  const isWaiting = state.waitingDeviceIds.has(dev.id);
+  const readout = deviceReadout(isWaiting, state.valuesAreStale);
   const isOn = devicePresentsAsActive(dev, readout === "possiblyStale");
   const kind = dev.kind.kind;
   const palette = devicePaletteClass(dev);
@@ -1206,6 +1219,11 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
         }
       : dev;
   const hasDrawer = hasDetailDrawer(effectiveDevForDrawer, state.deviceFacets[dev.id] ?? []);
+  const hasActiveHighRisk =
+    state.pendingHighRisk !== null &&
+    state.pendingHighRisk.deviceId === dev.id &&
+    state.pendingHighRisk.expiresAtMs > Date.now();
+  const isTwoTapArmed = hasActiveHighRisk && state.pendingHighRisk?.confirm === undefined;
   const subtitle =
     state.selectedRoom === "全部"
       ? `${dev.roomName} · ${deviceStatusSummary(dev)}`
@@ -1222,7 +1240,9 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
       ? t("可能过期")
       : dim !== null
         ? t("亮度 {percent}%", { percent: dim })
-        : subtitle;
+        : isTwoTapArmed && !isExpanded
+          ? trText("再点一次确认", "Tap again to confirm")
+          : subtitle;
 
   if (size === "small" && !isExpanded) {
     return renderSmallDeviceTile({
@@ -1259,12 +1279,12 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
 
   if (isCapsule) {
     return `
-      <div class="cc-tile is-capsule ${palette} ${isOn ? "is-active" : ""} ${dim !== null ? "is-dimming" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" ${attrs}>
+      <div class="cc-tile is-capsule ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dim !== null ? "is-dimming" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" ${attrs}>
         ${renderPinStarBadge(pinned, escape)}
         ${badge}
         <div class="cc-tile-header win-capsule-stack">
           <div class="win-split-pill ${hasDrawer ? "has-expand" : ""}">
-            ${capsuleFill > 0 ? `<span class="cc-tile-fill" style="width:${capsuleFill}%"></span>` : ""}
+            ${capsuleFill > 0 ? `<span class="cc-tile-fill" style="width:${capsuleFill}%;--fill-scale:${(capsuleFill / 100).toFixed(3)}"></span>` : ""}
             ${
               dev.kind.kind === "generic" && dev.kind.isReadOnly
                 ? `<span class="cc-readonly-badge">${t("只读")}</span>`
@@ -1308,13 +1328,14 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
             <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>
           </button>
         </div>
+        ${!hasDrawer ? renderPendingHighRiskRow(dev.id, state.pendingHighRisk, escape) : ""}
       </div>
     `;
   }
 
   if (isSubpage) {
     return `
-      <div class="cc-tile is-expanded is-subpage is-span-row ${palette} ${isOn ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" ${attrs}>
+      <div class="cc-tile is-expanded is-subpage is-span-row ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" ${attrs}>
         ${renderPinStarBadge(pinned, escape)}
         ${badge}
         <div class="cc-tile-header win-subpage-header">
@@ -1376,8 +1397,8 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
   });
 
   return `
-      <div class="cc-tile is-span-row ${palette} ${isOn ? "is-active" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${inlineSlider ? "has-inline-slider" : ""} ${motion}" data-tile-size="${size}" ${attrs}>
-        ${fill > 0 ? `<span class="cc-tile-fill" style="width:${fill}%"></span>` : ""}
+      <div class="cc-tile is-span-row ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${inlineSlider ? "has-inline-slider" : ""} ${motion}" data-tile-size="${size}" ${attrs}>
+        ${fill > 0 ? `<span class="cc-tile-fill" style="width:${fill}%;--fill-scale:${(fill / 100).toFixed(3)}"></span>` : ""}
         ${renderPinStarBadge(pinned, escape)}
         ${badge}
         <div class="cc-tile-header">

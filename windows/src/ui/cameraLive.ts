@@ -65,6 +65,13 @@ export interface CameraLiveHost {
   escapeHtml(value: string): string;
   saveSettings(): void;
   shouldKeepPopoverPinned(): boolean;
+  readonly pipeline?: {
+    readonly cameraStandby: {
+      resumeFromStandby(root: HTMLElement): void;
+      enterWarmStandby(root: HTMLElement): void;
+      cancel(): void;
+    };
+  };
 }
 
 export class CameraLiveController {
@@ -185,6 +192,7 @@ export class CameraLiveController {
     // Opening is idempotent even before the first frame or while cloud negotiation is
     // pending. Only the explicit reconnect action may replace this camera's session.
     if (this.activeLiveCameraId === deviceId) {
+      this.host.pipeline?.cameraStandby.resumeFromStandby(this.host.root);
       this.liveCameraHidden = false;
       this.clearCameraKeepAlive();
       this.syncModalEscapeListener();
@@ -199,6 +207,7 @@ export class CameraLiveController {
     if (this.activeLiveCameraId !== null && this.activeLiveCameraId !== deviceId) {
       this.teardownActiveCameraForSwitch();
     }
+    this.host.pipeline?.cameraStandby.cancel();
     this.reconnectingP2PSessionId = null;
     this.activeLiveCameraId = dev.id;
     this.activeLiveCameraSnapshot = dev;
@@ -276,6 +285,7 @@ export class CameraLiveController {
       if (this.liveCameraHidden) this.closeCameraLiveView();
     }, this.cameraKeepAliveMs);
     this.host.render();
+    this.host.pipeline?.cameraStandby.enterWarmStandby(this.host.root);
   }
 
   public clearCameraKeepAlive(): void {
@@ -286,6 +296,7 @@ export class CameraLiveController {
   }
 
   public closeCameraLiveView(): void {
+    this.host.pipeline?.cameraStandby.cancel();
     const closingId = this.activeLiveCameraId;
     const closingDev = closingId
       ? this.host.devices.find((d) => d.id === closingId) ??

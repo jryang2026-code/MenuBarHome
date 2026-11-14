@@ -1,22 +1,34 @@
-/* =========================================================================
-   Windows 11 Fluent 2 Shell Flyout Theme
-   Top Island: Win+N Notification / Dynamic Island
-   Bottom Island: Win+A Quick Settings Capsule Flyout + Utility Strip
-   ========================================================================= */
-
 :root {
   color-scheme: light dark;
 
-  --r-flyout: 8px;
+  --r-flyout: 12px;
   --r-card: 8px;
   --r-control: 4px;
   --r-pill: 999px;
 
-  /* Fluent 2 Dark Theme Tokens (Default) */
+  --dur-instant: 0ms;
+  --dur-ultra-fast: 50ms;
+  --dur-faster: 83ms;
+  --dur-exit-short: 150ms;
+  --dur-fast: 167ms;
+  --dur-normal: 250ms;
+  --dur-banner-in: 300ms;
+  --dur-slow: 333ms;
+
+  --ease-decelerate: cubic-bezier(0, 0, 0, 1);
+  --ease-decelerate-max: cubic-bezier(0.1, 0.9, 0.2, 1);
+  --ease-accelerate: cubic-bezier(1, 0, 1, 1);
+  --ease-point-to-point: cubic-bezier(0.55, 0.55, 0, 1);
+  --ease-standard: cubic-bezier(0.33, 0, 0.67, 1);
+  --ease-linear: cubic-bezier(0, 0, 1, 1);
+
+  --flyout-travel: 36px;
+
   --win-accent: #60cdff;
   --win-accent-hover: #70d3ff;
   --win-accent-pressed: #4ec2f7;
   --win-text-on-accent: #0c1117;
+  --text-on-accent: #0c1117;
 
   --win-island-rgb: 32, 32, 32;
   --win-sheet-bg: #272727;
@@ -26,6 +38,16 @@
   --win-island-shadow:
     0 6px 14px rgba(0, 0, 0, 0.34),
     0 1px 4px rgba(0, 0, 0, 0.22);
+
+  --win-smoke-bg: rgba(0, 0, 0, 0.302);
+  --win-focus-outer: #ffffff;
+  --win-focus-inner: rgba(0, 0, 0, 0.702);
+  --win-thumb-stroke: rgba(255, 255, 255, 0.14);
+  --win-caution-stroke: rgba(252, 225, 0, 0.45);
+  --win-caution-on-fill: #1c1c1e;
+  --win-light-fill-inactive: rgba(255, 255, 255, 0.14);
+  --win-light-fill-active: rgba(255, 255, 255, 0.22);
+  --win-elevation-border: linear-gradient(180deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0.05) 67%);
 
   --win-card-bg: rgba(255, 255, 255, 0.051);
   --win-card-secondary: rgba(255, 255, 255, 0.033);
@@ -56,12 +78,8 @@
   --win-critical-bg: rgba(255, 153, 164, 0.12);
   --win-critical-stroke: rgba(255, 153, 164, 0.28);
 
-  /* Fluent 2 Motion Curves */
-  --ease-decelerate: cubic-bezier(0, 0, 0, 1);
-  --ease-accelerate: cubic-bezier(1, 0, 1, 1);
-  --ease-standard: cubic-bezier(0.33, 0, 0.67, 1);
-
   font-family: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  font-variation-settings: "opsz" 10.5;
   font-size: 14px;
   line-height: 20px;
   font-variant-numeric: tabular-nums;
@@ -69,14 +87,48 @@
   user-select: none;
 }
 
-/* Fluent 2 Focus Visual */
+.win-type-caption {
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.win-type-display {
+  font-family: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 36;
+  font-weight: 600;
+  font-size: 20px;
+  line-height: 28px;
+}
+
 :focus-visible {
-  outline: 2px solid var(--text-primary);
-  outline-offset: 1px;
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+  box-shadow:
+    inset 0 0 0 2px var(--win-focus-outer),
+    inset 0 0 0 3px var(--win-focus-inner);
 }
 
 :focus:not(:focus-visible) {
   outline: none;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+[data-exit-ghost="true"] {
+  pointer-events: none !important;
+}
+
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled,
+[aria-disabled="true"] {
+  opacity: 0.42;
+  cursor: not-allowed;
 }
 
 * {
@@ -94,10 +146,18 @@ body {
   color: var(--text-primary);
 }
 
-/* Minimal Fluent overlay scrollbar */
 ::-webkit-scrollbar {
   width: 4px;
   height: 4px;
+}
+
+*:hover::-webkit-scrollbar,
+.cc-scroll-area:hover::-webkit-scrollbar,
+.win-notif-stack:hover::-webkit-scrollbar,
+.cc-sheet:hover::-webkit-scrollbar,
+.cc-sheet-body:hover::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
@@ -109,9 +169,10 @@ body {
   border-radius: var(--r-pill);
 }
 
-/* =========================================================================
-   Shell Viewport & Two-Island Container
-   ========================================================================= */
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.52);
+}
+
 #app {
   --panel-inset: 16px;
   width: 100vw;
@@ -124,7 +185,6 @@ body {
   background: transparent;
 }
 
-/* Browser / screenshot preview host (native Tauri HWND stays 100% transparent) */
 @media (min-width: 520px) {
   #app:not(.is-native-host) {
     align-items: center;
@@ -159,9 +219,10 @@ body {
   min-width: 0;
 }
 
-/* =========================================================================
-   Fluent 2 Light Theme Tokens (.scheme-light)
-   ========================================================================= */
+#app[data-backdrop="acrylic"] > .cc-popover {
+  --panel-alpha: clamp(0.54, calc(var(--panel-opacity, 0.9) * 0.72), 0.88);
+}
+
 .cc-popover.scheme-light {
   color-scheme: light;
 
@@ -169,6 +230,7 @@ body {
   --win-accent-hover: #186ec0;
   --win-accent-pressed: #0054a3;
   --win-text-on-accent: #ffffff;
+  --text-on-accent: #ffffff;
 
   --win-island-rgb: 243, 243, 243;
   --win-sheet-bg: #f6f6f6;
@@ -178,6 +240,15 @@ body {
   --win-island-shadow:
     0 5px 14px rgba(0, 0, 0, 0.13),
     0 1px 4px rgba(0, 0, 0, 0.07);
+
+  --win-focus-outer: rgba(0, 0, 0, 0.894);
+  --win-focus-inner: rgba(255, 255, 255, 0.702);
+  --win-thumb-stroke: rgba(0, 0, 0, 0.16);
+  --win-caution-stroke: rgba(157, 93, 0, 0.42);
+  --win-caution-on-fill: #ffffff;
+  --win-light-fill-inactive: rgba(0, 95, 184, 0.16);
+  --win-light-fill-active: rgba(255, 255, 255, 0.26);
+  --win-elevation-border: linear-gradient(180deg, rgba(0, 0, 0, 0.06) 33%, rgba(0, 0, 0, 0.16) 100%);
 
   --win-card-bg: rgba(255, 255, 255, 0.72);
   --win-card-secondary: rgba(246, 246, 246, 0.72);
@@ -211,9 +282,6 @@ body {
   color: var(--text-primary);
 }
 
-/* =========================================================================
-   Floating Islands (Win+N Top Island & Win+A Bottom Island)
-   ========================================================================= */
 .win-island {
   border-radius: var(--r-flyout);
   background: rgba(var(--win-island-rgb), var(--panel-alpha));
@@ -230,6 +298,7 @@ body {
 .win-island--top {
   flex: 0 0 auto;
   max-height: min(198px, 32%);
+  transition: max-height var(--dur-slow) var(--ease-decelerate);
 }
 
 .win-island--top:has(details.win-camera-card[open]) {
@@ -251,9 +320,6 @@ body {
   min-height: 0;
 }
 
-/* =========================================================================
-   Top Island: Header & Quiet Environment Readout (Win+N)
-   ========================================================================= */
 .cc-header {
   padding: 9px 12px 7px;
   display: flex;
@@ -289,7 +355,10 @@ body {
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
 }
 
 .cc-home-emblem.is-active {
@@ -320,10 +389,11 @@ body {
 
 .cc-home-title {
   min-width: 0;
-  font-family: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-family: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 10.5;
+  font-weight: 600;
   font-size: 14px;
   line-height: 20px;
-  font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -344,13 +414,19 @@ body {
   padding: 2px 4px;
   margin-left: -4px;
   font: inherit;
-  transition: background-color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .cc-home-switch:hover {
+  .cc-home-switch:hover:not(:disabled) {
     background: var(--win-subtle-hover);
   }
+}
+
+.cc-home-switch:active:not(:disabled) {
+  transform: scale(0.975);
 }
 
 .cc-home-caret {
@@ -358,7 +434,7 @@ body {
   width: 10px;
   height: 10px;
   color: var(--text-secondary);
-  transition: transform 167ms var(--ease-decelerate);
+  transition: transform var(--dur-fast) var(--ease-decelerate);
 }
 
 .cc-home-caret svg {
@@ -372,10 +448,12 @@ body {
 
 .cc-mode-pill {
   flex: 0 0 auto;
-  font-size: 11px;
-  line-height: 14px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
-  padding: 2px 6px;
+  font-size: 12px;
+  line-height: 16px;
+  padding: 1px 6px;
   border-radius: var(--r-control);
 }
 
@@ -391,6 +469,8 @@ body {
 }
 
 .cc-subtitle {
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
   color: var(--text-secondary);
@@ -407,7 +487,43 @@ body {
   margin-left: auto;
 }
 
-/* Fluent Subtle Icon Button */
+.cc-edit-done-chip {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--win-accent);
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-weight: 600;
+  font-size: 12px;
+  line-height: 16px;
+  background: var(--win-accent);
+  color: var(--text-on-accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .cc-edit-done-chip:hover:not(:disabled) {
+    background: var(--win-accent-hover);
+    border-color: var(--win-accent-hover);
+  }
+}
+
+.cc-edit-done-chip:active:not(:disabled) {
+  background: var(--win-accent-pressed);
+  transform: scale(0.975);
+  transition-duration: var(--dur-faster);
+}
+
 .cc-circle-btn {
   width: 30px;
   height: 30px;
@@ -420,7 +536,11 @@ body {
   justify-content: center;
   flex-shrink: 0;
   cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
 }
 
 .cc-circle-btn svg {
@@ -439,14 +559,16 @@ body {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .cc-circle-btn:hover {
+  .cc-circle-btn:hover:not(:disabled) {
     background: var(--win-subtle-hover);
     color: var(--text-primary);
   }
 }
 
-.cc-circle-btn:active {
+.cc-circle-btn:active:not(:disabled) {
   background: var(--win-subtle-pressed);
+  transform: scale(0.975);
+  transition-duration: var(--dur-faster);
 }
 
 .cc-circle-btn.is-selected {
@@ -461,7 +583,6 @@ body {
   color: var(--win-critical);
 }
 
-/* Quiet Tabular Environment Readout */
 .cc-env-strip {
   display: flex;
   align-items: center;
@@ -477,6 +598,8 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
   white-space: nowrap;
@@ -500,6 +623,7 @@ body {
 
 .cc-env-val {
   color: var(--text-primary);
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
 }
 
@@ -507,9 +631,6 @@ body {
   color: var(--text-tertiary);
 }
 
-/* =========================================================================
-   Top Island: Win+N Stacked Notification & Dynamic Cards
-   ========================================================================= */
 .win-notif-stack {
   padding: 0 10px 9px;
   display: flex;
@@ -520,6 +641,9 @@ body {
 }
 
 .win-notif-card,
+.win-notif-card-ghost,
+.cc-live-banner,
+.cc-live-banner-ghost,
 .cc-feedback-card {
   padding: 8px 10px;
   border-radius: var(--r-card);
@@ -531,24 +655,28 @@ body {
   min-width: 0;
 }
 
-/* Win+N stacked group corner radii (8px outer, 4px inner seam) */
-.win-notif-stack > .win-notif-card:first-child {
+.win-notif-stack > .win-notif-card:first-child,
+.win-notif-stack > .win-notif-card-ghost:first-child {
   border-radius: 8px 8px 4px 4px;
 }
 
-.win-notif-stack > .win-notif-card:not(:first-child):not(:last-child) {
+.win-notif-stack > .win-notif-card:not(:first-child):not(:last-child),
+.win-notif-stack > .win-notif-card-ghost:not(:first-child):not(:last-child) {
   border-radius: 4px;
 }
 
-.win-notif-stack > .win-notif-card:last-child {
+.win-notif-stack > .win-notif-card:last-child,
+.win-notif-stack > .win-notif-card-ghost:last-child {
   border-radius: 4px 4px 8px 8px;
 }
 
-.win-notif-stack > .win-notif-card:only-child {
+.win-notif-stack > .win-notif-card:only-child,
+.win-notif-stack > .win-notif-card-ghost:only-child {
   border-radius: 8px;
 }
 
-details.win-notif-card {
+details.win-notif-card,
+details.win-notif-card-ghost {
   display: block;
   padding: 0;
 }
@@ -560,10 +688,12 @@ details.win-notif-card {
   gap: 6px;
   padding: 6px 10px;
   cursor: pointer;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
   color: var(--text-secondary);
-  transition: background-color 120ms ease;
+  transition: background-color var(--dur-fast) var(--ease-standard);
 }
 
 .win-notif-summary::-webkit-details-marker {
@@ -585,13 +715,17 @@ details.win-notif-card {
 }
 
 .win-notif-app {
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .win-notif-meta {
   color: var(--text-tertiary);
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -603,7 +737,9 @@ details.win-notif-card {
   border-radius: var(--r-pill);
   background: var(--win-control-bg);
   color: var(--text-secondary);
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
   line-height: 16px;
 }
 
@@ -613,7 +749,7 @@ details.win-notif-card {
   margin-left: 2px;
   color: var(--text-tertiary);
   display: inline-flex;
-  transition: transform 167ms var(--ease-decelerate);
+  transition: transform var(--dur-fast) var(--ease-decelerate);
 }
 
 .win-notif-meta + .win-notif-chevron {
@@ -625,11 +761,13 @@ details.win-notif-card {
   height: 12px;
 }
 
-details.win-notif-card[open] .win-notif-chevron {
+details.win-notif-card[open] .win-notif-chevron,
+details.win-notif-card-ghost[open] .win-notif-chevron {
   transform: rotate(180deg);
 }
 
-details.win-notif-card > :not(summary) {
+details.win-notif-card > :not(summary),
+details.win-notif-card-ghost > :not(summary) {
   padding: 0 10px 8px;
 }
 
@@ -654,7 +792,9 @@ details.win-notif-card > :not(summary) {
   cursor: pointer;
   padding: 0;
   color: #ffffff;
-  transition: border-color 120ms ease, filter 120ms ease;
+  transition:
+    border-color var(--dur-fast) var(--ease-standard),
+    filter var(--dur-fast) var(--ease-standard);
 }
 
 .cc-popover.scheme-light .win-camera-preview {
@@ -696,12 +836,14 @@ details.win-notif-card > :not(summary) {
   align-items: center;
   gap: 4px;
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: var(--r-control);
   background: rgba(12, 16, 22, 0.72);
   color: rgba(255, 255, 255, 0.94);
-  font-size: 10px;
-  line-height: 14px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
+  font-size: 12px;
+  line-height: 14px;
 }
 
 .win-camera-live-dot {
@@ -724,10 +866,12 @@ details.win-notif-card > :not(summary) {
   top: 5px;
   right: 5px;
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: var(--r-control);
   background: rgba(12, 16, 22, 0.62);
   color: rgba(255, 255, 255, 0.78);
-  font-size: 10px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
   line-height: 14px;
 }
 
@@ -740,8 +884,10 @@ details.win-notif-card > :not(summary) {
 }
 
 .win-camera-status {
-  font-size: 11.5px;
-  line-height: 15px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
   color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -767,12 +913,16 @@ details.win-notif-card > :not(summary) {
   height: 13px;
 }
 
-.cc-feedback-card.is-error {
+.cc-feedback-card.is-error,
+.win-notif-card.is-error,
+.win-notif-card-ghost.is-error {
   background: var(--win-critical-bg);
   border-color: var(--win-critical-stroke);
 }
 
-.cc-feedback-card.is-warning {
+.cc-feedback-card.is-warning,
+.win-notif-card.is-warning,
+.win-notif-card-ghost.is-warning {
   background: var(--win-caution-bg);
 }
 
@@ -780,16 +930,20 @@ details.win-notif-card > :not(summary) {
   display: flex;
   align-items: center;
   gap: 6px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
   min-width: 0;
 }
 
 .cc-feedback-badge {
-  font-size: 11px;
-  line-height: 14px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
-  padding: 2px 6px;
+  font-size: 12px;
+  line-height: 16px;
+  padding: 1px 6px;
   border-radius: var(--r-control);
   background: var(--win-control-bg);
   color: var(--win-accent);
@@ -817,29 +971,40 @@ details.win-notif-card > :not(summary) {
   border: 1px solid var(--win-control-stroke);
   background: var(--win-control-bg);
   color: var(--text-primary);
-  font: inherit;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
   cursor: pointer;
   white-space: nowrap;
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
 }
 
 .cc-inline-pill.is-accent {
   background: var(--win-accent);
   border-color: var(--win-accent);
   color: var(--win-text-on-accent);
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .cc-inline-pill:hover {
+  .cc-inline-pill:hover:not(:disabled) {
     background: var(--win-control-hover);
   }
 
-  .cc-inline-pill.is-accent:hover {
+  .cc-inline-pill.is-accent:hover:not(:disabled) {
     background: var(--win-accent-hover);
   }
+}
+
+.cc-inline-pill:active:not(:disabled) {
+  transform: scale(0.975);
+  transition-duration: var(--dur-faster);
 }
 
 .cc-suggestion-row {
@@ -863,7 +1028,7 @@ details.win-notif-card > :not(summary) {
 
 .cc-suggestion-row[data-proactive-bar] .cc-inline-pill {
   flex-shrink: 0;
-  font-size: 11.5px;
+  font-size: 12px;
   padding: 2px 7px;
 }
 
@@ -878,14 +1043,13 @@ details.win-notif-card > :not(summary) {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
   color: var(--text-secondary);
 }
 
-/* =========================================================================
-   Bottom Island: Fluent TextBox, Quick Scenes & Room Tabs (Win+A)
-   ========================================================================= */
 .win-island-controls {
   padding: 10px 12px 4px;
   display: flex;
@@ -899,7 +1063,6 @@ details.win-notif-card > :not(summary) {
   flex-direction: column;
 }
 
-/* WinUI 3 TextBox with bottom accent focus underline */
 .cc-spotlight-bar {
   display: flex;
   align-items: center;
@@ -910,13 +1073,16 @@ details.win-notif-card > :not(summary) {
   background: var(--win-control-bg);
   border: 1px solid var(--win-control-stroke);
   border-bottom: 1px solid var(--win-control-bottom-stroke);
-  transition: background-color 120ms ease, border-color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
 }
 
 .cc-spotlight-bar:focus-within {
   background: var(--win-control-input-active);
-  border-bottom: 2px solid var(--win-accent);
-  padding-bottom: 0;
+  border-bottom-color: var(--win-accent);
+  box-shadow: inset 0 -2px 0 0 var(--win-accent);
 }
 
 .cc-spotlight-icon {
@@ -949,7 +1115,10 @@ details.win-notif-card > :not(summary) {
 
 .cc-search-count {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
   padding: 0 4px;
 }
 
@@ -964,7 +1133,10 @@ details.win-notif-card > :not(summary) {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
 }
 
 .cc-spotlight-send svg {
@@ -973,13 +1145,16 @@ details.win-notif-card > :not(summary) {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .cc-spotlight-send:hover {
+  .cc-spotlight-send:hover:not(:disabled) {
     background: var(--win-subtle-hover);
     color: var(--win-accent);
   }
 }
 
-/* Quick Scenes Capsule Strip */
+.cc-spotlight-send:active:not(:disabled) {
+  transform: scale(0.975);
+}
+
 .cc-quick-strip {
   display: flex;
   align-items: center;
@@ -999,9 +1174,10 @@ details.win-notif-card > :not(summary) {
   border: 1px solid var(--win-control-stroke);
   background: var(--win-control-bg);
   color: var(--text-primary);
-  font: inherit;
-  font-size: 11.5px;
-  line-height: 15px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1009,11 +1185,14 @@ details.win-notif-card > :not(summary) {
   white-space: nowrap;
   flex: 1 0 auto;
   cursor: pointer;
-  transition: background-color 120ms ease, border-color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .cc-quick-pill:hover {
+  .cc-quick-pill:hover:not(:disabled) {
     background: var(--win-control-hover);
   }
 }
@@ -1022,8 +1201,10 @@ details.win-notif-card > :not(summary) {
   color: var(--win-accent);
 }
 
-.cc-quick-pill:active {
+.cc-quick-pill:active:not(:disabled) {
   background: var(--win-control-pressed);
+  transform: scale(0.975);
+  transition-duration: var(--dur-faster);
 }
 
 .cc-quick-icon {
@@ -1034,7 +1215,6 @@ details.win-notif-card > :not(summary) {
   flex-shrink: 0;
 }
 
-/* Fluent Pivot / SelectorBar Room & Kind Tabs */
 .cc-room-bar {
   display: flex;
   align-items: center;
@@ -1079,13 +1259,17 @@ details.win-notif-card > :not(summary) {
   border: none;
   background: transparent;
   color: var(--text-secondary);
-  font: inherit;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
   white-space: nowrap;
   flex-shrink: 0;
   cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
 }
 
 .cc-room-pill.is-kind:not(.is-active) {
@@ -1093,26 +1277,45 @@ details.win-notif-card > :not(summary) {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .cc-room-pill:hover {
+  .cc-room-pill:hover:not(:disabled) {
     background: var(--win-subtle-hover);
     color: var(--text-primary);
   }
 }
 
+.cc-room-pill:active:not(:disabled) {
+  transform: scale(0.975);
+  transition-duration: var(--dur-faster);
+}
+
 .cc-room-pill.is-active {
   background: var(--win-subtle-hover);
   color: var(--text-primary);
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
 }
 
-.cc-room-pill.is-active::after {
+.cc-room-pill::after,
+.cc-settings-tabs .cc-seg-pill::after {
   content: "";
   position: absolute;
-  left: 8px;
-  right: 8px;
+  left: 50%;
   bottom: 0;
-  border-block-end: 3px solid var(--win-accent);
+  width: 16px;
+  height: 3px;
   border-radius: var(--r-pill);
+  background: var(--win-accent);
+  transform: translateX(-50%) scaleX(0);
+  opacity: 0;
+  transition:
+    transform var(--dur-fast) var(--ease-point-to-point),
+    opacity var(--dur-fast) var(--ease-point-to-point);
+}
+
+.cc-room-pill.is-active::after,
+.cc-settings-tabs .cc-seg-pill.is-active::after {
+  transform: translateX(-50%) scaleX(1);
+  opacity: 1;
 }
 
 .cc-room-tools {
@@ -1122,9 +1325,6 @@ details.win-notif-card > :not(summary) {
   flex-shrink: 0;
 }
 
-/* =========================================================================
-   Win+A 3-Column Split-Pill Capsule Grid & Sub-Flyout Detail View
-   ========================================================================= */
 .cc-scroll-area {
   flex: 1 1 0;
   min-height: 0;
@@ -1152,10 +1352,11 @@ details.win-notif-card > :not(summary) {
   background: none;
   padding: 2px 0;
   color: var(--text-secondary);
-  font: inherit;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-weight: 600;
   font-size: 12px;
   line-height: 16px;
-  font-weight: 600;
   cursor: pointer;
 }
 
@@ -1169,7 +1370,7 @@ details.win-notif-card > :not(summary) {
   display: inline-flex;
   width: 10px;
   height: 10px;
-  transition: transform 167ms var(--ease-decelerate);
+  transition: transform var(--dur-fast) var(--ease-decelerate);
 }
 
 .cc-group-caret svg {
@@ -1182,7 +1383,10 @@ details.win-notif-card > :not(summary) {
 }
 
 .cc-group-count {
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
   color: var(--text-tertiary);
 }
 
@@ -1216,7 +1420,8 @@ details.win-notif-card > :not(summary) {
   grid-column: 1 / -1 !important;
 }
 
-.cc-tile {
+.cc-tile,
+.cc-tile-ghost {
   position: relative;
   min-width: 0;
   border-radius: var(--r-card);
@@ -1225,16 +1430,65 @@ details.win-notif-card > :not(summary) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  transition: background-color 120ms ease, border-color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-decelerate);
 }
 
 .cc-tile.is-offline,
-.cc-tile.is-stale {
+.cc-tile.is-stale,
+.cc-tile-ghost.is-offline,
+.cc-tile-ghost.is-stale {
   opacity: 0.48;
 }
 
-/* Win+A Compact Split-Pill Capsule (`span 3`) */
-.cc-tile.is-capsule {
+.cc-tile.is-offline .win-pill-toggle,
+.cc-tile.is-offline .cc-tile-orb {
+  cursor: not-allowed;
+}
+
+@keyframes win-waiting-pulse {
+  0%, 100% {
+    opacity: 0.78;
+    border-color: color-mix(in srgb, var(--win-accent) 42%, var(--win-card-stroke));
+  }
+  50% {
+    opacity: 0.62;
+    border-color: var(--win-card-stroke);
+  }
+}
+
+.cc-tile.is-waiting {
+  opacity: 0.78;
+  cursor: progress;
+  animation: win-waiting-pulse 1.4s var(--ease-standard) infinite;
+}
+
+.cc-tile.is-capsule.is-waiting .win-split-pill {
+  border-color: color-mix(in srgb, var(--win-accent) 42%, var(--win-control-stroke));
+}
+
+.cc-tile.is-caution-armed,
+.cc-tile.is-caution-armed .win-split-pill {
+  border-color: var(--win-caution-stroke) !important;
+  box-shadow: 0 0 0 1px var(--win-caution-stroke);
+}
+
+.cc-tile.is-caution-armed .cc-tile-status {
+  color: var(--win-caution);
+  font-variation-settings: "opsz" 8;
+  font-weight: 600;
+}
+
+.cc-tile.is-popped,
+.cc-tile.is-capsule.is-popped .win-split-pill {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--win-accent) 55%, transparent);
+  transition: box-shadow var(--dur-fast) var(--ease-decelerate);
+}
+
+.cc-tile.is-capsule,
+.cc-tile-ghost.is-capsule {
   background: transparent;
   border: none;
   border-radius: var(--r-control);
@@ -1262,10 +1516,15 @@ details.win-notif-card > :not(summary) {
   display: flex;
   align-items: stretch;
   overflow: hidden;
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-decelerate);
 }
 
-.cc-tile.is-capsule.is-active .win-split-pill {
+.cc-tile.is-capsule.is-active .win-split-pill,
+.cc-tile-ghost.is-capsule.is-active .win-split-pill {
   background: var(--win-accent);
   border-color: var(--win-accent);
   color: var(--win-text-on-accent);
@@ -1276,12 +1535,38 @@ details.win-notif-card > :not(summary) {
   inset: 0 auto 0 0;
   z-index: 0;
   pointer-events: none;
-  background: rgba(255, 255, 255, 0.14);
-  transition: width 120ms linear;
+  background: var(--win-light-fill-inactive);
+  transform-origin: left center;
+  transition:
+    transform var(--dur-fast) var(--ease-decelerate),
+    background-color var(--dur-fast) var(--ease-standard);
 }
 
+.cc-popover.scheme-light .cc-tile-fill,
+.scheme-light .cc-tile-fill,
+.cc-popover.scheme-light .cc-tile:not(.is-active) .win-split-pill .cc-tile-fill,
+.scheme-light .cc-tile:not(.is-active) .win-split-pill .cc-tile-fill {
+  background: rgba(0, 95, 184, 0.16);
+}
+
+.cc-popover.scheme-light .cc-tile.is-active .win-split-pill .cc-tile-fill,
+.scheme-light .cc-tile.is-active .win-split-pill .cc-tile-fill,
 .cc-popover.scheme-light .win-split-pill .cc-tile-fill {
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.26);
+}
+
+.cc-tile-fill[style*="--fill-scale"],
+.cc-climate-gauge span[style*="--fill-scale"] {
+  width: 100% !important;
+  transform-origin: left center;
+  transform: scaleX(var(--fill-scale, 1));
+  transition:
+    transform var(--dur-fast) var(--ease-decelerate),
+    background-color var(--dur-fast) var(--ease-standard);
+}
+
+.cc-tile.is-dimming .cc-tile-fill {
+  transition: none !important;
 }
 
 .win-pill-toggle {
@@ -1298,7 +1583,9 @@ details.win-notif-card > :not(summary) {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background-color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
 }
 
 .win-pill-toggle svg {
@@ -1313,7 +1600,6 @@ details.win-notif-card > :not(summary) {
   flex: 0 0 32px;
   height: 100%;
   border: none;
-  border-left: 1px solid var(--win-divider);
   border-radius: 0;
   background: transparent;
   color: inherit;
@@ -1321,32 +1607,59 @@ details.win-notif-card > :not(summary) {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background-color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
 }
 
-.cc-tile.is-capsule.is-active .win-pill-expand {
-  border-left-color: rgba(0, 0, 0, 0.16);
+.win-pill-expand::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 22%;
+  height: 56%;
+  width: 1px;
+  background: var(--win-divider);
+  pointer-events: none;
 }
 
-.cc-popover.scheme-light .cc-tile.is-capsule.is-active .win-pill-expand {
-  border-left-color: rgba(255, 255, 255, 0.24);
+.cc-tile.is-capsule.is-active .win-pill-expand::before,
+.cc-tile-ghost.is-capsule.is-active .win-pill-expand::before {
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.cc-popover.scheme-light .cc-tile.is-capsule.is-active .win-pill-expand::before,
+.cc-popover.scheme-light .cc-tile-ghost.is-capsule.is-active .win-pill-expand::before {
+  background: rgba(255, 255, 255, 0.24);
 }
 
 .win-pill-expand svg {
   width: 12px;
   height: 12px;
+  transition: transform var(--dur-fast) var(--ease-decelerate);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .cc-tile.is-capsule:not(.is-active) .win-pill-toggle:hover,
-  .cc-tile.is-capsule:not(.is-active) .win-pill-expand:hover {
+  .cc-tile.is-capsule:not(.is-active) .win-pill-toggle:hover:not(:disabled),
+  .cc-tile.is-capsule:not(.is-active) .win-pill-expand:hover:not(:disabled) {
     background: var(--win-control-hover);
   }
 
-  .cc-tile.is-capsule.is-active .win-pill-toggle:hover,
-  .cc-tile.is-capsule.is-active .win-pill-expand:hover {
+  .cc-tile.is-capsule.is-active .win-pill-toggle:hover:not(:disabled),
+  .cc-tile.is-capsule.is-active .win-pill-expand:hover:not(:disabled) {
     background: rgba(255, 255, 255, 0.12);
   }
+
+  .has-expand .win-pill-expand:hover:not(:disabled) svg {
+    transform: translateX(1.5px);
+  }
+}
+
+.win-pill-toggle:active:not(:disabled),
+.win-pill-expand:active:not(:disabled),
+.win-pill-caption:active:not(:disabled) {
+  transform: scale(0.975);
+  transition-duration: var(--dur-faster);
 }
 
 .win-split-pill .cc-readonly-badge {
@@ -1359,6 +1672,7 @@ details.win-notif-card > :not(summary) {
 .win-pill-caption {
   width: 100%;
   border: none;
+  border-radius: var(--r-control);
   background: transparent;
   color: inherit;
   display: flex;
@@ -1366,14 +1680,25 @@ details.win-notif-card > :not(summary) {
   align-items: center;
   text-align: center;
   gap: 1px;
-  padding: 0 2px;
+  padding: 2px 4px;
   cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .win-pill-caption:hover:not(:disabled) {
+    background: var(--win-subtle-hover);
+  }
 }
 
 .win-pill-caption .cc-tile-name {
-  font-size: 12px;
-  line-height: 15px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-weight: 400;
+  font-size: 12px;
+  line-height: 16px;
   color: var(--text-primary);
   max-width: 100%;
   overflow: hidden;
@@ -1382,8 +1707,10 @@ details.win-notif-card > :not(summary) {
 }
 
 .win-pill-caption .cc-tile-status {
-  font-size: 11px;
-  line-height: 14px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
   color: var(--text-secondary);
   max-width: 100%;
   overflow: hidden;
@@ -1391,22 +1718,27 @@ details.win-notif-card > :not(summary) {
   white-space: nowrap;
 }
 
-/* Full-Width Row Tile (`span 6` / Single-Column Mode / Panel Size) */
-.cc-tile:not(.is-capsule) > .cc-tile-fill {
+.cc-tile:not(.is-capsule) > .cc-tile-fill,
+.cc-tile-ghost:not(.is-capsule) > .cc-tile-fill {
   position: absolute;
   inset: 0 auto 0 0;
   z-index: 0;
   pointer-events: none;
   background: color-mix(in srgb, var(--win-accent) 16%, transparent);
-  transition: width 120ms linear;
+  transform-origin: left center;
+  transition:
+    transform var(--dur-fast) var(--ease-decelerate),
+    background-color var(--dur-fast) var(--ease-standard);
 }
 
-.cc-tile:not(.is-capsule) > *:not(.cc-tile-fill):not(.cc-resize-handle):not(.cc-tile-pin-badge) {
+.cc-tile:not(.is-capsule) > *:not(.cc-tile-fill):not(.cc-resize-handle):not(.cc-tile-pin-badge),
+.cc-tile-ghost:not(.is-capsule) > *:not(.cc-tile-fill):not(.cc-resize-handle):not(.cc-tile-pin-badge) {
   position: relative;
   z-index: 1;
 }
 
-.cc-tile:not(.is-capsule) .cc-tile-header {
+.cc-tile:not(.is-capsule) .cc-tile-header,
+.cc-tile-ghost:not(.is-capsule) .cc-tile-header {
   padding: 10px 12px;
   display: flex;
   align-items: center;
@@ -1419,7 +1751,8 @@ details.win-notif-card > :not(summary) {
   }
 }
 
-.cc-tile:not(.is-capsule) .cc-tile-orb {
+.cc-tile:not(.is-capsule) .cc-tile-orb,
+.cc-tile-ghost:not(.is-capsule) .cc-tile-orb {
   width: 34px;
   height: 34px;
   border-radius: var(--r-control);
@@ -1431,21 +1764,32 @@ details.win-notif-card > :not(summary) {
   justify-content: center;
   flex-shrink: 0;
   cursor: pointer;
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
 }
 
-.cc-tile:not(.is-capsule) .cc-tile-orb svg {
+.cc-tile:not(.is-capsule) .cc-tile-orb:active:not(:disabled) {
+  transform: scale(0.975);
+}
+
+.cc-tile:not(.is-capsule) .cc-tile-orb svg,
+.cc-tile-ghost:not(.is-capsule) .cc-tile-orb svg {
   width: 16px;
   height: 16px;
 }
 
-.cc-tile:not(.is-capsule).is-active .cc-tile-orb {
+.cc-tile:not(.is-capsule).is-active .cc-tile-orb,
+.cc-tile-ghost:not(.is-capsule).is-active .cc-tile-orb {
   background: var(--win-accent);
   border-color: var(--win-accent);
   color: var(--win-text-on-accent);
 }
 
-.cc-tile:not(.is-capsule) .cc-tile-body {
+.cc-tile:not(.is-capsule) .cc-tile-body,
+.cc-tile-ghost:not(.is-capsule) .cc-tile-body {
   flex: 1;
   min-width: 0;
   border: none;
@@ -1458,17 +1802,22 @@ details.win-notif-card > :not(summary) {
   cursor: pointer;
 }
 
-.cc-tile:not(.is-capsule) .cc-tile-name {
+.cc-tile:not(.is-capsule) .cc-tile-name,
+.cc-tile-ghost:not(.is-capsule) .cc-tile-name {
+  font-variation-settings: "opsz" 10.5;
+  font-weight: 600;
   font-size: 13px;
   line-height: 18px;
-  font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.cc-tile:not(.is-capsule) .cc-tile-status {
+.cc-tile:not(.is-capsule) .cc-tile-status,
+.cc-tile-ghost:not(.is-capsule) .cc-tile-status {
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
   color: var(--text-secondary);
@@ -1477,7 +1826,8 @@ details.win-notif-card > :not(summary) {
   white-space: nowrap;
 }
 
-.cc-tile:not(.is-capsule) .cc-tile-chevron {
+.cc-tile:not(.is-capsule) .cc-tile-chevron,
+.cc-tile-ghost:not(.is-capsule) .cc-tile-chevron {
   width: 28px;
   height: 28px;
   border-radius: var(--r-control);
@@ -1489,22 +1839,30 @@ details.win-notif-card > :not(summary) {
   justify-content: center;
   flex-shrink: 0;
   cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-decelerate);
 }
 
-.cc-tile:not(.is-capsule) .cc-tile-chevron svg {
+.cc-tile:not(.is-capsule) .cc-tile-chevron svg,
+.cc-tile-ghost:not(.is-capsule) .cc-tile-chevron svg {
   width: 14px;
   height: 14px;
+  transition: transform var(--dur-fast) var(--ease-decelerate);
+}
+
+.cc-tile:not(.is-capsule) .cc-tile-chevron.is-open svg {
+  transform: rotate(90deg);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .cc-tile:not(.is-capsule) .cc-tile-chevron:hover {
+  .cc-tile:not(.is-capsule) .cc-tile-chevron:hover:not(:disabled) {
     background: var(--win-subtle-hover);
     color: var(--text-primary);
   }
 }
 
-/* Win+A In-Place Sub-Flyout Navigation (keeps all [data-tile-id] mounted in DOM) */
 .cc-scroll-area:has(.cc-tile.is-subpage) .cc-group-header,
 .win-island--bottom:has(.cc-tile.is-subpage) .win-island-controls,
 .win-island--bottom:has(.cc-tile.is-subpage) .win-slider-deck,
@@ -1526,7 +1884,9 @@ details.win-notif-card > :not(summary) {
   gap: 0;
 }
 
-.cc-tile.is-subpage {
+.cc-tile.is-subpage,
+.cc-tile-ghost.is-subpage-ghost,
+.is-subpage-ghost {
   flex: 1 1 auto;
   background: transparent;
   border: none;
@@ -1540,12 +1900,14 @@ details.win-notif-card > :not(summary) {
   border-bottom: 1px solid var(--win-divider);
 }
 
-.cc-tile.is-subpage .cc-tile-drawer {
+.cc-tile.is-subpage .cc-tile-drawer,
+.is-subpage-ghost .cc-tile-drawer {
   padding: 14px 16px 16px;
   gap: 12px;
 }
 
-.cc-tile.is-subpage .cc-facet-section {
+.cc-tile.is-subpage .cc-facet-section,
+.is-subpage-ghost .cc-facet-section {
   padding: 12px 16px 14px;
 }
 
@@ -1556,7 +1918,7 @@ details.win-notif-card > :not(summary) {
 
 @media (prefers-reduced-motion: no-preference) {
   .cc-empty-icon.is-pulsing {
-    animation: cc-empty-pulse 1.6s ease-in-out infinite;
+    animation: cc-empty-pulse 1.6s var(--ease-standard) infinite;
   }
 }
 
@@ -1571,20 +1933,32 @@ details.win-notif-card > :not(summary) {
   }
 }
 
-@keyframes win-subpage-in {
-  from {
-    opacity: 0;
-    transform: translateX(18px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
+.cc-expander-grid {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--dur-slow) var(--ease-decelerate);
+}
+
+.cc-expander-grid.is-collapsed {
+  grid-template-rows: 0fr;
+}
+
+.cc-expander-clip {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.cc-tile.is-subpage .cc-expander-clip,
+.cc-tile-ghost.is-subpage-ghost .cc-expander-clip {
+  overflow: visible;
+}
+
+@starting-style {
+  .cc-expander-grid:not(.is-collapsed) {
+    grid-template-rows: 0fr;
   }
 }
 
-/* =========================================================================
-   Detail Drawers, Facet Controls & Domain Cards
-   ========================================================================= */
 .cc-tile-drawer {
   padding: 12px;
   border-top: 1px solid var(--win-divider);
@@ -1593,7 +1967,8 @@ details.win-notif-card > :not(summary) {
   gap: 10px;
 }
 
-.cc-tile.is-subpage .cc-tile-drawer {
+.cc-tile.is-subpage .cc-tile-drawer,
+.is-subpage-ghost .cc-tile-drawer {
   border-top: none;
 }
 
@@ -1605,7 +1980,8 @@ details.win-notif-card > :not(summary) {
   gap: 8px;
 }
 
-.cc-facet-header {
+.cc-facet-header,
+.cc-facet-toggle {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1614,9 +1990,11 @@ details.win-notif-card > :not(summary) {
   border: none;
   background: transparent;
   color: var(--text-primary);
-  font: inherit;
-  font-size: 12px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
+  font-size: 12px;
+  line-height: 16px;
   cursor: pointer;
   text-align: left;
 }
@@ -1631,14 +2009,21 @@ details.win-notif-card > :not(summary) {
 
 .cc-facet-header-count {
   color: var(--text-tertiary);
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
 }
 
-.cc-facet-header .cc-mini-caret {
-  transition: transform 167ms var(--ease-decelerate);
+.cc-facet-header .cc-mini-caret,
+.cc-facet-toggle .cc-mini-caret,
+.cc-facet-toggle svg,
+summary .cc-mini-caret {
+  transition: transform var(--dur-fast) var(--ease-decelerate);
 }
 
-.cc-facet-header .cc-mini-caret.is-open {
+.cc-facet-header .cc-mini-caret.is-open,
+.cc-facet-toggle[aria-expanded="true"] .cc-mini-caret {
   transform: rotate(90deg);
 }
 
@@ -1662,7 +2047,10 @@ details.win-notif-card > :not(summary) {
   background: var(--win-card-secondary);
   border: 1px solid var(--win-card-stroke);
   color: var(--text-secondary);
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .cc-facet-more-btn {
@@ -1676,9 +2064,14 @@ details.win-notif-card > :not(summary) {
   border: 1px solid var(--win-control-stroke);
   background: var(--win-control-bg);
   color: var(--text-secondary);
-  font: inherit;
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
   cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
 }
 
 .cc-facet-more-btn .cc-mini-caret.is-open {
@@ -1741,19 +2134,24 @@ details.win-notif-card > :not(summary) {
   border: 1px solid var(--win-control-stroke);
   background: var(--win-control-bg);
   color: var(--text-primary);
-  font: inherit;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
+  line-height: 16px;
   cursor: pointer;
 }
 
 .cc-facet-portion-select:disabled {
-  opacity: 0.45;
-  cursor: default;
+  opacity: 0.42;
+  cursor: not-allowed;
 }
 
 .cc-facet-fed-today {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .cc-cover-actions {
@@ -1769,7 +2167,10 @@ details.win-notif-card > :not(summary) {
   align-items: center;
   gap: 4px;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .cc-cover-battery.is-low {
@@ -1791,13 +2192,17 @@ details.win-notif-card > :not(summary) {
 
 .cc-plug-metric-label {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .cc-plug-metric-val {
   color: var(--text-primary);
-  font-size: 13px;
+  font-variation-settings: "opsz" 10.5;
   font-weight: 600;
+  font-size: 13px;
 }
 
 .cc-generic-alert,
@@ -1810,8 +2215,11 @@ details.win-notif-card > :not(summary) {
   background: var(--win-critical-bg);
   border: 1px solid var(--win-critical-stroke);
   color: var(--win-critical);
-  font-size: 12px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .cc-generic-alert-text {
@@ -1824,21 +2232,29 @@ details.win-notif-card > :not(summary) {
   align-items: flex-start;
   gap: 6px;
   color: var(--text-secondary);
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
 }
 
 .cc-facet-label {
   color: var(--text-secondary);
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
+  line-height: 16px;
   flex: 1 1 auto;
   min-width: 0;
 }
 
 .cc-facet-value {
   color: var(--text-primary);
-  font-size: 12px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
+  font-size: 12px;
+  line-height: 16px;
   white-space: nowrap;
 }
 
@@ -1848,8 +2264,10 @@ details.win-notif-card > :not(summary) {
   background: var(--win-control-bg);
   border: 1px solid var(--win-control-stroke);
   color: var(--text-secondary);
-  font-size: 10px;
-  line-height: 14px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
   white-space: nowrap;
 }
 
@@ -1888,9 +2306,20 @@ details.win-notif-card > :not(summary) {
   border: 1px solid var(--win-control-stroke);
   background: var(--win-control-bg);
   color: var(--text-primary);
-  font-size: 11.5px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-weight: 500;
+  font-size: 12px;
+  line-height: 16px;
   cursor: pointer;
+}
+
+.cc-slider-group,
+.cc-facet-row.is-slider,
+.win-slider-row,
+.cc-opacity-row {
+  position: relative;
+  overflow: visible;
 }
 
 .cc-slider-group {
@@ -1903,6 +2332,8 @@ details.win-notif-card > :not(summary) {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
   color: var(--text-secondary);
@@ -1910,12 +2341,50 @@ details.win-notif-card > :not(summary) {
 
 .cc-slider-label strong {
   color: var(--text-primary);
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
 }
 
-/* =========================================================================
-   WinUI 3 Range Slider & Bottom Compound Slider Deck
-   ========================================================================= */
+.cc-slider-thumb-badge,
+.win-slider-tooltip {
+  position: absolute;
+  left: var(--thumb-left, 50%);
+  bottom: calc(100% + 6px);
+  z-index: 25;
+  padding: 2px 7px;
+  border-radius: var(--r-control);
+  background: var(--win-menu-bg);
+  border: 1px solid var(--win-island-stroke);
+  box-shadow:
+    inset 0 1px 0 var(--win-island-catchlight),
+    var(--win-island-shadow);
+  color: var(--text-primary);
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-weight: 600;
+  font-size: 12px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 4px) scale(0.92);
+  transition:
+    opacity var(--dur-fast) var(--ease-decelerate),
+    transform var(--dur-fast) var(--ease-decelerate);
+}
+
+.cc-slider-thumb-badge.is-visible,
+.win-slider-tooltip.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+}
+
+.cc-slider-group > .cc-slider-thumb-badge,
+.cc-slider-group > .win-slider-tooltip {
+  bottom: 24px;
+}
+
 .cc-range {
   -webkit-appearance: none;
   appearance: none;
@@ -1950,19 +2419,25 @@ details.win-notif-card > :not(summary) {
   margin-top: -8px;
   border-radius: 50%;
   background: var(--win-accent);
-  border: 4px solid var(--win-thumb-shell);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.22);
-  transition: border-width 100ms ease;
+  border: 1px solid var(--win-thumb-stroke);
+  box-shadow:
+    inset 0 0 0 3px var(--win-thumb-shell),
+    0 1px 3px rgba(0, 0, 0, 0.24);
+  transform: scale(1);
+  transition:
+    transform var(--dur-fast) var(--ease-decelerate),
+    box-shadow var(--dur-fast) var(--ease-decelerate),
+    background-color var(--dur-fast) var(--ease-standard);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .cc-range:hover::-webkit-slider-thumb {
-    border-width: 3px;
+  .cc-range:hover:not(:disabled)::-webkit-slider-thumb {
+    transform: scale(1.14);
   }
 }
 
-.cc-range:active::-webkit-slider-thumb {
-  border-width: 5px;
+.cc-range:active:not(:disabled)::-webkit-slider-thumb {
+  transform: scale(0.82);
 }
 
 .cc-range::-moz-range-track {
@@ -1987,22 +2462,27 @@ details.win-notif-card > :not(summary) {
   height: 20px;
   border-radius: 50%;
   background: var(--win-accent);
-  border: 4px solid var(--win-thumb-shell);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.22);
-  transition: border-width 100ms ease;
+  border: 1px solid var(--win-thumb-stroke);
+  box-shadow:
+    inset 0 0 0 3px var(--win-thumb-shell),
+    0 1px 3px rgba(0, 0, 0, 0.24);
+  transform: scale(1);
+  transition:
+    transform var(--dur-fast) var(--ease-decelerate),
+    box-shadow var(--dur-fast) var(--ease-decelerate),
+    background-color var(--dur-fast) var(--ease-standard);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .cc-range:hover::-moz-range-thumb {
-    border-width: 3px;
+  .cc-range:hover:not(:disabled)::-moz-range-thumb {
+    transform: scale(1.14);
   }
 }
 
-.cc-range:active::-moz-range-thumb {
-  border-width: 5px;
+.cc-range:active:not(:disabled)::-moz-range-thumb {
+  transform: scale(0.82);
 }
 
-/* Win+A Compound Slider Deck (pinned above footer strip) */
 .win-slider-deck {
   padding: 5px 12px 6px;
   border-top: 1px solid var(--win-divider);
@@ -2032,7 +2512,15 @@ details.win-notif-card > :not(summary) {
   justify-content: center;
   flex-shrink: 0;
   cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
+}
+
+.win-deck-btn:active:not(:disabled),
+.win-deck-more:active:not(:disabled) {
+  transform: scale(0.975);
 }
 
 .win-deck-btn.is-active {
@@ -2050,8 +2538,8 @@ details.win-notif-card > :not(summary) {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  button.win-deck-btn:hover,
-  .win-deck-more:hover {
+  button.win-deck-btn:hover:not(:disabled),
+  .win-deck-more:hover:not(:disabled) {
     background: var(--win-subtle-hover);
     color: var(--text-primary);
   }
@@ -2065,13 +2553,14 @@ details.win-notif-card > :not(summary) {
 .win-deck-val {
   min-width: 32px;
   text-align: right;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
   color: var(--text-secondary);
   flex-shrink: 0;
 }
 
-/* Segmented Pills inside Drawers */
 .cc-segmented-pills {
   display: flex;
   flex-wrap: wrap;
@@ -2088,47 +2577,74 @@ details.win-notif-card > :not(summary) {
   border: 1px solid var(--win-control-stroke);
   background: var(--win-control-bg);
   color: var(--text-primary);
-  font: inherit;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
   cursor: pointer;
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .cc-seg-pill:hover {
+  .cc-seg-pill:hover:not(:disabled) {
     background: var(--win-control-hover);
   }
+}
+
+.cc-seg-pill:active:not(:disabled) {
+  transform: scale(0.975);
+  transition-duration: var(--dur-faster);
 }
 
 .cc-seg-pill.is-active {
   background: var(--win-accent);
   border-color: var(--win-accent);
   color: var(--win-text-on-accent);
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
 }
 
-.cc-seg-pill.is-high-risk:not(.is-active) {
-  border-color: rgba(252, 225, 0, 0.45);
+.cc-seg-pill.is-high-risk:not(.is-active),
+.is-high-risk:not(.is-active) {
+  border-color: var(--win-caution-stroke);
   color: var(--win-caution);
 }
 
-.cc-seg-pill.is-high-risk.is-active {
+.cc-seg-pill.is-high-risk.is-active,
+.is-high-risk.is-active {
   background: var(--win-caution);
   border-color: var(--win-caution);
-  color: #1c1c1e;
+  color: var(--win-caution-on-fill);
+}
+
+.cc-popover.scheme-light .cc-seg-pill.is-high-risk:not(.is-active),
+.scheme-light .is-high-risk:not(.is-active) {
+  border-color: var(--win-caution-stroke);
+  background: var(--win-caution-bg);
+  color: var(--win-caution);
+}
+
+.cc-popover.scheme-light .cc-seg-pill.is-high-risk.is-active,
+.scheme-light .is-high-risk.is-active {
+  background: var(--win-caution);
+  border-color: var(--win-caution);
+  color: var(--win-caution-on-fill);
 }
 
 .cc-pill-label {
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
+  line-height: 16px;
   color: var(--text-secondary);
   align-self: center;
   margin-right: 2px;
 }
 
-/* =========================================================================
-   Climate Strip & Sensor Card (Fluent 2 Card Surfaces)
-   ========================================================================= */
 .cc-climate {
   padding: 8px 10px;
   gap: 6px;
@@ -2151,7 +2667,15 @@ details.win-notif-card > :not(summary) {
   border: 1px solid var(--win-control-stroke);
   background: var(--win-control-bg);
   color: var(--text-secondary);
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
+}
+
+.cc-climate-power:active:not(:disabled) {
+  transform: scale(0.975);
 }
 
 .cc-climate-power svg {
@@ -2180,9 +2704,10 @@ details.win-notif-card > :not(summary) {
 }
 
 .cc-climate-name .cc-tile-name {
+  font-variation-settings: "opsz" 10.5;
+  font-weight: 600;
   font-size: 13px;
   line-height: 18px;
-  font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2190,6 +2715,8 @@ details.win-notif-card > :not(summary) {
 }
 
 .cc-climate-name .cc-tile-status {
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
   color: var(--text-secondary);
@@ -2201,7 +2728,7 @@ details.win-notif-card > :not(summary) {
   height: 9px;
   vertical-align: middle;
   opacity: 0.72;
-  transition: transform 167ms var(--ease-decelerate);
+  transition: transform var(--dur-fast) var(--ease-decelerate);
 }
 
 .cc-mini-caret svg {
@@ -2224,27 +2751,36 @@ details.win-notif-card > :not(summary) {
   border: 1px solid var(--win-control-stroke);
   background: var(--win-control-bg);
   color: var(--text-primary);
-  transition: background-color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .cc-climate-step:hover {
+  .cc-climate-step:hover:not(:disabled) {
     background: var(--win-control-hover);
   }
+}
+
+.cc-climate-step:active:not(:disabled) {
+  transform: scale(0.975);
 }
 
 .cc-climate-temp {
   min-width: 52px;
   text-align: center;
+  font-variation-settings: "opsz" 10.5;
+  font-weight: 600;
   font-size: 18px;
   line-height: 24px;
-  font-weight: 600;
   flex-shrink: 0;
 }
 
 .cc-climate-temp small {
-  font-size: 12px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-weight: 400;
+  font-size: 12px;
   color: var(--text-secondary);
   margin-left: 1px;
 }
@@ -2262,7 +2798,10 @@ details.win-notif-card > :not(summary) {
   border-radius: inherit;
   background: var(--win-accent);
   opacity: 0.45;
-  transition: width 220ms var(--ease-decelerate);
+  transform-origin: left center;
+  transition:
+    transform var(--dur-normal) var(--ease-decelerate),
+    opacity var(--dur-fast) var(--ease-standard);
 }
 
 .cc-climate.is-active .cc-climate-gauge span {
@@ -2277,7 +2816,6 @@ details.win-notif-card > :not(summary) {
   border-top: 1px solid var(--win-divider);
 }
 
-/* Sensor Card */
 .cc-sensor {
   padding: 10px 12px;
   gap: 6px;
@@ -2292,9 +2830,11 @@ details.win-notif-card > :not(summary) {
 }
 
 .cc-sensor.is-compact .cc-sensor-name {
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-weight: 500;
   font-size: 12px;
   line-height: 16px;
-  font-weight: 500;
   color: var(--text-primary);
 }
 
@@ -2309,8 +2849,10 @@ details.win-notif-card > :not(summary) {
 .cc-sensor-name {
   flex: 1;
   min-width: 0;
-  font-size: 11px;
-  line-height: 14px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
   color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
@@ -2318,14 +2860,19 @@ details.win-notif-card > :not(summary) {
 }
 
 .cc-sensor-name.is-strong {
+  font-family: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 10.5;
+  font-weight: 600;
   font-size: 13px;
   line-height: 18px;
-  font-weight: 600;
   color: var(--text-primary);
 }
 
 .cc-sensor-room {
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
   color: var(--text-tertiary);
 }
 
@@ -2337,30 +2884,42 @@ details.win-notif-card > :not(summary) {
 }
 
 .cc-sensor-temp {
-  font-size: 20px;
-  line-height: 24px;
+  font-family: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 36;
   font-weight: 600;
+  font-size: 20px;
+  line-height: 28px;
 }
 
 .cc-sensor.is-compact .cc-sensor-temp {
+  font-family: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 10.5;
+  font-weight: 600;
   font-size: 15px;
-  line-height: 18px;
+  line-height: 20px;
 }
 
 .cc-sensor-temp.is-big {
+  font-family: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 36;
+  font-weight: 600;
   font-size: 26px;
-  line-height: 30px;
+  line-height: 32px;
 }
 
 .cc-sensor-temp small {
   font-size: 0.55em;
+  font-variation-settings: "opsz" 8;
   font-weight: 400;
   color: var(--text-secondary);
   margin-left: 1px;
 }
 
 .cc-sensor-hum {
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
   color: var(--win-accent);
 }
 
@@ -2392,9 +2951,11 @@ details.win-notif-card > :not(summary) {
 }
 
 .cc-comfort {
-  font-size: 10px;
-  line-height: 14px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
+  font-size: 12px;
+  line-height: 16px;
   padding: 1px 5px;
   border-radius: var(--r-control);
   background: var(--win-control-bg);
@@ -2440,7 +3001,10 @@ details.win-notif-card > :not(summary) {
 }
 
 .cc-sensor-batt {
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
   color: var(--text-secondary);
 }
 
@@ -2480,7 +3044,7 @@ details.win-notif-card > :not(summary) {
   stroke: var(--win-accent);
   stroke-linecap: round;
   stroke-dasharray: calc(var(--h) * 1) 100;
-  transition: stroke-dasharray 300ms var(--ease-decelerate);
+  transition: stroke-dasharray var(--dur-banner-in) var(--ease-decelerate);
 }
 
 .cc-hum-ring span {
@@ -2488,13 +3052,12 @@ details.win-notif-card > :not(summary) {
   inset: 0;
   display: grid;
   place-items: center;
-  font-size: 12px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
+  font-size: 12px;
 }
 
-/* =========================================================================
-   Empty / Syncing States
-   ========================================================================= */
 .cc-empty-state {
   padding: 36px 20px;
   display: flex;
@@ -2522,13 +3085,16 @@ details.win-notif-card > :not(summary) {
 }
 
 .cc-empty-title {
+  font-variation-settings: "opsz" 10.5;
+  font-weight: 600;
   font-size: 14px;
   line-height: 20px;
-  font-weight: 600;
   color: var(--text-primary);
 }
 
 .cc-empty-subtitle {
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
   color: var(--text-secondary);
@@ -2540,16 +3106,13 @@ details.win-notif-card > :not(summary) {
   margin-top: 6px;
 }
 
-/* =========================================================================
-   Bottom Island: Win+A Utility Footer Strip
-   ========================================================================= */
 .cc-footer {
   height: 44px;
-  padding: 0 8px 0 10px;
+  padding: 0 6px 0 8px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 4px;
+  gap: 3px;
   flex-shrink: 0;
   min-width: 0;
   background: var(--win-card-secondary);
@@ -2559,7 +3122,7 @@ details.win-notif-card > :not(summary) {
 .cc-footer-status {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
   flex: 1 1 78px;
 }
@@ -2589,7 +3152,9 @@ details.win-notif-card > :not(summary) {
 }
 
 .cc-footer-label {
-  font-size: 11.5px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
   line-height: 16px;
   color: var(--text-secondary);
   white-space: nowrap;
@@ -2613,7 +3178,6 @@ button.cc-footer-label.is-action {
   text-underline-offset: 2px;
 }
 
-/* Scoped 0.6s Hold All-Off Pill & Edit Done Pill */
 .cc-all-off-pill {
   height: 26px;
   padding: 0 6px;
@@ -2621,10 +3185,11 @@ button.cc-footer-label.is-action {
   border: 1px solid var(--win-control-stroke);
   background: var(--win-control-bg);
   color: var(--text-primary);
-  font: inherit;
-  font-size: 11px;
-  line-height: 14px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
+  font-size: 12px;
+  line-height: 16px;
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -2634,13 +3199,20 @@ button.cc-footer-label.is-action {
   cursor: pointer;
   position: relative;
   overflow: hidden;
-  transition: background-color 120ms ease, border-color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .cc-all-off-pill:hover {
+  .cc-all-off-pill:hover:not(:disabled) {
     background: var(--win-control-hover);
   }
+}
+
+.cc-all-off-pill:active:not(:disabled) {
+  transform: scale(0.975);
 }
 
 .cc-all-off-pill > *:not(.cc-hold-fill) {
@@ -2670,7 +3242,7 @@ button.cc-footer-label.is-action {
 
 .cc-all-off-pill.is-holding .cc-hold-fill {
   transform: scaleX(1);
-  transition: transform 600ms linear;
+  transition: transform 600ms var(--ease-linear);
 }
 
 .cc-all-off-pill.is-done {
@@ -2690,8 +3262,8 @@ button.cc-footer-label.is-action {
 }
 
 .cc-footer-icon-btn {
-  width: 25px;
-  height: 25px;
+  width: 24px;
+  height: 24px;
   border-radius: var(--r-control);
   border: none;
   background: transparent;
@@ -2701,7 +3273,14 @@ button.cc-footer-label.is-action {
   justify-content: center;
   flex-shrink: 0;
   cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
+}
+
+.cc-footer-icon-btn:active:not(:disabled) {
+  transform: scale(0.975);
 }
 
 .cc-footer-icon-btn svg {
@@ -2710,12 +3289,12 @@ button.cc-footer-label.is-action {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .cc-footer-icon-btn:hover {
+  .cc-footer-icon-btn:hover:not(:disabled) {
     background: var(--win-subtle-hover);
     color: var(--text-primary);
   }
 
-  .cc-footer-icon-btn.is-danger:hover {
+  .cc-footer-icon-btn.is-danger:hover:not(:disabled) {
     background: var(--win-critical-bg);
     color: var(--win-critical);
   }
@@ -2728,16 +3307,24 @@ button.cc-footer-label.is-action {
   border: 1px solid var(--win-control-stroke);
   background: var(--win-control-bg);
   color: var(--text-primary);
-  font: inherit;
-  font-size: 11px;
-  line-height: 14px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
+  font-size: 12px;
+  line-height: 16px;
   display: inline-flex;
   align-items: center;
   gap: 3px;
   flex-shrink: 0;
   cursor: pointer;
-  transition: background-color 120ms ease, border-color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
+}
+
+.cc-footer-pill:active:not(:disabled) {
+  transform: scale(0.975);
 }
 
 .cc-footer-pill svg {
@@ -2752,19 +3339,16 @@ button.cc-footer-label.is-action {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .cc-footer-pill.is-accent:hover {
+  .cc-footer-pill.is-accent:hover:not(:disabled) {
     background: var(--win-accent-hover);
   }
 }
 
-/* =========================================================================
-   Fluent 2 Modal Sheets (Settings, Onboarding & Camera 16:9 Live View)
-   ========================================================================= */
 .cc-sheet-backdrop {
   position: absolute;
   inset: 0;
   border-radius: var(--r-flyout);
-  background: rgba(0, 0, 0, 0.48);
+  background: var(--win-smoke-bg);
   padding: 0;
   display: flex;
   align-items: stretch;
@@ -2773,17 +3357,22 @@ button.cc-footer-label.is-action {
 }
 
 .cc-popover.scheme-light .cc-sheet-backdrop {
-  background: rgba(0, 0, 0, 0.24);
+  background: var(--win-smoke-bg);
 }
 
-.cc-sheet {
+.cc-sheet,
+.cc-sheet-ghost,
+.cc-camera-live-sheet,
+.cc-camera-live-sheet-ghost {
   width: 100%;
   max-height: 100%;
   overflow-y: auto;
   border-radius: var(--r-flyout);
   background: var(--win-sheet-bg);
   border: 1px solid var(--win-island-stroke);
-  box-shadow: var(--win-island-shadow);
+  box-shadow:
+    inset 0 1px 0 var(--win-island-catchlight),
+    var(--win-island-shadow);
   padding: 14px;
   display: flex;
   flex-direction: column;
@@ -2798,20 +3387,22 @@ button.cc-footer-label.is-action {
 }
 
 .cc-sheet-title {
-  font-family: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-family: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 10.5;
+  font-weight: 600;
   font-size: 16px;
   line-height: 22px;
-  font-weight: 600;
   color: var(--text-primary);
 }
 
 .cc-sheet-desc {
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 18px;
   color: var(--text-secondary);
 }
 
-/* Camera Live View */
 .cc-camera-stage {
   position: relative;
   overflow: hidden;
@@ -2834,6 +3425,8 @@ button.cc-footer-label.is-action {
 
 .cc-camera-stage.is-sleeping > p,
 .cc-camera-stage.is-error > p {
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 18px;
   color: rgba(255, 255, 255, 0.78);
@@ -2847,8 +3440,8 @@ button.cc-footer-label.is-action {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .cc-camera-stage > .cc-btn-secondary:hover,
-  .cc-camera-stage > div > .cc-btn-secondary:hover {
+  .cc-camera-stage > .cc-btn-secondary:hover:not(:disabled),
+  .cc-camera-stage > div > .cc-btn-secondary:hover:not(:disabled) {
     background: rgba(255, 255, 255, 0.2);
   }
 }
@@ -2857,15 +3450,18 @@ button.cc-footer-label.is-action {
 .cc-camera-stage > video {
   display: block;
   transform-origin: center center;
-  transition: transform 167ms var(--ease-decelerate);
+  transition: transform var(--dur-fast) var(--ease-decelerate);
 }
 
 .cc-rotate-btn {
   width: auto;
   min-width: 28px;
   padding: 0 6px;
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .cc-rotate-btn.is-active {
@@ -2944,11 +3540,12 @@ button.cc-footer-label.is-action {
 
 .cc-camera-ip-error {
   color: var(--win-critical);
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
 }
 
-/* QR & Form Fields */
 .cc-qr-box {
   padding: 12px;
   border-radius: var(--r-card);
@@ -2961,6 +3558,8 @@ button.cc-footer-label.is-action {
 }
 
 .cc-qr-status {
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
   color: var(--text-secondary);
@@ -2982,7 +3581,8 @@ button.cc-footer-label.is-action {
   object-fit: contain;
 }
 
-.cc-field {
+.cc-field,
+.cc-conn-card {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -2990,12 +3590,132 @@ button.cc-footer-label.is-action {
   border-radius: var(--r-card);
   background: var(--win-card-bg);
   border: 1px solid var(--win-card-stroke);
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
   color: var(--text-secondary);
 }
 
+.cc-conn-card.is-active-mode {
+  border-color: color-mix(in srgb, var(--win-accent) 52%, var(--win-card-stroke));
+  background: color-mix(in srgb, var(--win-accent) 6%, var(--win-card-bg));
+  box-shadow: inset 0 1px 0 var(--win-island-catchlight);
+}
+
+.cc-conn-active-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--win-accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--win-accent) 38%, transparent);
+  color: var(--win-accent);
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-weight: 600;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+details.cc-conn-secondary {
+  border-radius: var(--r-card);
+  background: var(--win-card-secondary);
+  border: 1px solid var(--win-card-stroke);
+  overflow: hidden;
+}
+
+summary.cc-conn-secondary-summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-weight: 600;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-secondary);
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard);
+}
+
+summary.cc-conn-secondary-summary::-webkit-details-marker {
+  display: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  summary.cc-conn-secondary-summary:hover {
+    background: var(--win-subtle-hover);
+    color: var(--text-primary);
+  }
+}
+
+details.cc-conn-secondary[open] > summary.cc-conn-secondary-summary {
+  border-bottom: 1px solid var(--win-divider);
+  color: var(--text-primary);
+}
+
+details.cc-conn-secondary[open] > summary.cc-conn-secondary-summary .cc-mini-caret {
+  transform: rotate(180deg);
+}
+
+details.cc-conn-secondary > :not(summary) {
+  padding: 10px 12px;
+}
+
+.cc-settings-save-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-width: 0;
+  gap: 5px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-secondary);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cc-settings-save-hint[data-save-state="dirty"] {
+  color: var(--win-caution);
+}
+
+.cc-settings-save-hint[data-save-state="dirty"]::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--win-caution);
+  flex-shrink: 0;
+}
+
+.cc-settings-save-hint[data-save-state="saved"] {
+  color: var(--win-success);
+}
+
+.cc-settings-save-hint[data-save-state="saved"]::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--win-success);
+  flex-shrink: 0;
+}
+
 .cc-field > label:not(.cc-checkbox) {
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -3012,13 +3732,16 @@ button.cc-footer-label.is-action {
   font-size: 13px;
   line-height: 18px;
   outline: none;
-  transition: background-color 120ms ease, border-color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
 }
 
 .cc-input:focus {
   background: var(--win-control-input-active);
-  border-bottom: 2px solid var(--win-accent);
-  padding-bottom: 5px;
+  border-bottom-color: var(--win-accent);
+  box-shadow: inset 0 -2px 0 0 var(--win-accent);
 }
 
 .cc-field select.cc-input {
@@ -3038,7 +3761,6 @@ button.cc-footer-label.is-action {
   flex: 1;
 }
 
-/* Fluent 2 ToggleSwitch (40x20px) */
 input[type="checkbox"] {
   -webkit-appearance: none;
   appearance: none;
@@ -3051,19 +3773,36 @@ input[type="checkbox"] {
   position: relative;
   cursor: pointer;
   flex-shrink: 0;
-  transition: background-color 120ms ease, border-color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard);
 }
 
 input[type="checkbox"]::after {
   content: "";
   position: absolute;
-  top: 3px;
+  top: 50%;
   left: 3px;
   width: 12px;
   height: 12px;
   border-radius: 50%;
   background: var(--text-secondary);
-  transition: transform 140ms var(--ease-decelerate), background-color 120ms ease;
+  transform: translateY(-50%);
+  transition:
+    transform var(--dur-normal) var(--ease-decelerate),
+    width var(--dur-faster) var(--ease-decelerate),
+    height var(--dur-faster) var(--ease-decelerate),
+    background-color var(--dur-fast) var(--ease-standard);
+}
+
+input[type="checkbox"]:hover:not(:disabled)::after {
+  width: 14px;
+  height: 14px;
+}
+
+input[type="checkbox"]:active:not(:disabled)::after {
+  width: 17px;
+  height: 14px;
 }
 
 input[type="checkbox"]:checked {
@@ -3073,12 +3812,22 @@ input[type="checkbox"]:checked {
 
 input[type="checkbox"]:checked::after {
   background: var(--win-text-on-accent);
-  transform: translateX(20px);
+  transform: translate(20px, -50%);
+}
+
+input[type="checkbox"]:checked:hover:not(:disabled)::after {
+  transform: translate(18px, -50%);
+}
+
+input[type="checkbox"]:checked:active:not(:disabled)::after {
+  transform: translate(15px, -50%);
 }
 
 .cc-field-hint {
-  font-size: 11px;
-  line-height: 15px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
   color: var(--text-tertiary);
 }
 
@@ -3096,7 +3845,10 @@ input[type="checkbox"]:checked::after {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
+  line-height: 16px;
 }
 
 .cc-update-row .cc-btn-secondary,
@@ -3125,14 +3877,18 @@ input[type="checkbox"]:checked::after {
   margin-top: 6px;
   border-radius: var(--r-control);
   background: var(--win-card-secondary);
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
   line-height: 16px;
   white-space: pre-wrap;
   color: var(--text-secondary);
 }
 
 .cc-update-status {
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
   line-height: 16px;
   margin-top: 4px;
   color: var(--text-secondary);
@@ -3150,8 +3906,8 @@ input[type="checkbox"]:checked::after {
   padding-top: 4px;
 }
 
-/* 4-Tab Settings Sheet */
-.cc-settings-sheet {
+.cc-settings-sheet,
+.cc-settings-sheet-ghost {
   overflow: hidden;
   padding: 0;
   display: flex;
@@ -3189,18 +3945,10 @@ input[type="checkbox"]:checked::after {
   color: var(--text-primary);
 }
 
-.cc-settings-tabs .cc-seg-pill.is-active::after {
-  content: "";
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  bottom: 0;
-  height: 3px;
-  border-radius: var(--r-pill);
-  background: var(--win-accent);
-}
-
-.cc-settings-sheet .cc-sheet-body {
+.cc-settings-sheet .cc-sheet-body,
+.cc-settings-sheet-ghost .cc-sheet-body-ghost,
+.cc-sheet-body,
+.cc-sheet-body-ghost {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -3220,30 +3968,39 @@ input[type="checkbox"]:checked::after {
   display: none;
 }
 
-.cc-settings-sheet .cc-sheet-footer {
+.cc-settings-sheet .cc-sheet-footer,
+.cc-settings-sheet-ghost .cc-sheet-footer {
   flex-shrink: 0;
   padding: 10px 14px;
   background: var(--win-card-secondary);
   border-top: 1px solid var(--win-divider);
 }
 
-/* Fluent 2 Standard / Accent / Critical Buttons */
+.cc-btn,
 .cc-btn-primary,
 .cc-btn-secondary,
-.cc-btn-danger {
+.cc-btn-danger,
+.cc-btn-ghost-danger {
   height: 32px;
   padding: 0 12px;
   border-radius: var(--r-control);
-  font: inherit;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-weight: 600;
   font-size: 12px;
   line-height: 16px;
-  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   cursor: pointer;
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
 }
 
 .cc-btn-primary svg {
@@ -3274,39 +4031,64 @@ input[type="checkbox"]:checked::after {
   color: var(--win-critical);
 }
 
+.cc-btn-ghost-danger {
+  padding: 0 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+}
+
 @media (hover: hover) and (pointer: fine) {
-  .cc-btn-primary:hover {
+  .cc-btn-primary:hover:not(:disabled) {
     background: var(--win-accent-hover);
     border-color: var(--win-accent-hover);
   }
 
-  .cc-btn-secondary:hover {
+  .cc-btn-secondary:hover:not(:disabled) {
     background: var(--win-control-hover);
   }
 
-  .cc-btn-danger:hover {
+  .cc-btn-danger:hover:not(:disabled) {
     background: color-mix(in srgb, var(--win-critical) 22%, transparent);
+  }
+
+  .cc-btn-ghost-danger:hover:not(:disabled) {
+    background: var(--win-critical-bg);
+    border-color: var(--win-critical-stroke);
+    color: var(--win-critical);
   }
 }
 
-.cc-btn-primary:active {
+.cc-btn-ghost-danger:focus-visible {
+  background: var(--win-critical-bg);
+  color: var(--win-critical);
+}
+
+.cc-btn:active:not(:disabled),
+.cc-btn-primary:active:not(:disabled),
+.cc-btn-secondary:active:not(:disabled),
+.cc-btn-danger:active:not(:disabled),
+.cc-btn-ghost-danger:active:not(:disabled) {
+  transform: scale(0.975);
+  transition-duration: var(--dur-faster);
+}
+
+.cc-btn-primary:active:not(:disabled) {
   background: var(--win-accent-pressed);
 }
 
-.cc-btn-secondary:active {
+.cc-btn-secondary:active:not(:disabled) {
   background: var(--win-control-pressed);
 }
 
-/* =========================================================================
-   Fluent Context Menus & Dialog Prompts
-   ========================================================================= */
 .cc-menu-scrim {
   position: absolute;
   inset: 0;
   z-index: 40;
 }
 
-.cc-menu {
+.cc-menu,
+.cc-menu-ghost {
   position: absolute;
   z-index: 41;
   min-width: 208px;
@@ -3315,7 +4097,9 @@ input[type="checkbox"]:checked::after {
   border-radius: var(--r-card);
   background: var(--win-menu-bg);
   border: 1px solid var(--win-island-stroke);
-  box-shadow: var(--win-island-shadow);
+  box-shadow:
+    inset 0 1px 0 var(--win-island-catchlight),
+    var(--win-island-shadow);
   color: var(--text-primary);
   display: flex;
   flex-direction: column;
@@ -3328,8 +4112,11 @@ input[type="checkbox"]:checked::after {
 }
 
 .cc-menu-title {
-  font-size: 12px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
+  font-size: 12px;
+  line-height: 16px;
   padding: 5px 8px;
   color: var(--text-secondary);
   white-space: nowrap;
@@ -3338,7 +4125,10 @@ input[type="checkbox"]:checked::after {
 }
 
 .cc-menu-label {
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
   padding: 4px 8px 2px;
   color: var(--text-tertiary);
 }
@@ -3351,23 +4141,28 @@ input[type="checkbox"]:checked::after {
   border: 0;
   background: transparent;
   color: inherit;
-  font: inherit;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 18px;
   text-align: left;
   padding: 6px 10px;
   border-radius: var(--r-control);
   cursor: pointer;
-  transition: background-color 100ms ease;
+  transition: background-color var(--dur-faster) var(--ease-standard);
 }
 
 .cc-menu-item small {
   color: var(--text-tertiary);
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .cc-menu-item.is-checked::after {
   content: "✓";
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
   color: var(--win-accent);
 }
@@ -3377,11 +4172,11 @@ input[type="checkbox"]:checked::after {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .cc-menu-item:hover {
+  .cc-menu-item:hover:not(:disabled) {
     background: var(--win-subtle-hover);
   }
 
-  .cc-menu-item.is-danger:hover {
+  .cc-menu-item.is-danger:hover:not(:disabled) {
     background: var(--win-critical-bg);
   }
 }
@@ -3403,17 +4198,28 @@ input[type="checkbox"]:checked::after {
   border: 1px solid var(--win-control-stroke);
   background: var(--win-control-bg);
   color: inherit;
-  font: inherit;
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
   padding: 3px 8px;
   border-radius: var(--r-control);
   cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    transform var(--dur-faster) var(--ease-decelerate);
+}
+
+.cc-menu-chip:active:not(:disabled) {
+  transform: scale(0.975);
 }
 
 .cc-menu-chip.is-active {
   background: var(--win-accent);
   border-color: var(--win-accent);
   color: var(--win-text-on-accent);
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
 }
 
@@ -3422,41 +4228,51 @@ input[type="checkbox"]:checked::after {
   border-style: dashed;
 }
 
-/* ContentDialog Prompt */
 .cc-prompt-backdrop {
   position: absolute;
   inset: 0;
   z-index: 50;
   border-radius: var(--r-flyout);
-  background: rgba(0, 0, 0, 0.44);
+  background: var(--win-smoke-bg);
 }
 
-.cc-prompt {
+.cc-prompt,
+.cc-prompt-ghost {
   position: absolute;
   z-index: 51;
-  left: 50%;
-  top: 40%;
   width: 288px;
-  transform: translate(-50%, -50%);
   padding: 16px;
-  border-radius: var(--r-card);
+  border-radius: var(--r-flyout);
   display: flex;
   flex-direction: column;
   gap: 10px;
   background: var(--win-menu-bg);
   border: 1px solid var(--win-island-stroke);
   color: var(--text-primary);
-  box-shadow: var(--win-island-shadow);
+  box-shadow:
+    inset 0 1px 0 var(--win-island-catchlight),
+    var(--win-island-shadow);
 }
 
-.cc-prompt small {
-  font-size: 11px;
+.cc-prompt {
+  left: 50%;
+  top: 40%;
+  transform: translate(-50%, -50%);
+}
+
+.cc-prompt small,
+.cc-prompt-ghost small {
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
+  font-size: 12px;
+  line-height: 16px;
   color: var(--text-secondary);
 }
 
 .cc-prompt-input {
   font: inherit;
   font-size: 13px;
+  line-height: 18px;
   padding: 6px 10px;
   border-radius: var(--r-control);
   outline: none;
@@ -3464,12 +4280,16 @@ input[type="checkbox"]:checked::after {
   border-bottom-color: var(--win-control-bottom-stroke);
   background: var(--win-control-bg);
   color: inherit;
+  transition:
+    background-color var(--dur-fast) var(--ease-standard),
+    border-color var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard);
 }
 
 .cc-prompt-input:focus {
   background: var(--win-control-input-active);
-  border-bottom: 2px solid var(--win-accent);
-  padding-bottom: 5px;
+  border-bottom-color: var(--win-accent);
+  box-shadow: inset 0 -2px 0 0 var(--win-accent);
 }
 
 .cc-prompt-actions {
@@ -3478,9 +4298,6 @@ input[type="checkbox"]:checked::after {
   gap: 6px;
 }
 
-/* =========================================================================
-   Opacity Preview, Keyboard Selection & Layout Edit Mode
-   ========================================================================= */
 .cc-opacity-row {
   display: flex;
   align-items: center;
@@ -3507,8 +4324,11 @@ input[type="checkbox"]:checked::after {
   justify-content: center;
   width: 100%;
   height: 100%;
-  font-size: 11px;
+  font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
+  font-size: 12px;
+  line-height: 16px;
   color: var(--text-primary);
   background: rgba(var(--win-island-rgb), var(--panel-alpha));
 }
@@ -3520,12 +4340,26 @@ input[type="checkbox"]:checked::after {
 
 #app[data-keyboard-nav="true"] .cc-tile.is-capsule.is-keyboard-selected .win-split-pill {
   outline: 2px solid var(--win-accent);
-  outline-offset: 2px;
+  outline-offset: -2px;
+  box-shadow:
+    inset 0 0 0 2px var(--win-accent),
+    inset 0 0 0 3px var(--win-focus-inner);
 }
 
 .cc-popover.is-editing .cc-tile {
   cursor: grab;
   overflow: visible;
+}
+
+.cc-popover.is-editing .cc-tile:not(.is-dragging):not(.is-resizing) {
+  animation: none;
+  border-color: color-mix(in srgb, var(--win-accent) 48%, var(--win-card-stroke));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
+}
+
+.cc-popover.is-editing .cc-tile.is-capsule:not(.is-dragging):not(.is-resizing) .win-split-pill {
+  border-color: color-mix(in srgb, var(--win-accent) 48%, var(--win-control-stroke));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
 }
 
 .cc-popover.is-editing .cc-tile > *:not(.cc-resize-handle) {
@@ -3581,11 +4415,8 @@ input[type="checkbox"]:checked::after {
   stroke-linecap: round;
 }
 
-/* =========================================================================
-   Windows 11 Native Taskbar Flyout Entrance & Exit Choreography
-   ========================================================================= */
 .is-spinning svg {
-  animation: win-spin 0.9s linear infinite;
+  animation: win-spin 0.9s var(--ease-linear) infinite;
 }
 
 @keyframes win-spin {
@@ -3596,35 +4427,31 @@ input[type="checkbox"]:checked::after {
 
 #app[data-flyout-edge="bottom"] {
   --flyout-dx: 0px;
-  --flyout-dy: calc(100% + var(--panel-inset, 16px) + 8px);
+  --flyout-dy: var(--flyout-travel);
 }
 
 #app[data-flyout-edge="top"] {
   --flyout-dx: 0px;
-  --flyout-dy: calc(-100% - var(--panel-inset, 16px) - 8px);
+  --flyout-dy: calc(-1 * var(--flyout-travel));
 }
 
 #app[data-flyout-edge="right"] {
-  --flyout-dx: calc(100% + var(--panel-inset, 16px) + 8px);
+  --flyout-dx: var(--flyout-travel);
   --flyout-dy: 0px;
 }
 
 #app[data-flyout-edge="left"] {
-  --flyout-dx: calc(-100% - var(--panel-inset, 16px) - 8px);
+  --flyout-dx: calc(-1 * var(--flyout-travel));
   --flyout-dy: 0px;
 }
 
 @keyframes win-flyout-enter {
   from {
     opacity: 0;
-    transform: translate3d(
-      var(--flyout-dx, 0px),
-      var(--flyout-dy, calc(100% + var(--panel-inset, 16px) + 8px)),
-      0
-    );
+    transform: translate3d(var(--flyout-dx, 0px), var(--flyout-dy, 36px), 0);
   }
-  12% {
-    opacity: 1;
+  50% {
+    opacity: 0.92;
   }
   to {
     opacity: 1;
@@ -3637,45 +4464,9 @@ input[type="checkbox"]:checked::after {
     opacity: 1;
     transform: translate3d(0, 0, 0);
   }
-  86% {
-    opacity: 1;
-  }
   to {
     opacity: 0;
-    transform: translate3d(
-      var(--flyout-dx, 0px),
-      var(--flyout-dy, calc(100% + var(--panel-inset, 16px) + 8px)),
-      0
-    );
-  }
-}
-
-@keyframes win-fade {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes win-sheet-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes win-jiggle {
-  from {
-    rotate: -0.7deg;
-  }
-  to {
-    rotate: 0.7deg;
+    transform: translate3d(calc(var(--flyout-dx, 0px) * 0.75), calc(var(--flyout-dy, 36px) * 0.75), 0);
   }
 }
 
@@ -3687,39 +4478,98 @@ input[type="checkbox"]:checked::after {
 
 @media (prefers-reduced-motion: no-preference) {
   #app:not(.is-parked).is-opening > .cc-popover {
-    animation: win-flyout-enter 250ms var(--ease-decelerate) both;
+    animation: win-flyout-enter var(--dur-normal) var(--ease-decelerate) both;
   }
 
   #app:not(.is-parked).is-closing > .cc-popover {
-    animation: win-flyout-exit 167ms var(--ease-accelerate) forwards;
+    animation: win-flyout-exit var(--dur-fast) var(--ease-accelerate) forwards;
     pointer-events: none;
-  }
-
-  .cc-popover.is-editing .cc-tile:not(.is-dragging):not(.is-resizing) {
-    animation: win-jiggle 280ms ease-in-out infinite alternate;
-    animation-delay: var(--jd);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-ultra-fast: 0ms;
+    --dur-faster: 0ms;
+    --dur-fast: 0ms;
+    --dur-normal: 0ms;
+    --dur-banner-in: 0ms;
+    --dur-slow: 0ms;
+    --flyout-travel: 0px;
+  }
+
   #app.is-opening > .cc-popover,
   #app.is-closing > .cc-popover,
   .cc-sheet,
-  .cc-menu {
+  .cc-sheet-ghost,
+  .cc-menu,
+  .cc-menu-ghost,
+  .cc-prompt,
+  .cc-prompt-ghost,
+  .cc-tile,
+  .cc-tile-ghost,
+  .is-spinning svg,
+  .cc-empty-icon.is-pulsing,
+  .cc-tile.is-waiting {
     animation: none !important;
+  }
+
+  #app.is-opening > .cc-popover,
+  #app.is-closing > .cc-popover,
+  .cc-sheet,
+  .cc-sheet-ghost,
+  .cc-menu,
+  .cc-menu-ghost {
     transform: none !important;
+  }
+
+  .cc-expander-grid,
+  .win-island--top,
+  .cc-range::-webkit-slider-thumb,
+  .cc-range::-moz-range-thumb,
+  .cc-slider-thumb-badge,
+  .win-slider-tooltip {
+    transition-duration: 0ms !important;
+  }
+
+  .cc-tile,
+  .win-split-pill,
+  .win-pill-toggle,
+  .win-pill-expand,
+  .win-pill-caption,
+  .cc-circle-btn,
+  .cc-room-pill,
+  .cc-quick-pill,
+  .cc-seg-pill,
+  .cc-inline-pill,
+  .cc-btn,
+  .cc-btn-primary,
+  .cc-btn-secondary,
+  .cc-btn-danger,
+  .cc-btn-ghost-danger,
+  .cc-edit-done-chip,
+  input[type="checkbox"] {
+    transition:
+      background-color var(--dur-exit-short) var(--ease-linear),
+      border-color var(--dur-exit-short) var(--ease-linear),
+      color var(--dur-exit-short) var(--ease-linear),
+      opacity var(--dur-exit-short) var(--ease-linear);
   }
 }
 
 @media (prefers-contrast: more) {
   .win-island,
   .win-notif-card,
+  .win-notif-card-ghost,
   .win-split-pill,
   .cc-tile:not(.is-capsule),
+  .cc-tile-ghost:not(.is-capsule),
   .cc-spotlight-bar,
   .cc-input,
   .cc-menu,
-  .cc-prompt {
+  .cc-menu-ghost,
+  .cc-prompt,
+  .cc-prompt-ghost {
     border-color: currentColor;
   }
 }
@@ -3730,7 +4580,8 @@ input[type="checkbox"]:checked::after {
   }
 }
 
-.cc-tile > .cc-tile-pin-badge {
+.cc-tile > .cc-tile-pin-badge,
+.cc-tile-ghost > .cc-tile-pin-badge {
   position: absolute;
   top: 5px;
   right: 7px;
@@ -3819,7 +4670,8 @@ input[type="checkbox"]:checked::after {
   border-radius: var(--r-pill);
   background: rgba(255, 255, 255, 0.09);
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: 12px;
+  font-variation-settings: "opsz" 8;
   font-weight: 550;
   white-space: nowrap;
 }
@@ -3867,7 +4719,8 @@ input[type="checkbox"]:checked::after {
 .cc-inline-slider-val {
   min-width: 32px;
   text-align: right;
-  font-size: 10.5px;
+  font-size: 12px;
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
@@ -3897,7 +4750,8 @@ input[type="checkbox"]:checked::after {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  font-size: 11px;
+  font-size: 12px;
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
   color: var(--text-secondary);
 }
@@ -3929,6 +4783,7 @@ input[type="checkbox"]:checked::after {
 
 .cc-hidden-device-name {
   font-size: 12px;
+  font-variation-settings: "opsz" 8;
   font-weight: 550;
   color: var(--text-primary);
   overflow: hidden;
@@ -3937,7 +4792,8 @@ input[type="checkbox"]:checked::after {
 }
 
 .cc-hidden-device-room {
-  font-size: 10.5px;
+  font-size: 12px;
+  font-variation-settings: "opsz" 8;
   color: var(--text-tertiary);
   flex-shrink: 0;
 }
@@ -3996,7 +4852,8 @@ input[type="checkbox"]:checked::after {
 
 .cc-room-editor-index {
   width: 18px;
-  font-size: 10.5px;
+  font-size: 12px;
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
   color: var(--text-tertiary);
   text-align: center;
@@ -4042,13 +4899,15 @@ input[type="checkbox"]:checked::after {
 }
 
 .cc-room-orig-hint {
-  font-size: 10px;
+  font-size: 12px;
+  font-variation-settings: "opsz" 8;
   color: var(--text-tertiary);
   padding-left: 2px;
 }
 
 .cc-room-kind-title {
   font-size: 12px;
+  font-variation-settings: "opsz" 8;
   font-weight: 550;
   color: var(--text-primary);
   padding: 3px 2px;
@@ -4098,7 +4957,8 @@ input[type="checkbox"]:checked::after {
 }
 
 .cc-room-editor-hidden-head {
-  font-size: 10.5px;
+  font-size: 12px;
+  font-variation-settings: "opsz" 8;
   font-weight: 600;
   color: var(--text-secondary);
 }

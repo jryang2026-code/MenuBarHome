@@ -153,8 +153,35 @@ check_secret_leaks() {
     return 0
 }
 
+check_git_identity() {
+    git rev-parse --git-dir >/dev/null 2>&1 || return 0
+
+    local author_ident committer_ident
+    author_ident="$(git var GIT_AUTHOR_IDENT 2>/dev/null || true)"
+    committer_ident="$(git var GIT_COMMITTER_IDENT 2>/dev/null || true)"
+    if printf '%s\n%s\n' "$author_ident" "$committer_ident" | grep -qF "jryang1997"; then
+        echo "❌ 当前 Git 提交身份仍为已停用账号 jryang1997，请先在当前工作树设置："
+        echo '   git config user.name "jryang2026-code" && git config user.email "jryang2026-code@users.noreply.github.com"'
+        return 1
+    fi
+
+    local retired_commits=""
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+        retired_commits="$(git log --format='%h %an <%ae> | %cn <%ce>' origin/main..HEAD 2>/dev/null | grep -F 'jryang1997' || true)"
+    elif [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; then
+        retired_commits="$(git log -1 --format='%h %an <%ae> | %cn <%ce>' HEAD 2>/dev/null | grep -F 'jryang1997' || true)"
+    fi
+    if [ -n "$retired_commits" ]; then
+        printf '%s\n' "$retired_commits"
+        echo "❌ 当前分支包含已停用账号 jryang1997 的提交，请改写作者为 jryang2026-code 后再继续！"
+        return 1
+    fi
+    return 0
+}
+
 echo "🔍 检查是否存在硬编码 JWT / 密钥 / 个人局域网地址泄露..."
 check_secret_leaks
+check_git_identity
 
 echo "🔍 检查机械性编码规范 (kVK_* 键码常量 & UNUserNotificationCenter Bundle 守卫)..."
 if search_matches 'event\.keyCode[[:space:]]*==[[:space:]]*[0-9]+' Sources/; then
@@ -231,6 +258,7 @@ PYTHON_LINT_SKIPPED=0
 if [ -n "$PYTHON_BIN" ]; then
     "$PYTHON_BIN" scripts/check_design_tokens.py
     "$PYTHON_BIN" scripts/check_windows_geometry.py
+    "$PYTHON_BIN" scripts/check_windows_motion_tokens.py
     "$PYTHON_BIN" scripts/check_timer_render.py
     "$PYTHON_BIN" scripts/check_swift_harness_lints.py
     "$PYTHON_BIN" scripts/check_workflows.py
@@ -318,6 +346,7 @@ run_script_self_tests() {
     run_clean_env bash scripts/ci_swift_test.sh --self-test
     run_clean_env bash scripts/test_ci_relevant_paths.sh
     run_clean_env bash scripts/test_secret_scan.sh
+    run_clean_env bash scripts/test_git_guardrails.sh
     run_clean_env bash scripts/test_install_ripgrep.sh
     if command -v node >/dev/null 2>&1; then
         run_clean_env node windows/scripts/test-file.mjs --self-test

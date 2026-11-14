@@ -1,12 +1,30 @@
 #!/usr/bin/env bash
-# Shared push guard: when pushing directly to refs/heads/main, run scripts/check.sh --changed
-# against the remote main ref so unreviewed snapshots or broken tests never land on main.
-# Pushing to any feature branch is an instant 0s no-op. Set MMB_SKIP_PRE_PUSH=1 to bypass.
 set -euo pipefail
 
-if [ "${MMB_SKIP_PRE_PUSH:-0}" = "1" ]; then
-    exit 0
-fi
+REMOTE_NAME="${1:-}"
+REMOTE_URL="${2:-}"
+
+check_push_target() {
+    local name="$1" url="$2"
+    if [ "${MMB_ALLOW_MIRROR_PUSH:-0}" = "1" ]; then
+        return 0
+    fi
+    case "$name" in
+        gitlab|nas|github-suspended)
+            echo "❌ 拒绝向只读镜像或已停用远端推送（${name}）。唯一写入源为 origin (jryang2026-code/MenuBarHome)；备份同步需显式设置 MMB_ALLOW_MIRROR_PUSH=1。" >&2
+            return 1
+            ;;
+    esac
+    case "$url" in
+        *gitlab.com*|*10.10.1.4*|*jryang1997*|DISABLED-*)
+            echo "❌ 拒绝向只读镜像或已停用地址推送（${url}）。唯一写入源为 origin (jryang2026-code/MenuBarHome)；备份同步需显式设置 MMB_ALLOW_MIRROR_PUSH=1。" >&2
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+check_push_target "$REMOTE_NAME" "$REMOTE_URL"
 
 ROOT_DIR="$(git rev-parse --show-toplevel)"
 ZERO_SHA="0000000000000000000000000000000000000000"
@@ -16,6 +34,25 @@ base_sha=""
 
 while read -r _local_ref local_sha remote_ref remote_sha; do
     [ -n "${remote_ref:-}" ] || continue
+    if [ "${local_sha:-$ZERO_SHA}" != "$ZERO_SHA" ]; then
+        range=""
+        if [ -n "${remote_sha:-}" ] && [ "$remote_sha" != "$ZERO_SHA" ] \
+            && git -C "$ROOT_DIR" cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
+            range="${remote_sha}..${local_sha}"
+        elif git -C "$ROOT_DIR" rev-parse --verify origin/main >/dev/null 2>&1; then
+            range="origin/main..${local_sha}"
+        fi
+        if [ -n "$range" ]; then
+            retired_hits="$(git -C "$ROOT_DIR" log --format='%h %an <%ae> | %cn <%ce>' "$range" 2>/dev/null | grep -F 'jryang1997' || true)"
+        else
+            retired_hits="$(git -C "$ROOT_DIR" log -1 --format='%h %an <%ae> | %cn <%ce>' "$local_sha" 2>/dev/null | grep -F 'jryang1997' || true)"
+        fi
+        if [ -n "$retired_hits" ]; then
+            printf '%s\n' "$retired_hits" >&2
+            echo "❌ 待推送提交包含已停用账号 jryang1997，请改写为 jryang2026-code 后再推送！" >&2
+            exit 1
+        fi
+    fi
     if [ "$remote_ref" = "refs/heads/main" ] && [ "${local_sha:-$ZERO_SHA}" != "$ZERO_SHA" ]; then
         need_main_check=1
         if [ -n "${remote_sha:-}" ] && [ "$remote_sha" != "$ZERO_SHA" ] \
@@ -25,7 +62,7 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
     fi
 done
 
-if [ "$need_main_check" -eq 0 ]; then
+if [ "${MMB_SKIP_PRE_PUSH:-0}" = "1" ] || [ "$need_main_check" -eq 0 ]; then
     exit 0
 fi
 

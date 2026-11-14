@@ -81,7 +81,6 @@ import { CameraLiveController } from "./cameraLive.js";
 import { renderDeviceTile as renderDeviceTileView, renderEnvironmentStrip as renderEnvironmentStripView } from "./deviceViews.js";
 import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt, renderSettingsModal } from "./menuViews.js";
 import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
-import { renderPanel } from "./panelView.js";
 import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
 import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground } from "./proactive.js";
@@ -93,16 +92,16 @@ import { foldGrouped, refreshDevices, refreshHADevices } from "./cloudRefresh.js
 import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
 import { clearPersistedMiSessionExpired, persistMiSessionExpired } from "../core/pollingPolicy.js";
 import { bindLayoutGestures } from "./layoutGestures.js";
-import { bindSettingsEvents, refreshHabitSharePreview } from "./settingsEvents.js";
-import { captureSettingsDraft, restoreSettingsDraft, type SettingsTab } from "./settingsViews.js";
+import { bindSettingsEvents } from "./settingsEvents.js";
+import { type SettingsTab } from "./settingsViews.js";
 import {
   bindUndoBannerHoverGuard, clearUndoHoverPause, copyUndoKindSnapshots, isInsideScheduledTimerTick, isUndoHoverPaused,
   rejectIfControlBlockedWhileLocked, renderUrlConfirmationPrompt, restoreUndoKindSnapshot, runScheduledCommandWithLockGuard, shouldKeepPopoverPinned, syncUndoBannerClock, toggleVoiceInput, undoButtonVisible,
 } from "./speechGuard.js";
-import { inputKeepsDraft } from "./dom.js";
 export { waitForCameraFrameGap } from "./dom.js";
 import { createPanelSearchState, normalizeSearch, PanelSearchIndex } from "../core/panelSearch.js";
-import { syncPanelSelection } from "./panelKeyboard.js";
+import { focusPanelOnActivate } from "./panelKeyboard.js";
+import { PanelRenderPipeline, prefersReducedMotion, syncDocumentLanguage } from "./reconciler.js";
 
 import { ScheduledCommandStore } from "../core/scheduledCommands.js";
 import { scheduledCommandIdentity } from "./scheduledCommands.js";
@@ -115,26 +114,6 @@ export type PanelHealth =
   | { readonly kind: "offline"; readonly dot: "is-offline"; readonly label: string; readonly recovery: "qr" | "none" };
 
 export { undoBannerMs, undoDeviceCount } from "./undoTracker.js";
-
-function visibleTopSheet(root: ParentNode): HTMLElement | undefined {
-  return Array.from(root.querySelectorAll<HTMLElement>(".cc-sheet"))
-    .filter((sheet) => sheet.closest<HTMLElement>(".cc-sheet-backdrop")?.style.display !== "none")
-    .at(-1);
-}
-
-function activeSheetKey(root: ParentNode): string | null {
-  const topSheet = visibleTopSheet(root);
-  if (!topSheet) return null;
-  if (topSheet.classList.contains("cc-camera-live-sheet")) return "camera";
-  if (topSheet.classList.contains("cc-settings-sheet")) return "settings";
-  return "onboarding";
-}
-
-function activeMenuKey(root: ParentNode): string | null {
-  const menu = root.querySelector<HTMLElement>(".cc-menu");
-  if (!menu) return null;
-  return menu.classList.contains("cc-home-menu") ? "home" : "context";
-}
 
 export type HaConnectionBlock = "plaintext" | "auth" | "stale" | "none";
 
@@ -204,8 +183,10 @@ export class MenuMijiaWindowsApp {
 
   public readonly panelSearch = createPanelSearchState();
   private readonly panelSearchIndex = new PanelSearchIndex();
+  public readonly pipeline = new PanelRenderPipeline();
   public expandedDeviceId: string | null = null;
-  private savedGridScrollTop = 0;
+  public savedGridScrollTop = 0;
+  public lastAppliedPanelHeightKey: string | null = null;
   /**
    * A high-risk manual write that needs one more tap on the same card within a few seconds.
    * `actionKey` binds the arm to one exact command, so tapping a different high-risk control
@@ -377,8 +358,16 @@ export class MenuMijiaWindowsApp {
     const onOpenUpdate = () => {
       this.openSettingsSheet();
     };
+    const onActivate = () => {
+      if (!this.root.isConnected) return;
+      focusPanelOnActivate(this);
+    };
     window.addEventListener("menumijia:open-update", onOpenUpdate);
-    this.appDisposers.push(() => window.removeEventListener("menumijia:open-update", onOpenUpdate));
+    window.addEventListener("menumijia:activate", onActivate);
+    this.appDisposers.push(
+      () => window.removeEventListener("menumijia:open-update", onOpenUpdate),
+      () => window.removeEventListener("menumijia:activate", onActivate),
+    );
     this.applyPanelHeight();
     this.syncPanelPlacement();
     this.syncPanelBackdrop();
@@ -407,6 +396,7 @@ export class MenuMijiaWindowsApp {
 
   public applyInterfaceLanguage(): void {
     applyInterfaceLanguage(this);
+    syncDocumentLanguage(this.root.ownerDocument, this.settings.interfaceLanguage);
   }
 
   public applyTemperatureSetting(): void {
@@ -456,6 +446,8 @@ export class MenuMijiaWindowsApp {
   /** Idempotently cancels lifecycle intervals, recovery timers, and global window listeners. */
   public dispose(): void {
     disposeAppLifecycle(this);
+    this.pipeline.clearTransientState();
+    this.pipeline.eventScope.abort();
     this.clearPendingHighRisk();
     this.cancelAllOffHold();
     for (const stop of this.appDisposers.splice(0)) stop();
@@ -763,6 +755,7 @@ export class MenuMijiaWindowsApp {
   }
 
   public invalidateSourceControl(): void {
+    this.pipeline.clearTransientState();
     invalidateSourceControl(this);
   }
 
@@ -891,24 +884,30 @@ export class MenuMijiaWindowsApp {
 
   /** Arms a high-risk confirmation and its own expiry timer, replacing any previous arm. */
   public setPendingHighRisk(pending: PendingHighRiskConfirmation): void {
-    this.clearPendingHighRisk();
+    this.clearPendingHighRisk({ syncPin: false });
     this.pendingHighRisk = pending;
+    invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
     this.pendingHighRiskTimer = window.setTimeout(() => {
       this.pendingHighRiskTimer = null;
       if (!this.pendingHighRisk) return;
       this.pendingHighRisk = null;
+      invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
       // A gesture in progress (a slider drag) owns the current DOM; drop the row once it ends.
       this.queueBackgroundRender();
     }, Math.max(0, pending.expiresAtMs - Date.now()));
   }
 
   /** Disarms the arm and cancels its timer; callers render when the row must disappear now. */
-  public clearPendingHighRisk(): void {
+  public clearPendingHighRisk(options?: { readonly syncPin?: boolean }): void {
+    const hadPending = this.pendingHighRisk !== null;
     if (this.pendingHighRiskTimer !== null) {
       window.clearTimeout(this.pendingHighRiskTimer);
       this.pendingHighRiskTimer = null;
     }
     this.pendingHighRisk = null;
+    if (hadPending && options?.syncPin !== false) {
+      invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
+    }
   }
 
 
@@ -1126,168 +1125,8 @@ export class MenuMijiaWindowsApp {
     this.saveSettings();
   }
 
-  /**
-   * Re-renders while keeping scroll offsets, and slides every card from its old position to its
-   * new one (FLIP), so reorders, resizes and group moves animate instead of jumping.
-   */
   public render(): void {
-    if (this.panelSearch.isComposing) {
-      if (this.activeSheet !== "none" ||
-          document.activeElement?.id !== "command-input" || this.panelSearch.compositionSourceRevision !== this.sourceRevision) {
-        this.panelSearch.isComposing = false;
-      } else {
-        this.pendingCloudRender = true;
-        return;
-      }
-    }
-    const focused = document.activeElement as HTMLElement | null;
-    const focusedInput =
-      focused && (focused.tagName === "INPUT" || focused.tagName === "TEXTAREA")
-        ? (focused as HTMLInputElement | HTMLTextAreaElement)
-        : null;
-    const keepsFocusedDraft = focusedInput ? inputKeepsDraft(focusedInput) : false;
-    const focusAttributes = focused
-      ? Array.from(focused.attributes)
-          .filter((attr) => attr.name === "id" || attr.name.startsWith("data-"))
-          .map((attr) => ({ name: attr.name, value: attr.value }))
-      : [];
-    const focusSnapshot =
-      focused && focusAttributes.length > 0
-        ? {
-            tagName: focused.tagName,
-            attributes: focusAttributes,
-            value: keepsFocusedDraft ? focusedInput?.value ?? null : null,
-            selectionStart: keepsFocusedDraft ? focusedInput?.selectionStart ?? null : null,
-            selectionEnd: keepsFocusedDraft ? focusedInput?.selectionEnd ?? null : null,
-          }
-        : null;
-    const prevSubpageId = this.root.querySelector<HTMLElement>(".cc-tile.is-subpage")?.dataset.tileId ?? null;
-    const prevSheetKey = activeSheetKey(this.root);
-    const prevMenuKey = activeMenuKey(this.root);
-    const tiles = Array.from(this.root.querySelectorAll<HTMLElement>("[data-tile-id]"));
-    const before = new Map<string, DOMRect>();
-    for (const el of tiles) {
-      const rect = el.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0 && el.dataset.tileId) {
-        before.set(el.dataset.tileId, rect);
-      }
-    }
-    const scrollTop = this.root.querySelector(".cc-scroll-area")?.scrollTop ?? 0;
-    const roomLeft = this.root.querySelector(".cc-room-scroll")?.scrollLeft ?? 0;
-    // The settings sheet scrolls its middle body, so that is the node whose offset has to survive.
-    const sheetScroll = this.root.querySelector<HTMLElement>(".cc-sheet-body") ?? this.root.querySelector<HTMLElement>(".cc-sheet");
-    const sheetScrollTop = sheetScroll?.scrollTop ?? 0;
-    // 完成并保存 reads every field, so a live refresh must not discard typed text in the sheet (#78).
-    const settingsDraft = captureSettingsDraft(this.root);
-
-    this.pendingCloudRender = false;
-    this.renderNow();
-    syncPanelSelection(this);
-
-    const nextSubpageEl = this.root.querySelector<HTMLElement>(".cc-tile.is-subpage");
-    const nextSubpageId = nextSubpageEl?.dataset.tileId ?? null;
-    const area = this.root.querySelector(".cc-scroll-area");
-    if (area) {
-      if (prevSubpageId === null && nextSubpageId !== null) {
-        this.savedGridScrollTop = scrollTop;
-        area.scrollTop = 0;
-      } else if (prevSubpageId !== null && nextSubpageId === null) {
-        area.scrollTop = this.savedGridScrollTop;
-      } else if (prevSubpageId !== nextSubpageId) {
-        area.scrollTop = 0;
-      } else {
-        area.scrollTop = scrollTop;
-      }
-    }
-    const strip = this.root.querySelector<HTMLElement>(".cc-room-scroll");
-    if (strip) strip.scrollLeft = roomLeft;
-    const sheet = this.root.querySelector<HTMLElement>(".cc-sheet-body") ?? this.root.querySelector<HTMLElement>(".cc-sheet");
-    if (sheet) sheet.scrollTop = sheetScrollTop;
-    // A preset click mutates the fields without a render, so only a rebuild can have dropped a draft.
-    if (
-      restoreSettingsDraft(this.root, settingsDraft, (el, url) => this.syncKeyFieldWithEndpoint(el, url))
-    ) {
-      refreshHabitSharePreview(this);
-    }
-
-    if (focusSnapshot) {
-      const matches = Array.from(
-        this.root.querySelectorAll<HTMLElement>(focusSnapshot.tagName.toLowerCase()),
-      ).filter((element) =>
-        focusSnapshot.attributes.every(
-          (attribute) => element.getAttribute(attribute.name) === attribute.value,
-        ),
-      );
-      const replacement = matches.length === 1 ? matches[0] : undefined;
-      if (replacement) {
-        if (focusSnapshot.value !== null && "value" in replacement) {
-          (replacement as HTMLInputElement).value = focusSnapshot.value;
-        }
-        replacement.focus({ preventScroll: true });
-        if (
-          focusSnapshot.selectionStart !== null &&
-          "setSelectionRange" in replacement
-        ) {
-          (replacement as HTMLInputElement).setSelectionRange(
-            focusSnapshot.selectionStart,
-            focusSnapshot.selectionEnd ?? focusSnapshot.selectionStart,
-          );
-        }
-      }
-    }
-
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const nextSheet = visibleTopSheet(this.root);
-    const nextSheetKey = activeSheetKey(this.root);
-    const nextMenu = this.root.querySelector<HTMLElement>(".cc-menu");
-    const nextMenuKey = activeMenuKey(this.root);
-    if (!reduce) {
-      if (nextSheet && nextSheetKey !== null && nextSheetKey !== prevSheetKey) {
-        nextSheet.animate?.(
-          [{ transform: "translateY(10px)" }, { transform: "translateY(0)" }],
-          { duration: 180, easing: "cubic-bezier(0, 0, 0, 1)" },
-        );
-      }
-      if (nextMenu && nextMenuKey !== null && nextMenuKey !== prevMenuKey) {
-        nextMenu.animate?.(
-          [{ transform: "translateY(-4px)" }, { transform: "translateY(0)" }],
-          { duration: 120, easing: "cubic-bezier(0, 0, 0, 1)" },
-        );
-      }
-      if (nextSubpageEl && nextSubpageId !== null && nextSubpageId !== prevSubpageId) {
-        nextSubpageEl.animate?.(
-          [{ opacity: 0.75, transform: "translateX(16px)" }, { opacity: 1, transform: "translateX(0)" }],
-          { duration: 240, easing: "cubic-bezier(0, 0, 0, 1)" },
-        );
-      } else if (prevSubpageId !== null && nextSubpageId === null) {
-        this.root.querySelector<HTMLElement>(".cc-scroll-area")?.animate?.(
-          [{ opacity: 0.75, transform: "translateX(-12px)" }, { opacity: 1, transform: "translateX(0)" }],
-          { duration: 200, easing: "cubic-bezier(0, 0, 0, 1)" },
-        );
-      } else if (prevSubpageId === null && nextSubpageId === null && before.size > 0) {
-        this.root.querySelectorAll<HTMLElement>("[data-tile-id]").forEach((el) => {
-          const id = el.dataset.tileId as string;
-          const old = before.get(id);
-          if (!old || id === this.draggingId) return;
-          const now = el.getBoundingClientRect();
-          if (now.width === 0 || now.height === 0) return;
-          const dx = old.left - now.left;
-          const dy = old.top - now.top;
-          if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
-          el.animate?.(
-            [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }],
-            { duration: 240, easing: "cubic-bezier(0, 0, 0, 1)" },
-          );
-        });
-      }
-    }
-    this.applyDragOffset();
-    this.animateEntrance = false;
-    this.poppedDeviceId = null;
-  }
-
-  private renderNow(): void {
-    renderPanel(this);
+    this.pipeline.commitRender(this);
   }
 
   public renderEnvironmentStrip(): string {
@@ -1442,7 +1281,9 @@ export class MenuMijiaWindowsApp {
   }
 
   public bindDeckEvents(): void {
-    bindDeckEvents(this);
+    this.pipeline.eventScope.bindWithinCurrentScope(this.root, () => {
+      bindDeckEvents(this);
+    });
   }
 
   public startEditing(): void {
@@ -1575,13 +1416,6 @@ export class MenuMijiaWindowsApp {
     });
   }
 
-  /**
-   * Windows 11 native taskbar flyout choreography:
-   * - Present (`menumijia:panel-present`): 250ms `cubic-bezier(0, 0, 0, 1)` decelerate slide out
-   *   from the docked taskbar edge (`bottom` / `top` / `left` / `right`), clearing transform at rest.
-   * - Dismiss (`menumijia:panel-dismiss`): 167ms `cubic-bezier(1, 0, 1, 1)` accelerate slide back
-   *   into the taskbar edge, then `finish_hide_panel({ seq })` hides the HWND without bounce or flash.
-   */
   private bindOpenAnimation(): void {
     const ownerWin = this.root.ownerDocument?.defaultView ?? window;
     let openClearTimer: number | null = null;
@@ -1590,10 +1424,6 @@ export class MenuMijiaWindowsApp {
 
     const normalizeEdge = (raw: unknown): "bottom" | "top" | "left" | "right" =>
       raw === "top" || raw === "left" || raw === "right" ? raw : "bottom";
-
-    const prefersReducedMotion = (): boolean =>
-      typeof ownerWin.matchMedia === "function" &&
-      ownerWin.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     const clearOpenTimer = (): void => {
       if (openClearTimer !== null) {
@@ -1656,6 +1486,7 @@ export class MenuMijiaWindowsApp {
     const playDismiss = (seq: number, edge?: unknown): void => {
       clearOpenTimer();
       clearDismissTimer();
+      this.pipeline.clearTransientState();
       this.root.dataset.flyoutEdge = normalizeEdge(edge ?? this.root.dataset.flyoutEdge);
       this.root.classList.remove("is-parked", "is-opening");
       activeDismissSeq = seq;
@@ -1675,6 +1506,7 @@ export class MenuMijiaWindowsApp {
     const onPanelPresent = (event: Event) => {
       if (!this.root.isConnected) return;
       hasExplicitPresent = true;
+      this.lastAppliedPanelHeightKey = null;
       const detail = (event as CustomEvent<{ edge?: unknown } | undefined>).detail;
       playPresent(detail?.edge);
     };
@@ -1773,12 +1605,30 @@ export class MenuMijiaWindowsApp {
       .catch(() => undefined);
   }
 
+  private panelMonitorGeometryKey(): string {
+    const scr = window.screen as (Screen & { availLeft?: number; availTop?: number }) | undefined;
+    const availLeft = scr?.availLeft ?? window.screenLeft ?? 0;
+    const availTop = scr?.availTop ?? window.screenTop ?? 0;
+    const availWidth = scr?.availWidth ?? 0;
+    const availHeight = scr?.availHeight ?? 0;
+    const dpr = window.devicePixelRatio || 1;
+    return `${availLeft},${availTop},${availWidth}x${availHeight}@${dpr}|${window.innerWidth}x${window.innerHeight}`;
+  }
+
   public applyPanelHeight(): void {
     const invoke = window.__TAURI_INTERNALS__?.invoke;
     if (!invoke) return;
     this.panelGeometryUpdates = this.panelGeometryUpdates.then(async () => {
       const h = PANEL_HEIGHTS.find((item) => item.id === this.settings.panelHeight) ?? PANEL_HEIGHTS[1]!;
-      await invoke("set_panel_height", { height: h.px });
+      const key = `${h.px}:${this.panelMonitorGeometryKey()}`;
+      if (this.lastAppliedPanelHeightKey === key) return;
+      this.lastAppliedPanelHeightKey = key;
+      try {
+        await invoke("set_panel_height", { height: h.px });
+      } catch (error) {
+        this.lastAppliedPanelHeightKey = null;
+        throw error;
+      }
     }).catch((error: unknown) => console.error("Panel geometry update failed", error));
   }
 
