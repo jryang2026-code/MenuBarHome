@@ -59,11 +59,16 @@ export class RunningBatch {
   private trackedUndoAction: UndoAction | null = null;
   private readonly stopListeners = new Set<(reason: BatchStopReason) => void>();
   private readonly inFlightPromises = new Set<Promise<void>>();
+  private resolveFinished!: () => void;
+  public readonly finishedPromise: Promise<void>;
 
   constructor(args: { readonly summary: string; readonly sourceRevision: number; readonly id?: string }) {
     this.id = args.id ?? `batch_${nextBatchSeq++}`;
     this.summary = args.summary;
     this.sourceRevision = args.sourceRevision;
+    this.finishedPromise = new Promise<void>((resolve) => {
+      this.resolveFinished = resolve;
+    });
   }
 
   public get isStopped(): boolean {
@@ -192,6 +197,7 @@ export class RunningBatch {
   public markFinished(): void {
     this.finished = true;
     this.stopListeners.clear();
+    this.resolveFinished();
   }
 }
 
@@ -349,9 +355,19 @@ export async function executeIntents(
     }
   }
 
-  const previousBatch = getRunningBatch(host);
+  const isScheduledSource =
+    sourceLabel === t("定时任务") || sourceLabel === "定时任务" || sourceLabel === "Scheduled";
+  let previousBatch = getRunningBatch(host);
   if (previousBatch && previousBatch !== options.batch) {
-    previousBatch.stop("preempted");
+    if (isScheduledSource) {
+      while (previousBatch && previousBatch !== options.batch && !previousBatch.isFinished) {
+        await previousBatch.finishedPromise;
+        if (sourceRevision !== host.sourceRevision) return false;
+        previousBatch = getRunningBatch(host);
+      }
+    } else {
+      previousBatch.stop("preempted");
+    }
   }
 
   const runningBatch =
@@ -470,9 +486,6 @@ export async function executeIntents(
           const isMomentaryButton =
             command.kind === "setSwitch" && command.entityId.startsWith("button.");
           const inverses = isMomentaryButton ? [] : inverseCommands(device, command);
-          if (!isMomentaryButton && inverses.length === 0) {
-            canUndo = false;
-          }
 
           const attemptedStep = runningBatch.recordAttempt(deviceId, inverses);
           syncHostLiveUndo(host, runningBatch, canUndo);
@@ -490,6 +503,9 @@ export async function executeIntents(
               }
               if (ok) {
                 succeeded += 1;
+                if (!isMomentaryButton && inverses.length === 0) {
+                  canUndo = false;
+                }
                 runningBatch.recordSuccess(deviceId);
                 const entry = candidateIntents[intentIndex];
                 if (entry) entry.succeededCount += 1;

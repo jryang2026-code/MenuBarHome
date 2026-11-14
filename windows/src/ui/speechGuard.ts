@@ -1024,6 +1024,26 @@ function createUrlCommandHostAdapter(
       });
     },
 
+    openExternalUrlConfirmPrompt(args): Promise<boolean> {
+      if (!revisionStillMatches() || isPanelHidden()) return Promise.resolve(false);
+      if (state.pendingUrlConfirmation !== null) {
+        const previous = state.pendingUrlConfirmation;
+        state.pendingUrlConfirmation = null;
+        previous.resolve(false);
+      }
+      return new Promise<boolean>((resolve) => {
+        state.pendingUrlConfirmation = {
+          description: args.description,
+          commandLabel: args.commandLabel,
+          ...(args.requestId ? { requestId: args.requestId } : {}),
+          sourceRevision: args.sourceRevision,
+          resolve,
+        };
+        invokeTauriVoid("set_pin_popover", { pin: true });
+        host.render();
+      });
+    },
+
     async revealPanelForExternalUrl(): Promise<void> {
       const invoke = window.__TAURI_INTERNALS__?.invoke;
       if (!invoke) return;

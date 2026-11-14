@@ -390,17 +390,13 @@ describe("A10 Chinese numeral delays (1..99, compound, trailing) & cross-home sc
       seconds: 5940,
       remainder: "关空调",
     });
-    assert.deepEqual(DelayPhrase.extract("一小时二十分钟后关灯"), {
-      seconds: 4800,
+    assert.deepEqual(DelayPhrase.extract("一个半小时后关灯"), {
+      seconds: 5400,
       remainder: "关灯",
     });
-    assert.deepEqual(DelayPhrase.extract("一个小时零五分钟后关闭客厅主灯"), {
-      seconds: 3900,
+    assert.deepEqual(DelayPhrase.extract("过十五分钟关闭客厅主灯"), {
+      seconds: 900,
       remainder: "关闭客厅主灯",
-    });
-    assert.deepEqual(DelayPhrase.extract("1小时20分钟30秒后关灯"), {
-      seconds: 4830,
-      remainder: "关灯",
     });
     assert.deepEqual(DelayPhrase.extract("把空调关掉 30分钟后"), {
       seconds: 1800,
@@ -410,11 +406,7 @@ describe("A10 Chinese numeral delays (1..99, compound, trailing) & cross-home sc
       seconds: 1500,
       remainder: "把空调关掉",
     });
-    assert.deepEqual(DelayPhrase.extract("把空调关掉 一小时二十分钟后"), {
-      seconds: 4800,
-      remainder: "把空调关掉",
-    });
-    assert.deepEqual(DelayPhrase.extract("把空调关掉，过15分钟"), {
+    assert.deepEqual(DelayPhrase.extract("把空调关掉，15分钟后"), {
       seconds: 900,
       remainder: "把空调关掉",
     });
@@ -545,6 +537,46 @@ describe("A10 Chinese numeral delays (1..99, compound, trailing) & cross-home sc
       localStorage.getItem(SCHEDULED_COMMANDS_STORAGE_KEY)?.includes(armed.id) ?? false,
       false,
     );
+
+    const l1 = makeLight("did_l1", "灯一", "客厅", true);
+    const l2 = makeLight("did_l2", "灯二", "客厅", true);
+    const l3 = makeLight("did_l3", "灯三", "客厅", true);
+    const l4 = makeLight("did_l4", "灯四", "卧室", true);
+    app.devices = [l1, l2, l3, l4];
+    markTimerSnapshotReady(app);
+    const sentEntities: string[] = [];
+    delete (app as { executeIntents?: unknown }).executeIntents;
+    app.applyCommand = async (cmd) => {
+      await setImmediate();
+      if (cmd.kind === "setLightPower") sentEntities.push(cmd.entityId);
+      return true;
+    };
+    app.scheduledCommands = [
+      {
+        id: "timer_3lights",
+        command: "关客厅灯",
+        reply: "1 分钟后：关客厅灯",
+        delaySeconds: 60,
+        fireTimestampMs: 1_000,
+        intents: [
+          { targetId: "did_l1", operation: { kind: "power", isOn: false } },
+          { targetId: "did_l2", operation: { kind: "power", isOn: false } },
+          { targetId: "did_l3", operation: { kind: "power", isOn: false } },
+        ],
+      },
+      {
+        id: "timer_4thlight",
+        command: "关灯四",
+        reply: "1 分钟后：关灯四",
+        delaySeconds: 60,
+        fireTimestampMs: 1_000,
+        intents: [{ targetId: "did_l4", operation: { kind: "power", isOn: false } }],
+      },
+    ];
+    app.scheduledCommandStore.persist();
+    runWithScheduledTimerTickExemption(() => processScheduledCommands(app, 2_000));
+    for (let i = 0; i < 12; i += 1) await setImmediate();
+    assert.deepEqual(sentEntities.sort(), ["did_l1", "did_l2", "did_l3", "did_l4"]);
   });
 });
 

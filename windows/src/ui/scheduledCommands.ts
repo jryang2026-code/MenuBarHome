@@ -32,6 +32,17 @@ export function markTimerSnapshotReady(host: MenuMijiaWindowsApp): void {
   host.timerSnapshot = identity ? { identity, sourceRevision: host.sourceRevision } : null;
 }
 
+const scheduledRunChainByHost = new WeakMap<MenuMijiaWindowsApp, Promise<void>>();
+
+function enqueueScheduledRun(host: MenuMijiaWindowsApp, item: ScheduledCommand): void {
+  const prev = scheduledRunChainByHost.get(host) ?? Promise.resolve();
+  const next = prev
+    .catch(() => undefined)
+    .then(() => host.runScheduledCommand(item))
+    .catch(() => undefined);
+  scheduledRunChainByHost.set(host, next);
+}
+
 export function processScheduledCommands(host: MenuMijiaWindowsApp, nowMs = Date.now()): boolean {
   const count = host.scheduledCommands.length;
   const missed = host.missedScheduledCommands.length;
@@ -53,7 +64,7 @@ export function processScheduledCommands(host: MenuMijiaWindowsApp, nowMs = Date
     host.isShowingAssistantBar = true;
     host.queueBackgroundRender();
   }
-  for (const item of run) void host.runScheduledCommand(item);
+  for (const item of run) enqueueScheduledRun(host, item);
   return count > 0 || host.missedScheduledCommands.length !== missed;
 }
 

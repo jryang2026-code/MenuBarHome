@@ -29,6 +29,10 @@ import {
   type AppURLCommandHost,
 } from "../src/core/appUrlCommand.js";
 import {
+  enqueueIncomingOpenUrl,
+  getActiveRaycastBridgeTokenForHost,
+} from "../src/ui/speechGuard.js";
+import {
   buildRaycastSnapshot,
   resolveRaycastVisibleDevices,
   type RaycastCommandFeedback,
@@ -640,6 +644,29 @@ describe("A11 RunningBatch mid-flight undo & preemption (#2)", () => {
       null,
       "stale batch settling after invalidateSourceControl must never republish its undo action",
     );
+
+    const lightOk = makeLight("l_ok", "客厅灯", { isOn: true });
+    const noUndoLight = makeLight("l_noundo", "走廊灯", { isOn: true });
+    if (noUndoLight.kind.kind === "light") {
+      noUndoLight.kind.brightnessPercent = null;
+    }
+    app.devices = [lightOk, noUndoLight];
+    app.applyCommand = async (cmd) => {
+      if (cmd.kind === "setLightPower") return true;
+      return false;
+    };
+    await executeIntents(
+      app,
+      [
+        { targetId: "l_ok", operation: { kind: "power", isOn: false } },
+        { targetId: "l_noundo", operation: { kind: "brightness", percent: 50 } },
+      ],
+      "关闭客厅灯并调节走廊灯",
+      "一键全关",
+    );
+    const undoAfterPartial = app.lastUndoAction as MenuMijiaWindowsApp["lastUndoAction"];
+    assert.equal(undoAfterPartial?.steps.length, 1);
+    assert.equal(undoAfterPartial?.steps[0]?.deviceId, "l_ok");
   });
 });
 
@@ -1052,6 +1079,24 @@ describe("A15 Companion URL high-risk confirm, Zero-AI presets, group folding & 
     ]);
     assert.equal(lamp.kind.kind === "light" && lamp.kind.brightnessPercent, 80);
     assert.equal(lamp.kind.kind === "light" && lamp.kind.colorTempKelvin, 4500);
+
+    const heater = makeHighRiskHeater("plug.heater", "卧室电暖器");
+    app.devices = [lamp, heater];
+    const token = getActiveRaycastBridgeTokenForHost(app)!;
+    const urlPromise = enqueueIncomingOpenUrl(
+      app,
+      `menumijia://power?device=plug.heater&on=true&id=req_prod_modal&token=${token}`,
+    );
+    await setImmediate();
+    await setImmediate();
+    const confirmBtn = document.querySelector<HTMLButtonElement>("#btn-url-confirm-run");
+    assert.ok(confirmBtn, "production URL adapter must render in-panel confirmation modal for trusted high-risk link");
+    confirmBtn.click();
+    await urlPromise;
+    assert.equal(
+      sent.some((cmd) => cmd.kind === "setSwitch" && cmd.entityId === "switch.plug.heater" && cmd.isOn === true),
+      true,
+    );
     if (dom) {
       closeTestWindow(dom);
       dom = null;

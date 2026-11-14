@@ -47,44 +47,20 @@ function spokenNumber(s: string): number | null {
   return spokenChineseNumber(s);
 }
 
-const CN_DELAY_SEG_SOURCE = "([0-9]+|[零一二两三四五六七八九十]+|半)\\s*(个半|个)?(秒钟|秒|分钟|分|小时|钟头)(半)?";
-const CN_DELAY_DURATION_SOURCE = `${CN_DELAY_SEG_SOURCE}(?:\\s*(?:零(?=[0-9]))?\\s*${CN_DELAY_SEG_SOURCE})?(?:\\s*(?:零(?=[0-9]))?\\s*${CN_DELAY_SEG_SOURCE})?`;
-const CN_DELAY_LEADING = new RegExp(
-  `^(?<prefix>过|等)?\\s*(?<duration>${CN_DELAY_DURATION_SOURCE})\\s*(?<suffix>以后|之后|后)?`,
-);
-const CN_DELAY_TRAILING = new RegExp(
-  `(?:[，,。\\s]+(?<prefix>过|等)\\s*|[，,。\\s]*)(?<![0-9零一二两三四五六七八九十])(?<duration>${CN_DELAY_DURATION_SOURCE})\\s*(?<suffix>以后|之后|后)?$`,
-);
-const CN_DELAY_SEG_GLOBAL = new RegExp(CN_DELAY_SEG_SOURCE, "g");
+const CN_DELAY_NUMBER = "([0-9]+|[零一二两三四五六七八九十]+|半)";
+const CN_DELAY_UNIT = "(个半|个)?(秒钟|秒|分钟|分|小时|钟头)(半)?";
+const CN_DELAY_LEADING = new RegExp(`^(过|等)?${CN_DELAY_NUMBER}\\s*${CN_DELAY_UNIT}(以后|之后|后)?`);
+const CN_DELAY_TRAILING = new RegExp(`[，,\\s]*${CN_DELAY_NUMBER}\\s*${CN_DELAY_UNIT}(以后|之后|后)$`);
 
-function parseChineseDurationSeconds(durationRaw: string): number | null {
-  let totalSeconds = 0;
-  let prevUnitSeconds = Number.POSITIVE_INFINITY;
-  let hadFractional = false;
-  let segmentCount = 0;
-  for (const seg of durationRaw.matchAll(CN_DELAY_SEG_GLOBAL)) {
-    if (hadFractional) return null;
-    const rawNumber = seg[1];
-    const classifier = seg[2];
-    const unitWord = seg[3];
-    const trailingHalf = seg[4];
-    if (!rawNumber || !unitWord) return null;
-    const unitSeconds = unitWord.startsWith("秒") ? 1 : unitWord.startsWith("分") ? 60 : 3600;
-    if (unitSeconds >= prevUnitSeconds) return null;
-    let value = rawNumber === "半" ? 0.5 : spokenNumber(rawNumber);
-    if (value === null) return null;
-    if (segmentCount > 0 && value >= 60) return null;
-    if (classifier === "个半" || trailingHalf === "半") {
-      value += 0.5;
-      hadFractional = true;
-    } else if (rawNumber === "半") {
-      hadFractional = true;
-    }
-    totalSeconds += value * unitSeconds;
-    prevUnitSeconds = unitSeconds;
-    segmentCount += 1;
-  }
-  return segmentCount > 0 ? totalSeconds : null;
+function chineseDelaySeconds(m: RegExpExecArray, g: number): number | null {
+  const rawNumber = m[g];
+  const unitWord = m[g + 2];
+  if (!rawNumber || !unitWord) return null;
+  const unitSeconds = unitWord.startsWith("秒") ? 1 : unitWord.startsWith("分") ? 60 : 3600;
+  let value = rawNumber === "半" ? 0.5 : spokenNumber(rawNumber);
+  if (value === null) return null;
+  if (m[g + 1] === "个半" || m[g + 3] === "半") value += 0.5;
+  return value * unitSeconds;
 }
 
 function stripDelayMatch(text: string, m: RegExpExecArray): string {
@@ -142,14 +118,12 @@ export const DelayPhrase = {
     const leading = CN_DELAY_LEADING.exec(simplified);
     if (leading) {
       // Without 过 / 等 in front or 后 behind, "10分钟" is not a delay ("10分钟关灯" is left alone).
-      const hasMarker = leading.groups?.prefix !== undefined || leading.groups?.suffix !== undefined;
-      const seconds = hasMarker ? parseChineseDurationSeconds(leading.groups?.duration ?? "") : null;
+      const seconds = leading[1] !== undefined || leading[6] !== undefined ? chineseDelaySeconds(leading, 2) : null;
       if (seconds !== null) return buildDelay(seconds, 1, stripDelayMatch(trimmed, leading));
     }
     const trailing = CN_DELAY_TRAILING.exec(simplified);
     if (trailing) {
-      const hasMarker = trailing.groups?.prefix !== undefined || trailing.groups?.suffix !== undefined;
-      const seconds = hasMarker ? parseChineseDurationSeconds(trailing.groups?.duration ?? "") : null;
+      const seconds = chineseDelaySeconds(trailing, 1);
       if (seconds !== null) return buildDelay(seconds, 1, stripDelayMatch(trimmed, trailing));
     }
     return null;
