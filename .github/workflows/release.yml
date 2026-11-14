@@ -99,6 +99,9 @@ jobs:
         with:
           ref: ${{ needs.verify-tag.outputs.commit }}
           persist-credentials: false
+          # build_app.sh derives CFBundleVersion from `git rev-list --count HEAD`; a shallow
+          # clone would stamp every release with build 1.
+          fetch-depth: 0
 
       # macos-26-intel ships Xcode 26.6 (17F113).
       - name: Select Xcode 26.6

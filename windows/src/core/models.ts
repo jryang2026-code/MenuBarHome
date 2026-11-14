@@ -1,13 +1,6 @@
 import { catalogEntry, currentLanguage, t } from "./i18n.js";
 import { formatTemperature } from "./temperature.js";
 
-export type HomeBackend = "xiaomiCloud" | "homeAssistant";
-
-export type ConnectionStatus =
-  | { readonly kind: "connected" }
-  | { readonly kind: "connecting" }
-  | { readonly kind: "disconnected"; readonly reason: string };
-
 export interface LightSpec {
   readonly kind: "light";
   readonly entityId: string;

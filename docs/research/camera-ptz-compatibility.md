@@ -191,7 +191,7 @@ go build -trimpath -ldflags "-s -w" -o go2rtc .
 
 - macOS：`XiaomiCameraBridge.downloadGo2RTCBinary` 固定 `AlexxIT/go2rtc v1.9.15` + 两个 SHA-256；只有文件不存在时才下载。→ 需要改成 **自有构建的固定 URL + 新校验和 + 构建标记检查**（例如 `--version`/能力探针），并强制升级已存在但无电机接口的旧二进制。
 - Windows：`windows/src-tauri/src/camera.rs` 同样固定官方 v1.9.15 + SHA-256，需要同步换 pin。
-- 资产可放 GitLab release（origin 在 GitLab）或随安装包内置；不能依赖个人 fork 的临时分支。
+- 资产可放 GitHub release或随安装包内置；不能依赖个人 fork 的临时分支。
 
 ### 6.3 应用侧接口（已实现）
 

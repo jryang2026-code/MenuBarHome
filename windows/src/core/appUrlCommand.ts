@@ -5,7 +5,6 @@ import {
 import { inverseCommands, mergeInverseCommands } from "./commandEffects.js";
 import { runTrackedDevicePresetCommands } from "./optimisticLock.js";
 import {
-  allOffTargets,
   deviceCanTogglePower,
   isDeviceActiveOn,
   type DeviceCommand,
@@ -1435,5 +1434,3 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
     }
   }
 }
-
-export { allOffTargets };

@@ -261,6 +261,16 @@ final class AutomationEngine {
         lastContext = effective
         guard let store else { return }
         for rule in ruleStore.load() where rule.isEnabled {
+            // Same Wi-Fi condition `handle(trigger:)` applies, checked before the cooldown is
+            // consumed. A "left network" rule is judged against the network it just left, since
+            // the current SSID is already gone.
+            let conditionSSID = rule.trigger == .wifiNetworkLeft
+                ? (previous?.wifiSSID ?? context.wifiSSID)
+                : context.wifiSSID
+            guard rule.conditions.evaluate(
+                wifiSSID: conditionSSID,
+                isAuthorized: context.isWiFiAuthorized
+            ).isSatisfied else { continue }
             let events = MacContextAutomation.events(
                 for: rule,
                 previous: previous,

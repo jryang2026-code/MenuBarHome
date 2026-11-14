@@ -134,6 +134,9 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
         continuation = cont
         demuxer = FragmentedMP4Demuxer()
         track = nil
+        // A new connection may carry different parameter sets; keep nothing from the last one.
+        formatDescription = nil
+        activeParameterSets = []
         waitingForKeyframe = true
         framesDecoded = 0
         failure = nil
