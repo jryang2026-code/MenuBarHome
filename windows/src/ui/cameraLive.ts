@@ -60,6 +60,13 @@ export interface CameraLiveHost {
   escapeHtml(value: string): string;
   saveSettings(): void;
   shouldKeepPopoverPinned(): boolean;
+  readonly pipeline?: {
+    readonly cameraStandby: {
+      resumeFromStandby(root: HTMLElement): void;
+      enterWarmStandby(root: HTMLElement): void;
+      cancel(): void;
+    };
+  };
 }
 
 export class CameraLiveController {
@@ -111,7 +118,7 @@ export class CameraLiveController {
   public liveCameraMuted = true;
   public liveCameraQualityApplies = true;
   public liveCameraImgEl: HTMLImageElement | null = null;
-  private liveCameraRawMediaEl: HTMLImageElement | HTMLVideoElement | null = null;
+  public liveCameraRawMediaEl: HTMLImageElement | HTMLVideoElement | null = null;
   public liveCameraAbort: AbortController | null = null;
   public ownedStreamOrigin: string | null = null;
   public liveCameraToken = 0;
@@ -124,6 +131,7 @@ export class CameraLiveController {
     // Opening is idempotent even before the first frame or while cloud negotiation is
     // pending. Only the explicit reconnect action may replace this camera's session.
     if (this.activeLiveCameraId === deviceId) {
+      this.host.pipeline?.cameraStandby.resumeFromStandby(this.host.root);
       this.liveCameraHidden = false;
       this.clearCameraKeepAlive();
       invokeTauriVoid("set_pin_popover", { pin: true });
@@ -137,6 +145,7 @@ export class CameraLiveController {
     if (this.activeLiveCameraId !== null && this.activeLiveCameraId !== deviceId) {
       this.teardownActiveCameraForSwitch();
     }
+    this.host.pipeline?.cameraStandby.cancel();
     this.activeLiveCameraId = dev.id;
     this.activeLiveCameraSnapshot = dev;
     this.liveCameraMuted = true;
@@ -207,6 +216,7 @@ export class CameraLiveController {
       if (this.liveCameraHidden) this.closeCameraLiveView();
     }, this.cameraKeepAliveMs);
     this.host.render();
+    this.host.pipeline?.cameraStandby.enterWarmStandby(this.host.root);
   }
 
   public clearCameraKeepAlive(): void {
@@ -217,6 +227,7 @@ export class CameraLiveController {
   }
 
   public closeCameraLiveView(): void {
+    this.host.pipeline?.cameraStandby.cancel();
     const closingId = this.activeLiveCameraId;
     const closingDev = closingId
       ? this.host.devices.find((d) => d.id === closingId) ??

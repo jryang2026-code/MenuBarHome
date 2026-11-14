@@ -25,6 +25,13 @@ export interface LayoutGestureHost {
   suppressNextClick: boolean;
   pointerIsDown: boolean;
   isEditingLayout: boolean;
+  readonly pipeline?: {
+    patchDimPreview(
+      host: { readonly root: HTMLElement },
+      deviceId: string,
+      percent: number | null,
+    ): void;
+  };
   tileSize(device: SmartDevice): Exclude<TileSize, "auto">;
   applyDragOffset(): void;
   executeSingleCommand(
@@ -213,7 +220,11 @@ export interface LayoutGestureHost {
         const percent = Math.max(1, Math.min(100, Math.round(((e.clientX - r.left) / r.width) * 100)));
         host.dimPreview = { id: press.id, percent };
         host.suppressNextClick = true;
-        host.render();
+        if (host.pipeline) {
+          host.pipeline.patchDimPreview(host, press.id, percent);
+        } else {
+          host.render();
+        }
       }
     });
 
