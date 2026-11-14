@@ -948,4 +948,114 @@ describe("Wave 4 · Issue #133 Partial-Account Staleness Guard & PM2.5 Sensor Fa
       { kind: "setLightPower", entityId: "light.light.study", isOn: true },
     ]);
   });
+
+  it("records live sensor and energy telemetry for HA-winning dual-source cards whose canonical ID matches a stale Xiaomi DID", async () => {
+    const app = createCloudApp();
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.haBaseURL = "http://192.168.1.10:8123";
+    app.settings.haToken = "token-ha-dual";
+    app.dualSourceEnabledOverride = true;
+    app.sourceRevision = 12;
+    (app as unknown as { timerSnapshot: { identity: string; sourceRevision: number } }).timerSnapshot = {
+      identity: "dual:test",
+      sourceRevision: 12,
+    };
+
+    const accA = makeMiAccount({
+      userId: "10001",
+      cUserId: "c1",
+      ssecurity: "AQIDBAUGBwgJCgsMDQ4PEA==",
+      serviceToken: "tok1",
+      passToken: "pass1",
+      region: "cn",
+    });
+    const accB = makeMiAccount({
+      userId: "20002",
+      cUserId: "c2",
+      ssecurity: "AQIDBAUGBwgJCgsMDQ4PEA==",
+      serviceToken: "tok2",
+      passToken: "pass2",
+      region: "de",
+    });
+    const staleXiaomiCanonicalId = "mi:20002/did-paired-sensor";
+    const staleXiaomiPlugCanonicalId = "mi:20002/did-paired-plug";
+
+    const haBackedSensor: SmartDevice = {
+      ...makeSensor({
+        id: staleXiaomiCanonicalId,
+        name: "Living Room Sensor (HA)",
+        temperature: 24.5,
+        humidity: 52,
+        battery: 95,
+      }),
+      sourceBackend: "homeAssistant",
+    };
+    const haBackedPlug: SmartDevice = {
+      ...makePlug({
+        id: staleXiaomiPlugCanonicalId,
+        name: "Living Room Plug (HA)",
+        isOn: true,
+        powerWatts: 110,
+        energyKwh: 4.2,
+      }),
+      sourceBackend: "homeAssistant",
+    };
+
+    app.multiAccountState = {
+      accounts: [accA, accB],
+      children: {},
+      merged: {
+        home: {
+          devices: [haBackedSensor, haBackedPlug],
+          rooms: [],
+          environmentReadings: [],
+          scenes: [],
+        },
+        homes: [],
+        accountStatuses: {
+          [accA.id]: { kind: "connected" },
+          [accB.id]: { kind: "disconnected", reason: "token expired" },
+        },
+        accountTokenStatuses: {},
+        deviceOwners: {},
+        aggregateStatus: { kind: "connected" },
+        rawDevicesByAccount: {},
+        allDevicesByAccount: {},
+        allRoomsByAccount: {},
+        specsByModel: {},
+        lightGroupOwners: new Map(),
+        resetSelectedHome: false,
+        staleDeviceIds: new Set([staleXiaomiCanonicalId, staleXiaomiPlugCanonicalId]),
+      },
+    };
+
+    app.devices = [haBackedSensor, haBackedPlug];
+    syncSensorHistoryHost(app);
+    syncEnergyHostOnRender(app);
+
+    const sensorPoints = sharedSensorHistoryStore().points(
+      staleXiaomiCanonicalId,
+      "24h",
+    );
+    assert.ok(sensorPoints.some((p) => p.isObserved), "HA-winning sensor must record live points despite Xiaomi canonical ID in staleDeviceIds");
+
+    await new Promise((r) => setTimeout(r, 5));
+    const nextHaPlug: SmartDevice = {
+      ...haBackedPlug,
+      kind:
+        haBackedPlug.kind.kind === "plug"
+          ? { ...haBackedPlug.kind, energyKwh: 5.7 }
+          : haBackedPlug.kind,
+    };
+    app.devices = [haBackedSensor, nextHaPlug];
+    syncEnergyHostOnRender(app);
+
+    const energyHistory = getScopedEnergyHistory({
+      ...app.settings,
+      dualSourceEnabled: true,
+      activeAccountIds: [accA.id, accB.id],
+    });
+    const plugDelta = energyHistory.todayKwh(staleXiaomiPlugCanonicalId) ?? 0;
+    assert.ok(Math.abs(plugDelta - 1.5) < 1e-6, `Expected 1.5 kWh recorded for HA-winning plug, got ${plugDelta}`);
+  });
 });

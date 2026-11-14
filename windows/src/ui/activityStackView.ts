@@ -39,7 +39,7 @@ import type { SmartDevice } from "../core/models.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { SF_ICONS } from "./appConstants.js";
 import { filterSafetyAlertsByGuardPrefs, loadSafetyGuardPrefs } from "./automationSettingsView.js";
-import { getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
+import { getHostDualSourceState, getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
 import { energyScopeForHost } from "./energySettingsView.js";
 import { withAliases } from "./panelPrefs.js";
 import {
@@ -124,7 +124,18 @@ export function isFullPanelHost(host: unknown): host is MenuMijiaWindowsApp {
 
 function aliasedHostDevices(host: MenuMijiaWindowsApp): SmartDevice[] {
   const prefs = host.layout ?? host.settings?.layout;
-  return prefs ? withAliases(prefs, host.devices) : [...host.devices];
+  const base = prefs ? withAliases(prefs, host.devices) : [...host.devices];
+  const staleIds = getHostMiAccountsState(host)?.merged?.staleDeviceIds;
+  if (!staleIds || staleIds.size === 0) return base;
+  const dualRoutes = isDualSourceEnabled(host) ? getHostDualSourceState(host)?.routes : undefined;
+  return base.map((dev) => {
+    if (dev.telemetryStale) return dev;
+    const route = dualRoutes?.[dev.id];
+    const backend = route?.backend ?? dev.sourceBackend;
+    if (backend === "homeAssistant") return dev;
+    const miId = backend === "xiaomiCloud" ? (route?.sourceDeviceId ?? dev.id) : dev.id;
+    return staleIds.has(miId) ? { ...dev, telemetryStale: true } : dev;
+  });
 }
 
 function deviceTelemetrySignature(devices: readonly SmartDevice[]): string {

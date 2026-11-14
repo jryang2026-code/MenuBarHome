@@ -1116,4 +1116,103 @@ describe("W4 Scanner & Diagnostics UI: cross-account scan, context-switch auto-c
     assert.ok(clipboardText.includes("## MenuBarHome 诊断信息"));
     assert.ok(app.root.querySelector('[data-settings-panel="connection"] #conn-diag-markdown-preview'));
   });
+
+  it("clears retained dual-source state on disable and serializes concurrent multi-account sign-out clicks", async () => {
+    const transport: HttpTransport = async (req: HttpRequest): Promise<HttpResponse> => {
+      if (req.url.includes("miot-spec.org")) {
+        return { status: 200, headers: {}, body: "{}" };
+      }
+      const { path } = cookieHeaderAccount(req);
+      const payload = req.body ? decryptMiPayload(req.body) : {};
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") {
+        return okMi({
+          homelist: [
+            { id: "h1", name: "家", roomlist: [{ id: "r1", name: "客厅", dids: ["55667788", "99001122"] }] },
+          ],
+        });
+      }
+      if (path === "v2/home/device_list_page" || path === "home/device_list") {
+        return okMi({
+          list: [
+            { did: "55667788", name: "客厅主灯", model: LIGHT_MODEL, isOnline: true },
+            { did: "99001122", name: "单源米家插座", model: PLUG_MODEL, isOnline: true },
+          ],
+        });
+      }
+      if (path === "miotspec/prop/get") {
+        const params = (payload["params"] as Array<{ did: string; siid: number; piid: number }>) ?? [];
+        return okMi(params.map((p) => ({ ...p, code: 0, value: p.piid === 1 ? true : 55 })));
+      }
+      return okMi({});
+    };
+
+    const haInvoke = async <T>(cmd: string): Promise<T> => {
+      assert.equal(cmd, "ha_snapshot");
+      return {
+        areas: [{ area_id: "a1", name: "客厅" }],
+        devices: [
+          {
+            id: "ha-dev-5566",
+            area_id: "a1",
+            name: "客厅主灯 HA",
+            model: LIGHT_MODEL,
+            identifiers: [["xiaomi_home", "cn_55667788"]],
+            connections: [],
+          },
+        ],
+        entities: [
+          { entity_id: "light.living_5566", device_id: "ha-dev-5566", area_id: null, disabled_by: null, hidden_by: null },
+        ],
+        states: [
+          { entity_id: "light.living_5566", state: "on", attributes: { friendly_name: "客厅主灯 HA", brightness: 204 } },
+        ],
+      } as unknown as T;
+    };
+
+    const secure = makeInMemorySecureStore();
+    const vault = new CredentialVault(secure.invoke);
+    const app = createMountedApp({ transport, vault, secureInvoke: secure.invoke });
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.miSession = { ...SESSION_CN_PRIMARY };
+    app.settings.haBaseURL = "https://ha.example.test:8123";
+    app.settings.haToken = "ha-dual-token";
+    setHostHAInvokeOverride(app, haInvoke);
+
+    await addOrUpdateMiAccountOnHost(app, SESSION_CN_PRIMARY, { triggerRefresh: false });
+    await addOrUpdateMiAccountOnHost(app, SESSION_SG_SECONDARY, { triggerRefresh: false });
+    const store = getHostMiAccountsStore(app);
+    setHostDualSourceEnabled(app, true, { persist: true });
+    await refreshDevices(app, false);
+    assert.ok(getHostDualSourceState(app));
+
+    setHostDualSourceEnabled(app, false, { persist: true });
+    assert.equal(getHostDualSourceState(app), null);
+    await refreshDevices(app, false);
+
+    const lamp = app.devices.find((d) => d.kind.kind === "light")!;
+    assert.ok(lamp);
+    app.ctxMenu = { x: 40, y: 40, deviceId: lamp.id };
+    app.render();
+    assertMissing(app.root.querySelector("[data-pin-device-source]"));
+    app.ctxMenu = null;
+    app.render();
+
+    openConnectionsAndDiagModal(app, "accounts");
+    await settleUi(4);
+
+    const signOutButtons = Array.from(
+      app.root.querySelectorAll<HTMLButtonElement>("[data-mi-account-signout]"),
+    );
+    assert.equal(signOutButtons.length, 2);
+
+    signOutButtons[0]!.click();
+    signOutButtons[1]!.click();
+    await settleUi(25);
+
+    assert.equal(store.getAccounts().length, 0);
+    const reloaded = await store.load();
+    assert.equal(reloaded.length, 0);
+    assert.equal(await vault.loadPrimaryMiSession(), null);
+    assert.equal(app.settings.miSession, null);
+  });
 });

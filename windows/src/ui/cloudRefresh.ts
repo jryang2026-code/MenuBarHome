@@ -995,6 +995,9 @@ export function setHostDualSourceEnabled(
 ): void {
   host.dualSourceEnabledOverride = enabled;
   host.settings.dualSourceEnabled = enabled;
+  if (!enabled) {
+    host.dualSourceCoordinator?.reset();
+  }
   if (options.persist) {
     try {
       if (typeof localStorage !== "undefined") {
@@ -1015,6 +1018,7 @@ export function getHostDualSourceCoordinator(host: MenuMijiaWindowsApp): DualSou
   if (!host.dualSourceCoordinator) {
     host.dualSourceCoordinator = new DualSourceCoordinator(undefined, {
       onRecompute: (merged) => {
+        if (!isDualSourceEnabled(host)) return;
         applyDualSourceMergeToHost(host, merged);
         if (isHostAttachedToActiveWindow(host)) host.render();
       },
@@ -1024,6 +1028,7 @@ export function getHostDualSourceCoordinator(host: MenuMijiaWindowsApp): DualSou
 }
 
 export function getHostDualSourceState(host: DualSourceInspectableHost): DeviceMergeResult | null {
+  if (!isDualSourceEnabled(host)) return null;
   return host.dualSourceCoordinator?.getLastMerged() ?? null;
 }
 
@@ -1032,12 +1037,14 @@ export function setHostDeviceSourcePin(
   deviceId: string,
   backend: HomeBackend | null,
 ): DeviceMergeResult | null {
+  if (!isDualSourceEnabled(host)) return null;
   const coordinator = getHostDualSourceCoordinator(host);
   coordinator.pinStorage.pin(deviceId, backend);
   return coordinator.getLastMerged();
 }
 
 export function recomputeHostDualSource(host: MenuMijiaWindowsApp): DeviceMergeResult | null {
+  if (!isDualSourceEnabled(host)) return null;
   const coordinator = getHostDualSourceCoordinator(host);
   const merged = coordinator.recompute(host.settings.interfaceLanguage);
   if (merged) {

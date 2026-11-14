@@ -212,6 +212,8 @@ export interface HostConnDiagSession {
   diagMarkdownPreview: string | null;
   diagCopied: boolean;
   haScannerInvokeOverride: ScannerHAInvoke | null;
+  readonly signingOutAccountIds: Set<string>;
+  signOutChain: Promise<boolean>;
   readonly addQr: AddAccountQrState;
 }
 
@@ -285,6 +287,8 @@ export function createDefaultHostConnDiagSession(region?: string): HostConnDiagS
     diagMarkdownPreview: null,
     diagCopied: false,
     haScannerInvokeOverride: null,
+    signingOutAccountIds: new Set<string>(),
+    signOutChain: Promise.resolve(false),
     addQr: {
       open: false,
       phase: "idle",
@@ -457,22 +461,46 @@ export async function addOrUpdateMiAccountOnHost(
   return result.accounts;
 }
 
-export async function signOutSingleMiAccountOnHost(
+export function signOutSingleMiAccountOnHost(
   host: ConnectionsAndDiagHost,
+  accountId: string,
+): Promise<boolean> {
+  const session = getHostConnDiagSession(host);
+  if (session.signingOutAccountIds.has(accountId)) {
+    return Promise.resolve(false);
+  }
+  session.signingOutAccountIds.add(accountId);
+  const run = session.signOutChain.then(
+    () => performSignOutSingleMiAccountOnHost(host, session, accountId),
+    () => performSignOutSingleMiAccountOnHost(host, session, accountId),
+  );
+  session.signOutChain = run.then(
+    () => false,
+    () => false,
+  );
+  return run;
+}
+
+async function performSignOutSingleMiAccountOnHost(
+  host: ConnectionsAndDiagHost,
+  session: HostConnDiagSession,
   accountId: string,
 ): Promise<boolean> {
   const store = getHostMiAccountsStore(host);
   const lang = activeLanguage(host.settings.interfaceLanguage);
 
   try {
-    if (store.getAccounts().length === 0) await store.load();
-    if (store.getAccounts().length === 0) {
+    if (store.getAccounts().length === 0 && !hasPendingMiVaultDeletion()) {
+      await store.load();
+    }
+    if (store.getAccounts().length === 0 && host.settings.miSession) {
       for (const item of resolveHostMiAccounts(host)) await store.upsertAccount(item.session);
     }
     const beforeCount = store.getAccounts().length;
+    if (beforeCount === 0) return false;
     const removal = await store.removeAccount(accountId, host.settings.selectedHomeId);
     setHostMiAccounts(host, null);
-    if (beforeCount > 0 && removal.accounts.length === beforeCount) return false;
+    if (removal.accounts.length === beforeCount) return false;
 
     host.localControlRevision += 1;
     host.invalidateSourceControl();
@@ -509,6 +537,9 @@ export async function signOutSingleMiAccountOnHost(
     if (removal.accounts.length <= 1) {
       host.multiAccountState = null;
     }
+
+    session.signingOutAccountIds.delete(accountId);
+    const hasMoreQueuedSignOuts = session.signingOutAccountIds.size > 0;
 
     if (removal.accounts.length === 0) {
       if (host.cameraLive?.activeLiveCameraId || host.cameraLive?.liveCameraKeepAliveTimer) {
@@ -571,9 +602,12 @@ export async function signOutSingleMiAccountOnHost(
       source: tr3("多账号管理", "多帳號管理", "Accounts", lang),
     };
     host.render();
-    if (host.settings.connectionMode !== "demo") await host.refreshDevices(false);
+    if (!hasMoreQueuedSignOuts && host.settings.connectionMode !== "demo") {
+      await host.refreshDevices(false);
+    }
     return true;
   } catch (error) {
+    session.signingOutAccountIds.delete(accountId);
     const detail = error instanceof Error && error.message.trim() ? ` (${error.message.trim()})` : "";
     host.replyBanner = {
       text: `${tr3("无法从系统凭据库移除该米家账号，请重试", "無法從系統憑證庫移除該米家帳號，請重試", "Could not remove Xiaomi account from the OS credential store; please retry", lang)}${detail}`,
@@ -582,6 +616,8 @@ export async function signOutSingleMiAccountOnHost(
     };
     host.render();
     return false;
+  } finally {
+    session.signingOutAccountIds.delete(accountId);
   }
 }
 
@@ -1115,7 +1151,7 @@ export function renderConnectionsAndDiagSection(ctx: ConnectionsAndDiagViewConte
                 ${badgeHtml}
                 <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
                   ${needsRescan ? `<button type="button" class="cc-inline-pill" data-mi-account-rescan="${esc(acc.id)}" data-mi-account-region="${esc(acc.region)}">${esc(tr3("重新扫码", "重新掃碼", "Rescan", lang))}</button>` : ""}
-                  <button type="button" class="cc-btn-danger" data-mi-account-signout="${esc(acc.id)}" style="padding:3px 9px;font-size:11.5px;">${esc(tr3("退出", "登出", "Sign Out", lang))}</button>
+                  <button type="button" class="cc-btn-danger" data-mi-account-signout="${esc(acc.id)}"${session && session.signingOutAccountIds.size > 0 ? " disabled" : ""} style="padding:3px 9px;font-size:11.5px;">${esc(tr3("退出", "登出", "Sign Out", lang))}</button>
                 </div>
               </div>
               ${noticeHtml}
@@ -1301,7 +1337,10 @@ export function bindConnectionsAndDiagEvents(host: ConnectionsAndDiagHost): void
 
   host.root.querySelectorAll<HTMLButtonElement>("[data-mi-account-signout]").forEach((btn) => {
     bindElementListener(btn, "click", (el) => {
-      if (el.dataset.miAccountSignout) void signOutSingleMiAccountOnHost(host, el.dataset.miAccountSignout);
+      const targetAccountId = el.dataset.miAccountSignout;
+      if (!targetAccountId || el.disabled) return;
+      el.disabled = true;
+      void signOutSingleMiAccountOnHost(host, targetAccountId);
     });
   });
   host.root.querySelectorAll<HTMLButtonElement>("[data-mi-account-rescan]").forEach((btn) => {
@@ -1380,7 +1419,7 @@ export function bindConnectionsAndDiagPanelEvents(host: ConnectionsAndDiagHost):
       const backend: HomeBackend | null =
         choice === "homeAssistant" || choice === "xiaomiCloud" ? choice : null;
       host.ctxMenu = null;
-      if (isFullPanelHost(host)) {
+      if (isFullPanelHost(host) && isDualSourceEnabled(host)) {
         setHostDeviceSourcePin(host, deviceId, backend);
         recomputeHostDualSource(host);
       }

@@ -151,22 +151,22 @@ export function renderContextMenu(host: MenuMijiaWindowsApp): string {
     const pinned = isDevicePinned(dev.id, host.layout);
     const pinnedList = pinnedDeviceIds(host.layout);
     const pinIdx = pinnedList.indexOf(dev.id);
-    const dualState = getHostDualSourceState(host);
     const dualEnabled = isDualSourceEnabled(host);
+    const dualState = dualEnabled ? getHostDualSourceState(host) : null;
     const route = dualState?.routes[dev.id] ?? null;
     const activeBackend: HomeBackend | null =
       route?.backend ??
       (dev.sourceBackend === "homeAssistant" || dev.sourceBackend === "xiaomiCloud"
         ? dev.sourceBackend
         : null);
-    const storedPin =
-      dualEnabled || dualState !== null
-        ? getHostDualSourceCoordinator(host).pinStorage.get(dev.id)
-        : null;
+    const storedPin = dualEnabled
+      ? getHostDualSourceCoordinator(host).pinStorage.get(dev.id)
+      : null;
     const pinnedBackend: HomeBackend | null =
       storedPin ?? route?.pinnedBackend ?? dev.pinnedBackend ?? null;
     const fallbackActive = Boolean(route?.fallbackActive ?? dev.fallbackActive);
     const showDualSourcePin =
+      dualEnabled &&
       activeBackend !== null &&
       (Boolean(dualState?.pairedDeviceIds.has(dev.id)) ||
         (route !== null && route.alternateBackend !== null) ||

@@ -1011,6 +1011,16 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   getLastMerged(): DeviceMergeResult | null { return this.lastMerged;
   }
 
+  reset(): void {
+    this.lastHA = null;
+    this.lastMi = null;
+    this.lastMerged = null;
+    this.sourceStatuses = {
+      homeAssistant: { kind: "connecting" },
+      xiaomiCloud: { kind: "connecting" },
+    };
+  }
+
   getSourceStatuses(): Readonly<Record<HomeBackend, ConnectionStatus>> { return { ...this.sourceStatuses };
   }
 
