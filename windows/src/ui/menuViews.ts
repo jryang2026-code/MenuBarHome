@@ -113,7 +113,7 @@ export function renderOnboardingModal(host: MenuMijiaWindowsApp): string {
             <label>${t("云端服务器地区")}</label>
             <select class="cc-input" data-mi-region>
               ${MI_CLOUD_REGIONS.map(
-                (region) => `<option value="${region.code}" ${normalizeMiCloudRegion(host.settings.miCloudRegion) === region.code ? "selected" : ""}>${host.escapeHtml(region.label)}</option>`,
+                (region) => `<option value="${region.code}" ${normalizeMiCloudRegion(host.settings.miCloudRegion) === region.code ? "selected" : ""}>${host.escapeHtml(t(region.label))}</option>`,
               ).join("")}
             </select>
             <p class="cc-field-hint">${t("欧洲、印度、俄罗斯、新加坡、美区的米家账号请先选择对应地区，再扫码登录。")}</p>

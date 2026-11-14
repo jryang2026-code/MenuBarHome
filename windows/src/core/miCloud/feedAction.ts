@@ -1,4 +1,4 @@
-import { setLanguage, speechLocale, t } from "../i18n.js";
+import { currentLanguage, setLanguage, speechLocale, t } from "../i18n.js";
 import { facetAlertText, facetValue, humanizedFacetName } from "../miotFacetText.js";
 import type { FacetArgument, FacetControl, FacetRange } from "../models.js";
 import { isMiotAlertLabel, matchesMiotFacetPattern, type DeviceOverride } from "./facets.js";
@@ -194,9 +194,9 @@ function alertMatchesControl(alert: string, control: FacetControl): boolean {
   if (!Number.isSafeInteger(code)) return false;
   const option = control.options.find((item) => item.value === code);
   if (!option || !isMiotAlertLabel(option.label)) return false;
-  const saved = speechLocale() === "en-US" ? "en" : "zh-Hans";
+  const saved = currentLanguage();
   try {
-    for (const lang of ["zh-Hans", "en"] as const) {
+    for (const lang of ["zh-Hans", "zh-Hant", "en"] as const) {
       setLanguage(lang);
       if (facetAlertText(control, option.label) === alert) return true;
     }
@@ -265,7 +265,7 @@ const SERVICE_TITLES: Readonly<Record<string, string>> = {
 export function facetServiceTitle(serviceName: string): string {
   if (speechLocale() !== "en-US") {
     const chinese = SERVICE_TITLES[serviceName];
-    if (chinese) return chinese;
+    if (chinese) return t(chinese);
   }
   return humanizedFacetName(serviceName);
 }

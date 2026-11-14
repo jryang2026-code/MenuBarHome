@@ -445,6 +445,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
   async function readyCloudApp(configure?: (cloud: ReturnType<typeof cloudFixture>) => void): Promise<{
     cloud: ReturnType<typeof cloudFixture>;
     triggerRefresh(): void;
+    advanceToTopologyPoll(): Promise<void>;
     runTimerTick(): void;
   }> {
     const cloud = cloudFixture([]);
@@ -468,24 +469,34 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
     assert.match(tile("fixture-light"), /50%/);
     const runTimerTick = () => (timerTick as () => void)();
     let refreshOffset = 0;
+    const triggerRefresh = () => {
+      refreshOffset += 7_000;
+      const realNow = Date.now;
+      Date.now = () => realNow() + refreshOffset;
+      try {
+        runTimerTick();
+      } finally {
+        Date.now = realNow;
+      }
+    };
+    const advanceToTopologyPoll = async () => {
+      for (let round = 0; round < 19; round += 1) {
+        const readsBefore = cloud.completedReads();
+        triggerRefresh();
+        await waitFor(() => cloud.completedReads() > readsBefore);
+        await setImmediate();
+      }
+    };
     return {
       cloud,
       runTimerTick,
-      triggerRefresh: () => {
-        refreshOffset += 7_000;
-        const realNow = Date.now;
-        Date.now = () => realNow() + refreshOffset;
-        try {
-          runTimerTick();
-        } finally {
-          Date.now = realNow;
-        }
-      },
+      triggerRefresh,
+      advanceToTopologyPoll,
     };
   }
 
   it("keeps device and room positions when cloud polling permutes the same records", async () => {
-    const { cloud, triggerRefresh } = await readyCloudApp((fixture) => {
+    const { cloud, triggerRefresh, advanceToTopologyPoll } = await readyCloudApp((fixture) => {
       const light = fixture.deviceRecords[0];
       assert.ok(light);
       fixture.deviceRecords.push({ ...light, did: "second-light", name: "第二盏灯" });
@@ -507,6 +518,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
     assert.deepEqual(initialEnvLabels, ["主卧", "阳台"]);
     const popover = element(".cc-popover");
     for (let i = 0; i < 4; i++) {
+      await advanceToTopologyPoll();
       cloud.deviceRecords.reverse();
       cloud.roomRecords.reverse();
       cloud.values.set(2, 51 + i);
@@ -527,7 +539,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
   });
 
   it("drops a card that goes offline while 只显示在线设备 is on", async () => {
-    const { cloud, triggerRefresh } = await readyCloudApp((fixture) => {
+    const { cloud, triggerRefresh, advanceToTopologyPoll } = await readyCloudApp((fixture) => {
       fixture.deviceRecords.push(fixture.sensorRecord("sensor-bedroom", "主卧温湿度计"));
     });
     assert.ok(document.querySelector('[data-tile-id="sensor-bedroom"]'));
@@ -535,6 +547,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
     assert.ok(document.querySelector('[data-tile-id="sensor-bedroom"]'));
     const sensor = cloud.deviceRecords.find((record) => record.did === "sensor-bedroom");
     assert.ok(sensor);
+    await advanceToTopologyPoll();
     sensor.isOnline = false;
     const held = cloud.holdNextRead();
     triggerRefresh();
@@ -556,7 +569,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
   });
 
   it("adds and removes kind chips when polling changes device availability", async () => {
-    const { cloud, triggerRefresh } = await readyCloudApp((fixture) => {
+    const { cloud, triggerRefresh, advanceToTopologyPoll } = await readyCloudApp((fixture) => {
       const sensor = fixture.sensorRecord("sensor-bedroom", "主卧温湿度计");
       sensor.isOnline = false;
       fixture.deviceRecords.push(sensor);
@@ -567,6 +580,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
     assertMissing(document.querySelector('[data-kind="sensor"]'));
     const sensor = cloud.deviceRecords.find((record) => record.did === "sensor-bedroom");
     assert.ok(sensor);
+    await advanceToTopologyPoll();
     sensor.isOnline = true;
     const broughtOnline = cloud.holdNextRead();
     triggerRefresh();
@@ -576,6 +590,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
     await waitFor(() => document.querySelector('[data-kind="sensor"]') !== null);
     assert.ok(document.querySelector('[data-kind="light"]'));
 
+    await advanceToTopologyPoll();
     sensor.isOnline = false;
     const takenOffline = cloud.holdNextRead();
     triggerRefresh();
@@ -587,7 +602,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
   });
 
   it("shows a collapsed group again when its only device comes online", async () => {
-    const { cloud, triggerRefresh } = await readyCloudApp((fixture) => {
+    const { cloud, triggerRefresh, advanceToTopologyPoll } = await readyCloudApp((fixture) => {
       const sensor = fixture.sensorRecord("sensor-bedroom", "主卧温湿度计");
       sensor.isOnline = false;
       fixture.deviceRecords.push(sensor);
@@ -607,6 +622,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
     assert.ok(document.querySelector('[data-tile-id="fixture-light"]'));
     const sensor = cloud.deviceRecords.find((record) => record.did === "sensor-bedroom");
     assert.ok(sensor);
+    await advanceToTopologyPoll();
     sensor.isOnline = true;
     const held = cloud.holdNextRead();
     triggerRefresh();
@@ -623,7 +639,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
   });
 
   it("appends new devices, removes missing devices and retains a partial custom order", async () => {
-    const { cloud, triggerRefresh } = await readyCloudApp((fixture) => {
+    const { cloud, triggerRefresh, advanceToTopologyPoll } = await readyCloudApp((fixture) => {
       const light = fixture.deviceRecords[0];
       assert.ok(light);
       fixture.deviceRecords.push(
@@ -637,6 +653,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
     });
     const light = cloud.deviceRecords[0];
     assert.ok(light);
+    await advanceToTopologyPoll();
     cloud.deviceRecords.splice(0, cloud.deviceRecords.length,
       { ...light, did: "new-light" }, { ...light, did: "third-light" }, light,
     );

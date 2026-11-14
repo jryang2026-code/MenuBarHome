@@ -194,6 +194,18 @@
       ]
     },
     {
+      "utterance": "空调调高十五度",
+      "expected": [
+        { "targetId": "dev_ac", "kind": "targetTemperature", "value": 31 }
+      ]
+    },
+    {
+      "utterance": "客厅空调调低八度",
+      "expected": [
+        { "targetId": "dev_ac", "kind": "targetTemperature", "value": 18 }
+      ]
+    },
+    {
       "utterance": "风扇调到高档",
       "expected": [
         { "targetId": "dev_fan", "kind": "fanSpeed", "value": "Level3" }
@@ -1974,6 +1986,272 @@
             { "targetId": "dev_kitchen_switch_light", "kind": "power", "value": false }
           ],
           "expectedReply": "已关闭厨房灯"
+        }
+      ]
+    },
+    {
+      "name": "Traditional and Simplified Chinese room names with distinct roomIds disambiguate via panelRoom or refuse collision",
+      "devices": [
+        {
+          "id": "dev_living_simp_light",
+          "name": "客厅吸顶灯",
+          "roomId": "living_simp",
+          "roomName": "客厅",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_living_simp_light:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_living_trad_light",
+          "name": "客廳吸頂燈",
+          "roomId": "living_trad",
+          "roomName": "客廳",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_living_trad_light:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        }
+      ],
+      "cases": [
+        {
+          "utterance": "关闭客厅灯",
+          "expected": null
+        },
+        {
+          "utterance": "關閉客廳燈",
+          "panelRoom": { "id": "living_simp", "name": "客厅" },
+          "expected": [
+            { "targetId": "dev_living_simp_light", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭客厅吸顶灯"
+        },
+        {
+          "utterance": "關閉客廳燈",
+          "panelRoom": { "id": "living_trad", "name": "客廳" },
+          "expected": [
+            { "targetId": "dev_living_trad_light", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭客廳吸頂燈"
+        }
+      ]
+    },
+    {
+      "name": "Same-room Traditional and Simplified Chinese device names preserve exact script or reject ambiguous normalized collisions",
+      "devices": [
+        {
+          "id": "dev_lamp_simp",
+          "name": "台灯",
+          "roomId": "study",
+          "roomName": "书房",
+          "model": "yeelink.light.lamp4",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_lamp_simp:2",
+            "isOn": true,
+            "brightnessPercent": 60,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_lamp_trad",
+          "name": "檯燈",
+          "roomId": "study",
+          "roomName": "书房",
+          "model": "yeelink.light.lamp4",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_lamp_trad:2",
+            "isOn": true,
+            "brightnessPercent": 60,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_ceiling_simp",
+          "name": "书房吸顶灯",
+          "roomId": "study",
+          "roomName": "书房",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_ceiling_simp:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_ceiling_trad",
+          "name": "書房吸頂燈",
+          "roomId": "study",
+          "roomName": "书房",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_ceiling_trad:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        }
+      ],
+      "cases": [
+        {
+          "utterance": "关闭檯燈",
+          "expected": [
+            { "targetId": "dev_lamp_trad", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭檯燈"
+        },
+        {
+          "utterance": "关闭台灯",
+          "expected": [
+            { "targetId": "dev_lamp_simp", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭台灯"
+        },
+        {
+          "utterance": "关闭書房吸頂燈",
+          "expected": [
+            { "targetId": "dev_ceiling_trad", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭書房吸頂燈"
+        },
+        {
+          "utterance": "关闭書房吸顶灯",
+          "expected": null
+        }
+      ]
+    },
+    {
+      "name": "Valve category commands resolve in Chinese and English while whole-home shutoff excludes normally-open valves",
+      "devices": [
+        {
+          "id": "dev_kitchen_light",
+          "name": "厨房吸顶灯",
+          "roomId": "kitchen",
+          "roomName": "厨房",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_kitchen_light:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_water_valve",
+          "name": "厨房总水阀",
+          "roomId": "kitchen",
+          "roomName": "厨房",
+          "model": "tuya.valve",
+          "isOnline": true,
+          "kind": {
+            "kind": "appliance",
+            "entityId": "valve.main_water",
+            "isOn": true,
+            "powerPresent": true,
+            "powerWritable": true,
+            "currentMode": null,
+            "availableModes": [],
+            "modeWritable": false,
+            "targetTemperature": null,
+            "currentTemperature": null,
+            "minTemp": 0,
+            "maxTemp": 100,
+            "step": 1,
+            "temperatureWritable": false,
+            "statusText": "开启",
+            "faultText": null,
+            "remainingMinutes": null,
+            "startAction": null,
+            "pauseAction": null,
+            "stopAction": null,
+            "powerEntityId": "valve.main_water",
+            "modeEntityId": "",
+            "temperatureEntityId": "",
+            "light": null,
+            "fanLevel": null,
+            "currentHumidity": null,
+            "symbolName": "drop.fill",
+            "roomReading": false,
+            "heats": false
+          }
+        }
+      ],
+      "cases": [
+        {
+          "utterance": "关闭水阀",
+          "expected": [
+            { "targetId": "dev_water_valve", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭厨房总水阀"
+        },
+        {
+          "utterance": "close water valve",
+          "expected": [
+            { "targetId": "dev_water_valve", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭厨房总水阀"
+        },
+        {
+          "utterance": "把家里关掉",
+          "expected": [
+            { "targetId": "dev_kitchen_light", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭厨房吸顶灯"
+        },
+        {
+          "utterance": "turn off everything",
+          "expected": [
+            { "targetId": "dev_kitchen_light", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭厨房吸顶灯"
         }
       ]
     }

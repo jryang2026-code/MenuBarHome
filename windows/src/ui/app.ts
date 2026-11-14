@@ -34,6 +34,7 @@ import {
   type ScheduledCommand,
   type SmartDevice,
   allOffTargets,
+  computeTotalPowerWatts,
   deviceEnvironmentReading,
   environmentReadingPriority,
   isActiveDevice,
@@ -83,9 +84,10 @@ import { renderPanel } from "./panelView.js";
 import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
 import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground } from "./proactive.js";
-import { applyCommand, markCloudValuesFresh, markCloudValuesStale } from "./commandDispatch.js";
+import { getHostApplyCommand, markCloudValuesFresh, markCloudValuesStale, setCustomApplyCommand } from "./commandDispatch.js";
 import { foldGrouped, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
-import { executeIntents, executeSingleCommand, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
+import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
+import { clearPersistedMiSessionExpired, persistMiSessionExpired } from "../core/pollingPolicy.js";
 import { bindLayoutGestures } from "./layoutGestures.js";
 import { bindSettingsEvents, refreshHabitSharePreview } from "./settingsEvents.js";
 import { captureSettingsDraft, restoreSettingsDraft, type SettingsTab } from "./settingsViews.js";
@@ -277,7 +279,19 @@ export class MenuMijiaWindowsApp {
   /** Last light explicitly switched on or adjusted by the user; fallback target for `softNightLight` (#36). */
   public lastManuallyUsedLightId: string | null = null;
   /** Set when a Xiaomi refresh fails because the login itself is dead. */
-  public miSessionExpired = false;
+  private _miSessionExpired = false;
+  public get miSessionExpired(): boolean {
+    return this._miSessionExpired;
+  }
+  public set miSessionExpired(next: boolean) {
+    const normalized = Boolean(next);
+    this._miSessionExpired = normalized;
+    if (normalized) {
+      if (this.settings.miSession) persistMiSessionExpired(this.settings.miSession, true);
+    } else {
+      clearPersistedMiSessionExpired();
+    }
+  }
   /** True after a hold already ran All Off, so a later pointerup on the rebuilt button does not replace the result with the short-press hint. */
   private allOffHoldConsumed = false;
   private allOffHoldTimer: number | null = null;
@@ -325,6 +339,7 @@ export class MenuMijiaWindowsApp {
     this.cameraLive = new CameraLiveController(this);
 
     this.applyInterfaceLanguage();
+    this.qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");
     this.applyTemperatureSetting();
     const haCache = this.settings.cachedHAHome?.identity === homeAssistantIdentity(this.settings.haBaseURL, this.settings.haToken) ? this.settings.cachedHAHome.home : null;
     this.devices = this.settings.connectionMode === "xiaomiCloud"
@@ -501,13 +516,7 @@ export class MenuMijiaWindowsApp {
   }
 
   private get totalPowerWatts(): number {
-    let watts = 0;
-    for (const d of this.devices) {
-      if (d.kind.kind === "plug" && d.kind.countsInTotalPower !== false && d.kind.powerWatts && d.kind.powerWatts > 0) {
-        watts += d.kind.powerWatts;
-      }
-    }
-    return watts;
+    return computeTotalPowerWatts(this.devices);
   }
 
   public get computedEnvironmentReadings(): EnvironmentReading[] {
@@ -774,10 +783,32 @@ export class MenuMijiaWindowsApp {
     this.lastUndoAction = null;
     clearUndoHoverPause(this);
     const sourceRevision = this.sourceRevision;
+    const activeBatch = getRunningBatch(this, action);
+    const ownerBatch =
+      getUndoActionBatch(action) ??
+      (activeBatch?.ownsUndoAction(action) ? activeBatch : null);
+    if (ownerBatch && !ownerBatch.isFinished) {
+      ownerBatch.stop("undo");
+      await ownerBatch.waitForInFlight();
+      if (sourceRevision !== this.sourceRevision) return;
+    }
+    const takenOverDevices = new Set<string>();
+    const stepsToRestore = action.steps.filter((step) => {
+      if (ownerBatch && !ownerBatch.ownsDeviceWrite(this, step.deviceId)) {
+        takenOverDevices.add(step.deviceId);
+        return false;
+      }
+      return true;
+    });
+    if (stepsToRestore.length === 0 && action.steps.length > 0) return;
     const failedSteps: UndoStep[] = [];
     const blockedDevices = new Set<string>();
     let failureMessage = "";
-    for (const step of action.steps) {
+    for (const step of stepsToRestore) {
+      if (ownerBatch && !ownerBatch.ownsDeviceWrite(this, step.deviceId)) {
+        takenOverDevices.add(step.deviceId);
+        continue;
+      }
       if (blockedDevices.has(step.deviceId)) {
         failedSteps.push(step);
         continue;
@@ -785,30 +816,49 @@ export class MenuMijiaWindowsApp {
       let failed = false;
       for (const command of step.commands) {
         if (sourceRevision !== this.sourceRevision) return;
-        if (!(await this.applyCommand(command))) {
+        if (ownerBatch && !ownerBatch.ownsDeviceWrite(this, step.deviceId)) {
+          takenOverDevices.add(step.deviceId);
+          break;
+        }
+        const ok = ownerBatch
+          ? await ownerBatch.applyRestoreCommand(this, step.deviceId, command)
+          : await this.applyCommand(command);
+        if (!ok) {
           failed = true;
-          failureMessage = this.replyBanner?.text ?? "设备未响应";
+          failureMessage = this.replyBanner?.text ?? t("设备未响应");
         }
       }
+      if (takenOverDevices.has(step.deviceId)) continue;
       if (failed) {
         failedSteps.push(step);
         blockedDevices.add(step.deviceId);
       } else {
         const restoredDevice = this.devices.find((d) => d.id === step.deviceId);
-        if (restoredDevice) restoreUndoKindSnapshot(action, restoredDevice);
+        if (restoredDevice && (!ownerBatch || ownerBatch.ownsDeviceWrite(this, step.deviceId))) {
+          restoreUndoKindSnapshot(action, restoredDevice);
+        }
       }
     }
     if (sourceRevision !== this.sourceRevision) return;
+    if (
+      failedSteps.length === 0 &&
+      takenOverDevices.size > 0 &&
+      takenOverDevices.size === new Set(action.steps.map((s) => s.deviceId)).size
+    ) {
+      return;
+    }
     let remainingReceipt = action.habitReceipt;
     if (action.habitReceipt) {
-      if (failedSteps.length === 0) {
+      const notRestoredDevices = new Set([...blockedDevices, ...takenOverDevices]);
+      if (notRestoredDevices.size === 0) {
         this.unrecordHabits(action.habitReceipt);
         remainingReceipt = undefined;
       } else {
-        const { succeeded, remaining } = partitionHabitReceipt(action.habitReceipt, blockedDevices);
+        const { succeeded } = partitionHabitReceipt(action.habitReceipt, notRestoredDevices);
         if (succeeded) {
           this.unrecordHabits(succeeded);
         }
+        const { remaining } = partitionHabitReceipt(action.habitReceipt, blockedDevices);
         remainingReceipt = remaining ?? undefined;
       }
     }
@@ -823,8 +873,12 @@ export class MenuMijiaWindowsApp {
     this.render();
   }
 
-  public async applyCommand(command: DeviceCommand, readBackPower = false): Promise<boolean> {
-    return applyCommand(this, command, readBackPower);
+  public get applyCommand(): (command: DeviceCommand, readBackPower?: boolean) => Promise<boolean> {
+    return getHostApplyCommand(this);
+  }
+
+  public set applyCommand(fn: (command: DeviceCommand, readBackPower?: boolean) => Promise<boolean>) {
+    setCustomApplyCommand(this, fn);
   }
 
   /** Arms a high-risk confirmation and its own expiry timer, replacing any previous arm. */

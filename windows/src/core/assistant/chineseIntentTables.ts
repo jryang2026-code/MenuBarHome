@@ -62,7 +62,10 @@ export const CN_HVAC_MODE_WORDS: Readonly<Record<string, string>> = {
   制冷: "cool", 制热: "heat", 除湿: "dry", 送风: "fan_only", 自动: "auto",
 };
 
-export const CN_SCOPE_WORDS = ["全部", "所有", "全屋", "全家", "家里", "整个家"];
+export const CN_SCOPE_WORDS = [
+  "所有设备", "全部设备", "全屋设备",
+  "全部", "所有", "全屋", "全家", "家里", "整个家",
+];
 
 export const CN_CATEGORY_WORDS: Readonly<Record<string, IntentCategory>> = {
   灯: "light", 灯光: "light", 电灯: "light",
@@ -76,6 +79,7 @@ export const CN_CATEGORY_WORDS: Readonly<Record<string, IntentCategory>> = {
   扫地机: "vacuum", 扫地机器人: "vacuum",
   电视: "tv", 电视机: "tv",
   摄像头: "camera", 摄像机: "camera", 监控: "camera",
+  阀门: "valve", 水阀: "valve", 气阀: "valve", 燃气阀: "valve", 总阀: "valve",
 };
 
 export const CN_ROOM_ALIASES: Readonly<Record<string, readonly string[]>> = {
@@ -99,8 +103,53 @@ const CN_SCENE_VERBS = ["执行", "启动", "打开", "开启", "激活", "切�
 const CN_SCENE_SUFFIXES = ["场景", "模式"];
 const CN_IGNORABLE_REGEX = /[\s，。！？、；：,!?;:~～"'“”‘’]+/g;
 
+const TRAD_CHARS =
+  "開關啟啓閉滅調變設為換執動進運場燈電氣機風熱涼溫濕溼乾淨掃視攝頭監閥門總鎖簾紗捲葉車庫揚聲魚寵餵煙霧應傳臥廳書廚陽臺檯衛間裡裏內頂帶環點黃藍綠紅檔擋級強靜愛搖擺別製備個盞隻條請幫煩給將兩過時鐘鍾後銷剛暫還計";
+const SIMP_CHARS =
+  "开关启启闭灭调变设为换执动进运场灯电气机风热凉温湿湿干净扫视摄头监阀门总锁帘纱卷叶车库扬声鱼宠喂烟雾应传卧厅书厨阳台台卫间里里内顶带环点黄蓝绿红档档级强静爱摇摆别制备个盏只条请帮烦给将两过时钟钟后销刚暂还计";
+const TRAD_TO_SIMP_MAP: ReadonlyMap<string, string> = new Map(
+  Array.from(TRAD_CHARS).map((ch, idx) => [ch, SIMP_CHARS[idx] ?? ch]),
+);
+
+export function toSimplifiedChinese(input: string): string {
+  if (!input) return input;
+  const replaced = input.replaceAll("裝置", "设备");
+  let out = "";
+  for (const ch of replaced) {
+    out += TRAD_TO_SIMP_MAP.get(ch) ?? ch;
+  }
+  return out;
+}
+
+export function cleanRawChineseText(raw: string): string {
+  return raw.replace(CN_IGNORABLE_REGEX, "").replace(/^\.+|\.+$/g, "");
+}
+
 export function normalizeChineseUtterance(utterance: string): string {
-  return utterance.replace(CN_IGNORABLE_REGEX, "").replace(/^\.+|\.+$/g, "");
+  return cleanRawChineseText(toSimplifiedChinese(utterance));
+}
+
+export function strippedRawSceneText(raw: string): string {
+  let chars = Array.from(cleanRawChineseText(raw));
+  let normChars = Array.from(toSimplifiedChinese(chars.join("")));
+  const normJoined = normChars.join("");
+  for (const verb of CN_SCENE_VERBS) {
+    if (normJoined.startsWith(verb)) {
+      const verbLen = Array.from(verb).length;
+      chars = chars.slice(verbLen);
+      normChars = normChars.slice(verbLen);
+      break;
+    }
+  }
+  const normAfterVerb = normChars.join("");
+  for (const suffix of CN_SCENE_SUFFIXES) {
+    const suffixLen = Array.from(suffix).length;
+    if (normAfterVerb.endsWith(suffix) && chars.length > suffixLen) {
+      chars = chars.slice(0, -suffixLen);
+      break;
+    }
+  }
+  return chars.join("");
 }
 
 export function strippedSceneText(raw: string): string {
@@ -132,23 +181,43 @@ export function consumeChinesePhrase(phrase: string, state: { rest: string }): b
   return true;
 }
 
-const CN_STEP_DIGITS: Readonly<Record<string, number>> = {
-  一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
+const CN_NUMERAL_DIGITS: Readonly<Record<string, number>> = {
+  零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9,
 };
 
-function spokenStepNumber(s: string): number | null {
+/**
+ * Parses Arabic digits or general Chinese numerals up to 99 (e.g. 十=10, 十五=15,
+ * 二十=20, 二十五=25, 四十五=45, 九十九=99, 零五=5), mirroring macOS `spokenNumber`.
+ */
+export function spokenChineseNumber(raw: string): number | null {
+  const s = raw.trim();
+  if (!s) return null;
   if (/^[0-9]+$/.test(s)) return Number(s);
-  return CN_STEP_DIGITS[s] ?? null;
+  const chars = Array.from(s);
+  if (chars.length === 2 && chars[0] === "零") {
+    const ones = CN_NUMERAL_DIGITS[chars[1] ?? ""];
+    return ones !== undefined ? ones : null;
+  }
+  const tenIndex = chars.indexOf("十");
+  if (tenIndex >= 0) {
+    if (tenIndex > 1 || chars.length - tenIndex > 2) return null;
+    const tens = tenIndex === 0 ? 1 : CN_NUMERAL_DIGITS[chars[0] ?? ""];
+    const ones = tenIndex === chars.length - 1 ? 0 : CN_NUMERAL_DIGITS[chars[tenIndex + 1] ?? ""];
+    if (tens === undefined || tens === 0 || ones === undefined) return null;
+    return tens * 10 + ones;
+  }
+  if (chars.length !== 1) return null;
+  return CN_NUMERAL_DIGITS[chars[0] ?? ""] ?? null;
 }
 
 export function extractChineseNumericOps(state: { rest: string }): IntentOperation[] {
   const ops: IntentOperation[] = [];
-  const stepRegex = /(调高|调低|升高|降低|升|降|高|低)(\d{1,2}|[一二两三四五六七八九十])(?:度|℃|°C|°)/gi;
+  const stepRegex = /(调高|调低|升高|降低|升|降|高|低)(\d{1,2}|[零一二两三四五六七八九十]+)(?:度|℃|°C|°)/gi;
   let stepMatched = false;
   for (const m of state.rest.matchAll(stepRegex)) {
     const direction = m[1] ?? "";
-    const amount = spokenStepNumber(m[2] ?? "");
-    if (amount !== null) {
+    const amount = spokenChineseNumber(m[2] ?? "");
+    if (amount !== null && amount > 0 && amount <= 99) {
       const sign = direction.includes("高") || direction.includes("升") ? 1 : -1;
       ops.push({ kind: "temperatureStep", delta: sign * amount });
       stepMatched = true;
@@ -180,37 +249,79 @@ export function extractChineseNumericOps(state: { rest: string }): IntentOperati
   return ops;
 }
 
-export type DevicePhraseEntry =
-  | { readonly phrase: string; readonly kind: "full"; readonly ids: readonly string[] }
-  | { readonly phrase: string; readonly kind: "base"; readonly ids: readonly string[] };
+export interface DevicePhraseCandidate {
+  readonly id: string;
+  readonly rawPhrase: string;
+  readonly kind: "full" | "base";
+}
+
+export interface DevicePhraseEntry {
+  readonly phrase: string;
+  readonly kind: "full" | "base";
+  readonly ids: readonly string[];
+  readonly candidates: readonly DevicePhraseCandidate[];
+}
 
 export function buildDevicePhrases(devices: readonly SmartDevice[]): DevicePhraseEntry[] {
-  const full = new Map<string, string[]>();
-  const base = new Map<string, string[]>();
+  const full = new Map<string, DevicePhraseCandidate[]>();
+  const base = new Map<string, DevicePhraseCandidate[]>();
   for (const dev of devices) {
     if (!dev.name) continue;
-    const fullIds = full.get(dev.name) ?? [];
-    fullIds.push(dev.id);
-    full.set(dev.name, fullIds);
-    if (dev.roomName && dev.name.startsWith(dev.roomName)) {
-      const stripped = dev.name.slice(dev.roomName.length);
+    const rawName = cleanRawChineseText(dev.name);
+    const rawRoom = cleanRawChineseText(dev.roomName);
+    const devName = toSimplifiedChinese(rawName);
+    const roomName = toSimplifiedChinese(rawRoom);
+    if (!devName) continue;
+    const fullList = full.get(devName) ?? [];
+    fullList.push({ id: dev.id, rawPhrase: rawName, kind: "full" });
+    full.set(devName, fullList);
+    if (roomName && devName.startsWith(roomName)) {
+      const roomCharLen = Array.from(roomName).length;
+      const stripped = Array.from(devName).slice(roomCharLen).join("");
+      const rawStripped = Array.from(rawName).slice(roomCharLen).join("");
       if (Array.from(stripped).length >= 2 && !(stripped in CN_CATEGORY_WORDS)) {
-        const baseIds = base.get(stripped) ?? [];
-        baseIds.push(dev.id);
-        base.set(stripped, baseIds);
+        const baseList = base.get(stripped) ?? [];
+        baseList.push({ id: dev.id, rawPhrase: rawStripped, kind: "base" });
+        base.set(stripped, baseList);
       }
     }
   }
   const phrases: DevicePhraseEntry[] = [];
-  for (const [phrase, ids] of full) {
-    phrases.push({ phrase, kind: "full", ids });
+  for (const [phrase, fullCandidates] of full) {
+    const fullRawSet = new Set(fullCandidates.map((c) => c.rawPhrase));
+    const extraBase = (base.get(phrase) ?? []).filter((c) => !fullRawSet.has(c.rawPhrase));
+    const candidates = [...fullCandidates, ...extraBase];
+    phrases.push({
+      phrase,
+      kind: "full",
+      ids: candidates.map((c) => c.id),
+      candidates,
+    });
   }
-  for (const [phrase, ids] of base) {
+  for (const [phrase, baseCandidates] of base) {
     if (!full.has(phrase)) {
-      phrases.push({ phrase, kind: "base", ids });
+      phrases.push({
+        phrase,
+        kind: "base",
+        ids: baseCandidates.map((c) => c.id),
+        candidates: baseCandidates,
+      });
     }
   }
   return phrases.sort((a, b) => Array.from(b.phrase).length - Array.from(a.phrase).length);
+}
+
+export function disambiguateDeviceScriptCollision(
+  candidates: readonly DevicePhraseCandidate[],
+  rawUtterance: string,
+): DevicePhraseCandidate[] {
+  const distinctRaw = new Set(candidates.map((c) => c.rawPhrase));
+  if (distinctRaw.size <= 1) return [...candidates];
+  const rawCleaned = cleanRawChineseText(rawUtterance);
+  const rawMatched = candidates.filter((c) => c.rawPhrase && rawCleaned.includes(c.rawPhrase));
+  const matchedRaw = new Set(rawMatched.map((c) => c.rawPhrase));
+  if (matchedRaw.size !== 1) return [];
+  return rawMatched;
 }
 
 /**
@@ -224,10 +335,11 @@ export function disambiguateRoomDevices(
   const roomIdsByName = new Map<string, Set<string>>();
   for (const dev of matched) {
     if (!dev.roomName || !dev.roomId) continue;
-    let ids = roomIdsByName.get(dev.roomName);
+    const normRoomName = toSimplifiedChinese(dev.roomName);
+    let ids = roomIdsByName.get(normRoomName);
     if (!ids) {
       ids = new Set<string>();
-      roomIdsByName.set(dev.roomName, ids);
+      roomIdsByName.set(normRoomName, ids);
     }
     ids.add(dev.roomId);
   }
@@ -254,13 +366,17 @@ export function chineseRoomDeviceIds(
   devices: readonly SmartDevice[],
   panelRoom: RoomScope | null,
 ): string[] | null {
-  const exact = devices.filter((dev) => dev.roomName === word);
+  const normWord = toSimplifiedChinese(word);
+  const exact = devices.filter((dev) => toSimplifiedChinese(dev.roomName) === normWord);
   if (exact.length > 0) {
     const resolved = disambiguateRoomDevices(exact, panelRoom);
     return resolved.length === 0 ? null : resolved;
   }
-  const aliases = CN_ROOM_ALIASES[word] ?? [word];
-  const matched = devices.filter((dev) => aliases.some((a) => dev.roomName.includes(a)));
+  const aliases = CN_ROOM_ALIASES[normWord] ?? [normWord];
+  const matched = devices.filter((dev) => {
+    const room = toSimplifiedChinese(dev.roomName);
+    return aliases.some((a) => room.includes(a));
+  });
   if (matched.length === 0) return [];
   const resolved = disambiguateRoomDevices(matched, panelRoom);
   return resolved.length === 0 ? null : resolved;

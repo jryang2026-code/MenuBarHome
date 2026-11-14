@@ -1,12 +1,18 @@
-import { t } from "../core/i18n.js";
-import { trText } from "../core/quickActions.js";
+import { haRoundedInt } from "../core/haDomains.js";
+import { currentLanguage, t } from "../core/i18n.js";
 import {
   lockedControlIdForAlert,
   showsAdvancedViewOnlyCopy,
 } from "../core/miCloud/feedAction.js";
 import { facetValue, formatReading } from "../core/miotFacetText.js";
 import {
+  applianceFaultNotice,
+  applianceModeStartsHeating,
+  localizeApplianceFanLevel,
+  localizeApplianceMode,
+  localizeApplianceStatus,
   localizeSwingMode,
+  type ApplianceSpec,
   type ClimateSpec,
   type CoverSpec,
   type DeviceCommand,
@@ -52,10 +58,10 @@ export function coverActionTitle(
   switch (trimmed.toLowerCase()) {
     case "open":
     case "打开":
-      return trText("打开", "Open");
+      return currentLanguage() === "en" ? "Open" : t("打开");
     case "close":
     case "关闭":
-      return trText("关闭", "Close");
+      return currentLanguage() === "en" ? "Close" : t("关闭");
     case "up":
     case "raise":
     case "上升":
@@ -105,6 +111,147 @@ export function coverMotorRequiresConfirmation(
     return true;
   }
   return action === "open";
+}
+
+export function renderApplianceDrawer(
+  dev: SmartDevice,
+  k: ApplianceSpec,
+  escapeHtml: (value: string) => string,
+): string {
+  const id = escapeHtml(dev.id);
+  const disabledAttr = dev.isOnline ? "" : ' disabled aria-disabled="true"';
+  const rows: string[] = [];
+
+  if (k.faultText && k.faultText.trim() !== "") {
+    const notice = applianceFaultNotice(k.faultText);
+    rows.push(
+      `<div class="cc-appliance-fault" role="status">` +
+        `<span class="cc-icon-inline" aria-hidden="true">${ALERT_TRIANGLE_SVG}</span>` +
+        `<span class="cc-appliance-fault-text">${escapeHtml(notice.message)}</span>` +
+        `<button type="button" class="cc-inline-pill cc-appliance-fault-copy" data-copy-fault="${escapeHtml(notice.copyText)}">${escapeHtml(t("复制代码"))}</button>` +
+      `</div>`,
+    );
+  }
+
+  if (k.temperatureWritable && k.targetTemperature !== null) {
+    rows.push(`<div class="cc-segmented-pills">
+      <button class="cc-seg-pill" data-appliancetemp="${id}|-1" aria-label="${t("降低目标温度")}"${disabledAttr}>−</button>
+      <span class="cc-pill-label">${formatTemperature(k.targetTemperature)}</span>
+      <button class="cc-seg-pill" data-appliancetemp="${id}|1" aria-label="${t("升高目标温度")}"${disabledAttr}>＋</button>
+    </div>`);
+  }
+
+  if (k.modeWritable && k.availableModes.length > 0) {
+    if (k.availableModes.length > 4) {
+      const activeMode =
+        k.currentMode && k.availableModes.includes(k.currentMode) ? k.currentMode : null;
+      rows.push(
+        `<div class="cc-appliance-mode-row">` +
+          `<span class="cc-pill-label">${escapeHtml(t("模式"))}</span>` +
+          `<select class="cc-appliance-select" data-appliancemode-select="${id}" aria-label="${escapeHtml(t("模式"))}"${disabledAttr}>` +
+            `${activeMode === null ? `<option value="" selected>${escapeHtml(t("未选择"))}</option>` : ""}` +
+            `${k.availableModes
+              .map(
+                (mode) =>
+                  `<option value="${escapeHtml(mode)}"${activeMode === mode ? " selected" : ""}>${escapeHtml(localizeApplianceMode(mode))}</option>`,
+              )
+              .join("")}` +
+          `</select>` +
+        `</div>`,
+      );
+    } else {
+      rows.push(`<div class="cc-segmented-pills">
+        ${k.availableModes
+          .map(
+            (mode) => `<button class="cc-seg-pill ${k.currentMode === mode ? "is-active" : ""}"
+              data-appliancemode="${id}|${escapeHtml(mode)}" aria-pressed="${k.currentMode === mode}"${disabledAttr}>
+              ${escapeHtml(localizeApplianceMode(mode))}
+            </button>`,
+          )
+          .join("")}
+      </div>`);
+    }
+  }
+
+  if (k.fanLevel?.writable && k.fanLevel.options.length > 0) {
+    rows.push(`<div class="cc-segmented-pills">
+      ${k.fanLevel.options
+        .map(
+          (level) => `<button class="cc-seg-pill ${k.fanLevel?.current === level ? "is-active" : ""}"
+            data-appliancefan="${id}|${escapeHtml(level)}" aria-pressed="${k.fanLevel?.current === level}"${disabledAttr}>
+            ${escapeHtml(localizeApplianceFanLevel(level))}
+          </button>`,
+        )
+        .join("")}
+    </div>`);
+  }
+
+  if (k.light?.writable) {
+    rows.push(`<div class="cc-segmented-pills">
+      <button class="cc-seg-pill ${k.light.isOn ? "is-active" : ""}" data-appliancelight="${id}" aria-pressed="${k.light.isOn}"${disabledAttr}>
+        ${k.light.isOn ? t("灯光：开") : t("灯光：关")}
+      </button>
+    </div>`);
+  }
+
+  const roundedHumidity = k.roomReading ? haRoundedInt(k.currentHumidity) : null;
+  if (roundedHumidity !== null) {
+    rows.push(`<div class="cc-slider-label"><span>${t("湿度")}</span><strong>${roundedHumidity}%</strong></div>`);
+  }
+
+  if (k.statusText) {
+    rows.push(`<div class="cc-slider-label"><span>${t("状态")}</span><span>${escapeHtml(localizeApplianceStatus(k.statusText))}</span></div>`);
+  }
+
+  if (k.remainingMinutes !== null) {
+    rows.push(`<div class="cc-slider-label"><span>${t("剩余时间")}</span><span>${t("{minutes} 分钟", { minutes: k.remainingMinutes })}</span></div>`);
+  }
+
+  const actions = (
+    [
+      ["start", k.startAction, t("开始")],
+      ["pause", k.pauseAction, t("暂停")],
+      ["stop", k.stopAction, t("停止")],
+    ] as const
+  ).filter(([, action]) => action !== null);
+  if (actions.length > 0) {
+    rows.push(`<div class="cc-segmented-pills">
+      ${actions
+        .map(
+          ([kind, , label]) =>
+            `<button class="cc-seg-pill" data-applianceaction="${id}|${kind}"${disabledAttr}>${label}</button>`,
+        )
+        .join("")}
+    </div>`);
+  }
+
+  if (rows.length === 0) return "";
+  return `<div class="cc-tile-drawer">${rows.join("")}</div>`;
+}
+
+async function writeFaultTextToClipboard(text: string): Promise<void> {
+  const nav = typeof window !== "undefined" ? window.navigator : navigator;
+  if (nav && nav.clipboard && typeof nav.clipboard.writeText === "function") {
+    try {
+      await nav.clipboard.writeText(text);
+      return;
+    } catch {}
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  try {
+    textarea.select();
+    if (typeof document.execCommand === "function") {
+      document.execCommand("copy");
+    }
+  } finally {
+    textarea.remove();
+  }
 }
 
 export function renderCoverDrawer(
@@ -556,6 +703,54 @@ export function bindDetailDrawerEvents(
       if (!found) return;
       setSelectedPortionForControl(pair[0], found.control, Number(select.value));
       host.render();
+    });
+  });
+
+  host.root.querySelectorAll<HTMLSelectElement>("[data-appliancemode-select]").forEach((select) => {
+    select.addEventListener("change", () => {
+      const id = select.dataset.appliancemodeSelect;
+      const mode = select.value;
+      if (!id || !mode) return;
+      const dev = host.devices.find((d) => d.id === id);
+      if (!dev || !dev.isOnline || dev.kind.kind !== "appliance" || !dev.kind.modeWritable) return;
+      const command: DeviceCommand = { kind: "setSelectOption", entityId: dev.kind.modeEntityId, option: mode };
+      if (
+        dev.kind.heats &&
+        !dev.kind.isOn &&
+        applianceModeStartsHeating(mode) &&
+        !confirmHighRisk(dev.id, command, t("切换到{mode}", { mode: localizeApplianceMode(mode) }))
+      ) {
+        if (select.isConnected) {
+          select.value =
+            dev.kind.currentMode && dev.kind.availableModes.includes(dev.kind.currentMode)
+              ? dev.kind.currentMode
+              : "";
+        }
+        return;
+      }
+      void host.executeSingleCommand(
+        dev,
+        command,
+        t("已将{name}设为{mode}", { name: dev.name, mode: localizeApplianceMode(mode) }),
+      );
+    });
+  });
+
+  host.root.querySelectorAll<HTMLButtonElement>("[data-copy-fault]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const text = btn.dataset.copyFault ?? "";
+      if (!text) return;
+      void writeFaultTextToClipboard(text).then(() => {
+        if (!btn.isConnected) return;
+        btn.textContent = t("已复制");
+        btn.dataset.copied = "true";
+        window.setTimeout(() => {
+          if (!btn.isConnected) return;
+          btn.textContent = t("复制代码");
+          delete btn.dataset.copied;
+        }, 1500);
+      });
     });
   });
 }

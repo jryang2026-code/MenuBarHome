@@ -158,7 +158,9 @@ export function loadSettings(): LoadedSettings {
           showQuickActionsBar: parsed.showQuickActionsBar ?? true,
           enableGrokBall: parsed.enableGrokBall ?? false,
           interfaceLanguage:
-            parsed.interfaceLanguage === "zh-Hans" || parsed.interfaceLanguage === "en"
+            parsed.interfaceLanguage === "zh-Hans" ||
+            parsed.interfaceLanguage === "zh-Hant" ||
+            parsed.interfaceLanguage === "en"
               ? parsed.interfaceLanguage
               : "system",
           temperatureUnit:

@@ -158,6 +158,10 @@ export function abortVoiceInput(host: MenuMijiaWindowsApp): void {
   state.speechRecognition = null;
   host.isListeningVoice = false;
   if (wasListening) {
+    const inputEl = host.root.querySelector<HTMLInputElement>("#command-input");
+    if (inputEl && !host.panelSearch.query) {
+      inputEl.value = "";
+    }
     invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
   }
   if (current) {
@@ -185,7 +189,10 @@ export function toggleVoiceInput(host: MenuMijiaWindowsApp): void {
   if (!SpeechCtor) {
     host.isShowingAssistantBar = true;
     host.replyBanner = {
-      text: t("当前系统环境不支持离线语音识别，请直接输入文字指令。"),
+      text: trText(
+        "当前环境不支持在线语音识别（Web Speech API 不可用），请直接输入文字指令。",
+        "Online speech recognition (Web Speech API) is unavailable in this environment; please type your command.",
+      ),
       source: t("语音提示"),
     };
     host.render();
@@ -197,16 +204,41 @@ export function toggleVoiceInput(host: MenuMijiaWindowsApp): void {
   const startedRevision = host.sourceRevision;
   const recognition = new SpeechCtor();
   recognition.lang = speechLocale();
-  recognition.interimResults = false;
+  recognition.interimResults = true;
   recognition.continuous = false;
+
+  let latestInterim = "";
+  let submittedFinal = false;
+  let hadError = false;
 
   recognition.onresult = (event) => {
     if (state.speechRecognition !== recognition || host.sourceRevision !== startedRevision) return;
-    const first = event.results[0]?.[0]?.transcript;
-    if (first) {
-      const inputEl = host.root.querySelector<HTMLInputElement>("#command-input");
+    let finalTranscript = "";
+    let interimTranscript = "";
+    const length = event.results?.length ?? 0;
+    for (let i = 0; i < length; i += 1) {
+      const item = event.results[i];
+      const piece = item?.[0]?.transcript ?? "";
+      if (!piece) continue;
+      if (item?.isFinal === true) {
+        finalTranscript += piece;
+      } else {
+        interimTranscript += piece;
+      }
+    }
+    const inputEl = host.root.querySelector<HTMLInputElement>("#command-input");
+    if (finalTranscript.trim()) {
+      submittedFinal = true;
+      latestInterim = "";
       if (inputEl) inputEl.value = "";
-      void host.handleNaturalCommand(first);
+      void host.handleNaturalCommand(finalTranscript.trim());
+      return;
+    }
+    if (interimTranscript) {
+      latestInterim = interimTranscript;
+      if (inputEl) {
+        inputEl.value = interimTranscript;
+      }
     }
   };
   const finishRecognition = () => {
@@ -217,8 +249,29 @@ export function toggleVoiceInput(host: MenuMijiaWindowsApp): void {
     invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
     host.render();
   };
-  recognition.onerror = finishRecognition;
-  recognition.onend = finishRecognition;
+  recognition.onerror = () => {
+    if (state.speechRecognition !== recognition) return;
+    hadError = true;
+    latestInterim = "";
+    const inputEl = host.root.querySelector<HTMLInputElement>("#command-input");
+    if (inputEl && !host.panelSearch.query) inputEl.value = "";
+    finishRecognition();
+  };
+  recognition.onend = () => {
+    if (state.speechRecognition !== recognition) return;
+    const pending =
+      !submittedFinal && !hadError && host.sourceRevision === startedRevision
+        ? latestInterim.trim()
+        : "";
+    latestInterim = "";
+    const inputEl = host.root.querySelector<HTMLInputElement>("#command-input");
+    if (inputEl && !host.panelSearch.query) inputEl.value = "";
+    finishRecognition();
+    if (pending) {
+      submittedFinal = true;
+      void host.handleNaturalCommand(pending);
+    }
+  };
 
   state.speechRecognition = recognition;
   host.isListeningVoice = true;
@@ -901,7 +954,9 @@ function createUrlCommandHostAdapter(
 ): AppURLCommandHost {
   const state = hostState(host);
   const revisionStillMatches = () => host.sourceRevision === expectedRevision;
+  let createdUndoAction: UndoAction | null = null;
   return {
+    lockHost: host,
     get devices() {
       return host.devices;
     },
@@ -1010,12 +1065,27 @@ function createUrlCommandHostAdapter(
 
     async executeSingleCommand(device, command, summary, intent, readBackPower): Promise<void> {
       if (!revisionStillMatches()) return;
+      const beforeUndo = host.lastUndoAction;
       await host.executeSingleCommand(device, command, summary, intent, readBackPower);
+      createdUndoAction = host.lastUndoAction !== beforeUndo ? host.lastUndoAction : null;
     },
 
     async applyCommand(command, readBackPower): Promise<boolean> {
       if (!revisionStillMatches()) return false;
       return host.applyCommand(command, readBackPower);
+    },
+
+    updateUndoCommandsForDevice(deviceId, commands, previousKind): void {
+      if (!revisionStillMatches() || !createdUndoAction) {
+        return;
+      }
+      const mutableSteps = createdUndoAction.steps as UndoStep[];
+      for (let i = 0; i < mutableSteps.length; i += 1) {
+        if (mutableSteps[i]!.deviceId === deviceId) {
+          mutableSteps[i] = { deviceId, commands: [...commands] };
+        }
+      }
+      recordUndoKindSnapshots(createdUndoAction, new Map([[deviceId, structuredClone(previousKind)]]));
     },
 
     async handleNaturalCommand(rawInput, fromScheduled): Promise<void> {

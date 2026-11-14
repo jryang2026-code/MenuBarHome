@@ -292,11 +292,257 @@ export function claimDeviceWrite(host: OptimisticLockHost, deviceId: string): De
   return { deviceId, writeSeq, sourceRevision: host.sourceRevision };
 }
 
+export function peekDeviceWriteSeq(host: OptimisticLockHost, deviceId: string): number {
+  const state = ensureHostState(host);
+  return state.writeSeqs.get(deviceId) ?? 0;
+}
+
+export function currentDeviceWriteClaim(host: OptimisticLockHost, deviceId: string): DeviceWriteClaim {
+  const state = ensureHostState(host);
+  return {
+    deviceId,
+    writeSeq: state.writeSeqs.get(deviceId) ?? 0,
+    sourceRevision: host.sourceRevision,
+  };
+}
+
 /** True while no newer command has claimed `claim`'s row and the data source is unchanged. */
 export function ownsDeviceWrite(host: OptimisticLockHost, claim: DeviceWriteClaim): boolean {
   if (claim.sourceRevision !== host.sourceRevision) return false;
   const state = ensureHostState(host);
   return (state.writeSeqs.get(claim.deviceId) ?? 0) === claim.writeSeq;
+}
+
+export interface UndoActionBatch {
+  readonly isStopped: boolean;
+  readonly isFinished: boolean;
+  stop(reason?: string): void;
+  waitForInFlight(): Promise<void>;
+  recordWriteClaim(deviceId: string, claim: DeviceWriteClaim): void;
+  ownsDeviceWrite(host: OptimisticLockHost, deviceId: string): boolean;
+  applyRestoreCommand(
+    host: OptimisticLockHost & {
+      applyCommand(command: DeviceCommand, readBackPower?: boolean): Promise<boolean>;
+    },
+    deviceId: string,
+    command: DeviceCommand,
+  ): Promise<boolean>;
+}
+
+const undoActionBatches = new WeakMap<object, UndoActionBatch>();
+
+export function registerUndoActionBatch(action: object, batch: UndoActionBatch): void {
+  undoActionBatches.set(action, batch);
+}
+
+export function getRegisteredUndoActionBatch(
+  action: object | null | undefined,
+): UndoActionBatch | null {
+  return action ? undoActionBatches.get(action) ?? null : null;
+}
+
+export class MultiCommandPresetBatch implements UndoActionBatch {
+  private stopped = false;
+  private finished = false;
+  private readonly inFlightPromises = new Set<Promise<void>>();
+  private readonly writeClaimsByDevice = new Map<string, DeviceWriteClaim>();
+
+  public get isStopped(): boolean {
+    return this.stopped;
+  }
+
+  public get isFinished(): boolean {
+    return this.finished;
+  }
+
+  public stop(): void {
+    this.stopped = true;
+  }
+
+  public markFinished(): void {
+    this.finished = true;
+  }
+
+  public async trackInFlight<T>(fn: () => Promise<T>): Promise<T> {
+    let settle!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    this.inFlightPromises.add(gate);
+    try {
+      return await fn();
+    } finally {
+      this.inFlightPromises.delete(gate);
+      settle();
+    }
+  }
+
+  public async waitForInFlight(): Promise<void> {
+    while (this.inFlightPromises.size > 0) {
+      await Promise.allSettled([...this.inFlightPromises]);
+    }
+  }
+
+  public recordWriteClaim(deviceId: string, claim: DeviceWriteClaim): void {
+    this.writeClaimsByDevice.set(deviceId, claim);
+  }
+
+  public ownsDeviceWrite(host: OptimisticLockHost, deviceId: string): boolean {
+    const claim = this.writeClaimsByDevice.get(deviceId);
+    return claim === undefined || ownsDeviceWrite(host, claim);
+  }
+
+  public async applyRestoreCommand(
+    host: OptimisticLockHost & {
+      applyCommand(command: DeviceCommand, readBackPower?: boolean): Promise<boolean>;
+    },
+    deviceId: string,
+    command: DeviceCommand,
+  ): Promise<boolean> {
+    const seqBefore = peekDeviceWriteSeq(host, deviceId);
+    const sendPromise = host.applyCommand(command);
+    const restoreClaim =
+      peekDeviceWriteSeq(host, deviceId) === seqBefore
+        ? claimDeviceWrite(host, deviceId)
+        : currentDeviceWriteClaim(host, deviceId);
+    this.recordWriteClaim(deviceId, restoreClaim);
+    return sendPromise;
+  }
+}
+
+export interface PresetCommandRunnerArgs {
+  readonly host: {
+    readonly sourceRevision: number;
+    readonly devices: readonly SmartDevice[];
+    readonly replyBanner: { readonly text: string; readonly isError?: boolean } | null;
+    readonly lockHost?: object;
+    executeSingleCommand(
+      device: SmartDevice,
+      command: DeviceCommand,
+      summary: string,
+      intent: unknown,
+    ): Promise<void>;
+    applyCommand(command: DeviceCommand): Promise<boolean>;
+    updateUndoCommandsForDevice?(
+      deviceId: string,
+      commands: readonly DeviceCommand[],
+      previousKind: SmartDevice["kind"],
+    ): void;
+  };
+  readonly device: SmartDevice;
+  readonly commands: readonly DeviceCommand[];
+  readonly intent: unknown;
+  readonly summary: string;
+  readonly preSnapshot: SmartDevice;
+  readonly computeInverses: (command: DeviceCommand) => DeviceCommand[];
+  readonly mergeInverses: (steps: readonly (readonly DeviceCommand[])[]) => DeviceCommand[];
+  readonly failureFallbackText: () => string;
+}
+
+export async function runTrackedDevicePresetCommands(
+  args: PresetCommandRunnerArgs,
+): Promise<{ readonly message: string; readonly isError: boolean }> {
+  const {
+    host,
+    device: dev,
+    commands,
+    intent,
+    summary,
+    preSnapshot,
+    computeInverses,
+    mergeInverses,
+    failureFallbackText,
+  } = args;
+  interface InlineUndoAction {
+    readonly summary: string;
+    readonly steps: ReadonlyArray<{ readonly deviceId: string; readonly commands: readonly DeviceCommand[] }>;
+    readonly expiresAtMs: number;
+  }
+  const lockHost = ((host.lockHost ?? host) as unknown) as OptimisticLockHost & {
+    lastUndoAction?: InlineUndoAction | null;
+  };
+  const startRevision = host.sourceRevision;
+  const presetBatch = commands.length > 1 ? new MultiCommandPresetBatch() : null;
+  const appliedInverses: DeviceCommand[][] = [];
+  let trackedUndoAction: InlineUndoAction | null = null;
+  try {
+    for (let i = 0; i < commands.length; i += 1) {
+      if (presetBatch?.isStopped || host.sourceRevision !== startRevision) break;
+      const cmd = commands[i]!;
+      if (i === 0) {
+        const prevBanner = host.replyBanner;
+        const prevUndo = lockHost.lastUndoAction;
+        const seqBefore = peekDeviceWriteSeq(lockHost, dev.id);
+        const execPromise = host.executeSingleCommand(dev, cmd, summary, intent);
+        if (presetBatch) {
+          const claim =
+            peekDeviceWriteSeq(lockHost, dev.id) === seqBefore
+              ? claimDeviceWrite(lockHost, dev.id)
+              : currentDeviceWriteClaim(lockHost, dev.id);
+          presetBatch.recordWriteClaim(dev.id, claim);
+        }
+        await (presetBatch ? presetBatch.trackInFlight(() => execPromise) : execPromise);
+        if (host.replyBanner !== prevBanner && host.replyBanner?.isError) {
+          return { message: host.replyBanner.text, isError: true };
+        }
+        const firstInverses = computeInverses(cmd);
+        appliedInverses.push(firstInverses);
+        trackedUndoAction =
+          lockHost.lastUndoAction && lockHost.lastUndoAction !== prevUndo
+            ? lockHost.lastUndoAction
+            : null;
+        if (trackedUndoAction && presetBatch) {
+          registerUndoActionBatch(trackedUndoAction, presetBatch);
+        }
+        if (typeof host.updateUndoCommandsForDevice === "function" && firstInverses.length > 0) {
+          host.updateUndoCommandsForDevice(dev.id, firstInverses, preSnapshot.kind);
+        }
+      } else {
+        let ok = false;
+        const runSubsequent = async (): Promise<void> => {
+          const seqBefore = peekDeviceWriteSeq(lockHost, dev.id);
+          const sendPromise = host.applyCommand(cmd);
+          if (presetBatch) {
+            const claim =
+              peekDeviceWriteSeq(lockHost, dev.id) === seqBefore
+                ? claimDeviceWrite(lockHost, dev.id)
+                : currentDeviceWriteClaim(lockHost, dev.id);
+            presetBatch.recordWriteClaim(dev.id, claim);
+          }
+          ok = await sendPromise;
+          if (!ok || host.sourceRevision !== startRevision) return;
+          appliedInverses.push(computeInverses(cmd));
+          const merged = mergeInverses(appliedInverses);
+          if (merged.length > 0 && (!presetBatch || presetBatch.ownsDeviceWrite(lockHost, dev.id))) {
+            if (trackedUndoAction) {
+              const mutableSteps = trackedUndoAction.steps as Array<{
+                deviceId: string;
+                commands: readonly DeviceCommand[];
+              }>;
+              for (let s = 0; s < mutableSteps.length; s += 1) {
+                if (mutableSteps[s]!.deviceId === dev.id) {
+                  mutableSteps[s] = { deviceId: dev.id, commands: merged };
+                }
+              }
+            }
+            if (typeof host.updateUndoCommandsForDevice === "function") {
+              host.updateUndoCommandsForDevice(dev.id, merged, preSnapshot.kind);
+            }
+          }
+        };
+        await (presetBatch ? presetBatch.trackInFlight(runSubsequent) : runSubsequent());
+        if (!ok) {
+          return {
+            message: host.replyBanner?.text ?? failureFallbackText(),
+            isError: true,
+          };
+        }
+      }
+    }
+  } finally {
+    presetBatch?.markFinished();
+  }
+  return { message: summary, isError: false };
 }
 
 

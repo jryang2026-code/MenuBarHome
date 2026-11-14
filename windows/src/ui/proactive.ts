@@ -13,6 +13,7 @@ import {
 } from "../core/assistant.js";
 import type { AssistantSuggestion, SmartDevice } from "../core/models.js";
 import { applyOrder, withAliases, type LayoutPrefs } from "./panelPrefs.js";
+import { cancelRunningBatch } from "./intentExecution.js";
 import { abortVoiceInput, clearUndoHoverPause } from "./speechGuard.js";
 
 function proactiveFavoriteIds(layout: LayoutPrefs, devices: readonly SmartDevice[]): string[] {
@@ -151,6 +152,7 @@ export function invalidateSourceControl(host: MenuMijiaWindowsApp): void {
   // Bump sourceRevision before resolving any pending URL confirmation so the drain loop sees
   // queued links as belonging to the previous source and cancels them cleanly.
   host.sourceRevision += 1;
+  cancelRunningBatch(host, "sourceChanged");
   clearUndoHoverPause(host);
   host.timerSnapshot = null;
   host.syncGeneration += 1;

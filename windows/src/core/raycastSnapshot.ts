@@ -137,6 +137,15 @@ export interface BuildRaycastSnapshotInput {
   readonly favoriteIds?: readonly string[];
   readonly hiddenIds?: readonly string[];
   readonly hideOfflineDevices?: boolean;
+  readonly hideGroupedLights?: boolean;
+  /** Maps member light `did` -> owning light group `did` (`RaycastSnapshot.swift` `lightGroupOwners`). */
+  readonly lightGroupOwners?: ReadonlyMap<string, string> | Readonly<Record<string, string>>;
+  /** Alias matching `MenuMijiaWindowsApp.groupOwnerByMemberDid` (`memberDid -> groupDid`). */
+  readonly groupOwnerByMemberDid?: ReadonlyMap<string, string>;
+  /** Optional group `did` -> member `did[]` map; converted to `member -> group` if provided. */
+  readonly lightGroupMembers?:
+    | ReadonlyMap<string, readonly string[]>
+    | Readonly<Record<string, readonly string[]>>;
   readonly aliases?: Readonly<Record<string, string>>;
   readonly roomAliases?: Readonly<Record<string, string>>;
   readonly roomOrder?: readonly string[];
@@ -449,9 +458,100 @@ function classifyScene(name: string): { icon: string; visualCategory: string } {
   return { icon: "sparkles", visualCategory: "general" };
 }
 
+function normalizeLightGroupOwners(input: BuildRaycastSnapshotInput): Map<string, string> {
+  const owners = new Map<string, string>();
+  const mergeDirect = (
+    source: ReadonlyMap<string, string> | Readonly<Record<string, string>> | undefined,
+  ): void => {
+    if (!source) return;
+    if (source instanceof Map || typeof (source as ReadonlyMap<string, string>).entries === "function") {
+      for (const [memberDid, groupDid] of (source as ReadonlyMap<string, string>).entries()) {
+        if (memberDid && groupDid && !owners.has(memberDid)) {
+          owners.set(memberDid, groupDid);
+        }
+      }
+      return;
+    }
+    for (const [memberDid, groupDid] of Object.entries(source as Readonly<Record<string, string>>)) {
+      if (memberDid && groupDid && !owners.has(memberDid)) {
+        owners.set(memberDid, groupDid);
+      }
+    }
+  };
+  mergeDirect(input.lightGroupOwners);
+  mergeDirect(input.groupOwnerByMemberDid);
+
+  const byGroup = input.lightGroupMembers;
+  if (byGroup) {
+    if (byGroup instanceof Map || typeof (byGroup as ReadonlyMap<string, readonly string[]>).entries === "function") {
+      for (const [groupDid, memberDids] of (byGroup as ReadonlyMap<string, readonly string[]>).entries()) {
+        if (!groupDid || !Array.isArray(memberDids)) continue;
+        for (const memberDid of memberDids) {
+          if (memberDid && !owners.has(memberDid)) {
+            owners.set(memberDid, groupDid);
+          }
+        }
+      }
+    } else {
+      for (const [groupDid, memberDids] of Object.entries(
+        byGroup as Readonly<Record<string, readonly string[]>>,
+      )) {
+        if (!groupDid || !Array.isArray(memberDids)) continue;
+        for (const memberDid of memberDids) {
+          if (memberDid && !owners.has(memberDid)) {
+            owners.set(memberDid, groupDid);
+          }
+        }
+      }
+    }
+  }
+  return owners;
+}
+
+/**
+ * Computes the companion-visible device list (`RaycastSnapshot.swift` `raycastVisibleDevices` parity):
+ * filters hidden and (when enabled) offline devices first, then when `hideGroupedLights` is active
+ * folds member lights whose owning light group is itself visible AND online.
+ */
+export function resolveRaycastVisibleDevices(input: {
+  readonly devices: readonly SmartDevice[];
+  readonly hiddenIds?: readonly string[];
+  readonly hideOfflineDevices?: boolean;
+  readonly hideGroupedLights?: boolean;
+  readonly lightGroupOwners?: ReadonlyMap<string, string> | Readonly<Record<string, string>>;
+  readonly groupOwnerByMemberDid?: ReadonlyMap<string, string>;
+  readonly lightGroupMembers?:
+    | ReadonlyMap<string, readonly string[]>
+    | Readonly<Record<string, readonly string[]>>;
+}): SmartDevice[] {
+  const hiddenSet = new Set(input.hiddenIds ?? []);
+  const baseVisible = input.devices.filter((dev) => {
+    if (hiddenSet.has(dev.id)) return false;
+    if (input.hideOfflineDevices && !dev.isOnline) return false;
+    return true;
+  });
+  const shouldFold = input.hideGroupedLights ?? true;
+  if (!shouldFold) return baseVisible;
+
+  const owners = normalizeLightGroupOwners(input as BuildRaycastSnapshotInput);
+  if (owners.size === 0) return baseVisible;
+
+  const listedById = new Map<string, SmartDevice>();
+  for (const dev of baseVisible) {
+    if (!listedById.has(dev.id)) listedById.set(dev.id, dev);
+  }
+
+  return baseVisible.filter((dev) => {
+    const groupDid = owners.get(dev.id);
+    if (!groupDid) return true;
+    const group = listedById.get(groupDid);
+    if (!group || !group.isOnline) return true;
+    return false;
+  });
+}
+
 export function buildRaycastSnapshot(input: BuildRaycastSnapshotInput): RaycastSnapshot {
   const isoNow = (input.now ?? new Date()).toISOString();
-  const hiddenSet = new Set(input.hiddenIds ?? []);
   const favoriteOrder = input.favoriteIds ?? [];
   const favoriteRankMap = new Map<string, number>();
   favoriteOrder.forEach((id, idx) => {
@@ -461,11 +561,7 @@ export function buildRaycastSnapshot(input: BuildRaycastSnapshotInput): RaycastS
   const roomAliases = input.roomAliases ?? {};
   const roomRanks = computeRoomRanks(input.rooms, input.roomOrder);
 
-  const visible = input.devices.filter((dev) => {
-    if (hiddenSet.has(dev.id)) return false;
-    if (input.hideOfflineDevices && !dev.isOnline) return false;
-    return true;
-  });
+  const visible = resolveRaycastVisibleDevices(input);
 
   const sortedDevices = visible
     .map((dev, index) => ({ dev, index }))
