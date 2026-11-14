@@ -340,6 +340,7 @@ export interface SmartDevice {
   readonly pinnedBackend?: HomeBackend | null;
   readonly fallbackActive?: boolean;
   readonly fallbackLabel?: string | null;
+  readonly telemetryStale?: boolean;
 }
 
 export interface RoomCategory {

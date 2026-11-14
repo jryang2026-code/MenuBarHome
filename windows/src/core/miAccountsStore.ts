@@ -356,10 +356,17 @@ function writeAccountIndex(storage: Storage | null,
 export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
   private loaded = false;
   private lastWroteIndexToStorage = false;
+  private opQueue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly vault: CredentialVault = new CredentialVault(),
     private readonly storage: Storage | null = defaultStorage(),
   ) {}
+
+  private enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.opQueue.then(fn, fn);
+    this.opQueue = run.then(() => undefined, () => undefined);
+    return run;
+  }
 
   private syncExternalRevocation(): void {
     if (!this.lastWroteIndexToStorage || this.cachedAccounts.length === 0 || !this.storage) return;
@@ -381,7 +388,11 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
     return this.cachedAccounts[0]?.session ?? null;
   }
 
-    async load(): Promise<MiAccount[]> { this.syncExternalRevocation();
+  async load(): Promise<MiAccount[]> {
+    return this.enqueue(() => this.loadUnlocked());
+  }
+
+  private async loadUnlocked(): Promise<MiAccount[]> { this.syncExternalRevocation();
     const index = readAccountIndex(this.storage);
     let primaryReadFailed = false;
     let primarySession: MiSession | null = null;
@@ -469,54 +480,56 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       throw new Error("Xiaomi session exceeds Win32 credential blob limit");
     }
 
-    if (!this.loaded) { await this.load();
-    }
+    return this.enqueue(async () => {
+      if (!this.loaded) { await this.loadUnlocked();
+      }
 
-    const existingIdx = this.cachedAccounts.findIndex((item) => item.id === account.id);
-    if (existingIdx === 0) { const prevFp = miSessionFingerprint(this.cachedAccounts[0]!.session);
-      await this.vault.savePrimaryMiSession(account.session);
-      if (prevFp !== miSessionFingerprint(account.session)) { markAccountSessionRejected(account.session, false, {
+      const existingIdx = this.cachedAccounts.findIndex((item) => item.id === account.id);
+      if (existingIdx === 0) { const prevFp = miSessionFingerprint(this.cachedAccounts[0]!.session);
+        await this.vault.savePrimaryMiSession(account.session);
+        if (prevFp !== miSessionFingerprint(account.session)) { markAccountSessionRejected(account.session, false, {
+            isPrimary: true,
+            storage: this.storage,
+          });
+        }
+        this.cachedAccounts = [account, ...this.cachedAccounts.slice(1)];
+        this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
+        return { accounts: [...this.cachedAccounts], account, added: false };
+      }
+
+      if (existingIdx > 0) { const prevFp = miSessionFingerprint(this.cachedAccounts[existingIdx]!.session);
+        await this.vault.saveMiAccountSlot(account.slotId, account.session);
+        if (prevFp !== miSessionFingerprint(account.session)) { markAccountSessionRejected(account.session, false, {
+            isPrimary: false,
+            storage: this.storage,
+          });
+        }
+        const next = [...this.cachedAccounts];
+        next[existingIdx] = account;
+        this.cachedAccounts = next;
+        this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
+        return { accounts: [...this.cachedAccounts], account, added: false };
+      }
+
+      if (this.cachedAccounts.length === 0) { await this.vault.savePrimaryMiSession(account.session);
+        markAccountSessionRejected(account.session, false, {
           isPrimary: true,
           storage: this.storage,
         });
+        this.cachedAccounts = [account];
+        this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
+        return { accounts: [...this.cachedAccounts], account, added: true };
       }
-      this.cachedAccounts = [account, ...this.cachedAccounts.slice(1)];
-      this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
-      return { accounts: [...this.cachedAccounts], account, added: false };
-    }
 
-    if (existingIdx > 0) { const prevFp = miSessionFingerprint(this.cachedAccounts[existingIdx]!.session);
       await this.vault.saveMiAccountSlot(account.slotId, account.session);
-      if (prevFp !== miSessionFingerprint(account.session)) { markAccountSessionRejected(account.session, false, {
-          isPrimary: false,
-          storage: this.storage,
-        });
-      }
-      const next = [...this.cachedAccounts];
-      next[existingIdx] = account;
-      this.cachedAccounts = next;
-      this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
-      return { accounts: [...this.cachedAccounts], account, added: false };
-    }
-
-    if (this.cachedAccounts.length === 0) { await this.vault.savePrimaryMiSession(account.session);
       markAccountSessionRejected(account.session, false, {
-        isPrimary: true,
+        isPrimary: false,
         storage: this.storage,
       });
-      this.cachedAccounts = [account];
+      this.cachedAccounts = [...this.cachedAccounts, account];
       this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
       return { accounts: [...this.cachedAccounts], account, added: true };
-    }
-
-    await this.vault.saveMiAccountSlot(account.slotId, account.session);
-    markAccountSessionRejected(account.session, false, {
-      isPrimary: false,
-      storage: this.storage,
     });
-    this.cachedAccounts = [...this.cachedAccounts, account];
-    this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
-    return { accounts: [...this.cachedAccounts], account, added: true };
   }
 
     async removeAccount(accountId: string,
@@ -524,57 +537,61 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
   ): Promise<{ readonly accounts: MiAccount[];
     readonly primarySession: MiSession | null;
     readonly resetSelectedHome: boolean;
-  }> { if (!this.loaded) { await this.load();
-    }
-    const idx = this.cachedAccounts.findIndex((item) => item.id === accountId);
-    if (idx < 0) { return {
-        accounts: [...this.cachedAccounts],
-        primarySession: this.primarySession(),
-        resetSelectedHome: false,
-      };
-    }
-
-    const removed = this.cachedAccounts[idx]!;
-    const resetSelectedHome = Boolean(selectedHomeId &&
-        (MiAccountScope.isOwned(selectedHomeId, accountId) ||
-          (MiAccountScope.owner(selectedHomeId) === null && idx === 0)),
-    );
-
-    const remaining = this.cachedAccounts.filter((item) => item.id !== accountId);
-    if (idx === 0) { if (remaining.length === 0) { await this.vault.deleteMiSession();
-      } else { const promoted = remaining[0]!;
-        await this.vault.savePrimaryMiSession(promoted.session);
-        await this.vault.deleteMiAccountSlot(promoted.slotId);
+  }> { return this.enqueue(async () => {
+      if (!this.loaded) { await this.loadUnlocked();
       }
-    } else { await this.vault.deleteMiAccountSlot(removed.slotId);
-    }
+      const idx = this.cachedAccounts.findIndex((item) => item.id === accountId);
+      if (idx < 0) { return {
+          accounts: [...this.cachedAccounts],
+          primarySession: this.primarySession(),
+          resetSelectedHome: false,
+        };
+      }
 
-    markAccountSessionRejected(removed.session, false, {
-      isPrimary: idx === 0 && remaining.length === 0,
-      storage: this.storage,
+      const removed = this.cachedAccounts[idx]!;
+      const resetSelectedHome = Boolean(selectedHomeId &&
+          (MiAccountScope.isOwned(selectedHomeId, accountId) ||
+            (MiAccountScope.owner(selectedHomeId) === null && idx === 0)),
+      );
+
+      const remaining = this.cachedAccounts.filter((item) => item.id !== accountId);
+      if (idx === 0) { if (remaining.length === 0) { await this.vault.deleteMiSession();
+        } else { const promoted = remaining[0]!;
+          await this.vault.savePrimaryMiSession(promoted.session);
+          await this.vault.deleteMiAccountSlot(promoted.slotId);
+        }
+      } else { await this.vault.deleteMiAccountSlot(removed.slotId);
+      }
+
+      markAccountSessionRejected(removed.session, false, {
+        isPrimary: idx === 0 && remaining.length === 0,
+        storage: this.storage,
+      });
+      this.cachedAccounts = remaining;
+      this.lastWroteIndexToStorage = writeAccountIndex(this.storage, remaining);
+      return {
+        accounts: [...remaining],
+        primarySession: remaining[0]?.session ?? null,
+        resetSelectedHome,
+      };
     });
-    this.cachedAccounts = remaining;
-    this.lastWroteIndexToStorage = writeAccountIndex(this.storage, remaining);
-    return {
-      accounts: [...remaining],
-      primarySession: remaining[0]?.session ?? null,
-      resetSelectedHome,
-    };
   }
 
-    async clearAll(): Promise<void> { if (!this.loaded) { await this.load();
-    }
-    const index = readAccountIndex(this.storage);
-    const slotIds = new Set<string>([
-      ...this.cachedAccounts.map((acc) => acc.slotId),
-      ...index.map((entry) => entry.slotId),
-    ]);
-    await this.vault.deleteMiSession([...slotIds]);
-    this.cachedAccounts = [];
-    this.loaded = true;
-    this.lastWroteIndexToStorage = writeAccountIndex(this.storage, []);
-    writePersistedAccountExpiryMap(this.storage, {});
-    clearPersistedMiSessionExpired(this.storage);
+    async clearAll(): Promise<void> { return this.enqueue(async () => {
+      if (!this.loaded) { await this.loadUnlocked();
+      }
+      const index = readAccountIndex(this.storage);
+      const slotIds = new Set<string>([
+        ...this.cachedAccounts.map((acc) => acc.slotId),
+        ...index.map((entry) => entry.slotId),
+      ]);
+      await this.vault.deleteMiSession([...slotIds]);
+      this.cachedAccounts = [];
+      this.loaded = true;
+      this.lastWroteIndexToStorage = writeAccountIndex(this.storage, []);
+      writePersistedAccountExpiryMap(this.storage, {});
+      clearPersistedMiSessionExpired(this.storage);
+    });
   }
 
   tokenStatuses(nowMs = Date.now()): Record<string, MiAccountTokenStatus> {
@@ -621,6 +638,7 @@ export interface MergedMiAccountsSnapshot {
   readonly specsByModel: Readonly<Record<string, MiotDeviceSpec>>;
   readonly lightGroupOwners: Map<string, string>;
   readonly resetSelectedHome: boolean;
+  readonly staleDeviceIds: ReadonlySet<string>;
 }
 
 export function buildHomeOptionsFromMiRooms(rooms: readonly MiRoom[],
@@ -770,6 +788,7 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
   const homes: AccountScopedHomeOption[] = [];
   const roomIds = new Set<string>();
   const deviceIds = new Set<string>();
+  const staleDeviceIds = new Set<string>();
   const seenPhysicalDids = new Set<string>();
   const deviceIndexById = new Map<string, number>();
   const deviceConnectedById = new Map<string, boolean>();
@@ -818,11 +837,15 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
     }
 
     for (const device of child.home.devices) { const baseDid = device.id;
+      const nextDevice: AccountScopedSmartDevice = isConnected
+        ? (device.telemetryStale ? { ...device, telemetryStale: false } : device)
+        : { ...device, telemetryStale: true };
       const existingIdx = deviceIndexById.get(device.id);
       if (existingIdx !== undefined || seenPhysicalDids.has(baseDid)) {
         if (existingIdx !== undefined && isConnected && !deviceConnectedById.get(device.id)) {
-          devices[existingIdx] = device;
+          devices[existingIdx] = nextDevice;
           deviceConnectedById.set(device.id, true);
+          staleDeviceIds.delete(device.id);
           const facets = childFacets[device.id];
           if (facets && facets.length > 0) { facetsByDevice[device.id] = facets;
           } else { delete facetsByDevice[device.id]; }
@@ -839,7 +862,8 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
       seenPhysicalDids.add(baseDid);
       deviceIndexById.set(device.id, devices.length);
       deviceConnectedById.set(device.id, isConnected);
-      devices.push(device);
+      if (!isConnected) staleDeviceIds.add(device.id);
+      devices.push(nextDevice);
       const facets = childFacets[device.id];
       if (facets && facets.length > 0) { facetsByDevice[device.id] = facets;
       }
@@ -907,6 +931,7 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
     specsByModel,
     lightGroupOwners: filteredGroupOwners,
     resetSelectedHome,
+    staleDeviceIds,
   };
 }
 

@@ -136,8 +136,16 @@ export function parseJsonObject(raw: string): Record<string, unknown> | null {
   }
 }
 
+const INT64_MIN = -9223372036854775808;
+const INT64_UPPER_EXCLUSIVE = 9223372036854775808;
+
 export function asIdString(v: unknown): string | null {
   if (typeof v === "string" && v.length > 0) return v;
-  if (typeof v === "number" && Number.isFinite(v)) return String(Math.trunc(v));
+  if (typeof v === "number" && Number.isFinite(v)) {
+    const truncated = Math.trunc(v);
+    if (truncated >= INT64_MIN && truncated < INT64_UPPER_EXCLUSIVE) {
+      return BigInt(Object.is(truncated, -0) ? 0 : truncated).toString();
+    }
+  }
   return null;
 }

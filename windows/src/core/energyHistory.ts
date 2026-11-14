@@ -7,6 +7,21 @@ export const ENERGY_TOP_DEVICE_LIMIT = 6;
 export const MAX_ENERGY_COUNTER_KWH = 1_000_000_000;
 export const MAX_SINGLE_DELTA_KWH = 500;
 export const MAX_ELECTRICITY_PRICE_PER_KWH = 10_000;
+const MAX_VALID_ENERGY_DATE_MS = 8_600_000_000_000_000;
+
+function isValidEnergyTimestampMs(ms: number): boolean {
+  return Number.isFinite(ms) && ms > 0 && ms <= MAX_VALID_ENERGY_DATE_MS;
+}
+
+function safeReferenceDate(now: Date): Date {
+  const ms = now instanceof Date ? now.getTime() : Number.NaN;
+  return isValidEnergyTimestampMs(ms) ? now : new Date();
+}
+
+function clampDayWindowCount(dayCount: number): number {
+  if (!Number.isFinite(dayCount)) return 7;
+  return Math.min(Math.max(Math.trunc(dayCount) || 1, 1), ENERGY_RETENTION_DAYS);
+}
 
 export const ENERGY_HISTORY_KEY_PREFIX = "menumijia.windows.energyHistory.v1";
 export const ENERGY_PRICE_STORAGE_KEY = "menumijia.windows.energyPrice.v1";
@@ -179,7 +194,7 @@ function sanitizeStored(raw: unknown): EnergyHistoryStored {
   const obj = raw as Record<string, unknown>;
   const result = emptyStored();
 
-  if (typeof obj.recordingStartedAtMs === "number" && Number.isFinite(obj.recordingStartedAtMs) && obj.recordingStartedAtMs > 0) {
+  if (typeof obj.recordingStartedAtMs === "number" && isValidEnergyTimestampMs(obj.recordingStartedAtMs)) {
     result.recordingStartedAtMs = obj.recordingStartedAtMs;
   }
 
@@ -207,7 +222,7 @@ function sanitizeStored(raw: unknown): EnergyHistoryStored {
 
   if (obj.lastSampleAtMs && typeof obj.lastSampleAtMs === "object") {
     for (const [deviceId, val] of Object.entries(obj.lastSampleAtMs as Record<string, unknown>)) {
-      if (deviceId && typeof val === "number" && Number.isFinite(val) && val > 0) {
+      if (deviceId && typeof val === "number" && isValidEnergyTimestampMs(val)) {
         result.lastSampleAtMs[deviceId] = val;
       }
     }
@@ -437,8 +452,8 @@ export class EnergyHistory {
   }
 
   public record(devices: readonly SmartDevice[], now: Date = new Date()): void {
-    const nowMs = now.getTime();
-    if (!Number.isFinite(nowMs) || nowMs <= 0) return;
+    const nowMs = now instanceof Date ? now.getTime() : Number.NaN;
+    if (!isValidEnergyTimestampMs(nowMs)) return;
 
     this.syncFromStorage();
     let shouldPersist = false;
@@ -598,8 +613,8 @@ export class EnergyHistory {
 
   public dailyTotals(dayCount = 7, now: Date = new Date()): EnergyDayTotal[] {
     this.syncFromStorage();
-    const count = Math.min(Math.max(Math.trunc(dayCount) || 1, 1), ENERGY_RETENTION_DAYS);
-    const today = startOfLocalDay(now);
+    const count = clampDayWindowCount(dayCount);
+    const today = startOfLocalDay(safeReferenceDate(now));
     const first = addLocalDays(today, -(count - 1));
     const bucketByKey = new Map(this.stored.buckets.map((b) => [b.dayKey, b]));
     const observedSet = new Set(this.stored.observedDays);
@@ -630,7 +645,8 @@ export class EnergyHistory {
 
   public todayKwh(deviceId: string, now: Date = new Date()): number | null {
     this.syncFromStorage();
-    const todayKey = localDayKey(now);
+    const refNow = safeReferenceDate(now);
+    const todayKey = localDayKey(refNow);
     const bucket = this.stored.buckets.find((b) => b.dayKey === todayKey);
     const bucketKwh = bucket?.perDevice[deviceId];
     if (typeof bucketKwh === "number" && Number.isFinite(bucketKwh) && bucketKwh >= 0) {
@@ -641,7 +657,7 @@ export class EnergyHistory {
     if (
       baseline === undefined ||
       lastSeenMs === undefined ||
-      !isSameLocalDayMs(lastSeenMs, now.getTime())
+      !isSameLocalDayMs(lastSeenMs, refNow.getTime())
     ) {
       return null;
     }
@@ -654,8 +670,8 @@ export class EnergyHistory {
     now: Date = new Date(),
   ): EnergyDeviceTotal[] {
     this.syncFromStorage();
-    const count = Math.min(Math.max(Math.trunc(dayCount) || 1, 1), ENERGY_RETENTION_DAYS);
-    const today = startOfLocalDay(now);
+    const count = clampDayWindowCount(dayCount);
+    const today = startOfLocalDay(safeReferenceDate(now));
     const firstKey = localDayKey(addLocalDays(today, -(count - 1)));
     const todayKey = localDayKey(today);
 
@@ -710,7 +726,8 @@ export class EnergyHistory {
     liveDevices: readonly SmartDevice[] = [],
     now: Date = new Date(),
   ): EnergyDeviceTotal[] {
-    return this.deviceTotals(dayCount, liveDevices, now).slice(0, Math.max(0, Math.trunc(limit)));
+    const safeLimit = Number.isFinite(limit) ? Math.max(0, Math.trunc(limit)) : ENERGY_TOP_DEVICE_LIMIT;
+    return this.deviceTotals(dayCount, liveDevices, now).slice(0, safeLimit);
   }
 
   public costForKwh(kwh: number): number | null {

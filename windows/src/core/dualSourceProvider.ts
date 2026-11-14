@@ -598,8 +598,8 @@ export const DeviceDeduplicator = {
         const accountStatus = backend === "xiaomiCloud" && dev.accountId && input.accountStatuses
           ? input.accountStatuses[dev.accountId]
           : undefined;
-        const accountDisconnected = allAccountsDisconnected || accountStatus?.kind === "disconnected";
-        const effectiveDev = accountDisconnected && dev.isOnline ? { ...dev, isOnline: false } : dev;
+        const accountDisconnected = allAccountsDisconnected || accountStatus?.kind === "disconnected" || dev.telemetryStale === true;
+        const effectiveDev = accountDisconnected ? { ...dev, isOnline: false, telemetryStale: true } : dev;
         return {
           backend,
           device: effectiveDev,
@@ -863,6 +863,7 @@ export const DeviceDeduplicator = {
           : {}),
         ...(accountId !== undefined ? { accountId } : {}),
         ...(accountLabel !== undefined ? { accountLabel } : {}),
+        ...(winnerDev.telemetryStale ? { telemetryStale: true } : {}),
       };
       mergedDevices.push(mergedCard);
 
@@ -1008,6 +1009,16 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   }
 
   getLastMerged(): DeviceMergeResult | null { return this.lastMerged;
+  }
+
+  reset(): void {
+    this.lastHA = null;
+    this.lastMi = null;
+    this.lastMerged = null;
+    this.sourceStatuses = {
+      homeAssistant: { kind: "connecting" },
+      xiaomiCloud: { kind: "connecting" },
+    };
   }
 
   getSourceStatuses(): Readonly<Record<HomeBackend, ConnectionStatus>> { return { ...this.sourceStatuses };

@@ -11,7 +11,7 @@ import {
 } from "../core/energyHistory.js";
 import type { SmartDevice } from "../core/models.js";
 import type { ReplyBannerState } from "./appTypes.js";
-import { getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
+import { getHostDualSourceState, getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
 import { withAliases, type LayoutPrefs } from "./panelPrefs.js";
 import type { SettingsTab, SettingsViewContext } from "./settingsViews.js";
 
@@ -111,10 +111,27 @@ export function notifyEnergyDevicesMutated(host: EnergyTrackableHost): void {
   session.lastRecordedSig = null;
 }
 
-function plugCounterSignature(devices: readonly SmartDevice[]): string {
+function isLiveEnergyTelemetryDevice(
+  dev: SmartDevice,
+  staleIds?: ReadonlySet<string>,
+  dualRoutes?: Readonly<Record<string, { readonly backend: string; readonly sourceDeviceId: string }>>,
+): boolean {
+  if (dev.telemetryStale) return false;
+  const route = dualRoutes?.[dev.id];
+  const backend = route?.backend ?? dev.sourceBackend;
+  if (backend === "homeAssistant") return true;
+  if (backend === "xiaomiCloud") return !staleIds?.has(route?.sourceDeviceId ?? dev.id);
+  return !staleIds?.has(dev.id);
+}
+
+function plugCounterSignature(
+  devices: readonly SmartDevice[],
+  staleIds?: ReadonlySet<string>,
+  dualRoutes?: Readonly<Record<string, { readonly backend: string; readonly sourceDeviceId: string }>>,
+): string {
   const parts: string[] = [];
   for (const dev of devices) {
-    if (!dev.isOnline || dev.kind.kind !== "plug") continue;
+    if (!dev.isOnline || !isLiveEnergyTelemetryDevice(dev, staleIds, dualRoutes) || dev.kind.kind !== "plug") continue;
     const kwh = dev.kind.energyKwh;
     if (typeof kwh === "number" && Number.isFinite(kwh) && kwh >= 0) {
       parts.push(`${dev.id}:${kwh}`);
@@ -162,14 +179,23 @@ function recordHostSnapshotIfLive(host: EnergyTrackableHost): void {
     return;
   }
 
-  const currentSig = plugCounterSignature(host.devices);
+  const staleIds = getHostMiAccountsState(host)?.merged?.staleDeviceIds;
+  const dualRoutes = dual ? getHostDualSourceState(host)?.routes : undefined;
+  const liveHostDevices = host.devices.filter((d) =>
+    isLiveEnergyTelemetryDevice(d, staleIds, dualRoutes),
+  );
+  const currentSig = plugCounterSignature(liveHostDevices, staleIds, dualRoutes);
   if (host.settings.connectionMode !== "demo") {
     const snapshotReady =
       host.timerSnapshot !== undefined &&
       host.timerSnapshot !== null &&
       host.timerSnapshot.sourceRevision === (host.sourceRevision ?? 0);
     if (!snapshotReady) {
-      const cachedSig = plugCounterSignature(cachedDevicesForMode(host.settings));
+      const cachedSig = plugCounterSignature(
+        cachedDevicesForMode(host.settings),
+        staleIds,
+        dualRoutes,
+      );
       if (cachedSig !== "" && cachedSig === currentSig) {
         return;
       }
@@ -194,7 +220,7 @@ function recordHostSnapshotIfLive(host: EnergyTrackableHost): void {
     return;
   }
   const effectiveDevices = devicesWithLayoutAliases(
-    host.devices,
+    liveHostDevices,
     host.layout ?? host.settings.layout,
   );
   history.record(effectiveDevices);

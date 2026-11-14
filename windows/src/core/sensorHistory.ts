@@ -202,9 +202,11 @@ function isSameLocalDay(lhsMs: number, rhsMs: number): boolean {
   return startOfLocalDayMs(lhsMs) === startOfLocalDayMs(rhsMs);
 }
 
+const MAX_VALID_DATE_MS = 8_600_000_000_000_000;
+
 function toTimestampMs(input: number | Date): number | null {
   const ms = input instanceof Date ? input.getTime() : input;
-  return typeof ms === "number" && Number.isFinite(ms) && ms > 0 ? ms : null;
+  return typeof ms === "number" && Number.isFinite(ms) && ms > 0 && ms <= MAX_VALID_DATE_MS ? ms : null;
 }
 
 function accumulatorAverage(acc: MetricAccumulator | undefined): number | null {
@@ -322,7 +324,7 @@ function sanitizeStoredBucket(raw: unknown): StoredBucketRecord | null {
   if (!raw || typeof raw !== "object") return null;
   const rec = raw as Record<string, unknown>;
   const bucketStartMs = typeof rec.bucketStartMs === "number" ? rec.bucketStartMs : Number.NaN;
-  if (!Number.isFinite(bucketStartMs) || bucketStartMs <= 0) return null;
+  if (!Number.isFinite(bucketStartMs) || bucketStartMs <= 0 || bucketStartMs > MAX_VALID_DATE_MS) return null;
   const rawMetrics =
     rec.metrics && typeof rec.metrics === "object" ? (rec.metrics as Record<string, unknown>) : {};
   const metrics: Partial<Record<SensorMetricKind, MetricAccumulator>> = {};

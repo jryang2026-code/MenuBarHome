@@ -14,6 +14,7 @@ import {
   haLightCapabilityFlags,
   haLockStatusText,
   haNumber as number,
+  haRoundedInt,
   haStrings as strings,
   haText as text,
   isHAStateAvailable,
@@ -412,18 +413,20 @@ function buildKind(
   ) {
     claimed.add(state.entityId);
     const a = state.attributes,
-      brightness = number(a.brightness);
+      brightness = number(a.brightness),
+      brightnessPct =
+        brightness === null ? null : haRoundedInt((brightness / 255) * 100);
     kind = {
       kind: "light",
       entityId: state.entityId,
       isOn: state.state === "on",
       brightnessPercent:
-        brightness === null
+        brightnessPct === null
           ? null
-          : Math.max(1, Math.min(100, Math.round((brightness / 255) * 100))),
-      colorTempKelvin: number(a.color_temp_kelvin),
-      minKelvin: number(a.min_color_temp_kelvin) ?? 2700,
-      maxKelvin: number(a.max_color_temp_kelvin) ?? 6500,
+          : Math.max(1, Math.min(100, brightnessPct)),
+      colorTempKelvin: haRoundedInt(a.color_temp_kelvin),
+      minKelvin: haRoundedInt(a.min_color_temp_kelvin) ?? 2700,
+      maxKelvin: haRoundedInt(a.max_color_temp_kelvin) ?? 6500,
       currentEffect: typeof a.effect === "string" ? a.effect : null,
       availableEffects: strings(a.effect_list),
       ...haLightCapabilityFlags(a),
@@ -435,7 +438,7 @@ function buildKind(
       kind: "fan",
       entityId: state.entityId,
       isOn: state.state === "on",
-      percentage: number(a.percentage),
+      percentage: haRoundedInt(a.percentage),
       presetMode: typeof a.preset_mode === "string" ? a.preset_mode : null,
       availablePresetModes: strings(a.preset_modes),
       isOscillating: typeof a.oscillating === "boolean" ? a.oscillating : null,
@@ -966,6 +969,13 @@ export class HomeAssistantSynthesizer {
   }
 }
 
+function finiteCmdNumber(value: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error("Non-finite Home Assistant command value");
+  }
+  return Object.is(value, -0) ? 0 : value;
+}
+
 export function haServiceCall(command: DeviceCommand): HaServiceCall {
   const [powerEntityId = "", selectEntityId] = command.entityId.split("|");
   const rawTarget =
@@ -996,9 +1006,9 @@ export function haServiceCall(command: DeviceCommand): HaServiceCall {
       }
       return call(command.isOn ? "turn_on" : "turn_off");
     case "setLightBrightness":
-      return call("turn_on", { brightness_pct: command.percent });
+      return call("turn_on", { brightness_pct: finiteCmdNumber(command.percent) });
     case "setLightColorTemp":
-      return call("turn_on", { color_temp_kelvin: command.kelvin });
+      return call("turn_on", { color_temp_kelvin: finiteCmdNumber(command.kelvin) });
     case "setLightEffect":
       return call("turn_on", { effect: command.effect });
     case "setClimatePower":
@@ -1008,11 +1018,11 @@ export function haServiceCall(command: DeviceCommand): HaServiceCall {
     case "setClimateMode":
       return call("set_hvac_mode", { hvac_mode: command.hvacMode });
     case "setClimateTemperature":
-      return call("set_temperature", { temperature: command.temperature });
+      return call("set_temperature", { temperature: finiteCmdNumber(command.temperature) });
     case "setClimateFanMode":
       return call("set_fan_mode", { fan_mode: command.fanMode });
     case "setFanPercentage":
-      return call("set_percentage", { percentage: command.percent });
+      return call("set_percentage", { percentage: finiteCmdNumber(command.percent) });
     case "setFanPresetMode":
       return call("set_preset_mode", { preset_mode: command.presetMode });
     case "setFanOscillating":
@@ -1054,36 +1064,40 @@ export function haServiceCall(command: DeviceCommand): HaServiceCall {
       }
       return call("select_option", { option: command.option });
     }
-    case "setNumberValue":
+    case "setNumberValue": {
+      const val = finiteCmdNumber(command.value);
       if (domain === "cover") {
         return call("set_cover_position", {
-          position: Math.max(0, Math.min(100, Math.round(command.value))),
+          position: Math.max(0, Math.min(100, Math.round(val))),
         });
       }
       if (domain === "valve") {
         return call("set_valve_position", {
-          position: Math.max(0, Math.min(100, Math.round(command.value))),
+          position: Math.max(0, Math.min(100, Math.round(val))),
         });
       }
       if (domain === "humidifier") {
         return call("set_humidity", {
-          humidity: Math.max(0, Math.min(100, Math.round(command.value))),
+          humidity: Math.max(0, Math.min(100, Math.round(val))),
         });
       }
       if (domain === "water_heater") {
-        return call("set_temperature", { temperature: command.value });
+        return call("set_temperature", { temperature: val });
       }
       if (domain === "media_player") {
-        const level = command.value > 1 ? command.value / 100 : command.value;
+        const level = val > 1 ? val / 100 : val;
         return call("volume_set", { volume_level: Math.max(0, Math.min(1, level)) });
       }
-      return call("set_value", { value: command.value });
+      return call("set_value", { value: val });
+    }
     case "vacuumAction":
       return call(
         command.action === "returnToBase" ? "return_to_base" : command.action,
       );
-    case "mediaSetVolume":
-      return call("volume_set", { volume_level: Math.max(0, Math.min(1, command.level)) });
+    case "mediaSetVolume": {
+      const level = finiteCmdNumber(command.level);
+      return call("volume_set", { volume_level: Math.max(0, Math.min(1, level)) });
+    }
     case "pressButton":
       if (domain === "valve") return call("stop_valve");
       if (domain === "media_player") return call("media_play_pause");
@@ -1097,6 +1111,231 @@ export function haServiceCall(command: DeviceCommand): HaServiceCall {
     case "activateScene":
       if (domain === "button") return call("press");
       return call("turn_on");
+  }
+}
+
+export interface HADoorbellRing {
+  readonly deviceId: string;
+  readonly entityId: string;
+  readonly firedAt: string;
+}
+
+export class HAHomeSnapshotReadError extends Error {
+  constructor(public readonly reason: "rejected" | "invalidResponse") {
+    super(
+      reason === "rejected"
+        ? "Home Assistant refused to read devices or registries"
+        : "Home Assistant returned invalid device or registry data",
+    );
+    this.name = "HAHomeSnapshotReadError";
+  }
+}
+
+function isOptionalStringField(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === "string";
+}
+
+function isPlainObject(value: unknown): value is Row {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function doorbellTimestamp(state: HAState): string | null {
+  if (
+    !state.entityId.startsWith("event.") ||
+    state.attributes.device_class !== "doorbell" ||
+    state.state === "" ||
+    state.state === "unknown" ||
+    state.state === "unavailable"
+  ) {
+    return null;
+  }
+  return state.state;
+}
+
+export class HAHomeSnapshot {
+  private areas: Row[] = [];
+  private devices: Row[] = [];
+  private entities: Row[] = [];
+  private states = new Map<string, HAState>();
+  private readonly pendingInitialResults = new Set<number>([1, 2, 3, 4]);
+  private rings: HADoorbellRing[] = [];
+  private readonly doorbellTimestamps = new Map<string, string>();
+
+  takeDoorbellRings(): HADoorbellRing[] {
+    const out = this.rings;
+    this.rings = [];
+    return out;
+  }
+
+  receive(message: unknown, isRefreshStatesResult = false): SynthesizedHome | null {
+    if (!isPlainObject(message)) return null;
+
+    if (message.type === "result") {
+      const id = haRoundedInt(message.id);
+      if (id === null) return null;
+      const inInitial = id >= 1 && id <= 4;
+      const inRefreshRange = id >= 1000 && id <= 9999;
+      if (!inInitial && !inRefreshRange && !isRefreshStatesResult) return null;
+      if (message.success !== true) {
+        throw new HAHomeSnapshotReadError("rejected");
+      }
+      if (!("result" in message) || message.result === undefined) {
+        throw new HAHomeSnapshotReadError("invalidResponse");
+      }
+      if (id === 1) {
+        this.areas = HAHomeSnapshot.decodeAreaEntries(message.result);
+      } else if (id === 2) {
+        this.devices = HAHomeSnapshot.decodeDeviceEntries(message.result);
+      } else if (id === 3) {
+        this.entities = HAHomeSnapshot.decodeEntityEntries(message.result);
+      } else if (id === 4 || inRefreshRange || isRefreshStatesResult) {
+        if (!Array.isArray(message.result)) {
+          throw new HAHomeSnapshotReadError("invalidResponse");
+        }
+        const nextStates = new Map<string, HAState>();
+        for (const entry of message.result) {
+          const parsed = HAHomeSnapshot.parseState(entry);
+          if (!parsed) throw new HAHomeSnapshotReadError("invalidResponse");
+          nextStates.set(parsed.entityId, parsed);
+          const ts = doorbellTimestamp(parsed);
+          if (ts !== null) this.doorbellTimestamps.set(parsed.entityId, ts);
+        }
+        this.states = nextStates;
+      } else {
+        return null;
+      }
+      this.pendingInitialResults.delete(id);
+    } else if (
+      message.type === "event" &&
+      isPlainObject(message.event) &&
+      message.event.event_type === "state_changed" &&
+      isPlainObject(message.event.data)
+    ) {
+      const data = message.event.data;
+      if ("new_state" in data && data.new_state !== null && data.new_state !== undefined) {
+        const parsed = HAHomeSnapshot.parseState(data.new_state);
+        if (!parsed) return null;
+        const ts = doorbellTimestamp(parsed);
+        if (ts !== null && ts !== this.doorbellTimestamps.get(parsed.entityId)) {
+          this.doorbellTimestamps.set(parsed.entityId, ts);
+          if (this.pendingInitialResults.size === 0 && this.isActiveEntity(parsed.entityId)) {
+            const ent = this.entities.find((e) => e.entity_id === parsed.entityId);
+            const deviceId = typeof ent?.device_id === "string" && ent.device_id ? ent.device_id : parsed.entityId;
+            this.rings.push({ deviceId, entityId: parsed.entityId, firedAt: ts });
+          }
+        }
+        this.states.set(parsed.entityId, parsed);
+      } else if (data.new_state === null) {
+        const oldState = isPlainObject(data.old_state) ? data.old_state : null;
+        const entityId =
+          typeof data.entity_id === "string"
+            ? data.entity_id
+            : typeof oldState?.entity_id === "string"
+              ? oldState.entity_id
+              : null;
+        if (!entityId || !this.states.delete(entityId)) {
+          return null;
+        }
+        this.doorbellTimestamps.delete(entityId);
+      } else {
+        return null;
+      }
+    } else {
+      return null;
+    }
+
+    if (this.pendingInitialResults.size > 0) return null;
+    return HomeAssistantSynthesizer.synthesize({
+      areas: this.areas,
+      devices: this.devices,
+      entities: this.entities,
+      states: [...this.states.values()].map((st) => ({
+        entity_id: st.entityId,
+        state: st.state,
+        attributes: st.attributes,
+      })),
+    });
+  }
+
+  private isActiveEntity(entityId: string): boolean {
+    const entry = this.entities.find((e) => e.entity_id === entityId);
+    if (!entry) return true;
+    if (entry.disabled_by != null || entry.hidden_by != null) return false;
+    if (typeof entry.device_id === "string") {
+      const dev = this.devices.find((d) => d.id === entry.device_id);
+      if (dev && dev.disabled_by != null) return false;
+    }
+    return true;
+  }
+
+  private static decodeAreaEntries(value: unknown): Row[] {
+    if (!Array.isArray(value)) throw new HAHomeSnapshotReadError("invalidResponse");
+    return value.map((item) => {
+      if (!isPlainObject(item) || typeof item.area_id !== "string" || typeof item.name !== "string") {
+        throw new HAHomeSnapshotReadError("invalidResponse");
+      }
+      return { ...item };
+    });
+  }
+
+  private static decodeDeviceEntries(value: unknown): Row[] {
+    if (!Array.isArray(value)) throw new HAHomeSnapshotReadError("invalidResponse");
+    const optStrings = [
+      "area_id",
+      "name",
+      "name_by_user",
+      "manufacturer",
+      "model",
+      "disabled_by",
+      "serial_number",
+      "configuration_url",
+    ];
+    return value.map((item) => {
+      if (!isPlainObject(item) || typeof item.id !== "string") {
+        throw new HAHomeSnapshotReadError("invalidResponse");
+      }
+      for (const k of optStrings) {
+        if (!isOptionalStringField(item[k])) throw new HAHomeSnapshotReadError("invalidResponse");
+      }
+      return { ...item };
+    });
+  }
+
+  private static decodeEntityEntries(value: unknown): Row[] {
+    if (!Array.isArray(value)) throw new HAHomeSnapshotReadError("invalidResponse");
+    const optStrings = [
+      "device_id",
+      "area_id",
+      "name",
+      "original_name",
+      "platform",
+      "entity_category",
+      "disabled_by",
+      "hidden_by",
+      "unique_id",
+      "translation_key",
+    ];
+    return value.map((item) => {
+      if (!isPlainObject(item) || typeof item.entity_id !== "string") {
+        throw new HAHomeSnapshotReadError("invalidResponse");
+      }
+      for (const k of optStrings) {
+        if (!isOptionalStringField(item[k])) throw new HAHomeSnapshotReadError("invalidResponse");
+      }
+      return { ...item };
+    });
+  }
+
+  private static parseState(value: unknown): HAState | null {
+    if (!isPlainObject(value) || typeof value.entity_id !== "string" || typeof value.state !== "string") {
+      return null;
+    }
+    const attributes = isPlainObject(value.attributes) ? { ...value.attributes } : {};
+    return {
+      entityId: value.entity_id,
+      state: value.state,
+      attributes,
+    };
   }
 }
 

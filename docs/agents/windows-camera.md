@@ -11,16 +11,18 @@
 2. **本地 UDP 广播打洞中继**：
    - CS2 摄像机不响应单播 `<cam_ip>:32108`，只响应子网广播 `<网段>.255:32108`；go2rtc 绑 `0.0.0.0` 直发单播会超时。
    - 本机起 UDP 中继（`127.0.0.1:0` ↔ 路由到摄像机的本机网卡 IP，`set_broadcast(true)`）：收到 `f1 30` 同时发 `<网段>.255:32108` 与单播 `:32108`；收到 `0x41` 原样回给摄像机动态来源端口，再收 `0x43` 后转发后续报文。`xiaomi://` 必须带端口写 `127.0.0.1:<relay_port>`。
-3. **显示格式与转码铁律**：
-   - 必须用 `ffmpeg:cam_raw_<did>#video=mjpeg` → `/api/stream.mjpeg?src=cam_mjpeg_<did>` 配常驻 `<img>`（`document.createElement` 创建一次，DOM 重绘时 `replaceChildren(sameImg)` 不断流；CSP 放行 `http://127.0.0.1:1984`）。
+3. **显示格式、鉴权 IPC 拉流与自适应帧率铁律**：
+   - 转码源固定用 `ffmpeg:cam_raw_<did>#video=mjpeg`（流名 `cam_mjpeg_<did>`），但前端**严禁**裸连 `<img src="http://127.0.0.1:1984/...">`：`go2rtc` 由 Rust 分配随机回环端口（`FORBIDDEN_GO2RTC_PORTS` 显式拒绝 `1984`/`8554`/`8555`），开启 `local_auth: true` HTTP Basic Auth 并写入 `go2rtc.owner` 校验归属。
+   - 前端 `CameraLiveController.pumpAuthenticatedMjpeg` 通过 Tauri IPC `invoke<string>("go2rtc_jpeg_frame", { src })` 经服务端 Basic Auth 拉取 `/api/frame.jpeg?src=cam_mjpeg_<did>` 的 Base64 帧，写入常驻 `<img>`（`img.src = "data:image/jpeg;base64,..."`，`document.createElement("img")` 只创建一次，DOM 重绘时 `replaceChildren(sameImg)` 防闪烁）。
+   - **自适应帧间隔调度（`computeNextFrameGapMs`）**：可见且收到动态新帧时按 `cameraActiveFrameGapMs = 45ms`（约 20fps 上限，扣除当次 IPC 耗时后保底 `12ms`）流畅拉流；连续收到相同帧时从 `cameraIdleFrameGapMs = 250ms` 阶梯退避至最高 `500ms` 省电；隐藏保活期间（`liveCameraHidden = true`）降频至 `cameraHiddenFrameGapMs = 400ms` 维持上游转码不断流。
    - 禁用 `stream.mp4`（WebView2 永久缓冲 0:00）与 WebRTC（摄像头 RTP 时间戳虚高导致持续累积 18s+ 延迟）。
    - **严禁加 `#width=`**：会破坏 HEVC 参考帧解码，直接报 `500 Could not find ref with POC`。
    - `go2rtc.yaml` 中 `log.ffmpeg` 用 `error`（`quiet` 非法，退回 `NoLevel` 传 `-v NoLevel` 致转码全败）。
 
 ## 2. P2P 会话冷却与单主生命周期
 
-- **1 分钟会话冷却**：单 P2P 会话承载视频后需 1 分钟以上自我回收。新会话 326–412 帧/12s（首帧 1–3s）；关闭后 0.3–2.5s 内重开会退化至 0–14 fps（卡首帧、HTTP 0 字节）；高频连测打入深度拒绝后须静置 5 分钟以上。
-- **隐藏保温**：关闭小窗只设 `display:none`，`<img>`、UDP 中继与 ffmpeg 保持存活；仅在 `cameraKeepAliveMs`（默认 120s）到期、面板关闭、切设备或异常重连时才调 `stop_xiaomi_camera_bridge` + `stop-stream`。
+- **1 分钟会话冷却与同会话退避**：单 P2P 会话承载视频后需 1 分钟以上由固件侧自我回收。新会话 326–412 帧/12s（首帧 1–3s）；关闭后立即重开会退化至 0–14 fps（卡首帧、HTTP 0 字节），因此前端对同一台摄像机重协商前执行 `cameraSameSessionCooldownMs = 2500ms` 退避（跨摄像机切换则跳过）；高频连测打入深度拒绝后须静置 5 分钟以上。
+- **隐藏保温（120s）**：关闭小窗只设 `liveCameraHidden = true`（`display:none` + `400ms` 低频保活拉帧），常驻 `<img>`、UDP 中继与 ffmpeg 保持热态，120 秒内重开秒出画；仅在 `cameraKeepAliveMs`（默认 `120_000ms`）到期、主面板收起、切设备、退出米家账号或异常重连时才调 `stop_xiaomi_camera_bridge` + `stop-stream`。
 - **串行与代次守卫**：Rust 端 `CAMERA_BRIDGE_LOCK`（async Mutex）全程串行 `start_xiaomi_camera_bridge` / `stop_xiaomi_camera_bridge`；前端用 `liveCameraToken` 在每个 `await` 后核对代次，过期桥启动后立即补发回收。
 
 ## 3. Helper 内置与 Windows 构建坑

@@ -10,6 +10,7 @@ import { quickActions } from "./demo.js";
 import { quickActionScopeDevices, reconcileUndoBannerHoverAfterRender } from "./speechGuard.js";
 import { renderProactiveInlinePill } from "./proactive.js";
 import { renderEditLayoutToolbar, renderHiddenDevicesTray } from "./roomOrderEditor.js";
+import { effectivePanelHomeTitle } from "./connectionsAndDiagView.js";
 import { syncEnergyHostOnRender } from "./energySettingsView.js";
 import { syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { renderPersistentUndoPill, tr3 } from "./undoTracker.js";
@@ -32,14 +33,10 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
               <div class="cc-home-emblem cc-home-badge ${host.activeDeviceCount > 0 ? "is-active" : ""}" aria-hidden="true">${SF_ICONS.houseFill}</div>
               <div class="cc-title-stack">
                 <div class="cc-title-row">
-                  ${
-                    host.homes.length > 1
-                      ? `<button class="cc-home-switch" id="btn-home-menu" aria-expanded="${host.isHomeMenuOpen}" aria-label="${t("切换家庭")}">
-                          <span class="cc-home-title">${host.escapeHtml(host.homeTitle)}</span>
-                          <span class="cc-home-caret ${host.isHomeMenuOpen ? "is-open" : ""}">${SF_ICONS.chevronDown}</span>
-                        </button>`
-                      : `<span class="cc-home-title">${host.escapeHtml(host.homeTitle)}</span>`
-                  }
+                  <button class="cc-home-switch" id="btn-home-menu" type="button" aria-expanded="${host.isHomeMenuOpen}" aria-label="${t("切换家庭")}">
+                    <span class="cc-home-title">${host.escapeHtml(effectivePanelHomeTitle(host))}</span>
+                    <span class="cc-home-caret ${host.isHomeMenuOpen ? "is-open" : ""}">${SF_ICONS.chevronDown}</span>
+                  </button>
                   <span class="cc-mode-pill ${isDemo ? "is-demo" : "is-cloud"}">
                     ${isDemo ? t("演示预览") : host.settings.connectionMode === "homeAssistant" ? "Home Assistant" : t("Miot 直连")}
                   </span>

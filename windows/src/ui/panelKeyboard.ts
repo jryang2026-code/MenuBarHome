@@ -1,5 +1,6 @@
 import { normalizeSearch, panelQueryKind } from "../core/panelSearch.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
+import { closeConnectionsAndDiagModal, isConnectionsAndDiagModalOpen } from "./connectionsAndDiagView.js";
 import {
   dismissPendingUrlConfirmation,
   hasPendingUrlConfirmation,
@@ -171,6 +172,7 @@ function activeModalContainer(host: MenuMijiaWindowsApp): HTMLElement | null {
   }
   if (
     host.activeSheet !== "none" ||
+    isConnectionsAndDiagModalOpen(host) ||
     (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden)
   ) {
     const sheets = host.root.querySelectorAll<HTMLElement>(".cc-sheet:not([data-exit-ghost])");
@@ -275,6 +277,11 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
     if (hasPendingUrlConfirmation(host)) {
       event.preventDefault();
       dismissPendingUrlConfirmation(host, false);
+      return true;
+    }
+    if (isConnectionsAndDiagModalOpen(host)) {
+      event.preventDefault();
+      closeConnectionsAndDiagModal(host);
       return true;
     }
     if (host.ctxMenu !== null || host.isHomeMenuOpen) {

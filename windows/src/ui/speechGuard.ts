@@ -24,6 +24,7 @@ import type {
   UndoAction,
   UndoStep,
 } from "./appTypes.js";
+import { isConnectionsAndDiagModalOpen } from "./connectionsAndDiagView.js";
 import { foldGrouped } from "./cloudRefresh.js";
 import { recordHabits } from "./intentExecution.js";
 import { filterByListCut } from "./listCut.js";
@@ -144,6 +145,7 @@ export function shouldKeepPopoverPinned(host: MenuMijiaWindowsApp): boolean {
   return (
     host.isPollingQR ||
     host.activeSheet !== "none" ||
+    isConnectionsAndDiagModalOpen(host) ||
     host.isEditingLayout ||
     host.prompt !== null ||
     hasPendingUrlConfirmation(host) ||

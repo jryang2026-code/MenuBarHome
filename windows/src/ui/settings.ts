@@ -186,6 +186,9 @@ export function loadSettings(): LoadedSettings {
         cameraStreamQualities: normalizeCameraStreamQualityMap(parsed.cameraStreamQualities),
         layout: { ...emptyLayoutPrefs(), ...(parsed.layout ?? {}) },
         selectedHomeId: parsed.selectedHomeId ?? null,
+        ...(typeof parsed.customHomeTitle === "string"
+          ? { customHomeTitle: parsed.customHomeTitle.trim() }
+          : {}),
       };
       return {
         settings,

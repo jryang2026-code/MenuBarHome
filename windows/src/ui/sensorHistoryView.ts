@@ -407,19 +407,40 @@ function resolveHostHistoryScope(host: MenuMijiaWindowsApp): string {
   });
 }
 
+function isLiveSensorTelemetryDevice(
+  dev: SmartDevice,
+  staleIds?: ReadonlySet<string>,
+  dualRoutes?: Readonly<Record<string, { readonly backend: string; readonly sourceDeviceId: string }>>,
+): boolean {
+  if (dev.telemetryStale) return false;
+  const route = dualRoutes?.[dev.id];
+  const backend = route?.backend ?? dev.sourceBackend;
+  if (backend === "homeAssistant") return true;
+  if (backend === "xiaomiCloud") return !staleIds?.has(route?.sourceDeviceId ?? dev.id);
+  return !staleIds?.has(dev.id);
+}
+
 function triggerRemoteHistoryFetchIfNeeded(
   host: MenuMijiaWindowsApp,
   dev: SmartDevice,
   window: SensorHistoryWindow,
   store: SensorHistoryStore,
 ): void {
-  if (!dev.isOnline || host.valuesAreStale || dev.kind.kind !== "sensor") return;
+  const staleIds = getHostMiAccountsState(host)?.merged?.staleDeviceIds;
+  const dualActive = isDualSourceEnabled(host);
+  const dualState = dualActive ? getHostDualSourceState(host) : null;
+  if (
+    !dev.isOnline ||
+    !isLiveSensorTelemetryDevice(dev, staleIds, dualState?.routes) ||
+    host.valuesAreStale ||
+    dev.kind.kind !== "sensor"
+  ) {
+    return;
+  }
   if (host.settings.connectionMode === "demo") return;
   if (!store.shouldFetchCloud(dev.id, window)) return;
 
   const requestScope = store.connectionScope;
-  const dualActive = isDualSourceEnabled(host);
-  const dualState = dualActive ? getHostDualSourceState(host) : null;
   const dualRoute = dualState?.routes[dev.id] ?? null;
 
   const effectiveBackend: "xiaomiCloud" | "homeAssistant" =
@@ -539,15 +560,28 @@ export function syncSensorHistoryHost(host?: MenuMijiaWindowsApp): void {
     ) {
       ui.lastRecordedDevicesRef = host.devices;
       ui.recordedBatchSeq += 1;
-      store.record(host.devices, {
-        facetsByDevice: host.deviceFacets,
-        snapshotKey: `${scope}#${ui.recordedBatchSeq}`,
-      });
+      const staleIds = getHostMiAccountsState(host)?.merged?.staleDeviceIds;
+      const dualRoutes = isDualSourceEnabled(host) ? getHostDualSourceState(host)?.routes : undefined;
+      const liveDevices = host.devices.filter((d) =>
+        isLiveSensorTelemetryDevice(d, staleIds, dualRoutes),
+      );
+      if (liveDevices.length > 0) {
+        store.record(liveDevices, {
+          facetsByDevice: host.deviceFacets,
+          snapshotKey: `${scope}#${ui.recordedBatchSeq}`,
+        });
+      }
     }
 
     if (host.expandedDeviceId && !host.valuesAreStale) {
       const expandedDev = host.devices.find((d) => d.id === host.expandedDeviceId);
-      if (expandedDev && expandedDev.kind.kind === "sensor") {
+      const staleIds = getHostMiAccountsState(host)?.merged?.staleDeviceIds;
+      const dualRoutes = isDualSourceEnabled(host) ? getHostDualSourceState(host)?.routes : undefined;
+      if (
+        expandedDev &&
+        expandedDev.kind.kind === "sensor" &&
+        isLiveSensorTelemetryDevice(expandedDev, staleIds, dualRoutes)
+      ) {
         triggerRemoteHistoryFetchIfNeeded(
           host,
           expandedDev,

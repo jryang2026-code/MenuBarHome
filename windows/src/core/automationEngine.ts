@@ -4,6 +4,7 @@ import type { LanguagePreference } from "./i18n.js";
 import { isDeviceActiveOn, type DeviceCommand, type DeviceIntent, type FacetControl, type HomeScene, type SmartDevice } from "./models.js";
 import { planQuickAction, type QuickActionId } from "./quickActions.js";
 import { defaultSafetyStorage, extractSensorObservations, tr3, type KeyValueStorageLike, type SensorAlertKind, type SensorObservation } from "./safetyAndHealth.js";
+import { extractSensorLiveMetrics } from "./sensorHistory.js";
 
 export type AutomationTrigger =
   | "away" | "back" | "screenLocked" | "screenUnlocked" | "displaySleep" | "displayWake"
@@ -640,19 +641,23 @@ export interface AutomationExecutionHost {
   queueBackgroundRender?(): void;
 }
 
-function readSensorMetricValue(device: SmartDevice, metric: SensorThresholdMetric): number | null {
+function readSensorMetricValue(
+  device: SmartDevice,
+  metric: SensorThresholdMetric,
+  facets: readonly FacetControl[] = [],
+): number | null {
   const k = device.kind;
   switch (metric) {
     case "temperature":
-      return k.kind === "sensor" ? k.temperature : k.kind === "climate" ? k.currentTemperature : k.kind === "fan" ? (k.temperature ?? null) : k.kind === "appliance" ? k.currentTemperature : null;
+      return k.kind === "sensor" ? (k.temperature ?? extractSensorLiveMetrics(device, facets).temperature) : k.kind === "climate" ? k.currentTemperature : k.kind === "fan" ? (k.temperature ?? null) : k.kind === "appliance" ? k.currentTemperature : null;
     case "humidity":
-      return k.kind === "sensor" ? k.humidity : k.kind === "fan" ? (k.humidity ?? null) : k.kind === "appliance" ? k.currentHumidity : null;
+      return k.kind === "sensor" ? (k.humidity ?? extractSensorLiveMetrics(device, facets).humidity) : k.kind === "fan" ? (k.humidity ?? null) : k.kind === "appliance" ? k.currentHumidity : null;
     case "battery":
       return k.kind === "sensor" ? k.battery : k.kind === "cover" ? k.batteryPercent : k.kind === "vacuum" ? k.battery : null;
     case "powerWatts":
       return k.kind === "plug" ? k.powerWatts : null;
     case "pm25":
-      return k.kind === "fan" ? (k.pm25Density ?? null) : null;
+      return k.kind === "fan" && k.pm25Density != null ? k.pm25Density : extractSensorLiveMetrics(device, facets).pm25;
     case "alarm":
       return null;
   }
@@ -1152,14 +1157,15 @@ export class AutomationEngine {
       const cond = rule.triggerOptions.sensorCondition;
       if (!cond) continue;
       const dev = host.devices.find((d) => d.id === cond.deviceId);
-      if (!dev || !dev.isOnline) continue;
+      if (!dev || !dev.isOnline || dev.telemetryStale) continue;
+      const facets = host.deviceFacets?.[dev.id] ?? [];
 
       let active = false;
       if (cond.metric === "alarm") {
-        const observations = extractSensorObservations(dev, host.deviceFacets?.[dev.id] ?? [], observationsByDeviceId?.[dev.id]);
+        const observations = extractSensorObservations(dev, facets, observationsByDeviceId?.[dev.id]);
         active = observations.some((obs) => obs.alarming && (!cond.alertKind || obs.kind === cond.alertKind));
       } else {
-        const val = readSensorMetricValue(dev, cond.metric);
+        const val = readSensorMetricValue(dev, cond.metric, facets);
         if (val === null || cond.threshold === undefined) continue;
         active = compareMetric(val, cond.comparison ?? "gte", cond.threshold);
       }
@@ -1186,11 +1192,7 @@ export function createDoorbellRing(deviceId: string, entityId: string, firedAt: 
   return { deviceId, entityId, firedAt, key: `${entityId}@${firedAt}` };
 }
 
-export interface DoorbellResponse {
-  readonly cameraDeviceId: string | null;
-  readonly playsChime: boolean;
-  readonly dismissAfterSeconds: number;
-}
+export interface DoorbellResponse { readonly cameraDeviceId: string | null; readonly playsChime: boolean; readonly dismissAfterSeconds: number; }
 
 export interface HASnapshotLike {
   readonly areas?: readonly Record<string, unknown>[];
@@ -1203,11 +1205,7 @@ export function isDoorbellEventState(entityId: string, attributes: Readonly<Reco
   return entityId.startsWith("event.") && attributes.device_class === "doorbell";
 }
 
-export function doorbellPressTimestamp(
-  entityId: string,
-  stateValue: string,
-  attributes: Readonly<Record<string, unknown>>,
-): string | null {
+export function doorbellPressTimestamp(entityId: string, stateValue: string, attributes: Readonly<Record<string, unknown>>): string | null {
   if (!isDoorbellEventState(entityId, attributes)) return null;
   const trimmed = stateValue.trim();
   return trimmed === "" || trimmed === "unknown" || trimmed === "unavailable" ? null : trimmed;
@@ -1217,9 +1215,7 @@ export class DoorbellDetector {
   private lastTimestamps = new Map<string, string>();
   private hasPrimedBaseline = false;
 
-  public get isPrimed(): boolean {
-    return this.hasPrimedBaseline;
-  }
+  public get isPrimed(): boolean { return this.hasPrimedBaseline; }
 
   public reset(): void {
     this.lastTimestamps.clear();

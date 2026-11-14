@@ -12,7 +12,9 @@ pub(crate) fn validated_release_url(raw: &str) -> Result<String, String> {
     if host != "github.com" {
         return Err(format!("拒绝打开非 GitHub 地址：{host}"));
     }
-    if !url.path().starts_with("/jryang2026-code/MenuBarHome/releases") {
+    if !url.path().starts_with("/jryang2026-code/MenuBarHome/releases")
+        && url.path() != "/jryang2026-code/MenuBarHome/issues/new"
+    {
         return Err("拒绝打开非 MenuBarHome 发布页".to_string());
     }
     Ok(url.to_string())
@@ -579,6 +581,30 @@ mod update_progress_tests {
         assert!(!staged.exists());
         assert!(keep_file.exists());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn validated_release_url_accepts_releases_and_feedback_issue_new_only() {
+        assert!(validated_release_url(
+            "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.2.5"
+        )
+        .is_ok());
+        assert!(validated_release_url(
+            "https://github.com/jryang2026-code/MenuBarHome/issues/new?title=test"
+        )
+        .is_ok());
+        assert!(validated_release_url(
+            "http://github.com/jryang2026-code/MenuBarHome/issues/new"
+        )
+        .is_err());
+        assert!(validated_release_url(
+            "https://github.com/jryang2026-code/MenuBarHome/issues/123"
+        )
+        .is_err());
+        assert!(validated_release_url(
+            "https://evil.example.com/jryang2026-code/MenuBarHome/releases"
+        )
+        .is_err());
     }
 }
 

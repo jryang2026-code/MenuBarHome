@@ -18,32 +18,69 @@ export type MiotWrite =
   | { readonly kind: "setProps"; readonly writes: readonly MiotPropWrite[] }
   | { readonly kind: "action"; readonly call: MiotActionCall };
 
+function normalizeZero(n: number): number {
+  return Object.is(n, -0) ? 0 : n;
+}
+
 function coercePropValue(prop: MiotProperty, val: number): number {
-  let n = val;
-  if (prop.valueRange && prop.valueRange.length >= 2) {
-    const lo = prop.valueRange[0] ?? n;
-    const hi = prop.valueRange[1] ?? n;
-    n = Math.min(hi, Math.max(lo, n));
+  const rawLo = prop.valueRange && prop.valueRange.length >= 2 ? prop.valueRange[0] : undefined;
+  const rawHi = prop.valueRange && prop.valueRange.length >= 2 ? prop.valueRange[1] : undefined;
+  const bounds =
+    rawLo !== undefined &&
+    rawHi !== undefined &&
+    Number.isFinite(rawLo) &&
+    Number.isFinite(rawHi) &&
+    rawLo <= rawHi
+      ? { lo: rawLo, hi: rawHi }
+      : null;
+
+  if (!Number.isFinite(val)) {
+    if (bounds) return normalizeZero(bounds.lo);
+    if (rawLo !== undefined && Number.isFinite(rawLo)) return normalizeZero(rawLo);
+    return 0;
   }
-  if (prop.format.startsWith("int") || prop.format.startsWith("uint")) {
+
+  let n = bounds ? Math.min(bounds.hi, Math.max(bounds.lo, val)) : val;
+  const isIntegerFormat = prop.format.startsWith("int") || prop.format.startsWith("uint");
+  const rawStep = prop.valueRange?.[2];
+  if (isIntegerFormat) {
     // Same grid snap as `MiotCommandMapper.coerce` on macOS: an integer range with a step above
     // 1 (e.g. [16, 32, 2]) only accepts values on that grid.
-    const intStep = prop.valueRange?.[2];
-    if (intStep !== undefined && Number.isFinite(intStep) && intStep > 1) {
-      const base = prop.valueRange?.[0] ?? 0;
-      const hi = prop.valueRange?.[1];
-      let snapped = base + Math.round((n - base) / intStep) * intStep;
-      if (hi !== undefined && snapped > hi && snapped - intStep >= base) snapped -= intStep;
-      if (Number.isFinite(snapped)) n = snapped;
+    if (rawStep !== undefined && Number.isFinite(rawStep) && rawStep > 1) {
+      const base = rawLo !== undefined && Number.isFinite(rawLo) ? rawLo : 0;
+      const steps = (n - base) / rawStep;
+      if (Number.isFinite(steps)) {
+        const snapped = base + Math.round(steps) * rawStep;
+        if (Number.isFinite(snapped)) {
+          n = snapped;
+          if (bounds && n > bounds.hi && Number.isFinite(n - rawStep) && n - rawStep >= bounds.lo) {
+            n -= rawStep;
+          }
+        }
+      }
     }
-    return Math.round(n);
+    n = Math.round(n);
+    if (bounds) n = Math.min(bounds.hi, Math.max(bounds.lo, n));
+  } else if (rawStep !== undefined && Number.isFinite(rawStep) && rawStep > 0) {
+    const base = rawLo !== undefined && Number.isFinite(rawLo) ? rawLo : 0;
+    const steps = (n - base) / rawStep;
+    if (Number.isFinite(steps)) {
+      const rawSnapped = base + Math.round(steps) * rawStep;
+      if (Number.isFinite(rawSnapped)) {
+        const rounded = Number(rawSnapped.toFixed(6));
+        if (Number.isFinite(rounded)) {
+          n = rounded;
+          if (bounds) {
+            if (n > bounds.hi && Number.isFinite(n - rawStep) && n - rawStep >= bounds.lo) {
+              n = Number((n - rawStep).toFixed(6));
+            }
+            n = Math.min(bounds.hi, Math.max(bounds.lo, n));
+          }
+        }
+      }
+    }
   }
-  const step = prop.valueRange?.[2];
-  if (step && step > 0) {
-    const base = prop.valueRange?.[0] ?? 0;
-    n = Number((base + Math.round((n - base) / step) * step).toFixed(6));
-  }
-  return n;
+  return Number.isFinite(n) ? normalizeZero(n) : normalizeZero(bounds?.lo ?? 0);
 }
 
 function coerceBoolPropValue(prop: MiotProperty, val: boolean): boolean | number {
@@ -211,7 +248,7 @@ export const MiotCommandMapper = {
         };
       }
       case "setLightBrightness": {
-        if (command.percent <= 0) {
+        if (!Number.isFinite(command.percent) || command.percent <= 0) {
           const { prop } = findProp("on");
           return {
             kind: "setProps",
@@ -297,7 +334,7 @@ export const MiotCommandMapper = {
         };
       }
       case "setFanPercentage": {
-        if (command.percent <= 0) {
+        if (!Number.isFinite(command.percent) || command.percent <= 0) {
           const { prop } = findProp("on");
           return {
             kind: "setProps",
@@ -482,7 +519,7 @@ export const MiotCommandMapper = {
             ? coerceBoolPropValue(prop, command.value)
             : typeof command.value === "number"
               ? prop.format === "bool"
-                ? command.value !== 0
+                ? Number.isFinite(command.value) && command.value !== 0
                 : coerce(prop, command.value)
               : command.value;
         return { kind: "setProps", writes: [{ did: addr.did, siid: service.iid, piid: prop.iid, value }] };

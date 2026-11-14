@@ -90,6 +90,15 @@ import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt,
 import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
 import type { HostActivityCenter } from "./activityStackView.js";
 import {
+  createDefaultHostAutoSafetySession,
+  type HostAutoSafetySession,
+} from "./automationSettingsView.js";
+import {
+  createDefaultHostConnDiagSession,
+  isConnectionsAndDiagModalOpen,
+  type HostConnDiagSession,
+} from "./connectionsAndDiagView.js";
+import {
   createDefaultHostEnergySession,
   energyScopeForHost,
   notifyEnergyDevicesMutated,
@@ -171,6 +180,10 @@ export class MenuMijiaWindowsApp {
   private _devices: SmartDevice[] = [];
   private devicesMutationScheduled = false;
   public energySession: HostEnergySession = createDefaultHostEnergySession();
+  public autoSafetySession: HostAutoSafetySession = createDefaultHostAutoSafetySession();
+  public connDiagSession: HostConnDiagSession = createDefaultHostConnDiagSession(
+    this.settings.miCloudRegion,
+  );
   public sensorHistoryUi: SensorHistoryUiState = createSensorHistoryUiState();
   public activityCenter: HostActivityCenter | null = null;
   public activityWindowLifecycleBound = false;
@@ -521,6 +534,7 @@ export class MenuMijiaWindowsApp {
   public hasBlockingPanelInteraction(): boolean {
     return (
       this.activeSheet !== "none" ||
+      isConnectionsAndDiagModalOpen(this) ||
       this.pointerIsDown ||
       this.isListeningVoice ||
       this.allOffHoldTimer !== null ||

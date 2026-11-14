@@ -36,6 +36,7 @@ export interface MiotService {
 
 export interface MiotDeviceSpec {
   readonly type: string;
+  readonly description?: string;
   readonly services: readonly MiotService[];
 }
 
@@ -70,7 +71,7 @@ export function parseMiotAddress(entityId: string): { did: string; siid: number 
   if (sep <= 0) return null;
   const did = rest.slice(0, sep);
   const siid = Number(rest.slice(sep + 1));
-  if (!Number.isInteger(siid)) return null;
+  if (!Number.isSafeInteger(siid)) return null;
   return { did, siid };
 }
 
@@ -87,7 +88,7 @@ export function parseMiotActionAddress(entityId: string): { did: string; siid: n
   const aiid = Number(parts[parts.length - 1]);
   const siid = Number(parts[parts.length - 2]);
   const did = parts.slice(0, -2).join(":");
-  if (!did || !Number.isInteger(siid) || !Number.isInteger(aiid)) return null;
+  if (!did || !Number.isSafeInteger(siid) || !Number.isSafeInteger(aiid)) return null;
   return { did, siid, aiid };
 }
 
@@ -122,6 +123,24 @@ export function hvacModeFromDescription(desc: string): string | null {
   }
 }
 
+function decodeValueList(rawList: unknown): MiotValueListItem[] | undefined {
+  if (!Array.isArray(rawList)) return undefined;
+  const out: MiotValueListItem[] = [];
+  for (const item of rawList) {
+    if (!item || typeof item !== "object") return undefined;
+    const rec = item as Record<string, unknown>;
+    const rawVal = rec["value"];
+    if (typeof rawVal !== "number" || !Number.isFinite(rawVal)) return undefined;
+    const truncated = Math.trunc(rawVal);
+    if (!Number.isSafeInteger(truncated)) return undefined;
+    out.push({
+      value: Object.is(truncated, -0) ? 0 : truncated,
+      description: typeof rec["description"] === "string" ? rec["description"] : "",
+    });
+  }
+  return out;
+}
+
 export function parseMiotDeviceSpec(raw: unknown): MiotDeviceSpec | null {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
@@ -135,7 +154,7 @@ export function parseMiotDeviceSpec(raw: unknown): MiotDeviceSpec | null {
     const sObj = s as Record<string, unknown>;
     const sIid = typeof sObj["iid"] === "number" ? Math.trunc(sObj["iid"]) : NaN;
     const sType = typeof sObj["type"] === "string" ? sObj["type"] : "";
-    if (!Number.isInteger(sIid) || !sType) continue;
+    if (!Number.isSafeInteger(sIid) || !sType) continue;
 
     const rawProps = Array.isArray(sObj["properties"]) ? sObj["properties"] : [];
     const properties: MiotProperty[] = [];
@@ -144,30 +163,25 @@ export function parseMiotDeviceSpec(raw: unknown): MiotDeviceSpec | null {
       const pObj = p as Record<string, unknown>;
       const pIid = typeof pObj["iid"] === "number" ? Math.trunc(pObj["iid"]) : NaN;
       const pType = typeof pObj["type"] === "string" ? pObj["type"] : "";
-      if (!Number.isInteger(pIid) || !pType) continue;
+      if (!Number.isSafeInteger(pIid) || !pType) continue;
       const format = typeof pObj["format"] === "string" ? pObj["format"] : "string";
       const access = Array.isArray(pObj["access"])
         ? pObj["access"].filter((a): a is string => typeof a === "string")
         : [];
       const rawRange = pObj["value-range"] ?? pObj["valueRange"];
       const valueRange = Array.isArray(rawRange)
-        ? rawRange.map((v) => Number(v)).filter((v) => Number.isFinite(v))
+        ? rawRange
+            .map((v) => (typeof v === "number" ? v : Number(v)))
+            .filter((v) => Number.isFinite(v))
         : undefined;
       const rawList = pObj["value-list"] ?? pObj["valueList"];
-      const valueList: MiotValueListItem[] | undefined = Array.isArray(rawList)
-        ? rawList
-            .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
-            .map((item) => ({
-              value: Math.trunc(Number(item["value"] ?? 0)),
-              description: typeof item["description"] === "string" ? item["description"] : "",
-            }))
-        : undefined;
+      const valueList = decodeValueList(rawList);
 
       const unit = typeof pObj["unit"] === "string" ? pObj["unit"] : undefined;
       const comment = typeof pObj["comment"] === "string" ? pObj["comment"] : undefined;
 
       properties.push({
-        iid: pIid,
+        iid: Object.is(pIid, -0) ? 0 : pIid,
         type: pType,
         ...(typeof pObj["description"] === "string" ? { description: pObj["description"] } : {}),
         format,
@@ -187,11 +201,15 @@ export function parseMiotDeviceSpec(raw: unknown): MiotDeviceSpec | null {
       const aIid = typeof aObj["iid"] === "number" ? Math.trunc(aObj["iid"]) : NaN;
       const aType = typeof aObj["type"] === "string" ? aObj["type"] : "";
       const rawIn = Array.isArray(aObj["in"])
-        ? aObj["in"].map((v) => Math.trunc(Number(v))).filter((v) => Number.isInteger(v))
+        ? aObj["in"]
+            .filter((v): v is number => typeof v === "number" && Number.isFinite(v))
+            .map((v) => Math.trunc(v))
+            .filter((v) => Number.isSafeInteger(v))
+            .map((v) => (Object.is(v, -0) ? 0 : v))
         : undefined;
-      if (Number.isInteger(aIid) && aType) {
+      if (Number.isSafeInteger(aIid) && aType) {
         actions.push({
-          iid: aIid,
+          iid: Object.is(aIid, -0) ? 0 : aIid,
           type: aType,
           ...(typeof aObj["description"] === "string" ? { description: aObj["description"] } : {}),
           ...(rawIn && rawIn.length > 0 ? { in: rawIn } : {}),
@@ -200,7 +218,7 @@ export function parseMiotDeviceSpec(raw: unknown): MiotDeviceSpec | null {
     }
 
     services.push({
-      iid: sIid,
+      iid: Object.is(sIid, -0) ? 0 : sIid,
       type: sType,
       ...(typeof sObj["description"] === "string" ? { description: sObj["description"] } : {}),
       properties,
@@ -208,7 +226,11 @@ export function parseMiotDeviceSpec(raw: unknown): MiotDeviceSpec | null {
     });
   }
 
-  return { type, services };
+  return {
+    type,
+    ...(typeof obj["description"] === "string" ? { description: obj["description"] } : {}),
+    services,
+  };
 }
 
 export function parseMiotInstanceIndex(raw: unknown): Record<string, string> {

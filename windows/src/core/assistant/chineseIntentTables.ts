@@ -122,7 +122,10 @@ export function toSimplifiedChinese(input: string): string {
 }
 
 export function cleanRawChineseText(raw: string): string {
-  return raw.replace(CN_IGNORABLE_REGEX, "").replace(/^\.+|\.+$/g, "");
+  return raw
+    .replace(/[\x00-\x1f\x7f]+/g, "")
+    .replace(CN_IGNORABLE_REGEX, "")
+    .replace(/^\.+|\.+$/g, "");
 }
 
 export function normalizeChineseUtterance(utterance: string): string {
@@ -176,7 +179,7 @@ export function longestFirst(words: Iterable<string>): string[] {
 }
 
 export function consumeChinesePhrase(phrase: string, state: { rest: string }): boolean {
-  if (!phrase || !state.rest.includes(phrase)) return false;
+  if (!phrase || phrase.includes(CONSUMED_MARKER) || !state.rest.includes(phrase)) return false;
   state.rest = state.rest.replaceAll(phrase, CONSUMED_MARKER);
   return true;
 }
@@ -192,7 +195,10 @@ const CN_NUMERAL_DIGITS: Readonly<Record<string, number>> = {
 export function spokenChineseNumber(raw: string): number | null {
   const s = raw.trim();
   if (!s) return null;
-  if (/^[0-9]+$/.test(s)) return Number(s);
+  if (/^[0-9]+$/.test(s)) {
+    const n = Number(s);
+    return Number.isSafeInteger(n) ? n : null;
+  }
   const chars = Array.from(s);
   if (chars.length === 2 && chars[0] === "零") {
     const ones = CN_NUMERAL_DIGITS[chars[1] ?? ""];

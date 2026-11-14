@@ -119,8 +119,16 @@ CODE_ANCHORS = (
             "symbol": "LocalIntentParser",
         },
         "windows": {
-            "path": "windows/src/ui/naturalCommand.ts",
-            "symbol": "handleNaturalCommand",
+            "checks": (
+                {
+                    "path": "windows/src/core/assistant/intent.ts",
+                    "symbols": ("LocalIntentParser", "IntentValidator"),
+                },
+                {
+                    "path": "windows/src/ui/naturalCommand.ts",
+                    "symbol": "handleNaturalCommand",
+                },
+            ),
         },
     },
     {
@@ -174,8 +182,16 @@ CODE_ANCHORS = (
             "symbol": "undoTurnAllOff",
         },
         "windows": {
-            "path": "windows/src/core/commandEffects.ts",
-            "symbol": "inverseCommands",
+            "checks": (
+                {
+                    "path": "windows/src/core/commandEffects.ts",
+                    "symbol": "inverseCommands",
+                },
+                {
+                    "path": "windows/src/core/models.ts",
+                    "symbol": "allOffTargets",
+                },
+            ),
         },
     },
     {
@@ -229,8 +245,16 @@ CODE_ANCHORS = (
             "symbol": "SensorHistoryPoint",
         },
         "windows": {
-            "path": "windows/src/core/sensorHistory.ts",
-            "symbol": "SensorHistoryStore",
+            "checks": (
+                {
+                    "path": "windows/src/core/sensorHistory.ts",
+                    "symbols": ("SensorHistoryStore", "mergeCloudSamples"),
+                },
+                {
+                    "path": "windows/src/ui/sensorHistoryView.ts",
+                    "symbols": ("renderSensorHistorySection", "bindSensorHistoryEvents"),
+                },
+            ),
         },
     },
     {
@@ -240,8 +264,16 @@ CODE_ANCHORS = (
             "symbol": "EnergyHistory",
         },
         "windows": {
-            "path": "windows/src/core/energyHistory.ts",
-            "symbol": "EnergyHistory",
+            "checks": (
+                {
+                    "path": "windows/src/core/energyHistory.ts",
+                    "symbols": ("EnergyHistory", "applyPriceInput"),
+                },
+                {
+                    "path": "windows/src/ui/energySettingsView.ts",
+                    "symbols": ("renderEnergySettingsSection", "bindEnergySettingsEvents"),
+                },
+            ),
         },
     },
     {
@@ -252,7 +284,7 @@ CODE_ANCHORS = (
         },
         "windows": {
             "path": "windows/src/core/haDomains.ts",
-            "symbol": "water_heater.",
+            "symbols": ("water_heater.", "buildHumidifierKind", "buildValveKind"),
         },
     },
     {
@@ -273,8 +305,16 @@ CODE_ANCHORS = (
             "symbol": "FeedProfile",
         },
         "windows": {
-            "path": "windows/src/core/miCloud/facets.ts",
-            "symbol": "feeding",
+            "checks": (
+                {
+                    "path": "windows/src/core/miCloud/facets.ts",
+                    "symbol": "feeding",
+                },
+                {
+                    "path": "windows/src/core/miCloud/feedAction.ts",
+                    "symbol": "findPortionArgumentIndex",
+                },
+            ),
         },
     },
     {
@@ -284,8 +324,21 @@ CODE_ANCHORS = (
             "symbol": "CameraLivePanelController",
         },
         "windows": {
-            "path": "windows/src/ui/cameraLive.ts",
-            "symbol": "CameraLiveController",
+            "checks": (
+                {
+                    "path": "windows/src/ui/cameraLive.ts",
+                    "symbols": (
+                        "CameraLiveController",
+                        "cameraActiveFrameGapMs",
+                        "cameraHiddenFrameGapMs",
+                        "cameraKeepAliveMs",
+                    ),
+                },
+                {
+                    "path": "windows/src-tauri/src/camera.rs",
+                    "symbol": "go2rtc_jpeg_frame",
+                },
+            ),
         },
     },
     {
@@ -317,8 +370,16 @@ CODE_ANCHORS = (
             "symbol": "CoverDetailDrawer",
         },
         "windows": {
-            "path": "windows/src/core/miCloud/synthesis.ts",
-            "symbol": "coverSubtype",
+            "checks": (
+                {
+                    "path": "windows/src/core/miCloud/synthesis.ts",
+                    "symbol": "coverSubtype",
+                },
+                {
+                    "path": "windows/src/ui/detailDrawers.ts",
+                    "symbol": "renderCoverDrawer",
+                },
+            ),
         },
     },
     {
@@ -330,6 +391,37 @@ CODE_ANCHORS = (
         "windows": {
             "path": "windows/src-tauri/src/update.rs",
             "symbol": "verify_ed25519_signature",
+        },
+    },
+)
+
+
+SUPPLEMENTARY_CODE_ANCHORS = (
+    {
+        "id": "dehumidifiers-blankets-diffusers-speakers",
+        "macos": {
+            "checks": (
+                {
+                    "path": "Sources/MijiaCore/MiCloud/MiotSynthesizer.swift",
+                    "symbols": ("ttsNotifyEntityId", "directiveNotifyEntityId"),
+                },
+                {
+                    "path": "Sources/MenuBarMijiaApp/DeviceCardView.swift",
+                    "symbol": "submitSpeakerInput",
+                },
+            ),
+        },
+        "windows": {
+            "checks": (
+                {
+                    "path": "windows/src/core/miCloud/speakerActions.ts",
+                    "symbols": ("resolveSpeakerActionIds", "buildSpeakerTextCommand"),
+                },
+                {
+                    "path": "windows/src/ui/detailDrawers.ts",
+                    "symbol": "renderSpeakerCommandBar",
+                },
+            ),
         },
     },
 )
@@ -351,6 +443,80 @@ def first_symbol_hit(root: pathlib.Path, roots: tuple[str, ...], symbol: str) ->
     return None
 
 
+def iter_supported_probes(spec: dict) -> list[tuple[str | None, tuple[str, ...]]]:
+    raw_checks = spec.get("checks")
+    entries = list(raw_checks) if isinstance(raw_checks, (list, tuple)) else [spec]
+    probes: list[tuple[str | None, tuple[str, ...]]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            probes.append((None, ()))
+            continue
+        rel = entry.get("path")
+        raw_symbols = entry.get("symbols")
+        if isinstance(raw_symbols, (list, tuple)):
+            symbols = tuple(s for s in raw_symbols if isinstance(s, str) and s)
+        else:
+            single = entry.get("symbol")
+            symbols = (single,) if isinstance(single, str) and single else ()
+        probes.append((rel if isinstance(rel, str) and rel else None, symbols))
+    return probes
+
+
+def verify_anchor_entry(
+    root: pathlib.Path,
+    anchor: dict,
+    row: dict,
+    errors: list[str],
+) -> None:
+    for platform in ("macos", "windows"):
+        if platform not in anchor:
+            continue
+        claimed = row.get(platform)
+        spec = anchor[platform]
+        if claimed in ("supported", "partial"):
+            probes = iter_supported_probes(spec)
+            if not probes or any(not rel or not symbols for rel, symbols in probes):
+                errors.append(
+                    f"{anchor['id']} 的 {platform} 标为 {claimed}，但锚点没有可核对的源文件"
+                )
+                continue
+            for rel, symbols in probes:
+                assert rel is not None
+                file = root / rel
+                if not file.is_file():
+                    errors.append(
+                        f"{anchor['id']} 的 {platform} 标为 {claimed}，但缺少源文件 {rel}"
+                    )
+                    continue
+                content = file.read_text(encoding="utf-8", errors="replace")
+                for sym in symbols:
+                    if sym not in content:
+                        errors.append(
+                            f"{anchor['id']} 的 {platform} 标为 {claimed}，但 {rel} 里没有 {sym}"
+                        )
+        elif claimed == "unsupported":
+            roots = spec.get("roots")
+            raw_symbols = spec.get("symbols")
+            symbols = (
+                tuple(s for s in raw_symbols if isinstance(s, str) and s)
+                if isinstance(raw_symbols, (list, tuple))
+                else ((spec["symbol"],) if isinstance(spec.get("symbol"), str) and spec.get("symbol") else ())
+            )
+            if not symbols or not roots:
+                errors.append(
+                    f"{anchor['id']} 的 {platform} 标为 unsupported，但锚点没有可搜索的源码树"
+                )
+                continue
+            for sym in symbols:
+                hit = first_symbol_hit(root, roots, sym)
+                if hit:
+                    errors.append(
+                        f"{anchor['id']} 的 {platform} 标为 unsupported，但 {hit} 含有 {sym}"
+                    )
+        else:
+            errors.append(f"{anchor['id']} 的 {platform} 状态无法核对：{claimed!r}")
+
+
 def code_anchor_errors(root: pathlib.Path, rows: list[dict]) -> list[str]:
     by_id = {
         row["id"]: row
@@ -363,36 +529,13 @@ def code_anchor_errors(root: pathlib.Path, rows: list[dict]) -> list[str]:
         if row is None:
             errors.append(f"代码锚点 {anchor['id']} 在 capabilities.json 里没有这一行")
             continue
-        for platform in ("macos", "windows"):
-            claimed = row.get(platform)
-            spec = anchor[platform]
-            symbol = spec.get("symbol")
-            if claimed in ("supported", "partial"):
-                rel = spec.get("path")
-                if not rel or not symbol:
-                    errors.append(
-                        f"{anchor['id']} 的 {platform} 标为 {claimed}，但锚点没有可核对的源文件"
-                    )
-                    continue
-                file = root / rel
-                if not file.is_file() or symbol not in file.read_text(encoding="utf-8", errors="replace"):
-                    errors.append(
-                        f"{anchor['id']} 的 {platform} 标为 {claimed}，但 {rel} 里没有 {symbol}"
-                    )
-            elif claimed == "unsupported":
-                roots = spec.get("roots")
-                if not symbol or not roots:
-                    errors.append(
-                        f"{anchor['id']} 的 {platform} 标为 unsupported，但锚点没有可搜索的源码树"
-                    )
-                    continue
-                hit = first_symbol_hit(root, roots, symbol)
-                if hit:
-                    errors.append(
-                        f"{anchor['id']} 的 {platform} 标为 unsupported，但 {hit} 含有 {symbol}"
-                    )
-            else:
-                errors.append(f"{anchor['id']} 的 {platform} 状态无法核对：{claimed!r}")
+        verify_anchor_entry(root, anchor, row, errors)
+
+    for anchor in SUPPLEMENTARY_CODE_ANCHORS:
+        row = by_id.get(anchor["id"])
+        if row is None:
+            continue
+        verify_anchor_entry(root, anchor, row, errors)
 
     anchored = {anchor["id"] for anchor in CODE_ANCHORS}
     for row in rows:

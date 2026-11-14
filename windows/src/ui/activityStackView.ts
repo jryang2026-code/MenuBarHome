@@ -38,7 +38,8 @@ import { resolveSensorHistoryScope, sharedSensorHistoryStore } from "../core/sen
 import type { SmartDevice } from "../core/models.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { SF_ICONS } from "./appConstants.js";
-import { getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
+import { filterSafetyAlertsByGuardPrefs, loadSafetyGuardPrefs } from "./automationSettingsView.js";
+import { getHostDualSourceState, getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
 import { energyScopeForHost } from "./energySettingsView.js";
 import { withAliases } from "./panelPrefs.js";
 import {
@@ -123,7 +124,18 @@ export function isFullPanelHost(host: unknown): host is MenuMijiaWindowsApp {
 
 function aliasedHostDevices(host: MenuMijiaWindowsApp): SmartDevice[] {
   const prefs = host.layout ?? host.settings?.layout;
-  return prefs ? withAliases(prefs, host.devices) : [...host.devices];
+  const base = prefs ? withAliases(prefs, host.devices) : [...host.devices];
+  const staleIds = getHostMiAccountsState(host)?.merged?.staleDeviceIds;
+  if (!staleIds || staleIds.size === 0) return base;
+  const dualRoutes = isDualSourceEnabled(host) ? getHostDualSourceState(host)?.routes : undefined;
+  return base.map((dev) => {
+    if (dev.telemetryStale) return dev;
+    const route = dualRoutes?.[dev.id];
+    const backend = route?.backend ?? dev.sourceBackend;
+    if (backend === "homeAssistant") return dev;
+    const miId = backend === "xiaomiCloud" ? (route?.sourceDeviceId ?? dev.id) : dev.id;
+    return staleIds.has(miId) ? { ...dev, telemetryStale: true } : dev;
+  });
 }
 
 function deviceTelemetrySignature(devices: readonly SmartDevice[]): string {
@@ -159,7 +171,12 @@ function isLiveSnapshotReadyForTelemetry(host: MenuMijiaWindowsApp): boolean {
 }
 
 export function computeActivityScopeKey(
-  host: Pick<MenuMijiaWindowsApp, "settings" | "miAccountsOverride" | "multiAccountState" | "dualSourceEnabledOverride">,
+  host: {
+    readonly settings: MenuMijiaWindowsApp["settings"];
+    readonly miAccountsOverride?: MenuMijiaWindowsApp["miAccountsOverride"] | undefined;
+    readonly multiAccountState?: MenuMijiaWindowsApp["multiAccountState"] | undefined;
+    readonly dualSourceEnabledOverride?: boolean | null | undefined;
+  },
 ): string {
   const s = host.settings;
   const mode = s.connectionMode;
@@ -773,6 +790,7 @@ export async function ingestHostHASnapshotForDoorbell(
     center.dismissedActivityIds.delete(`doorbell:${ring.key}`);
   }
 
+  const guardPrefs = loadSafetyGuardPrefs(center.storage);
   const responses = center.doorbellCoordinator.handleRings({
     rings,
     devices: aliased,
@@ -780,9 +798,9 @@ export async function ingestHostHASnapshotForDoorbell(
     isLocked,
     scope: center.scopeKey,
     nowMs,
-    autoPopup: options.autoPopup,
-    popupSeconds: options.popupSeconds,
-    playChime: options.playChime,
+    autoPopup: options.autoPopup ?? guardPrefs.doorbellAutoPopup,
+    popupSeconds: options.popupSeconds ?? guardPrefs.doorbellPopupSeconds,
+    playChime: options.playChime ?? guardPrefs.doorbellChime,
   });
 
   for (const ring of rings) {
@@ -894,15 +912,18 @@ export function tickSafetyHealthAndAutomation(
 
   if (isLiveSnapshotReadyForTelemetry(host)) {
     const aliased = aliasedHostDevices(host);
+    const guardPrefs = loadSafetyGuardPrefs(center.storage);
     const effectivePolicy: SensorAlertPolicy = {
       ...baseSensorPolicy,
       includesAway: baseSensorPolicy.includesAway || isLockedSnapshot,
     };
-    const favorites = new Set<string>([
+    const rawFavorites = new Set<string>([
       ...(host.layout?.pinnedDeviceIds ?? []),
       ...(host.settings.layout?.pinnedDeviceIds ?? []),
     ]);
-    const newAlerts = center.safetyMonitor.evaluate({
+    const favorites =
+      guardPrefs.enableSafetyAlerts && guardPrefs.favoriteOffline ? rawFavorites : new Set<string>();
+    const rawAlerts = center.safetyMonitor.evaluate({
       devices: aliased,
       favorites,
       sensorPolicy: effectivePolicy,
@@ -912,16 +933,19 @@ export function tickSafetyHealthAndAutomation(
       observationsByDeviceId: center.observationsOverride ?? undefined,
       language: host.settings.interfaceLanguage,
     });
+    const newAlerts = filterSafetyAlertsByGuardPrefs(rawAlerts, aliased, guardPrefs);
     if (recordSafetyAlerts(host, newAlerts, nowMs)) {
       needsRender = true;
     }
 
     center.offlineHistory.record(aliased, nowMs);
 
-    const lastDelivered = WeeklyHealthReportSchedule.loadLastDeliveredAtMs(center.storage);
-    if (WeeklyHealthReportSchedule.isDue(nowMs, lastDelivered)) {
-      deliverWeeklyHealthReport(host, nowMs, { storage: center.storage });
-      needsRender = true;
+    if (guardPrefs.enableWeeklyHealthReport) {
+      const lastDelivered = WeeklyHealthReportSchedule.loadLastDeliveredAtMs(center.storage);
+      if (WeeklyHealthReportSchedule.isDue(nowMs, lastDelivered)) {
+        deliverWeeklyHealthReport(host, nowMs, { storage: center.storage });
+        needsRender = true;
+      }
     }
   }
 
