@@ -995,15 +995,19 @@ function bindSpeakerCommandBars(host: MenuMijiaWindowsApp): void {
     const spec = dev.kind;
     if (!spec.ttsActionId && !spec.directiveActionId) continue;
 
-    const wrap = host.root.querySelector<HTMLElement>(`[data-speaker-command-wrap="${cssEscape(dev.id)}"]`);
+    const devId = dev.id;
+    const latestSpeaker = (): SmartDevice | undefined =>
+      host.devices.find((d) => d.id === devId && d.kind.kind === "speaker");
+
+    const wrap = host.root.querySelector<HTMLElement>(`[data-speaker-command-wrap="${cssEscape(devId)}"]`);
     if (!wrap) continue;
 
-    const currentMode = resolveSpeakerDrawerMode(spec, state.modes.get(dev.id));
+    const currentMode = resolveSpeakerDrawerMode(spec, state.modes.get(devId));
     if (!currentMode) continue;
-    state.modes.set(dev.id, currentMode);
+    state.modes.set(devId, currentMode);
 
-    const inputEl = wrap.querySelector<HTMLInputElement>(`[data-speaker-input="${cssEscape(dev.id)}"]`);
-    const sendBtn = wrap.querySelector<HTMLButtonElement>(`[data-speaker-send="${cssEscape(dev.id)}"]`);
+    const inputEl = wrap.querySelector<HTMLInputElement>(`[data-speaker-input="${cssEscape(devId)}"]`);
+    const sendBtn = wrap.querySelector<HTMLButtonElement>(`[data-speaker-send="${cssEscape(devId)}"]`);
     if (!inputEl || !sendBtn) continue;
 
     wrap.querySelectorAll<HTMLButtonElement>("[data-speaker-mode]").forEach((modeBtn) => {
@@ -1013,9 +1017,11 @@ function bindSpeakerCommandBars(host: MenuMijiaWindowsApp): void {
         const sep = raw.indexOf("|");
         const modeVal = sep >= 0 ? raw.slice(sep + 1) : "";
         if (modeVal !== "tts" && modeVal !== "directive") return;
-        const resolved = resolveSpeakerDrawerMode(spec, modeVal);
+        const currentDev = latestSpeaker();
+        if (!currentDev || currentDev.kind.kind !== "speaker") return;
+        const resolved = resolveSpeakerDrawerMode(currentDev.kind, modeVal);
         if (!resolved) return;
-        state.modes.set(dev.id, resolved);
+        state.modes.set(devId, resolved);
         wrap.querySelectorAll<HTMLButtonElement>("[data-speaker-mode]").forEach((pill) => {
           const pillMode = (pill.dataset.speakerMode ?? "").split("|")[1];
           const active = pillMode === resolved;
@@ -1029,7 +1035,8 @@ function bindSpeakerCommandBars(host: MenuMijiaWindowsApp): void {
     });
 
     const syncSendDisabled = (): void => {
-      const disabled = !dev.isOnline || inputEl.value.trim().length === 0;
+      const currentDev = latestSpeaker();
+      const disabled = !currentDev?.isOnline || inputEl.value.trim().length === 0;
       sendBtn.disabled = disabled;
       if (disabled) {
         sendBtn.setAttribute("aria-disabled", "true");
@@ -1043,13 +1050,15 @@ function bindSpeakerCommandBars(host: MenuMijiaWindowsApp): void {
     });
 
     inputEl.addEventListener("input", () => {
-      state.drafts.set(dev.id, inputEl.value);
+      state.drafts.set(devId, inputEl.value);
       syncSendDisabled();
     });
 
     let submitting = false;
     const submitSpeakerInput = async (): Promise<void> => {
-      if (submitting || !dev.isOnline) return;
+      const currentDev = latestSpeaker();
+      if (submitting || !currentDev?.isOnline || currentDev.kind.kind !== "speaker") return;
+      const currentSpec = currentDev.kind;
       const rawValue = inputEl.value;
       if (rawValue.trim().length === 0) return;
 
@@ -1071,9 +1080,9 @@ function bindSpeakerCommandBars(host: MenuMijiaWindowsApp): void {
         return;
       }
 
-      const activeMode = resolveSpeakerDrawerMode(spec, state.modes.get(dev.id));
+      const activeMode = resolveSpeakerDrawerMode(currentSpec, state.modes.get(devId));
       const actionId =
-        activeMode === "directive" ? spec.directiveActionId : spec.ttsActionId;
+        activeMode === "directive" ? currentSpec.directiveActionId : currentSpec.ttsActionId;
       if (!activeMode || !actionId) {
         host.replyBanner = {
           text: tr3(
@@ -1099,33 +1108,33 @@ function bindSpeakerCommandBars(host: MenuMijiaWindowsApp): void {
               "已向{name}下发指令：「{text}」",
               "已向{name}下發指令：「{text}」",
               'Sent command to {name}: "{text}"',
-              { name: dev.name, text: trimmed },
+              { name: currentDev.name, text: trimmed },
             )
           : tr3(
               "{name}已播报：「{text}」",
               "{name}已播報：「{text}」",
               '{name} announced: "{text}"',
-              { name: dev.name, text: trimmed },
+              { name: currentDev.name, text: trimmed },
             );
 
       submitting = true;
-      state.drafts.delete(dev.id);
+      state.drafts.delete(devId);
       inputEl.value = "";
       syncSendDisabled();
 
       try {
-        await host.executeSingleCommand(dev, command, summary);
+        await host.executeSingleCommand(currentDev, command, summary);
         if (host.replyBanner?.isError) {
-          state.drafts.set(dev.id, rawValue);
+          state.drafts.set(devId, rawValue);
           const liveInput = host.root.querySelector<HTMLInputElement>(
-            `[data-speaker-input="${cssEscape(dev.id)}"]`,
+            `[data-speaker-input="${cssEscape(devId)}"]`,
           );
           if (liveInput) {
             liveInput.value = rawValue;
             const liveSend = host.root.querySelector<HTMLButtonElement>(
-              `[data-speaker-send="${cssEscape(dev.id)}"]`,
+              `[data-speaker-send="${cssEscape(devId)}"]`,
             );
-            if (liveSend && dev.isOnline && rawValue.trim().length > 0) {
+            if (liveSend && latestSpeaker()?.isOnline && rawValue.trim().length > 0) {
               liveSend.disabled = false;
               liveSend.removeAttribute("aria-disabled");
             }

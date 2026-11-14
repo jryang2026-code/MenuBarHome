@@ -248,8 +248,8 @@ export function hasUnsavedSettingsChanges(host: SettingsEventsHost): boolean {
 }
 
 export async function probeAssistantConnection(
-  config: AssistantConfig,
-  transport: HttpTransport = createTransport(),
+  config: AssistantConfig & { readonly haUrl?: string },
+  transport?: HttpTransport,
 ): Promise<{ readonly ok: boolean; readonly latencyMs: number | null; readonly message: string }> {
   const trimmedBase = config.baseURL.trim();
   if (!trimmedBase) {
@@ -320,17 +320,25 @@ export async function probeAssistantConnection(
 
   const preset = inferAssistantPreset(trimmedBase);
   const model = config.model.trim() || preset.defaultModel || "gpt-4o-mini";
+  const effectiveTransport = transport ?? createTransport();
   const resolver = new ModelIntentResolver(
     {
       baseURL: trimmedBase,
       model,
       apiKey: config.apiKey.trim(),
     },
-    transport,
+    effectiveTransport,
   );
 
   const start = performance.now();
   try {
+    const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
+    if (!transport && invoke) {
+      await invoke("set_service_endpoints", {
+        assistantUrl: trimmedBase,
+        haUrl: (config.haUrl ?? "").trim(),
+      });
+    }
     await resolver.resolve("打开书房灯", [probeDevice], []);
     const latencyMs = Math.max(1, Math.round(performance.now() - start));
     const label = preset.id === "custom" ? tr3("自定义", "自訂", "Custom") : preset.shortTitle;
@@ -506,6 +514,7 @@ function commitSettingsSave(host: SettingsEventsHost): void {
         host.devices = [];
         host.scenes = [];
         host.environmentReadings = [];
+        host.deviceFacets = {};
       }
     }
     host.settings.haBaseURL = endpoint;
@@ -521,6 +530,7 @@ function commitSettingsSave(host: SettingsEventsHost): void {
         host.devices = [];
         host.scenes = [];
         host.environmentReadings = [];
+        host.deviceFacets = {};
       }
     }
     host.settings.haToken = token;
@@ -1134,8 +1144,10 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   }
   host.root.querySelector("#btn-import-env-key")?.addEventListener("click", () => {
     const baseEl = host.root.querySelector<HTMLInputElement>("#settings-base-url");
-    const apiKeyEl = host.root.querySelector<HTMLInputElement>("#settings-api-key");
-    const preset = inferAssistantPreset(baseEl?.value ?? host.settings.assistantBaseURL);
+    const requestedBaseURL = (baseEl?.value ?? host.settings.assistantBaseURL).trim();
+    const preset = inferAssistantPreset(requestedBaseURL);
+    const requestedEndpoint = assistantEndpointIdentity(requestedBaseURL);
+    const capturedRevision = host.localControlRevision;
     if (!presetSupportsEnvKeyImport(preset.id)) {
       const msg = tr3(
         "当前预设无需或不支持从环境变量自动导入密钥",
@@ -1152,9 +1164,22 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     }
     void (async () => {
       const hit = await importAmbientAssistantKey(preset.id);
+      const currentBaseEl = host.root.querySelector<HTMLInputElement>("#settings-base-url");
+      const currentBaseURL = (currentBaseEl?.value ?? host.settings.assistantBaseURL).trim();
+      const currentPreset = inferAssistantPreset(currentBaseURL);
+      const currentEndpoint = assistantEndpointIdentity(currentBaseURL);
+      if (
+        getSettingsSession(host) !== session ||
+        host.localControlRevision !== capturedRevision ||
+        currentPreset.id !== preset.id ||
+        currentEndpoint !== requestedEndpoint
+      ) {
+        return;
+      }
       const statusNode = host.root.querySelector<HTMLElement>("#settings-env-import-status");
+      const currentApiKeyEl = host.root.querySelector<HTMLInputElement>("#settings-api-key");
       if (hit) {
-        if (apiKeyEl) apiKeyEl.value = hit.apiKey;
+        if (currentApiKeyEl) currentApiKeyEl.value = hit.apiKey;
         const msg = tr3(
           `已从 ${hit.envName} 导入密钥（点击底部「完成并保存」生效）`,
           `已從 ${hit.envName} 匯入金鑰（點擊底部「完成並儲存」生效）`,
@@ -1192,9 +1217,11 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     const baseEl = host.root.querySelector<HTMLInputElement>("#settings-base-url");
     const modelEl = host.root.querySelector<HTMLInputElement>("#settings-model");
     const apiKeyEl = host.root.querySelector<HTMLInputElement>("#settings-api-key");
+    const haUrlEl = host.root.querySelector<HTMLInputElement>("#settings-ha-url");
     const baseURL = baseEl ? baseEl.value : host.settings.assistantBaseURL;
     const model = modelEl ? modelEl.value : host.settings.assistantModel;
     const apiKey = apiKeyEl ? apiKeyEl.value : storedKeyForURL(host, baseURL);
+    const haUrl = haUrlEl ? haUrlEl.value : host.settings.haBaseURL;
 
     const testingText = tr3("正在测试连接…", "正在測試連線…", "Testing connection…");
     session.aiTestStatus = { text: testingText, state: "testing" };
@@ -1207,7 +1234,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     }
 
     void (async () => {
-      const result = await probeAssistantConnection({ baseURL, model, apiKey });
+      const result = await probeAssistantConnection({ baseURL, model, apiKey, haUrl });
       const state = result.ok ? "ok" : "error";
       session.aiTestStatus = { text: result.message, state };
       const btnNow = host.root.querySelector<HTMLButtonElement>("#btn-test-ai-connection");

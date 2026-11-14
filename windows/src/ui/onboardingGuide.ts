@@ -679,10 +679,28 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       host.render();
       return;
     }
+    const prevIdentity = homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken);
+    const nextIdentity = homeAssistantIdentity(endpoint, token);
+    const identityChanged =
+      host.settings.connectionMode !== "homeAssistant" ||
+      endpoint !== host.settings.haBaseURL ||
+      token !== host.settings.haToken ||
+      prevIdentity !== nextIdentity;
     session.haURLDraft = endpoint;
     host.invalidateSourceControl();
     host.settings.cachedHAHome = null;
     host.localControlRevision += 1;
+    if (identityChanged) {
+      host.devices = [];
+      host.scenes = [];
+      host.environmentReadings = [];
+      host.deviceFacets = {};
+      host.homes = [];
+      host.groupOwnerByMemberDid = new Map();
+      (host as { expandedDeviceId?: string | null }).expandedDeviceId = null;
+      (host as { waitingDeviceIds?: Set<string> }).waitingDeviceIds?.clear();
+      host.selectRoom(null);
+    }
     host.settings.haBaseURL = endpoint;
     host.settings.haToken = token;
     host.settings.connectionMode = "homeAssistant";
@@ -798,8 +816,19 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   });
 
   sheet.querySelector("#btn-onboarding-import-env")?.addEventListener("click", () => {
+    const requestedPreset = session.assistantDraft.selectedPreset;
+    const requestedBaseURL = session.assistantDraft.baseURL.trim();
+    const capturedRevision = host.localControlRevision;
     void (async () => {
-      const hit = await importAmbientAssistantKey(session.assistantDraft.selectedPreset);
+      const hit = await importAmbientAssistantKey(requestedPreset);
+      if (
+        onboardingSessionByHost.get(host) !== session ||
+        host.localControlRevision !== capturedRevision ||
+        session.assistantDraft.selectedPreset !== requestedPreset ||
+        session.assistantDraft.baseURL.trim() !== requestedBaseURL
+      ) {
+        return;
+      }
       if (hit) {
         session.assistantDraft = {
           ...session.assistantDraft,

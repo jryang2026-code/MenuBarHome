@@ -273,12 +273,35 @@ describe("Wave 2 · A16 Multi-Step Onboarding Guide & Custom Preset Latch", () =
     assertMissing(document.querySelector(".cc-sheet-body"));
 
     await click('[data-onboarding-mode="homeAssistant"]');
+    app.devices = [
+      {
+        id: "light.old_home",
+        name: "旧家台灯",
+        roomId: "study",
+        roomName: "书房",
+        model: "ha.light",
+        isOnline: true,
+        kind: {
+          kind: "light",
+          entityId: "light.old_home",
+          isOn: true,
+          brightnessPercent: 80,
+          colorTempKelvin: 4000,
+          minKelvin: 2700,
+          maxKelvin: 6500,
+          currentEffect: null,
+          availableEffects: [],
+        },
+      },
+    ];
+    app.refreshHADevices = async () => {};
     type("#onboarding-ha-url", "192.168.1.50:8123");
     type("#onboarding-ha-token", "ha-long-token");
     await click("#btn-onboarding-connect-ha");
     assert.equal(app.settings.connectionMode, "homeAssistant");
     assert.equal(app.settings.haBaseURL, "http://192.168.1.50:8123");
     assert.equal(app.settings.haToken, "ha-long-token");
+    assert.equal(app.devices.length, 0, "connecting a new HA identity clears previous home rows");
 
     await click('[data-onboarding-mode="demo"]');
     assert.equal(app.settings.connectionMode, "demo");
@@ -643,9 +666,11 @@ describe("Wave 2 · A9 AI Assistant Enhancements (askWhenUnsure, Connection Prob
     assert.equal(insecureResult.ok, false);
     assert.match(insecureResult.message, /HTTPS/);
 
+    const invokeOrder: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       value: {
-        invoke: async (cmd: string) => {
+        invoke: async (cmd: string, args?: Record<string, unknown>) => {
+          invokeOrder.push({ cmd, args });
           if (cmd === "native_http") {
             return {
               status: 200,
@@ -675,12 +700,18 @@ describe("Wave 2 · A9 AI Assistant Enhancements (askWhenUnsure, Connection Prob
     await click('[data-settings-tab="assistant"]');
     await click('[data-ai-preset="deepseek"]');
     type("#settings-api-key", "sk-test-deepseek");
+    invokeOrder.length = 0;
     await click("#btn-test-ai-connection");
     await waitFor(
       () => element("#settings-ai-test-status").dataset.testState === "ok",
       "Expected AI connection test status to settle to ok",
     );
     assert.match(element("#settings-ai-test-status").textContent ?? "", /DeepSeek.*ms/);
+    const authIdx = invokeOrder.findIndex(
+      (c) => c.cmd === "set_service_endpoints" && c.args?.assistantUrl === "https://api.deepseek.com/v1",
+    );
+    const httpIdx = invokeOrder.findIndex((c) => c.cmd === "native_http");
+    assert.ok(authIdx >= 0 && authIdx < httpIdx, "Draft endpoint must be authorized before native_http probe");
   });
 
   it("imports provider API keys from environment variables", async () => {
@@ -692,10 +723,17 @@ describe("Wave 2 · A9 AI Assistant Enhancements (askWhenUnsure, Connection Prob
     const customHit = await importAmbientAssistantKey("custom", () => "sk-never");
     assert.equal(customHit, null);
 
+    let holdEnvLookup = false;
+    let releaseEnvLookup = (_val: string): void => {};
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       value: {
         invoke: async (cmd: string, args?: Record<string, unknown>) => {
           if (cmd === "get_env_var" && args?.name === "OPENROUTER_API_KEY") {
+            if (holdEnvLookup) {
+              return new Promise<string>((resolve) => {
+                releaseEnvLookup = resolve;
+              });
+            }
             return "sk-or-from-tauri-env";
           }
           return undefined;
@@ -713,6 +751,19 @@ describe("Wave 2 · A9 AI Assistant Enhancements (askWhenUnsure, Connection Prob
       "Expected API key input to receive imported env key",
     );
     assert.match(element("#settings-env-import-status").textContent ?? "", /OPENROUTER_API_KEY/);
+
+    holdEnvLookup = true;
+    await click("#btn-import-env-key");
+    await click('[data-ai-preset="deepseek"]');
+    type("#settings-api-key", "sk-deepseek-manual");
+    releaseEnvLookup("sk-stale-openrouter-key");
+    await setImmediate();
+    await setImmediate();
+    assert.equal(
+      field("#settings-api-key").value,
+      "sk-deepseek-manual",
+      "Stale env lookup from previous provider must not overwrite the newly selected provider's key",
+    );
   });
 });
 

@@ -419,18 +419,24 @@ describe("Wave 2 A4: Speaker dual-mode drawer UI & Xiaomi Cloud action dispatch"
       },
     };
 
-    const { app, actionCalls } = await mountSpeakerApp([ttsOnlySpeaker], {
-      "xiaomi.wifispeaker.l17a": spec,
-    });
+    const { app, actionCalls } = await mountSpeakerApp(
+      [{ ...ttsOnlySpeaker, isOnline: false }],
+      {
+        "xiaomi.wifispeaker.l17a": spec,
+      },
+    );
 
     element('[data-body-device="sp_tts_only"]').click();
     const fixedBadge = element<HTMLButtonElement>('[data-speaker-mode-fixed="sp_tts_only|tts"]');
     assert.equal(fixedBadge.disabled, true);
     assert.equal(document.querySelectorAll("[data-speaker-mode]").length, 0);
 
+    app.devices = [{ ...ttsOnlySpeaker, isOnline: true }];
     const input = element<HTMLInputElement>('[data-speaker-input="sp_tts_only"]');
+    input.disabled = false;
     input.value = "晚安";
     input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    assert.equal(element<HTMLButtonElement>('[data-speaker-send="sp_tts_only"]').disabled, false);
     element<HTMLButtonElement>('[data-speaker-send="sp_tts_only"]').click();
     await setImmediate();
     await setImmediate();
