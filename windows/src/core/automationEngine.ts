@@ -1,23 +1,9 @@
 import { ManualControlPolicy } from "./assistant/actionPolicy.js";
 import { inverseCommands } from "./commandEffects.js";
 import type { LanguagePreference } from "./i18n.js";
-import {
-  isDeviceActiveOn,
-  type DeviceCommand,
-  type DeviceIntent,
-  type FacetControl,
-  type HomeScene,
-  type SmartDevice,
-} from "./models.js";
+import { isDeviceActiveOn, type DeviceCommand, type DeviceIntent, type FacetControl, type HomeScene, type SmartDevice } from "./models.js";
 import { planQuickAction, type QuickActionId } from "./quickActions.js";
-import {
-  defaultSafetyStorage,
-  extractSensorObservations,
-  tr3,
-  type KeyValueStorageLike,
-  type SensorAlertKind,
-  type SensorObservation,
-} from "./safetyAndHealth.js";
+import { defaultSafetyStorage, extractSensorObservations, tr3, type KeyValueStorageLike, type SensorAlertKind, type SensorObservation } from "./safetyAndHealth.js";
 
 export type AutomationTrigger =
   | "away" | "back" | "screenLocked" | "screenUnlocked" | "displaySleep" | "displayWake"
@@ -1112,8 +1098,10 @@ export class AutomationEngine {
       uniqueRules.push(r);
     }
 
+    const startingRevision = host.sourceRevision ?? 0;
     const runs: RecordedAutomationRun[] = [];
     for (const rule of uniqueRules) {
+      if ((host.sourceRevision ?? 0) !== startingRevision) break;
       const run = await executeAutomationRule(host, rule, { ...options, nowMs });
       if (run) runs.push(run);
     }

@@ -255,9 +255,11 @@ function inferSensorKindFromMetadata(text: string): SensorAlertKind | null {
 const CLEAR_STATUS_TOKENS = [
   "normal", "clear", "closed", "locked", "dry", "safe", "no motion", "nobody",
   "unoccupied", "idle", "off", "false", "正常", "安全", "无异常", "無異常",
-  "已关闭", "已關閉", "关闭", "關閉", "已上锁", "已上鎖", "已锁", "无人", "無人",
+  "已关闭", "已關閉", "已闭合", "已閉合", "关闭", "關閉", "已上锁", "已上鎖", "已锁", "无人", "無人",
   "无移动", "干燥", "乾燥", "未触发", "未檢測", "未检测",
 ];
+
+const lastKnownSensorKindByDeviceId = new Map<string, SensorAlertKind>();
 
 const LOCK_ALARM_TOKENS = [
   "unlocked", "jammed", "ajar", "tamper", "forced", "未上锁", "未上鎖",
@@ -309,8 +311,18 @@ export function extractSensorObservations(
 
   if (device.kind.kind === "sensor") {
     const statusText = device.kind.statusText?.trim() ?? "";
+    const explicitOrMetaKind =
+      device.kind.alertKind ??
+      inferSensorKindFromMetadata(`${device.model} ${device.name} ${statusText}`) ??
+      null;
+    if (explicitOrMetaKind !== null) {
+      lastKnownSensorKindByDeviceId.set(device.id, explicitOrMetaKind);
+    }
     const inferredKind =
-      inferSensorKindFromMetadata(`${device.model} ${device.name} ${statusText}`) ?? null;
+      explicitOrMetaKind ??
+      (statusText !== "" && isStatusTextCleared(statusText)
+        ? (lastKnownSensorKindByDeviceId.get(device.id) ?? null)
+        : null);
     if (inferredKind !== null && statusText !== "") {
       pushObs({
         kind: inferredKind,

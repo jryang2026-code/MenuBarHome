@@ -382,10 +382,17 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
   }
 
     async load(): Promise<MiAccount[]> { this.syncExternalRevocation();
-    const primarySession = await this.vault.loadPrimaryMiSession();
     const index = readAccountIndex(this.storage);
+    let primaryReadFailed = false;
+    let primarySession: MiSession | null = null;
+    try {
+      primarySession = await this.vault.loadPrimaryMiSession();
+      if (this.vault.didLastPrimaryMiSessionReadFail?.() === true) primaryReadFailed = true;
+    } catch {
+      primaryReadFailed = true;
+    }
     const primaryAccount = primarySession ? makeMiAccount(primarySession) : null;
-    if (this.storage !== null && index.length === 0 && this.cachedAccounts.length > 0) {
+    if (!primaryReadFailed && this.storage !== null && index.length === 0 && this.cachedAccounts.length > 0) {
       this.cachedAccounts = [];
     }
 
@@ -398,12 +405,23 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       }
     }
 
-    const loadedSlots = await this.vault.loadMiAccountSlots(secondarySlotIds);
+    let slotsReadFailed = false;
+    let loadedSlots: Record<string, MiSession> = {};
+    try {
+      loadedSlots = await this.vault.loadMiAccountSlots(secondarySlotIds);
+      if (this.vault.didLastMiAccountSlotsReadFail?.() === true) slotsReadFailed = true;
+    } catch {
+      slotsReadFailed = true;
+    }
     const ordered: MiAccount[] = [];
     const seenIds = new Set<string>();
 
     if (primaryAccount) { ordered.push(primaryAccount);
       seenIds.add(primaryAccount.id);
+    } else if (primaryReadFailed && this.cachedAccounts.length > 0) {
+      const cachedPrimary = this.cachedAccounts[0]!;
+      ordered.push(cachedPrimary);
+      seenIds.add(cachedPrimary.id);
     }
 
     const candidateOrder = [
@@ -414,21 +432,25 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       if (!slotSession) continue;
       const account = makeMiAccount(slotSession);
       if (seenIds.has(account.id)) {
-        await this.vault.deleteMiAccountSlot(slotId).catch(() => {});
+        if (!primaryReadFailed && !slotsReadFailed) {
+          await this.vault.deleteMiAccountSlot(slotId).catch(() => {});
+        }
         continue;
       }
       seenIds.add(account.id);
       ordered.push(account);
     }
 
-    if (!primaryAccount && ordered.length > 0) { const promoted = ordered[0]!;
+    if (!primaryAccount && !primaryReadFailed && ordered.length > 0) { const promoted = ordered[0]!;
       await this.vault.savePrimaryMiSession(promoted.session);
       await this.vault.deleteMiAccountSlot(promoted.slotId).catch(() => {});
     }
 
     this.cachedAccounts = ordered;
     this.loaded = true;
-    this.lastWroteIndexToStorage = writeAccountIndex(this.storage, ordered);
+    if (!primaryReadFailed && !slotsReadFailed) {
+      this.lastWroteIndexToStorage = writeAccountIndex(this.storage, ordered);
+    }
     return [...ordered];
   }
 

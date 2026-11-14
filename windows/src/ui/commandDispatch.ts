@@ -587,7 +587,7 @@ export function scheduleEchoReadBack(
     const dualBackend = dualActive
       ? (getHostDualSourceState(host)?.deviceBackends[deviceId] ?? "xiaomiCloud")
       : null;
-    const isXiaomiDevice = mode === "xiaomiCloud" || (dualActive && dualBackend === "xiaomiCloud");
+    const isXiaomiDevice = dualActive ? dualBackend === "xiaomiCloud" : mode === "xiaomiCloud";
     const multiState = getHostMiAccountsState(host);
     const accounts = host.miAccountsOverride ?? multiState?.accounts ?? [];
     const mappedAccountId =

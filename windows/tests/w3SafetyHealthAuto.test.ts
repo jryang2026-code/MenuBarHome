@@ -1219,5 +1219,79 @@ describe("B1 + B5 PC Context Automation Engine, AwayArbitrator, 5m Undo & HA Doo
     const undoOk = await executeAutomationCardUndo(app, "run-source-switch", t0 + 1_000);
     assert.equal(undoOk, false);
     assert.equal(undoSent.length, 1);
+
+    const { HomeAssistantSynthesizer } = await import("../src/core/homeAssistant.js");
+    const makeGenericSmokeSnap = (state: "on" | "off") => ({
+      areas: [{ area_id: "kitchen", name: "厨房" }],
+      devices: [{ id: "generic_smoke_dev", name: "Kitchen", model: "TS0205", area_id: "kitchen" }],
+      entities: [{ entity_id: "binary_sensor.kitchen_detector", device_id: "generic_smoke_dev" }],
+      states: [
+        {
+          entity_id: "binary_sensor.kitchen_detector",
+          state,
+          attributes: { device_class: "smoke" },
+        },
+      ],
+    });
+    const smokeOn1 = HomeAssistantSynthesizer.synthesize(makeGenericSmokeSnap("on")).devices[0]!;
+    const smokeOff = HomeAssistantSynthesizer.synthesize(makeGenericSmokeSnap("off")).devices[0]!;
+    const smokeOn2 = HomeAssistantSynthesizer.synthesize(makeGenericSmokeSnap("on")).devices[0]!;
+    assert.equal(smokeOff.kind.kind === "sensor" ? smokeOff.kind.alertKind : null, "smoke");
+
+    const monitor = new SafetyMonitor(new MemoryKV());
+    const policy = createDefaultSensorAlertPolicy();
+    const alerts1 = monitor.evaluate({
+      devices: [smokeOn1],
+      favorites: new Set(),
+      sensorPolicy: policy,
+      nowMs: t0,
+    });
+    assert.equal(alerts1.length, 1);
+    const alertsClear = monitor.evaluate({
+      devices: [smokeOff],
+      favorites: new Set(),
+      sensorPolicy: policy,
+      nowMs: t0 + 5_000,
+    });
+    assert.equal(alertsClear.length, 0);
+    const alerts2 = monitor.evaluate({
+      devices: [smokeOn2],
+      favorites: new Set(),
+      sensorPolicy: policy,
+      nowMs: t0 + 10_000,
+    });
+    assert.equal(alerts2.length, 1);
+
+    const r1 = createAutomationRule({
+      id: "r-dispatch-1",
+      trigger: "screenUnlocked",
+      action: { kind: "devices", deviceIds: [lightA.id], isOn: false },
+    });
+    const r2 = createAutomationRule({
+      id: "r-dispatch-2",
+      trigger: "screenUnlocked",
+      action: { kind: "devices", deviceIds: [lightB.id], isOn: false },
+    });
+    let dispatchedRules = 0;
+    const revHost = {
+      devices: [lightA, lightB],
+      scenes: [],
+      sourceRevision: 10,
+      applyCommand: async () => {
+        dispatchedRules += 1;
+        revHost.sourceRevision = 11;
+        return true;
+      },
+      executeScene: async () => true,
+    };
+    const eng = new AutomationEngine(new MemoryKV());
+    await eng.dispatchEvent(revHost, { kind: "lockChanged", isLocked: true }, { rules: [r1, r2], nowMs: t0 + 40_000 });
+    const revRuns = await eng.dispatchEvent(
+      revHost,
+      { kind: "lockChanged", isLocked: false },
+      { rules: [r1, r2], nowMs: t0 + 50_000 },
+    );
+    assert.equal(dispatchedRules, 1);
+    assert.equal(revRuns.length, 0);
   });
 });

@@ -395,6 +395,12 @@ function extractFacetNumeric(facet: FacetControl): number | null {
   return num * scale;
 }
 
+function isNonPm25PollutantToken(text: string): boolean {
+  return /(?:^|[^a-z0-9])(?:pm10|pm1|pm4|tvoc|voc|hcho|formaldehyde|no2|so2|o3|co2|co|ozone|nitrogen|sulphur|sulfur|volatile_organic|carbon_monoxide|carbon_dioxide)(?:$|[^a-z0-9])/i.test(
+    text,
+  ) || text.includes("pm10") || text.includes("tvoc") || text.includes("甲醛");
+}
+
 function classifyFacetMetric(facet: FacetControl): SensorMetricKind | null {
   const name = facet.name.toLowerCase();
   const title = (facet.title ?? "").toLowerCase();
@@ -405,7 +411,13 @@ function classifyFacetMetric(facet: FacetControl): SensorMetricKind | null {
   if ((name === "relative-humidity" || name === "humidity" || name.includes("humidity")) && !name.includes("target")) {
     return "humidity";
   }
-  if (/pm2[._-]?5|pm25/.test(name) || /pm2[._-]?5|pm25/.test(title) || unit.includes("μg/m³") || unit.includes("µg/m³") || unit.includes("ug/m3")) {
+  if (/pm2[._-]?5|pm25/.test(name) || /pm2[._-]?5|pm25/.test(title)) {
+    return "pm25";
+  }
+  if (
+    (unit.includes("μg/m³") || unit.includes("µg/m³") || unit.includes("ug/m3")) &&
+    !isNonPm25PollutantToken(`${name} ${title}`)
+  ) {
     return "pm25";
   }
   if (name.includes("illumin") || unit === "lux" || unit === "lx" || title.includes("光照") || title.includes("illuminance")) {
@@ -1257,7 +1269,13 @@ function inferHAMetricFromMeta(
     return { metric: "temperature", unit };
   }
   if (devClass === "humidity" || lowerId.includes("humidity")) return { metric: "humidity", unit };
-  if (devClass === "pm25" || /pm2[._]?5|pm25/.test(lowerId) || lowerUnit.includes("µg/m³") || lowerUnit.includes("μg/m³") || lowerUnit.includes("ug/m3")) {
+  if (
+    devClass === "pm25" ||
+    /pm2[._-]?5|pm25/.test(lowerId) ||
+    (devClass === "" &&
+      !isNonPm25PollutantToken(lowerId) &&
+      (lowerUnit.includes("µg/m³") || lowerUnit.includes("μg/m³") || lowerUnit.includes("ug/m3")))
+  ) {
     return { metric: "pm25", unit };
   }
   if (devClass === "illuminance" || lowerUnit === "lx" || lowerUnit === "lux" || lowerId.includes("illuminance") || lowerId.includes("illumination") || /\blux\b/.test(lowerId)) {

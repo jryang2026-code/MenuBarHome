@@ -1121,5 +1121,84 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
     assert.match(decodedUrl, /sensor\.living_temperature/);
     assert.match(decodedUrl, /sensor\.living_humidity/);
     assert.match(decodedUrl, /sensor\.living_illuminance/);
+
+    const pollutantHistory = parseHomeAssistantHistoryResponse([
+      [
+        {
+          entity_id: "sensor.living_pm10",
+          state: "88",
+          last_changed: "2026-11-14T10:00:00Z",
+          attributes: { device_class: "pm10", unit_of_measurement: "µg/m³" },
+        },
+      ],
+      [
+        {
+          entity_id: "sensor.living_voc",
+          state: "120",
+          last_changed: "2026-11-14T10:00:00Z",
+          attributes: { device_class: "volatile_organic_compounds", unit_of_measurement: "µg/m³" },
+        },
+      ],
+      [
+        {
+          entity_id: "sensor.living_pm25",
+          state: "34",
+          last_changed: "2026-11-14T10:00:00Z",
+          attributes: { device_class: "pm25", unit_of_measurement: "µg/m³" },
+        },
+      ],
+    ]);
+    assert.equal(pollutantHistory.length, 1);
+    assert.equal(pollutantHistory[0]?.pm25, 34);
+
+    const { MiAccountsStore } = await import("../src/core/miAccountsStore.js");
+    const { CredentialVault, serializeMiSession } = await import("../src/core/secureStore.js");
+    const primarySess = {
+      userId: "10001",
+      cUserId: "c1",
+      ssecurity: "AQIDBAUGBwgJCgsMDQ4PEA==",
+      serviceToken: "tok-primary",
+      passToken: "",
+      region: "cn" as const,
+    };
+    const secondarySess = {
+      userId: "20002",
+      cUserId: "c2",
+      ssecurity: "AQIDBAUGBwgJCgsMDQ4PEA==",
+      serviceToken: "tok-secondary",
+      passToken: "",
+      region: "sg" as const,
+    };
+    const credMap = new Map<string, string>();
+    let failPrimaryRead = false;
+    const flakyVault = new CredentialVault(async <T>(cmd: string, args: Record<string, unknown>): Promise<T | null> => {
+      const name = String(args.name ?? "");
+      if (cmd === "secure_store_get") {
+        if (name === "mi_session" && failPrimaryRead) {
+          throw new Error("Win32 vault temporarily locked");
+        }
+        return (credMap.get(name) ?? null) as T | null;
+      }
+      if (cmd === "secure_store_set") {
+        credMap.set(name, String(args.value ?? ""));
+        return null;
+      }
+      if (cmd === "secure_store_delete") {
+        credMap.delete(name);
+        return null;
+      }
+      return null;
+    });
+    const acctStore = new MiAccountsStore(flakyVault, localStorage);
+    await acctStore.upsertAccount(primarySess);
+    await acctStore.upsertAccount(secondarySess);
+    const savedPrimaryBefore = credMap.get("mi_session");
+    assert.ok(savedPrimaryBefore);
+
+    failPrimaryRead = true;
+    const loadedDuringOutage = await acctStore.load();
+    assert.equal(loadedDuringOutage.length, 2);
+    assert.equal(credMap.get("mi_session"), savedPrimaryBefore);
+    assert.equal(credMap.get("mi_session"), serializeMiSession(primarySess));
   });
 });

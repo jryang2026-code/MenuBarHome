@@ -131,6 +131,7 @@ export interface SensorSpec {
   readonly humidity: number | null;
   readonly battery: number | null;
   readonly statusText?: string | null;
+  readonly alertKind?: "smoke" | "gas" | "leak" | "contact" | "motion" | "vibration" | "lock" | null;
 }
 
 export interface CoverSpec {

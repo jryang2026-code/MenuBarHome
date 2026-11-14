@@ -248,8 +248,18 @@ export async function secureStoreDelete(
 export class CredentialVault {
   private readonly known = new Map<SecureCredentialName, string>();
   private opChain: Promise<void> = Promise.resolve();
+  private lastPrimaryReadFailed = false;
+  private lastAccountSlotsReadFailed = false;
 
   constructor(private readonly invoke: SecureInvoke = tauriInvoke) {}
+
+  didLastPrimaryMiSessionReadFail(): boolean {
+    return this.lastPrimaryReadFailed;
+  }
+
+  didLastMiAccountSlotsReadFail(): boolean {
+    return this.lastAccountSlotsReadFailed;
+  }
 
   private serialize<T>(work: () => Promise<T>): Promise<T> {
     const next = this.opChain.then(work, work);
@@ -375,10 +385,16 @@ export class CredentialVault {
 
     async loadPrimaryMiSession(): Promise<MiSession | null> {
     return this.serialize(async () => {
-      const raw = await secureStoreGet("mi_session", this.invoke).catch(() => null);
-      const parsed = parseMiSession(raw);
-      this.remember("mi_session", parsed ? serializeMiSession(parsed) : "");
-      return parsed;
+      try {
+        const raw = await secureStoreGet("mi_session", this.invoke);
+        this.lastPrimaryReadFailed = false;
+        const parsed = parseMiSession(raw);
+        this.remember("mi_session", parsed ? serializeMiSession(parsed) : "");
+        return parsed;
+      } catch {
+        this.lastPrimaryReadFailed = true;
+        return null;
+      }
     });
   }
 
@@ -405,12 +421,22 @@ export class CredentialVault {
   }
 
     async loadMiAccountSlots(slotIds: readonly string[]): Promise<Record<string, MiSession>> {
-    if (slotIds.length === 0) return {};
+    if (slotIds.length === 0) {
+      this.lastAccountSlotsReadFailed = false;
+      return {};
+    }
     return this.serialize(async () => {
+      let hadError = false;
       const uniqueIds = [...new Set(slotIds.map((id) => normalizeMiCredentialSlotId(id)))];
       const raws = await Promise.all(
-        uniqueIds.map((id) => secureStoreGet(miAccountSessionCredentialName(id), this.invoke).catch(() => null)),
+        uniqueIds.map((id) =>
+          secureStoreGet(miAccountSessionCredentialName(id), this.invoke).catch(() => {
+            hadError = true;
+            return null;
+          }),
+        ),
       );
+      this.lastAccountSlotsReadFailed = hadError;
       const out: Record<string, MiSession> = {};
       for (let i = 0; i < uniqueIds.length; i += 1) {
         const slotId = uniqueIds[i]!;
