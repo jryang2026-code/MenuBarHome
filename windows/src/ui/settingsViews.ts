@@ -168,7 +168,7 @@ export interface SettingsViewContext {
 
           <div class="cc-sheet-footer">
             <button class="cc-btn-danger cc-btn-ghost-danger" id="btn-settings-quit">${t("退出 MenuBarHome")}</button>
-            <span class="cc-settings-save-hint" data-save-state="clean">${ctx.escapeHtml(trText("开关即时生效，地址与密钥点右侧保存", "Toggles apply instantly; click Save for URLs & keys"))}</span>
+            <span class="cc-settings-save-hint" data-save-state="clean" title="${ctx.escapeHtml(trText("开关即时生效，地址与密钥点右侧保存", "Toggles apply instantly; click Save for URLs & keys"))}">${ctx.escapeHtml(trText("开关已即时生效", "Toggles auto-save"))}</span>
             <button class="cc-btn-primary" id="btn-save-settings">${t("完成并保存")}</button>
           </div>
         </div>

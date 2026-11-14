@@ -936,10 +936,15 @@ export class PanelRenderPipeline {
     const max = Number(slider.max || "100");
     const val = Number(slider.value || "0");
     const ratio = max > min ? Math.max(0, Math.min(1, (val - min) / (max - min))) : 0;
+    const leftPct =
+      slider.offsetWidth > 0 && parent.clientWidth > 0
+        ? ((slider.offsetLeft + 8 + ratio * Math.max(0, slider.offsetWidth - 16)) / parent.clientWidth) * 100
+        : ratio * 100;
     badge.textContent = text;
     badge.classList.add("is-visible");
     badge.style.setProperty("--thumb-ratio", ratio.toFixed(4));
-    badge.style.left = `${(ratio * 100).toFixed(2)}%`;
+    badge.style.setProperty("--thumb-left", `${leftPct.toFixed(2)}%`);
+    badge.style.left = `${leftPct.toFixed(2)}%`;
   }
 
   private snapshotLayers(host: MenuMijiaWindowsApp): LayerSnapshot {

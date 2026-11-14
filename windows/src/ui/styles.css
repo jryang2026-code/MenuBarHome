@@ -1939,6 +1939,11 @@ details.win-notif-card-ghost > :not(summary) {
   min-height: 0;
 }
 
+.cc-tile.is-subpage .cc-expander-clip,
+.cc-tile-ghost.is-subpage-ghost .cc-expander-clip {
+  overflow: visible;
+}
+
 @starting-style {
   .cc-expander-grid:not(.is-collapsed) {
     grid-template-rows: 0fr;
@@ -2364,6 +2369,11 @@ summary .cc-mini-caret {
 .win-slider-tooltip.is-visible {
   opacity: 1;
   transform: translate(-50%, 0) scale(1);
+}
+
+.cc-slider-group > .cc-slider-thumb-badge,
+.cc-slider-group > .win-slider-tooltip {
+  bottom: 24px;
 }
 
 .cc-range {
@@ -3654,12 +3664,19 @@ details.cc-conn-secondary > :not(summary) {
 .cc-settings-save-hint {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  flex: 1;
+  min-width: 0;
+  gap: 5px;
   font-family: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
   font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
   color: var(--text-secondary);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .cc-settings-save-hint[data-save-state="dirty"] {
@@ -3963,6 +3980,8 @@ input[type="checkbox"]:checked:active:not(:disabled)::after {
   font-weight: 600;
   font-size: 12px;
   line-height: 16px;
+  white-space: nowrap;
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;

@@ -111,10 +111,10 @@ export function syncSettingsSaveHint(
   hint.dataset.saveState = mode;
   hint.textContent =
     mode === "dirty"
-      ? trText("文本改动待点击保存", "Unsaved text edits")
+      ? trText("有未保存文本", "Unsaved text")
       : mode === "saved"
-        ? trText("开关选项已自动生效", "Toggle saved automatically")
-        : trText("开关即时生效，地址与密钥点右侧保存", "Toggles apply instantly; click Save for URLs & keys");
+        ? trText("已自动保存", "Auto-saved")
+        : trText("开关已即时生效", "Toggles auto-save");
 }
 
 export function bindSettingsEvents(host: SettingsEventsHost): void {
