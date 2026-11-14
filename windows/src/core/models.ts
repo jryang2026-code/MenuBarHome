@@ -1148,10 +1148,6 @@ function normalizeMiotText(raw: string): string {
     .join(" ");
 }
 
-/**
- * Shared washer/dryer/light/fan programme table, matching macOS `MiotValueText.programmes`
- * (`Sources/MijiaCore/MiotValueText.swift:129-165`). Non-wash programmes stay neutral across dryers.
- */
 const MIOT_PROGRAMMES: Readonly<Record<string, string>> = {
   mix: "混合",
   "quick wash": "快速洗",
@@ -1209,10 +1205,6 @@ export function displayMiotValue(raw: string): string {
   return trimmed;
 }
 
-/**
- * Appliance fault value-list definitions, matching macOS `MiotValueText.faults`
- * (`Sources/MijiaCore/MiotValueText.swift:174-202`).
- */
 const MIOT_FAULTS: Readonly<Record<string, { readonly hansKey: string; readonly code?: string }>> = {
   "dehydration fault": { hansKey: "衣物分布不平衡", code: "E3" },
   "door lock malfunction": { hansKey: "门未关好", code: "E2" },

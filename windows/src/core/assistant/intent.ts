@@ -42,12 +42,10 @@ export interface ParsedDelay {
   readonly remainder: string;
 }
 
-/** Arabic digits or Chinese numerals up to 99 (十五, 二十五, 四十五); `AssistantSchedule.spokenNumber`. */
 function spokenNumber(s: string): number | null {
   return spokenChineseNumber(s);
 }
 
-// Supports single and compound Chinese durations (e.g. 二十五分钟后, 四十五秒后, 一小时二十分钟后, 把空调关掉 30分钟后).
 const CN_DELAY_SEG_SOURCE = "([0-9]+|[零一二两三四五六七八九十]+|半)\\s*(个半|个)?(秒钟|秒|分钟|分|小时|钟头)(半)?";
 const CN_DELAY_DURATION_SOURCE = `${CN_DELAY_SEG_SOURCE}(?:\\s*(?:零(?=[0-9]))?\\s*${CN_DELAY_SEG_SOURCE})?(?:\\s*(?:零(?=[0-9]))?\\s*${CN_DELAY_SEG_SOURCE})?`;
 const CN_DELAY_LEADING = new RegExp(

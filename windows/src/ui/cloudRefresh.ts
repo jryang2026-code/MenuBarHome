@@ -43,34 +43,9 @@ const lastGoodXiaomiRoomsByHost = new WeakMap<
   }
 >();
 
-const installedSessionExpiryHosts = new WeakSet<MenuMijiaWindowsApp>();
 const initialSessionCheckHosts = new WeakSet<MenuMijiaWindowsApp>();
 const lockProbeInFlightHosts = new WeakSet<MenuMijiaWindowsApp>();
 const lastSessionFingerprintByHost = new WeakMap<MenuMijiaWindowsApp, string>();
-
-function installMiSessionExpiredPersistence(host: MenuMijiaWindowsApp): void {
-  if (installedSessionExpiryHosts.has(host)) return;
-  installedSessionExpiryHosts.add(host);
-  let currentExpired = Boolean(host.miSessionExpired);
-  Object.defineProperty(host, "miSessionExpired", {
-    configurable: true,
-    enumerable: true,
-    get() {
-      return currentExpired;
-    },
-    set(next: boolean) {
-      const normalized = Boolean(next);
-      currentExpired = normalized;
-      if (normalized) {
-        if (host.settings.miSession) {
-          persistMiSessionExpired(host.settings.miSession, true);
-        }
-      } else {
-        clearPersistedMiSessionExpired();
-      }
-    },
-  });
-}
 
 function collectMiotPropKeys(
   rawDevices: readonly MiDeviceRecord[],
@@ -100,7 +75,6 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
     if (!isHostAttachedToActiveWindow(host)) return;
     if (host.settings.connectionMode === "homeAssistant") return refreshHADevices(host, silent);
     if (!host.settings.miSession || host.settings.connectionMode !== "xiaomiCloud" || host.isSyncingCloud) return;
-    installMiSessionExpiredPersistence(host);
     const session = host.settings.miSession;
     const currentFingerprint = miSessionFingerprint(session);
     const previousFingerprint = lastSessionFingerprintByHost.get(host);
@@ -227,7 +201,6 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
           ? client.lightGroupMembers(groupDids).catch(() => new Map<string, string[]>())
           : Promise.resolve(new Map<string, string[]>());
 
-        // Stage 1: Instant synthesis with cached/fallback specs so user sees their real devices immediately
         const stage1Specs = host.specResolver.exportCachedSpecs();
         const stage1Home = MiotSynthesizer.synthesize(
           rawDevices,
@@ -242,7 +215,6 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
           host.render();
         }
 
-        // Stage 2: Resolve exact MIoT specs
         specs = await host.specResolver.resolveForDevices(rawDevices);
         membersByGroup = await membershipPromise;
       }

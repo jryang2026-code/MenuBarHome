@@ -293,16 +293,14 @@ export function persistMiSessionExpired(
       storage.removeItem(MI_SESSION_EXPIRED_STORAGE_KEY);
       return;
     }
-    storage.setItem(
+      storage.setItem(
       MI_SESSION_EXPIRED_STORAGE_KEY,
       JSON.stringify({
         fingerprint: miSessionFingerprint(session),
         expiredAtMs: nowMs,
       }),
     );
-  } catch {
-    // Ignore storage quota or sandbox errors.
-  }
+  } catch {}
 }
 
 export function clearPersistedMiSessionExpired(
@@ -311,7 +309,5 @@ export function clearPersistedMiSessionExpired(
   if (!storage) return;
   try {
     storage.removeItem(MI_SESSION_EXPIRED_STORAGE_KEY);
-  } catch {
-    // Ignore storage errors.
-  }
+  } catch {}
 }

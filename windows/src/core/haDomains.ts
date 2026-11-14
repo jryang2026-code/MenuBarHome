@@ -570,8 +570,6 @@ export function buildMediaPlayerKind(
   const muteSw = eids.find((eid) => eid.startsWith("switch.") && eid.includes("mute")) ?? null;
   const sleepSw = eids.find((eid) => eid.startsWith("switch.") && eid.includes("sleep_mode")) ?? null;
 
-  // Claim only entities surfaced directly on `SpeakerSpec` so `button.*` actions (`play_music`,
-  // `stop_alarm`, `turn_on`) remain unclaimed and flow into `更多设置` (`buildHAFacets`).
   for (const id of [mediaId, muteSw, sleepSw]) {
     if (id) claimed.add(id);
   }

@@ -641,10 +641,6 @@ async function runIntentOnDevice(
   });
   const effectiveDev = aliasedDevices.find((d) => d.id === initialDev.id) ?? initialDev;
 
-  // High-risk confirmation (`ManualControlPolicy`) always applies, even with a valid `bridgeToken`.
-  // When the host exposes `openExternalUrlConfirmPrompt` and a valid `bridgeToken` is present,
-  // open the in-panel confirmation modal and wait for the user's explicit Confirm / Cancel click;
-  // otherwise fall back to arming `pendingHighRisk` in the panel without auto-consuming it (ADR-0013).
   if (requiresHighRiskArm(effectiveDev, options.riskIntent ?? intent, firstCommand, aliasedDevices)) {
     if ( options.bridgeContext?.isTrustedBridge && typeof host.openExternalUrlConfirmPrompt === "function" ) {
       const revisionBeforePrompt = host.sourceRevision;
@@ -772,7 +768,6 @@ function findUniqueAskDevice(
   });
   if (substring.length === 1) return substring[0]!;
 
-  // Generic category noun ("扫地机", "灯", "bedroom light") resolves only when unambiguous.
   const firstKind = candidates[0]?.kind.kind ?? "";
   const genericNouns = GENERIC_ASK_NOUNS_BY_KIND[firstKind] ?? [];
   if (genericNouns.some((n) => n.toLowerCase() === targetLower)) { return candidates.length === 1 ? candidates[0]! : null; }
@@ -817,7 +812,6 @@ export async function executeDirectAskPreset(
   const trimmed = rawText.trim();
   if (!trimmed || looksScheduledOrCompoundAsk(trimmed)) { return { handled: false, message: "", isError: false }; }
 
-  // 1. Light Moonlight / Soft Night Light (`15% · 2700K`)
   const isLight = (d: SmartDevice): boolean => d.kind.kind === "light";
   const bareMoonlight =
     /^(?:请|帮我|麻烦)?(?:开启|打开|设为|调到|调成|切换为)?\s*(?:柔和)?(?:月光|夜灯)(?:模式)?$/i.test(trimmed) ||
@@ -872,7 +866,6 @@ export async function executeDirectAskPreset(
     }
   }
 
-  // 2. Cover / Curtain Position / Open / Close
   const runDirectCover = async (dev: SmartDevice, rawPercent: number): Promise<DirectAskPresetResult> => {
     if (dev.kind.kind !== "cover") return { handled: false, message: "", isError: false };
     const name = displayNameFor(dev, host);
@@ -936,7 +929,6 @@ export async function executeDirectAskPreset(
     if (dev) { return runDirectCover(dev, 0); }
   }
 
-  // 3. Fan Speed Percentage & Preset Mode
   const fanPercentMatch = twoCapturesInText(trimmed, [ /^(?:请|帮我|麻烦)?(?:把|将)?\s*(.+?)\s*(?:风速|风量|转速)\s*(?:调到|设为|调成)\s*(\d{1,3})\s*%$/, /^(?:please\s+)?set\s+(.+?)\s+(?:fan\s+)?speed\s+to\s+(\d{1,3})\s*%$/i]);
   if (fanPercentMatch) {
     const parsedPct = Number.parseInt(fanPercentMatch.second, 10);
@@ -987,7 +979,6 @@ export async function executeDirectAskPreset(
     }
   }
 
-  // 4. Vacuum Start / Pause / Dock (`回充` / `dock`)
   const isVacuum = (d: SmartDevice): boolean => d.kind.kind === "vacuum";
   const runDirectVacuum = async (
     dev: SmartDevice,

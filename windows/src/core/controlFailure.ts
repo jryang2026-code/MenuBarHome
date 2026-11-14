@@ -105,11 +105,7 @@ export function isCancellationError(error: unknown): boolean {
   return false;
 }
 
-/**
- * Local validation/configuration errors raised before any packet leaves the client say nothing
- * about whether the target device is online (`ControlFailure.neverLeftThisMac`).
- */
-function neverLeftClient(error: unknown, shape: ExtractedErrorShape): boolean {
+function neverLeftClient(shape: ExtractedErrorShape): boolean {
   const lower = shape.message.toLowerCase();
   return (
     lower.includes("invalid url") ||
@@ -120,7 +116,6 @@ function neverLeftClient(error: unknown, shape: ExtractedErrorShape): boolean {
     shape.message.includes("地址格式无效") ||
     shape.message.includes("不支持此控制项")
   );
-  void error;
 }
 
 function classifyHttpStatus(
@@ -181,7 +176,6 @@ function classifyRawError(error: unknown, shape: ExtractedErrorShape): Classifie
     }
   }
 
-  // Structured numeric codes on plain error objects / IPC payloads
   if (typeof shape.code === "number") {
     if (shape.code === MIOT_DEVICE_OFFLINE_CODE) {
       return { kind: "deviceOffline", isCancellation: false };
@@ -194,7 +188,6 @@ function classifyRawError(error: unknown, shape: ExtractedErrorShape): Classifie
     }
   }
 
-  // Structured string error codes (Node / fetch / Tauri / socket errors)
   if (typeof shape.code === "string") {
     const upper = shape.code.toUpperCase();
     if (
@@ -242,7 +235,6 @@ function classifyRawError(error: unknown, shape: ExtractedErrorShape): Classifie
 
   if (!msg) return null;
 
-  // Rate limit
   if (
     /\b429\b/.test(lower) ||
     lower.includes("too many requests") ||
@@ -256,7 +248,6 @@ function classifyRawError(error: unknown, shape: ExtractedErrorShape): Classifie
     return { kind: "rateLimited", isCancellation: false };
   }
 
-  // Signed out / not logged in
   if (
     lower.includes("notlogged") ||
     lower.includes("not logged in") ||
@@ -267,7 +258,6 @@ function classifyRawError(error: unknown, shape: ExtractedErrorShape): Classifie
     return { kind: "signedOut", isCancellation: false };
   }
 
-  // Session expired / Mijia code 3 / auth token rejected
   if (
     lower.includes("sessionexpired") ||
     lower.includes("session expired") ||
@@ -301,7 +291,6 @@ function classifyRawError(error: unknown, shape: ExtractedErrorShape): Classifie
     };
   }
 
-  // Explicit MIoT offline code or offline/unavailable wording
   if (
     msg.includes(String(MIOT_DEVICE_OFFLINE_CODE)) ||
     /\boffline\b/.test(lower) ||
@@ -313,7 +302,6 @@ function classifyRawError(error: unknown, shape: ExtractedErrorShape): Classifie
     return { kind: "deviceOffline", isCancellation: false };
   }
 
-  // Negative Mijia device rejection code embedded in message
   const negMijiaMatch =
     msg.match(/米家(?:错误码|云指令失败)\s*\(?(-[1-9]\d*)\)?/) ??
     msg.match(/\bmiot\s+error\s+(-[1-9]\d*)\b/i);
@@ -327,7 +315,6 @@ function classifyRawError(error: unknown, shape: ExtractedErrorShape): Classifie
     }
   }
 
-  // Network timeout / unreachable
   if (
     lower.includes("timeout") ||
     lower.includes("timed out") ||
@@ -381,7 +368,7 @@ export function classifyControlFailure(
   ) {
     return direct;
   }
-  if (options.isDeviceOnline === false && !neverLeftClient(error, shape)) {
+  if (options.isDeviceOnline === false && !neverLeftClient(shape)) {
     return { kind: "deviceOffline", isCancellation: false };
   }
   return direct;

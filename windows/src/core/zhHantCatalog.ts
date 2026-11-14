@@ -1,9 +1,3 @@
-/**
- * Traditional Chinese (`zh-Hant`) catalog for the Windows control center (A7).
- *
- * Synced with `Sources/MijiaCore/Resources/Localizations/zh-Hant.json` and
- * `Sources/MijiaCore/MiotValueText.swift`, covering every key in `i18n.ts`.
- */
 export const ZH_HANT_CATALOG: Readonly<Record<string, string>> = {
   "没有匹配的设备": "沒有匹配的裝置",
   "输入设备名、房间或拼音首字母；整句话按回车执行": "輸入裝置名、房間或拼音首字母；整句話按Enter執行",

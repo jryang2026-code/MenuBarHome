@@ -178,7 +178,6 @@ export function buildIntentCatalog(
     aliasToIds.set(alias, [device.id]);
     aliasById.set(device.id, alias);
     if (!aliasToIds.has(device.id)) aliasToIds.set(device.id, [device.id]);
-    // Household water/gas valves stay normally open; exclude them from whole-home `all_devices` batches.
     if (category !== "valve") {
       allDeviceIds.push(device.id);
     }

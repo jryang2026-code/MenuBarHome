@@ -54,7 +54,6 @@ export async function isWorkstationLockBlockingControl(host: {
   try {
     return Boolean(await invoke<boolean>("is_workstation_locked"));
   } catch {
-    // Fail-closed on Tauri IPC errors when lock-screen protection is enabled (macOS ScreenLockPolicy parity).
     return true;
   }
 }

@@ -466,7 +466,7 @@ describe("A11 RunningBatch mid-flight undo & preemption (#2)", () => {
       if (cmd.kind === "setLightPower") {
         sent.push({ entityId: cmd.entityId, isOn: cmd.isOn });
         if (cmd.entityId === "light.l2" && !cmd.isOn) {
-          return false; // l2 failed!
+          return false;
         }
         if (cmd.entityId === "light.l3" && !cmd.isOn) {
           return l3Gate.promise;

@@ -93,11 +93,6 @@ export class RunningBatch {
     return this.liveSteps;
   }
 
-  /** Internal shared reference so hover-pause shallow spreads keep pointing to the live steps list. */
-  public get liveStepsRef(): UndoStep[] {
-    return this.liveSteps;
-  }
-
   public stop(reason: BatchStopReason = "cancelled"): void {
     if (this.stopped) return;
     this.stopped = true;
@@ -105,9 +100,7 @@ export class RunningBatch {
     for (const listener of [...this.stopListeners]) {
       try {
         listener(reason);
-      } catch {
-        // Listener errors must never block batch cancellation.
-      }
+      } catch {}
     }
   }
 
@@ -127,12 +120,10 @@ export class RunningBatch {
   }
 
   public recordAttempt(deviceId: string, inverses: readonly DeviceCommand[]): UndoStep | null {
-    // Freeze liveSteps once stopped so an active performUndo() for..of iterator never shifts indices.
     if (this.stopped) return null;
     this.attemptedIds.add(deviceId);
     if (inverses.length === 0) return null;
     const step: UndoStep = { deviceId, commands: [...inverses] };
-    // Prepend so undo replays in reverse execution order, matching completed-batch ordering.
     this.liveSteps.unshift(step);
     return step;
   }
@@ -164,10 +155,6 @@ export class RunningBatch {
     return action !== null && (action === this.trackedUndoAction || action.steps === this.liveSteps);
   }
 
-  public adoptUndoAction(action: UndoAction): void {
-    this.trackedUndoAction = action;
-  }
-
   public ensureLiveUndoAction(canUndo: boolean): UndoAction | null {
     if (!canUndo || this.liveSteps.length === 0) {
       this.trackedUndoAction = null;
@@ -190,8 +177,6 @@ export class RunningBatch {
 }
 
 const runningBatchByHost = new WeakMap<object, RunningBatch>();
-const undoValueByHost = new WeakMap<object, UndoAction | null>();
-const trappedHosts = new WeakSet<object>();
 
 export function getRunningBatch(host: object): RunningBatch | null {
   const batch = runningBatchByHost.get(host) ?? null;
@@ -205,50 +190,19 @@ export function cancelRunningBatch(host: object, reason: BatchStopReason = "canc
   return true;
 }
 
-function ensureUndoStopTrap(host: MenuMijiaWindowsApp): void {
-  if (trappedHosts.has(host)) return;
-  const descriptor = Object.getOwnPropertyDescriptor(host, "lastUndoAction");
-  if (descriptor && descriptor.configurable === false) return;
-  if (descriptor && typeof descriptor.get === "function" && typeof descriptor.set === "function") {
-    trappedHosts.add(host);
-    return;
-  }
-  undoValueByHost.set(host, host.lastUndoAction ?? null);
-  trappedHosts.add(host);
-  Object.defineProperty(host, "lastUndoAction", {
-    configurable: true,
-    enumerable: true,
-    get(): UndoAction | null {
-      return undoValueByHost.get(host) ?? null;
-    },
-    set(next: UndoAction | null): void {
-      const prev = undoValueByHost.get(host) ?? null;
-      undoValueByHost.set(host, next);
-      const active = runningBatchByHost.get(host);
-      if (!active || active.isFinished || active.isStopped) return;
-      if (!active.ownsUndoAction(prev)) return;
-      if (next === null) {
-        active.stop("undo");
-      } else if (next.steps === active.liveStepsRef) {
-        active.adoptUndoAction(next);
-      }
-    },
-  });
-}
-
 function syncHostLiveUndo(host: MenuMijiaWindowsApp, batch: RunningBatch, canUndo: boolean): void {
   if (batch.isStopped || runningBatchByHost.get(host) !== batch) return;
   const prev = host.lastUndoAction;
   const live = batch.ensureLiveUndoAction(canUndo);
   if (live) {
-    if (host.lastUndoAction !== live && host.lastUndoAction?.steps !== batch.liveStepsRef) {
+    if (!batch.ownsUndoAction(host.lastUndoAction)) {
       host.lastUndoAction = live;
       if (prev === null && typeof host.render === "function") {
         host.render();
       }
     }
   } else if (prev && batch.ownsUndoAction(prev)) {
-    undoValueByHost.set(host, null);
+    host.lastUndoAction = null;
   }
 }
 
@@ -370,13 +324,11 @@ export async function executeIntents(
     }
   }
 
-  // Preempt any earlier batch still running on this host before starting a new one.
   const previousBatch = getRunningBatch(host);
   if (previousBatch && previousBatch !== options.batch) {
     previousBatch.stop("preempted");
   }
 
-  ensureUndoStopTrap(host);
   const runningBatch =
     options.batch ?? new RunningBatch({ summary: replyText, sourceRevision });
   runningBatchByHost.set(host, runningBatch);
@@ -497,8 +449,6 @@ export async function executeIntents(
             canUndo = false;
           }
 
-          // Record before dispatch so mid-flight undo includes the command currently on the wire,
-          // and never includes devices queued behind an interrupted batch.
           const attemptedStep = runningBatch.recordAttempt(deviceId, inverses);
           syncHostLiveUndo(host, runningBatch, canUndo);
 
@@ -624,7 +574,7 @@ export async function executeIntents(
             }
           : null;
     } else if (host.lastUndoAction && runningBatch.ownsUndoAction(host.lastUndoAction)) {
-      undoValueByHost.set(host, null);
+      host.lastUndoAction = null;
     }
 
     if (succeeded === 0 && failed === 0) {

@@ -72,7 +72,7 @@ import {
 } from "./listCut.js";
 
 import { type LoadedSettings, type PendingHighRiskConfirmation, type PersistedSettings, type ReplyBannerState, type UndoAction, type UndoStep } from "./appTypes.js";
-import { LEGACY_STORAGE_KEY, SF_ICONS, STORAGE_KEY } from "./appConstants.js";
+import { SF_ICONS } from "./appConstants.js";
 import { demoDevices, demoScenes } from "./demo.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
 import { loadSettings } from "./settings.js";
@@ -86,7 +86,8 @@ import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
 import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground } from "./proactive.js";
 import { applyCommand, markCloudValuesFresh, markCloudValuesStale } from "./commandDispatch.js";
 import { foldGrouped, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
-import { executeIntents, executeSingleCommand, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
+import { cancelRunningBatch, executeIntents, executeSingleCommand, getRunningBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
+import { clearPersistedMiSessionExpired, persistMiSessionExpired } from "../core/pollingPolicy.js";
 import { bindLayoutGestures } from "./layoutGestures.js";
 import { bindSettingsEvents, refreshHabitSharePreview } from "./settingsEvents.js";
 import { captureSettingsDraft, restoreSettingsDraft, type SettingsTab } from "./settingsViews.js";
@@ -278,7 +279,19 @@ export class MenuMijiaWindowsApp {
   /** Last light explicitly switched on or adjusted by the user; fallback target for `softNightLight` (#36). */
   public lastManuallyUsedLightId: string | null = null;
   /** Set when a Xiaomi refresh fails because the login itself is dead. */
-  public miSessionExpired = false;
+  private _miSessionExpired = false;
+  public get miSessionExpired(): boolean {
+    return this._miSessionExpired;
+  }
+  public set miSessionExpired(next: boolean) {
+    const normalized = Boolean(next);
+    this._miSessionExpired = normalized;
+    if (normalized) {
+      if (this.settings.miSession) persistMiSessionExpired(this.settings.miSession, true);
+    } else {
+      clearPersistedMiSessionExpired();
+    }
+  }
   /** True after a hold already ran All Off, so a later pointerup on the rebuilt button does not replace the result with the short-press hint. */
   private allOffHoldConsumed = false;
   private allOffHoldTimer: number | null = null;
@@ -325,17 +338,6 @@ export class MenuMijiaWindowsApp {
     );
     this.cameraLive = new CameraLiveController(this);
 
-    const storedRaw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (storedRaw) {
-      try {
-        const parsed = JSON.parse(storedRaw) as { interfaceLanguage?: unknown } | null;
-        if (parsed?.interfaceLanguage === "zh-Hant") {
-          this.settings.interfaceLanguage = "zh-Hant";
-        }
-      } catch {
-        // Malformed storage already fell back in loadSettings().
-      }
-    }
     this.applyInterfaceLanguage();
     this.qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");
     this.applyTemperatureSetting();
@@ -778,13 +780,17 @@ export class MenuMijiaWindowsApp {
       return;
     }
     const action = this.lastUndoAction;
+    if (getRunningBatch(this)?.ownsUndoAction(action)) {
+      cancelRunningBatch(this, "undo");
+    }
+    const stepsToRestore = [...action.steps];
     this.lastUndoAction = null;
     clearUndoHoverPause(this);
     const sourceRevision = this.sourceRevision;
     const failedSteps: UndoStep[] = [];
     const blockedDevices = new Set<string>();
     let failureMessage = "";
-    for (const step of action.steps) {
+    for (const step of stepsToRestore) {
       if (blockedDevices.has(step.deviceId)) {
         failedSteps.push(step);
         continue;
@@ -1378,15 +1384,6 @@ export class MenuMijiaWindowsApp {
   }
 
   public bindEvents(): void {
-    this.root.querySelectorAll<HTMLElement>('[data-interface-language="zh-Hant"]').forEach((btn) => {
-      btn.addEventListener("click", (event) => {
-        event.stopImmediatePropagation();
-        this.settings.interfaceLanguage = "zh-Hant";
-        this.applyInterfaceLanguage();
-        this.saveSettings();
-        this.render();
-      });
-    });
     bindEventsImpl(this);
   }
 

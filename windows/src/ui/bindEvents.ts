@@ -438,7 +438,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       btn.addEventListener("click", () => {
         const value = btn.dataset.interfaceLanguage;
         host.settings.interfaceLanguage =
-          value === "zh-Hans" || value === "en" ? value : "system";
+          value === "zh-Hans" || value === "zh-Hant" || value === "en" ? value : "system";
         host.applyInterfaceLanguage();
         host.saveSettings();
         host.render();

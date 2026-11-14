@@ -142,7 +142,6 @@ export function renderApplianceDrawer(
   }
 
   if (k.modeWritable && k.availableModes.length > 0) {
-    // More than four programmes wrap into a button wall; switch to a compact <select> (ApplianceDetailDrawer.swift:26-27).
     if (k.availableModes.length > 4) {
       const activeMode =
         k.currentMode && k.availableModes.includes(k.currentMode) ? k.currentMode : null;
@@ -236,9 +235,7 @@ async function writeFaultTextToClipboard(text: string): Promise<void> {
     try {
       await nav.clipboard.writeText(text);
       return;
-    } catch {
-      // Fall through to legacy textarea selection fallback.
-    }
+    } catch {}
   }
   const textarea = document.createElement("textarea");
   textarea.value = text;
