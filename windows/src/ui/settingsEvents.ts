@@ -652,18 +652,19 @@ export function syncSettingsSaveHint(
   host: SettingsEventsHost,
   trigger?: "draft" | "auto-saved" | "reset",
 ): void {
+  const dirty = host.activeSheet === "settings" && hasUnsavedSettingsDraft(host);
   if (trigger === "reset" || host.activeSheet !== "settings") {
     settingsSaveModeByHost.set(host, "clean");
+  } else if (dirty) {
+    settingsSaveModeByHost.set(host, "dirty");
   } else if (trigger === "auto-saved") {
     settingsSaveModeByHost.set(host, "saved");
   } else if (trigger === "draft") {
-    settingsSaveModeByHost.set(host, hasUnsavedSettingsDraft(host) ? "dirty" : "clean");
-  } else if (hasUnsavedSettingsDraft(host) && settingsSaveModeByHost.get(host) !== "saved") {
-    settingsSaveModeByHost.set(host, "dirty");
+    settingsSaveModeByHost.set(host, "clean");
   }
   const hint = host.root.querySelector<HTMLElement>(".cc-settings-save-hint");
   if (!hint) return;
-  const mode = settingsSaveModeByHost.get(host) ?? (hasUnsavedSettingsDraft(host) ? "dirty" : "clean");
+  const mode = dirty ? "dirty" : (settingsSaveModeByHost.get(host) ?? "clean");
   hint.dataset.saveState = mode;
   hint.textContent =
     mode === "dirty"

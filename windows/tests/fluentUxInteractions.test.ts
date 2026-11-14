@@ -370,6 +370,15 @@ describe("Fluent UX & Interaction Holistic Contract", () => {
     const hideOfflineBox = element<HTMLInputElement>("#settings-hide-offline");
     hideOfflineBox.checked = !hideOfflineBox.checked;
     hideOfflineBox.dispatchEvent(new window.Event("change", { bubbles: true }));
+    assert.equal(element(".cc-settings-save-hint").dataset.saveState, "dirty");
+
+    element<HTMLInputElement>("#settings-ha-url").value = app.settings.haBaseURL;
+    element<HTMLInputElement>("#settings-ha-url").dispatchEvent(new window.Event("input", { bubbles: true }));
+    assert.equal(element(".cc-settings-save-hint").dataset.saveState, "clean");
+
+    const reToggleHideOffline = element<HTMLInputElement>("#settings-hide-offline");
+    reToggleHideOffline.checked = !reToggleHideOffline.checked;
+    reToggleHideOffline.dispatchEvent(new window.Event("change", { bubbles: true }));
     assert.equal(element(".cc-settings-save-hint").dataset.saveState, "saved");
 
     secondaryDetails.open = true;

@@ -339,5 +339,11 @@ describe("Keyed DOM Reconciler & Fluent Motion Pipeline", () => {
 
     window.dispatchEvent(new window.CustomEvent("menumijia:activate"));
     assert.ok(document.activeElement === element("#command-input"));
+
+    app.openSettingsSheet("connection");
+    const haUrlField = element<HTMLInputElement>("#settings-ha-url");
+    haUrlField.focus();
+    window.dispatchEvent(new window.CustomEvent("menumijia:activate"));
+    assert.equal(document.activeElement, haUrlField);
   });
 });

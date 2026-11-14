@@ -3108,11 +3108,11 @@ summary .cc-mini-caret {
 
 .cc-footer {
   height: 44px;
-  padding: 0 8px 0 10px;
+  padding: 0 6px 0 8px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 4px;
+  gap: 3px;
   flex-shrink: 0;
   min-width: 0;
   background: var(--win-card-secondary);
@@ -3122,7 +3122,7 @@ summary .cc-mini-caret {
 .cc-footer-status {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
   flex: 1 1 78px;
 }
@@ -3262,8 +3262,8 @@ button.cc-footer-label.is-action {
 }
 
 .cc-footer-icon-btn {
-  width: 25px;
-  height: 25px;
+  width: 24px;
+  height: 24px;
   border-radius: var(--r-control);
   border: none;
   background: transparent;

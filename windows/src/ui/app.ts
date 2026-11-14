@@ -100,6 +100,7 @@ import {
 } from "./speechGuard.js";
 export { waitForCameraFrameGap } from "./dom.js";
 import { createPanelSearchState, normalizeSearch, PanelSearchIndex } from "../core/panelSearch.js";
+import { focusPanelOnActivate } from "./panelKeyboard.js";
 import { PanelRenderPipeline, prefersReducedMotion, syncDocumentLanguage } from "./reconciler.js";
 
 import { ScheduledCommandStore } from "../core/scheduledCommands.js";
@@ -359,10 +360,7 @@ export class MenuMijiaWindowsApp {
     };
     const onActivate = () => {
       if (!this.root.isConnected) return;
-      const inputEl = this.root.querySelector<HTMLInputElement>("#command-input");
-      if (inputEl && !inputEl.disabled) {
-        inputEl.focus({ preventScroll: true });
-      }
+      focusPanelOnActivate(this);
     };
     window.addEventListener("menumijia:open-update", onOpenUpdate);
     window.addEventListener("menumijia:activate", onActivate);

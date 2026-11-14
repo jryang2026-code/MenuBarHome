@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import ./tests/tsLoader.mjs --test tests/*.test.ts",
     "test:file": "node ./scripts/test-file.mjs",
+    "verify:ui": "node ./scripts/verify-flyout-layout.mjs",
     "tauri": "tauri"
   },
   "devDependencies": {

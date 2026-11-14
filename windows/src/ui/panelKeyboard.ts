@@ -169,7 +169,10 @@ function activeModalContainer(host: MenuMijiaWindowsApp): HTMLElement | null {
     const promptEl = host.root.querySelector<HTMLElement>(".cc-prompt:not([data-exit-ghost])");
     if (promptEl) return promptEl;
   }
-  if (host.activeSheet !== "none") {
+  if (
+    host.activeSheet !== "none" ||
+    (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden)
+  ) {
     const sheets = host.root.querySelectorAll<HTMLElement>(".cc-sheet:not([data-exit-ghost])");
     for (let i = sheets.length - 1; i >= 0; i -= 1) {
       const sheet = sheets[i];
@@ -182,6 +185,29 @@ function activeModalContainer(host: MenuMijiaWindowsApp): HTMLElement | null {
     }
   }
   return null;
+}
+
+export function focusPanelOnActivate(host: MenuMijiaWindowsApp): void {
+  const modal = activeModalContainer(host);
+  if (modal) {
+    const active = document.activeElement as HTMLElement | null;
+    if (!active || !modal.contains(active)) {
+      modalFocusableElements(modal)[0]?.focus({ preventScroll: true });
+    }
+    return;
+  }
+  if (host.expandedDeviceId !== null) {
+    const subpage = host.root.querySelector<HTMLElement>(".cc-tile.is-subpage:not([data-exit-ghost])");
+    const active = document.activeElement as HTMLElement | null;
+    if (subpage && (!active || !subpage.contains(active))) {
+      modalFocusableElements(subpage)[0]?.focus({ preventScroll: true });
+    }
+    return;
+  }
+  const inputEl = host.root.querySelector<HTMLInputElement>("#command-input");
+  if (inputEl && !inputEl.disabled) {
+    inputEl.focus({ preventScroll: true });
+  }
 }
 
 function modalFocusableElements(modal: HTMLElement): HTMLElement[] {
