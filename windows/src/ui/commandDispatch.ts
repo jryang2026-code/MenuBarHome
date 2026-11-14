@@ -16,6 +16,18 @@ import {
   type HomeProvider,
 } from "../core/homeProvider.js";
 import {
+  DualSourceHomeProvider,
+  commandTargetBackend,
+} from "../core/dualSourceProvider.js";
+import { MultiAccountMiCloudProvider } from "../core/miAccountsStore.js";
+import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
+import {
+  getHostDualSourceState,
+  getHostMiAccountsState,
+  hasMultipleMiAccountsForHost,
+  isDualSourceEnabled,
+} from "./cloudRefresh.js";
+import {
   MiCloudClient,
   MiCloudError,
   MiotSynthesizer,
@@ -571,17 +583,33 @@ export function scheduleEchoReadBack(
     const currentDev = host.devices.find((d) => d.id === deviceId);
     if (!currentDev) return;
 
+    const dualActive = isDualSourceEnabled(host);
+    const dualBackend = dualActive
+      ? (getHostDualSourceState(host)?.deviceBackends[deviceId] ?? "xiaomiCloud")
+      : null;
+    const isXiaomiDevice = mode === "xiaomiCloud" || (dualActive && dualBackend === "xiaomiCloud");
+    const multiState = getHostMiAccountsState(host);
+    const accounts = host.miAccountsOverride ?? multiState?.accounts ?? [];
+    const mappedAccountId =
+      multiState?.merged?.deviceOwners[deviceId]?.[0] ??
+      (currentDev as { accountId?: string }).accountId ??
+      null;
+    const matchedAccount = mappedAccountId
+      ? accounts.find((a) => a.id === mappedAccountId)
+      : accounts[0];
+    const resolvedSession = matchedAccount?.session ?? host.settings?.miSession ?? null;
+
     if (
-      mode === "xiaomiCloud" &&
-      host.settings?.miSession &&
+      isXiaomiDevice &&
+      resolvedSession &&
       host.specResolver &&
       typeof host.specResolver.resolve === "function" &&
       host.transport
     ) {
-      const session = host.settings.miSession;
+      const session = resolvedSession;
       const record = buildSingleDeviceMiRecord(currentDev, host.deviceFacets?.[deviceId]);
       const spec = await host.specResolver.resolve(record);
-      if (!isStillCurrent() || host.settings?.miSession !== session) return;
+      if (!isStillCurrent()) return;
 
       const propKeys = dedupeMiotPropKeys([
         ...MiotSynthesizer.requiredProps(record, spec),
@@ -590,7 +618,7 @@ export function scheduleEchoReadBack(
       const client = new MiCloudClient(session, host.transport);
       const values =
         propKeys.length > 0 ? await client.getProps(propKeys) : new Map<string, unknown>();
-      if (!isStillCurrent() || host.settings?.miSession !== session) return;
+      if (!isStillCurrent()) return;
 
       const latestExisting = host.devices.find((d) => d.id === deviceId);
       if (!latestExisting) return;
@@ -720,21 +748,14 @@ export function scheduleEchoReadBack(
   };
 }
 
-/**
- * A cover command shown before its send. A cover is write-only — macOS locks it before the send so
- * a pre-command parked snapshot cannot drop the commanded travel (`HomeStore+Controls.swift:
- * togglePrimary`), and again after success, which bumps the revision.
- */
 interface CoverOptimisticWrite {
   readonly deviceId: string;
-  /** The position the motor started from; a snapshot parked there is pre-command, not confirmation. */
-  readonly originPosition: number | null;
+    readonly originPosition: number | null;
   readonly priorDevice: SmartDevice;
   readonly priorFacets: readonly FacetControl[] | undefined;
   readonly priorLock: OptimisticLockSnapshot | null;
 }
 
-/** The cover card a motor (`setSelectOption`) or position (`setNumberValue`) command addresses. */
 export function coverDeviceForCommand(
   host: MenuMijiaWindowsApp,
   command: DeviceCommand,
@@ -746,10 +767,6 @@ export function coverDeviceForCommand(
   return device ?? null;
 }
 
-/**
- * Copies `source.kind` back onto `target.kind` without replacing the device object, so a view or a
- * caller still holding that row sees the restored values.
- */
 function restoreKindInPlace(target: SmartDevice, source: SmartDevice): void {
   const kind = target.kind as unknown as Record<string, unknown>;
   const from = source.kind as unknown as Record<string, unknown>;
@@ -761,10 +778,17 @@ function restoreKindInPlace(target: SmartDevice, source: SmartDevice): void {
   }
 }
 
-/**
- * Shows a cover command before it goes out and locks the row for the length of its travel. The
- * previous row, facets and lock are kept so a refused send can put them back.
- */
+function effectiveCommandBackend(
+  host: MenuMijiaWindowsApp,
+  command: DeviceCommand,
+): "demo" | "xiaomiCloud" | "homeAssistant" {
+  if (host.settings.connectionMode === "demo") return "demo";
+  if (isDualSourceEnabled(host)) {
+    return commandTargetBackend(command);
+  }
+  return host.settings.connectionMode;
+}
+
 function beginCoverOptimisticWrite(
   host: MenuMijiaWindowsApp,
   command: DeviceCommand,
@@ -776,7 +800,12 @@ function beginCoverOptimisticWrite(
   const priorFacets = facets[device.id] ? structuredClone(facets[device.id]!) : undefined;
   const priorLock = snapshotOptimisticLock(host, device.id);
   const originPosition = device.kind.kind === "cover" ? device.kind.positionPercent : null;
-  applyCommandToDevices(host.devices, command, host.settings.connectionMode, facets);
+  applyCommandToDevices(
+    host.devices,
+    command,
+    effectiveCommandBackend(host, command),
+    facets,
+  );
   lockOptimistic(host, device.id, COVER_OPTIMISTIC_LOCK_DURATION_MS, {
     coverOriginPosition: originPosition,
     baselineDevice: priorDevice,
@@ -785,14 +814,12 @@ function beginCoverOptimisticWrite(
   return { deviceId: device.id, originPosition, priorDevice, priorFacets, priorLock };
 }
 
-/** Puts back a refused cover send: the row it displaced, and the lock it displaced. */
 function revertCoverOptimisticWrite(host: MenuMijiaWindowsApp, write: CoverOptimisticWrite): void {
   const device = host.devices.find((item) => item.id === write.deviceId);
   if (device) restoreKindInPlace(device, write.priorDevice);
   restoreOptimisticLock(host, write.deviceId, write.priorLock);
 }
 
-/** True when no newer command has taken the row this command addresses. */
 function stillOwnsWrite(host: MenuMijiaWindowsApp, claim: DeviceWriteClaim | null): boolean {
   return claim === null || ownsDeviceWrite(host, claim);
 }
@@ -828,9 +855,10 @@ export async function applyCommand(
     targetDeviceId !== null ? (host.devices.find((d) => d.id === targetDeviceId) ?? null) : null;
   const claim = targetDeviceId !== null ? claimDeviceWrite(host, targetDeviceId) : null;
   const coverWrite = beginCoverOptimisticWrite(host, command);
+  const effectiveMode = effectiveCommandBackend(host, command);
 
   try {
-    if (host.settings.connectionMode === "homeAssistant") {
+    if (effectiveMode === "homeAssistant") {
       command = homeAssistantCommand(command, host.devices, host.deviceFacets);
     }
     const readPower = await dispatchCloudCommand(host, command, readBackPower);
@@ -847,6 +875,15 @@ export async function applyCommand(
       }
       return false;
     }
+
+    appDiagnosticsLog.record({
+      error,
+      category:
+        classified?.kind === "sessionExpired" ||
+        (error instanceof MiCloudError && error.kind === "sessionExpired")
+          ? "auth"
+          : "command",
+    });
 
     if (
       classified?.kind === "sessionExpired" ||
@@ -928,18 +965,18 @@ export async function applyCommand(
   const cameraChanges = applyCommandToDevices(
     host.devices,
     command,
-    host.settings.connectionMode,
+    effectiveMode,
     facets,
   );
   if (originalCommand.kind === "setMiotProperty" && originalCommand !== command) {
     applyCommandToDevices(
       host.devices,
       originalCommand,
-      host.settings.connectionMode,
+      effectiveMode,
       facets,
     );
   }
-  if (host.settings.connectionMode === "homeAssistant") {
+  if (effectiveMode === "homeAssistant") {
     applyHAExtendedCommandEffect(host.devices, command);
   }
   syncDirectCommandToFacets(facets, command, host.devices);
@@ -999,11 +1036,6 @@ export async function applyCommand(
   return true;
 }
 
-/**
- * The card that owns a MIoT entity id, or null when none does. A card's own controls and every
- * 更多设置 row count: a plug's auxiliary control lives on a sibling service (#5), so the drawer
- * address must resolve to the card even though the card's main switch has another one.
- */
 export function deviceOwningEntityId(
   devices: readonly SmartDevice[],
   facets: Readonly<Record<string, readonly FacetControl[]>>,
@@ -1024,7 +1056,6 @@ export function deviceOwningEntityId(
   return owner?.id ?? devices.find((device) => device.id === entityId || device.id === baseEntityId)?.id ?? null;
 }
 
-/** The entity ids a card's own controls address, before 更多设置 rows are considered. */
 function kindOwnsEntity(kind: DeviceKind, entityId: string): boolean {
   switch (kind.kind) {
     case "plug":
@@ -1089,32 +1120,71 @@ export async function dispatchCloudCommand(
   }
 }
 
-/** The provider for the backend the panel is connected to right now (ADR-0020). */
-export function homeProviderFor(host: MenuMijiaWindowsApp): HomeProvider {
-  if (host.settings.connectionMode === "demo") return new DemoHomeProvider();
-  if (host.settings.connectionMode === "homeAssistant") {
-    return new HomeAssistantProvider(
-      new HomeAssistantClient(host.settings.haBaseURL, host.settings.haToken),
-      host.endpointSubmission,
-    );
+function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeProvider {
+  const deviceForEntity = (entityId: string): SmartDevice | undefined => {
+    const deviceId = deviceOwningEntityId(host.devices, host.deviceFacets, entityId);
+    return host.devices.find((device) => device.id === deviceId);
+  };
+  const multiState = getHostMiAccountsState(host);
+  const accounts = host.miAccountsOverride ?? multiState?.accounts ?? [];
+  if (hasMultipleMiAccountsForHost(host) && accounts.length > 0) {
+    return new MultiAccountMiCloudProvider({
+      accounts,
+      deviceOwners: multiState?.merged?.deviceOwners ?? {},
+      specsByModel: multiState?.merged?.specsByModel ?? {},
+      devices: host.devices,
+      specResolver: host.specResolver,
+      deviceForEntity,
+      transport: host.transport,
+    });
   }
-  if (!host.settings.miSession) throw new Error(t("请先扫码登录米家"));
+  const session = host.settings.miSession ?? accounts[0]?.session ?? null;
+  if (!session) throw new Error(t("请先扫码登录米家"));
   return new MiCloudProvider({
-    client: new MiCloudClient(host.settings.miSession, host.transport),
+    client: new MiCloudClient(session, host.transport),
     specResolver: host.specResolver,
-    deviceForEntity: (entityId) => {
-      const deviceId = deviceOwningEntityId(host.devices, host.deviceFacets, entityId);
-      return host.devices.find((device) => device.id === deviceId);
-    },
+    deviceForEntity,
   });
 }
 
+function buildHomeAssistantProvider(host: MenuMijiaWindowsApp): HomeProvider {
+  return new HomeAssistantProvider(
+    new HomeAssistantClient(
+      host.settings.haBaseURL,
+      host.settings.haToken,
+      host.haInvokeOverride ?? undefined,
+    ),
+    host.endpointSubmission,
+  );
+}
+
+export function homeProviderFor(host: MenuMijiaWindowsApp): HomeProvider {
+  if (host.settings.connectionMode === "demo") return new DemoHomeProvider();
+  if (isDualSourceEnabled(host)) {
+    return new DualSourceHomeProvider({
+      miProvider: buildXiaomiHomeProvider(host),
+      haProvider: buildHomeAssistantProvider(host),
+      routes: getHostDualSourceState(host)?.routes,
+      deviceIdForEntity: (entityId) => deviceOwningEntityId(host.devices, host.deviceFacets, entityId),
+    });
+  }
+  if (host.settings.connectionMode === "homeAssistant") {
+    return buildHomeAssistantProvider(host);
+  }
+  return buildXiaomiHomeProvider(host);
+}
+
 export function markCloudValuesStale(host: MenuMijiaWindowsApp): void {
-  if (host.settings.connectionMode === "xiaomiCloud" && host.devices.length > 0) {
+  if (
+    (host.settings.connectionMode === "xiaomiCloud" || isDualSourceEnabled(host)) &&
+    host.devices.length > 0
+  ) {
     host.cloudValuesStale = true;
   }
 }
 
 export function markCloudValuesFresh(host: MenuMijiaWindowsApp): void {
-  if (host.settings.connectionMode === "xiaomiCloud") host.cloudValuesStale = false;
+  if (host.settings.connectionMode === "xiaomiCloud" || isDualSourceEnabled(host)) {
+    host.cloudValuesStale = false;
+  }
 }

@@ -1,4 +1,10 @@
-import { homeAssistantIdentity } from "../core/homeAssistant.js";
+import { homeAssistantIdentity, type HAInvoke } from "../core/homeAssistant.js";
+import { DualSourceCoordinator } from "../core/dualSourceProvider.js";
+import {
+  MiAccountsStore,
+  type MiAccount,
+} from "../core/miAccountsStore.js";
+import type { HostMultiAccountState } from "./cloudRefresh.js";
 import {
   assistantEndpointIdentity,
   endpointAllowsSendingSecrets,
@@ -11,6 +17,7 @@ import {
 import {
   type HttpTransport,
   MiAccountLogin,
+  type MiRoom,
   MiotSpecResolver,
   type QRLoginTicket,
   maskedMiUserId,
@@ -178,6 +185,21 @@ export class MenuMijiaWindowsApp {
   public energySession: HostEnergySession = createDefaultHostEnergySession();
   public activityCenter: HostActivityCenter | null = null;
   public activityWindowLifecycleBound = false;
+  public miAccountsStore: MiAccountsStore | null = null;
+  public miAccountsOverride: readonly MiAccount[] | null = null;
+  public multiAccountState: HostMultiAccountState | null = null;
+  public dualSourceEnabledOverride: boolean | null = null;
+  public dualSourceCoordinator: DualSourceCoordinator | null = null;
+  public haInvokeOverride: HAInvoke | null = null;
+  public lastGoodXiaomiRooms: {
+    readonly sourceRevision: number;
+    readonly userId: string;
+    readonly region: string;
+    readonly rooms: readonly MiRoom[];
+  } | null = null;
+  public initialSessionCheckDone = false;
+  public lockProbeInFlight = false;
+  public lastSessionFingerprint: string | null = null;
   public get devices(): SmartDevice[] {
     return this._devices;
   }

@@ -38,8 +38,6 @@ export function upgradeCachedDevices(devices: SmartDevice[], migrateLegacyFridge
       };
     }
     if (migrateLegacyFridgeCache && dev.kind.kind === "fridge") {
-      // A legacy cache can carry ids from the guessed fallback; cloud re-synthesis
-      // restores only verified writable targets afterwards (#148).
       return {
         ...dev,
         kind: {
@@ -54,8 +52,6 @@ export function upgradeCachedDevices(devices: SmartDevice[], migrateLegacyFridge
     return dev;
   });
 }
-
-
 
 export function loadSettings(): LoadedSettings {
   try {
@@ -95,6 +91,9 @@ export function loadSettings(): LoadedSettings {
       const askWhenUnsure = typeof parsed.askWhenUnsure === "boolean" ? parsed.askWhenUnsure : true;
       const settings: PersistedSettings = {
         connectionMode: mode,
+        ...(typeof parsed.dualSourceEnabled === "boolean"
+          ? { dualSourceEnabled: parsed.dualSourceEnabled }
+          : {}),
         miSession,
         miCloudRegion: normalizeMiCloudRegion(parsed.miCloudRegion ?? miSession?.region),
         autoCheckUpdates: parsed.autoCheckUpdates ?? true,
@@ -102,7 +101,6 @@ export function loadSettings(): LoadedSettings {
         haToken: rawHaToken,
         assistantBaseURL: parsed.assistantBaseURL ?? "https://openrouter.ai/api/v1",
         openRouterApiKey: rawApiKey,
-        // Keys saved before binding existed belong to the URL saved alongside them.
         assistantKeyEndpoint: resolvedKeyEndpoint,
         assistantCustomKeyEndpoint,
         assistantLegacyKeyEndpoint,
@@ -147,8 +145,6 @@ export function loadSettings(): LoadedSettings {
           parsed.cachedModelTypes && typeof parsed.cachedModelTypes === "object"
             ? parsed.cachedModelTypes
             : {},
-        // A stored `skin` from builds before the redesign is simply not read; every surface today
-        // is the same glass panel.
         appearance:
           parsed.appearance === "light" || parsed.appearance === "dark"
             ? parsed.appearance
@@ -195,9 +191,19 @@ export function loadSettings(): LoadedSettings {
       };
     }
   } catch {
-    // ignore corrupt localStorage
+    return {
+      settings: buildDefaultSettings(),
+      hasLegacyCredentials: false,
+    };
   }
-  const defaultSettings: PersistedSettings = {
+  return {
+    settings: buildDefaultSettings(),
+    hasLegacyCredentials: false,
+  };
+}
+
+function buildDefaultSettings(): PersistedSettings {
+  return {
     connectionMode: "demo",
     miSession: null,
     miCloudRegion: "cn",
@@ -245,10 +251,6 @@ export function loadSettings(): LoadedSettings {
     cameraStreamURLs: {},
     cameraStreamQualities: {},
   };
-  return {
-    settings: defaultSettings,
-    hasLegacyCredentials: false,
-  };
 }
 
 export function readAskWhenUnsure(settings: { readonly askWhenUnsure?: boolean }): boolean {
@@ -259,16 +261,14 @@ export function writeAskWhenUnsure(settings: { askWhenUnsure?: boolean }, enable
   settings.askWhenUnsure = enabled;
 }
 
-/** Writes settings without credentials; secrets belong to the Windows Credential Manager (#28). */
 export function writeSettingsForStorage(settings: object): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitizeSettingsForStorage(settings)));
   } catch {
-    // ignore storage quota errors
+    return;
   }
 }
 
-/** Removes secrets from every settings copy, including the pre-1.0 legacy key. */
 export function stripCredentialFieldsFromStoredCopies(): void {
   for (const key of [STORAGE_KEY, LEGACY_STORAGE_KEY]) {
     const raw = localStorage.getItem(key);
@@ -277,7 +277,7 @@ export function stripCredentialFieldsFromStoredCopies(): void {
       const parsed = JSON.parse(raw) as Record<string, unknown>;
       localStorage.setItem(key, JSON.stringify(sanitizeSettingsForStorage(parsed)));
     } catch {
-      // ignore corrupt copies
+      continue;
     }
   }
 }
