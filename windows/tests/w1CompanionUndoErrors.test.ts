@@ -1221,12 +1221,16 @@ describe("A15 Companion URL high-risk confirm, Zero-AI presets, group folding & 
     const heater = makeHighRiskHeater("plug.heater", "卧室电暖器");
     app.devices = [lamp, heater];
     const token = getActiveRaycastBridgeTokenForHost(app)!;
-    app.openExternalUrlConfirmPrompt = async () => true;
-    await enqueueIncomingOpenUrl(
+    const urlPromise = enqueueIncomingOpenUrl(
       app,
       `menumijia://power?device=plug.heater&on=true&id=req_prod_modal&token=${token}`,
     );
-    app.openExternalUrlConfirmPrompt = undefined;
+    await setImmediate();
+    await setImmediate();
+    const confirmRunBtn = document.querySelector<HTMLButtonElement>("#btn-url-confirm-run");
+    assert.ok(confirmRunBtn, "production high-risk companion URL must render #btn-url-confirm-run modal");
+    confirmRunBtn.click();
+    await urlPromise;
     assert.equal(
       sent.some((cmd) => cmd.kind === "setSwitch" && cmd.entityId === "switch.plug.heater" && cmd.isOn === true),
       true,

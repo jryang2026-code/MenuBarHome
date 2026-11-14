@@ -508,10 +508,19 @@ describe("A10 Chinese numeral delays (1..99, compound, trailing) & cross-home sc
     app.devices = [homeBLamp];
     markTimerSnapshotReady(app);
     assert.deepEqual(missingScheduledCommandTargets(armed, app.devices, app.scenes), ["did_home_a_lamp"]);
+    const originalPersist = app.scheduledCommandStore.persist.bind(app.scheduledCommandStore);
+    let persistCallCount = 0;
+    app.scheduledCommandStore.persist = () => {
+      persistCallCount += 1;
+      if (persistCallCount > 1) return false;
+      return originalPersist();
+    };
     const changed = runWithScheduledTimerTickExemption(() =>
       processScheduledCommands(app, armed.fireTimestampMs + 100),
     );
     await setImmediate();
+    app.scheduledCommandStore.persist = originalPersist;
+    assert.equal(persistCallCount, 1);
     assert.equal(changed, true);
     assert.equal(executed.length, 0, "must never blindly dispatch missing target in Home B");
     assert.equal(app.replyBanner, null, "must not surface an error banner when parking cross-home timer");

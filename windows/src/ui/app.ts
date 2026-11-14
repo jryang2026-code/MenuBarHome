@@ -100,7 +100,6 @@ export { waitForCameraFrameGap } from "./dom.js";
 import { createPanelSearchState, normalizeSearch, PanelSearchIndex } from "../core/panelSearch.js";
 import { syncPanelSelection } from "./panelKeyboard.js";
 
-import type { AppURLCommandHost } from "../core/appUrlCommand.js";
 import { ScheduledCommandStore } from "../core/scheduledCommands.js";
 import { scheduledCommandIdentity } from "./scheduledCommands.js";
 
@@ -277,7 +276,6 @@ export class MenuMijiaWindowsApp {
     this.scheduledCommandStore.queue(scheduledCommandIdentity(this.settings)).missedScheduledCommands = items;
   }
   public lastUndoAction: UndoAction | null = null;
-  public openExternalUrlConfirmPrompt?: AppURLCommandHost["openExternalUrlConfirmPrompt"];
   /** Last light explicitly switched on or adjusted by the user; fallback target for `softNightLight` (#36). */
   public lastManuallyUsedLightId: string | null = null;
   /** Set when a Xiaomi refresh fails because the login itself is dead. */

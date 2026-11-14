@@ -1026,16 +1026,9 @@ function createUrlCommandHostAdapter(
       });
     },
 
-    ...(typeof host.openExternalUrlConfirmPrompt === "function"
-      ? {
-          openExternalUrlConfirmPrompt(
-            args: Parameters<NonNullable<AppURLCommandHost["openExternalUrlConfirmPrompt"]>>[0],
-          ): Promise<boolean> {
-            if (!revisionStillMatches() || isPanelHidden()) return Promise.resolve(false);
-            return host.openExternalUrlConfirmPrompt!(args);
-          },
-        }
-      : {}),
+    openExternalUrlConfirmPrompt(args): Promise<boolean> {
+      return this.requestExternalUrlConfirmation(args);
+    },
 
     async revealPanelForExternalUrl(): Promise<void> {
       const invoke = window.__TAURI_INTERNALS__?.invoke;
