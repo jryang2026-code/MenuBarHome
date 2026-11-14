@@ -27,7 +27,7 @@ import {
 import {
   CanonicalDeviceRegistry, CANONICAL_DEVICE_REGISTRY_STORAGE_KEY, DUAL_SOURCE_ENABLED_STORAGE_KEY, DeviceDeduplicator, DeviceIdentityNormalizer, DeviceSourcePinStorage,
   DualSourceCoordinator, DualSourceHomeProvider, PINNED_DEVICE_SOURCES_STORAGE_KEY, ROOM_IDENTITY_REGISTRY_STORAGE_KEY, RoomIdentityRegistry, commandTargetBackend,
-  currentSourceMenuTitle, extractHADeviceIdentities, extractMiDeviceIdentities, offlineFallbackBadgeText,
+  currentSourceMenuTitle, extractHADeviceIdentities, extractMiDeviceIdentities, makeDeviceSourceIdentity, offlineFallbackBadgeText,
 } from "../src/core/dualSourceProvider.js";
 import { clearHostSessionAndDualSourceState } from "../src/ui/appLifecycle.js";
 import { homeProviderFor } from "../src/ui/commandDispatch.js";
@@ -1405,5 +1405,71 @@ describe("B9: Multi-account unsupported device scanner & zero-leak Markdown diag
     assert.equal(localStorage.getItem(CANONICAL_DEVICE_REGISTRY_STORAGE_KEY), null);
     assert.equal(localStorage.getItem(ROOM_IDENTITY_REGISTRY_STORAGE_KEY), null);
     assert.equal(appDiagnosticsLog.count(), 0);
+
+    const haLampOff: SmartDevice = {
+      id: "ha:light.living",
+      name: "客厅灯",
+      roomId: "living",
+      roomName: "客厅",
+      model: "yeelink.light.lamp1",
+      isOnline: true,
+      kind: {
+        kind: "light",
+        entityId: "light.living",
+        isOn: false,
+        brightnessPercent: 50,
+        colorTempKelvin: null,
+        minKelvin: 2700,
+        maxKelvin: 6500,
+        currentEffect: null,
+        availableEffects: [],
+      },
+    };
+    const cachedMiLampOn: SmartDevice = {
+      id: "100200300",
+      name: "客厅灯",
+      roomId: "living",
+      roomName: "客厅",
+      model: "yeelink.light.lamp1",
+      isOnline: true,
+      accountId: "mi:cn:1",
+      kind: {
+        kind: "light",
+        entityId: "100200300:2:1",
+        isOn: true,
+        brightnessPercent: 80,
+        colorTempKelvin: 4000,
+        minKelvin: 2700,
+        maxKelvin: 6500,
+        currentEffect: "Reading",
+        availableEffects: ["Reading", "Movie"],
+      },
+    };
+    const mergedWhenMiDisconnected = DeviceDeduplicator.merge({
+      homeAssistant: {
+        home: { devices: [haLampOff], rooms: [], environmentReadings: [], scenes: [] },
+        identities: {
+          [haLampOff.id]: makeDeviceSourceIdentity({
+            dids: ["100200300"],
+            model: haLampOff.model,
+            name: haLampOff.name,
+            roomName: haLampOff.roomName,
+            kindTag: "light",
+          }),
+        },
+      },
+      xiaomiCloud: {
+        home: { devices: [cachedMiLampOn], rooms: [], environmentReadings: [], scenes: [] },
+        accountStatuses: {
+          "mi:cn:1": { kind: "disconnected", reason: "network timeout" },
+        },
+      },
+      pinnedBackends: { [haLampOff.id]: "xiaomiCloud" },
+    });
+    assert.equal(mergedWhenMiDisconnected.home.devices.length, 1);
+    const mergedLamp = mergedWhenMiDisconnected.home.devices[0]!;
+    assert.equal(mergedLamp.sourceBackend, "homeAssistant");
+    assert.equal(mergedLamp.kind.kind === "light" && mergedLamp.kind.isOn, false);
+    assert.equal(mergedLamp.fallbackActive, true);
   });
 });

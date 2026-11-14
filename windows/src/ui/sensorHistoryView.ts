@@ -329,20 +329,28 @@ async function discoverHASensorEntitiesViaSnapshot(
   facets: readonly FacetControl[],
 ): Promise<string[]> {
   const direct = resolveHomeAssistantSensorEntityIds(dev, facets);
-  if (direct.length > 0) return direct;
-  const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
-  if (!invoke) return [];
+  const rawId = dev.id.startsWith("ha:") ? dev.id.slice(3) : dev.id;
+  if (rawId.startsWith("sensor.")) return direct;
+  const invoke =
+    host.haInvokeOverride ??
+    (typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined);
+  if (!invoke) return direct;
   try {
     const raw = await invoke<Record<string, unknown>>("ha_snapshot", {
       baseUrl: host.settings.haBaseURL,
       token: host.settings.haToken,
     });
     const entities = Array.isArray(raw?.entities)
-      ? (raw.entities as ReadonlyArray<{ readonly entity_id?: unknown; readonly device_id?: unknown }>)
+      ? (raw.entities as ReadonlyArray<{
+          readonly entity_id?: unknown;
+          readonly device_id?: unknown;
+          readonly disabled_by?: unknown;
+          readonly hidden_by?: unknown;
+        }>)
       : [];
     return resolveHomeAssistantSensorEntityIds(dev, facets, entities);
   } catch {
-    return [];
+    return direct;
   }
 }
 

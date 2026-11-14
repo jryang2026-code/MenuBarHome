@@ -1163,7 +1163,61 @@ describe("B1 + B5 PC Context Automation Engine, AwayArbitrator, 5m Undo & HA Doo
       trigger: "back",
       action: { kind: "devices", deviceIds: [highRiskHeater.id], isOn: true },
     });
-  await executeAutomationRule(app, heaterRule, { nowMs: t0 + 10_000 });
+    const highRiskRun = await executeAutomationRule(app, heaterRule, { nowMs: t0 + 10_000 });
     assert.equal(sentHighRisk.length, 0);
+    assert.equal(highRiskRun, null);
+
+    app.scenes = [{ id: "scene.sleep", entityId: "scene.sleep", name: "睡眠模式" }];
+    app.replyBanner = null;
+    app.applyCommand = async () => {
+      app.replyBanner = { text: "场景激活失败", source: "Home Assistant", isError: true };
+      return false;
+    };
+    const failedSceneRule = createAutomationRule({
+      id: "r-scene-fail",
+      trigger: "scheduledTime",
+      action: { kind: "scene", sceneId: "scene.sleep" },
+    });
+    const failedSceneRun = await executeAutomationRule(app, failedSceneRule, { nowMs: t0 + 20_000 });
+    assert.equal(failedSceneRun, null);
+    const errBanner = app.replyBanner as { readonly text: string; readonly isError?: boolean } | null;
+    assert.equal(errBanner?.isError, true);
+    assert.equal(errBanner?.text, "场景激活失败");
+
+    const lightA = makeLight({ id: "ha:light_a", name: "灯A", isOn: true });
+    const lightB = makeLight({ id: "ha:light_b", name: "灯B", isOn: true });
+    app.devices = [lightA, lightB];
+    const undoCenter = getHostActivityCenter(app);
+    undoCenter.recentAutomationRuns = [
+      {
+        id: "run-source-switch",
+        ruleId: "r-away",
+        trigger: "away",
+        triggerTitle: "离开电脑",
+        summary: "离开电脑 · 已执行",
+        steps: [
+          { deviceId: lightA.id, commands: [{ kind: "setLightPower", entityId: lightA.id, isOn: true }] },
+          { deviceId: lightB.id, commands: [{ kind: "setLightPower", entityId: lightB.id, isOn: true }] },
+        ],
+        kindSnapshots: new Map([
+          [lightA.id, structuredClone(lightA.kind)],
+          [lightB.id, structuredClone(lightB.kind)],
+        ]),
+        scope: undoCenter.scopeKey,
+        firedAtMs: t0,
+        expiresAtMs: t0 + 300_000,
+      },
+    ];
+    const undoSent: DeviceCommand[] = [];
+    app.applyCommand = async (cmd) => {
+      undoSent.push(cmd);
+      app.settings.haBaseURL = "http://other-ha.local:8123";
+      app.invalidateSourceControl();
+      return true;
+    };
+    const { executeAutomationCardUndo } = await import("../src/ui/activityStackView.js");
+    const undoOk = await executeAutomationCardUndo(app, "run-source-switch", t0 + 1_000);
+    assert.equal(undoOk, false);
+    assert.equal(undoSent.length, 1);
   });
 });

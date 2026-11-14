@@ -588,22 +588,31 @@ export const DeviceDeduplicator = {
     const miInput = options.xiaomiCloud ?? null; const knownPrefIds = options.knownPreferenceIds ?? new Set<string>();
     const pinnedBackends = options.pinnedBackends ?? {}; const toCandidates = (input: DualSourceInputSnapshot | null,
       backend: HomeBackend): Candidate[] => { if (!input) return [];
+      const statuses = backend === "xiaomiCloud" && input.accountStatuses ? Object.values(input.accountStatuses) : [];
+      const allAccountsDisconnected = statuses.length > 0 && statuses.every((s) => s.kind === "disconnected");
       const fallbackIdentities = input.identities ??
         (backend === "homeAssistant"
           ? extractHADeviceIdentities(null, input.home)
           : extractMiDeviceIdentities([], input.home));
-      return input.home.devices.map((dev) => ({
-        backend,
-        device: dev,
-        identity: fallbackIdentities[dev.id] ??
-          makeDeviceSourceIdentity({
-            dids: backend === "xiaomiCloud" ? [stripTrackSuffix(dev.id)] : DeviceIdentityNormalizer.didCandidates([dev.id]),
-            model: dev.model,
-            name: dev.name,
-            roomName: dev.roomName,
-            kindTag: dev.kind.kind,
-          }),
-      }));
+      return input.home.devices.map((dev) => {
+        const accountStatus = backend === "xiaomiCloud" && dev.accountId && input.accountStatuses
+          ? input.accountStatuses[dev.accountId]
+          : undefined;
+        const accountDisconnected = allAccountsDisconnected || accountStatus?.kind === "disconnected";
+        const effectiveDev = accountDisconnected && dev.isOnline ? { ...dev, isOnline: false } : dev;
+        return {
+          backend,
+          device: effectiveDev,
+          identity: fallbackIdentities[dev.id] ??
+            makeDeviceSourceIdentity({
+              dids: backend === "xiaomiCloud" ? [stripTrackSuffix(dev.id)] : DeviceIdentityNormalizer.didCandidates([dev.id]),
+              model: dev.model,
+              name: dev.name,
+              roomName: dev.roomName,
+              kindTag: dev.kind.kind,
+            }),
+        };
+      });
     };
 
     const haCandidates = toCandidates(haInput, "homeAssistant");
@@ -1031,8 +1040,23 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
       };
     }
 
-    if (miSettled.status === "fulfilled") { this.lastMi = miSettled.value;
-      this.sourceStatuses.xiaomiCloud = { kind: "connected" };
+    if (miSettled.status === "fulfilled") {
+      const statuses = Object.values(miSettled.value.accountStatuses ?? {});
+      const allDisconnected = statuses.length > 0 && statuses.every((s) => s.kind === "disconnected");
+      if (allDisconnected) {
+        const firstDisc = statuses.find(
+          (s): s is Extract<ConnectionStatus, { readonly kind: "disconnected" }> => s.kind === "disconnected",
+        );
+        miError = firstDisc?.reason ?? "Xiaomi Cloud disconnected";
+        this.lastMi = null;
+        this.sourceStatuses.xiaomiCloud = {
+          kind: "disconnected",
+          reason: miError,
+        };
+      } else {
+        this.lastMi = miSettled.value;
+        this.sourceStatuses.xiaomiCloud = { kind: "connected" };
+      }
     } else { miError =
         miSettled.reason instanceof Error
           ? miSettled.reason.message

@@ -750,19 +750,29 @@ export async function executeAutomationRule(
   const preference = host.settings?.interfaceLanguage;
   const steps: AutomationUndoStep[] = [];
   const kindSnapshots = new Map<string, SmartDevice["kind"]>();
+  let attemptedCount = 0;
+  let succeededCount = 0;
+  let failedCount = 0;
 
   if (rule.action.kind === "quickAction") {
     const planned = planQuickAction(rule.action.quickAction, host.devices, host.lastManuallyUsedLightId ?? null);
     for (const target of planned.targets) {
       if ((host.sourceRevision ?? 0) !== startingRevision) return null;
+      if (target.commands.length === 0) continue;
+      attemptedCount += 1;
       let accepted = 0;
       for (const cmd of target.commands) {
         if (await host.applyCommand(cmd, true)) accepted += 1;
         else break;
       }
-      if (accepted > 0 && target.restoreCommands.length > 0) {
-        steps.push({ deviceId: target.deviceId, commands: target.restoreCommands });
-        kindSnapshots.set(target.deviceId, target.previousKind);
+      if (accepted > 0) {
+        succeededCount += 1;
+        if (target.restoreCommands.length > 0) {
+          steps.push({ deviceId: target.deviceId, commands: target.restoreCommands });
+          kindSnapshots.set(target.deviceId, target.previousKind);
+        }
+      } else {
+        failedCount += 1;
       }
     }
   } else if (rule.action.kind === "devices") {
@@ -773,27 +783,54 @@ export async function executeAutomationRule(
       if (!dev || !dev.isOnline || isDeviceActiveOn(dev) === rule.action.isOn) continue;
       const cmds = commandsForPowerIntent(dev, rule.action.isOn, policyDevices);
       if (cmds.length === 0) continue;
+      attemptedCount += 1;
       const previousKind = structuredClone(dev.kind);
-      const restore = cmds.flatMap((cmd) => inverseCommands(dev, cmd));
-      let accepted = 0;
+      const snapshotDev: SmartDevice = { ...dev, kind: previousKind };
+      const acceptedCmds: DeviceCommand[] = [];
       for (const cmd of cmds) {
-        if (await host.applyCommand(cmd, true)) accepted += 1;
+        if (await host.applyCommand(cmd, true)) acceptedCmds.push(cmd);
         else break;
       }
-      if (accepted > 0 && restore.length > 0) {
-        steps.push({ deviceId: dev.id, commands: restore });
-        kindSnapshots.set(dev.id, previousKind);
+      if (acceptedCmds.length > 0) {
+        succeededCount += 1;
+        const restore = acceptedCmds.flatMap((cmd) => inverseCommands(snapshotDev, cmd));
+        if (restore.length > 0) {
+          steps.push({ deviceId: dev.id, commands: restore });
+          kindSnapshots.set(dev.id, previousKind);
+        }
+      } else {
+        failedCount += 1;
       }
     }
   } else if (rule.action.kind === "scene") {
     const targetSceneId = rule.action.sceneId;
     const scene = host.scenes.find((s) => s.id === targetSceneId || s.entityId === targetSceneId);
-    await host.applyCommand({ kind: "activateScene", entityId: scene?.entityId ?? targetSceneId }, true);
+    attemptedCount += 1;
+    const ok = await host.applyCommand({ kind: "activateScene", entityId: scene?.entityId ?? targetSceneId }, true);
+    if (ok) succeededCount += 1;
+    else failedCount += 1;
   }
 
   if ((host.sourceRevision ?? 0) !== startingRevision) return null;
 
   const actionSummary = summarizeAutomationAction(rule.action, options.displayDevices ?? host.devices, host.scenes, preference);
+  if (succeededCount === 0) {
+    if (attemptedCount > 0 && !host.replyBanner?.isError) {
+      host.replyBanner = {
+        text: tr3(
+          "自动化执行失败：「{action}」",
+          "自動化執行失敗：「{action}」",
+          "Automation failed: \"{action}\"",
+          { action: actionSummary },
+          preference,
+        ),
+        source: tr3("状态感知自动化", "狀態感知自動化", "Context Automation", undefined, preference),
+        isError: true,
+      };
+    }
+    host.queueBackgroundRender?.();
+    return null;
+  }
   const triggerLabel = automationTriggerTitle(rule.trigger, preference);
   const runSummary = tr3(
     "{trigger} · 已执行「{action}」",
@@ -821,10 +858,12 @@ export async function executeAutomationRule(
     options.recordUndoKindSnapshots?.(undoAction, kindSnapshots);
     host.lastUndoAction = undoAction;
   }
-  host.replyBanner = {
-    text: runSummary,
-    source: tr3("状态感知自动化", "狀態感知自動化", "Context Automation", undefined, preference),
-  };
+  if (failedCount === 0 || !host.replyBanner?.isError) {
+    host.replyBanner = {
+      text: runSummary,
+      source: tr3("状态感知自动化", "狀態感知自動化", "Context Automation", undefined, preference),
+    };
+  }
   options.onUndoRecorded?.(recorded);
   host.queueBackgroundRender?.();
   return recorded;

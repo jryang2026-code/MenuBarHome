@@ -364,27 +364,35 @@ export async function dispatchDesktopNotification(
     const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
     if (typeof invoke === "function") {
       try {
-        const granted = await invoke<boolean>("plugin:notification|is_permission_granted");
-        if (granted) {
-          await invoke("plugin:notification|notify", {
-            options: { title: payload.title, body: payload.body },
-          });
-          channel = "tauri";
-        }
+        await invoke("send_desktop_notification", {
+          title: payload.title,
+          body: payload.body,
+        });
+        channel = "tauri";
       } catch {
         try {
-          await invoke("send_desktop_notification", {
-            title: payload.title,
-            body: payload.body,
-          });
-          channel = "tauri";
+          const granted = await invoke<boolean>("plugin:notification|is_permission_granted");
+          if (granted) {
+            await invoke("plugin:notification|notify", {
+              options: { title: payload.title, body: payload.body },
+            });
+            channel = "tauri";
+          }
         } catch {
         }
       }
     }
 
     if (channel === "panel-only" && typeof globalThis.Notification === "function") {
-      if (globalThis.Notification.permission === "granted") {
+      let permission = globalThis.Notification.permission;
+      if (permission === "default" && typeof globalThis.Notification.requestPermission === "function") {
+        try {
+          permission = await globalThis.Notification.requestPermission();
+        } catch {
+          permission = globalThis.Notification.permission;
+        }
+      }
+      if (permission === "granted") {
         new globalThis.Notification(payload.title, {
           body: payload.body,
           silent: false,
@@ -640,7 +648,9 @@ export async function executeAutomationCardUndo(
   const run = center.recentAutomationRuns.find((r) => r.id === runId);
   if (!run) return false;
 
-  if (run.scope !== computeActivityScopeKey(host) || run.expiresAtMs <= nowMs) {
+  const startingRevision = host.sourceRevision ?? 0;
+  const startingScope = computeActivityScopeKey(host);
+  if (run.scope !== startingScope || run.expiresAtMs <= nowMs) {
     center.recentAutomationRuns = center.recentAutomationRuns.filter((r) => r.id !== runId);
     host.replyBanner = {
       text: tr3(
@@ -657,10 +667,27 @@ export async function executeAutomationCardUndo(
     return false;
   }
 
+  const isUndoContextValid = (): boolean =>
+    (host.sourceRevision ?? 0) === startingRevision &&
+    computeActivityScopeKey(host) === startingScope &&
+    getHostActivityCenter(host) === center &&
+    center.recentAutomationRuns.some((r) => r.id === runId && r.scope === startingScope);
+
   let allOk = true;
   for (const step of [...run.steps].reverse()) {
+    if (!isUndoContextValid()) return false;
+    if (!host.devices.some((d) => d.id === step.deviceId)) {
+      allOk = false;
+      continue;
+    }
     for (const cmd of step.commands) {
+      if (!isUndoContextValid()) return false;
+      if (!host.devices.some((d) => d.id === step.deviceId)) {
+        allOk = false;
+        break;
+      }
       const ok = await host.applyCommand(cmd, true);
+      if (!isUndoContextValid()) return false;
       if (!ok) {
         allOk = false;
         const dev = host.devices.find((d) => d.id === step.deviceId);
@@ -671,6 +698,8 @@ export async function executeAutomationCardUndo(
       }
     }
   }
+
+  if (!isUndoContextValid()) return false;
 
   center.recentAutomationRuns = center.recentAutomationRuns.filter((r) => r.id !== runId);
   if (host.lastUndoAction && host.lastUndoAction.summary === run.summary) {

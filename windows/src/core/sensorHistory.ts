@@ -1349,10 +1349,18 @@ export function parseHomeAssistantHistoryResponse(
 export function resolveHomeAssistantSensorEntityIds(
   device: SmartDevice,
   facets: readonly FacetControl[] = [],
-  haEntities?: ReadonlyArray<{ readonly entity_id?: unknown; readonly device_id?: unknown }>,
+  haEntities?: ReadonlyArray<{
+    readonly entity_id?: unknown;
+    readonly device_id?: unknown;
+    readonly disabled_by?: unknown;
+    readonly hidden_by?: unknown;
+  }>,
 ): string[] {
   const ids = new Set<string>();
-  const rawId = device.id.startsWith("ha:") ? device.id.slice(3) : device.id;
+  const rawWithSplit = device.id.startsWith("ha:") ? device.id.slice(3) : device.id;
+  const hashIdx = rawWithSplit.indexOf("#");
+  const rawId = hashIdx >= 0 ? rawWithSplit.slice(0, hashIdx) : rawWithSplit;
+  const splitEntityId = hashIdx >= 0 ? rawWithSplit.slice(hashIdx + 1) : null;
   if (rawId.startsWith("sensor.")) {
     ids.add(rawId);
     if (device.kind.kind === "sensor" && device.kind.humidity !== null && /temperature/i.test(rawId)) {
@@ -1361,6 +1369,9 @@ export function resolveHomeAssistantSensorEntityIds(
     if (device.kind.kind === "sensor" && device.kind.temperature !== null && /humidity/i.test(rawId)) {
       ids.add(rawId.replace(/humidity/gi, "temperature"));
     }
+  }
+  if (splitEntityId && splitEntityId.startsWith("sensor.")) {
+    ids.add(splitEntityId);
   }
   for (const facet of facets) {
     if (facet.target?.kind === "property" && facet.target.entityId.startsWith("sensor.")) {
@@ -1371,6 +1382,7 @@ export function resolveHomeAssistantSensorEntityIds(
   }
   if (haEntities) {
     for (const entry of haEntities) {
+      if (entry.disabled_by != null || entry.hidden_by != null) continue;
       if (entry.device_id === rawId && typeof entry.entity_id === "string" && entry.entity_id.startsWith("sensor.")) {
         ids.add(entry.entity_id);
       }

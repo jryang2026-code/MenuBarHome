@@ -1042,4 +1042,84 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
     assert.ok(requestedDids.every((did) => did === "998877"));
     assertPresent(root.querySelector('[data-sensor-plot="acct_2/mi:998877"]'));
   });
+
+  it("discovers all registered HA sensor entities via ha_snapshot even when illuminance is in deviceFacets", async () => {
+    resetSharedSensorHistoryStoreForTests();
+    const requestedUrls: string[] = [];
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        connectionMode: "homeAssistant",
+        hasCompletedOnboarding: true,
+        haBaseURL: "http://192.168.1.50:8123",
+        haToken: "ha-tok-env",
+        enableGrokBall: false,
+        autoCheckUpdates: false,
+      }),
+    );
+    window.__TAURI_INTERNALS__ = {
+      invoke: (async (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === "native_http") {
+          requestedUrls.push(String(args?.url ?? ""));
+          return { status: 200, headers: {}, body: "[]" };
+        }
+        return null;
+      }) as <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>,
+    };
+    const root = document.getElementById("app")!;
+    const app = new MenuMijiaWindowsApp(root);
+    app.haInvokeOverride = (async (cmd: string) => {
+      if (cmd === "ha_snapshot") {
+        return {
+          entities: [
+            { entity_id: "sensor.living_temperature", device_id: "dev_living_env" },
+            { entity_id: "sensor.living_humidity", device_id: "dev_living_env" },
+            { entity_id: "sensor.living_illuminance", device_id: "dev_living_env" },
+          ],
+        };
+      }
+      return {};
+    }) as typeof app.haInvokeOverride;
+    app.devices = [
+      makeSensor("ha:dev_living_env", {
+        name: "客厅环境传感器",
+        roomName: "客厅",
+        temperature: 23.5,
+        humidity: 52,
+      }),
+    ];
+    app.deviceFacets = {
+      "ha:dev_living_env": [
+        {
+          id: "sensor.living_illuminance",
+          name: "illumination",
+          title: "光照度",
+          serviceName: "sensor",
+          kind: "reading",
+          isWritable: false,
+          writesByDefault: false,
+          isHighValue: true,
+          value: "320",
+          unit: "lx",
+          scale: null,
+          options: [],
+          range: null,
+          target: { kind: "property", entityId: "sensor.living_illuminance", piid: 1 },
+        },
+      ],
+    };
+    app.timerSnapshot = { identity: "ha:http://192.168.1.50:8123", sourceRevision: app.sourceRevision };
+    app.markCloudValuesFresh();
+    app.render();
+
+    root.querySelector<HTMLElement>('[data-sensor-card="ha:dev_living_env"]')!.click();
+    await setImmediate();
+    await setImmediate();
+
+    assert.equal(requestedUrls.length, 1);
+    const decodedUrl = decodeURIComponent(requestedUrls[0]!);
+    assert.match(decodedUrl, /sensor\.living_temperature/);
+    assert.match(decodedUrl, /sensor\.living_humidity/);
+    assert.match(decodedUrl, /sensor\.living_illuminance/);
+  });
 });

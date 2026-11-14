@@ -1080,7 +1080,7 @@ export async function refreshDualSourceDevices(
           previousSnapshots: prevMiState?.children,
         });
         host.multiAccountState = { accounts, merged, children };
-        if (merged.aggregateStatus.kind === "disconnected" && merged.home.devices.length === 0) {
+        if (merged.aggregateStatus.kind === "disconnected") {
           throw new Error(merged.aggregateStatus.reason);
         }
         const allRawRecords: MiDeviceRecord[] = [];
