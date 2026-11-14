@@ -4,7 +4,7 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
 
 ## Issue 与仓库边界
 
-- **唯一问题与 PR 源**：GitHub（`https://github.com/jryang2026-code/MenuBarHome`，`origin`），通过 `gh` CLI（账号 `jryang2026-code`）操作。旧账号 `jryang1997` 已停用；`gitlab` 与 `nas` 仅作镜像备份，**严禁向两处提单或写入**。
+- **唯一问题与 PR 源**：GitHub（`https://github.com/jryang2026-code/MenuBarHome`，`origin`），通过 `gh` CLI（账号 `jryang2026-code`）操作；`gitlab` 与 `nas` 为只读镜像，勿向两处提单（已停用账号 `jryang1997` 提交与镜像远端推送已由 `check.sh` 和 `pre-push` 拦截）。
 
 ## 交付分流：默认直接 push `main`，仅高风险面走 PR
 
@@ -24,7 +24,7 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
 
 - **`git commit`（约 4s）**：自动跑 `bash scripts/check.sh --lint-only`（密钥扫描、机械 lint、能力矩阵、云台型号表）。全量脚本自检加 `--script-tests`。
 - **推 `main` / 开 PR 前**：非 UI 改动跑 `bash scripts/check.sh --changed`；**macOS 界面改动**须在本机跑完整 `bash scripts/check.sh`（快照基线以维护者 Mac 为准；CI 托管机用 `macos-26-intel` 且跳过像素比对，未改视觉才贴 `no-snapshot-change`）。确认输出无非预期 `⚠️ 部分通过：跳过 ...` 才算通过。
-- **专项检查**：工作流改动跑 `actionlint .github/workflows/ci.yml .github/workflows/snapshot-guard.yml`；Windows Rust 在 CI `windows-rust-test` 或 `cargo test --locked --manifest-path windows/src-tauri/Cargo.toml`；单测提速用 `node windows/scripts/test-file.mjs tests/<file>.test.ts`、`scripts/repeat_test.sh <filter>`、`scripts/red-check.sh`。
+- **专项检查**：工作流改动跑 `actionlint .github/workflows/ci.yml .github/workflows/snapshot-guard.yml`；维护者 Mac 未装 `cargo`/`rustc`，`windows/src-tauri` 原生层测试由云端 CI `windows-rust-test` 承担（Windows 宿主机跑 `cargo test --locked --manifest-path windows/src-tauri/Cargo.toml`）；单测提速用 `node windows/scripts/test-file.mjs tests/<file>.test.ts`、`scripts/repeat_test.sh <filter>`、`scripts/red-check.sh`。
 - **检索与跨端**：Windows 无 Swift 工具链时本机跑 `--lint-only`（或 `scripts/remote-swift-test.sh`）；本仓 Swift/Rust 无 LSP，引用检索用 `grep`。
 
 ## 领域约定与按需文档

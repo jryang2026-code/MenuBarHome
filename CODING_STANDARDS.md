@@ -2,7 +2,7 @@
 
 审阅与编码规范总纲。引用证据时以 `path:symbol` 标注决定性符号并摘出关键行（如 `HomeStore+ControlWrite.swift:lockOptimistic`）。
 
-> **机械检查已由 `scripts/check.sh` 自动拦截（不在此赘述）**：密钥与私网扫描、`kVK_*` 常量、`UNUserNotificationCenter` `.app` 守卫、字号/圆角/颜色变量、`.glassEffect` 隔离、定时器回调裸 `render()`、`Task.yield` 固定循环、`#expect(...allSatisfy(\.))`、`withAnimation` 丢弃 `Task` 返回值、`L10n.currentLanguage =`、`#require` 嵌套、PTZ 型号表与补丁 SHA-256、能力矩阵同步。
+> **机械检查已由 `scripts/check.sh` 自动拦截（不在此赘述）**：密钥与私网扫描、Git 提交账号与镜像远端推送、`kVK_*` 常量、`UNUserNotificationCenter` `.app` 守卫、macOS 字号/圆角/颜色变量、Windows Fluent 2 曲线变量与退场幽灵类同步、`.glassEffect` 隔离、定时器回调裸 `render()`、`Task.yield` 固定循环、`#expect(...allSatisfy(\.))`、`withAnimation` 丢弃 `Task` 返回值、`L10n.currentLanguage =`、`#require` 嵌套、PTZ 型号表与补丁 SHA-256、能力矩阵同步。
 
 ---
 
@@ -84,6 +84,7 @@ Pair every pending UI field, toast, consent banner, activity row, hover/expansio
 
 - Background refreshes defer via `MenuMijiaWindowsApp.queueBackgroundRender` during gestures (`hasBlockingPanelInteraction()`); proactive results render only when idle and **drop** (never defer) during gestures (`proactive.ts`). `startTimerLoop` in `appLifecycle.ts` is the sole allowlisted direct `render()` exception when scheduled commands ran.
 - Destructive holds (`bindAllOffControl`) must abort if unfocused; drawer eligibility (`hasDetailDrawer`) gates both chevron and non-camera card clicks; restoring unsaved Settings drafts reconciles `#settings-api-key` via `syncKeyFieldWithEndpoint`; `mountTestWindow()` fails unstubbed `fetch` in 1 ms.
+- **Keyed DOM Reconciler & UI Contracts (`reconciler.ts`, `bindEvents.ts`)**: `PanelRenderPipeline.renderPanel` reconciles keyed controls in place; bind panel events once on the root via delegation or `RenderEventScope` (`scope.on`), never raw `addEventListener` on reconciled child nodes. Guard WAAPI `el.animate(...)?.finished` because `happy-dom` stubs return `{}`; keep `[data-high-risk-confirm]` mounted inside collapsed heater tiles; pair capsule inline `style="width:${pct}%"` with `--fill-scale`; cycle rooms on `Tab` only when focus is at body/panel root; keep inactive Settings connection tabs mounted behind `[hidden]`.
 - **Windows Camera (`docs/agents/windows-camera.md`)**: enforce 1-minute P2P cooldown (`cameraKeepAliveMs` 120s — hide modal/`<img>` rather than tearing down bridge immediately), serialize `start/stop_xiaomi_camera_bridge` via `CAMERA_BRIDGE_LOCK` + `liveCameraToken`, keep `.255:32108` UDP relay, MJPEG `<img>` without `#width=` (`error` log level), bundled `camera-bin/README.md`, and MSVC `windows/build-win.bat` (GNU `tar` on MSYS2 uses `cygpath -u` + `--force-local`).
 
 ---
