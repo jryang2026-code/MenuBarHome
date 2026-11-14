@@ -309,35 +309,40 @@ pub(crate) fn format_windows_toast_xml(title: &str, body: &str) -> Result<String
     ))
 }
 
+pub(crate) const WINDOWS_TOAST_POWERSHELL_SCRIPT: &str =
+    "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
+     [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null; \
+     $doc = New-Object Windows.Data.Xml.Dom.XmlDocument; \
+     $doc.LoadXml([string]$env:MMB_TOAST_XML); \
+     $toast = [Windows.UI.Notifications.ToastNotification]::new($doc); \
+     [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('com.jryang.menubarmijia').Show($toast)";
+
 #[tauri::command]
-pub(crate) fn send_desktop_notification(title: String, body: String) -> Result<(), String> {
+pub(crate) async fn send_desktop_notification(title: String, body: String) -> Result<(), String> {
     let xml = format_windows_toast_xml(&title, &body)?;
     #[cfg(windows)]
     {
-        let script = format!(
-            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
-             [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null; \
-             $doc = New-Object Windows.Data.Xml.Dom.XmlDocument; \
-             $doc.LoadXml('{}'); \
-             $toast = [Windows.UI.Notifications.ToastNotification]::new($doc); \
-             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('com.jryang.menubarmijia').Show($toast)",
-            xml.replace('\'', "''")
-        );
-        let status = std::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-WindowStyle",
-                "Hidden",
-                "-Command",
-                &script,
-            ])
-            .creation_flags(crate::CREATE_NO_WINDOW)
-            .status()
-            .map_err(|err| format!("启动系统通知失败：{err}"))?;
-        if !status.success() {
-            return Err("系统通知发送失败".to_string());
-        }
+        tauri::async_runtime::spawn_blocking(move || {
+            let status = std::process::Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    WINDOWS_TOAST_POWERSHELL_SCRIPT,
+                ])
+                .env("MMB_TOAST_XML", &xml)
+                .creation_flags(crate::CREATE_NO_WINDOW)
+                .status()
+                .map_err(|err| format!("启动系统通知失败：{err}"))?;
+            if !status.success() {
+                return Err("系统通知发送失败".to_string());
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|err| format!("启动系统通知失败：{err}"))??;
     }
     #[cfg(not(windows))]
     {
@@ -449,6 +454,15 @@ mod tests {
             .expect("valid toast xml");
         assert!(xml.contains("&lt;前门&gt; &amp; 告警"));
         assert!(xml.contains("&apos;查看&apos; &quot;画面&quot; 第二行"));
+        let curly = format_windows_toast_xml(
+            "小明’s 传感器’; calc.exe; #",
+            "‘注入测试’ ‚ ‛ <toast>",
+        )
+        .expect("curly single quotes toast xml");
+        assert!(curly.contains("小明’s 传感器’; calc.exe; #"));
+        assert!(curly.contains("&lt;toast&gt;"));
+        assert!(WINDOWS_TOAST_POWERSHELL_SCRIPT.contains("$doc.LoadXml([string]$env:MMB_TOAST_XML)"));
+        assert!(!WINDOWS_TOAST_POWERSHELL_SCRIPT.contains("{}"));
         assert!(format_windows_toast_xml("   ", "\n\t").is_err());
     }
 }

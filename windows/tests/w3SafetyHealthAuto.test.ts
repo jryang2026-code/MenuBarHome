@@ -1345,5 +1345,116 @@ describe("B1 + B5 PC Context Automation Engine, AwayArbitrator, 5m Undo & HA Doo
     );
     assert.equal(dispatchedRules, 1);
     assert.equal(revRuns.length, 0);
+
+    const { mergeMiAccountSnapshots } = await import("../src/core/miAccountsStore.js");
+    const staleSmoke = makeSensor({
+      id: "shared-smoke-did",
+      name: "共享烟感",
+      model: "lumi.sensor_smoke.v1",
+      statusText: "正常",
+    });
+    const liveSmoke = makeSensor({
+      id: "shared-smoke-did",
+      name: "共享烟感",
+      model: "lumi.sensor_smoke.v1",
+      statusText: "检测到烟雾告警",
+    });
+    const acc1 = { id: "mi:cn:1", slotId: "s1", region: "cn", regionLabel: "中国大陆", maskedUserId: "1***", displayName: "1***", session: { userId: "1", cUserId: "1", ssecurity: "a", serviceToken: "t", passToken: "p", region: "cn" } };
+    const acc2 = { id: "mi:cn:2", slotId: "s2", region: "cn", regionLabel: "中国大陆", maskedUserId: "2***", displayName: "2***", session: { userId: "2", cUserId: "2", ssecurity: "b", serviceToken: "t", passToken: "p", region: "cn" } };
+    const mergedShared = mergeMiAccountSnapshots(
+      [acc1, acc2],
+      {
+        "mi:cn:1": {
+          account: acc1,
+          home: {
+            rooms: [],
+            devices: [{ ...staleSmoke, accountId: "mi:cn:1" }],
+            environmentReadings: [{ id: "shared-smoke-did", label: "共享烟感", roomName: "厨房", temperature: 21, humidity: 40, battery: 80 }],
+            scenes: [],
+          },
+          homes: [],
+          status: { kind: "disconnected", reason: "timeout" },
+          tokenStatus: { kind: "valid" },
+          rawDevices: [],
+          allDevices: [],
+          allRooms: [],
+          specs: {},
+          lightGroupOwners: new Map(),
+        },
+        "mi:cn:2": {
+          account: acc2,
+          home: {
+            rooms: [],
+            devices: [{ ...liveSmoke, accountId: "mi:cn:2" }],
+            environmentReadings: [{ id: "shared-smoke-did", label: "共享烟感", roomName: "厨房", temperature: 29, humidity: 55, battery: 95 }],
+            scenes: [],
+          },
+          homes: [],
+          status: { kind: "connected" },
+          tokenStatus: { kind: "valid" },
+          rawDevices: [],
+          allDevices: [],
+          allRooms: [],
+          specs: {},
+          lightGroupOwners: new Map(),
+        },
+      },
+    );
+    assert.equal(mergedShared.home.devices.length, 1);
+    assert.equal(mergedShared.home.devices[0]?.accountId, "mi:cn:2");
+    assert.equal(
+      mergedShared.home.devices[0]?.kind.kind === "sensor" ? mergedShared.home.devices[0].kind.statusText : "",
+      "检测到烟雾告警",
+    );
+    assert.deepEqual(mergedShared.deviceOwners["shared-smoke-did"], ["mi:cn:2", "mi:cn:1"]);
+    assert.equal(mergedShared.home.environmentReadings[0]?.temperature, 29);
+
+    const rootEl = document.getElementById("app")!;
+    const dbApp = new MenuMijiaWindowsApp(rootEl);
+    const doorbellCam: SmartDevice = {
+      id: "ha:camera.front_door",
+      name: "门口可视门铃",
+      roomId: "r-entry",
+      roomName: "玄关",
+      model: "aqara.camera.g4",
+      isOnline: true,
+      kind: {
+        kind: "camera",
+        entityId: "camera.front_door",
+        streamEntityId: "camera.front_door",
+        isOn: true,
+        nightShot: null,
+        availableNightShots: [],
+        isMotionDetectionOn: null,
+        motionDetectionEntityId: null,
+      },
+    };
+    dbApp.devices = [doorbellCam];
+    dbApp.sourceRevision = 5;
+    await ingestHostHASnapshotForDoorbell(
+      dbApp,
+      { states: [{ entity_id: "event.front_door_doorbell", state: "2026-11-14T10:00:00Z", attributes: { device_id: "dev-db-1" } }], entities: [{ entity_id: "camera.front_door", device_id: "dev-db-1" }, { entity_id: "event.front_door_doorbell", device_id: "dev-db-1" }] },
+      { isLocked: false, nowMs: t0 + 60_000 },
+    );
+    const prevTauriInternals = window.__TAURI_INTERNALS__;
+    window.__TAURI_INTERNALS__ = {
+      invoke: (async (cmd: string) => {
+        if (cmd === "is_workstation_locked") {
+          dbApp.sourceRevision = 6;
+          return false;
+        }
+        return undefined;
+      }) as NonNullable<typeof window.__TAURI_INTERNALS__>["invoke"],
+    };
+    try {
+      const postSignOutRings = await ingestHostHASnapshotForDoorbell(
+        dbApp,
+        { states: [{ entity_id: "event.front_door_doorbell", state: "2026-11-14T10:01:00Z", attributes: { device_id: "dev-db-1" } }], entities: [{ entity_id: "camera.front_door", device_id: "dev-db-1" }, { entity_id: "event.front_door_doorbell", device_id: "dev-db-1" }] },
+        { nowMs: t0 + 65_000 },
+      );
+      assert.equal(postSignOutRings.length, 0);
+    } finally {
+      window.__TAURI_INTERNALS__ = prevTauriInternals;
+    }
   });
 });

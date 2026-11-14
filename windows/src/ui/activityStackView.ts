@@ -750,12 +750,24 @@ export async function ingestHostHASnapshotForDoorbell(
     readonly playChime?: boolean;
   } = {},
 ): Promise<DoorbellResponse[]> {
+  const startingRevision = host.sourceRevision ?? 0;
+  const startingScope = computeActivityScopeKey(host);
   const center = getHostActivityCenter(host);
   const aliased = aliasedHostDevices(host);
   const rings: DoorbellRing[] = center.doorbellDetector.ingestHASnapshot(snapshot, aliased);
   if (rings.length === 0) return [];
 
   const isLocked = options.isLocked ?? (await isWorkstationLocked());
+  if (
+    (host.sourceRevision ?? 0) !== startingRevision ||
+    computeActivityScopeKey(host) !== startingScope ||
+    (host as HostWithActivity).activityCenter !== center ||
+    center.scopeKey !== startingScope ||
+    center.lastSourceRevision !== startingRevision
+  ) {
+    syncSingleOwnerLifecycle(host);
+    return [];
+  }
   const nowMs = options.nowMs ?? Date.now();
   for (const ring of rings) {
     center.dismissedActivityIds.delete(`doorbell:${ring.key}`);

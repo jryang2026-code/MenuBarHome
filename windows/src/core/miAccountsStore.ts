@@ -771,11 +771,15 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
   const roomIds = new Set<string>();
   const deviceIds = new Set<string>();
   const seenPhysicalDids = new Set<string>();
+  const deviceIndexById = new Map<string, number>();
+  const deviceConnectedById = new Map<string, boolean>();
   const readingIds = new Set<string>();
+  const readingConnectedById = new Map<string, boolean>();
   const sceneIds = new Set<string>();
   const homeIds = new Set<string>();
   const facetsByDevice: Record<string, readonly FacetControl[]> = {};
   const lightGroupOwners = new Map<string, string>();
+  const lightGroupConnected = new Map<string, boolean>();
   const ownersMutable: Record<string, string[]> = {};
   const accountStatuses: Record<string, ConnectionStatus> = {};
   const accountTokenStatuses: Record<string, MiAccountTokenStatus> = {};
@@ -786,6 +790,7 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
 
   for (const account of accounts) { const child = children[account.id];
     if (!child) continue;
+    const isConnected = child.status.kind === "connected";
     accountStatuses[account.id] = child.status;
     accountTokenStatuses[account.id] = child.tokenStatus;
     rawDevicesByAccount[account.id] = child.rawDevices;
@@ -798,7 +803,12 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
     for (const device of child.home.devices) {
       const cmdDids = extractDeviceMiotCommandDids(device, childFacets[device.id] ?? []);
       for (const key of [device.id, ...cmdDids]) { const list = (ownersMutable[key] ??= []);
-        if (!list.includes(account.id)) list.push(account.id);
+        if (list.includes(account.id)) continue;
+        if (isConnected) {
+          const firstNonConnectedIdx = list.findIndex((id) => children[id]?.status.kind !== "connected");
+          if (firstNonConnectedIdx >= 0) { list.splice(firstNonConnectedIdx, 0, account.id);
+          } else { list.push(account.id); }
+        } else { list.push(account.id); }
       }
     }
 
@@ -808,24 +818,53 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
     }
 
     for (const device of child.home.devices) { const baseDid = device.id;
-      if (deviceIds.has(device.id) || seenPhysicalDids.has(baseDid)) continue;
+      const existingIdx = deviceIndexById.get(device.id);
+      if (existingIdx !== undefined || seenPhysicalDids.has(baseDid)) {
+        if (existingIdx !== undefined && isConnected && !deviceConnectedById.get(device.id)) {
+          devices[existingIdx] = device;
+          deviceConnectedById.set(device.id, true);
+          const facets = childFacets[device.id];
+          if (facets && facets.length > 0) { facetsByDevice[device.id] = facets;
+          } else { delete facetsByDevice[device.id]; }
+          if (readingIds.has(device.id) && !readingConnectedById.get(device.id)) {
+            readingIds.delete(device.id);
+            readingConnectedById.delete(device.id);
+            const rIdx = readings.findIndex((r) => r.id === device.id);
+            if (rIdx >= 0) readings.splice(rIdx, 1);
+          }
+        }
+        continue;
+      }
       deviceIds.add(device.id);
       seenPhysicalDids.add(baseDid);
+      deviceIndexById.set(device.id, devices.length);
+      deviceConnectedById.set(device.id, isConnected);
       devices.push(device);
       const facets = childFacets[device.id];
       if (facets && facets.length > 0) { facetsByDevice[device.id] = facets;
       }
     }
 
-    for (const [memberDid, groupDid] of child.lightGroupOwners) { if (!lightGroupOwners.has(memberDid)) {
+    for (const [memberDid, groupDid] of child.lightGroupOwners) {
+      if (!lightGroupOwners.has(memberDid) || (isConnected && !lightGroupConnected.get(memberDid))) {
         lightGroupOwners.set(memberDid, groupDid);
+        lightGroupConnected.set(memberDid, isConnected);
       }
     }
 
     for (const reading of child.home.environmentReadings) {
-      if (!readingIds.has(reading.id) && deviceIds.has(reading.id)) { readingIds.add(reading.id);
-        readings.push(reading);
+      if (!deviceIds.has(reading.id)) continue;
+      if (readingIds.has(reading.id)) {
+        if (isConnected && !readingConnectedById.get(reading.id)) {
+          const rIdx = readings.findIndex((r) => r.id === reading.id);
+          if (rIdx >= 0) readings[rIdx] = reading;
+          readingConnectedById.set(reading.id, true);
+        }
+        continue;
       }
+      readingIds.add(reading.id);
+      readingConnectedById.set(reading.id, isConnected);
+      readings.push(reading);
     }
 
     for (const scene of child.home.scenes) { if (!sceneIds.has(scene.id)) { sceneIds.add(scene.id);

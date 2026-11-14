@@ -209,8 +209,6 @@ const CLEAR_STATUS_TOKENS = [
   "无移动", "干燥", "乾燥", "未触发", "未檢測", "未检测", "积灰", "積灰", "无烟雾", "無煙霧",
 ];
 
-const lastKnownSensorKindByDeviceId = new Map<string, SensorAlertKind>();
-
 const LOCK_ALARM_TOKENS = [
   "unlocked", "unlock", "jammed", "ajar", "tamper", "forced", "damaged", "broken", "failed", "coerce",
   "timed out", "未上锁", "未上鎖", "已开锁", "已開鎖", "未关", "未關", "虚掩", "撬", "异常", "異常", "告警", "报警",
@@ -306,6 +304,7 @@ export function extractSensorObservations(
   device: SmartDevice,
   facets: readonly FacetControl[] = [],
   explicitObservations?: readonly SensorObservation[],
+  knownKindByDeviceId?: Map<string, SensorAlertKind>,
 ): SensorObservation[] {
   if (explicitObservations && explicitObservations.length > 0) return [...explicitObservations];
   if (!device.isOnline) return [];
@@ -327,9 +326,9 @@ export function extractSensorObservations(
       const statusText = device.kind.statusText?.trim() ?? "";
       const explicitOrMetaKind =
         device.kind.alertKind ?? inferSensorKindFromMetadata(`${device.model} ${device.name} ${statusText}`) ?? null;
-      if (explicitOrMetaKind !== null) lastKnownSensorKindByDeviceId.set(device.id, explicitOrMetaKind);
+      if (explicitOrMetaKind !== null) knownKindByDeviceId?.set(device.id, explicitOrMetaKind);
       const inferredKind =
-        explicitOrMetaKind ?? (statusText !== "" && isStatusTextCleared(statusText) ? (lastKnownSensorKindByDeviceId.get(device.id) ?? null) : null);
+        explicitOrMetaKind ?? (statusText !== "" && isStatusTextCleared(statusText) ? (knownKindByDeviceId?.get(device.id) ?? null) : null);
       if (inferredKind !== null && statusText !== "") {
         pushObs({ kind: inferredKind, sourceId: `${device.id}:${inferredKind}`, alarming: isStatusTextAlarming(inferredKind, statusText) });
       }
@@ -354,14 +353,14 @@ export function extractSensorObservations(
       const alertText = device.kind.alerts?.[idx] ?? "";
       const kind = inferSensorKindFromMetadata(`${genericMeta} ${alertText}`);
       if (kind && !facetObservedKinds.has(kind)) {
-        lastKnownSensorKindByDeviceId.set(device.id, kind);
+        knownKindByDeviceId?.set(device.id, kind);
         genericKindsSeen.add(kind);
         pushObs({ kind, sourceId: `${device.id}:generic:${kind}:${idx}`, alarming: isStatusTextAlarming(kind, alertText) });
       }
     }
-    const fallbackKind = inferSensorKindFromMetadata(genericMeta) ?? lastKnownSensorKindByDeviceId.get(device.id) ?? null;
+    const fallbackKind = inferSensorKindFromMetadata(genericMeta) ?? knownKindByDeviceId?.get(device.id) ?? null;
     if (fallbackKind && !facetObservedKinds.has(fallbackKind) && !genericKindsSeen.has(fallbackKind)) {
-      lastKnownSensorKindByDeviceId.set(device.id, fallbackKind);
+      knownKindByDeviceId?.set(device.id, fallbackKind);
       pushObs({ kind: fallbackKind, sourceId: `${device.id}:generic:${fallbackKind}:0`, alarming: false });
     }
   }
@@ -403,9 +402,18 @@ export function evaluateSensorAlerts(
     readonly deviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
     readonly observationsByDeviceId?: Readonly<Record<string, readonly SensorObservation[]>>;
     readonly language?: LanguagePreference;
+    readonly knownKindByDeviceId?: Map<string, SensorAlertKind>;
   } = {},
 ): { readonly alerts: SafetyAlert[]; readonly ledger: Record<string, boolean> } {
   const nextLedger: Record<string, boolean> = { ...ledger };
+  const knownKindMap = options.knownKindByDeviceId ?? new Map<string, SensorAlertKind>();
+  for (const key of Object.keys(nextLedger)) {
+    const parts = key.split(":");
+    const maybeKind = (parts[1] === "generic" ? parts[2] : parts[1]) as SensorAlertKind | undefined;
+    if (parts[0] && maybeKind && (SENSOR_ALERT_KINDS as readonly string[]).includes(maybeKind) && !knownKindMap.has(parts[0])) {
+      knownKindMap.set(parts[0], maybeKind);
+    }
+  }
   const alerts: SafetyAlert[] = [];
 
   for (const device of devices) {
@@ -413,6 +421,7 @@ export function evaluateSensorAlerts(
       device,
       options.deviceFacets?.[device.id] ?? [],
       options.observationsByDeviceId?.[device.id],
+      knownKindMap,
     );
     for (const obs of observations) {
       const previous = Object.prototype.hasOwnProperty.call(nextLedger, obs.sourceId)
@@ -477,6 +486,7 @@ export class SafetyMonitor {
   private activeSinceByDeviceId = new Map<string, number>();
   private longRunAlertedForSession = new Set<string>();
   private sensorEdge: Record<string, boolean> = {};
+  private knownSensorKindByDeviceId = new Map<string, SensorAlertKind>();
 
   constructor(storage: KeyValueStorageLike = defaultSafetyStorage(), scope = "default") {
     this.storage = storage;
@@ -500,6 +510,7 @@ export class SafetyMonitor {
     this.hasEvaluatedSnapshot = false;
     this.activeSinceByDeviceId.clear();
     this.longRunAlertedForSession.clear();
+    this.knownSensorKindByDeviceId.clear();
   }
 
   public resetSessionState(nextScope?: string): void {
@@ -507,6 +518,7 @@ export class SafetyMonitor {
     this.hasEvaluatedSnapshot = false;
     this.activeSinceByDeviceId.clear();
     this.longRunAlertedForSession.clear();
+    this.knownSensorKindByDeviceId.clear();
     if (nextScope !== undefined) {
       const normalized = nextScope.trim() || "default";
       this.activeScope = normalized;
@@ -676,6 +688,7 @@ export class SafetyMonitor {
       deviceFacets: args.deviceFacets,
       observationsByDeviceId: args.observationsByDeviceId,
       language: args.language,
+      knownKindByDeviceId: this.knownSensorKindByDeviceId,
     });
     if (!shallowEqualBooleanMap(evaluated.ledger, this.sensorEdge)) {
       this.sensorEdge = evaluated.ledger;
