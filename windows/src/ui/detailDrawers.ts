@@ -1,9 +1,15 @@
 import { haRoundedInt } from "../core/haDomains.js";
-import { currentLanguage, t } from "../core/i18n.js";
+import { currentLanguage, resolveLanguage, t } from "../core/i18n.js";
 import {
   lockedControlIdForAlert,
   showsAdvancedViewOnlyCopy,
 } from "../core/miCloud/feedAction.js";
+import {
+  SPEAKER_TEXT_MAX_LENGTH,
+  buildSpeakerTextCommand,
+  normalizeSpeakerText,
+  type SpeakerTextMode,
+} from "../core/miCloud/speakerActions.js";
 import { facetValue, formatReading } from "../core/miotFacetText.js";
 import {
   applianceFaultNotice,
@@ -21,10 +27,15 @@ import {
   type GenericSpec,
   type PlugSpec,
   type SmartDevice,
+  type SpeakerSpec,
 } from "../core/models.js";
 import { formatTemperature, toCelsius } from "../core/temperature.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { SF_ICONS } from "./appConstants.js";
+import {
+  isLightEffectUnsupported,
+  pruneUnsupportedLightEffectsOnHost,
+} from "./commandDispatch.js";
 import {
   facetRowDomId,
   resetMoreSettingsState,
@@ -680,17 +691,17 @@ export function bindDetailDrawerEvents(
       revealFacetRow(deviceId, controlId, host.deviceFacets[deviceId] ?? []);
       host.render();
       const targetEl = controlId
-        ? host.root.querySelector<HTMLElement>(`#${CSS.escape(facetRowDomId(deviceId, controlId))}`)
+        ? host.root.querySelector<HTMLElement>(`#${cssEscape(facetRowDomId(deviceId, controlId))}`)
         : host.root.querySelector<HTMLElement>(
-            `[data-tile-id="${CSS.escape(deviceId)}"] .cc-facet-section`,
+            `[data-tile-id="${cssEscape(deviceId)}"] .cc-facet-section`,
           );
       targetEl?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
       const focusable =
         targetEl?.querySelector<HTMLElement>(
           "button:not([disabled]), input:not([disabled]), select:not([disabled])",
         ) ??
-        host.root.querySelector<HTMLElement>(`[data-open-facet-settings="${CSS.escape(deviceId)}"]`) ??
-        host.root.querySelector<HTMLElement>(`[data-more-settings-toggle="${CSS.escape(deviceId)}"]`);
+        host.root.querySelector<HTMLElement>(`[data-open-facet-settings="${cssEscape(deviceId)}"]`) ??
+        host.root.querySelector<HTMLElement>(`[data-more-settings-toggle="${cssEscape(deviceId)}"]`);
       focusable?.focus({ preventScroll: true });
     });
   });
@@ -753,4 +764,330 @@ export function bindDetailDrawerEvents(
       });
     });
   });
+
+  filterUnsupportedLightEffectPills(host);
+  mountAndBindSpeakerCommandBars(host);
+}
+
+function tr3(
+  zhHans: string,
+  zhHant: string,
+  en: string,
+  params?: Record<string, string | number>,
+): string {
+  const lang = resolveLanguage(currentLanguage(), []);
+  let template = lang === "en" ? en : lang === "zh-Hant" ? zhHant : zhHans;
+  if (params) {
+    for (const [key, val] of Object.entries(params)) {
+      template = template.replaceAll(`{${key}}`, String(val));
+    }
+  }
+  return template;
+}
+
+function cssEscape(raw: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(raw);
+  }
+  return raw.replace(/([^\w-])/g, "\\$1");
+}
+
+function escapeAttr(raw: string): string {
+  return raw
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function speakerInputPlaceholder(mode: SpeakerTextMode): string {
+  return mode === "directive"
+    ? tr3("输入小爱静默指令…", "輸入小愛靜默指令…", "Enter silent command for XiaoAi…")
+    : tr3("输入小爱播报文字…", "輸入小愛播報文字…", "Enter text for XiaoAi to announce…");
+}
+
+export function resolveSpeakerDrawerMode(
+  spec: SpeakerSpec,
+  preferred?: SpeakerTextMode,
+): SpeakerTextMode | null {
+  const hasTts = Boolean(spec.ttsActionId);
+  const hasDirective = Boolean(spec.directiveActionId);
+  if (!hasTts && !hasDirective) return null;
+  if (hasTts && hasDirective) return preferred ?? "tts";
+  return hasTts ? "tts" : "directive";
+}
+
+export function renderSpeakerCommandBar(
+  dev: SmartDevice,
+  k: SpeakerSpec,
+  escapeHtml: (value: string) => string = escapeAttr,
+  options?: { readonly mode?: SpeakerTextMode; readonly draft?: string },
+): string {
+  const activeMode = resolveSpeakerDrawerMode(k, options?.mode);
+  if (!activeMode) return "";
+  const id = escapeHtml(dev.id);
+  const canSwitch = Boolean(k.ttsActionId && k.directiveActionId);
+  const draft = options?.draft ?? "";
+  const disabledAttr = dev.isOnline ? "" : ' disabled aria-disabled="true"';
+  const sendDisabled = !dev.isOnline || draft.trim().length === 0;
+  const placeholder = speakerInputPlaceholder(activeMode);
+  const speakLabel = escapeHtml(tr3("播报", "播報", "Speak"));
+  const directiveLabel = escapeHtml(tr3("指令", "指令", "Command"));
+  const sendLabel = escapeHtml(tr3("发送", "發送", "Send"));
+
+  const modePills = canSwitch
+    ? `<div class="cc-segmented-pills" data-speaker-mode-group="${id}">` +
+      `<button type="button" class="cc-seg-pill ${activeMode === "tts" ? "is-active" : ""}" data-speaker-mode="${id}|tts" aria-pressed="${activeMode === "tts"}"${disabledAttr}>${speakLabel}</button>` +
+      `<button type="button" class="cc-seg-pill ${activeMode === "directive" ? "is-active" : ""}" data-speaker-mode="${id}|directive" aria-pressed="${activeMode === "directive"}"${disabledAttr}>${directiveLabel}</button>` +
+      `</div>`
+    : `<div class="cc-segmented-pills" data-speaker-mode-group="${id}">` +
+      `<button type="button" class="cc-seg-pill is-active" data-speaker-mode-fixed="${id}|${activeMode}" aria-pressed="true" disabled>${activeMode === "tts" ? speakLabel : directiveLabel}</button>` +
+      `</div>`;
+
+  const inputRow =
+    `<div class="cc-speaker-command-row" data-speaker-command-bar="${id}" style="display:flex;gap:6px;align-items:center;">` +
+    `<input type="text" class="cc-speaker-input" data-speaker-input="${id}" maxlength="${SPEAKER_TEXT_MAX_LENGTH}" value="${escapeHtml(draft)}" placeholder="${escapeHtml(placeholder)}" aria-label="${escapeHtml(placeholder)}" style="flex:1;min-width:0;padding:5px 9px;border-radius:8px;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.06);color:inherit;font-size:12px;outline:none;"${disabledAttr} />` +
+    `<button type="button" class="cc-seg-pill is-active" data-speaker-send="${id}"${sendDisabled ? ' disabled aria-disabled="true"' : ""}>${sendLabel}</button>` +
+    `</div>`;
+
+  return `${modePills}${inputRow}`;
+}
+
+interface HostSpeakerDrawerState {
+  sourceRevision: number;
+  readonly modes: Map<string, SpeakerTextMode>;
+  readonly drafts: Map<string, string>;
+}
+
+const speakerDrawerStates = new WeakMap<MenuMijiaWindowsApp, HostSpeakerDrawerState>();
+
+function ensureSpeakerDrawerState(host: MenuMijiaWindowsApp): HostSpeakerDrawerState {
+  let state = speakerDrawerStates.get(host);
+  if (!state) {
+    state = {
+      sourceRevision: host.sourceRevision,
+      modes: new Map(),
+      drafts: new Map(),
+    };
+    speakerDrawerStates.set(host, state);
+    return state;
+  }
+  if (state.sourceRevision !== host.sourceRevision) {
+    state.modes.clear();
+    state.drafts.clear();
+    state.sourceRevision = host.sourceRevision;
+  }
+  return state;
+}
+
+function filterUnsupportedLightEffectPills(host: MenuMijiaWindowsApp): void {
+  pruneUnsupportedLightEffectsOnHost(host);
+  host.root.querySelectorAll<HTMLElement>("[data-lighteffect]").forEach((btn) => {
+    const devId = btn.dataset.lighteffect;
+    const effect = btn.dataset.effect;
+    if (!devId || !effect) return;
+    if (!isLightEffectUnsupported(host, devId, effect)) return;
+    const pillGroup = btn.closest<HTMLElement>(".cc-segmented-pills");
+    const drawer = btn.closest<HTMLElement>(".cc-tile-drawer");
+    btn.remove();
+    if (pillGroup && pillGroup.querySelectorAll("button").length === 0) {
+      pillGroup.remove();
+    }
+    if (drawer && drawer.children.length === 0) {
+      drawer.remove();
+    }
+  });
+}
+
+function mountAndBindSpeakerCommandBars(host: MenuMijiaWindowsApp): void {
+  const state = ensureSpeakerDrawerState(host);
+  for (const dev of host.devices) {
+    if (dev.kind.kind !== "speaker") continue;
+    const spec = dev.kind;
+    if (!spec.ttsActionId && !spec.directiveActionId) continue;
+
+    const tile = host.root.querySelector<HTMLElement>(`[data-tile-id="${cssEscape(dev.id)}"]`);
+    if (!tile) continue;
+
+    let drawer = tile.querySelector<HTMLElement>(".cc-tile-drawer");
+    if (!drawer) {
+      const isPanel = tile.classList.contains("size-panel") || tile.dataset.size === "panel";
+      const isOpen = isPanel || host.expandedDeviceId === dev.id;
+      if (!isOpen) continue;
+      drawer = document.createElement("div");
+      drawer.className = "cc-tile-drawer";
+      const facetSection = tile.querySelector(".cc-facet-section");
+      if (facetSection) {
+        tile.insertBefore(drawer, facetSection);
+      } else {
+        tile.appendChild(drawer);
+      }
+    }
+    if (drawer.querySelector(`[data-speaker-command-wrap="${cssEscape(dev.id)}"]`)) continue;
+
+    const currentMode = resolveSpeakerDrawerMode(spec, state.modes.get(dev.id));
+    if (!currentMode) continue;
+    state.modes.set(dev.id, currentMode);
+    const currentDraft = state.drafts.get(dev.id) ?? "";
+
+    const wrap = document.createElement("div");
+    wrap.className = "cc-speaker-command-wrap";
+    wrap.dataset.speakerCommandWrap = dev.id;
+    wrap.style.display = "flex";
+    wrap.style.flexDirection = "column";
+    wrap.style.gap = "6px";
+    wrap.innerHTML = renderSpeakerCommandBar(dev, spec, escapeAttr, {
+      mode: currentMode,
+      draft: currentDraft,
+    });
+    drawer.appendChild(wrap);
+
+    const inputEl = wrap.querySelector<HTMLInputElement>(`[data-speaker-input="${cssEscape(dev.id)}"]`);
+    const sendBtn = wrap.querySelector<HTMLButtonElement>(`[data-speaker-send="${cssEscape(dev.id)}"]`);
+    if (!inputEl || !sendBtn) continue;
+
+    wrap.querySelectorAll<HTMLButtonElement>("[data-speaker-mode]").forEach((modeBtn) => {
+      modeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const raw = modeBtn.dataset.speakerMode ?? "";
+        const sep = raw.indexOf("|");
+        const modeVal = sep >= 0 ? raw.slice(sep + 1) : "";
+        if (modeVal !== "tts" && modeVal !== "directive") return;
+        const resolved = resolveSpeakerDrawerMode(spec, modeVal);
+        if (!resolved) return;
+        state.modes.set(dev.id, resolved);
+        wrap.querySelectorAll<HTMLButtonElement>("[data-speaker-mode]").forEach((pill) => {
+          const pillMode = (pill.dataset.speakerMode ?? "").split("|")[1];
+          const active = pillMode === resolved;
+          pill.classList.toggle("is-active", active);
+          pill.setAttribute("aria-pressed", String(active));
+        });
+        const nextPlaceholder = speakerInputPlaceholder(resolved);
+        inputEl.placeholder = nextPlaceholder;
+        inputEl.setAttribute("aria-label", nextPlaceholder);
+      });
+    });
+
+    const syncSendDisabled = (): void => {
+      const disabled = !dev.isOnline || inputEl.value.trim().length === 0;
+      sendBtn.disabled = disabled;
+      if (disabled) {
+        sendBtn.setAttribute("aria-disabled", "true");
+      } else {
+        sendBtn.removeAttribute("aria-disabled");
+      }
+    };
+
+    inputEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+    });
+
+    inputEl.addEventListener("input", () => {
+      state.drafts.set(dev.id, inputEl.value);
+      syncSendDisabled();
+    });
+
+    let submitting = false;
+    const submitSpeakerInput = async (): Promise<void> => {
+      if (submitting || !dev.isOnline) return;
+      const rawValue = inputEl.value;
+      if (rawValue.trim().length === 0) return;
+
+      let trimmed: string;
+      try {
+        trimmed = normalizeSpeakerText(rawValue);
+      } catch {
+        host.replyBanner = {
+          text: tr3(
+            "输入内容不能超过 {max} 个字符",
+            "輸入內容不能超過 {max} 個字元",
+            "Text cannot exceed {max} characters",
+            { max: SPEAKER_TEXT_MAX_LENGTH },
+          ),
+          source: t("控制失败"),
+          isError: true,
+        };
+        host.render();
+        return;
+      }
+
+      const activeMode = resolveSpeakerDrawerMode(spec, state.modes.get(dev.id));
+      const actionId =
+        activeMode === "directive" ? spec.directiveActionId : spec.ttsActionId;
+      if (!activeMode || !actionId) {
+        host.replyBanner = {
+          text: tr3(
+            "该音箱不支持此指令通道",
+            "該音箱不支援此指令通道",
+            "This speaker does not support that channel",
+          ),
+          source: t("控制失败"),
+          isError: true,
+        };
+        host.render();
+        return;
+      }
+
+      const command = buildSpeakerTextCommand(
+        actionId,
+        trimmed,
+        activeMode === "directive" ? { silent: true } : undefined,
+      );
+      const summary =
+        activeMode === "directive"
+          ? tr3(
+              "已向{name}下发指令：「{text}」",
+              "已向{name}下發指令：「{text}」",
+              'Sent command to {name}: "{text}"',
+              { name: dev.name, text: trimmed },
+            )
+          : tr3(
+              "{name}已播报：「{text}」",
+              "{name}已播報：「{text}」",
+              '{name} announced: "{text}"',
+              { name: dev.name, text: trimmed },
+            );
+
+      submitting = true;
+      state.drafts.delete(dev.id);
+      inputEl.value = "";
+      syncSendDisabled();
+
+      try {
+        await host.executeSingleCommand(dev, command, summary);
+        if (host.replyBanner?.isError) {
+          state.drafts.set(dev.id, rawValue);
+          const liveInput = host.root.querySelector<HTMLInputElement>(
+            `[data-speaker-input="${cssEscape(dev.id)}"]`,
+          );
+          if (liveInput) {
+            liveInput.value = rawValue;
+            const liveSend = host.root.querySelector<HTMLButtonElement>(
+              `[data-speaker-send="${cssEscape(dev.id)}"]`,
+            );
+            if (liveSend && dev.isOnline && rawValue.trim().length > 0) {
+              liveSend.disabled = false;
+              liveSend.removeAttribute("aria-disabled");
+            }
+          }
+        }
+      } finally {
+        submitting = false;
+      }
+    };
+
+    inputEl.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter" && !e.isComposing) {
+        e.preventDefault();
+        void submitSpeakerInput();
+      }
+    });
+
+    sendBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void submitSpeakerInput();
+    });
+  }
 }
