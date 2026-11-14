@@ -436,7 +436,7 @@ export function renderClimateSwingRow(
 export function updateLiveSliderReadout(
   slider: HTMLInputElement,
   findControl: (deviceId: string, controlId: string) => FacetControl | null,
-): void {
+): string {
   const setGroupReadout = (formatted: string, ariaNow: string): void => {
     const label = slider.closest(".cc-slider-group")?.querySelector<HTMLElement>(".cc-slider-label strong");
     if (label) label.textContent = formatted;
@@ -446,13 +446,15 @@ export function updateLiveSliderReadout(
 
   if (slider.dataset.brightness !== undefined) {
     const pct = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
-    setGroupReadout(`${pct}%`, String(pct));
-    return;
+    const formatted = `${pct}%`;
+    setGroupReadout(formatted, String(pct));
+    return formatted;
   }
   if (slider.dataset.colortemp !== undefined) {
     const kelvin = Math.round(Number(slider.value));
-    setGroupReadout(`${kelvin}K`, String(kelvin));
-    return;
+    const formatted = `${kelvin}K`;
+    setGroupReadout(formatted, String(kelvin));
+    return formatted;
   }
   if (slider.dataset.actemp !== undefined) {
     const raw = Number(slider.value);
@@ -463,22 +465,25 @@ export function updateLiveSliderReadout(
     if (Number.isFinite(maxC)) celsius = Math.min(maxC, celsius);
     const formatted = formatTemperature(Number(celsius.toFixed(2)));
     setGroupReadout(formatted, slider.value);
-    return;
+    return formatted;
   }
   if (slider.dataset.fanpercent !== undefined) {
     const pct = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
-    setGroupReadout(`${pct}%`, String(pct));
-    return;
+    const formatted = `${pct}%`;
+    setGroupReadout(formatted, String(pct));
+    return formatted;
   }
   if (slider.dataset.volume !== undefined) {
     const pct = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
-    setGroupReadout(`${pct}%`, String(pct));
-    return;
+    const formatted = `${pct}%`;
+    setGroupReadout(formatted, String(pct));
+    return formatted;
   }
   if (slider.dataset.coverpos !== undefined) {
     const pct = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
-    setGroupReadout(`${pct}%`, String(pct));
-    return;
+    const formatted = `${pct}%`;
+    setGroupReadout(formatted, String(pct));
+    return formatted;
   }
   const facetKey = slider.dataset.facetNumber;
   if (facetKey !== undefined) {
@@ -486,7 +491,7 @@ export function updateLiveSliderReadout(
     const deviceId = sep > 0 ? facetKey.slice(0, sep) : "";
     const controlId = sep > 0 ? facetKey.slice(sep + 1) : "";
     const numeric = Number(slider.value);
-    if (!Number.isFinite(numeric)) return;
+    if (!Number.isFinite(numeric)) return "";
     const control = deviceId && controlId ? findControl(deviceId, controlId) : null;
     const formatted = control
       ? facetValue({ ...control, value: numeric })
@@ -495,7 +500,9 @@ export function updateLiveSliderReadout(
     if (valueEl) valueEl.textContent = formatted;
     slider.setAttribute("aria-valuenow", formatReading(numeric));
     slider.setAttribute("aria-valuetext", formatted);
+    return formatted;
   }
+  return "";
 }
 
 const boundDrawerLifecycleHosts = new WeakSet<MenuMijiaWindowsApp>();
@@ -549,20 +556,32 @@ export function bindDetailDrawerEvents(
       "input[type=\"range\"][data-brightness], input[type=\"range\"][data-colortemp], input[type=\"range\"][data-actemp], input[type=\"range\"][data-fanpercent], input[type=\"range\"][data-volume], input[type=\"range\"][data-coverpos], input[type=\"range\"][data-facet-number]",
     )
     .forEach((slider) => {
-      slider.addEventListener("pointerdown", () => {
-        host.pointerIsDown = true;
-      });
-      slider.addEventListener("input", () => {
-        host.pointerIsDown = true;
-        updateLiveSliderReadout(
+      const showThumbBadge = (): void => {
+        const formatted = updateLiveSliderReadout(
           slider,
           (devId, ctrlId) => host.deviceFacets[devId]?.find((item) => item.id === ctrlId) ?? null,
         );
+        host.pipeline.updateSliderThumbBadge(slider, formatted, Boolean(formatted));
+      };
+      const hideThumbBadge = (): void => {
+        host.pipeline.updateSliderThumbBadge(slider, "", false);
+      };
+      slider.addEventListener("pointerdown", () => {
+        host.pointerIsDown = true;
+        showThumbBadge();
       });
+      slider.addEventListener("input", () => {
+        host.pointerIsDown = true;
+        showThumbBadge();
+      });
+      slider.addEventListener("pointerup", hideThumbBadge);
+      slider.addEventListener("pointercancel", hideThumbBadge);
+      slider.addEventListener("blur", hideThumbBadge);
       slider.addEventListener(
         "change",
         () => {
           host.pointerIsDown = false;
+          hideThumbBadge();
           queueMicrotask(() => {
             if (!host.pointerIsDown && host.pendingCloudRender) {
               host.queueBackgroundRender();

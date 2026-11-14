@@ -147,6 +147,9 @@ export function shouldKeepPopoverPinned(host: MenuMijiaWindowsApp): boolean {
     host.prompt !== null ||
     hasPendingUrlConfirmation(host) ||
     host.isListeningVoice ||
+    host.isHomeMenuOpen ||
+    host.ctxMenu !== null ||
+    host.pendingHighRisk !== null ||
     (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden)
   );
 }

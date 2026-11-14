@@ -1,14 +1,21 @@
 import { normalizeSearch, panelQueryKind } from "../core/panelSearch.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
-import { hasPendingUrlConfirmation, resumeUndoHoverPause } from "./speechGuard.js";
+import {
+  dismissPendingUrlConfirmation,
+  hasPendingUrlConfirmation,
+  resumeUndoHoverPause,
+  shouldKeepPopoverPinned,
+} from "./speechGuard.js";
 import { invokeTauriVoid } from "./transport.js";
 
 function allTiles(host: MenuMijiaWindowsApp): HTMLElement[] {
-  return [...host.root.querySelectorAll<HTMLElement>("[data-tile-id]")];
+  return [...host.root.querySelectorAll<HTMLElement>("[data-tile-id]:not([data-exit-ghost])")];
 }
 
 function tiles(host: MenuMijiaWindowsApp): HTMLElement[] {
-  const subpage = host.root.querySelector<HTMLElement>(".cc-tile.is-subpage[data-tile-id]");
+  const subpage = host.root.querySelector<HTMLElement>(
+    ".cc-tile.is-subpage[data-tile-id]:not([data-exit-ghost])",
+  );
   if (subpage) return [subpage];
   return allTiles(host);
 }
@@ -147,21 +154,81 @@ function adjustSelection(host: MenuMijiaWindowsApp, direction: number): void {
   range.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
+function isUnfocusedContainer(host: MenuMijiaWindowsApp, active: Element | null): boolean {
+  return (
+    !active ||
+    active === document.body ||
+    active === document.documentElement ||
+    active === host.root ||
+    active.classList.contains("cc-popover")
+  );
+}
+
+function activeModalContainer(host: MenuMijiaWindowsApp): HTMLElement | null {
+  if (host.prompt !== null || hasPendingUrlConfirmation(host)) {
+    const promptEl = host.root.querySelector<HTMLElement>(".cc-prompt:not([data-exit-ghost])");
+    if (promptEl) return promptEl;
+  }
+  if (host.activeSheet !== "none") {
+    const sheets = host.root.querySelectorAll<HTMLElement>(".cc-sheet:not([data-exit-ghost])");
+    for (let i = sheets.length - 1; i >= 0; i -= 1) {
+      const sheet = sheets[i];
+      if (!sheet) continue;
+      const backdrop = sheet.closest<HTMLElement>(".cc-sheet-backdrop");
+      if (backdrop && (backdrop.hasAttribute("data-exit-ghost") || backdrop.style.display === "none")) {
+        continue;
+      }
+      return sheet;
+    }
+  }
+  return null;
+}
+
+function modalFocusableElements(modal: HTMLElement): HTMLElement[] {
+  return [
+    ...modal.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), summary, a[href], [tabindex]:not([tabindex="-1"])',
+    ),
+  ].filter((el) => {
+    if (el.hasAttribute("hidden") || el.closest("[hidden]")) return false;
+    const details = el.closest("details");
+    if (details && !details.open) {
+      const summary = details.querySelector(":scope > summary");
+      if (!summary || (el !== summary && !summary.contains(el))) return false;
+    }
+    return true;
+  });
+}
+
+function trapModalTab(modal: HTMLElement, event: KeyboardEvent): boolean {
+  const focusables = modalFocusableElements(modal);
+  if (focusables.length === 0) {
+    event.preventDefault();
+    return true;
+  }
+  const active = document.activeElement as HTMLElement | null;
+  const idx = active ? focusables.indexOf(active) : -1;
+  if (idx < 0) {
+    event.preventDefault();
+    (event.shiftKey ? focusables[focusables.length - 1] : focusables[0])?.focus();
+    return true;
+  }
+  if (!event.shiftKey && idx === focusables.length - 1) {
+    event.preventDefault();
+    focusables[0]?.focus();
+    return true;
+  }
+  if (event.shiftKey && idx === 0) {
+    event.preventDefault();
+    focusables[focusables.length - 1]?.focus();
+    return true;
+  }
+  return false;
+}
+
 export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent): boolean {
   if (event.defaultPrevented) return true;
   if (event.isComposing || event.keyCode === 229 || host.panelSearch.isComposing) return true;
-  if (
-    host.activeSheet !== "none" ||
-    hasPendingUrlConfirmation(host) ||
-    (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden)
-  ) {
-    return false;
-  }
-  if (host.prompt) {
-    if (event.key === "Escape") { event.preventDefault(); host.closePrompt(); }
-    return true;
-  }
-  if (host.isEditingLayout || host.ctxMenu || host.isHomeMenuOpen) return false;
   const input = host.root.querySelector<HTMLInputElement>("#command-input");
   const active = document.activeElement;
   const inInput = active === input;
@@ -171,6 +238,104 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
     ),
   );
   const isNonTextInput = Boolean(active?.matches("input")) && !inInput && !isEditable;
+  const hasSubpage = Boolean(host.root.querySelector(".cc-tile.is-subpage:not([data-exit-ghost])"));
+
+  if (event.key === "Escape" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    if (host.prompt !== null) {
+      event.preventDefault();
+      host.closePrompt();
+      return true;
+    }
+    if (hasPendingUrlConfirmation(host)) {
+      event.preventDefault();
+      dismissPendingUrlConfirmation(host, false);
+      return true;
+    }
+    if (host.ctxMenu !== null || host.isHomeMenuOpen) {
+      event.preventDefault();
+      host.ctxMenu = null;
+      host.isHomeMenuOpen = false;
+      invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
+      host.render();
+      return true;
+    }
+    if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
+      event.preventDefault();
+      host.cameraLive.hideCameraLiveView();
+      return true;
+    }
+    if (host.activeSheet !== "none") {
+      event.preventDefault();
+      host.activeSheet = "none";
+      host.isRecordingHotkey = false;
+      host.hotkeyNeedsHint = false;
+      invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
+      host.render();
+      return true;
+    }
+    if (host.isEditingLayout) {
+      event.preventDefault();
+      host.stopEditing();
+      return true;
+    }
+    if (host.pendingHighRisk !== null) {
+      event.preventDefault();
+      host.clearPendingHighRisk();
+      invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
+      host.render();
+      return true;
+    }
+    if (isEditable && !inInput) return true;
+    if (host.expandedDeviceId !== null && (hasSubpage || !inInput)) {
+      event.preventDefault();
+      host.expandedDeviceId = null;
+      host.render();
+      return true;
+    }
+    if (host.panelSearch.query || inInput) {
+      event.preventDefault();
+      if (input) input.value = "";
+      updateQuery(host, "");
+      host.root.querySelector<HTMLInputElement>("#command-input")?.blur();
+      return true;
+    }
+    if (host.expandedDeviceId !== null) {
+      event.preventDefault();
+      host.expandedDeviceId = null;
+      host.render();
+      return true;
+    }
+    if (host.panelSearch.selectedDeviceId !== null) {
+      event.preventDefault();
+      host.panelSearch.selectedDeviceId = null;
+      syncPanelSelection(host);
+      return true;
+    }
+    if (!isEditable) {
+      event.preventDefault();
+      resumeUndoHoverPause(host);
+      invokeTauriVoid("hide_panel");
+      return true;
+    }
+    return true;
+  }
+
+  const modal = activeModalContainer(host);
+  if (modal && event.key === "Tab" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    return trapModalTab(modal, event);
+  }
+
+  if (
+    host.activeSheet !== "none" ||
+    hasPendingUrlConfirmation(host) ||
+    (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden)
+  ) {
+    return false;
+  }
+  if (host.prompt) {
+    return true;
+  }
+  if (host.isEditingLayout || host.ctxMenu || host.isHomeMenuOpen) return false;
   if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key === ",") {
     event.preventDefault();
     if (!event.repeat) host.openSettingsSheet();
@@ -185,10 +350,21 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
     host.root.querySelector<HTMLInputElement>("#command-input")?.focus();
     return true;
   }
+  if (
+    event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    event.key === "ArrowLeft" &&
+    host.expandedDeviceId !== null
+  ) {
+    event.preventDefault();
+    host.expandedDeviceId = null;
+    host.render();
+    return true;
+  }
   if (event.ctrlKey || event.metaKey || event.altKey) return false;
   if (isEditable && !inInput) return true;
-  const hasSubpage = Boolean(host.root.querySelector(".cc-tile.is-subpage"));
-  if (!hasSubpage && !inInput && !isEditable && !isNonTextInput && event.key === "Tab") {
+  if (!hasSubpage && event.key === "Tab" && isUnfocusedContainer(host, active)) {
     const roomPills = [...host.root.querySelectorAll<HTMLButtonElement>(".cc-room-pill[data-room]")];
     if (roomPills.length > 0) {
       event.preventDefault();
@@ -210,28 +386,6 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
   }
   if (active?.closest("button, a[href], [role='button'], [role='link']") &&
       [" ", "Enter", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return true;
-  if (event.key === "Escape" && host.expandedDeviceId && (hasSubpage || !inInput)) {
-    event.preventDefault(); host.expandedDeviceId = null; host.render(); return true;
-  }
-  if (event.key === "Escape" && (host.panelSearch.query || inInput)) {
-    event.preventDefault();
-    if (input) input.value = "";
-    updateQuery(host, "");
-    host.root.querySelector<HTMLInputElement>("#command-input")?.blur();
-    return true;
-  }
-  if (event.key === "Escape" && host.expandedDeviceId) {
-    event.preventDefault(); host.expandedDeviceId = null; host.render(); return true;
-  }
-  if (event.key === "Escape" && host.panelSearch.selectedDeviceId) {
-    event.preventDefault(); host.panelSearch.selectedDeviceId = null; syncPanelSelection(host); return true;
-  }
-  if (event.key === "Escape" && !isEditable) {
-    event.preventDefault();
-    resumeUndoHoverPause(host);
-    invokeTauriVoid("hide_panel");
-    return true;
-  }
   if (isNonTextInput) return true;
   const hasQuery = Boolean(normalizeSearch(host.panelSearch.query));
   if (event.key === "ArrowDown" || event.key === "ArrowUp") {

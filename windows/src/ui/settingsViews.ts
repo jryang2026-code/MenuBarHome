@@ -1,6 +1,7 @@
 import { ASSISTANT_PROVIDER_PRESETS, inferAssistantPreset } from "../core/assistant.js";
 import { speechLocale, t } from "../core/i18n.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
+import { trText } from "../core/quickActions.js";
 import {
   getUpdateProgressForSettings,
   hasPendingMiVaultDeletion,
@@ -166,7 +167,8 @@ export interface SettingsViewContext {
           </div>
 
           <div class="cc-sheet-footer">
-            <button class="cc-btn-danger" id="btn-settings-quit">${t("退出 MenuBarHome")}</button>
+            <button class="cc-btn-danger cc-btn-ghost-danger" id="btn-settings-quit">${t("退出 MenuBarHome")}</button>
+            <span class="cc-settings-save-hint" data-save-state="clean">${ctx.escapeHtml(trText("开关即时生效，地址与密钥点右侧保存", "Toggles apply instantly; click Save for URLs & keys"))}</span>
             <button class="cc-btn-primary" id="btn-save-settings">${t("完成并保存")}</button>
           </div>
         </div>
@@ -317,34 +319,19 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
   `;
 }
 
-/** 数据源: which backend the panel reads, and how to sign in to each. */
-function renderConnectionPanel(ctx: SettingsViewContext): string {
+function renderHomeAssistantCredentialsBlock(ctx: SettingsViewContext): string {
   return `
-    <div class="cc-field">
-      <label>${t("设备数据源")}</label>
-      <div class="cc-segmented-pills">
-        <button
-          class="cc-seg-pill ${ctx.settings.connectionMode === "xiaomiCloud" ? "is-active" : ""}"
-          data-conn-mode="xiaomiCloud"
-        >
-          ${t("米家云真实设备")}
-        </button>
-        <button class="cc-seg-pill ${ctx.settings.connectionMode === "homeAssistant" ? "is-active" : ""}" data-conn-mode="homeAssistant">Home Assistant</button>
-        <button
-          class="cc-seg-pill ${ctx.settings.connectionMode === "demo" ? "is-active" : ""}"
-          data-conn-mode="demo"
-        >
-          ${t("演示设备预览")}
-        </button>
-      </div>
-    </div>
     <div class="cc-field">
       <label for="settings-ha-url">Home Assistant URL</label>
       <input id="settings-ha-url" class="cc-input" type="url" value="${ctx.escapeHtml(ctx.settings.haBaseURL)}" placeholder="http://homeassistant.local:8123" />
       <label for="settings-ha-token">Home Assistant access token</label>
       <input id="settings-ha-token" class="cc-input" type="password" autocomplete="off" value="${ctx.escapeHtml(ctx.settings.haToken)}" />
     </div>
+  `;
+}
 
+function renderXiaomiCloudBlock(ctx: SettingsViewContext): string {
+  return `
     <div class="cc-field">
       <label>${t("云端服务器地区")}</label>
       <select class="cc-input" data-mi-region>
@@ -374,6 +361,68 @@ function renderConnectionPanel(ctx: SettingsViewContext): string {
           : ""
       }
     </div>
+  `;
+}
+
+function renderConnectionPanel(ctx: SettingsViewContext): string {
+  const activeBadge = `<span class="cc-conn-active-badge">${ctx.escapeHtml(trText("当前使用", "Active"))}</span>`;
+  const modeBlocks =
+    ctx.settings.connectionMode === "homeAssistant"
+      ? `
+    <div class="cc-conn-card is-active-mode" data-conn-section="homeAssistant">
+      <div class="cc-conn-card-header">
+        <strong>Home Assistant</strong>
+        ${activeBadge}
+      </div>
+      ${renderHomeAssistantCredentialsBlock(ctx)}
+    </div>
+    <details class="cc-conn-secondary" data-conn-section="xiaomiCloud">
+      <summary class="cc-conn-secondary-summary">${ctx.escapeHtml(trText("备用数据源：米家云真实设备", "Secondary source: Xiaomi Cloud"))}</summary>
+      ${renderXiaomiCloudBlock(ctx)}
+    </details>`
+      : ctx.settings.connectionMode === "xiaomiCloud"
+        ? `
+    <div class="cc-conn-card is-active-mode" data-conn-section="xiaomiCloud">
+      <div class="cc-conn-card-header">
+        <strong>${ctx.escapeHtml(t("米家云真实设备"))}</strong>
+        ${activeBadge}
+      </div>
+      ${renderXiaomiCloudBlock(ctx)}
+    </div>
+    <details class="cc-conn-secondary" data-conn-section="homeAssistant">
+      <summary class="cc-conn-secondary-summary">${ctx.escapeHtml(trText("备用数据源：Home Assistant", "Secondary source: Home Assistant"))}</summary>
+      ${renderHomeAssistantCredentialsBlock(ctx)}
+    </details>`
+        : `
+    <div class="cc-conn-card is-active-mode" data-conn-section="demo">
+      <div class="cc-conn-card-header">
+        <strong>${ctx.escapeHtml(t("演示设备预览"))}</strong>
+        ${activeBadge}
+      </div>
+    </div>
+    ${renderHomeAssistantCredentialsBlock(ctx)}
+    ${renderXiaomiCloudBlock(ctx)}`;
+
+  return `
+    <div class="cc-field">
+      <label>${t("设备数据源")}</label>
+      <div class="cc-segmented-pills">
+        <button
+          class="cc-seg-pill ${ctx.settings.connectionMode === "xiaomiCloud" ? "is-active" : ""}"
+          data-conn-mode="xiaomiCloud"
+        >
+          ${t("米家云真实设备")}
+        </button>
+        <button class="cc-seg-pill ${ctx.settings.connectionMode === "homeAssistant" ? "is-active" : ""}" data-conn-mode="homeAssistant">Home Assistant</button>
+        <button
+          class="cc-seg-pill ${ctx.settings.connectionMode === "demo" ? "is-active" : ""}"
+          data-conn-mode="demo"
+        >
+          ${t("演示设备预览")}
+        </button>
+      </div>
+    </div>
+    ${modeBlocks}
   `;
 }
 
