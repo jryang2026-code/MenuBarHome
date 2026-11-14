@@ -81,6 +81,7 @@ import { CameraLiveController } from "./cameraLive.js";
 import { renderDeviceTile as renderDeviceTileView, renderEnvironmentStrip as renderEnvironmentStripView } from "./deviceViews.js";
 import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt, renderSettingsModal } from "./menuViews.js";
 import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
+import type { HostActivityCenter } from "./activityStackView.js";
 import { createDefaultHostEnergySession, notifyEnergyDevicesMutated, syncEnergyHostOnRender, type HostEnergySession } from "./energySettingsView.js";
 import { syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { renderPanel } from "./panelView.js";
@@ -175,6 +176,8 @@ export class MenuMijiaWindowsApp {
   private _devices: SmartDevice[] = [];
   private devicesMutationScheduled = false;
   public energySession: HostEnergySession = createDefaultHostEnergySession();
+  public activityCenter: HostActivityCenter | null = null;
+  public activityWindowLifecycleBound = false;
   public get devices(): SmartDevice[] {
     return this._devices;
   }

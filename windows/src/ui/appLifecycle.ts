@@ -26,6 +26,13 @@ import { invokeTauriVoid } from "./transport.js";
 import { stripCredentialFieldsFromStoredCopies, writeSettingsForStorage } from "./settings.js";
 import type { SettingsTab } from "./settingsViews.js";
 import {
+  clearHostActivitiesOnSignOut,
+  collapseActivityStackOnHide,
+  dispatchSystemContextEvent,
+  notifyPanelWakeLifecycle,
+  tickSafetyHealthAndAutomation,
+} from "./activityStackView.js";
+import {
   clearUpdateProgress,
   didMiExpiryKindChange,
   dismissPendingUrlConfirmation,
@@ -37,6 +44,8 @@ import {
   setPendingMiVaultDeletion,
   shouldKeepPopoverPinned,
 } from "./speechGuard.js";
+
+export { dispatchSystemContextEvent };
 
   /**
    * First run after this version: move the plaintext copy into the Windows Credential
@@ -208,6 +217,7 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     host.settings.miSession = null;
     host.settings.cachedXiaomiDevices = [];
     host.settings.selectedHomeId = null;
+    clearHostActivitiesOnSignOut(host);
     host.miSessionExpired = false;
     host.cloudValuesStale = false;
     host.unresolvedRoomDids.clear();
@@ -812,6 +822,11 @@ export function bindLifecycleRecovery(
       disposeAppLifecycle(host);
       return;
     }
+    if ((ownerDoc as { readonly visibilityState?: string }).visibilityState === "hidden") {
+      collapseActivityStackOnHide(host);
+    } else {
+      notifyPanelWakeLifecycle(host);
+    }
     controller.trigger("visibility");
   };
   const onFocus = () => {
@@ -840,6 +855,7 @@ export function bindLifecycleRecovery(
       disposeAppLifecycle(host);
       return;
     }
+    notifyPanelWakeLifecycle(host);
     controller.trigger("resume");
   };
   const onPageHide = () => {
@@ -942,6 +958,7 @@ export function bindGlobalKeys(
         host.cameraLive.hideCameraLiveView();
         return;
       }
+      collapseActivityStackOnHide(host);
       resumeUndoHoverPause(host);
       invokeTauriVoid("hide_panel");
     } else if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && document.activeElement?.tagName !== "INPUT") {
@@ -994,10 +1011,11 @@ export function startTimerLoop(
       undoExpired = true;
     }
     const miExpiryChanged = didMiExpiryKindChange(host, now);
+    const activityChanged = tickSafetyHealthAndAutomation(host, now);
 
     if (runWithScheduledTimerTickExemption(() => processScheduledCommands(host, now))) {
       host.render();
-    } else if (undoExpired || miExpiryChanged) {
+    } else if (undoExpired || miExpiryChanged || activityChanged) {
       host.queueBackgroundRender();
     }
 

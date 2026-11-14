@@ -10,6 +10,7 @@ import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom
 import { environmentReadingPriority, type SmartDevice } from "../core/models.js";
 import { isHostAttachedToActiveWindow, mergeHomeSnapshotRespectingLocks } from "../core/optimisticLock.js";
 import { getUnsupportedLightEffects } from "./commandDispatch.js";
+import { structuralActivityStackKey } from "./activityStackView.js";
 import { plugTodaySummaryForDrawer, syncEnergyHostOnRender } from "./energySettingsView.js";
 import { structuralSensorHistoryKey, syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { availableQuickActions } from "../core/quickActions.js";
@@ -466,6 +467,7 @@ export function cloudPanelStructureFingerprint(host: MenuMijiaWindowsApp): strin
       kindRowVisible: showsKindRow(kindChipsForPanel, host.listCut),
       groupOwners: [...host.groupOwnerByMemberDid],
       sensorHistory: structuralSensorHistoryKey(host),
+      activityStack: structuralActivityStackKey(host),
       allOffTargets: host.settings.connectionMode === "homeAssistant" ? null : host.allOffTargets.map((device) => device.id),
       devices: host.devices.map((device) => {
         const kind = device.kind;

@@ -1,9 +1,9 @@
 import type { MenuMijiaWindowsApp } from "./app.js";
-import { speechLocale, t } from "../core/i18n.js";
-import { miSessionExpiryState } from "../core/miCloud/session.js";
+import { t } from "../core/i18n.js";
 import { deviceCanTogglePower, hasDetailDrawer, isDeviceActiveOn, type SmartDevice } from "../core/models.js";
 import { normalizeSearch } from "../core/panelSearch.js";
 import { availableQuickActions, trText, type QuickActionId } from "../core/quickActions.js";
+import { bindActivityStackAfterRender, renderActivityStack } from "./activityStackView.js";
 import { SF_ICONS } from "./appConstants.js";
 import { applyPanelOpacity, withAliases } from "./panelPrefs.js";
 import { quickActions } from "./demo.js";
@@ -253,6 +253,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
 
   host.bindEvents();
   reconcileUndoBannerHoverAfterRender(host);
+  bindActivityStackAfterRender(host);
 }
 
 function renderNotificationStack(host: MenuMijiaWindowsApp): string {
@@ -266,8 +267,8 @@ function renderNotificationStack(host: MenuMijiaWindowsApp): string {
     );
   }
 
-  const miExpiry = miExpiryWarningBanner(host);
-  if (miExpiry) cards.push(miExpiry);
+  const activityStack = renderActivityStack(host);
+  if (activityStack) cards.push(activityStack);
 
   if (host.pendingSuggestions.length > 0) {
     cards.push(
@@ -525,29 +526,6 @@ export function renderSliderDeck(host: MenuMijiaWindowsApp): string {
   }
 
   return `<section class="win-slider-deck" aria-label="${t("快捷滑杆")}">${rows.join("")}</section>`;
-}
-
-function miExpiryWarningBanner(host: MenuMijiaWindowsApp): string {
-  if (
-    host.settings.connectionMode !== "xiaomiCloud" ||
-    !host.settings.miSession ||
-    host.miSessionExpired
-  ) {
-    return "";
-  }
-  const expiry = miSessionExpiryState(host.settings.miSession);
-  if (expiry.kind !== "expiringSoon") return "";
-  const dateText = new Intl.DateTimeFormat(speechLocale(), {
-    month: "short",
-    day: "numeric",
-  }).format(new Date(expiry.expiresAtMs));
-  return `<div class="win-notif-card cc-feedback-card is-warning" role="status" data-mi-expiry-warning>
-    <div class="cc-feedback-row">
-      <span class="cc-feedback-badge">${host.escapeHtml(trText("即将过期", "Expiring Soon"))}</span>
-      <span class="cc-feedback-text">${host.escapeHtml(trText("米家登录将在 {date} 到期", "Xiaomi Home sign-in expires {date}", { date: dateText }))}</span>
-      <button type="button" class="cc-inline-pill" id="btn-footer-qr">${host.escapeHtml(trText("重新扫码", "Re-scan"))}</button>
-    </div>
-  </div>`;
 }
 
 function footerStatus(host: MenuMijiaWindowsApp): string {
