@@ -163,4 +163,64 @@ struct FacetWriteLifecycleTests {
         store.cancelFacetWrites(for: nil)
     }
 
+    private func makeHeaterStore() async throws -> (HomeStore, MockHomeProvider) {
+        let device = SmartDevice(
+            id: "heater", name: "电暖器", roomId: "room", roomName: "Room",
+            model: "xiaomi.heater.v1", isOnline: true,
+            kind: .climate(ClimateSpec(entityId: "miot:heater:2", isOn: true, hvacMode: "heat",
+                                       availableModes: ["off", "heat"], targetTemperature: 22,
+                                       minTemp: 16, maxTemp: 30))
+        )
+        var snapshot = SynthesizedHome(devices: [device])
+        snapshot.deviceBackends = [device.id: .xiaomiCloud]
+        snapshot.deviceFacets = [device.id: [
+            FacetControl(id: "2.1", kind: .toggle, name: "on", title: "Power",
+                         serviceName: "heater", value: .bool(true), isWritable: true,
+                         writesByDefault: true, isHighValue: true,
+                         target: .property(entityId: "miot:heater:2", piid: 1)),
+            FacetControl(id: "2.5", kind: .slider, name: "target-temperature", title: "Target",
+                         serviceName: "heater", value: .number(22), isWritable: true,
+                         writesByDefault: true, isHighValue: true,
+                         target: .property(entityId: "miot:heater:2", piid: 5)),
+        ]]
+        let provider = MockHomeProvider(snapshot: snapshot)
+        let store = HomeStore(provider: provider, defaultsSuiteName: "test.facet.confirm.\(UUID())")
+        try await store.waitForTestSnapshot()
+        store.controlDebounceInterval = .seconds(60)
+        return (store, provider)
+    }
+
+    @Test("A toggle tapped back on while its off write is pending asks for a fresh confirmation")
+    func pendingToggleNeedsFreshConfirmation() async throws {
+        let (store, provider) = try await makeHeaterStore()
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return false
+        }
+        store.setFacetValue("heater", controlId: "2.1", value: .bool(false))
+        #expect(prompts == 0)
+        #expect(store.facetWrites["heater.facet.2.1"] != nil)
+        store.setFacetValue("heater", controlId: "2.1", value: .bool(true))
+        #expect(prompts == 1)
+        #expect(store.deviceFacets["heater"]?.first?.value == .bool(false))
+        store.cancelFacetWrites(for: nil)
+        #expect(await provider.executedCommands.isEmpty)
+    }
+
+    @Test("A slider drag keeps the confirmation its first tick received")
+    func sliderDragKeepsInitialConfirmation() async throws {
+        let (store, _) = try await makeHeaterStore()
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return true
+        }
+        store.setFacetValue("heater", controlId: "2.5", value: .number(24))
+        store.setFacetValue("heater", controlId: "2.5", value: .number(26))
+        store.setFacetValue("heater", controlId: "2.5", value: .number(28))
+        #expect(prompts == 1)
+        #expect(store.deviceFacets["heater"]?.last?.value == .number(28))
+        store.cancelFacetWrites(for: nil)
+    }
 }
