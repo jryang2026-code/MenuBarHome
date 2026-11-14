@@ -81,7 +81,6 @@ function confirmHighRiskForHost(
     armed.expiresAtMs > Date.now()
   ) {
     host.clearPendingHighRisk();
-    invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
     return true;
   }
   host.setPendingHighRisk({
@@ -93,7 +92,6 @@ function confirmHighRiskForHost(
       ? { confirm: { command, summary: explicit.summary, intent: explicit.intent } }
       : {}),
   });
-  invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
   host.replyBanner = {
     text:
       bannerOverride ??
@@ -569,7 +567,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     host.root.querySelector("#btn-hide-panel")?.addEventListener("click", () => {
       host.isHomeMenuOpen = false;
       host.ctxMenu = null;
-      host.clearPendingHighRisk();
+      host.clearPendingHighRisk({ syncPin: false });
       void (async () => {
         try {
           await window.__TAURI_INTERNALS__?.invoke?.("set_pin_popover", { pin: false });
@@ -789,7 +787,6 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         const expired = armed.expiresAtMs <= Date.now();
         const stale = armed.sourceRevision !== host.sourceRevision;
         host.clearPendingHighRisk();
-        invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
         if (expired) {
           host.replyBanner = { text: t("确认已过期，请重新操作"), source: t("需要确认") };
         }

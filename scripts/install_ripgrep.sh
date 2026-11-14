@@ -22,6 +22,10 @@ case "$(uname -s)-$(uname -m)" in
         asset="ripgrep-${version}-aarch64-apple-darwin.tar.gz"
         sha="24ad76777745fbff131c8fbc466742b011f925bfa4fffa2ded6def23b5b937be"
         ;;
+    Darwin-x86_64)
+        asset="ripgrep-${version}-x86_64-apple-darwin.tar.gz"
+        sha="fc87e78f7cb3fea12d69072e7ef3b21509754717b746368fd40d88963630e2b3"
+        ;;
     *)
         echo "❌ 没有 $(uname -s)-$(uname -m) 的预编译 ripgrep ${version}" >&2
         exit 1

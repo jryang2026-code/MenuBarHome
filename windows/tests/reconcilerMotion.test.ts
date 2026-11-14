@@ -306,15 +306,24 @@ describe("Keyed DOM Reconciler & Fluent Motion Pipeline", () => {
     await app.panelGeometryUpdates;
     assert.equal(heightCalls.length, 1);
 
+    app.applyPanelHeight();
+    await app.panelGeometryUpdates;
+    assert.equal(heightCalls.length, 1);
+
     window.dispatchEvent(new window.CustomEvent("menumijia:panel-present", { detail: { edge: "bottom" } }));
     window.dispatchEvent(new window.CustomEvent("menumijia:panel-present", { detail: { edge: "bottom" } }));
     await app.panelGeometryUpdates;
-    assert.equal(heightCalls.length, 1);
+    assert.equal(heightCalls.length, 2);
+
+    Object.defineProperty(window, "devicePixelRatio", { value: 2, configurable: true });
+    app.applyPanelHeight();
+    await app.panelGeometryUpdates;
+    assert.equal(heightCalls.length, 3);
 
     app.settings.panelHeight = "tall";
     app.applyPanelHeight();
     await app.panelGeometryUpdates;
-    assert.equal(heightCalls.length, 2);
+    assert.equal(heightCalls.length, 4);
 
     app.settings.interfaceLanguage = "zh-Hans";
     app.applyInterfaceLanguage();

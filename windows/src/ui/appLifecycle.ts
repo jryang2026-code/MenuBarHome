@@ -956,7 +956,6 @@ export function bindGlobalKeys(
       if (host.pendingHighRisk !== null) {
         e.preventDefault();
         host.clearPendingHighRisk();
-        invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
         host.render();
         return;
       }

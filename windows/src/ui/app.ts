@@ -185,7 +185,7 @@ export class MenuMijiaWindowsApp {
   public readonly pipeline = new PanelRenderPipeline();
   public expandedDeviceId: string | null = null;
   public savedGridScrollTop = 0;
-  public lastAppliedPanelHeightPx: number | null = null;
+  public lastAppliedPanelHeightKey: string | null = null;
   /**
    * A high-risk manual write that needs one more tap on the same card within a few seconds.
    * `actionKey` binds the arm to one exact command, so tapping a different high-risk control
@@ -886,24 +886,30 @@ export class MenuMijiaWindowsApp {
 
   /** Arms a high-risk confirmation and its own expiry timer, replacing any previous arm. */
   public setPendingHighRisk(pending: PendingHighRiskConfirmation): void {
-    this.clearPendingHighRisk();
+    this.clearPendingHighRisk({ syncPin: false });
     this.pendingHighRisk = pending;
+    invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
     this.pendingHighRiskTimer = window.setTimeout(() => {
       this.pendingHighRiskTimer = null;
       if (!this.pendingHighRisk) return;
       this.pendingHighRisk = null;
+      invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
       // A gesture in progress (a slider drag) owns the current DOM; drop the row once it ends.
       this.queueBackgroundRender();
     }, Math.max(0, pending.expiresAtMs - Date.now()));
   }
 
   /** Disarms the arm and cancels its timer; callers render when the row must disappear now. */
-  public clearPendingHighRisk(): void {
+  public clearPendingHighRisk(options?: { readonly syncPin?: boolean }): void {
+    const hadPending = this.pendingHighRisk !== null;
     if (this.pendingHighRiskTimer !== null) {
       window.clearTimeout(this.pendingHighRiskTimer);
       this.pendingHighRiskTimer = null;
     }
     this.pendingHighRisk = null;
+    if (hadPending && options?.syncPin !== false) {
+      invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
+    }
   }
 
 
@@ -1500,6 +1506,7 @@ export class MenuMijiaWindowsApp {
     const onPanelPresent = (event: Event) => {
       if (!this.root.isConnected) return;
       hasExplicitPresent = true;
+      this.lastAppliedPanelHeightKey = null;
       const detail = (event as CustomEvent<{ edge?: unknown } | undefined>).detail;
       playPresent(detail?.edge);
     };
@@ -1598,17 +1605,28 @@ export class MenuMijiaWindowsApp {
       .catch(() => undefined);
   }
 
+  private panelMonitorGeometryKey(): string {
+    const scr = window.screen as (Screen & { availLeft?: number; availTop?: number }) | undefined;
+    const availLeft = scr?.availLeft ?? window.screenLeft ?? 0;
+    const availTop = scr?.availTop ?? window.screenTop ?? 0;
+    const availWidth = scr?.availWidth ?? 0;
+    const availHeight = scr?.availHeight ?? 0;
+    const dpr = window.devicePixelRatio || 1;
+    return `${availLeft},${availTop},${availWidth}x${availHeight}@${dpr}|${window.innerWidth}x${window.innerHeight}`;
+  }
+
   public applyPanelHeight(): void {
     const invoke = window.__TAURI_INTERNALS__?.invoke;
     if (!invoke) return;
     this.panelGeometryUpdates = this.panelGeometryUpdates.then(async () => {
       const h = PANEL_HEIGHTS.find((item) => item.id === this.settings.panelHeight) ?? PANEL_HEIGHTS[1]!;
-      if (this.lastAppliedPanelHeightPx === h.px) return;
-      this.lastAppliedPanelHeightPx = h.px;
+      const key = `${h.px}:${this.panelMonitorGeometryKey()}`;
+      if (this.lastAppliedPanelHeightKey === key) return;
+      this.lastAppliedPanelHeightKey = key;
       try {
         await invoke("set_panel_height", { height: h.px });
       } catch (error) {
-        this.lastAppliedPanelHeightPx = null;
+        this.lastAppliedPanelHeightKey = null;
         throw error;
       }
     }).catch((error: unknown) => console.error("Panel geometry update failed", error));

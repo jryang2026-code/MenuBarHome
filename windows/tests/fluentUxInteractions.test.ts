@@ -11,6 +11,16 @@ import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.
 
 let dom: Window;
 
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = performance.now() + timeoutMs;
+  while (!predicate()) {
+    if (performance.now() >= deadline) {
+      assert.fail("Timed out waiting for expected UI state");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 function element<T extends HTMLElement = HTMLElement>(selector: string): T {
   const found = document.querySelector<T>(selector);
   assert.ok(found, `Missing element ${selector}`);
@@ -229,6 +239,19 @@ describe("Fluent UX & Interaction Holistic Contract", () => {
 
     assert.equal(callOrder.length, 2);
     assert.equal(callOrder[1]?.cmd, "hide_panel");
+
+    callOrder.length = 0;
+    app.setPendingHighRisk({
+      deviceId: "heater",
+      actionKey: "power:on",
+      expiresAtMs: Date.now() + 30,
+      sourceRevision: app.sourceRevision,
+    });
+    assert.deepEqual(callOrder, [{ cmd: "set_pin_popover", args: { pin: true } }]);
+
+    await waitFor(() => app.pendingHighRisk === null, 2000);
+    assert.equal(shouldKeepPopoverPinned(app), false);
+    assert.deepEqual(callOrder.at(-1), { cmd: "set_pin_popover", args: { pin: false } });
   });
 
   it("renders .is-waiting on waiting tiles and shows local high-risk caution without mounting [data-high-risk-confirm] on collapsed heater", () => {

@@ -87,7 +87,7 @@ jobs:
     # 更新包所需的 Ed25519 签名由维护者离线完成，本 job 不接触私钥。
     # 只产出 artifact；发布动作一律由 .github/workflows/finalize.yml 在离线签名后执行。
     needs: verify-tag
-    runs-on: macos-26
+    runs-on: macos-26-intel
     timeout-minutes: 90
     # 来源证明（#170）只需要 OIDC 与 attestations 写权限；构建仍然只读仓库。
     permissions:
@@ -100,7 +100,7 @@ jobs:
           ref: ${{ needs.verify-tag.outputs.commit }}
           persist-credentials: false
 
-      # macos-26 on 2026-11-09 printed Xcode 26.6 (17F113). Do not select latest.
+      # macos-26-intel ships Xcode 26.6 (17F113).
       - name: Select Xcode 26.6
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:

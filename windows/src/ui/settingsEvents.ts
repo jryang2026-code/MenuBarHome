@@ -91,7 +91,7 @@ export interface SettingsEventsHost {
   deviceFacets: Readonly<Record<string, readonly FacetControl[]>>;
   /** A high-risk write armed by its first tap; a backend switch disarms it. */
   pendingHighRisk: PendingHighRiskConfirmation | null;
-  clearPendingHighRisk(): void;
+  clearPendingHighRisk(options?: { readonly syncPin?: boolean }): void;
   groupOwnerByMemberDid: Map<string, string>;
   hotkeyNeedsHint: boolean;
   isRecordingHotkey: boolean;

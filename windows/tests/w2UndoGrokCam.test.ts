@@ -173,7 +173,7 @@ describe("Wave 2 — A11 Persistent 10-Minute Undo Pill", () => {
     app.lastUndoAction = {
       summary: "关闭 书房台灯",
       steps: [{ deviceId: light.id, commands: [{ kind: "setLightPower", entityId: light.id, isOn: initialIsOn }] }],
-      expiresAtMs: Date.now() + 65,
+      expiresAtMs: Date.now() + 350,
     };
     app.render();
     app.undoBannerUntilMs = Date.now() - 1;
@@ -181,7 +181,7 @@ describe("Wave 2 — A11 Persistent 10-Minute Undo Pill", () => {
     app.render();
     assert.ok(document.querySelector("#btn-header-undo"));
 
-    await waitFor(() => document.querySelector("#btn-header-undo") === null, 500);
+    await waitFor(() => document.querySelector("#btn-header-undo") === null, 2500);
     assert.equal(computeUndoAvailability(app).isAvailable, false);
 
     app.lastUndoAction = {

@@ -281,7 +281,6 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
     if (host.pendingHighRisk !== null) {
       event.preventDefault();
       host.clearPendingHighRisk();
-      invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
       host.render();
       return true;
     }
