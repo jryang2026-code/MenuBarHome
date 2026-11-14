@@ -1026,10 +1026,6 @@ function createUrlCommandHostAdapter(
       });
     },
 
-    openExternalUrlConfirmPrompt(args): Promise<boolean> {
-      return this.requestExternalUrlConfirmation(args);
-    },
-
     async revealPanelForExternalUrl(): Promise<void> {
       const invoke = window.__TAURI_INTERNALS__?.invoke;
       if (!invoke) return;
