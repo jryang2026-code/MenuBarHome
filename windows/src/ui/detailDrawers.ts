@@ -817,7 +817,10 @@ function bindCollapsedInlineSliders(host: MenuMijiaWindowsApp): void {
         if (slider.dataset.inlineBrightness) {
           const tile = slider.closest<HTMLElement>("[data-tile-id]");
           const fillEl = tile?.querySelector<HTMLElement>(".cc-tile-fill");
-          if (fillEl) fillEl.style.width = `${pct}%`;
+          if (fillEl) {
+            fillEl.style.width = `${pct}%`;
+            fillEl.style.setProperty("--fill-scale", (pct / 100).toFixed(3));
+          }
         }
       });
       slider.addEventListener("change", () => {

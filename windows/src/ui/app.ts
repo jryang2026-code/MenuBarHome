@@ -1281,7 +1281,9 @@ export class MenuMijiaWindowsApp {
   }
 
   public bindDeckEvents(): void {
-    bindDeckEvents(this);
+    this.pipeline.eventScope.bindWithinCurrentScope(this.root, () => {
+      bindDeckEvents(this);
+    });
   }
 
   public startEditing(): void {

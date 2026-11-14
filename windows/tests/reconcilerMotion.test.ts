@@ -72,6 +72,15 @@ describe("Keyed DOM Reconciler & Fluent Motion Pipeline", () => {
     toggleBtn.click();
     await setImmediate();
     assert.equal(commandCount, 1);
+
+    commandCount = 0;
+    app.bindDeckEvents();
+    app.render();
+    const deckSlider = element<HTMLInputElement>(".win-slider-deck input[data-deck-brightness]");
+    deckSlider.value = "55";
+    deckSlider.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await setImmediate();
+    assert.equal(commandCount, 1);
   });
 
   it("patches drag-to-dim preview in place without replacing .cc-popover children or detaching tiles", () => {

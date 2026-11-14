@@ -512,6 +512,7 @@ function findEventTargetPrototype(root: Element): {
 export class RenderEventScope {
   private controller: AbortController | null = null;
   private registered: RegisteredRenderListener[] = [];
+  private active = false;
 
   public abort(): void {
     if (this.controller) {
@@ -530,12 +531,22 @@ export class RenderEventScope {
 
   public rebind(root: HTMLElement, bindFn: () => void): void {
     this.abort();
-    const nextController = new AbortController();
-    this.controller = nextController;
-    const signal = nextController.signal;
+    this.bindWithinCurrentScope(root, bindFn);
+  }
+
+  public bindWithinCurrentScope(root: HTMLElement, bindFn: () => void): void {
+    if (this.active) {
+      bindFn();
+      return;
+    }
+    if (!this.controller) {
+      this.controller = new AbortController();
+    }
+    const signal = this.controller.signal;
     const registered = this.registered;
     const proto = findEventTargetPrototype(root);
     const originalAddEventListener = proto.addEventListener;
+    this.active = true;
 
     proto.addEventListener = function scopedAddEventListener(
       this: EventTarget,
@@ -569,6 +580,7 @@ export class RenderEventScope {
     try {
       bindFn();
     } finally {
+      this.active = false;
       proto.addEventListener = originalAddEventListener;
     }
   }
