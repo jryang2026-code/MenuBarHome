@@ -281,6 +281,76 @@ pub(crate) fn set_tray_tooltip(app: AppHandle, summary: Option<String>) -> Resul
         .map_err(|err| err.to_string())
 }
 
+pub(crate) fn escape_toast_xml(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            '\r' | '\n' | '\t' => out.push(' '),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+pub(crate) fn format_windows_toast_xml(title: &str, body: &str) -> Result<String, String> {
+    let clean_title = escape_toast_xml(&clamp_utf16_units(title.trim(), 120));
+    let clean_body = escape_toast_xml(&clamp_utf16_units(body.trim(), 240));
+    if clean_title.is_empty() && clean_body.is_empty() {
+        return Err("通知标题与内容不能为空".to_string());
+    }
+    Ok(format!(
+        "<toast><visual><binding template=\"ToastGeneric\"><text>{clean_title}</text><text>{clean_body}</text></binding></visual></toast>"
+    ))
+}
+
+pub(crate) const WINDOWS_TOAST_POWERSHELL_SCRIPT: &str =
+    "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
+     [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null; \
+     $doc = New-Object Windows.Data.Xml.Dom.XmlDocument; \
+     $doc.LoadXml([string]$env:MMB_TOAST_XML); \
+     $toast = [Windows.UI.Notifications.ToastNotification]::new($doc); \
+     [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('com.jryang.menubarmijia').Show($toast)";
+
+#[tauri::command]
+pub(crate) async fn send_desktop_notification(title: String, body: String) -> Result<(), String> {
+    let xml = format_windows_toast_xml(&title, &body)?;
+    #[cfg(windows)]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            let status = std::process::Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    WINDOWS_TOAST_POWERSHELL_SCRIPT,
+                ])
+                .env("MMB_TOAST_XML", &xml)
+                .creation_flags(crate::CREATE_NO_WINDOW)
+                .status()
+                .map_err(|err| format!("启动系统通知失败：{err}"))?;
+            if !status.success() {
+                return Err("系统通知发送失败".to_string());
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|err| format!("启动系统通知失败：{err}"))??;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = xml;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,5 +446,23 @@ mod tests {
             )),
             None
         );
+    }
+
+    #[test]
+    fn windows_toast_xml_escapes_entities_and_rejects_empty_payloads() {
+        let xml = format_windows_toast_xml("门铃 <前门> & 告警", "点击 '查看' \"画面\"\n第二行")
+            .expect("valid toast xml");
+        assert!(xml.contains("&lt;前门&gt; &amp; 告警"));
+        assert!(xml.contains("&apos;查看&apos; &quot;画面&quot; 第二行"));
+        let curly = format_windows_toast_xml(
+            "小明’s 传感器’; calc.exe; #",
+            "‘注入测试’ ‚ ‛ <toast>",
+        )
+        .expect("curly single quotes toast xml");
+        assert!(curly.contains("小明’s 传感器’; calc.exe; #"));
+        assert!(curly.contains("&lt;toast&gt;"));
+        assert!(WINDOWS_TOAST_POWERSHELL_SCRIPT.contains("$doc.LoadXml([string]$env:MMB_TOAST_XML)"));
+        assert!(!WINDOWS_TOAST_POWERSHELL_SCRIPT.contains("{}"));
+        assert!(format_windows_toast_xml("   ", "\n\t").is_err());
     }
 }

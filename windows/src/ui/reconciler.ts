@@ -85,6 +85,10 @@ const STATE_ONLY_DATA_ATTRS = new Set([
   "data-flyout-edge",
   "data-backdrop",
   "data-exit-ghost",
+  "data-activity-count",
+  "data-activity-expanded",
+  "data-sensor-metric-active",
+  "data-sensor-window-active",
 ]);
 
 const GHOST_CLASS_RENAMES: ReadonlyArray<readonly [string, string]> = [
@@ -133,6 +137,11 @@ export function extractControlIdentityKey(el: Element): ControlIdentityKey | nul
   if (el.hasAttribute("data-notif-card")) {
     return `notif:${el.getAttribute("data-notif-card")}`;
   }
+  if (el.hasAttribute("data-activity-card")) {
+    return el.hasAttribute("data-mi-expiry-warning")
+      ? "notif:mi-expiry"
+      : `notif:activity:${el.getAttribute("data-activity-card")}`;
+  }
   if (el.classList.contains("cc-live-banner")) return "notif:live-banner";
   if (el.hasAttribute("data-ha-error")) return "notif:ha-error";
   if (el.hasAttribute("data-mi-expiry-warning")) return "notif:mi-expiry";
@@ -151,6 +160,10 @@ export function extractControlIdentityKey(el: Element): ControlIdentityKey | nul
   if (el.classList.contains("win-island--top")) return "slot:island-top";
   if (el.classList.contains("win-island--bottom")) return "slot:island-bottom";
   if (el.classList.contains("win-notif-stack")) return "slot:notif-stack";
+  if (el.hasAttribute("data-activity-stack")) return "slot:activity-stack";
+  if (el.hasAttribute("data-sensor-history-drawer")) {
+    return `slot:sensor-history:${el.getAttribute("data-sensor-history-drawer")}`;
+  }
   if (el.classList.contains("cc-env-strip")) return "slot:env-strip";
   if (el.classList.contains("cc-scroll-area")) return "slot:scroll-area";
   if (el.classList.contains("win-slider-deck")) return "slot:slider-deck";

@@ -1,6 +1,13 @@
 import { catalogEntry, currentLanguage, t } from "./i18n.js";
 import { formatTemperature } from "./temperature.js";
 
+export type HomeBackend = "xiaomiCloud" | "homeAssistant";
+
+export type ConnectionStatus =
+  | { readonly kind: "connected" }
+  | { readonly kind: "connecting" }
+  | { readonly kind: "disconnected"; readonly reason: string };
+
 export interface LightSpec {
   readonly kind: "light";
   readonly entityId: string;
@@ -118,12 +125,20 @@ export interface CameraLens {
   readonly label?: string;
 }
 
+export interface SensorSafetyObservationSpec {
+  readonly entityId: string;
+  readonly kind: "smoke" | "gas" | "leak" | "contact" | "motion" | "vibration" | "lock";
+  readonly alarming: boolean;
+}
+
 export interface SensorSpec {
   readonly kind: "sensor";
   readonly temperature: number | null;
   readonly humidity: number | null;
   readonly battery: number | null;
   readonly statusText?: string | null;
+  readonly alertKind?: "smoke" | "gas" | "leak" | "contact" | "motion" | "vibration" | "lock" | null;
+  readonly safetyObservations?: readonly SensorSafetyObservationSpec[];
 }
 
 export interface CoverSpec {
@@ -319,6 +334,12 @@ export interface SmartDevice {
   readonly isOnline: boolean;
   kind: DeviceKind;
   readonly isSharedHome?: boolean;
+  readonly accountId?: string;
+  readonly accountLabel?: string;
+  readonly sourceBackend?: HomeBackend;
+  readonly pinnedBackend?: HomeBackend | null;
+  readonly fallbackActive?: boolean;
+  readonly fallbackLabel?: string | null;
 }
 
 export interface RoomCategory {

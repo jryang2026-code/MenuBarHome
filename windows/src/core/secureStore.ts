@@ -16,15 +16,54 @@
 import { ASSISTANT_PROVIDER_PRESETS, assistantEndpointIdentity, inferAssistantPreset } from "./assistant/provider.js";
 import { normalizeMiCloudRegion, type MiSession } from "./miCloudClient.js";
 
+export const WIN32_CRED_MAX_BLOB_BYTES = 2560;
+
 export type AssistantPresetCredentialName = `assistant_api_key_${string}`;
+export type MiAccountCredentialName = `mi_session_${string}`;
 export type SecureCredentialName =
   | "mi_session"
   | "ha_token"
   | "assistant_api_key"
-  | AssistantPresetCredentialName;
+  | AssistantPresetCredentialName
+  | MiAccountCredentialName;
 
 export function assistantApiKeyCredentialName(presetId: string): AssistantPresetCredentialName {
   return `assistant_api_key_${presetId}`;
+}
+
+export function normalizeMiCredentialSlotId(slotId: string): string {
+  const cleaned = slotId
+    .trim()
+    .replace(/^mi:/i, "")
+    .replace(/:/g, "_")
+    .replace(/[^A-Za-z0-9_-]/g, "_")
+    .slice(0, 48);
+  if (cleaned.length === 0 || !/^[A-Za-z0-9_-]{1,48}$/.test(cleaned)) {
+    throw new Error(`Invalid Xiaomi credential slot id: ${slotId}`);
+  }
+  return cleaned;
+}
+
+export function miAccountSessionCredentialName(slotId: string): MiAccountCredentialName {
+  return `mi_session_${normalizeMiCredentialSlotId(slotId)}`;
+}
+
+const utf8CredentialEncoder = new TextEncoder();
+
+export function credentialBlobByteLength(value: string): number {
+  return utf8CredentialEncoder.encode(value).byteLength;
+}
+
+export function assertCredentialBlobWithinLimit(
+  value: string,
+  slotName: string = "mi_session",
+): void {
+  const bytes = credentialBlobByteLength(value);
+  if (bytes > WIN32_CRED_MAX_BLOB_BYTES) {
+    throw new Error(
+      `Credential slot ${slotName} exceeds Win32 CRED_MAX_CREDENTIAL_BLOB_SIZE (${bytes} > ${WIN32_CRED_MAX_BLOB_BYTES} bytes)`,
+    );
+  }
 }
 
 export interface CredentialSnapshot {
@@ -32,6 +71,7 @@ export interface CredentialSnapshot {
   readonly haToken: string;
   readonly assistantApiKey: string;
   readonly assistantApiKeys?: Readonly<Record<string, string>>;
+  readonly miAccountSessions?: Readonly<Record<string, MiSession>>;
 }
 
 export interface CredentialFields {
@@ -43,18 +83,18 @@ export interface CredentialFields {
   readonly assistantKeyEndpoint?: string | null;
 }
 
-const CREDENTIAL_SETTINGS_FIELDS = ["miSession", "haToken", "openRouterApiKey"] as const;
+const CREDENTIAL_SETTINGS_FIELDS = ["miSession", "miAccounts", "haToken", "openRouterApiKey"] as const;
 
 export function hasCredentials(credentials: CredentialSnapshot): boolean {
   if (credentials.miSession !== null || credentials.haToken !== "" || credentials.assistantApiKey !== "") {
     return true;
   }
+  if (Object.keys(credentials.miAccountSessions ?? {}).length > 0) {
+    return true;
+  }
   return Object.values(credentials.assistantApiKeys ?? {}).some((value) => value.trim() !== "");
 }
 
-/**
- * Returns a copy of `settings` without the fields that hold secrets.
- */
 export function sanitizeSettingsForStorage<T extends object>(settings: T): Record<string, unknown> {
   const copy = { ...settings } as Record<string, unknown>;
   for (const field of CREDENTIAL_SETTINGS_FIELDS) delete copy[field];
@@ -79,7 +119,6 @@ export function sanitizeSettingsForStorage<T extends object>(settings: T): Recor
   return copy;
 }
 
-/** Reads a Mi session from a settings object or from the credential manager's JSON string. */
 export function parseMiSession(raw: unknown): MiSession | null {
   let value = raw;
   if (typeof raw === "string") {
@@ -128,7 +167,6 @@ export function serializeMiSession(session: MiSession): string {
   });
 }
 
-/** Drops the account-level `passToken` as soon as the QR login result reaches the UI. */
 export function sessionWithoutPassToken(session: MiSession): MiSession {
   return {
     userId: session.userId,
@@ -180,9 +218,6 @@ export type SecureInvoke = <T>(cmd: string, args: Record<string, unknown>) => Pr
 
 function tauriInvoke<T>(cmd: string, args: Record<string, unknown>): Promise<T | null> {
   const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
-  // Browser preview (vite without Tauri) has no credential manager. Treat writes as
-  // accepted so the plaintext migration copy is still removed; credentials then live
-  // only in memory for that preview session.
   if (!invoke) return Promise.resolve(null);
   return invoke<T>(cmd, args);
 }
@@ -210,16 +245,21 @@ export async function secureStoreDelete(
   await invoke<void>("secure_store_delete", { name });
 }
 
-/**
- * Writes credentials to the Windows Credential Manager only when they changed.
- * The cache is per instance so a cloud refresh that saves cached devices does
- * not rewrite the credential store every few seconds.
- */
 export class CredentialVault {
   private readonly known = new Map<SecureCredentialName, string>();
   private opChain: Promise<void> = Promise.resolve();
+  private lastPrimaryReadFailed = false;
+  private lastAccountSlotsReadFailed = false;
 
   constructor(private readonly invoke: SecureInvoke = tauriInvoke) {}
+
+  didLastPrimaryMiSessionReadFail(): boolean {
+    return this.lastPrimaryReadFailed;
+  }
+
+  didLastMiAccountSlotsReadFail(): boolean {
+    return this.lastAccountSlotsReadFailed;
+  }
 
   private serialize<T>(work: () => Promise<T>): Promise<T> {
     const next = this.opChain.then(work, work);
@@ -264,7 +304,6 @@ export class CredentialVault {
           : activePresetId;
       const targetSlot = assistantApiKeyCredentialName(ownerPreset);
       if (assistantApiKeys[ownerPreset]) {
-        // Only delete the legacy entry once its own replacement slot is confirmed present.
         try {
           await secureStoreDelete("assistant_api_key", this.invoke);
           this.remember("assistant_api_key", "");
@@ -302,9 +341,12 @@ export class CredentialVault {
     return snapshot;
   }
 
-  /** Rejects when the credential manager refused a write; callers must not retry via plaintext. */
-  async persist(credentials: CredentialSnapshot): Promise<void> {
+    async persist(credentials: CredentialSnapshot): Promise<void> {
     return this.serialize(async () => {
+      const primarySerialized = credentials.miSession ? serializeMiSession(credentials.miSession) : "";
+      if (primarySerialized !== "") {
+        assertCredentialBlobWithinLimit(primarySerialized, "mi_session");
+      }
       const keyWrites =
         credentials.assistantApiKeys !== undefined
           ? ASSISTANT_PROVIDER_PRESETS.map((preset) =>
@@ -314,10 +356,20 @@ export class CredentialVault {
               )
             )
           : [this.sync(assistantApiKeyCredentialName("openrouter_jev"), credentials.assistantApiKey)];
+      const accountSlotWrites: Promise<void>[] = [];
+      if (credentials.miAccountSessions !== undefined) {
+        for (const [slotId, slotSession] of Object.entries(credentials.miAccountSessions)) {
+          const slotName = miAccountSessionCredentialName(slotId);
+          const serialized = serializeMiSession(sessionWithoutPassToken(slotSession));
+          assertCredentialBlobWithinLimit(serialized, slotName);
+          accountSlotWrites.push(this.sync(slotName, serialized));
+        }
+      }
       const results = await Promise.allSettled([
-        this.sync("mi_session", credentials.miSession ? serializeMiSession(credentials.miSession) : ""),
+        this.sync("mi_session", primarySerialized),
         this.sync("ha_token", credentials.haToken),
         ...keyWrites,
+        ...accountSlotWrites,
       ]);
       const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
       if (failure) throw failure.reason;
@@ -331,11 +383,132 @@ export class CredentialVault {
     return (this.known.get("assistant_api_key") ?? "") !== "";
   }
 
-  /** Unconditionally removes `mi_session` from the OS credential store on explicit Sign Out. */
-  async deleteMiSession(): Promise<void> {
+    async loadPrimaryMiSession(): Promise<MiSession | null> {
     return this.serialize(async () => {
-      await secureStoreDelete("mi_session", this.invoke);
-      this.known.set("mi_session", "");
+      try {
+        const raw = await secureStoreGet("mi_session", this.invoke);
+        this.lastPrimaryReadFailed = false;
+        const parsed = parseMiSession(raw);
+        this.remember("mi_session", parsed ? serializeMiSession(parsed) : "");
+        return parsed;
+      } catch {
+        this.lastPrimaryReadFailed = true;
+        return null;
+      }
+    });
+  }
+
+    async savePrimaryMiSession(session: MiSession | null): Promise<void> {
+    return this.serialize(async () => {
+      if (session === null) {
+        await this.sync("mi_session", "");
+        return;
+      }
+      const serialized = serializeMiSession(sessionWithoutPassToken(session));
+      assertCredentialBlobWithinLimit(serialized, "mi_session");
+      await this.sync("mi_session", serialized);
+    });
+  }
+
+    async loadMiAccountSlot(slotId: string): Promise<MiSession | null> {
+    return this.serialize(async () => {
+      const slotName = miAccountSessionCredentialName(slotId);
+      const raw = await secureStoreGet(slotName, this.invoke).catch(() => null);
+      const parsed = parseMiSession(raw);
+      this.remember(slotName, parsed ? serializeMiSession(parsed) : "");
+      return parsed;
+    });
+  }
+
+    async loadMiAccountSlots(slotIds: readonly string[]): Promise<Record<string, MiSession>> {
+    if (slotIds.length === 0) {
+      this.lastAccountSlotsReadFailed = false;
+      return {};
+    }
+    return this.serialize(async () => {
+      let hadError = false;
+      const uniqueIds = [...new Set(slotIds.map((id) => normalizeMiCredentialSlotId(id)))];
+      const raws = await Promise.all(
+        uniqueIds.map((id) =>
+          secureStoreGet(miAccountSessionCredentialName(id), this.invoke).catch(() => {
+            hadError = true;
+            return null;
+          }),
+        ),
+      );
+      this.lastAccountSlotsReadFailed = hadError;
+      const out: Record<string, MiSession> = {};
+      for (let i = 0; i < uniqueIds.length; i += 1) {
+        const slotId = uniqueIds[i]!;
+        const slotName = miAccountSessionCredentialName(slotId);
+        const parsed = parseMiSession(raws[i]);
+        this.remember(slotName, parsed ? serializeMiSession(parsed) : "");
+        if (parsed) out[slotId] = parsed;
+      }
+      return out;
+    });
+  }
+
+    async saveMiAccountSlot(slotId: string, session: MiSession): Promise<void> {
+    return this.serialize(async () => {
+      const normalizedSlotId = normalizeMiCredentialSlotId(slotId);
+      const slotName = miAccountSessionCredentialName(normalizedSlotId);
+      const serialized = serializeMiSession(sessionWithoutPassToken(session));
+      assertCredentialBlobWithinLimit(serialized, slotName);
+      await this.sync(slotName, serialized);
+    });
+  }
+
+    async deleteMiAccountSlot(slotId: string): Promise<void> {
+    return this.serialize(async () => {
+      const slotName = miAccountSessionCredentialName(slotId);
+      await secureStoreDelete(slotName, this.invoke);
+      this.known.set(slotName, "");
+    });
+  }
+
+    async deleteMiSession(extraSlotIds: readonly string[] = []): Promise<void> {
+    return this.serialize(async () => {
+      const indexKeys = ["menumijia.windows.miAccountsIndex.v1", "menumijia.miAccountsIndex.v1"] as const;
+      const expiredKeys = ["menumijia.windows.miAccountsExpired.v1", "menumijia.miAccountsExpired.v1"] as const;
+      const slots = new Set<SecureCredentialName>(["mi_session"]);
+      for (const key of this.known.keys()) {
+        if (key.startsWith("mi_session_")) slots.add(key);
+      }
+      try {
+        if (typeof localStorage !== "undefined") {
+          for (const indexKey of indexKeys) {
+            const rawIndex = localStorage.getItem(indexKey);
+            if (!rawIndex) continue;
+            const parsed: unknown = JSON.parse(rawIndex);
+            if (!Array.isArray(parsed)) continue;
+            for (const item of parsed) {
+              const slotId = item && typeof item === "object" ? (item as Record<string, unknown>)["slotId"] : null;
+              if (typeof slotId === "string" && slotId.trim() !== "") {
+                slots.add(miAccountSessionCredentialName(slotId));
+              }
+            }
+          }
+        }
+      } catch {
+      }
+      for (const slotId of extraSlotIds) {
+        if (slotId.trim() !== "") slots.add(miAccountSessionCredentialName(slotId));
+      }
+      const slotList = [...slots];
+      const results = await Promise.allSettled(slotList.map((slot) => secureStoreDelete(slot, this.invoke)));
+      const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failure) throw failure.reason;
+      for (const slot of slotList) {
+        this.known.set(slot, "");
+      }
+      try {
+        if (typeof localStorage !== "undefined") {
+          for (const k of indexKeys) localStorage.removeItem(k);
+          for (const k of expiredKeys) localStorage.removeItem(k);
+        }
+      } catch {
+      }
     });
   }
 

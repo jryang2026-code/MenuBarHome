@@ -36,6 +36,7 @@ export type SettingsAnchor =
   | "raycast"
   | "allowURLControl"
   | "advancedDeviceWrites"
+  | "energyHistory"
   | "allOffDevices"
   | "signOut"
   | "softwareUpdate"
@@ -157,6 +158,7 @@ export function resolveSettingsAnchorTab(anchor: SettingsAnchor, hasAvailableUpd
     case "raycast":
     case "allowURLControl":
     case "advancedDeviceWrites":
+    case "energyHistory":
     case "allOffDevices":
     case "signOut":
     case "quitApp":
@@ -381,6 +383,41 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
     section: SEC_SECURITY,
     title: ["允许写入高级/高风险设备属性", "允許寫入進階/高風險裝置屬性", "Allow Secondary / High-Risk Controls"],
     synonyms: ["高级属性", "高风险", "更多设置", "次要控件", "门锁", "取暖", "水阀", "advanced", "facets", "more settings", "secondary", "high risk", "heater", "valve", "gaoji"],
+  },
+  {
+    anchor: "energyHistory",
+    section: SEC_SYSTEM,
+    title: ["插座用电统计", "插座用電統計", "Plug Energy & Electricity Cost"],
+    synonyms: [
+      "用电统计",
+      "插座电量",
+      "用电",
+      "电量",
+      "用電",
+      "電量",
+      "电费",
+      "電費",
+      "电价",
+      "電價",
+      "度电",
+      "能耗",
+      "耗电",
+      "耗电排行",
+      "柱状图",
+      "清空用电",
+      "energy",
+      "electricity",
+      "tariff",
+      "kwh",
+      "plug energy",
+      "power consumption",
+      "electricity bill",
+      "electricity price",
+      "yongdian",
+      "dianliang",
+      "dianfei",
+      "dianjia",
+    ],
   },
   {
     anchor: "allOffDevices",

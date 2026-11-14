@@ -1,4 +1,10 @@
-import { homeAssistantIdentity } from "../core/homeAssistant.js";
+import { homeAssistantIdentity, type HAInvoke } from "../core/homeAssistant.js";
+import { DualSourceCoordinator } from "../core/dualSourceProvider.js";
+import {
+  MiAccountsStore,
+  type MiAccount,
+} from "../core/miAccountsStore.js";
+import type { HostMultiAccountState } from "./cloudRefresh.js";
 import {
   assistantEndpointIdentity,
   endpointAllowsSendingSecrets,
@@ -11,6 +17,7 @@ import {
 import {
   type HttpTransport,
   MiAccountLogin,
+  type MiRoom,
   MiotSpecResolver,
   type QRLoginTicket,
   maskedMiUserId,
@@ -81,6 +88,19 @@ import { CameraLiveController } from "./cameraLive.js";
 import { renderDeviceTile as renderDeviceTileView, renderEnvironmentStrip as renderEnvironmentStripView } from "./deviceViews.js";
 import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt, renderSettingsModal } from "./menuViews.js";
 import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
+import type { HostActivityCenter } from "./activityStackView.js";
+import {
+  createDefaultHostEnergySession,
+  energyScopeForHost,
+  notifyEnergyDevicesMutated,
+  syncEnergyHostOnRender,
+  type HostEnergySession,
+} from "./energySettingsView.js";
+import {
+  createSensorHistoryUiState,
+  syncSensorHistoryHost,
+  type SensorHistoryUiState,
+} from "./sensorHistoryView.js";
 import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
 import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground } from "./proactive.js";
@@ -148,7 +168,44 @@ export class MenuMijiaWindowsApp {
   public lastSubmittedEndpoints: string | null = null;
   // Assigned in the constructor, after the interface language is resolved: the demo home is
   // generated per language (#52), so a field initializer would freeze the module default.
-  public devices: SmartDevice[];
+  private _devices: SmartDevice[] = [];
+  private devicesMutationScheduled = false;
+  public energySession: HostEnergySession = createDefaultHostEnergySession();
+  public sensorHistoryUi: SensorHistoryUiState = createSensorHistoryUiState();
+  public activityCenter: HostActivityCenter | null = null;
+  public activityWindowLifecycleBound = false;
+  public miAccountsStore: MiAccountsStore | null = null;
+  public miAccountsOverride: readonly MiAccount[] | null = null;
+  public multiAccountState: HostMultiAccountState | null = null;
+  public dualSourceEnabledOverride: boolean | null = null;
+  public dualSourceCoordinator: DualSourceCoordinator | null = null;
+  public haInvokeOverride: HAInvoke | null = null;
+  public lastGoodXiaomiRooms: {
+    readonly sourceRevision: number;
+    readonly userId: string;
+    readonly region: string;
+    readonly rooms: readonly MiRoom[];
+  } | null = null;
+  public initialSessionCheckDone = false;
+  public lockProbeInFlight = false;
+  public lastSessionFingerprint: string | null = null;
+  public get devices(): SmartDevice[] {
+    return this._devices;
+  }
+  public set devices(next: SmartDevice[]) {
+    this._devices = next;
+    notifyEnergyDevicesMutated(this);
+    if (!this.devicesMutationScheduled) {
+      this.devicesMutationScheduled = true;
+      queueMicrotask(() => {
+        this.devicesMutationScheduled = false;
+        if (this.root.isConnected) {
+          syncSensorHistoryHost(this);
+          syncEnergyHostOnRender(this);
+        }
+      });
+    }
+  }
   /** Device id → 更多设置 rows from the latest snapshot (#5); empty until one arrives. */
   public deviceFacets: Readonly<Record<string, readonly FacetControl[]>> = {};
   public scenes: HomeScene[];
@@ -1235,6 +1292,10 @@ export class MenuMijiaWindowsApp {
   }
 
   public renderDeviceTile(dev: SmartDevice, span: number, index: number): string {
+    if (this.sensorHistoryUi.lastRecordedDevicesRef !== this.devices) {
+      syncSensorHistoryHost(this);
+    }
+    syncEnergyHostOnRender(this);
     return renderDeviceTileView(dev, {
       span,
       index,
@@ -1254,6 +1315,8 @@ export class MenuMijiaWindowsApp {
       isPinned: isDevicePinned(dev.id, this.layout),
       unsupportedLightEffects: getUnsupportedLightEffects(this, dev.id),
       speakerDrawerState: getSpeakerDrawerItemState(this, dev.id),
+      energyScope: energyScopeForHost(this),
+      sensorHistoryUi: this.sensorHistoryUi,
       escapeHtml: (v) => this.escapeHtml(v),
     });
   }

@@ -57,6 +57,7 @@ export interface LearnedShortcut {
 export interface PersistedSettings {
   connectionMode: ConnectionMode;
   miSession: MiSession | null;
+  dualSourceEnabled?: boolean;
   /** Non-sensitive Xiaomi cloud region for the next QR login (#37); the session keeps the region it logged in with. */
   miCloudRegion: string;
   /** Daily GitHub release check (#39); off means no request at all. */

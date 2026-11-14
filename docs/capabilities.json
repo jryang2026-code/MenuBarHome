@@ -111,14 +111,14 @@
       "en": "Sensor Trend Line Charts",
       "zh": "传感器历史折线图",
       "macos": "supported",
-      "windows": "unsupported"
+      "windows": "supported"
     },
     {
       "id": "plug-energy",
       "en": "Smart Plug Energy Logs",
       "zh": "插座电量统计",
       "macos": "supported",
-      "windows": "unsupported"
+      "windows": "supported"
     },
     {
       "id": "air-purifiers",

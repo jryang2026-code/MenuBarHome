@@ -263,7 +263,7 @@ fn main() {
             get_launch_at_login,
             get_env_var,
             is_workstation_locked,
-            set_tray_tooltip,
+            set_tray_tooltip, send_desktop_notification,
             write_raycast_snapshot,
             remove_raycast_snapshot,
             drain_pending_open_urls,

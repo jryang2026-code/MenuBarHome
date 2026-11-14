@@ -18,6 +18,16 @@ pub(crate) fn allowed_credential_name(name: &str) -> Result<&str, String> {
             return Ok(name);
         }
     }
+    if let Some(suffix) = name.strip_prefix("mi_session_") {
+        if !suffix.is_empty()
+            && suffix.len() <= 64
+            && suffix
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+        {
+            return Ok(name);
+        }
+    }
     Err(format!("不允许的凭据名称：{name}"))
 }
 
@@ -55,5 +65,25 @@ pub(crate) fn secure_store_delete(name: String) -> Result<(), String> {
     match entry.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(format!("删除 Windows 凭据失败：{error}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allows_constrained_secondary_xiaomi_credential_slots() {
+        assert_eq!(
+            allowed_credential_name("mi_session_cn_10001").ok(),
+            Some("mi_session_cn_10001")
+        );
+        assert_eq!(
+            allowed_credential_name("mi_session_sg.user-2_ok").ok(),
+            Some("mi_session_sg.user-2_ok")
+        );
+        assert!(allowed_credential_name("mi_session_").is_err());
+        assert!(allowed_credential_name("mi_session_a/b").is_err());
+        assert!(allowed_credential_name(&format!("mi_session_{}", "a".repeat(65))).is_err());
     }
 }

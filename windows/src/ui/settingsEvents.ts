@@ -39,7 +39,7 @@ import {
 import { withAliases, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
 import type { ConnectionMode, PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
 import { demoDevices, demoScenes } from "./demo.js";
-import { submitServiceEndpoints } from "./appLifecycle.js";
+import { clearHostSessionAndDualSourceState, submitServiceEndpoints } from "./appLifecycle.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import {
   importAmbientAssistantKey,
@@ -58,6 +58,7 @@ import {
 } from "./settingsSearch.js";
 import { setPendingMiVaultDeletion, setRaycastIntegrationEnabled } from "./speechGuard.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
+import { bindEnergySettingsEvents } from "./energySettingsView.js";
 import type { SettingsTab } from "./settingsViews.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
 
@@ -458,6 +459,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
 
   const appHost = host as unknown as MenuMijiaWindowsApp;
   const vault = (host as unknown as Partial<MenuMijiaWindowsApp>).credentialVault;
+  const revokeMultiAndDualPromise = clearHostSessionAndDualSourceState(appHost, { revokeAll: true });
 
   setRaycastIntegrationEnabled(appHost, false, { persistSettings: false, render: false });
 
@@ -481,6 +483,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   host.render();
 
   try {
+    await revokeMultiAndDualPromise;
     if (vault) {
       await vault.persist(credentialsFromSettings(host.settings, host.assistantKeysByPreset));
       await vault.deleteMiSession();
@@ -1381,6 +1384,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     refreshHabitSharePreview(host);
   });
   refreshHabitSharePreview(host);
+  bindEnergySettingsEvents(host);
 
   host.root.querySelector("#btn-save-settings")?.addEventListener("click", () => {
     commitSettingsSave(host);

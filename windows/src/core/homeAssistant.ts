@@ -10,6 +10,7 @@ import {
   cachedDeviceFacets,
   cachedExtendedKind,
   claimSafetyBinarySensors,
+  haBinarySensorKind,
   haLightCapabilityFlags,
   haLockStatusText,
   haNumber as number,
@@ -17,6 +18,7 @@ import {
   haText as text,
   isHAStateAvailable,
   mapHAFacetCommand,
+  type HABinaryAlertKind,
   type HARow as Row,
   type HAState,
 } from "./haDomains.js";
@@ -28,6 +30,8 @@ import {
   type DeviceCommand,
   type DeviceKind,
   type FacetControl,
+  type SensorSafetyObservationSpec,
+  type SensorSpec,
   type SmartDevice,
   type SynthesizedHome,
 } from "./models.js";
@@ -128,6 +132,69 @@ function requiredCoverMotion(value: unknown): CoverSpec["motion"] {
   throw new Error("Invalid cached cover motion");
 }
 
+function requiredSensorAlertKind(value: unknown): NonNullable<SensorSpec["alertKind"]> {
+  if (
+    value === "smoke" ||
+    value === "gas" ||
+    value === "leak" ||
+    value === "contact" ||
+    value === "motion" ||
+    value === "vibration" ||
+    value === "lock"
+  ) {
+    return value;
+  }
+  throw new Error("Invalid cached sensor alert kind");
+}
+
+function resolveHASafetyAlertKind(
+  entities: readonly Row[],
+  states: ReadonlyMap<string, HAState>,
+  allowObjectIdFallback: boolean,
+): NonNullable<SensorSpec["alertKind"]> | undefined {
+  const readable: Array<{ entityId: string; alertKind: HABinaryAlertKind }> = [];
+  for (const entity of entities) {
+    const kind = haBinarySensorKind(entity, states, allowObjectIdFallback);
+    const entityId = text(entity.entity_id);
+    if (kind !== null && states.has(entityId)) readable.push({ entityId, alertKind: kind });
+  }
+  if (readable.length === 0) return undefined;
+  const active =
+    readable.find((item) => states.get(item.entityId)?.state.toLowerCase() === "on") ??
+    readable.find((item) => isHAStateAvailable(states.get(item.entityId))) ??
+    readable[0]!;
+  return active.alertKind;
+}
+
+function resolveHASafetyObservations(
+  entities: readonly Row[],
+  states: ReadonlyMap<string, HAState>,
+  allowObjectIdFallback: boolean,
+): SensorSafetyObservationSpec[] {
+  const out: SensorSafetyObservationSpec[] = [];
+  for (const entity of entities) {
+    const kind = haBinarySensorKind(entity, states, allowObjectIdFallback);
+    const entityId = text(entity.entity_id);
+    const st = entityId ? states.get(entityId) : undefined;
+    if (kind !== null && st && isHAStateAvailable(st)) {
+      out.push({ entityId, kind, alarming: st.state.toLowerCase() === "on" });
+    }
+  }
+  return out;
+}
+
+function requiredSafetyObservations(value: unknown): SensorSafetyObservationSpec[] {
+  if (!Array.isArray(value)) throw new Error("Invalid cached safety observations");
+  return value.map((item) => {
+    const rec = object(item);
+    return {
+      entityId: requiredText(rec.entityId),
+      kind: requiredSensorAlertKind(rec.kind),
+      alarming: requiredBoolean(rec.alarming),
+    };
+  });
+}
+
 function cachedKind(value: unknown): DeviceKind {
   const k = object(value);
   switch (k.kind) {
@@ -139,7 +206,7 @@ function cachedKind(value: unknown): DeviceKind {
     case "vacuum": return { kind: "vacuum", entityId: requiredText(k.entityId), status: requiredText(k.status), battery: nullableNumber(k.battery), modeEntityId: nullableText(k.modeEntityId), currentMode: nullableText(k.currentMode), availableModes: requiredStrings(k.availableModes) };
     case "camera": return { kind: "camera", entityId: requiredText(k.entityId), isOn: requiredBoolean(k.isOn), nightShot: nullableText(k.nightShot), availableNightShots: requiredStrings(k.availableNightShots), motionDetectionEntityId: nullableText(k.motionDetectionEntityId), isMotionDetectionOn: nullableBoolean(k.isMotionDetectionOn), streamEntityId: nullableText(k.streamEntityId), snapshotPath: null };
     case "cover": return { kind: "cover", entityId: requiredText(k.entityId), subtype: requiredCoverSubtype(k.subtype), positionPercent: nullableNumber(k.positionPercent), positionWritable: requiredBoolean(k.positionWritable), openDescription: nullableText(k.openDescription), closeDescription: nullableText(k.closeDescription), pauseDescription: nullableText(k.pauseDescription), batteryPercent: nullableNumber(k.batteryPercent), faultText: nullableText(k.faultText), motion: requiredCoverMotion(k.motion) };
-    case "sensor": return { kind: "sensor", temperature: nullableNumber(k.temperature), humidity: nullableNumber(k.humidity), battery: nullableNumber(k.battery), ...(k.statusText !== undefined && k.statusText !== null ? { statusText: requiredText(k.statusText) } : {}) };
+    case "sensor": return { kind: "sensor", temperature: nullableNumber(k.temperature), humidity: nullableNumber(k.humidity), battery: nullableNumber(k.battery), ...(k.statusText !== undefined && k.statusText !== null ? { statusText: requiredText(k.statusText) } : {}), ...(k.alertKind !== undefined && k.alertKind !== null ? { alertKind: requiredSensorAlertKind(k.alertKind) } : {}), ...(k.safetyObservations !== undefined ? { safetyObservations: requiredSafetyObservations(k.safetyObservations) } : {}) };
     default: return cachedExtendedKind(k);
   }
 }
@@ -500,6 +567,7 @@ function buildKind(
         humidity: null,
         battery: number(battery?.state),
         statusText: haLockStatusText(lockFresh ? lockState : undefined),
+        alertKind: "lock",
       },
       online: lockFresh || batteryFresh,
     };
@@ -564,12 +632,16 @@ function buildKind(
       // thermometer instead of dropping it, so the alert text rides along and the entities are
       // claimed out of 更多设置 (a read-only alarm row there would be noise).
       const safetyStatus = claimSafetyBinarySensors(entities, states, claimed);
+      const alertKind = resolveHASafetyAlertKind(entities, states, false);
+      const safetyObservations = resolveHASafetyObservations(entities, states, false);
       kind = {
         kind: "sensor",
         temperature: number(temperature?.state),
         humidity: number(humidity?.state),
         battery: reading("battery", true),
         ...(safetyStatus !== null ? { statusText: safetyStatus } : {}),
+        ...(alertKind ? { alertKind } : {}),
+        ...(safetyObservations.length > 0 ? { safetyObservations } : {}),
       };
     } else {
       const batState = sensor("battery");
@@ -581,7 +653,20 @@ function buildKind(
         batState?.entityId ?? null,
         allowBinaryFallback,
       );
-      if (binaryBuilt) return binaryBuilt;
+      if (binaryBuilt) {
+        const alertKind = resolveHASafetyAlertKind(entities, states, allowBinaryFallback);
+        const safetyObservations = resolveHASafetyObservations(entities, states, allowBinaryFallback);
+        return binaryBuilt.kind.kind === "sensor" && (alertKind || safetyObservations.length > 0)
+          ? {
+              ...binaryBuilt,
+              kind: {
+                ...binaryBuilt.kind,
+                ...(alertKind ? { alertKind } : {}),
+                ...(safetyObservations.length > 0 ? { safetyObservations } : {}),
+              },
+            }
+          : binaryBuilt;
+      }
 
       const primaryButtons = entities.filter((entry) => {
         const entityId = text(entry.entity_id);
@@ -1016,6 +1101,7 @@ export function haServiceCall(command: DeviceCommand): HaServiceCall {
 }
 
 export class HomeAssistantClient {
+  public lastRawSnapshot: unknown = null;
   constructor(
     private readonly baseURL: string,
     private readonly token: string,
@@ -1026,12 +1112,12 @@ export class HomeAssistantClient {
     },
   ) {}
   async snapshot(): Promise<SynthesizedHome> {
-    return HomeAssistantSynthesizer.synthesize(
-      await this.invoke<unknown>("ha_snapshot", {
-        baseUrl: this.baseURL,
-        token: this.token,
-      }),
-    );
+    const raw = await this.invoke<unknown>("ha_snapshot", {
+      baseUrl: this.baseURL,
+      token: this.token,
+    });
+    this.lastRawSnapshot = raw;
+    return HomeAssistantSynthesizer.synthesize(raw);
   }
   async execute(command: DeviceCommand): Promise<void> {
     await this.invoke("ha_execute", {

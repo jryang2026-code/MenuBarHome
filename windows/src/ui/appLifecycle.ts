@@ -26,6 +26,26 @@ import { invokeTauriVoid } from "./transport.js";
 import { stripCredentialFieldsFromStoredCopies, writeSettingsForStorage } from "./settings.js";
 import type { SettingsTab } from "./settingsViews.js";
 import {
+  clearHostActivitiesOnSignOut,
+  collapseActivityStackOnHide,
+  dispatchSystemContextEvent,
+  notifyPanelWakeLifecycle,
+  tickSafetyHealthAndAutomation,
+} from "./activityStackView.js";
+import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
+import {
+  CANONICAL_DEVICE_REGISTRY_STORAGE_KEY,
+  DUAL_SOURCE_ENABLED_STORAGE_KEY,
+  PINNED_DEVICE_SOURCES_STORAGE_KEY,
+  ROOM_IDENTITY_REGISTRY_STORAGE_KEY,
+} from "../core/dualSourceProvider.js";
+import {
+  clearAccountRateLimitBackoff,
+  MI_ACCOUNTS_EXPIRED_STORAGE_KEY,
+  MI_ACCOUNTS_INDEX_STORAGE_KEY,
+  readAccountIndex,
+} from "../core/miAccountsStore.js";
+import {
   clearUpdateProgress,
   didMiExpiryKindChange,
   dismissPendingUrlConfirmation,
@@ -37,6 +57,8 @@ import {
   setPendingMiVaultDeletion,
   shouldKeepPopoverPinned,
 } from "./speechGuard.js";
+
+export { dispatchSystemContextEvent };
 
   /**
    * First run after this version: move the plaintext copy into the Windows Credential
@@ -184,6 +206,45 @@ export async function persistCredentials(host: MenuMijiaWindowsApp): Promise<voi
     }
   }
 
+export async function clearHostSessionAndDualSourceState(
+  host: Partial<MenuMijiaWindowsApp> & { settings?: { dualSourceEnabled?: boolean } },
+  options: { readonly revokeAll?: boolean } = {},
+): Promise<void> {
+  clearHostActivitiesOnSignOut(host);
+  clearAccountRateLimitBackoff();
+  const slotIds = readAccountIndex().map((entry) => entry.slotId);
+  const store = host.miAccountsStore ?? null;
+  host.multiAccountState = null;
+  host.miAccountsOverride = null;
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.removeItem(MI_ACCOUNTS_INDEX_STORAGE_KEY);
+      localStorage.removeItem(MI_ACCOUNTS_EXPIRED_STORAGE_KEY);
+      if (options.revokeAll) {
+        localStorage.removeItem(DUAL_SOURCE_ENABLED_STORAGE_KEY);
+        localStorage.removeItem(PINNED_DEVICE_SOURCES_STORAGE_KEY);
+        localStorage.removeItem(CANONICAL_DEVICE_REGISTRY_STORAGE_KEY);
+        localStorage.removeItem(ROOM_IDENTITY_REGISTRY_STORAGE_KEY);
+      }
+    }
+  } catch {
+  }
+  if (options.revokeAll) {
+    appDiagnosticsLog.clear();
+    host.dualSourceCoordinator = null;
+    host.dualSourceEnabledOverride = null;
+    if (host.settings) {
+      host.settings.dualSourceEnabled = false;
+    }
+  }
+  if (store) {
+    await store.clearAll().catch(() => {});
+  }
+  if (host.credentialVault && slotIds.length > 0) {
+    await host.credentialVault.deleteMiSession(slotIds).catch(() => {});
+  }
+}
+
 export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     const retryOnly = !host.settings.miSession && host.settings.cachedXiaomiDevices.length === 0;
     if (retryOnly && !hasPendingMiVaultDeletion()) return;
@@ -208,6 +269,7 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     host.settings.miSession = null;
     host.settings.cachedXiaomiDevices = [];
     host.settings.selectedHomeId = null;
+    const clearMultiPromise = clearHostSessionAndDualSourceState(host, { revokeAll: false });
     host.miSessionExpired = false;
     host.cloudValuesStale = false;
     host.unresolvedRoomDids.clear();
@@ -221,6 +283,7 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     submitServiceEndpoints(host, false);
     void (async () => {
       try {
+        await clearMultiPromise;
         await host.credentialVault.persist(credentialsFromSettings(host.settings, host.assistantKeysByPreset));
         await host.credentialVault.deleteMiSession();
         setPendingMiVaultDeletion(false);
@@ -812,6 +875,11 @@ export function bindLifecycleRecovery(
       disposeAppLifecycle(host);
       return;
     }
+    if ((ownerDoc as { readonly visibilityState?: string }).visibilityState === "hidden") {
+      collapseActivityStackOnHide(host);
+    } else {
+      notifyPanelWakeLifecycle(host);
+    }
     controller.trigger("visibility");
   };
   const onFocus = () => {
@@ -840,6 +908,7 @@ export function bindLifecycleRecovery(
       disposeAppLifecycle(host);
       return;
     }
+    notifyPanelWakeLifecycle(host);
     controller.trigger("resume");
   };
   const onPageHide = () => {
@@ -965,6 +1034,7 @@ export function bindGlobalKeys(
         host.render();
         return;
       }
+      collapseActivityStackOnHide(host);
       resumeUndoHoverPause(host);
       invokeTauriVoid("hide_panel");
     } else if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && document.activeElement?.tagName !== "INPUT") {
@@ -1017,10 +1087,11 @@ export function startTimerLoop(
       undoExpired = true;
     }
     const miExpiryChanged = didMiExpiryKindChange(host, now);
+    const activityChanged = tickSafetyHealthAndAutomation(host, now);
 
     if (runWithScheduledTimerTickExemption(() => processScheduledCommands(host, now))) {
       host.render();
-    } else if (undoExpired || miExpiryChanged) {
+    } else if (undoExpired || miExpiryChanged || activityChanged) {
       host.queueBackgroundRender();
     }
 
