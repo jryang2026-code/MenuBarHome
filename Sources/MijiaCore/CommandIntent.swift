@@ -215,7 +215,16 @@ public enum IntentDeviceCategory: String, Equatable, Sendable, CaseIterable {
         case .camera: self = .camera
         case .sensor: self = .sensor
         case .cover: self = .cover
-        case .appliance: self = .appliance
+        case .appliance(let s):
+            let lowerEntity = s.entityId.lowercased()
+            let lowerModel = device.model.lowercased()
+            if lowerEntity.hasPrefix("humidifier.") || lowerModel.contains("humidifier") || s.symbolName == "humidity.fill" {
+                self = .airPurifier
+            } else if lowerEntity.hasPrefix("valve.") || lowerModel.contains("valve") || (!s.temperatureWritable && s.availableModes.isEmpty && (device.name.contains("水阀") || device.name.contains("气阀") || device.name.contains("燃气阀") || device.name.contains("阀门"))) {
+                self = .valve
+            } else {
+                self = .appliance
+            }
         case .generic: self = .generic
         // A humidifier keeps the air-purifier vocabulary it had as a `.fan` card: power is the
         // only operation the assistant understands for it.
@@ -227,8 +236,8 @@ public enum IntentDeviceCategory: String, Equatable, Sendable, CaseIterable {
     /// Categories whose state the assistant can change; the rest are omitted from prompts and plans.
     public var isAssistantControllable: Bool {
         switch self {
-        case .light, .climate, .heater, .fan, .airPurifier, .dehumidifier, .diffuser, .plug, .vacuum, .tv, .camera: return true
-        case .speaker, .fridge, .sensor, .cover, .appliance, .generic, .valve: return false
+        case .light, .climate, .heater, .fan, .airPurifier, .dehumidifier, .diffuser, .plug, .vacuum, .tv, .camera, .valve: return true
+        case .speaker, .fridge, .sensor, .cover, .appliance, .generic: return false
         }
     }
 }
@@ -530,7 +539,9 @@ public struct IntentCatalog: Sendable {
             aliasById[device.id] = alias
             if map[device.id] == nil { map[device.id] = [device.id] }
             let state = PromptText.sanitize(Self.stateSummary(device), limit: PromptText.stateLimit)
-            allDeviceIds.append(device.id)
+            if category != .valve {
+                allDeviceIds.append(device.id)
+            }
             if category == .light {
                 allLightIds.append(device.id)
                 if !device.roomName.isEmpty {

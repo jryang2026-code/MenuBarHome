@@ -805,6 +805,52 @@ describe("A11 RunningBatch mid-flight undo & preemption (#2)", () => {
     await setImmediate();
     await setImmediate();
     assert.equal(timerSent.includes("setLightPower:light.l_extra"), true);
+
+    const sceneGate = deferred<boolean>();
+    const sceneLight = makeLight("l_scene", "卧室灯", { isOn: true });
+    app.devices = [sceneLight];
+    app.scenes = [{ id: "scene.dim", name: "微光", entityId: "scene.dim" }];
+    app.applyCommand = async (cmd) => {
+      if (cmd.kind === "setLightBrightness" && cmd.entityId === "light.l_scene") {
+        if (sceneLight.kind.kind === "light") {
+          sceneLight.kind.brightnessPercent = cmd.percent;
+        }
+        return true;
+      }
+      if (cmd.kind === "activateScene") {
+        const ok = await sceneGate.promise;
+        if (ok && sceneLight.kind.kind === "light") {
+          sceneLight.kind.brightnessPercent = 15;
+        }
+        return ok;
+      }
+      return true;
+    };
+    const sceneBatchPromise = executeIntents(
+      app,
+      [
+        { targetId: "l_scene", operation: { kind: "brightness", percent: 30 } },
+        { targetId: "scene.dim", operation: { kind: "activateScene" } },
+      ],
+      "调暗卧室灯并触发微光",
+      "一键全关",
+    );
+    await setImmediate();
+    await setImmediate();
+    const sceneUndoPromise = app.performUndo();
+    await setImmediate();
+    assert.equal(
+      (app.devices.find((d) => d.id === "l_scene")!.kind as { brightnessPercent: number }).brightnessPercent,
+      30,
+      "performUndo must wait for in-flight activateScene before restoring l_scene",
+    );
+    sceneGate.resolve(true);
+    await Promise.all([sceneBatchPromise, sceneUndoPromise]);
+    assert.equal(
+      (app.devices.find((d) => d.id === "l_scene")!.kind as { brightnessPercent: number }).brightnessPercent,
+      80,
+      "after in-flight activateScene settles, performUndo restores l_scene to 80%",
+    );
   });
 });
 

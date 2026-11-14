@@ -518,7 +518,7 @@ export async function executeIntents(
           if (command.kind === "activateScene") {
             const prevBanner = host.replyBanner;
             try {
-              const ok = await host.applyCommand(command);
+              const ok = await runningBatch.trackInFlight(() => host.applyCommand(command));
               if (ok) {
                 succeeded += 1;
                 const entry = candidateIntents[intentIndex];

@@ -63,7 +63,10 @@ public enum LocalIntentParser {
         "制冷": "cool", "制热": "heat", "除湿": "dry", "送风": "fan_only", "自动": "auto"
     ]
 
-    private static let scopeWords: Set<String> = ["全部", "所有", "全屋", "全家", "家里", "整个家"]
+    private static let scopeWords: Set<String> = [
+        "所有设备", "全部设备", "全屋设备",
+        "全部", "所有", "全屋", "全家", "家里", "整个家"
+    ]
 
     private static let categoryWords: [String: IntentDeviceCategory] = [
         "灯": .light, "灯光": .light, "电灯": .light,
@@ -76,7 +79,8 @@ public enum LocalIntentParser {
         "插座": .plug,
         "扫地机": .vacuum, "扫地机器人": .vacuum,
         "电视": .tv, "电视机": .tv,
-        "摄像头": .camera, "摄像机": .camera, "监控": .camera
+        "摄像头": .camera, "摄像机": .camera, "监控": .camera,
+        "阀门": .valve, "水阀": .valve, "气阀": .valve, "燃气阀": .valve, "总阀": .valve
     ]
 
     /// Generic room words users say, mapped to room names they may correspond to in HA.
@@ -353,6 +357,7 @@ public enum LocalIntentParser {
                 let candidates = devices.filter { dev in
                     let category = IntentDeviceCategory(dev)
                     guard dev.isOnline, category.isAssistantControllable, dev.kind.acceptsControlWrites else { return false }
+                    if category == .valve && !(wanted?.contains(.valve) ?? false) { return false }
                     if onlyActive && !dev.isActiveOn { return false }
                     if !matchedRooms.isEmpty && !roomDeviceIds.contains(dev.id) { return false }
                     if let wanted, !wanted.contains(category) { return false }
@@ -755,7 +760,10 @@ public enum LocalIntentParser {
         ("plugs", .plug), ("plug", .plug), ("socket", .plug), ("outlet", .plug),
         ("vacuum", .vacuum),
         ("television", .tv), ("tv", .tv),
-        ("cameras", .camera), ("camera", .camera)
+        ("cameras", .camera), ("camera", .camera),
+        ("water valves", .valve), ("water valve", .valve),
+        ("gas valves", .valve), ("gas valve", .valve),
+        ("valves", .valve), ("valve", .valve)
     ]
 
     private static let englishFillers: [String] = [
@@ -973,6 +981,7 @@ public enum LocalIntentParser {
                 let candidates = devices.filter { dev in
                     let category = IntentDeviceCategory(dev)
                     guard dev.isOnline, category.isAssistantControllable, dev.kind.acceptsControlWrites else { return false }
+                    if category == .valve && !(wanted?.contains(.valve) ?? false) { return false }
                     if onlyActive && !dev.isActiveOn { return false }
                     if !matchedRoomKeys.isEmpty && !roomDeviceIds.contains(dev.id) { return false }
                     if let wanted, !wanted.contains(category) { return false }

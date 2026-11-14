@@ -2161,6 +2161,99 @@
           "expected": null
         }
       ]
+    },
+    {
+      "name": "Valve category commands resolve in Chinese and English while whole-home shutoff excludes normally-open valves",
+      "devices": [
+        {
+          "id": "dev_kitchen_light",
+          "name": "厨房吸顶灯",
+          "roomId": "kitchen",
+          "roomName": "厨房",
+          "model": "yeelink.light.ceiling20",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_kitchen_light:2",
+            "isOn": true,
+            "brightnessPercent": 80,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_water_valve",
+          "name": "厨房总水阀",
+          "roomId": "kitchen",
+          "roomName": "厨房",
+          "model": "tuya.valve",
+          "isOnline": true,
+          "kind": {
+            "kind": "appliance",
+            "entityId": "valve.main_water",
+            "isOn": true,
+            "powerPresent": true,
+            "powerWritable": true,
+            "currentMode": null,
+            "availableModes": [],
+            "modeWritable": false,
+            "targetTemperature": null,
+            "currentTemperature": null,
+            "minTemp": 0,
+            "maxTemp": 100,
+            "step": 1,
+            "temperatureWritable": false,
+            "statusText": "开启",
+            "faultText": null,
+            "remainingMinutes": null,
+            "startAction": null,
+            "pauseAction": null,
+            "stopAction": null,
+            "powerEntityId": "valve.main_water",
+            "modeEntityId": "",
+            "temperatureEntityId": "",
+            "light": null,
+            "fanLevel": null,
+            "currentHumidity": null,
+            "symbolName": "drop.fill",
+            "roomReading": false,
+            "heats": false
+          }
+        }
+      ],
+      "cases": [
+        {
+          "utterance": "关闭水阀",
+          "expected": [
+            { "targetId": "dev_water_valve", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭厨房总水阀"
+        },
+        {
+          "utterance": "close water valve",
+          "expected": [
+            { "targetId": "dev_water_valve", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭厨房总水阀"
+        },
+        {
+          "utterance": "把家里关掉",
+          "expected": [
+            { "targetId": "dev_kitchen_light", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭厨房吸顶灯"
+        },
+        {
+          "utterance": "turn off everything",
+          "expected": [
+            { "targetId": "dev_kitchen_light", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭厨房吸顶灯"
+        }
+      ]
     }
   ]
 }

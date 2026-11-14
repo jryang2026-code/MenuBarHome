@@ -1262,6 +1262,15 @@ extension HomeStore {
                 command: .setSwitch(entityId: s.entityId, isOn: on),
                 restore: [restore]
             )
+        case (.power(let on), .valve(var s)):
+            let restore = DeviceCommand.setSwitch(entityId: s.entityId, isOn: s.isOpen)
+            s.isOpen = on
+            updated.kind = .valve(s)
+            return AssistantEffect(
+                updated: updated,
+                command: .setSwitch(entityId: s.entityId, isOn: on),
+                restore: [restore]
+            )
 
         case (.fanSpeed(let preset), .fan(var s)):
             var restore: [DeviceCommand] = []
