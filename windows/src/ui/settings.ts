@@ -92,8 +92,9 @@ export function loadSettings(): LoadedSettings {
         typeof parsed.assistantLegacyKeyEndpoint === "string" || parsed.assistantLegacyKeyEndpoint === null
           ? parsed.assistantLegacyKeyEndpoint
           : resolvedKeyEndpoint;
-      return {
-        settings: {
+      const askWhenUnsure = typeof parsed.askWhenUnsure === "boolean" ? parsed.askWhenUnsure : true;
+      const settings: PersistedSettings = Object.assign(
+        {
           connectionMode: mode,
           miSession,
           miCloudRegion: normalizeMiCloudRegion(parsed.miCloudRegion ?? miSession?.region),
@@ -187,15 +188,19 @@ export function loadSettings(): LoadedSettings {
           cameraStreamQualities: normalizeCameraStreamQualityMap(parsed.cameraStreamQualities),
           layout: { ...emptyLayoutPrefs(), ...(parsed.layout ?? {}) },
           selectedHomeId: parsed.selectedHomeId ?? null,
-        },
+        } satisfies PersistedSettings,
+        { askWhenUnsure },
+      );
+      return {
+        settings,
         hasLegacyCredentials,
       };
     }
   } catch {
     // ignore corrupt localStorage
   }
-  return {
-    settings: {
+  const defaultSettings: PersistedSettings = Object.assign(
+    {
       connectionMode: "demo",
       miSession: null,
       miCloudRegion: "cn",
@@ -241,9 +246,24 @@ export function loadSettings(): LoadedSettings {
       allowDirectURLControl: false,
       cameraStreamURLs: {},
       cameraStreamQualities: {},
-    },
+    } satisfies PersistedSettings,
+    { askWhenUnsure: true },
+  );
+  return {
+    settings: defaultSettings,
     hasLegacyCredentials: false,
   };
+}
+
+/** Reads `askWhenUnsure` from settings (defaults to `true`, matching macOS `assistant_ask_when_unsure`). */
+export function readAskWhenUnsure(settings: object): boolean {
+  const raw = (settings as Record<string, unknown>).askWhenUnsure;
+  return typeof raw === "boolean" ? raw : true;
+}
+
+/** Persists `askWhenUnsure` onto the runtime settings record without touching `appTypes.ts`. */
+export function writeAskWhenUnsure(settings: object, enabled: boolean): void {
+  (settings as Record<string, unknown>).askWhenUnsure = enabled;
 }
 
 /** Writes settings without credentials; secrets belong to the Windows Credential Manager (#28). */

@@ -495,11 +495,6 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       host.saveSettings();
       host.render();
     });
-    host.root.querySelector<HTMLInputElement>("#settings-allow-advanced-facets")?.addEventListener("change", (e) => {
-      host.settings.allowAdvancedFacetWrites = (e.target as HTMLInputElement).checked;
-      host.saveSettings();
-      host.render();
-    });
     host.root.querySelector<HTMLInputElement>("#settings-quick-actions")?.addEventListener("change", (e) => {
       host.settings.showQuickActionsBar = (e.target as HTMLInputElement).checked;
       host.saveSettings();

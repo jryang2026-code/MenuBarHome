@@ -1,5 +1,10 @@
-import { ASSISTANT_PROVIDER_PRESETS, inferAssistantPreset } from "../core/assistant.js";
-import { speechLocale, t } from "../core/i18n.js";
+import {
+  ASSISTANT_PROVIDER_PRESETS,
+  inferAssistantPreset,
+  listReadableHabits,
+  type HabitSequenceEntry,
+} from "../core/assistant.js";
+import { currentLanguage, speechLocale, t, type AppLanguage } from "../core/i18n.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import {
   getUpdateProgressForSettings,
@@ -14,7 +19,7 @@ import {
   miCloudRegionLabel,
   normalizeMiCloudRegion,
 } from "../core/miCloudClient.js";
-import { joinsAllOff, type SmartDevice } from "../core/models.js";
+import { joinsAllOff, type HomeScene, type SmartDevice } from "../core/models.js";
 import {
   APPEARANCES,
   DEFAULT_GLOBAL_SHORTCUT,
@@ -26,7 +31,13 @@ import {
 } from "./panelPrefs.js";
 import type { PersistedSettings } from "./appTypes.js";
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
-import type { HabitSequenceEntry } from "../core/assistant.js";
+import { readAskWhenUnsure } from "./settings.js";
+
+function tr3(zhHans: string, zhHant: string, en: string, lang: AppLanguage = currentLanguage()): string {
+  if (lang === "en") return en;
+  if (lang === "zh-Hant") return zhHant;
+  return zhHans;
+}
 
 /** The four Settings categories (#78). The value is stored so a re-render keeps the open tab. */
 export type SettingsTab = "general" | "connection" | "assistant" | "system";
@@ -115,6 +126,7 @@ export function restoreSettingsDraft(
 export interface SettingsViewContext {
   readonly settings: PersistedSettings;
   readonly devices: readonly SmartDevice[];
+  readonly scenes?: readonly HomeScene[];
   readonly availableUpdate: GitHubRelease | null;
   readonly activeTab: SettingsTab;
   readonly apiKeyFor: (baseURL: string) => string;
@@ -134,12 +146,17 @@ export interface SettingsViewContext {
 }
 
   /**
-   * Three-zone sheet: a fixed header with the close button and the category tabs, one scrolling
+   * Three-zone sheet: a fixed header with the close button, search bar and category tabs, one scrolling
    * body holding all four panels, and a fixed footer with 完成并保存 (#78). Every panel stays in the
    * DOM behind `hidden`, so a typed draft survives a tab switch and 完成并保存 reads every input no
    * matter which tab is open.
    */
   export function renderSettingsModal(ctx: SettingsViewContext): string {
+    const searchPlaceholder = tr3(
+      "搜索设置项（开机自启 / 密钥 / 全关 / 习惯 / 锁屏…）",
+      "搜尋設定項（開機自啟 / 金鑰 / 全關 / 習慣 / 鎖屏…）",
+      "Search settings (startup, token, all off, habits, lock…)",
+    );
     return `
       <div class="cc-sheet-backdrop">
         <div class="cc-sheet cc-settings-sheet" role="dialog" aria-modal="true" aria-label="${t("偏好设置")}">
@@ -150,6 +167,61 @@ export interface SettingsViewContext {
                 ${SF_ICONS.xmark}
               </button>
             </div>
+
+            <div
+              id="settings-unsaved-confirm"
+              class="cc-update-row"
+              hidden
+              role="alert"
+              style="margin-top: 6px; padding: 6px 8px; border-radius: 8px; background: rgba(230, 126, 34, 0.14); gap: 6px; flex-wrap: wrap;"
+            >
+              <span style="font-size: 12px;">${ctx.escapeHtml(
+                tr3(
+                  "有未保存的设置修改，是否保存？",
+                  "有未儲存的設定修改，是否儲存？",
+                  "You have unsaved settings changes. Save before closing?",
+                ),
+              )}</span>
+              <div style="display: flex; gap: 6px; margin-left: auto;">
+                <button type="button" class="cc-btn-secondary" id="btn-cancel-close-settings">${ctx.escapeHtml(
+                  tr3("继续编辑", "繼續編輯", "Keep Editing"),
+                )}</button>
+                <button type="button" class="cc-btn-danger" id="btn-discard-settings">${ctx.escapeHtml(
+                  tr3("放弃未保存修改", "放棄未儲存修改", "Discard Changes"),
+                )}</button>
+                <button type="button" class="cc-btn-primary" id="btn-confirm-save-settings">${ctx.escapeHtml(
+                  tr3("保存并关闭", "儲存並關閉", "Save & Close"),
+                )}</button>
+              </div>
+            </div>
+
+            <div class="cc-settings-search" style="position: relative; margin: 6px 0;">
+              <div style="display: flex; gap: 6px; align-items: center;">
+                <input
+                  id="settings-search-input"
+                  class="cc-input"
+                  type="search"
+                  autocomplete="off"
+                  placeholder="${ctx.escapeHtml(searchPlaceholder)}"
+                  aria-label="${ctx.escapeHtml(tr3("搜索偏好设置", "搜尋偏好設定", "Search Preferences"))}"
+                  style="flex: 1;"
+                />
+                <button
+                  type="button"
+                  class="cc-inline-pill"
+                  id="btn-clear-settings-search"
+                  hidden
+                  aria-label="${ctx.escapeHtml(tr3("清空搜索", "清空搜尋", "Clear Search"))}"
+                >${ctx.escapeHtml(tr3("清空", "清空", "Clear"))}</button>
+              </div>
+              <div
+                id="settings-search-results"
+                role="listbox"
+                hidden
+                style="margin-top: 4px; max-height: 210px; overflow-y: auto; border-radius: 8px; padding: 4px; background: rgba(128, 128, 128, 0.12);"
+              ></div>
+            </div>
+
             <div class="cc-segmented-pills is-even cc-settings-tabs" role="tablist" aria-label="${t("设置分类")}">
               ${SETTINGS_TABS.map((tab) => {
                 const active = tab.id === ctx.activeTab;
@@ -166,7 +238,7 @@ export interface SettingsViewContext {
           </div>
 
           <div class="cc-sheet-footer">
-            <button class="cc-btn-danger" id="btn-settings-quit">${t("退出 MenuBarHome")}</button>
+            <button class="cc-btn-danger" id="btn-settings-quit" data-settings-anchor="quitApp">${t("退出 MenuBarHome")}</button>
             <button class="cc-btn-primary" id="btn-save-settings">${t("完成并保存")}</button>
           </div>
         </div>
@@ -183,12 +255,12 @@ function renderSettingsTabPanel(
   return `<div class="cc-settings-tab-panel" role="tabpanel" data-settings-panel="${tabId}" ${hidden}>${renderBody(ctx)}</div>`;
 }
 
-/** 外观与面板: the update card when there is one, then the panel's own look and hotkey. */
+/** 外观与面板: the update card when there is one, then the panel's own look, hotkey, voice tip, and setup guide. */
 function renderGeneralPanel(ctx: SettingsViewContext): string {
   return `
     ${ctx.availableUpdate ? renderUpdateSection(ctx) : ""}
 
-    <div class="cc-field">
+    <div class="cc-field" data-settings-anchor="appearanceMode">
       <label>${t("外观模式")}</label>
       <div class="cc-segmented-pills is-even">
         ${APPEARANCES.map(
@@ -198,7 +270,7 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
       </div>
     </div>
 
-    <div class="cc-field">
+    <div class="cc-field" data-settings-anchor="panelOpacity">
       <div class="cc-slider-label">
         <label for="settings-panel-opacity">${t("面板不透明度")}</label>
         <strong id="settings-panel-opacity-value">${ctx.settings.panelOpacity}%</strong>
@@ -210,7 +282,7 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
       <p class="cc-field-hint">${t("壁纸透出导致文字看不清时调高；100% 为不透明。")}</p>
     </div>
 
-    <div class="cc-field">
+    <div class="cc-field" data-settings-anchor="language">
       <label>${t("界面语言 / 语言")}</label>
       <div class="cc-segmented-pills">
         ${([["system", t("跟随系统")], ["zh-Hans", t("简体中文")], ["zh-Hant", t("繁體中文")], ["en", "English"]] as const)
@@ -222,7 +294,7 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
       </div>
     </div>
 
-    <div class="cc-field">
+    <div class="cc-field" data-settings-anchor="temperatureUnit">
       <label>${t("温度单位")}</label>
       <div class="cc-segmented-pills">
         ${([["system", t("跟随系统")], ["celsius", t("摄氏度 (°C)")], ["fahrenheit", t("华氏度 (°F)")]] as const)
@@ -234,14 +306,14 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
       </div>
     </div>
 
-    <div class="cc-field">
+    <div class="cc-field" data-settings-anchor="panelHeight">
       <label>${t("面板高度")}</label>
       <div class="cc-segmented-pills">
         ${PANEL_HEIGHTS.map((h) => `<button class="cc-seg-pill ${ctx.settings.panelHeight === h.id ? "is-active" : ""}" data-panel-height="${h.id}" aria-pressed="${ctx.settings.panelHeight === h.id}">${h.title}</button>`).join("")}
       </div>
     </div>
 
-    <div class="cc-field">
+    <div class="cc-field" data-settings-anchor="panelAnchor">
       <label>${t("面板位置")}</label>
       <div class="cc-segmented-pills">
         ${PANEL_ANCHORS.map((a) => `<button class="cc-seg-pill ${ctx.panelAnchor === a.id ? "is-active" : ""}" data-panel-anchor="${a.id}" aria-pressed="${ctx.panelAnchor === a.id}">${ctx.escapeHtml(a.title)}</button>`).join("")}
@@ -249,32 +321,32 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
       <p class="cc-field-hint">${t("拖动面板顶部即可移动，松开后吸附到最近的角落。")}</p>
     </div>
 
-    <div class="cc-field cc-field-row">
+    <div class="cc-field cc-field-row" data-settings-anchor="climatePanelModule">
       <label for="settings-climate-panel">${t("空调使用整行控制条")}</label>
       <input id="settings-climate-panel" type="checkbox" ${ctx.settings.climatePanel ? "checked" : ""} />
     </div>
 
-    <div class="cc-field cc-field-row">
+    <div class="cc-field cc-field-row" data-settings-anchor="hideOfflineDevices">
       <label for="settings-hide-offline">${t("隐藏离线/未通电的设备")}</label>
       <input id="settings-hide-offline" type="checkbox" ${ctx.settings.hideOfflineDevices ? "checked" : ""} />
     </div>
 
-    <div class="cc-field cc-field-row">
+    <div class="cc-field cc-field-row" data-settings-anchor="hideGroupedLights">
       <label for="settings-hide-grouped-lights">${t("灯组内的单灯不重复显示")}</label>
       <input id="settings-hide-grouped-lights" type="checkbox" ${ctx.settings.hideGroupedLights ? "checked" : ""} />
     </div>
 
-    <div class="cc-field cc-field-row">
+    <div class="cc-field cc-field-row" data-settings-anchor="quickScenesBar">
       <label for="settings-quick-actions">${t("显示顶部快捷场景栏")}</label>
       <input id="settings-quick-actions" type="checkbox" ${ctx.settings.showQuickActionsBar ? "checked" : ""} />
     </div>
 
-    <div class="cc-field cc-field-row">
+    <div class="cc-field cc-field-row" data-settings-anchor="launchAtLogin">
       <label for="settings-launch-at-login">${t("开机自动启动")}</label>
       <input id="settings-launch-at-login" type="checkbox" ${ctx.settings.launchAtLogin ? "checked" : ""} />
     </div>
 
-    <div class="cc-field">
+    <div class="cc-field" data-settings-anchor="globalHotkey">
       <div class="cc-field-row">
         <label for="settings-enable-hotkey">${t("启用全局呼出快捷键")}</label>
         <input id="settings-enable-hotkey" type="checkbox" ${ctx.settings.enableGlobalHotkey ? "checked" : ""} />
@@ -314,13 +386,40 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
           : ""
       }
     </div>
+
+    <div class="cc-field" data-settings-anchor="voiceControl">
+      <label>${ctx.escapeHtml(tr3("语音指令与麦克风", "語音指令與麥克風", "Voice Dictation & Microphone"))}</label>
+      <p class="cc-field-hint">${ctx.escapeHtml(
+        tr3(
+          "点击面板顶部麦克风按钮即可开始语音听写，自动跟随当前界面语言。",
+          "點擊面板頂部麥克風按鈕即可開始語音聽寫，自動跟隨目前介面語言。",
+          "Click the microphone icon at the top of the panel to dictate commands in your UI language.",
+        ),
+      )}</p>
+    </div>
+
+    <div class="cc-field cc-field-row" data-settings-anchor="setupGuide">
+      <div>
+        <label>${ctx.escapeHtml(tr3("首次设置与新手引导", "首次設定與新手引導", "Setup & Onboarding Guide"))}</label>
+        <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
+          tr3(
+            "随时重新打开三步上手引导，查看连接、快捷键与全关撤销演练。",
+            "隨時重新打開三步上手引導，查看連線、快速鍵與全關復原演練。",
+            "Reopen the 3-step onboarding guide anytime to review connections, shortcuts, and All Off.",
+          ),
+        )}</p>
+      </div>
+      <button type="button" class="cc-btn-secondary" id="btn-reopen-onboarding">${ctx.escapeHtml(
+        tr3("重新查看新手引导", "重新查看新手引導", "Reopen Setup Guide"),
+      )}</button>
+    </div>
   `;
 }
 
 /** 数据源: which backend the panel reads, and how to sign in to each. */
 function renderConnectionPanel(ctx: SettingsViewContext): string {
   return `
-    <div class="cc-field">
+    <div class="cc-field" data-settings-anchor="dataSource">
       <label>${t("设备数据源")}</label>
       <div class="cc-segmented-pills">
         <button
@@ -333,19 +432,24 @@ function renderConnectionPanel(ctx: SettingsViewContext): string {
         <button
           class="cc-seg-pill ${ctx.settings.connectionMode === "demo" ? "is-active" : ""}"
           data-conn-mode="demo"
+          data-settings-anchor="demoMode"
         >
           ${t("演示设备预览")}
         </button>
       </div>
     </div>
     <div class="cc-field">
-      <label for="settings-ha-url">Home Assistant URL</label>
-      <input id="settings-ha-url" class="cc-input" type="url" value="${ctx.escapeHtml(ctx.settings.haBaseURL)}" placeholder="http://homeassistant.local:8123" />
-      <label for="settings-ha-token">Home Assistant access token</label>
-      <input id="settings-ha-token" class="cc-input" type="password" autocomplete="off" value="${ctx.escapeHtml(ctx.settings.haToken)}" />
+      <div data-settings-anchor="haServerAddress">
+        <label for="settings-ha-url">Home Assistant URL</label>
+        <input id="settings-ha-url" class="cc-input" type="url" value="${ctx.escapeHtml(ctx.settings.haBaseURL)}" placeholder="http://homeassistant.local:8123" />
+      </div>
+      <div data-settings-anchor="haToken" style="margin-top: 6px;">
+        <label for="settings-ha-token">Home Assistant access token</label>
+        <input id="settings-ha-token" class="cc-input" type="password" autocomplete="off" value="${ctx.escapeHtml(ctx.settings.haToken)}" />
+      </div>
     </div>
 
-    <div class="cc-field">
+    <div class="cc-field" data-settings-anchor="miCloudRegion">
       <label>${t("云端服务器地区")}</label>
       <select class="cc-input" data-mi-region>
         ${MI_CLOUD_REGIONS.map(
@@ -355,7 +459,7 @@ function renderConnectionPanel(ctx: SettingsViewContext): string {
       <p class="cc-field-hint">${ctx.escapeHtml(t("当前选择：{region}。切换后请重新扫码登录该地区的米家账号；已登录会话仍使用登录时的地区。", { region: t(miCloudRegionLabel(ctx.settings.miCloudRegion)) }))}</p>
     </div>
 
-    <div class="cc-qr-box">
+    <div class="cc-qr-box" data-settings-anchor="miAccount">
       <button class="cc-btn-primary is-full" id="btn-start-qr" ${ctx.isPollingQR ? "disabled" : ""}>
         ${SF_ICONS.qrcode}
         <span>
@@ -398,24 +502,35 @@ function renderMiSessionNoteAndSignOut(ctx: SettingsViewContext): string {
 
 /** AI 与习惯: the decision model endpoint and everything the app learns from the user. */
 function renderAssistantPanel(ctx: SettingsViewContext): string {
+  const currentPreset = inferAssistantPreset(ctx.settings.assistantBaseURL);
+  const askWhenUnsure = readAskWhenUnsure(ctx.settings);
+  const readableHabits = listReadableHabits({
+    entries: ctx.settings.habitEntries,
+    sequences: ctx.habitSequences(),
+    phrases: ctx.settings.learnedShortcuts.map((s) => ({ phrase: s.phrase, summary: s.reply })),
+    devices: ctx.devices,
+    scenes: ctx.scenes ?? [],
+  });
+
   return `
-    <div class="cc-field">
+    <div class="cc-field" data-settings-anchor="assistantProvider">
       <label>${t("AI 服务商预设（支持 OpenRouter Jev、原生 Jev、DeepSeek、千问、GLM 等）")}</label>
       <div class="cc-segmented-pills" style="flex-wrap: wrap;">
-        ${ASSISTANT_PROVIDER_PRESETS.filter((p) => p.id !== "custom")
-          .map((preset) => {
-            const currentPreset = inferAssistantPreset(ctx.settings.assistantBaseURL);
-            return `<button
-              type="button"
-              class="cc-seg-pill ${currentPreset.id === preset.id ? "is-active" : ""}"
-              data-ai-preset="${ctx.escapeHtml(preset.id)}"
-            >${ctx.escapeHtml(preset.shortTitle)}</button>`;
-          })
-          .join("")}
+        ${ASSISTANT_PROVIDER_PRESETS.map((preset) => {
+          const label =
+            preset.id === "custom"
+              ? tr3("自定义", "自訂", "Custom")
+              : preset.shortTitle;
+          return `<button
+            type="button"
+            class="cc-seg-pill ${currentPreset.id === preset.id ? "is-active" : ""}"
+            data-ai-preset="${ctx.escapeHtml(preset.id)}"
+          >${ctx.escapeHtml(label)}</button>`;
+        }).join("")}
       </div>
     </div>
 
-    <div class="cc-field">
+    <div class="cc-field" data-settings-anchor="assistantBaseURL">
       <label>${t("AI 服务地址（支持 /v1/systemone 与 OpenAI 兼容 /v1/chat/completions）")}</label>
       <input
         id="settings-base-url"
@@ -426,7 +541,7 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
       />
     </div>
 
-    <div class="cc-field">
+    <div class="cc-field" data-settings-anchor="assistantModel">
       <label>${t("决策模型（如 ~typesafe/jev-latest、jev-latest、deepseek-chat）")}</label>
       <input
         id="settings-model"
@@ -436,38 +551,85 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
       />
     </div>
 
-    <div class="cc-field">
+    <div class="cc-field" data-settings-anchor="assistantAPIKey">
       <label>${t("API Key（本机安全保存）")}</label>
       <input
         id="settings-api-key"
         class="cc-input"
         type="password"
-        placeholder="${ctx.escapeHtml(inferAssistantPreset(ctx.settings.assistantBaseURL).keyPlaceholder)}"
+        placeholder="${ctx.escapeHtml(currentPreset.keyPlaceholder)}"
         value="${ctx.escapeHtml(ctx.apiKeyFor(ctx.settings.assistantBaseURL))}"
       />
+      <div class="cc-update-row" data-settings-anchor="assistantEnvImport" style="margin-top: 6px; gap: 6px; flex-wrap: wrap;">
+        <button type="button" class="cc-inline-pill" id="btn-import-env-key">${ctx.escapeHtml(
+          tr3(
+            "从环境变量导入 API Key",
+            "從環境變數匯入 API Key",
+            "Import API Key from Environment",
+          ),
+        )}</button>
+        <span id="settings-env-import-status" class="cc-field-hint" style="margin: 0;"></span>
+      </div>
+    </div>
+
+    <div class="cc-field" data-settings-anchor="assistantTest">
+      <div class="cc-update-row" style="gap: 8px; flex-wrap: wrap;">
+        <div>
+          <label>${ctx.escapeHtml(tr3("连通性检测", "連通性檢測", "Connection Check"))}</label>
+          <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
+            tr3(
+              "向当前配置的 AI 端点发送最小探针，检测响应耗时与密钥有效性。",
+              "向目前設定的 AI 端點傳送最小探針，檢測回應耗時與金鑰有效性。",
+              "Send a minimal probe to the configured AI endpoint to verify latency and key validity.",
+            ),
+          )}</p>
+        </div>
+        <button type="button" class="cc-btn-secondary" id="btn-test-ai-connection">${ctx.escapeHtml(
+          tr3("测试 AI 连接", "測試 AI 連線", "Test AI Connection"),
+        )}</button>
+      </div>
+      <div id="settings-ai-test-status" class="cc-field-hint" style="margin-top: 4px;"></div>
+    </div>
+
+    <div class="cc-field cc-field-row" data-settings-anchor="askWhenUnsure">
+      <div>
+        <label for="settings-ask-when-unsure">${ctx.escapeHtml(
+          tr3("AI 不确定时先让我确认", "AI 不確定時先讓我確認", "Ask Me When AI Is Unsure"),
+        )}</label>
+        <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
+          tr3(
+            "当指令存在歧义或把握度偏低时，先展示候选操作卡片供你确认。",
+            "當指令存在歧義或把握度偏低時，先展示候選操作卡片供你確認。",
+            "Show confirmation chips instead of acting immediately when an utterance is ambiguous.",
+          ),
+        )}</p>
+      </div>
+      <input id="settings-ask-when-unsure" type="checkbox" ${askWhenUnsure ? "checked" : ""} />
     </div>
 
     ${
       ctx.settings.cloudConsentEndpoints.length > 0
-        ? `<div class="cc-field">
+        ? `<div class="cc-field" data-settings-anchor="cloudConsent">
       <label>${t("已允许发送到：{endpoints}", { endpoints: ctx.escapeHtml(ctx.settings.cloudConsentEndpoints.join("、")) })}</label>
       <button type="button" class="cc-btn-secondary" id="btn-revoke-cloud">${t("撤销授权（下次发往云端前再问）")}</button>
     </div>`
         : ""
     }
 
-    <div class="cc-field">
+    <div class="cc-field" data-settings-anchor="habitMemory">
       <label class="cc-checkbox">
         <input type="checkbox" id="settings-habit" ${ctx.settings.habitLearningEnabled ? "checked" : ""} />
         <span>${t("自动记住自然语言习惯（相同表达下次 0ms 本地直达）")}</span>
       </label>
-      <label class="cc-checkbox">
-        <input type="checkbox" id="settings-habit-share" ${ctx.settings.habitShareEnabled ? "checked" : ""} />
-        <span>${t("发送习惯摘要（只包含这句话点名的设备）")}</span>
-      </label>
-      <label>${t("预览这句话会发送的习惯摘要")}</label>
-      <input id="settings-habit-share-sample" class="cc-input" type="text" />
-      <div id="settings-habit-share-preview">${t("不会发送习惯摘要")}</div>
+      <div data-settings-anchor="habitShare">
+        <label class="cc-checkbox">
+          <input type="checkbox" id="settings-habit-share" ${ctx.settings.habitShareEnabled ? "checked" : ""} />
+          <span>${t("发送习惯摘要（只包含这句话点名的设备）")}</span>
+        </label>
+        <label>${t("预览这句话会发送的习惯摘要")}</label>
+        <input id="settings-habit-share-sample" class="cc-input" type="text" />
+        <div id="settings-habit-share-preview">${t("不会发送习惯摘要")}</div>
+      </div>
       ${
         ctx.settings.learnedShortcuts.length > 0
           ? `<div class="cc-timers-stack">
@@ -485,14 +647,45 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
           : ""
       }
       ${
-        ctx.settings.habitEntries.length > 0 || ctx.habitSequences().length > 0
+        ctx.settings.habitEntries.length > 0 || ctx.habitSequences().length > 0 || readableHabits.length > 0
           ? `<div class="cc-timers-stack">
-              <div class="cc-timer-row">
-                <span>${t("已学习 {count} 条时段习惯、{sequences} 条先后习惯（用于猜你想控）", {
+              <div class="cc-timer-row" style="gap: 6px; flex-wrap: wrap;">
+                <span style="flex: 1;">${t("已学习 {count} 条时段习惯、{sequences} 条先后习惯（用于猜你想控）", {
                   count: ctx.settings.habitEntries.length,
                   sequences: ctx.habitSequences().length,
                 })}</span>
-                <button class="cc-inline-pill" id="btn-clear-habits">${t("清空")}</button>
+                <div style="display: flex; gap: 6px; align-items: center;">
+                  <button
+                    type="button"
+                    class="cc-inline-pill"
+                    id="btn-toggle-habit-items"
+                    aria-expanded="false"
+                    aria-controls="settings-habit-items-list"
+                  >${ctx.escapeHtml(
+                    tr3(
+                      `逐条查看 (${readableHabits.length})`,
+                      `逐條查看 (${readableHabits.length})`,
+                      `View Items (${readableHabits.length})`,
+                    ),
+                  )}</button>
+                  <button type="button" class="cc-inline-pill" id="btn-clear-habits">${t("清空")}</button>
+                </div>
+              </div>
+              <div id="settings-habit-items-list" hidden style="display: flex; flex-direction: column; gap: 4px; margin-top: 4px;">
+                ${readableHabits
+                  .map(
+                    (item) => `
+                  <div class="cc-timer-row" data-habit-item-row="${ctx.escapeHtml(item.id)}">
+                    <span>${ctx.escapeHtml(item.text)}</span>
+                    <button
+                      type="button"
+                      class="cc-inline-pill"
+                      data-forget-habit-id="${ctx.escapeHtml(item.id)}"
+                      title="${ctx.escapeHtml(tr3("忘掉这一条", "忘掉這一條", "Forget this habit"))}"
+                    >${t("删除")}</button>
+                  </div>`,
+                  )
+                  .join("")}
               </div>
             </div>`
           : ""
@@ -506,31 +699,60 @@ function renderSystemPanel(ctx: SettingsViewContext): string {
   return `
     <div class="cc-field">
       <label>${t("自动化与安全控制")}</label>
-      <div class="cc-field-row" style="margin-top: 4px;">
-        <label for="settings-block-while-locked">${t("锁屏时禁止控制设备")}</label>
-        <input id="settings-block-while-locked" type="checkbox" ${ctx.settings.blockControlWhileLocked ? "checked" : ""} />
+      <div data-settings-anchor="blockControlWhileLocked">
+        <div class="cc-field-row" style="margin-top: 4px;">
+          <label for="settings-block-while-locked">${t("锁屏时禁止控制设备")}</label>
+          <input id="settings-block-while-locked" type="checkbox" ${ctx.settings.blockControlWhileLocked ? "checked" : ""} />
+        </div>
+        <p class="cc-field-hint">${t("锁屏期间拦截手动与外部链接控制；已设好的定时任务仍按时执行。")}</p>
       </div>
-      <p class="cc-field-hint">${t("锁屏期间拦截手动与外部链接控制；已设好的定时任务仍按时执行。")}</p>
 
-      <div class="cc-field-row" style="margin-top: 8px;">
-        <label for="settings-raycast-integration">${t("Raycast 与本地 CLI / MCP 集成")}</label>
-        <input id="settings-raycast-integration" type="checkbox" ${ctx.settings.enableRaycastIntegration ? "checked" : ""} />
+      <div data-settings-anchor="raycast">
+        <div class="cc-field-row" style="margin-top: 8px;">
+          <label for="settings-raycast-integration">${t("Raycast 与本地 CLI / MCP 集成")}</label>
+          <input id="settings-raycast-integration" type="checkbox" ${ctx.settings.enableRaycastIntegration ? "checked" : ""} />
+        </div>
+        <p class="cc-field-hint">${t("在 %LOCALAPPDATA%\\MenuBarMijia 导出设备快照并签发本机令牌（不含账号凭据）；关闭后立即删除快照并吊销令牌。")}</p>
       </div>
-      <p class="cc-field-hint">${t("在 %LOCALAPPDATA%\\MenuBarMijia 导出设备快照并签发本机令牌（不含账号凭据）；关闭后立即删除快照并吊销令牌。")}</p>
 
-      <div class="cc-field-row" style="margin-top: 8px;">
-        <label for="settings-allow-direct-url">${t("允许 menumijia:// 外部链接免确认直控")}</label>
-        <input id="settings-allow-direct-url" type="checkbox" ${ctx.settings.allowDirectURLControl ? "checked" : ""} />
+      <div data-settings-anchor="allowURLControl">
+        <div class="cc-field-row" style="margin-top: 8px;">
+          <label for="settings-allow-direct-url">${t("允许 menumijia:// 外部链接免确认直控")}</label>
+          <input id="settings-allow-direct-url" type="checkbox" ${ctx.settings.allowDirectURLControl ? "checked" : ""} />
+        </div>
+        <p class="cc-field-hint">${t("关闭时，未携带本机令牌的外部网页或快捷方式链接须先在面板中确认；高风险设备与锁屏拦截始终生效。")}</p>
       </div>
-      <p class="cc-field-hint">${t("关闭时，未携带本机令牌的外部网页或快捷方式链接须先在面板中确认；高风险设备与锁屏拦截始终生效。")}</p>
     </div>
 
-    <div class="cc-field cc-field-row">
-      <label for="settings-allow-advanced-facets">${t("允许写入高级/高风险设备属性")}</label>
-      <input id="settings-allow-advanced-facets" type="checkbox" ${ctx.settings.allowAdvancedFacetWrites ? "checked" : ""} />
+    <div class="cc-field" data-settings-anchor="advancedDeviceWrites">
+      <div class="cc-field-row">
+        <label for="settings-allow-advanced-facets">${t("允许写入高级/高风险设备属性")}</label>
+        <input id="settings-allow-advanced-facets" type="checkbox" ${ctx.settings.allowAdvancedFacetWrites ? "checked" : ""} />
+      </div>
+      <div
+        id="settings-advanced-facets-confirm"
+        class="cc-update-row"
+        hidden
+        role="alert"
+        style="margin-top: 6px; padding: 8px; border-radius: 8px; background: rgba(231, 76, 60, 0.14); gap: 6px; flex-wrap: wrap;"
+      >
+        <span style="font-size: 12px;">${ctx.escapeHtml(
+          tr3(
+            "高风险提示：开启后「更多设置」将允许写入电取暖、门锁、水阀、童锁等次要控件，误操作可能引发安全或财产风险。确认开启？",
+            "高風險提示：開啟後「更多設定」將允許寫入電暖器、門鎖、水閥、兒童鎖等次要控制項，誤操作可能引發安全或財產風險。確認開啟？",
+            "High-risk warning: Enabling secondary controls allows writes to heaters, door locks, water valves, and child locks. Enable anyway?",
+          ),
+        )}</span>
+        <div style="display: flex; gap: 6px; margin-left: auto;">
+          <button type="button" class="cc-btn-secondary" id="btn-cancel-advanced-facets">${t("取消")}</button>
+          <button type="button" class="cc-btn-danger" id="btn-confirm-advanced-facets">${ctx.escapeHtml(
+            tr3("确认开启", "確認開啟", "Enable Risky Writes"),
+          )}</button>
+        </div>
+      </div>
     </div>
 
-    <div class="cc-field">
+    <div class="cc-field" data-settings-anchor="allOffDevices">
       <label>${t("「全关」包含哪些设备（插座、扫地机默认不包含）")}</label>
       <div class="cc-timers-stack">
         ${ctx.devices
@@ -543,6 +765,49 @@ function renderSystemPanel(ctx: SettingsViewContext): string {
           </label>`,
           )
           .join("")}
+      </div>
+    </div>
+
+    <div class="cc-field" data-settings-anchor="signOut">
+      <div class="cc-field-row">
+        <div>
+          <label>${ctx.escapeHtml(
+            tr3("退出并清除所有账号与密钥", "登出並清除所有帳號與金鑰", "Sign Out & Revoke All Credentials"),
+          )}</label>
+          <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
+            tr3(
+              "一键清除米家会话、Home Assistant 令牌、全部 AI 服务商 API Key 及本机快照桥接令牌。",
+              "一鍵清除米家工作階段、Home Assistant 權杖、全部 AI 服務商 API Key 及本機快照橋接權杖。",
+              "Clear Xiaomi session, Home Assistant token, all AI provider API keys, and local bridge tokens at once.",
+            ),
+          )}</p>
+        </div>
+        <button type="button" class="cc-btn-danger" id="btn-revoke-all-credentials">${ctx.escapeHtml(
+          tr3("退出并清除全部", "登出並清除全部", "Sign Out & Clear All"),
+        )}</button>
+      </div>
+      <div
+        id="settings-revoke-all-confirm"
+        class="cc-update-row"
+        hidden
+        role="alert"
+        style="margin-top: 6px; padding: 8px; border-radius: 8px; background: rgba(231, 76, 60, 0.14); gap: 6px; flex-wrap: wrap;"
+      >
+        <span style="font-size: 12px;">${ctx.escapeHtml(
+          tr3(
+            "确认退出并清除本机保存的所有账号会话、HA 令牌、全部 AI 密钥与本地桥接令牌？此操作不可撤销。",
+            "確認登出並清除本機儲存的所有帳號工作階段、HA 權杖、全部 AI 金鑰與本機橋接權杖？此操作無法復原。",
+            "Sign out and permanently delete all saved Xiaomi sessions, HA tokens, AI API keys, and local bridge tokens?",
+          ),
+        )}</span>
+        <div style="display: flex; gap: 6px; margin-left: auto;">
+          <button type="button" class="cc-btn-secondary" id="btn-cancel-revoke-all">${ctx.escapeHtml(
+            tr3("取消", "取消", "Cancel"),
+          )}</button>
+          <button type="button" class="cc-btn-danger" id="btn-confirm-revoke-all">${ctx.escapeHtml(
+            tr3("确认清除全部", "確認清除全部", "Revoke Everything"),
+          )}</button>
+        </div>
       </div>
     </div>
 
@@ -648,9 +913,9 @@ function renderUpdateDownloadProgress(
       ? (ctx.updateProgress ?? getUpdateProgressForSettings(ctx.settings))
       : null;
     return `
-      <div class="cc-field cc-update-card ${release ? "is-available" : ""}">
+      <div class="cc-field cc-update-card ${release ? "is-available" : ""}" data-settings-anchor="softwareUpdate">
         <label>${release ? t("发现新版本 v{version}", { version: release.version }) : t("软件更新")}</label>
-        <div class="cc-update-row">
+        <div class="cc-update-row" data-settings-anchor="aboutVersion">
           <span>${t("当前版本 v{version}", { version: APP_VERSION })}</span>
           <div class="cc-update-actions">
             ${
