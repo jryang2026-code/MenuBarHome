@@ -230,6 +230,7 @@ fi
 PYTHON_LINT_SKIPPED=0
 if [ -n "$PYTHON_BIN" ]; then
     "$PYTHON_BIN" scripts/check_design_tokens.py
+    "$PYTHON_BIN" scripts/check_windows_geometry.py
     "$PYTHON_BIN" scripts/check_timer_render.py
     "$PYTHON_BIN" scripts/check_swift_harness_lints.py
     "$PYTHON_BIN" scripts/check_workflows.py
@@ -323,6 +324,7 @@ run_script_self_tests() {
     if [ -n "$PYTHON_BIN" ]; then
         run_clean_env "$PYTHON_BIN" scripts/check_workflows.py --self-test
         run_clean_env "$PYTHON_BIN" scripts/test_check_capability_matrix.py
+        run_clean_env "$PYTHON_BIN" scripts/test_check_windows_geometry.py
         run_clean_env "$PYTHON_BIN" scripts/test_mijia_cli.py
         run_clean_env "$PYTHON_BIN" scripts/test_local_macos_runner.py
         run_clean_env "$PYTHON_BIN" scripts/update_manifest.py self-test

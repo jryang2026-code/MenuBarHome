@@ -150,10 +150,20 @@ static PANEL_VISIBILITY: LazyLock<std::sync::Mutex<PanelVisibilityState>> =
 pub(crate) const PANEL_PADDING: f64 = 16.0;
 /// Logical width of the Win11 `Win+N` + `Win+A` two-island flyout column (matches native `Win+A` 360–380 epx).
 pub(crate) const PANEL_MAIN_WIDTH: f64 = 380.0;
+pub(crate) const PANEL_MIN_WORK_HEIGHT: f64 = 480.0;
 
 /// Total logical window width around the fixed 380 px two-island column plus shadow padding on both sides.
 pub(crate) fn panel_window_width() -> f64 {
     PANEL_MAIN_WIDTH + PANEL_PADDING * 2.0
+}
+
+pub(crate) fn clamp_outer_panel_height(requested_outer_height: f64, work_logical_height: f64) -> f64 {
+    let max_h = work_logical_height.max(PANEL_MIN_WORK_HEIGHT);
+    if requested_outer_height <= 0.0 {
+        max_h
+    } else {
+        requested_outer_height.min(max_h)
+    }
 }
 
 /// Pure guard ensuring a delayed close callback never hides a panel that was reopened in the meantime.
@@ -486,8 +496,7 @@ pub(crate) fn set_panel_height(app: AppHandle, height: f64) -> bool {
     let margin = 0;
     // The work area already excludes the taskbar, whichever edge it is docked to (#204). `#app` reserves
     // `PANEL_PADDING` (16 px) around the islands so the visible border sits 16 px off the taskbar edge.
-    let max_h = (work.height as f64 / scale).max(480.0);
-    let target_h = if height <= 0.0 { max_h } else { (height + PANEL_PADDING * 2.0).min(max_h) };
+    let target_h = clamp_outer_panel_height(height, work.height as f64 / scale);
     let old_pos = window.outer_position().unwrap_or(PhysicalPosition::new(0, 0));
     let old_size = window.outer_size().unwrap_or(PhysicalSize::new(412, 680));
     let left = work.x as f64 + margin as f64;
@@ -739,4 +748,20 @@ pub(crate) fn toggle_main_window(app: &AppHandle, anchor: Option<PhysicalPositio
             TrayToggleAction::Noop => {}
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panel_window_geometry_preserves_outer_heights_and_work_area_clamp() {
+        assert_eq!(panel_window_width(), 412.0);
+        assert_eq!(clamp_outer_panel_height(680.0, 1040.0), 680.0);
+        assert_eq!(clamp_outer_panel_height(580.0, 1040.0), 580.0);
+        assert_eq!(clamp_outer_panel_height(780.0, 720.0), 720.0);
+        assert_eq!(clamp_outer_panel_height(0.0, 1040.0), 1040.0);
+        assert_eq!(clamp_outer_panel_height(680.0, 400.0), 480.0);
+        assert_eq!(clamp_outer_panel_height(0.0, 400.0), 480.0);
+    }
 }
