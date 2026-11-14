@@ -538,6 +538,86 @@ describe("A11 RunningBatch mid-flight undo & preemption (#2)", () => {
     assert.equal(secondSent.includes("setLightPower:light.l4"), false);
     assert.equal(secondSent.includes("setLightPower:light.l3"), true);
   });
+
+  it("still restores d1 when in-flight d2 fails while performUndo is awaiting d2 restore (no liveSteps splice race)", async () => {
+    const app = mountApp();
+    await setImmediate();
+    const d1 = makeLight("d1", "灯一", { isOn: true });
+    const d2 = makeLight("d2", "灯二", { isOn: true });
+    const d3 = makeLight("d3", "灯三", { isOn: true });
+    app.devices = [d1, d2, d3];
+
+    const d2OffGate = deferred<boolean>();
+    const d2RestoreGate = deferred<boolean>();
+    const dispatched: Array<{ entityId: string; isOn: boolean }> = [];
+
+    app.applyCommand = async (cmd) => {
+      if (cmd.kind !== "setLightPower") return true;
+      dispatched.push({ entityId: cmd.entityId, isOn: cmd.isOn });
+      const target = app.devices.find((d) => `light.${d.id}` === cmd.entityId);
+      if (cmd.entityId === "light.d2" && cmd.isOn === false) {
+        const ok = await d2OffGate.promise;
+        if (ok && target && target.kind.kind === "light") {
+          target.kind = { ...target.kind, isOn: false };
+        }
+        return ok;
+      }
+      if (cmd.entityId === "light.d2" && cmd.isOn === true) {
+        const ok = await d2RestoreGate.promise;
+        if (ok && target && target.kind.kind === "light") {
+          target.kind = { ...target.kind, isOn: true };
+        }
+        return ok;
+      }
+
+      if (target && target.kind.kind === "light") {
+        target.kind = { ...target.kind, isOn: cmd.isOn };
+      }
+      return true;
+    };
+
+    const batchPromise = executeIntents(
+      app,
+      [
+        { targetId: "d1", operation: { kind: "power", isOn: false } },
+        { targetId: "d2", operation: { kind: "power", isOn: false } },
+        { targetId: "d3", operation: { kind: "power", isOn: false } },
+      ],
+      "已关闭 3 盏灯",
+      "一键全关",
+    );
+    await setImmediate();
+    await setImmediate();
+    assert.equal(app.devices.find((d) => d.id === "d1")?.kind.kind === "light" && (app.devices.find((d) => d.id === "d1")!.kind as { isOn: boolean }).isOn, false);
+    const undoPromise = app.performUndo();
+    await setImmediate();
+    await setImmediate();
+    assert.ok(
+      dispatched.some((c) => c.entityId === "light.d2" && c.isOn === true),
+      "performUndo should be awaiting d2 restore at index 0",
+    );
+    d2OffGate.resolve(false);
+    await setImmediate();
+    await setImmediate();
+    d2RestoreGate.resolve(true);
+    await Promise.all([batchPromise, undoPromise]);
+
+    assert.equal(
+      dispatched.some((c) => c.entityId === "light.d1" && c.isOn === true),
+      true,
+      "d1 must receive its restore command even when d2 fails mid-undo",
+    );
+    assert.equal(
+      (app.devices.find((d) => d.id === "d1")!.kind as { isOn: boolean }).isOn,
+      true,
+      "d1 must be restored to on",
+    );
+    assert.equal(
+      dispatched.some((c) => c.entityId === "light.d3"),
+      false,
+      "d3 was never reached and must receive no commands",
+    );
+  });
 });
 
 describe("A15 Companion URL high-risk confirm, Zero-AI presets, group folding & Raycast Windows (#3)", () => {

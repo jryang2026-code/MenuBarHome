@@ -127,6 +127,8 @@ export class RunningBatch {
   }
 
   public recordAttempt(deviceId: string, inverses: readonly DeviceCommand[]): UndoStep | null {
+    // Freeze liveSteps once stopped so an active performUndo() for..of iterator never shifts indices.
+    if (this.stopped) return null;
     this.attemptedIds.add(deviceId);
     if (inverses.length === 0) return null;
     const step: UndoStep = { deviceId, commands: [...inverses] };
@@ -136,6 +138,7 @@ export class RunningBatch {
   }
 
   public recordSuccess(deviceId: string): void {
+    if (this.stopped) return;
     this.attemptedIds.add(deviceId);
     this.succeededIds.add(deviceId);
     this.acceptedCountByDevice.set(deviceId, (this.acceptedCountByDevice.get(deviceId) ?? 0) + 1);
@@ -145,6 +148,7 @@ export class RunningBatch {
     if (!isCancelled) {
       this.failedIds.add(deviceId);
     }
+    if (this.stopped) return;
     if (attemptedStep) {
       const idx = this.liveSteps.indexOf(attemptedStep);
       if (idx >= 0) {
