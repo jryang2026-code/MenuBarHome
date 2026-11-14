@@ -10,6 +10,7 @@ import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom
 import { environmentReadingPriority, type SmartDevice } from "../core/models.js";
 import { isHostAttachedToActiveWindow, mergeHomeSnapshotRespectingLocks } from "../core/optimisticLock.js";
 import { getUnsupportedLightEffects } from "./commandDispatch.js";
+import { structuralSensorHistoryKey, syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { availableQuickActions } from "../core/quickActions.js";
 import { renderSliderDeck } from "./panelView.js";
 import { isWorkstationLocked } from "./transport.js";
@@ -463,6 +464,7 @@ export function cloudPanelStructureFingerprint(host: MenuMijiaWindowsApp): strin
       kindChips: kindChipsForPanel,
       kindRowVisible: showsKindRow(kindChipsForPanel, host.listCut),
       groupOwners: [...host.groupOwnerByMemberDid],
+      sensorHistory: structuralSensorHistoryKey(host),
       allOffTargets: host.settings.connectionMode === "homeAssistant" ? null : host.allOffTargets.map((device) => device.id),
       devices: host.devices.map((device) => {
         const kind = device.kind;
@@ -547,6 +549,7 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
     ) {
       return false;
     }
+    syncSensorHistoryHost(host);
 
     const isAll = host.selectedRoom === "全部";
     const ordered = withAliases(host.layout, applyOrder(host.layout.order, host.presentationDevices));

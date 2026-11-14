@@ -1,65 +1,27 @@
 import { cancelScheduledCommands, confirmMissedScheduledCommand } from "./scheduledCommands.js";
+import { IntentReply, IntentValidator, ManualControlPolicy, ModelActionPolicy } from "../core/assistant.js";
 import {
-  IntentReply,
-  IntentValidator,
-  ManualControlPolicy,
-  ModelActionPolicy,
-} from "../core/assistant.js";
-import {
-  type DeviceCommand,
-  type DeviceIntent,
-  type FacetControl,
-  type SmartDevice,
-  applianceModeStartsHeating,
-  deviceCanTogglePower,
-  hasDetailDrawer,
-  isDeviceActiveOn,
-  localizeApplianceFanLevel,
-  localizeApplianceMode,
-  localizeHvacMode,
-  localizeNightShot,
-  localizeFridgeMode,
-  localizeSwingMode,
+  type DeviceCommand, type DeviceIntent, type FacetControl, type SmartDevice,
+  applianceModeStartsHeating, deviceCanTogglePower, hasDetailDrawer, isDeviceActiveOn,
+  localizeApplianceFanLevel, localizeApplianceMode, localizeHvacMode, localizeNightShot,
+  localizeFridgeMode, localizeSwingMode,
 } from "../core/models.js";
 import {
-  type PanelHeight,
-  DEFAULT_GLOBAL_SHORTCUT,
-  PANEL_ANCHORS,
-  applyPanelOpacity,
-  localizeFanMode,
-  nextSize,
-  normalizePanelOpacity,
-  normalizeTileSize,
-  scopedKey,
-  withAliases,
+  type PanelHeight, DEFAULT_GLOBAL_SHORTCUT, PANEL_ANCHORS, applyPanelOpacity, localizeFanMode,
+  nextSize, normalizePanelOpacity, normalizeTileSize, scopedKey, withAliases,
 } from "./panelPrefs.js";
 import { t } from "../core/i18n.js";
-import {
-  formatTemperature,
-  stepCelsius,
-  toCelsius,
-} from "../core/temperature.js";
-
+import { formatTemperature, stepCelsius, toCelsius } from "../core/temperature.js";
 import { invokeTauriVoid } from "./transport.js";
-import {
-  facetActionArguments,
-  feedingConfirmationBannerText,
-} from "../core/miCloud/feedAction.js";
-import {
-  bindDetailDrawerEvents,
-  coverMotorRequiresConfirmation,
-  ensureDrawerLifecycleListeners,
-} from "./detailDrawers.js";
-import {
-  facetWriteEnabled,
-  selectedPortionForControl,
-} from "./facetViews.js";
+import { facetActionArguments, feedingConfirmationBannerText } from "../core/miCloud/feedAction.js";
+import { bindDetailDrawerEvents, coverMotorRequiresConfirmation, ensureDrawerLifecycleListeners } from "./detailDrawers.js";
+import { facetWriteEnabled, selectedPortionForControl } from "./facetViews.js";
 import { facetTitle, facetValue } from "../core/miotFacetText.js";
-
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { normalizeSearch } from "../core/panelSearch.js";
 import { bindPanelInput, finishPanelComposition } from "./panelKeyboard.js";
 import { bindRoomOrderEditorEvents } from "./roomOrderEditor.js";
+import { bindSensorHistoryEvents } from "./sensorHistoryView.js";
 
 function confirmHighRiskForHost(
   host: MenuMijiaWindowsApp,
@@ -162,6 +124,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
 
   export function bindEvents(host: MenuMijiaWindowsApp): void {
     ensureDrawerLifecycleListeners(host);
+    bindSensorHistoryEvents(host);
     host.root.querySelectorAll<HTMLDetailsElement>("details[data-notif-card]").forEach((details) => {
       details.addEventListener("toggle", () => {
         const key = details.dataset.notifCard;

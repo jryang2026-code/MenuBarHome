@@ -81,6 +81,7 @@ import { CameraLiveController } from "./cameraLive.js";
 import { renderDeviceTile as renderDeviceTileView, renderEnvironmentStrip as renderEnvironmentStripView } from "./deviceViews.js";
 import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt, renderSettingsModal } from "./menuViews.js";
 import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
+import { syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { renderPanel } from "./panelView.js";
 import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
@@ -170,7 +171,23 @@ export class MenuMijiaWindowsApp {
   public lastSubmittedEndpoints: string | null = null;
   // Assigned in the constructor, after the interface language is resolved: the demo home is
   // generated per language (#52), so a field initializer would freeze the module default.
-  public devices: SmartDevice[];
+  private _devices: SmartDevice[] = [];
+  private devicesMutationScheduled = false;
+  public get devices(): SmartDevice[] {
+    return this._devices;
+  }
+  public set devices(next: SmartDevice[]) {
+    this._devices = next;
+    if (!this.devicesMutationScheduled) {
+      this.devicesMutationScheduled = true;
+      queueMicrotask(() => {
+        this.devicesMutationScheduled = false;
+        if (this.root.isConnected) {
+          syncSensorHistoryHost(this);
+        }
+      });
+    }
+  }
   /** Device id → 更多设置 rows from the latest snapshot (#5); empty until one arrives. */
   public deviceFacets: Readonly<Record<string, readonly FacetControl[]>> = {};
   public scenes: HomeScene[];

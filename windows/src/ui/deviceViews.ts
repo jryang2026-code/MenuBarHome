@@ -1,46 +1,18 @@
 import { t } from "../core/i18n.js";
 import { IntentReply } from "../core/assistant.js";
 import type { SpeakerTextMode } from "../core/miCloud/speakerActions.js";
-import {
-  renderApplianceDrawer,
-  renderClimateSwingRow,
-  renderCoverDrawer,
-  renderGenericDrawer,
-  renderPlugDrawer,
-  renderSpeakerCommandBar,
-} from "./detailDrawers.js";
+import { renderApplianceDrawer, renderClimateSwingRow, renderCoverDrawer, renderGenericDrawer, renderPlugDrawer, renderSpeakerCommandBar } from "./detailDrawers.js";
 import { renderMoreSettings } from "./facetViews.js";
 import {
-  deviceCanTogglePower,
-  devicePresentsAsActive,
-  deviceReadout,
-  deviceStatusSummary,
-  hasDetailDrawer,
-  localizeAirQuality,
-  localizeFanPreset,
-  localizeFridgeMode,
-  localizeNightShot,
-  type EnvironmentReading,
-  type FacetControl,
-  type SmartDevice,
+  deviceCanTogglePower, devicePresentsAsActive, deviceReadout, deviceStatusSummary, hasDetailDrawer,
+  localizeAirQuality, localizeFanPreset, localizeFridgeMode, localizeNightShot,
+  type EnvironmentReading, type FacetControl, type SmartDevice,
 } from "../core/models.js";
-import {
-  TILE_SIZES,
-  comfort,
-  localizeEffect,
-  localizeFanMode,
-  tr3,
-  type TileSize,
-} from "./panelPrefs.js";
-import {
-  formatTemperature,
-  formatTemperatureValue,
-  getTemperatureUnit,
-  displayStep,
-  temperatureSymbol,
-} from "../core/temperature.js";
+import { TILE_SIZES, comfort, localizeEffect, localizeFanMode, tr3, type TileSize } from "./panelPrefs.js";
+import { formatTemperature, formatTemperatureValue, getTemperatureUnit, displayStep, temperatureSymbol } from "../core/temperature.js";
 import { SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation } from "./appTypes.js";
+import { hasPlottableSensorMetrics, renderSensorHistorySection } from "./sensorHistoryView.js";
 
   export function renderSensorCard(
     dev: SmartDevice,
@@ -52,6 +24,8 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
     selectedRoom: string,
     valuesAreStale: boolean,
     escapeHtml: (value: string) => string,
+    isExpanded = false,
+    facets: readonly FacetControl[] = [],
   ): string {
     const c = comfort(k.temperature, k.humidity);
     const name = dev.name.replace(t("米家智能温湿度计"), t("温湿度计")) || dev.name;
@@ -69,13 +43,17 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
     const room = selectedRoom === "全部" ? `<span class="cc-sensor-room">${escapeHtml(dev.roomName)}</span>` : "";
     const batteryLabel = k.battery !== null ? t("电量 {percent}%", { percent: k.battery }) : "";
     const sensorAria = `${t("{name}，温度 {temp}", { name, temp: k.temperature !== null ? formatTemperature(k.temperature, undefined, 1) : "--" })}${hum !== null ? t("，湿度 {humidity}%", { humidity: hum }) : ""}${k.battery !== null ? t("，电量 {percent}%", { percent: k.battery }) : ""}${dev.isOnline ? "" : t("，离线")}`;
-    if (compact) {
+    const canExpand = hasPlottableSensorMetrics(dev, facets);
+    const sensorAttr = canExpand ? `data-sensor-card="${escapeHtml(dev.id)}" aria-expanded="${isExpanded}"` : "";
+    const caret = canExpand ? `<i class="cc-mini-caret ${isExpanded ? "is-open" : ""}" aria-hidden="true">${SF_ICONS.chevronDown}</i>` : "";
+    if (compact && !isExpanded) {
       return `
-        <div class="cc-tile cc-sensor is-compact ${dev.isOnline ? "" : "is-offline"} ${motion}" ${attrs} role="group" aria-label="${escapeHtml(sensorAria)}">
+        <div class="cc-tile cc-sensor is-compact ${dev.isOnline ? "" : "is-offline"} ${motion}" ${sensorAttr} ${attrs} role="group" aria-label="${escapeHtml(sensorAria)}">
           ${badge}
           <div class="cc-sensor-top">
             <span class="cc-sensor-name">${escapeHtml(name)}</span>
             <span class="cc-comfort is-${c.level}">${c.label}</span>
+            ${caret}
           </div>
           <div class="cc-sensor-main">
             <span class="cc-sensor-temp">${temp}<small>${temperatureSymbol()}</small></span>
@@ -91,7 +69,7 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
         </div>`
       : "";
     return `
-      <div class="cc-tile cc-sensor is-span-row ${dev.isOnline ? "" : "is-offline"} ${motion}" ${attrs} role="group" aria-label="${escapeHtml(sensorAria)}">
+      <div class="cc-tile cc-sensor is-span-row ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${motion}" ${sensorAttr} ${attrs} role="group" aria-label="${escapeHtml(sensorAria)}">
         ${badge}
         <div class="cc-sensor-wide">
           <div class="cc-sensor-info">
@@ -100,10 +78,12 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
             <div class="cc-sensor-meta">
               <span class="cc-comfort is-${c.level}">${c.label}</span>
               ${k.battery !== null ? `<span class="cc-sensor-batt ${k.battery <= 20 ? "is-low" : ""}" role="img" aria-label="${escapeHtml(batteryLabel)}" title="${escapeHtml(batteryLabel)}"><span class="cc-icon-inline" aria-hidden="true">${k.battery <= 20 ? SF_ICONS.batteryLow : SF_ICONS.batteryFull}</span> ${k.battery}%</span>` : ""}
+              ${caret}
             </div>
           </div>
           ${ring}
         </div>
+        ${isExpanded && canExpand ? renderSensorHistorySection(dev, facets, escapeHtml) : ""}
       </div>`;
   }
 
@@ -1172,7 +1152,8 @@ function renderSmallDeviceTile(options: {
     ? `<button type="button" class="cc-small-tile-btn" ${actionAttr} title="${escape(tooltip)}" aria-label="${escape(ariaLabel)}" aria-pressed="${isOn}"><span class="cc-tile-orb">${svg}</span><span class="cc-small-tile-dot" aria-hidden="true"></span></button>`
     : `<span class="cc-small-tile-btn is-readonly" role="img" title="${escape(tooltip)}" aria-label="${escape(ariaLabel)}"><span class="cc-tile-orb">${svg}</span></span>`;
 
-  return `<div class="cc-tile is-size-small ${palette} ${isOn ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="small" ${attrs}>${renderPinStarBadge(pinned, escape)}${badge}${inner}</div>`;
+  const canExpandSmallSensor = kind === "sensor" && readout !== "possiblyStale" && hasPlottableSensorMetrics(dev, state.deviceFacets[dev.id] ?? []);
+  return `<div class="cc-tile is-size-small ${palette} ${isOn ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="small" ${canExpandSmallSensor ? `data-sensor-card="${id}"` : ""} ${attrs}>${renderPinStarBadge(pinned, escape)}${badge}${inner}</div>`;
 }
 
 export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): string {
@@ -1195,6 +1176,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
   const palette = devicePaletteClass(dev);
   const svg = deviceSvgIcon(dev);
   const writable = deviceCanTogglePower(dev);
+  const facets = state.deviceFacets[dev.id] ?? [];
   const effectiveDevForDrawer =
     dev.kind.kind === "light" && state.unsupportedLightEffects && state.unsupportedLightEffects.size > 0
       ? {
@@ -1205,7 +1187,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
           },
         }
       : dev;
-  const hasDrawer = hasDetailDrawer(effectiveDevForDrawer, state.deviceFacets[dev.id] ?? []);
+  const hasDrawer = hasDetailDrawer(effectiveDevForDrawer, facets);
   const subtitle =
     state.selectedRoom === "全部"
       ? `${dev.roomName} · ${deviceStatusSummary(dev)}`
@@ -1243,13 +1225,14 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
   }
 
   if (dev.kind.kind === "sensor" && (dev.kind.temperature !== null || dev.kind.humidity !== null)) {
-    return renderSensorCard(dev, dev.kind, state.span < 6, `data-tile-size="${size}" ${attrs}`, motion, `${renderPinStarBadge(pinned, escape)}${badge}`, state.selectedRoom, state.valuesAreStale, escape);
+    return renderSensorCard(dev, dev.kind, state.span < 6 && !isExpanded, `data-tile-size="${size}" ${attrs}`, motion, `${renderPinStarBadge(pinned, escape)}${badge}`, state.selectedRoom, state.valuesAreStale, escape, isExpanded, facets);
   }
   if (dev.kind.kind === "climate" && size !== "half") {
-    return renderClimateStrip(dev, dev.kind, size === "panel", `data-tile-size="${size}" ${attrs}`, motion, `${renderPinStarBadge(pinned, escape)}${badge}`, state.expandedDeviceId, state.selectedRoom, state.valuesAreStale, state.waitingDeviceIds, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk);
+    return renderClimateStrip(dev, dev.kind, size === "panel", `data-tile-size="${size}" ${attrs}`, motion, `${renderPinStarBadge(pinned, escape)}${badge}`, state.expandedDeviceId, state.selectedRoom, state.valuesAreStale, state.waitingDeviceIds, escape, facets, state.allowAdvancedFacetWrites, state.pendingHighRisk);
   }
 
   const staleClass = readout === "possiblyStale" ? "is-stale" : "";
+  const canPlotSensor = kind === "sensor" && readout !== "possiblyStale" && hasPlottableSensorMetrics(dev, facets);
   const isSubpage = state.expandedDeviceId === dev.id && size !== "panel" && hasDrawer;
   const isCapsule = state.span < 6 && !isExpanded;
   const roomHeroPill =
@@ -1259,7 +1242,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
 
   if (isCapsule) {
     return `
-      <div class="cc-tile is-capsule ${palette} ${isOn ? "is-active" : ""} ${dim !== null ? "is-dimming" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" ${attrs}>
+      <div class="cc-tile is-capsule ${palette} ${isOn ? "is-active" : ""} ${dim !== null ? "is-dimming" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" ${canPlotSensor ? `data-sensor-card="${escape(dev.id)}" aria-expanded="false"` : ""} ${attrs}>
         ${renderPinStarBadge(pinned, escape)}
         ${badge}
         <div class="cc-tile-header win-capsule-stack">
@@ -1376,7 +1359,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
   });
 
   return `
-      <div class="cc-tile is-span-row ${palette} ${isOn ? "is-active" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${inlineSlider ? "has-inline-slider" : ""} ${motion}" data-tile-size="${size}" ${attrs}>
+      <div class="cc-tile is-span-row ${palette} ${isOn ? "is-active" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${inlineSlider ? "has-inline-slider" : ""} ${motion}" data-tile-size="${size}" ${canPlotSensor ? `data-sensor-card="${escape(dev.id)}" aria-expanded="${isExpanded}"` : ""} ${attrs}>
         ${fill > 0 ? `<span class="cc-tile-fill" style="width:${fill}%"></span>` : ""}
         ${renderPinStarBadge(pinned, escape)}
         ${badge}
@@ -1431,9 +1414,10 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
         ${inlineSlider}
         ${
           isExpanded && hasDrawer
-            ? renderDeviceDrawer(dev, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk, state.unsupportedLightEffects, state.speakerDrawerState)
+            ? renderDeviceDrawer(dev, escape, facets, state.allowAdvancedFacetWrites, state.pendingHighRisk, state.unsupportedLightEffects, state.speakerDrawerState)
             : ""
         }
+        ${isExpanded && canPlotSensor ? renderSensorHistorySection(dev, facets, escape) : ""}
         ${
           !hasDrawer
             ? renderPendingHighRiskRow(dev.id, state.pendingHighRisk, escape)
