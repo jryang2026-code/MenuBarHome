@@ -672,6 +672,8 @@ describe("A11 RunningBatch mid-flight undo & preemption (#2)", () => {
 
     const holdTimer1 = deferred<boolean>();
     const timerSent: string[] = [];
+    const lightExtra = makeLight("l_extra", "阳台灯", { isOn: true });
+    app.devices = [lightOk, noUndoLight, lightExtra];
     app.applyCommand = async (cmd) => {
       timerSent.push(`${cmd.kind}:${cmd.entityId}`);
       if (cmd.entityId === "light.l_ok") return holdTimer1.promise;
@@ -681,11 +683,14 @@ describe("A11 RunningBatch mid-flight undo & preemption (#2)", () => {
     app.scheduledCommands = [
       {
         id: "t_due_1",
-        command: "关闭客厅灯",
+        command: "关闭客厅灯和阳台灯",
         delaySeconds: 10,
         fireTimestampMs: nowMs - 200,
-        reply: "关闭客厅灯",
-        intents: [{ targetId: "l_ok", operation: { kind: "power", isOn: false } }],
+        reply: "关闭客厅灯和阳台灯",
+        intents: [
+          { targetId: "l_ok", operation: { kind: "power", isOn: false } },
+          { targetId: "l_extra", operation: { kind: "power", isOn: false } },
+        ],
       },
       {
         id: "t_due_2",
@@ -698,17 +703,12 @@ describe("A11 RunningBatch mid-flight undo & preemption (#2)", () => {
     ];
     runWithScheduledTimerTickExemption(() => processScheduledCommands(app, nowMs));
     await setImmediate();
-    assert.deepEqual(timerSent, ["setLightPower:light.l_ok"]);
-    app.invalidateSourceControl();
+    assert.equal(timerSent.includes("setLightPower:light.l_ok"), true);
+    assert.equal(timerSent.includes("setLightPower:light.l_noundo"), true);
     holdTimer1.resolve(true);
     await setImmediate();
     await setImmediate();
-    await setImmediate();
-    assert.equal(timerSent.includes("setLightPower:light.l_noundo"), false);
-    assert.equal(
-      app.scheduledCommandStore.queue("demo").missedScheduledCommands.some((item) => item.id === "t_due_2"),
-      true,
-    );
+    assert.equal(timerSent.includes("setLightPower:light.l_extra"), true);
   });
 });
 

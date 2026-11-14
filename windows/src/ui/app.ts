@@ -86,7 +86,7 @@ import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
 import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground } from "./proactive.js";
 import { applyCommand, markCloudValuesFresh, markCloudValuesStale } from "./commandDispatch.js";
 import { foldGrouped, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
-import { cancelRunningBatch, executeIntents, executeSingleCommand, getRunningBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
+import { executeIntents, executeSingleCommand, getRunningBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
 import { clearPersistedMiSessionExpired, persistMiSessionExpired } from "../core/pollingPolicy.js";
 import { bindLayoutGestures } from "./layoutGestures.js";
 import { bindSettingsEvents, refreshHabitSharePreview } from "./settingsEvents.js";
@@ -785,9 +785,9 @@ export class MenuMijiaWindowsApp {
     this.lastUndoAction = null;
     clearUndoHoverPause(this);
     const sourceRevision = this.sourceRevision;
-    const activeBatch = getRunningBatch(this);
+    const activeBatch = getRunningBatch(this, action);
     if (activeBatch?.ownsUndoAction(action)) {
-      cancelRunningBatch(this, "undo");
+      activeBatch.stop("undo");
       await activeBatch.waitForInFlight();
       if (sourceRevision !== this.sourceRevision) return;
     }

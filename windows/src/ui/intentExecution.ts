@@ -48,6 +48,7 @@ export class RunningBatch {
   public readonly id: string;
   public readonly summary: string;
   public readonly sourceRevision: number;
+  public readonly isScheduled: boolean;
   private stopped = false;
   private finished = false;
   private stopReasonValue: BatchStopReason | null = null;
@@ -62,10 +63,16 @@ export class RunningBatch {
   private resolveFinished!: () => void;
   public readonly finishedPromise: Promise<void>;
 
-  constructor(args: { readonly summary: string; readonly sourceRevision: number; readonly id?: string }) {
+  constructor(args: {
+    readonly summary: string;
+    readonly sourceRevision: number;
+    readonly id?: string;
+    readonly isScheduled?: boolean;
+  }) {
     this.id = args.id ?? `batch_${nextBatchSeq++}`;
     this.summary = args.summary;
     this.sourceRevision = args.sourceRevision;
+    this.isScheduled = Boolean(args.isScheduled);
     this.finishedPromise = new Promise<void>((resolve) => {
       this.resolveFinished = resolve;
     });
@@ -202,13 +209,37 @@ export class RunningBatch {
 }
 
 const runningBatchByHost = new WeakMap<object, RunningBatch>();
+const activeBatchesByHost = new WeakMap<object, Set<RunningBatch>>();
 
-export function getRunningBatch(host: object): RunningBatch | null {
+export function getRunningBatch(host: object, action?: UndoAction | null): RunningBatch | null {
+  if (action) {
+    const activeSet = activeBatchesByHost.get(host);
+    if (activeSet) {
+      for (const item of activeSet) {
+        if (!item.isFinished && item.ownsUndoAction(action)) {
+          return item;
+        }
+      }
+    }
+  }
   const batch = runningBatchByHost.get(host) ?? null;
   return batch && !batch.isFinished ? batch : null;
 }
 
 export function cancelRunningBatch(host: object, reason: BatchStopReason = "cancelled"): boolean {
+  if (reason === "sourceChanged") {
+    const activeSet = activeBatchesByHost.get(host);
+    let stoppedAny = false;
+    if (activeSet) {
+      for (const item of activeSet) {
+        if (!item.isFinished && !item.isStopped) {
+          item.stop(reason);
+          stoppedAny = true;
+        }
+      }
+    }
+    return stoppedAny;
+  }
   const batch = getRunningBatch(host);
   if (!batch || batch.isStopped) return false;
   batch.stop(reason);
@@ -357,21 +388,26 @@ export async function executeIntents(
 
   const isScheduledSource =
     sourceLabel === t("定时任务") || sourceLabel === "定时任务" || sourceLabel === "Scheduled";
-  let previousBatch = getRunningBatch(host);
-  if (previousBatch && previousBatch !== options.batch) {
-    if (isScheduledSource) {
-      while (previousBatch && previousBatch !== options.batch && !previousBatch.isFinished) {
-        await previousBatch.finishedPromise;
-        if (sourceRevision !== host.sourceRevision) return false;
-        previousBatch = getRunningBatch(host);
+  if (!isScheduledSource) {
+    const activeSet = activeBatchesByHost.get(host);
+    if (activeSet) {
+      for (const prev of activeSet) {
+        if (prev !== options.batch && !prev.isFinished && !prev.isScheduled) {
+          prev.stop("preempted");
+        }
       }
-    } else {
-      previousBatch.stop("preempted");
     }
   }
 
   const runningBatch =
-    options.batch ?? new RunningBatch({ summary: replyText, sourceRevision });
+    options.batch ??
+    new RunningBatch({ summary: replyText, sourceRevision, isScheduled: isScheduledSource });
+  let activeSet = activeBatchesByHost.get(host);
+  if (!activeSet) {
+    activeSet = new Set();
+    activeBatchesByHost.set(host, activeSet);
+  }
+  activeSet.add(runningBatch);
   runningBatchByHost.set(host, runningBatch);
 
   let succeeded = 0;
@@ -657,8 +693,14 @@ export async function executeIntents(
     return failed === 0;
   } finally {
     runningBatch.markFinished();
+    activeSet.delete(runningBatch);
     if (runningBatchByHost.get(host) === runningBatch) {
-      runningBatchByHost.delete(host);
+      const remaining = [...activeSet].find((item) => !item.isFinished && !item.isStopped);
+      if (remaining) {
+        runningBatchByHost.set(host, remaining);
+      } else {
+        runningBatchByHost.delete(host);
+      }
     }
   }
 }
