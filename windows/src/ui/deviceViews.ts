@@ -1,5 +1,6 @@
 import { t } from "../core/i18n.js";
 import { IntentReply } from "../core/assistant.js";
+import { trText } from "../core/quickActions.js";
 import type { SpeakerTextMode } from "../core/miCloud/speakerActions.js";
 import { renderApplianceDrawer, renderClimateSwingRow, renderCoverDrawer, renderGenericDrawer, renderPlugDrawer, renderSpeakerCommandBar } from "./detailDrawers.js";
 import { renderMoreSettings } from "./facetViews.js";
@@ -10,9 +11,10 @@ import {
 } from "../core/models.js";
 import { TILE_SIZES, comfort, localizeEffect, localizeFanMode, tr3, type TileSize } from "./panelPrefs.js";
 import { formatTemperature, formatTemperatureValue, getTemperatureUnit, displayStep, temperatureSymbol } from "../core/temperature.js";
+import type { EnergyScopeSource } from "../core/energyHistory.js";
 import { SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation } from "./appTypes.js";
-import { hasPlottableSensorMetrics, renderSensorHistorySection } from "./sensorHistoryView.js";
+import { hasPlottableSensorMetrics, renderSensorHistorySection, type SensorHistoryUiState } from "./sensorHistoryView.js";
 
   export function renderSensorCard(
     dev: SmartDevice,
@@ -26,6 +28,7 @@ import { hasPlottableSensorMetrics, renderSensorHistorySection } from "./sensorH
     escapeHtml: (value: string) => string,
     isExpanded = false,
     facets: readonly FacetControl[] = [],
+    sensorHistoryUi?: SensorHistoryUiState,
   ): string {
     const c = comfort(k.temperature, k.humidity);
     const name = dev.name.replace(t("米家智能温湿度计"), t("温湿度计")) || dev.name;
@@ -83,7 +86,7 @@ import { hasPlottableSensorMetrics, renderSensorHistorySection } from "./sensorH
           </div>
           ${ring}
         </div>
-        ${isExpanded && canExpand ? renderSensorHistorySection(dev, facets, escapeHtml) : ""}
+        ${isExpanded && canExpand ? renderSensorHistorySection(dev, facets, escapeHtml, sensorHistoryUi) : ""}
       </div>`;
   }
 
@@ -127,13 +130,19 @@ import { hasPlottableSensorMetrics, renderSensorHistorySection } from "./sensorH
     allowAdvancedFacetWrites = false,
     pendingHighRisk: PendingHighRiskConfirmation | null = null,
   ): string {
-    const readout = deviceReadout(waitingDeviceIds.has(dev.id), valuesAreStale);
+    const isWaiting = waitingDeviceIds.has(dev.id);
+    const readout = deviceReadout(isWaiting, valuesAreStale);
     const running = devicePresentsAsActive(dev, readout === "possiblyStale") && k.hvacMode !== "off";
     const powerWritable = k.powerWritable !== false;
     const temperatureWritable = k.temperatureWritable !== false;
     const canExpand = hasDetailDrawer(dev, facets);
     const open = canExpand && (forceOpen || expandedDeviceId === dev.id);
     const id = escapeHtml(dev.id);
+    const hasActiveHighRisk =
+      pendingHighRisk !== null &&
+      pendingHighRisk.deviceId === dev.id &&
+      pendingHighRisk.expiresAtMs > Date.now();
+    const isTwoTapArmed = hasActiveHighRisk && pendingHighRisk?.confirm === undefined;
     const modeLabel: Record<string, string> = { cool: t("制冷"), heat: t("制热"), dry: t("除湿"), fan_only: t("送风"), auto: t("自动") };
     const status = readout === "waiting"
       ? t("等待中")
@@ -147,7 +156,8 @@ import { hasPlottableSensorMetrics, renderSensorHistorySection } from "./sensorH
                 : "",
             ].filter(Boolean).join(" · ")
           : t("已关闭");
-    const subtitle = selectedRoom === "全部" ? `${dev.roomName} · ${status}` : status;
+    const baseSubtitle = selectedRoom === "全部" ? `${dev.roomName} · ${status}` : status;
+    const subtitle = isTwoTapArmed && !open ? trText("再点一次确认", "Tap again to confirm") : baseSubtitle;
     const span = Math.max(k.maxTemp - k.minTemp, 1);
     const progress = Math.min(Math.max((k.targetTemperature - k.minTemp) / span, 0), 1) * 100;
     const modes = (
@@ -174,7 +184,7 @@ import { hasPlottableSensorMetrics, renderSensorHistorySection } from "./sensorH
           <button class="cc-climate-step" data-acstep="${id}:1" title="${t("升高温度")}" aria-label="${t("升高目标温度")}">＋</button>`
       : `<span class="cc-climate-temp" aria-label="${t("目标温度 {temp}", { temp: formatTemperature(k.targetTemperature) })}">${temp}<small>${temperatureSymbol(unit)}</small></span>`;
     return `
-      <div class="cc-tile cc-climate is-span-row ${running ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${readout === "possiblyStale" ? "is-stale" : ""} ${motion}" ${attrs}>
+      <div class="cc-tile cc-climate is-span-row ${running ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dev.isOnline ? "" : "is-offline"} ${readout === "possiblyStale" ? "is-stale" : ""} ${motion}" ${attrs}>
         ${badge}
         <div class="cc-climate-strip">
           ${power}
@@ -184,11 +194,11 @@ import { hasPlottableSensorMetrics, renderSensorHistorySection } from "./sensorH
           </button>
           ${steps}
         </div>
-        ${readout === "possiblyStale" ? "" : `<div class="cc-climate-gauge" role="progressbar" aria-label="${t("目标温度进度")}" aria-valuemin="${k.minTemp}" aria-valuemax="${k.maxTemp}" aria-valuenow="${k.targetTemperature}"><span style="width:${progress}%"></span></div>`}
+        ${readout === "possiblyStale" ? "" : `<div class="cc-climate-gauge" role="progressbar" aria-label="${t("目标温度进度")}" aria-valuemin="${k.minTemp}" aria-valuemax="${k.maxTemp}" aria-valuenow="${k.targetTemperature}"><span style="width:${progress}%;--fill-scale:${(progress / 100).toFixed(3)}"></span></div>`}
         ${!canExpand ? renderPendingHighRiskRow(dev.id, pendingHighRisk, escapeHtml) : ""}
         ${
           open
-            ? `<div class="cc-climate-more">
+            ? `<div class="cc-expander-grid"><div class="cc-expander-clip"><div class="cc-climate-more">
                 ${renderPendingHighRiskRow(dev.id, pendingHighRisk, escapeHtml)}
                 ${modes.length > 0 ? `<div class="cc-segmented-pills is-even">
                   ${modes.map((m) => `<button class="cc-seg-pill ${running && k.hvacMode === m ? "is-active" : ""}" data-acmode="${id}:${escapeHtml(m)}" aria-pressed="${running && k.hvacMode === m}">${escapeHtml(Object.hasOwn(modeLabel, m) ? (modeLabel[m] ?? m) : m)}</button>`).join("")}
@@ -202,7 +212,7 @@ import { hasPlottableSensorMetrics, renderSensorHistorySection } from "./sensorH
                 }
                 ${renderClimateSwingRow(dev.id, k, escapeHtml)}
                 ${renderMoreSettings({ deviceId: dev.id, facets, allowAdvanced: allowAdvancedFacetWrites, isOnline: dev.isOnline, escapeHtml })}
-              </div>`
+              </div></div></div>`
             : ""
         }
       </div>`;
@@ -227,6 +237,7 @@ function renderPrimaryDrawer(
   allowAdvanced = false,
   unsupportedLightEffects?: ReadonlySet<string>,
   speakerDrawerState?: { readonly mode?: SpeakerTextMode; readonly draft?: string },
+  energyScope?: EnergyScopeSource,
 ): string {
     const k = dev.kind;
     if (k.kind === "light") {
@@ -524,7 +535,7 @@ function renderPrimaryDrawer(
       return renderCoverDrawer(dev, k, escapeHtml);
     }
     if (k.kind === "plug") {
-      return renderPlugDrawer(dev, k, escapeHtml);
+      return renderPlugDrawer(dev, k, escapeHtml, energyScope);
     }
     if (k.kind === "generic") {
       return renderGenericDrawer(dev, k, facets, allowAdvanced, escapeHtml);
@@ -541,6 +552,7 @@ export function renderDeviceDrawer(
   pendingHighRisk: PendingHighRiskConfirmation | null = null,
   unsupportedLightEffects?: ReadonlySet<string>,
   speakerDrawerState?: { readonly mode?: SpeakerTextMode; readonly draft?: string },
+  energyScope?: EnergyScopeSource,
 ): string {
   const primary = renderPrimaryDrawer(
     dev,
@@ -550,12 +562,13 @@ export function renderDeviceDrawer(
     allowAdvanced,
     unsupportedLightEffects,
     speakerDrawerState,
+    energyScope,
   );
   const extraConfirm =
     dev.kind.kind !== "climate" || primary === ""
       ? renderPendingHighRiskRow(dev.id, pendingHighRisk, escapeHtml)
       : "";
-  return (
+  const inner =
     primary +
     (extraConfirm ? `<div class="cc-tile-drawer">${extraConfirm}</div>` : "") +
     renderMoreSettings({
@@ -564,8 +577,8 @@ export function renderDeviceDrawer(
       allowAdvanced,
       isOnline: dev.isOnline,
       escapeHtml,
-    })
-  );
+    });
+  return inner ? `<div class="cc-expander-grid"><div class="cc-expander-clip">${inner}</div></div>` : "";
 }
 
 function devicePaletteClass(dev: SmartDevice): string {
@@ -990,6 +1003,8 @@ export interface DeviceTileViewState {
   readonly isPinned?: boolean;
   readonly unsupportedLightEffects?: ReadonlySet<string>;
   readonly speakerDrawerState?: { readonly mode?: SpeakerTextMode; readonly draft?: string };
+  readonly energyScope?: EnergyScopeSource;
+  readonly sensorHistoryUi?: SensorHistoryUiState;
   readonly escapeHtml: (value: string) => string;
 }
 
@@ -1152,8 +1167,13 @@ function renderSmallDeviceTile(options: {
     ? `<button type="button" class="cc-small-tile-btn" ${actionAttr} title="${escape(tooltip)}" aria-label="${escape(ariaLabel)}" aria-pressed="${isOn}"><span class="cc-tile-orb">${svg}</span><span class="cc-small-tile-dot" aria-hidden="true"></span></button>`
     : `<span class="cc-small-tile-btn is-readonly" role="img" title="${escape(tooltip)}" aria-label="${escape(ariaLabel)}"><span class="cc-tile-orb">${svg}</span></span>`;
 
+  const isWaiting = state.waitingDeviceIds.has(dev.id);
+  const hasActiveHighRisk =
+    state.pendingHighRisk !== null &&
+    state.pendingHighRisk.deviceId === dev.id &&
+    state.pendingHighRisk.expiresAtMs > Date.now();
   const canExpandSmallSensor = kind === "sensor" && readout !== "possiblyStale" && hasPlottableSensorMetrics(dev, state.deviceFacets[dev.id] ?? []);
-  return `<div class="cc-tile is-size-small ${palette} ${isOn ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="small" ${canExpandSmallSensor ? `data-sensor-card="${id}"` : ""} ${attrs}>${renderPinStarBadge(pinned, escape)}${badge}${inner}</div>`;
+  return `<div class="cc-tile is-size-small ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="small" ${canExpandSmallSensor ? `data-sensor-card="${id}"` : ""} ${attrs}>${renderPinStarBadge(pinned, escape)}${badge}${inner}</div>`;
 }
 
 export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): string {
@@ -1169,8 +1189,8 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
   const badge = state.isEditingLayout
     ? `<button class="cc-resize-handle" data-resize-handle="${escape(dev.id)}" data-cycle-size="${escape(dev.id)}" data-tile-size="${size}" title="${t("切换卡片大小")}：${sizeTitle}" aria-label="${t("切换卡片大小")}，${sizeTitle}"><svg class="cc-resize-arc" viewBox="0 0 28 28" aria-hidden="true"><path d="M 22 10 A 12 12 0 0 1 10 22" /></svg></button>`
     : "";
-
-  const readout = deviceReadout(state.waitingDeviceIds.has(dev.id), state.valuesAreStale);
+  const isWaiting = state.waitingDeviceIds.has(dev.id);
+  const readout = deviceReadout(isWaiting, state.valuesAreStale);
   const isOn = devicePresentsAsActive(dev, readout === "possiblyStale");
   const kind = dev.kind.kind;
   const palette = devicePaletteClass(dev);
@@ -1188,6 +1208,11 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
         }
       : dev;
   const hasDrawer = hasDetailDrawer(effectiveDevForDrawer, facets);
+  const hasActiveHighRisk =
+    state.pendingHighRisk !== null &&
+    state.pendingHighRisk.deviceId === dev.id &&
+    state.pendingHighRisk.expiresAtMs > Date.now();
+  const isTwoTapArmed = hasActiveHighRisk && state.pendingHighRisk?.confirm === undefined;
   const subtitle =
     state.selectedRoom === "全部"
       ? `${dev.roomName} · ${deviceStatusSummary(dev)}`
@@ -1204,7 +1229,9 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
       ? t("可能过期")
       : dim !== null
         ? t("亮度 {percent}%", { percent: dim })
-        : subtitle;
+        : isTwoTapArmed && !isExpanded
+          ? trText("再点一次确认", "Tap again to confirm")
+          : subtitle;
 
   if (size === "small" && !isExpanded) {
     return renderSmallDeviceTile({
@@ -1225,7 +1252,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
   }
 
   if (dev.kind.kind === "sensor" && (dev.kind.temperature !== null || dev.kind.humidity !== null)) {
-    return renderSensorCard(dev, dev.kind, state.span < 6 && !isExpanded, `data-tile-size="${size}" ${attrs}`, motion, `${renderPinStarBadge(pinned, escape)}${badge}`, state.selectedRoom, state.valuesAreStale, escape, isExpanded, facets);
+    return renderSensorCard(dev, dev.kind, state.span < 6 && !isExpanded, `data-tile-size="${size}" ${attrs}`, motion, `${renderPinStarBadge(pinned, escape)}${badge}`, state.selectedRoom, state.valuesAreStale, escape, isExpanded, facets, state.sensorHistoryUi);
   }
   if (dev.kind.kind === "climate" && size !== "half") {
     return renderClimateStrip(dev, dev.kind, size === "panel", `data-tile-size="${size}" ${attrs}`, motion, `${renderPinStarBadge(pinned, escape)}${badge}`, state.expandedDeviceId, state.selectedRoom, state.valuesAreStale, state.waitingDeviceIds, escape, facets, state.allowAdvancedFacetWrites, state.pendingHighRisk);
@@ -1242,12 +1269,12 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
 
   if (isCapsule) {
     return `
-      <div class="cc-tile is-capsule ${palette} ${isOn ? "is-active" : ""} ${dim !== null ? "is-dimming" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" ${canPlotSensor ? `data-sensor-card="${escape(dev.id)}" aria-expanded="false"` : ""} ${attrs}>
+      <div class="cc-tile is-capsule ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dim !== null ? "is-dimming" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" ${canPlotSensor ? `data-sensor-card="${escape(dev.id)}" aria-expanded="false"` : ""} ${attrs}>
         ${renderPinStarBadge(pinned, escape)}
         ${badge}
         <div class="cc-tile-header win-capsule-stack">
           <div class="win-split-pill ${hasDrawer ? "has-expand" : ""}">
-            ${capsuleFill > 0 ? `<span class="cc-tile-fill" style="width:${capsuleFill}%"></span>` : ""}
+            ${capsuleFill > 0 ? `<span class="cc-tile-fill" style="width:${capsuleFill}%;--fill-scale:${(capsuleFill / 100).toFixed(3)}"></span>` : ""}
             ${
               dev.kind.kind === "generic" && dev.kind.isReadOnly
                 ? `<span class="cc-readonly-badge">${t("只读")}</span>`
@@ -1291,13 +1318,14 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
             <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>
           </button>
         </div>
+        ${!hasDrawer ? renderPendingHighRiskRow(dev.id, state.pendingHighRisk, escape) : ""}
       </div>
     `;
   }
 
   if (isSubpage) {
     return `
-      <div class="cc-tile is-expanded is-subpage is-span-row ${palette} ${isOn ? "is-active" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" ${attrs}>
+      <div class="cc-tile is-expanded is-subpage is-span-row ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" ${attrs}>
         ${renderPinStarBadge(pinned, escape)}
         ${badge}
         <div class="cc-tile-header win-subpage-header">
@@ -1342,7 +1370,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
               : `<span class="cc-tile-orb win-subpage-power" title="${escape(dev.name)}" aria-hidden="true">${svg}</span>`
           }
         </div>
-        ${renderDeviceDrawer(dev, escape, state.deviceFacets[dev.id] ?? [], state.allowAdvancedFacetWrites, state.pendingHighRisk, state.unsupportedLightEffects, state.speakerDrawerState)}
+        ${renderDeviceDrawer(dev, escape, facets, state.allowAdvancedFacetWrites, state.pendingHighRisk, state.unsupportedLightEffects, state.speakerDrawerState, state.energyScope)}
       </div>
     `;
   }
@@ -1359,8 +1387,8 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
   });
 
   return `
-      <div class="cc-tile is-span-row ${palette} ${isOn ? "is-active" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${inlineSlider ? "has-inline-slider" : ""} ${motion}" data-tile-size="${size}" ${canPlotSensor ? `data-sensor-card="${escape(dev.id)}" aria-expanded="${isExpanded}"` : ""} ${attrs}>
-        ${fill > 0 ? `<span class="cc-tile-fill" style="width:${fill}%"></span>` : ""}
+      <div class="cc-tile is-span-row ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${inlineSlider ? "has-inline-slider" : ""} ${motion}" data-tile-size="${size}" ${canPlotSensor ? `data-sensor-card="${escape(dev.id)}" aria-expanded="${isExpanded}"` : ""} ${attrs}>
+        ${fill > 0 ? `<span class="cc-tile-fill" style="width:${fill}%;--fill-scale:${(fill / 100).toFixed(3)}"></span>` : ""}
         ${renderPinStarBadge(pinned, escape)}
         ${badge}
         <div class="cc-tile-header">
@@ -1414,10 +1442,10 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
         ${inlineSlider}
         ${
           isExpanded && hasDrawer
-            ? renderDeviceDrawer(dev, escape, facets, state.allowAdvancedFacetWrites, state.pendingHighRisk, state.unsupportedLightEffects, state.speakerDrawerState)
+            ? renderDeviceDrawer(dev, escape, facets, state.allowAdvancedFacetWrites, state.pendingHighRisk, state.unsupportedLightEffects, state.speakerDrawerState, state.energyScope)
             : ""
         }
-        ${isExpanded && canPlotSensor ? renderSensorHistorySection(dev, facets, escape) : ""}
+        ${isExpanded && canPlotSensor ? renderSensorHistorySection(dev, facets, escape, state.sensorHistoryUi) : ""}
         ${
           !hasDrawer
             ? renderPendingHighRiskRow(dev.id, state.pendingHighRisk, escape)

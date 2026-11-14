@@ -25,10 +25,11 @@ import {
   hasSecondaryMiAccountsInIndex, makeMiAccount, markAccountSessionRejected, miAccountId, refreshMiAccountsConcurrently,
 } from "../src/core/miAccountsStore.js";
 import {
-  CanonicalDeviceRegistry, DeviceDeduplicator, DeviceIdentityNormalizer, DeviceSourcePinStorage,
-  DualSourceCoordinator, DualSourceHomeProvider, PINNED_DEVICE_SOURCES_STORAGE_KEY, RoomIdentityRegistry, commandTargetBackend,
+  CanonicalDeviceRegistry, CANONICAL_DEVICE_REGISTRY_STORAGE_KEY, DUAL_SOURCE_ENABLED_STORAGE_KEY, DeviceDeduplicator, DeviceIdentityNormalizer, DeviceSourcePinStorage,
+  DualSourceCoordinator, DualSourceHomeProvider, PINNED_DEVICE_SOURCES_STORAGE_KEY, ROOM_IDENTITY_REGISTRY_STORAGE_KEY, RoomIdentityRegistry, commandTargetBackend,
   currentSourceMenuTitle, extractHADeviceIdentities, extractMiDeviceIdentities, offlineFallbackBadgeText,
 } from "../src/core/dualSourceProvider.js";
+import { clearHostSessionAndDualSourceState } from "../src/ui/appLifecycle.js";
 import { homeProviderFor } from "../src/ui/commandDispatch.js";
 import {
   DIAGNOSTICS_RING_BUFFER_CAPACITY, DIAGNOSTICS_RING_STORAGE_KEY, DiagnosticsLog, DiagnosticsReportBuilder,
@@ -1207,7 +1208,7 @@ describe("B9: Multi-account unsupported device scanner & zero-leak Markdown diag
     assert.equal(scanner.lastScannedAtMs, null);
   });
 
-  it("caps DiagnosticsLog ring buffer at 50 entries and exports 100% desensitized Markdown reports with zero Token or private IP leaks", () => {
+  it("caps DiagnosticsLog ring buffer at 50 entries and exports 100% desensitized Markdown reports with zero Token or private IP leaks", async () => {
     const fakeJwt = [
       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
       "eyJzdWIiOiI5OTg4Nzc2NjU1IiwibmFtZSI6IlNlY3JldCJ9",
@@ -1386,5 +1387,23 @@ describe("B9: Multi-account unsupported device scanner & zero-leak Markdown diag
     assertZeroSensitiveLeaks(reportEn);
     assert.match(reportEn, /## MenuBarHome Diagnostics/);
     assert.match(reportEn, /### Camera Diagnostics/);
+
+    const root = document.getElementById("app")!;
+    const app = new MenuMijiaWindowsApp(root);
+    app.settings.dualSourceEnabled = true;
+    localStorage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, JSON.stringify([{ slotId: "s1", accountId: "mi:cn:1", region: "cn", label: null }]));
+    localStorage.setItem(DUAL_SOURCE_ENABLED_STORAGE_KEY, "1");
+    localStorage.setItem(PINNED_DEVICE_SOURCES_STORAGE_KEY, '{"dev1":"xiaomiCloud"}');
+    localStorage.setItem(CANONICAL_DEVICE_REGISTRY_STORAGE_KEY, '{"entries":[]}');
+    localStorage.setItem(ROOM_IDENTITY_REGISTRY_STORAGE_KEY, '{"entries":[]}');
+    appDiagnosticsLog.record({ summary: "test-diag-entry", category: "network" });
+    await clearHostSessionAndDualSourceState(app, { revokeAll: true });
+    assert.equal(app.settings.dualSourceEnabled, false);
+    assert.equal(localStorage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY), null);
+    assert.equal(localStorage.getItem(DUAL_SOURCE_ENABLED_STORAGE_KEY), null);
+    assert.equal(localStorage.getItem(PINNED_DEVICE_SOURCES_STORAGE_KEY), null);
+    assert.equal(localStorage.getItem(CANONICAL_DEVICE_REGISTRY_STORAGE_KEY), null);
+    assert.equal(localStorage.getItem(ROOM_IDENTITY_REGISTRY_STORAGE_KEY), null);
+    assert.equal(appDiagnosticsLog.count(), 0);
   });
 });

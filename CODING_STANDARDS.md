@@ -2,7 +2,7 @@
 
 审阅与编码规范总纲。引用证据时以 `path:symbol` 标注决定性符号并摘出关键行（如 `HomeStore+ControlWrite.swift:lockOptimistic`）。
 
-> **机械检查已由 `scripts/check.sh` 自动拦截（不在此赘述）**：密钥与私网扫描、`kVK_*` 常量、`UNUserNotificationCenter` `.app` 守卫、字号/圆角/颜色变量、`.glassEffect` 隔离、定时器回调裸 `render()`、`Task.yield` 固定循环、`#expect(...allSatisfy(\.))`、`withAnimation` 丢弃 `Task` 返回值、`L10n.currentLanguage =`、`#require` 嵌套、PTZ 型号表与补丁 SHA-256、能力矩阵同步。
+> **机械检查已由 `scripts/check.sh` 自动拦截（不在此赘述）**：密钥与私网扫描、Git 提交账号与镜像远端推送、`kVK_*` 常量、`UNUserNotificationCenter` `.app` 守卫、macOS 字号/圆角/颜色变量、Windows Fluent 2 曲线变量与退场幽灵类同步、Windows 飞出面板几何与阴影留白预算、`.glassEffect` 隔离、定时器回调裸 `render()`、`Task.yield` 固定循环、`#expect(...allSatisfy(\.))`、`withAnimation` 丢弃 `Task` 返回值、`L10n.currentLanguage =`、`#require` 嵌套、PTZ 型号表与补丁 SHA-256、能力矩阵同步。
 
 ---
 
@@ -83,7 +83,9 @@ Pair every pending UI field, toast, consent banner, activity row, hover/expansio
 ## §16. Windows Panel Interaction & Camera Packaging Guardrails
 
 - Background refreshes defer via `MenuMijiaWindowsApp.queueBackgroundRender` during gestures (`hasBlockingPanelInteraction()`); proactive results render only when idle and **drop** (never defer) during gestures (`proactive.ts`). `startTimerLoop` in `appLifecycle.ts` is the sole allowlisted direct `render()` exception when scheduled commands ran.
-- Destructive holds (`bindAllOffControl`) must abort if unfocused; drawer eligibility (`hasDetailDrawer`) gates both chevron and non-camera card clicks; restoring unsaved Settings drafts reconciles `#settings-api-key` via `syncKeyFieldWithEndpoint`; `mountTestWindow()` fails unstubbed `fetch` in 1 ms.
+- Destructive holds (`bindAllOffControl`) must abort if unfocused; restoring unsaved Settings drafts reconciles `#settings-api-key` via `syncKeyFieldWithEndpoint`; `mountTestWindow()` fails unstubbed `fetch` in 1 ms.
+- **Win11 Split-Pill & `.is-subpage` Visibility (`deviceViews.ts`, `panelKeyboard.ts`, `app.ts`)**: split-pill left half (`[data-toggle-device]`) toggles power directly (except read-only kinds) while the right chevron (`[data-expand-device]`, gated by `hasDetailDrawer`) opens the in-place Bottom Island `.cc-tile.is-subpage`. Because CSS `:has(.cc-tile.is-subpage)` hides `#command-input`, `[data-room]`, `.win-slider-deck`, and sibling `.cc-tile` nodes via `display: none !important` without unmounting them (and `happy-dom` does not compute CSS layout), keyboard shortcuts (`Escape` stack pop before search clear, `1` to `9` room jumps, arrow navigation, `Ctrl+F` and `/` search focus) and cross-island `[data-expand-device]` or `[data-reveal-device]` actions must explicitly guard on `expandedDeviceId` / subpage state and active room, kind, and search cuts. `PANEL_HEIGHTS` (`580`, `680`, `780`) defines outer Tauri HWND logical heights including `2 * PANEL_PADDING` (`16px` `#app` shadow inset).
+- **Keyed DOM Reconciler & UI Contracts (`reconciler.ts`, `bindEvents.ts`)**: `PanelRenderPipeline.commitRender` reconciles keyed controls in place; bind panel events once on the root via delegation or `RenderEventScope` (`scope.on`), never raw `addEventListener` on reconciled child nodes. Guard WAAPI `el.animate(...)?.finished` because `happy-dom` stubs return `{}`; keep `[data-high-risk-confirm]` mounted inside collapsed heater tiles; pair capsule inline `style="width:${pct}%"` with `--fill-scale`; cycle rooms on `Tab` only when focus is at body/panel root; preserve local `open` state on `details.cc-conn-secondary` across renders; keep inactive Settings connection tabs mounted behind `[hidden]`.
 - **Windows Camera (`docs/agents/windows-camera.md`)**: enforce 1-minute P2P cooldown (`cameraKeepAliveMs` 120s — hide modal/`<img>` rather than tearing down bridge immediately), serialize `start/stop_xiaomi_camera_bridge` via `CAMERA_BRIDGE_LOCK` + `liveCameraToken`, keep `.255:32108` UDP relay, MJPEG `<img>` without `#width=` (`error` log level), bundled `camera-bin/README.md`, and MSVC `windows/build-win.bat` (GNU `tar` on MSYS2 uses `cygpath -u` + `--force-local`).
 
 ---
@@ -93,3 +95,4 @@ Pair every pending UI field, toast, consent banner, activity row, hover/expansio
 - **App icons**: editing `Resources/AppIcon/AppIcon-*.svg` -> `swift scripts/generate_app_icon.swift`
 - **Local macOS install**: `bash scripts/install_local_app.sh` (installs rollback-safe `.app`; `build_app.sh` builds in-tree only)
 - **Single Windows test**: `node windows/scripts/test-file.mjs tests/<file>.test.ts`
+- **Windows flyout layout & screenshot check**: `npm --prefix windows run verify:ui` (`-- --out-dir <dir>`)

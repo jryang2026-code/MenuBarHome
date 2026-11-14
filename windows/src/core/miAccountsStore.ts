@@ -306,7 +306,7 @@ export function hasSecondaryMiAccountsInIndex(storage: Storage | null = defaultS
   }
 }
 
-function readAccountIndex(storage: Storage | null): MiAccountIndexEntry[] { if (!storage) return [];
+export function readAccountIndex(storage: Storage | null = defaultStorage()): MiAccountIndexEntry[] { if (!storage) return [];
   try { const raw = storage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY);
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
@@ -563,9 +563,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
   }
 }
 
-export interface AccountScopedSmartDevice extends SmartDevice { readonly accountId?: string;
-  readonly accountLabel?: string;
-}
+export type AccountScopedSmartDevice = SmartDevice;
 
 export interface AccountScopedHomeOption { readonly id: string;
   readonly name: string;
@@ -1271,7 +1269,7 @@ export class MultiAccountMiCloudProvider implements HomeProvider {
     options.beforeSend?.();
 
     const mappedOwners = this.dependencies.deviceOwners[parsed.did] ?? [];
-    const fallbackAccountId = (device as AccountScopedSmartDevice).accountId;
+    const fallbackAccountId = device.accountId;
     const candidateIds =
       mappedOwners.length > 0
         ? mappedOwners

@@ -1,3 +1,18 @@
+/**
+ * Windows credential store boundary (#28).
+ *
+ * Secrets never belong in WebView `localStorage`: every process running as the
+ * signed-in user can read that file. They live in the Windows Credential
+ * Manager through the `secure_store_*` Tauri commands; this module is the only
+ * place that knows the credential names and how they map to settings fields.
+ *
+ * `sanitizeSettingsForStorage` is deliberately pure so tests can prove that a
+ * settings object written back to `localStorage` carries no token, key or
+ * session. The migration path reads the plaintext copy exactly once, rewrites
+ * it without credentials, and moves the values into the credential store; if
+ * the store refuses, the app never falls back to writing plaintext.
+ */
+
 import { ASSISTANT_PROVIDER_PRESETS, assistantEndpointIdentity, inferAssistantPreset } from "./assistant/provider.js";
 import { normalizeMiCloudRegion, type MiSession } from "./miCloudClient.js";
 
@@ -126,6 +141,7 @@ export function parseMiSession(raw: unknown): MiSession | null {
   if (!userId || !ssecurity || !serviceToken) return null;
   const rawExpiresAt = record["expiresAt"];
   const expiresAt = typeof rawExpiresAt === "number" && Number.isFinite(rawExpiresAt) ? rawExpiresAt : undefined;
+  // `passToken` is parsed from old sessions for compatibility but never stored (#27).
   return {
     userId,
     cUserId: stringField("cUserId") ?? "",
@@ -137,6 +153,7 @@ export function parseMiSession(raw: unknown): MiSession | null {
   };
 }
 
+/** The credential-manager value for `mi_session`: JSON with `passToken` removed (#27). */
 export function serializeMiSession(session: MiSession): string {
   return JSON.stringify({
     userId: session.userId,

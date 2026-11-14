@@ -4,7 +4,7 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
 
 ## Issue 与仓库边界
 
-- **唯一问题与 PR 源**：GitHub（`https://github.com/jryang2026-code/MenuBarHome`，`origin`），通过 `gh` CLI（账号 `jryang2026-code`）操作。旧账号 `jryang1997` 已停用；`gitlab` 与 `nas` 仅作镜像备份，**严禁向两处提单或写入**。
+- **唯一问题与 PR 源**：GitHub（`https://github.com/jryang2026-code/MenuBarHome`，`origin`），通过 `gh` CLI（账号 `jryang2026-code`）操作；`gitlab` 与 `nas` 为只读镜像，勿向两处提单（已停用账号 `jryang1997` 提交与镜像远端推送已由 `check.sh` 和 `pre-push` 拦截）。
 
 ## 交付分流：默认直接 push `main`，仅高风险面走 PR
 
@@ -22,9 +22,9 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
 
 ## 本地门禁与验证环境
 
-- **`git commit`（约 4s）**：自动跑 `bash scripts/check.sh --lint-only`（密钥扫描、机械 lint、能力矩阵、云台型号表）。全量脚本自检加 `--script-tests`。
+- **`git commit`（约 4s）**：自动跑 `bash scripts/check.sh --lint-only`（密钥扫描、机械 lint、工作流契约与文档链接、能力矩阵、云台型号表）。全量脚本自检加 `--script-tests`。
 - **推 `main` / 开 PR 前**：非 UI 改动跑 `bash scripts/check.sh --changed`；**macOS 界面改动**须在本机跑完整 `bash scripts/check.sh`（快照基线以维护者 Mac 为准；CI 托管机用 `macos-26-intel` 且跳过像素比对，未改视觉才贴 `no-snapshot-change`）。确认输出无非预期 `⚠️ 部分通过：跳过 ...` 才算通过。
-- **专项检查**：工作流改动跑 `actionlint .github/workflows/ci.yml .github/workflows/snapshot-guard.yml`；Windows Rust 在 CI `windows-rust-test` 或 `cargo test --locked --manifest-path windows/src-tauri/Cargo.toml`；单测提速用 `node windows/scripts/test-file.mjs tests/<file>.test.ts`、`scripts/repeat_test.sh <filter>`、`scripts/red-check.sh`。
+- **专项检查**：工作流改动跑 `actionlint .github/workflows/*.yml`；维护者 Mac 未装 `cargo`/`rustc`，`windows/src-tauri` 原生层测试由云端 CI `windows-rust-test` 承担（Windows 宿主机跑 `cargo test --locked --manifest-path windows/src-tauri/Cargo.toml`）；单测提速用 `node windows/scripts/test-file.mjs tests/<file>.test.ts`、`scripts/repeat_test.sh <filter>`、`scripts/red-check.sh`。
 - **检索与跨端**：Windows 无 Swift 工具链时本机跑 `--lint-only`（或 `scripts/remote-swift-test.sh`）；本仓 Swift/Rust 无 LSP，引用检索用 `grep`。
 
 ## 领域约定与按需文档
@@ -35,8 +35,13 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
   - Issue/PR 编号、老号映射与协同脚本：[`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md)
   - Windows 摄像机实时流、go2rtc/FFmpeg 与 Tauri 打包：[`docs/agents/windows-camera.md`](docs/agents/windows-camera.md)
   - 应用内自更新链路与 Ed25519 验签：[`docs/agents/in-app-update.md`](docs/agents/in-app-update.md)
-  - Linux 容器与 Cursor Cloud 检查：[`docs/agents/cursor-cloud.md`](docs/agents/cursor-cloud.md)
+  - Linux 容器与云端环境（Antigravity Cloud / Cursor Cloud）：[`docs/agents/cursor-cloud.md`](docs/agents/cursor-cloud.md)
   - 本地隔离 macOS CI VM 运维：[`docs/agents/local-macos-runner.md`](docs/agents/local-macos-runner.md)
+
+## 技能路由（`pstack` & Matt Pocock `mp-*`）
+
+- **工程执行默认路由 `poteto-mode`**：涉及多文件修改、跨函数/模块签名调整、架构设计、根因未明的 Bug 或性能问题时，先调 `lookup_skill("poteto-mode")` 按对应 Playbook 与原则推进；单文件明确小改或纯问答直接执行并在真实产物上验证。意图已明确时直入专项技能（`how`、`why`、`architect`、`arena`、`swarm`、`interrogate`、`tdd`、`no-comments`、`deslop`、`technical-writing`、`reflect`）。Antigravity Cloud 派发子代理一律使用 `Workspace: "inherit"`、默认 `Model: "inherit"`。
+- **议题分拣、规划拆票与双轴审查**：使用 `mp-*` 套件（`mp-triage`、`mp-wayfinder`、`mp-grill-with-docs`、`mp-to-spec`、`mp-to-tickets`、`mp-implement`、`mp-diagnosing-bugs`、`mp-code-review`、`mp-retro`），与 [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md) 联动。
 
 ## 并发与 Runner 安全红线
 

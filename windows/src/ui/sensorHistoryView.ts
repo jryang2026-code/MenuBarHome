@@ -26,6 +26,11 @@ import {
   type TemperatureUnit,
 } from "../core/temperature.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
+import {
+  getHostDualSourceState,
+  getHostMiAccountsState,
+  isDualSourceEnabled,
+} from "./cloudRefresh.js";
 import { seedDemoSensorHistory } from "./demo.js";
 import { comfort, tr3 } from "./panelPrefs.js";
 
@@ -44,34 +49,49 @@ const PLOT_BOTTOM = 98;
 const PLOT_WIDTH = PLOT_RIGHT - PLOT_LEFT;
 const PLOT_HEIGHT = PLOT_BOTTOM - PLOT_TOP;
 
-interface SensorHistoryUiState {
-  host: MenuMijiaWindowsApp | null;
+export interface SensorHistoryUiState {
   scopeKey: string | null;
   lastExpandedId: string | null;
   lastRecordedDevicesRef: readonly SmartDevice[] | null;
   recordedBatchSeq: number;
-  windowByDevice: Map<string, SensorHistoryWindow>;
-  metricByDevice: Map<string, SensorMetricKind>;
-  hoveredSlotByDevice: Map<string, number>;
+  isSyncingHost: boolean;
+  readonly windowByDevice: Map<string, SensorHistoryWindow>;
+  readonly metricByDevice: Map<string, SensorMetricKind>;
+  readonly hoveredSlotByDevice: Map<string, number>;
 }
 
-const uiState: SensorHistoryUiState = {
-  host: null,
-  scopeKey: null,
-  lastExpandedId: null,
-  lastRecordedDevicesRef: null,
-  recordedBatchSeq: 0,
-  windowByDevice: new Map<string, SensorHistoryWindow>(),
-  metricByDevice: new Map<string, SensorMetricKind>(),
-  hoveredSlotByDevice: new Map<string, number>(),
-};
+export function createSensorHistoryUiState(): SensorHistoryUiState {
+  return {
+    scopeKey: null,
+    lastExpandedId: null,
+    lastRecordedDevicesRef: null,
+    recordedBatchSeq: 0,
+    isSyncingHost: false,
+    windowByDevice: new Map<string, SensorHistoryWindow>(),
+    metricByDevice: new Map<string, SensorMetricKind>(),
+    hoveredSlotByDevice: new Map<string, number>(),
+  };
+}
 
-export function resetSensorHistoryUiState(): void {
-  uiState.windowByDevice.clear();
-  uiState.metricByDevice.clear();
-  uiState.hoveredSlotByDevice.clear();
-  uiState.lastExpandedId = null;
-  uiState.lastRecordedDevicesRef = null;
+function getHostSensorHistoryUi(host: MenuMijiaWindowsApp): SensorHistoryUiState {
+  if (!host.sensorHistoryUi) {
+    host.sensorHistoryUi = createSensorHistoryUiState();
+  }
+  return host.sensorHistoryUi;
+}
+
+export function resetSensorHistoryUiState(
+  target?: SensorHistoryUiState | { readonly sensorHistoryUi?: SensorHistoryUiState } | null,
+): void {
+  if (!target) return;
+  const state =
+    "windowByDevice" in target ? target : (target.sensorHistoryUi ?? null);
+  if (!state) return;
+  state.windowByDevice.clear();
+  state.metricByDevice.clear();
+  state.hoveredSlotByDevice.clear();
+  state.lastExpandedId = null;
+  state.lastRecordedDevicesRef = null;
 }
 
 function clamp(value: number, lo: number, hi: number): number {
@@ -240,10 +260,11 @@ function sensorSnapshotSignature(devices: readonly SmartDevice[]): string {
 
 function canRecordLiveHostSensors(host: MenuMijiaWindowsApp): boolean {
   if (host.valuesAreStale) return false;
-  if (host.settings.connectionMode === "homeAssistant" && Boolean(host.haConnectionError)) {
+  const dual = isDualSourceEnabled(host);
+  if (!dual && host.settings.connectionMode === "homeAssistant" && Boolean(host.haConnectionError)) {
     return false;
   }
-  if (host.settings.connectionMode === "xiaomiCloud" && Boolean(host.miSessionExpired)) {
+  if (!dual && host.settings.connectionMode === "xiaomiCloud" && Boolean(host.miSessionExpired)) {
     return false;
   }
   if (
@@ -262,17 +283,12 @@ function canRecordLiveHostSensors(host: MenuMijiaWindowsApp): boolean {
   return true;
 }
 
-let isSyncingHost = false;
-
 export function hasPlottableSensorMetrics(
   dev: SmartDevice,
   facets: readonly FacetControl[] = [],
   store: SensorHistoryStore = sharedSensorHistoryStore(),
 ): boolean {
   if (dev.kind.kind !== "sensor") return false;
-  if (!isSyncingHost && uiState.host && uiState.lastRecordedDevicesRef !== uiState.host.devices) {
-    syncSensorHistoryHost();
-  }
   const live = extractSensorLiveMetrics(dev, facets);
   if (
     live.temperature !== null ||
@@ -288,8 +304,11 @@ export function hasPlottableSensorMetrics(
   return pts7d.some((pt) => pt.isObserved);
 }
 
-export function selectedSensorWindow(deviceId: string): SensorHistoryWindow {
-  return uiState.windowByDevice.get(deviceId) ?? "24h";
+export function selectedSensorWindow(
+  deviceId: string,
+  state?: SensorHistoryUiState,
+): SensorHistoryWindow {
+  return state?.windowByDevice.get(deviceId) ?? "24h";
 }
 
 export function structuralSensorHistoryKey(host: MenuMijiaWindowsApp): string {
@@ -297,9 +316,10 @@ export function structuralSensorHistoryKey(host: MenuMijiaWindowsApp): string {
   if (!expandedId) return "";
   const dev = host.devices.find((d) => d.id === expandedId);
   if (!dev || dev.kind.kind !== "sensor") return "";
+  const ui = getHostSensorHistoryUi(host);
   const store = sharedSensorHistoryStore();
-  const window = selectedSensorWindow(dev.id);
-  const metric = uiState.metricByDevice.get(dev.id) ?? "default";
+  const window = selectedSensorWindow(dev.id, ui);
+  const metric = ui.metricByDevice.get(dev.id) ?? "default";
   return `${dev.id}:${window}:${metric}:${store.revision}:${store.isLoading(dev.id, window) ? 1 : 0}`;
 }
 
@@ -332,26 +352,51 @@ export function extractRawMiCloudDid(deviceId: string): string {
   return afterSlash.startsWith("mi:") ? afterSlash.slice(3) : afterSlash;
 }
 
-function resolveMiSessionForDevice(host: MenuMijiaWindowsApp, deviceId: string): MiSession | null {
-  const slashIdx = deviceId.indexOf("/");
-  if (slashIdx > 0) {
-    const rawPrefix = deviceId.slice(0, slashIdx);
-    const cleanPrefix = rawPrefix.startsWith("mi:") && rawPrefix.split(":").length > 3 ? rawPrefix.slice(3) : rawPrefix;
-    const maybeAccounts = host.settings.miAccounts;
-    if (Array.isArray(maybeAccounts)) {
-      const matched = maybeAccounts.find(
+function resolveMiSessionForDevice(
+  host: MenuMijiaWindowsApp,
+  device: SmartDevice,
+  rawDid: string,
+): MiSession | null {
+  const multiState = getHostMiAccountsState(host);
+  const accounts = host.miAccountsOverride ?? multiState?.accounts ?? [];
+  if (accounts.length > 0) {
+    const candidateAccountIds: string[] = [];
+    if (device.accountId) candidateAccountIds.push(device.accountId);
+    const ownersByDevId = multiState?.merged?.deviceOwners[device.id];
+    if (ownersByDevId) candidateAccountIds.push(...ownersByDevId);
+    const ownersByRawDid = multiState?.merged?.deviceOwners[rawDid];
+    if (ownersByRawDid) candidateAccountIds.push(...ownersByRawDid);
+    const slashIdx = device.id.indexOf("/");
+    if (slashIdx > 0 && !device.id.startsWith("ha:")) {
+      const rawPrefix = device.id.slice(0, slashIdx);
+      candidateAccountIds.push(rawPrefix);
+      if (rawPrefix.startsWith("mi:") && rawPrefix.split(":").length > 3) {
+        candidateAccountIds.push(rawPrefix.slice(3));
+      }
+    }
+    for (const candidateId of candidateAccountIds) {
+      const matched = accounts.find(
         (acc) =>
-          acc?.session &&
-          (acc.id === rawPrefix ||
-            acc.id === cleanPrefix ||
-            acc.accountId === rawPrefix ||
-            acc.accountId === cleanPrefix ||
-            acc.session.userId === cleanPrefix),
+          acc.id === candidateId ||
+          acc.session.userId === candidateId ||
+          acc.id.endsWith(`:${candidateId}`),
       );
-      if (matched?.session) return matched.session;
+      if (matched) return matched.session;
     }
   }
-  return host.settings.miSession;
+  return host.settings.miSession ?? accounts[0]?.session ?? null;
+}
+
+function resolveHostHistoryScope(host: MenuMijiaWindowsApp): string {
+  const multiState = getHostMiAccountsState(host);
+  const accounts = host.miAccountsOverride ?? multiState?.accounts ?? [];
+  return resolveSensorHistoryScope({
+    connectionMode: host.settings.connectionMode,
+    haBaseURL: host.settings.haBaseURL,
+    miSession: host.settings.miSession,
+    dualSourceEnabled: isDualSourceEnabled(host),
+    activeAccountIds: accounts.map((a) => a.id),
+  });
 }
 
 function triggerRemoteHistoryFetchIfNeeded(
@@ -362,24 +407,43 @@ function triggerRemoteHistoryFetchIfNeeded(
 ): void {
   if (!dev.isOnline || host.valuesAreStale || dev.kind.kind !== "sensor") return;
   if (host.settings.connectionMode === "demo") return;
-  if (host.settings.connectionMode === "homeAssistant" && Boolean(host.haConnectionError)) return;
-  if (host.settings.connectionMode === "xiaomiCloud" && Boolean(host.miSessionExpired)) return;
   if (!store.shouldFetchCloud(dev.id, window)) return;
 
   const requestScope = store.connectionScope;
-  const facets = host.deviceFacets[dev.id] ?? [];
+  const dualActive = isDualSourceEnabled(host);
+  const dualState = dualActive ? getHostDualSourceState(host) : null;
+  const dualRoute = dualState?.routes[dev.id] ?? null;
 
-  const isMiDeviceId =
-    dev.id.startsWith("mi:") || (dev.id.includes("/") && !dev.id.startsWith("ha:"));
-  const miSession =
-    host.settings.connectionMode === "xiaomiCloud" || isMiDeviceId
-      ? resolveMiSessionForDevice(host, dev.id)
-      : null;
-  if (miSession && (host.settings.connectionMode === "xiaomiCloud" || isMiDeviceId)) {
-    const rawDid = extractRawMiCloudDid(dev.id);
+  const effectiveBackend: "xiaomiCloud" | "homeAssistant" =
+    dualRoute?.backend ??
+    dualState?.deviceBackends[dev.id] ??
+    dev.sourceBackend ??
+    (dev.id.startsWith("ha:") || dev.id.startsWith("sensor.")
+      ? "homeAssistant"
+      : dev.id.startsWith("mi:") || (dev.id.includes("/") && !dev.id.startsWith("ha:"))
+        ? "xiaomiCloud"
+        : host.settings.connectionMode === "homeAssistant"
+          ? "homeAssistant"
+          : "xiaomiCloud");
+
+  const sourceDev = dualRoute?.sourceDevice ?? dev;
+  const facets =
+    host.deviceFacets[dev.id] ??
+    host.deviceFacets[sourceDev.id] ??
+    [];
+
+  if (effectiveBackend === "xiaomiCloud") {
+    if (!dualActive && Boolean(host.miSessionExpired)) return;
+    const rawDid = extractRawMiCloudDid(
+      dualRoute?.sourceDeviceId ?? sourceDev.id,
+    );
+    const miSession = resolveMiSessionForDevice(host, sourceDev, rawDid);
+    if (!miSession) return;
+    const multiSpecs = getHostMiAccountsState(host)?.merged?.specsByModel;
     const cachedSpec =
-      host.specResolver.exportCachedSpecs()[dev.model] ??
-      inferFallbackSpec({ model: dev.model, name: dev.name });
+      multiSpecs?.[sourceDev.model] ??
+      host.specResolver.exportCachedSpecs()[sourceDev.model] ??
+      inferFallbackSpec({ model: sourceDev.model, name: sourceDev.name });
     const propertyKeys = resolveMiotSensorPropertyKeys(cachedSpec, facets);
     const metrics = availableSensorMetrics(dev, facets, store.points(dev.id, window));
     void store
@@ -394,7 +458,7 @@ function triggerRemoteHistoryFetchIfNeeded(
         }),
       )
       .finally(() => {
-        if (uiState.host === host && host.root.isConnected && store.connectionScope === requestScope) {
+        if (host.root.isConnected && store.connectionScope === requestScope) {
           host.queueBackgroundRender();
         }
       });
@@ -402,7 +466,8 @@ function triggerRemoteHistoryFetchIfNeeded(
   }
 
   if (
-    (host.settings.connectionMode === "homeAssistant" || dev.id.startsWith("ha:")) &&
+    effectiveBackend === "homeAssistant" &&
+    (dualActive || !host.haConnectionError) &&
     host.settings.haBaseURL.trim() !== "" &&
     host.settings.haToken.trim() !== ""
   ) {
@@ -410,7 +475,7 @@ function triggerRemoteHistoryFetchIfNeeded(
     const token = host.settings.haToken;
     void store
       .fetchAndMerge(dev.id, window, async () => {
-        const entityIds = await discoverHASensorEntitiesViaSnapshot(host, dev, facets);
+        const entityIds = await discoverHASensorEntitiesViaSnapshot(host, sourceDev, facets);
         if (entityIds.length === 0) return [];
         return fetchHomeAssistantSensorHistory({
           baseURL,
@@ -421,7 +486,7 @@ function triggerRemoteHistoryFetchIfNeeded(
         });
       })
       .finally(() => {
-        if (uiState.host === host && host.root.isConnected && store.connectionScope === requestScope) {
+        if (host.root.isConnected && store.connectionScope === requestScope) {
           host.queueBackgroundRender();
         }
       });
@@ -429,64 +494,62 @@ function triggerRemoteHistoryFetchIfNeeded(
 }
 
 export function syncSensorHistoryHost(host?: MenuMijiaWindowsApp): void {
-  if (isSyncingHost) return;
-  const activeHost = host ?? uiState.host;
-  if (!activeHost) return;
-  isSyncingHost = true;
+  if (!host) return;
+  const ui = getHostSensorHistoryUi(host);
+  if (ui.isSyncingHost) return;
+  ui.isSyncingHost = true;
   try {
-    if (host && uiState.host !== host) {
-      resetSensorHistoryUiState();
-      uiState.host = host;
-    }
-    if (!activeHost.root.isConnected) {
-      uiState.hoveredSlotByDevice.clear();
+    if (!host.root.isConnected) {
+      ui.hoveredSlotByDevice.clear();
       return;
     }
 
     const store = sharedSensorHistoryStore();
-    const scope = resolveSensorHistoryScope(activeHost.settings);
-    if (uiState.scopeKey !== null && uiState.scopeKey !== scope) {
-      resetSensorHistoryUiState();
+    const scope = resolveHostHistoryScope(host);
+    if (ui.scopeKey !== null && ui.scopeKey !== scope) {
+      resetSensorHistoryUiState(ui);
     }
-    uiState.scopeKey = scope;
+    ui.scopeKey = scope;
     store.setConnectionScope(scope);
 
-    if (uiState.lastExpandedId && uiState.lastExpandedId !== activeHost.expandedDeviceId) {
-      uiState.hoveredSlotByDevice.delete(uiState.lastExpandedId);
+    if (ui.lastExpandedId && ui.lastExpandedId !== host.expandedDeviceId) {
+      ui.hoveredSlotByDevice.delete(ui.lastExpandedId);
     }
-    uiState.lastExpandedId = activeHost.expandedDeviceId;
+    ui.lastExpandedId = host.expandedDeviceId;
 
-    if (activeHost.settings.connectionMode === "demo") {
-      uiState.lastRecordedDevicesRef = activeHost.devices;
-      seedDemoSensorHistory(activeHost.devices, {
-        store,
-        facetsByDevice: activeHost.deviceFacets,
-      });
+    if (host.settings.connectionMode === "demo") {
+      if (ui.lastRecordedDevicesRef !== host.devices) {
+        ui.lastRecordedDevicesRef = host.devices;
+        seedDemoSensorHistory(host.devices, {
+          store,
+          facetsByDevice: host.deviceFacets,
+        });
+      }
     } else if (
-      uiState.lastRecordedDevicesRef !== activeHost.devices &&
-      canRecordLiveHostSensors(activeHost)
+      ui.lastRecordedDevicesRef !== host.devices &&
+      canRecordLiveHostSensors(host)
     ) {
-      uiState.lastRecordedDevicesRef = activeHost.devices;
-      uiState.recordedBatchSeq += 1;
-      store.record(activeHost.devices, {
-        facetsByDevice: activeHost.deviceFacets,
-        snapshotKey: `${scope}#${uiState.recordedBatchSeq}`,
+      ui.lastRecordedDevicesRef = host.devices;
+      ui.recordedBatchSeq += 1;
+      store.record(host.devices, {
+        facetsByDevice: host.deviceFacets,
+        snapshotKey: `${scope}#${ui.recordedBatchSeq}`,
       });
     }
 
-    if (activeHost.expandedDeviceId && !activeHost.valuesAreStale) {
-      const expandedDev = activeHost.devices.find((d) => d.id === activeHost.expandedDeviceId);
+    if (host.expandedDeviceId && !host.valuesAreStale) {
+      const expandedDev = host.devices.find((d) => d.id === host.expandedDeviceId);
       if (expandedDev && expandedDev.kind.kind === "sensor") {
         triggerRemoteHistoryFetchIfNeeded(
-          activeHost,
+          host,
           expandedDev,
-          selectedSensorWindow(expandedDev.id),
+          selectedSensorWindow(expandedDev.id, ui),
           store,
         );
       }
     }
   } finally {
-    isSyncingHost = false;
+    ui.isSyncingHost = false;
   }
 }
 
@@ -595,21 +658,21 @@ export function renderSensorHistorySection(
   dev: SmartDevice,
   facets: readonly FacetControl[] = [],
   escapeHtml: (value: string) => string,
+  state?: SensorHistoryUiState,
 ): string {
-  syncSensorHistoryHost();
   const store = sharedSensorHistoryStore();
   if (store.connectionScope === "default") {
     store.record([dev], { facetsByDevice: { [dev.id]: facets } });
   }
 
-  const window = selectedSensorWindow(dev.id);
+  const window = selectedSensorWindow(dev.id, state);
   const points24 = store.points(dev.id, "24h");
   const points7d = store.points(dev.id, "7d");
   const points = window === "24h" ? points24 : points7d;
   const metrics = availableSensorMetrics(dev, facets, [...points24, ...points7d]);
   if (metrics.length === 0) return "";
 
-  const preferredMetric = uiState.metricByDevice.get(dev.id);
+  const preferredMetric = state?.metricByDevice.get(dev.id);
   const activeMetric: SensorMetricKind =
     preferredMetric && metrics.includes(preferredMetric) ? preferredMetric : metrics[0]!;
 
@@ -830,99 +893,115 @@ function closestHtmlTarget(target: EventTarget | null, selector: string): Elemen
 
 export function bindSensorHistoryEvents(host: MenuMijiaWindowsApp): void {
   syncSensorHistoryHost(host);
+  const ui = getHostSensorHistoryUi(host);
 
-  host.root.querySelectorAll<HTMLElement>("[data-sensor-history-drawer]").forEach((drawer) => {
-    drawer.addEventListener("pointerdown", (e) => {
-      if (!host.isEditingLayout) e.stopPropagation();
+  host.root
+    .querySelectorAll<HTMLElement>("[data-sensor-history-drawer]:not([data-exit-ghost])")
+    .forEach((drawer) => {
+      if (drawer.closest("[data-exit-ghost]")) return;
+      drawer.addEventListener("pointerdown", (e) => {
+        if (!host.isEditingLayout) e.stopPropagation();
+      });
+      drawer.addEventListener("click", (e) => {
+        if (!host.isEditingLayout) e.stopPropagation();
+      });
     });
-    drawer.addEventListener("click", (e) => {
-      if (!host.isEditingLayout) e.stopPropagation();
-    });
-  });
 
-  host.root.querySelectorAll<HTMLElement>("[data-sensor-card]").forEach((card) => {
-    card.addEventListener("click", (e) => {
-      if (host.isEditingLayout || host.suppressNextClick || host.valuesAreStale) return;
-      if (
-        closestHtmlTarget(
-          e.target,
-          ".cc-resize-handle, .cc-pin-star, [data-sensor-history-drawer], [data-toggle-device], [data-expand-device]",
-        )
-      ) {
-        return;
-      }
-      const id = card.dataset.sensorCard;
-      if (!id) return;
-      const dev = host.devices.find((d) => d.id === id);
-      const facets = host.deviceFacets[id] ?? [];
-      if (!dev || !hasPlottableSensorMetrics(dev, facets)) return;
-      if (closestHtmlTarget(e.target, "[data-body-device]") && hasDetailDrawer(dev, facets)) return;
-      host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
-      uiState.hoveredSlotByDevice.delete(id);
-      syncSensorHistoryHost(host);
-      host.render();
+  host.root
+    .querySelectorAll<HTMLElement>("[data-sensor-card]:not([data-exit-ghost])")
+    .forEach((card) => {
+      if (card.closest("[data-exit-ghost]")) return;
+      card.addEventListener("click", (e) => {
+        if (host.isEditingLayout || host.suppressNextClick || host.valuesAreStale) return;
+        if (
+          closestHtmlTarget(
+            e.target,
+            ".cc-resize-handle, .cc-pin-star, [data-sensor-history-drawer], [data-toggle-device], [data-expand-device]",
+          )
+        ) {
+          return;
+        }
+        const id = card.dataset.sensorCard;
+        if (!id) return;
+        const dev = host.devices.find((d) => d.id === id);
+        const facets = host.deviceFacets[id] ?? [];
+        if (!dev || !hasPlottableSensorMetrics(dev, facets)) return;
+        if (closestHtmlTarget(e.target, "[data-body-device]") && hasDetailDrawer(dev, facets)) return;
+        host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
+        ui.hoveredSlotByDevice.delete(id);
+        syncSensorHistoryHost(host);
+        host.render();
+      });
     });
-  });
 
-  host.root.querySelectorAll<HTMLButtonElement>("[data-sensor-window]").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const raw = btn.dataset.sensorWindow ?? "";
-      const sep = raw.lastIndexOf(":");
-      if (sep <= 0) return;
-      const id = raw.slice(0, sep);
-      const win = raw.slice(sep + 1);
-      if (win !== "24h" && win !== "7d") return;
-      uiState.windowByDevice.set(id, win);
-      uiState.hoveredSlotByDevice.delete(id);
-      syncSensorHistoryHost(host);
-      host.render();
+  host.root
+    .querySelectorAll<HTMLButtonElement>("[data-sensor-window]:not([data-exit-ghost])")
+    .forEach((btn) => {
+      if (btn.closest("[data-exit-ghost]")) return;
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const raw = btn.dataset.sensorWindow ?? "";
+        const sep = raw.lastIndexOf(":");
+        if (sep <= 0) return;
+        const id = raw.slice(0, sep);
+        const win = raw.slice(sep + 1);
+        if (win !== "24h" && win !== "7d") return;
+        ui.windowByDevice.set(id, win);
+        ui.hoveredSlotByDevice.delete(id);
+        syncSensorHistoryHost(host);
+        host.render();
+      });
     });
-  });
 
-  host.root.querySelectorAll<HTMLButtonElement>("[data-sensor-metric]").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const raw = btn.dataset.sensorMetric ?? "";
-      const sep = raw.lastIndexOf(":");
-      if (sep <= 0) return;
-      const id = raw.slice(0, sep);
-      const metric = raw.slice(sep + 1) as SensorMetricKind;
-      if (
-        metric !== "temperature" &&
-        metric !== "humidity" &&
-        metric !== "pm25" &&
-        metric !== "illuminance"
-      ) {
-        return;
-      }
-      uiState.metricByDevice.set(id, metric);
-      uiState.hoveredSlotByDevice.delete(id);
-      host.render();
+  host.root
+    .querySelectorAll<HTMLButtonElement>("[data-sensor-metric]:not([data-exit-ghost])")
+    .forEach((btn) => {
+      if (btn.closest("[data-exit-ghost]")) return;
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const raw = btn.dataset.sensorMetric ?? "";
+        const sep = raw.lastIndexOf(":");
+        if (sep <= 0) return;
+        const id = raw.slice(0, sep);
+        const metric = raw.slice(sep + 1) as SensorMetricKind;
+        if (
+          metric !== "temperature" &&
+          metric !== "humidity" &&
+          metric !== "pm25" &&
+          metric !== "illuminance"
+        ) {
+          return;
+        }
+        ui.metricByDevice.set(id, metric);
+        ui.hoveredSlotByDevice.delete(id);
+        host.render();
+      });
     });
-  });
 
-  host.root.querySelectorAll<SVGElement>("[data-sensor-plot]").forEach((svg) => {
-    const drawer = findElementWithAttr(svg, "data-sensor-history-drawer") as HTMLElement | null;
-    if (!drawer) return;
-    const devId = svg.getAttribute("data-sensor-plot") ?? "";
-    const onScrub = (e: Event) => {
-      const slot = resolveSlotFromEvent(svg, e);
-      if (!slot) return;
-      const slotIdx = Number(slot.getAttribute("data-sensor-slot") ?? "-1");
-      if (Number.isInteger(slotIdx) && slotIdx >= 0 && devId) {
-        uiState.hoveredSlotByDevice.set(devId, slotIdx);
-      }
-      applySlotHover(drawer, slot);
-    };
-    const onLeave = () => {
-      if (devId) uiState.hoveredSlotByDevice.delete(devId);
-      applySlotHover(drawer, null);
-    };
-    svg.addEventListener("pointermove", onScrub);
-    svg.addEventListener("mousemove", onScrub);
-    svg.addEventListener("mouseover", onScrub);
-    svg.addEventListener("pointerleave", onLeave);
-    svg.addEventListener("mouseleave", onLeave);
-  });
+  host.root
+    .querySelectorAll<SVGElement>("[data-sensor-plot]:not([data-exit-ghost])")
+    .forEach((svg) => {
+      if (svg.closest("[data-exit-ghost]")) return;
+      const drawer = findElementWithAttr(svg, "data-sensor-history-drawer") as HTMLElement | null;
+      if (!drawer) return;
+      const devId = svg.getAttribute("data-sensor-plot") ?? "";
+      const onScrub = (e: Event) => {
+        const slot = resolveSlotFromEvent(svg, e);
+        if (!slot) return;
+        const slotIdx = Number(slot.getAttribute("data-sensor-slot") ?? "-1");
+        if (Number.isInteger(slotIdx) && slotIdx >= 0 && devId) {
+          ui.hoveredSlotByDevice.set(devId, slotIdx);
+        }
+        applySlotHover(drawer, slot);
+      };
+      const onLeave = () => {
+        if (devId) ui.hoveredSlotByDevice.delete(devId);
+        applySlotHover(drawer, null);
+      };
+      svg.addEventListener("pointermove", onScrub);
+      svg.addEventListener("mousemove", onScrub);
+      svg.addEventListener("mouseover", onScrub);
+      svg.addEventListener("pointerleave", onLeave);
+      svg.addEventListener("mouseleave", onLeave);
+    });
 }

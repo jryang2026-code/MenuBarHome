@@ -32,6 +32,19 @@ import {
   notifyPanelWakeLifecycle,
   tickSafetyHealthAndAutomation,
 } from "./activityStackView.js";
+import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
+import {
+  CANONICAL_DEVICE_REGISTRY_STORAGE_KEY,
+  DUAL_SOURCE_ENABLED_STORAGE_KEY,
+  PINNED_DEVICE_SOURCES_STORAGE_KEY,
+  ROOM_IDENTITY_REGISTRY_STORAGE_KEY,
+} from "../core/dualSourceProvider.js";
+import {
+  clearAccountRateLimitBackoff,
+  MI_ACCOUNTS_EXPIRED_STORAGE_KEY,
+  MI_ACCOUNTS_INDEX_STORAGE_KEY,
+  readAccountIndex,
+} from "../core/miAccountsStore.js";
 import {
   clearUpdateProgress,
   didMiExpiryKindChange,
@@ -193,6 +206,45 @@ export async function persistCredentials(host: MenuMijiaWindowsApp): Promise<voi
     }
   }
 
+export async function clearHostSessionAndDualSourceState(
+  host: Partial<MenuMijiaWindowsApp> & { settings?: { dualSourceEnabled?: boolean } },
+  options: { readonly revokeAll?: boolean } = {},
+): Promise<void> {
+  clearHostActivitiesOnSignOut(host);
+  clearAccountRateLimitBackoff();
+  const slotIds = readAccountIndex().map((entry) => entry.slotId);
+  const store = host.miAccountsStore ?? null;
+  host.multiAccountState = null;
+  host.miAccountsOverride = null;
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.removeItem(MI_ACCOUNTS_INDEX_STORAGE_KEY);
+      localStorage.removeItem(MI_ACCOUNTS_EXPIRED_STORAGE_KEY);
+      if (options.revokeAll) {
+        localStorage.removeItem(DUAL_SOURCE_ENABLED_STORAGE_KEY);
+        localStorage.removeItem(PINNED_DEVICE_SOURCES_STORAGE_KEY);
+        localStorage.removeItem(CANONICAL_DEVICE_REGISTRY_STORAGE_KEY);
+        localStorage.removeItem(ROOM_IDENTITY_REGISTRY_STORAGE_KEY);
+      }
+    }
+  } catch {
+  }
+  if (options.revokeAll) {
+    appDiagnosticsLog.clear();
+    host.dualSourceCoordinator = null;
+    host.dualSourceEnabledOverride = null;
+    if (host.settings) {
+      host.settings.dualSourceEnabled = false;
+    }
+  }
+  if (store) {
+    await store.clearAll().catch(() => {});
+  }
+  if (host.credentialVault && slotIds.length > 0) {
+    await host.credentialVault.deleteMiSession(slotIds).catch(() => {});
+  }
+}
+
 export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     const retryOnly = !host.settings.miSession && host.settings.cachedXiaomiDevices.length === 0;
     if (retryOnly && !hasPendingMiVaultDeletion()) return;
@@ -217,7 +269,7 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     host.settings.miSession = null;
     host.settings.cachedXiaomiDevices = [];
     host.settings.selectedHomeId = null;
-    clearHostActivitiesOnSignOut(host);
+    const clearMultiPromise = clearHostSessionAndDualSourceState(host, { revokeAll: false });
     host.miSessionExpired = false;
     host.cloudValuesStale = false;
     host.unresolvedRoomDids.clear();
@@ -231,6 +283,7 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     submitServiceEndpoints(host, false);
     void (async () => {
       try {
+        await clearMultiPromise;
         await host.credentialVault.persist(credentialsFromSettings(host.settings, host.assistantKeysByPreset));
         await host.credentialVault.deleteMiSession();
         setPendingMiVaultDeletion(false);
@@ -932,21 +985,31 @@ export function bindGlobalKeys(
     if (handlePanelKey(host, e)) return;
 
     if (e.key === "Escape") {
-      if (host.prompt) {
+      if (host.prompt !== null) {
+        e.preventDefault();
         host.closePrompt();
         return;
       }
-      if (host.ctxMenu || host.isHomeMenuOpen) {
-        host.ctxMenu = null;
-        host.isHomeMenuOpen = false;
-        host.render();
-        return;
-      }
       if (hasPendingUrlConfirmation(host)) {
+        e.preventDefault();
         dismissPendingUrlConfirmation(host, false);
         return;
       }
+      if (host.ctxMenu !== null || host.isHomeMenuOpen) {
+        e.preventDefault();
+        host.ctxMenu = null;
+        host.isHomeMenuOpen = false;
+        invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
+        host.render();
+        return;
+      }
+      if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
+        e.preventDefault();
+        host.cameraLive.hideCameraLiveView();
+        return;
+      }
       if (host.activeSheet !== "none") {
+        e.preventDefault();
         host.activeSheet = "none";
         host.isRecordingHotkey = false;
         host.hotkeyNeedsHint = false;
@@ -954,8 +1017,21 @@ export function bindGlobalKeys(
         host.render();
         return;
       }
-      if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
-        host.cameraLive.hideCameraLiveView();
+      if (host.isEditingLayout) {
+        e.preventDefault();
+        host.stopEditing();
+        return;
+      }
+      if (host.pendingHighRisk !== null) {
+        e.preventDefault();
+        host.clearPendingHighRisk();
+        host.render();
+        return;
+      }
+      if (host.expandedDeviceId !== null) {
+        e.preventDefault();
+        host.expandedDeviceId = null;
+        host.render();
         return;
       }
       collapseActivityStackOnHide(host);

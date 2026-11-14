@@ -11,6 +11,7 @@ import {
 } from "./panelPrefs.js";
 import { KIND_CHIP } from "./listCut.js";
 import { SF_ICONS } from "./appConstants.js";
+import { energyScopeForHost, syncEnergyHostOnRender } from "./energySettingsView.js";
 import { renderSettingsModal as renderSettingsModalView } from "./settingsViews.js";
 import {
   isRoomOrderEditorOpen,
@@ -227,6 +228,7 @@ export function renderOnboardingModal(host: MenuMijiaWindowsApp): string {
   }
 
 export function renderSettingsModal(host: MenuMijiaWindowsApp): string {
+    syncEnergyHostOnRender(host);
     return renderSettingsModalView({
       settings: host.settings,
       devices: host.devices,
@@ -244,6 +246,9 @@ export function renderSettingsModal(host: MenuMijiaWindowsApp): string {
       isCheckingUpdate: host.isCheckingUpdate,
       isInstallingUpdate: host.isInstallingUpdate,
       updateStatusMessage: host.updateStatusMessage,
+      energyScope: energyScopeForHost(host),
+      energySession: host.energySession,
+      layout: host.layout,
       escapeHtml: (value) => host.escapeHtml(value),
     });
   }

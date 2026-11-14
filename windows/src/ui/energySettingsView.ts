@@ -10,7 +10,9 @@ import {
   type EnergyScopeSource,
 } from "../core/energyHistory.js";
 import type { SmartDevice } from "../core/models.js";
+import type { MenuMijiaWindowsApp } from "./app.js";
 import type { ReplyBannerState } from "./appTypes.js";
+import { getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
 import { withAliases, type LayoutPrefs } from "./panelPrefs.js";
 import type { SettingsTab, SettingsViewContext } from "./settingsViews.js";
 
@@ -41,6 +43,8 @@ export interface EnergyTrackableSettings extends EnergyScopeSource {
 export interface HostEnergySession {
   clearedDevicesRef: readonly SmartDevice[] | null;
   clearedSig: string | null;
+  lastRecordedSig: string | null;
+  lastRecordedScope: string | null;
   priceDraft: string | null;
   priceFeedback: { readonly text: string; readonly isError: boolean } | null;
   confirmingClear: boolean;
@@ -64,12 +68,12 @@ export interface EnergyTrackableHost {
   render(): void;
 }
 
-let activeHost: EnergyTrackableHost | null = null;
-
 export function createDefaultHostEnergySession(): HostEnergySession {
   return {
     clearedDevicesRef: null,
     clearedSig: null,
+    lastRecordedSig: null,
+    lastRecordedScope: null,
     priceDraft: null,
     priceFeedback: null,
     confirmingClear: false,
@@ -83,10 +87,26 @@ function getHostSession(host: EnergyTrackableHost): HostEnergySession {
   return host.energySession;
 }
 
+export function energyScopeForHost(host: EnergyTrackableHost): EnergyScopeSource {
+  const appHost = host as unknown as MenuMijiaWindowsApp;
+  const dual = isDualSourceEnabled(appHost);
+  const multi = getHostMiAccountsState(appHost);
+  const accounts = appHost.miAccountsOverride ?? multi?.accounts ?? [];
+  return {
+    connectionMode: host.settings.connectionMode,
+    dualSourceEnabled: dual,
+    activeAccountIds: accounts.map((a) => a.id),
+    miSession: host.settings.miSession,
+    haBaseURL: host.settings.haBaseURL,
+    haToken: host.settings.haToken,
+  };
+}
+
 export function notifyEnergyDevicesMutated(host: EnergyTrackableHost): void {
   const session = getHostSession(host);
   session.clearedDevicesRef = null;
   session.clearedSig = null;
+  session.lastRecordedSig = null;
 }
 
 function plugCounterSignature(devices: readonly SmartDevice[]): string {
@@ -129,24 +149,18 @@ function devicesWithLayoutAliases(
   });
 }
 
-function activeConnectedHost(): EnergyTrackableHost | null {
-  if (!activeHost || !activeHost.root.isConnected) {
-    activeHost = null;
-    return null;
-  }
-  return activeHost;
-}
-
 function recordHostSnapshotIfLive(host: EnergyTrackableHost): void {
   if (!host.root.isConnected) return;
   if (host.valuesAreStale) return;
-  if (host.settings.connectionMode === "homeAssistant" && Boolean(host.haConnectionError)) {
+  const dual = isDualSourceEnabled(host as unknown as MenuMijiaWindowsApp);
+  if (!dual && host.settings.connectionMode === "homeAssistant" && Boolean(host.haConnectionError)) {
     return;
   }
-  if (host.settings.connectionMode === "xiaomiCloud" && Boolean(host.miSessionExpired)) {
+  if (!dual && host.settings.connectionMode === "xiaomiCloud" && Boolean(host.miSessionExpired)) {
     return;
   }
 
+  const currentSig = plugCounterSignature(host.devices);
   if (host.settings.connectionMode !== "demo") {
     const snapshotReady =
       host.timerSnapshot !== undefined &&
@@ -154,7 +168,7 @@ function recordHostSnapshotIfLive(host: EnergyTrackableHost): void {
       host.timerSnapshot.sourceRevision === (host.sourceRevision ?? 0);
     if (!snapshotReady) {
       const cachedSig = plugCounterSignature(cachedDevicesForMode(host.settings));
-      if (cachedSig !== "" && cachedSig === plugCounterSignature(host.devices)) {
+      if (cachedSig !== "" && cachedSig === currentSig) {
         return;
       }
     }
@@ -164,22 +178,32 @@ function recordHostSnapshotIfLive(host: EnergyTrackableHost): void {
   if (session.clearedDevicesRef !== null) {
     const stillClearedSnapshot =
       host.devices === session.clearedDevicesRef &&
-      plugCounterSignature(host.devices) === session.clearedSig;
+      currentSig === session.clearedSig;
     if (stillClearedSnapshot) return;
     session.clearedDevicesRef = null;
     session.clearedSig = null;
   }
 
+  const scope = energyScopeForHost(host);
+  const history = getScopedEnergyHistory(scope);
+  if (
+    session.lastRecordedSig === currentSig &&
+    session.lastRecordedScope === history.scope &&
+    (currentSig === "" || history.recordingStartedAt !== null)
+  ) {
+    return;
+  }
+  session.lastRecordedSig = currentSig;
+  session.lastRecordedScope = history.scope;
   const effectiveDevices = devicesWithLayoutAliases(
     host.devices,
     host.layout ?? host.settings.layout,
   );
-  getScopedEnergyHistory(host.settings).record(effectiveDevices);
+  history.record(effectiveDevices);
 }
 
 export function syncEnergyHostOnRender(host: EnergyTrackableHost): void {
   getHostSession(host);
-  activeHost = host;
   recordHostSnapshotIfLive(host);
 }
 
@@ -209,12 +233,9 @@ function buildPlugTodaySummaryFromHistory(
 export function plugTodaySummaryForDrawer(
   dev: SmartDevice,
   hasCumulativeCounter: boolean,
+  scope?: EnergyScopeSource,
 ): PlugTodayDrawerSummary | null {
-  const host = activeConnectedHost();
-  if (host) {
-    recordHostSnapshotIfLive(host);
-  }
-  const history = getScopedEnergyHistory(host ? host.settings : { connectionMode: "demo" });
+  const history = getScopedEnergyHistory(scope ?? { connectionMode: "demo" });
   const todayKwh = history.todayKwh(dev.id);
   if (!hasCumulativeCounter && todayKwh === null) {
     return null;
@@ -280,7 +301,7 @@ function renderSevenDayChart(
             <div
               data-energy-day-bar="${esc(item.dayKey)}"
               data-bar-percent="${pct}"
-              style="width: 100%; height: ${pct}%; border-radius: 6px; background: ${barBg}; transition: height 0.18s ease;"
+              style="width: 100%; height: ${pct}%; border-radius: 6px; background: ${barBg}; transition: height 0.18s var(--ease-decelerate);"
             ></div>
           </div>
           <span
@@ -379,12 +400,8 @@ function renderTopDevicesSection(
 
 export function renderEnergySettingsSection(ctx: SettingsViewContext): string {
   const esc = (raw: string) => ctx.escapeHtml(raw);
-  const host = activeConnectedHost();
-  if (host && host.settings === ctx.settings) {
-    recordHostSnapshotIfLive(host);
-  }
-  const session = host ? getHostSession(host) : null;
-  const history = getScopedEnergyHistory(ctx.settings);
+  const session = ctx.energySession ?? null;
+  const history = getScopedEnergyHistory(ctx.energyScope ?? ctx.settings);
 
   const daily = history.dailyTotals(7);
   const todayEntry = daily[daily.length - 1];
@@ -492,7 +509,7 @@ export function renderEnergySettingsSection(ctx: SettingsViewContext): string {
       </div>
 
       ${renderSevenDayChart(daily, history, esc)}
-      ${renderTopDevicesSection(ctx, history, host?.layout ?? ctx.settings.layout, esc)}
+      ${renderTopDevicesSection(ctx, history, ctx.layout ?? ctx.settings.layout, esc)}
 
       <div id="settings-energy-price-group" style="margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(128, 128, 128, 0.14);">
         <div class="cc-field-row" style="gap: 6px; flex-wrap: wrap;">
@@ -601,7 +618,7 @@ export function bindEnergySettingsEvents(host: EnergyTrackableHost): void {
   const priceInput = host.root.querySelector<HTMLInputElement>("#settings-energy-price");
   const commitPriceFromInput = (): void => {
     const raw = priceInput ? priceInput.value : "";
-    const history = getScopedEnergyHistory(host.settings);
+    const history = getScopedEnergyHistory(energyScopeForHost(host));
     const outcome = history.applyPriceInput(raw);
     session.priceDraft = null;
     if (outcome.action === "kept") {
@@ -641,7 +658,7 @@ export function bindEnergySettingsEvents(host: EnergyTrackableHost): void {
   });
 
   host.root.querySelector("#btn-clear-energy-price")?.addEventListener("click", () => {
-    const history = getScopedEnergyHistory(host.settings);
+    const history = getScopedEnergyHistory(energyScopeForHost(host));
     history.setPricePerKwh(null);
     session.priceDraft = null;
     session.priceFeedback = null;
@@ -662,7 +679,8 @@ export function bindEnergySettingsEvents(host: EnergyTrackableHost): void {
     session.confirmingClear = false;
     session.clearedDevicesRef = host.devices;
     session.clearedSig = plugCounterSignature(host.devices);
-    const history = getScopedEnergyHistory(host.settings);
+    session.lastRecordedSig = null;
+    const history = getScopedEnergyHistory(energyScopeForHost(host));
     history.clear();
     host.replyBanner = {
       text: tr3("已清除用电记录", "已清除用電記錄", "Energy history cleared"),

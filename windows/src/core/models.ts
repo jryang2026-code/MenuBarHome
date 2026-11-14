@@ -326,6 +326,12 @@ export interface SmartDevice {
   readonly isOnline: boolean;
   kind: DeviceKind;
   readonly isSharedHome?: boolean;
+  readonly accountId?: string;
+  readonly accountLabel?: string;
+  readonly sourceBackend?: HomeBackend;
+  readonly pinnedBackend?: HomeBackend | null;
+  readonly fallbackActive?: boolean;
+  readonly fallbackLabel?: string | null;
 }
 
 export interface RoomCategory {

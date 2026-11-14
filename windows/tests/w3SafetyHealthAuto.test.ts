@@ -16,6 +16,7 @@ import {
   createAutomationRule,
   createLateNightWindow,
   evaluateWiFiCondition,
+  executeAutomationRule,
   lateNightAnchorKey,
   lateNightWindowContains,
   normalizeWiFiSSIDs,
@@ -1128,5 +1129,41 @@ describe("B1 + B5 PC Context Automation Engine, AwayArbitrator, 5m Undo & HA Doo
     assert.ok(doorbellItem);
     assert.match(doorbellItem.title, /入户猫眼/);
     assert.equal(doorbellItem.subtitle, "一楼玄关");
+
+    const slugDetector = new DoorbellDetector();
+    const cams = [
+      makeCamera({ id: "ha:cam_a", entityId: "camera.living_a", name: "Cam A" }),
+      makeCamera({ id: "ha:cam_b", entityId: "camera.yard_b", name: "Cam B" }),
+    ];
+    slugDetector.ingestHASnapshot(
+      { states: [{ entity_id: "event._doorbell", state: "2026-11-08T12:00:00Z", attributes: { device_class: "doorbell" } }] },
+      cams,
+    );
+    const emptySlugRings = slugDetector.ingestHASnapshot(
+      { states: [{ entity_id: "event._doorbell", state: "2026-11-08T12:01:00Z", attributes: { device_class: "doorbell" } }] },
+      cams,
+    );
+    assert.equal(emptySlugRings.length, 1);
+    assert.equal(emptySlugRings[0]!.deviceId, "event._doorbell");
+
+    const highRiskHeater = makePlug({
+      id: "ha:heater_plug",
+      name: "卧室取暖器",
+      isOn: false,
+      powerWatts: 0,
+    });
+    const sentHighRisk: DeviceCommand[] = [];
+    app.devices = [highRiskHeater];
+    app.applyCommand = async (cmd) => {
+      sentHighRisk.push(cmd);
+      return true;
+    };
+    const heaterRule = createAutomationRule({
+      id: "r-heater-on",
+      trigger: "back",
+      action: { kind: "devices", deviceIds: [highRiskHeater.id], isOn: true },
+    });
+  await executeAutomationRule(app, heaterRule, { nowMs: t0 + 10_000 });
+    assert.equal(sentHighRisk.length, 0);
   });
 });

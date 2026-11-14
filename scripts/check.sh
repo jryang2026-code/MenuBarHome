@@ -153,8 +153,35 @@ check_secret_leaks() {
     return 0
 }
 
+check_git_identity() {
+    git rev-parse --git-dir >/dev/null 2>&1 || return 0
+
+    local author_ident committer_ident
+    author_ident="$(git var GIT_AUTHOR_IDENT 2>/dev/null || true)"
+    committer_ident="$(git var GIT_COMMITTER_IDENT 2>/dev/null || true)"
+    if printf '%s\n%s\n' "$author_ident" "$committer_ident" | grep -qF "jryang1997"; then
+        echo "❌ 当前 Git 提交身份仍为已停用账号 jryang1997，请先在当前工作树设置："
+        echo '   git config user.name "jryang2026-code" && git config user.email "jryang2026-code@users.noreply.github.com"'
+        return 1
+    fi
+
+    local retired_commits=""
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+        retired_commits="$(git log --format='%h %an <%ae> | %cn <%ce>' origin/main..HEAD 2>/dev/null | grep -F 'jryang1997' || true)"
+    elif [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; then
+        retired_commits="$(git log -1 --format='%h %an <%ae> | %cn <%ce>' HEAD 2>/dev/null | grep -F 'jryang1997' || true)"
+    fi
+    if [ -n "$retired_commits" ]; then
+        printf '%s\n' "$retired_commits"
+        echo "❌ 当前分支包含已停用账号 jryang1997 的提交，请改写作者为 jryang2026-code 后再继续！"
+        return 1
+    fi
+    return 0
+}
+
 echo "🔍 检查是否存在硬编码 JWT / 密钥 / 个人局域网地址泄露..."
 check_secret_leaks
+check_git_identity
 
 echo "🔍 检查机械性编码规范 (kVK_* 键码常量 & UNUserNotificationCenter Bundle 守卫)..."
 if search_matches 'event\.keyCode[[:space:]]*==[[:space:]]*[0-9]+' Sources/; then
@@ -225,13 +252,17 @@ if ! cmp -s Resources/AppIcon/AppIcon-Dark.svg docs/assets/logo-dark.svg || ! cm
     exit 1
 fi
 
-# Design-token, matrix, and Ed25519 checks (< 0.6s). CI runs them on ubuntu-latest
+# Fast static checks run locally on every commit and on ubuntu-latest in CI
 # (the Swift container image does not ship python3). Missing Python is recorded as a skip.
 PYTHON_LINT_SKIPPED=0
 if [ -n "$PYTHON_BIN" ]; then
     "$PYTHON_BIN" scripts/check_design_tokens.py
+    "$PYTHON_BIN" scripts/check_windows_geometry.py
+    "$PYTHON_BIN" scripts/check_windows_motion_tokens.py
     "$PYTHON_BIN" scripts/check_timer_render.py
     "$PYTHON_BIN" scripts/check_swift_harness_lints.py
+    "$PYTHON_BIN" scripts/check_workflows.py
+    "$PYTHON_BIN" scripts/check_doc_links.py
     "$PYTHON_BIN" scripts/check_capability_matrix.py
     "$PYTHON_BIN" scripts/go2rtc-ptz/check_model_tables.py
     "$PYTHON_BIN" scripts/miot_coverage_report.py
@@ -303,7 +334,9 @@ else
 fi
 
 run_clean_env() {
-    env -u GITHUB_EVENT_NAME -u GITHUB_REF -u GITHUB_REF_TYPE -u GITHUB_OUTPUT -u GITHUB_SHA -u GITHUB_ACTIONS "$@"
+    env -u GITHUB_EVENT_NAME -u GITHUB_REF -u GITHUB_REF_TYPE -u GITHUB_OUTPUT -u GITHUB_SHA -u GITHUB_ACTIONS \
+        -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR -u GIT_PREFIX \
+        "$@"
 }
 
 run_script_self_tests() {
@@ -313,13 +346,18 @@ run_script_self_tests() {
     run_clean_env bash scripts/ci_swift_test.sh --self-test
     run_clean_env bash scripts/test_ci_relevant_paths.sh
     run_clean_env bash scripts/test_secret_scan.sh
+    run_clean_env bash scripts/test_git_guardrails.sh
     run_clean_env bash scripts/test_install_ripgrep.sh
-    run_clean_env bash scripts/test_tauri_cache_key.sh
     if command -v node >/dev/null 2>&1; then
         run_clean_env node windows/scripts/test-file.mjs --self-test
+        run_clean_env node windows/scripts/verify-flyout-layout.mjs --self-test
     fi
     if [ -n "$PYTHON_BIN" ]; then
+        run_clean_env "$PYTHON_BIN" scripts/check_workflows.py --self-test
+        run_clean_env "$PYTHON_BIN" scripts/check_doc_links.py --self-test
+        run_clean_env "$PYTHON_BIN" scripts/check_swift_harness_lints.py --self-test
         run_clean_env "$PYTHON_BIN" scripts/test_check_capability_matrix.py
+        run_clean_env "$PYTHON_BIN" scripts/test_check_windows_geometry.py
         run_clean_env "$PYTHON_BIN" scripts/test_mijia_cli.py
         run_clean_env "$PYTHON_BIN" scripts/test_local_macos_runner.py
         run_clean_env "$PYTHON_BIN" scripts/update_manifest.py self-test
@@ -513,39 +551,20 @@ run_swift_gate() {
     [ "$status" -eq 0 ]
 }
 
-has_shared_windows_deps() {
-    [ "${MMB_DISABLE_SHARED_NODE_MODULES:-0}" = "1" ] && return 1
-    [ -f "$ROOT_DIR/windows/package-lock.json" ] || return 1
-    local wt
-    while IFS= read -r line; do
-        case "$line" in
-            "worktree "*)
-                wt="${line#worktree }"
-                [ "$wt" = "$ROOT_DIR" ] && continue
-                if [ -d "$wt/windows/node_modules/typescript" ] \
-                    && [ -f "$wt/windows/package-lock.json" ] \
-                    && cmp -s "$ROOT_DIR/windows/package-lock.json" "$wt/windows/package-lock.json"; then
-                    return 0
-                fi
-                ;;
-        esac
-    done < <(git worktree list --porcelain 2>/dev/null || true)
-    return 1
-}
-
-windows_shared_tests() {
-    cd "$ROOT_DIR/windows"
-    npm test
-}
+source "$ROOT_DIR/scripts/shared_windows_deps.sh"
 
 run_windows_gate() {
-    if [ ! -x "windows/node_modules/.bin/tsc" ]; then
-        if command -v npm >/dev/null 2>&1 && has_shared_windows_deps; then
+    cleanup_shared_windows_deps
+    if [ ! -x "$ROOT_DIR/windows/node_modules/.bin/tsc" ]; then
+        local shared_nm=""
+        if command -v npm >/dev/null 2>&1 && shared_nm="$(find_shared_windows_node_modules)"; then
             local status=0
-            echo "ℹ️  复用同锁文件的兄弟工作树依赖运行 Windows 单元测试（跳过 Vite 打包）..."
-            run_logged "Windows 单元测试" windows_shared_tests || status=$?
-            record_gate_result "WindowsTests=${status}"
-            record_gate_result "WindowsBuild=skip"
+            trap 'cleanup_shared_windows_deps' EXIT INT TERM HUP
+            echo "ℹ️  复用同锁文件的兄弟工作树依赖运行完整 Windows 前端门禁（单测 + 类型检查 + Vite 打包）..."
+            run_logged "Windows 前端" with_shared_windows_deps "$shared_nm" windows_npm || status=$?
+            cleanup_shared_windows_deps
+            trap - EXIT INT TERM HUP
+            record_gate_result "Windows=${status}"
             [ "$status" -eq 0 ]
             return $?
         fi

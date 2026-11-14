@@ -1016,6 +1016,7 @@ export function haServiceCall(command: DeviceCommand): HaServiceCall {
 }
 
 export class HomeAssistantClient {
+  public lastRawSnapshot: unknown = null;
   constructor(
     private readonly baseURL: string,
     private readonly token: string,
@@ -1026,12 +1027,12 @@ export class HomeAssistantClient {
     },
   ) {}
   async snapshot(): Promise<SynthesizedHome> {
-    return HomeAssistantSynthesizer.synthesize(
-      await this.invoke<unknown>("ha_snapshot", {
-        baseUrl: this.baseURL,
-        token: this.token,
-      }),
-    );
+    const raw = await this.invoke<unknown>("ha_snapshot", {
+      baseUrl: this.baseURL,
+      token: this.token,
+    });
+    this.lastRawSnapshot = raw;
+    return HomeAssistantSynthesizer.synthesize(raw);
   }
   async execute(command: DeviceCommand): Promise<void> {
     await this.invoke("ha_execute", {

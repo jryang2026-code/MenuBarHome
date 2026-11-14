@@ -659,6 +659,12 @@ export function highlightSettingsAnchor(
   const target = root.querySelector<HTMLElement>(`[data-settings-anchor="${anchor}"]`);
   if (!target) return null;
 
+  let ancestorDetails = target.closest("details");
+  while (ancestorDetails) {
+    ancestorDetails.open = true;
+    ancestorDetails = ancestorDetails.parentElement?.closest("details") ?? null;
+  }
+
   target.classList.add("is-search-highlighted");
   target.setAttribute("data-settings-highlighted", anchor);
   target.style.transition = "outline-color 180ms ease, background-color 180ms ease";

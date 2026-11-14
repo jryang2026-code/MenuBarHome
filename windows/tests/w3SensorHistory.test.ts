@@ -35,6 +35,7 @@ import {
   type StorageLike,
 } from "../src/core/sensorHistory.js";
 import { applyTemperatureUnit } from "../src/core/temperature.js";
+import { makeMiAccount } from "../src/core/miAccountsStore.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { demoDevices, demoSensorHistorySamples, seedDemoSensorHistory } from "../src/ui/demo.js";
@@ -1008,11 +1009,25 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
       region: "cn",
     };
     app.devices = [
-      makeSensor("acct_2/mi:998877", {
-        name: "副账号书房温湿度计",
-        roomName: "书房",
-        temperature: 24.2,
-        humidity: 48,
+      {
+        ...makeSensor("acct_2/mi:998877", {
+          name: "副账号书房温湿度计",
+          roomName: "书房",
+          temperature: 24.2,
+          humidity: 48,
+        }),
+        accountId: "mi:cn:3003",
+      },
+    ];
+    app.miAccountsOverride = [
+      makeMiAccount(app.settings.miSession!),
+      makeMiAccount({
+        userId: "3003",
+        cUserId: "c3003",
+        ssecurity: security,
+        serviceToken: "svc-secondary-3003",
+        passToken: "",
+        region: "cn",
       }),
     ];
     app.timerSnapshot = { identity: "mi:cn:2002", sourceRevision: app.sourceRevision };

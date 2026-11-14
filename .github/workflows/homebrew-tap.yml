@@ -305,9 +305,9 @@ jobs:
           if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
             summary "缺少 HOMEBREW_TAP_TOKEN，已拒绝更新 tap" \
               "本工作流不创建 homebrew-tap 仓库、也不改任何 secret。需要人工完成：" \
-              '1. 在 `jryang2026-code` 下创建公开仓库 `homebrew-tap`（tap 名即 `jryang2026-code/tap`）；' \
+              "1. 在 \`jryang2026-code\` 下创建公开仓库 \`homebrew-tap\`（tap 名即 \`jryang2026-code/tap\`）；" \
               "2. 建一个只对该仓库有 contents: write 的细粒度 PAT（或 GitHub App 令牌）；" \
-              '3. 在 MenuBarHome 仓库 Settings → Secrets 里添加 `HOMEBREW_TAP_TOKEN`。' \
+              "3. 在 MenuBarHome 仓库 Settings → Secrets 里添加 \`HOMEBREW_TAP_TOKEN\`。" \
               "在此之前 cask 只留在 artifact 里，tap 没有更新。"
             echo "❌ 未配置 HOMEBREW_TAP_TOKEN：tap 未更新（这不是成功，只是没有凭据）" >&2
             exit 1
@@ -445,5 +445,5 @@ jobs:
             echo "### 已更新 ${TAP_REPO}"
             echo "- cask：\`${TAP_CASK_PATH}\` → menubarhome ${VERSION}"
             echo "- DMG SHA-256：\`${DMG_SHA256:-<未记录>}\`"
-            echo '- 安装：`brew install --cask jryang2026-code/tap/menubarhome`'
+            echo "- 安装：\`brew install --cask jryang2026-code/tap/menubarhome\`"
           } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

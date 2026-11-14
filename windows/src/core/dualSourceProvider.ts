@@ -594,7 +594,7 @@ export const DeviceDeduplicator = {
           : extractMiDeviceIdentities([], input.home));
       return input.home.devices.map((dev) => ({
         backend,
-        device: dev as AccountScopedSmartDevice,
+        device: dev,
         identity: fallbackIdentities[dev.id] ??
           makeDeviceSourceIdentity({
             dids: backend === "xiaomiCloud" ? [stripTrackSuffix(dev.id)] : DeviceIdentityNormalizer.didCandidates([dev.id]),

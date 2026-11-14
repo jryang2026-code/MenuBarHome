@@ -19,6 +19,8 @@ export interface EnergyStorageLike {
 
 export interface EnergyScopeSource {
   readonly connectionMode: "demo" | "xiaomiCloud" | "homeAssistant";
+  readonly dualSourceEnabled?: boolean;
+  readonly activeAccountIds?: readonly string[];
   readonly miSession?: { readonly userId: string; readonly region: string } | null;
   readonly haBaseURL?: string;
   readonly haToken?: string;
@@ -129,23 +131,24 @@ function resolveActiveStorage(explicit: EnergyStorageLike | null): EnergyStorage
 }
 
 export function energyScopeKey(source: EnergyScopeSource): string {
-  switch (source.connectionMode) {
-    case "demo":
-      return "demo";
-    case "xiaomiCloud": {
-      const userId = source.miSession?.userId?.trim() ?? "";
-      if (!userId) return "xiaomiCloud:signedOut";
-      const region = normalizeMiCloudRegion(source.miSession?.region ?? "cn");
-      return JSON.stringify(["xiaomiCloud", userId, region]);
-    }
-    case "homeAssistant": {
-      const token = source.haToken?.trim() ?? "";
-      const baseURL = source.haBaseURL?.trim() ?? "";
-      if (!token || !baseURL) return "homeAssistant:unconfigured";
-      const identity = homeAssistantIdentity(baseURL, token);
-      return identity ? JSON.stringify(["homeAssistant", identity]) : "homeAssistant:unconfigured";
-    }
+  if (source.connectionMode === "demo") return "demo";
+  const userId = source.miSession?.userId?.trim() ?? "";
+  const region = normalizeMiCloudRegion(source.miSession?.region ?? "cn");
+  const accountIds = (source.activeAccountIds ?? []).map((id) => id.trim()).filter(Boolean);
+  const multiSuffix = accountIds.length > 1 ? accountIds.join("+") : "";
+  const miScope = userId
+    ? JSON.stringify(multiSuffix ? ["xiaomiCloud", userId, region, multiSuffix] : ["xiaomiCloud", userId, region])
+    : accountIds.length > 0
+      ? JSON.stringify(["xiaomiCloud", accountIds.join("+")])
+      : "xiaomiCloud:signedOut";
+  const token = source.haToken?.trim() ?? "";
+  const baseURL = source.haBaseURL?.trim() ?? "";
+  const haId = token && baseURL ? homeAssistantIdentity(baseURL, token) : "";
+  const haScope = haId ? JSON.stringify(["homeAssistant", haId]) : "homeAssistant:unconfigured";
+  if (source.dualSourceEnabled) {
+    return JSON.stringify(["dualSource", miScope, haScope]);
   }
+  return source.connectionMode === "homeAssistant" ? haScope : miScope;
 }
 
 export function energyStorageKeyForScope(scope: string): string {

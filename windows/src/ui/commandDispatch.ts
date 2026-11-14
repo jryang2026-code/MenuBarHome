@@ -592,7 +592,7 @@ export function scheduleEchoReadBack(
     const accounts = host.miAccountsOverride ?? multiState?.accounts ?? [];
     const mappedAccountId =
       multiState?.merged?.deviceOwners[deviceId]?.[0] ??
-      (currentDev as { accountId?: string }).accountId ??
+      currentDev.accountId ??
       null;
     const matchedAccount = mappedAccountId
       ? accounts.find((a) => a.id === mappedAccountId)
@@ -748,9 +748,15 @@ export function scheduleEchoReadBack(
   };
 }
 
+/**
+ * A cover command shown before its send. A cover is write-only — macOS locks it before the send so
+ * a pre-command parked snapshot cannot drop the commanded travel (`HomeStore+Controls.swift:
+ * togglePrimary`), and again after success, which bumps the revision.
+ */
 interface CoverOptimisticWrite {
   readonly deviceId: string;
-    readonly originPosition: number | null;
+  /** The position the motor started from; a snapshot parked there is pre-command, not confirmation. */
+  readonly originPosition: number | null;
   readonly priorDevice: SmartDevice;
   readonly priorFacets: readonly FacetControl[] | undefined;
   readonly priorLock: OptimisticLockSnapshot | null;
@@ -1036,6 +1042,11 @@ export async function applyCommand(
   return true;
 }
 
+/**
+ * The card that owns a MIoT entity id, or null when none does. A card's own controls and every
+ * 更多设置 row count: a plug's auxiliary control lives on a sibling service (#5), so the drawer
+ * address must resolve to the card even though the card's main switch has another one.
+ */
 export function deviceOwningEntityId(
   devices: readonly SmartDevice[],
   facets: Readonly<Record<string, readonly FacetControl[]>>,
@@ -1158,6 +1169,7 @@ function buildHomeAssistantProvider(host: MenuMijiaWindowsApp): HomeProvider {
   );
 }
 
+/** The provider for the backend the panel is connected to right now (ADR-0020). */
 export function homeProviderFor(host: MenuMijiaWindowsApp): HomeProvider {
   if (host.settings.connectionMode === "demo") return new DemoHomeProvider();
   if (isDualSourceEnabled(host)) {

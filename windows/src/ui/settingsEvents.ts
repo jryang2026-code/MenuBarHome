@@ -1,4 +1,5 @@
 import { currentLanguage, t, type AppLanguage } from "../core/i18n.js";
+import { trText } from "../core/quickActions.js";
 import {
   ASSISTANT_PROVIDER_PRESETS,
   ModelIntentResolver,
@@ -38,7 +39,7 @@ import {
 import { withAliases, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
 import type { ConnectionMode, PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
 import { demoDevices, demoScenes } from "./demo.js";
-import { submitServiceEndpoints } from "./appLifecycle.js";
+import { clearHostSessionAndDualSourceState, submitServiceEndpoints } from "./appLifecycle.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import {
   importAmbientAssistantKey,
@@ -91,7 +92,7 @@ export interface SettingsEventsHost {
   deviceFacets: Readonly<Record<string, readonly FacetControl[]>>;
   /** A high-risk write armed by its first tap; a backend switch disarms it. */
   pendingHighRisk: PendingHighRiskConfirmation | null;
-  clearPendingHighRisk(): void;
+  clearPendingHighRisk(options?: { readonly syncPin?: boolean }): void;
   groupOwnerByMemberDid: Map<string, string>;
   hotkeyNeedsHint: boolean;
   isRecordingHotkey: boolean;
@@ -458,6 +459,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
 
   const appHost = host as unknown as MenuMijiaWindowsApp;
   const vault = (host as unknown as Partial<MenuMijiaWindowsApp>).credentialVault;
+  const revokeMultiAndDualPromise = clearHostSessionAndDualSourceState(appHost, { revokeAll: true });
 
   setRaycastIntegrationEnabled(appHost, false, { persistSettings: false, render: false });
 
@@ -481,6 +483,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   host.render();
 
   try {
+    await revokeMultiAndDualPromise;
     if (vault) {
       await vault.persist(credentialsFromSettings(host.settings, host.assistantKeysByPreset));
       await vault.deleteMiSession();
@@ -518,6 +521,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
 }
 
 function closeSettingsSheetImmediate(host: SettingsEventsHost): void {
+  syncSettingsSaveHint(host, "reset");
   clearSettingsHighlight(host.root);
   host.activeSheet = "none";
   host.isRecordingHotkey = false;
@@ -626,6 +630,53 @@ function commitSettingsSave(host: SettingsEventsHost): void {
   closeSettingsSheetImmediate(host);
 }
 
+const settingsSaveModeByHost = new WeakMap<SettingsEventsHost, "clean" | "dirty" | "saved">();
+
+export function hasUnsavedSettingsDraft(host: SettingsEventsHost): boolean {
+  const root = host.root;
+  const haUrl = root.querySelector<HTMLInputElement>("#settings-ha-url");
+  if (haUrl && haUrl.value !== host.settings.haBaseURL) return true;
+  const haToken = root.querySelector<HTMLInputElement>("#settings-ha-token");
+  if (haToken && haToken.value !== host.settings.haToken) return true;
+  const baseUrl = root.querySelector<HTMLInputElement>("#settings-base-url");
+  if (baseUrl && baseUrl.value !== host.settings.assistantBaseURL) return true;
+  const model = root.querySelector<HTMLInputElement>("#settings-model");
+  if (model && model.value !== host.settings.assistantModel) return true;
+  const apiKey = root.querySelector<HTMLInputElement>("#settings-api-key");
+  if (apiKey && apiKey.value !== apiKey.defaultValue) return true;
+  const habit = root.querySelector<HTMLInputElement>("#settings-habit");
+  if (habit && habit.checked !== host.settings.habitLearningEnabled) return true;
+  const habitShare = root.querySelector<HTMLInputElement>("#settings-habit-share");
+  if (habitShare && habitShare.checked !== host.settings.habitShareEnabled) return true;
+  return false;
+}
+
+export function syncSettingsSaveHint(
+  host: SettingsEventsHost,
+  trigger?: "draft" | "auto-saved" | "reset",
+): void {
+  const dirty = host.activeSheet === "settings" && hasUnsavedSettingsDraft(host);
+  if (trigger === "reset" || host.activeSheet !== "settings") {
+    settingsSaveModeByHost.set(host, "clean");
+  } else if (dirty) {
+    settingsSaveModeByHost.set(host, "dirty");
+  } else if (trigger === "auto-saved") {
+    settingsSaveModeByHost.set(host, "saved");
+  } else if (trigger === "draft") {
+    settingsSaveModeByHost.set(host, "clean");
+  }
+  const hint = host.root.querySelector<HTMLElement>(".cc-settings-save-hint");
+  if (!hint) return;
+  const mode = dirty ? "dirty" : (settingsSaveModeByHost.get(host) ?? "clean");
+  hint.dataset.saveState = mode;
+  hint.textContent =
+    mode === "dirty"
+      ? trText("有未保存文本", "Unsaved text")
+      : mode === "saved"
+        ? trText("已自动保存", "Auto-saved")
+        : trText("开关已即时生效", "Toggles auto-save");
+}
+
 export function bindSettingsEvents(host: SettingsEventsHost): void {
   mountOnboardingGuide(host as OnboardingRenderViewHost);
 
@@ -642,6 +693,8 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     session.launchAtLoginSynced = true;
     void syncLaunchAtLoginFromSystem(host);
   }
+
+  syncSettingsSaveHint(host);
 
   host.root.querySelector("#btn-cloud-allow")?.addEventListener("click", () => {
     const pending = host.pendingCloudConsent;
@@ -674,6 +727,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       } else {
         host.settings.allOffOverrides[id] = box.checked;
       }
+      syncSettingsSaveHint(host, "auto-saved");
       host.saveSettings();
       host.render();
     });
@@ -681,6 +735,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
 
   host.root.querySelector("#btn-revoke-cloud")?.addEventListener("click", () => {
     host.settings.cloudConsentEndpoints = [];
+    syncSettingsSaveHint(host, "auto-saved");
     host.saveSettings();
     host.render();
   });
@@ -688,6 +743,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   host.root.querySelectorAll<HTMLSelectElement>("[data-mi-region]").forEach((select) => {
     select.addEventListener("change", () => {
       host.settings.miCloudRegion = normalizeMiCloudRegion(select.value);
+      syncSettingsSaveHint(host, "auto-saved");
       host.saveSettings();
       host.render();
     });
@@ -695,6 +751,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
 
   host.root.querySelector<HTMLInputElement>("#settings-auto-update")?.addEventListener("change", (event) => {
     host.settings.autoCheckUpdates = (event.target as HTMLInputElement).checked;
+    syncSettingsSaveHint(host, "auto-saved");
     host.saveSettings();
     host.render();
   });
@@ -702,6 +759,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   host.root.querySelector<HTMLInputElement>("#settings-launch-at-login")?.addEventListener("change", (event) => {
     const enabled = (event.target as HTMLInputElement).checked;
     host.settings.launchAtLogin = enabled;
+    syncSettingsSaveHint(host, "auto-saved");
     host.saveSettings();
     const invoke = window.__TAURI_INTERNALS__?.invoke;
     if (!invoke) {
@@ -726,17 +784,21 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
 
   host.root.querySelector<HTMLInputElement>("#settings-block-while-locked")?.addEventListener("change", (event) => {
     host.settings.blockControlWhileLocked = (event.target as HTMLInputElement).checked;
+    syncSettingsSaveHint(host, "auto-saved");
     host.saveSettings();
     host.render();
   });
 
   host.root.querySelector<HTMLInputElement>("#settings-raycast-integration")?.addEventListener("change", (event) => {
     const checked = (event.target as HTMLInputElement).checked;
+    syncSettingsSaveHint(host, "auto-saved");
     setRaycastIntegrationEnabled(host as unknown as MenuMijiaWindowsApp, checked);
+    syncSettingsSaveHint(host, "auto-saved");
   });
 
   host.root.querySelector<HTMLInputElement>("#settings-allow-direct-url")?.addEventListener("change", (event) => {
     host.settings.allowDirectURLControl = (event.target as HTMLInputElement).checked;
+    syncSettingsSaveHint(host, "auto-saved");
     host.saveSettings();
     host.render();
   });
@@ -754,6 +816,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       if (!advBox.checked && host.settings.allowAdvancedFacetWrites) {
         if (confirmEl) confirmEl.hidden = true;
         host.settings.allowAdvancedFacetWrites = false;
+        syncSettingsSaveHint(host, "auto-saved");
         host.saveSettings();
         host.render();
       }
@@ -771,6 +834,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     const confirmEl = host.root.querySelector<HTMLElement>("#settings-advanced-facets-confirm");
     if (confirmEl) confirmEl.hidden = true;
     host.settings.allowAdvancedFacetWrites = true;
+    syncSettingsSaveHint(host, "auto-saved");
     host.saveSettings();
     host.render();
   });
@@ -1010,8 +1074,8 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       host.homes = [];
       host.groupOwnerByMemberDid = new Map();
       host.deviceFacets = {};
-      // An armed high-risk write belongs to the backend it was armed on.
       host.clearPendingHighRisk();
+      invokeTauriVoid("set_pin_popover", { pin: host.shouldKeepPopoverPinned() });
       host.replyBanner = null;
       host.settings.connectionMode = mode;
       if (mode !== "xiaomiCloud") host.cloudValuesStale = false;
@@ -1035,6 +1099,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
           void host.refreshHADevices(false);
         }
       }
+      syncSettingsSaveHint(host, "auto-saved");
       host.saveSettings();
       host.render();
     });
@@ -1150,6 +1215,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       host.root.querySelectorAll<HTMLElement>("[data-ai-preset]").forEach((el) => {
         el.classList.toggle("is-active", el.dataset.aiPreset === preset.id);
       });
+      syncSettingsSaveHint(host, "draft");
     });
   });
 
@@ -1164,11 +1230,22 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       apiKeyEl.placeholder = inferred.keyPlaceholder;
       host.syncKeyFieldWithEndpoint(apiKeyEl, target.value);
     }
+    syncSettingsSaveHint(host, "draft");
+  });
+
+  for (const selector of ["#settings-ha-url", "#settings-ha-token", "#settings-model", "#settings-api-key"]) {
+    host.root.querySelector<HTMLInputElement>(selector)?.addEventListener("input", () => {
+      syncSettingsSaveHint(host, "draft");
+    });
+  }
+  host.root.querySelector<HTMLInputElement>("#settings-habit")?.addEventListener("change", () => {
+    syncSettingsSaveHint(host, "draft");
   });
 
   host.root.querySelector<HTMLInputElement>("#settings-ask-when-unsure")?.addEventListener("change", (event) => {
     const checked = (event.target as HTMLInputElement).checked;
     writeAskWhenUnsure(host.settings, checked);
+    syncSettingsSaveHint(host, "auto-saved");
     host.saveSettings();
   });
 
@@ -1215,6 +1292,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       const currentApiKeyEl = host.root.querySelector<HTMLInputElement>("#settings-api-key");
       if (hit) {
         if (currentApiKeyEl) currentApiKeyEl.value = hit.apiKey;
+        syncSettingsSaveHint(host, "draft");
         const msg = tr3(
           `已从 ${hit.envName} 导入密钥（点击底部「完成并保存」生效）`,
           `已從 ${hit.envName} 匯入金鑰（點擊底部「完成並儲存」生效）`,
@@ -1297,10 +1375,15 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     })();
   });
 
-  const refreshPreview = () => refreshHabitSharePreview(host);
+  const refreshPreview = () => {
+    refreshHabitSharePreview(host);
+    syncSettingsSaveHint(host, "draft");
+  };
   host.root.querySelector("#settings-habit-share")?.addEventListener("change", refreshPreview);
-  host.root.querySelector("#settings-habit-share-sample")?.addEventListener("input", refreshPreview);
-  refreshPreview();
+  host.root.querySelector("#settings-habit-share-sample")?.addEventListener("input", () => {
+    refreshHabitSharePreview(host);
+  });
+  refreshHabitSharePreview(host);
   bindEnergySettingsEvents(host);
 
   host.root.querySelector("#btn-save-settings")?.addEventListener("click", () => {

@@ -28,8 +28,9 @@ import {
 } from "../core/miAccountsStore.js";
 import { isHostAttachedToActiveWindow, mergeHomeSnapshotRespectingLocks } from "../core/optimisticLock.js";
 import { getUnsupportedLightEffects } from "./commandDispatch.js";
-import { structuralActivityStackKey } from "./activityStackView.js";
-import { plugTodaySummaryForDrawer, syncEnergyHostOnRender } from "./energySettingsView.js";
+import type { HASnapshotLike } from "../core/automationEngine.js";
+import { ingestHostHASnapshotForDoorbell, structuralActivityStackKey } from "./activityStackView.js";
+import { energyScopeForHost, plugTodaySummaryForDrawer, syncEnergyHostOnRender } from "./energySettingsView.js";
 import { structuralSensorHistoryKey, syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { availableQuickActions } from "../core/quickActions.js";
 import { renderSliderDeck } from "./panelView.js";
@@ -230,6 +231,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         membersByGroup = await membershipPromise;
       }
 
+      // Card properties plus the 更多设置 rows (#5), deduped so one snapshot covers both.
       const propKeys = collectMiotPropKeys(rawDevices, specs);
 
       let values: Map<string, unknown>;
@@ -375,7 +377,8 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
     if (!silent && host.devices.length === 0) host.render();
     try {
       await host.endpointSubmission;
-      const home = await new HomeAssistantClient(endpoint, token).snapshot();
+      const haClient = new HomeAssistantClient(endpoint, token, host.haInvokeOverride ?? undefined);
+      const home = await haClient.snapshot();
       const identity = homeAssistantIdentity(endpoint, token);
       if (!identity) throw new Error("Invalid Home Assistant URL");
       if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "homeAssistant" || host.settings.haBaseURL !== endpoint || host.settings.haToken !== token || host.localControlRevision !== revision || host.syncGeneration !== syncGen) return;
@@ -383,6 +386,9 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
       host.deviceFacets = merged.deviceFacets;
       host.scenes = home.scenes;
+      if (haClient.lastRawSnapshot && typeof haClient.lastRawSnapshot === "object") {
+        void ingestHostHASnapshotForDoorbell(host, haClient.lastRawSnapshot as HASnapshotLike);
+      }
       if (
         host.cameraLive.activeLiveCameraId !== null &&
         !host.devices.some((device) => device.id === host.cameraLive.activeLiveCameraId)
@@ -541,7 +547,7 @@ export function cloudPanelStructureFingerprint(host: MenuMijiaWindowsApp): strin
                                   kind.energyKwh !== null &&
                                   kind.energyKwh !== undefined &&
                                   Number.isFinite(kind.energyKwh);
-                                const todaySummary = plugTodaySummaryForDrawer(device, hasEnergy);
+                                const todaySummary = plugTodaySummaryForDrawer(device, hasEnergy, energyScopeForHost(host));
                                 return [
                                   hasEnergy,
                                   todaySummary !== null,
@@ -1040,12 +1046,14 @@ export async function refreshDualSourceDevices(
     const coordinator = getHostDualSourceCoordinator(host);
     const prevMiState = host.multiAccountState;
     const haInvoke = host.haInvokeOverride ?? undefined;
+    let haRawSnapshot: unknown = null;
 
     const outcome = await coordinator.refreshParallel({
       knownPreferenceIds: knownPreferenceIdsForHost(host),
       languagePreference: host.settings.interfaceLanguage,
       fetchHA: async (): Promise<DualSourceInputSnapshot> => {
         const res = await fetchHASnapshotWithIdentities(endpoint, token, haInvoke);
+        haRawSnapshot = res.rawSnapshot;
         return { home: res.home, identities: res.identities };
       },
       fetchMi: async (): Promise<DualSourceInputSnapshot> => {
@@ -1107,6 +1115,9 @@ export async function refreshDualSourceDevices(
     host.haConnectionError = outcome.haError;
     host.markCloudValuesFresh();
     applyDualSourceMergeToHost(host, outcome.merged);
+    if (haRawSnapshot && typeof haRawSnapshot === "object") {
+      void ingestHostHASnapshotForDoorbell(host, haRawSnapshot as HASnapshotLike);
+    }
     markTimerSnapshotReady(host);
     presentationChanged = cloudPresentationFingerprint(host) !== previousPresentation;
     if (presentationChanged) host.saveSettings();

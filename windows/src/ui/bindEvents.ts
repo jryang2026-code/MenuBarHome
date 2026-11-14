@@ -22,6 +22,8 @@ import { normalizeSearch } from "../core/panelSearch.js";
 import { bindPanelInput, finishPanelComposition } from "./panelKeyboard.js";
 import { bindRoomOrderEditorEvents } from "./roomOrderEditor.js";
 import { bindSensorHistoryEvents } from "./sensorHistoryView.js";
+import { syncSettingsSaveHint } from "./settingsEvents.js";
+import { shouldKeepPopoverPinned } from "./speechGuard.js";
 
 function confirmHighRiskForHost(
   host: MenuMijiaWindowsApp,
@@ -124,7 +126,6 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
 
   export function bindEvents(host: MenuMijiaWindowsApp): void {
     ensureDrawerLifecycleListeners(host);
-    bindSensorHistoryEvents(host);
     host.root.querySelectorAll<HTMLDetailsElement>("details[data-notif-card]").forEach((details) => {
       details.addEventListener("toggle", () => {
         const key = details.dataset.notifCard;
@@ -160,16 +161,21 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
 
     host.root.querySelector("#btn-home-menu")?.addEventListener("click", () => {
       host.isHomeMenuOpen = !host.isHomeMenuOpen;
+      invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
       host.render();
     });
     host.root.querySelectorAll<HTMLElement>("[data-home]").forEach((btn) => {
-      btn.addEventListener("click", () => host.selectHome(btn.dataset.home || null));
+      btn.addEventListener("click", () => {
+        host.selectHome(btn.dataset.home || null);
+        invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
+      });
     });
     host.root.querySelectorAll<HTMLElement>("[data-close-menus]").forEach((el) => {
       el.addEventListener("pointerdown", (e) => {
         e.preventDefault();
         host.isHomeMenuOpen = false;
         host.ctxMenu = null;
+        invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
         host.render();
       });
     });
@@ -189,6 +195,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         if (!gid) return;
         e.preventDefault();
         host.ctxMenu = { x: e.clientX, y: e.clientY, groupId: gid };
+        invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
         host.render();
       });
     });
@@ -218,6 +225,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         host.layout.tileSizes[scopedKey(host.pageKey, id)] = normalizeTileSize(size);
         host.saveLayout();
         host.ctxMenu = null;
+        invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
         host.render();
       });
     });
@@ -231,6 +239,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         if (gid) host.layout.groupMap[id] = gid; else delete host.layout.groupMap[id];
         host.saveLayout();
         host.ctxMenu = null;
+        invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
         host.render();
       });
     });
@@ -249,6 +258,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         const [action, gid] = (btn.dataset.groupAction ?? "").split(":");
         if (!gid) return;
         host.ctxMenu = null;
+        invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
         const groups = host.layout.groups;
         const i = groups.findIndex((g) => g.id === gid);
         if (action === "rename") { host.openPrompt({ kind: "renameGroup", groupId: gid }); return; }
@@ -374,13 +384,13 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         const value = btn.dataset.appearance;
         host.settings.appearance =
           value === "light" || value === "dark" ? value : "system";
+        syncSettingsSaveHint(host, "auto-saved");
         host.saveSettings();
         host.render();
       });
     });
     const opacitySlider = host.root.querySelector<HTMLInputElement>("#settings-panel-opacity");
     if (opacitySlider) {
-      // Dragging applies live without a re-render (which would drop the drag); releasing saves (#252).
       const applyOpacity = (): void => {
         host.settings.panelOpacity = normalizePanelOpacity(Number(opacitySlider.value));
         applyPanelOpacity(host.root, host.settings.panelOpacity);
@@ -388,9 +398,28 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         const label = host.root.querySelector("#settings-panel-opacity-value");
         if (label) label.textContent = `${host.settings.panelOpacity}%`;
       };
-      opacitySlider.addEventListener("input", applyOpacity);
+      const showOpacityBadge = (): void => {
+        host.pipeline.updateSliderThumbBadge(
+          opacitySlider,
+          `${normalizePanelOpacity(Number(opacitySlider.value))}%`,
+          true,
+        );
+      };
+      const hideOpacityBadge = (): void => {
+        host.pipeline.updateSliderThumbBadge(opacitySlider, "", false);
+      };
+      opacitySlider.addEventListener("pointerdown", showOpacityBadge);
+      opacitySlider.addEventListener("input", () => {
+        applyOpacity();
+        showOpacityBadge();
+      });
+      opacitySlider.addEventListener("pointerup", hideOpacityBadge);
+      opacitySlider.addEventListener("pointercancel", hideOpacityBadge);
+      opacitySlider.addEventListener("blur", hideOpacityBadge);
       opacitySlider.addEventListener("change", () => {
         applyOpacity();
+        hideOpacityBadge();
+        syncSettingsSaveHint(host, "auto-saved");
         host.saveSettings();
       });
     }
@@ -405,6 +434,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         host.settings.interfaceLanguage =
           value === "zh-Hans" || value === "zh-Hant" || value === "en" ? value : "system";
         host.applyInterfaceLanguage();
+        syncSettingsSaveHint(host, "auto-saved");
         host.saveSettings();
         host.render();
       });
@@ -416,6 +446,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         host.settings.temperatureUnit =
           value === "celsius" || value === "fahrenheit" ? value : "system";
         host.applyTemperatureSetting();
+        syncSettingsSaveHint(host, "auto-saved");
         host.saveSettings();
         host.render();
       });
@@ -424,6 +455,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     host.root.querySelectorAll<HTMLElement>("[data-panel-height]").forEach((btn) => {
       btn.addEventListener("click", () => {
         host.settings.panelHeight = btn.dataset.panelHeight as PanelHeight;
+        syncSettingsSaveHint(host, "auto-saved");
         host.saveSettings();
         host.applyPanelHeight();
         host.render();
@@ -434,27 +466,32 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         const known = PANEL_ANCHORS.find((item) => item.id === btn.dataset.panelAnchor);
         if (!known) return;
         host.panelAnchor = known.id;
+        syncSettingsSaveHint(host, "auto-saved");
         invokeTauriVoid("set_panel_placement", { anchor: known.id });
         host.render();
       });
     });
     host.root.querySelector<HTMLInputElement>("#settings-climate-panel")?.addEventListener("change", (e) => {
       host.settings.climatePanel = (e.target as HTMLInputElement).checked;
+      syncSettingsSaveHint(host, "auto-saved");
       host.saveSettings();
       host.render();
     });
     host.root.querySelector<HTMLInputElement>("#settings-hide-offline")?.addEventListener("change", (e) => {
       host.settings.hideOfflineDevices = (e.target as HTMLInputElement).checked;
+      syncSettingsSaveHint(host, "auto-saved");
       host.saveSettings();
       host.render();
     });
     host.root.querySelector<HTMLInputElement>("#settings-hide-grouped-lights")?.addEventListener("change", (e) => {
       host.settings.hideGroupedLights = (e.target as HTMLInputElement).checked;
+      syncSettingsSaveHint(host, "auto-saved");
       host.saveSettings();
       host.render();
     });
     host.root.querySelector<HTMLInputElement>("#settings-quick-actions")?.addEventListener("change", (e) => {
       host.settings.showQuickActionsBar = (e.target as HTMLInputElement).checked;
+      syncSettingsSaveHint(host, "auto-saved");
       host.saveSettings();
       host.render();
     });
@@ -463,6 +500,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       host.settings.enableGlobalHotkey = (e.target as HTMLInputElement).checked;
       host.isRecordingHotkey = false;
       host.hotkeyNeedsHint = false;
+      syncSettingsSaveHint(host, "auto-saved");
       host.saveSettings();
       void host.applyGlobalHotkey();
       host.render();
@@ -478,6 +516,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       host.isRecordingHotkey = false;
       host.hotkeyNeedsHint = false;
       host.settings.globalHotkey = DEFAULT_GLOBAL_SHORTCUT;
+      syncSettingsSaveHint(host, "auto-saved");
       host.saveSettings();
       void host.applyGlobalHotkey();
       host.render();
@@ -488,8 +527,15 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
 
     host.root.querySelector("#btn-hide-panel")?.addEventListener("click", () => {
-      invokeTauriVoid("set_pin_popover", { pin: false });
-      invokeTauriVoid("hide_panel");
+      host.isHomeMenuOpen = false;
+      host.ctxMenu = null;
+      host.clearPendingHighRisk({ syncPin: false });
+      void (async () => {
+        try {
+          await window.__TAURI_INTERNALS__?.invoke?.("set_pin_popover", { pin: false });
+        } catch {}
+        invokeTauriVoid("hide_panel");
+      })();
     });
 
     host.root.querySelector("#btn-quit-app")?.addEventListener("click", () => {
@@ -652,6 +698,19 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       });
     });
 
+    host.root.querySelectorAll<HTMLElement>(".cc-room-scroll").forEach((strip) => {
+      strip.addEventListener(
+        "wheel",
+        (e) => {
+          if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && strip.scrollWidth > strip.clientWidth) {
+            e.preventDefault();
+            strip.scrollLeft += e.deltaY;
+          }
+        },
+        { passive: false },
+      );
+    });
+
     host.root.querySelectorAll<HTMLElement>("[data-room]").forEach((btn) => {
       btn.addEventListener("click", () => {
         host.selectRoom(btn.dataset.roomId ?? null, btn.dataset.room);
@@ -674,13 +733,6 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       });
     });
 
-    /**
-     * A high-risk manual write asks for one more tap on the same card within a few seconds, and
-     * the arm is bound to that exact command: a different high-risk write on the same device
-     * re-arms instead of spending the previous tap. The window expires so an old tap can never
-     * authorise a later write (macOS 再点一次确认). A control that cannot repeat its value (the
-     * climate slider) passes `explicit`, which renders one confirm button for the captured command.
-     */
     const confirmHighRisk = (
       deviceId: string,
       command: DeviceCommand,
@@ -696,7 +748,6 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         if (!id || !armed?.confirm || armed.deviceId !== id) return;
         const expired = armed.expiresAtMs <= Date.now();
         const stale = armed.sourceRevision !== host.sourceRevision;
-        // Consume before sending: the row must disappear before the network call finishes.
         host.clearPendingHighRisk();
         if (expired) {
           host.replyBanner = { text: t("确认已过期，请重新操作"), source: t("需要确认") };
@@ -1332,9 +1383,8 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
 
     host.cameraLive.bindEvents();
-
     host.bindSettingsEvents();
-
+    bindSensorHistoryEvents(host);
     syncAllRanges(host.root);
     bindDeckEvents(host);
   }
@@ -1363,11 +1413,24 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     if (!deck) return;
 
     deck.querySelectorAll<HTMLInputElement>("input.cc-range").forEach((slider) => {
+      const showDeckBadge = (): void => {
+        const formatted = `${Math.round(Number(slider.value))}%`;
+        host.pipeline.updateSliderThumbBadge(slider, formatted, true);
+      };
+      const hideDeckBadge = (): void => {
+        host.pipeline.updateSliderThumbBadge(slider, "", false);
+      };
+      slider.addEventListener("pointerdown", showDeckBadge);
       slider.addEventListener("input", () => {
         syncRangeFill(slider);
         const valLabel = slider.closest(".win-slider-row")?.querySelector(".win-deck-val");
         if (valLabel) valLabel.textContent = `${Math.round(Number(slider.value))}%`;
+        showDeckBadge();
       });
+      slider.addEventListener("pointerup", hideDeckBadge);
+      slider.addEventListener("pointercancel", hideDeckBadge);
+      slider.addEventListener("change", hideDeckBadge);
+      slider.addEventListener("blur", hideDeckBadge);
     });
 
     deck.querySelectorAll<HTMLInputElement>("[data-deck-brightness]").forEach((slider) => {

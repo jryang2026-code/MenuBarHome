@@ -13,6 +13,7 @@ import {
 import {
   MiCloudClient,
   type HttpTransport,
+  type MiSession,
   type MiotSpecResolver,
 } from "../core/miCloudClient.js";
 import type { CameraLens, SmartDevice } from "../core/models.js";
@@ -20,6 +21,7 @@ import type { MenuMijiaWindowsApp } from "./app.js";
 import { SF_ICONS } from "./appConstants.js";
 import type { PersistedSettings } from "./appTypes.js";
 import { computeQuarterTurnScale, renderCameraLiveModalView } from "./cameraLiveModalView.js";
+import { getHostDualSourceState, getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
 import { waitForCameraFrameGap } from "./dom.js";
 import { hasPendingUrlConfirmation } from "./speechGuard.js";
 import { invokeTauriVoid } from "./transport.js";
@@ -65,6 +67,13 @@ export interface CameraLiveHost {
   escapeHtml(value: string): string;
   saveSettings(): void;
   shouldKeepPopoverPinned(): boolean;
+  readonly pipeline?: {
+    readonly cameraStandby: {
+      resumeFromStandby(root: HTMLElement): void;
+      enterWarmStandby(root: HTMLElement): void;
+      cancel(): void;
+    };
+  };
 }
 
 export class CameraLiveController {
@@ -135,11 +144,45 @@ export class CameraLiveController {
   private reconnectingP2PSessionId: string | null = null;
   private escapeKeyDisposer: (() => void) | null = null;
 
+  private resolveCameraSource(dev: SmartDevice): {
+    readonly backend: "xiaomiCloud" | "homeAssistant" | "demo";
+    readonly sourceDev: SmartDevice;
+    readonly miSession: MiSession | null;
+  } {
+    const appHost = this.host as unknown as MenuMijiaWindowsApp;
+    const route = isDualSourceEnabled(appHost)
+      ? getHostDualSourceState(appHost)?.routes[dev.id]
+      : undefined;
+    const sourceDev = route?.sourceDevice ?? dev;
+    const backend: "xiaomiCloud" | "homeAssistant" | "demo" =
+      route?.backend ??
+      (dev.sourceBackend === "xiaomiCloud" || dev.sourceBackend === "homeAssistant"
+        ? dev.sourceBackend
+        : this.host.settings.connectionMode);
+    if (backend !== "xiaomiCloud") {
+      return { backend, sourceDev, miSession: null };
+    }
+    const accounts = appHost.miAccountsOverride ?? getHostMiAccountsState(appHost)?.accounts ?? [];
+    const targetAccountId = sourceDev.accountId ?? dev.accountId ?? null;
+    if (targetAccountId) {
+      const matched = accounts.find(
+        (acc) => acc.id === targetAccountId || acc.session.userId === targetAccountId,
+      );
+      if (matched) return { backend, sourceDev, miSession: matched.session };
+    }
+    return {
+      backend,
+      sourceDev,
+      miSession: this.host.settings.miSession ?? accounts[0]?.session ?? null,
+    };
+  }
+
   private p2pSessionKeyForDevice(dev: SmartDevice): string {
     const bound = this.cameraBridgeBindings.get(dev.id);
     if (bound?.did) return bound.did;
-    if (dev.kind.kind === "camera" && dev.kind.gatewayDid) return dev.kind.gatewayDid;
-    return dev.id;
+    const { sourceDev } = this.resolveCameraSource(dev);
+    if (sourceDev.kind.kind === "camera" && sourceDev.kind.gatewayDid) return sourceDev.kind.gatewayDid;
+    return sourceDev.id;
   }
 
   private hasHigherPriorityOverlayOpen(): boolean {
@@ -185,6 +228,7 @@ export class CameraLiveController {
     // Opening is idempotent even before the first frame or while cloud negotiation is
     // pending. Only the explicit reconnect action may replace this camera's session.
     if (this.activeLiveCameraId === deviceId) {
+      this.host.pipeline?.cameraStandby.resumeFromStandby(this.host.root);
       this.liveCameraHidden = false;
       this.clearCameraKeepAlive();
       this.syncModalEscapeListener();
@@ -199,6 +243,7 @@ export class CameraLiveController {
     if (this.activeLiveCameraId !== null && this.activeLiveCameraId !== deviceId) {
       this.teardownActiveCameraForSwitch();
     }
+    this.host.pipeline?.cameraStandby.cancel();
     this.reconnectingP2PSessionId = null;
     this.activeLiveCameraId = dev.id;
     this.activeLiveCameraSnapshot = dev;
@@ -222,7 +267,7 @@ export class CameraLiveController {
       void this.playCustomCameraUrl(dev.id, this.liveCameraStreamURL);
     } else if (dev.kind.isOn && this.liveCameraStreamURL && this.needsHlsTranscodeBridge(this.liveCameraStreamURL)) {
       void this.bridgeHlsStreamToMjpeg(dev.id, this.liveCameraStreamURL);
-    } else if (dev.kind.isOn && !this.liveCameraStreamURL && this.host.settings.connectionMode === "xiaomiCloud") {
+    } else if (dev.kind.isOn && !this.liveCameraStreamURL && this.resolveCameraSource(dev).backend === "xiaomiCloud") {
       void this.resolveCloudCameraStream(dev);
     }
     this.host.render();
@@ -234,7 +279,8 @@ export class CameraLiveController {
       ? this.host.devices.find((d) => d.id === closingId) ??
         (this.activeLiveCameraSnapshot?.id === closingId ? this.activeLiveCameraSnapshot : undefined)
       : undefined;
-    if (closingDev && this.host.settings.connectionMode === "xiaomiCloud") {
+    const closingIsXiaomi = closingDev ? this.resolveCameraSource(closingDev).backend === "xiaomiCloud" : false;
+    if (closingDev && closingIsXiaomi) {
       this.recentP2PSessionActivityMs.set(this.p2pSessionKeyForDevice(closingDev), Date.now());
     }
     this.clearCameraKeepAlive();
@@ -243,14 +289,15 @@ export class CameraLiveController {
     this.activeLiveCameraId = null;
     this.activeLiveCameraSnapshot = null;
     this.syncModalEscapeListener();
-    if (closingId && this.host.settings.connectionMode === "xiaomiCloud" && closingDev) {
+    if (closingId && closingIsXiaomi && closingDev) {
       void this.releaseCameraP2PSession(closingDev, this.liveCameraToken);
     }
   }
 
   public resolveHaCameraStreamUrl(dev: SmartDevice): string | null {
-    if (this.host.settings.connectionMode !== "homeAssistant" || dev.kind.kind !== "camera") return null;
-    const rawPath = dev.kind.snapshotPath?.trim() ?? "";
+    const { backend, sourceDev } = this.resolveCameraSource(dev);
+    if (backend !== "homeAssistant" || sourceDev.kind.kind !== "camera") return null;
+    const rawPath = sourceDev.kind.snapshotPath?.trim() ?? "";
     if (!rawPath) return null;
     const streamPath = rawPath.replace(/^\/api\/camera_proxy\//i, "/api/camera_proxy_stream/");
     if (/^https?:\/\//i.test(streamPath)) return streamPath;
@@ -276,6 +323,7 @@ export class CameraLiveController {
       if (this.liveCameraHidden) this.closeCameraLiveView();
     }, this.cameraKeepAliveMs);
     this.host.render();
+    this.host.pipeline?.cameraStandby.enterWarmStandby(this.host.root);
   }
 
   public clearCameraKeepAlive(): void {
@@ -286,12 +334,14 @@ export class CameraLiveController {
   }
 
   public closeCameraLiveView(): void {
+    this.host.pipeline?.cameraStandby.cancel();
     const closingId = this.activeLiveCameraId;
     const closingDev = closingId
       ? this.host.devices.find((d) => d.id === closingId) ??
         (this.activeLiveCameraSnapshot?.id === closingId ? this.activeLiveCameraSnapshot : undefined)
       : undefined;
-    if (closingDev && this.host.settings.connectionMode === "xiaomiCloud") {
+    const closingIsXiaomi = closingDev ? this.resolveCameraSource(closingDev).backend === "xiaomiCloud" : false;
+    if (closingDev && closingIsXiaomi) {
       this.recentP2PSessionActivityMs.set(this.p2pSessionKeyForDevice(closingDev), Date.now());
     }
     this.reconnectingP2PSessionId = null;
@@ -310,7 +360,7 @@ export class CameraLiveController {
     this.liveCameraNeedsManualIp = false;
     this.liveCameraLocalIpError = null;
     this.liveCameraDraftIp = null;
-    if (closingId && this.host.settings.connectionMode === "xiaomiCloud" && closingDev) {
+    if (closingId && closingIsXiaomi && closingDev) {
       void this.releaseCameraP2PSession(closingDev, this.liveCameraToken);
     }
     invokeTauriVoid("set_pin_popover", { pin: this.host.shouldKeepPopoverPinned() });
@@ -327,15 +377,15 @@ export class CameraLiveController {
     releaseToken = this.liveCameraToken,
     allowActiveCamera = false,
   ): Promise<void> {
-    const session = this.host.settings.miSession;
-    if (!session) return Promise.resolve();
+    const { backend, sourceDev, miSession: session } = this.resolveCameraSource(dev);
+    if (backend !== "xiaomiCloud" || !session) return Promise.resolve();
     const run = (async () => {
       try {
         const spec = await this.host.specResolver.resolve({
-          did: dev.id,
-          name: dev.name,
-          model: dev.model,
-          isOnline: dev.isOnline,
+          did: sourceDev.id,
+          name: sourceDev.name,
+          model: sourceDev.model,
+          isOnline: sourceDev.isOnline,
           specType: null,
         });
         if (this.liveCameraToken !== releaseToken || (!allowActiveCamera && this.activeLiveCameraId === dev.id)) return;
@@ -344,7 +394,7 @@ export class CameraLiveController {
         if (!p2pSvc || !stopAct) return;
         const client = new MiCloudClient(session, this.host.transport);
         await client
-          .callAction({ did: dev.id, siid: p2pSvc.iid, aiid: stopAct.iid, inputs: [] })
+          .callAction({ did: sourceDev.id, siid: p2pSvc.iid, aiid: stopAct.iid, inputs: [] })
           .catch(() => {});
       } catch {
         // Best effort only; the bridge teardown below already freed local resources.
@@ -683,7 +733,10 @@ export class CameraLiveController {
     this.liveCameraLoading = true;
     this.host.render();
     try {
-      if (this.host.settings.connectionMode === "homeAssistant") {
+      if (
+        this.host.settings.connectionMode === "homeAssistant" ||
+        isDualSourceEnabled(this.host as unknown as MenuMijiaWindowsApp)
+      ) {
         await this.host.endpointSubmission;
         if (this.liveCameraToken !== token || this.activeLiveCameraId !== did) return false;
       }
@@ -775,7 +828,7 @@ export class CameraLiveController {
   public reconnectCameraLiveView(): void {
     const dev = this.host.devices.find((d) => d.id === this.activeLiveCameraId);
     if (!dev || dev.kind.kind !== "camera") return;
-    if (this.host.settings.connectionMode === "xiaomiCloud") {
+    if (this.resolveCameraSource(dev).backend === "xiaomiCloud") {
       this.reconnectingP2PSessionId = this.p2pSessionKeyForDevice(dev);
     }
     this.stopLiveTransport();
@@ -790,15 +843,16 @@ export class CameraLiveController {
       void this.playCustomCameraUrl(dev.id, this.liveCameraStreamURL);
     } else if (this.liveCameraStreamURL && this.needsHlsTranscodeBridge(this.liveCameraStreamURL)) {
       void this.bridgeHlsStreamToMjpeg(dev.id, this.liveCameraStreamURL);
-    } else if (!this.liveCameraStreamURL && this.host.settings.connectionMode === "xiaomiCloud") {
+    } else if (!this.liveCameraStreamURL && this.resolveCameraSource(dev).backend === "xiaomiCloud") {
       void this.resolveCloudCameraStream(dev);
     }
     this.host.render();
   }
 
   public async resolveCloudCameraStream(dev: SmartDevice): Promise<void> {
-    if (dev.kind.kind !== "camera" || !this.host.settings.miSession) return;
-    if (CameraHubCatalog.isHub(dev.model)) {
+    const { backend, sourceDev, miSession: session } = this.resolveCameraSource(dev);
+    if (dev.kind.kind !== "camera" || backend !== "xiaomiCloud" || !session) return;
+    if (CameraHubCatalog.isHub(sourceDev.model)) {
       this.liveCameraQualityApplies = false;
       this.liveCameraNeedsManualIp = false;
       this.liveCameraLoading = false;
@@ -811,7 +865,7 @@ export class CameraLiveController {
     }
 
     const channel = this.selectedCameraChannel(dev);
-    const requiresHub = CameraHubCatalog.hubModel(dev.model) !== null;
+    const requiresHub = CameraHubCatalog.hubModel(sourceDev.model) !== null;
     this.liveCameraLoading = true;
     this.liveCameraNeedsManualIp = false;
     this.host.render();
@@ -834,14 +888,14 @@ export class CameraLiveController {
         if (stale()) return;
       }
       const spec = await this.host.specResolver.resolve({
-        did: dev.id,
-        name: dev.name,
-        model: dev.model,
-        isOnline: dev.isOnline,
+        did: sourceDev.id,
+        name: sourceDev.name,
+        model: sourceDev.model,
+        isOnline: sourceDev.isOnline,
         specType: null,
       });
       if (stale()) return;
-      const client = new MiCloudClient(this.host.settings.miSession, this.host.transport);
+      const client = new MiCloudClient(session, this.host.transport);
 
       // 1. Try cloud HLS action on primary standalone lens if supported by the model
       const streamSvc =
@@ -857,7 +911,7 @@ export class CameraLiveController {
           if (stale()) return;
           try {
             const res = await client.callAction({
-              did: dev.id,
+              did: sourceDev.id,
               siid: streamSvc.iid,
               aiid: act.iid,
               inputs,
@@ -913,7 +967,7 @@ export class CameraLiveController {
       const p2pAct = p2pSvc?.actions.find((a) => a.type.includes("start-p2p-stream"));
       if (p2pSvc && stopAct) {
         const released = await client
-          .callAction({ did: dev.id, siid: p2pSvc.iid, aiid: stopAct.iid, inputs: [] })
+          .callAction({ did: sourceDev.id, siid: p2pSvc.iid, aiid: stopAct.iid, inputs: [] })
           .then(() => true)
           .catch(() => false);
         if (stale()) return;
@@ -925,7 +979,7 @@ export class CameraLiveController {
       if (stale()) return;
       if (p2pSvc && p2pAct) {
         startedP2PSession = await client
-          .callAction({ did: dev.id, siid: p2pSvc.iid, aiid: p2pAct.iid, inputs: [] })
+          .callAction({ did: sourceDev.id, siid: p2pSvc.iid, aiid: p2pAct.iid, inputs: [] })
           .then(() => true)
           .catch(() => false);
         if (startedP2PSession) {
@@ -941,7 +995,7 @@ export class CameraLiveController {
       if (window.__TAURI_INTERNALS__?.invoke) {
         const target = await resolveLiveCameraTarget(
           client,
-          dev,
+          sourceDev,
           this.host.devices,
           this.host.settings.selectedHomeId,
         );
@@ -1099,7 +1153,7 @@ export class CameraLiveController {
       if (dev && dev.kind.kind === "camera" && dev.kind.isOn) {
         if (this.liveCameraStreamURL && this.needsHlsTranscodeBridge(this.liveCameraStreamURL)) {
           void this.bridgeHlsStreamToMjpeg(id, this.liveCameraStreamURL);
-        } else if (!this.liveCameraStreamURL && this.host.settings.connectionMode === "xiaomiCloud") {
+        } else if (!this.liveCameraStreamURL && this.resolveCameraSource(dev).backend === "xiaomiCloud") {
           void this.resolveCloudCameraStream(dev);
         }
       }

@@ -38,6 +38,8 @@ export function upgradeCachedDevices(devices: SmartDevice[], migrateLegacyFridge
       };
     }
     if (migrateLegacyFridgeCache && dev.kind.kind === "fridge") {
+      // A legacy cache can carry ids from the guessed fallback; cloud re-synthesis
+      // restores only verified writable targets afterwards (#148).
       return {
         ...dev,
         kind: {
@@ -261,6 +263,7 @@ export function writeAskWhenUnsure(settings: { askWhenUnsure?: boolean }, enable
   settings.askWhenUnsure = enabled;
 }
 
+/** Writes settings without credentials; secrets belong to the Windows Credential Manager (#28). */
 export function writeSettingsForStorage(settings: object): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitizeSettingsForStorage(settings)));

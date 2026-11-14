@@ -23,6 +23,9 @@ import {
   renderWeeklyHealthMarkdown,
   tr3,
   weeklyHealthNotificationSummary,
+  type HealthClimateRange,
+  type HealthEnergyDayTotal,
+  type HealthEnergyDeviceTotal,
   type KeyValueStorageLike,
   type RecordedSafetyAlert,
   type SafetyAlert,
@@ -30,9 +33,13 @@ import {
   type SensorObservation,
   type WeeklyHealthReport,
 } from "../core/safetyAndHealth.js";
+import { getScopedEnergyHistory } from "../core/energyHistory.js";
+import { resolveSensorHistoryScope, sharedSensorHistoryStore } from "../core/sensorHistory.js";
 import type { SmartDevice } from "../core/models.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { SF_ICONS } from "./appConstants.js";
+import { getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
+import { energyScopeForHost } from "./energySettingsView.js";
 import { withAliases } from "./panelPrefs.js";
 import {
   recordUndoKindSnapshots,
@@ -151,18 +158,31 @@ function isLiveSnapshotReadyForTelemetry(host: MenuMijiaWindowsApp): boolean {
   return true;
 }
 
-export function computeActivityScopeKey(host: Pick<MenuMijiaWindowsApp, "settings">): string {
+export function computeActivityScopeKey(
+  host: Pick<MenuMijiaWindowsApp, "settings" | "miAccountsOverride" | "multiAccountState" | "dualSourceEnabledOverride">,
+): string {
   const s = host.settings;
   const mode = s.connectionMode;
+  if (mode === "demo") {
+    return `demo:${s.selectedHomeId ?? "all"}`;
+  }
+  const fullHost = host as MenuMijiaWindowsApp;
+  const accounts = host.miAccountsOverride ?? getHostMiAccountsState(fullHost)?.accounts ?? [];
+  const accountIds = accounts.map((a) => a.id.trim()).filter(Boolean);
+  const multiSuffix = accountIds.length > 1 ? `:${accountIds.join("+")}` : "";
+  const userId = s.miSession?.userId ?? (accountIds[0] ?? "signed-out");
+  const region = normalizeMiCloudRegion(s.miSession?.region ?? s.miCloudRegion ?? "cn");
+  const homeId = s.selectedHomeId ?? "all";
+  const miKey = `mi:${userId}:${region}:${homeId}${multiSuffix}`;
+  const haKey = `ha:${homeAssistantIdentity(s.haBaseURL ?? "", s.haToken ?? "") ?? "unconfigured"}`;
+  if (isDualSourceEnabled(fullHost)) {
+    return `dual:${miKey}|${haKey}`;
+  }
   if (mode === "xiaomiCloud") {
-    const userId = s.miSession?.userId ?? "signed-out";
-    const region = normalizeMiCloudRegion(s.miSession?.region ?? s.miCloudRegion ?? "cn");
-    const homeId = s.selectedHomeId ?? "all";
-    return `mi:${userId}:${region}:${homeId}`;
+    return miKey;
   }
   if (mode === "homeAssistant") {
-    const identity = homeAssistantIdentity(s.haBaseURL ?? "", s.haToken ?? "") ?? "unconfigured";
-    return `ha:${identity}`;
+    return haKey;
   }
   return `demo:${s.selectedHomeId ?? "all"}`;
 }
@@ -256,6 +276,7 @@ export function clearHostActivitiesOnSignOut(host: unknown): void {
   center.scopeKey = computeActivityScopeKey(host);
   center.lastSourceRevision = host.sourceRevision ?? 0;
   center.hasObservedNonEmptyDevices = false;
+  center.offlineHistory.clear();
   clearCenterActivities(center);
 }
 
@@ -419,6 +440,53 @@ export function recordSafetyAlerts(
   return true;
 }
 
+function buildReportEnergyAndClimateInputs(
+  host: MenuMijiaWindowsApp,
+  aliased: readonly SmartDevice[],
+  nowMs: number,
+): {
+  readonly dailyEnergy: readonly HealthEnergyDayTotal[];
+  readonly energyByDevice: readonly HealthEnergyDeviceTotal[];
+  readonly climate: Readonly<Record<string, HealthClimateRange>>;
+} {
+  const nowDate = new Date(nowMs);
+  const energyHistory = getScopedEnergyHistory(energyScopeForHost(host));
+  const dailyEnergy: HealthEnergyDayTotal[] = energyHistory
+    .dailyTotals(14, nowDate)
+    .map((day) => ({ kwh: day.kwh, isObserved: day.isObserved }));
+  const energyByDevice: HealthEnergyDeviceTotal[] = energyHistory
+    .deviceTotals(7, aliased, nowDate)
+    .map((entry) => ({
+      id: entry.deviceId,
+      name: entry.roomName.trim() ? `${entry.roomName} · ${entry.name}` : entry.name,
+      kwh: entry.kwh,
+    }));
+
+  const sensorStore = sharedSensorHistoryStore();
+  const accounts = host.miAccountsOverride ?? getHostMiAccountsState(host)?.accounts ?? [];
+  sensorStore.setConnectionScope(
+    resolveSensorHistoryScope({
+      connectionMode: host.settings.connectionMode,
+      haBaseURL: host.settings.haBaseURL ?? "",
+      miSession: host.settings.miSession ?? null,
+      dualSourceEnabled: isDualSourceEnabled(host),
+      activeAccountIds: accounts.map((a) => a.id),
+    }),
+  );
+  const climate: Record<string, HealthClimateRange> = {};
+  for (const dev of aliased) {
+    const temp = sensorStore.summary(dev.id, "7d", "temperature", nowMs);
+    const hum = sensorStore.summary(dev.id, "7d", "humidity", nowMs);
+    if (temp || hum) {
+      climate[dev.id] = {
+        ...(temp ? { temperature: { min: temp.min, max: temp.max } } : {}),
+        ...(hum ? { humidity: { min: hum.min, max: hum.max } } : {}),
+      };
+    }
+  }
+  return { dailyEnergy, energyByDevice, climate };
+}
+
 export function deliverWeeklyHealthReport(
   host: MenuMijiaWindowsApp,
   nowMs = Date.now(),
@@ -429,10 +497,15 @@ export function deliverWeeklyHealthReport(
 ): WeeklyReportNoticeCard {
   const center = getHostActivityCenter(host, { storage: options?.storage });
   const slotMs = WeeklyHealthReportSchedule.latestSlotMs(nowMs);
+  const aliased = aliasedHostDevices(host);
+  const inputs = options?.report ? null : buildReportEnergyAndClimateInputs(host, aliased, nowMs);
   const report =
     options?.report ??
     buildWeeklyHealthReport({
-      devices: aliasedHostDevices(host),
+      devices: aliased,
+      dailyEnergy: inputs?.dailyEnergy,
+      energyByDevice: inputs?.energyByDevice,
+      climate: inputs?.climate,
       offlineHistory: center.offlineHistory,
       nowMs,
     });
@@ -452,13 +525,21 @@ export function deliverWeeklyHealthReport(
   return card;
 }
 
-export async function copyWeeklyHealthMarkdown(host: MenuMijiaWindowsApp): Promise<string> {
+export async function copyWeeklyHealthMarkdown(host: MenuMijiaWindowsApp, nowMs = Date.now()): Promise<string> {
   const center = getHostActivityCenter(host);
+  const aliased = aliasedHostDevices(host);
+  const inputs = center.weeklyReportCard?.report
+    ? null
+    : buildReportEnergyAndClimateInputs(host, aliased, nowMs);
   const report =
     center.weeklyReportCard?.report ??
     buildWeeklyHealthReport({
-      devices: aliasedHostDevices(host),
+      devices: aliased,
+      dailyEnergy: inputs?.dailyEnergy,
+      energyByDevice: inputs?.energyByDevice,
+      climate: inputs?.climate,
       offlineHistory: center.offlineHistory,
+      nowMs,
     });
   const markdown = renderWeeklyHealthMarkdown(report, host.settings.interfaceLanguage);
   center.lastClipboardMarkdown = markdown;
@@ -1124,6 +1205,7 @@ export function bindActivityStackAfterRender(host: MenuMijiaWindowsApp): void {
   const center = getHostActivityCenter(host);
 
   for (const btn of host.root.querySelectorAll<HTMLButtonElement>("[data-activity-toggle-expand]")) {
+    if (btn.closest("[data-exit-ghost]")) continue;
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       center.isExpanded = !center.isExpanded;
@@ -1132,6 +1214,7 @@ export function bindActivityStackAfterRender(host: MenuMijiaWindowsApp): void {
   }
 
   for (const btn of host.root.querySelectorAll<HTMLButtonElement>("[data-activity-dismiss]")) {
+    if (btn.closest("[data-exit-ghost]")) continue;
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       const id = btn.dataset.activityDismiss;
@@ -1142,6 +1225,7 @@ export function bindActivityStackAfterRender(host: MenuMijiaWindowsApp): void {
   }
 
   for (const btn of host.root.querySelectorAll<HTMLButtonElement>("[data-activity-clear-all]")) {
+    if (btn.closest("[data-exit-ghost]")) continue;
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       dismissAllActivities(host);
@@ -1150,6 +1234,7 @@ export function bindActivityStackAfterRender(host: MenuMijiaWindowsApp): void {
   }
 
   for (const btn of host.root.querySelectorAll<HTMLButtonElement>("[data-activity-safety-off]")) {
+    if (btn.closest("[data-exit-ghost]")) continue;
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       const alertId = btn.dataset.activitySafetyOff;
@@ -1159,6 +1244,7 @@ export function bindActivityStackAfterRender(host: MenuMijiaWindowsApp): void {
   }
 
   for (const btn of host.root.querySelectorAll<HTMLButtonElement>("[data-activity-auto-undo]")) {
+    if (btn.closest("[data-exit-ghost]")) continue;
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       const runId = btn.dataset.activityAutoUndo;
@@ -1168,6 +1254,7 @@ export function bindActivityStackAfterRender(host: MenuMijiaWindowsApp): void {
   }
 
   for (const btn of host.root.querySelectorAll<HTMLButtonElement>("[data-activity-copy-health]")) {
+    if (btn.closest("[data-exit-ghost]")) continue;
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       void copyWeeklyHealthMarkdown(host);
@@ -1175,6 +1262,7 @@ export function bindActivityStackAfterRender(host: MenuMijiaWindowsApp): void {
   }
 
   for (const btn of host.root.querySelectorAll<HTMLButtonElement>("[data-activity-open-doorbell]")) {
+    if (btn.closest("[data-exit-ghost]")) continue;
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       const ringKey = btn.dataset.activityOpenDoorbell;

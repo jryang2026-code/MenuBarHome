@@ -496,13 +496,24 @@ export function resolveSensorHistoryScope(settings: {
   readonly connectionMode: "demo" | "xiaomiCloud" | "homeAssistant";
   readonly haBaseURL: string;
   readonly miSession: Pick<MiSession, "userId" | "region"> | null;
+  readonly dualSourceEnabled?: boolean;
+  readonly activeAccountIds?: readonly string[];
 }): string {
   if (settings.connectionMode === "demo") return "demo";
-  if (settings.connectionMode === "homeAssistant") return homeAssistantHistoryScope(settings.haBaseURL);
-  if (settings.miSession && settings.miSession.userId.trim() !== "") {
-    return `mi:${normalizeMiCloudRegion(settings.miSession.region)}:${settings.miSession.userId.trim()}`;
+  const haScope = homeAssistantHistoryScope(settings.haBaseURL);
+  const accountIds = (settings.activeAccountIds ?? []).map((id) => id.trim()).filter(Boolean);
+  const multiSuffix = accountIds.length > 1 ? `:${accountIds.join("+")}` : "";
+  const miScope =
+    settings.miSession && settings.miSession.userId.trim() !== ""
+      ? `mi:${normalizeMiCloudRegion(settings.miSession.region)}:${settings.miSession.userId.trim()}${multiSuffix}`
+      : accountIds.length > 0
+        ? `mi:accounts:${accountIds.join("+")}`
+        : "mi:signed-out";
+  if (settings.dualSourceEnabled) {
+    return `dual:${miScope}|${haScope}`;
   }
-  return "mi:signed-out";
+  if (settings.connectionMode === "homeAssistant") return haScope;
+  return miScope;
 }
 
 export interface RecordSensorOptions {

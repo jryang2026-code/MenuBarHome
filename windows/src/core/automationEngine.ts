@@ -1,3 +1,4 @@
+import { ManualControlPolicy } from "./assistant/actionPolicy.js";
 import { inverseCommands } from "./commandEffects.js";
 import type { LanguagePreference } from "./i18n.js";
 import {
@@ -678,7 +679,19 @@ function compareMetric(value: number, comparison: SensorThresholdComparison, thr
   return value <= threshold;
 }
 
-function commandsForPowerIntent(device: SmartDevice, isOn: boolean): DeviceCommand[] {
+function commandsForPowerIntent(
+  device: SmartDevice,
+  isOn: boolean,
+  allDevices: readonly SmartDevice[] = [device],
+): DeviceCommand[] {
+  if (
+    ManualControlPolicy.requiresConfirmation(
+      { targetId: device.id, operation: { kind: "power", isOn } },
+      allDevices,
+    )
+  ) {
+    return [];
+  }
   const k = device.kind;
   switch (k.kind) {
     case "light":
@@ -753,11 +766,12 @@ export async function executeAutomationRule(
       }
     }
   } else if (rule.action.kind === "devices") {
+    const policyDevices = options.displayDevices ?? host.devices;
     for (const deviceId of rule.action.deviceIds) {
       if ((host.sourceRevision ?? 0) !== startingRevision) return null;
       const dev = host.devices.find((d) => d.id === deviceId);
       if (!dev || !dev.isOnline || isDeviceActiveOn(dev) === rule.action.isOn) continue;
-      const cmds = commandsForPowerIntent(dev, rule.action.isOn);
+      const cmds = commandsForPowerIntent(dev, rule.action.isOn, policyDevices);
       if (cmds.length === 0) continue;
       const previousKind = structuredClone(dev.kind);
       const restore = cmds.flatMap((cmd) => inverseCommands(dev, cmd));
@@ -1273,8 +1287,11 @@ export class DoorbellDetector {
       );
       if (sameRoomCam) return sameRoomCam.id;
     }
-    const slug = entityId.replace(/^event\./, "").replace(/_doorbell.*$/, "");
-    const bySlug = devices.find((d) => d.kind.kind === "camera" && (d.kind.entityId.includes(slug) || d.id.includes(slug)));
+    const slug = entityId.replace(/^event\./, "").replace(/_doorbell.*$/, "").trim();
+    const bySlug =
+      slug.length > 0
+        ? devices.find((d) => d.kind.kind === "camera" && (d.kind.entityId.includes(slug) || d.id.includes(slug)))
+        : undefined;
     if (bySlug) return bySlug.id;
     const onlyCam = devices.filter((d) => d.kind.kind === "camera");
     if (onlyCam.length === 1) return onlyCam[0]!.id;

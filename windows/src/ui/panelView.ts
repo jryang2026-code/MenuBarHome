@@ -50,6 +50,11 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
 
             <div class="cc-header-controls">
               ${renderPersistentUndoPill(host)}
+              ${
+                host.isEditingLayout
+                  ? `<button type="button" class="cc-edit-done-chip" data-done-editing="true">${host.escapeHtml(trText("完成", "Done"))}</button>`
+                  : ""
+              }
               <button
                 class="cc-circle-btn ${host.isListeningVoice ? "is-recording" : ""}"
                 id="btn-mic"
@@ -241,19 +246,15 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
       ${host.renderContextMenu()}
       ${host.renderPrompt()}
   `;
-  const existingPopover = host.root.querySelector<HTMLElement>(":scope > .cc-popover");
-  if (existingPopover) {
-    if (existingPopover.className !== popoverClass) {
-      existingPopover.className = popoverClass;
-    }
-    existingPopover.innerHTML = innerContent;
-  } else {
-    host.root.innerHTML = `<div class="${popoverClass}">${innerContent}</div>`;
-  }
-
-  host.bindEvents();
-  reconcileUndoBannerHoverAfterRender(host);
-  bindActivityStackAfterRender(host);
+  host.pipeline.patchPopover(host, popoverClass, innerContent);
+  host.pipeline.eventScope.rebind(host.root, () => {
+    host.bindEvents();
+    reconcileUndoBannerHoverAfterRender(host);
+    bindActivityStackAfterRender(host);
+    host.root.querySelectorAll<HTMLElement>("[data-done-editing]").forEach((btn) => {
+      btn.addEventListener("click", () => host.stopEditing());
+    });
+  });
 }
 
 function renderNotificationStack(host: MenuMijiaWindowsApp): string {
