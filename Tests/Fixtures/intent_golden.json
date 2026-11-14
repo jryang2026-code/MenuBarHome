@@ -194,6 +194,18 @@
       ]
     },
     {
+      "utterance": "空调调高十五度",
+      "expected": [
+        { "targetId": "dev_ac", "kind": "targetTemperature", "value": 31 }
+      ]
+    },
+    {
+      "utterance": "客厅空调调低八度",
+      "expected": [
+        { "targetId": "dev_ac", "kind": "targetTemperature", "value": 18 }
+      ]
+    },
+    {
       "utterance": "风扇调到高档",
       "expected": [
         { "targetId": "dev_fan", "kind": "fanSpeed", "value": "Level3" }

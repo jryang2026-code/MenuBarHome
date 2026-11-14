@@ -39,6 +39,7 @@ import { MiotSynthesizer } from "../src/core/miCloud/synthesis.js";
 import { facetServiceTitle, lockedControlIdForAlert } from "../src/core/miCloud/feedAction.js";
 import { facetAlertText } from "../src/core/miotFacetText.js";
 import type { FacetControl } from "../src/core/models.js";
+import { LocalIntentParser } from "../src/core/assistant/intent.js";
 
 let dom: Window | null = null;
 
@@ -1107,5 +1108,24 @@ describe("SpeakerSpec optional ttsActionId and directiveActionId fields", () => 
       assert.equal(currentLanguage(), "zh-Hant");
       assert.equal(facetServiceTitle("physical-controls-locked"), "按鍵鎖");
     });
+  });
+
+  it("preserves exact script on scene-name collisions and rejects ambiguous normalized matches", () => {
+    const scenes = [
+      { id: "scene_simp", name: "晚间", entityId: "scene.simp" },
+      { id: "scene_trad", name: "晚間", entityId: "scene.trad" },
+    ];
+    const tradPlan = LocalIntentParser.parse("执行晚間", [], scenes);
+    assert.deepEqual(tradPlan?.intents, [{ targetId: "scene_trad", operation: { kind: "activateScene" } }]);
+    const simpPlan = LocalIntentParser.parse("执行晚间", [], scenes);
+    assert.deepEqual(simpPlan?.intents, [{ targetId: "scene_simp", operation: { kind: "activateScene" } }]);
+    const fallbackPlan = LocalIntentParser.parse("執行晚間", [], [{ id: "scene_simp", name: "晚间", entityId: "scene.simp" }]);
+    assert.deepEqual(fallbackPlan?.intents, [{ targetId: "scene_simp", operation: { kind: "activateScene" } }]);
+    const dupScenes = [
+      { id: "scene_a", name: "晚間模式", entityId: "scene.a" },
+      { id: "scene_b", name: "晚間場景", entityId: "scene.b" },
+    ];
+    assert.equal(LocalIntentParser.parse("执行晚間", [], dupScenes), null);
+    assert.equal(LocalIntentParser.parse("执行晚间", [], dupScenes), null);
   });
 });

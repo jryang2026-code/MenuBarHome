@@ -125,6 +125,29 @@ export function normalizeChineseUtterance(utterance: string): string {
   return toSimplifiedChinese(utterance).replace(CN_IGNORABLE_REGEX, "").replace(/^\.+|\.+$/g, "");
 }
 
+export function strippedRawSceneText(raw: string): string {
+  let chars = Array.from(raw.replace(CN_IGNORABLE_REGEX, "").replace(/^\.+|\.+$/g, ""));
+  let normChars = Array.from(toSimplifiedChinese(chars.join("")));
+  const normJoined = normChars.join("");
+  for (const verb of CN_SCENE_VERBS) {
+    if (normJoined.startsWith(verb)) {
+      const verbLen = Array.from(verb).length;
+      chars = chars.slice(verbLen);
+      normChars = normChars.slice(verbLen);
+      break;
+    }
+  }
+  const normAfterVerb = normChars.join("");
+  for (const suffix of CN_SCENE_SUFFIXES) {
+    const suffixLen = Array.from(suffix).length;
+    if (normAfterVerb.endsWith(suffix) && chars.length > suffixLen) {
+      chars = chars.slice(0, -suffixLen);
+      break;
+    }
+  }
+  return chars.join("");
+}
+
 export function strippedSceneText(raw: string): string {
   let s = normalizeChineseUtterance(raw);
   for (const verb of CN_SCENE_VERBS) {

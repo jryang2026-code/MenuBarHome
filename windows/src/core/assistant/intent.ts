@@ -31,6 +31,7 @@ import {
   longestFirst,
   normalizeChineseUtterance,
   spokenChineseNumber,
+  strippedRawSceneText,
   strippedSceneText,
   toSimplifiedChinese,
 } from "./chineseIntentTables.js";
@@ -1186,21 +1187,40 @@ export const LocalIntentParser = {
       return this.parseEnglish(utterance, devices, scenes, options);
     }
 
+    const rawSceneCore = strippedRawSceneText(utterance);
     const sceneCore = strippedSceneText(text);
-    const exactScene = scenes.find((scene) => scene.name && strippedSceneText(scene.name) === sceneCore);
-    if (exactScene) {
-      return scenePlan(exactScene, devices, scenes);
+    const rawExactScenes = scenes.filter(
+      (scene) => scene.name && strippedRawSceneText(scene.name) === rawSceneCore,
+    );
+    if (rawExactScenes.length === 1 && rawExactScenes[0]) {
+      return scenePlan(rawExactScenes[0], devices, scenes);
+    }
+    if (rawExactScenes.length === 0) {
+      const exactScenes = scenes.filter(
+        (scene) => scene.name && strippedSceneText(scene.name) === sceneCore,
+      );
+      if (exactScenes.length === 1 && exactScenes[0]) {
+        return scenePlan(exactScenes[0], devices, scenes);
+      }
     }
 
     const devicePlan = parseChineseDeviceCommand(text, devices, scenes, options);
     if (devicePlan) return devicePlan;
 
     if (Array.from(sceneCore).length >= 2) {
-      const containing = scenes.filter(
-        (scene) => scene.name && strippedSceneText(scene.name).includes(sceneCore),
+      const rawContaining = scenes.filter(
+        (scene) => scene.name && strippedRawSceneText(scene.name).includes(rawSceneCore),
       );
-      if (containing.length === 1 && containing[0]) {
-        return scenePlan(containing[0], devices, scenes);
+      if (rawContaining.length === 1 && rawContaining[0]) {
+        return scenePlan(rawContaining[0], devices, scenes);
+      }
+      if (rawContaining.length === 0) {
+        const containing = scenes.filter(
+          (scene) => scene.name && strippedSceneText(scene.name).includes(sceneCore),
+        );
+        if (containing.length === 1 && containing[0]) {
+          return scenePlan(containing[0], devices, scenes);
+        }
       }
     }
 

@@ -131,9 +131,17 @@ public enum LocalIntentParser {
             .trimmingCharacters(in: CharacterSet(charactersIn: "."))
         guard !text.isEmpty else { return nil }
 
+        let rawSceneCore = strippedRawSceneText(utterance)
         let sceneCore = strippedSceneText(text)
-        if let scene = scenes.first(where: { strippedSceneText($0.name) == sceneCore }) {
+        let rawExactScenes = scenes.filter { !$0.name.isEmpty && strippedRawSceneText($0.name) == rawSceneCore }
+        if rawExactScenes.count == 1, let scene = rawExactScenes.first {
             return scenePlan(scene)
+        }
+        if rawExactScenes.isEmpty {
+            let exactScenes = scenes.filter { !$0.name.isEmpty && strippedSceneText($0.name) == sceneCore }
+            if exactScenes.count == 1, let scene = exactScenes.first {
+                return scenePlan(scene)
+            }
         }
         if let plan = parseDeviceCommand(
             text,
@@ -144,9 +152,17 @@ public enum LocalIntentParser {
         ) {
             return plan
         }
-        let containing = scenes.filter { sceneCore.count >= 2 && strippedSceneText($0.name).contains(sceneCore) }
-        if containing.count == 1, let scene = containing.first {
-            return scenePlan(scene)
+        if sceneCore.count >= 2 {
+            let rawContaining = scenes.filter { !$0.name.isEmpty && strippedRawSceneText($0.name).contains(rawSceneCore) }
+            if rawContaining.count == 1, let scene = rawContaining.first {
+                return scenePlan(scene)
+            }
+            if rawContaining.isEmpty {
+                let containing = scenes.filter { !$0.name.isEmpty && strippedSceneText($0.name).contains(sceneCore) }
+                if containing.count == 1, let scene = containing.first {
+                    return scenePlan(scene)
+                }
+            }
         }
         if utterance.unicodeScalars.contains(where: { $0.isASCII && CharacterSet.letters.contains($0) }) {
             return parseEnglishCommand(
@@ -167,6 +183,25 @@ public enum LocalIntentParser {
             reply: IntentReply.describe(intents, devices: [], scenes: [scene]),
             source: .local
         )
+    }
+
+    private static func strippedRawSceneText(_ raw: String) -> String {
+        let cleaned = String(String.UnicodeScalarView(raw.unicodeScalars.filter { !ignorable.contains($0) }))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        var chars = Array(cleaned)
+        var normChars = Array(toSimplifiedChinese(cleaned))
+        let normJoined = String(normChars)
+        for verb in sceneVerbs.sorted(by: { $0.count > $1.count }) where normJoined.hasPrefix(verb) {
+            chars.removeFirst(verb.count)
+            normChars.removeFirst(verb.count)
+            break
+        }
+        let normAfterVerb = String(normChars)
+        for suffix in sceneSuffixes where normAfterVerb.hasSuffix(suffix) && chars.count > suffix.count {
+            chars.removeLast(suffix.count)
+            break
+        }
+        return String(chars)
     }
 
     private static func strippedSceneText(_ raw: String) -> String {
@@ -568,9 +603,23 @@ public enum LocalIntentParser {
     }
 
     private static func spokenNumber(_ s: String) -> Int? {
-        if let n = Int(s) { return n }
-        let digits: [String: Int] = ["一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10]
-        return digits[s]
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let n = Int(trimmed) { return n }
+        let digits: [Character: Int] = ["零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9]
+        let chars = Array(trimmed)
+        if chars.count == 2, chars[0] == "零", let ones = digits[chars[1]] {
+            return ones
+        }
+        if let tenIndex = chars.firstIndex(of: "十") {
+            guard tenIndex <= 1, chars.count - tenIndex <= 2 else { return nil }
+            let tens = tenIndex == 0 ? 1 : digits[chars[0]]
+            let ones = tenIndex == chars.count - 1 ? 0 : digits[chars[tenIndex + 1]]
+            guard let tens, tens > 0, let ones else { return nil }
+            return tens * 10 + ones
+        }
+        guard chars.count == 1 else { return nil }
+        return digits[chars[0]]
     }
 
     private static func longestFirst(_ words: Set<String>) -> [String] {
@@ -587,18 +636,21 @@ public enum LocalIntentParser {
 
     private static func extractNumericOperations(_ text: inout String) -> [IntentOperation] {
         // Relative degrees first, otherwise "调高2度" would read as an absolute 2°C.
-        let stepPattern = #"(调高|调低|升高|降低|升|降|高|低)(\d{1,2}|[一二两三四五六七八九十])(?:度|℃|°C|°)"#
+        let stepPattern = #"(调高|调低|升高|降低|升|降|高|低)(\d{1,2}|[零一二两三四五六七八九十]+)(?:度|℃|°C|°)"#
         var ops: [IntentOperation] = []
         if let regex = try? NSRegularExpression(pattern: stepPattern) {
             let ns = text as NSString
             let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+            var stepMatched = false
             for match in matches {
                 let direction = ns.substring(with: match.range(at: 1))
-                guard let amount = spokenNumber(ns.substring(with: match.range(at: 2))) else { continue }
+                guard let amount = spokenNumber(ns.substring(with: match.range(at: 2))),
+                      amount > 0, amount <= 99 else { continue }
                 let sign: Double = (direction.contains("高") || direction.contains("升")) ? 1 : -1
                 ops.append(.temperatureStep(sign * Double(amount)))
+                stepMatched = true
             }
-            if !matches.isEmpty {
+            if stepMatched {
                 text = regex.stringByReplacingMatches(
                     in: text, range: NSRange(location: 0, length: ns.length), withTemplate: String(consumed)
                 )

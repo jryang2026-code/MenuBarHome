@@ -136,14 +136,19 @@ public enum DelayPhrase {
 
     /// Arabic digits or Chinese numerals up to 99 (十五, 二十, 四十五).
     static func spokenNumber(_ s: String) -> Int? {
-        if let n = Int(s) { return n }
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let n = Int(trimmed) { return n }
         let digits: [Character: Int] = ["零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9]
-        let chars = Array(s)
+        let chars = Array(trimmed)
+        if chars.count == 2, chars[0] == "零", let ones = digits[chars[1]] {
+            return ones
+        }
         if let tenIndex = chars.firstIndex(of: "十") {
             guard tenIndex <= 1, chars.count - tenIndex <= 2 else { return nil }
             let tens = tenIndex == 0 ? 1 : digits[chars[0]]
             let ones = tenIndex == chars.count - 1 ? 0 : digits[chars[tenIndex + 1]]
-            guard let tens, let ones else { return nil }
+            guard let tens, tens > 0, let ones else { return nil }
             return tens * 10 + ones
         }
         guard chars.count == 1 else { return nil }
