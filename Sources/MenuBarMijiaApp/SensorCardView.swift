@@ -63,7 +63,7 @@ struct SensorCardView: View {
         .frame(minHeight: (isCompact && !isExpanded) ? 58 : nil, maxHeight: isExpanded ? nil : .infinity)
         .contentShape(Rectangle())
         .onTapGesture {
-            guard !isEditingLayout, let store else { return }
+            guard !isEditingLayout, !forceExpanded, let store else { return }
             withAnimation(AppleMotion.snappySpring) {
                 store.toggleExpanded(device.id)
             }

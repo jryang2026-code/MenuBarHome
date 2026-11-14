@@ -243,9 +243,10 @@ public enum AppURLParser {
     static func decimal(_ raw: String?) -> Double? {
         guard let raw else { return nil }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Plain decimals only: `Double` would also take exponents and hex floats (`0x1p3`),
+        // which the Windows parser rejects.
         guard !trimmed.isEmpty,
-              !trimmed.contains("e"),
-              !trimmed.contains("E"),
+              trimmed.allSatisfy({ $0.isASCII && ($0.isNumber || $0 == "." || $0 == "-" || $0 == "+") }),
               let value = Double(trimmed),
               value.isFinite else { return nil }
         return value

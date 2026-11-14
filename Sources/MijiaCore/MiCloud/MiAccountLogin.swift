@@ -146,7 +146,9 @@ public struct MiAccountLogin: Sendable {
                     if String(data: data, encoding: .utf8)?
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                         .isEmpty == true {
-                        await Task.yield()
+                        // An empty 200 means "not scanned yet" answered early; pace the retry like
+                        // the Windows client so this cannot become a tight request loop.
+                        try await Task.sleep(for: .milliseconds(800))
                         continue
                     }
                     scanned = try Self.parseScanResult(data)

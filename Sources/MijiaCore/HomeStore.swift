@@ -196,8 +196,6 @@ public final class HomeStore {
         didSet { HomePreferences.allowAdvancedFacetWrites.save(allowAdvancedFacetWrites, to: userDefaults) }
     }
 
-    public static let allowAdvancedFacetWritesKey = HomePreferences.allowAdvancedFacetWrites.key
-
     public var enableGlobalHotkey: Bool {
         didSet {
             HomePreferences.enableGlobalHotkey.save(enableGlobalHotkey, to: userDefaults)

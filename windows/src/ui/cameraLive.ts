@@ -229,8 +229,6 @@ export class CameraLiveController {
     if (dev.kind.isOn && this.liveCameraStreamURL && window.__TAURI_INTERNALS__?.invoke) {
       this.liveCameraLoading = true;
       void this.playCustomCameraUrl(dev.id, this.liveCameraStreamURL);
-    } else if (dev.kind.isOn && this.liveCameraStreamURL && this.needsHlsTranscodeBridge(this.liveCameraStreamURL)) {
-      void this.bridgeHlsStreamToMjpeg(dev.id, this.liveCameraStreamURL);
     } else if (dev.kind.isOn && !this.liveCameraStreamURL && this.host.settings.connectionMode === "xiaomiCloud") {
       void this.resolveCloudCameraStream(dev);
     }
@@ -799,8 +797,6 @@ export class CameraLiveController {
     if (this.liveCameraStreamURL && window.__TAURI_INTERNALS__?.invoke) {
       this.liveCameraLoading = true;
       void this.playCustomCameraUrl(dev.id, this.liveCameraStreamURL);
-    } else if (this.liveCameraStreamURL && this.needsHlsTranscodeBridge(this.liveCameraStreamURL)) {
-      void this.bridgeHlsStreamToMjpeg(dev.id, this.liveCameraStreamURL);
     } else if (!this.liveCameraStreamURL && this.host.settings.connectionMode === "xiaomiCloud") {
       void this.resolveCloudCameraStream(dev);
     }

@@ -112,7 +112,7 @@ extension ControlCenterPanel {
                             updateCapsule(for: release)
                         }
                         if !store.allOffTargets.isEmpty {
-                            let copy = PanelHeaderCopy.allOff(store: store, scopeName: allOffScopeDisplayName)
+                            let copy = store.allOffHeaderCopy(scopeName: allOffScopeDisplayName)
                             HoldToConfirmButton(
                                 title: copy.title,
                                 count: store.allOffTargets.count,

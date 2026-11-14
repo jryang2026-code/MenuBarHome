@@ -2,12 +2,10 @@ import Foundation
 
 /// Identifies a single controllable field on a `SmartDevice` card so optimistic writes and stale
 /// snapshot protection stay scoped to the edited property rather than freezing unrelated state.
-public enum OptimisticField: String, Hashable, Sendable, CaseIterable {
+public enum OptimisticField: String, Hashable, Sendable {
     case power
     case brightness
     case colorTemperature
-    case rgbColor
-    case colorMode
     case effect
     case targetTemperature
     case hvacMode
@@ -57,11 +55,6 @@ public struct OptimisticLockKey: Hashable, Sendable {
     public var field: OptimisticField? {
         guard case .field(let field) = target else { return nil }
         return field
-    }
-
-    public var facetControlId: String? {
-        guard case .facet(let controlId) = target else { return nil }
-        return controlId
     }
 }
 
