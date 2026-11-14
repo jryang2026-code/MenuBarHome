@@ -41,6 +41,9 @@ struct SafetyMonitor {
         calendar: Calendar = .current
     ) -> [SafetyAlert] {
         var emitted: [SafetyAlert] = []
+        let presentIds = Set(devices.map(\.id))
+        activeSinceByDeviceId = activeSinceByDeviceId.filter { presentIds.contains($0.key) }
+        longRunAlertedForSession.formIntersection(presentIds)
 
         for dev in devices {
             // 1. Starred device offline transition check
@@ -102,8 +105,8 @@ struct SafetyMonitor {
                             deviceId: dev.id,
                             title: L10n.tr("\(dev.name) 已开启超过 45 分钟", "\(dev.name) On for Over 45m"),
                             body: L10n.tr(
-                                "当前功率 \(Int((s.powerWatts ?? 0).rounded()))W，如需关闭可直接点击通知按钮。",
-                                "Drawing \(Int((s.powerWatts ?? 0).rounded()))W. Click the notification action to turn it off."
+                                "当前功率 \(DeviceSynthesizer.roundedInt(s.powerWatts ?? 0) ?? 0)W，如需关闭可直接点击通知按钮。",
+                                "Drawing \(DeviceSynthesizer.roundedInt(s.powerWatts ?? 0) ?? 0)W. Click the notification action to turn it off."
                             ),
                             turnOffCommand: .setSwitch(entityId: s.switchEntityId, isOn: false)
                         )

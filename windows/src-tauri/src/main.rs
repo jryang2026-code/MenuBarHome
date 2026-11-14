@@ -21,7 +21,7 @@ use network::*;
 use placement::{
     drag_settle_finished, fit_panel_height, key_state_is_down, move_is_user_driven,
     move_suppression_deadline, place, primary_button_virtual_key, resized_top, taskbar_edge,
-    PanelAnchor, PanelPlacement, PlacementInput, Rect, DRAG_SETTLE_MS,
+    PanelAnchor, PanelPlacement, PlacementInput, Rect, TaskbarEdge, DRAG_SETTLE_MS,
 };
 use update::*;
 use window::*;
@@ -248,8 +248,10 @@ fn main() {
             secure_store_set,
             secure_store_delete,
             hide_panel,
+            finish_hide_panel,
             quit_app,
             panel_backdrop,
+            panel_is_visible,
             set_panel_height,
             set_pin_popover,
             panel_placement,
@@ -258,14 +260,14 @@ fn main() {
             set_update_available,
             set_global_shortcut,
             set_launch_at_login,
+            get_launch_at_login,
+            get_env_var,
             is_workstation_locked,
             set_tray_tooltip,
             write_raycast_snapshot,
             remove_raycast_snapshot,
             drain_pending_open_urls,
             show_panel_for_url,
-            register_url_scheme,
-            unregister_url_scheme,
             open_release_page,
             install_update,
             start_xiaomi_camera_bridge,
@@ -286,18 +288,17 @@ fn main() {
             load_panel_placement();
             if let Some(main_win) = app.get_webview_window("main") {
                 apply_panel_backdrop(&main_win);
-                position_popover(&main_win, None);
-                let win_for_event = main_win.clone();
+                let _ = position_popover(&main_win, None);
                 let app_for_events = app.handle().clone();
                 main_win.on_window_event(move |event| match event {
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
-                        let _ = win_for_event.hide();
+                        request_hide_panel(&app_for_events);
                     }
                     WindowEvent::Focused(false) => {
                         if !PIN_POPOVER.load(Ordering::SeqCst) {
-                            LAST_FOCUS_LOSS_MS.store(now_epoch_ms(), Ordering::SeqCst);
-                            let _ = win_for_event.hide();
+                            note_panel_focus_loss();
+                            request_hide_panel(&app_for_events);
                         }
                     }
                     // Drag-to-move: a header press hands over to the OS move loop, and the resulting
@@ -316,13 +317,12 @@ fn main() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "toggle" => toggle_main_window(app, None, false),
                     "update" => {
-                        if let Some(window) = app.get_webview_window("main") {
+                        if app.get_webview_window("main").is_some() {
                             PIN_POPOVER.store(true, Ordering::SeqCst);
-                            position_popover(&window, None);
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                            let _ = window.eval(
-                                "window.dispatchEvent(new CustomEvent('menumijia:open-update'))",
+                            present_panel_and_eval(
+                                app,
+                                None,
+                                Some("window.dispatchEvent(new CustomEvent('menumijia:open-update'))"),
                             );
                         } else if let Ok(url) = validated_release_url(RELEASE_PAGE_URL) {
                             open_url_in_browser(&url);
@@ -335,16 +335,24 @@ fn main() {
                     }
                     _ => {}
                 })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
+                .on_tray_icon_event(|tray, event| match event {
+                    TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Down,
+                        position,
+                        ..
+                    } => {
+                        handle_tray_mouse_down(tray.app_handle(), Some(position));
+                    }
+                    TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
                         position,
                         ..
-                    } = event
-                    {
+                    } => {
                         toggle_main_window(tray.app_handle(), Some(position), true);
                     }
+                    _ => {}
                 });
 
             if let Some(icon) = app.default_window_icon() {
@@ -376,15 +384,121 @@ mod tests {
         assert!(validate_hls_stream_url("http://192.0.2.10/live.m3u8#raw=-f").is_err());
         assert!(validate_hls_stream_url("rtsp://192.0.2.10/live").is_err());
         assert!(validate_hls_stream_url("http://192.0.2.10/live\n.m3u8").is_err());
+        assert!(validate_hls_stream_url("http://user:pw@192.0.2.10/live.m3u8").is_err());
+        assert!(validate_hls_stream_url("http://user@192.0.2.10/live.m3u8").is_err());
     }
 
     #[test]
-    fn sidecar_reserves_the_complete_expanded_footprint_at_each_scale() {
-        for scale in [1.0, 1.25, 1.5, 2.0] {
-            assert!(panel_sidecar_on_left(1178.0 * scale, 246.0 * scale, scale));
-            assert!(!panel_sidecar_on_left(1178.0 * scale, 252.0 * scale, scale));
-            assert!(panel_sidecar_on_left(244.0 * scale, 251.0 * scale, scale));
-        }
+    fn flyout_edge_follows_taskbar_when_auto_and_corner_when_pinned() {
+        assert_eq!(flyout_edge_name(TaskbarEdge::Bottom, PanelAnchor::Auto), "bottom");
+        assert_eq!(flyout_edge_name(TaskbarEdge::None, PanelAnchor::Auto), "bottom");
+        assert_eq!(flyout_edge_name(TaskbarEdge::Top, PanelAnchor::Auto), "top");
+        assert_eq!(flyout_edge_name(TaskbarEdge::Left, PanelAnchor::Auto), "left");
+        assert_eq!(flyout_edge_name(TaskbarEdge::Right, PanelAnchor::Auto), "right");
+        assert_eq!(flyout_edge_name(TaskbarEdge::Bottom, PanelAnchor::TopRight), "top");
+        assert_eq!(flyout_edge_name(TaskbarEdge::Top, PanelAnchor::BottomLeft), "bottom");
+        assert!(should_complete_hide(true, 4, 4));
+        assert!(!should_complete_hide(false, 4, 4));
+        assert!(!should_complete_hide(true, 5, 4));
+
+        let mut vis = PanelVisibilityState::default();
+        assert_eq!(vis.begin_present(), 1);
+        assert_eq!(vis.begin_hide(false), None);
+        let dismiss_seq = vis.begin_hide(true).expect("visible panel begins dismissal");
+        assert_eq!(dismiss_seq, 2);
+        assert_eq!(vis.begin_hide(true), None);
+        // Reopening while the 200 ms fallback timer is in flight invalidates the pending hide.
+        assert_eq!(vis.begin_present(), 3);
+        assert!(!vis.complete_hide(dismiss_seq));
+        let second_dismiss = vis.begin_hide(true).expect("reopened panel can dismiss again");
+        assert!(vis.complete_hide(second_dismiss));
+        assert!(!vis.complete_hide(second_dismiss));
+        let aborted = vis.begin_hide(true).expect("starts hide before eval error");
+        vis.abort_hide();
+        assert!(!vis.complete_hide(aborted));
+
+        let tray_pt = Some((1_780, 1_060));
+        let near_tray_pt = Some((1_783, 1_058));
+        let desktop_pt = Some((620, 480));
+
+        let mut tray = PanelVisibilityState::default();
+        tray.note_tray_press_down(false, 1_000, tray_pt);
+        assert_eq!(tray.decide_tray_release(false, 1_060, tray_pt), TrayToggleAction::Present);
+        let _ = tray.begin_present();
+
+        // Fast tray click while open: focus loss starts hide, release stays Noop, and an immediate
+        // second click within 280 ms reopens cleanly instead of being swallowed.
+        tray.note_focus_loss(2_000, near_tray_pt);
+        let _ = tray.begin_hide(true);
+        tray.note_tray_press_down(false, 2_005, tray_pt);
+        assert_eq!(tray.decide_tray_release(false, 2_060, tray_pt), TrayToggleAction::Noop);
+        tray.note_tray_press_down(false, 2_170, tray_pt);
+        assert_eq!(tray.decide_tray_release(false, 2_220, tray_pt), TrayToggleAction::Present);
+        let _ = tray.begin_present();
+
+        // Slow cross-process tray notification (>65 ms after Focused(false)) on the tray icon
+        // still recognizes the same click spatially and does not bounce the flyout back open.
+        tray.note_focus_loss(2_500, near_tray_pt);
+        let _ = tray.begin_hide(true);
+        tray.note_tray_press_down(false, 2_640, tray_pt);
+        assert_eq!(tray.decide_tray_release(false, 2_690, tray_pt), TrayToggleAction::Noop);
+        let _ = tray.begin_present();
+
+        // Slow >280 ms press-and-hold on tray while open must keep the panel closed on release,
+        // even if the hide animation completed while the button was still held down.
+        tray.note_focus_loss(3_000, near_tray_pt);
+        let slow_seq = tray.begin_hide(true).expect("starts hide on slow tray hold");
+        tray.note_tray_press_down(false, 3_005, tray_pt);
+        assert!(tray.complete_hide(slow_seq));
+        assert_eq!(tray.decide_tray_release(false, 3_620, tray_pt), TrayToggleAction::Noop);
+
+        // Press-down arriving slightly before Focused(false) still dismisses cleanly without
+        // poisoning the next click.
+        let _ = tray.begin_present();
+        tray.note_tray_press_down(true, 3_700, tray_pt);
+        tray.note_focus_loss(3_704, near_tray_pt);
+        let _ = tray.begin_hide(true);
+        assert_eq!(tray.decide_tray_release(false, 3_750, tray_pt), TrayToggleAction::Noop);
+        tray.note_tray_press_down(false, 3_840, tray_pt);
+        assert_eq!(tray.decide_tray_release(false, 3_890, tray_pt), TrayToggleAction::Present);
+
+        // Clicking the desktop outside the flyout — even 40 ms before clicking the tray icon —
+        // must reopen the flyout, both mid-dismiss and right after complete_hide.
+        let _ = tray.begin_present();
+        tray.note_focus_loss(5_000, desktop_pt);
+        let _ = tray.begin_hide(true);
+        tray.note_tray_press_down(false, 5_040, tray_pt);
+        assert_eq!(tray.decide_tray_release(false, 5_085, tray_pt), TrayToggleAction::Present);
+
+        let _ = tray.begin_present();
+        tray.note_focus_loss(6_000, desktop_pt);
+        let desktop_hide = tray.begin_hide(true).expect("desktop click starts hide");
+        assert!(tray.complete_hide(desktop_hide));
+        tray.note_tray_press_down(false, 6_050, tray_pt);
+        assert_eq!(tray.decide_tray_release(false, 6_090, tray_pt), TrayToggleAction::Present);
+
+        // Cancelled tray press (Down on tray while open, dragged off without Up) must expire
+        // instead of swallowing a subsequent Up-only tap later.
+        let _ = tray.begin_present();
+        tray.note_tray_press_down(true, 7_000, tray_pt);
+        tray.note_focus_loss(7_010, near_tray_pt);
+        let drag_off_hide = tray.begin_hide(true).expect("drag-off press starts hide");
+        assert!(tray.complete_hide(drag_off_hide));
+        assert_eq!(tray.decide_tray_release(false, 12_500, tray_pt), TrayToggleAction::Present);
+
+        // Pinned popover stays open across focus loss and closes on tray release.
+        let _ = tray.begin_present();
+        tray.note_tray_press_down(true, 13_000, tray_pt);
+        assert_eq!(tray.decide_tray_release(true, 13_080, tray_pt), TrayToggleAction::Hide);
+
+        // Fallback timing branch when OS cursor coordinates are unavailable (`None`).
+        let _ = tray.begin_present();
+        tray.note_focus_loss(14_000, None);
+        let _ = tray.begin_hide(true);
+        tray.note_tray_press_down(false, 14_025, None);
+        assert_eq!(tray.decide_tray_release(false, 14_060, None), TrayToggleAction::Noop);
+        tray.note_tray_press_down(false, 14_150, None);
+        assert_eq!(tray.decide_tray_release(false, 14_190, None), TrayToggleAction::Present);
     }
 
     fn extra(origins: &[&str]) -> HashSet<String> {

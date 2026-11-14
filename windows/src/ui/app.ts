@@ -1,5 +1,4 @@
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
-import { GrokBallView } from "./grokBall.js";
 import {
   assistantEndpointIdentity,
   endpointAllowsSendingSecrets,
@@ -35,6 +34,7 @@ import {
   type ScheduledCommand,
   type SmartDevice,
   allOffTargets,
+  computeTotalPowerWatts,
   deviceEnvironmentReading,
   environmentReadingPriority,
   isActiveDevice,
@@ -47,6 +47,7 @@ import {
   PANEL_HEIGHTS,
   applyOrder,
   chosenSize,
+  isDevicePinned,
   moveInOrder,
   pageSections,
   parsePanelPlacement,
@@ -79,24 +80,27 @@ import { loadSettings } from "./settings.js";
 import { CameraLiveController } from "./cameraLive.js";
 import { renderDeviceTile as renderDeviceTileView, renderEnvironmentStrip as renderEnvironmentStripView } from "./deviceViews.js";
 import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt, renderSettingsModal } from "./menuViews.js";
-import { bindEvents as bindEventsImpl } from "./bindEvents.js";
-import { renderPanel } from "./panelView.js";
-import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, checkForAppUpdate, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
+import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
+import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
-import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground, renderGrokBallSidebar, setGrokBallStageExpanded, syncGrokBallEmotion } from "./proactive.js";
-import { applyCommand, markCloudValuesFresh, markCloudValuesStale } from "./commandDispatch.js";
+import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground } from "./proactive.js";
+import { bindPersistentUndoEvents, undoTrackerFor } from "./undoTracker.js";
+import { getHostApplyCommand, getUnsupportedLightEffects, markCloudValuesFresh, markCloudValuesStale, pruneUnsupportedLightEffectsOnHost, setCustomApplyCommand } from "./commandDispatch.js";
+import { getSpeakerDrawerItemState } from "./detailDrawers.js";
+import { activeRoomOptions } from "./roomOrderEditor.js";
 import { foldGrouped, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
-import { executeIntents, executeSingleCommand, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
+import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
+import { clearPersistedMiSessionExpired, persistMiSessionExpired } from "../core/pollingPolicy.js";
 import { bindLayoutGestures } from "./layoutGestures.js";
-import { bindSettingsEvents, refreshHabitSharePreview } from "./settingsEvents.js";
-import { captureSettingsDraft, restoreSettingsDraft, type SettingsTab } from "./settingsViews.js";
+import { bindSettingsEvents } from "./settingsEvents.js";
+import { type SettingsTab } from "./settingsViews.js";
 import {
   bindUndoBannerHoverGuard, clearUndoHoverPause, copyUndoKindSnapshots, isInsideScheduledTimerTick, isUndoHoverPaused,
   rejectIfControlBlockedWhileLocked, renderUrlConfirmationPrompt, restoreUndoKindSnapshot, runScheduledCommandWithLockGuard, shouldKeepPopoverPinned, syncUndoBannerClock, toggleVoiceInput, undoButtonVisible,
 } from "./speechGuard.js";
-import { inputKeepsDraft } from "./dom.js";
 import { createPanelSearchState, normalizeSearch, PanelSearchIndex } from "../core/panelSearch.js";
-import { syncPanelSelection } from "./panelKeyboard.js";
+import { focusPanelOnActivate } from "./panelKeyboard.js";
+import { PanelRenderPipeline, prefersReducedMotion, syncDocumentLanguage } from "./reconciler.js";
 
 import { ScheduledCommandStore } from "../core/scheduledCommands.js";
 import { scheduledCommandIdentity } from "./scheduledCommands.js";
@@ -108,14 +112,7 @@ export type PanelHealth =
   | { readonly kind: "degraded"; readonly dot: "is-degraded"; readonly label: string }
   | { readonly kind: "offline"; readonly dot: "is-offline"; readonly label: string; readonly recovery: "qr" | "none" };
 
-/** 10s for one or two devices, 15s from three. Same rule as macOS `HomeStore.undoBannerSeconds`. */
-export function undoBannerMs(deviceCount: number): number {
-  return (deviceCount >= 3 ? 15 : 10) * 1000;
-}
-
-export function undoDeviceCount(steps: readonly { readonly deviceId: string }[]): number {
-  return new Set(steps.map((step) => step.deviceId)).size;
-}
+export { undoBannerMs, undoDeviceCount } from "./undoTracker.js";
 
 export type HaConnectionBlock = "plaintext" | "auth" | "stale" | "none";
 
@@ -164,23 +161,18 @@ export class MenuMijiaWindowsApp {
 
   /** Room buttons keyed by id: two homes may both have a 客厅. */
   public get roomOptions(): RoomOption[] {
-    const seen = new Set<string>();
-    const options: RoomOption[] = [];
-    for (const device of this.devices) {
-      if (!device.roomId || seen.has(device.roomId)) continue;
-      seen.add(device.roomId);
-      options.push({ id: device.roomId, name: device.roomName });
-    }
-    return options;
+    return activeRoomOptions(this);
   }
 
   public selectRoom(roomId: string | null, roomName?: string): void {
+    this.savedGridScrollTop = 0;
     this.listCut = roomId === null
       ? { kind: "all" }
       : { kind: "room", roomId, roomName: roomName ?? roomId };
   }
 
   public selectDeviceKind(tag: DeviceKindTag): void {
+    this.savedGridScrollTop = 0;
     this.listCut = { kind: "deviceKind", tag };
   }
 
@@ -190,7 +182,10 @@ export class MenuMijiaWindowsApp {
 
   public readonly panelSearch = createPanelSearchState();
   private readonly panelSearchIndex = new PanelSearchIndex();
+  public readonly pipeline = new PanelRenderPipeline();
   public expandedDeviceId: string | null = null;
+  public savedGridScrollTop = 0;
+  public lastAppliedPanelHeightKey: string | null = null;
   /**
    * A high-risk manual write that needs one more tap on the same card within a few seconds.
    * `actionKey` binds the arm to one exact command, so tapping a different high-risk control
@@ -217,11 +212,8 @@ export class MenuMijiaWindowsApp {
   public aiProactiveSuggestions: AssistantSuggestion[] | null = null;
   public aiProactiveSignature: string | null = null;
   public isRefreshingProactive = false;
-  public isGrokBallStageExpanded = false;
-  public readonly grokBall = new GrokBallView();
-  public grokBallCelebrationUntil = 0;
-  public grokBallPointerUntil = 0;
-  public grokBallOnLeft = false;
+  /** Collapsible Win+N notification cards in the Top Island; quick camera starts compact. */
+  public collapsedNotifCards = new Set<string>(["camera"]);
   public panelGeometryUpdates: Promise<void> = Promise.resolve();
   /** Panel anchor the backend persists (#204); the window position itself is owned by Rust. */
   public panelAnchor: PanelAnchor = "auto";
@@ -257,10 +249,23 @@ export class MenuMijiaWindowsApp {
   /** Last light explicitly switched on or adjusted by the user; fallback target for `softNightLight` (#36). */
   public lastManuallyUsedLightId: string | null = null;
   /** Set when a Xiaomi refresh fails because the login itself is dead. */
-  public miSessionExpired = false;
+  private _miSessionExpired = false;
+  public get miSessionExpired(): boolean {
+    return this._miSessionExpired;
+  }
+  public set miSessionExpired(next: boolean) {
+    const normalized = Boolean(next);
+    this._miSessionExpired = normalized;
+    if (normalized) {
+      if (this.settings.miSession) persistMiSessionExpired(this.settings.miSession, true);
+    } else {
+      clearPersistedMiSessionExpired();
+    }
+  }
   /** True after a hold already ran All Off, so a later pointerup on the rebuilt button does not replace the result with the short-press hint. */
   private allOffHoldConsumed = false;
   private allOffHoldTimer: number | null = null;
+  private readonly appDisposers: Array<() => void> = [];
   public undoBannerUntilMs = 0;
   public qrTicket: QRLoginTicket | null = null;
   public qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");
@@ -285,8 +290,21 @@ export class MenuMijiaWindowsApp {
   public draggingId: string | null = null;
   public dragPointer: { x: number; y: number; grabX: number; grabY: number } | null = null;
   public lastSwap: { slot: string; at: number } | null = null;
-  public ctxMenu: { x: number; y: number; deviceId?: string; groupId?: string } | null = null;
-  public prompt: { kind: "newGroup"; deviceId: string } | { kind: "renameGroup"; groupId: string } | { kind: "renameDevice"; deviceId: string } | null = null;
+  public ctxMenu: {
+    x: number;
+    y: number;
+    deviceId?: string;
+    groupId?: string;
+    roomTarget?: { readonly roomId: string; readonly originalName: string };
+    kindTarget?: DeviceKindTag;
+    roomBar?: boolean;
+  } | null = null;
+  public prompt:
+    | { kind: "newGroup"; deviceId: string }
+    | { kind: "renameGroup"; groupId: string }
+    | { kind: "renameDevice"; deviceId: string }
+    | { kind: "roomOrderEditor" }
+    | null = null;
   public animateEntrance = false;
   public poppedDeviceId: string | null = null;
   public dimPreview: { id: string; percent: number } | null = null;
@@ -304,6 +322,7 @@ export class MenuMijiaWindowsApp {
     this.cameraLive = new CameraLiveController(this);
 
     this.applyInterfaceLanguage();
+    this.qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");
     this.applyTemperatureSetting();
     const haCache = this.settings.cachedHAHome?.identity === homeAssistantIdentity(this.settings.haBaseURL, this.settings.haToken) ? this.settings.cachedHAHome.home : null;
     this.devices = this.settings.connectionMode === "xiaomiCloud"
@@ -326,24 +345,33 @@ export class MenuMijiaWindowsApp {
     this.bindGlobalKeys();
     bindUndoBannerHoverGuard(this);
     // Alt+Tab hides the popover without a button blur; a hold started before it must not finish.
-    window.addEventListener("blur", () => this.cancelAllOffHold());
-    window.addEventListener("pointermove", (event) => {
-      const rect = this.grokBall.element.getBoundingClientRect();
-      this.grokBallPointerUntil = Date.now() + 1500;
-      this.grokBall.setGaze((event.clientX - rect.left - rect.width / 2) / 160,
-        (event.clientY - rect.top - rect.height / 2) / 160);
-      this.syncGrokBallEmotion();
-    });
+    const onBlurCancelAllOff = () => this.cancelAllOffHold();
+    window.addEventListener("blur", onBlurCancelAllOff);
+    this.appDisposers.push(
+      () => window.removeEventListener("blur", onBlurCancelAllOff),
+      () => undoTrackerFor(this).dispose(),
+    );
     this.bindLayoutGestures();
     this.bindPanelDrag();
     this.bindOpenAnimation();
-    window.addEventListener("menumijia:open-update", () => {
+    const onOpenUpdate = () => {
       this.openSettingsSheet();
-    });
+    };
+    const onActivate = () => {
+      if (!this.root.isConnected) return;
+      focusPanelOnActivate(this);
+    };
+    window.addEventListener("menumijia:open-update", onOpenUpdate);
+    window.addEventListener("menumijia:activate", onActivate);
+    this.appDisposers.push(
+      () => window.removeEventListener("menumijia:open-update", onOpenUpdate),
+      () => window.removeEventListener("menumijia:activate", onActivate),
+    );
     this.applyPanelHeight();
     this.syncPanelPlacement();
     this.syncPanelBackdrop();
     void this.applyGlobalHotkey();
+    this.bindLifecycleRecovery();
     this.startTimerLoop();
     this.restoreUpdateState();
     this.render();
@@ -367,6 +395,7 @@ export class MenuMijiaWindowsApp {
 
   public applyInterfaceLanguage(): void {
     applyInterfaceLanguage(this);
+    syncDocumentLanguage(this.root.ownerDocument, this.settings.interfaceLanguage);
   }
 
   public applyTemperatureSetting(): void {
@@ -405,8 +434,25 @@ export class MenuMijiaWindowsApp {
     bindGlobalKeys(this);
   }
 
+  private bindLifecycleRecovery(): void {
+    bindLifecycleRecovery(this, { onPageHide: () => this.dispose() });
+  }
+
   private startTimerLoop(): void {
     startTimerLoop(this);
+  }
+
+  /** Idempotently cancels lifecycle intervals, recovery timers, and global window listeners. */
+  public dispose(): void {
+    disposeAppLifecycle(this);
+    this.pipeline.clearTransientState();
+    this.pipeline.eventScope.abort();
+    this.clearPendingHighRisk();
+    this.cancelAllOffHold();
+    for (const stop of this.appDisposers.splice(0)) stop();
+    if (this.cameraLive.activeLiveCameraId !== null || this.cameraLive.liveCameraKeepAliveTimer !== null) {
+      this.cameraLive.closeCameraLiveView();
+    }
   }
 
   /** The tray popover hides when it loses focus, so focus means it is on screen. */
@@ -440,8 +486,8 @@ export class MenuMijiaWindowsApp {
 
   private get filteredDevices(): SmartDevice[] {
     const query = normalizeSearch(this.panelSearch.query);
-    if (!query) return filterByListCut(this.devices, this.listCut, this.settings.hideOfflineDevices);
-    const candidates = filterByListCut(this.devices, { kind: "all" }, this.settings.hideOfflineDevices);
+    if (!query) return filterByListCut(this.devices, this.listCut, this.settings.hideOfflineDevices, { layout: this.layout });
+    const candidates = filterByListCut(this.devices, { kind: "all" }, this.settings.hideOfflineDevices, { layout: this.layout });
     const byId = new Map(candidates.map((device) => [device.id, device]));
     return this.panelSearchIndex.matches(query, candidates, this.layout.aliases).flatMap((entry) => {
       const device = byId.get(entry.deviceId);
@@ -467,13 +513,7 @@ export class MenuMijiaWindowsApp {
   }
 
   private get totalPowerWatts(): number {
-    let watts = 0;
-    for (const d of this.devices) {
-      if (d.kind.kind === "plug" && d.kind.countsInTotalPower !== false && d.kind.powerWatts && d.kind.powerWatts > 0) {
-        watts += d.kind.powerWatts;
-      }
-    }
-    return watts;
+    return computeTotalPowerWatts(this.devices);
   }
 
   public get computedEnvironmentReadings(): EnvironmentReading[] {
@@ -525,13 +565,17 @@ export class MenuMijiaWindowsApp {
     this.settings.selectedHomeId = id;
     this.isHomeMenuOpen = false;
     this.selectRoom(null);
+    this.lastUndoAction = null;
+    clearUndoHoverPause(this);
+    // Invalidate any in-flight cloud refresh from the previous home so it cannot overwrite the new selection.
+    this.localControlRevision += 1;
+    this.syncGeneration += 1;
+    this.isSyncingCloud = false;
     // A different home is a different suggestion context even at the same ambient signature (Codex #116 review).
     this.aiProactiveSuggestions = null;
     this.aiProactiveSignature = null;
     this.isRefreshingProactive = false;
     this.proactiveRetryAfterMs = null;
-    this.isGrokBallStageExpanded = false;
-    this.grokBallCelebrationUntil = 0;
     this.applyPanelHeight();
     this.saveSettings();
     this.render();
@@ -549,15 +593,15 @@ export class MenuMijiaWindowsApp {
   }
 
   public renderKindBar(): string {
-    const chips = kindChips(this.devices, this.listCut, this.settings.hideOfflineDevices);
+    const chips = kindChips(this.devices, this.listCut, this.settings.hideOfflineDevices, { layout: this.layout });
     if (!showsKindRow(chips, this.listCut)) return "";
     const buttons = chips.map((tag) => {
       const chip = KIND_CHIP[tag];
       const active = this.listCut.kind === "deviceKind" && this.listCut.tag === tag;
       const hint = chip.hint ? ` title="${this.escapeHtml(t(chip.hint))}"` : "";
-      return `<button class="cc-room-pill${active ? " is-active" : ""}" data-kind="${tag}" aria-pressed="${active}"${hint}>${this.escapeHtml(t(chip.title))}</button>`;
+      return `<button class="cc-room-pill is-kind${active ? " is-active" : ""}" data-kind="${tag}" aria-pressed="${active}"${hint}>${this.escapeHtml(t(chip.title))}</button>`;
     }).join("");
-    return `<div class="cc-room-bar"><div class="cc-room-track"><div class="cc-room-scroll">${buttons}</div></div></div>`;
+    return `<span class="cc-filter-sep" aria-hidden="true"></span>${buttons}`;
   }
 
   private allOffButtonText(count: number): string {
@@ -705,24 +749,12 @@ export class MenuMijiaWindowsApp {
     return currentProactiveSuggestions(this);
   }
 
-  public syncGrokBallEmotion(): void {
-    syncGrokBallEmotion(this);
-  }
-
-
-  public renderGrokBallSidebar(): string {
-    return renderGrokBallSidebar(this);
-  }
-
-  public setGrokBallStageExpanded(expanded: boolean): void {
-    setGrokBallStageExpanded(this, expanded);
-  }
-
   public maybeRefreshProactiveInBackground(): void {
     maybeRefreshProactiveInBackground(this);
   }
 
   public invalidateSourceControl(): void {
+    this.pipeline.clearTransientState();
     invalidateSourceControl(this);
   }
 
@@ -751,10 +783,32 @@ export class MenuMijiaWindowsApp {
     this.lastUndoAction = null;
     clearUndoHoverPause(this);
     const sourceRevision = this.sourceRevision;
+    const activeBatch = getRunningBatch(this, action);
+    const ownerBatch =
+      getUndoActionBatch(action) ??
+      (activeBatch?.ownsUndoAction(action) ? activeBatch : null);
+    if (ownerBatch && !ownerBatch.isFinished) {
+      ownerBatch.stop("undo");
+      await ownerBatch.waitForInFlight();
+      if (sourceRevision !== this.sourceRevision) return;
+    }
+    const takenOverDevices = new Set<string>();
+    const stepsToRestore = action.steps.filter((step) => {
+      if (ownerBatch && !ownerBatch.ownsDeviceWrite(this, step.deviceId)) {
+        takenOverDevices.add(step.deviceId);
+        return false;
+      }
+      return true;
+    });
+    if (stepsToRestore.length === 0 && action.steps.length > 0) return;
     const failedSteps: UndoStep[] = [];
     const blockedDevices = new Set<string>();
     let failureMessage = "";
-    for (const step of action.steps) {
+    for (const step of stepsToRestore) {
+      if (ownerBatch && !ownerBatch.ownsDeviceWrite(this, step.deviceId)) {
+        takenOverDevices.add(step.deviceId);
+        continue;
+      }
       if (blockedDevices.has(step.deviceId)) {
         failedSteps.push(step);
         continue;
@@ -762,30 +816,49 @@ export class MenuMijiaWindowsApp {
       let failed = false;
       for (const command of step.commands) {
         if (sourceRevision !== this.sourceRevision) return;
-        if (!(await this.applyCommand(command))) {
+        if (ownerBatch && !ownerBatch.ownsDeviceWrite(this, step.deviceId)) {
+          takenOverDevices.add(step.deviceId);
+          break;
+        }
+        const ok = ownerBatch
+          ? await ownerBatch.applyRestoreCommand(this, step.deviceId, command)
+          : await this.applyCommand(command);
+        if (!ok) {
           failed = true;
-          failureMessage = this.replyBanner?.text ?? "设备未响应";
+          failureMessage = this.replyBanner?.text ?? t("设备未响应");
         }
       }
+      if (takenOverDevices.has(step.deviceId)) continue;
       if (failed) {
         failedSteps.push(step);
         blockedDevices.add(step.deviceId);
       } else {
         const restoredDevice = this.devices.find((d) => d.id === step.deviceId);
-        if (restoredDevice) restoreUndoKindSnapshot(action, restoredDevice);
+        if (restoredDevice && (!ownerBatch || ownerBatch.ownsDeviceWrite(this, step.deviceId))) {
+          restoreUndoKindSnapshot(action, restoredDevice);
+        }
       }
     }
     if (sourceRevision !== this.sourceRevision) return;
+    if (
+      failedSteps.length === 0 &&
+      takenOverDevices.size > 0 &&
+      takenOverDevices.size === new Set(action.steps.map((s) => s.deviceId)).size
+    ) {
+      return;
+    }
     let remainingReceipt = action.habitReceipt;
     if (action.habitReceipt) {
-      if (failedSteps.length === 0) {
+      const notRestoredDevices = new Set([...blockedDevices, ...takenOverDevices]);
+      if (notRestoredDevices.size === 0) {
         this.unrecordHabits(action.habitReceipt);
         remainingReceipt = undefined;
       } else {
-        const { succeeded, remaining } = partitionHabitReceipt(action.habitReceipt, blockedDevices);
+        const { succeeded } = partitionHabitReceipt(action.habitReceipt, notRestoredDevices);
         if (succeeded) {
           this.unrecordHabits(succeeded);
         }
+        const { remaining } = partitionHabitReceipt(action.habitReceipt, blockedDevices);
         remainingReceipt = remaining ?? undefined;
       }
     }
@@ -800,30 +873,40 @@ export class MenuMijiaWindowsApp {
     this.render();
   }
 
-  public async applyCommand(command: DeviceCommand, readBackPower = false): Promise<boolean> {
-    return applyCommand(this, command, readBackPower);
+  public get applyCommand(): (command: DeviceCommand, readBackPower?: boolean) => Promise<boolean> {
+    return getHostApplyCommand(this);
+  }
+
+  public set applyCommand(fn: (command: DeviceCommand, readBackPower?: boolean) => Promise<boolean>) {
+    setCustomApplyCommand(this, fn);
   }
 
   /** Arms a high-risk confirmation and its own expiry timer, replacing any previous arm. */
   public setPendingHighRisk(pending: PendingHighRiskConfirmation): void {
-    this.clearPendingHighRisk();
+    this.clearPendingHighRisk({ syncPin: false });
     this.pendingHighRisk = pending;
+    invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
     this.pendingHighRiskTimer = window.setTimeout(() => {
       this.pendingHighRiskTimer = null;
       if (!this.pendingHighRisk) return;
       this.pendingHighRisk = null;
+      invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
       // A gesture in progress (a slider drag) owns the current DOM; drop the row once it ends.
       this.queueBackgroundRender();
     }, Math.max(0, pending.expiresAtMs - Date.now()));
   }
 
   /** Disarms the arm and cancels its timer; callers render when the row must disappear now. */
-  public clearPendingHighRisk(): void {
+  public clearPendingHighRisk(options?: { readonly syncPin?: boolean }): void {
+    const hadPending = this.pendingHighRisk !== null;
     if (this.pendingHighRiskTimer !== null) {
       window.clearTimeout(this.pendingHighRiskTimer);
       this.pendingHighRiskTimer = null;
     }
     this.pendingHighRisk = null;
+    if (hadPending && options?.syncPin !== false) {
+      invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
+    }
   }
 
 
@@ -852,6 +935,7 @@ export class MenuMijiaWindowsApp {
 
   public async startXiaomiQRLogin(): Promise<void> {
     if (this.isPollingQR) return;
+    const sourceRevAtStart = this.sourceRevision;
     this.isPollingQR = true;
     this.qrStatusText = t("正在获取小米安全登录二维码...");
     invokeTauriVoid("set_pin_popover", { pin: true });
@@ -860,11 +944,13 @@ export class MenuMijiaWindowsApp {
     try {
       const login = new MiAccountLogin(this.transport, this.settings.miCloudRegion);
       const ticket = await login.start();
+      if (this.sourceRevision !== sourceRevAtStart) return;
       this.qrTicket = ticket;
       this.qrStatusText = t("请打开手机「米家 App → 我的 → 右上角扫一扫」确认登录");
       this.render();
 
       const session = await login.waitForScan(ticket);
+      if (this.sourceRevision !== sourceRevAtStart) return;
       this.invalidateSourceControl();
       // The account-level passToken is never persisted (#27).
       this.settings.miSession = sessionWithoutPassToken(session);
@@ -890,12 +976,16 @@ export class MenuMijiaWindowsApp {
 
       await this.refreshDevices(false);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.qrStatusText = t("扫码未完成：{message}", { message: msg });
+      if (this.sourceRevision === sourceRevAtStart) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.qrStatusText = t("扫码未完成：{message}", { message: msg });
+      }
     } finally {
-      this.isPollingQR = false;
-      invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
-      this.render();
+      if (this.sourceRevision === sourceRevAtStart) {
+        this.isPollingQR = false;
+        invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
+        this.render();
+      }
     }
   }
 
@@ -904,9 +994,9 @@ export class MenuMijiaWindowsApp {
     if (secs >= 60) {
       const m = Math.floor(secs / 60);
       const s = secs % 60;
-      return s > 0 ? `${m}分${s}秒` : `${m}分钟`;
+      return s > 0 ? t("{m}分{s}秒", { m, s }) : t("{m}分钟", { m });
     }
-    return `${secs}秒`;
+    return t("{secs}秒", { secs });
   }
 
   /** How long the 撤销 control stays up. Matches macOS `undoBannerSeconds`: 10s, or 15s from three devices. */
@@ -921,7 +1011,7 @@ export class MenuMijiaWindowsApp {
   public panelHealth(): PanelHealth {
     const mode = this.settings.connectionMode;
     if (mode === "demo") {
-      return { kind: "demo", dot: "is-demo", label: t("演示模式 · 未连接米家云") };
+      return { kind: "demo", dot: "is-demo", label: t("演示模式") };
     }
     if (
       mode === "xiaomiCloud" &&
@@ -966,7 +1056,7 @@ export class MenuMijiaWindowsApp {
     if (this.settings.connectionMode === "homeAssistant") {
       return `Home Assistant · ${this.devices.length}`;
     }
-    return t("演示模式 · 未连接米家云");
+    return t("演示模式");
   }
 
   private sourceIsMissing(): boolean {
@@ -1034,125 +1124,8 @@ export class MenuMijiaWindowsApp {
     this.saveSettings();
   }
 
-  /**
-   * Re-renders while keeping scroll offsets, and slides every card from its old position to its
-   * new one (FLIP), so reorders, resizes and group moves animate instead of jumping.
-   */
   public render(): void {
-    if (this.panelSearch.isComposing) {
-      if (this.activeSheet !== "none" ||
-          document.activeElement?.id !== "command-input" || this.panelSearch.compositionSourceRevision !== this.sourceRevision) {
-        this.panelSearch.isComposing = false;
-      } else {
-        this.pendingCloudRender = true;
-        return;
-      }
-    }
-    const focused = document.activeElement as HTMLElement | null;
-    const focusedInput =
-      focused && (focused.tagName === "INPUT" || focused.tagName === "TEXTAREA")
-        ? (focused as HTMLInputElement | HTMLTextAreaElement)
-        : null;
-    const keepsFocusedDraft = focusedInput ? inputKeepsDraft(focusedInput) : false;
-    const focusAttributes = focused
-      ? Array.from(focused.attributes)
-          .filter((attr) => attr.name === "id" || attr.name.startsWith("data-"))
-          .map((attr) => ({ name: attr.name, value: attr.value }))
-      : [];
-    const focusSnapshot =
-      focused && focusAttributes.length > 0
-        ? {
-            tagName: focused.tagName,
-            attributes: focusAttributes,
-            value: keepsFocusedDraft ? focusedInput?.value ?? null : null,
-            selectionStart: keepsFocusedDraft ? focusedInput?.selectionStart ?? null : null,
-            selectionEnd: keepsFocusedDraft ? focusedInput?.selectionEnd ?? null : null,
-          }
-        : null;
-    const hasMountedPopover = this.root.querySelector(":scope > .cc-popover") !== null;
-    if (hasMountedPopover) {
-      this.root.classList.remove("is-opening");
-    }
-    const tiles = Array.from(this.root.querySelectorAll<HTMLElement>("[data-tile-id]"));
-    const before = new Map(tiles.map((el) => [el.dataset.tileId as string, el.getBoundingClientRect()]));
-    const scrollTop = this.root.querySelector(".cc-scroll-area")?.scrollTop ?? 0;
-    const roomLeft = this.root.querySelector(".cc-room-scroll")?.scrollLeft ?? 0;
-    // The settings sheet scrolls its middle body, so that is the node whose offset has to survive.
-    const sheetScroll = this.root.querySelector<HTMLElement>(".cc-sheet-body") ?? this.root.querySelector<HTMLElement>(".cc-sheet");
-    const sheetScrollTop = sheetScroll?.scrollTop ?? 0;
-    // 完成并保存 reads every field, so a live refresh must not discard typed text in the sheet (#78).
-    const settingsDraft = captureSettingsDraft(this.root);
-
-    this.pendingCloudRender = false;
-    this.grokBall.prepareMove();
-    this.renderNow();
-    syncPanelSelection(this);
-    const grokSlot = this.root.querySelector<HTMLElement>("[data-grok-slot]");
-    if (grokSlot) this.grokBall.mount(grokSlot, this.grokBall.element.dataset.emotion ?? "02");
-    this.syncGrokBallEmotion();
-
-    const area = this.root.querySelector(".cc-scroll-area");
-    if (area) area.scrollTop = scrollTop;
-    const strip = this.root.querySelector<HTMLElement>(".cc-room-scroll");
-    if (strip) strip.scrollLeft = roomLeft;
-    const sheet = this.root.querySelector<HTMLElement>(".cc-sheet-body") ?? this.root.querySelector<HTMLElement>(".cc-sheet");
-    if (sheet) sheet.scrollTop = sheetScrollTop;
-    // A preset click mutates the fields without a render, so only a rebuild can have dropped a draft.
-    if (
-      restoreSettingsDraft(this.root, settingsDraft, (el, url) => this.syncKeyFieldWithEndpoint(el, url))
-    ) {
-      refreshHabitSharePreview(this);
-    }
-
-    if (focusSnapshot) {
-      const matches = Array.from(
-        this.root.querySelectorAll<HTMLElement>(focusSnapshot.tagName.toLowerCase()),
-      ).filter((element) =>
-        focusSnapshot.attributes.every(
-          (attribute) => element.getAttribute(attribute.name) === attribute.value,
-        ),
-      );
-      const replacement = matches.length === 1 ? matches[0] : undefined;
-      if (replacement) {
-        if (focusSnapshot.value !== null && "value" in replacement) {
-          (replacement as HTMLInputElement).value = focusSnapshot.value;
-        }
-        replacement.focus({ preventScroll: true });
-        if (
-          focusSnapshot.selectionStart !== null &&
-          "setSelectionRange" in replacement
-        ) {
-          (replacement as HTMLInputElement).setSelectionRange(
-            focusSnapshot.selectionStart,
-            focusSnapshot.selectionEnd ?? focusSnapshot.selectionStart,
-          );
-        }
-      }
-    }
-
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (!reduce && before.size > 0) {
-      this.root.querySelectorAll<HTMLElement>("[data-tile-id]").forEach((el) => {
-        const id = el.dataset.tileId as string;
-        const old = before.get(id);
-        if (!old || id === this.draggingId) return;
-        const now = el.getBoundingClientRect();
-        const dx = old.left - now.left;
-        const dy = old.top - now.top;
-        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
-        el.animate(
-          [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }],
-          { duration: 340, easing: "cubic-bezier(0.2, 0.9, 0.3, 1.15)" },
-        );
-      });
-    }
-    this.applyDragOffset();
-    this.animateEntrance = false;
-    this.poppedDeviceId = null;
-  }
-
-  private renderNow(): void {
-    renderPanel(this);
+    this.pipeline.commitRender(this);
   }
 
   public renderEnvironmentStrip(): string {
@@ -1165,6 +1138,7 @@ export class MenuMijiaWindowsApp {
   }
 
   public renderDeviceGrid(): string {
+    pruneUnsupportedLightEffectsOnHost(this);
     if (normalizeSearch(this.panelSearch.query)) {
       const results = withAliases(this.layout, this.presentationDevices);
       return results.length
@@ -1203,7 +1177,7 @@ export class MenuMijiaWindowsApp {
         <div class="cc-empty-state">
           <div class="cc-empty-icon">${SF_ICONS.houseFill}</div>
           <div class="cc-empty-title">${t("尚未同步到米家设备")}</div>
-          <div class="cc-empty-subtitle">当前地区（${this.escapeHtml(normalizeMiCloudRegion(this.settings.miSession?.region ?? this.settings.miCloudRegion))}）没有设备，可尝试切换地区</div>
+          <div class="cc-empty-subtitle">${this.escapeHtml(t("当前地区（{region}）没有设备，可尝试切换地区", { region: normalizeMiCloudRegion(this.settings.miSession?.region ?? this.settings.miCloudRegion) }))}</div>
           <div class="cc-empty-actions">
             <button class="cc-btn-primary" id="btn-empty-resync">${t("重新同步设备")}</button>
             <button class="cc-btn-secondary" id="btn-empty-settings">${t("切换账号 / 设置")}</button>
@@ -1234,6 +1208,8 @@ export class MenuMijiaWindowsApp {
     return sections
       .map((section) => {
         const collapsed = this.layout.collapsed.includes(scopedKey(this.pageKey, section.id));
+        const hasActiveSubpage =
+          this.expandedDeviceId !== null && section.devices.some((d) => d.id === this.expandedDeviceId);
         const spanMap = spans(section.devices, (d) => (this.expandedDeviceId === d.id ? "full" : this.tileSize(d)));
         const header =
           section.title === null
@@ -1244,7 +1220,7 @@ export class MenuMijiaWindowsApp {
                 <span class="cc-group-count">${section.devices.length}</span>
                 <span class="cc-group-rule"></span>
               </button>`;
-        const body = collapsed
+        const body = collapsed && !hasActiveSubpage
           ? ""
           : `<div class="cc-devices-grid is-flow">
               ${section.devices.map((dev) => this.renderDeviceTile(dev, spanMap.get(dev.id) ?? 6, index++)).join("")}
@@ -1271,6 +1247,9 @@ export class MenuMijiaWindowsApp {
       dimPreview: this.dimPreview,
       deviceFacets: this.deviceFacets,
       allowAdvancedFacetWrites: this.settings.allowAdvancedFacetWrites,
+      isPinned: isDevicePinned(dev.id, this.layout),
+      unsupportedLightEffects: getUnsupportedLightEffects(this, dev.id),
+      speakerDrawerState: getSpeakerDrawerItemState(this, dev.id),
       escapeHtml: (v) => this.escapeHtml(v),
     });
   }
@@ -1297,6 +1276,13 @@ export class MenuMijiaWindowsApp {
 
   public bindEvents(): void {
     bindEventsImpl(this);
+    bindPersistentUndoEvents(this);
+  }
+
+  public bindDeckEvents(): void {
+    this.pipeline.eventScope.bindWithinCurrentScope(this.root, () => {
+      bindDeckEvents(this);
+    });
   }
 
   public startEditing(): void {
@@ -1330,7 +1316,7 @@ export class MenuMijiaWindowsApp {
   public savePrompt(raw: string): void {
     const name = raw.trim();
     const p = this.prompt;
-    if (!p) return;
+    if (!p || p.kind === "roomOrderEditor") return;
     if (p.kind === "newGroup") {
       if (!name) return;
       const id = `g${Date.now().toString(36)}`;
@@ -1359,8 +1345,9 @@ export class MenuMijiaWindowsApp {
     el.style.translate = `${p.x - p.grabX - r.left}px ${p.y - p.grabY - r.top}px`;
   }
 
-  /** Section of a device on the current page: a user group id or "rest". */
+  /** Section of a device on the current page: "pinned", a user group id, or "rest". */
   private sectionOf(id: string): string {
+    if (this.selectedRoom === "全部" && isDevicePinned(id, this.layout)) return "pinned";
     const g = this.layout.groupMap[id];
     return g && this.layout.groups.some((x) => x.id === g) ? g : "rest";
   }
@@ -1390,9 +1377,9 @@ export class MenuMijiaWindowsApp {
     const slot = `${target}|${after}`;
     if (this.lastSwap?.slot === slot) return;
     this.lastSwap = { slot, at: now };
-    // Dropping beside a card in another group files the dragged card into that group.
     const to = this.sectionOf(target);
-    if (to !== this.sectionOf(dragged)) {
+    const from = this.sectionOf(dragged);
+    if (to !== from && to !== "pinned" && from !== "pinned") {
       if (to === "rest") delete this.layout.groupMap[dragged]; else this.layout.groupMap[dragged] = to;
     }
     this.layout.order = moveInOrder(this.layout.order, this.devices.map((d) => d.id), dragged, target, after);
@@ -1428,37 +1415,162 @@ export class MenuMijiaWindowsApp {
     });
   }
 
-  /** Drop-in animation each time the tray popover is shown. */
   private bindOpenAnimation(): void {
-    const play = () => {
+    const ownerWin = this.root.ownerDocument?.defaultView ?? window;
+    let openClearTimer: number | null = null;
+    let dismissTimer: number | null = null;
+    let activeDismissSeq: number | null = null;
+
+    const normalizeEdge = (raw: unknown): "bottom" | "top" | "left" | "right" =>
+      raw === "top" || raw === "left" || raw === "right" ? raw : "bottom";
+
+    const clearOpenTimer = (): void => {
+      if (openClearTimer !== null) {
+        ownerWin.clearTimeout(openClearTimer);
+        openClearTimer = null;
+      }
+    };
+
+    const clearDismissTimer = (): void => {
+      if (dismissTimer !== null) {
+        ownerWin.clearTimeout(dismissTimer);
+        dismissTimer = null;
+      }
+      activeDismissSeq = null;
+    };
+
+    const scrollActiveRoomIntoView = (): void => {
+      const strip = this.root.querySelector<HTMLElement>(".cc-room-scroll");
+      const active = strip?.querySelector<HTMLElement>(".cc-room-pill.is-active");
+      if (strip && active) {
+        strip.scrollLeft =
+          this.listCut.kind === "all"
+            ? 0
+            : active.offsetLeft - (strip.clientWidth - active.offsetWidth) / 2;
+      }
+    };
+
+    let hasExplicitPresent = false;
+
+    const playPresent = (edge?: unknown): void => {
+      clearDismissTimer();
+      clearOpenTimer();
+      this.root.dataset.flyoutEdge = normalizeEdge(edge ?? this.root.dataset.flyoutEdge);
+      this.root.classList.remove("is-parked", "is-closing");
       this.applyPanelHeight();
+      this.syncPanelPlacement();
+      scrollActiveRoomIntoView();
+      if (prefersReducedMotion()) {
+        this.root.classList.remove("is-opening");
+        return;
+      }
       this.root.classList.remove("is-opening");
       void this.root.offsetWidth;
       this.root.classList.add("is-opening");
-      const strip = this.root.querySelector<HTMLElement>(".cc-room-scroll");
-      const active = strip?.querySelector<HTMLElement>(".cc-room-pill.is-active");
-      if (strip && active) strip.scrollLeft = this.selectedRoom === "全部" ? 0 : active.offsetLeft - (strip.clientWidth - active.offsetWidth) / 2;
+      openClearTimer = ownerWin.setTimeout(() => {
+        openClearTimer = null;
+        this.root.classList.remove("is-opening");
+      }, 275);
     };
-    let hiddenAt = 0;
-    if (window.__TAURI_INTERNALS__) {
-      window.addEventListener("blur", () => { hiddenAt = performance.now(); });
-      window.addEventListener("focus", () => { if (performance.now() - hiddenAt > 150) play(); });
-    }
+    const finishDismiss = (seq: number): void => {
+      if (activeDismissSeq !== seq) return;
+      clearDismissTimer();
+      this.root.classList.remove("is-closing");
+      if (window.__TAURI_INTERNALS__?.invoke) {
+        this.root.classList.add("is-parked");
+      }
+      invokeTauriVoid("finish_hide_panel", { seq });
+    };
+
+    const playDismiss = (seq: number, edge?: unknown): void => {
+      clearOpenTimer();
+      clearDismissTimer();
+      this.pipeline.clearTransientState();
+      this.root.dataset.flyoutEdge = normalizeEdge(edge ?? this.root.dataset.flyoutEdge);
+      this.root.classList.remove("is-parked", "is-opening");
+      activeDismissSeq = seq;
+      if (prefersReducedMotion()) {
+        this.root.classList.remove("is-closing");
+        finishDismiss(seq);
+        return;
+      }
+      this.root.classList.remove("is-closing");
+      void this.root.offsetWidth;
+      this.root.classList.add("is-closing");
+      dismissTimer = ownerWin.setTimeout(() => {
+        finishDismiss(seq);
+      }, 185);
+    };
+
+    const onPanelPresent = (event: Event) => {
+      if (!this.root.isConnected) return;
+      hasExplicitPresent = true;
+      this.lastAppliedPanelHeightKey = null;
+      const detail = (event as CustomEvent<{ edge?: unknown } | undefined>).detail;
+      playPresent(detail?.edge);
+    };
+    const onPanelDismiss = (event: Event) => {
+      if (!this.root.isConnected) return;
+      const detail = (event as CustomEvent<{ seq?: unknown; edge?: unknown } | undefined>).detail;
+      const seq = typeof detail?.seq === "number" ? detail.seq : 0;
+      playDismiss(seq, detail?.edge);
+    };
+    const onInteractiveClick = () => {
+      if (this.root.classList.contains("is-opening")) {
+        clearOpenTimer();
+        this.root.classList.remove("is-opening");
+      }
+    };
+    ownerWin.addEventListener("menumijia:panel-present", onPanelPresent);
+    ownerWin.addEventListener("menumijia:panel-dismiss", onPanelDismiss);
+    this.root.addEventListener("click", onInteractiveClick, true);
+    this.appDisposers.push(
+      () => ownerWin.removeEventListener("menumijia:panel-present", onPanelPresent),
+      () => ownerWin.removeEventListener("menumijia:panel-dismiss", onPanelDismiss),
+      () => this.root.removeEventListener("click", onInteractiveClick, true),
+      () => clearOpenTimer(),
+      () => clearDismissTimer(),
+    );
+
     this.root.addEventListener("animationend", (e) => {
       const target = e.target as HTMLElement | null;
       if (target === this.root || target?.classList?.contains("cc-popover")) {
-        this.root.classList.remove("is-opening");
+        if (this.root.classList.contains("is-opening")) {
+          clearOpenTimer();
+          this.root.classList.remove("is-opening");
+        } else if (this.root.classList.contains("is-closing") && activeDismissSeq !== null) {
+          finishDismiss(activeDismissSeq);
+        }
       }
     });
-    if (typeof window.matchMedia === "function") {
-      const mql = window.matchMedia("(prefers-color-scheme: light)");
-      mql.addEventListener?.("change", () => {
-        if (this.settings.appearance === "system") {
+
+    if (typeof ownerWin.matchMedia === "function") {
+      const mql = ownerWin.matchMedia("(prefers-color-scheme: light)");
+      const onSchemeChange = () => {
+        if (this.settings.appearance === "system" && this.root.isConnected) {
           this.render();
         }
-      });
+      };
+      mql.addEventListener?.("change", onSchemeChange);
+      this.appDisposers.push(() => mql.removeEventListener?.("change", onSchemeChange));
     }
-    play();
+
+    this.root.dataset.flyoutEdge = "bottom";
+    playPresent("bottom");
+    const invoke = window.__TAURI_INTERNALS__?.invoke;
+    if (invoke) {
+      // Park the WebView2 swapchain at opacity 0 while the cold-launched HWND is hidden so the
+      // first ShowWindow never flashes a resting frame before menumijia:panel-present arrives.
+      void invoke<boolean>("panel_is_visible")
+        .then((visible) => {
+          if (visible === false && !hasExplicitPresent && activeDismissSeq === null && this.root.isConnected) {
+            clearOpenTimer();
+            this.root.classList.remove("is-opening");
+            this.root.classList.add("is-parked");
+          }
+        })
+        .catch(() => undefined);
+    }
   }
 
   /**
@@ -1492,20 +1604,29 @@ export class MenuMijiaWindowsApp {
       .catch(() => undefined);
   }
 
+  private panelMonitorGeometryKey(): string {
+    const scr = window.screen as (Screen & { availLeft?: number; availTop?: number }) | undefined;
+    const availLeft = scr?.availLeft ?? window.screenLeft ?? 0;
+    const availTop = scr?.availTop ?? window.screenTop ?? 0;
+    const availWidth = scr?.availWidth ?? 0;
+    const availHeight = scr?.availHeight ?? 0;
+    const dpr = window.devicePixelRatio || 1;
+    return `${availLeft},${availTop},${availWidth}x${availHeight}@${dpr}|${window.innerWidth}x${window.innerHeight}`;
+  }
+
   public applyPanelHeight(): void {
     const invoke = window.__TAURI_INTERNALS__?.invoke;
     if (!invoke) return;
     this.panelGeometryUpdates = this.panelGeometryUpdates.then(async () => {
       const h = PANEL_HEIGHTS.find((item) => item.id === this.settings.panelHeight) ?? PANEL_HEIGHTS[1]!;
-      const side = await invoke<boolean>("set_panel_height", {
-        height: h.px,
-        expanded: this.isGrokBallStageExpanded,
-        sideLeft: this.grokBallOnLeft,
-        grokEnabled: this.settings.enableGrokBall,
-      });
-      if (typeof side === "boolean") {
-        this.grokBallOnLeft = side;
-        this.root.dataset.grokSide = side ? "left" : "right";
+      const key = `${h.px}:${this.panelMonitorGeometryKey()}`;
+      if (this.lastAppliedPanelHeightKey === key) return;
+      this.lastAppliedPanelHeightKey = key;
+      try {
+        await invoke("set_panel_height", { height: h.px });
+      } catch (error) {
+        this.lastAppliedPanelHeightKey = null;
+        throw error;
       }
     }).catch((error: unknown) => console.error("Panel geometry update failed", error));
   }
@@ -1558,9 +1679,11 @@ export class MenuMijiaWindowsApp {
   }
 }
 
-document.addEventListener("DOMContentLoaded", () => {
-  const root = document.getElementById("app");
-  if (root) {
-    new MenuMijiaWindowsApp(root);
-  }
-});
+if (typeof document !== "undefined") {
+  document.addEventListener("DOMContentLoaded", () => {
+    const root = document.getElementById("app");
+    if (root) {
+      new MenuMijiaWindowsApp(root);
+    }
+  });
+}

@@ -1,6 +1,13 @@
 import type { MiRoom } from "../core/miCloudClient.js";
 import type { SmartDevice } from "../core/models.js";
-import { t } from "../core/i18n.js";
+import { currentLanguage, resolveLanguage, t } from "../core/i18n.js";
+
+export function tr3(zhHans: string, zhHant: string, en: string): string {
+  const lang = resolveLanguage(currentLanguage(), []);
+  if (lang === "en") return en;
+  if (lang === "zh-Hant") return zhHant;
+  return zhHans;
+}
 
 // Panel personalisation shared with the macOS app: per-page card sizes, custom order,
 // user groups and local device names. Pure functions only, so they can be unit tested.
@@ -41,9 +48,9 @@ export function applyPanelOpacity(root: HTMLElement, percent: number): void {
 export type PanelHeight = "compact" | "standard" | "tall" | "max";
 
 export const PANEL_HEIGHTS: ReadonlyArray<{ readonly id: PanelHeight; readonly title: string; readonly px: number }> = [
-  { id: "compact", get title() { return t("紧凑"); }, px: 520 },
-  { id: "standard", get title() { return t("标准"); }, px: 620 },
-  { id: "tall", get title() { return t("加高"); }, px: 740 },
+  { id: "compact", get title() { return t("紧凑"); }, px: 580 },
+  { id: "standard", get title() { return t("标准"); }, px: 680 },
+  { id: "tall", get title() { return t("加高"); }, px: 780 },
   { id: "max", get title() { return t("最大"); }, px: 0 },
 ];
 
@@ -73,16 +80,23 @@ export function parsePanelPlacement(value: unknown): PanelPlacement {
   return { anchor: known?.id ?? "auto" };
 }
 
-/**
- * Sizes the shared layout JSON can carry. `small` and `hero` come from the macOS 12-column grid;
- * Windows still renders a 6-column grid, so `TILE_SIZES` below offers only the sizes it can draw.
- */
 export type TileSize = "auto" | "small" | "half" | "hero" | "full" | "panel";
+
+export function normalizeTileSize(raw: unknown): TileSize {
+  if (raw === "1x1" || raw === "small") return "small";
+  if (raw === "2x1" || raw === "half") return "half";
+  if (raw === "1x2" || raw === "full") return "full";
+  if (raw === "2x2" || raw === "hero") return "hero";
+  if (raw === "panel") return "panel";
+  return "auto";
+}
 
 export const TILE_SIZES: ReadonlyArray<{ readonly id: TileSize; readonly title: string }> = [
   { id: "auto", get title() { return t("自动"); } },
+  { id: "small", get title() { return tr3("1×1 磁贴", "1×1 磁貼", "1×1 Tile"); } },
   { id: "half", get title() { return t("半行"); } },
   { id: "full", get title() { return t("整行"); } },
+  { id: "hero", get title() { return tr3("2×2 大卡", "2×2 大卡", "2×2 Large"); } },
   { id: "panel", get title() { return t("展开面板"); } },
 ];
 
@@ -100,6 +114,11 @@ export interface LayoutPrefs {
   /** `<page>|<sectionId>` of folded sections. */
   collapsed: string[];
   aliases: Record<string, string>;
+  pinnedDeviceIds?: string[];
+  hiddenDeviceIds?: string[];
+  roomOrder?: string[];
+  roomAliases?: Record<string, string>;
+  kindOrder?: string[];
 }
 
 export const emptyLayoutPrefs = (): LayoutPrefs => ({
@@ -109,7 +128,218 @@ export const emptyLayoutPrefs = (): LayoutPrefs => ({
   groupMap: {},
   collapsed: [],
   aliases: {},
+  pinnedDeviceIds: [],
+  hiddenDeviceIds: [],
+  roomOrder: [],
+  roomAliases: {},
+  kindOrder: [],
 });
+
+function dedupeStrings(items: readonly unknown[] | undefined): string[] {
+  if (!Array.isArray(items)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of items) {
+    if (typeof item !== "string") continue;
+    const trimmed = item.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+export function hiddenDeviceIds(prefs?: Pick<LayoutPrefs, "hiddenDeviceIds"> | null): string[] {
+  return dedupeStrings(prefs?.hiddenDeviceIds);
+}
+
+export function isDeviceHidden(deviceId: string, prefs?: Pick<LayoutPrefs, "hiddenDeviceIds"> | null): boolean {
+  return hiddenDeviceIds(prefs).includes(deviceId);
+}
+
+export function hideDevice(deviceId: string, prefs: LayoutPrefs): string[] {
+  const id = deviceId.trim();
+  if (!id) return hiddenDeviceIds(prefs);
+  const current = hiddenDeviceIds(prefs);
+  const next = current.includes(id) ? current : [...current, id];
+  prefs.hiddenDeviceIds = next;
+  return next;
+}
+
+export function unhideDevice(deviceId: string, prefs: LayoutPrefs): string[] {
+  const id = deviceId.trim();
+  const current = hiddenDeviceIds(prefs);
+  const next = current.filter((item) => item !== id);
+  prefs.hiddenDeviceIds = next;
+  return next;
+}
+
+export function unhideAllDevices(prefs: LayoutPrefs): string[] {
+  prefs.hiddenDeviceIds = [];
+  return [];
+}
+
+export function pinnedDeviceIds(prefs?: Pick<LayoutPrefs, "pinnedDeviceIds"> | null): string[] {
+  return dedupeStrings(prefs?.pinnedDeviceIds);
+}
+
+export function isDevicePinned(deviceId: string, prefs?: Pick<LayoutPrefs, "pinnedDeviceIds"> | null): boolean {
+  return pinnedDeviceIds(prefs).includes(deviceId);
+}
+
+export function pinDevice(deviceId: string, prefs: LayoutPrefs): string[] {
+  const id = deviceId.trim();
+  if (!id) return pinnedDeviceIds(prefs);
+  const current = pinnedDeviceIds(prefs);
+  const next = current.includes(id) ? current : [...current, id];
+  prefs.pinnedDeviceIds = next;
+  return next;
+}
+
+export function unpinDevice(deviceId: string, prefs: LayoutPrefs): string[] {
+  const id = deviceId.trim();
+  const current = pinnedDeviceIds(prefs);
+  const next = current.filter((item) => item !== id);
+  prefs.pinnedDeviceIds = next;
+  return next;
+}
+
+export function togglePinnedDevice(deviceId: string, prefs: LayoutPrefs): boolean {
+  if (isDevicePinned(deviceId, prefs)) {
+    unpinDevice(deviceId, prefs);
+    return false;
+  }
+  pinDevice(deviceId, prefs);
+  return true;
+}
+
+export function movePinnedDevice(deviceId: string, direction: -1 | 1, prefs: LayoutPrefs): string[] {
+  const next = [...pinnedDeviceIds(prefs)];
+  const idx = next.indexOf(deviceId);
+  const targetIdx = idx + direction;
+  if (idx < 0 || targetIdx < 0 || targetIdx >= next.length) return next;
+  [next[idx], next[targetIdx]] = [next[targetIdx]!, next[idx]!];
+  prefs.pinnedDeviceIds = next;
+  return next;
+}
+
+export function normalizeRoomAliases(aliases?: Readonly<Record<string, string>>): Record<string, string> {
+  if (!aliases || typeof aliases !== "object") return {};
+  const out: Record<string, string> = {};
+  for (const [roomId, raw] of Object.entries(aliases)) {
+    if (typeof raw !== "string") continue;
+    const trimmed = raw.trim();
+    if (roomId && trimmed) out[roomId] = trimmed;
+  }
+  return out;
+}
+
+export function roomDisplayName(
+  prefs: Pick<LayoutPrefs, "roomAliases"> | null | undefined,
+  roomId: string,
+  originalName: string,
+): string {
+  const alias = prefs?.roomAliases?.[roomId]?.trim();
+  return alias ? alias : originalName;
+}
+
+export function migrateRoomScopedLayoutKeys(
+  prefs: LayoutPrefs,
+  oldPageKey: string,
+  newPageKey: string,
+): void {
+  const from = oldPageKey.trim();
+  const to = newPageKey.trim();
+  if (!from || !to || from === to || from === "all" || to === "all") return;
+  const prefix = `${from}|`;
+  for (const [key, size] of Object.entries(prefs.tileSizes)) {
+    if (!key.startsWith(prefix)) continue;
+    const nextKey = `${to}|${key.slice(prefix.length)}`;
+    if (prefs.tileSizes[nextKey] === undefined) {
+      prefs.tileSizes[nextKey] = size;
+    }
+    delete prefs.tileSizes[key];
+  }
+  if (Array.isArray(prefs.collapsed) && prefs.collapsed.length > 0) {
+    const nextCollapsed: string[] = [];
+    const seen = new Set<string>();
+    for (const entry of prefs.collapsed) {
+      const mapped = entry.startsWith(prefix) ? `${to}|${entry.slice(prefix.length)}` : entry;
+      if (!seen.has(mapped)) {
+        seen.add(mapped);
+        nextCollapsed.push(mapped);
+      }
+    }
+    prefs.collapsed = nextCollapsed;
+  }
+}
+
+export function setRoomAlias(
+  prefs: LayoutPrefs,
+  roomId: string,
+  rawAlias: string,
+  originalName?: string,
+): void {
+  if (!roomId) return;
+  const prevDisplay = originalName !== undefined ? roomDisplayName(prefs, roomId, originalName) : null;
+  const aliases = normalizeRoomAliases(prefs.roomAliases);
+  const trimmed = rawAlias.trim();
+  if (!trimmed || (originalName !== undefined && trimmed === originalName.trim())) {
+    delete aliases[roomId];
+  } else {
+    aliases[roomId] = trimmed;
+  }
+  prefs.roomAliases = aliases;
+  if (prevDisplay !== null && originalName !== undefined) {
+    const nextDisplay = roomDisplayName(prefs, roomId, originalName);
+    if (prevDisplay !== nextDisplay) {
+      migrateRoomScopedLayoutKeys(prefs, prevDisplay, nextDisplay);
+    }
+  }
+}
+
+export function seededRoomOrder(savedOrder: readonly string[] | undefined, visibleIds: readonly string[]): string[] {
+  const next = dedupeStrings(savedOrder);
+  const seen = new Set(next);
+  for (const id of visibleIds) {
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      next.push(id);
+    }
+  }
+  return next;
+}
+
+export function applyRoomOrder<T extends { readonly id: string; readonly name: string }>(
+  prefs: Pick<LayoutPrefs, "roomOrder" | "roomAliases"> | null | undefined,
+  rooms: readonly T[],
+): T[] {
+  const ordered = applyOrder(dedupeStrings(prefs?.roomOrder), rooms);
+  const aliases = prefs?.roomAliases;
+  if (!aliases) return ordered;
+  return ordered.map((room) => {
+    const alias = aliases[room.id]?.trim();
+    return alias && alias !== room.name ? { ...room, name: alias } : room;
+  });
+}
+
+export function applyKindOrder<T extends string>(
+  savedKindOrder: readonly string[] | undefined,
+  tags: readonly T[],
+  fallbackRank: Readonly<Record<T, number>>,
+): T[] {
+  const order = dedupeStrings(savedKindOrder);
+  const explicitRank = new Map<string, number>();
+  order.forEach((tag, idx) => explicitRank.set(tag, idx));
+  return [...tags].sort((a, b) => {
+    const ra = explicitRank.get(a);
+    const rb = explicitRank.get(b);
+    if (ra !== undefined && rb !== undefined) return ra - rb;
+    if (ra !== undefined) return -1;
+    if (rb !== undefined) return 1;
+    return (fallbackRank[a] ?? 999) - (fallbackRank[b] ?? 999);
+  });
+}
 
 export function scopedKey(page: string, id: string): string {
   return `${page}|${id}`;
@@ -117,19 +347,19 @@ export function scopedKey(page: string, id: string): string {
 
 /** Size for a device on one page, falling back to the all-pages default. */
 export function chosenSize(prefs: LayoutPrefs, page: string, id: string): TileSize {
-  return prefs.tileSizes[scopedKey(page, id)] ?? prefs.tileSizes[id] ?? "auto";
+  const raw = prefs.tileSizes[scopedKey(page, id)] ?? prefs.tileSizes[id];
+  return raw !== undefined ? normalizeTileSize(raw) : "auto";
 }
 
 /** Resolves `auto` for the current grid mode; climate defaults to the full-row strip when enabled. */
 export function resolvedSize(size: TileSize, device: SmartDevice, compactGrid: boolean, climatePanel: boolean): Exclude<TileSize, "auto"> {
-  if (size !== "auto") return size;
+  const normalized = normalizeTileSize(size);
+  if (normalized !== "auto") return normalized;
   if (device.kind.kind === "climate" && climatePanel) return "full";
   return compactGrid ? "half" : "full";
 }
 
 export function nextSize(size: Exclude<TileSize, "auto">): Exclude<TileSize, "auto"> {
-  // Windows still packs a 6-column grid without 2×2 rows, so its tap cycle keeps the original
-  // three steps; `small`/`hero` arrive only through a saved macOS layout.
   if (size === "small") return "half";
   return size === "half" ? "full" : size === "full" ? "panel" : "half";
 }
@@ -163,7 +393,8 @@ export function targetSize(
   translation: TileResizeTranslation,
   isCompactGrid = true,
 ): Exclude<TileSize, "auto"> {
-  const resolvedStart: Exclude<TileSize, "auto"> = startSize === "auto" ? (isCompactGrid ? "half" : "full") : startSize;
+  const normalizedStart = normalizeTileSize(startSize);
+  const resolvedStart: Exclude<TileSize, "auto"> = normalizedStart === "auto" ? (isCompactGrid ? "half" : "full") : normalizedStart;
   // A 1×1 round button resizes from the capsule step; a 2×2 hero from the full-row step.
   const gestureStart: Exclude<TileSize, "auto"> =
     resolvedStart === "small" ? "half" : resolvedStart === "hero" ? "full" : resolvedStart;
@@ -242,19 +473,35 @@ export interface PageSection {
   readonly groupId: string | null;
 }
 
-/** User groups first, then the ungrouped rest. A page without any grouped device is one untitled section. */
 export function pageSections(prefs: LayoutPrefs, devices: readonly SmartDevice[], isAllPage: boolean): PageSection[] {
+  const pinnedOrder = isAllPage ? pinnedDeviceIds(prefs) : [];
+  const pinnedSet = new Set(pinnedOrder);
   const known = new Set(prefs.groups.map((g) => g.id));
   const groupOf = (id: string): string | null => {
     const g = prefs.groupMap[id];
     return g && known.has(g) ? g : null;
   };
   const sections: PageSection[] = [];
+  if (pinnedSet.size > 0) {
+    const pinnedMembers = applyOrder(
+      pinnedOrder,
+      devices.filter((d) => pinnedSet.has(d.id)),
+    );
+    if (pinnedMembers.length > 0) {
+      sections.push({
+        id: "pinned",
+        title: tr3("常用", "常用", "Favorites"),
+        devices: pinnedMembers,
+        groupId: null,
+      });
+    }
+  }
+  const remaining = pinnedSet.size > 0 ? devices.filter((d) => !pinnedSet.has(d.id)) : devices;
   for (const g of prefs.groups) {
-    const members = devices.filter((d) => groupOf(d.id) === g.id);
+    const members = remaining.filter((d) => groupOf(d.id) === g.id);
     if (members.length > 0) sections.push({ id: g.id, title: g.name, devices: members, groupId: g.id });
   }
-  const rest = devices.filter((d) => groupOf(d.id) === null);
+  const rest = remaining.filter((d) => groupOf(d.id) === null);
   if (rest.length > 0) {
     const title = sections.length === 0 ? null : isAllPage ? t("更多设备") : t("其他");
     sections.push({ id: "rest", title, devices: rest, groupId: null });
@@ -263,7 +510,19 @@ export function pageSections(prefs: LayoutPrefs, devices: readonly SmartDevice[]
 }
 
 export function withAliases(prefs: LayoutPrefs, devices: readonly SmartDevice[]): SmartDevice[] {
-  return devices.map((d) => (prefs.aliases[d.id] ? { ...d, name: prefs.aliases[d.id] as string } : d));
+  const roomAliases = prefs.roomAliases;
+  return devices.map((d) => {
+    const devAlias = prefs.aliases[d.id];
+    const roomAlias = d.roomId && roomAliases ? roomAliases[d.roomId]?.trim() : undefined;
+    const nextRoomName = roomAlias && roomAlias !== d.roomName ? roomAlias : d.roomName;
+    return devAlias || nextRoomName !== d.roomName
+      ? {
+          ...d,
+          ...(devAlias ? { name: devAlias } : {}),
+          ...(nextRoomName !== d.roomName ? { roomName: nextRoomName } : {}),
+        }
+      : d;
+  });
 }
 
 export interface HomeOption {

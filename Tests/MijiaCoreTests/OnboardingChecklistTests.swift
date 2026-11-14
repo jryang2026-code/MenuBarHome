@@ -329,6 +329,35 @@ struct OnboardingChecklistTests {
         #expect(store.devices.contains { !$0.isActiveOn })
         #expect(!(await mock.executedCommands).isEmpty, "the hold really switches devices off")
     }
+
+    @Test("Dismissing a declined HA plaintext notice restores rehearsal for the visible All Off lesson")
+    @MainActor
+    func dismissedDeclinedPlaintextNoticeKeepsAllOffAsRehearsal() async throws {
+        let suite = "test.onboarding.dismissed-plaintext.\(UUID().uuidString)"
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(
+            rooms: [RoomArea(id: "living", name: "客厅", sortOrder: 1)],
+            devices: [Self.livingLight, Self.studyLight],
+            scenes: []
+        ))
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        store.recordOnboardingMilestone(.searchedDevice)
+        store.haPlaintextPrompt = .declined("http://203.0.113.5:8123")
+
+        #expect(!store.showsLessonRow)
+        #expect(!store.allOffLessonIsActive)
+
+        let declined = try #require(store.panelActivities.first { $0.id == "notice.haPlaintext.declined" })
+        store.dismissActivity(declined)
+
+        #expect(store.showsLessonRow)
+        #expect(store.allOffLessonIsActive, "re-showing the checklist must also restore rehearsal")
+        #expect(store.rehearseAllOff() == nil)
+        #expect(store.onboardingMilestones.contains(.rehearsedAllOff))
+        #expect(!store.onboardingMilestones.contains(.turnedAllOff))
+        #expect(store.undoBanner?.isAllOff == false)
+        #expect(await mock.executedCommands.isEmpty)
+    }
 }
 
 struct PanelNoticeTests {

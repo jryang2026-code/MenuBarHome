@@ -2024,8 +2024,8 @@ struct GoldenCorpusTests {
     func confirmationGoldenCorpus() throws {
         let fixtureURL = try Self.locateGoldenFixture("Tests/Fixtures/confirmation_golden.json")
         let corpus = try JSONDecoder().decode(ConfirmationCorpus.self, from: Data(contentsOf: fixtureURL))
-        #expect(corpus.rows.count == 50)
-        #expect(corpus.decisionRows.count == 3)
+        #expect(corpus.rows.count == 58)
+        #expect(corpus.decisionRows.count == 4)
         #expect(Set(corpus.decisionRows.map(\.id)).count == corpus.decisionRows.count)
         #expect(Set(corpus.rows.map(\.id)).count == corpus.rows.count)
         for row in corpus.rows {
@@ -2058,5 +2058,21 @@ struct GoldenCorpusTests {
                 #expect(decision.suggestions.count == 1, "\(row.id)")
             }
         }
+    }
+
+    @Test("Scene-name collisions across Traditional and Simplified Chinese preserve exact script or reject ambiguity")
+    func sceneNameScriptCollisionParity() {
+        let simpScene = HomeScene(id: "scene_simp", name: "晚间", entityId: "scene.simp")
+        let tradScene = HomeScene(id: "scene_trad", name: "晚間", entityId: "scene.trad")
+        let tradPlan = LocalIntentParser.parse("执行晚間", devices: [], scenes: [simpScene, tradScene])
+        #expect(tradPlan?.intents == [DeviceIntent(targetId: "scene_trad", operation: .activateScene)])
+        let simpPlan = LocalIntentParser.parse("执行晚间", devices: [], scenes: [simpScene, tradScene])
+        #expect(simpPlan?.intents == [DeviceIntent(targetId: "scene_simp", operation: .activateScene)])
+        let fallbackPlan = LocalIntentParser.parse("執行晚間", devices: [], scenes: [simpScene])
+        #expect(fallbackPlan?.intents == [DeviceIntent(targetId: "scene_simp", operation: .activateScene)])
+        let dupA = HomeScene(id: "scene_a", name: "晚間模式", entityId: "scene.a")
+        let dupB = HomeScene(id: "scene_b", name: "晚間場景", entityId: "scene.b")
+        #expect(LocalIntentParser.parse("执行晚間", devices: [], scenes: [dupA, dupB]) == nil)
+        #expect(LocalIntentParser.parse("执行晚间", devices: [], scenes: [dupA, dupB]) == nil)
     }
 }

@@ -12,6 +12,7 @@ else
 fi
 TARGET="${INSTALL_TARGET:-$DEFAULT_TARGET}"
 BUNDLE=""
+EXPLICIT_BUNDLE=0
 SKIP_BUILD=0
 DRY_RUN=0
 RELAUNCH=1
@@ -32,7 +33,7 @@ USAGE
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --skip-build) SKIP_BUILD=1; shift ;;
-        --bundle) BUNDLE="${2:?--bundle 需要路径}"; shift 2 ;;
+        --bundle) BUNDLE="${2:?--bundle 需要路径}"; EXPLICIT_BUNDLE=1; shift 2 ;;
         --target) TARGET="${2:?--target 需要路径}"; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
         --no-relaunch) RELAUNCH=0; shift ;;
@@ -43,6 +44,27 @@ done
 
 fail() { echo "❌ $*" >&2; exit 1; }
 
+EXPECTED_BUILD="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
+
+# --dry-run must never compile or overwrite ROOT/MenuBarHome.app.
+if [ "$DRY_RUN" = "1" ] && [ "$SKIP_BUILD" = "0" ] && [ "$EXPLICIT_BUNDLE" = "0" ]; then
+    PLANNED_BUNDLE="$ROOT/MenuBarHome.app"
+    echo "▶ 计划打包并安装：$PLANNED_BUNDLE"
+    echo "  目标位置：$TARGET"
+    echo "  预期构建号：$EXPECTED_BUILD"
+    if [ -d "$PLANNED_BUNDLE" ]; then
+        EXISTING_BUNDLE_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLANNED_BUNDLE/Contents/Info.plist" 2>/dev/null || echo '未知')"
+        echo "  工作树现有包构建号：$EXISTING_BUNDLE_BUILD（正式运行时将重新执行 scripts/build_app.sh）"
+    else
+        echo "  工作树现有包：尚未生成（正式运行时将先执行 scripts/build_app.sh）"
+    fi
+    if [ -d "$TARGET" ]; then
+        echo "  现有版本：$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$TARGET/Contents/Info.plist" 2>/dev/null || echo '未知')"
+    fi
+    echo "✅ 计划校验通过（--dry-run，未执行编译，未改动文件）"
+    exit 0
+fi
+
 if [ "$SKIP_BUILD" = "0" ]; then
     echo "▶ 打包 MenuBarHome.app..."
     SKIP_RESTART=1 bash "$ROOT/scripts/build_app.sh"
@@ -51,7 +73,6 @@ BUNDLE="${BUNDLE:-$ROOT/MenuBarHome.app}"
 [ -d "$BUNDLE" ] || fail "找不到 $BUNDLE"
 
 BUNDLE="$(cd "$BUNDLE" && pwd)"
-EXPECTED_BUILD="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
 ACTUAL_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$BUNDLE/Contents/Info.plist" 2>/dev/null || true)"
 [ -n "$ACTUAL_BUILD" ] || fail "$BUNDLE 缺少 CFBundleVersion"
 [ "$ACTUAL_BUILD" = "$EXPECTED_BUILD" ] || \

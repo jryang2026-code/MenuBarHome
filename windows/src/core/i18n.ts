@@ -9,7 +9,9 @@
  * `{name}` placeholders are filled by name, so a translation may reorder them.
  */
 
-export type AppLanguage = "zh-Hans" | "en";
+import { ZH_HANT_CATALOG } from "./zhHantCatalog.js";
+
+export type AppLanguage = "zh-Hans" | "zh-Hant" | "en";
 export type LanguagePreference = "system" | AppLanguage;
 
 /** Chinese key → [Simplified Chinese, English]. */
@@ -153,7 +155,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "打开设置": ["打开设置", "Open settings"],
   "完全退出 MenuBarHome": ["完全退出 MenuBarHome", "Quit MenuBarHome"],
   "退出": ["退出", "Quit"],
-  "扫码直连": ["扫码直连", "Scan to connect"],
+  "扫码直连": ["扫码直连", "QR Login"],
   "用手机米家 App 扫码直连真实设备": ["用手机米家 App 扫码直连真实设备", "Scan with the Mi Home app to connect real devices"],
   "切换卡片大小": ["切换卡片大小", "Change card size"],
   "拖拽或点击调整卡片大小": ["拖拽或点击调整卡片大小", "Drag or click to resize"],
@@ -173,14 +175,14 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "我的米家": ["我的米家", "My Mi Home"],
   "关闭引导": ["关闭引导", "Close guide"],
   "返回控制中心": ["返回控制中心", "Back to control center"],
-  "切換家庭": ["切換家庭", "Switch home"],
 
   // Status summaries
   "{count} 台开启中 · 共 {online} 台在线": ["{count} 台开启中 · 共 {online} 台在线", "{count} on · {online} online"],
   "全屋待机 · {online} 台实时在线": ["全屋待机 · {online} 台实时在线", "All idle · {online} online"],
-  "演示预览 · 点击下方「扫码直连」同步你的真机": ["演示预览 · 点击下方「扫码直连」同步你的真机", "Demo preview · use “Scan to connect” to sync your devices"],
+  "演示预览 · 点击下方「扫码直连」同步你的真机": ["演示预览 · 点击下方「扫码直连」同步你的真机", "Demo preview · use “QR Login” to sync your devices"],
   "正在从小米云端同步真实设备...": ["正在从小米云端同步真实设备...", "Syncing devices from Xiaomi Cloud…"],
   "米家账号 {user} · {count} 台设备": ["米家账号 {user} · {count} 台设备", "Mi account {user} · {count} devices"],
+  "演示模式": ["演示模式", "Demo mode"],
   "演示模式 · 未连接米家云": ["演示模式 · 未连接米家云", "Demo mode · Mi Cloud not connected"],
   "已同步 {count} 台真实米家设备": ["已同步 {count} 台真实米家设备", "Synced {count} devices"],
   "当前小米账号下暂未发现米家设备": ["当前小米账号下暂未发现米家设备", "No Mi Home devices in this account"],
@@ -762,6 +764,117 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   ],
   "锁屏保护": ["锁屏保护", "Lock Guard"],
   "外部链接": ["外部链接", "External Link"],
+  "点击收起精细调节": ["点击收起精细调节", "Click to close detailed controls"],
+  "家庭状态与动态通知": ["家庭状态与动态通知", "Home status & notifications"],
+  "快速设置与设备控制": ["快速设置与设备控制", "Quick settings & device controls"],
+  "切换为胶囊控制网格": ["切换为胶囊控制网格", "Switch to capsule control grid"],
+  "定时指令": ["定时指令", "Scheduled timers"],
+  "摄像机速览": ["摄像机速览", "Camera preview"],
+  "查看实时画面": ["查看实时画面", "Open live view"],
+  "{name} 亮度": ["{name} 亮度", "{name} brightness"],
+  "展开 {name} 详细控制": ["展开 {name} 详细控制", "Expand {name} controls"],
+  "取消静音": ["取消静音", "Unmute"],
+  "{name} 音量": ["{name} 音量", "{name} volume"],
+  "快捷滑杆": ["快捷滑杆", "Quick sliders"],
+  "{m}分{s}秒": ["{m}分{s}秒", "{m}m {s}s"],
+  "{m}分钟": ["{m}分钟", "{m}m"],
+  "{secs}秒": ["{secs}秒", "{secs}s"],
+  "打开{name}": ["打开{name}", "Turn on {name}"],
+  "关闭{name}": ["关闭{name}", "Turn off {name}"],
+  "已打开{name}": ["已打开{name}", "Turned on {name}"],
+  "已关闭{name}": ["已关闭{name}", "Turned off {name}"],
+  "开始{name}": ["开始{name}", "Start {name}"],
+  "{action}{name}": ["{action}{name}", "{action} {name}"],
+  "{action}？": ["{action}？", "{action}?"],
+  "繁體中文": ["繁體中文", "Traditional Chinese"],
+  "未选择": ["未选择", "Not Selected"],
+  "复制代码": ["复制代码", "Copy code"],
+  "已复制": ["已复制", "Copied"],
+  "灯光": ["灯光", "Light"],
+  "混合": ["混合", "Mix"],
+  "快速洗": ["快速洗", "Quick Wash"],
+  "轻柔洗": ["轻柔洗", "Delicate Wash"],
+  "大件洗": ["大件洗", "Heavy Wash"],
+  "漂加脱": ["漂加脱", "Rinse & Spin"],
+  "单脱水": ["单脱水", "Spin"],
+  "婴童": ["婴童", "Baby Care"],
+  "筒清洁": ["筒清洁", "Drum Clean"],
+  "羊毛": ["羊毛", "Wool"],
+  "羽绒": ["羽绒", "Down Coat"],
+  "棉麻": ["棉麻", "Cotton"],
+  "化纤": ["化纤", "Synthetic"],
+  "内衣": ["内衣", "Underwear"],
+  "冲锋衣": ["冲锋衣", "Jacket"],
+  "运动服": ["运动服", "Sportswear"],
+  "新衣洗": ["新衣洗", "New Clothes Wash"],
+  "真丝": ["真丝", "Silk"],
+  "牛仔服": ["牛仔服", "Jeans"],
+  "随心洗": ["随心洗", "Pleased Wash"],
+  "头巾": ["头巾", "Turban"],
+  "自定义": ["自定义", "Custom"],
+  "被子": ["被子", "Bedding"],
+  "衬衣": ["衬衣", "Shirt"],
+  "漂洗": ["漂洗", "Rinse"],
+  "白天": ["白天", "Day"],
+  "夜晚": ["夜晚", "Night"],
+  "夜灯": ["夜灯", "Night Light"],
+  "故障 {code} · {detail}": ["故障 {code} · {detail}", "Fault {code} · {detail}"],
+  "故障 · {detail}": ["故障 · {detail}", "Fault · {detail}"],
+  "设备上报故障代码 {code}，请查看说明书或米家 App": [
+    "设备上报故障代码 {code}，请查看说明书或米家 App",
+    "The device reported fault code {code}. Check the manual or the Mi Home app.",
+  ],
+  "设备上报故障「{text}」，请查看说明书或米家 App": [
+    "设备上报故障「{text}」，请查看说明书或米家 App",
+    "The device reported a fault ({text}). Check the manual or the Mi Home app.",
+  ],
+  "衣物分布不平衡": ["衣物分布不平衡", "Dehydration Fault"],
+  "门未关好": ["门未关好", "Door Lock Malfunction"],
+  "电脑板通讯异常": ["电脑板通讯异常", "Motor Driver Board Communication Malfunction"],
+  "水位过高": ["水位过高", "Overflow Malfunction"],
+  "水位异常": ["水位异常", "Water Level Sensor Malfunction"],
+  "水温异常": ["水温异常", "Water Temperature Sensor Malfunction"],
+  "洗涤加热管异常": ["洗涤加热管异常", "Water Heating Tube Malfunction"],
+  "防漏水系统已激活": ["防漏水系统已激活", "AquaStop Activated"],
+  "冷凝水盒已满": ["冷凝水盒已满", "Condensate Tank Full"],
+  "门锁无法使用": ["门锁无法使用", "Door Lock Unavailable"],
+  "家电故障": ["家电故障", "Appliance Error"],
+  "整机震动过大": ["整机震动过大", "Excessive Vibration"],
+  "风机故障": ["风机故障", "Fan Fault"],
+  "出现异常": ["出现异常", "Fault"],
+  "灯板开合故障": ["灯板开合故障", "Light Panel Fault"],
+  "绒毛收集器已满": ["绒毛收集器已满", "Lint Filter Full"],
+  "低电量": ["低电量", "Low Power"],
+  "电源电压异常": ["电源电压异常", "Abnormal Voltage"],
+  "电源故障": ["电源故障", "Power Error"],
+  "温湿度传感器故障": ["温湿度传感器故障", "Temp/Humidity Sensor Fault"],
+  "水泵短路或断路": ["水泵短路或断路", "The Pump Is Short Circuited or Disconnected"],
+  "衣物分布不均": ["衣物分布不均", "Uneven Load"],
+  "电机故障": ["电机故障", "Motor Fault"],
+  "排水故障": ["排水故障", "Water Draining Malfunction"],
+  "进水故障": ["进水故障", "Water Intake Malfunction"],
+  "遇阻": ["遇阻", "Encounter Obstacles"],
+  "超重": ["超重", "Overweight"],
+  "全屋": ["全屋", "Whole Home"],
+  "有人移动": ["有人移动", "Motion"],
+  "无人移动": ["无人移动", "Clear"],
+  "移动监测": ["移动监测", "Motion Sensor"],
+  "已闭合": ["已闭合", "Closed"],
+  "门窗监测": ["门窗监测", "Contact Sensor"],
+  "浸水告警": ["浸水告警", "Leak Detected"],
+  "正常": ["正常", "Dry"],
+  "水浸监测": ["水浸监测", "Leak Sensor"],
+  "光照监测": ["光照监测", "Light Sensor"],
+  "保温监控": ["保温监控", "Water Monitor"],
+  "守护中": ["守护中", "Guarding"],
+  "布帘": ["布帘", "Drape Curtain"],
+  "纱帘": ["纱帘", "Lace Curtain"],
+  "左帘": ["左帘", "Left Curtain"],
+  "右帘": ["右帘", "Right Curtain"],
+  "窗帘": ["窗帘", "Curtain"],
+  "重试退出米家登录": ["重试退出米家登录", "Retry sign-out"],
+  "米家登录将在 {date} 到期": ["米家登录将在 {date} 到期", "Xiaomi Home sign-in expires {date}"],
+  "退出米家登录": ["退出米家登录", "Sign out"],
 };
 
 /** Every catalog key, for tests and tooling. */
@@ -773,16 +886,34 @@ export function catalogEntry(key: string): readonly [string, string] | undefined
   return CATALOG[key];
 }
 
+export function zhHantEntry(key: string): string | undefined {
+  return ZH_HANT_CATALOG[key];
+}
+
 let current: AppLanguage = "zh-Hans";
+
+export function currentLanguage(): AppLanguage {
+  return current;
+}
 
 export function setLanguage(language: AppLanguage): void {
   current = language;
 }
 
-/** `zh-Hans`, `zh-Hant` and bare `zh` are Chinese; everything else is English. */
+/**
+ * Maps a BCP-47 tag onto a supported language, honouring the Hant/Hans script and the
+ * TW/HK/MO regions that imply Traditional Chinese (macOS `AppLanguage.match`).
+ */
 export function languageFromTag(tag: string): AppLanguage {
-  const lower = tag.toLowerCase();
-  return lower === "zh" || lower.startsWith("zh-") || lower.startsWith("zh_") ? "zh-Hans" : "en";
+  const lower = tag.trim().toLowerCase();
+  if (lower === "zh" || lower.startsWith("zh-") || lower.startsWith("zh_")) {
+    const traditionalMarkers = ["hant", "-tw", "_tw", "-hk", "_hk", "-mo", "_mo"];
+    if (traditionalMarkers.some((marker) => lower.includes(marker))) {
+      return "zh-Hant";
+    }
+    return "zh-Hans";
+  }
+  return "en";
 }
 
 /** Resolves the picker value against the OS languages (`navigator.languages`). */
@@ -795,8 +926,10 @@ export function resolveLanguage(preference: LanguagePreference, navigatorLanguag
 }
 
 /** BCP-47 tag handed to the speech recognizer so dictation speaks the UI's language (#52). */
-function speechLocaleFor(language: AppLanguage): string {
-  return language === "en" ? "en-US" : "zh-CN";
+export function speechLocaleFor(language: AppLanguage): string {
+  if (language === "en") return "en-US";
+  if (language === "zh-Hant") return "zh-TW";
+  return "zh-CN";
 }
 
 /** UI language of the running panel; used for speech, locale-aware formatting and the picker. */
@@ -817,6 +950,11 @@ function fill(template: string, params: Readonly<Record<string, string | number>
  */
 export function t(template: string, params?: Readonly<Record<string, string | number>>): string {
   const entry = CATALOG[template];
-  const text = entry ? (current === "en" ? entry[1] : entry[0]) : template;
+  const text =
+    current === "en"
+      ? (entry ? entry[1] : template)
+      : current === "zh-Hant"
+        ? (ZH_HANT_CATALOG[template] ?? (entry ? entry[0] : template))
+        : (entry ? entry[0] : template);
   return params ? fill(text, params) : text;
 }

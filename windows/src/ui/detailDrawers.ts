@@ -1,11 +1,24 @@
-import { t } from "../core/i18n.js";
+import { haRoundedInt } from "../core/haDomains.js";
+import { currentLanguage, resolveLanguage, t } from "../core/i18n.js";
 import {
   lockedControlIdForAlert,
   showsAdvancedViewOnlyCopy,
 } from "../core/miCloud/feedAction.js";
+import {
+  SPEAKER_TEXT_MAX_LENGTH,
+  buildSpeakerTextCommand,
+  normalizeSpeakerText,
+  type SpeakerTextMode,
+} from "../core/miCloud/speakerActions.js";
 import { facetValue, formatReading } from "../core/miotFacetText.js";
 import {
+  applianceFaultNotice,
+  applianceModeStartsHeating,
+  localizeApplianceFanLevel,
+  localizeApplianceMode,
+  localizeApplianceStatus,
   localizeSwingMode,
+  type ApplianceSpec,
   type ClimateSpec,
   type CoverSpec,
   type DeviceCommand,
@@ -14,6 +27,7 @@ import {
   type GenericSpec,
   type PlugSpec,
   type SmartDevice,
+  type SpeakerSpec,
 } from "../core/models.js";
 import { formatTemperature, toCelsius } from "../core/temperature.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
@@ -51,10 +65,10 @@ export function coverActionTitle(
   switch (trimmed.toLowerCase()) {
     case "open":
     case "打开":
-      return t("打开");
+      return currentLanguage() === "en" ? "Open" : t("打开");
     case "close":
     case "关闭":
-      return t("关闭");
+      return currentLanguage() === "en" ? "Close" : t("关闭");
     case "up":
     case "raise":
     case "上升":
@@ -104,6 +118,147 @@ export function coverMotorRequiresConfirmation(
     return true;
   }
   return action === "open";
+}
+
+export function renderApplianceDrawer(
+  dev: SmartDevice,
+  k: ApplianceSpec,
+  escapeHtml: (value: string) => string,
+): string {
+  const id = escapeHtml(dev.id);
+  const disabledAttr = dev.isOnline ? "" : ' disabled aria-disabled="true"';
+  const rows: string[] = [];
+
+  if (k.faultText && k.faultText.trim() !== "") {
+    const notice = applianceFaultNotice(k.faultText);
+    rows.push(
+      `<div class="cc-appliance-fault" role="status">` +
+        `<span class="cc-icon-inline" aria-hidden="true">${ALERT_TRIANGLE_SVG}</span>` +
+        `<span class="cc-appliance-fault-text">${escapeHtml(notice.message)}</span>` +
+        `<button type="button" class="cc-inline-pill cc-appliance-fault-copy" data-copy-fault="${escapeHtml(notice.copyText)}">${escapeHtml(t("复制代码"))}</button>` +
+      `</div>`,
+    );
+  }
+
+  if (k.temperatureWritable && k.targetTemperature !== null) {
+    rows.push(`<div class="cc-segmented-pills">
+      <button class="cc-seg-pill" data-appliancetemp="${id}|-1" aria-label="${t("降低目标温度")}"${disabledAttr}>−</button>
+      <span class="cc-pill-label">${formatTemperature(k.targetTemperature)}</span>
+      <button class="cc-seg-pill" data-appliancetemp="${id}|1" aria-label="${t("升高目标温度")}"${disabledAttr}>＋</button>
+    </div>`);
+  }
+
+  if (k.modeWritable && k.availableModes.length > 0) {
+    if (k.availableModes.length > 4) {
+      const activeMode =
+        k.currentMode && k.availableModes.includes(k.currentMode) ? k.currentMode : null;
+      rows.push(
+        `<div class="cc-appliance-mode-row">` +
+          `<span class="cc-pill-label">${escapeHtml(t("模式"))}</span>` +
+          `<select class="cc-appliance-select" data-appliancemode-select="${id}" aria-label="${escapeHtml(t("模式"))}"${disabledAttr}>` +
+            `${activeMode === null ? `<option value="" selected>${escapeHtml(t("未选择"))}</option>` : ""}` +
+            `${k.availableModes
+              .map(
+                (mode) =>
+                  `<option value="${escapeHtml(mode)}"${activeMode === mode ? " selected" : ""}>${escapeHtml(localizeApplianceMode(mode))}</option>`,
+              )
+              .join("")}` +
+          `</select>` +
+        `</div>`,
+      );
+    } else {
+      rows.push(`<div class="cc-segmented-pills">
+        ${k.availableModes
+          .map(
+            (mode) => `<button class="cc-seg-pill ${k.currentMode === mode ? "is-active" : ""}"
+              data-appliancemode="${id}|${escapeHtml(mode)}" aria-pressed="${k.currentMode === mode}"${disabledAttr}>
+              ${escapeHtml(localizeApplianceMode(mode))}
+            </button>`,
+          )
+          .join("")}
+      </div>`);
+    }
+  }
+
+  if (k.fanLevel?.writable && k.fanLevel.options.length > 0) {
+    rows.push(`<div class="cc-segmented-pills">
+      ${k.fanLevel.options
+        .map(
+          (level) => `<button class="cc-seg-pill ${k.fanLevel?.current === level ? "is-active" : ""}"
+            data-appliancefan="${id}|${escapeHtml(level)}" aria-pressed="${k.fanLevel?.current === level}"${disabledAttr}>
+            ${escapeHtml(localizeApplianceFanLevel(level))}
+          </button>`,
+        )
+        .join("")}
+    </div>`);
+  }
+
+  if (k.light?.writable) {
+    rows.push(`<div class="cc-segmented-pills">
+      <button class="cc-seg-pill ${k.light.isOn ? "is-active" : ""}" data-appliancelight="${id}" aria-pressed="${k.light.isOn}"${disabledAttr}>
+        ${k.light.isOn ? t("灯光：开") : t("灯光：关")}
+      </button>
+    </div>`);
+  }
+
+  const roundedHumidity = k.roomReading ? haRoundedInt(k.currentHumidity) : null;
+  if (roundedHumidity !== null) {
+    rows.push(`<div class="cc-slider-label"><span>${t("湿度")}</span><strong>${roundedHumidity}%</strong></div>`);
+  }
+
+  if (k.statusText) {
+    rows.push(`<div class="cc-slider-label"><span>${t("状态")}</span><span>${escapeHtml(localizeApplianceStatus(k.statusText))}</span></div>`);
+  }
+
+  if (k.remainingMinutes !== null) {
+    rows.push(`<div class="cc-slider-label"><span>${t("剩余时间")}</span><span>${t("{minutes} 分钟", { minutes: k.remainingMinutes })}</span></div>`);
+  }
+
+  const actions = (
+    [
+      ["start", k.startAction, t("开始")],
+      ["pause", k.pauseAction, t("暂停")],
+      ["stop", k.stopAction, t("停止")],
+    ] as const
+  ).filter(([, action]) => action !== null);
+  if (actions.length > 0) {
+    rows.push(`<div class="cc-segmented-pills">
+      ${actions
+        .map(
+          ([kind, , label]) =>
+            `<button class="cc-seg-pill" data-applianceaction="${id}|${kind}"${disabledAttr}>${label}</button>`,
+        )
+        .join("")}
+    </div>`);
+  }
+
+  if (rows.length === 0) return "";
+  return `<div class="cc-tile-drawer">${rows.join("")}</div>`;
+}
+
+async function writeFaultTextToClipboard(text: string): Promise<void> {
+  const nav = typeof window !== "undefined" ? window.navigator : navigator;
+  if (nav && nav.clipboard && typeof nav.clipboard.writeText === "function") {
+    try {
+      await nav.clipboard.writeText(text);
+      return;
+    } catch {}
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  try {
+    textarea.select();
+    if (typeof document.execCommand === "function") {
+      document.execCommand("copy");
+    }
+  } finally {
+    textarea.remove();
+  }
 }
 
 export function renderCoverDrawer(
@@ -288,7 +443,7 @@ export function renderClimateSwingRow(
 export function updateLiveSliderReadout(
   slider: HTMLInputElement,
   findControl: (deviceId: string, controlId: string) => FacetControl | null,
-): void {
+): string {
   const setGroupReadout = (formatted: string, ariaNow: string): void => {
     const label = slider.closest(".cc-slider-group")?.querySelector<HTMLElement>(".cc-slider-label strong");
     if (label) label.textContent = formatted;
@@ -298,35 +453,44 @@ export function updateLiveSliderReadout(
 
   if (slider.dataset.brightness !== undefined) {
     const pct = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
-    setGroupReadout(`${pct}%`, String(pct));
-    return;
+    const formatted = `${pct}%`;
+    setGroupReadout(formatted, String(pct));
+    return formatted;
   }
   if (slider.dataset.colortemp !== undefined) {
     const kelvin = Math.round(Number(slider.value));
-    setGroupReadout(`${kelvin}K`, String(kelvin));
-    return;
+    const formatted = `${kelvin}K`;
+    setGroupReadout(formatted, String(kelvin));
+    return formatted;
   }
   if (slider.dataset.actemp !== undefined) {
     const raw = Number(slider.value);
-    const celsius = Number(toCelsius(raw).toFixed(2));
-    const formatted = formatTemperature(celsius);
+    let celsius = toCelsius(raw);
+    const minC = slider.dataset.minC !== undefined ? Number(slider.dataset.minC) : NaN;
+    const maxC = slider.dataset.maxC !== undefined ? Number(slider.dataset.maxC) : NaN;
+    if (Number.isFinite(minC)) celsius = Math.max(minC, celsius);
+    if (Number.isFinite(maxC)) celsius = Math.min(maxC, celsius);
+    const formatted = formatTemperature(Number(celsius.toFixed(2)));
     setGroupReadout(formatted, slider.value);
-    return;
+    return formatted;
   }
   if (slider.dataset.fanpercent !== undefined) {
     const pct = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
-    setGroupReadout(`${pct}%`, String(pct));
-    return;
+    const formatted = `${pct}%`;
+    setGroupReadout(formatted, String(pct));
+    return formatted;
   }
   if (slider.dataset.volume !== undefined) {
     const pct = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
-    setGroupReadout(`${pct}%`, String(pct));
-    return;
+    const formatted = `${pct}%`;
+    setGroupReadout(formatted, String(pct));
+    return formatted;
   }
   if (slider.dataset.coverpos !== undefined) {
     const pct = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
-    setGroupReadout(`${pct}%`, String(pct));
-    return;
+    const formatted = `${pct}%`;
+    setGroupReadout(formatted, String(pct));
+    return formatted;
   }
   const facetKey = slider.dataset.facetNumber;
   if (facetKey !== undefined) {
@@ -334,7 +498,7 @@ export function updateLiveSliderReadout(
     const deviceId = sep > 0 ? facetKey.slice(0, sep) : "";
     const controlId = sep > 0 ? facetKey.slice(sep + 1) : "";
     const numeric = Number(slider.value);
-    if (!Number.isFinite(numeric)) return;
+    if (!Number.isFinite(numeric)) return "";
     const control = deviceId && controlId ? findControl(deviceId, controlId) : null;
     const formatted = control
       ? facetValue({ ...control, value: numeric })
@@ -343,7 +507,9 @@ export function updateLiveSliderReadout(
     if (valueEl) valueEl.textContent = formatted;
     slider.setAttribute("aria-valuenow", formatReading(numeric));
     slider.setAttribute("aria-valuetext", formatted);
+    return formatted;
   }
+  return "";
 }
 
 const boundDrawerLifecycleHosts = new WeakSet<MenuMijiaWindowsApp>();
@@ -397,20 +563,32 @@ export function bindDetailDrawerEvents(
       "input[type=\"range\"][data-brightness], input[type=\"range\"][data-colortemp], input[type=\"range\"][data-actemp], input[type=\"range\"][data-fanpercent], input[type=\"range\"][data-volume], input[type=\"range\"][data-coverpos], input[type=\"range\"][data-facet-number]",
     )
     .forEach((slider) => {
-      slider.addEventListener("pointerdown", () => {
-        host.pointerIsDown = true;
-      });
-      slider.addEventListener("input", () => {
-        host.pointerIsDown = true;
-        updateLiveSliderReadout(
+      const showThumbBadge = (): void => {
+        const formatted = updateLiveSliderReadout(
           slider,
           (devId, ctrlId) => host.deviceFacets[devId]?.find((item) => item.id === ctrlId) ?? null,
         );
+        host.pipeline.updateSliderThumbBadge(slider, formatted, Boolean(formatted));
+      };
+      const hideThumbBadge = (): void => {
+        host.pipeline.updateSliderThumbBadge(slider, "", false);
+      };
+      slider.addEventListener("pointerdown", () => {
+        host.pointerIsDown = true;
+        showThumbBadge();
       });
+      slider.addEventListener("input", () => {
+        host.pointerIsDown = true;
+        showThumbBadge();
+      });
+      slider.addEventListener("pointerup", hideThumbBadge);
+      slider.addEventListener("pointercancel", hideThumbBadge);
+      slider.addEventListener("blur", hideThumbBadge);
       slider.addEventListener(
         "change",
         () => {
           host.pointerIsDown = false;
+          hideThumbBadge();
           queueMicrotask(() => {
             if (!host.pointerIsDown && host.pendingCloudRender) {
               host.queueBackgroundRender();
@@ -451,7 +629,7 @@ export function bindDetailDrawerEvents(
       const actionLabel = coverActionTitle(description, dev.kind.subtype);
       if (
         coverMotorRequiresConfirmation(dev.kind.subtype, rawAction) &&
-        !confirmHighRisk(dev.id, command, `${actionLabel}${dev.name}`)
+        !confirmHighRisk(dev.id, command, t("{action}{name}", { action: actionLabel, name: dev.name }))
       ) {
         return;
       }
@@ -463,8 +641,8 @@ export function bindDetailDrawerEvents(
         rawAction === "stop"
           ? t("已暂停{name}", { name: dev.name })
           : rawAction === "open"
-            ? `已${t("打开")}${dev.name}`
-            : `已${t("关闭")}${dev.name}`;
+            ? t("已打开{name}", { name: dev.name })
+            : t("已关闭{name}", { name: dev.name });
       void host.executeSingleCommand(dev, command, summary, intent);
     });
   });
@@ -528,17 +706,17 @@ export function bindDetailDrawerEvents(
       revealFacetRow(deviceId, controlId, host.deviceFacets[deviceId] ?? []);
       host.render();
       const targetEl = controlId
-        ? host.root.querySelector<HTMLElement>(`#${CSS.escape(facetRowDomId(deviceId, controlId))}`)
+        ? host.root.querySelector<HTMLElement>(`#${cssEscape(facetRowDomId(deviceId, controlId))}`)
         : host.root.querySelector<HTMLElement>(
-            `[data-tile-id="${CSS.escape(deviceId)}"] .cc-facet-section`,
+            `[data-tile-id="${cssEscape(deviceId)}"] .cc-facet-section`,
           );
       targetEl?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
       const focusable =
         targetEl?.querySelector<HTMLElement>(
           "button:not([disabled]), input:not([disabled]), select:not([disabled])",
         ) ??
-        host.root.querySelector<HTMLElement>(`[data-open-facet-settings="${CSS.escape(deviceId)}"]`) ??
-        host.root.querySelector<HTMLElement>(`[data-more-settings-toggle="${CSS.escape(deviceId)}"]`);
+        host.root.querySelector<HTMLElement>(`[data-open-facet-settings="${cssEscape(deviceId)}"]`) ??
+        host.root.querySelector<HTMLElement>(`[data-more-settings-toggle="${cssEscape(deviceId)}"]`);
       focusable?.focus({ preventScroll: true });
     });
   });
@@ -553,4 +731,453 @@ export function bindDetailDrawerEvents(
       host.render();
     });
   });
+
+  host.root.querySelectorAll<HTMLSelectElement>("[data-appliancemode-select]").forEach((select) => {
+    select.addEventListener("change", () => {
+      const id = select.dataset.appliancemodeSelect;
+      const mode = select.value;
+      if (!id || !mode) return;
+      const dev = host.devices.find((d) => d.id === id);
+      if (!dev || !dev.isOnline || dev.kind.kind !== "appliance" || !dev.kind.modeWritable) return;
+      const command: DeviceCommand = { kind: "setSelectOption", entityId: dev.kind.modeEntityId, option: mode };
+      if (
+        dev.kind.heats &&
+        !dev.kind.isOn &&
+        applianceModeStartsHeating(mode) &&
+        !confirmHighRisk(dev.id, command, t("切换到{mode}", { mode: localizeApplianceMode(mode) }))
+      ) {
+        if (select.isConnected) {
+          select.value =
+            dev.kind.currentMode && dev.kind.availableModes.includes(dev.kind.currentMode)
+              ? dev.kind.currentMode
+              : "";
+        }
+        return;
+      }
+      void host.executeSingleCommand(
+        dev,
+        command,
+        t("已将{name}设为{mode}", { name: dev.name, mode: localizeApplianceMode(mode) }),
+      );
+    });
+  });
+
+  host.root.querySelectorAll<HTMLButtonElement>("[data-copy-fault]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const text = btn.dataset.copyFault ?? "";
+      if (!text) return;
+      void writeFaultTextToClipboard(text).then(() => {
+        if (!btn.isConnected) return;
+        btn.textContent = t("已复制");
+        btn.dataset.copied = "true";
+        window.setTimeout(() => {
+          if (!btn.isConnected) return;
+          btn.textContent = t("复制代码");
+          delete btn.dataset.copied;
+        }, 1500);
+      });
+    });
+  });
+
+  bindSpeakerCommandBars(host);
+  bindCollapsedInlineSliders(host);
+}
+
+function bindCollapsedInlineSliders(host: MenuMijiaWindowsApp): void {
+  host.root.querySelectorAll<HTMLElement>("[data-inline-slider-wrap]").forEach((wrap) => {
+    wrap.addEventListener("pointerdown", (e) => {
+      host.pointerIsDown = true;
+      e.stopPropagation();
+    });
+    wrap.addEventListener("click", (e) => {
+      e.stopPropagation();
+    });
+  });
+
+  host.root
+    .querySelectorAll<HTMLInputElement>('input[type="range"][data-inline-slider]')
+    .forEach((slider) => {
+      slider.addEventListener("pointerdown", () => {
+        host.pointerIsDown = true;
+      });
+      slider.addEventListener("click", (e) => {
+        e.stopPropagation();
+      });
+      slider.addEventListener("input", () => {
+        host.pointerIsDown = true;
+        const min = Number(slider.min || "0");
+        const max = Number(slider.max || "100");
+        const pct = Math.max(min, Math.min(max, Math.round(Number(slider.value))));
+        slider.setAttribute("aria-valuenow", String(pct));
+        slider.setAttribute("aria-valuetext", `${pct}%`);
+        const wrap = slider.closest<HTMLElement>(".cc-inline-slider-wrap");
+        const valEl = wrap?.querySelector<HTMLElement>(".cc-inline-slider-val");
+        if (valEl) valEl.textContent = `${pct}%`;
+        if (slider.dataset.inlineBrightness) {
+          const tile = slider.closest<HTMLElement>("[data-tile-id]");
+          const fillEl = tile?.querySelector<HTMLElement>(".cc-tile-fill");
+          if (fillEl) {
+            fillEl.style.width = `${pct}%`;
+            fillEl.style.setProperty("--fill-scale", (pct / 100).toFixed(3));
+          }
+        }
+      });
+      slider.addEventListener("change", () => {
+        host.pointerIsDown = false;
+        queueMicrotask(() => {
+          if (!host.pointerIsDown && host.pendingCloudRender) {
+            host.queueBackgroundRender();
+          }
+        });
+        const id = slider.dataset.inlineSlider ?? "";
+        const dev = host.devices.find((d) => d.id === id);
+        if (!dev || !dev.isOnline) return;
+        if (
+          slider.dataset.inlineBrightness &&
+          dev.kind.kind === "light" &&
+          dev.kind.brightnessWritable !== false
+        ) {
+          const percent = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
+          void host.executeSingleCommand(
+            dev,
+            { kind: "setLightBrightness", entityId: dev.kind.entityId, percent },
+            t("已将{name}亮度设为 {percent}%", { name: dev.name, percent }),
+            { targetId: dev.id, operation: { kind: "brightness", percent } },
+          );
+          return;
+        }
+        if (slider.dataset.inlineCoverpos && dev.kind.kind === "cover" && dev.kind.positionWritable) {
+          const clamped = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
+          const displayed = snapCoverPosition(clamped);
+          const command: DeviceCommand = {
+            kind: "setNumberValue",
+            entityId: dev.kind.entityId,
+            value: clamped,
+          };
+          const summary = t("已将{name}位置设为 {percent}%", {
+            name: dev.name,
+            percent: displayed,
+          });
+          void host.executeSingleCommand(dev, command, summary);
+          return;
+        }
+        if (
+          slider.dataset.inlineFanpercent &&
+          dev.kind.kind === "fan" &&
+          dev.kind.speedWritable !== false
+        ) {
+          const percent = Math.max(1, Math.min(100, Math.round(Number(slider.value))));
+          void host.executeSingleCommand(
+            dev,
+            { kind: "setFanPercentage", entityId: dev.kind.entityId, percent },
+            t("已将{name}风速设为 {speed}", { name: dev.name, speed: `${percent}%` }),
+          );
+          return;
+        }
+        if (slider.dataset.inlineVolume && dev.kind.kind === "speaker" && dev.kind.volumeWritable) {
+          const percent = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
+          void host.executeSingleCommand(
+            dev,
+            { kind: "mediaSetVolume", entityId: dev.kind.mediaEntityId, level: percent / 100 },
+            t("已将{name}音量设为 {percent}%", { name: dev.name, percent }),
+          );
+        }
+      });
+    });
+}
+
+function tr3(
+  zhHans: string,
+  zhHant: string,
+  en: string,
+  params?: Record<string, string | number>,
+): string {
+  const lang = resolveLanguage(currentLanguage(), []);
+  let template = lang === "en" ? en : lang === "zh-Hant" ? zhHant : zhHans;
+  if (params) {
+    for (const [key, val] of Object.entries(params)) {
+      template = template.replaceAll(`{${key}}`, String(val));
+    }
+  }
+  return template;
+}
+
+function cssEscape(raw: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(raw);
+  }
+  return raw.replace(/([^\w-])/g, "\\$1");
+}
+
+function escapeAttr(raw: string): string {
+  return raw
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function speakerInputPlaceholder(mode: SpeakerTextMode): string {
+  return mode === "directive"
+    ? tr3("输入小爱静默指令…", "輸入小愛靜默指令…", "Enter silent command for XiaoAi…")
+    : tr3("输入小爱播报文字…", "輸入小愛播報文字…", "Enter text for XiaoAi to announce…");
+}
+
+export function resolveSpeakerDrawerMode(
+  spec: SpeakerSpec,
+  preferred?: SpeakerTextMode,
+): SpeakerTextMode | null {
+  const hasTts = Boolean(spec.ttsActionId);
+  const hasDirective = Boolean(spec.directiveActionId);
+  if (!hasTts && !hasDirective) return null;
+  if (hasTts && hasDirective) return preferred ?? "tts";
+  return hasTts ? "tts" : "directive";
+}
+
+export function renderSpeakerCommandBar(
+  dev: SmartDevice,
+  k: SpeakerSpec,
+  escapeHtml: (value: string) => string = escapeAttr,
+  options?: { readonly mode?: SpeakerTextMode; readonly draft?: string },
+): string {
+  const activeMode = resolveSpeakerDrawerMode(k, options?.mode);
+  if (!activeMode) return "";
+  const id = escapeHtml(dev.id);
+  const canSwitch = Boolean(k.ttsActionId && k.directiveActionId);
+  const draft = options?.draft ?? "";
+  const disabledAttr = dev.isOnline ? "" : ' disabled aria-disabled="true"';
+  const sendDisabled = !dev.isOnline || draft.trim().length === 0;
+  const placeholder = speakerInputPlaceholder(activeMode);
+  const speakLabel = escapeHtml(tr3("播报", "播報", "Speak"));
+  const directiveLabel = escapeHtml(tr3("指令", "指令", "Command"));
+  const sendLabel = escapeHtml(tr3("发送", "發送", "Send"));
+
+  const modePills = canSwitch
+    ? `<div class="cc-segmented-pills" data-speaker-mode-group="${id}">` +
+      `<button type="button" class="cc-seg-pill ${activeMode === "tts" ? "is-active" : ""}" data-speaker-mode="${id}|tts" aria-pressed="${activeMode === "tts"}"${disabledAttr}>${speakLabel}</button>` +
+      `<button type="button" class="cc-seg-pill ${activeMode === "directive" ? "is-active" : ""}" data-speaker-mode="${id}|directive" aria-pressed="${activeMode === "directive"}"${disabledAttr}>${directiveLabel}</button>` +
+      `</div>`
+    : `<div class="cc-segmented-pills" data-speaker-mode-group="${id}">` +
+      `<button type="button" class="cc-seg-pill is-active" data-speaker-mode-fixed="${id}|${activeMode}" aria-pressed="true" disabled>${activeMode === "tts" ? speakLabel : directiveLabel}</button>` +
+      `</div>`;
+
+  const inputRow =
+    `<div class="cc-speaker-command-row" data-speaker-command-bar="${id}" style="display:flex;gap:6px;align-items:center;">` +
+    `<input type="text" class="cc-speaker-input" data-speaker-input="${id}" maxlength="${SPEAKER_TEXT_MAX_LENGTH}" value="${escapeHtml(draft)}" placeholder="${escapeHtml(placeholder)}" aria-label="${escapeHtml(placeholder)}" style="flex:1;min-width:0;padding:5px 9px;border-radius:8px;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.06);color:inherit;font-size:12px;outline:none;"${disabledAttr} />` +
+    `<button type="button" class="cc-seg-pill is-active" data-speaker-send="${id}"${sendDisabled ? ' disabled aria-disabled="true"' : ""}>${sendLabel}</button>` +
+    `</div>`;
+
+  return `${modePills}${inputRow}`;
+}
+
+interface HostSpeakerDrawerState {
+  sourceRevision: number;
+  readonly modes: Map<string, SpeakerTextMode>;
+  readonly drafts: Map<string, string>;
+}
+
+const speakerDrawerStates = new WeakMap<MenuMijiaWindowsApp, HostSpeakerDrawerState>();
+
+function ensureSpeakerDrawerState(host: MenuMijiaWindowsApp): HostSpeakerDrawerState {
+  let state = speakerDrawerStates.get(host);
+  if (!state) {
+    state = {
+      sourceRevision: host.sourceRevision,
+      modes: new Map(),
+      drafts: new Map(),
+    };
+    speakerDrawerStates.set(host, state);
+    return state;
+  }
+  if (state.sourceRevision !== host.sourceRevision) {
+    state.modes.clear();
+    state.drafts.clear();
+    state.sourceRevision = host.sourceRevision;
+  }
+  return state;
+}
+
+export function getSpeakerDrawerItemState(
+  host: MenuMijiaWindowsApp,
+  deviceId: string,
+): { readonly mode?: SpeakerTextMode; readonly draft?: string } {
+  const state = ensureSpeakerDrawerState(host);
+  return {
+    mode: state.modes.get(deviceId),
+    draft: state.drafts.get(deviceId),
+  };
+}
+
+function bindSpeakerCommandBars(host: MenuMijiaWindowsApp): void {
+  const state = ensureSpeakerDrawerState(host);
+  for (const dev of host.devices) {
+    if (dev.kind.kind !== "speaker") continue;
+    const spec = dev.kind;
+    if (!spec.ttsActionId && !spec.directiveActionId) continue;
+
+    const devId = dev.id;
+    const latestSpeaker = (): SmartDevice | undefined =>
+      host.devices.find((d) => d.id === devId && d.kind.kind === "speaker");
+
+    const wrap = host.root.querySelector<HTMLElement>(`[data-speaker-command-wrap="${cssEscape(devId)}"]`);
+    if (!wrap) continue;
+
+    const currentMode = resolveSpeakerDrawerMode(spec, state.modes.get(devId));
+    if (!currentMode) continue;
+    state.modes.set(devId, currentMode);
+
+    const inputEl = wrap.querySelector<HTMLInputElement>(`[data-speaker-input="${cssEscape(devId)}"]`);
+    const sendBtn = wrap.querySelector<HTMLButtonElement>(`[data-speaker-send="${cssEscape(devId)}"]`);
+    if (!inputEl || !sendBtn) continue;
+
+    wrap.querySelectorAll<HTMLButtonElement>("[data-speaker-mode]").forEach((modeBtn) => {
+      modeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const raw = modeBtn.dataset.speakerMode ?? "";
+        const sep = raw.indexOf("|");
+        const modeVal = sep >= 0 ? raw.slice(sep + 1) : "";
+        if (modeVal !== "tts" && modeVal !== "directive") return;
+        const currentDev = latestSpeaker();
+        if (!currentDev || currentDev.kind.kind !== "speaker") return;
+        const resolved = resolveSpeakerDrawerMode(currentDev.kind, modeVal);
+        if (!resolved) return;
+        state.modes.set(devId, resolved);
+        wrap.querySelectorAll<HTMLButtonElement>("[data-speaker-mode]").forEach((pill) => {
+          const pillMode = (pill.dataset.speakerMode ?? "").split("|")[1];
+          const active = pillMode === resolved;
+          pill.classList.toggle("is-active", active);
+          pill.setAttribute("aria-pressed", String(active));
+        });
+        const nextPlaceholder = speakerInputPlaceholder(resolved);
+        inputEl.placeholder = nextPlaceholder;
+        inputEl.setAttribute("aria-label", nextPlaceholder);
+      });
+    });
+
+    const syncSendDisabled = (): void => {
+      const currentDev = latestSpeaker();
+      const disabled = !currentDev?.isOnline || inputEl.value.trim().length === 0;
+      sendBtn.disabled = disabled;
+      if (disabled) {
+        sendBtn.setAttribute("aria-disabled", "true");
+      } else {
+        sendBtn.removeAttribute("aria-disabled");
+      }
+    };
+
+    inputEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+    });
+
+    inputEl.addEventListener("input", () => {
+      state.drafts.set(devId, inputEl.value);
+      syncSendDisabled();
+    });
+
+    let submitting = false;
+    const submitSpeakerInput = async (): Promise<void> => {
+      const currentDev = latestSpeaker();
+      if (submitting || !currentDev?.isOnline || currentDev.kind.kind !== "speaker") return;
+      const currentSpec = currentDev.kind;
+      const rawValue = inputEl.value;
+      if (rawValue.trim().length === 0) return;
+
+      let trimmed: string;
+      try {
+        trimmed = normalizeSpeakerText(rawValue);
+      } catch {
+        host.replyBanner = {
+          text: tr3(
+            "输入内容不能超过 {max} 个字符",
+            "輸入內容不能超過 {max} 個字元",
+            "Text cannot exceed {max} characters",
+            { max: SPEAKER_TEXT_MAX_LENGTH },
+          ),
+          source: t("控制失败"),
+          isError: true,
+        };
+        host.render();
+        return;
+      }
+
+      const activeMode = resolveSpeakerDrawerMode(currentSpec, state.modes.get(devId));
+      const actionId =
+        activeMode === "directive" ? currentSpec.directiveActionId : currentSpec.ttsActionId;
+      if (!activeMode || !actionId) {
+        host.replyBanner = {
+          text: tr3(
+            "该音箱不支持此指令通道",
+            "該音箱不支援此指令通道",
+            "This speaker does not support that channel",
+          ),
+          source: t("控制失败"),
+          isError: true,
+        };
+        host.render();
+        return;
+      }
+
+      const command = buildSpeakerTextCommand(
+        actionId,
+        trimmed,
+        activeMode === "directive" ? { silent: true } : undefined,
+      );
+      const summary =
+        activeMode === "directive"
+          ? tr3(
+              "已向{name}下发指令：「{text}」",
+              "已向{name}下發指令：「{text}」",
+              'Sent command to {name}: "{text}"',
+              { name: currentDev.name, text: trimmed },
+            )
+          : tr3(
+              "{name}已播报：「{text}」",
+              "{name}已播報：「{text}」",
+              '{name} announced: "{text}"',
+              { name: currentDev.name, text: trimmed },
+            );
+
+      submitting = true;
+      state.drafts.delete(devId);
+      inputEl.value = "";
+      syncSendDisabled();
+
+      try {
+        await host.executeSingleCommand(currentDev, command, summary);
+        if (host.replyBanner?.isError) {
+          state.drafts.set(devId, rawValue);
+          const liveInput = host.root.querySelector<HTMLInputElement>(
+            `[data-speaker-input="${cssEscape(devId)}"]`,
+          );
+          if (liveInput) {
+            liveInput.value = rawValue;
+            const liveSend = host.root.querySelector<HTMLButtonElement>(
+              `[data-speaker-send="${cssEscape(devId)}"]`,
+            );
+            if (liveSend && latestSpeaker()?.isOnline && rawValue.trim().length > 0) {
+              liveSend.disabled = false;
+              liveSend.removeAttribute("aria-disabled");
+            }
+          }
+        }
+      } finally {
+        submitting = false;
+      }
+    };
+
+    inputEl.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter" && !e.isComposing) {
+        e.preventDefault();
+        void submitSpeakerInput();
+      }
+    });
+
+    sendBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void submitSpeakerInput();
+    });
+  }
 }

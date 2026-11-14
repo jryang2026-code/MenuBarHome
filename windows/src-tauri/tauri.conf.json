@@ -14,8 +14,8 @@
       {
         "label": "main",
         "title": "MenuBarHome",
-        "width": 504,
-        "height": 652,
+        "width": 412,
+        "height": 680,
         "resizable": false,
         "decorations": false,
         "transparent": true,
@@ -23,7 +23,8 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "visible": false,
-        "center": false
+        "center": false,
+        "backgroundThrottling": "disabled"
       }
     ],
     "security": {

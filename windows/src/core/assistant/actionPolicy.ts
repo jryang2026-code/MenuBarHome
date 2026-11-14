@@ -76,6 +76,9 @@ function confirmationHazard(dev: SmartDevice): ConfirmationHazard | null {
     }
   }
   if (dev.kind.kind === "appliance") {
+    if (deviceCategory(dev) === "valve") {
+      return { kind: "powerOn" };
+    }
     // Starting a cycle (a wash, a dry) is hazardous even when the appliance does not heat;
     // a hood's plain power switch stays direct (#3, #4).
     if (!dev.kind.heats && dev.kind.startAction === null) return null;
@@ -88,6 +91,7 @@ function confirmationHazard(dev: SmartDevice): ConfirmationHazard | null {
     case "camera":
       return { kind: "anyPower" };
     case "vacuum":
+    case "valve":
       return { kind: "powerOn" };
     case "climate":
       if (dev.kind.kind !== "climate" || !dev.name.includes("热水器")) return null;
@@ -183,6 +187,11 @@ export interface ConfirmationPolicy {
   readonly askWhenUnsure: boolean;
   readonly threshold: number;
 }
+
+export const DEFAULT_CONFIRMATION_POLICY: ConfirmationPolicy = {
+  askWhenUnsure: true,
+  threshold: 0.8,
+};
 
 /** Mirrors MijiaCore.ModelActionPolicy: guesses below 80% and risky actions wait for a tap. */
 export const ModelActionPolicy = {

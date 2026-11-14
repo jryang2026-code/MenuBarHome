@@ -28,9 +28,9 @@
 - **内置二进制**：`src-tauri/camera-bin/` 打包 `go2rtc.exe`（v1.9.15，SHA-256 `5b448fc90f15c925406d8da0984301985e385050222c1c2bbdf0a76fe4b1e9cb`）与最小化 LGPLv2.1 `ffmpeg`（v7.1.2，开启 `httpproxy`/`hls`/`https`/`schannel` 与 h264/hevc→mjpeg，无 libx264，PE 头 `pe_offset + 24 + 68` 的 `Subsystem` 置 `2` GUI + `CREATE_NO_WINDOW` 防黑框闪屏，附 `GO2RTC-LICENSE.txt` 与 `FFMPEG-LICENSE.txt`）。保留已提交的 `camera-bin/README.md` 防 `bundle.resources: ["camera-bin/*"]` 空匹配。
 - **运行时落地**：MSI 安装目录可能只读，首次使用从 `resource_dir().join("camera-bin")` 以临时文件原子重命名拷入 `%LOCALAPPDATA%\MenuBarMijia\bin`（不覆盖已有文件）；缺失时回退 3 次退避下载或提示手动放置路径。
 - **本机与 CI 构建**：
-  - 本机默认 GNU 工具链会让 `tauri build` 构建脚本崩 `0xc0000005` 且 CLI **仍报 `exit 0`**——必须看日志，构建走 `windows/build-win.bat`（`vcvars64.bat` + 清 `CC`/`CXX` + `RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc` + `--features tauri/custom-protocol`）。改了前端 TS 必须重跑 `tauri build` 才会打进内嵌 exe。
+  - 本机默认 GNU 工具链会让 `tauri build` 构建脚本崩 `0xc0000005` 且 CLI **仍报 `exit 0`**——必须看日志，构建走 `windows/build-win.bat`（`vcvars64.bat` + 清 `CC`/`CXX` + `RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-msvc` + `npm run tauri -- build --target x86_64-pc-windows-msvc`）。改了前端 TS 必须重跑 `tauri build` 才会打进内嵌 exe。
   - MSYS2 下 `RUNNER_TEMP` 为 `D:\a\_temp`，GNU `tar` 会把 `D:` 当远程主机，须 `cygpath -u` + `tar --force-local`。
-  - Git Bash 调 `taskkill`/`tasklist` 加 `MSYS_NO_PATHCONV=1`；无 bun 时用 `node node_modules/tsx/dist/cli.mjs`（`.bin/tsx` 受 CRLF shebang 影响）。
+  - Git Bash 调 `taskkill`/`tasklist` 加 `MSYS_NO_PATHCONV=1`；单文件测试走 `node windows/scripts/test-file.mjs <file>`（Node 22 原生剥离 TS 类型，无需额外转译器）。
 
 ## 4. 诊断与实机验证回路
 

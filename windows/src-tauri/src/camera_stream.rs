@@ -144,10 +144,44 @@ pub(crate) fn validate_hls_stream_url(hls_url: &str) -> Result<reqwest::Url, Str
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("HLS 流地址必须使用 http 或 https 协议".to_string());
     }
+    if parsed.host_str().map_or(true, str::is_empty) {
+        return Err("HLS 流地址缺少有效主机名".to_string());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("HLS 流地址不允许内嵌用户名或密码".to_string());
+    }
     if parsed.fragment().is_some() {
         return Err("HLS 流地址不能包含 # 片段".to_string());
     }
     Ok(parsed)
+}
+
+/// Accepts a UDP datagram on the loopback CS2 relay only from the bound `go2rtc` socket, or binds
+/// (or rebinds after >=750 ms of client silence) on a valid 4-byte-header CS2 `LAN_SEARCH`
+/// (`0xF1 0x30 <be16 len>`). Stray/non-CS2 local packets and active-stream hijack attempts from
+/// other local ports are dropped before they can clobber `go2rtc_addr` or `cmd_gate`.
+pub(crate) fn cs2_relay_accepts_client_packet(
+    pkt: &[u8],
+    src: std::net::SocketAddr,
+    bound_client: Option<(std::net::SocketAddr, std::time::Instant)>,
+    now: std::time::Instant,
+) -> bool {
+    if !src.ip().is_loopback() || pkt.len() < 4 || pkt[0] != 0xF1 {
+        return false;
+    }
+    match bound_client {
+        Some((addr, _)) if addr == src => true,
+        None => {
+            pkt[1] == 0x30
+                && 4 + usize::from(u16::from_be_bytes([pkt[2], pkt[3]])) == pkt.len()
+        }
+        Some((_, last_seen)) => {
+            pkt[1] == 0x30
+                && 4 + usize::from(u16::from_be_bytes([pkt[2], pkt[3]])) == pkt.len()
+                && now.saturating_duration_since(last_seen)
+                    >= std::time::Duration::from_millis(750)
+        }
+    }
 }
 
 pub(crate) fn is_go2rtc_stream_name(src: &str) -> bool {
@@ -260,5 +294,37 @@ mod tests {
         assert!(parse_camera_lan_ip(&class_a).is_ok());
         assert!(parse_camera_lan_ip("192.0.2.10").is_err());
         assert!(parse_camera_lan_ip("not-an-ip").is_err());
+    }
+
+    #[test]
+    fn cs2_relay_binds_loopback_handshake_and_blocks_active_hijack() {
+        let client_a: std::net::SocketAddr = "127.0.0.1:51000".parse().expect("client a");
+        let client_b: std::net::SocketAddr = "127.0.0.1:52000".parse().expect("client b");
+        let non_loopback: std::net::SocketAddr = "192.0.2.10:51000".parse().expect("lan");
+        let t0 = std::time::Instant::now();
+        let lan_search = [0xF1u8, 0x30, 0x00, 0x00];
+        let drw_ack = [0xF1u8, 0xD1, 0x00, 0x06, 0xD1, 0x00, 0x00, 0x01, 0x00, 0x01];
+
+        assert!(!cs2_relay_accepts_client_packet(&lan_search, non_loopback, None, t0));
+        assert!(!cs2_relay_accepts_client_packet(&[0xF1, 0x30], client_a, None, t0));
+        assert!(!cs2_relay_accepts_client_packet(&[0x00, 0x30, 0x00, 0x00], client_a, None, t0));
+        assert!(!cs2_relay_accepts_client_packet(&drw_ack, client_a, None, t0));
+        assert!(cs2_relay_accepts_client_packet(&lan_search, client_a, None, t0));
+
+        let bound = Some((client_a, t0));
+        let t_active = t0 + std::time::Duration::from_millis(200);
+        assert!(cs2_relay_accepts_client_packet(&drw_ack, client_a, bound, t_active));
+        assert!(!cs2_relay_accepts_client_packet(&drw_ack, client_b, bound, t_active));
+        assert!(!cs2_relay_accepts_client_packet(&lan_search, client_b, bound, t_active));
+
+        let t_idle = t0 + std::time::Duration::from_millis(800);
+        assert!(!cs2_relay_accepts_client_packet(&drw_ack, client_b, bound, t_idle));
+        assert!(!cs2_relay_accepts_client_packet(
+            &[0xF1, 0x30, 0x00, 0x04],
+            client_b,
+            bound,
+            t_idle
+        ));
+        assert!(cs2_relay_accepts_client_packet(&lan_search, client_b, bound, t_idle));
     }
 }

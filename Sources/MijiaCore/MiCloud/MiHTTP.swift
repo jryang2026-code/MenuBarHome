@@ -126,6 +126,11 @@ enum MiResponseText {
     static func parseJSON(_ data: Data) -> JSONValue? {
         guard var text = String(data: data, encoding: .utf8) else { return nil }
         if text.hasPrefix(startMarker) { text.removeFirst(startMarker.count) }
-        return try? JSONDecoder().decode(JSONValue.self, from: Data(text.utf8))
+        if let decoded = try? JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)) {
+            return decoded
+        }
+        let cleaned = cleanMalformedFirmwareJSON(text)
+        guard !cleaned.isEmpty else { return nil }
+        return try? JSONDecoder().decode(JSONValue.self, from: Data(cleaned.utf8))
     }
 }

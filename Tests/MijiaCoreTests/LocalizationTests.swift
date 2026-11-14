@@ -216,6 +216,78 @@ struct LocalizationTests {
         #expect(L10n.fill("亮度 *%（*）", with: ["60", "书房"]) == "亮度 60%（书房）")
     }
 
+    @Test("Traditional Chinese timer descriptions use the shipped resource table")
+    func traditionalTimerDescriptions() {
+        L10n.$overrideLanguage.withValue(.zhHant) {
+            #expect(DelayPhrase.describe(30) == "30 秒後")
+            #expect(DelayPhrase.describe(90) == "1 分鐘 30 秒後")
+            #expect(DelayPhrase.describe(600) == "10 分鐘後")
+            #expect(DelayPhrase.describe(3600) == "1 小時後")
+            #expect(DelayPhrase.describe(3630) == "1 小時 30 秒後")
+            #expect(DelayPhrase.describe(3690) == "1 小時 1 分鐘 30 秒後")
+            #expect(DelayPhrase.describe(5400) == "1 小時 30 分鐘後")
+        }
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(DelayPhrase.describe(30) == "30 秒后")
+            #expect(DelayPhrase.describe(90) == "1 分钟 30 秒后")
+            #expect(DelayPhrase.describe(600) == "10 分钟后")
+            #expect(DelayPhrase.describe(3600) == "1 小时后")
+            #expect(DelayPhrase.describe(3630) == "1 小时 30 秒后")
+            #expect(DelayPhrase.describe(3690) == "1 小时 1 分钟 30 秒后")
+            #expect(DelayPhrase.describe(5400) == "1 小时 30 分钟后")
+        }
+        L10n.$overrideLanguage.withValue(.en) {
+            #expect(DelayPhrase.describe(30) == "In 30s: ")
+            #expect(DelayPhrase.describe(90) == "In 1m 30s: ")
+            #expect(DelayPhrase.describe(600) == "In 10m: ")
+            #expect(DelayPhrase.describe(3600) == "In 1h: ")
+            #expect(DelayPhrase.describe(3630) == "In 1h 30s: ")
+            #expect(DelayPhrase.describe(3690) == "In 1h 1m 30s: ")
+            #expect(DelayPhrase.describe(5400) == "In 1h 30m: ")
+        }
+    }
+
+    @Test("Habit readable items and offline bare-category replies follow active UI language (C13, F30h)")
+    func habitDayTypeSuffixAndOfflineReplyLocalization() throws {
+        var memory = UserHabitMemory()
+        let cal = Calendar.current
+        // 2026-10-16 is a Friday (weekday).
+        let fridayEvening = try #require(
+            cal.date(from: DateComponents(year: 2026, month: 10, day: 16, hour: 21, minute: 0))
+        )
+        memory.record(
+            utterance: nil,
+            intents: [DeviceIntent(targetId: "dev_study_ceiling", operation: .power(true))],
+            devices: AssistantTests.devices,
+            scenes: AssistantTests.scenes,
+            now: fridayEvening
+        )
+        L10n.$overrideLanguage.withValue(.en) {
+            let items = memory.readableItems(devices: AssistantTests.devices, scenes: AssistantTests.scenes)
+            #expect(items.first?.text.hasPrefix("Evening (Weekday):") == true)
+            #expect(items.first?.text.contains("（") == false)
+        }
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            let items = memory.readableItems(devices: AssistantTests.devices, scenes: AssistantTests.scenes)
+            #expect(items.first?.text.hasPrefix("夜晚常做（工作日）：") == true)
+        }
+
+        let offlineLight = SmartDevice(
+            id: "dev_offline_light",
+            name: "书房吸顶灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "yeelink.light.ceiling20",
+            isOnline: false,
+            kind: .light(LightSpec(entityId: "light.offline", isOn: true))
+        )
+        try L10n.$overrideLanguage.withValue(.en) {
+            let plan = try #require(LocalIntentParser.parse("turn off the lights", devices: [offlineLight], scenes: []))
+            #expect(plan.intents.isEmpty)
+            #expect(plan.reply == "The lights are offline")
+        }
+    }
+
     // MARK: - Temperature units
 
     @Test(

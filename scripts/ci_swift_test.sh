@@ -11,8 +11,54 @@
 # watchdog. A passing run can fail to exit on macos-26 (SwiftPM #8394), and `script` does not
 # reliably forward the child status. A run with no summary line is a failure.
 #
-# Usage: bash scripts/ci_swift_test.sh [swift test arguments...]
+# Usage:
+#   bash scripts/ci_swift_test.sh [swift test arguments...]
 set -uo pipefail
+
+evaluate_swift_test_log() {
+    local log_file="$1"
+    local run_exit="$2"
+    local run_stalled="$3"
+    local stall_limit="$4"
+
+    # A crash in a later test binary must fail even if an earlier target printed a passing summary.
+    if grep -qE 'unexpected signal code|Fatal error:' "$log_file"; then
+        echo "::error::swift test crashed during execution"
+        return 1
+    fi
+
+    # Every Swift Testing target summary must pass, no test issue may be recorded in any target,
+    # and no subsequent target (`Test run started.`) may hang before printing its own summary.
+    local summary_verdict
+    summary_verdict="$(awk '
+        /(^|◇ )Test run started\./ { pending_target = 1; next }
+        /Test run with [0-9]+ tests? in [0-9]+ suites?/ {
+            summaries++
+            pending_target = 0
+            if ($0 !~ /Test run with [0-9]+ tests? in [0-9]+ suites? passed/) {
+                failed = 1
+            }
+            next
+        }
+        /✘ Test |recorded an issue/ { failed = 1 }
+        END {
+            print (summaries > 0 && !failed && !pending_target) ? "pass" : "fail"
+        }
+    ' "$log_file")"
+
+    if [ "$summary_verdict" = "pass" ]; then
+        if [ "$run_stalled" -eq 1 ] || [ "$run_exit" -ne 0 ]; then
+            echo "::warning::the suite passed but swift test did not exit cleanly (exit ${run_exit}, stalled=${run_stalled}); accepting the passing summary"
+        fi
+        return 0
+    fi
+    if [ "$run_stalled" -eq 1 ]; then
+        echo "::error::swift test produced no output for ${stall_limit}s; the test process is deadlocked"
+        return 1
+    fi
+    echo "::error::swift test produced no passing summary"
+    return 1
+}
 
 stall_seconds="${SWIFT_TEST_STALL_SECONDS:-300}"
 tick=10
@@ -65,15 +111,5 @@ wait "$tail_pid" 2>/dev/null || true
 echo "=== swift test process exit: $exit_code (stalled=${stall_detected})"
 # Read the summary before treating a stall as failure. The macos-26 exit hang writes a passing
 # summary and then stays alive, so the watchdog sets stall_detected on a suite that already passed.
-if grep -qE 'Test run with [0-9]+ tests? in [0-9]+ suites? passed' "$log"; then
-    if [ "$stall_detected" -eq 1 ] || [ "$exit_code" -ne 0 ]; then
-        echo "::warning::the suite passed but swift test did not exit cleanly (exit ${exit_code}, stalled=${stall_detected}); accepting the passing summary"
-    fi
-    exit 0
-fi
-if [ "$stall_detected" -eq 1 ]; then
-    echo "::error::swift test produced no output for ${stall_seconds}s; the test process is deadlocked"
-    exit 1
-fi
-echo "::error::swift test produced no passing summary"
-exit 1
+evaluate_swift_test_log "$log" "$exit_code" "$stall_detected" "$stall_seconds"
+exit $?

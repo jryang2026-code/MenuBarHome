@@ -18,6 +18,35 @@ export interface MiDeviceRecord {
   /** Split key of a multi-key panel (did like `<parent>.s2`): MIoT calls go to the parent did, switch service `splitSiid`. */
   readonly splitParentDid?: string | null;
   readonly splitSiid?: number | null;
+  readonly localIp?: string | null;
+  readonly mac?: string | null;
+}
+
+export function normalizeDeviceLocalIp(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(trimmed);
+  if (!match) return null;
+  const octets: number[] = [];
+  for (let i = 1; i <= 4; i += 1) {
+    const part = match[i]!;
+    if (part.length > 1 && part.startsWith("0")) return null;
+    const value = Number(part);
+    if (!Number.isInteger(value) || value < 0 || value > 255) return null;
+    octets.push(value);
+  }
+  const [a, b, c, d] = octets as [number, number, number, number];
+  if (a === 0 || a === 127 || a >= 224) return null;
+  return `${a}.${b}.${c}.${d}`;
+}
+
+export function normalizeDeviceMac(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!/^[0-9a-fA-F]{2}(?:[:-][0-9a-fA-F]{2}){5}$/.test(trimmed)) return null;
+  const normalized = trimmed.replaceAll("-", ":").toUpperCase();
+  if (normalized === "00:00:00:00:00:00" || normalized === "FF:FF:FF:FF:FF:FF") return null;
+  return normalized;
 }
 
 /** The did MIoT property and action calls address. */
@@ -141,6 +170,9 @@ export class MiCloudClient {
     if (statusCode === 401 || statusCode === 403) {
       throw new MiCloudError("sessionExpired", "米家登录已过期，请重新扫码");
     }
+    if (statusCode === 429) {
+      throw new MiCloudError("http", `米家云服务 HTTP ${statusCode}`, statusCode);
+    }
     const plain = parseJsonObject(body);
     if (plain) {
       if (typeof plain["code"] === "number") {
@@ -191,15 +223,7 @@ export class MiCloudClient {
     const code = Math.trunc(json["code"]);
     const message = responseMessage(json);
     if (code === 0) return json["result"] ?? null;
-    const lower = message.toLowerCase();
-    if (
-      code === 2 ||
-      code === 3 ||
-      lower.includes("auth err") ||
-      lower.includes("servicetoken_expired") ||
-      lower.includes("token expired") ||
-      lower.includes("invalid signature")
-    ) {
+    if (code === 2 || code === 3 || looksSessionExpired(message)) {
       throw new MiCloudError("sessionExpired", "米家登录已过期，请重新扫码", code);
     }
     throw new MiCloudError("api", `米家云指令失败 (${code})：${message}`, code);
@@ -222,6 +246,8 @@ export class MiCloudClient {
     const split = extra["split"] && typeof extra["split"] === "object" ? (extra["split"] as Record<string, unknown>) : null;
     const splitParentDid = split ? asIdString(split["parentId"]) : null;
     const splitSiid = split && typeof split["moduleId"] === "number" ? Math.trunc(split["moduleId"]) : null;
+    const localIp = normalizeDeviceLocalIp(rec["localip"] ?? rec["localIp"]);
+    const mac = normalizeDeviceMac(rec["mac"]);
     return {
       did,
       name: typeof rec["name"] === "string" ? rec["name"] : model,
@@ -229,6 +255,8 @@ export class MiCloudClient {
       isOnline: typeof rec["isOnline"] === "boolean" ? rec["isOnline"] : true,
       specType: typeof rec["spec_type"] === "string" ? rec["spec_type"] : null,
       ...(splitParentDid && splitSiid !== null ? { splitParentDid, splitSiid } : {}),
+      ...(localIp !== null ? { localIp } : {}),
+      ...(mac !== null ? { mac } : {}),
     };
   }
 
@@ -291,7 +319,7 @@ export class MiCloudClient {
           continue;
         }
         // A home with no rooms and no dids still matters when the cloud names its owner: only
-        // `withHomeDeviceLists` can list its devices, and it needs a room to learn the pair
+        // `withHomeDeviceLists` (`discovery.ts`) can list its devices, and it needs a room to learn the pair
         // (home id, owner uid) from. Without this entry such a shared home is invisible (#76, #67).
         if (homeId && roomCount === 0 && ownerUid) {
           rooms.push({ id: `home_${homeId}`, name: "", dids: [], homeId, homeName, ...sharedFlag, ...ownerFlag });

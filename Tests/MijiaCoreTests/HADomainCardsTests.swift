@@ -636,6 +636,121 @@ struct HADomainCardsTests {
         #expect(prompts.count == 1, "closing an open valve stays direct")
         #expect(await provider.executedCommands.contains(.setSwitch(entityId: "valve.water_main", isOn: false)))
     }
+
+    @MainActor
+    @Test("Non-finite or out-of-range humidity omits the reading instead of showing 0%")
+    func invalidHumidityOmittedFromSummariesAndSynthesis() async throws {
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            for badHumidity in [Double.nan, .infinity, 1e300] {
+                let humidifier = SmartDevice(
+                    id: "hum-bad",
+                    name: "客厅加湿器",
+                    roomId: "living",
+                    roomName: "客厅",
+                    model: "deerma.humidifier.jsq5",
+                    isOnline: true,
+                    kind: .humidifier(HumidifierSpec(
+                        entityId: "humidifier.bad",
+                        isOn: true,
+                        targetHumidity: 50,
+                        currentHumidity: badHumidity
+                    ))
+                )
+                #expect(humidifier.statusSubtitle == "目标 50%")
+                #expect(!IntentCatalog.stateSummary(humidifier).contains("当前湿度"))
+                #expect(IntentCatalog.stateSummary(humidifier) == "开 目标湿度50%")
+
+                let fanWithTemp = SmartDevice(
+                    id: "fan-bad-h",
+                    name: "净化器",
+                    roomId: "living",
+                    roomName: "客厅",
+                    model: "zhimi.airp.rmb1",
+                    isOnline: true,
+                    kind: .fan(FanSpec(
+                        entityId: "fan.bad",
+                        isOn: false,
+                        temperature: 24.0,
+                        humidity: badHumidity
+                    ))
+                )
+                #expect(!fanWithTemp.statusSubtitle.contains("0%"))
+                #expect(fanWithTemp.statusSubtitle == "已关闭 · 24.0°C")
+
+                let fanHumOnly = SmartDevice(
+                    id: "fan-bad-only-h",
+                    name: "风扇",
+                    roomId: "living",
+                    roomName: "客厅",
+                    model: "zhimi.fan.za5",
+                    isOnline: true,
+                    kind: .fan(FanSpec(
+                        entityId: "fan.bad2",
+                        isOn: true,
+                        temperature: nil,
+                        humidity: badHumidity
+                    ))
+                )
+                #expect(fanHumOnly.statusSubtitle == "运行中")
+            }
+
+            let validHumidifier = SmartDevice(
+                id: "hum-ok",
+                name: "客厅加湿器",
+                roomId: "living",
+                roomName: "客厅",
+                model: "deerma.humidifier.jsq5",
+                isOnline: true,
+                kind: .humidifier(HumidifierSpec(
+                    entityId: "humidifier.ok",
+                    isOn: true,
+                    targetHumidity: 50,
+                    currentHumidity: 46.4
+                ))
+            )
+            #expect(validHumidifier.statusSubtitle == "目标 50% · 当前 46%")
+            #expect(IntentCatalog.stateSummary(validHumidifier) == "开 目标湿度50% 当前湿度46%")
+        }
+
+        // Synthesis drops non-finite current_humidity strings ("nan", "inf") at the boundary.
+        let home = DeviceSynthesizer.synthesize(
+            areas: [HAAreaEntry(area_id: "living", name: "客厅")],
+            devices: [HADeviceEntry(id: "hum", area_id: "living", name: "加湿器")],
+            entities: [
+                HAEntityEntry(entity_id: "humidifier.living", device_id: "hum"),
+                HAEntityEntry(entity_id: "sensor.living_humidity", device_id: "hum"),
+            ],
+            states: [
+                "humidifier.living": HAEntityState(entityId: "humidifier.living", state: "on", attributes: ["humidity": .number(50)]),
+                "sensor.living_humidity": HAEntityState(entityId: "sensor.living_humidity", state: "nan", attributes: ["device_class": .string("humidity")]),
+            ]
+        )
+        let synthHum = try #require(home.devices.first?.humidifierCard)
+        #expect(synthHum.currentHumidity == nil)
+
+        // Assistant environment summary omits huge or non-finite humidities instead of falling back to 0%.
+        let badSensor = SmartDevice(
+            id: "sensor-bad",
+            name: "温湿度计",
+            roomId: "living",
+            roomName: "客厅",
+            model: "miaomiaoce.sensor_ht.t2",
+            isOnline: true,
+            kind: .sensor(SensorSpec(temperature: 23.5, humidity: 1e300, battery: nil))
+        )
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(
+                rooms: [RoomArea(id: "living", name: "客厅", sortOrder: 1)],
+                devices: [badSensor],
+                environmentReadings: [EnvironmentReading(id: "env-living", label: "温湿度计", roomName: "客厅", temperature: 23.5, humidity: 1e300)],
+                scenes: []
+            )),
+            defaultsSuiteName: "test.invalid-humidity.\(UUID().uuidString)"
+        )
+        try await store.waitForTestSnapshot()
+        let context = store.buildAssistantContext(mention: .none)
+        #expect(context.environmentSummary == "客厅 23.5°C")
+    }
 }
 
 private extension SmartDevice {

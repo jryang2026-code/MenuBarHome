@@ -21,32 +21,41 @@ public enum DelayPhrase {
         options: [.caseInsensitive]
     )
 
-    private static let cancelPhrases = ["取消定时", "取消倒计时", "定时取消", "定时都取消", "取消所有定时", "取消全部定时", "不要定时"]
+    private static let cancelPhrases = [
+        "取消定时", "取消倒计时", "定时取消", "倒计时取消",
+        "定时都取消", "取消所有定时", "取消全部定时",
+        "不要定时", "不要倒计时",
+        "撤销定时", "撤回定时", "清除定时", "清除倒计时",
+        "取消刚才的定时", "取消刚才设的定时", "撤销刚才的定时", "撤回刚才的定时"
+    ]
     private static let enCancelPhrases = [
-        "cancel timer", "cancel timers", "cancel all timers",
+        "cancel timer", "cancel timers", "cancel all timers", "cancel the timer", "cancel that timer",
         "clear timer", "clear timers", "clear all timers",
-        "stop timer", "stop timers", "stop all timers"
+        "stop timer", "stop timers", "stop all timers",
+        "undo timer", "undo timers", "undo the timer", "undo that timer"
     ]
 
     public static func extract(_ utterance: String) -> (delay: TimeInterval, remainder: String)? {
         let text = utterance.trimmingCharacters(in: .whitespacesAndNewlines)
+        let norm = LocalIntentParser.toSimplifiedChinese(text)
         let ns = text as NSString
-        let full = NSRange(location: 0, length: ns.length)
+        let nsNorm = norm as NSString
+        let full = NSRange(location: 0, length: nsNorm.length)
 
-        if let m = leading.firstMatch(in: text, range: full) {
+        if let m = leading.firstMatch(in: norm, range: full) {
             let hasPrefix = m.range(at: 1).location != NSNotFound
             let hasSuffix = m.range(at: 6).location != NSNotFound
-            if hasPrefix || hasSuffix, let seconds = seconds(ns, m, numberGroup: 2) {
-                return finish(seconds, ns.replacingCharacters(in: m.range, with: ""))
+            if hasPrefix || hasSuffix, let seconds = seconds(nsNorm, m, numberGroup: 2) {
+                return finish(seconds, (ns.length == nsNorm.length ? ns : nsNorm).replacingCharacters(in: m.range, with: ""))
             }
         }
-        if let m = trailing.firstMatch(in: text, range: full), let seconds = seconds(ns, m, numberGroup: 1) {
-            return finish(seconds, ns.replacingCharacters(in: m.range, with: ""))
+        if let m = trailing.firstMatch(in: norm, range: full), let seconds = seconds(nsNorm, m, numberGroup: 1) {
+            return finish(seconds, (ns.length == nsNorm.length ? ns : nsNorm).replacingCharacters(in: m.range, with: ""))
         }
-        if let m = enLeading.firstMatch(in: text, range: full), let secs = enSeconds(ns, m) {
+        if let m = enLeading.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)), let secs = enSeconds(ns, m) {
             return finish(secs, ns.replacingCharacters(in: m.range, with: ""))
         }
-        if let m = enTrailing.firstMatch(in: text, range: full), let secs = enSeconds(ns, m) {
+        if let m = enTrailing.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)), let secs = enSeconds(ns, m) {
             return finish(secs, ns.replacingCharacters(in: m.range, with: ""))
         }
         return nil
@@ -55,19 +64,42 @@ public enum DelayPhrase {
     public static func isCancel(_ utterance: String) -> Bool {
         let lower = utterance.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         if enCancelPhrases.contains(where: { lower.contains($0) }) { return true }
-        let compact = utterance.filter { !$0.isWhitespace && !"，。！？,.!?了吧".contains($0) }
+        let compact = LocalIntentParser.toSimplifiedChinese(utterance).filter { !$0.isWhitespace && !"，。！？,.!?了吧".contains($0) }
         return cancelPhrases.contains { compact.contains($0) }
     }
 
-    /// 30 → "30 秒后"，600 → "10 分钟后"，5400 → "1 小时 30 分钟后"。
+    /// 30 → "30 秒后"，90 → "1 分钟 30 秒后"，600 → "10 分钟后"，5400 → "1 小时 30 分钟后"。
     public static func describe(_ delay: TimeInterval) -> String {
-        let total = Int(delay.rounded())
+        let clamped = delay.isFinite ? max(0, min(delay, Double(Int.max / 2))) : 0
+        let total = Int(clamped.rounded())
         if total < 60 { return L10n.format("%@ 秒后", "In %@s: ", String(total)) }
-        let hours = total / 3600, minutes = (total % 3600) / 60
-        if hours == 0 { return L10n.format("%@ 分钟后", "In %@m: ", String(minutes)) }
-        return minutes == 0
-            ? L10n.format("%@ 小时后", "In %@h: ", String(hours))
-            : L10n.format("%@ 小时 %@ 分钟后", "In %@h %@m: ", String(hours), String(minutes))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        if hours == 0 {
+            if secs == 0 {
+                return L10n.format("%@ 分钟后", "In %@m: ", String(minutes))
+            }
+            if L10n.isEnglish { return "In \(minutes)m \(secs)s: " }
+            let minPart = String(L10n.format("%@ 分钟后", "In %@m: ", String(minutes)).dropLast())
+            let secPart = L10n.format("%@ 秒后", "In %@s: ", String(secs))
+            return "\(minPart) \(secPart)"
+        }
+        if minutes == 0 && secs == 0 {
+            return L10n.format("%@ 小时后", "In %@h: ", String(hours))
+        }
+        if secs == 0 {
+            return L10n.format("%@ 小时 %@ 分钟后", "In %@h %@m: ", String(hours), String(minutes))
+        }
+        let secPart = L10n.format("%@ 秒后", "In %@s: ", String(secs))
+        if minutes == 0 {
+            if L10n.isEnglish { return "In \(hours)h \(secs)s: " }
+            let hourPart = String(L10n.format("%@ 小时后", "In %@h: ", String(hours)).dropLast())
+            return "\(hourPart) \(secPart)"
+        }
+        if L10n.isEnglish { return "In \(hours)h \(minutes)m \(secs)s: " }
+        let hmPart = String(L10n.format("%@ 小时 %@ 分钟后", "In %@h %@m: ", String(hours), String(minutes)).dropLast())
+        return "\(hmPart) \(secPart)"
     }
 
     private static func enSeconds(_ ns: NSString, _ m: NSTextCheckingResult) -> TimeInterval? {
@@ -104,14 +136,19 @@ public enum DelayPhrase {
 
     /// Arabic digits or Chinese numerals up to 99 (十五, 二十, 四十五).
     static func spokenNumber(_ s: String) -> Int? {
-        if let n = Int(s) { return n }
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let n = Int(trimmed) { return n }
         let digits: [Character: Int] = ["零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9]
-        let chars = Array(s)
+        let chars = Array(trimmed)
+        if chars.count == 2, chars[0] == "零", let ones = digits[chars[1]] {
+            return ones
+        }
         if let tenIndex = chars.firstIndex(of: "十") {
             guard tenIndex <= 1, chars.count - tenIndex <= 2 else { return nil }
             let tens = tenIndex == 0 ? 1 : digits[chars[0]]
             let ones = tenIndex == chars.count - 1 ? 0 : digits[chars[tenIndex + 1]]
-            guard let tens, let ones else { return nil }
+            guard let tens, tens > 0, let ones else { return nil }
             return tens * 10 + ones
         }
         guard chars.count == 1 else { return nil }
@@ -190,14 +227,25 @@ public struct ScheduledCommand: Codable, Identifiable, Equatable, Sendable {
 public enum UndoPhrase {
     private static let keywords = ["撤销", "撤回", "还原", "恢复原样", "恢复原状", "恢复刚才", "取消刚才", "刚才不算"]
     private static let enKeywords: Set<String> = ["undo", "revert", "undo that", "revert that", "cancel that"]
+    private static let timerExcludeWords = ["定时", "倒计时"]
+    private static let enTimerExcludeRegex = try! NSRegularExpression(
+        pattern: #"\b(timers?|countdowns?)\b"#,
+        options: [.caseInsensitive]
+    )
 
     /// Short utterances only, so a long command that merely mentions "还原" still reaches the parser.
     public static func isUndo(_ utterance: String) -> Bool {
+        if DelayPhrase.isCancel(utterance) { return false }
         let lower = utterance.lowercased()
-            .trimmingCharacters(in: CharacterSet(charactersIn: "，。！？,.!? ").union(.whitespacesAndNewlines))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "，。！？、,.!? ").union(.whitespacesAndNewlines))
+        let nsLower = lower as NSString
+        if enTimerExcludeRegex.firstMatch(in: lower, range: NSRange(location: 0, length: nsLower.length)) != nil {
+            return false
+        }
         if enKeywords.contains(lower) { return true }
-        let compact = utterance.filter { !$0.isWhitespace && !"，。！？,.!?".contains($0) }
-        guard compact.count <= 10, !DelayPhrase.isCancel(compact) else { return false }
+        let compact = LocalIntentParser.toSimplifiedChinese(utterance).filter { !$0.isWhitespace && !"，。！？、,.!?".contains($0) }
+        guard compact.count <= 10,
+              !timerExcludeWords.contains(where: { compact.contains($0) }) else { return false }
         return keywords.contains { compact.contains($0) }
     }
 }

@@ -17,9 +17,7 @@ struct FacetControlsTests {
     }
 
     private static func coverageSpec(_ model: String) throws -> MiotDeviceSpec {
-        let data = try Data(contentsOf: repoFile("Tests/Fixtures/miot_coverage_specs.json"))
-        let specs = try JSONDecoder().decode([String: MiotDeviceSpec].self, from: data)
-        return try #require(specs[model], Comment(rawValue: model))
+        try MiotCoverageBaselineTests.coverageSpec(model)
     }
 
     private static func home(
@@ -193,6 +191,8 @@ struct FacetControlsTests {
         let home = try Self.home(model: model, did: did, values: values)
         let mock = MockHomeProvider(snapshot: home)
         let store = HomeStore(provider: mock, defaultsSuiteName: "test.facets.\(UUID().uuidString)")
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+        store.optimisticNow = { fixedNow }
         store.controlDebounceInterval = .zero
         try await store.waitForTestSnapshot()
         return (store, mock)

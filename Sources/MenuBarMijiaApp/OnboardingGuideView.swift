@@ -11,6 +11,7 @@ public struct OnboardingGuideView: View {
 
     @State private var haURLDraft: String = ""
     @State private var haTokenDraft: String = ""
+    @State private var haTokenLookupWasUnavailable: Bool = false
     @State private var selectedPreset: AssistantProviderPreset = .openRouterJev
     @State private var baseURLDraft: String = ""
     @State private var modelDraft: String = ""
@@ -70,7 +71,9 @@ public struct OnboardingGuideView: View {
         .onAppear {
             launchAtLogin.refresh()
             haURLDraft = store.serverURLString
-            haTokenDraft = store.loadHAToken()
+            let initialHAToken = HAConnectionSaveGuard.loadInitialToken(from: store)
+            haTokenDraft = initialHAToken.token
+            haTokenLookupWasUnavailable = initialHAToken.lookupWasUnavailable
             let config = store.assistantConfig
             let initialPreset = AssistantProviderPreset.infer(baseURL: config.baseURL)
             if let initialPresetOverride {
@@ -336,7 +339,12 @@ public struct OnboardingGuideView: View {
                             .font(.system(size: 11, design: .monospaced))
 
                         Button(L10n.tr("连接", "Connect")) {
-                            store.updateConnection(serverURL: haURLDraft, token: haTokenDraft)
+                            HAConnectionSaveGuard.save(
+                                serverURL: haURLDraft,
+                                tokenDraft: &haTokenDraft,
+                                initialLookupWasUnavailable: &haTokenLookupWasUnavailable,
+                                in: store
+                            )
                         }
                         .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
                     }
@@ -529,12 +537,12 @@ public struct OnboardingGuideView: View {
                     icon: "gearshape.2",
                     title: L10n.tr("自动化与 URL 直控", "Automation & URL Control"),
                     detail: L10n.tr(
-                        "设置 → 连接 → 自动化；URL 直控默认每次先确认。",
-                        "Settings → Connections → Automation. URL control asks first by default."
+                        "设置 → 通用 → 自动化与外部控制；URL 直控默认每次先确认。",
+                        "Settings → General → Automation & External Control. URL control asks first by default."
                     ),
                     actionTitle: L10n.tr("打开设置", "Open Settings")
                 ) {
-                    SettingsWindowOpener.shared.show(tab: .connection)
+                    SettingsWindowOpener.shared.show(tab: .general)
                 }
 
                 advancedVoiceAndShortcutsCard

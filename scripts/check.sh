@@ -8,18 +8,44 @@ cd "$ROOT_DIR"
 
 LINT_ONLY=0
 SKIP_SNAPSHOTS=0
-for argument in "$@"; do
-    case "$argument" in
-        --lint-only) LINT_ONLY=1 ;;
-        --skip-snapshots) SKIP_SNAPSHOTS=1 ;;
+RUN_SCRIPT_TESTS=0
+CHANGED_ONLY=0
+BASE_REF=""
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --lint-only)
+            LINT_ONLY=1
+            shift
+            ;;
+        --skip-snapshots)
+            SKIP_SNAPSHOTS=1
+            shift
+            ;;
+        --script-tests)
+            RUN_SCRIPT_TESTS=1
+            shift
+            ;;
+        --changed)
+            CHANGED_ONLY=1
+            shift
+            ;;
+        --base)
+            [ "$#" -ge 2 ] || {
+                echo "❌ --base 需要指定比较基准引用" >&2
+                exit 2
+            }
+            BASE_REF="$2"
+            shift 2
+            ;;
         *)
-            echo "❌ 未知参数：${argument}（可用：--lint-only --skip-snapshots）" >&2
+            echo "❌ 未知参数：$1（可用：--lint-only --script-tests --changed [--base <ref>] --skip-snapshots）" >&2
             exit 2
             ;;
     esac
 done
 
-# The hook lives in the shared git directory, so every worktree gets the same gate.
+# The hooks live in the shared git directory, so every worktree gets the same gates.
 GIT_COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null || true)"
 case "$GIT_COMMON_DIR" in
     "") ;;
@@ -27,17 +53,20 @@ case "$GIT_COMMON_DIR" in
     *) GIT_COMMON_DIR="$ROOT_DIR/$GIT_COMMON_DIR" ;;
 esac
 if [ -n "$GIT_COMMON_DIR" ] && [ -d "$GIT_COMMON_DIR/hooks" ]; then
-    # Every worktree shares this hook, so it must not point at one worktree's copy: a symlink to a
-    # worktree that was later removed dangles, and git then skips the hook without a word. The
-    # wrapper runs the committing worktree's own scripts/hooks/pre-commit.
-    HOOK_PATH="$GIT_COMMON_DIR/hooks/pre-commit"
-    HOOK_WRAPPER='#!/usr/bin/env bash
-# Installed by scripts/check.sh: run the committing worktree'"'"'s own gate.
-exec bash "$(git rev-parse --show-toplevel)/scripts/hooks/pre-commit" "$@"'
-    if [ -L "$HOOK_PATH" ] || [ "$(cat "$HOOK_PATH" 2>/dev/null || true)" != "$HOOK_WRAPPER" ]; then
-        rm -f "$HOOK_PATH"
-        printf '%s\n' "$HOOK_WRAPPER" > "$HOOK_PATH" && chmod +x "$HOOK_PATH" 2>/dev/null || true
-    fi
+    # Every worktree shares these hooks, so wrappers invoke the active worktree's own copy.
+    install_hook_wrapper() {
+        local hook_name="$1"
+        local hook_path="$GIT_COMMON_DIR/hooks/$hook_name"
+        local wrapper="#!/usr/bin/env bash
+# Installed by scripts/check.sh: run the active worktree's own ${hook_name} gate.
+exec bash \"\$(git rev-parse --show-toplevel)/scripts/hooks/${hook_name}\" \"\$@\""
+        if [ -L "$hook_path" ] || [ "$(cat "$hook_path" 2>/dev/null || true)" != "$wrapper" ]; then
+            rm -f "$hook_path"
+            printf '%s\n' "$wrapper" > "$hook_path" && chmod +x "$hook_path" 2>/dev/null || true
+        fi
+    }
+    install_hook_wrapper "pre-commit"
+    install_hook_wrapper "pre-push"
 fi
 
 search_matches() {
@@ -124,8 +153,35 @@ check_secret_leaks() {
     return 0
 }
 
+check_git_identity() {
+    git rev-parse --git-dir >/dev/null 2>&1 || return 0
+
+    local author_ident committer_ident
+    author_ident="$(git var GIT_AUTHOR_IDENT 2>/dev/null || true)"
+    committer_ident="$(git var GIT_COMMITTER_IDENT 2>/dev/null || true)"
+    if printf '%s\n%s\n' "$author_ident" "$committer_ident" | grep -qF "jryang1997"; then
+        echo "❌ 当前 Git 提交身份仍为已停用账号 jryang1997，请先在当前工作树设置："
+        echo '   git config user.name "jryang2026-code" && git config user.email "jryang2026-code@users.noreply.github.com"'
+        return 1
+    fi
+
+    local retired_commits=""
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+        retired_commits="$(git log --format='%h %an <%ae> | %cn <%ce>' origin/main..HEAD 2>/dev/null | grep -F 'jryang1997' || true)"
+    elif [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; then
+        retired_commits="$(git log -1 --format='%h %an <%ae> | %cn <%ce>' HEAD 2>/dev/null | grep -F 'jryang1997' || true)"
+    fi
+    if [ -n "$retired_commits" ]; then
+        printf '%s\n' "$retired_commits"
+        echo "❌ 当前分支包含已停用账号 jryang1997 的提交，请改写作者为 jryang2026-code 后再继续！"
+        return 1
+    fi
+    return 0
+}
+
 echo "🔍 检查是否存在硬编码 JWT / 密钥 / 个人局域网地址泄露..."
 check_secret_leaks
+check_git_identity
 
 echo "🔍 检查机械性编码规范 (Swift 宏/并发隔离/UNUserNotificationCenter Bundle 守卫)..."
 
@@ -177,11 +233,6 @@ select_python_bin() {
             return 0
         fi
     done
-    if command -v python3 >/dev/null 2>&1; then
-        printf '%s\n' "python3"
-    elif command -v python >/dev/null 2>&1; then
-        printf '%s\n' "python"
-    fi
 }
 
 PYTHON_BIN="$(select_python_bin)"
@@ -197,12 +248,16 @@ if ! cmp -s Resources/AppIcon/AppIcon-Dark.svg docs/assets/logo-dark.svg || ! cm
     exit 1
 fi
 
-# Python-based lints and Ed25519 checks need Python 3. CI runs them on ubuntu-latest
-# (the Swift container image does not ship python3).
+# Fast static checks run locally on every commit and on ubuntu-latest in CI
+# (the Swift container image does not ship python3). Missing Python is recorded as a skip.
+PYTHON_LINT_SKIPPED=0
 if [ -n "$PYTHON_BIN" ]; then
+    "$PYTHON_BIN" scripts/check_windows_geometry.py
+    "$PYTHON_BIN" scripts/check_windows_motion_tokens.py
     "$PYTHON_BIN" scripts/check_timer_render.py
     "$PYTHON_BIN" scripts/check_swift_harness_lints.py
-    "$PYTHON_BIN" scripts/test_mijia_cli.py
+    "$PYTHON_BIN" scripts/check_workflows.py
+    "$PYTHON_BIN" scripts/check_doc_links.py
     "$PYTHON_BIN" scripts/check_capability_matrix.py
     "$PYTHON_BIN" scripts/go2rtc-ptz/check_model_tables.py
     "$PYTHON_BIN" - <<'PY'
@@ -250,14 +305,126 @@ if overlap:
     if overlap in keys.values():
         sys.exit("❌ Ed25519 过渡公开钥不能与当前签名公钥相同")
 PY
-    "$PYTHON_BIN" scripts/update_manifest.py self-test
-    # 发布附件集合（含两端 SBOM）是发版硬门槛，用 fixture 验证严格清单不会悄悄放宽。
-    bash scripts/test_check_release.sh
+else
+    PYTHON_LINT_SKIPPED=1
+    echo "⏭️  跳过 Python 门禁检查：未找到 Python 3.10+"
+fi
+
+run_clean_env() {
+    env -u GITHUB_EVENT_NAME -u GITHUB_REF -u GITHUB_REF_TYPE -u GITHUB_OUTPUT -u GITHUB_SHA -u GITHUB_ACTIONS \
+        -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR -u GIT_PREFIX \
+        "$@"
+}
+
+run_script_self_tests() {
+    echo "🧪 运行脚本与工具自检 (--script-tests)..."
+    if [ -n "$PYTHON_BIN" ]; then
+        run_clean_env "$PYTHON_BIN" scripts/test_mijia_cli.py
+        run_clean_env "$PYTHON_BIN" scripts/update_manifest.py self-test
+        run_clean_env bash scripts/test_check_release.sh
+    fi
+}
+
+if [ "$RUN_SCRIPT_TESTS" = "1" ]; then
+    run_script_self_tests
 fi
 
 if [ "$LINT_ONLY" = "1" ]; then
+    if [ "$PYTHON_LINT_SKIPPED" = "1" ]; then
+        bash "$ROOT_DIR/scripts/gate_report.sh" summary "PythonLint=skip"
+        exit $?
+    fi
     echo "✅ 密钥与机械性编码规范检查通过！"
     exit 0
+fi
+
+# Resolve changed scope for `--changed` mode, or detect whether `scripts/go2rtc-ptz/` changed on full runs.
+SCOPE_MACOS=true
+SCOPE_WINDOWS=true
+SCOPE_CORE=true
+SCOPE_RAYCAST=true
+SCOPE_SCRIPTS=false
+SCOPE_GO2RTC=false
+MACOS_APP_CHANGED=1
+
+resolve_base_ref() {
+    if [ -n "$BASE_REF" ]; then
+        printf '%s\n' "$BASE_REF"
+        return 0
+    fi
+    local branch head_sha upstream_sha
+    branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    if [ "$branch" = "main" ] && git rev-parse --verify origin/main >/dev/null 2>&1; then
+        head_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+        upstream_sha="$(git rev-parse origin/main 2>/dev/null || true)"
+        if [ -n "$head_sha" ] && [ -n "$upstream_sha" ] && [ "$head_sha" != "$upstream_sha" ]; then
+            printf '%s\n' "origin/main"
+            return 0
+        fi
+    fi
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+        git merge-base HEAD origin/main 2>/dev/null || printf '%s\n' "origin/main"
+        return 0
+    fi
+    if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+        printf '%s\n' "HEAD~1"
+        return 0
+    fi
+    return 1
+}
+
+collect_changed_files() {
+    local base="$1"
+    {
+        if [ -n "$base" ] && git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            git diff --name-only --no-renames "$base" HEAD 2>/dev/null || true
+        fi
+        git diff --name-only --no-renames 2>/dev/null || true
+        git diff --cached --name-only --no-renames 2>/dev/null || true
+        git ls-files --others --exclude-standard 2>/dev/null || true
+    } | sort -u | sed '/^$/d'
+}
+
+if [ "$CHANGED_ONLY" = "1" ]; then
+    resolved_base="$(resolve_base_ref || true)"
+    changed_list="$(collect_changed_files "$resolved_base")"
+    if [ -z "$changed_list" ]; then
+        echo "✅ 未检测到相对基线（${resolved_base:-工作区}）的改动，快速静态检查已通过。"
+        if [ "$PYTHON_LINT_SKIPPED" = "1" ]; then
+            bash "$ROOT_DIR/scripts/gate_report.sh" summary "PythonLint=skip"
+            exit $?
+        fi
+        exit 0
+    fi
+
+    scope_output="$(printf '%s\n' "$changed_list" | bash "$ROOT_DIR/scripts/ci_relevant_paths.sh")"
+    eval "$scope_output"
+    SCOPE_MACOS="$macos"
+    SCOPE_WINDOWS="$windows"
+    SCOPE_CORE="$core"
+    SCOPE_RAYCAST="$raycast"
+    SCOPE_SCRIPTS="$scripts"
+    SCOPE_GO2RTC="$go2rtc"
+
+    MACOS_APP_CHANGED=0
+    if printf '%s\n' "$changed_list" | grep -Eq '^(Sources/MenuBarMijiaApp/|Resources/|Tests/MenuBarMijiaAppTests/|Package\.(swift|resolved)$)'; then
+        MACOS_APP_CHANGED=1
+    fi
+
+    echo "🎯 增量门禁命中范围：macos=${SCOPE_MACOS} core=${SCOPE_CORE} windows=${SCOPE_WINDOWS} raycast=${SCOPE_RAYCAST} scripts=${SCOPE_SCRIPTS} go2rtc=${SCOPE_GO2RTC}"
+    if [ "$SCOPE_SCRIPTS" = "true" ] && [ "$RUN_SCRIPT_TESTS" != "1" ]; then
+        run_script_self_tests
+    fi
+else
+    if [ "${MMB_FORCE_GO2RTC:-0}" = "1" ]; then
+        SCOPE_GO2RTC=true
+    else
+        resolved_base="$(resolve_base_ref || true)"
+        changed_list="$(collect_changed_files "$resolved_base")"
+        if printf '%s\n' "$changed_list" | grep -q '^scripts/go2rtc-ptz/'; then
+            SCOPE_GO2RTC=true
+        fi
+    fi
 fi
 
 # A new step is one add_gate_step line. The function calls record_gate_result with 名称=0, 名称=skip, or 名称=退出码.
@@ -271,6 +438,9 @@ add_gate_step() {
 record_gate_result() {
     gate_results[${#gate_results[@]}]="$1"
 }
+if [ "$PYTHON_LINT_SKIPPED" = "1" ]; then
+    record_gate_result "PythonLint=skip"
+fi
 
 run_logged() {
     local title="$1"
@@ -321,6 +491,10 @@ run_swift_gate() {
         record_gate_result "Swift=${status}"
         # The summary must not call this a full pass: the snapshot comparison did not run.
         record_gate_result "Snapshots=skip"
+    elif [ "$CHANGED_ONLY" = "1" ] && [ "$MACOS_APP_CHANGED" = "0" ]; then
+        echo "ℹ️  仅核心层改动，跳过 UI 快照渲染比对，运行 MijiaCore 单元测试..."
+        run_logged "Swift 核心测试" swift test --skip SnapshotTests || status=$?
+        record_gate_result "Swift=${status}"
     else
         echo "运行 Swift 单元测试 (swift test) 与双端黄金语料校验..."
         run_logged "Swift 测试" swift test || status=$?
@@ -329,39 +503,20 @@ run_swift_gate() {
     [ "$status" -eq 0 ]
 }
 
-has_shared_windows_deps() {
-    [ "${MMB_DISABLE_SHARED_NODE_MODULES:-0}" = "1" ] && return 1
-    [ -f "$ROOT_DIR/windows/package-lock.json" ] || return 1
-    local wt
-    while IFS= read -r line; do
-        case "$line" in
-            "worktree "*)
-                wt="${line#worktree }"
-                [ "$wt" = "$ROOT_DIR" ] && continue
-                if [ -d "$wt/windows/node_modules/typescript" ] \
-                    && [ -f "$wt/windows/package-lock.json" ] \
-                    && cmp -s "$ROOT_DIR/windows/package-lock.json" "$wt/windows/package-lock.json"; then
-                    return 0
-                fi
-                ;;
-        esac
-    done < <(git worktree list --porcelain 2>/dev/null || true)
-    return 1
-}
-
-windows_shared_tests() {
-    cd "$ROOT_DIR/windows"
-    npm test
-}
+source "$ROOT_DIR/scripts/shared_windows_deps.sh"
 
 run_windows_gate() {
-    if [ ! -x "windows/node_modules/.bin/tsc" ]; then
-        if command -v npm >/dev/null 2>&1 && has_shared_windows_deps; then
+    cleanup_shared_windows_deps
+    if [ ! -x "$ROOT_DIR/windows/node_modules/.bin/tsc" ]; then
+        local shared_nm=""
+        if command -v npm >/dev/null 2>&1 && shared_nm="$(find_shared_windows_node_modules)"; then
             local status=0
-            echo "ℹ️  复用同锁文件的兄弟工作树依赖运行 Windows 单元测试（跳过 Vite 打包）..."
-            run_logged "Windows 单元测试" windows_shared_tests || status=$?
-            record_gate_result "WindowsTests=${status}"
-            record_gate_result "WindowsBuild=skip"
+            trap 'cleanup_shared_windows_deps' EXIT INT TERM HUP
+            echo "ℹ️  复用同锁文件的兄弟工作树依赖运行完整 Windows 前端门禁（单测 + 类型检查 + Vite 打包）..."
+            run_logged "Windows 前端" with_shared_windows_deps "$shared_nm" windows_npm || status=$?
+            cleanup_shared_windows_deps
+            trap - EXIT INT TERM HUP
+            record_gate_result "Windows=${status}"
             [ "$status" -eq 0 ]
             return $?
         fi
@@ -390,10 +545,7 @@ run_raycast_gate() {
 }
 
 # verify.sh clones go2rtc and runs go test -race. --lint-only returns before these
-# steps, so a machine that already has Go keeps the fast lint. The patch SHA is
-# checked in check_model_tables.py, which that fast path already runs.
-# A directory or a stub that fails `go version` is not a toolchain: skip it.
-# A working go whose verify.sh fails still fails this gate.
+# steps, and unchanged runs rely on check_model_tables.py verifying the patch SHA-256.
 run_go2rtc_gate() {
     local go err status=0
     err="$(mktemp)"
@@ -409,13 +561,30 @@ run_go2rtc_gate() {
     [ "$status" -eq 0 ]
 }
 
-add_gate_step "Swift 测试" run_swift_gate
-add_gate_step "Windows 前端" run_windows_gate
-add_gate_step "Raycast 扩展" run_raycast_gate
-add_gate_step "go2rtc 云台补丁" run_go2rtc_gate
+if [ "$SCOPE_MACOS" = "true" ] || [ "$SCOPE_CORE" = "true" ]; then
+    add_gate_step "Swift 测试" run_swift_gate
+fi
+if [ "$SCOPE_WINDOWS" = "true" ]; then
+    add_gate_step "Windows 前端" run_windows_gate
+fi
+if [ "$SCOPE_RAYCAST" = "true" ]; then
+    add_gate_step "Raycast 扩展" run_raycast_gate
+fi
+if [ "$SCOPE_GO2RTC" = "true" ] || [ "${MMB_FORCE_GO2RTC:-0}" = "1" ]; then
+    add_gate_step "go2rtc 云台补丁" run_go2rtc_gate
+fi
+
+step_total=${#gate_step_fns[@]}
+if [ "$step_total" -eq 0 ]; then
+    echo "✅ 受影响检查已完成（无需运行编译或单元测试套件）。"
+    if [ "${#gate_results[@]}" -eq 0 ]; then
+        exit 0
+    fi
+    bash "$ROOT_DIR/scripts/gate_report.sh" summary "${gate_results[@]}"
+    exit $?
+fi
 
 failed=0
-step_total=${#gate_step_fns[@]}
 step_index=0
 while [ "$step_index" -lt "$step_total" ]; do
     echo "🧪 [$((step_index + 1))/${step_total}] ${gate_step_names[$step_index]}"

@@ -244,4 +244,85 @@ describe("Panel keyboard on the rendered demo", () => {
     input("书房"); key("Escape"); assert.ok(!calls.includes("hide_panel"));
     key("Escape"); await setImmediate(); assert.ok(calls.includes("hide_panel"));
   });
+  it("excludes hidden sibling cards from keyboard navigation while a device subpage is open", async () => {
+    app.devices = [light("one", "书房主灯"), light("two", "书房台灯")];
+    app.render();
+    input("书房");
+    assert.deepEqual(ids(), ["one", "two"]);
+    key("ArrowRight");
+    assert.equal(app.expandedDeviceId, "one");
+    assert.equal(app.panelSearch.selectedDeviceId, "one");
+    assert.ok(document.querySelector('.cc-tile.is-subpage[data-tile-id="one"]'));
+    key("ArrowDown");
+    assert.equal(app.panelSearch.selectedDeviceId, "one");
+    assert.equal(document.querySelector('[data-tile-id="two"]')?.classList.contains("is-keyboard-selected"), false);
+    key("Enter");
+    await setImmediate();
+    const first = app.devices.find((item) => item.id === "one")!;
+    const second = app.devices.find((item) => item.id === "two")!;
+    assert.equal(first.kind.kind === "light" && first.kind.isOn, true);
+    assert.equal(second.kind.kind === "light" && second.kind.isOn, false);
+  });
+
+  it("Escape pops an open subpage before clearing active search or hiding the panel, even when a range slider is focused", async () => {
+    const calls: string[] = [];
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: { invoke: async (command: string) => { calls.push(command); } },
+      configurable: true,
+    });
+    app.devices = [light("one", "书房主灯"), light("two", "书房台灯")];
+    app.render();
+    input("书房");
+    key("ArrowRight");
+    assert.equal(app.expandedDeviceId, "one");
+    assert.equal(app.panelSearch.query, "书房");
+
+    const range = document.querySelector<HTMLInputElement>('.cc-tile.is-subpage input[type="range"]');
+    assert.ok(range);
+    range.focus();
+
+    key(" ");
+    key("q");
+    await setImmediate();
+    const beforeEscLight = app.devices.find((item) => item.id === "one")!;
+    assert.equal(beforeEscLight.kind.kind === "light" && beforeEscLight.kind.isOn, false);
+    assert.equal(app.panelSearch.query, "书房");
+
+    key("Escape");
+    assert.equal(app.expandedDeviceId, null);
+    assert.equal(app.panelSearch.query, "书房");
+    assert.deepEqual(ids(), ["one", "two"]);
+    assert.ok(!calls.includes("hide_panel"));
+
+    key("Escape");
+    assert.equal(app.panelSearch.query, "");
+    assert.ok(!calls.includes("hide_panel"));
+
+    key("Escape");
+    await setImmediate();
+    assert.ok(calls.includes("hide_panel"));
+  });
+
+  it("digit shortcuts 1-9 only activate visible room tabs and ignore kind chips or open subpages", () => {
+    app.render();
+    const roomCount = document.querySelectorAll(".cc-room-pill[data-room]").length;
+    const kindChipIndex = roomCount + 1;
+    assert.ok(kindChipIndex <= 9);
+
+    key(String(kindChipIndex));
+    assert.equal(app.listCut.kind, "all");
+
+    key("2");
+    assert.equal(app.listCut.kind, "room");
+    const chosenRoom = app.selectedRoom;
+
+    const target = app.presentationDevices[0]!;
+    app.expandedDeviceId = target.id;
+    app.render();
+    assert.ok(document.querySelector(".cc-tile.is-subpage"));
+
+    key("1");
+    assert.equal(app.expandedDeviceId, target.id);
+    assert.equal(app.selectedRoom, chosenRoom);
+  });
 });

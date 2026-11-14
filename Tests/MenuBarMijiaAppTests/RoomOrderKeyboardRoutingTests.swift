@@ -154,12 +154,48 @@ struct RoomOrderKeyboardRoutingTests {
         defer { defaults.removePersistentDomain(forName: name) }
         let ui = LayoutUIState()
         ui.beginRoomOrder(rooms: twoRooms, order: [], aliases: ["bedroom": "主卧"])
+        ui.updateRoomOrderDraft(rooms: twoRooms) { $0.moveToFront(id: "bedroom") }
 
         ui.commitRoomOrderIfNeeded(defaults: defaults)
 
         #expect(ui.editMode == .none)
-        #expect(RoomPrefs.storedOrder(from: defaults) == ["living", "bedroom"])
+        #expect(RoomPrefs.storedOrder(from: defaults) == ["bedroom", "living"])
         #expect(RoomPrefs.decodeAliases(defaults.string(forKey: RoomPrefs.aliasesKey) ?? "{}") == ["bedroom": "主卧"])
+    }
+
+    @Test("Opening and closing room order without edits writes nothing")
+    func unchangedSessionSkipsWrite() {
+        let (defaults, name) = makeSuite()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let ui = LayoutUIState()
+        ui.beginRoomOrder(rooms: twoRooms, order: [], aliases: ["bedroom": "  主卧  ", "empty": "   "])
+        #expect(ui.roomOrderDraft?.hasChanges == false)
+
+        ui.exitRoomOrder(.commit, defaults: defaults)
+
+        #expect(ui.editMode == .none)
+        #expect(defaults.string(forKey: RoomPrefs.orderKey) == nil)
+        #expect(defaults.string(forKey: RoomPrefs.aliasesKey) == nil)
+    }
+
+    @Test("Pruning stale prompts drops targets that disappeared from the home")
+    func pruneStalePromptsDropsMissingTargets() {
+        let ui = LayoutUIState()
+        ui.renamingDeviceId = "dev_gone"
+        ui.newGroupForDevice = "dev_alive"
+        ui.renamingGroupId = "grp_gone"
+        ui.renamingRoomId = "room_gone"
+
+        ui.pruneStalePrompts(
+            deviceIds: ["dev_alive"],
+            groupIds: ["grp_alive"],
+            roomIds: ["room_alive"]
+        )
+
+        #expect(ui.renamingDeviceId == nil)
+        #expect(ui.newGroupForDevice == "dev_alive")
+        #expect(ui.renamingGroupId == nil)
+        #expect(ui.renamingRoomId == nil)
     }
 
     @Test("Committing keeps rooms of another home in the saved order")

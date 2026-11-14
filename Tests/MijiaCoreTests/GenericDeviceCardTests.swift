@@ -15,11 +15,7 @@ struct GenericDeviceCardTests {
     }
 
     private func coverageSpec(_ model: String) throws -> MiotDeviceSpec {
-        let specs = try JSONDecoder().decode(
-            [String: MiotDeviceSpec].self,
-            from: fixture("Tests/Fixtures/miot_coverage_specs.json")
-        )
-        return try #require(specs[model], "\(model)")
+        try MiotCoverageBaselineTests.coverageSpec(model)
     }
 
     private func record(_ did: String, model: String) -> MiDeviceRecord {

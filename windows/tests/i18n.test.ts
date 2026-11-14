@@ -91,7 +91,7 @@ describe("text catalog (#52)", () => {
 
   it("falls back to Chinese for Chinese regions and to English for everything else", () => {
     assert.equal(languageFromTag("zh-CN"), "zh-Hans");
-    assert.equal(languageFromTag("zh-Hant-HK"), "zh-Hans");
+    assert.equal(languageFromTag("zh-Hant-HK"), "zh-Hant");
     assert.equal(languageFromTag("zh"), "zh-Hans");
     assert.equal(languageFromTag("en-GB"), "en");
     assert.equal(languageFromTag("fr-FR"), "en");

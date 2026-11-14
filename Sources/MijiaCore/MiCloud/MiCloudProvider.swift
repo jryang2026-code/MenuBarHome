@@ -13,6 +13,10 @@ public actor MiCloudProvider: HomeProvider {
     private let apiFactory: APIFactory
     private let specSource: any MiotSpecSource
     private let cameraBridge: any XiaomiCameraBridging
+    private let localClient: LocalMiIOClient?
+    private let lanFailureThreshold: Int
+    private let lanCooldownDuration: TimeInterval
+    private let now: @Sendable () -> Date
     /// Poll interval while the panel is open; see `PollingPolicy` for the rest (#26).
     private let pollInterval: Duration
     private let closedPollInterval: Duration
@@ -20,6 +24,11 @@ public actor MiCloudProvider: HomeProvider {
     private let followUpDelay: Duration
     private let cameraSessionReleaseDelay: Duration
     private let selectedHomeLoader: @Sendable () -> String?
+
+    private struct LANHealthState: Sendable {
+        var consecutiveFailures: Int = 0
+        var cooldownUntil: Date?
+    }
 
     private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
     /// Whether the last status sent to the store was `.connected`; a transient read failure
@@ -31,9 +40,15 @@ public actor MiCloudProvider: HomeProvider {
     /// A rejection is reported once; later failures must not re-open the re-auth prompt.
     private var didReportSessionExpired = false
     private var pendingCameraReleases: [String: Task<Void, Never>] = [:]
+    private var followUpTasks: [UUID: Task<Void, Never>] = [:]
     /// The hub DID and camera subdid used the last time this camera's bridge started.
     /// Teardown keeps that pair after the hub later looks offline.
     private var cameraBridgeBindings: [String: (did: String, subdid: String?)] = [:]
+    private var lanHealthByDid: [String: LANHealthState] = [:]
+    private var knownLANEndpointsByDid: [String: (ip: String, token: String)] = [:]
+    private var sharedHomeDids: Set<String> = []
+    private var doorbellBaselineTime: [String: Date] = [:]
+    private var lastDoorbellTimestamp: [String: Date] = [:]
 
     private var devices: [MiDeviceRecord] = []
     private var rooms: [MiRoom] = []
@@ -60,6 +75,10 @@ public actor MiCloudProvider: HomeProvider {
         apiFactory: @escaping APIFactory = { MiCloudClient(session: $0) },
         specSource: any MiotSpecSource = MiotSpecStore(),
         cameraBridge: any XiaomiCameraBridging = XiaomiCameraBridge.shared,
+        localClient: LocalMiIOClient? = LocalMiIOClient(),
+        lanFailureThreshold: Int = 3,
+        lanCooldownDuration: TimeInterval = 30,
+        now: @escaping @Sendable () -> Date = { Date() },
         pollInterval: Duration = PollingPolicy.panelOpenInterval,
         closedPollInterval: Duration = PollingPolicy.panelClosedInterval,
         deviceRefreshEveryPolls: Int = 20,
@@ -72,6 +91,10 @@ public actor MiCloudProvider: HomeProvider {
         self.apiFactory = apiFactory
         self.specSource = specSource
         self.cameraBridge = cameraBridge
+        self.localClient = localClient
+        self.lanFailureThreshold = max(1, lanFailureThreshold)
+        self.lanCooldownDuration = max(0, lanCooldownDuration)
+        self.now = now
         self.pollInterval = pollInterval
         self.closedPollInterval = closedPollInterval
         self.deviceRefreshEveryPolls = max(1, deviceRefreshEveryPolls)
@@ -91,12 +114,32 @@ public actor MiCloudProvider: HomeProvider {
         restartLoop()
     }
 
-    /// Stops polling and finishes the event stream; used when the user switches backends.
-    public func shutdown() {
+    /// Stops polling, local/cloud clients, timers, and finishes the event stream; used when switching backends.
+    public func shutdown() async {
         loopTask?.cancel()
         loopTask = nil
+        waitTask?.cancel()
+        waitTask = nil
+        for task in followUpTasks.values {
+            task.cancel()
+        }
+        followUpTasks.removeAll()
+        for task in pendingCameraReleases.values {
+            task.cancel()
+        }
+        pendingCameraReleases.removeAll()
+        doorbellBaselineTime.removeAll()
+        lastDoorbellTimestamp.removeAll()
+        let bindings = Array(cameraBridgeBindings.values)
+        cameraBridgeBindings.removeAll()
+        await localClient?.shutdown()
+        await api?.shutdown()
+        api = nil
         continuation?.finish()
         continuation = nil
+        for binding in bindings {
+            await cameraBridge.stopBridge(did: binding.did, subdid: binding.subdid)
+        }
     }
 
     public func refreshNow() async {
@@ -244,6 +287,7 @@ public actor MiCloudProvider: HomeProvider {
         guard account != nil else { return }
         devices = []
         rooms = []
+        sharedHomeDids.removeAll()
         values = [:]
         emitSnapshot()
     }
@@ -300,6 +344,7 @@ public actor MiCloudProvider: HomeProvider {
         unresolvedRoomDids = outcome.unresolvedRoomDids
         rooms = outcome.rooms
         devices = outcome.devices
+        reconcileLANEndpoints(devices)
         try await refreshGroupMembers(api)
         await loadMissingSpecs()
 
@@ -374,8 +419,12 @@ public actor MiCloudProvider: HomeProvider {
         }
         guard !pending.isEmpty else { return }
         let source = specSource
+        let entries = Array(pending)
+        let maxConcurrency = 6
         let loaded = await withTaskGroup(of: SpecLoadOutcome.self) { group in
-            for (model, request) in pending {
+            var iterator = entries.makeIterator()
+            func enqueueNext() {
+                guard let (model, request) = iterator.next() else { return }
                 let specType = request.specType
                 let name = request.name
                 group.addTask {
@@ -397,8 +446,14 @@ public actor MiCloudProvider: HomeProvider {
                     )
                 }
             }
+            for _ in 0..<min(maxConcurrency, entries.count) {
+                enqueueNext()
+            }
             var out: [SpecLoadOutcome] = []
-            for await result in group { out.append(result) }
+            for await result in group {
+                out.append(result)
+                enqueueNext()
+            }
             return out
         }
         for outcome in loaded {
@@ -422,26 +477,282 @@ public actor MiCloudProvider: HomeProvider {
         spec.type.split(separator: ":").dropFirst(5).first == "fallback"
     }
 
+    private struct HybridPropReadOutcome {
+        let values: [MiotPropKey: JSONValue]
+        let completedKeys: [MiotPropKey]
+        let cloudError: (any Error)?
+    }
+
     /// Reads the selected home's devices only (all homes when none is selected) (#26).
     @discardableResult
     private func poll(_ api: any MiCloudAPI, dids: Set<String>?) async throws -> Set<MiotPropKey> {
-        let keys = propKeys(of: scopedDevicesAndRooms().devices, dids: dids)
+        let outcome = try await pollOutcome(api, dids: dids)
+        if let cloudError = outcome.cloudError {
+            throw cloudError
+        }
+        return outcome.freshKeys
+    }
+
+    private func pollOutcome(
+        _ api: any MiCloudAPI,
+        dids: Set<String>?
+    ) async throws -> (freshKeys: Set<MiotPropKey>, cloudError: (any Error)?) {
+        let scopedDevices = scopedDevicesAndRooms().devices
+        let keys = propKeys(of: scopedDevices, dids: dids)
         var freshKeys: Set<MiotPropKey> = []
         if !keys.isEmpty {
-            let fresh = try await api.getProps(keys)
-            freshKeys = Set(fresh.keys)
+            let outcome = try await fetchPropsHybrid(api: api, keys: keys, scopedDevices: scopedDevices)
+            freshKeys = Set(outcome.values.keys)
             // getProps omits items with a non-zero code. A missing door-state must not keep the
             // previous locked/unlocked claim while the device list still says online (#149).
-            let requestedLocks = doorStateKeys(requested: keys)
-            Self.applyPropRead(&values, fresh: fresh, requestedLockKeys: requestedLocks)
+            let requestedLocks = doorStateKeys(requested: outcome.completedKeys)
+            let clearedCachedLock = requestedLocks.contains { outcome.values[$0] == nil && values[$0] != nil }
+            Self.applyPropRead(&values, fresh: outcome.values, requestedLockKeys: requestedLocks)
+            if let cloudError = outcome.cloudError {
+                if !outcome.values.isEmpty || clearedCachedLock {
+                    emitSnapshot(closesAwayGap: false)
+                }
+                return (freshKeys, cloudError)
+            }
         }
         if dids == nil {
+            try await pollDoorbellEvents(api, scopedDevices: scopedDevices)
             lastFullPollAt = .now
             pollRequested = false
             pollsSinceContextChange += 1
         }
-        emitSnapshot()
-        return freshKeys
+        emitSnapshot(closesAwayGap: dids == nil)
+        return (freshKeys, nil)
+    }
+
+    private func fetchPropsHybrid(
+        api: any MiCloudAPI,
+        keys: [MiotPropKey],
+        scopedDevices: [MiDeviceRecord]
+    ) async throws -> HybridPropReadOutcome {
+        guard let localClient else {
+            let cloudValues = try await api.getProps(keys)
+            return HybridPropReadOutcome(values: cloudValues, completedKeys: keys, cloudError: nil)
+        }
+
+        var recordByDid: [String: MiDeviceRecord] = [:]
+        for record in scopedDevices where recordByDid[record.miotDid] == nil {
+            recordByDid[record.miotDid] = record
+        }
+
+        var lanEndpoints: [String: MiIODeviceEndpoint] = [:]
+        var lanKeysByDid: [String: [MiotPropKey]] = [:]
+        var cloudKeys: [MiotPropKey] = []
+
+        for key in keys {
+            if let record = recordByDid[key.did], let endpoint = lanEndpoint(for: record) {
+                lanEndpoints[key.did] = endpoint
+                lanKeysByDid[key.did, default: []].append(key)
+            } else {
+                cloudKeys.append(key)
+            }
+        }
+
+        var combined: [MiotPropKey: JSONValue] = [:]
+        var lanAnsweredKeys: [MiotPropKey] = []
+        if !lanKeysByDid.isEmpty {
+            struct LANPollResult: Sendable {
+                let did: String
+                let values: [MiotPropKey: JSONValue]?
+                let keys: [MiotPropKey]
+                let error: (any Error)?
+            }
+            let lanResults = await withTaskGroup(of: LANPollResult.self) { group in
+                for (did, deviceKeys) in lanKeysByDid {
+                    guard let endpoint = lanEndpoints[did] else { continue }
+                    group.addTask {
+                        do {
+                            let result = try await localClient.getProps(deviceKeys, endpoint: endpoint)
+                            return LANPollResult(did: did, values: result, keys: deviceKeys, error: nil)
+                        } catch {
+                            return LANPollResult(did: did, values: nil, keys: deviceKeys, error: error)
+                        }
+                    }
+                }
+                var out: [LANPollResult] = []
+                for await item in group { out.append(item) }
+                return out
+            }
+
+            for outcome in lanResults {
+                if let err = outcome.error {
+                    if err is CancellationError { throw CancellationError() }
+                    recordLANFailure(did: outcome.did, error: err)
+                    cloudKeys.append(contentsOf: outcome.keys)
+                } else if let resultValues = outcome.values {
+                    let missingKeys = outcome.keys.filter { resultValues[$0] == nil }
+                    if !resultValues.isEmpty || outcome.keys.isEmpty {
+                        recordLANSuccess(did: outcome.did)
+                        combined.merge(resultValues) { _, new in new }
+                    }
+                    // Even an all-nonzero reply completed the read attempt; keep its keys in
+                    // completedKeys so failed cloud fallback still clears stale door-state claims.
+                    lanAnsweredKeys.append(contentsOf: outcome.keys)
+                    if !missingKeys.isEmpty {
+                        cloudKeys.append(contentsOf: missingKeys)
+                    }
+                }
+            }
+        }
+
+        if !cloudKeys.isEmpty {
+            do {
+                let cloudValues = try await api.getProps(cloudKeys)
+                combined.merge(cloudValues) { _, new in new }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch MiCloudError.sessionExpired {
+                throw MiCloudError.sessionExpired
+            } catch {
+                if combined.isEmpty && lanAnsweredKeys.isEmpty {
+                    throw error
+                }
+                return HybridPropReadOutcome(
+                    values: combined,
+                    completedKeys: lanAnsweredKeys,
+                    cloudError: error
+                )
+            }
+        }
+        return HybridPropReadOutcome(values: combined, completedKeys: keys, cloudError: nil)
+    }
+
+    // MARK: - Hybrid LAN Eligibility & Cooldown
+
+    private func reconcileLANEndpoints(_ records: [MiDeviceRecord]) {
+        sharedHomeDids = Set(rooms.lazy.filter(\.isSharedHome).flatMap(\.dids))
+        for record in records where record.splitParentDid == nil {
+            let did = record.miotDid
+            let ip = record.localIp?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let token = record.token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if let prev = knownLANEndpointsByDid[did], (prev.ip != ip || prev.token != token) {
+                lanHealthByDid.removeValue(forKey: did)
+            }
+            if !ip.isEmpty && !token.isEmpty {
+                knownLANEndpointsByDid[did] = (ip: ip, token: token)
+            } else {
+                knownLANEndpointsByDid.removeValue(forKey: did)
+            }
+        }
+    }
+
+    private func lanEndpoint(for record: MiDeviceRecord) -> MiIODeviceEndpoint? {
+        guard localClient != nil,
+              record.isOnline,
+              !record.isShared,
+              !sharedHomeDids.contains(record.did),
+              !sharedHomeDids.contains(record.miotDid),
+              record.splitParentDid == nil,
+              !record.did.hasPrefix("group."),
+              let ip = record.localIp?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !ip.isEmpty,
+              let token = record.token?.trimmingCharacters(in: .whitespacesAndNewlines),
+              MiIOPacket.validateToken(token) != nil else {
+            return nil
+        }
+        if let cooldownUntil = lanHealthByDid[record.miotDid]?.cooldownUntil, now() < cooldownUntil {
+            return nil
+        }
+        return MiIODeviceEndpoint(did: record.miotDid, ip: ip, token: token)
+    }
+
+    private func recordLANSuccess(did: String) {
+        lanHealthByDid[did] = LANHealthState(consecutiveFailures: 0, cooldownUntil: nil)
+    }
+
+    private func recordLANFailure(did: String, error: any Error) {
+        var state = lanHealthByDid[did] ?? LANHealthState()
+        state.consecutiveFailures += 1
+        if state.consecutiveFailures >= lanFailureThreshold {
+            state.cooldownUntil = now().addingTimeInterval(lanCooldownDuration)
+            logger.notice("LAN cooldown activated for \(did, privacy: .public) after \(state.consecutiveFailures, privacy: .public) failures: \(error.localizedDescription, privacy: .public)")
+        }
+        lanHealthByDid[did] = state
+    }
+
+    // MARK: - MIoT Doorbell Event Bridging
+
+    static func doorbellEventTarget(for spec: MiotDeviceSpec) -> (siid: Int, eiid: Int)? {
+        let prioritized = spec.services(named: "video-doorbell")
+            + spec.services(named: "doorbell")
+            + spec.services.filter { !["video-doorbell", "doorbell"].contains($0.shortName) }
+        for service in prioritized {
+            if let event = service.events.first(where: { ["doorbell-ring", "doorbell-press"].contains($0.shortName) }) {
+                return (service.iid, event.iid)
+            }
+        }
+        return nil
+    }
+
+    private func pollDoorbellEvents(_ api: any MiCloudAPI, scopedDevices: [MiDeviceRecord]) async throws {
+        var seenTrackerKeys: Set<String> = []
+        for record in scopedDevices where record.isOnline {
+            guard let spec = specsByModel[record.model],
+                  let target = Self.doorbellEventTarget(for: spec) else { continue }
+            let eventKey = "\(target.siid).\(target.eiid)"
+            let trackerKey = "\(record.miotDid)#\(eventKey)"
+            guard seenTrackerKeys.insert(trackerKey).inserted else { continue }
+
+            let currentNow = now()
+            do {
+                if let baseline = doorbellBaselineTime[trackerKey] {
+                    let querySince = (lastDoorbellTimestamp[trackerKey] ?? baseline).addingTimeInterval(-1)
+                    let latest = try await api.doorbellLatestEventTimestamp(
+                        did: record.miotDid,
+                        eventKey: eventKey,
+                        since: querySince,
+                        now: currentNow
+                    )
+                    doorbellBaselineTime[trackerKey] = currentNow
+                    if let latest {
+                        let isNewRing: Bool
+                        if let previous = lastDoorbellTimestamp[trackerKey] {
+                            isNewRing = latest > previous
+                        } else {
+                            isNewRing = latest > baseline
+                        }
+                        if isNewRing {
+                            lastDoorbellTimestamp[trackerKey] = latest
+                            let ring = DoorbellRing(
+                                deviceId: record.did,
+                                entityId: "miot-event:\(record.miotDid):\(target.siid):\(target.eiid)",
+                                firedAt: Self.iso8601String(from: latest)
+                            )
+                            continuation?.yield(.doorbellRang(ring))
+                        }
+                    }
+                } else {
+                    let initialSince = currentNow.addingTimeInterval(-3600)
+                    let latest = try await api.doorbellLatestEventTimestamp(
+                        did: record.miotDid,
+                        eventKey: eventKey,
+                        since: initialSince,
+                        now: currentNow
+                    )
+                    if let latest {
+                        lastDoorbellTimestamp[trackerKey] = latest
+                    }
+                    doorbellBaselineTime[trackerKey] = currentNow
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch MiCloudError.sessionExpired {
+                throw MiCloudError.sessionExpired
+            } catch {
+                logger.notice("Doorbell event query failed for \(record.miotDid, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private static func iso8601String(from date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
     }
 
     /// Successful reads replace cached values. A requested `door-state` that this round did not
@@ -517,6 +828,7 @@ public actor MiCloudProvider: HomeProvider {
         home.closesAwayGap = closesAwayGap
         home.homes = Self.homeOptions(from: rooms)
         home.lightGroupOwners = Self.deviceGroupOwners(membersByGroup: groupMembersByGroup, devices: visibleDevices)
+        DeviceSynthesizer.reconcileLightGroups(&home)
         // Light groups advertise `mode` but their members reject it; hide scenes there too.
         for i in home.devices.indices {
             guard case .light(var spec) = home.devices[i].kind,
@@ -584,29 +896,68 @@ public actor MiCloudProvider: HomeProvider {
             throw MiotCommandError.unsupported("设备规格未加载")
         }
         let write = try MiotCommandMapper.map(command, spec: spec)
-        do {
-            switch write {
-            case .setProps(let writes): try await api.setProps(writes)
-            case .action(let call): try await api.action(call)
+        var executedViaLAN = false
+        if let localClient, let endpoint = lanEndpoint(for: record) {
+            do {
+                switch write {
+                case .setProps(let writes):
+                    try await localClient.setProps(writes, endpoint: endpoint)
+                case .action(let call):
+                    _ = try await localClient.callAction(call, endpoint: endpoint)
+                }
+                recordLANSuccess(did: record.miotDid)
+                executedViaLAN = true
+            } catch MiCloudError.deviceError(let code, let message) {
+                if case .setLightEffect = command, code == Self.propertyUnsupportedCode {
+                    effectsUnsupported.insert(record.did)
+                    emitSnapshot()
+                }
+                throw MiCloudError.deviceError(code: code, message: message)
+            } catch MiIOError.ambiguousActionOutcome {
+                recordLANFailure(did: record.miotDid, error: MiIOError.ambiguousActionOutcome)
+                scheduleFollowUpPoll(for: record)
+                throw MiIOError.ambiguousActionOutcome
+            } catch MiIOError.shutDown {
+                throw MiIOError.shutDown
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                recordLANFailure(did: record.miotDid, error: error)
             }
-        } catch MiCloudError.sessionExpired {
-            report(MiCloudError.sessionExpired)
-            throw MiCloudError.sessionExpired
-        } catch MiCloudError.deviceError(let code, let message) {
-            if case .setLightEffect = command, code == Self.propertyUnsupportedCode {
-                effectsUnsupported.insert(record.did)
-                emitSnapshot()
-            }
-            throw MiCloudError.deviceError(code: code, message: message)
         }
 
+        if !executedViaLAN {
+            do {
+                switch write {
+                case .setProps(let writes): try await api.setProps(writes)
+                case .action(let call): try await api.action(call)
+                }
+            } catch MiCloudError.sessionExpired {
+                report(MiCloudError.sessionExpired)
+                throw MiCloudError.sessionExpired
+            } catch MiCloudError.deviceError(let code, let message) {
+                if case .setLightEffect = command, code == Self.propertyUnsupportedCode {
+                    effectsUnsupported.insert(record.did)
+                    emitSnapshot()
+                }
+                throw MiCloudError.deviceError(code: code, message: message)
+            }
+        }
+
+        scheduleFollowUpPoll(for: record)
+    }
+
+    private func scheduleFollowUpPoll(for record: MiDeviceRecord) {
         let delay = followUpDelay
         // Split cards address `100.s2`; property reads are keyed by the parent `100`.
         let followUpDid = record.miotDid
-        Task {
+        let followUpId = UUID()
+        let followUpTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
-            await self.followUpPoll(did: followUpDid)
+            guard !Task.isCancelled else { return }
+            await self?.followUpPoll(did: followUpDid, taskId: followUpId)
         }
+        followUpTasks[followUpId] = followUpTask
     }
 
     public func readBack(deviceId: String) async -> ControlReadBack {
@@ -618,11 +969,14 @@ public actor MiCloudProvider: HomeProvider {
         let did = record.miotDid
         do {
             // Only a full poll may clear home-wide staleness; this read refreshes one device.
-            let fresh = try await poll(api, dids: [did])
+            let outcome = try await pollOutcome(api, dids: [did])
+            if let cloudError = outcome.cloudError {
+                report(cloudError)
+            }
             let powerKeys = service.properties.filter { ["on", "status"].contains($0.shortName) }.map {
                 MiotPropKey(did: did, siid: service.iid, piid: $0.iid)
             }
-            guard powerKeys.contains(where: { fresh.contains($0) }) else { return .failed }
+            guard powerKeys.contains(where: { outcome.freshKeys.contains($0) }) else { return .failed }
             return .published
         } catch {
             report(error)
@@ -630,9 +984,10 @@ public actor MiCloudProvider: HomeProvider {
         }
     }
 
-    private func followUpPoll(did: String) async {
+    private func followUpPoll(did: String, taskId: UUID) async {
+        followUpTasks.removeValue(forKey: taskId)
         guard let api else { return }
-        try? await poll(api, dids: [did])
+        _ = try? await poll(api, dids: [did])
     }
 
     public func fetchSensorHistory(

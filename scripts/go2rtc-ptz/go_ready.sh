@@ -51,7 +51,7 @@ my $status = $?;
 exit 0 if $status == 0;
 exit($status >> 8) if ($status & 127) == 0;
 exit(128 + ($status & 127));
-' 5 "$candidate" version >/dev/null 2>&1 || version_status=$?
+' "${GO2RTC_VERSION_TIMEOUT:-5}" "$candidate" version >/dev/null 2>&1 || version_status=$?
 if [ "$version_status" -ne 0 ]; then
     if [ "$version_status" -eq 124 ]; then
         echo "go version 超时" >&2

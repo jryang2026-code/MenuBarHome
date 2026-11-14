@@ -143,6 +143,11 @@ public final class EnergyHistory {
                 continue
             }
             stored.lastSampleAt[device.id] = now
+            // Persist once per device per calendar day even when the counter has not moved, so
+            // `todayKwh` and multi-plug day attribution survive a relaunch without per-poll writes.
+            if lastSeen.map({ !calendar.isDate($0, inSameDayAs: now) }) ?? true {
+                shouldPersist = true
+            }
 
             guard let baseline = stored.baselines[device.id] else {
                 // First observation: this is the baseline only. No consumption is inferred.

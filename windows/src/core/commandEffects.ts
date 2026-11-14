@@ -363,4 +363,32 @@ export function inverseCommands(dev: SmartDevice, command: DeviceCommand): Devic
       return exhaustive;
     }
   }
+}
+
+export function mergeInverseCommands(
+  batches: readonly (readonly DeviceCommand[])[],
+): DeviceCommand[] {
+  const adjustments: DeviceCommand[] = [];
+  const powerCommands: DeviceCommand[] = [];
+  const seenAdjustments = new Set<string>();
+  const seenPower = new Set<string>();
+  for (const batch of batches) {
+    for (const cmd of batch) {
+      const key = JSON.stringify(cmd);
+      if (
+        cmd.kind === "setLightPower" ||
+        cmd.kind === "setClimatePower" ||
+        cmd.kind === "setFanPower"
+      ) {
+        if (!seenPower.has(key)) {
+          seenPower.add(key);
+          powerCommands.push(cmd);
+        }
+      } else if (!seenAdjustments.has(key)) {
+        seenAdjustments.add(key);
+        adjustments.push(cmd);
+      }
+    }
   }
+  return [...adjustments, ...powerCommands];
+}

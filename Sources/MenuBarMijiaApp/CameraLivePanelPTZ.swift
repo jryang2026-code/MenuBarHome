@@ -28,6 +28,8 @@ extension CameraLivePanelController {
         ptzSeq = 0
         ptzPendingDirection = nil
         let previousStop = ptzStopTask
+        let attemptDeviceId = deviceId
+        let attemptLifecycleID = ptzLifecycleID
         ptzBeginTask = Task { @MainActor [weak self] in
             // A new drag must not begin before the previous stop reached the bridge; otherwise
             // begin sees the old session active and fails (or races its stop).
@@ -37,7 +39,17 @@ extension CameraLivePanelController {
                 // session, leaving no token to stop it. A finished drag stops it below instead.
                 let begin = try await client.begin()
                 guard let self, self.ptzDragID == dragID else {
-                    try? await client.stop(token: begin.token)
+                    let attempt = CameraPTZStopAttempt(
+                        token: begin.token,
+                        deviceId: attemptDeviceId,
+                        lifecycleID: attemptLifecycleID,
+                        client: client
+                    )
+                    if let self {
+                        await self.completePTZStop(client: client, attempt: attempt, notify: false)
+                    } else {
+                        _ = try? await client.stop(token: begin.token)
+                    }
                     return
                 }
                 self.ptzToken = begin.token
@@ -616,6 +628,7 @@ struct CameraControlBarView: View {
                 if let power = bar.power {
                     Button {
                         guard let device else { return }
+                        controller.claimDoorbellWindowForUser(claimsPlacement: false)
                         _ = store.togglePrimary(device)
                     } label: {
                         Label(power.title, systemImage: power.symbol)
@@ -693,6 +706,7 @@ struct CameraControlBarView: View {
 
     private func perform(_ item: CameraControlBar.Item) {
         guard let device else { return }
+        controller.claimDoorbellWindowForUser(claimsPlacement: false)
         switch item.action {
         case .selectLens(let id):
             guard let lens = spec.lenses.first(where: { $0.id == id }) else { return }

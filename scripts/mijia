@@ -4,7 +4,7 @@
 所有控制都通过 `menumijia://` 链接交给 MenuBarHome 执行，本脚本只读应用写出的
 `raycast-snapshot.json`，不保存也不转发米家 / Home Assistant 凭据。因此需要：
 
-1. 打开 MenuBarHome：设置 → 自动化与外部控制 → 打开「Raycast 集成」；
+1. 打开 MenuBarHome：设置 → 通用 → 自动化与外部控制 → 打开「Raycast 集成」；
 2. 让应用保持运行（关闭后它无法执行链接）。
 
 用法示例：
@@ -62,6 +62,7 @@ DEFAULT_SNAPSHOT_PATH = _default_snapshot_path()
 DEFAULT_TIMEOUT = 12.0
 POLL_INTERVAL = 0.15
 MAX_ASK_LENGTH = 500
+MAX_URL_LENGTH = 4096
 
 EXIT_OK = 0
 EXIT_COMMAND_FAILED = 1
@@ -110,7 +111,7 @@ def load_snapshot(path: Path) -> dict:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         raise CliError(
-            f"没找到 {path}。请在 MenuBarHome 的设置 → 自动化与外部控制里打开「Raycast 集成」。"
+            f"没找到 {path}。请在 MenuBarHome 的设置 → 通用 → 自动化与外部控制里打开「Raycast 集成」。"
         ) from None
     except OSError as error:
         raise CliError(f"读取快照失败：{error}") from error
@@ -304,7 +305,12 @@ def build_url(route: str, params: list[tuple[str, str]], token: str, request_id:
     query.append(("id", request_id))
     query.append(("token", token))
     # quote, not quote_plus: the app reads a literal "+" as part of the text.
-    return f"menumijia://{route}?" + urlencode(query, quote_via=quote)
+    url = f"menumijia://{route}?" + urlencode(query, quote_via=quote)
+    if len(url) > MAX_URL_LENGTH:
+        raise CliError(
+            f"编码后的链接长度为 {len(url)} 字节，超过应用接受的上限（{MAX_URL_LENGTH} 字节）；请缩短口令或参数后重试。"
+        )
+    return url
 
 
 def open_url(url: str) -> None:
@@ -312,8 +318,9 @@ def open_url(url: str) -> None:
         try:
             os.startfile(url)  # type: ignore[attr-defined]
         except OSError as error:
+            # The OS error text carries the URL, token included; never pass it on unredacted.
             raise CliError(
-                f"系统没能打开 menumijia:// 链接（{error}），请确认 MenuBarHome 已安装。"
+                f"系统没能打开 menumijia:// 链接（{_scrub_token(str(error))}），请确认 MenuBarHome 已安装。"
             ) from error
         return
     try:
@@ -325,9 +332,9 @@ def open_url(url: str) -> None:
             text=True,
         )
     except OSError as error:
-        raise CliError(f"无法调用 open 打开链接：{error}") from error
+        raise CliError(f"无法调用 open 打开链接：{_scrub_token(str(error))}") from error
     if completed.returncode != 0:
-        reason = (completed.stderr or "").strip() or f"退出码 {completed.returncode}"
+        reason = _scrub_token((completed.stderr or "").strip()) or f"退出码 {completed.returncode}"
         raise CliError(f"系统没能打开 menumijia:// 链接（{reason}），请确认 MenuBarHome 已安装。")
 
 
@@ -435,6 +442,13 @@ def send(
     else:
         print(message or ("完成" if not is_error else "执行失败"))
     return EXIT_COMMAND_FAILED if is_error else EXIT_OK
+
+
+def _scrub_token(text: str) -> str:
+    """Replaces every `token=<value>` in free text; `open` and `os.startfile` echo the URL."""
+    import re
+
+    return re.sub(r"token=[^&\s'\"<>]+", "token=<redacted>", text)
 
 
 def _redacted(url: str) -> str:
@@ -873,7 +887,7 @@ MCP_RESOURCES: tuple[McpResourceSpec, ...] = (
     McpResourceSpec(
         uri="mijia://scenes",
         name="场景与内置快捷动作",
-        description="可执行的全屋快捷动作（全屋关灯、柔和夜灯、睡眠关温控、一键全关、撤销上一步）与 Home Assistant 场景。",
+        description="可执行的全屋快捷动作（全屋关灯、柔和夜灯、关温控风扇、一键全关、撤销上一步）与 Home Assistant 场景。",
         mime_type="application/json",
         reader=_read_scenes_resource,
     ),
@@ -1348,7 +1362,13 @@ def handle_mcp_message(ctx: McpContext, message: object) -> dict | None:
             snapshot = load_snapshot(ctx.path)
             payload = spec.reader(snapshot)
         except CliError as error:
-            return _jsonrpc_error(req_id, -32000, str(error))
+            return _jsonrpc_error(req_id, -32000, _scrub_token(str(error)))
+        except Exception as error:
+            return _jsonrpc_error(
+                req_id,
+                -32603,
+                f"Failed to read resource {uri}: {_scrub_token(str(error))}",
+            )
         return _jsonrpc_result(
             req_id,
             {
@@ -1392,7 +1412,12 @@ def handle_mcp_message(ctx: McpContext, message: object) -> dict | None:
             _validate_tool_arguments(spec, arguments)
             result = spec.handler(ctx, arguments)
         except CliError as error:
-            result = _tool_result(str(error), is_error=True)
+            result = _tool_result(_scrub_token(str(error)), is_error=True)
+        except Exception as error:
+            result = _tool_result(
+                f"执行工具 {name} 时发生非预期异常：{_scrub_token(str(error))}",
+                is_error=True,
+            )
         return _jsonrpc_result(req_id, result)
 
     return _jsonrpc_error(req_id, -32601, f"Method not found: {method}")
@@ -1561,6 +1586,24 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _ensure_utf8_stdio(stdout_override=None) -> None:
+    """Windows 重定向管道默认使用系统 ANSI 代码页（如 GBK/CP1252），输出中文或符号前统一切到 UTF-8。"""
+    if stdout_override is None and hasattr(sys.stdout, "reconfigure"):
+        try:
+            encoding = (getattr(sys.stdout, "encoding", None) or "").lower().replace("_", "-")
+            if encoding != "utf-8":
+                sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+    if hasattr(sys.stderr, "reconfigure"):
+        try:
+            encoding = (getattr(sys.stderr, "encoding", None) or "").lower().replace("_", "-")
+            if encoding != "utf-8":
+                sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -1571,6 +1614,7 @@ def main(
     stdin=None,
     stdout=None,
 ) -> int:
+    _ensure_utf8_stdio(stdout)
     args = build_parser().parse_args(argv)
     try:
         path = snapshot_path(args.snapshot, env)

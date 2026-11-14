@@ -1,4 +1,6 @@
 import { HomeAssistantClient, HomeAssistantSynthesizer, haServiceCall, homeAssistantCommand, homeAssistantIdentity, parseCachedHAHome } from "../src/core/homeAssistant.js";
+import { deviceCategory, isSwitchedLightDevice } from "../src/core/assistant/deviceCategory.js";
+import { buildRaycastSnapshot } from "../src/core/raycastSnapshot.js";
 import {
   cameraStreamSubtype,
   normalizeCameraStreamQuality,
@@ -20,7 +22,9 @@ import {
   UserHabitMemory,
   type HabitDayType,
   assistantEndpointIdentity,
+  assistantDeviceCategory,
   buildAssistantContext,
+  buildIntentCatalog,
   decodeHabitOperation,
   resolveHabitSharing,
   shareHabitSentence,
@@ -2402,7 +2406,7 @@ function smartDeviceFromConfirmation(device: ConfirmationFixtureDevice): SmartDe
 it("matches the shared confirmation table in confirmation_golden.json", () => {
   const raw = readFileSync(resolve(process.cwd(), "../Tests/Fixtures/confirmation_golden.json"), "utf8");
   const rows = parseConfirmationRows(raw);
-  assert.equal(rows.length, 50);
+  assert.equal(rows.length, 58);
   assert.equal(new Set(rows.map((row) => row.id)).size, rows.length);
   for (const row of rows) {
     if (row.device) assert.equal(row.device.id, row.id, row.id);
@@ -2417,7 +2421,7 @@ it("matches the shared confirmation table in confirmation_golden.json", () => {
   // #180: the plain-language "ask me when unsure" policy shares the same fixture. Windows keeps
   // the preference on by default; this asserts both the opt-out branch and that hazard rules win.
   const decisionRows = parseConfirmationDecisionRows(raw);
-  assert.equal(decisionRows.length, 3);
+  assert.equal(decisionRows.length, 4);
   assert.equal(new Set(decisionRows.map((row) => row.id)).size, decisionRows.length);
   for (const row of decisionRows) {
     const devices = row.device ? [smartDeviceFromConfirmation(row.device)] : [];
@@ -2546,6 +2550,180 @@ it("manual controls do not exempt covers from the off shortcut; unknown targets 
   // A heater temperature change always asks, in either direction.
   assert.equal(confirm(heater, { kind: "targetTemperature", celsius: 22 }), true);
   assert.equal(confirm(heater, { kind: "targetTemperature", celsius: 18 }), true);
+});
+
+it("classifies switched lights on plug cards as light while excluding hazardous plug names and models", () => {
+  const makePlug = (
+    id: string,
+    name: string,
+    model = "lumi.switch.b1nacn02",
+    overrides: {
+      roomId?: string;
+      roomName?: string;
+      isOn?: boolean;
+      switchEntityId?: string;
+      powerWritable?: boolean;
+    } = {},
+  ): SmartDevice => ({
+    id,
+    name,
+    roomId: overrides.roomId ?? "kitchen",
+    roomName: overrides.roomName ?? "厨房",
+    model,
+    isOnline: true,
+    kind: {
+      kind: "plug",
+      switchEntityId: overrides.switchEntityId ?? `switch.${id}`,
+      isOn: overrides.isOn ?? true,
+      powerWatts: null,
+      childLockEntityId: null,
+      isChildLocked: false,
+      ...(overrides.powerWritable !== undefined ? { powerWritable: overrides.powerWritable } : {}),
+    },
+  });
+
+  // Positive switched lights
+  const positives: SmartDevice[] = [
+    makePlug("sw_kitchen", "厨房灯", "lumi.switch.b1nacn02"),
+    makePlug("sw_downlight", "筒灯", "lemesh.switch.sw2f12"),
+    makePlug("sw_en", "Kitchen Light", "switch.kitchen_light"),
+    makePlug("sw_warm_strip", "暖光灯带", "cuco.plug.cp1"),
+    makePlug("sw_illumination", "厨房照明", "090615.switch.09dh1"),
+  ];
+
+  for (const dev of positives) {
+    assert.equal(isSwitchedLightDevice(dev), true, `isSwitchedLightDevice(${dev.name})`);
+    assert.equal(deviceCategory(dev), "light", `deviceCategory(${dev.name})`);
+    assert.equal(assistantDeviceCategory(dev), "light", `assistantDeviceCategory(${dev.name})`);
+    assert.equal(
+      ManualControlPolicy.requiresConfirmation(
+        { targetId: dev.id, operation: { kind: "power", isOn: true } },
+        [dev],
+      ),
+      false,
+      `ManualControlPolicy ON (${dev.name})`,
+    );
+    assert.equal(
+      ManualControlPolicy.requiresConfirmation(
+        { targetId: dev.id, operation: { kind: "power", isOn: false } },
+        [dev],
+      ),
+      false,
+      `ManualControlPolicy OFF (${dev.name})`,
+    );
+    const decisionOff = ModelActionPolicy.decide(
+      [dev],
+      [],
+      { actions: [{ intent: { targetId: dev.id, operation: { kind: "power", isOn: false } }, confidence: 0.95, primaryChoice: true }] },
+    );
+    assert.equal(decisionOff.intents.length, 1, `ModelActionPolicy auto-runs OFF (${dev.name})`);
+    assert.equal(decisionOff.suggestions.length, 0, `ModelActionPolicy no suggestion OFF (${dev.name})`);
+    const decisionOn = ModelActionPolicy.decide(
+      [dev],
+      [],
+      { actions: [{ intent: { targetId: dev.id, operation: { kind: "power", isOn: true } }, confidence: 0.95, primaryChoice: true }] },
+    );
+    assert.equal(decisionOn.intents.length, 1, `ModelActionPolicy auto-runs ON (${dev.name})`);
+    assert.equal(decisionOn.suggestions.length, 0, `ModelActionPolicy no suggestion ON (${dev.name})`);
+  }
+
+  // buildIntentCatalog builds room_lights and all_lights when switched lights are present
+  const kitchenLight = positives[0]!;
+  const kitchenStrip = positives[3]!;
+  const catalog = buildIntentCatalog([kitchenLight, kitchenStrip], []);
+  assert.ok(catalog.aliasToIds.has("room_lights:1"), "catalog groups kitchen switched lights into room_lights:1");
+  assert.deepEqual(catalog.aliasToIds.get("room_lights:1"), [kitchenLight.id, kitchenStrip.id]);
+  assert.deepEqual(catalog.aliasToIds.get("all_lights"), [kitchenLight.id, kitchenStrip.id]);
+
+  // LocalIntentParser parses explicit, room-light, and bare-light commands on switched lights
+  const directOff = LocalIntentParser.parse("关厨房灯", [kitchenLight], []);
+  assert.deepEqual(directOff?.intents, [{ targetId: kitchenLight.id, operation: { kind: "power", isOn: false } }]);
+  const roomOff = LocalIntentParser.parse("把厨房的灯关了", [kitchenLight], []);
+  assert.deepEqual(roomOff?.intents, [{ targetId: kitchenLight.id, operation: { kind: "power", isOn: false } }]);
+  const bareOff = LocalIntentParser.parse("关灯", [kitchenLight], []);
+  assert.deepEqual(bareOff?.intents, [{ targetId: kitchenLight.id, operation: { kind: "power", isOn: false } }]);
+
+  // RaycastSnapshot classifies switched lights as low-risk light, including via aliases
+  const aliasedSwitch = makePlug("sw_left_key", "左键", "lumi.switch.b1nacn02");
+  const snap = buildRaycastSnapshot({
+    connectionMode: "demo",
+    selectedHomeId: "home_1",
+    connectionSummary: "演示家庭",
+    bridgeToken: "a".repeat(64),
+    isStale: false,
+    devices: [kitchenLight, aliasedSwitch],
+    rooms: [{ id: "kitchen", name: "厨房", deviceCount: 2 }],
+    scenes: [],
+    environmentReadings: [],
+    aliases: { [aliasedSwitch.id]: "厨房灯" },
+  });
+  for (const item of snap.devices) {
+    assert.equal(item.category, "light", `snapshot category (${item.id})`);
+    assert.equal(item.categoryTitle, "照明", `snapshot categoryTitle (${item.id})`);
+    assert.equal(item.capabilities.isHighRisk, false, `snapshot isHighRisk (${item.id})`);
+  }
+
+  // HA auxiliary facets: switched light has isHighRiskHADevice === false so low-risk facet writesByDefault === true
+  const haHome = HomeAssistantSynthesizer.synthesize({
+    areas: [{ area_id: "kitchen", name: "厨房" }],
+    devices: [
+      { id: "ha_sw_light", name: "厨房灯", area_id: "kitchen", model: "lumi.switch.b1nacn02" },
+      { id: "ha_real_plug", name: "厨房插座", area_id: "kitchen", model: "cuco.plug.cp1" },
+    ],
+    entities: [
+      { entity_id: "switch.kitchen_light", device_id: "ha_sw_light" },
+      { entity_id: "switch.kitchen_light_indicator", device_id: "ha_sw_light" },
+      { entity_id: "switch.kitchen_plug", device_id: "ha_real_plug" },
+      { entity_id: "switch.kitchen_plug_indicator", device_id: "ha_real_plug" },
+    ],
+    states: [
+      { entity_id: "switch.kitchen_light", state: "on", attributes: { friendly_name: "厨房灯" } },
+      { entity_id: "switch.kitchen_light_indicator", state: "on", attributes: { friendly_name: "指示灯" } },
+      { entity_id: "switch.kitchen_plug", state: "on", attributes: { friendly_name: "厨房插座" } },
+      { entity_id: "switch.kitchen_plug_indicator", state: "on", attributes: { friendly_name: "指示灯" } },
+    ],
+  });
+  const haLightFacet = haHome.deviceFacets?.["ha_sw_light"]?.find((f) => f.id === "switch.kitchen_light_indicator");
+  const haPlugFacet = haHome.deviceFacets?.["ha_real_plug"]?.find((f) => f.id === "switch.kitchen_plug_indicator");
+  assert.equal(haLightFacet?.writesByDefault, true, "HA switched light low-risk auxiliary facet writesByDefault");
+  assert.equal(haPlugFacet?.writesByDefault, false, "HA real plug auxiliary facet remains guarded");
+
+  // Negatives on plug: must remain "plug" and high-risk
+  const negatives: SmartDevice[] = [
+    makePlug("neg_uv_zh", "紫外线杀菌灯"),
+    makePlug("neg_uv_en", "UV灯"),
+    makePlug("neg_bath", "浴霸取暖灯"),
+    makePlug("neg_ir", "红外烤灯"),
+    makePlug("neg_mosquito", "灭蚊灯"),
+    makePlug("neg_indicator", "路由器指示灯"),
+    makePlug("neg_outlet_zh", "台灯插座"),
+    makePlug("neg_outlet_en", "Desk Lamp Outlet"),
+    makePlug("neg_button", "厨房灯", "lumi.switch.b1nacn02", { switchEntityId: "button.kitchen_light" }),
+    makePlug("neg_ro", "厨房灯", "lumi.switch.b1nacn02", { powerWritable: false }),
+    makePlug("neg_oven_model", "厨房灯", "chunmi.oven.s1"),
+  ];
+
+  for (const dev of negatives) {
+    assert.equal(isSwitchedLightDevice(dev), false, `negative isSwitchedLightDevice(${dev.id}:${dev.name})`);
+    assert.equal(deviceCategory(dev), "plug", `negative deviceCategory(${dev.id}:${dev.name})`);
+    assert.equal(assistantDeviceCategory(dev), "plug", `negative assistantDeviceCategory(${dev.id}:${dev.name})`);
+    if (dev.kind.kind === "plug" && dev.kind.powerWritable !== false) {
+      assert.equal(
+        ManualControlPolicy.requiresConfirmation(
+          { targetId: dev.id, operation: { kind: "power", isOn: true } },
+          [dev],
+        ),
+        true,
+        `negative ManualControlPolicy ON (${dev.id}:${dev.name})`,
+      );
+      const decision = ModelActionPolicy.decide(
+        [dev],
+        [],
+        { actions: [{ intent: { targetId: dev.id, operation: { kind: "power", isOn: false } }, confidence: 0.95, primaryChoice: true }] },
+      );
+      assert.equal(decision.intents.length, 0, `negative ModelActionPolicy holds OFF (${dev.id}:${dev.name})`);
+    }
+  }
 });
 
 it("hasDetailDrawer mirrors the macOS card table and never opens an empty drawer", () => {

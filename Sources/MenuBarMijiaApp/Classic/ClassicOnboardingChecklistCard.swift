@@ -128,7 +128,7 @@ struct ClassicOnboardingChecklistCard: View {
                     launchAtLogin.openSystemSettings()
                 }
             } else {
-                Button(L10n.tr("开机自动启动", "Turn On Launch at Login")) {
+                Button(L10n.tr("登录 Mac 时自动启动", "Turn On Launch at Login")) {
                     withAnimation(AppleMotion.snappySpring) {
                         launchAtLogin.setEnabled(true)
                     }
@@ -149,7 +149,7 @@ struct ClassicOnboardingChecklistCard: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .accessibilityLabel(Text(L10n.tr("开机自动启动", "Launch at Login")))
+        .accessibilityLabel(Text(L10n.tr("登录 Mac 时自动启动", "Launch at Login")))
         .panelHelp(launchAtLoginDetail)
     }
 

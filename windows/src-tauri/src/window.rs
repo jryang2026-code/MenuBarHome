@@ -1,24 +1,191 @@
 use super::*;
 use crate::placement::*;
 
-pub(crate) static LAST_FOCUS_LOSS_MS: AtomicU64 = AtomicU64::new(0);
+const SAME_CLICK_FALLBACK_MS: u64 = 65;
+const SAME_CLICK_SPATIAL_MS: u64 = 250;
+const TRAY_ICON_SLOP_PX: i32 = 36;
+const MAX_TRAY_HOLD_MS: u64 = 5_000;
+
 pub(crate) static PIN_POPOVER: AtomicBool = AtomicBool::new(false);
 /// Whether the window manager granted the panel a native backdrop (§1.4 of the control center spec).
 static PANEL_BACKDROP_ACRYLIC: AtomicBool = AtomicBool::new(false);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrayToggleAction {
+    Present,
+    Hide,
+    Noop,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FocusLossMark {
+    at_ms: u64,
+    cursor: Option<(i32, i32)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TrayPressMark {
+    at_ms: u64,
+    dismissed: bool,
+}
+
+fn is_same_tray_click_focus_loss(
+    mark: FocusLossMark,
+    now_ms: u64,
+    tray_cursor: Option<(i32, i32)>,
+) -> bool {
+    let elapsed = now_ms.saturating_sub(mark.at_ms);
+    match (mark.cursor, tray_cursor) {
+        (Some((fx, fy)), Some((tx, ty))) => {
+            elapsed <= SAME_CLICK_SPATIAL_MS
+                && (fx - tx).abs() <= TRAY_ICON_SLOP_PX
+                && (fy - ty).abs() <= TRAY_ICON_SLOP_PX
+        }
+        _ => elapsed <= SAME_CLICK_FALLBACK_MS,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PanelVisibilityState {
+    pub(crate) seq: u64,
+    pub(crate) closing: bool,
+    focus_loss: Option<FocusLossMark>,
+    tray_press: Option<TrayPressMark>,
+}
+
+impl PanelVisibilityState {
+    pub(crate) fn begin_present(&mut self) -> u64 {
+        self.seq = self.seq.wrapping_add(1);
+        self.closing = false;
+        self.focus_loss = None;
+        self.tray_press = None;
+        self.seq
+    }
+
+    pub(crate) fn begin_hide(&mut self, is_visible: bool) -> Option<u64> {
+        if !is_visible {
+            self.closing = false;
+            self.focus_loss = None;
+            return None;
+        }
+        if self.closing {
+            return None;
+        }
+        self.closing = true;
+        self.seq = self.seq.wrapping_add(1);
+        Some(self.seq)
+    }
+
+    pub(crate) fn complete_hide(&mut self, requested_seq: u64) -> bool {
+        if !should_complete_hide(self.closing, self.seq, requested_seq) {
+            return false;
+        }
+        self.closing = false;
+        self.focus_loss = None;
+        true
+    }
+
+    pub(crate) fn abort_hide(&mut self) {
+        self.closing = false;
+        self.focus_loss = None;
+    }
+
+    pub(crate) fn clear_tray_press(&mut self) {
+        self.tray_press = None;
+    }
+
+    pub(crate) fn note_focus_loss(&mut self, now_ms: u64, cursor: Option<(i32, i32)>) {
+        self.focus_loss = Some(FocusLossMark {
+            at_ms: now_ms,
+            cursor,
+        });
+    }
+
+    pub(crate) fn note_tray_press_down(
+        &mut self,
+        is_open: bool,
+        now_ms: u64,
+        cursor: Option<(i32, i32)>,
+    ) {
+        let same_click_focus_loss = self
+            .focus_loss
+            .take()
+            .is_some_and(|mark| self.closing && is_same_tray_click_focus_loss(mark, now_ms, cursor));
+        self.tray_press = Some(TrayPressMark {
+            at_ms: now_ms,
+            dismissed: is_open || same_click_focus_loss,
+        });
+    }
+
+    pub(crate) fn decide_tray_release(
+        &mut self,
+        is_open: bool,
+        now_ms: u64,
+        cursor: Option<(i32, i32)>,
+    ) -> TrayToggleAction {
+        let active_press = self
+            .tray_press
+            .take()
+            .filter(|press| now_ms.saturating_sub(press.at_ms) <= MAX_TRAY_HOLD_MS);
+        let saw_down = active_press.is_some();
+        let was_dismiss_press = active_press.is_some_and(|press| press.dismissed);
+        let recent_focus_loss = self.focus_loss.take().is_some_and(|mark| {
+            !saw_down && self.closing && is_same_tray_click_focus_loss(mark, now_ms, cursor)
+        });
+        if is_open {
+            TrayToggleAction::Hide
+        } else if was_dismiss_press || recent_focus_loss {
+            TrayToggleAction::Noop
+        } else {
+            TrayToggleAction::Present
+        }
+    }
+}
+
+static PANEL_VISIBILITY: LazyLock<std::sync::Mutex<PanelVisibilityState>> =
+    LazyLock::new(|| std::sync::Mutex::new(PanelVisibilityState::default()));
+
 /// Window pixels reserved around the card column for the panel's own drop shadow. `#app { padding }`
 /// in `styles.css` carries the same value on all four sides.
 pub(crate) const PANEL_PADDING: f64 = 16.0;
-/// Gap between the card column and the assistant rail in `#app`'s grid.
-pub(crate) const PANEL_COLUMN_GAP: f64 = 12.0;
+/// Logical width of the Win11 `Win+N` + `Win+A` two-island flyout column (matches native `Win+A` 360–380 epx).
+pub(crate) const PANEL_MAIN_WIDTH: f64 = 380.0;
+pub(crate) const PANEL_MIN_WORK_HEIGHT: f64 = 480.0;
 
-/// Window width around the fixed 472 px card column: both paddings, the column gap and an optional rail.
-pub(crate) fn panel_window_width(rail_width: f64) -> f64 {
-    let rail = if rail_width > 0.0 { rail_width + PANEL_COLUMN_GAP } else { 0.0 };
-    472.0 + PANEL_PADDING * 2.0 + rail
+/// Total logical window width around the fixed 380 px two-island column plus shadow padding on both sides.
+pub(crate) fn panel_window_width() -> f64 {
+    PANEL_MAIN_WIDTH + PANEL_PADDING * 2.0
 }
 
-/// Applies the native backdrop this machine earns (see `backdrop.rs`) and records it for the webview.
+pub(crate) fn clamp_outer_panel_height(requested_outer_height: f64, work_logical_height: f64) -> f64 {
+    let max_h = work_logical_height.max(PANEL_MIN_WORK_HEIGHT);
+    if requested_outer_height <= 0.0 {
+        max_h
+    } else {
+        requested_outer_height.min(max_h)
+    }
+}
+
+/// Pure guard ensuring a delayed close callback never hides a panel that was reopened in the meantime.
+pub(crate) fn should_complete_hide(closing: bool, active_seq: u64, requested_seq: u64) -> bool {
+    closing && active_seq == requested_seq
+}
+
+/// Maps the monitor taskbar edge and placement preference to the Win11 flyout slide origin edge.
+pub(crate) fn flyout_edge_name(edge: TaskbarEdge, preference: PanelAnchor) -> &'static str {
+    match preference {
+        PanelAnchor::Auto => match edge {
+            TaskbarEdge::Top => "top",
+            TaskbarEdge::Left => "left",
+            TaskbarEdge::Right => "right",
+            TaskbarEdge::Bottom | TaskbarEdge::None => "bottom",
+        },
+        PanelAnchor::TopLeft | PanelAnchor::TopRight => "top",
+        PanelAnchor::BottomLeft | PanelAnchor::BottomRight => "bottom",
+    }
+}
+
+/// Applies the native backdrop policy (see `backdrop.rs`) and records it for the webview.
 pub(crate) fn apply_panel_backdrop(window: &WebviewWindow) {
     PANEL_BACKDROP_ACRYLIC.store(crate::backdrop::apply(window), Ordering::SeqCst);
 }
@@ -33,12 +200,136 @@ pub(crate) fn panel_backdrop() -> &'static str {
     }
 }
 
-
+/// Reports whether the flyout is currently open so cold-launched WebView2 can park its swapchain
+/// at opacity 0 before the very first Win32 `ShowWindow`.
 #[tauri::command]
-pub(crate) fn hide_panel(app: AppHandle) {
+pub(crate) fn panel_is_visible(app: AppHandle) -> bool {
+    let visible = app
+        .get_webview_window("main")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    let closing = PANEL_VISIBILITY
+        .lock()
+        .map(|state| state.closing)
+        .unwrap_or(false);
+    visible && !closing
+}
+
+fn physical_point(pos: Option<PhysicalPosition<f64>>) -> Option<(i32, i32)> {
+    pos.map(|p| (p.x.round() as i32, p.y.round() as i32))
+}
+
+#[cfg(all(windows, not(test)))]
+fn current_cursor_position() -> Option<(i32, i32)> {
+    #[repr(C)]
+    struct WinPoint {
+        x: i32,
+        y: i32,
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetCursorPos(point: *mut WinPoint) -> i32;
+    }
+    let mut point = WinPoint { x: 0, y: 0 };
+    if unsafe { GetCursorPos(&mut point) } != 0 {
+        Some((point.x, point.y))
+    } else {
+        None
+    }
+}
+
+#[cfg(any(not(windows), test))]
+fn current_cursor_position() -> Option<(i32, i32)> {
+    None
+}
+
+pub(crate) fn note_panel_focus_loss() {
+    let cursor = current_cursor_position();
+    if let Ok(mut state) = PANEL_VISIBILITY.lock() {
+        state.note_focus_loss(now_epoch_ms(), cursor);
+    }
+}
+
+pub(crate) fn handle_tray_mouse_down(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>) {
+    let cursor = physical_point(anchor);
+    let app_clone = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let is_visible = app_clone
+            .get_webview_window("main")
+            .and_then(|window| window.is_visible().ok())
+            .unwrap_or(false);
+        if let Ok(mut state) = PANEL_VISIBILITY.lock() {
+            let is_open = is_visible && !state.closing;
+            state.note_tray_press_down(is_open, now_epoch_ms(), cursor);
+        }
+    });
+}
+
+fn complete_hide_panel_on_main_thread(app: &AppHandle, seq: u64) {
+    let should_hide = PANEL_VISIBILITY
+        .lock()
+        .map(|mut state| state.complete_hide(seq))
+        .unwrap_or(false);
+    if !should_hide {
+        return;
+    }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
     }
+}
+
+fn request_hide_panel_on_main_thread(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let is_visible = window.is_visible().unwrap_or(false);
+    let Some(seq) = PANEL_VISIBILITY
+        .lock()
+        .ok()
+        .and_then(|mut state| state.begin_hide(is_visible))
+    else {
+        return;
+    };
+    let edge = current_flyout_edge(&window, None);
+    let script = format!(
+        "window.dispatchEvent(new CustomEvent('menumijia:panel-dismiss', {{ detail: {{ seq: {seq}, edge: '{edge}' }} }}))"
+    );
+    if window.eval(&script).is_err() {
+        if let Ok(mut state) = PANEL_VISIBILITY.lock() {
+            state.abort_hide();
+        }
+        let _ = window.hide();
+        return;
+    }
+    let app_clone = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(230));
+        complete_hide_panel(&app_clone, seq);
+    });
+}
+
+pub(crate) fn complete_hide_panel(app: &AppHandle, seq: u64) {
+    let app_clone = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        complete_hide_panel_on_main_thread(&app_clone, seq);
+    });
+}
+
+pub(crate) fn request_hide_panel(app: &AppHandle) {
+    let app_clone = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        request_hide_panel_on_main_thread(&app_clone);
+    });
+}
+
+#[tauri::command]
+pub(crate) fn hide_panel(app: AppHandle) {
+    request_hide_panel(&app);
+}
+
+#[tauri::command]
+pub(crate) fn finish_hide_panel(app: AppHandle, seq: u64) {
+    complete_hide_panel(&app, seq);
 }
 
 #[tauri::command]
@@ -63,7 +354,7 @@ pub(crate) fn set_panel_placement(app: AppHandle, anchor: PanelAnchor) -> Result
     let saved = store_panel_placement(PanelPlacement { anchor });
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) {
-            position_popover(&window, None);
+            let _ = position_popover(&window, None);
         }
     }
     saved
@@ -79,18 +370,6 @@ pub(crate) fn start_panel_drag(app: AppHandle, window: WebviewWindow) {
     PROGRAMMATIC_MOVE_UNTIL_MS.store(0, Ordering::SeqCst);
     schedule_drag_settle(app);
     let _ = window.start_dragging();
-}
-
-static GROK_SIDE_LEFT: AtomicBool = AtomicBool::new(false);
-
-pub(crate) fn panel_sidecar_on_left(room_left: f64, room_right: f64, scale: f64) -> bool {
-    if room_right >= (232.0 + 20.0) * scale {
-        false
-    } else if room_left >= (232.0 + 12.0) * scale {
-        true
-    } else {
-        room_left > room_right
-    }
 }
 
 /// Panel placement preference (auto or a fixed work-area corner). It lives beside the window rather
@@ -178,69 +457,63 @@ pub(crate) fn monitor_rects(monitor: &Monitor) -> (Rect, Rect) {
     }
 }
 
-/// Left offset of the main card column inside the window: one padding, then the rail and its gap.
-/// Independent of the sidecar so `place()` can centre the card column under the tray icon.
+/// Left offset of the 380 px island column inside the window (`PANEL_PADDING` = 16 px at 1x).
 pub(crate) fn main_column_offset(window_width: i32, scale: f64) -> i32 {
-    let main = (472.0 * scale).round() as i32;
+    let main = (PANEL_MAIN_WIDTH * scale).round() as i32;
     let padding = (PANEL_PADDING * scale).round() as i32;
     (window_width - main - padding).max(0)
 }
 
-/// Left inset of the main card column inside the panel; the sidecar widens the window to its left.
 pub(crate) fn main_column_inset(window_width: i32, scale: f64) -> i32 {
-    if GROK_SIDE_LEFT.load(Ordering::SeqCst) {
-        main_column_offset(window_width, scale)
-    } else {
-        0
-    }
+    main_column_offset(window_width, scale)
 }
 
-/// Keep the main card column fixed while reserving space for the side-mounted assistant.
+pub(crate) fn current_flyout_edge(
+    window: &WebviewWindow,
+    anchor: Option<PhysicalPosition<f64>>,
+) -> &'static str {
+    let monitor = anchor
+        .and_then(|pos| window.monitor_from_point(pos.x, pos.y).ok().flatten())
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let (full, work) = monitor
+        .as_ref()
+        .map(monitor_rects)
+        .unwrap_or((Rect::new(0, 0, 1920, 1080), Rect::new(0, 0, 1920, 1080)));
+    flyout_edge_name(taskbar_edge(full, work), current_panel_placement().anchor)
+}
+
+/// Resizes the two-island Win11 flyout height while keeping the 380 px column anchored to its work-area corner.
 #[tauri::command]
-pub(crate) fn set_panel_height(
-    app: AppHandle,
-    height: f64,
-    expanded: bool,
-    side_left: bool,
-    grok_enabled: Option<bool>,
-) -> bool {
-    let Some(window) = app.get_webview_window("main") else { return side_left };
+pub(crate) fn set_panel_height(app: AppHandle, height: f64) -> bool {
+    let Some(window) = app.get_webview_window("main") else { return false };
     let monitor = window.current_monitor().ok().flatten().or_else(|| window.primary_monitor().ok().flatten());
     let scale = monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0);
     let (full, work) = monitor
         .as_ref()
         .map(monitor_rects)
         .unwrap_or((Rect::new(0, 0, 1920, 1080), Rect::new(0, 0, 1920, 1080)));
-    let margin = (12.0 * scale).round() as i32;
-    // The work area already excludes the taskbar, whichever edge it is docked to (#204). The window
-    // carries the card plus the padding the panel draws its own shadow in.
-    let max_h = (work.height as f64 / scale - 24.0).max(480.0);
-    let target_h = if height <= 0.0 { max_h } else { (height + PANEL_PADDING * 2.0).min(max_h) };
+    let margin = 0;
+    // The work area already excludes the taskbar, whichever edge it is docked to (#204). `#app` reserves
+    // `PANEL_PADDING` (16 px) around the islands so the visible border sits 16 px off the taskbar edge.
+    let target_h = clamp_outer_panel_height(height, work.height as f64 / scale);
     let old_pos = window.outer_position().unwrap_or(PhysicalPosition::new(0, 0));
-    let old_size = window.outer_size().unwrap_or(PhysicalSize::new(480, 520));
-    let main_width = 472.0 * scale;
-    let main_x = old_pos.x as f64 + if side_left { (old_size.width as f64 - main_width - PANEL_PADDING * 2.0 * scale).max(0.0) } else { 0.0 };
+    let old_size = window.outer_size().unwrap_or(PhysicalSize::new(412, 680));
     let left = work.x as f64 + margin as f64;
     let right = work.right() as f64 - margin as f64;
-    let room_right = right - main_x - main_width;
-    let room_left = main_x - left;
-    let enabled = grok_enabled.unwrap_or(true);
-    let on_left = if enabled { panel_sidecar_on_left(room_left, room_right, scale) } else { false };
-    let rail_width: f64 = if !enabled { 0.0 } else if expanded { 232.0 } else { 84.0 };
-    let target_w = panel_window_width(if enabled { rail_width } else { 0.0 }).min((right - left) / scale);
-    let desired_x = main_x - if on_left { (rail_width + 12.0) * scale } else { 0.0 };
-    let x = desired_x.clamp(left, (right - target_w * scale).max(left));
+    let target_w = panel_window_width().min((right - left) / scale);
+    let x = (old_pos.x as f64).clamp(left, (right - target_w * scale).max(left));
     let new_h = (target_h * scale).round() as i32;
     let corner = current_panel_placement().anchor.corner(taskbar_edge(full, work));
     let y = resized_top(work, margin, old_pos.y, old_size.height as i32, new_h, corner);
     suppress_move_snaps();
     let _ = window.set_size(tauri::LogicalSize::new(target_w, target_h));
     let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y));
-    GROK_SIDE_LEFT.store(on_left, Ordering::SeqCst);
-    on_left
+    false
 }
-pub(crate) fn position_popover(window: &WebviewWindow, anchor: Option<PhysicalPosition<f64>>) {
-    let win_size = window.outer_size().unwrap_or(PhysicalSize::new(480, 520));
+
+pub(crate) fn position_popover(window: &WebviewWindow, anchor: Option<PhysicalPosition<f64>>) -> &'static str {
+    let win_size = window.outer_size().unwrap_or(PhysicalSize::new(412, 680));
     let win_w = win_size.width as i32;
     let win_h = win_size.height as i32;
 
@@ -252,17 +525,19 @@ pub(crate) fn position_popover(window: &WebviewWindow, anchor: Option<PhysicalPo
 
     let Some(monitor) = monitor else {
         if let Some(pos) = anchor {
-            let x = (pos.x as i32 - win_w / 2).max(16);
-            let y = (pos.y as i32 - win_h - 16).max(16);
+            let x = (pos.x as i32 - win_w / 2).max(0);
+            let y = (pos.y as i32 - win_h).max(0);
             suppress_move_snaps();
             let _ = window.set_position(PhysicalPosition::new(x, y));
         }
-        return;
+        return "bottom";
     };
 
     let (full, work) = monitor_rects(&monitor);
     let scale = monitor.scale_factor();
-    let margin = (12.0 * scale).round() as i32;
+    let margin = 0;
+    let preference = current_panel_placement().anchor;
+    let edge = taskbar_edge(full, work);
     // A panel sized for a larger display has to fit this monitor before it is placed (#204 review).
     let fitted_h = fit_panel_height(work, margin, win_h);
     let (x, y) = place(&PlacementInput {
@@ -271,15 +546,16 @@ pub(crate) fn position_popover(window: &WebviewWindow, anchor: Option<PhysicalPo
         window: (win_w, fitted_h),
         margin,
         anchor: anchor.map(|pos| (pos.x.round() as i32, pos.y.round() as i32)),
-        preference: current_panel_placement().anchor,
+        preference,
         main_inset: main_column_inset(win_w, scale),
-        main_width: (472.0 * scale).round() as i32,
+        main_width: (PANEL_MAIN_WIDTH * scale).round() as i32,
     });
     suppress_move_snaps();
     if fitted_h != win_h {
         let _ = window.set_size(PhysicalSize::new(win_size.width, fitted_h as u32));
     }
     let _ = window.set_position(PhysicalPosition::new(x, y));
+    flyout_edge_name(edge, preference)
 }
 
 /// Whether the primary mouse button is still held. A drag that pauses without emitting `Moved` events
@@ -361,7 +637,7 @@ pub(crate) fn note_user_move(app: &AppHandle) {
 /// Drag-to-move lands on the nearest work-area corner, and that corner becomes the preference.
 pub(crate) fn snap_panel_to_work_area(window: &WebviewWindow) {
     let Ok(position) = window.outer_position() else { return };
-    let size = window.outer_size().unwrap_or(PhysicalSize::new(480, 520));
+    let size = window.outer_size().unwrap_or(PhysicalSize::new(412, 680));
     let win_w = size.width as i32;
     let win_h = size.height as i32;
     let center = (position.x + win_w / 2, position.y + win_h / 2);
@@ -375,7 +651,7 @@ pub(crate) fn snap_panel_to_work_area(window: &WebviewWindow) {
     };
     let (full, work) = monitor_rects(&monitor);
     let scale = monitor.scale_factor();
-    let margin = (12.0 * scale).round() as i32;
+    let margin = 0;
     // Fit the destination work area before placing: an over-tall panel would otherwise pin its top and
     // leave its bottom offscreen (#204 review).
     let fitted_h = fit_panel_height(work, margin, win_h);
@@ -395,7 +671,7 @@ pub(crate) fn snap_panel_to_work_area(window: &WebviewWindow) {
         anchor: None,
         preference: anchor,
         main_inset: main_column_inset(win_w, scale),
-        main_width: (472.0 * scale).round() as i32,
+        main_width: (PANEL_MAIN_WIDTH * scale).round() as i32,
     });
     suppress_move_snaps();
     if fitted_h != win_h {
@@ -404,21 +680,88 @@ pub(crate) fn snap_panel_to_work_area(window: &WebviewWindow) {
     let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
+fn present_panel_on_main_thread(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let seq = PANEL_VISIBILITY
+        .lock()
+        .map(|mut state| state.begin_present())
+        .unwrap_or(1);
+    let edge = position_popover(&window, anchor);
+    let script = format!(
+        "window.dispatchEvent(new CustomEvent('menumijia:panel-present', {{ detail: {{ seq: {seq}, edge: '{edge}' }} }}))"
+    );
+    let _ = window.eval(&script);
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+pub(crate) fn present_panel(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>) {
+    present_panel_and_eval(app, anchor, None);
+}
+
+pub(crate) fn present_panel_and_eval(
+    app: &AppHandle,
+    anchor: Option<PhysicalPosition<f64>>,
+    after_present_script: Option<&'static str>,
+) {
+    let app_clone = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        present_panel_on_main_thread(&app_clone, anchor);
+        if let Some(script) = after_present_script {
+            if let Some(window) = app_clone.get_webview_window("main") {
+                let _ = window.eval(script);
+            }
+        }
+    });
+}
+
 pub(crate) fn toggle_main_window(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>, from_tray_click: bool) {
-    if let Some(window) = app.get_webview_window("main") {
+    let cursor = physical_point(anchor);
+    let app_clone = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Some(window) = app_clone.get_webview_window("main") else {
+            return;
+        };
         let is_visible = window.is_visible().unwrap_or(false);
-        if is_visible {
-            let _ = window.hide();
-        } else {
+        let action = if let Ok(mut state) = PANEL_VISIBILITY.lock() {
+            let is_open = is_visible && !state.closing;
             if from_tray_click {
-                let elapsed = now_epoch_ms().saturating_sub(LAST_FOCUS_LOSS_MS.load(Ordering::SeqCst));
-                if elapsed < 280 {
-                    return;
+                state.decide_tray_release(is_open, now_epoch_ms(), cursor)
+            } else {
+                state.clear_tray_press();
+                if is_open {
+                    TrayToggleAction::Hide
+                } else {
+                    TrayToggleAction::Present
                 }
             }
-            position_popover(&window, anchor);
-            let _ = window.show();
-            let _ = window.set_focus();
+        } else if is_visible {
+            TrayToggleAction::Hide
+        } else {
+            TrayToggleAction::Present
+        };
+        match action {
+            TrayToggleAction::Hide => request_hide_panel_on_main_thread(&app_clone),
+            TrayToggleAction::Present => present_panel_on_main_thread(&app_clone, anchor),
+            TrayToggleAction::Noop => {}
         }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panel_window_geometry_preserves_outer_heights_and_work_area_clamp() {
+        assert_eq!(panel_window_width(), 412.0);
+        assert_eq!(clamp_outer_panel_height(680.0, 1040.0), 680.0);
+        assert_eq!(clamp_outer_panel_height(580.0, 1040.0), 580.0);
+        assert_eq!(clamp_outer_panel_height(780.0, 720.0), 720.0);
+        assert_eq!(clamp_outer_panel_height(0.0, 1040.0), 1040.0);
+        assert_eq!(clamp_outer_panel_height(680.0, 400.0), 480.0);
+        assert_eq!(clamp_outer_panel_height(0.0, 400.0), 480.0);
     }
 }

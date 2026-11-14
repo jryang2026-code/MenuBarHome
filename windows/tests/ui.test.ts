@@ -9,6 +9,8 @@ import type { Window } from "happy-dom";
 import { assertMissing } from "./dom.js";
 import { closeTestWindow, installCssEscape, mountTestWindow, setWindowFocused } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
+import { SF_ICONS } from "../src/ui/appConstants.js";
+import { PANEL_HEIGHTS } from "../src/ui/panelPrefs.js";
 import { cloudFixture } from "./cloudFixture.js";
 import { MiCloudClient, MiotSynthesizer, inferFallbackSpec, parseMiotDeviceSpec } from "../src/core/miCloudClient.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
@@ -393,6 +395,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
   async function readyCloudApp(configure?: (cloud: ReturnType<typeof cloudFixture>) => void): Promise<{
     cloud: ReturnType<typeof cloudFixture>;
     triggerRefresh(): void;
+    advanceToTopologyPoll(): Promise<void>;
     runTimerTick(): void;
   }> {
     const cloud = cloudFixture([]);
@@ -416,24 +419,34 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
     assert.match(tile("fixture-light"), /50%/);
     const runTimerTick = () => (timerTick as () => void)();
     let refreshOffset = 0;
+    const triggerRefresh = () => {
+      refreshOffset += 7_000;
+      const realNow = Date.now;
+      Date.now = () => realNow() + refreshOffset;
+      try {
+        runTimerTick();
+      } finally {
+        Date.now = realNow;
+      }
+    };
+    const advanceToTopologyPoll = async () => {
+      for (let round = 0; round < 19; round += 1) {
+        const readsBefore = cloud.completedReads();
+        triggerRefresh();
+        await waitFor(() => cloud.completedReads() > readsBefore);
+        await setImmediate();
+      }
+    };
     return {
       cloud,
       runTimerTick,
-      triggerRefresh: () => {
-        refreshOffset += 7_000;
-        const realNow = Date.now;
-        Date.now = () => realNow() + refreshOffset;
-        try {
-          runTimerTick();
-        } finally {
-          Date.now = realNow;
-        }
-      },
+      triggerRefresh,
+      advanceToTopologyPoll,
     };
   }
 
   it("keeps device and room positions when cloud polling permutes the same records", async () => {
-    const { cloud, triggerRefresh } = await readyCloudApp((fixture) => {
+    const { cloud, triggerRefresh, advanceToTopologyPoll } = await readyCloudApp((fixture) => {
       const light = fixture.deviceRecords[0];
       assert.ok(light);
       fixture.deviceRecords.push({ ...light, did: "second-light", name: "第二盏灯" });
@@ -455,6 +468,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
     assert.deepEqual(initialEnvLabels, ["主卧", "阳台"]);
     const popover = element(".cc-popover");
     for (let i = 0; i < 4; i++) {
+      await advanceToTopologyPoll();
       cloud.deviceRecords.reverse();
       cloud.roomRecords.reverse();
       cloud.values.set(2, 51 + i);
@@ -475,7 +489,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
   });
 
   it("drops a card that goes offline while 只显示在线设备 is on", async () => {
-    const { cloud, triggerRefresh } = await readyCloudApp((fixture) => {
+    const { cloud, triggerRefresh, advanceToTopologyPoll } = await readyCloudApp((fixture) => {
       fixture.deviceRecords.push(fixture.sensorRecord("sensor-bedroom", "主卧温湿度计"));
     });
     assert.ok(document.querySelector('[data-tile-id="sensor-bedroom"]'));
@@ -483,6 +497,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
     assert.ok(document.querySelector('[data-tile-id="sensor-bedroom"]'));
     const sensor = cloud.deviceRecords.find((record) => record.did === "sensor-bedroom");
     assert.ok(sensor);
+    await advanceToTopologyPoll();
     sensor.isOnline = false;
     const held = cloud.holdNextRead();
     triggerRefresh();
@@ -504,7 +519,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
   });
 
   it("adds and removes kind chips when polling changes device availability", async () => {
-    const { cloud, triggerRefresh } = await readyCloudApp((fixture) => {
+    const { cloud, triggerRefresh, advanceToTopologyPoll } = await readyCloudApp((fixture) => {
       const sensor = fixture.sensorRecord("sensor-bedroom", "主卧温湿度计");
       sensor.isOnline = false;
       fixture.deviceRecords.push(sensor);
@@ -515,6 +530,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
     assertMissing(document.querySelector('[data-kind="sensor"]'));
     const sensor = cloud.deviceRecords.find((record) => record.did === "sensor-bedroom");
     assert.ok(sensor);
+    await advanceToTopologyPoll();
     sensor.isOnline = true;
     const broughtOnline = cloud.holdNextRead();
     triggerRefresh();
@@ -524,6 +540,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
     await waitFor(() => document.querySelector('[data-kind="sensor"]') !== null);
     assert.ok(document.querySelector('[data-kind="light"]'));
 
+    await advanceToTopologyPoll();
     sensor.isOnline = false;
     const takenOffline = cloud.holdNextRead();
     triggerRefresh();
@@ -535,7 +552,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
   });
 
   it("shows a collapsed group again when its only device comes online", async () => {
-    const { cloud, triggerRefresh } = await readyCloudApp((fixture) => {
+    const { cloud, triggerRefresh, advanceToTopologyPoll } = await readyCloudApp((fixture) => {
       const sensor = fixture.sensorRecord("sensor-bedroom", "主卧温湿度计");
       sensor.isOnline = false;
       fixture.deviceRecords.push(sensor);
@@ -555,6 +572,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
     assert.ok(document.querySelector('[data-tile-id="fixture-light"]'));
     const sensor = cloud.deviceRecords.find((record) => record.did === "sensor-bedroom");
     assert.ok(sensor);
+    await advanceToTopologyPoll();
     sensor.isOnline = true;
     const held = cloud.holdNextRead();
     triggerRefresh();
@@ -571,7 +589,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
   });
 
   it("appends new devices, removes missing devices and retains a partial custom order", async () => {
-    const { cloud, triggerRefresh } = await readyCloudApp((fixture) => {
+    const { cloud, triggerRefresh, advanceToTopologyPoll } = await readyCloudApp((fixture) => {
       const light = fixture.deviceRecords[0];
       assert.ok(light);
       fixture.deviceRecords.push(
@@ -585,6 +603,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
     });
     const light = cloud.deviceRecords[0];
     assert.ok(light);
+    await advanceToTopologyPoll();
     cloud.deviceRecords.splice(0, cloud.deviceRecords.length,
       { ...light, did: "new-light" }, { ...light, did: "third-light" }, light,
     );
@@ -3598,16 +3617,14 @@ describe("Manual habit learning and proactive Top-4 (#113)", () => {
     assert.deepEqual(habitEntries().map((e) => e.operationKey), ["brightness:30", "brightness:42"]);
   });
 
-  it("shows four zero-delay proactive suggestions when opening the ball", async () => {
+  it("shows four zero-delay proactive suggestions in the top notification island", () => {
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
       connectionMode: "demo",
       hasCompletedOnboarding: true,
-      enableGrokBall: true,
     }));
     new MenuMijiaWindowsApp(element("#app"));
-    await click("#btn-grok-ball");
     // Demo home: two lights on (全屋关灯), then running AC, plug, and camera power-offs.
-    const pills = [...document.querySelectorAll<HTMLElement>("[data-proactive-id]")];
+    const pills = [...document.querySelectorAll<HTMLElement>(".win-island--top [data-proactive-bar] [data-proactive-id]")];
     assert.equal(pills.length, 4);
     assert.match(pills[0]?.textContent ?? "", /全屋关灯/);
   });
@@ -3616,16 +3633,12 @@ describe("Manual habit learning and proactive Top-4 (#113)", () => {
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
       connectionMode: "demo",
       hasCompletedOnboarding: true,
-      enableGrokBall: true,
     }));
     new MenuMijiaWindowsApp(element("#app"));
-    await click("#btn-grok-ball");
     await click('[data-proactive-id^="builtin:lightsOff"]');
     await waitFor(() => habitEntries().length > 0);
     assert.ok(habitEntries().every((e) => e.operationKey === "power:off"));
-    // Reopening filters out the completed action because the lights are now off.
-    await waitFor(() => document.querySelector(".cc-grok-stage") === null);
-    await click("#btn-grok-ball");
+    // Completed action is filtered out immediately because the lights are now off.
     assertMissing(document.querySelector('[data-proactive-id^="builtin:lightsOff"]'));
   });
 
@@ -3915,10 +3928,9 @@ describe("Home Assistant source", () => {
         return undefined;
       };
       Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
-      localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, enableGrokBall: true, assistantBaseURL: "http://localhost:1234/v1", assistantModel: "controlled-model" }));
+      localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, assistantBaseURL: "http://localhost:1234/v1", assistantModel: "controlled-model" }));
       new MenuMijiaWindowsApp(element("#app"));
       await waitFor(() => !!document.querySelector('[data-tile-id="light.study"]'));
-      await click("#btn-grok-ball");
       for (const tick of ticks) tick();
       await waitFor(() => modelRequests === 1);
       if (responseState === "cached") await waitFor(() => !!document.querySelector('[data-proactive-id^="chat:"]'));
@@ -3928,7 +3940,6 @@ describe("Home Assistant source", () => {
       url.value = "http://localhost:8124";
       await click("#btn-save-settings");
       await waitFor(() => tile("light.study").includes("Source B lamp"));
-      if (!document.querySelector(".cc-grok-stage")) await click("#btn-grok-ball");
       assert.doesNotMatch(document.body.textContent ?? "", /Source A lamp/);
       for (const tick of ticks) tick();
       await setImmediate();
@@ -4270,42 +4281,49 @@ describe("Home Assistant source", () => {
   });
 });
 
-describe("GrokBall side attachment (#114)", () => {
-  it("stays hidden by default and opens four side actions when enabled", async () => {
+describe("Windows 11 Fluent 2 two-island flyout, Quick Settings capsules & taskbar motion", () => {
+  it("renders Win+N notification island + Win+A Quick Settings island without GrokBall UI", async () => {
     startDemo();
+    assert.ok(document.querySelector(".win-island--top .cc-header"));
+    assert.ok(document.querySelector(".win-island--top .win-notif-stack"));
+    assert.ok(document.querySelector(".win-island--bottom .win-island-controls #command-input"));
+    assert.ok(document.querySelector(".win-island--bottom .cc-footer"));
     assertMissing(document.querySelector("#btn-grok-ball"));
-    await click("#btn-settings");
-    const toggle = element("#settings-grok-ball") as HTMLInputElement;
-    assert.equal(toggle.checked, false);
-    toggle.checked = true;
-    toggle.dispatchEvent(new Event("change", { bubbles: true }));
-    await setImmediate();
-    await click("#btn-close-settings");
+    assertMissing(document.querySelector(".cc-grok-sidebar"));
+    assertMissing(document.querySelector(".cc-grok-stage"));
 
-    await click("#btn-grok-ball");
-    assert.equal(document.querySelectorAll(".cc-grok-sidebar [data-proactive-id]").length, 4);
-    await click(".cc-grok-pill");
-    await waitFor(() => document.querySelector("#btn-undo") !== null);
-    assertMissing(document.querySelector(".cc-grok-stage"));
-    assert.equal(element(".cc-grok-ball").dataset.emotion, "33");
-    await click("#btn-undo");
-    await click("#btn-grok-ball");
-    dom.dispatchEvent(new dom.KeyboardEvent("keydown", { key: "Escape" }));
-    assertMissing(document.querySelector(".cc-grok-stage"));
+    const proactiveDetails = element('.win-island--top details[data-notif-card="proactive"]') as HTMLDetailsElement;
+    assert.equal(proactiveDetails.open, true);
+    proactiveDetails.open = false;
+    proactiveDetails.dispatchEvent(new Event("toggle"));
+    await click("#btn-toggle-appearance");
+    const afterRender = element('.win-island--top details[data-notif-card="proactive"]') as HTMLDetailsElement;
+    assert.equal(afterRender.open, false, "Win+N notification group collapse state persists across renders");
   });
 
-  it("keeps learned scenes outside the reversible side attachment", async () => {
-    localStorage.setItem(["menumijia", "windows", "settings", "v2"].join("."), JSON.stringify({
-      connectionMode: "demo", hasCompletedOnboarding: true, enableGrokBall: true,
-      habitEntries: [{ bucket: "深夜", targetId: "scene.home", operationKey: "scene:activate", count: 99 }],
-    }));
-    new MenuMijiaWindowsApp(element("#app"));
-    await click("#btn-grok-ball");
-    assertMissing(document.querySelector('[data-proactive-id*="scene.home"]'));
-    assert.equal(document.querySelectorAll(".cc-grok-pill").length, 4);
+  it("drills down Win+A split-pill capsules into in-place sub-flyouts and drives the WinUI 3 slider deck", async () => {
+    startDemo();
+    const ceiling = element('[data-tile-id="light.living_ceiling"]');
+    assert.ok(ceiling.classList.contains("is-capsule"), "Compact device tiles render as Win+A split-pill capsules");
+    assert.ok(ceiling.querySelector(".win-split-pill .win-pill-toggle"));
+    assert.ok(ceiling.querySelector(".win-split-pill .win-pill-expand"));
+
+    // WinUI 3 bottom slider deck updates active light brightness and --val track fill.
+    const deckBri = element('[data-deck-brightness="light.living_ceiling"]') as HTMLInputElement;
+    assert.ok(deckBri.style.getPropertyValue("--val").endsWith("%"));
+    await setRange('[data-deck-brightness="light.living_ceiling"]', "55");
+    assert.match(tile("light.living_ceiling"), /55%/);
+
+    // Expanding a capsule opens the in-place Win+A sub-flyout with a Back button.
+    await click('[data-expand-device="light.living_ceiling"]');
+    const subpage = element('[data-tile-id="light.living_ceiling"]');
+    assert.ok(subpage.classList.contains("is-subpage"));
+    assert.ok(subpage.querySelector(".win-subpage-back"));
+    await click('[data-tile-id="light.living_ceiling"] .win-subpage-back');
+    assert.ok(element('[data-tile-id="light.living_ceiling"]').classList.contains("is-capsule"));
   });
 
-  it("shows emotion 34 on the ball when a Home Assistant refresh fails", async () => {
+  it("surfaces Home Assistant connection errors in the top Win+N notification island", async () => {
     const invoke = async (name: string) => {
       if (name === "secure_store_get") return "controlled-token";
       if (name === "ha_snapshot") throw new Error("Home Assistant unreachable");
@@ -4313,11 +4331,72 @@ describe("GrokBall side attachment (#114)", () => {
     };
     Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
     localStorage.setItem(["menumijia", "windows", "settings", "v2"].join("."), JSON.stringify({
-      connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, enableGrokBall: true,
+      connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true,
     }));
     new MenuMijiaWindowsApp(element("#app"));
-    await waitFor(() => !!document.querySelector("[data-ha-error]"));
-    assert.equal(element(".cc-grok-ball").dataset.emotion, "34");
+    await waitFor(() => !!document.querySelector(".win-island--top .win-notif-stack [data-ha-error]"));
+    assertMissing(document.querySelector(".cc-grok-ball"));
+  });
+
+  it("slides out from and back into the taskbar edge and cancels hide if reopened mid-dismiss", async () => {
+    const finishCalls: Array<{ seq?: number }> = [];
+    const invoke = async (name: string, args?: { seq?: number }) => {
+      if (name === "finish_hide_panel") finishCalls.push({ seq: args?.seq });
+      if (name === "panel_backdrop") return "none";
+      if (name === "panel_placement") return { anchor: "tray", customPosition: false };
+      return undefined;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    const root = element("#app");
+    startDemo();
+
+    for (const edge of ["right", "top", "left", "bottom"] as const) {
+      window.dispatchEvent(new window.CustomEvent("menumijia:panel-present", { detail: { edge } }));
+      assert.equal(root.dataset.flyoutEdge, edge);
+      assert.equal(root.classList.contains("is-opening"), true);
+      assert.equal(root.classList.contains("is-closing"), false);
+    }
+
+    // Reopening mid-dismiss cancels the stale sequence so the HWND is never hidden under the user.
+    window.dispatchEvent(new window.CustomEvent("menumijia:panel-dismiss", { detail: { seq: 41, edge: "bottom" } }));
+    assert.equal(root.classList.contains("is-closing"), true);
+    window.dispatchEvent(new window.CustomEvent("menumijia:panel-present", { detail: { edge: "bottom" } }));
+    assert.equal(root.classList.contains("is-closing"), false);
+    await new Promise((resolve) => setTimeout(resolve, 210));
+    assert.deepEqual(finishCalls, []);
+
+    // Completing dismiss notifies Rust with the exact sequence number.
+    window.dispatchEvent(new window.CustomEvent("menumijia:panel-dismiss", { detail: { seq: 42, edge: "right" } }));
+    assert.equal(root.dataset.flyoutEdge, "right");
+    assert.equal(root.classList.contains("is-closing"), true);
+    const animEnd = new window.Event("animationend", { bubbles: true });
+    root.querySelector(".cc-popover")!.dispatchEvent(animEnd);
+    await setImmediate();
+    assert.deepEqual(finishCalls, [{ seq: 42 }]);
+
+    // Under prefers-reduced-motion: reduce, dismiss completes immediately without .is-closing.
+    const origMatchMedia = window.matchMedia;
+    window.matchMedia = ((query: string) =>
+      ({
+        matches: query.includes("prefers-reduced-motion"),
+        media: query,
+        onchange: null,
+        addListener: () => undefined,
+        removeListener: () => undefined,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+        dispatchEvent: () => false,
+      }) as MediaQueryList) as typeof window.matchMedia;
+    try {
+      window.dispatchEvent(new window.CustomEvent("menumijia:panel-present", { detail: { edge: "top" } }));
+      assert.equal(root.classList.contains("is-opening"), false);
+      window.dispatchEvent(new window.CustomEvent("menumijia:panel-dismiss", { detail: { seq: 43, edge: "top" } }));
+      assert.equal(root.classList.contains("is-closing"), false);
+      await setImmediate();
+      assert.deepEqual(finishCalls, [{ seq: 42 }, { seq: 43 }]);
+    } finally {
+      window.matchMedia = origMatchMedia;
+    }
   });
 });
 
@@ -6234,5 +6313,360 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.ok(document.querySelector('[data-scene-cmd="quick:lightsOff"]'));
     assert.doesNotMatch(document.body.textContent ?? "", /全开主灯/);
     assert.doesNotMatch(document.body.textContent ?? "", /25°制冷/);
+  });
+
+  it("toggles and expands the slider deck primary light even when its custom group is collapsed", async () => {
+    const app = startDemoApp();
+    app.layout.groups = [{ id: "g-lights", name: "主灯" }];
+    app.layout.groupMap = {
+      "light.living_ceiling": "g-lights",
+      "light.study_desk": "g-lights",
+    };
+    app.layout.collapsed = ["all|g-lights"];
+    app.render();
+    assert.ok(document.querySelector('[data-collapse="g-lights"].is-collapsed'));
+    assertMissing(document.querySelector('[data-tile-id="light.living_ceiling"]'));
+    const deckToggle = document.querySelector<HTMLElement>('[data-deck-toggle="light.living_ceiling"]');
+    assert.ok(deckToggle, "slider deck still mounts for the collapsed group's primary light");
+    deckToggle.click();
+    await setImmediate();
+    const livingLight = app.devices.find((d) => d.id === "light.living_ceiling")!;
+    assert.equal(livingLight.kind.kind === "light" && livingLight.kind.isOn, false);
+
+    // Toggle light.study_desk off too or expand whichever primary light is now on the deck (both are in collapsed g-lights).
+    const deckExpand = document.querySelector<HTMLElement>('[data-deck-expand="light.study_desk"]');
+    assert.ok(deckExpand);
+    deckExpand.click();
+    await setImmediate();
+    assert.ok(document.querySelector('.cc-tile.is-subpage[data-tile-id="light.study_desk"]'));
+  });
+
+  it("aligns standard panel height with the 680px two-island Tauri window", async () => {
+    const heights: number[] = [];
+    const invoke = async (name: string, args?: { height?: number }) => {
+      if (name === "set_panel_height" && typeof args?.height === "number") heights.push(args.height);
+      if (name === "panel_is_visible") return true;
+      return undefined;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    startDemoApp();
+    await setImmediate();
+    assert.equal(PANEL_HEIGHTS.find((item) => item.id === "compact")?.px, 580);
+    assert.equal(PANEL_HEIGHTS.find((item) => item.id === "standard")?.px, 680);
+    assert.equal(PANEL_HEIGHTS.find((item) => item.id === "tall")?.px, 780);
+    assert.ok(heights.length > 0 && heights.every((h) => h === 680));
+  });
+
+  it("preserves is-opening across programmatic renders and parks swapchain when Tauri HWND is hidden", async () => {
+    const invoke = async (name: string) => {
+      if (name === "panel_is_visible") return false;
+      return undefined;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    const root = element("#app");
+    const app = startDemoApp();
+    await setImmediate();
+    assert.equal(root.classList.contains("is-parked"), true);
+    assert.equal(root.classList.contains("is-opening"), false);
+
+    window.dispatchEvent(new window.CustomEvent("menumijia:panel-present", { detail: { edge: "bottom" } }));
+    assert.equal(root.classList.contains("is-parked"), false);
+    assert.equal(root.classList.contains("is-opening"), true);
+
+    app.render();
+    assert.equal(root.classList.contains("is-opening"), true);
+
+    window.dispatchEvent(new window.CustomEvent("menumijia:panel-dismiss", { detail: { seq: 9, edge: "bottom" } }));
+    root.querySelector(".cc-popover")!.dispatchEvent(new window.Event("animationend", { bubbles: true }));
+    await setImmediate();
+    assert.equal(root.classList.contains("is-parked"), true);
+  });
+
+  it("animates subpages and sheets only on entrance instead of re-flashing on internal clicks", async () => {
+    const animatedTargets: string[] = [];
+    const proto = window.HTMLElement.prototype as HTMLElement & { animate?: typeof HTMLElement.prototype.animate };
+    const origAnimate = proto.animate;
+    proto.animate = function mockAnimate() {
+      animatedTargets.push(this.className || this.tagName);
+      return {} as Animation;
+    };
+    try {
+      const app = startDemoApp();
+      animatedTargets.length = 0;
+
+      await click('[data-expand-device="light.living_ceiling"]');
+      assert.equal(animatedTargets.some((cls) => cls.includes("is-subpage")), true);
+      animatedTargets.length = 0;
+
+      await click('[data-tile-id="light.living_ceiling"] [data-effect="Night"]');
+      assert.equal(animatedTargets.some((cls) => cls.includes("is-subpage")), false);
+
+      await click("#btn-settings");
+      assert.equal(animatedTargets.some((cls) => cls.includes("cc-settings-sheet")), true);
+      animatedTargets.length = 0;
+
+      await click('[data-appearance="light"]');
+      assert.equal(animatedTargets.some((cls) => cls.includes("cc-settings-sheet")), false);
+      app.render();
+      assert.equal(animatedTargets.some((cls) => cls.includes("cc-settings-sheet")), false);
+    } finally {
+      proto.animate = origAnimate!;
+    }
+  });
+
+  it("renders distinct monochrome icons for cover, appliance, and generic capsules and tracks keyboard modality", () => {
+    const app = startDemoApp();
+    app.devices = [
+      {
+        id: "cover.curtain",
+        name: "客厅窗帘",
+        roomId: "r1",
+        roomName: "客厅",
+        model: "lumi.curtain.v1",
+        isOnline: true,
+        kind: {
+          kind: "cover",
+          entityId: "c1",
+          subtype: "curtain",
+          positionPercent: 80,
+          positionWritable: true,
+          openDescription: "open",
+          closeDescription: "close",
+          pauseDescription: "pause",
+          batteryPercent: null,
+          faultText: null,
+          motion: "stopped",
+        },
+      },
+      {
+        id: "appliance.washer",
+        name: "洗衣机",
+        roomId: "r1",
+        roomName: "客厅",
+        model: "mibx5.washer.v1",
+        isOnline: true,
+        kind: {
+          kind: "appliance",
+          entityId: "a1",
+          isOn: true,
+          powerPresent: true,
+          powerWritable: true,
+          currentMode: null,
+          availableModes: [],
+          modeWritable: false,
+          targetTemperature: null,
+          currentTemperature: null,
+          minTemp: 30,
+          maxTemp: 60,
+          step: 1,
+          temperatureWritable: false,
+          statusText: "洗涤中",
+          faultText: null,
+          remainingMinutes: null,
+          startAction: null,
+          pauseAction: null,
+          stopAction: null,
+          powerEntityId: "a1",
+          modeEntityId: "a1",
+          temperatureEntityId: "a1",
+          light: null,
+          fanLevel: null,
+          currentHumidity: null,
+          symbolName: null,
+          roomReading: false,
+          heats: false,
+        },
+      },
+      {
+        id: "generic.switch",
+        name: "墙壁开关",
+        roomId: "r1",
+        roomName: "客厅",
+        model: "lumi.switch.v1",
+        isOnline: true,
+        kind: {
+          kind: "generic",
+          deviceType: "switch",
+          typeTitle: "智能开关",
+          isOn: false,
+          powerControl: null,
+          isReadOnly: false,
+          readouts: [],
+          symbolName: null,
+        },
+      },
+    ];
+    app.render();
+    for (const id of ["cover.curtain", "appliance.washer", "generic.switch"]) {
+      const iconHtml = element(`[data-tile-id="${id}"] .cc-tile-orb`).innerHTML.trim();
+      assert.notEqual(iconHtml, SF_ICONS.sensorFill);
+    }
+    const icons = ["cover.curtain", "appliance.washer", "generic.switch"].map(
+      (id) => element(`[data-tile-id="${id}"] .cc-tile-orb`).innerHTML.trim(),
+    );
+    assert.equal(new Set(icons).size, 3);
+
+    window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    assert.equal(app.root.dataset.keyboardNav, "true");
+    element('[data-tile-id="cover.curtain"]').dispatchEvent(new window.Event("pointerdown", { bubbles: true }));
+    assert.equal(app.root.dataset.keyboardNav, undefined);
+  });
+
+  it("ignores Enter during CJK IME composition in the rename prompt dialog", () => {
+    const app = startDemoApp();
+    app.prompt = { kind: "renameDevice", deviceId: "light.living_ceiling" };
+    app.render();
+
+    const input = element("#prompt-input") as HTMLInputElement;
+    input.value = "keting";
+    input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true }));
+    assert.notEqual(app.prompt, null);
+    assert.equal(app.layout.aliases["light.living_ceiling"], undefined);
+
+    input.value = "主卧吊灯";
+    input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", isComposing: false, bubbles: true }));
+    assert.equal(app.prompt, null);
+    assert.equal(app.layout.aliases["light.living_ceiling"], "主卧吊灯");
+  });
+
+  it("keeps resting active light capsules uniform without a .cc-tile-fill seam while showing fill during drag-to-dim", () => {
+    const app = startDemoApp();
+    assertMissing(
+      document.querySelector('[data-tile-id="light.living_ceiling"] .win-split-pill .cc-tile-fill'),
+    );
+    assertMissing(
+      document.querySelector('[data-tile-id="light.study_desk"] .win-split-pill .cc-tile-fill'),
+    );
+
+    app.dimPreview = { id: "light.living_ceiling", percent: 42 };
+    app.render();
+    assert.match(
+      document.querySelector('[data-tile-id="light.living_ceiling"] .win-split-pill .cc-tile-fill')?.getAttribute("style") ?? "",
+      /width:42%/,
+    );
+
+    app.dimPreview = null;
+    app.render();
+    assertMissing(
+      document.querySelector('[data-tile-id="light.living_ceiling"] .win-split-pill .cc-tile-fill'),
+    );
+  });
+
+  it("consolidates room and kind filters into one strip, keeps demo footer concise, and renders Variant B camera preview", async () => {
+    const app = startDemoApp();
+    assert.equal(document.querySelectorAll(".win-island--bottom .cc-room-bar").length, 1);
+    assert.ok(document.querySelector('.win-island--bottom .cc-room-bar [data-room="全部"]'));
+    assert.ok(document.querySelector('.win-island--bottom .cc-room-bar [data-kind="light"]'));
+    assert.equal(textOf(".cc-footer-label"), "演示模式");
+
+    const camCard = element('.win-island--top details.win-camera-card') as HTMLDetailsElement;
+    camCard.open = true;
+    assert.ok(camCard.querySelector('.win-camera-preview[data-open-camera="camera.living_cam"]'));
+    assert.ok(camCard.querySelector('.win-camera-actions [data-toggle-device="camera.living_cam"]'));
+    assert.ok(camCard.querySelector('.win-camera-actions [data-open-camera="camera.living_cam"]'));
+
+    await click('.win-island--top .win-camera-actions [data-toggle-device="camera.living_cam"]');
+    const cam = app.devices.find((d) => d.id === "camera.living_cam")!;
+    assert.equal(cam.kind.kind === "camera" && cam.kind.isOn, false);
+
+    app.cameraLive.activeLiveCameraId = "camera.living_cam";
+    app.cameraLive.liveCameraHidden = true;
+    app.render();
+    const standbyCard = element('.win-island--top details.win-camera-card');
+    assert.match(standbyCard.textContent ?? "", /120s/);
+  });
+
+  it("closes an open subpage on Ctrl+F or / search shortcuts and reveals filtered-out camera drawers from Top Island", async () => {
+    const app = startDemoApp();
+
+    await click('[data-tile-id="light.living_ceiling"] [data-expand-device]');
+    assert.equal(app.expandedDeviceId, "light.living_ceiling");
+    assert.ok(document.querySelector('.cc-tile.is-subpage[data-tile-id="light.living_ceiling"]'));
+
+    window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true }));
+    assert.equal(app.expandedDeviceId, null);
+    assertMissing(document.querySelector(".cc-tile.is-subpage"));
+    assert.equal(document.activeElement?.id, "command-input");
+
+    (document.activeElement as HTMLElement | null)?.blur();
+    await click('[data-tile-id="light.living_ceiling"] [data-expand-device]');
+    assert.equal(app.expandedDeviceId, "light.living_ceiling");
+
+    window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "/", bubbles: true }));
+    assert.equal(app.expandedDeviceId, null);
+    assertMissing(document.querySelector(".cc-tile.is-subpage"));
+    assert.equal(document.activeElement?.id, "command-input");
+
+    (document.activeElement as HTMLElement | null)?.blur();
+    await click('.win-island--bottom .cc-room-bar [data-kind="light"]');
+    app.panelSearch.query = "台灯";
+    app.render();
+    assertMissing(document.querySelector('[data-tile-id="camera.living_cam"]'));
+
+    await click('.win-island--top .win-camera-actions [data-reveal-device="camera.living_cam"]');
+    assert.equal(app.panelSearch.query, "");
+    assert.equal(app.listCut.kind, "all");
+    assert.equal(app.expandedDeviceId, "camera.living_cam");
+    assert.ok(document.querySelector('.cc-tile.is-subpage[data-tile-id="camera.living_cam"]'));
+
+    await click('.win-island--top .win-camera-actions [data-reveal-device="camera.living_cam"]');
+    assert.equal(app.expandedDeviceId, null);
+    assertMissing(document.querySelector(".cc-tile.is-subpage"));
+  });
+
+  it("isolates subpage scrollTop from grid scroll, preserves active kind scroll on reopen, and reveals cameras from edit or panel mode", async () => {
+    const app = startDemoApp();
+    const scrollArea = element(".cc-scroll-area");
+    scrollArea.scrollTop = 74;
+
+    await click('[data-tile-id="camera.living_cam"] [data-expand-device]');
+    assert.equal(element(".cc-scroll-area").scrollTop, 0);
+
+    element(".cc-scroll-area").scrollTop = 28;
+    await click(".win-subpage-back");
+    assert.equal(element(".cc-scroll-area").scrollTop, 74);
+
+    await click('.win-island--bottom .cc-room-bar [data-kind="sensor"]');
+    assert.equal(app.listCut.kind, "deviceKind");
+    const strip = element(".cc-room-scroll");
+    const activeKind = element('.cc-room-pill.is-kind.is-active[data-kind="sensor"]');
+    Object.defineProperty(strip, "clientWidth", { value: 260, configurable: true });
+    Object.defineProperty(activeKind, "offsetLeft", { value: 360, configurable: true });
+    Object.defineProperty(activeKind, "offsetWidth", { value: 52, configurable: true });
+    strip.scrollLeft = 240;
+
+    window.dispatchEvent(new window.CustomEvent("menumijia:panel-present", { detail: { seq: 9, edge: "bottom" } }));
+    assert.ok(strip.scrollLeft > 0, "reopening flyout must keep active kind chip scrolled into view");
+
+    app.startEditing();
+    assert.equal(app.isEditingLayout, true);
+    await click('.win-island--top .win-camera-actions [data-reveal-device="camera.living_cam"]');
+    assert.equal(app.isEditingLayout, false);
+    assert.equal(app.expandedDeviceId, "camera.living_cam");
+    assert.ok(document.querySelector('.cc-tile.is-subpage[data-tile-id="camera.living_cam"]'));
+
+    app.expandedDeviceId = null;
+    app.layout.tileSizes["camera.living_cam"] = "panel";
+    app.render();
+    let scrolledTileId: string | null = null;
+    const prevScrollIntoView = window.HTMLElement.prototype.scrollIntoView;
+    window.HTMLElement.prototype.scrollIntoView = function () {
+      scrolledTileId = (this as HTMLElement).dataset?.tileId ?? null;
+    };
+    try {
+      await click('.win-island--top .win-camera-actions [data-reveal-device="camera.living_cam"]');
+    } finally {
+      window.HTMLElement.prototype.scrollIntoView = prevScrollIntoView;
+    }
+    assert.equal(scrolledTileId, "camera.living_cam");
+
+    localStorage.setItem(
+      "menumijia.windows.settings.v2",
+      JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true, interfaceLanguage: "en" }),
+    );
+    document.body.innerHTML = '<div id="app"></div>';
+    new MenuMijiaWindowsApp(element("#app"));
+    assert.equal(textOf(".cc-footer-label"), "Demo mode");
+    assert.equal(textOf("#btn-footer-qr span"), "QR Login");
   });
 });

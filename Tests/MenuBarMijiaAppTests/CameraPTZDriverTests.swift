@@ -841,6 +841,89 @@ struct CameraPTZDriverTests {
         let elapsed = ContinuousClock.now - start
         #expect(elapsed >= .milliseconds(450), "the retry fired after \(elapsed)")
     }
+
+    @Test("Releasing PTZ before begin resolves retries a failed stop and raises the sticky stop warning")
+    func quickClickCancelledBeginRetriesFailedStop() async throws {
+        let controller = CameraLivePanelController.shared
+        let client = UncancelledBeginFailingStopPTZClient()
+        controller.configurePTZPreview(
+            deviceId: "cam-quick",
+            binding: binding(),
+            stream: .demo(deviceId: "cam-quick"),
+            notice: nil,
+            ready: true,
+            client: client,
+            hasFrame: true
+        )
+        controller.ptzStopRetryHold = {}
+        defer {
+            controller.ptzStopRetryHold = nil
+            controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false)
+        }
+
+        controller.ptzDragBegan(at: .init(x: 0, y: 0))
+        let began = await client.waitForBegin()
+        #expect(began)
+        controller.ptzDragEnded()
+        await client.releaseBegin(CameraPTZSessionToken(epoch: "e1", session: 42))
+
+        let stops = await client.waitForStops(minimum: 2)
+        let recorded = try #require(stops)
+        #expect(recorded.count == 2, "cancelled begin must retry a failed stop instead of swallowing it")
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !controller.offersPTZStopRetry, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(controller.offersPTZStopRetry)
+    }
+}
+
+private actor UncancelledBeginFailingStopPTZClient: CameraPTZControlling {
+    private var beginContinuation: CheckedContinuation<(token: CameraPTZSessionToken, mode: CameraPTZMotionMode?), Error>?
+    private var beginWaiter: CheckedContinuation<Bool, Never>?
+    private var stopTokens: [CameraPTZSessionToken] = []
+    private var stopWaiter: (minimum: Int, continuation: CheckedContinuation<[CameraPTZSessionToken]?, Never>)?
+
+    func begin() async throws -> (token: CameraPTZSessionToken, mode: CameraPTZMotionMode?) {
+        try await withCheckedThrowingContinuation { continuation in
+            beginContinuation = continuation
+            if let waiter = beginWaiter {
+                beginWaiter = nil
+                waiter.resume(returning: true)
+            }
+        }
+    }
+
+    func releaseBegin(_ token: CameraPTZSessionToken) {
+        beginContinuation?.resume(returning: (token, .continuous))
+        beginContinuation = nil
+    }
+
+    func move(direction: CameraPTZDirection, token: CameraPTZSessionToken, seq: UInt64) async throws {}
+    func heartbeat(token: CameraPTZSessionToken, seq: UInt64) async throws {}
+
+    func stop(token: CameraPTZSessionToken) async throws -> CameraPTZStopResult {
+        stopTokens.append(token)
+        if let waiter = stopWaiter, stopTokens.count >= waiter.minimum {
+            stopWaiter = nil
+            waiter.continuation.resume(returning: stopTokens)
+        }
+        return CameraPTZStopResult(sent: false, confirmed: false, mode: .continuous, errorReason: "write_failed")
+    }
+
+    func waitForBegin() async -> Bool {
+        if beginContinuation != nil { return true }
+        return await withCheckedContinuation { continuation in
+            beginWaiter = continuation
+        }
+    }
+
+    func waitForStops(minimum: Int) async -> [CameraPTZSessionToken]? {
+        if stopTokens.count >= minimum { return stopTokens }
+        return await withCheckedContinuation { continuation in
+            stopWaiter = (minimum, continuation)
+        }
+    }
 }
 
 @MainActor

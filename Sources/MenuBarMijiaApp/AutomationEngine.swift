@@ -139,16 +139,40 @@ final class AutomationEngine {
         self.store = store
     }
 
-    /// Test seam: starts the injected context provider (or the real observer) without subscribing
-    /// to NSWorkspace/distributed notifications. `start(with:)` calls the same method.
+    /// Whether any enabled rule needs the 10-second Mac context poller (CoreMediaIO, CoreAudio,
+    /// IOKit, CoreWLAN, Focus, EventKit). Event-driven triggers (`away`, `back`, precise sleep/lock,
+    /// external display count) with unconditional Wi-Fi run purely off system notifications.
+    static func needsContextPolling(_ rules: [AutomationRule]) -> Bool {
+        rules.contains { rule in
+            guard rule.isEnabled else { return false }
+            if rule.conditions.wifi.isNetworkSpecific { return true }
+            switch rule.trigger {
+            case .away, .back, .screenLocked, .lidClosedSleep, .systemSleep,
+                 .externalDisplayConnected, .externalDisplayDisconnected:
+                return false
+            case .cameraInUse, .cameraNotInUse,
+                 .microphoneInUse, .microphoneNotInUse,
+                 .powerConnected, .powerDisconnected, .batteryBelowThreshold,
+                 .wifiNetworkJoined, .wifiNetworkLeft,
+                 .focusModeEnabled, .focusModeDisabled,
+                 .calendarMeetingStartingSoon, .lateNightUsage:
+                return true
+            }
+        }
+    }
+
+    /// Test seam: starts the injected context provider (or the real observer when enabled rules
+    /// need it) without subscribing to NSWorkspace/distributed notifications.
     func startContextObservation() {
         guard activeContextProvider == nil else { return }
         let provider: any MacContextProviding
         if let injectedContextProvider {
             provider = injectedContextProvider
         } else {
+            let rules = ruleStore.load()
+            guard Self.needsContextPolling(rules) else { return }
             // Only rules the user already enabled can prompt; starting the app alone never does.
-            MacContextPermissionRequester.requestPermissions(for: ruleStore.load())
+            MacContextPermissionRequester.requestPermissions(for: rules)
             provider = MacContextObserver()
         }
         activeContextProvider = provider
@@ -158,10 +182,19 @@ final class AutomationEngine {
     }
 
     /// Settings calls this after a rule is added, removed or toggled so a newly enabled Focus,
-    /// calendar or Wi-Fi rule can request its permission immediately. The observer re-reads the
-    /// authorization status on its next tick; it does not need to be restarted.
+    /// calendar or Wi-Fi rule can request its permission immediately and start or stop the 10 s
+    /// context poller as needed.
     func rulesDidChange() {
-        MacContextPermissionRequester.requestPermissions(for: ruleStore.load())
+        let rules = ruleStore.load()
+        MacContextPermissionRequester.requestPermissions(for: rules)
+        guard injectedContextProvider == nil else { return }
+        if Self.needsContextPolling(rules) {
+            startContextObservation()
+        } else if let provider = activeContextProvider {
+            provider.stop()
+            activeContextProvider = nil
+            lastContext = nil
+        }
     }
 
     /// Test seam: notifying systems cannot post in unit tests, so the mapping is exercised by

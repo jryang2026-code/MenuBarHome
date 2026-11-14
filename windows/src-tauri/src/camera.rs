@@ -162,7 +162,7 @@ pub(crate) async fn put_stream(
         .await
         .map_err(|e| e.to_string())?;
     if let Some(path) = go2rtc_config_path() {
-        restrict_secret_file(&path);
+        let _ = tauri::async_runtime::spawn_blocking(move || restrict_secret_file(&path)).await;
     }
     if resp.status().is_success() {
         Ok(())
@@ -187,7 +187,7 @@ pub(crate) async fn stop_bridge(
             let _ = authed(http.delete(&url), session).send().await;
         }
         if let Some(path) = go2rtc_config_path() {
-            restrict_secret_file(&path);
+            let _ = tauri::async_runtime::spawn_blocking(move || restrict_secret_file(&path)).await;
         }
     }
     let no_active_relays = if let Ok(mut relays) = CAMERA_RELAYS.lock() {
@@ -1090,7 +1090,14 @@ pub(crate) async fn spawn_fresh_go2rtc(
     ffmpeg_bin: &str,
 ) -> Result<(), String> {
     let exe_path = bin_dir.join("go2rtc.exe");
-    if !ensure_component(app, bin_dir, "go2rtc.exe")? {
+    let app_for_component = app.clone();
+    let bin_dir_for_component = bin_dir.to_path_buf();
+    let has_go2rtc = tauri::async_runtime::spawn_blocking(move || {
+        ensure_component(&app_for_component, &bin_dir_for_component, "go2rtc.exe")
+    })
+    .await
+    .map_err(|e| format!("检查 go2rtc 组件失败：{e}"))??;
+    if !has_go2rtc {
         download_go2rtc_win64(bin_dir, &exe_path).await?;
     }
     let cfg_path = bin_dir.join("go2rtc.yaml");
@@ -1098,7 +1105,10 @@ pub(crate) async fn spawn_fresh_go2rtc(
     for _ in 0..4 {
         let session = make_ephemeral_go2rtc_session()?;
         let desired = desired_go2rtc_config(&session, ffmpeg_bin);
-        write_secret_file(&cfg_path, &desired)?;
+        let cfg_for_write = cfg_path.clone();
+        tauri::async_runtime::spawn_blocking(move || write_secret_file(&cfg_for_write, &desired))
+            .await
+            .map_err(|e| format!("写入 go2rtc 配置失败：{e}"))??;
         let mut command = std::process::Command::new(&exe_path);
         command.arg("-c").arg(&cfg_path).current_dir(bin_dir);
         #[cfg(windows)]
@@ -1112,7 +1122,13 @@ pub(crate) async fn spawn_fresh_go2rtc(
             *guard = Some(child);
         }
         let record = Go2RtcOwnerRecord { pid, session: session.clone() };
-        write_secret_file(&owner_path, &serialize_owner(&record))?;
+        let owner_for_write = owner_path.clone();
+        let serialized_owner = serialize_owner(&record);
+        tauri::async_runtime::spawn_blocking(move || {
+            write_secret_file(&owner_for_write, &serialized_owner)
+        })
+        .await
+        .map_err(|e| format!("写入 go2rtc 属主记录失败：{e}"))??;
         store_go2rtc_session(record);
         if wait_for_owned_api(http, &session).await {
             return Ok(());
@@ -1138,7 +1154,13 @@ pub(crate) async fn ensure_go2rtc_running(app: &AppHandle) -> Result<(), String>
         .timeout(Duration::from_millis(800))
         .build()
         .map_err(|e| e.to_string())?;
-    let ffmpeg_bin = resolve_ffmpeg_bin(app, &bin_dir)?;
+    let app_for_ffmpeg = app.clone();
+    let bin_dir_for_ffmpeg = bin_dir.clone();
+    let ffmpeg_bin = tauri::async_runtime::spawn_blocking(move || {
+        resolve_ffmpeg_bin(&app_for_ffmpeg, &bin_dir_for_ffmpeg)
+    })
+    .await
+    .map_err(|e| format!("解析 ffmpeg 组件失败：{e}"))??;
 
     if let Some(record) = existing_owned_record() {
         let probe = probe_owned(&http, &record.session).await;
@@ -1959,7 +1981,7 @@ pub(crate) fn spawn_cs2_udp_relay(
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_thread = Arc::clone(&stop);
     std::thread::spawn(move || {
-        let mut go2rtc_addr: Option<std::net::SocketAddr> = None;
+        let mut go2rtc_client: Option<(std::net::SocketAddr, std::time::Instant)> = None;
         let mut cam_dynamic_port: u16 = 32108;
         let mut cmd_gate = Cs2CommandChannelGate::new();
         let mut buf = vec![0u8; 65_536];
@@ -1971,8 +1993,12 @@ pub(crate) fn spawn_cs2_udp_relay(
                 match local_relay.recv_from(&mut buf) {
                     Ok((n, src)) => {
                         transferred = true;
-                        go2rtc_addr = Some(src);
-                        if n >= 2 && buf[0] == 0xF1 && buf[1] == 0x30 {
+                        let now = std::time::Instant::now();
+                        if !cs2_relay_accepts_client_packet(&buf[..n], src, go2rtc_client, now) {
+                            continue;
+                        }
+                        go2rtc_client = Some((src, now));
+                        if n >= 4 && buf[0] == 0xF1 && buf[1] == 0x30 {
                             cmd_gate.reset();
                             let _ =
                                 lan_sock.send_to(&buf[..n], SocketAddrV4::new(broadcast_ip, 32108));
@@ -2000,7 +2026,7 @@ pub(crate) fn spawn_cs2_udp_relay(
                                     .send_to(&ack, SocketAddrV4::new(cam_ip, cam_dynamic_port));
                                 continue;
                             }
-                            if let Some(client_addr) = go2rtc_addr {
+                            if let Some((client_addr, _)) = go2rtc_client {
                                 let _ = local_relay.send_to(&buf[..n], client_addr);
                             }
                         }

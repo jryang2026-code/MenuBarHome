@@ -40,7 +40,8 @@ private func makeLight(
     roomId: String,
     roomName: String,
     model: String = "yeelight.light",
-    isOnline: Bool = true
+    isOnline: Bool = true,
+    isOn: Bool = true
 ) -> SmartDevice {
     SmartDevice(
         id: id,
@@ -52,7 +53,7 @@ private func makeLight(
         kind: .light(
             LightSpec(
                 entityId: "light.\(id)",
-                isOn: true,
+                isOn: isOn,
                 brightnessPercent: 80,
                 colorTempKelvin: 4000
             )
@@ -1172,5 +1173,115 @@ struct DualSourceMergeTests {
         )
         #expect(pinned.home.deviceBackends[cardID] == .xiaomiCloud)
         #expect(pinned.routes[cardID]?.sourceDeviceID == miLight.id)
+    }
+
+    @Test("A pin is honored when both sources are offline")
+    func pinHonoredWhenBothSourcesOffline() throws {
+        let haLight = makeLight(id: "ha-offline-1", name: "客厅灯", roomId: "living_room", roomName: "客厅", isOnline: false, isOn: true)
+        let miLight = makeLight(id: "555666779", name: "客厅灯", roomId: "mi_room_1", roomName: "客厅", model: "xiaomi.light", isOnline: false, isOn: false)
+        let haHome = makeHome(
+            devices: [haLight],
+            identities: [
+                haLight.id: makeIdentity(
+                    dids: DeviceIdentityNormalizer.didCandidates(from: ["xiaomi_home_555666779"]),
+                    model: haLight.model, name: haLight.name, roomName: haLight.roomName, kind: .light
+                )
+            ]
+        )
+        let miHome = makeHome(
+            devices: [miLight],
+            identities: [
+                miLight.id: makeIdentity(
+                    dids: ["555666779"],
+                    model: miLight.model, name: miLight.name, roomName: miLight.roomName, kind: .light
+                )
+            ]
+        )
+
+        let automatic = DeviceDeduplicator.merge(homeAssistant: haHome, xiaomiCloud: miHome)
+        let cardID = try #require(automatic.home.devices.first?.id)
+        #expect(automatic.home.deviceBackends[cardID] == .homeAssistant)
+
+        let pinned = DeviceDeduplicator.merge(
+            homeAssistant: haHome,
+            xiaomiCloud: miHome,
+            pinnedBackends: [cardID: .xiaomiCloud]
+        )
+        #expect(pinned.home.deviceBackends[cardID] == .xiaomiCloud)
+        #expect(pinned.routes[cardID]?.sourceDeviceID == miLight.id)
+    }
+
+    @Test("A stale online HA virtual light group becomes offline/off when all members are offline")
+    func pairedVirtualLightGroupWithOfflineMembersTurnsOfflineAndOff() throws {
+        let haGroup = makeLight(id: "ha-group-1", name: "客厅灯", roomId: "ha-living", roomName: "客厅", model: "mijia.light.group3", isOnline: true, isOn: true)
+        let haM1 = makeLight(id: "ha-m1", name: "客厅大吸顶灯", roomId: "ha-living", roomName: "客厅", model: "yeelink.light.ceiling19", isOnline: false, isOn: false)
+        let haM2 = makeLight(id: "ha-m2", name: "客厅小吸顶灯", roomId: "ha-living", roomName: "客厅", model: "yeelink.light.ceiling20", isOnline: false, isOn: false)
+        let haHome = makeHome(
+            devices: [haGroup, haM1, haM2],
+            identities: [
+                haGroup.id: makeIdentity(dids: DeviceIdentityNormalizer.didCandidates(from: ["cn_group_2039326"]), model: "mijia.light.group3", name: "客厅灯", roomName: "客厅", kind: .light),
+                haM1.id: makeIdentity(dids: ["362590071"], model: haM1.model, name: haM1.name, roomName: "客厅", kind: .light),
+                haM2.id: makeIdentity(dids: ["556738192"], model: haM2.model, name: haM2.name, roomName: "客厅", kind: .light),
+            ]
+        )
+
+        let miGroup = makeLight(id: "group.2039326", name: "客厅灯", roomId: "mi-living", roomName: "客厅", model: "mijia.light.group3", isOnline: false, isOn: false)
+        let miM1 = makeLight(id: "362590071", name: "客厅大吸顶灯", roomId: "mi-living", roomName: "客厅", model: "yeelink.light.ceiling19", isOnline: false, isOn: false)
+        let miM2 = makeLight(id: "556738192", name: "客厅小吸顶灯", roomId: "mi-living", roomName: "客厅", model: "yeelink.light.ceiling20", isOnline: false, isOn: false)
+        var miHome = makeHome(
+            devices: [miGroup, miM1, miM2],
+            identities: [
+                miGroup.id: makeIdentity(dids: ["group.2039326"], model: "mijia.light.group3", name: "客厅灯", roomName: "客厅", kind: .light),
+                miM1.id: makeIdentity(dids: ["362590071"], model: miM1.model, name: miM1.name, roomName: "客厅", kind: .light),
+                miM2.id: makeIdentity(dids: ["556738192"], model: miM2.model, name: miM2.name, roomName: "客厅", kind: .light),
+            ]
+        )
+        miHome.lightGroupOwners = ["362590071": "group.2039326", "556738192": "group.2039326"]
+
+        let automatic = DeviceDeduplicator.merge(homeAssistant: haHome, xiaomiCloud: miHome)
+        let groupCard = try #require(automatic.home.devices.first(where: { $0.name == "客厅灯" }))
+        #expect(!groupCard.isOnline)
+        #expect(!groupCard.isActiveOn)
+
+        let pinned = DeviceDeduplicator.merge(
+            homeAssistant: haHome,
+            xiaomiCloud: miHome,
+            pinnedBackends: [groupCard.id: .xiaomiCloud]
+        )
+        #expect(pinned.home.deviceBackends[groupCard.id] == .xiaomiCloud)
+        #expect(pinned.routes[groupCard.id]?.sourceDeviceID == "group.2039326")
+    }
+
+    @Test("A virtual light group clears its on state when all online HA member lights are off")
+    func pairedVirtualLightGroupClearsOnWhenOnlineMembersAreOff() throws {
+        let haGroup = makeLight(id: "ha-group-2", name: "客厅灯", roomId: "ha-living", roomName: "客厅", model: "mijia.light.group3", isOnline: true, isOn: true)
+        let haM1 = makeLight(id: "ha-m1-off", name: "客厅大吸顶灯", roomId: "ha-living", roomName: "客厅", model: "yeelink.light.ceiling19", isOnline: true, isOn: false)
+        let haM2 = makeLight(id: "ha-m2-off", name: "客厅小吸顶灯", roomId: "ha-living", roomName: "客厅", model: "yeelink.light.ceiling20", isOnline: true, isOn: false)
+        let haHome = makeHome(
+            devices: [haGroup, haM1, haM2],
+            identities: [
+                haGroup.id: makeIdentity(dids: DeviceIdentityNormalizer.didCandidates(from: ["cn_group_999999"]), model: "mijia.light.group3", name: "客厅灯", roomName: "客厅", kind: .light),
+                haM1.id: makeIdentity(dids: ["1110001"], model: haM1.model, name: haM1.name, roomName: "客厅", kind: .light),
+                haM2.id: makeIdentity(dids: ["1110002"], model: haM2.model, name: haM2.name, roomName: "客厅", kind: .light),
+            ]
+        )
+
+        let miGroup = makeLight(id: "group.999999", name: "客厅灯", roomId: "mi-living", roomName: "客厅", model: "mijia.light.group3", isOnline: true, isOn: true)
+        let miM1 = makeLight(id: "1110001", name: "客厅大吸顶灯", roomId: "mi-living", roomName: "客厅", model: "yeelink.light.ceiling19", isOnline: true, isOn: false)
+        let miM2 = makeLight(id: "1110002", name: "客厅小吸顶灯", roomId: "mi-living", roomName: "客厅", model: "yeelink.light.ceiling20", isOnline: true, isOn: false)
+        var miHome = makeHome(
+            devices: [miGroup, miM1, miM2],
+            identities: [
+                miGroup.id: makeIdentity(dids: ["group.999999"], model: "mijia.light.group3", name: "客厅灯", roomName: "客厅", kind: .light),
+                miM1.id: makeIdentity(dids: ["1110001"], model: miM1.model, name: miM1.name, roomName: "客厅", kind: .light),
+                miM2.id: makeIdentity(dids: ["1110002"], model: miM2.model, name: miM2.name, roomName: "客厅", kind: .light),
+            ]
+        )
+        miHome.lightGroupOwners = ["1110001": "group.999999", "1110002": "group.999999"]
+
+        let result = DeviceDeduplicator.merge(homeAssistant: haHome, xiaomiCloud: miHome)
+        let groupCard = try #require(result.home.devices.first(where: { $0.name == "客厅灯" }))
+        #expect(groupCard.isOnline)
+        #expect(!groupCard.isActiveOn)
     }
 }

@@ -768,6 +768,126 @@
         "speed": "high"
       },
       "confirm": false
+    },
+    {
+      "id": "switched-kitchen-light-on",
+      "role": "new",
+      "device": {
+        "id": "switched-kitchen-light-on",
+        "name": "厨房灯",
+        "model": "lumi.switch.b1nacn02",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": false
+    },
+    {
+      "id": "switched-kitchen-light-off",
+      "role": "new",
+      "device": {
+        "id": "switched-kitchen-light-off",
+        "name": "厨房灯",
+        "model": "lumi.switch.b1nacn02",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": false
+      },
+      "confirm": false
+    },
+    {
+      "id": "switched-english-light-off",
+      "role": "new",
+      "device": {
+        "id": "switched-english-light-off",
+        "name": "Kitchen Light",
+        "model": "lumi.switch.b1nacn02",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": false
+      },
+      "confirm": false
+    },
+    {
+      "id": "switched-uv-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-uv-lamp-on",
+        "name": "紫外线杀菌灯",
+        "model": "lumi.switch.b1nacn02",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-uv-ascii-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-uv-ascii-lamp-on",
+        "name": "UV灯",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-heat-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-heat-lamp-on",
+        "name": "浴霸取暖灯",
+        "model": "lumi.switch.b1nacn02",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "plug-desk-lamp-outlet-on",
+      "role": "new",
+      "device": {
+        "id": "plug-desk-lamp-outlet-on",
+        "name": "台灯插座",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "oven-named-kitchen-light-on",
+      "role": "new",
+      "device": {
+        "id": "oven-named-kitchen-light-on",
+        "name": "厨房灯",
+        "model": "chunmi.oven.s1",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
     }
   ],
   "decisionRows": [
@@ -819,6 +939,22 @@
       "confidence": 0.99,
       "askWhenUnsure": false,
       "expectAutoRun": false
+    },
+    {
+      "id": "confident-switched-kitchen-light-off-runs",
+      "device": {
+        "id": "confident-switched-kitchen-light-off-runs",
+        "name": "厨房灯",
+        "model": "lumi.switch.b1nacn02",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": false
+      },
+      "confidence": 0.95,
+      "askWhenUnsure": true,
+      "expectAutoRun": true
     }
   ]
 }

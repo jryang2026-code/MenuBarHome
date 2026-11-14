@@ -3,6 +3,27 @@ import { partitionDueTimers } from "./models.js";
 
 export const SCHEDULED_COMMANDS_STORAGE_KEY = "menumijia.windows.scheduledCommands.v1";
 
+/**
+ * Returns target IDs referenced by `item.intents` that exist in neither `devices` nor `scenes`
+ * of the active home (`HomeStore+Assistant.swift:missingPlanTargets`, ADR-0019).
+ */
+export function missingScheduledCommandTargets(
+  item: ScheduledCommand,
+  devices: readonly { readonly id: string }[],
+  scenes: readonly { readonly id: string }[],
+): string[] {
+  if (!item.intents || item.intents.length === 0) return [];
+  const deviceIds = new Set(devices.map((device) => device.id));
+  const sceneIds = new Set(scenes.map((scene) => scene.id));
+  const missing: string[] = [];
+  for (const intent of item.intents) {
+    if (!deviceIds.has(intent.targetId) && !sceneIds.has(intent.targetId)) {
+      missing.push(intent.targetId);
+    }
+  }
+  return missing;
+}
+
 export interface TimerQueue {
   scheduledCommands: ScheduledCommand[];
   missedScheduledCommands: ScheduledCommand[];
@@ -58,28 +79,54 @@ function parseTimer(value: unknown): ScheduledCommand | null {
   };
 }
 
-function parseQueues(raw: string | null): Map<string, TimerQueue> | null {
-  if (raw === null) return new Map();
+function parseQueues(
+  raw: string | null,
+): { readonly queues: Map<string, TimerQueue>; readonly hadCorruption: boolean } | null {
+  if (raw === null) return { queues: new Map(), hadCorruption: false };
   try {
     const value: unknown = JSON.parse(raw);
     if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.sources)) return null;
     const sources = new Map<string, TimerQueue>();
+    let hadCorruption = false;
     for (const source of value.sources) {
-      if (!isRecord(source) || typeof source.identity !== "string" || !source.identity ||
-          sources.has(source.identity) || !Array.isArray(source.scheduledCommands) ||
-          !Array.isArray(source.missedScheduledCommands)) return null;
-      const scheduledCommands = source.scheduledCommands.map(parseTimer);
-      const missedScheduledCommands = source.missedScheduledCommands.map(parseTimer);
-      const all = [...scheduledCommands, ...missedScheduledCommands];
-      if (all.some((item) => item === null)) return null;
-      if (new Set(all.map((item) => item?.id)).size !== all.length) return null;
-      sources.set(source.identity, {
-        scheduledCommands: scheduledCommands.filter((item): item is ScheduledCommand => item !== null),
-        missedScheduledCommands: missedScheduledCommands.filter((item): item is ScheduledCommand => item !== null),
-      });
+      if (
+        !isRecord(source) ||
+        typeof source.identity !== "string" ||
+        !source.identity ||
+        sources.has(source.identity) ||
+        !Array.isArray(source.scheduledCommands) ||
+        !Array.isArray(source.missedScheduledCommands)
+      ) {
+        hadCorruption = true;
+        continue;
+      }
+      const seenIds = new Set<string>();
+      const scheduledCommands: ScheduledCommand[] = [];
+      for (const rawItem of source.scheduledCommands) {
+        const parsed = parseTimer(rawItem);
+        if (!parsed || seenIds.has(parsed.id)) {
+          hadCorruption = true;
+          continue;
+        }
+        seenIds.add(parsed.id);
+        scheduledCommands.push(parsed);
+      }
+      const missedScheduledCommands: ScheduledCommand[] = [];
+      for (const rawItem of source.missedScheduledCommands) {
+        const parsed = parseTimer(rawItem);
+        if (!parsed || seenIds.has(parsed.id)) {
+          hadCorruption = true;
+          continue;
+        }
+        seenIds.add(parsed.id);
+        missedScheduledCommands.push(parsed);
+      }
+      sources.set(source.identity, { scheduledCommands, missedScheduledCommands });
     }
-    return sources;
-  } catch { return null; }
+    return { queues: sources, hadCorruption };
+  } catch {
+    return null;
+  }
 }
 
 export class ScheduledCommandStore {
@@ -94,8 +141,8 @@ export class ScheduledCommandStore {
       this.storageReadable = false;
     }
     const parsed = parseQueues(raw);
-    this.sources = parsed ?? new Map();
-    if (!parsed) this.unreadableRaw = raw;
+    this.sources = parsed?.queues ?? new Map();
+    if (!parsed || parsed.hadCorruption) this.unreadableRaw = raw;
     let changed = false;
     for (const queue of this.sources.values()) {
       const expired = queue.scheduledCommands.filter((item) => item.fireTimestampMs <= nowMs);
@@ -135,7 +182,12 @@ export class ScheduledCommandStore {
     } catch { return false; }
   }
 
-  takeDue(identity: string | null, ready: boolean, nowMs: number): ScheduledCommand[] | null {
+  takeDue(
+    identity: string | null,
+    ready: boolean,
+    nowMs: number,
+    knownTargetIds?: ReadonlySet<string>,
+  ): ScheduledCommand[] | null {
     const runnable: ScheduledCommand[] = [];
     let changed = false;
     for (const [owner, queue] of this.sources) {
@@ -143,8 +195,17 @@ export class ScheduledCommandStore {
       if (run.length === 0 && missed.length === 0) continue;
       queue.scheduledCommands = remaining;
       queue.missedScheduledCommands.push(...missed);
-      if (owner === identity && ready) runnable.push(...run);
-      else queue.missedScheduledCommands.push(...run);
+      if (owner === identity && ready) {
+        for (const item of run) {
+          const missingTarget =
+            knownTargetIds !== undefined &&
+            Boolean(item.intents?.some((intent) => !knownTargetIds.has(intent.targetId)));
+          if (missingTarget) queue.missedScheduledCommands.push(item);
+          else runnable.push(item);
+        }
+      } else {
+        queue.missedScheduledCommands.push(...run);
+      }
       changed = true;
     }
     if (changed && !this.persist()) {

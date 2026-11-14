@@ -1442,6 +1442,23 @@ struct SnapshotTests {
         }
     }
 
+    @Test("Connection settings render the Disconnect button when Home Assistant is configured")
+    func settingsConnectionConfiguredHASnapshots() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: true)
+        defer { fixture.restore() }
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                SettingsWindowView(store: fixture.store, selectedTab: .connection)
+                    .environment(\.colorScheme, scheme)
+                    .environment(\.reduceMotionOverride, true)
+                    .environment(\.reduceTransparencyOverride, true),
+                size: CGSize(width: 780, height: 680),
+                named: "settings-connection-configured-ha-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
     @Test("Settings search suggestions remain readable in both appearances")
     func settingsSearchSuggestions() async throws {
         for scheme in [ColorScheme.light, .dark] {
@@ -1937,6 +1954,7 @@ struct SnapshotFixture {
     struct MissingDefaults: Error {}
 
     let store: HomeStore
+    private let suiteName: String
     private let previousAppearance: String?
     private let previousTemperatureUnit: String?
     private let previousRoomOrder: String?
@@ -1991,6 +2009,7 @@ struct SnapshotFixture {
         #endif
 
         let suiteName = "MenuBarMijiaSnapshotTests-\(UUID().uuidString)"
+        self.suiteName = suiteName
         guard let defaults = UserDefaults(suiteName: suiteName) else {
             throw MissingDefaults()
         }
@@ -2153,6 +2172,7 @@ struct SnapshotFixture {
         #if DEBUG
         LayoutUIState.shared.resetForTesting()
         #endif
+        store.userDefaults.removePersistentDomain(forName: suiteName)
     }
 }
 
