@@ -1,5 +1,5 @@
 import { deviceCategory } from "./assistant/deviceCategory.js";
-import { speechLocale } from "./i18n.js";
+import { speechLocale, t } from "./i18n.js";
 import { DEVICE_PROFILES, matchesMiotFacetPattern, type DeviceProfiles } from "./miCloud/facets.js";
 import type {
   ApplianceAction,
@@ -569,14 +569,10 @@ export function buildMediaPlayerKind(
 
   const muteSw = eids.find((eid) => eid.startsWith("switch.") && eid.includes("mute")) ?? null;
   const sleepSw = eids.find((eid) => eid.startsWith("switch.") && eid.includes("sleep_mode")) ?? null;
-  const ttsNotify = eids.find((eid) => eid.startsWith("notify.") && eid.includes("play_text")) ?? null;
-  const dirNotify =
-    eids.find((eid) => eid.startsWith("notify.") && eid.includes("execute_text_directive")) ?? null;
-  const playMusicBtn = eids.find((eid) => eid.startsWith("button.") && eid.includes("play_music")) ?? null;
-  const stopAlarmBtn = eids.find((eid) => eid.startsWith("button.") && eid.includes("stop_alarm")) ?? null;
-  const turnOnBtn = eids.find((eid) => eid.startsWith("button.") && eid.includes("turn_on")) ?? null;
 
-  for (const id of [mediaId, muteSw, sleepSw, ttsNotify, dirNotify, playMusicBtn, stopAlarmBtn, turnOnBtn]) {
+  // Claim only entities surfaced directly on `SpeakerSpec` so `button.*` actions (`play_music`,
+  // `stop_alarm`, `turn_on`) remain unclaimed and flow into `更多设置` (`buildHAFacets`).
+  for (const id of [mediaId, muteSw, sleepSw]) {
     if (id) claimed.add(id);
   }
 
@@ -955,6 +951,52 @@ function buildSyntheticPrimaryHAFacets(
   return out;
 }
 
+export interface HACameraMotionFallback {
+  readonly motionDetectionEntityId: string | null;
+  readonly isMotionDetectionOn: boolean | null;
+  readonly claimedEntityId: string | null;
+  readonly syntheticReadingEntityId: string | null;
+}
+
+/** Camera motion fallback: `input_boolean.*motion*`, `camera.<id>#motion` (`DeviceSynthesizer.swift:1252`), or motion `binary_sensor.*`. */
+export function resolveHACameraMotionFallback(
+  entities: readonly HARow[],
+  states: ReadonlyMap<string, HAState>,
+  cameraSpec: Extract<DeviceKind, { kind: "camera" }>,
+): HACameraMotionFallback {
+  if (cameraSpec.motionDetectionEntityId !== null || cameraSpec.isMotionDetectionOn !== null) {
+    return { motionDetectionEntityId: cameraSpec.motionDetectionEntityId, isMotionDetectionOn: cameraSpec.isMotionDetectionOn, claimedEntityId: null, syntheticReadingEntityId: null };
+  }
+  for (const entity of entities) {
+    if (entity.disabled_by != null || entity.hidden_by != null) continue;
+    const category = haText(entity.entity_category).toLowerCase();
+    if (category === "config" || category === "diagnostic") continue;
+    const eid = haText(entity.entity_id);
+    if (!eid.startsWith("input_boolean.")) continue;
+    const semantic = haText(entity.translation_key).toLowerCase();
+    if (!eid.toLowerCase().includes("motion") && !semantic.includes("motion")) continue;
+    const st = states.get(eid);
+    const lower = st && isHAStateAvailable(st) ? st.state.toLowerCase() : "";
+    if (lower === "on" || lower === "off") {
+      return { motionDetectionEntityId: eid, isMotionDetectionOn: lower === "on", claimedEntityId: eid, syntheticReadingEntityId: null };
+    }
+  }
+  const cameraEntityId = cameraSpec.streamEntityId ?? entities.map((entry) => haText(entry.entity_id)).find((eid) => eid.startsWith("camera.")) ?? null;
+  const camMotion = cameraEntityId ? states.get(cameraEntityId)?.attributes.motion_detection : undefined;
+  if (cameraEntityId && typeof camMotion === "boolean") {
+    return { motionDetectionEntityId: null, isMotionDetectionOn: camMotion, claimedEntityId: null, syntheticReadingEntityId: `${cameraEntityId}#motion` };
+  }
+  for (const entity of entities) {
+    if (haBinarySensorKind(entity, states, true) !== "motion") continue;
+    const st = states.get(haText(entity.entity_id));
+    const lower = st && isHAStateAvailable(st) ? st.state.toLowerCase() : "";
+    if (lower === "on" || lower === "off") {
+      return { motionDetectionEntityId: null, isMotionDetectionOn: lower === "on", claimedEntityId: null, syntheticReadingEntityId: null };
+    }
+  }
+  return { motionDetectionEntityId: null, isMotionDetectionOn: null, claimedEntityId: null, syntheticReadingEntityId: null };
+}
+
 export function buildHAFacets(
   entities: readonly HARow[],
   states: ReadonlyMap<string, HAState>,
@@ -962,11 +1004,27 @@ export function buildHAFacets(
   device: SmartDevice,
   profiles: DeviceProfiles = DEVICE_PROFILES,
 ): FacetControl[] {
-  const syntheticControls = buildSyntheticPrimaryHAFacets(device, states);
+  const effectiveClaimed = new Set(claimed);
+  const cameraSyntheticControls: FacetControl[] = [];
+  if (device.kind.kind === "camera") {
+    const fallback = resolveHACameraMotionFallback(entities, states, device.kind);
+    if (fallback.motionDetectionEntityId !== device.kind.motionDetectionEntityId || fallback.isMotionDetectionOn !== device.kind.isMotionDetectionOn) {
+      (device as { kind: DeviceKind }).kind = { ...device.kind, motionDetectionEntityId: fallback.motionDetectionEntityId, isMotionDetectionOn: fallback.isMotionDetectionOn };
+    }
+    if (fallback.claimedEntityId) effectiveClaimed.add(fallback.claimedEntityId);
+    if (fallback.syntheticReadingEntityId !== null && typeof fallback.isMotionDetectionOn === "boolean") {
+      cameraSyntheticControls.push({
+        id: fallback.syntheticReadingEntityId, kind: "reading", name: "motion-detection", title: t("移动侦测"),
+        serviceName: "camera", unit: null, scale: null, value: fallback.isMotionDetectionOn,
+        options: [], range: null, isWritable: false, writesByDefault: false, isHighValue: false, target: null,
+      });
+    }
+  }
+  const syntheticControls = [...cameraSyntheticControls, ...buildSyntheticPrimaryHAFacets(device, states)];
   const controls: FacetControl[] = [];
   for (const entity of entities) {
     const entityId = haText(entity.entity_id);
-    if (!entityId || claimed.has(entityId)) continue;
+    if (!entityId || effectiveClaimed.has(entityId)) continue;
     if (entity.disabled_by != null || entity.hidden_by != null) continue;
     const state = states.get(entityId);
     if (!state) continue;
