@@ -689,4 +689,27 @@ describe("Wave 3 · B3 Energy Settings Panel, Plug Drawer Today Cell & Settings 
     assert.match(ranks[0]?.textContent ?? "", /电竞升降桌总插 · 主卧工作室/);
     assert.match(ranks[1]?.textContent ?? "", /弱电箱光猫插座 · 入户弱电间/);
   });
+
+  it("handles narrow EnergyTrackableHost callers with HA credentials when optional dual-source fields are omitted", async () => {
+    const { energyScopeForHost, syncEnergyHostOnRender } = await import("../src/ui/energySettingsView.js");
+    const root = element("#app");
+    const narrowHost = {
+      root,
+      settings: {
+        connectionMode: "homeAssistant" as const,
+        haBaseURL: "http://192.168.1.10:8123",
+        haToken: "ha-token-123",
+      },
+      devices: [makePlug("ha_narrow_plug", "HA插座", 5.0)],
+      timerSnapshot: { identity: "ha:http://192.168.1.10:8123", sourceRevision: 0 },
+      sourceRevision: 0,
+      render() {},
+    };
+    const scope = energyScopeForHost(narrowHost);
+    assert.equal(scope.connectionMode, "homeAssistant");
+    assert.equal(scope.dualSourceEnabled, false);
+    assert.deepEqual(scope.activeAccountIds, []);
+    syncEnergyHostOnRender(narrowHost);
+    assert.ok(narrowHost);
+  });
 });

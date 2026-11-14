@@ -10,7 +10,6 @@ import {
   type EnergyScopeSource,
 } from "../core/energyHistory.js";
 import type { SmartDevice } from "../core/models.js";
-import type { MenuMijiaWindowsApp } from "./app.js";
 import type { ReplyBannerState } from "./appTypes.js";
 import { getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
 import { withAliases, type LayoutPrefs } from "./panelPrefs.js";
@@ -65,6 +64,10 @@ export interface EnergyTrackableHost {
   settingsTab?: SettingsTab;
   replyBanner?: ReplyBannerState | null;
   energySession?: HostEnergySession;
+  readonly miAccountsOverride?: readonly import("../core/miAccountsStore.js").MiAccount[] | null;
+  readonly dualSourceEnabledOverride?: boolean | null;
+  readonly multiAccountState?: import("./cloudRefresh.js").HostMultiAccountState | null;
+  readonly dualSourceCoordinator?: import("../core/dualSourceProvider.js").DualSourceCoordinator | null;
   render(): void;
 }
 
@@ -88,10 +91,9 @@ function getHostSession(host: EnergyTrackableHost): HostEnergySession {
 }
 
 export function energyScopeForHost(host: EnergyTrackableHost): EnergyScopeSource {
-  const appHost = host as unknown as MenuMijiaWindowsApp;
-  const dual = isDualSourceEnabled(appHost);
-  const multi = getHostMiAccountsState(appHost);
-  const accounts = appHost.miAccountsOverride ?? multi?.accounts ?? [];
+  const dual = isDualSourceEnabled(host);
+  const multi = getHostMiAccountsState(host);
+  const accounts = host.miAccountsOverride ?? multi?.accounts ?? [];
   return {
     connectionMode: host.settings.connectionMode,
     dualSourceEnabled: dual,
@@ -152,7 +154,7 @@ function devicesWithLayoutAliases(
 function recordHostSnapshotIfLive(host: EnergyTrackableHost): void {
   if (!host.root.isConnected) return;
   if (host.valuesAreStale) return;
-  const dual = isDualSourceEnabled(host as unknown as MenuMijiaWindowsApp);
+  const dual = isDualSourceEnabled(host);
   if (!dual && host.settings.connectionMode === "homeAssistant" && Boolean(host.haConnectionError)) {
     return;
   }

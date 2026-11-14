@@ -731,12 +731,26 @@ export function setHostMiAccounts(
   host.miAccountsOverride = accounts.map((entry) => ("session" in entry ? entry : makeMiAccount(entry)));
 }
 
-export function getHostMiAccountsState(host: MenuMijiaWindowsApp): HostMultiAccountState | null {
-  return host.multiAccountState;
+export interface DualSourceInspectableHost {
+  readonly settings: {
+    readonly connectionMode?: "demo" | "homeAssistant" | "xiaomiCloud" | string;
+    readonly haBaseURL?: string | null;
+    readonly haToken?: string | null;
+    readonly miSession?: { readonly userId: string; readonly region: string } | null;
+    readonly dualSourceEnabled?: boolean;
+  };
+  readonly miAccountsOverride?: readonly MiAccount[] | null;
+  readonly dualSourceEnabledOverride?: boolean | null;
+  readonly multiAccountState?: HostMultiAccountState | null;
+  readonly dualSourceCoordinator?: DualSourceCoordinator | null;
 }
 
-export function hasMultipleMiAccountsForHost(host: MenuMijiaWindowsApp): boolean {
-  if (host.miAccountsOverride !== null) return host.miAccountsOverride.length > 1;
+export function getHostMiAccountsState(host: DualSourceInspectableHost): HostMultiAccountState | null {
+  return host.multiAccountState ?? null;
+}
+
+export function hasMultipleMiAccountsForHost(host: DualSourceInspectableHost): boolean {
+  if (host.miAccountsOverride != null) return host.miAccountsOverride.length > 1;
   return hasSecondaryMiAccountsInIndex();
 }
 
@@ -918,21 +932,21 @@ export async function refreshMultiAccountXiaomiDevices(
   }
 }
 
-export function canUseDualSource(host: MenuMijiaWindowsApp): boolean {
+export function canUseDualSource(host: DualSourceInspectableHost): boolean {
   if (host.settings.connectionMode === "demo") return false;
-  const hasHA = homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken) !== null;
+  const hasHA = homeAssistantIdentity(host.settings.haBaseURL ?? "", host.settings.haToken ?? "") !== null;
   if (!hasHA) return false;
   const override = host.miAccountsOverride;
   const hasMi =
-    (override !== null && override.length > 0) ||
-    host.settings.miSession !== null ||
+    (override != null && override.length > 0) ||
+    host.settings.miSession != null ||
     hasSecondaryMiAccountsInIndex();
   return hasMi;
 }
 
-export function isDualSourceEnabled(host: MenuMijiaWindowsApp): boolean {
+export function isDualSourceEnabled(host: DualSourceInspectableHost): boolean {
   if (!canUseDualSource(host)) return false;
-  if (host.dualSourceEnabledOverride !== null) return host.dualSourceEnabledOverride;
+  if (host.dualSourceEnabledOverride != null) return host.dualSourceEnabledOverride;
   if (typeof host.settings.dualSourceEnabled === "boolean") return host.settings.dualSourceEnabled;
   try {
     return typeof localStorage !== "undefined" && localStorage.getItem(DUAL_SOURCE_ENABLED_STORAGE_KEY) === "1";
@@ -976,7 +990,7 @@ export function getHostDualSourceCoordinator(host: MenuMijiaWindowsApp): DualSou
   return host.dualSourceCoordinator;
 }
 
-export function getHostDualSourceState(host: MenuMijiaWindowsApp): DeviceMergeResult | null {
+export function getHostDualSourceState(host: DualSourceInspectableHost): DeviceMergeResult | null {
   return host.dualSourceCoordinator?.getLastMerged() ?? null;
 }
 

@@ -74,6 +74,10 @@ export interface CameraLiveHost {
       cancel(): void;
     };
   };
+  readonly miAccountsOverride?: readonly import("../core/miAccountsStore.js").MiAccount[] | null;
+  readonly dualSourceEnabledOverride?: boolean | null;
+  readonly multiAccountState?: import("./cloudRefresh.js").HostMultiAccountState | null;
+  readonly dualSourceCoordinator?: import("../core/dualSourceProvider.js").DualSourceCoordinator | null;
 }
 
 export class CameraLiveController {
@@ -149,9 +153,8 @@ export class CameraLiveController {
     readonly sourceDev: SmartDevice;
     readonly miSession: MiSession | null;
   } {
-    const appHost = this.host as unknown as MenuMijiaWindowsApp;
-    const route = isDualSourceEnabled(appHost)
-      ? getHostDualSourceState(appHost)?.routes[dev.id]
+    const route = isDualSourceEnabled(this.host)
+      ? getHostDualSourceState(this.host)?.routes[dev.id]
       : undefined;
     const sourceDev = route?.sourceDevice ?? dev;
     const backend: "xiaomiCloud" | "homeAssistant" | "demo" =
@@ -162,7 +165,7 @@ export class CameraLiveController {
     if (backend !== "xiaomiCloud") {
       return { backend, sourceDev, miSession: null };
     }
-    const accounts = appHost.miAccountsOverride ?? getHostMiAccountsState(appHost)?.accounts ?? [];
+    const accounts = this.host.miAccountsOverride ?? getHostMiAccountsState(this.host)?.accounts ?? [];
     const targetAccountId = sourceDev.accountId ?? dev.accountId ?? null;
     if (targetAccountId) {
       const matched = accounts.find(
@@ -735,7 +738,7 @@ export class CameraLiveController {
     try {
       if (
         this.host.settings.connectionMode === "homeAssistant" ||
-        isDualSourceEnabled(this.host as unknown as MenuMijiaWindowsApp)
+        isDualSourceEnabled(this.host)
       ) {
         await this.host.endpointSubmission;
         if (this.liveCameraToken !== token || this.activeLiveCameraId !== did) return false;
