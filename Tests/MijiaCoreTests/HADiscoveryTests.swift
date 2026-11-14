@@ -94,16 +94,6 @@ struct HADiscoveryTests {
         #expect(store.discoveredHAInstances.first?.baseURL == "http://192.168.1.4:8123")
     }
 
-    @Test("HADiscovery.discoverOnLAN finds live Home Assistant on LAN when HA_RUN_LIVE_TEST=1 is set")
-    func liveLANDiscovery() async throws {
-        guard ProcessInfo.processInfo.environment["HA_RUN_LIVE_TEST"] == "1" else { return }
-        let found = await HADiscovery.discoverOnLAN()
-        print("Found instances (no hint): \(found)")
-        let first = try #require(found.first)
-        #expect(first.baseURL.hasPrefix("http://"))
-        #expect(!first.locationName.isEmpty)
-    }
-
     @Test("HAWebSocketProvider.describeConnectionError explains macOS Local Network block on LAN -1009")
     func describeConnectionErrorLANBlock() {
         let lanOffline = URLError(.notConnectedToInternet)

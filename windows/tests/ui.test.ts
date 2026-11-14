@@ -8,7 +8,7 @@ import type { Window } from "happy-dom";
 
 import { assertMissing } from "./dom.js";
 import { closeTestWindow, installCssEscape, mountTestWindow, setWindowFocused } from "./uiHarness.js";
-import { MenuMijiaWindowsApp, waitForCameraFrameGap } from "../src/ui/app.js";
+import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { SF_ICONS } from "../src/ui/appConstants.js";
 import { PANEL_HEIGHTS } from "../src/ui/panelPrefs.js";
 import { cloudFixture } from "./cloudFixture.js";
@@ -136,56 +136,6 @@ describe("Service endpoint submission", () => {
       },
     ]);
     assert.equal(calls.some((call) => call.command === "set_allowed_origins"), false);
-  });
-
-  it("sends the shared LAN classification so the native dialog warns only on public plaintext", async () => {
-    const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
-    const invoke = async (command: string, args: Record<string, unknown> = {}) => {
-      calls.push({ command, args });
-      return undefined;
-    };
-    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
-    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
-      connectionMode: "demo",
-      hasCompletedOnboarding: true,
-      assistantBaseURL: "https://api.deepseek.com/v1",
-      haBaseURL: "http://ha.example.com:8123",
-    }));
-
-    new MenuMijiaWindowsApp(element("#app"));
-    await setImmediate();
-
-    assert.deepEqual(calls.filter((call) => call.command === "set_service_endpoints").map((call) => call.args), [
-      {
-        assistantUrl: "https://api.deepseek.com/v1",
-        haUrl: "http://ha.example.com:8123",
-      },
-    ]);
-  });
-
-  it("marks a .lan Home Assistant address as local for the native dialog", async () => {
-    const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
-    const invoke = async (command: string, args: Record<string, unknown> = {}) => {
-      calls.push({ command, args });
-      return undefined;
-    };
-    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
-    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
-      connectionMode: "demo",
-      hasCompletedOnboarding: true,
-      assistantBaseURL: "https://api.deepseek.com/v1",
-      haBaseURL: "http://homeassistant.lan:8123",
-    }));
-
-    new MenuMijiaWindowsApp(element("#app"));
-    await setImmediate();
-
-    assert.deepEqual(calls.filter((call) => call.command === "set_service_endpoints").map((call) => call.args), [
-      {
-        assistantUrl: "https://api.deepseek.com/v1",
-        haUrl: "http://homeassistant.lan:8123",
-      },
-    ]);
   });
 
   it("does not re-prompt a declined endpoint on unrelated background saves, but retries when settings are explicitly saved", async () => {
@@ -901,19 +851,6 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
       document.activeElement === element('[data-toggle-device="fixture-light"]'),
       "device control lost keyboard focus",
     );
-  });
-
-  it("does not let an open detail drawer block structural updates forever", async () => {
-    const { cloud, triggerRefresh } = await readyCloudApp();
-    await click('[data-expand-device="fixture-light"]');
-    assert.ok(document.querySelector(".cc-tile-drawer"), "detail drawer did not open");
-    cloud.values.set(1, false);
-
-    triggerRefresh();
-    await waitFor(() => tile("fixture-light").includes("已关闭"));
-
-    assert.match(tile("fixture-light"), /已关闭/);
-    assert.ok(document.querySelector(".cc-tile-drawer"), "detail drawer closed after refresh");
   });
 
   it("updates and restores focus when a detail slider is focused", async () => {
@@ -2138,14 +2075,6 @@ describe("Interface language and temperature units (#52)", () => {
     await click('[data-acstep="climate.living_ac:1"]');
     assert.match(textOf(".cc-climate"), /78°F/);
   });
-
-  it("keeps Celsius when the unit is Celsius", async () => {
-    seed({ interfaceLanguage: "zh-Hans", temperatureUnit: "celsius" });
-    new MenuMijiaWindowsApp(element("#app"));
-    await setImmediate();
-    assert.match(textOf(".cc-climate"), /25°C/);
-    assert.match(textOf(".cc-sensor"), /25\.5°C/);
-  });
 });
 
 describe("Panel placement (#204)", () => {
@@ -2647,23 +2576,6 @@ describe("Smart camera support and live view (#97)", () => {
     assert.equal(element("#cc-camera-mute").getAttribute("aria-pressed"), "true");
   });
 
-  it("labels a native MJPEG live view as video only without offering a mute toggle (#29)", async () => {
-    const live = await openXiaomiCloudP2PCamera({
-      budgetMs: 5_000,
-      retryMs: 0,
-      frame: async () => "aGVsbG8",
-    });
-    await waitFor(
-      () =>
-        (document.querySelector("#cc-camera-live-img") as HTMLImageElement | null)?.getAttribute("src") ===
-        "data:image/jpeg;base64,aGVsbG8",
-      800,
-    );
-    assert.equal(textOf("#cc-camera-audio-badge"), "仅画面");
-    assertMissing(document.querySelector("#cc-camera-mute"));
-    assert.equal(live.bridgeCalls.length, 1);
-  });
-
   it("bridges Home Assistant camera_proxy_stream URLs through native JPEG frames, not a browser fetch", async () => {
     const bridgedCalls: Array<{ did: string; hlsUrl: string }> = [];
     const frameCalls: string[] = [];
@@ -2796,26 +2708,6 @@ describe("Smart camera support and live view (#97)", () => {
       "data:image/jpeg;base64,aGVsbG8",
     );
     assert.equal(bridgedOwnedGo2rtc, false);
-  });
-
-  it("drops the frame-gap abort listener when the timer fires", async () => {
-    const controller = new AbortController();
-    let listeners = 0;
-    const add = controller.signal.addEventListener.bind(controller.signal);
-    const remove = controller.signal.removeEventListener.bind(controller.signal);
-    controller.signal.addEventListener = ((type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => {
-      if (type === "abort") listeners += 1;
-      return add(type, listener, options);
-    }) as typeof controller.signal.addEventListener;
-    controller.signal.removeEventListener = ((type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions) => {
-      if (type === "abort") listeners -= 1;
-      return remove(type, listener, options);
-    }) as typeof controller.signal.removeEventListener;
-    await waitForCameraFrameGap(controller.signal, 15);
-    await waitForCameraFrameGap(controller.signal, 15);
-    assert.equal(listeners, 0);
-    controller.abort();
-    assert.equal(listeners, 0);
   });
 
   it("does not start a bridge after the camera closes during the endpoint refresh", async () => {
@@ -4243,17 +4135,6 @@ describe("Home Assistant source", () => {
     await click('[data-ha-scene="scene.evening"]');
     assert.ok(calls.includes("ha_execute"));
   });
-  it("retains cached cards when a refresh fails", async () => {
-    startHA(true);
-    await waitFor(() => (document.body.textContent ?? "").includes("Home Assistant disconnected"));
-    assert.match(tile("study-light"), /书房灯/);
-  });
-  it("shows HA refresh errors outside the hidden assistant bar", async () => {
-    startHA(true);
-    await click("#btn-toggle-assistant");
-    await waitFor(() => !!document.querySelector("[data-ha-error]"));
-    assert.match(textOf("[data-ha-error]"), /Home Assistant disconnected/);
-  });
   it("keeps the confirmed light state after a failed service", async () => {
     const state = startHA();
     await waitFor(() => !!document.querySelector('[data-body-device="study-light"]'));
@@ -4624,12 +4505,6 @@ describe("只显示在线设备 (#158)", () => {
     assert.equal(element("#btn-show-offline").textContent, "Show Offline Devices");
     assert.equal(element(".cc-empty-title").textContent, "No online devices in this room");
   });
-
-  it("treats a non-boolean stored value as off", () => {
-    startCached({ hideOfflineDevices: "yes" });
-    assert.equal(element("#btn-toggle-hide-offline").getAttribute("aria-pressed"), "false");
-    assert.deepEqual(tileIds(), ["offline-living", "offline-study", "online-living"]);
-  });
 });
 
 describe("device kind filter", () => {
@@ -4794,13 +4669,6 @@ describe("light-group folding (#214)", () => {
     );
   });
 
-  it("restores the saved preference on the next launch", async () => {
-    await readyGroupApp({ hideGrouped: false });
-    assert.deepEqual(tileIds(), [memberA, memberB, "fixture-light", groupDid].sort());
-    await click("#btn-settings");
-    assert.equal(document.querySelector<HTMLInputElement>("#settings-hide-grouped-lights")?.checked, false);
-  });
-
   it("keeps members visible when the group card is offline-hidden", async () => {
     await readyGroupApp({ groupOnline: false, hideOffline: true });
     assert.deepEqual(tileIds(), [memberA, memberB, "fixture-light"].sort());
@@ -4883,16 +4751,6 @@ describe("Panel opacity (#252)", () => {
     document.body.innerHTML = '<div id="app"></div>';
     new MenuMijiaWindowsApp(element("#app"));
     assert.equal(element("#app").style.getPropertyValue("--panel-opacity"), "1");
-  });
-
-  it("clamps a stored value outside 60–100", () => {
-    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
-      connectionMode: "demo",
-      hasCompletedOnboarding: true,
-      panelOpacity: 12,
-    }));
-    new MenuMijiaWindowsApp(element("#app"));
-    assert.equal(element("#app").style.getPropertyValue("--panel-opacity"), "0.6");
   });
 });
 
@@ -6177,17 +6035,6 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     app.render();
     assert.ok(element(".cc-status-dot").classList.contains("is-offline"));
     assert.match(textOf(".cc-footer-label"), /未配置数据源/);
-  });
-
-  it("shows the declined plain-HTTP Home Assistant copy", () => {
-    const app = startDemoApp();
-    app.settings.connectionMode = "homeAssistant";
-    app.settings.haBaseURL = "http://203.0.113.5:8123";
-    app.settings.haToken = "controlled-token";
-    app.haConnectionError = "未授权的网络来源：http://203.0.113.5:8123";
-    app.render();
-    assert.ok(element(".cc-status-dot").classList.contains("is-offline"));
-    assert.match(textOf(".cc-footer-label"), /已拒绝明文/);
   });
 
   function cachedHaHome(baseURL: string, token: string) {

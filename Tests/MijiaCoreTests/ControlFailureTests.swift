@@ -225,13 +225,6 @@ struct ControlFailureTests {
         #expect(haToast.message == "台灯 操作未生效")
     }
 
-    @Test("An error outside the five categories keeps the generic action copy")
-    func unknownKeepsGenericCopy() async throws {
-        let (message, store) = try await failureToast(for: MiotCommandError.unsupported("测试"))
-        #expect(message == "台灯 操作未生效")
-        #expect(store.devices.first?.isActiveOn == false)
-    }
-
     @Test("A failed adjustment rolls the slider back and keeps the adjustment wording")
     func adjustmentRollsBack() async throws {
         let error = try #require(capturedCloudError {

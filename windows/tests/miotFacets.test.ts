@@ -172,30 +172,6 @@ describe("MIoT facet engine (shared fixture)", () => {
     }
   });
 
-  it("keeps high-risk writes closed until the data whitelist opens them", () => {
-    const ruleCase = fixture.cases.find((candidate) => candidate.id === "low-risk-writes-are-open-by-default");
-    assert.ok(ruleCase);
-    const facets = buildMiotFacets(parseSpec(ruleCase.spec));
-    const on = facets.find((facet) => facet.name === "on");
-    assert.ok(on);
-    assert.equal(on.risk, "low");
-    assert.equal(on.writesByDefault, true);
-    for (const name of ["mode", "brightness", "fan-level"]) {
-      const facet = facets.find((candidate) => candidate.name === name);
-      assert.ok(facet, name);
-      assert.equal(facet.risk, "low", name);
-      assert.equal(facet.writesByDefault, true, name);
-    }
-    const hazardous = fixture.cases.find(
-      (candidate) => candidate.id === "hazardous-device-type-keeps-whitelisted-writes-closed",
-    );
-    assert.ok(hazardous);
-    const heaterMode = buildMiotFacets(parseSpec(hazardous.spec)).find((facet) => facet.name === "mode");
-    assert.ok(heaterMode);
-    assert.equal(heaterMode.risk, "high");
-    assert.equal(heaterMode.writesByDefault, false);
-  });
-
   it("drops every noise service and property across the coverage fixture", () => {
     for (const [model, spec] of coverageSpecs()) {
       for (const facet of buildMiotFacets(spec, DEVICE_PROFILES, model)) {

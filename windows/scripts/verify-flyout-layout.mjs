@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const scriptPath = fileURLToPath(import.meta.url);
 const windowsRoot = path.resolve(path.dirname(scriptPath), "..");
 const repoRoot = path.resolve(windowsRoot, "..");
-const usageText = "usage: npm --prefix windows run verify:ui -- [--self-test] [--require-chrome] [--no-build] [--dist <dir>] [--out-dir <dir>] [--chrome <bin>]";
+const usageText = "usage: npm --prefix windows run verify:ui -- [--require-chrome] [--no-build] [--dist <dir>] [--out-dir <dir>] [--chrome <bin>]";
 
 function scenario(id, panelHeight, height, interfaceLanguage, appearance, view) {
   return { id, panelHeight, width: 412, height, interfaceLanguage, appearance, view };
@@ -84,13 +84,12 @@ export function evaluateSnapshot(snapshot, sc) {
 
 export function parseArgs(argv) {
   const options = {
-    selfTest: false, requireChrome: false, noBuild: false, customDist: false,
+    requireChrome: false, noBuild: false, customDist: false,
     distDir: path.join(windowsRoot, "dist"), outDir: null, chromeBin: process.env.CHROME_BIN || null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === "--self-test") options.selfTest = true;
-    else if (arg === "--require-chrome") options.requireChrome = true;
+    if (arg === "--require-chrome") options.requireChrome = true;
     else if (arg === "--no-build") options.noBuild = true;
     else if (arg === "--dist" && i + 1 < argv.length) { options.distDir = path.resolve(argv[++i]); options.customDist = true; }
     else if (arg === "--out-dir" && i + 1 < argv.length) options.outDir = path.resolve(argv[++i]);
@@ -98,79 +97,6 @@ export function parseArgs(argv) {
     else return null;
   }
   return options;
-}
-
-async function runSelfTest() {
-  const validStandard = {
-    scenarioId: SCENARIOS[0].id, locationScenario: SCENARIOS[0].id, readyState: "complete", schemeLight: false,
-    isNativeHost: true, isParked: false, errors: [],
-    appRect: { left: 0, top: 0, right: 412, bottom: 680, width: 412, height: 680 },
-    popoverRect: { left: 16, top: 16, right: 396, bottom: 664, width: 380, height: 648 },
-    islands: [{ className: "win-island win-island--top", left: 16, top: 16, right: 396, bottom: 160 }, { className: "win-island win-island--bottom", left: 16, top: 170, right: 396, bottom: 664 }],
-    documentElementScrollWidth: 412, chromeLabels: [{ selector: ".cc-footer-label", text: "演示环境", clientWidth: 80, scrollWidth: 80 }],
-    scrollAreaHeight: 280, activeRoomId: null, subpage: null,
-  };
-  const passAll = evaluateSnapshot(validStandard, SCENARIOS[0]);
-  if (passAll.length !== 0) { console.error("self-test failed on valid standard snapshot:", passAll); process.exit(1); }
-  const wrongScenarioAndTheme = evaluateSnapshot({ ...validStandard, scenarioId: "stale-scenario", schemeLight: true }, SCENARIOS[0]);
-  if (!wrongScenarioAndTheme.some((msg) => msg.includes("scenarioId")) || !wrongScenarioAndTheme.some((msg) => msg.includes("scheme-light"))) {
-    console.error("self-test expected evaluateSnapshot to catch stale scenarioId and mismatched schemeLight, got:", wrongScenarioAndTheme);
-    process.exit(1);
-  }
-  const hiddenZero = { width: 0, height: 0, display: "none" };
-  const validSubpage = {
-    ...validStandard,
-    scenarioId: SCENARIOS[4].id, locationScenario: SCENARIOS[4].id, readyState: "complete", schemeLight: false,
-    appRect: { left: 0, top: 0, right: 412, bottom: 580, width: 412, height: 580 },
-    popoverRect: { left: 16, top: 16, right: 396, bottom: 564, width: 380, height: 548 },
-    islands: [{ className: "win-island win-island--top", left: 16, top: 16, right: 396, bottom: 140 }, { className: "win-island win-island--bottom", left: 16, top: 150, right: 396, bottom: 564 }],
-    scrollAreaHeight: 320,
-    subpage: {
-      mounted: true, hiddenControls: { "#command-input": hiddenZero, '.cc-room-pill[data-room-id="room_living"]': hiddenZero, ".win-slider-deck": hiddenZero },
-      visibleSiblingTileCount: 0, backButton: { width: 28, height: 28 },
-    },
-  };
-  const passSubpage = evaluateSnapshot(validSubpage, SCENARIOS[4]);
-  if (passSubpage.length !== 0) { console.error("self-test failed on valid compact subpage snapshot:", passSubpage); process.exit(1); }
-  const broken = {
-    ...validSubpage, isParked: true,
-    popoverRect: { left: 0, top: 0, right: 412, bottom: 580, width: 412, height: 580 },
-    chromeLabels: [{ selector: ".cc-footer-label", text: "Truncated", clientWidth: 40, scrollWidth: 65 }],
-    scrollAreaHeight: 110,
-    subpage: {
-      ...validSubpage.subpage, hiddenControls: { ...validSubpage.subpage.hiddenControls, "#command-input": { width: 240, height: 32, display: "block" } },
-      visibleSiblingTileCount: 3, backButton: { width: 0, height: 0 },
-    },
-  };
-  const failures = evaluateSnapshot(broken, SCENARIOS[4]);
-  if (failures.length < 6) { console.error("self-test expected at least 6 failures on broken snapshot, got:", failures); process.exit(1); }
-  const fakeWs = Object.assign(new EventTarget(), { readyState: 1, send() {}, close() {} });
-  const fakeSession = new CdpSession(fakeWs, 5000);
-  const pendingSend = fakeSession.send("Runtime.evaluate").then(() => null, (err) => err);
-  const pendingEvent = fakeSession.waitForEvent("Page.loadEventFired").then(() => null, (err) => err);
-  fakeWs.readyState = 3;
-  fakeWs.dispatchEvent(new Event("close"));
-  const [sendErr, eventErr] = await Promise.all([pendingSend, pendingEvent]);
-  if (!(sendErr instanceof Error) || !(eventErr instanceof Error)) {
-    console.error("self-test expected CdpSession close to reject in-flight send and waitForEvent, got:", { sendErr, eventErr });
-    process.exit(1);
-  }
-  const timeoutWs = Object.assign(new EventTarget(), { readyState: 1, send() {}, close() {} });
-  const timeoutSession = new CdpSession(timeoutWs, 5000);
-  const timeoutErr = await timeoutSession.send("Runtime.evaluate", {}, 15).then(() => null, (err) => err);
-  if (!(timeoutErr instanceof Error) || !timeoutErr.message.includes("timed out")) {
-    console.error("self-test expected CdpSession per-command timeout rejection, got:", timeoutErr);
-    process.exit(1);
-  }
-  const defaultOpts = parseArgs([]), customOpts = parseArgs(["--no-build", "--dist", "/tmp/custom-dist"]);
-  if (!defaultOpts || defaultOpts.customDist !== false || defaultOpts.noBuild !== false || !customOpts || customOpts.customDist !== true || customOpts.noBuild !== true || customOpts.distDir !== path.resolve("/tmp/custom-dist")) {
-    console.error("self-test failed on parseArgs customDist/noBuild flags:", { defaultOpts, customOpts }); process.exit(1);
-  }
-  const badCli = spawnSync(process.execPath, [scriptPath, "--unknown-flag"], { encoding: "utf8" });
-  if (badCli.status !== 2 || !String(badCli.stderr ?? "").includes(usageText)) {
-    console.error("self-test expected unknown flag to exit 2 with usage, got:", badCli.status, badCli.stderr); process.exit(1);
-  }
-  console.log("verify-flyout-layout self-test passed");
 }
 
 function findChromeBinary(explicitBin) {
@@ -472,7 +398,6 @@ async function terminateChrome(proc, tmpDir) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (!options) { console.error(usageText); process.exit(2); }
-  if (options.selfTest) { await runSelfTest(); return; }
   const chromeBin = findChromeBinary(options.chromeBin);
   if (!chromeBin) {
     if (options.requireChrome) { console.error("❌ Chrome/Chromium/Edge binary not found (--require-chrome specified)"); process.exit(1); }

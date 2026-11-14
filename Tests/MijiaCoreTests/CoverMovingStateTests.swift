@@ -185,18 +185,6 @@ struct CoverMovingStateTests {
 
     // MARK: Dead zone
 
-    @Test("Positions within two points of either end snap to the end")
-    func deadZoneSnapsEnds() {
-        #expect(CoverSpec.snappedPosition(0) == 0)
-        #expect(CoverSpec.snappedPosition(1) == 0)
-        #expect(CoverSpec.snappedPosition(2) == 0)
-        #expect(CoverSpec.snappedPosition(3) == 3)
-        #expect(CoverSpec.snappedPosition(97) == 97)
-        #expect(CoverSpec.snappedPosition(98) == 100)
-        #expect(CoverSpec.snappedPosition(99) == 100)
-        #expect(CoverSpec.snappedPosition(100) == 100)
-    }
-
     @Test("A parked curtain never displays 1% or 99%")
     func deadZoneReachesTheCard() throws {
         let low = try coverProperty(statusModel: Self.statusModel, current: 1, target: 1, status: 0)

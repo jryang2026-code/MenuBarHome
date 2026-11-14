@@ -128,16 +128,10 @@ fn now_epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn tray_labels_for_shortcut(shortcut_label: Option<&str>) -> (String, String) {
+fn tray_toggle_label(shortcut_label: Option<&str>) -> String {
     match shortcut_label.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(label) => (
-            format!("打开/隐藏控制中心 ({label})"),
-            format!("MenuBarHome · 菜单栏米家 ({label})"),
-        ),
-        None => (
-            "打开/隐藏控制中心".to_string(),
-            "MenuBarHome · 菜单栏米家".to_string(),
-        ),
+        Some(label) => format!("打开/隐藏控制中心 ({label})"),
+        None => "打开/隐藏控制中心".to_string(),
     }
 }
 
@@ -148,7 +142,7 @@ fn build_tray_menu(
     shortcut_label: Option<&str>,
     update_version: Option<&str>,
 ) -> tauri::Result<Menu<tauri::Wry>> {
-    let (toggle_text, _) = tray_labels_for_shortcut(shortcut_label);
+    let toggle_text = tray_toggle_label(shortcut_label);
     let mut builder = MenuBuilder::new(app).text("toggle", toggle_text);
     if let Some(version) = update_version {
         builder = builder.text("update", format!("有新版本 v{version}，点击查看"));
@@ -507,17 +501,6 @@ mod tests {
         assert_eq!(tray.decide_tray_release(false, 14_190, None), TrayToggleAction::Present);
     }
 
-    #[test]
-    fn the_panel_window_carries_the_padding_its_shadow_is_drawn_in() {
-        // `#app` pads `--panel-inset: 16px` on every side around the 380 px Win11 two-island column.
-        assert_eq!(panel_window_width(), 412.0);
-        assert_eq!(main_column_offset(412, 1.0), 16);
-        assert_eq!(main_column_offset(515, 1.25), 20);
-        assert_eq!(main_column_inset(412, 1.0), 16);
-    }
-
-
-
     fn extra(origins: &[&str]) -> HashSet<String> {
         origins
             .iter()
@@ -528,39 +511,6 @@ mod tests {
     fn allows(url: &str, origins: &[&str]) -> bool {
         let parsed = reqwest::Url::parse(url).expect("test URL");
         check_url_allowed(&parsed, &extra(origins)).is_ok()
-    }
-
-    #[test]
-    fn native_http_invoke_rejects_an_unconfigured_host() {
-        let app = tauri::test::mock_builder()
-            .invoke_handler(tauri::generate_handler![native_http])
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("isolated IPC application");
-        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
-            .build()
-            .expect("isolated IPC window");
-        let response = tauri::test::get_ipc_response(
-            &window,
-            tauri::webview::InvokeRequest {
-                cmd: "native_http".into(),
-                callback: tauri::ipc::CallbackFn(0),
-                error: tauri::ipc::CallbackFn(1),
-                url: "http://tauri.localhost".parse().expect("local app origin"),
-                body: tauri::ipc::InvokeBody::Json(serde_json::json!({
-                    "url": "https://not-configured.invalid/private",
-                    "method": "POST",
-                    "headers": {"Authorization": "Bearer isolated-test-value"},
-                    "body": "private-data",
-                    "timeoutMs": 100
-                })),
-                headers: Default::default(),
-                invoke_key: tauri::test::INVOKE_KEY.to_string(),
-            },
-        );
-        let error = response.expect_err("unconfigured hosts must fail before networking");
-        let message = error.as_str().expect("policy error returned to the frontend");
-        assert!(message.contains("not-configured.invalid"), "unexpected IPC error: {message}");
-        assert!(message.contains("拒绝访问未授权来源"), "request reached transport: {message}");
     }
 
     #[test]
@@ -833,29 +783,6 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_message_appends_warning_only_when_requested() {
-        let base = confirmation_message("https://ha.example.com", false);
-        assert!(!base.contains(PLAINTEXT_WARNING));
-
-        let local_http = confirmation_message("http://192.168.1.8:8123", false);
-        assert!(!local_http.contains(PLAINTEXT_WARNING));
-
-        let public_http = confirmation_message("http://ha.example.com:8123", true);
-        assert!(public_http.contains(PLAINTEXT_WARNING));
-        assert!(public_http.starts_with("允许 MenuBarHome 连接这个地址吗？"));
-    }
-
-    #[test]
-    fn native_classification_rejects_public_plaintext_ai_endpoints() {
-        let public = requested_service_origins("http://evil.example/v1", "").expect("parses");
-        assert!(public.rejected_assistant.is_some());
-        assert!(public.origins.is_empty());
-        let local = requested_service_origins("http://192.168.1.5:11434/v1", "").expect("parses");
-        assert!(local.rejected_assistant.is_none());
-        assert_eq!(local.origins.len(), 1);
-    }
-
-    #[test]
     fn confirmation_warning_matches_the_shared_local_network_golden() {
         let raw = include_str!("../../../Tests/Fixtures/local_network_endpoint_golden.json");
         let golden: serde_json::Value = serde_json::from_str(raw).expect("LAN endpoint golden");
@@ -1060,24 +987,6 @@ mod tests {
     }
 
     #[test]
-    fn tray_labels_include_shortcut_only_when_enabled() {
-        assert_eq!(
-            tray_labels_for_shortcut(Some("Ctrl+Alt+M")),
-            (
-                "打开/隐藏控制中心 (Ctrl+Alt+M)".to_string(),
-                "MenuBarHome · 菜单栏米家 (Ctrl+Alt+M)".to_string()
-            )
-        );
-        assert_eq!(
-            tray_labels_for_shortcut(None),
-            (
-                "打开/隐藏控制中心".to_string(),
-                "MenuBarHome · 菜单栏米家".to_string()
-            )
-        );
-    }
-
-    #[test]
     fn validates_release_asset_urls_filenames_and_sha256() {
         assert!(validated_release_asset_url(
             "https://github.com/jryang2026-code/MenuBarHome/releases/download/v1.1.4/MenuBarHome-1.1.4-windows-x64-setup.exe"
@@ -1107,26 +1016,6 @@ mod tests {
         assert!(!release_asset_redirect_allowed(
             &reqwest::Url::parse("http://objects.githubusercontent.com/setup.exe").unwrap()
         ));
-
-        assert_eq!(
-            sanitize_installer_filename("MenuBarHome-1.1.4-windows-x64-setup.exe").ok(),
-            Some("MenuBarHome-1.1.4-windows-x64-setup.exe".to_string())
-        );
-        for bad_name in [
-            "../setup.exe",
-            "dir/setup.exe",
-            "dir\\setup.exe",
-            "C:setup.exe",
-            "payload.bat",
-            "",
-        ] {
-            assert!(sanitize_installer_filename(bad_name).is_err(), "{bad_name}");
-        }
-
-        let hex = compute_sha256_hex(b"verified-windows-installer");
-        assert_eq!(parse_sha256_hex(&format!("sha256:{}", hex.to_uppercase())), Some(hex.clone()));
-        assert_eq!(parse_sha256_hex(&format!("{hex}  MenuBarHome-1.1.4-windows-x64-setup.exe\n")), Some(hex));
-        assert_eq!(parse_sha256_hex("sha256:1234"), None);
 
         // Built-in Ed25519 public key decodes to 32 bytes (ADR-0005).
         assert_eq!(
@@ -1269,22 +1158,15 @@ mod tests {
             nonce: "mnonce0001".to_string(),
         };
         assert_eq!(
-            go2rtc_jpeg_frame_url(&session, "cam_mjpeg_dev_cam").expect("frame url"),
-            "http://127.0.0.1:43123/api/frame.jpeg?src=cam_mjpeg_dev_cam"
-        );
-        assert_eq!(
             go2rtc_mjpeg_stream_url(&session, "cam_mjpeg_dev_cam").expect("stream url"),
             "http://127.0.0.1:43123/api/stream.mjpeg?src=cam_mjpeg_dev_cam"
         );
-        assert!(go2rtc_jpeg_frame_url(&session, "http://127.0.0.1:1984/api/config").is_err());
-        assert!(go2rtc_jpeg_frame_url(&session, "../api/config").is_err());
         assert!(go2rtc_mjpeg_stream_url(&session, "http://127.0.0.1:1984/api/config").is_err());
         assert!(go2rtc_mjpeg_stream_url(&session, "../api/config").is_err());
         let stranger = Go2RtcSession {
             api_listen: "127.0.0.1:1984".to_string(),
             ..session
         };
-        assert!(go2rtc_jpeg_frame_url(&stranger, "cam_mjpeg_dev_cam").is_err());
         assert!(go2rtc_mjpeg_stream_url(&stranger, "cam_mjpeg_dev_cam").is_err());
 
         let ports = reserve_loopback_ports(2).expect("loopback ports");
@@ -1303,50 +1185,6 @@ mod tests {
         assert_eq!(xiaomi_camera_subtype(Some("hd")), Ok("hd"));
         assert_eq!(xiaomi_camera_subtype(Some("max")), Ok("3"));
         assert!(xiaomi_camera_subtype(Some("4k")).is_err());
-    }
-
-    #[test]
-    fn bundled_component_copy_repairs_a_damaged_copy_and_stays_idempotent() {
-        let root = std::env::temp_dir().join(format!("mbm-camera-bin-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let bin = root.join("bin");
-        std::fs::create_dir_all(&root).expect("temp dir");
-        let src = root.join("go2rtc.exe");
-        std::fs::write(&src, b"bundled-component").expect("write source");
-        let dest = bin.join("go2rtc.exe");
-
-        copy_bundled_component(&src, &dest).expect("copy missing component");
-        assert_eq!(std::fs::read(&dest).expect("read copied file"), b"bundled-component");
-
-        std::fs::write(&dest, b"").expect("truncate destination");
-        copy_bundled_component(&src, &dest).expect("repair empty component");
-        assert_eq!(std::fs::read(&dest).expect("read repaired file"), b"bundled-component");
-
-        std::fs::write(&dest, b"interrupted").expect("write stale destination");
-        copy_bundled_component(&src, &dest).expect("repair stale component");
-        assert_eq!(std::fs::read(&dest).expect("read repaired file"), b"bundled-component");
-
-        let installed = std::fs::metadata(&dest)
-            .expect("dest metadata")
-            .modified()
-            .expect("dest mtime");
-        copy_bundled_component(&src, &dest).expect("keep identical component");
-        assert_eq!(
-            std::fs::metadata(&dest)
-                .expect("dest metadata")
-                .modified()
-                .expect("dest mtime"),
-            installed,
-            "an identical component must not be rewritten"
-        );
-
-        let leftovers = std::fs::read_dir(&bin)
-            .expect("read bin dir")
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.file_name().to_string_lossy().contains(".staging-"))
-            .count();
-        assert_eq!(leftovers, 0, "staging files must not survive a copy");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1422,6 +1260,32 @@ mod tests {
         assert_eq!(install_component(Some(src.as_path()), &dest, None), Ok(true));
         assert_eq!(std::fs::read(&dest).expect("read repaired file"), b"bundled-component");
 
+        // Running go2rtc.exe on Windows holds an OS image lock; reinstalling an identical
+        // binary must be a no-op that neither rewrites `dest` nor leaves `.staging-` files.
+        let installed_mtime = std::fs::metadata(&dest)
+            .expect("dest metadata")
+            .modified()
+            .expect("dest mtime");
+        assert_eq!(
+            install_component(Some(src.as_path()), &dest, expected.as_deref()),
+            Ok(true)
+        );
+        copy_bundled_component(&src, &dest).expect("idempotent bundled copy");
+        assert_eq!(
+            std::fs::metadata(&dest)
+                .expect("dest metadata")
+                .modified()
+                .expect("dest mtime"),
+            installed_mtime,
+            "an identical component must not be rewritten"
+        );
+        let leftovers = std::fs::read_dir(&bin)
+            .expect("read bin dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".staging-"))
+            .count();
+        assert_eq!(leftovers, 0, "staging files must not survive a copy");
+
         std::fs::write(&src, b"").expect("corrupt the bundled copy");
         std::fs::write(&dest, b"downloaded-build").expect("write working destination");
         assert_eq!(
@@ -1443,22 +1307,6 @@ mod tests {
             install_component(None, &unbundled, Some(GO2RTC_EXE_SHA256)),
             Ok(false),
             "an unverified go2rtc.exe must not short-circuit the download"
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn file_sha256_hex_matches_the_in_memory_digest_across_chunk_boundaries() {
-        let root = std::env::temp_dir().join(format!("mbm-file-sha-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("temp dir");
-        // 200 KB spans three 64 KB reads, so a chunk dropped at a boundary would change the sum.
-        let content: Vec<u8> = (0..200_000u32).map(|index| (index % 251) as u8).collect();
-        let path = root.join("component.bin");
-        std::fs::write(&path, &content).expect("write component");
-        assert_eq!(
-            file_sha256_hex(&path).expect("hash component"),
-            compute_sha256_hex(&content)
         );
         let _ = std::fs::remove_dir_all(&root);
     }

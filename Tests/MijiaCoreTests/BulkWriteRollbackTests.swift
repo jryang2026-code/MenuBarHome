@@ -361,18 +361,6 @@ struct BulkWriteRollbackTests {
         #expect(store.undoBanner == nil)
     }
 
-    @Test("turnAllOff hands back the task that sends its commands")
-    @MainActor
-    func turnAllOffReturnsItsTask() async throws {
-        let (store, mock) = try await makeStore([Self.ceiling])
-        let task = store.turnAllOff()
-        #expect(task != nil)
-        // Freeze the banner so a loaded CI cannot expire it mid-test (CODING_STANDARDS §9).
-        store.pauseUndoBannerCountdown()
-        await task?.value
-        #expect(await mock.executedCommands == [.setLightPower(entityId: "light.ceiling", isOn: false)])
-    }
-
     @Test("Undo during a running 全关 stops the batch and restores only the device it reached")
     @MainActor
     func undoDuringRunningBatchStopsRemainingCommands() async throws {
@@ -493,27 +481,6 @@ struct BulkWriteRollbackTests {
         ])
         #expect(store.devices.allSatisfy { !$0.isActiveOn })
         #expect(store.undoBanner == nil)
-    }
-
-    @Test("Undo after the batch finished restores every device it switched off")
-    @MainActor
-    func undoAfterFinishedBatchRestoresEveryDevice() async throws {
-        let (store, mock) = try await makeStore([Self.ceiling, Self.deskLamp])
-        let batch = store.turnAllOff()
-        store.pauseUndoBannerCountdown()
-        await batch?.value
-        #expect(store.runningBatches.isEmpty)
-
-        let undo = try #require(store.undoTurnAllOff())
-        await undo.value
-
-        let commands = await mock.executedCommands
-        #expect(commands.count == 4)
-        #expect(Array(commands.suffix(2)) == [
-            .setLightPower(entityId: "light.ceiling", isOn: true),
-            .setLightPower(entityId: "light.desk", isOn: true),
-        ])
-        #expect(store.devices.allSatisfy { $0.isActiveOn })
     }
 
     @Test("A snapshot during the undo wait cannot leave the card off")

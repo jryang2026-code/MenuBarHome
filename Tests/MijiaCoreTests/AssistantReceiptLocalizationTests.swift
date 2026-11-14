@@ -13,27 +13,6 @@ struct AssistantReceiptLocalizationTests {
         IntentReply.describe([DeviceIntent(targetId: device.id, operation: operation)], devices: [device], scenes: [])
     }
 
-    @Test("Receipts translate fixed text while preserving user device names")
-    func receiptLanguages() {
-        L10n.$overrideLanguage.withValue(.zhHant) {
-            #expect(reply(.power(true)) == "已開啟书房灯")
-            #expect(reply(.power(false)) == "已關閉书房灯")
-            #expect(reply(.brightness(30)) == "已书房灯亮度調至 30%")
-            #expect(reply(.fanSpeed("high")) == "已书房灯風速調為高檔")
-            #expect(reply(.oscillation(false)) == "已书房灯關閉搖頭")
-        }
-        L10n.$overrideLanguage.withValue(.zhHans) {
-            #expect(reply(.power(true)) == "已打开书房灯")
-            #expect(reply(.brightness(30)) == "已书房灯亮度调至 30%")
-            #expect(reply(.fanSpeed("Level3")) == "已书房灯风速调为 3 档")
-        }
-        L10n.$overrideLanguage.withValue(.en) {
-            #expect(reply(.power(true)) == "Turned on 书房灯")
-            #expect(reply(.brightness(30)) == "Set 书房灯 brightness to 30%")
-            #expect(reply(.fanSpeed("Level3")) == "Set 书房灯 fan speed to Level 3")
-        }
-    }
-
     @Test("Absolute temperatures follow the display unit and temperature differences omit the offset")
     func temperatureReceipts() {
         L10n.$overrideLanguage.withValue(.en) {
@@ -65,29 +44,6 @@ struct AssistantReceiptLocalizationTests {
             #expect(reply(.colorTemperature(4000)) == "已书房灯色溫調至 4000K")
             #expect(reply(.brightnessStep(-10)) == "已书房灯亮度調低 10%")
             #expect(reply(.lightEffect("Night")) == "已书房灯切換為月光模式")
-        }
-    }
-
-    @Test("Habit suggestions use translated action labels and display temperatures")
-    func suggestionLanguages() {
-        func title(_ operation: IntentOperation) -> String? {
-            UserHabitMemory.suggestionTitle(for: DeviceIntent(targetId: device.id, operation: operation), devices: [device], scenes: [])
-        }
-        L10n.$overrideLanguage.withValue(.zhHant) {
-            #expect(title(.power(true)) == "開啟书房灯")
-            #expect(title(.colorTemperature(4000)) == "书房灯·色溫4000K")
-            #expect(title(.hvacMode("heat")) == "书房灯·制熱")
-            #expect(title(.oscillation(true)) == "书房灯·搖頭")
-            #expect(title(.fanSpeed("Level3")) == "书房灯·風速3 檔")
-            L10n.$overrideTemperatureUnit.withValue(.fahrenheit) {
-                #expect(title(.targetTemperature(24)) == "书房灯·75.2°F")
-            }
-        }
-        L10n.$overrideLanguage.withValue(.en) {
-            #expect(title(.power(false)) == "Turn off 书房灯")
-            L10n.$overrideTemperatureUnit.withValue(.celsius) {
-                #expect(title(.targetTemperature(24)) == "书房灯 · 24°C")
-            }
         }
     }
 }

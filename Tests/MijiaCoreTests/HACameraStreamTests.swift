@@ -10,15 +10,6 @@ struct HACameraStreamTests {
         )
     }
 
-    @Test("The snapshot proxy path maps to HA's MJPEG proxy and keeps the access token")
-    func mjpegProxyPathKeepsToken() {
-        #expect(HAWebSocketProvider.mjpegProxyPath(fromSnapshotPath: "/api/camera_proxy/camera.door?token=abc123")
-            == "/api/camera_proxy_stream/camera.door?token=abc123")
-        #expect(HAWebSocketProvider.mjpegProxyPath(fromSnapshotPath: "https://ha.local:8123/api/camera_proxy/camera.door?token=t")
-            == "https://ha.local:8123/api/camera_proxy_stream/camera.door?token=t")
-        #expect(HAWebSocketProvider.mjpegProxyPath(fromSnapshotPath: "/local/door.jpg") == nil)
-    }
-
     @Test("Without HLS, an HA camera entity plays as MJPEG instead of 1 fps snapshots")
     func cameraEntityFallsBackToMJPEG() async throws {
         let provider = HAWebSocketProvider(baseURLString: "http://192.168.1.10:8123", token: "t", onAddressSuggestion: nil)

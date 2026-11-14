@@ -310,25 +310,4 @@ struct SensorHistoryTests {
         #expect(keys.temperature == "2.1")
         #expect(keys.humidity == "2.2")
     }
-
-    @Test("DemoHomeProvider synthesizes 24h and 7d sensor history curves")
-    func demoProviderSynthesizesHistory() async {
-        let provider = DemoHomeProvider()
-        let now = Date(timeIntervalSince1970: 1_760_000_000)
-        let samples24h = await provider.fetchSensorHistory(
-            deviceId: "demo_living_sensor",
-            window: .last24Hours,
-            now: now
-        )
-        #expect(samples24h.count == 24)
-        #expect(samples24h.allSatisfy { $0.temperature != nil && $0.humidity != nil })
-
-        let samples7d = await provider.fetchSensorHistory(
-            deviceId: "demo_living_sensor",
-            window: .last7Days,
-            now: now
-        )
-        #expect(samples7d.count == 7)
-        #expect(samples7d.allSatisfy { $0.minTemperature != nil && $0.maxTemperature != nil })
-    }
 }

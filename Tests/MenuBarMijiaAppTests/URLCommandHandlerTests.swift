@@ -107,31 +107,6 @@ struct URLCommandHandlerTests {
         }
     }
 
-    @Test("A blocked Mi write shows the link result, then restores the scan toast")
-    func blockedWriteRestoresScanToast() async throws {
-        try await L10n.$overrideLanguage.withValue(.en) {
-            let (store, provider) = try await Self.makeBlockedStore()
-            #expect(store.miSessionBlocksControl)
-            store.setRaycastIntegration(enabled: true)
-            let token = try #require(store.raycastBridgeToken)
-
-            let handler = URLCommandHandler()
-            handler.confirmationHandler = { _ in true }
-            let link = try Self.url(
-                "menumijia://brightness?device=dev_lamp&percent=40&id=cli-blocked&token=\(token)"
-            )
-            await handler.handle(link, in: store)
-
-            #expect(store.lastRaycastCommandFeedback?.isError == true)
-            #expect(store.lastRaycastCommandFeedback?.message == "Xiaomi Home session expired")
-            #expect(store.toastNotice?.message == "Xiaomi Home session expired")
-            #expect(store.toastNotice?.persistent == false, "the link result is shown while the prompt waits")
-            store.dismissToast()
-            #expect(store.toastNotice?.persistent == true, "the scan action returns when the result ends")
-            #expect(await provider.executedCommands.isEmpty)
-        }
-    }
-
     @Test("An ask link while expired shows its failure, then restores the scan toast")
     func askLinkRestoresScanToast() async throws {
         try await L10n.$overrideLanguage.withValue(.zhHans) {

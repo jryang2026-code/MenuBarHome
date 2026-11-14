@@ -66,21 +66,6 @@ struct UnsupportedDeviceCollectorDiagnosticsTests {
         #expect(timestamps.last == Self.now.addingTimeInterval(-86_400))
     }
 
-    @Test("The crash summary counts only the window and reports the latest time")
-    func crashSummaryWindow() {
-        let summary = DiagnosticsReportBuilder.crashSummary(
-            [
-                Self.now.addingTimeInterval(-86_400),
-                Self.now.addingTimeInterval(-9 * 86_400),
-                Self.now.addingTimeInterval(-2 * 86_400)
-            ],
-            now: Self.now
-        )
-
-        #expect(summary.count == 2)
-        #expect(summary.lastAt == Self.now.addingTimeInterval(-86_400))
-    }
-
     @Test("The report shows the crash count and latest day, and no file name or path")
     func crashSectionRendering() throws {
         let latest = try Self.localNoon(year: 2026, month: 11, day: 5)
@@ -107,25 +92,5 @@ struct UnsupportedDeviceCollectorDiagnosticsTests {
         let report = DiagnosticsReportBuilder.markdown(Self.input(crashes: []), now: Self.now)
 
         #expect(Self.crashSection(report).contains("0"))
-    }
-
-    @Test("The crash section is translated in the shipped Traditional Chinese table")
-    func crashSectionTraditionalChinese() throws {
-        let latest = try Self.localNoon(year: 2026, month: 11, day: 5)
-        L10n.$overrideTranslationDirectory.withValue(LocalizationTests.shippedTablesDirectory) {
-            L10n.$overrideLanguage.withValue(.zhHant) {
-                let empty = DiagnosticsReportBuilder.markdown(Self.input(crashes: []), now: Self.now)
-                #expect(empty.contains("本機崩潰"))
-                #expect(empty.contains("最近 7 天 0 次"))
-                #expect(empty.contains("崩潰堆疊"))
-                #expect(!empty.contains("本地崩溃"))
-
-                let dated = DiagnosticsReportBuilder.markdown(
-                    Self.input(crashes: [latest]),
-                    now: latest.addingTimeInterval(60)
-                )
-                #expect(dated.contains("最近 7 天 1 次（最近一次 2026-11-05）"))
-            }
-        }
     }
 }

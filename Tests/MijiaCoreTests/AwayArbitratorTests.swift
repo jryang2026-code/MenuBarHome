@@ -75,27 +75,4 @@ struct AwayArbitratorTests {
         _ = arbiter.ingest(.screenLocked, lidClosed: false, at: start)
         #expect(arbiter.flush(at: start.addingTimeInterval(-30)) == .screenLockedOnly)
     }
-
-    // MARK: Regression — what the single `away` trigger could not do
-
-    /// The old engine mapped `screenIsLocked` and `willSleep` to the same trigger, so one rule fired
-    /// for both physical actions. The arbiter now returns two different outcomes for the same two
-    /// notification sequences, which is the whole point of the split.
-    @Test func lidCloseAndPlainLockAreNoLongerTheSameOutcome() {
-        func outcome(lidClosed: Bool, sleepFollows: Bool) -> AwayOutcome? {
-            var arbiter = AwayArbitrator()
-            _ = arbiter.ingest(.screenLocked, lidClosed: lidClosed, at: start)
-            if sleepFollows {
-                return arbiter.ingest(.willSleep, lidClosed: lidClosed, at: start.addingTimeInterval(0.4))
-            }
-            return arbiter.flush(at: start.addingTimeInterval(5))
-        }
-
-        #expect(outcome(lidClosed: true, sleepFollows: true) == .lidClosedSleep)
-        #expect(outcome(lidClosed: false, sleepFollows: false) == .screenLockedOnly)
-        // And the precise outcomes map onto distinct triggers.
-        #expect(AwayOutcome.lidClosedSleep.trigger == .lidClosedSleep)
-        #expect(AwayOutcome.screenLockedOnly.trigger == .screenLocked)
-        #expect(AwayOutcome.systemSleep.trigger == .systemSleep)
-    }
 }

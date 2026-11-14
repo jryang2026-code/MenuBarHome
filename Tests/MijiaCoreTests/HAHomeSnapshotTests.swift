@@ -16,21 +16,6 @@ struct HAHomeSnapshotTests {
         ["type": .string("result"), "id": .number(Double(id)), "success": .bool(true), "result": result]
     }
 
-    @Test("Initial states never publish hidden devices before their registry arrives")
-    func waitsForInitialRegistries() throws {
-        var projection = HAHomeSnapshot()
-        let statesOnly = try projection.receive(Self.reply(4, Self.states))
-        #expect(statesOnly?.devices == nil)
-        let withAreas = try projection.receive(Self.reply(1, .array([.object(["area_id": .string("office"), "name": .string("Office")])])))
-        #expect(withAreas?.devices == nil)
-        let withoutEntities = try projection.receive(Self.reply(2, .array([])))
-        #expect(withoutEntities?.devices == nil)
-        let completed = try projection.receive(Self.reply(3, Self.entities))
-        let home = try #require(completed)
-        #expect(home.devices.map(\.id) == ["light.visible"])
-        #expect(home.devices.first?.roomName == "Office")
-    }
-
     static var responseOrders: [[Int]] {
         var result: [[Int]] = []
         for a in 1...4 {

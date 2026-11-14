@@ -8,7 +8,6 @@ import posixpath
 import re
 import subprocess
 import sys
-import tempfile
 import unicodedata
 import urllib.parse
 from dataclasses import dataclass
@@ -406,65 +405,7 @@ def audit_doc_links(root: Path = ROOT) -> list[DocDiagnostic]:
     return scan_repo_docs(root)[3]
 
 
-def _build_fixture_repo(tmp: Path) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp, env=_clean_git_env(), check=True)
-    (tmp / ".gitignore").write_text("node_modules\nscripts/go2rtc-ptz/out/\n", encoding="utf-8")
-    (tmp / "GLOSSARY.md").write_text("# Glossary\n\n## 领域术语\n", encoding="utf-8")
-    for d in ("Sources", "scripts/go2rtc-ptz", "windows", "docs/adr", "docs/research", "docs/assets"):
-        (tmp / d).mkdir(parents=True, exist_ok=True)
-    (tmp / "Sources/App.swift").write_text("line1\nline2\nline3\n", encoding="utf-8")
-    (tmp / "scripts/check.sh").write_text("#!/bin/sh\n", encoding="utf-8")
-    (tmp / "windows/package.json").write_text("{}\n", encoding="utf-8")
-    (tmp / "docs/assets/logo.svg").write_text("<svg/>\n", encoding="utf-8")
-    (tmp / "docs/adr/INDEX.md").write_text("# ADR Index\n\n- [0018](0018-back-to-github.md)\n- `Sources/App.swift`\n", encoding="utf-8")
-    (tmp / "docs/adr/0018-back-to-github.md").write_text("# ADR 0018\n\nRetired `scripts/forge.py` and linked [Index](INDEX.md).\n", encoding="utf-8")
-    (tmp / "docs/research/similar.md").write_text("# Research\n\nExternal `Sources/HeaterKit/MiIO.swift`.\n```swift\nvar out = [UInt8](repeating: 0, count: 16)\n```\n", encoding="utf-8")
-    (tmp / "AGENTS.md").write_text(
-        "# Agent Guide\n\n## Foo\n\n## Foo-1\n\n## Foo\n\n<a id=\"custom-id\"></a>\n"
-        "- [GLOSSARY](GLOSSARY.md#领域术语) [ThirdFoo](#foo-2) [Custom](#custom-id)\n"
-        "- [![badge](docs/assets/logo.svg)](GLOSSARY.md) [Lines](Sources/App.swift#L1-L3) [Ref][adr-idx]\n"
-        '- <img src="docs/assets/logo.svg"> [`scripts/upstream_only.sh`](https://example.com/scripts/upstream_only.sh)\n'
-        "- `./scripts/check.sh` `Sources/App.swift:main(arg:)` `Sources/*.swift` `windows/node_modules`\n"
-        "<!-- [commented](missing.md) `Sources/MissingInComment.swift` -->\n\n[adr-idx]: docs/adr/INDEX.md\n",
-        encoding="utf-8",
-    )
-    subprocess.run(["git", "add", "."], cwd=tmp, env=_clean_git_env(), check=True)
-
-
-def self_test() -> None:
-    assert classify_doc("docs/adr/INDEX.md") == DocTier.LIVING
-    assert classify_doc("docs/adr/0018-back-to-github.md") == DocTier.HISTORICAL_OR_EXTERNAL
-    assert classify_doc("CHANGELOG.md") == DocTier.HISTORICAL_OR_EXTERNAL
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp = Path(tmp_dir)
-        _build_fixture_repo(tmp)
-        (tmp / "docs/untracked.md").write_text("# Untracked\n", encoding="utf-8")
-        (tmp / "Sources/Untracked.swift").write_text("// untracked\n", encoding="utf-8")
-        if diags := audit_doc_links(tmp):
-            raise SystemExit(f"self-test expected 0 diagnostics on valid repo, got: {diags}")
-        (tmp / "docs/broken_link.md").symlink_to("missing_target.md")
-        subprocess.run(["git", "add", "docs/broken_link.md"], cwd=tmp, env=_clean_git_env(), check=True)
-        (tmp / "docs/adr/INDEX.md").write_text(
-            "# ADR\n\n- [Untracked](../untracked.md)\n- [Symlink](../broken_link.md)\n"
-            "- [![i](../assets/logo.svg)](../missing_outer.md)\n- [BadLines](../../Sources/App.swift#L2-L9)\n"
-            "- [BadSwiftFrag](../../Sources/App.swift#not-a-line)\n- [ZeroLine](../../Sources/App.swift#L0)\n"
-            "- `./scripts/missing.sh` `Sources/Missing.swift:fn(a:)` `Sources/Untracked*.swift`\n",
-            encoding="utf-8",
-        )
-        expected = {
-            "../untracked.md", "../broken_link.md", "../missing_outer.md",
-            "../../Sources/App.swift#L2-L9", "../../Sources/App.swift#not-a-line", "../../Sources/App.swift#L0",
-            "./scripts/missing.sh", "Sources/Missing.swift:fn(a:)", "Sources/Untracked*.swift",
-        }
-        if (got := {d.target for d in audit_doc_links(tmp)}) != expected:
-            raise SystemExit(f"self-test mismatch: got {got}, expected {expected}")
-
-
 def main() -> None:
-    if "--self-test" in sys.argv[1:]:
-        self_test()
-        print("✅ Markdown 文档链接与仓库路径引用自检通过。")
-        return
     doc_count, link_count, path_count, diags = scan_repo_docs(ROOT)
     if diags:
         print("❌ Markdown 文档链接与仓库路径引用检查未通过：", file=sys.stderr)

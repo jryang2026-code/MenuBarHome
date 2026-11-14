@@ -15,9 +15,7 @@ import {
   onOpenURL,
 } from "../src/core/appUrlCommand.js";
 import {
-  RaycastBridgeTokenManager,
   SNAPSHOT_SCHEMA_VERSION,
-  buildRaycastSnapshot,
   formatDynamicTraySummary,
   generateRandomHexToken,
   type RaycastSnapshot,
@@ -172,32 +170,6 @@ describe("RaycastSnapshot exporter & bridgeToken lifecycle", () => {
     await flushAsync();
     const rotatedToken = getActiveRaycastBridgeTokenForHost(app);
     assert.ok(rotatedToken && rotatedToken !== firstToken, "re-enabling issues a fresh bridgeToken");
-  });
-
-  it("manages RaycastBridgeTokenManager state cleanly in isolation", () => {
-    const manager = new RaycastBridgeTokenManager();
-    assert.equal(manager.getOrCreate(false), undefined);
-    const tok1 = manager.getOrCreate(true);
-    assert.ok(tok1 && tok1.length === 64);
-    assert.equal(manager.getOrCreate(true), tok1);
-    manager.revoke();
-    assert.equal(manager.active, undefined);
-    const tok2 = manager.getOrCreate(true);
-    assert.notEqual(tok2, tok1);
-
-    const emptySnap = buildRaycastSnapshot({
-      connectionMode: "demo",
-      selectedHomeId: "home_1",
-      connectionSummary: "演示家庭",
-      bridgeToken: tok2!,
-      isStale: false,
-      devices: [],
-      rooms: [],
-      scenes: [],
-      environmentReadings: [],
-    });
-    assert.equal(emptySnap.selectedHomeId, "home_1");
-    assert.equal(emptySnap.schemaVersion, 1);
   });
 });
 

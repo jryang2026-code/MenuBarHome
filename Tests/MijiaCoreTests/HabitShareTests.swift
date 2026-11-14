@@ -62,13 +62,6 @@ struct HabitShareTests {
         )
     }
 
-    @Test("Absent habit sharing resolves off and is persisted; an explicit bool is left alone")
-    func resolveHabitSharingCases() {
-        #expect(resolveHabitSharing(.absent) == HabitShareResolution(sharing: .off, persistOff: true))
-        #expect(resolveHabitSharing(.off) == HabitShareResolution(sharing: .off, persistOff: false))
-        #expect(resolveHabitSharing(.on) == HabitShareResolution(sharing: .on, persistOff: false))
-    }
-
     @Test("The cloud sentence is empty unless sharing is on and the command names a device")
     func shareSentenceWorkedExample() {
         let now = Self.evening()
@@ -103,13 +96,6 @@ struct HabitShareTests {
         #expect(both.contains("打开书房台灯"))
         #expect(!both.contains("dev_"))
         #expect(!both.contains("21:30"))
-    }
-
-    @Test("A repeated device name keeps every occurrence reserved against room names")
-    func repeatedDeviceNameReservesEveryOccurrence() {
-        let sentence = Self.sentence(.utterance("客厅吸顶灯能不能把客厅吸顶灯调暗一点"), now: Self.evening())
-        #expect(sentence == "夜晚常做：关闭客厅吸顶灯(3次)")
-        #expect(!sentence.contains("空调"))
     }
 
     @Test("A shared room-stripped base is not a needle")

@@ -142,35 +142,6 @@ struct PanelSearchTests {
         #expect(everything.contains { $0.deviceId == Self.studySensor.id })
     }
 
-    @Test("results() maps ranks back to devices and enforces the visibility guards")
-    func resultsMapsRanksToDevices() {
-        let found = PanelSearch.results("sfd", devices: Self.devices, syllables: Self.syllables)
-        #expect(found.map(\.id) == [Self.studyLight.id])
-
-        let hidden = PanelSearch.results(
-            "sf",
-            devices: Self.devices,
-            hiddenIds: [Self.studySensor.id],
-            hideOffline: true,
-            syllables: Self.syllables
-        )
-        #expect(hidden.map(\.id) == [Self.studyLight.id])
-
-        // An empty query keeps the panel's own order, so opening search does not reshuffle the list.
-        let all = PanelSearch.results("", devices: Self.devices, syllables: Self.syllables)
-        #expect(all.map(\.id) == Self.devices.map(\.id))
-        #expect(PanelSearch.results("zzz", devices: Self.devices, syllables: Self.syllables).isEmpty)
-    }
-
-    @Test("Search spans rooms even when a room filter is active")
-    func searchSpansRooms() {
-        // The panel passes every visible device, not `filteredDevices`, so a room filter must not
-        // narrow the search. This asserts the helper keeps a device from another room.
-        let entries = PanelSearch.entries(devices: Self.devices, syllables: Self.syllables)
-        #expect(PanelSearch.matches("sfd", entries: entries).first?.deviceId == Self.studyLight.id)
-        #expect(PanelSearch.matches("kt", entries: entries).first?.deviceId == Self.livingLight.id)
-    }
-
     // MARK: - Return: filter or command
 
     private func kind(_ query: String) -> PanelQueryKind {

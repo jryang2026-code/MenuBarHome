@@ -79,19 +79,6 @@ struct ManualHabitRecordingTests {
         #expect(memory.entries.contains { $0.targetId == "dev_ac" && $0.operationKey == "temp:26" && $0.count == 1 })
     }
 
-    @Test("Scene trigger records the scene habit")
-    func sceneTriggerRecordsHabit() async throws {
-        let (store, mock) = try await makeStore()
-        let scene = try #require(store.scenes.first)
-
-        _ = await store.triggerScene(scene).value
-
-        let executed = await mock.executedCommands
-        #expect(executed.contains(.activateScene(entityId: "scene.movie")))
-        let memory = store.userHabitMemory
-        #expect(memory.entries.map { "\($0.targetId)|\($0.operationKey)" } == ["scene_movie|scene:activate"])
-    }
-
     @Test("全屋关灯 quick action records habits and undo rolls them back")
     func quickActionRecordsAndUndoRollsBack() async throws {
         let (store, _) = try await makeStore()

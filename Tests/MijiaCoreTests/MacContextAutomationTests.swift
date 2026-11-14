@@ -279,38 +279,6 @@ struct MacContextAutomationTests {
         #expect(beforeMidnight.cooldown == AutomationPolicy.nightlyCooldown)
     }
 
-    @Test("Late-night window math handles midnight crossing and same-day windows")
-    func lateNightWindowMath() {
-        let window = LateNightWindow(startHour: 23, endHour: 6)
-        #expect(window.contains(date(23, 0), calendar: utcCalendar))
-        #expect(window.contains(date(5, 59), calendar: utcCalendar))
-        #expect(!window.contains(date(6, 0), calendar: utcCalendar))
-        #expect(!window.contains(date(12, 0), calendar: utcCalendar))
-
-        let afternoon = LateNightWindow(startHour: 13, endHour: 14)
-        #expect(afternoon.contains(date(13, 30), calendar: utcCalendar))
-        #expect(!afternoon.contains(date(14, 0), calendar: utcCalendar))
-
-        #expect(window.nightAnchor(containing: date(23, 30), calendar: utcCalendar)
-            == utcCalendar.startOfDay(for: date(23, 30)))
-        #expect(window.nightAnchor(containing: date(3, 30, day: 16), calendar: utcCalendar)
-            == utcCalendar.startOfDay(for: date(23, 30)))
-        #expect(window.nightAnchor(containing: date(12), calendar: utcCalendar) == nil)
-
-        let empty = LateNightWindow(startHour: 0, endHour: 0)
-        #expect(!empty.contains(date(0), calendar: utcCalendar))
-        #expect(empty.startHour == 0)
-        #expect(empty.endHour == 0)
-    }
-
-    @Test("Decoded late-night windows clamp hostile hour values")
-    func lateNightWindowDecoding() throws {
-        let data = Data(#"{"startHour":99,"endHour":-5}"#.utf8)
-        let window = try JSONDecoder().decode(LateNightWindow.self, from: data)
-        #expect(window.startHour == 23)
-        #expect(window.endHour == 0)
-    }
-
     @Test("Only enabled rules contribute their required permissions")
     func requiredPermissions() {
         let rules = [

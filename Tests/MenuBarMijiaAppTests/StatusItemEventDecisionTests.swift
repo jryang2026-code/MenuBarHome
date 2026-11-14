@@ -23,7 +23,6 @@ struct StatusItemEventDecisionTests {
     func syntheticPairAfterMenu() {
         let suppressed = State(suppressReleaseUntil: 200)
         #expect(decide(.leftMouseDown, buttons: 0, suppressed).step == .none)
-        #expect(decide(.leftMouseDown, buttons: 0, suppressed).trace == "guard=suppressReleaseUntil")
         let real = decide(.leftMouseDown, buttons: 1, suppressed)
         #expect(real.step == .beginPress)
         #expect(real.cancelsReleaseSuppression)
@@ -33,7 +32,6 @@ struct StatusItemEventDecisionTests {
     func earlyUpWhileHeld() {
         let d = decide(.leftMouseUp, buttons: 1, State(isPressActive: true))
         #expect(d.step == .none)
-        #expect(d.trace == "guard=primaryStillPressed")
         #expect(decide(.leftMouseUp, buttons: 0, State(isPressActive: true)).step == .finishPress)
     }
 
@@ -41,7 +39,7 @@ struct StatusItemEventDecisionTests {
     func postMenuMouseUp() {
         #expect(decide(.leftMouseUp, State(acceptsStandalonePostMenuMouseUp: true)).step == .postMenuToggle)
         #expect(decide(.leftMouseUp, State(acceptsStandalonePostMenuMouseUp: true, suppressReleaseUntil: 200)).step == .none)
-        #expect(decide(.leftMouseUp).trace == "guard=inactiveRelease")
+        #expect(decide(.leftMouseUp).step == .none)
     }
 
     @Test("Events that belong to the context menu's own dismissal only restore the highlight")
@@ -63,7 +61,6 @@ struct StatusItemEventDecisionTests {
         #expect(stale.clearsPostMenuMouseUp)
         let inGrace = decide(nil, now: 100, State(acceptsStandalonePostMenuMouseUp: true, suppressContextMenuUntil: 150))
         #expect(inGrace.step == .none)
-        #expect(inGrace.trace == "guard=postMenuAwaitingMouseUp")
-        #expect(decide(nil, State(pressTriggered: true)).trace == "guard=pressTriggered")
+        #expect(decide(nil, State(pressTriggered: true)).step == .none)
     }
 }

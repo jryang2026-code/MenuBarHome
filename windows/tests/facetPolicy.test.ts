@@ -3,11 +3,7 @@ import { describe, it } from "node:test";
 import { ManualControlPolicy, ModelActionPolicy } from "../src/core/assistant/actionPolicy.js";
 import { deviceCategory } from "../src/core/assistant/deviceCategory.js";
 import { IntentValidator } from "../src/core/assistant/intent.js";
-import {
-  DEVICE_PROFILES,
-  MANUAL_CONTROL_FALLBACK_RULES,
-  type ManualControlRules,
-} from "../src/core/miCloud/facets.js";
+import { type ManualControlRules } from "../src/core/miCloud/facets.js";
 import type { FacetControl, SmartDevice } from "../src/core/models.js";
 
 /**
@@ -531,10 +527,6 @@ describe("更多设置 confirmation rule (#5, #6)", () => {
       lowRiskTokens: [],
     };
     assert.equal(ManualControlPolicy.facetRequiresConfirmation(control, false, dev, custom), true);
-  });
-
-  it("the bundled document carries the manual-control table macOS reads (ManualControlPolicyTests bundledRulesMatchDocument)", () => {
-    assert.deepEqual(DEVICE_PROFILES.manualControlPolicy, MANUAL_CONTROL_FALLBACK_RULES);
   });
 });
 

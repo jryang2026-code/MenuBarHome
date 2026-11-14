@@ -512,11 +512,6 @@ public struct AssistantConfig: Equatable, Sendable {
         return nil
     }
 
-    /// Reads the OpenRouter API key from `OPENROUTER_API_KEY` or CodexBar's `~/.config/codexbar/config.json`.
-    public static func loadCodexBarOpenRouterKey(configURL: URL? = nil) -> String? {
-        loadAmbientAPIKey(forBaseURL: defaultBaseURL, configURL: configURL)
-    }
-
     private static func readCodexBarProviderKey(providerIds: [String], configURL: URL?) -> String? {
         let wanted = Set(providerIds.map { $0.lowercased() })
         let url = configURL ?? FileManager.default.homeDirectoryForCurrentUser

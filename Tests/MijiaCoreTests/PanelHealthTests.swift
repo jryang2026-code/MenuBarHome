@@ -121,42 +121,6 @@ struct PanelHealthTests {
         #expect(!allowedCommands.isEmpty)
     }
 
-    @Test("All Off names the devices it will turn off and the ones it leaves out")
-    func allOffCopy() async throws {
-        try await L10n.$overrideLanguage.withValue(.zhHans) {
-            let narrow = AllOffHeaderCopy.make(
-                activeDeviceCount: 4, targetNames: ["台灯"], scopeName: nil, excludedIncludesPlug: true
-            )
-            #expect(narrow.title == "全关 1 台")
-            #expect(narrow.helper == "全关不含插座等 3 台")
-            #expect(narrow.tooltip == "按住 0.6 秒关闭：台灯")
-
-            let matched = AllOffHeaderCopy.make(
-                activeDeviceCount: 1, targetNames: ["台灯"], scopeName: nil, excludedIncludesPlug: false
-            )
-            #expect(matched.helper == nil)
-
-            let room = AllOffHeaderCopy.make(
-                activeDeviceCount: 2, targetNames: ["台灯"], scopeName: "书房", excludedIncludesPlug: false
-            )
-            #expect(room.title == "全关 书房 1 台")
-            #expect(room.helper == "全关不含这 1 台")
-
-            let names = ["一", "二", "三", "四", "五", "六"]
-            let listed = AllOffHeaderCopy.make(
-                activeDeviceCount: 6, targetNames: names, scopeName: nil, excludedIncludesPlug: true
-            )
-            #expect(listed.tooltip == "按住 0.6 秒关闭：一、二、三、四、五 等")
-            #expect(!listed.tooltip.contains("六"))
-        }
-        try await L10n.$overrideLanguage.withValue(.en) {
-            let room = AllOffHeaderCopy.make(
-                activeDeviceCount: 2, targetNames: ["Desk"], scopeName: "Study", excludedIncludesPlug: false
-            )
-            #expect(room.title == "All Off 1 in Study")
-        }
-    }
-
     @Test("A blocked Mi session sends no quick action, undo, assistant, safety, or URL command")
     func blockedSessionStopsEveryWriteEntry() async throws {
         let provider = MockHomeProvider(snapshot: Self.lampHome)

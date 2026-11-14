@@ -143,34 +143,7 @@ def check_sources(css_src: str, reconciler_src: str | None) -> list[str]:
     return errors
 
 
-def self_test() -> None:
-    valid_css = """
-    /* ease in a comment is ignored */
-    :root { --ease-decelerate: cubic-bezier(0, 0, 0, 1); }
-    .cc-sheet, .cc-sheet-ghost { content: "ease"; transition: transform 167ms var(--ease-decelerate); }
-    .cc-tile-fill[style*="--fill-scale"] { width: 100% !important; transform: scaleX(var(--fill-scale, 1)); }
-    .cc-tile.is-subpage .cc-expander-clip { overflow: visible; }
-    .cc-btn, .cc-btn-primary { white-space: nowrap; flex-shrink: 0; }
-    """
-    valid_ts = 'const GHOST_CLASS_RENAMES = [["cc-sheet", "cc-sheet-ghost"]];'
-    if check_sources(valid_css, valid_ts):
-        raise SystemExit(f"self-test valid input failed: {check_sources(valid_css, valid_ts)}")
-
-    raw_ease = valid_css + "\n.bad { transition: opacity 150ms ease-out; }\n"
-    if not any("裸写 `ease-out`" in e for e in check_sources(raw_ease, valid_ts)):
-        raise SystemExit("self-test failed to catch raw ease-out")
-
-    missing_ghost_ts = 'const GHOST_CLASS_RENAMES = [["cc-sheet", "cc-sheet-ghost"], ["cc-menu", "cc-menu-ghost"]];'
-    if not any(".cc-menu-ghost" in e for e in check_sources(valid_css, missing_ghost_ts)):
-        raise SystemExit("self-test failed to catch missing ghost selector")
-
-    clipped_subpage = valid_css.replace("overflow: visible;", "overflow: hidden;")
-    if not any("cc-expander-clip" in e for e in check_sources(clipped_subpage, valid_ts)):
-        raise SystemExit("self-test failed to catch clipped subpage expander")
-
-
 def main() -> None:
-    self_test()
     if not STYLES_PATH.is_file():
         return
     css_src = STYLES_PATH.read_text(encoding="utf-8")

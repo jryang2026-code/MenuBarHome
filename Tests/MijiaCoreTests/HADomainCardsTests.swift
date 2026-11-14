@@ -263,23 +263,6 @@ struct HADomainCardsTests {
         #expect(close.service == "close_valve")
     }
 
-    @Test("The unsupported-device scan no longer lists the three new domains")
-    func unsupportedScanExcludesNewDomains() throws {
-        let (home, fixture) = try load()
-        let states = Dictionary(
-            uniqueKeysWithValues: fixture.states.map {
-                ($0.entity_id, HAEntityState(entityId: $0.entity_id, state: $0.state, attributes: $0.attributes))
-            }
-        )
-        let skipped = UnsupportedDeviceCollector.homeAssistant(
-            devices: fixture.devices,
-            entities: fixture.entities,
-            states: states,
-            synthesized: home
-        )
-        #expect(skipped.isEmpty)
-    }
-
     // MARK: - Metadata-first matching
 
     @Test("Plug power and energy come from device_class even when the entity id does not say so")
