@@ -115,9 +115,8 @@ extension ClassicControlCenterPanel {
         }
     }
 
-    /// Done / Cancel. Everything but an explicit cancel writes the draft back; a session that changed
-    /// nothing writes nothing (that is what `isDirty` is for), which is the same outcome as a cancel
-    /// without touching `UserDefaults`.
+    /// Done / Cancel. Everything but an explicit cancel writes the draft back; a session where
+    /// neither draft has changes writes nothing, matching cancel without touching `UserDefaults`.
     func finishRoomOrder(_ exit: RoomOrderExit) {
         let draft = layoutUI.roomOrderDraft
         let kindDraft = layoutUI.kindOrderDraft
@@ -128,8 +127,8 @@ extension ClassicControlCenterPanel {
             if exit == .commit, !nothingToWrite {
                 // `@AppStorage` republishes a moment after the write; without this mirror the strip
                 // would fall back to the pre-session order for one frame (§6.3).
-                liveRoomOrder = draft?.order
-                liveKindOrder = kindDraft?.order
+                liveRoomOrder = draft?.committedLiveOrder(currentRaw: roomOrderRaw)
+                liveKindOrder = kindDraft?.committedLiveOrder(currentRaw: kindOrderRaw)
             }
             layoutUI.exitRoomOrder(nothingToWrite ? .cancel : exit)
         }

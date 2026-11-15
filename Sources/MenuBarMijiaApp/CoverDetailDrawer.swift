@@ -11,6 +11,7 @@ struct CoverDetailDrawer: View {
     let store: HomeStore
     let accent: Color
     let statusColor: Color
+    var theme: PanelTheme = .liquidGlass
 
     var body: some View {
         let position = Double(spec.positionPercent ?? 0)
@@ -33,7 +34,8 @@ struct CoverDetailDrawer: View {
                     iconName: spec.subtype == .clothesAirer ? "hanger" : "window.vertical.open",
                     iconColor: statusColor,
                     trackColors: [accent.opacity(0.55), accent.opacity(0.92)],
-                    formattedValue: "\(Int(position))%"
+                    formattedValue: "\(Int(position))%",
+                    theme: theme
                 ) { percent in
                     store.setCoverPosition(device.id, percent: Int(percent.rounded()))
                 }
@@ -63,7 +65,7 @@ struct CoverDetailDrawer: View {
     }
 
     private func motorButton(_ description: String) -> some View {
-        DetailPillButton(title: Self.actionTitle(description, subtype: spec.subtype)) {
+        DetailPillButton(title: Self.actionTitle(description, subtype: spec.subtype), theme: theme) {
             store.setCoverMotor(device.id, description: description)
         }
         .disabled(!device.isOnline)
