@@ -148,11 +148,47 @@ static PANEL_VISIBILITY: LazyLock<std::sync::Mutex<PanelVisibilityState>> =
 pub(crate) const PANEL_PADDING: f64 = 16.0;
 /// Logical width of the Win11 `Win+N` + `Win+A` two-island flyout column (matches native `Win+A` 360–380 epx).
 pub(crate) const PANEL_MAIN_WIDTH: f64 = 380.0;
+pub(crate) const CLASSIC_MAIN_WIDTH: f64 = 440.0;
 pub(crate) const PANEL_MIN_WORK_HEIGHT: f64 = 480.0;
 
-/// Total logical window width around the fixed 380 px two-island column plus shadow padding on both sides.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PanelTheme {
+    #[default]
+    Fluent,
+    Classic,
+}
+
+impl PanelTheme {
+    pub(crate) const fn main_width(self) -> f64 {
+        match self { Self::Fluent => PANEL_MAIN_WIDTH, Self::Classic => CLASSIC_MAIN_WIDTH }
+    }
+
+    pub(crate) const fn window_width(self) -> f64 {
+        self.main_width() + PANEL_PADDING * 2.0
+    }
+
+    const fn as_u8(self) -> u8 {
+        match self { Self::Fluent => 0, Self::Classic => 1 }
+    }
+
+    const fn from_u8(raw: u8) -> Self {
+        if raw == 1 { Self::Classic } else { Self::Fluent }
+    }
+}
+
+static ACTIVE_PANEL_THEME: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub(crate) fn active_panel_theme() -> PanelTheme {
+    PanelTheme::from_u8(ACTIVE_PANEL_THEME.load(Ordering::SeqCst))
+}
+
+pub(crate) fn set_active_panel_theme(theme: PanelTheme) {
+    ACTIVE_PANEL_THEME.store(theme.as_u8(), Ordering::SeqCst);
+}
+
 pub(crate) fn panel_window_width() -> f64 {
-    PANEL_MAIN_WIDTH + PANEL_PADDING * 2.0
+    active_panel_theme().window_width()
 }
 
 pub(crate) fn clamp_outer_panel_height(requested_outer_height: f64, work_logical_height: f64) -> f64 {
@@ -440,15 +476,8 @@ pub(crate) fn monitor_rects(monitor: &Monitor) -> (Rect, Rect) {
     }
 }
 
-/// Left offset of the 380 px island column inside the window (`PANEL_PADDING` = 16 px at 1x).
-pub(crate) fn main_column_offset(window_width: i32, scale: f64) -> i32 {
-    let main = (PANEL_MAIN_WIDTH * scale).round() as i32;
-    let padding = (PANEL_PADDING * scale).round() as i32;
-    (window_width - main - padding).max(0)
-}
-
-pub(crate) fn main_column_inset(window_width: i32, scale: f64) -> i32 {
-    main_column_offset(window_width, scale)
+pub(crate) fn main_column_inset(scale: f64) -> i32 {
+    (PANEL_PADDING * scale).round() as i32
 }
 
 pub(crate) fn current_flyout_edge(
@@ -495,6 +524,34 @@ pub(crate) fn set_panel_height(app: AppHandle, height: f64) -> bool {
     false
 }
 
+#[tauri::command]
+pub(crate) fn set_panel_geometry(app: AppHandle, theme: PanelTheme, height: f64) -> bool {
+    set_active_panel_theme(theme);
+    let Some(window) = app.get_webview_window("main") else { return false };
+    let monitor = window.current_monitor().ok().flatten().or_else(|| window.primary_monitor().ok().flatten());
+    let scale = monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0);
+    let (full, work) = monitor
+        .as_ref()
+        .map(monitor_rects)
+        .unwrap_or((Rect::new(0, 0, 1920, 1080), Rect::new(0, 0, 1920, 1080)));
+    let margin = 0;
+    let target_h = clamp_outer_panel_height(height, work.height as f64 / scale);
+    let old_pos = window.outer_position().unwrap_or(PhysicalPosition::new(0, 0));
+    let old_size = window.outer_size().unwrap_or(PhysicalSize::new(412, 680));
+    let work_left = work.x + margin;
+    let work_right = work.right() - margin;
+    let target_w = theme.window_width().min(((work_right - work_left).max(1) as f64) / scale);
+    let new_w = (target_w * scale).round() as i32;
+    let new_h = (target_h * scale).round() as i32;
+    let corner = current_panel_placement().anchor.corner(taskbar_edge(full, work));
+    let x = resized_x(old_pos.x, old_size.width as i32, new_w, work_left, work_right, !corner.left);
+    let y = resized_top(work, margin, old_pos.y, old_size.height as i32, new_h, corner);
+    suppress_move_snaps();
+    let _ = window.set_size(tauri::LogicalSize::new(target_w, target_h));
+    let _ = window.set_position(PhysicalPosition::new(x, y));
+    true
+}
+
 pub(crate) fn position_popover(window: &WebviewWindow, anchor: Option<PhysicalPosition<f64>>) -> &'static str {
     let win_size = window.outer_size().unwrap_or(PhysicalSize::new(412, 680));
     let win_w = win_size.width as i32;
@@ -530,8 +587,8 @@ pub(crate) fn position_popover(window: &WebviewWindow, anchor: Option<PhysicalPo
         margin,
         anchor: anchor.map(|pos| (pos.x.round() as i32, pos.y.round() as i32)),
         preference,
-        main_inset: main_column_inset(win_w, scale),
-        main_width: (PANEL_MAIN_WIDTH * scale).round() as i32,
+        main_inset: main_column_inset(scale),
+        main_width: (active_panel_theme().main_width() * scale).round() as i32,
     });
     suppress_move_snaps();
     if fitted_h != win_h {
@@ -653,8 +710,8 @@ pub(crate) fn snap_panel_to_work_area(window: &WebviewWindow) {
         margin,
         anchor: None,
         preference: anchor,
-        main_inset: main_column_inset(win_w, scale),
-        main_width: (PANEL_MAIN_WIDTH * scale).round() as i32,
+        main_inset: main_column_inset(scale),
+        main_width: (active_panel_theme().main_width() * scale).round() as i32,
     });
     suppress_move_snaps();
     if fitted_h != win_h {
@@ -739,12 +796,30 @@ mod tests {
 
     #[test]
     fn panel_window_geometry_preserves_outer_heights_and_work_area_clamp() {
+        set_active_panel_theme(PanelTheme::Fluent);
         assert_eq!(panel_window_width(), 412.0);
+        assert_eq!(PanelTheme::Fluent.main_width(), 380.0);
+        assert_eq!(PanelTheme::Fluent.window_width(), 412.0);
+        assert_eq!(PanelTheme::Classic.main_width(), 440.0);
+        assert_eq!(PanelTheme::Classic.window_width(), 472.0);
+        set_active_panel_theme(PanelTheme::Classic);
+        assert_eq!(panel_window_width(), 472.0);
+        set_active_panel_theme(PanelTheme::Fluent);
+        assert_eq!(
+            serde_json::from_str::<PanelTheme>(r#""classic""#).unwrap(),
+            PanelTheme::Classic
+        );
+        assert_eq!(
+            serde_json::from_str::<PanelTheme>(r#""fluent""#).unwrap(),
+            PanelTheme::Fluent
+        );
         assert_eq!(clamp_outer_panel_height(680.0, 1040.0), 680.0);
         assert_eq!(clamp_outer_panel_height(580.0, 1040.0), 580.0);
         assert_eq!(clamp_outer_panel_height(780.0, 720.0), 720.0);
         assert_eq!(clamp_outer_panel_height(0.0, 1040.0), 1040.0);
         assert_eq!(clamp_outer_panel_height(680.0, 400.0), 480.0);
         assert_eq!(clamp_outer_panel_height(0.0, 400.0), 480.0);
+        assert_eq!(main_column_inset(1.0), 16);
+        assert_eq!(main_column_inset(1.5), 24);
     }
 }

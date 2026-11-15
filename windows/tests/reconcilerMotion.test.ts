@@ -299,7 +299,7 @@ describe("Keyed DOM Reconciler & Fluent Motion Pipeline", () => {
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       value: {
         invoke: async (cmd: string, args?: { height?: number }) => {
-          if (cmd === "set_panel_height" && typeof args?.height === "number") {
+          if ((cmd === "set_panel_height" || cmd === "set_panel_geometry") && typeof args?.height === "number") {
             heightCalls.push(args.height);
           }
           if (cmd === "panel_is_visible") return true;

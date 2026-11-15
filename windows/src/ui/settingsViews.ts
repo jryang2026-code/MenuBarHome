@@ -276,12 +276,12 @@ export interface SettingsViewContext {
 
 const inactiveTabHtmlCache = new Map<SettingsTab, { key: string; html: string }>();
 
-function buildInactiveTabCacheKey(ctx: SettingsViewContext, tabId: SettingsTab): string | null {
+export function buildInactiveTabCacheKey(ctx: SettingsViewContext, tabId: SettingsTab): string | null {
   if (tabId === "general") {
     return JSON.stringify([
       t("外观模式"), ctx.availableUpdate, ctx.isCheckingUpdate, ctx.isInstallingUpdate, ctx.updateStatusMessage,
       ctx.updateProgress ?? getUpdateProgressForSettings(ctx.settings), ctx.settings.autoCheckUpdates,
-      ctx.settings.appearance, ctx.settings.panelOpacity, ctx.settings.interfaceLanguage,
+      ctx.settings.appearance, ctx.settings.panelTheme, ctx.settings.panelOpacity, ctx.settings.interfaceLanguage,
       ctx.settings.temperatureUnit, ctx.settings.panelHeight, ctx.panelAnchor, ctx.settings.climatePanel,
       ctx.settings.hideOfflineDevices, ctx.settings.hideGroupedLights, ctx.settings.showQuickActionsBar,
       ctx.settings.launchAtLogin, ctx.settings.enableGlobalHotkey, ctx.settings.globalHotkey,
@@ -331,6 +331,14 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
           (a) =>
             `<button class="cc-seg-pill ${ctx.settings.appearance === a.id ? "is-active" : ""}" data-appearance="${a.id}" aria-pressed="${ctx.settings.appearance === a.id}">${ctx.escapeHtml(a.title)}</button>`,
         ).join("")}
+      </div>
+    </div>
+
+    <div class="cc-field" data-settings-anchor="panelTheme">
+      <label>${t("面板风格")}</label>
+      <div class="cc-segmented-pills is-even">
+        <button type="button" class="cc-seg-pill ${ctx.settings.panelTheme === "fluent" ? "is-active" : ""}" data-panel-theme="fluent" aria-pressed="${ctx.settings.panelTheme === "fluent"}">${ctx.escapeHtml(t("Win11 双岛"))}</button>
+        <button type="button" class="cc-seg-pill ${ctx.settings.panelTheme === "classic" ? "is-active" : ""}" data-panel-theme="classic" aria-pressed="${ctx.settings.panelTheme === "classic"}">${ctx.escapeHtml(t("macOS 控制中心"))}</button>
       </div>
     </div>
 

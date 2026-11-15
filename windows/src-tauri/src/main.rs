@@ -250,6 +250,7 @@ fn main() {
             quit_app,
             panel_is_visible,
             set_panel_height,
+            set_panel_geometry,
             set_pin_popover,
             panel_placement,
             set_panel_placement,

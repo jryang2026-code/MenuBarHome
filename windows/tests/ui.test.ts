@@ -6342,7 +6342,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
   it("aligns standard panel height with the 680px two-island Tauri window", async () => {
     const heights: number[] = [];
     const invoke = async (name: string, args?: { height?: number }) => {
-      if (name === "set_panel_height" && typeof args?.height === "number") heights.push(args.height);
+      if ((name === "set_panel_height" || name === "set_panel_geometry") && typeof args?.height === "number") heights.push(args.height);
       if (name === "panel_is_visible") return true;
       return undefined;
     };

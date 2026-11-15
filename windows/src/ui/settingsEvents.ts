@@ -37,6 +37,7 @@ import {
   clearXiaomiRateLimitBackoff,
 } from "../core/pollingPolicy.js";
 import { withAliases, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
+import { normalizePanelTheme } from "./panelTheme.js";
 import type { ConnectionMode, PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
 import { demoDevices, demoScenes } from "./demo.js";
 import { clearHostSessionAndDualSourceState, submitServiceEndpoints } from "./appLifecycle.js";
@@ -113,6 +114,7 @@ export interface SettingsEventsHost {
   refreshHADevices(silent?: boolean): Promise<void>;
   render(): void;
   saveSettings(force?: boolean): void;
+  setPanelTheme?(raw: unknown): void;
   shouldKeepPopoverPinned(): boolean;
   signOutXiaomiAccount(): void;
   startUpdateInstall(): Promise<void>;
@@ -719,6 +721,23 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     bindAutomationSettingsEvents(host);
     return;
   }
+
+  host.root.querySelectorAll<HTMLElement>("[data-panel-theme]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const raw = btn.dataset.panelTheme;
+      syncSettingsSaveHint(host, "auto-saved");
+      if (typeof host.setPanelTheme === "function") {
+        host.setPanelTheme(raw);
+      } else {
+        const next = normalizePanelTheme(raw);
+        host.settings.panelTheme = next;
+        host.root.dataset.panelTheme = next;
+        host.saveSettings();
+        host.render();
+      }
+      syncSettingsSaveHint(host, "auto-saved");
+    });
+  });
 
   host.root.querySelectorAll<HTMLInputElement>("[data-alloff-device]").forEach((box) => {
     box.addEventListener("change", () => {

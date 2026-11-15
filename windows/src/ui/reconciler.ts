@@ -82,6 +82,7 @@ const STATE_ONLY_DATA_ATTRS = new Set([
   "data-max-c",
   "data-keyboard-nav",
   "data-scheme",
+  "data-panel-theme",
   "data-flyout-edge",
   "data-exit-ghost",
   "data-activity-count",
