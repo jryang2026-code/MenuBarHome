@@ -7,8 +7,6 @@ const TRAY_ICON_SLOP_PX: i32 = 36;
 const MAX_TRAY_HOLD_MS: u64 = 5_000;
 
 pub(crate) static PIN_POPOVER: AtomicBool = AtomicBool::new(false);
-/// Whether the window manager granted the panel a native backdrop (§1.4 of the control center spec).
-static PANEL_BACKDROP_ACRYLIC: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TrayToggleAction {
@@ -182,21 +180,6 @@ pub(crate) fn flyout_edge_name(edge: TaskbarEdge, preference: PanelAnchor) -> &'
         },
         PanelAnchor::TopLeft | PanelAnchor::TopRight => "top",
         PanelAnchor::BottomLeft | PanelAnchor::BottomRight => "bottom",
-    }
-}
-
-/// Applies the native backdrop policy (see `backdrop.rs`) and records it for the webview.
-pub(crate) fn apply_panel_backdrop(window: &WebviewWindow) {
-    PANEL_BACKDROP_ACRYLIC.store(crate::backdrop::apply(window), Ordering::SeqCst);
-}
-
-/// What the window manager granted, so the stylesheet can lower its own fill to a tint.
-#[tauri::command]
-pub(crate) fn panel_backdrop() -> &'static str {
-    if PANEL_BACKDROP_ACRYLIC.load(Ordering::SeqCst) {
-        "acrylic"
-    } else {
-        "none"
     }
 }
 
