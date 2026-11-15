@@ -42,30 +42,12 @@ private struct SettingsAnchorHighlight: ViewModifier {
             .padding(.vertical, -3)
             .animation(reduceMotion ? nil : AppleMotion.control, value: isHighlighted)
             .id(anchor)
-            .background {
-                // Report the row's frame so a jump can scroll to it. A `GeometryReader` in the
-                // background keeps the row's own layout untouched.
-                GeometryReader { proxy in
-                    Color.clear.preference(
-                        key: SettingsRowAnchorKey.self,
-                        value: [anchor: proxy.frame(in: .named(SettingsScrollSpace.name))]
-                    )
-                }
-            }
     }
 }
 
-/// The scroll coordinate space every settings page and the anchor reporter share.
+/// The scroll coordinate space every settings page shares.
 enum SettingsScrollSpace {
     static let name = "settings-scroll"
-}
-
-struct SettingsRowAnchorKey: PreferenceKey {
-    static var defaultValue: [SettingsAnchor: CGRect] { [:] }
-
-    static func reduce(value: inout [SettingsAnchor: CGRect], nextValue: () -> [SettingsAnchor: CGRect]) {
-        value.merge(nextValue()) { _, new in new }
-    }
 }
 
 extension View {

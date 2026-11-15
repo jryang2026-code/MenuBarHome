@@ -19,7 +19,12 @@ final class PanelLayoutStore {
     private(set) var groupMap: [String: String]
 
     @ObservationIgnored private let defaults: UserDefaults
-    @ObservationIgnored private var observer: NSObjectProtocol?
+    @ObservationIgnored nonisolated(unsafe) private var observer: NSObjectProtocol?
+    @ObservationIgnored private var lastOrderRaw: String
+    @ObservationIgnored private var lastSizesRaw: String
+    @ObservationIgnored private var lastGroupMapRaw: String
+    @ObservationIgnored private var isWritingSelf = false
+    @ObservationIgnored private(set) var externalDecodeCount = 0
 
     private static var instances: [ObjectIdentifier: PanelLayoutStore] = [:]
 
@@ -34,9 +39,15 @@ final class PanelLayoutStore {
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
-        order = DeviceLayoutPrefs.decodeOrder(defaults.string(forKey: DeviceLayoutPrefs.orderKey) ?? "[]")
-        sizes = DeviceLayoutPrefs.decode(defaults.string(forKey: DeviceLayoutPrefs.storageKey) ?? "{}")
-        groupMap = GroupPrefs.map(defaults.string(forKey: GroupPrefs.mapKey) ?? "{}")
+        let initialOrderRaw = defaults.string(forKey: DeviceLayoutPrefs.orderKey) ?? "[]"
+        let initialSizesRaw = defaults.string(forKey: DeviceLayoutPrefs.storageKey) ?? "{}"
+        let initialGroupMapRaw = defaults.string(forKey: GroupPrefs.mapKey) ?? "{}"
+        lastOrderRaw = initialOrderRaw
+        lastSizesRaw = initialSizesRaw
+        lastGroupMapRaw = initialGroupMapRaw
+        order = DeviceLayoutPrefs.decodeOrder(initialOrderRaw)
+        sizes = DeviceLayoutPrefs.decode(initialSizesRaw)
+        groupMap = GroupPrefs.map(initialGroupMapRaw)
         // A write that did not come through here (another process, a migration, a test seeding the
         // keys) still reaches the panel.
         observer = NotificationCenter.default.addObserver(
@@ -45,6 +56,12 @@ final class PanelLayoutStore {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.reloadIfChangedElsewhere() }
+        }
+    }
+
+    deinit {
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
         }
     }
 
@@ -60,7 +77,11 @@ final class PanelLayoutStore {
     func setOrder(_ next: [String]) {
         guard next != order else { return }
         order = next
-        defaults.set(DeviceLayoutPrefs.encodeOrder(next), forKey: DeviceLayoutPrefs.orderKey)
+        let raw = DeviceLayoutPrefs.encodeOrder(next)
+        lastOrderRaw = raw
+        isWritingSelf = true
+        defer { isWritingSelf = false }
+        defaults.set(raw, forKey: DeviceLayoutPrefs.orderKey)
     }
 
     func setSize(_ size: TileSize, of deviceId: String, scope: String) {
@@ -70,6 +91,9 @@ final class PanelLayoutStore {
         let normalized = DeviceLayoutPrefs.decode(raw)
         guard normalized != sizes else { return }
         sizes = normalized
+        lastSizesRaw = raw
+        isWritingSelf = true
+        defer { isWritingSelf = false }
         defaults.set(raw, forKey: DeviceLayoutPrefs.storageKey)
     }
 
@@ -88,18 +112,36 @@ final class PanelLayoutStore {
     private func setGroupMap(_ next: [String: String]) {
         guard next != groupMap else { return }
         groupMap = next
-        defaults.set(GroupPrefs.encode(next), forKey: GroupPrefs.mapKey)
+        let raw = GroupPrefs.encode(next)
+        lastGroupMapRaw = raw
+        isWritingSelf = true
+        defer { isWritingSelf = false }
+        defaults.set(raw, forKey: GroupPrefs.mapKey)
     }
 
     private func reloadIfChangedElsewhere() {
-        let order = DeviceLayoutPrefs.decodeOrder(defaults.string(forKey: DeviceLayoutPrefs.orderKey) ?? "[]")
-        let sizes = DeviceLayoutPrefs.decode(defaults.string(forKey: DeviceLayoutPrefs.storageKey) ?? "{}")
-        let groupMap = GroupPrefs.map(defaults.string(forKey: GroupPrefs.mapKey) ?? "{}")
-        guard order != self.order || sizes != self.sizes || groupMap != self.groupMap else { return }
+        guard !isWritingSelf else { return }
+        let orderRaw = defaults.string(forKey: DeviceLayoutPrefs.orderKey) ?? "[]"
+        let sizesRaw = defaults.string(forKey: DeviceLayoutPrefs.storageKey) ?? "{}"
+        let groupMapRaw = defaults.string(forKey: GroupPrefs.mapKey) ?? "{}"
+        let orderChanged = orderRaw != lastOrderRaw
+        let sizesChanged = sizesRaw != lastSizesRaw
+        let groupMapChanged = groupMapRaw != lastGroupMapRaw
+        guard orderChanged || sizesChanged || groupMapChanged else { return }
+
+        lastOrderRaw = orderRaw
+        lastSizesRaw = sizesRaw
+        lastGroupMapRaw = groupMapRaw
+        externalDecodeCount += 1
+
+        let nextOrder = orderChanged ? DeviceLayoutPrefs.decodeOrder(orderRaw) : order
+        let nextSizes = sizesChanged ? DeviceLayoutPrefs.decode(sizesRaw) : sizes
+        let nextGroupMap = groupMapChanged ? GroupPrefs.map(groupMapRaw) : groupMap
+        guard nextOrder != order || nextSizes != sizes || nextGroupMap != groupMap else { return }
         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-            if order != self.order { self.order = order }
-            if sizes != self.sizes { self.sizes = sizes }
-            if groupMap != self.groupMap { self.groupMap = groupMap }
+            if nextOrder != order { order = nextOrder }
+            if nextSizes != sizes { sizes = nextSizes }
+            if nextGroupMap != groupMap { groupMap = nextGroupMap }
         }
     }
 }

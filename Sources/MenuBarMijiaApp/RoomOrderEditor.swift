@@ -138,6 +138,7 @@ private struct RoomOrderDrag {
 @MainActor
 struct RoomOrderEditor: View {
     let store: HomeStore
+    var theme: PanelTheme = .liquidGlass
 
     @Environment(\.effectiveReduceMotion) private var reduceMotion
     @State private var ui = LayoutUIState.shared
@@ -201,12 +202,10 @@ struct RoomOrderEditor: View {
 
             listFooter
         }
-        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.module)
-        .padding(.horizontal, 13)
-        .padding(.bottom, 12)
         // Leaving the mode mid-drag (Esc, Done, hiding the panel) tears the view down without an
         // `onEnded`, so the auto-scroll loop has to be stopped here or it keeps ticking at 60 fps.
         .onDisappear { stopAutoScroll() }
+        .modifier(RoomOrderContainerChrome(theme: theme))
     }
 
     // MARK: Rows
@@ -343,7 +342,7 @@ struct RoomOrderEditor: View {
                 Label(L10n.tr("恢复默认顺序", "Restore default order"), systemImage: "arrow.counterclockwise")
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
             }
-            .buttonStyle(PillActionButtonStyle())
+            .themedPillButtonStyle(theme)
             .accessibilityHint(Text(isKinds
                 ? L10n.tr("把类型恢复成默认顺序", "Restore the kinds to their default order")
                 : L10n.tr(
@@ -510,6 +509,22 @@ struct RoomOrderEditor: View {
         }
     }
 
+}
+
+private struct RoomOrderContainerChrome: ViewModifier {
+    let theme: PanelTheme
+
+    func body(content: Content) -> some View {
+        switch theme {
+        case .liquidGlass:
+            content
+                .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.module)
+                .padding(.horizontal, 13)
+                .padding(.bottom, 12)
+        case .classic:
+            content
+        }
+    }
 }
 
 // MARK: - One row

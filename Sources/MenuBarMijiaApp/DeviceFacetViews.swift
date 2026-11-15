@@ -5,6 +5,37 @@ import SwiftUI
 
 // MARK: - Shared Detail Controls (#5)
 
+extension View {
+    @ViewBuilder
+    func themedAdaptiveGlass<S: InsettableShape>(
+        _ theme: PanelTheme,
+        in shape: S,
+        tint: Color? = nil,
+        interactive: Bool = false
+    ) -> some View {
+        switch theme {
+        case .liquidGlass:
+            adaptiveGlass(in: shape, tint: tint, interactive: interactive)
+        case .classic:
+            classicAdaptiveGlass(in: shape, tint: tint, interactive: interactive)
+        }
+    }
+
+    @ViewBuilder
+    func themedPillButtonStyle(
+        _ theme: PanelTheme,
+        isSelected: Bool = false,
+        tintColor: Color = DesignTokens.active
+    ) -> some View {
+        switch theme {
+        case .liquidGlass:
+            buttonStyle(PillActionButtonStyle(isSelected: isSelected, tintColor: tintColor))
+        case .classic:
+            buttonStyle(ClassicPillActionButtonStyle(isSelected: isSelected, tintColor: tintColor))
+        }
+    }
+}
+
 /// A reading value in the drawer's right column. Shared by the cover battery and generic facets.
 struct DetailValueText: View {
     let text: String
@@ -25,11 +56,12 @@ struct DetailValueText: View {
 struct DetailPillButton: View {
     let title: String
     var tint: Color?
+    var theme: PanelTheme = .liquidGlass
     let action: () -> Void
 
     var body: some View {
         Button(title, action: action)
-            .buttonStyle(PillActionButtonStyle(tintColor: tint ?? .accentColor))
+            .themedPillButtonStyle(theme, tintColor: tint ?? .accentColor)
     }
 }
 
@@ -42,22 +74,41 @@ struct DetailSliderControl: View {
     var iconColor: Color = .secondary
     var trackColors: [Color]
     let formattedValue: String
+    var theme: PanelTheme = .liquidGlass
     let onChange: (Double) -> Void
 
     var body: some View {
-        LiquidGlassSlider(
-            value: Binding(get: { value }, set: onChange),
-            in: range,
-            step: step,
-            iconName: iconName,
-            iconColor: iconColor,
-            trackFill: LinearGradient(
-                colors: trackColors,
-                startPoint: .leading,
-                endPoint: .trailing
-            ),
-            formattedValue: formattedValue
+        let trackFill = LinearGradient(
+            colors: trackColors,
+            startPoint: .leading,
+            endPoint: .trailing
         )
+        let binding = Binding(
+            get: { value },
+            set: { newValue in onChange(newValue) }
+        )
+        switch theme {
+        case .liquidGlass:
+            LiquidGlassSlider(
+                value: binding,
+                in: range,
+                step: step,
+                iconName: iconName,
+                iconColor: iconColor,
+                trackFill: trackFill,
+                formattedValue: formattedValue
+            )
+        case .classic:
+            ClassicLiquidGlassSlider(
+                value: binding,
+                in: range,
+                step: step,
+                iconName: iconName,
+                iconColor: iconColor,
+                trackFill: trackFill,
+                formattedValue: formattedValue
+            )
+        }
     }
 }
 
@@ -155,6 +206,7 @@ struct DeviceFacetSection: View {
     let store: HomeStore
     let accent: Color
     let statusColor: Color
+    let theme: PanelTheme
 
     @State private var isExpanded: Bool
     @State private var showsRest: Bool
@@ -167,14 +219,38 @@ struct DeviceFacetSection: View {
         accent: Color,
         statusColor: Color,
         initiallyExpanded: Bool = false,
-        initiallyShowsRest: Bool = false
+        initiallyShowsRest: Bool = false,
+        theme: PanelTheme = .liquidGlass
     ) {
         self.device = device
         self.store = store
         self.accent = accent
         self.statusColor = statusColor
+        self.theme = theme
         _isExpanded = State(initialValue: initiallyExpanded)
         _showsRest = State(initialValue: initiallyShowsRest)
+    }
+
+    static func selectedOptionValue(for control: FacetControl) -> Int? {
+        guard let value = control.value?.intValue,
+              control.options.contains(where: { $0.value == value }) else {
+            return nil
+        }
+        return value
+    }
+
+    static func selectBinding(
+        for control: FacetControl,
+        onSelect: @escaping (Int) -> Void
+    ) -> Binding<Int?> {
+        let activeOption = selectedOptionValue(for: control)
+        return Binding<Int?>(
+            get: { activeOption },
+            set: { selected in
+                guard let selected else { return }
+                onSelect(selected)
+            }
+        )
     }
 
     private var controls: [FacetControl] {
@@ -332,17 +408,20 @@ struct DeviceFacetSection: View {
             }
 
         case .select:
+            let activeOption = Self.selectedOptionValue(for: control)
             HStack(spacing: 8) {
                 Text(title)
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                 Spacer(minLength: 8)
                 lockedControl(locked) {
-                    Picker("", selection: Binding(
-                        get: { control.value?.intValue ?? control.options.first?.value ?? 0 },
-                        set: { store.setFacetValue(device.id, controlId: control.id, value: .number(Double($0))) }
-                    )) {
+                    Picker("", selection: Self.selectBinding(for: control) { selected in
+                        store.setFacetValue(device.id, controlId: control.id, value: .number(Double(selected)))
+                    }) {
+                        if activeOption == nil {
+                            Text(L10n.tr("未选择", "Not Selected")).tag(Int?.none)
+                        }
                         ForEach(control.options, id: \.value) { option in
-                            Text(MiotValueText.display(option.label)).tag(option.value)
+                            Text(MiotValueText.display(option.label)).tag(Optional(option.value))
                         }
                     }
                     .labelsHidden()
@@ -372,7 +451,8 @@ struct DeviceFacetSection: View {
                             iconName: FacetLabel.icon(control.name),
                             iconColor: statusColor,
                             trackColors: [accent.opacity(0.55), accent.opacity(0.92)],
-                            formattedValue: FacetLabel.value(control)
+                            formattedValue: FacetLabel.value(control),
+                            theme: theme
                         ) { newValue in
                             store.setFacetValue(device.id, controlId: control.id, value: .number(newValue))
                         }
@@ -398,7 +478,7 @@ struct DeviceFacetSection: View {
                     if locked {
                         lockedButton(title)
                     } else {
-                        DetailPillButton(title: title, tint: accent) {
+                        DetailPillButton(title: title, tint: accent, theme: theme) {
                             store.runFacetAction(
                                 device.id,
                                 controlId: control.id,
