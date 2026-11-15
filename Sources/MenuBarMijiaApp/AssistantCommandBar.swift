@@ -872,6 +872,27 @@ struct AssistantSettingsSection: View {
     /// Imported-key labels and cloud consent also live in UserDefaults; bump to redraw after import/undo/revoke.
     @State private var storageRevision = 0
     @State private var showsAdvanced = false
+    @Environment(\.settingsUnsavedChanges) private var unsaved
+    /// The fields as last loaded or saved; edits that differ from them are unsaved (#148).
+    @State private var savedFields: AssistantSettingsDraft.Fields?
+
+    private var hasUnsavedEdits: Bool {
+        guard let savedFields else { return false }
+        return draftFields != savedFields
+    }
+
+    private func registerUnsavedForm() {
+        unsaved?.register("assistant", .init(
+            title: AssistantSettingsCopy.title,
+            isDirty: hasUnsavedEdits,
+            save: { saveCurrentDraft() != nil },
+            discard: {
+                guard let savedFields else { return }
+                apply(savedFields)
+                selectedPreset = AssistantProviderPreset.infer(baseURL: savedFields.baseURL)
+            }
+        ))
+    }
 
     var body: some View {
         let _ = store.effectiveLanguage
@@ -984,6 +1005,8 @@ struct AssistantSettingsSection: View {
 
                 Spacer()
 
+                UnsavedChangesBadge(isVisible: hasUnsavedEdits)
+
                 Button(AssistantSettingsCopy.saveConfiguration) {
                     if saveCurrentDraft() != nil {
                         store.showToast(L10n.tr("已保存 AI 指令配置", "Saved AI configuration"))
@@ -1006,7 +1029,11 @@ struct AssistantSettingsSection: View {
             modelDraft = config.model
             selectedPreset = AssistantProviderPreset.infer(baseURL: config.baseURL)
             apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: config.baseURL)
+            savedFields = draftFields
+            registerUnsavedForm()
         }
+        .onChange(of: hasUnsavedEdits) { _, _ in registerUnsavedForm() }
+        .onDisappear { unsaved?.unregister("assistant") }
     }
 
     private var draftFields: AssistantSettingsDraft.Fields {
@@ -1032,6 +1059,7 @@ struct AssistantSettingsSection: View {
         baseURLDraft = resolved.baseURL
         modelDraft = resolved.model
         selectedPreset = resolved.preset
+        savedFields = draftFields
         return cfg
     }
 

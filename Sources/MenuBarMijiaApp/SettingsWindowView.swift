@@ -42,6 +42,7 @@ public struct SettingsWindowView: View {
     public let store: HomeStore
     @State private var tab: SettingsTab = .general
     @State private var focus = SettingsSearchFocus()
+    @State private var unsaved = SettingsUnsavedChanges()
     @State private var highlightedResult: Int?
     /// The ⌘, window is a separate scene, so it must apply the app's appearance itself.
     @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
@@ -87,7 +88,7 @@ public struct SettingsWindowView: View {
         ZStack(alignment: .bottom) {
             HStack(spacing: 0) {
                 SettingsSidebar(
-                    selection: $tab,
+                    selection: guardedTab,
                     isSearching: focus.isSearching,
                     searchField: AnyView(searchField),
                     hasUpdateBadge: store.updateState.badgeRelease != nil,
@@ -121,6 +122,11 @@ public struct SettingsWindowView: View {
         .font(.system(size: DesignTokens.TypeSize.body))
         .controlSize(.regular)
         .environment(\.settingsSearchFocus, focus)
+        .environment(\.settingsUnsavedChanges, unsaved)
+        .background(WindowWillCloseObserver {
+            // The window closes regardless, so only Save or Discard is offered (#148).
+            _ = unsaved.resolveBeforeLeaving(allowCancel: false)
+        })
         .animation(reduceMotion ? nil : AppleMotion.pressFeedback, value: store.toastNotice)
         .transaction { if reduceMotion { $0.disablesAnimations = true } }
         // Errors shown while the window is open still reach the diagnostics ring buffer (#45).
@@ -206,7 +212,25 @@ public struct SettingsWindowView: View {
     private func selectCategory(_ category: SettingsTab) {
         focus.clearQuery()
         highlightedResult = nil
+        guard leavesTabSafely(for: category) else { return }
         tab = category
+    }
+
+    /// Switching pages drops the page's drafts, so unsaved edits are resolved first (#148).
+    private func leavesTabSafely(for destination: SettingsTab) -> Bool {
+        guard destination != tab else { return true }
+        return unsaved.resolveBeforeLeaving(allowCancel: true)
+    }
+
+    /// The rail writes its selection straight into this binding; a refusal keeps the current page.
+    private var guardedTab: Binding<SettingsTab> {
+        Binding(
+            get: { tab },
+            set: { newTab in
+                guard leavesTabSafely(for: newTab) else { return }
+                tab = newTab
+            }
+        )
     }
 
     private func jump(to hit: SettingsSearchHit) {
@@ -215,6 +239,7 @@ public struct SettingsWindowView: View {
         // the query change and the jump would arrive with nothing to scroll to or point at.
         focus.clearQuery()
         highlightedResult = nil
+        guard leavesTabSafely(for: hit.anchor.tab) else { return }
         tab = hit.anchor.tab
         focus.jump(to: hit.anchor)
     }
@@ -997,6 +1022,44 @@ private struct ConnectionSettingsTab: View {
     /// #143: Home Assistant is the second path, so its form stays folded until it is needed.
     @State private var haExpanded = false
     @Environment(\.settingsSearchFocus) private var searchFocus
+    @Environment(\.settingsUnsavedChanges) private var unsaved
+    /// The address and token as loaded or last saved; edits that differ are unsaved (#148).
+    @State private var haBaselineURL = ""
+    @State private var haBaselineToken = ""
+
+    private var haIsDirty: Bool { urlDraft != haBaselineURL || tokenDraft != haBaselineToken }
+
+    private func registerUnsavedForm() {
+        unsaved?.register("home-assistant", .init(
+            title: "Home Assistant",
+            isDirty: haIsDirty,
+            save: { saveHomeAssistant() },
+            discard: {
+                urlDraft = haBaselineURL
+                tokenDraft = haBaselineToken
+            }
+        ))
+    }
+
+    /// Saves through the usual guard, then reports whether the store really holds the draft now. A
+    /// refused Keychain write leaves the edits flagged as unsaved.
+    @discardableResult
+    private func saveHomeAssistant() -> Bool {
+        HAConnectionSaveGuard.save(
+            serverURL: HAConnectionSaveGuard.effectiveURL(urlDraft),
+            tokenDraft: &tokenDraft,
+            initialLookupWasUnavailable: &tokenLookupWasUnavailable,
+            in: store
+        )
+        let urlSaved = HAWebSocketProvider.normalizeBaseURL(store.serverURLString)
+            == HAWebSocketProvider.normalizeBaseURL(HAConnectionSaveGuard.effectiveURL(urlDraft))
+        let tokenSaved = store.loadHAToken().trimmingCharacters(in: .whitespacesAndNewlines)
+            == tokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard urlSaved, tokenSaved else { return false }
+        haBaselineURL = urlDraft
+        haBaselineToken = tokenDraft
+        return true
+    }
 
     private var showsHomeAssistantForm: Bool {
         if haExpanded || store.hasHASource { return true }
@@ -1077,10 +1140,13 @@ private struct ConnectionSettingsTab: View {
 
                             Spacer()
 
+                            UnsavedChangesBadge(isVisible: haIsDirty)
+
                             if store.hasHASource {
                                 Button(L10n.tr("断开连接", "Disconnect")) {
                                     if store.disconnectHomeAssistant() {
                                         tokenDraft = ""
+                                        haBaselineToken = ""
                                         tokenLookupWasUnavailable = false
                                         store.showToast(L10n.tr("已断开 Home Assistant", "Disconnected from Home Assistant"))
                                     } else {
@@ -1094,12 +1160,7 @@ private struct ConnectionSettingsTab: View {
                             }
 
                             Button(L10n.tr("保存并重新连接", "Save & Reconnect")) {
-                                HAConnectionSaveGuard.save(
-                                    serverURL: HAConnectionSaveGuard.effectiveURL(urlDraft),
-                                    tokenDraft: &tokenDraft,
-                                    initialLookupWasUnavailable: &tokenLookupWasUnavailable,
-                                    in: store
-                                )
+                                saveHomeAssistant()
                             }
                             .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
                         }
@@ -1131,6 +1192,8 @@ private struct ConnectionSettingsTab: View {
                 LGWebOSSettingsSection(store: store)
             }
         }
+        .onChange(of: haIsDirty) { _, _ in registerUnsavedForm() }
+        .onDisappear { unsaved?.unregister("home-assistant") }
         .onChange(of: searchFocus?.highlight) { _, highlight in
             if HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: highlight) { haExpanded = true }
         }
@@ -1139,6 +1202,9 @@ private struct ConnectionSettingsTab: View {
             let initialHAToken = HAConnectionSaveGuard.loadInitialToken(from: store)
             tokenDraft = initialHAToken.token
             tokenLookupWasUnavailable = initialHAToken.lookupWasUnavailable
+            haBaselineURL = urlDraft
+            haBaselineToken = tokenDraft
+            registerUnsavedForm()
             if store.discoveredHAInstances.isEmpty,
                store.shouldAutoDiscoverHomeAssistantOnLAN,
                !store.isDiscoveringHA {
@@ -1147,6 +1213,8 @@ private struct ConnectionSettingsTab: View {
                     if let first = found.first,
                        urlDraft.isEmpty || HAWebSocketProvider.normalizeBaseURL(urlDraft) == KeychainHelper.defaultNASURL {
                         urlDraft = first.baseURL
+                        // An automatic suggestion is not an edit the user would lose.
+                        haBaselineURL = urlDraft
                     }
                 }
             }
