@@ -582,34 +582,47 @@ public enum MiotSynthesizer {
 
     // MARK: Builders
 
+    static func normalizedKelvinBounds(rawMin: Double?, rawMax: Double?) -> (min: Int, max: Int) {
+        let parsedMin = rawMin.flatMap(DeviceSynthesizer.roundedInt)
+        let parsedMax = rawMax.flatMap(DeviceSynthesizer.roundedInt)
+        var minK = parsedMin ?? parsedMax.map { min(2700, $0) } ?? 2700
+        var maxK = parsedMax ?? parsedMin.map { max(6500, $0) } ?? 6500
+        if minK > maxK { swap(&minK, &maxK) }
+        return (minK, maxK)
+    }
+
     static func buildLight(_ r: MiotReader, _ s: MiotService) -> DeviceKind {
         let on = r.ref("on", in: s)
-        let bri = r.ref("brightness", in: s)
-        let ct = r.ref("color-temperature", in: s)
+        let bri = r.ref("brightness", in: s, includingWriteOnly: true)
+        let ct = r.ref("color-temperature", in: s, includingWriteOnly: true)
         let mode = r.ref("mode", in: s)
         let isLightGroup = r.did.hasPrefix("group.")
         let effects = (!isLightGroup && mode?.property.isWritable == true)
             ? (mode?.property.valueList?.map(\.description) ?? [])
             : []
+        let kelvinBounds = normalizedKelvinBounds(
+            rawMin: ct?.property.rangeMin,
+            rawMax: ct?.property.rangeMax
+        )
         return .light(LightSpec(
             entityId: MiotAddress.make(did: r.did, siid: s.iid),
             isOn: on?.value?.miotBool ?? false,
             brightnessPercent: bri.flatMap { ref in ref.value?.doubleValue.map { MiotPercentScale.percent(fromRaw: $0, property: ref.property, curve: .proportional) } },
             colorTempKelvin: ct?.value?.intValue,
-            minKelvin: ct?.property.rangeMin.flatMap { $0.isFinite ? Int(exactly: $0.rounded()) : nil } ?? 2700,
-            maxKelvin: ct?.property.rangeMax.flatMap { $0.isFinite ? Int(exactly: $0.rounded()) : nil } ?? 6500,
+            minKelvin: kelvinBounds.min,
+            maxKelvin: kelvinBounds.max,
             currentEffect: isLightGroup ? nil : mode?.valueDescription,
             availableEffects: effects,
             powerWritable: on?.property.isWritable == true,
-            brightnessWritable: bri?.property.isWritable ?? true,
-            colorWritable: ct?.property.isWritable ?? true
+            brightnessWritable: bri?.property.isWritable ?? false,
+            colorWritable: ct?.property.isWritable ?? false
         ))
     }
 
     static func buildClimate(_ r: MiotReader, _ s: MiotService) -> DeviceKind {
         let on = r.ref("on", in: s)
         let mode = s.shortName == "electric-blanket" ? nil : r.ref("mode", in: s)
-        let target = r.ref("target-temperature", in: s)
+        let target = r.ref("target-temperature", in: s, includingWriteOnly: true)
         let current = s.shortName == "electric-blanket" ? nil : r.first("temperature", in: [s] + r.spec.services(named: "environment") + r.spec.services(named: "temperature-humidity-sensor"))
         let fanLevel = r.first("fan-level", in: r.spec.services(named: "fan-control") + [s])
 
@@ -641,7 +654,7 @@ public enum MiotSynthesizer {
             fanMode: fanLevel?.valueDescription,
             availableFanModes: fanLevel?.property.isWritable == true ? (fanLevel?.property.valueList?.map(\.description) ?? []) : [],
             powerWritable: onWritable,
-            temperatureWritable: target?.property.isWritable ?? true
+            temperatureWritable: target?.property.isWritable ?? false
         ))
     }
 
@@ -749,10 +762,11 @@ public enum MiotSynthesizer {
         case "paused", "pause": "paused"
         default: "idle"
         }
+        let rawVolume = volume?.value?.doubleValue
         return .speaker(SpeakerSpec(
             mediaEntityId: MiotAddress.make(did: r.did, siid: s.iid),
             state: state,
-            volumePercent: volume.flatMap { ref in ref.value?.doubleValue.map { MiotPercentScale.percent(fromRaw: $0, property: ref.property, curve: .proportional) } } ?? 0,
+            volumePercent: volume.flatMap { ref in rawVolume.map { MiotPercentScale.percent(fromRaw: $0, property: ref.property, curve: .proportional) } } ?? 0,
             isMuted: mute?.value?.miotBool ?? false,
             muteSwitchEntityId: mute?.property.isWritable == true ? MiotAddress.make(did: r.did, siid: s.iid) : nil,
             sleepModeEntityId: sleep?.property.isWritable == true ? intelligent.map { MiotAddress.make(did: r.did, siid: $0.iid) } : nil,
@@ -760,7 +774,9 @@ public enum MiotSynthesizer {
             ttsNotifyEntityId: actionAddress(intelligent, "play-text", inputs: ["text-content"]),
             directiveNotifyEntityId: actionAddress(intelligent, "execute-text-directive", inputs: ["text-content", "silent-execution"]),
             playMusicButtonId: actionAddress(intelligent, "play-music", inputs: []),
-            stopAlarmButtonId: actionAddress(r.spec.services(named: "clock").first, "stop-alarm", inputs: [])
+            stopAlarmButtonId: actionAddress(r.spec.services(named: "clock").first, "stop-alarm", inputs: []),
+            volumeWritable: volume?.property.isWritable == true,
+            volumePresent: rawVolume != nil
         ))
     }
 
@@ -1012,16 +1028,21 @@ public enum MiotSynthesizer {
         let freezerTemp = freezerChamber.flatMap { r.ref("temperature", in: $0) }
         let freezerTarget = freezerChamber.flatMap { r.ref("target-temperature", in: $0) }
 
+        let rawFridgeTarget = fridgeTarget?.value?.doubleValue
+        let rawFreezerTarget = freezerTarget?.value?.doubleValue
+
         return .fridge(FridgeSpec(
             modeEntityId: mode?.property.isWritable == true ? MiotAddress.make(did: r.did, siid: s.iid) : nil,
             currentMode: mode?.valueDescription ?? "None",
             availableModes: mode?.property.isWritable == true ? (mode?.property.valueList?.map(\.description) ?? []) : [],
             fridgeCurrentTemp: fridgeTemp?.value?.doubleValue,
-            fridgeTargetTemp: fridgeTarget?.value?.doubleValue ?? 4,
+            fridgeTargetTemp: rawFridgeTarget ?? 4,
             fridgeTargetEntityId: fridgeTarget?.property.isWritable == true ? fridgeChamber.map { MiotAddress.make(did: r.did, siid: $0.iid) } : nil,
             freezerCurrentTemp: freezerTemp?.value?.doubleValue,
-            freezerTargetTemp: freezerTarget?.value?.doubleValue ?? -18,
-            freezerTargetEntityId: freezerTarget?.property.isWritable == true ? freezerChamber.map { MiotAddress.make(did: r.did, siid: $0.iid) } : nil
+            freezerTargetTemp: rawFreezerTarget ?? -18,
+            freezerTargetEntityId: freezerTarget?.property.isWritable == true ? freezerChamber.map { MiotAddress.make(did: r.did, siid: $0.iid) } : nil,
+            fridgeTargetPresent: rawFridgeTarget != nil,
+            freezerTargetPresent: rawFreezerTarget != nil
         ))
     }
 
@@ -1509,17 +1530,8 @@ public enum MiotSynthesizer {
 
     static func genericApplianceStatusText(forDescription description: String) -> String {
         let lower = description.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        if lower.contains("idle") || lower.contains("standby") || lower.contains("off") || lower.contains("shutdown") {
-            return L10n.tr("待机", "Standby")
-        }
-        if lower.contains("keep warm") || lower.contains("keep-warm") || lower.contains("warm") || lower.contains("insulation") {
-            return L10n.tr("保温中", "Keep Warm")
-        }
-        if lower.contains("cook") || lower.contains("work") || lower.contains("busy") || lower.contains("run") || lower.contains("boil") || lower.contains("heat") {
-            return L10n.tr("运行中", "Running")
-        }
-        if lower.contains("preheat") {
-            return L10n.tr("预热中", "Preheating")
+        if lower.contains("error") || lower.contains("fault") {
+            return L10n.tr("故障", "Fault")
         }
         if lower.contains("delayed") || lower.contains("delay-off") || lower.contains("延时") {
             return L10n.tr("延时关机", "Delayed Off")
@@ -1527,17 +1539,26 @@ public enum MiotSynthesizer {
         if lower.contains("delay") || lower.contains("appoint") || lower.contains("reservation") {
             return L10n.tr("预约中", "Scheduled")
         }
+        if lower.contains("idle") || lower.contains("standby") || lower.contains("off") || lower.contains("shutdown") {
+            return L10n.tr("待机", "Standby")
+        }
+        if lower.contains("preheat") || lower.contains("预热") {
+            return L10n.tr("预热中", "Preheating")
+        }
+        if lower.contains("keep warm") || lower.contains("keep-warm") || lower.contains("warm") || lower.contains("insulation") {
+            return L10n.tr("保温中", "Keep Warm")
+        }
+        if lower.contains("finish") || lower.contains("complete") || lower.contains("cooked") {
+            return L10n.tr("已完成", "Completed")
+        }
         if lower.contains("clean") || lower.contains("清洗") {
             return L10n.tr("清洗中", "Cleaning")
         }
         if lower.contains("paus") {
             return L10n.tr("已暂停", "Paused")
         }
-        if lower.contains("finish") || lower.contains("complete") || lower.contains("cooked") {
-            return L10n.tr("已完成", "Completed")
-        }
-        if lower.contains("error") || lower.contains("fault") {
-            return L10n.tr("故障", "Fault")
+        if lower.contains("cook") || lower.contains("work") || lower.contains("busy") || lower.contains("run") || lower.contains("boil") || lower.contains("heat") {
+            return L10n.tr("运行中", "Running")
         }
         return description
     }
@@ -1571,8 +1592,9 @@ final class MiotReader {
     }
 
     func ref(_ name: String, in service: MiotService, includingWriteOnly: Bool = false) -> Ref? {
-        guard includingWriteOnly else { return refs(name, in: service).first }
-        return service.properties.first(where: { $0.shortName == name }).map { make(service, $0) }
+        if let readable = refs(name, in: service).first { return readable }
+        guard includingWriteOnly else { return nil }
+        return service.properties.first(where: { $0.shortName == name && $0.isWritable }).map { make(service, $0) }
     }
 
     func refs(_ name: String, in service: MiotService) -> [Ref] {
@@ -1598,7 +1620,7 @@ final class MiotReader {
         let key = MiotPropKey(did: did, siid: service.iid, piid: property.iid)
         consumed.insert(key)
         if property.isReadable, !touched.contains(key) { touched.append(key) }
-        return Ref(service: service, property: property, value: values[key])
+        return Ref(service: service, property: property, value: property.isReadable ? values[key] : nil)
     }
 }
 

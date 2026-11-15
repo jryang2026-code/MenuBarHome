@@ -18,6 +18,17 @@
     { "raw": null, "pm25": 150, "level": "poor" },
     { "raw": null, "pm25": 250, "level": "heavy" },
     { "raw": null, "pm25": 251, "level": "hazardous" },
-    { "raw": null, "pm25": null, "level": null }
+    { "raw": null, "pm25": null, "level": null },
+    { "raw": "0", "pm25": null, "level": "excellent" },
+    { "raw": "42", "pm25": null, "level": "excellent" },
+    { "raw": " 42.4 ", "pm25": 180, "level": "excellent" },
+    { "raw": "50", "pm25": null, "level": "excellent" },
+    { "raw": "75", "pm25": null, "level": "good" },
+    { "raw": "135", "pm25": null, "level": "moderate" },
+    { "raw": "180", "pm25": null, "level": "poor" },
+    { "raw": "250", "pm25": null, "level": "heavy" },
+    { "raw": "320", "pm25": null, "level": "hazardous" },
+    { "raw": "-5", "pm25": 20, "level": null },
+    { "raw": "Infinity", "pm25": 20, "level": null }
   ]
 }

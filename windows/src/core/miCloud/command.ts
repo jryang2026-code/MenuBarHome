@@ -84,7 +84,8 @@ function coercePropValue(prop: MiotProperty, val: number): number {
 }
 
 function coerceBoolPropValue(prop: MiotProperty, val: boolean): boolean | number {
-  if (prop.format.startsWith("int") || prop.format.startsWith("uint") || prop.format === "float") {
+  const fmt = prop.format.toLowerCase();
+  if (fmt.startsWith("int") || fmt.startsWith("uint") || fmt.startsWith("float")) {
     return coercePropValue(prop, val ? 1 : 0);
   }
   return val;
@@ -439,7 +440,13 @@ export const MiotCommandMapper = {
         }
         // A bath heater publishes its heat as `heating` instead of `on` (#4), and an appliance's
         // only writable switch may live on a companion service (#300).
-        const appliancePower = findApplianceProp("on") ?? findApplianceProp("heating");
+        const localHeating = service.properties.find(
+          (p) => miotShortName(p.type) === "heating" && p.access.includes("write"),
+        );
+        const appliancePower =
+          (localHeating ? { service, prop: localHeating } : null) ??
+          findApplianceProp("on") ??
+          findApplianceProp("heating");
         if (appliancePower) {
           return {
             kind: "setProps",

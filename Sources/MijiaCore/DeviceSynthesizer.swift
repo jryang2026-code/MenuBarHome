@@ -922,8 +922,10 @@ public enum DeviceSynthesizer {
             let rawBri = st.attributes["brightness"]?.doubleValue
             let briPct = rawBri.flatMap { Self.roundedInt($0 / 255.0 * 100.0).map { max(1, min(100, $0)) } }
             let kelvin = st.attributes["color_temp_kelvin"]?.intValue
-            let minK = st.attributes["min_color_temp_kelvin"]?.intValue ?? 2700
-            let maxK = st.attributes["max_color_temp_kelvin"]?.intValue ?? 6500
+            let kelvinBounds = MiotSynthesizer.normalizedKelvinBounds(
+                rawMin: st.attributes["min_color_temp_kelvin"]?.doubleValue,
+                rawMax: st.attributes["max_color_temp_kelvin"]?.doubleValue
+            )
             let effect = st.attributes["effect"]?.stringValue
             let effects = st.attributes["effect_list"]?.stringArrayValue ?? []
             let writable = Self.haLightWritability(st.attributes)
@@ -941,8 +943,8 @@ public enum DeviceSynthesizer {
                         isOn: isOn,
                         brightnessPercent: briPct,
                         colorTempKelvin: kelvin,
-                        minKelvin: minK,
-                        maxKelvin: maxK,
+                        minKelvin: kelvinBounds.min,
+                        maxKelvin: kelvinBounds.max,
                         currentEffect: effect,
                         availableEffects: effects,
                         brightnessWritable: writable.brightness,
@@ -1191,8 +1193,10 @@ public enum DeviceSynthesizer {
 
             let fCur = fridgeTempId.flatMap { states[$0]?.state }.flatMap(Double.init)
             let zCur = freezerTempId.flatMap { states[$0]?.state }.flatMap(Double.init)
-            let fTgt = fridgeTargetId.flatMap { states[$0]?.state }.flatMap(Double.init) ?? 4
-            let zTgt = freezerTargetId.flatMap { states[$0]?.state }.flatMap(Double.init) ?? -18
+            let rawFridgeTarget = fridgeTargetId.flatMap { states[$0]?.state }.flatMap(Double.init)
+            let rawFreezerTarget = freezerTargetId.flatMap { states[$0]?.state }.flatMap(Double.init)
+            let fTgt = rawFridgeTarget ?? 4
+            let zTgt = rawFreezerTarget ?? -18
             let online = (modeSt?.isAvailable == true) || (fCur != nil)
 
             for id in [modeId, fridgeTempId, freezerTempId, fridgeTargetId, freezerTargetId].compactMap({ $0 }) {
@@ -1216,7 +1220,9 @@ public enum DeviceSynthesizer {
                         fridgeTargetEntityId: fridgeTargetId,
                         freezerCurrentTemp: zCur,
                         freezerTargetTemp: zTgt,
-                        freezerTargetEntityId: freezerTargetId
+                        freezerTargetEntityId: freezerTargetId,
+                        fridgeTargetPresent: rawFridgeTarget != nil,
+                        freezerTargetPresent: rawFreezerTarget != nil
                     )
                 )
             )
@@ -1484,15 +1490,33 @@ public enum DeviceSynthesizer {
             let powerId = eids.first {
                 $0.hasPrefix("sensor.")
                     && states[$0]?.attributes["device_class"]?.stringValue == "power"
-            } ?? eids.first(where: { $0.hasPrefix("sensor.") && $0.contains("electric_power") })
+            } ?? eids.first {
+                guard $0.hasPrefix("sensor.") else { return false }
+                let dc = states[$0]?.attributes["device_class"]?.stringValue ?? ""
+                if ["energy", "power_factor", "apparent_power", "reactive_power"].contains(dc) {
+                    return false
+                }
+                if $0.contains("power_consumption") || $0.contains("power_factor")
+                    || $0.contains("apparent_power") || $0.contains("reactive_power") {
+                    return false
+                }
+                return $0.contains("electric_power") || $0.contains("power")
+            }
             let energyId = eids.first {
                 $0.hasPrefix("sensor.")
                     && states[$0]?.attributes["device_class"]?.stringValue == "energy"
-            } ?? eids.first(where: { $0.hasPrefix("sensor.") && $0.contains("power_consumption") })
+            } ?? eids.first {
+                guard $0.hasPrefix("sensor.") else { return false }
+                let dc = states[$0]?.attributes["device_class"]?.stringValue ?? ""
+                if ["power", "power_factor", "apparent_power", "reactive_power"].contains(dc) {
+                    return false
+                }
+                return $0.contains("power_consumption") || $0.contains("energy")
+            }
             let lockId = eids.first(where: { $0.hasPrefix("switch.") && $0.contains("physical_controls_locked") })
 
-            let watts = powerId.flatMap { states[$0]?.state }.flatMap(Double.init)
-            let kwh = energyId.flatMap { states[$0]?.state }.flatMap(Double.init)
+            let watts = Self.haPowerWatts(from: powerId.flatMap { states[$0] })
+            let kwh = Self.haEnergyKwh(from: energyId.flatMap { states[$0] })
             let locked = lockId.flatMap { states[$0]?.state == "on" } ?? false
 
             for id in [swId, powerId, energyId, lockId].compactMap({ $0 }) { claimed.insert(id) }
@@ -1520,8 +1544,11 @@ public enum DeviceSynthesizer {
         // 7. Smart Speaker / TV (media_player.*)
         if let mediaId = eids.first(where: { $0.hasPrefix("media_player.") }),
            let st = states[mediaId] {
-            let volDouble = st.attributes["volume_level"]?.doubleValue ?? 0.2
-            let volPct = Self.roundedInt(volDouble * 100.0) ?? 20
+            let rawVol = st.attributes["volume_level"]?.doubleValue
+            let volPct = rawVol.flatMap { Self.roundedInt($0 * 100.0) }.map { max(0, min(100, $0)) } ?? 0
+            let features = st.attributes["supported_features"]?.intValue
+            let volumeWritable = st.isAvailable && (features.map { ($0 & 4) != 0 } ?? (rawVol != nil))
+            let volumePresent = rawVol != nil
             let devClass = st.attributes["device_class"]?.stringValue ?? ""
 
             if devClass == "tv" || model.contains("tv") {
@@ -1543,7 +1570,9 @@ public enum DeviceSynthesizer {
                             volumePercent: volPct,
                             currentSource: src,
                             availableSources: srcs,
-                            turnOnButtonId: turnOnBtn
+                            turnOnButtonId: turnOnBtn,
+                            volumeWritable: volumeWritable,
+                            volumePresent: volumePresent
                         )
                     )
                 )
@@ -1583,7 +1612,9 @@ public enum DeviceSynthesizer {
                             ttsNotifyEntityId: ttsNotify,
                             directiveNotifyEntityId: dirNotify,
                             playMusicButtonId: playMusicBtn,
-                            stopAlarmButtonId: stopAlarmBtn
+                            stopAlarmButtonId: stopAlarmBtn,
+                            volumeWritable: volumeWritable,
+                            volumePresent: volumePresent
                         )
                     )
                 )
@@ -1684,12 +1715,63 @@ public enum DeviceSynthesizer {
         }
     }
 
+    private static func haPowerWatts(from state: HAEntityState?) -> Double? {
+        guard let state, state.isAvailable,
+              let raw = Double(state.state), raw.isFinite, raw >= 0 else { return nil }
+        let unit = (state.attributes["unit_of_measurement"]?.stringValue ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let scale: Double
+        switch unit {
+        case "mW": scale = 0.001
+        case "MW": scale = 1_000_000
+        case "GW": scale = 1_000_000_000
+        default:
+            switch unit.lowercased() {
+            case "", "w", "watt", "watts": scale = 1
+            case "milliwatt", "milliwatts": scale = 0.001
+            case "kw", "kilowatt", "kilowatts": scale = 1000
+            case "megawatt", "megawatts": scale = 1_000_000
+            case "gw", "gigawatt", "gigawatts": scale = 1_000_000_000
+            default: return nil
+            }
+        }
+        let scaled = (raw * scale * 1_000_000).rounded() / 1_000_000
+        return scaled.isFinite ? scaled : nil
+    }
+
+    private static func haEnergyKwh(from state: HAEntityState?) -> Double? {
+        guard let state, state.isAvailable,
+              let raw = Double(state.state), raw.isFinite, raw >= 0 else { return nil }
+        let unit = (state.attributes["unit_of_measurement"]?.stringValue ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let scale: Double
+        switch unit {
+        case "mWh": scale = 0.000_001
+        case "MWh": scale = 1000
+        default:
+            switch unit.lowercased() {
+            case "", "kwh", "kilowatt-hour", "kilowatt-hours", "kw·h": scale = 1
+            case "wh", "watt-hour", "watt-hours", "w·h": scale = 0.001
+            case "milliwatt-hour", "milliwatt-hours": scale = 0.000_001
+            case "megawatt-hour", "megawatt-hours": scale = 1000
+            case "gwh", "gigawatt-hour", "gigawatt-hours": scale = 1_000_000
+            case "j", "joule", "joules": scale = 1.0 / 3_600_000.0
+            case "kj": scale = 1.0 / 3_600.0
+            case "mj": scale = 1.0 / 3.6
+            case "gj": scale = 1000.0 / 3.6
+            default: return nil
+            }
+        }
+        let scaled = (raw * scale * 1_000_000).rounded() / 1_000_000
+        return scaled.isFinite ? scaled : nil
+    }
+
     private static func parseClimateSpec(entityId: String, state st: HAEntityState) -> ClimateSpec {
         let isOn = st.isAvailable && st.state != "off"
         let modes = st.attributes["hvac_modes"]?.stringArrayValue ?? ["cool", "heat", "dry", "fan_only", "off"]
-        let target = st.attributes["temperature"]?.doubleValue
+        let rawTarget = st.attributes["temperature"]?.doubleValue
             ?? st.attributes["target_temp_low"]?.doubleValue
-            ?? 26.0
+        let target = rawTarget ?? 26.0
         let current = st.attributes["current_temperature"]?.doubleValue
         let minT = st.attributes["min_temp"]?.doubleValue ?? 16.0
         let maxT = st.attributes["max_temp"]?.doubleValue ?? 30.0
@@ -1712,7 +1794,8 @@ public enum DeviceSynthesizer {
             fanMode: fanMode,
             availableFanModes: fanModes,
             swingMode: swingMode,
-            availableSwingModes: swingModes
+            availableSwingModes: swingModes,
+            temperatureWritable: st.isAvailable && rawTarget != nil
         )
     }
 

@@ -559,11 +559,11 @@ export function buildMediaPlayerKind(
   const a = st.attributes;
   const online = isHAStateAvailable(st);
   const eids = entities.map((item) => haText(item.entity_id));
-  const volDouble = haNumber(a.volume_level) ?? 0.2;
-  const volPct = Math.max(0, Math.min(100, haRoundedInt(volDouble * 100) ?? 20));
+  const rawVol = haNumber(a.volume_level);
+  const volPct = rawVol !== null ? Math.max(0, Math.min(100, haRoundedInt(rawVol * 100) ?? 0)) : 0;
   const features = haIntFeatures(a.supported_features);
   // MediaPlayerEntityFeature: VOLUME_SET = 4, VOLUME_MUTE = 8.
-  const volumeWritable = online && (features !== null ? (features & 4) !== 0 : true);
+  const volumeWritable = online && (features !== null ? (features & 4) !== 0 : rawVol !== null);
   const supportsMute = features !== null ? (features & 8) !== 0 : typeof a.is_volume_muted === "boolean";
 
   const muteSw = eids.find((eid) => eid.startsWith("switch.") && eid.includes("mute")) ?? null;
@@ -592,6 +592,7 @@ export function buildMediaPlayerKind(
       sleepModeEntityId: sleepSw,
       isSleepMode,
       volumeWritable,
+      ...(rawVol === null ? { volumePresent: false } : {}),
     },
   };
 }
@@ -1390,6 +1391,7 @@ export function cachedExtendedKind(k: HARow): DeviceKind {
         sleepModeEntityId: nullStr(k.sleepModeEntityId),
         isSleepMode: reqBool(k.isSleepMode),
         volumeWritable: reqBool(k.volumeWritable),
+        ...(k.volumePresent !== undefined ? { volumePresent: reqBool(k.volumePresent) } : {}),
       };
     }
     case "appliance":

@@ -751,6 +751,112 @@ struct HADomainCardsTests {
         let context = store.buildAssistantContext(mention: .none)
         #expect(context.environmentSummary == "客厅 23.5°C")
     }
+
+    @Test("HA synthesis scales plug power/energy units, enforces kelvin bounds, and suppresses fabricated defaults")
+    func haUnitScalingKelvinBoundsAndMissingDefaults() throws {
+        let home = DeviceSynthesizer.synthesize(
+            areas: [HAAreaEntry(area_id: "living", name: "客厅")],
+            devices: [
+                HADeviceEntry(id: "plug-kw", area_id: "living", name: "大功率插座", model: "cuco.plug.v3"),
+                HADeviceEntry(id: "plug-mw", area_id: "living", name: "毫瓦插座", model: "cuco.plug.v3"),
+                HADeviceEntry(id: "ac-ro", area_id: "living", name: "只读空调", model: "xiaomi.aircondition.mc5"),
+                HADeviceEntry(id: "light-inv", area_id: "living", name: "反向色温灯", model: "yeelink.light.ceiling22"),
+                HADeviceEntry(id: "fridge-ro", area_id: "living", name: "无目标冰箱", model: "midjd6.fridge.v1"),
+                HADeviceEntry(id: "spk-novol", area_id: "living", name: "无音量音箱", model: "xiaomi.speaker.s1"),
+                HADeviceEntry(id: "tv-novol", area_id: "living", name: "无音量电视", model: "lg.tv.c3"),
+            ],
+            entities: [
+                HAEntityEntry(entity_id: "switch.plug_kw", device_id: "plug-kw"),
+                HAEntityEntry(entity_id: "sensor.plug_kw_power_factor", device_id: "plug-kw"),
+                HAEntityEntry(entity_id: "sensor.plug_kw_load", device_id: "plug-kw"),
+                HAEntityEntry(entity_id: "sensor.plug_kw_total", device_id: "plug-kw"),
+                HAEntityEntry(entity_id: "switch.plug_mw", device_id: "plug-mw"),
+                HAEntityEntry(entity_id: "sensor.plug_mw_apparent_power", device_id: "plug-mw"),
+                HAEntityEntry(entity_id: "sensor.plug_mw_electric_power", device_id: "plug-mw"),
+                HAEntityEntry(entity_id: "sensor.plug_mw_energy", device_id: "plug-mw"),
+                HAEntityEntry(entity_id: "climate.ac_ro", device_id: "ac-ro"),
+                HAEntityEntry(entity_id: "light.inv", device_id: "light-inv"),
+                HAEntityEntry(entity_id: "sensor.fridge_ro_temperature_p_3", device_id: "fridge-ro", translation_key: "temperature_p_3"),
+                HAEntityEntry(entity_id: "media_player.spk_novol", device_id: "spk-novol"),
+                HAEntityEntry(entity_id: "media_player.tv_novol", device_id: "tv-novol"),
+            ],
+            states: [
+                "switch.plug_kw": HAEntityState(entityId: "switch.plug_kw", state: "on"),
+                "sensor.plug_kw_power_factor": HAEntityState(entityId: "sensor.plug_kw_power_factor", state: "0.98", attributes: ["device_class": .string("power_factor")]),
+                "sensor.plug_kw_load": HAEntityState(entityId: "sensor.plug_kw_load", state: "1.25", attributes: ["device_class": .string("power"), "unit_of_measurement": .string("kW")]),
+                "sensor.plug_kw_total": HAEntityState(entityId: "sensor.plug_kw_total", state: "0.5", attributes: ["device_class": .string("energy"), "unit_of_measurement": .string("MWh")]),
+                "switch.plug_mw": HAEntityState(entityId: "switch.plug_mw", state: "on"),
+                "sensor.plug_mw_apparent_power": HAEntityState(entityId: "sensor.plug_mw_apparent_power", state: "15"),
+                "sensor.plug_mw_electric_power": HAEntityState(entityId: "sensor.plug_mw_electric_power", state: "2500", attributes: ["unit_of_measurement": .string("mW")]),
+                "sensor.plug_mw_energy": HAEntityState(entityId: "sensor.plug_mw_energy", state: "500", attributes: ["unit_of_measurement": .string("Wh")]),
+                "climate.ac_ro": HAEntityState(entityId: "climate.ac_ro", state: "cool", attributes: ["current_temperature": .number(25)]),
+                "light.inv": HAEntityState(entityId: "light.inv", state: "on", attributes: ["min_color_temp_kelvin": .number(6500), "max_color_temp_kelvin": .number(2700)]),
+                "sensor.fridge_ro_temperature_p_3": HAEntityState(entityId: "sensor.fridge_ro_temperature_p_3", state: "5"),
+                "media_player.spk_novol": HAEntityState(entityId: "media_player.spk_novol", state: "playing", attributes: ["supported_features": .number(0)]),
+                "media_player.tv_novol": HAEntityState(entityId: "media_player.tv_novol", state: "on", attributes: ["device_class": .string("tv"), "supported_features": .number(0)]),
+            ]
+        )
+        let byId = Dictionary(uniqueKeysWithValues: home.devices.map { ($0.id, $0) })
+
+        guard case .plug(let kwPlug) = try #require(byId["plug-kw"]).kind else {
+            Issue.record("expected plug-kw"); return
+        }
+        #expect(kwPlug.powerWatts == 1250)
+        #expect(kwPlug.energyKwh == 500)
+
+        guard case .plug(let mwPlug) = try #require(byId["plug-mw"]).kind else {
+            Issue.record("expected plug-mw"); return
+        }
+        #expect(mwPlug.powerWatts == 2.5)
+        #expect(mwPlug.energyKwh == 0.5)
+
+        guard case .climate(let ac) = try #require(byId["ac-ro"]).kind else {
+            Issue.record("expected ac-ro"); return
+        }
+        #expect(ac.temperatureWritable == false)
+
+        guard case .light(let light) = try #require(byId["light-inv"]).kind else {
+            Issue.record("expected light-inv"); return
+        }
+        #expect(light.minKelvin == 2700)
+        #expect(light.maxKelvin == 6500)
+
+        let fridgeDev = try #require(byId["fridge-ro"])
+        guard case .fridge(let fridge) = fridgeDev.kind else {
+            Issue.record("expected fridge-ro"); return
+        }
+        #expect(fridge.fridgeTargetPresent == false)
+        #expect(fridge.freezerTargetPresent == false)
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(!fridgeDev.statusSubtitle.contains("4"))
+            #expect(!fridgeDev.statusSubtitle.contains("-18"))
+            #expect(fridgeDev.statusSubtitle.contains("5"))
+        }
+
+        let spkDev = try #require(byId["spk-novol"])
+        guard case .speaker(let spk) = spkDev.kind else {
+            Issue.record("expected spk-novol"); return
+        }
+        #expect(spk.volumePercent == 0)
+        #expect(spk.volumeWritable == false)
+        #expect(spk.volumePresent == false)
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(!spkDev.statusSubtitle.contains("20%"))
+            #expect(spkDev.statusSubtitle == "播放中")
+        }
+
+        let tvDev = try #require(byId["tv-novol"])
+        guard case .tv(let tv) = tvDev.kind else {
+            Issue.record("expected tv-novol"); return
+        }
+        #expect(tv.volumePercent == 0)
+        #expect(tv.volumeWritable == false)
+        #expect(tv.volumePresent == false)
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(!tvDev.statusSubtitle.contains("20%"))
+            #expect(tvDev.statusSubtitle == "在线")
+        }
+    }
 }
 
 private extension SmartDevice {
