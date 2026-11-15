@@ -222,7 +222,7 @@ MenuBarHome can hand its device list to a companion without sharing any credenti
 
 | You will see | What it is | Use this |
 | :--- | :--- | :--- |
-| `menumijia://…` | The URL scheme every companion sends. It is a compatibility contract ([ADR-0013](docs/adr/0013-raycast-companion-contract.md)), so it does not change | Keep `menumijia://` |
+| `menumijia://…` | The URL scheme every companion sends. It is a compatibility contract ([ADR-0013](docs/adr/0013-raycast-companion-contract.md)), so companions keep sending it | Keep `menumijia://`; `menubarhome://` is accepted as an exact alias |
 | `scripts/mijia`, `scripts/mijia-mcp` | The CLI and MCP server | `scripts/menubarhome` is the same CLI under the new name; `mijia` keeps working |
 | `MenuBarMijia/` data folder, `MenuBarMijiaApp` process | The app's data directory and process name | Nothing to do; your sign-in and settings live there |
 | MCP key `menubarmijia` | A label in your MCP client's config, and the server's reported name | Name it anything; the example below uses `menubarhome` |

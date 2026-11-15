@@ -146,6 +146,20 @@ pub(crate) fn remove_raycast_snapshot() -> Result<(), String> {
     remove_snapshot_in_dir(&dir)
 }
 
+/// The schemes this app answers to: the original, and the product's current name (#166). Both run
+/// exactly the same links, so everything after the scheme is validated identically.
+const ACCEPTED_URL_SCHEMES: [&str; 2] = ["menumijia", "menubarhome"];
+
+fn has_accepted_url_scheme(url: &str) -> bool {
+    let bytes = url.as_bytes();
+    ACCEPTED_URL_SCHEMES.iter().any(|scheme| {
+        let len = scheme.len();
+        bytes.len() > len
+            && bytes[..len].eq_ignore_ascii_case(scheme.as_bytes())
+            && bytes[len] == b':'
+    })
+}
+
 pub(crate) fn sanitize_menumijia_url(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.len() > MAX_OPEN_URL_BYTES {
@@ -154,8 +168,7 @@ pub(crate) fn sanitize_menumijia_url(raw: &str) -> Option<String> {
     if trimmed.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0) {
         return None;
     }
-    let prefix = trimmed.get(..10)?;
-    if !prefix.eq_ignore_ascii_case("menumijia:") {
+    if !has_accepted_url_scheme(trimmed) {
         return None;
     }
     Some(trimmed.to_string())
@@ -805,7 +818,10 @@ pub(crate) fn unregister_url_scheme_under_root(classes_subkey: &str) -> Result<(
 
 fn register_url_scheme() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|err| format!("无法读取当前程序路径：{err}"))?;
-    register_url_scheme_under_root(r"Software\Classes\menumijia", &exe)
+    register_url_scheme_under_root(r"Software\Classes\menumijia", &exe)?;
+    // The alias is best effort: a failure here must not undo the original registration.
+    let _ = register_url_scheme_under_root(r"Software\Classes\menubarhome", &exe);
+    Ok(())
 }
 
 pub(crate) fn start_companion_runtime(app: AppHandle) {
@@ -1164,6 +1180,18 @@ mod tests {
         );
         assert_eq!(extract_menumijia_arg(["https://example.com"]), None);
         assert_eq!(sanitize_menumijia_url("menumijia://toggle?name=lamp\r\nInjected: 1"), None);
+        // #166: the product-name alias is accepted exactly like the original scheme.
+        assert_eq!(
+            extract_menumijia_arg(["--flag", "MenuBarHome://focus", "other"]),
+            Some("MenuBarHome://focus".to_string())
+        );
+        assert_eq!(
+            sanitize_menumijia_url("menubarhome:/toggle?device=lamp"),
+            Some("menubarhome:/toggle?device=lamp".to_string())
+        );
+        assert_eq!(sanitize_menumijia_url("menubarhome-evil://toggle?device=lamp"), None);
+        assert_eq!(sanitize_menumijia_url("menubarhome"), None);
+        assert_eq!(sanitize_menumijia_url("menubarhome://toggle?name=lamp\r\nInjected: 1"), None);
 
         let cmd = format_protocol_open_command(Path::new(r"C:\Program Files\MenuBarHome\MenuBarHome.exe"))
             .expect("format exe open command");

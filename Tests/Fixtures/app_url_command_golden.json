@@ -160,6 +160,38 @@
     {
       "url": "menumijia://fan?device=dev_fan&percent=0",
       "expected": null
+    },
+    {
+      "url": "menubarhome://toggle?device=dev_study_ceiling",
+      "expected": {
+        "kind": "toggle",
+        "deviceId": "dev_study_ceiling",
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "MENUBARHOME://toggle?device=dev_study_ceiling",
+      "expected": {
+        "kind": "toggle",
+        "deviceId": "dev_study_ceiling",
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menubarhome:/toggle?device=dev_study_ceiling",
+      "expected": {
+        "kind": "toggle",
+        "deviceId": "dev_study_ceiling",
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menubarhome://toggle/extra?device=dev_study_ceiling",
+      "expected": null
+    },
+    {
+      "url": "menubarhome-evil://toggle?device=dev_study_ceiling",
+      "expected": null
     }
   ],
   "builtInSceneCases": [

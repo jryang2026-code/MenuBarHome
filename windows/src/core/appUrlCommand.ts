@@ -153,6 +153,8 @@ function parseRawQuery(rawQuery: string | undefined): Record<string, string> | n
 
 export const AppURLParser = {
   scheme: "menumijia",
+  /** Accepted as an exact synonym of `scheme` (#166); companions keep sending `menumijia://`. */
+  aliasSchemes: ["menubarhome"] as readonly string[],
   maximumAskLength: 500,
   maximumNameLength: 200,
   maximumTokenLength: 200,
@@ -177,7 +179,9 @@ export const AppURLParser = {
     );
     if (!match) return null;
     const [, schemePart, rawRoute = "", rawQuery] = match;
-    if (!schemePart || schemePart.toLowerCase() !== this.scheme) return null;
+    if (!schemePart) return null;
+    const lowerScheme = schemePart.toLowerCase();
+    if (lowerScheme !== this.scheme && !this.aliasSchemes.includes(lowerScheme)) return null;
 
     const strippedRoute = rawRoute.replace(/^\/+|\/+$/g, "");
     if (!strippedRoute || strippedRoute.includes("/")) return null;
