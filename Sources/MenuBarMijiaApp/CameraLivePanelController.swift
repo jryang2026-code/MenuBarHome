@@ -131,6 +131,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     weak var store: HomeStore?
     private(set) var panelWindow: CameraFloatingPanel?
     private var resolveTask: Task<Void, Never>?
+    private var cancelledResolveTask: Task<Void, Never>?
     private var snapshotLoopTask: Task<Void, Never>?
     private var mjpegSession: URLSession?
     private var activePlayback: CameraLivePlayback?
@@ -142,6 +143,13 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     private var pendingStopGenerations: [String: Int] = [:]
     private var activeCameraEntityID: String?
     private var doorbellDismissTask: Task<Void, Never>?
+    var mjpegStableWindow: Duration = .seconds(10)
+    var mjpegRetryBackoff: Duration = .milliseconds(900)
+    var mjpegMaxAttempts = 4
+    var mjpegMaxReconnects = 6
+    var consumeMJPEGOverride: (@MainActor (URL, @escaping @MainActor (NSImage) -> Void) async -> Void)?
+    var bridgeShutdownOverride: (@Sendable () async -> Void)?
+    private(set) var terminationTask: Task<Void, Never>?
     /// The window sits where a ring put it, so closing it must not overwrite the user's saved position.
     private(set) var isDoorbellPlacement = false
     /// The ring still owns this window's closing; the user taking it over (moving, resizing, PiP,
@@ -457,13 +465,49 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         }
     }
 
+    public func handleApplicationWillTerminate() {
+        let task = Task<Void, Never> { @MainActor [weak self] in
+            guard let self else { return }
+            await self.shutdownForTermination()
+        }
+        terminationTask = task
+    }
+
+    public func shutdownForTermination() async {
+        finishPTZMove(notify: false)
+        retryFailedPTZStop()
+        let ptzStopToAwait = ptzStopTask
+        let closingDeviceId = activeDeviceId
+        let activePlaybackIDs = warmPlaybacks.map(\.deviceID)
+        let store = self.store
+        closePanel()
+        activeDeviceId = nil
+        await ptzStopToAwait?.value
+        await closeReleaseTask?.value
+        if let store {
+            var deviceIDs = Set(activePlaybackIDs)
+            if let closingDeviceId { deviceIDs.insert(closingDeviceId) }
+            for deviceID in deviceIDs {
+                await store.stopCameraStream(for: deviceID)
+            }
+        }
+        if let bridgeShutdownOverride {
+            await bridgeShutdownOverride()
+        } else {
+            await XiaomiCameraBridge.shared.shutdown()
+        }
+    }
+
     private func stopStreamTasks() {
         clearPTZ()
         videoOnlyNoticeTask?.cancel()
         videoOnlyNoticeTask = nil
         videoOnlyNotice = nil
-        resolveTask?.cancel()
-        resolveTask = nil
+        if let resolveTask {
+            resolveTask.cancel()
+            cancelledResolveTask = resolveTask
+            self.resolveTask = nil
+        }
         snapshotLoopTask?.cancel()
         snapshotLoopTask = nil
         setMJPEGSession(nil)
@@ -746,7 +790,10 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         let lens = selectedLens(for: device)
         activeLensID = lens?.id ?? "main"
         let channel = lens?.channel ?? 0
+        let priorResolveTask = cancelledResolveTask
+        cancelledResolveTask = nil
         resolveTask = Task { @MainActor [weak self] in
+            await priorResolveTask?.value
             guard let self else { return }
             await self.closeReleaseTask?.value
             await self.pendingStopTasks[deviceId]?.value
@@ -854,27 +901,40 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                 "Live video stopped: \(detail ?? "no data")"
             )
             self.tearDownPictureInPicture()
+            self.scheduleStopCameraStream(for: deviceID)
         }
         playback.start()
     }
 
     private func startMJPEGStream(url: URL) {
         snapshotLoopTask?.cancel()
+        let targetDeviceID = activeDeviceId
         snapshotLoopTask = Task { @MainActor [weak self] in
             guard let self else { return }
             var attempts = 0
-            while !Task.isCancelled, attempts < 4 {
+            var totalReconnects = 0
+            while !Task.isCancelled, attempts < self.mjpegMaxAttempts, totalReconnects < self.mjpegMaxReconnects {
                 attempts += 1
+                totalReconnects += 1
+                let attemptStartedAt = ContinuousClock.now
                 var receivedFrame = false
-                await self.consumeMJPEGConnection(url: url) { [weak self] image in
-                    receivedFrame = true
-                    self?.snapshotImage = image
+                if let override = self.consumeMJPEGOverride {
+                    await override(url) { [weak self] image in
+                        receivedFrame = true
+                        self?.snapshotImage = image
+                    }
+                } else {
+                    await self.consumeMJPEGConnection(url: url) { [weak self] image in
+                        receivedFrame = true
+                        self?.snapshotImage = image
+                    }
                 }
                 if Task.isCancelled { break }
-                if receivedFrame {
+                if receivedFrame, (ContinuousClock.now - attemptStartedAt) >= self.mjpegStableWindow {
                     attempts = 0
+                    totalReconnects = 0
                 }
-                try? await Task.sleep(for: .milliseconds(900))
+                try? await Task.sleep(for: self.mjpegRetryBackoff)
             }
             guard !Task.isCancelled else { return }
             self.setMJPEGSession(nil)
@@ -884,6 +944,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                 "实时画面连接中断，请检查摄像机与电脑是否在同一局域网或点击重试",
                 "Live stream disconnected. Check that the camera and Mac are on the same LAN, or click Retry"
             )
+            if let deviceID = targetDeviceID ?? self.activeDeviceId {
+                self.scheduleStopCameraStream(for: deviceID)
+            }
         }
     }
 

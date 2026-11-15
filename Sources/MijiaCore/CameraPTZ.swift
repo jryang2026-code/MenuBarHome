@@ -220,10 +220,27 @@ public struct CameraPTZDragPlanner: Sendable {
         }
 
         let translation = CameraPTZPoint(x: point.x - start.x, y: point.y - start.y)
-        if !isActive, hypot(translation.x, translation.y) < timing.activationDistance {
+        let horizontal = capability.supportsPan ? abs(translation.x) : 0
+        let vertical = capability.supportsTilt ? abs(translation.y) : 0
+        if hypot(translation.x, translation.y) < timing.activationDistance
+            || hypot(horizontal, vertical) < timing.activationDistance {
+            if isActive {
+                isActive = false
+                activeDirection = nil
+                lastCommandAt = time
+                return [.stop]
+            }
             return []
         }
-        guard let direction = direction(for: translation, capability: capability) else { return [] }
+        guard let direction = direction(for: translation, capability: capability) else {
+            if isActive {
+                isActive = false
+                activeDirection = nil
+                lastCommandAt = time
+                return [.stop]
+            }
+            return []
+        }
 
         if !isActive {
             isActive = true

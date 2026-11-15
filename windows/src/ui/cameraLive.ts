@@ -9,6 +9,7 @@ import {
   cameraTr,
   parsePrivateLanIpv4,
   resolveLiveCameraTarget,
+  type CachedCameraTopology,
 } from "../core/miCloud/cameraHubs.js";
 import {
   MiCloudClient,
@@ -17,6 +18,7 @@ import {
   type MiotSpecResolver,
 } from "../core/miCloudClient.js";
 import type { CameraLens, SmartDevice } from "../core/models.js";
+import { getCachedXiaomiTopology } from "../core/pollingPolicy.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { SF_ICONS } from "./appConstants.js";
 import type { PersistedSettings } from "./appTypes.js";
@@ -178,6 +180,29 @@ export class CameraLiveController {
       sourceDev,
       miSession: this.host.settings.miSession ?? accounts[0]?.session ?? null,
     };
+  }
+
+  private resolveCachedCameraTopology(dev: SmartDevice, sourceDev: SmartDevice): CachedCameraTopology | null {
+    const accountsState = getHostMiAccountsState(this.host);
+    const merged = accountsState?.merged;
+    const targetAccountId = sourceDev.accountId ?? dev.accountId ?? null;
+    if (merged && targetAccountId) {
+      const accounts = this.host.miAccountsOverride ?? accountsState?.accounts ?? [];
+      const matched = accounts.find(
+        (acc) => acc.id === targetAccountId || acc.session.userId === targetAccountId,
+      );
+      const accountKey = matched?.id ?? targetAccountId;
+      const allDevices = merged.allDevicesByAccount[accountKey];
+      const allRooms = merged.allRoomsByAccount[accountKey];
+      if (allDevices && allDevices.length > 0) {
+        return { allDevices, allRooms: allRooms ?? [] };
+      }
+    }
+    const cached = getCachedXiaomiTopology(this.host);
+    if (cached && cached.allDevices.length > 0) {
+      return { allDevices: cached.allDevices, allRooms: cached.allRooms };
+    }
+    return null;
   }
 
   private p2pSessionKeyForDevice(dev: SmartDevice): string {
@@ -722,7 +747,11 @@ export class CameraLiveController {
         );
       return !canPlayNative;
     }
-    if (!/\/api\/camera_proxy/i.test(url) && /\.(mp4|webm|ogv|ogg|mov)(\?|$|#)/i.test(url)) {
+    if (
+      !/\/api\/camera_proxy/i.test(url) &&
+      (/\.(mp4|webm|ogv|ogg|mov|jpg|jpeg|png)(\?|$|#)/i.test(url) ||
+        /snapshot|frame\.jpeg|mjpeg/i.test(url))
+    ) {
       return false;
     }
     return /^https?:\/\//i.test(url);
@@ -755,10 +784,13 @@ export class CameraLiveController {
         this.attachLiveMedia();
         return true;
       }
+      this.liveCameraStreamURL = null;
+      this.liveCameraError = t("本地视频桥接未返回可用流，请检查网络后重试");
       this.liveCameraLoading = false;
       this.host.render();
     } catch (err) {
       if (this.liveCameraToken === token && this.activeLiveCameraId === did) {
+        this.liveCameraStreamURL = null;
         this.liveCameraError = err instanceof Error ? err.message : String(err);
         this.liveCameraLoading = false;
         this.host.render();
@@ -871,13 +903,17 @@ export class CameraLiveController {
     // Closing/hiding bumps liveCameraToken via stopLiveTransport or full teardown;
     // a negotiation that outlives its modal must not start a bridge afterwards.
     const token = this.liveCameraToken;
-    const stale = () => this.liveCameraToken !== token || this.activeLiveCameraId !== dev.id;
+    const hasCustomUrl = () => Boolean(this.cameraStreamURLs[dev.id]);
+    const stale = () =>
+      this.liveCameraToken !== token || this.activeLiveCameraId !== dev.id || hasCustomUrl();
+    const shouldReleaseStaleCloudSession = () =>
+      this.activeLiveCameraId !== dev.id || hasCustomUrl();
     let startedP2PSession = false;
     let failureReason: string | null = null;
     const releaseIfStarted = () => {
       if (startedP2PSession) {
         startedP2PSession = false;
-        void this.releaseCameraP2PSession(dev, token, true);
+        void this.releaseCameraP2PSession(dev, this.liveCameraToken, true);
       }
     };
     try {
@@ -986,7 +1022,7 @@ export class CameraLiveController {
         }
       }
       if (stale()) {
-        if (this.activeLiveCameraId !== dev.id) releaseIfStarted();
+        if (shouldReleaseStaleCloudSession()) releaseIfStarted();
         return;
       }
 
@@ -997,9 +1033,10 @@ export class CameraLiveController {
           sourceDev,
           this.host.devices,
           this.host.settings.selectedHomeId,
+          this.resolveCachedCameraTopology(dev, sourceDev),
         );
         if (stale()) {
-          if (this.activeLiveCameraId !== dev.id) releaseIfStarted();
+          if (shouldReleaseStaleCloudSession()) releaseIfStarted();
           return;
         }
         const { bridgeDid, bridgeModel, subdid, cloudLocalIp, hubBlockedReason } = target;
@@ -1024,7 +1061,7 @@ export class CameraLiveController {
               support_vendors: "TUTK_CS2_MTP",
             })) as Record<string, unknown> | null;
             if (stale()) {
-              if (this.activeLiveCameraId !== dev.id) releaseIfStarted();
+              if (shouldReleaseStaleCloudSession()) releaseIfStarted();
               return;
             }
             const vendorObj = (vendorRes?.["vendor"] as Record<string, unknown> | undefined) ?? {};
@@ -1037,7 +1074,7 @@ export class CameraLiveController {
 
             if (devicePublic && sign) {
               if (stale()) {
-                if (this.activeLiveCameraId !== dev.id) releaseIfStarted();
+                if (shouldReleaseStaleCloudSession()) releaseIfStarted();
                 return;
               }
               this.liveCameraQualityApplies = true;
@@ -1060,7 +1097,7 @@ export class CameraLiveController {
                 // relay and stream registrations that nothing else will reclaim. Undo
                 // them — unless the same camera was re-opened, in which case the new
                 // negotiation's own stop_bridge replaces them and must not be killed.
-                if (this.activeLiveCameraId !== dev.id) {
+                if (shouldReleaseStaleCloudSession()) {
                   invokeTauriVoid("stop_xiaomi_camera_bridge", {
                     did: bridgeDid,
                     ...(channel > 0 ? { channel } : {}),
@@ -1124,21 +1161,27 @@ export class CameraLiveController {
     if (!id) return;
     const input = this.host.root.querySelector<HTMLInputElement>("#camera-stream-url-input");
     const val = input?.value.trim() ?? "";
-    this.stopLiveTransport();
-    const token = this.liveCameraToken;
-    await this.refreshOwnedGo2rtcOrigin();
-    const stillViewing = this.liveCameraToken === token && this.activeLiveCameraId === id;
+    const dev = this.host.devices.find((d) => d.id === id) ??
+      (this.activeLiveCameraSnapshot?.id === id ? this.activeLiveCameraSnapshot : undefined);
+    const isXiaomiCamera = dev ? this.resolveCameraSource(dev).backend === "xiaomiCloud" : false;
+    const hadCustomUrl = Boolean(this.cameraStreamURLs[id]);
     if (val) this.cameraStreamURLs[id] = val;
     else delete this.cameraStreamURLs[id];
     this.host.settings.cameraStreamURLs = { ...this.cameraStreamURLs };
     this.host.saveSettings();
+    this.stopLiveTransport();
+    const token = this.liveCameraToken;
+    if (dev && isXiaomiCamera && (val || (!hadCustomUrl && dev.kind.kind === "camera" && !dev.kind.isOn))) {
+      void this.releaseCameraP2PSession(dev, token, true);
+    }
+    await this.refreshOwnedGo2rtcOrigin();
+    const stillViewing = this.liveCameraToken === token && this.activeLiveCameraId === id;
     if (!stillViewing) return;
     if (val) {
       const playable = this.normalizeWindowsCameraStreamUrl(val);
       this.liveCameraStreamURL = playable;
       this.liveCameraError = null;
       this.liveCameraLoading = false;
-      const dev = this.host.devices.find((d) => d.id === id);
       const ownedSrc = this.ownedGo2rtcStreamName(playable);
       if (dev && dev.kind.kind === "camera" && dev.kind.isOn && ownedSrc) {
         this.liveCameraStreamURL = ownedSrc;
@@ -1147,12 +1190,11 @@ export class CameraLiveController {
         void this.bridgeHlsStreamToMjpeg(id, playable);
       }
     } else {
-      const dev = this.host.devices.find((d) => d.id === id);
       this.liveCameraStreamURL = dev ? this.resolveHaCameraStreamUrl(dev) : null;
       if (dev && dev.kind.kind === "camera" && dev.kind.isOn) {
         if (this.liveCameraStreamURL && this.needsHlsTranscodeBridge(this.liveCameraStreamURL)) {
           void this.bridgeHlsStreamToMjpeg(id, this.liveCameraStreamURL);
-        } else if (!this.liveCameraStreamURL && this.resolveCameraSource(dev).backend === "xiaomiCloud") {
+        } else if (!this.liveCameraStreamURL && isXiaomiCamera) {
           void this.resolveCloudCameraStream(dev);
         }
       }

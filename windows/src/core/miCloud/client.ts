@@ -18,6 +18,7 @@ export interface MiDeviceRecord {
   /** Split key of a multi-key panel (did like `<parent>.s2`): MIoT calls go to the parent did, switch service `splitSiid`. */
   readonly splitParentDid?: string | null;
   readonly splitSiid?: number | null;
+  readonly parentDid?: string | null;
   readonly localIp?: string | null;
   readonly mac?: string | null;
 }
@@ -271,6 +272,12 @@ export class MiCloudClient {
     const split = extra["split"] && typeof extra["split"] === "object" ? (extra["split"] as Record<string, unknown>) : null;
     const splitParentDid = split ? asIdString(split["parentId"]) : null;
     const splitSiid = split && typeof split["moduleId"] === "number" ? Math.trunc(split["moduleId"]) : null;
+    const parentDid =
+      asIdString(rec["parentDid"]) ??
+      asIdString(rec["parent_id"]) ??
+      asIdString(extra["parentDid"]) ??
+      asIdString(extra["parent_id"]) ??
+      asIdString(extra["parentId"]);
     const localIp = normalizeDeviceLocalIp(rec["localip"] ?? rec["localIp"]);
     const mac = normalizeDeviceMac(rec["mac"]);
     return {
@@ -280,6 +287,7 @@ export class MiCloudClient {
       isOnline: typeof rec["isOnline"] === "boolean" ? rec["isOnline"] : true,
       specType: typeof rec["spec_type"] === "string" ? rec["spec_type"] : null,
       ...(splitParentDid && splitSiid !== null ? { splitParentDid, splitSiid } : {}),
+      ...(parentDid !== null ? { parentDid } : {}),
       ...(localIp !== null ? { localIp } : {}),
       ...(mac !== null ? { mac } : {}),
     };

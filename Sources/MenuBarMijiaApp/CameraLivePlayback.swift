@@ -12,10 +12,19 @@ final class CameraLivePlayback {
     let player: CameraLiveVideoPlayer
 
     private(set) var hasFrame = false
+    private(set) var lastFrameAt: ContinuousClock.Instant?
     private(set) var failure: String?
     private let url: URL
     private let mjpegFallback: URL?
     private var task: Task<Void, Never>?
+
+    var stallTimeout: Duration = .seconds(15)
+    var watchdogInterval: Duration = .seconds(1)
+    var stablePlaybackThreshold: Duration = .seconds(10)
+    var reconnectBackoff: Duration = .milliseconds(400)
+    var failureBackoff: Duration = .milliseconds(900)
+    var maxFailedAttempts = 4
+    var maxReconnectAttempts = 6
 
     var onFirstFrame: (@MainActor () -> Void)?
     var onFallback: (@MainActor (URL) -> Void)?
@@ -32,7 +41,12 @@ final class CameraLivePlayback {
         player.onFirstFrame = { [weak self] in
             guard let self, self.task != nil else { return }
             self.hasFrame = true
+            self.lastFrameAt = ContinuousClock.now
             self.onFirstFrame?()
+        }
+        player.onFrameDecoded = { [weak self] _ in
+            guard let self, self.task != nil else { return }
+            self.lastFrameAt = ContinuousClock.now
         }
     }
 
@@ -40,20 +54,44 @@ final class CameraLivePlayback {
         guard task == nil else { return }
         task = Task { @MainActor [weak self] in
             var failedAttempts = 0
+            var reconnectAttempts = 0
             while !Task.isCancelled {
                 guard let self else { return }
+                let attemptStartedAt = ContinuousClock.now
+                self.lastFrameAt = nil
+                let stallTimeout = self.stallTimeout
+                let pollInterval = self.watchdogInterval
                 let watchdog = Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .seconds(15))
-                    guard !Task.isCancelled, let self, !self.hasFrame else { return }
-                    self.player.stop()
+                    while !Task.isCancelled {
+                        try? await Task.sleep(for: pollInterval)
+                        guard !Task.isCancelled, let self else { return }
+                        let reference = self.lastFrameAt ?? attemptStartedAt
+                        if ContinuousClock.now - reference >= stallTimeout {
+                            self.player.stop(failure: "stream stalled")
+                            return
+                        }
+                    }
                 }
                 let outcome = await self.player.play(url: self.url)
                 watchdog.cancel()
                 guard !Task.isCancelled else { return }
 
+                let sustainedPlayback = outcome.framesDecoded > 0
+                    && (ContinuousClock.now - attemptStartedAt) >= self.stablePlaybackThreshold
+
                 if outcome.framesDecoded > 0 {
-                    failedAttempts = 0
-                    try? await Task.sleep(for: .milliseconds(400))
+                    if sustainedPlayback {
+                        failedAttempts = 0
+                        reconnectAttempts = 0
+                    } else {
+                        failedAttempts += 1
+                        reconnectAttempts += 1
+                    }
+                    if failedAttempts >= self.maxFailedAttempts || reconnectAttempts >= self.maxReconnectAttempts {
+                        self.pauseAfterFailure(outcome.failure)
+                        return
+                    }
+                    try? await Task.sleep(for: self.reconnectBackoff)
                     continue
                 }
 
@@ -66,6 +104,7 @@ final class CameraLivePlayback {
                 }
 
                 failedAttempts += 1
+                reconnectAttempts += 1
                 if failedAttempts >= 2, !self.hasFrame, let mjpegFallback = self.mjpegFallback {
                     self.player.stop()
                     self.task = nil
@@ -73,11 +112,11 @@ final class CameraLivePlayback {
                     self.onFallback?(mjpegFallback)
                     return
                 }
-                if failedAttempts >= 4 {
+                if failedAttempts >= self.maxFailedAttempts || reconnectAttempts >= self.maxReconnectAttempts {
                     self.pauseAfterFailure(outcome.failure)
                     return
                 }
-                try? await Task.sleep(for: .milliseconds(900))
+                try? await Task.sleep(for: self.failureBackoff)
             }
         }
     }
@@ -87,6 +126,7 @@ final class CameraLivePlayback {
         task = nil
         player.stop()
         hasFrame = false
+        lastFrameAt = nil
         failure = nil
     }
 
@@ -94,6 +134,7 @@ final class CameraLivePlayback {
         task = nil
         player.stop()
         hasFrame = false
+        lastFrameAt = nil
         failure = CameraPlaybackTerminalFailure.reason(detail: detail)
         onFailure?(detail)
     }

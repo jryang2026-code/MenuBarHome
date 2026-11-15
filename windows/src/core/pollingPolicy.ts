@@ -190,6 +190,10 @@ export function takeCachedXiaomiTopologyForPoll(
   return cached;
 }
 
+export function getCachedXiaomiTopology(host: object): CachedXiaomiTopology | null {
+  return hostPollStates.get(host)?.topology ?? null;
+}
+
 export function storeCachedXiaomiTopology(
   host: object,
   topology: CachedXiaomiTopology,

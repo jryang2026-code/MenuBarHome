@@ -154,6 +154,10 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
     private var relays: [String: RelayHandle] = [:]
     /// Relay ports keyed by camera stream, not by hub DID.
     private var relaySessions = HubRelaySessions()
+    private var relayGenerations: [String: UInt64] = [:]
+    private var nextRelayGeneration: UInt64 = 0
+    private var streamQueueTail: [String: (id: UInt64, task: Task<Void, Never>, continuation: AsyncStream<Void>.Continuation)] = [:]
+    private var nextStreamQueueID: UInt64 = 0
     private var go2rtcProcess: Process?
     private var activeOwner: Go2RTCOwnerRecord?
     /// True only when the running go2rtc build exposes the PTZ endpoint. The official v1.9.15
@@ -162,6 +166,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
     private var startupTask: Task<Void, any Error>?
     private var ensureRunningOverride: (@Sendable () async throws -> Void)?
     private var onJoinedStartup: (@Sendable () async -> Void)?
+    private var putStreamOverride: (@Sendable (String, String) async throws -> Void)?
 
     var activeRelayCount: Int { relays.count }
 
@@ -173,13 +178,41 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         self.onJoinedStartup = onJoinedStartup
     }
 
+    func setTestBridgeHooks(
+        activeOwner: Go2RTCOwnerRecord?,
+        putStreamOverride: (@Sendable (String, String) async throws -> Void)?
+    ) {
+        self.activeOwner = activeOwner
+        self.putStreamOverride = putStreamOverride
+    }
+
     private struct RelayHandle {
         let port: UInt16
         let stopBox: RelayStopBox
         let commandChannelDrained: Bool
     }
 
-    public init() {}
+    public init() {
+        _ = Self.scrubStaleConfigInDirectory(Self.supportBinDirectory())
+    }
+
+    @discardableResult
+    public static func scrubStaleConfigOnLaunch() -> Bool {
+        scrubStaleConfigInDirectory(supportBinDirectory())
+    }
+
+    @discardableResult
+    public static func scrubStaleConfigInDirectory(_ binDir: URL) -> Bool {
+        if let record = readOwner(in: binDir), processIsAlive(record.pid) {
+            return false
+        }
+        return scrubPersistedStreamsInFile(binDir.appendingPathComponent("go2rtc.yaml"))
+    }
+
+    public func scrubStaleConfigOnStartup() {
+        guard existingOwnedRecord() == nil else { return }
+        Self.scrubPersistedStreamsFromConfig()
+    }
 
     public static func makeX25519KeyPair() -> (publicKeyHex: String, privateKeyHex: String) {
         let privateKey = Curve25519.KeyAgreement.PrivateKey()
@@ -207,10 +240,15 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
             throw HomeProviderError.serviceCallFailed(400, L10n.tr("无效或非局域网摄像机 IP：\(trimmedIP)", "Invalid or non-LAN camera IP: \(trimmedIP)"))
         }
 
-        try await ensureGo2RTCRunning()
-
         let cleanDid = Self.sanitizeDid(did)
         let streamKey = Self.streamKey(cleanDid: cleanDid, subdid: subdid)
+        let slot = await acquireStreamSlot(streamKey: streamKey)
+        defer { releaseStreamSlot(streamKey: streamKey, slot: slot) }
+        try Task.checkCancellation()
+
+        try await ensureGo2RTCRunning()
+        try Task.checkCancellation()
+
         let suffix = channel == 0 ? "" : "_c\(channel)"
         let rawName = Self.rawStreamName(cleanDid: streamKey, channel: channel)
         let mjpegName = "cam_mjpeg_\(streamKey)\(suffix)"
@@ -221,8 +259,9 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         // A lens switch replaces this camera's streams. A second camera on the same hub
         // gets its own relay, because the relay thread keeps one go2rtc address.
         await stopBridgeInternal(http: session, names: Self.allStreamNames(cleanDid: streamKey))
+        try Task.checkCancellation()
 
-        let relayPort = try beginSharedRelay(relayKey: streamKey) {
+        let (relayPort, relayGeneration) = try beginSharedRelayWithGeneration(relayKey: streamKey) {
             try ensureRelayPort(
                 cleanDid: streamKey,
                 camIP: ipv4,
@@ -232,7 +271,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         var registeredStreams = false
         defer {
             if !registeredStreams {
-                endSharedRelay(relayKey: streamKey)
+                endSharedRelay(relayKey: streamKey, generation: relayGeneration)
             }
         }
 
@@ -254,7 +293,9 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
             throw HomeProviderError.serviceCallFailed(500, "Local streaming service did not start")
         }
         try await putStream(http: session, owner: owner.session, name: rawName, src: xiaomiURL)
+        try Task.checkCancellation()
         try await putStream(http: session, owner: owner.session, name: mjpegName, src: "ffmpeg:\(rawName)#video=mjpeg")
+        try Task.checkCancellation()
 
         // `mp4` (empty) selects go2rtc's H.264 + H.265 fMP4 profile, so the camera's own
         // bitstream reaches VideoToolbox without an FFmpeg transcode in between.
@@ -269,10 +310,63 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
     public func stopBridge(did: String, subdid: String?) async {
         let cleanDid = Self.sanitizeDid(did)
         let streamKey = Self.streamKey(cleanDid: cleanDid, subdid: subdid)
+        let slot = await acquireStreamSlot(streamKey: streamKey)
+        defer { releaseStreamSlot(streamKey: streamKey, slot: slot) }
         let http = Self.makeLocalHTTPClient(timeout: 3.0)
         defer { http.invalidateAndCancel() }
         await stopBridgeInternal(http: http, names: Self.allStreamNames(cleanDid: streamKey))
         endSharedRelay(relayKey: streamKey)
+    }
+
+    public func shutdown() async {
+        startupTask?.cancel()
+        startupTask = nil
+        for (_, relay) in relays {
+            relay.stopBox.stop()
+        }
+        relays.removeAll()
+        relaySessions = HubRelaySessions()
+        relayGenerations.removeAll()
+        if let record = existingOwnedRecord() {
+            await stopOwnedProcess(record)
+        } else if let proc = go2rtcProcess {
+            let pid = proc.processIdentifier
+            if proc.isRunning {
+                proc.terminate()
+            }
+            await Self.terminateOwnedPID(pid)
+            go2rtcProcess = nil
+            activeOwner = nil
+        }
+        ptzEndpointAvailable = false
+        Self.scrubPersistedStreamsFromConfig()
+    }
+
+    private func acquireStreamSlot(
+        streamKey: String
+    ) async -> (id: UInt64, continuation: AsyncStream<Void>.Continuation) {
+        let previousTask = streamQueueTail[streamKey]?.task
+        nextStreamQueueID &+= 1
+        let id = nextStreamQueueID
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        let waitTask = Task<Void, Never> {
+            for await _ in stream { break }
+        }
+        streamQueueTail[streamKey] = (id, waitTask, continuation)
+        if let previousTask {
+            await previousTask.value
+        }
+        return (id, continuation)
+    }
+
+    private func releaseStreamSlot(
+        streamKey: String,
+        slot: (id: UInt64, continuation: AsyncStream<Void>.Continuation)
+    ) {
+        slot.continuation.finish()
+        if streamQueueTail[streamKey]?.id == slot.id {
+            streamQueueTail.removeValue(forKey: streamKey)
+        }
     }
 
     static func streamKey(cleanDid: String, subdid: String?) -> String {
@@ -340,19 +434,34 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         relayKey: String,
         allocate: () throws -> UInt16
     ) throws -> UInt16 {
+        try beginSharedRelayWithGeneration(relayKey: relayKey, allocate: allocate).port
+    }
+
+    func beginSharedRelayWithGeneration(
+        relayKey: String,
+        allocate: () throws -> UInt16
+    ) throws -> (port: UInt16, generation: UInt64) {
         if relaySessions.release(relayKey: relayKey) != nil {
             relays.removeValue(forKey: relayKey)?.stopBox.stop()
+            relayGenerations.removeValue(forKey: relayKey)
             if relays.isEmpty {
                 Self.scrubPersistedStreamsFromConfig()
             }
         }
         let port = try allocate()
+        nextRelayGeneration &+= 1
+        let generation = nextRelayGeneration
         relaySessions.retain(relayKey: relayKey, port: port)
-        return port
+        relayGenerations[relayKey] = generation
+        return (port, generation)
     }
 
-    func endSharedRelay(relayKey: String) {
+    func endSharedRelay(relayKey: String, generation: UInt64? = nil) {
+        if let generation, relayGenerations[relayKey] != generation {
+            return
+        }
         guard relaySessions.release(relayKey: relayKey) != nil else { return }
+        relayGenerations.removeValue(forKey: relayKey)
         relays.removeValue(forKey: relayKey)?.stopBox.stop()
         if relays.isEmpty {
             Self.scrubPersistedStreamsFromConfig()
@@ -364,11 +473,16 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
     }
 
     private static func scrubPersistedStreamsFromConfig() {
-        let cfgURL = go2rtcConfigURL()
+        _ = scrubPersistedStreamsInFile(go2rtcConfigURL())
+    }
+
+    @discardableResult
+    static func scrubPersistedStreamsInFile(_ cfgURL: URL) -> Bool {
         guard let existing = try? String(contentsOf: cfgURL, encoding: .utf8),
-              existing.contains("streams:") else { return }
+              existing.contains("streams:") else { return false }
         let cleaned = baseConfig(existing) + "\n"
         try? writeSecretFile(cleaned, to: cfgURL)
+        return true
     }
 
     /// `webrtc: listen: ""` keeps go2rtc from opening port 8555. `local_auth` is required
@@ -401,14 +515,23 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
     }
 
     static func decideGo2RTCAction(_ probe: Go2RTCOwnershipProbe) -> Go2RTCAction {
-        let owned = probe.pidAlive && probe.authenticated && probe.nonceMatches
-        if !owned {
+        guard probe.pidAlive else {
+            return .spawnFresh
+        }
+        if !probe.authenticated {
+            return .restartOwned
+        }
+        if !probe.nonceMatches {
             return .spawnFresh
         }
         return (probe.configChanged || probe.binaryChanged) ? .restartOwned : .reuseOwned
     }
 
     private func putStream(http: URLSession, owner: Go2RTCSession, name: String, src: String) async throws {
+        if let putStreamOverride {
+            try await putStreamOverride(name, src)
+            return
+        }
         let query = "name=\(Self.urlEncode(name))&src=\(Self.urlEncode(src))"
         guard let url = Self.streamURL(session: owner, path: "/api/streams", query: query) else {
             throw HomeProviderError.serviceCallFailed(500, "Invalid go2rtc stream URL")
@@ -631,11 +754,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
             if await waitForOwnedAPI(session) {
                 return
             }
-            if proc.isRunning {
-                proc.terminate()
-            }
-            go2rtcProcess = nil
-            activeOwner = nil
+            await stopOwnedProcess(record)
         }
         throw HomeProviderError.serviceCallFailed(
             504,
@@ -665,15 +784,27 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         if let proc = go2rtcProcess, proc.isRunning, proc.processIdentifier == record.pid {
             proc.terminate()
         }
-        for _ in 0..<20 {
-            if !Self.processIsAlive(record.pid) { break }
-            try? await Task.sleep(for: .milliseconds(100))
-        }
-        if Self.processIsAlive(record.pid) {
-            Self.terminateProcess(record.pid, force: true)
-        }
+        await Self.terminateOwnedPID(record.pid)
         go2rtcProcess = nil
         activeOwner = nil
+    }
+
+    static func terminateOwnedPID(
+        _ pid: Int32,
+        pollInterval: Duration = .milliseconds(50),
+        maxPolls: Int = 20
+    ) async {
+        guard pid > 0 else { return }
+        if processIsAlive(pid) {
+            terminateProcess(pid, force: false)
+        }
+        for _ in 0..<maxPolls {
+            if !processIsAlive(pid) { break }
+            try? await Task.sleep(for: pollInterval)
+        }
+        if processIsAlive(pid) {
+            terminateProcess(pid, force: true)
+        }
     }
 
     private func requestOwnedExit(_ session: Go2RTCSession) async {
@@ -823,7 +954,12 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
     }
 
     static func readOwner() -> Go2RTCOwnerRecord? {
-        guard let text = try? String(contentsOf: go2rtcOwnerURL(), encoding: .utf8) else { return nil }
+        readOwner(in: supportBinDirectory())
+    }
+
+    static func readOwner(in binDir: URL) -> Go2RTCOwnerRecord? {
+        let ownerURL = binDir.appendingPathComponent("go2rtc.owner")
+        guard let text = try? String(contentsOf: ownerURL, encoding: .utf8) else { return nil }
         return Go2RTCOwnerRecord.parse(text)
     }
 

@@ -21,6 +21,8 @@ struct MenuBarMijiaApp: App {
         HotkeyAndNotificationManager.shared.start(with: sharedStore)
         SystemActivityMonitor.shared.start(with: sharedStore)
         AutomationEngine.shared.start(with: sharedStore)
+        XiaomiCameraBridge.scrubStaleConfigOnLaunch()
+        Task { await XiaomiCameraBridge.shared.scrubStaleConfigOnStartup() }
         CameraLivePanelController.shared.install(with: sharedStore)
     }
 
@@ -65,6 +67,7 @@ final class MenuBarMijiaAppDelegate: NSObject, NSApplicationDelegate, Observable
     /// #146 §5.2：应用退出时也要把排序草稿提交回 `UserDefaults`，否则拖到一半的会话会静默丢失。
     func applicationWillTerminate(_ notification: Notification) {
         LayoutUIState.shared.commitRoomOrderIfNeeded()
+        CameraLivePanelController.shared.handleApplicationWillTerminate()
     }
 }
 

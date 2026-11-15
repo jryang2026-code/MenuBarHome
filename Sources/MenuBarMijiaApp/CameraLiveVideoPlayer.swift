@@ -25,6 +25,9 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
 
     /// Called on the main actor when the first frame of a connection reaches the renderer.
     var onFirstFrame: (@MainActor @Sendable () -> Void)?
+    var onFrameDecoded: (@MainActor @Sendable (Int) -> Void)?
+    var playOverride: (@MainActor @Sendable (URL, CameraLiveVideoPlayer) async -> Outcome)?
+    var stopOverride: (@MainActor @Sendable (String?) -> Void)?
 
     private final class PlayToken: @unchecked Sendable {
         private let lock = NSLock()
@@ -86,6 +89,9 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
 
     /// Streams one HTTP connection until it ends, fails, or the calling task is cancelled.
     func play(url: URL) async -> Outcome {
+        if let playOverride {
+            return await playOverride(url, self)
+        }
         let token = PlayToken()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (cont: CheckedContinuation<Outcome, Never>) in
@@ -99,12 +105,23 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
         }
     }
 
-    func stop() {
+    func stop(failure reason: String? = nil) {
+        if let stopOverride {
+            Task { @MainActor in stopOverride(reason) }
+        }
         queue.async {
             self.playbackPaused = false
             self.renderer.flush()
-            self.finish(failure: nil)
+            self.finish(failure: reason)
         }
+    }
+
+    @MainActor
+    func notifyDecodedFrame(_ count: Int) {
+        if count == 1 {
+            onFirstFrame?()
+        }
+        onFrameDecoded?(count)
     }
 
     func setPlaybackPaused(_ paused: Bool) {
@@ -277,8 +294,14 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
         renderer.enqueue(sampleBuffer)
         framesDecoded += 1
         statsWindowFrames += 1
-        if framesDecoded == 1, let onFirstFrame {
-            Task { @MainActor in onFirstFrame() }
+        let decodedCount = framesDecoded
+        let firstFrameCallback = decodedCount == 1 ? onFirstFrame : nil
+        let frameCallback = onFrameDecoded
+        if firstFrameCallback != nil || frameCallback != nil {
+            Task { @MainActor in
+                firstFrameCallback?()
+                frameCallback?(decodedCount)
+            }
         }
         let elapsed = Date().timeIntervalSince(statsWindowStart)
         if elapsed >= 5 {
