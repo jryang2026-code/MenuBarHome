@@ -117,8 +117,10 @@ extension HomeStore {
         // scheduling refuses that window instead of stamping a stale list with the new sources.
         listeningSnapshotGeneration = snapshotGeneration
         eventTask?.cancel()
+        let pendingShutdown = providerShutdownTask
         let stream = provider.events()
         eventTask = Task { [weak self] in
+            await pendingShutdown?.value
             for await event in stream {
                 guard let self, !Task.isCancelled else { break }
                 self.handleProviderEvent(event)
@@ -602,7 +604,7 @@ extension HomeStore {
         guard homeBackend != .demo, let url = haPlaintextPrompt?.address else { return }
         haPlaintextPrompt = nil
         HAPlaintextConsent.approve(url, defaults: userDefaults)
-        rebuildLiveProvider()
+        rebuildLiveProvider(forceHAReconnect: true)
     }
 
     /// 不连接: nothing is sent; the banner keeps the reason and still offers to connect.
@@ -613,13 +615,25 @@ extension HomeStore {
 
     func makeLiveProvider() -> any HomeProvider {
         let token = loadHAToken()
-        let ha: (any HomeProvider)? = (hasHASource || (!hasMiSource && homeBackend == .homeAssistant))
-            ? makeHAProvider(baseURLString: serverURLString, token: token)
-            : nil
-        let mi: (any HomeProvider)? = (hasMiSource || (!hasHASource && homeBackend == .xiaomiCloud))
-            ? makeMiAccountsProvider()
-            : nil
-        return Self.makeComposite(homeAssistant: ha, xiaomiCloud: mi, defaults: userDefaults, pinBox: pinnedDeviceSourcesBox)
+        let wantsHA = hasHASource || (!hasMiSource && homeBackend == .homeAssistant)
+        let wantsMi = hasMiSource || (!hasHASource && homeBackend == .xiaomiCloud)
+        let ha: HAWebSocketProvider? = if wantsHA {
+            makeHAProvider(baseURLString: serverURLString, token: token)
+        } else {
+            nil
+        }
+        activeHAProvider = ha
+        activeHAConfig = wantsHA ? (url: HAWebSocketProvider.normalizeBaseURL(serverURLString), token: token) : nil
+        let mi: MiAccountsProvider? = wantsMi ? makeMiAccountsProvider() : nil
+        activeMiAccountsProvider = mi
+        let composite = Self.makeComposite(
+            homeAssistant: ha,
+            xiaomiCloud: mi,
+            defaults: userDefaults,
+            pinBox: pinnedDeviceSourcesBox
+        )
+        activeDualProvider = composite
+        return composite
     }
 
     static func makeComposite(
@@ -653,12 +667,96 @@ extension HomeStore {
         )
     }
 
-    private func rebuildLiveProvider() {
-        eventTask?.cancel()
-        shutdownCurrentProvider()
+    private func rebuildLiveProvider(forceHAReconnect: Bool = false) {
         haPlaintextPrompt = nil
-        self.provider = makeLiveProvider()
-        startListening()
+        guard let dual = activeDualProvider,
+              provider as AnyObject === dual,
+              homeBackend != .demo else {
+            eventTask?.cancel()
+            shutdownCurrentProvider()
+            self.provider = makeLiveProvider()
+            startListening()
+            return
+        }
+
+        let token = loadHAToken()
+        let wantsHA = hasHASource || (!hasMiSource && homeBackend == .homeAssistant)
+        let wantsMi = hasMiSource || (!hasHASource && homeBackend == .xiaomiCloud)
+        var nextHAReplacement: (shouldReplace: Bool, provider: HAWebSocketProvider?) = (false, nil)
+        var haCredentialUpdate: (provider: HAWebSocketProvider, url: String, token: String)?
+        if wantsHA {
+            let normalizedURL = HAWebSocketProvider.normalizeBaseURL(serverURLString)
+            if let existingHA = activeHAProvider {
+                if forceHAReconnect || activeHAConfig?.url != normalizedURL || activeHAConfig?.token != token {
+                    activeHAConfig = (url: normalizedURL, token: token)
+                    haCredentialUpdate = (existingHA, serverURLString, token)
+                }
+            } else {
+                let createdHA = makeHAProvider(baseURLString: serverURLString, token: token)
+                activeHAProvider = createdHA
+                activeHAConfig = (url: normalizedURL, token: token)
+                nextHAReplacement = (true, createdHA)
+            }
+        } else if activeHAProvider != nil {
+            activeHAProvider = nil
+            activeHAConfig = nil
+            nextHAReplacement = (true, nil)
+        }
+        var nextMiReplacement: (shouldReplace: Bool, provider: MiAccountsProvider?) = (false, nil)
+        var miAccountsUpdate: (provider: MiAccountsProvider, accounts: [MiAccount], invalidateSnapshot: Bool)?
+        var miAccountsChanged = false
+        if wantsMi {
+            let latestAccounts = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
+            let previousAccounts = activeMiProviderAccounts
+            miAccountsChanged = latestAccounts.count != previousAccounts.count
+                || !zip(latestAccounts, previousAccounts).allSatisfy { $0.id == $1.id && $0.session == $1.session }
+            let keptAnyAccount = latestAccounts.contains { next in
+                previousAccounts.contains { $0.id == next.id && $0.session == next.session }
+            }
+            miAccounts = latestAccounts
+            if let existingMi = activeMiAccountsProvider {
+                if miAccountsChanged {
+                    activeMiProviderAccounts = latestAccounts
+                    miAccountsUpdate = (existingMi, latestAccounts, !keptAnyAccount && !latestAccounts.isEmpty)
+                }
+            } else {
+                let createdMi = makeMiAccountsProvider()
+                activeMiAccountsProvider = createdMi
+                nextMiReplacement = (true, createdMi)
+            }
+        } else if activeMiAccountsProvider != nil {
+            activeMiAccountsProvider = nil
+            nextMiReplacement = (true, nil)
+        }
+        if haCredentialUpdate != nil || nextHAReplacement.shouldReplace || nextMiReplacement.shouldReplace || miAccountsChanged {
+            hasReceivedInitialSnapshot = false
+            listeningSnapshotGeneration = snapshotGeneration
+        }
+        syncScheduledCommandScopeIfNeeded()
+        let previousShutdown = providerShutdownTask
+        providerShutdownTask = Task {
+            await previousShutdown?.value
+            if let u = haCredentialUpdate {
+                await dual.invalidateSnapshot(for: .homeAssistant)
+                await u.provider.updateCredentials(baseURLString: u.url, token: u.token)
+            }
+            if nextHAReplacement.shouldReplace, let ha = nextHAReplacement.provider {
+                await dual.setSourceProvider(ha, for: .homeAssistant)
+            }
+            if nextMiReplacement.shouldReplace, let mi = nextMiReplacement.provider {
+                await dual.setSourceProvider(mi, for: .xiaomiCloud)
+            }
+            if nextHAReplacement.shouldReplace, nextHAReplacement.provider == nil {
+                await dual.setSourceProvider(nil, for: .homeAssistant)
+            }
+            if nextMiReplacement.shouldReplace, nextMiReplacement.provider == nil {
+                await dual.setSourceProvider(nil, for: .xiaomiCloud)
+            }
+            if let u = miAccountsUpdate {
+                if u.invalidateSnapshot { await dual.invalidateSnapshot(for: .xiaomiCloud) }
+                await u.provider.updateAccounts(u.accounts)
+            }
+        }
     }
 
     /// Shows a found address as a question instead of switching to it (#18). An address whose instance id
@@ -925,8 +1023,20 @@ extension HomeStore {
     }
 
     private func shutdownCurrentProvider() {
+        eventTask?.cancel()
+        eventTask = nil
+        pollingContextSync?.cancel()
+        pollingContextSync = nil
+        activeDualProvider = nil
+        activeHAProvider = nil
+        activeHAConfig = nil
+        activeMiAccountsProvider = nil
         let old = provider
-        Task { await old.shutdown() }
+        let previousShutdown = providerShutdownTask
+        providerShutdownTask = Task {
+            await previousShutdown?.value
+            await old.shutdown()
+        }
     }
 
     public func updateConnection(serverURL: String, token: String) {
@@ -985,13 +1095,29 @@ extension HomeStore {
         }
     }
 
+    public var shouldAutoDiscoverHomeAssistantOnLAN: Bool {
+        guard homeBackend != .demo, homeBackend != .xiaomiCloud else { return false }
+        guard !hasHASource, !hasMiSource else { return false }
+        if let lastAutoHADiscoveryAt,
+           ContinuousClock.now - lastAutoHADiscoveryAt < Self.autoHADiscoveryCooldown {
+            return false
+        }
+        return true
+    }
+
     @discardableResult
     public func discoverHomeAssistantOnLAN(autoApplyIfDefault: Bool = false) async -> [HADiscoveredInstance] {
         // Demo mode is strictly offline: no LAN discovery, no network probe (#47).
         guard homeBackend != .demo else { return [] }
+        if autoApplyIfDefault {
+            guard shouldAutoDiscoverHomeAssistantOnLAN else { return discoveredHAInstances }
+            lastAutoHADiscoveryAt = ContinuousClock.now
+        }
+        guard !isDiscoveringHA else { return discoveredHAInstances }
         isDiscoveringHA = true
         defer { isDiscoveringHA = false }
-        let found = await HADiscovery.discoverOnLAN(currentURLHint: serverURLString)
+        let discoverer = haLANDiscoverer
+        let found = await discoverer(serverURLString)
         self.discoveredHAInstances = found
         // A user who typed the address by hand never went through a suggestion; the moment LAN
         // discovery identifies the instance the app is connected to, pin its id so look-alikes
