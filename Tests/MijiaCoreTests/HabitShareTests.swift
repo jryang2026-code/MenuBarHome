@@ -262,4 +262,20 @@ struct HabitShareTests {
         #expect(store.userHabitMemory.entries.count == 1)
         #expect(store.userHabitMemory.entries.first?.operationKey == "power:off")
     }
+
+    @Test("Saturated sequence and phrase caches evict stale decayed records instead of dropping fresh ones (#17)")
+    func saturatedSequenceAndPhraseEvictionUsesDecayedScore() {
+        let now = Self.evening()
+        let staleAt = now.addingTimeInterval(-56 * 86_400)
+        let sequences = (1...39).map {
+            UserHabitMemory.SequenceEntry(afterKey: "dev_ceiling|power:on", targetId: "seq_\($0)", operationKey: "power:on", count: 2, lastRecordedAt: now)
+        } + [.init(afterKey: "dev_ceiling|power:on", targetId: "seq_stale_40", operationKey: "power:on", count: 2, lastRecordedAt: staleAt)]
+        let phrases = (1...14).map {
+            UserHabitMemory.PhraseMemory(phrase: "口令\($0)", bucket: .evening, summary: "打开书房台灯", count: 2, targets: [.init(targetId: "dev_study", operationKey: "power:on")], lastRecordedAt: now)
+        } + [.init(phrase: "陈旧口令15", bucket: .evening, summary: "打开书房台灯", count: 2, targets: [.init(targetId: "dev_study", operationKey: "power:on")], lastRecordedAt: staleAt)]
+        var memory = UserHabitMemory(entries: [], phrases: phrases, sequences: sequences, lastAction: .init(targetId: "dev_ceiling", operationKey: "power:on", recordedAt: now.addingTimeInterval(-60)))
+        memory.record(utterance: "新学口令", intents: [DeviceIntent(targetId: "dev_study", operation: .power(true))], devices: Self.devices, scenes: [], now: now)
+        #expect(memory.sequences.count == 40 && memory.sequences.contains { $0.targetId == "dev_study" && $0.count == 1 } && !memory.sequences.contains { $0.targetId == "seq_stale_40" })
+        #expect(memory.phrases.count == 15 && memory.phrases.contains { $0.phrase == "新学口令" && $0.count == 1 } && !memory.phrases.contains { $0.phrase == "陈旧口令15" })
+    }
 }

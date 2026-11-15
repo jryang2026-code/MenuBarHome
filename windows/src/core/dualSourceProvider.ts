@@ -652,8 +652,10 @@ export const DeviceDeduplicator = {
       if (haLive !== miLive) { return haLive ? ha : mi; } const haScore = this.capabilityScore(haDev);
       const miScore = this.capabilityScore(miDev); if (haScore !== miScore) { return haScore > miScore ? ha : mi; }
       return ha; }; 
-    const isAlreadyShownByMiTracks = (haIdentity: DeviceSourceIdentity): boolean => { for (const mi of miCandidates) {
-        if (mi.identity && sharesDID(haIdentity, mi.identity)) return true; }
+    const isAlreadyShownByMiTracks = (haIdentity: DeviceSourceIdentity): boolean => {
+      if (miCandidates.filter((mi) => mi.identity !== null && sharesDID(haIdentity, mi.identity)).length >= 2) {
+        return true;
+      }
       const curtainTracks = miCandidates.filter((mi) => mi.identity !== null &&
           sharesMAC(haIdentity, mi.identity) &&
           mi.device.kind.kind === "cover" &&

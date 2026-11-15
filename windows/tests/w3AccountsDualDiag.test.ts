@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { Window } from "happy-dom";
 
@@ -11,6 +12,11 @@ import {
 } from "../src/ui/cloudRefresh.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
+import {
+  MI_SESSION_WARNING_LEAD_MS,
+  maskedMiUserId,
+  miSessionExpiryState,
+} from "../src/core/miCloud/session.js";
 import {
   MiotSpecResolver, parseMiotDeviceSpec, type HttpRequest, type HttpResponse,
   type HttpTransport, type MiDeviceRecord, type MiSession,
@@ -1015,6 +1021,46 @@ describe("B7: Home Assistant + Xiaomi Cloud dual-source parallel fusion, 3-tier 
     assert.equal(partial.sourceStatuses.xiaomiCloud.kind, "connected");
     assert.equal(partial.merged.home.devices.length, 1);
   });
+
+  it("keeps a second HA entity sharing a DID when Xiaomi Cloud only has one device for that DID (#25)", () => {
+    const ha1 = makeLightDevice({ id: "ha-sub-1", name: "一路灯", roomId: "r1", roomName: "客厅", entityId: "light.sub_1" });
+    const ha2 = makeLightDevice({ id: "ha-sub-2", name: "二路灯", roomId: "r1", roomName: "客厅", entityId: "light.sub_2" });
+    const mi1 = makeLightDevice({ id: "55009911", name: "一路灯", roomId: "mr1", roomName: "客厅", entityId: "miot:55009911:2:1" });
+    const sharedIdentity = makeDeviceSourceIdentity({
+      dids: ["55009911"],
+      model: LIGHT_MODEL,
+      name: "一路灯",
+      roomName: "客厅",
+      kindTag: "light",
+    });
+    const secondIdentity = makeDeviceSourceIdentity({
+      dids: ["55009911"],
+      model: LIGHT_MODEL,
+      name: "二路灯",
+      roomName: "客厅",
+      kindTag: "light",
+    });
+    const merged = DeviceDeduplicator.merge({
+      homeAssistant: {
+        home: { devices: [ha1, ha2], rooms: [{ id: "r1", name: "客厅", deviceCount: 2 }], environmentReadings: [], scenes: [] },
+        identities: {
+          "ha-sub-1": sharedIdentity,
+          "ha-sub-2": secondIdentity,
+        },
+      },
+      xiaomiCloud: {
+        home: { devices: [mi1], rooms: [{ id: "mr1", name: "客厅", deviceCount: 1 }], environmentReadings: [], scenes: [] },
+        identities: {
+          "55009911": sharedIdentity,
+        },
+      },
+    });
+    assert.equal(merged.home.devices.length, 2);
+    assert.deepEqual(
+      merged.home.devices.map((d) => d.name),
+      ["一路灯", "二路灯"],
+    );
+  });
 });
 
 describe("B9: Multi-account unsupported device scanner & zero-leak Markdown diagnostics exporter (ADR-0015)", () => {
@@ -1471,5 +1517,18 @@ describe("B9: Multi-account unsupported device scanner & zero-leak Markdown diag
     assert.equal(mergedLamp.sourceBackend, "homeAssistant");
     assert.equal(mergedLamp.kind.kind === "light" && mergedLamp.kind.isOn, false);
     assert.equal(mergedLamp.fallbackActive, true);
+  });
+
+  it("matches shared session_expiry_golden.json corpus for miSessionExpiryState and maskedMiUserId (#46)", () => {
+    const golden = JSON.parse(readFileSync("../Tests/Fixtures/session_expiry_golden.json", "utf8"));
+    assert.equal(MI_SESSION_WARNING_LEAD_MS, golden.warningLeadSeconds * 1000);
+    const nowMs = golden.nowEpochSeconds * 1000;
+    for (const item of golden.policyCases) {
+      const expiresAt = item.expiresAtOffsetSeconds === null ? undefined : nowMs + item.expiresAtOffsetSeconds * 1000;
+      const state = miSessionExpiryState({ ...SESSION_CN_PRIMARY, ...(expiresAt !== undefined ? { expiresAt } : {}) }, nowMs);
+      assert.equal(state.kind, item.expectedState, item.id);
+      if (state.kind === "expiringSoon") assert.equal(state.expiresAtMs, expiresAt, item.id);
+    }
+    for (const item of golden.maskedUserIdCases) assert.equal(maskedMiUserId(item.userId), item.expected);
   });
 });

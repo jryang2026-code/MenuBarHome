@@ -668,4 +668,54 @@ struct AppURLCommandTests {
         #expect(!approved.isError)
         #expect(store.devices.first { $0.id == "dev_water_heater" }?.isActiveOn == true)
     }
+
+    @Test("Shared app_url_command_golden.json corpus matches macOS parser, scene resolver, bridge token gate, and temperature snap (#46)")
+    func matchesAppURLCommandGoldenCorpus() throws {
+        struct ParseExpected: Decodable {
+            let kind: String; let deviceId: String?; let name: String?; let text: String?; let isOn: Bool?
+            let percent: Int?; let kelvin: Int?; let celsius: Double?; let preset: String?
+            let controlsDevice: Bool; let token: String?; let requestId: String?
+        }
+        struct ParseCase: Decodable { let url: String; let expected: ParseExpected? }
+        struct BuiltInSceneCase: Decodable { let raw: String; let expected: String? }
+        struct BridgeTokenCase: Decodable {
+            let allowDirectControl: Bool; let providedToken: String?; let expectedToken: String?
+            let validToken: Bool; let requiresConfirmation: Bool
+        }
+        struct SnapTempCase: Decodable { let celsius: Double; let min: Double; let max: Double; let step: Double; let expected: Double }
+        struct GoldenFile: Decodable {
+            let parseCases: [ParseCase]; let builtInSceneCases: [BuiltInSceneCase]
+            let bridgeTokenCases: [BridgeTokenCase]; let snapTemperatureCases: [SnapTempCase]
+        }
+
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Fixtures/app_url_command_golden.json")
+        let golden = try JSONDecoder().decode(GoldenFile.self, from: Data(contentsOf: url))
+
+        for item in golden.parseCases {
+            let parsed = URL(string: item.url).flatMap(AppURLParser.parseEnvelope)
+            guard let exp = item.expected else { #expect(parsed == nil, "\(item.url)"); continue }
+            let env = try #require(parsed, "expected \(item.url) to parse")
+            #expect(env.command.controlsDevice == exp.controlsDevice && env.token == exp.token && env.requestId == exp.requestId, "\(item.url)")
+            switch exp.kind {
+            case "toggle": #expect(env.command == .toggle(deviceId: exp.deviceId ?? ""))
+            case "scene": #expect(env.command == .scene(name: exp.name ?? ""))
+            case "ask": #expect(env.command == .ask(text: exp.text ?? ""))
+            case "power": #expect(env.command == .power(deviceId: exp.deviceId ?? "", isOn: exp.isOn ?? false))
+            case "brightness": #expect(env.command == .brightness(deviceId: exp.deviceId ?? "", percent: exp.percent ?? 0))
+            case "colorTemp": #expect(env.command == .colorTemp(deviceId: exp.deviceId ?? "", kelvin: exp.kelvin ?? 0))
+            case "temperature": #expect(env.command == .temperature(deviceId: exp.deviceId ?? "", celsius: exp.celsius ?? 0))
+            case "fan": #expect(env.command == .fan(deviceId: exp.deviceId ?? "", percent: exp.percent, preset: exp.preset))
+            case "focus": #expect(env.command == .focus(deviceId: exp.deviceId ?? ""))
+            default: Issue.record("Unknown kind \(exp.kind)")
+            }
+        }
+        for item in golden.builtInSceneCases { #expect(BuiltInURLScene.resolve(item.raw)?.rawValue == item.expected) }
+        for item in golden.bridgeTokenCases {
+            #expect(URLDirectControl.isValidBridgeToken(item.providedToken, expectedToken: item.expectedToken) == item.validToken)
+            #expect(URLDirectControl.requiresConfirmation(allowDirectControl: item.allowDirectControl, providedToken: item.providedToken, expectedToken: item.expectedToken) == item.requiresConfirmation)
+        }
+        for item in golden.snapTemperatureCases {
+            #expect(abs(HomeStore.snappedTemperature(item.celsius, lowerBound: item.min, upperBound: item.max, step: item.step) - item.expected) < 1e-6)
+        }
+    }
 }

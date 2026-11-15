@@ -735,4 +735,26 @@ struct ScheduledCommandScopeTests {
         #expect(await mock.executedCommands.isEmpty)
         _ = store.cancelScheduledCommands()
     }
+
+    @Test("Shared scheduled_command_golden.json corpus matches macOS DelayPhrase and UndoPhrase (#46)")
+    func matchesScheduledCommandGoldenCorpus() throws {
+        struct DelayExpected: Decodable { let delaySeconds: Double; let remainder: String }
+        struct DelayCase: Decodable { let utterance: String; let expected: DelayExpected? }
+        struct CancelCase: Decodable { let utterance: String; let isCancel: Bool }
+        struct UndoCase: Decodable { let utterance: String; let isUndo: Bool }
+        struct GoldenFile: Decodable { let delayExtractCases: [DelayCase]; let cancelCases: [CancelCase]; let undoCases: [UndoCase] }
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Fixtures/scheduled_command_golden.json")
+        let golden = try JSONDecoder().decode(GoldenFile.self, from: Data(contentsOf: url))
+        for item in golden.delayExtractCases {
+            let extracted = DelayPhrase.extract(item.utterance)
+            if let exp = item.expected {
+                let actual = try #require(extracted, "\(item.utterance)")
+                #expect(abs(actual.delay - exp.delaySeconds) < 1e-6 && actual.remainder == exp.remainder, "\(item.utterance)")
+            } else {
+                #expect(extracted == nil, "\(item.utterance)")
+            }
+        }
+        for item in golden.cancelCases { #expect(DelayPhrase.isCancel(item.utterance) == item.isCancel) }
+        for item in golden.undoCases { #expect(UndoPhrase.isUndo(item.utterance) == item.isUndo) }
+    }
 }

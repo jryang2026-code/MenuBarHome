@@ -10,6 +10,7 @@ import { currentLanguage, type AppLanguage } from "../i18n.js";
 import { deviceAcceptsControlWrites, deviceCanTogglePower, isDeviceActiveOn } from "../models.js";
 import { timeBucketLabel } from "./context.js";
 import { IntentReply } from "./intent.js";
+import { PROMPT_NAME_LIMIT, sanitizePromptText } from "./promptText.js";
 
 // MARK: - Full-Channel Habit Memory & Top-4 Engine (#113)
 
@@ -58,6 +59,50 @@ export const HABIT_SEQUENCE_BOOST_WINDOW_MS = 60 * 60 * 1000;
 /** Score bonus per learned transition count when the last action matches (ADR-0009). */
 export const HABIT_SEQUENCE_BOOST_WEIGHT = 2;
 export const MAX_HABIT_SEQUENCES = 40;
+export const MAX_HABIT_PHRASES = 15;
+
+export interface HabitPhraseTarget {
+  targetId: string;
+  operationKey: string;
+}
+
+export interface HabitPhraseMemory {
+  phrase: string;
+  bucket: string;
+  summary: string;
+  count: number;
+  targets: HabitPhraseTarget[];
+  lastRecordedAtMs?: number;
+}
+
+export interface HabitPhraseChange {
+  readonly phrase: string;
+  readonly previous: HabitPhraseMemory | null;
+}
+
+export function decayedHabitWeight(
+  count: number,
+  lastRecordedAtMs: number | undefined,
+  nowMs: number,
+): number {
+  if (lastRecordedAtMs === undefined) return count;
+  const days = Math.max(0, (nowMs - lastRecordedAtMs) / 86_400_000);
+  return count * Math.pow(0.5, days / HABIT_DECAY_HALF_LIFE_DAYS);
+}
+
+function compareHabitRank(
+  a: { count: number; lastRecordedAtMs?: number },
+  b: { count: number; lastRecordedAtMs?: number },
+  nowMs: number,
+): number {
+  const wa = decayedHabitWeight(a.count, a.lastRecordedAtMs, nowMs);
+  const wb = decayedHabitWeight(b.count, b.lastRecordedAtMs, nowMs);
+  if (Math.abs(wa - wb) > 1e-6) return wb - wa;
+  const ta = a.lastRecordedAtMs ?? Number.NEGATIVE_INFINITY;
+  const tb = b.lastRecordedAtMs ?? Number.NEGATIVE_INFINITY;
+  if (Math.abs(ta - tb) >= 60_000) return tb - ta;
+  return b.count - a.count;
+}
 
 export interface HabitEntryChange {
   readonly bucket: string;
@@ -76,6 +121,7 @@ export interface HabitEntryChange {
 /** What one `record` call changed, so undoing the action can take the habit back (#34). */
 export interface HabitRecordingReceipt {
   readonly entries: readonly HabitEntryChange[];
+  readonly phrase?: HabitPhraseChange | null;
   readonly sequences?: readonly HabitSequenceChange[];
   readonly previousLastAction?: HabitLastAction | null;
   readonly recordedLastAction?: HabitLastAction | null;
@@ -242,6 +288,7 @@ export function habitSuggestionTitle(
  */
 export class UserHabitMemory {
   entries: HabitEntry[] = [];
+  phrases: HabitPhraseMemory[] = [];
   sequences: HabitSequenceEntry[] = [];
   lastAction: HabitLastAction | null = null;
 
@@ -249,9 +296,10 @@ export class UserHabitMemory {
     entries: readonly HabitEntry[] = [],
     sequences: readonly HabitSequenceEntry[] = [],
     lastAction: HabitLastAction | null = null,
+    phrases: readonly HabitPhraseMemory[] = [],
   ) {
-    // JSON round-trips can turn the legacy "no day type" into null; normalize to undefined.
     this.entries = entries.map((e) => ({ ...e, dayType: e.dayType ?? undefined }));
+    this.phrases = phrases.map((p) => ({ ...p, targets: p.targets.map((t) => ({ ...t })) }));
     this.sequences = [...sequences];
     this.lastAction = lastAction ? { ...lastAction } : null;
   }
@@ -261,6 +309,7 @@ export class UserHabitMemory {
     devices: readonly SmartDevice[],
     scenes: readonly HomeScene[],
     now: Date = new Date(),
+    utterance?: string | null,
   ): HabitRecordingReceipt | null {
     if (intents.length === 0) return null;
     const bucket = timeBucketLabel(now.getHours());
@@ -268,14 +317,12 @@ export class UserHabitMemory {
     const nowMs = now.getTime();
     const changes: HabitEntryChange[] = [];
 
-    // Encode once: the normalized pattern keys drive entries, sequences, and lastAction.
     const encoded = intents
       .map((intent) => ({ targetId: intent.targetId, operationKey: encodeHabitOperation(intent.operation) }))
       .filter((item): item is { targetId: string; operationKey: string } => item.operationKey !== null);
     if (encoded.length === 0) return null;
 
     for (const intent of encoded) {
-      // Exact (bucket, dayType) match first; a legacy dayType-less entry is upgraded in place.
       let idx = this.entries.findIndex(
         (e) =>
           e.bucket === bucket && e.dayType === dayType
@@ -322,11 +369,9 @@ export class UserHabitMemory {
       }
     }
 
-    this.entries.sort((a, b) => b.count - a.count);
+    this.entries.sort((a, b) => compareHabitRank(a, b, nowMs));
     if (this.entries.length > MAX_HABIT_ENTRIES) this.entries.length = MAX_HABIT_ENTRIES;
 
-    // One-step transition learning: within the window, everything after the last action
-    // is a candidate "what the user does next" pattern (ADR-0009).
     const sequenceChanges: HabitSequenceChange[] = [];
     if (this.lastAction && nowMs - this.lastAction.recordedAtMs <= HABIT_SEQUENCE_WINDOW_MS) {
       const afterKey = `${this.lastAction.targetId}|${this.lastAction.operationKey}`;
@@ -362,10 +407,8 @@ export class UserHabitMemory {
           });
         }
       }
-      this.sequences.sort((a, b) => b.count - a.count);
+      this.sequences.sort((a, b) => compareHabitRank(a, b, nowMs));
       if (this.sequences.length > MAX_HABIT_SEQUENCES) this.sequences.length = MAX_HABIT_SEQUENCES;
-      // A just-inserted transition that trimming already dropped never existed for the user;
-      // undo must not resurrect it (Codex #116 re-review).
       for (const change of sequenceChanges) {
         if (change.previousCount === null) {
           change.insertedButTrimmed = !this.sequences.some(
@@ -382,12 +425,56 @@ export class UserHabitMemory {
       : null;
     if (recordedLastAction) this.lastAction = { ...recordedLastAction };
 
-    if (changes.length === 0 && sequenceChanges.length === 0) return null;
-    return { entries: changes, sequences: sequenceChanges, previousLastAction, recordedLastAction };
+    let phraseChange: HabitPhraseChange | undefined;
+    const rawPhrase = utterance?.trim() ?? "";
+    if (rawPhrase) {
+      const actionSummary = intents
+        .map((intent) => habitSuggestionTitle(intent, devices, scenes))
+        .filter((title): title is string => title !== null)
+        .join("+");
+      if (actionSummary) {
+        const targets = encoded.map((item) => ({ targetId: item.targetId, operationKey: item.operationKey }));
+        const idx = this.phrases.findIndex((p) => p.phrase === rawPhrase);
+        if (idx >= 0) {
+          const prev = this.phrases[idx]!;
+          phraseChange = { phrase: rawPhrase, previous: { ...prev, targets: prev.targets.map((t) => ({ ...t })) } };
+          prev.count += 1;
+          prev.bucket = bucket;
+          prev.summary = actionSummary;
+          prev.targets = targets;
+          prev.lastRecordedAtMs = nowMs;
+        } else {
+          phraseChange = { phrase: rawPhrase, previous: null };
+          this.phrases.unshift({
+            phrase: rawPhrase,
+            bucket,
+            summary: actionSummary,
+            count: 1,
+            targets,
+            lastRecordedAtMs: nowMs,
+          });
+        }
+        this.phrases.sort((a, b) => compareHabitRank(a, b, nowMs));
+        if (this.phrases.length > MAX_HABIT_PHRASES) this.phrases.length = MAX_HABIT_PHRASES;
+      }
+    }
+
+    if (changes.length === 0 && sequenceChanges.length === 0 && !phraseChange) return null;
+    return phraseChange
+      ? { entries: changes, phrase: phraseChange, sequences: sequenceChanges, previousLastAction, recordedLastAction }
+      : { entries: changes, sequences: sequenceChanges, previousLastAction, recordedLastAction };
   }
 
   /** Undoes the exact changes from one `record` call, leaving earlier habits untouched (#34). */
   unrecord(receipt: HabitRecordingReceipt): void {
+    const timestamps = [
+      receipt.recordedLastAction?.recordedAtMs,
+      ...this.entries.map((e) => e.lastRecordedAtMs),
+      ...this.sequences.map((s) => s.lastRecordedAtMs),
+      ...this.phrases.map((p) => p.lastRecordedAtMs),
+    ].filter((t): t is number => t !== undefined);
+    const referenceNowMs = timestamps.length > 0 ? Math.max(...timestamps) : Date.now();
+
     for (const change of [...receipt.entries].reverse()) {
       const idx = this.entries.findIndex(
         (e) =>
@@ -403,7 +490,7 @@ export class UserHabitMemory {
         this.entries.splice(idx, 1);
       }
     }
-    this.entries.sort((a, b) => b.count - a.count);
+    this.entries.sort((a, b) => compareHabitRank(a, b, referenceNowMs));
 
     for (const change of [...(receipt.sequences ?? [])].reverse()) {
       const idx = this.sequences.findIndex(
@@ -417,8 +504,6 @@ export class UserHabitMemory {
           this.sequences.splice(idx, 1);
         }
       } else if (change.insertedButTrimmed !== true) {
-        // A capacity-trimmed pre-existing transition still comes back on undo; a transition
-        // that was trimmed on insertion never existed for the user (Codex #116 re-review).
         this.sequences.push({
           afterKey: change.afterKey,
           targetId: change.targetId,
@@ -428,7 +513,25 @@ export class UserHabitMemory {
         });
       }
     }
-    this.sequences.sort((a, b) => b.count - a.count);
+    this.sequences.sort((a, b) => compareHabitRank(a, b, referenceNowMs));
+
+    if (receipt.phrase) {
+      if (receipt.phrase.previous) {
+        const idx = this.phrases.findIndex((p) => p.phrase === receipt.phrase!.phrase);
+        const restored = {
+          ...receipt.phrase.previous,
+          targets: receipt.phrase.previous.targets.map((t) => ({ ...t })),
+        };
+        if (idx >= 0) {
+          this.phrases[idx] = restored;
+        } else {
+          this.phrases.unshift(restored);
+        }
+      } else {
+        this.phrases = this.phrases.filter((p) => p.phrase !== receipt.phrase!.phrase);
+      }
+      this.phrases.sort((a, b) => compareHabitRank(a, b, referenceNowMs));
+    }
 
     if (receipt.previousLastAction !== undefined) {
       const canRestoreLastAction =
@@ -702,7 +805,29 @@ export function shareHabitSentence(input: {
   if (input.mention.kind !== "utterance") return "";
   const utterance = input.mention.text.trim();
   if (!utterance) return "";
-  const ids = mentionedHabitTargets(utterance, input.devices, input.scenes);
+  const mentionDevices = input.devices.map((device) => ({
+    ...device,
+    name: sanitizePromptText(device.name, Number.MAX_SAFE_INTEGER),
+    roomName: sanitizePromptText(device.roomName, Number.MAX_SAFE_INTEGER),
+  }));
+  const mentionScenes = input.scenes.map((scene) => ({
+    ...scene,
+    name: sanitizePromptText(scene.name, Number.MAX_SAFE_INTEGER),
+  }));
+  const sanitizedDevices = input.devices.map((device) => ({
+    ...device,
+    name: sanitizePromptText(device.name, PROMPT_NAME_LIMIT),
+    roomName: sanitizePromptText(device.roomName, PROMPT_NAME_LIMIT),
+  }));
+  const sanitizedScenes = input.scenes.map((scene) => ({
+    ...scene,
+    name: sanitizePromptText(scene.name, PROMPT_NAME_LIMIT),
+  }));
+  const cleanUtterance = sanitizePromptText(utterance, Number.MAX_SAFE_INTEGER);
+  const ids = new Set([
+    ...mentionedHabitTargets(utterance, input.devices, input.scenes),
+    ...mentionedHabitTargets(cleanUtterance, mentionDevices, mentionScenes),
+  ]);
   if (ids.size === 0) return "";
 
   const bucket = timeBucketLabel(input.now.getHours());
@@ -712,7 +837,7 @@ export function shareHabitSentence(input: {
     if (entry.bucket !== bucket || !ids.has(entry.targetId)) continue;
     const operation = decodeHabitOperation(entry.operationKey);
     if (!operation) continue;
-    const title = habitSuggestionTitle({ targetId: entry.targetId, operation }, input.devices, input.scenes);
+    const title = habitSuggestionTitle({ targetId: entry.targetId, operation }, sanitizedDevices, sanitizedScenes);
     if (!title) continue;
     bucketTitles.push(`${title}(${entry.count}次)`);
     if (bucketTitles.length === 4) break;
@@ -721,11 +846,13 @@ export function shareHabitSentence(input: {
 
   const phraseBits: string[] = [];
   for (const phrase of input.phrases) {
+    const cleanPhrase = sanitizePromptText(phrase.phrase, PROMPT_NAME_LIMIT).trim();
+    if (!cleanPhrase) continue;
     const titles: string[] = [];
     let qualified = true;
     for (const intent of phrase.intents) {
       if (encodeHabitOperation(intent.operation) === null) continue;
-      const title = habitSuggestionTitle(intent, input.devices, input.scenes);
+      const title = habitSuggestionTitle(intent, sanitizedDevices, sanitizedScenes);
       if (!ids.has(intent.targetId) || !title) {
         qualified = false;
         break;
@@ -733,7 +860,7 @@ export function shareHabitSentence(input: {
       titles.push(title);
     }
     if (!qualified || titles.length === 0) continue;
-    phraseBits.push(`「${phrase.phrase}」→${titles.join("+")}`);
+    phraseBits.push(`「${cleanPhrase}」→${titles.join("+")}`);
     if (phraseBits.length === 4) break;
   }
   if (phraseBits.length > 0) parts.push(`个人口头禅：${phraseBits.join("；")}`);
@@ -743,20 +870,20 @@ export function shareHabitSentence(input: {
     const afterKey = `${last.targetId}|${last.operationKey}`;
     const next = [...(input.memory.sequences ?? [])]
       .filter((item) => item.afterKey === afterKey)
-      .sort((a, b) => b.count - a.count)[0];
+      .sort((a, b) => compareHabitRank(a, b, input.now.getTime()))[0];
     if (next && ids.has(last.targetId) && ids.has(next.targetId)) {
       const previousOperation = decodeHabitOperation(last.operationKey);
       const nextOperation = decodeHabitOperation(next.operationKey);
       if (previousOperation && nextOperation) {
         const previousTitle = habitSuggestionTitle(
           { targetId: last.targetId, operation: previousOperation },
-          input.devices,
-          input.scenes,
+          sanitizedDevices,
+          sanitizedScenes,
         );
         const nextTitle = habitSuggestionTitle(
           { targetId: next.targetId, operation: nextOperation },
-          input.devices,
-          input.scenes,
+          sanitizedDevices,
+          sanitizedScenes,
         );
         if (previousTitle && nextTitle) {
           parts.push(`刚做完${previousTitle}后常做：${nextTitle}(${next.count}次)`);

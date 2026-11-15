@@ -24,8 +24,13 @@ import {
   getRunningBatch,
 } from "../src/ui/intentExecution.js";
 import {
+  AppURLParser,
+  BuiltInURLScene,
+  URLDirectControl,
+  appURLCommandControlsDevice,
   executeDirectAskPreset,
   onOpenURL,
+  snapTemperature,
   type AppURLCommandHost,
 } from "../src/core/appUrlCommand.js";
 import {
@@ -1357,5 +1362,74 @@ describe("A15 Companion URL high-risk confirm, Zero-AI presets, group folding & 
       closeTestWindow(dom);
       dom = null;
     }
+  });
+
+  it("matches shared app_url_command_golden.json and control_failure_golden.json corpora (#46)", () => {
+    const loadFixture = (name: string) =>
+      JSON.parse(readFileSync(fileURLToPath(new URL(`../../Tests/Fixtures/${name}`, import.meta.url)), "utf8"));
+    const urlGolden = loadFixture("app_url_command_golden.json");
+
+    for (const item of urlGolden.parseCases) {
+      const parsed = AppURLParser.parseEnvelope(item.url);
+      if (!item.expected) {
+        assert.equal(parsed, null, item.url);
+        continue;
+      }
+      assert.ok(parsed, item.url);
+      assert.equal(appURLCommandControlsDevice(parsed.command), item.expected.controlsDevice, item.url);
+      assert.equal(parsed.token, item.expected.token, item.url);
+      assert.equal(parsed.requestId, item.expected.requestId, item.url);
+      assert.equal(parsed.command.kind, item.expected.kind, item.url);
+      if ("deviceId" in parsed.command && item.expected.deviceId !== undefined) assert.equal(parsed.command.deviceId, item.expected.deviceId);
+      if (parsed.command.kind === "scene") assert.equal(parsed.command.name, item.expected.name);
+      if (parsed.command.kind === "ask") assert.equal(parsed.command.text, item.expected.text);
+      if (parsed.command.kind === "power") assert.equal(parsed.command.isOn, item.expected.isOn);
+      if (parsed.command.kind === "brightness") assert.equal(parsed.command.percent, item.expected.percent);
+      if (parsed.command.kind === "colorTemp") assert.equal(parsed.command.kelvin, item.expected.kelvin);
+      if (parsed.command.kind === "temperature") assert.equal(parsed.command.celsius, item.expected.celsius);
+      if (parsed.command.kind === "fan") {
+        assert.equal(parsed.command.percent, item.expected.percent ?? null);
+        assert.equal(parsed.command.preset, item.expected.preset ?? null);
+      }
+    }
+    for (const item of urlGolden.builtInSceneCases) assert.equal(BuiltInURLScene.resolve(item.raw), item.expected);
+    for (const item of urlGolden.bridgeTokenCases) {
+      assert.equal(URLDirectControl.isValidBridgeToken(item.providedToken ?? undefined, item.expectedToken ?? undefined), item.validToken);
+      assert.equal(
+        URLDirectControl.requiresConfirmation({
+          allowDirectControl: item.allowDirectControl,
+          ...(item.providedToken !== null ? { providedToken: item.providedToken } : {}),
+          ...(item.expectedToken !== null ? { expectedToken: item.expectedToken } : {}),
+        }),
+        item.requiresConfirmation,
+      );
+    }
+    for (const item of urlGolden.snapTemperatureCases) {
+      assert.equal(snapTemperature(item.celsius, item.min, item.max, item.step), item.expected);
+    }
+
+    const cfGolden = loadFixture("control_failure_golden.json");
+    for (const item of cfGolden.cases) {
+      const err =
+        item.source === "miCloud" && item.errorKind === "deviceError" ? new MiCloudError("api", item.message ?? "device error", item.code)
+        : item.source === "miCloud" && item.errorKind === "http" ? new MiCloudError("http", `HTTP ${item.status}`, item.status)
+        : item.source === "miCloud" && item.errorKind === "sessionExpired" ? new MiCloudError("sessionExpired", "session expired")
+        : item.source === "miCloud" && item.errorKind === "notLoggedIn" ? new MiCloudError("notLoggedIn", "not logged in")
+        : item.source === "homeAssistant" ? Object.assign(new Error(item.message ?? `HTTP ${item.status}`), { status: item.status })
+        : new DOMException("The operation was aborted.", "AbortError");
+      assert.equal(isCancellationError(err), item.expectedIsCancellation, item.id);
+      assert.equal(classifyControlFailure(err, { isDeviceOnline: item.isDeviceOnline })?.kind ?? null, item.expectedBucket, item.id);
+      if (item.expectedIsCancellation) {
+        assert.equal(controlFailureUserMessage(err, { deviceName: item.deviceNameZh, isDeviceOnline: item.isDeviceOnline, adjustment: item.adjustment }), null);
+        continue;
+      }
+      setLanguage("zh-Hans");
+      const zhMsg = controlFailureUserMessage(err, { deviceName: item.deviceNameZh, isDeviceOnline: item.isDeviceOnline, adjustment: item.adjustment }) ?? "";
+      if (item.expectedZhSubstring) assert.ok(zhMsg.includes(item.expectedZhSubstring), `${item.id}: ${zhMsg}`);
+      setLanguage("en");
+      const enMsg = controlFailureUserMessage(err, { deviceName: item.deviceNameEn, isDeviceOnline: item.isDeviceOnline, adjustment: item.adjustment }) ?? "";
+      if (item.expectedEnSubstring) assert.ok(enMsg.toLowerCase().includes(item.expectedEnSubstring.toLowerCase()), `${item.id}: ${enMsg}`);
+    }
+    setLanguage("zh-Hans");
   });
 });

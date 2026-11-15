@@ -46,7 +46,31 @@ public func shareHabitSentence(
     guard case .utterance(let raw) = mention else { return "" }
     let utterance = raw.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !utterance.isEmpty else { return "" }
+    let mentionDevices = devices.map { device in
+        var copy = device
+        copy.name = PromptText.sanitize(device.name, limit: Int.max)
+        copy.roomName = PromptText.sanitize(device.roomName, limit: Int.max)
+        return copy
+    }
+    let mentionScenes = scenes.map { scene in
+        var copy = scene
+        copy.name = PromptText.sanitize(scene.name, limit: Int.max)
+        return copy
+    }
+    let sanitizedDevices = devices.map { device in
+        var copy = device
+        copy.name = PromptText.sanitize(device.name, limit: PromptText.nameLimit)
+        copy.roomName = PromptText.sanitize(device.roomName, limit: PromptText.nameLimit)
+        return copy
+    }
+    let sanitizedScenes = scenes.map { scene in
+        var copy = scene
+        copy.name = PromptText.sanitize(scene.name, limit: PromptText.nameLimit)
+        return copy
+    }
+    let cleanUtterance = PromptText.sanitize(utterance, limit: Int.max)
     let ids = mentionedTargets(utterance, devices: devices, scenes: scenes)
+        .union(mentionedTargets(cleanUtterance, devices: mentionDevices, scenes: mentionScenes))
     guard !ids.isEmpty else { return "" }
 
     let bucket = UserHabitMemory.TimeBucket.from(date: now)
@@ -57,8 +81,8 @@ public func shareHabitSentence(
         guard let operation = UserHabitMemory.decodeOperation(entry.operationKey),
               let title = UserHabitMemory.suggestionTitle(
                 for: DeviceIntent(targetId: entry.targetId, operation: operation),
-                devices: devices,
-                scenes: scenes
+                devices: sanitizedDevices,
+                scenes: sanitizedScenes
               ) else { continue }
         bucketTitles.append("\(title)(\(entry.count)次)")
         if bucketTitles.count == 4 { break }
@@ -70,6 +94,9 @@ public func shareHabitSentence(
     var phraseBits: [String] = []
     for phrase in memory.phrases {
         guard !phrase.targets.isEmpty else { continue }
+        let cleanPhrase = PromptText.sanitize(phrase.phrase, limit: PromptText.nameLimit)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanPhrase.isEmpty else { continue }
         var titles: [String] = []
         var qualified = true
         for target in phrase.targets {
@@ -77,8 +104,8 @@ public func shareHabitSentence(
                   let operation = UserHabitMemory.decodeOperation(target.operationKey),
                   let title = UserHabitMemory.suggestionTitle(
                     for: DeviceIntent(targetId: target.targetId, operation: operation),
-                    devices: devices,
-                    scenes: scenes
+                    devices: sanitizedDevices,
+                    scenes: sanitizedScenes
                   ) else {
                 qualified = false
                 break
@@ -86,7 +113,7 @@ public func shareHabitSentence(
             titles.append(title)
         }
         guard qualified else { continue }
-        phraseBits.append("「\(phrase.phrase)」→\(titles.joined(separator: "+"))")
+        phraseBits.append("「\(cleanPhrase)」→\(titles.joined(separator: "+"))")
         if phraseBits.count == 4 { break }
     }
     if !phraseBits.isEmpty {
@@ -95,20 +122,31 @@ public func shareHabitSentence(
 
     if let last = memory.lastAction,
        now.timeIntervalSince(last.recordedAt) <= UserHabitMemory.sequenceBoostWindow,
-       let next = memory.sequences.first(where: { $0.afterKey == last.key }),
+       let next = memory.sequences
+           .filter({ $0.afterKey == last.key })
+           .sorted(by: {
+               UserHabitMemory.ranksBefore(
+                   countA: $0.count,
+                   lastA: $0.lastRecordedAt,
+                   countB: $1.count,
+                   lastB: $1.lastRecordedAt,
+                   now: now
+               )
+           })
+           .first,
        ids.contains(last.targetId),
        ids.contains(next.targetId),
        let previousOperation = UserHabitMemory.decodeOperation(last.operationKey),
        let nextOperation = UserHabitMemory.decodeOperation(next.operationKey),
        let previousTitle = UserHabitMemory.suggestionTitle(
         for: DeviceIntent(targetId: last.targetId, operation: previousOperation),
-        devices: devices,
-        scenes: scenes
+        devices: sanitizedDevices,
+        scenes: sanitizedScenes
        ),
        let nextTitle = UserHabitMemory.suggestionTitle(
         for: DeviceIntent(targetId: next.targetId, operation: nextOperation),
-        devices: devices,
-        scenes: scenes
+        devices: sanitizedDevices,
+        scenes: sanitizedScenes
        ) {
         parts.append("刚做完\(previousTitle)后常做：\(nextTitle)(\(next.count)次)")
     }

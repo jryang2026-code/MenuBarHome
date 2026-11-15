@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "warningLeadSeconds": 259200,
+  "nowEpochSeconds": 1800000000,
+  "policyCases": [
+    {
+      "id": "undated_session",
+      "expiresAtOffsetSeconds": null,
+      "expectedState": "valid"
+    },
+    {
+      "id": "outside_warning_lead",
+      "expiresAtOffsetSeconds": 259201,
+      "expectedState": "valid"
+    },
+    {
+      "id": "exactly_at_warning_lead",
+      "expiresAtOffsetSeconds": 259200,
+      "expectedState": "expiringSoon"
+    },
+    {
+      "id": "inside_warning_lead",
+      "expiresAtOffsetSeconds": 86400,
+      "expectedState": "expiringSoon"
+    },
+    {
+      "id": "one_second_before_expiry",
+      "expiresAtOffsetSeconds": 1,
+      "expectedState": "expiringSoon"
+    },
+    {
+      "id": "exactly_at_expiry",
+      "expiresAtOffsetSeconds": 0,
+      "expectedState": "expired"
+    },
+    {
+      "id": "past_expiry",
+      "expiresAtOffsetSeconds": -3600,
+      "expectedState": "expired"
+    }
+  ],
+  "maskedUserIdCases": [
+    { "userId": "1234567890", "expected": "12****90" },
+    { "userId": "100200300", "expected": "10****00" },
+    { "userId": "1234", "expected": "****" },
+    { "userId": "42", "expected": "**" }
+  ]
+}

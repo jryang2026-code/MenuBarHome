@@ -111,6 +111,40 @@ struct HAHomeSnapshotTests {
         let refreshed = try #require(try projection.receive(Self.reply(500_005, offStates), isRefreshStatesResult: true))
         #expect(refreshed.devices.first?.isActiveOn == false)
     }
+
+    private static func loadSnapshotFixture(_ relativePath: String) throws -> SynthesizedHome {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../\(relativePath)")
+        let root = try JSONDecoder().decode([String: JSONValue].self, from: Data(contentsOf: url))
+        var projection = HAHomeSnapshot()
+        _ = try projection.receive(reply(1, root["areas"] ?? .array([])))
+        _ = try projection.receive(reply(2, root["devices"] ?? .array([])))
+        _ = try projection.receive(reply(3, root["entities"] ?? .array([])))
+        return try #require(try projection.receive(reply(4, root["states"] ?? .array([]))))
+    }
+
+    @Test("Shared ha_snapshot.json and ha_regressions.json fixtures match Windows HomeAssistantSynthesizer (#46)")
+    func sharedHASnapshotAndRegressionFixtures() throws {
+        let snapshotHome = try Self.loadSnapshotFixture("Fixtures/ha_snapshot.json")
+        #expect(snapshotHome.devices.map(\.id) == ["study-light", "thermometer"])
+        if case .light(let l) = snapshotHome.devices.first(where: { $0.id == "study-light" })?.kind {
+            #expect(l.isOn && l.brightnessPercent == 50 && l.availableEffects == ["Reading"])
+        } else { Issue.record("Expected study-light") }
+        #expect(snapshotHome.environmentReadings.map { [$0.temperature, $0.humidity] } == [[23.5, 45.0]])
+        #expect(snapshotHome.rooms.map(\.name) == ["书房"] && snapshotHome.scenes.map(\.entityId) == ["scene.evening"])
+
+        let regressionHome = try Self.loadSnapshotFixture("Fixtures/ha_regressions.json")
+        #expect(regressionHome.devices.map(\.id) == ["heat-only", "dev_airp_1", "dev_cam_1"])
+        if case .climate(let c) = regressionHome.devices.first(where: { $0.id == "heat-only" })?.kind {
+            #expect(!c.isOn && c.availableModes == ["off", "heat"] && c.targetTemperature == 22)
+        } else { Issue.record("Expected heat-only") }
+        if case .camera(let cam) = regressionHome.devices.first(where: { $0.id == "dev_cam_1" })?.kind {
+            #expect(cam.entityId == "switch.living_cam_power|select.living_cam_night_shot" && cam.streamEntityId == nil && cam.motionDetectionEntityId == "switch.living_cam_motion_detection" && cam.nightShot == "Auto")
+        } else { Issue.record("Expected dev_cam_1") }
+        if case .fan(let f) = regressionHome.devices.first(where: { $0.id == "dev_airp_1" })?.kind {
+            #expect(f.isOn && f.percentage == 50 && f.presetMode == "Auto" && f.pm25Density == 18 && f.airQuality == "Excellent" && f.temperature == 24.5 && f.humidity == 52 && f.filterLifePercent == 86)
+        } else { Issue.record("Expected dev_airp_1") }
+        #expect(regressionHome.deviceFacets["dev_airp_1"] == nil)
+    }
 }
 
 /// Deterministic fuzz pass over Home Assistant WebSocket frames (#186). A frame is untrusted

@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "delayExtractCases": [
+    {
+      "utterance": "10分钟后关闭书房吸顶灯",
+      "expected": { "delaySeconds": 600, "remainder": "关闭书房吸顶灯" }
+    },
+    {
+      "utterance": "过两分钟关灯",
+      "expected": { "delaySeconds": 120, "remainder": "关灯" }
+    },
+    {
+      "utterance": "关灯，30秒后",
+      "expected": { "delaySeconds": 30, "remainder": "关灯" }
+    },
+    {
+      "utterance": "半小时后关闭客厅空调",
+      "expected": { "delaySeconds": 1800, "remainder": "关闭客厅空调" }
+    },
+    {
+      "utterance": "一个半小时后关风扇",
+      "expected": { "delaySeconds": 5400, "remainder": "关风扇" }
+    },
+    {
+      "utterance": "in 15 minutes turn off bedroom light",
+      "expected": { "delaySeconds": 900, "remainder": "turn off bedroom light" }
+    },
+    {
+      "utterance": "turn off study lamp in 45 seconds",
+      "expected": { "delaySeconds": 45, "remainder": "turn off study lamp" }
+    },
+    {
+      "utterance": "10分钟关闭书房吸顶灯",
+      "expected": null
+    },
+    {
+      "utterance": "25小时后关灯",
+      "expected": null
+    },
+    {
+      "utterance": "打开书房吸顶灯",
+      "expected": null
+    }
+  ],
+  "cancelCases": [
+    { "utterance": "取消定时", "isCancel": true },
+    { "utterance": "取消所有定时", "isCancel": true },
+    { "utterance": "cancel all timers", "isCancel": true },
+    { "utterance": "stop timer", "isCancel": true },
+    { "utterance": "撤销", "isCancel": false },
+    { "utterance": "关闭书房台灯", "isCancel": false }
+  ],
+  "undoCases": [
+    { "utterance": "撤销", "isUndo": true },
+    { "utterance": "恢复刚才", "isUndo": true },
+    { "utterance": "undo that", "isUndo": true },
+    { "utterance": "revert", "isUndo": true },
+    { "utterance": "取消定时", "isUndo": false },
+    { "utterance": "撤销定时", "isUndo": false },
+    { "utterance": "undo timer", "isUndo": false },
+    { "utterance": "把客厅吸顶灯亮度还原到百分之八十并且调成暖光", "isUndo": false }
+  ]
+}

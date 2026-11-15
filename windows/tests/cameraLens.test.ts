@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import {
   parsePrivateLanIpv4,
@@ -6,7 +7,7 @@ import {
 } from "../src/core/miCloud/cameraHubs.js";
 import { cameraLensesFor } from "../src/core/miCloud/cameraLens.js";
 import { MiotSynthesizer } from "../src/core/miCloud/synthesis.js";
-import type { MiotDeviceSpec } from "../src/core/miCloud/spec.js";
+import { inferFallbackSpec, type MiotDeviceSpec } from "../src/core/miCloud/spec.js";
 
 const cameraSpec: MiotDeviceSpec = {
   type: "urn:miot-spec-v2:device:camera:0000A01C:mxiang-mwc11:1",
@@ -263,5 +264,26 @@ describe("parsePrivateLanIpv4", () => {
     assert.equal(parsePrivateLanIpv4("192.168.01.5"), null);
     assert.equal(parsePrivateLanIpv4("192.168.1.999"), null);
     assert.equal(parsePrivateLanIpv4("not-an-ip"), null);
+  });
+});
+
+describe("Shared camera_ptz_models.json fixture (#46)", () => {
+  it("synthesizes every shared PTZ camera model as a camera card and preserves dual-lens channel metadata", () => {
+    const ptzFixture = JSON.parse(readFileSync(new URL("../../Tests/Fixtures/camera_ptz_models.json", import.meta.url), "utf8"));
+    assert.equal(ptzFixture.models.length, 19);
+    for (const entry of ptzFixture.models) {
+      assert.ok(entry.model.includes(".camera.") && ["cs2", "tutk"].includes(entry.vendor));
+      const fallback = inferFallbackSpec({ model: entry.model, name: "客厅摄像机" });
+      assert.ok(fallback);
+      const home = MiotSynthesizer.synthesize(
+        [{ did: `did-${entry.model}`, name: "客厅摄像机", model: entry.model, isOnline: true, specType: fallback.type }],
+        [],
+        { [entry.model]: fallback },
+        new Map([[`did-${entry.model}.2.1`, true]]),
+      );
+      assert.ok(home.devices[0]?.kind.kind === "camera", entry.model);
+      const channels = cameraLensesFor(entry.model).map((l) => l.channel);
+      assert.deepEqual(channels, ["isa.camera.500dh", "isa.camera.hlmax", "chuangmi.camera.72ac1"].includes(entry.model) ? [0, 1] : []);
+    }
   });
 });

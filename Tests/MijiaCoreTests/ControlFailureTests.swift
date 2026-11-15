@@ -298,6 +298,45 @@ struct ControlFailureTests {
             }
         }
     }
+
+    @Test("Shared control_failure_golden.json corpus matches macOS ControlFailure classification and bilingual copy (#46)")
+    func matchesControlFailureGoldenCorpus() throws {
+        struct CaseItem: Decodable {
+            let id: String; let source: String; let errorKind: String; let status: Int?; let code: Int?; let message: String?
+            let isDeviceOnline: Bool; let adjustment: Bool; let deviceNameZh: String; let deviceNameEn: String
+            let expectedBucket: String?; let expectedIsCancellation: Bool; let expectedZhSubstring: String?; let expectedEnSubstring: String?
+        }
+        struct GoldenFile: Decodable { let cases: [CaseItem] }
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Fixtures/control_failure_golden.json")
+        let golden = try JSONDecoder().decode(GoldenFile.self, from: Data(contentsOf: url))
+        let tables = LocalizationTests.shippedTablesDirectory
+
+        for item in golden.cases {
+            let err: any Error
+            switch (item.source, item.errorKind) {
+            case ("miCloud", "deviceError"):
+                err = try #require(capturedCloudError { try MiCloudClient.checkWriteCodes([.object(["code": .number(Double(item.code ?? -1))])]) })
+            case ("miCloud", "http"): err = MiCloudError.http(item.status ?? 500)
+            case ("miCloud", "sessionExpired"): err = MiCloudError.sessionExpired
+            case ("miCloud", "notLoggedIn"): err = MiCloudError.notLoggedIn
+            case ("homeAssistant", "serviceCallFailed"): err = HomeProviderError.serviceCallFailed(item.status ?? 500, item.message ?? "")
+            default: err = CancellationError()
+            }
+            #expect(ControlFailure.isCancellation(err) == item.expectedIsCancellation, "\(item.id)")
+            if item.expectedIsCancellation { continue }
+            L10n.$overrideTranslationDirectory.withValue(tables) {
+                L10n.$overrideLanguage.withValue(.zhHans) {
+                    let zhMsg = ControlFailure.userMessage(for: err, deviceName: item.deviceNameZh, isDeviceOnline: item.isDeviceOnline, adjustment: item.adjustment)
+                    if let sub = item.expectedZhSubstring { #expect(zhMsg.contains(sub), "\(item.id)") }
+                    if item.expectedBucket == nil { #expect(!zhMsg.contains("："), "\(item.id)") }
+                }
+                L10n.$overrideLanguage.withValue(.en) {
+                    let enMsg = ControlFailure.userMessage(for: err, deviceName: item.deviceNameEn, isDeviceOnline: item.isDeviceOnline, adjustment: item.adjustment)
+                    if let sub = item.expectedEnSubstring { #expect(enMsg.localizedCaseInsensitiveContains(sub), "\(item.id)") }
+                }
+            }
+        }
+    }
 }
 
 /// A provider whose writes always fail with the error under test.

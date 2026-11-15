@@ -758,7 +758,7 @@ public enum DeviceDeduplicator {
         in miCandidates: [Candidate]
     ) -> Bool {
         let identities = miCandidates.compactMap(\.identity)
-        if identities.contains(where: { sharesDID(haIdentity, $0) }) { return true }
+        if identities.filter({ sharesDID(haIdentity, $0) }).count >= 2 { return true }
 
         let tracks = miCandidates.filter { candidate in
             guard let identity = candidate.identity, sharesMAC(haIdentity, identity),
