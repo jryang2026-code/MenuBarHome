@@ -513,7 +513,8 @@ public struct OnboardingGuideView: View {
                     detail: L10n.tr(
                         "隐藏的设备、插座和扫地机默认不动，避免关掉路由器和还在工作的家电。",
                         "Hidden devices, plugs and vacuums stay as they are, so a router or a working appliance is not switched off."
-                    )
+                    ),
+                    statesConsequence: true
                 )
                 shortcutTipRow(
                     icon: "arrow.uturn.backward",
@@ -521,7 +522,8 @@ public struct OnboardingGuideView: View {
                     detail: L10n.tr(
                         "撤销后横幅消失，再想改回来就点设备卡片。",
                         "The banner disappears after undo; toggle the device card if you change your mind again."
-                    )
+                    ),
+                    statesConsequence: true
                 )
             }
         }
@@ -894,7 +896,10 @@ public struct OnboardingGuideView: View {
         }
     }
 
-    private func shortcutTipRow(icon: String, title: String, detail: String) -> some View {
+    /// `statesConsequence` is for text that says what a control will not do or what an action costs
+    /// (the All Off exclusions, that Undo is one shot): CODING_STANDARDS §18 puts it at 12 pt in the
+    /// primary colour. Ordinary how-to lines (search tips) stay small and secondary.
+    private func shortcutTipRow(icon: String, title: String, detail: String, statesConsequence: Bool = false) -> some View {
         HStack(alignment: .top, spacing: 7) {
             Image(systemName: icon)
                 .font(.system(size: 11, weight: .semibold))
@@ -906,8 +911,8 @@ public struct OnboardingGuideView: View {
                 Text(title)
                     .font(.system(size: 11, weight: .semibold))
                 Text(detail)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: statesConsequence ? DesignTokens.TypeSize.caption : 11))
+                    .foregroundStyle(statesConsequence ? AnyShapeStyle(.primary.opacity(0.85)) : AnyShapeStyle(.secondary))
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
