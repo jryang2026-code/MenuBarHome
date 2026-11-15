@@ -558,6 +558,25 @@ struct SnapshotTests {
         )
     }
 
+    @Test("A form with unsaved edits says so beside its Save button")
+    func unsavedChangesBadgeSnapshot() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+        assertRendered(
+            snapshotReady(
+                HStack(spacing: 10) {
+                    UnsavedChangesBadge(isVisible: true)
+                    Button(L10n.tr("保存 AI 配置", "Save AI Configuration")) {}
+                        .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+                }
+                .padding(12)
+                .frame(width: 320, height: 56, alignment: .trailing)
+            ),
+            size: CGSize(width: 320, height: 56),
+            named: "unsaved-changes-badge-zh-light"
+        )
+    }
+
     @Test("An unconnected first launch puts the demo in view above the connect form")
     func onboardingDemoEntrySnapshot() async throws {
         let fixture = try await SnapshotFixture(configuredHASource: false)

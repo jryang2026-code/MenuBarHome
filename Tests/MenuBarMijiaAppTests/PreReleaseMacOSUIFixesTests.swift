@@ -426,5 +426,66 @@ struct PreReleaseMacOSUIFixesTests {
         #expect(!HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: .miAccount))
         #expect(!HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: nil))
     }
+
+    // MARK: - #148: unsaved edits are resolved, never dropped silently
+
+    private func unsavedForm(
+        _ title: String, dirty: Bool, saves: Bool = true,
+        onSave: @escaping @MainActor () -> Void = {}, onDiscard: @escaping @MainActor () -> Void = {}
+    ) -> SettingsUnsavedChanges.Form {
+        .init(title: title, isDirty: dirty, save: { onSave(); return saves }, discard: onDiscard)
+    }
+
+    @Test("Nothing is asked while no form has unsaved edits")
+    func unsavedChangesStaySilentWhenClean() {
+        let unsaved = SettingsUnsavedChanges()
+        unsaved.register("ha", unsavedForm("Home Assistant", dirty: false))
+        var asked = false
+        let go = unsaved.resolveBeforeLeaving(allowCancel: true) { _, _ in asked = true; return .cancel }
+        #expect(go)
+        #expect(!asked)
+        #expect(!unsaved.isDirty)
+    }
+
+    @Test("Save runs every dirty form and blocks leaving when one cannot save")
+    func unsavedChangesSaveChoice() {
+        let unsaved = SettingsUnsavedChanges()
+        var saved: [String] = []
+        unsaved.register("ha", unsavedForm("Home Assistant", dirty: true, onSave: { saved.append("ha") }))
+        unsaved.register("ai", unsavedForm("AI", dirty: true, onSave: { saved.append("ai") }))
+        unsaved.register("clean", unsavedForm("Clean", dirty: false, onSave: { saved.append("clean") }))
+        var titles: [String] = []
+        let go = unsaved.resolveBeforeLeaving(allowCancel: true) { shown, _ in titles = shown; return .save }
+        #expect(go)
+        #expect(Set(saved) == ["ha", "ai"])
+        #expect(titles == ["AI", "Home Assistant"])
+
+        unsaved.register("ha", unsavedForm("Home Assistant", dirty: true, saves: false))
+        let blocked = unsaved.resolveBeforeLeaving(allowCancel: true) { _, _ in .save }
+        #expect(!blocked, "a refused save keeps the user on the page")
+    }
+
+    @Test("Discard resets the drafts and leaves; Cancel stays and touches nothing")
+    func unsavedChangesDiscardAndCancel() {
+        let unsaved = SettingsUnsavedChanges()
+        var discarded = 0
+        var saved = 0
+        unsaved.register("ha", unsavedForm("Home Assistant", dirty: true, onSave: { saved += 1 }, onDiscard: { discarded += 1 }))
+
+        #expect(!unsaved.resolveBeforeLeaving(allowCancel: true) { _, _ in .cancel })
+        #expect(discarded == 0 && saved == 0)
+
+        var offeredCancel = true
+        let left = unsaved.resolveBeforeLeaving(allowCancel: false) { _, allowCancel in
+            offeredCancel = allowCancel
+            return .discard
+        }
+        #expect(left)
+        #expect(!offeredCancel, "closing the window cannot be cancelled")
+        #expect(discarded == 1 && saved == 0)
+
+        unsaved.unregister("ha")
+        #expect(!unsaved.isDirty)
+    }
 }
 }
