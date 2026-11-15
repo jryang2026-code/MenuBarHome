@@ -125,7 +125,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   // Chrome
   "切换家庭": ["切换家庭", "Switch home"],
   "演示预览": ["演示预览", "Demo preview"],
-  "Miot 直连": ["Miot 直连", "Miot direct"],
+  "米家云端": ["米家云端", "Xiaomi Cloud"],
   "拖动卡片排序 · 点右下角圆弧手柄改大小": ["拖动卡片排序 · 点右下角圆弧手柄改大小", "Drag to reorder · drag or tap the corner handle to resize"],
   "语音控制": ["语音控制", "Voice control"],
   "AI 自然语言指令栏": ["AI 自然语言指令栏", "AI command bar"],

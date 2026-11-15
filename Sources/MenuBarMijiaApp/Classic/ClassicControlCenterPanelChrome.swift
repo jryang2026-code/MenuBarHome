@@ -1221,9 +1221,9 @@ extension ClassicControlCenterPanel {
                 return L10n.tr("HA + 米家云 (\(store.serverHostSummary))", "HA + Xiaomi Cloud (\(store.serverHostSummary))")
             }
             if store.connectedBackends.contains(.xiaomiCloud) {
-                return L10n.tr("\(store.serverHostSummary)，Miot 直连", "\(store.serverHostSummary), MIoT Direct")
+                return L10n.tr("已连接 · \(store.serverHostSummary)", "Connected · \(store.serverHostSummary)")
             }
-            return L10n.tr("HA 实时连接 (\(store.serverHostSummary))", "HA Live (\(store.serverHostSummary))")
+            return L10n.tr("已连接 · Home Assistant", "Connected · Home Assistant")
         case .connecting:
             return L10n.tr("正在连接 (\(store.serverHostSummary))…", "Connecting (\(store.serverHostSummary))…")
         case .degraded(let reason), .blocked(let reason, _):
