@@ -50,7 +50,7 @@ while IFS= read -r path || [ -n "$path" ]; do
             code=true
             ;;
         # Capability matrix lint validates links and counts inside READMEs and docs/capabilities.json.
-        README.md|README.zh-CN.md|docs/capabilities.json)
+        README.md|README.zh-CN.md|docs/platform-matrix.md|docs/platform-matrix.zh-CN.md|docs/capabilities.json)
             code=true
             ;;
         # check_model_tables.py reads the patch SHA-256 row from this README inside the lint job.
