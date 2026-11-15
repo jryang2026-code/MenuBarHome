@@ -635,7 +635,9 @@ struct LocalMiIOClientTests {
             throw MiIOError.timeout
         }
         let client = LocalMiIOClient(transport: transport, maxRetries: 0)
+        #if canImport(Network)
         let nwTransport = NWConnectionMiIOUDPTransport()
+        #endif
         let rejectedHosts = ["192.0.2.10", "8.8.8.8", "127.0.0.1", "example.com"]
 
         for host in rejectedHosts {
@@ -649,12 +651,16 @@ struct LocalMiIOClientTests {
             await #expect(throws: MiIOError.invalidAddress(host)) {
                 try await client.setProps([MiotPropWrite(did: "12345678", siid: 2, piid: 1, value: .bool(true))], endpoint: endpoint)
             }
+            #if canImport(Network)
             await #expect(throws: MiIOError.invalidAddress(host)) {
                 _ = try await nwTransport.send(MiIOPacket.helloPacket, to: host, port: 54321, timeout: .milliseconds(50))
             }
+            #endif
         }
         #expect(await transport.sends.isEmpty)
+        #if canImport(Network)
         await nwTransport.shutdown()
+        #endif
         await client.shutdown()
     }
 }
