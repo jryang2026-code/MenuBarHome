@@ -2,6 +2,7 @@ import {
   AutomationEngine,
   DoorbellCameraCoordinator,
   DoorbellDetector,
+  getAutomationUndoRunId,
   type DoorbellCoordinatorScheduler,
   type DoorbellResponse,
   type DoorbellRing,
@@ -669,7 +670,7 @@ export function doesUndoStepActivateHighRiskDevice(
     return false;
   }
   const snapKind = kindSnapshots?.get(step.deviceId);
-  if (snapKind && isDeviceActiveOn({ ...dev, kind: snapKind })) return true;
+  if (snapKind && !isDeviceActiveOn(dev) && isDeviceActiveOn({ ...dev, kind: snapKind })) return true;
   return step.commands.some((cmd) => {
     switch (cmd.kind) {
       case "setSwitch":
@@ -681,6 +682,7 @@ export function doesUndoStepActivateHighRiskDevice(
       case "setClimateMode":
         return cmd.hvacMode.trim().toLowerCase() !== "off";
       case "setSelectOption":
+        if (dev.kind.kind === "camera" || dev.kind.kind === "fridge") return false;
         return dev.kind.kind === "cover" ? cmd.option === dev.kind.openDescription : cmd.option.trim().toLowerCase() !== "off";
       case "setNumberValue":
         return dev.kind.kind === "cover" && cmd.value > 0;
@@ -841,7 +843,7 @@ export async function executeAutomationCardUndo(
     center.recentAutomationRuns = center.recentAutomationRuns.map((r) =>
       r.id === runId ? { ...r, steps: confirmation.skippedHighRiskSteps } : r,
     );
-    if (host.lastUndoAction && host.lastUndoAction.summary === run.summary) {
+    if (host.lastUndoAction && getAutomationUndoRunId(host.lastUndoAction) === runId) {
       const nextUndo = { ...host.lastUndoAction, steps: confirmation.skippedHighRiskSteps };
       recordUndoKindSnapshots(nextUndo, run.kindSnapshots);
       host.lastUndoAction = nextUndo;
@@ -855,7 +857,7 @@ export async function executeAutomationCardUndo(
   }
 
   center.recentAutomationRuns = center.recentAutomationRuns.filter((r) => r.id !== runId);
-  if (host.lastUndoAction && host.lastUndoAction.summary === run.summary) {
+  if (host.lastUndoAction && getAutomationUndoRunId(host.lastUndoAction) === runId) {
     host.lastUndoAction = null;
   }
   if (buildActivityFeed(host, nowMs).length <= 1) {

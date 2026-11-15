@@ -616,6 +616,12 @@ export interface AutomationUndoStep {
   readonly commands: readonly DeviceCommand[];
 }
 
+const AUTOMATION_UNDO_RUN_ID = Symbol.for("menumijia.automationUndoRunId");
+export function getAutomationUndoRunId(action: unknown): string | null {
+  const id = action && typeof action === "object" ? (action as Record<symbol, unknown>)[AUTOMATION_UNDO_RUN_ID] : null;
+  return typeof id === "string" ? id : null;
+}
+
 export interface RecordedAutomationRun {
   readonly id: string;
   readonly ruleId: string;
@@ -658,9 +664,7 @@ export function automationRuleHighRiskConfirmation(
   }
   if (highRiskDevices.length === 0) return null;
   const names = highRiskDevices.map((d) => d.name).join(tr3("、", "、", ", ", undefined, preference));
-  const verb = action.isOn
-    ? tr3("开启", "開啟", "turn on", undefined, preference)
-    : tr3("关闭", "關閉", "close", undefined, preference);
+  const verb = action.isOn ? tr3("开启", "開啟", "turn on", undefined, preference) : tr3("关闭", "關閉", "close", undefined, preference);
   return {
     title: tr3("确认启用高风险自动化规则？", "確認啟用高風險自動化規則？", "Enable high-risk automation rule?", undefined, preference),
     message: tr3(
@@ -868,13 +872,7 @@ export async function executeAutomationRule(
   if (succeededCount === 0) {
     if (attemptedCount > 0 && !host.replyBanner?.isError) {
       host.replyBanner = {
-        text: tr3(
-          "自动化执行失败：「{action}」",
-          "自動化執行失敗：「{action}」",
-          "Automation failed: \"{action}\"",
-          { action: actionSummary },
-          preference,
-        ),
+        text: tr3("自动化执行失败：「{action}」", "自動化執行失敗：「{action}」", "Automation failed: \"{action}\"", { action: actionSummary }, preference),
         source: tr3("状态感知自动化", "狀態感知自動化", "Context Automation", undefined, preference),
         isError: true,
       };
@@ -883,22 +881,10 @@ export async function executeAutomationRule(
     return null;
   }
   const triggerLabel = automationTriggerTitle(rule.trigger, preference);
-  const baseSummary = tr3(
-    "{trigger} · 已执行「{action}」",
-    "{trigger} · 已執行「{action}」",
-    "{trigger} · Executed \"{action}\"",
-    { trigger: triggerLabel, action: actionSummary },
-    preference,
-  );
+  const baseSummary = tr3("{trigger} · 已执行「{action}」", "{trigger} · 已執行「{action}」", "{trigger} · Executed \"{action}\"", { trigger: triggerLabel, action: actionSummary }, preference);
   const partialSuffix =
     failedCount > 0
-      ? tr3(
-          "（成功 {succeeded} 项，{failed} 项失败）",
-          "（成功 {succeeded} 項，{failed} 項失敗）",
-          " ({succeeded} succeeded, {failed} failed)",
-          { succeeded: String(succeededCount), failed: String(failedCount) },
-          preference,
-        )
+      ? tr3("（成功 {succeeded} 项，{failed} 项失败）", "（成功 {succeeded} 項，{failed} 項失敗）", " ({succeeded} succeeded, {failed} failed)", { succeeded: String(succeededCount), failed: String(failedCount) }, preference)
       : "";
   const runSummary = `${baseSummary}${partialSuffix}`;
   const expiresAtMs = nowMs + AUTOMATION_POLICY.undoWindowMs;
@@ -919,7 +905,7 @@ export async function executeAutomationRule(
   };
 
   if (steps.length > 0) {
-    const undoAction = { summary: runSummary, steps, expiresAtMs };
+    const undoAction = { summary: runSummary, steps, expiresAtMs, [AUTOMATION_UNDO_RUN_ID]: recorded.id };
     options.recordUndoKindSnapshots?.(undoAction, kindSnapshots);
     host.lastUndoAction = undoAction;
   }
