@@ -434,7 +434,10 @@ export function renderEnergySettingsSection(ctx: SettingsViewContext): string {
   const todayCost = todayObserved ? history.costForKwh(todayKwh) : null;
 
   const weekObserved = daily.some((d) => d.isObserved);
-  const weekKwh = history.totalKwh(7);
+  const weekKwh = daily.reduce(
+    (sum, item) => (Number.isFinite(item.kwh) && item.kwh > 0 ? sum + item.kwh : sum),
+    0,
+  );
   const weekCost = weekObserved ? history.costForKwh(weekKwh) : null;
 
   const startedAt = history.recordingStartedAt;

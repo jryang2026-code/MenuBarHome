@@ -63,11 +63,20 @@ public actor MiCloudProvider: HomeProvider {
 
     private var pollingContext = PollingContext()
     private var lastFullPollAt: ContinuousClock.Instant?
+    private var lastWakePollAt: ContinuousClock.Instant?
+    private var lastPolledSelection: String?
+    private var wakePollPending = false
+    private var pendingRefreshAfterPoll = false
+    private var isPolling = false
+    private var isShutDown = false
+    private static let wakeRefreshCooldown: Duration = .seconds(1)
     /// The loop's current wait; cancelling it makes the loop re-check `pollingContext` right away.
     private var waitTask: Task<Void, Never>?
     private var pollsSinceContextChange = 0
     /// Set on wake or unlock: poll once right away, however recent the last poll was.
     private var pollRequested = false
+
+    var isShutDownForTesting: Bool { isShutDown }
 
     public init(
         account: MiAccount? = nil,
@@ -101,6 +110,7 @@ public actor MiCloudProvider: HomeProvider {
         self.followUpDelay = followUpDelay
         self.cameraSessionReleaseDelay = cameraSessionReleaseDelay
         self.selectedHomeLoader = selectedHomeLoader
+        self.lastPolledSelection = selectedHomeLoader()
     }
 
     public nonisolated func events() -> AsyncStream<HomeProviderEvent> {
@@ -110,12 +120,23 @@ public actor MiCloudProvider: HomeProvider {
     }
 
     private func attach(_ cont: AsyncStream<HomeProviderEvent>.Continuation) {
+        guard !isShutDown else {
+            cont.finish()
+            return
+        }
         continuation = cont
+        start()
+    }
+
+    public func start() {
+        guard !isShutDown else { return }
         restartLoop()
     }
 
     /// Stops polling, local/cloud clients, timers, and finishes the event stream; used when switching backends.
     public func shutdown() async {
+        guard !isShutDown else { return }
+        isShutDown = true
         loopTask?.cancel()
         loopTask = nil
         waitTask?.cancel()
@@ -143,8 +164,21 @@ public actor MiCloudProvider: HomeProvider {
     }
 
     public func refreshNow() async {
+        guard !isShutDown else { return }
         guard let api else {
             restartLoop()
+            return
+        }
+        let withinWakeCooldown = wakePollPending
+            || (lastWakePollAt.map { ContinuousClock.now - $0 < Self.wakeRefreshCooldown } ?? false)
+        let selectionChanged = selectedHomeLoader() != lastPolledSelection
+        if isPolling {
+            if selectionChanged || !withinWakeCooldown {
+                pendingRefreshAfterPoll = true
+            }
+            return
+        }
+        if withinWakeCooldown, !selectionChanged, !devices.isEmpty, lastReportedConnected {
             return
         }
         // After switching homes, devices of a home never polled would flash as off; wait for their values.
@@ -152,8 +186,10 @@ public actor MiCloudProvider: HomeProvider {
             emitSnapshot(closesAwayGap: false)
         }
         do {
-            try await discover(api)
-            try await poll(api, dids: nil)
+            try await performTrackedPoll(api) {
+                try await discover(api)
+                try await poll(api, dids: nil)
+            }
             reportConnected()
         } catch MiCloudError.sessionExpired {
             clearExpiredSnapshot()
@@ -164,11 +200,13 @@ public actor MiCloudProvider: HomeProvider {
     }
 
     private func restartLoop() {
+        guard !isShutDown else { return }
         loopTask?.cancel()
         loopTask = Task { await self.runLoop() }
     }
 
     private func runLoop() async {
+        guard !isShutDown else { return }
         guard let session = account?.session ?? sessionLoader() else {
             api = nil
             continuation?.yield(.statusChanged(.disconnected(MiCloudError.notLoggedIn.localizedDescription)))
@@ -189,34 +227,39 @@ public actor MiCloudProvider: HomeProvider {
         self.api = api
         var backoff: Double = 2
 
-        while !Task.isCancelled {
+        while !Task.isCancelled && !isShutDown {
             continuation?.yield(.statusChanged(.connecting))
             lastReportedConnected = false
             do {
-                try await discover(api)
-                // Connected means a poll just succeeded. Marking it earlier shows the previous
-                // snapshot as live while the cloud is still catching up.
-                try await poll(api, dids: nil)
+                try await performTrackedPoll(api) {
+                    try await discover(api)
+                    try await poll(api, dids: nil)
+                }
                 reportConnected()
                 backoff = 2
                 var polls = 1
-                while !Task.isCancelled {
+                while !Task.isCancelled && !isShutDown {
                     try await waitForNextPoll()
-                    try await poll(api, dids: nil)
-                    reportConnected()
-                    polls += 1
-                    if polls % deviceRefreshEveryPolls == 0 {
-                        try await refreshDeviceList(api)
+                    guard !Task.isCancelled && !isShutDown else { return }
+                    try await performTrackedPoll(api) {
+                        try await poll(api, dids: nil)
+                        polls += 1
+                        if polls % deviceRefreshEveryPolls == 0 {
+                            try await refreshDeviceList(api)
+                        }
                     }
+                    reportConnected()
                 }
             } catch is CancellationError {
                 return
             } catch MiCloudError.sessionExpired {
+                if isShutDown { return }
                 clearExpiredSnapshot()
                 report(MiCloudError.sessionExpired)
                 return
             } catch {
-                if Task.isCancelled { return }
+                if Task.isCancelled || isShutDown { return }
+                wakePollPending = false
                 report(error)
                 // Xiaomi throttles busy clients; back off for minutes instead of seconds (#26).
                 let throttled = (error as? MiCloudError) == .http(429)
@@ -228,6 +271,28 @@ public actor MiCloudProvider: HomeProvider {
         }
     }
 
+    private func performTrackedPoll(_ api: any MiCloudAPI, _ body: () async throws -> Void) async throws {
+        isPolling = true
+        defer {
+            isPolling = false
+            pendingRefreshAfterPoll = false
+        }
+        try await body()
+        while pendingRefreshAfterPoll, !Task.isCancelled, !isShutDown {
+            pendingRefreshAfterPoll = false
+            try await poll(api, dids: nil)
+        }
+    }
+
+    private func withSessionExpiryRetry<T: Sendable>(_ body: () async throws -> T) async throws -> T {
+        do {
+            return try await body()
+        } catch MiCloudError.sessionExpired {
+            guard !Task.isCancelled && !isShutDown else { throw CancellationError() }
+            return try await body()
+        }
+    }
+
     // MARK: Polling Rhythm (#26)
 
     /// Called by the app when the panel opens or closes, the Mac sleeps or wakes, the screen locks, or
@@ -235,9 +300,15 @@ public actor MiCloudProvider: HomeProvider {
     /// than the new interval.
     /// Declared `async` so it wins over the protocol's no-op default in async callers.
     public func setPollingContext(_ context: PollingContext) async {
-        guard context != pollingContext else { return }
+        guard !isShutDown, context != pollingContext else { return }
         logger.info("Mi cloud polling: \(context.description, privacy: .public) (\(self.pollsSinceContextChange, privacy: .public) polls since last change)")
-        if context.systemActive && !pollingContext.systemActive { pollRequested = true }
+        if context.systemActive && !pollingContext.systemActive {
+            pollRequested = true
+            wakePollPending = true
+        } else if !context.systemActive {
+            wakePollPending = false
+            lastWakePollAt = nil
+        }
         pollingContext = context
         pollsSinceContextChange = 0
         waitTask?.cancel()
@@ -314,7 +385,7 @@ public actor MiCloudProvider: HomeProvider {
 
     private func discover(_ api: any MiCloudAPI) async throws {
         // Rooms first: they name the shared-home devices the unfiltered device list leaves out (#134).
-        let outcome = try await MiCloudDiscovery.rooms(api)
+        let outcome = try await withSessionExpiryRetry { try await MiCloudDiscovery.rooms(api) }
         // A failed room list keeps the rooms of the last good refresh; only a success replaces them.
         if outcome.error == nil {
             if outcome.rooms != rooms { unresolvedRoomDids = [] }
@@ -335,12 +406,16 @@ public actor MiCloudProvider: HomeProvider {
     private var unresolvedRoomDids: Set<String> = []
 
     private func refreshDeviceList(_ api: any MiCloudAPI, retryUnresolved: Bool = false) async throws {
-        let outcome = try await MiCloudDiscovery.devices(
-            api,
-            rooms: rooms,
-            retryUnresolved: retryUnresolved,
-            previousUnresolved: unresolvedRoomDids
-        )
+        let currentRooms = rooms
+        let previousUnresolved = unresolvedRoomDids
+        let outcome = try await withSessionExpiryRetry {
+            try await MiCloudDiscovery.devices(
+                api,
+                rooms: currentRooms,
+                retryUnresolved: retryUnresolved,
+                previousUnresolved: previousUnresolved
+            )
+        }
         unresolvedRoomDids = outcome.unresolvedRoomDids
         rooms = outcome.rooms
         devices = outcome.devices
@@ -375,7 +450,9 @@ public actor MiCloudProvider: HomeProvider {
             return
         }
         do {
-            groupMembersByGroup = try await api.lightGroupMembers(groupDids: groupDids)
+            groupMembersByGroup = try await withSessionExpiryRetry {
+                try await api.lightGroupMembers(groupDids: groupDids)
+            }
         } catch MiCloudError.sessionExpired {
             throw MiCloudError.sessionExpired
         } catch {
@@ -497,6 +574,10 @@ public actor MiCloudProvider: HomeProvider {
         _ api: any MiCloudAPI,
         dids: Set<String>?
     ) async throws -> (freshKeys: Set<MiotPropKey>, cloudError: (any Error)?) {
+        if dids == nil {
+            lastPolledSelection = selectedHomeLoader()
+            pendingRefreshAfterPoll = false
+        }
         let scopedDevices = scopedDevicesAndRooms().devices
         let keys = propKeys(of: scopedDevices, dids: dids)
         var freshKeys: Set<MiotPropKey> = []
@@ -518,6 +599,10 @@ public actor MiCloudProvider: HomeProvider {
         if dids == nil {
             try await pollDoorbellEvents(api, scopedDevices: scopedDevices)
             lastFullPollAt = .now
+            if wakePollPending {
+                wakePollPending = false
+                lastWakePollAt = .now
+            }
             pollRequested = false
             pollsSinceContextChange += 1
         }
@@ -531,7 +616,9 @@ public actor MiCloudProvider: HomeProvider {
         scopedDevices: [MiDeviceRecord]
     ) async throws -> HybridPropReadOutcome {
         guard let localClient else {
-            let cloudValues = try await api.getProps(keys)
+            let cloudValues = try await withSessionExpiryRetry {
+                try await api.getProps(keys)
+            }
             return HybridPropReadOutcome(values: cloudValues, completedKeys: keys, cloudError: nil)
         }
 
@@ -602,7 +689,9 @@ public actor MiCloudProvider: HomeProvider {
 
         if !cloudKeys.isEmpty {
             do {
-                let cloudValues = try await api.getProps(cloudKeys)
+                let cloudValues = try await withSessionExpiryRetry {
+                    try await api.getProps(cloudKeys)
+                }
                 combined.merge(cloudValues) { _, new in new }
             } catch is CancellationError {
                 throw CancellationError()
@@ -702,12 +791,14 @@ public actor MiCloudProvider: HomeProvider {
             do {
                 if let baseline = doorbellBaselineTime[trackerKey] {
                     let querySince = (lastDoorbellTimestamp[trackerKey] ?? baseline).addingTimeInterval(-1)
-                    let latest = try await api.doorbellLatestEventTimestamp(
-                        did: record.miotDid,
-                        eventKey: eventKey,
-                        since: querySince,
-                        now: currentNow
-                    )
+                    let latest = try await withSessionExpiryRetry {
+                        try await api.doorbellLatestEventTimestamp(
+                            did: record.miotDid,
+                            eventKey: eventKey,
+                            since: querySince,
+                            now: currentNow
+                        )
+                    }
                     doorbellBaselineTime[trackerKey] = currentNow
                     if let latest {
                         let isNewRing: Bool
@@ -728,12 +819,14 @@ public actor MiCloudProvider: HomeProvider {
                     }
                 } else {
                     let initialSince = currentNow.addingTimeInterval(-3600)
-                    let latest = try await api.doorbellLatestEventTimestamp(
-                        did: record.miotDid,
-                        eventKey: eventKey,
-                        since: initialSince,
-                        now: currentNow
-                    )
+                    let latest = try await withSessionExpiryRetry {
+                        try await api.doorbellLatestEventTimestamp(
+                            did: record.miotDid,
+                            eventKey: eventKey,
+                            since: initialSince,
+                            now: currentNow
+                        )
+                    }
                     if let latest {
                         lastDoorbellTimestamp[trackerKey] = latest
                     }
@@ -928,9 +1021,11 @@ public actor MiCloudProvider: HomeProvider {
 
         if !executedViaLAN {
             do {
-                switch write {
-                case .setProps(let writes): try await api.setProps(writes)
-                case .action(let call): try await api.action(call)
+                try await withSessionExpiryRetry {
+                    switch write {
+                    case .setProps(let writes): try await api.setProps(writes)
+                    case .action(let call): try await api.action(call)
+                    }
                 }
             } catch MiCloudError.sessionExpired {
                 report(MiCloudError.sessionExpired)
@@ -948,6 +1043,7 @@ public actor MiCloudProvider: HomeProvider {
     }
 
     private func scheduleFollowUpPoll(for record: MiDeviceRecord) {
+        guard !isShutDown else { return }
         let delay = followUpDelay
         // Split cards address `100.s2`; property reads are keyed by the parent `100`.
         let followUpDid = record.miotDid
@@ -961,7 +1057,7 @@ public actor MiCloudProvider: HomeProvider {
     }
 
     public func readBack(deviceId: String) async -> ControlReadBack {
-        guard let api else { return .failed }
+        guard !isShutDown, let api else { return .failed }
         // Split wall-switch cards report `100.s2` while property reads are keyed by `100`.
         guard let record = devices.first(where: { $0.did == deviceId }),
               let spec = specsByModel[record.model],
@@ -986,7 +1082,7 @@ public actor MiCloudProvider: HomeProvider {
 
     private func followUpPoll(did: String, taskId: UUID) async {
         followUpTasks.removeValue(forKey: taskId)
-        guard let api else { return }
+        guard !isShutDown, let api else { return }
         _ = try? await poll(api, dids: [did])
     }
 
@@ -995,7 +1091,7 @@ public actor MiCloudProvider: HomeProvider {
         window: SensorHistoryWindow,
         now: Date
     ) async -> [SensorHistorySample] {
-        guard let api else { return [] }
+        guard !isShutDown, let api else { return [] }
         let record = devices.first { $0.did == deviceId } ?? devices.first { $0.miotDid == deviceId }
         let did = record?.miotDid ?? deviceId
         let keys: (temperature: String?, humidity: String?)
@@ -1005,13 +1101,15 @@ public actor MiCloudProvider: HomeProvider {
             keys = (nil, nil)
         }
         do {
-            return try await api.sensorHistory(
-                did: did,
-                temperatureKey: keys.temperature,
-                humidityKey: keys.humidity,
-                window: window,
-                now: now
-            )
+            return try await withSessionExpiryRetry {
+                try await api.sensorHistory(
+                    did: did,
+                    temperatureKey: keys.temperature,
+                    humidityKey: keys.humidity,
+                    window: window,
+                    now: now
+                )
+            }
         } catch MiCloudError.sessionExpired {
             report(MiCloudError.sessionExpired)
             return []

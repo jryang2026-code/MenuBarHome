@@ -14,11 +14,11 @@ struct EnergySettingsSection: View {
     @State private var isConfirmingClear = false
 
     private var history: EnergyHistory { store.energyHistory }
-    private var daily: [EnergyDayTotal] { history.dailyTotals(dayCount: 7) }
-    private var ranking: [EnergyDeviceTotal] { history.deviceTotals(dayCount: 7) }
 
     var body: some View {
         let _ = store.effectiveLanguage
+        let dailyTotals = history.dailyTotals(dayCount: 7)
+        let rankingTotals = history.deviceTotals(dayCount: 7)
         SettingsSection(title: L10n.tr("插座用电统计", "Plug Energy"), anchor: .energyHistory) {
             Text(L10n.tr(
                 "只保存在这台 Mac 上，来源是每个插座自己的累计电量计数，不用功率估算用电。记录从第一次收到读数开始，之前的用电不会补算；第一次读数只作为基线。跨零点的增量记在前一个采样日，不拆分也不猜测，因此「今天」不会把昨天可能用掉的电算进来。记录保留 31 天，可随时清除。",
@@ -57,9 +57,9 @@ struct EnergySettingsSection: View {
 
             Divider().overlay(Color.primary.opacity(0.06))
 
-            summaryRow
-            weekList
-            rankingList
+            summaryRow(daily: dailyTotals)
+            weekList(daily: dailyTotals)
+            rankingList(ranking: rankingTotals)
 
             Divider().overlay(Color.primary.opacity(0.06))
 
@@ -87,8 +87,9 @@ struct EnergySettingsSection: View {
 
     // MARK: Today / last 7 days
 
-    private var summaryRow: some View {
-        HStack(alignment: .top, spacing: 16) {
+    private func summaryRow(daily: [EnergyDayTotal]) -> some View {
+        let weekKwh = daily.reduce(0) { $0 + $1.kwh }
+        return HStack(alignment: .top, spacing: 16) {
             summaryColumn(
                 title: L10n.tr("今天", "Today"),
                 kwh: daily.last?.kwh ?? 0,
@@ -96,7 +97,7 @@ struct EnergySettingsSection: View {
             )
             summaryColumn(
                 title: L10n.tr("最近 7 天", "Last 7 days"),
-                kwh: history.totalKwh(dayCount: 7),
+                kwh: weekKwh,
                 isObserved: daily.contains { $0.isObserved }
             )
             Spacer(minLength: 0)
@@ -122,20 +123,22 @@ struct EnergySettingsSection: View {
 
     // MARK: Seven-day breakdown
 
-    private var weekList: some View {
-        VStack(alignment: .leading, spacing: 4) {
+    private func weekList(daily: [EnergyDayTotal]) -> some View {
+        let maxDay = max(daily.map(\.kwh).max() ?? 0, 0.0001)
+        let lastId = daily.last?.id
+        return VStack(alignment: .leading, spacing: 4) {
             Text(L10n.tr("最近 7 天每天用电", "Daily usage, last 7 days"))
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                 .foregroundStyle(.secondary)
 
             ForEach(daily) { total in
                 HStack(spacing: 8) {
-                    Text(Self.dayLabel(total.day, isToday: total.id == daily.last?.id))
+                    Text(Self.dayLabel(total.day, isToday: total.id == lastId))
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(.secondary)
                         .frame(width: 88, alignment: .leading)
 
-                    bar(fraction: fraction(total.kwh, of: maxDayKwh), isActive: total.isObserved)
+                    bar(fraction: fraction(total.kwh, of: maxDay), isActive: total.isObserved)
 
                     Text(total.isObserved ? Self.kwhText(total.kwh) : "—")
                         .font(.system(size: DesignTokens.TypeSize.caption))
@@ -163,8 +166,9 @@ struct EnergySettingsSection: View {
 
     // MARK: Device ranking
 
-    private var rankingList: some View {
-        VStack(alignment: .leading, spacing: 4) {
+    private func rankingList(ranking: [EnergyDeviceTotal]) -> some View {
+        let maxRanking = max(ranking.map(\.kwh).max() ?? 0, 0.0001)
+        return VStack(alignment: .leading, spacing: 4) {
             Text(L10n.tr("设备排行（最近 7 天）", "By device (last 7 days)"))
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                 .foregroundStyle(.secondary)
@@ -188,7 +192,7 @@ struct EnergySettingsSection: View {
                             .lineLimit(1)
                             .frame(width: 104, alignment: .leading)
 
-                        bar(fraction: fraction(total.kwh, of: maxRankingKwh), isActive: true)
+                        bar(fraction: fraction(total.kwh, of: maxRanking), isActive: true)
 
                         Text(Self.kwhText(total.kwh))
                             .font(.system(size: DesignTokens.TypeSize.caption))
@@ -268,14 +272,6 @@ struct EnergySettingsSection: View {
     }
 
     // MARK: Helpers
-
-    private var maxDayKwh: Double {
-        max(daily.map(\.kwh).max() ?? 0, 0.0001)
-    }
-
-    private var maxRankingKwh: Double {
-        max(ranking.map(\.kwh).max() ?? 0, 0.0001)
-    }
 
     private func fraction(_ value: Double, of maximum: Double) -> Double {
         guard maximum > 0, value.isFinite, value > 0 else { return 0 }
