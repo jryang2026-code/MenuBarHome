@@ -222,15 +222,11 @@ public struct SettingsWindowView: View {
         return unsaved.resolveBeforeLeaving(allowCancel: true)
     }
 
-    /// The rail writes its selection straight into this binding; a refusal keeps the current page.
+    /// The rail writes its selection into this binding and then calls `onSelectCategory` for the same
+    /// click. Only the second path resolves unsaved edits and changes `tab`, so one click asks once and
+    /// a Cancel or a failed save leaves the page as it was (#148).
     private var guardedTab: Binding<SettingsTab> {
-        Binding(
-            get: { tab },
-            set: { newTab in
-                guard leavesTabSafely(for: newTab) else { return }
-                tab = newTab
-            }
-        )
+        Binding(get: { tab }, set: { _ in })
     }
 
     private func jump(to hit: SettingsSearchHit) {
