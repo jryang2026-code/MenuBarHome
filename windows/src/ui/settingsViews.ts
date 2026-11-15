@@ -250,6 +250,7 @@ export interface SettingsViewContext {
             </div>
 
             <div class="cc-segmented-pills is-even cc-settings-tabs" role="tablist" aria-label="${t("设置分类")}">
+              <span class="cc-tab-indicator" aria-hidden="true"></span>
               ${SETTINGS_TABS.map((tab) => {
                 const active = tab.id === ctx.activeTab;
                 return `<button type="button" class="cc-seg-pill ${active ? "is-active" : ""}" data-settings-tab="${tab.id}" role="tab" aria-selected="${active}">${ctx.escapeHtml(t(tab.title))}</button>`;

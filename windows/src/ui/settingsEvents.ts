@@ -1,4 +1,5 @@
 import { currentLanguage, t, type AppLanguage } from "../core/i18n.js";
+import { syncSlidingTabIndicators } from "./reconciler.js";
 import { trText } from "../core/quickActions.js";
 import {
   ASSISTANT_PROVIDER_PRESETS,
@@ -1430,6 +1431,7 @@ export function showSettingsTab(root: HTMLElement, tab: SettingsTab): void {
   });
   const body = root.querySelector<HTMLElement>(".cc-sheet-body");
   if (body) body.scrollTop = 0;
+  syncSlidingTabIndicators(root);
 }
 
 /** Recomputes the habit-share preview from the current switch and sample text. */

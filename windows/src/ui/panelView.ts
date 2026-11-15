@@ -127,6 +127,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
           <div class="cc-room-bar">
             <div class="cc-room-track">
               <div class="cc-room-scroll">
+                <span class="cc-tab-indicator" aria-hidden="true"></span>
                 ${[{ id: null, name: t("全部") }, ...host.roomOptions]
                   .map((room) => {
                     const pressed = room.id === null
@@ -175,7 +176,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
               </button>
             </div>
           </div>
-          ${isClassic && kindBarHtml ? `<div class="cc-kind-bar" role="toolbar" aria-label="${host.escapeHtml(tr3("设备类型筛选", "設備類型篩選", "Filter by device type"))}"><div class="cc-room-scroll">${kindBarHtml}</div></div>` : ""}`;
+          ${isClassic && kindBarHtml ? `<div class="cc-kind-bar" role="toolbar" aria-label="${host.escapeHtml(tr3("设备类型筛选", "設備類型篩選", "Filter by device type"))}"><div class="cc-room-scroll cc-kind-scroll"><span class="cc-tab-indicator" aria-hidden="true"></span>${kindBarHtml}</div></div>` : ""}`;
   const scrollAreaHtml = `
         <main class="cc-scroll-area" aria-label="${t("设备列表")}">
           ${renderEditLayoutToolbar(host)}
