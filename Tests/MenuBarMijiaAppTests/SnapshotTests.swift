@@ -1930,6 +1930,8 @@ struct SnapshotTests {
             .environment(\.colorScheme, scheme)
             .environment(\.reduceMotionOverride, reduceMotion)
             .environment(\.reduceTransparencyOverride, true)
+            // A fixed 2023 date would read "2 years 11 months" one month and "3 years" the next.
+            .environment(\.activityTimestampOverride, "5 分钟")
             .transaction { transaction in
                 transaction.disablesAnimations = true
             }
