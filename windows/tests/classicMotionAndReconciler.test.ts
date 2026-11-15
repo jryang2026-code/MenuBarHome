@@ -136,7 +136,9 @@ describe("Apple Spring Physics, Reconciler Motion Upgrades & Dual-Theme CDP Snap
     assert.equal(ghostExpander.hasAttribute("inert"), true);
     assert.equal(ghostExpander.getAttribute("aria-hidden"), "true");
     assert.equal(ghostExpander.querySelector("[id], [data-brightness]"), null);
-    assert.match(readFileSync(new URL("../src/ui/styles.css", import.meta.url), "utf8"), /\.cc-expander-grid:not\(\.is-collapsed\):not\(\[data-exit-ghost\]\)/);
+    const cssText = readFileSync(new URL("../src/ui/styles.css", import.meta.url), "utf8");
+    assert.match(cssText, /\.cc-expander-grid:not\(\.is-collapsed\):not\(\[data-exit-ghost\]\)/);
+    assert.match(cssText, /#app\[data-panel-theme="classic"\] \.cc-expander-grid:not\(\.is-collapsed\):not\(\[data-exit-ghost\]\)/);
 
     ghostExpander.dispatchEvent(Object.assign(new window.Event("transitionend", { bubbles: true }), { propertyName: "opacity" }));
     assert.ok(tile.querySelector(":scope > .cc-expander-grid.is-collapsed"));

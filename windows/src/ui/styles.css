@@ -5234,10 +5234,13 @@ input[type="checkbox"]:checked:active:not(:disabled)::after {
   #app[data-panel-theme="classic"] .cc-resize-handle:hover { transform: scale(1.22); color: var(--theme-accent, #007aff); }
 }
 #app[data-panel-theme="classic"] .cc-expander-grid {
-  display: grid; grid-template-rows: 1fr; opacity: 1;
+  opacity: 1;
   transition: grid-template-rows 380ms var(--spring-reveal), opacity 220ms var(--ease-standard);
 }
 #app[data-panel-theme="classic"] .cc-expander-grid.is-collapsed { grid-template-rows: 0fr; opacity: 0; }
+@starting-style {
+  #app[data-panel-theme="classic"] .cc-expander-grid:not(.is-collapsed):not([data-exit-ghost]) { grid-template-rows: 0fr; opacity: 0; }
+}
 #app[data-panel-theme="classic"] .cc-expander-clip { min-height: 0; overflow: hidden; }
 #app[data-panel-theme="classic"] .cc-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 8px; border-top: 1px solid var(--theme-divider); }
 
