@@ -156,6 +156,8 @@ describe("Unified Collapsible Upper Stack with 3-Card Peek & Swipe-to-Dismiss", 
     app.lastUndoAction = { summary: "已打开书房台灯", expiresAtMs: nowMs + 605_000, steps: [{ deviceId: "light.study_desk", commands: [{ kind: "setSwitch", entityId: "light.study_desk", isOn: false }] }] };
     app.undoBannerUntilMs = nowMs + 605_000;
     app.render();
+    assert.equal(collectUpperStackCards(app, nowMs).some((c) => c.id === "undo:manual"), true);
+    element<HTMLButtonElement>("[data-activity-toggle-expand]").click();
     assert.ok(document.querySelector('[data-upper-card-id="undo:manual"]'));
     dismissUpperStackCard(app, "undo:manual");
     app.render();
