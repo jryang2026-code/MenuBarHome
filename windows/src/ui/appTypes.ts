@@ -8,6 +8,7 @@ import type {
   LayoutPrefs,
   PanelHeight,
 } from "./panelPrefs.js";
+import type { PanelTheme } from "./panelTheme.js";
 import type { TemperatureUnitPreference } from "../core/temperature.js";
 
 declare global {
@@ -96,6 +97,7 @@ export interface PersistedSettings {
   cachedHAHome: { identity: string; home: SynthesizedHome } | null;
   cachedModelTypes: Record<string, string>;
   appearance: AppAppearance;
+  panelTheme: PanelTheme;
   panelHeight: PanelHeight;
   /** Panel background opacity, 60–100 percent (#252). */
   panelOpacity: number;

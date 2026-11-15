@@ -65,6 +65,7 @@ import {
   withAliases,
   type HomeOption,
 } from "./panelPrefs.js";
+import { normalizePanelTheme, type PanelTheme } from "./panelTheme.js";
 import {
   t,
 } from "../core/i18n.js";
@@ -409,6 +410,7 @@ export class MenuMijiaWindowsApp {
     this.applyInterfaceLanguage();
     this.qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");
     this.applyTemperatureSetting();
+    this.root.dataset.panelTheme = normalizePanelTheme(this.settings.panelTheme);
     const haCache = this.settings.cachedHAHome?.identity === homeAssistantIdentity(this.settings.haBaseURL, this.settings.haToken) ? this.settings.cachedHAHome.home : null;
     this.devices = this.settings.connectionMode === "xiaomiCloud"
       ? structuredClone(this.settings.cachedXiaomiDevices)
@@ -1256,6 +1258,7 @@ export class MenuMijiaWindowsApp {
   }
 
   public render(): void {
+    this.root.dataset.panelTheme = normalizePanelTheme(this.settings.panelTheme);
     this.pipeline.commitRender(this);
   }
 
@@ -1737,21 +1740,35 @@ export class MenuMijiaWindowsApp {
     return `${availLeft},${availTop},${availWidth}x${availHeight}@${dpr}|${window.innerWidth}x${window.innerHeight}`;
   }
 
-  public applyPanelHeight(): void {
+  public setPanelTheme(raw: unknown): void {
+    const next: PanelTheme = normalizePanelTheme(raw);
+    this.settings.panelTheme = next;
+    this.root.dataset.panelTheme = next;
+    this.saveSettings();
+    this.syncPanelGeometry();
+    this.render();
+  }
+
+  public syncPanelGeometry(): void {
     const invoke = window.__TAURI_INTERNALS__?.invoke;
     if (!invoke) return;
+    const theme = normalizePanelTheme(this.settings.panelTheme);
+    const h = PANEL_HEIGHTS.find((item) => item.id === this.settings.panelHeight) ?? PANEL_HEIGHTS[1]!;
     this.panelGeometryUpdates = this.panelGeometryUpdates.then(async () => {
-      const h = PANEL_HEIGHTS.find((item) => item.id === this.settings.panelHeight) ?? PANEL_HEIGHTS[1]!;
-      const key = `${h.px}:${this.panelMonitorGeometryKey()}`;
+      const key = `${theme}:${h.px}:${this.panelMonitorGeometryKey()}`;
       if (this.lastAppliedPanelHeightKey === key) return;
       this.lastAppliedPanelHeightKey = key;
       try {
-        await invoke("set_panel_height", { height: h.px });
+        await invoke("set_panel_geometry", { theme, height: h.px });
       } catch (error) {
         this.lastAppliedPanelHeightKey = null;
         throw error;
       }
     }).catch((error: unknown) => console.error("Panel geometry update failed", error));
+  }
+
+  public applyPanelHeight(): void {
+    this.syncPanelGeometry();
   }
 
   /** The saved API key, isolated per provider preset and bound to custom host (#19, §6). */

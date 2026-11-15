@@ -4,6 +4,7 @@ import type { SettingsTab } from "./settingsViews.js";
 
 export type SettingsAnchor =
   | "appearanceMode"
+  | "panelTheme"
   | "panelOpacity"
   | "language"
   | "temperatureUnit"
@@ -129,6 +130,7 @@ export function resolveSettingsAnchorTab(anchor: SettingsAnchor, hasAvailableUpd
   }
   switch (anchor) {
     case "appearanceMode":
+    case "panelTheme":
     case "panelOpacity":
     case "language":
     case "temperatureUnit":
@@ -208,6 +210,12 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
     section: SEC_GENERAL,
     title: ["外观模式", "外觀模式", "Appearance Mode"],
     synonyms: ["外观", "外觀", "浅色", "深色", "暗黑", "夜间", "跟随系统", "主题", "appearance", "theme", "light", "dark", "system", "waiguan", "shense"],
+  },
+  {
+    anchor: "panelTheme",
+    section: SEC_GENERAL,
+    title: ["面板风格", "面板風格", "Panel Style"],
+    synonyms: ["面板风格", "面板風格", "主题风格", "控制中心", "经典", "双岛", "双岛风格", "苹果风格", "Win11 双岛", "macOS 控制中心", "panel theme", "panel style", "classic", "fluent", "macos", "macos control center", "win11 islands", "bento", "mianbanfengge", "zhuti"],
   },
   {
     anchor: "panelOpacity",

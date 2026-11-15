@@ -12,6 +12,7 @@ import {
   normalizePanelOpacity,
   type PanelHeight,
 } from "./panelPrefs.js";
+import { DEFAULT_PANEL_THEME, normalizePanelTheme } from "./panelTheme.js";
 import { parseMiSession, sanitizeSettingsForStorage } from "../core/secureStore.js";
 import { CACHED_DEVICES_VERSION, LEGACY_STORAGE_KEY, STORAGE_KEY } from "./appConstants.js";
 import type { ConnectionMode, LoadedSettings, PersistedSettings } from "./appTypes.js";
@@ -151,6 +152,7 @@ export function loadSettings(): LoadedSettings {
           parsed.appearance === "light" || parsed.appearance === "dark"
             ? parsed.appearance
             : "system",
+        panelTheme: normalizePanelTheme(parsed.panelTheme),
         panelHeight: PANEL_HEIGHTS.some((h) => h.id === parsed.panelHeight) ? (parsed.panelHeight as PanelHeight) : "standard",
         panelOpacity: normalizePanelOpacity(parsed.panelOpacity),
         climatePanel: parsed.climatePanel ?? true,
@@ -237,6 +239,7 @@ function buildDefaultSettings(): PersistedSettings {
     cachedHAHome: null,
     cachedModelTypes: {},
     appearance: "system",
+    panelTheme: DEFAULT_PANEL_THEME,
     panelHeight: "standard",
     panelOpacity: DEFAULT_PANEL_OPACITY,
     climatePanel: true,
@@ -267,7 +270,11 @@ export function writeAskWhenUnsure(settings: { askWhenUnsure?: boolean }, enable
 /** Writes settings without credentials; secrets belong to the Windows Credential Manager (#28). */
 export function writeSettingsForStorage(settings: object): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitizeSettingsForStorage(settings)));
+    const normalized =
+      "panelTheme" in settings
+        ? { ...settings, panelTheme: normalizePanelTheme((settings as { panelTheme?: unknown }).panelTheme) }
+        : settings;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitizeSettingsForStorage(normalized)));
   } catch {
     return;
   }

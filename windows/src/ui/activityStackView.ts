@@ -1138,29 +1138,6 @@ export function buildActivityFeed(
     }
   }
 
-  if (center.weeklyReportCard && center.weeklyReportCard.scope === center.scopeKey) {
-    const card = center.weeklyReportCard;
-    if (!center.dismissedActivityIds.has(card.id)) {
-      items.push({
-        id: card.id,
-        kind: "weeklyReport",
-        badge: tr3("健康周报", "健康週報", "Weekly Health", undefined, pref),
-        title: tr3(
-          "家庭健康周报已生成",
-          "家庭健康週報已產生",
-          "Weekly Home Health Report Ready",
-          undefined,
-          pref,
-        ),
-        subtitle: card.summary,
-        tone: "accent",
-        actionLabel: tr3("复制 Markdown", "複製 Markdown", "Copy Markdown", undefined, pref),
-        actionAttr: "data-activity-copy-health",
-        actionValue: card.id,
-      });
-    }
-  }
-
   const aliased = aliasedHostDevices(host);
   const presentIds = new Set(aliased.map((d) => d.id));
   for (const entry of center.doorbellCoordinator.recentRings) {
@@ -1256,6 +1233,29 @@ export function buildActivityFeed(
           }
         : {}),
     });
+  }
+
+  if (center.weeklyReportCard && center.weeklyReportCard.scope === center.scopeKey) {
+    const card = center.weeklyReportCard;
+    if (!center.dismissedActivityIds.has(card.id)) {
+      items.push({
+        id: card.id,
+        kind: "weeklyReport",
+        badge: tr3("健康周报", "健康週報", "Weekly Health", undefined, pref),
+        title: tr3(
+          "家庭健康周报已生成",
+          "家庭健康週報已產生",
+          "Weekly Home Health Report Ready",
+          undefined,
+          pref,
+        ),
+        subtitle: card.summary,
+        tone: "accent",
+        actionLabel: tr3("复制 Markdown", "複製 Markdown", "Copy Markdown", undefined, pref),
+        actionAttr: "data-activity-copy-health",
+        actionValue: card.id,
+      });
+    }
   }
 
   if (items.length <= 1) {

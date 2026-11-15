@@ -243,6 +243,24 @@ pub fn resized_top(
     top.clamp(min_y, max_y)
 }
 
+pub fn resized_x(
+    old_x: i32,
+    old_width: i32,
+    new_width: i32,
+    work_left: i32,
+    work_right: i32,
+    anchor_right: bool,
+) -> i32 {
+    let min_x = work_left;
+    let max_x = (work_right - new_width).max(min_x);
+    let x = if anchor_right {
+        old_x + old_width - new_width
+    } else {
+        old_x
+    };
+    x.clamp(min_x, max_x)
+}
+
 /// How long our own `set_position` calls may still deliver `Moved` events (IPC plus event-loop hops).
 pub const MOVE_SUPPRESS_MS: u64 = 600;
 
@@ -439,6 +457,14 @@ mod tests {
             resized_top(work, MARGIN, 900, 520, 620, bottom),
             1080 - 620 - MARGIN
         );
+    }
+
+    #[test]
+    fn resizing_keeps_the_anchored_horizontal_edge_fixed() {
+        assert_eq!(resized_x(1920 - 412, 412, 472, 0, 1920, true), 1920 - 472);
+        assert_eq!(resized_x(24, 412, 472, 0, 1920, false), 24);
+        assert_eq!(resized_x(1600, 412, 472, 0, 1920, false), 1920 - 472);
+        assert_eq!(resized_x(20, 472, 500, 0, 1920, true), 0);
     }
 
     #[test]
