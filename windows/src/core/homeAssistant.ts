@@ -933,7 +933,10 @@ export class HomeAssistantSynthesizer {
         snapshot.areas.find((area) => area.area_id === areaId)?.name,
         t("全屋"),
       ).trim();
-      const roomName = !rawRoomName || rawRoomName === "默认房间" ? t("全屋") : rawRoomName;
+      const roomName =
+        !rawRoomName || rawRoomName === "默认房间" || rawRoomName === "預設房間"
+          ? t("全屋")
+          : rawRoomName;
       return {
         roomId: areaId || roomIds[roomName] || "other",
         roomName,

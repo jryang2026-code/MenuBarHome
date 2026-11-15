@@ -25,6 +25,8 @@ import {
   toCelsius,
   toDisplayTemperature,
 } from "../src/core/temperature.js";
+import { classifyControlFailure, MIOT_DEVICE_OFFLINE_CODE } from "../src/core/controlFailure.js";
+import { DeviceDeduplicator, RoomIdentityRegistry } from "../src/core/dualSourceProvider.js";
 import { haBinarySensorStatusText, haLockStatusText } from "../src/core/haDomains.js";
 import { HomeAssistantSynthesizer } from "../src/core/homeAssistant.js";
 import { MI_CLOUD_REGIONS, MiCloudClient, miCloudRegionLabel } from "../src/core/miCloudClient.js";
@@ -161,6 +163,119 @@ describe("text catalog (#52)", () => {
       });
       assert.equal(synth.devices[0]?.roomName, "全屋");
       assert.equal(synth.devices[0]?.name, "智慧裝置");
+    });
+  });
+
+  it("preserves unassigned-room inheritance in DeviceDeduplicator.merge and classifyControlFailure across en and zh-Hant (#45)", () => {
+    let sharedRooms = new RoomIdentityRegistry();
+    const lightKind = {
+      kind: "light" as const,
+      entityId: "light.lamp_100001",
+      isOn: true,
+      brightnessPercent: 50,
+      colorTempKelvin: null,
+      minKelvin: 2700,
+      maxKelvin: 6500,
+      availableEffects: [] as const,
+      currentEffect: null,
+    };
+
+    withLanguage("zh-Hans", () => {
+      const initial = DeviceDeduplicator.merge({
+        homeAssistant: {
+          home: {
+            devices: [
+              { id: "light.unassigned_999001", name: "Hall Lamp", roomId: "other", roomName: "全屋", model: "yeelink.light.lamp1", isOnline: true, kind: lightKind },
+            ],
+            rooms: [],
+            environmentReadings: [],
+            scenes: [],
+          },
+        },
+        rooms: sharedRooms,
+      });
+      sharedRooms = initial.rooms;
+      assert.equal(initial.home.devices[0]?.roomName, "全屋");
+    });
+
+    withLanguage("en", () => {
+      const mergedEn = DeviceDeduplicator.merge({
+        homeAssistant: {
+          home: {
+            devices: [
+              { id: "100001", name: "Desk Lamp", roomId: "other", roomName: "Whole Home", model: "yeelink.light.lamp1", isOnline: true, kind: lightKind },
+              { id: "light.unassigned_999001", name: "Hall Lamp", roomId: "other", roomName: "Whole Home", model: "yeelink.light.lamp1", isOnline: true, kind: lightKind },
+            ],
+            rooms: [],
+            environmentReadings: [],
+            scenes: [],
+          },
+        },
+        xiaomiCloud: {
+          home: {
+            devices: [
+              { id: "100001", name: "Desk Lamp", roomId: "room-lr", roomName: "Living Room", model: "yeelink.light.lamp1", isOnline: true, kind: lightKind },
+            ],
+            rooms: [{ id: "room-lr", name: "Living Room", deviceCount: 1 }],
+            environmentReadings: [],
+            scenes: [],
+          },
+        },
+        rooms: sharedRooms,
+      });
+      const paired = mergedEn.home.devices.find((d) => d.name === "Desk Lamp");
+      const unassigned = mergedEn.home.devices.find((d) => d.name === "Hall Lamp");
+      assert.equal(paired?.roomName, "Living Room");
+      assert.equal(unassigned?.roomName, "Whole Home");
+
+      assert.equal(classifyControlFailure(new Error(t("请先扫码登录米家")))?.kind, "signedOut");
+      assert.equal(classifyControlFailure(new Error(t("米家登录已过期，请重新扫码")))?.kind, "sessionExpired");
+      assert.equal(classifyControlFailure(new Error(t("设备未响应或离线")))?.kind, "deviceOffline");
+      assert.equal(
+        classifyControlFailure(
+          new Error(t("米家云指令失败 ({code})：{message}", { code: MIOT_DEVICE_OFFLINE_CODE, message: "err" })),
+        )?.kind,
+        "deviceOffline",
+      );
+      assert.equal(
+        classifyControlFailure(
+          new Error(t("米家云指令失败 ({code})：{message}", { code: -704042001, message: "err" })),
+        )?.kind,
+        "deviceRejected",
+      );
+    });
+
+    withLanguage("zh-Hant", () => {
+      const mergedHant = DeviceDeduplicator.merge({
+        homeAssistant: {
+          home: {
+            devices: [
+              { id: "light.unassigned_999001", name: "Hall Lamp", roomId: "other", roomName: "預設房間", model: "yeelink.light.lamp1", isOnline: true, kind: lightKind },
+            ],
+            rooms: [],
+            environmentReadings: [],
+            scenes: [],
+          },
+        },
+        rooms: sharedRooms,
+      });
+      assert.equal(mergedHant.home.devices[0]?.roomName, "全屋");
+
+      assert.equal(classifyControlFailure(new Error(t("请先扫码登录米家")))?.kind, "signedOut");
+      assert.equal(classifyControlFailure(new Error(t("米家登录已过期，请重新扫码")))?.kind, "sessionExpired");
+      assert.equal(classifyControlFailure(new Error(t("设备未响应或离线")))?.kind, "deviceOffline");
+      assert.equal(
+        classifyControlFailure(
+          new Error(t("米家云指令失败 ({code})：{message}", { code: MIOT_DEVICE_OFFLINE_CODE, message: "err" })),
+        )?.kind,
+        "deviceOffline",
+      );
+      assert.equal(
+        classifyControlFailure(
+          new Error(t("米家云指令失败 ({code})：{message}", { code: -704042001, message: "err" })),
+        )?.kind,
+        "deviceRejected",
+      );
     });
   });
 });
