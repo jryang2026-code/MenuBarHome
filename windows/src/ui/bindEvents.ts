@@ -26,6 +26,7 @@ import { invokeTauriVoid } from "./transport.js";
 import { facetActionArguments, feedingConfirmationBannerText } from "../core/miCloud/feedAction.js";
 import { bindDetailDrawerEvents, coverMotorRequiresConfirmation, ensureDrawerLifecycleListeners } from "./detailDrawers.js";
 import { bindLiquidGlassSliders } from "./liquidGlassSlider.js";
+import { syncSlidingTabIndicators } from "./reconciler.js";
 import { facetWriteEnabled, selectedPortionForControl } from "./facetViews.js";
 import { facetTitle, facetValue } from "../core/miotFacetText.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
@@ -139,6 +140,11 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
   export function bindEvents(host: MenuMijiaWindowsApp): void {
     ensureDrawerLifecycleListeners(host);
     bindLiquidGlassSliders(host.root);
+    host.root
+      .querySelectorAll<HTMLElement>(".cc-room-scroll, .cc-kind-scroll, .cc-settings-tabs")
+      .forEach((track) => {
+        track.addEventListener("scroll", () => syncSlidingTabIndicators(track), { passive: true });
+      });
     bindConnectionsAndDiagPanelEvents(host);
     host.root.querySelectorAll<HTMLDetailsElement>("details[data-notif-card]").forEach((details) => {
       details.addEventListener("toggle", () => {
@@ -618,7 +624,9 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       void host.refreshDevices(false);
     });
 
-    host.root.querySelector("#btn-settings")?.addEventListener("click", () => {
+    const settingsBtn = host.root.querySelector<HTMLElement>("#btn-settings");
+    settingsBtn?.addEventListener("click", () => {
+      host.pipeline.recordTriggerOrigin(settingsBtn);
       host.openSettingsSheet();
     });
 
@@ -712,6 +720,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
 
     host.root.querySelectorAll<HTMLElement>("[data-open-camera]").forEach((btn) => {
       btn.addEventListener("click", () => {
+        host.pipeline.recordTriggerOrigin(btn);
         const id = btn.dataset.openCamera;
         if (!id) return;
         const dev = host.devices.find((d) => d.id === id);
@@ -807,6 +816,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
 
     host.root.querySelectorAll<HTMLElement>("[data-body-device]").forEach((btn) => {
       btn.addEventListener("click", () => {
+        host.pipeline.recordTriggerOrigin(btn);
         const id = btn.dataset.bodyDevice;
         if (!id) return;
         const dev = host.devices.find((d) => d.id === id);
@@ -832,6 +842,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     host.root.querySelectorAll<HTMLElement>("[data-expand-device]").forEach((btn) => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
+        host.pipeline.recordTriggerOrigin(btn);
         const id = btn.dataset.expandDevice ?? null;
         host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
         host.render();

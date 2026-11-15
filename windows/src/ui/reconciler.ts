@@ -1,6 +1,12 @@
 import { resolveLanguage, type LanguagePreference } from "../core/i18n.js";
 import { hasMatchingDomShape, inputKeepsDraft, morphMatchingDom, parseSingleElement } from "./dom.js";
 import { syncLiquidGlassSlider } from "./liquidGlassSlider.js";
+import {
+  APPLE_SPRINGS,
+  buildOrbBounceKeyframes,
+  buildSpringSurfaceKeyframes,
+  buildSpringTranslateKeyframes,
+} from "./motionSpring.js";
 import { renderPanel } from "./panelView.js";
 import { syncPanelSelection } from "./panelKeyboard.js";
 import { refreshHabitSharePreview } from "./settingsEvents.js";
@@ -99,6 +105,7 @@ const STATE_ONLY_DATA_ATTRS = new Set([
   "data-upper-kind",
   "data-stack-peek",
   "data-stack-dragging",
+  "data-sliding-indicator",
 ]);
 
 const GHOST_CLASS_RENAMES: ReadonlyArray<readonly [string, string]> = [
@@ -186,6 +193,8 @@ function extractControlIdentityKey(el: Element): ControlIdentityKey | null {
   if (el.classList.contains("win-slider-deck")) return "slot:slider-deck";
   if (el.classList.contains("cc-quick-strip")) return "slot:quick-strip";
   if (el.classList.contains("cc-room-bar")) return "slot:room-bar";
+  if (el.classList.contains("cc-kind-scroll")) return "slot:kind-scroll";
+  if (el.classList.contains("cc-tab-indicator")) return "slot:tab-indicator";
   if (el.classList.contains("cc-footer")) return "slot:footer";
   if (el.classList.contains("cc-tile-fill")) return "slot:tile-fill";
   if (el.classList.contains("cc-tile-header")) return "slot:tile-header";
@@ -516,6 +525,107 @@ function reconcileElementTree(
   }
 }
 
+const SLIDING_TAB_TRACK_SELECTOR = ".cc-room-scroll, .cc-kind-scroll, .cc-settings-tabs";
+
+export function syncSlidingTabIndicators(root: ParentNode): void {
+  const tracks: HTMLElement[] = [];
+  if ("matches" in root && typeof root.matches === "function" && root.matches(SLIDING_TAB_TRACK_SELECTOR)) {
+    tracks.push(root as HTMLElement);
+  }
+  tracks.push(...Array.from(root.querySelectorAll<HTMLElement>(SLIDING_TAB_TRACK_SELECTOR)));
+  const doc = ("ownerDocument" in root ? root.ownerDocument : root) as Document | null;
+  for (const track of new Set(tracks)) {
+    if (doc && !track.querySelector(":scope > .cc-tab-indicator")) {
+      const indicator = doc.createElement("span");
+      indicator.className = "cc-tab-indicator";
+      indicator.setAttribute("aria-hidden", "true");
+      track.insertBefore(indicator, track.firstChild);
+    }
+    const active = track.querySelector<HTMLElement>(":scope > .is-active");
+    if (!active) {
+      track.style.setProperty("--tab-x", "0px");
+      track.style.setProperty("--tab-w", "0px");
+      track.setAttribute("data-sliding-indicator", "none");
+      continue;
+    }
+    let x = active.offsetLeft, w = active.offsetWidth;
+    if (w === 0) {
+      const activeRect = active.getBoundingClientRect();
+      if (activeRect.width > 0) {
+        x = activeRect.left - track.getBoundingClientRect().left + track.scrollLeft;
+        w = activeRect.width;
+      }
+    }
+    track.style.setProperty("--tab-x", `${Math.round(x * 100) / 100}px`);
+    track.style.setProperty("--tab-w", `${Math.round(w * 100) / 100}px`);
+    track.setAttribute("data-sliding-indicator", w > 0 ? "ready" : "pending");
+  }
+}
+
+function preserveSlidingTrackState(existingPopover: Element, desiredPopover: Element): void {
+  for (const sel of [".cc-room-scroll:not(.cc-kind-scroll)", ".cc-kind-scroll", ".cc-settings-tabs"]) {
+    const prevTrack = existingPopover.querySelector<HTMLElement>(sel);
+    const nextTrack = desiredPopover.querySelector<HTMLElement>(sel);
+    if (!prevTrack || !nextTrack) continue;
+    const state = prevTrack.getAttribute("data-sliding-indicator");
+    if (state) nextTrack.setAttribute("data-sliding-indicator", state);
+    for (const prop of ["--tab-x", "--tab-w"]) {
+      const val = prevTrack.style.getPropertyValue(prop);
+      if (val) nextTrack.style.setProperty(prop, val);
+    }
+  }
+}
+
+function resolveOriginSurfaceAnim(
+  isClassic: boolean,
+  originRect: DOMRect | null | undefined,
+  surfaceRect: DOMRect | null | undefined,
+  fallbackTx: number,
+  fallbackTy: number,
+  direction: "enter" | "exit",
+): { readonly keyframes: Keyframe[]; readonly durationMs: number; readonly easing: string } {
+  let tx = fallbackTx, ty = fallbackTy;
+  if (originRect && surfaceRect && originRect.width > 0 && originRect.height > 0 && surfaceRect.width > 0 && surfaceRect.height > 0) {
+    tx = Math.round((originRect.left + originRect.width / 2 - (surfaceRect.left + surfaceRect.width / 2)) * 0.18 * 100) / 100;
+    ty = Math.round((originRect.top + originRect.height / 2 - (surfaceRect.top + surfaceRect.height / 2)) * 0.18 * 100) / 100;
+  }
+  if (isClassic) {
+    return {
+      keyframes: buildSpringSurfaceKeyframes({ tx, ty, fromScale: 0.94, direction, spec: APPLE_SPRINGS.snappy }),
+      durationMs: APPLE_SPRINGS.snappy.durationMs,
+      easing: FLUENT_MOTION.linearEasing,
+    };
+  }
+  const shifted = { opacity: 0, transform: `translate3d(${tx}px, ${ty}px, 0) scale(0.94)` };
+  const rest = { opacity: 1, transform: "translate3d(0px, 0px, 0) scale(1)" };
+  return {
+    keyframes: direction === "enter" ? [shifted, rest] : [rest, shifted],
+    durationMs: direction === "enter" ? FLUENT_MOTION.enterDurationMs : FLUENT_MOTION.exitDurationMs,
+    easing: FLUENT_MOTION.decelerateEasing,
+  };
+}
+
+function animateFlipShift(el: HTMLElement, dx: number, dy: number, isClassic: boolean): void {
+  if (isClassic) {
+    el.animate?.(buildSpringTranslateKeyframes(dx, dy, APPLE_SPRINGS.reveal), {
+      duration: APPLE_SPRINGS.reveal.durationMs,
+      easing: FLUENT_MOTION.linearEasing,
+    });
+  } else {
+    el.animate?.([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }], {
+      duration: FLUENT_MOTION.flipDurationMs,
+      easing: FLUENT_MOTION.decelerateEasing,
+    });
+  }
+}
+
+function groupFlipKey(el: Element, index: number): string {
+  const collapse = el.querySelector(":scope > [data-collapse]")?.getAttribute("data-collapse");
+  if (collapse) return `collapse:${collapse}`;
+  const gid = el.getAttribute("data-group-id");
+  return gid ? `gid:${gid}` : `idx:${index}`;
+}
+
 function sanitizeDepartureGhost(sourceEl: HTMLElement): HTMLElement {
   const clone = sourceEl.cloneNode(true) as HTMLElement;
   const allNodes = [clone, ...Array.from(clone.querySelectorAll<HTMLElement>("*"))];
@@ -654,6 +764,8 @@ function hasActiveWebAnimations(ownerWin: Window & typeof globalThis): boolean {
 class CameraStandbyController {
   private activeCancel: (() => void) | null = null;
 
+  public constructor(private readonly originRectProvider?: () => DOMRect | null) {}
+
   private findCameraBackdrop(root: HTMLElement): {
     backdrop: HTMLElement;
     sheet: HTMLElement;
@@ -696,10 +808,15 @@ class CameraStandbyController {
     backdrop.style.display = "";
     backdrop.style.pointerEvents = "none";
 
-    const sheetAnim = sheet.animate(FLUENT_MOTION.sheetExitKeyframes as Keyframe[], {
-      duration: FLUENT_MOTION.exitDurationMs,
-      easing: FLUENT_MOTION.accelerateEasing,
-    });
+    const exitAnim = resolveOriginSurfaceAnim(
+      root.dataset.panelTheme === "classic",
+      this.originRectProvider?.(),
+      sheet.getBoundingClientRect(),
+      0,
+      10,
+      "exit",
+    );
+    const sheetAnim = sheet.animate(exitAnim.keyframes, { duration: exitAnim.durationMs, easing: exitAnim.easing });
     sheetAnim?.finished?.catch?.(() => {});
 
     if (!sheetAnim || typeof sheetAnim.finished?.then !== "function") {
@@ -711,14 +828,14 @@ class CameraStandbyController {
     const backdropAnim =
       typeof backdrop.animate === "function"
         ? backdrop.animate(FLUENT_MOTION.backdropExitKeyframes as Keyframe[], {
-            duration: FLUENT_MOTION.exitDurationMs,
+            duration: exitAnim.durationMs,
             easing: FLUENT_MOTION.accelerateEasing,
           })
         : null;
     backdropAnim?.finished?.catch?.(() => {});
 
     let settled = false;
-    const timer = window.setTimeout(() => finish(true), FLUENT_MOTION.exitDurationMs + 60);
+    const timer = window.setTimeout(() => finish(true), exitAnim.durationMs + 60);
     const finish = (applyDisplayNone: boolean) => {
       if (settled) return;
       settled = true;
@@ -782,6 +899,7 @@ interface StagedDepartureGhost {
   readonly rect: DOMRect;
   readonly keyframes: readonly Keyframe[];
   readonly durationMs: number;
+  readonly easing?: string;
   readonly zIndex: string;
 }
 
@@ -812,7 +930,9 @@ function selectorForTriggerElement(el: Element | null, root: HTMLElement): strin
 
 export class PanelRenderPipeline {
   public readonly eventScope = new RenderEventScope();
-  public readonly cameraStandby = new CameraStandbyController();
+  public readonly cameraStandby = new CameraStandbyController(
+    () => this.layerOriginRects.get("camera") ?? null,
+  );
 
   private prevLayers: LayerSnapshot = {
     activeSheet: null,
@@ -825,7 +945,78 @@ export class PanelRenderPipeline {
   private prevNotifKeys = new Set<string>();
   private hasRenderedOnce = false;
   private focusOrigins = new Map<string, string>();
+  private layerOriginRects = new Map<"sheet" | "camera" | "subpage", DOMRect>();
+  private lastTriggerCapture: { readonly rect: DOMRect; readonly timestampMs: number } | null = null;
   private activeGhostCleanups = new Set<() => void>();
+  private activeExpanderCleanups = new Map<string, () => void>();
+  private rootCleanups = new Set<() => void>();
+  private boundTriggerRoots = new WeakSet<HTMLElement>();
+
+  public recordTriggerOrigin(trigger: Element | DOMRect | null | undefined): void {
+    if (!trigger) return;
+    const rect = "getBoundingClientRect" in trigger && typeof trigger.getBoundingClientRect === "function"
+      ? trigger.getBoundingClientRect()
+      : (trigger as DOMRect);
+    if (rect.width > 0 && rect.height > 0) this.lastTriggerCapture = { rect, timestampMs: Date.now() };
+  }
+
+  private ensureRootListeners(root: HTMLElement): void {
+    if (this.boundTriggerRoots.has(root)) return;
+    this.boundTriggerRoots.add(root);
+    const onTrigger = (event: Event) => {
+      const target = (event.target as Element | null)?.closest?.(
+        "button, [data-open-camera], [data-expand-device], [data-body-device], [data-tile-id], [tabindex], summary",
+      );
+      if (target && root.contains(target)) this.recordTriggerOrigin(target);
+    };
+    const ownerWin = root.ownerDocument?.defaultView, onResize = () => syncSlidingTabIndicators(root);
+    root.addEventListener("pointerdown", onTrigger, true);
+    root.addEventListener("click", onTrigger, true);
+    ownerWin?.addEventListener("resize", onResize);
+    this.rootCleanups.add(() => {
+      root.removeEventListener("pointerdown", onTrigger, true);
+      root.removeEventListener("click", onTrigger, true);
+      ownerWin?.removeEventListener("resize", onResize);
+      this.boundTriggerRoots.delete(root);
+    });
+  }
+
+  private captureLayerOriginRect(layerKey: "sheet" | "camera" | "subpage", scope: ParentNode | null, fallbackSelector: string): void {
+    if (this.lastTriggerCapture && Date.now() - this.lastTriggerCapture.timestampMs <= 600) {
+      this.layerOriginRects.set(layerKey, this.lastTriggerCapture.rect);
+      this.lastTriggerCapture = null;
+      return;
+    }
+    if (!scope) return;
+    try {
+      const rect = scope.querySelector<HTMLElement>(fallbackSelector)?.getBoundingClientRect();
+      if (rect && rect.width > 0 && rect.height > 0) this.layerOriginRects.set(layerKey, rect);
+    } catch {}
+  }
+
+  private mountCollapsingExpander(tileEl: HTMLElement, tileId: string, clone: HTMLElement): void {
+    this.activeExpanderCleanups.get(tileId)?.();
+    clone.classList.remove("is-collapsed");
+    tileEl.appendChild(clone);
+    void clone.getBoundingClientRect();
+    clone.classList.add("is-collapsed");
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      window.clearTimeout(timer);
+      clone.removeEventListener("transitionend", onEnd);
+      this.activeGhostCleanups.delete(cleanup);
+      if (this.activeExpanderCleanups.get(tileId) === cleanup) this.activeExpanderCleanups.delete(tileId);
+      clone.remove();
+    };
+    const onEnd = (event: Event) => { if (event.target === clone) cleanup(); };
+    const timer = window.setTimeout(cleanup, 420);
+    (timer as unknown as { unref?: () => void })?.unref?.();
+    clone.addEventListener("transitionend", onEnd);
+    this.activeGhostCleanups.add(cleanup);
+    this.activeExpanderCleanups.set(tileId, cleanup);
+  }
 
   public recordFocusOrigin(
     layerKey: string,
@@ -865,8 +1056,15 @@ export class PanelRenderPipeline {
       cleanup();
     }
     this.activeGhostCleanups.clear();
+    this.activeExpanderCleanups.clear();
+    for (const cleanup of Array.from(this.rootCleanups)) {
+      cleanup();
+    }
+    this.rootCleanups.clear();
     this.cameraStandby.cancel();
     this.focusOrigins.clear();
+    this.layerOriginRects.clear();
+    this.lastTriggerCapture = null;
     this.prevNotifKeys.clear();
     this.hasRenderedOnce = false;
     this.prevLayers = {
@@ -929,6 +1127,7 @@ export class PanelRenderPipeline {
       const protectedMediaNodes = new Set<Element>();
       if (host.cameraLive.liveCameraImgEl) protectedMediaNodes.add(host.cameraLive.liveCameraImgEl);
       if (host.cameraLive.liveCameraRawMediaEl) protectedMediaNodes.add(host.cameraLive.liveCameraRawMediaEl);
+      preserveSlidingTrackState(existingPopover, desiredPopover);
 
       if (!activeDraftElement && protectedMediaNodes.size === 0 && hasMatchingDomShape(existingPopover, desiredPopover)) {
         morphMatchingDom(existingPopover, desiredPopover);
@@ -1058,7 +1257,7 @@ export class PanelRenderPipeline {
     popover.appendChild(ghost);
     const anim = ghost.animate(keyframes as Keyframe[], {
       duration: durationMs,
-      easing: FLUENT_MOTION.accelerateEasing,
+      easing: staged.easing ?? FLUENT_MOTION.accelerateEasing,
       fill: "forwards",
     });
     anim?.finished?.catch?.(() => {});
@@ -1100,6 +1299,8 @@ export class PanelRenderPipeline {
 
     const prev = this.prevLayers;
     const next = this.snapshotLayers(host);
+    this.ensureRootListeners(host.root);
+    const existingPopover = host.root.querySelector<HTMLElement>(":scope > .cc-popover");
     const activeEl = host.root.ownerDocument.activeElement;
     const triggerSelector = selectorForTriggerElement(activeEl, host.root);
 
@@ -1107,6 +1308,7 @@ export class PanelRenderPipeline {
       const origin =
         triggerSelector && triggerSelector !== "#command-input" ? triggerSelector : "#btn-settings";
       this.focusOrigins.set("sheet", origin);
+      this.captureLayerOriginRect("sheet", existingPopover ?? host.root, origin);
     }
     if (prev.expandedDeviceId === null && next.expandedDeviceId !== null) {
       const escapedId = next.expandedDeviceId.replace(/"/g, '\\"');
@@ -1118,6 +1320,11 @@ export class PanelRenderPipeline {
           ? triggerSelector
           : defaultExpandSelector;
       this.focusOrigins.set("subpage", origin);
+      this.captureLayerOriginRect(
+        "subpage",
+        existingPopover ?? host.root,
+        `${origin}, [data-tile-id="${escapedId}"]`,
+      );
     }
     if (!prev.isCameraOpen && next.isCameraOpen && next.cameraDeviceId) {
       const escapedId = next.cameraDeviceId.replace(/"/g, '\\"');
@@ -1126,6 +1333,11 @@ export class PanelRenderPipeline {
           ? triggerSelector
           : `[data-open-camera="${escapedId}"]`;
       this.focusOrigins.set("camera", origin);
+      this.captureLayerOriginRect(
+        "camera",
+        existingPopover ?? host.root,
+        `${origin}, [data-body-device="${escapedId}"], [data-tile-id="${escapedId}"]`,
+      );
     }
     if (!prev.isMenuOpen && next.isMenuOpen) {
       const origin =
@@ -1158,43 +1370,42 @@ export class PanelRenderPipeline {
           }
         : null;
 
-    const prevSubpageId =
-      host.root.querySelector<HTMLElement>(".cc-tile.is-subpage:not([data-exit-ghost])")?.dataset
-        .tileId ?? null;
+    const prevSubpageEl = host.root.querySelector<HTMLElement>(
+      ".cc-tile.is-subpage:not([data-exit-ghost])",
+    );
+    const prevSubpageId = prevSubpageEl?.dataset.tileId ?? null;
+    const prevHasSubpage = Boolean(prevSubpageEl);
     const ownerWin = (host.root.ownerDocument?.defaultView ?? window) as Window & typeof globalThis;
     const canAnimate = !prefersReducedMotion() && hasActiveWebAnimations(ownerWin);
+    const isClassic = host.settings.panelTheme === "classic";
 
     const stagedGhosts: StagedDepartureGhost[] = [];
     const stagedNotifGhosts = new Map<string, StagedDepartureGhost>();
-    const existingPopover = host.root.querySelector<HTMLElement>(":scope > .cc-popover");
+    const collapsingExpanders = new Map<string, HTMLElement>();
+
+    if (!prefersReducedMotion() && this.hasRenderedOnce && existingPopover && isClassic) {
+      existingPopover.querySelectorAll<HTMLElement>("[data-tile-id]:not(.is-subpage):not([data-exit-ghost])").forEach((tileEl) => {
+        const tileId = tileEl.dataset.tileId;
+        const expEl = tileEl.querySelector<HTMLElement>(":scope > .cc-expander-grid:not([data-exit-ghost])");
+        if (tileId && expEl) collapsingExpanders.set(tileId, sanitizeDepartureGhost(expEl));
+      });
+    }
 
     if (canAnimate && existingPopover && this.hasRenderedOnce) {
       if (prev.expandedDeviceId !== null && next.expandedDeviceId === null) {
-        const subpageEl = existingPopover.querySelector<HTMLElement>(
-          ".cc-tile.is-subpage:not([data-exit-ghost])",
-        );
+        const subpageEl = existingPopover.querySelector<HTMLElement>(".cc-tile.is-subpage:not([data-exit-ghost])");
         if (subpageEl) {
-          stagedGhosts.push({
-            ghost: sanitizeDepartureGhost(subpageEl),
-            rect: subpageEl.getBoundingClientRect(),
-            keyframes: FLUENT_MOTION.subpageExitKeyframes,
-            durationMs: FLUENT_MOTION.exitDurationMs,
-            zIndex: "25",
-          });
+          const rect = subpageEl.getBoundingClientRect();
+          const exitAnim = resolveOriginSurfaceAnim(isClassic, this.layerOriginRects.get("subpage"), rect, 24, 0, "exit");
+          stagedGhosts.push({ ghost: sanitizeDepartureGhost(subpageEl), rect, ...exitAnim, zIndex: "25" });
         }
       }
       if (isSheetOpen(prev.activeSheet) && !isSheetOpen(next.activeSheet)) {
-        const sheetEl = existingPopover.querySelector<HTMLElement>(
-          ".cc-sheet:not(.cc-camera-live-sheet):not([data-exit-ghost])",
-        );
+        const sheetEl = existingPopover.querySelector<HTMLElement>(".cc-sheet:not(.cc-camera-live-sheet):not([data-exit-ghost])");
         if (sheetEl) {
-          stagedGhosts.push({
-            ghost: sanitizeDepartureGhost(sheetEl),
-            rect: sheetEl.getBoundingClientRect(),
-            keyframes: FLUENT_MOTION.sheetExitKeyframes,
-            durationMs: FLUENT_MOTION.exitDurationMs,
-            zIndex: "35",
-          });
+          const rect = sheetEl.getBoundingClientRect();
+          const exitAnim = resolveOriginSurfaceAnim(isClassic, this.layerOriginRects.get("sheet"), rect, 0, 10, "exit");
+          stagedGhosts.push({ ghost: sanitizeDepartureGhost(sheetEl), rect, ...exitAnim, zIndex: "35" });
         }
       }
       if (prev.isPromptOpen && !next.isPromptOpen) {
@@ -1241,14 +1452,23 @@ export class PanelRenderPipeline {
         });
     }
 
-    const before = new Map<string, DOMRect>();
-    if (canAnimate && prev.expandedDeviceId === null && next.expandedDeviceId === null) {
+    const beforeTiles = new Map<string, DOMRect>();
+    const beforeGroups = new Map<string, DOMRect>();
+    if (canAnimate && !prevHasSubpage) {
+      host.root
+        .querySelectorAll<HTMLElement>(".cc-group:not([data-exit-ghost])")
+        .forEach((el, idx) => {
+          const rect = el.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            beforeGroups.set(groupFlipKey(el, idx), rect);
+          }
+        });
       host.root
         .querySelectorAll<HTMLElement>("[data-tile-id]:not([data-exit-ghost])")
         .forEach((el) => {
           const rect = el.getBoundingClientRect();
           if (rect.width > 0 && rect.height > 0 && el.dataset.tileId) {
-            before.set(el.dataset.tileId, rect);
+            beforeTiles.set(el.dataset.tileId, rect);
           }
         });
     }
@@ -1287,6 +1507,7 @@ export class PanelRenderPipeline {
       ".cc-tile.is-subpage:not([data-exit-ghost])",
     );
     const nextSubpageId = nextSubpageEl?.dataset.tileId ?? null;
+    const nextHasSubpage = Boolean(nextSubpageEl);
     const area = host.root.querySelector(".cc-scroll-area");
     if (area) {
       if (prevSubpageId === null && nextSubpageId !== null) {
@@ -1313,6 +1534,20 @@ export class PanelRenderPipeline {
     ) {
       refreshHabitSharePreview(host);
     }
+
+    if (isClassic) {
+      host.root.querySelectorAll<HTMLElement>("[data-tile-id]:not(.is-subpage):not([data-exit-ghost])").forEach((tileEl) => {
+        const tileId = tileEl.dataset.tileId;
+        if (!tileId) return;
+        if (tileEl.querySelector(":scope > .cc-expander-grid:not([data-exit-ghost])")) {
+          this.activeExpanderCleanups.get(tileId)?.();
+          return;
+        }
+        const clone = collapsingExpanders.get(tileId);
+        if (clone && !tileEl.classList.contains("is-size-small")) this.mountCollapsingExpander(tileEl, tileId, clone);
+      });
+    }
+    syncSlidingTabIndicators(host.root);
 
     const closedSheet = isSheetOpen(prev.activeSheet) && !isSheetOpen(next.activeSheet);
     const closedSubpage = prev.expandedDeviceId !== null && next.expandedDeviceId === null;
@@ -1383,14 +1618,12 @@ export class PanelRenderPipeline {
       }
 
       if (isSheetOpen(next.activeSheet) && next.activeSheet !== prev.activeSheet) {
-        const sheetEl = host.root.querySelector<HTMLElement>(
-          ".cc-sheet:not(.cc-camera-live-sheet):not([data-exit-ghost])",
-        );
+        const sheetEl = host.root.querySelector<HTMLElement>(".cc-sheet:not(.cc-camera-live-sheet):not([data-exit-ghost])");
         const backdropEl = sheetEl?.closest<HTMLElement>(".cc-sheet-backdrop") ?? null;
-        sheetEl?.animate?.(FLUENT_MOTION.sheetEnterKeyframes as Keyframe[], {
-          duration: FLUENT_MOTION.enterDurationMs,
-          easing: FLUENT_MOTION.decelerateEasing,
-        });
+        if (sheetEl) {
+          const enterAnim = resolveOriginSurfaceAnim(isClassic, this.layerOriginRects.get("sheet"), sheetEl.getBoundingClientRect(), 0, 14, "enter");
+          sheetEl.animate?.(enterAnim.keyframes, { duration: enterAnim.durationMs, easing: enterAnim.easing });
+        }
         backdropEl?.animate?.(FLUENT_MOTION.backdropEnterKeyframes as Keyframe[], {
           duration: FLUENT_MOTION.fastEnterDurationMs,
           easing: FLUENT_MOTION.decelerateEasing,
@@ -1398,14 +1631,12 @@ export class PanelRenderPipeline {
       }
 
       if (next.isCameraOpen && !prev.isCameraOpen) {
-        const cameraSheetEl = host.root.querySelector<HTMLElement>(
-          ".cc-camera-live-sheet:not([data-exit-ghost])",
-        );
+        const cameraSheetEl = host.root.querySelector<HTMLElement>(".cc-camera-live-sheet:not([data-exit-ghost])");
         const backdropEl = cameraSheetEl?.closest<HTMLElement>(".cc-sheet-backdrop") ?? null;
-        cameraSheetEl?.animate?.(FLUENT_MOTION.sheetEnterKeyframes as Keyframe[], {
-          duration: FLUENT_MOTION.enterDurationMs,
-          easing: FLUENT_MOTION.decelerateEasing,
-        });
+        if (cameraSheetEl) {
+          const enterAnim = resolveOriginSurfaceAnim(isClassic, this.layerOriginRects.get("camera"), cameraSheetEl.getBoundingClientRect(), 0, 14, "enter");
+          cameraSheetEl.animate?.(enterAnim.keyframes, { duration: enterAnim.durationMs, easing: enterAnim.easing });
+        }
         backdropEl?.animate?.(FLUENT_MOTION.backdropEnterKeyframes as Keyframe[], {
           duration: FLUENT_MOTION.fastEnterDurationMs,
           easing: FLUENT_MOTION.decelerateEasing,
@@ -1413,10 +1644,8 @@ export class PanelRenderPipeline {
       }
 
       if (nextSubpageEl && nextSubpageId !== null && nextSubpageId !== prevSubpageId) {
-        nextSubpageEl.animate?.(FLUENT_MOTION.subpageEnterKeyframes as Keyframe[], {
-          duration: FLUENT_MOTION.enterDurationMs,
-          easing: FLUENT_MOTION.decelerateEasing,
-        });
+        const enterAnim = resolveOriginSurfaceAnim(isClassic, this.layerOriginRects.get("subpage"), nextSubpageEl.getBoundingClientRect(), 28, 0, "enter");
+        nextSubpageEl.animate?.(enterAnim.keyframes, { duration: enterAnim.durationMs, easing: enterAnim.easing });
       } else if (prevSubpageId !== null && nextSubpageId === null) {
         host.root
           .querySelector<HTMLElement>(".cc-scroll-area")
@@ -1424,28 +1653,38 @@ export class PanelRenderPipeline {
             duration: FLUENT_MOTION.enterDurationMs,
             easing: FLUENT_MOTION.decelerateEasing,
           });
-      } else if (prevSubpageId === null && nextSubpageId === null && before.size > 0) {
+      } else if (!prevHasSubpage && !nextHasSubpage && (beforeGroups.size > 0 || beforeTiles.size > 0)) {
+        const groupDeltas = new Map<Element, { readonly dx: number; readonly dy: number }>();
+        host.root.querySelectorAll<HTMLElement>(".cc-group:not([data-exit-ghost])").forEach((el, idx) => {
+          const old = beforeGroups.get(groupFlipKey(el, idx));
+          if (!old) return;
+          const now = el.getBoundingClientRect();
+          if (now.width === 0 || now.height === 0) return;
+          const dx = old.left - now.left, dy = old.top - now.top;
+          if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+          groupDeltas.set(el, { dx, dy });
+          animateFlipShift(el, dx, dy, isClassic);
+        });
+        host.root.querySelectorAll<HTMLElement>("[data-tile-id]:not([data-exit-ghost])").forEach((el) => {
+          const id = el.dataset.tileId as string;
+          const old = beforeTiles.get(id);
+          if (!old || id === host.draggingId) return;
+          const now = el.getBoundingClientRect();
+          if (now.width === 0 || now.height === 0) return;
+          const groupShift = el.closest(".cc-group") ? groupDeltas.get(el.closest(".cc-group")!) : undefined;
+          const dx = old.left - now.left - (groupShift?.dx ?? 0), dy = old.top - now.top - (groupShift?.dy ?? 0);
+          if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+          animateFlipShift(el, dx, dy, isClassic);
+        });
+      }
+
+      if (isClassic && host.poppedDeviceId) {
+        const escapedId = host.poppedDeviceId.replace(/"/g, '\\"');
         host.root
-          .querySelectorAll<HTMLElement>("[data-tile-id]:not([data-exit-ghost])")
-          .forEach((el) => {
-            const id = el.dataset.tileId as string;
-            const old = before.get(id);
-            if (!old || id === host.draggingId) return;
-            const now = el.getBoundingClientRect();
-            if (now.width === 0 || now.height === 0) return;
-            const dx = old.left - now.left;
-            const dy = old.top - now.top;
-            if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
-            el.animate?.(
-              [
-                { transform: `translate(${dx}px, ${dy}px)` },
-                { transform: "translate(0, 0)" },
-              ],
-              {
-                duration: FLUENT_MOTION.flipDurationMs,
-                easing: FLUENT_MOTION.decelerateEasing,
-              },
-            );
+          .querySelector<HTMLElement>(`[data-tile-id="${escapedId}"]:not([data-exit-ghost]) .cc-tile-orb`)
+          ?.animate?.(buildOrbBounceKeyframes(APPLE_SPRINGS.orbBounce), {
+            duration: APPLE_SPRINGS.orbBounce.durationMs,
+            easing: FLUENT_MOTION.linearEasing,
           });
       }
 

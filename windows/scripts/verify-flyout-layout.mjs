@@ -11,19 +11,28 @@ const windowsRoot = path.resolve(path.dirname(scriptPath), "..");
 const repoRoot = path.resolve(windowsRoot, "..");
 const usageText = "usage: npm --prefix windows run verify:ui -- [--require-chrome] [--no-build] [--dist <dir>] [--out-dir <dir>] [--chrome <bin>]";
 
-function scenario(id, panelHeight, height, interfaceLanguage, appearance, view) {
-  return { id, panelHeight, width: 412, height, interfaceLanguage, appearance, view };
+function scenario(id, panelHeight, height, interfaceLanguage, appearance, view, panelTheme = "fluent") {
+  const width = panelTheme === "classic" ? 472 : 412;
+  return { id, panelTheme, panelHeight, width, height, interfaceLanguage, appearance, view };
 }
 
 export const SCENARIOS = [
-  scenario("standard-zh-hans-dark-all", "standard", 680, "zh-Hans", "dark", "all"),
-  scenario("standard-zh-hans-light-all", "standard", 680, "zh-Hans", "light", "all"),
-  scenario("standard-zh-hant-dark-room", "standard", 680, "zh-Hant", "dark", "room"),
-  scenario("standard-en-light-subpage", "standard", 680, "en", "light", "subpage"),
-  scenario("compact-zh-hans-dark-subpage", "compact", 580, "zh-Hans", "dark", "subpage"),
-  scenario("compact-zh-hant-light-all", "compact", 580, "zh-Hant", "light", "all"),
-  scenario("compact-en-dark-all", "compact", 580, "en", "dark", "all"),
-  scenario("compact-en-light-room", "compact", 580, "en", "light", "room"),
+  scenario("standard-zh-hans-dark-all", "standard", 680, "zh-Hans", "dark", "all", "fluent"),
+  scenario("standard-zh-hans-light-all", "standard", 680, "zh-Hans", "light", "all", "fluent"),
+  scenario("standard-zh-hant-dark-room", "standard", 680, "zh-Hant", "dark", "room", "fluent"),
+  scenario("standard-en-light-subpage", "standard", 680, "en", "light", "subpage", "fluent"),
+  scenario("compact-zh-hans-dark-subpage", "compact", 580, "zh-Hans", "dark", "subpage", "fluent"),
+  scenario("compact-zh-hant-light-all", "compact", 580, "zh-Hant", "light", "all", "fluent"),
+  scenario("compact-en-dark-all", "compact", 580, "en", "dark", "all", "fluent"),
+  scenario("compact-en-light-room", "compact", 580, "en", "light", "room", "fluent"),
+  scenario("classic-standard-zh-hans-dark-all", "standard", 680, "zh-Hans", "dark", "all", "classic"),
+  scenario("classic-standard-zh-hans-light-all", "standard", 680, "zh-Hans", "light", "all", "classic"),
+  scenario("classic-standard-zh-hant-dark-room", "standard", 680, "zh-Hant", "dark", "room", "classic"),
+  scenario("classic-standard-en-light-drawer", "standard", 680, "en", "light", "drawer", "classic"),
+  scenario("classic-compact-zh-hans-dark-drawer", "compact", 580, "zh-Hans", "dark", "drawer", "classic"),
+  scenario("classic-compact-zh-hant-light-all", "compact", 580, "zh-Hant", "light", "all", "classic"),
+  scenario("classic-compact-en-dark-all", "compact", 580, "en", "dark", "all", "classic"),
+  scenario("classic-compact-en-light-room", "compact", 580, "en", "light", "room", "classic"),
 ];
 
 function approxEqual(actual, expected, tolerance = 0.75) {
@@ -32,7 +41,8 @@ function approxEqual(actual, expected, tolerance = 0.75) {
 
 export function evaluateSnapshot(snapshot, sc) {
   const failures = [];
-  const expectedWidth = sc.width ?? 412, expectedHeight = sc.height, inset = 16;
+  const isClassic = sc.panelTheme === "classic";
+  const expectedWidth = sc.width ?? (isClassic ? 472 : 412), expectedHeight = sc.height, inset = 16;
   const expectedPopoverWidth = expectedWidth - inset * 2, expectedPopoverHeight = expectedHeight - inset * 2;
   const expectedLight = sc.appearance === "light";
   if (snapshot.scenarioId !== sc.id) failures.push(`scenarioId must be ${sc.id} (got ${String(snapshot.scenarioId)})`);
@@ -51,14 +61,35 @@ export function evaluateSnapshot(snapshot, sc) {
     failures.push(`.cc-popover must be ${expectedPopoverWidth}x${expectedPopoverHeight} at inset ${inset}px (got ${pop ? JSON.stringify(pop) : "null"})`);
   }
   const islands = Array.isArray(snapshot.islands) ? snapshot.islands : [];
-  if (islands.length === 0) failures.push("expected at least one visible .win-island");
-  for (const island of islands) {
-    if (island.left < inset - 0.75 || island.right > expectedWidth - inset + 0.75 || island.top < inset - 0.75 || island.bottom > expectedHeight - inset + 0.75) {
-      failures.push(`.win-island (${island.className}) overflows [16, ${expectedWidth - 16}]x[16, ${expectedHeight - 16}]: ${JSON.stringify(island)}`);
+  if (isClassic) {
+    if (snapshot.panelThemeAttr !== "classic") {
+      failures.push(`#app[data-panel-theme] must be "classic" (got ${String(snapshot.panelThemeAttr)})`);
+    }
+    if (snapshot.isUnifiedPopover !== true) {
+      failures.push(`.cc-popover.cc-rim.is-unified-popover must be true in classic (got ${String(snapshot.isUnifiedPopover)})`);
+    }
+    const islandCount = snapshot.islandDomCount ?? islands.length;
+    if (islandCount !== 0 || islands.length !== 0) {
+      failures.push(`classic theme must render zero .win-island nodes (got ${String(islandCount)})`);
+    }
+    for (const slider of Array.isArray(snapshot.liquidSliders) ? snapshot.liquidSliders : []) {
+      if (!slider || typeof slider.height !== "number" || slider.height < 24) {
+        failures.push(`.cc-liquid-slider height must be >= 24px (got ${JSON.stringify(slider)})`);
+      }
+    }
+  } else {
+    if (islands.length === 0) failures.push("expected at least one visible .win-island");
+    for (const island of islands) {
+      if (island.left < inset - 0.75 || island.right > expectedWidth - inset + 0.75 || island.top < inset - 0.75 || island.bottom > expectedHeight - inset + 0.75) {
+        failures.push(`.win-island (${island.className}) overflows [16, ${expectedWidth - 16}]x[16, ${expectedHeight - 16}]: ${JSON.stringify(island)}`);
+      }
     }
   }
   if (typeof snapshot.documentElementScrollWidth !== "number" || snapshot.documentElementScrollWidth > expectedWidth) {
     failures.push(`documentElement.scrollWidth (${String(snapshot.documentElementScrollWidth)}) exceeds ${expectedWidth}`);
+  }
+  if (snapshot.scrollAreaOverflowX === true) {
+    failures.push(".cc-scroll-area has unexpected horizontal overflow");
   }
   for (const label of Array.isArray(snapshot.chromeLabels) ? snapshot.chromeLabels : []) {
     if (label.scrollWidth > label.clientWidth + 1) failures.push(`chrome label ${label.selector} (${JSON.stringify(label.text)}) truncated: scrollWidth=${label.scrollWidth} > clientWidth=${label.clientWidth}`);
@@ -77,6 +108,17 @@ export function evaluateSnapshot(snapshot, sc) {
       }
       if ((sub.visibleSiblingTileCount ?? 0) !== 0) failures.push(`subpage must hide all non-subpage .cc-tile nodes (visibleSiblingTileCount=${sub.visibleSiblingTileCount})`);
       if (!sub.backButton || sub.backButton.width <= 0 || sub.backButton.height <= 0) failures.push(`subpage back button must be visible with non-zero bounds (got ${JSON.stringify(sub.backButton)})`);
+    }
+  }
+  if (sc.view === "drawer") {
+    const drw = snapshot.drawer;
+    if (!drw || drw.mounted !== true || drw.isExpanded !== true) {
+      failures.push('inline .cc-expander-grid drawer on light.living_ceiling did not mount');
+    } else {
+      if ((drw.subpageCount ?? 0) !== 0) failures.push(`classic drawer must not mount .is-subpage (subpageCount=${drw.subpageCount})`);
+      if ((drw.visibleSiblingTileCount ?? 0) <= 0) failures.push(`classic drawer must keep sibling tiles visible (visibleSiblingTileCount=${drw.visibleSiblingTileCount})`);
+      const sliders = Array.isArray(snapshot.liquidSliders) ? snapshot.liquidSliders : [];
+      if (sliders.length === 0) failures.push("classic drawer expected at least one visible .cc-liquid-slider");
     }
   }
   return failures;
@@ -289,7 +331,7 @@ async function connectCdpPage(wsUrl, timeoutMs = 8000) {
 
 function buildInitScript(sc) {
   const settingsJson = JSON.stringify({
-    connectionMode: "demo", hasCompletedOnboarding: true,
+    connectionMode: "demo", hasCompletedOnboarding: true, panelTheme: sc.panelTheme ?? "fluent",
     interfaceLanguage: sc.interfaceLanguage, appearance: sc.appearance, panelHeight: sc.panelHeight,
   });
   return `window.__MMB_SCENARIO_ID__ = ${JSON.stringify(sc.id)};
@@ -326,11 +368,16 @@ function buildSnapshotExpression(sc) {
     } else if (view === "subpage") {
       const expandBtn = document.querySelector('[data-expand-device="light.living_ceiling"]');
       if (expandBtn && !document.querySelector('.cc-tile.is-subpage[data-tile-id="light.living_ceiling"]')) expandBtn.click();
+    } else if (view === "drawer") {
+      const expandBtn = document.querySelector('[data-expand-device="light.living_ceiling"]');
+      if (expandBtn && !document.querySelector('.cc-tile[data-tile-id="light.living_ceiling"] .cc-expander-grid')) expandBtn.click();
     }
     const app = document.getElementById("app"), popover = document.querySelector(".cc-popover"), scrollArea = document.querySelector(".cc-scroll-area");
+    const islandDomCount = document.querySelectorAll(".win-island").length;
     const islands = Array.from(document.querySelectorAll(".win-island")).filter((el) => effectiveDisplay(el) !== "none" && el.getBoundingClientRect().height > 0).map((el) => ({ className: el.className, ...roundRect(el) }));
+    const liquidSliders = Array.from(document.querySelectorAll(".cc-liquid-slider")).filter((el) => effectiveDisplay(el) !== "none" && el.getBoundingClientRect().width > 0).map((el) => roundRect(el));
     const chromeLabels = [];
-    for (const selector of [".cc-footer-label", ".cc-subpage-back", ".win-subpage-back"]) {
+    for (const selector of [".cc-home-title", ".cc-footer-label", ".cc-subpage-back", ".win-subpage-back"]) {
       for (const el of document.querySelectorAll(selector)) {
         const r = el.getBoundingClientRect();
         if (effectiveDisplay(el) !== "none" && r.width > 0 && r.height > 0) chromeLabels.push({ selector, text: (el.textContent || "").trim(), clientWidth: el.clientWidth, scrollWidth: el.scrollWidth });
@@ -351,14 +398,35 @@ function buildSnapshotExpression(sc) {
       const backBtn = document.querySelector("#btn-subpage-back, .cc-subpage-back, .win-subpage-back");
       subpage = { mounted: Boolean(subEl && effectiveDisplay(subEl) !== "none" && subEl.getBoundingClientRect().height > 0), hiddenControls, visibleSiblingTileCount, backButton: roundRect(backBtn) };
     }
+    let drawer = null;
+    if (view === "drawer") {
+      const tileEl = document.querySelector('.cc-tile[data-tile-id="light.living_ceiling"]');
+      const expEl = tileEl ? tileEl.querySelector(".cc-expander-grid") : null;
+      const subpageCount = document.querySelectorAll(".cc-tile.is-subpage").length;
+      const visibleSiblingTileCount = Array.from(document.querySelectorAll('.cc-scroll-area .cc-tile[data-tile-id]:not([data-tile-id="light.living_ceiling"])')).filter((el) => {
+        const r = el.getBoundingClientRect();
+        return effectiveDisplay(el) !== "none" && r.width > 0 && r.height > 0;
+      }).length;
+      drawer = {
+        mounted: Boolean(expEl && effectiveDisplay(expEl) !== "none" && expEl.getBoundingClientRect().height > 0),
+        isExpanded: Boolean(tileEl && tileEl.classList.contains("is-expanded")),
+        subpageCount,
+        visibleSiblingTileCount,
+      };
+    }
     return {
       ready: Boolean(app && popover && scrollArea), scenarioId, locationScenario, readyState,
+      panelThemeAttr: app ? app.getAttribute("data-panel-theme") : null,
+      isUnifiedPopover: Boolean(popover && popover.classList.contains("cc-rim") && popover.classList.contains("is-unified-popover")),
       schemeLight: Boolean(popover && popover.classList.contains("scheme-light")),
       isNativeHost: Boolean(app && app.classList.contains("is-native-host")),
-      isParked: Boolean(app && app.classList.contains("is-parked")), appRect: roundRect(app), popoverRect: roundRect(popover), islands,
-      documentElementScrollWidth: document.documentElement.scrollWidth, chromeLabels,
+      isParked: Boolean(app && app.classList.contains("is-parked")), appRect: roundRect(app), popoverRect: roundRect(popover),
+      islandDomCount, islands, liquidSliders,
+      documentElementScrollWidth: document.documentElement.scrollWidth,
+      scrollAreaOverflowX: Boolean(scrollArea && scrollArea.scrollWidth > scrollArea.clientWidth + 1),
+      chromeLabels,
       scrollAreaHeight: scrollArea ? round(scrollArea.getBoundingClientRect().height) : 0,
-      activeRoomId: activeRoomPill ? activeRoomPill.getAttribute("data-room-id") : null, subpage,
+      activeRoomId: activeRoomPill ? activeRoomPill.getAttribute("data-room-id") : null, subpage, drawer,
     };
   })()`;
 }
@@ -449,7 +517,8 @@ async function main() {
           snapshot.readyState === "complete" &&
           snapshot.popoverRect?.height > 0 &&
           (sc.view !== "room" || snapshot.activeRoomId === "room_living") &&
-          (sc.view !== "subpage" || snapshot.subpage?.mounted === true)
+          (sc.view !== "subpage" || snapshot.subpage?.mounted === true) &&
+          (sc.view !== "drawer" || snapshot.drawer?.mounted === true)
         ) break;
         await new Promise((r) => setTimeout(r, 35));
       }
@@ -478,4 +547,6 @@ async function main() {
   }
 }
 
-await main();
+if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
+  await main();
+}
