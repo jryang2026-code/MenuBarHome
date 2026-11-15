@@ -1,5 +1,6 @@
 import { haRoundedInt } from "../haDomains.js";
 import type { EnvironmentReading } from "../models.js";
+import { cleanPromptField, PROMPT_NAME_LIMIT } from "./promptText.js";
 
 // MARK: - Ambient Context & Jev SystemOne Request (#38)
 
@@ -42,7 +43,7 @@ export function buildTimeSummary(now: Date): string {
 export function buildEnvironmentSummary(readings: readonly EnvironmentReading[]): string {
   return readings
     .map((reading) => {
-      let text = reading.roomName;
+      let text = cleanPromptField(reading.roomName, PROMPT_NAME_LIMIT);
       if (reading.temperature !== null && Number.isFinite(reading.temperature)) {
         text += ` ${reading.temperature.toFixed(1)}°C`;
       }

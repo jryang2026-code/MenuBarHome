@@ -1,4 +1,3 @@
-import { assertMissing } from "./dom.js";
 import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -310,7 +309,7 @@ describe("Timer app wiring", () => {
     assert.equal(modelCalls, 1);
   });
 
-  it("never turns an uncertain model timer into an immediate suggestion button", async () => {
+  it("turns an uncertain model timer into a delayed confirmation chip that schedules instead of running immediately", async () => {
     const invoke = async (name: string) => {
       if (name !== "native_http") return undefined;
       const answers = { target: { choice: "d3", confidence: 0.9 }, op: { choice: "power_off", confidence: 0.55 }, temp: { choice: "none", confidence: 0.99 } };
@@ -324,9 +323,14 @@ describe("Timer app wiring", () => {
     await instance.handleNaturalCommand("10分钟后帮我让书桌适合看星星");
     assert.equal(calls.length, 0);
     assert.equal(instance.scheduledCommands.length, 0);
-    assert.equal(instance.pendingSuggestions.length, 0);
-    assertMissing(document.querySelector("[data-suggestion-id]"));
-    assert.match(document.body.textContent ?? "", /定时指令需要明确的设备和操作，未设定定时/);
+    assert.equal(instance.pendingSuggestions.length, 1);
+    const chip = document.querySelector<HTMLButtonElement>("[data-suggestion-id]");
+    assert.ok(chip);
+    assert.match(chip.textContent ?? "", /10\s*分钟后/);
+    chip.click();
+    assert.equal(calls.length, 0);
+    assert.equal(instance.scheduledCommands.length, 1);
+    assert.equal(instance.scheduledCommands[0]?.delaySeconds, 600);
   });
 
   it("retains the delay through cloud consent instead of executing the continuation immediately", async () => {

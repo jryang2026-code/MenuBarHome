@@ -18,10 +18,13 @@ import {
   buildAssistantContext,
   endpointAllowsSendingSecrets,
   isLocalAssistantEndpoint,
+  suggestionBaseId,
+  withSuggestionDelay,
   type ConfirmationPolicy,
   type LocalIntentParseOptions,
+  type SuggestionDelaySpec,
 } from "../core/assistant.js";
-import type { DeviceIntent, IntentPlan, ScheduledCommand } from "../core/models.js";
+import type { AssistantSuggestion, DeviceIntent, IntentPlan, ScheduledCommand } from "../core/models.js";
 import { withAliases } from "./panelPrefs.js";
 import { executeBuiltInQuickAction } from "./speechGuard.js";
 
@@ -88,7 +91,23 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
           localParseOptions(host),
         );
         if (resolved && resolved.intents.length === 0) {
-          // A timer never fires an unresolved choice; ask for the room or device now.
+          if (
+            resolved.suggestions.length > 0 &&
+            !resolved.suggestions.every((s) => suggestionBaseId(s.id).startsWith("bare:"))
+          ) {
+            const spec: SuggestionDelaySpec = {
+              seconds: delaySpec.seconds,
+              label: `${DelayPhrase.formatDelay(delaySpec.seconds)}后`,
+              command: delaySpec.remainder,
+            };
+            host.pendingSuggestions = resolved.suggestions.map((chip) => withSuggestionDelay(chip, spec));
+            host.replyBanner = {
+              text: resolved.reply || ModelActionPolicy.confirmationReply(null),
+              source: t("需要确认"),
+            };
+            host.render();
+            return;
+          }
           host.pendingSuggestions = [];
           host.replyBanner = {
             text: resolved.reply || t("无法找到指令对应的设备"),
@@ -101,8 +120,19 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
           resolved &&
           resolved.intents.some((intent) => ManualControlPolicy.requiresConfirmation(intent, aliasedDevices))
         ) {
-          // A timer never fires an unconfirmed high-risk action; ask the user to run it now.
-          host.pendingSuggestions = [];
+          const spec: SuggestionDelaySpec = {
+            seconds: delaySpec.seconds,
+            label: `${DelayPhrase.formatDelay(delaySpec.seconds)}后`,
+            command: delaySpec.remainder,
+          };
+          host.pendingSuggestions = ModelActionPolicy.chips(
+            resolved.intents,
+            null,
+            "confirm:local",
+            aliasedDevices,
+            host.scenes,
+            true,
+          ).map((chip) => withSuggestionDelay(chip, spec));
           host.replyBanner = {
             text: t("高风险设备需要先确认，未设定定时"),
             source: t("需要确认"),
@@ -214,12 +244,35 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
         ManualControlPolicy.requiresConfirmation(intent, aliasedDevices),
       );
       if (delaySpec) {
-        host.pendingSuggestions = [];
+        const spec: SuggestionDelaySpec = {
+          seconds: delaySpec.seconds,
+          label: `${DelayPhrase.formatDelay(delaySpec.seconds)}后`,
+          command: delaySpec.remainder,
+        };
         if (hazardous.length > 0) {
+          host.pendingSuggestions = ModelActionPolicy.chips(
+            sanitized,
+            null,
+            "confirm:local",
+            aliasedDevices,
+            host.scenes,
+            true,
+          ).map((chip) => withSuggestionDelay(chip, spec));
           host.replyBanner = { text: t("高风险设备需要先确认，未设定定时"), source: t("需要确认") };
-        } else if (sanitized.length === 0 || plan.suggestions.length > 0) {
+        } else if (sanitized.length === 0 && plan.suggestions.length > 0) {
+          host.pendingSuggestions = plan.suggestions.map((chip) => withSuggestionDelay(chip, spec));
+          host.replyBanner = {
+            text: plan.reply || ModelActionPolicy.confirmationReply(null),
+            source: t("需要确认"),
+          };
+        } else if (sanitized.length === 0) {
+          host.pendingSuggestions = [];
           host.replyBanner = { text: t("定时指令需要明确的设备和操作，未设定定时"), source: t("需要确认") };
         } else {
+          host.pendingSuggestions =
+            plan.suggestions.length > 0
+              ? plan.suggestions.map((chip) => withSuggestionDelay(chip, spec))
+              : [];
           queueScheduledCommand(host, delaySpec, sanitized);
           return;
         }
@@ -283,6 +336,7 @@ function queueScheduledCommand(
   host: MenuMijiaWindowsApp,
   delaySpec: NonNullable<ReturnType<typeof DelayPhrase.extract>>,
   intents: readonly DeviceIntent[],
+  options: { readonly allowConfirmedHazardous?: boolean } = {},
 ): void {
   const devices = withAliases(host.layout, host.devices);
   const sanitized = IntentValidator.sanitize(intents, devices, host.scenes);
@@ -291,7 +345,10 @@ function queueScheduledCommand(
     host.render();
     return;
   }
-  if (sanitized.some((intent) => ManualControlPolicy.requiresConfirmation(intent, devices))) {
+  if (
+    !options.allowConfirmedHazardous &&
+    sanitized.some((intent) => ManualControlPolicy.requiresConfirmation(intent, devices))
+  ) {
     host.replyBanner = { text: t("高风险设备需要先确认，未设定定时"), source: t("需要确认") };
     host.render();
     return;
@@ -310,6 +367,22 @@ function queueScheduledCommand(
     source: t("定时任务"),
   };
   host.render();
+}
+
+export function confirmDelayedSuggestion(
+  host: MenuMijiaWindowsApp,
+  suggestion: AssistantSuggestion,
+  delaySpec: SuggestionDelaySpec,
+): void {
+  const aliasedDevices = withAliases(host.layout, host.devices);
+  const fallbackCommand = IntentReply.describe(suggestion.intents, aliasedDevices, host.scenes).replace(/^已/, "");
+  const remainder = delaySpec.command?.trim() || fallbackCommand;
+  queueScheduledCommand(
+    host,
+    { seconds: delaySpec.seconds, remainder },
+    suggestion.intents,
+    { allowConfirmedHazardous: true },
+  );
 }
 
 export async function runScheduledCommand(host: MenuMijiaWindowsApp, item: ScheduledCommand): Promise<void> {

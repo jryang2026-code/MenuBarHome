@@ -168,7 +168,10 @@ final class URLCommandHandler {
                let builtIn = BuiltInURLScene.resolve(name) {
                 return .builtInScene(builtIn)
             }
-            if let scene = store.scenes.first(where: { $0.name == name || $0.id == name }) {
+            let normalizedName = IntentValidator.normalizedSceneName(name)
+            if let scene = store.scenes.first(where: {
+                IntentValidator.normalizedSceneName($0.name) == normalizedName || $0.id == name
+            }) {
                 return .scene(scene)
             }
             if let builtIn = BuiltInURLScene.resolve(name) {

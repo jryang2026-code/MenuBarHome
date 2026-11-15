@@ -1017,14 +1017,16 @@
         ]
       },
       "expect": {
-        "runTargetIds": [
+        "runTargetIds": [],
+        "confirmTargetIds": [
           "scene.1",
           "scene.2",
           "scene.3",
           "scene.4"
         ],
-        "confirmTargetIds": [],
-        "suggestionIds": []
+        "suggestionIds": [
+          "confirm"
+        ]
       }
     },
     {
@@ -1215,6 +1217,109 @@
         "runTargetIds": [],
         "confirmTargetIds": ["scene.over"],
         "suggestionIds": ["confirm:scene.over"]
+      }
+    },
+    {
+      "id": "scene-two",
+      "devices": [],
+      "scenes": [
+        {
+          "id": "scene.1",
+          "name": "回家模式",
+          "entityId": "scene.1"
+        },
+        {
+          "id": "scene.2",
+          "name": "影院模式",
+          "entityId": "scene.2"
+        }
+      ],
+      "payload": {
+        "actions": [
+          {
+            "targetId": "scene.1",
+            "op": "scene",
+            "value": null,
+            "confidence": 1
+          },
+          {
+            "targetId": "scene.2",
+            "op": "scene",
+            "value": null,
+            "confidence": 1
+          }
+        ]
+      },
+      "expect": {
+        "runTargetIds": [],
+        "confirmTargetIds": ["scene.1", "scene.2"],
+        "suggestionIds": ["confirm"]
+      }
+    },
+    {
+      "id": "scene-plus-device-wide",
+      "devices": [
+        {
+          "id": "light.p1",
+          "name": "客厅灯",
+          "roomName": "客厅",
+          "model": "yeelink.light.lamp1",
+          "kind": "light"
+        }
+      ],
+      "scenes": [
+        {
+          "id": "scene.1",
+          "name": "睡眠模式",
+          "entityId": "scene.1"
+        }
+      ],
+      "payload": {
+        "actions": [
+          {
+            "targetId": "scene.1",
+            "op": "scene",
+            "value": null,
+            "confidence": 1
+          },
+          {
+            "targetId": "light.p1",
+            "op": "power",
+            "value": false,
+            "confidence": 1
+          }
+        ]
+      },
+      "expect": {
+        "runTargetIds": [],
+        "confirmTargetIds": ["scene.1", "light.p1"],
+        "suggestionIds": ["confirm"]
+      }
+    },
+    {
+      "id": "chat-scene-unscored",
+      "devices": [],
+      "scenes": [
+        {
+          "id": "scene.1",
+          "name": "离家模式",
+          "entityId": "scene.1"
+        }
+      ],
+      "payload": {
+        "actions": [
+          {
+            "targetId": "scene.1",
+            "op": "scene",
+            "value": null,
+            "confidence": null
+          }
+        ]
+      },
+      "expect": {
+        "runTargetIds": [],
+        "confirmTargetIds": ["scene.1"],
+        "suggestionIds": ["confirm:scene.1"]
       }
     }
   ]

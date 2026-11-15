@@ -174,11 +174,39 @@ struct AssistantTests {
 
         let plan = try await resolver.resolve("随便", devices: Self.devices, scenes: Self.scenes)
         #expect(plan.source == .model)
-        #expect(plan.reply == "好的，已为你处理 {书房}")
-        #expect(plan.intents == [
+        #expect(plan.reply == "没把握直接执行，点下面的建议再执行")
+        #expect(plan.intents.isEmpty)
+        #expect(plan.suggestions.count == 1)
+        #expect(plan.suggestions.first?.id == "confirm")
+        #expect(plan.suggestions.first?.intents == [
             DeviceIntent(targetId: "dev_study_ceiling", operation: .lightEffect("Night")),
             DeviceIntent(targetId: "dev_living_ac", operation: .targetTemperature(30)),
             DeviceIntent(targetId: "scene_sleep", operation: .activateScene)
+        ])
+
+        let deviceOnlyContent = """
+        好的：
+        ```json
+        {"actions":[
+          {"device":"d1","op":"effect","value":"Night"},
+          {"device":"d99","op":"power","value":true},
+          {"device":"d3","op":"brightness","value":50},
+          {"device":"d3","op":"temperature","value":40}
+        ],"reply":"好的，已为你处理 {书房}"}
+        ```
+        """
+        let deviceOnlyData = try JSONSerialization.data(withJSONObject: ["choices": [["message": ["role": "assistant", "content": deviceOnlyContent]]]])
+        let deviceOnlyResolver = ModelIntentResolver(
+            config: AssistantConfig(baseURL: "https://api.example.com/v1/", model: "test-model", apiKey: "test-key"),
+            transport: { request in
+                (deviceOnlyData, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }
+        )
+        let directPlan = try await deviceOnlyResolver.resolve("随便", devices: Self.devices, scenes: Self.scenes)
+        #expect(directPlan.reply == "好的，已为你处理 {书房}")
+        #expect(directPlan.intents == [
+            DeviceIntent(targetId: "dev_study_ceiling", operation: .lightEffect("Night")),
+            DeviceIntent(targetId: "dev_living_ac", operation: .targetTemperature(30))
         ])
     }
 
@@ -473,11 +501,15 @@ struct AssistantTests {
 
         let plan = try #require(await store.runAssistantCommand("我要睡觉了"))
         #expect(plan.source == .model)
+        #expect(await mock.executedCommands.isEmpty)
+        #expect(store.assistantState == .awaitingChoice("没把握直接执行，点下面的建议再执行"))
+        let chip = try #require(store.assistantSuggestions.first)
+        #expect(chip.id == "confirm")
+        await store.applyAssistantSuggestion(chip)
         let executed = await mock.executedCommands
         #expect(executed.count == 2)
         #expect(executed.contains(.activateScene(entityId: "scene.sleep")))
         #expect(executed.contains(.setLightPower(entityId: "light.bedside", isOn: false)))
-        #expect(store.assistantState == .done("晚安"))
     }
 
     @Test("runAssistantCommand records a local execution receipt")
@@ -505,7 +537,7 @@ struct AssistantTests {
             scenes: store.scenes
         )
         store.userHabitMemory = memory
-        let content = #"{"actions":[{"device":"s2","op":"scene","value":null},{"device":"d4","op":"power","value":false}],"reply":"晚安"}"#
+        let content = #"{"actions":[{"device":"d4","op":"power","value":false}],"reply":"晚安"}"#
         store.assistantResolverOverride = ModelIntentResolver(config: AssistantConfig(model: "glm-5.1"), transport: { request in
             let data = try JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": content]]]])
             return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
