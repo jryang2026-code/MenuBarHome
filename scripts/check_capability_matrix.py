@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare README capability tables with docs/capabilities.json, then check code anchors.
+"""Compare the capability tables in docs/platform-matrix*.md with docs/capabilities.json, then check code anchors.
 
 Every row is checked against code: CODE_ANCHORS fails when a claimed platform status
 contradicts a source file, and a row's `miotTypes` derives both platforms' status from the
@@ -16,8 +16,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "docs/capabilities.json"
 COVERAGE = ROOT / "Tests/Fixtures/miot_coverage_golden.json"
 TABLES = (
-    ("README.md", "| Feature Area |", "en"),
-    ("README.zh-CN.md", "| 功能维度 |", "zh"),
+    ("docs/platform-matrix.md", "| Feature Area |", "en"),
+    ("docs/platform-matrix.zh-CN.md", "| 功能维度 |", "zh"),
 )
 
 
@@ -634,7 +634,7 @@ def main() -> int:
         print("❌ 能力表与文档或代码锚点不一致：")
         for error in errors:
             print(f"  - {error}")
-        print("文档行请同时更新 README.md、README.zh-CN.md 与 docs/capabilities.json。")
+        print("文档行请同时更新 docs/platform-matrix.md、docs/platform-matrix.zh-CN.md 与 docs/capabilities.json。")
         print("代码锚点行要改 capabilities.json 的状态，或改掉对不上的源文件。")
         print("带 miotTypes 的行，状态以覆盖率基线为准：改合成并重录基线，或照推出的状态改文档。")
         return 1

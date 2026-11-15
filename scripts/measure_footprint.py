@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure MenuBarHome's memory and CPU, and print the README FAQ comparison.
+"""Measure MenuBarHome's memory and CPU, and print the docs/faq.md comparison.
 
 The live path samples a process that is already running; it never launches the
 app. Put the app in the state you want to measure first:

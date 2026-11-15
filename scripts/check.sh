@@ -259,6 +259,7 @@ if [ -n "$PYTHON_BIN" ]; then
     "$PYTHON_BIN" scripts/check_workflows.py
     "$PYTHON_BIN" scripts/check_doc_links.py
     "$PYTHON_BIN" scripts/check_capability_matrix.py
+    "$PYTHON_BIN" scripts/check_supported_devices.py
     "$PYTHON_BIN" scripts/go2rtc-ptz/check_model_tables.py
     "$PYTHON_BIN" - <<'PY'
 import base64

@@ -544,7 +544,11 @@ export function cloudPanelStructureFingerprint(host: MenuMijiaWindowsApp): strin
                               kind.ttsActionId,
                               kind.directiveActionId,
                             ]
-                          : kind.kind === "plug"
+                          : kind.kind === "tv"
+                            ? [kind.volumeWritable, kind.volumePresent, kind.muteSwitchEntityId, kind.availableSources, kind.turnOnButtonId, kind.powerWritable]
+                            : kind.kind === "humidifier"
+                              ? [kind.powerWritable, kind.humidityWritable, kind.minHumidity, kind.maxHumidity, kind.step, kind.availableModes, kind.modeWritable]
+                              : kind.kind === "plug"
                             ? (() => {
                                 const hasEnergy =
                                   kind.energyKwh !== null &&

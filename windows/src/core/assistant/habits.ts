@@ -250,6 +250,7 @@ export function habitActionable(
     case "fanSpeed":
       if (k.kind === "fan") return k.availablePresetModes.length > 0 && (!k.isOn || k.presetMode !== op.speed);
       if (k.kind === "climate") return k.availableFanModes.length > 0 && k.fanMode !== op.speed;
+      if (k.kind === "humidifier") return k.modeWritable && k.availableModes.length > 0 && (!k.isOn || k.currentMode !== op.speed);
       return false;
     case "oscillation":
       return k.kind === "fan" && k.swingWritable !== false && k.isOscillating !== null && (!k.isOn || k.isOscillating !== op.enabled);
@@ -263,7 +264,7 @@ function isPowerToggleable(device: SmartDevice): boolean {
   const k = device.kind.kind;
   return (
     deviceCanTogglePower(device) &&
-    (k === "light" || k === "climate" || k === "fan" || k === "plug" || k === "camera")
+    (k === "light" || k === "climate" || k === "fan" || k === "plug" || k === "camera" || k === "tv" || k === "humidifier")
   );
 }
 

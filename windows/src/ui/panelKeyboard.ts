@@ -148,7 +148,7 @@ function adjustSelection(host: MenuMijiaWindowsApp, direction: number): void {
   const step = [...(card?.querySelectorAll<HTMLButtonElement>("[data-acstep]") ?? [])]
     .find((button) => button.dataset.acstep === `${device.id}:${direction}`);
   if (step) { step.click(); return; }
-  const range = card?.querySelector<HTMLInputElement>("[data-brightness], [data-actemp], [data-fanpercent], [data-volume]");
+  const range = card?.querySelector<HTMLInputElement>("[data-brightness], [data-actemp], [data-fanpercent], [data-humidity], [data-volume]");
   if (!range || range.disabled) return;
   const delta = range.hasAttribute("data-actemp") ? Number(range.step) || 1 : 5;
   range.value = String(Math.min(Number(range.max), Math.max(Number(range.min), Number(range.value) + delta * direction)));

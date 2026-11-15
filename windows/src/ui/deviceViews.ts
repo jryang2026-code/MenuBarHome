@@ -6,7 +6,7 @@ import { renderApplianceDrawer, renderClimateSwingRow, renderCoverDrawer, render
 import { renderMoreSettings } from "./facetViews.js";
 import {
   deviceCanTogglePower, devicePresentsAsActive, deviceReadout, deviceStatusSummary, hasDetailDrawer,
-  localizeAirQuality, localizeFanPreset, localizeFridgeMode, localizeNightShot,
+  localizeAirQuality, localizeApplianceMode, localizeFanPreset, localizeFridgeMode, localizeNightShot,
   type EnvironmentReading, type FacetControl, type SmartDevice,
 } from "../core/models.js";
 import { TILE_SIZES, comfort, localizeEffect, localizeFanMode, tr3, type TileSize } from "./panelPrefs.js";
@@ -432,6 +432,44 @@ function renderPrimaryDrawer(
         </div>
       `;
     }
+    if (k.kind === "tv") {
+      const id = escapeHtml(dev.id);
+      const showVolume = Boolean(k.volumeWritable) && k.volumePresent !== false;
+      const showSources = k.availableSources.length > 0;
+      if (!showVolume && !k.muteSwitchEntityId && !showSources && !k.isPairingPromptActive) return "";
+      const sourceControls = showSources
+        ? k.availableSources.length <= 4
+          ? `<div class="cc-segmented-pills">${k.availableSources.map((src) => `<button class="cc-seg-pill ${k.currentSource === src ? "is-active" : ""}" data-tvsource="${id}|${escapeHtml(src)}" aria-pressed="${k.currentSource === src}">${escapeHtml(src)}</button>`).join("")}</div>`
+          : `<div class="cc-slider-group"><label class="cc-slider-label"><span>${t("信源")}</span><select class="cc-facet-select" data-tvsource-select="${id}" aria-label="${t("信源")}">${k.availableSources.map((src) => `<option value="${escapeHtml(src)}"${k.currentSource === src ? " selected" : ""}>${escapeHtml(src)}</option>`).join("")}</select></label></div>`
+        : "";
+      return `<div class="cc-tile-drawer">
+          ${k.isPairingPromptActive ? `<div class="cc-slider-label"><span>${t("请在电视上确认配对")}</span></div>` : ""}
+          ${showVolume ? `<div class="cc-slider-group"><div class="cc-slider-label"><span>${t("音量")}</span><strong>${k.volumePercent}%</strong></div><input class="cc-range" type="range" min="0" max="100" value="${k.volumePercent}" data-volume="${id}" aria-label="${t("音量")}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${k.volumePercent}" /></div>` : ""}
+          ${k.muteSwitchEntityId ? `<div class="cc-segmented-pills"><button class="cc-seg-pill ${k.isMuted ? "is-active" : ""}" data-speakermute="${id}" aria-pressed="${k.isMuted}">${k.isMuted ? t("静音：开") : t("静音：关")}</button></div>` : ""}
+          ${sourceControls}
+        </div>`;
+    }
+    if (k.kind === "humidifier") {
+      const id = escapeHtml(dev.id);
+      const showHumidity = k.humidityWritable;
+      const showModes = k.modeWritable && k.availableModes.length > 0;
+      const currentPct = k.currentHumidity !== null && Number.isFinite(k.currentHumidity) ? Math.round(k.currentHumidity) : null;
+      if (!showHumidity && !showModes && currentPct === null) return "";
+      const minH = k.minHumidity;
+      const maxH = Math.max(minH + 1, k.maxHumidity);
+      const stepH = Math.max(1, k.step);
+      const targetVal = Math.max(minH, Math.min(maxH, Math.round(k.targetHumidity ?? currentPct ?? 50)));
+      const modeControls = showModes
+        ? k.availableModes.length <= 4
+          ? `<div class="cc-segmented-pills">${k.availableModes.map((mode) => `<button class="cc-seg-pill ${k.currentMode === mode ? "is-active" : ""}" data-humidifiermode="${id}|${escapeHtml(mode)}" aria-pressed="${k.currentMode === mode}">${escapeHtml(localizeApplianceMode(mode))}</button>`).join("")}</div>`
+          : `<div class="cc-slider-group"><label class="cc-slider-label"><span>${t("模式")}</span><select class="cc-facet-select" data-humidifiermode-select="${id}" aria-label="${t("模式")}">${k.availableModes.map((mode) => `<option value="${escapeHtml(mode)}"${k.currentMode === mode ? " selected" : ""}>${escapeHtml(localizeApplianceMode(mode))}</option>`).join("")}</select></label></div>`
+        : "";
+      return `<div class="cc-tile-drawer">
+          ${showHumidity ? `<div class="cc-slider-group"><div class="cc-slider-label"><span>${t("目标湿度")}</span><strong>${targetVal}%</strong></div><input class="cc-range" type="range" min="${minH}" max="${maxH}" step="${stepH}" value="${targetVal}" data-humidity="${id}" aria-label="${t("目标湿度")}" aria-valuemin="${minH}" aria-valuemax="${maxH}" aria-valuenow="${targetVal}" /></div>` : ""}
+          ${modeControls}
+          ${currentPct !== null ? `<div class="cc-slider-label"><span>${t("当前湿度")}</span><strong>${currentPct}%</strong></div>` : ""}
+        </div>`;
+    }
     if (k.kind === "camera") {
       if (k.powerWritable === false && k.availableNightShots.length === 0 && !k.motionDetectionEntityId) return "";
       const id = escapeHtml(dev.id);
@@ -595,6 +633,7 @@ function devicePaletteClass(dev: SmartDevice): string {
     case "fridge":
       return "palette-blue";
     case "fan":
+    case "humidifier":
       return "palette-mint";
     case "plug":
       return "palette-green";
@@ -607,6 +646,7 @@ function devicePaletteClass(dev: SmartDevice): string {
     case "cover":
       return "palette-teal";
     case "speaker":
+    case "tv":
       return "palette-indigo";
     case "appliance":
       return "palette-blue";
@@ -877,6 +917,10 @@ export function deviceSvgIcon(dev: SmartDevice): string {
       return DEVICE_ICONS.robotVacuum;
     case "speaker":
       return k.isMuted ? SF_ICONS.speakerSlash : SF_ICONS.speakerFill;
+    case "tv":
+      return DEVICE_ICONS.television;
+    case "humidifier":
+      return DEVICE_ICONS.humidifier;
     case "camera":
       if (
         model.includes("doorbell") ||
@@ -1104,7 +1148,23 @@ function renderCollapsedInlineSlider(options: {
         disabledAttr,
       });
     }
-    if (k.kind === "speaker" && isOn && k.volumeWritable) {
+    if (k.kind === "humidifier" && isOn && k.humidityWritable) {
+      const min = k.minHumidity;
+      const max = Math.max(min + 1, k.maxHumidity);
+      const pct = Math.max(min, Math.min(max, Math.round(k.targetHumidity ?? k.currentHumidity ?? 50)));
+      return renderInlineRangeRow({
+        id,
+        icon: DEVICE_ICONS.humidifier,
+        rangeClass: "is-blue",
+        min,
+        max,
+        val: pct,
+        dataAttr: "data-inline-humidity",
+        ariaLabel: escape(`${dev.name} ${t("目标湿度")}`),
+        disabledAttr,
+      });
+    }
+    if ((k.kind === "speaker" || (k.kind === "tv" && k.volumePresent !== false)) && isOn && k.volumeWritable) {
       const vol = Math.max(0, Math.min(100, Math.round(k.volumePercent)));
       return renderInlineRangeRow({
         id,
