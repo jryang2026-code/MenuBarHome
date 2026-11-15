@@ -90,6 +90,10 @@ Pair every pending UI field, toast, consent banner, activity row, hover/expansio
 
 ---
 
+## §18. Text Size And Labels
+
+Secondary text is at least 11 pt (the first-run guide uses 11 / 11.5, not 10 / 10.5). Text that states a limit, a risk or a consequence (an unofficial API, a plaintext token, an expiring sign-in) is at least 12 pt (`DesignTokens.TypeSize.caption`) and uses the primary colour or a warning tint, not secondary grey. Every icon-only button needs both `accessibilityLabel` and a hover help (`help` / `panelHelp`). Contrast is not yet measured; check light and dark with Accessibility Inspector before claiming WCAG AA.
+
 ## Tooling Quick Reference
 
 - **App icons**: editing `Resources/AppIcon/AppIcon-*.svg` -> `swift scripts/generate_app_icon.swift`
