@@ -90,6 +90,17 @@ describe("SliderStepSnap & LiquidGlassSlider 28px Pill Track", () => {
     kelvinInput.dispatchEvent(new Event("change", { bubbles: true }));
     await setImmediate();
     assert.equal(dispatched.some((c) => c.kind === "setLightColorTemp" && c.kelvin === 6535), true);
+    const beforeKeyDispatched = dispatched.length;
+    kelvinInput.dispatchEvent(new dom.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }) as unknown as Event);
+    await setImmediate();
+    assert.equal(kelvinInput.value, "6535");
+    assert.equal(dispatched.length, beforeKeyDispatched);
+    kelvinInput.dispatchEvent(new dom.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }) as unknown as Event);
+    await setImmediate();
+    assert.equal(kelvinInput.value, "6500");
+    kelvinInput.dispatchEvent(new dom.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }) as unknown as Event);
+    await setImmediate();
+    assert.equal(kelvinInput.value, "6535");
 
     const tvVolInput = element<HTMLInputElement>('input[data-inline-volume="tv.living_oled"]');
     const tvVolWrap = tvVolInput.closest<HTMLElement>(".cc-liquid-slider")!;
