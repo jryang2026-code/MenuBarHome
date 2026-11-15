@@ -872,6 +872,27 @@ struct AssistantSettingsSection: View {
     /// Imported-key labels and cloud consent also live in UserDefaults; bump to redraw after import/undo/revoke.
     @State private var storageRevision = 0
     @State private var showsAdvanced = false
+    @Environment(\.settingsUnsavedChanges) private var unsaved
+    /// The fields as last loaded or saved; edits that differ from them are unsaved (#148).
+    @State private var savedFields: AssistantSettingsDraft.Fields?
+
+    private var hasUnsavedEdits: Bool {
+        guard let savedFields else { return false }
+        return draftFields != savedFields
+    }
+
+    private func registerUnsavedForm() {
+        unsaved?.register("assistant", .init(
+            title: AssistantSettingsCopy.title,
+            isDirty: hasUnsavedEdits,
+            save: { saveCurrentDraft() != nil },
+            discard: {
+                guard let savedFields else { return }
+                apply(savedFields)
+                selectedPreset = AssistantProviderPreset.infer(baseURL: savedFields.baseURL)
+            }
+        ))
+    }
 
     var body: some View {
         let _ = store.effectiveLanguage
@@ -984,6 +1005,8 @@ struct AssistantSettingsSection: View {
 
                 Spacer()
 
+                UnsavedChangesBadge(isVisible: hasUnsavedEdits)
+
                 Button(AssistantSettingsCopy.saveConfiguration) {
                     if saveCurrentDraft() != nil {
                         store.showToast(L10n.tr("已保存 AI 指令配置", "Saved AI configuration"))
@@ -1006,7 +1029,11 @@ struct AssistantSettingsSection: View {
             modelDraft = config.model
             selectedPreset = AssistantProviderPreset.infer(baseURL: config.baseURL)
             apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: config.baseURL)
+            savedFields = draftFields
+            registerUnsavedForm()
         }
+        .onChange(of: hasUnsavedEdits) { _, _ in registerUnsavedForm() }
+        .onDisappear { unsaved?.unregister("assistant") }
     }
 
     private var draftFields: AssistantSettingsDraft.Fields {
@@ -1028,10 +1055,22 @@ struct AssistantSettingsSection: View {
             return nil
         }
         store.assistantConfig = cfg
+        // `AssistantConfig.save` does not report a refused Keychain write or delete, so read the key back
+        // before the draft counts as saved. A replacement that was not stored would be lost on leaving,
+        // and a clearing that was refused would leave the old key active (#148).
+        if store.storedAssistantAPIKey(forBaseURL: cfg.baseURL).trimmingCharacters(in: .whitespacesAndNewlines)
+            != cfg.apiKey.trimmingCharacters(in: .whitespacesAndNewlines) {
+            store.showToast(
+                L10n.tr("无法写入钥匙串，请授权钥匙串访问后重试", "Could not save to Keychain; allow Keychain access and try again"),
+                isError: true
+            )
+            return nil
+        }
         let resolved = store.assistantConfig
         baseURLDraft = resolved.baseURL
         modelDraft = resolved.model
         selectedPreset = resolved.preset
+        savedFields = draftFields
         return cfg
     }
 
