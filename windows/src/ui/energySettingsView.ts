@@ -309,7 +309,7 @@ function renderSevenDayChart(
           : "";
       const dateLabel = formatDayChartDate(item.day, isToday);
       const barBg = item.isObserved
-        ? "var(--win-accent)"
+        ? "var(--theme-accent, var(--win-accent))"
         : "rgba(128, 128, 128, 0.18)";
       return `
         <div
@@ -404,7 +404,7 @@ function renderTopDevicesSection(
             <div
               data-energy-rank-bar="${esc(item.deviceId)}"
               data-share-percent="${sharePct}"
-              style="height: 100%; width: ${barWidthPct}%; border-radius: 999px; background: var(--win-accent);"
+              style="height: 100%; width: ${barWidthPct}%; border-radius: 999px; background: var(--theme-accent, var(--win-accent));"
             ></div>
           </div>
         </div>`;

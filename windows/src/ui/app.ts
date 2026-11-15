@@ -1390,6 +1390,8 @@ export class MenuMijiaWindowsApp {
       speakerDrawerState: getSpeakerDrawerItemState(this, dev.id),
       energyScope: energyScopeForHost(this),
       sensorHistoryUi: this.sensorHistoryUi,
+      panelTheme: this.settings.panelTheme,
+      isCompactGridMode: this.settings.isCompactGridMode,
       escapeHtml: (v) => this.escapeHtml(v),
     });
   }

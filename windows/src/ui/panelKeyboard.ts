@@ -200,11 +200,13 @@ export function focusPanelOnActivate(host: MenuMijiaWindowsApp): void {
   }
   if (host.expandedDeviceId !== null) {
     const subpage = host.root.querySelector<HTMLElement>(".cc-tile.is-subpage:not([data-exit-ghost])");
-    const active = document.activeElement as HTMLElement | null;
-    if (subpage && (!active || !subpage.contains(active))) {
-      modalFocusableElements(subpage)[0]?.focus({ preventScroll: true });
+    if (subpage) {
+      const active = document.activeElement as HTMLElement | null;
+      if (!active || !subpage.contains(active)) {
+        modalFocusableElements(subpage)[0]?.focus({ preventScroll: true });
+      }
+      return;
     }
-    return;
   }
   const inputEl = host.root.querySelector<HTMLInputElement>("#command-input");
   if (inputEl && !inputEl.disabled) {
@@ -318,7 +320,7 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
       return true;
     }
     if (isEditable && !inInput) return true;
-    if (host.expandedDeviceId !== null && (hasSubpage || !inInput)) {
+    if (host.expandedDeviceId !== null && (hasSubpage || !inInput || !host.panelSearch.query)) {
       event.preventDefault();
       host.expandedDeviceId = null;
       host.render();

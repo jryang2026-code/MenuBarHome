@@ -7,6 +7,7 @@ import { HomeAssistantClient, homeAssistantIdentity, type HAInvoke } from "../co
 import { applyOrder, homeOptions, pageSections, scopedKey, spans, tr3, withAliases } from "./panelPrefs.js";
 import { filterByListCut, foldGroupedLights, kindChips, memberGroupOwners, showsKindRow } from "./listCut.js";
 import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom.js";
+import { getPanelThemeProfile } from "./panelTheme.js";
 import { environmentReadingPriority, type HomeBackend, type SmartDevice } from "../core/models.js";
 import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
 import {
@@ -644,7 +645,12 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
       } else if (current) {
         current.remove();
       } else if (desired) {
-        host.root.querySelector(".cc-footer-status")?.append(desired);
+        if (getPanelThemeProfile(host.settings.panelTheme).shellLayout === "unifiedPopover") {
+          const headerControls = host.root.querySelector(".cc-header-controls");
+          headerControls?.insertBefore(desired, headerControls.querySelector("#btn-hide-panel"));
+        } else {
+          host.root.querySelector(".cc-footer-status")?.append(desired);
+        }
         host.bindAllOffControl();
       }
     }
