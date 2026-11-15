@@ -131,8 +131,12 @@ export function bindLiquidGlassSliders(scope: ParentNode): void {
       e.preventDefault();
       const min = Number(slider.min || "0");
       const max = Number(slider.max || "100");
+      const allowOffGridMax = slider.getAttribute("data-allow-off-grid-max") === "true";
       const dir = e.key === "ArrowRight" || e.key === "ArrowUp" ? 1 : -1;
-      slider.value = formatSliderAttrNumber(SliderStepSnap.stepBy(Number(slider.value || "0"), dir * step, min, max, step));
+      const prevValue = SliderStepSnap.snap(Number(slider.value || "0"), min, max, step, allowOffGridMax);
+      const nextValue = SliderStepSnap.stepBy(prevValue, dir * step, min, max, step, allowOffGridMax);
+      if (nextValue === prevValue) return;
+      slider.value = formatSliderAttrNumber(nextValue);
       syncLiquidGlassSlider(slider);
       slider.dispatchEvent(new Event("input", { bubbles: true }));
       slider.dispatchEvent(new Event("change", { bubbles: true }));
