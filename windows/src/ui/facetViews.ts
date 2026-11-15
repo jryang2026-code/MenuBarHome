@@ -9,6 +9,7 @@ import { facetTitle, facetValue } from "../core/miotFacetText.js";
 import type { FacetControl } from "../core/models.js";
 import { SF_ICONS } from "./appConstants.js";
 import type { DeviceListCut } from "./listCut.js";
+import { renderLiquidGlassSlider } from "./liquidGlassSlider.js";
 
 /**
  * 更多设置 rows (#5, #7): rendered from the shared `deviceProfiles.json` rules with 2-stage folding:
@@ -280,12 +281,19 @@ function row(
         <span class="cc-facet-label">${label}</span>
         <span class="cc-facet-slider-meta"><strong class="cc-facet-value">${value}</strong>${lockBadge}</span>
       </div>
-      <input class="cc-range is-blue" type="range"
-        min="${formatRangeAttr(control.range.min)}" max="${formatRangeAttr(control.range.max)}"
-        step="${formatRangeAttr(control.range.step)}" value="${formatRangeAttr(current)}"
-        data-facet-number="${id}|${controlId}" aria-label="${label}"
-        aria-valuemin="${formatRangeAttr(control.range.min)}" aria-valuemax="${formatRangeAttr(control.range.max)}"
-        aria-valuenow="${formatRangeAttr(current)}" aria-valuetext="${value}"${disabledAttr} />
+      ${renderLiquidGlassSlider({
+        variant: "drawer",
+        min: control.range.min,
+        max: control.range.max,
+        step: control.range.step,
+        value: current,
+        formattedValue: value,
+        toneClass: "is-blue",
+        showDecileTicks: true,
+        inputDataAttrs: `data-facet-number="${id}|${controlId}"`,
+        ariaAttrs: `aria-label="${label}" aria-valuemin="${formatRangeAttr(control.range.min)}" aria-valuemax="${formatRangeAttr(control.range.max)}" aria-valuenow="${formatRangeAttr(current)}" aria-valuetext="${value}"`,
+        disabledAttr,
+      })}
     </div>`;
   }
   if (control.kind === "button") {
