@@ -72,7 +72,7 @@ struct AutomationSettingsSection: View {
                 "No rules exist by default. Lock, lid close and sleep are grouped as Away; unlock and wake as Back. The same trigger runs at most once per minute. Mac-only signals (camera/microphone, power and battery, Wi-Fi, Focus, Calendar, late-night use) are off until you add a rule. Wi-Fi name, Focus status and Calendar need system permission; without it their rules do not fire."
             ))
             .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(DesignTokens.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
 
             Text(L10n.tr(
@@ -80,7 +80,7 @@ struct AutomationSettingsSection: View {
                 "For finer control use the three precise triggers: Screen locked (not asleep), Sleep after lid close, and Sleep (lid open). A lid close locks before it sleeps, so “Screen locked” is decided about 2 s late to avoid mistaking a lid close for a plain lock; sleep itself is never delayed, otherwise the command would miss the suspend. Conditions are ANDed with the trigger, for example “Sleep after lid close + only on office Wi-Fi”."
             ))
             .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(DesignTokens.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
 
             if rules.isEmpty {
@@ -89,7 +89,7 @@ struct AutomationSettingsSection: View {
                     "No rules yet. Create one below, for example “Away → turn off the study light”."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .padding(.vertical, 4)
             } else {
                 ForEach(rules) { rule in
@@ -133,7 +133,7 @@ struct AutomationSettingsSection: View {
                 "Writes your device and scene list to a file only you can read, for the Raycast extension to search. Links from the extension carry a local token and skip confirmation; high-risk devices still ask. Turning this off deletes the file and revokes the token."
             ))
             .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(DesignTokens.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
         }
         .onAppear {
@@ -152,7 +152,7 @@ struct AutomationSettingsSection: View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: rule.trigger.symbolName)
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .frame(width: 16)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -160,12 +160,12 @@ struct AutomationSettingsSection: View {
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                 Text(rule.action.summary(devices: store.devices, scenes: store.scenes))
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                     .lineLimit(2)
                 if let detail = triggerDetail(rule) {
                     Text(detail)
                         .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.secondaryText)
                         .lineLimit(1)
                 }
             }
@@ -185,7 +185,7 @@ struct AutomationSettingsSection: View {
                     .font(.system(size: DesignTokens.TypeSize.caption))
             }
             .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(DesignTokens.secondaryText)
             .help(L10n.tr("删除这条规则", "Delete this rule"))
         }
         .padding(.vertical, 2)
@@ -258,12 +258,12 @@ struct AutomationSettingsSection: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(L10n.tr("新建规则", "New Rule"))
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
 
             HStack(spacing: 6) {
                 Text(L10n.tr("触发", "When"))
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                 Picker(L10n.tr("触发", "When"), selection: $newTrigger) {
                     ForEach(AutomationTrigger.allCases) { trigger in
                         Text(trigger.title).tag(trigger)
@@ -275,7 +275,7 @@ struct AutomationSettingsSection: View {
 
                 Text(L10n.tr("动作", "Then"))
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                 Picker(L10n.tr("动作", "Then"), selection: $newActionKind) {
                     ForEach(AutomationActionKind.allCases) { kind in
                         Text(kind.title).tag(kind)
@@ -315,10 +315,10 @@ struct AutomationSettingsSection: View {
         HStack(spacing: 6) {
             Text(L10n.tr("条件", "If"))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
             Text("Wi-Fi")
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
             Picker("", selection: $newWiFiMode) {
                 ForEach(WiFiConditionMode.allCases) { mode in
                     Text(mode.title).tag(mode)
@@ -365,7 +365,7 @@ struct AutomationSettingsSection: View {
                 "Names are matched exactly. When no Wi-Fi is connected neither mode is satisfied and the rule stays quiet; the same applies without Location permission."
             ))
             .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(DesignTokens.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
 
             // A menu-bar-only app (LSUIElement) has no window at launch, so macOS often suppresses
@@ -426,7 +426,7 @@ struct AutomationSettingsSection: View {
             HStack(spacing: 6) {
                 Text(L10n.tr("电量低于", "Battery below"))
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                 Stepper(value: $newBatteryThreshold, in: 1...100) {
                     Text("\(newBatteryThreshold)%")
                         .font(.system(size: DesignTokens.TypeSize.caption))
@@ -445,18 +445,18 @@ struct AutomationSettingsSection: View {
             HStack(spacing: 6) {
                 Text(L10n.tr("从", "From"))
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                 hourPicker($newLateNightStart)
                 Text(L10n.tr("到", "to"))
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                 hourPicker($newLateNightEnd)
             }
         case .calendarMeetingStartingSoon:
             HStack(spacing: 6) {
                 Text(L10n.tr("提前", "Lead"))
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                 Stepper(value: $newCalendarLeadMinutes, in: 1...60) {
                     Text(L10n.format("%@ 分钟", "%@ min", String(newCalendarLeadMinutes)))
                         .font(.system(size: DesignTokens.TypeSize.caption))
@@ -470,7 +470,7 @@ struct AutomationSettingsSection: View {
         if let permission = newTrigger.requiredPermission {
             Text(permissionHint(permission))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -526,7 +526,7 @@ struct AutomationSettingsSection: View {
                     "No scenes available. Connect Home Assistant and sync scenes first."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
             } else {
                 Picker("", selection: sceneSelection) {
                     ForEach(store.scenes) { scene in
@@ -548,7 +548,7 @@ struct AutomationSettingsSection: View {
                     "No controllable devices (hidden, offline, or detail-only devices are not listed). Connect a data source or unhide a device first."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
             } else {
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(alignment: .leading, spacing: 3) {

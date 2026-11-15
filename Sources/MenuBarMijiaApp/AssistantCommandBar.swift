@@ -439,7 +439,7 @@ struct AssistantResponseArea: View {
                 "Sends: your words, device names/rooms/states, time of day, room temperature\(store.habitSharing == .on ? ", habit summary" : ""). Asked once; revoke in Settings."
             ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 6) {
                 Spacer(minLength: 0)
@@ -513,7 +513,7 @@ struct AssistantResponseArea: View {
                         store.dismissMissedScheduledCommand(id: entry.id)
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(DesignTokens.secondaryText)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(Text(L10n.tr("忽略已错过的定时", "Dismiss missed timer")))
@@ -539,12 +539,12 @@ struct AssistantResponseArea: View {
                     Spacer(minLength: 4)
                     Text(entry.fireDate, style: .timer)
                         .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.secondaryText)
                     Button {
                         store.cancelScheduledCommands(id: entry.id)
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(DesignTokens.secondaryText)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(Text(L10n.tr("取消这个定时", "Cancel this timer")))
@@ -679,7 +679,7 @@ private struct ExecutionRouteBadge: View {
             }
         }
         .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(DesignTokens.secondaryText)
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
         .background(Capsule().fill(Color.primary.opacity(0.07)))
@@ -931,14 +931,14 @@ struct AssistantSettingsSection: View {
                 }
                 Text(AssistantSettingsCopy.subtitle)
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack {
                 Text(AssistantSettingsCopy.providerLabel)
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                 Spacer()
                 Picker(
                     "",
@@ -1107,7 +1107,7 @@ struct AssistantSettingsSection: View {
             HStack(spacing: 4) {
                 Text(AssistantSettingsCopy.modelLabel)
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                 Spacer()
                 ForEach(selectedPreset.recommendedModels.prefix(2), id: \.self) { candidate in
                     Button(candidate) {
@@ -1135,7 +1135,7 @@ struct AssistantSettingsSection: View {
 
         Text(AssistantSettingsCopy.protocolNote)
             .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(DesignTokens.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
 
         if selectedPreset.supportsKeyImport {
@@ -1165,7 +1165,7 @@ struct AssistantSettingsSection: View {
 
             Text(AssistantSettingsCopy.learnHabitsNote)
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
             Toggle(isOn: Binding(
@@ -1195,12 +1195,12 @@ struct AssistantSettingsSection: View {
                 )
                 Text(habitSharePreview.isEmpty ? AssistantSettingsCopy.habitPreviewEmpty : habitSharePreview)
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 Text(AssistantSettingsCopy.habitPreviewEmpty)
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
             }
 
             Toggle(isOn: Binding(
@@ -1262,7 +1262,7 @@ struct AssistantSettingsSection: View {
                         } label: {
                             Image(systemName: "trash")
                                 .font(.system(size: DesignTokens.TypeSize.caption))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(DesignTokens.secondaryText)
                         }
                         .buttonStyle(.plain)
                         .help(L10n.tr("忘掉这一条", "Forget this habit"))
@@ -1275,7 +1275,7 @@ struct AssistantSettingsSection: View {
                 HStack(spacing: 6) {
                     Text(L10n.tr("已允许发送到：\(consented.joined(separator: "、"))", "Allowed to send to: \(consented.joined(separator: ", "))"))
                         .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.secondaryText)
                         .lineLimit(2)
                     Spacer(minLength: 4)
                     Button(L10n.tr("撤销授权", "Revoke")) {
@@ -1289,7 +1289,7 @@ struct AssistantSettingsSection: View {
 
             Text(AssistantSettingsCopy.privacyExplanation)
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -1304,7 +1304,7 @@ struct AssistantSettingsSection: View {
             if let importedSource {
                 Text(L10n.tr("来源：\(importedSource)（已复制到本机钥匙串）", "Source: \(importedSource) (copied to Keychain)"))
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                 Button(L10n.tr("撤销导入", "Remove")) {
                     AssistantConfig.removeStoredAPIKey(forBaseURL: target, defaults: store.userDefaults, vault: store.credentialVault)
                     apiKeyDraft = ""
@@ -1333,7 +1333,7 @@ struct AssistantSettingsSection: View {
                 .help(L10n.tr("点了才会读取 ~/.config/codexbar/config.json 和环境变量", "Reads ~/.config/codexbar/config.json and environment variables only when clicked"))
                 Text(L10n.tr("仅在你点击后读取，不会自动使用。", "Read only when you click; never used automatically."))
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
             }
             Spacer(minLength: 0)
         }
@@ -1343,7 +1343,7 @@ struct AssistantSettingsSection: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
             field()
                 .controlSize(.regular)
                 .font(.system(size: DesignTokens.TypeSize.body, design: .monospaced))

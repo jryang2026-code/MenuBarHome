@@ -335,7 +335,7 @@ struct SettingsSection<Content: View>: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .padding(.leading, 4)
                 .accessibilityAddTraits(.isHeader)
 
@@ -530,7 +530,7 @@ private struct GeneralSettingsTab: View {
                     "When on, member lights fold into their Mi light-group card. If that card is hidden, offline or filtered out, the member lights stay visible. All Off, scenes, search and the assistant still use the full device set. On by default."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
                 SettingsToggleRow(
@@ -562,7 +562,7 @@ private struct GeneralSettingsTab: View {
                     "Off by default. When enabled, successful toggles, All Off and AI actions play a soft cue, and failures play a different one."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
                 HStack {
@@ -642,7 +642,7 @@ private struct GeneralSettingsTab: View {
                     "Brightness, mode and fan level are the only writes open by default. Other switches, sliders and buttons under More Settings stay disabled until you turn this on; check that the device really supports the setting first."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -667,7 +667,7 @@ private struct GeneralSettingsTab: View {
                     "Turning this off unregisters the shortcut immediately so other apps can use it."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -725,7 +725,7 @@ private struct GeneralSettingsTab: View {
                 HStack(spacing: 6) {
                     Text(L10n.tr("门铃画面自动收起", "Close the doorbell view after"))
                         .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.secondaryText)
                     Spacer()
                     Stepper(
                         value: Binding(get: { store.doorbellPopupSeconds }, set: { store.doorbellPopupSeconds = $0 }),
@@ -776,7 +776,7 @@ private struct GeneralSettingsTab: View {
                             "Safety alerts (a device left on too long, low battery) and missed timers are delivered as local macOS notifications. They stay on this Mac; the rest of the app works without them."
                         ))
                         .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
 
                         HStack(spacing: 8) {
@@ -809,7 +809,7 @@ private struct GeneralSettingsTab: View {
                         HStack(spacing: 8) {
                             Image(systemName: dev.sfSymbolName)
                                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(DesignTokens.secondaryText)
                                 .frame(width: 18)
 
                             VStack(alignment: .leading, spacing: 1) {
@@ -817,7 +817,7 @@ private struct GeneralSettingsTab: View {
                                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                                 Text(L10n.displayRoomName(dev.roomName))
                                     .font(.system(size: DesignTokens.TypeSize.caption))
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(DesignTokens.secondaryText)
                             }
 
                             Spacer()
@@ -837,7 +837,7 @@ private struct GeneralSettingsTab: View {
                 HStack {
                     Text(L10n.tr("重新打开新手引导，再看一遍连接、搜索与全关撤销。", "Reopen the setup guide to review connecting, search and All Off + Undo."))
                         .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.secondaryText)
                     Spacer()
                     Button {
                         store.reopenOnboarding()
@@ -1069,7 +1069,7 @@ private struct ConnectionSettingsTab: View {
                 HStack {
                     Text(store.connectionSourceSummary)
                         .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.secondaryText)
                     Spacer()
                     Text(connectionBadgeText)
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
@@ -1100,7 +1100,7 @@ private struct ConnectionSettingsTab: View {
                         "Home Assistant and Xiaomi Cloud can be configured together. With both, the app connects in parallel and merges overlapping devices; one source runs alone when it is the only one configured."
                      ))
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -1171,7 +1171,7 @@ private struct ConnectionSettingsTab: View {
                                 Text(L10n.tr("我用 Home Assistant", "I use Home Assistant"))
                                 Spacer()
                                 Image(systemName: "chevron.right")
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(DesignTokens.secondaryText)
                             }
                             .contentShape(Rectangle())
                         }
@@ -1181,7 +1181,7 @@ private struct ConnectionSettingsTab: View {
                             "Already run Home Assistant? Connect it here. If you only use Mi Home, skip this."
                         ))
                         .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.secondaryText)
                     }
                 }
 
@@ -1223,7 +1223,7 @@ private struct ConnectionSettingsTab: View {
                 HStack {
                     Text(L10n.tr("服务器地址", "Server URL"))
                         .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.secondaryText)
                     Spacer()
                     if let firstHA = store.discoveredHAInstances.first {
                         if HAWebSocketProvider.normalizeBaseURL(urlDraft) == firstHA.baseURL {
@@ -1259,7 +1259,7 @@ private struct ConnectionSettingsTab: View {
                 HStack {
                     Text(L10n.tr("长期访问令牌 (安全存入钥匙串)", "Long-Lived Access Token (Stored in Keychain)"))
                         .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.secondaryText)
                     Spacer()
                     if let secURL = URL(string: "\(HAWebSocketProvider.normalizeBaseURL(HAConnectionSaveGuard.effectiveURL(urlDraft)))/profile/security") {
                         Button(L10n.tr("打开网页取令牌", "Open Security Page")) {
@@ -1365,7 +1365,7 @@ private struct AssistantSettingsTab: View {
                     "Only matters once an AI service is set up. On: actions the AI is unsure about become suggestions and wait for a click. Off: it acts more boldly. Risky devices such as heaters, plugs and vacuums still ask first."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
                 DisclosureGroup(isExpanded: $showsThresholdDetail) {
@@ -1374,13 +1374,13 @@ private struct AssistantSettingsTab: View {
                         "Below \(Int(ModelActionPolicy.autoRunThreshold * 100))% confidence counts as unsure, so the AI asks first. The threshold is fixed to prevent accidental control."
                     ))
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 4)
                 } label: {
                     Text(L10n.tr("高级：把握度阈值", "Advanced: confidence threshold"))
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.secondaryText)
                 }
                 .settingsRow(anchor: .confidenceThreshold)
             }
@@ -1420,7 +1420,7 @@ private struct AppearanceSettingsTab: View {
                     "The panel follows light and dark automatically, and a device that is on sits one step brighter than the off tile."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
                 if #available(macOS 26.0, *) {
@@ -1491,7 +1491,7 @@ private struct PrivacySettingsTab: View {
                     "Copies Markdown for a GitHub issue: versions, OS, backend, models and skipped devices only. No device IDs, tokens, server addresses or account information."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 8) {
@@ -1528,14 +1528,14 @@ private struct PrivacySettingsTab: View {
                     "Scans the raw device registry for devices the panel skipped, with the reason. The first Mi Cloud scan loads per-model specs and may take a while; demo mode has none."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
                 HStack {
                     if let scannedAt = scanner.lastScannedAt, !scanner.isScanning {
                         Text(L10n.tr("上次扫描：\(scannedAt.formatted(date: .abbreviated, time: .shortened))", "Last scan: \(scannedAt.formatted(date: .abbreviated, time: .shortened))"))
                             .font(.system(size: DesignTokens.TypeSize.caption))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(DesignTokens.secondaryText)
                     }
                     Spacer()
                     Button(scanner.isScanning
@@ -1564,7 +1564,7 @@ private struct PrivacySettingsTab: View {
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: "questionmark.square.dashed")
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(DesignTokens.secondaryText)
                             .frame(width: 18)
 
                         VStack(alignment: .leading, spacing: 1) {
@@ -1572,7 +1572,7 @@ private struct PrivacySettingsTab: View {
                                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                             Text("\(device.model.isEmpty ? L10n.tr("未知型号", "Unknown model") : device.model) · \(device.reasonText)")
                                 .font(.system(size: DesignTokens.TypeSize.caption))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(DesignTokens.secondaryText)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
 
@@ -1611,7 +1611,7 @@ private struct PrivacySettingsTab: View {
                     "When on, card/detail controls, URL links, shortcuts and assistant commands are refused while the Mac is locked. Scheduled commands and automation rules still run. On by default."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
                 Divider().overlay(Color.primary.opacity(0.06))
@@ -1625,7 +1625,7 @@ private struct PrivacySettingsTab: View {
                             "Signs out every Xiaomi Home account, deletes the Home Assistant token and disconnects, and clears saved AI keys and cloud consent. Devices, rooms and local history stay."
                         ))
                         .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 12)
@@ -1663,7 +1663,7 @@ private struct PrivacySettingsTab: View {
                 .padding(.top, 2)
             Text(text)
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -1747,7 +1747,7 @@ private struct AboutSettingsTab: View {
                             .font(.system(size: DesignTokens.TypeSize.body, weight: .bold))
                         Text(L10n.tr("版本 \(appVersion) (\(buildNumber))", "Version \(appVersion) (\(buildNumber))"))
                             .font(.system(size: DesignTokens.TypeSize.caption))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(DesignTokens.secondaryText)
                             .monospacedDigit()
                     }
 
@@ -1775,7 +1775,7 @@ private struct AboutSettingsTab: View {
                 HStack {
                     Text(L10n.tr("完全退出后菜单栏图标与快捷键都会停止。", "Quitting stops the menu bar icon and the global shortcut."))
                         .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.secondaryText)
                     Spacer()
                     Button {
                         NSApplication.shared.terminate(nil)
@@ -1844,7 +1844,7 @@ struct LGWebOSSettingsSection: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(L10n.tr("局域网 IP", "LAN IP"))
                             .font(.system(size: DesignTokens.TypeSize.caption))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(DesignTokens.secondaryText)
                         TextField(L10n.tr("如 192.168.1.50", "e.g. 192.168.1.50"), text: $hostDraft)
                             .textFieldStyle(.roundedBorder)
                             .controlSize(.regular)
@@ -1854,7 +1854,7 @@ struct LGWebOSSettingsSection: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(L10n.tr("MAC 地址 (Wake-on-LAN)", "MAC Address (Wake-on-LAN)"))
                             .font(.system(size: DesignTokens.TypeSize.caption))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(DesignTokens.secondaryText)
                         TextField(L10n.tr("如 AA:BB:CC:DD:EE:FF", "e.g. AA:BB:CC:DD:EE:FF"), text: $macDraft)
                             .textFieldStyle(.roundedBorder)
                             .controlSize(.regular)

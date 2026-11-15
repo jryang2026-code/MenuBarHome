@@ -25,7 +25,7 @@ struct EnergySettingsSection: View {
                 "Stored on this Mac only. Every figure comes from each plug's own cumulative counter — usage is never estimated from wattage. Recording starts with the first reading; earlier usage is never backfilled, and the first reading only sets a baseline. A delta that spans midnight is credited to the earlier sample day instead of being split or guessed, so “today” cannot claim energy that may have been used yesterday. History keeps 31 days and can be cleared at any time."
             ))
             .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(DesignTokens.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
 
             if let startedAt = history.recordingStartedAt {
@@ -42,7 +42,7 @@ struct EnergySettingsSection: View {
                         "The baseline is stored; the first measured increase is still pending. A figure appears only when a counter actually grows."
                     ))
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
@@ -51,7 +51,7 @@ struct EnergySettingsSection: View {
                     "No plug counter reading yet. Recording starts automatically once a plug that reports cumulative energy is connected."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -108,14 +108,14 @@ struct EnergySettingsSection: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
             Text(isObserved ? Self.kwhText(kwh) : "—")
                 .font(.system(size: DesignTokens.TypeSize.title, weight: .semibold, design: .rounded))
                 .monospacedDigit()
             if isObserved, let cost = costText(kwh) {
                 Text(cost)
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
             }
         }
         .frame(minWidth: 96, alignment: .leading)
@@ -129,13 +129,13 @@ struct EnergySettingsSection: View {
         return VStack(alignment: .leading, spacing: 4) {
             Text(L10n.tr("最近 7 天每天用电", "Daily usage, last 7 days"))
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
 
             ForEach(daily) { total in
                 HStack(spacing: 8) {
                     Text(Self.dayLabel(total.day, isToday: total.id == lastId))
                         .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.secondaryText)
                         .frame(width: 88, alignment: .leading)
 
                     bar(fraction: fraction(total.kwh, of: maxDay), isActive: total.isObserved)
@@ -171,7 +171,7 @@ struct EnergySettingsSection: View {
         return VStack(alignment: .leading, spacing: 4) {
             Text(L10n.tr("设备排行（最近 7 天）", "By device (last 7 days)"))
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
 
             if ranking.isEmpty {
                 Text(L10n.tr(
@@ -179,13 +179,13 @@ struct EnergySettingsSection: View {
                     "No measured increase yet. Devices appear once their counter grows."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
             } else {
                 ForEach(ranking.prefix(6)) { total in
                     HStack(spacing: 8) {
                         Image(systemName: "powerplug")
                             .font(.system(size: DesignTokens.TypeSize.caption))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(DesignTokens.secondaryText)
                             .frame(width: 14)
                         Text(deviceName(for: total))
                             .font(.system(size: DesignTokens.TypeSize.caption))
@@ -254,13 +254,13 @@ struct EnergySettingsSection: View {
         HStack(spacing: 8) {
             Image(systemName: "trash")
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
             Text(L10n.tr(
                 "清除会删除全部用电记录与基线，下一次读数重新开始；电价保留。",
                 "Clearing deletes every recorded sample and baseline so the next reading starts over; the price is kept."
             ))
             .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(DesignTokens.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
             Button(L10n.tr("清除用电记录", "Clear energy history")) {

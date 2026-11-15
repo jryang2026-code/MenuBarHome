@@ -96,7 +96,7 @@ Switches, pickers and sliders in Settings apply at once. A text form that carrie
 
 ## §18. Text Size And Labels
 
-Secondary text is at least 11 pt (the first-run guide uses 11 / 11.5, not 10 / 10.5). Text that states a limit, a risk or a consequence (an unofficial API, a plaintext token, an expiring sign-in) is at least 12 pt (`DesignTokens.TypeSize.caption`) and uses the primary colour or a warning tint, not secondary grey. Every icon-only button needs both `accessibilityLabel` and a hover help (`help` / `panelHelp`). Contrast is not yet measured; check light and dark with Accessibility Inspector before claiming WCAG AA.
+Secondary text is at least 11 pt (the first-run guide uses 11 / 11.5, not 10 / 10.5). Text that states a limit, a risk or a consequence (an unofficial API, a plaintext token, an expiring sign-in) is at least 12 pt (`DesignTokens.TypeSize.caption`) and uses the primary colour or a warning tint, not secondary grey. Every icon-only button needs both `accessibilityLabel` and a hover help (`help` / `panelHelp`). Explanatory text in Settings and onboarding uses `DesignTokens.secondaryText`, not the system `.secondary`: rendered snapshots show `.secondary` at about 3.4:1 on white in light mode (WCAG AA body text needs 4.5:1), while `secondaryText` measures about 4.9:1 light and 6.4:1 dark. Measure rendered pixels in the snapshot baselines before claiming a contrast result.
 
 ## Tooling Quick Reference
 
