@@ -24,8 +24,10 @@ import type {
 import { shareHabitSentence } from "./habits.js";
 import {
   cleanPromptField,
+  PROMPT_ACTIVE_STATE_LIMIT,
   PROMPT_DATA_NOTICE,
   PROMPT_NAME_LIMIT,
+  PROMPT_OPTION_LIMIT,
   PROMPT_STATE_LIMIT,
   sanitizePromptText,
 } from "./promptText.js";
@@ -47,7 +49,11 @@ export function buildAssistantContext(options: {
 }): AssistantContext {
   const active = options.devices
     .filter((device) => device.isOnline && isActiveDevice(device))
-    .map((device) => `${device.name}(${catalogStateSummary(device)})`);
+    .map((device) => {
+      const name = cleanPromptField(device.name, PROMPT_NAME_LIMIT);
+      const state = cleanPromptField(catalogStateSummary(device), PROMPT_ACTIVE_STATE_LIMIT);
+      return `${name}(${state})`;
+    });
   const habitSummary = shareHabitSentence({
     sharing: options.sharing,
     memory: options.memory,
@@ -85,26 +91,41 @@ export function catalogStateSummary(device: SmartDevice): string {
   const kind = device.kind;
   switch (kind.kind) {
     case "light": {
-      const effects = kind.availableEffects.length > 0 ? ` 可用模式:${kind.availableEffects.join("/")}` : "";
+      const cleanedEffects = kind.availableEffects
+        .map((item) => cleanPromptField(item, PROMPT_OPTION_LIMIT))
+        .filter(Boolean);
+      const effects = cleanedEffects.length > 0 ? ` 可用模式:${cleanedEffects.join("/")}` : "";
       if (!kind.isOn) return `关${effects}`;
       let text = "开";
       if (kind.brightnessPercent !== null) text += ` 亮度${kind.brightnessPercent}%`;
-      if (kind.currentEffect) text += ` 当前:${kind.currentEffect}`;
+      const currentEffect = kind.currentEffect ? cleanPromptField(kind.currentEffect, PROMPT_OPTION_LIMIT) : "";
+      if (currentEffect) text += ` 当前:${currentEffect}`;
       return text + effects;
     }
     case "climate": {
-      const modes = kind.availableModes.join("/");
+      const modes = kind.availableModes
+        .map((item) => cleanPromptField(item, PROMPT_OPTION_LIMIT))
+        .filter(Boolean)
+        .join("/");
       const range = `${formatTemperatureValue(kind.minTemp)}-${formatTemperatureValue(kind.maxTemp)}°C`;
+      const currentMode = cleanPromptField(kind.hvacMode, PROMPT_OPTION_LIMIT);
       const current = kind.isOn && kind.hvacMode !== "off"
-        ? `${kind.hvacMode} ${formatTemperatureValue(kind.targetTemperature)}°C`
+        ? `${currentMode} ${formatTemperatureValue(kind.targetTemperature)}°C`
         : "关";
-      const fan = kind.availableFanModes.length > 0 ? ` 可选风速:${kind.availableFanModes.join("/")}` : "";
+      const fanModes = kind.availableFanModes
+        .map((item) => cleanPromptField(item, PROMPT_OPTION_LIMIT))
+        .filter(Boolean);
+      const fan = fanModes.length > 0 ? ` 可选风速:${fanModes.join("/")}` : "";
       return `${current} 可用模式:${modes} 温度范围:${range}${fan}`;
     }
     case "fan": {
       let text = kind.isOn ? "开" : "关";
-      if (kind.isOn && kind.presetMode) text += ` 风速:${kind.presetMode}`;
-      if (kind.availablePresetModes.length > 0) text += ` 可选风速:${kind.availablePresetModes.join("/")}`;
+      const preset = kind.presetMode ? cleanPromptField(kind.presetMode, PROMPT_OPTION_LIMIT) : "";
+      if (kind.isOn && preset) text += ` 风速:${preset}`;
+      const presetModes = kind.availablePresetModes
+        .map((item) => cleanPromptField(item, PROMPT_OPTION_LIMIT))
+        .filter(Boolean);
+      if (presetModes.length > 0) text += ` 可选风速:${presetModes.join("/")}`;
       if (kind.isOscillating !== null) text += ` 摇头:${kind.isOscillating ? "开" : "关"}`;
       return text;
     }
@@ -132,16 +153,22 @@ export function catalogStateSummary(device: SmartDevice): string {
         if (kind.currentHumidity !== null && Number.isFinite(kind.currentHumidity)) {
           parts.push(`当前湿度${Math.round(kind.currentHumidity)}%`);
         }
-        if (kind.currentMode) parts.push(kind.currentMode);
+        const currentMode = kind.currentMode ? cleanPromptField(kind.currentMode, PROMPT_OPTION_LIMIT) : "";
+        if (currentMode) parts.push(currentMode);
         return parts.join(" ");
       }
       const parts = [kind.isOn ? "开" : "关"];
-      if (kind.statusText) parts.push(kind.statusText);
+      const statusText = kind.statusText ? cleanPromptField(kind.statusText, PROMPT_OPTION_LIMIT) : "";
+      if (statusText) parts.push(statusText);
       if (kind.targetTemperature !== null) parts.push(`${formatTemperatureValue(kind.targetTemperature)}°C`);
       return parts.join(" ");
     }
-    case "generic":
-      return kind.readouts.length > 0 ? kind.readouts.join(" ") : kind.typeTitle;
+    case "generic": {
+      const readouts = kind.readouts
+        .map((item) => cleanPromptField(item, PROMPT_OPTION_LIMIT))
+        .filter(Boolean);
+      return readouts.length > 0 ? readouts.join(" ") : cleanPromptField(kind.typeTitle, PROMPT_OPTION_LIMIT);
+    }
   }
 }
 

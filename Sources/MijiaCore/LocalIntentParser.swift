@@ -160,12 +160,12 @@ public enum LocalIntentParser {
         if sceneCore.count >= 2 {
             let rawContaining = scenes.filter { !$0.name.isEmpty && strippedRawSceneText($0.name).contains(rawSceneCore) }
             if rawContaining.count == 1, let scene = rawContaining.first {
-                return scenePlan(scene)
+                return sceneConfirmationPlan(scene)
             }
             if rawContaining.isEmpty {
                 let containing = scenes.filter { !$0.name.isEmpty && strippedSceneText($0.name).contains(sceneCore) }
                 if containing.count == 1, let scene = containing.first {
-                    return scenePlan(scene)
+                    return sceneConfirmationPlan(scene)
                 }
             }
         }
@@ -187,6 +187,22 @@ public enum LocalIntentParser {
             intents: intents,
             reply: IntentReply.describe(intents, devices: [], scenes: [scene]),
             source: .local
+        )
+    }
+
+    private static func sceneConfirmationPlan(_ scene: HomeScene) -> IntentPlan {
+        let intents = [DeviceIntent(targetId: scene.id, operation: .activateScene)]
+        return IntentPlan(
+            intents: [],
+            reply: ModelActionPolicy.confirmationReply(ranReply: nil),
+            source: .local,
+            suggestions: ModelActionPolicy.confirmationChips(
+                for: intents,
+                probability: nil,
+                idPrefix: "confirm",
+                devices: [],
+                scenes: [scene]
+            )
         )
     }
 
@@ -301,17 +317,9 @@ public enum LocalIntentParser {
             for candidates in matchedEntries {
                 let preScript = disambiguateDeviceScriptCollision(candidates, rawUtterance: rawUtterance)
                 let initialCandidates = preScript.isEmpty ? candidates : preScript
-                let hasFullCandidate = initialCandidates.contains { $0.isFull }
-                let narrowedCandidates: [DevicePhraseCandidate]
-                if hasFullCandidate {
-                    narrowedCandidates = (initialCandidates.count > 1 && !matchedRooms.isEmpty)
-                        ? initialCandidates.filter { roomDeviceIds.contains($0.id) }
-                        : initialCandidates
-                } else {
-                    narrowedCandidates = matchedRooms.isEmpty
-                        ? initialCandidates
-                        : initialCandidates.filter { roomDeviceIds.contains($0.id) }
-                }
+                let narrowedCandidates = matchedRooms.isEmpty
+                    ? initialCandidates
+                    : initialCandidates.filter { roomDeviceIds.contains($0.id) }
                 guard !narrowedCandidates.isEmpty else { return nil }
                 let roomResolvedIds = Set(disambiguateRoomDevices(
                     narrowedCandidates.compactMap { deviceById[$0.id] },
@@ -788,7 +796,8 @@ public enum LocalIntentParser {
 
         // Check scene activation ("activate sleep mode", "run focus scene")
         for scene in scenes where !scene.name.isEmpty {
-            let sName = scene.name.lowercased()
+            let sName = IntentValidator.normalizedSceneName(scene.name).lowercased()
+            guard !sName.isEmpty else { continue }
             if lower == "activate \(sName)" || lower == "run \(sName)" || lower == "start \(sName)" || lower == "\(sName) scene" {
                 return scenePlan(scene)
             }
@@ -941,9 +950,9 @@ public enum LocalIntentParser {
 
         var explicitIds: [String] = []
         for group in explicitGroups {
-            let narrowed = (group.count > 1 && !matchedRoomKeys.isEmpty)
-                ? group.filter { roomDeviceIds.contains($0.id) }
-                : group
+            let narrowed = matchedRoomKeys.isEmpty
+                ? group
+                : group.filter { roomDeviceIds.contains($0.id) }
             guard !narrowed.isEmpty else { return nil }
             let resolved = disambiguateRoomDevices(narrowed, panelRoom: panelRoom)
             guard !resolved.isEmpty else { return nil }

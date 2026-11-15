@@ -1,5 +1,14 @@
 import { cancelScheduledCommands, confirmMissedScheduledCommand } from "./scheduledCommands.js";
-import { IntentReply, IntentValidator, ManualControlPolicy, ModelActionPolicy } from "../core/assistant.js";
+import { confirmDelayedSuggestion } from "./naturalCommand.js";
+import {
+  IntentReply,
+  IntentValidator,
+  ManualControlPolicy,
+  ModelActionPolicy,
+  getSuggestionDelaySpec,
+  suggestionBaseId,
+  withSuggestionDelay,
+} from "../core/assistant.js";
 import {
   type DeviceCommand, type DeviceIntent, type FacetControl, type SmartDevice,
   applianceModeStartsHeating, deviceCanTogglePower, hasDetailDrawer, isDeviceActiveOn,
@@ -618,12 +627,15 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         host.pendingSuggestions = host.pendingSuggestions.filter((s) => s.id !== suggestion.id);
         const aliasedDevices = withAliases(host.layout, host.devices);
         const intents = IntentValidator.sanitize(suggestion.intents, aliasedDevices, host.scenes);
+        const baseId = suggestionBaseId(suggestion.id);
+        const delaySpec = getSuggestionDelaySpec(suggestion);
         // Picking a bare-category open candidate is still a manual control on a high-risk device (#274).
         if (
-          suggestion.id.startsWith("bare:on:") &&
+          baseId.startsWith("bare:on:") &&
           intents.some((intent) => ManualControlPolicy.requiresConfirmation(intent, aliasedDevices))
         ) {
-          host.pendingSuggestions = ModelActionPolicy.chips(intents, null, "confirm:bare", aliasedDevices, host.scenes, true);
+          const chips = ModelActionPolicy.chips(intents, null, "confirm:bare", aliasedDevices, host.scenes, true);
+          host.pendingSuggestions = delaySpec ? chips.map((chip) => withSuggestionDelay(chip, delaySpec)) : chips;
           host.replyBanner = {
             text: t("「{action}」属于高风险设备，再点一次确认执行", {
               action: IntentReply.describe(intents, aliasedDevices, host.scenes).replace(/^已/, ""),
@@ -631,6 +643,10 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
             source: t("需要确认"),
           };
           host.render();
+          return;
+        }
+        if (delaySpec) {
+          confirmDelayedSuggestion(host, suggestion, delaySpec);
           return;
         }
         void host.executeIntents(intents, IntentReply.describe(intents, aliasedDevices, host.scenes), t("已确认"), { recordHabits: true });

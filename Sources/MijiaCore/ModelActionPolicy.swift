@@ -32,6 +32,8 @@ public struct ModelDecision: Equatable, Sendable {
 
 enum PromptText {
     static let nameLimit = 64
+    static let activeStateLimit = 96
+    static let optionLimit = 32
     static let stateLimit = 160
     /// Ambient text is stripped of control characters, not cut to a catalog field.
     static let contextLimit = 8_000
@@ -48,7 +50,19 @@ enum PromptText {
         return Int(total.rounded(.up))
     }
 
+    static func cleanField(_ raw: String, limit: Int = contextLimit) -> String {
+        let stripped = stripControlScalars(raw).trimmingCharacters(in: .whitespacesAndNewlines)
+        if stripped.count <= limit { return stripped }
+        return String(stripped.prefix(limit)).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func sanitize(_ raw: String, limit: Int) -> String {
+        let filtered = stripControlScalars(raw)
+        if filtered.count <= limit { return filtered }
+        return String(filtered.prefix(limit))
+    }
+
+    private static func stripControlScalars(_ raw: String) -> String {
         var dropped = false
         var scalars: [Unicode.Scalar] = []
         scalars.reserveCapacity(raw.unicodeScalars.count)
@@ -59,9 +73,7 @@ enum PromptText {
             }
             scalars.append(scalar)
         }
-        let filtered = dropped ? String(String.UnicodeScalarView(scalars)) : raw
-        if filtered.count <= limit { return filtered }
-        return String(filtered.prefix(limit))
+        return dropped ? String(String.UnicodeScalarView(scalars)) : raw
     }
 
     private static func drops(_ scalar: Unicode.Scalar) -> Bool {
@@ -130,8 +142,14 @@ public enum ModelActionPolicy {
             }
         }
 
+        let sceneById = Dictionary(scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let deviceIDs = Set(surviving.compactMap { deviceById[$0.intent.targetId] == nil ? nil : $0.intent.targetId })
-        let wide = deviceIDs.count > maxAutoRunDevices
+        let sceneIDs = Set(surviving.compactMap {
+            $0.intent.operation == .activateScene && sceneById[$0.intent.targetId] != nil ? $0.intent.targetId : nil
+        })
+        let wide = sceneIDs.count >= 2
+            || (!sceneIDs.isEmpty && !deviceIDs.isEmpty)
+            || deviceIDs.count > maxAutoRunDevices
         let judged = surviving.map { action -> (action: ChosenAction, confirms: Bool) in
             if wide {
                 return (action, true)
@@ -145,9 +163,11 @@ public enum ModelActionPolicy {
                     || needsConfirmation(action.intent, devices: devices)
                 return (action, confirms)
             }
-            if let scene = scenes.first(where: { $0.id == action.intent.targetId }) {
-                let lowConfidence = needsUnsureConfirmation(action.confidence, policy: policy)
-                let confirms = PromptText.sanitize(scene.name, limit: PromptText.nameLimit) != scene.name || lowConfidence
+            if let scene = sceneById[action.intent.targetId] {
+                let lowOrMissingConfidence = policy.askWhenUnsure
+                    && (action.confidence == nil || needsUnsureConfirmation(action.confidence, policy: policy))
+                let confirms = PromptText.sanitize(scene.name, limit: PromptText.nameLimit) != scene.name
+                    || lowOrMissingConfidence
                 return (action, confirms)
             }
             let confirms = needsUnsureConfirmation(action.confidence, policy: policy)
@@ -311,7 +331,7 @@ public enum ModelActionPolicy {
                   let title = UserHabitMemory.suggestionTitle(for: first, devices: devices, scenes: scenes) else {
                 return []
             }
-            let targetCount = Set(intents.map(\.targetId)).count
+            let targetCount = Set(intents.map { "\($0.operation == .activateScene ? "s:" : "d:")\($0.targetId)" }).count
             let fullTitle = targetCount > 1 ? title + L10n.tr(" 等 \(targetCount) 台", " +\(targetCount - 1)") : title
             return [chip(id: idPrefix, title: fullTitle, group: intents)]
         }

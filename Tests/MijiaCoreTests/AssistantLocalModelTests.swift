@@ -271,12 +271,14 @@ struct AssistantLocalModelTests {
         )
 
         #expect(plan.source == .model)
-        #expect(plan.intents == [
+        #expect(plan.intents.isEmpty)
+        #expect(plan.suggestions.count == 1)
+        #expect(plan.suggestions.first?.id == "confirm")
+        #expect(plan.suggestions.first?.intents == [
             DeviceIntent(targetId: "dev_study_ceiling", operation: .power(true)),
             DeviceIntent(targetId: "scene_sleep", operation: .activateScene)
         ])
-        #expect(plan.suggestions.isEmpty)
-        #expect(plan.reply == "晚安")
+        #expect(plan.reply == "没把握直接执行，点下面的建议再执行")
     }
 
     @Test("A room group alias expands to every light in the room")

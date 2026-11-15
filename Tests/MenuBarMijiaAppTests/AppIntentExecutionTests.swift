@@ -243,6 +243,28 @@ struct AppIntentExecutionTests {
             #expect(store.lastRaycastCommandFeedback?.message.contains("已取消") == true)
         }
     }
+
+    @Test("URLCommandHandler and SceneQuery normalize repeated whitespace in scene names (#31f)")
+    func sceneWhitespaceNormalizationInURLAndAppIntents() async throws {
+        let suite = "test.scene.whitespace.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let provider = ControlledIntentProvider(autoComplete: true)
+        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let spacedScene = HomeScene(id: "sc_movie", name: "  Movie   Night  ", entityId: "scene.movie_night")
+        await provider.sendSnapshot(SynthesizedHome(scenes: [spacedScene]))
+        try await store.waitForTestSnapshot()
+
+        store.setRaycastIntegration(enabled: true)
+        let token = try #require(store.raycastBridgeToken)
+        let handler = URLCommandHandler()
+        let url = try #require(
+            URL(string: "menumijia://scene?name=Movie%20Night&token=\(token)&id=ws-scene-1")
+        )
+        await handler.handle(url, in: store)
+        #expect(await provider.commandCount == 1)
+        #expect(store.lastRaycastCommandFeedback?.requestId == "ws-scene-1")
+        #expect(store.lastRaycastCommandFeedback?.isError == false)
+    }
 }
 
 private actor ControlledIntentProvider: HomeProvider {

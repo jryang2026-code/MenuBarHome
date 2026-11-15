@@ -507,6 +507,14 @@
       "expectedReply": "已关闭书房台灯"
     },
     {
+      "utterance": "关客厅台灯",
+      "expected": null
+    },
+    {
+      "utterance": "关客厅的书房台灯",
+      "expected": null
+    },
+    {
       "utterance": "如果没人就关闭书房吸顶灯",
       "expected": null
     },
@@ -2341,6 +2349,104 @@
           "panelRoom": { "id": "study", "name": "书房" },
           "expected": [],
           "expectedReply": "书房的灯都开着"
+        }
+      ]
+    },
+    {
+      "name": "room word filters even a single full-name candidate in another room (#24)",
+      "devices": [
+        {
+          "id": "dev_only_study_lamp",
+          "name": "台灯",
+          "roomId": "study",
+          "roomName": "书房",
+          "model": "yeelink.light.lamp4",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_only_study_lamp:2",
+            "isOn": true,
+            "brightnessPercent": 60,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_only_en_study_lamp",
+          "name": "Desk Lamp",
+          "roomId": "study",
+          "roomName": "Study",
+          "model": "yeelink.light.lamp4",
+          "isOnline": true,
+          "kind": {
+            "kind": "light",
+            "entityId": "miot:dev_only_en_study_lamp:2",
+            "isOn": true,
+            "brightnessPercent": 60,
+            "colorTempKelvin": 4000,
+            "minKelvin": 2700,
+            "maxKelvin": 6500,
+            "currentEffect": null,
+            "availableEffects": []
+          }
+        },
+        {
+          "id": "dev_living_only_ac",
+          "name": "客厅空调",
+          "roomId": "living",
+          "roomName": "客厅",
+          "model": "xiaomi.aircondition.mc5",
+          "isOnline": true,
+          "kind": {
+            "kind": "climate",
+            "entityId": "miot:dev_living_only_ac:2",
+            "isOn": true,
+            "hvacMode": "cool",
+            "availableModes": ["cool", "heat", "off"],
+            "targetTemperature": 26,
+            "currentTemperature": 27,
+            "minTemp": 16,
+            "maxTemp": 31,
+            "step": 0.5,
+            "fanMode": "auto",
+            "availableFanModes": ["low", "medium", "high", "auto"],
+            "swingMode": "off",
+            "availableSwingModes": ["on", "off"]
+          }
+        }
+      ],
+      "cases": [
+        {
+          "utterance": "关客厅台灯",
+          "expected": null
+        },
+        {
+          "utterance": "turn off living room desk lamp",
+          "expected": null
+        },
+        {
+          "utterance": "关书房台灯",
+          "expected": [
+            { "targetId": "dev_only_study_lamp", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭台灯"
+        },
+        {
+          "utterance": "turn off study desk lamp",
+          "expected": [
+            { "targetId": "dev_only_en_study_lamp", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭Desk Lamp"
+        },
+        {
+          "utterance": "关台灯",
+          "expected": [
+            { "targetId": "dev_only_study_lamp", "kind": "power", "value": false }
+          ],
+          "expectedReply": "已关闭台灯"
         }
       ]
     }

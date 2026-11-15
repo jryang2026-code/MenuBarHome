@@ -145,7 +145,7 @@ extension HomeStore {
         let timeSummary = "\(bucket.rawValue) \(formatter.string(from: now))"
 
         let envParts = environmentReadings.map { reading -> String in
-            var text = "\(reading.roomName)"
+            var text = PromptText.cleanField(reading.roomName, limit: PromptText.nameLimit)
             if let t = reading.temperature, t.isFinite { text += " \(String(format: "%.1f°C", t))" }
             if let h = reading.humidity.flatMap(DeviceSynthesizer.roundedInt) { text += " \(h)%" }
             return text
@@ -153,7 +153,9 @@ extension HomeStore {
         let environmentSummary = envParts.joined(separator: "，")
 
         let activeParts = devices.filter(\.isActiveDevice).map { dev in
-            "\(dev.name)(\(IntentCatalog.stateSummary(dev)))"
+            let name = PromptText.cleanField(dev.name, limit: PromptText.nameLimit)
+            let state = PromptText.cleanField(IntentCatalog.stateSummary(dev), limit: PromptText.activeStateLimit)
+            return "\(name)(\(state))"
         }
         let activeSummary = activeParts.isEmpty ? "全屋设备均关闭" : activeParts.joined(separator: "、")
         let habitSummary = shareHabitSentence(
@@ -166,10 +168,10 @@ extension HomeStore {
         )
 
         return AssistantContext(
-            timeSummary: PromptText.sanitize(timeSummary, limit: PromptText.contextLimit),
-            environmentSummary: PromptText.sanitize(environmentSummary, limit: PromptText.contextLimit),
-            activeDevicesSummary: PromptText.sanitize(activeSummary, limit: PromptText.contextLimit),
-            habitSummary: PromptText.sanitize(habitSummary, limit: PromptText.contextLimit),
+            timeSummary: PromptText.cleanField(timeSummary, limit: PromptText.contextLimit),
+            environmentSummary: PromptText.cleanField(environmentSummary, limit: PromptText.contextLimit),
+            activeDevicesSummary: PromptText.cleanField(activeSummary, limit: PromptText.contextLimit),
+            habitSummary: PromptText.cleanField(habitSummary, limit: PromptText.contextLimit),
             favoriteDeviceIds: favoriteOrder
         )
     }
@@ -342,6 +344,10 @@ extension HomeStore {
         guard !intents.isEmpty else { return }
         let reply = IntentReply.describe(intents, devices: devices, scenes: scenes)
         let plan = IntentPlan(intents: intents, reply: reply, source: .model)
+        if let delaySpec = suggestion.delaySpec {
+            _ = schedule(plan, after: delaySpec.seconds)
+            return
+        }
         _ = await executeIntentPlan(plan, recordedUtterance: nil, origin: .userInitiated, offersUndoBanner: offersUndoBanner)
     }
 
@@ -441,7 +447,9 @@ extension HomeStore {
             }
         }
         guard !plan.intents.isEmpty else {
-            if delayed != nil, plan.source == .local {
+            let isBareLocalChoice = plan.source == .local
+                && (plan.suggestions.isEmpty || plan.suggestions.allSatisfy { $0.baseId.hasPrefix("bare:") })
+            if delayed != nil, isBareLocalChoice {
                 // A timer never fires an unresolved choice; ask for the room or device now.
                 assistantSuggestions = localTopSuggestions()
                 setAssistantState(.done(plan.reply.isEmpty
@@ -450,6 +458,10 @@ extension HomeStore {
                 return plan
             }
             if !plan.suggestions.isEmpty {
+                if let delayed {
+                    let delaySpec = SuggestionDelaySpec(seconds: delayed.delay)
+                    plan.suggestions = plan.suggestions.map { $0.withDelay(delaySpec) }
+                }
                 assistantSuggestions = plan.suggestions
                 setAssistantState(.awaitingChoice(plan.reply.isEmpty
                     ? ModelActionPolicy.confirmationReply(ranReply: nil)
@@ -466,7 +478,21 @@ extension HomeStore {
         }
 
         if let delayed {
-            return schedule(plan, after: delayed.delay)
+            if !plan.suggestions.isEmpty {
+                let delaySpec = SuggestionDelaySpec(seconds: delayed.delay)
+                plan.suggestions = plan.suggestions.map { $0.withDelay(delaySpec) }
+            }
+            var timerPlan = plan
+            timerPlan.suggestions = []
+            var scheduled = schedule(timerPlan, after: delayed.delay)
+            if case .failed = assistantState {
+                return scheduled
+            }
+            if !plan.suggestions.isEmpty {
+                assistantSuggestions = plan.suggestions
+            }
+            scheduled.suggestions = plan.suggestions
+            return scheduled
         }
         // A locally parsed command is the user's explicit ask. A model plan is the AI filling in
         // devices/actions the user never spelled out, so it does not train habits (#34).
