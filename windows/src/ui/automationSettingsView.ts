@@ -1099,7 +1099,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
   const effectiveScenes = resolveScenesForContext(host);
 
   const commitRuleAdd = (created: AutomationRule): void => {
-    ruleStore.save([...ruleStore.load(), created]);
+    ruleStore.save([...ruleStore.load(), { ...created, highRiskApproved: true }]);
     draft.selectedDeviceIds.clear();
     session.pendingHighRiskConfirm = null;
     host.replyBanner = {
@@ -1112,9 +1112,16 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
   };
 
   const commitRuleEnable = (ruleId: string): void => {
-    ruleStore.save(ruleStore.load().map((r) => (r.id === ruleId ? { ...r, isEnabled: true } : r)));
+    ruleStore.save(ruleStore.load().map((r) => (r.id === ruleId ? { ...r, isEnabled: true, highRiskApproved: true } : r)));
     session.pendingHighRiskConfirm = null;
     host.render();
+  };
+
+  const clearPendingAddConfirm = (): void => {
+    if (session.pendingHighRiskConfirm?.kind === "add") {
+      session.pendingHighRiskConfirm = null;
+      host.root.querySelector("#settings-auto-high-risk-confirm")?.remove();
+    }
   };
 
   const rejectHighRiskRule = (): void => {
@@ -1166,10 +1173,11 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
       if (!target.checked && session.pendingHighRiskConfirm?.kind === "enable" && session.pendingHighRiskConfirm.rule.id === ruleId) {
         session.pendingHighRiskConfirm = null;
       }
-      ruleStore.save(ruleStore.load().map((r) => (r.id === ruleId ? { ...r, isEnabled: target.checked } : r)));
+      ruleStore.save(ruleStore.load().map((r) => (r.id === ruleId ? { ...r, isEnabled: target.checked, ...(target.checked ? { highRiskApproved: true } : {}) } : r)));
       host.render();
       return;
     }
+    clearPendingAddConfirm();
     if (target.id === "settings-auto-trigger" && isSelectEl(target) && isAutomationTrigger(target.value)) {
       draft.trigger = target.value;
       host.render();
@@ -1198,18 +1206,15 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
       host.render();
     } else if (target.id === "settings-auto-action-kind" && isSelectEl(target)) {
       draft.actionKind = target.value as "quickAction" | "devices" | "scene";
-      if (session.pendingHighRiskConfirm?.kind === "add") session.pendingHighRiskConfirm = null;
       host.render();
     } else if (target.id === "settings-auto-quick-action" && isSelectEl(target)) {
       draft.quickAction = target.value as QuickActionId;
     } else if (target.id === "settings-auto-devices-power" && isSelectEl(target)) {
       draft.devicesPowerOn = target.value === "on";
-      if (session.pendingHighRiskConfirm?.kind === "add") session.pendingHighRiskConfirm = null;
       host.render();
     } else if (isInputEl(target) && target.dataset.autoTargetDevice) {
       if (target.checked) draft.selectedDeviceIds.add(target.dataset.autoTargetDevice);
       else draft.selectedDeviceIds.delete(target.dataset.autoTargetDevice);
-      if (session.pendingHighRiskConfirm?.kind === "add") session.pendingHighRiskConfirm = null;
       host.render();
     } else if (target.id === "settings-auto-scene-id" && isSelectEl(target)) {
       draft.selectedSceneId = target.value;
@@ -1219,6 +1224,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
   const handleDraftInput = (event: Event) => {
     const target = event.target;
     if (!isInputEl(target) || target.closest("[data-exit-ghost]")) return;
+    if (!target.dataset.autoRuleToggle) clearPendingAddConfirm();
     if (target.id === "settings-auto-wifi-ssids") {
       draft.wifiSSIDsText = target.value;
       const valid = normalizeWiFiSSIDs(draft.wifiSSIDsText.split(/[,\n，]/)).length > 0;
@@ -1297,7 +1303,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
           },
         });
         if (!isSameScope()) return;
-        if (!run) {
+        if (!run && !host.replyBanner?.isError) {
           host.replyBanner = {
             text: uiText(
               lang,

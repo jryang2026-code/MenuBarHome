@@ -285,6 +285,7 @@ export interface AutomationRule {
   readonly action: AutomationAction;
   readonly triggerOptions: AutomationTriggerOptions;
   readonly conditions: AutomationConditions;
+  readonly highRiskApproved?: boolean;
 }
 
 let fallbackRuleCounter = 1;
@@ -302,6 +303,7 @@ export function createAutomationRule(args: {
   readonly isEnabled?: boolean;
   readonly triggerOptions?: Partial<Parameters<typeof createAutomationTriggerOptions>[0]>;
   readonly conditions?: AutomationConditions;
+  readonly highRiskApproved?: boolean;
 }): AutomationRule {
   return {
     id: args.id?.trim() ? args.id.trim() : makeRuleId(),
@@ -310,6 +312,7 @@ export function createAutomationRule(args: {
     action: args.action,
     triggerOptions: createAutomationTriggerOptions(args.triggerOptions),
     conditions: args.conditions ? createAutomationConditions(args.conditions.wifi) : createAutomationConditions(),
+    ...(args.highRiskApproved ? { highRiskApproved: true } : {}),
   };
 }
 
@@ -413,7 +416,15 @@ function parseStoredRule(raw: unknown): AutomationRule | null {
     ? (obj.conditions as Record<string, unknown>)
     : {};
   const conditions = createAutomationConditions(parseStoredWiFiCondition(condObj.wifi));
-  return { id: obj.id, isEnabled: obj.isEnabled, trigger: obj.trigger, action, triggerOptions, conditions };
+  return {
+    id: obj.id,
+    isEnabled: obj.isEnabled,
+    trigger: obj.trigger,
+    action,
+    triggerOptions,
+    conditions,
+    ...(obj.highRiskApproved === true ? { highRiskApproved: true } : {}),
+  };
 }
 
 export class AutomationRuleStore {
@@ -450,6 +461,7 @@ export class AutomationRuleStore {
           ...(r.triggerOptions.sensorCondition ? { sensorCondition: r.triggerOptions.sensorCondition } : {}),
         },
         conditions: r.conditions,
+        ...(r.highRiskApproved ? { highRiskApproved: true } : {}),
       }));
       this.storage.setItem(AutomationRuleStore.storageKey, JSON.stringify(serializable));
     } catch {
@@ -633,26 +645,29 @@ export function automationRuleHighRiskConfirmation(
   devices: readonly SmartDevice[],
   preference?: LanguagePreference,
 ): AutomationHighRiskConfirmation | null {
-  if (action.kind !== "devices" || !action.isOn) return null;
+  if (action.kind !== "devices") return null;
   const seen = new Set<string>();
   const highRiskDevices: SmartDevice[] = [];
   for (const id of action.deviceIds) {
     if (seen.has(id)) continue;
     seen.add(id);
-    if (ManualControlPolicy.requiresConfirmation({ targetId: id, operation: { kind: "power", isOn: true } }, devices)) {
+    if (ManualControlPolicy.requiresConfirmation({ targetId: id, operation: { kind: "power", isOn: action.isOn } }, devices)) {
       const dev = devices.find((d) => d.id === id);
       if (dev) highRiskDevices.push(dev);
     }
   }
   if (highRiskDevices.length === 0) return null;
   const names = highRiskDevices.map((d) => d.name).join(tr3("、", "、", ", ", undefined, preference));
+  const verb = action.isOn
+    ? tr3("开启", "開啟", "turn on", undefined, preference)
+    : tr3("关闭", "關閉", "close", undefined, preference);
   return {
     title: tr3("确认启用高风险自动化规则？", "確認啟用高風險自動化規則？", "Enable high-risk automation rule?", undefined, preference),
     message: tr3(
-      "该规则会自动开启高风险设备（{names}）。请确认周围无人值守时不会引发用电、加热或水气安全风险。",
-      "該規則會自動開啟高風險設備（{names}）。請確認周圍無人值守時不會引發用電、加熱或水氣安全風險。",
-      "This rule will automatically turn on high-risk devices ({names}). Confirm it is safe to run unattended.",
-      { names },
+      "该规则会自动{verb}高风险设备（{names}）。请确认周围无人值守时不会引发用电、加热或水气安全风险。",
+      "該規則會自動{verb}高風險設備（{names}）。請確認周圍無人值守時不會引發用電、加熱或水氣安全風險。",
+      "This rule will automatically {verb} high-risk devices ({names}). Confirm it is safe to run unattended.",
+      { verb, names },
       preference,
     ),
     confirmTitle: tr3("确认启用", "確認啟用", "Enable Rule", undefined, preference),
@@ -804,6 +819,15 @@ export async function executeAutomationRule(
     }
   } else if (rule.action.kind === "devices") {
     const policyDevices = options.displayDevices ?? host.devices;
+    if (automationRuleHighRiskConfirmation(rule.action, policyDevices, preference) !== null && !rule.highRiskApproved) {
+      host.replyBanner = {
+        text: tr3("高风险自动化规则需在设置中重新确认启用", "高風險自動化規則需在設定中重新確認啟用", "High-risk automation rule requires re-confirmation in Settings", undefined, preference),
+        source: tr3("状态感知自动化", "狀態感知自動化", "Context Automation", undefined, preference),
+        isError: true,
+      };
+      host.queueBackgroundRender?.();
+      return null;
+    }
     for (const deviceId of rule.action.deviceIds) {
       if ((host.sourceRevision ?? 0) !== startingRevision) return null;
       const dev = host.devices.find((d) => d.id === deviceId);
@@ -1164,7 +1188,11 @@ export class AutomationEngine {
     for (const rule of uniqueRules) {
       if ((host.sourceRevision ?? 0) !== startingRevision) break;
       const run = await executeAutomationRule(host, rule, { ...options, nowMs });
-      if (run) runs.push(run);
+      if (run) {
+        runs.push(run);
+      } else if (!options.rules && !rule.highRiskApproved && automationRuleHighRiskConfirmation(rule.action, options.displayDevices ?? host.devices) !== null) {
+        this.store.save(this.store.load().map((r) => (r.id === rule.id ? { ...r, isEnabled: false } : r)));
+      }
     }
     return runs;
   }

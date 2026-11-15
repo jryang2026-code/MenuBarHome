@@ -897,68 +897,45 @@ extension HomeStore {
 
         for command in commands {
             if let target = Self.facetTarget(for: command),
-               let device = devices.first(where: { device in
-                   deviceFacets[device.id]?.contains { $0.target == target } == true
-                       && !excludingDeviceIds.contains(device.id)
-               }),
-               device.isOnline {
+               let device = devices.first(where: {
+                   deviceFacets[$0.id]?.contains { $0.target == target } == true && !excludingDeviceIds.contains($0.id)
+               }), device.isOnline {
                 hasApprovedTarget = true
                 continue
             }
             if case .setMiotProperty(let entityId, _, _) = command {
                 let did = MiotAddress.parse(entityId)?.did
-                let fallbackOwners = devices.filter { device in
-                    did.map { device.id == $0 || device.miotCommandDids.contains($0) } == true
-                }
-                if let device = fallbackOwners.count == 1 ? fallbackOwners.first : nil,
-                   device.isOnline,
-                   !excludingDeviceIds.contains(device.id) {
+                let owners = devices.filter { device in did.map { device.id == $0 || device.miotCommandDids.contains($0) } == true }
+                if let device = owners.count == 1 ? owners.first : nil, device.isOnline, !excludingDeviceIds.contains(device.id) {
                     hasApprovedTarget = true
                 }
                 continue
             }
             let resolved: (device: SmartDevice, restored: SmartDevice)?
-            if let idx = devices.indices.first(where: {
-                   !excludingDeviceIds.contains(devices[$0].id)
-                       && Self.undoEffect(of: command, on: devices[$0]) != nil
-               }),
+            if let idx = devices.indices.first(where: { !excludingDeviceIds.contains(devices[$0].id) && Self.undoEffect(of: command, on: devices[$0]) != nil }),
                let restored = Self.undoEffect(of: command, on: devices[idx]) {
                 resolved = (devices[idx], restored)
-            } else if let prev = previousDevices.first(where: {
-                          !excludingDeviceIds.contains($0.id)
-                              && Self.undoEffect(of: command, on: $0) != nil
-                      }),
+            } else if let prev = previousDevices.first(where: { !excludingDeviceIds.contains($0.id) && Self.undoEffect(of: command, on: $0) != nil }),
                       let idx = devices.indices.first(where: { devices[$0].id == prev.id && devices[$0].isOnline }),
                       let retargeted = Self.retargetedUndoEffect(of: command, on: devices[idx]) {
                 resolved = (devices[idx], retargeted.updated)
             } else {
                 resolved = nil
             }
-            guard let (device, restored) = resolved else { continue }
-            if declinedDeviceIds.contains(device.id) { continue }
+            guard let (device, restored) = resolved, !declinedDeviceIds.contains(device.id) else { continue }
             let requiresConfirm = restored.isActiveOn && ManualControlPolicy.requiresConfirmation(
-                DeviceIntent(targetId: device.id, operation: .power(true)),
-                devices: devices
+                DeviceIntent(targetId: device.id, operation: .power(true)), devices: devices
             )
-            if requiresConfirm {
-                if checkedHighRiskDeviceIds.insert(device.id).inserted {
-                    if allowManualControl(.power(true), for: device) {
-                        hasApprovedTarget = true
-                    } else {
-                        declinedDeviceIds.insert(device.id)
-                    }
-                } else {
-                    hasApprovedTarget = true
-                }
+            if requiresConfirm, checkedHighRiskDeviceIds.insert(device.id).inserted {
+                if allowManualControl(.power(true), for: device) { hasApprovedTarget = true }
+                else { declinedDeviceIds.insert(device.id) }
             } else {
                 hasApprovedTarget = true
             }
         }
-
-        let abortUndo = !declinedDeviceIds.isEmpty && !hasApprovedTarget
         return UndoConfirmationFilterResult(
             excludedDeviceIds: excludingDeviceIds.union(declinedDeviceIds),
-            abortUndo: abortUndo
+            abortUndo: !declinedDeviceIds.isEmpty && !hasApprovedTarget
         )
     }
 

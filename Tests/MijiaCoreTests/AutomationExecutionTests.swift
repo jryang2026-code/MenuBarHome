@@ -119,8 +119,8 @@ struct AutomationExecutionTests {
         #expect(store.controllableDevices.map(\.id) == [Self.studyLight.id])
     }
 
-    @Test("High-risk automation rules require confirmation only when turning high-risk devices on")
-    func highRiskAutomationRuleConfirmation() {
+    @Test("High-risk automation rules require confirmation for turning on hazards and closing barrier covers")
+    func highRiskAutomationRuleConfirmation() throws {
         let heaterPlug = SmartDevice(
             id: "plug_heater",
             name: "卧室取暖器插座",
@@ -130,7 +130,16 @@ struct AutomationExecutionTests {
             isOnline: true,
             kind: .plug(PlugSpec(switchEntityId: "switch.heater", isOn: false))
         )
-        let devices = [Self.studyLight, heaterPlug]
+        let garageDoor = SmartDevice(
+            id: "cover_garage",
+            name: "地下车库门",
+            roomId: "garage",
+            roomName: "车库",
+            model: "lumi.curtain.v1",
+            isOnline: true,
+            kind: .cover(CoverSpec(entityId: "cover.garage_door", subtype: .garageDoor))
+        )
+        let devices = [Self.studyLight, heaterPlug, garageDoor]
 
         let turnOnRule = AutomationRule(
             trigger: .back,
@@ -139,6 +148,7 @@ struct AutomationExecutionTests {
         let confirmation = turnOnRule.highRiskConfirmation(devices: devices)
         #expect(confirmation != nil)
         #expect(confirmation?.message.contains("卧室取暖器插座") == true)
+        #expect(!turnOnRule.highRiskApproved)
 
         let turnOffRule = AutomationRule(
             trigger: .away,
@@ -146,11 +156,26 @@ struct AutomationExecutionTests {
         )
         #expect(turnOffRule.highRiskConfirmation(devices: devices) == nil)
 
+        let closeGarageRule = AutomationRule(
+            trigger: .away,
+            action: .devices(ids: [garageDoor.id], isOn: false)
+        )
+        #expect(closeGarageRule.highRiskConfirmation(devices: devices) != nil)
+
         let lightRule = AutomationRule(
             trigger: .back,
             action: .devices(ids: [Self.studyLight.id], isOn: true)
         )
         #expect(lightRule.highRiskConfirmation(devices: devices) == nil)
+
+        let approvedRule = AutomationRule(
+            trigger: .back,
+            action: .devices(ids: [heaterPlug.id], isOn: true),
+            highRiskApproved: true
+        )
+        let data = try JSONEncoder().encode(approvedRule)
+        let decoded = try JSONDecoder().decode(AutomationRule.self, from: data)
+        #expect(decoded.highRiskApproved == true)
     }
 
     @Test("runAutomation returns typed attempted, succeeded, and failed counts for partial and total failures")

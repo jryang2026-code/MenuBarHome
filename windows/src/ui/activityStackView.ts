@@ -306,7 +306,9 @@ export function clearHostActivitiesOnSignOut(host: unknown): void {
 export function collapseActivityStackOnHide(host: unknown): boolean {
   if (!isFullPanelHost(host)) return false;
   const center = (host as HostWithActivity).activityCenter;
-  if (!center || !center.isExpanded) return false;
+  if (!center) return false;
+  center.pendingHighRiskUndoRunId = null;
+  if (!center.isExpanded) return false;
   center.isExpanded = false;
   return true;
 }
@@ -699,26 +701,15 @@ export function partitionUndoStepsByHighRiskConfirmation<
 >(
   host: MenuMijiaWindowsApp,
   steps: readonly T[],
-  options: {
-    readonly kindSnapshots?: ReadonlyMap<string, SmartDevice["kind"]>;
-    readonly isArmed: boolean;
-    readonly arm: () => void;
-    readonly disarm: () => void;
-  },
-): {
-  readonly approvedSteps: T[];
-  readonly skippedHighRiskSteps: T[];
-  readonly abortedAllHighRisk: boolean;
-  readonly armedPromptText?: string;
-} {
+  options: { readonly kindSnapshots?: ReadonlyMap<string, SmartDevice["kind"]>; readonly isArmed: boolean; readonly arm: () => void; readonly disarm: () => void },
+): { readonly approvedSteps: T[]; readonly skippedHighRiskSteps: T[]; readonly abortedAllHighRisk: boolean; readonly armedPromptText?: string } {
   const aliased = aliasedHostDevices(host);
   const pref = host.settings.interfaceLanguage;
   const highRiskSet = new Set(steps.filter((s) => doesUndoStepActivateHighRiskDevice(s, aliased, options.kindSnapshots)));
-  if (highRiskSet.size === 0) {
+  if (highRiskSet.size === 0 || (typeof host.manualControlConfirmationHandler !== "function" && options.isArmed)) {
     options.disarm();
     return { approvedSteps: [...steps], skippedHighRiskSteps: [], abortedAllHighRisk: false };
   }
-
   const handler = host.manualControlConfirmationHandler;
   if (typeof handler === "function") {
     options.disarm();
@@ -750,17 +741,9 @@ export function partitionUndoStepsByHighRiskConfirmation<
       approvedSteps,
       skippedHighRiskSteps,
       abortedAllHighRisk: approvedSteps.length === 0,
-      ...(declinedNames.length > 0
-        ? { armedPromptText: tr3("已取消恢复高风险设备「{names}」", "已取消恢復高風險設備「{names}」", 'Skipped restoring high-risk device "{names}"', { names }, pref) }
-        : {}),
+      ...(declinedNames.length > 0 ? { armedPromptText: tr3("已取消恢复高风险设备「{names}」", "已取消恢復高風險設備「{names}」", 'Skipped restoring high-risk device "{names}"', { names }, pref) } : {}),
     };
   }
-
-  if (options.isArmed) {
-    options.disarm();
-    return { approvedSteps: [...steps], skippedHighRiskSteps: [], abortedAllHighRisk: false };
-  }
-
   options.arm();
   const seenIds = new Set<string>();
   const highRiskNames: string[] = [];
@@ -858,6 +841,11 @@ export async function executeAutomationCardUndo(
     center.recentAutomationRuns = center.recentAutomationRuns.map((r) =>
       r.id === runId ? { ...r, steps: confirmation.skippedHighRiskSteps } : r,
     );
+    if (host.lastUndoAction && host.lastUndoAction.summary === run.summary) {
+      const nextUndo = { ...host.lastUndoAction, steps: confirmation.skippedHighRiskSteps };
+      recordUndoKindSnapshots(nextUndo, run.kindSnapshots);
+      host.lastUndoAction = nextUndo;
+    }
     host.replyBanner = {
       text: confirmation.armedPromptText ?? run.summary,
       source: tr3("需要确认", "需要確認", "Confirmation Required", undefined, pref),

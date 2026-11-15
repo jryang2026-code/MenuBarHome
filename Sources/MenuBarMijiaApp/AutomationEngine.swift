@@ -429,6 +429,18 @@ final class AutomationEngine {
     }
 
     private func execute(_ rule: AutomationRule, store: HomeStore) async {
+        if rule.highRiskConfirmation(devices: store.devices) != nil, !rule.highRiskApproved {
+            var stored = ruleStore.load()
+            if let idx = stored.firstIndex(where: { $0.id == rule.id }) {
+                stored[idx].isEnabled = false
+                ruleStore.save(stored)
+            }
+            store.showToast(
+                L10n.tr("高风险自动化规则需在设置中重新确认启用", "High-risk automation rule requires re-confirmation in Settings"),
+                isError: true
+            )
+            return
+        }
         switch rule.action {
         // Quick actions aggregate devices in the store and already show their own toast plus undo
         // banner; the longer automation window keeps the banner usable after unlocking (#59).

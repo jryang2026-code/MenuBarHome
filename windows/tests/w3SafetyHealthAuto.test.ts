@@ -1159,10 +1159,16 @@ describe("B1 + B5 PC Context Automation Engine, AwayArbitrator, 5m Undo & HA Doo
       sentHighRisk.push(cmd);
       return true;
     };
+    const unapprovedHeaterRule = createAutomationRule({
+      id: "r-heater-unapproved",
+      trigger: "back",
+      action: { kind: "devices", deviceIds: [highRiskHeater.id], isOn: true },
+    });
     const heaterRule = createAutomationRule({
       id: "r-heater-on",
       trigger: "back",
       action: { kind: "devices", deviceIds: [highRiskHeater.id], isOn: true },
+      highRiskApproved: true,
     });
     const heaterConfirm = automationRuleHighRiskConfirmation(heaterRule.action, app.devices);
     assert.ok(heaterConfirm);
@@ -1172,6 +1178,26 @@ describe("B1 + B5 PC Context Automation Engine, AwayArbitrator, 5m Undo & HA Doo
       app.devices,
     );
     assert.equal(heaterOffConfirm, null);
+    const garageCover: SmartDevice = {
+      id: "ha:garage_door",
+      name: "车库门",
+      roomId: "r-garage",
+      roomName: "车库",
+      model: "cover.garage",
+      isOnline: true,
+      kind: { kind: "cover", entityId: "cover.garage_door", subtype: "garage-door", positionPercent: 100, openDescription: "open", closeDescription: "close", pauseDescription: "stop" },
+    };
+    assert.ok(
+      automationRuleHighRiskConfirmation(
+        { kind: "devices", deviceIds: [garageCover.id], isOn: false },
+        [garageCover],
+      ),
+    );
+    const blockedLegacyRun = await executeAutomationRule(app, unapprovedHeaterRule, { nowMs: t0 + 9_000 });
+    assert.equal(blockedLegacyRun, null);
+    assert.equal(sentHighRisk.length, 0);
+    assert.equal(app.replyBanner?.isError, true);
+
     const highRiskRun = await executeAutomationRule(app, heaterRule, { nowMs: t0 + 10_000 });
     assert.equal(sentHighRisk.length, 1);
     assert.ok(highRiskRun);

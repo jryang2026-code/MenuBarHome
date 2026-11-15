@@ -197,9 +197,9 @@ struct AutomationSettingsSection: View {
             set: { enabled in
                 guard let index = rules.firstIndex(where: { $0.id == rule.id }) else { return }
                 if enabled, !rules[index].isEnabled,
-                   let confirmation = rules[index].highRiskConfirmation(devices: store.devices),
-                   !confirmHighRiskRule(confirmation) {
-                    return
+                   let confirmation = rules[index].highRiskConfirmation(devices: store.devices) {
+                    guard confirmHighRiskRule(confirmation) else { return }
+                    rules[index].highRiskApproved = true
                 }
                 rules[index].isEnabled = enabled
                 persist()
@@ -636,15 +636,15 @@ struct AutomationSettingsSection: View {
         case .only: wifi = .inAny(parsedSSIDs)
         case .exclude: wifi = .notIn(parsedSSIDs)
         }
-        let rule = AutomationRule(
+        var rule = AutomationRule(
             trigger: newTrigger,
             action: action,
             triggerOptions: options,
             conditions: AutomationConditions(wifi: wifi)
         )
-        if let confirmation = rule.highRiskConfirmation(devices: store.devices),
-           !confirmHighRiskRule(confirmation) {
-            return
+        if let confirmation = rule.highRiskConfirmation(devices: store.devices) {
+            guard confirmHighRiskRule(confirmation) else { return }
+            rule.highRiskApproved = true
         }
         rules.append(rule)
         newDeviceIds = []

@@ -424,8 +424,15 @@ describe("Wave 4 · PC Context Automation Rule Editor UI & Live Runtime", () => 
     assert.equal(document.querySelector("#settings-auto-high-risk-confirm"), null);
 
     await click("#btn-add-auto-rule");
+    assert.ok(document.querySelector("#settings-auto-high-risk-confirm"));
+    selectValue("#settings-auto-trigger", "back");
+    assert.equal(document.querySelector("#settings-auto-high-risk-confirm"), null);
+
+    await click("#btn-add-auto-rule");
     await click("#btn-confirm-auto-high-risk");
     assert.equal(new AutomationRuleStore().load().length, 1);
+    assert.equal(new AutomationRuleStore().load()[0]?.trigger, "back");
+    assert.equal(new AutomationRuleStore().load()[0]?.highRiskApproved, true);
     const ruleId = new AutomationRuleStore().load()[0]!.id;
 
     toggleCheck(`[data-auto-rule-toggle="${ruleId}"]`, false);

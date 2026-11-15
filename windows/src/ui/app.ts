@@ -863,18 +863,7 @@ export class MenuMijiaWindowsApp {
       return;
     }
     const action = this.lastUndoAction;
-    const confirmation = partitionUndoStepsByHighRiskConfirmation(this, action.steps, {
-      isArmed: this.pendingHighRiskUndoAction === action,
-      arm: () => { this.pendingHighRiskUndoAction = action; },
-      disarm: () => { if (this.pendingHighRiskUndoAction === action) this.pendingHighRiskUndoAction = null; },
-    });
-    if (confirmation.abortedAllHighRisk) {
-      this.replyBanner = { text: confirmation.armedPromptText ?? t("需要确认后才能恢复高风险设备"), source: t("需要确认") };
-      this.render();
-      return;
-    }
     this.lastUndoAction = null;
-    clearUndoHoverPause(this);
     const sourceRevision = this.sourceRevision;
     const activeBatch = getRunningBatch(this, action);
     const ownerBatch =
@@ -886,14 +875,32 @@ export class MenuMijiaWindowsApp {
       if (sourceRevision !== this.sourceRevision) return;
     }
     const takenOverDevices = new Set<string>();
-    const stepsToRestore = confirmation.approvedSteps.filter((step) => {
+    const eligibleSteps = action.steps.filter((step) => {
       if (ownerBatch && !ownerBatch.ownsDeviceWrite(this, step.deviceId)) {
         takenOverDevices.add(step.deviceId);
         return false;
       }
       return true;
     });
-    if (stepsToRestore.length === 0 && action.steps.length > 0) return;
+    if (eligibleSteps.length === 0 && action.steps.length > 0) return;
+    const confirmation = partitionUndoStepsByHighRiskConfirmation(this, eligibleSteps, {
+      isArmed: this.pendingHighRiskUndoAction === action,
+      arm: () => { this.pendingHighRiskUndoAction = action; },
+      disarm: () => { if (this.pendingHighRiskUndoAction === action) this.pendingHighRiskUndoAction = null; },
+    });
+    if (confirmation.abortedAllHighRisk) {
+      if (this.lastUndoAction === null) {
+        const retryAction = eligibleSteps.length === action.steps.length ? action : { ...action, steps: eligibleSteps };
+        if (retryAction !== action) copyUndoKindSnapshots(action, retryAction);
+        this.lastUndoAction = retryAction;
+        if (this.pendingHighRiskUndoAction === action) this.pendingHighRiskUndoAction = retryAction;
+      }
+      this.replyBanner = { text: confirmation.armedPromptText ?? t("需要确认后才能恢复高风险设备"), source: t("需要确认") };
+      this.render();
+      return;
+    }
+    clearUndoHoverPause(this);
+    const stepsToRestore = confirmation.approvedSteps;
     const failedSteps: UndoStep[] = [];
     const blockedDevices = new Set<string>(
       confirmation.skippedHighRiskSteps.map((s) => s.deviceId),
@@ -959,6 +966,12 @@ export class MenuMijiaWindowsApp {
     }
     const armedRest = this.pendingHighRiskUndoAction === action ? confirmation.skippedHighRiskSteps : [];
     const pendingSteps = [...failedSteps, ...armedRest];
+    const center = (this as { activityCenter?: { recentAutomationRuns?: Array<{ summary: string; steps: readonly UndoStep[] }> } | null }).activityCenter;
+    if (center?.recentAutomationRuns) {
+      center.recentAutomationRuns = pendingSteps.length > 0
+        ? center.recentAutomationRuns.map((r) => (r.summary === action.summary ? { ...r, steps: pendingSteps } : r))
+        : center.recentAutomationRuns.filter((r) => r.summary !== action.summary);
+    }
     if (pendingSteps.length > 0 && this.lastUndoAction === null) {
       const retryAction: UndoAction = { ...action, steps: pendingSteps, habitReceipt: remainingReceipt };
       copyUndoKindSnapshots(action, retryAction);
@@ -1005,6 +1018,7 @@ export class MenuMijiaWindowsApp {
       this.pendingHighRiskTimer = null;
     }
     this.pendingHighRisk = null;
+    this.pendingHighRiskUndoAction = null;
     if (hadPending && options?.syncPin !== false) {
       invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
     }

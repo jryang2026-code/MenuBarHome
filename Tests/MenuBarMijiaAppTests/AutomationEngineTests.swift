@@ -203,6 +203,50 @@ struct AutomationEngineTests {
         #expect(store.toastNotice?.isError == true)
     }
 
+    @Test("Legacy unapproved high-risk automation rules are blocked and disabled until re-confirmed")
+    func legacyUnapprovedHighRiskRuleBlocked() async throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let heaterPlug = SmartDevice(
+            id: "plug_heater",
+            name: "卧室取暖器插座",
+            roomId: "bedroom",
+            roomName: "卧室",
+            model: "chuangmi.plug.212a01",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.heater", isOn: false))
+        )
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [heaterPlug]))
+        let store = HomeStore(provider: mock, defaultsSuiteName: "test.automation.engine.highrisk.\(UUID().uuidString)")
+        try await store.waitForTestSnapshot()
+
+        let ruleStore = AutomationRuleStore(defaults: defaults)
+        let unapprovedRule = AutomationRule(
+            trigger: .back,
+            action: .devices(ids: [heaterPlug.id], isOn: true),
+            highRiskApproved: false
+        )
+        ruleStore.save([unapprovedRule])
+
+        let engine = AutomationEngine(defaults: defaults)
+        engine.attach(store: store)
+        let start = Date()
+
+        await engine.handle(trigger: .back, at: start)
+        #expect(await mock.executedCommands.isEmpty)
+        #expect(ruleStore.load().first?.isEnabled == false)
+        #expect(store.toastNotice?.isError == true)
+
+        var approvedRule = unapprovedRule
+        approvedRule.isEnabled = true
+        approvedRule.highRiskApproved = true
+        ruleStore.save([approvedRule])
+
+        await engine.handle(trigger: .back, at: start.addingTimeInterval(65))
+        #expect(await mock.executedCommands == [.setSwitch(entityId: "switch.heater", isOn: true)])
+    }
+
     @Test("Device cards guard inverted Kelvin ranges, offline drawers, and room-prefixed Classic room pills")
     func deviceCardSafetyAndRoomBadgeGuards() async throws {
         let invertedLight = SmartDevice(
