@@ -125,6 +125,8 @@ struct GoldenCorpusTests {
             let freezerCurrentTemp: Double?
             let freezerTargetTemp: Double
             let freezerTargetEntityId: String?
+            let fridgeTargetPresent: Bool?
+            let freezerTargetPresent: Bool?
         }
 
         struct VacuumPayload: Decodable {
@@ -339,7 +341,9 @@ struct GoldenCorpusTests {
                         fridgeTargetEntityId: p.fridgeTargetEntityId,
                         freezerCurrentTemp: p.freezerCurrentTemp,
                         freezerTargetTemp: p.freezerTargetTemp,
-                        freezerTargetEntityId: p.freezerTargetEntityId
+                        freezerTargetEntityId: p.freezerTargetEntityId,
+                        fridgeTargetPresent: p.fridgeTargetPresent ?? true,
+                        freezerTargetPresent: p.freezerTargetPresent ?? true
                     )
                 )
             case .vacuum(let p):

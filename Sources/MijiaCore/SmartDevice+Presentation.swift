@@ -175,8 +175,12 @@ extension SmartDevice {
 
         case .fridge(let s):
             if s.fridgeCurrentTemp == nil && s.freezerCurrentTemp == nil {
-                let cStr = L10n.format("冷藏 %@", "Fridge %@", L10n.temperature(s.fridgeTargetTemp))
-                let fStr = L10n.format("冷冻 %@", "Freezer %@", L10n.temperature(s.freezerTargetTemp))
+                let cStr = s.fridgeTargetPresent
+                    ? L10n.format("冷藏 %@", "Fridge %@", L10n.temperature(s.fridgeTargetTemp))
+                    : L10n.tr("冷藏 --", "Fridge --")
+                let fStr = s.freezerTargetPresent
+                    ? L10n.format("冷冻 %@", "Freezer %@", L10n.temperature(s.freezerTargetTemp))
+                    : L10n.tr("冷冻 --", "Freezer --")
                 let mStr = Self.localizeFridgeMode(s.currentMode)
                 return mStr.isEmpty ? "\(cStr) · \(fStr)" : "\(mStr) · \(cStr) · \(fStr)"
             }
@@ -201,8 +205,11 @@ extension SmartDevice {
 
         case .speaker(let s):
             let playStr = s.state == "playing" ? L10n.tr("播放中", "Playing") : L10n.tr("待机", "Standby")
-            let volStr = s.isMuted ? L10n.tr("已静音", "Muted") : L10n.tr("音量 \(s.volumePercent)%", "Vol \(s.volumePercent)%")
-            return "\(playStr) · \(volStr)"
+            if s.isMuted {
+                return "\(playStr) · \(L10n.tr("已静音", "Muted"))"
+            }
+            guard s.volumePresent else { return playStr }
+            return "\(playStr) · \(L10n.tr("音量 \(s.volumePercent)%", "Vol \(s.volumePercent)%"))"
 
         case .tv(let s):
             if s.isPairingPromptActive {
@@ -220,7 +227,11 @@ extension SmartDevice {
             if s.isScreenOff {
                 parts.append(L10n.tr("已熄屏", "Screen Off"))
             }
-            parts.append(s.isMuted ? L10n.tr("已静音", "Muted") : L10n.tr("音量 \(s.volumePercent)%", "Vol \(s.volumePercent)%"))
+            if s.isMuted {
+                parts.append(L10n.tr("已静音", "Muted"))
+            } else if s.volumePresent {
+                parts.append(L10n.tr("音量 \(s.volumePercent)%", "Vol \(s.volumePercent)%"))
+            }
             return parts.joined(separator: " · ")
 
         case .camera(let s):
@@ -457,14 +468,28 @@ public enum AirQualityLevel: String, CaseIterable, Sendable {
     public enum Tone: Sendable { case good, moderate, poor }
 
     public init?(raw: String) {
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch trimmed.lowercased() {
         case "excellent", "空气优", "优": self = .excellent
         case "good", "空气良", "良": self = .good
         case "moderate", "轻度污染": self = .moderate
         case "poor", "中度污染": self = .poor
         case "heavy pollution", "heavy", "重度污染": self = .heavy
         case "hazardous", "严重污染": self = .hazardous
-        default: return nil
+        default:
+            guard trimmed.range(of: "^[+-]?(?:\\d+\\.?\\d*|\\.\\d+)$", options: .regularExpression) != nil,
+                  let parsed = Double(trimmed), parsed.isFinite, parsed >= 0,
+                  let aqi = DeviceSynthesizer.roundedInt(parsed) else {
+                return nil
+            }
+            switch aqi {
+            case ...50: self = .excellent
+            case ...100: self = .good
+            case ...150: self = .moderate
+            case ...200: self = .poor
+            case ...300: self = .heavy
+            default: self = .hazardous
+            }
         }
     }
 

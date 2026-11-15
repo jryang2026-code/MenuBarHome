@@ -505,14 +505,18 @@ function renderPrimaryDrawer(
         ? `<button class="cc-seg-pill" data-fridgestep="${id}:freezer:-1" aria-label="${t("降低冷冻室温度")}">−</button>
             <button class="cc-seg-pill" data-fridgestep="${id}:freezer:1" aria-label="${t("升高冷冻室温度")}">＋</button>`
         : "";
+      const fridgeTargetText =
+        k.fridgeTargetPresent !== false ? formatTemperature(k.fridgeTargetTemp) : "--";
+      const freezerTargetText =
+        k.freezerTargetPresent !== false ? formatTemperature(k.freezerTargetTemp) : "--";
       return `
         <div class="cc-tile-drawer">
           <div class="cc-segmented-pills">
-            <span class="cc-pill-label">${t("冷藏室")} (${formatTemperature(k.fridgeTargetTemp)})</span>
+            <span class="cc-pill-label">${t("冷藏室")} (${fridgeTargetText})</span>
             ${fridgeStep}
           </div>
           <div class="cc-segmented-pills">
-            <span class="cc-pill-label">${t("冷冻室")} (${formatTemperature(k.freezerTargetTemp)})</span>
+            <span class="cc-pill-label">${t("冷冻室")} (${freezerTargetText})</span>
             ${freezerStep}
           </div>
           ${

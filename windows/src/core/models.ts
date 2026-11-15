@@ -87,6 +87,8 @@ export interface FridgeSpec {
   readonly freezerCurrentTemp: number | null;
   freezerTargetTemp: number;
   readonly freezerTargetEntityId: string | null;
+  readonly fridgeTargetPresent?: boolean;
+  readonly freezerTargetPresent?: boolean;
 }
 
 export interface VacuumSpec {
@@ -166,6 +168,7 @@ export interface SpeakerSpec {
   readonly sleepModeEntityId: string | null;
   isSleepMode: boolean;
   readonly volumeWritable: boolean;
+  readonly volumePresent?: boolean;
   readonly ttsActionId?: string | null;
   readonly directiveActionId?: string | null;
 }
@@ -940,7 +943,8 @@ const AIR_QUALITY_LABEL: Record<AirQualityLevel, string> = {
 };
 
 function airQualityFromRaw(raw: string): AirQualityLevel | null {
-  switch (raw.trim().toLowerCase()) {
+  const trimmed = raw.trim();
+  switch (trimmed.toLowerCase()) {
     case "excellent":
     case "空气优":
     case "优":
@@ -962,8 +966,18 @@ function airQualityFromRaw(raw: string): AirQualityLevel | null {
     case "hazardous":
     case "严重污染":
       return "hazardous";
-    default:
-      return null;
+    default: {
+      if (!/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(trimmed)) return null;
+      const parsed = Number(trimmed);
+      if (!Number.isFinite(parsed) || parsed < 0 || !Number.isSafeInteger(Math.round(parsed))) return null;
+      const aqi = Math.round(parsed);
+      if (aqi <= 50) return "excellent";
+      if (aqi <= 100) return "good";
+      if (aqi <= 150) return "moderate";
+      if (aqi <= 200) return "poor";
+      if (aqi <= 300) return "heavy";
+      return "hazardous";
+    }
   }
 }
 
@@ -1076,8 +1090,14 @@ export function deviceStatusSummary(device: SmartDevice): string {
     }
     case "fridge": {
       if (k.fridgeCurrentTemp === null && k.freezerCurrentTemp === null) {
-        const cStr = `${t("冷藏")} ${formatTemperature(k.fridgeTargetTemp)}`;
-        const fStr = `${t("冷冻")} ${formatTemperature(k.freezerTargetTemp)}`;
+        const cStr =
+          k.fridgeTargetPresent !== false
+            ? `${t("冷藏")} ${formatTemperature(k.fridgeTargetTemp)}`
+            : t("冷藏 --");
+        const fStr =
+          k.freezerTargetPresent !== false
+            ? `${t("冷冻")} ${formatTemperature(k.freezerTargetTemp)}`
+            : t("冷冻 --");
         const mStr = localizeFridgeMode(k.currentMode);
         return mStr ? `${mStr} · ${cStr} · ${fStr}` : `${cStr} · ${fStr}`;
       }
@@ -1130,8 +1150,9 @@ export function deviceStatusSummary(device: SmartDevice): string {
     }
     case "speaker": {
       const play = k.state === "playing" ? t("播放中") : t("待机");
-      const volume = k.isMuted ? t("已静音") : t("音量 {percent}%", { percent: k.volumePercent });
-      return `${play} · ${volume}`;
+      if (k.isMuted) return `${play} · ${t("已静音")}`;
+      if (k.volumePresent === false) return play;
+      return `${play} · ${t("音量 {percent}%", { percent: k.volumePercent })}`;
     }
     case "appliance": {
       const parts: string[] = [];

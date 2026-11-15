@@ -1,6 +1,6 @@
 import { t } from "./i18n.js";
 import type { HomeAssistantClient } from "./homeAssistant.js";
-import { MiotCommandMapper, propKeyString } from "./miCloudClient.js";
+import { MiotCommandMapper, miotShortName, propKeyString } from "./miCloudClient.js";
 import type { MiCloudClient, MiotSpecResolver } from "./miCloudClient.js";
 import { readMiotPower, type DeviceCommand, type SmartDevice } from "./models.js";
 
@@ -90,7 +90,14 @@ export class MiCloudProvider implements HomeProvider {
     }
     await client.setProps(mapped.writes);
     if (!options.readBackPower) return null;
-    const power = mapped.writes.find((write) => typeof write.value === "boolean");
+    const power = mapped.writes.find((write) => {
+      if (typeof write.value === "boolean") return true;
+      if (write.value !== 0 && write.value !== 1) return false;
+      const service = spec.services.find((s) => s.iid === write.siid);
+      const prop = service?.properties.find((p) => p.iid === write.piid);
+      const shortName = prop ? miotShortName(prop.type) : "";
+      return shortName === "on" || shortName === "heating";
+    });
     if (!power) return null;
     let read: Map<string, unknown>;
     try {

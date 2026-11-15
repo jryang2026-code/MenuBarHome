@@ -5155,4 +5155,123 @@ describe("MIoT parameterized actions", () => {
       /Unsupported action inputs/,
     );
   });
+
+  it("matches delay-off, preheat, and cooked before generic off/heat/cook and coerces float toggle writes", () => {
+    const ovenSpec = parseMiotDeviceSpec({
+      type: "urn:miot-spec-v2:device:oven:0000A04E:chunmi-oven1:1",
+      services: [
+        {
+          iid: 2,
+          type: "urn:miot-spec-v2:service:oven:00007862:chunmi-oven1:1",
+          properties: [
+            {
+              iid: 1,
+              type: "urn:miot-spec-v2:property:status:00000007:chunmi-oven1:1",
+              format: "uint8",
+              access: ["read"],
+              "value-list": [
+                { value: 1, description: "Delay-Off" },
+                { value: 2, description: "Preheating" },
+                { value: 3, description: "Cooked" },
+              ],
+            },
+          ],
+          actions: [],
+        },
+      ],
+    })!;
+    const record = { did: "ov1", name: "烤箱", model: "chunmi.oven.v1", isOnline: true, specType: null };
+    for (const [val, expected] of [[1, "延时关机"], [2, "预热中"], [3, "已完成"]] as const) {
+      const home = MiotSynthesizer.synthesize([record], [], { "chunmi.oven.v1": ovenSpec }, new Map([["ov1.2.1", val]]));
+      const dev = home.devices[0]!;
+      assert.equal(dev.kind.kind, "sensor");
+      if (dev.kind.kind === "sensor") {
+        assert.equal(dev.kind.statusText, expected);
+      }
+    }
+
+    const spkSpec = parseMiotDeviceSpec({
+      type: "urn:miot-spec-v2:device:speaker:0000A015:test-spk:1",
+      services: [
+        {
+          iid: 2,
+          type: "urn:miot-spec-v2:service:speaker:0000781C:test-spk:1",
+          properties: [
+            { iid: 1, type: "urn:miot-spec-v2:property:volume:00000013:test-spk:1", format: "uint8", access: ["read"], "value-range": [0, 100, 1] },
+            { iid: 2, type: "urn:miot-spec-v2:property:mute:00000040:test-spk:1", format: "float", access: ["read", "write"], "value-range": [0, 1, 1] },
+          ],
+          actions: [],
+        },
+        {
+          iid: 3,
+          type: "urn:miot-spec-v2:service:ptc-bath-heater:0000783B:test-spk:1",
+          properties: [
+            { iid: 1, type: "urn:miot-spec-v2:property:on:00000006:test-spk:1", format: "bool", access: ["read", "write"] },
+          ],
+          actions: [],
+        },
+      ],
+    })!;
+    assert.deepEqual(
+      MiotCommandMapper.map({ kind: "setSwitch", entityId: "miot:spk1:2", isOn: true }, spkSpec),
+      { kind: "setProps", writes: [{ did: "spk1", siid: 2, piid: 2, value: 1 }] },
+    );
+    const spkHome = MiotSynthesizer.synthesize(
+      [{ did: "spk1", name: "音箱", model: "xiaomi.speaker.test", isOnline: true, specType: null }],
+      [],
+      { "xiaomi.speaker.test": spkSpec },
+      new Map(),
+    );
+    assert.equal(deviceStatusSummary(spkHome.devices[0]!), "待机");
+
+    const lightInvertedSpec = parseMiotDeviceSpec({
+      type: "urn:miot-spec-v2:device:light:0000A001:test-lgt:1",
+      services: [
+        {
+          iid: 2,
+          type: "urn:miot-spec-v2:service:light:00007802:test-lgt:1",
+          properties: [
+            { iid: 1, type: "urn:miot-spec-v2:property:on:00000006:test-lgt:1", format: "bool", access: ["read", "write"] },
+            { iid: 3, type: "urn:miot-spec-v2:property:color-temperature:0000000F:test-lgt:1", format: "uint32", access: ["read"], "value-range": [6500, 2700, 100] },
+          ],
+          actions: [],
+        },
+      ],
+    })!;
+    const acNoTargetSpec = parseMiotDeviceSpec({
+      type: "urn:miot-spec-v2:device:air-conditioner:0000A004:test-ac:1",
+      services: [
+        {
+          iid: 2,
+          type: "urn:miot-spec-v2:service:air-conditioner:0000780F:test-ac:1",
+          properties: [
+            { iid: 1, type: "urn:miot-spec-v2:property:on:00000006:test-ac:1", format: "bool", access: ["read", "write"] },
+          ],
+          actions: [],
+        },
+      ],
+    })!;
+    const capHome = MiotSynthesizer.synthesize(
+      [
+        { did: "lgt1", name: "筒灯", model: "yeelink.light.test", isOnline: true, specType: null },
+        { did: "ac1", name: "空调", model: "xiaomi.ac.test", isOnline: true, specType: null },
+      ],
+      [],
+      { "yeelink.light.test": lightInvertedSpec, "xiaomi.ac.test": acNoTargetSpec },
+      new Map([["lgt1.2.1", true], ["ac1.2.1", true]]),
+    );
+    const lgt = capHome.devices.find((d) => d.id === "lgt1")!;
+    assert.equal(lgt.kind.kind, "light");
+    if (lgt.kind.kind === "light") {
+      assert.equal(lgt.kind.brightnessWritable, false);
+      assert.equal(lgt.kind.colorWritable, false);
+      assert.equal(lgt.kind.minKelvin, 2700);
+      assert.equal(lgt.kind.maxKelvin, 6500);
+    }
+    const ac = capHome.devices.find((d) => d.id === "ac1")!;
+    assert.equal(ac.kind.kind, "climate");
+    if (ac.kind.kind === "climate") {
+      assert.equal(ac.kind.temperatureWritable, false);
+    }
+  });
 });

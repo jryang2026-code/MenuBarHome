@@ -222,4 +222,44 @@ describe("MiCloudProvider", () => {
     assert.equal(result, null);
     assert.deepEqual(cloud.log, ["resolveSpec", "action:2.1"]);
   });
+
+  it("reads back 0/1 numeric writes on 'on' without mistaking brightness 1 for power", async () => {
+    const numericPlugSpec = spec({
+      type: "urn:miot-spec-v2:device:light:0000A001:unit-lamp:1",
+      services: [
+        {
+          iid: 2,
+          type: "urn:miot-spec-v2:service:light:00007802:unit-lamp:1",
+          properties: [
+            { iid: 1, type: "urn:miot-spec-v2:property:on:00000006:unit-lamp:1", format: "uint8", access: ["read", "write"], "value-range": [0, 1, 1] },
+            { iid: 2, type: "urn:miot-spec-v2:property:brightness:0000000D:unit-lamp:1", format: "uint8", access: ["read", "write"], "value-range": [1, 100, 1] },
+          ],
+        },
+      ],
+    });
+    const lamp = {
+      id: "lamp1", name: "台灯", roomId: "study", roomName: "书房", model: "unit.lamp.v1", isOnline: true,
+      kind: { kind: "light", entityId: "miot:lamp1:2", isOn: false, brightnessPercent: 50, colorTempKelvin: null, minKelvin: 2700, maxKelvin: 6500, currentEffect: null, availableEffects: [] },
+    } as SmartDevice;
+
+    const cloudOn = fakeCloud(() => 1);
+    assert.equal(
+      await miProvider(cloudOn, numericPlugSpec, [lamp]).execute(
+        { kind: "setLightPower", entityId: "miot:lamp1:2", isOn: true },
+        { readBackPower: true },
+      ),
+      true,
+    );
+    assert.deepEqual(cloudOn.log, ["resolveSpec", "setProps:lamp1.2.1=1", "getProps"]);
+
+    const cloudBri = fakeCloud(() => 50);
+    assert.equal(
+      await miProvider(cloudBri, numericPlugSpec, [lamp]).execute(
+        { kind: "setMiotProperty", entityId: "miot:lamp1:2", piid: 2, value: 1 },
+        { readBackPower: true },
+      ),
+      null,
+    );
+    assert.deepEqual(cloudBri.log, ["resolveSpec", "setProps:lamp1.2.2=1"]);
+  });
 });

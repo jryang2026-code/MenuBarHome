@@ -225,6 +225,8 @@ public struct FridgeSpec: Equatable, Sendable {
     public var freezerCurrentTemp: Double?
     public var freezerTargetTemp: Double
     public var freezerTargetEntityId: String?
+    public var fridgeTargetPresent: Bool
+    public var freezerTargetPresent: Bool
 
     public init(
         modeEntityId: String?,
@@ -235,7 +237,9 @@ public struct FridgeSpec: Equatable, Sendable {
         fridgeTargetEntityId: String?,
         freezerCurrentTemp: Double?,
         freezerTargetTemp: Double,
-        freezerTargetEntityId: String?
+        freezerTargetEntityId: String?,
+        fridgeTargetPresent: Bool = true,
+        freezerTargetPresent: Bool = true
     ) {
         self.modeEntityId = modeEntityId
         self.currentMode = currentMode
@@ -246,6 +250,8 @@ public struct FridgeSpec: Equatable, Sendable {
         self.freezerCurrentTemp = freezerCurrentTemp
         self.freezerTargetTemp = freezerTargetTemp
         self.freezerTargetEntityId = freezerTargetEntityId
+        self.fridgeTargetPresent = fridgeTargetPresent
+        self.freezerTargetPresent = freezerTargetPresent
     }
 }
 
@@ -293,6 +299,8 @@ public struct SpeakerSpec: Equatable, Sendable {
     public var directiveNotifyEntityId: String?
     public var playMusicButtonId: String?
     public var stopAlarmButtonId: String?
+    public var volumeWritable: Bool
+    public var volumePresent: Bool
 
     public init(
         mediaEntityId: String,
@@ -305,7 +313,9 @@ public struct SpeakerSpec: Equatable, Sendable {
         ttsNotifyEntityId: String? = nil,
         directiveNotifyEntityId: String? = nil,
         playMusicButtonId: String? = nil,
-        stopAlarmButtonId: String? = nil
+        stopAlarmButtonId: String? = nil,
+        volumeWritable: Bool = true,
+        volumePresent: Bool = true
     ) {
         self.mediaEntityId = mediaEntityId
         self.state = state
@@ -318,6 +328,8 @@ public struct SpeakerSpec: Equatable, Sendable {
         self.directiveNotifyEntityId = directiveNotifyEntityId
         self.playMusicButtonId = playMusicButtonId
         self.stopAlarmButtonId = stopAlarmButtonId
+        self.volumeWritable = volumeWritable
+        self.volumePresent = volumePresent
     }
 }
 
@@ -331,6 +343,8 @@ public struct TVSpec: Equatable, Sendable {
     public var currentSource: String?
     public var availableSources: [String]
     public var turnOnButtonId: String?
+    public var volumeWritable: Bool
+    public var volumePresent: Bool
 
     public init(
         mediaEntityId: String,
@@ -341,7 +355,9 @@ public struct TVSpec: Equatable, Sendable {
         isPairingPromptActive: Bool = false,
         currentSource: String? = nil,
         availableSources: [String] = [],
-        turnOnButtonId: String? = nil
+        turnOnButtonId: String? = nil,
+        volumeWritable: Bool = true,
+        volumePresent: Bool = true
     ) {
         self.mediaEntityId = mediaEntityId
         self.state = state
@@ -352,6 +368,8 @@ public struct TVSpec: Equatable, Sendable {
         self.currentSource = currentSource
         self.availableSources = availableSources
         self.turnOnButtonId = turnOnButtonId
+        self.volumeWritable = volumeWritable
+        self.volumePresent = volumePresent
     }
 }
 
