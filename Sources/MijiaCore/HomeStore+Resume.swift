@@ -42,6 +42,7 @@ extension HomeStore {
         let state = cancelResumeAndStoreTasks()
         Task {
             await state.coordinator?.shutdown()
+            await state.pendingProviderShutdown?.value
             await state.provider.shutdown()
             await state.lgClient?.shutdown()
         }
@@ -51,6 +52,7 @@ extension HomeStore {
     public func shutdown() async {
         let state = cancelResumeAndStoreTasks()
         await state.coordinator?.shutdown()
+        await state.pendingProviderShutdown?.value
         await state.provider.shutdown()
         await state.lgClient?.shutdown()
     }
@@ -91,12 +93,15 @@ extension HomeStore {
 
     private func performDebouncedResumeRefresh(reasons: Set<ResumeReason>) async {
         guard !isResumeShutdown,
+              !isPerformingResumeRefresh,
               homeBackend != .demo,
               !isScreenLocked,
               pollingContext.systemActive,
               isNetworkSatisfiedForResume else {
             return
         }
+        isPerformingResumeRefresh = true
+        defer { isPerformingResumeRefresh = false }
         if let hook = onDebouncedResumeHook {
             await hook(reasons)
         }
@@ -111,6 +116,7 @@ extension HomeStore {
 
     private func cancelResumeAndStoreTasks() -> (
         coordinator: DebouncedResumeCoordinator?,
+        pendingProviderShutdown: Task<Void, Never>?,
         provider: any HomeProvider,
         lgClient: LGWebOSClient?
     ) {
@@ -124,6 +130,12 @@ extension HomeStore {
         eventTask = nil
         pollingContextSync?.cancel()
         pollingContextSync = nil
+        activeDualProvider = nil
+        activeHAProvider = nil
+        activeHAConfig = nil
+        activeMiAccountsProvider = nil
+        let pendingProviderShutdown = providerShutdownTask
+        providerShutdownTask = nil
         for task in debounceTasks.values {
             task.cancel()
         }
@@ -151,6 +163,6 @@ extension HomeStore {
         let currentProvider = provider
         let currentLG = lgWebOSClient
         lgWebOSClient = nil
-        return (coordinator, currentProvider, currentLG)
+        return (coordinator, pendingProviderShutdown, currentProvider, currentLG)
     }
 }

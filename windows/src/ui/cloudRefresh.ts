@@ -22,6 +22,7 @@ import {
   hasSecondaryMiAccountsInIndex,
   makeMiAccount,
   refreshMiAccountsConcurrently,
+  withSessionExpiredRetry,
   type AccountChildSnapshot,
   type MergedMiAccountsSnapshot,
   type MiAccount,
@@ -174,7 +175,8 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         specs = cachedTopology.specs;
         membersByGroup = cachedTopology.membersByGroup;
       } else {
-        const discovery = await discoverMiHome(client, {
+        const discovery = await withSessionExpiredRetry(() =>
+          discoverMiHome(client, {
           unresolvedDids: host.unresolvedRoomDids,
           retryUnresolved: !silent,
           cachedRooms: () => {
@@ -194,7 +196,8 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
               rooms: fetchedRooms,
             };
           },
-        });
+          }),
+        );
         const homeRoomsError = discovery.roomsError;
         const allRooms = discovery.rooms;
         const allDevices = discovery.devices;
@@ -238,7 +241,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       try {
         values =
           propKeys.length > 0
-            ? await client.getProps(propKeys)
+            ? await withSessionExpiredRetry(() => client.getProps(propKeys))
             : new Map<string, unknown>();
       } catch (error) {
         if (!cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) {

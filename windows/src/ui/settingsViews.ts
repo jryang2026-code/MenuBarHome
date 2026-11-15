@@ -274,13 +274,50 @@ export interface SettingsViewContext {
     `;
   }
 
+const inactiveTabHtmlCache = new Map<SettingsTab, { key: string; html: string }>();
+
+function buildInactiveTabCacheKey(ctx: SettingsViewContext, tabId: SettingsTab): string | null {
+  if (tabId === "general") {
+    return JSON.stringify([
+      t("外观模式"), ctx.availableUpdate, ctx.isCheckingUpdate, ctx.isInstallingUpdate, ctx.updateStatusMessage,
+      ctx.updateProgress ?? getUpdateProgressForSettings(ctx.settings), ctx.settings.autoCheckUpdates,
+      ctx.settings.appearance, ctx.settings.panelOpacity, ctx.settings.interfaceLanguage,
+      ctx.settings.temperatureUnit, ctx.settings.panelHeight, ctx.panelAnchor, ctx.settings.climatePanel,
+      ctx.settings.hideOfflineDevices, ctx.settings.hideGroupedLights, ctx.settings.showQuickActionsBar,
+      ctx.settings.launchAtLogin, ctx.settings.enableGlobalHotkey, ctx.settings.globalHotkey,
+      ctx.isRecordingHotkey, ctx.hotkeyNeedsHint, ctx.hotkeyRegistrationError,
+    ]);
+  }
+  if (tabId === "assistant") {
+    return JSON.stringify([
+      t("AI 服务商预设（支持 OpenRouter Jev、原生 Jev、DeepSeek、千问、GLM 等）"),
+      ctx.settings.assistantBaseURL, ctx.settings.assistantModel, ctx.apiKeyFor(ctx.settings.assistantBaseURL),
+      readAskWhenUnsure(ctx.settings), ctx.settings.cloudConsentEndpoints, ctx.settings.habitLearningEnabled,
+      ctx.settings.habitShareEnabled, ctx.settings.learnedShortcuts, ctx.settings.habitEntries,
+      ctx.habitSequences(), ctx.devices.map((d) => [d.id, d.name]), (ctx.scenes ?? []).map((s) => [s.id, s.name]),
+    ]);
+  }
+  return null;
+}
+
 function renderSettingsTabPanel(
   ctx: SettingsViewContext,
   tabId: SettingsTab,
   renderBody: (ctx: SettingsViewContext) => string,
 ): string {
   const hidden = ctx.activeTab !== tabId ? "hidden" : "";
-  return `<div class="cc-settings-tab-panel" role="tabpanel" data-settings-panel="${tabId}" ${hidden}>${renderBody(ctx)}</div>`;
+  const cacheKey = buildInactiveTabCacheKey(ctx, tabId);
+  if (ctx.activeTab !== tabId && cacheKey !== null) {
+    const cached = inactiveTabHtmlCache.get(tabId);
+    if (cached && cached.key === cacheKey) {
+      return `<div class="cc-settings-tab-panel" role="tabpanel" data-settings-panel="${tabId}" ${hidden}>${cached.html}</div>`;
+    }
+  }
+  const innerHtml = renderBody(ctx);
+  if (cacheKey !== null) {
+    inactiveTabHtmlCache.set(tabId, { key: cacheKey, html: innerHtml });
+  }
+  return `<div class="cc-settings-tab-panel" role="tabpanel" data-settings-panel="${tabId}" ${hidden}>${innerHtml}</div>`;
 }
 
 function renderGeneralPanel(ctx: SettingsViewContext): string {
@@ -579,9 +616,10 @@ function renderMiSessionNoteAndSignOut(ctx: SettingsViewContext): string {
 function renderAssistantPanel(ctx: SettingsViewContext): string {
   const currentPreset = inferAssistantPreset(ctx.settings.assistantBaseURL);
   const askWhenUnsure = readAskWhenUnsure(ctx.settings);
+  const sequences = ctx.habitSequences();
   const readableHabits = listReadableHabits({
     entries: ctx.settings.habitEntries,
-    sequences: ctx.habitSequences(),
+    sequences,
     phrases: ctx.settings.learnedShortcuts.map((s) => ({ phrase: s.phrase, summary: s.reply })),
     devices: ctx.devices,
     scenes: ctx.scenes ?? [],
@@ -722,12 +760,12 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
           : ""
       }
       ${
-        ctx.settings.habitEntries.length > 0 || ctx.habitSequences().length > 0 || readableHabits.length > 0
+        ctx.settings.habitEntries.length > 0 || sequences.length > 0 || readableHabits.length > 0
           ? `<div class="cc-timers-stack">
               <div class="cc-timer-row" style="gap: 6px; flex-wrap: wrap;">
                 <span style="flex: 1;">${t("已学习 {count} 条时段习惯、{sequences} 条先后习惯（用于猜你想控）", {
                   count: ctx.settings.habitEntries.length,
-                  sequences: ctx.habitSequences().length,
+                  sequences: sequences.length,
                 })}</span>
                 <div style="display: flex; gap: 6px; align-items: center;">
                   <button

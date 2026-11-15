@@ -11,6 +11,33 @@ import MijiaCore
 /// to the browser to copy a token (audit #42). The sidebar replaced the old capsule rail: six
 /// categories no longer fit comfortably across the top of a 740 pt window once each carries a
 /// coloured tile, and a vertical rail also leaves room for search results to appear in place.
+@MainActor
+private enum SettingsSearchMemoCache {
+    struct Key: Equatable {
+        let query: String
+        let availability: SettingsSearchAvailability
+        let language: AppLanguage
+    }
+
+    private static var lastKey: Key?
+    private static var lastOutcome = SettingsSearchOutcome()
+
+    static func search(
+        query: String,
+        availability: SettingsSearchAvailability,
+        language: AppLanguage
+    ) -> SettingsSearchOutcome {
+        let key = Key(query: query, availability: availability, language: language)
+        if lastKey == key {
+            return lastOutcome
+        }
+        let outcome = SettingsSearch.search(query, availability: availability)
+        lastKey = key
+        lastOutcome = outcome
+        return outcome
+    }
+}
+
 public struct SettingsWindowView: View {
     public let store: HomeStore
     @State private var tab: SettingsTab = .general
@@ -44,7 +71,11 @@ public struct SettingsWindowView: View {
 
     private var outcome: SettingsSearchOutcome {
         focus.isSearching
-            ? SettingsSearch.search(focus.query, availability: searchAvailability)
+            ? SettingsSearchMemoCache.search(
+                query: focus.query,
+                availability: searchAvailability,
+                language: store.effectiveLanguage
+            )
             : SettingsSearchOutcome()
     }
 
@@ -1043,7 +1074,9 @@ private struct ConnectionSettingsTab: View {
             let initialHAToken = HAConnectionSaveGuard.loadInitialToken(from: store)
             tokenDraft = initialHAToken.token
             tokenLookupWasUnavailable = initialHAToken.lookupWasUnavailable
-            if store.discoveredHAInstances.isEmpty {
+            if store.discoveredHAInstances.isEmpty,
+               store.shouldAutoDiscoverHomeAssistantOnLAN,
+               !store.isDiscoveringHA {
                 Task {
                     let found = await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: true)
                     if let first = found.first,

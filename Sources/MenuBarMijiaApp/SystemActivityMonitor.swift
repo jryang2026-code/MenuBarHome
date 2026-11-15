@@ -54,6 +54,7 @@ final class SystemActivityMonitor {
     private var displayAsleep = false
     private var locked = false
     private var sessionInactive = false
+    private var pendingResumeReasons: Set<ResumeReason> = []
     private var lastNetworkSatisfied: Bool?
 
     init() {}
@@ -104,6 +105,7 @@ final class SystemActivityMonitor {
         displayAsleep = false
         locked = false
         sessionInactive = false
+        pendingResumeReasons.removeAll()
         lastNetworkSatisfied = nil
     }
 
@@ -118,26 +120,33 @@ final class SystemActivityMonitor {
 
     private func apply(_ change: Change) {
         guard isStarted else { return }
-        var resumeReason: ResumeReason?
         switch change {
         case .asleep(let value):
+            if asleep && !value { pendingResumeReasons.insert(.systemWake) }
+            if value { pendingResumeReasons.removeAll() }
             asleep = value
-            if !value { resumeReason = .systemWake }
         case .displayAsleep(let value):
+            if displayAsleep && !value { pendingResumeReasons.insert(.displayWake) }
             displayAsleep = value
-            if !value { resumeReason = .displayWake }
         case .locked(let value):
+            if locked && !value { pendingResumeReasons.insert(.screenUnlocked) }
+            if value { pendingResumeReasons.removeAll() }
             locked = value
-            if !value { resumeReason = .screenUnlocked }
         case .sessionInactive(let value):
+            if sessionInactive && !value { pendingResumeReasons.insert(.sessionActive) }
+            if value { pendingResumeReasons.removeAll() }
             sessionInactive = value
-            if !value { resumeReason = .sessionActive }
         case .powerState:
             break
         }
+        let isActive = !(asleep || displayAsleep || locked || sessionInactive)
         publish()
-        if let resumeReason {
-            store?.scheduleDebouncedResume(reason: resumeReason)
+        if isActive, !pendingResumeReasons.isEmpty {
+            let reasons = pendingResumeReasons
+            pendingResumeReasons.removeAll()
+            for reason in reasons {
+                store?.scheduleDebouncedResume(reason: reason)
+            }
         }
     }
 
