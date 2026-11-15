@@ -51,6 +51,9 @@ public struct OnboardingGuideView: View {
 
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 10) {
+                    if store.homeBackend != .demo, !store.hasConnectedHomeSource {
+                        demoHeroCard
+                    }
                     step1ConnectionCard
                     step2SearchCard(checklist: checklist)
                     step3AllOffUndoCard(checklist: checklist)
@@ -171,6 +174,47 @@ public struct OnboardingGuideView: View {
         }
     }
 
+    // MARK: - Demo entry (#144)
+
+    /// The fastest way to see what this is: no account, no network. It sits above the connect form,
+    /// in view without scrolling, instead of being a small pill inside step 1.
+    private var demoHeroCard: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "play.rectangle.fill")
+                .font(.system(size: 20))
+                .foregroundStyle(.orange)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(L10n.tr("先看看效果，不用账号", "See it first, no account needed"))
+                    .font(.system(size: 12, weight: .semibold))
+                Text(L10n.tr(
+                    "用一套虚拟家庭体验面板、搜索和全关。完全离线，随时可以连接真实家庭。",
+                    "Try the panel, search and All Off on a virtual home. Fully offline; connect a real home any time."
+                ))
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 6)
+
+            Button {
+                withAnimation(AppleMotion.snappySpring) {
+                    store.switchBackend(.demo)
+                    // No `completeOnboarding()`: once demo devices arrive the guide hides by
+                    // itself, and "Connect a Real Home" brings it back.
+                    store.showToast(L10n.tr("已进入演示模式，随时可以连接真实家庭", "Demo mode on; connect a real home any time"))
+                }
+            } label: {
+                Text(L10n.tr("试试演示", "Try the Demo"))
+                    .font(.system(size: 11.5, weight: .semibold))
+            }
+            .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
+        }
+        .padding(11)
+        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.card)
+    }
+
     // MARK: - Step 1: Connect Devices
 
     private var step1ConnectionCard: some View {
@@ -252,29 +296,6 @@ public struct OnboardingGuideView: View {
                 }
                 .padding(8)
                 .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            } else {
-                HStack(spacing: 6) {
-                    Button {
-                        withAnimation(AppleMotion.snappySpring) {
-                            store.switchBackend(.demo)
-                            // No `completeOnboarding()`: once demo devices arrive the guide hides by
-                            // itself, and switching to an account without credentials shows it again.
-                            store.showToast(L10n.tr("已进入演示模式，可随时在设置里切回真实账号", "Demo mode on; switch back anytime in Settings"))
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "play.rectangle")
-                            Text(L10n.tr("先看看演示（无需账号）", "Try the Demo (No Account)"))
-                        }
-                        .font(.system(size: 10.5, weight: .semibold))
-                    }
-                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
-
-                    Text(L10n.tr("用虚拟设备体验面板与皮肤", "Explore the dashboard with virtual devices"))
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                }
             }
 
             if store.homeBackend == .xiaomiCloud {

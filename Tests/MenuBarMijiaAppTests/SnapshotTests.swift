@@ -142,6 +142,22 @@ struct SnapshotTests {
         }
     }
 
+    @Test("The demo panel offers a way out to a real home")
+    func panelDemoFooterSnapshot() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        fixture.store.switchBackend(.demo)
+        #expect(fixture.store.homeBackend == .demo)
+
+        assertRendered(
+            snapshotReady(themedPanel(.classic, store: fixture.store)),
+            size: CGSize(width: 376, height: 560),
+            named: themedName(.classic, "panel-demo-footer-zh-light")
+        )
+    }
+
     @Test("Panel shows the expired Mi session banner")
     func panelExpiredMiSessionSnapshot() async throws {
         let fixture = try await SnapshotFixture(
@@ -539,6 +555,25 @@ struct SnapshotTests {
             ),
             size: CGSize(width: 400, height: 1080),
             named: "onboarding-custom-ai-zh-light"
+        )
+    }
+
+    @Test("An unconnected first launch puts the demo in view above the connect form")
+    func onboardingDemoEntrySnapshot() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: false)
+        defer { fixture.restore() }
+        fixture.store.hasCompletedOnboarding = false
+        fixture.store.switchBackend(.xiaomiCloud)
+        // The mock provider reports connected; a first launch has nothing connected yet.
+        fixture.store.connectionStatus = .disconnected("")
+        #expect(!fixture.store.hasConnectedHomeSource)
+        assertRendered(
+            snapshotReady(
+                OnboardingGuideView(store: fixture.store)
+                    .frame(width: 400, height: 640)
+            ),
+            size: CGSize(width: 400, height: 640),
+            named: "onboarding-demo-entry-zh-light"
         )
     }
 

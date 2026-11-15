@@ -25,6 +25,21 @@ extension HomeStore {
         return false
     }
 
+    /// #144: leave the offline demo for a real home. A configured source takes over directly; with none
+    /// configured the guide's connect form opens, so the virtual devices do not linger and the user
+    /// lands on the Xiaomi QR path. Returns whether a configured source took over.
+    @discardableResult
+    public func leaveDemo() -> Bool {
+        guard homeBackend == .demo else { return false }
+        if hasHASource || hasMiSource || !miAccounts.isEmpty {
+            switchBackend(preferredLiveBackend)
+            return true
+        }
+        switchBackend(.xiaomiCloud)
+        reopenOnboarding()
+        return false
+    }
+
     /// The three-step checklist shown by the guide and the dashboard card (#180).
     public var onboardingChecklist: OnboardingChecklist {
         OnboardingChecklist(hasConfiguredSource: hasConfiguredHomeSource, milestones: onboardingMilestones)
