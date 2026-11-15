@@ -4326,6 +4326,49 @@ describe("Habit share sentence", () => {
     assert.equal(idle.habitSummary, "");
     assert.match(idle.timeSummary, /21:30/);
   });
+
+  it("evicts stale decayed sequences and phrases when slots are full (#17)", () => {
+    const staleMs = now.getTime() - 56 * 86_400_000;
+    const seedSequences = [
+      ...Array.from({ length: 39 }, (_, i) => ({ afterKey: "dev_ceiling|power:on", targetId: `seq_${i + 1}`, operationKey: "power:on", count: 2, lastRecordedAtMs: now.getTime() })),
+      { afterKey: "dev_ceiling|power:on", targetId: "seq_stale_40", operationKey: "power:on", count: 2, lastRecordedAtMs: staleMs },
+    ];
+    const seedPhrases = [
+      ...Array.from({ length: 14 }, (_, i) => ({ phrase: `口令${i + 1}`, bucket: "夜晚", summary: "打开书房台灯", count: 2, targets: [{ targetId: "dev_study", operationKey: "power:on" }], lastRecordedAtMs: now.getTime() })),
+      { phrase: "陈旧口令15", bucket: "夜晚", summary: "打开书房台灯", count: 2, targets: [{ targetId: "dev_study", operationKey: "power:on" }], lastRecordedAtMs: staleMs },
+    ];
+    const memory = new UserHabitMemory([], seedSequences, { targetId: "dev_ceiling", operationKey: "power:on", recordedAtMs: now.getTime() - 60_000 }, seedPhrases);
+    memory.record([{ targetId: "dev_study", operation: { kind: "power", isOn: true } }], devices, [], now, "新学口令");
+    assert.equal(memory.sequences.length === 40 && memory.sequences.some((s) => s.targetId === "dev_study" && s.count === 1) && !memory.sequences.some((s) => s.targetId === "seq_stale_40"), true);
+    assert.equal(memory.phrases.length === 15 && memory.phrases.some((p) => p.phrase === "新学口令" && p.count === 1) && !memory.phrases.some((p) => p.phrase === "陈旧口令15"), true);
+  });
+});
+
+describe("Shared MIoT curtain fixtures lumi.curtain.hagl05.json and czmydz.curtain.myf5.json (#46)", () => {
+  it("synthesizes single-track lumi.curtain.hagl05 and dual-track czmydz.curtain.myf5 identically to MijiaCore", () => {
+    const singleSpec = parseMiotDeviceSpec(JSON.parse(readFileSync(resolve("../Tests/Fixtures/miot/lumi.curtain.hagl05.json"), "utf8")));
+    assert.ok(singleSpec);
+    const singleHome = MiotSynthesizer.synthesize(
+      [{ did: "curtain1", name: "客厅窗帘", model: "lumi.curtain.hagl05", isOnline: true, specType: singleSpec.type }],
+      [],
+      { "lumi.curtain.hagl05": singleSpec },
+      new Map<string, unknown>([["curtain1.2.6", 0], ["curtain1.2.3", 42], ["curtain1.2.7", 42]]),
+    );
+    const single = singleHome.devices[0]!;
+    assert.equal(single.kind.kind === "cover" && single.kind.subtype === "curtain" && single.kind.positionPercent === 42 && single.kind.positionWritable, true);
+    assert.deepEqual(MiotCommandMapper.map({ kind: "setSelectOption", entityId: "miot:curtain1:2", option: "Open" }, singleSpec), { kind: "setProps", writes: [{ did: "curtain1", siid: 2, piid: 2, value: 1 }] });
+    assert.deepEqual(MiotCommandMapper.map({ kind: "setNumberValue", entityId: "miot:curtain1:2", value: 37 }, singleSpec), { kind: "setProps", writes: [{ did: "curtain1", siid: 2, piid: 7, value: 37 }] });
+
+    const dualSpec = parseMiotDeviceSpec(JSON.parse(readFileSync(resolve("../Tests/Fixtures/miot/czmydz.curtain.myf5.json"), "utf8")));
+    assert.ok(dualSpec);
+    const dualHome = MiotSynthesizer.synthesize(
+      [{ did: "dual1", name: "卧室窗帘", model: "czmydz.curtain.myf5", isOnline: true, specType: dualSpec.type }],
+      [],
+      { "czmydz.curtain.myf5": dualSpec },
+      new Map<string, unknown>([["dual1.2.2", 2], ["dual1.2.3", 20], ["dual1.2.4", 20], ["dual1.2.10", 1], ["dual1.3.2", 2], ["dual1.3.3", 90], ["dual1.3.4", 90]]),
+    );
+    assert.deepEqual(dualHome.devices.map((d) => [d.id, d.name]), [["dual1.s2", "布帘"], ["dual1.s3", "纱帘"]]);
+  });
 });
 
 describe("Lock status without a fresh reading (#149)", () => {

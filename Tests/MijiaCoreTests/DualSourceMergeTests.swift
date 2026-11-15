@@ -1284,4 +1284,30 @@ struct DualSourceMergeTests {
         #expect(groupCard.isOnline)
         #expect(!groupCard.isActiveOn)
     }
+
+    @Test("Two HA entities sharing one DID with a single Mi device keep the unpaired HA entity visible (#25)")
+    func sharedDIDWithSingleMiDeviceDoesNotSuppressSecondHAEntity() {
+        let haLight1 = makeLight(id: "ha-sub-1", name: "一路灯", roomId: "living", roomName: "客厅", model: "lumi.switch.b2lacn02")
+        let haLight2 = makeLight(id: "ha-sub-2", name: "二路灯", roomId: "living", roomName: "客厅", model: "lumi.switch.b2lacn02")
+        let miSingle = makeLight(id: "55009911", name: "一路灯", roomId: "mi-living", roomName: "客厅", model: "lumi.switch.b2lacn02")
+
+        let haHome = makeHome(
+            devices: [haLight1, haLight2],
+            identities: [
+                haLight1.id: makeIdentity(dids: ["55009911"], model: haLight1.model, name: haLight1.name, roomName: "客厅", kind: .light),
+                haLight2.id: makeIdentity(dids: ["55009911"], model: haLight2.model, name: haLight2.name, roomName: "客厅", kind: .light),
+            ]
+        )
+        let miHome = makeHome(
+            devices: [miSingle],
+            identities: [
+                miSingle.id: makeIdentity(dids: ["55009911"], model: miSingle.model, name: miSingle.name, roomName: "客厅", kind: .light),
+            ]
+        )
+
+        let merged = DeviceDeduplicator.merge(homeAssistant: haHome, xiaomiCloud: miHome)
+        #expect(merged.home.devices.count == 2)
+        #expect(merged.home.devices.contains { $0.name == "一路灯" })
+        #expect(merged.home.devices.contains { $0.name == "二路灯" })
+    }
 }

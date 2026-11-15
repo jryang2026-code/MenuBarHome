@@ -107,17 +107,26 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
         public var summary: String
         public var count: Int
         public var targets: [PhraseTarget]
+        public var lastRecordedAt: Date?
 
-        public init(phrase: String, bucket: TimeBucket, summary: String, count: Int, targets: [PhraseTarget] = []) {
+        public init(
+            phrase: String,
+            bucket: TimeBucket,
+            summary: String,
+            count: Int,
+            targets: [PhraseTarget] = [],
+            lastRecordedAt: Date? = nil
+        ) {
             self.phrase = phrase
             self.bucket = bucket
             self.summary = summary
             self.count = count
             self.targets = targets
+            self.lastRecordedAt = lastRecordedAt
         }
 
         private enum CodingKeys: String, CodingKey {
-            case phrase, bucket, summary, count, targets
+            case phrase, bucket, summary, count, targets, lastRecordedAt
         }
 
         public init(from decoder: any Decoder) throws {
@@ -127,6 +136,7 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
             summary = try container.decode(String.self, forKey: .summary)
             count = try container.decode(Int.self, forKey: .count)
             targets = try container.decodeIfPresent([PhraseTarget].self, forKey: .targets) ?? []
+            lastRecordedAt = try container.decodeIfPresent(Date.self, forKey: .lastRecordedAt)
         }
 
         public func encode(to encoder: any Encoder) throws {
@@ -136,6 +146,7 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
             try container.encode(summary, forKey: .summary)
             try container.encode(count, forKey: .count)
             try container.encode(targets, forKey: .targets)
+            try container.encodeIfPresent(lastRecordedAt, forKey: .lastRecordedAt)
         }
     }
 
@@ -347,13 +358,19 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
             }
         }
 
-        entries.sort { $0.count > $1.count }
+        entries.sort {
+            Self.ranksBefore(
+                countA: $0.count,
+                lastA: $0.lastRecordedAt,
+                countB: $1.count,
+                lastB: $1.lastRecordedAt,
+                now: now
+            )
+        }
         if entries.count > Self.maxEntries {
             entries = Array(entries.prefix(Self.maxEntries))
         }
 
-        // One-step transition learning: within the window, everything after the last action
-        // is a candidate "what the user does next" pattern (ADR-0009).
         if let last = lastAction, now.timeIntervalSince(last.recordedAt) <= Self.sequenceWindow {
             let afterKey = last.key
             for intent in encoded where !(intent.targetId == last.targetId && intent.operationKey == last.operationKey) {
@@ -387,12 +404,18 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
                     ))
                 }
             }
-            sequences.sort { $0.count > $1.count }
+            sequences.sort {
+                Self.ranksBefore(
+                    countA: $0.count,
+                    lastA: $0.lastRecordedAt,
+                    countB: $1.count,
+                    lastB: $1.lastRecordedAt,
+                    now: now
+                )
+            }
             if sequences.count > Self.maxSequences {
                 sequences = Array(sequences.prefix(Self.maxSequences))
             }
-            // A just-inserted transition that trimming already dropped never existed for the
-            // user; undo must not resurrect it (Codex #116 re-review).
             for index in receipt.sequences.indices where receipt.sequences[index].previousCount == nil {
                 let change = receipt.sequences[index]
                 receipt.sequences[index].insertedButTrimmed = !sequences.contains {
@@ -418,27 +441,48 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
                     phrases[idx].bucket = bucket
                     phrases[idx].summary = actionSummary
                     phrases[idx].targets = targets
+                    phrases[idx].lastRecordedAt = now
                 } else {
                     receipt.phrase = RecordingReceipt.PhraseChange(phrase: raw, previous: nil)
                     phrases.insert(
-                        PhraseMemory(phrase: raw, bucket: bucket, summary: actionSummary, count: 1, targets: targets),
+                        PhraseMemory(
+                            phrase: raw,
+                            bucket: bucket,
+                            summary: actionSummary,
+                            count: 1,
+                            targets: targets,
+                            lastRecordedAt: now
+                        ),
                         at: 0
                     )
                 }
-                phrases.sort { $0.count > $1.count }
+                phrases.sort {
+                    Self.ranksBefore(
+                        countA: $0.count,
+                        lastA: $0.lastRecordedAt,
+                        countB: $1.count,
+                        lastB: $1.lastRecordedAt,
+                        now: now
+                    )
+                }
                 if phrases.count > Self.maxPhrases {
                     phrases = Array(phrases.prefix(Self.maxPhrases))
                 }
             }
         }
 
-        // Nothing was encoded (relative steps only): no receipt, nothing to undo (#113).
         guard !receipt.entries.isEmpty || receipt.phrase != nil || !receipt.sequences.isEmpty else { return nil }
         return receipt
     }
 
     /// Undoes the exact changes from one `record` call, leaving earlier habits untouched (#34).
     public mutating func unrecord(_ receipt: RecordingReceipt) {
+        let referenceNow = receipt.recordedLastAction?.recordedAt
+            ?? entries.compactMap(\.lastRecordedAt).max()
+            ?? sequences.compactMap(\.lastRecordedAt).max()
+            ?? phrases.compactMap(\.lastRecordedAt).max()
+            ?? Date()
+
         for change in receipt.entries.reversed() {
             guard let idx = entries.firstIndex(where: {
                 $0.bucket == change.bucket
@@ -468,8 +512,6 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
             case (let idx?, nil):
                 sequences.remove(at: idx)
             case (nil, let previousCount):
-                // A capacity-trimmed pre-existing transition still comes back on undo; a
-                // transition trimmed on insertion never existed for the user (Codex #116).
                 if change.insertedButTrimmed != true {
                     sequences.append(SequenceEntry(
                         afterKey: change.afterKey,
@@ -481,7 +523,15 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
                 }
             }
         }
-        sequences.sort { $0.count > $1.count }
+        sequences.sort {
+            Self.ranksBefore(
+                countA: $0.count,
+                lastA: $0.lastRecordedAt,
+                countB: $1.count,
+                lastB: $1.lastRecordedAt,
+                now: referenceNow
+            )
+        }
 
         if let phraseChange = receipt.phrase {
             if let previous = phraseChange.previous {
@@ -500,8 +550,24 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
                 lastAction = receipt.previousLastAction
             }
         }
-        entries.sort { $0.count > $1.count }
-        phrases.sort { $0.count > $1.count }
+        entries.sort {
+            Self.ranksBefore(
+                countA: $0.count,
+                lastA: $0.lastRecordedAt,
+                countB: $1.count,
+                lastB: $1.lastRecordedAt,
+                now: referenceNow
+            )
+        }
+        phrases.sort {
+            Self.ranksBefore(
+                countA: $0.count,
+                lastA: $0.lastRecordedAt,
+                countB: $1.count,
+                lastB: $1.lastRecordedAt,
+                now: referenceNow
+            )
+        }
     }
 
     // MARK: - Viewing & Forgetting (privacy)
@@ -777,17 +843,30 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
         return (targetId, op)
     }
 
-    /// Recency-decayed frequency plus the next-action bonus (ADR-0009).
+    static func decayedWeight(count: Int, lastRecordedAt: Date?, now: Date) -> Double {
+        guard let last = lastRecordedAt else { return Double(count) }
+        let days = max(0, now.timeIntervalSince(last) / 86_400)
+        return Double(count) * pow(0.5, days / decayHalfLifeDays)
+    }
+
+    static func ranksBefore(
+        countA: Int,
+        lastA: Date?,
+        countB: Int,
+        lastB: Date?,
+        now: Date
+    ) -> Bool {
+        let wa = decayedWeight(count: countA, lastRecordedAt: lastA, now: now)
+        let wb = decayedWeight(count: countB, lastRecordedAt: lastB, now: now)
+        if abs(wa - wb) > 1e-6 { return wa > wb }
+        let ta = lastA ?? .distantPast
+        let tb = lastB ?? .distantPast
+        if abs(ta.timeIntervalSince(tb)) >= 60 { return ta > tb }
+        return countA > countB
+    }
+
     private static func score(of entry: HabitEntry, now: Date, sequenceBonus: Double) -> Double {
-        let decay: Double
-        if let last = entry.lastRecordedAt {
-            let days = max(0, now.timeIntervalSince(last) / 86_400)
-            decay = pow(0.5, days / decayHalfLifeDays)
-        } else {
-            // Pre-ADR-0009 entries carry no timestamp and keep their full weight.
-            decay = 1
-        }
-        return Double(entry.count) * decay + sequenceBonus
+        decayedWeight(count: entry.count, lastRecordedAt: entry.lastRecordedAt, now: now) + sequenceBonus
     }
 
     /// Learned-transition count when this entry continues the still-fresh last action (ADR-0009).

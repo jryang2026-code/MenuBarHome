@@ -6,6 +6,7 @@ import { setImmediate } from "node:timers/promises";
 import { readFileSync } from "node:fs";
 import type { Window } from "happy-dom";
 import { ScheduledCommandStore, SCHEDULED_COMMANDS_STORAGE_KEY } from "../src/core/scheduledCommands.js";
+import { DelayPhrase, UndoPhrase } from "../src/core/assistant/intent.js";
 import type { DeviceIntent, ScheduledCommand } from "../src/core/models.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { processScheduledCommands, scheduledCommandIdentity, scheduledCommandsReady } from "../src/ui/scheduledCommands.js";
@@ -360,5 +361,18 @@ describe("Timer app wiring", () => {
     await instance.runScheduledCommand({ ...timer(), intents: undefined });
     assert.equal(calls.length, 0);
     assert.equal(instance.pendingCloudConsent, null);
+  });
+
+  it("matches shared scheduled_command_golden.json corpus for DelayPhrase and UndoPhrase (#46)", () => {
+    const golden = JSON.parse(readFileSync("../Tests/Fixtures/scheduled_command_golden.json", "utf8"));
+    for (const item of golden.delayExtractCases) {
+      assert.deepEqual(
+        DelayPhrase.extract(item.utterance),
+        item.expected ? { seconds: item.expected.delaySeconds, remainder: item.expected.remainder } : null,
+        item.utterance,
+      );
+    }
+    for (const item of golden.cancelCases) assert.equal(DelayPhrase.isCancel(item.utterance), item.isCancel);
+    for (const item of golden.undoCases) assert.equal(UndoPhrase.isUndo(item.utterance), item.isUndo);
   });
 });

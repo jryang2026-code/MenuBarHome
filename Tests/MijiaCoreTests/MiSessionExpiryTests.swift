@@ -40,6 +40,32 @@ struct MiSessionExpiryPolicyTests {
         #expect(session.expiresAt == nil)
         #expect(session.expiryState(at: .distantFuture) == .valid)
     }
+
+    @Test("Shared session_expiry_golden.json corpus matches macOS MiSessionExpiryPolicy and maskedUserId (#46)")
+    func matchesSessionExpiryGoldenCorpus() throws {
+        struct PolicyCase: Decodable { let id: String; let expiresAtOffsetSeconds: Double?; let expectedState: String }
+        struct MaskedCase: Decodable { let userId: String; let expected: String }
+        struct GoldenFile: Decodable {
+            let warningLeadSeconds: Double; let nowEpochSeconds: Double
+            let policyCases: [PolicyCase]; let maskedUserIdCases: [MaskedCase]
+        }
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Fixtures/session_expiry_golden.json")
+        let golden = try JSONDecoder().decode(GoldenFile.self, from: Data(contentsOf: url))
+        #expect(MiSessionExpiryPolicy.warningLeadTime == golden.warningLeadSeconds)
+        let now = Date(timeIntervalSince1970: golden.nowEpochSeconds)
+        for item in golden.policyCases {
+            let expiresAt = item.expiresAtOffsetSeconds.map { now.addingTimeInterval($0) }
+            let state = MiSessionExpiryPolicy.state(expiresAt: expiresAt, now: now)
+            switch item.expectedState {
+            case "valid": #expect(state == .valid, "\(item.id)")
+            case "expiringSoon": #expect(state == .expiringSoon(expiresAt: try #require(expiresAt)), "\(item.id)")
+            default: #expect(state == .expired, "\(item.id)")
+            }
+        }
+        for item in golden.maskedUserIdCases {
+            #expect(MiSession(userId: item.userId, cUserId: "c", ssecurity: "s", serviceToken: "t").maskedUserId == item.expected)
+        }
+    }
 }
 
 struct MiSessionRejectionTests {

@@ -1,0 +1,214 @@
+{
+  "version": 1,
+  "parseCases": [
+    {
+      "url": "menumijia://toggle?device=dev_study_ceiling",
+      "expected": {
+        "kind": "toggle",
+        "deviceId": "dev_study_ceiling",
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menumijia:/toggle?device=light_bed",
+      "expected": {
+        "kind": "toggle",
+        "deviceId": "light_bed",
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menumijia://scene?name=%E5%9B%9E%E5%AE%B6%E6%A8%A1%E5%BC%8F",
+      "expected": {
+        "kind": "scene",
+        "name": "回家模式",
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menumijia://ask?text=%20%E6%89%93%E5%BC%80%E4%B9%A6%E6%88%BF%E7%81%AF%20",
+      "expected": {
+        "kind": "ask",
+        "text": "打开书房灯",
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menumijia://power?device=dev_light&on=false",
+      "expected": {
+        "kind": "power",
+        "deviceId": "dev_light",
+        "isOn": false,
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menumijia://power?device=dev_light&state=ON",
+      "expected": {
+        "kind": "power",
+        "deviceId": "dev_light",
+        "isOn": true,
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menumijia://brightness?device=dev_light&percent=40",
+      "expected": {
+        "kind": "brightness",
+        "deviceId": "dev_light",
+        "percent": 40,
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menumijia://color-temp?device=dev_light&kelvin=2700",
+      "expected": {
+        "kind": "colorTemp",
+        "deviceId": "dev_light",
+        "kelvin": 2700,
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menumijia://color_temp?device=dev_light&value=4500",
+      "expected": {
+        "kind": "colorTemp",
+        "deviceId": "dev_light",
+        "kelvin": 4500,
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menumijia://temperature?device=dev_ac&celsius=25.5",
+      "expected": {
+        "kind": "temperature",
+        "deviceId": "dev_ac",
+        "celsius": 25.5,
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menumijia://fan?device=dev_fan&percent=60",
+      "expected": {
+        "kind": "fan",
+        "deviceId": "dev_fan",
+        "percent": 60,
+        "preset": null,
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menumijia://fan?device=dev_fan&preset=Auto",
+      "expected": {
+        "kind": "fan",
+        "deviceId": "dev_fan",
+        "percent": null,
+        "preset": "Auto",
+        "controlsDevice": true
+      }
+    },
+    {
+      "url": "menumijia://focus?device=dev_fan&token=0123456789abcdef0123456789abcdef&id=req-42",
+      "expected": {
+        "kind": "focus",
+        "deviceId": "dev_fan",
+        "controlsDevice": false,
+        "token": "0123456789abcdef0123456789abcdef",
+        "requestId": "req-42"
+      }
+    },
+    {
+      "url": "https://toggle?device=light_bed",
+      "expected": null
+    },
+    {
+      "url": "menumijia://toggle",
+      "expected": null
+    },
+    {
+      "url": "menumijia://toggle?device=",
+      "expected": null
+    },
+    {
+      "url": "menumijia://toggle/extra?device=light_bed",
+      "expected": null
+    },
+    {
+      "url": "menumijia://power?device=dev_light&on=maybe",
+      "expected": null
+    },
+    {
+      "url": "menumijia://brightness?device=dev_light&percent=101",
+      "expected": null
+    },
+    {
+      "url": "menumijia://brightness?device=dev_light&percent=-1",
+      "expected": null
+    },
+    {
+      "url": "menumijia://color-temp?device=dev_light&kelvin=999",
+      "expected": null
+    },
+    {
+      "url": "menumijia://temperature?device=dev_ac&celsius=101",
+      "expected": null
+    },
+    {
+      "url": "menumijia://fan?device=dev_fan&percent=60&preset=Auto",
+      "expected": null
+    },
+    {
+      "url": "menumijia://fan?device=dev_fan&percent=0",
+      "expected": null
+    }
+  ],
+  "builtInSceneCases": [
+    { "raw": "lightsOff", "expected": "lightsOff" },
+    { "raw": "quick:lightsOff", "expected": "lightsOff" },
+    { "raw": "全屋关灯", "expected": "lightsOff" },
+    { "raw": "softNightLight", "expected": "softNightLight" },
+    { "raw": "柔和夜灯", "expected": "softNightLight" },
+    { "raw": "climateSleepOff", "expected": "climateSleepOff" },
+    { "raw": "关温控风扇", "expected": "climateSleepOff" },
+    { "raw": "allOff", "expected": "allOff" },
+    { "raw": "一键全关", "expected": "allOff" },
+    { "raw": "undo", "expected": "undo" },
+    { "raw": "撤销上一步", "expected": "undo" },
+    { "raw": "unknown_custom_scene", "expected": null }
+  ],
+  "bridgeTokenCases": [
+    {
+      "allowDirectControl": false,
+      "providedToken": "0123456789abcdef0123456789abcdef",
+      "expectedToken": "0123456789abcdef0123456789abcdef",
+      "validToken": true,
+      "requiresConfirmation": false
+    },
+    {
+      "allowDirectControl": false,
+      "providedToken": "wrong-token-1234567890abcdef1234",
+      "expectedToken": "0123456789abcdef0123456789abcdef",
+      "validToken": false,
+      "requiresConfirmation": true
+    },
+    {
+      "allowDirectControl": false,
+      "providedToken": "short",
+      "expectedToken": "short",
+      "validToken": false,
+      "requiresConfirmation": true
+    },
+    {
+      "allowDirectControl": true,
+      "providedToken": null,
+      "expectedToken": "0123456789abcdef0123456789abcdef",
+      "validToken": false,
+      "requiresConfirmation": false
+    }
+  ],
+  "snapTemperatureCases": [
+    { "celsius": 25.3, "min": 16.0, "max": 30.0, "step": 0.5, "expected": 25.5 },
+    { "celsius": 75.0, "min": 16.0, "max": 30.0, "step": 0.5, "expected": 30.0 },
+    { "celsius": 10.0, "min": 16.0, "max": 30.0, "step": 1.0, "expected": 16.0 }
+  ]
+}

@@ -310,16 +310,28 @@ public enum PanelSearch {
         return .filter
     }
 
-    private static let commandPrefixes = [
+    private static let zhCommandPrefixes = [
         "打开", "开启", "关闭", "关掉", "关上", "熄灭", "请", "帮我", "帮忙", "把", "将",
-        "调", "设", "切", "执行", "启动", "运行", "全关", "全开",
+        "调", "设", "切", "执行", "启动", "运行", "全关", "全开"
+    ]
+
+    private static let enCommandPrefixes = [
         "turn", "open", "close", "switch", "set", "make", "please", "run", "start",
-        "activate", "enable", "disable", "dim", "brighten"
+        "activate", "enable", "disable", "dim", "brighten",
+        "lock", "unlock", "mute", "unmute", "pause", "stop", "toggle"
     ]
 
     private static func startsWithCommandVerb(_ query: String) -> Bool {
         let lower = query.lowercased()
-        return commandPrefixes.contains { lower.hasPrefix($0) }
+        if zhCommandPrefixes.contains(where: { lower.hasPrefix($0) }) { return true }
+        for verb in enCommandPrefixes where lower.hasPrefix(verb) {
+            let rest = lower.dropFirst(verb.count)
+            guard let next = rest.unicodeScalars.first else { return true }
+            if !((65...90).contains(next.value) || (97...122).contains(next.value)) {
+                return true
+            }
+        }
+        return false
     }
 
     /// `26 度`, `60%`, `4500K`, `调到 30`: a number tied to a unit or a set-verb means an instruction.

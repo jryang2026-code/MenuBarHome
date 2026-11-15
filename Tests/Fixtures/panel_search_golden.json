@@ -26,6 +26,17 @@
     { "query": "撤销", "kind": "command" },
     { "query": "26 度", "kind": "command" },
     { "query": "请帮我开灯", "kind": "command" },
-    { "query": "turn on study light", "kind": "command" }
+    { "query": "turn on study light", "kind": "command" },
+    { "query": "dimian", "kind": "filter" },
+    { "query": "dimeng", "kind": "filter" },
+    { "query": "seting", "kind": "filter" },
+    { "query": "running", "kind": "filter" },
+    { "query": "opening", "kind": "filter" },
+    { "query": "closet", "kind": "filter" },
+    { "query": "dim bedroom light", "kind": "command" },
+    { "query": "dim 客厅灯", "kind": "command" },
+    { "query": "set 书房空调 26", "kind": "command" },
+    { "query": "toggle study light", "kind": "command" },
+    { "query": "pause vacuum", "kind": "command" }
   ]
 }
