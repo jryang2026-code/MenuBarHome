@@ -2,6 +2,48 @@ import AppKit
 import Foundation
 
 enum SnapshotAssertion {
+    /// How far a render may drift from its baseline and still count as the same picture.
+    ///
+    /// Baselines are recorded on one Mac, then compared on whichever Mac, display and wallpaper the
+    /// developer has that day. Measured over 92 baselines on a machine with a second display attached:
+    /// 78 differed by at most 3 of 255 in any channel (invisible rounding), and the other 14 differed in
+    /// at most 71 pixels, all SF Symbol and glyph edges. A byte-exact comparison called all 92 failures.
+    ///
+    /// - `channel`: a pixel whose every channel is within this of the baseline is the same pixel.
+    /// - `pixelBudget`: this many pixels beyond that may differ freely, for anti-aliased symbol edges.
+    ///   A fixed count rather than a fraction, so a large window does not buy a larger allowance. A real
+    ///   change (a different label, icon, colour or layout) moves far more pixels than this.
+    enum Tolerance {
+        static let channel = 3
+        static let pixelBudget = 96
+    }
+
+    /// How many pixels differ by more than `channelTolerance` in at least one RGBA channel.
+    static func differingPixelCount(
+        reference: UnsafeRawPointer,
+        snapshot: UnsafeRawPointer,
+        width: Int,
+        height: Int,
+        bytesPerRow: Int,
+        channelTolerance: Int = Tolerance.channel
+    ) -> Int {
+        guard width > 0, height > 0, bytesPerRow >= width * 4 else { return Int.max }
+        var count = 0
+        for y in 0..<height {
+            for x in 0..<width {
+                let offset = y * bytesPerRow + x * 4
+                var exceeds = false
+                for channel in 0..<4 {
+                    let a = Int(reference.load(fromByteOffset: offset + channel, as: UInt8.self))
+                    let b = Int(snapshot.load(fromByteOffset: offset + channel, as: UInt8.self))
+                    if abs(a - b) > channelTolerance { exceeds = true; break }
+                }
+                if exceeds { count += 1 }
+            }
+        }
+        return count
+    }
+
     static func sanitizePathComponent(_ raw: String) -> String {
         raw.replacingOccurrences(of: "\\W+", with: "-", options: .regularExpression)
             .replacingOccurrences(of: "^-|-$", with: "", options: .regularExpression)
@@ -65,6 +107,16 @@ enum SnapshotAssertion {
             if rtCount == byteCount, memcmp(oldBytes, rtBytes, rtCount) == 0 {
                 return nil
             }
+            if rtCount == byteCount,
+               differingPixelCount(
+                   reference: UnsafeRawPointer(oldBytes),
+                   snapshot: UnsafeRawPointer(rtBytes),
+                   width: rtCtx.width,
+                   height: rtCtx.height,
+                   bytesPerRow: rtCtx.bytesPerRow
+               ) <= Tolerance.pixelBudget {
+                return nil
+            }
             let detail = firstDifferingPixel(
                 reference: UnsafeRawPointer(oldBytes),
                 snapshot: UnsafeRawPointer(rtBytes),
@@ -72,7 +124,17 @@ enum SnapshotAssertion {
                 height: rtCtx.height,
                 bytesPerRow: rtCtx.bytesPerRow
             )
-            return "Newly-taken snapshot does not match reference. \(detail)"
+            let beyond = rtCount == byteCount
+                ? differingPixelCount(
+                    reference: UnsafeRawPointer(oldBytes),
+                    snapshot: UnsafeRawPointer(rtBytes),
+                    width: rtCtx.width,
+                    height: rtCtx.height,
+                    bytesPerRow: rtCtx.bytesPerRow
+                )
+                : -1
+            return "Newly-taken snapshot does not match reference: \(beyond) pixels differ by more than "
+                + "\(Tolerance.channel)/255 (budget \(Tolerance.pixelBudget)). \(detail)"
         }
         let detail = firstDifferingPixel(
             reference: UnsafeRawPointer(oldBytes),
