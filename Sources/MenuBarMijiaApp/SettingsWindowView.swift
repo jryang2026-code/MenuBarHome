@@ -902,6 +902,12 @@ enum HAConnectionSaveGuard {
     /// Search anchors that live inside the collapsed Home Assistant card.
     static let collapsedAnchors: Set<SettingsAnchor> = [.haServerAddress, .haToken, .haDiscovery]
 
+    /// A search hit inside the folded card opens it for good: the highlight itself fades after about
+    /// 1.6 s, and the form must not vanish while the user is typing or scanning.
+    static func shouldLatchExpansion(forHighlight anchor: SettingsAnchor?) -> Bool {
+        anchor.map(collapsedAnchors.contains) ?? false
+    }
+
     enum Decision: Equatable {
         case proceed(token: String, clearUnavailableFlag: Bool)
         case blockedKeychainUnavailable
@@ -994,8 +1000,7 @@ private struct ConnectionSettingsTab: View {
 
     private var showsHomeAssistantForm: Bool {
         if haExpanded || store.hasHASource { return true }
-        if let highlight = searchFocus?.highlight { return HAConnectionSaveGuard.collapsedAnchors.contains(highlight) }
-        return false
+        return HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: searchFocus?.highlight)
     }
 
     var body: some View {
@@ -1125,6 +1130,9 @@ private struct ConnectionSettingsTab: View {
 
                 LGWebOSSettingsSection(store: store)
             }
+        }
+        .onChange(of: searchFocus?.highlight) { _, highlight in
+            if HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: highlight) { haExpanded = true }
         }
         .onAppear {
             urlDraft = HAConnectionSaveGuard.initialURLDraft(storedURL: store.serverURLString, hasHASource: store.hasHASource)

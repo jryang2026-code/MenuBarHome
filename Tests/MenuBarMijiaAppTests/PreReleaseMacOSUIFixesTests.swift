@@ -421,6 +421,10 @@ struct PreReleaseMacOSUIFixesTests {
     func haCardAnchorsAreExpandedBySearch() {
         #expect(HAConnectionSaveGuard.collapsedAnchors.isSuperset(of: [.haServerAddress, .haToken, .haDiscovery]))
         #expect(!HAConnectionSaveGuard.collapsedAnchors.contains(.miAccount))
+        // The highlight fades after ~1.6 s; the form latches open on the first hit instead.
+        #expect(HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: .haToken))
+        #expect(!HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: .miAccount))
+        #expect(!HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: nil))
     }
 }
 }
