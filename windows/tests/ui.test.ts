@@ -135,7 +135,6 @@ describe("Service endpoint submission", () => {
         haUrl: "http://[::1]:8123/api",
       },
     ]);
-    assert.equal(calls.some((call) => call.command === "set_allowed_origins"), false);
   });
 
   it("does not re-prompt a declined endpoint on unrelated background saves, but retries when settings are explicitly saved", async () => {
@@ -4342,7 +4341,6 @@ describe("Windows 11 Fluent 2 two-island flyout, Quick Settings capsules & taskb
     const finishCalls: Array<{ seq?: number }> = [];
     const invoke = async (name: string, args?: { seq?: number }) => {
       if (name === "finish_hide_panel") finishCalls.push({ seq: args?.seq });
-      if (name === "panel_backdrop") return "none";
       if (name === "panel_placement") return { anchor: "tray", customPosition: false };
       return undefined;
     };

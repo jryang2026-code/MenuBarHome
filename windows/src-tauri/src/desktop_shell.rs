@@ -114,18 +114,6 @@ pub(crate) fn apply_run_registry_entry(
     }
 }
 
-#[cfg(not(windows))]
-pub(crate) fn apply_run_registry_entry(
-    _subkey: &str,
-    _value_name: &str,
-    exe_path: Option<&Path>,
-) -> Result<(), String> {
-    if let Some(path) = exe_path {
-        let _ = format_launch_at_login_value(path)?;
-    }
-    Ok(())
-}
-
 #[cfg(windows)]
 pub(crate) fn has_run_registry_entry(subkey: &str, value_name: &str) -> Result<bool, String> {
     use std::os::windows::ffi::OsStrExt;
@@ -159,11 +147,6 @@ pub(crate) fn has_run_registry_entry(subkey: &str, value_name: &str) -> Result<b
         return Ok(false);
     }
     Err(format!("读取开机自启注册表项失败（Win32 错误码 {status}）"))
-}
-
-#[cfg(not(windows))]
-pub(crate) fn has_run_registry_entry(_subkey: &str, _value_name: &str) -> Result<bool, String> {
-    Err("非 Windows 平台不支持注册表自启查询".to_string())
 }
 
 #[tauri::command]
@@ -205,11 +188,6 @@ fn probe_workstation_locked() -> bool {
         let _ = CloseDesktop(desktop);
         interpret_input_desktop_probe(true, switched != 0)
     }
-}
-
-#[cfg(not(windows))]
-fn probe_workstation_locked() -> bool {
-    false
 }
 
 #[tauri::command]
@@ -343,10 +321,6 @@ pub(crate) async fn send_desktop_notification(title: String, body: String) -> Re
         })
         .await
         .map_err(|err| format!("启动系统通知失败：{err}"))??;
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = xml;
     }
     Ok(())
 }

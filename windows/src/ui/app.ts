@@ -439,7 +439,6 @@ export class MenuMijiaWindowsApp {
     );
     this.applyPanelHeight();
     this.syncPanelPlacement();
-    this.syncPanelBackdrop();
     void this.applyGlobalHotkey();
     this.bindLifecycleRecovery();
     this.startTimerLoop();
@@ -1652,20 +1651,6 @@ export class MenuMijiaWindowsApp {
         })
         .catch(() => undefined);
     }
-  }
-
-  /**
-   * The native backdrop the window manager granted (§1.4). WebView2 cannot sample the desktop, so the
-   * stylesheet only lowers the panel fill to a tint when Rust reports a real Acrylic/Mica backdrop.
-   */
-  public syncPanelBackdrop(): void {
-    const invoke = window.__TAURI_INTERNALS__?.invoke;
-    if (!invoke) return;
-    void invoke<string>("panel_backdrop")
-      .then((value) => {
-        this.root.dataset.backdrop = value === "acrylic" ? "acrylic" : "none";
-      })
-      .catch(() => undefined);
   }
 
   /** Pulls the placement the backend persists so a drag shows up in the settings sheet (#204). */
