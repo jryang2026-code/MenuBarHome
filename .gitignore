@@ -3,11 +3,6 @@
 .derived/
 .swiftpm/
 /Package.resolved
-Packages/
-DerivedData/
-*.xcodeproj
-*.xcworkspace
-xcuserdata/
 
 # Built App Bundles & Archives
 *.app/
@@ -40,25 +35,12 @@ windows/src-tauri/gen/
 windows/src-tauri/camera-bin/*
 !windows/src-tauri/camera-bin/README.md
 
-# Android 构建缓存与本地私密配置
-android/
-
-# 本地宣传片工程与未发布图标草稿（保留在本地磁盘，不随代码库提交）
-remotion_promo/
-video_promo/
-*.mp4
-docs/assets/AppIcon_*.png
-
-.review/
-
 # 本地 Paseo 配置（不随仓库分发）
 paseo.json
 
 # 本地诊断脚本与临时实验（摄像机 #97 排错脚本等，保留在本地磁盘）
 .scratch/
 
-
 # 本地构建的带云台补丁 go2rtc（scripts/go2rtc-ptz/build.sh）
 scripts/go2rtc-ptz/out/
 __pycache__/
-.alma-snapshots/
