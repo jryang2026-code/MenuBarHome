@@ -70,7 +70,7 @@ public struct OnboardingGuideView: View {
         }
         .onAppear {
             launchAtLogin.refresh()
-            haURLDraft = store.serverURLString
+            haURLDraft = HAConnectionSaveGuard.initialURLDraft(storedURL: store.serverURLString, hasHASource: store.hasHASource)
             let initialHAToken = HAConnectionSaveGuard.loadInitialToken(from: store)
             haTokenDraft = initialHAToken.token
             haTokenLookupWasUnavailable = initialHAToken.lookupWasUnavailable
@@ -218,7 +218,8 @@ public struct OnboardingGuideView: View {
                     }
                 )
             ) {
-                ForEach(HomeBackend.allCases) { backend in
+                // #143: the recommended path first; Home Assistant is the "I already run it" option.
+                ForEach([HomeBackend.xiaomiCloud, .demo, .homeAssistant]) { backend in
                     Text(backend.title).tag(backend)
                 }
             }
@@ -301,10 +302,7 @@ public struct OnboardingGuideView: View {
                         .disabled(store.isDiscoveringHA)
                     }
 
-                    if let address = URL(string: HAWebSocketProvider.normalizeBaseURL(haURLDraft)),
-                       address.scheme == "http",
-                       let host = address.host,
-                       !["localhost", "127.0.0.1", "::1", "[::1]"].contains(host.lowercased()) {
+                    if HAConnectionSaveGuard.showsPlaintextWarning(forDraft: haURLDraft) {
                         Label(L10n.tr("令牌将以明文在网络上传输，建议使用 HTTPS 或 Nabu Casa 地址。", "Your token will travel unencrypted. Use HTTPS or a Nabu Casa address."), systemImage: "exclamationmark.triangle.fill")
                             .font(.system(size: 10.5))
                             .foregroundStyle(.orange)
@@ -321,7 +319,7 @@ public struct OnboardingGuideView: View {
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                             Spacer()
-                            if let secURL = URL(string: "\(HAWebSocketProvider.normalizeBaseURL(haURLDraft))/profile/security") {
+                            if let secURL = URL(string: "\(HAWebSocketProvider.normalizeBaseURL(HAConnectionSaveGuard.effectiveURL(haURLDraft)))/profile/security") {
                                 Button(L10n.tr("打开网页取令牌", "Open Security Page")) {
                                     NSWorkspace.shared.open(secURL)
                                 }
@@ -340,7 +338,7 @@ public struct OnboardingGuideView: View {
 
                         Button(L10n.tr("连接", "Connect")) {
                             HAConnectionSaveGuard.save(
-                                serverURL: haURLDraft,
+                                serverURL: HAConnectionSaveGuard.effectiveURL(haURLDraft),
                                 tokenDraft: &haTokenDraft,
                                 initialLookupWasUnavailable: &haTokenLookupWasUnavailable,
                                 in: store

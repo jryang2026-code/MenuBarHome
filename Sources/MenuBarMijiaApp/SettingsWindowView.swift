@@ -877,6 +877,37 @@ enum WeeklyHealthReportExport {
 enum HAConnectionSaveGuard {
     static let haTokenAccount = "ha_access_token"
 
+    /// #143: a fresh install shows an empty field (the placeholder names the address) instead of a
+    /// pre-filled `http://homeassistant.local:8123` that raises a plaintext warning before anyone typed.
+    /// Whoever already connected Home Assistant, or saved a custom address, keeps what they have.
+    static func initialURLDraft(storedURL: String, hasHASource: Bool) -> String {
+        if hasHASource { return storedURL }
+        return HAWebSocketProvider.normalizeBaseURL(storedURL) == KeychainHelper.defaultNASURL ? "" : storedURL
+    }
+
+    /// An empty field still means the default address, exactly as the pre-filled one did.
+    static func effectiveURL(_ draft: String) -> String {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? KeychainHelper.defaultNASURL : draft
+    }
+
+    /// The plaintext-token warning is about something the user typed, never about the default.
+    static func showsPlaintextWarning(forDraft draft: String) -> Bool {
+        guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let address = URL(string: HAWebSocketProvider.normalizeBaseURL(draft)),
+              address.scheme == "http",
+              let host = address.host else { return false }
+        return !["localhost", "127.0.0.1", "::1", "[::1]"].contains(host.lowercased())
+    }
+
+    /// Search anchors that live inside the collapsed Home Assistant card.
+    static let collapsedAnchors: Set<SettingsAnchor> = [.haServerAddress, .haToken, .haDiscovery]
+
+    /// A search hit inside the folded card opens it for good: the highlight itself fades after about
+    /// 1.6 s, and the form must not vanish while the user is typing or scanning.
+    static func shouldLatchExpansion(forHighlight anchor: SettingsAnchor?) -> Bool {
+        anchor.map(collapsedAnchors.contains) ?? false
+    }
+
     enum Decision: Equatable {
         case proceed(token: String, clearUnavailableFlag: Bool)
         case blockedKeychainUnavailable
@@ -963,6 +994,14 @@ private struct ConnectionSettingsTab: View {
     @State private var urlDraft: String = ""
     @State private var tokenDraft: String = ""
     @State private var tokenLookupWasUnavailable = false
+    /// #143: Home Assistant is the second path, so its form stays folded until it is needed.
+    @State private var haExpanded = false
+    @Environment(\.settingsSearchFocus) private var searchFocus
+
+    private var showsHomeAssistantForm: Bool {
+        if haExpanded || store.hasHASource { return true }
+        return HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: searchFocus?.highlight)
+    }
 
     var body: some View {
         let _ = store.effectiveLanguage
@@ -1007,70 +1046,96 @@ private struct ConnectionSettingsTab: View {
             }
 
             if store.homeBackend != .demo {
-                SettingsSection(title: "Home Assistant", anchor: .haServerAddress) {
-                    homeAssistantForm
+                SettingsSection(title: L10n.tr("米家云端直连", "Xiaomi Cloud Direct"), anchor: .miAccount) {
+                    MiAccountSection(store: store)
+                }
 
-                    HStack {
-                        Button(store.isDiscoveringHA ? L10n.tr("扫描中…", "Scanning…") : L10n.tr("扫描局域网 HA", "Scan LAN for HA")) {
-                            Task {
-                                let found = await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: false)
-                                if let first = found.first {
-                                    urlDraft = first.baseURL
-                                    store.showToast(L10n.tr("已发现：\(first.displaySummary)", "Found: \(first.displaySummary)"))
-                                } else {
-                                    store.showToast(L10n.tr("未在局域网扫描到 Home Assistant", "No Home Assistant found on LAN"), isError: true)
-                                }
-                            }
-                        }
-                        .buttonStyle(PillActionButtonStyle())
-                        .disabled(store.isDiscoveringHA)
-                        .settingsRow(anchor: .haDiscovery)
+                if showsHomeAssistantForm {
+                    SettingsSection(title: "Home Assistant", anchor: .haServerAddress) {
+                        homeAssistantForm
 
-                        Button(L10n.tr("默认地址", "Default URL")) {
-                            urlDraft = KeychainHelper.defaultNASURL
-                        }
-                        .buttonStyle(PillActionButtonStyle())
-
-                        Spacer()
-
-                        if store.hasHASource {
-                            Button(L10n.tr("断开连接", "Disconnect")) {
-                                if store.disconnectHomeAssistant() {
-                                    tokenDraft = ""
-                                    tokenLookupWasUnavailable = false
-                                    store.showToast(L10n.tr("已断开 Home Assistant", "Disconnected from Home Assistant"))
-                                } else {
-                                    store.showToast(
-                                        L10n.tr("无法更新钥匙串，请授权钥匙串访问后重试", "Could not update Keychain; allow Keychain access and try again"),
-                                        isError: true
-                                    )
+                        HStack {
+                            Button(store.isDiscoveringHA ? L10n.tr("扫描中…", "Scanning…") : L10n.tr("扫描局域网 HA", "Scan LAN for HA")) {
+                                Task {
+                                    let found = await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: false)
+                                    if let first = found.first {
+                                        urlDraft = first.baseURL
+                                        store.showToast(L10n.tr("已发现：\(first.displaySummary)", "Found: \(first.displaySummary)"))
+                                    } else {
+                                        store.showToast(L10n.tr("未在局域网扫描到 Home Assistant", "No Home Assistant found on LAN"), isError: true)
+                                    }
                                 }
                             }
                             .buttonStyle(PillActionButtonStyle())
-                        }
+                            .disabled(store.isDiscoveringHA)
+                            .settingsRow(anchor: .haDiscovery)
 
-                        Button(L10n.tr("保存并重新连接", "Save & Reconnect")) {
-                            HAConnectionSaveGuard.save(
-                                serverURL: urlDraft,
-                                tokenDraft: &tokenDraft,
-                                initialLookupWasUnavailable: &tokenLookupWasUnavailable,
-                                in: store
-                            )
+                            Button(L10n.tr("默认地址", "Default URL")) {
+                                urlDraft = KeychainHelper.defaultNASURL
+                            }
+                            .buttonStyle(PillActionButtonStyle())
+
+                            Spacer()
+
+                            if store.hasHASource {
+                                Button(L10n.tr("断开连接", "Disconnect")) {
+                                    if store.disconnectHomeAssistant() {
+                                        tokenDraft = ""
+                                        tokenLookupWasUnavailable = false
+                                        store.showToast(L10n.tr("已断开 Home Assistant", "Disconnected from Home Assistant"))
+                                    } else {
+                                        store.showToast(
+                                            L10n.tr("无法更新钥匙串，请授权钥匙串访问后重试", "Could not update Keychain; allow Keychain access and try again"),
+                                            isError: true
+                                        )
+                                    }
+                                }
+                                .buttonStyle(PillActionButtonStyle())
+                            }
+
+                            Button(L10n.tr("保存并重新连接", "Save & Reconnect")) {
+                                HAConnectionSaveGuard.save(
+                                    serverURL: HAConnectionSaveGuard.effectiveURL(urlDraft),
+                                    tokenDraft: &tokenDraft,
+                                    initialLookupWasUnavailable: &tokenLookupWasUnavailable,
+                                    in: store
+                                )
+                            }
+                            .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
                         }
-                        .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+                        .padding(.top, 2)
                     }
-                    .padding(.top, 2)
-                }
-
-                SettingsSection(title: L10n.tr("米家云端直连", "Xiaomi Cloud Direct"), anchor: .miAccount) {
-                    MiAccountSection(store: store)
+                } else {
+                    SettingsSection(title: "Home Assistant") {
+                        Button {
+                            withAnimation(AppleMotion.snappySpring) { haExpanded = true }
+                        } label: {
+                            HStack {
+                                Text(L10n.tr("我用 Home Assistant", "I use Home Assistant"))
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        Text(L10n.tr(
+                            "已经有 Home Assistant 的话在这里连接；只用米家的话可以跳过。",
+                            "Already run Home Assistant? Connect it here. If you only use Mi Home, skip this."
+                        ))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(.secondary)
+                    }
                 }
 
                 LGWebOSSettingsSection(store: store)
             }
         }
+        .onChange(of: searchFocus?.highlight) { _, highlight in
+            if HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: highlight) { haExpanded = true }
+        }
         .onAppear {
-            urlDraft = store.serverURLString
+            urlDraft = HAConnectionSaveGuard.initialURLDraft(storedURL: store.serverURLString, hasHASource: store.hasHASource)
             let initialHAToken = HAConnectionSaveGuard.loadInitialToken(from: store)
             tokenDraft = initialHAToken.token
             tokenLookupWasUnavailable = initialHAToken.lookupWasUnavailable
@@ -1080,7 +1145,7 @@ private struct ConnectionSettingsTab: View {
                 Task {
                     let found = await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: true)
                     if let first = found.first,
-                       HAWebSocketProvider.normalizeBaseURL(urlDraft) == KeychainHelper.defaultNASURL {
+                       urlDraft.isEmpty || HAWebSocketProvider.normalizeBaseURL(urlDraft) == KeychainHelper.defaultNASURL {
                         urlDraft = first.baseURL
                     }
                 }
@@ -1118,10 +1183,7 @@ private struct ConnectionSettingsTab: View {
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.regular)
                     .font(.system(size: DesignTokens.TypeSize.body, design: .monospaced))
-                if let address = URL(string: HAWebSocketProvider.normalizeBaseURL(urlDraft)),
-                   address.scheme == "http",
-                   let host = address.host,
-                   !["localhost", "127.0.0.1", "::1", "[::1]"].contains(host.lowercased()) {
+                if HAConnectionSaveGuard.showsPlaintextWarning(forDraft: urlDraft) {
                     Label(L10n.tr("令牌将以明文在网络上传输，建议使用 HTTPS 或 Nabu Casa 地址。", "Your token will travel unencrypted. Use HTTPS or a Nabu Casa address."), systemImage: "exclamationmark.triangle.fill")
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(.orange)
@@ -1135,7 +1197,7 @@ private struct ConnectionSettingsTab: View {
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    if let secURL = URL(string: "\(HAWebSocketProvider.normalizeBaseURL(urlDraft))/profile/security") {
+                    if let secURL = URL(string: "\(HAWebSocketProvider.normalizeBaseURL(HAConnectionSaveGuard.effectiveURL(urlDraft)))/profile/security") {
                         Button(L10n.tr("打开网页取令牌", "Open Security Page")) {
                             NSWorkspace.shared.open(secURL)
                         }
