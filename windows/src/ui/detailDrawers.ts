@@ -11,6 +11,7 @@ import {
   type SpeakerTextMode,
 } from "../core/miCloud/speakerActions.js";
 import { facetValue, formatReading } from "../core/miotFacetText.js";
+import { renderLiquidGlassSlider, syncLiquidGlassSlider } from "./liquidGlassSlider.js";
 import {
   applianceFaultNotice,
   applianceModeStartsHeating,
@@ -287,9 +288,20 @@ export function renderCoverDrawer(
         <span>${label}</span>
         <strong>${pos}%</strong>
       </div>
-      <input class="cc-range is-blue" type="range" min="0" max="100" step="1" value="${pos}"
-        data-coverpos="${id}" aria-label="${label}" aria-valuemin="0" aria-valuemax="100"
-        aria-valuenow="${pos}" aria-valuetext="${pos}%"${disabledAttr} />
+      ${renderLiquidGlassSlider({
+        variant: "drawer",
+        min: 0,
+        max: 100,
+        step: 1,
+        value: pos,
+        formattedValue: `${pos}%`,
+        leadingIconSvg: SF_ICONS.blindsHorizontal,
+        toneClass: "is-blue",
+        showDecileTicks: true,
+        inputDataAttrs: `data-coverpos="${id}"`,
+        ariaAttrs: `aria-label="${label}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pos}" aria-valuetext="${pos}%"`,
+        disabledAttr,
+      })}
     </div>`);
   }
 
@@ -463,6 +475,7 @@ export function updateLiveSliderReadout(
     if (label) label.textContent = formatted;
     slider.setAttribute("aria-valuenow", ariaNow);
     slider.setAttribute("aria-valuetext", formatted);
+    syncLiquidGlassSlider(slider, formatted);
   };
 
   if (slider.dataset.brightness !== undefined) {
@@ -529,6 +542,7 @@ export function updateLiveSliderReadout(
     if (valueEl) valueEl.textContent = formatted;
     slider.setAttribute("aria-valuenow", formatReading(numeric));
     slider.setAttribute("aria-valuetext", formatted);
+    syncLiquidGlassSlider(slider, formatted);
     return formatted;
   }
   return "";
@@ -895,6 +909,7 @@ function bindCollapsedInlineSliders(host: MenuMijiaWindowsApp): void {
         const pct = Math.max(min, Math.min(max, Math.round(Number(slider.value))));
         slider.setAttribute("aria-valuenow", String(pct));
         slider.setAttribute("aria-valuetext", `${pct}%`);
+        syncLiquidGlassSlider(slider, `${pct}%`);
         const wrap = slider.closest<HTMLElement>(".cc-inline-slider-wrap");
         const valEl = wrap?.querySelector<HTMLElement>(".cc-inline-slider-val");
         if (valEl) valEl.textContent = `${pct}%`;

@@ -1,5 +1,6 @@
 import { resolveLanguage, type LanguagePreference } from "../core/i18n.js";
 import { hasMatchingDomShape, inputKeepsDraft, morphMatchingDom, parseSingleElement } from "./dom.js";
+import { syncLiquidGlassSlider } from "./liquidGlassSlider.js";
 import { renderPanel } from "./panelView.js";
 import { syncPanelSelection } from "./panelKeyboard.js";
 import { refreshHabitSharePreview } from "./settingsEvents.js";
@@ -89,6 +90,15 @@ const STATE_ONLY_DATA_ATTRS = new Set([
   "data-activity-expanded",
   "data-sensor-metric-active",
   "data-sensor-window-active",
+  "data-liquid-slider",
+  "data-tick-active",
+  "data-snap-step",
+  "data-upper-stack",
+  "data-upper-card-id",
+  "data-upper-dismissible",
+  "data-upper-kind",
+  "data-stack-peek",
+  "data-stack-dragging",
 ]);
 
 const GHOST_CLASS_RENAMES: ReadonlyArray<readonly [string, string]> = [
@@ -141,6 +151,12 @@ function extractControlIdentityKey(el: Element): ControlIdentityKey | null {
     return el.hasAttribute("data-mi-expiry-warning")
       ? "notif:mi-expiry"
       : `notif:activity:${el.getAttribute("data-activity-card")}`;
+  }
+  if (el.hasAttribute("data-upper-card-id")) {
+    return `notif:upper:${el.getAttribute("data-upper-card-id")}`;
+  }
+  if (el.hasAttribute("data-stack-peek")) {
+    return `slot:stack-peek:${el.getAttribute("data-stack-peek")}`;
   }
   if (el.classList.contains("cc-live-banner")) return "notif:live-banner";
   if (el.hasAttribute("data-ha-error")) return "notif:ha-error";
@@ -244,15 +260,27 @@ function syncElementAttributesAndProps(
   options?: ReconcileOptions,
 ): void {
   const tag = current.tagName.toUpperCase();
+  const isRangeDraftOwner =
+    tag === "INPUT" &&
+    (current as HTMLInputElement).type === "range" &&
+    current === options?.activeDraftElement;
   const isDraftOwner =
-    current === options?.activeDraftElement &&
-    (tag === "INPUT" || tag === "TEXTAREA") &&
-    inputKeepsDraft(current as HTMLInputElement | HTMLTextAreaElement);
+    isRangeDraftOwner ||
+    (current === options?.activeDraftElement &&
+      (tag === "INPUT" || tag === "TEXTAREA") &&
+      inputKeepsDraft(current as HTMLInputElement | HTMLTextAreaElement));
+  const isActiveLiquidWrap =
+    current.classList.contains("cc-liquid-slider") &&
+    Boolean(options?.activeDraftElement && current.contains(options.activeDraftElement));
   const isProtectedMedia = isProtectedCameraMedia(current, options);
   const keepDetailsOpen = preservesLocalDetailsOpen(current, desired);
 
   for (const attr of Array.from(current.attributes)) {
     if (attr.name === "value" && isDraftOwner) continue;
+    if ((attr.name === "aria-valuenow" || attr.name === "aria-valuetext" || attr.name === "style") && isRangeDraftOwner) {
+      continue;
+    }
+    if ((attr.name === "style" || attr.name === "class") && isActiveLiquidWrap) continue;
     if (attr.name === "open" && keepDetailsOpen) continue;
     if (retainsLiveCameraMediaAttr(isProtectedMedia, attr.name, desired)) {
       continue;
@@ -264,6 +292,10 @@ function syncElementAttributesAndProps(
 
   for (const attr of Array.from(desired.attributes)) {
     if (attr.name === "value" && isDraftOwner) continue;
+    if ((attr.name === "aria-valuenow" || attr.name === "aria-valuetext" || attr.name === "style") && isRangeDraftOwner) {
+      continue;
+    }
+    if ((attr.name === "style" || attr.name === "class") && isActiveLiquidWrap) continue;
     if (isProtectedMedia && attr.name === "src" && !attr.value) continue;
     if (current.getAttribute(attr.name) !== attr.value) {
       current.setAttribute(attr.name, attr.value);
@@ -470,6 +502,17 @@ function reconcileElementTree(
     if (currentSelect.value !== targetValue) {
       currentSelect.value = targetValue;
     }
+  }
+
+  if (
+    current.classList.contains("cc-liquid-slider") &&
+    options?.activeDraftElement?.tagName.toUpperCase() === "INPUT" &&
+    current.contains(options.activeDraftElement)
+  ) {
+    syncLiquidGlassSlider(
+      options.activeDraftElement as HTMLInputElement,
+      options.activeDraftElement.getAttribute("aria-valuetext") ?? undefined,
+    );
   }
 }
 
@@ -872,13 +915,17 @@ export class PanelRenderPipeline {
         }
       }
       const activeElement = host.root.ownerDocument.activeElement;
+      const activeDraggingRange = host.pointerIsDown
+        ? existingPopover.querySelector<HTMLInputElement>(".cc-liquid-slider.is-dragging input.cc-range")
+        : null;
       const activeDraftElement =
-        activeElement &&
+        activeDraggingRange ??
+        (activeElement &&
         existingPopover.contains(activeElement) &&
         (activeElement.tagName === "INPUT" || activeElement.tagName === "TEXTAREA") &&
         inputKeepsDraft(activeElement as HTMLInputElement | HTMLTextAreaElement)
           ? activeElement
-          : null;
+          : null);
       const protectedMediaNodes = new Set<Element>();
       if (host.cameraLive.liveCameraImgEl) protectedMediaNodes.add(host.cameraLive.liveCameraImgEl);
       if (host.cameraLive.liveCameraRawMediaEl) protectedMediaNodes.add(host.cameraLive.liveCameraRawMediaEl);

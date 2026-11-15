@@ -11,7 +11,7 @@ import {
   type SystemContextEvent,
 } from "../core/automationEngine.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
-import { speechLocale } from "../core/i18n.js";
+import { speechLocale, t } from "../core/i18n.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { normalizeMiCloudRegion } from "../core/miCloudClient.js";
 import {
@@ -45,10 +45,14 @@ import { getHostDualSourceState, getHostMiAccountsState, isDualSourceEnabled } f
 import { energyScopeForHost } from "./energySettingsView.js";
 import { withAliases } from "./panelPrefs.js";
 import {
+  isUndoHoverPaused,
   recordUndoKindSnapshots,
   rejectIfControlBlockedWhileLocked,
 } from "./speechGuard.js";
+import { proactiveSignature, renderProactiveInlinePill } from "./proactive.js";
+import { cancelScheduledCommands } from "./scheduledCommands.js";
 import { isWorkstationLocked } from "./transport.js";
+import { computeUndoAvailability, undoTrackerFor } from "./undoTracker.js";
 
 export const MAX_RECENT_SAFETY_ALERTS = 10;
 export const MAX_RECENT_AUTOMATION_RUNS = 10;
@@ -107,6 +111,7 @@ export interface HostActivityCenter {
   lastSampledLockState: boolean | null;
   lastClipboardMarkdown: string | null;
   pendingHighRiskUndoRunId?: string | null;
+  dismissedProactiveSignature?: string | null;
 }
 
 type HostWithActivity = MenuMijiaWindowsApp & {
@@ -236,6 +241,7 @@ function createHostActivityCenter(
     lastSampledLockState: null,
     lastClipboardMarkdown: null,
     pendingHighRiskUndoRunId: null,
+    dismissedProactiveSignature: null,
   };
 }
 
@@ -290,6 +296,7 @@ function clearCenterActivities(center: HostActivityCenter): void {
   center.automationEngine.resetTransientState();
   center.lastSampledLockState = null;
   center.pendingHighRiskUndoRunId = null;
+  center.dismissedProactiveSignature = null;
 }
 
 export function clearHostActivitiesOnSignOut(host: unknown): void {
@@ -1258,10 +1265,42 @@ export function buildActivityFeed(
     }
   }
 
-  if (items.length <= 1) {
+  if (items.length <= 1 && host.settings.panelTheme !== "classic") {
     center.isExpanded = false;
   }
   return items;
+}
+
+export const StackedCardGeometry = {
+  maxVisible: 3,
+  peekReservePx: 15,
+  dismissDistanceFraction: 0.4,
+  dismissVelocityPxPerSec: 800,
+  backplateTransform(depth: number): { readonly scale: number; readonly scaleX: number; readonly offsetY: number; readonly opacity: number } {
+    const clamped = Math.min(Math.max(Math.trunc(depth), 0), 2);
+    if (clamped === 0) return { scale: 1, scaleX: 1, offsetY: 0, opacity: 1 };
+    if (clamped === 1) return { scale: 0.94, scaleX: 0.94, offsetY: 8, opacity: 0.78 };
+    return { scale: 0.88, scaleX: 0.88, offsetY: 15, opacity: 0.55 };
+  },
+  rubberBand(translationPx: number, widthPx: number): number {
+    return widthPx <= 0 ? 0 : (translationPx * widthPx * 0.55) / (widthPx + 0.55 * Math.abs(translationPx));
+  },
+  shouldDismiss(gesture: { readonly translationPx: number; readonly predictedTranslationPx?: number; readonly velocityPxPerSec: number; readonly widthPx: number }): boolean {
+    const width = Math.max(1, gesture.widthPx);
+    const predicted = gesture.predictedTranslationPx ?? gesture.translationPx + gesture.velocityPxPerSec * 0.12;
+    return Math.abs(gesture.translationPx) > width * 0.4 || Math.abs(predicted) > width * 0.4 || Math.abs(gesture.velocityPxPerSec) > 800;
+  },
+} as const;
+
+export type UpperStackCardKind =
+  | "consent" | "voice" | "haError" | "miExpiry" | "doorbell" | "safety" | "automation"
+  | "weeklyReport" | "undo" | "reply" | "suggestions" | "missedTimers" | "proactive" | "timers";
+
+export interface UpperStackCard {
+  readonly id: string;
+  readonly kind: UpperStackCardKind;
+  readonly isDismissible: boolean;
+  readonly html: string;
 }
 
 export function structuralActivityStackKey(host: MenuMijiaWindowsApp): string {
@@ -1274,12 +1313,11 @@ export function structuralActivityStackKey(host: MenuMijiaWindowsApp): string {
 function renderSingleActivityRow(
   host: MenuMijiaWindowsApp,
   item: ActivityFeedItem,
-  options: {
-    readonly stackCount: number;
-    readonly showStackControls: boolean;
-  },
+  options: { readonly stackCount: number; readonly showStackControls: boolean; readonly isDismissible?: boolean },
 ): string {
   const pref = host.settings.interfaceLanguage;
+  const center = getHostActivityCenter(host);
+  const isDismissible = options.isDismissible ?? !(item.kind === "automation" && item.actionValue && center.pendingHighRiskUndoRunId === item.actionValue);
   const miAttr = item.isMiExpiryNotice ? " data-mi-expiry-warning" : "";
   const toneClass = item.tone === "danger" ? " is-error" : item.tone === "warning" ? " is-warning" : "";
   const role = item.tone === "danger" ? "alert" : "status";
@@ -1288,80 +1326,64 @@ function renderSingleActivityRow(
       ? `<button type="button" class="cc-inline-pill" id="${host.escapeHtml(item.actionElementId)}">${host.escapeHtml(item.actionLabel)}</button>`
       : `<button type="button" class="cc-inline-pill" ${item.actionAttr}="${host.escapeHtml(item.actionValue ?? "")}">${host.escapeHtml(item.actionLabel)}</button>`
     : "";
-
-  const stackBadgeButton =
-    options.showStackControls && options.stackCount > 1
-      ? `<button type="button" class="cc-inline-pill" data-activity-toggle-expand="1" aria-expanded="false" title="${host.escapeHtml(tr3("展开全部 {count} 条提醒", "展開全部 {count} 條提醒", "Expand all {count} activities", { count: options.stackCount }, pref))}">+${options.stackCount - 1}</button>`
-      : "";
-
-  const dismissLabel = host.escapeHtml(
-    tr3("划掉此条提醒", "劃掉此條提醒", "Dismiss activity", undefined, pref),
-  );
-  const dismissButton = `<button type="button" class="cc-inline-pill" data-activity-dismiss="${host.escapeHtml(item.id)}" aria-label="${dismissLabel}" title="${dismissLabel}">×</button>`;
-
-  const clearAllLabel = host.escapeHtml(
-    tr3("清空全部提醒", "清空全部提醒", "Clear all activities", undefined, pref),
-  );
-  const clearAllButton =
-    options.showStackControls && options.stackCount > 1
-      ? `<button type="button" class="cc-inline-pill" data-activity-clear-all="1" aria-label="${clearAllLabel}" title="${clearAllLabel}">${host.escapeHtml(tr3("清空", "清空", "Clear", undefined, pref))}</button>`
-      : "";
-
+  const stackBadgeButton = options.showStackControls && options.stackCount > 1
+    ? `<button type="button" class="cc-inline-pill cc-stack-expand-pill" data-activity-toggle-expand="1" data-upper-toggle-expand="1" aria-expanded="false" title="${host.escapeHtml(tr3("展开全部 {count} 条提醒", "展開全部 {count} 條提醒", "Expand all {count} activities", { count: options.stackCount }, pref))}">+${options.stackCount - 1}</button>`
+    : "";
+  const dismissLabel = host.escapeHtml(tr3("划掉此条提醒", "劃掉此條提醒", "Dismiss activity", undefined, pref));
+  const dismissButton = isDismissible
+    ? `<button type="button" class="cc-inline-pill" data-activity-dismiss="${host.escapeHtml(item.id)}" data-upper-dismiss="${host.escapeHtml(item.id)}" aria-label="${dismissLabel}" title="${dismissLabel}">×</button>`
+    : "";
+  const clearAllLabel = host.escapeHtml(tr3("清空全部提醒", "清空全部提醒", "Clear all activities", undefined, pref));
+  const clearAllButton = options.showStackControls && options.stackCount > 1
+    ? `<button type="button" class="cc-inline-pill" data-activity-clear-all="1" data-upper-clear-all="1" aria-label="${clearAllLabel}" title="${clearAllLabel}">${host.escapeHtml(tr3("清空", "清空", "Clear", undefined, pref))}</button>`
+    : "";
   const textBody = item.subtitle
     ? `${host.escapeHtml(item.title)} · <span style="opacity:0.84;">${host.escapeHtml(item.subtitle)}</span>`
     : host.escapeHtml(item.title);
-
-  return `<div class="win-notif-card cc-feedback-card${toneClass}" role="${role}" data-activity-card="${host.escapeHtml(item.id)}" data-activity-kind="${item.kind}"${miAttr}>
+  return `<div class="win-notif-card cc-feedback-card${toneClass}" role="${role}" data-activity-card="${host.escapeHtml(item.id)}" data-upper-card-id="${host.escapeHtml(item.id)}" data-activity-kind="${item.kind}" data-upper-kind="${item.kind}" data-upper-dismissible="${isDismissible ? "true" : "false"}"${miAttr}>
     <div class="cc-feedback-row" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
       <span class="cc-feedback-badge">${host.escapeHtml(item.badge)}</span>
       <span class="cc-feedback-text" style="flex:1;min-width:120px;">${textBody}</span>
-      ${actionButton}
-      ${stackBadgeButton}
-      ${clearAllButton}
-      ${dismissButton}
+      ${actionButton}${stackBadgeButton}${clearAllButton}${dismissButton}
     </div>
   </div>`;
 }
 
-export function renderActivityStack(
-  host: MenuMijiaWindowsApp,
-  nowMs = Date.now(),
-): string {
+function renderPeekBackplates(totalCount: number): string {
+  const visibleDepth = Math.min(totalCount, StackedCardGeometry.maxVisible);
+  if (visibleDepth <= 1) return "";
+  const plates: string[] = [];
+  for (let depth = visibleDepth - 1; depth >= 1; depth -= 1) {
+    const tf = StackedCardGeometry.backplateTransform(depth);
+    plates.push(`<div class="cc-stack-backplate" data-stack-peek="${depth}" aria-hidden="true" style="--peek-scale:${tf.scaleX};--peek-offset-y:${tf.offsetY}px;--peek-opacity:${tf.opacity};transform:translateY(${tf.offsetY}px) scaleX(${tf.scaleX});opacity:${tf.opacity};"></div>`);
+  }
+  return plates.join("");
+}
+
+export function renderActivityStack(host: MenuMijiaWindowsApp, nowMs = Date.now()): string {
   const center = getHostActivityCenter(host);
   const items = buildActivityFeed(host, nowMs);
   if (items.length === 0) return "";
-
   const pref = host.settings.interfaceLanguage;
   if (items.length === 1) {
-    return `<section class="cc-activity-stack" data-activity-stack data-activity-count="1" data-activity-expanded="false">
-      ${renderSingleActivityRow(host, items[0]!, { stackCount: 1, showStackControls: false })}
-    </section>`;
+    return `<section class="cc-activity-stack" data-activity-stack data-activity-count="1" data-activity-expanded="false">${renderSingleActivityRow(host, items[0]!, { stackCount: 1, showStackControls: false })}</section>`;
   }
-
   if (!center.isExpanded) {
-    const top = items[0]!;
     return `<section class="cc-activity-stack is-collapsed" data-activity-stack data-activity-count="${items.length}" data-activity-expanded="false" style="position:relative;">
-      ${renderSingleActivityRow(host, top, { stackCount: items.length, showStackControls: true })}
+      ${renderPeekBackplates(items.length)}
+      ${renderSingleActivityRow(host, items[0]!, { stackCount: items.length, showStackControls: true })}
       <div class="cc-activity-deck-shadow" data-activity-deck aria-hidden="true" style="height:4px;margin:0 10px 4px;border-radius:0 0 var(--r-card, 8px) var(--r-card, 8px);opacity:0.45;border-bottom:1px solid currentColor;"></div>
     </section>`;
   }
-
-  const countTitle = tr3(
-    "{count} 条家庭动态",
-    "{count} 條家庭動態",
-    "{count} Home Activities",
-    { count: items.length },
-    pref,
-  );
+  const countTitle = tr3("{count} 条家庭动态", "{count} 條家庭動態", "{count} Home Activities", { count: items.length }, pref);
   const collapseLabel = tr3("收起", "收起", "Collapse", undefined, pref);
   const clearAllText = tr3("全部忽略", "全部忽略", "Dismiss All", undefined, pref);
-
   return `<section class="cc-activity-stack is-expanded" data-activity-stack data-activity-count="${items.length}" data-activity-expanded="true">
     <div class="cc-activity-stack-header" style="display:flex;align-items:center;justify-content:space-between;padding:2px 6px 4px;font-size:12px;opacity:0.86;">
       <strong style="display:inline-flex;align-items:center;gap:4px;">${SF_ICONS.sparkles}<span>${host.escapeHtml(countTitle)}</span></strong>
       <div style="display:inline-flex;gap:6px;">
-        <button type="button" class="cc-inline-pill" data-activity-toggle-expand="1" aria-expanded="true">${host.escapeHtml(collapseLabel)}</button>
-        <button type="button" class="cc-inline-pill" data-activity-clear-all="1">${host.escapeHtml(clearAllText)}</button>
+        <button type="button" class="cc-inline-pill" data-activity-toggle-expand="1" data-upper-toggle-expand="1" aria-expanded="true">${host.escapeHtml(collapseLabel)}</button>
+        <button type="button" class="cc-inline-pill" data-activity-clear-all="1" data-upper-clear-all="1">${host.escapeHtml(clearAllText)}</button>
       </div>
     </div>
     <div class="cc-activity-stack-list" style="display:flex;flex-direction:column;gap:6px;">
@@ -1370,39 +1392,251 @@ export function renderActivityStack(
   </section>`;
 }
 
+interface UpperCardFactory {
+  readonly id: string;
+  readonly kind: UpperStackCardKind;
+  readonly isDismissible: boolean;
+  readonly render: (opts: { readonly stackCount: number; readonly showStackControls: boolean }) => string;
+}
+
+function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()): UpperCardFactory[] {
+  const center = getHostActivityCenter(host);
+  const pref = host.settings.interfaceLanguage;
+  const dismissLabel = host.escapeHtml(tr3("划掉此条提醒", "劃掉此條提醒", "Dismiss activity", undefined, pref));
+  const clearAllLabel = host.escapeHtml(tr3("清空全部提醒", "清空全部提醒", "Clear all activities", undefined, pref));
+  const renderStackBtns = (opts: { readonly stackCount: number; readonly showStackControls: boolean }, cardId: string, isDismissible: boolean, extraDismissId?: string): string => {
+    const expandBtn = opts.showStackControls && opts.stackCount > 1 ? `<button type="button" class="cc-inline-pill cc-stack-expand-pill" data-activity-toggle-expand="1" data-upper-toggle-expand="1" aria-expanded="false" title="${host.escapeHtml(tr3("展开全部 {count} 条提醒", "展開全部 {count} 條提醒", "Expand all {count} activities", { count: opts.stackCount }, pref))}">+${opts.stackCount - 1}</button>` : "";
+    const clearBtn = opts.showStackControls && opts.stackCount > 1 ? `<button type="button" class="cc-inline-pill" data-activity-clear-all="1" data-upper-clear-all="1" aria-label="${clearAllLabel}" title="${clearAllLabel}">${host.escapeHtml(tr3("清空", "清空", "Clear", undefined, pref))}</button>` : "";
+    const dismissBtn = isDismissible ? `<button type="button" class="cc-inline-pill"${extraDismissId ? ` id="${extraDismissId}"` : ""} data-upper-dismiss="${host.escapeHtml(cardId)}" data-activity-dismiss="${host.escapeHtml(cardId)}" aria-label="${dismissLabel}" title="${dismissLabel}">×</button>` : "";
+    return `${expandBtn}${clearBtn}${dismissBtn}`;
+  };
+  const wrapCard = (id: string, kind: UpperStackCardKind, isDismissible: boolean, cls: string, innerRow: (btns: string) => string, extraAttrs = "", role = "status", extraDismissId?: string): UpperCardFactory => ({
+    id, kind, isDismissible,
+    render: (opts) => `<div class="win-notif-card ${cls}" role="${role}"${extraAttrs} data-upper-card-id="${id}" data-upper-kind="${kind}" data-upper-dismissible="${isDismissible ? "true" : "false"}">${innerRow(renderStackBtns(opts, id, isDismissible, extraDismissId))}</div>`,
+  });
+
+  const factories: UpperCardFactory[] = [];
+  if (host.pendingCloudConsent) {
+    const reply = host.replyBanner;
+    factories.push(wrapCard("consent:cloud", "consent", false, "cc-live-banner cc-feedback-card", (btns) => `<div class="cc-feedback-row">${reply ? `<span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>` : ""}<button class="cc-inline-pill" id="btn-cloud-allow">${t("允许并发送")}</button><button class="cc-inline-pill" id="btn-cloud-decline">${t("不用了")}</button>${btns}</div>`));
+  } else if (host.isListeningVoice) {
+    factories.push(wrapCard("voice:active", "voice", false, "cc-feedback-card", (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${t("语音控制")}</span><span class="cc-feedback-text">${host.escapeHtml(host.panelSearch.query || t("语音控制"))}</span>${btns}</div>`));
+  }
+  if (host.haConnectionError) {
+    const errText = host.haConnectionError;
+    factories.push(wrapCard("ha:error", "haError", false, "cc-feedback-card is-error", (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">Home Assistant</span><span class="cc-feedback-text">${host.escapeHtml(errText)}</span>${btns}</div>`, " data-ha-error", "alert"));
+  }
+
+  for (const item of buildActivityFeed(host, nowMs)) {
+    const isArmedHighRisk = item.kind === "automation" && Boolean(center.pendingHighRiskUndoRunId) && (item.actionValue === center.pendingHighRiskUndoRunId || item.id === `auto:${center.pendingHighRiskUndoRunId}`);
+    const isDismissible = !isArmedHighRisk;
+    factories.push({ id: item.id, kind: item.kind, isDismissible, render: (opts) => renderSingleActivityRow(host, item, { stackCount: opts.stackCount, showStackControls: opts.showStackControls, isDismissible }) });
+  }
+
+  const undoState = computeUndoAvailability(host, nowMs);
+  const tracker = undoTrackerFor(host);
+  if (!undoState.isAvailable || isUndoHoverPaused(host) || !host.lastUndoAction) {
+    tracker.syncAction(null, nowMs);
+  } else if (tracker.expiresAtMs !== undoState.expiresAtMs || tracker.summary !== undoState.summary) {
+    tracker.syncAction(host.lastUndoAction, nowMs, () => {
+      if (host.lastUndoAction && host.lastUndoAction.expiresAtMs <= Date.now()) host.lastUndoAction = null;
+      host.queueBackgroundRender();
+    });
+  }
+
+  const autoRunId = host.lastUndoAction ? getAutomationUndoRunId(host.lastUndoAction) : null;
+  const isDuplicateAutoUndo = autoRunId !== null && center.recentAutomationRuns.some((r) => r.id === autoRunId && r.expiresAtMs > nowMs);
+  const undoDismissKey = host.lastUndoAction ? `undo:${host.lastUndoAction.expiresAtMs}` : "";
+  let replyConsumedByUndo = false;
+  if (undoState.isAvailable && host.lastUndoAction && !isDuplicateAutoUndo && !center.dismissedActivityIds.has("undo:manual") && !center.dismissedActivityIds.has(undoDismissKey)) {
+    const reply = host.replyBanner;
+    const mergeReply = Boolean(reply && !reply.isError && !host.pendingCloudConsent && host.pendingHighRisk === null);
+    if (mergeReply) replyConsumedByUndo = true;
+    const badge = mergeReply && reply ? reply.source : t("撤销提示");
+    const text = mergeReply && reply ? reply.text : `${host.lastUndoAction.summary} ${t("· 剩余 {remaining}", { remaining: host.formatRemainingMs(Math.max(1000, undoState.remainingMs)) })}`;
+    factories.push(wrapCard("undo:manual", "undo", true, "cc-live-banner cc-feedback-card", (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(badge)}</span><span class="cc-feedback-text">${host.escapeHtml(text)}</span><button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>${btns}</div>`));
+  }
+
+  if (host.replyBanner && !host.pendingCloudConsent && !replyConsumedByUndo) {
+    const reply = host.replyBanner;
+    const isDismissible = !(host.pendingHighRisk !== null && host.pendingHighRisk.expiresAtMs > nowMs);
+    factories.push(wrapCard("reply:banner", "reply", isDismissible, `cc-live-banner cc-feedback-card${reply.isError ? " is-error" : ""}`, (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>${host.undoButtonVisible(nowMs) ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}${btns}</div>`, "", reply.isError ? "alert" : "status", "btn-dismiss-banner"));
+  }
+  if (host.pendingSuggestions.length > 0) {
+    factories.push(wrapCard("suggestions:pending", "suggestions", true, "cc-feedback-card", (btns) => `<div class="cc-feedback-row"><div class="cc-suggestion-row" style="flex:1;">${host.pendingSuggestions.map((item) => `<button class="cc-inline-pill" data-suggestion-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""}</button>`).join("")}</div>${btns}</div>`));
+  }
+  if (host.missedScheduledCommands.length > 0) {
+    factories.push({
+      id: "missed:timers", kind: "missedTimers", isDismissible: true,
+      render: (opts) => `<div class="win-notif-card cc-feedback-card is-warning" data-upper-card-id="missed:timers" data-upper-kind="missedTimers" data-upper-dismissible="true"><div class="cc-timers-stack">${host.missedScheduledCommands.map((item) => `<div class="cc-timer-row"><span>${t("已错过定时：{command}（没有自动执行，请确认后运行）", { command: host.escapeHtml(item.command) })}</span><button class="cc-inline-pill" data-run-missed="${host.escapeHtml(item.id)}">${t("立即执行")}</button><button class="cc-inline-pill" data-dismiss-missed="${host.escapeHtml(item.id)}">${t("忽略")}</button></div>`).join("")}</div>${opts.showStackControls && opts.stackCount > 1 ? `<div class="cc-feedback-row">${renderStackBtns(opts, "missed:timers", true)}</div>` : ""}</div>`,
+    });
+  }
+  if (host.pendingSuggestions.length === 0) {
+    const items = host.currentProactiveSuggestions();
+    if (items.length > 0) {
+      const sig = `${proactiveSignature(host)}:${items.map((item) => item.id).join(",")}`;
+      if (center.dismissedProactiveSignature !== sig) {
+        factories.push(wrapCard("proactive:suggestions", "proactive", true, "cc-feedback-card", (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${SF_ICONS.sparkles} ${t("猜你想控")}</span><div class="cc-suggestion-row" data-proactive-bar style="flex:1;">${items.map((item) => renderProactiveInlinePill(host, item)).join("")}</div>${btns}</div>`, ' data-notif-card="proactive"'));
+      }
+    }
+  }
+  if (host.scheduledCommands.length > 0) {
+    factories.push(wrapCard("timers:active", "timers", true, "cc-feedback-card", (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${SF_ICONS.clock} ${t("定时指令")}</span><div class="cc-timers-stack" style="flex:1;">${host.scheduledCommands.map((item) => `<div class="cc-timer-row"><span>${host.escapeHtml(item.command)} ${t("· 剩余 {remaining}", { remaining: host.formatRemainingMs(item.fireTimestampMs - nowMs) })}</span><button class="cc-inline-pill" data-cancel-timer="${host.escapeHtml(item.id)}">${t("取消")}</button></div>`).join("")}</div>${btns}</div>`, ' data-notif-card="timers"'));
+  }
+  return factories;
+}
+
+export function collectUpperStackCards(host: MenuMijiaWindowsApp, nowMs = Date.now()): UpperStackCard[] {
+  const center = getHostActivityCenter(host);
+  const factories = buildUpperCardFactories(host, nowMs);
+  if (factories.length <= 1) center.isExpanded = false;
+  const showCollapsedControls = !center.isExpanded && factories.length > 1;
+  return factories.map((f, idx) => ({ id: f.id, kind: f.kind, isDismissible: f.isDismissible, html: f.render({ stackCount: factories.length, showStackControls: showCollapsedControls && idx === 0 }) }));
+}
+
+export function renderClassicUnifiedUpperStack(host: MenuMijiaWindowsApp, nowMs = Date.now()): string {
+  const center = getHostActivityCenter(host);
+  const cards = collectUpperStackCards(host, nowMs);
+  if (cards.length === 0) return "";
+  const pref = host.settings.interfaceLanguage;
+  if (cards.length === 1) return `<section class="cc-upper-stack cc-activity-stack" data-upper-stack data-activity-stack data-activity-count="1" data-activity-expanded="false">${cards[0]!.html}</section>`;
+  if (!center.isExpanded) {
+    const visibleDepth = Math.min(cards.length, StackedCardGeometry.maxVisible);
+    const reservePx = visibleDepth > 1 ? StackedCardGeometry.backplateTransform(visibleDepth - 1).offsetY : 0;
+    return `<section class="cc-upper-stack cc-activity-stack is-collapsed" data-upper-stack data-activity-stack data-activity-count="${cards.length}" data-activity-expanded="false" style="position:relative;padding-bottom:${reservePx}px;">${renderPeekBackplates(cards.length)}${cards[0]!.html}</section>`;
+  }
+  const countTitle = tr3("{count} 条家庭动态", "{count} 條家庭動態", "{count} Home Activities", { count: cards.length }, pref);
+  const collapseLabel = tr3("收起", "收起", "Collapse", undefined, pref);
+  const clearAllText = tr3("全部忽略", "全部忽略", "Dismiss All", undefined, pref);
+  const anyDismissible = cards.some((card) => card.isDismissible);
+  return `<section class="cc-upper-stack cc-activity-stack is-expanded" data-upper-stack data-activity-stack data-activity-count="${cards.length}" data-activity-expanded="true"><div class="cc-activity-stack-header" style="display:flex;align-items:center;justify-content:space-between;padding:2px 6px 4px;font-size:12px;opacity:0.86;"><strong style="display:inline-flex;align-items:center;gap:4px;">${SF_ICONS.sparkles}<span>${host.escapeHtml(countTitle)}</span></strong><div style="display:inline-flex;gap:6px;"><button type="button" class="cc-inline-pill" data-activity-toggle-expand="1" data-upper-toggle-expand="1" aria-expanded="true">${host.escapeHtml(collapseLabel)}</button>${anyDismissible ? `<button type="button" class="cc-inline-pill" data-activity-clear-all="1" data-upper-clear-all="1">${host.escapeHtml(clearAllText)}</button>` : ""}</div></div><div class="cc-activity-stack-list" style="display:flex;flex-direction:column;gap:6px;">${cards.map((c) => c.html).join("")}</div></section>`;
+}
+
+export const renderUnifiedUpperStack = renderClassicUnifiedUpperStack;
+
 export function dismissActivityById(host: MenuMijiaWindowsApp, activityId: string): void {
   const center = getHostActivityCenter(host);
-  center.dismissedActivityIds.add(activityId);
-
-  if (activityId.startsWith("safety:")) {
-    const rawId = activityId.slice("safety:".length);
-    center.recentSafetyAlerts = center.recentSafetyAlerts.filter((r) => r.alert.id !== rawId);
-  } else if (activityId.startsWith("doorbell:")) {
-    const key = activityId.slice("doorbell:".length);
-    center.doorbellCoordinator.dismissRingKey(key);
+  if (activityId === "undo:manual") {
+    if (host.lastUndoAction) center.dismissedActivityIds.add(`undo:${host.lastUndoAction.expiresAtMs}`);
+    center.dismissedActivityIds.add("undo:manual");
+    host.lastUndoAction = null;
+    host.undoBannerUntilMs = 0;
+    undoTrackerFor(host).syncAction(null);
+    if (host.replyBanner && !host.replyBanner.isError && host.pendingHighRisk === null) host.replyBanner = null;
+  } else if (activityId === "proactive:suggestions") {
+    const items = host.currentProactiveSuggestions();
+    center.dismissedProactiveSignature = items.length > 0 ? `${proactiveSignature(host)}:${items.map((i) => i.id).join(",")}` : proactiveSignature(host);
+    center.dismissedActivityIds.add("proactive:suggestions");
+  } else if (activityId === "reply:banner") {
+    if (host.pendingHighRisk === null) host.replyBanner = null;
+  } else if (activityId === "suggestions:pending") {
+    host.pendingSuggestions = [];
+  } else if (activityId === "missed:timers") {
+    for (const item of [...host.missedScheduledCommands]) cancelScheduledCommands(host, item.id);
+  } else if (activityId === "timers:active") {
+    cancelScheduledCommands(host);
   } else if (activityId.startsWith("auto:")) {
     const runId = activityId.slice("auto:".length);
+    if (center.pendingHighRiskUndoRunId === runId) return;
+    center.dismissedActivityIds.add(activityId);
     center.recentAutomationRuns = center.recentAutomationRuns.filter((r) => r.id !== runId);
-  } else if (center.weeklyReportCard?.id === activityId) {
-    center.weeklyReportCard = null;
+  } else {
+    center.dismissedActivityIds.add(activityId);
+    if (activityId.startsWith("safety:")) {
+      const rawId = activityId.slice("safety:".length);
+      center.recentSafetyAlerts = center.recentSafetyAlerts.filter((r) => r.alert.id !== rawId);
+    } else if (activityId.startsWith("doorbell:")) {
+      center.doorbellCoordinator.dismissRingKey(activityId.slice("doorbell:".length));
+    } else if (center.weeklyReportCard?.id === activityId) {
+      center.weeklyReportCard = null;
+    }
   }
-
-  if (buildActivityFeed(host).length <= 1) {
-    center.isExpanded = false;
-  }
+  const remaining = host.settings.panelTheme === "classic" ? collectUpperStackCards(host).length : buildActivityFeed(host).length;
+  if (remaining <= 1) center.isExpanded = false;
 }
+
+export const dismissUpperStackCard = dismissActivityById;
 
 export function dismissAllActivities(host: MenuMijiaWindowsApp): void {
   const center = getHostActivityCenter(host);
-  const currentFeed = buildActivityFeed(host);
-  for (const item of currentFeed) {
+  for (const item of buildActivityFeed(host)) {
+    if (item.kind === "automation" && item.actionValue && center.pendingHighRiskUndoRunId === item.actionValue) continue;
     center.dismissedActivityIds.add(item.id);
   }
   center.recentSafetyAlerts = [];
-  center.recentAutomationRuns = [];
+  center.recentAutomationRuns = center.recentAutomationRuns.filter((r) => center.pendingHighRiskUndoRunId === r.id);
   center.weeklyReportCard = null;
   center.doorbellCoordinator.clearAll();
+  if (host.settings.panelTheme === "classic") {
+    for (const id of ["undo:manual", "proactive:suggestions", "reply:banner", "suggestions:pending", "missed:timers", "timers:active"]) dismissActivityById(host, id);
+  }
   center.isExpanded = false;
+}
+
+export function bindUnifiedUpperStack(host: MenuMijiaWindowsApp): void {
+  const center = getHostActivityCenter(host);
+  for (const plate of host.root.querySelectorAll<HTMLElement>(".cc-stack-backplate")) {
+    if (plate.closest("[data-exit-ghost]")) continue;
+    plate.addEventListener("click", (e) => { e.stopPropagation(); center.isExpanded = true; host.render(); });
+  }
+  for (const cardEl of host.root.querySelectorAll<HTMLElement>("[data-upper-card-id]")) {
+    if (cardEl.closest("[data-exit-ghost]")) continue;
+    const cardId = cardEl.dataset.upperCardId ?? cardEl.dataset.activityCard ?? "";
+    if (!cardId) continue;
+    const isDismissible = cardEl.dataset.upperDismissible !== "false";
+    let activePointerId: number | null = null, startX = 0, startY = 0, startTimeMs = 0, lastX = 0, lastTimeMs = 0, velocityPxPerSec = 0, isHorizontalSwipe = false;
+
+    cardEl.addEventListener("pointerdown", (e: PointerEvent) => {
+      if ((typeof e.button === "number" && e.button !== 0) || (e.target as Element | null)?.closest?.("button, input, select, a, summary")) return;
+      activePointerId = typeof e.pointerId === "number" ? e.pointerId : 1;
+      startX = lastX = e.clientX;
+      startY = e.clientY;
+      startTimeMs = lastTimeMs = e.timeStamp && e.timeStamp > 0 ? e.timeStamp : performance.now();
+      velocityPxPerSec = 0;
+      isHorizontalSwipe = false;
+      try { cardEl.setPointerCapture?.(activePointerId); } catch {}
+    });
+
+    cardEl.addEventListener("pointermove", (e: PointerEvent) => {
+      if (activePointerId === null) return;
+      const dx = e.clientX - startX, dy = e.clientY - startY;
+      if (!isHorizontalSwipe) {
+        if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+        if (Math.abs(dy) > Math.abs(dx)) { activePointerId = null; return; }
+        isHorizontalSwipe = true;
+        cardEl.setAttribute("data-stack-dragging", "true");
+      }
+      const now = e.timeStamp && e.timeStamp > 0 ? e.timeStamp : performance.now();
+      velocityPxPerSec = (e.clientX - lastX) / Math.max(0.001, (now - lastTimeMs) / 1000);
+      lastX = e.clientX;
+      lastTimeMs = now;
+      const widthPx = cardEl.getBoundingClientRect().width || cardEl.offsetWidth || 396;
+      const tx = (isDismissible ? dx : StackedCardGeometry.rubberBand(dx, widthPx)).toFixed(2);
+      cardEl.style.transform = `translate3d(${tx}px, 0px, 0px)`;
+      cardEl.style.setProperty("--swipe-x", `${tx}px`);
+    });
+
+    const finishPointer = (e: PointerEvent, cancelled: boolean): void => {
+      if (activePointerId === null) return;
+      const dx = e.clientX - startX;
+      const now = e.timeStamp && e.timeStamp > 0 ? e.timeStamp : performance.now();
+      if (Math.abs(velocityPxPerSec) < 1 && Math.abs(dx) > 0) velocityPxPerSec = dx / Math.max(0.008, (now - startTimeMs) / 1000);
+      const widthPx = cardEl.getBoundingClientRect().width || cardEl.offsetWidth || 396;
+      const ptrId = activePointerId;
+      activePointerId = null;
+      cardEl.removeAttribute("data-stack-dragging");
+      try { cardEl.releasePointerCapture?.(ptrId); } catch {}
+      if (!cancelled && isHorizontalSwipe && isDismissible && StackedCardGeometry.shouldDismiss({ translationPx: dx, velocityPxPerSec, widthPx })) {
+        dismissUpperStackCard(host, cardId);
+        host.render();
+        return;
+      }
+      cardEl.style.transform = "translate3d(0px, 0px, 0px)";
+      cardEl.style.setProperty("--swipe-x", "0px");
+    };
+    cardEl.addEventListener("pointerup", (e: PointerEvent) => finishPointer(e, false));
+    cardEl.addEventListener("pointercancel", (e: PointerEvent) => finishPointer(e, true));
+  }
 }
 
 export function bindActivityStackAfterRender(host: MenuMijiaWindowsApp): void {
@@ -1417,11 +1651,11 @@ export function bindActivityStackAfterRender(host: MenuMijiaWindowsApp): void {
     });
   }
 
-  for (const btn of host.root.querySelectorAll<HTMLButtonElement>("[data-activity-dismiss]")) {
+  for (const btn of host.root.querySelectorAll<HTMLButtonElement>("[data-activity-dismiss], [data-upper-dismiss]")) {
     if (btn.closest("[data-exit-ghost]")) continue;
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      const id = btn.dataset.activityDismiss;
+      const id = btn.dataset.upperDismiss ?? btn.dataset.activityDismiss;
       if (!id) return;
       dismissActivityById(host, id);
       host.render();
@@ -1477,6 +1711,8 @@ export function bindActivityStackAfterRender(host: MenuMijiaWindowsApp): void {
       host.cameraLive.openCameraLiveView(matched.ring.deviceId);
     });
   }
+
+  bindUnifiedUpperStack(host);
 
   const cameraSheet = host.root.querySelector<HTMLElement>(".cc-camera-live-sheet");
   if (cameraSheet) {
