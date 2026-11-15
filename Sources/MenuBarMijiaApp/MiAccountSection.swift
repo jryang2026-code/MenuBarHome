@@ -357,11 +357,25 @@ public struct MiAccountSection: View {
     private var loggedOutView: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(L10n.tr(
-                "无需额外部署 Home Assistant，扫码即可通过米家云端直连同步设备与房间。直连使用非官方客户端接口；若介意账号风控，请改用官方开源的 Home Assistant (xiaomi_home) 模式。",
-                "No Home Assistant needed. Scan with the Mi Home app to sync devices and rooms directly from Xiaomi Cloud. Direct mode uses an unofficial client API; switch to Home Assistant (xiaomi_home) if you prefer Xiaomi's official integration."
+                "无需额外部署 Home Assistant，扫码即可通过米家云端直连同步设备与房间。",
+                "No Home Assistant needed. Scan with the Mi Home app to sync devices and rooms directly from Xiaomi Cloud."
             ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(.secondary)
+
+            // #146: the risk is visible, not buried in secondary-colour fine print.
+            Label {
+                Text(L10n.tr(
+                    "直连使用非官方接口，小米可能限制请求或风控账号；介意的话请改用官方的 Home Assistant (xiaomi_home)。登录会过期，到期需重新扫码。",
+                    "Direct mode uses an unofficial API, so Xiaomi may rate-limit or flag accounts. If that worries you, use Home Assistant (xiaomi_home) instead. Sign-in expires; you will need to scan again."
+                ))
+                .fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
+            .font(.system(size: DesignTokens.TypeSize.caption))
+            .foregroundStyle(.primary.opacity(0.85))
 
             HStack {
                 Spacer()

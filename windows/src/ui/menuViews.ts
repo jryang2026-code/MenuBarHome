@@ -291,6 +291,9 @@ export function renderOnboardingModal(host: MenuMijiaWindowsApp): string {
           <p class="cc-sheet-desc">
             ${t("手机打开「米家 App → 扫一扫」即可直接同步全屋真实设备；常驻 Windows 右下角系统托盘，点击图标或按 Alt+M 随时弹出，点击外部自动收起。")}
           </p>
+          <p class="cc-sheet-desc cc-sheet-note">
+            ${t("直连使用非官方接口，小米可能限制请求或风控账号；介意的话请改用官方的 Home Assistant (xiaomi_home)。登录会过期，到期需重新扫码。")}
+          </p>
 
           <div class="cc-field">
             <label>${t("云端服务器地区")}</label>
