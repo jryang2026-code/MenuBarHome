@@ -6,6 +6,7 @@ import type { Window } from "happy-dom";
 
 import { ManualControlPolicy } from "../src/core/assistant/actionPolicy.js";
 import { buildEnvironmentSummary } from "../src/core/assistant/context.js";
+import { applyCommandToDevices, inverseCommands } from "../src/core/commandEffects.js";
 import {
   HomeAssistantSynthesizer,
   haServiceCall,
@@ -1612,15 +1613,44 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
         ...fridge,
         kind: {
           ...fridge.kind,
+          fridgeCurrentTemp: null,
+          freezerCurrentTemp: null,
           fridgeTargetEntityId: "number.fridge_target",
           freezerTargetEntityId: "number.freezer_target",
           fridgeTargetPresent: false,
           freezerTargetPresent: false,
         },
       };
+      assert.equal(deviceStatusSummary(unknownTargetFridge), "手动 · 冷藏 -- · 冷冻 --");
       const drawerHtml = renderDeviceDrawer(unknownTargetFridge, (s) => s);
       assert.ok(drawerHtml.includes("(--)"));
       assert.ok(!drawerHtml.includes("data-fridgestep"));
+      assert.deepEqual(
+        inverseCommands(unknownTargetFridge, { kind: "setNumberValue", entityId: "number.fridge_target", value: 3 }),
+        [],
+      );
+      applyCommandToDevices(
+        [unknownTargetFridge],
+        { kind: "setNumberValue", entityId: "number.fridge_target", value: 3 },
+        "homeAssistant",
+      );
+      applyCommandToDevices(
+        [unknownTargetFridge],
+        { kind: "setNumberValue", entityId: "number.freezer_target", value: -20 },
+        "homeAssistant",
+      );
+      assert.equal(unknownTargetFridge.kind.kind, "fridge");
+      if (unknownTargetFridge.kind.kind === "fridge") {
+        assert.equal(unknownTargetFridge.kind.fridgeTargetPresent, true);
+        assert.equal(unknownTargetFridge.kind.freezerTargetPresent, true);
+        assert.equal(unknownTargetFridge.kind.fridgeTargetTemp, 3);
+        assert.equal(unknownTargetFridge.kind.freezerTargetTemp, -20);
+      }
+      assert.equal(deviceStatusSummary(unknownTargetFridge), "手动 · 冷藏 3°C · 冷冻 -20°C");
+      const updatedDrawerHtml = renderDeviceDrawer(unknownTargetFridge, (s) => s);
+      assert.ok(updatedDrawerHtml.includes("(3°C)"));
+      assert.ok(updatedDrawerHtml.includes("(-20°C)"));
+      assert.ok(updatedDrawerHtml.includes("data-fridgestep"));
     }
 
     const spk = byId.get("spk_novol")!;
@@ -1630,6 +1660,22 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
       assert.equal(spk.kind.volumeWritable, false);
       assert.equal(spk.kind.volumePresent, false);
       assert.equal(deviceStatusSummary(spk), "播放中");
+      const spkClone: SmartDevice = { ...spk, kind: { ...spk.kind, volumeWritable: true } };
+      assert.deepEqual(
+        inverseCommands(spkClone, { kind: "mediaSetVolume", entityId: spk.kind.mediaEntityId, level: 0.6 }),
+        [],
+      );
+      applyCommandToDevices(
+        [spkClone],
+        { kind: "mediaSetVolume", entityId: spk.kind.mediaEntityId, level: 0.6 },
+        "homeAssistant",
+      );
+      assert.equal(spkClone.kind.kind, "speaker");
+      if (spkClone.kind.kind === "speaker") {
+        assert.equal(spkClone.kind.volumePercent, 60);
+        assert.equal(spkClone.kind.volumePresent, true);
+      }
+      assert.equal(deviceStatusSummary(spkClone), "播放中 · 音量 60%");
     }
 
     const identity = homeAssistantIdentity("http://localhost:8123", "tok")!;

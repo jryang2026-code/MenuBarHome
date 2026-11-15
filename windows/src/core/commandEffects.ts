@@ -135,6 +135,7 @@ export function applyCommandToDevices(
       case "mediaSetVolume":
         if (k.kind === "speaker" && k.mediaEntityId === command.entityId) {
           k.volumePercent = Math.round(Math.max(0, Math.min(1, command.level)) * 100);
+          k.volumePresent = true;
         }
         break;
       case "setSelectOption":
@@ -173,8 +174,10 @@ export function applyCommandToDevices(
         } else if (k.kind === "fridge") {
           if (k.fridgeTargetEntityId === command.entityId) {
             k.fridgeTargetTemp = command.value;
+            k.fridgeTargetPresent = true;
           } else if (k.freezerTargetEntityId === command.entityId) {
             k.freezerTargetTemp = command.value;
+            k.freezerTargetPresent = true;
           }
         }
         break;
@@ -333,16 +336,18 @@ export function inverseCommands(dev: SmartDevice, command: DeviceCommand): Devic
           : [];
       }
       if (k.kind === "fridge") {
-        if (command.entityId === k.fridgeTargetEntityId) {
+        if (command.entityId === k.fridgeTargetEntityId && k.fridgeTargetPresent !== false) {
           return [{ kind: "setNumberValue", entityId: command.entityId, value: k.fridgeTargetTemp }];
         }
-        if (command.entityId === k.freezerTargetEntityId) {
+        if (command.entityId === k.freezerTargetEntityId && k.freezerTargetPresent !== false) {
           return [{ kind: "setNumberValue", entityId: command.entityId, value: k.freezerTargetTemp }];
         }
       }
       return [];
     case "mediaSetVolume":
-      return k.kind === "speaker" ? [{ kind: "mediaSetVolume", entityId: k.mediaEntityId, level: k.volumePercent / 100 }] : [];
+      return k.kind === "speaker" && k.volumePresent !== false
+        ? [{ kind: "mediaSetVolume", entityId: k.mediaEntityId, level: k.volumePercent / 100 }]
+        : [];
     case "vacuumAction":
       // Mirrors macOS `HomeStore+Assistant.swift` vacuum undo: cleaning/on restores `start`, otherwise `returnToBase`.
       return k.kind === "vacuum"

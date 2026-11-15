@@ -87,8 +87,8 @@ export interface FridgeSpec {
   readonly freezerCurrentTemp: number | null;
   freezerTargetTemp: number;
   readonly freezerTargetEntityId: string | null;
-  readonly fridgeTargetPresent?: boolean;
-  readonly freezerTargetPresent?: boolean;
+  fridgeTargetPresent?: boolean;
+  freezerTargetPresent?: boolean;
 }
 
 export interface VacuumSpec {
@@ -168,7 +168,7 @@ export interface SpeakerSpec {
   readonly sleepModeEntityId: string | null;
   isSleepMode: boolean;
   readonly volumeWritable: boolean;
-  readonly volumePresent?: boolean;
+  volumePresent?: boolean;
   readonly ttsActionId?: string | null;
   readonly directiveActionId?: string | null;
 }
