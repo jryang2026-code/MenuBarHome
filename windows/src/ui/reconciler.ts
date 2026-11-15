@@ -83,7 +83,6 @@ const STATE_ONLY_DATA_ATTRS = new Set([
   "data-keyboard-nav",
   "data-scheme",
   "data-flyout-edge",
-  "data-backdrop",
   "data-exit-ghost",
   "data-activity-count",
   "data-activity-expanded",
@@ -860,7 +859,7 @@ export class PanelRenderPipeline {
     this.eventScope.abort();
 
     if (existingPopover && desiredPopover) {
-      for (const preservedAttr of ["data-keyboard-nav", "data-flyout-edge", "data-backdrop"]) {
+      for (const preservedAttr of ["data-keyboard-nav", "data-flyout-edge"]) {
         if (
           existingPopover.hasAttribute(preservedAttr) &&
           !desiredPopover.hasAttribute(preservedAttr)
