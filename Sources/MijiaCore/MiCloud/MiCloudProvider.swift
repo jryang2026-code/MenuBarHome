@@ -650,7 +650,7 @@ public actor MiCloudProvider: HomeProvider {
               record.splitParentDid == nil,
               !record.did.hasPrefix("group."),
               let ip = record.localIp?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !ip.isEmpty,
+              LocalMiIOClient.isPrivateRFC1918IPv4(ip),
               let token = record.token?.trimmingCharacters(in: .whitespacesAndNewlines),
               MiIOPacket.validateToken(token) != nil else {
             return nil

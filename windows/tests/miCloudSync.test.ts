@@ -14,11 +14,13 @@ import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
 import {
   MiCloudClient,
   MiCloudError,
+  MiotSpecResolver,
   type HttpRequest,
   type HttpResponse,
   type HttpTransport,
   type MiSession,
 } from "../src/core/miCloudClient.js";
+import { fetchCameraMetadataList, parsePrivateLanIpv4, resolveLiveCameraTarget } from "../src/core/miCloud/cameraHubs.js";
 
 const SETTINGS_KEY = STORAGE_KEY;
 const SECURITY = "AQIDBAUGBwgJCgsMDQ4PEA==";
@@ -481,5 +483,151 @@ describe("A selected home the cloud reports as empty (#67)", () => {
       [...new Set(homeDeviceListCalls.map((call) => call["home_id"]))],
       [2],
     );
+  });
+});
+
+describe("MiCloud transport redirect lock, rate-limit non-fallback, and spec dedup", () => {
+  it("disables redirects on MiCloudClient requests and rethrows HTTP 429 or rate-limit errors without legacy fallback", async () => {
+    const requests: HttpRequest[] = [];
+    const client429 = new MiCloudClient(SESSION, async (req) => {
+      requests.push(req);
+      return {
+        status: 429,
+        headers: {},
+        body: JSON.stringify({ code: -1, message: "too many requests" }),
+      };
+    });
+
+    await assert.rejects(
+      () => client429.deviceList(),
+      (err: unknown) => err instanceof MiCloudError && err.kind === "http" && err.code === 429,
+    );
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.followRedirects, false);
+    assert.ok(requests[0]?.url.endsWith("/v2/home/device_list_page"));
+
+    const roomRequests: HttpRequest[] = [];
+    const clientRateApi = new MiCloudClient(SESSION, async (req) => {
+      roomRequests.push(req);
+      return {
+        status: 200,
+        headers: {},
+        body: JSON.stringify({ code: -1, message: "请求过于频繁，请稍后再试" }),
+      };
+    });
+    await assert.rejects(
+      () => clientRateApi.homeRooms(),
+      (err: unknown) => err instanceof MiCloudError && err.kind === "api" && err.code === -1,
+    );
+    assert.equal(roomRequests.length, 1);
+    assert.ok(roomRequests[0]?.url.endsWith("/v2/homeroom/gethome_merged"));
+
+    const camRequests: HttpRequest[] = [];
+    const camClient = new MiCloudClient(SESSION, async (req) => {
+      camRequests.push(req);
+      return {
+        status: 429,
+        headers: {},
+        body: JSON.stringify({ code: -1, message: "rate limit exceeded" }),
+      };
+    });
+    await assert.rejects(
+      () => fetchCameraMetadataList(camClient),
+      (err: unknown) => err instanceof MiCloudError && err.code === 429,
+    );
+    assert.equal(camRequests.length, 1);
+    assert.ok(camRequests[0]?.url.endsWith("/v2/home/device_list_page"));
+
+    const liveCamRequests: HttpRequest[] = [];
+    const liveCamClient = new MiCloudClient(SESSION, async (req) => {
+      liveCamRequests.push(req);
+      if (req.url.endsWith("/v2/homeroom/gethome_merged")) {
+        return {
+          status: 429,
+          headers: {},
+          body: JSON.stringify({ code: -1, message: "too many requests" }),
+        };
+      }
+      const nonce = MiCloudCrypto.makeNonce();
+      const signed = MiCloudCrypto.signedNonce(SECURITY, nonce);
+      void signed;
+      return {
+        status: 429,
+        headers: {},
+        body: JSON.stringify({ code: -1, message: "too many requests" }),
+      };
+    });
+    await assert.rejects(
+      () =>
+        resolveLiveCameraTarget(
+          liveCamClient,
+          {
+            id: "cam-1",
+            name: "门厅摄像机",
+            roomId: "r1",
+            roomName: "客厅",
+            model: "isa.camera.hlc7",
+            isOnline: true,
+            kind: {
+              kind: "camera",
+              entityId: "miot:cam-1:2",
+              isOn: true,
+              nightShot: null,
+              availableNightShots: [],
+              motionDetectionEntityId: null,
+              isMotionDetectionOn: null,
+              streamEntityId: null,
+              snapshotPath: null,
+            },
+          },
+          [],
+        ),
+      (err: unknown) => err instanceof MiCloudError && err.code === 429,
+    );
+    assert.ok(liveCamRequests.every((r) => !r.url.endsWith("/home/device_list") && !r.url.endsWith("/v2/homeroom/gethome")));
+  });
+
+  it("deduplicates concurrent MiotSpecResolver.fetchInstance requests per URN and cleans up on settle", async () => {
+    let shouldFail = true;
+    let unblockGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      unblockGate = r;
+    });
+    let fetchCount = 0;
+    const gatedResolver = new MiotSpecResolver(async () => {
+      fetchCount += 1;
+      await gate;
+      if (shouldFail) {
+        return { status: 503, headers: {}, body: "" };
+      }
+      return { status: 200, headers: {}, body: JSON.stringify(SPEC) };
+    });
+
+    const sharedUrn = SPEC.type;
+    const failBatch = gatedResolver.resolveForDevices([
+      { did: "d1", name: "灯1", model: "yeelink.light.a", isOnline: true, specType: sharedUrn },
+      { did: "d2", name: "灯2", model: "yeelink.light.b", isOnline: true, specType: sharedUrn },
+      { did: "d3", name: "灯3", model: "yeelink.light.c", isOnline: true, specType: sharedUrn },
+    ]);
+    unblockGate();
+    await failBatch;
+    assert.equal(fetchCount, 1);
+
+    shouldFail = false;
+    const recovered = await gatedResolver.resolveForDevices([
+      { did: "d1", name: "灯1", model: "yeelink.light.a", isOnline: true, specType: sharedUrn },
+      { did: "d2", name: "灯2", model: "yeelink.light.b", isOnline: true, specType: sharedUrn },
+    ]);
+    assert.equal(fetchCount, 2);
+    assert.equal(recovered["yeelink.light.a"]?.type, sharedUrn);
+    assert.equal(recovered["yeelink.light.b"]?.type, sharedUrn);
+  });
+
+  it("accepts non-/24 RFC1918 .0 and .255 hosts while rejecting public and loopback addresses", () => {
+    assert.equal(parsePrivateLanIpv4("192.168.1.0"), "192.168.1.0");
+    assert.equal(parsePrivateLanIpv4("172.16.0.255"), "172.16.0.255");
+    for (const bad of ["192.0.2.10", "8.8.8.8", "127.0.0.1", "172.32.0.1", "example.com"]) {
+      assert.equal(parsePrivateLanIpv4(bad), null);
+    }
   });
 });

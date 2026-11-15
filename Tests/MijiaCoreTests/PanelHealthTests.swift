@@ -288,7 +288,8 @@ struct PanelHealthTests {
             config: LGWebOSConfig(isEnabled: false),
             onDeviceUpdated: { _ in },
             onClientKeyRegistered: { _ in },
-            onSecurityFailure: { _ in }
+            onSecurityFailure: { _ in },
+            sendFrameOverrideForTesting: { _ in }
         )
         #expect(store.miSessionBlocksControl)
 
@@ -378,7 +379,8 @@ struct PanelHealthTests {
             config: LGWebOSConfig(isEnabled: false),
             onDeviceUpdated: { _ in },
             onClientKeyRegistered: { _ in },
-            onSecurityFailure: { _ in }
+            onSecurityFailure: { _ in },
+            sendFrameOverrideForTesting: { _ in }
         )
         #expect(store.miSessionBlocksControl)
 
@@ -457,7 +459,8 @@ struct PanelHealthTests {
             config: LGWebOSConfig(isEnabled: false),
             onDeviceUpdated: { _ in },
             onClientKeyRegistered: { _ in },
-            onSecurityFailure: { _ in }
+            onSecurityFailure: { _ in },
+            sendFrameOverrideForTesting: { _ in }
         )
         #expect(store.miSessionBlocksControl)
 
@@ -598,7 +601,8 @@ struct PanelHealthTests {
             config: LGWebOSConfig(isEnabled: false),
             onDeviceUpdated: { _ in },
             onClientKeyRegistered: { _ in },
-            onSecurityFailure: { _ in }
+            onSecurityFailure: { _ in },
+            sendFrameOverrideForTesting: { _ in }
         )
 
         let allOff = try #require(store.turnAllOff())
@@ -641,7 +645,8 @@ struct PanelHealthTests {
             config: LGWebOSConfig(isEnabled: false),
             onDeviceUpdated: { _ in },
             onClientKeyRegistered: { _ in },
-            onSecurityFailure: { _ in }
+            onSecurityFailure: { _ in },
+            sendFrameOverrideForTesting: { _ in }
         )
         #expect(store.miSessionBlocksControl)
 

@@ -1033,6 +1033,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         if req.value(forHTTPHeaderField: "Authorization") == nil,
            let store, store.deviceBackend(for: currentDevice?.id ?? "") == .homeAssistant,
            targetURL.query?.contains("token=") != true,
+           HAPlaintextConsent.matchesServerOrigin(targetURL, serverBaseURL: store.serverURLString),
            HAPlaintextConsent.allowsToken(to: targetURL.absoluteString, defaults: store.userDefaults) {
             let token = store.loadHAToken().trimmingCharacters(in: .whitespacesAndNewlines)
             if !token.isEmpty {

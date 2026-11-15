@@ -127,6 +127,42 @@ extension HomeProvider {
 
 // MARK: - Live Home Assistant WebSocket + REST Provider
 
+protocol HAWebSocketConnection: AnyObject, Sendable {
+    func resume()
+    func send(_ text: String) async throws
+    func receive() async throws -> Data
+    func cancel()
+}
+
+private final class URLSessionHAWebSocketConnection: HAWebSocketConnection, @unchecked Sendable {
+    private let task: URLSessionWebSocketTask
+
+    init(task: URLSessionWebSocketTask) {
+        self.task = task
+    }
+
+    func resume() {
+        task.resume()
+    }
+
+    func send(_ text: String) async throws {
+        try await task.send(.string(text))
+    }
+
+    func receive() async throws -> Data {
+        let msg = try await task.receive()
+        switch msg {
+        case .string(let s): return Data(s.utf8)
+        case .data(let d): return d
+        @unknown default: return Data()
+        }
+    }
+
+    func cancel() {
+        task.cancel(with: .goingAway, reason: nil)
+    }
+}
+
 public actor HAWebSocketProvider: HomeProvider {
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "HAWebSocket")
     private var baseURLString: String
@@ -138,7 +174,8 @@ public actor HAWebSocketProvider: HomeProvider {
     private var loopTask: Task<Void, Never>?
     private var pingTask: Task<Void, Never>?
     private var receiveTask: Task<Void, Error>?
-    private var activeWebSocket: URLSessionWebSocketTask?
+    private var activeWebSocket: (any HAWebSocketConnection)?
+    private var handshakingWebSocket: (any HAWebSocketConnection)?
     private var nextWebSocketMessageId: Int = 5
     private var pendingRefreshStateIds: Set<Int> = []
     private var pendingStreamRequests: [Int: CheckedContinuation<String?, Never>] = [:]
@@ -147,6 +184,7 @@ public actor HAWebSocketProvider: HomeProvider {
     private var startupFailure: Error?
 
     var hasActiveSessionForTesting: Bool { session != nil }
+    var hasActiveWebSocketForTesting: Bool { activeWebSocket != nil }
     var isShutDownForTesting: Bool { isShutDown }
     private(set) var createdSessionCountForTesting: Int = 0
     private(set) var invalidatedSessionCountForTesting: Int = 0
@@ -175,16 +213,19 @@ public actor HAWebSocketProvider: HomeProvider {
 
     /// Test seams for deterministic retry/backoff verification without wall-clock sleeps or sockets.
     private var connectOverride: (@Sendable () async throws -> ConnectTestOutcome)?
+    private var webSocketFactoryOverride: (@Sendable (URL) -> any HAWebSocketConnection)?
     private var reconnectSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
 
     func setTestSeams(
         connectOverride: (@Sendable () async throws -> ConnectTestOutcome)?,
-        reconnectSleep: (@Sendable (Duration) async throws -> Void)? = nil
+        reconnectSleep: (@Sendable (Duration) async throws -> Void)? = nil,
+        webSocketFactory: (@Sendable (URL) -> any HAWebSocketConnection)? = nil
     ) {
         self.connectOverride = connectOverride
         if let reconnectSleep {
             self.reconnectSleep = reconnectSleep
         }
+        self.webSocketFactoryOverride = webSocketFactory
     }
 
     public init(
@@ -268,7 +309,9 @@ public actor HAWebSocketProvider: HomeProvider {
         pingTask = nil
         receiveTask?.cancel()
         receiveTask = nil
-        activeWebSocket?.cancel(with: .goingAway, reason: nil)
+        handshakingWebSocket?.cancel()
+        handshakingWebSocket = nil
+        activeWebSocket?.cancel()
         activeWebSocket = nil
         failPendingStartupReplies(with: CancellationError())
         failPendingStreamRequests()
@@ -291,8 +334,8 @@ public actor HAWebSocketProvider: HomeProvider {
         return nextWebSocketMessageId
     }
 
-    private func sendWebSocketPing(ws: URLSessionWebSocketTask) async {
-        guard activeWebSocket === ws else { return }
+    private func sendWebSocketPing(ws: any HAWebSocketConnection) async {
+        guard (activeWebSocket as AnyObject?) === (ws as AnyObject) else { return }
         let pingId = allocateWebSocketMessageId()
         try? await sendJSON(ws: ws, ["id": pingId, "type": "ping"])
     }
@@ -319,7 +362,7 @@ public actor HAWebSocketProvider: HomeProvider {
             } catch {
                 pendingRefreshStateIds.remove(id)
             }
-        } else {
+        } else if handshakingWebSocket == nil {
             restartLoop()
         }
     }
@@ -331,7 +374,9 @@ public actor HAWebSocketProvider: HomeProvider {
         pingTask = nil
         receiveTask?.cancel()
         receiveTask = nil
-        activeWebSocket?.cancel(with: .goingAway, reason: nil)
+        handshakingWebSocket?.cancel()
+        handshakingWebSocket = nil
+        activeWebSocket?.cancel()
         activeWebSocket = nil
         failPendingStartupReplies(with: CancellationError())
         invalidateSession()
@@ -417,11 +462,19 @@ public actor HAWebSocketProvider: HomeProvider {
         guard let wsURL = Self.makeWebSocketURL(from: baseURLString) else {
             throw HomeProviderError.invalidURL(baseURLString)
         }
-        guard let currentSession = replaceSession() else { return }
-
-        let ws = currentSession.webSocketTask(with: wsURL)
-        ws.maximumMessageSize = 16 * 1024 * 1024
-        self.activeWebSocket = ws
+        let currentSession: URLSession?
+        let ws: any HAWebSocketConnection
+        if let webSocketFactoryOverride {
+            currentSession = nil
+            ws = webSocketFactoryOverride(wsURL)
+        } else {
+            guard let createdSession = replaceSession() else { return }
+            currentSession = createdSession
+            let task = createdSession.webSocketTask(with: wsURL)
+            task.maximumMessageSize = 16 * 1024 * 1024
+            ws = URLSessionHAWebSocketConnection(task: task)
+        }
+        self.handshakingWebSocket = ws
         ws.resume()
 
         var localPingTask: Task<Void, Never>?
@@ -435,31 +488,35 @@ public actor HAWebSocketProvider: HomeProvider {
             if let localReceiveTask, self.receiveTask == localReceiveTask {
                 self.receiveTask = nil
             }
-            ws.cancel(with: .goingAway, reason: nil)
-            if self.activeWebSocket === ws {
+            ws.cancel()
+            if (self.handshakingWebSocket as AnyObject?) === (ws as AnyObject) {
+                self.handshakingWebSocket = nil
+            }
+            if (self.activeWebSocket as AnyObject?) === (ws as AnyObject) {
                 self.activeWebSocket = nil
             }
             failPendingStartupReplies(with: CancellationError())
             failPendingStreamRequests()
-            invalidateSession(ifMatching: currentSession)
+            if let currentSession {
+                invalidateSession(ifMatching: currentSession)
+            }
         }
 
-        // 1. Expect auth_required
-        _ = try await receiveJSON(ws: ws)
+        let greeting = try await receiveJSON(ws: ws)
+        try Self.validateAuthGreeting(greeting)
 
-        // 2. Send auth
         try await sendJSON(ws: ws, [
             "type": "auth",
             "access_token": token
         ])
 
         let authResp = try await receiveJSON(ws: ws)
-        let authType = authResp["type"]?.stringValue ?? ""
-        if authType != "auth_ok" {
-            ws.cancel(with: .goingAway, reason: nil)
-            throw HomeProviderError.unauthorized
-        }
+        try Self.validateAuthResponse(authResp)
 
+        if (self.handshakingWebSocket as AnyObject?) === (ws as AnyObject) {
+            self.handshakingWebSocket = nil
+        }
+        self.activeWebSocket = ws
         onAuthenticated()
         snapshot = HAHomeSnapshot()
         nextWebSocketMessageId = 5
@@ -469,7 +526,6 @@ public actor HAWebSocketProvider: HomeProvider {
 
         continuation?.yield(.statusChanged(.connected))
 
-        // 3. Periodic 25-second ping task to keep connection alive forever
         let startedPingTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(25))
@@ -480,7 +536,6 @@ public actor HAWebSocketProvider: HomeProvider {
         localPingTask = startedPingTask
         self.pingTask = startedPingTask
 
-        // 4. Start receive loop before pipelined sends so early startup replies are never missed.
         let startedReceiveTask = Task { [weak self] () throws in
             guard let self else { return }
             try await self.runReceiveLoop(ws: ws)
@@ -488,15 +543,34 @@ public actor HAWebSocketProvider: HomeProvider {
         localReceiveTask = startedReceiveTask
         self.receiveTask = startedReceiveTask
 
-        // 5. Request registries, initial states, and state_changed subscription sequentially
-        //    on the socket, then collect all 5 replies concurrently via `async let`.
         try await fetchInitialRegistries(ws: ws)
 
-        // 6. Keep listening for state_changed events and stream responses until disconnect.
         try await startedReceiveTask.value
     }
 
-    private func runReceiveLoop(ws: URLSessionWebSocketTask) async throws {
+    static func validateAuthGreeting(_ message: [String: JSONValue]) throws {
+        switch message["type"]?.stringValue {
+        case "auth_required":
+            return
+        case "auth_invalid":
+            throw HomeProviderError.unauthorized
+        default:
+            throw HomeProviderError.networkError("Unexpected WebSocket greeting")
+        }
+    }
+
+    static func validateAuthResponse(_ message: [String: JSONValue]) throws {
+        switch message["type"]?.stringValue {
+        case "auth_ok":
+            return
+        case "auth_invalid":
+            throw HomeProviderError.unauthorized
+        default:
+            throw HomeProviderError.networkError("Unexpected WebSocket auth response")
+        }
+    }
+
+    private func runReceiveLoop(ws: any HAWebSocketConnection) async throws {
         do {
             while !Task.isCancelled {
                 let msg = try await receiveJSON(ws: ws)
@@ -526,7 +600,7 @@ public actor HAWebSocketProvider: HomeProvider {
         }
     }
 
-    func fetchInitialRegistries(ws: URLSessionWebSocketTask) async throws {
+    func fetchInitialRegistries(ws: any HAWebSocketConnection) async throws {
         try await sendJSON(ws: ws, ["id": 1, "type": "config/area_registry/list"])
         try await sendJSON(ws: ws, ["id": 2, "type": "config/device_registry/list"])
         try await sendJSON(ws: ws, ["id": 3, "type": "config/entity_registry/list"])
@@ -927,19 +1001,14 @@ public actor HAWebSocketProvider: HomeProvider {
 
     // MARK: - Helpers
 
-    private func sendJSON(ws: URLSessionWebSocketTask, _ dict: [String: Any]) async throws {
+    private func sendJSON(ws: any HAWebSocketConnection, _ dict: [String: Any]) async throws {
         let data = try JSONSerialization.data(withJSONObject: dict)
         guard let str = String(data: data, encoding: .utf8) else { return }
-        try await ws.send(.string(str))
+        try await ws.send(str)
     }
 
-    private func receiveJSON(ws: URLSessionWebSocketTask) async throws -> [String: JSONValue] {
-        let msg = try await ws.receive()
-        let data: Data = switch msg {
-        case .string(let s): Data(s.utf8)
-        case .data(let d): d
-        @unknown default: Data()
-        }
+    private func receiveJSON(ws: any HAWebSocketConnection) async throws -> [String: JSONValue] {
+        let data = try await ws.receive()
         return (try? JSONDecoder().decode([String: JSONValue].self, from: data)) ?? [:]
     }
 

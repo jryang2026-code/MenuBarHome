@@ -18,8 +18,8 @@ import {
   parseCachedHAHome,
 } from "../src/core/homeAssistant.js";
 import { setLanguage } from "../src/core/i18n.js";
-import { MiAccountLogin } from "../src/core/miCloud/accountLogin.js";
-import { MI_SESSION_WARNING_LEAD_MS, miSessionExpiryState } from "../src/core/miCloud/session.js";
+import { MiAccountLogin, isTrustedXiaomiLoginRedirect } from "../src/core/miCloud/accountLogin.js";
+import { MiCloudError, MI_SESSION_WARNING_LEAD_MS, miSessionExpiryState, type HttpResponse } from "../src/core/miCloud/session.js";
 import type { DeviceCommand, SmartDevice } from "../src/core/models.js";
 import { availableQuickActions, planQuickAction } from "../src/core/quickActions.js";
 import { CredentialVault, parseMiSession, serializeMiSession } from "../src/core/secureStore.js";
@@ -1200,6 +1200,78 @@ describe("Demo offline guard, credential error banner, mic pin guard & hover pau
       assert.equal(app.undoButtonVisible(fakeNow + 11_000), false);
     } finally {
       Date.now = realNow;
+    }
+  });
+
+  it("enforces https Xiaomi domains without userinfo on MiAccountLogin Location hops", async () => {
+    assert.equal(isTrustedXiaomiLoginRedirect("https://sts.api.io.mi.com/sts?d=1"), true);
+    assert.equal(isTrustedXiaomiLoginRedirect("https://account.xiaomi.com/pass/serviceLogin"), true);
+    assert.equal(isTrustedXiaomiLoginRedirect("https://xiaomi.com/sts"), true);
+    assert.equal(isTrustedXiaomiLoginRedirect("https://mi.com/sts"), true);
+    assert.equal(isTrustedXiaomiLoginRedirect("http://sts.api.io.mi.com/sts"), false);
+    assert.equal(isTrustedXiaomiLoginRedirect("https://user:pass@account.xiaomi.com/sts"), false);
+    assert.equal(isTrustedXiaomiLoginRedirect("https://xiaomi.com.evil.example/sts"), false);
+    assert.equal(isTrustedXiaomiLoginRedirect("https://notxiaomi.com/sts"), false);
+
+    const ticket = {
+      qrImageURL: "https://qr.example/img",
+      loginURL: "https://login.example/qr",
+      longPollURL: "https://lp.example/poll",
+      timeout: 30,
+    };
+
+    const okLogin = new MiAccountLogin(async (req): Promise<HttpResponse> => {
+      if (req.url === "https://lp.example/poll") {
+        return {
+          status: 200,
+          headers: {},
+          body: '&&&START&&&{"userId":88,"ssecurity":"c3M=","cUserId":"c","passToken":"p","location":"https://account.xiaomi.com/sts?step=1"}',
+        };
+      }
+      if (req.url === "https://account.xiaomi.com/sts?step=1") {
+        return {
+          status: 302,
+          headers: { Location: "https://sts.api.io.mi.com/sts?step=2" },
+          body: "",
+        };
+      }
+      if (req.url === "https://sts.api.io.mi.com/sts?step=2") {
+        return {
+          status: 200,
+          headers: { "Set-Cookie": "serviceToken=hop-ok; Path=/" },
+          body: "ok",
+        };
+      }
+      return { status: 404, headers: {}, body: "" };
+    });
+    const okSession = await okLogin.waitForScan(ticket);
+    assert.equal(okSession.serviceToken, "hop-ok");
+
+    for (const badHop of [
+      "https://evil.example/steal",
+      "http://sts.api.io.mi.com/sts",
+      "https://user@sts.api.io.mi.com/sts",
+    ]) {
+      const seenUrls: string[] = [];
+      const badLogin = new MiAccountLogin(async (req): Promise<HttpResponse> => {
+        seenUrls.push(req.url);
+        if (req.url === "https://lp.example/poll") {
+          return {
+            status: 200,
+            headers: {},
+            body: '&&&START&&&{"userId":88,"ssecurity":"c3M=","cUserId":"c","passToken":"p","location":"https://account.xiaomi.com/sts?step=1"}',
+          };
+        }
+        if (req.url === "https://account.xiaomi.com/sts?step=1") {
+          return { status: 302, headers: { Location: badHop }, body: "" };
+        }
+        assert.fail(`Unexpected request to untrusted redirect ${req.url}`);
+      });
+      await assert.rejects(
+        () => badLogin.waitForScan(ticket),
+        (err: unknown) => err instanceof MiCloudError && err.kind === "badResponse",
+      );
+      assert.equal(seenUrls.length, 2);
     }
   });
 });

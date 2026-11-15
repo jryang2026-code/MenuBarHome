@@ -74,11 +74,13 @@ public actor NWConnectionMiIOUDPTransport: MiIOUDPTransport {
     public func send(_ packet: Data, to host: String, port: UInt16, timeout: Duration) async throws -> Data {
         try Task.checkCancellation()
         guard !isShutDown else { throw MiIOError.shutDown }
-        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+        let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard LocalMiIOClient.isPrivateRFC1918IPv4(trimmedHost),
+              let nwPort = NWEndpoint.Port(rawValue: port) else {
             throw MiIOError.invalidAddress(host)
         }
         let callID = UUID()
-        let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: .udp)
+        let connection = NWConnection(host: NWEndpoint.Host(trimmedHost), port: nwPort, using: .udp)
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, any Error>) in
@@ -411,9 +413,33 @@ public actor LocalMiIOClient {
         return tokenData
     }
 
+    public static func isPrivateRFC1918IPv4(_ ip: String) -> Bool {
+        let trimmed = ip.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = trimmed.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return false }
+        var octets: [Int] = []
+        octets.reserveCapacity(4)
+        for part in parts {
+            guard !part.isEmpty,
+                  part.count <= 3,
+                  part.allSatisfy({ $0.isASCII && $0.isNumber }),
+                  !(part.count > 1 && part.first == "0"),
+                  let value = Int(part),
+                  (0...255).contains(value) else {
+                return false
+            }
+            octets.append(value)
+        }
+        let a = octets[0]
+        let b = octets[1]
+        return a == 2 * 5
+            || (a == 172 && (16...31).contains(b))
+            || (a == 192 && b == 168)
+    }
+
     private func validatedHost(_ ip: String) throws -> String {
         let trimmed = ip.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw MiIOError.invalidAddress(ip) }
+        guard Self.isPrivateRFC1918IPv4(trimmed) else { throw MiIOError.invalidAddress(ip) }
         return trimmed
     }
 

@@ -92,9 +92,33 @@ function responseMessage(json: Record<string, unknown>): string {
   return "";
 }
 
+const RATE_LIMIT_MARKERS: readonly string[] = [
+  "too many requests",
+  "rate limit",
+  "ratelimit",
+  "frequency limit",
+  "request limit",
+  "请求过于频繁",
+  "访问过于频繁",
+  "请求太频繁",
+];
+
 function looksSessionExpired(text: string): boolean {
   const lower = text.toLowerCase();
   return SESSION_EXPIRED_MARKERS.some((marker) => lower.includes(marker));
+}
+
+function looksRateLimited(text: string): boolean {
+  const lower = text.toLowerCase();
+  return RATE_LIMIT_MARKERS.some((marker) => lower.includes(marker));
+}
+
+export function shouldRethrowWithoutFallback(err: unknown): boolean {
+  if (!(err instanceof MiCloudError)) return false;
+  if (err.kind === "sessionExpired") return true;
+  if (err.code === 429 || err.code === -429) return true;
+  if (err.kind === "api" && looksRateLimited(err.message)) return true;
+  return false;
 }
 
 export interface MiotPropKey {
@@ -143,6 +167,7 @@ export class MiCloudClient {
     const resp = await this.transport({
       url,
       method: "POST",
+      followRedirects: false,
       headers: {
         "User-Agent": this.userAgent,
         "x-xiaomi-protocal-flag-cli": "PROTOCAL-HTTP2",
@@ -361,7 +386,7 @@ export class MiCloudClient {
     try {
       return await this.deviceListPaged();
     } catch (err) {
-      if (err instanceof MiCloudError && err.kind === "sessionExpired") throw err;
+      if (shouldRethrowWithoutFallback(err)) throw err;
       return this.legacyDeviceList();
     }
   }
@@ -429,7 +454,7 @@ export class MiCloudClient {
         plat_form: 0,
       });
     } catch (err) {
-      if (err instanceof MiCloudError && err.kind === "sessionExpired") throw err;
+      if (shouldRethrowWithoutFallback(err)) throw err;
       result = await this.request("v2/homeroom/gethome", {
         fg: true,
         fetch_share: true,

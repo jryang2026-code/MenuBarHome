@@ -22,6 +22,42 @@ public enum HAPlaintextConsent {
         !needsConsent(baseURL) || isApproved(baseURL, defaults: defaults)
     }
 
+    public static func matchesServerOrigin(_ targetURL: URL, serverBaseURL: String) -> Bool {
+        guard !serverBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        let normalizedServer = HAWebSocketProvider.normalizeBaseURL(serverBaseURL)
+        guard let targetComponents = URLComponents(url: targetURL, resolvingAgainstBaseURL: true),
+              let serverComponents = URLComponents(string: normalizedServer),
+              let targetOrigin = normalizedOrigin(from: targetComponents),
+              let serverOrigin = normalizedOrigin(from: serverComponents) else {
+            return false
+        }
+        return targetOrigin == serverOrigin
+    }
+
+    private static func normalizedOrigin(from components: URLComponents) -> (scheme: String, host: String, port: Int)? {
+        guard components.user == nil,
+              components.password == nil,
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              var host = components.host?.lowercased() else {
+            return nil
+        }
+        if host.hasPrefix("["), host.hasSuffix("]") {
+            host = String(host.dropFirst().dropLast())
+        }
+        while host.hasSuffix(".") {
+            host.removeLast()
+        }
+        guard !host.isEmpty else { return nil }
+        if let port = components.port, !(1...65535).contains(port) {
+            return nil
+        }
+        let effectivePort = components.port ?? (scheme == "https" ? 443 : 80)
+        return (scheme, host, effectivePort)
+    }
+
     public static func approve(_ baseURL: String, defaults: UserDefaults) {
         var urls = approved(defaults)
         urls.insert(key(baseURL))

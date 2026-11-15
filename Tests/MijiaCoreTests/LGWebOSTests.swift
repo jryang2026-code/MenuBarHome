@@ -88,4 +88,41 @@ struct LGWebOSTests {
         #expect(executed.contains(.setSwitch(entityId: LGWebOSProtocol.screenOffEntityId, isOn: true)))
         #expect(executed.contains(.mediaSelectSource(entityId: LGWebOSProtocol.mediaEntityId, source: "HDMI 2")))
     }
+
+    @Test("Disconnected LGWebOSClient throws on socket controls and keeps isConnected false on Wake-on-LAN")
+    func disconnectedControlsThrowAndWakeStaysStandby() async throws {
+        let emitted = LockedDevices()
+        let client = LGWebOSClient(
+            config: LGWebOSConfig(isEnabled: true, host: "192.168.1.50", macAddress: "AA:BB:CC:DD:EE:FF"),
+            onDeviceUpdated: { emitted.append($0) },
+            onClientKeyRegistered: { _ in },
+            onSecurityFailure: { _ in }
+        )
+
+        let disconnectedCommands: [DeviceCommand] = [
+            .setSwitch(entityId: LGWebOSProtocol.powerEntityId, isOn: false),
+            .setSwitch(entityId: LGWebOSProtocol.muteEntityId, isOn: true),
+            .setSwitch(entityId: LGWebOSProtocol.screenOffEntityId, isOn: true),
+            .mediaSetVolume(entityId: LGWebOSProtocol.mediaEntityId, volumeLevel: 0.35),
+            .mediaSelectSource(entityId: LGWebOSProtocol.mediaEntityId, source: "HDMI 2"),
+        ]
+
+        for cmd in disconnectedCommands {
+            await #expect(throws: HomeProviderError.self) {
+                try await client.execute(cmd)
+            }
+        }
+        #expect(emitted.items.isEmpty)
+
+        try await client.execute(.setSwitch(entityId: LGWebOSProtocol.powerEntityId, isOn: true))
+        #expect(await client.isConnectedForTesting == false)
+        await client.shutdown()
+    }
+}
+
+private final class LockedDevices: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [SmartDevice] = []
+    var items: [SmartDevice] { lock.withLock { stored } }
+    func append(_ device: SmartDevice) { lock.withLock { stored.append(device) } }
 }

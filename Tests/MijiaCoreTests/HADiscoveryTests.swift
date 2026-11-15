@@ -121,4 +121,66 @@ struct HADiscoveryTests {
         )
         #expect(authMessage == HomeProviderError.unauthorized.errorDescription)
     }
+
+    @Test("LAN discovery drops external_url and rejects public, loopback, and non-.local hosts")
+    func rejectsExternalPublicAndLoopbackTargets() {
+        #expect(HADiscovery.buildInstance(
+            instanceName: "Cloud Only",
+            txt: ["external_url": "https://ha.example.com"],
+            hostResolver: { _ in nil }
+        ) == nil)
+
+        #expect(HADiscovery.buildInstance(
+            instanceName: "Public Internal",
+            txt: [
+                "internal_url": "http://8.8.8.8:8123",
+                "base_url": "https://ha.example.com",
+                "external_url": "https://ha.example.com",
+            ],
+            hostResolver: { _ in nil }
+        ) == nil)
+
+        #expect(HADiscovery.buildInstance(
+            instanceName: "Loopback",
+            txt: [
+                "internal_url": "http://127.0.0.1:8123",
+                "base_url": "http://localhost:8123",
+            ],
+            srvTarget: "localhost.",
+            hostResolver: { _ in "127.0.0.1" }
+        ) == nil)
+
+        #expect(HADiscovery.buildInstance(
+            instanceName: "Foreign SRV",
+            txt: [:],
+            srvTarget: "evil.example.com.",
+            hostResolver: { _ in "192.168.1.88" }
+        ) == nil)
+
+        #expect(HADiscovery.buildInstance(
+            instanceName: "Public Resolver Answer",
+            txt: [:],
+            srvTarget: "ha-box.local.",
+            hostResolver: { _ in "8.8.8.8" }
+        )?.baseURL == "http://ha-box.local:8123")
+
+        let mdnsLocal = HADiscovery.buildInstance(
+            instanceName: "LAN mDNS",
+            txt: [
+                "internal_url": "http://homeassistant.local:8123",
+                "external_url": "https://ha.example.com",
+            ],
+            hostResolver: { _ in nil }
+        )
+        #expect(mdnsLocal?.baseURL == "http://homeassistant.local:8123")
+
+        #expect(HADiscovery.isAllowedLANDiscoveryHost("192.168.1.25"))
+        #expect(HADiscovery.isAllowedLANDiscoveryHost("ha-nas.local."))
+        #expect(!HADiscovery.isAllowedLANDiscoveryHost("localhost"))
+        #expect(!HADiscovery.isAllowedLANDiscoveryHost("localhost.local"))
+        #expect(!HADiscovery.isAllowedLANDiscoveryHost("127.0.0.1"))
+        #expect(!HADiscovery.isAllowedLANDiscoveryHost("192.0.2.10"))
+        #expect(!HADiscovery.isAllowedLANDiscoveryHost("8.8.8.8"))
+        #expect(!HADiscovery.isAllowedLANDiscoveryHost("example.com"))
+    }
 }
