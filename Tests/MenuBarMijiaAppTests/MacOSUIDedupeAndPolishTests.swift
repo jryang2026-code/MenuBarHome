@@ -1,0 +1,125 @@
+import AppKit
+import Foundation
+import SwiftUI
+import Testing
+@testable import MijiaCore
+@testable import MenuBarMijiaApp
+
+@MainActor
+@Suite("macOS UI dedupe & polish regressions", .serialized)
+struct MacOSUIDedupeAndPolishTests {
+    private func stackHeight(_ list: [PanelActivity], expanded: Bool, theme: PanelTheme) -> CGFloat {
+        _ = NSApplication.shared
+        let root = ActivityStackView(
+            activities: list, isExpanded: .constant(expanded), expandedViewportHeight: 220, theme: theme,
+            dismiss: { _ in }, clear: {}, label: { _ in "Kettle Running" }, content: { _ in Text("Card").padding(12) }
+        ).frame(width: 340)
+        let view = NSHostingView(rootView: root)
+        view.layoutSubtreeIfNeeded()
+        return view.fittingSize.height
+    }
+
+    @Test("ActivityStackView collapses when count drops to 1 and preserves single-card VoiceOver body")
+    func activityStackSingleCardCollapseAndAccessibility() {
+        L10n.$overrideLanguage.withValue(.en) {
+            let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+            let a1 = RecordedSafetyAlert(alert: SafetyAlert(id: "a1", deviceId: "d1", title: "Kettle Running", body: "Check kitchen outlet now.", turnOffCommand: nil), scope: "demo", date: t0)
+            let a2 = RecordedSafetyAlert(alert: SafetyAlert(id: "a2", deviceId: "d2", title: "Heater On", body: "Study heater active.", turnOffCommand: nil), scope: "demo", date: t0)
+            let items = PanelActivityFeed.items(notices: [], safety: [a1, a2], doorbells: [], dismissedIds: [])
+            let first = items[0]
+
+            #expect(ActivityStackPolicy.rendersExpanded(isExpanded: true, count: 2))
+            #expect(!ActivityStackPolicy.rendersExpanded(isExpanded: true, count: 1))
+            #expect(ActivityStackPolicy.sanitizedExpansion(isExpanded: true, count: 2))
+            #expect(!ActivityStackPolicy.sanitizedExpansion(isExpanded: true, count: 1))
+            #expect(ActivityStackPolicy.collapsedAccessibilitySummary(count: 1, firstLabel: "Kettle Running") == nil)
+            #expect(ActivityStackPolicy.collapsedAccessibilitySummary(count: 2, firstLabel: "Kettle Running") == "2 notifications. First: Kettle Running")
+
+            for theme in PanelTheme.allCases {
+                #expect(stackHeight(items, expanded: true, theme: theme) > stackHeight(items, expanded: false, theme: theme))
+                let staleOne = stackHeight([first], expanded: true, theme: theme)
+                #expect(staleOne == stackHeight([first], expanded: false, theme: theme))
+                #expect(staleOne < 120)
+            }
+        }
+    }
+
+    @Test("DeviceFacetSection select binding keeps nil/unlisted unselected so picking option 1 fires")
+    func facetSelectBindingDispatchesFirstOptionFromNilOrUnlisted() {
+        let options = [MiotFacetOption(value: 1, label: "Silent"), MiotFacetOption(value: 2, label: "Turbo")]
+        var control = FacetControl(
+            id: "2.1", kind: .select, name: "mode", title: "Mode", serviceName: "fan",
+            value: nil, options: options, isWritable: true, writesByDefault: true, isHighValue: true
+        )
+        #expect(DeviceFacetSection.selectedOptionValue(for: control) == nil)
+        var picked: [Int] = []
+        let binding = DeviceFacetSection.selectBinding(for: control) { picked.append($0) }
+        #expect(binding.wrappedValue == nil)
+        binding.wrappedValue = nil
+        #expect(picked.isEmpty)
+        binding.wrappedValue = 1
+        #expect(picked == [1])
+        control.value = .number(99)
+        #expect(DeviceFacetSection.selectedOptionValue(for: control) == nil)
+        control.value = .number(2)
+        #expect(DeviceFacetSection.selectedOptionValue(for: control) == 2)
+    }
+
+    @Test("GrokBallAnimator starts in target emotion pose on first mount instead of blending from 02")
+    func grokBallStartsDirectlyInInitialEmotion() throws {
+        let defaultBase = try #require(GrokBallData.emotions["02"]).base
+        let distinct = try #require(GrokBallData.emotions.first { key, emo in
+            let start = emo.frames.first?.pose ?? emo.base
+            return key != "02" && emo.transition > 0 && start.body.color.r != defaultBase.body.color.r
+        })
+        let expectedR = (distinct.value.frames.first?.pose ?? distinct.value.base).body.color.r
+        let t0 = Date(timeIntervalSinceReferenceDate: 10)
+        let fresh = GrokBallAnimator()
+        fresh.sample(at: t0, emotionId: distinct.key, pointer: .zero, reduceMotion: false)
+        #expect(fresh.pose.body.color.r == expectedR)
+
+        let switched = GrokBallAnimator()
+        switched.sample(at: t0, emotionId: "02", pointer: .zero, reduceMotion: false)
+        switched.sample(at: t0, emotionId: distinct.key, pointer: .zero, reduceMotion: false)
+        #expect(switched.pose.body.color.r == defaultBase.body.color.r)
+    }
+
+    @Test("MenuBarPanelController idles label timer when closed and ignores unrelated UserDefaults")
+    func menuBarControllerTimerIdlesAndFiltersUserDefaults() async throws {
+        let suite = "test.menubar.idle.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let otherDefaults = try #require(UserDefaults(suiteName: "\(suite).other"))
+        defer { defaults.removePersistentDomain(forName: suite); otherDefaults.removePersistentDomain(forName: "\(suite).other") }
+        let store = HomeStore(provider: MockHomeProvider(snapshot: DemoHomeProvider.defaultHome()), defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        _ = NSApplication.shared
+        let controller = MenuBarPanelController(userDefaults: defaults)
+        controller.presentsActively = false
+        controller.install(with: store)
+        defer { controller.uninstall() }
+
+        #expect(!controller.isLabelTimerRunning)
+        controller.showPanel()
+        #expect(controller.isLabelTimerRunning)
+        controller.hidePanel(animated: false)
+        #expect(!controller.isLabelTimerRunning)
+
+        let now = Date()
+        store.scheduledCommands = [ScheduledCommand(reply: "Lamp off", fireDate: now.addingTimeInterval(30), plan: IntentPlan(intents: [], reply: "Lamp off", source: .local))]
+        controller.updateLabelTimer(now: now)
+        #expect(controller.isLabelTimerRunning)
+        store.scheduledCommands = []
+        controller.updateLabelTimer(now: now)
+        #expect(!controller.isLabelTimerRunning)
+
+        defaults.set("value", forKey: "unrelated_setting")
+        otherDefaults.set(PanelHeight.tall.rawValue, forKey: PanelHeight.storageKey)
+        controller.handleUserDefaultsDidChange()
+        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: otherDefaults)
+        await Task.yield()
+        #expect(controller.preferencesReloadCount == 0)
+        defaults.set(PanelHeight.tall.rawValue, forKey: PanelHeight.storageKey)
+        controller.handleUserDefaultsDidChange()
+        #expect(controller.preferencesReloadCount == 1)
+    }
+}

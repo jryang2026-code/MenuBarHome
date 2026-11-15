@@ -1167,11 +1167,13 @@ extension HomeStore {
             entityId = eid
             next = max(-24, min(-15, s.freezerTargetTemp + delta))
             s.freezerTargetTemp = next
+            s.freezerTargetPresent = true
         } else {
             guard let eid = s.fridgeTargetEntityId else { return }
             entityId = eid
             next = max(2, min(8, s.fridgeTargetTemp + delta))
             s.fridgeTargetTemp = next
+            s.fridgeTargetPresent = true
         }
         var updated = previous
         updated.kind = .fridge(s)
@@ -1183,8 +1185,10 @@ extension HomeStore {
                 guard case .fridge(var spec) = device.kind else { return }
                 if isFreezer {
                     spec.freezerTargetTemp = next
+                    spec.freezerTargetPresent = true
                 } else {
                     spec.fridgeTargetTemp = next
+                    spec.fridgeTargetPresent = true
                 }
                 device.kind = .fridge(spec)
             }
@@ -1232,10 +1236,12 @@ extension HomeStore {
         switch previous.kind {
         case .speaker(var s):
             s.volumePercent = clamped
+            s.volumePresent = true
             updated.kind = .speaker(s)
             mediaEid = s.mediaEntityId
         case .tv(var s):
             s.volumePercent = clamped
+            s.volumePresent = true
             updated.kind = .tv(s)
             mediaEid = s.mediaEntityId
         default:
@@ -1249,9 +1255,11 @@ extension HomeStore {
                 switch device.kind {
                 case .speaker(var spec):
                     spec.volumePercent = clamped
+                    spec.volumePresent = true
                     device.kind = .speaker(spec)
                 case .tv(var spec):
                     spec.volumePercent = clamped
+                    spec.volumePresent = true
                     device.kind = .tv(spec)
                 default:
                     break

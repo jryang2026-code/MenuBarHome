@@ -58,6 +58,22 @@ export function readOnlyFlags(flags: Record<string, boolean>): Record<string, fa
   return out;
 }
 
+export function normalizedKelvinBounds(
+  rawMin: number | null | undefined,
+  rawMax: number | null | undefined,
+): { min: number; max: number } {
+  const parsedMin = typeof rawMin === "number" && Number.isFinite(rawMin) ? Math.round(rawMin) : null;
+  const parsedMax = typeof rawMax === "number" && Number.isFinite(rawMax) ? Math.round(rawMax) : null;
+  let min = parsedMin ?? (parsedMax !== null ? Math.min(2700, parsedMax) : 2700);
+  let max = parsedMax ?? (parsedMin !== null ? Math.max(6500, parsedMin) : 6500);
+  if (min > max) {
+    const tmp = min;
+    min = max;
+    max = tmp;
+  }
+  return { min, max };
+}
+
 /** A read-only property map: synthesis also runs to discover which keys it polls. */
 const EMPTY_VALUES: ReadonlyMap<string, unknown> = new Map<string, unknown>();
 
@@ -500,12 +516,19 @@ function applianceStatusDescription(description: string): string {
     case "washing":
       return t("洗浴中");
     default:
-      break;
+      return genericApplianceStatusDescription(description);
   }
+}
+
+function genericApplianceStatusDescription(description: string): string {
   const lower = description.trim().toLowerCase();
+  if (lower.includes("error") || lower.includes("fault")) return t("故障");
+  if (lower.includes("delayed") || lower.includes("delay-off") || lower.includes("延时")) return t("延时关机");
+  if (lower.includes("delay") || lower.includes("appoint") || lower.includes("reservation")) return t("预约中");
   if (lower.includes("idle") || lower.includes("standby") || lower.includes("off") || lower.includes("shutdown")) {
     return t("待机");
   }
+  if (lower.includes("preheat") || lower.includes("预热")) return t("预热中");
   if (
     lower.includes("keep warm") ||
     lower.includes("keep-warm") ||
@@ -514,6 +537,9 @@ function applianceStatusDescription(description: string): string {
   ) {
     return t("保温中");
   }
+  if (lower.includes("finish") || lower.includes("complete") || lower.includes("cooked")) return t("已完成");
+  if (lower.includes("clean") || lower.includes("清洗")) return t("清洗中");
+  if (lower.includes("paus")) return t("已暂停");
   if (
     lower.includes("cook") ||
     lower.includes("work") ||
@@ -524,13 +550,6 @@ function applianceStatusDescription(description: string): string {
   ) {
     return t("运行中");
   }
-  if (lower.includes("preheat")) return t("预热中");
-  if (lower.includes("delayed") || lower.includes("delay-off") || lower.includes("延时")) return t("延时关机");
-  if (lower.includes("delay") || lower.includes("appoint") || lower.includes("reservation")) return t("预约中");
-  if (lower.includes("clean") || lower.includes("清洗")) return t("清洗中");
-  if (lower.includes("paus")) return t("已暂停");
-  if (lower.includes("finish") || lower.includes("complete") || lower.includes("cooked")) return t("已完成");
-  if (lower.includes("error") || lower.includes("fault")) return t("故障");
   return description;
 }
 
@@ -1119,12 +1138,28 @@ export const MiotSynthesizer = {
     const primaryService = primaryMiotService(spec);
     if (!primaryService) return null;
 
-    const readProp = (s: MiotService, short: string, predicate?: (p: MiotProperty) => boolean) => {
-      const prop = s.properties.find(
-        (p) => miotShortName(p.type) === short && p.access.includes("read") && (!predicate || predicate(p))
-      );
+    const readProp = (
+      s: MiotService,
+      short: string,
+      predicate?: (p: MiotProperty) => boolean,
+      includeWriteOnly = false
+    ) => {
+      const prop =
+        s.properties.find(
+          (p) => miotShortName(p.type) === short && p.access.includes("read") && (!predicate || predicate(p))
+        ) ??
+        (includeWriteOnly
+          ? s.properties.find(
+              (p) => miotShortName(p.type) === short && p.access.includes("write") && (!predicate || predicate(p))
+            )
+          : undefined);
       if (!prop) return null;
-      touched?.add(`${s.iid}.${prop.iid}`);
+      const key = `${s.iid}.${prop.iid}`;
+      consumed?.add(key);
+      if (!prop.access.includes("read")) {
+        return { service: s, prop, val: null };
+      }
+      touched?.add(key);
       const val = normalizeMiotPropValue(prop, values.get(propKeyString({ did, siid: s.iid, piid: prop.iid })));
       return { service: s, prop, val };
     };
@@ -1164,8 +1199,8 @@ export const MiotSynthesizer = {
     const sName = miotShortName(primaryService.type);
     if (sName === "light") {
       const on = readProp(primaryService, "on");
-      const bri = readProp(primaryService, "brightness");
-      const ct = readProp(primaryService, "color-temperature");
+      const bri = readProp(primaryService, "brightness", undefined, true);
+      const ct = readProp(primaryService, "color-temperature", undefined, true);
       const mode = readProp(primaryService, "mode");
       const modeVal = typeof mode?.val === "number" ? Math.trunc(mode.val) : null;
       const currentEffect =
@@ -1177,16 +1212,15 @@ export const MiotSynthesizer = {
 
       const isLightGroup = did.startsWith("group.");
       const onWritable = exposesWrite(on?.prop.access);
-      const rawMinK = Math.round(finiteRangeAt(ct?.prop, 0, 2700));
-      const rawMaxK = Math.round(finiteRangeAt(ct?.prop, 1, 6500));
+      const kelvinBounds = normalizedKelvinBounds(ct?.prop.valueRange?.[0], ct?.prop.valueRange?.[1]);
       return {
         kind: "light",
         entityId: makeMiotAddress(did, primaryService.iid),
         isOn: miotBool(on?.val) ?? false,
         brightnessPercent: briPct,
         colorTempKelvin: typeof ct?.val === "number" && Number.isFinite(Math.round(ct.val)) ? Math.round(ct.val) : null,
-        minKelvin: Number.isFinite(rawMinK) ? rawMinK : 2700,
-        maxKelvin: Number.isFinite(rawMaxK) ? rawMaxK : 6500,
+        minKelvin: kelvinBounds.min,
+        maxKelvin: kelvinBounds.max,
         currentEffect: isLightGroup ? null : currentEffect,
         availableEffects:
           isLightGroup || !exposesWrite(mode?.prop.access)
@@ -1194,8 +1228,8 @@ export const MiotSynthesizer = {
             : (mode?.prop.valueList?.map((i) => i.description) ?? []),
         ...readOnlyFlags({
           powerWritable: onWritable,
-          brightnessWritable: bri ? exposesWrite(bri.prop.access) : true,
-          colorWritable: ct ? exposesWrite(ct.prop.access) : true,
+          brightnessWritable: bri ? exposesWrite(bri.prop.access) : false,
+          colorWritable: ct ? exposesWrite(ct.prop.access) : false,
         }),
       };
     }
@@ -1203,7 +1237,7 @@ export const MiotSynthesizer = {
     if (sName === "air-conditioner" || sName === "heater" || sName === "thermostat" || sName === "electric-blanket") {
       const on = readProp(primaryService, "on");
       const mode = sName === "electric-blanket" ? null : readProp(primaryService, "mode");
-      const target = readProp(primaryService, "target-temperature");
+      const target = readProp(primaryService, "target-temperature", undefined, true);
       const current = sName === "electric-blanket" ? null : readFirst(
         [
           primaryService,
@@ -1253,7 +1287,7 @@ export const MiotSynthesizer = {
           : [],
         ...readOnlyFlags({
           powerWritable: onWritable,
-          temperatureWritable: target ? exposesWrite(target.prop.access) : true,
+          temperatureWritable: target ? exposesWrite(target.prop.access) : false,
         }),
       };
     }
@@ -1458,11 +1492,13 @@ export const MiotSynthesizer = {
           : "idle";
       const speakerAddress = makeMiotAddress(did, primaryService.iid);
       const speakerActions = resolveSpeakerActionIds(did, spec);
+      const rawVolume =
+        volume && typeof volume.val === "number" && Number.isFinite(volume.val) ? volume.val : null;
       return {
         kind: "speaker",
         mediaEntityId: speakerAddress,
         state,
-        volumePercent: volume && typeof volume.val === "number" ? percentFromRaw(volume.val, volume.prop, "proportional") : 0,
+        volumePercent: rawVolume !== null && volume ? percentFromRaw(rawVolume, volume.prop, "proportional") : 0,
         isMuted: miotBool(mute?.val) ?? false,
         muteSwitchEntityId: exposesWrite(mute?.prop.access) ? speakerAddress : null,
         sleepModeEntityId:
@@ -1471,6 +1507,7 @@ export const MiotSynthesizer = {
         volumeWritable: exposesWrite(volume?.prop.access),
         ttsActionId: speakerActions.ttsActionId,
         directiveActionId: speakerActions.directiveActionId,
+        ...readOnlyFlags({ volumePresent: rawVolume !== null }),
       };
     }
 
@@ -1693,6 +1730,10 @@ export const MiotSynthesizer = {
       const modeWritable = Boolean(mode?.prop.access.includes("write"));
       const fridgeTargetWritable = Boolean(fridgeTarget?.prop.access.includes("write"));
       const freezerTargetWritable = Boolean(freezerTarget?.prop.access.includes("write"));
+      const rawFridgeTarget =
+        typeof fridgeTarget?.val === "number" && Number.isFinite(fridgeTarget.val) ? fridgeTarget.val : null;
+      const rawFreezerTarget =
+        typeof freezerTarget?.val === "number" && Number.isFinite(freezerTarget.val) ? freezerTarget.val : null;
 
       return {
         kind: "fridge",
@@ -1700,11 +1741,15 @@ export const MiotSynthesizer = {
         currentMode,
         availableModes: modeWritable ? (mode?.prop.valueList?.map((i) => i.description) ?? []) : [],
         fridgeCurrentTemp: typeof fridgeTemp?.val === "number" ? fridgeTemp.val : null,
-        fridgeTargetTemp: typeof fridgeTarget?.val === "number" ? fridgeTarget.val : 4,
+        fridgeTargetTemp: rawFridgeTarget ?? 4,
         fridgeTargetEntityId: fridgeTargetWritable && fridgeChamber ? makeMiotAddress(did, fridgeChamber.iid) : null,
         freezerCurrentTemp: typeof freezerTemp?.val === "number" ? freezerTemp.val : null,
-        freezerTargetTemp: typeof freezerTarget?.val === "number" ? freezerTarget.val : -18,
+        freezerTargetTemp: rawFreezerTarget ?? -18,
         freezerTargetEntityId: freezerTargetWritable && freezerChamber ? makeMiotAddress(did, freezerChamber.iid) : null,
+        ...readOnlyFlags({
+          fridgeTargetPresent: rawFridgeTarget !== null,
+          freezerTargetPresent: rawFreezerTarget !== null,
+        }),
       };
     }
 
@@ -1786,14 +1831,7 @@ export const MiotSynthesizer = {
       readProp(primaryService, "ble-keep-warm-time");
       const parts: string[] = [];
       if (statusDesc) {
-        const lower = statusDesc.toLowerCase();
-        if (lower.includes("idle") || lower.includes("standby") || lower.includes("off")) parts.push(t("待机"));
-        else if (lower.includes("warm") || lower.includes("insulation")) parts.push(t("保温中"));
-        else if (lower.includes("cook") || lower.includes("work") || lower.includes("busy") || lower.includes("boil") || lower.includes("heat")) parts.push(t("运行中"));
-        else if (lower.includes("preheat")) parts.push(t("预热中"));
-        else if (lower.includes("delay") || lower.includes("appoint") || lower.includes("reservation")) parts.push(t("预约中"));
-        else if (lower.includes("paus")) parts.push(t("已暂停"));
-        else parts.push(statusDesc);
+        parts.push(genericApplianceStatusDescription(statusDesc));
       }
       if (typeof temp?.val === "number" && Number.isFinite(temp.val)) {
         parts.push(`${Math.round(temp.val)}°C`);

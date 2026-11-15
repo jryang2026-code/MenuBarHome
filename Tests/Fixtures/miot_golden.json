@@ -1,5 +1,65 @@
 {
   "specs": {
+    "fixture.switch.toggle.precedence": {
+      "type": "urn:miot-spec-v2:device:outlet:0000A002:fixture:1",
+      "services": [
+        {
+          "iid": 2,
+          "type": "urn:miot-spec-v2:service:outlet:00007802:fixture:1",
+          "properties": [
+            {
+              "iid": 1,
+              "type": "urn:miot-spec-v2:property:on:00000006:fixture:1",
+              "format": "uint8",
+              "access": ["read", "write", "notify"],
+              "value-range": [0, 1, 1]
+            }
+          ]
+        },
+        {
+          "iid": 3,
+          "type": "urn:miot-spec-v2:service:ptc-bath-heater:0000783B:fixture:1",
+          "properties": [
+            {
+              "iid": 1,
+              "type": "urn:miot-spec-v2:property:on:00000006:fixture:1",
+              "format": "bool",
+              "access": ["read", "write"]
+            },
+            {
+              "iid": 2,
+              "type": "urn:miot-spec-v2:property:heating:000000C7:fixture:1",
+              "format": "bool",
+              "access": ["read", "write"]
+            }
+          ]
+        },
+        {
+          "iid": 4,
+          "type": "urn:miot-spec-v2:service:motion-detection:0000784F:fixture:1",
+          "properties": [
+            {
+              "iid": 1,
+              "type": "urn:miot-spec-v2:property:motion-detection:00000056:fixture:1",
+              "format": "bool",
+              "access": ["read", "write"]
+            }
+          ]
+        },
+        {
+          "iid": 5,
+          "type": "urn:miot-spec-v2:service:physical-controls-locked:00007807:fixture:1",
+          "properties": [
+            {
+              "iid": 1,
+              "type": "urn:miot-spec-v2:property:physical-controls-locked:0000001D:fixture:1",
+              "format": "bool",
+              "access": ["read", "write"]
+            }
+          ]
+        }
+      ]
+    },
     "fixture.generic.tank.alerts": {
       "type": "urn:miot-spec-v2:device:fish-tank:00000000:fixture:1",
       "services": [
@@ -3229,6 +3289,81 @@
         "freezerTargetTemp": -20,
         "freezerTargetEntityId": null
       }
+    },
+    {
+      "did": "fb_fridge_no_targets",
+      "model": "fixture.fridge.notarget",
+      "name": "小冰箱",
+      "spec": {
+        "type": "urn:miot-spec-v2:device:fridge:0000A00F:fallback:1",
+        "services": [
+          {
+            "iid": 2,
+            "type": "urn:miot-spec-v2:service:fridge:00007819:fallback:1",
+            "properties": [],
+            "actions": []
+          },
+          {
+            "iid": 3,
+            "type": "urn:miot-spec-v2:service:fridge-chamber:0000781A:fallback:1",
+            "properties": [
+              {
+                "iid": 1,
+                "type": "urn:miot-spec-v2:property:temperature:00000020:fallback:1",
+                "format": "int8",
+                "access": ["read"],
+                "value-range": [-30, 100, 1]
+              },
+              {
+                "iid": 2,
+                "type": "urn:miot-spec-v2:property:target-temperature:00000021:fallback:1",
+                "format": "int8",
+                "access": ["read"],
+                "value-range": [2, 8, 1]
+              }
+            ],
+            "actions": []
+          },
+          {
+            "iid": 4,
+            "type": "urn:miot-spec-v2:service:fridge-chamber:0000781A:fallback:1",
+            "properties": [
+              {
+                "iid": 1,
+                "type": "urn:miot-spec-v2:property:temperature:00000020:fallback:1",
+                "format": "int8",
+                "access": ["read"],
+                "value-range": [-50, 100, 1]
+              },
+              {
+                "iid": 2,
+                "type": "urn:miot-spec-v2:property:target-temperature:00000021:fallback:1",
+                "format": "int8",
+                "access": ["read"],
+                "value-range": [-24, -15, 1]
+              }
+            ],
+            "actions": []
+          }
+        ]
+      },
+      "values": [
+        { "siid": 3, "piid": 1, "value": 5 }
+      ],
+      "expectedKind": {
+        "kind": "fridge",
+        "modeEntityId": null,
+        "currentMode": "None",
+        "availableModes": [],
+        "fridgeCurrentTemp": 5,
+        "fridgeTargetTemp": 4,
+        "fridgeTargetEntityId": null,
+        "freezerCurrentTemp": null,
+        "freezerTargetTemp": -18,
+        "freezerTargetEntityId": null,
+        "fridgeTargetPresent": false,
+        "freezerTargetPresent": false
+      }
     }
   ],
   "devices": [
@@ -4810,6 +4945,46 @@
         "kind": "setProps",
         "writes": [
           { "did": "did_fish_tank", "siid": 2, "piid": 2, "value": 1 }
+        ]
+      }
+    },
+    {
+      "model": "fixture.switch.toggle.precedence",
+      "command": { "kind": "setSwitch", "entityId": "miot:did_int_plug:2", "isOn": true },
+      "expected": {
+        "kind": "setProps",
+        "writes": [
+          { "did": "did_int_plug", "siid": 2, "piid": 1, "value": 1 }
+        ]
+      }
+    },
+    {
+      "model": "fixture.switch.toggle.precedence",
+      "command": { "kind": "setSwitch", "entityId": "miot:did_int_plug:2", "isOn": false },
+      "expected": {
+        "kind": "setProps",
+        "writes": [
+          { "did": "did_int_plug", "siid": 2, "piid": 1, "value": 0 }
+        ]
+      }
+    },
+    {
+      "model": "fixture.switch.toggle.precedence",
+      "command": { "kind": "setSwitch", "entityId": "miot:did_int_plug:4", "isOn": false },
+      "expected": {
+        "kind": "setProps",
+        "writes": [
+          { "did": "did_int_plug", "siid": 4, "piid": 1, "value": false }
+        ]
+      }
+    },
+    {
+      "model": "fixture.switch.toggle.precedence",
+      "command": { "kind": "setSwitch", "entityId": "miot:did_int_plug:5", "isOn": true },
+      "expected": {
+        "kind": "setProps",
+        "writes": [
+          { "did": "did_int_plug", "siid": 5, "piid": 1, "value": true }
         ]
       }
     }

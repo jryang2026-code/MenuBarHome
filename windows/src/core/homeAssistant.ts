@@ -24,6 +24,7 @@ import {
   type HAState,
 } from "./haDomains.js";
 import { sha256 } from "./miCloudCrypto.js";
+import { normalizedKelvinBounds } from "./miCloud/synthesis.js";
 import {
   deviceEnvironmentReading,
   environmentReadingPriority,
@@ -196,14 +197,115 @@ function requiredSafetyObservations(value: unknown): SensorSafetyObservationSpec
   });
 }
 
+function haPowerWatts(state: HAState | undefined): number | null {
+  if (!isHAStateAvailable(state)) return null;
+  const raw = number(state?.state);
+  if (raw === null || raw < 0) return null;
+  const unit = text(state?.attributes.unit_of_measurement).trim();
+  let scale: number;
+  if (unit === "mW") scale = 0.001;
+  else if (unit === "MW") scale = 1_000_000;
+  else if (unit === "GW") scale = 1_000_000_000;
+  else {
+    switch (unit.toLowerCase()) {
+      case "":
+      case "w":
+      case "watt":
+      case "watts":
+        scale = 1;
+        break;
+      case "milliwatt":
+      case "milliwatts":
+        scale = 0.001;
+        break;
+      case "kw":
+      case "kilowatt":
+      case "kilowatts":
+        scale = 1000;
+        break;
+      case "megawatt":
+      case "megawatts":
+        scale = 1_000_000;
+        break;
+      case "gw":
+      case "gigawatt":
+      case "gigawatts":
+        scale = 1_000_000_000;
+        break;
+      default:
+        return null;
+    }
+  }
+  const scaled = Math.round(raw * scale * 1_000_000) / 1_000_000;
+  return Number.isFinite(scaled) ? scaled : null;
+}
+
+function haEnergyKwh(state: HAState | undefined): number | null {
+  if (!isHAStateAvailable(state)) return null;
+  const raw = number(state?.state);
+  if (raw === null || raw < 0) return null;
+  const unit = text(state?.attributes.unit_of_measurement).trim();
+  let scale: number;
+  if (unit === "mWh") scale = 0.000_001;
+  else if (unit === "MWh") scale = 1000;
+  else {
+    switch (unit.toLowerCase()) {
+      case "":
+      case "kwh":
+      case "kilowatt-hour":
+      case "kilowatt-hours":
+      case "kw·h":
+        scale = 1;
+        break;
+      case "wh":
+      case "watt-hour":
+      case "watt-hours":
+      case "w·h":
+        scale = 0.001;
+        break;
+      case "milliwatt-hour":
+      case "milliwatt-hours":
+        scale = 0.000_001;
+        break;
+      case "megawatt-hour":
+      case "megawatt-hours":
+        scale = 1000;
+        break;
+      case "gwh":
+      case "gigawatt-hour":
+      case "gigawatt-hours":
+        scale = 1_000_000;
+        break;
+      case "j":
+      case "joule":
+      case "joules":
+        scale = 1 / 3_600_000;
+        break;
+      case "kj":
+        scale = 1 / 3_600;
+        break;
+      case "mj":
+        scale = 1 / 3.6;
+        break;
+      case "gj":
+        scale = 1000 / 3.6;
+        break;
+      default:
+        return null;
+    }
+  }
+  const scaled = Math.round(raw * scale * 1_000_000) / 1_000_000;
+  return Number.isFinite(scaled) ? scaled : null;
+}
+
 function cachedKind(value: unknown): DeviceKind {
   const k = object(value);
   switch (k.kind) {
     case "light": return { kind: "light", entityId: requiredText(k.entityId), isOn: requiredBoolean(k.isOn), brightnessPercent: nullableNumber(k.brightnessPercent), colorTempKelvin: nullableNumber(k.colorTempKelvin), minKelvin: requiredNumber(k.minKelvin), maxKelvin: requiredNumber(k.maxKelvin), currentEffect: nullableText(k.currentEffect), availableEffects: requiredStrings(k.availableEffects), ...(k.brightnessWritable !== undefined ? { brightnessWritable: requiredBoolean(k.brightnessWritable) } : {}), ...(k.colorWritable !== undefined ? { colorWritable: requiredBoolean(k.colorWritable) } : {}) };
-    case "climate": return { kind: "climate", entityId: requiredText(k.entityId), isOn: requiredBoolean(k.isOn), hvacMode: requiredText(k.hvacMode), availableModes: requiredStrings(k.availableModes), targetTemperature: requiredNumber(k.targetTemperature), currentTemperature: nullableNumber(k.currentTemperature), minTemp: requiredNumber(k.minTemp), maxTemp: requiredNumber(k.maxTemp), step: requiredNumber(k.step), fanMode: nullableText(k.fanMode), availableFanModes: requiredStrings(k.availableFanModes), ...(k.swingMode !== undefined ? { swingMode: nullableText(k.swingMode) } : {}), ...(k.availableSwingModes !== undefined ? { availableSwingModes: requiredStrings(k.availableSwingModes) } : {}) };
+    case "climate": return { kind: "climate", entityId: requiredText(k.entityId), isOn: requiredBoolean(k.isOn), hvacMode: requiredText(k.hvacMode), availableModes: requiredStrings(k.availableModes), targetTemperature: requiredNumber(k.targetTemperature), currentTemperature: nullableNumber(k.currentTemperature), minTemp: requiredNumber(k.minTemp), maxTemp: requiredNumber(k.maxTemp), step: requiredNumber(k.step), fanMode: nullableText(k.fanMode), availableFanModes: requiredStrings(k.availableFanModes), ...(k.swingMode !== undefined ? { swingMode: nullableText(k.swingMode) } : {}), ...(k.availableSwingModes !== undefined ? { availableSwingModes: requiredStrings(k.availableSwingModes) } : {}), ...(k.powerWritable !== undefined ? { powerWritable: requiredBoolean(k.powerWritable) } : {}), ...(k.temperatureWritable !== undefined ? { temperatureWritable: requiredBoolean(k.temperatureWritable) } : {}) };
     case "fan": return { kind: "fan", entityId: requiredText(k.entityId), isOn: requiredBoolean(k.isOn), percentage: nullableNumber(k.percentage), presetMode: nullableText(k.presetMode), availablePresetModes: requiredStrings(k.availablePresetModes), isOscillating: nullableBoolean(k.isOscillating), pm25Density: nullableNumber(k.pm25Density ?? null), airQuality: nullableText(k.airQuality ?? null), temperature: nullableNumber(k.temperature ?? null), humidity: nullableNumber(k.humidity ?? null), filterLifePercent: nullableNumber(k.filterLifePercent ?? null) };
     case "plug": return { kind: "plug", switchEntityId: requiredText(k.switchEntityId), isOn: requiredBoolean(k.isOn), powerWatts: nullableNumber(k.powerWatts), energyKwh: nullableNumber(k.energyKwh ?? null), childLockEntityId: nullableText(k.childLockEntityId), isChildLocked: requiredBoolean(k.isChildLocked) };
-    case "fridge": return { kind: "fridge", modeEntityId: nullableText(k.modeEntityId), currentMode: requiredText(k.currentMode), availableModes: requiredStrings(k.availableModes), fridgeCurrentTemp: nullableNumber(k.fridgeCurrentTemp), fridgeTargetTemp: requiredNumber(k.fridgeTargetTemp), fridgeTargetEntityId: nullableText(k.fridgeTargetEntityId), freezerCurrentTemp: nullableNumber(k.freezerCurrentTemp), freezerTargetTemp: requiredNumber(k.freezerTargetTemp), freezerTargetEntityId: nullableText(k.freezerTargetEntityId) };
+    case "fridge": return { kind: "fridge", modeEntityId: nullableText(k.modeEntityId), currentMode: requiredText(k.currentMode), availableModes: requiredStrings(k.availableModes), fridgeCurrentTemp: nullableNumber(k.fridgeCurrentTemp), fridgeTargetTemp: requiredNumber(k.fridgeTargetTemp), fridgeTargetEntityId: nullableText(k.fridgeTargetEntityId), freezerCurrentTemp: nullableNumber(k.freezerCurrentTemp), freezerTargetTemp: requiredNumber(k.freezerTargetTemp), freezerTargetEntityId: nullableText(k.freezerTargetEntityId), ...(k.fridgeTargetPresent !== undefined ? { fridgeTargetPresent: requiredBoolean(k.fridgeTargetPresent) } : {}), ...(k.freezerTargetPresent !== undefined ? { freezerTargetPresent: requiredBoolean(k.freezerTargetPresent) } : {}) };
     case "vacuum": return { kind: "vacuum", entityId: requiredText(k.entityId), status: requiredText(k.status), battery: nullableNumber(k.battery), modeEntityId: nullableText(k.modeEntityId), currentMode: nullableText(k.currentMode), availableModes: requiredStrings(k.availableModes) };
     case "camera": return { kind: "camera", entityId: requiredText(k.entityId), isOn: requiredBoolean(k.isOn), nightShot: nullableText(k.nightShot), availableNightShots: requiredStrings(k.availableNightShots), motionDetectionEntityId: nullableText(k.motionDetectionEntityId), isMotionDetectionOn: nullableBoolean(k.isMotionDetectionOn), streamEntityId: nullableText(k.streamEntityId), snapshotPath: null };
     case "cover": return { kind: "cover", entityId: requiredText(k.entityId), subtype: requiredCoverSubtype(k.subtype), positionPercent: nullableNumber(k.positionPercent), positionWritable: requiredBoolean(k.positionWritable), openDescription: nullableText(k.openDescription), closeDescription: nullableText(k.closeDescription), pauseDescription: nullableText(k.pauseDescription), batteryPercent: nullableNumber(k.batteryPercent), faultText: nullableText(k.faultText), motion: requiredCoverMotion(k.motion) };
@@ -333,8 +435,49 @@ function buildKind(
     find(domain, (entry) => translationKeys.includes(text(entry.translation_key))) ??
     find(domain, (entry) => text(entry.entity_id).includes(legacyContains));
 
-  const sensor = (metric: string) =>
-    find("sensor", (entry) => {
+  const sensor = (metric: string) => {
+    if (metric === "power") {
+      return (
+        find("sensor", (entry) => states.get(text(entry.entity_id))?.attributes.device_class === "power") ??
+        find("sensor", (entry) => {
+          const state = states.get(text(entry.entity_id));
+          const dc = text(state?.attributes.device_class);
+          if (dc === "energy" || dc === "power_factor" || dc === "apparent_power" || dc === "reactive_power") {
+            return false;
+          }
+          const entityId = text(entry.entity_id);
+          const tKey = text(entry.translation_key);
+          if (
+            entityId.includes("power_consumption") ||
+            entityId.includes("power_factor") ||
+            entityId.includes("apparent_power") ||
+            entityId.includes("reactive_power") ||
+            tKey.includes("power_consumption") ||
+            tKey.includes("power_factor") ||
+            tKey.includes("apparent_power") ||
+            tKey.includes("reactive_power")
+          ) {
+            return false;
+          }
+          return entityId.includes("electric_power") || entityId.includes("power");
+        })
+      );
+    }
+    if (metric === "energy") {
+      return (
+        find("sensor", (entry) => states.get(text(entry.entity_id))?.attributes.device_class === "energy") ??
+        find("sensor", (entry) => {
+          const state = states.get(text(entry.entity_id));
+          const dc = text(state?.attributes.device_class);
+          if (dc === "power" || dc === "power_factor" || dc === "apparent_power" || dc === "reactive_power") {
+            return false;
+          }
+          const entityId = text(entry.entity_id);
+          return entityId.includes("power_consumption") || entityId.includes("energy");
+        })
+      );
+    }
+    return find("sensor", (entry) => {
       const state = states.get(text(entry.entity_id));
       const entityId = text(entry.entity_id);
       const tKey = text(entry.translation_key);
@@ -342,14 +485,6 @@ function buildKind(
         return state?.attributes.device_class === "aqi" || state?.attributes.device_class === "air_quality" || tKey === "air_quality" || entityId.includes("air_quality");
       }
       if (state?.attributes.device_class === metric) return true;
-      if (metric === "power") {
-        if (state?.attributes.device_class === "energy") return false;
-        return entityId.includes("electric_power") || (entityId.includes("power") && !entityId.includes("power_consumption"));
-      }
-      if (metric === "energy") {
-        if (state?.attributes.device_class === "power") return false;
-        return entityId.includes("power_consumption") || entityId.includes("energy");
-      }
       if (metric === "pm25") {
         return /pm2[._]?5|pm25/.test(tKey) || /pm2[._]?5|pm25/.test(entityId);
       }
@@ -361,6 +496,7 @@ function buildKind(
       }
       return tKey.includes(metric) || entityId.includes(metric);
     });
+  };
   const claimSensor = (metric: string): HAState | undefined => {
     const found = sensor(metric);
     if (found) claimed.add(found.entityId);
@@ -387,13 +523,15 @@ function buildKind(
     const modes = strings(a.hvac_modes);
     const swingMode = typeof a.swing_mode === "string" ? a.swing_mode : undefined;
     const swingModes = strings(a.swing_modes);
+    const rawTarget = number(a.temperature) ?? number(a.target_temp_low);
+    const climateOnline = isHAStateAvailable(state);
     kind = {
       kind: "climate",
       entityId: state.entityId,
-      isOn: state.state !== "off" && state.state !== "unknown" && state.state !== "unavailable",
+      isOn: climateOnline && state.state !== "off",
       hvacMode: state.state,
       availableModes: modes.length > 0 ? modes : ["cool", "heat", "dry", "fan_only", "off"],
-      targetTemperature: number(a.temperature) ?? number(a.target_temp_low) ?? number(a.current_temperature) ?? 26,
+      targetTemperature: rawTarget ?? number(a.current_temperature) ?? 26,
       currentTemperature: number(a.current_temperature),
       minTemp: number(a.min_temp) ?? 16,
       maxTemp: number(a.max_temp) ?? 30,
@@ -402,6 +540,7 @@ function buildKind(
       availableFanModes: strings(a.fan_modes),
       ...(swingMode !== undefined ? { swingMode } : {}),
       ...(swingModes.length > 0 ? { availableSwingModes: swingModes } : {}),
+      ...(!climateOnline || rawTarget === null ? { temperatureWritable: false } : {}),
     };
   } else if (
     (state = find(
@@ -415,7 +554,11 @@ function buildKind(
     const a = state.attributes,
       brightness = number(a.brightness),
       brightnessPct =
-        brightness === null ? null : haRoundedInt((brightness / 255) * 100);
+        brightness === null ? null : haRoundedInt((brightness / 255) * 100),
+      kelvinBounds = normalizedKelvinBounds(
+        haRoundedInt(a.min_color_temp_kelvin),
+        haRoundedInt(a.max_color_temp_kelvin),
+      );
     kind = {
       kind: "light",
       entityId: state.entityId,
@@ -425,8 +568,8 @@ function buildKind(
           ? null
           : Math.max(1, Math.min(100, brightnessPct)),
       colorTempKelvin: haRoundedInt(a.color_temp_kelvin),
-      minKelvin: haRoundedInt(a.min_color_temp_kelvin) ?? 2700,
-      maxKelvin: haRoundedInt(a.max_color_temp_kelvin) ?? 6500,
+      minKelvin: kelvinBounds.min,
+      maxKelvin: kelvinBounds.max,
       currentEffect: typeof a.effect === "string" ? a.effect : null,
       availableEffects: strings(a.effect_list),
       ...haLightCapabilityFlags(a),
@@ -483,8 +626,10 @@ function buildKind(
     }
     const fCur = number(fridgeTemp?.state);
     const zCur = number(freezerTemp?.state);
-    const fTgt = number(fridgeTarget?.state) ?? 4;
-    const zTgt = number(freezerTarget?.state) ?? -18;
+    const rawFridgeTarget = number(fridgeTarget?.state);
+    const rawFreezerTarget = number(freezerTarget?.state);
+    const fTgt = rawFridgeTarget ?? 4;
+    const zTgt = rawFreezerTarget ?? -18;
     const online = Boolean((mode && mode.state !== "unavailable" && mode.state !== "unknown") || fCur !== null);
     const modeOpts = strings(mode?.attributes.options);
     return {
@@ -499,6 +644,8 @@ function buildKind(
         freezerCurrentTemp: zCur,
         freezerTargetTemp: zTgt,
         freezerTargetEntityId: freezerTarget?.entityId ?? null,
+        ...(rawFridgeTarget === null ? { fridgeTargetPresent: false } : {}),
+        ...(rawFreezerTarget === null ? { freezerTargetPresent: false } : {}),
       },
       online,
     };
@@ -597,8 +744,8 @@ function buildKind(
       kind: "plug",
       switchEntityId: state.entityId,
       isOn: state.state === "on",
-      powerWatts: reading("power", true),
-      energyKwh: reading("energy", true),
+      powerWatts: haPowerWatts(claimSensor("power")),
+      energyKwh: haEnergyKwh(claimSensor("energy")),
       childLockEntityId: lock?.entityId ?? null,
       isChildLocked: lock?.state === "on",
     };

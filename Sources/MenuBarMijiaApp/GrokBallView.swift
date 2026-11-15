@@ -210,8 +210,8 @@ final class GrokBallAnimator {
         previousTick = now
         isStatic = reduceMotion
         if externalId != emotionId {
-            externalId = emotionId
             enter(GrokBallData.emotions[emotionId] ?? GrokBallData.emotions["02"]!, at: now)
+            externalId = emotionId
         }
         elapsed = max(0, now - emotionStarted)
         if reduceMotion {

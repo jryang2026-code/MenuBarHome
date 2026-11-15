@@ -10,6 +10,7 @@ struct ApplianceDetailDrawer: View {
     let store: HomeStore
     let accent: Color
     let statusColor: Color
+    var theme: PanelTheme = .liquidGlass
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -33,10 +34,11 @@ struct ApplianceDetailDrawer: View {
                                     Button(SmartDevice.localizeApplianceMode(mode)) {
                                         store.setApplianceMode(device.id, mode: mode)
                                     }
-                                    .buttonStyle(PillActionButtonStyle(
+                                    .themedPillButtonStyle(
+                                        theme,
                                         isSelected: spec.currentMode == mode,
                                         tintColor: accent
-                                    ))
+                                    )
                                     .disabled(!device.isOnline || !spec.modeWritable)
                                 }
                             }
@@ -170,7 +172,7 @@ struct ApplianceDetailDrawer: View {
                 Image(systemName: "minus")
                     .font(.system(size: DesignTokens.TypeSize.body, weight: .bold))
                     .frame(width: 32, height: 28)
-                    .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
+                    .themedAdaptiveGlass(theme, in: Capsule(style: .continuous), interactive: true)
             }
             .buttonStyle(PressableCardButtonStyle())
             .accessibilityLabel(Text(L10n.tr("降低目标温度", "Lower target temperature")))
@@ -201,7 +203,7 @@ struct ApplianceDetailDrawer: View {
                 Image(systemName: "plus")
                     .font(.system(size: DesignTokens.TypeSize.body, weight: .bold))
                     .frame(width: 32, height: 28)
-                    .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
+                    .themedAdaptiveGlass(theme, in: Capsule(style: .continuous), interactive: true)
             }
             .buttonStyle(PressableCardButtonStyle())
             .accessibilityLabel(Text(L10n.tr("升高目标温度", "Raise target temperature")))
@@ -218,10 +220,11 @@ struct ApplianceDetailDrawer: View {
                         Button(SmartDevice.localizeApplianceFanLevel(level)) {
                             store.setApplianceFanLevel(device.id, level: level)
                         }
-                        .buttonStyle(PillActionButtonStyle(
+                        .themedPillButtonStyle(
+                            theme,
                             isSelected: fan.current == level,
                             tintColor: accent
-                        ))
+                        )
                         .disabled(!device.isOnline || !fan.writable)
                     }
                 }
@@ -249,7 +252,7 @@ struct ApplianceDetailDrawer: View {
         Button(action.title) {
             store.runApplianceAction(device.id, action: action)
         }
-        .buttonStyle(PillActionButtonStyle(tintColor: accent))
+        .themedPillButtonStyle(theme, tintColor: accent)
         .disabled(!device.isOnline)
     }
 }

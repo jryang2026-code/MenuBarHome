@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import os
 import SwiftUI
 import MijiaCore
@@ -142,9 +143,28 @@ final class MenuBarPanelController: NSObject {
         }
     }
 
+    struct WatchedPreferences: Equatable {
+        var appearance: String?
+        var panelTheme: String?
+        var panelHeight: String?
+        var temperatureUnit: String?
+
+        init(from defaults: UserDefaults) {
+            appearance = defaults.string(forKey: AppAppearance.storageKey)
+            panelTheme = defaults.string(forKey: PanelTheme.storageKey)
+            panelHeight = defaults.string(forKey: PanelHeight.storageKey)
+            temperatureUnit = defaults.string(forKey: TemperatureUnitPreference.storageKey)
+        }
+    }
+
+    let userDefaults: UserDefaults
     /// Read-only outside this file; `install` / `uninstall` own the lifetime.
     private(set) weak var store: HomeStore?
     private var labelTimer: Timer?
+    private var subMinuteWakeTimer: Timer?
+    private var observationGeneration: UInt64 = 0
+    var lastSeenPreferences: WatchedPreferences?
+    var preferencesReloadCount = 0
     private var pressTimer: Timer?
     private var pressStartedAt: TimeInterval = 0
     private var pressTriggered = false
@@ -169,8 +189,13 @@ final class MenuBarPanelController: NSObject {
     private var globalMouseMonitor: Any?
     private var didInstall = false
 
-    init(statusItem: NSStatusItem? = nil) {
+    var isLabelTimerRunning: Bool {
+        labelTimer != nil
+    }
+
+    init(statusItem: NSStatusItem? = nil, userDefaults: UserDefaults = .standard) {
         self.statusItem = statusItem
+        self.userDefaults = userDefaults
         super.init()
     }
 
@@ -185,6 +210,7 @@ final class MenuBarPanelController: NSObject {
         self.store = store
         guard !didInstall else { return }
         didInstall = true
+        lastSeenPreferences = WatchedPreferences(from: userDefaults)
         createStatusItem()
         installMouseMonitors()
         observers.append(NotificationCenter.default.addObserver(
@@ -197,7 +223,8 @@ final class MenuBarPanelController: NSObject {
             }
         })
         installObservers()
-        startLabelUpdates()
+        observationGeneration &+= 1
+        observeStatusItemState(generation: observationGeneration)
     }
 
     /// A status item created before the status bar was ready stays blank; remove and recreate it.
@@ -212,16 +239,21 @@ final class MenuBarPanelController: NSObject {
         }
         createStatusItem()
         syncStatusItem()
+        updateLabelTimer()
     }
 
     /// Releases the status item, the panel and every observer. Used by tests; the app keeps the item
     /// for its whole lifetime.
     func uninstall() {
         presentationGeneration &+= 1
+        observationGeneration &+= 1
         isClosing = false
         removeMouseMonitors()
         labelTimer?.invalidate()
         labelTimer = nil
+        subMinuteWakeTimer?.invalidate()
+        subMinuteWakeTimer = nil
+        lastSeenPreferences = nil
         pendingContextMenu?.cancel()
         pendingContextMenu = nil
         stopPressTimer()
@@ -613,10 +645,75 @@ final class MenuBarPanelController: NSObject {
 
     // MARK: - Menu Bar Label (#54)
 
+    func shouldRunLabelTimer(now: Date = Date()) -> Bool {
+        guard didInstall, let store else { return false }
+        if isPanelVisible { return true }
+        let speech = SpeechInputController.shared
+        if speech.isListening || speech.isHoldToTalk || isStatusItemPressActive {
+            return true
+        }
+        if store.undoBanner != nil || store.toastNotice != nil {
+            return true
+        }
+        return store.scheduledCommands.contains { $0.fireDate.timeIntervalSince(now) <= 60 }
+    }
+
+    func updateLabelTimer(now: Date = Date()) {
+        subMinuteWakeTimer?.invalidate()
+        subMinuteWakeTimer = nil
+        if shouldRunLabelTimer(now: now) {
+            startLabelUpdates()
+            return
+        }
+        labelTimer?.invalidate()
+        labelTimer = nil
+        guard didInstall, let store,
+              let nextFire = store.scheduledCommands.map(\.fireDate).min() else { return }
+        let delayUntilSubMinute = nextFire.timeIntervalSince(now) - 60
+        guard delayUntilSubMinute > 0 else { return }
+        let wake = Timer(
+            timeInterval: delayUntilSubMinute,
+            target: self,
+            selector: #selector(handleSubMinuteWake(_:)),
+            userInfo: nil,
+            repeats: false
+        )
+        subMinuteWakeTimer = wake
+        RunLoop.main.add(wake, forMode: .common)
+    }
+
+    private func observeStatusItemState(generation: UInt64) {
+        guard didInstall, generation == observationGeneration, store != nil else { return }
+        withObservationTracking {
+            syncStatusItem()
+            readObservableStatusInputs()
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, self.didInstall, generation == self.observationGeneration else { return }
+                self.observeStatusItemState(generation: generation)
+            }
+        }
+        updateLabelTimer()
+    }
+
+    private func readObservableStatusInputs() {
+        let speech = SpeechInputController.shared
+        _ = speech.isListening
+        _ = speech.isHoldToTalk
+        _ = speech.draft
+        if let store {
+            _ = store.menuBarSymbolName
+            _ = store.menuBarText
+            _ = store.menuBarShowsHazard
+            _ = MenuBarStatusSummary.text(for: store)
+            _ = store.undoBanner?.id
+            _ = store.toastNotice?.id
+            _ = store.scheduledCommands
+        }
+    }
+
     private func startLabelUpdates() {
         guard labelTimer == nil else { return }
-        // A 0.5 s poll mirrors the old 2 s tooltip loop and adds the listening waveform; the label
-        // lives in AppKit, so `@Observable` tracking cannot drive it.
         let timer = Timer(
             timeInterval: 0.5,
             target: self,
@@ -628,8 +725,15 @@ final class MenuBarPanelController: NSObject {
         RunLoop.main.add(timer, forMode: .common)
     }
 
+    @objc private func handleSubMinuteWake(_ timer: Timer) {
+        subMinuteWakeTimer = nil
+        syncStatusItem()
+        updateLabelTimer()
+    }
+
     @objc private func handleLabelTimerTick(_ timer: Timer) {
         syncStatusItem()
+        updateLabelTimer()
     }
 
     /// Pushes icon, text, tooltip and accessibility label onto the status button.
@@ -997,6 +1101,7 @@ final class MenuBarPanelController: NSObject {
         )
         pressTimer = timer
         RunLoop.main.add(timer, forMode: .common)
+        updateLabelTimer()
     }
 
     @objc private func handlePressTick(_ timer: Timer) {
@@ -1098,6 +1203,7 @@ final class MenuBarPanelController: NSObject {
     private func stopPressTimer() {
         pressTimer?.invalidate()
         pressTimer = nil
+        updateLabelTimer()
     }
 
     // MARK: - Hold to Talk
@@ -1108,6 +1214,7 @@ final class MenuBarPanelController: NSObject {
         resignActiveAwaitingMonitorMouseDown = false
         SpeechInputController.shared.startHoldToTalk(store: store)
         syncStatusItem()
+        updateLabelTimer()
         showPanel()
         store.presentAssistantBar(startVoice: false)
         // A microphone prompt or the first audio buffer can steal key status; re-assert the panel.
@@ -1123,6 +1230,7 @@ final class MenuBarPanelController: NSObject {
         guard let store else { return }
         SpeechInputController.shared.finishHoldToTalk(store: store)
         syncStatusItem()
+        updateLabelTimer()
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(70))
             guard let self, self.isPanelVisible, let store = self.store, store.isShowingAssistantBar else { return }
@@ -1184,13 +1292,20 @@ final class MenuBarPanelController: NSObject {
         // Height or skin changed in Settings while the panel is open: apply it right away.
         observers.append(NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
-            object: nil,
+            object: userDefaults,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.handlePreferencesChanged()
+                self?.handleUserDefaultsDidChange()
             }
         })
+    }
+
+    func handleUserDefaultsDidChange() {
+        let current = WatchedPreferences(from: userDefaults)
+        guard current != lastSeenPreferences else { return }
+        lastSeenPreferences = current
+        handlePreferencesChanged()
     }
 
     /// Another window of ours (Settings, an alert) took key status: the panel closes, like the extra

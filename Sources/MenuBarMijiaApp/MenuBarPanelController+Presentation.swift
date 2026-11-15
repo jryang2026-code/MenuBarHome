@@ -31,10 +31,10 @@ extension MenuBarPanelController {
 
     func showPanel() {
         guard let store else { return }
-        let theme = PanelTheme.current
+        let theme = currentPanelTheme
         let panel = ensurePanelWindow(theme: theme)
         prepareSidecar(for: panel)
-        panel.appearance = Self.preferredAppearance()
+        panel.appearance = Self.preferredAppearance(from: userDefaults)
         refreshPanelContent(theme: theme)
 
         let target = columnFrame(for: theme)
@@ -84,6 +84,7 @@ extension MenuBarPanelController {
             panel.orderFront(nil)
         }
         setStatusItemHighlighted(true)
+        updateLabelTimer()
         if theme == .classic {
             // A Liquid Glass session suspends the ball while its column slides; resuming also
             // repositions it, which is the `synchronize()` the classic panel used to do.
@@ -147,6 +148,7 @@ extension MenuBarPanelController {
             panel.orderOut(nil)
         }
         restoreStatusItemHighlight()
+        updateLabelTimer()
         // The SwiftUI tree stays alive, exactly like a `.window`-style `MenuBarExtra`: scroll
         // position, the search field text and layout-editing state survive a close/reopen. A theme
         // switch drops it explicitly so the next open builds the other root view.
@@ -204,9 +206,13 @@ extension MenuBarPanelController {
         grokBallSidecar?.synchronize()
     }
 
+    private var currentPanelTheme: PanelTheme {
+        PanelTheme.resolved(from: userDefaults.string(forKey: PanelTheme.storageKey))
+    }
+
     func handleScreenParametersChanged() {
         guard let panel = panelWindow, panel.isVisible else { return }
-        switch hostedPanelTheme ?? PanelTheme.current {
+        switch hostedPanelTheme ?? currentPanelTheme {
         case .classic:
             panel.setFrame(
                 Self.frame(for: panel.frame.size, anchor: statusAnchor, screen: statusScreen, theme: .classic),
@@ -219,9 +225,12 @@ extension MenuBarPanelController {
     }
 
     func handlePreferencesChanged() {
-        panelWindow?.appearance = Self.preferredAppearance()
-        grokBallSidecarWindow?.appearance = Self.preferredAppearance()
-        let theme = PanelTheme.current
+        preferencesReloadCount &+= 1
+        lastSeenPreferences = WatchedPreferences(from: userDefaults)
+        syncStatusItem()
+        panelWindow?.appearance = Self.preferredAppearance(from: userDefaults)
+        grokBallSidecarWindow?.appearance = Self.preferredAppearance(from: userDefaults)
+        let theme = currentPanelTheme
         if let built = hostedPanelTheme, built != theme {
             // A theme switch only takes effect on the next open: close the panel in place, drop the
             // hosting tree, and let the next `showPanel` build the other root view. Bumping the
@@ -232,6 +241,7 @@ extension MenuBarPanelController {
                 hidePanel(animated: false)
             }
             dropPanelContent()
+            updateLabelTimer()
             return
         }
         guard isPanelVisible else { return }
@@ -240,7 +250,7 @@ extension MenuBarPanelController {
             // Height or skin changed in Settings while the panel is open: apply it right away.
             updatePanelSize(
                 width: Self.panelWidth,
-                height: Self.preferredContentSize(screen: statusScreen, theme: .classic).height
+                height: Self.preferredContentSize(screen: statusScreen, theme: .classic, defaults: userDefaults).height
             )
         case .liquidGlass:
             refreshPanelFrame()
@@ -250,7 +260,7 @@ extension MenuBarPanelController {
     /// The window target for the theme currently on screen.
     private func columnFrame(for theme: PanelTheme) -> NSRect {
         Self.frame(
-            for: Self.preferredContentSize(screen: statusScreen, theme: theme),
+            for: Self.preferredContentSize(screen: statusScreen, theme: theme, defaults: userDefaults),
             anchor: statusAnchor,
             screen: statusScreen,
             theme: theme
@@ -260,7 +270,7 @@ extension MenuBarPanelController {
     /// Re-applies the column frame after a screen or preference change. No-op while closed.
     private func refreshPanelFrame() {
         guard let panel = panelWindow, isPanelVisible, grokBallSidecar?.isPresentationSuspended != true else { return }
-        let theme = hostedPanelTheme ?? PanelTheme.current
+        let theme = hostedPanelTheme ?? currentPanelTheme
         let target = columnFrame(for: theme)
         if panel.frame != target {
             panel.setFrame(target, display: true)
@@ -297,18 +307,22 @@ extension MenuBarPanelController {
 
     /// Mirrors `AppAppearance` onto the AppKit panel so materials, dynamic `NSColor`s, menus and
     /// tooltips match the SwiftUI scheme.
-    static func preferredAppearance() -> NSAppearance? {
-        let raw = UserDefaults.standard.string(forKey: AppAppearance.storageKey)
+    static func preferredAppearance(from defaults: UserDefaults = .standard) -> NSAppearance? {
+        let raw = defaults.string(forKey: AppAppearance.storageKey)
         return (raw.flatMap(AppAppearance.init(rawValue:)) ?? .system).nsAppearance
     }
 
     /// Width is fixed; height comes from the theme: the `PanelHeight` preference for the classic
     /// card, the full column under the menu bar for Liquid Glass.
-    static func preferredContentSize(screen: NSScreen?, theme: PanelTheme) -> NSSize {
+    static func preferredContentSize(
+        screen: NSScreen?,
+        theme: PanelTheme,
+        defaults: UserDefaults = .standard
+    ) -> NSSize {
         let available = (screen ?? NSScreen.main)?.visibleFrame.height ?? 900
         switch theme {
         case .classic:
-            let raw = UserDefaults.standard.string(forKey: PanelHeight.storageKey)
+            let raw = defaults.string(forKey: PanelHeight.storageKey)
             let height = (raw.flatMap(PanelHeight.init(rawValue:)) ?? .standard).points
             return NSSize(width: panelWidth, height: min(height, available - 24))
         case .liquidGlass:

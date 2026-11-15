@@ -6,6 +6,7 @@ import type { Window } from "happy-dom";
 
 import { ManualControlPolicy } from "../src/core/assistant/actionPolicy.js";
 import { buildEnvironmentSummary } from "../src/core/assistant/context.js";
+import { applyCommandToDevices, inverseCommands } from "../src/core/commandEffects.js";
 import {
   HomeAssistantSynthesizer,
   haServiceCall,
@@ -38,6 +39,7 @@ import {
 } from "../src/core/optimisticLock.js";
 import { refreshHADevices } from "../src/ui/cloudRefresh.js";
 import { applyCommand } from "../src/ui/commandDispatch.js";
+import { renderDeviceDrawer } from "../src/ui/deviceViews.js";
 import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 
 function loadFixture(name: string): unknown {
@@ -1526,5 +1528,158 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
       ]),
       "客厅 23.5°C，卧室 48%",
     );
+  });
+
+  it("scales HA plug power/energy units, prioritizes device_class power, normalizes kelvin bounds, and suppresses fabricated defaults", () => {
+    setLanguage("zh-Hans");
+    const snap = {
+      areas: [{ area_id: "living", name: "客厅" }],
+      devices: [
+        { id: "plug_kw", name: "大功率插座", area_id: "living", model: "cuco.plug.v3" },
+        { id: "plug_mw", name: "毫瓦插座", area_id: "living", model: "cuco.plug.v3" },
+        { id: "ac_ro", name: "只读空调", area_id: "living", model: "xiaomi.aircondition.mc5" },
+        { id: "light_inv", name: "反向色温灯", area_id: "living", model: "yeelink.light.ceiling22" },
+        { id: "fridge_ro", name: "无目标冰箱", area_id: "living", model: "midjd6.fridge.v1" },
+        { id: "spk_novol", name: "无音量音箱", area_id: "living", model: "xiaomi.speaker.s1" },
+      ],
+      entities: [
+        { entity_id: "switch.plug_kw", device_id: "plug_kw" },
+        { entity_id: "sensor.plug_kw_power_factor", device_id: "plug_kw" },
+        { entity_id: "sensor.plug_kw_load", device_id: "plug_kw" },
+        { entity_id: "sensor.plug_kw_total", device_id: "plug_kw" },
+        { entity_id: "switch.plug_mw", device_id: "plug_mw" },
+        { entity_id: "sensor.plug_mw_apparent_power", device_id: "plug_mw" },
+        { entity_id: "sensor.plug_mw_electric_power", device_id: "plug_mw" },
+        { entity_id: "sensor.plug_mw_energy", device_id: "plug_mw" },
+        { entity_id: "climate.ac_ro", device_id: "ac_ro" },
+        { entity_id: "light.inv", device_id: "light_inv" },
+        { entity_id: "sensor.fridge_ro_temperature_p_3", device_id: "fridge_ro", translation_key: "temperature_p_3" },
+        { entity_id: "media_player.spk_novol", device_id: "spk_novol" },
+      ],
+      states: [
+        { entity_id: "switch.plug_kw", state: "on", attributes: {} },
+        { entity_id: "sensor.plug_kw_power_factor", state: "0.98", attributes: { device_class: "power_factor" } },
+        { entity_id: "sensor.plug_kw_load", state: "1.25", attributes: { device_class: "power", unit_of_measurement: "kW" } },
+        { entity_id: "sensor.plug_kw_total", state: "0.5", attributes: { device_class: "energy", unit_of_measurement: "MWh" } },
+        { entity_id: "switch.plug_mw", state: "on", attributes: {} },
+        { entity_id: "sensor.plug_mw_apparent_power", state: "15", attributes: {} },
+        { entity_id: "sensor.plug_mw_electric_power", state: "2500", attributes: { unit_of_measurement: "mW" } },
+        { entity_id: "sensor.plug_mw_energy", state: "500", attributes: { unit_of_measurement: "Wh" } },
+        { entity_id: "climate.ac_ro", state: "cool", attributes: { current_temperature: 25 } },
+        { entity_id: "light.inv", state: "on", attributes: { min_color_temp_kelvin: 6500, max_color_temp_kelvin: 2700 } },
+        { entity_id: "sensor.fridge_ro_temperature_p_3", state: "5", attributes: {} },
+        { entity_id: "media_player.spk_novol", state: "playing", attributes: { supported_features: 0 } },
+      ],
+    };
+    const home = HomeAssistantSynthesizer.synthesize(snap);
+    const byId = new Map(home.devices.map((d) => [d.id, d]));
+
+    const kwPlug = byId.get("plug_kw")!;
+    assert.equal(kwPlug.kind.kind, "plug");
+    if (kwPlug.kind.kind === "plug") {
+      assert.equal(kwPlug.kind.powerWatts, 1250);
+      assert.equal(kwPlug.kind.energyKwh, 500);
+    }
+
+    const mwPlug = byId.get("plug_mw")!;
+    assert.equal(mwPlug.kind.kind, "plug");
+    if (mwPlug.kind.kind === "plug") {
+      assert.equal(mwPlug.kind.powerWatts, 2.5);
+      assert.equal(mwPlug.kind.energyKwh, 0.5);
+    }
+
+    const ac = byId.get("ac_ro")!;
+    assert.equal(ac.kind.kind, "climate");
+    if (ac.kind.kind === "climate") {
+      assert.equal(ac.kind.temperatureWritable, false);
+    }
+
+    const light = byId.get("light_inv")!;
+    assert.equal(light.kind.kind, "light");
+    if (light.kind.kind === "light") {
+      assert.equal(light.kind.minKelvin, 2700);
+      assert.equal(light.kind.maxKelvin, 6500);
+    }
+
+    const fridge = byId.get("fridge_ro")!;
+    assert.equal(fridge.kind.kind, "fridge");
+    if (fridge.kind.kind === "fridge") {
+      assert.equal(fridge.kind.fridgeTargetPresent, false);
+      assert.equal(fridge.kind.freezerTargetPresent, false);
+      assert.ok(!deviceStatusSummary(fridge).includes("4°C"));
+      assert.ok(!deviceStatusSummary(fridge).includes("-18°C"));
+      assert.ok(deviceStatusSummary(fridge).includes("5°C"));
+      const unknownTargetFridge: SmartDevice = {
+        ...fridge,
+        kind: {
+          ...fridge.kind,
+          fridgeCurrentTemp: null,
+          freezerCurrentTemp: null,
+          fridgeTargetEntityId: "number.fridge_target",
+          freezerTargetEntityId: "number.freezer_target",
+          fridgeTargetPresent: false,
+          freezerTargetPresent: false,
+        },
+      };
+      assert.equal(deviceStatusSummary(unknownTargetFridge), "手动 · 冷藏 -- · 冷冻 --");
+      const drawerHtml = renderDeviceDrawer(unknownTargetFridge, (s) => s);
+      assert.ok(drawerHtml.includes("(--)"));
+      assert.ok(!drawerHtml.includes("data-fridgestep"));
+      assert.deepEqual(
+        inverseCommands(unknownTargetFridge, { kind: "setNumberValue", entityId: "number.fridge_target", value: 3 }),
+        [],
+      );
+      applyCommandToDevices(
+        [unknownTargetFridge],
+        { kind: "setNumberValue", entityId: "number.fridge_target", value: 3 },
+        "homeAssistant",
+      );
+      applyCommandToDevices(
+        [unknownTargetFridge],
+        { kind: "setNumberValue", entityId: "number.freezer_target", value: -20 },
+        "homeAssistant",
+      );
+      assert.equal(unknownTargetFridge.kind.kind, "fridge");
+      if (unknownTargetFridge.kind.kind === "fridge") {
+        assert.equal(unknownTargetFridge.kind.fridgeTargetPresent, true);
+        assert.equal(unknownTargetFridge.kind.freezerTargetPresent, true);
+        assert.equal(unknownTargetFridge.kind.fridgeTargetTemp, 3);
+        assert.equal(unknownTargetFridge.kind.freezerTargetTemp, -20);
+      }
+      assert.equal(deviceStatusSummary(unknownTargetFridge), "手动 · 冷藏 3°C · 冷冻 -20°C");
+      const updatedDrawerHtml = renderDeviceDrawer(unknownTargetFridge, (s) => s);
+      assert.ok(updatedDrawerHtml.includes("(3°C)"));
+      assert.ok(updatedDrawerHtml.includes("(-20°C)"));
+      assert.ok(updatedDrawerHtml.includes("data-fridgestep"));
+    }
+
+    const spk = byId.get("spk_novol")!;
+    assert.equal(spk.kind.kind, "speaker");
+    if (spk.kind.kind === "speaker") {
+      assert.equal(spk.kind.volumePercent, 0);
+      assert.equal(spk.kind.volumeWritable, false);
+      assert.equal(spk.kind.volumePresent, false);
+      assert.equal(deviceStatusSummary(spk), "播放中");
+      const spkClone: SmartDevice = { ...spk, kind: { ...spk.kind, volumeWritable: true } };
+      assert.deepEqual(
+        inverseCommands(spkClone, { kind: "mediaSetVolume", entityId: spk.kind.mediaEntityId, level: 0.6 }),
+        [],
+      );
+      applyCommandToDevices(
+        [spkClone],
+        { kind: "mediaSetVolume", entityId: spk.kind.mediaEntityId, level: 0.6 },
+        "homeAssistant",
+      );
+      assert.equal(spkClone.kind.kind, "speaker");
+      if (spkClone.kind.kind === "speaker") {
+        assert.equal(spkClone.kind.volumePercent, 60);
+        assert.equal(spkClone.kind.volumePresent, true);
+      }
+      assert.equal(deviceStatusSummary(spkClone), "播放中 · 音量 60%");
+    }
+
+    const identity = homeAssistantIdentity("http://localhost:8123", "tok")!;
+    const cached = parseCachedHAHome(JSON.parse(JSON.stringify({ identity, home })));
+    assert.deepEqual(cached, { identity, home });
   });
 });

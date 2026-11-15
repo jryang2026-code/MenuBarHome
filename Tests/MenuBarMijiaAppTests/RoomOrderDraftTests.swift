@@ -137,29 +137,25 @@ struct RoomOrderDraftTests {
         #expect(subject.alias(for: "study") == nil)
     }
 
-    // MARK: - Dirty tracking and rollback
+    // MARK: - Live mirror commit gating
 
-    @Test("isDirty follows the visible order and the visible aliases only")
-    func isDirtyTracksOrderAndAliases() {
-        let rooms = roomList(visible)
-        var subject = draft(aliases: ["living": "大厅"])
-        #expect(!subject.isDirty(currentRooms: rooms))
+    @Test("committedLiveOrder publishes only when serialized order actually changes")
+    func committedLiveOrderGatesStaleMirrors() {
+        let initialRaw = RoomPrefs.encodeOrder(["living", "other-home-1", "bedroom", "study", "other-account-2", "kids"])
 
-        subject.rename(id: "study", to: "工作间")
-        #expect(subject.isDirty(currentRooms: rooms))
+        let untouched = draft()
+        #expect(!untouched.hasChanges)
+        #expect(untouched.committedLiveOrder(currentRaw: initialRaw) == nil)
 
-        var orderOnly = draft()
-        orderOnly.move(id: "kids", relativeTo: "living", after: true)
-        #expect(orderOnly.isDirty(currentRooms: rooms))
+        var aliasOnly = draft()
+        aliasOnly.rename(id: "study", to: "工作间")
+        #expect(aliasOnly.hasChanges)
+        #expect(aliasOnly.committedLiveOrder(currentRaw: initialRaw) == nil)
 
-        // A room appearing (reconcile appends it) counts as a change to write back.
-        var withNewRoom = draft()
-        withNewRoom.reconcile(rooms: roomList(visible + ["bath"]))
-        #expect(withNewRoom.isDirty(currentRooms: roomList(visible + ["bath"])))
-
-        // Nothing visible changed, so an invisible home's ids on their own never mark the session dirty.
-        var ghostOnly = draft(order: ["living", "other-home-1", "bedroom", "study", "other-account-2", "kids"])
-        ghostOnly.moveToFront(id: "other-home-1")
-        #expect(!ghostOnly.isDirty(currentRooms: rooms))
+        var reordered = draft()
+        reordered.move(id: "kids", relativeTo: "living", after: true)
+        #expect(reordered.hasChanges)
+        #expect(reordered.committedLiveOrder(currentRaw: initialRaw) == reordered.order)
+        #expect(reordered.committedLiveOrder(currentRaw: RoomPrefs.encodeOrder(reordered.order)) == nil)
     }
 }

@@ -231,8 +231,21 @@ export const ModelActionPolicy = {
         surviving.push({ intent, confidence: action.confidence, primaryChoice: action.primaryChoice });
       }
     }
-    const deviceIDs = new Set(surviving.filter((action) => deviceById.has(action.intent.targetId)).map((action) => action.intent.targetId));
-    const wide = deviceIDs.size > this.maxAutoRunDevices;
+    const sceneById = new Map(scenes.map((scene) => [scene.id, scene]));
+    const deviceIDs = new Set(
+      surviving
+        .filter((action) => deviceById.has(action.intent.targetId))
+        .map((action) => action.intent.targetId),
+    );
+    const sceneIDs = new Set(
+      surviving
+        .filter((action) => action.intent.operation.kind === "activateScene" && sceneById.has(action.intent.targetId))
+        .map((action) => action.intent.targetId),
+    );
+    const wide =
+      sceneIDs.size >= 2 ||
+      (sceneIDs.size >= 1 && deviceIDs.size > 0) ||
+      deviceIDs.size > this.maxAutoRunDevices;
     const judged = surviving.map((action) => {
       if (wide) return { action, confirms: true };
       const device = deviceById.get(action.intent.targetId);
@@ -246,12 +259,13 @@ export const ModelActionPolicy = {
           this.needsConfirmation(action.intent, devices);
         return { action, confirms };
       }
-      const scene = scenes.find((item) => item.id === action.intent.targetId);
+      const scene = sceneById.get(action.intent.targetId);
       if (scene) {
-        const lowConfidence = unsure(action.confidence);
+        const lowOrMissingConfidence =
+          askWhenUnsure && (action.confidence === null || unsure(action.confidence));
         return {
           action,
-          confirms: sanitizePromptText(scene.name, PROMPT_NAME_LIMIT) !== scene.name || lowConfidence,
+          confirms: sanitizePromptText(scene.name, PROMPT_NAME_LIMIT) !== scene.name || lowOrMissingConfidence,
         };
       }
       return {

@@ -15,6 +15,7 @@ struct TransientStackView: View {
     let store: HomeStore
     /// Already filtered by the panel: a toast the pinned notice repeats never reaches this surface.
     let toast: ToastNotice?
+    let theme: PanelTheme
     let onHeightChange: (CGFloat) -> Void
 
     @State private var isExpanded: Bool
@@ -32,10 +33,12 @@ struct TransientStackView: View {
         store: HomeStore,
         toast: ToastNotice?,
         initialExpanded: Bool = false,
+        theme: PanelTheme = .liquidGlass,
         onHeightChange: @escaping (CGFloat) -> Void = { _ in }
     ) {
         self.store = store
         self.toast = toast
+        self.theme = theme
         self.onHeightChange = onHeightChange
         _isExpanded = State(initialValue: initialExpanded)
         _isManuallyExpanded = State(initialValue: initialExpanded)
@@ -52,7 +55,15 @@ struct TransientStackView: View {
     private var cardTransition: AnyTransition { reduceMotion ? .opacity : AppleMotion.drawerTransition }
 
     /// Reduced motion never offsets or scales; only the opacity changes.
-    private var peekOffset: CGFloat { reduceMotion ? 0 : StackedCardGeometry.offsetY(depth: 1) }
+    private var peekOffset: CGFloat {
+        guard !reduceMotion else { return 0 }
+        switch theme {
+        case .liquidGlass:
+            return StackedCardGeometry.offsetY(depth: 1)
+        case .classic:
+            return ClassicStackedCardGeometry.transform(depth: 1).offsetY
+        }
+    }
 
     var body: some View {
         content
@@ -160,7 +171,14 @@ struct TransientStackView: View {
                 }
                 .background {
                     GeometryReader { proxy in
-                        if !reduceMotion { StackedCardBackplate(depth: 1, size: proxy.size) }
+                        if !reduceMotion {
+                            switch theme {
+                            case .liquidGlass:
+                                StackedCardBackplate(depth: 1, size: proxy.size)
+                            case .classic:
+                                ClassicStackedCardBackplate(depth: 1, size: proxy.size)
+                            }
+                        }
                     }
                     .allowsHitTesting(false)
                 }
@@ -252,11 +270,11 @@ struct TransientStackView: View {
                 }
             }
             .keyboardShortcut("z", modifiers: .command)
-            .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: DesignTokens.active))
+            .themedPillButtonStyle(theme, isSelected: true, tintColor: DesignTokens.active)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .adaptiveGlass(in: shape)
+        .themedAdaptiveGlass(theme, in: shape)
         .clipShape(shape)
     }
 
@@ -278,11 +296,11 @@ struct TransientStackView: View {
             // Inside the stack every card fills the row, so the two edges line up.
             banner
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .adaptiveGlass(in: stackShape)
+                .themedAdaptiveGlass(theme, in: stackShape)
                 .clipShape(stackShape)
         } else {
             banner
-                .adaptiveGlass(in: Capsule(style: .continuous))
+                .themedAdaptiveGlass(theme, in: Capsule(style: .continuous))
         }
     }
 

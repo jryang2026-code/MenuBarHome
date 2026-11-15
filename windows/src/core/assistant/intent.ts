@@ -46,6 +46,92 @@ export interface ParsedDelay {
   readonly remainder: string;
 }
 
+export interface SuggestionDelaySpec {
+  readonly seconds: number;
+  readonly label: string;
+  readonly command?: string;
+}
+
+const DELAY_SUGGESTION_PREFIX = "delay:";
+
+export function normalizeSceneName(raw: string): string {
+  return raw.replace(/\s+/g, " ").trim();
+}
+
+function parseDelayedSuggestionId(rawId: string): {
+  readonly seconds: number;
+  readonly label: string;
+  readonly command: string;
+  readonly baseId: string;
+} | null {
+  if (!rawId.startsWith(DELAY_SUGGESTION_PREFIX)) return null;
+  const rest = rawId.slice(DELAY_SUGGESTION_PREFIX.length);
+  const firstColon = rest.indexOf(":");
+  if (firstColon <= 0) return null;
+  const seconds = Number(rest.slice(0, firstColon));
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  const afterSeconds = rest.slice(firstColon + 1);
+  const secondColon = afterSeconds.indexOf(":");
+  if (secondColon < 0) return null;
+  const encodedLabel = afterSeconds.slice(0, secondColon);
+  const afterLabel = afterSeconds.slice(secondColon + 1);
+  const thirdColon = afterLabel.indexOf(":");
+  if (thirdColon < 0) return null;
+  const encodedCommand = afterLabel.slice(0, thirdColon);
+  const baseId = afterLabel.slice(thirdColon + 1);
+  if (!baseId) return null;
+  let label = "";
+  let command = "";
+  try {
+    label = decodeURIComponent(encodedLabel);
+    command = decodeURIComponent(encodedCommand);
+  } catch {
+    return null;
+  }
+  return {
+    seconds,
+    label: label || `${DelayPhrase.formatDelay(seconds)}后`,
+    command,
+    baseId,
+  };
+}
+
+export function suggestionBaseId(id: string): string {
+  return parseDelayedSuggestionId(id)?.baseId ?? id;
+}
+
+export function getSuggestionDelaySpec(suggestion: Pick<AssistantSuggestion, "id">): SuggestionDelaySpec | null {
+  const parsed = parseDelayedSuggestionId(suggestion.id);
+  if (!parsed) return null;
+  return {
+    seconds: parsed.seconds,
+    label: parsed.label,
+    ...(parsed.command ? { command: parsed.command } : {}),
+  };
+}
+
+export function withSuggestionDelay(
+  suggestion: AssistantSuggestion,
+  spec: { readonly seconds: number; readonly label?: string; readonly command?: string },
+): AssistantSuggestion {
+  const seconds = Number.isFinite(spec.seconds) ? Math.max(1, Math.min(86400, Math.round(spec.seconds))) : 1;
+  const label = (spec.label ?? `${DelayPhrase.formatDelay(seconds)}后`).trim();
+  const existing = getSuggestionDelaySpec(suggestion);
+  const existingPrefix = existing?.label.trim() ?? "";
+  let rootTitle = suggestion.title;
+  if (existingPrefix && rootTitle.startsWith(`${existingPrefix} · `)) {
+    rootTitle = rootTitle.slice(existingPrefix.length + 3);
+  }
+  const title = !label || rootTitle.startsWith(label) ? rootTitle : `${label} · ${rootTitle}`;
+  const baseId = suggestionBaseId(suggestion.id);
+  const command = spec.command ?? existing?.command ?? "";
+  return {
+    ...suggestion,
+    id: `${DELAY_SUGGESTION_PREFIX}${seconds}:${encodeURIComponent(label)}:${encodeURIComponent(command)}:${baseId}`,
+    title,
+  };
+}
+
 function spokenNumber(s: string): number | null {
   return spokenChineseNumber(s);
 }
@@ -1022,6 +1108,27 @@ function scenePlan(
   };
 }
 
+function sceneConfirmationPlan(
+  scene: HomeScene,
+  devices: readonly SmartDevice[],
+  scenes: readonly HomeScene[],
+): IntentPlan {
+  const intents: DeviceIntent[] = [{ targetId: scene.id, operation: { kind: "activateScene" } }];
+  return {
+    intents: [],
+    reply: "没把握直接执行，点下面的建议再执行",
+    source: "local",
+    suggestions: [
+      {
+        id: `confirm:${scene.id}`,
+        title: IntentReply.describe(intents, devices, scenes).replace(/^已/, ""),
+        confidencePercent: null,
+        intents,
+      },
+    ],
+  };
+}
+
 function parseChineseDeviceCommand(
   text: string,
   devices: readonly SmartDevice[],
@@ -1105,12 +1212,8 @@ function parseChineseDeviceCommand(
     for (const entry of matchedEntries) {
       const preScript = disambiguateDeviceScriptCollision(entry.candidates, rawUtterance);
       const initialCandidates = preScript.length > 0 ? preScript : entry.candidates;
-      const hasFullCandidate = initialCandidates.some((c) => c.kind === "full");
-      const narrowedCandidates = hasFullCandidate
-        ? initialCandidates.length > 1 && matchedRooms.length > 0
-          ? initialCandidates.filter((c) => roomDeviceIds.has(c.id))
-          : initialCandidates
-        : matchedRooms.length === 0
+      const narrowedCandidates =
+        matchedRooms.length === 0
           ? initialCandidates
           : initialCandidates.filter((c) => roomDeviceIds.has(c.id));
       if (narrowedCandidates.length === 0) return null;
@@ -1185,10 +1288,6 @@ export const LocalIntentParser = {
     const text = normalizeChineseUtterance(utterance);
     if (!text) return null;
 
-    if (!/[\u4e00-\u9fff]/.test(utterance) && /[a-zA-Z]/.test(utterance)) {
-      return this.parseEnglish(utterance, devices, scenes, options);
-    }
-
     const rawSceneCore = strippedRawSceneText(utterance);
     const sceneCore = strippedSceneText(text);
     const rawExactScenes = scenes.filter(
@@ -1206,6 +1305,11 @@ export const LocalIntentParser = {
       }
     }
 
+    if (!/[\u4e00-\u9fff]/.test(utterance) && /[a-zA-Z]/.test(utterance)) {
+      const englishPlan = this.parseEnglish(utterance, devices, scenes, options);
+      if (englishPlan) return englishPlan;
+    }
+
     const devicePlan = parseChineseDeviceCommand(text, devices, scenes, options, utterance);
     if (devicePlan) return devicePlan;
 
@@ -1214,14 +1318,14 @@ export const LocalIntentParser = {
         (scene) => scene.name && strippedRawSceneText(scene.name).includes(rawSceneCore),
       );
       if (rawContaining.length === 1 && rawContaining[0]) {
-        return scenePlan(rawContaining[0], devices, scenes);
+        return sceneConfirmationPlan(rawContaining[0], devices, scenes);
       }
       if (rawContaining.length === 0) {
         const containing = scenes.filter(
           (scene) => scene.name && strippedSceneText(scene.name).includes(sceneCore),
         );
         if (containing.length === 1 && containing[0]) {
-          return scenePlan(containing[0], devices, scenes);
+          return sceneConfirmationPlan(containing[0], devices, scenes);
         }
       }
     }
@@ -1248,8 +1352,8 @@ export const LocalIntentParser = {
     if (!lower) return null;
 
     for (const scene of scenes) {
-      if (!scene.name) continue;
-      const sName = scene.name.toLowerCase();
+      const sName = normalizeSceneName(scene.name).toLowerCase();
+      if (!sName) continue;
       if (
         lower === `activate ${sName}` ||
         lower === `run ${sName}` ||
@@ -1420,9 +1524,9 @@ export const LocalIntentParser = {
     const explicitIds: string[] = [];
     for (const group of explicitGroups) {
       const narrowed =
-        group.length > 1 && matchedRoomKeys.length > 0
-          ? group.filter((dev) => roomDeviceIds.has(dev.id))
-          : group;
+        matchedRoomKeys.length === 0
+          ? group
+          : group.filter((dev) => roomDeviceIds.has(dev.id));
       if (narrowed.length === 0) return null;
       const resolved = disambiguateRoomDevices(narrowed, panelRoom);
       if (resolved.length === 0) return null;

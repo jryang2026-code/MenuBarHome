@@ -170,33 +170,24 @@ public enum MiotCommandMapper {
             return .setProps([try ctx.write("horizontal-swing", .bool(oscillating))])
 
         case .setSwitch(_, let isOn):
-            // A gas water heater publishes its power switch on the companion `boiler` service
-            // while the card addresses the `water-heater` service (#300); a cleanfly dryer
-            // likewise (#3). A bath heater publishes its heat as `heating` instead of `on` (#4).
-            if let power = ctx.property("on")
-                ?? ctx.writableProperty("on", in: applianceServices) {
-                return .setProps([ctx.write(power, .bool(isOn))])
+            let localToggle = ctx.property("on")
+                ?? (service.shortName == "speaker" ? ctx.property("mute") : nil)
+                ?? (service.shortName == "intelligent-speaker" ? ctx.property("sleep-mode") : nil)
+                ?? ctx.property("motion-detection")
+                ?? ctx.property("physical-controls-locked")
+            if let localToggle {
+                return .setProps([ctx.write(localToggle, .bool(isOn))])
             }
-            if let heating = ctx.property("heating") {
-                return .setProps([ctx.write(heating, .bool(isOn))])
+            if let appliancePower = ctx.property("heating")
+                ?? ctx.writableProperty("on", in: applianceServices)
+                ?? ctx.writableProperty("heating", in: applianceServices) {
+                return .setProps([ctx.write(appliancePower, .bool(isOn))])
             }
-            let name: String
-            if service.shortName == "speaker", ctx.property("mute") != nil {
-                name = "mute"
-            } else if service.shortName == "intelligent-speaker", ctx.property("sleep-mode") != nil {
-                name = "sleep-mode"
-            } else if ctx.property("motion-detection") != nil {
-                name = "motion-detection"
-            } else if ctx.property("physical-controls-locked") != nil {
-                name = "physical-controls-locked"
-            } else {
-                let candidates = isOn ? ["start-cook", "resume-cook"] : ["cancel-cooking", "pause"]
-                if let call = try? ctx.action(candidates, requireEmptyInputs: true) {
-                    return .action(call)
-                }
-                name = "on"
+            let candidates = isOn ? ["start-cook", "resume-cook"] : ["cancel-cooking", "pause"]
+            if let call = try? ctx.action(candidates, requireEmptyInputs: true) {
+                return .action(call)
             }
-            return .setProps([try ctx.write(name, .bool(isOn))])
+            throw MiotCommandError.unsupported("on")
 
         case .setSelectOption(_, let option):
             if ctx.property("motor-control") != nil {
@@ -382,7 +373,13 @@ public enum MiotCommandMapper {
         /// Clamp to the spec's value-range and match the wire format (bool / integer / float).
         func coerce(_ value: JSONValue, for p: MiotProperty) -> JSONValue {
             if p.format == "bool" { return .bool(value.miotBool ?? false) }
-            guard var n = value.doubleValue else { return value }
+            let rawNumeric: Double? = switch value {
+            case .bool(let b) where p.isIntegerFormat || p.format.lowercased().hasPrefix("float"):
+                b ? 1 : 0
+            default:
+                value.doubleValue
+            }
+            guard var n = rawNumeric else { return value }
             let bounds: (lo: Double, hi: Double)? = {
                 guard let lo = p.rangeMin, let hi = p.rangeMax,
                       lo.isFinite, hi.isFinite, lo <= hi else { return nil }

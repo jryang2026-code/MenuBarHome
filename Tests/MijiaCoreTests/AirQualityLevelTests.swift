@@ -32,4 +32,24 @@ struct AirQualityLevelTests {
         #expect(AirQualityLevel(raw: "Smoky", pm25: 12) == nil)
         #expect(SmartDevice.localizeAirQuality("Smoky", pm25: 12) == "Smoky")
     }
+
+    @Test("Numeric AQI strings from Home Assistant map to standard grade labels and tones")
+    func numericAqiStringsMapToGradesAndTones() {
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            let excellent = AirQualityLevel(raw: "42", pm25: nil)
+            #expect(excellent == .excellent)
+            #expect(excellent?.tone == .good)
+            #expect(SmartDevice.localizeAirQuality("42", pm25: nil) == "优")
+
+            let moderate = AirQualityLevel(raw: "135", pm25: nil)
+            #expect(moderate == .moderate)
+            #expect(moderate?.tone == .moderate)
+            #expect(SmartDevice.localizeAirQuality("135", pm25: nil) == "轻度污染")
+
+            let hazardous = AirQualityLevel(raw: "320", pm25: nil)
+            #expect(hazardous == .hazardous)
+            #expect(hazardous?.tone == .poor)
+            #expect(SmartDevice.localizeAirQuality("320", pm25: nil) == "严重污染")
+        }
+    }
 }

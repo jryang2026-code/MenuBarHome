@@ -36,6 +36,83 @@ public struct DeviceIntent: Codable, Equatable, Sendable {
     }
 }
 
+public struct SuggestionDelaySpec: Codable, Equatable, Sendable {
+    public let seconds: TimeInterval
+    public let label: String
+
+    public init(seconds: TimeInterval, label: String? = nil) {
+        let clamped = seconds.isFinite ? max(1, min(DelayPhrase.maxDelay, seconds.rounded())) : 1
+        self.seconds = clamped
+        self.label = label ?? DelayPhrase.describe(clamped)
+    }
+}
+
+extension AssistantSuggestion {
+    private static let delayIdPrefix = "delay:"
+    private static let labelAllowedCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+
+    public var baseId: String {
+        guard let parsed = Self.parseDelayedId(id) else { return id }
+        return parsed.baseId
+    }
+
+    public var delaySpec: SuggestionDelaySpec? {
+        guard let parsed = Self.parseDelayedId(id) else { return nil }
+        return SuggestionDelaySpec(seconds: parsed.seconds, label: parsed.label)
+    }
+
+    public func withDelay(_ spec: SuggestionDelaySpec) -> AssistantSuggestion {
+        let rootId = baseId
+        let rootTitle = Self.stripLeadingDelayPrefix(from: title, existing: delaySpec)
+        let cleanLabel = spec.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let encodedLabel = cleanLabel.addingPercentEncoding(withAllowedCharacters: Self.labelAllowedCharacters) ?? ""
+        let secsInt = max(1, Int(spec.seconds.rounded()))
+        let delayedTitle: String
+        if cleanLabel.isEmpty || rootTitle.hasPrefix(cleanLabel) {
+            delayedTitle = rootTitle
+        } else if cleanLabel.hasSuffix(":") {
+            delayedTitle = "\(cleanLabel) \(rootTitle)"
+        } else {
+            delayedTitle = "\(cleanLabel) · \(rootTitle)"
+        }
+        return AssistantSuggestion(
+            id: "\(Self.delayIdPrefix)\(secsInt):\(encodedLabel):\(rootId)",
+            title: delayedTitle,
+            confidencePercent: confidencePercent,
+            intents: intents
+        )
+    }
+
+    private static func stripLeadingDelayPrefix(from title: String, existing: SuggestionDelaySpec?) -> String {
+        guard let existing else { return title }
+        let prefix = existing.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prefix.isEmpty else { return title }
+        if title.hasPrefix("\(prefix) · ") {
+            return String(title.dropFirst(prefix.count + 3))
+        }
+        if prefix.hasSuffix(":"), title.hasPrefix("\(prefix) ") {
+            return String(title.dropFirst(prefix.count + 1))
+        }
+        return title
+    }
+
+    private static func parseDelayedId(_ rawId: String) -> (seconds: TimeInterval, label: String?, baseId: String)? {
+        guard rawId.hasPrefix(delayIdPrefix) else { return nil }
+        let rest = rawId.dropFirst(delayIdPrefix.count)
+        guard let firstColon = rest.firstIndex(of: ":") else { return nil }
+        let secondsPart = String(rest[..<firstColon])
+        guard let seconds = Double(secondsPart), seconds.isFinite, seconds > 0 else { return nil }
+        let afterSeconds = rest[rest.index(after: firstColon)...]
+        guard let secondColon = afterSeconds.firstIndex(of: ":") else { return nil }
+        let encodedLabel = String(afterSeconds[..<secondColon])
+        let baseId = String(afterSeconds[afterSeconds.index(after: secondColon)...])
+        guard !baseId.isEmpty else { return nil }
+        let decoded = encodedLabel.removingPercentEncoding
+        let label = (decoded?.isEmpty == false) ? decoded : nil
+        return (seconds, label, baseId)
+    }
+}
+
 public struct IntentPlan: Codable, Equatable, Sendable {
     public enum Source: String, Codable, Equatable, Sendable { case local, model }
 
@@ -357,6 +434,11 @@ public enum IntentValidator {
         default:
             return nil
         }
+    }
+
+    public static func normalizedSceneName(_ raw: String) -> String {
+        raw.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Keeps only intents whose target exists and whose operation is valid for it, clamping numeric values.
@@ -801,30 +883,49 @@ public struct IntentCatalog: Sendable {
         guard device.isOnline else { return "离线" }
         switch device.kind {
         case .light(let s):
-            let effectList = s.availableEffects.isEmpty ? "" : " 可用模式:\(s.availableEffects.joined(separator: "/"))"
+            let effects = s.availableEffects
+                .map { PromptText.cleanField($0, limit: PromptText.optionLimit) }
+                .filter { !$0.isEmpty }
+            let effectList = effects.isEmpty ? "" : " 可用模式:\(effects.joined(separator: "/"))"
             guard s.isOn else { return "关" + effectList }
             let bri = s.brightnessPercent.map { " 亮度\($0)%" } ?? ""
-            let eff = s.currentEffect.flatMap { $0.isEmpty ? nil : " 当前:\($0)" } ?? ""
+            let eff = s.currentEffect
+                .map { PromptText.cleanField($0, limit: PromptText.optionLimit) }
+                .flatMap { $0.isEmpty ? nil : " 当前:\($0)" } ?? ""
             return "开\(bri)\(eff)\(effectList)"
         case .climate(let s):
-            let modes = s.availableModes.joined(separator: "/")
+            let modes = s.availableModes
+                .map { PromptText.cleanField($0, limit: PromptText.optionLimit) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "/")
             let range = "\(IntentReply.formatTemperature(s.minTemp))-\(IntentReply.formatTemperature(s.maxTemp))°C"
+            let currentMode = PromptText.cleanField(s.hvacMode, limit: PromptText.optionLimit)
             let current = (s.isOn && s.hvacMode != "off")
-                ? "\(s.hvacMode) \(IntentReply.formatTemperature(s.targetTemperature))°C"
+                ? "\(currentMode) \(IntentReply.formatTemperature(s.targetTemperature))°C"
                 : "关"
-            let fan = s.availableFanModes.isEmpty ? "" : " 可选风速:\(s.availableFanModes.joined(separator: "/"))"
+            let fanModes = s.availableFanModes
+                .map { PromptText.cleanField($0, limit: PromptText.optionLimit) }
+                .filter { !$0.isEmpty }
+            let fan = fanModes.isEmpty ? "" : " 可选风速:\(fanModes.joined(separator: "/"))"
             return "\(current) 可用模式:\(modes) 温度范围:\(range)\(fan)"
         case .fan(let s):
             var out = s.isOn ? "开" : "关"
-            if s.isOn, let preset = s.presetMode { out += " 风速:\(preset)" }
-            if !s.availablePresetModes.isEmpty { out += " 可选风速:\(s.availablePresetModes.joined(separator: "/"))" }
+            if s.isOn, let preset = s.presetMode.map({ PromptText.cleanField($0, limit: PromptText.optionLimit) }), !preset.isEmpty {
+                out += " 风速:\(preset)"
+            }
+            let presets = s.availablePresetModes
+                .map { PromptText.cleanField($0, limit: PromptText.optionLimit) }
+                .filter { !$0.isEmpty }
+            if !presets.isEmpty { out += " 可选风速:\(presets.joined(separator: "/"))" }
             if s.isOscillating != nil { out += " 摇头:\(s.isOscillating == true ? "开" : "关")" }
             return out
         case .plug(let s): return s.isOn ? "开" : "关"
         case .vacuum(let s): return s.isCleaning ? "清扫中" : "待机"
         case .tv(let s):
             if s.state == "off" || s.state == "standby" { return "关" }
-            let src = s.currentSource.map { " \($0)" } ?? ""
+            let src = s.currentSource
+                .map { PromptText.cleanField($0, limit: PromptText.optionLimit) }
+                .flatMap { $0.isEmpty ? nil : " \($0)" } ?? ""
             return "开\(src) 音量\(s.volumePercent)%"
         case .camera(let s):
             return s.isOn ? "开" : "关"
@@ -840,13 +941,17 @@ public struct IntentCatalog: Sendable {
             if let target = s.targetTemperature {
                 parts.append("目标\(IntentReply.formatTemperature(target))°C")
             }
-            if let mode = s.currentMode, !mode.isEmpty { parts.append(mode) }
+            if let mode = s.currentMode.map({ PromptText.cleanField($0, limit: PromptText.optionLimit) }), !mode.isEmpty {
+                parts.append(mode)
+            }
             return parts.joined(separator: " ")
         case .humidifier(let s):
             var parts: [String] = [s.isOn ? "开" : "关"]
             if let target = s.targetHumidity { parts.append("目标湿度\(target)%") }
             if let current = s.currentHumidity.flatMap(DeviceSynthesizer.roundedInt) { parts.append("当前湿度\(current)%") }
-            if let mode = s.currentMode, !mode.isEmpty { parts.append(mode) }
+            if let mode = s.currentMode.map({ PromptText.cleanField($0, limit: PromptText.optionLimit) }), !mode.isEmpty {
+                parts.append(mode)
+            }
             return parts.joined(separator: " ")
         case .valve(let s):
             return s.isOpen ? "开" : "关"

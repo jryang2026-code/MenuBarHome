@@ -113,14 +113,11 @@ struct RoomOrderDraft: Equatable {
         order = RoomPrefs.defaultOrder(order, rooms: rooms)
     }
 
-    /// Whether the session holds anything worth writing back. Compared against the *visible*
-    /// projection, so an unrelated home's ids never make this true on their own.
-    func isDirty(currentRooms: [RoomArea]) -> Bool {
-        let ids = Set(currentRooms.map(\.id))
-        if visibleOrder(for: currentRooms) != initialOrder.filter({ ids.contains($0) }) { return true }
-        let mine = aliases.filter { ids.contains($0.key) }
-        let theirs = initialAliases.filter { ids.contains($0.key) && RoomPrefs.alias(for: $0.key, in: initialAliases) != nil }
-        return mine != theirs
+    /// Returns `order` only when this draft changed and will write a different serialized order to
+    /// `@AppStorage`, so untouched or alias-only drafts do not leave a stale live mirror behind.
+    func committedLiveOrder(currentRaw: String) -> [String]? {
+        guard hasChanges, RoomPrefs.encodeOrder(order) != currentRaw else { return nil }
+        return order
     }
 }
 

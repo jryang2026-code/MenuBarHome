@@ -102,8 +102,8 @@ public struct ControlCenterPanel: View {
             // Leaving search puts the caret back on the panel, so Esc closes it instead of resigning the field.
             .onChange(of: search.isSearching) { _, searching in handleSearching(searching) }
             .onChange(of: store.homeBackend) { _, _ in activitiesExpanded = false }
-            .onChange(of: store.panelActivities.isEmpty) { _, empty in
-                if empty { activitiesExpanded = false }
+            .onChange(of: store.panelActivities.count) { _, count in
+                activitiesExpanded = ActivityStackPolicy.sanitizedExpansion(isExpanded: activitiesExpanded, count: count)
             }
             // #180: typing a query — through the key monitor or the field — ticks the guide's search step.
             .onChange(of: search.query) { _, query in handleSearchQuery(query) }

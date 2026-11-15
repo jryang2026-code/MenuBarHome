@@ -6,13 +6,14 @@ import MijiaCore
 struct OnboardingChecklistCard: View {
     let store: HomeStore
     var onBeginSearch: () -> Void
+    var theme: PanelTheme = .liquidGlass
 
     var body: some View {
         let checklist = store.onboardingChecklist
         // The same row doubles as the standalone launch-at-login reminder after onboarding is
         // skipped or done. That row is not a lesson step and must not offer 试试.
         let nextStep = store.showsOnboardingChecklist ? checklist.nextStep : nil
-        HStack(spacing: 6) {
+        let row = HStack(spacing: 6) {
             Text(rowTitle(checklist, nextStep: nextStep))
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                 .foregroundStyle(.primary)
@@ -29,7 +30,7 @@ struct OnboardingChecklistCard: View {
                 Button(L10n.tr("试试", "Try")) {
                     run(next)
                 }
-                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+                .themedPillButtonStyle(theme, isSelected: true, tintColor: .accentColor)
                 .disabled(next == .allOffAndUndo && store.allOffTargets.isEmpty)
                 .panelHelp(tryHelp(next))
             }
@@ -41,7 +42,10 @@ struct OnboardingChecklistCard: View {
                 }
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: DesignTokens.TypeSize.micro, weight: .bold))
+                    .font(.system(
+                        size: theme == .classic ? 9.5 : DesignTokens.TypeSize.micro,
+                        weight: .bold
+                    ))
                     .foregroundStyle(.secondary)
                     .frame(width: 22, height: 22)
                     .contentShape(Rectangle())
@@ -53,12 +57,29 @@ struct OnboardingChecklistCard: View {
                 "Close the checklist; reopen it in Settings → General → Setup"
             ))
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, theme == .classic ? 10 : 12)
         .frame(height: 44)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.panel, isCapsule: true)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("onboarding-lesson-row")
+
+        cardChrome(row)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("onboarding-lesson-row")
+    }
+
+    @ViewBuilder
+    private func cardChrome<Content: View>(_ content: Content) -> some View {
+        switch theme {
+        case .liquidGlass:
+            content
+                .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.panel, isCapsule: true)
+        case .classic:
+            content
+                .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.accentColor.opacity(0.20), lineWidth: DesignTokens.hairline)
+                }
+        }
     }
 
     private func rowTitle(_ checklist: OnboardingChecklist, nextStep: OnboardingStep?) -> String {
@@ -137,7 +158,10 @@ struct OnboardingChecklistCard: View {
             }
         } label: {
             Image(systemName: "ellipsis")
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .bold))
+                .font(.system(
+                    size: theme == .classic ? 12 : DesignTokens.TypeSize.caption,
+                    weight: .bold
+                ))
                 .foregroundStyle(.secondary)
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())

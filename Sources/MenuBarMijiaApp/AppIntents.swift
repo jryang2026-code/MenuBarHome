@@ -103,11 +103,11 @@ struct SceneEntityQuery: EntityStringQuery {
 
     func entities(matching string: String) async throws -> [SceneEntity] {
         try await HomeStore.shared.waitForInitialSnapshot()
-        let needle = string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let needle = IntentValidator.normalizedSceneName(string).lowercased()
         guard !needle.isEmpty else { return try await suggestedEntities() }
         return await MainActor.run {
             HomeStore.shared.scenes
-                .filter { $0.name.lowercased().contains(needle) }
+                .filter { IntentValidator.normalizedSceneName($0.name).lowercased().contains(needle) }
                 .map { SceneEntity(scene: $0) }
         }
     }

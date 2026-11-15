@@ -1,6 +1,7 @@
 import {
   IntentValidator,
   ManualControlPolicy,
+  normalizeSceneName,
 } from "./assistant.js";
 import { inverseCommands, mergeInverseCommands } from "./commandEffects.js";
 import { runTrackedDevicePresetCommands } from "./optimisticLock.js";
@@ -477,8 +478,12 @@ function resolveTarget(command: AppURLCommand, host: AppURLCommandHost): Resolve
         const builtIn = BuiltInURLScene.resolve(command.name);
         if (builtIn) return { kind: "builtInScene", builtIn };
       }
+      const normalizedName = normalizeSceneName(command.name);
       const scene = host.scenes.find(
-        (s) => s.name === command.name || s.id === command.name || s.entityId === command.name,
+        (s) =>
+          normalizeSceneName(s.name) === normalizedName ||
+          s.id === command.name ||
+          s.entityId === command.name,
       );
       if (scene) return { kind: "scene", scene };
       const builtIn = BuiltInURLScene.resolve(command.name);

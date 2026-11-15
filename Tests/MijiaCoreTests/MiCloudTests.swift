@@ -674,6 +674,82 @@ struct MiotSynthesizerTests {
         #expect(offline.statusSubtitle.contains("离线"))
     }
 
+    @Test("Appliance status precedence checks delay-off, preheat, and cooked before generic off, heat, and cook")
+    func applianceStatusPrecedenceAndFloatToggleCoercion() throws {
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(MiotSynthesizer.applianceStatusText(forDescription: "Delay-Off") == "延时关机")
+            #expect(MiotSynthesizer.applianceStatusText(forDescription: "Preheating") == "预热中")
+            #expect(MiotSynthesizer.applianceStatusText(forDescription: "Cooked") == "已完成")
+        }
+
+        let floatToggleSpec = MiotFixtures.decode("""
+        {"type":"urn:miot-spec-v2:device:speaker:0000A015:test-spk:1","services":[
+          {"iid":2,"type":"urn:miot-spec-v2:service:speaker:0000781C:test-spk:1","properties":[
+            {"iid":1,"type":"urn:miot-spec-v2:property:volume:00000013:test-spk:1","format":"uint8","access":["read"],"value-range":[0,100,1]},
+            {"iid":2,"type":"urn:miot-spec-v2:property:mute:00000040:test-spk:1","format":"float","access":["read","write"],"value-range":[0,1,1]}
+          ]},
+          {"iid":3,"type":"urn:miot-spec-v2:service:ptc-bath-heater:0000783B:test-spk:1","properties":[
+            {"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:test-spk:1","format":"bool","access":["read","write"]}
+          ]}
+        ]}
+        """)
+        let muteWrite = try MiotCommandMapper.map(.setSwitch(entityId: "miot:spk1:2", isOn: true), spec: floatToggleSpec)
+        #expect(muteWrite == .setProps([MiotPropWrite(did: "spk1", siid: 2, piid: 2, value: .number(1))]))
+
+        let home = MiotSynthesizer.synthesize(
+            devices: [MiDeviceRecord(did: "spk1", name: "音箱", model: "xiaomi.speaker.test", isOnline: true)],
+            rooms: [],
+            specs: ["xiaomi.speaker.test": floatToggleSpec],
+            values: [:]
+        )
+        let spkDev = try #require(home.devices.first)
+        guard case .speaker(let spk) = spkDev.kind else {
+            Issue.record("expected speaker"); return
+        }
+        #expect(spk.volumePresent == false)
+        #expect(spk.volumeWritable == false)
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(spkDev.statusSubtitle == "待机")
+        }
+
+        let lightInvertedSpec = MiotFixtures.decode("""
+        {"type":"urn:miot-spec-v2:device:light:0000A001:test-lgt:1","services":[
+          {"iid":2,"type":"urn:miot-spec-v2:service:light:00007802:test-lgt:1","properties":[
+            {"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:test-lgt:1","format":"bool","access":["read","write"]},
+            {"iid":3,"type":"urn:miot-spec-v2:property:color-temperature:0000000F:test-lgt:1","format":"uint32","access":["read"],"value-range":[6500,2700,100]}
+          ]}
+        ]}
+        """)
+        let acNoTargetSpec = MiotFixtures.decode("""
+        {"type":"urn:miot-spec-v2:device:air-conditioner:0000A004:test-ac:1","services":[
+          {"iid":2,"type":"urn:miot-spec-v2:service:air-conditioner:0000780F:test-ac:1","properties":[
+            {"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:test-ac:1","format":"bool","access":["read","write"]}
+          ]}
+        ]}
+        """)
+        let capHome = MiotSynthesizer.synthesize(
+            devices: [
+                MiDeviceRecord(did: "lgt1", name: "筒灯", model: "yeelink.light.test", isOnline: true),
+                MiDeviceRecord(did: "ac1", name: "空调", model: "xiaomi.ac.test", isOnline: true),
+            ],
+            rooms: [],
+            specs: ["yeelink.light.test": lightInvertedSpec, "xiaomi.ac.test": acNoTargetSpec],
+            values: [MiotFixtures.key("lgt1", 2, 1): .bool(true), MiotFixtures.key("ac1", 2, 1): .bool(true)]
+        )
+        guard case .light(let lgt) = try #require(capHome.devices.first { $0.id == "lgt1" }).kind else {
+            Issue.record("expected light"); return
+        }
+        #expect(lgt.brightnessWritable == false)
+        #expect(lgt.colorWritable == false)
+        #expect(lgt.minKelvin == 2700)
+        #expect(lgt.maxKelvin == 6500)
+
+        guard case .climate(let ac) = try #require(capHome.devices.first { $0.id == "ac1" }).kind else {
+            Issue.record("expected climate"); return
+        }
+        #expect(ac.temperatureWritable == false)
+    }
+
     @Test("A failed door-state read drops the previous Locked claim (#149)")
     func failedDoorStateReadDropsStaleLock() throws {
         let door = MiotPropKey(did: "lk", siid: 2, piid: 1)
@@ -788,6 +864,62 @@ struct MiotSynthesizerTests {
             ))
         }
         return MiotDeviceSpec(type: "urn:miot-spec-v2:device:lock:0000A038:test:1", services: services)
+    }
+
+    @Test("Write-only brightness, color-temperature, and target-temperature keep writability and ranges without polling")
+    func writeOnlyLightAndClimateControlsKeepMetadata() throws {
+        let lightSpec = MiotDeviceSpec(
+            type: "urn:miot-spec-v2:device:light:0000A001:test-wo:1",
+            services: [
+                MiotService(iid: 2, type: "urn:miot-spec-v2:service:light:00007802:test-wo:1", properties: [
+                    MiotProperty(iid: 1, type: "urn:miot-spec-v2:property:on:00000006:test-wo:1", format: "bool", access: ["read", "write"]),
+                    MiotProperty(iid: 2, type: "urn:miot-spec-v2:property:brightness:0000000D:test-wo:1", format: "uint8", access: ["write"], valueRange: [1, 100, 1]),
+                    MiotProperty(iid: 3, type: "urn:miot-spec-v2:property:color-temperature:0000000F:test-wo:1", format: "uint32", access: ["write"], valueRange: [3000, 5700, 100]),
+                ])
+            ]
+        )
+        let acSpec = MiotDeviceSpec(
+            type: "urn:miot-spec-v2:device:air-conditioner:0000A004:test-wo:1",
+            services: [
+                MiotService(iid: 2, type: "urn:miot-spec-v2:service:air-conditioner:0000780F:test-wo:1", properties: [
+                    MiotProperty(iid: 1, type: "urn:miot-spec-v2:property:on:00000006:test-wo:1", format: "bool", access: ["read", "write"]),
+                    MiotProperty(iid: 2, type: "urn:miot-spec-v2:property:target-temperature:00000021:test-wo:1", format: "float", access: ["write"], valueRange: [18, 28, 0.5]),
+                ])
+            ]
+        )
+        let lightRec = MiDeviceRecord(did: "wo-lgt", name: "射灯", model: "yeelink.light.wo", isOnline: true)
+        let acRec = MiDeviceRecord(did: "wo-ac", name: "空调", model: "xiaomi.ac.wo", isOnline: true)
+        #expect(MiotSynthesizer.requiredProps(for: lightRec, spec: lightSpec) == [MiotPropKey(did: "wo-lgt", siid: 2, piid: 1)])
+        #expect(MiotSynthesizer.requiredProps(for: acRec, spec: acSpec) == [MiotPropKey(did: "wo-ac", siid: 2, piid: 1)])
+
+        let home = MiotSynthesizer.synthesize(
+            devices: [lightRec, acRec],
+            rooms: [],
+            specs: ["yeelink.light.wo": lightSpec, "xiaomi.ac.wo": acSpec],
+            values: [
+                MiotPropKey(did: "wo-lgt", siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: "wo-ac", siid: 2, piid: 1): .bool(true),
+            ]
+        )
+        guard case .light(let lgt) = try #require(home.devices.first(where: { $0.id == "wo-lgt" })).kind else {
+            Issue.record("expected light"); return
+        }
+        #expect(lgt.brightnessWritable == true)
+        #expect(lgt.colorWritable == true)
+        #expect(lgt.brightnessPercent == nil)
+        #expect(lgt.colorTempKelvin == nil)
+        #expect(lgt.minKelvin == 3000)
+        #expect(lgt.maxKelvin == 5700)
+        #expect(home.deviceFacets["wo-lgt"] == nil)
+
+        guard case .climate(let ac) = try #require(home.devices.first(where: { $0.id == "wo-ac" })).kind else {
+            Issue.record("expected climate"); return
+        }
+        #expect(ac.temperatureWritable == true)
+        #expect(ac.minTemp == 18)
+        #expect(ac.maxTemp == 28)
+        #expect(ac.step == 0.5)
+        #expect(home.deviceFacets["wo-ac"] == nil)
     }
 }
 
