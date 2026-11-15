@@ -715,6 +715,17 @@ public final class HomeStore {
     let isTestEnvironment: Bool
     var latestLGDevice: SmartDevice?
     var eventTask: Task<Void, Never>?
+    var providerShutdownTask: Task<Void, Never>?
+    var activeDualProvider: DualSourceHomeProvider?
+    var activeHAProvider: HAWebSocketProvider?
+    var activeHAConfig: (url: String, token: String)?
+    var activeMiAccountsProvider: MiAccountsProvider?
+    static let autoHADiscoveryCooldown: Duration = .seconds(300)
+    var lastAutoHADiscoveryAt: ContinuousClock.Instant?
+    var isPerformingResumeRefresh = false
+    @ObservationIgnored var haLANDiscoverer: @Sendable (String) async -> [HADiscoveredInstance] = {
+        await HADiscovery.discoverOnLAN(currentURLHint: $0)
+    }
     /// Panel open, Mac awake, Low Power Mode; the provider paces polling with it (#26).
     public internal(set) var pollingContext = PollingContext() {
         didSet {
@@ -1021,8 +1032,10 @@ public final class HomeStore {
         // Demo mode is strictly offline: no LAN discovery, no LG connection (#47).
         if provider == nil, dualSource == nil, initialBackend != .demo {
             startLGWebOSIfNeeded()
-            Task { [weak self] in
-                _ = await self?.discoverHomeAssistantOnLAN(autoApplyIfDefault: true)
+            if shouldAutoDiscoverHomeAssistantOnLAN {
+                Task { [weak self] in
+                    _ = await self?.discoverHomeAssistantOnLAN(autoApplyIfDefault: true)
+                }
             }
         }
     }

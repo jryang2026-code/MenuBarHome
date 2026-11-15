@@ -1126,7 +1126,16 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
     }
 
     try { const client = clientFactory(account.session, transport);
-      const discovered = await discoverMiAccountDevicesAndRooms(client);
+      let discovered: Awaited<ReturnType<typeof discoverMiAccountDevicesAndRooms>>;
+      try {
+        discovered = await discoverMiAccountDevicesAndRooms(client);
+      } catch (error) {
+        if (error instanceof MiCloudError && error.kind === "sessionExpired") {
+          discovered = await discoverMiAccountDevicesAndRooms(client);
+        } else {
+          throw error;
+        }
+      }
       const rawSelection = MiAccountScope.scopedSelectionForAccount(effectiveSelectedHomeId,
         account.id,
         allAccountIds,
@@ -1147,9 +1156,20 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
       ]);
 
       const propKeys = collectAccountMiotPropKeys(filtered.devices, specs);
-      const values = propKeys.length > 0
-          ? await client.getProps(propKeys)
-          : new Map<string, unknown>();
+      let values: Map<string, unknown>;
+      if (propKeys.length > 0) {
+        try {
+          values = await client.getProps(propKeys);
+        } catch (error) {
+          if (error instanceof MiCloudError && error.kind === "sessionExpired") {
+            values = await client.getProps(propKeys);
+          } else {
+            throw error;
+          }
+        }
+      } else {
+        values = new Map<string, unknown>();
+      }
 
       const rawHome = MiotSynthesizer.synthesize(filtered.devices,
         filtered.rooms,
@@ -1300,8 +1320,22 @@ export async function executeMultiAccountMiotCommand(command: DeviceCommand,
     attemptCount += 1;
     const account = options.accounts[accountIdx]!;
     const client = clientFactory(account.session, options.transport);
-    try { if (write.kind === "setProps") { await client.setProps(write.writes);
-      } else { await client.callAction(write.call);
+    const sendWrite = async (): Promise<void> => {
+      if (write.kind === "setProps") {
+        await client.setProps(write.writes);
+      } else {
+        await client.callAction(write.call);
+      }
+    };
+    try {
+      try {
+        await sendWrite();
+      } catch (error) {
+        if (error instanceof MiCloudError && error.kind === "sessionExpired") {
+          await sendWrite();
+        } else {
+          throw error;
+        }
       }
       return { executedByAccountId: account.id };
     } catch (error) { if (error instanceof MiCloudError && error.kind === "sessionExpired") { sawExpired = true;

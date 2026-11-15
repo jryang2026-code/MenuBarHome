@@ -5,15 +5,18 @@ import Foundation
 public actor DualSourceHomeProvider: HomeProvider {
     public typealias CanonicalIDPersistence = @Sendable ([String: String]) -> Void
 
-    private let homeAssistant: (any HomeProvider)?
-    private let xiaomiCloud: (any HomeProvider)?
+    private var homeAssistant: (any HomeProvider)?
+    private var xiaomiCloud: (any HomeProvider)?
     private let knownPreferenceIDs: @Sendable () -> Set<String>
     private let pinnedBackends: @Sendable () -> [String: HomeBackend]
     private let persistCanonicalIDs: CanonicalIDPersistence
 
     private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
-    private var tasks: [Task<Void, Never>] = []
+    private var haTask: Task<Void, Never>?
+    private var miTask: Task<Void, Never>?
     private var started = false
+    private var isShutDown = false
+    private var pollingContext = PollingContext()
 
     private var haStatus: ConnectionStatus = .connecting
     private var miStatus: ConnectionStatus = .connecting
@@ -26,6 +29,8 @@ public actor DualSourceHomeProvider: HomeProvider {
     private var routes: [String: DeviceMergeRoute] = [:]
     private var haCanonicalIDs: [String: String] = [:]
     private var activeCameraRoutes: [String: DeviceMergeRoute] = [:]
+
+    var isShutDownForTesting: Bool { isShutDown }
 
     public init(
         homeAssistant: (any HomeProvider)?,
@@ -50,36 +55,97 @@ public actor DualSourceHomeProvider: HomeProvider {
     }
 
     private func attach(_ cont: AsyncStream<HomeProviderEvent>.Continuation) {
+        guard !isShutDown else {
+            cont.finish()
+            return
+        }
         continuation = cont
+        start()
+    }
+
+    public func start() {
+        guard !isShutDown else { return }
         startIfNeeded()
     }
 
     private func startIfNeeded() {
-        guard !started else { return }
+        guard !isShutDown, !started else { return }
         started = true
         if let homeAssistant {
-            tasks.append(Task { [weak self] in
-                for await event in homeAssistant.events() {
-                    guard let self else { return }
-                    await self.handle(event, from: .homeAssistant)
-                }
-                await self?.sourceStreamFinished(.homeAssistant)
-            })
+            startForwarding(homeAssistant, for: .homeAssistant)
         }
         if let xiaomiCloud {
-            tasks.append(Task { [weak self] in
-                for await event in xiaomiCloud.events() {
-                    guard let self else { return }
-                    await self.handle(event, from: .xiaomiCloud)
-                }
-                await self?.sourceStreamFinished(.xiaomiCloud)
-            })
+            startForwarding(xiaomiCloud, for: .xiaomiCloud)
         }
         emitStatus(force: true)
         emitSourceStatuses()
     }
 
+    private func startForwarding(_ source: any HomeProvider, for backend: HomeBackend) {
+        let task = Task { [weak self] in
+            for await event in source.events() {
+                guard !Task.isCancelled, let self else { return }
+                await self.handle(event, from: backend)
+            }
+            guard !Task.isCancelled else { return }
+            await self?.sourceStreamFinished(backend)
+        }
+        switch backend {
+        case .homeAssistant:
+            haTask?.cancel()
+            haTask = task
+        case .xiaomiCloud:
+            miTask?.cancel()
+            miTask = task
+        case .demo:
+            task.cancel()
+        }
+    }
+
+    public func setHomeAssistantProvider(_ next: (any HomeProvider)?) async {
+        await setSourceProvider(next, for: .homeAssistant)
+    }
+
+    public func setXiaomiCloudProvider(_ next: (any HomeProvider)?) async {
+        await setSourceProvider(next, for: .xiaomiCloud)
+    }
+
+    private func setSourceProvider(_ next: (any HomeProvider)?, for backend: HomeBackend) async {
+        guard !isShutDown else {
+            await next?.shutdown()
+            return
+        }
+        let previous: (any HomeProvider)?
+        if backend == .homeAssistant {
+            haTask?.cancel()
+            haTask = nil
+            previous = homeAssistant
+            homeAssistant = next
+            haSnapshot = nil
+            haStatus = .connecting
+        } else {
+            miTask?.cancel()
+            miTask = nil
+            previous = xiaomiCloud
+            xiaomiCloud = next
+            miSnapshot = nil
+            miStatus = .connecting
+        }
+        await previous?.shutdown()
+        guard !isShutDown, started else { return }
+        if let next {
+            startForwarding(next, for: backend)
+            await next.setPollingContext(pollingContext)
+        }
+        emitStatus(force: true)
+        emitSourceStatuses()
+        recompute(allowEmpty: true)
+    }
+
     private func handle(_ event: HomeProviderEvent, from backend: HomeBackend) {
+        guard !isShutDown else { return }
+        if backend == .homeAssistant, homeAssistant == nil { return }
+        if backend == .xiaomiCloud, xiaomiCloud == nil { return }
         switch event {
         case .statusChanged(let status):
             if backend == .homeAssistant {
@@ -119,10 +185,13 @@ public actor DualSourceHomeProvider: HomeProvider {
     }
 
     private func sourceStreamFinished(_ backend: HomeBackend) {
+        guard !isShutDown else { return }
         if backend == .homeAssistant {
+            guard homeAssistant != nil else { return }
             haStatus = .disconnected("")
             haSnapshot = nil
         } else if backend == .xiaomiCloud {
+            guard xiaomiCloud != nil else { return }
             miStatus = .disconnected("")
             miSnapshot = nil
         }
@@ -164,8 +233,9 @@ public actor DualSourceHomeProvider: HomeProvider {
         return statuses.first
     }
 
-    private func recompute() {
-        guard haSnapshot != nil || miSnapshot != nil else { return }
+    private func recompute(allowEmpty: Bool = false) {
+        guard !isShutDown else { return }
+        guard allowEmpty || haSnapshot != nil || miSnapshot != nil else { return }
         let result = DeviceDeduplicator.merge(
             homeAssistant: haSnapshot,
             xiaomiCloud: miSnapshot,
@@ -244,6 +314,7 @@ public actor DualSourceHomeProvider: HomeProvider {
     // MARK: - Polling
 
     public func refreshNow() async {
+        guard !isShutDown else { return }
         let ha = homeAssistant
         let mi = xiaomiCloud
         await withTaskGroup(of: Void.self) { group in
@@ -253,6 +324,8 @@ public actor DualSourceHomeProvider: HomeProvider {
     }
 
     public func setPollingContext(_ context: PollingContext) async {
+        guard !isShutDown else { return }
+        pollingContext = context
         let ha = homeAssistant
         let mi = xiaomiCloud
         await withTaskGroup(of: Void.self) { group in
@@ -415,8 +488,11 @@ public actor DualSourceHomeProvider: HomeProvider {
     }
 
     public func shutdown() async {
-        for task in tasks { task.cancel() }
-        tasks.removeAll()
+        isShutDown = true
+        haTask?.cancel()
+        haTask = nil
+        miTask?.cancel()
+        miTask = nil
         continuation?.finish()
         continuation = nil
         let ha = homeAssistant

@@ -321,3 +321,289 @@ struct MiSessionExpiryHomeStoreTests {
         #expect(allExpiredStore.menuBarSymbolName == "house.slash")
     }
 }
+
+private actor TransientExpiryMiCloudAPI: MiCloudAPI {
+    var devices: [MiDeviceRecord]
+    var rooms: [MiRoom]
+    var values: [MiotPropKey: JSONValue]
+    var remainingFailures: Int
+    private(set) var deviceListCalls = 0
+    private(set) var getPropsCalls = 0
+
+    init(
+        devices: [MiDeviceRecord] = [MiotFixtures.lightRecord],
+        rooms: [MiRoom] = [],
+        values: [MiotPropKey: JSONValue] = MiotFixtures.lightValues,
+        remainingFailures: Int
+    ) {
+        self.devices = devices
+        self.rooms = rooms
+        self.values = values
+        self.remainingFailures = remainingFailures
+    }
+
+    func setRemainingFailures(_ count: Int) {
+        remainingFailures = count
+    }
+
+    func deviceList() async throws -> [MiDeviceRecord] {
+        deviceListCalls += 1
+        if remainingFailures > 0 {
+            remainingFailures -= 1
+            throw MiCloudError.sessionExpired
+        }
+        return devices
+    }
+
+    func homeRooms() async throws -> [MiRoom] { rooms }
+    func devices(dids: [String]) async throws -> [MiDeviceRecord] { devices.filter { dids.contains($0.did) } }
+    func lightGroupMembers(groupDids: [String]) async throws -> [String: [String]] { [:] }
+
+    func getProps(_ keys: [MiotPropKey]) async throws -> [MiotPropKey: JSONValue] {
+        getPropsCalls += 1
+        if remainingFailures > 0 {
+            remainingFailures -= 1
+            throw MiCloudError.sessionExpired
+        }
+        return values.filter { keys.contains($0.key) }
+    }
+
+    func setProps(_ writes: [MiotPropWrite]) async throws {}
+    func action(_ call: MiotActionCall) async throws {}
+    func callAction(_ call: MiotActionCall) async throws -> JSONValue { .object(["code": .number(0)]) }
+    func cameraLocalIP(did: String) async throws -> String? { nil }
+    func cameraP2PVendor(did: String, appPublicKey: String) async throws -> MiCameraP2PVendor {
+        MiCameraP2PVendor(vendorName: "cs2", p2pId: "p", devicePublicKey: "k", sign: "s")
+    }
+}
+
+struct ProviderResilienceAndPerfTests {
+    private static let session = MiSession(
+        userId: "90010001",
+        cUserId: "c-90010001",
+        ssecurity: "c2VjcmV0",
+        serviceToken: "tok-live",
+        region: "cn"
+    )
+
+    @Test("One transient 401/sessionExpired recovers on retry without emitting sessionExpired, while two consecutive 401s emit sessionExpired (#18)")
+    func transientSessionExpiredRecoversWhileConsecutiveRejects() async throws {
+        let api = TransientExpiryMiCloudAPI(remainingFailures: 1)
+        let provider = MiCloudProvider(
+            sessionLoader: { Self.session },
+            apiFactory: { _ in api },
+            specSource: StubSpecSource(),
+            pollInterval: .seconds(60),
+            selectedHomeLoader: { nil }
+        )
+        let log = EventLog()
+        let stream = provider.events()
+        let task = Task { for await event in stream { await log.append(event) } }
+        defer { task.cancel() }
+
+        #expect(await log.wait { await !$0.snapshots.isEmpty })
+        #expect(await api.deviceListCalls == 2)
+        #expect(await log.expiredSessions.isEmpty)
+
+        await api.setRemainingFailures(2)
+        await provider.refreshNow()
+        #expect(await log.wait { await !$0.expiredSessions.isEmpty })
+        #expect(await log.expiredSessions.first == Self.session)
+        await provider.shutdown()
+    }
+
+    @Test("Shut-down MiCloudProvider, MiAccountsProvider, and DualSourceHomeProvider latch isShutDown and never restart (#20)")
+    func providerShutdownLatchesPreventRestart() async throws {
+        let api = TransientExpiryMiCloudAPI(remainingFailures: 0)
+        let cloud = MiCloudProvider(
+            sessionLoader: { Self.session },
+            apiFactory: { _ in api },
+            specSource: StubSpecSource(),
+            pollInterval: .seconds(60),
+            selectedHomeLoader: { nil }
+        )
+        await cloud.shutdown()
+        #expect(await cloud.isShutDownForTesting)
+        await cloud.start()
+        await cloud.refreshNow()
+        await cloud.setPollingContext(PollingContext(panelVisible: true))
+        var cloudEvents = 0
+        for await _ in cloud.events() { cloudEvents += 1 }
+        #expect(cloudEvents == 0)
+        #expect(await api.deviceListCalls == 0)
+
+        let accounts = MiAccountsProvider(
+            accounts: [MiAccount(session: Self.session)],
+            apiFactory: { _ in api },
+            specSource: StubSpecSource(),
+            pollInterval: .seconds(60)
+        )
+        await accounts.shutdown()
+        #expect(await accounts.isShutDownForTesting)
+        await accounts.start()
+        await accounts.refreshNow()
+        await accounts.updateAccounts([MiAccount(session: Self.session)])
+        var accountEvents = 0
+        for await _ in accounts.events() { accountEvents += 1 }
+        #expect(accountEvents == 0)
+        #expect(await api.deviceListCalls == 0)
+
+        let dual = DualSourceHomeProvider(homeAssistant: nil, xiaomiCloud: accounts)
+        await dual.shutdown()
+        #expect(await dual.isShutDownForTesting)
+        await dual.start()
+        await dual.refreshNow()
+        var dualEvents = 0
+        for await _ in dual.events() { dualEvents += 1 }
+        #expect(dualEvents == 0)
+    }
+
+    @Test("Wake poll and immediate refreshNow coalesce into one poll on MiCloudProvider (#33a)")
+    func wakePollAndRefreshNowCoalesce() async throws {
+        let api = TransientExpiryMiCloudAPI(remainingFailures: 0)
+        let provider = MiCloudProvider(
+            sessionLoader: { Self.session },
+            apiFactory: { _ in api },
+            specSource: StubSpecSource(),
+            pollInterval: .seconds(60),
+            closedPollInterval: .seconds(60),
+            deviceRefreshEveryPolls: 1000,
+            selectedHomeLoader: { nil }
+        )
+        let log = EventLog()
+        let stream = provider.events()
+        let task = Task { for await event in stream { await log.append(event) } }
+        defer { task.cancel() }
+
+        #expect(await log.wait { await !$0.snapshots.isEmpty })
+        await provider.setPollingContext(PollingContext(panelVisible: false, systemActive: false))
+        try await Task.sleep(for: .milliseconds(40))
+        let callsBeforeWake = await api.getPropsCalls
+
+        await provider.setPollingContext(PollingContext(panelVisible: false, systemActive: true))
+        await provider.refreshNow()
+        try await Task.sleep(for: .milliseconds(120))
+        let callsAfterWake = await api.getPropsCalls
+        #expect(callsAfterWake == callsBeforeWake + 1)
+        await provider.shutdown()
+    }
+
+    @Test("MiAccountsProvider.updateAccounts keeps unchanged account child provider live while adding and removing accounts (#33b)")
+    func incrementalAccountUpdatesKeepUnchangedChildLive() async throws {
+        let cnAccount = MiAccount(session: Self.session)
+        let deAccount = MiAccount(session: MiSession(
+            userId: "90020002",
+            cUserId: "c-de",
+            ssecurity: "c2VjcmV0",
+            serviceToken: "tok-de",
+            region: "de"
+        ))
+        let cnApi = StubMiCloudAPI(devices: [MiotFixtures.lightRecord], rooms: [], values: MiotFixtures.lightValues)
+        let deApi = StubMiCloudAPI(
+            devices: [MiDeviceRecord(did: "de-plug", name: "Plug", model: "cuco.plug.v3", isOnline: true)],
+            rooms: [],
+            values: [MiotFixtures.key("de-plug", 2, 1): .bool(true)]
+        )
+        let provider = MiAccountsProvider(
+            accounts: [cnAccount],
+            apiFactory: { $0.region == "de" ? deApi : cnApi },
+            specSource: StubSpecSource(),
+            pollInterval: .seconds(60)
+        )
+        let log = EventLog()
+        let stream = provider.events()
+        let task = Task { for await event in stream { await log.append(event) } }
+        defer { task.cancel() }
+
+        #expect(await log.wait { await !$0.snapshots.isEmpty })
+        let initialCnIdentity = try #require(await provider.childProviderIdentityForTesting(accountId: cnAccount.id))
+
+        await provider.updateAccounts([cnAccount, deAccount])
+        #expect(await log.wait { events in await events.snapshots.contains { $0.devices.count == 2 } })
+        let afterAddCnIdentity = try #require(await provider.childProviderIdentityForTesting(accountId: cnAccount.id))
+        #expect(afterAddCnIdentity == initialCnIdentity)
+        #expect(await provider.childProviderIdentityForTesting(accountId: deAccount.id) != nil)
+
+        await provider.updateAccounts([cnAccount])
+        #expect(await log.wait { events in await events.snapshots.last?.devices.map(\.id) == ["123"] })
+        #expect(await provider.childProviderIdentityForTesting(accountId: cnAccount.id) == initialCnIdentity)
+        #expect(await provider.childProviderIdentityForTesting(accountId: deAccount.id) == nil)
+        await provider.shutdown()
+    }
+
+    @Test("UserHabitMemory memoizes decoded memory per UserDefaults instance and invalidates on external byte mutation (#35a)")
+    func habitMemoryDecodeMemoization() throws {
+        let suite = "com.jryang1997.MenuBarMijia.habit-memo.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let memory = UserHabitMemory(
+            lastAction: UserHabitMemory.LastAction(
+                targetId: "lamp-1",
+                operationKey: "power:on",
+                recordedAt: Date(timeIntervalSince1970: 1_800_000_000)
+            )
+        )
+        memory.save(to: defaults)
+
+        let baselineDecodes = UserHabitMemory.decodeCountForTesting
+        let first = UserHabitMemory.load(from: defaults)
+        let second = UserHabitMemory.load(from: defaults)
+        #expect(first == second)
+        #expect(UserHabitMemory.decodeCountForTesting == baselineDecodes)
+
+        let external = UserHabitMemory(
+            lastAction: UserHabitMemory.LastAction(
+                targetId: "lamp-2",
+                operationKey: "power:off",
+                recordedAt: Date(timeIntervalSince1970: 1_800_000_060)
+            )
+        )
+        let rawExternal = try JSONEncoder().encode(external)
+        defaults.set(rawExternal, forKey: UserHabitMemory.storageKey)
+
+        let third = UserHabitMemory.load(from: defaults)
+        #expect(UserHabitMemory.decodeCountForTesting == baselineDecodes + 1)
+        #expect(third.lastAction?.targetId == "lamp-2")
+
+        let fourth = UserHabitMemory.load(from: defaults)
+        #expect(UserHabitMemory.decodeCountForTesting == baselineDecodes + 1)
+        #expect(fourth == third)
+    }
+
+    @MainActor
+    @Test("Automatic HA LAN discovery is gated by unconfigured non-Xiaomi state and session cooldown while manual scan always runs (#35b)")
+    func autoHADiscoveryGatingAndCooldown() async throws {
+        let suite = "com.jryang1997.MenuBarMijia.ha-scan-gate.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        defaults.set(HomeBackend.homeAssistant.rawValue, forKey: "home_backend")
+        defaults.set("", forKey: "ha_base_url")
+        defaults.set("", forKey: "ha_token")
+
+        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        var scanCalls = 0
+        store.haLANDiscoverer = { @MainActor _ in
+            scanCalls += 1
+            return []
+        }
+
+        #expect(store.shouldAutoDiscoverHomeAssistantOnLAN)
+        await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: true)
+        #expect(scanCalls == 1)
+
+        #expect(!store.shouldAutoDiscoverHomeAssistantOnLAN)
+        await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: true)
+        #expect(scanCalls == 1)
+
+        await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: false)
+        #expect(scanCalls == 2)
+
+        store.lastAutoHADiscoveryAt = nil
+        store.homeBackend = .xiaomiCloud
+        #expect(!store.shouldAutoDiscoverHomeAssistantOnLAN)
+        await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: true)
+        #expect(scanCalls == 2)
+    }
+}

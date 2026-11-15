@@ -911,43 +911,62 @@ export function recordHabits(
   return receipt;
 }
 
+const HABIT_SEQUENCE_STORAGE_KEY = "menumijia.windows.habit.sequences.v1";
+
+let cachedHabitSequences: {
+  storageRef: Storage | null;
+  raw: string | null;
+  sequences: HabitSequenceEntry[];
+  lastAction: HabitLastAction | null;
+} | null = null;
+
+function readCachedHabitSequencePayload() {
+  const storageRef = typeof localStorage !== "undefined" ? localStorage : null;
+  const raw = storageRef ? storageRef.getItem(HABIT_SEQUENCE_STORAGE_KEY) : null;
+  if (cachedHabitSequences && cachedHabitSequences.storageRef === storageRef && cachedHabitSequences.raw === raw) {
+    return cachedHabitSequences;
+  }
+  if (!raw) {
+    cachedHabitSequences = { storageRef, raw: null, sequences: [], lastAction: null };
+    return cachedHabitSequences;
+  }
+  try {
+    const parsed = JSON.parse(raw) as { sequences?: HabitSequenceEntry[]; lastAction?: HabitLastAction | null };
+    cachedHabitSequences = {
+      storageRef,
+      raw,
+      sequences: Array.isArray(parsed.sequences) ? parsed.sequences : [],
+      lastAction: parsed.lastAction ?? null,
+    };
+  } catch {
+    cachedHabitSequences = { storageRef, raw, sequences: [], lastAction: null };
+  }
+  return cachedHabitSequences;
+}
+
 /** Sequence entries and lastAction persist alongside the entries (ADR-0009). */
 export function habitSequences(): HabitSequenceEntry[] {
-  const raw = localStorage.getItem("menumijia.windows.habit.sequences.v1");
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw) as {
-      sequences?: HabitSequenceEntry[];
-      lastAction?: HabitLastAction | null;
-    };
-    return Array.isArray(parsed.sequences) ? parsed.sequences : [];
-  } catch {
-    return [];
-  }
+  return readCachedHabitSequencePayload().sequences;
 }
 
 export function lastHabitAction(): HabitLastAction | null {
-  const raw = localStorage.getItem("menumijia.windows.habit.sequences.v1");
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as { lastAction?: HabitLastAction | null };
-    return parsed.lastAction ?? null;
-  } catch {
-    return null;
-  }
+  return readCachedHabitSequencePayload().lastAction;
 }
 
 export function saveHabitMemory(host: MenuMijiaWindowsApp, memory: UserHabitMemory): void {
   host.settings.habitEntries = [...memory.entries];
   host.saveSettings();
   try {
-    localStorage.setItem(
-      "menumijia.windows.habit.sequences.v1",
-      JSON.stringify({
-        sequences: memory.sequences,
-        lastAction: memory.lastAction,
-      }),
-    );
+    const sequences = [...memory.sequences];
+    const lastAction = memory.lastAction ?? null;
+    const raw = JSON.stringify({ sequences, lastAction });
+    localStorage.setItem(HABIT_SEQUENCE_STORAGE_KEY, raw);
+    cachedHabitSequences = {
+      storageRef: typeof localStorage !== "undefined" ? localStorage : null,
+      raw,
+      sequences,
+      lastAction,
+    };
   } catch {
     // Quota errors only cost the sequence context, never the entries.
   }

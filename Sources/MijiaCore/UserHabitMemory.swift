@@ -244,7 +244,7 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
         public var preserveLastAction: Bool = false
     }
 
-    private static let storageKey = "assistant_user_habit_memory_v1"
+    static let storageKey = "assistant_user_habit_memory_v1"
     private static let maxEntries = 60
     private static let maxPhrases = 15
     /// Recency half-life for the decay score; a habit fades to half weight in two weeks (ADR-0009).
@@ -256,6 +256,15 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
     /// Score bonus per learned transition count when the last action matches (ADR-0009).
     static let sequenceBoostWeight: Double = 2
     private static let maxSequences = 40
+
+    private struct CachedMemoryEntry {
+        let rawData: Data
+        let decodedMemory: UserHabitMemory
+    }
+
+    private static let cacheLock = NSLock()
+    private nonisolated(unsafe) static var decodedCache: [ObjectIdentifier: CachedMemoryEntry] = [:]
+    nonisolated(unsafe) static var decodeCountForTesting: Int = 0
 
     public private(set) var entries: [HabitEntry] = []
     public private(set) var phrases: [PhraseMemory] = []
@@ -279,9 +288,21 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
     }
 
     public static func load(from defaults: UserDefaults) -> UserHabitMemory {
-        guard let data = defaults.data(forKey: storageKey),
-              let decoded = try? JSONDecoder().decode(UserHabitMemory.self, from: data) else {
+        let key = ObjectIdentifier(defaults)
+        guard let data = defaults.data(forKey: storageKey) else {
+            _ = cacheLock.withLock { decodedCache.removeValue(forKey: key) }
             return UserHabitMemory()
+        }
+        if let cached = cacheLock.withLock({ decodedCache[key] }), cached.rawData == data {
+            return cached.decodedMemory
+        }
+        guard let decoded = try? JSONDecoder().decode(UserHabitMemory.self, from: data) else {
+            _ = cacheLock.withLock { decodedCache.removeValue(forKey: key) }
+            return UserHabitMemory()
+        }
+        cacheLock.withLock {
+            decodeCountForTesting += 1
+            decodedCache[key] = CachedMemoryEntry(rawData: data, decodedMemory: decoded)
         }
         return decoded
     }
@@ -289,6 +310,16 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
     public func save(to defaults: UserDefaults) {
         guard let data = try? JSONEncoder().encode(self) else { return }
         defaults.set(data, forKey: Self.storageKey)
+        let key = ObjectIdentifier(defaults)
+        Self.cacheLock.withLock {
+            Self.decodedCache[key] = CachedMemoryEntry(rawData: data, decodedMemory: self)
+        }
+    }
+
+    public static func clear(in defaults: UserDefaults) {
+        defaults.removeObject(forKey: storageKey)
+        let key = ObjectIdentifier(defaults)
+        _ = cacheLock.withLock { decodedCache.removeValue(forKey: key) }
     }
 
     @discardableResult

@@ -3,7 +3,27 @@ import Foundation
 /// `HomeProvider` over several Xiaomi accounts: one `MiCloudProvider` per account, merged into one
 /// panel listing whose devices and homes carry the account they came from.
 public actor MiAccountsProvider: HomeProvider {
-    private let accounts: [MiAccount]
+    private final class AccountScopeBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var firstId: String?
+        private var knownIds: Set<String>
+        init(accounts: [MiAccount]) {
+            self.firstId = accounts.first?.id
+            self.knownIds = Set(accounts.map(\.id))
+        }
+        func update(accounts: [MiAccount]) {
+            lock.withLock {
+                firstId = accounts.first?.id
+                knownIds = Set(accounts.map(\.id))
+            }
+        }
+        func snapshot() -> (firstId: String?, knownIds: Set<String>) {
+            lock.withLock { (firstId, knownIds) }
+        }
+    }
+
+    private var accounts: [MiAccount]
+    private let scopeBox: AccountScopeBox
     private let apiFactory: MiCloudProvider.APIFactory
     private let specSource: any MiotSpecSource
     private let cameraBridge: any XiaomiCameraBridging
@@ -18,7 +38,7 @@ public actor MiAccountsProvider: HomeProvider {
 
     private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
     private var children: [(account: MiAccount, provider: MiCloudProvider)] = []
-    private var forwardTasks: [Task<Void, Never>] = []
+    private var forwardTasks: [String: Task<Void, Never>] = [:]
     private var snapshots: [String: SynthesizedHome] = [:]
     private var statuses: [String: ConnectionStatus] = [:]
     /// Accounts that delivered a post-poll snapshot (`closesAwayGap == true`) in the current wake cycle.
@@ -27,6 +47,13 @@ public actor MiAccountsProvider: HomeProvider {
     private var deviceOwners: [String: [String]] = [:]
     private var lastStatus: ConnectionStatus?
     private var pollingContext = PollingContext()
+    private var isShutDown = false
+
+    var isShutDownForTesting: Bool { isShutDown }
+
+    func childProviderIdentityForTesting(accountId: String) -> ObjectIdentifier? {
+        childProvider(for: accountId).map(ObjectIdentifier.init)
+    }
 
     public init(
         accounts: [MiAccount],
@@ -47,6 +74,7 @@ public actor MiAccountsProvider: HomeProvider {
         }
     ) {
         self.accounts = accounts
+        self.scopeBox = AccountScopeBox(accounts: accounts)
         self.apiFactory = apiFactory
         self.specSource = specSource
         self.cameraBridge = cameraBridge
@@ -67,9 +95,20 @@ public actor MiAccountsProvider: HomeProvider {
     }
 
     private func attach(_ cont: AsyncStream<HomeProviderEvent>.Continuation) async {
+        guard !isShutDown else {
+            cont.finish()
+            return
+        }
         continuation = cont
+        await start()
+    }
+
+    public func start() async {
+        guard !isShutDown else { return }
         guard !accounts.isEmpty else {
-            cont.yield(.statusChanged(.disconnected(MiCloudError.notLoggedIn.localizedDescription)))
+            let disconnected = ConnectionStatus.disconnected(MiCloudError.notLoggedIn.localizedDescription)
+            lastStatus = disconnected
+            continuation?.yield(.statusChanged(disconnected))
             return
         }
         for account in accounts where account.session.expiryState(at: Date()) == .expired {
@@ -80,27 +119,94 @@ public actor MiAccountsProvider: HomeProvider {
     }
 
     private func startChildren() {
+        guard !isShutDown else { return }
         for account in accounts {
-            let provider = MiCloudProvider(
-                account: account,
-                apiFactory: apiFactory,
-                specSource: specSource,
-                cameraBridge: cameraBridge,
-                localClient: localClientFactory(),
-                pollInterval: pollInterval,
-                closedPollInterval: closedPollInterval,
-                deviceRefreshEveryPolls: deviceRefreshEveryPolls,
-                followUpDelay: followUpDelay,
-                cameraSessionReleaseDelay: cameraSessionReleaseDelay,
-                selectedHomeLoader: scopedSelection(for: account)
-            )
-            children.append((account: account, provider: provider))
-            let stream = provider.events()
-            forwardTasks.append(Task { [weak self] in
-                for await event in stream {
-                    await self?.handle(event, from: account.id)
-                }
-            })
+            _ = startChild(for: account)
+        }
+    }
+
+    @discardableResult
+    private func startChild(for account: MiAccount) -> MiCloudProvider {
+        let provider = MiCloudProvider(
+            account: account,
+            apiFactory: apiFactory,
+            specSource: specSource,
+            cameraBridge: cameraBridge,
+            localClient: localClientFactory(),
+            pollInterval: pollInterval,
+            closedPollInterval: closedPollInterval,
+            deviceRefreshEveryPolls: deviceRefreshEveryPolls,
+            followUpDelay: followUpDelay,
+            cameraSessionReleaseDelay: cameraSessionReleaseDelay,
+            selectedHomeLoader: scopedSelection(for: account)
+        )
+        children.append((account: account, provider: provider))
+        let stream = provider.events()
+        forwardTasks[account.id] = Task { [weak self] in
+            for await event in stream {
+                guard !Task.isCancelled else { break }
+                await self?.handle(event, from: account.id)
+            }
+        }
+        return provider
+    }
+
+    public func updateAccounts(_ nextAccounts: [MiAccount]) async {
+        guard !isShutDown else { return }
+        let unchanged = accounts.count == nextAccounts.count && zip(accounts, nextAccounts).allSatisfy {
+            $0.id == $1.id && $0.session == $1.session
+        }
+        guard !unchanged else { return }
+        let nextById = Dictionary(uniqueKeysWithValues: nextAccounts.map { ($0.id, $0) })
+        var keptChildren: [(account: MiAccount, provider: MiCloudProvider)] = []
+        var removedProviders: [MiCloudProvider] = []
+        for entry in children {
+            if let nextAccount = nextById[entry.account.id], nextAccount.session == entry.account.session {
+                keptChildren.append((account: nextAccount, provider: entry.provider))
+            } else {
+                forwardTasks.removeValue(forKey: entry.account.id)?.cancel()
+                snapshots.removeValue(forKey: entry.account.id)
+                statuses.removeValue(forKey: entry.account.id)
+                freshAccounts.remove(entry.account.id)
+                removedProviders.append(entry.provider)
+            }
+        }
+        accounts = nextAccounts
+        scopeBox.update(accounts: nextAccounts)
+        children = keptChildren
+        for provider in removedProviders { await provider.shutdown() }
+        guard continuation != nil, !isShutDown else { return }
+        if accounts.isEmpty {
+            rebuildDeviceOwners()
+            let disconnected = ConnectionStatus.disconnected(MiCloudError.notLoggedIn.localizedDescription)
+            if lastStatus != disconnected {
+                lastStatus = disconnected
+                continuation?.yield(.statusChanged(disconnected))
+            }
+            var empty = SynthesizedHome(rooms: [], devices: [], environmentReadings: [], scenes: [])
+            empty.isInitialLoadComplete = true
+            continuation?.yield(.snapshotUpdated(empty))
+            return
+        }
+        for account in accounts where account.session.expiryState(at: Date()) == .expired {
+            resetSelection(ownedBy: account.id)
+        }
+        var newlyStarted: [MiCloudProvider] = []
+        for account in accounts where !children.contains(where: { $0.account.id == account.id }) {
+            newlyStarted.append(startChild(for: account))
+        }
+        let childrenById = Dictionary(uniqueKeysWithValues: children.map { ($0.account.id, $0) })
+        children = accounts.compactMap { childrenById[$0.id] }
+        for provider in newlyStarted { await provider.setPollingContext(pollingContext) }
+        rebuildDeviceOwners()
+        publishStatus()
+        if snapshots.isEmpty {
+            var empty = SynthesizedHome(rooms: [], devices: [], environmentReadings: [], scenes: [])
+            empty.accountStatuses = statuses
+            empty.isInitialLoadComplete = accounts.allSatisfy { snapshots[$0.id] != nil || isDisconnected($0.id) }
+            continuation?.yield(.snapshotUpdated(empty))
+        } else {
+            publishSnapshot()
         }
     }
 
@@ -110,12 +216,12 @@ public actor MiAccountsProvider: HomeProvider {
     private func scopedSelection(for account: MiAccount) -> @Sendable () -> String? {
         let loader = selectedHomeLoader
         let accountId = account.id
-        let isFirst = accounts.first?.id == accountId
-        let knownAccountIds = Set(accounts.map(\.id))
+        let scopeBox = self.scopeBox
         return {
             guard let selection = loader(), !selection.isEmpty else { return nil }
+            let (firstId, knownAccountIds) = scopeBox.snapshot()
             guard let ownerId = MiAccountScope.owner(of: selection) else {
-                if isFirst { return selection }
+                if firstId == accountId { return selection }
                 return knownAccountIds.count > 1 ? MiCloudProvider.otherAccountHomeSentinel : nil
             }
             guard ownerId == accountId else {
@@ -136,15 +242,19 @@ public actor MiAccountsProvider: HomeProvider {
     }
 
     public func shutdown() async {
-        for task in forwardTasks { task.cancel() }
-        forwardTasks = []
-        for child in children { await child.provider.shutdown() }
+        guard !isShutDown else { return }
+        isShutDown = true
+        for task in forwardTasks.values { task.cancel() }
+        forwardTasks.removeAll()
+        let currentChildren = children
         children = []
+        for child in currentChildren { await child.provider.shutdown() }
         continuation?.finish()
         continuation = nil
     }
 
     public func refreshNow() async {
+        guard !isShutDown else { return }
         let providers = children.map { $0.provider }
         await withTaskGroup(of: Void.self) { group in
             for provider in providers {
@@ -154,6 +264,7 @@ public actor MiAccountsProvider: HomeProvider {
     }
 
     public func setPollingContext(_ context: PollingContext) async {
+        guard !isShutDown else { return }
         if context.systemActive && !pollingContext.systemActive {
             freshAccounts.removeAll()
         }
@@ -162,6 +273,7 @@ public actor MiAccountsProvider: HomeProvider {
     }
 
     private func applyPollingContext() async {
+        guard !isShutDown else { return }
         let context = pollingContext
         let providers = children.map { $0.provider }
         await withTaskGroup(of: Void.self) { group in
@@ -174,6 +286,7 @@ public actor MiAccountsProvider: HomeProvider {
     // MARK: Merging Child Events
 
     private func handle(_ event: HomeProviderEvent, from accountId: String) async {
+        guard !isShutDown, accounts.contains(where: { $0.id == accountId }) else { return }
         switch event {
         case .statusChanged(let status):
             statuses[accountId] = status

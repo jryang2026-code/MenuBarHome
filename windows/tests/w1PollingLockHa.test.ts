@@ -616,6 +616,66 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
     assert.equal(isPersistedMiSessionExpired(SESSION_A), false);
     assert.equal(localStorage.getItem(MI_SESSION_EXPIRED_STORAGE_KEY), null);
   });
+
+  it("recovers from a single transient 401 without marking the session expired, while two consecutive 401s reject (#18, #35a)", async () => {
+    let remaining401s = 1;
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
+          if (cmd === "is_workstation_locked") return false;
+          if (cmd !== "native_http") return null;
+          const url = String(args["url"] ?? "");
+          if (url.includes("miot-spec.org")) return okResponse(LIGHT_SPEC_RAW);
+          if (url.includes("device_list")) {
+            if (remaining401s > 0) {
+              remaining401s -= 1;
+              return { status: 401, headers: {}, body: "" };
+            }
+            return okResponse({
+              list: [{ did: "lamp-1", name: "台灯", model: LIGHT_MODEL, isOnline: true, spec_type: LIGHT_SPEC_RAW.type }],
+            });
+          }
+          if (url.includes("homeroom/gethome")) {
+            return okResponse({
+              homelist: [{ id: "1", name: "家", roomlist: [{ id: "10", name: "客厅", dids: ["lamp-1"] }] }],
+            });
+          }
+          return okResponse([{ did: "lamp-1", siid: 2, piid: 1, code: 0, value: true }]);
+        },
+      },
+    });
+
+    localStorage.setItem(
+      SETTINGS_KEY,
+      JSON.stringify({
+        connectionMode: "xiaomiCloud",
+        hasCompletedOnboarding: true,
+        enableGrokBall: false,
+        autoCheckUpdates: false,
+        miSession: SESSION_A,
+        cachedModelTypes: { [LIGHT_MODEL]: LIGHT_SPEC_RAW.type },
+      }),
+    );
+
+    const app = new MenuMijiaWindowsApp(document.querySelector<HTMLElement>("#app")!);
+    while (app.isSyncingCloud || app.devices.length === 0) {
+      await setImmediate();
+    }
+
+    assert.equal(app.miSessionExpired, false, "single transient 401 recovers on retry");
+    assert.equal(isPersistedMiSessionExpired(SESSION_A), false, "single transient 401 does not persist rejection");
+    assert.equal(app.devices.length, 1);
+
+    const firstHabits = app.habitSequences();
+    const secondHabits = app.habitSequences();
+    assert.equal(firstHabits, secondHabits, "habitSequences memoizes parsed array while localStorage is unchanged");
+
+    remaining401s = 2;
+    await app.refreshDevices(false);
+    assert.equal(app.miSessionExpired, true, "two consecutive 401s mark session expired");
+    assert.equal(isPersistedMiSessionExpired(SESSION_A), true, "two consecutive 401s persist rejection");
+  });
 });
 
 describe("A3: Home Assistant speaker black-hole fix & camera motion fallbacks (haDomains.ts)", () => {
