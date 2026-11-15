@@ -65,6 +65,12 @@ pub(crate) fn all_camera_stream_names(stream_key: &str, extra_channel: u32) -> V
     names
 }
 
+pub(crate) fn is_private_lan_ipv4(host: &str) -> bool {
+    host.trim()
+        .parse::<std::net::Ipv4Addr>()
+        .is_ok_and(|ip| ip.is_private())
+}
+
 pub(crate) fn parse_camera_lan_ip(local_ip: &str) -> Result<std::net::Ipv4Addr, String> {
     let cam_ip: std::net::Ipv4Addr = local_ip
         .trim()
@@ -154,6 +160,24 @@ pub(crate) fn validate_hls_stream_url(hls_url: &str) -> Result<reqwest::Url, Str
         return Err("HLS 流地址不能包含 # 片段".to_string());
     }
     Ok(parsed)
+}
+
+pub(crate) fn check_hls_stream_url_allowed(
+    url: &reqwest::Url,
+    extra_origins: &std::collections::HashSet<String>,
+) -> Result<(), String> {
+    if crate::network::check_url_allowed(url, extra_origins).is_ok() {
+        return Ok(());
+    }
+    if matches!(url.scheme(), "http" | "https")
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.host_str().is_some_and(is_private_lan_ipv4)
+    {
+        return Ok(());
+    }
+    let origin = crate::network::url_origin(url).unwrap_or_else(|| url.as_str().to_string());
+    Err(format!("HLS 流地址不在允许的局域网或已授权服务范围内：{origin}"))
 }
 
 /// Accepts a UDP datagram on the loopback CS2 relay only from the bound `go2rtc` socket, or binds
@@ -294,6 +318,47 @@ mod tests {
         assert!(parse_camera_lan_ip(&class_a).is_ok());
         assert!(parse_camera_lan_ip("192.0.2.10").is_err());
         assert!(parse_camera_lan_ip("not-an-ip").is_err());
+
+        assert!(is_private_lan_ipv4("192.168.1.50"));
+        assert!(is_private_lan_ipv4("172.16.4.9"));
+        assert!(!is_private_lan_ipv4("127.0.0.1"));
+        assert!(!is_private_lan_ipv4("169.254.169.254"));
+        assert!(!is_private_lan_ipv4("192.0.2.10"));
+        assert!(!is_private_lan_ipv4("localhost"));
+    }
+
+    #[test]
+    fn hls_stream_allowlist_permits_private_lan_and_authorized_origins_only() {
+        let mut authorized = std::collections::HashSet::new();
+        authorized.insert("https://ha.example.com:8443".to_string());
+
+        for allowed in [
+            "http://192.168.1.50:8080/live/index.m3u8",
+            "https://172.16.4.9/live/index.m3u8",
+            "https://ha.example.com:8443/api/hls/master_playlist.m3u8",
+            "https://api.io.mi.com/app/v2/camera/hls.m3u8",
+        ] {
+            let parsed = validate_hls_stream_url(allowed).expect("valid syntax");
+            assert!(
+                check_hls_stream_url_allowed(&parsed, &authorized).is_ok(),
+                "{allowed}"
+            );
+        }
+
+        for rejected in [
+            "http://127.0.0.1:1984/api/stream.m3u8",
+            "http://localhost:8123/api/hls/master.m3u8",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://192.0.2.10:8123/api/hls/master.m3u8",
+            "https://cam.example.com/live/index.m3u8",
+            "http://ha.example.com:8443/api/hls/master.m3u8",
+        ] {
+            let parsed = validate_hls_stream_url(rejected).expect("valid syntax");
+            assert!(
+                check_hls_stream_url_allowed(&parsed, &authorized).is_err(),
+                "{rejected}"
+            );
+        }
     }
 
     #[test]

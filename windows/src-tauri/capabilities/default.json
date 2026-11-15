@@ -4,9 +4,6 @@
   "description": "Default capabilities for MenuMijia Windows tray window",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "global-shortcut:allow-register",
-    "global-shortcut:allow-unregister",
-    "global-shortcut:allow-is-registered"
+    "core:default"
   ]
 }

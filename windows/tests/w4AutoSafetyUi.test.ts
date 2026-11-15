@@ -234,15 +234,15 @@ function createCloudApp(extraSettings: Record<string, unknown> = {}): MenuMijiaW
 }
 
 beforeEach(() => {
-  dom = mountTestWindow();
+  dom = mountTestWindow({ stubInterval: true });
   installCssEscape();
   resetSharedSensorHistoryStoreForTests();
   setLanguage("zh-Hans");
 });
 
-afterEach(() => {
+afterEach(async () => {
   resetSharedSensorHistoryStoreForTests();
-  closeTestWindow(dom);
+  await closeTestWindow(dom);
 });
 
 describe("Wave 4 · PC Context Automation Rule Editor UI & Live Runtime", () => {

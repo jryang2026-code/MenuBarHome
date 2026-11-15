@@ -357,11 +357,6 @@ fn acquire_single_instance() -> bool {
     true
 }
 
-#[cfg(all(not(windows), not(test)))]
-fn acquire_single_instance() -> bool {
-    true
-}
-
 /// Real startup path: claim the single-instance mutex, or hand the launch over and exit.
 ///
 /// Runs only outside unit tests, because both branches either exit the process or hold a real
@@ -805,15 +800,6 @@ pub(crate) fn unregister_url_scheme_under_root(classes_subkey: &str) -> Result<(
             return Err(format!("删除协议注册表项失败（Win32 错误码 {status}）"));
         }
     }
-    Ok(())
-}
-
-#[cfg(not(windows))]
-pub(crate) fn register_url_scheme_under_root(
-    _classes_subkey: &str,
-    exe_path: &Path,
-) -> Result<(), String> {
-    let _ = format_protocol_open_command(exe_path)?;
     Ok(())
 }
 
