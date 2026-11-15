@@ -20,7 +20,7 @@ import {
   type HttpTransport,
   type MiSession,
 } from "../src/core/miCloudClient.js";
-import { fetchCameraMetadataList, resolveLiveCameraTarget } from "../src/core/miCloud/cameraHubs.js";
+import { fetchCameraMetadataList, parsePrivateLanIpv4, resolveLiveCameraTarget } from "../src/core/miCloud/cameraHubs.js";
 
 const SETTINGS_KEY = STORAGE_KEY;
 const SECURITY = "AQIDBAUGBwgJCgsMDQ4PEA==";
@@ -621,5 +621,13 @@ describe("MiCloud transport redirect lock, rate-limit non-fallback, and spec ded
     assert.equal(fetchCount, 2);
     assert.equal(recovered["yeelink.light.a"]?.type, sharedUrn);
     assert.equal(recovered["yeelink.light.b"]?.type, sharedUrn);
+  });
+
+  it("accepts non-/24 RFC1918 .0 and .255 hosts while rejecting public and loopback addresses", () => {
+    assert.equal(parsePrivateLanIpv4("192.168.1.0"), "192.168.1.0");
+    assert.equal(parsePrivateLanIpv4("172.16.0.255"), "172.16.0.255");
+    for (const bad of ["192.0.2.10", "8.8.8.8", "127.0.0.1", "172.32.0.1", "example.com"]) {
+      assert.equal(parsePrivateLanIpv4(bad), null);
+    }
   });
 });

@@ -662,6 +662,23 @@ struct LocalMiIOClientTests {
         await nwTransport.shutdown()
         #endif
         await client.shutdown()
+
+        #expect(LocalMiIOClient.isPrivateRFC1918IPv4("192.168.1.0") == true)
+        #expect(LocalMiIOClient.isPrivateRFC1918IPv4("172.16.0.255") == true)
+        #expect(LocalMiIOClient.isPrivateRFC1918IPv4("172.32.0.1") == false)
+
+        let wideSubnetTransport = MockUDPTransport { _, _, _ in
+            makeHelloResponse(deviceId: 0x00BC_614E, stamp: 77)
+        }
+        let wideSubnetClient = LocalMiIOClient(transport: wideSubnetTransport, maxRetries: 0)
+        for wideHost in ["192.168.1.0", "172.16.0.255"] {
+            let endpoint = MiIODeviceEndpoint(did: "12345678", ip: wideHost, token: validTokenHex)
+            let state = try await wideSubnetClient.handshake(for: endpoint)
+            #expect(state.deviceId32 == 0x00BC_614E)
+        }
+        let wideSends = await wideSubnetTransport.sends
+        #expect(wideSends.map { $0.host } == ["192.168.1.0", "172.16.0.255"])
+        await wideSubnetClient.shutdown()
     }
 }
 
