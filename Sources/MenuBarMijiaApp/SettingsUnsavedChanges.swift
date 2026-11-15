@@ -162,7 +162,10 @@ struct WindowCloseGuard: NSViewRepresentable {
 
     @MainActor
     final class Delegate: NSObject, NSWindowDelegate {
-        weak var original: NSWindowDelegate?
+        /// `responds(to:)` and `forwardingTarget(for:)` are declared nonisolated by NSObject, so they cannot
+        /// read a main-actor property. AppKit sends them from the main thread, and the reference is weak,
+        /// so a stale read cannot dangle; `nonisolated(unsafe)` says exactly that.
+        nonisolated(unsafe) weak var original: NSWindowDelegate?
         private let shouldClose: () -> Bool
 
         init(original: NSWindowDelegate?, shouldClose: @escaping () -> Bool) {
