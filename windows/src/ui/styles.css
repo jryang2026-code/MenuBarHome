@@ -3832,7 +3832,8 @@ input[type="checkbox"]:checked:active:not(:disabled)::after {
   font-variation-settings: "opsz" 8;
   font-size: 12px;
   line-height: 16px;
-  color: var(--text-tertiary);
+  /* Form help is content, not decoration: tertiary measures 3.2:1 on the light island, below WCAG AA (#153). */
+  color: var(--text-secondary);
 }
 
 .cc-field-row {
