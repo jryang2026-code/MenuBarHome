@@ -14,9 +14,9 @@ export function prefersReducedMotion(): boolean {
   );
 }
 
-export type ControlIdentityKey = string;
+type ControlIdentityKey = string;
 
-export const FLUENT_MOTION = {
+const FLUENT_MOTION = {
   decelerateEasing: "cubic-bezier(0, 0, 0, 1)",
   accelerateEasing: "cubic-bezier(1, 0, 1, 1)",
   linearEasing: "linear",
@@ -107,7 +107,7 @@ function hasStableControlId(id: string): boolean {
   return Boolean(id && !id.startsWith("panel-device-"));
 }
 
-export function extractControlIdentityKey(el: Element): ControlIdentityKey | null {
+function extractControlIdentityKey(el: Element): ControlIdentityKey | null {
   if (el.hasAttribute("data-exit-ghost")) return null;
 
   const tileId = el.getAttribute("data-tile-id");
@@ -208,7 +208,7 @@ function structuralClassSignature(el: Element): string {
   return "";
 }
 
-export interface ReconcileOptions {
+interface ReconcileOptions {
   readonly activeDraftElement?: Element | null;
   readonly protectedMediaNodes?: ReadonlySet<Element>;
 }
@@ -338,7 +338,7 @@ function firstNonGhostChild(parent: Element): ChildNode | null {
   return cur;
 }
 
-export function reconcileElementTree(
+function reconcileElementTree(
   current: Element,
   desired: Element,
   options?: ReconcileOptions,
@@ -470,7 +470,7 @@ export function reconcileElementTree(
   }
 }
 
-export function sanitizeDepartureGhost(sourceEl: HTMLElement): HTMLElement {
+function sanitizeDepartureGhost(sourceEl: HTMLElement): HTMLElement {
   const clone = sourceEl.cloneNode(true) as HTMLElement;
   const allNodes = [clone, ...Array.from(clone.querySelectorAll<HTMLElement>("*"))];
   for (const node of allNodes) {
@@ -499,8 +499,6 @@ export function sanitizeDepartureGhost(sourceEl: HTMLElement): HTMLElement {
   clone.style.pointerEvents = "none";
   return clone;
 }
-
-export const sanitizeExitGhost = sanitizeDepartureGhost;
 
 interface RegisteredRenderListener {
   readonly target: EventTarget;
@@ -607,7 +605,7 @@ function hasActiveWebAnimations(ownerWin: Window & typeof globalThis): boolean {
   return true;
 }
 
-export class CameraStandbyController {
+class CameraStandbyController {
   private activeCancel: (() => void) | null = null;
 
   private findCameraBackdrop(root: HTMLElement): {

@@ -6,7 +6,6 @@ import {
 } from "../core/cameraQuality.js";
 import {
   CameraHubCatalog,
-  cameraTr,
   parsePrivateLanIpv4,
   resolveLiveCameraTarget,
   type CachedCameraTopology,
@@ -27,6 +26,7 @@ import { getHostDualSourceState, getHostMiAccountsState, isDualSourceEnabled } f
 import { waitForCameraFrameGap } from "./dom.js";
 import { hasPendingUrlConfirmation } from "./speechGuard.js";
 import { invokeTauriVoid } from "./transport.js";
+import { tr3 } from "./undoTracker.js";
 
 export type CameraRotationDeg = 0 | 90 | 180 | 270;
 
@@ -831,8 +831,9 @@ export class CameraLiveController {
     this.liveCameraDraftIp = raw;
     const parsed = parsePrivateLanIpv4(raw);
     if (!parsed) {
-      this.liveCameraLocalIpError = cameraTr(
+      this.liveCameraLocalIpError = tr3(
         "请输入有效的局域网私有 IPv4 地址（192.168.x.x / 172.16-31.x.x / 10.x.x.x）",
+        "請輸入有效的區域網私有 IPv4 位址（192.168.x.x / 172.16-31.x.x / 10.x.x.x）",
         "Enter a valid private IPv4 LAN address (192.168.x.x / 172.16-31.x.x / 10.x.x.x)",
       );
       this.host.render();
@@ -887,8 +888,9 @@ export class CameraLiveController {
       this.liveCameraQualityApplies = false;
       this.liveCameraNeedsManualIp = false;
       this.liveCameraLoading = false;
-      this.liveCameraError = cameraTr(
+      this.liveCameraError = tr3(
         "室内网关本身不提供画面，请打开其配对的室外摄像机观看",
+        "室內網關本身不提供畫面，請開啟其配對的室外攝影機觀看",
         "The indoor gateway has no camera feed of its own; open its paired battery camera instead",
       );
       this.host.render();
@@ -1335,8 +1337,8 @@ export class CameraLiveController {
 
   public rotateButtonTitle(rotation: CameraRotationDeg): string {
     return rotation === 0
-      ? cameraTr("旋转画面 90°", "Rotate video 90°")
-      : cameraTr(`旋转画面 90°（当前 ${rotation}°）`, `Rotate video 90° (currently ${rotation}°)`);
+      ? tr3("旋转画面 90°", "旋轉畫面 90°", "Rotate video 90°")
+      : tr3("旋转画面 90°（当前 {rotation}°）", "旋轉畫面 90°（目前 {rotation}°）", "Rotate video 90° (currently {rotation}°)", { rotation });
   }
 
   private syncCameraRotateControl(): void {

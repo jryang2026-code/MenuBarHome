@@ -7,17 +7,7 @@ import { trText } from "./quickActions.js";
  */
 export const MIOT_DEVICE_OFFLINE_CODE = -704042011;
 
-export type ControlFailureKind =
-  | "cancelled"
-  | "deviceOffline"
-  | "rateLimited"
-  | "sessionExpired"
-  | "signedOut"
-  | "tokenRejected"
-  | "deviceRejected"
-  | "network";
-
-export type ClassifiedControlFailure =
+type ClassifiedControlFailure =
   | { readonly kind: "cancelled"; readonly isCancellation: true }
   | { readonly kind: "deviceOffline"; readonly isCancellation: false }
   | { readonly kind: "rateLimited"; readonly isCancellation: false }
@@ -27,12 +17,12 @@ export type ClassifiedControlFailure =
   | { readonly kind: "deviceRejected"; readonly code: number; readonly isCancellation: false }
   | { readonly kind: "network"; readonly isCancellation: false };
 
-export interface ClassifyControlFailureOptions {
+interface ClassifyControlFailureOptions {
   /** Last known online state of the target device; mirrors `ControlFailure.swift` `isDeviceOnline`. */
   readonly isDeviceOnline?: boolean;
 }
 
-export interface ControlFailureFormatOptions extends ClassifyControlFailureOptions {
+interface ControlFailureFormatOptions extends ClassifyControlFailureOptions {
   readonly deviceName?: string;
   readonly adjustment?: boolean;
   /** Returned when the failure does not fit any structured bucket (e.g. generic HTTP 500). */
@@ -212,6 +202,7 @@ function classifyRawError(error: unknown, shape: ExtractedErrorShape): Classifie
     error instanceof MiCloudError ||
     lower.includes("mi cloud") ||
     lower.includes("micloud") ||
+    lower.includes("mi home") ||
     lower.includes("xiaomi") ||
     lower.includes("miot") ||
     msg.includes("米家");
@@ -243,6 +234,8 @@ function classifyRawError(error: unknown, shape: ExtractedErrorShape): Classifie
     lower.includes("ratelimit") ||
     msg.includes("请求过于频繁") ||
     msg.includes("请求太频繁") ||
+    msg.includes("請求過於頻繁") ||
+    msg.includes("請求太頻繁") ||
     msg.includes("限流")
   ) {
     return { kind: "rateLimited", isCancellation: false };
@@ -252,8 +245,11 @@ function classifyRawError(error: unknown, shape: ExtractedErrorShape): Classifie
     lower.includes("notlogged") ||
     lower.includes("not logged in") ||
     lower.includes("not signed in") ||
+    lower.includes("sign in to mi home") ||
     msg.includes("未登录米家") ||
-    msg.includes("请先扫码登录米家")
+    msg.includes("请先扫码登录米家") ||
+    msg.includes("未登入米家") ||
+    msg.includes("請先掃碼登入米家")
   ) {
     return { kind: "signedOut", isCancellation: false };
   }
@@ -263,11 +259,17 @@ function classifyRawError(error: unknown, shape: ExtractedErrorShape): Classifie
     lower.includes("session expired") ||
     lower.includes("servicetoken_expired") ||
     lower.includes("token expired") ||
+    lower.includes("mi cloud command failed (2)") ||
+    lower.includes("mi cloud command failed (3)") ||
     /\bcode\s*[:=]?\s*[23]\b/.test(lower) ||
     msg.includes("米家登录已过期") ||
     msg.includes("登录已过期") ||
     msg.includes("米家云指令失败 (2)") ||
-    msg.includes("米家云指令失败 (3)")
+    msg.includes("米家云指令失败 (3)") ||
+    msg.includes("米家登入已過期") ||
+    msg.includes("登入已過期") ||
+    msg.includes("米家雲指令失敗 (2)") ||
+    msg.includes("米家雲指令失敗 (3)")
   ) {
     return { kind: "sessionExpired", isCancellation: false };
   }
@@ -283,7 +285,11 @@ function classifyRawError(error: unknown, shape: ExtractedErrorShape): Classifie
     lower.includes("auth err") ||
     msg.includes("访问令牌无效") ||
     msg.includes("令牌已失效") ||
-    msg.includes("令牌无效")
+    msg.includes("令牌无效") ||
+    msg.includes("存取權杖無效") ||
+    msg.includes("訪問令牌無效") ||
+    msg.includes("權杖已失效") ||
+    msg.includes("權杖無效")
   ) {
     return {
       kind: isMijiaContext ? "sessionExpired" : "tokenRejected",
@@ -297,13 +303,17 @@ function classifyRawError(error: unknown, shape: ExtractedErrorShape): Classifie
     /\bunavailable\b/.test(lower) ||
     msg.includes("设备未响应或离线") ||
     msg.includes("设备离线") ||
-    msg.includes("当前离线")
+    msg.includes("当前离线") ||
+    msg.includes("裝置未響應或離線") ||
+    msg.includes("裝置離線") ||
+    msg.includes("目前離線")
   ) {
     return { kind: "deviceOffline", isCancellation: false };
   }
 
   const negMijiaMatch =
-    msg.match(/米家(?:错误码|云指令失败)\s*\(?(-[1-9]\d*)\)?/) ??
+    msg.match(/米家(?:错误码|云指令失败|錯誤碼|雲指令失敗)\s*\(?(-[1-9]\d*)\)?/) ??
+    msg.match(/\bmi\s+cloud\s+command\s+failed\s*\((-[1-9]\d*)\)/i) ??
     msg.match(/\bmiot\s+error\s+(-[1-9]\d*)\b/i);
   if (negMijiaMatch?.[1]) {
     const negCode = Number.parseInt(negMijiaMatch[1], 10);
@@ -337,7 +347,13 @@ function classifyRawError(error: unknown, shape: ExtractedErrorShape): Classifie
     msg.includes("网络连接超时") ||
     msg.includes("网络异常") ||
     msg.includes("网络不可达") ||
-    msg.includes("连接超时")
+    msg.includes("连接超时") ||
+    msg.includes("網路逾時") ||
+    msg.includes("網路連線逾時") ||
+    msg.includes("網路異常") ||
+    msg.includes("網路不可達") ||
+    msg.includes("連線逾時") ||
+    msg.includes("網絡超時")
   ) {
     return { kind: "network", isCancellation: false };
   }
@@ -374,7 +390,7 @@ export function classifyControlFailure(
   return direct;
 }
 
-export function controlFailureVerb(deviceName: string, adjustment = false): string {
+function controlFailureVerb(deviceName: string, adjustment = false): string {
   const trimmed = deviceName.trim();
   if (!trimmed) {
     return adjustment
@@ -386,7 +402,7 @@ export function controlFailureVerb(deviceName: string, adjustment = false): stri
     : trText("{name} 操作未生效", "{name} action failed", { name: trimmed });
 }
 
-export function formatControlFailureReason(
+function formatControlFailureReason(
   failure: Exclude<ClassifiedControlFailure, { readonly kind: "cancelled" }>,
 ): string {
   switch (failure.kind) {

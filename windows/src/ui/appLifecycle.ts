@@ -19,9 +19,8 @@ import { assistantEndpointIdentity, inferAssistantPreset } from "../core/assista
 import { setLanguage, resolveLanguage } from "../core/i18n.js";
 import { applyTemperatureUnit } from "../core/temperature.js";
 import { cloudRefreshDue } from "../core/models.js";
-import { normalizeGlobalShortcut, recordShortcutFromKeyEvent } from "./panelPrefs.js";
+import { normalizeGlobalShortcut, recordShortcutFromKeyEvent, tr3 } from "./panelPrefs.js";
 import { APP_VERSION } from "./appConstants.js";
-import { trText } from "../core/quickActions.js";
 import { invokeTauriVoid } from "./transport.js";
 import { stripCredentialFieldsFromStoredCopies, writeSettingsForStorage } from "./settings.js";
 import type { SettingsTab } from "./settingsViews.js";
@@ -195,8 +194,9 @@ export async function persistCredentials(host: MenuMijiaWindowsApp): Promise<voi
     } catch {
       // The credential manager refused the write; never fall back to plaintext storage.
       host.replyBanner = {
-        text: trText(
+        text: tr3(
           "无法将凭据保存到 Windows 凭据管理器，请检查系统凭据设置。",
+          "無法將憑據儲存到 Windows 憑據管理員，請檢查系統憑據設定。",
           "Could not save credentials to Windows Credential Manager; check system settings.",
         ),
         source: t("出错提示"),
@@ -276,8 +276,8 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     host.qrTicket = null;
     host.qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");
     host.replyBanner = {
-      text: trText("已退出米家账号", "Signed out of Xiaomi Home"),
-      source: trText("账号管理", "Account"),
+      text: tr3("已退出米家账号", "已登出米家帳號", "Signed out of Xiaomi Home"),
+      source: tr3("账号管理", "帳號管理", "Account"),
     };
     writeSettingsForStorage(host.settings);
     submitServiceEndpoints(host, false);
@@ -291,7 +291,7 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
       } catch (error: unknown) {
         const detail = error instanceof Error && error.message.trim() ? ` (${error.message.trim()})` : "";
         host.replyBanner = {
-          text: `${trText("无法从系统凭据库移除米家登录，请重试", "Could not remove Xiaomi sign-in from the OS credential vault; please retry")}${detail}`,
+          text: `${tr3("无法从系统凭据库移除米家登录，请重试", "無法從系統憑據庫移除米家登入，請重試", "Could not remove Xiaomi sign-in from the OS credential vault; please retry")}${detail}`,
           source: t("出错提示"),
           isError: true,
         };
@@ -371,8 +371,9 @@ export function saveUpdateState(host: MenuMijiaWindowsApp): void {
 export async function checkForAppUpdate(host: MenuMijiaWindowsApp, manual: boolean): Promise<void> {
     if (host.settings.connectionMode === "demo") {
       if (manual) {
-        const text = trText(
+        const text = tr3(
           "演示模式下不发起联网更新检查，切换真实数据源后再试。",
+          "示範模式下不發起聯網更新檢查，切換真實資料來源後再試。",
           "Update checks are disabled in demo mode; switch to a live source first.",
         );
         host.updateStatusMessage = { text, isError: false };
@@ -456,8 +457,9 @@ export function openUpdatePage(host: MenuMijiaWindowsApp): void {
 export async function startUpdateInstall(host: MenuMijiaWindowsApp): Promise<void> {
     if (host.isInstallingUpdate || !host.availableUpdate) return;
     if (host.settings.connectionMode === "demo") {
-      const text = trText(
+      const text = tr3(
         "演示模式下不发起联网下载，切换真实数据源后再试。",
+        "示範模式下不發起聯網下載，切換真實資料來源後再試。",
         "Update downloads are disabled in demo mode; switch to a live source first.",
       );
       host.updateStatusMessage = { text, isError: false };

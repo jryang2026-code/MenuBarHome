@@ -1,7 +1,7 @@
 import { ManualControlPolicy } from "./assistant/actionPolicy.js";
 import { inverseCommands } from "./commandEffects.js";
 import type { LanguagePreference } from "./i18n.js";
-import { isDeviceActiveOn, type DeviceCommand, type DeviceIntent, type FacetControl, type HomeScene, type SmartDevice } from "./models.js";
+import { isDeviceActiveOn, type DeviceCommand, type FacetControl, type HomeScene, type SmartDevice } from "./models.js";
 import { planQuickAction, type QuickActionId } from "./quickActions.js";
 import { defaultSafetyStorage, extractSensorObservations, tr3, type KeyValueStorageLike, type SensorAlertKind, type SensorObservation } from "./safetyAndHealth.js";
 import { extractSensorLiveMetrics } from "./sensorHistory.js";
@@ -32,7 +32,7 @@ export function isAutomationTrigger(value: unknown): value is AutomationTrigger 
   return typeof value === "string" && TRIGGER_SET.has(value);
 }
 
-export type AutomationPermission = "location" | "focus" | "calendar";
+type AutomationPermission = "location" | "focus" | "calendar";
 
 export function automationRequiredPermission(trigger: AutomationTrigger): AutomationPermission | null {
   if (trigger === "wifiNetworkJoined" || trigger === "wifiNetworkLeft") return "location";
@@ -117,13 +117,13 @@ export interface SensorThresholdCondition {
   readonly alertKind?: SensorAlertKind;
 }
 
-export interface ScheduledTimeConfig {
+interface ScheduledTimeConfig {
   readonly hour: number;
   readonly minute: number;
   readonly weekdays?: readonly number[];
 }
 
-export interface AutomationTriggerOptions {
+interface AutomationTriggerOptions {
   readonly batteryThresholdPercent: number;
   readonly powerSaverEnabled?: boolean;
   readonly wifiSSID: string | null;
@@ -133,7 +133,7 @@ export interface AutomationTriggerOptions {
   readonly sensorCondition?: SensorThresholdCondition | null;
 }
 
-export function createAutomationTriggerOptions(
+function createAutomationTriggerOptions(
   partial: Partial<{
     readonly batteryThresholdPercent: number;
     readonly powerSaverEnabled: boolean;
@@ -163,7 +163,7 @@ export function createAutomationTriggerOptions(
   };
 }
 
-export const WIFI_SSID_LIMIT = 20;
+const WIFI_SSID_LIMIT = 20;
 
 export type AutomationWiFiCondition =
   | { readonly kind: "any" }
@@ -184,10 +184,10 @@ export function normalizeWiFiSSIDs(ssids: readonly string[]): string[] {
   return out;
 }
 
-export type AutomationWiFiEvaluationStatus =
+type AutomationWiFiEvaluationStatus =
   | "satisfied" | "not-authorized" | "no-network" | "network-not-listed" | "network-excluded" | "empty-list";
 
-export interface AutomationWiFiEvaluation {
+interface AutomationWiFiEvaluation {
   readonly status: AutomationWiFiEvaluationStatus;
   readonly isSatisfied: boolean;
   readonly ssid?: string;
@@ -214,7 +214,7 @@ export function evaluateWiFiCondition(
     : { status: "satisfied", isSatisfied: true, ssid };
 }
 
-export interface AutomationConditions {
+interface AutomationConditions {
   readonly wifi: AutomationWiFiCondition;
 }
 
@@ -228,14 +228,6 @@ export type AutomationAction =
   | { readonly kind: "quickAction"; readonly quickAction: QuickActionId }
   | { readonly kind: "devices"; readonly deviceIds: readonly string[]; readonly isOn: boolean }
   | { readonly kind: "scene"; readonly sceneId: string };
-
-export function automationActionIntents(action: AutomationAction): DeviceIntent[] {
-  if (action.kind === "quickAction") return [];
-  if (action.kind === "devices") {
-    return action.deviceIds.map((id) => ({ targetId: id, operation: { kind: "power", isOn: action.isOn } }));
-  }
-  return [{ targetId: action.sceneId, operation: { kind: "activateScene" } }];
-}
 
 export function summarizeAutomationAction(
   action: AutomationAction,
@@ -505,15 +497,11 @@ export class AutomationTriggerDeduper {
   }
 }
 
-export function rulesForTrigger(trigger: AutomationTrigger, rules: readonly AutomationRule[]): AutomationRule[] {
-  return rules.filter((r) => r.isEnabled && r.trigger === trigger);
-}
+type AwaySignal = "screenLocked" | "screenUnlocked" | "willSleep" | "displayDidSleep";
 
-export type AwaySignal = "screenLocked" | "screenUnlocked" | "willSleep" | "displayDidSleep";
+type AwayOutcome = "screenLockedOnly" | "lidClosedSleep" | "systemSleep";
 
-export type AwayOutcome = "screenLockedOnly" | "lidClosedSleep" | "systemSleep";
-
-export function awayOutcomeTrigger(outcome: AwayOutcome): AutomationTrigger {
+function awayOutcomeTrigger(outcome: AwayOutcome): AutomationTrigger {
   if (outcome === "screenLockedOnly") return "screenLocked";
   return outcome === "lidClosedSleep" ? "lidClosedSleep" : "systemSleep";
 }
@@ -571,7 +559,7 @@ export class AwayArbitrator {
   }
 }
 
-export interface SystemContextSnapshot {
+interface SystemContextSnapshot {
   readonly isLocked: boolean;
   readonly isDisplayAsleep: boolean;
   readonly isSystemAsleep: boolean;
@@ -587,7 +575,7 @@ export interface SystemContextSnapshot {
   readonly focusModeEnabled: boolean;
 }
 
-export function createDefaultSystemContextSnapshot(partial: Partial<SystemContextSnapshot> = {}): SystemContextSnapshot {
+function createDefaultSystemContextSnapshot(partial: Partial<SystemContextSnapshot> = {}): SystemContextSnapshot {
   return {
     isLocked: false, isDisplayAsleep: false, isSystemAsleep: false, lidClosed: false,
     onExternalPower: null, batteryPercent: null, powerSaverEnabled: false,
@@ -611,7 +599,7 @@ export type SystemContextEvent =
   | { readonly kind: "calendarMeetingSoon"; readonly eventId: string; readonly startsInMinutes: number }
   | { readonly kind: "tick" };
 
-export interface AutomationUndoStep {
+interface AutomationUndoStep {
   readonly deviceId: string;
   readonly commands: readonly DeviceCommand[];
 }
@@ -780,7 +768,7 @@ function commandsForPowerIntent(
   }
 }
 
-export interface ExecuteAutomationRuleOptions {
+interface ExecuteAutomationRuleOptions {
   readonly nowMs?: number;
   readonly scope?: string;
   readonly displayDevices?: readonly SmartDevice[];
@@ -1264,7 +1252,7 @@ export interface DoorbellRing {
   readonly key: string;
 }
 
-export function createDoorbellRing(deviceId: string, entityId: string, firedAt: string): DoorbellRing {
+function createDoorbellRing(deviceId: string, entityId: string, firedAt: string): DoorbellRing {
   return { deviceId, entityId, firedAt, key: `${entityId}@${firedAt}` };
 }
 
@@ -1281,7 +1269,7 @@ export function isDoorbellEventState(entityId: string, attributes: Readonly<Reco
   return entityId.startsWith("event.") && attributes.device_class === "doorbell";
 }
 
-export function doorbellPressTimestamp(entityId: string, stateValue: string, attributes: Readonly<Record<string, unknown>>): string | null {
+function doorbellPressTimestamp(entityId: string, stateValue: string, attributes: Readonly<Record<string, unknown>>): string | null {
   if (!isDoorbellEventState(entityId, attributes)) return null;
   const trimmed = stateValue.trim();
   return trimmed === "" || trimmed === "unknown" || trimmed === "unavailable" ? null : trimmed;
@@ -1398,14 +1386,14 @@ export class DoorbellDetector {
   }
 }
 
-export interface DoorbellCameraViewLike {
+interface DoorbellCameraViewLike {
   activeLiveCameraId: string | null;
   liveCameraHidden: boolean;
   openCameraLiveView(id: string): void;
   hideCameraLiveView(): void;
 }
 
-export interface RecordedDoorbellRing {
+interface RecordedDoorbellRing {
   readonly ring: DoorbellRing;
   readonly scope: string;
   readonly dateMs: number;

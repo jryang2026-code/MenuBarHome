@@ -67,7 +67,7 @@ const LONG_OPAQUE_TOKEN_PATTERN = /\b[A-Za-z0-9+/=_-]{32,}\b/g;
 const SECRET_KV_PATTERN =
   /\b(?:serviceToken|ssecurity|passToken|haToken|bridgeToken|access_token|authorization)\s*[:=]\s*[^\s,;)"']+/gi;
 
-export function redactSensitiveText(raw: string,
+function redactSensitiveText(raw: string,
   extraForbiddenLiterals: readonly string[] = [],
 ): string { let out = raw;
   for (const literal of extraForbiddenLiterals) { const trimmed = literal.trim();
@@ -127,7 +127,7 @@ export function assertZeroSensitiveLeaks(text: string,
   }
 }
 
-export interface SanitizedMiotSpecSummary { readonly urnType: string;
+interface SanitizedMiotSpecSummary { readonly urnType: string;
   readonly deviceType: string;
   readonly serviceNames: readonly string[];
   readonly propertyCount: number;
@@ -185,14 +185,14 @@ export function formatSpecSummaryText(summary: SanitizedMiotSpecSummary,
   );
 }
 
-export type UnsupportedDeviceReason = | "unknownModel"
+type UnsupportedDeviceReason = | "unknownModel"
   | "noControllableItems"
   | "unsupportedEntities"
   | "noActiveEntities"
   | "deviceDisabled"
   | "filteredDuplicate";
 
-export function unsupportedReasonText(reason: UnsupportedDeviceReason,
+function unsupportedReasonText(reason: UnsupportedDeviceReason,
   preference?: LanguagePreference,
 ): string { switch (reason) { case "unknownModel":
       return tr3("没有取到米家设备规格",
@@ -530,11 +530,6 @@ export const UnsupportedDeviceCollector = {
   },
 } as const;
 
-export interface UnsupportedScanContext { readonly backend: HomeBackend | "demo" | "dualSource";
-  readonly miAccountIds: readonly string[];
-  readonly haBaseURL: string;
-}
-
 export interface ScanUnsupportedOptions { readonly connectionMode?: HomeBackend | "demo";
   readonly dualSourceEnabled?: boolean;
   readonly miAccounts?: readonly MiAccount[];
@@ -548,7 +543,7 @@ export interface ScanUnsupportedOptions { readonly connectionMode?: HomeBackend 
   readonly clientFactory?: (session: MiSession, transport: HttpTransport) => MiCloudClient;
 }
 
-export interface ScanUnsupportedResult { readonly devices: UnsupportedDevice[];
+interface ScanUnsupportedResult { readonly devices: UnsupportedDevice[];
   readonly miHomeCount: number | null;
   readonly miSharedHomeCount: number | null;
   readonly errors: readonly string[];
@@ -744,7 +739,7 @@ export class UnsupportedDeviceScanner { public devices: UnsupportedDevice[] = []
   }
 }
 
-export type DiagnosticsErrorCategory = | "miCloud"
+type DiagnosticsErrorCategory = | "miCloud"
   | "homeAssistant"
   | "camera"
   | "command"
@@ -753,7 +748,7 @@ export type DiagnosticsErrorCategory = | "miCloud"
   | "network"
   | "unknown";
 
-export interface DiagnosticsErrorSnapshot { readonly timestampMs: number;
+interface DiagnosticsErrorSnapshot { readonly timestampMs: number;
   readonly category: DiagnosticsErrorCategory;
   readonly statusCode?: number | null;
   readonly summary: string;
@@ -893,7 +888,7 @@ export class DiagnosticsLog { private entries: DiagnosticsErrorSnapshot[] = [];
 
 export const appDiagnosticsLog = new DiagnosticsLog();
 
-export type CameraStreamMode = | "xiaomi_p2p_mjpeg"
+type CameraStreamMode = | "xiaomi_p2p_mjpeg"
   | "xiaomi_gateway_p2p_mjpeg"
   | "ha_hls_bridge_mjpeg"
   | "ha_proxy_mjpeg"
@@ -901,12 +896,12 @@ export type CameraStreamMode = | "xiaomi_p2p_mjpeg"
   | "direct_video"
   | "idle";
 
-export type CameraAudioSupport = | "none_mjpeg"
+type CameraAudioSupport = | "none_mjpeg"
   | "muted_video"
   | "active_video"
   | "unsupported";
 
-export interface CameraDiagnosticsEntry { readonly model: string;
+interface CameraDiagnosticsEntry { readonly model: string;
   readonly streamMode: CameraStreamMode;
   readonly audioSupport: CameraAudioSupport;
   readonly lensCount?: number;
@@ -955,7 +950,7 @@ export function deriveCameraDiagnostics(devices: readonly SmartDevice[],
   return out;
 }
 
-export interface PollingBackoffDiagnostics { readonly active: boolean;
+interface PollingBackoffDiagnostics { readonly active: boolean;
   readonly remainingSeconds: number;
   readonly cadenceSeconds?: number | null;
   readonly pausedReason?: "workstation_locked" | "session_expired" | "demo_offline" | null;
@@ -999,7 +994,7 @@ export function derivePollingBackoffDiagnostics(options: { readonly host?: objec
   };
 }
 
-export interface DiagnosticsModelCount { readonly model: string;
+interface DiagnosticsModelCount { readonly model: string;
   readonly count: number;
 }
 
@@ -1013,7 +1008,7 @@ export function summarizeModelCounts(devices: readonly SmartDevice[],
     .sort((a, b) => (a.count !== b.count ? b.count - a.count : a.model < b.model ? -1 : 1));
 }
 
-export interface DiagnosticsReportInput { readonly appVersion: string;
+interface DiagnosticsReportInput { readonly appVersion: string;
   readonly buildNumber?: string;
   readonly osVersion?: string;
   readonly language?: AppLanguage;

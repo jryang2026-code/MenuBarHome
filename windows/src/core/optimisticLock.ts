@@ -11,9 +11,9 @@ export const READ_BACK_BUSY_RETRY_MS = 250;
 /** Attempts a delayed read-back makes while a background sync is running before it gives up. */
 export const READ_BACK_BUSY_RETRY_LIMIT = 40;
 /** How long a fired read-back's confirmation snapshot may stand in for a locked row. */
-export const READ_BACK_CONFIRM_WINDOW_MS = 5_000;
+const READ_BACK_CONFIRM_WINDOW_MS = 5_000;
 
-export interface OptimisticLockWindowLike {
+interface OptimisticLockWindowLike {
   readonly closed?: boolean;
   setTimeout?: (handler: () => void, timeout?: number) => number | ReturnType<typeof setTimeout>;
   clearTimeout?: (id: number | undefined) => void;
@@ -341,7 +341,7 @@ export function getRegisteredUndoActionBatch(
   return action ? undoActionBatches.get(action) ?? null : null;
 }
 
-export class MultiCommandPresetBatch implements UndoActionBatch {
+class MultiCommandPresetBatch implements UndoActionBatch {
   private stopped = false;
   private finished = false;
   private readonly inFlightPromises = new Set<Promise<void>>();
@@ -410,7 +410,7 @@ export class MultiCommandPresetBatch implements UndoActionBatch {
   }
 }
 
-export interface PresetCommandRunnerArgs {
+interface PresetCommandRunnerArgs {
   readonly host: {
     readonly sourceRevision: number;
     readonly devices: readonly SmartDevice[];

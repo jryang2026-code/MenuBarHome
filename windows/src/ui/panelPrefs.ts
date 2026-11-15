@@ -100,7 +100,7 @@ export const TILE_SIZES: ReadonlyArray<{ readonly id: TileSize; readonly title: 
   { id: "panel", get title() { return t("展开面板"); } },
 ];
 
-export interface DeviceGroup {
+interface DeviceGroup {
   readonly id: string;
   readonly name: string;
 }
@@ -196,7 +196,7 @@ export function pinDevice(deviceId: string, prefs: LayoutPrefs): string[] {
   return next;
 }
 
-export function unpinDevice(deviceId: string, prefs: LayoutPrefs): string[] {
+function unpinDevice(deviceId: string, prefs: LayoutPrefs): string[] {
   const id = deviceId.trim();
   const current = pinnedDeviceIds(prefs);
   const next = current.filter((item) => item !== id);
@@ -364,13 +364,13 @@ export function nextSize(size: Exclude<TileSize, "auto">): Exclude<TileSize, "au
   return size === "half" ? "full" : size === "full" ? "panel" : "half";
 }
 
-export interface TileResizeTranslation {
+interface TileResizeTranslation {
   readonly width: number;
   readonly height: number;
 }
 
 /** Drag distance in px that advances one size step (half ↔ full ↔ panel). */
-export const RESIZE_STEP_THRESHOLD = 30;
+const RESIZE_STEP_THRESHOLD = 30;
 
 const ORDERED_CONCRETE_TILE_SIZES: ReadonlyArray<Exclude<TileSize, "auto">> = ["half", "full", "panel"];
 
@@ -406,7 +406,7 @@ export function targetSize(
   return ORDERED_CONCRETE_TILE_SIZES[targetIndex] ?? resolvedStart;
 }
 
-export interface TileResizeSample {
+interface TileResizeSample {
   readonly x: number;
   readonly y: number;
   /** `performance.now()` milliseconds. */
@@ -465,7 +465,7 @@ export function spans(
   return out;
 }
 
-export interface PageSection {
+interface PageSection {
   readonly id: string;
   readonly title: string | null;
   readonly devices: SmartDevice[];
@@ -545,7 +545,7 @@ export function homeOptions(rooms: readonly MiRoom[]): HomeOption[] {
   return order.map((id) => ({ id, name: names.get(id) ?? "", deviceCount: dids.get(id)?.size ?? 0 }));
 }
 
-export type ComfortLevel = "warm" | "cool" | "dry" | "humid" | "comfy";
+type ComfortLevel = "warm" | "cool" | "dry" | "humid" | "comfy";
 
 export function comfort(temperature: number | null, humidity: number | null): { level: ComfortLevel; label: string } {
   const t0 = temperature ?? 24;
@@ -557,22 +557,22 @@ export function comfort(temperature: number | null, humidity: number | null): { 
   return { level: "comfy", label: t("舒适") };
 }
 
-const EFFECT_NAMES: Record<string, string> = {
-  Day: "日光", Night: "月光", None: "无", Warmth: "温馨", Tv: "观影", TV: "观影", Reading: "阅读",
-  Computer: "电脑", Hospitality: "会客", Entertainment: "娱乐", Wakeup: "起床", Dusk: "黄昏", Sleep: "睡眠",
+const EFFECT_NAMES: Record<string, () => string> = {
+  Day: () => t("日光"), Night: () => t("月光"), None: () => t("无"), Warmth: () => t("温馨"), Tv: () => t("观影"), TV: () => t("观影"), Reading: () => t("阅读"),
+  Computer: () => t("电脑"), Hospitality: () => t("会客"), Entertainment: () => t("娱乐"), Wakeup: () => t("起床"), Dusk: () => t("黄昏"), Sleep: () => t("睡眠"),
 };
 
 export function localizeEffect(effect: string): string {
-  const key = EFFECT_NAMES[effect];
-  return key === undefined ? effect : t(key);
+  const resolve = EFFECT_NAMES[effect];
+  return resolve === undefined ? effect : resolve();
 }
 
-const FAN_NAMES: Record<string, string> = { auto: "自动", low: "低", silent: "低", quiet: "低", medium: "中", middle: "中", high: "高" };
+const FAN_NAMES: Record<string, () => string> = { auto: () => t("自动"), low: () => t("低"), silent: () => t("低"), quiet: () => t("低"), medium: () => t("中"), middle: () => t("中"), high: () => t("高") };
 
 export function localizeFanMode(raw: string): string {
   const lower = raw.toLowerCase();
-  const key = FAN_NAMES[lower];
-  if (key !== undefined) return t(key);
+  const resolve = FAN_NAMES[lower];
+  if (resolve !== undefined) return resolve();
   const m = /^level\s*(\d+)$/.exec(lower);
   return m ? t("{level} 档", { level: m[1] ?? "" }) : raw;
 }
@@ -706,7 +706,7 @@ export function normalizeGlobalShortcut(raw: unknown): string {
   return parseGlobalShortcut(raw) ?? DEFAULT_GLOBAL_SHORTCUT;
 }
 
-export interface KeyEventLike {
+interface KeyEventLike {
   readonly key: string;
   readonly code?: string;
   readonly ctrlKey?: boolean;
@@ -715,7 +715,7 @@ export interface KeyEventLike {
   readonly metaKey?: boolean;
 }
 
-export type RecordedShortcutOutcome =
+type RecordedShortcutOutcome =
   | { readonly kind: "cancel" }
   | { readonly kind: "modifier-only" }
   | { readonly kind: "invalid" }

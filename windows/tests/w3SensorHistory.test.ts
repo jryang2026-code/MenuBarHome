@@ -531,7 +531,6 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
       JSON.stringify({
         connectionMode: "demo",
         hasCompletedOnboarding: true,
-        enableGrokBall: false,
         autoCheckUpdates: false,
       }),
     );
@@ -594,7 +593,6 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
       JSON.stringify({
         connectionMode: "demo",
         hasCompletedOnboarding: true,
-        enableGrokBall: false,
         autoCheckUpdates: false,
       }),
     );
@@ -715,7 +713,6 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
         connectionMode: "homeAssistant",
         haBaseURL: "https://ha.example.com",
         hasCompletedOnboarding: true,
-        enableGrokBall: false,
         autoCheckUpdates: false,
       }),
     );
@@ -793,7 +790,6 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
       JSON.stringify({
         connectionMode: "demo",
         hasCompletedOnboarding: true,
-        enableGrokBall: false,
         autoCheckUpdates: false,
       }),
     );
@@ -852,7 +848,6 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
       JSON.stringify({
         connectionMode: "xiaomiCloud",
         hasCompletedOnboarding: true,
-        enableGrokBall: false,
         autoCheckUpdates: false,
         cachedXiaomiDevices: [coldSensor],
       }),
@@ -881,7 +876,6 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
       JSON.stringify({
         connectionMode: "xiaomiCloud",
         hasCompletedOnboarding: true,
-        enableGrokBall: false,
         autoCheckUpdates: false,
       }),
     );
@@ -993,7 +987,6 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
       JSON.stringify({
         connectionMode: "xiaomiCloud",
         hasCompletedOnboarding: true,
-        enableGrokBall: false,
         autoCheckUpdates: false,
       }),
     );
@@ -1053,7 +1046,6 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
         hasCompletedOnboarding: true,
         haBaseURL: "http://192.168.1.50:8123",
         haToken: "ha-tok-env",
-        enableGrokBall: false,
         autoCheckUpdates: false,
       }),
     );

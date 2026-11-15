@@ -3983,7 +3983,7 @@ describe("Home Assistant source", () => {
         return undefined;
       };
       Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
-      localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, enableGrokBall: true, assistantBaseURL: "http://localhost:1234/v1", assistantModel: "controlled-model" }));
+      localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, assistantBaseURL: "http://localhost:1234/v1", assistantModel: "controlled-model" }));
       new MenuMijiaWindowsApp(element("#app"));
       await waitFor(() => !!document.querySelector('[data-body-device="study-light"]'));
       await command("让这里适合观星");

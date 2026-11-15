@@ -23,6 +23,7 @@ import {
   type HARow as Row,
   type HAState,
 } from "./haDomains.js";
+import { t } from "./i18n.js";
 import { sha256 } from "./miCloudCrypto.js";
 import { normalizedKelvinBounds } from "./miCloud/synthesis.js";
 import {
@@ -403,7 +404,7 @@ function cleanHADeviceName(name: string, roomName: string): string {
     .replace(/^(?:直流变频循环扇|米家踢脚线电暖器|Yeelight LED 彩光灯带)\s*/, "")
     .replace(/(?:  灯|  电暖器|  风扇|  音箱|  电视|  开关 开关|  窗帘)$/, "")
     .trim();
-  if (cleanName === "吸顶灯" && roomName !== "全屋") {
+  if (cleanName === "吸顶灯" && roomName !== "全屋" && roomName !== t("全屋")) {
     cleanName = `${roomName}吸顶灯`;
   }
   return cleanName || name.trim();
@@ -930,9 +931,12 @@ export class HomeAssistantSynthesizer {
     const resolveRoom = (areaId: string): { roomId: string; roomName: string } => {
       const rawRoomName = text(
         snapshot.areas.find((area) => area.area_id === areaId)?.name,
-        "全屋",
+        t("全屋"),
       ).trim();
-      const roomName = !rawRoomName || rawRoomName === "默认房间" ? "全屋" : rawRoomName;
+      const roomName =
+        !rawRoomName || rawRoomName === "默认房间" || rawRoomName === "預設房間"
+          ? t("全屋")
+          : rawRoomName;
       return {
         roomId: areaId || roomIds[roomName] || "other",
         roomName,
@@ -1039,7 +1043,7 @@ export class HomeAssistantSynthesizer {
       }
       append(
         id,
-        nonEmpty(device.name_by_user, nonEmpty(device.name, "智能设备")),
+        nonEmpty(device.name_by_user, nonEmpty(device.name, t("智能设备"))),
         text(
           device.area_id,
           text(entities.find((entity) => entity.area_id)?.area_id),
@@ -1097,7 +1101,7 @@ export class HomeAssistantSynthesizer {
       (id) => ({
         id,
         name:
-          devices.find((device) => device.roomId === id)?.roomName ?? "全屋",
+          devices.find((device) => device.roomId === id)?.roomName ?? t("全屋"),
         deviceCount: devices.filter((device) => device.roomId === id).length,
       }),
     );

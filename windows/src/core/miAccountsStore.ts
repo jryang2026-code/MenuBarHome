@@ -93,7 +93,7 @@ export function miAccountId(session: Pick<MiSession, "userId" | "region">): stri
   return `mi:${region}:${bytesToHex(digest.subarray(0, 8))}`;
 }
 
-export function miAccountSlotId(accountIdOrSession: string | Pick<MiSession, "userId" | "region">,
+function miAccountSlotId(accountIdOrSession: string | Pick<MiSession, "userId" | "region">,
 ): string { const id = typeof accountIdOrSession === "string"
       ? accountIdOrSession
       : miAccountId(accountIdOrSession);
@@ -202,16 +202,6 @@ function writePersistedAccountExpiryMap(storage: Storage | null,
   }
 }
 
-export function isAccountSessionRejected(session: MiSession | null | undefined,
-  storage: Storage | null = defaultStorage(),
-): boolean { if (!session) return false;
-  const accountId = miAccountId(session);
-  const fp = miSessionFingerprint(session);
-  const map = readPersistedAccountExpiryMap(storage);
-  if (map[accountId]?.fingerprint === fp) return true;
-  return isPersistedMiSessionExpired(session, storage);
-}
-
 export function markAccountSessionRejected(session: MiSession | null | undefined,
   expired: boolean,
   options: { readonly isPrimary?: boolean;
@@ -290,7 +280,7 @@ export function formatAccountTokenNotice(account: MiAccount,
   );
 }
 
-export interface MiAccountIndexEntry { readonly id: string;
+interface MiAccountIndexEntry { readonly id: string;
   readonly slotId: string;
   readonly region: string;
   readonly maskedUserId: string;
@@ -665,7 +655,7 @@ export function buildHomeOptionsFromMiRooms(rooms: readonly MiRoom[],
   }));
 }
 
-export function stampAccountSnapshot(home: SynthesizedHome,
+function stampAccountSnapshot(home: SynthesizedHome,
   homes: readonly AccountScopedHomeOption[],
   account: MiAccount,
   namespaceIds = true,
@@ -698,7 +688,7 @@ export function stampAccountSnapshot(home: SynthesizedHome,
   };
 }
 
-export function extractDeviceMiotCommandDids(device: SmartDevice,
+function extractDeviceMiotCommandDids(device: SmartDevice,
   facets: readonly FacetControl[] = [],
 ): string[] { const dids = new Set<string>();
   const addAddress = (entityId: string | null | undefined): void => { if (!entityId) return;
@@ -763,7 +753,7 @@ export function extractDeviceMiotCommandDids(device: SmartDevice,
   return [...dids];
 }
 
-export function aggregateAccountConnectionStatus(accounts: readonly MiAccount[],
+function aggregateAccountConnectionStatus(accounts: readonly MiAccount[],
   statuses: Readonly<Record<string, ConnectionStatus>>,
 ): ConnectionStatus { if (accounts.length === 0) { return {
       kind: "disconnected",
@@ -1016,7 +1006,7 @@ interface AccountBackoffEntry {
 
 const perAccountBackoffMap = new Map<string, AccountBackoffEntry>();
 
-export function getAccountRateLimitBackoffUntilMs(
+function getAccountRateLimitBackoffUntilMs(
   account: MiAccount,
   nowMs = Date.now(),
 ): number | null {
@@ -1037,7 +1027,7 @@ export function clearAccountRateLimitBackoff(accountId?: string): void {
   }
 }
 
-export interface RefreshMiAccountsOptions {
+interface RefreshMiAccountsOptions {
   readonly accounts: readonly MiAccount[];
   readonly transport: HttpTransport;
   readonly specResolver: MiotSpecResolver;

@@ -172,7 +172,6 @@ interface MockLifecycleHost extends ResumeRecoveryHost {
   pendingCloudRender: boolean;
   lastUndoAction: { expiresAtMs: number } | null;
   isRecordingHotkey: boolean;
-  isGrokBallStageExpanded: boolean;
   cameraLive: { activeLiveCameraId: string | null; liveCameraHidden: boolean };
   refreshCalls: boolean[];
   renderCalls: number;
@@ -184,7 +183,6 @@ interface MockLifecycleHost extends ResumeRecoveryHost {
   queueBackgroundRender(): void;
   hasBlockingPanelInteraction(): boolean;
   maybeRefreshProactiveInBackground(): void;
-  syncGrokBallEmotion(): void;
 }
 
 function createMockHost(overrides: Partial<MockLifecycleHost> = {}): MockLifecycleHost {
@@ -203,7 +201,6 @@ function createMockHost(overrides: Partial<MockLifecycleHost> = {}): MockLifecyc
     pendingCloudRender: false,
     lastUndoAction: null,
     isRecordingHotkey: false,
-    isGrokBallStageExpanded: false,
     cameraLive: { activeLiveCameraId: null, liveCameraHidden: false },
     refreshCalls: [],
     renderCalls: 0,
@@ -226,7 +223,6 @@ function createMockHost(overrides: Partial<MockLifecycleHost> = {}): MockLifecyc
       return false;
     },
     maybeRefreshProactiveInBackground() {},
-    syncGrokBallEmotion() {},
     ...overrides,
   };
   return host;

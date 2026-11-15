@@ -43,20 +43,21 @@ export interface DeviceSourceIdentity { readonly dids: readonly string[];
 
 function sortedUnique(values: readonly string[]): string[] {
   return [...new Set(values.filter((v) => v.length > 0))].sort(); } 
-function normalizeDisplayRoomName(raw: string): string { const trimmed = raw.trim();
-  if (trimmed === "" ||
-    trimmed === "默认房间" ||
-    trimmed === "未分配" ||
-    trimmed.toLowerCase() === "default" ||
-    trimmed.toLowerCase() === "unassigned"
-  ) { return "全屋";
+function normalizeDisplayRoomName(raw: string, languagePreference?: LanguagePreference): string {
+  if (isRoomUnassigned(raw)) {
+    return tr3("全屋", "全屋", "Whole Home", undefined, languagePreference);
   }
-  return trimmed; } export function isRoomUnassigned(roomName: string): boolean { const name = roomName.trim();
+  return raw.trim();
+}
+export function isRoomUnassigned(roomName: string): boolean { const name = roomName.trim();
   const lower = name.toLowerCase(); return (name === "" ||
     name === "全屋" ||
     name === "默认房间" ||
+    name === "預設房間" ||
     name === "未分配" ||
+    lower === "whole home" ||
     lower === "all rooms" ||
+    lower === "default" ||
     lower === "default room" ||
     lower === "unassigned"
   );
@@ -89,7 +90,7 @@ export const DeviceIdentityNormalizer = {
     if (!isFormattedMac) return null; const hex = trimmed.replace(/[^0-9a-fA-F]/g, "").toLowerCase();
     if (hex.length !== 12) return null; if (hex === "000000000000" || hex === "ffffffffffff") return null; return hex;
   }, 
-  normalizedRoomName(raw: string): string { return normalizeDisplayRoomName(raw).trim().toLowerCase();
+  normalizedRoomName(raw: string): string { return isRoomUnassigned(raw) ? "全屋" : raw.trim().toLowerCase();
   }, 
   normalizedToken(raw: string): string { return raw
       .toLowerCase()
@@ -782,7 +783,9 @@ export const DeviceDeduplicator = {
     const collectRoomIdentities = (home?: SynthesizedHome) => { if (!home) return;
       const recordRoom = (name: string, id: string) => { const key = DeviceIdentityNormalizer.normalizedRoomName(name);
         if (!key) return; if (!updatedRooms.idsByName[key]) updatedRooms.idsByName[key] = id;
-        if (!updatedRooms.displayNames[key]) { updatedRooms.displayNames[key] = normalizeDisplayRoomName(name); } };
+        if (isRoomUnassigned(name) || !updatedRooms.displayNames[key]) {
+          updatedRooms.displayNames[key] = normalizeDisplayRoomName(name, options.languagePreference);
+        } };
       for (const room of home.rooms) recordRoom(room.name, room.id);
       for (const dev of home.devices) recordRoom(dev.roomName, dev.roomId);
     };
@@ -842,8 +845,8 @@ export const DeviceDeduplicator = {
       const accountLabel = winnerDev.accountLabel ?? otherDev?.accountLabel; 
       const roomKey = DeviceIdentityNormalizer.normalizedRoomName(roomName);
       if (roomKey) { if (!updatedRooms.idsByName[roomKey]) updatedRooms.idsByName[roomKey] = roomId;
-        if (!updatedRooms.displayNames[roomKey]) {
-          updatedRooms.displayNames[roomKey] = normalizeDisplayRoomName(roomName);
+        if (isRoomUnassigned(roomName) || !updatedRooms.displayNames[roomKey]) {
+          updatedRooms.displayNames[roomKey] = normalizeDisplayRoomName(roomName, options.languagePreference);
         }
         const regRoomId = updatedRooms.idsByName[roomKey];
         if (regRoomId && !hasDistinctAccountScope(regRoomId, roomId)) { roomId = regRoomId; }
@@ -919,7 +922,7 @@ export const DeviceDeduplicator = {
           }));
         if (states.length > 0) { mergedDevices[i] = clampLightGroupDevice(dev, states); } } } 
     const roomOrder = new Map<string, number>();
-    const registerOrder = (rawName: string) => { const disp = normalizeDisplayRoomName(rawName);
+    const registerOrder = (rawName: string) => { const disp = normalizeDisplayRoomName(rawName, options.languagePreference);
       if (!roomOrder.has(disp)) roomOrder.set(disp, roomOrder.size); };
     for (const r of haInput?.home.rooms ?? []) registerOrder(r.name);
     for (const r of miInput?.home.rooms ?? []) registerOrder(r.name);

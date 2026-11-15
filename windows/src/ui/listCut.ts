@@ -1,3 +1,4 @@
+import { t } from "../core/i18n.js";
 import type { DeviceKind, SmartDevice } from "../core/models.js";
 import {
   applyKindOrder,
@@ -19,7 +20,7 @@ export interface RoomOption {
   readonly name: string;
 }
 
-export interface ListCutFilterOptions {
+interface ListCutFilterOptions {
   readonly layout?: LayoutPrefs;
   readonly hiddenIds?: Iterable<string>;
   readonly includeHidden?: boolean;
@@ -48,20 +49,20 @@ export const KIND_CHIP: Record<
   DeviceKindTag,
   { readonly title: string; readonly hint?: string }
 > = {
-  climate: { title: "空调", hint: "也包括电暖器、温控器和电热毯" },
-  light: { title: "灯" },
-  plug: { title: "插座", hint: "也包括开关、香薰，以及带开关的小家电" },
-  fan: { title: "风扇", hint: "也包括净化器、新风、加湿器和除湿器" },
-  humidifier: { title: "加湿器" },
-  vacuum: { title: "扫地机" },
-  fridge: { title: "冰箱" },
-  speaker: { title: "音箱" },
-  tv: { title: "电视" },
-  camera: { title: "摄像机" },
-  sensor: { title: "传感器", hint: "也包括没有开关的小家电" },
-  cover: { title: "门窗" },
-  appliance: { title: "家电", hint: "也包括热水器、浴霸、油烟机与洗衣烘干洗碗机" },
-  generic: { title: "通用", hint: "没有专用卡片、但仍有可用控件的设备" },
+  climate: { get title() { return t("空调"); }, get hint() { return t("也包括电暖器、温控器和电热毯"); } },
+  light: { get title() { return t("灯"); } },
+  plug: { get title() { return t("插座"); }, get hint() { return t("也包括开关、香薰，以及带开关的小家电"); } },
+  fan: { get title() { return t("风扇"); }, get hint() { return t("也包括净化器、新风、加湿器和除湿器"); } },
+  humidifier: { get title() { return t("加湿器"); } },
+  vacuum: { get title() { return t("扫地机"); } },
+  fridge: { get title() { return t("冰箱"); } },
+  speaker: { get title() { return t("音箱"); } },
+  tv: { get title() { return t("电视"); } },
+  camera: { get title() { return t("摄像机"); } },
+  sensor: { get title() { return t("传感器"); }, get hint() { return t("也包括没有开关的小家电"); } },
+  cover: { get title() { return t("门窗"); } },
+  appliance: { get title() { return t("家电"); }, get hint() { return t("也包括热水器、浴霸、油烟机与洗衣烘干洗碗机"); } },
+  generic: { get title() { return t("通用"); }, get hint() { return t("没有专用卡片、但仍有可用控件的设备"); } },
 };
 
 function resolveHiddenSet(

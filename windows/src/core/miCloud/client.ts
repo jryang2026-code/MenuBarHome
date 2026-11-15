@@ -1,3 +1,4 @@
+import { t } from "../i18n.js";
 import { MiCloudCrypto } from "../miCloudCrypto.js";
 import {
   asIdString,
@@ -194,10 +195,10 @@ export class MiCloudClient {
 
   static decodeResponse(body: string, statusCode: number, signedNonce: string): unknown {
     if (statusCode === 401 || statusCode === 403) {
-      throw new MiCloudError("sessionExpired", "米家登录已过期，请重新扫码");
+      throw new MiCloudError("sessionExpired", t("米家登录已过期，请重新扫码"));
     }
     if (statusCode === 429) {
-      throw new MiCloudError("http", `米家云服务 HTTP ${statusCode}`, statusCode);
+      throw new MiCloudError("http", t("米家云服务 HTTP {status}", { status: statusCode }), statusCode);
     }
     const plain = parseJsonObject(body);
     if (plain) {
@@ -205,7 +206,7 @@ export class MiCloudClient {
         // `code` 0 means the cloud answered, so a non-200 status is an HTTP failure worth retrying.
         if (Math.trunc(plain["code"]) === 0) {
           if (statusCode !== 200) {
-            throw new MiCloudError("http", `米家云服务 HTTP ${statusCode}`, statusCode);
+            throw new MiCloudError("http", t("米家云服务 HTTP {status}", { status: statusCode }), statusCode);
           }
           return plain["result"] ?? null;
         }
@@ -213,25 +214,25 @@ export class MiCloudClient {
       }
       const message = responseMessage(plain);
       if (looksSessionExpired(message)) {
-        throw new MiCloudError("sessionExpired", "米家登录已过期，请重新扫码");
+        throw new MiCloudError("sessionExpired", t("米家登录已过期，请重新扫码"));
       }
       if (statusCode !== 200) {
-        throw new MiCloudError("http", `米家云服务 HTTP ${statusCode}`, statusCode);
+        throw new MiCloudError("http", t("米家云服务 HTTP {status}", { status: statusCode }), statusCode);
       }
-      throw new MiCloudError("badResponse", "米家云响应缺少状态码");
+      throw new MiCloudError("badResponse", t("米家云响应缺少状态码"));
     }
     if (statusCode !== 200) {
-      throw new MiCloudError("http", `米家云服务 HTTP ${statusCode}`, statusCode);
+      throw new MiCloudError("http", t("米家云服务 HTTP {status}", { status: statusCode }), statusCode);
     }
     let decryptedText: string;
     try {
       decryptedText = MiCloudCrypto.decryptResponse(body, signedNonce);
     } catch {
-      throw new MiCloudError("badResponse", "米家云响应无法解密");
+      throw new MiCloudError("badResponse", t("米家云响应无法解密"));
     }
     const json = parseJsonObject(decryptedText);
     if (!json) {
-      throw new MiCloudError("badResponse", "米家云解密后非 JSON");
+      throw new MiCloudError("badResponse", t("米家云解密后非 JSON"));
     }
     return MiCloudClient.unwrapResult(json);
   }
@@ -242,17 +243,20 @@ export class MiCloudClient {
       // the user gets the QR hint instead of a generic parse error (#76).
       const message = responseMessage(json);
       if (looksSessionExpired(message)) {
-        throw new MiCloudError("sessionExpired", "米家登录已过期，请重新扫码");
+        throw new MiCloudError("sessionExpired", t("米家登录已过期，请重新扫码"));
       }
-      throw new MiCloudError("badResponse", `米家云响应缺少状态码${message ? `：${message}` : ""}`);
+      throw new MiCloudError(
+        "badResponse",
+        message ? t("米家云响应缺少状态码：{message}", { message }) : t("米家云响应缺少状态码"),
+      );
     }
     const code = Math.trunc(json["code"]);
     const message = responseMessage(json);
     if (code === 0) return json["result"] ?? null;
     if (code === 2 || code === 3 || looksSessionExpired(message)) {
-      throw new MiCloudError("sessionExpired", "米家登录已过期，请重新扫码", code);
+      throw new MiCloudError("sessionExpired", t("米家登录已过期，请重新扫码"), code);
     }
-    throw new MiCloudError("api", `米家云指令失败 (${code})：${message}`, code);
+    throw new MiCloudError("api", t("米家云指令失败 ({code})：{message}", { code, message }), code);
   }
 
   static parseDeviceList(result: unknown): MiDeviceRecord[] {
@@ -693,7 +697,7 @@ export class MiCloudClient {
             ? Math.trunc((item as Record<string, unknown>)["code"] as number)
             : 0;
           if (code < 0) {
-            throw new MiCloudError("api", "设备未响应或离线", code);
+            throw new MiCloudError("api", t("设备未响应或离线"), code);
           }
         }
       }
@@ -718,7 +722,7 @@ export class MiCloudClient {
         ? Math.trunc((result as Record<string, unknown>)["code"] as number)
         : 0;
       if (code < 0) {
-        throw new MiCloudError("api", "设备未响应或离线", code);
+        throw new MiCloudError("api", t("设备未响应或离线"), code);
       }
     }
     return result;

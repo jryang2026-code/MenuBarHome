@@ -473,7 +473,6 @@ describe("A10 Chinese numeral delays (1..99, compound, trailing) & cross-home sc
         connectionMode: "xiaomiCloud",
         hasCompletedOnboarding: true,
         autoCheckUpdates: false,
-        enableGrokBall: false,
       }),
     );
 
@@ -612,7 +611,6 @@ describe("A13 Panel keyboard navigation (Tab/Shift+Tab, Ctrl+,, Escape hide_pane
         connectionMode: "demo",
         hasCompletedOnboarding: true,
         autoCheckUpdates: false,
-        enableGrokBall: false,
       }),
     );
     app = new MenuMijiaWindowsApp(document.querySelector<HTMLElement>("#app")!);
@@ -722,7 +720,6 @@ describe("A8 Voice input live interim streaming draft & accurate Web Speech erro
         connectionMode: "demo",
         hasCompletedOnboarding: true,
         autoCheckUpdates: false,
-        enableGrokBall: false,
       }),
     );
     app = new MenuMijiaWindowsApp(document.querySelector<HTMLElement>("#app")!);

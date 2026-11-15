@@ -155,7 +155,6 @@ export function loadSettings(): LoadedSettings {
         panelOpacity: normalizePanelOpacity(parsed.panelOpacity),
         climatePanel: parsed.climatePanel ?? true,
         showQuickActionsBar: parsed.showQuickActionsBar ?? true,
-        enableGrokBall: parsed.enableGrokBall ?? false,
         interfaceLanguage:
           parsed.interfaceLanguage === "zh-Hans" ||
           parsed.interfaceLanguage === "zh-Hant" ||
@@ -242,7 +241,6 @@ function buildDefaultSettings(): PersistedSettings {
     panelOpacity: DEFAULT_PANEL_OPACITY,
     climatePanel: true,
     showQuickActionsBar: true,
-    enableGrokBall: false,
     layout: emptyLayoutPrefs(),
     selectedHomeId: null,
     interfaceLanguage: "system",

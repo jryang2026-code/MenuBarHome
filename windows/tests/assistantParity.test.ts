@@ -289,7 +289,6 @@ describe("F16 Windows app naturalCommand undo-timer dispatch order", () => {
       JSON.stringify({
         connectionMode: "demo",
         hasCompletedOnboarding: true,
-        enableGrokBall: false,
         autoCheckUpdates: false,
       }),
     );
