@@ -593,8 +593,8 @@ public enum MiotSynthesizer {
 
     static func buildLight(_ r: MiotReader, _ s: MiotService) -> DeviceKind {
         let on = r.ref("on", in: s)
-        let bri = r.ref("brightness", in: s)
-        let ct = r.ref("color-temperature", in: s)
+        let bri = r.ref("brightness", in: s, includingWriteOnly: true)
+        let ct = r.ref("color-temperature", in: s, includingWriteOnly: true)
         let mode = r.ref("mode", in: s)
         let isLightGroup = r.did.hasPrefix("group.")
         let effects = (!isLightGroup && mode?.property.isWritable == true)
@@ -622,7 +622,7 @@ public enum MiotSynthesizer {
     static func buildClimate(_ r: MiotReader, _ s: MiotService) -> DeviceKind {
         let on = r.ref("on", in: s)
         let mode = s.shortName == "electric-blanket" ? nil : r.ref("mode", in: s)
-        let target = r.ref("target-temperature", in: s)
+        let target = r.ref("target-temperature", in: s, includingWriteOnly: true)
         let current = s.shortName == "electric-blanket" ? nil : r.first("temperature", in: [s] + r.spec.services(named: "environment") + r.spec.services(named: "temperature-humidity-sensor"))
         let fanLevel = r.first("fan-level", in: r.spec.services(named: "fan-control") + [s])
 
@@ -1592,8 +1592,9 @@ final class MiotReader {
     }
 
     func ref(_ name: String, in service: MiotService, includingWriteOnly: Bool = false) -> Ref? {
-        guard includingWriteOnly else { return refs(name, in: service).first }
-        return service.properties.first(where: { $0.shortName == name }).map { make(service, $0) }
+        if let readable = refs(name, in: service).first { return readable }
+        guard includingWriteOnly else { return nil }
+        return service.properties.first(where: { $0.shortName == name && $0.isWritable }).map { make(service, $0) }
     }
 
     func refs(_ name: String, in service: MiotService) -> [Ref] {
@@ -1619,7 +1620,7 @@ final class MiotReader {
         let key = MiotPropKey(did: did, siid: service.iid, piid: property.iid)
         consumed.insert(key)
         if property.isReadable, !touched.contains(key) { touched.append(key) }
-        return Ref(service: service, property: property, value: values[key])
+        return Ref(service: service, property: property, value: property.isReadable ? values[key] : nil)
     }
 }
 

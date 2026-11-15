@@ -5273,5 +5273,65 @@ describe("MIoT parameterized actions", () => {
     if (ac.kind.kind === "climate") {
       assert.equal(ac.kind.temperatureWritable, false);
     }
+
+    const writeOnlyLightSpec = parseMiotDeviceSpec({
+      type: "urn:miot-spec-v2:device:light:0000A001:test-wo:1",
+      services: [
+        {
+          iid: 2,
+          type: "urn:miot-spec-v2:service:light:00007802:test-wo:1",
+          properties: [
+            { iid: 1, type: "urn:miot-spec-v2:property:on:00000006:test-wo:1", format: "bool", access: ["read", "write"] },
+            { iid: 2, type: "urn:miot-spec-v2:property:brightness:0000000D:test-wo:1", format: "uint8", access: ["write"], "value-range": [1, 100, 1] },
+            { iid: 3, type: "urn:miot-spec-v2:property:color-temperature:0000000F:test-wo:1", format: "uint32", access: ["write"], "value-range": [3000, 5700, 100] },
+          ],
+          actions: [],
+        },
+      ],
+    })!;
+    const writeOnlyAcSpec = parseMiotDeviceSpec({
+      type: "urn:miot-spec-v2:device:air-conditioner:0000A004:test-wo:1",
+      services: [
+        {
+          iid: 2,
+          type: "urn:miot-spec-v2:service:air-conditioner:0000780F:test-wo:1",
+          properties: [
+            { iid: 1, type: "urn:miot-spec-v2:property:on:00000006:test-wo:1", format: "bool", access: ["read", "write"] },
+            { iid: 2, type: "urn:miot-spec-v2:property:target-temperature:00000021:test-wo:1", format: "float", access: ["write"], "value-range": [18, 28, 0.5] },
+          ],
+          actions: [],
+        },
+      ],
+    })!;
+    const woLightRec = { did: "wo-lgt", name: "射灯", model: "yeelink.light.wo", isOnline: true, specType: null };
+    const woAcRec = { did: "wo-ac", name: "空调", model: "xiaomi.ac.wo", isOnline: true, specType: null };
+    assert.deepEqual(MiotSynthesizer.requiredProps(woLightRec, writeOnlyLightSpec), [{ did: "wo-lgt", siid: 2, piid: 1 }]);
+    assert.deepEqual(MiotSynthesizer.requiredProps(woAcRec, writeOnlyAcSpec), [{ did: "wo-ac", siid: 2, piid: 1 }]);
+    const woHome = MiotSynthesizer.synthesize(
+      [woLightRec, woAcRec],
+      [],
+      { "yeelink.light.wo": writeOnlyLightSpec, "xiaomi.ac.wo": writeOnlyAcSpec },
+      new Map([["wo-lgt.2.1", true], ["wo-ac.2.1", true]]),
+    );
+    const woLgt = woHome.devices.find((d) => d.id === "wo-lgt")!;
+    assert.equal(woLgt.kind.kind, "light");
+    if (woLgt.kind.kind === "light") {
+      assert.equal(woLgt.kind.brightnessWritable, undefined);
+      assert.equal(woLgt.kind.colorWritable, undefined);
+      assert.equal(woLgt.kind.brightnessPercent, null);
+      assert.equal(woLgt.kind.colorTempKelvin, null);
+      assert.equal(woLgt.kind.minKelvin, 3000);
+      assert.equal(woLgt.kind.maxKelvin, 5700);
+    }
+    assert.equal(woHome.deviceFacets?.["wo-lgt"], undefined);
+    const woAc = woHome.devices.find((d) => d.id === "wo-ac")!;
+    assert.equal(woAc.kind.kind, "climate");
+    if (woAc.kind.kind === "climate") {
+      assert.equal(woAc.kind.temperatureWritable, undefined);
+      assert.equal(woAc.kind.minTemp, 18);
+      assert.equal(woAc.kind.maxTemp, 28);
+      assert.equal(woAc.kind.step, 0.5);
+    }
+    assert.equal(woHome.deviceFacets?.["wo-ac"], undefined);
   });
 });

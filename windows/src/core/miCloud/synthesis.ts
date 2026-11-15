@@ -1138,12 +1138,28 @@ export const MiotSynthesizer = {
     const primaryService = primaryMiotService(spec);
     if (!primaryService) return null;
 
-    const readProp = (s: MiotService, short: string, predicate?: (p: MiotProperty) => boolean) => {
-      const prop = s.properties.find(
-        (p) => miotShortName(p.type) === short && p.access.includes("read") && (!predicate || predicate(p))
-      );
+    const readProp = (
+      s: MiotService,
+      short: string,
+      predicate?: (p: MiotProperty) => boolean,
+      includeWriteOnly = false
+    ) => {
+      const prop =
+        s.properties.find(
+          (p) => miotShortName(p.type) === short && p.access.includes("read") && (!predicate || predicate(p))
+        ) ??
+        (includeWriteOnly
+          ? s.properties.find(
+              (p) => miotShortName(p.type) === short && p.access.includes("write") && (!predicate || predicate(p))
+            )
+          : undefined);
       if (!prop) return null;
-      touched?.add(`${s.iid}.${prop.iid}`);
+      const key = `${s.iid}.${prop.iid}`;
+      consumed?.add(key);
+      if (!prop.access.includes("read")) {
+        return { service: s, prop, val: null };
+      }
+      touched?.add(key);
       const val = normalizeMiotPropValue(prop, values.get(propKeyString({ did, siid: s.iid, piid: prop.iid })));
       return { service: s, prop, val };
     };
@@ -1183,8 +1199,8 @@ export const MiotSynthesizer = {
     const sName = miotShortName(primaryService.type);
     if (sName === "light") {
       const on = readProp(primaryService, "on");
-      const bri = readProp(primaryService, "brightness");
-      const ct = readProp(primaryService, "color-temperature");
+      const bri = readProp(primaryService, "brightness", undefined, true);
+      const ct = readProp(primaryService, "color-temperature", undefined, true);
       const mode = readProp(primaryService, "mode");
       const modeVal = typeof mode?.val === "number" ? Math.trunc(mode.val) : null;
       const currentEffect =
@@ -1221,7 +1237,7 @@ export const MiotSynthesizer = {
     if (sName === "air-conditioner" || sName === "heater" || sName === "thermostat" || sName === "electric-blanket") {
       const on = readProp(primaryService, "on");
       const mode = sName === "electric-blanket" ? null : readProp(primaryService, "mode");
-      const target = readProp(primaryService, "target-temperature");
+      const target = readProp(primaryService, "target-temperature", undefined, true);
       const current = sName === "electric-blanket" ? null : readFirst(
         [
           primaryService,

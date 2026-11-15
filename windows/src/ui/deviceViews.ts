@@ -497,14 +497,16 @@ function renderPrimaryDrawer(
     }
     if (k.kind === "fridge") {
       const id = escapeHtml(dev.id);
-      const fridgeStep = k.fridgeTargetEntityId
-        ? `<button class="cc-seg-pill" data-fridgestep="${id}:fridge:-1" aria-label="${t("降低冷藏室温度")}">−</button>
+      const fridgeStep =
+        k.fridgeTargetEntityId && k.fridgeTargetPresent !== false
+          ? `<button class="cc-seg-pill" data-fridgestep="${id}:fridge:-1" aria-label="${t("降低冷藏室温度")}">−</button>
             <button class="cc-seg-pill" data-fridgestep="${id}:fridge:1" aria-label="${t("升高冷藏室温度")}">＋</button>`
-        : "";
-      const freezerStep = k.freezerTargetEntityId
-        ? `<button class="cc-seg-pill" data-fridgestep="${id}:freezer:-1" aria-label="${t("降低冷冻室温度")}">−</button>
+          : "";
+      const freezerStep =
+        k.freezerTargetEntityId && k.freezerTargetPresent !== false
+          ? `<button class="cc-seg-pill" data-fridgestep="${id}:freezer:-1" aria-label="${t("降低冷冻室温度")}">−</button>
             <button class="cc-seg-pill" data-fridgestep="${id}:freezer:1" aria-label="${t("升高冷冻室温度")}">＋</button>`
-        : "";
+          : "";
       const fridgeTargetText =
         k.fridgeTargetPresent !== false ? formatTemperature(k.fridgeTargetTemp) : "--";
       const freezerTargetText =

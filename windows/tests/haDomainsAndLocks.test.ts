@@ -38,6 +38,7 @@ import {
 } from "../src/core/optimisticLock.js";
 import { refreshHADevices } from "../src/ui/cloudRefresh.js";
 import { applyCommand } from "../src/ui/commandDispatch.js";
+import { renderDeviceDrawer } from "../src/ui/deviceViews.js";
 import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 
 function loadFixture(name: string): unknown {
@@ -1607,6 +1608,19 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
       assert.ok(!deviceStatusSummary(fridge).includes("4°C"));
       assert.ok(!deviceStatusSummary(fridge).includes("-18°C"));
       assert.ok(deviceStatusSummary(fridge).includes("5°C"));
+      const unknownTargetFridge: SmartDevice = {
+        ...fridge,
+        kind: {
+          ...fridge.kind,
+          fridgeTargetEntityId: "number.fridge_target",
+          freezerTargetEntityId: "number.freezer_target",
+          fridgeTargetPresent: false,
+          freezerTargetPresent: false,
+        },
+      };
+      const drawerHtml = renderDeviceDrawer(unknownTargetFridge, (s) => s);
+      assert.ok(drawerHtml.includes("(--)"));
+      assert.ok(!drawerHtml.includes("data-fridgestep"));
     }
 
     const spk = byId.get("spk_novol")!;

@@ -779,6 +779,62 @@ struct MiotSynthesizerTests {
         }
         return MiotDeviceSpec(type: "urn:miot-spec-v2:device:lock:0000A038:test:1", services: services)
     }
+
+    @Test("Write-only brightness, color-temperature, and target-temperature keep writability and ranges without polling")
+    func writeOnlyLightAndClimateControlsKeepMetadata() throws {
+        let lightSpec = MiotDeviceSpec(
+            type: "urn:miot-spec-v2:device:light:0000A001:test-wo:1",
+            services: [
+                MiotService(iid: 2, type: "urn:miot-spec-v2:service:light:00007802:test-wo:1", properties: [
+                    MiotProperty(iid: 1, type: "urn:miot-spec-v2:property:on:00000006:test-wo:1", format: "bool", access: ["read", "write"]),
+                    MiotProperty(iid: 2, type: "urn:miot-spec-v2:property:brightness:0000000D:test-wo:1", format: "uint8", access: ["write"], valueRange: [1, 100, 1]),
+                    MiotProperty(iid: 3, type: "urn:miot-spec-v2:property:color-temperature:0000000F:test-wo:1", format: "uint32", access: ["write"], valueRange: [3000, 5700, 100]),
+                ])
+            ]
+        )
+        let acSpec = MiotDeviceSpec(
+            type: "urn:miot-spec-v2:device:air-conditioner:0000A004:test-wo:1",
+            services: [
+                MiotService(iid: 2, type: "urn:miot-spec-v2:service:air-conditioner:0000780F:test-wo:1", properties: [
+                    MiotProperty(iid: 1, type: "urn:miot-spec-v2:property:on:00000006:test-wo:1", format: "bool", access: ["read", "write"]),
+                    MiotProperty(iid: 2, type: "urn:miot-spec-v2:property:target-temperature:00000021:test-wo:1", format: "float", access: ["write"], valueRange: [18, 28, 0.5]),
+                ])
+            ]
+        )
+        let lightRec = MiDeviceRecord(did: "wo-lgt", name: "射灯", model: "yeelink.light.wo", isOnline: true)
+        let acRec = MiDeviceRecord(did: "wo-ac", name: "空调", model: "xiaomi.ac.wo", isOnline: true)
+        #expect(MiotSynthesizer.requiredProps(for: lightRec, spec: lightSpec) == [MiotPropKey(did: "wo-lgt", siid: 2, piid: 1)])
+        #expect(MiotSynthesizer.requiredProps(for: acRec, spec: acSpec) == [MiotPropKey(did: "wo-ac", siid: 2, piid: 1)])
+
+        let home = MiotSynthesizer.synthesize(
+            devices: [lightRec, acRec],
+            rooms: [],
+            specs: ["yeelink.light.wo": lightSpec, "xiaomi.ac.wo": acSpec],
+            values: [
+                MiotPropKey(did: "wo-lgt", siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: "wo-ac", siid: 2, piid: 1): .bool(true),
+            ]
+        )
+        guard case .light(let lgt) = try #require(home.devices.first(where: { $0.id == "wo-lgt" })).kind else {
+            Issue.record("expected light"); return
+        }
+        #expect(lgt.brightnessWritable == true)
+        #expect(lgt.colorWritable == true)
+        #expect(lgt.brightnessPercent == nil)
+        #expect(lgt.colorTempKelvin == nil)
+        #expect(lgt.minKelvin == 3000)
+        #expect(lgt.maxKelvin == 5700)
+        #expect(home.deviceFacets["wo-lgt"] == nil)
+
+        guard case .climate(let ac) = try #require(home.devices.first(where: { $0.id == "wo-ac" })).kind else {
+            Issue.record("expected climate"); return
+        }
+        #expect(ac.temperatureWritable == true)
+        #expect(ac.minTemp == 18)
+        #expect(ac.maxTemp == 28)
+        #expect(ac.step == 0.5)
+        #expect(home.deviceFacets["wo-ac"] == nil)
+    }
 }
 
 struct MiotCommandMapperTests {
