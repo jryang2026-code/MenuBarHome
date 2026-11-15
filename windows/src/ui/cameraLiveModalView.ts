@@ -55,6 +55,8 @@ export function renderCameraLiveModalView(ctrl: CameraLiveController): string {
     mediaKind = "frames";
   } else if (ctrl.liveCameraLoading) {
     mediaKind = "loading";
+  } else if (ctrl.liveCameraError) {
+    mediaKind = "error";
   } else if (ctrl.liveCameraStreamURL && ctrl.isOwnedGo2rtcApiUrl(ctrl.liveCameraStreamURL)) {
     mediaKind = "loading";
   } else if (ctrl.liveCameraStreamURL && /^https?:/i.test(ctrl.liveCameraStreamURL)) {

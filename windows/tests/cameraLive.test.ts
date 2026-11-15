@@ -6,6 +6,7 @@ import type { Window } from "happy-dom";
 import { assertMissing } from "./dom.js";
 import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
+import { MiCloudClient } from "../src/core/miCloudClient.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { CameraLiveController } from "../src/ui/cameraLive.js";
 
@@ -100,6 +101,8 @@ async function mountCloudCameraApp(options: {
   const frameSrcs: string[] = [];
   const p2pStartsByDid = new Map<string, number>();
   const p2pStopsByDid = new Map<string, number>();
+  let deviceListCalls = 0;
+  let homeRoomCalls = 0;
 
   const invoke = async (name: string, args: Record<string, unknown> = {}): Promise<unknown> => {
     if (name === "bridge_hls_camera_stream") {
@@ -168,6 +171,7 @@ async function mountCloudCameraApp(options: {
         has_more: false,
       };
     } else if (url.includes("device_list")) {
+      deviceListCalls += 1;
       result = {
         list: options.devices
           .filter((d) => !d.omitFromUnfilteredList)
@@ -191,6 +195,7 @@ async function mountCloudCameraApp(options: {
         vendor: { vendor: 4, vendor_params: { p2p_id: "uid-1" } },
       };
     } else if (url.includes("homeroom/")) {
+      homeRoomCalls += 1;
       const homes = new Map<
         string,
         { shared: boolean; ownerUid?: string; rooms: Map<string, string[]> }
@@ -287,6 +292,8 @@ async function mountCloudCameraApp(options: {
     frameSrcs,
     p2pStartsByDid,
     p2pStopsByDid,
+    getDeviceListCalls: () => deviceListCalls,
+    getHomeRoomCalls: () => homeRoomCalls,
   };
 }
 
@@ -692,5 +699,141 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
     assert.equal(ctx.bridgeCalls[0]?.["model"], "mxiang.camera.mwc10");
     assert.equal(ctx.bridgeCalls[0]?.["localIp"], "192.168.31.66");
     assert.equal(ctx.bridgeCalls[0]?.["subdid"], "cam-shared");
+  });
+
+  it("clears stale liveCameraStreamURL and renders error state when HLS bridge fails or returns empty mjpegName", async () => {
+    const ctx = await mountCloudCameraApp({
+      devices: [
+        {
+          did: "cam-hls",
+          name: "玄关摄像机",
+          model: "isa.camera.hlc7",
+          localip: "192.168.1.50",
+        },
+      ],
+      hlsBridgeResult: () => "",
+    });
+    await waitFor(() => document.querySelector('[data-body-device="cam-hls"]') !== null);
+    await click('[data-body-device="cam-hls"]');
+    await waitFor(() => ctx.bridgeCalls.length === 1);
+
+    await click("#btn-toggle-camera-url");
+    const input = element<HTMLInputElement>("#camera-stream-url-input");
+    input.value = "http://192.168.1.50:8080/live/index.m3u8";
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    await click("#btn-save-camera-url");
+
+    await waitFor(() => ctx.hlsBridgeCalls.length === 1 && !ctx.app.cameraLive.liveCameraLoading);
+    assert.equal(ctx.app.cameraLive.liveCameraStreamURL, null);
+    assert.ok(ctx.app.cameraLive.liveCameraError);
+    assert.ok(document.querySelector(".cc-camera-stage.is-error"));
+    assertMissing(document.querySelector("#cc-camera-video"), "video#cc-camera-video");
+  });
+
+  it("releases active Xiaomi P2P session when saving a custom stream URL", async () => {
+    const ctx = await mountCloudCameraApp({
+      devices: [
+        {
+          did: "cam-p2p-url",
+          name: "客厅摄像机",
+          model: "isa.camera.hlc7",
+          localip: "192.168.1.50",
+        },
+      ],
+    });
+    await waitFor(() => document.querySelector('[data-body-device="cam-p2p-url"]') !== null);
+    await click('[data-body-device="cam-p2p-url"]');
+    await waitFor(() => ctx.bridgeCalls.length === 1);
+    const stopsBefore = ctx.p2pStopsByDid.get("cam-p2p-url") ?? 0;
+
+    await click("#btn-toggle-camera-url");
+    const input = element<HTMLInputElement>("#camera-stream-url-input");
+    input.value = "http://192.168.1.50:8080/live.mp4";
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    await click("#btn-save-camera-url");
+
+    await waitFor(() => (ctx.p2pStopsByDid.get("cam-p2p-url") ?? 0) > stopsBefore);
+    assert.equal(ctx.app.cameraLive.liveCameraStreamURL, "http://192.168.1.50:8080/live.mp4");
+  });
+
+  it("does not release the newly connected P2P session when a superseded same-camera negotiation rejects", async () => {
+    let rejectFirstBridge: (err: Error) => void = () => {};
+    let bridgeCallCount = 0;
+    const ctx = await mountCloudCameraApp({
+      devices: [
+        {
+          did: "cam-reconnect",
+          name: "客厅摄像机",
+          model: "isa.camera.hlc7",
+          localip: "192.168.1.50",
+        },
+      ],
+      bridgeResult: () => {
+        bridgeCallCount += 1;
+        if (bridgeCallCount === 1) {
+          return new Promise<string>((_resolve, reject) => {
+            rejectFirstBridge = reject;
+          });
+        }
+        return "cam_h264_camreconnect|cam_mjpeg_camreconnect";
+      },
+    });
+    await waitFor(() => document.querySelector('[data-body-device="cam-reconnect"]') !== null);
+    await click('[data-body-device="cam-reconnect"]');
+    await waitFor(() => ctx.bridgeCalls.length === 1);
+
+    await click("#btn-reload-camera-live");
+    await waitFor(() => ctx.bridgeCalls.length === 2 && !ctx.app.cameraLive.liveCameraLoading);
+    const stopsAfterSecondConnect = ctx.p2pStopsByDid.get("cam-reconnect") ?? 0;
+
+    rejectFirstBridge(new Error("late bridge failure"));
+    await setImmediate();
+    await setImmediate();
+
+    assert.equal(ctx.p2pStopsByDid.get("cam-reconnect") ?? 0, stopsAfterSecondConnect);
+    assert.equal(ctx.app.cameraLive.liveCameraError, null);
+    assert.equal(ctx.app.cameraLive.liveCameraStreamURL, "cam_mjpeg_camreconnect");
+  });
+
+  it("retains parentDid on MiDeviceRecord and reuses cached topology without re-fetching device_list or homeroom", async () => {
+    const parsed = MiCloudClient.parseDeviceRecord({
+      did: "cam-child",
+      name: "子摄像机",
+      model: "mxiang.camera.mwc11",
+      isOnline: true,
+      parent_id: "hub-parent",
+      localip: "",
+    });
+    assert.equal(parsed?.parentDid, "hub-parent");
+
+    const ctx = await mountCloudCameraApp({
+      devices: [
+        {
+          did: "cam-cached",
+          name: "室外电池机",
+          model: "mxiang.camera.mwc11",
+          parent_id: "hub-cached",
+          localip: "",
+        },
+        {
+          did: "hub-cached",
+          name: "室内网关",
+          model: "mxiang.camera.mwc10",
+          localip: "192.168.1.92",
+        },
+      ],
+    });
+    await waitFor(() => document.querySelector('[data-body-device="cam-cached"]') !== null);
+    const deviceListBefore = ctx.getDeviceListCalls();
+    const homeRoomBefore = ctx.getHomeRoomCalls();
+
+    await click('[data-body-device="cam-cached"]');
+    await waitFor(() => ctx.bridgeCalls.length === 1);
+
+    assert.equal(ctx.bridgeCalls[0]?.["did"], "hub-cached");
+    assert.equal(ctx.bridgeCalls[0]?.["localIp"], "192.168.1.92");
+    assert.equal(ctx.bridgeCalls[0]?.["subdid"], "cam-cached");
+    assert.equal(ctx.getDeviceListCalls(), deviceListBefore);
+    assert.equal(ctx.getHomeRoomCalls(), homeRoomBefore);
   });
 });
