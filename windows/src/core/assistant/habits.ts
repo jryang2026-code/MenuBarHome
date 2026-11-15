@@ -10,7 +10,7 @@ import { currentLanguage, type AppLanguage } from "../i18n.js";
 import { deviceAcceptsControlWrites, deviceCanTogglePower, isDeviceActiveOn } from "../models.js";
 import { timeBucketLabel } from "./context.js";
 import { IntentReply } from "./intent.js";
-import { PROMPT_CONTEXT_LIMIT, PROMPT_NAME_LIMIT, sanitizePromptText } from "./promptText.js";
+import { PROMPT_NAME_LIMIT, sanitizePromptText } from "./promptText.js";
 
 // MARK: - Full-Channel Habit Memory & Top-4 Engine (#113)
 
@@ -805,6 +805,15 @@ export function shareHabitSentence(input: {
   if (input.mention.kind !== "utterance") return "";
   const utterance = input.mention.text.trim();
   if (!utterance) return "";
+  const mentionDevices = input.devices.map((device) => ({
+    ...device,
+    name: sanitizePromptText(device.name, Number.MAX_SAFE_INTEGER),
+    roomName: sanitizePromptText(device.roomName, Number.MAX_SAFE_INTEGER),
+  }));
+  const mentionScenes = input.scenes.map((scene) => ({
+    ...scene,
+    name: sanitizePromptText(scene.name, Number.MAX_SAFE_INTEGER),
+  }));
   const sanitizedDevices = input.devices.map((device) => ({
     ...device,
     name: sanitizePromptText(device.name, PROMPT_NAME_LIMIT),
@@ -814,10 +823,10 @@ export function shareHabitSentence(input: {
     ...scene,
     name: sanitizePromptText(scene.name, PROMPT_NAME_LIMIT),
   }));
-  const cleanUtterance = sanitizePromptText(utterance, PROMPT_CONTEXT_LIMIT);
+  const cleanUtterance = sanitizePromptText(utterance, Number.MAX_SAFE_INTEGER);
   const ids = new Set([
     ...mentionedHabitTargets(utterance, input.devices, input.scenes),
-    ...mentionedHabitTargets(cleanUtterance, sanitizedDevices, sanitizedScenes),
+    ...mentionedHabitTargets(cleanUtterance, mentionDevices, mentionScenes),
   ]);
   if (ids.size === 0) return "";
 

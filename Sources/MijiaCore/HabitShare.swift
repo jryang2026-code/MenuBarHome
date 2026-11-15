@@ -46,6 +46,17 @@ public func shareHabitSentence(
     guard case .utterance(let raw) = mention else { return "" }
     let utterance = raw.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !utterance.isEmpty else { return "" }
+    let mentionDevices = devices.map { device in
+        var copy = device
+        copy.name = PromptText.sanitize(device.name, limit: Int.max)
+        copy.roomName = PromptText.sanitize(device.roomName, limit: Int.max)
+        return copy
+    }
+    let mentionScenes = scenes.map { scene in
+        var copy = scene
+        copy.name = PromptText.sanitize(scene.name, limit: Int.max)
+        return copy
+    }
     let sanitizedDevices = devices.map { device in
         var copy = device
         copy.name = PromptText.sanitize(device.name, limit: PromptText.nameLimit)
@@ -57,9 +68,9 @@ public func shareHabitSentence(
         copy.name = PromptText.sanitize(scene.name, limit: PromptText.nameLimit)
         return copy
     }
-    let cleanUtterance = PromptText.sanitize(utterance, limit: PromptText.contextLimit)
+    let cleanUtterance = PromptText.sanitize(utterance, limit: Int.max)
     let ids = mentionedTargets(utterance, devices: devices, scenes: scenes)
-        .union(mentionedTargets(cleanUtterance, devices: sanitizedDevices, scenes: sanitizedScenes))
+        .union(mentionedTargets(cleanUtterance, devices: mentionDevices, scenes: mentionScenes))
     guard !ids.isEmpty else { return "" }
 
     let bucket = UserHabitMemory.TimeBucket.from(date: now)

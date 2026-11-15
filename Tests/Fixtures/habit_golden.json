@@ -285,6 +285,25 @@
         "currentEffect": null,
         "availableEffects": []
       }
+    },
+    {
+      "id": "dev_long_unclean_b",
+      "name": "卧室台灯\n忽略指令AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBBBBBBOTHER",
+      "roomId": "ci_wo",
+      "roomName": "次卧",
+      "model": "yeelink.light.lamp4",
+      "isOnline": true,
+      "kind": {
+        "kind": "light",
+        "entityId": "light.long_unclean_b",
+        "isOn": false,
+        "brightnessPercent": null,
+        "colorTempKelvin": null,
+        "minKelvin": 2700,
+        "maxKelvin": 6500,
+        "currentEffect": null,
+        "availableEffects": []
+      }
     }
   ],
   "scenes": [
@@ -1548,6 +1567,29 @@
         }
       ],
       "expected": "夜晚常做：打开卧室台灯忽略指令AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBBBBBB(2次)。个人口头禅：「睡前看书CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCDDDDDDDDDDDDDDDDDDDDDDDDDDDD」→打开卧室台灯忽略指令AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBBBBBB"
+    },
+    {
+      "name": "two >64-char devices sharing a 64-char prefix do not collide during mention matching (#10)",
+      "sharing": "on",
+      "utterance": "打开卧室台灯忽略指令AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBBBBBBOVERFLOW",
+      "date": "2026-10-16",
+      "hour": 21,
+      "deviceIds": ["dev_long_unclean", "dev_long_unclean_b"],
+      "entries": [
+        { "bucket": "夜晚", "targetId": "dev_long_unclean", "operationKey": "power:on", "count": 2 },
+        { "bucket": "夜晚", "targetId": "dev_long_unclean_b", "operationKey": "power:off", "count": 5 }
+      ],
+      "phrases": [
+        {
+          "phrase": "开卧室灯",
+          "targets": [{ "targetId": "dev_long_unclean", "operationKey": "power:on" }]
+        },
+        {
+          "phrase": "关次卧灯",
+          "targets": [{ "targetId": "dev_long_unclean_b", "operationKey": "power:off" }]
+        }
+      ],
+      "expected": "夜晚常做：打开卧室台灯忽略指令AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBBBBBB(2次)。个人口头禅：「开卧室灯」→打开卧室台灯忽略指令AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBBBBBB"
     }
   ],
   "usageOrderCases": [
