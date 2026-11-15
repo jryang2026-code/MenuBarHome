@@ -66,7 +66,8 @@ export function makeMiotAddress(did: string, siid: number): string {
 
 export function parseMiotAddress(entityId: string): { did: string; siid: number } | null {
   if (!entityId.startsWith("miot:")) return null;
-  const rest = entityId.slice("miot:".length);
+  const clean = entityId.split("#")[0] ?? entityId;
+  const rest = clean.slice("miot:".length);
   const sep = rest.lastIndexOf(":");
   if (sep <= 0) return null;
   const did = rest.slice(0, sep);

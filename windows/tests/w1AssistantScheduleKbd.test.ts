@@ -272,7 +272,7 @@ describe("A3c Home Assistant humidifier.* and valve.* category & AI catalog alig
     ]);
 
     const offHumHome: SmartDevice[] = haHome.devices.map((dev) =>
-      dev.id === "ha-hum-bed" && dev.kind.kind === "appliance"
+      dev.id === "ha-hum-bed" && dev.kind.kind === "humidifier"
         ? { ...dev, kind: { ...dev.kind, isOn: false } }
         : dev,
     );

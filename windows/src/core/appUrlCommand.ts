@@ -739,6 +739,8 @@ const GENERIC_ASK_NOUNS_BY_KIND: Readonly<Record<string, readonly string[]>> = {
   vacuum: ["扫地机", "扫地机器人", "清洁机器人", "洗地机", "机器人", "vacuum", "robot vacuum", "robovac", "vac"],
   cover: ["窗帘", "纱帘", "卷帘", "百叶窗", "curtain", "blinds", "shade", "cover"],
   fan: ["风扇", "电风扇", "电扇", "落地扇", "循环扇", "空气循环扇", "fan"],
+  tv: ["电视", "电视机", "tv", "television"],
+  humidifier: ["加湿器", "加湿机", "humidifier"],
 };
 
 function findUniqueAskDevice(

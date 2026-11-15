@@ -736,6 +736,13 @@ export function extractDeviceMiotCommandDids(device: SmartDevice,
       addAddress(k.ttsActionId);
       addAddress(k.directiveActionId);
       break;
+    case "tv": addAddress(k.mediaEntityId);
+      addAddress(k.muteSwitchEntityId);
+      addAddress(k.powerOnActionId);
+      addAddress(k.powerOffActionId);
+      break;
+    case "humidifier": addAddress(k.entityId);
+      break;
     case "appliance": addAddress(k.entityId);
       addAddress(k.powerEntityId);
       addAddress(k.modeEntityId);

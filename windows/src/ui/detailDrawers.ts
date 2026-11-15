@@ -494,6 +494,14 @@ export function updateLiveSliderReadout(
     setGroupReadout(formatted, String(pct));
     return formatted;
   }
+  if (slider.dataset.humidity !== undefined) {
+    const min = Number(slider.min || "0");
+    const max = Number(slider.max || "100");
+    const pct = Math.max(min, Math.min(max, Math.round(Number(slider.value))));
+    const formatted = `${pct}%`;
+    setGroupReadout(formatted, String(pct));
+    return formatted;
+  }
   if (slider.dataset.volume !== undefined) {
     const pct = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
     const formatted = `${pct}%`;
@@ -575,7 +583,7 @@ export function bindDetailDrawerEvents(
 
   host.root
     .querySelectorAll<HTMLInputElement>(
-      "input[type=\"range\"][data-brightness], input[type=\"range\"][data-colortemp], input[type=\"range\"][data-actemp], input[type=\"range\"][data-fanpercent], input[type=\"range\"][data-volume], input[type=\"range\"][data-coverpos], input[type=\"range\"][data-facet-number]",
+      "input[type=\"range\"][data-brightness], input[type=\"range\"][data-colortemp], input[type=\"range\"][data-actemp], input[type=\"range\"][data-fanpercent], input[type=\"range\"][data-humidity], input[type=\"range\"][data-volume], input[type=\"range\"][data-coverpos], input[type=\"range\"][data-facet-number]",
     )
     .forEach((slider) => {
       const showThumbBadge = (): void => {
@@ -777,6 +785,67 @@ export function bindDetailDrawerEvents(
     });
   });
 
+  host.root.querySelectorAll<HTMLInputElement>("[data-humidity]").forEach((slider) => {
+    slider.addEventListener("change", () => {
+      const id = slider.dataset.humidity;
+      if (!id) return;
+      const dev = host.devices.find((d) => d.id === id);
+      if (!dev || dev.kind.kind !== "humidifier" || !dev.kind.humidityWritable || !dev.isOnline) return;
+      const min = dev.kind.minHumidity;
+      const max = Math.max(min + 1, dev.kind.maxHumidity);
+      const percent = Math.max(min, Math.min(max, Math.round(Number(slider.value))));
+      void host.executeSingleCommand(
+        dev,
+        { kind: "setHumidity", entityId: dev.kind.entityId, percent },
+        t("已将{name}目标湿度设为 {percent}%", { name: dev.name, percent }),
+      );
+    });
+  });
+
+  const applyHumidifierMode = (id: string, mode: string): void => {
+    const dev = host.devices.find((d) => d.id === id);
+    if (!dev || !dev.isOnline || dev.kind.kind !== "humidifier" || !dev.kind.modeWritable) return;
+    const command: DeviceCommand = { kind: "setSelectOption", entityId: dev.kind.entityId, option: mode };
+    void host.executeSingleCommand(
+      dev,
+      command,
+      t("已切换{name}模式为 {mode}", { name: dev.name, mode: localizeApplianceMode(mode) }),
+      { targetId: dev.id, operation: { kind: "fanSpeed", speed: mode } },
+    );
+  };
+
+  host.root.querySelectorAll<HTMLElement>("[data-humidifiermode]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const pair = splitControlId(btn.dataset.humidifiermode);
+      if (pair) applyHumidifierMode(pair[0], pair[1]);
+    });
+  });
+
+  host.root.querySelectorAll<HTMLSelectElement>("[data-humidifiermode-select]").forEach((select) => {
+    select.addEventListener("change", () => {
+      if (select.dataset.humidifiermodeSelect && select.value) applyHumidifierMode(select.dataset.humidifiermodeSelect, select.value);
+    });
+  });
+
+  const applyTvSource = (id: string, source: string): void => {
+    const dev = host.devices.find((d) => d.id === id);
+    if (!dev || !dev.isOnline || dev.kind.kind !== "tv" || !dev.kind.availableSources.includes(source)) return;
+    void host.executeSingleCommand(dev, { kind: "mediaSelectSource", entityId: dev.kind.mediaEntityId, source }, t("已切换{name}信源为 {source}", { name: dev.name, source }));
+  };
+
+  host.root.querySelectorAll<HTMLElement>("[data-tvsource]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const pair = splitControlId(btn.dataset.tvsource);
+      if (pair) applyTvSource(pair[0], pair[1]);
+    });
+  });
+
+  host.root.querySelectorAll<HTMLSelectElement>("[data-tvsource-select]").forEach((select) => {
+    select.addEventListener("change", () => {
+      if (select.dataset.tvsourceSelect && select.value) applyTvSource(select.dataset.tvsourceSelect, select.value);
+    });
+  });
+
   host.root.querySelectorAll<HTMLButtonElement>("[data-copy-fault]").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -890,7 +959,26 @@ function bindCollapsedInlineSliders(host: MenuMijiaWindowsApp): void {
           );
           return;
         }
-        if (slider.dataset.inlineVolume && dev.kind.kind === "speaker" && dev.kind.volumeWritable) {
+        if (
+          slider.dataset.inlineHumidity &&
+          dev.kind.kind === "humidifier" &&
+          dev.kind.humidityWritable
+        ) {
+          const min = dev.kind.minHumidity;
+          const max = Math.max(min + 1, dev.kind.maxHumidity);
+          const percent = Math.max(min, Math.min(max, Math.round(Number(slider.value))));
+          void host.executeSingleCommand(
+            dev,
+            { kind: "setHumidity", entityId: dev.kind.entityId, percent },
+            t("已将{name}目标湿度设为 {percent}%", { name: dev.name, percent }),
+          );
+          return;
+        }
+        if (
+          slider.dataset.inlineVolume &&
+          (dev.kind.kind === "speaker" || dev.kind.kind === "tv") &&
+          dev.kind.volumeWritable
+        ) {
           const percent = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
           void host.executeSingleCommand(
             dev,

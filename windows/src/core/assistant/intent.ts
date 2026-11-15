@@ -348,7 +348,7 @@ export const IntentValidator = {
           }
           return op;
         }
-        if (k.kind === "light" || k.kind === "climate" || k.kind === "fan" || k.kind === "camera") {
+        if (k.kind === "light" || k.kind === "climate" || k.kind === "fan" || k.kind === "camera" || k.kind === "tv" || k.kind === "humidifier") {
           return k.powerWritable === false ? null : op;
         }
         if (k.kind === "appliance") {
@@ -406,6 +406,10 @@ export const IntentValidator = {
           const matched = matchFanSpeed("auto", k.availablePresetModes);
           return matched ? { kind: "fanSpeed", speed: matched } : null;
         }
+        if (k.kind === "humidifier" && k.modeWritable && op.mode.toLowerCase() === "auto") {
+          const matched = matchFanSpeed("auto", k.availableModes);
+          return matched ? { kind: "fanSpeed", speed: matched } : null;
+        }
         return null;
       }
       case "targetTemperature": {
@@ -423,7 +427,14 @@ export const IntentValidator = {
         return { kind: "targetTemperature", celsius: Object.is(next, -0) ? 0 : next };
       }
       case "fanSpeed": {
-        const list = k.kind === "fan" ? k.availablePresetModes : k.kind === "climate" ? k.availableFanModes : null;
+        const list =
+          k.kind === "fan"
+            ? k.availablePresetModes
+            : k.kind === "climate"
+              ? k.availableFanModes
+              : k.kind === "humidifier" && k.modeWritable
+                ? k.availableModes
+                : null;
         if (!list || list.length === 0) return null;
         const matched = matchFanSpeed(op.speed, list);
         return matched ? { kind: "fanSpeed", speed: matched } : null;
@@ -498,6 +509,15 @@ export const IntentValidator = {
         }
         if (k.kind === "camera")
           return k.powerWritable === false ? [] : [{ kind: "setSwitch", entityId: k.entityId, isOn: op.isOn }];
+        if (k.kind === "tv") {
+          if (k.powerWritable === false) return [];
+          if (op.isOn && k.turnOnButtonId) {
+            return [{ kind: "pressButton", entityId: k.turnOnButtonId }];
+          }
+          return [{ kind: "setSwitch", entityId: k.mediaEntityId, isOn: op.isOn }];
+        }
+        if (k.kind === "humidifier")
+          return k.powerWritable ? [{ kind: "setSwitch", entityId: k.entityId, isOn: op.isOn }] : [];
         if (k.kind === "vacuum")
           return k.actionsWritable === false
             ? []
@@ -547,6 +567,8 @@ export const IntentValidator = {
           return [{ kind: "setFanPresetMode", entityId: k.entityId, presetMode: op.speed }];
         if (k.kind === "climate" && k.availableFanModes.length > 0)
           return [{ kind: "setClimateFanMode", entityId: k.entityId, fanMode: op.speed }];
+        if (k.kind === "humidifier" && k.modeWritable && k.availableModes.length > 0)
+          return [{ kind: "setSelectOption", entityId: k.entityId, option: op.speed }];
         return [];
       case "oscillation":
         return k.kind === "fan" && k.swingWritable !== false
