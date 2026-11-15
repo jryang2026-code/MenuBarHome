@@ -288,5 +288,9 @@ describe("Classic Single-Card Glass Shell, 4-Size Bento Grid & Inline Accordion 
       css,
       /#app\[data-panel-theme="classic"\]\s+\.cc-devices-grid\.is-flow\s*>\s*\.cc-sensor\.is-compact\.is-size-half:not\(\.is-expanded\):not\(\.is-span-row\)\s*\{[^}]*grid-column:\s*span 6\s*!important;/s,
     );
+    assert.doesNotMatch(
+      css,
+      /#app\[data-panel-theme="classic"\]\s+\.cc-room-bar\s*\{[^}]*flex:\s*1/s,
+    );
   });
 });
