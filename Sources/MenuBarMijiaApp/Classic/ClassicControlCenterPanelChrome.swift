@@ -1201,7 +1201,7 @@ extension ClassicControlCenterPanel {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Button {
-                    withAnimation(AppleMotion.snappySpring) { store.leaveDemo() }
+                    withAnimation(AppleMotion.snappySpring) { _ = store.leaveDemo() }
                 } label: {
                     Text(L10n.tr("连接真实家庭", "Connect a Real Home"))
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
