@@ -612,14 +612,13 @@ struct AssistantSuggestionsRow: View {
                 ))
 
                 ForEach(store.assistantSuggestions) { suggestion in
-                    let isDelayed = suggestion.delaySpec != nil
                     Button {
                         Task { await store.applyAssistantSuggestion(suggestion) }
                     } label: {
                         HStack(spacing: 3.5) {
-                            Image(systemName: isDelayed ? "timer" : (suggestion.confidencePercent != nil ? "sparkle" : "clock.arrow.circlepath"))
+                            Image(systemName: suggestion.confidencePercent != nil ? "sparkle" : "clock.arrow.circlepath")
                                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                                .foregroundStyle((isDelayed || suggestion.confidencePercent != nil) ? Color.orange : Color.secondary)
+                                .foregroundStyle(suggestion.confidencePercent != nil ? Color.orange : Color.secondary)
                             Text(suggestion.title)
                                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                                 .foregroundStyle(.primary.opacity(0.88))
@@ -636,11 +635,9 @@ struct AssistantSuggestionsRow: View {
                     }
                     .buttonStyle(.plain)
                     .help(
-                        suggestion.delaySpec != nil
-                            ? L10n.tr("点击确认设定定时", "Click to confirm and schedule")
-                            : (suggestion.confidencePercent != nil
-                                ? L10n.tr("AI 不太确定，点一下才执行", "The AI is not sure; click to run it")
-                                : L10n.tr("你在当前时间段的常用习惯（点击立即执行）", "Your frequent habit in this time slot (click to execute)"))
+                        suggestion.confidencePercent != nil
+                            ? L10n.tr("AI 不太确定，点一下才执行", "The AI is not sure; click to run it")
+                            : L10n.tr("你在当前时间段的常用习惯（点击立即执行）", "Your frequent habit in this time slot (click to execute)")
                     )
                 }
             }

@@ -328,6 +328,32 @@ struct AIIntentScenePolicyTests {
             DeviceIntent(targetId: "dev_heater", operation: .power(true))
         ])
         _ = store.cancelScheduledCommands()
+
+        store.assistantResolverOverride = ModelIntentResolver(
+            config: AssistantConfig(baseURL: "http://127.0.0.1:11434/v1", model: "local-chat"),
+            transport: { request in
+                let content = #"{"actions":[{"device":"d1","op":"power","value":false},{"device":"d2","op":"power","value":true}],"reply":"好的"}"#
+                let data = try JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": content]]]])
+                return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }
+        )
+
+        let mixedPlan = try #require(await store.runAssistantCommand("15分钟后关书房灯并开取暖器"))
+        #expect(await mock.executedCommands.isEmpty)
+        #expect(store.scheduledCommands.count == 1)
+        let autoScheduled = try #require(store.scheduledCommands.first)
+        #expect(autoScheduled.plan.intents == [
+            DeviceIntent(targetId: "dev_desk", operation: .power(false))
+        ])
+        #expect(autoScheduled.plan.suggestions.isEmpty)
+        let mixedChip = try #require(store.assistantSuggestions.first)
+        #expect(mixedChip.delaySpec == SuggestionDelaySpec(seconds: 900, label: "15 分钟后"))
+        #expect(mixedPlan.suggestions == [mixedChip])
+
+        await store.applyAssistantSuggestion(mixedChip)
+        #expect(await mock.executedCommands.isEmpty)
+        #expect(store.scheduledCommands.count == 2)
+        _ = store.cancelScheduledCommands()
     }
 
     @Test("Room-word mismatch rejects single full-name candidate in another room (#24)")

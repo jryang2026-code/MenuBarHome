@@ -478,7 +478,21 @@ extension HomeStore {
         }
 
         if let delayed {
-            return schedule(plan, after: delayed.delay)
+            if !plan.suggestions.isEmpty {
+                let delaySpec = SuggestionDelaySpec(seconds: delayed.delay)
+                plan.suggestions = plan.suggestions.map { $0.withDelay(delaySpec) }
+            }
+            var timerPlan = plan
+            timerPlan.suggestions = []
+            var scheduled = schedule(timerPlan, after: delayed.delay)
+            if case .failed = assistantState {
+                return scheduled
+            }
+            if !plan.suggestions.isEmpty {
+                assistantSuggestions = plan.suggestions
+            }
+            scheduled.suggestions = plan.suggestions
+            return scheduled
         }
         // A locally parsed command is the user's explicit ask. A model plan is the AI filling in
         // devices/actions the user never spelled out, so it does not train habits (#34).
