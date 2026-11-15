@@ -15,13 +15,10 @@ English | [简体中文](README.zh-CN.md)
 
 <h1 align="center">MenuBarHome</h1>
 
-> [!IMPORTANT]
-> **Not affiliated with Xiaomi.** MenuBarHome is an independent open-source project, not an official Xiaomi or Mijia product, and is not affiliated with, endorsed by, or sponsored by Xiaomi Corporation or its affiliates. "Xiaomi", "Mijia", "Mi Home", and "米家" are trademarks of Xiaomi Corporation and its affiliates. The project uses these names only to describe compatibility with Xiaomi / Mijia devices; no endorsement is implied.
-
 <p align="center">
-  <b>Control your entire home right from your computer, without picking up your phone.</b><br>
-  A native macOS menu-bar app for Xiaomi / Mijia smart home devices, with a companion Windows 11 tray build.<br>
-  Scan a QR code to connect directly to Mi Home without setting up Home Assistant. Features keyboard fuzzy search, push-to-talk voice, Mac event automation, and one-click undo.
+  <b>Run your whole home from your computer, without reaching for your phone.</b><br>
+  A Mi Home control center that lives in the Mac menu bar, with a Windows 11 tray edition too.<br>
+  Scan one QR code with the Mi Home app and you're connected. No Home Assistant setup required.
 </p>
 
 <p align="center">
@@ -34,79 +31,171 @@ English | [简体中文](README.zh-CN.md)
 </p>
 
 <p align="center">
-  <a href="https://github.com/jryang2026-code/MenuBarHome/releases/latest">Download latest</a> ·
+  <a href="https://github.com/jryang2026-code/MenuBarHome/releases/latest"><b>Download latest</b></a> ·
   <a href="#quick-start">Install & Connect</a> ·
   <a href="#features--platform-matrix">Platform Comparison</a> ·
   <a href="#safety-privacy--limitations">Safety & Privacy</a> ·
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
-> **Renamed:** MenuBarMijia is now MenuBarHome. Quit and delete the old `MenuBarMijia` app after installing this one; your sign-in and settings carry over. On Windows, uninstall the old version.
+<p align="center">
+  <img src="docs/assets/readme-v3/keyboard-search.gif" alt="macOS demo: press Option-M, type sftd to find the study desk lamp, and press Return to turn it on" width="900">
+</p>
 
-> **Back on GitHub (2026-11):** the original GitHub account was suspended, so the repository now lives at [github.com/jryang2026-code/MenuBarHome](https://github.com/jryang2026-code/MenuBarHome). Installed builds up to v1.1.7 keep working, but their update check still points at the old address, so install v1.2.0 or later by hand once.
+<p align="center"><sub>Press <code>⌥M</code>, type <code>sftd</code> (the pinyin initials of 书房台灯, "study desk lamp"), and hit Return. Recorded in macOS demo mode with virtual devices; the interface shown is in Chinese.</sub></p>
+
+> [!NOTE]
+> **New name, new address:** as of 1.2.0, MenuBarMijia is called MenuBarHome and lives at [github.com/jryang2026-code/MenuBarHome](https://github.com/jryang2026-code/MenuBarHome). Version 1.1.7 and earlier can't pick up this update on their own, so install it by hand once. Your sign-in and settings carry over; afterwards, delete the old `MenuBarMijia` app (on Windows, uninstall the old version first).
+
+> [!IMPORTANT]
+> **Not affiliated with Xiaomi.** MenuBarHome is an independent open-source project, not an official Xiaomi or Mijia product, and is not affiliated with, endorsed by, or sponsored by Xiaomi Corporation or its affiliates. "Xiaomi", "Mijia", "Mi Home", and "米家" are trademarks of Xiaomi Corporation and its affiliates. The project uses these names only to describe compatibility with Xiaomi / Mijia devices; no endorsement is implied.
 
 ---
 
-<p align="center">
-  <img src="docs/assets/readme-v2/hero-keyboard.gif" alt="macOS demo: open the panel, search for a study lamp by pinyin initials, and turn it on" width="900">
-</p>
+## Why You'll Want It
 
-<sub>macOS demo mode with simulated devices.</sub>
+You're writing, coding, or on a call, and the light needs to go off. Normally that means unlocking your phone, finding the app, and digging through rooms. MenuBarHome turns it into one shortcut.
 
----
-
-## Why Put Smart Home Control on Your Desktop?
-
-When coding, writing, or in a meeting, you don't need to reach for your phone:
-
-1. **Keep Your Hands on the Keyboard:** Press `⌥M` to summon the panel, type a name or pinyin initials (e.g. `sftd` for "Study Desk Lamp"), and hit `Return` to toggle. Open a device’s details and use the arrow keys to adjust brightness or AC temperature. No scrolling through nested room trees.
-2. **Push-to-Talk, Release to Run:** Hold `⌥M` or the menu bar icon to speak your command, and release when you are done. Everyday commands like switching lights or setting the thermostat are interpreted by local parsing rules—no wake words, no sluggish voice chatter. Optional AI backends handle multi-step requests.
-3. **Sync with Your Daily Work Rhythm:** Automatically turn off lights when you lock your Mac or step away. Trigger your focus lighting when plugging in an external display. All automation rules are disabled by default; you stay in full control of what triggers when.
-4. **All Off, with Undo:** Hold "All Off" when it is time to call it a day. Plugs and robot vacuums stay on by default, and if you change your mind, the undo button brings your devices back.
+- **Scan and go.** Choose "Mi Cloud Connect" in Settings, scan the QR code on screen with the Mi Home app, and every room and device shows up. No Home Assistant, no token hunting. If you already run Home Assistant, you can connect that instead.
+- **Keep your hands on the keyboard.** `⌥M` opens the panel. Start typing a device name, a room, or pinyin initials, and press Return to toggle. Arrow keys adjust brightness and temperature.
+- **Hold to talk, let go to run it.** No wake word, no waiting for a reply. Everyday commands like switching, dimming, setting the temperature, or timers are understood on your Mac, with no AI key needed.
+- **Undo the oops.** All Off leaves plugs, robot vacuums, and cameras alone by default. If you switched off something you needed, tap Undo and everything comes back.
+- **Follows your Mac.** Lights off when you lock the screen, desk lamp on when you plug in a display, lighting set before a calendar meeting starts. Every rule starts switched off, so you choose what runs.
+- **Native and quiet.** The macOS app is written in Swift with no bundled browser engine, and sits at about 0.1% CPU with the panel open and idle.
 
 ---
 
-## Feature Demos
+## 1.2.0: Rebuilt Inside and Out
 
-Here are a few everyday actions in the macOS demo home. The interface shown is in Chinese.
+### A new panel
 
-### 1. Push-to-Talk Voice Control
-
-No wake words needed. Hold the menu bar icon or global shortcut to speak, and see execution receipts right away (showing local millisecond execution or AI resolution).
+Search now sits at the top, and the same box takes device names and spoken commands. Favorite devices are laid out as tiles, the AC can be nudged up or down right on its card, and room tabs, sorting, and the compact view are a click away. Light and dark follow the system, and on macOS 26 or later you can switch to the Liquid Glass theme.
 
 <p align="center">
-  <img src="docs/assets/readme-v2/voice-ptt.gif" alt="macOS demo: hold the shortcut, speak, and switch the study lamp to moonlight mode" width="900">
+  <img src="docs/assets/readme-v3/panel-themes.gif" alt="The macOS panel in the Classic and Liquid Glass themes, in light and dark appearance" width="900">
 </p>
 
-### 2. Room All-Off with Safety Protection & Undo
+### Settings that feel like System Settings
 
-Heading out or turning in? Hold "All Off" for 0.6 seconds to switch off participating devices in the current view. Plugs, robot vacuums, and cameras are left alone by default, and you can change that in settings. If you switch something off by mistake, tap Undo.
+A sidebar of categories with colored icons and grouped cards, laid out like the Mac's own System Settings. The search field understands Chinese and English keywords plus synonyms, and picking a result jumps straight to that setting and highlights it.
 
 <p align="center">
-  <img src="docs/assets/readme-v2/undo-all-off.gif" alt="macOS demo: hold All Off, leave the plug on, and undo" width="900">
+  <img src="docs/assets/readme-v3/settings.gif" alt="macOS settings: moving between General, AI Assistant, Appearance, and Privacy" width="900">
 </p>
 
-### 3. macOS Display & Lock-Screen Automation
+### Hold to talk
 
-Turn everyday desktop transitions into ambient triggers. Configure a rule to turn off lights when you lock your screen or put your Mac to sleep, and another for returning. Mac-only rules can also react to camera/microphone use, AC power and battery thresholds, the Wi-Fi network name, Focus mode, upcoming calendar meetings, and late-night use. All of them are off by default; Wi-Fi name, Focus status, and Calendar require system permission before their rules fire.
+Hold `⌥M` or the menu bar icon, say what you want, and let go. What you say appears in the search field as you speak and runs the moment you release. Everyday commands are parsed locally, so there's almost no wait; for trickier requests you can plug in an AI service of your choice.
 
 <p align="center">
-  <img src="docs/assets/readme-v2/automation-away.gif" alt="macOS automation demo: lock the screen and turn off the living room light" width="900">
+  <img src="docs/assets/readme-v3/hold-to-talk.gif" alt="macOS demo: hold Option-M, ask to set the living room light to 40 percent, release, and the ceiling light dims to 40%" width="900">
 </p>
 
-### 4. Climate Trends & Energy Metrics
+### All Off, with Undo
 
-Wondering whether the room is warmer than yesterday? On macOS, open a sensor to see its temperature and humidity trends over 24 hours or 7 days. For plugs that report energy readings, device details show today’s usage and settings show the last 7 days.
+Heading out or going to bed? Hold All Off for 0.6 seconds and everything that's on in the current view switches off. Plugs, robot vacuums, and cameras sit it out by default (you can change that in Settings). An Undo button appears right after; one tap restores the way things were.
 
 <p align="center">
-  <img src="docs/assets/readme-v2/sensor-chart.gif" alt="macOS demo: inspect a sensor trend over 24 hours and 7 days" width="900">
+  <img src="docs/assets/readme-v3/all-off-undo.gif" alt="macOS demo: hold All Off to turn off three devices while the plug stays on, then tap Undo to restore them" width="900">
 </p>
+
+### Windows 11, redesigned too
+
+The tray app was redrawn in Windows 11's Fluent 2 style as two floating islands: home status, "For You" suggestions, and a camera glance on top; search, quick actions, and device tiles below. Keyboard search, the `Alt+M` shortcut, and light/dark appearance are all there.
+
+<p align="center">
+  <img src="docs/assets/readme-v3/windows-fluent.png" alt="The Windows 11 tray panel in light and dark appearance" width="820">
+</p>
+
+---
+
+## What Else It Does
+
+- **Works with a lot of devices.** Lights, ACs, fans, plugs, TVs, curtains, clothes airers, air purifiers, humidifiers, fridges, water heaters, washers and dryers, bath heaters, range hoods, robot vacuums, cameras, locks, and all sorts of sensors. Mi devices without a dedicated card still get a generic one.
+- **Camera windows.** Click a camera for a pinned live view. Dual-lens models can switch lenses, and pan-tilt cameras turn when you drag the picture.
+- **Climate trends and energy logs.** Sensors chart 24-hour and 7-day trends; plugs keep a daily energy log, and with your electricity rate entered you get a cost estimate.
+- **For You suggestions.** Based on what you usually turn on and when, likely next actions are ready before you ask. Habits stay on your machine and can be reviewed or cleared anytime.
+- **Multiple accounts, two sources.** Sign in to several Xiaomi accounts at once, or run Mi Home and Home Assistant side by side; the same physical device is merged automatically.
+- **Safety alerts and a weekly report.** You get a notification when a high-power appliance has been running too long or a favorite device drops offline, and a weekly home health report shows which devices keep disconnecting and which plugs draw standby power.
+- **Plugs into your tools.** Apple Shortcuts, `menumijia://` links, a Raycast extension, a command-line tool, and an MCP server, so AI tools like Claude and Cursor can check on and control your home without ever seeing your account credentials.
+
+For what each platform supports, see the [platform comparison](#features--platform-matrix) below.
+
+---
+
+## Quick Start
+
+### 1. Install
+
+- **macOS:** macOS 14 (Sonoma) or later, Universal Binary for Apple Silicon and Intel.
+- **Windows:** Windows 11 (64-bit).
+
+**macOS · Homebrew**
+
+```bash
+brew tap jryang2026-code/tap
+brew trust --cask jryang2026-code/tap/menubarhome
+brew install --cask jryang2026-code/tap/menubarhome
+```
+
+**macOS · DMG**
+
+Download the latest DMG from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) and drag `MenuBarHome.app` into Applications.
+
+> The project isn't enrolled in the paid Apple Developer Program, so the app isn't notarized. If macOS blocks the first launch, go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
+
+**Windows 11**
+
+Download the `.exe` or `.msi` installer from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest).
+
+> The installer isn't signed with a commercial Authenticode certificate. If SmartScreen says "Windows protected your PC", click **More info → Run anyway**. SHA-256 digests are published on every release if you'd like to verify the download.
+
+### 2. Connect your home
+
+Click the menu bar (or tray) icon to open the panel, open Settings `⚙️`, and pick one:
+
+- **Mi Cloud Connect (recommended):** choose "Mi Cloud Connect", scan the QR code with the Mi Home app on your phone, and your homes, rooms, and devices sync in. CN, SG, DE, US, and RU servers are supported. On macOS you can add more accounts and see all their devices in one panel. If your sign-in is about to expire, the panel warns you 3 days ahead, and a quick re-scan in the panel renews it.
+- **Home Assistant:** enter your instance address (for example `http://192.168.1.100:8123`; reverse-proxy subpaths work too) and a long-lived access token. macOS can also find Home Assistant on your local network. The token is kept in the macOS Keychain or Windows Credential Manager.<br>
+  If macOS says "Local network connection blocked by macOS", allow MenuBarHome under **System Settings → Privacy & Security → Local Network**.
+- **Demo mode:** try the whole interface with virtual devices, no account needed.
+
+---
+
+## Keyboard Shortcuts & Natural Commands
+
+### Keyboard Navigation
+
+`⌥M` opens the panel on macOS and `Alt+M` opens it on Windows. Typing to search, `↑`/`↓`, `Return`/`Space`, `→`/`←`, and `Esc` work on both platforms; `Tab` cycles room tabs on macOS.
+
+| Shortcut | Action |
+| :--- | :--- |
+| `⌥M` / `Alt+M` | Toggle the MenuBarHome panel (macOS / Windows) |
+| Type letters | Instant search by device name, room, or pinyin initials (e.g. `sftd`) |
+| `↑` / `↓` | Navigate through search matches and device cards |
+| `Return` / `Space` | Toggle the focused device; expand the detail drawer if not directly switchable |
+| `→` / `←` | Press Right to open details; then use Left and Right to adjust light brightness, AC temperature, cover position, or volume (Windows also adjusts fan speed) |
+| `Tab` | Switch between room tabs (macOS) |
+| `Esc` | Clear search query, close drawer, or dismiss panel |
+
+### Local Natural Language Commands
+
+These phrases are parsed locally **without any AI API key** or cloud model tokens:
+
+- **Power:** "turn off study light", "turn on living room ac", "turn off all lights"
+- **Lighting presets:** "study light moonlight mode", "daylight mode"
+- **Adjustments:** "dimmer", "brighter", "set bedroom light to 40%"
+- **Climate & Fan:** "set ac to 24 degrees", "warmer", "fan natural wind"
+- **Timers:** "in 10 minutes turn off study light", "cancel timer"
+- **Undo:** "undo", "revert" (active for 10 minutes after any batch execution)
 
 ---
 
 ## Features & Platform Matrix
 
 The macOS version is built natively in Swift 6, while the Windows 11 client is an independent implementation using Tauri v2 and TypeScript. Both share verified golden fixtures (`Tests/Fixtures/`) for protocol and intent matching, while respecting system platform differences.
+
+<details>
+<summary><b>Show the full comparison table</b></summary>
 
 | Feature Area | macOS Native (14+) | Windows 11 Tray | Details |
 | :--- | :---: | :---: | :--- |
@@ -143,86 +232,16 @@ The macOS version is built natively in Swift 6, while the Windows 11 client is a
 | **Curtains & Window Openers** | ✅ Travel state + 2% end snap | ✅ Travel state + 2% end snap | Both platforms show real opening/closing travel (including the vendor spellings `Dowm` / `Fallin` and `Up` / `Down`), snap parked positions within 2% of either end, and stop a moving card. Airers report height, so their MIoT position is inverted on both platforms. Opening a window opener or an airer asks first; a garage door asks in either direction |
 | **Code Signing & Integrity** | ⚠️ Self-signed + Ed25519 updates | ⚠️ Unsigned installer + Ed25519 updates | Both platforms verify in-app update manifests with an offline Ed25519 key; macOS requires first-launch Gatekeeper approval and Windows shows a SmartScreen prompt |
 
----
-
-## Quick Start
-
-### 1. Requirements & Installation
-
-- **macOS:** macOS 14 (Sonoma) or later (Universal Binary: Apple Silicon & Intel).
-- **Windows:** Windows 11 (64-bit).
-
-#### Installing on macOS
-
-**Homebrew:**
-
-```bash
-brew tap jryang2026-code/tap
-brew trust --cask jryang2026-code/tap/menubarhome
-brew install --cask jryang2026-code/tap/menubarhome
-```
-
-**Direct DMG Download**
-Download the latest macOS DMG from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) and drag `MenuBarHome.app` into your Applications folder.
-> **About macOS Gatekeeper:**<br>
-> This project is an independent open-source tool and is not enrolled in the paid Apple Developer Program (no Developer ID notarization). If Gatekeeper blocks initial launch, open **System Settings → Privacy & Security**, scroll down, and click **"Open Anyway"** for MenuBarHome.
-
-#### Installing on Windows 11
-
-Download the latest Windows x64 `.exe` or `.msi` from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest).
-> **About Windows SmartScreen:**<br>
-> The Windows binary is not signed with an enterprise Authenticode certificate. If SmartScreen shows "Windows protected your PC", click **"More info" → "Run anyway"**. SHA-256 digests are published on each Release for manual verification.
-
----
-
-### 2. Connect Your Devices
-
-Click the menu bar or tray icon to reveal the panel, then open Settings `⚙️` (organized on Windows into four fixed-header tabs: **Appearance & Panel**, **Data Sources**, **AI & Habits**, and **All-Off & Updates**):
-
-
-
-- **Option A: Mi Home Direct Cloud Connect (Recommended):**<br>
-  Select "Mi Cloud Connect" in Settings. A QR code appears on screen. Scan it with the official Mi Home app on your phone to link your account. All your homes, rooms, and supported devices sync instantly. On macOS, you can click "Add Account" in Settings to sign in to multiple Xiaomi accounts across regions at once and merge their devices and homes in one panel (Windows currently supports a single signed-in account). When Xiaomi's login response declares a cookie expiry (or the server rejects an expired token), the panel warns 3 days before expiry, switches the macOS menu-bar icon to `house.slash` once expired, and offers a one-click in-panel QR re-scan without guessing a lifetime for undated sessions.
-- **Option B: Home Assistant local connection:**<br>
-  Select "Home Assistant" and enter your instance origin (or reverse-proxy subpath base URL), such as `http://192.168.1.100:8123` or `https://home.example.com/hass`, and Long-Lived Access Token. macOS maintains a persistent WebSocket event stream and supports LAN mDNS discovery; Windows fetches snapshots and dispatches service calls over on-demand WebSocket requests, caches the last verified home snapshot locally without storing camera proxy tokens, and asks you to approve each new origin in a native dialog (adding an explicit warning if a non-local `http` origin would send tokens in plaintext). The token stays in macOS Keychain or Windows Credential Manager, and a rejected or failed connection never switches to demo. Windows synthesizes light, climate, fan, plug, fridge, vacuum, camera (including MJPEG proxy live streams through local `go2rtc`), cover (including dual-track curtains), humidifier, water heater, valve, media player (speaker), standalone button, and sensor (including binary sensors and read-only lock status) cards, plus More Settings (`更多设置`) entity controls, scenes, and scripts.<br>
-  On macOS, connecting to a LAN address or `.local` host can be blocked by the system's local-network privacy gate. The panel says so explicitly ("Local network connection blocked by macOS") instead of showing a generic socket error. Grant MenuBarHome permission under **System Settings → Privacy & Security → Local Network**; if it still fails, reinstall so the local app signature lines up.
-- **Option C: Offline Demo Home:**<br>
-  Explore the interface and controls without an account using simulated devices.
-
----
-
-## Keyboard Shortcuts & Natural Commands
-
-### Keyboard Navigation
-
-`⌥M` opens the panel on macOS and `Alt+M` opens it on Windows. Typing to search, `↑`/`↓`, `Return`/`Space`, `→`/`←`, and `Esc` work on both platforms; `Tab` cycles room tabs on macOS.
-
-| Shortcut | Action |
-| :--- | :--- |
-| `⌥M` / `Alt+M` | Toggle the MenuBarHome panel (macOS / Windows) |
-| Type letters | Instant search by device name, room, or pinyin initials (e.g. `sftd`) |
-| `↑` / `↓` | Navigate through search matches and device cards |
-| `Return` / `Space` | Toggle the focused device; expand the detail drawer if not directly switchable |
-| `→` / `←` | Press Right to open details; then use Left and Right to adjust light brightness, AC temperature, cover position, or volume (Windows also adjusts fan speed) |
-| `Tab` | Switch between room tabs (macOS) |
-| `Esc` | Clear search query, close drawer, or dismiss panel |
-
-### Local Natural Language Commands
-
-These phrases are parsed locally **without any AI API key** or cloud model tokens:
-
-- **Power:** "turn off study light", "turn on living room ac", "turn off all lights"
-- **Lighting presets:** "study light moonlight mode", "daylight mode"
-- **Adjustments:** "dimmer", "brighter", "set bedroom light to 40%"
-- **Climate & Fan:** "set ac to 24 degrees", "warmer", "fan natural wind"
-- **Timers:** "in 10 minutes turn off study light", "cancel timer"
-- **Undo:** "undo", "revert" (active for 10 minutes after any batch execution)
+</details>
 
 ---
 
 ## Raycast Extension, Local CLI & MCP Server
 
 MenuBarHome can hand its device list to a companion without sharing any credential. Turn on **Settings → 通用 → 自动化与外部控制 → Raycast 集成** (**Settings → General → Automation & External Control → Raycast integration**) on macOS (or **Settings → All-Off & Updates → Raycast & Local CLI / MCP Integration** on Windows): the app writes `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json` on macOS (mode `0600`) or `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json` on Windows with your devices, scenes, quick actions, environment readings, the last command result, and a random local bridge token. Links that carry the token skip the external-link confirmation prompt; high-risk devices still ask, and the lock-screen block still applies on both platforms. Turning the integration off deletes the file and revokes the token. The contract and the trade-offs behind it are in [ADR-0013](docs/adr/0013-raycast-companion-contract.md).
+
+<details>
+<summary><b>How to use the CLI, MCP server, and Raycast extension</b></summary>
 
 ### Local CLI
 
@@ -263,9 +282,20 @@ Exit codes: `0` success, `1` the app reported a failure, `2` local error (snapsh
 
 `raycast/` is a standard Raycast extension with three commands: **Search Devices**, **Scenes & Quick Actions**, and **Ask MenuBarHome**. Import it with Raycast → Extensions → `+` → **Import Extension**, or run `cd raycast && npm ci && npm run dev` while Raycast is open. Power, brightness, colour temperature, thermostat target and fan speed are sent as exact values (`menumijia://power`, `brightness`, `color-temp`, `temperature`, `fan`), so a slider never flips a device by guessing its state; each command shows a toast with the app's result.
 
+</details>
+
 ---
 
 ## Safety, Privacy & Limitations
+
+- Account credentials live only in the macOS Keychain or Windows Credential Manager, never in plain config files or logs.
+- Turning on a heater, switching a plug, or starting a robot vacuum always asks first; turning them off happens right away.
+- While your Mac is locked, manual control is refused by default, so nobody can play with your lights while you're away from the desk.
+- Everyday commands are parsed on your machine. Only when you've set up an AI service and a command can't be understood locally does that command, with the relevant device details, go to the service you chose.
+- In-app updates are verified against an Ed25519 signature whose private key is kept offline.
+
+<details>
+<summary><b>Full details: where credentials live, high-risk confirmations, lock screen, and revocation</b></summary>
 
 MenuBarHome is an independent open-source project, not an official Xiaomi app. Mi Home cloud control needs an internet connection. You can connect your own Home Assistant instance on macOS or Windows.
 
@@ -301,6 +331,8 @@ The macOS app is not yet notarized by Apple, so you may need to allow it in Syst
 Releases built by GitHub Actions carry build provenance attestations and SPDX SBOMs. See [verifying release artifacts](SECURITY.md#verifying-release-artifacts).
 
 To report a vulnerability in private, follow [Security policy](SECURITY.md).
+
+</details>
 
 ---
 
