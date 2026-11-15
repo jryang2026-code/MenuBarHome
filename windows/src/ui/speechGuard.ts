@@ -8,7 +8,7 @@ import {
 import { speechLocale, t } from "../core/i18n.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { allOffTargets, hasDetailDrawer, type SmartDevice } from "../core/models.js";
-import { planQuickAction, trText, type QuickActionId } from "../core/quickActions.js";
+import { planQuickAction, type QuickActionId } from "../core/quickActions.js";
 import {
   RaycastBridgeTokenManager,
   buildRaycastSnapshot,
@@ -17,7 +17,7 @@ import {
   type RaycastSnapshot,
 } from "../core/raycastSnapshot.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
-import { undoBannerMs, undoDeviceCount } from "./undoTracker.js";
+import { tr3, undoBannerMs, undoDeviceCount } from "./undoTracker.js";
 import type {
   PersistedSettings,
   SpeechRecognitionInstance,
@@ -195,8 +195,9 @@ export function toggleVoiceInput(host: MenuMijiaWindowsApp): void {
   if (!SpeechCtor) {
     host.isShowingAssistantBar = true;
     host.replyBanner = {
-      text: trText(
+      text: tr3(
         "当前环境不支持在线语音识别（Web Speech API 不可用），请直接输入文字指令。",
+        "目前環境不支援線上語音辨識（Web Speech API 不可用），請直接輸入文字指令。",
         "Online speech recognition (Web Speech API) is unavailable in this environment; please type your command.",
       ),
       source: t("语音提示"),
@@ -598,7 +599,7 @@ export async function executeBuiltInQuickAction(
 
   if (planned.targets.length === 0) {
     host.replyBanner = {
-      text: trText("当前无需执行「{title}」", "No devices need \"{title}\"", { title: planned.title }),
+      text: tr3(`当前无需执行「${planned.title}」`, `目前無需執行「${planned.title}」`, `No devices need "${planned.title}"`),
       source: t("0ms 本地直达"),
     };
     host.render();
@@ -618,7 +619,7 @@ export async function executeBuiltInQuickAction(
           accepted += 1;
         } else {
           failed = true;
-          failureMessage = host.replyBanner?.text ?? "设备未响应";
+          failureMessage = host.replyBanner?.text ?? t("设备未响应");
           break;
         }
       }
@@ -660,7 +661,7 @@ export async function executeBuiltInQuickAction(
   if (steps.length > 0) {
     host.lastManuallyUsedLightId = planned.nextLastManuallyUsedLightId;
     const undoAction: UndoAction = {
-      summary: trText("已执行「{title}」", "Executed \"{title}\"", { title: planned.title }),
+      summary: tr3(`已执行「${planned.title}」`, `已執行「${planned.title}」`, `Executed "${planned.title}"`),
       steps,
       expiresAtMs: Date.now() + 10 * 60 * 1000,
       habitReceipt: habitReceipt ?? undefined,
@@ -681,7 +682,7 @@ export async function executeBuiltInQuickAction(
           isError: true,
         }
       : {
-          text: trText("已执行「{title}」", "Executed \"{title}\"", { title: planned.title }),
+          text: tr3(`已执行「${planned.title}」`, `已執行「${planned.title}」`, `Executed "${planned.title}"`),
           source: t("0ms 本地直达"),
         };
   host.render();
@@ -793,7 +794,7 @@ function warnBridgeTokenUnavailable(host: MenuMijiaWindowsApp, error: unknown): 
   const detail = error instanceof Error ? error.message : String(error);
   host.replyBanner = {
     text: detail,
-    source: trText("Raycast 集成", "Raycast Integration"),
+    source: tr3("Raycast 集成", "Raycast 整合", "Raycast Integration"),
     isError: true,
   };
   // Without a token nothing can be written safely, so the integration stays off until it works.
@@ -1111,7 +1112,7 @@ function createUrlCommandHostAdapter(
     ): Promise<{ readonly message: string; readonly isError: boolean }> {
       if (!revisionStillMatches()) {
         return {
-          message: trText("数据源已切换，已取消外部链接执行", "Data source changed; external link cancelled"),
+          message: tr3("数据源已切换，已取消外部链接执行", "資料源已切換，已取消外部連結執行", "Data source changed; external link cancelled"),
           isError: true,
         };
       }
@@ -1130,7 +1131,7 @@ function createUrlCommandHostAdapter(
         );
         if (targets.length === 0) {
           return {
-            message: trText("当前没有开启的设备", "No active devices are currently on"),
+            message: tr3("当前没有开启的设备", "目前沒有開啟的裝置", "No active devices are currently on"),
             isError: false,
           };
         }
@@ -1152,7 +1153,7 @@ function createUrlCommandHostAdapter(
       const noUndo =
         banner?.source === t("撤销提示") || Boolean(banner?.isError);
       return {
-        message: banner?.text ?? trText("没有可以撤销的操作", "Nothing to undo"),
+        message: banner?.text ?? tr3("没有可以撤销的操作", "沒有可以復原的操作", "Nothing to undo"),
         isError: noUndo,
       };
     },
@@ -1235,15 +1236,16 @@ export function enqueueIncomingOpenUrl(
 function reportStaleExternalUrl(host: MenuMijiaWindowsApp, rawUrl: string): void {
   const state = hostState(host);
   const envelope = AppURLParser.parseEnvelope(rawUrl);
+  const staleMessage = tr3("数据源已切换，已取消外部链接执行", "資料源已切換，已取消外部連結執行", "Data source changed; external link cancelled");
   host.replyBanner = {
-    text: trText("数据源已切换，已取消外部链接执行", "Data source changed; external link cancelled"),
+    text: staleMessage,
     source: t("外部链接"),
     isError: true,
   };
   state.lastCommandFeedback = {
     ...(envelope?.requestId ? { requestId: envelope.requestId } : {}),
     command: envelope ? formatAppURLCommandLabel(envelope.command) : "invalid",
-    message: trText("数据源已切换，已取消外部链接执行", "Data source changed; external link cancelled"),
+    message: staleMessage,
     isError: true,
     completedAt: new Date().toISOString(),
   };

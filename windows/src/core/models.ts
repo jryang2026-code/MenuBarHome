@@ -8,7 +8,7 @@ export type ConnectionStatus =
   | { readonly kind: "connecting" }
   | { readonly kind: "disconnected"; readonly reason: string };
 
-export interface LightSpec {
+interface LightSpec {
   readonly kind: "light";
   readonly entityId: string;
   isOn: boolean;
@@ -44,7 +44,7 @@ export interface ClimateSpec {
   readonly temperatureWritable?: boolean;
 }
 
-export interface FanSpec {
+interface FanSpec {
   readonly kind: "fan";
   readonly entityId: string;
   isOn: boolean;
@@ -76,7 +76,7 @@ export interface PlugSpec {
   readonly countsInTotalPower?: boolean;
 }
 
-export interface FridgeSpec {
+interface FridgeSpec {
   readonly kind: "fridge";
   readonly modeEntityId: string | null;
   currentMode: string;
@@ -192,7 +192,7 @@ export interface TvSpec {
   volumePresent?: boolean;
 }
 
-export interface HumidifierSpec {
+interface HumidifierSpec {
   readonly kind: "humidifier";
   readonly entityId: string;
   isOn: boolean;
@@ -413,7 +413,7 @@ export interface SynthesizedHome {
   readonly deviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
 }
 
-export type VacuumAction = "start" | "pause" | "returnToBase";
+type VacuumAction = "start" | "pause" | "returnToBase";
 
 export type DeviceCommand =
   | { readonly kind: "setLightPower"; readonly entityId: string; readonly isOn: boolean }
@@ -773,7 +773,7 @@ export function allOffTargets(
 }
 
 /** A timer that comes due more than this late (the PC slept, the app was frozen) waits for the user (#22). */
-export const LATE_TIMER_GRACE_MS = 60_000;
+const LATE_TIMER_GRACE_MS = 60_000;
 
 /** Splits timers into ones to run now, ones that were missed, and ones still counting down. */
 export function partitionDueTimers(
@@ -1043,7 +1043,7 @@ export function localizeHvacMode(mode: string): string {
 }
 
 /** One air-quality grade; mirrors macOS `AirQualityLevel`, pinned by Tests/Fixtures/air_quality_golden.json. */
-export type AirQualityLevel = "excellent" | "good" | "moderate" | "poor" | "heavy" | "hazardous";
+type AirQualityLevel = "excellent" | "good" | "moderate" | "poor" | "heavy" | "hazardous";
 
 const AIR_QUALITY_LABEL: Record<AirQualityLevel, string> = {
   excellent: "优",
@@ -1100,13 +1100,6 @@ function airQualityFromPm25(pm25: number): AirQualityLevel {
   if (pm25 <= 150) return "poor";
   if (pm25 <= 250) return "heavy";
   return "hazardous";
-}
-
-/** A known raw grade wins over PM2.5; an unknown raw grade has no level. */
-export function airQualityLevel(raw: string | null | undefined, pm25?: number | null): AirQualityLevel | null {
-  if (raw && raw.trim() !== "") return airQualityFromRaw(raw);
-  if (pm25 === undefined || pm25 === null) return null;
-  return airQualityFromPm25(pm25);
 }
 
 export function localizeAirQuality(raw: string | null | undefined, pm25?: number | null): string | null {
@@ -1325,7 +1318,7 @@ export function deviceStatusSummary(device: SmartDevice): string {
   }
 }
 
-export interface FaultNotice {
+interface FaultNotice {
   readonly message: string;
   readonly copyText: string;
 }

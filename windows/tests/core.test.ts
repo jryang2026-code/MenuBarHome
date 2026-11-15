@@ -13,7 +13,6 @@ import { describe, it } from "node:test";
 import {
   ASSISTANT_PROVIDER_PRESETS,
   DelayPhrase,
-  GROK_BALL_RADIAL_SLOTS,
   LocalIntentParser,
   ManualControlPolicy,
   ModelActionPolicy,
@@ -37,7 +36,6 @@ import {
   IntentValidator,
   parseAssistantEndpoint,
   partitionHabitReceipt,
-  resolveGrokBallEmotion,
 } from "../src/core/assistant.js";
 import {
   MI_CLOUD_REGIONS,
@@ -94,7 +92,6 @@ import {
   deviceStatusSummary,
   type CoverSpec,
   type SmartDevice,
-  airQualityLevel,
 } from "../src/core/models.js";
 import { applyCommand } from "../src/ui/commandDispatch.js";
 import { executeSingleCommand } from "../src/ui/intentExecution.js";
@@ -4806,44 +4803,6 @@ describe("Home Assistant snapshot boundary", () => {
   });
 });
 
-describe("Cross-platform GrokBall emotion & radial stage corpus (#114)", () => {
-  const raw = readFileSync(resolve(process.cwd(), "../Tests/Fixtures/grok_ball_golden.json"), "utf8");
-  const corpus = JSON.parse(raw) as {
-    radialSlots: string[];
-    emotionCases: Array<{
-      name: string;
-      timeBucket: string;
-      activeDeviceCount: number;
-      speechListening: boolean;
-      assistantState: "idle" | "thinking" | "done" | "failed" | "awaitingChoice";
-      isRecommending: boolean;
-      hasErrorToast: boolean;
-      isPointerTracking: boolean;
-      isStageExpanded: boolean;
-      hasRecentCelebration: boolean;
-      expectedEmotionId: string;
-    }>;
-  };
-
-  it("matches the 4 radial slot order and emotion transitions shared with MijiaCore", () => {
-    assert.deepEqual([...GROK_BALL_RADIAL_SLOTS], corpus.radialSlots);
-    for (const item of corpus.emotionCases) {
-      const actual = resolveGrokBallEmotion({
-        timeBucket: item.timeBucket,
-        activeDeviceCount: item.activeDeviceCount,
-        speechListening: item.speechListening,
-        assistantState: item.assistantState,
-        isRecommending: item.isRecommending,
-        hasErrorToast: item.hasErrorToast,
-        isPointerTracking: item.isPointerTracking,
-        isStageExpanded: item.isStageExpanded,
-        hasRecentCelebration: item.hasRecentCelebration,
-      });
-      assert.equal(actual, item.expectedEmotionId, item.name);
-    }
-  });
-});
-
 describe("Partial undo sequence context preservation", () => {
   it("preserves lastAction for failed devices or newer manual controls during partial undo", () => {
     const devA: SmartDevice = {
@@ -5132,16 +5091,6 @@ describe("Windows curtain control (#279)", () => {
       mention: { kind: "none" },
     });
     assert.equal(context.activeDevicesSummary, "全屋设备均关闭");
-  });
-});
-
-describe("Air-quality grade (shared golden)", () => {
-  it("matches Tests/Fixtures/air_quality_golden.json used by both apps", () => {
-    const raw = readFileSync(resolve(process.cwd(), "../Tests/Fixtures/air_quality_golden.json"), "utf8");
-    const golden = JSON.parse(raw) as { cases: Array<{ raw: string | null; pm25: number | null; level: string | null }> };
-    for (const item of golden.cases) {
-      assert.equal(airQualityLevel(item.raw, item.pm25), item.level, `raw ${item.raw} pm25 ${item.pm25}`);
-    }
   });
 });
 

@@ -11,8 +11,10 @@ import {
   type RoomCategory,
   type SmartDevice,
 } from "./models.js";
+import { t } from "./i18n.js";
 import { normalizeSearch } from "./panelSearch.js";
-import { quickActionTitle, trText } from "./quickActions.js";
+import { quickActionTitle } from "./quickActions.js";
+import { tr3 } from "./safetyAndHealth.js";
 import { formatTemperature } from "./temperature.js";
 
 export const SNAPSHOT_SCHEMA_VERSION = 1;
@@ -191,8 +193,9 @@ export class RaycastBridgeTokenManager {
 export function generateRandomHexToken(): string {
   const webCrypto = globalThis.crypto;
   if (typeof webCrypto?.getRandomValues !== "function") {
-    throw new Error(trText(
+    throw new Error(tr3(
       "安全随机数源不可用，无法生成 Raycast 桥接令牌",
+      "安全隨機數源不可用，無法產生 Raycast 橋接權杖",
       "No secure random source is available; refusing to mint a Raycast bridge token",
     ));
   }
@@ -216,35 +219,35 @@ function pinyinPair(raw: string): { initials: string; full: string } {
 function categoryTitleForDevice(device: SmartDevice): string {
   switch (device.kind.kind) {
     case "light":
-      return trText("照明", "Lights");
+      return tr3("照明", "照明", "Lights");
     case "climate":
-      return trText("空调", "Climate");
+      return t("空调");
     case "fan":
-      return trText("风扇", "Fans");
+      return tr3("风扇", "風扇", "Fans");
     case "plug":
       return isSwitchedLightDevice(device)
-        ? trText("照明", "Lights")
-        : trText("插座", "Plugs");
+        ? tr3("照明", "照明", "Lights")
+        : t("插座");
     case "fridge":
-      return trText("冰箱", "Fridge");
+      return t("冰箱");
     case "vacuum":
-      return trText("扫地机", "Vacuum");
+      return t("扫地机");
     case "camera":
-      return trText("摄像机", "Camera");
+      return t("摄像机");
     case "sensor":
-      return trText("传感器", "Sensors");
+      return t("传感器");
     case "cover":
-      return trText("窗帘电机", "Covers");
+      return tr3("窗帘电机", "窗簾電機", "Covers");
     case "speaker":
-      return trText("音箱", "Speakers");
+      return tr3("音箱", "音箱", "Speakers");
     case "tv":
-      return trText("电视", "TV");
+      return t("电视");
     case "humidifier":
-      return trText("加湿器", "Humidifiers");
+      return tr3("加湿器", "加濕器", "Humidifiers");
     case "appliance":
-      return trText("厨卫大家电", "Appliances");
+      return tr3("厨卫大家电", "廚衛大家電", "Appliances");
     case "generic":
-      return device.kind.typeTitle || trText("设备", "Device");
+      return device.kind.typeTitle ? t(device.kind.typeTitle) : tr3("设备", "裝置", "Device");
   }
 }
 
@@ -379,8 +382,8 @@ function buildQuickActionItems(
   const lightsOffTitle = quickActionTitle("lightsOff");
   const softNightTitle = quickActionTitle("softNightLight");
   const climateOffTitle = quickActionTitle("climateSleepOff");
-  const allOffTitle = trText("一键全关", "Turn All Off");
-  const undoTitle = trText("撤销上一步", "Undo Last Action");
+  const allOffTitle = tr3("一键全关", "一鍵全關", "Turn All Off");
+  const undoTitle = tr3("撤销上一步", "撤銷上一步", "Undo Last Action");
 
   return [
     {
@@ -388,8 +391,8 @@ function buildQuickActionItems(
       name: lightsOffTitle,
       subtitle:
         activeLightsCount > 0
-          ? trText("当前有 {n} 盏灯开启", "{n} light(s) currently on", { n: activeLightsCount })
-          : trText("全部灯具已关闭", "All lights are already off"),
+          ? tr3("当前有 {n} 盏灯开启", "目前有 {n} 盞燈開啟", "{n} light(s) currently on", { n: activeLightsCount })
+          : tr3("全部灯具已关闭", "全部燈具已關閉", "All lights are already off"),
       icon: "lightbulb.slash",
       isEnabled: activeLightsCount > 0,
       affectedCount: activeLightsCount,
@@ -400,8 +403,8 @@ function buildQuickActionItems(
       name: softNightTitle,
       subtitle:
         nightLightCount > 0
-          ? trText("调至 15% 亮度与 2700K 暖光", "Dim to 15% at 2700K warm light")
-          : trText("无支持调光调色温的在线灯具", "No dimmable warm-white lights online"),
+          ? tr3("调至 15% 亮度与 2700K 暖光", "調至 15% 亮度與 2700K 暖光", "Dim to 15% at 2700K warm light")
+          : tr3("无支持调光调色温的在线灯具", "無支援調光調色溫的線上燈具", "No dimmable warm-white lights online"),
       icon: "moon.stars",
       isEnabled: nightLightCount > 0,
       affectedCount: nightLightCount > 0 ? 1 : 0,
@@ -412,8 +415,8 @@ function buildQuickActionItems(
       name: climateOffTitle,
       subtitle:
         activeClimateFanCount > 0
-          ? trText("当前有 {n} 台温控/风扇开启", "{n} climate/fan device(s) on", { n: activeClimateFanCount })
-          : trText("空调与风扇均已关闭", "All climate & fan devices are off"),
+          ? tr3("当前有 {n} 台温控/风扇开启", "目前有 {n} 台溫控/風扇開啟", "{n} climate/fan device(s) on", { n: activeClimateFanCount })
+          : tr3("空调与风扇均已关闭", "空調與風扇均已關閉", "All climate & fan devices are off"),
       icon: "snowflake.slash",
       isEnabled: activeClimateFanCount > 0,
       affectedCount: activeClimateFanCount,
@@ -424,8 +427,8 @@ function buildQuickActionItems(
       name: allOffTitle,
       subtitle:
         allOffCount > 0
-          ? trText("关闭当前开启的 {n} 台设备（支持撤销）", "Turn off {n} active device(s) (with undo)", { n: allOffCount })
-          : trText("当前没有开启的设备", "No active devices are currently on"),
+          ? tr3("关闭当前开启的 {n} 台设备（支持撤销）", "關閉目前開啟的 {n} 台裝置（支援撤銷）", "Turn off {n} active device(s) (with undo)", { n: allOffCount })
+          : tr3("当前没有开启的设备", "目前沒有開啟的裝置", "No active devices are currently on"),
       icon: "power",
       isEnabled: allOffCount > 0,
       affectedCount: allOffCount,
@@ -435,8 +438,8 @@ function buildQuickActionItems(
       id: "undo",
       name: undoTitle,
       subtitle: undoSummary
-        ? trText("可撤销：{title}", "Undo: {title}", { title: undoSummary.title })
-        : trText("当前没有可撤销的操作", "Nothing to undo right now"),
+        ? tr3("可撤销：{title}", "可撤銷：{title}", "Undo: {title}", { title: undoSummary.title })
+        : tr3("当前没有可撤销的操作", "目前沒有可撤銷的操作", "Nothing to undo right now"),
       icon: "arrow.uturn.backward",
       isEnabled: Boolean(undoSummary),
       affectedCount: undoSummary?.count ?? 0,
@@ -604,7 +607,7 @@ export function buildRaycastSnapshot(input: BuildRaycastSnapshotInput): RaycastS
       roomName: displayRoom,
       roomSortOrder: roomOrder,
       category: switchedLight ? "light" : dev.kind.kind,
-      categoryTitle: switchedLight ? trText("照明", "Lights") : categoryTitleForDevice(effectiveDev),
+      categoryTitle: switchedLight ? tr3("照明", "照明", "Lights") : categoryTitleForDevice(effectiveDev),
       model: dev.model,
       stateText: deviceStatusSummary(dev),
       isOnline: dev.isOnline,
@@ -712,8 +715,8 @@ export function formatDynamicTraySummary(
     const activeCount = devices.filter((d) => d.isOnline && isActiveDevice(d)).length;
     parts.push(
       activeCount > 0
-        ? trText("{count} 台开启", "{count} on", { count: activeCount })
-        : trText("全部关闭", "All off"),
+        ? tr3("{count} 台开启", "{count} 台開啟", "{count} on", { count: activeCount })
+        : tr3("全部关闭", "全部關閉", "All off"),
     );
   }
   return parts.length > 0 ? parts.join(" · ") : null;

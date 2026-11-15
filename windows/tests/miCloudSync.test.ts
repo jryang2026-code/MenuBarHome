@@ -276,7 +276,6 @@ function cloudApp(extra: Record<string, unknown> = {}): MenuMijiaWindowsApp {
     JSON.stringify({
       connectionMode: "xiaomiCloud",
       hasCompletedOnboarding: true,
-      enableGrokBall: false,
       autoCheckUpdates: false,
       miSession: SESSION,
       cachedModelTypes: { [MODEL]: SPEC.type },

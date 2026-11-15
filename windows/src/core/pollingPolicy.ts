@@ -11,7 +11,7 @@ import {
 /**
  * Current panel and workstation activity context. Mirrors `Sources/MijiaCore/PollingPolicy.swift:4-22`.
  */
-export interface PollingContext {
+interface PollingContext {
   /** The control center panel is visible on screen. */
   readonly panelVisible: boolean;
   /** False while the machine or display sleeps or the workstation is locked. */
@@ -118,7 +118,7 @@ export function miSessionFingerprint(session: MiSession): string {
   return `${userId}|${region}|${tokenHash}`;
 }
 
-export interface CachedXiaomiTopology {
+interface CachedXiaomiTopology {
   readonly sessionFingerprint: string;
   readonly sourceRevision: number;
   readonly selectedHomeId: string | null;

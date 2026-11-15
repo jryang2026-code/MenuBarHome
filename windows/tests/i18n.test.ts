@@ -25,6 +25,11 @@ import {
   toCelsius,
   toDisplayTemperature,
 } from "../src/core/temperature.js";
+import { haBinarySensorStatusText, haLockStatusText } from "../src/core/haDomains.js";
+import { HomeAssistantSynthesizer } from "../src/core/homeAssistant.js";
+import { MI_CLOUD_REGIONS, MiCloudClient, miCloudRegionLabel } from "../src/core/miCloudClient.js";
+import { KIND_CHIP } from "../src/ui/listCut.js";
+import { localizeEffect, localizeFanMode } from "../src/ui/panelPrefs.js";
 
 function withLanguage<T>(language: AppLanguage, body: () => T): T {
   setLanguage(language);
@@ -101,6 +106,62 @@ describe("text catalog (#52)", () => {
     assert.equal(resolveLanguage("system", ["zh-Hans-CN"]), "zh-Hans");
     // No OS languages at all: the app's own default, not an empty string.
     assert.equal(resolveLanguage("system", []), "zh-Hans");
+  });
+
+  it("localizes MiCloud, Home Assistant, KIND_CHIP, and panel preference strings in en and zh-Hant (#45)", () => {
+    withLanguage("en", () => {
+      assert.throws(
+        () => MiCloudClient.decodeResponse("", 401, ""),
+        /The Mi Home session expired; scan again/,
+      );
+      assert.throws(
+        () => MiCloudClient.decodeResponse("", 503, ""),
+        /Mi Cloud service returned HTTP 503/,
+      );
+      assert.equal(miCloudRegionLabel("sg"), "Singapore / Global (sg)");
+      assert.equal(MI_CLOUD_REGIONS[0]?.label, "China Mainland (cn)");
+      assert.equal(KIND_CHIP.climate.title, "Climate");
+      assert.equal(KIND_CHIP.climate.hint, "Also heaters, thermostats, and electric blankets");
+      assert.equal(localizeEffect("Warmth"), "Cozy");
+      assert.equal(localizeFanMode("quiet"), "Low");
+      assert.equal(haLockStatusText({ entityId: "lock.front", state: "jammed", attributes: {} }), "Jammed");
+      assert.equal(
+        haBinarySensorStatusText("smoke", { entityId: "binary_sensor.smoke", state: "on", attributes: {} }),
+        "Smoke detected",
+      );
+      const synth = HomeAssistantSynthesizer.synthesize({
+        states: [{ entity_id: "light.unnamed", state: "on", attributes: {} }],
+        devices: [{ id: "dev-1", name: "" }],
+        entities: [{ entity_id: "light.unnamed", device_id: "dev-1" }],
+        areas: [],
+      });
+      assert.equal(synth.devices[0]?.roomName, "Whole Home");
+      assert.equal(synth.devices[0]?.name, "Smart Device");
+    });
+
+    withLanguage("zh-Hant", () => {
+      assert.throws(
+        () => MiCloudClient.decodeResponse("", 401, ""),
+        /米家登入已過期，請重新掃碼/,
+      );
+      assert.equal(miCloudRegionLabel("de"), "歐洲 (de)");
+      assert.equal(KIND_CHIP.sensor.title, "感測器");
+      assert.equal(KIND_CHIP.sensor.hint, "也包括沒有開關的小家電");
+      assert.equal(localizeEffect("Reading"), "閱讀");
+      assert.equal(haLockStatusText({ entityId: "lock.front", state: "locked", attributes: {} }), "已上鎖");
+      assert.equal(
+        haBinarySensorStatusText("leak", { entityId: "binary_sensor.leak", state: "on", attributes: {} }),
+        "偵測到漏水",
+      );
+      const synth = HomeAssistantSynthesizer.synthesize({
+        states: [{ entity_id: "light.unnamed", state: "on", attributes: {} }],
+        devices: [{ id: "dev-1", name: "" }],
+        entities: [{ entity_id: "light.unnamed", device_id: "dev-1" }],
+        areas: [],
+      });
+      assert.equal(synth.devices[0]?.roomName, "全屋");
+      assert.equal(synth.devices[0]?.name, "智慧裝置");
+    });
   });
 });
 

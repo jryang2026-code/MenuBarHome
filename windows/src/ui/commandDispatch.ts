@@ -246,7 +246,7 @@ export function pruneUnsupportedLightEffectsOnHost(host: MenuMijiaWindowsApp): b
   return mutated;
 }
 
-export function recordUnsupportedLightEffect(
+function recordUnsupportedLightEffect(
   host: MenuMijiaWindowsApp,
   deviceId: string,
   effect: string,
@@ -263,7 +263,7 @@ export function recordUnsupportedLightEffect(
   pruneUnsupportedLightEffectsOnHost(host);
 }
 
-export interface CapturedReversibleFacet {
+interface CapturedReversibleFacet {
   readonly dev: SmartDevice;
   readonly control: FacetControl;
   readonly entityId: string;
@@ -273,10 +273,6 @@ export interface CapturedReversibleFacet {
 }
 
 const undoRestoreCommands = new WeakSet<DeviceCommand>();
-
-export function isUndoRestoreCommand(command: DeviceCommand): boolean {
-  return undoRestoreCommands.has(command);
-}
 
 export function captureReversibleFacetBeforeWrite(
   host: MenuMijiaWindowsApp,
@@ -366,7 +362,7 @@ export function buildReversibleFacetUndo(
   };
 }
 
-export interface EchoReadBackTicket {
+interface EchoReadBackTicket {
   readonly generation: number;
   readonly deviceId: string;
   readonly sourceRevision: number;
@@ -765,7 +761,7 @@ interface CoverOptimisticWrite {
   readonly priorLock: OptimisticLockSnapshot | null;
 }
 
-export function coverDeviceForCommand(
+function coverDeviceForCommand(
   host: MenuMijiaWindowsApp,
   command: DeviceCommand,
 ): SmartDevice | null {
@@ -1123,7 +1119,7 @@ function kindOwnsEntity(kind: DeviceKind, entityId: string): boolean {
   }
 }
 
-export async function dispatchCloudCommand(
+async function dispatchCloudCommand(
   host: MenuMijiaWindowsApp,
   command: DeviceCommand,
   readBackPower = false,

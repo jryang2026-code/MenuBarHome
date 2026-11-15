@@ -1,5 +1,6 @@
 import { speechLocale } from "./i18n.js";
 import type { DeviceCommand, DeviceIntent, SmartDevice } from "./models.js";
+import { tr3 } from "./safetyAndHealth.js";
 
 /**
  * Locale-reactive copy helper for strings owned outside `i18n.ts` (`w1-drawers` boundary).
@@ -31,11 +32,11 @@ export interface BuiltInQuickActionDescriptor {
 export function quickActionTitle(id: QuickActionId): string {
   switch (id) {
     case "lightsOff":
-      return trText("全屋关灯", "All Lights Off");
+      return tr3("全屋关灯", "全屋關燈", "All Lights Off");
     case "softNightLight":
-      return trText("柔和夜灯", "Soft Night Light");
+      return tr3("柔和夜灯", "柔和夜燈", "Soft Night Light");
     case "climateSleepOff":
-      return trText("关温控风扇", "Sleep Climate Off");
+      return tr3("关温控风扇", "關溫控風扇", "Sleep Climate Off");
   }
 }
 

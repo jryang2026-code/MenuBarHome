@@ -1,5 +1,7 @@
 
 
+import { t } from "../i18n.js";
+
 export interface HttpRequest {
   readonly url: string;
   readonly method?: "GET" | "POST";
@@ -77,12 +79,12 @@ export interface MiCloudRegionOption {
  * tests assert against it (macOS `MiCloudRegion.allCases`, Windows `MI_CLOUD_REGIONS`).
  */
 export const MI_CLOUD_REGIONS: ReadonlyArray<MiCloudRegionOption> = [
-  { code: "cn", label: "中国大陆 (cn)" },
-  { code: "de", label: "欧洲 (de)" },
-  { code: "i2", label: "印度 (i2)" },
-  { code: "ru", label: "俄罗斯 (ru)" },
-  { code: "sg", label: "新加坡 / 国际 (sg)" },
-  { code: "us", label: "美区 (us)" },
+  { code: "cn", get label() { return t("中国大陆 (cn)"); } },
+  { code: "de", get label() { return t("欧洲 (de)"); } },
+  { code: "i2", get label() { return t("印度 (i2)"); } },
+  { code: "ru", get label() { return t("俄罗斯 (ru)"); } },
+  { code: "sg", get label() { return t("新加坡 / 国际 (sg)"); } },
+  { code: "us", get label() { return t("美区 (us)"); } },
 ];
 
 /** Falls back to China Mainland for unknown/missing values coming from older settings. */

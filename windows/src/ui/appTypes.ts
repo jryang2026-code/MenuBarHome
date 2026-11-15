@@ -101,7 +101,6 @@ export interface PersistedSettings {
   panelOpacity: number;
   climatePanel: boolean;
   showQuickActionsBar: boolean;
-  enableGrokBall: boolean;
   layout: LayoutPrefs;
   /** Selected Mi Home id; null shows every home. */
   selectedHomeId: string | null;

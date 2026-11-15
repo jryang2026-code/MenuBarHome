@@ -101,7 +101,7 @@ const windows: Window[] = [];
 beforeEach(() => {
   dom = mountTestWindow({ stubInterval: true });
   windows.push(dom);
-  localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true, enableGrokBall: false, autoCheckUpdates: false }));
+  localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true, autoCheckUpdates: false }));
 });
 afterEach(async () => {
   for (const instance of windows.splice(0)) {
@@ -232,7 +232,7 @@ describe("Timer app wiring", () => {
     };
     Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
     const identity = homeAssistantIdentity("http://localhost:8123", "synthetic-token");
-    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, autoCheckUpdates: false, enableGrokBall: false, cachedHAHome: { identity, home: HomeAssistantSynthesizer.synthesize(snapshot) } }));
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, autoCheckUpdates: false, cachedHAHome: { identity, home: HomeAssistantSynthesizer.synthesize(snapshot) } }));
     const instance = app();
     const calls = fakeExecutor(instance);
     assert.equal(scheduledCommandsReady(instance), false);

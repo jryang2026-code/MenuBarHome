@@ -3,7 +3,7 @@ import {
   CAMERA_STREAM_QUALITIES,
   DEFAULT_CAMERA_STREAM_QUALITY,
 } from "../core/cameraQuality.js";
-import { CameraHubCatalog, cameraTr } from "../core/miCloud/cameraHubs.js";
+import { CameraHubCatalog } from "../core/miCloud/cameraHubs.js";
 import { cameraLensLabel } from "../core/miCloud/cameraLens.js";
 import { localizeNightShot } from "../core/models.js";
 import { CAMERA_QUALITY_TITLES, SF_ICONS } from "./appConstants.js";
@@ -127,13 +127,13 @@ export function renderCameraLiveModalView(ctrl: CameraLiveController): string {
         ${
           showManualIpFallback
             ? `<div class="cc-camera-ip-box">
-                <label for="camera-local-ip-input">${cameraTr("手动填写局域网 IP（云端未返回时备用）", "Manual LAN IP fallback")}</label>
+                <label for="camera-local-ip-input">${tr3("手动填写局域网 IP（云端未返回时备用）", "手動填寫區域網 IP（雲端未傳回時備用）", "Manual LAN IP fallback")}</label>
                 <div class="cc-camera-ip-row">
                   <input id="camera-local-ip-input" class="cc-input" type="text" value="${ctrl.host.escapeHtml(ipDraft)}" placeholder="192.168.1.50" />
-                  <button type="button" class="cc-btn-primary" id="btn-save-camera-ip">${cameraTr("保存 IP", "Save IP")}</button>
+                  <button type="button" class="cc-btn-primary" id="btn-save-camera-ip">${tr3("保存 IP", "儲存 IP", "Save IP")}</button>
                   ${
                     savedManualIp
-                      ? `<button type="button" class="cc-btn-secondary" id="btn-clear-camera-ip">${cameraTr("清除 IP", "Clear IP")}</button>`
+                      ? `<button type="button" class="cc-btn-secondary" id="btn-clear-camera-ip">${tr3("清除 IP", "清除 IP", "Clear IP")}</button>`
                       : ""
                   }
                 </div>
@@ -217,7 +217,7 @@ export function renderCameraLiveModalView(ctrl: CameraLiveController): string {
         </div>
         ${
           playableCameras.length >= 2
-            ? `<div class="cc-camera-switcher" role="tablist" aria-label="${cameraTr("切换摄像机", "Switch camera")}">
+            ? `<div class="cc-camera-switcher" role="tablist" aria-label="${tr3("切换摄像机", "切換攝影機", "Switch camera")}">
                 ${playableCameras
                   .map((cam) => {
                     const selected = cam.id === dev.id;
@@ -247,7 +247,7 @@ export function renderCameraLiveModalView(ctrl: CameraLiveController): string {
         ${
           hasDualLenses
             ? `<div class="cc-segmented-pills cc-camera-lens-pills" style="margin-top:10px;">
-                <span class="cc-pill-label">${cameraTr("镜头", "Lens")}</span>
+                <span class="cc-pill-label">${tr3("镜头", "鏡頭", "Lens")}</span>
                 ${k.lenses!
                   .map((lens) => {
                     const selected = activeLensChannel === lens.channel;
@@ -271,7 +271,7 @@ export function renderCameraLiveModalView(ctrl: CameraLiveController): string {
                 }).join("")}
                 ${
                   mediaKind !== "error" && savedManualIp
-                    ? `<button type="button" class="cc-seg-pill" id="btn-clear-camera-ip" title="${cameraTr("清除手动局域网 IP", "Clear manual LAN IP")}">
+                    ? `<button type="button" class="cc-seg-pill" id="btn-clear-camera-ip" title="${tr3("清除手动局域网 IP", "清除手動區域網 IP", "Clear manual LAN IP")}">
                         IP ${ctrl.host.escapeHtml(savedManualIp)} ×
                       </button>`
                     : ""

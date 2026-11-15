@@ -7,17 +7,7 @@ import { trText } from "./quickActions.js";
  */
 export const MIOT_DEVICE_OFFLINE_CODE = -704042011;
 
-export type ControlFailureKind =
-  | "cancelled"
-  | "deviceOffline"
-  | "rateLimited"
-  | "sessionExpired"
-  | "signedOut"
-  | "tokenRejected"
-  | "deviceRejected"
-  | "network";
-
-export type ClassifiedControlFailure =
+type ClassifiedControlFailure =
   | { readonly kind: "cancelled"; readonly isCancellation: true }
   | { readonly kind: "deviceOffline"; readonly isCancellation: false }
   | { readonly kind: "rateLimited"; readonly isCancellation: false }
@@ -27,12 +17,12 @@ export type ClassifiedControlFailure =
   | { readonly kind: "deviceRejected"; readonly code: number; readonly isCancellation: false }
   | { readonly kind: "network"; readonly isCancellation: false };
 
-export interface ClassifyControlFailureOptions {
+interface ClassifyControlFailureOptions {
   /** Last known online state of the target device; mirrors `ControlFailure.swift` `isDeviceOnline`. */
   readonly isDeviceOnline?: boolean;
 }
 
-export interface ControlFailureFormatOptions extends ClassifyControlFailureOptions {
+interface ControlFailureFormatOptions extends ClassifyControlFailureOptions {
   readonly deviceName?: string;
   readonly adjustment?: boolean;
   /** Returned when the failure does not fit any structured bucket (e.g. generic HTTP 500). */
@@ -374,7 +364,7 @@ export function classifyControlFailure(
   return direct;
 }
 
-export function controlFailureVerb(deviceName: string, adjustment = false): string {
+function controlFailureVerb(deviceName: string, adjustment = false): string {
   const trimmed = deviceName.trim();
   if (!trimmed) {
     return adjustment
@@ -386,7 +376,7 @@ export function controlFailureVerb(deviceName: string, adjustment = false): stri
     : trText("{name} 操作未生效", "{name} action failed", { name: trimmed });
 }
 
-export function formatControlFailureReason(
+function formatControlFailureReason(
   failure: Exclude<ClassifiedControlFailure, { readonly kind: "cancelled" }>,
 ): string {
   switch (failure.kind) {

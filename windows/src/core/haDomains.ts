@@ -1,5 +1,5 @@
 import { deviceCategory } from "./assistant/deviceCategory.js";
-import { speechLocale, t } from "./i18n.js";
+import { currentLanguage, resolveLanguage, t } from "./i18n.js";
 import { DEVICE_PROFILES, matchesMiotFacetPattern, type DeviceProfiles } from "./miCloud/facets.js";
 import type {
   ApplianceAction,
@@ -59,28 +59,31 @@ export function isHAStateAvailable(state: HAState | undefined): boolean {
   return state !== undefined && state.state !== "unavailable" && state.state !== "unknown";
 }
 
-export function haTr(zh: string, en: string): string {
-  return speechLocale().toLowerCase().startsWith("en") ? en : zh;
+function haTr(zhHans: string, zhHant: string, en: string): string {
+  const lang = resolveLanguage(currentLanguage(), []);
+  if (lang === "en") return en;
+  if (lang === "zh-Hant") return zhHant;
+  return zhHans;
 }
 
 export function haLockStatusText(state: HAState | undefined): string {
   if (!state || !isHAStateAvailable(state)) {
-    return haTr("锁状态未知", "Lock status unknown");
+    return haTr("锁状态未知", "鎖狀態未知", "Lock status unknown");
   }
   switch (state.state.toLowerCase()) {
     case "locked":
-      return haTr("已上锁", "Locked");
+      return haTr("已上锁", "已上鎖", "Locked");
     case "unlocked":
     case "open":
-      return haTr("已开锁", "Unlocked");
+      return haTr("已开锁", "已開鎖", "Unlocked");
     case "locking":
-      return haTr("正在上锁", "Locking");
+      return haTr("正在上锁", "正在上鎖", "Locking");
     case "unlocking":
-      return haTr("正在开锁", "Unlocking");
+      return haTr("正在开锁", "正在開鎖", "Unlocking");
     case "jammed":
-      return haTr("门锁卡住", "Jammed");
+      return haTr("门锁卡住", "門鎖卡住", "Jammed");
     default:
-      return haTr("锁状态未知", "Lock status unknown");
+      return haTr("锁状态未知", "鎖狀態未知", "Lock status unknown");
   }
 }
 
@@ -216,7 +219,7 @@ export function buildCoverKind(
     typeof a.friendly_name === "string"
       ? a.friendly_name
       : haText(coverEntry?.name, haText(coverEntry?.original_name));
-  const nameForInference = !deviceName || deviceName === "智能设备" ? friendlyName : deviceName;
+  const nameForInference = !deviceName || deviceName === "智能设备" || deviceName === t("智能设备") ? friendlyName : deviceName;
   const rawPos = haRoundedInt(a.current_position);
   const roundedPos = rawPos !== null ? Math.max(0, Math.min(100, rawPos)) : null;
   const stateLower = coverState.state.toLowerCase();
@@ -297,20 +300,20 @@ export function haBinarySensorKind(
 
 export function haBinarySensorStatusText(kind: HABinaryAlertKind, state: HAState | undefined): string {
   if (!state || !isHAStateAvailable(state)) {
-    return haTr("状态未知", "Status unknown");
+    return haTr("状态未知", "狀態未知", "Status unknown");
   }
   const active = state.state.toLowerCase() === "on";
   switch (kind) {
     case "leak":
-      return active ? haTr("检测到漏水", "Leak detected") : haTr("正常", "Dry");
+      return active ? haTr("检测到漏水", "偵測到漏水", "Leak detected") : haTr("正常", "正常", "Dry");
     case "smoke":
-      return active ? haTr("检测到烟雾", "Smoke detected") : haTr("正常", "Clear");
+      return active ? haTr("检测到烟雾", "偵測到煙霧", "Smoke detected") : haTr("正常", "正常", "Clear");
     case "gas":
-      return active ? haTr("检测到燃气", "Gas detected") : haTr("正常", "Clear");
+      return active ? haTr("检测到燃气", "偵測到燃氣", "Gas detected") : haTr("正常", "正常", "Clear");
     case "contact":
-      return active ? haTr("已打开", "Open") : haTr("已关闭", "Closed");
+      return active ? haTr("已打开", "已開啟", "Open") : haTr("已关闭", "已關閉", "Closed");
     case "motion":
-      return active ? haTr("有人", "Detected") : haTr("无人", "Clear");
+      return active ? haTr("有人", "有人", "Detected") : haTr("无人", "無人", "Clear");
   }
 }
 
@@ -464,11 +467,11 @@ export function buildValveKind(
 
   let statusText: string | null = null;
   if (stateLower === "opening") {
-    statusText = haTr("正在打开", "Opening");
+    statusText = haTr("正在打开", "正在開啟", "Opening");
   } else if (stateLower === "closing") {
-    statusText = haTr("正在关闭", "Closing");
+    statusText = haTr("正在关闭", "正在關閉", "Closing");
   } else if (rawPos !== null && rawPos > 0 && rawPos < 100) {
-    statusText = haTr(`开 ${rawPos}%`, `Open ${rawPos}%`);
+    statusText = haTr(`开 ${rawPos}%`, `開 ${rawPos}%`, `Open ${rawPos}%`);
   }
 
   claimed.add(valveId);
@@ -816,7 +819,7 @@ function buildSyntheticPrimaryHAFacets(
           id: `${valveId}#position`,
           kind: "slider",
           name: "valve-position",
-          title: haTr("开度", "Position"),
+          title: haTr("开度", "開度", "Position"),
           serviceName: haText(a.device_class).toLowerCase() === "gas" ? "gas-valve" : "water-valve",
           unit: "percentage",
           scale: null,
@@ -845,7 +848,7 @@ function buildSyntheticPrimaryHAFacets(
           id: `${mediaId}#play_pause`,
           kind: "toggle",
           name: "play-pause",
-          title: haTr("播放", "Play"),
+          title: haTr("播放", "播放", "Play"),
           serviceName,
           unit: null,
           scale: null,
@@ -887,7 +890,7 @@ function buildSyntheticPrimaryHAFacets(
           id: `${mediaId}#source`,
           kind: "select",
           name: "source",
-          title: haTr("音源", "Source"),
+          title: haTr("音源", "音源", "Source"),
           serviceName: "speaker",
           unit: null,
           scale: null,

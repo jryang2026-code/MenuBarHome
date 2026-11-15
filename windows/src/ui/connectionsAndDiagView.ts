@@ -19,7 +19,7 @@ import { createTransport, invokeTauriVoid } from "./transport.js";
 export const CUSTOM_HOME_TITLE_STORAGE_KEY = "menumijia.windows.customHomeTitle.v1";
 
 type MiRegionCode = ReturnType<typeof normalizeMiCloudRegion>;
-export type ScannerHAInvoke = NonNullable<ScanUnsupportedOptions["haInvoke"]>;
+type ScannerHAInvoke = NonNullable<ScanUnsupportedOptions["haInvoke"]>;
 
 function activeLanguage(preference?: LanguagePreference): AppLanguage {
   if (preference && preference !== "system") return resolveLanguage(preference, []);
@@ -56,7 +56,7 @@ export type ConnectionsDiagAnchorId =
   | "scanUnsupportedDevices"
   | "copyDiagnostics";
 
-export interface ConnectionsDiagSearchAnchorSpec {
+interface ConnectionsDiagSearchAnchorSpec {
   readonly anchor: ConnectionsDiagAnchorId;
   readonly tab: SettingsTab;
   readonly section: readonly [string, string, string];
@@ -191,9 +191,9 @@ export const CONNECTIONS_DIAG_SEARCH_ANCHORS: readonly ConnectionsDiagSearchAnch
   },
 ];
 
-export type ConnDiagModalSection = "accounts" | "title" | "scanner" | "diagnostics";
+type ConnDiagModalSection = "accounts" | "title" | "scanner" | "diagnostics";
 
-export interface AddAccountQrState {
+interface AddAccountQrState {
   open: boolean;
   phase: "idle" | "loading" | "waiting" | "failed";
   region: MiRegionCode;
@@ -267,7 +267,7 @@ export interface ConnectionsAndDiagHost {
   connDiagSession?: HostConnDiagSession;
 }
 
-export type ConnectionsAndDiagViewContext =
+type ConnectionsAndDiagViewContext =
   | SettingsViewContext
   | {
       readonly settings: PersistedSettings;
@@ -300,7 +300,7 @@ export function createDefaultHostConnDiagSession(region?: string): HostConnDiagS
   };
 }
 
-export function getHostConnDiagSession(host: ConnectionsAndDiagHost): HostConnDiagSession {
+function getHostConnDiagSession(host: ConnectionsAndDiagHost): HostConnDiagSession {
   if (!host.connDiagSession) {
     host.connDiagSession = createDefaultHostConnDiagSession(host.settings.miCloudRegion);
   }
@@ -311,18 +311,11 @@ function isHostAttached(host: ConnectionsAndDiagHost): boolean {
   return typeof document !== "undefined" && Boolean(host.root?.isConnected);
 }
 
-export function setHostScannerHAInvokeOverride(
-  host: ConnectionsAndDiagHost,
-  invoke: ScannerHAInvoke | null,
-): void {
-  getHostConnDiagSession(host).haScannerInvokeOverride = invoke;
-}
-
 export function getHostUnsupportedScanner(host: ConnectionsAndDiagHost): UnsupportedDeviceScanner {
   return getHostConnDiagSession(host).scanner;
 }
 
-export function resetHostUnsupportedScanner(host: ConnectionsAndDiagHost): void {
+function resetHostUnsupportedScanner(host: ConnectionsAndDiagHost): void {
   const session = getHostConnDiagSession(host);
   session.scanner.reset();
   session.diagMarkdownPreview = null;
@@ -340,7 +333,7 @@ export function readCustomHomeTitle(settings: PersistedSettings): string {
   return "";
 }
 
-export function writeCustomHomeTitle(host: ConnectionsAndDiagHost, rawTitle: string): string {
+function writeCustomHomeTitle(host: ConnectionsAndDiagHost, rawTitle: string): string {
   const normalized = rawTitle.trim();
   host.settings.customHomeTitle = normalized;
   getHostConnDiagSession(host).titleDraft = null;
@@ -356,7 +349,7 @@ export function writeCustomHomeTitle(host: ConnectionsAndDiagHost, rawTitle: str
   return normalized;
 }
 
-export function defaultPanelHomeTitle(host: ConnectionsAndDiagHost): string {
+function defaultPanelHomeTitle(host: ConnectionsAndDiagHost): string {
   if (typeof host.homeTitle === "string" && host.homeTitle.trim() !== "") return host.homeTitle;
   const selected = host.homes.find((item) => item.id === host.settings.selectedHomeId);
   const lang = activeLanguage(host.settings.interfaceLanguage);
@@ -391,7 +384,7 @@ export function resolveHostMiAccounts(host: ConnectionsAndDiagHost): MiAccount[]
   return baseList;
 }
 
-export async function ensureHostMiAccountsHydrated(host: ConnectionsAndDiagHost): Promise<MiAccount[]> {
+async function ensureHostMiAccountsHydrated(host: ConnectionsAndDiagHost): Promise<MiAccount[]> {
   const session = getHostConnDiagSession(host);
   const store = getHostMiAccountsStore(host);
   if (store.getAccounts().length > 1) {
@@ -461,7 +454,7 @@ export async function addOrUpdateMiAccountOnHost(
   return result.accounts;
 }
 
-export function signOutSingleMiAccountOnHost(
+function signOutSingleMiAccountOnHost(
   host: ConnectionsAndDiagHost,
   accountId: string,
 ): Promise<boolean> {
@@ -621,7 +614,7 @@ async function performSignOutSingleMiAccountOnHost(
   }
 }
 
-export async function disconnectHomeAssistantOnHost(host: ConnectionsAndDiagHost): Promise<boolean> {
+async function disconnectHomeAssistantOnHost(host: ConnectionsAndDiagHost): Promise<boolean> {
   const lang = activeLanguage(host.settings.interfaceLanguage);
 
   try {
@@ -708,7 +701,7 @@ export async function disconnectHomeAssistantOnHost(host: ConnectionsAndDiagHost
   return true;
 }
 
-export async function toggleDualSourceOnHost(
+async function toggleDualSourceOnHost(
   host: ConnectionsAndDiagHost,
   enabled: boolean,
 ): Promise<void> {
@@ -726,7 +719,7 @@ export async function toggleDualSourceOnHost(
   else await host.refreshDevices(false);
 }
 
-export function cancelAddAccountQrFlow(host: ConnectionsAndDiagHost, shouldRender = false): void {
+function cancelAddAccountQrFlow(host: ConnectionsAndDiagHost, shouldRender = false): void {
   const session = getHostConnDiagSession(host);
   if (!session.addQr.open && session.addQr.phase === "idle") return;
   session.addQr.generation += 1;
@@ -804,7 +797,7 @@ function resolveScannerHAInvoke(host: ConnectionsAndDiagHost): ScannerHAInvoke |
   return <T>(cmd: string, args: Record<string, unknown>) => tauriInvoke<T>(cmd, args);
 }
 
-export function buildUnsupportedScanOptions(
+function buildUnsupportedScanOptions(
   host: ConnectionsAndDiagHost,
   accountsOverride?: readonly MiAccount[],
 ): ScanUnsupportedOptions {
@@ -822,7 +815,7 @@ export function buildUnsupportedScanOptions(
   };
 }
 
-export function syncConnectionContextWatcher(host: ConnectionsAndDiagHost): void {
+function syncConnectionContextWatcher(host: ConnectionsAndDiagHost): void {
   const session = getHostConnDiagSession(host);
   const options = buildUnsupportedScanOptions(host);
   const nextKey = UnsupportedDeviceScanner.contextKey(options);
@@ -836,7 +829,7 @@ export function syncConnectionContextWatcher(host: ConnectionsAndDiagHost): void
   session.scanner.invalidateIfContextChanged(options);
 }
 
-export async function runUnsupportedDevicesScanOnHost(
+async function runUnsupportedDevicesScanOnHost(
   host: ConnectionsAndDiagHost,
 ): Promise<readonly UnsupportedDevice[]> {
   const session = getHostConnDiagSession(host);
@@ -877,7 +870,7 @@ function collectForbiddenLiterals(
   return literals.map((item) => item.trim()).filter((item) => item.length >= 2);
 }
 
-export function buildDesensitizedDiagnosticsMarkdown(host: ConnectionsAndDiagHost): string {
+function buildDesensitizedDiagnosticsMarkdown(host: ConnectionsAndDiagHost): string {
   syncConnectionContextWatcher(host);
   const session = getHostConnDiagSession(host);
   const lang = activeLanguage(host.settings.interfaceLanguage);
@@ -979,7 +972,7 @@ async function writeTextToClipboard(text: string): Promise<boolean> {
   return false;
 }
 
-export async function copyDiagnosticsReportOnHost(host: ConnectionsAndDiagHost): Promise<string> {
+async function copyDiagnosticsReportOnHost(host: ConnectionsAndDiagHost): Promise<string> {
   const session = getHostConnDiagSession(host);
   const lang = activeLanguage(host.settings.interfaceLanguage);
   const markdown = buildDesensitizedDiagnosticsMarkdown(host);

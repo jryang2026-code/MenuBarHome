@@ -18,11 +18,11 @@ import type { DeviceListCut } from "./listCut.js";
  * 2) Highlighted (`isHighValue`) facets come first; secondary overflow (>6) folds behind
  *    `还有 {count} 项次要设置`.
  */
-export const MORE_SETTINGS_VISIBLE_LIMIT = 6;
+const MORE_SETTINGS_VISIBLE_LIMIT = 6;
 
 const LOCK_BADGE_SVG = `<svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 3a4 4 0 00-4 4v2H5a1.5 1.5 0 00-1.5 1.5v5A1.5 1.5 0 005 17h10a1.5 1.5 0 001.5-1.5v-5A1.5 1.5 0 0015 9h-1V7a4 4 0 00-4-4zm-2.5 6V7a2.5 2.5 0 015 0v2h-5z"/></svg>`;
 
-export interface MoreSettingsLifecycleHost {
+interface MoreSettingsLifecycleHost {
   readonly root: HTMLElement;
   readonly settings: {
     readonly connectionMode: string;
@@ -116,11 +116,6 @@ export function syncMoreSettingsHost(host?: MoreSettingsLifecycleHost): void {
   state.expandedDeviceId = active.expandedDeviceId;
 }
 
-export function isMoreSettingsExpanded(deviceId: string): boolean {
-  syncMoreSettingsHost();
-  return state.openDevices.has(deviceId);
-}
-
 export function toggleMoreSettingsExpanded(deviceId: string): boolean {
   syncMoreSettingsHost();
   if (state.openDevices.has(deviceId)) {
@@ -131,11 +126,6 @@ export function toggleMoreSettingsExpanded(deviceId: string): boolean {
   }
   state.openDevices.add(deviceId);
   return true;
-}
-
-export function isMoreSettingsRestExpanded(deviceId: string): boolean {
-  syncMoreSettingsHost();
-  return state.restDevices.has(deviceId);
 }
 
 export function toggleMoreSettingsRest(deviceId: string): boolean {
@@ -184,7 +174,7 @@ export function facetRowDomId(deviceId: string, controlId: string): string {
   return `facet-row-${clean(deviceId)}-${clean(controlId)}`;
 }
 
-export function orderFacets(facets: readonly FacetControl[]): FacetControl[] {
+function orderFacets(facets: readonly FacetControl[]): FacetControl[] {
   return [
     ...facets.filter((control) => control.isHighValue),
     ...facets.filter((control) => !control.isHighValue),
@@ -219,7 +209,7 @@ function duplicateFacetTitles(ordered: readonly FacetControl[]): Set<string> {
   return duplicates;
 }
 
-export function displayFacetTitle(
+function displayFacetTitle(
   control: FacetControl,
   duplicateTitles: ReadonlySet<string>,
 ): string {

@@ -2,7 +2,7 @@ import { pinyin } from "pinyin-pro";
 import { DelayPhrase, LocalIntentParser, UndoPhrase } from "./assistant.js";
 import type { HomeScene, SmartDevice } from "./models.js";
 
-export interface DeviceSearchEntry {
+interface DeviceSearchEntry {
   readonly deviceId: string;
   readonly name: string;
   readonly room: string;
@@ -12,7 +12,7 @@ export interface DeviceSearchEntry {
   readonly roomInitials: string;
 }
 
-export interface PanelSearchState {
+interface PanelSearchState {
   query: string;
   selectedDeviceId: string | null;
   explicitSelection: boolean;

@@ -128,8 +128,6 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "米家云端": ["米家云端", "Xiaomi Cloud"],
   "拖动卡片排序 · 点右下角圆弧手柄改大小": ["拖动卡片排序 · 点右下角圆弧手柄改大小", "Drag to reorder · drag or tap the corner handle to resize"],
   "语音控制": ["语音控制", "Voice control"],
-  "AI 自然语言指令栏": ["AI 自然语言指令栏", "AI command bar"],
-  "AI 自然语言指令栏 (/)": ["AI 自然语言指令栏 (/)", "AI command bar (/)"],
   "完成": ["完成", "Done"],
   "完成布局编辑": ["完成布局编辑", "Finish layout editing"],
   "全关": ["全关", "All off"],
@@ -140,7 +138,6 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "收起面板到右下角托盘 (Esc)": ["收起面板到右下角托盘 (Esc)", "Hide to the tray (Esc)"],
   "收起面板": ["收起面板", "Hide panel"],
   "切换为单列详情视图": ["切换为单列详情视图", "Switch to single-column detail view"],
-  "切换为双列控制中心磁贴": ["切换为双列控制中心磁贴", "Switch to two-column tile view"],
   "只显示在线设备": ["只显示在线设备", "Show online devices only"],
   "当前只显示在线设备（点击显示全部）": ["当前只显示在线设备（点击显示全部）", "Showing online devices only (click to show all)"],
   "点击隐藏未通电/离线设备": ["点击隐藏未通电/离线设备", "Hide offline/unplugged devices"],
@@ -158,7 +155,6 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "扫码直连": ["扫码直连", "QR Login"],
   "用手机米家 App 扫码直连真实设备": ["用手机米家 App 扫码直连真实设备", "Scan with the Mi Home app to connect real devices"],
   "切换卡片大小": ["切换卡片大小", "Change card size"],
-  "拖拽或点击调整卡片大小": ["拖拽或点击调整卡片大小", "Drag or click to resize"],
   "点击直接切换开关": ["点击直接切换开关", "Tap to toggle"],
   "点击展开精细调节": ["点击展开精细调节", "Tap to expand fine controls"],
   "点击切换开关": ["点击切换开关", "Tap to toggle"],
@@ -183,7 +179,6 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "正在从小米云端同步真实设备...": ["正在从小米云端同步真实设备...", "Syncing devices from Xiaomi Cloud…"],
   "米家账号 {user} · {count} 台设备": ["米家账号 {user} · {count} 台设备", "Mi account {user} · {count} devices"],
   "演示模式": ["演示模式", "Demo mode"],
-  "演示模式 · 未连接米家云": ["演示模式 · 未连接米家云", "Demo mode · Mi Cloud not connected"],
   "已同步 {count} 台真实米家设备": ["已同步 {count} 台真实米家设备", "Synced {count} devices"],
   "当前小米账号下暂未发现米家设备": ["当前小米账号下暂未发现米家设备", "No Mi Home devices in this account"],
   "米家云同步失败：{message}": ["米家云同步失败：{message}", "Mi Cloud sync failed: {message}"],
@@ -260,7 +255,6 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "打开空调": ["打开空调", "Turn on"],
   "关闭 {name}": ["关闭 {name}", "Turn off {name}"],
   "打开 {name}": ["打开 {name}", "Turn on {name}"],
-  "{name}，温度 {temp}{humidity}": ["{name}，温度 {temp}{humidity}", "{name}, temperature {temp}{humidity}"],
   "，湿度 {humidity}%": ["，湿度 {humidity}%", ", humidity {humidity}%"],
   "电量 {percent}%": ["电量 {percent}%", "Battery {percent}%"],
   "，电量 {percent}%": ["，电量 {percent}%", ", battery {percent}%"],
@@ -269,7 +263,6 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   // Quick actions
   "全开主灯": ["全开主灯", "All main lights on"],
   "睡眠关灯": ["睡眠关灯", "Lights off for sleep"],
-  "{temp} 制冷": ["{temp} 制冷", "{temp} cool"],
   "调亮灯光": ["调亮灯光", "Brighten lights"],
   "打开所有灯": ["打开所有灯", "Turn on all lights"],
   "关闭所有灯": ["关闭所有灯", "Turn off all lights"],
@@ -324,20 +317,14 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "已错过定时：{command}（没有自动执行，请确认后运行）": ["已错过定时：{command}（没有自动执行，请确认后运行）", "Missed schedule: {command} (not run automatically; confirm to run)"],
   "立即执行": ["立即执行", "Run now"],
   "忽略": ["忽略", "Dismiss"],
-  "{command} · 剩余 {remaining}": ["{command} · 剩余 {remaining}", "{command} · {remaining} left"],
   "取消": ["取消", "Cancel"],
   "撤销": ["撤销", "Undo"],
   "允许并发送": ["允许并发送", "Allow and send"],
   "不用了": ["不用了", "Not now"],
-  "说一句：我困了 / 调低两度 / 10分钟后关灯 / 撤销...": ["说一句：我困了 / 调低两度 / 10分钟后关灯 / 撤销...", "Say: I'm sleepy / two degrees cooler / lights off in 10 minutes / undo…"],
-  "自然语言指令": ["自然语言指令", "Natural-language command"],
   "执行指令": ["执行指令", "Run command"],
   "执行指令 (Enter)": ["执行指令 (Enter)", "Run command (Enter)"],
 
   // Durations
-  "{minutes}分{seconds}秒": ["{minutes}分{seconds}秒", "{minutes}m {seconds}s"],
-  "{minutes}分钟": ["{minutes}分钟", "{minutes}m"],
-  "{seconds}秒": ["{seconds}秒", "{seconds}s"],
 
   // Cloud sign-in
   "点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。": ["点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。", "Get a secure QR code below, then scan it with “Mi Home → Scan” to sync your devices."],
@@ -351,7 +338,6 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "二维码已过期，请重新获取": ["二维码已过期，请重新获取", "The QR code expired; request a new one"],
   "切换/重新扫码 (已登录 {user})": ["切换/重新扫码 (已登录 {user})", "Switch / rescan (signed in as {user})"],
   "请先扫码登录米家": ["请先扫码登录米家", "Sign in to Mi Home first"],
-  "当前系统环境不支持离线语音识别，请直接输入文字指令。": ["当前系统环境不支持离线语音识别，请直接输入文字指令。", "On-device speech recognition isn’t available here; please type the command."],
 
   // Empty states
   "正在同步你的真实米家设备…": ["正在同步你的真实米家设备…", "Syncing your devices…"],
@@ -383,7 +369,6 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
 
   // Onboarding
   "首次设置": ["首次设置", "First-time setup"],
-  "MenuBarHome 控制中心": ["MenuBarHome 控制中心", "MenuBarHome control center"],
   "扫码直连你的真实米家设备": ["扫码直连你的真实米家设备", "Scan to connect your real devices"],
   "手机打开「米家 App → 扫一扫」即可直接同步全屋真实设备；常驻 Windows 右下角系统托盘，点击图标或按 Alt+M 随时弹出，点击外部自动收起。": ["手机打开「米家 App → 扫一扫」即可直接同步全屋真实设备；常驻 Windows 右下角系统托盘，点击图标或按 Alt+M 随时弹出，点击外部自动收起。", "Open “Mi Home → Scan” on your phone to sync your devices. The panel lives in the Windows tray: click the icon or press Alt+M to open it, and it hides when you click outside."],
   "直连使用非官方接口，小米可能限制请求或风控账号；介意的话请改用官方的 Home Assistant (xiaomi_home)。登录会过期，到期需重新扫码。": ["直连使用非官方接口，小米可能限制请求或风控账号；介意的话请改用官方的 Home Assistant (xiaomi_home)。登录会过期，到期需重新扫码。", "Direct mode uses an unofficial API, so Xiaomi may rate-limit or flag accounts. If that worries you, use Home Assistant (xiaomi_home) instead. Sign-in expires; you will need to scan again."],
@@ -395,7 +380,6 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
 
   // Settings sheet
   "偏好设置": ["偏好设置", "Preferences"],
-  "偏好设置与米家连接": ["偏好设置与米家连接", "Preferences and Mi Home connection"],
   "设置分类": ["设置分类", "Settings categories"],
   "外观与面板": ["外观与面板", "General"],
   "数据源": ["数据源", "Sources"],
@@ -570,12 +554,16 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "扫码结果非 JSON": ["扫码结果非 JSON", "QR result was not JSON"],
   "扫码结果缺少字段 (code {code})": ["扫码结果缺少字段 (code {code})", "QR result is missing fields (code {code})"],
   "缺少二维码字段 (code {code})": ["缺少二维码字段 (code {code})", "Missing QR fields (code {code})"],
+  "非小米登录跳转地址": ["非小米登录跳转地址", "Untrusted Xiaomi sign-in redirect URL"],
   "登录成功但未拿到 serviceToken，请重试": ["登录成功但未拿到 serviceToken，请重试", "Signed in but no serviceToken was returned; please retry"],
+  "米家云响应缺少状态码": ["米家云响应缺少状态码", "Mi Cloud response is missing a status code"],
+  "米家云响应缺少状态码：{message}": ["米家云响应缺少状态码：{message}", "Mi Cloud response is missing a status code: {message}"],
   "米家云响应无法解密": ["米家云响应无法解密", "Mi Cloud response could not be decrypted"],
   "米家云解密后非 JSON": ["米家云解密后非 JSON", "Decrypted Mi Cloud payload was not JSON"],
   "米家云指令失败 ({code})：{message}": ["米家云指令失败 ({code})：{message}", "Mi Cloud command failed ({code}): {message}"],
   "米家云服务 HTTP {status}": ["米家云服务 HTTP {status}", "Mi Cloud service returned HTTP {status}"],
   "米家登录已过期，请重新扫码": ["米家登录已过期，请重新扫码", "The Mi Home session expired; scan again"],
+  "智能设备": ["智能设备", "Smart Device"],
   "米家登录已过期 · 点此扫码": ["米家登录已过期 · 点此扫码", "Xiaomi Home session expired · Tap to scan"],
   "Home Assistant 未连接（已拒绝明文）": ["Home Assistant 未连接（已拒绝明文）", "Home Assistant not connected (plain HTTP declined)"],
   "Home Assistant 认证被拒绝": ["Home Assistant 认证被拒绝", "Home Assistant authentication rejected"],
@@ -591,8 +579,6 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "移动侦测：开": ["移动侦测：开", "Motion: On"],
   "移动侦测：关": ["移动侦测：关", "Motion: Off"],
   "米家云直连摄像头采用私有 P2P 加密流；可在下方填写本地 go2rtc / HLS 流地址观看实时画面": ["米家云直连摄像头采用私有 P2P 加密流；可在下方填写本地 go2rtc / HLS 流地址观看实时画面", "Xiaomi Cloud cameras use private P2P streaming; enter a local go2rtc / HLS stream URL below to watch live"],
-  "该机型未开放云端 HLS 流接口，可填写本地 go2rtc 流地址接入": ["该机型未开放云端 HLS 流接口，可填写本地 go2rtc 流地址接入", "This model does not expose a cloud HLS stream; enter a local go2rtc stream URL"],
-  "米家云未返回实时流地址，可填写本地 go2rtc / HLS 地址观看": ["米家云未返回实时流地址，可填写本地 go2rtc / HLS 地址观看", "Xiaomi Cloud did not return a live stream URL; enter a local go2rtc / HLS URL"],
   "摄像机处于物理休眠状态": ["摄像机处于物理休眠状态", "Camera is in sleep mode"],
   "镜头已遮蔽，点击下方唤醒后即可查看实时画面": ["镜头已遮蔽，点击下方唤醒后即可查看实时画面", "Lens is covered; click below to wake the camera and watch live"],
   "唤醒镜头并观看": ["唤醒镜头并观看", "Wake & Watch Live"],
@@ -626,7 +612,6 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "仅画面": ["仅画面", "Video only"],
   "开启声音": ["开启声音", "Unmute audio"],
   "关闭声音": ["关闭声音", "Mute audio"],
-  "当前视频流（米家 P2P / MJPEG / 抓拍）只传画面，不含音频": ["当前视频流（米家 P2P / MJPEG / 抓拍）只传画面，不含音频", "This stream (Xiaomi P2P / MJPEG / snapshot) carries video only, without audio"],
 
   // Air Purifier (#98)
   "最爱": ["最爱", "Favorite"],
@@ -647,7 +632,6 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "已复制脱敏诊断信息": ["已复制脱敏诊断信息", "Desensitized diagnostics copied"],
   "摄像机诊断": ["摄像机诊断", "Camera Diagnostics"],
   "显示顶部快捷场景栏": ["显示顶部快捷场景栏", "Show top quick actions bar"],
-  "启用侧边情绪智能球": ["启用侧边情绪智能球", "Enable side emotion ball"],
   "电量": ["电量", "Battery"],
   "锁状态未知": ["锁状态未知", "Lock status unknown"],
   "已上锁": ["已上锁", "Locked"],
@@ -770,7 +754,6 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "快速设置与设备控制": ["快速设置与设备控制", "Quick settings & device controls"],
   "切换为胶囊控制网格": ["切换为胶囊控制网格", "Switch to capsule control grid"],
   "定时指令": ["定时指令", "Scheduled timers"],
-  "摄像机速览": ["摄像机速览", "Camera preview"],
   "查看实时画面": ["查看实时画面", "Open live view"],
   "{name} 亮度": ["{name} 亮度", "{name} brightness"],
   "展开 {name} 详细控制": ["展开 {name} 详细控制", "Expand {name} controls"],

@@ -175,7 +175,6 @@ describe("D5: Workstation lock fail-closed control guard (transport.ts)", () => 
         connectionMode: "demo",
         hasCompletedOnboarding: true,
         blockControlWhileLocked: true,
-        enableGrokBall: false,
         autoCheckUpdates: false,
       }),
     );
@@ -316,7 +315,6 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
       JSON.stringify({
         connectionMode: "xiaomiCloud",
         hasCompletedOnboarding: true,
-        enableGrokBall: false,
         autoCheckUpdates: false,
         selectedHomeId: "home-1",
         miSession: SESSION_A,
@@ -404,7 +402,6 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
       JSON.stringify({
         connectionMode: "xiaomiCloud",
         hasCompletedOnboarding: true,
-        enableGrokBall: false,
         autoCheckUpdates: false,
         miSession: SESSION_A,
         cachedModelTypes: { [LIGHT_MODEL]: LIGHT_SPEC_RAW.type },
@@ -542,7 +539,6 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
         JSON.stringify({
           connectionMode: "xiaomiCloud",
           hasCompletedOnboarding: true,
-          enableGrokBall: false,
           autoCheckUpdates: false,
           miSession: session,
           cachedModelTypes: { [LIGHT_MODEL]: LIGHT_SPEC_RAW.type },
@@ -651,7 +647,6 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
       JSON.stringify({
         connectionMode: "xiaomiCloud",
         hasCompletedOnboarding: true,
-        enableGrokBall: false,
         autoCheckUpdates: false,
         miSession: SESSION_A,
         cachedModelTypes: { [LIGHT_MODEL]: LIGHT_SPEC_RAW.type },

@@ -1,3 +1,4 @@
+import { t } from "../i18n.js";
 import { MiCloudCrypto } from "../miCloudCrypto.js";
 import {
   asIdString,
@@ -33,20 +34,20 @@ export class MiAccountLogin {
       method: "GET",
     });
     if (resp.status !== 200) {
-      throw new MiCloudError("http", `小米账号服务返回 HTTP ${resp.status}`, resp.status);
+      throw new MiCloudError("http", t("小米账号服务返回 HTTP {status}", { status: resp.status }), resp.status);
     }
     return MiAccountLogin.parseTicket(resp.body);
   }
 
   static parseTicket(body: string): QRLoginTicket {
     const json = parseJsonObject(body);
-    if (!json) throw new MiCloudError("badResponse", "小米账号服务响应非 JSON");
+    if (!json) throw new MiCloudError("badResponse", t("小米账号服务响应非 JSON"));
     const qr = typeof json["qr"] === "string" ? json["qr"] : null;
     const loginUrl = typeof json["loginUrl"] === "string" ? json["loginUrl"] : null;
     const lp = typeof json["lp"] === "string" ? json["lp"] : null;
     if (!qr || !loginUrl || !lp) {
       const code = asIdString(json["code"]) ?? "?";
-      throw new MiCloudError("badResponse", `缺少二维码字段 (code ${code})`);
+      throw new MiCloudError("badResponse", t("缺少二维码字段 (code {code})", { code }));
     }
     const timeoutRaw = json["timeout"];
     const timeout =
@@ -66,13 +67,13 @@ export class MiAccountLogin {
     location: string;
   } {
     const json = parseJsonObject(body);
-    if (!json) throw new MiCloudError("badResponse", "扫码结果非 JSON");
+    if (!json) throw new MiCloudError("badResponse", t("扫码结果非 JSON"));
     const userId = asIdString(json["userId"]);
     const ssecurity = typeof json["ssecurity"] === "string" ? json["ssecurity"] : null;
     const location = typeof json["location"] === "string" ? json["location"] : null;
     if (!userId || !ssecurity || !location) {
       const code = asIdString(json["code"]) ?? "?";
-      throw new MiCloudError("badResponse", `扫码结果缺少字段 (code ${code})`);
+      throw new MiCloudError("badResponse", t("扫码结果缺少字段 (code {code})", { code }));
     }
     return {
       userId,
@@ -89,7 +90,7 @@ export class MiAccountLogin {
     while (!scanned) {
       if (signal?.aborted) throw new Error("Cancelled");
       if (Date.now() >= deadline) {
-        throw new MiCloudError("badResponse", "二维码已过期，请重新获取");
+        throw new MiCloudError("badResponse", t("二维码已过期，请重新获取"));
       }
       try {
         const resp = await this.transport({
@@ -209,17 +210,17 @@ export class MiAccountLogin {
           }
           resolved = new URL(nextLoc, url).toString();
         } catch {
-          throw new MiCloudError("badResponse", "非小米登录跳转地址");
+          throw new MiCloudError("badResponse", t("非小米登录跳转地址"));
         }
         if (!isTrustedXiaomiLoginRedirect(resolved)) {
-          throw new MiCloudError("badResponse", "非小米登录跳转地址");
+          throw new MiCloudError("badResponse", t("非小米登录跳转地址"));
         }
         url = resolved;
         continue;
       }
       break;
     }
-    throw new MiCloudError("badResponse", "登录成功但未拿到 serviceToken，请重试");
+    throw new MiCloudError("badResponse", t("登录成功但未拿到 serviceToken，请重试"));
   }
 }
 

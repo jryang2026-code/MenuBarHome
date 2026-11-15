@@ -37,7 +37,7 @@ import {
   type UndoActionBatch,
 } from "../core/optimisticLock.js";
 import { recordUndoKindSnapshots } from "./speechGuard.js";
-import { trText } from "../core/quickActions.js";
+import { tr3 } from "./undoTracker.js";
 
 export type BatchStopReason = "undo" | "preempted" | "sourceChanged" | "cancelled";
 
@@ -544,7 +544,7 @@ export async function executeIntents(
                     "",
                     true,
                     false,
-                    "设备未响应",
+                    t("设备未响应"),
                   );
                 }
               }
@@ -631,7 +631,7 @@ export async function executeIntents(
                     devName,
                     device.isOnline,
                     adjustment,
-                    "设备未响应",
+                    t("设备未响应"),
                   );
                   syncHostLiveUndo(host, runningBatch, canUndo);
                 }
@@ -806,7 +806,7 @@ export async function executeSingleCommand(
         isDeviceOnline: device.isOnline,
         adjustment,
         fallback: err instanceof Error ? err.message : String(err),
-      }) ?? trText("操作未生效", "Action failed");
+      }) ?? tr3("操作未生效", "操作未生效", "Action failed");
     host.replyBanner = { text: msg, source: t("控制失败"), isError: true };
     if (typeof host.render === "function") host.render();
     return;
