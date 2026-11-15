@@ -123,9 +123,9 @@ public struct SettingsWindowView: View {
         .controlSize(.regular)
         .environment(\.settingsSearchFocus, focus)
         .environment(\.settingsUnsavedChanges, unsaved)
-        .background(WindowWillCloseObserver {
-            // The window closes regardless, so only Save or Discard is offered (#148).
-            _ = unsaved.resolveBeforeLeaving(allowCancel: false)
+        .background(WindowCloseGuard {
+            // Save, Discard or Cancel; a save that fails keeps the window open (#148).
+            unsaved.resolveBeforeLeaving(allowCancel: true)
         })
         .animation(reduceMotion ? nil : AppleMotion.pressFeedback, value: store.toastNotice)
         .transaction { if reduceMotion { $0.disablesAnimations = true } }
