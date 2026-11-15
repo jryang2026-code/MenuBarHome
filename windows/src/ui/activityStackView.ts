@@ -33,9 +33,10 @@ import {
   type SensorObservation,
   type WeeklyHealthReport,
 } from "../core/safetyAndHealth.js";
+import { ManualControlPolicy } from "../core/assistant.js";
 import { getScopedEnergyHistory } from "../core/energyHistory.js";
 import { resolveSensorHistoryScope, sharedSensorHistoryStore } from "../core/sensorHistory.js";
-import type { SmartDevice } from "../core/models.js";
+import { isDeviceActiveOn, type DeviceCommand, type SmartDevice } from "../core/models.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { SF_ICONS } from "./appConstants.js";
 import { filterSafetyAlertsByGuardPrefs, loadSafetyGuardPrefs } from "./automationSettingsView.js";
@@ -104,6 +105,7 @@ export interface HostActivityCenter {
   lockPollInFlight: boolean;
   lastSampledLockState: boolean | null;
   lastClipboardMarkdown: string | null;
+  pendingHighRiskUndoRunId?: string | null;
 }
 
 type HostWithActivity = MenuMijiaWindowsApp & {
@@ -232,6 +234,7 @@ function createHostActivityCenter(
     lockPollInFlight: false,
     lastSampledLockState: null,
     lastClipboardMarkdown: null,
+    pendingHighRiskUndoRunId: null,
   };
 }
 
@@ -285,6 +288,7 @@ function clearCenterActivities(center: HostActivityCenter): void {
   center.safetyMonitor.resetSessionState(center.scopeKey);
   center.automationEngine.resetTransientState();
   center.lastSampledLockState = null;
+  center.pendingHighRiskUndoRunId = null;
 }
 
 export function clearHostActivitiesOnSignOut(host: unknown): void {
@@ -653,14 +657,131 @@ export async function executeSafetyTurnOffAction(
   return false;
 }
 
+export function doesUndoStepActivateHighRiskDevice(
+  step: { readonly deviceId: string; readonly commands: readonly DeviceCommand[] },
+  devices: readonly SmartDevice[],
+  kindSnapshots?: ReadonlyMap<string, SmartDevice["kind"]>,
+): boolean {
+  const dev = devices.find((d) => d.id === step.deviceId);
+  if (!dev || !ManualControlPolicy.requiresConfirmation({ targetId: dev.id, operation: { kind: "power", isOn: true } }, devices)) {
+    return false;
+  }
+  const snapKind = kindSnapshots?.get(step.deviceId);
+  if (snapKind && isDeviceActiveOn({ ...dev, kind: snapKind })) return true;
+  return step.commands.some((cmd) => {
+    switch (cmd.kind) {
+      case "setSwitch":
+        if (dev.kind.kind === "plug" && dev.kind.childLockEntityId === cmd.entityId) return false;
+        if (dev.kind.kind === "appliance" && dev.kind.light?.entityId === cmd.entityId) return false;
+        return cmd.isOn;
+      case "setClimatePower":
+        return cmd.isOn;
+      case "setClimateMode":
+        return cmd.hvacMode.trim().toLowerCase() !== "off";
+      case "setSelectOption":
+        return dev.kind.kind === "cover" ? cmd.option === dev.kind.openDescription : cmd.option.trim().toLowerCase() !== "off";
+      case "setNumberValue":
+        return dev.kind.kind === "cover" && cmd.value > 0;
+      case "vacuumAction":
+        return cmd.action === "start";
+      case "pressButton":
+        return dev.kind.kind === "appliance" ? dev.kind.startAction?.entityId === cmd.entityId : true;
+      case "setMiotProperty":
+        return cmd.value === true || (dev.kind.kind === "cover" && typeof cmd.value === "number" && cmd.value > 0);
+      default:
+        return false;
+    }
+  });
+}
+
+export function partitionUndoStepsByHighRiskConfirmation<
+  T extends { readonly deviceId: string; readonly commands: readonly DeviceCommand[] },
+>(
+  host: MenuMijiaWindowsApp,
+  steps: readonly T[],
+  options: {
+    readonly kindSnapshots?: ReadonlyMap<string, SmartDevice["kind"]>;
+    readonly isArmed: boolean;
+    readonly arm: () => void;
+    readonly disarm: () => void;
+  },
+): {
+  readonly approvedSteps: T[];
+  readonly skippedHighRiskSteps: T[];
+  readonly abortedAllHighRisk: boolean;
+  readonly armedPromptText?: string;
+} {
+  const aliased = aliasedHostDevices(host);
+  const pref = host.settings.interfaceLanguage;
+  const highRiskSet = new Set(steps.filter((s) => doesUndoStepActivateHighRiskDevice(s, aliased, options.kindSnapshots)));
+  if (highRiskSet.size === 0) {
+    options.disarm();
+    return { approvedSteps: [...steps], skippedHighRiskSteps: [], abortedAllHighRisk: false };
+  }
+
+  const handler = host.manualControlConfirmationHandler;
+  if (typeof handler === "function") {
+    options.disarm();
+    const decisions = new Map<string, boolean>();
+    const approvedSteps: T[] = [];
+    const skippedHighRiskSteps: T[] = [];
+    const declinedNames: string[] = [];
+    for (const step of steps) {
+      if (!highRiskSet.has(step)) {
+        approvedSteps.push(step);
+        continue;
+      }
+      let allowed = decisions.get(step.deviceId);
+      if (allowed === undefined) {
+        const name = aliased.find((d) => d.id === step.deviceId)?.name ?? step.deviceId;
+        allowed = handler({
+          title: tr3("确定要恢复开启「{name}」吗？", "確定要恢復開啟「{name}」嗎？", 'Restore "{name}" to ON?', { name }, pref),
+          message: tr3("撤销操作将重新开启高风险设备「{name}」，请确认现场安全。", "撤銷操作將重新開啟高風險設備「{name}」，請確認現場安全。", 'Undoing will turn high-risk device "{name}" back on. Please confirm it is safe.', { name }, pref),
+          confirmTitle: tr3("恢复开启", "恢復開啟", "Restore ON", undefined, pref),
+          cancelTitle: tr3("跳过", "跳過", "Skip", undefined, pref),
+        });
+        decisions.set(step.deviceId, allowed);
+        if (!allowed) declinedNames.push(name);
+      }
+      (allowed ? approvedSteps : skippedHighRiskSteps).push(step);
+    }
+    const names = declinedNames.join(pref === "en" ? ", " : "、");
+    return {
+      approvedSteps,
+      skippedHighRiskSteps,
+      abortedAllHighRisk: approvedSteps.length === 0,
+      ...(declinedNames.length > 0
+        ? { armedPromptText: tr3("已取消恢复高风险设备「{names}」", "已取消恢復高風險設備「{names}」", 'Skipped restoring high-risk device "{names}"', { names }, pref) }
+        : {}),
+    };
+  }
+
+  if (options.isArmed) {
+    options.disarm();
+    return { approvedSteps: [...steps], skippedHighRiskSteps: [], abortedAllHighRisk: false };
+  }
+
+  options.arm();
+  const seenIds = new Set<string>();
+  const highRiskNames: string[] = [];
+  for (const step of steps) {
+    if (!highRiskSet.has(step) || seenIds.has(step.deviceId)) continue;
+    seenIds.add(step.deviceId);
+    highRiskNames.push(aliased.find((d) => d.id === step.deviceId)?.name ?? step.deviceId);
+  }
+  const names = highRiskNames.join(pref === "en" ? ", " : "、");
+  const armedPromptText = tr3("撤销将重新开启高风险设备「{names}」，再点一次「撤销」确认执行", "撤銷將重新開啟高風險設備「{names}」，再點一次「撤銷」確認執行", 'Undo will turn high-risk device "{names}" back on; click Undo again to confirm', { names }, pref);
+  const approvedSteps = steps.filter((s) => !highRiskSet.has(s));
+  const skippedHighRiskSteps = steps.filter((s) => highRiskSet.has(s));
+  return { approvedSteps, skippedHighRiskSteps, abortedAllHighRisk: approvedSteps.length === 0, armedPromptText };
+}
+
 export async function executeAutomationCardUndo(
   host: MenuMijiaWindowsApp,
   runId: string,
   nowMs = Date.now(),
 ): Promise<boolean> {
-  if (await rejectIfControlBlockedWhileLocked(host)) {
-    return false;
-  }
+  if (await rejectIfControlBlockedWhileLocked(host)) return false;
 
   const center = getHostActivityCenter(host);
   const pref = host.settings.interfaceLanguage;
@@ -671,16 +792,26 @@ export async function executeAutomationCardUndo(
   const startingScope = computeActivityScopeKey(host);
   if (run.scope !== startingScope || run.expiresAtMs <= nowMs) {
     center.recentAutomationRuns = center.recentAutomationRuns.filter((r) => r.id !== runId);
+    if (center.pendingHighRiskUndoRunId === runId) center.pendingHighRiskUndoRunId = null;
     host.replyBanner = {
-      text: tr3(
-        "撤销窗口已过期或家庭已切换",
-        "撤銷視窗已過期或家庭已切換",
-        "Undo window expired or home changed",
-        undefined,
-        pref,
-      ),
+      text: tr3("撤销窗口已过期或家庭已切换", "撤銷視窗已過期或家庭已切換", "Undo window expired or home changed", undefined, pref),
       source: tr3("状态感知自动化", "狀態感知自動化", "Context Automation", undefined, pref),
       isError: true,
+    };
+    host.render();
+    return false;
+  }
+
+  const confirmation = partitionUndoStepsByHighRiskConfirmation(host, run.steps, {
+    kindSnapshots: run.kindSnapshots,
+    isArmed: center.pendingHighRiskUndoRunId === runId,
+    arm: () => { center.pendingHighRiskUndoRunId = runId; },
+    disarm: () => { if (center.pendingHighRiskUndoRunId === runId) center.pendingHighRiskUndoRunId = null; },
+  });
+  if (confirmation.abortedAllHighRisk) {
+    host.replyBanner = {
+      text: confirmation.armedPromptText ?? tr3("需要确认后才能恢复高风险设备", "需要確認後才能恢復高風險設備", "Confirm before restoring high-risk devices", undefined, pref),
+      source: tr3("需要确认", "需要確認", "Confirmation Required", undefined, pref),
     };
     host.render();
     return false;
@@ -693,7 +824,7 @@ export async function executeAutomationCardUndo(
     center.recentAutomationRuns.some((r) => r.id === runId && r.scope === startingScope);
 
   let allOk = true;
-  for (const step of [...run.steps].reverse()) {
+  for (const step of [...confirmation.approvedSteps].reverse()) {
     if (!isUndoContextValid()) return false;
     if (!host.devices.some((d) => d.id === step.deviceId)) {
       allOk = false;
@@ -720,6 +851,20 @@ export async function executeAutomationCardUndo(
   }
 
   if (!isUndoContextValid()) return false;
+
+  const hasPendingArmedRest =
+    confirmation.skippedHighRiskSteps.length > 0 && center.pendingHighRiskUndoRunId === runId;
+  if (hasPendingArmedRest) {
+    center.recentAutomationRuns = center.recentAutomationRuns.map((r) =>
+      r.id === runId ? { ...r, steps: confirmation.skippedHighRiskSteps } : r,
+    );
+    host.replyBanner = {
+      text: confirmation.armedPromptText ?? run.summary,
+      source: tr3("需要确认", "需要確認", "Confirmation Required", undefined, pref),
+    };
+    host.render();
+    return allOk;
+  }
 
   center.recentAutomationRuns = center.recentAutomationRuns.filter((r) => r.id !== runId);
   if (host.lastUndoAction && host.lastUndoAction.summary === run.summary) {

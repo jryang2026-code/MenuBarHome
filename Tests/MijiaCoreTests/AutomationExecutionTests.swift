@@ -118,4 +118,78 @@ struct AutomationExecutionTests {
         let (store, _) = try await makeStore()
         #expect(store.controllableDevices.map(\.id) == [Self.studyLight.id])
     }
+
+    @Test("High-risk automation rules require confirmation only when turning high-risk devices on")
+    func highRiskAutomationRuleConfirmation() {
+        let heaterPlug = SmartDevice(
+            id: "plug_heater",
+            name: "卧室取暖器插座",
+            roomId: "bedroom",
+            roomName: "卧室",
+            model: "chuangmi.plug.212a01",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.heater", isOn: false))
+        )
+        let devices = [Self.studyLight, heaterPlug]
+
+        let turnOnRule = AutomationRule(
+            trigger: .back,
+            action: .devices(ids: [heaterPlug.id], isOn: true)
+        )
+        let confirmation = turnOnRule.highRiskConfirmation(devices: devices)
+        #expect(confirmation != nil)
+        #expect(confirmation?.message.contains("卧室取暖器插座") == true)
+
+        let turnOffRule = AutomationRule(
+            trigger: .away,
+            action: .devices(ids: [heaterPlug.id], isOn: false)
+        )
+        #expect(turnOffRule.highRiskConfirmation(devices: devices) == nil)
+
+        let lightRule = AutomationRule(
+            trigger: .back,
+            action: .devices(ids: [Self.studyLight.id], isOn: true)
+        )
+        #expect(lightRule.highRiskConfirmation(devices: devices) == nil)
+    }
+
+    @Test("runAutomation returns typed attempted, succeeded, and failed counts for partial and total failures")
+    @MainActor
+    func runAutomationTypedOutcome() async throws {
+        let deskLight = SmartDevice(
+            id: "light_desk",
+            name: "工作台灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.desk", isOn: true))
+        )
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.studyLight, deskLight]))
+        let store = HomeStore(provider: mock, defaultsSuiteName: "test.automation.outcome.\(UUID().uuidString)")
+        try await store.waitForTestSnapshot()
+
+        await mock.setFailingCommands { $0 == .setLightPower(entityId: "light.desk", isOn: false) }
+        let partial = await store.runAutomation(
+            intents: [
+                DeviceIntent(targetId: Self.studyLight.id, operation: .power(false)),
+                DeviceIntent(targetId: deskLight.id, operation: .power(false))
+            ],
+            title: "锁屏关灯"
+        )
+        #expect(partial.attemptedCount == 2)
+        #expect(partial.succeededCount == 1)
+        #expect(partial.failedCount == 1)
+        #expect(partial.errorMessage != nil)
+
+        await mock.setFailingCommands { _ in true }
+        let totalFail = await store.runAutomation(
+            intents: [DeviceIntent(targetId: deskLight.id, operation: .power(false))],
+            title: "再次关灯"
+        )
+        #expect(totalFail.attemptedCount == 1)
+        #expect(totalFail.succeededCount == 0)
+        #expect(totalFail.failedCount == 1)
+        #expect(totalFail.errorMessage != nil)
+    }
 }

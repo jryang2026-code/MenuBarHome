@@ -262,6 +262,7 @@ struct BathHeaterHoodDeviceTests {
         #expect(await mock.executedCommands == [.setSwitch(entityId: "miot:undo-appliance:5", isOn: false)])
         #expect(store.devices.first?.isActiveOn == false)
 
+        store.manualControlConfirmationHandler = { _ in true }
         let undo = store.undoTurnAllOff()
         await undo?.value
         #expect(await mock.executedCommands.last == .setSwitch(entityId: "miot:undo-appliance:5", isOn: true))

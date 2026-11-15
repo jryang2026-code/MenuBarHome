@@ -615,6 +615,50 @@ export interface RecordedAutomationRun {
   readonly scope: string;
   readonly firedAtMs: number;
   readonly expiresAtMs: number;
+  readonly attemptedCount?: number;
+  readonly succeededCount?: number;
+  readonly failedCount?: number;
+}
+
+export interface AutomationHighRiskConfirmation {
+  readonly title: string;
+  readonly message: string;
+  readonly confirmTitle: string;
+  readonly cancelTitle: string;
+  readonly deviceNames: readonly string[];
+}
+
+export function automationRuleHighRiskConfirmation(
+  action: AutomationAction,
+  devices: readonly SmartDevice[],
+  preference?: LanguagePreference,
+): AutomationHighRiskConfirmation | null {
+  if (action.kind !== "devices" || !action.isOn) return null;
+  const seen = new Set<string>();
+  const highRiskDevices: SmartDevice[] = [];
+  for (const id of action.deviceIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (ManualControlPolicy.requiresConfirmation({ targetId: id, operation: { kind: "power", isOn: true } }, devices)) {
+      const dev = devices.find((d) => d.id === id);
+      if (dev) highRiskDevices.push(dev);
+    }
+  }
+  if (highRiskDevices.length === 0) return null;
+  const names = highRiskDevices.map((d) => d.name).join(tr3("、", "、", ", ", undefined, preference));
+  return {
+    title: tr3("确认启用高风险自动化规则？", "確認啟用高風險自動化規則？", "Enable high-risk automation rule?", undefined, preference),
+    message: tr3(
+      "该规则会自动开启高风险设备（{names}）。请确认周围无人值守时不会引发用电、加热或水气安全风险。",
+      "該規則會自動開啟高風險設備（{names}）。請確認周圍無人值守時不會引發用電、加熱或水氣安全風險。",
+      "This rule will automatically turn on high-risk devices ({names}). Confirm it is safe to run unattended.",
+      { names },
+      preference,
+    ),
+    confirmTitle: tr3("确认启用", "確認啟用", "Enable Rule", undefined, preference),
+    cancelTitle: tr3("取消", "取消", "Cancel", undefined, preference),
+    deviceNames: highRiskDevices.map((d) => d.name),
+  };
 }
 
 export interface AutomationExecutionHost {
@@ -673,16 +717,8 @@ function compareMetric(value: number, comparison: SensorThresholdComparison, thr
 function commandsForPowerIntent(
   device: SmartDevice,
   isOn: boolean,
-  allDevices: readonly SmartDevice[] = [device],
+  _allDevices: readonly SmartDevice[] = [device],
 ): DeviceCommand[] {
-  if (
-    ManualControlPolicy.requiresConfirmation(
-      { targetId: device.id, operation: { kind: "power", isOn } },
-      allDevices,
-    )
-  ) {
-    return [];
-  }
   const k = device.kind;
   switch (k.kind) {
     case "light":
@@ -823,13 +859,24 @@ export async function executeAutomationRule(
     return null;
   }
   const triggerLabel = automationTriggerTitle(rule.trigger, preference);
-  const runSummary = tr3(
+  const baseSummary = tr3(
     "{trigger} · 已执行「{action}」",
     "{trigger} · 已執行「{action}」",
     "{trigger} · Executed \"{action}\"",
     { trigger: triggerLabel, action: actionSummary },
     preference,
   );
+  const partialSuffix =
+    failedCount > 0
+      ? tr3(
+          "（成功 {succeeded} 项，{failed} 项失败）",
+          "（成功 {succeeded} 項，{failed} 項失敗）",
+          " ({succeeded} succeeded, {failed} failed)",
+          { succeeded: String(succeededCount), failed: String(failedCount) },
+          preference,
+        )
+      : "";
+  const runSummary = `${baseSummary}${partialSuffix}`;
   const expiresAtMs = nowMs + AUTOMATION_POLICY.undoWindowMs;
   const recorded: RecordedAutomationRun = {
     id: `auto-run:${rule.id}:${nowMs}`,
@@ -842,6 +889,9 @@ export async function executeAutomationRule(
     scope,
     firedAtMs: nowMs,
     expiresAtMs,
+    attemptedCount,
+    succeededCount,
+    failedCount,
   };
 
   if (steps.length > 0) {
@@ -849,7 +899,13 @@ export async function executeAutomationRule(
     options.recordUndoKindSnapshots?.(undoAction, kindSnapshots);
     host.lastUndoAction = undoAction;
   }
-  if (failedCount === 0 || !host.replyBanner?.isError) {
+  if (failedCount > 0) {
+    host.replyBanner = {
+      text: runSummary,
+      source: tr3("状态感知自动化", "狀態感知自動化", "Context Automation", undefined, preference),
+      isError: true,
+    };
+  } else if (!host.replyBanner?.isError) {
     host.replyBanner = {
       text: runSummary,
       source: tr3("状态感知自动化", "狀態感知自動化", "Context Automation", undefined, preference),

@@ -3,6 +3,7 @@ import {
   AutomationRuleStore,
   AutomationTriggerDeduper,
   automationRequiredPermission,
+  automationRuleHighRiskConfirmation,
   automationTriggerTitle,
   clampDoorbellPopupSeconds,
   createAutomationConditions,
@@ -12,6 +13,7 @@ import {
   normalizeWiFiSSIDs,
   summarizeAutomationAction,
   type AutomationAction,
+  type AutomationHighRiskConfirmation,
   type AutomationRule,
   type AutomationTrigger,
   type AutomationWiFiCondition,
@@ -117,6 +119,11 @@ export interface HostAutoSafetySession {
   healthReportPreviewMarkdown: string | null;
   lastScopeKey: string | null;
   lastSourceRevision: number | null;
+  pendingHighRiskConfirm?: {
+    readonly kind: "add" | "enable";
+    readonly rule: AutomationRule;
+    readonly confirmation: AutomationHighRiskConfirmation;
+  } | null;
 }
 
 export interface AutoSafetySettingsHost {
@@ -135,6 +142,7 @@ export interface AutoSafetySettingsHost {
   readonly dualSourceCoordinator?: import("../core/dualSourceProvider.js").DualSourceCoordinator | null;
   autoSafetySession?: HostAutoSafetySession;
   activityCenter?: HostActivityCenter | null;
+  manualControlConfirmationHandler?: ((prompt: AutomationHighRiskConfirmation) => boolean) | null;
   applyCommand?(cmd: DeviceCommand, silent?: boolean): Promise<boolean>;
   activateScene?(entityId: string): Promise<boolean>;
   render(): void;
@@ -215,6 +223,7 @@ export function syncAutoSafetySessionScope(
       (session.lastSourceRevision !== null && session.lastSourceRevision !== rev))
   ) {
     session.healthReportPreviewMarkdown = null;
+    session.pendingHighRiskConfirm = null;
     session.draft.selectedDeviceIds.clear();
   }
   session.lastScopeKey = scopeKey;
@@ -910,6 +919,18 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
           </select>
         </div>`;
 
+  const pendingConfirm = session?.pendingHighRiskConfirm ?? null;
+  const highRiskConfirmHtml = pendingConfirm
+    ? `<div id="settings-auto-high-risk-confirm" role="alertdialog" aria-labelledby="settings-auto-high-risk-title" style="margin: 6px 0 8px 0; padding: 9px 11px; border-radius: 8px; border: 1px solid rgba(255, 149, 0, 0.45); background: rgba(255, 149, 0, 0.12);">
+        <div id="settings-auto-high-risk-title" style="font-size: 12px; font-weight: 600; margin-bottom: 3px;">${esc(pendingConfirm.confirmation.title)}</div>
+        <div id="settings-auto-high-risk-msg" style="font-size: 11.5px; opacity: 0.88; margin-bottom: 8px;">${esc(pendingConfirm.confirmation.message)}</div>
+        <div style="display: flex; justify-content: flex-end; gap: 6px;">
+          <button type="button" class="cc-btn-secondary" id="btn-cancel-auto-high-risk">${esc(pendingConfirm.confirmation.cancelTitle)}</button>
+          <button type="button" class="cc-btn-danger" id="btn-confirm-auto-high-risk">${esc(pendingConfirm.confirmation.confirmTitle)}</button>
+        </div>
+      </div>`
+    : "";
+
   return `
     <div class="cc-field" data-settings-anchor="automationRules" id="settings-automation-section">
       <div class="cc-field-row">
@@ -921,6 +942,7 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
         )}</button>
       </div>
       <p class="cc-field-hint">${esc(uiText(lang, "根据电脑锁屏离开、解锁回来、深夜用机、定时、传感器状态、会议摄像头/麦克风占用或低电量自动控制当前家庭设备。", "根據電腦鎖屏離開、解鎖回來、深夜用機、定時、感測器狀態、會議攝影機/麥克風佔用或低電量自動控制目前家庭設備。", "Run home actions automatically on PC lock/away, unlock/back, late-night usage, schedules, sensor states, camera/mic meetings, or battery thresholds."))}</p>
+      ${highRiskConfirmHtml}
       ${rulesHtml}
       ${recentRunsHtml}
       <div id="settings-auto-form" ${draft.formOpen ? "" : "hidden"} style="margin-top: 8px; padding: 10px; border-radius: 8px; background: rgba(128, 128, 128, 0.07);">
@@ -1064,6 +1086,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
   const session = getHostAutoSafetySession(host);
   if (host.activeSheet !== "settings") {
     session.healthReportPreviewMarkdown = null;
+    session.pendingHighRiskConfirm = null;
     return;
   }
 
@@ -1075,12 +1098,74 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
   const aliasedDevices = aliasedDevicesFor(host.devices, host.layout);
   const effectiveScenes = resolveScenesForContext(host);
 
+  const commitRuleAdd = (created: AutomationRule): void => {
+    ruleStore.save([...ruleStore.load(), created]);
+    draft.selectedDeviceIds.clear();
+    session.pendingHighRiskConfirm = null;
+    host.replyBanner = {
+      text: uiText(lang, "已保存自动化规则：{summary}", "已儲存自動化規則：{summary}", "Saved automation rule: {summary}", {
+        summary: summarizeAutomationAction(created.action, aliasedDevices, effectiveScenes, lang),
+      }),
+      source: uiText(lang, "状态感知自动化", "狀態感知自動化", "Context Automation"),
+    };
+    host.render();
+  };
+
+  const commitRuleEnable = (ruleId: string): void => {
+    ruleStore.save(ruleStore.load().map((r) => (r.id === ruleId ? { ...r, isEnabled: true } : r)));
+    session.pendingHighRiskConfirm = null;
+    host.render();
+  };
+
+  const rejectHighRiskRule = (): void => {
+    session.pendingHighRiskConfirm = null;
+    host.replyBanner = {
+      text: uiText(lang, "已取消高风险操作", "已取消高風險操作", "High-risk action cancelled."),
+      source: uiText(lang, "状态感知自动化", "狀態感知自動化", "Context Automation"),
+      isError: true,
+    };
+    host.render();
+  };
+
+  const armHighRiskRule = (kind: "add" | "enable", rule: AutomationRule, confirmation: AutomationHighRiskConfirmation): void => {
+    session.pendingHighRiskConfirm = { kind, rule, confirmation };
+    host.replyBanner = {
+      text: `${confirmation.title} ${confirmation.message}`,
+      source: uiText(lang, "状态感知自动化", "狀態感知自動化", "Context Automation"),
+      isError: false,
+    };
+    host.render();
+  };
+
   const autoSection = host.root.querySelector<HTMLElement>("#settings-automation-section");
   autoSection?.addEventListener("change", (event) => {
     const target = event.target as HTMLElement | null;
     if (!target || target.closest("[data-exit-ghost]")) return;
     if (isInputEl(target) && target.dataset.autoRuleToggle) {
       const ruleId = target.dataset.autoRuleToggle;
+      const existing = ruleStore.load().find((r) => r.id === ruleId);
+      if (target.checked && existing && !existing.isEnabled) {
+        const confirmation = automationRuleHighRiskConfirmation(existing.action, aliasedDevices, host.settings.interfaceLanguage);
+        if (confirmation) {
+          if (typeof host.manualControlConfirmationHandler === "function") {
+            if (!host.manualControlConfirmationHandler(confirmation)) {
+              target.checked = false;
+              rejectHighRiskRule();
+              return;
+            }
+          } else if (session.pendingHighRiskConfirm?.kind === "enable" && session.pendingHighRiskConfirm.rule.id === ruleId) {
+            commitRuleEnable(ruleId);
+            return;
+          } else {
+            target.checked = false;
+            armHighRiskRule("enable", existing, confirmation);
+            return;
+          }
+        }
+      }
+      if (!target.checked && session.pendingHighRiskConfirm?.kind === "enable" && session.pendingHighRiskConfirm.rule.id === ruleId) {
+        session.pendingHighRiskConfirm = null;
+      }
       ruleStore.save(ruleStore.load().map((r) => (r.id === ruleId ? { ...r, isEnabled: target.checked } : r)));
       host.render();
       return;
@@ -1113,14 +1198,18 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
       host.render();
     } else if (target.id === "settings-auto-action-kind" && isSelectEl(target)) {
       draft.actionKind = target.value as "quickAction" | "devices" | "scene";
+      if (session.pendingHighRiskConfirm?.kind === "add") session.pendingHighRiskConfirm = null;
       host.render();
     } else if (target.id === "settings-auto-quick-action" && isSelectEl(target)) {
       draft.quickAction = target.value as QuickActionId;
     } else if (target.id === "settings-auto-devices-power" && isSelectEl(target)) {
       draft.devicesPowerOn = target.value === "on";
+      if (session.pendingHighRiskConfirm?.kind === "add") session.pendingHighRiskConfirm = null;
+      host.render();
     } else if (isInputEl(target) && target.dataset.autoTargetDevice) {
       if (target.checked) draft.selectedDeviceIds.add(target.dataset.autoTargetDevice);
       else draft.selectedDeviceIds.delete(target.dataset.autoTargetDevice);
+      if (session.pendingHighRiskConfirm?.kind === "add") session.pendingHighRiskConfirm = null;
       host.render();
     } else if (target.id === "settings-auto-scene-id" && isSelectEl(target)) {
       draft.selectedSceneId = target.value;
@@ -1230,6 +1319,19 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
       return;
     }
 
+    if (btn.id === "btn-cancel-auto-high-risk") {
+      rejectHighRiskRule();
+      return;
+    }
+
+    if (btn.id === "btn-confirm-auto-high-risk") {
+      const pending = session.pendingHighRiskConfirm;
+      if (!pending) return;
+      if (pending.kind === "add") commitRuleAdd(pending.rule);
+      else commitRuleEnable(pending.rule.id);
+      return;
+    }
+
     if (btn.id === "btn-add-auto-rule") {
       const action = buildActionFromDraft(draft, effectiveScenes);
       if (!action) return;
@@ -1269,21 +1371,22 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
         },
         conditions: createAutomationConditions(wifiCond),
       });
-      ruleStore.save([...ruleStore.load(), created]);
-      draft.selectedDeviceIds.clear();
-      host.replyBanner = {
-        text: uiText(
-          lang,
-          "已保存自动化规则：{summary}",
-          "已儲存自動化規則：{summary}",
-          "Saved automation rule: {summary}",
-          {
-            summary: summarizeAutomationAction(created.action, aliasedDevices, effectiveScenes, lang),
-          },
-        ),
-        source: uiText(lang, "状态感知自动化", "狀態感知自動化", "Context Automation"),
-      };
-      host.render();
+      const confirmation = automationRuleHighRiskConfirmation(created.action, aliasedDevices, host.settings.interfaceLanguage);
+      if (confirmation) {
+        if (typeof host.manualControlConfirmationHandler === "function") {
+          if (!host.manualControlConfirmationHandler(confirmation)) {
+            rejectHighRiskRule();
+            return;
+          }
+        } else if (session.pendingHighRiskConfirm?.kind === "add") {
+          commitRuleAdd(created);
+          return;
+        } else {
+          armHighRiskRule("add", created, confirmation);
+          return;
+        }
+      }
+      commitRuleAdd(created);
     }
   });
 

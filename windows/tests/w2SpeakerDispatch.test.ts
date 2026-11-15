@@ -350,6 +350,15 @@ describe("Wave 2 A4: Speaker dual-mode drawer UI & Xiaomi Cloud action dispatch"
     await setImmediate();
     await setImmediate();
 
+    assert.equal(actionCalls.length, 0);
+    const armedInput = element<HTMLInputElement>('[data-speaker-input="sp_pro"]');
+    assert.equal(armedInput.value, "  把书房灯关掉  ");
+    assert.equal(app.replyBanner?.source, "需要确认");
+
+    armedInput.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await setImmediate();
+    await setImmediate();
+
     assert.equal(actionCalls.length, 1);
     assert.deepEqual(actionCalls[0], {
       did: "sp_pro",
@@ -358,7 +367,7 @@ describe("Wave 2 A4: Speaker dual-mode drawer UI & Xiaomi Cloud action dispatch"
       in: ["把书房灯关掉", true],
     });
     const refreshedInput = element<HTMLInputElement>('[data-speaker-input="sp_pro"]');
-    assert.equal(refreshedInput.value, "", "input box must clear after Enter submit");
+    assert.equal(refreshedInput.value, "", "input box must clear after confirmed Enter submit");
     assert.match(app.replyBanner?.text ?? "", /已向客厅小爱下发指令：「把书房灯关掉」/);
 
     setLanguage("en");

@@ -12,6 +12,7 @@ import {
   AwayArbitrator,
   DoorbellCameraCoordinator,
   DoorbellDetector,
+  automationRuleHighRiskConfirmation,
   createAutomationConditions,
   createAutomationRule,
   createLateNightWindow,
@@ -1163,9 +1164,37 @@ describe("B1 + B5 PC Context Automation Engine, AwayArbitrator, 5m Undo & HA Doo
       trigger: "back",
       action: { kind: "devices", deviceIds: [highRiskHeater.id], isOn: true },
     });
+    const heaterConfirm = automationRuleHighRiskConfirmation(heaterRule.action, app.devices);
+    assert.ok(heaterConfirm);
+    assert.match(heaterConfirm.message, /卧室取暖器/);
+    const heaterOffConfirm = automationRuleHighRiskConfirmation(
+      { kind: "devices", deviceIds: [highRiskHeater.id], isOn: false },
+      app.devices,
+    );
+    assert.equal(heaterOffConfirm, null);
     const highRiskRun = await executeAutomationRule(app, heaterRule, { nowMs: t0 + 10_000 });
-    assert.equal(sentHighRisk.length, 0);
-    assert.equal(highRiskRun, null);
+    assert.equal(sentHighRisk.length, 1);
+    assert.ok(highRiskRun);
+    assert.equal(highRiskRun.attemptedCount, 1);
+    assert.equal(highRiskRun.succeededCount, 1);
+    assert.equal(highRiskRun.failedCount, 0);
+
+    const lightOk = makeLight({ id: "ha:light_ok", name: "玄关灯", isOn: false });
+    const lightFail = makeLight({ id: "ha:light_fail", name: "走廊灯", isOn: false });
+    app.devices = [lightOk, lightFail];
+    app.applyCommand = async (cmd) => cmd.kind === "setLightPower" && cmd.entityId !== "ha:light_fail";
+    const partialRule = createAutomationRule({
+      id: "r-partial",
+      trigger: "back",
+      action: { kind: "devices", deviceIds: [lightOk.id, lightFail.id], isOn: true },
+    });
+    const partialRun = await executeAutomationRule(app, partialRule, { nowMs: t0 + 15_000 });
+    assert.ok(partialRun);
+    assert.equal(partialRun.attemptedCount, 2);
+    assert.equal(partialRun.succeededCount, 1);
+    assert.equal(partialRun.failedCount, 1);
+    assert.match(partialRun.summary, /成功 1 项，1 项失败/);
+    assert.equal(app.replyBanner?.isError, true);
 
     app.scenes = [{ id: "scene.sleep", entityId: "scene.sleep", name: "睡眠模式" }];
     app.replyBanner = null;

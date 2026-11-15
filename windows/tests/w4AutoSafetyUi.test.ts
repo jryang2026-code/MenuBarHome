@@ -391,6 +391,85 @@ describe("Wave 4 · PC Context Automation Rule Editor UI & Live Runtime", () => 
     assert.equal(new AutomationRuleStore().load().length, 0);
     assert.ok(document.querySelector("#settings-auto-rules-empty"));
   });
+
+  it("gates high-risk automation rule save/enable and high-risk undo behind explicit confirmation", async () => {
+    const app = createCloudApp();
+    const lamp = makeLight("light.desk", "书桌灯", true);
+    const heaterPlug = makePlug({ id: "plug.heater", name: "卧室取暖器插座", isOn: false });
+    app.devices = [lamp, heaterPlug];
+    const sent: DeviceCommand[] = [];
+    app.applyCommand = async (cmd) => {
+      sent.push(cmd);
+      if (cmd.kind === "setLightPower") {
+        lamp.kind = { ...(lamp.kind as Extract<SmartDevice["kind"], { kind: "light" }>), isOn: cmd.isOn };
+      } else if (cmd.kind === "setSwitch") {
+        heaterPlug.kind = { ...(heaterPlug.kind as Extract<SmartDevice["kind"], { kind: "plug" }>), isOn: cmd.isOn };
+      }
+      return true;
+    };
+
+    app.openSettingsSheet("system");
+    selectValue("#settings-auto-action-kind", "devices");
+    selectValue("#settings-auto-devices-power", "on");
+    toggleCheck(`[data-auto-target-device="${heaterPlug.id}"]`, true);
+    await click("#btn-add-auto-rule");
+
+    assert.equal(new AutomationRuleStore().load().length, 0);
+    const confirmCard = document.querySelector("#settings-auto-high-risk-confirm");
+    assert.ok(confirmCard);
+    assert.match(confirmCard.textContent ?? "", /卧室取暖器插座/);
+
+    await click("#btn-cancel-auto-high-risk");
+    assert.equal(new AutomationRuleStore().load().length, 0);
+    assert.equal(document.querySelector("#settings-auto-high-risk-confirm"), null);
+
+    await click("#btn-add-auto-rule");
+    await click("#btn-confirm-auto-high-risk");
+    assert.equal(new AutomationRuleStore().load().length, 1);
+    const ruleId = new AutomationRuleStore().load()[0]!.id;
+
+    toggleCheck(`[data-auto-rule-toggle="${ruleId}"]`, false);
+    assert.equal(new AutomationRuleStore().load()[0]?.isEnabled, false);
+
+    toggleCheck(`[data-auto-rule-toggle="${ruleId}"]`, true);
+    assert.equal(new AutomationRuleStore().load()[0]?.isEnabled, false);
+    assert.ok(document.querySelector("#settings-auto-high-risk-confirm"));
+    await click("#btn-confirm-auto-high-risk");
+    assert.equal(new AutomationRuleStore().load()[0]?.isEnabled, true);
+
+    heaterPlug.kind = { ...(heaterPlug.kind as Extract<SmartDevice["kind"], { kind: "plug" }>), isOn: true };
+    lamp.kind = { ...(lamp.kind as Extract<SmartDevice["kind"], { kind: "light" }>), isOn: true };
+    await app.executeIntents(
+      [
+        { targetId: lamp.id, operation: { kind: "power", isOn: false } },
+        { targetId: heaterPlug.id, operation: { kind: "power", isOn: false } },
+      ],
+      "已关闭 2 台设备",
+      "一键全关",
+    );
+    sent.length = 0;
+
+    app.manualControlConfirmationHandler = () => false;
+    await app.performUndo();
+    assert.deepEqual(sent, [{ kind: "setLightPower", entityId: "light.light.desk", isOn: true }]);
+
+    sent.length = 0;
+    heaterPlug.kind = { ...(heaterPlug.kind as Extract<SmartDevice["kind"], { kind: "plug" }>), isOn: true };
+    await app.executeIntents(
+      [{ targetId: heaterPlug.id, operation: { kind: "power", isOn: false } }],
+      "已关闭插座",
+      "一键全关",
+    );
+    sent.length = 0;
+    await app.performUndo();
+    assert.equal(sent.length, 0);
+    assert.ok(app.lastUndoAction, "declined all-high-risk undo must preserve lastUndoAction");
+
+    app.manualControlConfirmationHandler = () => true;
+    await app.performUndo();
+    assert.deepEqual(sent, [{ kind: "setSwitch", entityId: "switch.plug.heater", isOn: true }]);
+    assert.equal(app.lastUndoAction, null);
+  });
 });
 
 describe("Wave 4 · Active Safety Guard, Security Sensor Alerts & HA Doorbell Settings UI", () => {

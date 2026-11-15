@@ -162,4 +162,100 @@ struct AutomationEngineTests {
         #expect(store.undoBanner != nil)
         #expect(store.userHabitMemory.entries.isEmpty)
     }
+
+    @Test("AutomationEngine surfaces partial and repeated failures via typed execution outcomes")
+    func engineSurfacesPartialAndRepeatedFailures() async throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let secondLight = SmartDevice(
+            id: "light_corridor",
+            name: "走廊灯",
+            roomId: "corridor",
+            roomName: "走廊",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.corridor", isOn: true))
+        )
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.studyLight, secondLight]))
+        let store = HomeStore(provider: mock, defaultsSuiteName: "test.automation.engine.fail.\(UUID().uuidString)")
+        try await store.waitForTestSnapshot()
+
+        AutomationRuleStore(defaults: defaults).save([
+            AutomationRule(
+                trigger: .away,
+                action: .devices(ids: [Self.studyLight.id, secondLight.id], isOn: false)
+            )
+        ])
+
+        let engine = AutomationEngine(defaults: defaults)
+        engine.attach(store: store)
+        let start = Date()
+
+        await mock.setFailingCommands { $0 == .setLightPower(entityId: "light.corridor", isOn: false) }
+        await engine.handle(trigger: .away, at: start)
+        #expect(store.toastNotice?.isError == true)
+        #expect(store.toastNotice?.message.contains("1") == true)
+        #expect(store.toastNotice?.message.contains("走廊灯") == true)
+
+        await mock.setFailingCommands { _ in true }
+        await engine.handle(trigger: .away, at: start.addingTimeInterval(65))
+        #expect(store.toastNotice?.isError == true)
+    }
+
+    @Test("Device cards guard inverted Kelvin ranges, offline drawers, and room-prefixed Classic room pills")
+    func deviceCardSafetyAndRoomBadgeGuards() async throws {
+        let invertedLight = SmartDevice(
+            id: "light_inverted",
+            name: "书房台灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(
+                entityId: "light.inverted",
+                isOn: true,
+                brightnessPercent: 50,
+                colorTempKelvin: 4000,
+                minKelvin: 6500,
+                maxKelvin: 2700,
+                colorWritable: true
+            ))
+        )
+        let offlineFridge = SmartDevice(
+            id: "fridge_1",
+            name: "厨房冰箱",
+            roomId: "kitchen",
+            roomName: "厨房",
+            model: "midjd6.fridge.v1",
+            isOnline: false,
+            kind: .fridge(FridgeSpec(
+                modeEntityId: nil,
+                currentMode: "auto",
+                availableModes: [],
+                fridgeCurrentTemp: 4,
+                fridgeTargetTemp: 4,
+                fridgeTargetEntityId: nil,
+                freezerCurrentTemp: -18,
+                freezerTargetTemp: -18,
+                freezerTargetEntityId: nil
+            ))
+        )
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [invertedLight, offlineFridge]))
+        let store = HomeStore(provider: mock, defaultsSuiteName: "test.cards.guards.\(UUID().uuidString)")
+        try await store.waitForTestSnapshot()
+        store.expandedDeviceId = invertedLight.id
+
+        #expect(DeviceRoomBadge.label(roomName: "书房", title: "书房台灯", showRoomBadge: true) == nil)
+        #expect(DeviceRoomBadge.label(roomName: "书房", title: "台灯", showRoomBadge: true) == "书房")
+
+        let modernLightCard = DeviceCardView(device: invertedLight, store: store, showRoomBadge: true)
+        let classicLightCard = ClassicDeviceCardView(device: invertedLight, store: store, showRoomBadge: true)
+        let modernFridgeCard = DeviceCardView(device: offlineFridge, store: store, showRoomBadge: true)
+        let classicFridgeCard = ClassicDeviceCardView(device: offlineFridge, store: store, showRoomBadge: true)
+        _ = modernLightCard.body
+        _ = classicLightCard.body
+        _ = modernFridgeCard.body
+        _ = classicFridgeCard.body
+    }
 }
