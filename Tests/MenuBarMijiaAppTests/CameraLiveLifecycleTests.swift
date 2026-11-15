@@ -123,7 +123,7 @@ struct CameraLiveLifecycleTests {
         let playback = try #require(CameraLivePlayback(deviceID: "cam-1", lensID: "main", source: source))
         playback.stallTimeout = .milliseconds(80)
         playback.watchdogInterval = .milliseconds(20)
-        playback.stablePlaybackThreshold = .seconds(5)
+        playback.stablePlaybackThreshold = .milliseconds(40)
         playback.reconnectBackoff = .milliseconds(10)
         playback.failureBackoff = .milliseconds(10)
         playback.maxFailedAttempts = 3
@@ -158,6 +158,53 @@ struct CameraLiveLifecycleTests {
 
         #expect(playCalls == 3)
         #expect(terminalFailure == "stream stalled")
+        #expect(playback.failure != nil)
+    }
+
+    @Test("Paused playback suspends stall watchdog and resets lastFrameAt on resume")
+    func pausedPlaybackSuspendsWatchdogAndResumesCleanly() async throws {
+        let mp4URL = try #require(URL(string: "http://127.0.0.1:43123/api/stream.mp4?src=cam_raw_pause&mp4"))
+        let source = CameraStreamSource.liveMP4(mp4URL, mjpegFallback: nil, ptz: nil)
+        let playback = try #require(CameraLivePlayback(deviceID: "cam-pause", lensID: "main", source: source))
+        playback.stallTimeout = .milliseconds(60)
+        playback.watchdogInterval = .milliseconds(15)
+        playback.maxFailedAttempts = 1
+        playback.maxReconnectAttempts = 1
+
+        var stalledDuringPause = false
+        var pauseWindowFinished = false
+        let (doneStream, doneCont) = AsyncStream<Void>.makeStream()
+
+        playback.onFailure = { _ in
+            doneCont.yield()
+            doneCont.finish()
+        }
+
+        var stopContinuation: CheckedContinuation<String?, Never>?
+        playback.player.stopOverride = { reason in
+            if !pauseWindowFinished {
+                stalledDuringPause = true
+            }
+            stopContinuation?.resume(returning: reason)
+            stopContinuation = nil
+        }
+        playback.player.playOverride = { _, player in
+            player.notifyDecodedFrame(1)
+            player.setPlaybackPaused(true)
+            try? await Task.sleep(for: .milliseconds(110))
+            pauseWindowFinished = true
+            player.setPlaybackPaused(false)
+            let reason = await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
+                stopContinuation = cont
+            }
+            return CameraLiveVideoPlayer.Outcome(framesDecoded: 1, failure: reason)
+        }
+
+        playback.start()
+        for await _ in doneStream { break }
+
+        #expect(stalledDuringPause == false)
+        #expect(pauseWindowFinished == true)
         #expect(playback.failure != nil)
     }
 
@@ -203,17 +250,23 @@ struct CameraLiveLifecycleTests {
         controller.presentsActively = false
         let oldBackoff = controller.mjpegRetryBackoff
         let oldStable = controller.mjpegStableWindow
+        let oldStall = controller.mjpegStallTimeout
+        let oldWatchdog = controller.mjpegWatchdogInterval
         let oldMaxAttempts = controller.mjpegMaxAttempts
         defer {
             controller.mjpegRetryBackoff = oldBackoff
             controller.mjpegStableWindow = oldStable
+            controller.mjpegStallTimeout = oldStall
+            controller.mjpegWatchdogInterval = oldWatchdog
             controller.mjpegMaxAttempts = oldMaxAttempts
             controller.consumeMJPEGOverride = nil
             controller.closePanel()
         }
 
         controller.mjpegRetryBackoff = .milliseconds(10)
-        controller.mjpegStableWindow = .seconds(5)
+        controller.mjpegStableWindow = .milliseconds(30)
+        controller.mjpegStallTimeout = .milliseconds(80)
+        controller.mjpegWatchdogInterval = .milliseconds(20)
         controller.mjpegMaxAttempts = 3
 
         let suiteName = "MenuBarMijiaTests.CameraMJPEG.\(UUID().uuidString)"
@@ -232,6 +285,7 @@ struct CameraLiveLifecycleTests {
         controller.consumeMJPEGOverride = { _, onFrame in
             mjpegConnects += 1
             onFrame(NSImage(size: NSSize(width: 2, height: 2)))
+            try? await Task.sleep(for: .milliseconds(45))
         }
 
         controller.reloadStream()
@@ -242,14 +296,16 @@ struct CameraLiveLifecycleTests {
         #expect(controller.errorMessage != nil)
     }
 
-    @Test("shutdownForTermination stops active PTZ session, releases camera stream, and shuts down bridge")
-    func shutdownForTerminationCleansUpPTZStreamAndBridge() async throws {
+    @Test("prepareForTermination defers app exit until PTZ stop, stream release, and bridge shutdown complete")
+    func prepareForTerminationCleansUpPTZStreamAndBridge() async throws {
         let controller = CameraLivePanelController.shared
         controller.presentsActively = false
         defer {
             controller.bridgeShutdownOverride = nil
+            controller.hasLiveOwnedProcessOverride = nil
             controller.closePanel()
         }
+        controller.hasLiveOwnedProcessOverride = { false }
 
         let suiteName = "MenuBarMijiaTests.CameraTerminate.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
@@ -296,11 +352,21 @@ struct CameraLiveLifecycleTests {
             await bridgeShutdown.mark()
         }
 
-        await controller.shutdownForTermination()
+        let (replyStream, replyCont) = AsyncStream<Void>.makeStream()
+        let reply = controller.prepareForTermination {
+            replyCont.yield()
+            replyCont.finish()
+        }
+        #expect(reply == .terminateLater)
+        for await _ in replyStream { break }
 
         #expect(await ptzClient.stoppedTokens == [activeToken])
         #expect(await provider.stoppedDeviceIDs.contains(cam.id))
         #expect(await bridgeShutdown.isCalled())
         #expect(controller.activeDeviceId == nil)
+
+        controller.bridgeShutdownOverride = nil
+        await controller.terminationTask?.value
+        #expect(controller.prepareForTermination() == .terminateNow)
     }
 }

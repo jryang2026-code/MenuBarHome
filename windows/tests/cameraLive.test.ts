@@ -756,6 +756,45 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
     assert.equal(ctx.app.cameraLive.liveCameraStreamURL, "http://192.168.1.50:8080/live.mp4");
   });
 
+  it("does not release the newly connected P2P session when a superseded same-camera negotiation rejects", async () => {
+    let rejectFirstBridge: (err: Error) => void = () => {};
+    let bridgeCallCount = 0;
+    const ctx = await mountCloudCameraApp({
+      devices: [
+        {
+          did: "cam-reconnect",
+          name: "客厅摄像机",
+          model: "isa.camera.hlc7",
+          localip: "192.168.1.50",
+        },
+      ],
+      bridgeResult: () => {
+        bridgeCallCount += 1;
+        if (bridgeCallCount === 1) {
+          return new Promise<string>((_resolve, reject) => {
+            rejectFirstBridge = reject;
+          });
+        }
+        return "cam_h264_camreconnect|cam_mjpeg_camreconnect";
+      },
+    });
+    await waitFor(() => document.querySelector('[data-body-device="cam-reconnect"]') !== null);
+    await click('[data-body-device="cam-reconnect"]');
+    await waitFor(() => ctx.bridgeCalls.length === 1);
+
+    await click("#btn-reload-camera-live");
+    await waitFor(() => ctx.bridgeCalls.length === 2 && !ctx.app.cameraLive.liveCameraLoading);
+    const stopsAfterSecondConnect = ctx.p2pStopsByDid.get("cam-reconnect") ?? 0;
+
+    rejectFirstBridge(new Error("late bridge failure"));
+    await setImmediate();
+    await setImmediate();
+
+    assert.equal(ctx.p2pStopsByDid.get("cam-reconnect") ?? 0, stopsAfterSecondConnect);
+    assert.equal(ctx.app.cameraLive.liveCameraError, null);
+    assert.equal(ctx.app.cameraLive.liveCameraStreamURL, "cam_mjpeg_camreconnect");
+  });
+
   it("retains parentDid on MiDeviceRecord and reuses cached topology without re-fetching device_list or homeroom", async () => {
     const parsed = MiCloudClient.parseDeviceRecord({
       did: "cam-child",

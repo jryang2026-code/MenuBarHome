@@ -12,7 +12,9 @@ final class CameraLivePlayback {
     let player: CameraLiveVideoPlayer
 
     private(set) var hasFrame = false
+    private(set) var firstFrameAt: ContinuousClock.Instant?
     private(set) var lastFrameAt: ContinuousClock.Instant?
+    private(set) var isPaused = false
     private(set) var failure: String?
     private let url: URL
     private let mjpegFallback: URL?
@@ -40,13 +42,27 @@ final class CameraLivePlayback {
         self.player = CameraLiveVideoPlayer()
         player.onFirstFrame = { [weak self] in
             guard let self, self.task != nil else { return }
+            let now = ContinuousClock.now
             self.hasFrame = true
-            self.lastFrameAt = ContinuousClock.now
+            self.firstFrameAt = now
+            self.lastFrameAt = now
             self.onFirstFrame?()
         }
         player.onFrameDecoded = { [weak self] _ in
             guard let self, self.task != nil else { return }
-            self.lastFrameAt = ContinuousClock.now
+            let now = ContinuousClock.now
+            if self.firstFrameAt == nil {
+                self.firstFrameAt = now
+            }
+            self.lastFrameAt = now
+        }
+        player.onPlaybackPauseChanged = { [weak self] paused in
+            guard let self, self.task != nil else { return }
+            let resumed = self.isPaused && !paused
+            self.isPaused = paused
+            if resumed {
+                self.lastFrameAt = ContinuousClock.now
+            }
         }
     }
 
@@ -58,15 +74,22 @@ final class CameraLivePlayback {
             while !Task.isCancelled {
                 guard let self else { return }
                 let attemptStartedAt = ContinuousClock.now
+                self.firstFrameAt = nil
                 self.lastFrameAt = nil
+                self.isPaused = false
+                var didStallTimeout = false
                 let stallTimeout = self.stallTimeout
                 let pollInterval = self.watchdogInterval
                 let watchdog = Task { @MainActor [weak self] in
                     while !Task.isCancelled {
                         try? await Task.sleep(for: pollInterval)
                         guard !Task.isCancelled, let self else { return }
+                        if self.isPaused {
+                            continue
+                        }
                         let reference = self.lastFrameAt ?? attemptStartedAt
                         if ContinuousClock.now - reference >= stallTimeout {
+                            didStallTimeout = true
                             self.player.stop(failure: "stream stalled")
                             return
                         }
@@ -76,8 +99,16 @@ final class CameraLivePlayback {
                 watchdog.cancel()
                 guard !Task.isCancelled else { return }
 
-                let sustainedPlayback = outcome.framesDecoded > 0
-                    && (ContinuousClock.now - attemptStartedAt) >= self.stablePlaybackThreshold
+                let sustainedPlayback: Bool
+                if !didStallTimeout,
+                   outcome.framesDecoded >= 2,
+                   let firstFrameAt = self.firstFrameAt,
+                   let lastFrameAt = self.lastFrameAt,
+                   (lastFrameAt - firstFrameAt) >= self.stablePlaybackThreshold {
+                    sustainedPlayback = true
+                } else {
+                    sustainedPlayback = false
+                }
 
                 if outcome.framesDecoded > 0 {
                     if sustainedPlayback {
@@ -126,7 +157,9 @@ final class CameraLivePlayback {
         task = nil
         player.stop()
         hasFrame = false
+        firstFrameAt = nil
         lastFrameAt = nil
+        isPaused = false
         failure = nil
     }
 
@@ -134,7 +167,9 @@ final class CameraLivePlayback {
         task = nil
         player.stop()
         hasFrame = false
+        firstFrameAt = nil
         lastFrameAt = nil
+        isPaused = false
         failure = CameraPlaybackTerminalFailure.reason(detail: detail)
         onFailure?(detail)
     }

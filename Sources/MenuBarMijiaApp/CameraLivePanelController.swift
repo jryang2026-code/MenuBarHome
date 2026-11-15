@@ -144,11 +144,15 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     private var activeCameraEntityID: String?
     private var doorbellDismissTask: Task<Void, Never>?
     var mjpegStableWindow: Duration = .seconds(10)
+    var mjpegStallTimeout: Duration = .seconds(15)
+    var mjpegWatchdogInterval: Duration = .seconds(1)
     var mjpegRetryBackoff: Duration = .milliseconds(900)
     var mjpegMaxAttempts = 4
     var mjpegMaxReconnects = 6
+    var terminationTimeout: Duration = .seconds(3)
     var consumeMJPEGOverride: (@MainActor (URL, @escaping @MainActor (NSImage) -> Void) async -> Void)?
     var bridgeShutdownOverride: (@Sendable () async -> Void)?
+    var hasLiveOwnedProcessOverride: (() -> Bool)?
     private(set) var terminationTask: Task<Void, Never>?
     /// The window sits where a ring put it, so closing it must not overwrite the user's saved position.
     private(set) var isDoorbellPlacement = false
@@ -465,12 +469,51 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         }
     }
 
-    public func handleApplicationWillTerminate() {
-        let task = Task<Void, Never> { @MainActor [weak self] in
-            guard let self else { return }
-            await self.shutdownForTermination()
+    public var needsAsyncTerminationCleanup: Bool {
+        let hasOwnedBridge = hasLiveOwnedProcessOverride?() ?? XiaomiCameraBridge.hasLiveOwnedProcess()
+        return activeDeviceId != nil
+            || !warmPlaybacks.isEmpty
+            || ptzDragID != nil
+            || ptzToken != nil
+            || !ptzUnresolvedStops.isEmpty
+            || ptzStopTask != nil
+            || closeReleaseTask != nil
+            || !pendingStopTasks.isEmpty
+            || bridgeShutdownOverride != nil
+            || hasOwnedBridge
+    }
+
+    public func prepareForTermination(
+        onComplete: (@MainActor () -> Void)? = nil
+    ) -> NSApplication.TerminateReply {
+        guard needsAsyncTerminationCleanup else {
+            XiaomiCameraBridge.scrubStaleConfigOnLaunch()
+            return .terminateNow
         }
-        terminationTask = task
+        let timeout = terminationTimeout
+        terminationTask?.cancel()
+        terminationTask = Task<Void, Never> { @MainActor [weak self] in
+            guard let self else {
+                onComplete?()
+                return
+            }
+            let shutdownTask = Task<Void, Never> { @MainActor in
+                await self.shutdownForTermination()
+            }
+            let timeoutTask = Task<Void, Never> {
+                try? await Task.sleep(for: timeout)
+                shutdownTask.cancel()
+            }
+            await shutdownTask.value
+            timeoutTask.cancel()
+            XiaomiCameraBridge.scrubStaleConfigOnLaunch()
+            onComplete?()
+        }
+        return .terminateLater
+    }
+
+    public func handleApplicationWillTerminate() {
+        _ = prepareForTermination()
     }
 
     public func shutdownForTermination() async {
@@ -483,7 +526,13 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         closePanel()
         activeDeviceId = nil
         await ptzStopToAwait?.value
+        ptzStopTask = nil
         await closeReleaseTask?.value
+        let pendingTasks = Array(pendingStopTasks.values)
+        for pendingTask in pendingTasks {
+            await pendingTask.value
+        }
+        pendingStopTasks.removeAll()
         if let store {
             var deviceIDs = Set(activePlaybackIDs)
             if let closingDeviceId { deviceIDs.insert(closingDeviceId) }
@@ -917,20 +966,45 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                 attempts += 1
                 totalReconnects += 1
                 let attemptStartedAt = ContinuousClock.now
-                var receivedFrame = false
-                if let override = self.consumeMJPEGOverride {
-                    await override(url) { [weak self] image in
-                        receivedFrame = true
-                        self?.snapshotImage = image
+                var frameCount = 0
+                var firstFrameAt: ContinuousClock.Instant?
+                var lastFrameAt: ContinuousClock.Instant?
+                var didStallTimeout = false
+                let stallTimeout = self.mjpegStallTimeout
+                let pollInterval = self.mjpegWatchdogInterval
+                let handleFrame: @MainActor (NSImage) -> Void = { [weak self] image in
+                    let now = ContinuousClock.now
+                    frameCount += 1
+                    if firstFrameAt == nil {
+                        firstFrameAt = now
                     }
-                } else {
-                    await self.consumeMJPEGConnection(url: url) { [weak self] image in
-                        receivedFrame = true
-                        self?.snapshotImage = image
+                    lastFrameAt = now
+                    self?.snapshotImage = image
+                }
+                let watchdog = Task { @MainActor [weak self] in
+                    while !Task.isCancelled {
+                        try? await Task.sleep(for: pollInterval)
+                        guard !Task.isCancelled, let self else { return }
+                        let reference = lastFrameAt ?? attemptStartedAt
+                        if ContinuousClock.now - reference >= stallTimeout {
+                            didStallTimeout = true
+                            self.setMJPEGSession(nil)
+                            return
+                        }
                     }
                 }
+                if let override = self.consumeMJPEGOverride {
+                    await override(url, handleFrame)
+                } else {
+                    await self.consumeMJPEGConnection(url: url, onFrame: handleFrame)
+                }
+                watchdog.cancel()
                 if Task.isCancelled { break }
-                if receivedFrame, (ContinuousClock.now - attemptStartedAt) >= self.mjpegStableWindow {
+                if !didStallTimeout,
+                   frameCount >= 2,
+                   let firstFrameAt,
+                   let lastFrameAt,
+                   (lastFrameAt - firstFrameAt) >= self.mjpegStableWindow {
                     attempts = 0
                     totalReconnects = 0
                 }

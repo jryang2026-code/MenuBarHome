@@ -125,6 +125,7 @@ struct Go2RTCOwnershipProbe: Equatable, Sendable {
     var configChanged: Bool
     /// The owned process was started from a different binary than the one this build resolved.
     var binaryChanged: Bool = false
+    var processVerified: Bool = false
 }
 
 /// One UDP relay per camera session. The relay thread remembers a single go2rtc address,
@@ -203,14 +204,28 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
 
     @discardableResult
     public static func scrubStaleConfigInDirectory(_ binDir: URL) -> Bool {
-        if let record = readOwner(in: binDir), processIsAlive(record.pid) {
+        if hasLiveOwnedProcess(in: binDir) {
             return false
         }
         return scrubPersistedStreamsInFile(binDir.appendingPathComponent("go2rtc.yaml"))
     }
 
+    public static func hasLiveOwnedProcess() -> Bool {
+        hasLiveOwnedProcess(in: supportBinDirectory())
+    }
+
+    static func hasLiveOwnedProcess(in binDir: URL) -> Bool {
+        guard let record = readOwner(in: binDir),
+              processIsAlive(record.pid) else {
+            return false
+        }
+        return processMatchesBinary(pid: record.pid, expectedBinaryPath: record.binaryPath)
+    }
+
     public func scrubStaleConfigOnStartup() {
-        guard existingOwnedRecord() == nil else { return }
+        if let record = existingOwnedRecord(), isOwnedProcessVerified(record) {
+            return
+        }
         Self.scrubPersistedStreamsFromConfig()
     }
 
@@ -333,8 +348,8 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
             let pid = proc.processIdentifier
             if proc.isRunning {
                 proc.terminate()
+                await Self.terminateOwnedPID(pid)
             }
-            await Self.terminateOwnedPID(pid)
             go2rtcProcess = nil
             activeOwner = nil
         }
@@ -519,7 +534,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
             return .spawnFresh
         }
         if !probe.authenticated {
-            return .restartOwned
+            return probe.processVerified ? .restartOwned : .spawnFresh
         }
         if !probe.nonceMatches {
             return .spawnFresh
@@ -609,12 +624,14 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
             let binaryChanged = record.binaryPath != identity.path
                 || record.binarySize != identity.size
                 || abs(record.binaryModifiedAt - identity.modifiedAt) > 0.5
+            let verified = isOwnedProcessVerified(record)
             let action = Self.decideGo2RTCAction(Go2RTCOwnershipProbe(
                 pidAlive: true,
                 authenticated: probe.authenticated,
                 nonceMatches: probe.nonceMatches,
                 configChanged: changed,
-                binaryChanged: binaryChanged
+                binaryChanged: binaryChanged,
+                processVerified: verified
             ))
             switch action {
             case .reuseOwned:
@@ -780,13 +797,51 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
     }
 
     private func stopOwnedProcess(_ record: Go2RTCOwnerRecord) async {
+        let verified = isOwnedProcessVerified(record)
         await requestOwnedExit(record.session)
         if let proc = go2rtcProcess, proc.isRunning, proc.processIdentifier == record.pid {
             proc.terminate()
         }
-        await Self.terminateOwnedPID(record.pid)
+        if verified {
+            await Self.terminateOwnedPID(record.pid)
+        }
         go2rtcProcess = nil
         activeOwner = nil
+    }
+
+    private func isOwnedProcessVerified(_ record: Go2RTCOwnerRecord) -> Bool {
+        if let proc = go2rtcProcess, proc.isRunning, proc.processIdentifier == record.pid {
+            return true
+        }
+        return Self.processMatchesBinary(pid: record.pid, expectedBinaryPath: record.binaryPath)
+    }
+
+    static func executablePath(for pid: Int32) -> String? {
+        guard pid > 0 else { return nil }
+        #if canImport(Darwin)
+        var buffer = [UInt8](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard length > 0 else { return nil }
+        return String(decoding: buffer.prefix(Int(length)), as: UTF8.self)
+        #elseif os(Linux)
+        var buffer = [CChar](repeating: 0, count: 4096)
+        let length = readlink("/proc/\(pid)/exe", &buffer, buffer.count - 1)
+        guard length > 0 else { return nil }
+        let bytes = buffer.prefix(Int(length)).map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
+        #else
+        return nil
+        #endif
+    }
+
+    static func processMatchesBinary(pid: Int32, expectedBinaryPath: String) -> Bool {
+        guard !expectedBinaryPath.isEmpty,
+              let actualPath = executablePath(for: pid) else {
+            return false
+        }
+        let normalizedActual = URL(fileURLWithPath: actualPath).resolvingSymlinksInPath().path
+        let normalizedExpected = URL(fileURLWithPath: expectedBinaryPath).resolvingSymlinksInPath().path
+        return normalizedActual == normalizedExpected
     }
 
     static func terminateOwnedPID(

@@ -64,10 +64,17 @@ final class MenuBarMijiaAppDelegate: NSObject, NSApplicationDelegate, Observable
         URLCommandHandler.shared.enqueue(urls)
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        LayoutUIState.shared.commitRoomOrderIfNeeded()
+        return CameraLivePanelController.shared.prepareForTermination {
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+    }
+
     /// #146 §5.2：应用退出时也要把排序草稿提交回 `UserDefaults`，否则拖到一半的会话会静默丢失。
     func applicationWillTerminate(_ notification: Notification) {
         LayoutUIState.shared.commitRoomOrderIfNeeded()
-        CameraLivePanelController.shared.handleApplicationWillTerminate()
+        XiaomiCameraBridge.scrubStaleConfigOnLaunch()
     }
 }
 

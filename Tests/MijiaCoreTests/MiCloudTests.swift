@@ -2064,7 +2064,7 @@ struct MiCloudClientTests {
         )) == .restartOwned)
         #expect(XiaomiCameraBridge.decideGo2RTCAction(Go2RTCOwnershipProbe(
             pidAlive: true, authenticated: false, nonceMatches: false, configChanged: true
-        )) == .restartOwned)
+        )) == .spawnFresh)
         #expect(XiaomiCameraBridge.decideGo2RTCAction(Go2RTCOwnershipProbe(
             pidAlive: true, authenticated: true, nonceMatches: false, configChanged: false
         )) == .spawnFresh)

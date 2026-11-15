@@ -4,7 +4,7 @@ import Testing
 
 @Suite("XiaomiCameraBridge Lifecycle")
 struct XiaomiCameraBridgeTests {
-    private static func makeSampleOwnerRecord(pid: Int32) -> Go2RTCOwnerRecord {
+    private static func makeSampleOwnerRecord(pid: Int32, binaryPath: String = "/usr/local/bin/go2rtc") -> Go2RTCOwnerRecord {
         Go2RTCOwnerRecord(
             pid: pid,
             session: Go2RTCSession(
@@ -14,7 +14,7 @@ struct XiaomiCameraBridgeTests {
                 password: "mpass0001",
                 nonce: "mnonce0001"
             ),
-            binaryPath: "/usr/local/bin/go2rtc",
+            binaryPath: binaryPath,
             binarySize: 1024,
             binaryModifiedAt: 1_700_000_000
         )
@@ -49,7 +49,13 @@ struct XiaomiCameraBridgeTests {
         #expect(cleaned.contains("local_auth: true"))
 
         try XiaomiCameraBridge.writeSecretFile(rawConfig, to: cfgURL)
-        let liveRecord = Self.makeSampleOwnerRecord(pid: getpid())
+        let recycledRecord = Self.makeSampleOwnerRecord(pid: getpid(), binaryPath: "/nonexistent/go2rtc")
+        try XiaomiCameraBridge.writeSecretFile(recycledRecord.serialized(), to: ownerURL)
+        #expect(XiaomiCameraBridge.scrubStaleConfigInDirectory(dir) == true)
+
+        try XiaomiCameraBridge.writeSecretFile(rawConfig, to: cfgURL)
+        let selfExe = try #require(XiaomiCameraBridge.executablePath(for: getpid()))
+        let liveRecord = Self.makeSampleOwnerRecord(pid: getpid(), binaryPath: selfExe)
         try XiaomiCameraBridge.writeSecretFile(liveRecord.serialized(), to: ownerURL)
         #expect(XiaomiCameraBridge.scrubStaleConfigInDirectory(dir) == false)
         let preserved = try String(contentsOf: cfgURL, encoding: .utf8)
@@ -159,14 +165,27 @@ struct XiaomiCameraBridgeTests {
             pidAlive: true,
             authenticated: false,
             nonceMatches: false,
-            configChanged: false
+            configChanged: false,
+            processVerified: true
         )) == .restartOwned)
+        #expect(XiaomiCameraBridge.decideGo2RTCAction(Go2RTCOwnershipProbe(
+            pidAlive: true,
+            authenticated: false,
+            nonceMatches: false,
+            configChanged: false,
+            processVerified: false
+        )) == .spawnFresh)
         #expect(XiaomiCameraBridge.decideGo2RTCAction(Go2RTCOwnershipProbe(
             pidAlive: true,
             authenticated: true,
             nonceMatches: false,
-            configChanged: false
+            configChanged: false,
+            processVerified: true
         )) == .spawnFresh)
+
+        let selfExe = try #require(XiaomiCameraBridge.executablePath(for: getpid()))
+        #expect(XiaomiCameraBridge.processMatchesBinary(pid: getpid(), expectedBinaryPath: selfExe))
+        #expect(!XiaomiCameraBridge.processMatchesBinary(pid: getpid(), expectedBinaryPath: "/nonexistent/go2rtc"))
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/sh")

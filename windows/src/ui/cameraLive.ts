@@ -910,10 +910,10 @@ export class CameraLiveController {
       this.activeLiveCameraId !== dev.id || hasCustomUrl();
     let startedP2PSession = false;
     let failureReason: string | null = null;
-    const releaseIfStarted = () => {
+    const releaseIfStarted = (releaseToken = token) => {
       if (startedP2PSession) {
         startedP2PSession = false;
-        void this.releaseCameraP2PSession(dev, this.liveCameraToken, true);
+        void this.releaseCameraP2PSession(dev, releaseToken, true);
       }
     };
     try {
@@ -1022,7 +1022,7 @@ export class CameraLiveController {
         }
       }
       if (stale()) {
-        if (shouldReleaseStaleCloudSession()) releaseIfStarted();
+        if (shouldReleaseStaleCloudSession()) releaseIfStarted(this.liveCameraToken);
         return;
       }
 
@@ -1036,7 +1036,7 @@ export class CameraLiveController {
           this.resolveCachedCameraTopology(dev, sourceDev),
         );
         if (stale()) {
-          if (shouldReleaseStaleCloudSession()) releaseIfStarted();
+          if (shouldReleaseStaleCloudSession()) releaseIfStarted(this.liveCameraToken);
           return;
         }
         const { bridgeDid, bridgeModel, subdid, cloudLocalIp, hubBlockedReason } = target;
@@ -1061,7 +1061,7 @@ export class CameraLiveController {
               support_vendors: "TUTK_CS2_MTP",
             })) as Record<string, unknown> | null;
             if (stale()) {
-              if (shouldReleaseStaleCloudSession()) releaseIfStarted();
+              if (shouldReleaseStaleCloudSession()) releaseIfStarted(this.liveCameraToken);
               return;
             }
             const vendorObj = (vendorRes?.["vendor"] as Record<string, unknown> | undefined) ?? {};
@@ -1074,7 +1074,7 @@ export class CameraLiveController {
 
             if (devicePublic && sign) {
               if (stale()) {
-                if (shouldReleaseStaleCloudSession()) releaseIfStarted();
+                if (shouldReleaseStaleCloudSession()) releaseIfStarted(this.liveCameraToken);
                 return;
               }
               this.liveCameraQualityApplies = true;
@@ -1103,7 +1103,7 @@ export class CameraLiveController {
                     ...(channel > 0 ? { channel } : {}),
                     ...(subdid ? { subdid } : {}),
                   });
-                  releaseIfStarted();
+                  releaseIfStarted(this.liveCameraToken);
                 }
                 return;
               }
@@ -1141,8 +1141,10 @@ export class CameraLiveController {
       this.liveCameraQualityApplies = false;
       this.liveCameraError = failureReason ?? t("米家云直连摄像头采用私有 P2P 加密流；可在下方填写本地 go2rtc / HLS 流地址观看实时画面");
     } catch (err) {
-      releaseIfStarted();
-      if (!stale()) {
+      if (stale()) {
+        if (shouldReleaseStaleCloudSession()) releaseIfStarted(this.liveCameraToken);
+      } else {
+        releaseIfStarted();
         this.liveCameraQualityApplies = false;
         this.liveCameraError = err instanceof Error ? err.message : String(err);
       }

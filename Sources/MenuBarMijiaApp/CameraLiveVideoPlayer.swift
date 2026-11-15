@@ -26,6 +26,7 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
     /// Called on the main actor when the first frame of a connection reaches the renderer.
     var onFirstFrame: (@MainActor @Sendable () -> Void)?
     var onFrameDecoded: (@MainActor @Sendable (Int) -> Void)?
+    var onPlaybackPauseChanged: (@MainActor @Sendable (Bool) -> Void)?
     var playOverride: (@MainActor @Sendable (URL, CameraLiveVideoPlayer) async -> Outcome)?
     var stopOverride: (@MainActor @Sendable (String?) -> Void)?
 
@@ -106,6 +107,15 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
     }
 
     func stop(failure reason: String? = nil) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                self.onPlaybackPauseChanged?(false)
+            }
+        } else {
+            Task { @MainActor [weak self] in
+                self?.onPlaybackPauseChanged?(false)
+            }
+        }
         if let stopOverride {
             Task { @MainActor in stopOverride(reason) }
         }
@@ -125,6 +135,15 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
     }
 
     func setPlaybackPaused(_ paused: Bool) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                self.onPlaybackPauseChanged?(paused)
+            }
+        } else {
+            Task { @MainActor [weak self] in
+                self?.onPlaybackPauseChanged?(paused)
+            }
+        }
         queue.async {
             let resumed = self.playbackPaused && !paused
             self.playbackPaused = paused
