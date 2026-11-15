@@ -27,6 +27,8 @@ check_push_target() {
 check_push_target "$REMOTE_NAME" "$REMOTE_URL"
 
 ROOT_DIR="$(git rev-parse --show-toplevel)"
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+cd "$ROOT_DIR"
 ZERO_SHA="0000000000000000000000000000000000000000"
 
 need_main_check=0
