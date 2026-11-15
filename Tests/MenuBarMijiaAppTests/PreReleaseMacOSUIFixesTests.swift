@@ -394,5 +394,33 @@ struct PreReleaseMacOSUIFixesTests {
         #expect(store.serverURLString == "https://new-ha.example:8123")
         #expect(store.loadHAToken() == "secret-ha-token")
     }
+
+    // MARK: - #143: Home Assistant form does not greet a Mi-only user with a default address and warning
+
+    @Test("A fresh install shows an empty Home Assistant address; configured users keep theirs")
+    func haURLDraftIsEmptyOnlyForUnconfiguredDefault() {
+        let fallback = KeychainHelper.defaultNASURL
+        #expect(HAConnectionSaveGuard.initialURLDraft(storedURL: fallback, hasHASource: false).isEmpty)
+        #expect(HAConnectionSaveGuard.initialURLDraft(storedURL: "homeassistant.local:8123", hasHASource: false).isEmpty)
+        #expect(HAConnectionSaveGuard.initialURLDraft(storedURL: fallback, hasHASource: true) == fallback)
+        #expect(HAConnectionSaveGuard.initialURLDraft(storedURL: "https://ha.example", hasHASource: false) == "https://ha.example")
+    }
+
+    @Test("An empty address saves as the default; only a typed plain-http address warns")
+    func haEmptyDraftMeansDefaultAndNeverWarns() {
+        #expect(HAConnectionSaveGuard.effectiveURL("  ") == KeychainHelper.defaultNASURL)
+        #expect(HAConnectionSaveGuard.effectiveURL("https://ha.example") == "https://ha.example")
+        #expect(!HAConnectionSaveGuard.showsPlaintextWarning(forDraft: ""))
+        #expect(!HAConnectionSaveGuard.showsPlaintextWarning(forDraft: "https://ha.example"))
+        #expect(!HAConnectionSaveGuard.showsPlaintextWarning(forDraft: "http://localhost:8123"))
+        #expect(HAConnectionSaveGuard.showsPlaintextWarning(forDraft: "http://ha.ddns.example:8123"))
+        #expect(HAConnectionSaveGuard.showsPlaintextWarning(forDraft: "ha.ddns.example"))
+    }
+
+    @Test("Search jumps into the folded Home Assistant card expand it")
+    func haCardAnchorsAreExpandedBySearch() {
+        #expect(HAConnectionSaveGuard.collapsedAnchors.isSuperset(of: [.haServerAddress, .haToken, .haDiscovery]))
+        #expect(!HAConnectionSaveGuard.collapsedAnchors.contains(.miAccount))
+    }
 }
 }
