@@ -3403,6 +3403,10 @@ button.cc-footer-label.is-action {
   color: var(--text-secondary);
 }
 
+.cc-sheet-note {
+  color: var(--text-primary);
+}
+
 .cc-camera-stage {
   position: relative;
   overflow: hidden;
