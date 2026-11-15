@@ -170,7 +170,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         return URLSession(configuration: cfg)
     }()
 
-    override private init() {
+    override init() {
         super.init()
     }
 
@@ -490,24 +490,20 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
             XiaomiCameraBridge.scrubStaleConfigOnLaunch()
             return .terminateNow
         }
-        let timeout = terminationTimeout
+        var didComplete = false
+        let completeOnce: @MainActor () -> Void = {
+            guard !didComplete else { return }
+            didComplete = true
+            onComplete?()
+        }
         terminationTask?.cancel()
         terminationTask = Task<Void, Never> { @MainActor [weak self] in
             guard let self else {
-                onComplete?()
+                completeOnce()
                 return
             }
-            let shutdownTask = Task<Void, Never> { @MainActor in
-                await self.shutdownForTermination()
-            }
-            let timeoutTask = Task<Void, Never> {
-                try? await Task.sleep(for: timeout)
-                shutdownTask.cancel()
-            }
-            await shutdownTask.value
-            timeoutTask.cancel()
-            XiaomiCameraBridge.scrubStaleConfigOnLaunch()
-            onComplete?()
+            await self.shutdownForTermination()
+            completeOnce()
         }
         return .terminateLater
     }
@@ -520,31 +516,61 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         finishPTZMove(notify: false)
         retryFailedPTZStop()
         let ptzStopToAwait = ptzStopTask
+        let previousCloseTask = closeReleaseTask
+        let pendingTasks = Array(pendingStopTasks.values)
         let closingDeviceId = activeDeviceId
         let activePlaybackIDs = warmPlaybacks.map(\.deviceID)
         let store = self.store
         closePanel()
         activeDeviceId = nil
-        await ptzStopToAwait?.value
+        let currentCloseTask = closeReleaseTask
         ptzStopTask = nil
-        await closeReleaseTask?.value
-        let pendingTasks = Array(pendingStopTasks.values)
-        for pendingTask in pendingTasks {
-            await pendingTask.value
-        }
+        closeReleaseTask = nil
         pendingStopTasks.removeAll()
-        if let store {
-            var deviceIDs = Set(activePlaybackIDs)
-            if let closingDeviceId { deviceIDs.insert(closingDeviceId) }
-            for deviceID in deviceIDs {
-                await store.stopCameraStream(for: deviceID)
+
+        let timeout = terminationTimeout
+        let (raceStream, raceContinuation) = AsyncStream<Void>.makeStream()
+        let drainTask = Task<Void, Never> { @MainActor in
+            await ptzStopToAwait?.value
+            await previousCloseTask?.value
+            await currentCloseTask?.value
+            for pendingTask in pendingTasks {
+                await pendingTask.value
             }
+            if let store {
+                var deviceIDs = Set(activePlaybackIDs)
+                if let closingDeviceId { deviceIDs.insert(closingDeviceId) }
+                for deviceID in deviceIDs {
+                    await store.stopCameraStream(for: deviceID)
+                }
+            }
+            raceContinuation.yield()
+            raceContinuation.finish()
         }
+        let timeoutTask = Task<Void, Never> {
+            try? await Task.sleep(for: timeout)
+            raceContinuation.yield()
+            raceContinuation.finish()
+        }
+        for await _ in raceStream {
+            break
+        }
+        timeoutTask.cancel()
+        drainTask.cancel()
+        ptzStopToAwait?.cancel()
+        previousCloseTask?.cancel()
+        currentCloseTask?.cancel()
+        for pendingTask in pendingTasks {
+            pendingTask.cancel()
+        }
+        closeReleaseTask = nil
+
         if let bridgeShutdownOverride {
             await bridgeShutdownOverride()
         } else {
             await XiaomiCameraBridge.shared.shutdown()
         }
+        XiaomiCameraBridge.scrubStaleConfigOnLaunch()
     }
 
     private func stopStreamTasks() {

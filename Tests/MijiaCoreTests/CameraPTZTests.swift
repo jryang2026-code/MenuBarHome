@@ -173,9 +173,11 @@ struct CameraPTZDragPlannerTests {
         #expect(planner.heartbeat(time: 0.4) == [.heartbeat])
 
         #expect(planner.moved(to: .init(x: 100, y: 100), time: 0.5, capability: capability) == [.stop])
+        #expect(planner.isDragging == true)
         #expect(planner.heartbeat(time: 0.8).isEmpty)
         #expect(planner.moved(to: .init(x: 102, y: 101), time: 0.9, capability: capability).isEmpty)
-        #expect(planner.ended().isEmpty)
+        #expect(planner.moved(to: .init(x: 80, y: 100), time: 1.0, capability: capability) == [.move(.left)])
+        #expect(planner.ended() == [.stop])
     }
 }
 

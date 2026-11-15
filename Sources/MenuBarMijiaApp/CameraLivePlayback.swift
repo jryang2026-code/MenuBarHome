@@ -31,6 +31,7 @@ final class CameraLivePlayback {
     var onFirstFrame: (@MainActor () -> Void)?
     var onFallback: (@MainActor (URL) -> Void)?
     var onFailure: (@MainActor (String?) -> Void)?
+    var onWatchdogTick: (@MainActor () -> Void)?
 
     init?(deviceID: String, lensID: String, source: CameraStreamSource) {
         guard case .liveMP4(let url, let mjpegFallback, _) = source else { return nil }
@@ -85,14 +86,17 @@ final class CameraLivePlayback {
                         try? await Task.sleep(for: pollInterval)
                         guard !Task.isCancelled, let self else { return }
                         if self.isPaused {
+                            self.onWatchdogTick?()
                             continue
                         }
                         let reference = self.lastFrameAt ?? attemptStartedAt
                         if ContinuousClock.now - reference >= stallTimeout {
                             didStallTimeout = true
+                            self.onWatchdogTick?()
                             self.player.stop(failure: "stream stalled")
                             return
                         }
+                        self.onWatchdogTick?()
                     }
                 }
                 let outcome = await self.player.play(url: self.url)

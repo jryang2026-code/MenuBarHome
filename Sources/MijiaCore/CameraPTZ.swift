@@ -157,6 +157,7 @@ public struct CameraPTZDragPlanner: Sendable {
 
     public private(set) var isActive = false
     public private(set) var activeDirection: CameraPTZDirection?
+    public var isDragging: Bool { start != nil }
 
     private let timing: Timing
     private var start: CameraPTZPoint?
@@ -245,6 +246,7 @@ public struct CameraPTZDragPlanner: Sendable {
         if !isActive {
             isActive = true
             activeDirection = direction
+            beganAt = time
             lastCommandAt = time
             return [.move(direction)]
         }

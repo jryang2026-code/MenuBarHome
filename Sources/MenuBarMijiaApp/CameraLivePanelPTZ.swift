@@ -27,18 +27,22 @@ extension CameraLivePanelController {
         ptzPlanner.began(at: point, time: ptzTime)
         ptzSeq = 0
         ptzPendingDirection = nil
+        startPTZBeginSession(for: dragID, client: client, deviceId: deviceId)
+    }
+
+    private func startPTZBeginSession(
+        for dragID: UUID,
+        client: any CameraPTZControlling,
+        deviceId: String
+    ) {
         let previousStop = ptzStopTask
         let attemptDeviceId = deviceId
         let attemptLifecycleID = ptzLifecycleID
         ptzBeginTask = Task { @MainActor [weak self] in
-            // A new drag must not begin before the previous stop reached the bridge; otherwise
-            // begin sees the old session active and fails (or races its stop).
             await previousStop?.value
             do {
-                // Never cancelled: a cancelled request can throw after the bridge opened the
-                // session, leaving no token to stop it. A finished drag stops it below instead.
                 let begin = try await client.begin()
-                guard let self, self.ptzDragID == dragID else {
+                guard let self, self.ptzDragID == dragID, self.ptzBeginTask != nil else {
                     let attempt = CameraPTZStopAttempt(
                         token: begin.token,
                         deviceId: attemptDeviceId,
@@ -54,14 +58,12 @@ extension CameraLivePanelController {
                 }
                 self.ptzToken = begin.token
                 self.ptzBeginTask = nil
-                // A new session does not prove the previous motor stopped; only a successful
-                // stop clears the sticky warning.
                 if let direction = self.ptzPendingDirection {
                     self.ptzPendingDirection = nil
                     self.enqueueMove(direction)
                 }
             } catch {
-                guard let self, self.ptzDragID == dragID else { return }
+                guard let self, self.ptzDragID == dragID, self.ptzBeginTask != nil else { return }
                 self.showPTZNotice(error.localizedDescription)
                 self.finishPTZMove(notify: false)
             }
@@ -69,13 +71,18 @@ extension CameraLivePanelController {
     }
 
     public func ptzDragMoved(to point: CameraPTZPoint) {
-        guard let capability = ptzBinding?.capability, ptzDragID != nil else { return }
+        guard let capability = ptzBinding?.capability, let dragID = ptzDragID else { return }
         let commands = ptzPlanner.moved(to: point, time: ptzTime, capability: capability)
         for command in commands {
             switch command {
             case .move(let direction):
                 if ptzToken == nil {
                     ptzPendingDirection = direction
+                    if ptzBeginTask == nil,
+                       let client = ptzClient,
+                       let deviceId = ptzDeviceId ?? activeDeviceId {
+                        startPTZBeginSession(for: dragID, client: client, deviceId: deviceId)
+                    }
                 } else {
                     ptzPendingDirection = nil
                     enqueueMove(direction)
@@ -86,7 +93,11 @@ extension CameraLivePanelController {
                     enqueueHeartbeat()
                 }
             case .stop:
-                finishPTZMove()
+                if ptzPlanner.isDragging {
+                    pausePTZMove()
+                } else {
+                    finishPTZMove()
+                }
             }
         }
     }
@@ -127,11 +138,11 @@ extension CameraLivePanelController {
                     try await client.heartbeat(token: token, seq: seq)
                 }
             } catch {
-                guard let self, self.ptzDragID == dragID else { return }
+                guard let self, self.ptzDragID == dragID, self.ptzToken == token else { return }
                 self.showPTZNotice(error.localizedDescription)
                 self.finishPTZMove()
             }
-            guard let self, self.ptzDragID == dragID else { return }
+            guard let self, self.ptzDragID == dragID, self.ptzToken == token else { return }
             if let next = self.ptzQueue.complete() {
                 self.run(next)
             }
@@ -160,6 +171,34 @@ extension CameraLivePanelController {
                 }
             }
         }
+    }
+
+    func pausePTZMove(notify: Bool = false) {
+        let pendingBegin = ptzBeginTask
+        ptzBeginTask = nil
+        ptzHeartbeatTask?.cancel()
+        ptzHeartbeatTask = nil
+        ptzQueue.reset()
+        ptzPendingDirection = nil
+        let token = ptzToken
+        ptzToken = nil
+        let deviceId = ptzDeviceId
+        let lifecycleID = ptzLifecycleID
+        guard let token, let client = ptzClient else {
+            if let pendingBegin { ptzStopTask = pendingBegin }
+            return
+        }
+        let attempt = CameraPTZStopAttempt(
+            token: token,
+            deviceId: deviceId,
+            lifecycleID: lifecycleID,
+            client: client
+        )
+        let stopTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.completePTZStop(client: client, attempt: attempt, notify: notify)
+        }
+        ptzStopTask = stopTask
     }
 
     /// Cancels the heartbeat and releases the bridge session first, then stops. The stop is
