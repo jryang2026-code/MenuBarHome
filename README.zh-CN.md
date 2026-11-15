@@ -39,7 +39,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/readme-v3/keyboard-search.gif" alt="macOS 演示：按 ⌥M 呼出面板，输入 sftd 找到书房台灯，回车开灯" width="900">
+  <img src="docs/assets/readme-v3/keyboard-search.gif" alt="macOS 演示：按 ⌥M 呼出面板，输入 sftd 找到书房台灯，回车开灯" width="420">
 </p>
 
 <p align="center"><sub>按 <code>⌥M</code> 呼出面板，敲 <code>sftd</code>（书房台灯的拼音首字母），回车开灯。画面来自 macOS 演示模式，设备均为虚拟。</sub></p>
@@ -80,7 +80,7 @@
 左侧分类、彩色图标、分组卡片，用起来和 Mac 自带的「系统设置」一样顺手。顶部的搜索框认中英文关键词和同义词，选中结果会直接跳过去，并把那一项高亮出来。
 
 <p align="center">
-  <img src="docs/assets/readme-v3/settings.gif" alt="macOS 偏好设置：在通用、AI 助手、外观、隐私与诊断之间切换" width="900">
+  <img src="docs/assets/readme-v3/settings.gif" alt="macOS 偏好设置：在家居连接、外观、隐私与诊断之间切换，再搜索 dark 直接跳到外观模式设置" width="900">
 </p>
 
 ### 按住说话
@@ -96,7 +96,7 @@
 出门或睡前，按住「全关」0.6 秒，当前视图里亮着的设备一起关掉。插座、扫地机和摄像机默认不参与，可以在设置里改。关完会出现「撤销」，点一下就回到关之前的样子。
 
 <p align="center">
-  <img src="docs/assets/readme-v3/all-off-undo.gif" alt="macOS 演示：按住全关关掉 3 台设备，插座保持开启，再点撤销全部恢复" width="900">
+  <img src="docs/assets/readme-v3/all-off-undo.gif" alt="macOS 演示：按住全关关掉 3 台设备，插座保持开启，再点撤销全部恢复" width="420">
 </p>
 
 ### Windows 11 也换了新衣服

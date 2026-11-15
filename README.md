@@ -39,7 +39,7 @@ English | [简体中文](README.zh-CN.md)
 </p>
 
 <p align="center">
-  <img src="docs/assets/readme-v3/keyboard-search.gif" alt="macOS demo: press Option-M, type sftd to find the study desk lamp, and press Return to turn it on" width="900">
+  <img src="docs/assets/readme-v3/keyboard-search.gif" alt="macOS demo: press Option-M, type sftd to find the study desk lamp, and press Return to turn it on" width="420">
 </p>
 
 <p align="center"><sub>Press <code>⌥M</code>, type <code>sftd</code> (the pinyin initials of 书房台灯, "study desk lamp"), and hit Return. Recorded in macOS demo mode with virtual devices; the interface shown is in Chinese.</sub></p>
@@ -80,7 +80,7 @@ Search now sits at the top, and the same box takes device names and spoken comma
 A sidebar of categories with colored icons and grouped cards, laid out like the Mac's own System Settings. The search field understands Chinese and English keywords plus synonyms, and picking a result jumps straight to that setting and highlights it.
 
 <p align="center">
-  <img src="docs/assets/readme-v3/settings.gif" alt="macOS settings: moving between General, AI Assistant, Appearance, and Privacy" width="900">
+  <img src="docs/assets/readme-v3/settings.gif" alt="macOS settings: moving between Home Connection, Appearance, and Privacy, then searching &quot;dark&quot; jumps straight to the appearance mode setting" width="900">
 </p>
 
 ### Hold to talk
@@ -96,7 +96,7 @@ Hold `⌥M` or the menu bar icon, say what you want, and let go. What you say ap
 Heading out or going to bed? Hold All Off for 0.6 seconds and everything that's on in the current view switches off. Plugs, robot vacuums, and cameras sit it out by default (you can change that in Settings). An Undo button appears right after; one tap restores the way things were.
 
 <p align="center">
-  <img src="docs/assets/readme-v3/all-off-undo.gif" alt="macOS demo: hold All Off to turn off three devices while the plug stays on, then tap Undo to restore them" width="900">
+  <img src="docs/assets/readme-v3/all-off-undo.gif" alt="macOS demo: hold All Off to turn off three devices while the plug stays on, then tap Undo to restore them" width="420">
 </p>
 
 ### Windows 11, redesigned too
