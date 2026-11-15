@@ -325,7 +325,7 @@ public struct OnboardingGuideView: View {
 
                     if HAConnectionSaveGuard.showsPlaintextWarning(forDraft: haURLDraft) {
                         Label(L10n.tr("令牌将以明文在网络上传输，建议使用 HTTPS 或 Nabu Casa 地址。", "Your token will travel unencrypted. Use HTTPS or a Nabu Casa address."), systemImage: "exclamationmark.triangle.fill")
-                            .font(.system(size: 11.5))
+                            .font(.system(size: DesignTokens.TypeSize.caption))
                             .foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -405,7 +405,7 @@ public struct OnboardingGuideView: View {
                         ),
                         systemImage: "exclamationmark.triangle.fill"
                     )
-                    .font(.system(size: 11.5))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
 
