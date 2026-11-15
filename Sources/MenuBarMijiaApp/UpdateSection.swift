@@ -18,7 +18,7 @@ struct UpdateSection: View {
                                 .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                             Text(L10n.tr("当前 v\(UpdateChecker.bundleVersion)", "Current v\(UpdateChecker.bundleVersion)"))
                                 .font(.system(size: DesignTokens.TypeSize.caption))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(DesignTokens.secondaryText)
                         }
                     } else {
                         Text(L10n.tr("版本 \(UpdateChecker.bundleVersion)", "Version \(UpdateChecker.bundleVersion)"))
@@ -207,7 +207,7 @@ struct UpdateSection: View {
             if let detail = downloadDetail(progress) {
                 Text(detail)
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                     .monospacedDigit()
                     .lineLimit(1)
             }
@@ -227,7 +227,7 @@ struct UpdateSection: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text("•")
                         .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.secondaryText)
                     Text(ReleaseNotesDigest.render(title))
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)

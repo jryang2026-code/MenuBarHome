@@ -125,7 +125,7 @@ public struct MiAccountSection: View {
                         .controlSize(.regular)
                     Text(L10n.tr("正在获取小米登录二维码…", "Fetching Xiaomi QR code…"))
                         .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.secondaryText)
                     Spacer()
                     Button(L10n.tr("取消", "Cancel")) {
                         cancelLogin()
@@ -361,7 +361,7 @@ public struct MiAccountSection: View {
                 "No Home Assistant needed. Scan with the Mi Home app to sync devices and rooms directly from Xiaomi Cloud."
             ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
 
             // #146: the risk is visible, not buried in secondary-colour fine print.
             Label {
@@ -407,7 +407,7 @@ public struct MiAccountSection: View {
                 let remaining = max(0, Int(expiresAt.timeIntervalSince(context.date).rounded()))
                 Text(L10n.tr("二维码有效剩余 \(remaining)s", "QR code expires in \(remaining)s"))
                     .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                     .monospacedDigit()
             }
 

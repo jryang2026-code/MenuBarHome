@@ -143,4 +143,9 @@ enum DesignTokens {
         static let cool = Color(red: 0.56, green: 0.82, blue: 1.0)
     }
     static let separator = Color(nsColor: .separatorColor)
+
+    /// Explanatory text in Settings, onboarding and the AI/Connection forms (#153). The system
+    /// `.secondary` renders as about (138, 138, 138) on white, 3.4:1, below WCAG AA's 4.5:1 for body
+    /// text. Primary at 70% measures about 5.6:1 on white and about 6:1 on the dark card.
+    static let secondaryText = Color.primary.opacity(0.7)
 }

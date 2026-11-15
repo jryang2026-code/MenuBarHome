@@ -151,7 +151,7 @@ public struct OnboardingGuideView: View {
                     "Connect an account · Search with \(hotkeyLabel) · Turn all off, then undo"
                 ))
                 .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
             }
 
             Spacer()
@@ -197,7 +197,7 @@ public struct OnboardingGuideView: View {
                     "Try the panel, search and All Off on a virtual home. Fully offline; connect a real home any time."
                 ))
                 .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -281,7 +281,7 @@ public struct OnboardingGuideView: View {
                 "Home Assistant and Xiaomi Cloud can be configured together. This only switches the form below; the other configured source keeps running."
             ))
             .font(.system(size: 11))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(DesignTokens.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
 
             // #154: before anyone signs in, answer "will my devices even work?".
@@ -304,7 +304,7 @@ public struct OnboardingGuideView: View {
                         "Demo mode is on: a built-in virtual home, fully offline, no network requests. Pick Xiaomi Cloud or Home Assistant above to switch back to a real account."
                     ))
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(8)
@@ -350,7 +350,7 @@ public struct OnboardingGuideView: View {
                                 .foregroundStyle(.green)
                             Text(L10n.tr("已自动识别局域网 HA：\(firstHA.displaySummary)", "Detected LAN HA: \(firstHA.displaySummary)"))
                                 .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(DesignTokens.secondaryText)
                                 .lineLimit(1)
                             Spacer()
                             if let secURL = URL(string: "\(HAWebSocketProvider.normalizeBaseURL(HAConnectionSaveGuard.effectiveURL(haURLDraft)))/profile/security") {
@@ -394,7 +394,7 @@ public struct OnboardingGuideView: View {
                         "Keep the menu-bar tool around after a restart without opening Applications again."
                     ))
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -456,7 +456,7 @@ public struct OnboardingGuideView: View {
                 "Tap \(hotkeyLabel) to open the panel, then type a device name or pinyin initials. ↑↓ chooses, Return toggles. Hold \(hotkeyLabel) to speak instead."
             ))
             .font(.system(size: 11.5))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(DesignTokens.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 5) {
@@ -541,7 +541,7 @@ public struct OnboardingGuideView: View {
                     "You will not need these on day one. Each row says where it lives."
                 ))
                 .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
                 advancedAIModelCard
@@ -595,12 +595,12 @@ public struct OnboardingGuideView: View {
                         "AI commands, GrokBall, cameras, automation and URL control"
                     ))
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                 }
                 Spacer(minLength: 0)
                 Text(L10n.tr("默认收起", "Collapsed"))
                     .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
             }
         }
         .tint(Color.accentColor)
@@ -643,7 +643,7 @@ public struct OnboardingGuideView: View {
                 } else {
                     Text(L10n.tr("不填也能用本机规则", "Local Rules Work Without It"))
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(DesignTokens.secondaryText)
                 }
             }
 
@@ -652,7 +652,7 @@ public struct OnboardingGuideView: View {
                 "Simple commands run on this Mac without AI. Connect Jev, DeepSeek or another service only for multi-device phrasing."
             ))
             .font(.system(size: 11.5))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(DesignTokens.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 6) {
@@ -797,7 +797,7 @@ public struct OnboardingGuideView: View {
                 "Hold the menu bar icon or \(hotkeyLabel) and speak, e.g. \"study light moonlight mode\" or \"turn off the lights in 10 minutes\"."
             ))
             .font(.system(size: 11))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(DesignTokens.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
 
             // #176: when a command takes effect is a consequence, not a how-to (CODING_STANDARDS §18).
@@ -851,7 +851,7 @@ public struct OnboardingGuideView: View {
         HStack {
             Text(L10n.tr("随时可在「设置 → 通用 → 首次设置」重新打开", "Reopen anytime in Settings → General → Setup"))
                 .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(DesignTokens.secondaryText)
 
             Spacer()
 
@@ -946,7 +946,7 @@ public struct OnboardingGuideView: View {
                     .font(.system(size: 11, weight: .semibold))
                 Text(detail)
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(DesignTokens.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
