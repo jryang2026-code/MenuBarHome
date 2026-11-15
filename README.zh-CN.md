@@ -240,6 +240,15 @@ MenuBarHome 的 macOS 版本采用 Swift 6 原生开发，Windows 11 版本基�
 
 在 macOS 打开 **设置 → 通用 → 自动化与外部控制 → Raycast 集成**（或在 Windows 打开 **设置 → 全关与更新 → Raycast 与本地 CLI / MCP 集成**）后，应用会把设备、场景、快捷动作、环境读数、上一条命令结果和一个本机随机令牌写到 `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json`（macOS，权限 `0600`）或 `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json`（Windows）。带令牌的 `menumijia://` 链接不再弹外部链接确认；双端的高风险设备仍会先问，锁屏拦截照旧。关闭该开关会立即删除文件并作废令牌，伴生端拿不到任何米家或 Home Assistant 凭据；契约与取舍见 [ADR-0013](docs/adr/0013-raycast-companion-contract.md)。
 
+**为什么还能看到旧名字。** 应用叫 MenuBarHome，但对外的集成接口保留了原来的名字，这样已有的 Raycast 命令、快捷指令、脚本和 MCP 配置都不会失效：
+
+| 你会看到 | 它是什么 | 该怎么用 |
+| :--- | :--- | :--- |
+| `menumijia://…` | 所有伴生工具发来的 URL scheme，是兼容契约（见 [ADR-0013](docs/adr/0013-raycast-companion-contract.md)），不会改 | 继续用 `menumijia://` |
+| `scripts/mijia`、`scripts/mijia-mcp` | 命令行与 MCP 服务 | `scripts/menubarhome` 是同一个命令行的新名字，`mijia` 照常可用 |
+| `MenuBarMijia/` 数据目录、`MenuBarMijiaApp` 进程 | 应用的数据目录与进程名 | 无需操作；你的登录和设置都在里面 |
+| MCP 配置键 `menubarmijia` | MCP 客户端配置里的一个标签，也是服务端上报的名字 | 随便起名；下面的示例用 `menubarhome` |
+
 <details>
 <summary><b>命令行、MCP 服务与 Raycast 的具体用法</b></summary>
 
@@ -262,6 +271,8 @@ MenuBarHome 的 macOS 版本采用 Swift 6 原生开发，Windows 11 版本基�
 | `scripts/mijia ask "把客厅灯调到 40%"` | 一句话指令，复用应用自己的解析与确认规则 |
 | `scripts/mijia mcp`（或 `scripts/mijia-mcp`） | 以 stdio 方式运行本地 MCP 服务 |
 
+`scripts/menubarhome` 运行的是同一个程序：`scripts/menubarhome list` 就是 `scripts/mijia list`。
+
 退出码：`0` 成功；`1` 应用报告执行失败；`2` 本地错误（快照缺失、设备找不到、集成未开启）；`3` 等待结果超时。`--dry-run` 只打印链接（令牌打码），`--no-wait` 发完不等结果，`MENUBARMIJIA_SNAPSHOT_PATH` 可覆盖快照路径。
 
 ### 本地 MCP 服务（Claude Desktop / Claude Code / Cursor）
@@ -271,7 +282,7 @@ MenuBarHome 的 macOS 版本采用 Swift 6 原生开发，Windows 11 版本基�
 ```json
 {
   "mcpServers": {
-    "menubarmijia": {
+    "menubarhome": {
       "command": "/ABSOLUTE/PATH/TO/MenuBarHome/scripts/mijia-mcp"
     }
   }

@@ -240,6 +240,15 @@ The macOS version is built natively in Swift 6, while the Windows 11 client is a
 
 MenuBarHome can hand its device list to a companion without sharing any credential. Turn on **Settings → 通用 → 自动化与外部控制 → Raycast 集成** (**Settings → General → Automation & External Control → Raycast integration**) on macOS (or **Settings → All-Off & Updates → Raycast & Local CLI / MCP Integration** on Windows): the app writes `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json` on macOS (mode `0600`) or `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json` on Windows with your devices, scenes, quick actions, environment readings, the last command result, and a random local bridge token. Links that carry the token skip the external-link confirmation prompt; high-risk devices still ask, and the lock-screen block still applies on both platforms. Turning the integration off deletes the file and revokes the token. The contract and the trade-offs behind it are in [ADR-0013](docs/adr/0013-raycast-companion-contract.md).
 
+**Why you still see the old name.** The app is MenuBarHome, but the integration surface kept its original names so existing Raycast commands, Shortcuts, scripts and MCP configs keep working:
+
+| You will see | What it is | Use this |
+| :--- | :--- | :--- |
+| `menumijia://…` | The URL scheme every companion sends. It is a compatibility contract ([ADR-0013](docs/adr/0013-raycast-companion-contract.md)), so it does not change | Keep `menumijia://` |
+| `scripts/mijia`, `scripts/mijia-mcp` | The CLI and MCP server | `scripts/menubarhome` is the same CLI under the new name; `mijia` keeps working |
+| `MenuBarMijia/` data folder, `MenuBarMijiaApp` process | The app's data directory and process name | Nothing to do; your sign-in and settings live there |
+| MCP key `menubarmijia` | A label in your MCP client's config, and the server's reported name | Name it anything; the example below uses `menubarhome` |
+
 <details>
 <summary><b>How to use the CLI, MCP server, and Raycast extension</b></summary>
 
@@ -262,6 +271,8 @@ MenuBarHome can hand its device list to a companion without sharing any credenti
 | `scripts/mijia ask "把客厅灯调到 40%"` | One natural-language command, with the app's own parsing and confirmation |
 | `scripts/mijia mcp` (or `scripts/mijia-mcp`) | Run the local MCP server over stdio |
 
+`scripts/menubarhome` runs the same program: `scripts/menubarhome list` is `scripts/mijia list`.
+
 Exit codes: `0` success, `1` the app reported a failure, `2` local error (snapshot missing, unknown device, integration off), `3` no result in time. `--dry-run` prints the link with the token masked, `--no-wait` sends it without waiting, and `MENUBARMIJIA_SNAPSHOT_PATH` overrides the snapshot path.
 
 ### Local MCP Server (Claude Desktop / Claude Code / Cursor)
@@ -271,7 +282,7 @@ Exit codes: `0` success, `1` the app reported a failure, `2` local error (snapsh
 ```json
 {
   "mcpServers": {
-    "menubarmijia": {
+    "menubarhome": {
       "command": "/ABSOLUTE/PATH/TO/MenuBarHome/scripts/mijia-mcp"
     }
   }

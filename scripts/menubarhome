@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""menubarhome — `scripts/mijia` under the product's current name (#151).
+
+The CLI kept its old name `mijia` so existing scripts, aliases and MCP configs keep working. This
+wrapper runs the very same program, so every command, flag and exit code is identical:
+`scripts/menubarhome list` is `scripts/mijia list`.
+"""
+
+from __future__ import annotations
+
+import importlib.machinery
+import importlib.util
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+
+_CLI = Path(__file__).resolve().with_name("mijia")
+_LOADER = importlib.machinery.SourceFileLoader("mijia_cli", str(_CLI))
+_SPEC = importlib.util.spec_from_loader(_LOADER.name, _LOADER)
+assert _SPEC is not None and _SPEC.loader is not None
+_MODULE = importlib.util.module_from_spec(_SPEC)
+sys.modules[_LOADER.name] = _MODULE
+_SPEC.loader.exec_module(_MODULE)
+
+
+if __name__ == "__main__":
+    sys.exit(_MODULE.main(sys.argv[1:]))
