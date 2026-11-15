@@ -103,4 +103,4 @@ grep -rcE "\"(homeAssistant|xiaomiCloud)\"" windows/src | grep -v ":0" | sort -t
 
 - `Sources/MijiaCore/HomeProvider.swift`（`HomeBackend`、`HomeProvider`）、`Sources/MijiaCore/HomeStore+Backend.swift`（`makeLiveProvider`、`makeComposite`、`applyLGDeviceUpdate`）、`Sources/MijiaCore/DualSourceHomeProvider.swift`、`Sources/MijiaCore/LGWebOSClient.swift`
 - `windows/src/core/homeAssistant.ts`（`HomeAssistantClient`）、`windows/src/core/miCloudClient.ts`、`windows/src/core/models.ts`（`HomeBackend`）、`windows/src/ui/app.ts`
-- `GLOSSARY.md`：`HomeBackend（连接后端）`、`deviceBackends（卡片数据源表）`。`HomeBackendDescriptor（后端描述）`。
+- `GLOSSARY.md`：`HomeBackend（连接后端）`、`deviceBackends（卡片数据源表）`、`HomeBackendDescriptor（后端描述，ADR-0020 规划 / 现由 HomeBackend 与 HomeStore+Backend 承载）`。
