@@ -207,8 +207,7 @@ extension MenuBarPanelController {
     }
 
     private var currentPanelTheme: PanelTheme {
-        let raw = userDefaults.string(forKey: PanelTheme.storageKey)
-        return raw.flatMap(PanelTheme.init(rawValue:)) ?? PanelTheme.defaultValue
+        PanelTheme.resolved(from: userDefaults.string(forKey: PanelTheme.storageKey))
     }
 
     func handleScreenParametersChanged() {
