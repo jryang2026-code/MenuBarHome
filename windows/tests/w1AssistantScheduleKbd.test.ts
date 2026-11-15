@@ -236,14 +236,14 @@ describe("A3c Home Assistant humidifier.* and valve.* category & AI catalog alig
     ],
   });
 
-  it("classifies HA humidifier.* as airPurifier and valve.* as valve across deviceCategory and IntentCatalog", () => {
+  it("classifies HA humidifier.* as humidifier and valve.* as valve across deviceCategory and IntentCatalog", () => {
     const hum = haHome.devices.find((d) => d.id === "ha-hum-bed")!;
     const waterValve = haHome.devices.find((d) => d.id === "ha-valve-water")!;
     const gasValve = haHome.devices.find((d) => d.id === "ha-valve-gas")!;
 
     assert.equal(isHumidifierAppliance(hum), true);
-    assert.equal(deviceCategory(hum), "airPurifier");
-    assert.equal(assistantDeviceCategory(hum), "airPurifier");
+    assert.equal(deviceCategory(hum), "humidifier");
+    assert.equal(assistantDeviceCategory(hum), "humidifier");
     assert.equal(catalogStateSummary(hum), "开 目标湿度60% 当前湿度48% auto");
 
     assert.equal(isValveDevice(waterValve), true);
@@ -257,7 +257,7 @@ describe("A3c Home Assistant humidifier.* and valve.* category & AI catalog alig
       devices: Array<{ id: string; name: string; category: string; state: string }>;
     };
     const byName = new Map(parsedJson.devices.map((row) => [row.name, row]));
-    assert.equal(byName.get("卧室加湿器")?.category, "airPurifier");
+    assert.equal(byName.get("卧室加湿器")?.category, "humidifier");
     assert.equal(byName.get("卧室加湿器")?.state, "开 目标湿度60% 当前湿度48% auto");
     assert.equal(byName.get("厨房水阀")?.category, "valve");
     assert.equal(byName.get("厨房水阀")?.state, "开");
@@ -272,7 +272,7 @@ describe("A3c Home Assistant humidifier.* and valve.* category & AI catalog alig
     ]);
 
     const offHumHome: SmartDevice[] = haHome.devices.map((dev) =>
-      dev.id === "ha-hum-bed" && dev.kind.kind === "appliance"
+      dev.id === "ha-hum-bed" && dev.kind.kind === "humidifier"
         ? { ...dev, kind: { ...dev.kind, isOn: false } }
         : dev,
     );

@@ -986,6 +986,11 @@
     "unexposedWritableTotal" : 470
   },
   "windowsDivergences" : {
-
+    "123888.tv.xhzn11" : {
+      "category" : "matched",
+      "deviceType" : "television",
+      "service" : "television",
+      "unexposedWritable" : 3
+    }
   }
 }

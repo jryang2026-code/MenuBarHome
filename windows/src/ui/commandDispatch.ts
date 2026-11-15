@@ -148,8 +148,10 @@ function isAdjustmentCommand(command: DeviceCommand): boolean {
     case "setLightColorTemp":
     case "setClimateTemperature":
     case "setFanPercentage":
+    case "setHumidity":
     case "setNumberValue":
     case "mediaSetVolume":
+    case "mediaSelectSource":
       return true;
     case "setMiotProperty":
       return typeof command.value === "number";
@@ -448,6 +450,7 @@ function primaryMiotEntityIdForDevice(
       candidate = k.switchEntityId;
       break;
     case "speaker":
+    case "tv":
       candidate = k.mediaEntityId;
       break;
     case "fridge":
@@ -1089,6 +1092,16 @@ function kindOwnsEntity(kind: DeviceKind, entityId: string): boolean {
         kind.ttsActionId,
         kind.directiveActionId,
       ].includes(entityId);
+    case "tv":
+      return [
+        kind.mediaEntityId,
+        kind.muteSwitchEntityId,
+        kind.turnOnButtonId,
+        kind.powerOnActionId,
+        kind.powerOffActionId,
+      ].includes(entityId);
+    case "humidifier":
+      return kind.entityId === entityId;
     case "appliance":
       return [
         kind.entityId,

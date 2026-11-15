@@ -136,6 +136,24 @@ export function catalogStateSummary(device: SmartDevice): string {
       return kind.status === "cleaning" || kind.status === "on" ? "清扫中" : "待机";
     case "camera":
       return kind.isOn ? "开" : "关";
+    case "tv": {
+      if (kind.state === "off" || kind.state === "standby") return "关";
+      const src = kind.currentSource ? cleanPromptField(kind.currentSource, PROMPT_OPTION_LIMIT) : "";
+      const vol = kind.volumePresent === false ? "" : ` 音量${kind.volumePercent}%`;
+      return `开${src ? ` ${src}` : ""}${vol}`;
+    }
+    case "humidifier": {
+      const parts = [kind.isOn ? "开" : "关"];
+      if (kind.targetHumidity !== null && Number.isFinite(kind.targetHumidity) && Number.isSafeInteger(Math.round(kind.targetHumidity))) {
+        parts.push(`目标湿度${Math.round(kind.targetHumidity)}%`);
+      }
+      if (kind.currentHumidity !== null && Number.isFinite(kind.currentHumidity) && Number.isSafeInteger(Math.round(kind.currentHumidity))) {
+        parts.push(`当前湿度${Math.round(kind.currentHumidity)}%`);
+      }
+      const currentMode = kind.currentMode ? cleanPromptField(kind.currentMode, PROMPT_OPTION_LIMIT) : "";
+      if (currentMode) parts.push(currentMode);
+      return parts.join(" ");
+    }
     case "fridge":
     case "sensor":
     case "speaker":
@@ -364,6 +382,8 @@ export function deviceSpecificCriteria(device: SmartDevice): Record<string, stri
     case "plug":
     case "vacuum":
     case "camera":
+    case "tv":
+    case "humidifier":
     case "sensor":
       break;
   }

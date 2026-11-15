@@ -348,7 +348,7 @@ export const IntentValidator = {
           }
           return op;
         }
-        if (k.kind === "light" || k.kind === "climate" || k.kind === "fan" || k.kind === "camera") {
+        if (k.kind === "light" || k.kind === "climate" || k.kind === "fan" || k.kind === "camera" || k.kind === "tv" || k.kind === "humidifier") {
           return k.powerWritable === false ? null : op;
         }
         if (k.kind === "appliance") {
@@ -358,8 +358,24 @@ export const IntentValidator = {
         return null;
       }
       case "brightness": {
+        if (k.kind === "humidifier") {
+          if (!k.humidityWritable || !Number.isFinite(op.percent)) return null;
+          const a = Number.isFinite(k.minHumidity) ? k.minHumidity : 30;
+          const b = Number.isFinite(k.maxHumidity) ? k.maxHumidity : 80;
+          const lo = Math.min(a, b);
+          const hi = Math.max(a, b);
+          return { kind: "targetHumidity", percent: Math.max(lo, Math.min(hi, Math.round(op.percent))) };
+        }
         if (k.kind !== "light" || k.brightnessWritable === false || !Number.isFinite(op.percent)) return null;
         return { kind: "brightness", percent: Math.max(1, Math.min(100, Math.round(op.percent))) };
+      }
+      case "targetHumidity": {
+        if (k.kind !== "humidifier" || !k.humidityWritable || !Number.isFinite(op.percent)) return null;
+        const a = Number.isFinite(k.minHumidity) ? k.minHumidity : 30;
+        const b = Number.isFinite(k.maxHumidity) ? k.maxHumidity : 80;
+        const lo = Math.min(a, b);
+        const hi = Math.max(a, b);
+        return { kind: "targetHumidity", percent: Math.max(lo, Math.min(hi, Math.round(op.percent))) };
       }
       case "brightnessStep": {
         if (k.kind !== "light" || k.brightnessWritable === false || !Number.isFinite(op.delta)) return null;
@@ -406,6 +422,10 @@ export const IntentValidator = {
           const matched = matchFanSpeed("auto", k.availablePresetModes);
           return matched ? { kind: "fanSpeed", speed: matched } : null;
         }
+        if (k.kind === "humidifier" && k.modeWritable && op.mode.toLowerCase() === "auto") {
+          const matched = matchFanSpeed("auto", k.availableModes);
+          return matched ? { kind: "fanSpeed", speed: matched } : null;
+        }
         return null;
       }
       case "targetTemperature": {
@@ -423,7 +443,14 @@ export const IntentValidator = {
         return { kind: "targetTemperature", celsius: Object.is(next, -0) ? 0 : next };
       }
       case "fanSpeed": {
-        const list = k.kind === "fan" ? k.availablePresetModes : k.kind === "climate" ? k.availableFanModes : null;
+        const list =
+          k.kind === "fan"
+            ? k.availablePresetModes
+            : k.kind === "climate"
+              ? k.availableFanModes
+              : k.kind === "humidifier" && k.modeWritable
+                ? k.availableModes
+                : null;
         if (!list || list.length === 0) return null;
         const matched = matchFanSpeed(op.speed, list);
         return matched ? { kind: "fanSpeed", speed: matched } : null;
@@ -498,6 +525,15 @@ export const IntentValidator = {
         }
         if (k.kind === "camera")
           return k.powerWritable === false ? [] : [{ kind: "setSwitch", entityId: k.entityId, isOn: op.isOn }];
+        if (k.kind === "tv") {
+          if (k.powerWritable === false) return [];
+          if (op.isOn && k.turnOnButtonId) {
+            return [{ kind: "pressButton", entityId: k.turnOnButtonId }];
+          }
+          return [{ kind: "setSwitch", entityId: k.mediaEntityId, isOn: op.isOn }];
+        }
+        if (k.kind === "humidifier")
+          return k.powerWritable ? [{ kind: "setSwitch", entityId: k.entityId, isOn: op.isOn }] : [];
         if (k.kind === "vacuum")
           return k.actionsWritable === false
             ? []
@@ -542,11 +578,17 @@ export const IntentValidator = {
         return k.kind === "climate" && k.temperatureWritable !== false
           ? [{ kind: "setClimateTemperature", entityId: k.entityId, temperature: op.celsius }]
           : [];
+      case "targetHumidity":
+        return k.kind === "humidifier" && k.humidityWritable
+          ? [{ kind: "setHumidity", entityId: k.entityId, percent: op.percent }]
+          : [];
       case "fanSpeed":
         if (k.kind === "fan" && k.availablePresetModes.length > 0)
           return [{ kind: "setFanPresetMode", entityId: k.entityId, presetMode: op.speed }];
         if (k.kind === "climate" && k.availableFanModes.length > 0)
           return [{ kind: "setClimateFanMode", entityId: k.entityId, fanMode: op.speed }];
+        if (k.kind === "humidifier" && k.modeWritable && k.availableModes.length > 0)
+          return [{ kind: "setSelectOption", entityId: k.entityId, option: op.speed }];
         return [];
       case "oscillation":
         return k.kind === "fan" && k.swingWritable !== false
@@ -639,6 +681,8 @@ export const IntentReply = {
       }
       case "targetTemperature":
         return `已${targetNames}设为 ${op.celsius}°C`;
+      case "targetHumidity":
+        return `已${targetNames}目标湿度调至 ${op.percent}%`;
       case "fanSpeed":
         return `已${targetNames}风速调为 ${this.fanSpeedLabel(op.speed)}`;
       case "oscillation":
@@ -675,8 +719,10 @@ function impliedCategories(ops: readonly IntentOperation[]): Set<IntentCategory>
       case "targetTemperature":
       case "temperatureStep":
         return new Set(["climate", "heater"]);
+      case "targetHumidity":
+        return new Set(["humidifier"]);
       case "fanSpeed":
-        return new Set(["fan", "airPurifier", "climate"]);
+        return new Set(["fan", "airPurifier", "humidifier", "climate"]);
       case "oscillation":
         return new Set(["fan"]);
       case "power":
@@ -700,6 +746,7 @@ function dispatchRank(op: IntentOperation): number {
     case "activateScene": return 6;
     case "fanSpeed": return 7;
     case "oscillation": return 8;
+    case "targetHumidity": return 9;
   }
 }
 
@@ -774,6 +821,7 @@ const BARE_CATEGORY_NOUNS: Readonly<Record<IntentCategory, string>> = {
   heater: "电暖器",
   fan: "风扇",
   airPurifier: "空气净化器",
+  humidifier: "加湿器",
   dehumidifier: "除湿机",
   diffuser: "香氛机",
   plug: "插座",
@@ -1003,7 +1051,7 @@ const EN_CATEGORY_WORDS: ReadonlyArray<readonly [string, IntentCategory]> = [
   ["robot vacuum", "vacuum"], ["smart plug", "plug"], ["space heater", "heater"],
   ["standing fan", "fan"], ["air purifiers", "airPurifier"], ["air purifier", "airPurifier"],
   ["purifiers", "airPurifier"], ["purifier", "airPurifier"],
-  ["fresh air", "airPurifier"], ["humidifiers", "airPurifier"], ["humidifier", "airPurifier"],
+  ["fresh air", "airPurifier"], ["humidifiers", "humidifier"], ["humidifier", "humidifier"],
   ["lights", "light"], ["light", "light"], ["lamps", "light"], ["lamp", "light"],
   ["climate", "climate"], ["ac", "climate"],
   ["heater", "heater"], ["dehumidifier", "dehumidifier"], ["diffuser", "diffuser"],
@@ -1021,7 +1069,7 @@ const EN_FILLERS = [
   "please", "can", "could", "would", "you", "help", "me",
   "the", "my", "a", "an", "in", "at", "to", "by", "for", "into", "of",
   "set", "change", "switch", "adjust", "make", "it", "bit", "little",
-  "mode", "room", "temperature", "temp", "brightness", "level", "speed",
+  "mode", "room", "temperature", "temp", "target humidity", "humidity", "brightness", "level", "speed",
 ].sort((a, b) => b.length - a.length);
 
 function escapeRegex(s: string): string {
@@ -1073,6 +1121,7 @@ function extractEnglishNumericOps(state: { rest: string }): IntentOperation[] {
 
   const numericPatterns: ReadonlyArray<readonly [RegExp, (val: number) => IntentOperation]> = [
     [/(?<![a-z0-9])(\d{4})\s*k(?![a-z0-9])/g, (v) => ({ kind: "colorTemperature", kelvin: Math.round(v) })],
+    [/(?<![a-z0-9])(?:target\s+)?humidity(?:\s+(?:to|at))?\s+(\d{1,3})\s*(?:%|percent)?(?![a-z0-9])/g, (v) => ({ kind: "targetHumidity", percent: Math.round(v) })],
     [/(?<![a-z0-9])(\d{1,3})\s*(?:%|percent)(?![a-z0-9])/g, (v) => ({ kind: "brightness", percent: Math.round(v) })],
     [/(?<![a-z0-9])(\d{1,2}(?:\.\d)?)\s*(?:degrees?\s*celsius|degrees?|deg|℃|°c|°)(?![a-z0-9])/g, (v) => ({ kind: "targetTemperature", celsius: v })],
   ];

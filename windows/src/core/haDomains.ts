@@ -340,63 +340,26 @@ export function buildHumidifierKind(
   });
   const humiditySensorId = humiditySensor ? haText(humiditySensor.entity_id) : null;
   const humiditySensorState = humiditySensorId ? states.get(humiditySensorId) : undefined;
-  const currentHumidity =
+  const rawCurrent =
     haNumber(a.current_humidity) ??
     (isHAStateAvailable(humiditySensorState) ? haNumber(humiditySensorState?.state) : null);
+  const currentHumidity =
+    rawCurrent !== null && Number.isSafeInteger(Math.round(rawCurrent)) ? rawCurrent : null;
 
-  const tempSensor = entities.find((item) => {
-    const eid = haText(item.entity_id);
-    return eid.startsWith("sensor.") && states.get(eid)?.attributes.device_class === "temperature";
-  });
-  const tempSensorId = tempSensor ? haText(tempSensor.entity_id) : null;
-  const tempSensorState = tempSensorId ? states.get(tempSensorId) : undefined;
-  const currentTemp = isHAStateAvailable(tempSensorState) ? haNumber(tempSensorState?.state) : null;
-
+  const humidityWritable =
+    online &&
+    (features !== null ? (features & 1) !== 0 : targetHumidity !== null) &&
+    maxH > minH;
   const modeWritable = online && (features !== null ? (features & 2) !== 0 && modes.length > 0 : modes.length > 0);
   claimed.add(humId);
   if (humiditySensorId) claimed.add(humiditySensorId);
-  if (tempSensorId && currentTemp !== null) claimed.add(tempSensorId);
-
-  const statusParts: string[] = [];
-  const roundedCurrent = haRoundedInt(currentHumidity);
-  if (roundedCurrent !== null) statusParts.push(`${roundedCurrent}%`);
-  if (targetHumidity !== null) {
-    statusParts.push(haTr(`目标 ${targetHumidity}%`, `Target ${targetHumidity}%`));
-  }
-  const statusText = statusParts.length > 0 ? statusParts.join(" · ") : null;
 
   return {
     online,
     kind: {
-      kind: "appliance",
-      entityId: humId,
-      isOn: online && st.state === "on",
-      powerPresent: true,
-      powerWritable: online,
-      currentMode,
-      availableModes: modes,
-      modeWritable,
-      targetTemperature: null,
-      currentTemperature: currentTemp,
-      minTemp: minH,
-      maxTemp: maxH,
-      step,
-      temperatureWritable: false,
-      statusText,
-      faultText: null,
-      remainingMinutes: null,
-      startAction: null,
-      pauseAction: null,
-      stopAction: null,
-      powerEntityId: humId,
-      modeEntityId: humId,
-      temperatureEntityId: humId,
-      light: null,
-      fanLevel: null,
-      currentHumidity,
-      symbolName: "humidity.fill",
-      roomReading: true,
-      heats: false,
+      kind: "humidifier", entityId: humId, isOn: online && st.state === "on",
+      currentMode, availableModes: modes, modeWritable, targetHumidity,
+      minHumidity: minH, maxHumidity: maxH, step, humidityWritable, currentHumidity, powerWritable: online,
     },
   };
 }
@@ -550,6 +513,7 @@ export function buildMediaPlayerKind(
   entities: readonly HARow[],
   states: ReadonlyMap<string, HAState>,
   claimed: Set<string>,
+  model = "",
 ): { kind: DeviceKind; online: boolean } | null {
   const entry = entities.find((item) => haText(item.entity_id).startsWith("media_player."));
   const mediaId = entry ? haText(entry.entity_id) : "";
@@ -562,9 +526,29 @@ export function buildMediaPlayerKind(
   const rawVol = haNumber(a.volume_level);
   const volPct = rawVol !== null ? Math.max(0, Math.min(100, haRoundedInt(rawVol * 100) ?? 0)) : 0;
   const features = haIntFeatures(a.supported_features);
-  // MediaPlayerEntityFeature: VOLUME_SET = 4, VOLUME_MUTE = 8.
   const volumeWritable = online && (features !== null ? (features & 4) !== 0 : rawVol !== null);
   const supportsMute = features !== null ? (features & 8) !== 0 : typeof a.is_volume_muted === "boolean";
+  const devClass = haText(a.device_class).trim().toLowerCase();
+
+  if (devClass === "tv" || model.toLowerCase().includes("tv")) {
+    const currentSource = typeof a.source === "string" && a.source.trim() !== "" ? a.source : null;
+    const availableSources = haStrings(a.source_list);
+    const turnOnButtonId = eids.find((eid) => eid.startsWith("button.") && eid.includes("turn_on")) ?? null;
+    const muteSw = eids.find((eid) => eid.startsWith("switch.") && eid.includes("mute")) ?? null;
+    for (const id of [mediaId, turnOnButtonId, muteSw]) if (id) claimed.add(id);
+    const isMuted = muteSw ? states.get(muteSw)?.state === "on" : Boolean(a.is_volume_muted);
+    const muteSwitchEntityId = muteSw ?? (supportsMute ? `${mediaId}#mute` : null);
+    const rawState = st.state.trim().toLowerCase();
+    const supportsPowerToggle = turnOnButtonId !== null || features === null || (features & (128 | 256)) !== 0 || rawState === "off" || rawState === "standby";
+    return {
+      online,
+      kind: {
+        kind: "tv", mediaEntityId: mediaId, state: rawState || st.state, volumePercent: volPct,
+        isMuted, muteSwitchEntityId, currentSource, availableSources, turnOnButtonId,
+        powerWritable: online && supportsPowerToggle, volumeWritable, ...(rawVol === null ? { volumePresent: false } : {}),
+      },
+    };
+  }
 
   const muteSw = eids.find((eid) => eid.startsWith("switch.") && eid.includes("mute")) ?? null;
   const sleepSw = eids.find((eid) => eid.startsWith("switch.") && eid.includes("sleep_mode")) ?? null;
@@ -819,38 +803,7 @@ function buildSyntheticPrimaryHAFacets(
   const out: FacetControl[] = [];
   const k = device.kind;
 
-  if (k.kind === "appliance" && k.entityId.startsWith("humidifier.")) {
-    const humId = k.entityId;
-    const st = states.get(humId);
-    if (st) {
-      const a = st.attributes;
-      const online = isHAStateAvailable(st);
-      const features = haIntFeatures(a.supported_features);
-      const targetHumidity = haRoundedInt(a.target_humidity) ?? haRoundedInt(a.humidity);
-      const minH = haRoundedInt(a.min_humidity) ?? 0;
-      const maxH = haRoundedInt(a.max_humidity) ?? 100;
-      const step = Math.max(1, haRoundedInt(a.target_humidity_step) ?? 1);
-      const supportsTargetHumidity = features !== null ? (features & 1) !== 0 : targetHumidity !== null;
-      if (supportsTargetHumidity && targetHumidity !== null && maxH > minH) {
-        out.push({
-          id: `${humId}#target_humidity`,
-          kind: "slider",
-          name: "target-humidity",
-          title: null,
-          serviceName: "humidifier",
-          unit: "percentage",
-          scale: null,
-          value: targetHumidity,
-          options: [],
-          range: { min: minH, max: maxH, step },
-          isWritable: online,
-          writesByDefault: true,
-          isHighValue: true,
-          target: { kind: "property", entityId: `${humId}#target_humidity`, piid: 0 },
-        });
-      }
-    }
-  } else if (k.kind === "appliance" && k.entityId.startsWith("valve.")) {
+  if (k.kind === "appliance" && k.entityId.startsWith("valve.")) {
     const valveId = k.entityId;
     const st = states.get(valveId);
     if (st) {
@@ -878,7 +831,7 @@ function buildSyntheticPrimaryHAFacets(
         });
       }
     }
-  } else if (k.kind === "speaker" && k.mediaEntityId.startsWith("media_player.")) {
+  } else if ((k.kind === "speaker" || k.kind === "tv") && k.mediaEntityId.startsWith("media_player.")) {
     const mediaId = k.mediaEntityId;
     const st = states.get(mediaId);
     if (st) {
@@ -886,13 +839,14 @@ function buildSyntheticPrimaryHAFacets(
       const online = isHAStateAvailable(st);
       const stateLower = st.state.toLowerCase();
       const features = haIntFeatures(a.supported_features);
+      const serviceName = k.kind === "tv" ? "television" : "speaker";
       if (features === null || (features & (1 | 16384)) !== 0) {
         out.push({
           id: `${mediaId}#play_pause`,
           kind: "toggle",
           name: "play-pause",
           title: haTr("播放", "Play"),
-          serviceName: "speaker",
+          serviceName,
           unit: null,
           scale: null,
           value: k.state === "playing",
@@ -904,7 +858,10 @@ function buildSyntheticPrimaryHAFacets(
           target: { kind: "property", entityId: `${mediaId}#play_pause`, piid: 0 },
         });
       }
-      if ((features !== null && (features & (128 | 256)) !== 0) || stateLower === "off" || stateLower === "standby") {
+      if (
+        k.kind === "speaker" &&
+        ((features !== null && (features & (128 | 256)) !== 0) || stateLower === "off" || stateLower === "standby")
+      ) {
         out.push({
           id: `${mediaId}#power`,
           kind: "toggle",
@@ -923,7 +880,7 @@ function buildSyntheticPrimaryHAFacets(
         });
       }
       const sourceList = haStrings(a.source_list);
-      if (sourceList.length > 0 && (features === null || (features & 2048) !== 0)) {
+      if (k.kind === "speaker" && sourceList.length > 0 && (features === null || (features & 2048) !== 0)) {
         const currentSource = typeof a.source === "string" ? a.source : "";
         const selectedIdx = Math.max(0, sourceList.indexOf(currentSource));
         out.push({
@@ -1394,6 +1351,28 @@ export function cachedExtendedKind(k: HARow): DeviceKind {
         ...(k.volumePresent !== undefined ? { volumePresent: reqBool(k.volumePresent) } : {}),
       };
     }
+    case "tv":
+      return {
+        kind: "tv", mediaEntityId: reqStr(k.mediaEntityId), state: reqStr(k.state), volumePercent: reqNum(k.volumePercent),
+        ...(k.isMuted !== undefined ? { isMuted: reqBool(k.isMuted) } : {}),
+        ...(k.muteSwitchEntityId !== undefined ? { muteSwitchEntityId: nullStr(k.muteSwitchEntityId) } : {}),
+        ...(k.isScreenOff !== undefined ? { isScreenOff: reqBool(k.isScreenOff) } : {}),
+        ...(k.isPairingPromptActive !== undefined ? { isPairingPromptActive: reqBool(k.isPairingPromptActive) } : {}),
+        currentSource: nullStr(k.currentSource), availableSources: reqStrs(k.availableSources),
+        ...(k.turnOnButtonId !== undefined ? { turnOnButtonId: nullStr(k.turnOnButtonId) } : {}),
+        ...(k.powerOnActionId !== undefined ? { powerOnActionId: nullStr(k.powerOnActionId) } : {}),
+        ...(k.powerOffActionId !== undefined ? { powerOffActionId: nullStr(k.powerOffActionId) } : {}),
+        ...(k.powerWritable !== undefined ? { powerWritable: reqBool(k.powerWritable) } : {}),
+        volumeWritable: reqBool(k.volumeWritable), ...(k.volumePresent !== undefined ? { volumePresent: reqBool(k.volumePresent) } : {}),
+      };
+    case "humidifier":
+      return {
+        kind: "humidifier", entityId: reqStr(k.entityId), isOn: reqBool(k.isOn),
+        currentMode: nullStr(k.currentMode), availableModes: reqStrs(k.availableModes), modeWritable: reqBool(k.modeWritable),
+        targetHumidity: nullNum(k.targetHumidity), minHumidity: reqNum(k.minHumidity), maxHumidity: reqNum(k.maxHumidity),
+        step: reqNum(k.step), humidityWritable: reqBool(k.humidityWritable),
+        currentHumidity: nullNum(k.currentHumidity), powerWritable: reqBool(k.powerWritable),
+      };
     case "appliance":
       return {
         kind: "appliance",

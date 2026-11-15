@@ -876,6 +876,16 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "重试退出米家登录": ["重试退出米家登录", "Retry sign-out"],
   "米家登录将在 {date} 到期": ["米家登录将在 {date} 到期", "Xiaomi Home sign-in expires {date}"],
   "退出米家登录": ["退出米家登录", "Sign out"],
+  "电视": ["电视", "TV"],
+  "加湿器": ["加湿器", "Humidifier"],
+  "信源": ["信源", "Source"],
+  "熄屏": ["熄屏", "Screen off"],
+  "请在电视上确认配对": ["请在电视上确认配对", "Confirm pairing on TV"],
+  "目标 {percent}%": ["目标 {percent}%", "Target {percent}%"],
+  "已将{name}目标湿度设为 {percent}%": ["已将{name}目标湿度设为 {percent}%", "Set {name} target humidity to {percent}%"],
+  "已切换{name}信源为 {source}": ["已切换{name}信源为 {source}", "Switched {name} source to {source}"],
+  "已切换{name}模式为 {mode}": ["已切换{name}模式为 {mode}", "Switched {name} mode to {mode}"],
+  "将 {names} 目标湿度设为 {percent}%": ["将 {names} 目标湿度设为 {percent}%", "Set {names} target humidity to {percent}%"],
 };
 
 /** Every catalog key, for tests and tooling. */

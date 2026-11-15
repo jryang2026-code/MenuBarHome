@@ -949,6 +949,15 @@ export function syncDirectCommandToFacets(
           control.value = nextVal;
           touched = true;
         }
+      } else if (
+        command.kind === "setHumidity" &&
+        targetId === `${command.entityId}#target_humidity`
+      ) {
+        const nextVal = Math.max(0, Math.min(100, Math.round(command.percent)));
+        if (control.value !== nextVal) {
+          control.value = nextVal;
+          touched = true;
+        }
       } else if (command.kind === "setSwitch" && targetId === `${command.entityId}#power`) {
         if (control.value !== command.isOn) {
           control.value = command.isOn;
@@ -966,16 +975,20 @@ export function syncDirectCommandToFacets(
       } else if (command.kind === "pressButton" && targetId === `${command.entityId}#play_pause`) {
         const dev = devices?.find((d) => d.id === devId);
         const nextVal =
-          dev?.kind.kind === "speaker"
+          dev?.kind.kind === "speaker" || dev?.kind.kind === "tv"
             ? dev.kind.state === "playing"
             : !(control.value === true || control.value === 1);
         if (control.value !== nextVal) {
           control.value = nextVal;
           touched = true;
         }
-      } else if (command.kind === "setSelectOption" && targetId === `${command.entityId}#source`) {
-        const match = control.options.find((opt) => opt.label === command.option);
-        const nextVal = match ? match.value : command.option;
+      } else if (
+        (command.kind === "setSelectOption" || command.kind === "mediaSelectSource") &&
+        targetId === `${command.entityId}#source`
+      ) {
+        const wanted = command.kind === "mediaSelectSource" ? command.source : command.option;
+        const match = control.options.find((opt) => opt.label === wanted);
+        const nextVal = match ? match.value : wanted;
         if (control.value !== nextVal) {
           control.value = nextVal;
           touched = true;
@@ -1026,16 +1039,17 @@ export function applyHAExtendedCommandEffect(
           }
         }
       }
-    } else if (k.kind === "speaker" && k.mediaEntityId === command.entityId) {
+    } else if ((k.kind === "speaker" || k.kind === "tv") && k.mediaEntityId === command.entityId) {
       if (command.kind === "setNumberValue") {
         const pct =
           command.value <= 1
             ? Math.max(0, Math.min(100, Math.round(command.value * 100)))
             : Math.max(0, Math.min(100, Math.round(command.value)));
         k.volumePercent = pct;
+        k.volumePresent = true;
       } else if (command.kind === "pressButton") {
         k.state = k.state === "playing" ? "paused" : "playing";
-      } else if (command.kind === "setSwitch" && !command.isOn) {
+      } else if (k.kind === "speaker" && command.kind === "setSwitch" && !command.isOn) {
         k.state = "idle";
       }
     }

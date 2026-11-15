@@ -714,7 +714,7 @@ function readSensorMetricValue(
     case "temperature":
       return k.kind === "sensor" ? (k.temperature ?? extractSensorLiveMetrics(device, facets).temperature) : k.kind === "climate" ? k.currentTemperature : k.kind === "fan" ? (k.temperature ?? null) : k.kind === "appliance" ? k.currentTemperature : null;
     case "humidity":
-      return k.kind === "sensor" ? (k.humidity ?? extractSensorLiveMetrics(device, facets).humidity) : k.kind === "fan" ? (k.humidity ?? null) : k.kind === "appliance" ? k.currentHumidity : null;
+      return k.kind === "sensor" ? (k.humidity ?? extractSensorLiveMetrics(device, facets).humidity) : k.kind === "fan" ? (k.humidity ?? null) : k.kind === "humidifier" ? k.currentHumidity : k.kind === "appliance" ? k.currentHumidity : null;
     case "battery":
       return k.kind === "sensor" ? k.battery : k.kind === "cover" ? k.batteryPercent : k.kind === "vacuum" ? k.battery : null;
     case "powerWatts":
@@ -752,6 +752,12 @@ function commandsForPowerIntent(
       return k.powerWritable === false ? [] : [{ kind: "setSwitch", entityId: k.switchEntityId, isOn }];
     case "camera":
       return k.powerWritable === false ? [] : [{ kind: "setSwitch", entityId: k.entityId, isOn }];
+    case "tv":
+      if (k.powerWritable === false) return [];
+      if (isOn && k.turnOnButtonId) return [{ kind: "pressButton", entityId: k.turnOnButtonId }];
+      return [{ kind: "setSwitch", entityId: k.mediaEntityId, isOn }];
+    case "humidifier":
+      return !k.powerWritable ? [] : [{ kind: "setSwitch", entityId: k.entityId, isOn }];
     case "appliance":
       return !k.powerPresent || !k.powerWritable ? [] : [{ kind: "setSwitch", entityId: k.powerEntityId, isOn }];
     case "vacuum":

@@ -460,9 +460,12 @@ export const MiotCommandMapper = {
             ],
           };
         }
-        const candidates = command.isOn
-          ? ["start-cook", "resume-cook"]
-          : ["cancel-cooking", "pause"];
+        const candidates =
+          sShort === "television" || sShort === "stb"
+            ? (command.isOn ? ["turn-on"] : ["turn-off"])
+            : command.isOn
+              ? ["start-cook", "resume-cook"]
+              : ["cancel-cooking", "pause"];
         for (const name of candidates) {
           for (const s of [service, ...spec.services.filter((sv) => sv.iid !== service.iid)]) {
             const act = s.actions.find(
@@ -482,6 +485,7 @@ export const MiotCommandMapper = {
         const found =
           findListProp("motor-control", command.option) ??
           findListProp("mode", command.option) ??
+          findListProp("fan-level", command.option, true) ??
           findApplianceListProp("mode", command.option) ??
           findListProp("night-shot", command.option);
         if (!found) throw new Error(`Unsupported select option: ${command.option}`);
@@ -551,15 +555,49 @@ export const MiotCommandMapper = {
         }
         throw new Error(`Unsupported vacuum action: ${command.action}`);
       }
+      case "setHumidity": {
+        if (!Number.isFinite(command.percent)) {
+          throw new Error("Unsupported property: target-humidity");
+        }
+        const { service: targetSvc, prop } = findProp("target-humidity");
+        const min = prop.valueRange?.[0] ?? 0;
+        const max = prop.valueRange?.[1] ?? 100;
+        const clamped = Math.max(min, Math.min(max, Math.round(command.percent)));
+        return {
+          kind: "setProps",
+          writes: [
+            ...powerOnPrefix(),
+            { did: addr.did, siid: targetSvc.iid, piid: prop.iid, value: coerce(prop, clamped) },
+          ],
+        };
+      }
       case "mediaSetVolume": {
-        if (miotShortName(service.type) !== "speaker" || !Number.isFinite(command.level)) {
+        const sShort = miotShortName(service.type);
+        if (!["speaker", "television", "stb"].includes(sShort) || !Number.isFinite(command.level)) {
           throw new Error("Unsupported property: volume");
         }
-        const { prop } = findProp("volume");
+        const localVol = service.properties.find(
+          (p) => miotShortName(p.type) === "volume" && p.access.includes("write"),
+        );
+        const speakerSvc = spec.services.find((s) => miotShortName(s.type) === "speaker");
+        const companionVol = speakerSvc?.properties.find(
+          (p) => miotShortName(p.type) === "volume" && p.access.includes("write"),
+        );
+        const volSvc = localVol ? service : companionVol && speakerSvc ? speakerSvc : null;
+        const prop = localVol ?? companionVol;
+        if (!volSvc || !prop) throw new Error("Unsupported property: volume");
         const raw = rawFromPercent(command.level * 100, prop, "proportional");
         return {
           kind: "setProps",
-          writes: [{ did: addr.did, siid: service.iid, piid: prop.iid, value: coerce(prop, raw) }],
+          writes: [{ did: addr.did, siid: volSvc.iid, piid: prop.iid, value: coerce(prop, raw) }],
+        };
+      }
+      case "mediaSelectSource": {
+        const found = findListProp("input-control", command.source, true);
+        if (!found) throw new Error(`Unsupported source: ${command.source}`);
+        return {
+          kind: "setProps",
+          writes: [{ did: addr.did, siid: found.service.iid, piid: found.prop.iid, value: found.item.value }],
         };
       }
       case "activateScene":

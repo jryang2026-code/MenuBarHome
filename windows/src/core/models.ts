@@ -173,6 +173,41 @@ export interface SpeakerSpec {
   readonly directiveActionId?: string | null;
 }
 
+export interface TvSpec {
+  readonly kind: "tv";
+  readonly mediaEntityId: string;
+  state: string;
+  volumePercent: number;
+  isMuted?: boolean;
+  readonly muteSwitchEntityId?: string | null;
+  isScreenOff?: boolean;
+  readonly isPairingPromptActive?: boolean;
+  currentSource: string | null;
+  readonly availableSources: readonly string[];
+  readonly turnOnButtonId?: string | null;
+  readonly powerOnActionId?: string | null;
+  readonly powerOffActionId?: string | null;
+  readonly powerWritable?: boolean;
+  readonly volumeWritable: boolean;
+  volumePresent?: boolean;
+}
+
+export interface HumidifierSpec {
+  readonly kind: "humidifier";
+  readonly entityId: string;
+  isOn: boolean;
+  currentMode: string | null;
+  readonly availableModes: readonly string[];
+  readonly modeWritable: boolean;
+  targetHumidity: number | null;
+  readonly minHumidity: number;
+  readonly maxHumidity: number;
+  readonly step: number;
+  readonly humidityWritable: boolean;
+  readonly currentHumidity: number | null;
+  readonly powerWritable: boolean;
+}
+
 export type ApplianceActionKind = "start" | "pause" | "stop";
 
 /** One no-argument appliance action addressed on the MIoT service that declares it (#300). */
@@ -326,6 +361,8 @@ export type DeviceKind =
   | SensorSpec
   | CoverSpec
   | SpeakerSpec
+  | TvSpec
+  | HumidifierSpec
   | ApplianceSpec
   | GenericSpec;
 export interface SmartDevice {
@@ -394,8 +431,10 @@ export type DeviceCommand =
   | { readonly kind: "setSwitch"; readonly entityId: string; readonly isOn: boolean }
   | { readonly kind: "setSelectOption"; readonly entityId: string; readonly option: string }
   | { readonly kind: "setNumberValue"; readonly entityId: string; readonly value: number }
+  | { readonly kind: "setHumidity"; readonly entityId: string; readonly percent: number }
   /** `level` is 0…1, scaled onto the volume property's range (macOS `mediaSetVolume`). */
   | { readonly kind: "mediaSetVolume"; readonly entityId: string; readonly level: number }
+  | { readonly kind: "mediaSelectSource"; readonly entityId: string; readonly source: string }
   | { readonly kind: "vacuumAction"; readonly entityId: string; readonly action: VacuumAction }
   /** A MIoT action: an appliance start/pause/stop, a 更多设置 button, or a portioned feed (#300, #5, #7). */
   | { readonly kind: "pressButton"; readonly entityId: string; readonly arguments?: readonly unknown[] }
@@ -412,6 +451,7 @@ export type IntentOperation =
   | { readonly kind: "hvacMode"; readonly mode: string }
   | { readonly kind: "targetTemperature"; readonly celsius: number }
   | { readonly kind: "temperatureStep"; readonly delta: number }
+  | { readonly kind: "targetHumidity"; readonly percent: number }
   | { readonly kind: "fanSpeed"; readonly speed: string }
   | { readonly kind: "oscillation"; readonly enabled: boolean }
   | { readonly kind: "activateScene" };
@@ -445,6 +485,36 @@ export interface ScheduledCommand {
   readonly intents?: readonly DeviceIntent[];
 }
 
+export function devicePrimaryEntityId(device: SmartDevice): string | null {
+  const k = device.kind;
+  switch (k.kind) {
+    case "light":
+    case "climate":
+    case "fan":
+    case "vacuum":
+    case "camera":
+    case "cover":
+    case "humidifier":
+    case "appliance":
+      return k.entityId;
+    case "plug":
+      return k.switchEntityId;
+    case "speaker":
+    case "tv":
+      return k.mediaEntityId;
+    case "generic":
+      return k.powerControl?.target?.kind === "property" ? k.powerControl.target.entityId : null;
+    case "fridge":
+      return k.modeEntityId ?? k.fridgeTargetEntityId ?? k.freezerTargetEntityId;
+    case "sensor":
+      return null;
+    default: {
+      const _exhaustive: never = k;
+      return _exhaustive;
+    }
+  }
+}
+
 /** Plugs often power a router, fridge or NAS, and 全关 should not send a cleaning vacuum home (#23). */
 export function deviceCanTogglePower(device: SmartDevice): boolean {
   const kind = device.kind;
@@ -454,7 +524,10 @@ export function deviceCanTogglePower(device: SmartDevice): boolean {
     case "fan":
     case "plug":
     case "camera":
+    case "tv":
       return kind.powerWritable !== false;
+    case "humidifier":
+      return kind.powerWritable;
     case "vacuum":
       return kind.actionsWritable !== false;
     case "cover":
@@ -516,6 +589,19 @@ export function deviceAcceptsControlWrites(device: SmartDevice): boolean {
         kind.sleepModeEntityId !== null ||
         Boolean(kind.ttsActionId) ||
         Boolean(kind.directiveActionId)
+      );
+    case "tv":
+      return (
+        kind.powerWritable !== false ||
+        kind.volumeWritable ||
+        Boolean(kind.muteSwitchEntityId) ||
+        kind.availableSources.length > 0
+      );
+    case "humidifier":
+      return (
+        kind.powerWritable ||
+        kind.humidityWritable ||
+        (kind.modeWritable && kind.availableModes.length > 0)
       );
     case "appliance":
       return (
@@ -594,6 +680,18 @@ export function hasDetailDrawer(device: SmartDevice, facets: readonly FacetContr
         Boolean(kind.ttsActionId) ||
         Boolean(kind.directiveActionId)
       );
+    case "tv":
+      return (
+        kind.volumeWritable ||
+        Boolean(kind.muteSwitchEntityId) ||
+        kind.availableSources.length > 0
+      );
+    case "humidifier":
+      return (
+        (kind.humidityWritable && kind.targetHumidity !== null) ||
+        (kind.modeWritable && kind.availableModes.length > 0) ||
+        (kind.currentHumidity !== null && Number.isFinite(kind.currentHumidity) && Number.isSafeInteger(Math.round(kind.currentHumidity)))
+      );
     case "fridge":
       return true;
     case "appliance":
@@ -643,6 +741,12 @@ export function hasDetailDrawer(device: SmartDevice, facets: readonly FacetContr
 }
 
 export function joinsAllOffByDefault(device: SmartDevice): boolean {
+  if (device.kind.kind === "humidifier") {
+    return device.kind.powerWritable;
+  }
+  if (device.kind.kind === "tv") {
+    return device.kind.powerWritable !== false;
+  }
   if (device.kind.kind === "appliance" && device.kind.entityId.startsWith("humidifier.")) {
     return true;
   }
@@ -715,6 +819,9 @@ export function isDeviceActiveOn(device: SmartDevice): boolean {
       return (device.kind.positionPercent ?? 0) > 0;
     case "speaker":
       return device.kind.state === "playing";
+    case "tv":
+      return device.kind.state !== "off" && device.kind.state !== "standby";
+    case "humidifier":
     case "appliance":
     case "generic":
       return device.kind.isOn;
@@ -771,6 +878,7 @@ export function environmentReadingPriority(kind: DeviceKind): number {
     case "sensor":
       return 0;
     case "fan":
+    case "humidifier":
       return 1;
     case "climate":
       return 2;
@@ -823,6 +931,11 @@ export function deviceEnvironmentReading(device: SmartDevice): EnvironmentReadin
         humidity: null,
         battery: null,
       };
+    }
+    case "humidifier": {
+      const h = device.kind.currentHumidity;
+      if (h === null || !Number.isFinite(h) || !Number.isSafeInteger(Math.round(h))) return null;
+      return { id: device.id, label: device.name.trim() || device.roomName, roomName: device.roomName, temperature: null, humidity: h, battery: null };
     }
     case "appliance": {
       const { roomReading, currentTemperature, currentHumidity } = device.kind;
@@ -1153,6 +1266,38 @@ export function deviceStatusSummary(device: SmartDevice): string {
       if (k.isMuted) return `${play} · ${t("已静音")}`;
       if (k.volumePresent === false) return play;
       return `${play} · ${t("音量 {percent}%", { percent: k.volumePercent })}`;
+    }
+    case "tv": {
+      if (k.isPairingPromptActive) return t("请在电视上确认配对");
+      if (k.state === "off" || k.state === "standby") return t("待机");
+      if (k.isScreenOff) {
+        return k.volumePresent === false ? t("熄屏") : `${t("熄屏")} · ${k.volumePercent}%`;
+      }
+      const src = k.currentSource?.trim() ?? "";
+      if (k.isMuted) {
+        return src ? `${src} · ${t("已静音")}` : t("已静音");
+      }
+      if (src) {
+        return k.volumePresent === false ? src : `${src} · ${k.volumePercent}%`;
+      }
+      return k.volumePresent === false ? t("已开启") : t("音量 {percent}%", { percent: k.volumePercent });
+    }
+    case "humidifier": {
+      const roundedCur =
+        k.currentHumidity !== null && Number.isFinite(k.currentHumidity)
+          ? Math.round(k.currentHumidity)
+          : null;
+      const cur = roundedCur !== null && Number.isSafeInteger(roundedCur) ? roundedCur : null;
+      if (!k.isOn) {
+        return cur !== null ? `${t("已关闭")} · ${cur}%` : t("已关闭");
+      }
+      const parts: string[] = [];
+      if (cur !== null) parts.push(`${cur}%`);
+      if (k.targetHumidity !== null) {
+        parts.push(t("目标 {percent}%", { percent: k.targetHumidity }));
+      }
+      if (k.currentMode) parts.push(localizeApplianceMode(k.currentMode));
+      return parts.length > 0 ? parts.join(" · ") : t("已开启");
     }
     case "appliance": {
       const parts: string[] = [];
