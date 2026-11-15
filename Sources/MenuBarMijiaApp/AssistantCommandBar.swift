@@ -730,6 +730,13 @@ enum AssistantSettingsCopy {
         L10n.tr("学习我的使用习惯（用于猜你想做）", "Learn my usage habits (for proactive suggestions)")
     }
 
+    static var learnHabitsNote: String {
+        L10n.tr(
+            "习惯只保存在这台 Mac 上，不会外发；只有下面的「发送习惯摘要」打开后才会随指令发出。",
+            "Habits stay on this Mac. They leave it only if “Share habit summary” below is on."
+        )
+    }
+
     static var shareHabits: String {
         L10n.tr("发送习惯摘要（只包含这句话点名的设备）", "Share habit summary (only devices this command names)")
     }
@@ -1145,6 +1152,11 @@ struct AssistantSettingsSection: View {
             .toggleStyle(.glass)
             .controlSize(.regular)
 
+            Text(AssistantSettingsCopy.learnHabitsNote)
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             Toggle(isOn: Binding(
                 get: { store.habitSharing == .on },
                 set: { store.habitSharing = $0 ? .on : .off }
@@ -1155,22 +1167,30 @@ struct AssistantSettingsSection: View {
             .toggleStyle(.glass)
             .controlSize(.regular)
 
-            TextField(AssistantSettingsCopy.habitPreviewPlaceholder, text: $habitShareSample)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: DesignTokens.TypeSize.caption))
+            // #149: the preview only makes sense while sharing is on; off, it was a box beside the words
+            // "nothing is sent".
+            if store.habitSharing == .on {
+                TextField(AssistantSettingsCopy.habitPreviewPlaceholder, text: $habitShareSample)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: DesignTokens.TypeSize.caption))
 
-            let habitSharePreview = shareHabitSentence(
-                sharing: store.habitSharing,
-                memory: store.userHabitMemory,
-                devices: store.devices,
-                scenes: store.scenes,
-                mention: .utterance(habitShareSample),
-                now: Date()
-            )
-            Text(habitSharePreview.isEmpty ? AssistantSettingsCopy.habitPreviewEmpty : habitSharePreview)
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                let habitSharePreview = shareHabitSentence(
+                    sharing: store.habitSharing,
+                    memory: store.userHabitMemory,
+                    devices: store.devices,
+                    scenes: store.scenes,
+                    mention: .utterance(habitShareSample),
+                    now: Date()
+                )
+                Text(habitSharePreview.isEmpty ? AssistantSettingsCopy.habitPreviewEmpty : habitSharePreview)
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(AssistantSettingsCopy.habitPreviewEmpty)
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.secondary)
+            }
 
             Toggle(isOn: Binding(
                 get: { store.prefersOnDeviceSpeech },
@@ -1284,7 +1304,7 @@ struct AssistantSettingsSection: View {
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                 .foregroundStyle(Color.accentColor)
             } else {
-                Button(L10n.tr("从 CodexBar / 环境变量导入 Key", "Import key from CodexBar / environment")) {
+                Button(L10n.tr("从环境变量或其他工具导入 Key", "Import key from environment variables or other tools")) {
                     if let label = AssistantConfig.importAmbientAPIKey(forBaseURL: target, defaults: store.userDefaults, vault: store.credentialVault) {
                         apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: target)
                         storageRevision &+= 1
@@ -1300,6 +1320,9 @@ struct AssistantSettingsSection: View {
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                 .foregroundStyle(Color.accentColor)
                 .help(L10n.tr("点了才会读取 ~/.config/codexbar/config.json 和环境变量", "Reads ~/.config/codexbar/config.json and environment variables only when clicked"))
+                Text(L10n.tr("仅在你点击后读取，不会自动使用。", "Read only when you click; never used automatically."))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
         }

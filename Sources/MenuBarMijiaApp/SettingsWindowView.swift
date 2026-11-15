@@ -1351,6 +1351,9 @@ private struct AssistantSettingsTab: View {
     var body: some View {
         let _ = store.effectiveLanguage
         VStack(alignment: .leading, spacing: 16) {
+            // #149: set the AI up first; how boldly it acts only matters once it is set up.
+            AssistantSettingsSection(store: store)
+
             // #180: the headline is plain language; the number moved into advanced settings.
             SettingsSection(title: L10n.tr("AI 不确定时", "When the AI Is Unsure"), anchor: .askWhenUnsure) {
                 SettingsToggleRow(
@@ -1362,8 +1365,8 @@ private struct AssistantSettingsTab: View {
                 )
 
                 Text(L10n.tr(
-                    "开着时，AI 没把握的动作只给建议，点一下才执行。关掉后它会更主动；电暖器、插座、扫地机这类高风险设备仍然会先问。",
-                    "On: actions the AI is unsure about become suggestions and wait for a click. Off: it acts more boldly; risky devices such as heaters, plugs and vacuums still ask first."
+                    "只在你配置了 AI 之后才起作用。开着时，AI 没把握的动作只给建议，点一下才执行；关掉后它会更主动。电暖器、插座、扫地机这类高风险设备仍然会先问。",
+                    "Only matters once an AI service is set up. On: actions the AI is unsure about become suggestions and wait for a click. Off: it acts more boldly. Risky devices such as heaters, plugs and vacuums still ask first."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(.secondary)
@@ -1385,8 +1388,6 @@ private struct AssistantSettingsTab: View {
                 }
                 .settingsRow(anchor: .confidenceThreshold)
             }
-
-            AssistantSettingsSection(store: store)
         }
     }
 }
