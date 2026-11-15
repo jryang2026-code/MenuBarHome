@@ -160,6 +160,7 @@ function extractControlIdentityKey(el: Element): ControlIdentityKey | null {
   if (el.classList.contains("win-island--top")) return "slot:island-top";
   if (el.classList.contains("win-island--bottom")) return "slot:island-bottom";
   if (el.classList.contains("win-notif-stack")) return "slot:notif-stack";
+  if (el.classList.contains("cc-header")) return "slot:header";
   if (el.hasAttribute("data-activity-stack")) return "slot:activity-stack";
   if (el.hasAttribute("data-sensor-history-drawer")) {
     return `slot:sensor-history:${el.getAttribute("data-sensor-history-drawer")}`;
@@ -173,6 +174,7 @@ function extractControlIdentityKey(el: Element): ControlIdentityKey | null {
   if (el.classList.contains("cc-tile-fill")) return "slot:tile-fill";
   if (el.classList.contains("cc-tile-header")) return "slot:tile-header";
   if (el.classList.contains("win-split-pill")) return "slot:split-pill";
+  if (el.classList.contains("cc-expander-grid")) return "slot:expander-grid";
   if (el.classList.contains("cc-tile-drawer")) return "slot:tile-drawer";
   if (el.classList.contains("cc-climate-more")) return "slot:climate-more";
   if (el.tagName.toUpperCase() === "SECTION" && el.classList.contains("cc-group")) {

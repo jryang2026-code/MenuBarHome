@@ -14,6 +14,7 @@ import { formatTemperature, formatTemperatureValue, getTemperatureUnit, displayS
 import type { EnergyScopeSource } from "../core/energyHistory.js";
 import { SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation } from "./appTypes.js";
+import { resolveTilePresentation, type PanelTheme } from "./panelTheme.js";
 import { hasPlottableSensorMetrics, renderSensorHistorySection, type SensorHistoryUiState } from "./sensorHistoryView.js";
 
   export function renderSensorCard(
@@ -29,13 +30,14 @@ import { hasPlottableSensorMetrics, renderSensorHistorySection, type SensorHisto
     isExpanded = false,
     facets: readonly FacetControl[] = [],
     sensorHistoryUi?: SensorHistoryUiState,
+    spansFullRow = !compact,
   ): string {
     const c = comfort(k.temperature, k.humidity);
     const name = dev.name.replace(t("米家智能温湿度计"), t("温湿度计")) || dev.name;
     if (valuesAreStale) {
       const label = t("可能过期");
       return `
-        <div class="cc-tile cc-sensor ${compact ? "is-compact" : "is-span-row"} is-stale ${motion}" ${attrs} role="group" aria-label="${escapeHtml(`${name}，${label}`)}">
+        <div class="cc-tile cc-sensor ${compact ? "is-compact" : spansFullRow ? "is-span-row" : ""} is-stale ${motion}" ${attrs} role="group" aria-label="${escapeHtml(`${name}，${label}`)}">
           ${badge}
           <div class="cc-sensor-top"><span class="cc-sensor-name">${escapeHtml(name)}</span></div>
           <div class="cc-sensor-main"><span class="cc-sensor-temp">${label}</span></div>
@@ -72,7 +74,7 @@ import { hasPlottableSensorMetrics, renderSensorHistorySection, type SensorHisto
         </div>`
       : "";
     return `
-      <div class="cc-tile cc-sensor is-span-row ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${motion}" ${sensorAttr} ${attrs} role="group" aria-label="${escapeHtml(sensorAria)}">
+      <div class="cc-tile cc-sensor ${spansFullRow ? "is-span-row" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${motion}" ${sensorAttr} ${attrs} role="group" aria-label="${escapeHtml(sensorAria)}">
         ${badge}
         <div class="cc-sensor-wide">
           <div class="cc-sensor-info">
@@ -86,7 +88,7 @@ import { hasPlottableSensorMetrics, renderSensorHistorySection, type SensorHisto
           </div>
           ${ring}
         </div>
-        ${isExpanded && canExpand ? renderSensorHistorySection(dev, facets, escapeHtml, sensorHistoryUi) : ""}
+        ${isExpanded && canExpand ? `<div class="cc-expander-grid"><div class="cc-expander-clip">${renderSensorHistorySection(dev, facets, escapeHtml, sensorHistoryUi)}</div></div>` : ""}
       </div>`;
   }
 
@@ -1055,6 +1057,8 @@ export interface DeviceTileViewState {
   readonly speakerDrawerState?: { readonly mode?: SpeakerTextMode; readonly draft?: string };
   readonly energyScope?: EnergyScopeSource;
   readonly sensorHistoryUi?: SensorHistoryUiState;
+  readonly panelTheme?: PanelTheme;
+  readonly isCompactGridMode?: boolean;
   readonly escapeHtml: (value: string) => string;
 }
 
@@ -1086,6 +1090,7 @@ function renderInlineRangeRow(options: {
 function renderCollapsedInlineSlider(options: {
   readonly dev: SmartDevice;
   readonly size: Exclude<TileSize, "auto">;
+  readonly panelTheme?: PanelTheme;
   readonly isExpanded: boolean;
   readonly isOn: boolean;
   readonly readout: string;
@@ -1093,7 +1098,7 @@ function renderCollapsedInlineSlider(options: {
   readonly isEditingLayout: boolean;
   readonly escape: (value: string) => string;
 }): string {
-  const { dev, size, isExpanded, isOn, readout, dim, isEditingLayout, escape } = options;
+  const { dev, size, panelTheme, isExpanded, isOn, readout, dim, isEditingLayout, escape } = options;
   if ((size !== "full" && size !== "hero") || isExpanded || !dev.isOnline || readout === "possiblyStale") {
     return "";
   }
@@ -1133,7 +1138,7 @@ function renderCollapsedInlineSlider(options: {
     });
   }
 
-  if (size === "hero") {
+  if (size === "hero" || panelTheme === "classic") {
     if (k.kind === "fan" && isOn && k.speedWritable !== false && k.percentage !== null) {
       const pct = Math.max(1, Math.min(100, Math.round(k.percentage)));
       return renderInlineRangeRow({
@@ -1178,7 +1183,7 @@ function renderCollapsedInlineSlider(options: {
         disabledAttr,
       });
     }
-    if (k.kind === "vacuum" && k.actionsWritable !== false) {
+    if (size === "hero" && k.kind === "vacuum" && k.actionsWritable !== false) {
       const status = k.status.toLowerCase();
       return `<div class="cc-hero-primary-bar"><div class="cc-segmented-pills">
           <button class="cc-seg-pill ${status === "cleaning" ? "is-active" : ""}" data-vacuumaction="${id}|start"${disabledAttr}>${t("开始清扫")}</button>
@@ -1247,14 +1252,6 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
   const escape = state.escapeHtml;
   const isExpanded = state.expandedDeviceId === dev.id || size === "panel";
   const pinned = state.isPinned ?? false;
-  const effectiveSpan = size === "small" && !isExpanded ? 3 : state.span;
-  const attrs = `data-tile-id="${escape(dev.id)}" style="grid-column: span ${effectiveSpan}; --i: ${Math.min(state.index, 12)}; --jd: -${Math.round((performance.now() + (state.index * 137) % 560) % 560)}ms"`;
-  const sizeClass = `is-size-${size}`;
-  const motion = `${sizeClass} ${state.animateEntrance ? "is-entering" : ""} ${state.poppedDeviceId === dev.id ? "is-popped" : ""} ${state.draggingId === dev.id ? "is-dragging" : ""}`;
-  const sizeTitle = TILE_SIZES.find((item) => item.id === size)?.title ?? "";
-  const badge = state.isEditingLayout
-    ? `<button class="cc-resize-handle" data-resize-handle="${escape(dev.id)}" data-cycle-size="${escape(dev.id)}" data-tile-size="${size}" title="${t("切换卡片大小")}：${sizeTitle}" aria-label="${t("切换卡片大小")}，${sizeTitle}"><svg class="cc-resize-arc" viewBox="0 0 28 28" aria-hidden="true"><path d="M 22 10 A 12 12 0 0 1 10 22" /></svg></button>`
-    : "";
   const isWaiting = state.waitingDeviceIds.has(dev.id);
   const readout = deviceReadout(isWaiting, state.valuesAreStale);
   const isOn = devicePresentsAsActive(dev, readout === "possiblyStale");
@@ -1274,6 +1271,24 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
         }
       : dev;
   const hasDrawer = hasDetailDrawer(effectiveDevForDrawer, facets);
+  const canPlotSensor = kind === "sensor" && readout !== "possiblyStale" && hasPlottableSensorMetrics(dev, facets);
+  const isClassic = state.panelTheme === "classic";
+  const presentation = resolveTilePresentation({
+    theme: state.panelTheme ?? "fluent",
+    size,
+    isExpanded,
+    hasDrawer,
+    isCompactGridMode: state.isCompactGridMode ?? state.span < 6,
+  });
+  const effectiveSpan = isClassic ? presentation.cssColumnSpan : (size === "small" && !isExpanded ? 3 : state.span);
+  const rowSpanStyle = presentation.cssRowSpan === 2 ? " grid-row: span 2;" : "";
+  const attrs = `data-tile-id="${escape(dev.id)}" style="grid-column: span ${effectiveSpan};${rowSpanStyle} --i: ${Math.min(state.index, 12)}; --jd: -${Math.round((performance.now() + (state.index * 137) % 560) % 560)}ms"`;
+  const sizeClass = `is-size-${size}`;
+  const motion = `${sizeClass} ${state.animateEntrance ? "is-entering" : ""} ${state.poppedDeviceId === dev.id ? "is-popped" : ""} ${state.draggingId === dev.id ? "is-dragging" : ""}`;
+  const sizeTitle = TILE_SIZES.find((item) => item.id === size)?.title ?? "";
+  const badge = state.isEditingLayout
+    ? `<button class="cc-resize-handle" data-resize-handle="${escape(dev.id)}" data-cycle-size="${escape(dev.id)}" data-tile-size="${size}" title="${t("切换卡片大小")}：${sizeTitle}" aria-label="${t("切换卡片大小")}，${sizeTitle}"><svg class="cc-resize-arc" viewBox="0 0 28 28" aria-hidden="true"><path d="M 22 10 A 12 12 0 0 1 10 22" /></svg></button>`
+    : "";
   const hasActiveHighRisk =
     state.pendingHighRisk !== null &&
     state.pendingHighRisk.deviceId === dev.id &&
@@ -1299,7 +1314,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
           ? trText("再点一次确认", "Tap again to confirm")
           : subtitle;
 
-  if (size === "small" && !isExpanded) {
+  if (presentation.mode === "smallOrb") {
     return renderSmallDeviceTile({
       dev,
       state,
@@ -1318,16 +1333,15 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
   }
 
   if (dev.kind.kind === "sensor" && (dev.kind.temperature !== null || dev.kind.humidity !== null)) {
-    return renderSensorCard(dev, dev.kind, state.span < 6 && !isExpanded, `data-tile-size="${size}" ${attrs}`, motion, `${renderPinStarBadge(pinned, escape)}${badge}`, state.selectedRoom, state.valuesAreStale, escape, isExpanded, facets, state.sensorHistoryUi);
+    return renderSensorCard(dev, dev.kind, !presentation.spansFullRow && presentation.mode !== "bentoHero", `data-tile-size="${size}" ${attrs}`, motion, `${renderPinStarBadge(pinned, escape)}${badge}`, state.selectedRoom, state.valuesAreStale, escape, isExpanded, facets, state.sensorHistoryUi, presentation.spansFullRow);
   }
-  if (dev.kind.kind === "climate" && size !== "half") {
+  if (dev.kind.kind === "climate" && size !== "half" && presentation.mode !== "bentoHero") {
     return renderClimateStrip(dev, dev.kind, size === "panel", `data-tile-size="${size}" ${attrs}`, motion, `${renderPinStarBadge(pinned, escape)}${badge}`, state.expandedDeviceId, state.selectedRoom, state.valuesAreStale, state.waitingDeviceIds, escape, facets, state.allowAdvancedFacetWrites, state.pendingHighRisk);
   }
 
   const staleClass = readout === "possiblyStale" ? "is-stale" : "";
-  const canPlotSensor = kind === "sensor" && readout !== "possiblyStale" && hasPlottableSensorMetrics(dev, facets);
-  const isSubpage = state.expandedDeviceId === dev.id && size !== "panel" && hasDrawer;
-  const isCapsule = state.span < 6 && !isExpanded;
+  const isSubpage = presentation.mountsSubpage;
+  const isCapsule = presentation.mode === "fluentCapsule";
   const roomHeroPill =
     size === "hero" && dev.roomName
       ? `<span class="cc-hero-room-pill">${escape(dev.roomName)}</span>`
@@ -1441,9 +1455,10 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
     `;
   }
 
-  const inlineSlider = renderCollapsedInlineSlider({
+  const rawInlineSlider = renderCollapsedInlineSlider({
     dev,
     size,
+    panelTheme: state.panelTheme,
     isExpanded,
     isOn,
     readout,
@@ -1451,9 +1466,13 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
     isEditingLayout: state.isEditingLayout,
     escape,
   });
+  const inlineSlider =
+    presentation.mode === "bentoHero" && rawInlineSlider && !rawInlineSlider.includes("cc-hero-primary-bar")
+      ? `<div class="cc-hero-primary-bar">${rawInlineSlider}</div>`
+      : rawInlineSlider;
 
   return `
-      <div class="cc-tile is-span-row ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${inlineSlider ? "has-inline-slider" : ""} ${motion}" data-tile-size="${size}" ${canPlotSensor ? `data-sensor-card="${escape(dev.id)}" aria-expanded="${isExpanded}"` : ""} ${attrs}>
+      <div class="cc-tile ${presentation.spansFullRow ? "is-span-row" : ""} ${presentation.mode === "bentoCard" ? "is-bento-card" : ""} ${presentation.mode === "bentoHero" ? "is-bento-hero" : ""} ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dim !== null ? "is-dimming" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${inlineSlider ? "has-inline-slider" : ""} ${motion}" data-tile-size="${size}" ${canPlotSensor ? `data-sensor-card="${escape(dev.id)}" aria-expanded="${isExpanded}"` : ""} ${attrs}>
         ${fill > 0 ? `<span class="cc-tile-fill" style="width:${fill}%;--fill-scale:${(fill / 100).toFixed(3)}"></span>` : ""}
         ${renderPinStarBadge(pinned, escape)}
         ${badge}
@@ -1511,7 +1530,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
             ? renderDeviceDrawer(dev, escape, facets, state.allowAdvancedFacetWrites, state.pendingHighRisk, state.unsupportedLightEffects, state.speakerDrawerState, state.energyScope)
             : ""
         }
-        ${isExpanded && canPlotSensor ? renderSensorHistorySection(dev, facets, escape, state.sensorHistoryUi) : ""}
+        ${isExpanded && canPlotSensor ? `<div class="cc-expander-grid"><div class="cc-expander-clip">${renderSensorHistorySection(dev, facets, escape, state.sensorHistoryUi)}</div></div>` : ""}
         ${
           !hasDrawer
             ? renderPendingHighRiskRow(dev.id, state.pendingHighRisk, escape)
