@@ -14,7 +14,7 @@ export interface AssistantProviderPresetInfo {
 export const ASSISTANT_PROVIDER_PRESETS: ReadonlyArray<AssistantProviderPresetInfo> = [
   {
     id: "openrouter_jev",
-    title: "OpenRouter · Jev (默认)",
+    title: "OpenRouter（默认）",
     shortTitle: "OpenRouter",
     defaultBaseURL: "https://openrouter.ai/api/v1",
     defaultModel: "~typesafe/jev-latest",

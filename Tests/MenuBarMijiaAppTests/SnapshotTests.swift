@@ -1496,6 +1496,25 @@ struct SnapshotTests {
         }
     }
 
+    @Test("AI settings show the habit-summary preview only while sharing is on")
+    func settingsAssistantHabitSharingOnSnapshots() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: false)
+        defer { fixture.restore() }
+        fixture.store.habitSharing = .on
+        defer { fixture.store.habitSharing = .off }
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                SettingsWindowView(store: fixture.store, selectedTab: .assistant)
+                    .environment(\.colorScheme, scheme)
+                    .environment(\.reduceMotionOverride, true)
+                    .environment(\.reduceTransparencyOverride, true),
+                size: CGSize(width: 780, height: 680),
+                named: "settings-assistant-habit-sharing-on-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
     @Test("Connection settings render the Disconnect button when Home Assistant is configured")
     func settingsConnectionConfiguredHASnapshots() async throws {
         let fixture = try await SnapshotFixture(configuredHASource: true)

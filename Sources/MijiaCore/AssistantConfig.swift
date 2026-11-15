@@ -21,7 +21,7 @@ public enum AssistantProviderPreset: String, CaseIterable, Identifiable, Sendabl
     public var title: String {
         switch self {
         case .openRouterJev:
-            return L10n.tr("OpenRouter · Jev (默认)", "OpenRouter · Jev (Default)")
+            return L10n.tr("OpenRouter（默认）", "OpenRouter (default)")
         case .nativeJev:
             return L10n.tr("TypeSafe · 原生 Jev", "TypeSafe · Native Jev")
         case .deepSeek:
