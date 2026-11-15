@@ -349,6 +349,7 @@ export const ZH_HANT_CATALOG: Readonly<Record<string, string>> = {
   "MenuBarHome 控制中心": "MenuBarHome 控制中心",
   "扫码直连你的真实米家设备": "掃碼直連你的真實米家裝置",
   "手机打开「米家 App → 扫一扫」即可直接同步全屋真实设备；常驻 Windows 右下角系统托盘，点击图标或按 Alt+M 随时弹出，点击外部自动收起。": "手機打開「米家 App → 掃一掃」即可直接同步全屋真實裝置；常駐 Windows 右下角系統托盤，點擊圖標或按 Alt+M 隨時彈出，點擊外部自動收起。",
+  "直连使用非官方接口，小米可能限制请求或风控账号；介意的话请改用官方的 Home Assistant (xiaomi_home)。登录会过期，到期需重新扫码。": "直連使用非官方介面，小米可能限制請求或風控賬號；介意的話請改用官方的 Home Assistant (xiaomi_home)。登入會過期，到期需重新掃碼。",
   "云端服务器地区": "雲端伺服器地區",
   "欧洲、印度、俄罗斯、新加坡、美区的米家账号请先选择对应地区，再扫码登录。": "歐洲、印度、俄羅斯、新加坡、美區的米家賬號請先選擇對應地區，再掃碼登入。",
   "OpenRouter API Key（可选，用于 Jev SystemOne 模糊意图决策）": "OpenRouter API Key（可選，用於 Jev SystemOne 模糊意圖決策）",

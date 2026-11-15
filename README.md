@@ -288,6 +288,15 @@ Exit codes: `0` success, `1` the app reported a failure, `2` local error (snapsh
 
 ## Safety, Privacy & Limitations
 
+### Know before you connect
+
+- **Mi Cloud Connect uses an unofficial client API.** It is not an official Xiaomi integration. Xiaomi can rate-limit requests or flag an account (risk control) at any time, and this project cannot promise it won't happen. The app polls less when the panel is closed or the screen is locked to keep traffic low. If you'd rather not take that risk, connect Home Assistant with Xiaomi's official [xiaomi_home](https://github.com/XiaoMi/ha_xiaomi_home) integration instead.
+- **You will need to scan again.** The app does not store the long-lived `passToken` and does not renew a sign-in silently ([ADR-0004](docs/adr/0004-no-pass-token-storage.md)). How long a sign-in lasts is decided by Xiaomi's server and is shown in Settings when it is known; the panel warns you 3 days before it ends, and re-scanning takes a few seconds.
+- **The apps are not code-signed commercially.** macOS needs **Open Anyway** on first launch and Windows shows a SmartScreen prompt (see [Install](#1-install)).
+- **Windows is not at feature parity.** Windows 11 only; voice is hands-free only (no hold-to-talk); one Xiaomi account; no Mac event automation, Apple Shortcuts, or GrokBall. See the [platform comparison](#features--platform-matrix).
+
+### Safety and privacy
+
 - Account credentials live only in the macOS Keychain or Windows Credential Manager, never in plain config files or logs.
 - Turning on a heater, switching a plug, or starting a robot vacuum always asks first; turning them off happens right away.
 - While your Mac is locked, manual control is refused by default, so nobody can play with your lights while you're away from the desk.
