@@ -1055,11 +1055,17 @@ export async function discoverMiAccountDevicesAndRooms(
   return { devices: discovered.devices, rooms: discovered.rooms };
 }
 
-export async function withSessionExpiredRetry<T>(fn: () => Promise<T>): Promise<T> {
+export async function withSessionExpiredRetry<T>(
+  fn: () => Promise<T>,
+  beforeRetry?: () => void,
+): Promise<T> {
   try {
     return await fn();
   } catch (error) {
-    if (error instanceof MiCloudError && error.kind === "sessionExpired") return await fn();
+    if (error instanceof MiCloudError && error.kind === "sessionExpired") {
+      beforeRetry?.();
+      return await fn();
+    }
     throw error;
   }
 }
@@ -1310,8 +1316,9 @@ export async function executeMultiAccountMiotCommand(command: DeviceCommand,
     const account = options.accounts[accountIdx]!;
     const client = clientFactory(account.session, options.transport);
     try {
-      await withSessionExpiredRetry(() =>
-        write.kind === "setProps" ? client.setProps(write.writes) : client.callAction(write.call),
+      await withSessionExpiredRetry(
+        () => (write.kind === "setProps" ? client.setProps(write.writes) : client.callAction(write.call)),
+        options.beforeSend,
       );
       return { executedByAccountId: account.id };
     } catch (error) { if (error instanceof MiCloudError && error.kind === "sessionExpired") { sawExpired = true;
@@ -1391,10 +1398,10 @@ export class MultiAccountMiCloudProvider implements HomeProvider {
       const client = new MiCloudClient(account.session, this.dependencies.transport);
       try {
         if (write.kind === "action") {
-          await withSessionExpiredRetry(() => client.action(write.call));
+          await withSessionExpiredRetry(() => client.action(write.call), options.beforeSend);
           return null;
         }
-        await withSessionExpiredRetry(() => client.setProps(write.writes));
+        await withSessionExpiredRetry(() => client.setProps(write.writes), options.beforeSend);
         if (!options.readBackPower) return null;
         const power = write.writes.find((w) => typeof w.value === "boolean");
         if (!power) return null;

@@ -632,4 +632,42 @@ struct ProviderResilienceAndPerfTests {
         await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: true)
         #expect(scanCalls == 2)
     }
+
+    @MainActor
+    @Test("HomeStore completeMiLogin and logoutMiAccount propagate account changes to activeMiAccountsProvider (#33b)")
+    func homeStoreIncrementalAccountPropagation() async throws {
+        let suite = "com.jryang1997.MenuBarMijia.live-mi-prop.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let firstAccountId = MiAccount(session: Self.session).id
+        let secondSession = MiSession(
+            userId: "90020002",
+            cUserId: "c-de",
+            ssecurity: "c2VjcmV0",
+            serviceToken: "tok-de",
+            region: "de"
+        )
+        let secondAccountId = MiAccount(session: secondSession).id
+        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+        let store = HomeStore(defaultsSuiteName: suite)
+        store.completeMiLogin(Self.session)
+        let activeProvider = try #require(store.activeMiAccountsProvider)
+        await store.providerShutdownTask?.value
+        #expect(store.activeMiProviderAccounts.map(\.id) == [firstAccountId])
+        #expect(await activeProvider.childProviderIdentityForTesting(accountId: firstAccountId) != nil)
+
+        store.completeMiLogin(secondSession)
+        await store.providerShutdownTask?.value
+        #expect(store.activeMiAccountsProvider === activeProvider)
+        #expect(store.activeMiProviderAccounts.count == 2)
+        #expect(await activeProvider.childProviderIdentityForTesting(accountId: secondAccountId) != nil)
+
+        store.logoutMiAccount(id: secondAccountId)
+        await store.providerShutdownTask?.value
+        #expect(store.activeMiProviderAccounts.map(\.id) == [firstAccountId])
+        #expect(await activeProvider.childProviderIdentityForTesting(accountId: secondAccountId) == nil)
+        #expect(await activeProvider.childProviderIdentityForTesting(accountId: firstAccountId) != nil)
+        await store.shutdown()
+    }
 }

@@ -707,7 +707,7 @@ extension HomeStore {
         var miAccountsChanged = false
         if wantsMi {
             let latestAccounts = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
-            let previousAccounts = miAccounts
+            let previousAccounts = activeMiProviderAccounts
             miAccountsChanged = latestAccounts.count != previousAccounts.count
                 || !zip(latestAccounts, previousAccounts).allSatisfy { $0.id == $1.id && $0.session == $1.session }
             let keptAnyAccount = latestAccounts.contains { next in
@@ -716,6 +716,7 @@ extension HomeStore {
             miAccounts = latestAccounts
             if let existingMi = activeMiAccountsProvider {
                 if miAccountsChanged {
+                    activeMiProviderAccounts = latestAccounts
                     miAccountsUpdate = (existingMi, latestAccounts, !keptAnyAccount && !latestAccounts.isEmpty)
                 }
             } else {

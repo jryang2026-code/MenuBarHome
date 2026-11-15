@@ -719,7 +719,12 @@ public final class HomeStore {
     var activeDualProvider: DualSourceHomeProvider?
     var activeHAProvider: HAWebSocketProvider?
     var activeHAConfig: (url: String, token: String)?
-    var activeMiAccountsProvider: MiAccountsProvider?
+    var activeMiAccountsProvider: MiAccountsProvider? {
+        didSet {
+            if activeMiAccountsProvider == nil { activeMiProviderAccounts = [] }
+        }
+    }
+    var activeMiProviderAccounts: [MiAccount] = []
     static let autoHADiscoveryCooldown: Duration = .seconds(300)
     var lastAutoHADiscoveryAt: ContinuousClock.Instant?
     var isPerformingResumeRefresh = false
@@ -1055,6 +1060,7 @@ public final class HomeStore {
     /// provider around the current list.
     func makeMiAccountsProvider() -> MiAccountsProvider {
         miAccounts = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
+        activeMiProviderAccounts = miAccounts
         return Self.makeMiAccountsProvider(accounts: miAccounts, defaults: userDefaults)
     }
 
