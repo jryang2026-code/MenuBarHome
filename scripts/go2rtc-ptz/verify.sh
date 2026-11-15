@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Re-apply the pinned patch to a clean upstream v1.9.15 checkout and run its tests.
 set -euo pipefail
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BASE_COMMIT="7c05066c90ab6ad1fccb506d5f0408aa31ebe60f"
 PATCH_FILE="$ROOT_DIR/scripts/go2rtc-ptz/patches/0001-xiaomi-ptz.patch"
 UPSTREAM="https://github.com/AlexxIT/go2rtc"
 
-if ! command -v go >/dev/null 2>&1 && [ -x "${GO2RTC_PTZ_GO_CACHE:-$HOME/.cache/menubarmijia/go1.26.10}/go/bin/go" ]; then
-    export PATH="${GO2RTC_PTZ_GO_CACHE:-$HOME/.cache/menubarmijia/go1.26.10}/go/bin:$PATH"
-fi
-if ! command -v go >/dev/null 2>&1; then
-    echo "❌ 未找到 go（需要 Go 1.26+）。可先运行 bash scripts/go2rtc-ptz/build.sh 自动准备固定版本 Go 工具链" >&2
+if go_bin="$(bash "$ROOT_DIR/scripts/go2rtc-ptz/go_ready.sh" 2>/dev/null)"; then
+    export PATH="$(dirname "$go_bin"):$PATH"
+else
+    echo "❌ 未找到可用的 Go 1.26+。可先运行 bash scripts/go2rtc-ptz/build.sh --go-only 自动准备固定版本 Go 工具链" >&2
     exit 1
 fi
 
