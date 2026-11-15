@@ -3,8 +3,6 @@ import Foundation
 import Testing
 @testable import MijiaCore
 
-// MARK: - Local Test Doubles (RFC 5737 TEST-NET-1: 192.0.2.0/24 only)
-
 private actor MockUDPTransport: MiIOUDPTransport {
     struct RecordedSend: Sendable {
         let packet: Data
@@ -496,7 +494,7 @@ struct MiIOPacketAndCryptoTests {
 @Suite("LocalMiIOClient UDP Protocol")
 struct LocalMiIOClientTests {
     private let validTokenHex = "00112233445566778899aabbccddeeff"
-    private let testEndpoint = MiIODeviceEndpoint(did: "12345678", ip: "192.0.2.10", token: "00112233445566778899aabbccddeeff")
+    private let testEndpoint = MiIODeviceEndpoint(did: "12345678", ip: "192.168.1.10", token: "00112233445566778899aabbccddeeff")
 
     @Test("Handshake tracks stamp skew + monotonic increments, encodes integer JSON values, and chunks >12 props")
     func handshakePropsChunkingAndCompactJSON() async throws {
@@ -506,7 +504,7 @@ struct LocalMiIOClientTests {
         let capturedRequests = LockedBox<[String]>([])
 
         let transport = MockUDPTransport { packet, host, port in
-            #expect(host == "192.0.2.10")
+            #expect(host == "192.168.1.10")
             #expect(port == 54321)
             capturedPackets.withValue { $0.append(packet) }
 
@@ -620,14 +618,43 @@ struct LocalMiIOClientTests {
         await #expect(throws: MiIOError.invalidToken) {
             _ = try await client.getProps(
                 [MiotPropKey(did: "12345678", siid: 2, piid: 1)],
-                endpoint: MiIODeviceEndpoint(did: "12345678", ip: "192.0.2.10", token: "00000000000000000000000000000000")
+                endpoint: MiIODeviceEndpoint(did: "12345678", ip: "192.168.1.10", token: "00000000000000000000000000000000")
             )
         }
 
         let result = try await client.getProps([MiotPropKey(did: "12345678", siid: 2, piid: 1)], endpoint: testEndpoint)
         #expect(result[MiotPropKey(did: "12345678", siid: 2, piid: 1)] == .bool(true))
-        // 1st HELLO + failed attempt 1 + 2nd HELLO (reset on retry) + retry success = 4 sends.
         #expect(await transport.sends.count == 4)
+        await client.shutdown()
+    }
+
+    @Test("Rejects non-private IPv4, loopback, and hostname targets before sending UDP packets")
+    func rejectsNonPrivateAddresses() async throws {
+        let transport = MockUDPTransport { _, _, _ in
+            Issue.record("Unexpected UDP send to non-private target")
+            throw MiIOError.timeout
+        }
+        let client = LocalMiIOClient(transport: transport, maxRetries: 0)
+        let nwTransport = NWConnectionMiIOUDPTransport()
+        let rejectedHosts = ["192.0.2.10", "8.8.8.8", "127.0.0.1", "example.com"]
+
+        for host in rejectedHosts {
+            let endpoint = MiIODeviceEndpoint(did: "12345678", ip: host, token: validTokenHex)
+            await #expect(throws: MiIOError.invalidAddress(host)) {
+                _ = try await client.handshake(for: endpoint)
+            }
+            await #expect(throws: MiIOError.invalidAddress(host)) {
+                _ = try await client.getProps([MiotPropKey(did: "12345678", siid: 2, piid: 1)], endpoint: endpoint)
+            }
+            await #expect(throws: MiIOError.invalidAddress(host)) {
+                try await client.setProps([MiotPropWrite(did: "12345678", siid: 2, piid: 1, value: .bool(true))], endpoint: endpoint)
+            }
+            await #expect(throws: MiIOError.invalidAddress(host)) {
+                _ = try await nwTransport.send(MiIOPacket.helloPacket, to: host, port: 54321, timeout: .milliseconds(50))
+            }
+        }
+        #expect(await transport.sends.isEmpty)
+        await nwTransport.shutdown()
         await client.shutdown()
     }
 }
@@ -648,8 +675,8 @@ struct MiCloudAndSpecEnhancementsTests {
     func parseDeviceListTokensAndSharedFlags() throws {
         let json = try JSONDecoder().decode(JSONValue.self, from: Data(#"""
         {"list":[
-            {"did":"100","name":"Own Bulb","model":"yeelink.light.color4","isOnline":true,"localip":"192.0.2.20","token":"00112233445566778899aabbccddeeff","share_flag":0},
-            {"did":"200","name":"Shared Lamp","model":"yeelink.light.color4","isOnline":true,"localip":"192.0.2.21","token":"ffeeddccbbaa99887766554433221100","share_flag":1},
+            {"did":"100","name":"Own Bulb","model":"yeelink.light.color4","isOnline":true,"localip":"192.168.1.20","token":"00112233445566778899aabbccddeeff","share_flag":0},
+            {"did":"200","name":"Shared Lamp","model":"yeelink.light.color4","isOnline":true,"localip":"192.168.1.21","token":"ffeeddccbbaa99887766554433221100","share_flag":1},
             {"did":"300","name":"Legacy Item","model":"lumi.sensor_ht.v1","isOnline":true,"isShared":true}
         ]}
         """#.utf8))
@@ -972,8 +999,8 @@ struct HybridProviderAndDoorbellTests {
 
         let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() })
 
-        let ownWifi = MiDeviceRecord(did: "101", name: "Own Wifi Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.0.2.10", token: tokenHex, isShared: false)
-        let sharedWifi = MiDeviceRecord(did: "202", name: "Shared Wifi Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.0.2.11", token: tokenHex, isShared: true)
+        let ownWifi = MiDeviceRecord(did: "101", name: "Own Wifi Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.10", token: tokenHex, isShared: false)
+        let sharedWifi = MiDeviceRecord(did: "202", name: "Shared Wifi Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.11", token: tokenHex, isShared: true)
         let bleLight = MiDeviceRecord(did: "303", name: "BLE Mesh Light", model: "yeelink.light.color4", isOnline: true, localIp: nil, token: nil, isShared: false)
 
         let api = HybridMockCloudAPI(
@@ -1020,8 +1047,7 @@ struct HybridProviderAndDoorbellTests {
         let snap1 = await collector.snapshots.last
         let ownDev1 = snap1?.devices.first { $0.id == "101" }
         #expect(lightBrightness(ownDev1) == 75)
-        // Shared IP 192.0.2.11 must NEVER be contacted over LAN.
-        #expect(lanHostCalls.withValue { !$0.contains("192.0.2.11") })
+        #expect(lanHostCalls.withValue { !$0.contains("192.168.1.11") })
         // Cloud getProps must NOT have included did 101 during healthy LAN poll.
         let firstCloudGetDids = Set((await api.getPropsCalls.first ?? []).map(\.did))
         #expect(!firstCloudGetDids.contains("101"))
@@ -1129,7 +1155,7 @@ struct HybridProviderAndDoorbellTests {
         }
 
         let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 0)
-        let ownWifi = MiDeviceRecord(did: "101", name: "Partial Bulb", model: "yeelink.light.color4", isOnline: true, localIp: "192.0.2.30", token: tokenHex, isShared: false)
+        let ownWifi = MiDeviceRecord(did: "101", name: "Partial Bulb", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.30", token: tokenHex, isShared: false)
         let api = HybridMockCloudAPI(
             devices: [ownWifi],
             rooms: [MiRoom(id: "r1", name: "Study", dids: ["101"])],
@@ -1201,7 +1227,7 @@ struct HybridProviderAndDoorbellTests {
 
         // maxRetries: 2 proves action never retries even when retries are configured.
         let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 2)
-        let ownWifi = MiDeviceRecord(did: "101", name: "Living Room Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.0.2.31", token: tokenHex, isShared: false)
+        let ownWifi = MiDeviceRecord(did: "101", name: "Living Room Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.31", token: tokenHex, isShared: false)
         let api = HybridMockCloudAPI(
             devices: [ownWifi],
             rooms: [MiRoom(id: "r1", name: "Study", dids: ["101"])],
@@ -1277,7 +1303,7 @@ struct HybridProviderAndDoorbellTests {
         }
 
         let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 2)
-        let ownWifi = MiDeviceRecord(did: "101", name: "Living Room Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.0.2.32", token: tokenHex, isShared: false)
+        let ownWifi = MiDeviceRecord(did: "101", name: "Living Room Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.32", token: tokenHex, isShared: false)
         let api = HybridMockCloudAPI(
             devices: [ownWifi],
             rooms: [MiRoom(id: "r1", name: "Study", dids: ["101"])],
@@ -1340,7 +1366,7 @@ struct HybridProviderAndDoorbellTests {
             name: "Shared Home Light",
             model: "yeelink.light.color4",
             isOnline: true,
-            localIp: "192.0.2.55",
+            localIp: "192.168.1.55",
             token: tokenHex,
             isShared: false
         )
@@ -1422,7 +1448,7 @@ struct HybridProviderAndDoorbellTests {
         }
 
         let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 0)
-        let ownWifi = MiDeviceRecord(did: "101", name: "Own Wifi Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.0.2.40", token: tokenHex, isShared: false)
+        let ownWifi = MiDeviceRecord(did: "101", name: "Own Wifi Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.40", token: tokenHex, isShared: false)
         let cloudOnly = MiDeviceRecord(did: "303", name: "Cloud Light", model: "yeelink.light.color4", isOnline: true, localIp: nil, token: nil, isShared: false)
         let api = HybridMockCloudAPI(
             devices: [ownWifi, cloudOnly],
@@ -1491,6 +1517,64 @@ struct HybridProviderAndDoorbellTests {
             $0.statuses.last == .connected && lightBrightness($0.snapshots.last?.devices.first { $0.id == "303" }) == 60
         })
         #expect(await collector.snapshots.last?.closesAwayGap == true)
+
+        await provider.shutdown()
+    }
+
+    @Test("Non-private localIp values skip LAN UDP and route through cloud")
+    func nonPrivateLocalIpsRouteThroughCloudOnly() async throws {
+        let udpTransport = MockUDPTransport { _, _, _ in
+            Issue.record("Unexpected UDP packet sent to non-private localIp")
+            throw MiIOError.timeout
+        }
+        let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 0)
+        let rejected = [
+            ("d1", "192.0.2.10"),
+            ("d2", "8.8.8.8"),
+            ("d3", "127.0.0.1"),
+            ("d4", "example.com"),
+        ]
+        let devices = rejected.map { did, ip in
+            MiDeviceRecord(did: did, name: "Light \(did)", model: "yeelink.light.color4", isOnline: true, localIp: ip, token: tokenHex, isShared: false)
+        }
+        var props: [MiotPropKey: JSONValue] = [:]
+        for (did, _) in rejected {
+            props[MiotPropKey(did: did, siid: 2, piid: 1)] = .bool(true)
+            props[MiotPropKey(did: did, siid: 2, piid: 2)] = .number(45)
+        }
+        let api = HybridMockCloudAPI(
+            devices: devices,
+            rooms: [MiRoom(id: "r1", name: "Study", dids: rejected.map(\.0))],
+            props: props
+        )
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession },
+            apiFactory: { _ in api },
+            specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightSpec()]),
+            localClient: localClient,
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+
+        let collector = EventCollector()
+        let stream = provider.events()
+        let task = Task {
+            for await event in stream {
+                await collector.append(event)
+            }
+            await collector.finish()
+        }
+        defer { task.cancel() }
+
+        #expect(await collector.wait { !$0.snapshots.isEmpty })
+        #expect(await udpTransport.sends.isEmpty)
+        let cloudPolledDids = Set((await api.getPropsCalls.first ?? []).map(\.did))
+        #expect(cloudPolledDids == Set(["d1", "d2", "d3", "d4"]))
+
+        try await provider.execute(.setLightPower(entityId: "miot:d1:2", isOn: false))
+        #expect(await udpTransport.sends.isEmpty)
+        #expect(await api.setPropsCalls == [[MiotPropWrite(did: "d1", siid: 2, piid: 1, value: .bool(false))]])
 
         await provider.shutdown()
     }

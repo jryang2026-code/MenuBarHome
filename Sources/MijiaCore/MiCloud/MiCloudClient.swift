@@ -235,7 +235,7 @@ public actor MiCloudClient: MiCloudAPI {
         var key: String
     }
 
-    public init(session: MiSession, transport: any MiHTTPTransport = URLSessionMiTransport()) {
+    public init(session: MiSession, transport: any MiHTTPTransport = URLSessionMiTransport(followRedirects: false)) {
         self.session = session
         self.transport = transport
         self.userAgent = Self.makeUserAgent()
@@ -315,6 +315,7 @@ public actor MiCloudClient: MiCloudAPI {
 
     static func decodeResponse(_ body: Data, statusCode: Int, signedNonce: String) throws -> JSONValue {
         if statusCode == 401 || statusCode == 403 { throw MiCloudError.sessionExpired }
+        if statusCode == 429 { throw MiCloudError.http(429) }
         // Errors come back as plain JSON; successes are base64(RC4(json)). A plain object is never a
         // success payload, so it must carry an explicit verdict: either an integer `code`, or a
         // message that names the real reason (#76, #67).
@@ -382,6 +383,35 @@ public actor MiCloudClient: MiCloudAPI {
         throw MiCloudError.api(code: code, message: message)
     }
 
+    static func shouldRethrowWithoutFallback(_ error: any Error) -> Bool {
+        if error is CancellationError { return true }
+        guard let cloudError = error as? MiCloudError else { return false }
+        switch cloudError {
+        case .sessionExpired:
+            return true
+        case .http(let status):
+            return status == 429
+        case .api(let code, let message):
+            if code == 429 || code == -429 { return true }
+            return looksRateLimited(message)
+        default:
+            return false
+        }
+    }
+
+    private static func looksRateLimited(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        guard !lower.isEmpty else { return false }
+        return lower.contains("too many requests")
+            || lower.contains("rate limit")
+            || lower.contains("ratelimit")
+            || lower.contains("frequency limit")
+            || lower.contains("request limit")
+            || lower.contains("请求过于频繁")
+            || lower.contains("访问过于频繁")
+            || lower.contains("请求太频繁")
+    }
+
     // MARK: Endpoints
 
     /// `v2/home/device_list_page` also returns the split keys of multi-key Mesh panels, which
@@ -389,9 +419,8 @@ public actor MiCloudClient: MiCloudAPI {
     public func deviceList() async throws -> [MiDeviceRecord] {
         do {
             return try await deviceListPaged()
-        } catch MiCloudError.sessionExpired {
-            throw MiCloudError.sessionExpired
         } catch {
+            if Self.shouldRethrowWithoutFallback(error) { throw error }
             return try await legacyDeviceList()
         }
     }
@@ -603,9 +632,8 @@ public actor MiCloudClient: MiCloudAPI {
                 "fg": .bool(true), "fetch_share": .bool(true), "fetch_share_dev": .bool(true),
                 "limit": .number(300), "app_ver": .number(9), "plat_form": .number(0),
             ]))
-        } catch MiCloudError.sessionExpired {
-            throw MiCloudError.sessionExpired
         } catch {
+            if Self.shouldRethrowWithoutFallback(error) { throw error }
             merged = try await request("v2/homeroom/gethome", data: .object([
                 "fg": .bool(true), "fetch_share": .bool(true), "fetch_share_dev": .bool(true),
                 "limit": .number(300), "app_ver": .number(9), "plat_form": .number(0),

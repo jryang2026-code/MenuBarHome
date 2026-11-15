@@ -325,14 +325,14 @@ struct ContractReplayTests {
         let replayFailure = ReplayFlagBox(false)
         let udpTransport = ReplayMiIOUDPTransport { packet, host, _ in
             if packet == MiIOPacket.helloPacket {
-                let deviceId: UInt32 = host == "192.0.2.21" ? 0x2222_0001 : 0x2222_0002
+                let deviceId: UInt32 = host == "192.168.1.21" ? 0x2222_0001 : 0x2222_0002
                 return replayHelloPacket(deviceId: deviceId, stamp: 10)
             }
             let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
             let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
             let reqId = req["id"]?.intValue ?? 0
             let result: JSONValue
-            if host == "192.0.2.21" {
+            if host == "192.168.1.21" {
                 result = mixedLightResult
             } else if replayFailure.withValue({ $0 }) {
                 result = allNonzeroLockResult
@@ -356,7 +356,7 @@ struct ContractReplayTests {
             name: "Contract Front Lock",
             model: "xiaomi.lock.contract",
             isOnline: true,
-            localIp: "192.0.2.20",
+            localIp: "192.168.1.20",
             token: tokenHex,
             isShared: false
         )
@@ -365,7 +365,7 @@ struct ContractReplayTests {
             name: "Contract Ceiling Light",
             model: "yeelink.light.contract",
             isOnline: true,
-            localIp: "192.0.2.21",
+            localIp: "192.168.1.21",
             token: tokenHex,
             isShared: false
         )

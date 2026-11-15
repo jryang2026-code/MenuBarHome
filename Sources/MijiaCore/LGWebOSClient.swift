@@ -427,9 +427,11 @@ public actor LGWebOSClient {
 
     private var loopTask: Task<Void, Never>?
     private var activeWebSocket: URLSessionWebSocketTask?
+    private var sendFrameOverrideForTesting: (@Sendable (String) async throws -> Void)?
     private var nextRequestId: Int = 1
 
     var hasActiveSessionForTesting: Bool { session != nil }
+    var isConnectedForTesting: Bool { isConnected }
     var isShutDownForTesting: Bool { isShutDown }
     private(set) var createdSessionCountForTesting: Int = 0
     private(set) var invalidatedSessionCountForTesting: Int = 0
@@ -457,6 +459,21 @@ public actor LGWebOSClient {
         self.onDeviceUpdated = onDeviceUpdated
         self.onClientKeyRegistered = onClientKeyRegistered
         self.onSecurityFailure = onSecurityFailure
+        self.sendFrameOverrideForTesting = nil
+    }
+
+    init(
+        config: LGWebOSConfig,
+        onDeviceUpdated: @escaping @Sendable (SmartDevice) -> Void,
+        onClientKeyRegistered: @escaping @Sendable (String) -> Void,
+        onSecurityFailure: @escaping @Sendable (String) -> Void,
+        sendFrameOverrideForTesting: (@Sendable (String) async throws -> Void)?
+    ) {
+        self.config = config
+        self.onDeviceUpdated = onDeviceUpdated
+        self.onClientKeyRegistered = onClientKeyRegistered
+        self.onSecurityFailure = onSecurityFailure
+        self.sendFrameOverrideForTesting = sendFrameOverrideForTesting
     }
 
     private static func makeURLSession() -> URLSession {
@@ -578,27 +595,36 @@ public actor LGWebOSClient {
         }
     }
 
+    private func sendCommandFrame(_ frame: String) async throws {
+        if let sendFrameOverrideForTesting {
+            try await sendFrameOverrideForTesting(frame)
+            return
+        }
+        guard let ws = activeWebSocket else {
+            throw HomeProviderError.networkError(L10n.tr("电视尚未建立局域网连接", "TV is not connected on LAN"))
+        }
+        try await ws.send(.string(frame))
+    }
+
     private func setPower(isOn: Bool) async throws {
         if isOn {
             Self.sendWakeOnLan(macAddress: config.macAddress, host: config.host)
-            isConnected = true
-            isScreenOff = false
-            emitCurrentDevice()
-            if let ws = activeWebSocket {
+            if activeWebSocket != nil || sendFrameOverrideForTesting != nil {
                 let req = LGWebOSProtocol.ssapRequest(
                     id: nextId("screen_on"),
                     uri: "ssap://com.webos.service.tvpower/power/turnOnScreen",
                     payload: ["standbyMode": "active"]
                 )
-                try? await ws.send(.string(req))
+                try? await sendCommandFrame(req)
+                isScreenOff = false
+                emitCurrentDevice()
             }
         } else {
-            guard let ws = activeWebSocket else { return }
             let req = LGWebOSProtocol.ssapRequest(
                 id: nextId("power_off"),
                 uri: "ssap://system/turnOff"
             )
-            try await ws.send(.string(req))
+            try await sendCommandFrame(req)
             isConnected = false
             isScreenOff = false
             emitCurrentDevice()
@@ -606,21 +632,17 @@ public actor LGWebOSClient {
     }
 
     private func setMuted(_ muted: Bool) async throws {
-        guard let ws = activeWebSocket else { return }
-        isMuted = muted
-        emitCurrentDevice()
         let req = LGWebOSProtocol.ssapRequest(
             id: nextId("mute"),
             uri: "ssap://audio/setMute",
             payload: ["mute": muted]
         )
-        try await ws.send(.string(req))
+        try await sendCommandFrame(req)
+        isMuted = muted
+        emitCurrentDevice()
     }
 
     private func setScreenOff(_ off: Bool) async throws {
-        guard let ws = activeWebSocket else { return }
-        isScreenOff = off
-        emitCurrentDevice()
         let uri = off
             ? "ssap://com.webos.service.tvpower/power/turnOffScreen"
             : "ssap://com.webos.service.tvpower/power/turnOnScreen"
@@ -629,42 +651,42 @@ public actor LGWebOSClient {
             uri: uri,
             payload: ["standbyMode": "active"]
         )
-        try await ws.send(.string(req))
+        try await sendCommandFrame(req)
+        isScreenOff = off
+        emitCurrentDevice()
     }
 
     private func setVolume(percent: Int) async throws {
-        guard let ws = activeWebSocket else { return }
-        volumePercent = percent
-        if percent > 0 { isMuted = false }
-        emitCurrentDevice()
         let req = LGWebOSProtocol.ssapRequest(
             id: nextId("vol"),
             uri: "ssap://audio/setVolume",
             payload: ["volume": percent]
         )
-        try await ws.send(.string(req))
+        try await sendCommandFrame(req)
+        volumePercent = percent
+        if percent > 0 { isMuted = false }
+        emitCurrentDevice()
     }
 
     private func selectSource(_ label: String) async throws {
-        guard let ws = activeWebSocket else { return }
-        currentSource = label
-        emitCurrentDevice()
         let mapped = LGWebOSProtocol.appIdOrInput(forSourceLabel: label)
+        let req: String
         if mapped.isInput {
-            let req = LGWebOSProtocol.ssapRequest(
+            req = LGWebOSProtocol.ssapRequest(
                 id: nextId("input"),
                 uri: "ssap://tv/switchInput",
                 payload: ["inputId": mapped.id]
             )
-            try await ws.send(.string(req))
         } else {
-            let req = LGWebOSProtocol.ssapRequest(
+            req = LGWebOSProtocol.ssapRequest(
                 id: nextId("launch"),
                 uri: "ssap://system.launcher/launch",
                 payload: ["id": mapped.id]
             )
-            try await ws.send(.string(req))
         }
+        try await sendCommandFrame(req)
+        currentSource = label
+        emitCurrentDevice()
     }
 
     // MARK: - Connection & Subscription Loop

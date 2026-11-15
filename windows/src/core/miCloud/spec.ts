@@ -299,6 +299,7 @@ export function isFallbackSpec(spec: MiotDeviceSpec): boolean {
 export class MiotSpecResolver {
   private readonly specByModel = new Map<string, MiotDeviceSpec>();
   private readonly specByType = new Map<string, MiotDeviceSpec>();
+  private readonly inFlightByType = new Map<string, Promise<MiotDeviceSpec | null>>();
   /// Models served by the guessed table; every resolve() retries the released instance (#30).
   private readonly fallbackModels = new Set<string>();
   private typeIndex: Record<string, string> | null = null;
@@ -415,21 +416,33 @@ export class MiotSpecResolver {
   private async fetchInstance(urn: string): Promise<MiotDeviceSpec | null> {
     const cached = this.specByType.get(urn);
     if (cached) return cached;
-    try {
-      const resp = await this.transport({
-        url: `https://miot-spec.org/miot-spec-v2/instance?type=${encodeURIComponent(urn)}`,
-        method: "GET",
-        timeoutMs: 15000,
-      });
-      if (resp.status !== 200) return null;
-      const spec = parseMiotDeviceSpec(JSON.parse(resp.body));
-      if (spec && spec.services.length > 0) {
-        this.specByType.set(urn, spec);
-        return spec;
+    const inFlight = this.inFlightByType.get(urn);
+    if (inFlight) return inFlight;
+
+    const task = (async (): Promise<MiotDeviceSpec | null> => {
+      try {
+        const resp = await this.transport({
+          url: `https://miot-spec.org/miot-spec-v2/instance?type=${encodeURIComponent(urn)}`,
+          method: "GET",
+          timeoutMs: 15000,
+        });
+        if (resp.status !== 200) return null;
+        const spec = parseMiotDeviceSpec(JSON.parse(resp.body));
+        if (spec && spec.services.length > 0) {
+          this.specByType.set(urn, spec);
+          return spec;
+        }
+      } catch {
+        return null;
       }
-    } catch {
-      // ignore instance fetch failure
+      return null;
+    })();
+
+    this.inFlightByType.set(urn, task);
+    try {
+      return await task;
+    } finally {
+      this.inFlightByType.delete(urn);
     }
-    return null;
   }
 }

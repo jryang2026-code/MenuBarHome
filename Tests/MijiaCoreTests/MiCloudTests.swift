@@ -124,6 +124,92 @@ struct MiAccountLoginTests {
         let session = try await login.waitForScan(ticket)
         #expect(session == MiSession(userId: "42", cUserId: "c", ssecurity: "c3M=", serviceToken: "tok123", region: "cn"))
     }
+
+    @Test("Login redirect hops require https Xiaomi domains without userinfo")
+    func loginRedirectValidationAndEnforcement() async throws {
+        #expect(MiAccountLogin.isTrustedXiaomiLoginRedirect(URL(string: "https://sts.api.io.mi.com/sts?d=1")!))
+        #expect(MiAccountLogin.isTrustedXiaomiLoginRedirect(URL(string: "https://account.xiaomi.com/pass/serviceLogin")!))
+        #expect(MiAccountLogin.isTrustedXiaomiLoginRedirect(URL(string: "https://xiaomi.com/sts")!))
+        #expect(MiAccountLogin.isTrustedXiaomiLoginRedirect(URL(string: "https://mi.com/sts")!))
+        #expect(!MiAccountLogin.isTrustedXiaomiLoginRedirect(URL(string: "http://sts.api.io.mi.com/sts")!))
+        #expect(!MiAccountLogin.isTrustedXiaomiLoginRedirect(URL(string: "https://user:pass@account.xiaomi.com/sts")!))
+        #expect(!MiAccountLogin.isTrustedXiaomiLoginRedirect(URL(string: "https://@account.xiaomi.com/sts")!))
+        #expect(!MiAccountLogin.isTrustedXiaomiLoginRedirect(URL(string: "https://xiaomi.com.evil.example/sts")!))
+        #expect(!MiAccountLogin.isTrustedXiaomiLoginRedirect(URL(string: "https://notxiaomi.com/sts")!))
+
+        let trustedTransport = ScriptedTransport { req in
+            let url = req.url!.absoluteString
+            if url == "https://lp.example/poll" {
+                return (200, [:], #"&&&START&&&{"userId":7,"ssecurity":"c3M=","cUserId":"c","passToken":"p","location":"https://account.xiaomi.com/sts?step=1"}"#)
+            }
+            if url == "https://account.xiaomi.com/sts?step=1" {
+                return (302, ["Location": "https://sts.api.io.mi.com/sts?step=2"], "")
+            }
+            if url == "https://sts.api.io.mi.com/sts?step=2" {
+                return (200, ["Set-Cookie": "serviceToken=hopTok; Path=/"], "ok")
+            }
+            return (404, [:], "")
+        }
+        let ticket = QRLoginTicket(
+            qrImageURL: URL(string: "https://qr.example")!,
+            loginURL: URL(string: "https://login.example")!,
+            longPollURL: URL(string: "https://lp.example/poll")!,
+            timeout: 30
+        )
+        let okSession = try await MiAccountLogin(transport: trustedTransport, redirectlessTransport: trustedTransport).waitForScan(ticket)
+        #expect(okSession.serviceToken == "hopTok")
+
+        for untrustedHop in [
+            "https://evil.example/steal",
+            "http://sts.api.io.mi.com/sts",
+            "https://user@sts.api.io.mi.com/sts",
+        ] {
+            let badTransport = ScriptedTransport { req in
+                let url = req.url!.absoluteString
+                if url == "https://lp.example/poll" {
+                    return (200, [:], #"&&&START&&&{"userId":7,"ssecurity":"c3M=","cUserId":"c","passToken":"p","location":"https://account.xiaomi.com/sts?step=1"}"#)
+                }
+                if url == "https://account.xiaomi.com/sts?step=1" {
+                    return (302, ["Location": untrustedHop], "")
+                }
+                Issue.record("Unexpected request to untrusted redirect \(url)")
+                return (200, ["Set-Cookie": "serviceToken=leaked"], "ok")
+            }
+            await #expect(throws: MiLoginError.badResponse("非小米登录跳转地址")) {
+                _ = try await MiAccountLogin(transport: badTransport, redirectlessTransport: badTransport).waitForScan(ticket)
+            }
+            #expect(badTransport.requests.count == 2)
+        }
+    }
+
+    @Test("deviceList and homeRooms rethrow HTTP 429 and Mi rate-limit errors without calling legacy fallbacks")
+    func rateLimitSkipsLegacyFallback() async throws {
+        let session = MiSession(
+            userId: "100",
+            cUserId: "c",
+            ssecurity: Vectors.ssecurity,
+            serviceToken: "tok",
+            region: "cn"
+        )
+
+        let http429Devices = ScriptedTransport { _ in
+            (429, [:], #"{"code":-1,"message":"too many requests"}"#)
+        }
+        await #expect(throws: MiCloudError.http(429)) {
+            _ = try await MiCloudClient(session: session, transport: http429Devices).deviceList()
+        }
+        #expect(http429Devices.requests.count == 1)
+        #expect(http429Devices.requests.first?.url?.path == "/app/v2/home/device_list_page")
+
+        let apiRateLimitRooms = ScriptedTransport { _ in
+            (200, [:], #"{"code":-1,"message":"请求过于频繁，请稍后再试"}"#)
+        }
+        await #expect(throws: MiCloudError.api(code: -1, message: "请求过于频繁，请稍后再试")) {
+            _ = try await MiCloudClient(session: session, transport: apiRateLimitRooms).homeRooms()
+        }
+        #expect(apiRateLimitRooms.requests.count == 1)
+        #expect(apiRateLimitRooms.requests.first?.url?.path == "/app/v2/homeroom/gethome_merged")
+    }
 }
 
 // MARK: - Test Doubles

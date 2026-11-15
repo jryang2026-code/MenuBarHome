@@ -74,11 +74,13 @@ public actor NWConnectionMiIOUDPTransport: MiIOUDPTransport {
     public func send(_ packet: Data, to host: String, port: UInt16, timeout: Duration) async throws -> Data {
         try Task.checkCancellation()
         guard !isShutDown else { throw MiIOError.shutDown }
-        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+        let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard HADiscovery.isPrivateLANIPv4(trimmedHost),
+              let nwPort = NWEndpoint.Port(rawValue: port) else {
             throw MiIOError.invalidAddress(host)
         }
         let callID = UUID()
-        let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: .udp)
+        let connection = NWConnection(host: NWEndpoint.Host(trimmedHost), port: nwPort, using: .udp)
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, any Error>) in
@@ -413,7 +415,7 @@ public actor LocalMiIOClient {
 
     private func validatedHost(_ ip: String) throws -> String {
         let trimmed = ip.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw MiIOError.invalidAddress(ip) }
+        guard HADiscovery.isPrivateLANIPv4(trimmed) else { throw MiIOError.invalidAddress(ip) }
         return trimmed
     }
 

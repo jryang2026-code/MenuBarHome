@@ -103,6 +103,42 @@ struct HAPlaintextConsentTests {
         #expect(store.provider is DemoHomeProvider)
         #expect(!HAPlaintextConsent.isApproved(Self.publicHTTP, defaults: store.userDefaults))
     }
+
+    @Test("matchesServerOrigin enforces normalized scheme, host, and default port parity without userinfo")
+    func matchesServerOriginChecks() throws {
+        #expect(HAPlaintextConsent.matchesServerOrigin(
+            try #require(URL(string: "http://192.168.1.20:8123/api/camera_proxy/camera.door?_t=1")),
+            serverBaseURL: "http://192.168.1.20:8123/"
+        ))
+        #expect(HAPlaintextConsent.matchesServerOrigin(
+            try #require(URL(string: "http://192.168.1.20:80/api/camera_proxy/camera.door")),
+            serverBaseURL: "http://192.168.1.20"
+        ))
+        #expect(HAPlaintextConsent.matchesServerOrigin(
+            try #require(URL(string: "https://HA.EXAMPLE.COM:443/api/camera_proxy/camera.door")),
+            serverBaseURL: "https://ha.example.com/"
+        ))
+        #expect(!HAPlaintextConsent.matchesServerOrigin(
+            try #require(URL(string: "https://cam.other.example/snap.jpg")),
+            serverBaseURL: "https://ha.example.com"
+        ))
+        #expect(!HAPlaintextConsent.matchesServerOrigin(
+            try #require(URL(string: "http://ha.example.com/snap.jpg")),
+            serverBaseURL: "https://ha.example.com"
+        ))
+        #expect(!HAPlaintextConsent.matchesServerOrigin(
+            try #require(URL(string: "http://192.168.1.20:8080/snap.jpg")),
+            serverBaseURL: "http://192.168.1.20:8123"
+        ))
+        #expect(!HAPlaintextConsent.matchesServerOrigin(
+            try #require(URL(string: "https://user:pass@ha.example.com/snap.jpg")),
+            serverBaseURL: "https://ha.example.com"
+        ))
+        #expect(!HAPlaintextConsent.matchesServerOrigin(
+            try #require(URL(string: "https://ha.example.com/snap.jpg")),
+            serverBaseURL: ""
+        ))
+    }
 }
 
 final class ReportedURLs: @unchecked Sendable {

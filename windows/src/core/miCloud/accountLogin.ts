@@ -183,6 +183,10 @@ export class MiAccountLogin {
     return null;
   }
 
+  static isTrustedXiaomiLoginRedirect(rawUrl: string): boolean {
+    return isTrustedXiaomiLoginRedirect(rawUrl);
+  }
+
   private async fetchServiceToken(initialLocation: string): Promise<{ token: string; expiresAt?: number }> {
     let url = initialLocation;
     for (let i = 0; i < 5; i++) {
@@ -196,15 +200,47 @@ export class MiAccountLogin {
       if (parsedCookie) {
         return parsedCookie;
       }
-      const nextLoc = resp.headers["location"] ?? resp.headers["Location"];
+      const nextLoc = (resp.headers["location"] ?? resp.headers["Location"])?.trim();
       if (resp.status >= 300 && resp.status < 400 && nextLoc) {
-        url = new URL(nextLoc, url).toString();
+        let resolved: string;
+        try {
+          if (nextLoc.includes("\\")) {
+            throw new Error("invalid redirect");
+          }
+          resolved = new URL(nextLoc, url).toString();
+        } catch {
+          throw new MiCloudError("badResponse", "非小米登录跳转地址");
+        }
+        if (!isTrustedXiaomiLoginRedirect(resolved)) {
+          throw new MiCloudError("badResponse", "非小米登录跳转地址");
+        }
+        url = resolved;
         continue;
       }
       break;
     }
     throw new MiCloudError("badResponse", "登录成功但未拿到 serviceToken，请重试");
   }
+}
+
+export function isTrustedXiaomiLoginRedirect(rawUrl: string): boolean {
+  if (rawUrl.includes("\\")) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:") return false;
+  if (parsed.username !== "" || parsed.password !== "") return false;
+  const host = parsed.hostname.toLowerCase();
+  if (!host || host.endsWith(".")) return false;
+  return (
+    host === "xiaomi.com" ||
+    host.endsWith(".xiaomi.com") ||
+    host === "mi.com" ||
+    host.endsWith(".mi.com")
+  );
 }
 
 const COOKIE_ATTR_NAMES = new Set([

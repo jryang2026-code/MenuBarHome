@@ -193,6 +193,25 @@ public struct MiAccountLogin: Sendable {
         )
     }
 
+    public static func isTrustedXiaomiLoginRedirect(_ url: URL) -> Bool {
+        let raw = url.absoluteString
+        guard !raw.contains("\\"),
+              let components = URLComponents(url: url.absoluteURL, resolvingAgainstBaseURL: false),
+              components.user == nil,
+              components.password == nil,
+              components.scheme?.lowercased() == "https",
+              let host = components.host?.lowercased(),
+              !host.isEmpty,
+              !host.hasPrefix("["),
+              !host.hasSuffix(".") else {
+            return false
+        }
+        return host == "xiaomi.com"
+            || host.hasSuffix(".xiaomi.com")
+            || host == "mi.com"
+            || host.hasSuffix(".mi.com")
+    }
+
     private func fetchServiceToken(location: URL) async throws -> (token: String, expiresAt: Date?) {
         var url = location
         for _ in 0..<5 {
@@ -203,10 +222,16 @@ public struct MiAccountLogin: Sendable {
                 return token
             }
             guard (300...399).contains(http.statusCode),
-                  let next = http.value(forHTTPHeaderField: "Location").flatMap({ URL(string: $0, relativeTo: url) }) else {
+                  let rawLocation = http.value(forHTTPHeaderField: "Location")?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !rawLocation.isEmpty else {
                 break
             }
-            url = next.absoluteURL
+            guard !rawLocation.contains("\\"),
+                  let next = URL(string: rawLocation, relativeTo: url)?.absoluteURL,
+                  Self.isTrustedXiaomiLoginRedirect(next) else {
+                throw MiLoginError.badResponse("非小米登录跳转地址")
+            }
+            url = next
         }
         throw MiLoginError.missingServiceToken
     }

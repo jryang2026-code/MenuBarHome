@@ -192,25 +192,25 @@ public enum HADiscovery {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "."))
 
-        let internalURL = Self.validHTTPURL(txt["internal_url"])
-        let baseURL = Self.validHTTPURL(txt["base_url"])
-        let externalURL = Self.validHTTPURL(txt["external_url"])
+        let internalURL = Self.validLANHTTPURL(txt["internal_url"])
+        let baseURL = Self.validLANHTTPURL(txt["base_url"])
+        let validTarget = cleanTarget.flatMap { Self.isAllowedLANDiscoveryHost($0) ? $0 : nil }
 
         let chosenURL: String?
         if let internalURL, Self.urlHasIPv4Host(internalURL) {
             chosenURL = internalURL
         } else if let baseURL, Self.urlHasIPv4Host(baseURL) {
             chosenURL = baseURL
-        } else if let cleanTarget, !cleanTarget.isEmpty, let resolvedTargetIP = hostResolver(cleanTarget), !resolvedTargetIP.isEmpty {
+        } else if let validTarget,
+                  let resolvedTargetIP = hostResolver(validTarget)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  Self.isPrivateLANIPv4(resolvedTargetIP) {
             chosenURL = "http://\(resolvedTargetIP):\(port)"
         } else if let internalURL {
             chosenURL = internalURL
         } else if let baseURL {
             chosenURL = baseURL
-        } else if let cleanTarget, !cleanTarget.isEmpty {
-            chosenURL = "http://\(cleanTarget):\(port)"
-        } else if let externalURL {
-            chosenURL = externalURL
+        } else if let validTarget {
+            chosenURL = Self.validLANHTTPURL("http://\(validTarget):\(port)")
         } else {
             chosenURL = nil
         }
@@ -391,8 +391,8 @@ public enum HADiscovery {
         var seenCandidates: Set<String> = []
 
         func addCandidate(_ raw: String, into list: inout [String]) {
-            let norm = HAWebSocketProvider.normalizeBaseURL(raw)
-            guard !norm.isEmpty, seenCandidates.insert(norm).inserted else { return }
+            guard let norm = Self.validLANHTTPURL(raw),
+                  seenCandidates.insert(norm).inserted else { return }
             list.append(norm)
         }
 
@@ -469,7 +469,7 @@ public enum HADiscovery {
                 var buffer = [UInt8](repeating: 0, count: Int(INET_ADDRSTRLEN))
                 if inet_ntop(AF_INET, &addr, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil {
                     let ip = String(decoding: buffer.prefix { $0 != 0 }, as: UTF8.self)
-                    if !ip.hasPrefix("127.") && !ip.hasPrefix("169.254.") {
+                    if isPrivateLANIPv4(ip) {
                         return ip
                     }
                 }
@@ -541,7 +541,8 @@ public enum HADiscovery {
         return await withTaskGroup(of: (Int, HADiscoveredInstance?).self) { group in
             for (idx, baseURL) in urls.enumerated() {
                 group.addTask {
-                    guard let url = URL(string: "\(baseURL)/manifest.json") else {
+                    guard let safeBase = Self.validLANHTTPURL(baseURL),
+                          let url = URL(string: "\(safeBase)/manifest.json") else {
                         return (idx, nil)
                     }
                     var req = URLRequest(url: url)
@@ -575,13 +576,60 @@ public enum HADiscovery {
         }
     }
 
-    private static func validHTTPURL(_ raw: String?) -> String? {
+    static func isAllowedLANDiscoveryHost(_ rawHost: String) -> Bool {
+        var host = rawHost
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        while host.hasSuffix(".") {
+            host.removeLast()
+        }
+        guard !host.isEmpty,
+              host != "localhost",
+              host != "localhost.local",
+              !host.contains("@"),
+              !host.contains(":"),
+              !host.contains("["),
+              !host.contains("]") else {
+            return false
+        }
+        if isPrivateLANIPv4(host) {
+            return true
+        }
+        guard host.hasSuffix(".local") else {
+            return false
+        }
+        let stem = host.dropLast(".local".count)
+        guard !stem.isEmpty, stem != "localhost" else { return false }
+        let labels = stem.split(separator: ".", omittingEmptySubsequences: false)
+        guard !labels.isEmpty else { return false }
+        return labels.allSatisfy { label in
+            guard !label.isEmpty,
+                  label.count <= 63,
+                  let first = label.first,
+                  let last = label.last,
+                  first.isASCII && (first.isLetter || first.isNumber),
+                  last.isASCII && (last.isLetter || last.isNumber) else {
+                return false
+            }
+            return label.allSatisfy { ch in
+                ch.isASCII && (ch.isLetter || ch.isNumber || ch == "-")
+            }
+        }
+    }
+
+    private static func validLANHTTPURL(_ raw: String?) -> String? {
         guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
               !trimmed.isEmpty,
-              trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://"),
-              let url = URL(string: trimmed),
-              let host = url.host,
-              !host.isEmpty else {
+              let components = URLComponents(string: trimmed),
+              components.user == nil,
+              components.password == nil,
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host,
+              isAllowedLANDiscoveryHost(host) else {
+            return nil
+        }
+        if let port = components.port, !(1...65535).contains(port) {
             return nil
         }
         return HAWebSocketProvider.normalizeBaseURL(trimmed)
@@ -595,9 +643,19 @@ public enum HADiscovery {
     public static func isPrivateLANIPv4(_ ip: String) -> Bool {
         let parts = ip.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 4 else { return false }
-        let nums = parts.compactMap { Int($0) }
-        guard nums.count == 4, nums.allSatisfy({ (0...255).contains($0) }) else { return false }
-        // Exclude network/broadcast endpoints
+        var nums: [Int] = []
+        nums.reserveCapacity(4)
+        for part in parts {
+            guard !part.isEmpty,
+                  part.count <= 3,
+                  !(part.count > 1 && part.first == "0"),
+                  part.allSatisfy({ $0.isASCII && $0.isNumber }),
+                  let val = Int(part),
+                  (0...255).contains(val) else {
+                return false
+            }
+            nums.append(val)
+        }
         guard nums[3] != 0 && nums[3] != 255 else { return false }
         if nums[0] == 10 { return true }
         if nums[0] == 192 && nums[1] == 168 { return true }

@@ -1,7 +1,7 @@
 import { speechLocale } from "../i18n.js";
 import type { DeviceKind, SmartDevice } from "../models.js";
-import { MiCloudClient, type MiDeviceRecord, type MiRoom } from "./client.js";
-import { asIdString, MiCloudError } from "./session.js";
+import { MiCloudClient, shouldRethrowWithoutFallback, type MiDeviceRecord, type MiRoom } from "./client.js";
+import { asIdString } from "./session.js";
 
 /** Locale-aware inline text helper for camera gateway / HUD labels (`i18n.ts` stays untouched). */
 export function cameraTr(zh: string, en: string): string {
@@ -323,7 +323,7 @@ async function fetchCameraMetadataPaged(
   return records.filter((r) => !seen.has(r.did) && (seen.add(r.did), true));
 }
 
-async function fetchCameraMetadataList(client: MiCloudClient): Promise<CameraRecordMetadata[]> {
+export async function fetchCameraMetadataList(client: MiCloudClient): Promise<CameraRecordMetadata[]> {
   const byDid = new Map<string, CameraRecordMetadata>();
   const merge = (items: readonly CameraRecordMetadata[]) => {
     for (const item of items) {
@@ -338,7 +338,7 @@ async function fetchCameraMetadataList(client: MiCloudClient): Promise<CameraRec
     try {
       merge(await fetchCameraMetadataPaged(client));
     } catch (err) {
-      if (err instanceof MiCloudError && err.kind === "sessionExpired") throw err;
+      if (shouldRethrowWithoutFallback(err)) throw err;
       const legacy = await client.request("home/device_list", {
         getVirtualModel: true,
         getHuamiDevices: 1,
@@ -393,7 +393,7 @@ export async function resolveLiveCameraTarget(
   const [initialMetadata, cloudRooms] = await Promise.all([
     fetchCameraMetadataList(client),
     client.homeRooms().catch((err: unknown) => {
-      if (err instanceof MiCloudError && err.kind === "sessionExpired") throw err;
+      if (shouldRethrowWithoutFallback(err)) throw err;
       return [] as MiRoom[];
     }),
   ]);
@@ -427,7 +427,7 @@ export async function resolveLiveCameraTarget(
     if (wantedDids.size > 0) {
       const extra = await fetchCameraMetadataPaged(client, Array.from(wantedDids).slice(0, 150)).catch(
         (err: unknown) => {
-          if (err instanceof MiCloudError && err.kind === "sessionExpired") throw err;
+          if (shouldRethrowWithoutFallback(err)) throw err;
           return [] as CameraRecordMetadata[];
         },
       );
