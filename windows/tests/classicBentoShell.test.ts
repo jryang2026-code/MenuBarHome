@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
@@ -275,5 +276,17 @@ describe("Classic Single-Card Glass Shell, 4-Size Bento Grid & Inline Accordion 
       await setImmediate();
       assert.equal(app.layout.tileSizes[sizeKey], expected);
     }
+  });
+
+  it("bounds and scrolls .cc-classic-upper-stack and overrides compact sensor span in Classic mode", () => {
+    const css = readFileSync(new URL("../src/ui/styles.css", import.meta.url), "utf8");
+    assert.match(
+      css,
+      /#app\[data-panel-theme="classic"\]\s+\.cc-classic-upper-stack\s*\{[^}]*max-height:\s*min\(220px,\s*35%\);[^}]*overflow-y:\s*auto;/s,
+    );
+    assert.match(
+      css,
+      /#app\[data-panel-theme="classic"\]\s+\.cc-devices-grid\.is-flow\s*>\s*\.cc-sensor\.is-compact\.is-size-half:not\(\.is-expanded\):not\(\.is-span-row\)\s*\{[^}]*grid-column:\s*span 6\s*!important;/s,
+    );
   });
 });

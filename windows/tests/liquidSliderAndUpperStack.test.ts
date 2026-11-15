@@ -5,7 +5,7 @@ import type { Window } from "happy-dom";
 import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { SliderStepSnap } from "../src/ui/liquidGlassSlider.js";
-import { StackedCardGeometry, collectUpperStackCards, getHostActivityCenter, recordSafetyAlerts } from "../src/ui/activityStackView.js";
+import { StackedCardGeometry, collectUpperStackCards, dismissUpperStackCard, getHostActivityCenter, recordSafetyAlerts } from "../src/ui/activityStackView.js";
 import { scopedKey } from "../src/ui/panelPrefs.js";
 import type { DeviceCommand } from "../src/core/models.js";
 
@@ -152,6 +152,24 @@ describe("Unified Collapsible Upper Stack with 3-Card Peek & Swipe-to-Dismiss", 
     swipeCard(element<HTMLElement>('[data-upper-card-id="undo:manual"]'), 2, 200, 20, 10);
     assert.equal(app.lastUndoAction, null);
     assert.equal(document.querySelector('[data-upper-card-id="undo:manual"]'), null);
+
+    app.lastUndoAction = { summary: "已打开书房台灯", expiresAtMs: nowMs + 605_000, steps: [{ deviceId: "light.study_desk", commands: [{ kind: "setSwitch", entityId: "light.study_desk", isOn: false }] }] };
+    app.undoBannerUntilMs = nowMs + 605_000;
+    app.render();
+    assert.equal(collectUpperStackCards(app, nowMs).some((c) => c.id === "undo:manual"), true);
+    element<HTMLButtonElement>("[data-activity-toggle-expand]").click();
+    assert.ok(document.querySelector('[data-upper-card-id="undo:manual"]'));
+    dismissUpperStackCard(app, "undo:manual");
+    app.render();
+
+    app.scheduledCommands = [{ id: "sched-active-1", command: "10 分钟后关主灯", delaySeconds: 600, fireTimestampMs: nowMs + 600_000, reply: "已设置", intents: [{ targetId: "light.living_ceiling", operation: { kind: "power", isOn: false } }] }];
+    app.missedScheduledCommands = [{ id: "sched-missed-1", command: "昨晚关空调", delaySeconds: 300, fireTimestampMs: nowMs - 60_000, reply: "已设置", intents: [{ targetId: "climate.living_ac", operation: { kind: "power", isOn: false } }] }];
+    dismissUpperStackCard(app, "timers:active");
+    assert.equal(app.scheduledCommands.length, 0);
+    assert.equal(app.missedScheduledCommands.length, 1);
+    assert.equal(app.missedScheduledCommands[0]?.id, "sched-missed-1");
+    dismissUpperStackCard(app, "missed:timers");
+    assert.equal(app.missedScheduledCommands.length, 0);
 
     app.haConnectionError = "Home Assistant 令牌无效";
     app.render();

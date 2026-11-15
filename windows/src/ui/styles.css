@@ -5105,6 +5105,15 @@ input[type="checkbox"]:checked:active:not(:disabled)::after {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: min(220px, 35%);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+#app[data-panel-theme="classic"] .cc-classic-upper-stack:has(details.win-camera-card[open]) {
+  max-height: min(280px, 44%);
 }
 
 #app[data-panel-theme="classic"] .cc-classic-upper-stack:empty {
@@ -5171,15 +5180,24 @@ input[type="checkbox"]:checked:active:not(:disabled)::after {
   transform: scale(0.972);
 }
 #app[data-panel-theme="classic"] .cc-popover.scheme-light .cc-tile { background: rgba(255, 255, 255, 0.72); border-color: rgba(0, 0, 0, 0.08); }
-#app[data-panel-theme="classic"] .cc-tile.is-size-small:not(.is-expanded) { grid-column: span 3; }
-#app[data-panel-theme="classic"] .cc-tile.is-size-half:not(.is-expanded):not(.is-span-row) { grid-column: span 6; }
+#app[data-panel-theme="classic"] .cc-tile.is-size-small:not(.is-expanded),
+#app[data-panel-theme="classic"] .cc-devices-grid.is-flow > .cc-tile.is-size-small:not(.is-expanded) {
+  grid-column: span 3 !important;
+}
+#app[data-panel-theme="classic"] .cc-tile.is-size-half:not(.is-expanded):not(.is-span-row),
+#app[data-panel-theme="classic"] .cc-sensor.is-compact.is-size-half:not(.is-expanded):not(.is-span-row),
+#app[data-panel-theme="classic"] .cc-devices-grid.is-flow > .cc-sensor.is-compact.is-size-half:not(.is-expanded):not(.is-span-row) {
+  grid-column: span 6 !important;
+}
 #app[data-panel-theme="classic"] .cc-tile.is-size-hero:not(.is-expanded) {
   grid-column: span 6; grid-row: span 2; min-height: 124px; display: flex; flex-direction: column; justify-content: space-between;
 }
 #app[data-panel-theme="classic"] .cc-tile.is-size-full,
 #app[data-panel-theme="classic"] .cc-tile.is-size-panel,
 #app[data-panel-theme="classic"] .cc-tile.is-expanded,
-#app[data-panel-theme="classic"] .cc-tile.is-span-row { grid-column: 1 / -1; }
+#app[data-panel-theme="classic"] .cc-tile.is-span-row {
+  grid-column: 1 / -1 !important;
+}
 #app[data-panel-theme="classic"] .cc-tile .cc-tile-orb { width: 36px; height: 36px; border-radius: 999px; flex-shrink: 0; }
 #app[data-panel-theme="classic"] .cc-tile.is-active {
   background: color-mix(in srgb, var(--tile-family-color, #007aff) 16%, rgba(255, 255, 255, 0.11));
