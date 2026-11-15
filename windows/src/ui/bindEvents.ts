@@ -25,6 +25,7 @@ import { formatTemperature, stepCelsius, toCelsius } from "../core/temperature.j
 import { invokeTauriVoid } from "./transport.js";
 import { facetActionArguments, feedingConfirmationBannerText } from "../core/miCloud/feedAction.js";
 import { bindDetailDrawerEvents, coverMotorRequiresConfirmation, ensureDrawerLifecycleListeners } from "./detailDrawers.js";
+import { bindLiquidGlassSliders } from "./liquidGlassSlider.js";
 import { facetWriteEnabled, selectedPortionForControl } from "./facetViews.js";
 import { facetTitle, facetValue } from "../core/miotFacetText.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
@@ -137,6 +138,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
 
   export function bindEvents(host: MenuMijiaWindowsApp): void {
     ensureDrawerLifecycleListeners(host);
+    bindLiquidGlassSliders(host.root);
     bindConnectionsAndDiagPanelEvents(host);
     host.root.querySelectorAll<HTMLDetailsElement>("details[data-notif-card]").forEach((details) => {
       details.addEventListener("toggle", () => {

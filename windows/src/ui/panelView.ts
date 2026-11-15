@@ -3,7 +3,7 @@ import { t } from "../core/i18n.js";
 import { deviceCanTogglePower, hasDetailDrawer, isDeviceActiveOn, type SmartDevice } from "../core/models.js";
 import { normalizeSearch } from "../core/panelSearch.js";
 import { availableQuickActions, trText, type QuickActionId } from "../core/quickActions.js";
-import { bindActivityStackAfterRender, renderActivityStack } from "./activityStackView.js";
+import { bindActivityStackAfterRender, renderActivityStack, renderClassicUnifiedUpperStack } from "./activityStackView.js";
 import { SF_ICONS } from "./appConstants.js";
 import { applyPanelOpacity, withAliases } from "./panelPrefs.js";
 import { quickActions } from "./demo.js";
@@ -34,7 +34,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
   ]
     .filter(Boolean)
     .join(" ");
-  const notifStack = renderNotificationStack(host, !isClassic);
+  const notifStack = isClassic ? renderClassicUnifiedUpperStack(host) : renderNotificationStack(host, true);
   const headerHtml = `
         <header class="cc-header">
           <div class="cc-header-top">
