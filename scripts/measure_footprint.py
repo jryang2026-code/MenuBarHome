@@ -99,7 +99,7 @@ class Measurement:
 
 def parse_cpu_time(text: str) -> float:
     """Accept `MM:SS.ss`, `HH:MM:SS.ss`, and `MMM:SS.ss` from `ps -o cputime=`."""
-    match = CPU_TIME_RE.match(text.strip())
+    match = CPU_TIME_RE.match(text.strip().replace(",", "."))
     if not match:
         raise MeasureError(f"unrecognised CPU time: {text!r}")
     hours = int(match.group(1) or 0)
@@ -186,6 +186,15 @@ def find_macos_pid(name: str = MACOS_PROCESS_NAME) -> int | None:
     return None
 
 
+def macos_platform_label(machine: str | None = None) -> str:
+    arch = (machine if machine is not None else _platform.machine()).strip().lower()
+    if arch in ("x86_64", "amd64", "i386", "x86"):
+        return "macOS (Intel)"
+    if arch in ("arm64", "aarch64"):
+        return "macOS (Apple Silicon)"
+    return f"macOS ({arch})" if arch else "macOS"
+
+
 def _macos_reading(pid: int) -> tuple[Sample, float]:
     fields = _run(["ps", "-p", str(pid), "-o", "rss=,cputime=,pcpu="]).split()
     if len(fields) < 3:
@@ -194,7 +203,7 @@ def _macos_reading(pid: int) -> tuple[Sample, float]:
         Sample(
             rss_mb=int(fields[0]) / 1024,
             cpu_percent=0.0,
-            cpu_percent_lifetime=float(fields[2]),
+            cpu_percent_lifetime=float(fields[2].replace(",", ".")),
         ),
         parse_cpu_time(fields[1]),
     )
@@ -241,7 +250,7 @@ def measure_macos(
         previous_cpu, previous_wall = cpu_seconds, wall
         if index < samples:
             sleep(interval)
-    return summarize(readings, "macOS (Apple Silicon)", state, macos_footprint(pid))
+    return summarize(readings, macos_platform_label(), state, macos_footprint(pid))
 
 
 class _PROCESSENTRY32W(ctypes.Structure):
@@ -260,7 +269,9 @@ class _PROCESSENTRY32W(ctypes.Structure):
 
 
 def select_process_tree(
-    entries: Sequence[tuple[int, int, str]], root_names: str | Sequence[str]
+    entries: Sequence[tuple[int, int, str]],
+    root_names: str | Sequence[str],
+    root_pid: int | None = None,
 ) -> list[tuple[int, str]]:
     """Return the root process and every descendant.
 
@@ -268,8 +279,15 @@ def select_process_tree(
     other applications run their own `msedgewebview2.exe` copies, so matching by
     image name alone would count foreign memory.
     """
-    names = {root_names.lower()} if isinstance(root_names, str) else {name.lower() for name in root_names}
-    included = {pid for pid, _parent, name in entries if name.lower() in names}
+    if root_pid is not None:
+        included = {pid for pid, _parent, _name in entries if pid == root_pid}
+    else:
+        names = (
+            {root_names.lower()}
+            if isinstance(root_names, str)
+            else {name.lower() for name in root_names}
+        )
+        included = {pid for pid, _parent, name in entries if name.lower() in names}
     if not included:
         return []
     changed = True
@@ -314,8 +332,8 @@ def _windows_process_entries() -> list[tuple[int, int, str]]:
     return rows
 
 
-def windows_process_tree() -> list[tuple[int, str]]:
-    return select_process_tree(_windows_process_entries(), WINDOWS_APP_NAMES)
+def windows_process_tree(pid: int | None = None) -> list[tuple[int, str]]:
+    return select_process_tree(_windows_process_entries(), WINDOWS_APP_NAMES, root_pid=pid)
 
 
 class _FILETIME(ctypes.Structure):
@@ -390,19 +408,24 @@ def measure_windows(
     interval: float = DEFAULT_INTERVAL_SECONDS,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    pid: int | None = None,
 ) -> Measurement:
-    processes = windows_process_tree()
-    if not processes:
-        names = " or ".join(WINDOWS_APP_NAMES)
-        raise MeasureError(f"{names} is not running")
     readings: list[Sample] = []
     previous: dict[int, tuple[float, float]] = {}
     previous_wall: float | None = None
     for index in range(samples + 1):
+        processes = windows_process_tree(pid)
+        if not processes:
+            if index == 0:
+                if pid is not None:
+                    raise MeasureError(f"process {pid} is not running")
+                names = " or ".join(WINDOWS_APP_NAMES)
+                raise MeasureError(f"{names} is not running")
+            raise MeasureError("no readable MenuBarHome process")
         current: dict[int, tuple[float, float]] = {}
-        for pid, _name in processes:
+        for proc_pid, _name in processes:
             try:
-                current[pid] = _windows_reading(pid)
+                current[proc_pid] = _windows_reading(proc_pid)
             except MeasureError:
                 continue  # the renderer may exit between the snapshot and the read
         if not current:
@@ -411,9 +434,9 @@ def measure_windows(
         wall = clock()
         if index:
             deltas = [
-                current[pid][1] - previous[pid][1]
-                for pid in current
-                if pid in previous
+                current[proc_pid][1] - previous[proc_pid][1]
+                for proc_pid in current
+                if proc_pid in previous
             ]
             cpu_seconds = sum(deltas)
             readings.append(
@@ -459,6 +482,7 @@ def build_report(
     state: str | None = "idle",
     live: bool = True,
     sampler: Callable[[str], Measurement] | None = None,
+    require_live: bool = False,
 ) -> dict:
     """Assemble the report. `sampler(state)` is the live path; None means baseline only."""
     selected = None if state is None else resolve_state(state)
@@ -471,13 +495,17 @@ def build_report(
             rows.append(sampler(selected))
             mode = "live"
         except MeasureError as error:
+            if require_live:
+                raise
             notes.append(f"live sample skipped: {error}")
 
     recorded = _recorded_rows(platform_name)
     live_states = {row.state for row in rows}
     rows.extend(row for row in recorded if row.state not in live_states)
     if recorded:
-        notes.append("recorded rows are the committed baseline; use --live on a quiet machine to refresh them")
+        notes.append(
+            "recorded rows are the committed baseline; omit --no-live on a quiet machine to refresh them"
+        )
     if not rows and platform_name != "macos":
         raise MeasureError("Windows has no recorded baseline; run this on Windows 11 with the tray app running")
 
@@ -545,6 +573,48 @@ def render_markdown(report: dict) -> str:
     return "\n".join(lines)
 
 
+def _run_self_test() -> int:
+    assert abs(parse_cpu_time("01:02,50") - 62.5) < 1e-6
+    assert macos_platform_label("x86_64") == "macOS (Intel)"
+    assert macos_platform_label("arm64") == "macOS (Apple Silicon)"
+
+    entries = [
+        (100, 1, "MenuBarHome.exe"),
+        (101, 100, "msedgewebview2.exe"),
+        (200, 1, "MenuBarHome.exe"),
+        (201, 200, "msedgewebview2.exe"),
+    ]
+    assert select_process_tree(entries, WINDOWS_APP_NAMES, root_pid=200) == [
+        (200, "MenuBarHome.exe"),
+        (201, "msedgewebview2.exe"),
+    ]
+
+    def failing_sampler(_state: str) -> Measurement:
+        raise MeasureError("process 999999 is not running")
+
+    try:
+        build_report(
+            platform_name="macos",
+            state="idle",
+            live=True,
+            sampler=failing_sampler,
+            require_live=True,
+        )
+    except MeasureError:
+        pass
+    else:
+        raise AssertionError("explicit --pid failure did not propagate MeasureError")
+
+    fallback = build_report(
+        platform_name="macos",
+        state="idle",
+        live=False,
+    )
+    assert any("omit --no-live" in note for note in fallback["notes"])
+    assert not any("use --live" in note for note in fallback["notes"])
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--json", action="store_true", help="print JSON instead of Markdown")
@@ -553,12 +623,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--samples", type=int, default=DEFAULT_SAMPLES, help="sample windows to average")
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL_SECONDS, help="seconds per window")
     parser.add_argument("--no-live", action="store_true", help="print the recorded baseline only")
+    parser.add_argument("--self-test", action="store_true", help="run offline unit checks")
     args = parser.parse_args(argv)
 
+    if args.self_test:
+        return _run_self_test()
     if args.samples < 1:
         parser.error("--samples must be at least 1")
     if args.interval <= 0:
         parser.error("--interval must be greater than zero")
+    if args.pid is not None and args.pid <= 0:
+        parser.error("--pid must be a positive integer")
 
     platform_name = "windows" if _platform.system() == "Windows" else "macos"
     sampler: Callable[[str], Measurement] | None = None
@@ -572,7 +647,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         sampler = macos_sampler
     elif live:
-        sampler = lambda state: measure_windows(state, args.samples, args.interval)
+        sampler = lambda state: measure_windows(state, args.samples, args.interval, pid=args.pid)
 
     try:
         report = build_report(
@@ -580,6 +655,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             state=args.state,
             live=live,
             sampler=sampler,
+            require_live=args.pid is not None,
         )
     except MeasureError as error:
         print(f"measure_footprint: {error}", file=sys.stderr)

@@ -2,6 +2,7 @@
 # Build the pinned go2rtc PTZ binary from the upstream v1.9.15 tag plus one patch.
 # Never publishes and never touches the user's daily go2rtc binary.
 set -euo pipefail
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BASE_COMMIT="7c05066c90ab6ad1fccb506d5f0408aa31ebe60f"
@@ -9,19 +10,20 @@ PATCH_FILE="$ROOT_DIR/scripts/go2rtc-ptz/patches/0001-xiaomi-ptz.patch"
 OUT_DIR="$ROOT_DIR/scripts/go2rtc-ptz/out"
 UPSTREAM="https://github.com/AlexxIT/go2rtc"
 
+sha256_file() {
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        sha256sum "$1" | awk '{print $1}'
+    fi
+}
+
 ensure_go_126() {
-    local candidate ver os arch archive sha256 cache_root tmp_archive
-    for candidate in "$(command -v go 2>/dev/null || true)" "${GO2RTC_PTZ_GO_CACHE:-$HOME/.cache/menubarmijia/go1.26.10}/go/bin/go"; do
-        if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-            ver="$("$candidate" env GOVERSION 2>/dev/null || "$candidate" version 2>/dev/null | awk '{print $3}')"
-            case "$ver" in
-                go1.2[6-9]*|go1.[3-9][0-9]*|go[2-9].*)
-                    export PATH="$(dirname "$candidate"):$PATH"
-                    return 0
-                    ;;
-            esac
-        fi
-    done
+    local go_bin os arch archive sha256 cache_root tmp_archive actual_sha
+    if go_bin="$(bash "$ROOT_DIR/scripts/go2rtc-ptz/go_ready.sh" 2>/dev/null)"; then
+        export PATH="$(dirname "$go_bin"):$PATH"
+        return 0
+    fi
 
     case "$(uname -s)-$(uname -m)" in
         Darwin-arm64)
@@ -56,12 +58,7 @@ ensure_go_126() {
         echo "❌ 下载 Go 1.26.10 失败" >&2
         exit 1
     fi
-    local actual_sha
-    if command -v shasum >/dev/null 2>&1; then
-        actual_sha="$(shasum -a 256 "$tmp_archive" | awk '{print $1}')"
-    else
-        actual_sha="$(sha256sum "$tmp_archive" | awk '{print $1}')"
-    fi
+    actual_sha="$(sha256_file "$tmp_archive")"
     if [ "$actual_sha" != "$sha256" ]; then
         rm -f "$tmp_archive"
         echo "❌ Go 1.26.10 SHA-256 校验失败（期望 ${sha256}，实际 ${actual_sha}）" >&2
@@ -76,7 +73,11 @@ ensure_go_126() {
     export PATH="$cache_root/go/bin:$PATH"
 }
 ensure_go_126
-if ! command -v lipo >/dev/null 2>&1; then
+if [ "${1:-}" = "--go-only" ] || [ "${1:-}" = "--ensure-go-only" ]; then
+    echo "✅ Go 工具链已就绪：$(go version)"
+    exit 0
+fi
+if [ "$(uname -s)" = "Darwin" ] && ! command -v lipo >/dev/null 2>&1; then
     echo "❌ 未找到 lipo（Xcode Command Line Tools）" >&2
     exit 1
 fi
@@ -99,16 +100,22 @@ build() {
 }
 build arm64 "$OUT_DIR/go2rtc-darwin-arm64"
 build amd64 "$OUT_DIR/go2rtc-darwin-amd64"
-lipo -create "$OUT_DIR/go2rtc-darwin-arm64" "$OUT_DIR/go2rtc-darwin-amd64" \
-    -output "$OUT_DIR/go2rtc-universal"
-chmod 755 "$OUT_DIR/go2rtc-universal"
+if command -v lipo >/dev/null 2>&1; then
+    lipo -create "$OUT_DIR/go2rtc-darwin-arm64" "$OUT_DIR/go2rtc-darwin-amd64" \
+        -output "$OUT_DIR/go2rtc-universal"
+    chmod 755 "$OUT_DIR/go2rtc-universal"
+else
+    echo "ℹ️ 当前环境未提供 lipo，跳过合成 macOS 通用二进制 go2rtc-universal"
+fi
 
 echo "▶ 构建 windows/amd64（不参与 macOS 打包，供后续验证）"
 (cd "$WORK/go2rtc" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
     go build -trimpath -ldflags "-s -w" -o "$OUT_DIR/go2rtc-windows-amd64.exe" .)
 
-PATCH_SHA="$(shasum -a 256 "$PATCH_FILE" | awk '{print $1}')"
+PATCH_SHA="$(sha256_file "$PATCH_FILE")"
 printf 'patch_sha256=%s\nheader_version=v1\n' "$PATCH_SHA" > "$OUT_DIR/go2rtc-ptz.manifest"
 
 echo "✅ 构建完成（未发布、未覆盖日用二进制）"
-shasum -a 256 "$OUT_DIR"/go2rtc-* | sed "s|$OUT_DIR/||"
+for artifact in "$OUT_DIR"/go2rtc-*; do
+    printf '%s  %s\n' "$(sha256_file "$artifact")" "$(basename "$artifact")"
+done

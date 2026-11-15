@@ -24,7 +24,7 @@ CANONICAL_CAMERA_WORKFLOW = "./.github/workflows/camera-bin.yml"
 ALLOWED_MACOS_RUNS_ON: frozenset[str] = frozenset(
     {
         CANONICAL_MACOS_RUNNER,
-        "${{ fromJSON(vars.MACOS_CI_RUNNER || '\"macos-26-intel\"') }}",
+        "${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.MACOS_CI_RUNNER || '\"macos-26-intel\"') || 'macos-26-intel' }}",
     }
 )
 

@@ -321,7 +321,10 @@ run_script_self_tests() {
     if [ -n "$PYTHON_BIN" ]; then
         run_clean_env "$PYTHON_BIN" scripts/test_mijia_cli.py
         run_clean_env "$PYTHON_BIN" scripts/update_manifest.py self-test
+        run_clean_env "$PYTHON_BIN" scripts/probe_lan_gateway.py --self-test
+        run_clean_env "$PYTHON_BIN" scripts/measure_footprint.py --self-test
         run_clean_env bash scripts/test_check_release.sh
+        run_clean_env bash scripts/test_nas_setup.sh
     fi
 }
 
@@ -412,10 +415,13 @@ if [ "$CHANGED_ONLY" = "1" ]; then
     fi
 
     echo "🎯 增量门禁命中范围：macos=${SCOPE_MACOS} core=${SCOPE_CORE} windows=${SCOPE_WINDOWS} raycast=${SCOPE_RAYCAST} scripts=${SCOPE_SCRIPTS} go2rtc=${SCOPE_GO2RTC}"
-    if [ "$SCOPE_SCRIPTS" = "true" ] && [ "$RUN_SCRIPT_TESTS" != "1" ]; then
+    if [ "$RUN_SCRIPT_TESTS" != "1" ] && { [ "$SCOPE_SCRIPTS" = "true" ] || printf '%s\n' "$changed_list" | grep -q '^nas/'; }; then
         run_script_self_tests
     fi
 else
+    if [ "$RUN_SCRIPT_TESTS" != "1" ]; then
+        run_script_self_tests
+    fi
     if [ "${MMB_FORCE_GO2RTC:-0}" = "1" ]; then
         SCOPE_GO2RTC=true
     else
