@@ -737,35 +737,37 @@ extension HomeStore {
         if hasMiRestore, !hasLGRestore, rejectWritesBlockedByMiSession() {
             return nil
         }
-        lastAssistantUndo = nil
-        undoTimerTask?.cancel()
-        self.undoBanner = nil
-        // A rehearsal banner has nothing to restore. Dismissing it must not claim the home came back,
-        // and a rehearsal never starts a batch, so the batch bookkeeping below does not concern it.
-        if banner.restoreCommands.isEmpty { return nil }
-        // A bulk action that is still sending must stop before its next command, and the restore
-        // below waits for the command already in flight, so a late batch write cannot land after
-        // the undo. The rows go back synchronously, so the card still answers at once.
+        if banner.restoreCommands.isEmpty {
+            lastAssistantUndo = nil
+            undoTimerTask?.cancel()
+            self.undoBanner = nil
+            return nil
+        }
         let batch = runningBatches[banner.id]
-        batch?.isStopped = true
-        let batchTask = batch?.task
-        // Final once stopped: the loop records a device before its send and checks the stop before
-        // recording, so the wait below cannot admit another device. A batch that already finished
-        // left its report on the banner; an assistant-plan banner has neither, so undo sends all.
-        let attemptedDeviceIds = batch?.attemptedDeviceIds ?? banner.attemptedDeviceIds
-        // A device a newer write took keeps its own state: neither its row nor a restore command
-        // belongs to this action any more. A running batch compares each row's revision through
-        // `ownsRow`; a finished batch had these devices dropped from its banner when it ended.
         let takenOverDeviceIds = batch.map { running in
             Set(running.writes.filter { !ownsRow($0.value) }.keys)
         } ?? []
+        let confirmation = confirmUndoTargets(
+            banner.restoreCommands,
+            previousDevices: banner.previousDevices,
+            excludingDeviceIds: takenOverDeviceIds
+        )
+        if confirmation.abortUndo {
+            return nil
+        }
+        lastAssistantUndo = nil
+        undoTimerTask?.cancel()
+        self.undoBanner = nil
+        batch?.isStopped = true
+        let batchTask = batch?.task
+        let attemptedDeviceIds = batch?.attemptedDeviceIds ?? banner.attemptedDeviceIds
         let undoRevision = undoStateRevision
         let preUndoById = Dictionary(devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let preUndoFacetsById = deviceFacets
         let applicable = applyUndoCommands(
             banner.restoreCommands,
             previousDevices: banner.previousDevices,
-            excludingDeviceIds: takenOverDeviceIds
+            excludingDeviceIds: confirmation.excludedDeviceIds
         )
         if applicable.isEmpty, !banner.restoreCommands.isEmpty {
             showToast(L10n.tr("设备状态已变化，无法撤销", "Device state changed; cannot undo"), isError: true)
@@ -877,6 +879,64 @@ extension HomeStore {
                 )
             }
         }
+    }
+
+    struct UndoConfirmationFilterResult {
+        let excludedDeviceIds: Set<String>
+        let abortUndo: Bool
+    }
+
+    func confirmUndoTargets(
+        _ commands: [DeviceCommand],
+        previousDevices: [SmartDevice] = [],
+        excludingDeviceIds: Set<String> = []
+    ) -> UndoConfirmationFilterResult {
+        var declinedDeviceIds: Set<String> = []
+        var checkedHighRiskDeviceIds: Set<String> = []
+        var hasApprovedTarget = false
+
+        for command in commands {
+            if let target = Self.facetTarget(for: command),
+               let device = devices.first(where: {
+                   deviceFacets[$0.id]?.contains { $0.target == target } == true && !excludingDeviceIds.contains($0.id)
+               }), device.isOnline {
+                hasApprovedTarget = true
+                continue
+            }
+            if case .setMiotProperty(let entityId, _, _) = command {
+                let did = MiotAddress.parse(entityId)?.did
+                let owners = devices.filter { device in did.map { device.id == $0 || device.miotCommandDids.contains($0) } == true }
+                if let device = owners.count == 1 ? owners.first : nil, device.isOnline, !excludingDeviceIds.contains(device.id) {
+                    hasApprovedTarget = true
+                }
+                continue
+            }
+            let resolved: (device: SmartDevice, restored: SmartDevice)?
+            if let idx = devices.indices.first(where: { !excludingDeviceIds.contains(devices[$0].id) && Self.undoEffect(of: command, on: devices[$0]) != nil }),
+               let restored = Self.undoEffect(of: command, on: devices[idx]) {
+                resolved = (devices[idx], restored)
+            } else if let prev = previousDevices.first(where: { !excludingDeviceIds.contains($0.id) && Self.undoEffect(of: command, on: $0) != nil }),
+                      let idx = devices.indices.first(where: { devices[$0].id == prev.id && devices[$0].isOnline }),
+                      let retargeted = Self.retargetedUndoEffect(of: command, on: devices[idx]) {
+                resolved = (devices[idx], retargeted.updated)
+            } else {
+                resolved = nil
+            }
+            guard let (device, restored) = resolved, !declinedDeviceIds.contains(device.id) else { continue }
+            let requiresConfirm = restored.isActiveOn && ManualControlPolicy.requiresConfirmation(
+                DeviceIntent(targetId: device.id, operation: .power(true)), devices: devices
+            )
+            if requiresConfirm, checkedHighRiskDeviceIds.insert(device.id).inserted {
+                if allowManualControl(.power(true), for: device) { hasApprovedTarget = true }
+                else { declinedDeviceIds.insert(device.id) }
+            } else {
+                hasApprovedTarget = true
+            }
+        }
+        return UndoConfirmationFilterResult(
+            excludedDeviceIds: excludingDeviceIds.union(declinedDeviceIds),
+            abortUndo: !declinedDeviceIds.isEmpty && !hasApprovedTarget
+        )
     }
 
     struct UndoApplicableCommand: Sendable {

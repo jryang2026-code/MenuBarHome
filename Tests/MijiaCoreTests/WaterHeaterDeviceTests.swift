@@ -666,6 +666,7 @@ struct WaterHeaterDeviceTests {
         #expect(await mock.executedCommands == [.setSwitch(entityId: "miot:electric:2", isOn: false)])
         #expect(store.devices.first?.isActiveOn == false)
 
+        store.manualControlConfirmationHandler = { _ in true }
         let undo = try #require(store.undoTurnAllOff(), "All Off undo must apply to an appliance")
         await undo.value
         #expect(await mock.executedCommands.last == .setSwitch(entityId: "miot:electric:2", isOn: true))

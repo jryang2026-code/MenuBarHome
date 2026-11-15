@@ -196,6 +196,11 @@ struct AutomationSettingsSection: View {
             get: { rules.first(where: { $0.id == rule.id })?.isEnabled ?? rule.isEnabled },
             set: { enabled in
                 guard let index = rules.firstIndex(where: { $0.id == rule.id }) else { return }
+                if enabled, !rules[index].isEnabled,
+                   let confirmation = rules[index].highRiskConfirmation(devices: store.devices) {
+                    guard confirmHighRiskRule(confirmation) else { return }
+                    rules[index].highRiskApproved = true
+                }
                 rules[index].isEnabled = enabled
                 persist()
             }
@@ -631,14 +636,28 @@ struct AutomationSettingsSection: View {
         case .only: wifi = .inAny(parsedSSIDs)
         case .exclude: wifi = .notIn(parsedSSIDs)
         }
-        rules.append(AutomationRule(
+        var rule = AutomationRule(
             trigger: newTrigger,
             action: action,
             triggerOptions: options,
             conditions: AutomationConditions(wifi: wifi)
-        ))
+        )
+        if let confirmation = rule.highRiskConfirmation(devices: store.devices) {
+            guard confirmHighRiskRule(confirmation) else { return }
+            rule.highRiskApproved = true
+        }
+        rules.append(rule)
         newDeviceIds = []
         persist()
+    }
+
+    private func confirmHighRiskRule(_ confirmation: ManualControlConfirmation) -> Bool {
+        let approved = store.manualControlConfirmationHandler?(confirmation)
+            ?? ManualControlConfirmationPresenter.present(confirmation)
+        if !approved {
+            store.showToast(L10n.tr("已取消高风险操作", "High-risk action cancelled."), isError: true)
+        }
+        return approved
     }
 
     private func persist() {

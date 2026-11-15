@@ -504,8 +504,7 @@ public struct ClassicDeviceCardView: View {
                                 .foregroundStyle(nameColor)
                                 .lineLimit(1)
 
-                            let roomLabel = L10n.displayRoomName(device.roomName).trimmingCharacters(in: .whitespacesAndNewlines)
-                            if showRoomBadge, !roomLabel.isEmpty {
+                            if let roomLabel = DeviceRoomBadge.label(roomName: device.roomName, title: device.name, showRoomBadge: showRoomBadge) {
                                 Text(roomLabel)
                                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                                     .foregroundStyle(nameColor.opacity(0.68))
@@ -811,11 +810,12 @@ public struct ClassicDeviceCardView: View {
             .disabled(!device.isOnline)
             }
 
-            if spec.colorWritable {
+            if spec.colorWritable, spec.minKelvin < spec.maxKelvin {
+            let clampedKelvin = min(max(kelvinVal, Double(spec.minKelvin)), Double(spec.maxKelvin))
             // Liquid Glass Color Temperature Slider (Physical Kelvin Spectrum)
             ClassicLiquidGlassSlider(
                 value: Binding(
-                    get: { kelvinVal },
+                    get: { clampedKelvin },
                     set: { store.setLightColorTemp(device.id, kelvin: Int($0.rounded())) }
                 ),
                 in: Double(spec.minKelvin)...Double(spec.maxKelvin),
@@ -832,7 +832,7 @@ public struct ClassicDeviceCardView: View {
                     endPoint: .trailing
                 ),
                 isSpectrumTrack: true,
-                formattedValue: "\(Int(kelvinVal))K"
+                formattedValue: "\(Int(clampedKelvin))K"
             )
             .disabled(!device.isOnline)
             }
@@ -912,6 +912,7 @@ public struct ClassicDeviceCardView: View {
             }
 
             // HVAC Modes
+            if !spec.availableModes.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 AdaptiveGlassContainer(spacing: 6) {
                     HStack(spacing: 6) {
@@ -928,6 +929,7 @@ public struct ClassicDeviceCardView: View {
                 .padding(6)
             }
             .padding(-6)
+            }
         }
     }
 
@@ -1113,6 +1115,7 @@ public struct ClassicDeviceCardView: View {
                     .toggleStyle(.glass)
                     .controlSize(.mini)
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                    .disabled(!device.isOnline)
                 }
             }
         }
@@ -1128,6 +1131,7 @@ public struct ClassicDeviceCardView: View {
                     title: L10n.tr("冷藏室", "Fridge"),
                     actual: spec.fridgeCurrentTemp,
                     target: spec.fridgeTargetTemp,
+                    canAdjustTarget: spec.fridgeTargetEntityId != nil && spec.fridgeTargetPresent,
                     onStep: { store.stepFridgeTargetTemp(device.id, isFreezer: false, delta: $0) }
                 )
 
@@ -1135,6 +1139,7 @@ public struct ClassicDeviceCardView: View {
                     title: L10n.tr("冷冻室", "Freezer"),
                     actual: spec.freezerCurrentTemp,
                     target: spec.freezerTargetTemp,
+                    canAdjustTarget: spec.freezerTargetEntityId != nil && spec.freezerTargetPresent,
                     onStep: { store.stepFridgeTargetTemp(device.id, isFreezer: true, delta: $0) }
                 )
             }
@@ -1156,12 +1161,14 @@ public struct ClassicDeviceCardView: View {
                 .padding(-6)
             }
         }
+        .disabled(!device.isOnline)
     }
 
     private func fridgeZoneBox(
         title: String,
         actual: Double?,
         target: Double,
+        canAdjustTarget: Bool,
         onStep: @escaping (Double) -> Void
     ) -> some View {
         let shape = RoundedRectangle(cornerRadius: DesignTokens.Radius.inset, style: .continuous)
@@ -1179,6 +1186,7 @@ public struct ClassicDeviceCardView: View {
             }
 
             HStack {
+                if canAdjustTarget {
                 Button {
                     onStep(-1)
                 } label: {
@@ -1188,6 +1196,7 @@ public struct ClassicDeviceCardView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(L10n.tr("降低\(title)温度", "Lower \(title) temperature")))
+                }
 
                 Spacer()
 
@@ -1197,6 +1206,7 @@ public struct ClassicDeviceCardView: View {
 
                 Spacer()
 
+                if canAdjustTarget {
                 Button {
                     onStep(1)
                 } label: {
@@ -1206,6 +1216,7 @@ public struct ClassicDeviceCardView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(L10n.tr("升高\(title)温度", "Raise \(title) temperature")))
+                }
             }
         }
         .padding(8)
@@ -1239,6 +1250,7 @@ public struct ClassicDeviceCardView: View {
                 .buttonStyle(ClassicPillActionButtonStyle(isSelected: spec.status == "returning", tintColor: accent))
             }
         }
+        .disabled(!device.isOnline)
     }
 
     // MARK: - 7. Xiaomi Smart Speaker Controls + XiaoAi Command Bar
@@ -1246,6 +1258,7 @@ public struct ClassicDeviceCardView: View {
     private func speakerDrawer(_ spec: SpeakerSpec) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 6) {
+                if spec.muteSwitchEntityId != nil {
                 Button {
                     store.toggleSpeakerMute(device.id)
                 } label: {
@@ -1260,6 +1273,7 @@ public struct ClassicDeviceCardView: View {
                     ? L10n.tr("取消静音 \(device.name)", "Unmute \(device.name)")
                     : L10n.tr("静音 \(device.name)", "Mute \(device.name)")))
                 .panelHelp(L10n.tr("切换麦克风/扬声器静音", "Toggle speaker mute"))
+                }
 
                 ClassicLiquidGlassSlider(
                     value: Binding(
@@ -1282,6 +1296,7 @@ public struct ClassicDeviceCardView: View {
                 )
             }
 
+            if spec.playMusicButtonId != nil || spec.stopAlarmButtonId != nil {
             AdaptiveGlassContainer(spacing: 6) {
                 HStack(spacing: 6) {
                     if let musicBtn = spec.playMusicButtonId {
@@ -1302,6 +1317,7 @@ public struct ClassicDeviceCardView: View {
                         .buttonStyle(ClassicPillActionButtonStyle(tintColor: accent))
                     }
                 }
+            }
             }
 
             if spec.directiveNotifyEntityId != nil || spec.ttsNotifyEntityId != nil {
@@ -1334,15 +1350,11 @@ public struct ClassicDeviceCardView: View {
                 }
             }
         }
+        .disabled(!device.isOnline)
     }
 
     private func submitSpeakerInput(_ spec: SpeakerSpec, asDirective: Bool) {
-        let trimmed = speakerInputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        let hasEntity = (asDirective ? spec.directiveNotifyEntityId : spec.ttsNotifyEntityId) != nil
-        let canDispatch = !store.miSessionBlocksControl && !store.isControlBlockedByScreenLock && hasEntity
-        store.sendSpeakerText(device.id, text: speakerInputText, asDirective: asDirective)
-        if canDispatch {
+        if store.sendSpeakerText(device.id, text: speakerInputText, asDirective: asDirective) {
             speakerInputText = ""
         }
     }

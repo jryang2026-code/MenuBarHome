@@ -516,13 +516,22 @@ extension HomeStore {
             setAssistantState(.failed(L10n.tr("没有可以撤销的操作", "Nothing to undo")))
             return
         }
+        let confirmation = confirmUndoTargets(last.restore, previousDevices: last.previous)
+        if confirmation.abortUndo {
+            setAssistantState(.failed(L10n.tr("已取消高风险操作", "High-risk action cancelled.")))
+            return
+        }
         lastAssistantUndo = nil
         undoTimerTask?.cancel()
         undoBanner = nil
         let undoRevision = undoStateRevision
         let preUndoById = Dictionary(devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let preUndoFacetsById = deviceFacets
-        let applicable = applyUndoCommands(last.restore, previousDevices: last.previous)
+        let applicable = applyUndoCommands(
+            last.restore,
+            previousDevices: last.previous,
+            excludingDeviceIds: confirmation.excludedDeviceIds
+        )
         if applicable.isEmpty, !last.restore.isEmpty {
             setAssistantState(.failed(L10n.tr("设备状态已变化，无法撤销", "Device state changed; cannot undo")))
             return

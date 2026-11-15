@@ -54,6 +54,22 @@ public enum ManualControlPolicy {
         )
     }
 
+    public static func speakerDirectiveConfirmation(
+        text: String,
+        for device: SmartDevice
+    ) -> ManualControlConfirmation {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ManualControlConfirmation(
+            title: L10n.tr("确认向\(device.name)发送控制指令？", "Send directive to \(device.name)?"),
+            message: L10n.tr(
+                "「\(trimmed)」将作为小爱远程指令执行，可能触发全屋或高风险设备动作。请确认指令内容安全无误。",
+                "“\(trimmed)” will execute as a remote XiaoAi directive and may trigger home-wide or high-risk device actions."
+            ),
+            confirmTitle: L10n.tr("确认执行", "Execute Directive"),
+            cancelTitle: L10n.tr("取消", "Cancel")
+        )
+    }
+
     /// The whitelist controls availability; confirmation follows the operation's meaning. A feeding
     /// action reports its portion and the portions already dispensed today (#7).
     public static func confirmation(
