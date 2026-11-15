@@ -38,7 +38,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
                     <span class="cc-home-caret ${host.isHomeMenuOpen ? "is-open" : ""}">${SF_ICONS.chevronDown}</span>
                   </button>
                   <span class="cc-mode-pill ${isDemo ? "is-demo" : "is-cloud"}">
-                    ${isDemo ? t("演示预览") : host.settings.connectionMode === "homeAssistant" ? "Home Assistant" : t("Miot 直连")}
+                    ${isDemo ? t("演示预览") : host.settings.connectionMode === "homeAssistant" ? "Home Assistant" : t("米家云端")}
                   </span>
                 </div>
                 <div class="cc-subtitle">${host.escapeHtml(host.isEditingLayout ? t("拖动卡片排序 · 点右下角圆弧手柄改大小") : host.statusSummaryText)}</div>
