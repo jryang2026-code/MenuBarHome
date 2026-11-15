@@ -112,6 +112,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     var ptzToken: CameraPTZSessionToken?
     var ptzDeviceId: String?
     var ptzSeq: UInt64 = 0
+    var ptzBeginAttemptID: UUID?
     var ptzBeginTask: Task<Void, Never>?
     var ptzHeartbeatTask: Task<Void, Never>?
     var ptzQueue = CameraPTZCommandQueue()

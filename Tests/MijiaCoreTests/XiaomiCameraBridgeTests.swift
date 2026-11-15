@@ -187,11 +187,11 @@ struct XiaomiCameraBridgeTests {
         #expect(XiaomiCameraBridge.processMatchesBinary(pid: getpid(), expectedBinaryPath: selfExe))
         #expect(!XiaomiCameraBridge.processMatchesBinary(pid: getpid(), expectedBinaryPath: "/nonexistent/go2rtc"))
 
-        let readyPipe = Pipe()
+        let readyFile = FileManager.default.temporaryDirectory.appendingPathComponent("trap-ready-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: readyFile) }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/sh")
-        proc.arguments = ["-c", "trap '' TERM; printf r; while true; do sleep 1; done"]
-        proc.standardOutput = readyPipe
+        proc.arguments = ["-c", "trap '' TERM; : > \"$1\"; while true; do sleep 1; done", "sh", readyFile.path]
         try proc.run()
         let pid = proc.processIdentifier
         defer {
@@ -200,7 +200,11 @@ struct XiaomiCameraBridgeTests {
             }
         }
 
-        _ = try readyPipe.fileHandleForReading.read(upToCount: 1)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !FileManager.default.fileExists(atPath: readyFile.path), ContinuousClock.now < deadline {
+            await Task.yield()
+        }
+        #expect(FileManager.default.fileExists(atPath: readyFile.path))
         #expect(XiaomiCameraBridge.processIsAlive(pid))
 
         await XiaomiCameraBridge.terminateOwnedPID(pid, pollInterval: .milliseconds(15), maxPolls: 4)

@@ -35,6 +35,8 @@ extension CameraLivePanelController {
         client: any CameraPTZControlling,
         deviceId: String
     ) {
+        let attemptID = UUID()
+        ptzBeginAttemptID = attemptID
         let previousStop = ptzStopTask
         let attemptDeviceId = deviceId
         let attemptLifecycleID = ptzLifecycleID
@@ -42,7 +44,7 @@ extension CameraLivePanelController {
             await previousStop?.value
             do {
                 let begin = try await client.begin()
-                guard let self, self.ptzDragID == dragID, self.ptzBeginTask != nil else {
+                guard let self, self.ptzDragID == dragID, self.ptzBeginAttemptID == attemptID else {
                     let attempt = CameraPTZStopAttempt(
                         token: begin.token,
                         deviceId: attemptDeviceId,
@@ -57,13 +59,14 @@ extension CameraLivePanelController {
                     return
                 }
                 self.ptzToken = begin.token
+                self.ptzBeginAttemptID = nil
                 self.ptzBeginTask = nil
                 if let direction = self.ptzPendingDirection {
                     self.ptzPendingDirection = nil
                     self.enqueueMove(direction)
                 }
             } catch {
-                guard let self, self.ptzDragID == dragID, self.ptzBeginTask != nil else { return }
+                guard let self, self.ptzDragID == dragID, self.ptzBeginAttemptID == attemptID else { return }
                 self.showPTZNotice(error.localizedDescription)
                 self.finishPTZMove(notify: false)
             }
@@ -175,6 +178,7 @@ extension CameraLivePanelController {
 
     func pausePTZMove(notify: Bool = false) {
         let pendingBegin = ptzBeginTask
+        ptzBeginAttemptID = nil
         ptzBeginTask = nil
         ptzHeartbeatTask?.cancel()
         ptzHeartbeatTask = nil
@@ -206,6 +210,7 @@ extension CameraLivePanelController {
     /// started the drag, so an old stop cannot put a notice over a newly opened camera.
     func finishPTZMove(notify: Bool = true) {
         let pendingBegin = ptzBeginTask
+        ptzBeginAttemptID = nil
         ptzBeginTask = nil
         ptzHeartbeatTask?.cancel()
         ptzHeartbeatTask = nil
@@ -393,6 +398,7 @@ extension CameraLivePanelController {
         client: (any CameraPTZControlling)? = nil,
         hasFrame: Bool = true
     ) {
+        ptzBeginAttemptID = nil
         ptzBeginTask = nil
         ptzHeartbeatTask?.cancel()
         ptzHeartbeatTask = nil
