@@ -237,6 +237,10 @@ function categoryTitleForDevice(device: SmartDevice): string {
       return trText("窗帘电机", "Covers");
     case "speaker":
       return trText("音箱", "Speakers");
+    case "tv":
+      return trText("电视", "TV");
+    case "humidifier":
+      return trText("加湿器", "Humidifiers");
     case "appliance":
       return trText("厨卫大家电", "Appliances");
     case "generic":
