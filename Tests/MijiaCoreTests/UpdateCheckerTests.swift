@@ -445,6 +445,198 @@ struct UpdateCheckerTests {
         }
     }
 
+    @Test("Multi-chunk package downloads write identical bytes and emit monotonic progress callbacks")
+    func multiChunkPackageDownloadWritesIdenticalBytesAndMonotonicProgress() async throws {
+        let rootDir = FileManager.default.temporaryDirectory.appendingPathComponent("chunk-download-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let chunks = [
+            Data(repeating: 0x11, count: 64 * 1024),
+            Data(repeating: 0x22, count: 64 * 1024),
+            Data(repeating: 0x33, count: 35 * 1024),
+        ]
+        let expectedBytes = chunks.reduce(into: Data()) { $0.append($1) }
+        let packageURL = try #require(UpdateChecker.releaseAssetURL(version: "1.6.0", fileName: "MenuBarHome-1.6.0.dmg"))
+        let destination = rootDir.appendingPathComponent("MenuBarHome-1.6.0.dmg")
+
+        let (session, unregister) = UpdateStreamStubProtocol.makeSession { request in
+            #expect(request.url == packageURL)
+            return .init(status: 200, headers: ["Content-Length": "\(expectedBytes.count)"], chunks: chunks)
+        }
+        defer { unregister() }
+
+        let recorder = ProgressRecorder()
+        try await UpdateSystemDriver.live(session: session).downloadFile(packageURL, destination) {
+            recorder.append($0)
+        }
+
+        #expect(try Data(contentsOf: destination) == expectedBytes)
+        let samples = recorder.samples
+        let receivedValues = samples.map(\.receivedBytes)
+        let expectedReceived: [Int64] = [65_536, 131_072, Int64(expectedBytes.count)]
+        #expect(receivedValues == expectedReceived)
+        for (previous, current) in zip(samples, samples.dropFirst()) {
+            #expect(current.receivedBytes > previous.receivedBytes)
+        }
+        #expect(samples.allSatisfy { $0.totalBytes == Int64(expectedBytes.count) })
+    }
+
+    @Test("Oversized Content-Length and oversized streamed bodies abort package downloads and clean up partial files")
+    func oversizedPackageDownloadAbortsAndCleansUpPartialFiles() async throws {
+        #expect(UpdateChecker.maxPackageDownloadBytes == 256 * 1024 * 1024)
+
+        let rootDir = FileManager.default.temporaryDirectory.appendingPathComponent("oversized-pkg-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let packageURL = try #require(UpdateChecker.releaseAssetURL(version: "1.6.0", fileName: "MenuBarHome-1.6.0.dmg"))
+        let destination = rootDir.appendingPathComponent("partial-package.dmg")
+        try Data("preexisting-partial".utf8).write(to: destination)
+
+        let (headerSession, unregisterHeader) = UpdateStreamStubProtocol.makeSession { _ in
+            .init(
+                status: 200,
+                headers: ["Content-Length": "\(UpdateChecker.maxPackageDownloadBytes + 1)"],
+                chunks: [Data(repeating: 0xAA, count: 64 * 1024)]
+            )
+        }
+        defer { unregisterHeader() }
+
+        await #expect(throws: UpdateChecker.CheckError.responseTooLarge(maxBytes: UpdateChecker.maxPackageDownloadBytes)) {
+            try await UpdateSystemDriver.live(session: headerSession).downloadFile(packageURL, destination) { _ in }
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+
+        let streamLimit: Int64 = 128 * 1024
+        let chunk64K = Data(repeating: 0xBB, count: 64 * 1024)
+        let (streamSession, unregisterStream) = UpdateStreamStubProtocol.makeSession { _ in
+            .init(status: 200, headers: [:], chunks: Array(repeating: chunk64K, count: 4))
+        }
+        defer { unregisterStream() }
+
+        let streamRecorder = ProgressRecorder()
+        await #expect(throws: UpdateChecker.CheckError.responseTooLarge(maxBytes: streamLimit)) {
+            try await UpdateSystemDriver.live(session: streamSession, maxPackageDownloadBytes: streamLimit)
+                .downloadFile(packageURL, destination) { streamRecorder.append($0) }
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+        let streamReceived = streamRecorder.samples.map(\.receivedBytes)
+        let expectedStreamReceived: [Int64] = [65_536, 131_072]
+        #expect(streamReceived == expectedStreamReceived)
+
+        let targetAppURL = try Self.makeFakeAppBundle(in: rootDir, shortVersion: "1.0.0")
+        let stagingParent = rootDir.appendingPathComponent("staging", isDirectory: true)
+        try FileManager.default.createDirectory(at: stagingParent, withIntermediateDirectories: true)
+        let release = AppRelease(
+            version: "1.6.0",
+            pageURL: URL(string: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.6.0")!,
+            notes: "",
+            packageAsset: .init(name: "MenuBarHome-1.6.0.dmg", downloadURL: packageURL, sizeBytes: 0, kind: .dmg)
+        )
+        let updater = AppUpdater(
+            currentVersion: "1.0.0",
+            targetBundleURL: targetAppURL,
+            stagingBaseDirectory: stagingParent,
+            driver: UpdateSystemDriver.live(session: streamSession, maxPackageDownloadBytes: streamLimit)
+        )
+        await #expect(throws: UpdateChecker.CheckError.responseTooLarge(maxBytes: streamLimit)) {
+            _ = try await updater.stageUpdate(for: release) { _ in }
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: stagingParent.path).isEmpty)
+    }
+
+    @Test("checkRelease and fetchReleaseFile reject oversized Content-Length and oversized streamed bodies and clean up staging")
+    func releaseMetadataAndManifestBoundsRejectOverflowAndCleanUp() async throws {
+        #expect(UpdateChecker.maxReleaseMetadataBytes == 1 * 1024 * 1024)
+        #expect(UpdateChecker.maxReleaseFileBytes == 64 * 1024)
+
+        let (metaHeaderSession, unregisterMetaHeader) = UpdateStreamStubProtocol.makeSession { _ in
+            .init(
+                status: 200,
+                headers: ["Content-Length": "\(UpdateChecker.maxReleaseMetadataBytes + 1)"],
+                chunks: [Data(#"{"tag_name":"v1.6.0"}"#.utf8)]
+            )
+        }
+        defer { unregisterMetaHeader() }
+        await #expect(throws: UpdateChecker.CheckError.responseTooLarge(maxBytes: UpdateChecker.maxReleaseMetadataBytes)) {
+            _ = try await UpdateChecker(currentVersion: "1.0.0", session: metaHeaderSession).checkRelease()
+        }
+
+        let chunk64K = Data(repeating: 0x20, count: 64 * 1024)
+        let (metaStreamSession, unregisterMetaStream) = UpdateStreamStubProtocol.makeSession { _ in
+            .init(status: 200, headers: [:], chunks: Array(repeating: chunk64K, count: 17))
+        }
+        defer { unregisterMetaStream() }
+        await #expect(throws: UpdateChecker.CheckError.responseTooLarge(maxBytes: UpdateChecker.maxReleaseMetadataBytes)) {
+            _ = try await UpdateChecker(currentVersion: "1.0.0", session: metaStreamSession).checkRelease()
+        }
+
+        let rootDir = FileManager.default.temporaryDirectory.appendingPathComponent("oversized-manifest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let targetAppURL = try Self.makeFakeAppBundle(in: rootDir, shortVersion: "1.0.0")
+        let stagingParent = rootDir.appendingPathComponent("staging", isDirectory: true)
+        try FileManager.default.createDirectory(at: stagingParent, withIntermediateDirectories: true)
+
+        let archiveBytes = Data("small-dmg-payload".utf8)
+        let signed = try signedUpdateManifest(version: "1.6.0", package: archiveBytes)
+        let packageURL = try #require(UpdateChecker.releaseAssetURL(version: "1.6.0", fileName: "MenuBarHome-1.6.0.dmg"))
+        let release = AppRelease(
+            version: "1.6.0",
+            pageURL: URL(string: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.6.0")!,
+            notes: "",
+            packageAsset: .init(
+                name: "MenuBarHome-1.6.0.dmg",
+                downloadURL: packageURL,
+                sizeBytes: Int64(archiveBytes.count),
+                kind: .dmg
+            )
+        )
+        let oversizedStreamChunks = [Data(repeating: 0x41, count: 32 * 1024), Data(repeating: 0x42, count: 32 * 1024 + 1)]
+        let oversizedHeader = ["Content-Length": "\(UpdateChecker.maxReleaseFileBytes + 1)"]
+
+        for (failManifest, useHeader) in [(true, true), (true, false), (false, true), (false, false)] {
+            let (session, unregister) = UpdateStreamStubProtocol.makeSession { request in
+                let path = request.url?.path ?? ""
+                if path.hasSuffix(".dmg") {
+                    return .init(status: 200, headers: ["Content-Length": "\(archiveBytes.count)"], chunks: [archiveBytes])
+                }
+                if path.hasSuffix(".update.json") {
+                    if failManifest {
+                        return useHeader
+                            ? .init(status: 200, headers: oversizedHeader, chunks: [signed.bytes])
+                            : .init(status: 200, headers: [:], chunks: oversizedStreamChunks)
+                    }
+                    return .init(status: 200, headers: ["Content-Length": "\(signed.bytes.count)"], chunks: [signed.bytes])
+                }
+                if path.hasSuffix(".update.json.ed25519.sig") {
+                    if !failManifest {
+                        return useHeader
+                            ? .init(status: 200, headers: oversizedHeader, chunks: [Data(signed.signatureText.utf8)])
+                            : .init(status: 200, headers: [:], chunks: oversizedStreamChunks)
+                    }
+                    return .init(status: 200, headers: [:], chunks: [Data(signed.signatureText.utf8)])
+                }
+                return .init(status: 404, headers: [:], chunks: [])
+            }
+            defer { unregister() }
+
+            let updater = AppUpdater(
+                currentVersion: "1.0.0",
+                targetBundleURL: targetAppURL,
+                stagingBaseDirectory: stagingParent,
+                updateSigningPublicKeysBase64: [signed.publicKey],
+                driver: UpdateSystemDriver.live(session: session)
+            )
+            await #expect(throws: UpdateChecker.CheckError.responseTooLarge(maxBytes: UpdateChecker.maxReleaseFileBytes)) {
+                _ = try await updater.stageUpdate(for: release) { _ in }
+            }
+            #expect(try FileManager.default.contentsOfDirectory(atPath: stagingParent.path).isEmpty)
+        }
+    }
+
 
     @MainActor
     @Test("HomeStore orchestrates throttling, staging, cancellation, retry, and relaunch")
@@ -1013,4 +1205,110 @@ struct UpdateCheckerTests {
         }
     }
     #endif
+}
+
+private final class ProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [DownloadProgress] = []
+
+    var samples: [DownloadProgress] {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func append(_ progress: DownloadProgress) {
+        lock.lock()
+        stored.append(progress)
+        lock.unlock()
+    }
+}
+
+private final class UpdateStreamStubProtocol: URLProtocol {
+    struct StubResponse: Sendable {
+        var status: Int = 200
+        var headers: [String: String] = [:]
+        var chunks: [Data] = []
+    }
+
+    typealias Handler = @Sendable (URLRequest) -> StubResponse
+
+    private static let headerField = "X-Update-Stub-Session"
+    private static let handlersLock = NSLock()
+    nonisolated(unsafe) private static var handlers: [String: Handler] = [:]
+
+    private let stateLock = NSLock()
+    private var isStopped = false
+
+    static func makeSession(handler: @escaping Handler) -> (URLSession, @Sendable () -> Void) {
+        let id = UUID().uuidString
+        handlersLock.lock()
+        handlers[id] = handler
+        handlersLock.unlock()
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [UpdateStreamStubProtocol.self]
+        configuration.httpAdditionalHeaders = [headerField: id]
+        let session = URLSession(configuration: configuration)
+        let unregister: @Sendable () -> Void = {
+            handlersLock.lock()
+            handlers.removeValue(forKey: id)
+            handlersLock.unlock()
+        }
+        return (session, unregister)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.value(forHTTPHeaderField: headerField) != nil
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let id = request.value(forHTTPHeaderField: Self.headerField) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        Self.handlersLock.lock()
+        let handler = Self.handlers[id]
+        Self.handlersLock.unlock()
+        guard let handler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+
+        let stub = handler(request)
+        guard let response = HTTPURLResponse(
+            url: request.url ?? URL(string: "https://github.com")!,
+            statusCode: stub.status,
+            httpVersion: "HTTP/1.1",
+            headerFields: stub.headers
+        ) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        for chunk in stub.chunks {
+            stateLock.lock()
+            let stopped = isStopped
+            stateLock.unlock()
+            if stopped { return }
+            client?.urlProtocol(self, didLoad: chunk)
+        }
+        stateLock.lock()
+        let stopped = isStopped
+        stateLock.unlock()
+        if !stopped {
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+
+    override func stopLoading() {
+        stateLock.lock()
+        isStopped = true
+        stateLock.unlock()
+    }
 }
