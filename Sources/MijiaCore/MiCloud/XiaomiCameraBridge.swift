@@ -167,6 +167,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
     private var startupTask: Task<Void, any Error>?
     private var ensureRunningOverride: (@Sendable () async throws -> Void)?
     private var onJoinedStartup: (@Sendable () async -> Void)?
+    private var relayPortOverride: (@Sendable () throws -> UInt16)?
     private var putStreamOverride: (@Sendable (String, String) async throws -> Void)?
 
     var activeRelayCount: Int { relays.count }
@@ -181,9 +182,11 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
 
     func setTestBridgeHooks(
         activeOwner: Go2RTCOwnerRecord?,
+        relayPortOverride: (@Sendable () throws -> UInt16)? = nil,
         putStreamOverride: (@Sendable (String, String) async throws -> Void)?
     ) {
         self.activeOwner = activeOwner
+        self.relayPortOverride = relayPortOverride
         self.putStreamOverride = putStreamOverride
     }
 
@@ -334,8 +337,10 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
     }
 
     public func shutdown() async {
-        startupTask?.cancel()
+        let pending = startupTask
         startupTask = nil
+        pending?.cancel()
+        _ = try? await pending?.value
         for (_, relay) in relays {
             relay.stopBox.stop()
         }
@@ -573,10 +578,16 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
             existing.stopBox.stop()
         }
         relays.removeValue(forKey: cleanDid)
-        let (port, stopBox) = try Self.spawnCS2UDPRelay(
-            camIP: camIP,
-            commandChannelDrained: commandChannelDrained
-        )
+        let (port, stopBox): (UInt16, RelayStopBox)
+        if let relayPortOverride {
+            port = try relayPortOverride()
+            stopBox = RelayStopBox()
+        } else {
+            (port, stopBox) = try Self.spawnCS2UDPRelay(
+                camIP: camIP,
+                commandChannelDrained: commandChannelDrained
+            )
+        }
         relays[cleanDid] = RelayHandle(
             port: port,
             stopBox: stopBox,
@@ -741,6 +752,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
 
     private func spawnFreshGo2RTC(exePath: String, ffmpegBin: String, appSupportBin: URL) async throws {
         for _ in 0..<4 {
+            try Task.checkCancellation()
             let session = try Self.makeEphemeralGo2RTCSession()
             let desired = Self.desiredGo2RTCConfig(ffmpegBin: ffmpegBin, session: session)
             try Self.writeSecretFile(desired, to: Self.go2rtcConfigURL())
@@ -772,6 +784,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
                 return
             }
             await stopOwnedProcess(record)
+            try Task.checkCancellation()
         }
         throw HomeProviderError.serviceCallFailed(
             504,
@@ -781,7 +794,9 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
 
     private func waitForOwnedAPI(_ session: Go2RTCSession) async -> Bool {
         for _ in 0..<25 {
+            if Task.isCancelled { return false }
             try? await Task.sleep(for: .milliseconds(120))
+            if Task.isCancelled { return false }
             let probe = await probeOwned(session)
             if probe.authenticated && probe.nonceMatches {
                 return true

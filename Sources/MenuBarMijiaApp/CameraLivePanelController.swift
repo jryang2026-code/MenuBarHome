@@ -996,7 +996,6 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                 var frameCount = 0
                 var firstFrameAt: ContinuousClock.Instant?
                 var lastFrameAt: ContinuousClock.Instant?
-                var didStallTimeout = false
                 let stallTimeout = self.mjpegStallTimeout
                 let pollInterval = self.mjpegWatchdogInterval
                 let handleFrame: @MainActor (NSImage) -> Void = { [weak self] image in
@@ -1014,7 +1013,6 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                         guard !Task.isCancelled, let self else { return }
                         let reference = lastFrameAt ?? attemptStartedAt
                         if ContinuousClock.now - reference >= stallTimeout {
-                            didStallTimeout = true
                             self.setMJPEGSession(nil)
                             return
                         }
@@ -1027,8 +1025,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
                 }
                 watchdog.cancel()
                 if Task.isCancelled { break }
-                if !didStallTimeout,
-                   frameCount >= 2,
+                if frameCount >= 2,
                    let firstFrameAt,
                    let lastFrameAt,
                    (lastFrameAt - firstFrameAt) >= self.mjpegStableWindow {

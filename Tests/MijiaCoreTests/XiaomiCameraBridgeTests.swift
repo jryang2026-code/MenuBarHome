@@ -97,7 +97,7 @@ struct XiaomiCameraBridgeTests {
         let recorder = CallRecorder()
 
         await bridge.setEnsureRunningOverride({})
-        await bridge.setTestBridgeHooks(activeOwner: owner) { name, _ in
+        await bridge.setTestBridgeHooks(activeOwner: owner, relayPortOverride: { 41999 }) { name, _ in
             await recorder.record("put:\(name)")
             if name.hasPrefix("cam_raw_"), await recorder.takeFirstCall() {
                 firstEnteredCont.yield()

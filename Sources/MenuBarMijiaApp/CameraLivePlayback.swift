@@ -78,7 +78,6 @@ final class CameraLivePlayback {
                 self.firstFrameAt = nil
                 self.lastFrameAt = nil
                 self.isPaused = false
-                var didStallTimeout = false
                 let stallTimeout = self.stallTimeout
                 let pollInterval = self.watchdogInterval
                 let watchdog = Task { @MainActor [weak self] in
@@ -91,7 +90,6 @@ final class CameraLivePlayback {
                         }
                         let reference = self.lastFrameAt ?? attemptStartedAt
                         if ContinuousClock.now - reference >= stallTimeout {
-                            didStallTimeout = true
                             self.onWatchdogTick?()
                             self.player.stop(failure: "stream stalled")
                             return
@@ -104,8 +102,7 @@ final class CameraLivePlayback {
                 guard !Task.isCancelled else { return }
 
                 let sustainedPlayback: Bool
-                if !didStallTimeout,
-                   outcome.framesDecoded >= 2,
+                if outcome.framesDecoded >= 2,
                    let firstFrameAt = self.firstFrameAt,
                    let lastFrameAt = self.lastFrameAt,
                    (lastFrameAt - firstFrameAt) >= self.stablePlaybackThreshold {
