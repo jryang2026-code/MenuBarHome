@@ -222,7 +222,7 @@ macOS 版是 Swift 6 原生应用，Windows 11 版是另一套 Tauri v2 实现�
 
 | 你会看到 | 它是什么 | 该怎么用 |
 | :--- | :--- | :--- |
-| `menumijia://…` | 所有伴生工具发来的 URL scheme，是兼容契约（见 [ADR-0013](docs/adr/0013-raycast-companion-contract.md)），不会改 | 继续用 `menumijia://` |
+| `menumijia://…` | 所有伴生工具发来的 URL scheme，是兼容契约（见 [ADR-0013](docs/adr/0013-raycast-companion-contract.md)），伴生工具会继续发它 | 继续用 `menumijia://`；`menubarhome://` 也被接受，两者完全等价 |
 | `scripts/mijia`、`scripts/mijia-mcp` | 命令行与 MCP 服务 | `scripts/menubarhome` 是同一个命令行的新名字，`mijia` 照常可用 |
 | `MenuBarMijia/` 数据目录、`MenuBarMijiaApp` 进程 | 应用的数据目录与进程名 | 无需操作；你的登录和设置都在里面 |
 | MCP 配置键 `menubarmijia` | MCP 客户端配置里的一个标签，也是服务端上报的名字 | 随便起名；下面的示例用 `menubarhome` |

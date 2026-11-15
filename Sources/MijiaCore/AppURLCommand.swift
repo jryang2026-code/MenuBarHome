@@ -111,6 +111,10 @@ public enum BuiltInURLScene: String, CaseIterable, Equatable, Sendable {
 /// or non-numeric values are rejected too: a slider that sends 250% must not reach the device.
 public enum AppURLParser {
     public static let scheme = "menumijia"
+    /// Accepted as an exact synonym of `scheme` (#166). The companions keep sending `menumijia://`;
+    /// `menubarhome://` lets newcomers use the product's current name.
+    public static let aliasSchemes = ["menubarhome"]
+    public static var acceptedSchemes: [String] { [scheme] + aliasSchemes }
     public static let maximumAskLength = 500
     public static let maximumNameLength = 200
     public static let maximumTokenLength = 200
@@ -125,7 +129,8 @@ public enum AppURLParser {
     }
 
     public static func parseEnvelope(_ url: URL) -> AppURLCommandEnvelope? {
-        guard url.scheme?.lowercased() == scheme,
+        guard let urlScheme = url.scheme?.lowercased(),
+              acceptedSchemes.contains(urlScheme),
               url.absoluteString.count <= maximumURLLength,
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return nil

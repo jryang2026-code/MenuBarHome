@@ -33,3 +33,4 @@
 - 快照字段与 schema 版本成为对外契约：改名字段必须升 `RaycastSnapshot.currentSchemaVersion`，两端（Swift 与 `raycast/src/snapshot.ts`、`scripts/mijia`）同步。
 - 新增了与面板并行的控制入口，因此每次扩展路由都要走同一套安全模块；测试覆盖「高风险设备未确认不执行」「未授权链接必须弹确认」「MCP 响应不泄露 `bridgeToken`」三条边界。
 - 已知取舍：`temperature` 只设目标温度、不开机（与详情抽屉一致）；要开机仍需 `power=true`。
+- **URL scheme 别名（#166，2026-11-15）**：`menubarhome://` 作为 `menumijia://` 的**完全等价**别名被两端接受（macOS 在 `Info.plist` 注册两个 scheme，`AppURLParser` 接受两者；Windows 在注册表写两份协议处理项，`companion.rs` 与 `appUrlCommand.ts` 接受两者）。别名不绕过任何校验：bridge token、外部链接确认、高风险二次确认、锁屏拦截都按同一条路径执行，黄金语料 `app_url_command_golden.json` 含别名用例。伴生端（Raycast、CLI、MCP）**继续发送 `menumijia://`**，这样新版 CLI 对旧版应用仍然有效；别名只给手写链接和快捷指令的使用者。

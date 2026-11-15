@@ -221,6 +221,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
             <key>CFBundleURLSchemes</key>
             <array>
                 <string>menumijia</string>
+                <!-- #166: the same links under the product's current name -->
+                <string>menubarhome</string>
             </array>
         </dict>
     </array>
