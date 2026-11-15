@@ -22,8 +22,8 @@ _Avoid_: Data mapping（数据映射）、Parsing（解析）
 驱动 `HomeStore` 的底层数据源（macOS 支持 HA `HAWebSocketProvider` 与米家云端 `MiCloudProvider` 单源或双源自动合并及 `DemoHomeProvider`；Windows 为互斥单选）。
 _Avoid_: Server type（服务器类型）、Mode（模式）
 
-**HomeBackendDescriptor（后端描述）**：
-每个 `HomeBackend` 枚举值对应的集中描述表条目（显示名、是否已配置、连接源标识、provider 工厂），由穷尽 `switch` 保证完备，不是运行时插件扩展点（ADR-0020）。
+**HomeBackendDescriptor（后端描述，ADR-0020 规划 / 现由 `HomeBackend` 与 `HomeStore+Backend` 承载）**：
+ADR-0020 规划为每个 `HomeBackend` 枚举值建立的集中描述表条目（显示名、是否已配置、连接源标识、provider 工厂）；当前代码由 `HomeBackend`（`HomeProvider.swift`）与 `HomeStore+Backend.swift`（`hasHASource` / `hasMiSource` / `makeLiveProvider`）穷尽 `switch` 承载，不是运行时插件扩展点。
 _Avoid_: Plugin（插件）、Registry（注册表）
 
 **RaycastSnapshot（伴生快照）**：
@@ -74,12 +74,12 @@ _Avoid_: Zone（防区）、Group（分组）
 按风险分窗帘类、开窗器（开需确认）、车库/大门（开关均确认）、晾衣架四类；多轨电机按服务拆分为独立卡片。
 _Avoid_: Window（作总称时）、Curtain（作总称时）
 
-**HumidifierDevice（加湿器卡片）**：
-HA `humidifier` 实体合成的卡片（电源、模式、目标湿度与当前湿度读数）。
+**HumidifierSpec（加湿器卡片）**：
+HA `humidifier` 实体合成的加湿器规格（`Models.swift:HumidifierSpec`，含电源、模式、目标湿度与当前湿度读数；Windows 端映射见 `haDomains.ts`）。
 _Avoid_: Humidifier fan（加湿风扇）
 
-**ValveDevice（阀门卡片）**：
-HA `valve` 实体合成的开/关卡片（开启水/气阀须确认，不参与默认「全关」）。
+**ValveSpec（阀门卡片）**：
+HA `valve` 实体合成的开/关规格（`Models.swift:ValveSpec`；Windows 端判别见 `deviceCategory.ts:isValveDevice`），开启水/气阀须确认，不参与默认「全关」。
 _Avoid_: Switch card（开关卡）
 
 **CameraLens（摄像机镜头）**：
@@ -87,15 +87,15 @@ _Avoid_: Switch card（开关卡）
 _Avoid_: Camera source（视频源）、Stream profile（流配置）
 
 **ApplianceDevice（家电卡片）**：
-热水器、洗衣机、烘干机、洗碗机、浴霸与油烟机共用的规格驱动家电卡（状态/剩余时间/模式/目标温度及起停确认规则）；主副服务声明见 `deviceProfiles.json` `appliances` 表。
+热水器、洗衣机、烘干机、洗碗机、浴霸与油烟机共用的规格驱动家电卡（`ApplianceSpec`，含状态/剩余时间/模式/目标温度及起停确认规则）；主副服务声明见 `deviceProfiles.json` `appliances` 表。
 _Avoid_: Washer card（洗衣机专用卡）、Kitchen appliance（厨房家电专用卡）
 
-**GenericDeviceCard（通用兜底卡片）**：
-无专用合成器但可通过 `MiotFacet` 展示至多两项读数 + 低风险开关或只读状态，并按设备家族规则标红告警的卡片；不参与「全关」。
+**DeviceCardView（通用兜底卡片，`GenericSpec`）**：
+无专用合成器但可通过 `MiotSynthesizer.genericCard`（Windows：`synthesis.ts:genericCard`）与 `MiotFacet` 生成 `GenericSpec`、由 `DeviceCardView` 渲染展示至多两项读数 + 低风险开关或只读状态，并按设备家族规则标红告警的卡片；不参与「全关」。
 _Avoid_: Unsupported card（不支持卡片）、Fallback tile（兜底磁贴）
 
-**FamilyOverride（设备家族覆盖）**：
-`deviceProfiles.json` `overrides` 中的通配符/类型级补充规则（主读数、高亮优先表、`keepInNoisyServices`、投喂动作与告警词表），双端共读。
+**DeviceProfiles.Override（设备家族覆盖）**：
+`deviceProfiles.json` `overrides` 中的通配符/类型级补充规则（macOS `MiotFacets.swift:DeviceProfiles.Override` 与 `MiotFacetEngine.profileOverride`；Windows `facets.ts:DeviceOverride` 与 `profileOverride`，含主读数、高亮优先表、`keepInNoisyServices`、投喂动作与告警词表），双端共读。
 _Avoid_: Model table（型号表）、Hardcoded card（写死卡片）
 
 **FeedAction（按份投喂）**：
@@ -106,8 +106,8 @@ _Avoid_: Snack button（零食按钮）、Quick feed（快捷投喂）
 小米账号下由 `homeroom/gethome` 返回的独立家庭空间，支持单家庭与全部分合并视图。
 _Avoid_: Workspace（工作区）、Account（账号）
 
-**SplitDevice（多键分键设备）**：
-多键墙壁开关拆分出的独立按键记录（`<parentDid>.s2`，携带 `splitParentDid` / `splitSiid`），隐藏父面板并以父 `did` + 子 `siid` 寻址。
+**splitParentDid / trackID（多键分键与多轨拆分设备）**：
+多键墙壁开关拆分出的独立按键记录（`<parentDid>.s2`，携带 `MiDeviceRecord.splitParentDid` / `splitSiid` 并在 `MiotSynthesizer.specForRecord` 收窄服务）及双轨窗帘按服务拆分的独立轨道卡片（`MiotSynthesizer.plans` / `MiotSynthesizer.trackID`），隐藏父面板并以父 `did` + 子 `siid` 寻址。
 _Avoid_: Sub-entity（子实体）、Virtual plug（虚拟插座）
 
 **EnvironmentReading（环境读数）**：
@@ -128,8 +128,8 @@ _Avoid_: Automation（后台自动化规则）、Macro（宏）
 按设备类别实时聚合的一键批量领域指令，提供按设备数计时的撤销横幅（1–2 台 10s，3+ 台 15s）与 10 分钟助手回滚。
 _Avoid_: Local scene（本地场景）、Custom script（自定义脚本）
 
-**AllOffTarget（全关目标）**：
-当前视图内开启中且允许参与「全关」的 `SmartDevice` 集合（插座、扫地机、摄像机等默认不加入，支持单设备覆盖；通用卡不可加入）。
+**allOffTargets（全关目标）**：
+当前视图内开启中且允许参与「全关」的 `SmartDevice` 集合（macOS `HomeStore.allOffTargets`；Windows `models.ts:allOffTargets`，插座、扫地机、摄像机等默认不加入，支持单设备覆盖；通用卡不可加入）。
 _Avoid_: All devices（全部设备）
 
 **DeviceListCut（房间或类型筛选）**：
@@ -156,12 +156,12 @@ _Avoid_: Online device（在线设备）
 双列紧凑网格卡片；展开详情抽屉时瞬时扩为整行（12 列）宽度。
 _Avoid_: Mini card（迷你卡片）、Widget（小组件）
 
-**ActivityStack（通知中心）**：
-面板头部折叠展示（最多露 3 层）的系统提醒、主动守护与门铃记录；切换后端即清空本机告警记录。
+**ActivityStackView（通知中心）**：
+面板头部折叠展示（最多露 3 层）的系统提醒、主动守护与门铃记录（macOS `ActivityStackView` / `ClassicActivityStackView`；Windows `activityStackView.ts:renderActivityStack`）；切换后端即清空本机告警记录。
 _Avoid_: Reminder cycle（提醒轮播）、Toast（瞬时提示）
 
-**TransientStack（瞬时横幅栈）**：
-面板底部共用的撤销与 Toast 浮层，与通知中心共享 `StackedCardGeometry`，悬停展开并暂停撤销倒计时。
+**TransientStackView（瞬时横幅栈）**：
+面板底部共用的撤销与 Toast 浮层（macOS `TransientStackView` / `ClassicTransientStackView` 与 `TransientStackExpansion`），与通知中心共享 `StackedCardGeometry`，悬停展开并暂停撤销倒计时。
 _Avoid_: Activity feed（持久提醒集合）、Single banner（互斥横幅）
 
 **SafetyAlert（主动守护提醒）**：

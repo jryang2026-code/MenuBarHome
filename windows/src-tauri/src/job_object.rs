@@ -106,6 +106,4 @@ mod imp {
 pub(crate) fn bind_child_to_kill_on_close_job(child: &std::process::Child) {
     #[cfg(windows)]
     imp::bind_child(child);
-    #[cfg(not(windows))]
-    let _ = child;
 }
