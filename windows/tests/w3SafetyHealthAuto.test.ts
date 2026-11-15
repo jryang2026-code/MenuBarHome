@@ -1185,7 +1185,19 @@ describe("B1 + B5 PC Context Automation Engine, AwayArbitrator, 5m Undo & HA Doo
       roomName: "车库",
       model: "cover.garage",
       isOnline: true,
-      kind: { kind: "cover", entityId: "cover.garage_door", subtype: "garage-door", positionPercent: 100, openDescription: "open", closeDescription: "close", pauseDescription: "stop" },
+      kind: {
+        kind: "cover",
+        entityId: "cover.garage_door",
+        subtype: "garage-door",
+        positionPercent: 100,
+        positionWritable: true,
+        openDescription: "open",
+        closeDescription: "close",
+        pauseDescription: "stop",
+        batteryPercent: null,
+        faultText: null,
+        motion: "stopped",
+      },
     };
     assert.ok(
       automationRuleHighRiskConfirmation(
