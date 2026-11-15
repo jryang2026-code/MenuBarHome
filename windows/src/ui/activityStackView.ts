@@ -1446,9 +1446,9 @@ function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()):
 
   const autoRunId = host.lastUndoAction ? getAutomationUndoRunId(host.lastUndoAction) : null;
   const isDuplicateAutoUndo = autoRunId !== null && center.recentAutomationRuns.some((r) => r.id === autoRunId && r.expiresAtMs > nowMs);
-  const undoDismissKey = host.lastUndoAction ? `undo:${host.lastUndoAction.expiresAtMs}` : "";
+  const undoDismissKey = host.lastUndoAction ? `undo:${host.lastUndoAction.expiresAtMs}:${host.lastUndoAction.summary}` : "";
   let replyConsumedByUndo = false;
-  if (undoState.isAvailable && host.lastUndoAction && !isDuplicateAutoUndo && !center.dismissedActivityIds.has("undo:manual") && !center.dismissedActivityIds.has(undoDismissKey)) {
+  if (undoState.isAvailable && host.lastUndoAction && !isDuplicateAutoUndo && !center.dismissedActivityIds.has(undoDismissKey)) {
     const reply = host.replyBanner;
     const mergeReply = Boolean(reply && !reply.isError && !host.pendingCloudConsent && host.pendingHighRisk === null);
     if (mergeReply) replyConsumedByUndo = true;
@@ -1517,8 +1517,7 @@ export const renderUnifiedUpperStack = renderClassicUnifiedUpperStack;
 export function dismissActivityById(host: MenuMijiaWindowsApp, activityId: string): void {
   const center = getHostActivityCenter(host);
   if (activityId === "undo:manual") {
-    if (host.lastUndoAction) center.dismissedActivityIds.add(`undo:${host.lastUndoAction.expiresAtMs}`);
-    center.dismissedActivityIds.add("undo:manual");
+    if (host.lastUndoAction) center.dismissedActivityIds.add(`undo:${host.lastUndoAction.expiresAtMs}:${host.lastUndoAction.summary}`);
     host.lastUndoAction = null;
     host.undoBannerUntilMs = 0;
     undoTrackerFor(host).syncAction(null);
@@ -1534,7 +1533,7 @@ export function dismissActivityById(host: MenuMijiaWindowsApp, activityId: strin
   } else if (activityId === "missed:timers") {
     for (const item of [...host.missedScheduledCommands]) cancelScheduledCommands(host, item.id);
   } else if (activityId === "timers:active") {
-    cancelScheduledCommands(host);
+    for (const item of [...host.scheduledCommands]) cancelScheduledCommands(host, item.id);
   } else if (activityId.startsWith("auto:")) {
     const runId = activityId.slice("auto:".length);
     if (center.pendingHighRiskUndoRunId === runId) return;
