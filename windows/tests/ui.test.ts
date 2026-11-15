@@ -3984,42 +3984,46 @@ describe("Home Assistant source", () => {
       };
       Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
       localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, assistantBaseURL: "http://localhost:1234/v1", assistantModel: "controlled-model" }));
-      new MenuMijiaWindowsApp(element("#app"));
-      await waitFor(() => !!document.querySelector('[data-body-device="study-light"]'));
-      await command("让这里适合观星");
-      await waitFor(() => modelStarted);
-      if (!outcome.startsWith("same-source")) {
-        await click("#btn-settings");
-        const url = document.querySelector<HTMLInputElement>("#settings-ha-url");
-        assert.ok(url);
-        url.value = "http://localhost:8124";
-        await click("#btn-save-settings");
+      const app = new MenuMijiaWindowsApp(element("#app"));
+      try {
         await waitFor(() => !!document.querySelector('[data-body-device="study-light"]'));
-      }
-      const before = localStorage.getItem("menumijia.windows.settings.v2");
-      const bannerBefore = document.querySelector(".cc-feedback-text")?.textContent;
-      modelResponse.emit("release");
-      await waitFor(() => modelReturned);
-      await setImmediate();
-      if (outcome === "same-source") {
-        assert.equal(calls.length, 1);
-        assert.match(tile("study-light"), /已关闭/);
-        assert.ok(document.querySelector("#btn-undo"));
-        const saved = JSON.parse(localStorage.getItem("menumijia.windows.settings.v2") ?? "{}");
-        assert.equal(saved.learnedShortcuts.length, 1);
-      } else if (outcome === "same-source-suggestion") {
-        assert.equal(calls.length, 0);
-        assert.ok(document.querySelector("[data-suggestion-id]"), "A current model suggestion must remain available");
-      } else if (outcome === "same-source-error") {
-        assert.equal(calls.length, 0);
-        assert.match(textOf(".cc-feedback-text"), /Late account A error/);
-      } else {
-        assert.equal(calls.length, 0, "An account A model response must never control account B's matching entity ID");
-        assert.ok(!document.querySelector("#btn-undo"), "A stale response must not install undo");
-        assert.ok(!document.querySelector("[data-suggestion-id]"), "A stale response must not publish suggestions");
-        assert.equal(localStorage.getItem("menumijia.windows.settings.v2"), before, "Late replies must not save learning or habit receipts");
-        assert.equal(document.querySelector(".cc-feedback-text")?.textContent, bannerBefore);
-        assert.doesNotMatch(document.body.textContent ?? "", /Account A model reply|Late account A error/);
+        await command("让这里适合观星");
+        await waitFor(() => modelStarted);
+        if (!outcome.startsWith("same-source")) {
+          await click("#btn-settings");
+          const url = document.querySelector<HTMLInputElement>("#settings-ha-url");
+          assert.ok(url);
+          url.value = "http://localhost:8124";
+          await click("#btn-save-settings");
+          await waitFor(() => !!document.querySelector('[data-body-device="study-light"]'));
+        }
+        const before = localStorage.getItem("menumijia.windows.settings.v2");
+        const bannerBefore = document.querySelector(".cc-live-banner .cc-feedback-text")?.textContent;
+        modelResponse.emit("release");
+        await waitFor(() => modelReturned);
+        await setImmediate();
+        if (outcome === "same-source") {
+          assert.equal(calls.length, 1);
+          assert.match(tile("study-light"), /已关闭/);
+          assert.ok(document.querySelector("#btn-undo"));
+          const saved = JSON.parse(localStorage.getItem("menumijia.windows.settings.v2") ?? "{}");
+          assert.equal(saved.learnedShortcuts.length, 1);
+        } else if (outcome === "same-source-suggestion") {
+          assert.equal(calls.length, 0);
+          assert.ok(document.querySelector("[data-suggestion-id]"), "A current model suggestion must remain available");
+        } else if (outcome === "same-source-error") {
+          assert.equal(calls.length, 0);
+          assert.match(textOf(".cc-live-banner .cc-feedback-text"), /Late account A error/);
+        } else {
+          assert.equal(calls.length, 0, "An account A model response must never control account B's matching entity ID");
+          assert.ok(!document.querySelector("#btn-undo"), "A stale response must not install undo");
+          assert.ok(!document.querySelector("[data-suggestion-id]"), "A stale response must not publish suggestions");
+          assert.equal(localStorage.getItem("menumijia.windows.settings.v2"), before, "Late replies must not save learning or habit receipts");
+          assert.equal(document.querySelector(".cc-live-banner .cc-feedback-text")?.textContent, bannerBefore);
+          assert.doesNotMatch(document.body.textContent ?? "", /Account A model reply|Late account A error/);
+        }
+      } finally {
+        app.dispose();
       }
     });
   }
