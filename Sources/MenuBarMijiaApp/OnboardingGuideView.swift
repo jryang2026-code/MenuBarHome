@@ -150,7 +150,7 @@ public struct OnboardingGuideView: View {
                     "连接账号 · 按 \(hotkeyLabel) 搜设备 · 全关后还能撤销",
                     "Connect an account · Search with \(hotkeyLabel) · Turn all off, then undo"
                 ))
-                .font(.system(size: 10.5))
+                .font(.system(size: 11.5))
                 .foregroundStyle(.secondary)
             }
 
@@ -196,7 +196,7 @@ public struct OnboardingGuideView: View {
                     "用一套虚拟家庭体验面板、搜索和全关。完全离线，随时可以连接真实家庭。",
                     "Try the panel, search and All Off on a virtual home. Fully offline; connect a real home any time."
                 ))
-                .font(.system(size: 10.5))
+                .font(.system(size: 11.5))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             }
@@ -231,7 +231,7 @@ public struct OnboardingGuideView: View {
                 Spacer()
                 if store.hasConnectedHomeSource {
                     Label(L10n.tr("已连接", "Connected"), systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(.green)
                 } else if let firstHA = store.discoveredHAInstances.first {
                     Button {
@@ -245,13 +245,13 @@ public struct OnboardingGuideView: View {
                             L10n.tr("已发现局域网 HA · \(firstHA.hostAndPort)", "Found LAN HA · \(firstHA.hostAndPort)"),
                             systemImage: "dot.radiowaves.left.and.right"
                         )
-                            .font(.system(size: 10, weight: .medium))
+                            .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(.green)
                     }
                     .buttonStyle(.plain)
                 } else {
                     Text(L10n.tr("推荐手机扫码", "QR Login Recommended"))
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.orange)
                 }
             }
@@ -280,7 +280,7 @@ public struct OnboardingGuideView: View {
                 "Home Assistant 与米家云端可以同时配置；这里只切换当前填写的连接表单，已配置的另一端会继续连接。",
                 "Home Assistant and Xiaomi Cloud can be configured together. This only switches the form below; the other configured source keeps running."
             ))
-            .font(.system(size: 10))
+            .font(.system(size: 11))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
@@ -303,7 +303,7 @@ public struct OnboardingGuideView: View {
                         "演示模式已开启：内置虚拟家庭，完全离线，不发起任何网络请求。选择上方「米家云端直连」或「Home Assistant」即可切回真实账号。",
                         "Demo mode is on: a built-in virtual home, fully offline, no network requests. Pick Xiaomi Cloud or Home Assistant above to switch back to a real account."
                     ))
-                    .font(.system(size: 10))
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 }
@@ -338,7 +338,7 @@ public struct OnboardingGuideView: View {
 
                     if HAConnectionSaveGuard.showsPlaintextWarning(forDraft: haURLDraft) {
                         Label(L10n.tr("令牌将以明文在网络上传输，建议使用 HTTPS 或 Nabu Casa 地址。", "Your token will travel unencrypted. Use HTTPS or a Nabu Casa address."), systemImage: "exclamationmark.triangle.fill")
-                            .font(.system(size: 10.5))
+                            .font(.system(size: DesignTokens.TypeSize.caption))
                             .foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -346,10 +346,10 @@ public struct OnboardingGuideView: View {
                     if let firstHA = store.discoveredHAInstances.first {
                         HStack(spacing: 5) {
                             Image(systemName: "checkmark.seal.fill")
-                                .font(.system(size: 10))
+                                .font(.system(size: 11))
                                 .foregroundStyle(.green)
                             Text(L10n.tr("已自动识别局域网 HA：\(firstHA.displaySummary)", "Detected LAN HA: \(firstHA.displaySummary)"))
-                                .font(.system(size: 10))
+                                .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                             Spacer()
@@ -358,7 +358,7 @@ public struct OnboardingGuideView: View {
                                     NSWorkspace.shared.open(secURL)
                                 }
                                 .buttonStyle(.plain)
-                                .font(.system(size: 10, weight: .medium))
+                                .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(Color.accentColor)
                             }
                         }
@@ -393,7 +393,7 @@ public struct OnboardingGuideView: View {
                         "菜单栏工具常驻：重启 Mac 后自动出现，不用再去应用程序里找。",
                         "Keep the menu-bar tool around after a restart without opening Applications again."
                     ))
-                    .font(.system(size: 10))
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 }
@@ -418,7 +418,7 @@ public struct OnboardingGuideView: View {
                         ),
                         systemImage: "exclamationmark.triangle.fill"
                     )
-                    .font(.system(size: 10.5))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -446,7 +446,7 @@ public struct OnboardingGuideView: View {
                 Spacer()
                 if checklist.isComplete(.searchDevice) {
                     Label(L10n.tr("已试过", "Tried"), systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(.green)
                 }
             }
@@ -455,7 +455,7 @@ public struct OnboardingGuideView: View {
                 "短按 \(hotkeyLabel) 打开面板，直接输入设备名或拼音首字母；↑↓ 选择，回车开关。长按 \(hotkeyLabel) 可以直接说话。",
                 "Tap \(hotkeyLabel) to open the panel, then type a device name or pinyin initials. ↑↓ chooses, Return toggles. Hold \(hotkeyLabel) to speak instead."
             ))
-            .font(.system(size: 10.5))
+            .font(.system(size: 11.5))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
@@ -493,7 +493,7 @@ public struct OnboardingGuideView: View {
                 Spacer()
                 if checklist.isComplete(.allOffAndUndo) {
                     Label(L10n.tr("已试过", "Tried"), systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(.green)
                 }
             }
@@ -502,7 +502,7 @@ public struct OnboardingGuideView: View {
                 "按住顶部「全关」会列出将关闭的设备，并提示未实际执行。以后真的全关，这一步也算完成。",
                 "Hold All Off at the top to list the devices that would turn off. Nothing is sent. A real All Off later completes this step too."
             ))
-            .font(.system(size: 10.5))
+            .font(.system(size: 11.5))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
@@ -513,7 +513,8 @@ public struct OnboardingGuideView: View {
                     detail: L10n.tr(
                         "隐藏的设备、插座和扫地机默认不动，避免关掉路由器和还在工作的家电。",
                         "Hidden devices, plugs and vacuums stay as they are, so a router or a working appliance is not switched off."
-                    )
+                    ),
+                    statesConsequence: true
                 )
                 shortcutTipRow(
                     icon: "arrow.uturn.backward",
@@ -521,7 +522,8 @@ public struct OnboardingGuideView: View {
                     detail: L10n.tr(
                         "撤销后横幅消失，再想改回来就点设备卡片。",
                         "The banner disappears after undo; toggle the device card if you change your mind again."
-                    )
+                    ),
+                    statesConsequence: true
                 )
             }
         }
@@ -538,7 +540,7 @@ public struct OnboardingGuideView: View {
                     "这些功能第一次用到时再打开也不迟；下面每一行都标了在哪里配置。",
                     "You will not need these on day one. Each row says where it lives."
                 ))
-                .font(.system(size: 10))
+                .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -592,7 +594,7 @@ public struct OnboardingGuideView: View {
                         "AI 指令、GrokBall、摄像机、自动化与 URL 直控",
                         "AI commands, GrokBall, cameras, automation and URL control"
                     ))
-                    .font(.system(size: 10))
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
@@ -628,19 +630,19 @@ public struct OnboardingGuideView: View {
                 Spacer()
                 if let importedSource {
                     Label(L10n.tr("已从 \(importedSource) 导入", "Imported from \(importedSource)"), systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(.green)
                 } else if hasCustomKey {
                     Label(L10n.tr("已配置密钥", "Key Configured"), systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(.green)
                 } else if isLoopback {
                     Label(L10n.tr("本机免密接口", "Local Endpoint"), systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(.green)
                 } else {
                     Text(L10n.tr("不填也能用本机规则", "Local Rules Work Without It"))
-                        .font(.system(size: 10))
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -649,7 +651,7 @@ public struct OnboardingGuideView: View {
                 "常规指令本机直接执行，不需要 AI。想要一次统筹多台设备或更口语的说法，再接 Jev、DeepSeek 等服务。",
                 "Simple commands run on this Mac without AI. Connect Jev, DeepSeek or another service only for multi-device phrasing."
             ))
-            .font(.system(size: 10.5))
+            .font(.system(size: 11.5))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
@@ -737,7 +739,7 @@ public struct OnboardingGuideView: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 10.5, weight: .medium))
+                .font(.system(size: 11.5, weight: .medium))
                 .foregroundStyle(Color.accentColor)
             }
         }
@@ -785,7 +787,7 @@ public struct OnboardingGuideView: View {
                 Spacer()
                 if voiceAuthorized {
                     Label(L10n.tr("语音已授权", "Voice Authorized"), systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(.green)
                 }
             }
@@ -794,7 +796,7 @@ public struct OnboardingGuideView: View {
                 "长按菜单栏图标或 \(hotkeyLabel) 直接说话，例如「书房灯月光模式」「10 分钟后关灯」，松手即执行。",
                 "Hold the menu bar icon or \(hotkeyLabel) and speak, e.g. \"study light moonlight mode\" or \"turn off the lights in 10 minutes\", then release."
             ))
-            .font(.system(size: 10))
+            .font(.system(size: 11))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
@@ -839,7 +841,7 @@ public struct OnboardingGuideView: View {
     private var bottomActionRow: some View {
         HStack {
             Text(L10n.tr("随时可在「设置 → 通用 → 首次设置」重新打开", "Reopen anytime in Settings → General → Setup"))
-                .font(.system(size: 10.5))
+                .font(.system(size: 11.5))
                 .foregroundStyle(.secondary)
 
             Spacer()
@@ -888,13 +890,16 @@ public struct OnboardingGuideView: View {
                     .foregroundStyle(.green)
             } else {
                 Text(number)
-                    .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                    .font(.system(size: 11.5, weight: .bold, design: .rounded))
                     .foregroundStyle(Color.accentColor)
             }
         }
     }
 
-    private func shortcutTipRow(icon: String, title: String, detail: String) -> some View {
+    /// `statesConsequence` is for text that says what a control will not do or what an action costs
+    /// (the All Off exclusions, that Undo is one shot): CODING_STANDARDS §18 puts it at 12 pt in the
+    /// primary colour. Ordinary how-to lines (search tips) stay small and secondary.
+    private func shortcutTipRow(icon: String, title: String, detail: String, statesConsequence: Bool = false) -> some View {
         HStack(alignment: .top, spacing: 7) {
             Image(systemName: icon)
                 .font(.system(size: 11, weight: .semibold))
@@ -906,8 +911,8 @@ public struct OnboardingGuideView: View {
                 Text(title)
                     .font(.system(size: 11, weight: .semibold))
                 Text(detail)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: statesConsequence ? DesignTokens.TypeSize.caption : 11))
+                    .foregroundStyle(statesConsequence ? AnyShapeStyle(.primary.opacity(0.85)) : AnyShapeStyle(.secondary))
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -931,7 +936,7 @@ public struct OnboardingGuideView: View {
                 Text(title)
                     .font(.system(size: 11, weight: .semibold))
                 Text(detail)
-                    .font(.system(size: 10))
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

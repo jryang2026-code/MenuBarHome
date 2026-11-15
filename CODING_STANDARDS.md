@@ -94,6 +94,10 @@ Pair every pending UI field, toast, consent banner, activity row, hover/expansio
 
 Switches, pickers and sliders in Settings apply at once. A text form that carries a credential or triggers a reconnect (the Home Assistant address and token, the AI service) is saved explicitly, and it registers with `SettingsUnsavedChanges` so an unsaved edit is flagged with "有未保存的更改" and is never dropped silently: switching pages offers Save / Discard / Cancel, and closing the window (`windowShouldClose`) offers the same three. A form's `save` returns `false` when nothing was stored (a refused Keychain write, a missing address) so the edits stay flagged; an automatic suggestion (a LAN-discovered address) moves the baseline instead of counting as an edit.
 
+## §18. Text Size And Labels
+
+Secondary text is at least 11 pt (the first-run guide uses 11 / 11.5, not 10 / 10.5). Text that states a limit, a risk or a consequence (an unofficial API, a plaintext token, an expiring sign-in) is at least 12 pt (`DesignTokens.TypeSize.caption`) and uses the primary colour or a warning tint, not secondary grey. Every icon-only button needs both `accessibilityLabel` and a hover help (`help` / `panelHelp`). Contrast is not yet measured; check light and dark with Accessibility Inspector before claiming WCAG AA.
+
 ## Tooling Quick Reference
 
 - **App icons**: editing `Resources/AppIcon/AppIcon-*.svg` -> `swift scripts/generate_app_icon.swift`
