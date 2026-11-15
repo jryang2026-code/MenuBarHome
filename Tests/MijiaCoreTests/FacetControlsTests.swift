@@ -62,7 +62,7 @@ struct FacetControlsTests {
         let freshAirMode = try #require(facets.first { $0.id == "3.2" })
         #expect(freshAirMode.kind == .select)
         #expect(freshAirMode.value == .number(1))
-        #expect(freshAirMode.selectedOption?.label == "HuanQi")
+        #expect(freshAirMode.options.first { $0.value == 1 }?.label == "HuanQi")
         #expect(freshAirMode.writesByDefault, "mode is on the low-risk whitelist")
         #expect(freshAirMode.isHighValue)
         #expect(freshAirMode.target == .property(entityId: "miot:ac1:3", piid: 2))

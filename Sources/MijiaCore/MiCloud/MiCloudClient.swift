@@ -330,12 +330,12 @@ public actor MiCloudClient: MiCloudAPI {
             guard statusCode == 200 else { throw MiCloudError.http(statusCode) }
             // A 200 object with no `code` is a gateway error page or an unknown envelope shape. The
             // old code read it as `code: 0` and returned `.null`, which surfaced as "synced, no devices".
-            throw MiCloudError.badResponse("缺少状态码")
+            throw MiCloudError.badResponse(L10n.tr("缺少状态码", "Missing status code"))
         }
         guard statusCode == 200 else { throw MiCloudError.http(statusCode) }
         guard let text = String(data: body, encoding: .utf8),
               let decrypted = try? MiCloudCrypto.decryptResponse(text, signedNonce: signedNonce) else {
-            throw MiCloudError.badResponse("无法解密")
+            throw MiCloudError.badResponse(L10n.tr("无法解密", "Decryption failed"))
         }
         let json: JSONValue
         if let direct = try? JSONDecoder().decode(JSONValue.self, from: decrypted) {
@@ -346,7 +346,7 @@ public actor MiCloudClient: MiCloudAPI {
                   let sanitized = try? JSONDecoder().decode(JSONValue.self, from: Data(cleaned.utf8)) {
             json = sanitized
         } else {
-            throw MiCloudError.badResponse("无法解密")
+            throw MiCloudError.badResponse(L10n.tr("无法解密", "Decryption failed"))
         }
         return try unwrapResult(json)
     }
@@ -368,7 +368,7 @@ public actor MiCloudClient: MiCloudAPI {
         // An envelope without an integer `code` has no verdict, so it is never a success (#76, #67).
         guard let code = json["code"]?.intValue else {
             if Self.isAuthRejection(json) { throw MiCloudError.sessionExpired }
-            throw MiCloudError.badResponse("缺少状态码")
+            throw MiCloudError.badResponse(L10n.tr("缺少状态码", "Missing status code"))
         }
         let message = json["message"]?.stringValue ?? json["desc"]?.stringValue ?? ""
         if code == 0 { return json["result"] ?? .null }
@@ -844,7 +844,10 @@ public actor MiCloudClient: MiCloudAPI {
         for item in items {
             let code = item["code"]?.intValue ?? 0
             if code < 0 {
-                throw MiCloudError.deviceError(code: code, message: "设备未响应或离线")
+                throw MiCloudError.deviceError(
+                    code: code,
+                    message: L10n.tr("设备未响应或离线", "Device did not respond or is offline")
+                )
             }
         }
     }

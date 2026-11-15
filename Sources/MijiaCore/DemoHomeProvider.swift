@@ -122,7 +122,7 @@ public actor MockHomeProvider: HomeProvider {
         if shouldFailCommands
             || failingTargets.contains(command.targetEntityId)
             || failingCommandFilter?(command) == true {
-            throw HomeProviderError.serviceCallFailed(500, "模拟网络失败")
+            throw HomeProviderError.serviceCallFailed(500, L10n.tr("模拟网络失败", "Simulated network failure"))
         }
         executedCommands.append(command)
         snapshot = DemoHomeProvider.applying(command, to: snapshot)
@@ -153,32 +153,17 @@ public actor MockHomeProvider: HomeProvider {
         continuation?.yield(.statusChanged(status))
     }
 
-    private var sensorHistoryByDevice: [String: [SensorHistorySample]] = [:]
-
-    public func setSensorHistory(_ samples: [SensorHistorySample], forDevice deviceId: String) {
-        sensorHistoryByDevice[deviceId] = samples
-    }
-
     public func fetchSensorHistory(
         deviceId: String,
         window: SensorHistoryWindow,
         now: Date
     ) async -> [SensorHistorySample] {
-        sensorHistoryByDevice[deviceId] ?? []
-    }
-
-    private var cameraStreamByDevice: [String: CameraStreamSource] = [:]
-
-    public func setCameraStream(_ source: CameraStreamSource, forDevice deviceId: String) {
-        cameraStreamByDevice[deviceId] = source
+        []
     }
 
     public func resolveCameraStream(for device: SmartDevice) async throws -> CameraStreamSource {
         if shouldFailCommands {
-            throw HomeProviderError.serviceCallFailed(500, "模拟网络失败")
-        }
-        if let source = cameraStreamByDevice[device.id] {
-            return source
+            throw HomeProviderError.serviceCallFailed(500, L10n.tr("模拟网络失败", "Simulated network failure"))
         }
         return .demo(deviceId: device.id)
     }

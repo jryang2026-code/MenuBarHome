@@ -279,8 +279,7 @@ public enum L10n {
     /// Pins the display unit for a scope (tests, previews).
     @TaskLocal public static var overrideTemperatureUnit: TemperatureUnit?
 
-    /// Pins the translation-table directory for a scope. Tests use it so parallel suites never
-    /// fight over one global path; `setTranslationDirectory` remains for tools.
+    /// Pins the translation-table directory for a scope so parallel test suites never fight over one global path.
     @TaskLocal public static var overrideTranslationDirectory: URL?
 
     // MARK: Locked storage
@@ -396,18 +395,6 @@ public enum L10n {
         }
     }
 
-    /// Points table loading at a directory of `<id>.json` files (tests, tools). `nil` restores the
-    /// bundle search order used by the app.
-    public static func setTranslationDirectory(_ url: URL?) {
-        directoryBox.set(url)
-        tableBox.set(nil)
-    }
-
-    /// Drops the cached tables so a newly installed language file is picked up without relaunching.
-    public static func reloadTranslationTables() {
-        tableBox.set(nil)
-    }
-
     // MARK: Strings
 
     /// Inline two-language lookup. Simplified Chinese and English come from the arguments; any other
@@ -482,22 +469,6 @@ public enum L10n {
     }
 
     public static var temperatureSymbol: String { temperatureUnit.symbol }
-
-    /// Converts a value typed or spoken in display units back to the Celsius core.
-    public static func celsiusValue(displayValue: Double) -> Double {
-        switch temperatureUnit {
-        case .celsius: return displayValue
-        case .fahrenheit: return (displayValue - 32) * 5 / 9
-        }
-    }
-
-    /// Converts a step expressed in display units into the Celsius delta a control applies.
-    public static func celsiusDelta(displayDelta: Double) -> Double {
-        switch temperatureUnit {
-        case .celsius: return displayDelta
-        case .fahrenheit: return displayDelta * 5 / 9
-        }
-    }
 
     /// The Celsius delta for one ± tap: the provider's step in Celsius, or exactly one whole °F.
     public static func celsiusStep(_ providerStep: Double) -> Double {

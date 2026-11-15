@@ -94,11 +94,6 @@ public struct FacetControl: Identifiable, Equatable, Sendable {
     public var isOn: Bool? { value?.miotBool }
 
     public var numberValue: Double? { value?.doubleValue }
-
-    public var selectedOption: MiotFacetOption? {
-        guard let raw = value?.intValue else { return nil }
-        return options.first { $0.value == raw }
-    }
 }
 
 /// The portion input of a feeding action, shared by the drawer, the confirmation and the command

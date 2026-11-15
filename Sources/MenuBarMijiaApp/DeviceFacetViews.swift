@@ -716,7 +716,7 @@ enum FacetLabel {
 
     static func service(_ name: String) -> String {
         if !L10n.isEnglish, let chinese = chineseServices[name] {
-            return chinese
+            return L10n.tr(chinese, humanized(name))
         }
         return humanized(name)
     }

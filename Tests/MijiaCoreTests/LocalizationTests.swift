@@ -105,6 +105,11 @@ struct LocalizationTests {
         #expect(strings["已关闭"] == "已關閉")
         #expect(strings["跟随系统"] == "跟隨系統")
         #expect(strings["当前室温 %@"] == "當前室溫 %@")
+        for (key, value) in strings {
+            #expect(!key.isEmpty && !value.isEmpty)
+            #expect(key.filter { $0 == "*" }.count == value.filter { $0 == "*" }.count, "Wildcard mismatch for \(key)")
+            #expect(key.components(separatedBy: "%@").count == value.components(separatedBy: "%@").count, "Format mismatch for \(key)")
+        }
 
         L10n.$overrideTranslationDirectory.withValue(dir) {
             #expect(L10n.availableLanguages.contains(.zhHant))
@@ -113,6 +118,11 @@ struct LocalizationTests {
             #expect(L10n.speechLocaleIdentifier(for: .zhHant) == "zh-TW")
             L10n.$overrideLanguage.withValue(.zhHans) {
                 #expect(L10n.tr("已关闭", "Off") == "已关闭")
+            }
+            L10n.$overrideLanguage.withValue(.zhHant) {
+                #expect(L10n.tr("缺少状态码", "Missing status code") == "缺少狀態碼")
+                #expect(L10n.tr("设备未响应或离线", "Device did not respond or is offline") == "裝置未響應或離線")
+                #expect(L10n.tr("全屋设备均关闭", "All devices are off") == "全屋裝置均關閉")
             }
             L10n.$overrideLanguage.withValue(.en) {
                 #expect(L10n.tr("已关闭", "Off") == "Off")
@@ -326,9 +336,6 @@ struct LocalizationTests {
             #expect(L10n.temperature(100) == "212°F")
             #expect(L10n.temperature(24) == "75°F")
             #expect(L10n.temperatureSymbol == "°F")
-            // Round-tripping a Fahrenheit reading must return the original Celsius value.
-            #expect(abs(L10n.celsiusValue(displayValue: 77) - 25) < 0.0001)
-            #expect(abs(L10n.celsiusValue(displayValue: L10n.temperatureNumber(21.5)) - 21.5) < 0.0001)
         }
     }
 
@@ -336,12 +343,9 @@ struct LocalizationTests {
     func temperatureSteps() {
         L10n.$overrideTemperatureUnit.withValue(.celsius) {
             #expect(L10n.celsiusStep(0.5) == 0.5)
-            #expect(L10n.celsiusDelta(displayDelta: 2) == 2)
         }
         L10n.$overrideTemperatureUnit.withValue(.fahrenheit) {
             #expect(abs(L10n.celsiusStep(0.5) - 5.0 / 9.0) < 0.0001)
-            #expect(abs(L10n.celsiusDelta(displayDelta: 1) - 5.0 / 9.0) < 0.0001)
-            // A step keeps the delta a whole Fahrenheit degree, even though the core is Celsius.
             let start = 24.0
             let stepped = start + L10n.celsiusStep(0.5)
             #expect(abs((L10n.temperatureNumber(stepped) - L10n.temperatureNumber(start)) - 1) < 0.0001)

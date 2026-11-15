@@ -239,4 +239,51 @@ struct WeeklyHealthReportTests {
         let english = report.markdown(language: .english)
         #expect(english.contains("- Rooms recommended for Wi-Fi/gateway check: 书房, 客厅"))
     }
+
+    @Test("Renders Traditional Chinese report and notification summary when zh-Hant is active")
+    func traditionalChineseRendering() {
+        let devices = [
+            device("t", "溫濕度計", room: "書房", kind: .sensor(SensorSpec(temperature: 31, humidity: 25, battery: 10))),
+            device("f", "淨化器", room: "客廳", kind: .fan(FanSpec(entityId: "fan.f", isOn: true, filterLifePercent: 5))),
+            device("p", "電視插座", room: "客廳", kind: .plug(PlugSpec(switchEntityId: "switch.p", isOn: false, powerWatts: 4.0))),
+            device("o1", "書桌燈", room: "書房", online: false, kind: .sensor(SensorSpec())),
+            device("o2", "落地燈", room: "書房", online: true, kind: .sensor(SensorSpec())),
+        ]
+        let report = WeeklyHealthReport.build(
+            devices: devices,
+            dailyEnergy: fortnight(lastWeek: Array(repeating: 1.0, count: 7), thisWeek: Array(repeating: 0.5, count: 7)),
+            energyByDevice: [EnergyDeviceTotal(deviceId: "p", name: "電視插座", kwh: 3.5)],
+            climate: [
+                "t": .init(
+                    temperature: summary(min: 14, max: 31, average: 24),
+                    humidity: summary(min: 25, max: 75, average: 50)
+                )
+            ],
+            offlineDays: ["o2": 3],
+            now: now
+        )
+        L10n.$overrideLanguage.withValue(.zhHant) {
+            #expect(WeeklyHealthReport.Language.current == .traditionalChinese)
+            let summary = report.notificationSummary()
+            #expect(summary == "本週用電 3.5 kWh（比上週 -50%） · 1 處溫濕度異常 · 2 台待更換 · 2 台離線 · 待機耗電 1 台")
+            let md = report.markdown()
+            #expect(md.contains("# 家庭健康週報"))
+            #expect(md.contains("## 用電"))
+            #expect(md.contains("本週 3.5 kWh，比上週 -50%"))
+            #expect(md.contains("耗電最多："))
+            #expect(md.contains("- 待機耗電提醒：客廳 · 電視插座 (關閉狀態仍消耗 4.0 W)"))
+            #expect(md.contains("## 溫濕度"))
+            #expect(md.contains("最高濕度 75%，偏潮、最低濕度 25%，偏乾、最高 31°C，偏熱、最低 14°C，偏冷"))
+            #expect(md.contains("## 需要更換"))
+            #expect(md.contains("濾芯 5%"))
+            #expect(md.contains("電池 10%"))
+            #expect(md.contains("## 離線設備"))
+            #expect(md.contains("（現在離線）"))
+            #expect(md.contains("（本週 3 天出現離線）"))
+            #expect(md.contains("- 建議排查網路/網關訊號的房間：書房"))
+        }
+        let empty = WeeklyHealthReport.build(devices: [], dailyEnergy: [], energyByDevice: [], climate: [:], now: now)
+        #expect(empty.notificationSummary(language: .traditionalChinese) == "本週一切正常")
+        #expect(empty.markdown(language: .traditionalChinese).contains("本週一切正常"))
+    }
 }

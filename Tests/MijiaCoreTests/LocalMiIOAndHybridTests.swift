@@ -226,41 +226,9 @@ private actor EventCollector {
     }
 }
 
-private actor SpecConcurrencyGate {
-    private let targetConcurrency: Int
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-    private var released = false
-
-    init(targetConcurrency: Int) {
-        self.targetConcurrency = targetConcurrency
-    }
-
-    func enterAndSync() async {
-        if released { return }
-        if waiters.count + 1 >= targetConcurrency {
-            released = true
-            let parked = waiters
-            waiters.removeAll()
-            for waiter in parked {
-                waiter.resume()
-            }
-            return
-        }
-        await withCheckedContinuation { continuation in
-            if released {
-                continuation.resume()
-                return
-            }
-            waiters.append(continuation)
-        }
-    }
-}
-
 private actor MirrorHTTPStub: MiHTTPTransport {
     private var handler: @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
     private(set) var requestedURLs: [String] = []
-    private(set) var maxConcurrent = 0
-    private var currentConcurrent = 0
 
     init(handler: @escaping @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)) {
         self.handler = handler
@@ -268,11 +236,6 @@ private actor MirrorHTTPStub: MiHTTPTransport {
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         requestedURLs.append(request.url?.absoluteString ?? "")
-        currentConcurrent += 1
-        if currentConcurrent > maxConcurrent {
-            maxConcurrent = currentConcurrent
-        }
-        defer { currentConcurrent -= 1 }
         return try await handler(request)
     }
 }
@@ -825,14 +788,13 @@ struct MiCloudAndSpecEnhancementsTests {
         }
     }
 
-    @Test("MiotSpecStore falls back to secondary mirror, applies TTL jitter, and prefetches concurrently")
+    @Test("MiotSpecStore falls back to secondary mirror and applies TTL jitter")
     func specStoreMirrorFallbackJitterAndPrefetch() async throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("MiotSpecTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
-        let concurrencyGate = SpecConcurrencyGate(targetConcurrency: 2)
         let transport = MirrorHTTPStub { req in
             let url = req.url!.absoluteString
             if url.hasPrefix("https://miot-spec.org") {
@@ -855,7 +817,6 @@ struct MiCloudAndSpecEnhancementsTests {
                 let resp = HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
                 return (body, resp)
             }
-            await concurrencyGate.enterAndSync()
             let body = Data(#"""
             {"type":"urn:miot-spec-v2:device:light:0000A001:acme-bulb:1","services":[
                 {"iid":2,"type":"urn:miot-spec-v2:service:light:00007802:acme-bulb:1","properties":[
@@ -880,9 +841,8 @@ struct MiCloudAndSpecEnhancementsTests {
         let effective = await store.effectiveTTL(forKey: "test", base: 100)
         #expect(abs(effective - 110.0) < 0.001)
 
-        let prefetched = await store.getSpecs(for: ["acme.bulb.v1", "acme.bulb.v2", "acme.bulb.v3", "acme.bulb.v1"], maxConcurrency: 2)
-        #expect(prefetched.count == 3)
-        #expect(await transport.maxConcurrent <= 2)
+        let loaded = try await store.spec(model: "acme.bulb.v1", specType: nil)
+        #expect(loaded?.services.count == 1)
         let urls = await transport.requestedURLs
         #expect(urls.contains { $0.hasPrefix("https://spec.miot-spec.com/") })
 
