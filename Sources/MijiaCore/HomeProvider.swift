@@ -716,7 +716,7 @@ public actor HAWebSocketProvider: HomeProvider {
         }
         let (data, response) = try await activeSession.data(for: req)
         guard let http = response as? HTTPURLResponse else {
-            throw HomeProviderError.networkError("无 HTTP 响应")
+            throw HomeProviderError.networkError(L10n.tr("无 HTTP 响应", "No HTTP response"))
         }
         guard (200...299).contains(http.statusCode) else {
             let bodyText = String(data: data, encoding: .utf8) ?? ""

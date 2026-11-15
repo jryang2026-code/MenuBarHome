@@ -554,8 +554,6 @@ public struct AutomationConditions: Codable, Equatable, Sendable {
         try container.encode(wifi, forKey: .wifi)
     }
 
-    public var isUnconditional: Bool { !wifi.isNetworkSpecific }
-
     public func evaluate(wifiSSID: String?, isAuthorized: Bool) -> AutomationWiFiEvaluation {
         wifi.evaluate(wifiSSID: wifiSSID, isAuthorized: isAuthorized)
     }

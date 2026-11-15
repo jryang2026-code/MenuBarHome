@@ -161,6 +161,23 @@ struct CameraPTZDragPlannerTests {
         planner.began(at: .init(x: 0, y: 0), time: 0)
         #expect(planner.moved(to: .init(x: 0, y: 30), time: 0.1, capability: horizontal).isEmpty)
         #expect(planner.moved(to: .init(x: 30, y: 0), time: 0.2, capability: horizontal) == [.move(.right)])
+        #expect(planner.moved(to: .init(x: 1, y: 30), time: 0.3, capability: horizontal) == [.stop])
+        #expect(planner.heartbeat(time: 0.6).isEmpty)
+    }
+
+    @Test("Re-entering the activation deadzone while active emits stop and halts heartbeats")
+    func deadzoneReentryEmitsStopAndHaltsHeartbeat() {
+        var planner = planner()
+        planner.began(at: .init(x: 100, y: 100), time: 0)
+        #expect(planner.moved(to: .init(x: 120, y: 100), time: 0.1, capability: capability) == [.move(.right)])
+        #expect(planner.heartbeat(time: 0.4) == [.heartbeat])
+
+        #expect(planner.moved(to: .init(x: 100, y: 100), time: 0.5, capability: capability) == [.stop])
+        #expect(planner.isDragging == true)
+        #expect(planner.heartbeat(time: 0.8).isEmpty)
+        #expect(planner.moved(to: .init(x: 102, y: 101), time: 0.9, capability: capability).isEmpty)
+        #expect(planner.moved(to: .init(x: 80, y: 100), time: 1.0, capability: capability) == [.move(.left)])
+        #expect(planner.ended() == [.stop])
     }
 }
 

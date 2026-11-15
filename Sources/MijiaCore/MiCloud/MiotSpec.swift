@@ -306,39 +306,6 @@ public actor MiotSpecStore: MiotSpecSource {
         return MiotDeviceSpec.inferFallbackSpec(model: model)
     }
 
-    /// Prefetches MIoT specs for multiple models concurrently with a bounded `TaskGroup`.
-    public func getSpecs(for models: [String], maxConcurrency: Int = 6) async -> [String: MiotDeviceSpec] {
-        var seen: Set<String> = []
-        let uniqueModels = models.filter { !$0.isEmpty && seen.insert($0).inserted }
-        guard !uniqueModels.isEmpty else { return [:] }
-        _ = try? await typeIndex()
-        let limit = max(1, maxConcurrency)
-        return await withTaskGroup(of: (String, MiotDeviceSpec?).self) { group in
-            var iterator = uniqueModels.makeIterator()
-            for _ in 0..<min(limit, uniqueModels.count) {
-                if let model = iterator.next() {
-                    group.addTask {
-                        let loaded = try? await self.spec(model: model, specType: nil)
-                        return (model, loaded)
-                    }
-                }
-            }
-            var results: [String: MiotDeviceSpec] = [:]
-            for await (model, loaded) in group {
-                if let loaded {
-                    results[model] = loaded
-                }
-                if let nextModel = iterator.next() {
-                    group.addTask {
-                        let nextLoaded = try? await self.spec(model: nextModel, specType: nil)
-                        return (nextModel, nextLoaded)
-                    }
-                }
-            }
-            return results
-        }
-    }
-
     func effectiveTTL(forKey cacheKey: String, base: TimeInterval) -> TimeInterval {
         guard base > 0 else { return 0 }
         if let cached = jitteredTTLByKey[cacheKey] { return cached }

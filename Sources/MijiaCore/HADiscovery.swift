@@ -73,10 +73,6 @@ public struct HADiscoveredInstance: Equatable, Sendable, Identifiable {
         return "\(locationName) (\(hostAndPort))"
     }
 
-    public var securityProfileURL: URL? {
-        URL(string: "\(baseURL)/profile/security")
-    }
-
     public init(
         baseURL: String,
         locationName: String = "Home Assistant",

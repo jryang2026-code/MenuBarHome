@@ -435,7 +435,7 @@ struct AssistantResponseArea: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Text(L10n.tr(
-                "会发送：这句话、设备名称/房间/状态、时间段、室温\(store.habitSharing == .on ? "、习惯摘要" : "")。只问这一次，可在设置里撤销。",
+                "会发送：这句话、设备名称/房间/状态、时间段、室温\(store.habitSharing == .on ? L10n.tr("、习惯摘要", ", habit summary") : "")。只问这一次，可在设置里撤销。",
                 "Sends: your words, device names/rooms/states, time of day, room temperature\(store.habitSharing == .on ? ", habit summary" : ""). Asked once; revoke in Settings."
             ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
@@ -779,31 +779,6 @@ enum AssistantSettingsCopy {
         if hasKey { return keySaved }
         if isLoopback { return loopback }
         return nil
-    }
-
-    static func collapsedSurface(presetTitle: String, hasKey: Bool) -> [String] {
-        var strings = [title, subtitle, providerLabel, presetTitle, apiKeyLabel, apiKeyPlaceholder]
-        if let status = headerStatus(isInsecure: false, hasKey: hasKey, isLoopback: false) {
-            strings.append(status)
-        }
-        strings += [
-            advancedTitle,
-            learnHabits,
-            shareHabits,
-            habitPreviewPlaceholder,
-            habitPreviewEmpty,
-            onDeviceSpeech,
-            learnedHabitsTitle(count: 0, expanded: false),
-            privacyExplanation,
-            restoreDefaults,
-            testConnection,
-            saveConfiguration
-        ]
-        return strings
-    }
-
-    static func containsDeveloperJargon(_ text: String) -> Bool {
-        ["systemone", "System One", "CodexBar", "/v1/chat/completions"].contains { text.contains($0) }
     }
 }
 

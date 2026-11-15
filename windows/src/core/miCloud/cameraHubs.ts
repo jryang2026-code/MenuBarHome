@@ -376,26 +376,76 @@ export interface LiveCameraBridgeTarget {
   readonly hubBlockedReason: string | null;
 }
 
+export interface CachedCameraTopology {
+  readonly allDevices?: readonly CameraRecordMetadata[] | null;
+  readonly allRooms?: readonly MiRoom[] | null;
+}
+
 /**
  * Resolves live camera bridge target (`bridgeDid`, `bridgeModel`, `subdid`, `cloudLocalIp`) using
- * paged cloud device metadata + `client.homeRooms()`, isolating multi-home hubs and falling back
- * to synthesized `gatewayDid` / `gatewayModel` / `gatewayLocalIp` for shared-home cameras (#76).
+ * cached topology when available, falling back to paged cloud device metadata + `client.homeRooms()`,
+ * isolating multi-home hubs and falling back to synthesized `gatewayDid` / `gatewayModel` /
+ * `gatewayLocalIp` for shared-home cameras (#76, #34b).
  */
 export async function resolveLiveCameraTarget(
   client: MiCloudClient,
   dev: SmartDevice,
   hostDevices: readonly SmartDevice[],
   selectedHomeId?: string | null,
+  cachedTopology?: CachedCameraTopology | null,
 ): Promise<LiveCameraBridgeTarget> {
   const camSpec = dev.kind.kind === "camera" ? dev.kind : null;
   const requiresHub = CameraHubCatalog.hubModel(dev.model) !== null;
 
+  const cachedDevices =
+    cachedTopology?.allDevices && cachedTopology.allDevices.length > 0
+      ? cachedTopology.allDevices
+      : null;
+  const cachedRooms =
+    cachedTopology?.allRooms && cachedTopology.allRooms.length > 0
+      ? [...cachedTopology.allRooms]
+      : null;
+
+  if (cachedDevices) {
+    const cachedByDid = new Map<string, CameraRecordMetadata>(
+      cachedDevices.map((item) => [item.did, item]),
+    );
+    const cachedDev = cachedByDid.get(dev.id);
+    const cachedOwnIp = extractRecordLocalIp(cachedDev);
+    if (cachedDev && (!requiresHub || cachedOwnIp)) {
+      if (cachedOwnIp) {
+        return {
+          bridgeDid: dev.id,
+          bridgeModel: dev.model,
+          subdid: camSpec?.subdid ?? null,
+          cloudLocalIp: cachedOwnIp,
+          hubBlockedReason: null,
+        };
+      }
+    } else if (cachedDev && requiresHub) {
+      const candidateRooms = cachedRooms ?? buildHostRoomHints(hostDevices, selectedHomeId);
+      const cachedResolution = resolveCameraHub(cachedDev, cachedDevices, candidateRooms);
+      const cachedHubIp = extractRecordLocalIp(cachedResolution.hub);
+      if (cachedResolution.hub && cachedHubIp) {
+        return {
+          bridgeDid: cachedResolution.hub.did,
+          bridgeModel: cachedResolution.hub.model,
+          subdid: camSpec?.subdid ?? dev.id,
+          cloudLocalIp: cachedHubIp,
+          hubBlockedReason: null,
+        };
+      }
+    }
+  }
+
   const [initialMetadata, cloudRooms] = await Promise.all([
     fetchCameraMetadataList(client),
-    client.homeRooms().catch((err: unknown) => {
-      if (shouldRethrowWithoutFallback(err)) throw err;
-      return [] as MiRoom[];
-    }),
+    cachedRooms
+      ? Promise.resolve(cachedRooms)
+      : client.homeRooms().catch((err: unknown) => {
+          if (shouldRethrowWithoutFallback(err)) throw err;
+          return [] as MiRoom[];
+        }),
   ]);
   const rooms = cloudRooms.length > 0 ? cloudRooms : buildHostRoomHints(hostDevices, selectedHomeId);
 

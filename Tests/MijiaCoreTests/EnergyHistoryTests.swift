@@ -351,21 +351,6 @@ struct EnergyHistoryTests {
         #expect(history.pricePerKwh == nil)
     }
 
-    @Test("Total cost follows measured energy and the configured price")
-    @MainActor
-    func totalCost() throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let history = EnergyHistory(defaults: defaults, calendar: testCalendar)
-
-        history.record(devices: [testPlug("plug_tv", "电视插座", kwh: 1)], now: testDate(0, 9))
-        history.record(devices: [testPlug("plug_tv", "电视插座", kwh: 1.5)], now: testDate(0, 18))
-        #expect(history.totalCost(dayCount: 7, now: testDate(0, 19)) == nil)
-
-        history.setPricePerKwh(1.2)
-        expectClose(try #require(history.totalCost(dayCount: 7, now: testDate(0, 19))), 0.6)
-    }
-
     // MARK: Clearing
 
     @Test("Clearing removes samples and baselines, so the next reading starts over")

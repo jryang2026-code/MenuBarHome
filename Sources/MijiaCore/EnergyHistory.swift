@@ -300,11 +300,6 @@ public final class EnergyHistory {
         return cost.isFinite ? cost : nil
     }
 
-    /// Cost of a window's total, or `nil` when no price is configured.
-    public func totalCost(dayCount: Int = 7, now: Date = Date()) -> Double? {
-        cost(forKwh: totalKwh(dayCount: dayCount, now: now))
-    }
-
     // MARK: Clearing
 
     /// Deletes every recorded sample, baseline and remembered name. The next observation of each

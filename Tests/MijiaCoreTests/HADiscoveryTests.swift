@@ -21,7 +21,6 @@ struct HADiscoveryTests {
         #expect(found.first?.version == "2026.10.1")
         #expect(found.first?.uuid == "f7d5b92ef26b41ce9eba8980bdcb9a00")
         #expect(found.first?.displaySummary == "我的家 (192.168.1.4:8123 · v2026.10.1)")
-        #expect(found.first?.securityProfileURL?.absoluteString == "http://192.168.1.4:8123/profile/security")
     }
 
     @Test("Unescapes DNS-SD decimal byte escapes and resolves SRV target host when internal_url is empty")
