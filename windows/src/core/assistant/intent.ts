@@ -358,24 +358,8 @@ export const IntentValidator = {
         return null;
       }
       case "brightness": {
-        if (k.kind === "humidifier") {
-          if (!k.humidityWritable || !Number.isFinite(op.percent)) return null;
-          const a = Number.isFinite(k.minHumidity) ? k.minHumidity : 30;
-          const b = Number.isFinite(k.maxHumidity) ? k.maxHumidity : 80;
-          const lo = Math.min(a, b);
-          const hi = Math.max(a, b);
-          return { kind: "targetHumidity", percent: Math.max(lo, Math.min(hi, Math.round(op.percent))) };
-        }
         if (k.kind !== "light" || k.brightnessWritable === false || !Number.isFinite(op.percent)) return null;
         return { kind: "brightness", percent: Math.max(1, Math.min(100, Math.round(op.percent))) };
-      }
-      case "targetHumidity": {
-        if (k.kind !== "humidifier" || !k.humidityWritable || !Number.isFinite(op.percent)) return null;
-        const a = Number.isFinite(k.minHumidity) ? k.minHumidity : 30;
-        const b = Number.isFinite(k.maxHumidity) ? k.maxHumidity : 80;
-        const lo = Math.min(a, b);
-        const hi = Math.max(a, b);
-        return { kind: "targetHumidity", percent: Math.max(lo, Math.min(hi, Math.round(op.percent))) };
       }
       case "brightnessStep": {
         if (k.kind !== "light" || k.brightnessWritable === false || !Number.isFinite(op.delta)) return null;
@@ -578,10 +562,6 @@ export const IntentValidator = {
         return k.kind === "climate" && k.temperatureWritable !== false
           ? [{ kind: "setClimateTemperature", entityId: k.entityId, temperature: op.celsius }]
           : [];
-      case "targetHumidity":
-        return k.kind === "humidifier" && k.humidityWritable
-          ? [{ kind: "setHumidity", entityId: k.entityId, percent: op.percent }]
-          : [];
       case "fanSpeed":
         if (k.kind === "fan" && k.availablePresetModes.length > 0)
           return [{ kind: "setFanPresetMode", entityId: k.entityId, presetMode: op.speed }];
@@ -681,8 +661,6 @@ export const IntentReply = {
       }
       case "targetTemperature":
         return `已${targetNames}设为 ${op.celsius}°C`;
-      case "targetHumidity":
-        return `已${targetNames}目标湿度调至 ${op.percent}%`;
       case "fanSpeed":
         return `已${targetNames}风速调为 ${this.fanSpeedLabel(op.speed)}`;
       case "oscillation":
@@ -719,10 +697,8 @@ function impliedCategories(ops: readonly IntentOperation[]): Set<IntentCategory>
       case "targetTemperature":
       case "temperatureStep":
         return new Set(["climate", "heater"]);
-      case "targetHumidity":
-        return new Set(["humidifier"]);
       case "fanSpeed":
-        return new Set(["fan", "airPurifier", "humidifier", "climate"]);
+        return new Set(["fan", "airPurifier", "climate"]);
       case "oscillation":
         return new Set(["fan"]);
       case "power":
@@ -746,7 +722,6 @@ function dispatchRank(op: IntentOperation): number {
     case "activateScene": return 6;
     case "fanSpeed": return 7;
     case "oscillation": return 8;
-    case "targetHumidity": return 9;
   }
 }
 
@@ -821,7 +796,6 @@ const BARE_CATEGORY_NOUNS: Readonly<Record<IntentCategory, string>> = {
   heater: "电暖器",
   fan: "风扇",
   airPurifier: "空气净化器",
-  humidifier: "加湿器",
   dehumidifier: "除湿机",
   diffuser: "香氛机",
   plug: "插座",
@@ -1051,7 +1025,7 @@ const EN_CATEGORY_WORDS: ReadonlyArray<readonly [string, IntentCategory]> = [
   ["robot vacuum", "vacuum"], ["smart plug", "plug"], ["space heater", "heater"],
   ["standing fan", "fan"], ["air purifiers", "airPurifier"], ["air purifier", "airPurifier"],
   ["purifiers", "airPurifier"], ["purifier", "airPurifier"],
-  ["fresh air", "airPurifier"], ["humidifiers", "humidifier"], ["humidifier", "humidifier"],
+  ["fresh air", "airPurifier"], ["humidifiers", "airPurifier"], ["humidifier", "airPurifier"],
   ["lights", "light"], ["light", "light"], ["lamps", "light"], ["lamp", "light"],
   ["climate", "climate"], ["ac", "climate"],
   ["heater", "heater"], ["dehumidifier", "dehumidifier"], ["diffuser", "diffuser"],
@@ -1069,7 +1043,7 @@ const EN_FILLERS = [
   "please", "can", "could", "would", "you", "help", "me",
   "the", "my", "a", "an", "in", "at", "to", "by", "for", "into", "of",
   "set", "change", "switch", "adjust", "make", "it", "bit", "little",
-  "mode", "room", "temperature", "temp", "target humidity", "humidity", "brightness", "level", "speed",
+  "mode", "room", "temperature", "temp", "brightness", "level", "speed",
 ].sort((a, b) => b.length - a.length);
 
 function escapeRegex(s: string): string {
@@ -1121,7 +1095,6 @@ function extractEnglishNumericOps(state: { rest: string }): IntentOperation[] {
 
   const numericPatterns: ReadonlyArray<readonly [RegExp, (val: number) => IntentOperation]> = [
     [/(?<![a-z0-9])(\d{4})\s*k(?![a-z0-9])/g, (v) => ({ kind: "colorTemperature", kelvin: Math.round(v) })],
-    [/(?<![a-z0-9])(?:target\s+)?humidity(?:\s+(?:to|at))?\s+(\d{1,3})\s*(?:%|percent)?(?![a-z0-9])/g, (v) => ({ kind: "targetHumidity", percent: Math.round(v) })],
     [/(?<![a-z0-9])(\d{1,3})\s*(?:%|percent)(?![a-z0-9])/g, (v) => ({ kind: "brightness", percent: Math.round(v) })],
     [/(?<![a-z0-9])(\d{1,2}(?:\.\d)?)\s*(?:degrees?\s*celsius|degrees?|deg|℃|°c|°)(?![a-z0-9])/g, (v) => ({ kind: "targetTemperature", celsius: v })],
   ];

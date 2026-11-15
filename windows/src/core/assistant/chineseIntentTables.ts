@@ -73,8 +73,7 @@ export const CN_CATEGORY_WORDS: Readonly<Record<string, IntentCategory>> = {
   暖气: "heater", 电暖器: "heater", 电暖气: "heater", 取暖器: "heater", 暖风机: "heater",
   风扇: "fan", 电风扇: "fan", 电扇: "fan",
   空气净化器: "airPurifier", 净化器: "airPurifier", 空净: "airPurifier",
-  新风机: "airPurifier", 新风: "airPurifier",
-  加湿器: "humidifier", 加湿机: "humidifier",
+  新风机: "airPurifier", 新风: "airPurifier", 加湿器: "airPurifier",
   除湿机: "dehumidifier", 香氛机: "diffuser",
   插座: "plug",
   扫地机: "vacuum", 扫地机器人: "vacuum",
@@ -93,7 +92,7 @@ export const CN_ROOM_ALIASES: Readonly<Record<string, readonly string[]>> = {
 export const CN_FILLERS = [
   "请", "帮我", "帮忙", "麻烦", "给我", "把", "将", "给", "一下", "一点", "一些",
   "吧", "了", "的", "呢", "啊", "呀", "都", "里", "模式",
-  "再", "稍微", "稍", "更", "温度", "目标湿度", "湿度", "风速", "亮度", "色温",
+  "再", "稍微", "稍", "更", "温度", "风速", "亮度", "色温",
   "调到", "调成", "调为", "调至", "设为", "设成", "设置为", "设置成", "设置", "调节", "调", "到", "为",
   "切换为", "切换到", "切到", "切为", "切成", "切换", "切", "改成", "改为",
 ];
@@ -236,7 +235,6 @@ export function extractChineseNumericOps(state: { rest: string }): IntentOperati
 
   const numericPatterns: ReadonlyArray<readonly [RegExp, (val: number) => IntentOperation]> = [
     [/(\d{4})[kK]/g, (v) => ({ kind: "colorTemperature", kelvin: Math.round(v) })],
-    [/(?:目标)?湿度(?:调到|调至|调为|设为|设置为|设成|调成|调节到|到|为)?(\d{1,3})(?:%|％)?/g, (v) => ({ kind: "targetHumidity", percent: Math.round(v) })],
     [/亮度(?:调到|调至|调为|设为|设置为|到|为)?(\d{1,3})(?:%|％)?/g, (v) => ({ kind: "brightness", percent: Math.round(v) })],
     [/(\d{1,3})(?:%|％)/g, (v) => ({ kind: "brightness", percent: Math.round(v) })],
     [/(\d{1,2}(?:\.\d)?)(?:度|℃|°C|°)/gi, (v) => ({ kind: "targetTemperature", celsius: v })],

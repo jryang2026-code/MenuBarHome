@@ -1148,10 +1148,10 @@ function renderCollapsedInlineSlider(options: {
         disabledAttr,
       });
     }
-    if (k.kind === "humidifier" && isOn && k.humidityWritable && k.targetHumidity !== null) {
+    if (k.kind === "humidifier" && isOn && k.humidityWritable) {
       const min = k.minHumidity;
       const max = Math.max(min + 1, k.maxHumidity);
-      const pct = Math.max(min, Math.min(max, Math.round(k.targetHumidity)));
+      const pct = Math.max(min, Math.min(max, Math.round(k.targetHumidity ?? k.currentHumidity ?? 50)));
       return renderInlineRangeRow({
         id,
         icon: DEVICE_ICONS.humidifier,

@@ -532,7 +532,7 @@ export function buildMediaPlayerKind(
 
   if (devClass === "tv" || model.toLowerCase().includes("tv")) {
     const currentSource = typeof a.source === "string" && a.source.trim() !== "" ? a.source : null;
-    const availableSources = haStrings(a.source_list);
+    const availableSources = features === null || (features & 2048) !== 0 ? haStrings(a.source_list) : [];
     const turnOnButtonId = eids.find((eid) => eid.startsWith("button.") && eid.includes("turn_on")) ?? null;
     const muteSw = eids.find((eid) => eid.startsWith("switch.") && eid.includes("mute")) ?? null;
     for (const id of [mediaId, turnOnButtonId, muteSw]) if (id) claimed.add(id);

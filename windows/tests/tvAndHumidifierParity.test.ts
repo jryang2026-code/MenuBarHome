@@ -3,8 +3,12 @@ import { afterEach, describe, it } from "node:test";
 import type { Window } from "happy-dom";
 
 import { deviceCategory } from "../src/core/assistant/deviceCategory.js";
-import { decodeHabitOperation, encodeHabitOperation } from "../src/core/assistant/habits.js";
-import { IntentReply, IntentValidator, LocalIntentParser } from "../src/core/assistant/intent.js";
+import { IntentValidator, LocalIntentParser } from "../src/core/assistant/intent.js";
+import {
+  AutomationEngine,
+  createAutomationRule,
+  type AutomationExecutionHost,
+} from "../src/core/automationEngine.js";
 import { applyCommandToDevices, inverseCommands } from "../src/core/commandEffects.js";
 import {
   HomeAssistantSynthesizer,
@@ -24,12 +28,15 @@ import {
   hasDetailDrawer,
   isDeviceActiveOn,
   joinsAllOffByDefault,
+  type DeviceCommand,
   type SmartDevice,
   type TvSpec,
 } from "../src/core/models.js";
 import { cancelDelayedReadBack } from "../src/core/optimisticLock.js";
 import { buildRaycastSnapshot } from "../src/core/raycastSnapshot.js";
+import type { KeyValueStorageLike } from "../src/core/safetyAndHealth.js";
 import { refreshHADevices } from "../src/ui/cloudRefresh.js";
+import { executeIntents } from "../src/ui/intentExecution.js";
 import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 
 let activeDom: Window | null = null;
@@ -88,6 +95,7 @@ describe("Windows TV and humidifier parity (#29)", () => {
           attributes: {
             device_class: "tv",
             supported_features: 4 | 256,
+            source_list: ["HDMI 1", "HDMI 2"],
           },
         },
         {
@@ -136,6 +144,7 @@ describe("Windows TV and humidifier parity (#29)", () => {
     assert.ok(tvNoVol && tvNoVol.kind.kind === "tv");
     assert.equal(tvNoVol.kind.volumeWritable, true);
     assert.equal(tvNoVol.kind.volumePresent, false);
+    assert.deepEqual(tvNoVol.kind.availableSources, []);
     assert.equal(isDeviceActiveOn(tvNoVol), true);
 
     const hum = byId.get("hum-ha");
@@ -332,7 +341,7 @@ describe("Windows TV and humidifier parity (#29)", () => {
     assert.equal(miTv.kind.volumeWritable, true);
     assert.equal(miTv.kind.volumePresent !== false, true);
     assert.equal(miTv.kind.isMuted, false);
-    assert.equal(miTv.kind.muteSwitchEntityId, "miot:did-tv:3");
+    assert.equal(miTv.kind.muteSwitchEntityId, "miot:did-tv:3#mute");
     assert.equal(miTv.kind.currentSource, "HDMI 1");
     assert.deepEqual(miTv.kind.availableSources, ["HDMI 1", "HDMI 2"]);
     assert.equal(miTv.kind.powerOnActionId, "miot-action:did-tv:2:1");
@@ -356,7 +365,7 @@ describe("Windows TV and humidifier parity (#29)", () => {
       { kind: "setProps", writes: [{ did: "did-tv", siid: 3, piid: 1, value: 65 }] },
     );
     assert.deepEqual(
-      MiotCommandMapper.map({ kind: "setSwitch", entityId: "miot:did-tv:3", isOn: true }, tvSpec),
+      MiotCommandMapper.map({ kind: "setSwitch", entityId: "miot:did-tv:3#mute", isOn: true }, tvSpec),
       { kind: "setProps", writes: [{ did: "did-tv", siid: 3, piid: 2, value: true }] },
     );
     assert.deepEqual(
@@ -382,7 +391,7 @@ describe("Windows TV and humidifier parity (#29)", () => {
     );
   });
 
-  it("resolves 关电视, 打开电视, 打开加湿器, and target humidity intents plus habits and Raycast categories", () => {
+  it("resolves 关电视, 打开电视, 打开加湿器, and humidifier mode intents aligned with Swift airPurifier category", () => {
     setLanguage("zh-Hans");
     const tvOffSpec: TvSpec = {
       kind: "tv",
@@ -436,7 +445,7 @@ describe("Windows TV and humidifier parity (#29)", () => {
     };
 
     assert.equal(deviceCategory(tvOn), "tv");
-    assert.equal(deviceCategory(hum), "humidifier");
+    assert.equal(deviceCategory(hum), "airPurifier");
 
     const closeTvPlan = LocalIntentParser.parse("关电视", [tvOn, hum], []);
     assert.ok(closeTvPlan);
@@ -462,20 +471,18 @@ describe("Windows TV and humidifier parity (#29)", () => {
       { kind: "setSwitch", entityId: "humidifier.bed", isOn: true },
     ]);
 
-    const humTargetPlan = LocalIntentParser.parse("把加湿器湿度调到 85%", [tvOn, hum], []);
-    assert.ok(humTargetPlan);
-    const humTargetIntents = IntentValidator.sanitize(humTargetPlan.intents, [tvOn, hum], []);
-    assert.deepEqual(humTargetIntents, [
-      { targetId: "hum-1", operation: { kind: "targetHumidity", percent: 75 } },
+    const humSleepPlan = LocalIntentParser.parse("卧室加湿器睡眠模式", [tvOn, hum], []);
+    assert.ok(humSleepPlan);
+    const humSleepIntents = IntentValidator.sanitize(humSleepPlan.intents, [tvOn, hum], []);
+    assert.deepEqual(humSleepIntents, [
+      { targetId: "hum-1", operation: { kind: "fanSpeed", speed: "sleep" } },
     ]);
-    assert.deepEqual(IntentValidator.commandsForIntent(humTargetIntents[0]!, hum), [
-      { kind: "setHumidity", entityId: "humidifier.bed", percent: 75 },
+    assert.deepEqual(IntentValidator.commandsForIntent(humSleepIntents[0]!, hum), [
+      { kind: "setSelectOption", entityId: "humidifier.bed", option: "sleep" },
     ]);
-    assert.equal(IntentReply.describe(humTargetIntents, [tvOn, hum], []), "已卧室加湿器目标湿度调至 75%");
 
-    const habitKey = encodeHabitOperation({ kind: "targetHumidity", percent: 55 });
-    assert.equal(habitKey, "humidity:55");
-    assert.deepEqual(decodeHabitOperation(habitKey!), { kind: "targetHumidity", percent: 55 });
+    const humAutoNorm = IntentValidator.normalize({ kind: "hvacMode", mode: "auto" }, hum);
+    assert.deepEqual(humAutoNorm, { kind: "fanSpeed", speed: "auto" });
 
     const mutableTv: SmartDevice = structuredClone(tvOn);
     applyCommandToDevices(
@@ -495,6 +502,14 @@ describe("Windows TV and humidifier parity (#29)", () => {
     assert.deepEqual(
       inverseCommands(tvOn, { kind: "mediaSelectSource", entityId: "media_player.living_tv", source: "HDMI 2" }),
       [{ kind: "mediaSelectSource", entityId: "media_player.living_tv", source: "HDMI 1" }],
+    );
+    assert.deepEqual(
+      inverseCommands(tvOffWithWol, { kind: "pressButton", entityId: "button.living_tv_wol" }),
+      [{ kind: "setSwitch", entityId: "media_player.living_tv", isOn: false }],
+    );
+    assert.deepEqual(
+      inverseCommands(tvOn, { kind: "setSwitch", entityId: "media_player.living_tv", isOn: false }),
+      [{ kind: "pressButton", entityId: "button.living_tv_wol" }],
     );
 
     const raySnap = buildRaycastSnapshot({
@@ -517,6 +532,276 @@ describe("Windows TV and humidifier parity (#29)", () => {
     assert.equal(rayTv?.categoryTitle, "电视");
     assert.equal(rayHum?.category, "humidifier");
     assert.equal(rayHum?.categoryTitle, "加湿器");
+  });
+
+  it("disambiguates same-service MIoT TV mute vs power, preserves unobserved humidifier undo, fires humidifier temperature automations, and keeps TV WOL batch undoable", async () => {
+    const sameServiceTvSpec: MiotDeviceSpec = {
+      type: "urn:miot-spec-v2:device:television:0000A010:xiaomi-tv2:1",
+      services: [
+        {
+          iid: 2,
+          type: "urn:miot-spec-v2:service:television:0000781B:xiaomi-tv2:1",
+          description: "Television",
+          properties: [
+            {
+              iid: 1,
+              type: "urn:miot-spec-v2:property:on:00000006:xiaomi-tv2:1",
+              description: "Switch Status",
+              format: "bool",
+              access: ["read", "write", "notify"],
+            },
+            {
+              iid: 2,
+              type: "urn:miot-spec-v2:property:mute:00000040:xiaomi-tv2:1",
+              description: "Mute",
+              format: "bool",
+              access: ["read", "write", "notify"],
+            },
+          ],
+          actions: [],
+        },
+      ],
+    };
+
+    const writeOnlyHumSpec: MiotDeviceSpec = {
+      type: "urn:miot-spec-v2:device:humidifier:0000A00E:deerma-jsq:1",
+      services: [
+        {
+          iid: 2,
+          type: "urn:miot-spec-v2:service:humidifier:00007818:deerma-jsq:1",
+          description: "Humidifier",
+          properties: [
+            {
+              iid: 1,
+              type: "urn:miot-spec-v2:property:on:00000006:deerma-jsq:1",
+              description: "Switch Status",
+              format: "bool",
+              access: ["read", "write", "notify"],
+            },
+            {
+              iid: 6,
+              type: "urn:miot-spec-v2:property:target-humidity:00000022:deerma-jsq:1",
+              description: "Target Humidity",
+              format: "uint8",
+              access: ["write"],
+              valueRange: [40, 70, 1],
+            },
+          ],
+          actions: [],
+        },
+        {
+          iid: 3,
+          type: "urn:miot-spec-v2:service:environment:0000780A:deerma-jsq:1",
+          description: "Environment",
+          properties: [
+            {
+              iid: 1,
+              type: "urn:miot-spec-v2:property:relative-humidity:0000000C:deerma-jsq:1",
+              description: "Relative Humidity",
+              format: "uint8",
+              access: ["read", "notify"],
+              valueRange: [0, 100, 1],
+            },
+            {
+              iid: 2,
+              type: "urn:miot-spec-v2:property:temperature:00000020:deerma-jsq:1",
+              description: "Temperature",
+              format: "float",
+              access: ["read", "notify"],
+              unit: "celsius",
+              valueRange: [-20, 60, 0.1],
+            },
+          ],
+          actions: [],
+        },
+      ],
+    };
+
+    const miValues = new Map<string, unknown>([
+      [propKeyString({ did: "did-tv-same", siid: 2, piid: 1 }), true],
+      [propKeyString({ did: "did-tv-same", siid: 2, piid: 2 }), false],
+      [propKeyString({ did: "did-hum-wo", siid: 2, piid: 1 }), false],
+      [propKeyString({ did: "did-hum-wo", siid: 3, piid: 1 }), 44],
+      [propKeyString({ did: "did-hum-wo", siid: 3, piid: 2 }), 29.5],
+    ]);
+
+    const miHome = MiotSynthesizer.synthesize(
+      [
+        { did: "did-tv-same", name: "书房电视", model: "xiaomi.tv.tv2", isOnline: true, specType: sameServiceTvSpec.type },
+        { did: "did-hum-wo", name: "书房加湿器", model: "deerma.humidifier.jsq", isOnline: true, specType: writeOnlyHumSpec.type },
+      ],
+      [{ id: "r2", name: "书房", dids: ["did-tv-same", "did-hum-wo"] }],
+      {
+        "xiaomi.tv.tv2": sameServiceTvSpec,
+        "deerma.humidifier.jsq": writeOnlyHumSpec,
+      },
+      miValues,
+    );
+
+    const tvSame = miHome.devices.find((d) => d.id === "did-tv-same")!;
+    assert.ok(tvSame.kind.kind === "tv");
+    assert.equal(tvSame.kind.mediaEntityId, "miot:did-tv-same:2");
+    assert.equal(tvSame.kind.muteSwitchEntityId, "miot:did-tv-same:2#mute");
+    assert.deepEqual(
+      MiotCommandMapper.map({ kind: "setSwitch", entityId: "miot:did-tv-same:2#mute", isOn: true }, sameServiceTvSpec),
+      { kind: "setProps", writes: [{ did: "did-tv-same", siid: 2, piid: 2, value: true }] },
+    );
+    assert.deepEqual(
+      MiotCommandMapper.map({ kind: "setSwitch", entityId: "miot:did-tv-same:2", isOn: false }, sameServiceTvSpec),
+      { kind: "setProps", writes: [{ did: "did-tv-same", siid: 2, piid: 1, value: false }] },
+    );
+
+    const mutableTvSame = structuredClone(tvSame);
+    applyCommandToDevices(
+      [mutableTvSame],
+      { kind: "setSwitch", entityId: "miot:did-tv-same:2#mute", isOn: true },
+      "xiaomiCloud",
+    );
+    assert.equal(mutableTvSame.kind.kind === "tv" && mutableTvSame.kind.isMuted, true);
+    assert.equal(mutableTvSame.kind.kind === "tv" && mutableTvSame.kind.state, "on");
+
+    const humWo = miHome.devices.find((d) => d.id === "did-hum-wo")!;
+    assert.ok(humWo.kind.kind === "humidifier");
+    assert.equal(humWo.kind.targetHumidity, null);
+    assert.equal(hasDetailDrawer(humWo), true);
+    assert.deepEqual(
+      inverseCommands(humWo, { kind: "setHumidity", entityId: "miot:did-hum-wo:2", percent: 60 }),
+      [{ kind: "setSwitch", entityId: "miot:did-hum-wo:2", isOn: false }],
+    );
+
+    const memStore = new Map<string, string>();
+    const kv: KeyValueStorageLike = {
+      getItem: (k) => memStore.get(k) ?? null,
+      setItem: (k, v) => {
+        memStore.set(k, v);
+      },
+      removeItem: (k) => {
+        memStore.delete(k);
+      },
+    };
+    const engine = new AutomationEngine(kv);
+    const appliedAutoCommands: DeviceCommand[] = [];
+    const lightDev: SmartDevice = {
+      id: "light-study",
+      name: "书房吸顶灯",
+      roomId: "r2",
+      roomName: "书房",
+      model: "yeelink.light.ceil1",
+      isOnline: true,
+      kind: {
+        kind: "light",
+        entityId: "light.study",
+        isOn: false,
+        brightnessPercent: 80,
+        colorTempKelvin: null,
+        minKelvin: 2700,
+        maxKelvin: 6500,
+        currentEffect: null,
+        availableEffects: [],
+        powerWritable: true,
+        brightnessWritable: true,
+        colorWritable: false,
+      },
+    };
+    const autoHost: AutomationExecutionHost = {
+      devices: [humWo, lightDev],
+      scenes: [],
+      deviceFacets: miHome.deviceFacets,
+      settings: { connectionMode: "xiaomiCloud" },
+      applyCommand: async (cmd) => {
+        appliedAutoCommands.push(cmd);
+        return true;
+      },
+    };
+    const tempRule = createAutomationRule({
+      id: "rule-hum-temp",
+      trigger: "sensorThreshold",
+      triggerOptions: {
+        sensorCondition: {
+          deviceId: "did-hum-wo",
+          metric: "temperature",
+          comparison: "gt",
+          threshold: 28,
+        },
+      },
+      action: {
+        kind: "devices",
+        deviceIds: ["light-study"],
+        isOn: true,
+      },
+    });
+    const runs = await engine.dispatchEvent(autoHost, { kind: "tick" }, { rules: [tempRule], nowMs: 1_700_000_010_000 });
+    assert.equal(runs.length, 1);
+    assert.deepEqual(appliedAutoCommands, [{ kind: "setLightPower", entityId: "light.study", isOn: true }]);
+
+    activeDom = mountTestWindow({ stubInterval: true });
+    const { MenuMijiaWindowsApp } = await import("../src/ui/app.js");
+    const haBaseURL = "http://192.168.1.22:8123";
+    const haToken = "tv-batch-undo-token";
+    const haSnap = {
+      areas: [{ area_id: "living", name: "客厅" }],
+      devices: [
+        { id: "tv-wol", name: "客厅电视", area_id: "living" },
+        { id: "light-liv", name: "客厅主灯", area_id: "living" },
+      ],
+      entities: [
+        { entity_id: "media_player.tv_wol", device_id: "tv-wol" },
+        { entity_id: "button.tv_wol_turn_on", device_id: "tv-wol" },
+        { entity_id: "light.living_main", device_id: "light-liv" },
+      ],
+      states: [
+        {
+          entity_id: "media_player.tv_wol",
+          state: "off",
+          attributes: { device_class: "tv", supported_features: 4 | 256 },
+        },
+        {
+          entity_id: "button.tv_wol_turn_on",
+          state: "unknown",
+          attributes: { friendly_name: "Wake TV" },
+        },
+        {
+          entity_id: "light.living_main",
+          state: "off",
+          attributes: {},
+        },
+      ],
+    };
+    const invoke = async (command: string): Promise<unknown> => {
+      if (command === "ha_snapshot") return structuredClone(haSnap);
+      return null;
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    localStorage.setItem(
+      "menumijia.windows.settings.v2",
+      JSON.stringify({
+        connectionMode: "homeAssistant",
+        hasCompletedOnboarding: true,
+        haBaseURL,
+        haToken,
+        cachedHAHome: {
+          identity: homeAssistantIdentity(haBaseURL, haToken),
+          home: HomeAssistantSynthesizer.synthesize(haSnap),
+        },
+      }),
+    );
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const app = new MenuMijiaWindowsApp(root);
+    await refreshHADevices(app, true);
+    await executeIntents(
+      app,
+      [
+        { targetId: "tv-wol", operation: { kind: "power", isOn: true } },
+        { targetId: "light-liv", operation: { kind: "power", isOn: true } },
+      ],
+      "已打开客厅电视和主灯",
+      "local",
+    );
+    assert.ok(app.lastUndoAction);
+    assert.equal(app.lastUndoAction.steps.length, 2);
+    cancelDelayedReadBack(app);
+    await closeTestWindow(activeDom);
+    activeDom = null;
   });
 
   it("renders TV and humidifier drawers (omitting volume slider when volumePresent is false) and dispatches DOM controls", async () => {

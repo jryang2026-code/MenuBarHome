@@ -1356,7 +1356,7 @@ export const MiotSynthesizer = {
       return {
         kind: "humidifier", entityId: makeMiotAddress(did, primaryService.iid), isOn: miotBool(on?.val) ?? false,
         currentMode, availableModes, modeWritable: availableModes.length > 0,
-        targetHumidity: humidityWritable && rawTarget === null ? Math.min(maxHumidity, Math.max(minHumidity, 50)) : rawTarget,
+        targetHumidity: rawTarget,
         minHumidity, maxHumidity, step, humidityWritable, currentHumidity, powerWritable: exposesWrite(on?.prop.access),
       };
     }
@@ -1537,7 +1537,7 @@ export const MiotSynthesizer = {
         kind: "tv", mediaEntityId: makeMiotAddress(did, primaryService.iid), state,
         volumePercent: rawVolume !== null && volume ? percentFromRaw(rawVolume, volume.prop, "proportional") : 0,
         isMuted: miotBool(mute?.val) ?? false,
-        muteSwitchEntityId: mute && exposesWrite(mute.prop.access) ? makeMiotAddress(did, mute.service.iid) : null,
+        muteSwitchEntityId: mute && exposesWrite(mute.prop.access) ? `${makeMiotAddress(did, mute.service.iid)}#mute` : null,
         currentSource, availableSources, powerOnActionId, powerOffActionId, powerWritable,
         volumeWritable: exposesWrite(volume?.prop.access), ...readOnlyFlags({ volumePresent: rawVolume !== null }),
       };

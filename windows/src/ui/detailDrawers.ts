@@ -798,7 +798,6 @@ export function bindDetailDrawerEvents(
         dev,
         { kind: "setHumidity", entityId: dev.kind.entityId, percent },
         t("已将{name}目标湿度设为 {percent}%", { name: dev.name, percent }),
-        { targetId: dev.id, operation: { kind: "targetHumidity", percent } },
       );
     });
   });
@@ -972,7 +971,6 @@ function bindCollapsedInlineSliders(host: MenuMijiaWindowsApp): void {
             dev,
             { kind: "setHumidity", entityId: dev.kind.entityId, percent },
             t("已将{name}目标湿度设为 {percent}%", { name: dev.name, percent }),
-            { targetId: dev.id, operation: { kind: "targetHumidity", percent } },
           );
           return;
         }

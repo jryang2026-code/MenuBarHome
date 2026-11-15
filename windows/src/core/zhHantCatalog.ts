@@ -783,5 +783,4 @@ export const ZH_HANT_CATALOG: Readonly<Record<string, string>> = {
   "已将{name}目标湿度设为 {percent}%": "已將{name}目標濕度設為 {percent}%",
   "已切换{name}信源为 {source}": "已切換{name}信源為 {source}",
   "已切换{name}模式为 {mode}": "已切換{name}模式為 {mode}",
-  "将 {names} 目标湿度设为 {percent}%": "將 {names} 目標濕度設為 {percent}%",
 };

@@ -885,7 +885,6 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "已将{name}目标湿度设为 {percent}%": ["已将{name}目标湿度设为 {percent}%", "Set {name} target humidity to {percent}%"],
   "已切换{name}信源为 {source}": ["已切换{name}信源为 {source}", "Switched {name} source to {source}"],
   "已切换{name}模式为 {mode}": ["已切换{name}模式为 {mode}", "Switched {name} mode to {mode}"],
-  "将 {names} 目标湿度设为 {percent}%": ["将 {names} 目标湿度设为 {percent}%", "Set {names} target humidity to {percent}%"],
 };
 
 /** Every catalog key, for tests and tooling. */

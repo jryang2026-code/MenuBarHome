@@ -411,6 +411,16 @@ export const MiotCommandMapper = {
         };
       }
       case "setSwitch": {
+        if (command.entityId.endsWith("#mute")) {
+          const muteProp = service.properties.find(
+            (p) => miotShortName(p.type) === "mute" && p.access.includes("write")
+          );
+          if (!muteProp) throw new Error(`Missing writable mute: ${command.entityId}`);
+          return {
+            kind: "setProps",
+            writes: [{ did: addr.did, siid: service.iid, piid: muteProp.iid, value: coerceBoolPropValue(muteProp, command.isOn) }],
+          };
+        }
         const sShort = miotShortName(service.type);
         const targetProp =
           service.properties.find(

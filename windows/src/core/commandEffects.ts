@@ -350,7 +350,15 @@ export function inverseCommands(dev: SmartDevice, command: DeviceCommand): Devic
           return [{ kind: "setSwitch", entityId: command.entityId, isOn: Boolean(k.isMuted) }];
         }
         if (command.entityId === k.mediaEntityId) {
-          return [{ kind: "setSwitch", entityId: command.entityId, isOn: k.state !== "off" && k.state !== "standby" }];
+          const wasOn = k.state !== "off" && k.state !== "standby";
+          if (wasOn) {
+            if (k.turnOnButtonId) return [{ kind: "pressButton", entityId: k.turnOnButtonId }];
+            if (k.powerOnActionId) return [{ kind: "pressButton", entityId: k.powerOnActionId }];
+            return [{ kind: "setSwitch", entityId: k.mediaEntityId, isOn: true }];
+          }
+          return k.powerOffActionId
+            ? [{ kind: "pressButton", entityId: k.powerOffActionId }]
+            : [{ kind: "setSwitch", entityId: k.mediaEntityId, isOn: false }];
         }
       }
       if (k.kind === "humidifier" && command.entityId === k.entityId) {
@@ -436,6 +444,26 @@ export function inverseCommands(dev: SmartDevice, command: DeviceCommand): Devic
           }]
         : [];
     case "pressButton":
+      if (k.kind === "tv") {
+        const wasOn = k.state !== "off" && k.state !== "standby";
+        if (command.entityId === k.turnOnButtonId || command.entityId === k.powerOnActionId) {
+          if (!wasOn) {
+            return k.powerOffActionId
+              ? [{ kind: "pressButton", entityId: k.powerOffActionId }]
+              : [{ kind: "setSwitch", entityId: k.mediaEntityId, isOn: false }];
+          }
+          return [{ kind: "pressButton", entityId: command.entityId }];
+        }
+        if (command.entityId === k.powerOffActionId) {
+          if (wasOn) {
+            if (k.turnOnButtonId) return [{ kind: "pressButton", entityId: k.turnOnButtonId }];
+            if (k.powerOnActionId) return [{ kind: "pressButton", entityId: k.powerOnActionId }];
+            return [{ kind: "setSwitch", entityId: k.mediaEntityId, isOn: true }];
+          }
+          return [{ kind: "pressButton", entityId: command.entityId }];
+        }
+      }
+      return [];
     case "setMiotProperty":
     case "activateScene":
       // An appliance programme write and a 更多设置 write carry no previous

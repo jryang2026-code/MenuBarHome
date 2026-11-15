@@ -451,7 +451,6 @@ export type IntentOperation =
   | { readonly kind: "hvacMode"; readonly mode: string }
   | { readonly kind: "targetTemperature"; readonly celsius: number }
   | { readonly kind: "temperatureStep"; readonly delta: number }
-  | { readonly kind: "targetHumidity"; readonly percent: number }
   | { readonly kind: "fanSpeed"; readonly speed: string }
   | { readonly kind: "oscillation"; readonly enabled: boolean }
   | { readonly kind: "activateScene" };
@@ -688,7 +687,7 @@ export function hasDetailDrawer(device: SmartDevice, facets: readonly FacetContr
       );
     case "humidifier":
       return (
-        (kind.humidityWritable && kind.targetHumidity !== null) ||
+        kind.humidityWritable ||
         (kind.modeWritable && kind.availableModes.length > 0) ||
         (kind.currentHumidity !== null && Number.isFinite(kind.currentHumidity) && Number.isSafeInteger(Math.round(kind.currentHumidity)))
       );

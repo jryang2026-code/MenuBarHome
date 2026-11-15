@@ -1,6 +1,6 @@
 import type { SmartDevice } from "../models.js";
 
-export type IntentCategory = "light" | "climate" | "heater" | "fan" | "airPurifier" | "humidifier" | "dehumidifier" | "diffuser" | "plug" | "vacuum" | "tv" | "camera" | "valve" | "other";
+export type IntentCategory = "light" | "climate" | "heater" | "fan" | "airPurifier" | "dehumidifier" | "diffuser" | "plug" | "vacuum" | "tv" | "camera" | "valve" | "other";
 
 export function isHumidifierAppliance(dev: SmartDevice): boolean {
   if (dev.kind.kind === "humidifier") return true;
@@ -38,9 +38,11 @@ export function isAirPurifierDevice(dev: SmartDevice): boolean {
     m.includes("airp") ||
     m.includes("purifier") ||
     m.includes("airfresh") ||
+    m.includes("humidifier") ||
     dev.name.includes("净化") ||
     dev.name.includes("空净") ||
     dev.name.includes("新风") ||
+    dev.name.includes("加湿") ||
     dev.kind.pm25Density != null ||
     dev.kind.airQuality != null ||
     dev.kind.filterLifePercent != null
@@ -245,9 +247,8 @@ export function deviceCategory(dev: SmartDevice): IntentCategory {
   if (dev.kind.kind === "light") return "light";
   if (dev.kind.kind === "climate") return isHeaterDevice(dev) ? "heater" : "climate";
   if (dev.kind.kind === "tv") return "tv";
-  if (dev.kind.kind === "humidifier") return "humidifier";
+  if (dev.kind.kind === "humidifier") return "airPurifier";
   if (dev.kind.kind === "fan" && dev.model.includes(".derh.")) return "dehumidifier";
-  if (dev.kind.kind === "fan" && (dev.model.toLowerCase().includes("humidifier") || dev.name.includes("加湿"))) return "humidifier";
   if (dev.kind.kind === "plug" && dev.model.includes(".diffuser.")) return "diffuser";
   if (dev.kind.kind === "plug" && isSwitchedLightDevice(dev)) return "light";
   if (dev.kind.kind === "fan") return isAirPurifierDevice(dev) ? "airPurifier" : "fan";
@@ -255,7 +256,7 @@ export function deviceCategory(dev: SmartDevice): IntentCategory {
   if (dev.kind.kind === "vacuum") return "vacuum";
   if (dev.kind.kind === "camera") return "camera";
   if (dev.kind.kind === "appliance") {
-    if (isHumidifierAppliance(dev)) return "humidifier";
+    if (isHumidifierAppliance(dev)) return "airPurifier";
     if (isValveDevice(dev)) return "valve";
   }
   return "other";

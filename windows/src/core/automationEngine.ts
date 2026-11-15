@@ -712,9 +712,9 @@ function readSensorMetricValue(
   const k = device.kind;
   switch (metric) {
     case "temperature":
-      return k.kind === "sensor" ? (k.temperature ?? extractSensorLiveMetrics(device, facets).temperature) : k.kind === "climate" ? k.currentTemperature : k.kind === "fan" ? (k.temperature ?? null) : k.kind === "appliance" ? k.currentTemperature : null;
+      return k.kind === "sensor" ? (k.temperature ?? extractSensorLiveMetrics(device, facets).temperature) : k.kind === "climate" ? k.currentTemperature : k.kind === "fan" ? (k.temperature ?? null) : k.kind === "humidifier" ? extractSensorLiveMetrics(device, facets).temperature : k.kind === "appliance" ? k.currentTemperature : null;
     case "humidity":
-      return k.kind === "sensor" ? (k.humidity ?? extractSensorLiveMetrics(device, facets).humidity) : k.kind === "fan" ? (k.humidity ?? null) : k.kind === "humidifier" ? k.currentHumidity : k.kind === "appliance" ? k.currentHumidity : null;
+      return k.kind === "sensor" ? (k.humidity ?? extractSensorLiveMetrics(device, facets).humidity) : k.kind === "fan" ? (k.humidity ?? null) : k.kind === "humidifier" ? (k.currentHumidity ?? extractSensorLiveMetrics(device, facets).humidity) : k.kind === "appliance" ? k.currentHumidity : null;
     case "battery":
       return k.kind === "sensor" ? k.battery : k.kind === "cover" ? k.batteryPercent : k.kind === "vacuum" ? k.battery : null;
     case "powerWatts":

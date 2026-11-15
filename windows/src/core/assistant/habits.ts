@@ -199,7 +199,6 @@ export function encodeHabitOperation(op: IntentOperation): string | null {
     case "activateScene": return "scene:activate";
     case "fanSpeed": return `fan:${op.speed}`;
     case "oscillation": return op.enabled ? "swing:on" : "swing:off";
-    case "targetHumidity": return `humidity:${op.percent}`;
     case "brightnessStep":
     case "temperatureStep": return null;
   }
@@ -220,7 +219,6 @@ export function decodeHabitOperation(key: string): IntentOperation | null {
     case "scene": return value === "activate" ? { kind: "activateScene" } : null;
     case "fan": return value ? { kind: "fanSpeed", speed: value } : null;
     case "swing": return value === "on" ? { kind: "oscillation", enabled: true } : value === "off" ? { kind: "oscillation", enabled: false } : null;
-    case "humidity": return Number.isFinite(Number(value)) ? { kind: "targetHumidity", percent: Number(value) } : null;
     default: return null;
   }
 }
@@ -249,8 +247,6 @@ export function habitActionable(
       return k.kind === "climate" && k.availableModes.length > 0 && (!k.isOn || k.hvacMode !== op.mode);
     case "targetTemperature":
       return k.kind === "climate" && k.temperatureWritable !== false && (!k.isOn || Math.abs(k.targetTemperature - op.celsius) >= 0.5);
-    case "targetHumidity":
-      return k.kind === "humidifier" && k.humidityWritable && (!k.isOn || Math.abs((k.targetHumidity ?? 0) - op.percent) >= 2);
     case "fanSpeed":
       if (k.kind === "fan") return k.availablePresetModes.length > 0 && (!k.isOn || k.presetMode !== op.speed);
       if (k.kind === "climate") return k.availableFanModes.length > 0 && k.fanMode !== op.speed;
