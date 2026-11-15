@@ -199,6 +199,8 @@ def build_packet(token: bytes, did: int, stamp: int, clear: bytes) -> bytes:
     """
     if len(token) != 16:
         raise ValueError(f"token must be 16 bytes, got {len(token)}")
+    if isinstance(did, bool) or not isinstance(did, int) or not 0 <= did < (1 << 64):
+        raise ValueError("did must be between 0 and 2^64-1")
     key, iv = derive_key_iv(token)
     ciphertext = aes128_cbc_encrypt(key, iv, pad_pkcs7(clear))
     total = MIIO_HEADER_LEN + len(ciphertext)
@@ -422,10 +424,15 @@ _SENSITIVE_KEYS = frozenset(
         "token",
         "did",
         "deviceid",
+        "uid",
+        "userid",
+        "sid",
+        "subdid",
         "mac",
         "ip",
         "bssid",
         "ssid",
+        "wifissid",
         "password",
         "passwd",
         "key",
@@ -437,7 +444,9 @@ _SENSITIVE_KEYS = frozenset(
     }
 )
 _IPV4 = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
-_MAC = re.compile(r"\b[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}\b")
+_MAC = re.compile(r"\b[0-9a-fA-F]{2}(?:[:-][0-9a-fA-F]{2}){5}\b")
+_DEVICE_ID = re.compile(r"\b(?:lumi|blt|did)\.[0-9a-zA-Z._-]+\b", re.IGNORECASE)
+_HEX_TOKEN = re.compile(r"\b[0-9a-fA-F]{32}\b")
 
 
 def _is_sensitive_key(key: str) -> bool:
@@ -471,7 +480,18 @@ def redact_token(token: bytes) -> str:
 
 def _scrub_text(text: str) -> str:
     scrubbed = _IPV4.sub(lambda match: redact_ip(match.group(0)), text)
-    scrubbed = _MAC.sub(lambda match: "mac:" + _fingerprint(match.group(0).lower()), scrubbed)
+    scrubbed = _MAC.sub(
+        lambda match: "mac:" + _fingerprint(match.group(0).lower().replace("-", ":")),
+        scrubbed,
+    )
+    scrubbed = _DEVICE_ID.sub(
+        lambda match: "id:" + _fingerprint(match.group(0).lower()),
+        scrubbed,
+    )
+    scrubbed = _HEX_TOKEN.sub(
+        lambda match: "hex:" + _fingerprint(match.group(0).lower()),
+        scrubbed,
+    )
     words = []
     for word in scrubbed.split(" "):
         candidate = word.strip("\"'(),[]{};")
@@ -488,16 +508,22 @@ class Redactor:
     """输出边界的脱敏器：已知秘密按整词替换，字段按键名脱敏，其余按模式替换。"""
 
     def __init__(self, secrets: Iterable[str] = ()) -> None:
-        # 太短的秘密做字面替换会把正常文字吃掉（例如 did 为 1 时替换掉所有 "1"）。
-        candidates = {secret for secret in secrets if len(secret) >= 8}
-        self._secrets = sorted(candidates, key=len, reverse=True)
-        self._values = frozenset(candidates)
+        raw = {secret for secret in secrets if secret}
+        long_secrets = sorted((s for s in raw if len(s) >= 8), key=len, reverse=True)
+        short_secrets = sorted((s for s in raw if len(s) < 8), key=len, reverse=True)
+        self._long_patterns = [re.compile(re.escape(s), re.IGNORECASE) for s in long_secrets]
+        self._short_patterns = [
+            re.compile(r"(?<![0-9a-zA-Z])" + re.escape(s) + r"(?![0-9a-zA-Z])", re.IGNORECASE)
+            for s in short_secrets
+        ]
+        self._values = frozenset({s.lower() for s in raw})
 
     def text(self, message: str) -> str:
         scrubbed = message
-        for secret in self._secrets:
-            # 已知秘密一律字面替换。邻接字母数字时也要抹掉，宁可过度脱敏。
-            scrubbed = scrubbed.replace(secret, "<redacted>")
+        for pattern in self._long_patterns:
+            scrubbed = pattern.sub("<redacted>", scrubbed)
+        for pattern in self._short_patterns:
+            scrubbed = pattern.sub("<redacted>", scrubbed)
         return _scrub_text(scrubbed)
 
     def value(self, value: Any) -> Any:
@@ -513,9 +539,12 @@ class Redactor:
         if isinstance(value, (list, tuple)):
             return [self.value(item) for item in value]
         if isinstance(value, str):
-            if value in self._values:
+            if value.lower() in self._values:
                 return "<redacted>"
             return self.text(value)
+        if isinstance(value, int) and not isinstance(value, bool):
+            if str(value) in self._values:
+                return "<redacted>"
         return value
 
 
@@ -562,7 +591,8 @@ class Report:
             "tls_ok",
             "client_cert_required",
         )
-        return "reachable" if udp_reachable or tls_reachable else "unreachable"
+        read_reachable = self.read is not None and self.read.status == "ok"
+        return "reachable" if udp_reachable or tls_reachable or read_reachable else "unreachable"
 
 
 def _socket_family(host: str) -> int:
@@ -755,7 +785,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="只读探测小米网关的局域网 miIO(54321) 与中枢网关 MIPS(8883) 端口。",
     )
-    parser.add_argument("--ip", required=True, help="网关或设备的局域网 IP 字面量")
+    parser.add_argument("--ip", help="网关或设备的局域网 IP 字面量")
     parser.add_argument("--udp-port", type=int, default=MIIO_UDP_PORT, help="miIO UDP 端口，默认 54321")
     parser.add_argument("--tls-port", type=int, default=CENTRAL_MIPS_PORT, help="MIPS TLS 端口，默认 8883")
     parser.add_argument("--timeout", type=float, default=2.0, help="单次探测超时秒数，默认 2")
@@ -771,12 +801,77 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-udp", action="store_true", help="跳过 UDP Hello 探测")
     parser.add_argument("--skip-tls", action="store_true", help="跳过 8883 TLS 探测")
     parser.add_argument("--json", action="store_true", help="输出 JSON 而不是文本")
+    parser.add_argument("--self-test", action="store_true", help="运行内置离线自检")
     return parser
+
+
+def _run_self_test() -> int:
+    try:
+        guard_read_only("set_properties")
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError("write method was not blocked")
+
+    redactor = Redactor(["00112233445566778899aabbccddeeff", "12345"])
+    sample = redactor.value(
+        {
+            "uid": 998877,
+            "user_id": "u1",
+            "sid": "lumi.1234",
+            "sub_did": "did.5678",
+            "wifi_ssid": "MyHomeWiFi",
+            "did_echo": 12345,
+            "note": (
+                "dev lumi.sensor_ht.v1 blt.3.abc did.999 "
+                "mac AA-BB-CC-DD-EE-FF token 00112233445566778899AABBCCDDEEFF "
+                "other ffeeddccbbaa99887766554433221100 short 12345"
+            ),
+        }
+    )
+    assert sample["uid"] == "<redacted>"
+    assert sample["user_id"] == "<redacted>"
+    assert sample["sid"] == "<redacted>"
+    assert sample["sub_did"] == "<redacted>"
+    assert sample["wifi_ssid"] == "<redacted>"
+    assert sample["did_echo"] == "<redacted>"
+    note = sample["note"]
+    for leaked in (
+        "lumi.sensor_ht.v1",
+        "blt.3.abc",
+        "did.999",
+        "AA-BB-CC-DD-EE-FF",
+        "00112233445566778899AABBCCDDEEFF",
+        "ffeeddccbbaa99887766554433221100",
+        "12345",
+    ):
+        assert leaked not in note, f"leaked {leaked!r} in {note!r}"
+
+    for bad_did in (-1, 1 << 64):
+        try:
+            build_packet(b"\x00" * 16, bad_did, 0, b"{}")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"out-of-range did {bad_did} was accepted")
+
+    read_only_report = Report(
+        host="192.168.1.10",
+        udp_port=MIIO_UDP_PORT,
+        tls_port=CENTRAL_MIPS_PORT,
+        read=ReadProbe(method="miIO.info", status="ok", result={"model": "lumi.gateway.mgl03"}),
+    )
+    assert read_only_report.verdict() == "reachable"
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     arguments = parser.parse_args(argv)
+    if arguments.self_test:
+        return _run_self_test()
+    if not arguments.ip:
+        parser.error("the following arguments are required: --ip")
     try:
         host = str(ipaddress.ip_address(arguments.ip))
         token = parse_token(arguments.token) if arguments.token else None
@@ -785,6 +880,8 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("ports must be between 1 and 65535")
         if arguments.timeout <= 0:
             raise ValueError("--timeout must be positive")
+        if arguments.did is not None and not 0 <= arguments.did < (1 << 64):
+            raise ValueError("--did must be between 0 and 2^64-1")
         guard_read_only(arguments.method)
     except (ValueError, PermissionError) as error:
         parser.exit(2, f"{parser.prog}: error: {error}\n")
@@ -802,7 +899,7 @@ def main(argv: list[str] | None = None) -> int:
             report.secrets.append(str(report.udp.reply.did))
     if not arguments.skip_tls:
         report.tls = probe_tls(host, arguments.tls_port, arguments.timeout)
-    if token is not None and not arguments.skip_udp:
+    if token is not None and (not arguments.skip_udp or arguments.did is not None):
         reply = report.udp.reply if report.udp is not None else None
         did = arguments.did if arguments.did is not None else (reply.did if reply else None)
         if did is None:

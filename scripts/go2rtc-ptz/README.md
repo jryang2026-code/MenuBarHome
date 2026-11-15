@@ -11,7 +11,7 @@
 | 基座 tag | `v1.9.15` |
 | 基座 commit | `7c05066c90ab6ad1fccb506d5f0408aa31ebe60f` |
 | 补丁文件 | `patches/0001-xiaomi-ptz.patch` |
-| 补丁 SHA-256 | `5b239e896c553444fc98d32fc9d62295685aca018caa6c448de5d597ba901b67` |
+| 补丁 SHA-256 | `c00dc5fd01c6270a6a13fe3ede1c0867be154107e7ae7854a4cf3f33575eaf60` |
 | 许可 | MIT（保留 go2rtc 版权声明；补丁本身同样以 MIT 提供） |
 
 补丁的思路来自社区真机报告与上游 PR #2531（`bcamarneiro`，commit `1a056d7c29` / `e23a21b9ee`），但这里只保留单会话电机命令与租约端点，没有引入 ONVIF 相关代码。
@@ -28,8 +28,9 @@
    可中断等待与 `WriteCommandNoWait`，停止路径先 `AbortWaits`，然后做最多 3 次、间隔 60ms
    的单包写入（不等待 ACK），不会被丢包的 move 拖住，也不会再有 5s 锁等待。写入失败会返回
    `stopSent=false` + `stopError=write_failed`，不以 HTTP 200 假装成功。已结束会话再次收到
-   stop 时，只要它仍是当前会话且上次写入失败，就重新向电机发送 `-1001` 并记录新结果；
-   不属于当前会话的 stop 只留 tombstone，永不驱动电机。
+   stop 时，只要上次停止写入失败且没有更新的会话已经驱动过电机（包括当前会话或后续尚未移动的
+   空闲会话），就重新向电机发送 `-1001` 并记录新结果；若后续会话已经开始移动，旧会话的 stop
+   只更新 tombstone 并返回原失败，永不覆盖或打断新会话。
 4. **桥端会话/租约**：`POST /api/xiaomi/ptz`（仅 loopback、POST、拒绝带 `Origin` 的请求）：
    - `{"action":"begin","src":…}` → `{"epoch":…,"session":…,"mode":…}`；会话号由桥单调分配。
    - `{"action":"move","src":…,"epoch":…,"session":…,"seq":…,"direction":"left|right|up|down"}`

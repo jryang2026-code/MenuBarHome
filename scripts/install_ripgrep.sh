@@ -13,6 +13,8 @@ if command -v rg >/dev/null 2>&1; then
 fi
 
 version="14.1.1"
+asset=""
+sha=""
 case "$(uname -s)-$(uname -m)" in
     Linux-x86_64)
         asset="ripgrep-${version}-x86_64-unknown-linux-musl.tar.gz"
@@ -27,8 +29,7 @@ case "$(uname -s)-$(uname -m)" in
         sha="fc87e78f7cb3fea12d69072e7ef3b21509754717b746368fd40d88963630e2b3"
         ;;
     *)
-        echo "❌ 没有 $(uname -s)-$(uname -m) 的预编译 ripgrep ${version}" >&2
-        exit 1
+        echo "⚠️ 没有 $(uname -s)-$(uname -m) 的预编译 ripgrep ${version}，改用系统包管理器" >&2
         ;;
 esac
 
@@ -39,6 +40,7 @@ trap 'rm -rf "$tmp"' EXIT
 # Returns 1 on a failed download so the caller can fall back. A checksum mismatch exits the script
 # outright: the file came from the network but is not the pinned release.
 install_pinned() {
+    [ -n "$asset" ] || return 1
     local url
     url="https://github.com/BurntSushi/ripgrep/releases/download/${version}/${asset}"
     # GitHub answers 502/503/504 on release assets; --retry-all-errors covers those plus resets.
@@ -92,13 +94,14 @@ install_from_package_manager() {
     esac
 }
 
-if install_pinned; then
-    echo "✅ ripgrep ${version} -> $(command -v rg)"
-    exit 0
+if [ -n "$asset" ]; then
+    if install_pinned; then
+        echo "✅ ripgrep ${version} -> $(command -v rg)"
+        exit 0
+    fi
+    echo "⚠️ 预编译 ripgrep ${version} 下载失败（GitHub Releases 可能返回 5xx），改用系统包管理器" >&2
 fi
-
-echo "⚠️ 预编译 ripgrep ${version} 下载失败（GitHub Releases 可能返回 5xx），改用系统包管理器" >&2
-if install_from_package_manager && command -v rg >/dev/null 2>&1; then
+if install_from_package_manager && command -v rg >/dev/null 2>&1 && rg --version >/dev/null 2>&1; then
     echo "✅ $(rg --version | head -n 1) -> $(command -v rg)（系统包管理器）"
     exit 0
 fi

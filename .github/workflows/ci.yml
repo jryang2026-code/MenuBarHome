@@ -36,6 +36,7 @@ jobs:
       appintents: ${{ steps.filter.outputs.appintents }}
       windows_native: ${{ steps.filter.outputs.windows_native }}
       nas: ${{ steps.filter.outputs.nas }}
+      go2rtc: ${{ steps.filter.outputs.go2rtc }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -177,6 +178,23 @@ jobs:
           cache-dependency-path: raycast/package-lock.json
       - name: Test and typecheck the Raycast extension
         run: npm ci --no-audit --no-fund && npm test && npm run typecheck
+
+  go2rtc-test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.go2rtc == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache Go 1.26.10 toolchain
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/menubarmijia/go1.26.10
+          key: go2rtc-go-1.26.10-${{ runner.os }}-${{ runner.arch }}
+      - name: Verify go2rtc PTZ patch and Go unit tests
+        run: |
+          bash scripts/go2rtc-ptz/build.sh --go-only
+          bash scripts/go2rtc-ptz/verify.sh
 
   windows-core:
     needs: changes
@@ -320,7 +338,7 @@ jobs:
     # 全部 Swift 单测（快照比对留在宿主机门禁）。三个 macOS job 里只有这个可以排到本地隔离 VM：
     # VM 单任务串行，三个都排过去时一次运行占用约 20 分钟，后面的 PR 全在排队。
     # Empty MACOS_CI_RUNNER keeps GitHub-hosted macOS; the local option is an isolated VM.
-    runs-on: ${{ fromJSON(vars.MACOS_CI_RUNNER || '"macos-26-intel"') }}
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.MACOS_CI_RUNNER || '"macos-26-intel"') || 'macos-26-intel' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -480,7 +498,7 @@ jobs:
 
   ci:
     # 始终运行的汇总检查。无需 checkout；仅核对本次实际命中的面是否全绿。
-    needs: [changes, nas-safety, linux-core, raycast, windows-core, windows-camera-bin, windows-rust-test, windows-installer, macos-test, macos-release, macos-appintents]
+    needs: [changes, nas-safety, linux-core, raycast, go2rtc-test, windows-core, windows-camera-bin, windows-rust-test, windows-installer, macos-test, macos-release, macos-appintents]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -493,9 +511,11 @@ jobs:
           WINDOWS: ${{ needs.changes.outputs.windows }}
           CORE: ${{ needs.changes.outputs.core }}
           RAYCAST: ${{ needs.changes.outputs.raycast }}
+          GO2RTC: ${{ needs.changes.outputs.go2rtc }}
           NAS: ${{ needs.nas-safety.result }}
           LINUX: ${{ needs.linux-core.result }}
           RAYCAST_RES: ${{ needs.raycast.result }}
+          GO2RTC_TEST: ${{ needs.go2rtc-test.result }}
           WINDOWS_CORE: ${{ needs.windows-core.result }}
           WINDOWS_CAMERA: ${{ needs.windows-camera-bin.result }}
           WINDOWS_RUST_TEST: ${{ needs.windows-rust-test.result }}
@@ -536,6 +556,7 @@ jobs:
           check_job "nas-safety" "$NAS" "always"
           check_job "linux-core" "$LINUX" "$CORE"
           check_job "raycast" "$RAYCAST_RES" "$RAYCAST"
+          check_job "go2rtc-test" "$GO2RTC_TEST" "$GO2RTC"
           check_job "windows-core" "$WINDOWS_CORE" "$WINDOWS"
           check_job "windows-camera-bin" "$WINDOWS_CAMERA" "$WINDOWS_NATIVE_ACTIVE"
           check_job "windows-rust-test" "$WINDOWS_RUST_TEST" "$WINDOWS_NATIVE_ACTIVE"
