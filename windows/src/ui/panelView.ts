@@ -13,6 +13,7 @@ import { renderEditLayoutToolbar, renderHiddenDevicesTray } from "./roomOrderEdi
 import { effectivePanelHomeTitle } from "./connectionsAndDiagView.js";
 import { syncEnergyHostOnRender } from "./energySettingsView.js";
 import { syncSensorHistoryHost } from "./sensorHistoryView.js";
+import { getPanelThemeProfile } from "./panelTheme.js";
 import { renderPersistentUndoPill, tr3 } from "./undoTracker.js";
 
 export function renderPanel(host: MenuMijiaWindowsApp): void {
@@ -20,13 +21,21 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
   syncEnergyHostOnRender(host);
   const isDemo = host.settings.connectionMode === "demo";
   const scheme = host.effectiveAppearance;
+  const profile = getPanelThemeProfile(host.settings.panelTheme);
+  const isClassic = profile.shellLayout === "unifiedPopover";
   host.root.dataset.scheme = scheme;
   applyPanelOpacity(host.root, host.settings.panelOpacity);
   host.root.classList.toggle("is-native-host", Boolean(window.__TAURI_INTERNALS__));
-  const popoverClass = `cc-popover scheme-${scheme} ${host.isEditingLayout ? "is-editing" : ""}`.trim();
-  const notifStack = renderNotificationStack(host);
-  const innerContent = `
-      <section class="win-island win-island--top" aria-label="${t("家庭状态与动态通知")}">
+  const popoverClass = [
+    "cc-popover",
+    isClassic ? "cc-rim is-unified-popover" : "",
+    `scheme-${scheme}`,
+    host.isEditingLayout ? "is-editing" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const notifStack = renderNotificationStack(host, !isClassic);
+  const headerHtml = `
         <header class="cc-header">
           <div class="cc-header-top">
             <div class="cc-title-group">
@@ -70,6 +79,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
               >
                 ${SF_ICONS.sparkles}
               </button>
+              ${isClassic ? host.renderAllOffControl() : ""}
               <button
                 class="cc-circle-btn"
                 id="btn-hide-panel"
@@ -82,12 +92,9 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
           </div>
 
           ${host.renderEnvironmentStrip()}
-        </header>
-        ${notifStack}
-      </section>
-
-      <section class="win-island win-island--bottom" aria-label="${t("快速设置与设备控制")}">
-        <div class="win-island-controls">
+        </header>`;
+  const kindBarHtml = host.renderKindBar();
+  const controlsHtml = `
           <div class="cc-assistant-section">
             <div class="cc-spotlight-bar">
               <span class="cc-spotlight-icon">${SF_ICONS.search}</span>
@@ -136,7 +143,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
                   </button>
                 `;
                   })
-                  .join("")}${host.renderKindBar()}
+                  .join("")}${isClassic ? "" : kindBarHtml}
               </div>
             </div>
             <div class="cc-room-tools">
@@ -168,20 +175,18 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
               </button>
             </div>
           </div>
-        </div>
-
+          ${isClassic && kindBarHtml ? `<div class="cc-kind-bar" role="toolbar" aria-label="${host.escapeHtml(tr3("设备类型筛选", "設備類型篩選", "Filter by device type"))}"><div class="cc-room-scroll">${kindBarHtml}</div></div>` : ""}`;
+  const scrollAreaHtml = `
         <main class="cc-scroll-area" aria-label="${t("设备列表")}">
           ${renderEditLayoutToolbar(host)}
           ${host.renderDeviceGrid()}
           ${renderHiddenDevicesTray(host)}
-        </main>
-
-        ${renderSliderDeck(host)}
-
+        </main>`;
+  const footerHtml = `
         <footer class="cc-footer">
           <div class="cc-footer-status">
             ${footerStatus(host)}
-            ${host.renderAllOffControl()}
+            ${isClassic ? "" : host.renderAllOffControl()}
           </div>
 
           <div class="cc-footer-actions">
@@ -233,15 +238,31 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
               ${SF_ICONS.power}
             </button>
           </div>
-        </footer>
-      </section>
-
+        </footer>`;
+  const overlaysHtml = `
       ${host.activeSheet === "onboarding" ? host.renderOnboardingModal() : ""}
       ${host.activeSheet === "settings" ? host.renderSettingsModal() : ""}
       ${host.cameraLive.activeLiveCameraId !== null ? host.cameraLive.renderCameraLiveModal() : ""}
       ${host.renderHomeMenu()}
       ${host.renderContextMenu()}
-      ${host.renderPrompt()}
+      ${host.renderPrompt()}`;
+  const innerContent = isClassic
+    ? `${headerHtml}<div class="cc-classic-upper-stack" data-slot="classic-upper">${notifStack}</div>${controlsHtml}${scrollAreaHtml}${footerHtml}${overlaysHtml}`
+    : `
+      <section class="win-island win-island--top" aria-label="${t("家庭状态与动态通知")}">
+        ${headerHtml}
+        ${notifStack}
+      </section>
+
+      <section class="win-island win-island--bottom" aria-label="${t("快速设置与设备控制")}">
+        <div class="win-island-controls">
+          ${controlsHtml}
+        </div>
+        ${scrollAreaHtml}
+        ${renderSliderDeck(host)}
+        ${footerHtml}
+      </section>
+      ${overlaysHtml}
   `;
   host.pipeline.patchPopover(host, popoverClass, innerContent);
   host.pipeline.eventScope.rebind(host.root, () => {
@@ -254,7 +275,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
   });
 }
 
-function renderNotificationStack(host: MenuMijiaWindowsApp): string {
+function renderNotificationStack(host: MenuMijiaWindowsApp, includeCameraDeck = true): string {
   const cards: string[] = [];
   const live = liveBanner(host);
   if (live) cards.push(live);
@@ -332,7 +353,7 @@ function renderNotificationStack(host: MenuMijiaWindowsApp): string {
       );
     }
 
-    if (host.cameraLive.activeLiveCameraId === null || host.cameraLive.liveCameraHidden) {
+    if (includeCameraDeck && (host.cameraLive.activeLiveCameraId === null || host.cameraLive.liveCameraHidden)) {
       const onlineCameras = withAliases(host.layout, host.devices).filter(
         (d) => d.kind.kind === "camera" && d.isOnline,
       );
@@ -415,11 +436,12 @@ function renderNotificationStack(host: MenuMijiaWindowsApp): string {
   }
 
   if (cards.length === 0) return "";
-  return `<div class="win-notif-stack">${cards.join("")}</div>`;
+  return includeCameraDeck ? `<div class="win-notif-stack">${cards.join("")}</div>` : cards.join("");
 }
 
 export function renderSliderDeck(host: MenuMijiaWindowsApp): string {
   if (
+    !getPanelThemeProfile(host.settings.panelTheme).showsBottomSliderDeck ||
     host.isEditingLayout ||
     Boolean(normalizeSearch(host.panelSearch.query)) ||
     host.expandedDeviceId !== null ||

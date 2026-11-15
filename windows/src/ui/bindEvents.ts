@@ -17,8 +17,9 @@ import {
 } from "../core/models.js";
 import {
   type PanelHeight, DEFAULT_GLOBAL_SHORTCUT, PANEL_ANCHORS, applyPanelOpacity, localizeFanMode,
-  nextSize, normalizePanelOpacity, normalizeTileSize, scopedKey, withAliases,
+  normalizePanelOpacity, normalizeTileSize, scopedKey, withAliases,
 } from "./panelPrefs.js";
+import { nextSizeForTheme } from "./panelTheme.js";
 import { t } from "../core/i18n.js";
 import { formatTemperature, stepCelsius, toCelsius } from "../core/temperature.js";
 import { invokeTauriVoid } from "./transport.js";
@@ -305,7 +306,10 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       btn.addEventListener("click", () => {
         const dev = host.devices.find((d) => d.id === btn.dataset.cycleSize);
         if (!dev) return;
-        host.layout.tileSizes[scopedKey(host.pageKey, dev.id)] = nextSize(host.tileSize(dev));
+        host.layout.tileSizes[scopedKey(host.pageKey, dev.id)] = nextSizeForTheme(
+          host.tileSize(dev),
+          host.settings.panelTheme,
+        );
         host.saveLayout();
         host.render();
       });

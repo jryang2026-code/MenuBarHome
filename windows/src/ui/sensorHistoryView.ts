@@ -794,7 +794,7 @@ export function renderSensorHistorySection(
       : "";
 
   return `
-    <div class="cc-tile-drawer cc-sensor-history" data-sensor-history-drawer="${idEsc}" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--win-divider);display:flex;flex-direction:column;gap:8px;cursor:default;">
+    <div class="cc-tile-drawer cc-sensor-history" data-sensor-history-drawer="${idEsc}" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--theme-divider, var(--win-divider));display:flex;flex-direction:column;gap:8px;cursor:default;">
       <div class="cc-sensor-history-controls" style="display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;">
         <div class="cc-segmented-pills" role="group" aria-label="${escapeHtml(tr3("时间范围", "時間範圍", "Time range"))}">
           <button type="button" class="cc-seg-pill ${window === "24h" ? "is-active" : ""}" data-sensor-window="${idEsc}:24h" aria-pressed="${window === "24h"}">${escapeHtml(tr3("24小时", "24小時", "24h"))}</button>
