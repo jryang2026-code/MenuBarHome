@@ -102,15 +102,24 @@ public actor DualSourceHomeProvider: HomeProvider {
         }
     }
 
-    public func setHomeAssistantProvider(_ next: (any HomeProvider)?) async {
-        await setSourceProvider(next, for: .homeAssistant)
+    public func invalidateSnapshot(for backend: HomeBackend) {
+        guard !isShutDown else { return }
+        if backend == .homeAssistant, homeAssistant != nil {
+            haSnapshot = nil
+            haStatus = .connecting
+        } else if backend == .xiaomiCloud, xiaomiCloud != nil {
+            miSnapshot = nil
+            miStatus = .connecting
+        } else {
+            return
+        }
+        guard started else { return }
+        emitStatus(force: true)
+        emitSourceStatuses()
+        recompute()
     }
 
-    public func setXiaomiCloudProvider(_ next: (any HomeProvider)?) async {
-        await setSourceProvider(next, for: .xiaomiCloud)
-    }
-
-    private func setSourceProvider(_ next: (any HomeProvider)?, for backend: HomeBackend) async {
+    public func setSourceProvider(_ next: (any HomeProvider)?, for backend: HomeBackend) async {
         guard !isShutDown else {
             await next?.shutdown()
             return
@@ -139,7 +148,9 @@ public actor DualSourceHomeProvider: HomeProvider {
         }
         emitStatus(force: true)
         emitSourceStatuses()
-        recompute(allowEmpty: true)
+        if previous != nil {
+            recompute(allowEmpty: homeAssistant == nil && xiaomiCloud == nil)
+        }
     }
 
     private func handle(_ event: HomeProviderEvent, from backend: HomeBackend) {

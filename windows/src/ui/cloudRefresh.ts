@@ -22,6 +22,7 @@ import {
   hasSecondaryMiAccountsInIndex,
   makeMiAccount,
   refreshMiAccountsConcurrently,
+  withSessionExpiredRetry,
   type AccountChildSnapshot,
   type MergedMiAccountsSnapshot,
   type MiAccount,
@@ -174,38 +175,29 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         specs = cachedTopology.specs;
         membersByGroup = cachedTopology.membersByGroup;
       } else {
-        const runDiscovery = () =>
+        const discovery = await withSessionExpiredRetry(() =>
           discoverMiHome(client, {
-            unresolvedDids: host.unresolvedRoomDids,
-            retryUnresolved: !silent,
-            cachedRooms: () => {
-              const cached = host.lastGoodXiaomiRooms;
-              return cached &&
-                cached.sourceRevision === host.sourceRevision &&
-                cached.userId === session.userId &&
-                cached.region === normalizedRegion
-                ? cached.rooms
-                : null;
-            },
-            onRoomsRead: (fetchedRooms) => {
-              host.lastGoodXiaomiRooms = {
-                sourceRevision: host.sourceRevision,
-                userId: session.userId,
-                region: normalizedRegion,
-                rooms: fetchedRooms,
-              };
-            },
-          });
-        let discovery: Awaited<ReturnType<typeof discoverMiHome>>;
-        try {
-          discovery = await runDiscovery();
-        } catch (error) {
-          if (error instanceof MiCloudError && error.kind === "sessionExpired") {
-            discovery = await runDiscovery();
-          } else {
-            throw error;
-          }
-        }
+          unresolvedDids: host.unresolvedRoomDids,
+          retryUnresolved: !silent,
+          cachedRooms: () => {
+            const cached = host.lastGoodXiaomiRooms;
+            return cached &&
+              cached.sourceRevision === host.sourceRevision &&
+              cached.userId === session.userId &&
+              cached.region === normalizedRegion
+              ? cached.rooms
+              : null;
+          },
+          onRoomsRead: (fetchedRooms) => {
+            host.lastGoodXiaomiRooms = {
+              sourceRevision: host.sourceRevision,
+              userId: session.userId,
+              region: normalizedRegion,
+              rooms: fetchedRooms,
+            };
+          },
+          }),
+        );
         const homeRoomsError = discovery.roomsError;
         const allRooms = discovery.rooms;
         const allDevices = discovery.devices;
@@ -247,19 +239,10 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
 
       let values: Map<string, unknown>;
       try {
-        if (propKeys.length > 0) {
-          try {
-            values = await client.getProps(propKeys);
-          } catch (error) {
-            if (error instanceof MiCloudError && error.kind === "sessionExpired") {
-              values = await client.getProps(propKeys);
-            } else {
-              throw error;
-            }
-          }
-        } else {
-          values = new Map<string, unknown>();
-        }
+        values =
+          propKeys.length > 0
+            ? await withSessionExpiredRetry(() => client.getProps(propKeys))
+            : new Map<string, unknown>();
       } catch (error) {
         if (!cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) {
           host.markCloudValuesStale();

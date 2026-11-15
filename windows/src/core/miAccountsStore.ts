@@ -1055,6 +1055,15 @@ export async function discoverMiAccountDevicesAndRooms(
   return { devices: discovered.devices, rooms: discovered.rooms };
 }
 
+export async function withSessionExpiredRetry<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (error instanceof MiCloudError && error.kind === "sessionExpired") return await fn();
+    throw error;
+  }
+}
+
 export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOptions,
 ): Promise<{ readonly merged: MergedMiAccountsSnapshot;
   readonly children: Record<string, AccountChildSnapshot>;
@@ -1126,16 +1135,7 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
     }
 
     try { const client = clientFactory(account.session, transport);
-      let discovered: Awaited<ReturnType<typeof discoverMiAccountDevicesAndRooms>>;
-      try {
-        discovered = await discoverMiAccountDevicesAndRooms(client);
-      } catch (error) {
-        if (error instanceof MiCloudError && error.kind === "sessionExpired") {
-          discovered = await discoverMiAccountDevicesAndRooms(client);
-        } else {
-          throw error;
-        }
-      }
+      const discovered = await withSessionExpiredRetry(() => discoverMiAccountDevicesAndRooms(client));
       const rawSelection = MiAccountScope.scopedSelectionForAccount(effectiveSelectedHomeId,
         account.id,
         allAccountIds,
@@ -1156,20 +1156,9 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
       ]);
 
       const propKeys = collectAccountMiotPropKeys(filtered.devices, specs);
-      let values: Map<string, unknown>;
-      if (propKeys.length > 0) {
-        try {
-          values = await client.getProps(propKeys);
-        } catch (error) {
-          if (error instanceof MiCloudError && error.kind === "sessionExpired") {
-            values = await client.getProps(propKeys);
-          } else {
-            throw error;
-          }
-        }
-      } else {
-        values = new Map<string, unknown>();
-      }
+      const values = propKeys.length > 0
+          ? await withSessionExpiredRetry(() => client.getProps(propKeys))
+          : new Map<string, unknown>();
 
       const rawHome = MiotSynthesizer.synthesize(filtered.devices,
         filtered.rooms,
@@ -1320,23 +1309,10 @@ export async function executeMultiAccountMiotCommand(command: DeviceCommand,
     attemptCount += 1;
     const account = options.accounts[accountIdx]!;
     const client = clientFactory(account.session, options.transport);
-    const sendWrite = async (): Promise<void> => {
-      if (write.kind === "setProps") {
-        await client.setProps(write.writes);
-      } else {
-        await client.callAction(write.call);
-      }
-    };
     try {
-      try {
-        await sendWrite();
-      } catch (error) {
-        if (error instanceof MiCloudError && error.kind === "sessionExpired") {
-          await sendWrite();
-        } else {
-          throw error;
-        }
-      }
+      await withSessionExpiredRetry(() =>
+        write.kind === "setProps" ? client.setProps(write.writes) : client.callAction(write.call),
+      );
       return { executedByAccountId: account.id };
     } catch (error) { if (error instanceof MiCloudError && error.kind === "sessionExpired") { sawExpired = true;
         markAccountSessionRejected(account.session, true, {
@@ -1415,10 +1391,10 @@ export class MultiAccountMiCloudProvider implements HomeProvider {
       const client = new MiCloudClient(account.session, this.dependencies.transport);
       try {
         if (write.kind === "action") {
-          await client.action(write.call);
+          await withSessionExpiredRetry(() => client.action(write.call));
           return null;
         }
-        await client.setProps(write.writes);
+        await withSessionExpiredRetry(() => client.setProps(write.writes));
         if (!options.readBackPower) return null;
         const power = write.writes.find((w) => typeof w.value === "boolean");
         if (!power) return null;

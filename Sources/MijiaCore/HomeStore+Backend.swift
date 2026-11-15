@@ -703,12 +703,21 @@ extension HomeStore {
             nextHAReplacement = (true, nil)
         }
         var nextMiReplacement: (shouldReplace: Bool, provider: MiAccountsProvider?) = (false, nil)
-        var miAccountsUpdate: (provider: MiAccountsProvider, accounts: [MiAccount])?
+        var miAccountsUpdate: (provider: MiAccountsProvider, accounts: [MiAccount], invalidateSnapshot: Bool)?
+        var miAccountsChanged = false
         if wantsMi {
             let latestAccounts = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
+            let previousAccounts = miAccounts
+            miAccountsChanged = latestAccounts.count != previousAccounts.count
+                || !zip(latestAccounts, previousAccounts).allSatisfy { $0.id == $1.id && $0.session == $1.session }
+            let keptAnyAccount = latestAccounts.contains { next in
+                previousAccounts.contains { $0.id == next.id && $0.session == next.session }
+            }
             miAccounts = latestAccounts
             if let existingMi = activeMiAccountsProvider {
-                miAccountsUpdate = (existingMi, latestAccounts)
+                if miAccountsChanged {
+                    miAccountsUpdate = (existingMi, latestAccounts, !keptAnyAccount && !latestAccounts.isEmpty)
+                }
             } else {
                 let createdMi = makeMiAccountsProvider()
                 activeMiAccountsProvider = createdMi
@@ -718,16 +727,34 @@ extension HomeStore {
             activeMiAccountsProvider = nil
             nextMiReplacement = (true, nil)
         }
+        if haCredentialUpdate != nil || nextHAReplacement.shouldReplace || nextMiReplacement.shouldReplace || miAccountsChanged {
+            hasReceivedInitialSnapshot = false
+            listeningSnapshotGeneration = snapshotGeneration
+        }
         syncScheduledCommandScopeIfNeeded()
         let previousShutdown = providerShutdownTask
         providerShutdownTask = Task {
             await previousShutdown?.value
             if let u = haCredentialUpdate {
+                await dual.invalidateSnapshot(for: .homeAssistant)
                 await u.provider.updateCredentials(baseURLString: u.url, token: u.token)
             }
-            if nextHAReplacement.shouldReplace { await dual.setHomeAssistantProvider(nextHAReplacement.provider) }
-            if let u = miAccountsUpdate { await u.provider.updateAccounts(u.accounts) }
-            if nextMiReplacement.shouldReplace { await dual.setXiaomiCloudProvider(nextMiReplacement.provider) }
+            if nextHAReplacement.shouldReplace, let ha = nextHAReplacement.provider {
+                await dual.setSourceProvider(ha, for: .homeAssistant)
+            }
+            if nextMiReplacement.shouldReplace, let mi = nextMiReplacement.provider {
+                await dual.setSourceProvider(mi, for: .xiaomiCloud)
+            }
+            if nextHAReplacement.shouldReplace, nextHAReplacement.provider == nil {
+                await dual.setSourceProvider(nil, for: .homeAssistant)
+            }
+            if nextMiReplacement.shouldReplace, nextMiReplacement.provider == nil {
+                await dual.setSourceProvider(nil, for: .xiaomiCloud)
+            }
+            if let u = miAccountsUpdate {
+                if u.invalidateSnapshot { await dual.invalidateSnapshot(for: .xiaomiCloud) }
+                await u.provider.updateAccounts(u.accounts)
+            }
         }
     }
 

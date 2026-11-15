@@ -327,6 +327,8 @@ private actor TransientExpiryMiCloudAPI: MiCloudAPI {
     var rooms: [MiRoom]
     var values: [MiotPropKey: JSONValue]
     var remainingFailures: Int
+    var remainingRoomFailures: Int
+    private(set) var homeRoomsCalls = 0
     private(set) var deviceListCalls = 0
     private(set) var getPropsCalls = 0
 
@@ -334,12 +336,14 @@ private actor TransientExpiryMiCloudAPI: MiCloudAPI {
         devices: [MiDeviceRecord] = [MiotFixtures.lightRecord],
         rooms: [MiRoom] = [],
         values: [MiotPropKey: JSONValue] = MiotFixtures.lightValues,
-        remainingFailures: Int
+        remainingFailures: Int,
+        remainingRoomFailures: Int = 0
     ) {
         self.devices = devices
         self.rooms = rooms
         self.values = values
         self.remainingFailures = remainingFailures
+        self.remainingRoomFailures = remainingRoomFailures
     }
 
     func setRemainingFailures(_ count: Int) {
@@ -355,7 +359,14 @@ private actor TransientExpiryMiCloudAPI: MiCloudAPI {
         return devices
     }
 
-    func homeRooms() async throws -> [MiRoom] { rooms }
+    func homeRooms() async throws -> [MiRoom] {
+        homeRoomsCalls += 1
+        if remainingRoomFailures > 0 {
+            remainingRoomFailures -= 1
+            throw MiCloudError.sessionExpired
+        }
+        return rooms
+    }
     func devices(dids: [String]) async throws -> [MiDeviceRecord] { devices.filter { dids.contains($0.did) } }
     func lightGroupMembers(groupDids: [String]) async throws -> [String: [String]] { [:] }
 
@@ -388,7 +399,7 @@ struct ProviderResilienceAndPerfTests {
 
     @Test("One transient 401/sessionExpired recovers on retry without emitting sessionExpired, while two consecutive 401s emit sessionExpired (#18)")
     func transientSessionExpiredRecoversWhileConsecutiveRejects() async throws {
-        let api = TransientExpiryMiCloudAPI(remainingFailures: 1)
+        let api = TransientExpiryMiCloudAPI(remainingFailures: 1, remainingRoomFailures: 1)
         let provider = MiCloudProvider(
             sessionLoader: { Self.session },
             apiFactory: { _ in api },
@@ -402,6 +413,7 @@ struct ProviderResilienceAndPerfTests {
         defer { task.cancel() }
 
         #expect(await log.wait { await !$0.snapshots.isEmpty })
+        #expect(await api.homeRoomsCalls == 2)
         #expect(await api.deviceListCalls == 2)
         #expect(await log.expiredSessions.isEmpty)
 
@@ -458,9 +470,19 @@ struct ProviderResilienceAndPerfTests {
         #expect(dualEvents == 0)
     }
 
-    @Test("Wake poll and immediate refreshNow coalesce into one poll on MiCloudProvider (#33a)")
+    @Test("Wake poll and immediate refreshNow coalesce into one poll on MiCloudProvider while scope changes still refresh (#33a)")
     func wakePollAndRefreshNowCoalesce() async throws {
-        let api = TransientExpiryMiCloudAPI(remainingFailures: 0)
+        final class SelectionBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value: String?
+            func get() -> String? { lock.lock(); defer { lock.unlock() }; return value }
+            func set(_ next: String?) { lock.lock(); value = next; lock.unlock() }
+        }
+        let selection = SelectionBox()
+        let api = TransientExpiryMiCloudAPI(
+            rooms: [MiRoom(id: "r1", name: "客厅", dids: ["123"], homeId: "h1", homeName: "家")],
+            remainingFailures: 0
+        )
         let provider = MiCloudProvider(
             sessionLoader: { Self.session },
             apiFactory: { _ in api },
@@ -468,7 +490,7 @@ struct ProviderResilienceAndPerfTests {
             pollInterval: .seconds(60),
             closedPollInterval: .seconds(60),
             deviceRefreshEveryPolls: 1000,
-            selectedHomeLoader: { nil }
+            selectedHomeLoader: { selection.get() }
         )
         let log = EventLog()
         let stream = provider.events()
@@ -477,14 +499,18 @@ struct ProviderResilienceAndPerfTests {
 
         #expect(await log.wait { await !$0.snapshots.isEmpty })
         await provider.setPollingContext(PollingContext(panelVisible: false, systemActive: false))
-        try await Task.sleep(for: .milliseconds(40))
+        let snapshotsBeforeWake = await log.snapshots.count
         let callsBeforeWake = await api.getPropsCalls
 
         await provider.setPollingContext(PollingContext(panelVisible: false, systemActive: true))
         await provider.refreshNow()
-        try await Task.sleep(for: .milliseconds(120))
-        let callsAfterWake = await api.getPropsCalls
-        #expect(callsAfterWake == callsBeforeWake + 1)
+        #expect(await log.wait { await $0.snapshots.count == snapshotsBeforeWake + 1 })
+        await provider.refreshNow()
+        #expect(await api.getPropsCalls == callsBeforeWake + 1)
+
+        selection.set("h1")
+        await provider.refreshNow()
+        #expect(await api.getPropsCalls == callsBeforeWake + 2)
         await provider.shutdown()
     }
 

@@ -200,12 +200,7 @@ public actor MiAccountsProvider: HomeProvider {
         for provider in newlyStarted { await provider.setPollingContext(pollingContext) }
         rebuildDeviceOwners()
         publishStatus()
-        if snapshots.isEmpty {
-            var empty = SynthesizedHome(rooms: [], devices: [], environmentReadings: [], scenes: [])
-            empty.accountStatuses = statuses
-            empty.isInitialLoadComplete = accounts.allSatisfy { snapshots[$0.id] != nil || isDisconnected($0.id) }
-            continuation?.yield(.snapshotUpdated(empty))
-        } else {
+        if !snapshots.isEmpty {
             publishSnapshot()
         }
     }
