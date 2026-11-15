@@ -109,6 +109,29 @@ pub(crate) fn format_reqwest_error(err: &reqwest::Error) -> String {
     detail
 }
 
+pub(crate) const MIN_HTTP_TIMEOUT_MS: u64 = 500;
+pub(crate) const MAX_HTTP_TIMEOUT_MS: u64 = 60_000;
+pub(crate) const DEFAULT_HTTP_TIMEOUT_MS: u64 = 15_000;
+pub(crate) const MAX_HTTP_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+pub(crate) fn clamp_http_timeout_ms(timeout_ms: Option<u64>) -> u64 {
+    timeout_ms
+        .unwrap_or(DEFAULT_HTTP_TIMEOUT_MS)
+        .clamp(MIN_HTTP_TIMEOUT_MS, MAX_HTTP_TIMEOUT_MS)
+}
+
+pub(crate) fn append_bounded_response_chunk(
+    buf: &mut Vec<u8>,
+    chunk: &[u8],
+    max_bytes: usize,
+) -> Result<(), String> {
+    if buf.len().saturating_add(chunk.len()) > max_bytes {
+        return Err(format!("native_http 响应体超过 {max_bytes} 字节上限"));
+    }
+    buf.extend_from_slice(chunk);
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) async fn native_http(
     url: String,
@@ -143,7 +166,7 @@ pub(crate) async fn native_http(
 
     let client = reqwest::Client::builder()
         .redirect(policy)
-        .timeout(Duration::from_millis(timeout_ms.unwrap_or(15_000)))
+        .timeout(Duration::from_millis(clamp_http_timeout_ms(timeout_ms)))
         .build()
         .map_err(|e| format_reqwest_error(&e))?;
 
@@ -179,12 +202,20 @@ pub(crate) async fn native_http(
         req = req.body(b);
     }
 
-    let resp = req.send().await.map_err(|e| format_reqwest_error(&e))?;
+    let mut resp = req.send().await.map_err(|e| format_reqwest_error(&e))?;
     let status = resp.status().as_u16();
     // A stopped redirect comes back as a 3xx here; surfacing it as an error is
     // clearer than handing the frontend a response from a host it may not use.
     if follow && resp.status().is_redirection() && status != 304 {
         return Err("native_http 拒绝跨来源或未授权重定向".to_string());
+    }
+    if resp
+        .content_length()
+        .is_some_and(|len| len > MAX_HTTP_RESPONSE_BYTES as u64)
+    {
+        return Err(format!(
+            "native_http 响应体超过 {MAX_HTTP_RESPONSE_BYTES} 字节上限"
+        ));
     }
 
     let mut out_headers: HashMap<String, String> = HashMap::new();
@@ -201,17 +232,16 @@ pub(crate) async fn native_http(
         }
     }
 
-    let text = resp.text().await.map_err(|e| format_reqwest_error(&e))?;
+    let mut body_bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format_reqwest_error(&e))? {
+        append_bounded_response_chunk(&mut body_bytes, &chunk, MAX_HTTP_RESPONSE_BYTES)?;
+    }
+    let text = String::from_utf8_lossy(&body_bytes).into_owned();
     Ok(NativeHttpResponse {
         status,
         headers: out_headers,
         body: text,
     })
-}
-
-#[tauri::command]
-pub(crate) fn set_allowed_origins(_origins: Vec<String>) -> Result<(), String> {
-    Err("前端不能自行授权网络来源".into())
 }
 
 pub(crate) fn origin_from_endpoint(raw: &str) -> Option<String> {
@@ -548,11 +578,6 @@ pub(crate) fn user_confirms_origin(origin: &str, plaintext_warning: bool) -> boo
     }
 }
 
-#[cfg(all(not(windows), not(test)))]
-pub(crate) fn user_confirms_origin(_origin: &str, _plaintext_warning: bool) -> bool {
-    false
-}
-
 #[tauri::command]
 pub(crate) fn set_service_endpoints(
     assistant_url: String,
@@ -634,5 +659,21 @@ mod subpath_tests {
             assert!(parse_ha_endpoint_parts(invalid, false).is_err(), "{invalid}");
             assert!(requested_service_origins("", invalid).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn http_timeout_clamps_to_safe_bounds_and_response_chunks_enforce_16_mib_cap() {
+        assert_eq!(clamp_http_timeout_ms(None), 15_000);
+        assert_eq!(clamp_http_timeout_ms(Some(0)), 500);
+        assert_eq!(clamp_http_timeout_ms(Some(100)), 500);
+        assert_eq!(clamp_http_timeout_ms(Some(45_000)), 45_000);
+        assert_eq!(clamp_http_timeout_ms(Some(120_000)), 60_000);
+        assert_eq!(clamp_http_timeout_ms(Some(u64::MAX)), 60_000);
+        assert_eq!(MAX_HTTP_RESPONSE_BYTES, 16 * 1024 * 1024);
+
+        let mut buf = Vec::new();
+        assert!(append_bounded_response_chunk(&mut buf, b"hello ", 10).is_ok());
+        assert!(append_bounded_response_chunk(&mut buf, b"world", 10).is_err());
+        assert_eq!(&buf, b"hello ");
     }
 }

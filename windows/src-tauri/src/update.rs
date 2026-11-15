@@ -58,9 +58,6 @@ pub(crate) fn open_url_in_browser(url: &str) {
     }
 }
 
-#[cfg(not(windows))]
-pub(crate) fn open_url_in_browser(_url: &str) {}
-
 #[tauri::command]
 pub(crate) fn open_release_page(url: String) -> Result<(), String> {
     let target = validated_release_url(&url)?;

@@ -303,7 +303,6 @@ describe("Keyed DOM Reconciler & Fluent Motion Pipeline", () => {
             heightCalls.push(args.height);
           }
           if (cmd === "panel_is_visible") return true;
-          if (cmd === "panel_backdrop") return "acrylic";
           if (cmd === "panel_placement") return "auto";
           return null;
         },

@@ -5,7 +5,6 @@ mod camera;
 mod companion;
 mod desktop_shell;
 mod job_object;
-mod backdrop;
 mod credentials;
 mod network;
 mod placement;
@@ -242,7 +241,6 @@ fn main() {
             ha_snapshot,
             ha_execute,
             native_http,
-            set_allowed_origins,
             set_service_endpoints,
             secure_store_get,
             secure_store_set,
@@ -250,7 +248,6 @@ fn main() {
             hide_panel,
             finish_hide_panel,
             quit_app,
-            panel_backdrop,
             panel_is_visible,
             set_panel_height,
             set_pin_popover,
@@ -278,6 +275,7 @@ fn main() {
         ])
         .setup(move |app| {
             sweep_stale_update_installers();
+            scrub_stale_camera_config_on_startup();
             start_companion_runtime(app.handle().clone());
             if let Some(path) = authorization_store_path() {
                 if let Ok(mut guard) = EXTRA_ALLOWED_ORIGINS.write() {
@@ -287,7 +285,6 @@ fn main() {
             let _ = app.global_shortcut().register(default_shortcut);
             load_panel_placement();
             if let Some(main_win) = app.get_webview_window("main") {
-                apply_panel_backdrop(&main_win);
                 let _ = position_popover(&main_win, None);
                 let app_for_events = app.handle().clone();
                 main_win.on_window_event(move |event| match event {
@@ -649,27 +646,13 @@ mod tests {
             guard.clear();
         }
         let app = tauri::test::mock_builder()
-            .invoke_handler(tauri::generate_handler![native_http, set_allowed_origins, set_service_endpoints])
+            .invoke_handler(tauri::generate_handler![native_http, set_service_endpoints])
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("isolated IPC application");
         let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
             .build()
             .expect("isolated IPC window");
         let invoke_url: reqwest::Url = "http://tauri.localhost".parse().expect("local app origin");
-        let _grant = tauri::test::get_ipc_response(
-            &window,
-            tauri::webview::InvokeRequest {
-                cmd: "set_allowed_origins".into(),
-                callback: tauri::ipc::CallbackFn(0),
-                error: tauri::ipc::CallbackFn(1),
-                url: invoke_url.clone(),
-                body: tauri::ipc::InvokeBody::Json(serde_json::json!({
-                    "origins": ["https://evil.example"]
-                })),
-                headers: Default::default(),
-                invoke_key: tauri::test::INVOKE_KEY.to_string(),
-            },
-        );
         let service = tauri::test::get_ipc_response(
             &window,
             tauri::webview::InvokeRequest {
@@ -1105,6 +1088,53 @@ mod tests {
             base_go2rtc_config(&written.replace("43123", "43125")),
             base_go2rtc_config(&written)
         );
+
+        let root = std::env::temp_dir().join(format!("mbm-scrub-camera-cfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp dir");
+        let cfg_path = root.join("go2rtc.yaml");
+        let owner_path = root.join("go2rtc.owner");
+
+        std::fs::write(&cfg_path, &rewritten_by_go2rtc).expect("write dirty config");
+        assert!(scrub_stale_camera_config_in_dir(&root));
+        let scrubbed = std::fs::read_to_string(&cfg_path).expect("read scrubbed config");
+        assert!(!scrubbed.contains("streams:"));
+        assert!(!scrubbed.contains("client_private"));
+        assert_eq!(scrubbed, written);
+        assert!(!scrub_stale_camera_config_in_dir(&root));
+
+        std::fs::write(&cfg_path, &rewritten_by_go2rtc).expect("rewrite dirty config");
+        std::fs::write(
+            &owner_path,
+            serialize_owner(&Go2RtcOwnerRecord {
+                pid: 0,
+                session: session.clone(),
+            }),
+        )
+        .expect("write dead owner");
+        assert!(scrub_stale_camera_config_in_dir(&root));
+        assert!(!std::fs::read_to_string(&cfg_path)
+            .expect("read scrubbed after dead owner")
+            .contains("streams:"));
+
+        #[cfg(windows)]
+        {
+            std::fs::write(&cfg_path, &rewritten_by_go2rtc).expect("rewrite dirty config");
+            std::fs::write(
+                &owner_path,
+                serialize_owner(&Go2RtcOwnerRecord {
+                    pid: std::process::id(),
+                    session: session.clone(),
+                }),
+            )
+            .expect("write live owner");
+            assert!(!scrub_stale_camera_config_in_dir(&root));
+            assert!(std::fs::read_to_string(&cfg_path)
+                .expect("read preserved config")
+                .contains("streams:"));
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1769,7 +1799,7 @@ mod tests {
         let addr = listener.local_addr().expect("listener addr");
         let server = std::thread::spawn(move || {
             if let Ok((_stream, _peer)) = listener.accept() {
-                std::thread::sleep(Duration::from_millis(250));
+                std::thread::sleep(Duration::from_millis(800));
             }
         });
         let origin = format!("http://127.0.0.1:{}", addr.port());
