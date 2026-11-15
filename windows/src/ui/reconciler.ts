@@ -1010,7 +1010,12 @@ export class PanelRenderPipeline {
       if (this.activeExpanderCleanups.get(tileId) === cleanup) this.activeExpanderCleanups.delete(tileId);
       clone.remove();
     };
-    const onEnd = (event: Event) => { if (event.target === clone) cleanup(); };
+    const onEnd = (event: Event) => {
+      if (event.target !== clone) return;
+      const prop = (event as TransitionEvent).propertyName;
+      if (typeof prop === "string" && prop !== "" && prop !== "grid-template-rows") return;
+      cleanup();
+    };
     const timer = window.setTimeout(cleanup, 420);
     (timer as unknown as { unref?: () => void })?.unref?.();
     clone.addEventListener("transitionend", onEnd);
@@ -1654,23 +1659,25 @@ export class PanelRenderPipeline {
             easing: FLUENT_MOTION.decelerateEasing,
           });
       } else if (!prevHasSubpage && !nextHasSubpage && (beforeGroups.size > 0 || beforeTiles.size > 0)) {
+        const groupEls = Array.from(host.root.querySelectorAll<HTMLElement>(".cc-group:not([data-exit-ghost])"));
+        const tileEls = Array.from(host.root.querySelectorAll<HTMLElement>("[data-tile-id]:not([data-exit-ghost])"));
+        const nextGroupRects = groupEls.map((el) => el.getBoundingClientRect());
+        const nextTileRects = tileEls.map((el) => el.getBoundingClientRect());
         const groupDeltas = new Map<Element, { readonly dx: number; readonly dy: number }>();
-        host.root.querySelectorAll<HTMLElement>(".cc-group:not([data-exit-ghost])").forEach((el, idx) => {
+        groupEls.forEach((el, idx) => {
           const old = beforeGroups.get(groupFlipKey(el, idx));
-          if (!old) return;
-          const now = el.getBoundingClientRect();
-          if (now.width === 0 || now.height === 0) return;
+          const now = nextGroupRects[idx];
+          if (!old || !now || now.width === 0 || now.height === 0) return;
           const dx = old.left - now.left, dy = old.top - now.top;
           if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
           groupDeltas.set(el, { dx, dy });
           animateFlipShift(el, dx, dy, isClassic);
         });
-        host.root.querySelectorAll<HTMLElement>("[data-tile-id]:not([data-exit-ghost])").forEach((el) => {
+        tileEls.forEach((el, idx) => {
           const id = el.dataset.tileId as string;
           const old = beforeTiles.get(id);
-          if (!old || id === host.draggingId) return;
-          const now = el.getBoundingClientRect();
-          if (now.width === 0 || now.height === 0) return;
+          const now = nextTileRects[idx];
+          if (!old || !now || id === host.draggingId || now.width === 0 || now.height === 0) return;
           const groupShift = el.closest(".cc-group") ? groupDeltas.get(el.closest(".cc-group")!) : undefined;
           const dx = old.left - now.left - (groupShift?.dx ?? 0), dy = old.top - now.top - (groupShift?.dy ?? 0);
           if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;

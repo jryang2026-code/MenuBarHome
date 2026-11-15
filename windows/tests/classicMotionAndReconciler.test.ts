@@ -57,21 +57,32 @@ describe("Apple Spring Physics, Reconciler Motion Upgrades & Dual-Theme CDP Snap
     const proto = window.HTMLElement.prototype as HTMLElement & { animate?: typeof HTMLElement.prototype.animate };
     const origAnimate = proto.animate, origGetRect = proto.getBoundingClientRect;
     const recorded: Array<{ el: HTMLElement; keyframes: Keyframe[]; options: KeyframeAnimationOptions }> = [];
+    const activeGroupTransform = new Map<HTMLElement, { dx: number; dy: number }>();
 
     proto.animate = function captureAnimate(keyframes, options) {
-      recorded.push({ el: this as HTMLElement, keyframes: (Array.isArray(keyframes) ? keyframes : []) as Keyframe[], options: (typeof options === "object" && options ? options : {}) as KeyframeAnimationOptions });
+      const frames = (Array.isArray(keyframes) ? keyframes : []) as Keyframe[];
+      const el = this as HTMLElement;
+      recorded.push({ el, keyframes: frames, options: (typeof options === "object" && options ? options : {}) as KeyframeAnimationOptions });
+      if (el.classList.contains("cc-group")) {
+        const m = String(frames[0]?.transform ?? "").match(/translate3d\(([-\d.]+)px,\s*([-\d.]+)px/);
+        if (m) activeGroupTransform.set(el, { dx: Number(m[1]), dy: Number(m[2]) });
+      }
       return {} as Animation;
     };
     proto.getBoundingClientRect = function mockFlipRect() {
       const el = this as HTMLElement;
       const expanded = Boolean(document.querySelector('[data-tile-id="light.living_ceiling"].is-expanded'));
-      if (el.dataset.tileId === "light.living_ceiling") return makeRect(14, 120, expanded ? 412 : 202, expanded ? 220 : 72);
-      if (el.dataset.tileId === "light.study_desk") return makeRect(14, expanded ? 348 : 200, 202, 72);
+      const parentGroup = el.hasAttribute("data-tile-id") ? el.closest<HTMLElement>(".cc-group") : null;
+      const groupOffset = parentGroup ? activeGroupTransform.get(parentGroup) : undefined;
+      const ox = groupOffset?.dx ?? 0, oy = groupOffset?.dy ?? 0;
+      if (el.dataset.tileId === "light.living_ceiling") return makeRect(14 + ox, 120 + oy, expanded ? 412 : 202, expanded ? 220 : 72);
+      if (el.dataset.tileId === "light.study_desk") return makeRect(14 + ox, (expanded ? 348 : 200) + oy, 202, 72);
+      if (el.dataset.tileId === "plug.entry_socket") return makeRect(14 + ox, (expanded ? 548 : 408) + oy, 202, 72);
       if (el.classList.contains("cc-group")) {
         const idx = Array.from(document.querySelectorAll(".cc-group")).indexOf(el);
         return idx > 0 ? makeRect(14, expanded ? 520 : 380, 412, 140) : makeRect(14, 96, 412, expanded ? 340 : 200);
       }
-      return makeRect(14, 14, 200, 60);
+      return makeRect(14 + ox, 14 + oy, 200, 60);
     };
 
     try {
@@ -79,6 +90,7 @@ describe("Apple Spring Physics, Reconciler Motion Upgrades & Dual-Theme CDP Snap
       app.layout.pinnedDeviceIds = ["light.living_ceiling", "light.study_desk"];
       app.render();
       recorded.length = 0;
+      activeGroupTransform.clear();
 
       element<HTMLButtonElement>('[data-expand-device="light.living_ceiling"]').click();
       await setImmediate();
@@ -89,6 +101,7 @@ describe("Apple Spring Physics, Reconciler Motion Upgrades & Dual-Theme CDP Snap
       assert.equal(siblingAnim.options.easing, "linear");
       assert.equal(siblingAnim.keyframes[0]?.transform, "translate3d(0px, -148px, 0)");
       assert.ok(recorded.some((r) => r.el.classList.contains("cc-group") && r.options.duration === APPLE_SPRINGS.reveal.durationMs));
+      assert.equal(recorded.some((r) => r.el.dataset.tileId === "plug.entry_socket"), false);
 
       app.expandedDeviceId = null;
       app.settings.panelTheme = "fluent";
@@ -122,7 +135,10 @@ describe("Apple Spring Physics, Reconciler Motion Upgrades & Dual-Theme CDP Snap
     assert.equal(ghostExpander.getAttribute("aria-hidden"), "true");
     assert.equal(ghostExpander.querySelector("[id], [data-brightness]"), null);
 
-    ghostExpander.dispatchEvent(new window.Event("transitionend", { bubbles: true }));
+    ghostExpander.dispatchEvent(Object.assign(new window.Event("transitionend", { bubbles: true }), { propertyName: "opacity" }));
+    assert.ok(tile.querySelector(":scope > .cc-expander-grid.is-collapsed"));
+
+    ghostExpander.dispatchEvent(Object.assign(new window.Event("transitionend", { bubbles: true }), { propertyName: "grid-template-rows" }));
     assert.equal(tile.querySelector(".cc-expander-grid"), null);
 
     element<HTMLButtonElement>('[data-expand-device="light.living_ceiling"]').click();
