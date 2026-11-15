@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
@@ -131,9 +132,11 @@ describe("Apple Spring Physics, Reconciler Motion Upgrades & Dual-Theme CDP Snap
     const ghostExpander = tile.querySelector<HTMLElement>(":scope > .cc-expander-grid.is-collapsed");
     assert.ok(ghostExpander);
     assert.equal(ghostExpander.getAttribute("data-exit-ghost"), "true");
+    assert.equal(ghostExpander.style.transition, "");
     assert.equal(ghostExpander.hasAttribute("inert"), true);
     assert.equal(ghostExpander.getAttribute("aria-hidden"), "true");
     assert.equal(ghostExpander.querySelector("[id], [data-brightness]"), null);
+    assert.match(readFileSync(new URL("../src/ui/styles.css", import.meta.url), "utf8"), /\.cc-expander-grid:not\(\.is-collapsed\):not\(\[data-exit-ghost\]\)/);
 
     ghostExpander.dispatchEvent(Object.assign(new window.Event("transitionend", { bubbles: true }), { propertyName: "opacity" }));
     assert.ok(tile.querySelector(":scope > .cc-expander-grid.is-collapsed"));

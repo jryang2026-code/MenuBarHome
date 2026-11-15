@@ -997,7 +997,10 @@ export class PanelRenderPipeline {
   private mountCollapsingExpander(tileEl: HTMLElement, tileId: string, clone: HTMLElement): void {
     this.activeExpanderCleanups.get(tileId)?.();
     clone.classList.remove("is-collapsed");
+    clone.style.transition = "none";
     tileEl.appendChild(clone);
+    void clone.getBoundingClientRect();
+    clone.style.removeProperty("transition");
     void clone.getBoundingClientRect();
     clone.classList.add("is-collapsed");
     let cleaned = false;

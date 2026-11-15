@@ -1973,7 +1973,7 @@ details.win-notif-card-ghost > :not(summary) {
 }
 
 @starting-style {
-  .cc-expander-grid:not(.is-collapsed) {
+  .cc-expander-grid:not(.is-collapsed):not([data-exit-ghost]) {
     grid-template-rows: 0fr;
   }
 }
