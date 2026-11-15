@@ -8,6 +8,7 @@ export interface LiquidGlassSliderSpec {
   readonly leadingIconSvg?: string;
   readonly toneClass?: string;
   readonly isSpectrumTrack?: boolean;
+  readonly allowOffGridMax?: boolean;
   readonly showDecileTicks?: boolean;
   readonly inputClassName?: string;
   readonly inputDataAttrs: string;
@@ -19,24 +20,25 @@ const round6 = (v: number): number => Number(v.toFixed(6));
 export const formatSliderAttrNumber = (n: number): string => (Number.isInteger(n) ? String(n) : String(round6(n)));
 
 export const SliderStepSnap = {
-  snap(raw: number, min: number, max: number, step: number | null): number {
+  snap(raw: number, min: number, max: number, step: number | null, allowOffGridMax = false): number {
     const clamped = Math.min(max, Math.max(min, raw));
     const span = max - min;
     if (step === null || !Number.isFinite(step) || step <= 0 || span <= 0) return round6(clamped);
     const lastGrid = min + Math.floor(span / step) * step;
     if (clamped > lastGrid) {
+      if (!allowOffGridMax) return round6(Math.max(min, lastGrid));
       return round6(clamped >= lastGrid + (max - lastGrid) * 0.5 ? max : lastGrid);
     }
     return round6(Math.min(max, Math.max(min, min + Math.round((clamped - min) / step) * step)));
   },
-  stepBy(value: number, delta: number, min: number, max: number, step: number): number {
+  stepBy(value: number, delta: number, min: number, max: number, step: number, allowOffGridMax = false): number {
     const clamped = Math.min(max, Math.max(min, value));
     const span = max - min;
     if (step > 0 && span > 0 && delta < 0) {
       const lastGrid = min + Math.floor(span / step) * step;
       if (clamped > lastGrid) return round6(Math.max(min, lastGrid));
     }
-    return this.snap(clamped + delta, min, max, step);
+    return this.snap(clamped + delta, min, max, step, allowOffGridMax);
   },
   decileBucket(value: number, min: number, max: number): number {
     const span = max - min;
@@ -45,7 +47,8 @@ export const SliderStepSnap = {
 } as const;
 
 export function renderLiquidGlassSlider(spec: LiquidGlassSliderSpec): string {
-  const snapped = SliderStepSnap.snap(spec.value, spec.min, spec.max, spec.step);
+  const allowOffGridMax = Boolean(spec.allowOffGridMax);
+  const snapped = SliderStepSnap.snap(spec.value, spec.min, spec.max, spec.step, allowOffGridMax);
   const span = spec.max - spec.min;
   const ratio = span > 0 ? Math.max(0, Math.min(1, (snapped - spec.min) / span)) : 0;
   const ratioStr = ratio.toFixed(4);
@@ -58,12 +61,14 @@ export function renderLiquidGlassSlider(spec: LiquidGlassSliderSpec): string {
     : "";
   const hasStep = spec.step !== null && Number.isFinite(spec.step) && spec.step > 0;
   const stepDivides = hasStep && span > 0 && Math.abs(span / spec.step! - Math.round(span / spec.step!)) < 1e-6;
-  // Use step="1" on the DOM input when span is not divisible by step (e.g. 2000..6535 step 100) so max remains reachable.
-  const domStepAttr = hasStep ? ` step="${stepDivides ? formatSliderAttrNumber(spec.step!) : "1"}"` : "";
+  const domStepAttr = hasStep
+    ? ` step="${!allowOffGridMax || stepDivides ? formatSliderAttrNumber(spec.step!) : "1"}"`
+    : "";
   const snapStepAttr = hasStep ? ` data-snap-step="${formatSliderAttrNumber(spec.step!)}"` : "";
+  const offGridAttr = allowOffGridMax ? ' data-allow-off-grid-max="true"' : "";
   const wrapCls = ["cc-liquid-slider", `is-${spec.variant}`, spec.isSpectrumTrack ? "is-kelvin" : "", spec.toneClass ?? ""].filter(Boolean).join(" ");
   const inputCls = ["cc-range", spec.inputClassName ?? "", spec.toneClass ?? ""].filter(Boolean).join(" ");
-  return `<div class="${wrapCls}" data-liquid-slider="${spec.variant}" style="--slider-ratio:${ratioStr};--fill-scale:${ratioStr}"><div class="cc-liquid-track" aria-hidden="true"><span class="cc-liquid-fill" style="--fill-scale:${ratioStr}"></span>${ticksHtml}<span class="cc-liquid-thumb"></span><div class="cc-liquid-chrome">${spec.leadingIconSvg ? `<span class="cc-liquid-icon">${spec.leadingIconSvg}</span>` : ""}<span class="cc-liquid-readout">${spec.formattedValue}</span></div></div><span class="cc-slider-thumb-badge" aria-hidden="true"></span><input class="${inputCls}" type="range" min="${formatSliderAttrNumber(spec.min)}" max="${formatSliderAttrNumber(spec.max)}"${domStepAttr} value="${formatSliderAttrNumber(snapped)}"${snapStepAttr} style="--val:${pctStr}%" ${spec.inputDataAttrs} ${spec.ariaAttrs}${spec.disabledAttr ?? ""} /></div>`;
+  return `<div class="${wrapCls}" data-liquid-slider="${spec.variant}" style="--slider-ratio:${ratioStr};--fill-scale:${ratioStr}"><div class="cc-liquid-track" aria-hidden="true"><span class="cc-liquid-fill" style="--fill-scale:${ratioStr}"></span>${ticksHtml}<span class="cc-liquid-thumb"></span><div class="cc-liquid-chrome">${spec.leadingIconSvg ? `<span class="cc-liquid-icon">${spec.leadingIconSvg}</span>` : ""}<span class="cc-liquid-readout">${spec.formattedValue}</span></div></div><span class="cc-slider-thumb-badge" aria-hidden="true"></span><input class="${inputCls}" type="range" min="${formatSliderAttrNumber(spec.min)}" max="${formatSliderAttrNumber(spec.max)}"${domStepAttr} value="${formatSliderAttrNumber(snapped)}"${snapStepAttr}${offGridAttr} style="--val:${pctStr}%" ${spec.inputDataAttrs} ${spec.ariaAttrs}${spec.disabledAttr ?? ""} /></div>`;
 }
 
 export function syncLiquidGlassSlider(slider: HTMLInputElement, formattedOverride?: string): number {
@@ -71,8 +76,9 @@ export function syncLiquidGlassSlider(slider: HTMLInputElement, formattedOverrid
   const max = Number(slider.max || "100");
   const snapAttr = slider.getAttribute("data-snap-step");
   const snapStep = snapAttr ? Number(snapAttr) : slider.step && slider.step !== "any" ? Number(slider.step) : null;
+  const allowOffGridMax = slider.getAttribute("data-allow-off-grid-max") === "true";
   const raw = Number(slider.value || "0");
-  const val = SliderStepSnap.snap(Number.isFinite(raw) ? raw : min, min, max, snapStep);
+  const val = SliderStepSnap.snap(Number.isFinite(raw) ? raw : min, min, max, snapStep, allowOffGridMax);
   const valStr = formatSliderAttrNumber(val);
   if (slider.value !== valStr) slider.value = valStr;
   const span = max - min;

@@ -265,7 +265,7 @@ function renderPrimaryDrawer(
               <span>${t("色温")}</span>
               <strong>${ct}K</strong>
             </div>
-            ${renderLiquidGlassSlider({ variant: "drawer", min: k.minKelvin, max: k.maxKelvin, step: 100, value: ct, formattedValue: `${ct}K`, leadingIconSvg: SF_ICONS.sunMaxFill, toneClass: "is-kelvin", isSpectrumTrack: true, showDecileTicks: true, inputDataAttrs: `data-colortemp="${id}"`, ariaAttrs: `aria-label="${t("色温")}" aria-valuemin="${k.minKelvin}" aria-valuemax="${k.maxKelvin}" aria-valuenow="${ct}" aria-valuetext="${ct}K"` })}
+            ${renderLiquidGlassSlider({ variant: "drawer", min: k.minKelvin, max: k.maxKelvin, step: 100, allowOffGridMax: true, value: ct, formattedValue: `${ct}K`, leadingIconSvg: SF_ICONS.sunMaxFill, toneClass: "is-kelvin", isSpectrumTrack: true, showDecileTicks: true, inputDataAttrs: `data-colortemp="${id}"`, ariaAttrs: `aria-label="${t("色温")}" aria-valuemin="${k.minKelvin}" aria-valuemax="${k.maxKelvin}" aria-valuenow="${ct}" aria-valuetext="${ct}K"` })}
           </div>` : ""}
           ${visibleEffects.length > 0 ? `
             <div class="cc-segmented-pills">

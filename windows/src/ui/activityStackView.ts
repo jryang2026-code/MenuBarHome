@@ -1427,10 +1427,24 @@ function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()):
     factories.push(wrapCard("ha:error", "haError", false, "cc-feedback-card is-error", (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">Home Assistant</span><span class="cc-feedback-text">${host.escapeHtml(errText)}</span>${btns}</div>`, " data-ha-error", "alert"));
   }
 
+  let replyConsumedByArmedAuto = false;
   for (const item of buildActivityFeed(host, nowMs)) {
     const isArmedHighRisk = item.kind === "automation" && Boolean(center.pendingHighRiskUndoRunId) && (item.actionValue === center.pendingHighRiskUndoRunId || item.id === `auto:${center.pendingHighRiskUndoRunId}`);
     const isDismissible = !isArmedHighRisk;
-    factories.push({ id: item.id, kind: item.kind, isDismissible, render: (opts) => renderSingleActivityRow(host, item, { stackCount: opts.stackCount, showStackControls: opts.showStackControls, isDismissible }) });
+    const renderedItem = isArmedHighRisk
+      ? {
+          ...item,
+          tone: "warning" as const,
+          subtitle: host.replyBanner?.text || item.subtitle,
+          actionLabel: tr3("确认撤销", "確認撤銷", "Confirm Undo", undefined, host.settings.interfaceLanguage),
+        }
+      : item;
+    if (isArmedHighRisk && host.replyBanner && !host.replyBanner.isError && host.pendingHighRisk === null) {
+      replyConsumedByArmedAuto = true;
+    }
+    const factory: UpperCardFactory = { id: item.id, kind: item.kind, isDismissible, render: (opts) => renderSingleActivityRow(host, renderedItem, { stackCount: opts.stackCount, showStackControls: opts.showStackControls, isDismissible }) };
+    if (isArmedHighRisk) factories.unshift(factory);
+    else factories.push(factory);
   }
 
   const undoState = computeUndoAvailability(host, nowMs);
@@ -1448,19 +1462,21 @@ function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()):
   const isDuplicateAutoUndo = autoRunId !== null && center.recentAutomationRuns.some((r) => r.id === autoRunId && r.expiresAtMs > nowMs);
   const undoDismissKey = host.lastUndoAction ? `undo:${host.lastUndoAction.expiresAtMs}:${host.lastUndoAction.summary}` : "";
   let replyConsumedByUndo = false;
+  let manualUndoRendered = false;
   if (undoState.isAvailable && host.lastUndoAction && !isDuplicateAutoUndo && !center.dismissedActivityIds.has(undoDismissKey)) {
     const reply = host.replyBanner;
-    const mergeReply = Boolean(reply && !reply.isError && !host.pendingCloudConsent && host.pendingHighRisk === null);
+    const mergeReply = Boolean(reply && !reply.isError && !host.pendingCloudConsent && host.pendingHighRisk === null && !replyConsumedByArmedAuto);
     if (mergeReply) replyConsumedByUndo = true;
+    manualUndoRendered = true;
     const badge = mergeReply && reply ? reply.source : t("撤销提示");
     const text = mergeReply && reply ? reply.text : `${host.lastUndoAction.summary} ${t("· 剩余 {remaining}", { remaining: host.formatRemainingMs(Math.max(1000, undoState.remainingMs)) })}`;
     factories.push(wrapCard("undo:manual", "undo", true, "cc-live-banner cc-feedback-card", (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(badge)}</span><span class="cc-feedback-text">${host.escapeHtml(text)}</span><button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>${btns}</div>`));
   }
 
-  if (host.replyBanner && !host.pendingCloudConsent && !replyConsumedByUndo) {
+  if (host.replyBanner && !host.pendingCloudConsent && !replyConsumedByUndo && !replyConsumedByArmedAuto) {
     const reply = host.replyBanner;
     const isDismissible = !(host.pendingHighRisk !== null && host.pendingHighRisk.expiresAtMs > nowMs);
-    factories.push(wrapCard("reply:banner", "reply", isDismissible, `cc-live-banner cc-feedback-card${reply.isError ? " is-error" : ""}`, (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>${host.undoButtonVisible(nowMs) ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}${btns}</div>`, "", reply.isError ? "alert" : "status", "btn-dismiss-banner"));
+    factories.push(wrapCard("reply:banner", "reply", isDismissible, `cc-live-banner cc-feedback-card${reply.isError ? " is-error" : ""}`, (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>${!manualUndoRendered && host.undoButtonVisible(nowMs) ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}${btns}</div>`, "", reply.isError ? "alert" : "status", "btn-dismiss-banner"));
   }
   if (host.pendingSuggestions.length > 0) {
     factories.push(wrapCard("suggestions:pending", "suggestions", true, "cc-feedback-card", (btns) => `<div class="cc-feedback-row"><div class="cc-suggestion-row" style="flex:1;">${host.pendingSuggestions.map((item) => `<button class="cc-inline-pill" data-suggestion-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""}</button>`).join("")}</div>${btns}</div>`));
@@ -1619,13 +1635,18 @@ export function bindUnifiedUpperStack(host: MenuMijiaWindowsApp): void {
       if (activePointerId === null) return;
       const dx = e.clientX - startX;
       const now = e.timeStamp && e.timeStamp > 0 ? e.timeStamp : performance.now();
-      if (Math.abs(velocityPxPerSec) < 1 && Math.abs(dx) > 0) velocityPxPerSec = dx / Math.max(0.008, (now - startTimeMs) / 1000);
+      const idleSinceLastMoveMs = now - lastTimeMs;
+      const releaseVelocity = idleSinceLastMoveMs > 80
+        ? 0
+        : Math.abs(velocityPxPerSec) < 1 && Math.abs(dx) > 0
+          ? dx / Math.max(0.008, (now - startTimeMs) / 1000)
+          : velocityPxPerSec;
       const widthPx = cardEl.getBoundingClientRect().width || cardEl.offsetWidth || 396;
       const ptrId = activePointerId;
       activePointerId = null;
       cardEl.removeAttribute("data-stack-dragging");
       try { cardEl.releasePointerCapture?.(ptrId); } catch {}
-      if (!cancelled && isHorizontalSwipe && isDismissible && StackedCardGeometry.shouldDismiss({ translationPx: dx, velocityPxPerSec, widthPx })) {
+      if (!cancelled && isHorizontalSwipe && isDismissible && StackedCardGeometry.shouldDismiss({ translationPx: dx, velocityPxPerSec: releaseVelocity, widthPx })) {
         dismissUpperStackCard(host, cardId);
         host.render();
         return;

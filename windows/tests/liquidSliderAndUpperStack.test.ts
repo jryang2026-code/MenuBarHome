@@ -22,12 +22,14 @@ beforeEach(() => { dom = mountTestWindow(); });
 afterEach(async () => { app?.dispose(); app = null; await closeTestWindow(dom); });
 
 describe("SliderStepSnap & LiquidGlassSlider 28px Pill Track", () => {
-  it("snaps non-divisible ranges (2000..6535K step 100) cleanly to max and computes decile buckets", () => {
+  it("snaps strict provider step grids by default and snaps non-divisible ranges (2000..6535K step 100) to max when allowOffGridMax is true", () => {
+    assert.equal(SliderStepSnap.snap(100, 1, 100, 10), 91);
+    assert.equal(SliderStepSnap.stepBy(91, 10, 1, 100, 10), 91);
     for (const [raw, expected] of [[2000, 2000], [4240, 4200], [6510, 6500], [6520, 6535], [6535, 6535]] as const) {
-      assert.equal(SliderStepSnap.snap(raw, 2000, 6535, 100), expected);
+      assert.equal(SliderStepSnap.snap(raw, 2000, 6535, 100, true), expected);
     }
-    assert.equal(SliderStepSnap.stepBy(6500, 100, 2000, 6535, 100), 6535);
-    assert.equal(SliderStepSnap.stepBy(6535, -100, 2000, 6535, 100), 6500);
+    assert.equal(SliderStepSnap.stepBy(6500, 100, 2000, 6535, 100, true), 6535);
+    assert.equal(SliderStepSnap.stepBy(6535, -100, 2000, 6535, 100, true), 6500);
     for (const [val, bucket] of [[0, 0], [29, 2], [30, 3], [100, 10]] as const) {
       assert.equal(SliderStepSnap.decileBucket(val, 0, 100), bucket);
     }
@@ -182,9 +184,38 @@ describe("Unified Collapsible Upper Stack with 3-Card Peek & Swipe-to-Dismiss", 
     assert.equal(haErrorCard.style.transform, "translate3d(0px, 0px, 0px)");
 
     const center = getHostActivityCenter(app);
+    center.isExpanded = false;
     center.pendingHighRiskUndoRunId = "run-heater-1";
     center.recentAutomationRuns = [{ id: "run-heater-1", ruleId: "rule-1", trigger: "away", triggerTitle: "离开", summary: "已关闭取暖器", scope: center.scopeKey, firedAtMs: nowMs, expiresAtMs: nowMs + 600_000, steps: [], kindSnapshots: new Map() }];
+    app.replyBanner = { source: "状态感知自动化", text: "撤销将重新开启高风险设备，请再次点击确认撤销", isError: false };
     app.render();
-    assert.equal(collectUpperStackCards(app, nowMs).find((c) => c.id === "auto:run-heater-1")?.isDismissible, false);
+    const collapsedCards = collectUpperStackCards(app, nowMs);
+    assert.equal(collapsedCards[0]?.id, "auto:run-heater-1");
+    assert.equal(collapsedCards[0]?.isDismissible, false);
+    assert.equal(collapsedCards.some((c) => c.id === "reply:banner"), false);
+    const armedTopEl = element<HTMLElement>('[data-upper-card-id="auto:run-heater-1"]');
+    assert.equal(armedTopEl.textContent?.includes("确认撤销"), true);
+    assert.equal(armedTopEl.textContent?.includes("撤销将重新开启高风险设备"), true);
+
+    center.pendingHighRiskUndoRunId = null;
+    center.recentAutomationRuns = [];
+    app.haConnectionError = null;
+    app.lastUndoAction = { summary: "已关闭书房台灯", expiresAtMs: nowMs + 600_000, steps: [{ deviceId: "light.study_desk", commands: [{ kind: "setSwitch", entityId: "light.study_desk", isOn: true }] }] };
+    app.undoBannerUntilMs = nowMs + 600_000;
+    app.replyBanner = { source: "控制失败", text: "网关响应超时", isError: true };
+    center.isExpanded = true;
+    app.render();
+    assert.equal(document.querySelectorAll("#btn-undo").length, 1);
+
+    const timedPtrEvent = (type: string, clientX: number, timeStamp: number): Event => {
+      const ev = new dom.PointerEvent(type, { clientX, clientY: 20, pointerId: 9, bubbles: true });
+      Object.defineProperty(ev, "timeStamp", { value: timeStamp });
+      return ev as unknown as Event;
+    };
+    const undoCardEl = element<HTMLElement>('[data-upper-card-id="undo:manual"]');
+    undoCardEl.dispatchEvent(timedPtrEvent("pointerdown", 200, 100));
+    undoCardEl.dispatchEvent(timedPtrEvent("pointermove", 225, 110));
+    undoCardEl.dispatchEvent(timedPtrEvent("pointerup", 225, 2110));
+    assert.ok(document.querySelector('[data-upper-card-id="undo:manual"]'));
   });
 });
