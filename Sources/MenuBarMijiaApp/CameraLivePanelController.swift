@@ -973,7 +973,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
             self.hasLiveVideoFrame = false
             self.streamSource = nil
             self.errorMessage = L10n.tr(
-                "实时画面中断：\(detail ?? "无数据")",
+                "实时画面中断：\(detail ?? L10n.tr("无数据", "no data"))",
                 "Live video stopped: \(detail ?? "no data")"
             )
             self.tearDownPictureInPicture()
@@ -2095,7 +2095,7 @@ struct CameraLivePanelView: View {
 
                     Text(
                         L10n.tr(
-                            "\(device?.name ?? "客厅摄像机") · 实时看护小窗预览",
+                            "\(device?.name ?? L10n.tr("客厅摄像机", "Living Room Camera")) · 实时看护小窗预览",
                             "\(device?.name ?? "Living Room Camera") · Live Floating Monitor"
                         )
                     )

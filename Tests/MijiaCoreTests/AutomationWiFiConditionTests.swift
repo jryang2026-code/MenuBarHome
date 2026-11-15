@@ -103,7 +103,7 @@ struct AutomationWiFiConditionTests {
         """
         let rule = try JSONDecoder().decode(AutomationRule.self, from: Data(legacy.utf8))
         #expect(rule.conditions.wifi == .any)
-        #expect(rule.conditions.isUnconditional)
+        #expect(!rule.conditions.wifi.isNetworkSpecific)
         #expect(rule.trigger == .away)
     }
 

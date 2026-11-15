@@ -157,7 +157,9 @@ extension HomeStore {
             let state = PromptText.cleanField(IntentCatalog.stateSummary(dev), limit: PromptText.activeStateLimit)
             return "\(name)(\(state))"
         }
-        let activeSummary = activeParts.isEmpty ? "全屋设备均关闭" : activeParts.joined(separator: "、")
+        let activeSummary = activeParts.isEmpty
+            ? L10n.tr("全屋设备均关闭", "All devices are off")
+            : activeParts.joined(separator: "、")
         let habitSummary = shareHabitSentence(
             sharing: habitSharing,
             memory: userHabitMemory,

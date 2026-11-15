@@ -631,7 +631,10 @@ public actor LocalMiIOClient {
         for item in items {
             let code = item["code"]?.intValue ?? 0
             if code < 0 {
-                throw MiCloudError.deviceError(code: code, message: "设备未响应或离线")
+                throw MiCloudError.deviceError(
+                    code: code,
+                    message: L10n.tr("设备未响应或离线", "Device did not respond or is offline")
+                )
             }
         }
     }

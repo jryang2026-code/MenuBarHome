@@ -57,15 +57,6 @@ struct RoomPrefsTests {
         #expect(RoomPrefs.alias(for: "ghost", in: aliases) == "旧房间")
     }
 
-    @Test("Reset clears aliases and order so the default room strip returns")
-    func resetClearsPreferences() {
-        let cleared = RoomPrefs.reset()
-        #expect(RoomPrefs.decodeAliases(cleared.aliases) == [:])
-        #expect(RoomPrefs.decodeOrder(cleared.order) == [])
-        #expect(RoomPrefs.apply(order: RoomPrefs.decodeOrder(cleared.order), to: rooms()) == rooms())
-        #expect(RoomPrefs.alias(for: "living", in: RoomPrefs.decodeAliases(cleared.aliases)) == nil)
-    }
-
     @Test("Shift moves one visible slot and skips rooms that are temporarily missing")
     func shiftSkipsMissingRooms() {
         let order = ["living", "ghost", "bedroom", "study"]

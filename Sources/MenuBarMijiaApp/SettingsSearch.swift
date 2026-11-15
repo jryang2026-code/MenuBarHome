@@ -163,19 +163,6 @@ struct SettingsSearchAvailability: Equatable, Sendable {
         PanelTheme.resolved(from: storedPanelTheme, liquidGlassAvailable: liquidGlassAvailable)
     }
 
-    /// Every row assumed to be on screen. Only for tests that pin matching and ranking; the window
-    /// always builds the live value from the store, which `conditionalRowsAreDeclared` scans for.
-    static var unrestricted: SettingsSearchAvailability {
-        SettingsSearchAvailability(
-            backend: .homeAssistant,
-            hiddenDeviceCount: 1,
-            storedPanelTheme: PanelTheme.classic.rawValue,
-            // Fixed rather than read from the host so the index tests assert on the index, not on
-            // which macOS the test runner happens to be.
-            liquidGlassAvailable: true
-        )
-    }
-
     func blockReason(for anchor: SettingsAnchor) -> SettingsSearchBlockReason? {
         switch anchor {
         // Rendered inside `if store.homeBackend != .demo` in `ConnectionSettingsTab`, including

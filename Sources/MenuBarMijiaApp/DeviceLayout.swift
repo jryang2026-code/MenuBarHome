@@ -116,16 +116,6 @@ public enum DeviceLayoutPrefs {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
-    /// Memoised decode: cards read their size on every render, the JSON only changes on edits.
-    @MainActor private static var cache: (raw: String, sizes: [String: TileSize]) = ("", [:])
-
-    /// Size for a device on one page (`scope` = room id or "all"); falls back to the all-pages default.
-    @MainActor
-    public static func cachedSize(raw: String, id: String, scope: String) -> TileSize {
-        if cache.raw != raw { cache = (raw, decode(raw)) }
-        return lookup(cache.sizes, id: id, scope: scope)
-    }
-
     public static func lookup(_ sizes: [String: TileSize], id: String, scope: String) -> TileSize {
         if let exact = sizes[scopedKey(id: id, scope: scope)] {
             return exact
@@ -625,11 +615,6 @@ public enum RoomPrefs {
         var result = order
         result.swapAt(from, to)
         return result
-    }
-
-    /// Raw defaults values for the "reset room names and order" action.
-    public static func reset() -> (aliases: String, order: String) {
-        (encodeAliases([:]), encodeOrder([]))
     }
 }
 

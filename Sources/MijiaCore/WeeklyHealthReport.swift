@@ -4,9 +4,22 @@ import Foundation
 /// (plug energy history, sensor history, live filter and battery levels, online state).
 public struct WeeklyHealthReport: Equatable, Sendable {
     public enum Language: Sendable {
-        case chinese, english
+        case chinese, traditionalChinese, english
 
-        public static var current: Language { L10n.isEnglish ? .english : .chinese }
+        public static var current: Language {
+            if L10n.isEnglish { return .english }
+            return L10n.currentLanguage == .zhHant ? .traditionalChinese : .chinese
+        }
+
+        fileprivate var isChinese: Bool { self != .english }
+
+        fileprivate func tr(_ zhHans: String, _ zhHant: String, _ en: String) -> String {
+            switch self {
+            case .chinese: return zhHans
+            case .traditionalChinese: return zhHant
+            case .english: return en
+            }
+        }
     }
 
     public struct Energy: Equatable, Sendable {
@@ -209,56 +222,64 @@ public struct WeeklyHealthReport: Equatable, Sendable {
 extension WeeklyHealthReport {
     /// One line for the weekly system notification.
     public func notificationSummary(language: Language = .current) -> String {
-        let zh = language == .chinese
         var parts: [String] = []
         if let energy {
             let kwh = Self.kwh(energy.thisWeekKwh)
-            let change = energy.changePercent.map { zh ? "（比上周 \(Self.signed($0))）" : " (\(Self.signed($0)) vs last week)" } ?? ""
-            parts.append(zh ? "本周用电 \(kwh)\(change)" : "Energy \(kwh)\(change)")
+            let change = energy.changePercent.map {
+                language.tr("（比上周 \(Self.signed($0))）", "（比上週 \(Self.signed($0))）", " (\(Self.signed($0)) vs last week)")
+            } ?? ""
+            parts.append(language.tr("本周用电 \(kwh)\(change)", "本週用電 \(kwh)\(change)", "Energy \(kwh)\(change)"))
         }
         let warnings = climate.filter { !$0.warnings.isEmpty }.count
-        if warnings > 0 { parts.append(zh ? "\(warnings) 处温湿度异常" : "\(warnings) climate alerts") }
-        if !maintenance.isEmpty { parts.append(zh ? "\(maintenance.count) 台待更换" : "\(maintenance.count) need replacing") }
-        if !offlineDevices.isEmpty { parts.append(zh ? "\(offlineDevices.count) 台离线" : "\(offlineDevices.count) offline") }
-        if !standbyConsumers.isEmpty { parts.append(zh ? "待机耗电 \(standbyConsumers.count) 台" : "\(standbyConsumers.count) on standby") }
+        if warnings > 0 {
+            parts.append(language.tr("\(warnings) 处温湿度异常", "\(warnings) 處溫濕度異常", "\(warnings) climate alerts"))
+        }
+        if !maintenance.isEmpty {
+            parts.append(language.tr("\(maintenance.count) 台待更换", "\(maintenance.count) 台待更換", "\(maintenance.count) need replacing"))
+        }
+        if !offlineDevices.isEmpty {
+            parts.append(language.tr("\(offlineDevices.count) 台离线", "\(offlineDevices.count) 台離線", "\(offlineDevices.count) offline"))
+        }
+        if !standbyConsumers.isEmpty {
+            parts.append(language.tr("待机耗电 \(standbyConsumers.count) 台", "待機耗電 \(standbyConsumers.count) 台", "\(standbyConsumers.count) on standby"))
+        }
         if parts.isEmpty {
-            return zh ? "本周一切正常" : "All clear this week"
+            return language.tr("本周一切正常", "本週一切正常", "All clear this week")
         }
         return parts.joined(separator: " · ")
     }
 
     /// The exportable report.
     public func markdown(language: Language = .current) -> String {
-        let zh = language == .chinese
+        let zh = language.isChinese
         let colon = zh ? "：" : ": "
-        var lines: [String] = [zh ? "# 家庭健康周报" : "# Weekly Home Health Report", ""]
+        var lines: [String] = [language.tr("# 家庭健康周报", "# 家庭健康週報", "# Weekly Home Health Report"), ""]
 
         if let energy {
-            lines.append(zh ? "## 用电" : "## Energy")
-            var total = (zh ? "本周 " : "This week ") + Self.kwh(energy.thisWeekKwh)
+            lines.append(language.tr("## 用电", "## 用電", "## Energy"))
+            var total = language.tr("本周 ", "本週 ", "This week ") + Self.kwh(energy.thisWeekKwh)
             if let change = energy.changePercent {
-                total += zh ? "，比上周 \(Self.signed(change))" : ", \(Self.signed(change)) vs last week"
+                total += language.tr("，比上周 \(Self.signed(change))", "，比上週 \(Self.signed(change))", ", \(Self.signed(change)) vs last week")
             }
             lines.append(total)
             if !energy.topConsumers.isEmpty {
                 lines.append("")
-                lines.append(zh ? "耗电最多：" : "Top consumers:")
+                lines.append(language.tr("耗电最多：", "耗電最多：", "Top consumers:"))
                 lines += energy.topConsumers.map { "- \($0.name)\(colon)\(Self.kwh($0.kwh))" }
             }
             if !standbyConsumers.isEmpty {
                 lines.append("")
-                lines += standbyLines(zh: zh)
+                lines += standbyLines(language: language)
             }
             lines.append("")
         } else if !standbyConsumers.isEmpty {
-            // No metered week to total, but a plug drawing power while off still needs saying.
-            lines.append(zh ? "## 用电" : "## Energy")
-            lines += standbyLines(zh: zh)
+            lines.append(language.tr("## 用电", "## 用電", "## Energy"))
+            lines += standbyLines(language: language)
             lines.append("")
         }
 
         if !climate.isEmpty {
-            lines.append(zh ? "## 温湿度" : "## Temperature & Humidity")
+            lines.append(language.tr("## 温湿度", "## 溫濕度", "## Temperature & Humidity"))
             for room in climate {
                 var parts: [String] = []
                 if let t = room.range.temperature { parts.append("\(Self.number(t.min))–\(Self.number(t.max))°C") }
@@ -266,7 +287,7 @@ extension WeeklyHealthReport {
                 var line = "- \(room.roomName) · \(room.deviceName)\(colon)\(parts.joined(separator: zh ? "，" : ", "))"
                 if !room.warnings.isEmpty {
                     line += zh ? "（" : " ("
-                    line += room.warnings.map { Self.describe($0, zh: zh) }.joined(separator: zh ? "、" : ", ")
+                    line += room.warnings.map { Self.describe($0, language: language) }.joined(separator: zh ? "、" : ", ")
                     line += zh ? "）" : ")"
                 }
                 lines.append(line)
@@ -275,11 +296,11 @@ extension WeeklyHealthReport {
         }
 
         if !maintenance.isEmpty {
-            lines.append(zh ? "## 需要更换" : "## Needs Replacing")
+            lines.append(language.tr("## 需要更换", "## 需要更換", "## Needs Replacing"))
             lines += maintenance.map { m in
                 let what = switch m.item {
-                case .battery(let p): zh ? "电池 \(p)%" : "battery \(p)%"
-                case .filter(let p): zh ? "滤芯 \(p)%" : "filter \(p)%"
+                case .battery(let p): language.tr("电池 \(p)%", "電池 \(p)%", "battery \(p)%")
+                case .filter(let p): language.tr("滤芯 \(p)%", "濾芯 \(p)%", "filter \(p)%")
                 }
                 return "- \(m.roomName) · \(m.deviceName)\(colon)\(what)"
             }
@@ -287,51 +308,53 @@ extension WeeklyHealthReport {
         }
 
         if !offlineDevices.isEmpty {
-            lines.append(zh ? "## 离线设备" : "## Offline Devices")
+            lines.append(language.tr("## 离线设备", "## 離線設備", "## Offline Devices"))
             lines += offlineDevices.map { device in
                 let note: String
                 if device.isOfflineNow {
-                    note = zh ? "（现在离线）" : " (offline now)"
+                    note = language.tr("（现在离线）", "（現在離線）", " (offline now)")
                 } else {
                     let days = device.daysOffline ?? 0
-                    note = zh ? "（本周 \(days) 天出现离线）" : " (dropped offline on \(days) days)"
+                    note = language.tr("（本周 \(days) 天出现离线）", "（本週 \(days) 天出現離線）", " (dropped offline on \(days) days)")
                 }
                 return "- \(device.roomName) · \(device.deviceName)\(note)"
             }
             if !unreliableRooms.isEmpty {
                 let rooms = unreliableRooms.joined(separator: zh ? "、" : ", ")
-                lines.append(zh ? "- 建议排查网络/网关信号的房间：\(rooms)" : "- Rooms recommended for Wi-Fi/gateway check: \(rooms)")
+                lines.append(language.tr("- 建议排查网络/网关信号的房间：\(rooms)", "- 建議排查網路/網關訊號的房間：\(rooms)", "- Rooms recommended for Wi-Fi/gateway check: \(rooms)"))
             }
             lines.append("")
         }
 
         if energy == nil && climate.isEmpty && maintenance.isEmpty && offlineDevices.isEmpty
             && standbyConsumers.isEmpty && unreliableRooms.isEmpty {
-            lines.append(zh ? "本周一切正常" : "All clear this week")
+            lines.append(language.tr("本周一切正常", "本週一切正常", "All clear this week"))
             lines.append("")
         }
         return lines.joined(separator: "\n")
     }
 
     /// One line per plug that keeps drawing power while off.
-    private func standbyLines(zh: Bool) -> [String] {
+    private func standbyLines(language: Language) -> [String] {
         standbyConsumers.map { consumer in
             let location = consumer.roomName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? consumer.deviceName
                 : "\(consumer.roomName) · \(consumer.deviceName)"
             let watts = String(format: "%.1f", consumer.powerWatts)
-            return zh
-                ? "- 待机耗电提醒：\(location) (关闭状态仍消耗 \(watts) W)"
-                : "- Standby power alert: \(location) (drawing \(watts) W while off)"
+            return language.tr(
+                "- 待机耗电提醒：\(location) (关闭状态仍消耗 \(watts) W)",
+                "- 待機耗電提醒：\(location) (關閉狀態仍消耗 \(watts) W)",
+                "- Standby power alert: \(location) (drawing \(watts) W while off)"
+            )
         }
     }
 
-    private static func describe(_ warning: ClimateWarning, zh: Bool) -> String {
+    private static func describe(_ warning: ClimateWarning, language: Language) -> String {
         switch warning {
-        case .tooHumid(let v): zh ? "最高湿度 \(number(v))%，偏潮" : "humidity peaked at \(number(v))%"
-        case .tooDry(let v): zh ? "最低湿度 \(number(v))%，偏干" : "humidity fell to \(number(v))%"
-        case .tooHot(let v): zh ? "最高 \(number(v))°C，偏热" : "peaked at \(number(v))°C"
-        case .tooCold(let v): zh ? "最低 \(number(v))°C，偏冷" : "fell to \(number(v))°C"
+        case .tooHumid(let v): language.tr("最高湿度 \(number(v))%，偏潮", "最高濕度 \(number(v))%，偏潮", "humidity peaked at \(number(v))%")
+        case .tooDry(let v): language.tr("最低湿度 \(number(v))%，偏干", "最低濕度 \(number(v))%，偏乾", "humidity fell to \(number(v))%")
+        case .tooHot(let v): language.tr("最高 \(number(v))°C，偏热", "最高 \(number(v))°C，偏熱", "peaked at \(number(v))°C")
+        case .tooCold(let v): language.tr("最低 \(number(v))°C，偏冷", "最低 \(number(v))°C，偏冷", "fell to \(number(v))°C")
         }
     }
 
