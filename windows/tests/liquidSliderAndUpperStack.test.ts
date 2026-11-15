@@ -5,7 +5,7 @@ import type { Window } from "happy-dom";
 import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { SliderStepSnap } from "../src/ui/liquidGlassSlider.js";
-import { StackedCardGeometry, collectUpperStackCards, dismissUpperStackCard, getHostActivityCenter, recordSafetyAlerts } from "../src/ui/activityStackView.js";
+import { StackedCardGeometry, collectUpperStackCards, dismissAllActivities, dismissUpperStackCard, getHostActivityCenter, recordSafetyAlerts } from "../src/ui/activityStackView.js";
 import { scopedKey } from "../src/ui/panelPrefs.js";
 import type { DeviceCommand } from "../src/core/models.js";
 
@@ -217,5 +217,13 @@ describe("Unified Collapsible Upper Stack with 3-Card Peek & Swipe-to-Dismiss", 
     undoCardEl.dispatchEvent(timedPtrEvent("pointermove", 225, 110));
     undoCardEl.dispatchEvent(timedPtrEvent("pointerup", 225, 2110));
     assert.ok(document.querySelector('[data-upper-card-id="undo:manual"]'));
+
+    app.pendingCloudConsent = { utterance: "把客厅空调调到24度", endpoint: "https://api.openai.com" };
+    app.replyBanner = { source: "云端隐私确认", text: "将向 api.openai.com 发送设备摘要与指令文本", isError: false };
+    recordSafetyAlerts(app, [{ id: "longrun:climate.living_ac", deviceId: "climate.living_ac", category: "longRun", priority: "normal", title: "空调连续运行", body: "已运行 5 小时" }], nowMs);
+    dismissAllActivities(app);
+    app.render();
+    const consentCardEl = element<HTMLElement>('[data-upper-card-id="consent:cloud"]');
+    assert.equal(consentCardEl.textContent?.includes("api.openai.com"), true);
   });
 });

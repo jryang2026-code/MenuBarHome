@@ -1532,18 +1532,22 @@ export const renderUnifiedUpperStack = renderClassicUnifiedUpperStack;
 
 export function dismissActivityById(host: MenuMijiaWindowsApp, activityId: string): void {
   const center = getHostActivityCenter(host);
+  const bannerOwnedByPinnedCard =
+    Boolean(host.pendingCloudConsent) ||
+    host.pendingHighRisk !== null ||
+    (Boolean(center.pendingHighRiskUndoRunId) && Boolean(host.replyBanner && !host.replyBanner.isError));
   if (activityId === "undo:manual") {
     if (host.lastUndoAction) center.dismissedActivityIds.add(`undo:${host.lastUndoAction.expiresAtMs}:${host.lastUndoAction.summary}`);
     host.lastUndoAction = null;
     host.undoBannerUntilMs = 0;
     undoTrackerFor(host).syncAction(null);
-    if (host.replyBanner && !host.replyBanner.isError && host.pendingHighRisk === null) host.replyBanner = null;
+    if (host.replyBanner && !host.replyBanner.isError && !bannerOwnedByPinnedCard) host.replyBanner = null;
   } else if (activityId === "proactive:suggestions") {
     const items = host.currentProactiveSuggestions();
     center.dismissedProactiveSignature = items.length > 0 ? `${proactiveSignature(host)}:${items.map((i) => i.id).join(",")}` : proactiveSignature(host);
     center.dismissedActivityIds.add("proactive:suggestions");
   } else if (activityId === "reply:banner") {
-    if (host.pendingHighRisk === null) host.replyBanner = null;
+    if (!bannerOwnedByPinnedCard) host.replyBanner = null;
   } else if (activityId === "suggestions:pending") {
     host.pendingSuggestions = [];
   } else if (activityId === "missed:timers") {
