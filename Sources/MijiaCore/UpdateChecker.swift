@@ -397,9 +397,16 @@ public enum AppUpdateState: Equatable, Sendable {
 public struct UpdateChecker: Sendable {
     public typealias Transport = @Sendable (URLRequest) async throws -> (Data, URLResponse)
 
-    public enum CheckError: LocalizedError, Equatable {
+    public static let maxPackageDownloadBytes: Int64 = 256 * 1024 * 1024
+    public static let maxReleaseMetadataBytes: Int64 = 1 * 1024 * 1024
+    public static let maxReleaseFileBytes: Int64 = 64 * 1024
+
+    @TaskLocal fileprivate static var activeFetchMaxBytes: Int64?
+
+    public enum CheckError: LocalizedError, Equatable, Sendable {
         case httpStatus(Int)
         case malformed
+        case responseTooLarge(maxBytes: Int64)
 
         public var errorDescription: String? {
             switch self {
@@ -407,6 +414,8 @@ public struct UpdateChecker: Sendable {
                 return L10n.tr("检查更新失败（\(code)），稍后再试", "Update check failed (\(code)); try again later")
             case .malformed:
                 return L10n.tr("检查更新失败：返回内容看不懂", "Update check failed: unexpected response")
+            case .responseTooLarge:
+                return L10n.tr("更新数据体积超出安全上限，已中止下载", "Update response exceeded the safety size limit; download aborted")
             }
         }
     }
@@ -428,10 +437,40 @@ public struct UpdateChecker: Sendable {
 
     public let currentVersion: String
     private let transport: Transport
+    private let maxMetadataBytes: Int64
 
-    public init(currentVersion: String, transport: Transport? = nil) {
+    public init(
+        currentVersion: String,
+        transport: Transport? = nil,
+        maxMetadataBytes: Int64 = Self.maxReleaseMetadataBytes
+    ) {
         self.currentVersion = currentVersion
-        self.transport = transport ?? { try await URLSession.shared.data(for: $0) }
+        self.maxMetadataBytes = maxMetadataBytes
+        self.transport = transport ?? { request in
+            try await UpdateHTTPStream.fetchData(
+                for: request,
+                session: .shared,
+                maxBytes: Self.activeFetchMaxBytes ?? maxMetadataBytes
+            )
+        }
+    }
+
+    public init(
+        currentVersion: String,
+        session: URLSession,
+        maxMetadataBytes: Int64 = Self.maxReleaseMetadataBytes
+    ) {
+        self.init(
+            currentVersion: currentVersion,
+            transport: { request in
+                try await UpdateHTTPStream.fetchData(
+                    for: request,
+                    session: session,
+                    maxBytes: Self.activeFetchMaxBytes ?? maxMetadataBytes
+                )
+            },
+            maxMetadataBytes: maxMetadataBytes
+        )
     }
 
     /// The running app's CFBundleShortVersionString ("0" when run from `swift run`).
@@ -442,7 +481,11 @@ public struct UpdateChecker: Sendable {
     public func checkRelease() async throws -> AppRelease? {
         var request = URLRequest(url: Self.latestReleaseURL, timeoutInterval: 10)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await transport(request)
+        let (data, response) = try await Self.fetchBoundedData(
+            for: request,
+            maxBytes: maxMetadataBytes,
+            using: transport
+        )
         let status = (response as? HTTPURLResponse)?.statusCode ?? 200
         if status == 404 { return nil }
         guard (200..<300).contains(status) else { throw CheckError.httpStatus(status) }
@@ -463,6 +506,24 @@ public struct UpdateChecker: Sendable {
         let rawAssets = object["assets"] as? [[String: Any]] ?? []
         let packageAsset = Self.selectPackageAsset(version: shown, from: rawAssets)
         return AppRelease(version: shown, pageURL: url, notes: notes, packageAsset: packageAsset)
+    }
+
+    fileprivate static func fetchBoundedData(
+        for request: URLRequest,
+        maxBytes: Int64,
+        using transport: Transport
+    ) async throws -> (Data, URLResponse) {
+        let (data, response) = try await $activeFetchMaxBytes.withValue(maxBytes) {
+            try await transport(request)
+        }
+        if let declaredLength = UpdateHTTPStream.declaredContentLength(of: response),
+           declaredLength > maxBytes {
+            throw CheckError.responseTooLarge(maxBytes: maxBytes)
+        }
+        if Int64(data.count) > maxBytes {
+            throw CheckError.responseTooLarge(maxBytes: maxBytes)
+        }
+        return (data, response)
     }
 
     /// GitHub release URL for one of the eight publish names. `browser_download_url` is not used.
@@ -599,6 +660,9 @@ public enum UpdateInstallError: LocalizedError, Equatable, Sendable {
 }
 
 public struct UpdateSystemDriver: Sendable {
+    public static let maxPackageDownloadBytes: Int64 = UpdateChecker.maxPackageDownloadBytes
+    public static let maxReleaseFileBytes: Int64 = UpdateChecker.maxReleaseFileBytes
+
     public var downloadFile: @Sendable (
         _ url: URL,
         _ destination: URL,
@@ -624,7 +688,7 @@ public struct UpdateSystemDriver: Sendable {
             _ destination: URL,
             _ onProgress: @escaping @Sendable (DownloadProgress) -> Void
         ) async throws -> Void,
-        fetchData: @escaping UpdateChecker.Transport = { try await URLSession.shared.data(for: $0) },
+        fetchData: UpdateChecker.Transport? = nil,
         unpackArchive: @escaping @Sendable (
             _ archiveURL: URL,
             _ kind: AppRelease.AssetKind,
@@ -639,7 +703,13 @@ public struct UpdateSystemDriver: Sendable {
         ) throws -> Void
     ) {
         self.downloadFile = downloadFile
-        self.fetchData = fetchData
+        self.fetchData = fetchData ?? { request in
+            try await UpdateHTTPStream.fetchData(
+                for: request,
+                session: .shared,
+                maxBytes: UpdateChecker.activeFetchMaxBytes ?? UpdateChecker.maxReleaseFileBytes
+            )
+        }
         self.unpackArchive = unpackArchive
         self.stripQuarantine = stripQuarantine
         self.verifyCodeSignature = verifyCodeSignature
@@ -648,61 +718,21 @@ public struct UpdateSystemDriver: Sendable {
 
     public static let live = UpdateSystemDriver(
         downloadFile: { url, destination, onProgress in
-            var request = URLRequest(url: url, timeoutInterval: 60)
-            request.setValue("MenuBarHome", forHTTPHeaderField: "User-Agent")
-            #if os(macOS)
-            let (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 200
-            guard (200..<300).contains(status) else {
-                throw UpdateChecker.CheckError.httpStatus(status)
-            }
-            let expectedLength = response.expectedContentLength
-            let totalBytes: Int64? = expectedLength > 0 ? expectedLength : nil
-
-            FileManager.default.createFile(atPath: destination.path, contents: nil)
-            let handle = try FileHandle(forWritingTo: destination)
-            defer { try? handle.close() }
-
-            var receivedBytes: Int64 = 0
-            var lastReportedAt = ContinuousClock.now
-            // Batch disk writes and progress callbacks in 256 KB chunks; `URLSession.AsyncBytes`
-            // buffers network reads internally and only suspends when refilling its buffer.
-            var chunk = Data()
-            chunk.reserveCapacity(256 * 1024)
-            for try await byte in asyncBytes {
-                chunk.append(byte)
-                if chunk.count >= 256 * 1024 {
-                    try Task.checkCancellation()
-                    try handle.write(contentsOf: chunk)
-                    receivedBytes += Int64(chunk.count)
-                    chunk.removeAll(keepingCapacity: true)
-                    let now = ContinuousClock.now
-                    if now - lastReportedAt >= .milliseconds(120) {
-                        lastReportedAt = now
-                        onProgress(DownloadProgress(receivedBytes: receivedBytes, totalBytes: totalBytes))
-                    }
-                }
-            }
-
-            if !chunk.isEmpty {
-                try Task.checkCancellation()
-                try handle.write(contentsOf: chunk)
-                receivedBytes += Int64(chunk.count)
-                chunk.removeAll(keepingCapacity: false)
-            }
-            onProgress(DownloadProgress(receivedBytes: receivedBytes, totalBytes: totalBytes))
-            #else
-            let (data, response) = try await URLSession.shared.data(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 200
-            guard (200..<300).contains(status) else {
-                throw UpdateChecker.CheckError.httpStatus(status)
-            }
-            try data.write(to: destination, options: .atomic)
-            let count = Int64(data.count)
-            onProgress(DownloadProgress(receivedBytes: count, totalBytes: count))
-            #endif
+            try await UpdateHTTPStream.downloadFile(
+                from: url,
+                to: destination,
+                session: .shared,
+                maxBytes: UpdateChecker.maxPackageDownloadBytes,
+                onProgress: onProgress
+            )
         },
-        fetchData: { try await URLSession.shared.data(for: $0) },
+        fetchData: { request in
+            try await UpdateHTTPStream.fetchData(
+                for: request,
+                session: .shared,
+                maxBytes: UpdateChecker.activeFetchMaxBytes ?? UpdateChecker.maxReleaseFileBytes
+            )
+        },
         unpackArchive: { archiveURL, kind, destinationDir in
             switch kind {
             case .dmg:
@@ -750,6 +780,31 @@ public struct UpdateSystemDriver: Sendable {
             }
         }
     )
+
+    public static func live(
+        session: URLSession,
+        maxPackageDownloadBytes: Int64 = UpdateChecker.maxPackageDownloadBytes,
+        maxReleaseFileBytes: Int64 = UpdateChecker.maxReleaseFileBytes
+    ) -> UpdateSystemDriver {
+        var driver = Self.live
+        driver.downloadFile = { url, destination, onProgress in
+            try await UpdateHTTPStream.downloadFile(
+                from: url,
+                to: destination,
+                session: session,
+                maxBytes: maxPackageDownloadBytes,
+                onProgress: onProgress
+            )
+        }
+        driver.fetchData = { request in
+            try await UpdateHTTPStream.fetchData(
+                for: request,
+                session: session,
+                maxBytes: UpdateChecker.activeFetchMaxBytes ?? maxReleaseFileBytes
+            )
+        }
+        return driver
+    }
 
     /// Waits for the running app to exit, swaps the staged bundle in, and reopens it.
     ///
@@ -971,6 +1026,8 @@ public struct UpdateSystemDriver: Sendable {
 
 public struct AppUpdater: Sendable {
     public static let expectedBundleIdentifier = KeychainHelper.service
+    public static let maxPackageDownloadBytes: Int64 = UpdateChecker.maxPackageDownloadBytes
+    public static let maxReleaseFileBytes: Int64 = UpdateChecker.maxReleaseFileBytes
     private static let stagingDirectoryPrefix = "\(expectedBundleIdentifier).update-"
 
     private let checker: UpdateChecker
@@ -978,19 +1035,22 @@ public struct AppUpdater: Sendable {
     private let targetBundleURL: URL
     private let stagingBaseDirectory: URL
     private let updateSigningPublicKeysBase64: [String]
+    private let maxReleaseFileBytes: Int64
 
     public init(
         currentVersion: String = UpdateChecker.bundleVersion,
         targetBundleURL: URL = Bundle.main.bundleURL,
         stagingBaseDirectory: URL = FileManager.default.temporaryDirectory,
         updateSigningPublicKeysBase64: [String] = UpdateChecker.updateSigningPublicKeysBase64,
-        driver: UpdateSystemDriver = .live
+        driver: UpdateSystemDriver = .live,
+        maxReleaseFileBytes: Int64 = UpdateChecker.maxReleaseFileBytes
     ) {
         self.checker = UpdateChecker(currentVersion: currentVersion, transport: driver.fetchData)
         self.driver = driver
         self.targetBundleURL = targetBundleURL
         self.stagingBaseDirectory = stagingBaseDirectory
         self.updateSigningPublicKeysBase64 = updateSigningPublicKeysBase64
+        self.maxReleaseFileBytes = maxReleaseFileBytes
     }
 
     public func checkLatestRelease() async throws -> AppRelease? {
@@ -1016,6 +1076,9 @@ public struct AppUpdater: Sendable {
               ) else {
             throw UpdateInstallError.updateSignatureInvalid("release asset name is not publishable")
         }
+        if asset.sizeBytes > Self.maxPackageDownloadBytes {
+            throw UpdateChecker.CheckError.responseTooLarge(maxBytes: Self.maxPackageDownloadBytes)
+        }
 
         sweepStaleStagingDirectories()
         let stagingRootURL = stagingBaseDirectory.appendingPathComponent(
@@ -1035,8 +1098,19 @@ public struct AppUpdater: Sendable {
         onPhaseChange(.downloading(release, progress: DownloadProgress(receivedBytes: 0, totalBytes: initialTotal)))
 
         let sampler = DownloadProgressSampler()
-        try await driver.downloadFile(packageURL, archiveURL) { progress in
-            onPhaseChange(.downloading(release, progress: sampler.decorate(progress)))
+        do {
+            try await driver.downloadFile(packageURL, archiveURL) { progress in
+                onPhaseChange(.downloading(release, progress: sampler.decorate(progress)))
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: archiveURL)
+            throw error
+        }
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: archiveURL.path),
+           let fileSize = (attrs[.size] as? NSNumber)?.int64Value,
+           fileSize > Self.maxPackageDownloadBytes {
+            try? FileManager.default.removeItem(at: archiveURL)
+            throw UpdateChecker.CheckError.responseTooLarge(maxBytes: Self.maxPackageDownloadBytes)
         }
         try Task.checkCancellation()
 
@@ -1203,7 +1277,11 @@ public struct AppUpdater: Sendable {
 
     private func fetchReleaseFile(from url: URL, missing: UpdateInstallError) async throws -> Data {
         let request = URLRequest(url: url, timeoutInterval: 15)
-        let (data, response) = try await driver.fetchData(request)
+        let (data, response) = try await UpdateChecker.fetchBoundedData(
+            for: request,
+            maxBytes: maxReleaseFileBytes,
+            using: driver.fetchData
+        )
         let status = (response as? HTTPURLResponse)?.statusCode ?? 200
         if status == 404 {
             throw missing
@@ -1260,5 +1338,293 @@ public struct AppUpdater: Sendable {
                 throw UpdateInstallError.bundleVersionMismatch(found: rawFound, expected: expectedVersion)
             }
         }
+    }
+}
+
+private enum UpdateHTTPStream {
+    static let writeChunkBytes = 64 * 1024
+
+    static func declaredContentLength(of response: URLResponse) -> Int64? {
+        if let http = response as? HTTPURLResponse,
+           let raw = http.value(forHTTPHeaderField: "Content-Length")?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty {
+            if let parsed = Int64(raw), parsed >= 0 { return parsed }
+            if raw.allSatisfy(\.isNumber) { return Int64.max }
+        }
+        let expected = response.expectedContentLength
+        return expected >= 0 ? expected : nil
+    }
+
+    static func downloadFile(
+        from url: URL,
+        to destination: URL,
+        session: URLSession = .shared,
+        maxBytes: Int64 = UpdateChecker.maxPackageDownloadBytes,
+        onProgress: @escaping @Sendable (DownloadProgress) -> Void
+    ) async throws {
+        var request = URLRequest(url: url, timeoutInterval: 60)
+        request.setValue("MenuBarHome", forHTTPHeaderField: "User-Agent")
+        let delegate = BoundedHTTPStreamDelegate(
+            mode: .file(destination: destination, onProgress: onProgress),
+            maxBytes: maxBytes
+        )
+        _ = try await delegate.run(request: request, configuration: session.configuration)
+    }
+
+    static func fetchData(
+        for request: URLRequest,
+        session: URLSession = .shared,
+        maxBytes: Int64
+    ) async throws -> (Data, URLResponse) {
+        let delegate = BoundedHTTPStreamDelegate(mode: .data, maxBytes: maxBytes)
+        return try await delegate.run(request: request, configuration: session.configuration)
+    }
+}
+
+private final class BoundedHTTPStreamDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    enum Mode {
+        case data
+        case file(destination: URL, onProgress: @Sendable (DownloadProgress) -> Void)
+    }
+
+    private let mode: Mode
+    private let maxBytes: Int64
+    private let lock = NSLock()
+    private var session: URLSession?
+    private var task: URLSessionDataTask?
+    private var continuation: CheckedContinuation<(Data, URLResponse), any Error>?
+    private var response: URLResponse?
+    private var buffer = Data()
+    private var handle: FileHandle?
+    private var receivedBytes: Int64 = 0
+    private var totalBytes: Int64?
+    private var reportedProgress = false
+    private var completed = false
+
+    init(mode: Mode, maxBytes: Int64) {
+        self.mode = mode
+        self.maxBytes = maxBytes
+    }
+
+    func run(request: URLRequest, configuration: URLSessionConfiguration) async throws -> (Data, URLResponse) {
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                start(request: request, configuration: configuration, continuation: continuation)
+            }
+        } onCancel: {
+            fail(CancellationError())
+        }
+    }
+
+    private func start(
+        request: URLRequest,
+        configuration: URLSessionConfiguration,
+        continuation: CheckedContinuation<(Data, URLResponse), any Error>
+    ) {
+        lock.lock()
+        if completed {
+            if case .file(let destination, _) = mode {
+                try? FileManager.default.removeItem(at: destination)
+            }
+            lock.unlock()
+            continuation.resume(throwing: CancellationError())
+            return
+        }
+        self.continuation = continuation
+        let createdSession = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+        let createdTask = createdSession.dataTask(with: request)
+        self.session = createdSession
+        self.task = createdTask
+        lock.unlock()
+        createdTask.resume()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        let declaredLength = UpdateHTTPStream.declaredContentLength(of: response)
+        if case .file = mode {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 200
+            guard (200..<300).contains(status) else {
+                completionHandler(.cancel)
+                fail(UpdateChecker.CheckError.httpStatus(status))
+                return
+            }
+        }
+        if let declaredLength, declaredLength > maxBytes {
+            completionHandler(.cancel)
+            fail(UpdateChecker.CheckError.responseTooLarge(maxBytes: maxBytes))
+            return
+        }
+
+        lock.lock()
+        if completed {
+            lock.unlock()
+            completionHandler(.cancel)
+            return
+        }
+        self.response = response
+        self.receivedBytes = 0
+        self.reportedProgress = false
+        self.totalBytes = if let declaredLength, declaredLength > 0 { declaredLength } else { nil }
+        switch mode {
+        case .data:
+            buffer.removeAll(keepingCapacity: false)
+            if let declaredLength, declaredLength > 0 {
+                buffer.reserveCapacity(Int(min(declaredLength, maxBytes)))
+            }
+        case .file(let destination, _):
+            try? handle?.close()
+            handle = nil
+            do {
+                try FileManager.default.createDirectory(
+                    at: destination.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                _ = FileManager.default.createFile(atPath: destination.path, contents: nil)
+                handle = try FileHandle(forWritingTo: destination)
+            } catch {
+                lock.unlock()
+                completionHandler(.cancel)
+                fail(error)
+                return
+            }
+        }
+        lock.unlock()
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard !data.isEmpty else { return }
+        switch mode {
+        case .data:
+            lock.lock()
+            if completed { lock.unlock(); return }
+            let nextCount = Int64(buffer.count) + Int64(data.count)
+            if nextCount > maxBytes {
+                buffer.removeAll(keepingCapacity: false)
+                lock.unlock()
+                fail(UpdateChecker.CheckError.responseTooLarge(maxBytes: maxBytes))
+                return
+            }
+            buffer.append(data)
+            lock.unlock()
+        case .file(_, let onProgress):
+            var offset = data.startIndex
+            while offset < data.endIndex {
+                let end = data.index(
+                    offset,
+                    offsetBy: UpdateHTTPStream.writeChunkBytes,
+                    limitedBy: data.endIndex
+                ) ?? data.endIndex
+                let slice = data[offset..<end]
+                offset = end
+
+                lock.lock()
+                if completed { lock.unlock(); return }
+                let nextReceived = receivedBytes + Int64(slice.count)
+                if nextReceived > maxBytes {
+                    lock.unlock()
+                    fail(UpdateChecker.CheckError.responseTooLarge(maxBytes: maxBytes))
+                    return
+                }
+                guard let currentHandle = handle else {
+                    lock.unlock()
+                    fail(URLError(.cannotWriteToFile))
+                    return
+                }
+                do {
+                    try currentHandle.write(contentsOf: slice)
+                } catch {
+                    lock.unlock()
+                    fail(error)
+                    return
+                }
+                receivedBytes = nextReceived
+                reportedProgress = true
+                let progress = DownloadProgress(receivedBytes: nextReceived, totalBytes: totalBytes)
+                lock.unlock()
+                onProgress(progress)
+            }
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+        if let error {
+            fail((error as? URLError)?.code == .cancelled ? CancellationError() : error)
+            return
+        }
+        succeed()
+    }
+
+    private func succeed() {
+        lock.lock()
+        guard !completed else { lock.unlock(); return }
+        guard let finalResponse = response else {
+            lock.unlock()
+            fail(URLError(.badServerResponse))
+            return
+        }
+        var postUnlockProgress: (() -> Void)?
+        if case .file(_, let onProgress) = mode {
+            guard let currentHandle = handle else {
+                lock.unlock()
+                fail(URLError(.badServerResponse))
+                return
+            }
+            handle = nil
+            do {
+                try currentHandle.close()
+            } catch {
+                lock.unlock()
+                fail(error)
+                return
+            }
+            if !reportedProgress {
+                let progress = DownloadProgress(receivedBytes: receivedBytes, totalBytes: totalBytes)
+                postUnlockProgress = { onProgress(progress) }
+            }
+        }
+        completed = true
+        let finalData = buffer
+        buffer.removeAll(keepingCapacity: false)
+        let currentSession = session
+        session = nil
+        task = nil
+        let cont = continuation
+        continuation = nil
+        lock.unlock()
+
+        postUnlockProgress?()
+        currentSession?.finishTasksAndInvalidate()
+        cont?.resume(returning: (finalData, finalResponse))
+    }
+
+    private func fail(_ error: any Error) {
+        lock.lock()
+        guard !completed else { lock.unlock(); return }
+        completed = true
+        buffer.removeAll(keepingCapacity: false)
+        let currentHandle = handle
+        handle = nil
+        let currentTask = task
+        task = nil
+        let currentSession = session
+        session = nil
+        let cont = continuation
+        continuation = nil
+        try? currentHandle?.close()
+        if case .file(let destination, _) = mode {
+            try? FileManager.default.removeItem(at: destination)
+        }
+        lock.unlock()
+
+        currentTask?.cancel()
+        currentSession?.invalidateAndCancel()
+        cont?.resume(throwing: error)
     }
 }
