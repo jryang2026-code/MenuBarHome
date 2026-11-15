@@ -5118,17 +5118,6 @@ input[type="checkbox"]:checked:active:not(:disabled)::after {
   display: none;
 }
 
-#app[data-panel-theme="classic"] .cc-room-bar-wrap {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-#app[data-panel-theme="classic"] .cc-room-bar {
-  flex: 1;
-  min-width: 0;
-}
-
 #app[data-panel-theme="classic"] .cc-room-tools {
   display: flex;
   align-items: center;
