@@ -1062,6 +1062,17 @@ struct AssistantSettingsSection: View {
             return nil
         }
         store.assistantConfig = cfg
+        // `AssistantConfig.save` does not report a refused Keychain write, so confirm the key is really
+        // stored before the draft counts as saved; otherwise navigation would drop the only copy (#148).
+        if cfg.hasAPIKey,
+           store.storedAssistantAPIKey(forBaseURL: cfg.baseURL).trimmingCharacters(in: .whitespacesAndNewlines)
+            != cfg.apiKey.trimmingCharacters(in: .whitespacesAndNewlines) {
+            store.showToast(
+                L10n.tr("无法写入钥匙串，请授权钥匙串访问后重试", "Could not save to Keychain; allow Keychain access and try again"),
+                isError: true
+            )
+            return nil
+        }
         let resolved = store.assistantConfig
         baseURLDraft = resolved.baseURL
         modelDraft = resolved.model

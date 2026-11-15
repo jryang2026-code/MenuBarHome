@@ -114,43 +114,73 @@ struct UnsavedChangesBadge: View {
     }
 }
 
-/// Runs `onClose` when the window hosting this view is about to close. The window closes either way,
-/// so the handler can offer Save or Discard but not Cancel.
-struct WindowWillCloseObserver: NSViewRepresentable {
-    let onClose: () -> Void
+/// Asks `shouldClose` before the window hosting this view closes, so a failed Save keeps the window
+/// (and its drafts) open and the prompt can offer Cancel. The window's own delegate keeps receiving
+/// everything else.
+struct WindowCloseGuard: NSViewRepresentable {
+    let shouldClose: () -> Bool
 
     func makeNSView(context: Context) -> Probe {
         let probe = Probe()
-        probe.onClose = onClose
+        probe.shouldClose = shouldClose
         return probe
     }
 
     func updateNSView(_ probe: Probe, context: Context) {
-        probe.onClose = onClose
+        probe.shouldClose = shouldClose
     }
 
+    @MainActor
     final class Probe: NSView {
-        var onClose: (() -> Void)?
-        private var token: NSObjectProtocol?
+        var shouldClose: () -> Bool = { true }
+        private var guardDelegate: Delegate?
+        private weak var guardedWindow: NSWindow?
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            if let token { NotificationCenter.default.removeObserver(token) }
-            token = nil
-            guard let window else { return }
-            token = NotificationCenter.default.addObserver(
-                forName: NSWindow.willCloseNotification, object: window, queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.onClose?() }
-            }
+            guard let window, guardedWindow !== window else { return }
+            restore()
+            let delegate = Delegate(original: window.delegate) { [weak self] in self?.shouldClose() ?? true }
+            guardDelegate = delegate
+            guardedWindow = window
+            window.delegate = delegate
         }
 
         override func viewWillMove(toWindow newWindow: NSWindow?) {
-            if newWindow == nil, let token {
-                NotificationCenter.default.removeObserver(token)
-                self.token = nil
-            }
+            if newWindow == nil { restore() }
             super.viewWillMove(toWindow: newWindow)
+        }
+
+        private func restore() {
+            if let window = guardedWindow, window.delegate === guardDelegate {
+                window.delegate = guardDelegate?.original
+            }
+            guardDelegate = nil
+            guardedWindow = nil
+        }
+    }
+
+    @MainActor
+    final class Delegate: NSObject, NSWindowDelegate {
+        weak var original: NSWindowDelegate?
+        private let shouldClose: () -> Bool
+
+        init(original: NSWindowDelegate?, shouldClose: @escaping () -> Bool) {
+            self.original = original
+            self.shouldClose = shouldClose
+        }
+
+        func windowShouldClose(_ sender: NSWindow) -> Bool {
+            guard original?.windowShouldClose?(sender) ?? true else { return false }
+            return shouldClose()
+        }
+
+        override func responds(to selector: Selector!) -> Bool {
+            super.responds(to: selector) || (original?.responds(to: selector) ?? false)
+        }
+
+        override func forwardingTarget(for selector: Selector!) -> Any? {
+            original?.responds(to: selector) == true ? original : super.forwardingTarget(for: selector)
         }
     }
 }
