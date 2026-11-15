@@ -720,6 +720,24 @@ extension ControlCenterPanel {
                     .lineLimit(1)
             }
             .buttonStyle(.plain)
+        } else if store.homeBackend == .demo {
+            // #144: the demo is a doorway, not a place to stay.
+            HStack(spacing: 8) {
+                Text(statusFooterLabel)
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Button {
+                    withAnimation(AppleMotion.snappySpring) { store.leaveDemo() }
+                } label: {
+                    Text(L10n.tr("连接真实家庭", "Connect a Real Home"))
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                .panelHelp(L10n.tr("退出演示，连接你自己的米家或 Home Assistant", "Leave the demo and connect your own Mi Home or Home Assistant"))
+            }
         } else {
             Text(statusFooterLabel)
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))

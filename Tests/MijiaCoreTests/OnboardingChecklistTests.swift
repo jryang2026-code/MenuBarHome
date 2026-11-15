@@ -431,4 +431,35 @@ struct PanelNoticeTests {
             return false
         })
     }
+
+    // MARK: - #144: the demo is a doorway
+
+    @Test("Leaving the demo with nothing configured reopens the connect guide on the Xiaomi path")
+    @MainActor
+    func leavingDemoWithoutSourceOpensConnectGuide() throws {
+        let suite = "test.onboarding.leavedemo.none.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.set(HomeBackend.demo.rawValue, forKey: "home_backend")
+        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        store.hasCompletedOnboarding = true
+        store.switchBackend(.demo)
+        #expect(store.homeBackend == .demo)
+
+        #expect(store.leaveDemo() == false)
+        #expect(store.homeBackend == .xiaomiCloud)
+        #expect(store.onboardingPresentation == .fullGuide, "the connect form must be reachable even after onboarding was finished")
+    }
+
+    @Test("Leaving the demo with a configured source returns to that source, not the guide")
+    @MainActor
+    func leavingDemoWithSourceReturnsToIt() throws {
+        let suite = "test.onboarding.leavedemo.ha.\(UUID().uuidString)"
+        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        store.hasHASource = true
+        store.switchBackend(.demo)
+
+        #expect(store.leaveDemo() == true)
+        #expect(store.homeBackend == .homeAssistant)
+        #expect(store.leaveDemo() == false, "outside the demo there is nothing to leave")
+    }
 }

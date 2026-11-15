@@ -1013,6 +1013,28 @@ class MijiaMcpTests(unittest.TestCase):
         self.assertEqual(code, mijia.EXIT_OK)
         self.assertIn("书房台灯", raw_out.getvalue().decode("utf-8"))
 
+class MenubarhomeWrapperTests(unittest.TestCase):
+    """#151: `scripts/menubarhome` is the same program as `scripts/mijia` under the product's name."""
+
+    def test_wrapper_lists_the_same_devices_as_the_original_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp) / "raycast-snapshot.json"
+            snapshot.write_text(json.dumps(make_snapshot()), encoding="utf-8")
+            outputs = []
+            for name in ("mijia", "menubarhome"):
+                completed = subprocess.run(
+                    [sys.executable, str(Path(__file__).resolve().with_name(name)), "list", "--json", "--snapshot", str(snapshot)],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    check=False,
+                    timeout=10,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                outputs.append(completed.stdout)
+        self.assertEqual(outputs[0], outputs[1])
+        self.assertNotIn(TOKEN, outputs[1])
+
 
 if __name__ == "__main__":
     sys.exit(unittest.main())
