@@ -502,8 +502,8 @@ public struct OnboardingGuideView: View {
                 "按住顶部「全关」会列出将关闭的设备，并提示未实际执行。以后真的全关，这一步也算完成。",
                 "Hold All Off at the top to list the devices that would turn off. Nothing is sent. A real All Off later completes this step too."
             ))
-            .font(.system(size: 11.5))
-            .foregroundStyle(.secondary)
+            .font(.system(size: DesignTokens.TypeSize.caption))
+            .foregroundStyle(.primary.opacity(0.85))
             .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 5) {
@@ -793,11 +793,20 @@ public struct OnboardingGuideView: View {
             }
 
             Text(L10n.tr(
-                "长按菜单栏图标或 \(hotkeyLabel) 直接说话，例如「书房灯月光模式」「10 分钟后关灯」，松手即执行。",
-                "Hold the menu bar icon or \(hotkeyLabel) and speak, e.g. \"study light moonlight mode\" or \"turn off the lights in 10 minutes\", then release."
+                "长按菜单栏图标或 \(hotkeyLabel) 直接说话，例如「书房灯月光模式」「10 分钟后关灯」。",
+                "Hold the menu bar icon or \(hotkeyLabel) and speak, e.g. \"study light moonlight mode\" or \"turn off the lights in 10 minutes\"."
             ))
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            // #176: when a command takes effect is a consequence, not a how-to (CODING_STANDARDS §18).
+            Text(L10n.tr(
+                "松手就执行；电暖器、插座、扫地机这类设备仍会先问你。",
+                "Release and it runs. Heaters, plugs and vacuums still ask first."
+            ))
+            .font(.system(size: DesignTokens.TypeSize.caption))
+            .foregroundStyle(.primary.opacity(0.85))
             .fixedSize(horizontal: false, vertical: true)
 
             if !voiceAuthorized {
