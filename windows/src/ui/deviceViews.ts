@@ -15,6 +15,7 @@ import type { EnergyScopeSource } from "../core/energyHistory.js";
 import { SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation } from "./appTypes.js";
 import { resolveTilePresentation, type PanelTheme } from "./panelTheme.js";
+import { renderLiquidGlassSlider } from "./liquidGlassSlider.js";
 import { hasPlottableSensorMetrics, renderSensorHistorySection, type SensorHistoryUiState } from "./sensorHistoryView.js";
 
   export function renderSensorCard(
@@ -249,6 +250,7 @@ function renderPrimaryDrawer(
       if (!showBrightness && !showColor && visibleEffects.length === 0) return "";
       const bri = k.brightnessPercent ?? 80;
       const ct = k.colorTempKelvin ?? 4000;
+      const id = escapeHtml(dev.id);
       return `
         <div class="cc-tile-drawer">
           ${showBrightness ? `<div class="cc-slider-group">
@@ -256,14 +258,14 @@ function renderPrimaryDrawer(
               <span>${t("亮度")}</span>
               <strong>${bri}%</strong>
             </div>
-            <input class="cc-range is-amber" type="range" min="1" max="100" value="${bri}" data-brightness="${escapeHtml(dev.id)}" aria-label="${t("亮度")}" aria-valuemin="1" aria-valuemax="100" aria-valuenow="${bri}" />
+            ${renderLiquidGlassSlider({ variant: "drawer", min: 1, max: 100, step: 1, value: bri, formattedValue: `${bri}%`, leadingIconSvg: SF_ICONS.sunMaxFill, toneClass: "is-amber", showDecileTicks: true, inputDataAttrs: `data-brightness="${id}"`, ariaAttrs: `aria-label="${t("亮度")}" aria-valuemin="1" aria-valuemax="100" aria-valuenow="${bri}" aria-valuetext="${bri}%"` })}
           </div>` : ""}
           ${showColor ? `<div class="cc-slider-group">
             <div class="cc-slider-label">
               <span>${t("色温")}</span>
               <strong>${ct}K</strong>
             </div>
-            <input class="cc-range is-kelvin" type="range" min="${k.minKelvin}" max="${k.maxKelvin}" step="100" value="${ct}" data-colortemp="${escapeHtml(dev.id)}" aria-label="${t("色温")}" aria-valuemin="${k.minKelvin}" aria-valuemax="${k.maxKelvin}" aria-valuenow="${ct}" />
+            ${renderLiquidGlassSlider({ variant: "drawer", min: k.minKelvin, max: k.maxKelvin, step: 100, allowOffGridMax: true, value: ct, formattedValue: `${ct}K`, leadingIconSvg: SF_ICONS.sunMaxFill, toneClass: "is-kelvin", isSpectrumTrack: true, showDecileTicks: true, inputDataAttrs: `data-colortemp="${id}"`, ariaAttrs: `aria-label="${t("色温")}" aria-valuemin="${k.minKelvin}" aria-valuemax="${k.maxKelvin}" aria-valuenow="${ct}" aria-valuetext="${ct}K"` })}
           </div>` : ""}
           ${visibleEffects.length > 0 ? `
             <div class="cc-segmented-pills">
@@ -312,7 +314,7 @@ function renderPrimaryDrawer(
               <span>${t("目标温度")}</span>
               <strong>${formatTemperature(k.targetTemperature)}</strong>
             </div>
-            <input class="cc-range is-blue" type="range" min="${formatTemperatureValue(k.minTemp)}" max="${formatTemperatureValue(k.maxTemp)}" step="${displayStep(k.step)}" value="${formatTemperatureValue(k.targetTemperature)}" data-actemp="${escapeHtml(dev.id)}" data-min-c="${k.minTemp}" data-max-c="${k.maxTemp}" aria-label="${t("目标温度")}" aria-valuemin="${formatTemperatureValue(k.minTemp)}" aria-valuemax="${formatTemperatureValue(k.maxTemp)}" aria-valuetext="${formatTemperature(k.targetTemperature)}" />
+            ${renderLiquidGlassSlider({ variant: "drawer", min: Number(formatTemperatureValue(k.minTemp)), max: Number(formatTemperatureValue(k.maxTemp)), step: Number(displayStep(k.step)), value: Number(formatTemperatureValue(k.targetTemperature)), formattedValue: formatTemperature(k.targetTemperature), leadingIconSvg: SF_ICONS.snowflake, toneClass: "is-blue", showDecileTicks: true, inputDataAttrs: `data-actemp="${escapeHtml(dev.id)}" data-min-c="${k.minTemp}" data-max-c="${k.maxTemp}"`, ariaAttrs: `aria-label="${t("目标温度")}" aria-valuemin="${formatTemperatureValue(k.minTemp)}" aria-valuemax="${formatTemperatureValue(k.maxTemp)}" aria-valuetext="${formatTemperature(k.targetTemperature)}"` })}
           </div>` : ""}
           ${confirmTemperature !== null ? `<div class="cc-slider-label">
             <span>${t("设为 {temp}？", { temp: formatTemperature(confirmTemperature) })}</span>
@@ -380,7 +382,7 @@ function renderPrimaryDrawer(
                     <span>${t("风速")}</span>
                     <strong>${k.percentage}%</strong>
                   </div>
-                  <input class="cc-range is-blue" type="range" min="1" max="100" value="${Math.max(1, k.percentage)}" data-fanpercent="${escapeHtml(dev.id)}" aria-label="${t("风速")}" aria-valuemin="1" aria-valuemax="100" aria-valuenow="${Math.max(1, k.percentage)}" />
+                  ${renderLiquidGlassSlider({ variant: "drawer", min: 1, max: 100, step: 1, value: Math.max(1, k.percentage), formattedValue: `${k.percentage}%`, leadingIconSvg: SF_ICONS.fanbladesFill, toneClass: "is-blue", showDecileTicks: true, inputDataAttrs: `data-fanpercent="${escapeHtml(dev.id)}"`, ariaAttrs: `aria-label="${t("风速")}" aria-valuemin="1" aria-valuemax="100" aria-valuenow="${Math.max(1, k.percentage)}" aria-valuetext="${k.percentage}%"` })}
                 </div>`
               : ""
           }
@@ -420,7 +422,7 @@ function renderPrimaryDrawer(
               <span>${t("音量")}</span>
               <strong>${k.volumePercent}%</strong>
             </div>
-            <input class="cc-range" type="range" min="0" max="100" value="${k.volumePercent}" data-volume="${id}" aria-label="${t("音量")}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${k.volumePercent}" />
+            ${renderLiquidGlassSlider({ variant: "drawer", min: 0, max: 100, step: 1, value: k.volumePercent, formattedValue: `${k.volumePercent}%`, leadingIconSvg: SF_ICONS.speakerFill, showDecileTicks: true, inputDataAttrs: `data-volume="${id}"`, ariaAttrs: `aria-label="${t("音量")}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${k.volumePercent}" aria-valuetext="${k.volumePercent}%"` })}
           </div>` : ""}
           ${k.muteSwitchEntityId || k.sleepModeEntityId ? `<div class="cc-segmented-pills">
             ${k.muteSwitchEntityId ? `<button class="cc-seg-pill ${k.isMuted ? "is-active" : ""}" data-speakermute="${id}" aria-pressed="${k.isMuted}">
@@ -446,7 +448,7 @@ function renderPrimaryDrawer(
         : "";
       return `<div class="cc-tile-drawer">
           ${k.isPairingPromptActive ? `<div class="cc-slider-label"><span>${t("请在电视上确认配对")}</span></div>` : ""}
-          ${showVolume ? `<div class="cc-slider-group"><div class="cc-slider-label"><span>${t("音量")}</span><strong>${k.volumePercent}%</strong></div><input class="cc-range" type="range" min="0" max="100" value="${k.volumePercent}" data-volume="${id}" aria-label="${t("音量")}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${k.volumePercent}" /></div>` : ""}
+          ${showVolume ? `<div class="cc-slider-group"><div class="cc-slider-label"><span>${t("音量")}</span><strong>${k.volumePercent}%</strong></div>${renderLiquidGlassSlider({ variant: "drawer", min: 0, max: 100, step: 1, value: k.volumePercent, formattedValue: `${k.volumePercent}%`, leadingIconSvg: SF_ICONS.speakerFill, showDecileTicks: true, inputDataAttrs: `data-volume="${id}"`, ariaAttrs: `aria-label="${t("音量")}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${k.volumePercent}" aria-valuetext="${k.volumePercent}%"` })}</div>` : ""}
           ${k.muteSwitchEntityId ? `<div class="cc-segmented-pills"><button class="cc-seg-pill ${k.isMuted ? "is-active" : ""}" data-speakermute="${id}" aria-pressed="${k.isMuted}">${k.isMuted ? t("静音：开") : t("静音：关")}</button></div>` : ""}
           ${sourceControls}
         </div>`;
@@ -467,7 +469,7 @@ function renderPrimaryDrawer(
           : `<div class="cc-slider-group"><label class="cc-slider-label"><span>${t("模式")}</span><select class="cc-facet-select" data-humidifiermode-select="${id}" aria-label="${t("模式")}">${k.availableModes.map((mode) => `<option value="${escapeHtml(mode)}"${k.currentMode === mode ? " selected" : ""}>${escapeHtml(localizeApplianceMode(mode))}</option>`).join("")}</select></label></div>`
         : "";
       return `<div class="cc-tile-drawer">
-          ${showHumidity ? `<div class="cc-slider-group"><div class="cc-slider-label"><span>${t("目标湿度")}</span><strong>${targetVal}%</strong></div><input class="cc-range" type="range" min="${minH}" max="${maxH}" step="${stepH}" value="${targetVal}" data-humidity="${id}" aria-label="${t("目标湿度")}" aria-valuemin="${minH}" aria-valuemax="${maxH}" aria-valuenow="${targetVal}" /></div>` : ""}
+          ${showHumidity ? `<div class="cc-slider-group"><div class="cc-slider-label"><span>${t("目标湿度")}</span><strong>${targetVal}%</strong></div>${renderLiquidGlassSlider({ variant: "drawer", min: minH, max: maxH, step: stepH, value: targetVal, formattedValue: `${targetVal}%`, leadingIconSvg: SF_ICONS.dropFill, toneClass: "is-blue", showDecileTicks: true, inputDataAttrs: `data-humidity="${id}"`, ariaAttrs: `aria-label="${t("目标湿度")}" aria-valuemin="${minH}" aria-valuemax="${maxH}" aria-valuenow="${targetVal}" aria-valuetext="${targetVal}%"` })}</div>` : ""}
           ${modeControls}
           ${currentPct !== null ? `<div class="cc-slider-label"><span>${t("当前湿度")}</span><strong>${currentPct}%</strong></div>` : ""}
         </div>`;
@@ -1082,7 +1084,7 @@ function renderInlineRangeRow(options: {
   const { id, icon, rangeClass, min, max, val, dataAttr, ariaLabel, disabledAttr } = options;
   return `<div class="cc-inline-slider-wrap" data-inline-slider-wrap="${id}">
       <span class="cc-inline-slider-icon" aria-hidden="true">${icon}</span>
-      <input class="cc-range cc-inline-range ${rangeClass}" type="range" min="${min}" max="${max}" step="1" value="${val}" data-inline-slider="${id}" ${dataAttr}="${id}" aria-label="${ariaLabel}" aria-valuemin="${min}" aria-valuemax="${max}" aria-valuenow="${val}" aria-valuetext="${val}%"${disabledAttr} />
+      ${renderLiquidGlassSlider({ variant: "inline", min, max, step: 1, value: val, formattedValue: `${val}%`, leadingIconSvg: icon, toneClass: rangeClass, showDecileTicks: true, inputClassName: "cc-inline-range", inputDataAttrs: `data-inline-slider="${id}" ${dataAttr}="${id}"`, ariaAttrs: `aria-label="${ariaLabel}" aria-valuemin="${min}" aria-valuemax="${max}" aria-valuenow="${val}" aria-valuetext="${val}%"`, disabledAttr })}
       <strong class="cc-inline-slider-val">${val}%</strong>
     </div>`;
 }
