@@ -750,7 +750,7 @@ function buildKind(
       isChildLocked: lock?.state === "on",
     };
   } else if (entities.some((entry) => text(entry.entity_id).startsWith("media_player."))) {
-    return buildMediaPlayerKind(entities, states, claimed);
+    return buildMediaPlayerKind(entities, states, claimed, model);
   } else if (
     entities.length === 1 &&
     (state = find(
@@ -1171,6 +1171,7 @@ export function haServiceCall(command: DeviceCommand): HaServiceCall {
     case "setFanPercentage":
       return call("set_percentage", { percentage: finiteCmdNumber(command.percent) });
     case "setFanPresetMode":
+      if (domain === "humidifier") return call("set_mode", { mode: command.presetMode });
       return call("set_preset_mode", { preset_mode: command.presetMode });
     case "setFanOscillating":
       return call("oscillate", { oscillating: command.oscillating });
@@ -1244,6 +1245,12 @@ export function haServiceCall(command: DeviceCommand): HaServiceCall {
     case "mediaSetVolume": {
       const level = finiteCmdNumber(command.level);
       return call("volume_set", { volume_level: Math.max(0, Math.min(1, level)) });
+    }
+    case "mediaSelectSource":
+      return call("select_source", { source: command.source });
+    case "setHumidity": {
+      const pct = finiteCmdNumber(command.percent);
+      return call("set_humidity", { humidity: Math.max(0, Math.min(100, Math.round(pct))) });
     }
     case "pressButton":
       if (domain === "valve") return call("stop_valve");

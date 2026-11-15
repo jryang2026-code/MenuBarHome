@@ -461,6 +461,8 @@ export function extractSensorLiveMetrics(
     temperature = sanitizeTemperature(device.kind.temperature);
     humidity = sanitizeHumidity(device.kind.humidity);
     pm25 = sanitizePm25(device.kind.pm25Density);
+  } else if (device.kind.kind === "humidifier") {
+    humidity = sanitizeHumidity(device.kind.currentHumidity);
   }
 
   for (const facet of facets) {

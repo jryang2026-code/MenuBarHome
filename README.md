@@ -33,7 +33,8 @@ English | [简体中文](README.zh-CN.md)
 <p align="center">
   <a href="https://github.com/jryang2026-code/MenuBarHome/releases/latest"><b>Download latest</b></a> ·
   <a href="#quick-start">Install & Connect</a> ·
-  <a href="#features--platform-matrix">Platform Comparison</a> ·
+  <a href="docs/supported-devices.md">Will my devices work?</a> ·
+  <a href="docs/platform-matrix.md">Platform Comparison</a> ·
   <a href="#safety-privacy--limitations">Safety & Privacy</a> ·
   <a href="CHANGELOG.md">Changelog</a>
 </p>
@@ -43,6 +44,8 @@ English | [简体中文](README.zh-CN.md)
 </p>
 
 <p align="center"><sub>Press <code>⌥M</code>, type <code>sftd</code> (the pinyin initials of 书房台灯, "study desk lamp"), and hit Return. Recorded in macOS demo mode with virtual devices; the interface shown is in Chinese.</sub></p>
+
+**Three steps:** [install](#1-install) (Homebrew, DMG, or the Windows installer) → [connect](#2-connect-your-home) (scan one QR code, or try the Demo with no account) → press `⌥M` (`Alt+M` on Windows).
 
 > [!NOTE]
 > **New name, new address:** as of 1.2.0, MenuBarMijia is called MenuBarHome and lives at [github.com/jryang2026-code/MenuBarHome](https://github.com/jryang2026-code/MenuBarHome). Version 1.1.7 and earlier can't pick up this update on their own, so install it by hand once. Your sign-in and settings carry over; afterwards, delete the old `MenuBarMijia` app (on Windows, uninstall the old version first).
@@ -65,7 +68,45 @@ You're writing, coding, or on a call, and the light needs to go off. Normally th
 
 ---
 
-## 1.2.0: Rebuilt Inside and Out
+## Quick Start
+
+### 1. Install
+
+- **macOS:** macOS 14 (Sonoma) or later, Universal Binary for Apple Silicon and Intel.
+- **Windows:** Windows 11 (64-bit).
+
+**macOS · Homebrew**
+
+```bash
+brew tap jryang2026-code/tap
+brew trust --cask jryang2026-code/tap/menubarhome
+brew install --cask jryang2026-code/tap/menubarhome
+```
+
+**macOS · DMG**
+
+Download the latest DMG from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) and drag `MenuBarHome.app` into Applications.
+
+> The project isn't enrolled in the paid Apple Developer Program, so the app isn't notarized. If macOS blocks the first launch, go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
+
+**Windows 11**
+
+Download the `.exe` or `.msi` installer from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest).
+
+> The installer isn't signed with a commercial Authenticode certificate. If SmartScreen says "Windows protected your PC", click **More info → Run anyway**. SHA-256 digests are published on every release if you'd like to verify the download.
+
+### 2. Connect your home
+
+Click the menu bar (or tray) icon to open the panel, open Settings `⚙️`, and pick one:
+
+- **Mi Cloud Connect (recommended):** choose "Mi Cloud Connect", scan the QR code with the Mi Home app on your phone, and your homes, rooms, and devices sync in. CN, SG, DE, US, and RU servers are supported. On macOS you can add more accounts and see all their devices in one panel. If your sign-in is about to expire, the panel warns you 3 days ahead, and a quick re-scan in the panel renews it.
+- **Home Assistant:** enter your instance address (for example `http://192.168.1.100:8123`; reverse-proxy subpaths work too) and a long-lived access token. macOS can also find Home Assistant on your local network. The token is kept in the macOS Keychain or Windows Credential Manager.<br>
+  If macOS says "Local network connection blocked by macOS", allow MenuBarHome under **System Settings → Privacy & Security → Local Network**.
+- **Demo mode:** try the whole interface with virtual devices, no account needed.
+
+---
+
+## Take the Tour
 
 ### A new panel
 
@@ -111,7 +152,7 @@ The tray app was redrawn in Windows 11's Fluent 2 style as two floating islands:
 
 ## What Else It Does
 
-- **Works with a lot of devices.** Lights, ACs, fans, plugs, TVs, curtains, clothes airers, air purifiers, humidifiers, fridges, water heaters, washers and dryers, bath heaters, range hoods, robot vacuums, cameras, locks, and all sorts of sensors. Mi devices without a dedicated card still get a generic one.
+- **Works with a lot of devices.** Lights, ACs, fans, plugs, TVs, curtains, clothes airers, air purifiers, humidifiers, fridges, water heaters, washers and dryers, bath heaters, range hoods, robot vacuums, cameras, locks, and all sorts of sensors. Mi devices without a dedicated card still get a generic one. [Check your own devices here.](docs/supported-devices.md)
 - **Camera windows.** Click a camera for a pinned live view. Dual-lens models can switch lenses, and pan-tilt cameras turn when you drag the picture.
 - **Climate trends and energy logs.** Sensors chart 24-hour and 7-day trends; plugs keep a daily energy log, and with your electricity rate entered you get a cost estimate.
 - **For You suggestions.** Based on what you usually turn on and when, likely next actions are ready before you ask. Habits stay on your machine and can be reviewed or cleared anytime.
@@ -119,45 +160,7 @@ The tray app was redrawn in Windows 11's Fluent 2 style as two floating islands:
 - **Safety alerts and a weekly report.** You get a notification when a high-power appliance has been running too long or a favorite device drops offline, and a weekly home health report shows which devices keep disconnecting and which plugs draw standby power.
 - **Plugs into your tools.** Apple Shortcuts, `menumijia://` links, a Raycast extension, a command-line tool, and an MCP server, so AI tools like Claude and Cursor can check on and control your home without ever seeing your account credentials.
 
-For what each platform supports, see the [platform comparison](#features--platform-matrix) below.
-
----
-
-## Quick Start
-
-### 1. Install
-
-- **macOS:** macOS 14 (Sonoma) or later, Universal Binary for Apple Silicon and Intel.
-- **Windows:** Windows 11 (64-bit).
-
-**macOS · Homebrew**
-
-```bash
-brew tap jryang2026-code/tap
-brew trust --cask jryang2026-code/tap/menubarhome
-brew install --cask jryang2026-code/tap/menubarhome
-```
-
-**macOS · DMG**
-
-Download the latest DMG from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) and drag `MenuBarHome.app` into Applications.
-
-> The project isn't enrolled in the paid Apple Developer Program, so the app isn't notarized. If macOS blocks the first launch, go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
-
-**Windows 11**
-
-Download the `.exe` or `.msi` installer from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest).
-
-> The installer isn't signed with a commercial Authenticode certificate. If SmartScreen says "Windows protected your PC", click **More info → Run anyway**. SHA-256 digests are published on every release if you'd like to verify the download.
-
-### 2. Connect your home
-
-Click the menu bar (or tray) icon to open the panel, open Settings `⚙️`, and pick one:
-
-- **Mi Cloud Connect (recommended):** choose "Mi Cloud Connect", scan the QR code with the Mi Home app on your phone, and your homes, rooms, and devices sync in. CN, SG, DE, US, and RU servers are supported. On macOS you can add more accounts and see all their devices in one panel. If your sign-in is about to expire, the panel warns you 3 days ahead, and a quick re-scan in the panel renews it.
-- **Home Assistant:** enter your instance address (for example `http://192.168.1.100:8123`; reverse-proxy subpaths work too) and a long-lived access token. macOS can also find Home Assistant on your local network. The token is kept in the macOS Keychain or Windows Credential Manager.<br>
-  If macOS says "Local network connection blocked by macOS", allow MenuBarHome under **System Settings → Privacy & Security → Local Network**.
-- **Demo mode:** try the whole interface with virtual devices, no account needed.
+For what each platform supports, see the [platform comparison](docs/platform-matrix.md).
 
 ---
 
@@ -190,55 +193,39 @@ These phrases are parsed locally **without any AI API key** or cloud model token
 
 ---
 
-## Features & Platform Matrix
+## Platform Comparison
 
-The macOS version is built natively in Swift 6, while the Windows 11 client is an independent implementation using Tauri v2 and TypeScript. Both share verified golden fixtures (`Tests/Fixtures/`) for protocol and intent matching, while respecting system platform differences.
+macOS is a native Swift 6 app; Windows 11 is a separate Tauri v2 implementation. They share golden test fixtures, but they are not identical:
 
-<details>
-<summary><b>Show the full comparison table</b></summary>
+| Area | macOS 14+ | Windows 11 |
+| :--- | :---: | :---: |
+| Mi Home QR connect | ✅ | ✅ |
+| Home Assistant | ✅ | ✅ |
+| Keyboard search and global hotkey | ✅ `⌥M` | ✅ `Alt+M` |
+| Voice | ✅ hold to talk or hands-free | ⚠️ hands-free only |
+| Local commands and optional AI | ✅ | ✅ |
+| All Off and Undo | ✅ | ✅ |
+| Camera live view | ✅ | ✅ |
+| Several Xiaomi accounts at once | ✅ | — one account |
+| Mac event automation, Shortcuts, GrokBall | ✅ | — |
+| Signed installer | ⚠️ self-signed | ⚠️ unsigned |
 
-| Feature Area | macOS Native (14+) | Windows 11 Tray | Details |
-| :--- | :---: | :---: | :--- |
-| **Mi Home Direct QR Connect** | ✅ Supported | ✅ Supported | Scan with Mi Home app; supports CN, SG, DE, US, and RU regional servers; loads homes you own plus homes shared with your account |
-| **Home Assistant Integration** | ✅ Supported | ✅ Supported | macOS keeps a persistent WebSocket event stream with LAN mDNS discovery; Windows fetches WebSocket snapshots and runs service calls per action. Both group `xiaomi_home` entities by physical device |
-| **Keyboard Search & Control** | ✅ Supported | ✅ Supported | Search by device name, room, or pinyin initials. Arrow keys select and adjust devices. Enter toggles a result or runs a command |
-| **Global Activation Hotkey** | ✅ `⌥M` (Customizable) | ✅ `Alt+M` (Customizable) | Windows 1.1.4 adds custom key recording with collision detection |
-| **Voice Interaction** | ✅ Menu bar hold / Hotkey hold / Hands-free | ⚠️ Hands-free only | macOS supports native Speech frameworks; Windows uses WebView speech recognition |
-| **Local Command Parsing** | ✅ Supported | ✅ Supported | Power, brightness, temp, fan speeds, and timers are parsed locally |
-| **Optional AI Assistant** | ✅ Supported | ✅ Supported | Connect Jev, DeepSeek, Qwen, GLM, Ollama, or a custom endpoint with per-provider saved API keys; macOS adds an "Ask me when unsure" toggle with an adjustable threshold in advanced settings |
-| **Proactive "For You" Suggestions** | ✅ Up to 4 chips | ✅ Up to 4 pills | Manual card actions train time-bucket and weekday/weekend habits with a 14-day decay half-life and next-action prediction (undo rolls them back; see [ADR-0009](docs/adr/0009-habit-ranking-algorithm.md)). Local picks appear immediately; a configured model refreshes the cache in the background. Homes with fewer executable actions show their actual count. |
-| **GrokBall & Side Suggestions** | ✅ Native Canvas | — Not yet | On macOS, click the ball for up to four reversible device actions, drag to reposition it, or hold 0.5 seconds for voice input; neutral expressions use a black ball with white eyes that follow the pointer (static under Reduce Motion). Based on [TyCoding/grok-ball](https://github.com/TyCoding/grok-ball) (MIT). Windows surfaces proactive suggestions directly in the top notification island instead. |
-| **Quick Actions & Scenes Strip** | ✅ 3 actions | ✅ 3 actions | Toggle in Settings — "Show Scenes Under the Input" on macOS (the pills open under the input when you click it), "Show top quick actions bar" on Windows. Both ship All Lights Off, Soft Night Light, and Sleep Climate Off, each shown only when the home has a device it can act on; Windows demo mode shows four sample actions instead. Home Assistant scenes are appended on both. On macOS, four or fewer pills stretch edge to edge and the rest scroll horizontally with a normal mouse wheel. |
-| **All-Off & Instant Undo** | ✅ Supported | ✅ Supported | A 0.6s hold confirms the action; plugs and vacuums are excluded by default; reversible actions show an undo banner for 10–15s |
-| **Mac Event Automation** | ✅ Supported | — Not yet | Triggers on lock, sleep, wake, external displays, camera/microphone use, power/battery, Wi-Fi, Focus, Calendar, and late-night use (all Mac-only signals off by default) |
-| **Apple Shortcuts (App Intents)** | ✅ Supported (4 actions) | — Not yet | Toggle Device, Run Scene, Voice Command, Query Room Climate |
-| **URL Scheme Control** | ✅ Supported | ✅ Supported | `menumijia://toggle` (plus `power`, `brightness`, `color-temp`, `temperature`, `fan`, `scene`, `ask`, `focus`) asks for confirmation by default; direct control can be enabled in settings, and Windows forwards links to the running tray instance |
-| **Raycast Extension, Local CLI & MCP Server** | ✅ Supported | ✅ Supported | `raycast/`, `scripts/mijia`, and `scripts/mijia-mcp` read `raycast-snapshot.json` (`~/Library/Application Support/MenuBarMijia/` on macOS, `%LOCALAPPDATA%\MenuBarMijia\` on Windows) and control devices, scenes and quick actions through `menumijia://` links, so none holds credentials; MCP responses strip `bridgeToken`, and high-risk confirmation plus the lock-screen block still run in the app |
-| **Sensor Trend Line Charts** | ✅ 24h / 7d trends | ✅ 24h / 7d trends | Both platforms chart temperature, humidity, PM2.5, or illuminance over 24 hours or 7 days with local bucketed history and cloud/HA backfill |
-| **Smart Plug Energy Logs** | ✅ Supported | ✅ Supported | Both platforms count changes in cumulative hardware readings with daily ledgers and optional electricity tariff estimates; missing data is not estimated |
-| **Mi Air Purifiers, Air Fresheners & Humidifiers** | ✅ Supported | ✅ Supported | Both platforms synthesize `air-purifier`, `air-fresh`, and `humidifier` specs: PM2.5, air quality, temp/humidity, filter life, and a 1–100% fan slider driving the favorite level |
-| **Fridges & Kitchen Appliances** | ✅ Supported | ✅ Supported | Fridges expose per-chamber current/target temperature and modes (Manual, Smart, Holiday, Super Cool, Super Freeze). Kettles, water dispensers, cookers, air fryers, ovens, microwaves, and health pots show working status, temperature, and minutes remaining; models exposing `start-cook` / `pause` actions can be started and stopped |
-| **Water Heaters** | ✅ Supported | ✅ Supported | MIoT water heaters become the shared appliance card: power, mode, target temperature with the spec's range and step, status, fault strip, remaining time, and no-argument start/pause actions, each shown only when the spec publishes it. Current water temperature is the main reading. Turning one on or raising its target asks first; turning it off is direct. Water heaters stay out of All Off by default |
-| **HA Humidifiers, Water Heaters & Valves** | ✅ Supported | ✅ Supported | The Home Assistant channel now synthesizes `humidifier` (power, mode, target humidity and its built-in humidity reading), `water_heater` (the shared appliance card, with opening or hotter targets asking first) and `valve` (open / close; opening a water or gas valve asks first). Unclaimed `switch`, `select`, `number`, `button`, `sensor` and `binary_sensor` entities join 更多设置 with optimistic writes and undo on macOS (optimistic writes on Windows); `text` entities stay out |
-| **Bath Heaters & Range Hoods** | ✅ Supported | ✅ Supported | MIoT bath heaters merge their PTC heat, fan speed, room reading and lamp into one appliance card: power, target temperature, the spec's mode list, fan level, light switch, and room temperature/humidity. Range hoods merge exhaust power, fan level and lamp. A companion light stays inside the card instead of becoming its own light card. Every control appears only when the model's spec publishes it |
-| **Washers, Dryers & Dishwashers** | ✅ Supported | ✅ Supported | `washer`, `dryer`, `clothes-dryer` and `dishwasher` specs become the shared appliance card: programme list, the wash stage and minutes remaining on the card ("Washing · 42 min left"), fault strip, and no-argument start/pause/stop. Long programme lists scroll inside the drawer instead of stacking every option. Starting a wash asks first; pausing and stopping are direct. Actions that take arguments are ignored rather than failing the card |
-| **Dehumidifiers, Blankets, Diffusers & Speakers** | ✅ Supported | ✅ Supported | Dehumidifiers become fan cards driven by their reported mode list plus their own temp/humidity reading, electric blankets become climate cards, aroma diffusers become switchable plugs, and speakers become media cards with volume, mute, play state, sleep mode, and TTS (TTS is macOS-only; Windows speaker cards carry volume, mute, play state and sleep mode) |
-| **Locks & Presence Sensors** | ✅ Read-only cards | ✅ Read-only cards | Door locks report battery. A readable `door-state` or Home Assistant `lock` entity shows locked, unlocked, ajar, or jammed; otherwise the card says the lock status is unknown instead of “Guarding”. Motion/occupancy, contact, water-leak, illumination, and air-quality monitors synthesize as sensor cards. MIoT exposes no remote unlock, so locks stay status-only. On macOS, Mi gateways, routers, and repeaters get a generic card when their spec exposes a usable item; models with no spec or no usable item stay in the skipped list. |
-| **Generic Fallback Cards** | ✅ Supported | ✅ Supported | Mi devices whose type has no dedicated card but still expose a usable control or reading get a generic card: name and room, up to two key readings, one low-risk main switch, and the rest under More Settings. Read-only devices say so. Locks, heating, and router configuration stay read-only by default; enabling advanced writes asks first. Generic cards stay out of All Off and assistant batches by default. Windows writes under More Settings are optimistic but not undoable |
-| **Fish Tanks & Pet Feeders** | ✅ Supported | ✅ Supported | MIoT `fish-tank` and `pet-feeder` specs join the generic card on both platforms: the tile shows the main switch and water temperature (food level for a feeder), while More Settings highlights the pump switch and level, the light (mode, brightness), a portioned feeding action, filter life and the water-temperature alarm. Feeding asks for the portion and names today's total before it dispenses; pump states (not inserted, low water, blocked, fault) show as an inline alert. Vendor-private services and properties stay hidden. |
-| **Camera Live View** | ✅ Supported | ✅ Supported | Click a card for a pinned live window: macOS uses HLS / HA snapshots and can switch between cameras in the same window; verified dual-lens Xiaomi models expose a main/second-lens picker. Windows ships a private P2P bridge (bundled helpers, SD/HD/Ultra quality). Xiaomi P2P, MJPEG and snapshot streams carry video only and the HUD labels them "Video only"; an HLS stream with an audio track gets a mute/unmute control (macOS) |
-| **Layout Editing Resize** | ✅ Supported | ✅ Supported | Edit mode shows an iOS Control Center-style corner arc handle on each card's bottom-right: drag out/in to step half ↔ full ↔ panel, or tap it to cycle sizes |
-| **Visual Look** | ✅ Classic / Liquid Glass themes | ✅ Windows 11 Fluent 2 flyout | macOS defaults to Classic anchored below the menu bar icon (four height choices) and adds Liquid Glass on macOS 26+. Windows uses a native Windows 11 Fluent 2 two-island flyout (`Win+N` notification island + `Win+A` Quick Settings capsule island) with taskbar-edge entrance and exit transitions. |
-| **Curtains & Window Openers** | ✅ Travel state + 2% end snap | ✅ Travel state + 2% end snap | Both platforms show real opening/closing travel (including the vendor spellings `Dowm` / `Fallin` and `Up` / `Down`), snap parked positions within 2% of either end, and stop a moving card. Airers report height, so their MIoT position is inverted on both platforms. Opening a window opener or an airer asks first; a garage door asks in either direction |
-| **Code Signing & Integrity** | ⚠️ Self-signed + Ed25519 updates | ⚠️ Unsigned installer + Ed25519 updates | Both platforms verify in-app update manifests with an offline Ed25519 key; macOS requires first-launch Gatekeeper approval and Windows shows a SmartScreen prompt |
-
-</details>
+The full device-by-device table, with every capability and its status, is in [docs/platform-matrix.md](docs/platform-matrix.md).
 
 ---
 
 ## Raycast Extension, Local CLI & MCP Server
 
 MenuBarHome can hand its device list to a companion without sharing any credential. Turn on **Settings → 通用 → 自动化与外部控制 → Raycast 集成** (**Settings → General → Automation & External Control → Raycast integration**) on macOS (or **Settings → All-Off & Updates → Raycast & Local CLI / MCP Integration** on Windows): the app writes `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json` on macOS (mode `0600`) or `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json` on Windows with your devices, scenes, quick actions, environment readings, the last command result, and a random local bridge token. Links that carry the token skip the external-link confirmation prompt; high-risk devices still ask, and the lock-screen block still applies on both platforms. Turning the integration off deletes the file and revokes the token. The contract and the trade-offs behind it are in [ADR-0013](docs/adr/0013-raycast-companion-contract.md).
+
+**Why you still see the old name.** The app is MenuBarHome, but the integration surface kept its original names so existing Raycast commands, Shortcuts, scripts and MCP configs keep working:
+
+| You will see | What it is | Use this |
+| :--- | :--- | :--- |
+| `menumijia://…` | The URL scheme every companion sends. It is a compatibility contract ([ADR-0013](docs/adr/0013-raycast-companion-contract.md)), so it does not change | Keep `menumijia://` |
+| `scripts/mijia`, `scripts/mijia-mcp` | The CLI and MCP server | `scripts/menubarhome` is the same CLI under the new name; `mijia` keeps working |
+| `MenuBarMijia/` data folder, `MenuBarMijiaApp` process | The app's data directory and process name | Nothing to do; your sign-in and settings live there |
+| MCP key `menubarmijia` | A label in your MCP client's config, and the server's reported name | Name it anything; the example below uses `menubarhome` |
 
 <details>
 <summary><b>How to use the CLI, MCP server, and Raycast extension</b></summary>
@@ -262,6 +249,8 @@ MenuBarHome can hand its device list to a companion without sharing any credenti
 | `scripts/mijia ask "把客厅灯调到 40%"` | One natural-language command, with the app's own parsing and confirmation |
 | `scripts/mijia mcp` (or `scripts/mijia-mcp`) | Run the local MCP server over stdio |
 
+`scripts/menubarhome` runs the same program: `scripts/menubarhome list` is `scripts/mijia list`.
+
 Exit codes: `0` success, `1` the app reported a failure, `2` local error (snapshot missing, unknown device, integration off), `3` no result in time. `--dry-run` prints the link with the token masked, `--no-wait` sends it without waiting, and `MENUBARMIJIA_SNAPSHOT_PATH` overrides the snapshot path.
 
 ### Local MCP Server (Claude Desktop / Claude Code / Cursor)
@@ -271,7 +260,7 @@ Exit codes: `0` success, `1` the app reported a failure, `2` local error (snapsh
 ```json
 {
   "mcpServers": {
-    "menubarmijia": {
+    "menubarhome": {
       "command": "/ABSOLUTE/PATH/TO/MenuBarHome/scripts/mijia-mcp"
     }
   }
@@ -293,7 +282,7 @@ Exit codes: `0` success, `1` the app reported a failure, `2` local error (snapsh
 - **Mi Cloud Connect uses an unofficial client API.** It is not an official Xiaomi integration. Xiaomi can rate-limit requests or flag an account (risk control) at any time, and this project cannot promise it won't happen. The app polls less when the panel is closed or the screen is locked to keep traffic low. If you'd rather not take that risk, connect Home Assistant with Xiaomi's official [xiaomi_home](https://github.com/XiaoMi/ha_xiaomi_home) integration instead.
 - **You will need to scan again.** The app does not store the long-lived `passToken` and does not renew a sign-in silently ([ADR-0004](docs/adr/0004-no-pass-token-storage.md)). How long a sign-in lasts is decided by Xiaomi's server and is shown in Settings when it is known; the panel warns you 3 days before it ends, and re-scanning takes a few seconds.
 - **The apps are not code-signed commercially.** macOS needs **Open Anyway** on first launch and Windows shows a SmartScreen prompt (see [Install](#1-install)).
-- **Windows is not at feature parity.** Windows 11 only; voice is hands-free only (no hold-to-talk); one Xiaomi account; no Mac event automation, Apple Shortcuts, or GrokBall. See the [platform comparison](#features--platform-matrix).
+- **Windows is not at feature parity.** Windows 11 only; voice is hands-free only (no hold-to-talk); one Xiaomi account; no Mac event automation, Apple Shortcuts, or GrokBall. See the [platform comparison](#platform-comparison).
 
 ### Safety and privacy
 
@@ -388,63 +377,7 @@ Thanks to all contributors who have submitted PRs, reported issues, and helped r
 
 ---
 
-## 常见问题（FAQ） / Frequently Asked Questions
+## FAQ
 
-### How much memory and CPU does MenuBarHome use?
-
-The macOS build is one native AppKit/SwiftUI process, with no bundled browser engine. Measured on 2026-11-07 with MenuBarHome 1.1.7 (426) on an Apple-silicon Mac (10 cores, macOS 27.0.1), with about a dozen devices configured, one of them a camera:
-
-| State | RSS | CPU (one core) |
-| --- | --- | --- |
-| Idle, panel closed | 159 MB | 0.1% |
-| Panel open, no interaction | 147 MB | 0.1% |
-| Holding Option-M for voice input | 152 MB | 26% |
-
-- **RSS** is the resident set from `ps`. Activity Monitor's Memory column (physical footprint) read about 146 MB for the loaded app.
-- **CPU** is a share of one core, computed from CPU-time deltas across three sample windows (five seconds each by default). `ps %cpu` is a lifetime average and keeps reporting a busy period long after it ended, so the script does not use it as the measurement.
-- Opening the panel reuses the same process, so RSS stays flat and CPU stays near zero when you do not interact.
-- Voice input is the only state with noticeable CPU. `AVAudioEngine` streams the microphone and the speech framework transcribes it. The system's `corespeechd` does the recognition, and its CPU is not part of the app's number.
-- Memory depends on what is connected. A camera stream, many MIoT device specs and large scenes all add memory.
-
-### What about Windows 11?
-
-The Windows build is Tauri v2 with WebView2. One host process runs the tray app, either `MenuBarHome.exe` from the installer or `menubarmijia-windows.exe` from a local Tauri build, and one or more `msedgewebview2.exe` processes render the UI. `scripts/measure_footprint.py` sums the host and its own renderer descendants, and ignores WebView2 processes that belong to other applications.
-
-Windows 11 memory and CPU numbers are not in the table yet. They have to be taken on a Windows host. With the tray app running, run the same command there:
-
-```powershell
-python scripts\measure_footprint.py --state idle
-python scripts\measure_footprint.py --state panel
-python scripts\measure_footprint.py --state voice
-```
-
-### How long does the first open take with 20 or more devices?
-
-| Platform | Devices | Synthesis (median) | Range | Runs |
-| --- | --- | --- | --- | --- |
-| macOS (MijiaCore) | 24 | 2.10 ms | 2.02–2.69 ms | 31 |
-| Windows (TypeScript core) | 24 | 0.10 ms | 0.07–0.13 ms | 31 |
-
-Both runs synthesize the same snapshot, 18 lights and 6 switches across six rooms. Device synthesis is a pure function and finishes in milliseconds, so a slow first open comes from the data fetch and view construction, not from synthesis itself.
-
-### How do I reproduce these numbers?
-
-`scripts/measure_footprint.py` samples the process that is already running. It never launches the app, and it cannot tell which state the app is in, so put the app in the state first:
-
-```bash
-# Idle: panel closed, app left alone for a minute
-python3 scripts/measure_footprint.py --state idle
-
-# Panel open: press Option-M, leave the panel open, then
-python3 scripts/measure_footprint.py --state panel
-
-# Voice: hold Option-M until the microphone indicator appears, and run this while it listens
-python3 scripts/measure_footprint.py --state voice
-
-# Machine-readable copy of the committed baseline
-python3 scripts/measure_footprint.py --no-live --json
-```
-
-Live rows are marked `live` in the Source column. Without a running app the script prints the committed baseline and marks every row `recorded`. Quit any second copy of the app first. The script measures the first `MenuBarMijiaApp` it finds.
-
----
+- [How much memory and CPU does it use, and how do I measure it?](docs/faq.md)
+- [What about Windows 11?](docs/faq.md#what-about-windows-11)

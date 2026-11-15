@@ -552,7 +552,16 @@ export const DeviceDeduplicator = {
       case "speaker": { let score = 0;
         if (spec.mediaEntityId !== "") score += 1; if (spec.ttsActionId) score += 2;
         if (spec.directiveActionId) score += 2; if (spec.muteSwitchEntityId !== null) score += 1;
-        if (spec.sleepModeEntityId !== null) score += 1; return score; } case "camera": { let score = 0;
+        if (spec.sleepModeEntityId !== null) score += 1; return score; }
+      case "tv": { let score = 0;
+        if (spec.turnOnButtonId !== null || Boolean(spec.powerOnActionId)) score += 1;
+        if (spec.availableSources.length > 0) score += 1; return score; }
+      case "humidifier": { let score = 0;
+        if (spec.powerWritable) score += 1;
+        if (spec.humidityWritable && spec.targetHumidity !== null) score += 1;
+        if (spec.availableModes.length > 0) score += 1;
+        if (spec.currentHumidity !== null) score += 1; return score; }
+      case "camera": { let score = 0;
         if (spec.powerWritable !== false) score += 1; if (spec.availableNightShots.length > 0) score += 1;
         if (spec.motionDetectionEntityId !== null) score += 1; if (spec.streamEntityId !== null) score += 1;
         if (spec.snapshotPath != null && spec.snapshotPath !== "") score += 1; return score; }

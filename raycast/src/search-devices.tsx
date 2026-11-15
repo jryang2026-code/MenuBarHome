@@ -194,6 +194,7 @@ function categoryIcon(category: string): Icon {
     case "climate":
       return Icon.Snowflake;
     case "fan":
+    case "humidifier":
       return Icon.Wind;
     case "cover":
       return Icon.AppWindow;

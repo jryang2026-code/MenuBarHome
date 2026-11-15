@@ -698,6 +698,7 @@ export function preferredMiotServices(deviceType: string): string[] {
   const appliance = DEVICE_PROFILES.appliances[deviceType];
   if (appliance) return [...appliance.primary];
   if (deviceType === "outlet") return ["outlet", "switch"];
+  if (deviceType === "stb") return ["stb", "television"];
   if (deviceType === "camera" || deviceType === "cateye" || deviceType === "video-doorbell") {
     return ["camera-control", "video-doorbell"];
   }
@@ -714,6 +715,8 @@ export function primaryMiotService(spec: MiotDeviceSpec): MiotService | undefine
     "electric-blanket",
     "dehumidifier",
     "diffuser",
+    "television",
+    "stb",
     "speaker",
     "light",
     "fan",
@@ -1330,7 +1333,35 @@ export const MiotSynthesizer = {
       };
     }
 
-    if (sName === "air-purifier" || sName === "air-fresh" || sName === "humidifier") {
+    if (sName === "humidifier") {
+      const on = readProp(primaryService, "on");
+      const mode = readProp(primaryService, "mode");
+      const levels = readProps(primaryService, "fan-level");
+      const presetRef = (mode?.prop.valueList?.length ?? 0) > 0 ? mode : levels.find((r) => (r.prop.valueList?.length ?? 0) > 0);
+      const target = readProp(primaryService, "target-humidity", undefined, true);
+      const envServices = [
+        primaryService,
+        ...spec.services.filter((s) => miotShortName(s.type) === "environment" || miotShortName(s.type) === "temperature-humidity-sensor"),
+      ];
+      const hum = readFirst(envServices, "relative-humidity");
+      const modeVal = typeof presetRef?.val === "number" ? Math.trunc(presetRef.val) : null;
+      const currentMode = modeVal !== null ? (presetRef?.prop.valueList?.find((i) => i.value === modeVal)?.description ?? null) : null;
+      const availableModes = exposesWrite(presetRef?.prop.access) ? (presetRef?.prop.valueList?.map((i) => i.description) ?? []) : [];
+      const minHumidity = Math.round(finiteRangeAt(target?.prop, 0, 0));
+      const maxHumidity = Math.round(finiteRangeAt(target?.prop, 1, 100));
+      const step = Math.max(1, Math.round(finitePositiveStep(target?.prop, 1)));
+      const rawTarget = typeof target?.val === "number" && Number.isFinite(target.val) && Number.isSafeInteger(Math.round(target.val)) ? Math.round(target.val) : null;
+      const currentHumidity = typeof hum?.val === "number" && Number.isFinite(hum.val) && Number.isSafeInteger(Math.round(hum.val)) ? hum.val : null;
+      const humidityWritable = exposesWrite(target?.prop.access) && maxHumidity > minHumidity;
+      return {
+        kind: "humidifier", entityId: makeMiotAddress(did, primaryService.iid), isOn: miotBool(on?.val) ?? false,
+        currentMode, availableModes, modeWritable: availableModes.length > 0,
+        targetHumidity: rawTarget,
+        minHumidity, maxHumidity, step, humidityWritable, currentHumidity, powerWritable: exposesWrite(on?.prop.access),
+      };
+    }
+
+    if (sName === "air-purifier" || sName === "air-fresh") {
       const on = readProp(primaryService, "on");
       const mode = readProp(primaryService, "mode");
       const levels = readProps(primaryService, "fan-level");
@@ -1468,6 +1499,47 @@ export const MiotSynthesizer = {
             ),
           ),
         }),
+      };
+    }
+
+    if (sName === "television" || sName === "stb") {
+      const on = readProp(primaryService, "on");
+      const status = readProp(primaryService, "status");
+      const input = readProp(primaryService, "input-control", undefined, true);
+      const speakerSvc = spec.services.find((s) => miotShortName(s.type) === "speaker");
+      const volume = speakerSvc ? readProp(speakerSvc, "volume") : readProp(primaryService, "volume");
+      const mute = speakerSvc ? readProp(speakerSvc, "mute") : readProp(primaryService, "mute");
+      const playing = readFirst(spec.services.filter((s) => miotShortName(s.type) === "play-control"), "playing-state");
+      const findZeroArgAction = (actionName: string): string | null => {
+        for (const sv of [primaryService, ...spec.services.filter((s) => s.iid !== primaryService.iid)]) {
+          const act = sv.actions.find((a) => miotShortName(a.type) === actionName && (a.in?.length ?? 0) === 0);
+          if (act) return makeMiotActionAddress(did, sv.iid, act.iid);
+        }
+        return null;
+      };
+      const powerOnActionId = findZeroArgAction("turn-on");
+      const powerOffActionId = findZeroArgAction("turn-off");
+      const playingCode = typeof playing?.val === "number" ? Math.trunc(playing.val) : null;
+      const playingWord = playingCode !== null ? (playing?.prop.valueList?.find((i) => i.value === playingCode)?.description.toLowerCase() ?? "") : "";
+      const statusCode = typeof status?.val === "number" ? Math.trunc(status.val) : null;
+      const statusWord = statusCode !== null ? (status?.prop.valueList?.find((i) => i.value === statusCode)?.description.toLowerCase() ?? "") : "";
+      const onBool = miotBool(on?.val);
+      const isPlaying = playingWord === "playing" || playingWord === "play";
+      const state = onBool === false ? "off" : onBool === true ? (isPlaying ? "playing" : "on")
+        : statusWord !== "" ? (["off", "standby", "sleep", "shutdown", "closed", "close"].some((w) => statusWord.includes(w)) ? "standby" : isPlaying ? "playing" : "on")
+        : isPlaying ? "playing" : "standby";
+      const inputCode = typeof input?.val === "number" ? Math.trunc(input.val) : null;
+      const currentSource = inputCode !== null ? (input?.prop.valueList?.find((i) => i.value === inputCode)?.description ?? null) : null;
+      const availableSources = exposesWrite(input?.prop.access) ? (input?.prop.valueList?.map((i) => i.description) ?? []) : [];
+      const rawVolume = volume && typeof volume.val === "number" && Number.isFinite(volume.val) ? volume.val : null;
+      const powerWritable = exposesWrite(on?.prop.access) || powerOnActionId !== null || powerOffActionId !== null;
+      return {
+        kind: "tv", mediaEntityId: makeMiotAddress(did, primaryService.iid), state,
+        volumePercent: rawVolume !== null && volume ? percentFromRaw(rawVolume, volume.prop, "proportional") : 0,
+        isMuted: miotBool(mute?.val) ?? false,
+        muteSwitchEntityId: mute && exposesWrite(mute.prop.access) ? `${makeMiotAddress(did, mute.service.iid)}#mute` : null,
+        currentSource, availableSources, powerOnActionId, powerOffActionId, powerWritable,
+        volumeWritable: exposesWrite(volume?.prop.access), ...readOnlyFlags({ volumePresent: rawVolume !== null }),
       };
     }
 

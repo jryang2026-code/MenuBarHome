@@ -1024,7 +1024,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     host.root.querySelectorAll<HTMLInputElement>("[data-volume]").forEach((slider) => {
       slider.addEventListener("change", () => {
         const dev = host.devices.find((d) => d.id === slider.dataset.volume);
-        if (!dev || dev.kind.kind !== "speaker" || !dev.kind.volumeWritable) return;
+        if (!dev || (dev.kind.kind !== "speaker" && dev.kind.kind !== "tv") || !dev.kind.volumeWritable) return;
         const percent = Math.max(0, Math.min(100, Math.round(Number(slider.value))));
         void host.executeSingleCommand(
           dev,
@@ -1037,7 +1037,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     host.root.querySelectorAll<HTMLElement>("[data-speakermute]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const dev = host.devices.find((d) => d.id === btn.dataset.speakermute);
-        if (!dev || dev.kind.kind !== "speaker" || !dev.kind.muteSwitchEntityId) return;
+        if (!dev || (dev.kind.kind !== "speaker" && dev.kind.kind !== "tv") || !dev.kind.muteSwitchEntityId) return;
         const next = !dev.kind.isMuted;
         void host.executeSingleCommand(
           dev,

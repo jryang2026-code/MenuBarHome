@@ -367,7 +367,10 @@ function isDeviceControllableForRule(device: SmartDevice): boolean {
     case "fan":
     case "plug":
     case "camera":
+    case "tv":
       return k.powerWritable !== false;
+    case "humidifier":
+      return k.powerWritable;
     case "appliance":
       return Boolean(k.powerPresent && k.powerWritable);
     case "vacuum":

@@ -124,6 +124,15 @@ export function applyCommandToDevices(
         } else if (k.kind === "speaker") {
           if (k.muteSwitchEntityId === command.entityId) k.isMuted = command.isOn;
           else if (k.sleepModeEntityId === command.entityId) k.isSleepMode = command.isOn;
+        } else if (k.kind === "tv") {
+          if (k.muteSwitchEntityId === command.entityId) {
+            k.isMuted = command.isOn;
+          } else if (k.mediaEntityId === command.entityId) {
+            k.state = command.isOn ? "on" : "standby";
+            if (command.isOn) k.isScreenOff = false;
+          }
+        } else if (k.kind === "humidifier" && k.entityId === command.entityId) {
+          k.isOn = command.isOn;
         } else if (k.kind === "appliance") {
           // Power may live on a companion service, and the lamp is its own switch (#4).
           if (k.powerEntityId === command.entityId) k.isOn = command.isOn;
@@ -133,9 +142,21 @@ export function applyCommandToDevices(
         }
         break;
       case "mediaSetVolume":
-        if (k.kind === "speaker" && k.mediaEntityId === command.entityId) {
+        if ((k.kind === "speaker" || k.kind === "tv") && k.mediaEntityId === command.entityId) {
           k.volumePercent = Math.round(Math.max(0, Math.min(1, command.level)) * 100);
           k.volumePresent = true;
+        }
+        break;
+      case "mediaSelectSource":
+        if (k.kind === "tv" && k.mediaEntityId === command.entityId) {
+          k.currentSource = command.source;
+        }
+        break;
+      case "setHumidity":
+        if (k.kind === "humidifier" && k.entityId === command.entityId) {
+          const pct = Math.max(k.minHumidity, Math.min(k.maxHumidity, Math.round(command.percent)));
+          if (connectionMode !== "homeAssistant") k.isOn = true;
+          k.targetHumidity = pct;
         }
         break;
       case "setSelectOption":
@@ -145,6 +166,11 @@ export function applyCommandToDevices(
           k.currentMode = command.option;
         } else if (k.kind === "appliance" && k.modeEntityId === command.entityId) {
           k.currentMode = command.option;
+        } else if (k.kind === "humidifier" && k.entityId === command.entityId) {
+          if (connectionMode !== "homeAssistant") k.isOn = true;
+          k.currentMode = command.option;
+        } else if (k.kind === "tv" && k.mediaEntityId === command.entityId) {
+          k.currentSource = command.option;
         } else if (k.kind === "climate" && k.entityId === command.entityId) {
           k.swingMode = command.option;
         } else if (k.kind === "cover" && k.entityId === command.entityId) {
@@ -171,6 +197,10 @@ export function applyCommandToDevices(
                 ? "closing"
                 : "stopped";
           k.positionPercent = displayed;
+        } else if (k.kind === "humidifier" && k.entityId === command.entityId) {
+          const pct = Math.max(k.minHumidity, Math.min(k.maxHumidity, Math.round(command.value)));
+          if (connectionMode !== "homeAssistant") k.isOn = true;
+          k.targetHumidity = pct;
         } else if (k.kind === "fridge") {
           if (k.fridgeTargetEntityId === command.entityId) {
             k.fridgeTargetTemp = command.value;
@@ -192,7 +222,14 @@ export function applyCommandToDevices(
         }
         break;
       case "pressButton":
-        // An appliance reports the programme it started; nothing is shown ahead of it (#3, #4).
+        if (k.kind === "tv") {
+          if (k.turnOnButtonId === command.entityId || k.powerOnActionId === command.entityId) {
+            k.state = "on";
+            k.isScreenOff = false;
+          } else if (k.powerOffActionId === command.entityId) {
+            k.state = "standby";
+          }
+        }
         break;
       case "setMiotProperty": {
         // The drawer's row shows the value the write asked for until the next snapshot (#5).
@@ -308,6 +345,25 @@ export function inverseCommands(dev: SmartDevice, command: DeviceCommand): Devic
         if (command.entityId === k.muteSwitchEntityId) return [{ kind: "setSwitch", entityId: command.entityId, isOn: k.isMuted }];
         if (command.entityId === k.sleepModeEntityId) return [{ kind: "setSwitch", entityId: command.entityId, isOn: k.isSleepMode }];
       }
+      if (k.kind === "tv") {
+        if (command.entityId === k.muteSwitchEntityId) {
+          return [{ kind: "setSwitch", entityId: command.entityId, isOn: Boolean(k.isMuted) }];
+        }
+        if (command.entityId === k.mediaEntityId) {
+          const wasOn = k.state !== "off" && k.state !== "standby";
+          if (wasOn) {
+            if (k.turnOnButtonId) return [{ kind: "pressButton", entityId: k.turnOnButtonId }];
+            if (k.powerOnActionId) return [{ kind: "pressButton", entityId: k.powerOnActionId }];
+            return [{ kind: "setSwitch", entityId: k.mediaEntityId, isOn: true }];
+          }
+          return k.powerOffActionId
+            ? [{ kind: "pressButton", entityId: k.powerOffActionId }]
+            : [{ kind: "setSwitch", entityId: k.mediaEntityId, isOn: false }];
+        }
+      }
+      if (k.kind === "humidifier" && command.entityId === k.entityId) {
+        return [{ kind: "setSwitch", entityId: k.entityId, isOn: k.isOn }];
+      }
       if (k.kind === "appliance") {
         // macOS `assistantEffect(.power, .appliance)` and `allOffChange` restore the appliance
         // through the service that carries power; the lamp switch has no undo (manual write).
@@ -323,6 +379,15 @@ export function inverseCommands(dev: SmartDevice, command: DeviceCommand): Devic
       if (k.kind === "fridge") {
         return [{ kind: "setSelectOption", entityId: command.entityId, option: k.currentMode }];
       }
+      if (k.kind === "humidifier" && k.entityId === command.entityId && k.currentMode !== null) {
+        return [
+          { kind: "setSelectOption", entityId: k.entityId, option: k.currentMode },
+          { kind: "setSwitch", entityId: k.entityId, isOn: k.isOn },
+        ];
+      }
+      if (k.kind === "tv" && k.mediaEntityId === command.entityId && k.currentSource !== null) {
+        return [{ kind: "mediaSelectSource", entityId: k.mediaEntityId, source: k.currentSource }];
+      }
       if (k.kind === "climate" && k.entityId === command.entityId && k.swingMode != null && k.swingMode !== command.option) {
         return [{ kind: "setSelectOption", entityId: command.entityId, option: k.swingMode }];
       }
@@ -335,6 +400,12 @@ export function inverseCommands(dev: SmartDevice, command: DeviceCommand): Devic
           ? [{ kind: "setNumberValue", entityId: command.entityId, value: k.positionPercent }]
           : [];
       }
+      if (k.kind === "humidifier" && k.entityId === command.entityId && k.targetHumidity !== null) {
+        return [
+          { kind: "setHumidity", entityId: k.entityId, percent: k.targetHumidity },
+          { kind: "setSwitch", entityId: k.entityId, isOn: k.isOn },
+        ];
+      }
       if (k.kind === "fridge") {
         if (command.entityId === k.fridgeTargetEntityId && k.fridgeTargetPresent !== false) {
           return [{ kind: "setNumberValue", entityId: command.entityId, value: k.fridgeTargetTemp }];
@@ -344,9 +415,24 @@ export function inverseCommands(dev: SmartDevice, command: DeviceCommand): Devic
         }
       }
       return [];
+    case "setHumidity":
+      if (k.kind === "humidifier" && k.entityId === command.entityId) {
+        if (k.targetHumidity !== null) {
+          return [
+            { kind: "setHumidity", entityId: k.entityId, percent: k.targetHumidity },
+            { kind: "setSwitch", entityId: k.entityId, isOn: k.isOn },
+          ];
+        }
+        return !k.isOn ? [{ kind: "setSwitch", entityId: k.entityId, isOn: false }] : [];
+      }
+      return [];
     case "mediaSetVolume":
-      return k.kind === "speaker" && k.volumePresent !== false
+      return (k.kind === "speaker" || k.kind === "tv") && k.volumePresent !== false
         ? [{ kind: "mediaSetVolume", entityId: k.mediaEntityId, level: k.volumePercent / 100 }]
+        : [];
+    case "mediaSelectSource":
+      return k.kind === "tv" && k.currentSource !== null
+        ? [{ kind: "mediaSelectSource", entityId: k.mediaEntityId, source: k.currentSource }]
         : [];
     case "vacuumAction":
       // Mirrors macOS `HomeStore+Assistant.swift` vacuum undo: cleaning/on restores `start`, otherwise `returnToBase`.
@@ -358,6 +444,26 @@ export function inverseCommands(dev: SmartDevice, command: DeviceCommand): Devic
           }]
         : [];
     case "pressButton":
+      if (k.kind === "tv") {
+        const wasOn = k.state !== "off" && k.state !== "standby";
+        if (command.entityId === k.turnOnButtonId || command.entityId === k.powerOnActionId) {
+          if (!wasOn) {
+            return k.powerOffActionId
+              ? [{ kind: "pressButton", entityId: k.powerOffActionId }]
+              : [{ kind: "setSwitch", entityId: k.mediaEntityId, isOn: false }];
+          }
+          return [{ kind: "pressButton", entityId: command.entityId }];
+        }
+        if (command.entityId === k.powerOffActionId) {
+          if (wasOn) {
+            if (k.turnOnButtonId) return [{ kind: "pressButton", entityId: k.turnOnButtonId }];
+            if (k.powerOnActionId) return [{ kind: "pressButton", entityId: k.powerOnActionId }];
+            return [{ kind: "setSwitch", entityId: k.mediaEntityId, isOn: true }];
+          }
+          return [{ kind: "pressButton", entityId: command.entityId }];
+        }
+      }
+      return [];
     case "setMiotProperty":
     case "activateScene":
       // An appliance programme write and a 更多设置 write carry no previous

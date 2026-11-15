@@ -336,8 +336,10 @@ function isAdjustmentCommand(command: DeviceCommand): boolean {
     case "setFanPercentage":
     case "setFanPresetMode":
     case "setFanOscillating":
+    case "setHumidity":
     case "setNumberValue":
     case "mediaSetVolume":
+    case "mediaSelectSource":
     case "setMiotProperty":
       return true;
     default:

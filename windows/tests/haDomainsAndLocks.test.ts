@@ -67,26 +67,24 @@ describe("Home Assistant domain synthesis & golden fixtures", () => {
     const home = HomeAssistantSynthesizer.synthesize(raw);
     const map = byId(home.devices);
 
-    // 1. Full humidifier card + 6 unclaimed facets
     const humFull = map.get("humidifier-full");
     assert.ok(humFull, "humidifier-full card exists");
     assert.equal(humFull.name, "客厅加湿器");
     assert.equal(humFull.roomName, "客厅");
     assert.equal(humFull.isOnline, true);
-    assert.equal(humFull.kind.kind, "appliance");
+    assert.equal(humFull.kind.kind, "humidifier");
     assert.equal(humFull.kind.entityId, "humidifier.living");
     assert.equal(humFull.kind.isOn, true);
     assert.equal(humFull.kind.powerWritable, true);
     assert.equal(humFull.kind.currentMode, "auto");
     assert.deepEqual(humFull.kind.availableModes, ["auto", "sleep", "strong"]);
     assert.equal(humFull.kind.modeWritable, true);
-    assert.equal(humFull.kind.minTemp, 30);
-    assert.equal(humFull.kind.maxTemp, 80);
+    assert.equal(humFull.kind.targetHumidity, 55);
+    assert.equal(humFull.kind.minHumidity, 30);
+    assert.equal(humFull.kind.maxHumidity, 80);
     assert.equal(humFull.kind.step, 5);
+    assert.equal(humFull.kind.humidityWritable, true);
     assert.equal(humFull.kind.currentHumidity, 48, "entity current_humidity beats sensor.living_humidity (47)");
-    assert.equal(humFull.kind.symbolName, "humidity.fill");
-    assert.equal(humFull.kind.roomReading, true);
-    assert.equal(humFull.kind.heats, false);
     assert.equal(hasDetailDrawer(humFull, home.deviceFacets?.["humidifier-full"] ?? []), true);
     const humSubtitle = deviceStatusSummary(humFull);
     assert.ok(humSubtitle.includes("48"), `expected 48 in "${humSubtitle}"`);
@@ -97,7 +95,6 @@ describe("Home Assistant domain synthesis & golden fixtures", () => {
     assert.deepEqual(
       facets.map((f) => f.id),
       [
-        "humidifier.living#target_humidity",
         "switch.living_led",
         "select.living_fan_mode",
         "number.target_level",
@@ -105,18 +102,8 @@ describe("Home Assistant domain synthesis & golden fixtures", () => {
         "sensor.living_battery",
         "binary_sensor.living_water_shortage",
       ],
-      "prepends synthetic target humidity slider and skips claimed sensor.living_humidity, text.living_note, and config switch.living_reboot",
+      "exposes unclaimed companion facets and skips claimed sensor.living_humidity, text.living_note, and config switch.living_reboot",
     );
-
-    const humTargetSlider = facets.find((f) => f.id === "humidifier.living#target_humidity");
-    assert.equal(humTargetSlider?.kind, "slider");
-    assert.equal(humTargetSlider?.name, "target-humidity");
-    assert.equal(humTargetSlider?.serviceName, "humidifier");
-    assert.equal(humTargetSlider?.unit, "percentage");
-    assert.equal(humTargetSlider?.value, 55);
-    assert.deepEqual(humTargetSlider?.range, { min: 30, max: 80, step: 5 });
-    assert.equal(humTargetSlider?.writesByDefault, true);
-    assert.equal(humTargetSlider?.isHighValue, true);
 
     const led = facets.find((f) => f.id === "switch.living_led");
     assert.equal(led?.kind, "toggle");
@@ -151,16 +138,17 @@ describe("Home Assistant domain synthesis & golden fixtures", () => {
     assert.equal(shortage?.kind, "reading");
     assert.equal(shortage?.value, false);
 
-    // 2. Minimal humidifier card
     const humMin = map.get("humidifier-minimal");
     assert.ok(humMin);
-    assert.equal(humMin.kind.kind, "appliance");
+    assert.equal(humMin.kind.kind, "humidifier");
     assert.equal(humMin.kind.isOn, false);
     assert.deepEqual(humMin.kind.availableModes, []);
     assert.equal(humMin.kind.modeWritable, false);
-    assert.equal(humMin.kind.minTemp, 0);
-    assert.equal(humMin.kind.maxTemp, 100);
+    assert.equal(humMin.kind.targetHumidity, null);
+    assert.equal(humMin.kind.minHumidity, 0);
+    assert.equal(humMin.kind.maxHumidity, 100);
     assert.equal(humMin.kind.step, 1);
+    assert.equal(humMin.kind.humidityWritable, false);
     assert.equal(humMin.kind.currentHumidity, null);
     assert.equal(hasDetailDrawer(humMin, home.deviceFacets?.["humidifier-minimal"] ?? []), false);
     assert.equal(deviceCanTogglePower(humMin), true);
@@ -340,8 +328,9 @@ describe("Home Assistant domain synthesis & golden fixtures", () => {
 
     const humOnly = parityMap.get("hum_only_target")!;
     const humOnlyFacets = parityHome.deviceFacets?.["hum_only_target"] ?? [];
-    assert.equal(humOnlyFacets.length, 1);
-    assert.equal(humOnlyFacets[0]?.id, "humidifier.only_target#target_humidity");
+    assert.equal(humOnly.kind.kind, "humidifier");
+    assert.equal(humOnly.kind.humidityWritable, true);
+    assert.equal(humOnlyFacets.length, 0);
     assert.equal(hasDetailDrawer(humOnly, humOnlyFacets), true, "target-humidity-only humidifier expands drawer");
 
     const valvePos = parityMap.get("valve_pos_dev")!;
@@ -889,7 +878,7 @@ describe("HA service mapping, subpath identity, and cache round-trip", () => {
     assert.ok(parsed);
     assert.equal(parsed.identity, idSub);
     assert.equal(parsed.home.devices.length, withExtra.devices.length);
-    assert.equal(parsed.home.deviceFacets?.["humidifier-full"]?.length, 7);
+    assert.equal(parsed.home.deviceFacets?.["humidifier-full"]?.length, 6);
     const parsedCam = parsed.home.devices.find((d) => d.id === "cam-1");
     assert.equal(parsedCam?.kind.kind === "camera" ? parsedCam.kind.snapshotPath : "bad", null);
   });
@@ -1113,7 +1102,7 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
     const root = document.querySelector<HTMLElement>("#app")!;
     const app = new MenuMijiaWindowsApp(root);
     await refreshHADevices(app, true);
-    assert.equal(app.deviceFacets["humidifier-full"]?.length, 7);
+    assert.equal(app.deviceFacets["humidifier-full"]?.length, 6);
 
     // Toggle switch.living_led facet off via setMiotProperty -> switch.turn_off
     const ok = await applyCommand(app, {
@@ -1270,11 +1259,12 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
       moreToggle.click();
     };
 
-    // 1. Humidifier target humidity slider dispatches humidifier.set_humidity directly
-    openDrawerMoreSettings("hum-dom");
-    const humSlider = root.querySelector<HTMLInputElement>(
-      '[data-facet-number="hum-dom|humidifier.dom#target_humidity"]',
-    );
+    const humExpandBtn =
+      root.querySelector<HTMLElement>('[data-expand-device="hum-dom"]') ??
+      root.querySelector<HTMLElement>('[data-body-device="hum-dom"]');
+    assert.ok(humExpandBtn, "expected expandable trigger for hum-dom");
+    humExpandBtn.click();
+    const humSlider = root.querySelector<HTMLInputElement>('input[data-humidity="hum-dom"]');
     assert.ok(humSlider && !humSlider.disabled, "humidifier target humidity slider is enabled");
     humSlider.value = "65";
     humSlider.dispatchEvent(new window.Event("change", { bubbles: true }));
@@ -1428,9 +1418,15 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
     const liveSnap = {
       areas: [{ area_id: "living", name: "客厅" }],
       devices: [{ id: "hum-1", name: "加湿器", area_id: "living" }, { id: "cov-1", name: "窗帘", area_id: "living" }, { id: "btn-1", name: "门铃按钮", area_id: "living" }],
-      entities: [{ entity_id: "humidifier.h1", device_id: "hum-1" }, { entity_id: "cover.c1", device_id: "cov-1" }, { entity_id: "button.b1", device_id: "btn-1" }],
+      entities: [
+        { entity_id: "humidifier.h1", device_id: "hum-1" },
+        { entity_id: "switch.h1_led", device_id: "hum-1" },
+        { entity_id: "cover.c1", device_id: "cov-1" },
+        { entity_id: "button.b1", device_id: "btn-1" },
+      ],
       states: [
         { entity_id: "humidifier.h1", state: "off", attributes: { humidity: 45, min_humidity: 30, max_humidity: 80, supported_features: 1 } },
+        { entity_id: "switch.h1_led", state: "on", attributes: {} },
         { entity_id: "cover.c1", state: "closed", attributes: { current_position: 0, supported_features: 15 } },
         { entity_id: "button.b1", state: "unknown", attributes: {} },
       ],
@@ -1516,10 +1512,10 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
     };
     const dev = HomeAssistantSynthesizer.synthesize(snap).devices.find((d) => d.id === "hum_huge");
     assert.ok(dev);
-    assert.equal(dev.kind.kind, "appliance");
-    if (dev.kind.kind === "appliance") {
-      assert.equal(dev.kind.statusText, "目标 50%");
-    }
+    assert.equal(dev.kind.kind, "humidifier");
+    assert.equal(dev.kind.currentHumidity, null);
+    assert.equal(dev.kind.targetHumidity, 50);
+    assert.equal(deviceStatusSummary(dev), "目标 50%");
 
     assert.equal(
       buildEnvironmentSummary([

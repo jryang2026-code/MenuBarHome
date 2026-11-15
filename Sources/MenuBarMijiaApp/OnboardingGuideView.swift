@@ -174,6 +174,11 @@ public struct OnboardingGuideView: View {
         }
     }
 
+    private var supportedDevicesURL: URL? {
+        let page = store.effectiveLanguage == .en ? "supported-devices.md" : "supported-devices.zh-CN.md"
+        return URL(string: "https://github.com/jryang2026-code/MenuBarHome/blob/main/docs/\(page)")
+    }
+
     // MARK: - Demo entry (#144)
 
     /// The fastest way to see what this is: no account, no network. It sits above the connect form,
@@ -278,6 +283,14 @@ public struct OnboardingGuideView: View {
             .font(.system(size: 10))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
+
+            // #154: before anyone signs in, answer "will my devices even work?".
+            if !store.hasConnectedHomeSource, let supportedDevicesURL {
+                Link(destination: supportedDevicesURL) {
+                    Label(L10n.tr("我的设备支持吗？", "Will my devices work?"), systemImage: "questionmark.circle")
+                        .font(.system(size: 10.5, weight: .medium))
+                }
+            }
 
             // #47: let people try the panel before signing any account in.
             if store.homeBackend == .demo {
