@@ -290,4 +290,108 @@ struct ManualControlSafetyTests {
             "Some credentials could not be removed. Allow Keychain access and try again."
         ))
     }
+
+    @Test("Undo requires confirmation before restoring high-risk devices and preserves banner when declined")
+    @MainActor
+    func undoHighRiskRequiresConfirmation() async throws {
+        let onLight = SmartDevice(
+            id: "dev_light_on",
+            name: "书房灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.study", isOn: true))
+        )
+        let plug = SmartDevice(
+            id: "plug_heater",
+            name: "取暖器插座",
+            roomId: "living",
+            roomName: "客厅",
+            model: "chuangmi.plug.212a01",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.heater", isOn: true))
+        )
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [onLight, plug]))
+        let store = HomeStore(provider: mock, defaultsSuiteName: "test.undo.highrisk.\(UUID().uuidString)")
+        try await store.waitForTestSnapshot()
+        store.setJoinsAllOff(true, deviceId: plug.id)
+
+        _ = await store.turnAllOff()?.value
+        #expect(store.devices.first(where: { $0.id == onLight.id })?.isActiveOn == false)
+        #expect(store.devices.first(where: { $0.id == plug.id })?.isActiveOn == false)
+
+        store.manualControlConfirmationHandler = { _ in false }
+        let mixedUndo = store.undoTurnAllOff()
+        await mixedUndo?.value
+        #expect(store.devices.first(where: { $0.id == onLight.id })?.isActiveOn == true)
+        #expect(store.devices.first(where: { $0.id == plug.id })?.isActiveOn == false)
+
+        _ = await store.runAutomation(
+            intents: [DeviceIntent(targetId: plug.id, operation: .power(true))],
+            title: "开启插座"
+        )
+        _ = await store.runAutomation(
+            intents: [DeviceIntent(targetId: onLight.id, operation: .power(false))],
+            title: "关闭书房灯"
+        )
+        _ = await store.turnAllOff()?.value
+        store.manualControlConfirmationHandler = { _ in false }
+        let aborted = store.undoTurnAllOff()
+        #expect(aborted == nil)
+        #expect(store.undoBanner != nil)
+        #expect(store.devices.first(where: { $0.id == plug.id })?.isActiveOn == false)
+
+        store.manualControlConfirmationHandler = { _ in true }
+        let approved = store.undoTurnAllOff()
+        await approved?.value
+        #expect(store.devices.first(where: { $0.id == plug.id })?.isActiveOn == true)
+    }
+
+    @Test("Speaker directive commands require confirmation and return false when cancelled while TTS succeeds directly")
+    @MainActor
+    func speakerDirectiveConfirmation() async throws {
+        let speaker = SmartDevice(
+            id: "sp_pro",
+            name: "客厅小爱",
+            roomId: "living",
+            roomName: "客厅",
+            model: "xiaomi.wifispeaker.l17a",
+            isOnline: true,
+            kind: .speaker(SpeakerSpec(
+                mediaEntityId: "miot:sp_pro:2",
+                state: "idle",
+                volumePercent: 35,
+                isMuted: false,
+                muteSwitchEntityId: "miot:sp_pro:2",
+                sleepModeEntityId: nil,
+                isSleepMode: false,
+                ttsNotifyEntityId: "miot-action:sp_pro:7:3",
+                directiveNotifyEntityId: "miot-action:sp_pro:7:4",
+                volumeWritable: true
+            ))
+        )
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [speaker]))
+        let store = HomeStore(provider: mock, defaultsSuiteName: "test.speaker.directive.\(UUID().uuidString)")
+        try await store.waitForTestSnapshot()
+
+        store.manualControlConfirmationHandler = { _ in false }
+        #expect(!store.sendSpeakerText(speaker.id, text: "打开所有设备", asDirective: true))
+        #expect(await mock.executedCommands.isEmpty)
+
+        #expect(store.sendSpeakerText(speaker.id, text: "开饭了", asDirective: false))
+        let deadline1 = ContinuousClock.now + .seconds(2)
+        while await mock.executedCommands.count < 1, ContinuousClock.now < deadline1 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await mock.executedCommands.count == 1)
+
+        store.manualControlConfirmationHandler = { _ in true }
+        #expect(store.sendSpeakerText(speaker.id, text: "关闭书房灯", asDirective: true))
+        let deadline2 = ContinuousClock.now + .seconds(2)
+        while await mock.executedCommands.count < 2, ContinuousClock.now < deadline2 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await mock.executedCommands.count == 2)
+    }
 }

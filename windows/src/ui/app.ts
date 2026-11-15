@@ -88,7 +88,10 @@ import { CameraLiveController } from "./cameraLive.js";
 import { renderDeviceTile as renderDeviceTileView, renderEnvironmentStrip as renderEnvironmentStripView } from "./deviceViews.js";
 import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt, renderSettingsModal } from "./menuViews.js";
 import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
-import type { HostActivityCenter } from "./activityStackView.js";
+import {
+  partitionUndoStepsByHighRiskConfirmation,
+  type HostActivityCenter,
+} from "./activityStackView.js";
 import {
   createDefaultHostAutoSafetySession,
   type HostAutoSafetySession,
@@ -119,6 +122,9 @@ import { getSpeakerDrawerItemState } from "./detailDrawers.js";
 import { activeRoomOptions } from "./roomOrderEditor.js";
 import { foldGrouped, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
 import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
+import { getAutomationUndoRunId } from "../core/automationEngine.js";
+import { registerUndoActionBatch } from "../core/optimisticLock.js";
+import { tr3 } from "../core/safetyAndHealth.js";
 import { clearPersistedMiSessionExpired, persistMiSessionExpired } from "../core/pollingPolicy.js";
 import { bindLayoutGestures } from "./layoutGestures.js";
 import { bindSettingsEvents } from "./settingsEvents.js";
@@ -263,6 +269,15 @@ export class MenuMijiaWindowsApp {
    */
   public pendingHighRisk: PendingHighRiskConfirmation | null = null;
   private pendingHighRiskTimer: number | null = null;
+  public pendingHighRiskUndoAction: UndoAction | null = null;
+  public manualControlConfirmationHandler:
+    | ((prompt: {
+        readonly title: string;
+        readonly message: string;
+        readonly confirmTitle: string;
+        readonly cancelTitle: string;
+      }) => boolean)
+    | null = null;
   public isShowingAssistantBar = true;
   public activeSheet: "none" | "onboarding" | "settings" = "none";
   /** Open Settings category (#78); a re-render keeps it, `openSettingsSheet(tab)` routes it. */
@@ -842,6 +857,7 @@ export class MenuMijiaWindowsApp {
     if (!this.lastUndoAction || (!paused && this.lastUndoAction.expiresAtMs <= Date.now())) {
       clearUndoHoverPause(this);
       this.lastUndoAction = null;
+      this.pendingHighRiskUndoAction = null;
       this.replyBanner = {
         text: t("没有可撤销的操作（仅支持 10 分钟内的操作撤销）"),
         source: t("撤销提示"),
@@ -851,7 +867,6 @@ export class MenuMijiaWindowsApp {
     }
     const action = this.lastUndoAction;
     this.lastUndoAction = null;
-    clearUndoHoverPause(this);
     const sourceRevision = this.sourceRevision;
     const activeBatch = getRunningBatch(this, action);
     const ownerBatch =
@@ -863,16 +878,44 @@ export class MenuMijiaWindowsApp {
       if (sourceRevision !== this.sourceRevision) return;
     }
     const takenOverDevices = new Set<string>();
-    const stepsToRestore = action.steps.filter((step) => {
+    const eligibleSteps = action.steps.filter((step) => {
       if (ownerBatch && !ownerBatch.ownsDeviceWrite(this, step.deviceId)) {
         takenOverDevices.add(step.deviceId);
         return false;
       }
       return true;
     });
-    if (stepsToRestore.length === 0 && action.steps.length > 0) return;
+    if (eligibleSteps.length === 0 && action.steps.length > 0) return;
+    const autoRunId = getAutomationUndoRunId(action);
+    const confirmation =
+      ownerBatch !== null || autoRunId !== null || action.steps.length > 1
+        ? partitionUndoStepsByHighRiskConfirmation(this, eligibleSteps, {
+            isArmed: this.pendingHighRiskUndoAction === action,
+            arm: () => { this.pendingHighRiskUndoAction = action; },
+            disarm: () => { if (this.pendingHighRiskUndoAction === action) this.pendingHighRiskUndoAction = null; },
+          })
+        : { approvedSteps: eligibleSteps, skippedHighRiskSteps: [] as UndoStep[], abortedAllHighRisk: false };
+    const defaultConfirmText = tr3("需要确认后才能恢复高风险设备", "需要確認後才能恢復高風險設備", "Confirm before restoring high-risk devices", undefined, this.settings.interfaceLanguage);
+    if (confirmation.abortedAllHighRisk) {
+      if (this.lastUndoAction === null) {
+        const retryAction = eligibleSteps.length === action.steps.length ? action : { ...action, steps: eligibleSteps };
+        if (retryAction !== action) {
+          copyUndoKindSnapshots(action, retryAction);
+          if (ownerBatch) registerUndoActionBatch(retryAction, ownerBatch);
+        }
+        this.lastUndoAction = retryAction;
+        if (this.pendingHighRiskUndoAction === action) this.pendingHighRiskUndoAction = retryAction;
+      }
+      this.replyBanner = { text: confirmation.armedPromptText ?? defaultConfirmText, source: t("需要确认") };
+      this.render();
+      return;
+    }
+    clearUndoHoverPause(this);
+    const stepsToRestore = confirmation.approvedSteps;
     const failedSteps: UndoStep[] = [];
-    const blockedDevices = new Set<string>();
+    const blockedDevices = new Set<string>(
+      confirmation.skippedHighRiskSteps.map((s) => s.deviceId),
+    );
     let failureMessage = "";
     for (const step of stepsToRestore) {
       if (ownerBatch && !ownerBatch.ownsDeviceWrite(this, step.deviceId)) {
@@ -932,14 +975,27 @@ export class MenuMijiaWindowsApp {
         remainingReceipt = remaining ?? undefined;
       }
     }
-    if (failedSteps.length > 0 && this.lastUndoAction === null) {
-      const retryAction: UndoAction = { ...action, steps: failedSteps, habitReceipt: remainingReceipt };
-      copyUndoKindSnapshots(action, retryAction);
-      this.lastUndoAction = retryAction;
+    const armedRest = this.pendingHighRiskUndoAction === action ? confirmation.skippedHighRiskSteps : [];
+    const pendingSteps = [...failedSteps, ...armedRest];
+    const center = (this as { activityCenter?: { recentAutomationRuns?: Array<{ id: string; steps: readonly UndoStep[] }> } | null }).activityCenter;
+    if (autoRunId && center?.recentAutomationRuns) {
+      center.recentAutomationRuns = pendingSteps.length > 0
+        ? center.recentAutomationRuns.map((r) => (r.id === autoRunId ? { ...r, steps: pendingSteps } : r))
+        : center.recentAutomationRuns.filter((r) => r.id !== autoRunId);
     }
-    this.replyBanner = failedSteps.length > 0
-      ? { text: t("撤销未完成，{count} 项待恢复。{message}", { count: failedSteps.length, message: failureMessage }), source: t("控制失败"), isError: true }
-      : { text: t("已撤销：{summary}", { summary: action.summary }), source: t("已恢复") };
+    if (pendingSteps.length > 0 && this.lastUndoAction === null) {
+      const retryAction: UndoAction = { ...action, steps: pendingSteps, habitReceipt: remainingReceipt };
+      copyUndoKindSnapshots(action, retryAction);
+      if (ownerBatch) registerUndoActionBatch(retryAction, ownerBatch);
+      this.lastUndoAction = retryAction;
+      if (armedRest.length > 0) this.pendingHighRiskUndoAction = retryAction;
+    }
+    this.replyBanner =
+      failedSteps.length > 0
+        ? { text: t("撤销未完成，{count} 项待恢复。{message}", { count: failedSteps.length, message: failureMessage }), source: t("控制失败"), isError: true }
+        : armedRest.length > 0
+          ? { text: confirmation.armedPromptText ?? defaultConfirmText, source: t("需要确认") }
+          : { text: t("已撤销：{summary}", { summary: action.summary }), source: t("已恢复") };
     this.render();
   }
 
@@ -974,6 +1030,7 @@ export class MenuMijiaWindowsApp {
       this.pendingHighRiskTimer = null;
     }
     this.pendingHighRisk = null;
+    this.pendingHighRiskUndoAction = null;
     if (hadPending && options?.syncPin !== false) {
       invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
     }

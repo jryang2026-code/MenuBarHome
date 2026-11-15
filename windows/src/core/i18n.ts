@@ -386,6 +386,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "MenuBarHome 控制中心": ["MenuBarHome 控制中心", "MenuBarHome control center"],
   "扫码直连你的真实米家设备": ["扫码直连你的真实米家设备", "Scan to connect your real devices"],
   "手机打开「米家 App → 扫一扫」即可直接同步全屋真实设备；常驻 Windows 右下角系统托盘，点击图标或按 Alt+M 随时弹出，点击外部自动收起。": ["手机打开「米家 App → 扫一扫」即可直接同步全屋真实设备；常驻 Windows 右下角系统托盘，点击图标或按 Alt+M 随时弹出，点击外部自动收起。", "Open “Mi Home → Scan” on your phone to sync your devices. The panel lives in the Windows tray: click the icon or press Alt+M to open it, and it hides when you click outside."],
+  "直连使用非官方接口，小米可能限制请求或风控账号；介意的话请改用官方的 Home Assistant (xiaomi_home)。登录会过期，到期需重新扫码。": ["直连使用非官方接口，小米可能限制请求或风控账号；介意的话请改用官方的 Home Assistant (xiaomi_home)。登录会过期，到期需重新扫码。", "Direct mode uses an unofficial API, so Xiaomi may rate-limit or flag accounts. If that worries you, use Home Assistant (xiaomi_home) instead. Sign-in expires; you will need to scan again."],
   "云端服务器地区": ["云端服务器地区", "Cloud region"],
   "欧洲、印度、俄罗斯、新加坡、美区的米家账号请先选择对应地区，再扫码登录。": ["欧洲、印度、俄罗斯、新加坡、美区的米家账号请先选择对应地区，再扫码登录。", "For Europe, India, Russia, Singapore and US accounts, pick the matching region before scanning."],
   "OpenRouter API Key（可选，用于 Jev SystemOne 模糊意图决策）": ["OpenRouter API Key（可选，用于 Jev SystemOne 模糊意图决策）", "OpenRouter API key (optional, for Jev SystemOne intent decisions)"],

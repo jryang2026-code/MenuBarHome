@@ -795,7 +795,7 @@ export function bindDetailDrawerEvents(
     });
   });
 
-  bindSpeakerCommandBars(host);
+  bindSpeakerCommandBars(host, confirmHighRisk);
   bindCollapsedInlineSliders(host);
 }
 
@@ -1025,7 +1025,10 @@ export function getSpeakerDrawerItemState(
   };
 }
 
-function bindSpeakerCommandBars(host: MenuMijiaWindowsApp): void {
+function bindSpeakerCommandBars(
+  host: MenuMijiaWindowsApp,
+  confirmHighRisk: (deviceId: string, command: DeviceCommand, actionLabel: string) => boolean,
+): void {
   const state = ensureSpeakerDrawerState(host);
   for (const dev of host.devices) {
     if (dev.kind.kind !== "speaker") continue;
@@ -1058,6 +1061,9 @@ function bindSpeakerCommandBars(host: MenuMijiaWindowsApp): void {
         if (!currentDev || currentDev.kind.kind !== "speaker") return;
         const resolved = resolveSpeakerDrawerMode(currentDev.kind, modeVal);
         if (!resolved) return;
+        if (host.pendingHighRisk?.deviceId === devId) {
+          host.clearPendingHighRisk();
+        }
         state.modes.set(devId, resolved);
         wrap.querySelectorAll<HTMLButtonElement>("[data-speaker-mode]").forEach((pill) => {
           const pillMode = (pill.dataset.speakerMode ?? "").split("|")[1];
@@ -1087,6 +1093,9 @@ function bindSpeakerCommandBars(host: MenuMijiaWindowsApp): void {
     });
 
     inputEl.addEventListener("input", () => {
+      if (host.pendingHighRisk?.deviceId === devId) {
+        host.clearPendingHighRisk();
+      }
       state.drafts.set(devId, inputEl.value);
       syncSendDisabled();
     });
@@ -1139,6 +1148,27 @@ function bindSpeakerCommandBars(host: MenuMijiaWindowsApp): void {
         trimmed,
         activeMode === "directive" ? { silent: true } : undefined,
       );
+      if (activeMode === "directive") {
+        state.drafts.set(devId, rawValue);
+        const handler = host.manualControlConfirmationHandler;
+        if (typeof handler === "function") {
+          const allowed = handler({
+            title: tr3("确定要通过「{name}」下发指令吗？", "確定要透過「{name}」下發指令嗎？", 'Send command via "{name}"?', { name: currentDev.name }),
+            message: tr3("即将让小爱音箱静默执行指令「{text}」，这可能触发全屋设备或高风险家电，请确认并非误触。", "即將讓小愛音箱靜默執行指令「{text}」，這可能觸發全屋設備或高風險家電，請確認並非誤觸。", 'XiaoAi will silently execute "{text}", which may trigger whole-home or high-risk appliances. Please confirm this was intentional.', { text: trimmed }),
+            confirmTitle: tr3("下发指令", "下發指令", "Send Command"),
+            cancelTitle: t("取消"),
+          });
+          if (!allowed) return;
+        } else if (
+          !confirmHighRisk(
+            currentDev.id,
+            command,
+            tr3("向{name}下发指令「{text}」", "向{name}下發指令「{text}」", 'Send command "{text}" to {name}', { name: currentDev.name, text: trimmed }),
+          )
+        ) {
+          return;
+        }
+      }
       const summary =
         activeMode === "directive"
           ? tr3(

@@ -201,6 +201,34 @@ public enum AutomationAction: Equatable, Sendable {
             return L10n.format("场景：%@", "Scene: %@", name)
         }
     }
+
+    public func highRiskConfirmation(devices: [SmartDevice]) -> ManualControlConfirmation? {
+        guard case .devices(let ids, let isOn) = self else {
+            return nil
+        }
+        var seen = Set<String>()
+        var highRiskDevices: [SmartDevice] = []
+        for id in ids where seen.insert(id).inserted {
+            let intent = DeviceIntent(targetId: id, operation: .power(isOn))
+            if ManualControlPolicy.requiresConfirmation(intent, devices: devices),
+               let device = devices.first(where: { $0.id == id }) {
+                highRiskDevices.append(device)
+            }
+        }
+        guard !highRiskDevices.isEmpty else { return nil }
+        let names = highRiskDevices.map(\.name).joined(separator: L10n.tr("、", ", "))
+        let zhVerb = isOn ? "开启" : "关闭"
+        let enVerb = isOn ? "turn on" : "close"
+        return ManualControlConfirmation(
+            title: L10n.tr("确认启用高风险自动化规则？", "Enable high-risk automation rule?"),
+            message: L10n.tr(
+                "该规则会自动\(zhVerb)高风险设备（\(names)）。请确认周围无人值守时不会引发用电、加热或水气安全风险。",
+                "This rule will automatically \(enVerb) high-risk devices (\(names)). Confirm it is safe to run unattended."
+            ),
+            confirmTitle: L10n.tr("确认启用", "Enable Rule"),
+            cancelTitle: L10n.tr("取消", "Cancel")
+        )
+    }
 }
 
 extension AutomationAction: Codable {
@@ -556,6 +584,7 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
     public var triggerOptions: AutomationTriggerOptions
     /// AND-ed with the trigger. Older rules decode with no conditions and behave exactly as before.
     public var conditions: AutomationConditions
+    public var highRiskApproved: Bool
 
     public init(
         id: UUID = UUID(),
@@ -563,7 +592,8 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         action: AutomationAction,
         isEnabled: Bool = true,
         triggerOptions: AutomationTriggerOptions = AutomationTriggerOptions(),
-        conditions: AutomationConditions = AutomationConditions()
+        conditions: AutomationConditions = AutomationConditions(),
+        highRiskApproved: Bool = false
     ) {
         self.id = id
         self.trigger = trigger
@@ -571,6 +601,7 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         self.isEnabled = isEnabled
         self.triggerOptions = triggerOptions
         self.conditions = conditions
+        self.highRiskApproved = highRiskApproved
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -580,6 +611,7 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         case action
         case triggerOptions
         case conditions
+        case highRiskApproved
     }
 
     public init(from decoder: any Decoder) throws {
@@ -593,6 +625,7 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
             ?? AutomationTriggerOptions()
         conditions = try container.decodeIfPresent(AutomationConditions.self, forKey: .conditions)
             ?? AutomationConditions()
+        highRiskApproved = try container.decodeIfPresent(Bool.self, forKey: .highRiskApproved) ?? false
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -603,6 +636,11 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         try container.encode(action, forKey: .action)
         try container.encode(triggerOptions, forKey: .triggerOptions)
         try container.encode(conditions, forKey: .conditions)
+        try container.encode(highRiskApproved, forKey: .highRiskApproved)
+    }
+
+    public func highRiskConfirmation(devices: [SmartDevice]) -> ManualControlConfirmation? {
+        action.highRiskConfirmation(devices: devices)
     }
 }
 

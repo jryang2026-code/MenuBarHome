@@ -429,6 +429,18 @@ final class AutomationEngine {
     }
 
     private func execute(_ rule: AutomationRule, store: HomeStore) async {
+        if rule.highRiskConfirmation(devices: store.devices) != nil, !rule.highRiskApproved {
+            var stored = ruleStore.load()
+            if let idx = stored.firstIndex(where: { $0.id == rule.id }) {
+                stored[idx].isEnabled = false
+                ruleStore.save(stored)
+            }
+            store.showToast(
+                L10n.tr("高风险自动化规则需在设置中重新确认启用", "High-risk automation rule requires re-confirmation in Settings"),
+                isError: true
+            )
+            return
+        }
         switch rule.action {
         // Quick actions aggregate devices in the store and already show their own toast plus undo
         // banner; the longer automation window keeps the banner usable after unlocking (#59).
@@ -439,18 +451,25 @@ final class AutomationEngine {
             let intents = rule.action.intents()
             guard !intents.isEmpty else { return }
             let summary = rule.action.summary(devices: store.devices, scenes: store.scenes)
-            let stateBefore = store.assistantState
-            _ = await store.runAutomation(
+            let title = L10n.format("自动化：%@", "Automation: %@", summary)
+            let outcome = await store.runAutomation(
                 intents: intents,
-                title: L10n.format("自动化：%@", "Automation: %@", summary)
+                title: title
             )
-            // `runAutomation` reports failures through the assistant state; surface only a *new*
-            // failure as a toast, because the assistant bar (and its error text) may be closed when
-            // a rule fires.
-            if case .failed(let message) = store.assistantState, store.assistantState != stateBefore {
+            if outcome.succeededCount == 0 {
+                let message = outcome.errorMessage ?? L10n.tr("控制执行失败", "Execution failed")
                 store.showToast(message, isError: true)
+            } else if outcome.failedCount > 0 {
+                let summaryDetail = L10n.format(
+                    "成功 %@ 项，%@ 项失败",
+                    "%@ succeeded, %@ failed",
+                    String(outcome.succeededCount),
+                    String(outcome.failedCount)
+                )
+                let detail = outcome.errorMessage.map { "\(summaryDetail)：\($0)" } ?? summaryDetail
+                store.showToast("\(title)（\(detail)）", isError: true)
             } else {
-                store.showToast(L10n.format("自动化：%@", "Automation: %@", summary))
+                store.showToast(title)
             }
         }
     }

@@ -1351,18 +1351,27 @@ extension HomeStore {
         )
     }
 
-    public func sendSpeakerText(_ deviceId: String, text: String, asDirective: Bool) {
-        guard !rejectWritesBlockedByMiSession() else { return }
-        guard !rejectControlWhileLocked() else { return }
+    @discardableResult
+    public func sendSpeakerText(_ deviceId: String, text: String, asDirective: Bool) -> Bool {
+        guard !rejectWritesBlockedByMiSession() else { return false }
+        guard !rejectControlWhileLocked() else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               let idx = devices.firstIndex(where: { $0.id == deviceId }),
-              case .speaker(let s) = devices[idx].kind else { return }
+              case .speaker(let s) = devices[idx].kind else { return false }
 
         let targetEid = asDirective ? s.directiveNotifyEntityId : s.ttsNotifyEntityId
         guard let eid = targetEid else {
             showToast(L10n.tr("该音箱不支持此指令通道", "This speaker does not support that channel"), isError: true)
-            return
+            return false
+        }
+
+        if asDirective {
+            let prompt = ManualControlPolicy.speakerDirectiveConfirmation(text: trimmed, for: devices[idx])
+            guard let handler = manualControlConfirmationHandler, handler(prompt) else {
+                showToast(L10n.tr("已取消高风险操作", "High-risk action cancelled."), isError: true)
+                return false
+            }
         }
 
         Task {
@@ -1377,6 +1386,7 @@ extension HomeStore {
                 showToast(L10n.tr("发送失败：\(error.localizedDescription)", "Failed to send: \(error.localizedDescription)"), isError: true)
             }
         }
+        return true
     }
 
     public func pressDeviceButton(_ buttonEntityId: String, label: String) {
