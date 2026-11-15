@@ -3,6 +3,7 @@ import Foundation
 import Testing
 @testable import MijiaCore
 
+@Suite(.serialized)
 struct UpdateCheckerTests {
     @Test("A release page outside github.com falls back to the project's releases page")
     func foreignReleasePageFallsBack() async throws {
@@ -1233,46 +1234,39 @@ private final class UpdateStreamStubProtocol: URLProtocol {
 
     typealias Handler = @Sendable (URLRequest) -> StubResponse
 
-    private static let headerField = "X-Update-Stub-Session"
     private static let handlersLock = NSLock()
-    nonisolated(unsafe) private static var handlers: [String: Handler] = [:]
+    nonisolated(unsafe) private static var nextID: UInt64 = 0
+    nonisolated(unsafe) private static var activeHandler: (id: UInt64, handler: Handler)?
 
     private let stateLock = NSLock()
     private var isStopped = false
 
     static func makeSession(handler: @escaping Handler) -> (URLSession, @Sendable () -> Void) {
-        let id = UUID().uuidString
         handlersLock.lock()
-        handlers[id] = handler
+        nextID &+= 1
+        let id = nextID
+        activeHandler = (id, handler)
         handlersLock.unlock()
 
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [UpdateStreamStubProtocol.self]
-        configuration.httpAdditionalHeaders = [headerField: id]
         let session = URLSession(configuration: configuration)
         let unregister: @Sendable () -> Void = {
             handlersLock.lock()
-            handlers.removeValue(forKey: id)
+            if activeHandler?.id == id {
+                activeHandler = nil
+            }
             handlersLock.unlock()
         }
         return (session, unregister)
     }
 
-    override class func canInit(with request: URLRequest) -> Bool {
-        request.value(forHTTPHeaderField: headerField) != nil
-    }
-
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
-        request
-    }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        guard let id = request.value(forHTTPHeaderField: Self.headerField) else {
-            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
-            return
-        }
         Self.handlersLock.lock()
-        let handler = Self.handlers[id]
+        let handler = Self.activeHandler?.handler
         Self.handlersLock.unlock()
         guard let handler else {
             client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
