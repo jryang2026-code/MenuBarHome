@@ -1452,9 +1452,9 @@ public struct AllOffHeaderCopy: Equatable, Sendable {
         let excluded = activeDeviceCount - count
         let helper: String?
         if excluded > 0, excludedIncludesPlug {
-            helper = L10n.tr("全关不含插座等 \(excluded) 台", "All Off leaves out \(excluded), including plugs")
+            helper = L10n.tr("保留 \(excluded) 台开启（含插座）", "\(excluded) stay on (incl. plugs)")
         } else if excluded > 0 {
-            helper = L10n.tr("全关不含这 \(excluded) 台", "All Off leaves out \(excluded)")
+            helper = L10n.tr("保留 \(excluded) 台开启", "\(excluded) stay on")
         } else {
             helper = nil
         }

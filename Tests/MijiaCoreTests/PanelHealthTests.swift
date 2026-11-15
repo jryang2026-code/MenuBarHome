@@ -247,7 +247,7 @@ struct PanelHealthTests {
         try await L10n.$overrideLanguage.withValue(.zhHans) {
             let copy = store.allOffHeaderCopy(scopeName: "书房")
             #expect(copy.title == "全关 书房 1 台")
-            #expect(copy.helper == "全关不含插座等 1 台")
+            #expect(copy.helper == "保留 1 台开启（含插座）")
         }
 
         let cameraProvider = MockHomeProvider(snapshot: SynthesizedHome(
@@ -257,7 +257,7 @@ struct PanelHealthTests {
         let cameraStore = try await makeStore(provider: cameraProvider)
         try await L10n.$overrideLanguage.withValue(.zhHans) {
             let copy = cameraStore.allOffHeaderCopy(scopeName: nil)
-            #expect(copy.helper == "全关不含这 1 台")
+            #expect(copy.helper == "保留 1 台开启")
             #expect(copy.helper?.contains("插座") == false)
         }
     }
