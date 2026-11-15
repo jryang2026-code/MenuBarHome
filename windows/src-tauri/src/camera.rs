@@ -82,6 +82,8 @@ pub(crate) async fn bridge_hls_camera_stream(
 ) -> Result<String, String> {
     let _bridge_order = CAMERA_BRIDGE_LOCK.lock().await;
     let parsed = validate_hls_stream_url(&hls_url)?;
+    let allowed_origins = crate::network::allowed_origins_snapshot()?;
+    check_hls_stream_url_allowed(&parsed, &allowed_origins)?;
     ensure_go2rtc_running(&app).await?;
     let session = current_go2rtc_session()?;
     let clean_did = sanitize_camera_did(&did);
@@ -161,9 +163,6 @@ pub(crate) async fn put_stream(
         .send()
         .await
         .map_err(|e| e.to_string())?;
-    if let Some(path) = go2rtc_config_path() {
-        let _ = tauri::async_runtime::spawn_blocking(move || restrict_secret_file(&path)).await;
-    }
     if resp.status().is_success() {
         Ok(())
     } else {
@@ -185,9 +184,6 @@ pub(crate) async fn stop_bridge(
                 &format!("/api/streams?src={}", urlencoding_simple(name)),
             );
             let _ = authed(http.delete(&url), session).send().await;
-        }
-        if let Some(path) = go2rtc_config_path() {
-            let _ = tauri::async_runtime::spawn_blocking(move || restrict_secret_file(&path)).await;
         }
     }
     let no_active_relays = if let Ok(mut relays) = CAMERA_RELAYS.lock() {
@@ -224,18 +220,41 @@ static GO2RTC_SESSION: LazyLock<std::sync::Mutex<Option<Go2RtcOwnerRecord>>> =
 static CAMERA_BRIDGE_LOCK: LazyLock<tauri::async_runtime::Mutex<()>> =
     LazyLock::new(|| tauri::async_runtime::Mutex::new(()));
 
-pub(crate) fn scrub_persisted_streams_from_config() {
-    let Some(cfg_path) = go2rtc_config_path() else {
-        return;
-    };
-    let Ok(existing) = std::fs::read_to_string(&cfg_path) else {
-        return;
+pub(crate) fn scrub_persisted_streams_in_file(cfg_path: &std::path::Path) -> bool {
+    let Ok(existing) = std::fs::read_to_string(cfg_path) else {
+        return false;
     };
     if !existing.contains("streams:") {
-        return;
+        return false;
     }
     let cleaned = format!("{}\n", base_go2rtc_config(&existing));
-    let _ = write_secret_file(&cfg_path, &cleaned);
+    write_secret_file(cfg_path, &cleaned).is_ok()
+}
+
+pub(crate) fn scrub_persisted_streams_from_config() {
+    if let Some(cfg_path) = go2rtc_config_path() {
+        let _ = scrub_persisted_streams_in_file(&cfg_path);
+    }
+}
+
+pub(crate) fn scrub_stale_camera_config_in_dir(bin_dir: &std::path::Path) -> bool {
+    let owner_alive = std::fs::read_to_string(bin_dir.join("go2rtc.owner"))
+        .ok()
+        .and_then(|text| parse_owner(&text))
+        .is_some_and(|record| process_is_alive(record.pid));
+    if owner_alive {
+        return false;
+    }
+    scrub_persisted_streams_in_file(&bin_dir.join("go2rtc.yaml"))
+}
+
+pub(crate) fn scrub_stale_camera_config_on_startup() {
+    tauri::async_runtime::block_on(async {
+        let _bridge_order = CAMERA_BRIDGE_LOCK.lock().await;
+        if existing_owned_record().is_none() {
+            scrub_persisted_streams_from_config();
+        }
+    });
 }
 
 pub(crate) fn shutdown_camera_daemons() {
@@ -697,11 +716,6 @@ pub(crate) fn write_secret_file(path: &std::path::Path, contents: &str) -> Resul
 }
 
 pub(crate) fn restrict_secret_file(path: &std::path::Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
     #[cfg(windows)]
     {
         let Ok(user) = std::env::var("USERNAME") else {
@@ -934,11 +948,6 @@ pub(crate) fn process_is_alive(pid: u32) -> bool {
             CloseHandle(handle);
             ok != 0 && code == STILL_ACTIVE
         }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = pid;
-        false
     }
 }
 
@@ -1944,6 +1953,33 @@ fn configure_cs2_udp_socket(sock: &std::net::UdpSocket) {
     }
 }
 
+#[cfg(windows)]
+fn wait_for_udp_relay_readable(
+    local_relay: &std::net::UdpSocket,
+    lan_sock: &std::net::UdpSocket,
+    timeout_ms: i32,
+) {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{POLLRDNORM, SOCKET, WSAPOLLFD, WSAPoll};
+
+    let mut fds = [
+        WSAPOLLFD {
+            fd: local_relay.as_raw_socket() as SOCKET,
+            events: POLLRDNORM,
+            revents: 0,
+        },
+        WSAPOLLFD {
+            fd: lan_sock.as_raw_socket() as SOCKET,
+            events: POLLRDNORM,
+            revents: 0,
+        },
+    ];
+    let rc = unsafe { WSAPoll(fds.as_mut_ptr(), fds.len() as u32, timeout_ms) };
+    if rc < 0 {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 pub(crate) fn spawn_cs2_udp_relay(
     cam_ip: std::net::Ipv4Addr,
 ) -> Result<(u16, std::sync::Arc<AtomicBool>), String> {
@@ -2038,7 +2074,8 @@ pub(crate) fn spawn_cs2_udp_relay(
             }
 
             if !transferred {
-                std::thread::sleep(Duration::from_millis(1));
+                #[cfg(windows)]
+                wait_for_udp_relay_readable(&local_relay, &lan_sock, 50);
             }
         }
     });
