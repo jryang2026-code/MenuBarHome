@@ -5103,9 +5103,17 @@ input[type="checkbox"]:checked:active:not(:disabled)::after {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: min(220px, 35%);
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
-#app[data-panel-theme="classic"] .cc-Classic-upper-stack:empty,
+#app[data-panel-theme="classic"] .cc-classic-upper-stack:has(details.win-camera-card[open]) {
+  max-height: min(280px, 44%);
+}
+
 #app[data-panel-theme="classic"] .cc-classic-upper-stack:empty {
   display: none;
 }
@@ -5164,12 +5172,15 @@ input[type="checkbox"]:checked:active:not(:disabled)::after {
   border-color: rgba(0, 0, 0, 0.08);
 }
 
-#app[data-panel-theme="classic"] .cc-tile.is-size-small:not(.is-expanded) {
-  grid-column: span 3;
+#app[data-panel-theme="classic"] .cc-tile.is-size-small:not(.is-expanded),
+#app[data-panel-theme="classic"] .cc-devices-grid.is-flow > .cc-tile.is-size-small:not(.is-expanded) {
+  grid-column: span 3 !important;
 }
 
-#app[data-panel-theme="classic"] .cc-tile.is-size-half:not(.is-expanded):not(.is-span-row) {
-  grid-column: span 6;
+#app[data-panel-theme="classic"] .cc-tile.is-size-half:not(.is-expanded):not(.is-span-row),
+#app[data-panel-theme="classic"] .cc-sensor.is-compact.is-size-half:not(.is-expanded):not(.is-span-row),
+#app[data-panel-theme="classic"] .cc-devices-grid.is-flow > .cc-sensor.is-compact.is-size-half:not(.is-expanded):not(.is-span-row) {
+  grid-column: span 6 !important;
 }
 
 #app[data-panel-theme="classic"] .cc-tile.is-size-hero:not(.is-expanded) {
@@ -5185,7 +5196,7 @@ input[type="checkbox"]:checked:active:not(:disabled)::after {
 #app[data-panel-theme="classic"] .cc-tile.is-size-panel,
 #app[data-panel-theme="classic"] .cc-tile.is-expanded,
 #app[data-panel-theme="classic"] .cc-tile.is-span-row {
-  grid-column: 1 / -1;
+  grid-column: 1 / -1 !important;
 }
 
 #app[data-panel-theme="classic"] .cc-tile .cc-tile-orb {
