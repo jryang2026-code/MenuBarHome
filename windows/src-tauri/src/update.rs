@@ -80,8 +80,36 @@ const STAGED_INSTALLER_PREFIX: &str = "MenuBarMijia-update-";
 const UPDATE_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const UPDATE_METADATA_TIMEOUT: Duration = Duration::from_secs(30);
 const UPDATE_DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+// Matches UpdateChecker.maxReleaseFileBytes on macOS for manifests and signatures.
+const MAX_RELEASE_FILE_BYTES: usize = 64 * 1024;
 const MAX_INSTALLER_DOWNLOAD_BYTES: usize = 256 * 1024 * 1024;
 static STAGED_INSTALLER_SEQ: AtomicU64 = AtomicU64::new(0);
+
+async fn read_bounded_update_metadata(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    let too_large = || format!("{label}体积超出安全上限，已中止下载");
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|err| format!("读取{label}失败：{err}"))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(too_large());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -369,10 +397,12 @@ pub(crate) async fn install_update(app: AppHandle, asset: InstallerAssetPayload)
             manifest_resp.status().as_u16()
         ));
     }
-    let manifest_bytes = tokio::time::timeout(UPDATE_METADATA_TIMEOUT, manifest_resp.bytes())
-        .await
-        .map_err(|_| "读取更新清单超时".to_string())?
-        .map_err(|err| format!("读取更新清单失败：{err}"))?;
+    let manifest_bytes = tokio::time::timeout(
+        UPDATE_METADATA_TIMEOUT,
+        read_bounded_update_metadata(manifest_resp, MAX_RELEASE_FILE_BYTES, "更新清单"),
+    )
+    .await
+    .map_err(|_| "读取更新清单超时".to_string())??;
 
     let sig_resp = tokio::time::timeout(
         UPDATE_METADATA_TIMEOUT,
@@ -390,9 +420,13 @@ pub(crate) async fn install_update(app: AppHandle, asset: InstallerAssetPayload)
             sig_resp.status().as_u16()
         ));
     }
-    let sig_text = tokio::time::timeout(UPDATE_METADATA_TIMEOUT, sig_resp.text())
-        .await
-        .map_err(|_| "读取 Ed25519 更新签名超时".to_string())?
+    let sig_bytes = tokio::time::timeout(
+        UPDATE_METADATA_TIMEOUT,
+        read_bounded_update_metadata(sig_resp, MAX_RELEASE_FILE_BYTES, "Ed25519 更新签名"),
+    )
+    .await
+    .map_err(|_| "读取 Ed25519 更新签名超时".to_string())??;
+    let sig_text = String::from_utf8(sig_bytes)
         .map_err(|err| format!("读取 Ed25519 更新签名失败：{err}"))?;
 
     let mut response = tokio::time::timeout(
@@ -540,6 +574,88 @@ fn emit_update_progress(app: &AppHandle, payload: &UpdateProgressPayload) {
 #[cfg(test)]
 mod update_progress_tests {
     use super::*;
+
+    fn read_metadata_fixture(raw_response: &[u8], max_bytes: usize) -> Result<Vec<u8>, String> {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind metadata fixture");
+        let addr = listener.local_addr().expect("metadata fixture address");
+        let raw_response = raw_response.to_vec();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept metadata request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("set fixture read timeout");
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).expect("read metadata request");
+                request.push(byte[0]);
+            }
+            stream.write_all(&raw_response).expect("write metadata response");
+        });
+        let result = tauri::async_runtime::block_on(async {
+            let response = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .expect("build metadata fixture client")
+                .get(format!("http://{addr}"))
+                .send()
+                .await
+                .expect("receive metadata fixture headers");
+            read_bounded_update_metadata(response, max_bytes, "测试更新文件").await
+        });
+        server.join().expect("metadata fixture server");
+        result
+    }
+
+    #[test]
+    fn bounded_metadata_rejects_declared_oversize_before_reading_body() {
+        let err = read_metadata_fixture(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\n",
+            8,
+        )
+        .expect_err("oversize header must reject even when no body arrives");
+        assert_eq!(err, "测试更新文件体积超出安全上限，已中止下载");
+    }
+
+    #[test]
+    fn bounded_metadata_accepts_exact_limit_and_empty_body() {
+        for response in [
+            &b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n12345678"[..],
+            &b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n12345678"[..],
+            &b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\n123\r\n5\r\n45678\r\n0\r\n\r\n"[..],
+        ] {
+            assert_eq!(read_metadata_fixture(response, 8).unwrap(), b"12345678");
+        }
+        assert!(read_metadata_fixture(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", 8)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn bounded_metadata_rejects_streamed_oversize_without_content_length() {
+        for response in [
+            &b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n123456789"[..],
+            &b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n1234\r\n5\r\n56789\r\n0\r\n\r\n"[..],
+        ] {
+            assert_eq!(
+                read_metadata_fixture(response, 8).unwrap_err(),
+                "测试更新文件体积超出安全上限，已中止下载"
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_metadata_propagates_truncated_body_error() {
+        let err = read_metadata_fixture(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n1234",
+            8,
+        )
+        .expect_err("truncated metadata must not be accepted");
+        assert!(err.starts_with("读取测试更新文件失败："), "{err}");
+    }
 
     #[test]
     fn update_progress_payload_serializes_camel_case_and_computes_throughput() {
