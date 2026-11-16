@@ -247,6 +247,7 @@ export interface ConnectionsAndDiagHost {
     readonly activeLiveCameraId: string | null;
     readonly liveCameraKeepAliveTimer: number | null;
     closeCameraLiveView(): void;
+    discardRetainedCloudSessions?(): void;
   };
   readonly credentialVault?: CredentialVault;
   readonly transport?: HttpTransport;
@@ -538,6 +539,7 @@ async function performSignOutSingleMiAccountOnHost(
       if (host.cameraLive?.activeLiveCameraId || host.cameraLive?.liveCameraKeepAliveTimer) {
         host.cameraLive.closeCameraLiveView();
       }
+      host.cameraLive?.discardRetainedCloudSessions?.();
       host.expandedDeviceId = null;
       host.waitingDeviceIds?.clear();
       host.settings.cachedXiaomiDevices = [];
