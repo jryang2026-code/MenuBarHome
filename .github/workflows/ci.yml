@@ -353,7 +353,10 @@ jobs:
       - name: Toolchain info
         run: xcodebuild -version && swift --version
       # 只有 main 写缓存：key 带 sha，PR 也写的话一次运行 370 MB，很快撑满仓库的 10 GB。
-      - id: swift-debug-cache
+      - name: Restore Swift build cache
+        id: swift-debug-cache
+        continue-on-error: true
+        timeout-minutes: 10
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build
@@ -361,6 +364,9 @@ jobs:
           key: spm-debug-v4-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
           restore-keys: |
             spm-debug-v4-${{ runner.os }}-${{ runner.arch }}-
+      - name: Reset incomplete Swift build cache
+        if: steps.swift-debug-cache.outcome != 'success'
+        run: rm -rf .build
       - name: Restore source mtimes for the Swift cache
         run: bash scripts/ci_restore_mtimes.sh
       - name: Match the maintainer's region
@@ -384,10 +390,12 @@ jobs:
           du -sh .build 2>/dev/null || true
       - name: Save Swift build cache
         if: success() && github.ref == 'refs/heads/main' && steps.swift-debug-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        timeout-minutes: 10
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build
-          key: ${{ steps.swift-debug-cache.outputs.cache-primary-key }}
+          key: ${{ steps.swift-debug-cache.outputs.cache-primary-key || format('spm-debug-v4-{0}-{1}-{2}', runner.os, runner.arch, github.sha) }}
 
   macos-appintents:
     needs: changes
@@ -458,7 +466,10 @@ jobs:
           xcode-version: "26.6"
       - name: Toolchain info
         run: xcodebuild -version && swift --version
-      - id: swift-release-cache
+      - name: Restore Swift build cache
+        id: swift-release-cache
+        continue-on-error: true
+        timeout-minutes: 10
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build
@@ -466,6 +477,9 @@ jobs:
           key: spm-release-v3-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
           restore-keys: |
             spm-release-v3-${{ runner.os }}-${{ runner.arch }}-
+      - name: Reset incomplete Swift build cache
+        if: steps.swift-release-cache.outcome != 'success'
+        run: rm -rf .build
       - name: Restore source mtimes for the Swift cache
         run: bash scripts/ci_restore_mtimes.sh
       - id: go2rtc-ptz-cache
@@ -491,10 +505,12 @@ jobs:
           du -sh .build 2>/dev/null || true
       - name: Save Swift build cache
         if: success() && github.ref == 'refs/heads/main' && steps.swift-release-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        timeout-minutes: 10
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build
-          key: ${{ steps.swift-release-cache.outputs.cache-primary-key }}
+          key: ${{ steps.swift-release-cache.outputs.cache-primary-key || format('spm-release-v3-{0}-{1}-{2}', runner.os, runner.arch, github.sha) }}
 
   ci:
     # 始终运行的汇总检查。无需 checkout；仅核对本次实际命中的面是否全绿。
