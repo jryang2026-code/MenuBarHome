@@ -24,6 +24,7 @@ import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { hasPendingMiVaultDeletion } from "../src/ui/speechGuard.js";
 import {
+  PROVIDER_ENV_VARS,
   createInitialAssistantDraftState,
   importAmbientAssistantKey,
   resolveAssistantDraftForSave,
@@ -751,47 +752,61 @@ describe("Wave 2 · A9 AI Assistant Enhancements (askWhenUnsure, Connection Prob
     const customHit = await importAmbientAssistantKey("custom", () => "sk-never");
     assert.equal(customHit, null);
 
-    let holdEnvLookup = false;
-    let releaseEnvLookup = (_val: string): void => {};
-    Object.defineProperty(window, "__TAURI_INTERNALS__", {
-      value: {
-        invoke: async (cmd: string, args?: Record<string, unknown>) => {
-          if (cmd === "get_env_var" && args?.name === "OPENROUTER_API_KEY") {
-            if (holdEnvLookup) {
-              return new Promise<string>((resolve) => {
-                releaseEnvLookup = resolve;
-              });
+    const envNames = Object.values(PROVIDER_ENV_VARS).flat();
+    const savedEnv = new Map<string, string | undefined>();
+    for (const name of envNames) {
+      savedEnv.set(name, process.env[name]);
+      delete process.env[name];
+    }
+
+    try {
+      let holdEnvLookup = false;
+      let releaseEnvLookup = (_val: string): void => {};
+      Object.defineProperty(window, "__TAURI_INTERNALS__", {
+        value: {
+          invoke: async (cmd: string, args?: Record<string, unknown>) => {
+            if (cmd === "get_env_var" && args?.name === "OPENROUTER_API_KEY") {
+              if (holdEnvLookup) {
+                return new Promise<string>((resolve) => {
+                  releaseEnvLookup = resolve;
+                });
+              }
+              return "sk-or-from-tauri-env";
             }
-            return "sk-or-from-tauri-env";
-          }
-          return undefined;
+            return undefined;
+          },
         },
-      },
-      configurable: true,
-    });
+        configurable: true,
+      });
 
-    startDemoApp();
-    await click("#btn-settings");
-    await click('[data-settings-tab="assistant"]');
-    await click("#btn-import-env-key");
-    await waitFor(
-      () => field("#settings-api-key").value === "sk-or-from-tauri-env",
-      "Expected API key input to receive imported env key",
-    );
-    assert.match(element("#settings-env-import-status").textContent ?? "", /OPENROUTER_API_KEY/);
+      startDemoApp();
+      await click("#btn-settings");
+      await click('[data-settings-tab="assistant"]');
+      await click("#btn-import-env-key");
+      await waitFor(
+        () => field("#settings-api-key").value === "sk-or-from-tauri-env",
+        "Expected API key input to receive imported env key",
+      );
+      assert.match(element("#settings-env-import-status").textContent ?? "", /OPENROUTER_API_KEY/);
 
-    holdEnvLookup = true;
-    await click("#btn-import-env-key");
-    await click('[data-ai-preset="deepseek"]');
-    type("#settings-api-key", "sk-deepseek-manual");
-    releaseEnvLookup("sk-stale-openrouter-key");
-    await setImmediate();
-    await setImmediate();
-    assert.equal(
-      field("#settings-api-key").value,
-      "sk-deepseek-manual",
-      "Stale env lookup from previous provider must not overwrite the newly selected provider's key",
-    );
+      holdEnvLookup = true;
+      await click("#btn-import-env-key");
+      await click('[data-ai-preset="deepseek"]');
+      type("#settings-api-key", "sk-deepseek-manual");
+      releaseEnvLookup("sk-stale-openrouter-key");
+      await setImmediate();
+      await setImmediate();
+      assert.equal(
+        field("#settings-api-key").value,
+        "sk-deepseek-manual",
+        "Stale env lookup from previous provider must not overwrite the newly selected provider's key",
+      );
+    } finally {
+      for (const [name, val] of savedEnv) {
+        if (val === undefined) delete process.env[name];
+        else process.env[name] = val;
+      }
+    }
   });
 });
 
