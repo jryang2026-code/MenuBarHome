@@ -1,5 +1,6 @@
 import { HomeAssistantClient, HomeAssistantSynthesizer, haServiceCall, homeAssistantCommand, homeAssistantIdentity, parseCachedHAHome } from "../src/core/homeAssistant.js";
 import { deviceCategory, isSwitchedLightDevice } from "../src/core/assistant/deviceCategory.js";
+import { setLanguage } from "../src/core/i18n.js";
 import { buildRaycastSnapshot } from "../src/core/raycastSnapshot.js";
 import {
   cameraStreamSubtype,
@@ -2721,6 +2722,105 @@ it("classifies switched lights on plug cards as light while excluding hazardous 
       assert.equal(decision.intents.length, 0, `negative ModelActionPolicy holds OFF (${dev.id}:${dev.name})`);
     }
   }
+});
+
+it("shows a rename hint only for a default-named wall switch and does not change confirmation (#104)", () => {
+  const plug = (
+    id: string,
+    name: string,
+    model: string,
+    overrides: { switchEntityId?: string; powerWritable?: boolean } = {},
+  ): SmartDevice => ({
+    id,
+    name,
+    roomId: "hall",
+    roomName: "玄关",
+    model,
+    isOnline: true,
+    kind: {
+      kind: "plug",
+      switchEntityId: overrides.switchEntityId ?? `switch.${id}`,
+      isOn: false,
+      powerWatts: null,
+      childLockEntityId: null,
+      isChildLocked: false,
+      ...(overrides.powerWritable !== undefined ? { powerWritable: overrides.powerWritable } : {}),
+    },
+  });
+  const confirms = (dev: SmartDevice, isOn: boolean) =>
+    ManualControlPolicy.requiresConfirmation({ targetId: dev.id, operation: { kind: "power", isOn } }, [dev]);
+  const hintOf = (dev: SmartDevice) => ManualControlPolicy.wallSwitchLightHint(dev);
+
+  const walls = [
+    plug("left", "左键", "lumi.switch.b1nacn02"),
+    plug("middle", "中键", "lumi.switch.b2nacn02"),
+    plug("right", "右键", "lemesh.switch.sw2f12"),
+    plug("channel", "一路开关", "090615.switch.09dh1"),
+  ];
+  for (const dev of walls) {
+    assert.equal(confirms(dev, true), true, `${dev.name} still confirms`);
+    assert.equal(confirms(dev, false), false, `${dev.name} off stays direct`);
+    assert.match(hintOf(dev) ?? "", /加上「灯」/);
+  }
+
+  const silent = [
+    plug("socket", "书房插座", "cuco.plug.v3"),
+    plug("heater-plug", "取暖器插座", "chuangmi.plug.212a01"),
+    plug("named-switch", "一路开关", "cuco.plug.cp1"),
+    plug("uv", "杀菌灯", "lumi.switch.b1nacn02"),
+    plug("bath", "浴霸取暖灯", "lumi.switch.b1nacn02"),
+    plug("button", "左键", "lumi.switch.b1nacn02", { switchEntityId: "button.left" }),
+    plug("breaker", "左键", "lumi.switch.b1nacn02", { powerWritable: false }),
+    plug("oven", "左键", "chunmi.oven.s1"),
+    plug("already", "厨房灯", "lumi.switch.b1nacn02"),
+  ];
+  for (const dev of silent) {
+    assert.equal(hintOf(dev), null, `${dev.name} (${dev.model}) has no rename hint`);
+    assert.equal(confirms(dev, true), dev.name !== "厨房灯", `${dev.name} confirmation unchanged`);
+  }
+
+  const heater: SmartDevice = {
+    id: "heater",
+    name: "电暖器",
+    roomId: "study",
+    roomName: "书房",
+    model: "xiaomi.heater.v1",
+    isOnline: true,
+    kind: {
+      kind: "climate",
+      entityId: "climate.heater",
+      isOn: false,
+      hvacMode: "off",
+      availableModes: ["off", "heat"],
+      targetTemperature: 22,
+      currentTemperature: null,
+      minTemp: 16,
+      maxTemp: 30,
+      step: 1,
+      fanMode: null,
+      availableFanModes: [],
+    },
+  };
+  assert.equal(confirms(heater, true), true);
+  assert.equal(hintOf(heater), null);
+  assert.equal(
+    ManualControlPolicy.wallSwitchLightHintForIntents(
+      [
+        { targetId: walls[0]!.id, operation: { kind: "power", isOn: true } },
+        { targetId: heater.id, operation: { kind: "power", isOn: true } },
+      ],
+      [...walls, heater],
+    ),
+    null,
+    "a heater in the same confirmation hides the switch hint",
+  );
+
+  const left = walls[0]!;
+  setLanguage("en");
+  assert.match(hintOf(left) ?? "", /light/);
+  setLanguage("zh-Hant");
+  assert.match(hintOf(left) ?? "", /燈/);
+  setLanguage("zh-Hans");
 });
 
 it("hasDetailDrawer mirrors the macOS card table and never opens an empty drawer", () => {

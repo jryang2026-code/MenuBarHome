@@ -12,9 +12,10 @@ import {
   matchesMiotFacetPattern,
   type ManualControlRules,
 } from "../miCloud/facets.js";
-import { deviceCategory } from "./deviceCategory.js";
+import { deviceCategory, isSwitchedLightDevice } from "./deviceCategory.js";
 import { IntentReply, IntentValidator } from "./intent.js";
 import { PROMPT_NAME_LIMIT, sanitizePromptText } from "./promptText.js";
+import { t } from "../i18n.js";
 
 export function deviceHeadInstruction(alias: string): string {
   return `What action should be taken on device ${alias} for this command? Choose none if unrelated.`;
@@ -405,6 +406,34 @@ export const ManualControlPolicy = {
     if (!device) return false;
     if (deescalatesHazard(intent.operation) && device.kind.kind !== "cover") return false;
     return ModelActionPolicy.needsConfirmation(intent, devices);
+  },
+
+  /** Copy for an existing confirmation. Appending 「灯」 reuses `isSwitchedLightDevice`. */
+  wallSwitchLightHint(device: SmartDevice): string | null {
+    if (device.kind.kind !== "plug") return null;
+    if (device.kind.powerWritable === false) return null;
+    if (device.kind.switchEntityId.startsWith("button.")) return null;
+    const model = device.model.toLowerCase();
+    if (!model.includes(".switch.") || model.includes(".plug.")) return null;
+    if (deviceCategory(device) !== "plug") return null;
+    if (!isSwitchedLightDevice({ ...device, name: `${device.name}灯` })) return null;
+    return t(
+      "如果这个开关实际控制的是普通照明灯，可在米家改名或在这里设置别名，名称里加上「灯」，以后就不会再弹出这个确认。",
+    );
+  },
+
+  /** The rename hint when every device in this confirmation is that wall-switch case. */
+  wallSwitchLightHintForIntents(intents: readonly DeviceIntent[], devices: readonly SmartDevice[]): string | null {
+    const hazardous = intents.filter((intent) => this.requiresConfirmation(intent, devices));
+    if (hazardous.length === 0) return null;
+    let hint: string | null = null;
+    for (const intent of hazardous) {
+      const device = devices.find((item) => item.id === intent.targetId);
+      const next = device ? this.wallSwitchLightHint(device) : null;
+      if (!next) return null;
+      hint = next;
+    }
+    return hint;
   },
 
   /**

@@ -47,6 +47,15 @@ enum ManualControlConfirmationPresenter {
         alert.messageText = prompt.title
         alert.informativeText = prompt.message
         alert.alertStyle = .warning
+        if let hint = prompt.hint {
+            let field = NSTextField(wrappingLabelWithString: hint)
+            field.font = .systemFont(ofSize: DesignTokens.TypeSize.caption)
+            field.textColor = .labelColor
+            field.preferredMaxLayoutWidth = 280
+            let size = field.sizeThatFits(NSSize(width: 280, height: 800))
+            field.frame = NSRect(origin: .zero, size: size)
+            alert.accessoryView = field
+        }
         alert.addButton(withTitle: prompt.cancelTitle)
         alert.addButton(withTitle: prompt.confirmTitle)
         return alert.runModal() == .alertSecondButtonReturn

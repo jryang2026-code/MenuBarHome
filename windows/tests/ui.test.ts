@@ -5425,8 +5425,33 @@ describe("Manual control parity with macOS (#143)", () => {
     assert.equal(app.pendingHighRisk?.deviceId, "plug");
     const plugKind = app.devices.find((device) => device.id === "plug")?.kind;
     assert.ok(plugKind?.kind === "plug" && !plugKind.isOn);
+    assert.equal(document.querySelector(".cc-feedback-hint"), null, "a smart plug confirmation has no rename hint");
     await click('[data-toggle-device="plug"]');
     assert.ok(plugKind?.kind === "plug" && plugKind.isOn);
+  });
+
+  it("a default-named wall switch confirms once and shows the rename hint (#104)", async () => {
+    const wall: SmartDevice = {
+      ...plug(),
+      id: "wall",
+      name: "左键",
+      model: "lumi.switch.b1nacn02",
+    };
+    const app = await startWithDevices([wall, heater()]);
+
+    await click('[data-toggle-device="wall"]');
+    const kind = app.devices.find((device) => device.id === "wall")?.kind;
+    assert.ok(kind?.kind === "plug" && !kind.isOn, "the first tap still waits");
+    assert.match(document.body.textContent ?? "", /属于高风险设备，再点一次确认执行/);
+    assert.match(document.querySelector(".cc-feedback-hint")?.textContent ?? "", /加上「灯」/);
+
+    await click('[data-toggle-device="wall"]');
+    const after = app.devices.find((device) => device.id === "wall")?.kind;
+    assert.ok(after?.kind === "plug" && after.isOn, "the second tap still runs");
+
+    await click('[data-toggle-device="heater"]');
+    assert.match(document.body.textContent ?? "", /属于高风险设备，再点一次确认执行/);
+    assert.equal(document.querySelector(".cc-feedback-hint"), null, "a heater confirmation has no rename hint");
   });
 
   it("heater temperature, mode and fan writes each wait for a second tap", async () => {

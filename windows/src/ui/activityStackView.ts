@@ -1476,7 +1476,10 @@ function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()):
   if (host.replyBanner && !host.pendingCloudConsent && !replyConsumedByUndo && !replyConsumedByArmedAuto) {
     const reply = host.replyBanner;
     const isDismissible = !(host.pendingHighRisk !== null && host.pendingHighRisk.expiresAtMs > nowMs);
-    factories.push(wrapCard("reply:banner", "reply", isDismissible, `cc-live-banner cc-feedback-card${reply.isError ? " is-error" : ""}`, (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>${!manualUndoRendered && host.undoButtonVisible(nowMs) ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}${btns}</div>`, "", reply.isError ? "alert" : "status", "btn-dismiss-banner"));
+    const hint = reply.hint
+      ? `<p class="cc-feedback-hint">${host.escapeHtml(reply.hint)}</p>`
+      : "";
+    factories.push(wrapCard("reply:banner", "reply", isDismissible, `cc-live-banner cc-feedback-card${reply.isError ? " is-error" : ""}`, (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>${!manualUndoRendered && host.undoButtonVisible(nowMs) ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}${btns}</div>${hint}`, "", reply.isError ? "alert" : "status", "btn-dismiss-banner"));
   }
   if (host.pendingSuggestions.length > 0) {
     factories.push(wrapCard("suggestions:pending", "suggestions", true, "cc-feedback-card", (btns) => `<div class="cc-feedback-row"><div class="cc-suggestion-row" style="flex:1;">${host.pendingSuggestions.map((item) => `<button class="cc-inline-pill" data-suggestion-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""}</button>`).join("")}</div>${btns}</div>`));
