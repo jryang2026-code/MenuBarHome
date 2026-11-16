@@ -32,8 +32,14 @@ DMG="$DIST/MenuBarHome-$VERSION.dmg"
 
 echo "▶ [0/5] 运行门禁检查与 Release 模式单元测试..."
 bash scripts/check.sh --lint-only
+# The optimized whole-module compile of the test targets prints nothing for minutes on the hosted
+# runner, and the stall watchdog in ci_swift_test.sh would read that silence as a deadlock. Build
+# first without the watchdog (the job timeout bounds it); the watchdog then covers only test runs.
+# `swift test` compiles every module for testing; `swift build -c release` needs it spelled out,
+# or the `@testable import`s in the test targets fail with "not compiled for testing".
+swift build -c release --build-tests -Xswiftc -enable-testing
 # Baselines are this maintainer Mac's rendering, so releases built on CI cannot compare them.
-bash scripts/ci_swift_test.sh -c release --skip SnapshotTests
+bash scripts/ci_swift_test.sh -c release --skip SnapshotTests --skip-build
 
 # 发布包必须带上正确的 40 位证书 SHA-1。缺失或无效时应用内更新会失败关闭。
 if [ "$DEVELOPER_ID" = "-" ]; then
