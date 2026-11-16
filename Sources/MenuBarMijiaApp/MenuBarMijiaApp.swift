@@ -43,22 +43,33 @@ struct MenuBarMijiaApp: App {
 enum ManualControlConfirmationPresenter {
     static func present(_ prompt: ManualControlConfirmation) -> Bool {
         NSApp.activate(ignoringOtherApps: true)
+        return makeAlert(prompt).runModal() == .alertSecondButtonReturn
+    }
+
+    /// The alert `present` runs, built separately so a snapshot can render it without a modal loop.
+    static func makeAlert(_ prompt: ManualControlConfirmation) -> NSAlert {
         let alert = NSAlert()
         alert.messageText = prompt.title
         alert.informativeText = prompt.message
         alert.alertStyle = .warning
         if let hint = prompt.hint {
-            let field = NSTextField(wrappingLabelWithString: hint)
-            field.font = .systemFont(ofSize: DesignTokens.TypeSize.caption)
-            field.textColor = .labelColor
-            field.preferredMaxLayoutWidth = 280
-            let size = field.sizeThatFits(NSSize(width: 280, height: 800))
-            field.frame = NSRect(origin: .zero, size: size)
-            alert.accessoryView = field
+            alert.accessoryView = hintAccessory(hint)
         }
         alert.addButton(withTitle: prompt.cancelTitle)
         alert.addButton(withTitle: prompt.confirmTitle)
-        return alert.runModal() == .alertSecondButtonReturn
+        return alert
+    }
+
+    /// 12 pt primary text: the sentence says how to stop this dialog, so it is not secondary grey (§18).
+    private static func hintAccessory(_ hint: String) -> NSTextField {
+        let width: CGFloat = 280
+        let field = NSTextField(wrappingLabelWithString: hint)
+        field.font = .systemFont(ofSize: DesignTokens.TypeSize.caption)
+        field.textColor = .labelColor
+        field.preferredMaxLayoutWidth = width
+        let fitted = field.sizeThatFits(NSSize(width: width, height: .greatestFiniteMagnitude))
+        field.frame = NSRect(origin: .zero, size: NSSize(width: width, height: ceil(fitted.height)))
+        return field
     }
 }
 

@@ -2816,11 +2816,21 @@ it("shows a rename hint only for a default-named wall switch and does not change
   );
 
   const left = walls[0]!;
-  setLanguage("en");
-  assert.match(hintOf(left) ?? "", /light/);
-  setLanguage("zh-Hant");
-  assert.match(hintOf(left) ?? "", /燈/);
-  setLanguage("zh-Hans");
+  try {
+    for (const language of ["zh-Hans", "zh-Hant", "en"] as const) {
+      setLanguage(language);
+      const hint = hintOf(left) ?? "";
+      const keywords = [...hint.matchAll(/[「“]([^」”]+)[」”]/g)].map((match) => match[1]!);
+      assert.ok(keywords.length > 0, `${language} hint names a keyword: ${hint}`);
+      for (const keyword of keywords) {
+        const renamed = { ...left, name: `${left.name} ${keyword}` };
+        assert.equal(isSwitchedLightDevice(renamed), true, `${language} keyword ${keyword} is a light name`);
+        assert.equal(confirms(renamed, true), false, `${language} keyword ${keyword} stops the confirmation`);
+      }
+    }
+  } finally {
+    setLanguage("zh-Hans");
+  }
 });
 
 it("hasDetailDrawer mirrors the macOS card table and never opens an empty drawer", () => {

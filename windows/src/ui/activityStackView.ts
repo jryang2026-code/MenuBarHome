@@ -39,6 +39,7 @@ import { getScopedEnergyHistory } from "../core/energyHistory.js";
 import { resolveSensorHistoryScope, sharedSensorHistoryStore } from "../core/sensorHistory.js";
 import { isDeviceActiveOn, type DeviceCommand, type SmartDevice } from "../core/models.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
+import type { ReplyBannerState } from "./appTypes.js";
 import { SF_ICONS } from "./appConstants.js";
 import { filterSafetyAlertsByGuardPrefs, loadSafetyGuardPrefs } from "./automationSettingsView.js";
 import { getHostDualSourceState, getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
@@ -1399,6 +1400,11 @@ interface UpperCardFactory {
   readonly render: (opts: { readonly stackCount: number; readonly showStackControls: boolean }) => string;
 }
 
+/** Wall-switch rename guidance under a confirmation, kept when the reply merges into the undo card (#104). */
+function feedbackHint(host: MenuMijiaWindowsApp, reply: ReplyBannerState | null): string {
+  return reply?.hint ? `<p class="cc-feedback-hint">${host.escapeHtml(reply.hint)}</p>` : "";
+}
+
 function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()): UpperCardFactory[] {
   const center = getHostActivityCenter(host);
   const pref = host.settings.interfaceLanguage;
@@ -1470,15 +1476,14 @@ function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()):
     manualUndoRendered = true;
     const badge = mergeReply && reply ? reply.source : t("撤销提示");
     const text = mergeReply && reply ? reply.text : `${host.lastUndoAction.summary} ${t("· 剩余 {remaining}", { remaining: host.formatRemainingMs(Math.max(1000, undoState.remainingMs)) })}`;
-    factories.push(wrapCard("undo:manual", "undo", true, "cc-live-banner cc-feedback-card", (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(badge)}</span><span class="cc-feedback-text">${host.escapeHtml(text)}</span><button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>${btns}</div>`));
+    const hint = mergeReply ? feedbackHint(host, reply) : "";
+    factories.push(wrapCard("undo:manual", "undo", true, "cc-live-banner cc-feedback-card", (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(badge)}</span><span class="cc-feedback-text">${host.escapeHtml(text)}</span><button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>${btns}</div>${hint}`));
   }
 
   if (host.replyBanner && !host.pendingCloudConsent && !replyConsumedByUndo && !replyConsumedByArmedAuto) {
     const reply = host.replyBanner;
     const isDismissible = !(host.pendingHighRisk !== null && host.pendingHighRisk.expiresAtMs > nowMs);
-    const hint = reply.hint
-      ? `<p class="cc-feedback-hint">${host.escapeHtml(reply.hint)}</p>`
-      : "";
+    const hint = feedbackHint(host, reply);
     factories.push(wrapCard("reply:banner", "reply", isDismissible, `cc-live-banner cc-feedback-card${reply.isError ? " is-error" : ""}`, (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>${!manualUndoRendered && host.undoButtonVisible(nowMs) ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}${btns}</div>${hint}`, "", reply.isError ? "alert" : "status", "btn-dismiss-banner"));
   }
   if (host.pendingSuggestions.length > 0) {

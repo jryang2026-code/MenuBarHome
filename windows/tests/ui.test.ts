@@ -1404,10 +1404,11 @@ describe("Bare category opens (#274)", () => {
     },
   });
 
-  async function startWithDevices(devices: SmartDevice[]): Promise<MenuMijiaWindowsApp> {
+  async function startWithDevices(devices: SmartDevice[], settings: Record<string, unknown> = {}): Promise<MenuMijiaWindowsApp> {
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
       connectionMode: "demo",
       hasCompletedOnboarding: true,
+      ...settings,
     }));
     const app = new MenuMijiaWindowsApp(element("#app"));
     await setImmediate();
@@ -1507,6 +1508,38 @@ describe("Bare category opens (#274)", () => {
     assert.match(tile("plug.study"), /供电中/);
     assert.match(tile("plug.living"), /供电中/);
   });
+
+  for (const panelTheme of ["classic", "fluent"] as const) {
+    it(`keeps the wall-switch rename hint on a typed confirmation that shares the undo card (#104, ${panelTheme})`, async () => {
+      const app = await startWithDevices([
+        light("light.study_desk", "书房台灯", "study", "书房", false),
+        { ...plug("wall.hall", "左键", "hall", "玄关"), model: "lumi.switch.b1nacn02" },
+      ], { panelTheme });
+      await command("打开书房台灯");
+      assert.match(tile("light.study_desk"), /已开启/);
+      assert.ok(app.lastUndoAction, "the light write leaves an undo");
+
+      await command("打开左键");
+      assert.equal(app.pendingHighRisk, null, "a typed confirmation waits on the chip, not a second tile tap");
+      const card = document.querySelector(".cc-feedback-hint")?.closest(".cc-feedback-card");
+      assert.ok(card, "the rename hint is rendered");
+      assert.match(card.textContent ?? "", /「打开左键」属于高风险设备，再点一次确认执行/);
+      assert.match(card.textContent ?? "", /加上「灯」/);
+      assert.ok(card.querySelector("#btn-undo"), "the confirmation shares the card with the earlier undo");
+      if (panelTheme === "classic") assert.equal(card.getAttribute("data-upper-card-id"), "undo:manual");
+      assert.match(tile("wall.hall"), /已断电/, "the hint does not run the switch");
+      assert.deepEqual(app.pendingSuggestions.map((item) => item.id), ["confirm:local"], "the same confirm chip still decides");
+
+      if (!document.querySelector('[data-suggestion-id="confirm:local"]')) {
+        element("[data-upper-toggle-expand]").click();
+        await setImmediate();
+      }
+      element('[data-suggestion-id="confirm:local"]').click();
+      await setImmediate();
+      await setImmediate();
+      assert.match(tile("wall.hall"), /供电中/);
+    });
+  }
 
   it("a panel room auto-resolving several heaters waits for confirmation", async () => {
     const app = await startWithDevices([

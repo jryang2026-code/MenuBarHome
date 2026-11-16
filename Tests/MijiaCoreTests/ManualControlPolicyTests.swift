@@ -301,20 +301,40 @@ struct ManualControlPolicyTests {
             devices: [heater]
         )?.hint == nil)
 
-        let left = wallSwitches[0]
-        L10n.$overrideLanguage.withValue(.en) {
-            let prompt = ManualControlPolicy.confirmation(
-                DeviceIntent(targetId: left.id, operation: .power(true)),
-                devices: [left]
-            )
-            #expect(prompt?.hint?.contains("light") == true)
+    }
+
+    @Test("Every language's hint recommends a name keyword that really stops the confirmation (#104)")
+    func wallSwitchLightHintKeywordIsRecognizedInEveryLanguage() {
+        let left = SmartDevice(
+            id: "left", name: "左键", roomId: "hall", roomName: "玄关",
+            model: "lumi.switch.b1nacn02", isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.left", isOn: false, powerWritable: true))
+        )
+        #expect(Set(AppLanguage.allCases).isSuperset(of: [.zhHans, .zhHant, .en]))
+        for language in AppLanguage.allCases {
+            L10n.$overrideLanguage.withValue(language) {
+                let hint = ManualControlPolicy.confirmation(
+                    DeviceIntent(targetId: left.id, operation: .power(true)),
+                    devices: [left]
+                )?.hint ?? ""
+                let keywords = Self.quotedKeywords(in: hint)
+                #expect(!keywords.isEmpty, "\(language.rawValue) hint names a keyword: \(hint)")
+                for keyword in keywords {
+                    var renamed = left
+                    renamed.name = "\(left.name) \(keyword)"
+                    #expect(renamed.isSwitchedLight, "\(language.rawValue) keyword \(keyword) is a light name")
+                    #expect(
+                        !ManualControlPolicy.requiresConfirmation(.power(true), for: renamed),
+                        "\(language.rawValue) keyword \(keyword) stops the confirmation"
+                    )
+                }
+            }
         }
-        L10n.$overrideLanguage.withValue(.zhHant) {
-            let prompt = ManualControlPolicy.confirmation(
-                DeviceIntent(targetId: left.id, operation: .power(true)),
-                devices: [left]
-            )
-            #expect(prompt?.hint?.contains("燈") == true)
-        }
+    }
+
+    /// Text inside 「」 or “”, the marks the hint uses around the word to add.
+    private static func quotedKeywords(in text: String) -> [String] {
+        let pattern = /[「“]([^」”]+)[」”]/
+        return text.matches(of: pattern).map { String($0.output.1) }
     }
 }

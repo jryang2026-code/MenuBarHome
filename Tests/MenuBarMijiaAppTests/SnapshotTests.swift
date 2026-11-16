@@ -1923,6 +1923,56 @@ struct SnapshotTests {
         }
     }
 
+    // MARK: - Manual high-risk confirmation (#104)
+
+    @Test("A default-named wall switch's confirmation shows the rename hint under the decision text")
+    func wallSwitchConfirmationHintSnapshot() throws {
+        _ = NSApplication.shared
+        let wall = SmartDevice(
+            id: "wall", name: "左键", roomId: "hall", roomName: "玄关",
+            model: "lumi.switch.b1nacn02", isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.wall", isOn: false, powerWritable: true))
+        )
+        let prompt = try #require(L10n.$overrideLanguage.withValue(.zhHans) {
+            ManualControlPolicy.confirmation(
+                DeviceIntent(targetId: wall.id, operation: .power(true)),
+                devices: [wall]
+            )
+        })
+        #expect(prompt.hint != nil)
+
+        let alert = ManualControlConfirmationPresenter.makeAlert(prompt)
+        alert.window.appearance = NSAppearance(named: .aqua)
+        alert.layout()
+        let content = try #require(alert.window.contentView)
+        SnapshotWindow.prepareForCapture(alert.window)
+        let size = content.bounds.size
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(size.width),
+            pixelsHigh: Int(size.height),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        bitmap.size = size
+        content.cacheDisplay(in: content.bounds, to: bitmap)
+        let image = NSImage(size: size)
+        image.addRepresentation(bitmap)
+        if let failure = SnapshotAssertion.verifyImage(
+            image,
+            named: "manual-confirmation-wall-switch-hint-zh-light",
+            recordAll: recordAll
+        ) {
+            Issue.record(Comment(rawValue: failure))
+        }
+        alert.window.orderOut(nil)
+    }
+
     // MARK: - Rendering switches
 
     private func snapshotReady<V: View>(_ view: V, scheme: ColorScheme = .light, reduceMotion: Bool = true) -> some View {
