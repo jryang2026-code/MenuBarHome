@@ -210,6 +210,27 @@ PY
     fi
 fi
 
+notes_in="$workdir/raw-notes.md"
+notes_out="$workdir/out-notes.md"
+printf '## Changes\n- Fix tray icon\n' > "$notes_in"
+bash scripts/check_release.sh notes "$notes_in" "$notes_out" "$version" false >"$workdir/notes.log" 2>&1
+if grep -Fq "签名接入见 issue #12。" "$notes_out" && ! grep -Fq "issue #32" "$notes_out"; then
+    pass "notes appends Windows unsigned notice pointing to issue #12"
+else
+    printf 'FAIL notes should cite issue #12 instead of migration PR #32\n'
+    sed 's/^/    /' "$notes_out"
+    failures=$((failures + 1))
+fi
+
+bash scripts/check_release.sh notes "$notes_out" "$notes_out" "$version" true >"$workdir/notes.log" 2>&1
+if ! grep -Fq "windows-signing-status" "$notes_out" && grep -Fq "Fix tray icon" "$notes_out"; then
+    pass "notes strips Windows unsigned notice when signed=true"
+else
+    printf 'FAIL notes should strip Windows unsigned notice when signed=true\n'
+    sed 's/^/    /' "$notes_out"
+    failures=$((failures + 1))
+fi
+
 if [ "$failures" -ne 0 ]; then
     printf '❌ %d 项发布附件校验自测失败\n' "$failures" >&2
     exit 1
