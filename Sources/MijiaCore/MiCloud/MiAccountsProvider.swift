@@ -3,22 +3,80 @@ import Foundation
 /// `HomeProvider` over several Xiaomi accounts: one `MiCloudProvider` per account, merged into one
 /// panel listing whose devices and homes carry the account they came from.
 public actor MiAccountsProvider: HomeProvider {
+    private enum ScopedSelection: Equatable, Sendable {
+        case allHomes
+        case home(String)
+
+        var rawValue: String? {
+            switch self {
+            case .allHomes: return nil
+            case .home(let id): return id
+            }
+        }
+    }
+
     private final class AccountScopeBox: @unchecked Sendable {
         private let lock = NSLock()
         private var firstId: String?
         private var knownIds: Set<String>
+        private var lastResolved: [String: ScopedSelection] = [:]
+
         init(accounts: [MiAccount]) {
             self.firstId = accounts.first?.id
             self.knownIds = Set(accounts.map(\.id))
         }
-        func update(accounts: [MiAccount]) {
+
+        func update(accounts: [MiAccount], removing removedIds: Set<String> = []) {
             lock.withLock {
                 firstId = accounts.first?.id
-                knownIds = Set(accounts.map(\.id))
+                let nextIds = Set(accounts.map(\.id))
+                knownIds = nextIds
+                lastResolved = lastResolved.filter { nextIds.contains($0.key) && !removedIds.contains($0.key) }
             }
         }
-        func snapshot() -> (firstId: String?, knownIds: Set<String>) {
-            lock.withLock { (firstId, knownIds) }
+
+        func resolve(for accountId: String, rawSelection: String?) -> String? {
+            lock.withLock {
+                let resolved = Self.compute(
+                    rawSelection: rawSelection,
+                    accountId: accountId,
+                    firstId: firstId,
+                    knownIds: knownIds
+                )
+                lastResolved[accountId] = resolved
+                return resolved.rawValue
+            }
+        }
+
+        func hasSelectionChanged(for accountId: String, rawSelection: String?) -> Bool {
+            lock.withLock {
+                guard let previous = lastResolved[accountId] else { return false }
+                let current = Self.compute(
+                    rawSelection: rawSelection,
+                    accountId: accountId,
+                    firstId: firstId,
+                    knownIds: knownIds
+                )
+                return previous != current
+            }
+        }
+
+        private static func compute(
+            rawSelection: String?,
+            accountId: String,
+            firstId: String?,
+            knownIds: Set<String>
+        ) -> ScopedSelection {
+            guard let selection = rawSelection, !selection.isEmpty else { return .allHomes }
+            guard let ownerId = MiAccountScope.owner(of: selection) else {
+                if firstId == accountId { return .home(selection) }
+                return knownIds.count > 1 ? .home(MiCloudProvider.otherAccountHomeSentinel) : .allHomes
+            }
+            guard ownerId == accountId else {
+                return knownIds.contains(ownerId) ? .home(MiCloudProvider.otherAccountHomeSentinel) : .allHomes
+            }
+            let raw = MiAccountScope.localId(of: selection)
+            return raw.isEmpty ? .allHomes : .home(raw)
         }
     }
 
@@ -43,6 +101,7 @@ public actor MiAccountsProvider: HomeProvider {
     private var statuses: [String: ConnectionStatus] = [:]
     /// Accounts that delivered a post-poll snapshot (`closesAwayGap == true`) in the current wake cycle.
     private var freshAccounts: Set<String> = []
+    private var expiredAccounts: Set<String> = []
     /// did → owning accounts in account order; a did shared by two accounts keeps its first owner first.
     private var deviceOwners: [String: [String]] = [:]
     private var lastStatus: ConnectionStatus?
@@ -127,6 +186,9 @@ public actor MiAccountsProvider: HomeProvider {
 
     @discardableResult
     private func startChild(for account: MiAccount) -> MiCloudProvider {
+        if account.session.expiryState(at: Date()) == .expired {
+            expiredAccounts.insert(account.id)
+        }
         let provider = MiCloudProvider(
             account: account,
             apiFactory: apiFactory,
@@ -153,27 +215,54 @@ public actor MiAccountsProvider: HomeProvider {
 
     public func updateAccounts(_ nextAccounts: [MiAccount]) async {
         guard !isShutDown else { return }
-        let unchanged = accounts.count == nextAccounts.count && zip(accounts, nextAccounts).allSatisfy {
-            $0.id == $1.id && $0.session == $1.session
-        }
-        guard !unchanged else { return }
+        let now = Date()
         let nextById = Dictionary(uniqueKeysWithValues: nextAccounts.map { ($0.id, $0) })
+        let hasNewlyExpiredChild = children.contains { entry in
+            !expiredAccounts.contains(entry.account.id)
+                && nextById[entry.account.id]?.session.expiryState(at: now) == .expired
+        }
+        let unchanged = !hasNewlyExpiredChild
+            && accounts.count == nextAccounts.count
+            && zip(accounts, nextAccounts).allSatisfy { $0.id == $1.id && $0.session == $1.session }
+        guard !unchanged else { return }
+        for account in accounts where nextById[account.id] == nil {
+            resetSelection(ownedBy: account.id)
+        }
         var keptChildren: [(account: MiAccount, provider: MiCloudProvider)] = []
         var removedProviders: [MiCloudProvider] = []
+        var removedChildIds = Set<String>()
         for entry in children {
-            if let nextAccount = nextById[entry.account.id], nextAccount.session == entry.account.session {
+            let newlyExpired = !expiredAccounts.contains(entry.account.id)
+                && nextById[entry.account.id]?.session.expiryState(at: now) == .expired
+            if let nextAccount = nextById[entry.account.id],
+               nextAccount.session == entry.account.session,
+               !newlyExpired {
                 keptChildren.append((account: nextAccount, provider: entry.provider))
             } else {
                 forwardTasks.removeValue(forKey: entry.account.id)?.cancel()
                 snapshots.removeValue(forKey: entry.account.id)
                 statuses.removeValue(forKey: entry.account.id)
                 freshAccounts.remove(entry.account.id)
+                expiredAccounts.remove(entry.account.id)
+                removedChildIds.insert(entry.account.id)
                 removedProviders.append(entry.provider)
             }
         }
         accounts = nextAccounts
-        scopeBox.update(accounts: nextAccounts)
+        scopeBox.update(accounts: nextAccounts, removing: removedChildIds)
         children = keptChildren
+        for account in accounts where account.session.expiryState(at: now) == .expired {
+            resetSelection(ownedBy: account.id)
+        }
+        let rawSelection = selectedHomeLoader()
+        var retainedIdsToRefresh = Set<String>()
+        for entry in keptChildren where !expiredAccounts.contains(entry.account.id) {
+            if scopeBox.hasSelectionChanged(for: entry.account.id, rawSelection: rawSelection) {
+                snapshots.removeValue(forKey: entry.account.id)
+                freshAccounts.remove(entry.account.id)
+                retainedIdsToRefresh.insert(entry.account.id)
+            }
+        }
         for provider in removedProviders { await provider.shutdown() }
         guard continuation != nil, !isShutDown else { return }
         if accounts.isEmpty {
@@ -188,9 +277,6 @@ public actor MiAccountsProvider: HomeProvider {
             continuation?.yield(.snapshotUpdated(empty))
             return
         }
-        for account in accounts where account.session.expiryState(at: Date()) == .expired {
-            resetSelection(ownedBy: account.id)
-        }
         var newlyStarted: [MiCloudProvider] = []
         for account in accounts where !children.contains(where: { $0.account.id == account.id }) {
             newlyStarted.append(startChild(for: account))
@@ -198,10 +284,21 @@ public actor MiAccountsProvider: HomeProvider {
         let childrenById = Dictionary(uniqueKeysWithValues: children.map { ($0.account.id, $0) })
         children = accounts.compactMap { childrenById[$0.id] }
         for provider in newlyStarted { await provider.setPollingContext(pollingContext) }
+        guard !isShutDown else { return }
         rebuildDeviceOwners()
         publishStatus()
         if !snapshots.isEmpty {
             publishSnapshot()
+        }
+        let providersToRefresh = children
+            .filter { retainedIdsToRefresh.contains($0.account.id) }
+            .map(\.provider)
+        if !providersToRefresh.isEmpty {
+            await withTaskGroup(of: Void.self) { group in
+                for provider in providersToRefresh {
+                    group.addTask { await provider.refreshNow() }
+                }
+            }
         }
     }
 
@@ -213,17 +310,7 @@ public actor MiAccountsProvider: HomeProvider {
         let accountId = account.id
         let scopeBox = self.scopeBox
         return {
-            guard let selection = loader(), !selection.isEmpty else { return nil }
-            let (firstId, knownAccountIds) = scopeBox.snapshot()
-            guard let ownerId = MiAccountScope.owner(of: selection) else {
-                if firstId == accountId { return selection }
-                return knownAccountIds.count > 1 ? MiCloudProvider.otherAccountHomeSentinel : nil
-            }
-            guard ownerId == accountId else {
-                return knownAccountIds.contains(ownerId) ? MiCloudProvider.otherAccountHomeSentinel : nil
-            }
-            let raw = MiAccountScope.localId(of: selection)
-            return raw.isEmpty ? nil : raw
+            scopeBox.resolve(for: accountId, rawSelection: loader())
         }
     }
 
@@ -290,6 +377,7 @@ public actor MiAccountsProvider: HomeProvider {
                 publishSnapshot()
             }
         case .sessionExpired(let session):
+            expiredAccounts.insert(accountId)
             continuation?.yield(.sessionExpired(session))
             if resetSelection(ownedBy: accountId) {
                 await refreshNow()
