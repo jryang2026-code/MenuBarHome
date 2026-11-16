@@ -54,7 +54,7 @@ struct HAHomeSnapshotTests {
         }
         let refreshed = try projection.receive(Self.reply(1001, .array([
             .object(["entity_id": .string("light.visible"), "state": .string("off"), "attributes": .object([:])])
-        ])))
+        ])), isRefreshStatesResult: true)
         let home = try #require(refreshed)
         if case .light(let light) = home.devices.first?.kind {
             #expect(!light.isOn)

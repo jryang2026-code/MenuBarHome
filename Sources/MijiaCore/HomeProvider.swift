@@ -591,6 +591,12 @@ public actor HAWebSocketProvider: HomeProvider {
                         deliverStartupReply(id: id, message: msg)
                     }
                     let isRefresh = pendingRefreshStateIds.remove(id) != nil
+                    if !isRefresh && !(1...4).contains(id) {
+                        if !(1...5).contains(id) {
+                            logger.debug("Ignoring Home Assistant result id \(id, privacy: .public) with no open request")
+                        }
+                        continue
+                    }
                     if let home = try snapshot.receive(msg, isRefreshStatesResult: isRefresh) {
                         continuation?.yield(.snapshotUpdated(home))
                     }
