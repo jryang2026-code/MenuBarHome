@@ -820,6 +820,73 @@ struct CameraPTZDriverTests {
         #expect(controller.ptzUnresolvedStops.isEmpty)
     }
 
+    @Test("Quitting waits for a release stop that is still inside its automatic retry")
+    func quitWaitsForAReleaseStopInsideItsRetry() async throws {
+        let controller = CameraLivePanelController()
+        controller.presentsActively = false
+        controller.hasLiveOwnedProcessOverride = { false }
+        controller.terminationTimeout = .seconds(30)
+        let failed = CameraPTZStopResult(
+            sent: false,
+            confirmed: false,
+            mode: .continuous,
+            errorReason: "write_failed"
+        )
+        let client = FakePTZClient()
+        await client.setStopScript([failed, CameraPTZStopResult(sent: true, confirmed: false, mode: .continuous)])
+        configure(controller, deviceId: "cam-a", client: client)
+        // An earlier drag on this camera failed both stops, so quitting presses "Stop again".
+        let olderClient = FakePTZClient()
+        controller.ptzUnresolvedStops = [CameraPTZStopAttempt(
+            token: CameraPTZSessionToken(epoch: "e1", session: 3),
+            deviceId: "cam-a",
+            lifecycleID: controller.ptzLifecycleID,
+            client: olderClient
+        )]
+        let gate = PTZRetryGate()
+        controller.ptzStopRetryHold = { await gate.wait() }
+        actor StopCountAtBridgeShutdown {
+            var value: Int?
+            func record(_ count: Int) { value = count }
+        }
+        let atBridgeShutdown = StopCountAtBridgeShutdown()
+        controller.bridgeShutdownOverride = {
+            await atBridgeShutdown.record(await client.recordedStops().count)
+        }
+        defer {
+            gate.release()
+            controller.bridgeShutdownOverride = nil
+            controller.hasLiveOwnedProcessOverride = nil
+            controller.closePanel()
+        }
+
+        // The release stop fails its first write and waits for the automatic retry.
+        let token = CameraPTZSessionToken(epoch: "e1", session: 9)
+        controller.ptzToken = token
+        controller.ptzDeviceId = "cam-a"
+        controller.finishPTZMove(notify: false)
+        _ = try #require(await client.waitForStops(), "the release stop was never written")
+
+        var completed = false
+        let (doneStream, doneContinuation) = AsyncStream<Void>.makeStream()
+        let reply = controller.prepareForTermination {
+            completed = true
+            doneContinuation.yield()
+            doneContinuation.finish()
+        }
+        #expect(reply == .terminateLater)
+        _ = try #require(await olderClient.waitForStops(), "quitting did not retry the older failed stop")
+        for _ in 0..<5000 where !completed {
+            await Task.yield()
+        }
+        #expect(!completed, "quit finished while the release stop still waited for its retry")
+
+        gate.release()
+        for await _ in doneStream { break }
+        #expect(await client.recordedStops() == [token, token])
+        #expect(await atBridgeShutdown.value == 2, "the bridge shut down before the retry stop was written")
+    }
+
     @Test("The automatic stop retry waits about half a second")
     func automaticStopRetryWaitsHalfASecond() async throws {
         let controller = CameraLivePanelController.shared
