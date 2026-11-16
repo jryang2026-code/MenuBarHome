@@ -79,6 +79,7 @@ export interface SettingsEventsHost {
     readonly activeLiveCameraId: string | null;
     readonly liveCameraKeepAliveTimer: number | null;
     closeCameraLiveView(): void;
+    discardRetainedCloudSessions?(): void;
   };
   assistantKeysByPreset: Record<string, string>;
   devices: SmartDevice[];
@@ -417,6 +418,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
     host.cameraLive.closeCameraLiveView();
   }
+  host.cameraLive.discardRetainedCloudSessions?.();
   host.localControlRevision += 1;
   host.invalidateSourceControl();
   host.clearPendingHighRisk();

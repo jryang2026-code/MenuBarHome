@@ -247,7 +247,10 @@ export async function clearHostSessionAndDualSourceState(
 
 export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     const retryOnly = !host.settings.miSession && host.settings.cachedXiaomiDevices.length === 0;
-    if (retryOnly && !hasPendingMiVaultDeletion()) return;
+    if (retryOnly && !hasPendingMiVaultDeletion()) {
+      host.cameraLive.discardRetainedCloudSessions();
+      return;
+    }
     setPendingMiVaultDeletion(true);
     const wasXiaomiMode = host.settings.connectionMode === "xiaomiCloud";
     if (!retryOnly && wasXiaomiMode) {
@@ -266,6 +269,7 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
       host.waitingDeviceIds.clear();
       host.selectRoom(null);
     }
+    host.cameraLive.discardRetainedCloudSessions();
     host.settings.miSession = null;
     host.settings.cachedXiaomiDevices = [];
     host.settings.selectedHomeId = null;

@@ -53,6 +53,11 @@ interface CameraBridgeBinding {
   readonly subdid: string | null;
 }
 
+/** One cloud start. Identity is the lease, so a later start for the same device is a different entry. */
+interface RetainedCloudStream {
+  readonly session: MiSession;
+}
+
 export interface CameraLiveHost {
   readonly root: HTMLElement;
   readonly settings: PersistedSettings;
@@ -145,8 +150,8 @@ export class CameraLiveController {
   public ownedStreamOrigin: string | null = null;
   public liveCameraToken = 0;
   public readonly pendingCameraReleases = new Map<string, Promise<void>>();
-  /** Session that started the in-flight or open cloud stream. Logout clears the store before a late start can be stopped. */
-  private readonly cloudStreamSessions = new Map<string, MiSession>();
+  /** Session that started the in-flight or open cloud stream. Released with that stream, not kept across logout. */
+  private readonly cloudStreamSessions = new Map<string, RetainedCloudStream>();
   private readonly cameraBridgeBindings = new Map<string, CameraBridgeBinding>();
   private readonly recentP2PSessionActivityMs = new Map<string, number>();
   private reconnectingP2PSessionId: string | null = null;
@@ -405,10 +410,18 @@ export class CameraLiveController {
     releaseToken = this.liveCameraToken,
     allowActiveCamera = false,
     sessionOverride?: MiSession | null,
+    retainedLease?: RetainedCloudStream,
   ): Promise<void> {
     const { backend, sourceDev, miSession } = this.resolveCameraSource(dev);
-    const session = sessionOverride ?? this.cloudStreamSessions.get(dev.id) ?? miSession ?? null;
-    if (backend !== "xiaomiCloud" || !session) return Promise.resolve();
+    const dropLease = retainedLease ?? this.cloudStreamSessions.get(dev.id) ?? null;
+    // The signed-in store session owns a later release. The retained session is only
+    // the fallback after logout clears the store; a caller can still pin the session
+    // that actually started an in-flight stream.
+    const session = sessionOverride ?? miSession ?? dropLease?.session ?? null;
+    if (backend !== "xiaomiCloud" || !session) {
+      this.dropRetainedCloudStream(dev.id, dropLease);
+      return Promise.resolve();
+    }
     const run = (async () => {
       try {
         const spec = await this.host.specResolver.resolve({
@@ -434,9 +447,26 @@ export class CameraLiveController {
       if (this.pendingCameraReleases.get(dev.id) === tracked) {
         this.pendingCameraReleases.delete(dev.id);
       }
+      this.dropRetainedCloudStream(dev.id, dropLease);
     });
     this.pendingCameraReleases.set(dev.id, tracked);
     return tracked;
+  }
+
+  /** Session retained for a cloud stream that has not been released yet. */
+  public retainedCloudStreamSession(deviceId: string): MiSession | null {
+    return this.cloudStreamSessions.get(deviceId)?.session ?? null;
+  }
+
+  /** Drops every retained cloud session. Call after logout has already dispatched releases. */
+  public discardRetainedCloudSessions(): void {
+    this.cloudStreamSessions.clear();
+  }
+
+  private dropRetainedCloudStream(deviceId: string, retained: RetainedCloudStream | null): void {
+    if (retained !== null && this.cloudStreamSessions.get(deviceId) === retained) {
+      this.cloudStreamSessions.delete(deviceId);
+    }
   }
 
   private buildStopBridgePayload(cameraId: string): Record<string, unknown> {
@@ -909,7 +939,8 @@ export class CameraLiveController {
 
     const channel = this.selectedCameraChannel(dev);
     const requiresHub = CameraHubCatalog.hubModel(sourceDev.model) !== null;
-    this.cloudStreamSessions.set(dev.id, session);
+    const retained: RetainedCloudStream = { session };
+    this.cloudStreamSessions.set(dev.id, retained);
     this.liveCameraLoading = true;
     this.liveCameraNeedsManualIp = false;
     this.host.render();
@@ -923,12 +954,15 @@ export class CameraLiveController {
       this.activeLiveCameraId !== dev.id || hasCustomUrl();
     let startedP2PSession = false;
     let startedCloudStream = false;
+    let streamRemainsOpen = false;
+    let releaseArmed = false;
     let failureReason: string | null = null;
     const releaseIfStarted = (releaseToken = token) => {
       if (!startedP2PSession && !startedCloudStream) return;
       startedP2PSession = false;
       startedCloudStream = false;
-      void this.releaseCameraP2PSession(dev, releaseToken, true, session);
+      releaseArmed = true;
+      void this.releaseCameraP2PSession(dev, releaseToken, true, session, retained);
     };
     const abandonIfStale = (): boolean => {
       if (!stale()) return false;
@@ -981,6 +1015,7 @@ export class CameraLiveController {
                 const bridged = await this.bridgeHlsStreamToMjpeg(dev.id, playable);
                 if (abandonIfStale()) return;
                 if (bridged) {
+                  streamRemainsOpen = true;
                   return;
                 }
                 this.liveCameraQualityApplies = true;
@@ -992,6 +1027,7 @@ export class CameraLiveController {
                 this.liveCameraStreamURL = playable;
                 this.liveCameraError = null;
                 this.liveCameraLoading = false;
+                streamRemainsOpen = true;
                 this.host.render();
                 return;
               }
@@ -1134,6 +1170,7 @@ export class CameraLiveController {
                 this.liveCameraError = null;
                 this.liveCameraLoading = false;
                 this.startMjpegTransport(mjpegName);
+                streamRemainsOpen = true;
                 this.host.render();
                 this.attachLiveMedia();
                 return;
@@ -1168,6 +1205,8 @@ export class CameraLiveController {
         this.liveCameraQualityApplies = false;
         this.liveCameraError = err instanceof Error ? err.message : String(err);
       }
+    } finally {
+      if (!streamRemainsOpen && !releaseArmed) this.dropRetainedCloudStream(dev.id, retained);
     }
     if (stale()) return;
     this.liveCameraLoading = false;

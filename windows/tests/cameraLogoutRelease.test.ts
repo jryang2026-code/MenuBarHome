@@ -73,8 +73,10 @@ interface CameraHarness {
   bridgeReturned: boolean;
   releaseHls: () => void;
   releaseBridge: (streamName: string) => void;
+  releaseStop: () => void;
   whenHlsRequested: Promise<void>;
   whenBridgeRequested: Promise<void>;
+  whenStopRequested: Promise<void>;
 }
 
 let dom: Window;
@@ -113,7 +115,11 @@ function actionCall(args: Record<string, unknown>): { siid: number; aiid: number
   return { siid, aiid };
 }
 
-async function mountCamera(options: { readonly holdHls: boolean; readonly holdBridge: boolean }): Promise<CameraHarness> {
+async function mountCamera(options: {
+  readonly holdHls: boolean;
+  readonly holdBridge: boolean;
+  readonly holdStop?: boolean;
+}): Promise<CameraHarness> {
   const cloudStops: CloudStop[] = [];
   const bridgeStops: BridgeStop[] = [];
   let hlsReturned = false;
@@ -129,11 +135,19 @@ async function mountCamera(options: { readonly holdHls: boolean; readonly holdBr
   });
   let markHlsRequested = (): void => {};
   let markBridgeRequested = (): void => {};
+  let markStopRequested = (): void => {};
+  let releaseStop = (): void => {};
   const whenHlsRequested = new Promise<void>((resolve) => {
     markHlsRequested = resolve;
   });
   const whenBridgeRequested = new Promise<void>((resolve) => {
     markBridgeRequested = resolve;
+  });
+  const whenStopRequested = new Promise<void>((resolve) => {
+    markStopRequested = resolve;
+  });
+  const stopGate = new Promise<void>((resolve) => {
+    releaseStop = resolve;
   });
 
   const invoke = async (name: string, args: Record<string, unknown> = {}): Promise<unknown> => {
@@ -223,6 +237,8 @@ async function mountCamera(options: { readonly holdHls: boolean; readonly holdBr
       };
     }
     if (call?.siid === STREAM_SIID && call.aiid === STOP_STREAM_AIID) {
+      markStopRequested();
+      if (options.holdStop) await stopGate;
       cloudStops.push({
         token: serviceTokenFrom(args),
         siid: call.siid,
@@ -295,8 +311,10 @@ async function mountCamera(options: { readonly holdHls: boolean; readonly holdBr
     },
     releaseHls,
     releaseBridge,
+    releaseStop,
     whenHlsRequested,
     whenBridgeRequested,
+    whenStopRequested,
   };
   return harness;
 }
@@ -328,6 +346,7 @@ describe("camera streams stop after Xiaomi logout", () => {
     live.app.signOutXiaomiAccount();
     await settleReleases(live.app);
     assert.equal(live.app.settings.miSession, null);
+    assert.equal(live.app.cameraLive.retainedCloudStreamSession(CAMERA_ID), null);
     live.releaseHls();
     await settleReleases(live.app);
 
@@ -339,6 +358,7 @@ describe("camera streams stop after Xiaomi logout", () => {
     assert.equal(lateStops.at(-1)?.token, SERVICE_TOKEN);
     assert.equal(lateStops.at(-1)?.siid, STREAM_SIID);
     assert.equal(lateStops.at(-1)?.aiid, STOP_STREAM_AIID);
+    assert.equal(live.app.cameraLive.retainedCloudStreamSession(CAMERA_ID), null);
     assert.equal(live.app.assistantKeysByPreset["openrouter_jev"], "sk-keep-provider");
     assert.equal(live.app.settings.openRouterApiKey, "sk-keep-provider");
   });
@@ -351,6 +371,7 @@ describe("camera streams stop after Xiaomi logout", () => {
     live.app.signOutXiaomiAccount();
     await settleReleases(live.app);
     assert.equal(live.app.settings.miSession, null);
+    assert.equal(live.app.cameraLive.retainedCloudStreamSession(CAMERA_ID), null);
     live.releaseBridge("cam_mjpeg_camlive");
     await settleReleases(live.app);
 
@@ -384,6 +405,88 @@ describe("camera streams stop after Xiaomi logout", () => {
       "release after the session store was cleared did not send stop-stream",
     );
     assert.equal(live.cloudStops.at(-1)?.token, SERVICE_TOKEN);
+    assert.equal(live.app.cameraLive.retainedCloudStreamSession(CAMERA_ID), null);
     assert.equal(live.app.assistantKeysByPreset["openrouter_jev"], "sk-keep-provider");
+  });
+
+  it("drops the retained cloud session once release finishes", async () => {
+    const live = await mountCamera({ holdHls: false, holdBridge: false });
+    live.app.cameraLive.openCameraLiveView(CAMERA_ID);
+    await live.whenHlsRequested;
+    await live.whenBridgeRequested;
+    await until(() => live.hlsReturned && live.bridgeReturned, "camera stream did not start");
+    await settleReleases(live.app);
+    assert.equal(live.app.cameraLive.retainedCloudStreamSession(CAMERA_ID)?.serviceToken, SERVICE_TOKEN);
+
+    live.app.cameraLive.closeCameraLiveView();
+    await settleReleases(live.app);
+
+    assert.equal(live.app.cameraLive.retainedCloudStreamSession(CAMERA_ID), null);
+  });
+
+  it("stops with the re-login session while the previous stream session is still retained", async () => {
+    const live = await mountCamera({ holdHls: false, holdBridge: false });
+    live.app.cameraLive.openCameraLiveView(CAMERA_ID);
+    await live.whenHlsRequested;
+    await live.whenBridgeRequested;
+    await until(() => live.hlsReturned && live.bridgeReturned, "camera stream did not start");
+    await settleReleases(live.app);
+    assert.equal(live.app.cameraLive.retainedCloudStreamSession(CAMERA_ID)?.serviceToken, SERVICE_TOKEN);
+
+    const nextToken = "tok-relogin-session";
+    live.app.settings.miSession = null;
+    live.app.miAccountsOverride = [];
+    live.app.multiAccountState = null;
+    assert.equal(live.app.cameraLive.retainedCloudStreamSession(CAMERA_ID)?.serviceToken, SERVICE_TOKEN);
+    live.app.settings.miSession = {
+      userId: "200",
+      cUserId: "c200",
+      ssecurity: SECURITY,
+      serviceToken: nextToken,
+      passToken: "",
+      region: "cn",
+    };
+    const stopsBefore = live.cloudStops.length;
+    live.app.cameraLive.closeCameraLiveView();
+    await settleReleases(live.app);
+
+    assert.ok(
+      live.cloudStops.length > stopsBefore,
+      "release after re-login did not send stop-stream",
+    );
+    assert.equal(live.cloudStops.at(-1)?.token, nextToken);
+    assert.equal(live.app.cameraLive.retainedCloudStreamSession(CAMERA_ID), null);
+  });
+
+  it("keeps a newer cloud session when an older release finishes", async () => {
+    const live = await mountCamera({ holdHls: false, holdBridge: false, holdStop: true });
+    live.app.cameraLive.openCameraLiveView(CAMERA_ID);
+    await live.whenHlsRequested;
+    await live.whenBridgeRequested;
+    await until(() => live.hlsReturned && live.bridgeReturned, "camera stream did not start");
+    await settleReleases(live.app);
+
+    live.app.cameraLive.closeCameraLiveView();
+    await live.whenStopRequested;
+    const nextToken = "tok-replacement-session";
+    live.app.settings.miSession = {
+      userId: "200",
+      cUserId: "c200",
+      ssecurity: SECURITY,
+      serviceToken: nextToken,
+      passToken: "",
+      region: "cn",
+    };
+    live.app.miAccountsOverride = [];
+    live.app.cameraLive.openCameraLiveView(CAMERA_ID);
+    assert.equal(live.app.cameraLive.retainedCloudStreamSession(CAMERA_ID)?.serviceToken, nextToken);
+
+    live.releaseStop();
+    await settleReleases(live.app);
+    await until(
+      () => live.app.cameraLive.liveCameraStreamURL !== null && !live.app.cameraLive.liveCameraLoading,
+      "replacement stream did not start",
+    );
+    assert.equal(live.app.cameraLive.retainedCloudStreamSession(CAMERA_ID)?.serviceToken, nextToken);
   });
 });
