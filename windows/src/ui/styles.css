@@ -982,6 +982,14 @@ details.win-notif-card-ghost > :not(summary) {
   white-space: nowrap;
 }
 
+.cc-feedback-hint {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: normal;
+}
+
 .cc-inline-pill {
   padding: 3px 8px;
   border-radius: var(--r-control);

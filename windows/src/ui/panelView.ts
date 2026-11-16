@@ -564,6 +564,7 @@ function liveBanner(host: MenuMijiaWindowsApp): string {
   const undo = host.undoButtonVisible();
   if (!reply && !undo && !host.pendingCloudConsent) return "";
   const role = reply?.isError ? "alert" : "status";
+  const hint = reply?.hint ? `<p class="cc-feedback-hint">${host.escapeHtml(reply.hint)}</p>` : "";
   return `<div class="win-notif-card cc-live-banner cc-feedback-card ${reply?.isError ? "is-error" : ""}" role="${role}">
     <div class="cc-feedback-row">
       ${reply ? `<span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>` : ""}
@@ -575,6 +576,7 @@ function liveBanner(host: MenuMijiaWindowsApp): string {
       ${undo ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}
       ${reply?.isError ? `<button type="button" class="cc-inline-pill" id="btn-dismiss-banner" aria-label="${t("忽略")}">×</button>` : ""}
     </div>
+    ${hint}
   </div>`;
 }
 

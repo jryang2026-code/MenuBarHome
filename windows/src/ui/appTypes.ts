@@ -146,6 +146,8 @@ export interface ReplyBannerState {
   readonly text: string;
   readonly source: string;
   readonly isError?: boolean;
+  /** Wall-switch rename guidance under a high-risk confirmation. Absent for every other banner. */
+  readonly hint?: string;
 }
 
 /**

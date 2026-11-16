@@ -281,6 +281,10 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "需要 API Key": ["需要 API Key", "API key needed"],
   "需要确认": ["需要确认", "Confirmation needed"],
   "「{action}」属于高风险设备，再点一次确认执行": ["「{action}」属于高风险设备，再点一次确认执行", "「{action}」is a high-risk device. Tap again to confirm."],
+  "如果这个开关实际控制的是普通照明灯，可在米家改名或在这里设置别名，名称里加上「灯」，以后就不会再弹出这个确认。": [
+    "如果这个开关实际控制的是普通照明灯，可在米家改名或在这里设置别名，名称里加上「灯」，以后就不会再弹出这个确认。",
+    "If this switch actually controls an ordinary light, rename it in Xiaomi Home or set an alias here and include “light”. This confirmation will stop appearing.",
+  ],
   "「{action}」属于高风险设备，确认后执行": ["「{action}」属于高风险设备，确认后执行", "「{action}」is a high-risk device. Confirm to run it."],
   "设为 {temp}？": ["设为 {temp}？", "Set to {temp}?"],
   "确认执行": ["确认执行", "Confirm"],
