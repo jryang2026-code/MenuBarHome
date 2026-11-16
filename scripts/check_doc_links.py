@@ -29,6 +29,16 @@ MD_LINK_RE = re.compile(
 HTML_LINK_RE = re.compile(r"""<(?:a\b[^>]*?\bhref|img\b[^>]*?\bsrc|source\b[^>]*?\bsrcset)\s*=\s*(['"])(.*?)\1""", re.IGNORECASE)
 LINE_FRAGMENT_RE = re.compile(r"^L([1-9][0-9]*)(?:-L?([1-9][0-9]*))?$")
 HISTORICAL_ADR_RE = re.compile(r"^docs/adr/[0-9]")
+AGENT_POLICY_DOCS = ("AGENTS.md", "docs/agents/issue-tracker.md")
+STALE_AGENT_REFS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\blookup_skill\b"), "已移除的跨宿主幻觉工具 lookup_skill（请改为直接读取对应 SKILL.md 路径）"),
+    (
+        re.compile(r"\bmp-(?:triage|wayfinder|grill-with-docs|to-spec|to-tickets|implement|diagnosing-bugs|code-review|retro)\b"),
+        "已失效的 mp-* 技能前缀（本地已安装的技能名无 mp- 前缀）",
+    ),
+    (re.compile(r"\bdeslop\b"), "未安装的 Cursor 专有技能 deslop（请改用 unslop）"),
+    (re.compile(r"scripts/watch-pr/watch-pr"), "不存在的脚本路径（请改用 scripts/pr-ready.sh --wait）"),
+)
 SHELL_TEMPLATE_CHARS = frozenset("<>|$=(){};")
 GLOB_CHARS = frozenset("*?[]")
 _GIT_OVERRIDE_VARS = (
@@ -397,6 +407,15 @@ def scan_repo_docs(root: Path = ROOT) -> tuple[int, int, int, list[DocDiagnostic
         for ref in pending_code:
             if ref.repo_rel_path not in ignored:
                 diags.append(DocDiagnostic(ref.doc_path, ref.line, ref.span, f"行内仓库路径不存在 ({ref.repo_rel_path})"))
+    if "docs/feature-map.md" not in index.tracked_files:
+        diags.append(DocDiagnostic("docs/feature-map.md", 1, "docs/feature-map.md", "缺少项目模块路径索引文件"))
+    for policy_doc in AGENT_POLICY_DOCS:
+        if policy_doc not in index.tracked_files:
+            continue
+        for lineno, line in enumerate((index.root / policy_doc).read_text(encoding="utf-8").splitlines(), 1):
+            for pat, reason in STALE_AGENT_REFS:
+                if match := pat.search(line):
+                    diags.append(DocDiagnostic(policy_doc, lineno, match.group(0), reason))
     diags.sort(key=lambda d: (d.doc_path, d.line, d.target))
     return len(md_files), total_links, total_code_paths, diags
 
