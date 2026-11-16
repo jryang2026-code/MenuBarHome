@@ -397,7 +397,7 @@ describe("Wave 2 — A1 Camera Adaptive Frame Pacing (>5fps), Fast Switch, HUD M
     await closeTestWindow(dom);
   });
 
-  it("paces visible new MJPEG frames at ~45ms (~20fps), applies IPC backpressure, and throttles to 250-500ms when static or hidden", async () => {
+  it("paces visible new MJPEG frames at ~45ms (~20fps), applies IPC backpressure, and throttles to 250-500ms when static or hidden", async (t) => {
     localStorage.setItem(
       "menumijia.windows.settings.v2",
       JSON.stringify({
@@ -445,10 +445,31 @@ describe("Wave 2 — A1 Camera Adaptive Frame Pacing (>5fps), Fast Switch, HUD M
       `hidden warm keep-alive gap (${hiddenGap}ms) stays within 250ms-500ms power-saving band`,
     );
 
+    // happy-dom binds the real setTimeout at import, so the pump's window.setTimeout
+    // has to be pointed at the global that t.mock.timers replaces.
+    const scheduledDelays: number[] = [];
+    const originalSetTimeout = window.setTimeout;
+    const originalClearTimeout = window.clearTimeout;
+    let perfNow = 0;
+    let ipcCostMs = 0;
+    t.mock.method(performance, "now", () => perfNow);
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      const delay = Math.max(0, Number(timeout ?? 0));
+      scheduledDelays.push(delay);
+      return globalThis.setTimeout(handler as () => void, delay, ...(args as []));
+    }) as unknown as typeof window.setTimeout;
+    window.clearTimeout = ((id?: number) => {
+      globalThis.clearTimeout(id as unknown as ReturnType<typeof setTimeout>);
+    }) as unknown as typeof window.clearTimeout;
+
     let seq = 0;
+    let polls = 0;
     let mode: "changing" | "static" = "changing";
     const invoke = async (name: string): Promise<unknown> => {
       if (name === "go2rtc_jpeg_frame") {
+        perfNow += ipcCostMs;
+        polls += 1;
         if (mode === "changing") seq += 1;
         return `ZnJhbWUt${seq}`;
       }
@@ -456,35 +477,109 @@ describe("Wave 2 — A1 Camera Adaptive Frame Pacing (>5fps), Fast Switch, HUD M
     };
     Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
 
-    cam.cameraActiveFrameGapMs = 15;
-    cam.cameraIdleFrameGapMs = 90;
-    cam.cameraHiddenFrameGapMs = 110;
-    cam.cameraKeepAliveMs = 5_000;
+    const settle = async (): Promise<void> => {
+      for (let step = 0; step < 30; step += 1) await Promise.resolve();
+    };
+    const latestDelay = (): number => {
+      const delay = scheduledDelays.at(-1);
+      assert.ok(
+        delay !== undefined,
+        `frame pump scheduled no gap; delays=[${scheduledDelays.join(", ")}]`,
+      );
+      return delay;
+    };
+    const expectNextPollAfter = async (gapMs: number): Promise<void> => {
+      const pollsBefore = polls;
+      t.mock.timers.tick(gapMs - 1);
+      await settle();
+      assert.equal(
+        polls,
+        pollsBefore,
+        `polled ${gapMs - 1}ms before the ${gapMs}ms frame gap (delays=[${scheduledDelays.join(", ")}])`,
+      );
+      t.mock.timers.tick(1);
+      await settle();
+      assert.equal(
+        polls,
+        pollsBefore + 1,
+        `frame gap ${gapMs}ms did not release the next poll (delays=[${scheduledDelays.join(", ")}])`,
+      );
+    };
 
-    cam.activeLiveCameraId = "camera.living_cam";
-    cam.liveCameraHidden = false;
-    cam.startMjpegTransport("cam_mjpeg_test");
-    app.render();
-    cam.attachLiveMedia();
+    try {
+      cam.activeLiveCameraId = "camera.living_cam";
+      cam.liveCameraHidden = false;
+      cam.startMjpegTransport("cam_mjpeg_test");
+      app.render();
+      cam.attachLiveMedia();
+      await settle();
 
-    const startMs = performance.now();
-    await waitFor(() => seq >= 6, 600);
-    const elapsedForSix = performance.now() - startMs;
-    assert.ok(
-      elapsedForSix < 450,
-      `expected 6 distinct frames well under old 5fps (1000ms+) cap, got ${Math.round(elapsedForSix)}ms`,
-    );
+      assert.equal(polls, 1);
+      assert.equal(seq, 1);
+      assert.equal(latestDelay(), 45, "visible changing frames wait the 45ms active budget");
 
-    cam.hideCameraLiveView();
-    assert.equal(cam.liveCameraHidden, true);
-    assert.ok(cam.liveCameraKeepAliveTimer !== null, "1-minute P2P keep-alive timer remains armed");
-    const seqAtHide = seq;
-    await new Promise((resolve) => setTimeout(resolve, 75));
-    assert.ok(
-      seq - seqAtHide <= 2,
-      `hidden keep-alive must throttle frame polling (delta=${seq - seqAtHide})`,
-    );
-    cam.closeCameraLiveView();
+      let pacedMs = 0;
+      for (let frame = 2; frame <= 6; frame += 1) {
+        const gap = latestDelay();
+        assert.equal(gap, 45, `visible changing frame gap was ${gap}ms`);
+        pacedMs += gap;
+        await expectNextPollAfter(gap);
+        assert.equal(seq, frame);
+      }
+      assert.ok(
+        pacedMs < 450,
+        `expected 6 distinct frames well under old 5fps (1000ms+) cap, paced ${pacedMs}ms`,
+      );
+
+      ipcCostMs = 95;
+      await expectNextPollAfter(45);
+      assert.equal(
+        latestDelay(),
+        33,
+        "a 95ms IPC round-trip applies backpressure breathing room on the next gap",
+      );
+      ipcCostMs = 0;
+
+      mode = "static";
+      await expectNextPollAfter(33);
+      const firstIdleGap = latestDelay();
+      assert.ok(
+        firstIdleGap >= 250 && firstIdleGap <= 500,
+        `unchanged frame gap (${firstIdleGap}ms) drops to >=250ms budget`,
+      );
+      for (let step = 0; step < 8 && latestDelay() < 500; step += 1) {
+        await expectNextPollAfter(latestDelay());
+      }
+      assert.equal(latestDelay(), 500, "repeated unchanged frames back off up to the 500ms ceiling");
+
+      const gapBeforeHide = latestDelay();
+      cam.hideCameraLiveView();
+      assert.equal(cam.liveCameraHidden, true);
+      assert.ok(cam.liveCameraKeepAliveTimer !== null, "1-minute P2P keep-alive timer remains armed");
+      assert.ok(
+        scheduledDelays.includes(cam.cameraKeepAliveMs),
+        "hide arms the long P2P keep-alive instead of tearing the stream down",
+      );
+      await expectNextPollAfter(gapBeforeHide);
+      const hiddenScheduled = latestDelay();
+      assert.ok(
+        hiddenScheduled >= 250 && hiddenScheduled <= 500,
+        `hidden warm keep-alive gap (${hiddenScheduled}ms) stays within 250ms-500ms power-saving band`,
+      );
+      const pollsWhileHidden = polls;
+      t.mock.timers.tick(Math.min(249, hiddenScheduled - 1));
+      await settle();
+      assert.equal(
+        polls,
+        pollsWhileHidden,
+        `hidden keep-alive must throttle frame polling (delta=${polls - pollsWhileHidden})`,
+      );
+      cam.closeCameraLiveView();
+    } finally {
+      window.setTimeout = originalSetTimeout;
+      window.clearTimeout = originalClearTimeout;
+      t.mock.timers.reset();
+    }
   });
 
   it("skips the 2500ms same-session cooldown when switching between different cameras, but honours cooldown on same-camera reconnect", async () => {
