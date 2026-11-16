@@ -419,4 +419,231 @@ struct MiAccountsProviderTests {
         #expect(mapped)
         await provider.shutdown()
     }
+
+    @Test("Removing the selected home's account resets selection and immediately refreshes retained accounts (#160)")
+    func removingSelectedAccountResetsSelectionAndRefreshesRetainedChild() async throws {
+        let suite = "test.mi.remove-selected.\(UUID().uuidString)"
+        nonisolated(unsafe) let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(Self.cn.id + "/home-cn", forKey: MiCloudProvider.selectedHomeKey)
+
+        let cnApi = StubMiCloudAPI(
+            devices: [MiDeviceRecord(did: "cn-light", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true)],
+            rooms: [MiRoom(id: "r-cn", name: "客厅", dids: ["cn-light"], homeId: "home-cn", homeName: "国内家")],
+            values: [MiotFixtures.key("cn-light", 2, 1): .bool(true)]
+        )
+        let deApi = StubMiCloudAPI(
+            devices: [MiDeviceRecord(did: "de-plug", name: "卧室插座", model: "cuco.plug.v3", isOnline: true)],
+            rooms: [MiRoom(id: "r-de", name: "卧室", dids: ["de-plug"], homeId: "home-de", homeName: "海外家")],
+            values: [MiotFixtures.key("de-plug", 2, 1): .bool(true)]
+        )
+        let provider = MiAccountsProvider(
+            accounts: [Self.cn, Self.de],
+            apiFactory: { $0.region == "de" ? deApi : cnApi },
+            specSource: StubSpecSource(),
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { defaults.string(forKey: MiCloudProvider.selectedHomeKey) },
+            clearSelectedHome: { defaults.removeObject(forKey: MiCloudProvider.selectedHomeKey) }
+        )
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+
+        let initialFiltered = await log.wait { events in
+            guard let latest = await events.snapshots.last else { return false }
+            return latest.isInitialLoadComplete && latest.homes.count == 2 && latest.devices.map(\.id) == ["cn-light"]
+        }
+        #expect(initialFiltered)
+        let deIdentity = try #require(await provider.childProviderIdentityForTesting(accountId: Self.de.id))
+        let snapshotsBefore = await log.snapshots.count
+
+        await provider.updateAccounts([Self.de])
+        #expect(defaults.string(forKey: MiCloudProvider.selectedHomeKey) == nil)
+        #expect(await provider.childProviderIdentityForTesting(accountId: Self.de.id) == deIdentity)
+
+        let restored = await log.wait { events in
+            await events.snapshots.dropFirst(snapshotsBefore).contains {
+                $0.isInitialLoadComplete && $0.devices.map(\.id) == ["de-plug"]
+            }
+        }
+        #expect(restored)
+        let postUpdateSnapshots = Array((await log.snapshots).dropFirst(snapshotsBefore))
+        #expect(!postUpdateSnapshots.contains { $0.isInitialLoadComplete && $0.devices.isEmpty })
+        await provider.shutdown()
+    }
+
+    @Test("Removing the selected home's account after caller clears selection still refreshes retained accounts (#160)")
+    func callerClearedSelectionBeforeRemovingAccountStillRefreshesRetainedChild() async throws {
+        let suite = "test.mi.caller-clear-remove.\(UUID().uuidString)"
+        nonisolated(unsafe) let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(Self.cn.id + "/home-cn", forKey: MiCloudProvider.selectedHomeKey)
+
+        let cnApi = StubMiCloudAPI(
+            devices: [MiDeviceRecord(did: "cn-light", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true)],
+            rooms: [MiRoom(id: "r-cn", name: "客厅", dids: ["cn-light"], homeId: "home-cn", homeName: "国内家")],
+            values: [MiotFixtures.key("cn-light", 2, 1): .bool(true)]
+        )
+        let deApi = StubMiCloudAPI(
+            devices: [MiDeviceRecord(did: "de-plug", name: "卧室插座", model: "cuco.plug.v3", isOnline: true)],
+            rooms: [MiRoom(id: "r-de", name: "卧室", dids: ["de-plug"], homeId: "home-de", homeName: "海外家")],
+            values: [MiotFixtures.key("de-plug", 2, 1): .bool(true)]
+        )
+        let provider = MiAccountsProvider(
+            accounts: [Self.cn, Self.de],
+            apiFactory: { $0.region == "de" ? deApi : cnApi },
+            specSource: StubSpecSource(),
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { defaults.string(forKey: MiCloudProvider.selectedHomeKey) },
+            clearSelectedHome: { defaults.removeObject(forKey: MiCloudProvider.selectedHomeKey) }
+        )
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+
+        #expect(await log.wait { events in
+            guard let latest = await events.snapshots.last else { return false }
+            return latest.isInitialLoadComplete && latest.homes.count == 2 && latest.devices.map(\.id) == ["cn-light"]
+        })
+        let snapshotsBefore = await log.snapshots.count
+
+        // Mirrors HomeStore.logoutMiAccount(id:), which clears UserDefaults before updateAccounts runs.
+        defaults.removeObject(forKey: MiCloudProvider.selectedHomeKey)
+        await provider.updateAccounts([Self.de])
+
+        #expect(await log.wait { events in
+            await events.snapshots.dropFirst(snapshotsBefore).contains {
+                $0.isInitialLoadComplete && $0.devices.map(\.id) == ["de-plug"]
+            }
+        })
+        await provider.shutdown()
+    }
+
+    @Test("Expiring the selected home's account in updateAccounts resets selection and refreshes retained accounts (#160)")
+    func expiringSelectedAccountInUpdateAccountsRefreshesRetainedChild() async throws {
+        let suite = "test.mi.update-expire-selected.\(UUID().uuidString)"
+        nonisolated(unsafe) let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(Self.cn.id + "/home-cn", forKey: MiCloudProvider.selectedHomeKey)
+
+        let cnApi = StubMiCloudAPI(
+            devices: [MiDeviceRecord(did: "cn-light", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true)],
+            rooms: [MiRoom(id: "r-cn", name: "客厅", dids: ["cn-light"], homeId: "home-cn", homeName: "国内家")],
+            values: [MiotFixtures.key("cn-light", 2, 1): .bool(true)]
+        )
+        let deApi = StubMiCloudAPI(
+            devices: [MiDeviceRecord(did: "de-plug", name: "卧室插座", model: "cuco.plug.v3", isOnline: true)],
+            rooms: [MiRoom(id: "r-de", name: "卧室", dids: ["de-plug"], homeId: "home-de", homeName: "海外家")],
+            values: [MiotFixtures.key("de-plug", 2, 1): .bool(true)]
+        )
+        let provider = MiAccountsProvider(
+            accounts: [Self.cn, Self.de],
+            apiFactory: { $0.region == "de" ? deApi : cnApi },
+            specSource: StubSpecSource(),
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { defaults.string(forKey: MiCloudProvider.selectedHomeKey) },
+            clearSelectedHome: { defaults.removeObject(forKey: MiCloudProvider.selectedHomeKey) }
+        )
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+
+        #expect(await log.wait { events in
+            guard let latest = await events.snapshots.last else { return false }
+            return latest.isInitialLoadComplete && latest.homes.count == 2 && latest.devices.map(\.id) == ["cn-light"]
+        })
+        let deIdentity = try #require(await provider.childProviderIdentityForTesting(accountId: Self.de.id))
+        let snapshotsBefore = await log.snapshots.count
+
+        var expiredCn = Self.cn
+        expiredCn.session.expiresAt = .distantPast
+        await provider.updateAccounts([expiredCn, Self.de])
+        #expect(defaults.string(forKey: MiCloudProvider.selectedHomeKey) == nil)
+        #expect(await provider.childProviderIdentityForTesting(accountId: Self.de.id) == deIdentity)
+
+        let restored = await log.wait { events in
+            await events.snapshots.dropFirst(snapshotsBefore).contains {
+                $0.isInitialLoadComplete && $0.devices.map(\.id) == ["de-plug"]
+            }
+        }
+        #expect(restored)
+        let postUpdateSnapshots = Array((await log.snapshots).dropFirst(snapshotsBefore))
+        #expect(!postUpdateSnapshots.contains { $0.isInitialLoadComplete && $0.devices.isEmpty })
+        await provider.shutdown()
+    }
+
+    @Test("Legacy un-prefixed home selection refreshes retained accounts on first-account reorder and 2-to-1 removal (#160)")
+    func legacyUnprefixedSelectionRefreshesRetainedAccountsOnOwnerShift() async throws {
+        let suite = "test.mi.legacy-owner-shift.\(UUID().uuidString)"
+        nonisolated(unsafe) let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("home-1", forKey: MiCloudProvider.selectedHomeKey)
+
+        let cnApi = StubMiCloudAPI(
+            devices: [
+                MiDeviceRecord(did: "cn-1", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true),
+                MiDeviceRecord(did: "cn-2", name: "书房灯", model: "yeelink.light.ceiling22", isOnline: true),
+            ],
+            rooms: [
+                MiRoom(id: "r-cn-1", name: "客厅", dids: ["cn-1"], homeId: "home-1", homeName: "一宅"),
+                MiRoom(id: "r-cn-2", name: "书房", dids: ["cn-2"], homeId: "home-2", homeName: "二宅"),
+            ],
+            values: [
+                MiotFixtures.key("cn-1", 2, 1): .bool(true),
+                MiotFixtures.key("cn-2", 2, 1): .bool(true),
+            ]
+        )
+        let deApi = StubMiCloudAPI(
+            devices: [
+                MiDeviceRecord(did: "de-1", name: "卧室插座", model: "cuco.plug.v3", isOnline: true),
+                MiDeviceRecord(did: "de-2", name: "厨房插座", model: "cuco.plug.v3", isOnline: true),
+            ],
+            rooms: [
+                MiRoom(id: "r-de-1", name: "卧室", dids: ["de-1"], homeId: "home-1", homeName: "海外一宅"),
+                MiRoom(id: "r-de-2", name: "厨房", dids: ["de-2"], homeId: "home-2", homeName: "海外二宅"),
+            ],
+            values: [
+                MiotFixtures.key("de-1", 2, 1): .bool(true),
+                MiotFixtures.key("de-2", 2, 1): .bool(false),
+            ]
+        )
+        let provider = MiAccountsProvider(
+            accounts: [Self.cn, Self.de],
+            apiFactory: { $0.region == "de" ? deApi : cnApi },
+            specSource: StubSpecSource(),
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { defaults.string(forKey: MiCloudProvider.selectedHomeKey) },
+            clearSelectedHome: { defaults.removeObject(forKey: MiCloudProvider.selectedHomeKey) }
+        )
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+
+        #expect(await log.wait { events in
+            guard let latest = await events.snapshots.last else { return false }
+            return latest.isInitialLoadComplete && latest.homes.count == 4 && latest.devices.map(\.id) == ["cn-1"]
+        })
+        let cnIdentity = try #require(await provider.childProviderIdentityForTesting(accountId: Self.cn.id))
+        let deIdentity = try #require(await provider.childProviderIdentityForTesting(accountId: Self.de.id))
+
+        let beforeReorder = await log.snapshots.count
+        await provider.updateAccounts([Self.de, Self.cn])
+        #expect(defaults.string(forKey: MiCloudProvider.selectedHomeKey) == "home-1")
+        #expect(await provider.childProviderIdentityForTesting(accountId: Self.cn.id) == cnIdentity)
+        #expect(await provider.childProviderIdentityForTesting(accountId: Self.de.id) == deIdentity)
+        #expect(await log.wait { events in
+            guard let latest = await events.snapshots.dropFirst(beforeReorder).last else { return false }
+            return latest.isInitialLoadComplete && latest.devices.map(\.id) == ["de-1"]
+        })
+
+        let beforeRemove = await log.snapshots.count
+        await provider.updateAccounts([Self.cn])
+        #expect(defaults.string(forKey: MiCloudProvider.selectedHomeKey) == nil)
+        #expect(await provider.childProviderIdentityForTesting(accountId: Self.cn.id) == cnIdentity)
+        #expect(await log.wait { events in
+            guard let latest = await events.snapshots.dropFirst(beforeRemove).last else { return false }
+            return latest.isInitialLoadComplete && Set(latest.devices.map(\.id)) == ["cn-1", "cn-2"]
+        })
+        await provider.shutdown()
+    }
 }
