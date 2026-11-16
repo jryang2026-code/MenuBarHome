@@ -214,12 +214,14 @@ struct ContractReplayTests {
                 Issue.record("fixture message is not an object")
                 continue
             }
-            if let home = try snapshot.receive(object) {
+            let isRefresh = object["id"]?.intValue == 1001
+            if let home = try snapshot.receive(object, isRefreshStatesResult: isRefresh) {
                 homes.append(home)
             }
         }
 
-        // Initial registries, the state_changed event, and the 1001 refresh each publish once.
+        // Initial registries, the state_changed event, and the explicit 1001 get_states refresh each publish once.
+        // The id 7 stream URL is not a state list, so it publishes nothing.
         #expect(homes.count == 3)
         let initial = try #require(homes.first)
         #expect(initial.devices.map(\.id).sorted() == ["dev-light-01", "dev-thermo-02"])

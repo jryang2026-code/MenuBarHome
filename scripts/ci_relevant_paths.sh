@@ -59,7 +59,11 @@ while IFS= read -r path || [ -n "$path" ]; do
             scripts=true
             go2rtc=true
             ;;
-        *.md|docs/*|LICENSE|.github/ISSUE_TEMPLATE/*|.cursor/*|.claude/*|.agents/*)
+        # check_doc_links.py validates Markdown links and docs/* targets inside the lint job.
+        *.md|docs/*)
+            code=true
+            ;;
+        LICENSE|.github/ISSUE_TEMPLATE/*|.cursor/*|.claude/*|.agents/*)
             ;;
         # Changing the main CI workflow exercises every job on the PR.
         .github/workflows/ci.yml)

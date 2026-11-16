@@ -539,6 +539,7 @@ export class MenuMijiaWindowsApp {
     if (this.cameraLive.activeLiveCameraId !== null || this.cameraLive.liveCameraKeepAliveTimer !== null) {
       this.cameraLive.closeCameraLiveView();
     }
+    this.cameraLive.discardRetainedCloudSessions();
   }
 
   /** The tray popover hides when it loses focus, so focus means it is on screen. */

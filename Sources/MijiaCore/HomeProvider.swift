@@ -211,21 +211,28 @@ public actor HAWebSocketProvider: HomeProvider {
         case authenticatedStayConnected
     }
 
-    /// Test seams for deterministic retry/backoff verification without wall-clock sleeps or sockets.
+    /// Test seams for retry, backoff, and the camera-stream timeout. Tests gate these instead of sleeping.
     private var connectOverride: (@Sendable () async throws -> ConnectTestOutcome)?
     private var webSocketFactoryOverride: (@Sendable (URL) -> any HAWebSocketConnection)?
     private var reconnectSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    private var streamRequestTimeout: @Sendable () async -> Void = {
+        try? await Task.sleep(for: .milliseconds(3500))
+    }
 
     func setTestSeams(
         connectOverride: (@Sendable () async throws -> ConnectTestOutcome)?,
         reconnectSleep: (@Sendable (Duration) async throws -> Void)? = nil,
-        webSocketFactory: (@Sendable (URL) -> any HAWebSocketConnection)? = nil
+        webSocketFactory: (@Sendable (URL) -> any HAWebSocketConnection)? = nil,
+        streamRequestTimeout: (@Sendable () async -> Void)? = nil
     ) {
         self.connectOverride = connectOverride
         if let reconnectSleep {
             self.reconnectSleep = reconnectSleep
         }
         self.webSocketFactoryOverride = webSocketFactory
+        if let streamRequestTimeout {
+            self.streamRequestTimeout = streamRequestTimeout
+        }
     }
 
     public init(
@@ -584,6 +591,12 @@ public actor HAWebSocketProvider: HomeProvider {
                         deliverStartupReply(id: id, message: msg)
                     }
                     let isRefresh = pendingRefreshStateIds.remove(id) != nil
+                    if !isRefresh && !(1...4).contains(id) {
+                        if !(1...5).contains(id) {
+                            logger.debug("Ignoring Home Assistant result id \(id, privacy: .public) with no open request")
+                        }
+                        continue
+                    }
                     if let home = try snapshot.receive(msg, isRefreshStatesResult: isRefresh) {
                         continuation?.yield(.snapshotUpdated(home))
                     }
@@ -732,8 +745,7 @@ public actor HAWebSocketProvider: HomeProvider {
            let ws = activeWebSocket {
             let reqId = allocateWebSocketMessageId()
             let timeoutTask = Task { [weak self] in
-                try? await Task.sleep(for: .milliseconds(3500))
-                await self?.completeStreamRequest(id: reqId, urlPath: nil)
+                await self?.expireStreamRequest(id: reqId)
             }
             let urlPath: String? = await withCheckedContinuation { cont in
                 pendingStreamRequests[reqId] = cont
@@ -782,6 +794,11 @@ public actor HAWebSocketProvider: HomeProvider {
         let marker = "/api/camera_proxy/"
         guard let range = path.range(of: marker) else { return nil }
         return path.replacingCharacters(in: range, with: "/api/camera_proxy_stream/")
+    }
+
+    private func expireStreamRequest(id: Int) async {
+        await streamRequestTimeout()
+        completeStreamRequest(id: id, urlPath: nil)
     }
 
     private func completeStreamRequest(id: Int, urlPath: String?) {

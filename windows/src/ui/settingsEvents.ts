@@ -79,6 +79,7 @@ export interface SettingsEventsHost {
     readonly activeLiveCameraId: string | null;
     readonly liveCameraKeepAliveTimer: number | null;
     closeCameraLiveView(): void;
+    discardRetainedCloudSessions?(): void;
   };
   assistantKeysByPreset: Record<string, string>;
   devices: SmartDevice[];
@@ -417,6 +418,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
     host.cameraLive.closeCameraLiveView();
   }
+  host.cameraLive.discardRetainedCloudSessions?.();
   host.localControlRevision += 1;
   host.invalidateSourceControl();
   host.clearPendingHighRisk();
@@ -533,6 +535,33 @@ function closeSettingsSheetImmediate(host: SettingsEventsHost): void {
   host.hotkeyNeedsHint = false;
   invokeTauriVoid("set_pin_popover", { pin: host.shouldKeepPopoverPinned() });
   host.render();
+}
+
+function settingsUnsavedConfirm(host: SettingsEventsHost): HTMLElement | null {
+  return host.root.querySelector<HTMLElement>("#settings-unsaved-confirm");
+}
+
+function keepEditingSettings(host: SettingsEventsHost): boolean {
+  const unsavedBar = settingsUnsavedConfirm(host);
+  if (!unsavedBar || unsavedBar.hidden) return false;
+  unsavedBar.hidden = true;
+  return true;
+}
+
+function requestCloseSettingsSheet(host: SettingsEventsHost): void {
+  if (hasUnsavedSettingsChanges(host)) {
+    const unsavedBar = settingsUnsavedConfirm(host);
+    if (unsavedBar) {
+      unsavedBar.hidden = false;
+      return;
+    }
+  }
+  closeSettingsSheetImmediate(host);
+}
+
+export function handleSettingsSheetEscape(host: SettingsEventsHost): void {
+  if (keepEditingSettings(host)) return;
+  requestCloseSettingsSheet(host);
 }
 
 function commitSettingsSave(host: SettingsEventsHost): void {
@@ -1061,19 +1090,11 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   });
 
   host.root.querySelector("#btn-close-settings")?.addEventListener("click", () => {
-    if (hasUnsavedSettingsChanges(host)) {
-      const unsavedBar = host.root.querySelector<HTMLElement>("#settings-unsaved-confirm");
-      if (unsavedBar) {
-        unsavedBar.hidden = false;
-        return;
-      }
-    }
-    closeSettingsSheetImmediate(host);
+    requestCloseSettingsSheet(host);
   });
 
   host.root.querySelector("#btn-cancel-close-settings")?.addEventListener("click", () => {
-    const unsavedBar = host.root.querySelector<HTMLElement>("#settings-unsaved-confirm");
-    if (unsavedBar) unsavedBar.hidden = true;
+    keepEditingSettings(host);
   });
 
   host.root.querySelector("#btn-discard-settings")?.addEventListener("click", () => {

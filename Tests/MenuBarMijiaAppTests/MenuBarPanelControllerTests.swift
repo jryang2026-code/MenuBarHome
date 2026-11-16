@@ -2313,6 +2313,8 @@ struct MenuBarPanelControllerTests {
         #expect(abs(slow.height + 9.9) < 0.001)
     }
 
+    #if DEBUG
+    // Mouse targeting uses cardGlobalFrames, which the panel only records in debug builds.
     @Test("Long-pressing a light card no longer enters edit mode; the corner handle resizes and cycles once editing is entered from the menu (#115)")
     func longPressOnLightCardNoLongerEntersEditModeAndCornerHandleResizesWhenEditing() async throws {
         _ = NSApplication.shared
@@ -2507,6 +2509,7 @@ struct MenuBarPanelControllerTests {
 
         LayoutUIState.shared.endDeviceLayoutEditing()
     }
+    #endif
 
     private static func pumpMainRunLoop(_ seconds: TimeInterval = 0.05) {
         CFRunLoopRunInMode(.defaultMode, seconds, false)
