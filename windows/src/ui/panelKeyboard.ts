@@ -1,6 +1,7 @@
 import { normalizeSearch, panelQueryKind } from "../core/panelSearch.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { closeConnectionsAndDiagModal, isConnectionsAndDiagModalOpen } from "./connectionsAndDiagView.js";
+import { handleSettingsSheetEscape } from "./settingsEvents.js";
 import {
   dismissPendingUrlConfirmation,
   hasPendingUrlConfirmation,
@@ -297,6 +298,11 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
     if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
       event.preventDefault();
       host.cameraLive.hideCameraLiveView();
+      return true;
+    }
+    if (host.activeSheet === "settings") {
+      event.preventDefault();
+      handleSettingsSheetEscape(host);
       return true;
     }
     if (host.activeSheet !== "none") {

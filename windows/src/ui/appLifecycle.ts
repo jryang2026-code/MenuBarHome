@@ -1,4 +1,5 @@
 import { finishPanelComposition, handlePanelKey } from "./panelKeyboard.js";
+import { handleSettingsSheetEscape } from "./settingsEvents.js";
 import { processScheduledCommands } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
@@ -1008,6 +1009,11 @@ export function bindGlobalKeys(
       if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
         e.preventDefault();
         host.cameraLive.hideCameraLiveView();
+        return;
+      }
+      if (host.activeSheet === "settings") {
+        e.preventDefault();
+        handleSettingsSheetEscape(host);
         return;
       }
       if (host.activeSheet !== "none") {

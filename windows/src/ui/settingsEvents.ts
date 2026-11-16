@@ -535,6 +535,33 @@ function closeSettingsSheetImmediate(host: SettingsEventsHost): void {
   host.render();
 }
 
+function settingsUnsavedConfirm(host: SettingsEventsHost): HTMLElement | null {
+  return host.root.querySelector<HTMLElement>("#settings-unsaved-confirm");
+}
+
+function keepEditingSettings(host: SettingsEventsHost): boolean {
+  const unsavedBar = settingsUnsavedConfirm(host);
+  if (!unsavedBar || unsavedBar.hidden) return false;
+  unsavedBar.hidden = true;
+  return true;
+}
+
+function requestCloseSettingsSheet(host: SettingsEventsHost): void {
+  if (hasUnsavedSettingsChanges(host)) {
+    const unsavedBar = settingsUnsavedConfirm(host);
+    if (unsavedBar) {
+      unsavedBar.hidden = false;
+      return;
+    }
+  }
+  closeSettingsSheetImmediate(host);
+}
+
+export function handleSettingsSheetEscape(host: SettingsEventsHost): void {
+  if (keepEditingSettings(host)) return;
+  requestCloseSettingsSheet(host);
+}
+
 function commitSettingsSave(host: SettingsEventsHost): void {
   const baseEl = host.root.querySelector<HTMLInputElement>("#settings-base-url");
   const apiKeyEl = host.root.querySelector<HTMLInputElement>("#settings-api-key");
@@ -1061,19 +1088,11 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   });
 
   host.root.querySelector("#btn-close-settings")?.addEventListener("click", () => {
-    if (hasUnsavedSettingsChanges(host)) {
-      const unsavedBar = host.root.querySelector<HTMLElement>("#settings-unsaved-confirm");
-      if (unsavedBar) {
-        unsavedBar.hidden = false;
-        return;
-      }
-    }
-    closeSettingsSheetImmediate(host);
+    requestCloseSettingsSheet(host);
   });
 
   host.root.querySelector("#btn-cancel-close-settings")?.addEventListener("click", () => {
-    const unsavedBar = host.root.querySelector<HTMLElement>("#settings-unsaved-confirm");
-    if (unsavedBar) unsavedBar.hidden = true;
+    keepEditingSettings(host);
   });
 
   host.root.querySelector("#btn-discard-settings")?.addEventListener("click", () => {
