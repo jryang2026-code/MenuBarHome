@@ -145,6 +145,8 @@ export class CameraLiveController {
   public ownedStreamOrigin: string | null = null;
   public liveCameraToken = 0;
   public readonly pendingCameraReleases = new Map<string, Promise<void>>();
+  /** Session that started the in-flight or open cloud stream. Logout clears the store before a late start can be stopped. */
+  private readonly cloudStreamSessions = new Map<string, MiSession>();
   private readonly cameraBridgeBindings = new Map<string, CameraBridgeBinding>();
   private readonly recentP2PSessionActivityMs = new Map<string, number>();
   private reconnectingP2PSessionId: string | null = null;
@@ -402,8 +404,10 @@ export class CameraLiveController {
     dev: SmartDevice,
     releaseToken = this.liveCameraToken,
     allowActiveCamera = false,
+    sessionOverride?: MiSession | null,
   ): Promise<void> {
-    const { backend, sourceDev, miSession: session } = this.resolveCameraSource(dev);
+    const { backend, sourceDev, miSession } = this.resolveCameraSource(dev);
+    const session = sessionOverride ?? this.cloudStreamSessions.get(dev.id) ?? miSession ?? null;
     if (backend !== "xiaomiCloud" || !session) return Promise.resolve();
     const run = (async () => {
       try {
@@ -774,7 +778,13 @@ export class CameraLiveController {
         did,
         hlsUrl,
       });
-      if (this.liveCameraToken !== token || this.activeLiveCameraId !== did) return false;
+      if (this.liveCameraToken !== token || this.activeLiveCameraId !== did) {
+        // stopLiveTransport can run before this registration; stop the stream this call just created.
+        if (mjpegName && this.activeLiveCameraId !== did) {
+          invokeTauriVoid("stop_xiaomi_camera_bridge", { did });
+        }
+        return false;
+      }
       if (mjpegName) {
         this.liveCameraStreamURL = mjpegName;
         this.liveCameraError = null;
@@ -899,6 +909,7 @@ export class CameraLiveController {
 
     const channel = this.selectedCameraChannel(dev);
     const requiresHub = CameraHubCatalog.hubModel(sourceDev.model) !== null;
+    this.cloudStreamSessions.set(dev.id, session);
     this.liveCameraLoading = true;
     this.liveCameraNeedsManualIp = false;
     this.host.render();
@@ -911,12 +922,18 @@ export class CameraLiveController {
     const shouldReleaseStaleCloudSession = () =>
       this.activeLiveCameraId !== dev.id || hasCustomUrl();
     let startedP2PSession = false;
+    let startedCloudStream = false;
     let failureReason: string | null = null;
     const releaseIfStarted = (releaseToken = token) => {
-      if (startedP2PSession) {
-        startedP2PSession = false;
-        void this.releaseCameraP2PSession(dev, releaseToken, true);
-      }
+      if (!startedP2PSession && !startedCloudStream) return;
+      startedP2PSession = false;
+      startedCloudStream = false;
+      void this.releaseCameraP2PSession(dev, releaseToken, true, session);
+    };
+    const abandonIfStale = (): boolean => {
+      if (!stale()) return false;
+      if (shouldReleaseStaleCloudSession()) releaseIfStarted(this.liveCameraToken);
+      return true;
     };
     try {
       const pendingRelease = this.pendingCameraReleases.get(dev.id);
@@ -945,7 +962,7 @@ export class CameraLiveController {
         // typed inputs; try the bare call, then the codec-index variant, and treat every
         // failure as "no cloud HLS" so the P2P bridge below still runs (#97).
         for (const inputs of [[], [1]]) {
-          if (stale()) return;
+          if (abandonIfStale()) return;
           try {
             const res = await client.callAction({
               did: sourceDev.id,
@@ -953,7 +970,8 @@ export class CameraLiveController {
               aiid: act.iid,
               inputs,
             });
-            if (stale()) return;
+            startedCloudStream = true;
+            if (abandonIfStale()) return;
             const rawJson = JSON.stringify(res ?? {});
             const urlMatch = /https?:\/\/[^\s"'\\]+/i.exec(rawJson);
             if (urlMatch?.[0]) {
@@ -961,7 +979,7 @@ export class CameraLiveController {
               if (this.needsHlsTranscodeBridge(playable)) {
                 this.liveCameraQualityApplies = false;
                 const bridged = await this.bridgeHlsStreamToMjpeg(dev.id, playable);
-                if (stale()) return;
+                if (abandonIfStale()) return;
                 if (bridged) {
                   return;
                 }
@@ -979,13 +997,13 @@ export class CameraLiveController {
               }
             }
           } catch {
-            if (stale()) return;
+            if (abandonIfStale()) return;
             // Cloud HLS rejected (bad inputs / 403 / offline): fall back to P2P.
           }
         }
       }
 
-      if (stale()) return;
+      if (abandonIfStale()) return;
       // 2. Release any previous P2P session, then wake a fresh one (siid=9 p2p-stream service)
       const sessionKey = this.p2pSessionKeyForDevice(dev);
       const isSameSessionReconnect = this.reconnectingP2PSessionId === sessionKey;
@@ -1007,13 +1025,13 @@ export class CameraLiveController {
           .callAction({ did: sourceDev.id, siid: p2pSvc.iid, aiid: stopAct.iid, inputs: [] })
           .then(() => true)
           .catch(() => false);
-        if (stale()) return;
+        if (abandonIfStale()) return;
         if (released && needsSameSessionCooldown && this.cameraSameSessionCooldownMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, this.cameraSameSessionCooldownMs));
-          if (stale()) return;
+          if (abandonIfStale()) return;
         }
       }
-      if (stale()) return;
+      if (abandonIfStale()) return;
       if (p2pSvc && p2pAct) {
         startedP2PSession = await client
           .callAction({ did: sourceDev.id, siid: p2pSvc.iid, aiid: p2pAct.iid, inputs: [] })
