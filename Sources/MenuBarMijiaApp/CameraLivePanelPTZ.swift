@@ -347,13 +347,18 @@ extension CameraLivePanelController {
         let attempts = ptzUnresolvedStops
         guard !attempts.isEmpty else { return }
         ptzManualStopInFlight = true
+        // A release stop may still be inside its automatic retry. Quitting and the next drag
+        // await this slot, so the batch keeps that stop tracked instead of replacing it.
+        let previousStop = ptzStopTask
         let task = Task { @MainActor [weak self] in
-            defer { self?.ptzManualStopInFlight = false }
             for attempt in attempts {
                 let result = try? await attempt.client.stop(token: attempt.token)
                 guard let self, let result, result.clearsFailedWrite else { continue }
                 self.resolveUnresolvedStop(attempt)
             }
+            self?.ptzManualStopInFlight = false
+            self?.ptzManualStopBatchDidFinish?()
+            await previousStop?.value
         }
         ptzStopTask = task
     }
@@ -410,6 +415,7 @@ extension CameraLivePanelController {
         ptzDeviceId = nil
         ptzUnresolvedStops = []
         ptzStopRetryHold = nil
+        ptzManualStopBatchDidFinish = nil
         ptzManualStopInFlight = false
         ptzClient = client
         if let store {

@@ -122,6 +122,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     var ptzLifecycleID = UUID()
     var ptzUnresolvedStops: [CameraPTZStopAttempt] = []
     var ptzStopRetryHold: (@MainActor () async -> Void)?
+    var ptzManualStopBatchDidFinish: (@MainActor () -> Void)?
     var ptzManualStopInFlight = false
     /// Fixed clock for deterministic previews; nil in production.
     var demoTimestampOverride: Date?
