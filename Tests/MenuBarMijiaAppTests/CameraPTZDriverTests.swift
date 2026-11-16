@@ -867,6 +867,11 @@ struct CameraPTZDriverTests {
         controller.finishPTZMove(notify: false)
         _ = try #require(await client.waitForStops(), "the release stop was never written")
 
+        let (batchStream, batchContinuation) = AsyncStream<Void>.makeStream()
+        controller.ptzManualStopBatchDidFinish = {
+            batchContinuation.yield()
+            batchContinuation.finish()
+        }
         var completed = false
         let (doneStream, doneContinuation) = AsyncStream<Void>.makeStream()
         let reply = controller.prepareForTermination {
@@ -876,9 +881,7 @@ struct CameraPTZDriverTests {
         }
         #expect(reply == .terminateLater)
         _ = try #require(await olderClient.waitForStops(), "quitting did not retry the older failed stop")
-        for _ in 0..<5000 where !completed {
-            await Task.yield()
-        }
+        for await _ in batchStream { break }
         #expect(!completed, "quit finished while the release stop still waited for its retry")
 
         gate.release()

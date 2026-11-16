@@ -357,6 +357,7 @@ extension CameraLivePanelController {
                 self.resolveUnresolvedStop(attempt)
             }
             self?.ptzManualStopInFlight = false
+            self?.ptzManualStopBatchDidFinish?()
             await previousStop?.value
         }
         ptzStopTask = task
@@ -414,6 +415,7 @@ extension CameraLivePanelController {
         ptzDeviceId = nil
         ptzUnresolvedStops = []
         ptzStopRetryHold = nil
+        ptzManualStopBatchDidFinish = nil
         ptzManualStopInFlight = false
         ptzClient = client
         if let store {
