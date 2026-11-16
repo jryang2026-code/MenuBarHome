@@ -59,7 +59,7 @@ struct DoorbellRingTests {
         _ = try snapshot.receive(Self.changed(Self.state("event.door_ring", Self.second)))
         #expect(snapshot.takeDoorbellRings().isEmpty, "coming back from unavailable with a press already seen is not a press")
 
-        _ = try snapshot.receive(Self.reply(1000, .array([Self.state("event.door_ring", "2026-11-05T02:00:00.000+00:00")])))
+        _ = try snapshot.receive(Self.reply(1000, .array([Self.state("event.door_ring", "2026-11-05T02:00:00.000+00:00")])), isRefreshStatesResult: true)
         #expect(snapshot.takeDoorbellRings().isEmpty, "a get_states refresh is not a press")
     }
 

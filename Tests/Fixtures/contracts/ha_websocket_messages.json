@@ -3,7 +3,7 @@
     "endpoint": "WS /api/websocket",
     "captured": "2026-11-03",
     "sanitised": "entity ids, device ids, area ids and names replaced; message envelope shapes preserved",
-    "shape": "ordered server messages; feed each object to HAHomeSnapshot.receive"
+    "shape": "ordered server messages; feed each object to HAHomeSnapshot.receive. The id 1001 get_states refresh needs isRefreshStatesResult"
   },
   "messages": [
     {"type": "auth_required", "ha_version": "2026.10.0"},
