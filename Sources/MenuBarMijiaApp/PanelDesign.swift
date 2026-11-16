@@ -156,6 +156,12 @@ public struct TileSurface: Equatable, Sendable {
 // MARK: - Motion Helpers
 
 /// Status dot that breathes slowly while connected.
+///
+/// `repeatForever` 一旦启动就不会自己停：面板关闭时 SwiftUI 只把窗口 orderOut，视图树是刻意保活的
+/// （见 `MenuBarPanelController+Presentation.hidePanel`），于是这个动画会继续以屏幕刷新率驱动
+/// `ViewGraph` 重算动画值。窗口不可见时不产生 display cycle，所以 sample 里看不到渲染热点，
+/// 但 CPU 会常驻约 10%（实测：面板关闭后 11.10% → 停止动画后 1.1%）。
+/// 因此这里按 `animate` 的取值启停，而不是只在 `onAppear` 里启动一次。
 struct BreathingDot: View {
     @Environment(\.effectiveReduceMotion) private var reduceMotion
     let color: Color
@@ -167,10 +173,24 @@ struct BreathingDot: View {
             .fill(color)
             .frame(width: 7, height: 7)
             .opacity(dim ? 0.35 : 1)
-            .onAppear {
-                guard animate, !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { dim = true }
-            }
+            .onAppear { syncAnimation() }
+            .onChange(of: animate) { _, _ in syncAnimation() }
+            .onDisappear { stopAnimation() }
+    }
+
+    private func syncAnimation() {
+        guard animate, !reduceMotion else {
+            stopAnimation()
+            return
+        }
+        withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { dim = true }
+    }
+
+    /// 用无动画事务把 `dim` 推回初始值：这一步会移除 `repeatForever`，动画才真正停下。
+    private func stopAnimation() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { dim = false }
     }
 }
 
