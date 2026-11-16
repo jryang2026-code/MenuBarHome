@@ -326,6 +326,7 @@ run_script_self_tests() {
         run_clean_env "$PYTHON_BIN" scripts/measure_footprint.py --self-test
         run_clean_env bash scripts/test_ci_relevant_paths.sh
         run_clean_env bash scripts/test_check_release.sh
+        run_clean_env bash scripts/test_next_version.sh
         run_clean_env bash scripts/test_nas_setup.sh
     fi
 }

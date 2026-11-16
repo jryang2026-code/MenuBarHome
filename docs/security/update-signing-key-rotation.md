@@ -293,7 +293,7 @@ After `R3`, `K_old` is no longer trusted by updated clients and cannot be used f
 | After `R2`, before `R3` | Set primary back to `K_old`, overlap to `""` (or `K_new` if only `K_new`'s release was bad and you want to retry), bump the version above `R2`, and sign with `K_old`. Clients on `R1`/`R2` trust `K_old`. |
 | After `R3` | `K_old` is no longer trusted. Roll forward with `K_new`; if `K_new` is lost, every client needs a manual install of a build signed by a key you still hold. |
 
-A rollback is a normal release: the version must be higher than the release being withdrawn, and `scripts/check.sh` must pass with the reordered constants.
+A rollback is a normal release: the version must be higher than the release being withdrawn, and `scripts/check.sh` must pass with the reordered constants. Take that version from `scripts/next_version.sh` ([ADR-0022](../adr/0022-date-version-scheme.md)); do not invent a semver patch on top of 1.3.0.
 
 ## 4. Compromise and revocation
 

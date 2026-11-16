@@ -159,6 +159,39 @@ expect_tag 1 "v1.2.5" "tag rejects stale windows/package-lock.json version" "win
 write_tag_repo_files "1.2.5" "1.2.5" "1.2.5" "1.2.0"
 expect_tag 1 "v1.2.5" "tag rejects stale windows/src-tauri/Cargo.lock version" "windows/src-tauri/Cargo.lock"
 
+write_tag_repo_files "1.3.0" "1.3.0" "1.3.0" "1.3.0"
+expect_tag 0 "v1.3.0" "tag accepts the existing semver 1.3.0"
+
+write_tag_repo_files "26.11.1701" "26.11.1701" "26.11.1701" "26.11.1701"
+expect_tag 0 "v26.11.1701" "tag accepts a date version 26.11.1701"
+
+write_tag_repo_files "26.12.501" "26.12.501" "26.12.501" "26.12.501"
+expect_tag 0 "v26.12.501" "tag accepts a date version 26.12.501"
+
+write_tag_repo_files "255.255.65535" "255.255.65535" "255.255.65535" "255.255.65535"
+expect_tag 0 "v255.255.65535" "tag accepts the MSI ProductVersion ceiling"
+
+write_tag_repo_files "01.3.0" "01.3.0" "01.3.0" "01.3.0"
+expect_tag 1 "v01.3.0" "tag rejects a leading zero in major" "不允许前导零"
+
+write_tag_repo_files "1.03.0" "1.03.0" "1.03.0" "1.03.0"
+expect_tag 1 "v1.03.0" "tag rejects a leading zero in minor" "不允许前导零"
+
+write_tag_repo_files "1.3.00" "1.3.00" "1.3.00" "1.3.00"
+expect_tag 1 "v1.3.00" "tag rejects a leading zero in patch" "不允许前导零"
+
+write_tag_repo_files "2026.11.17" "2026.11.17" "2026.11.17" "2026.11.17"
+expect_tag 1 "v2026.11.17" "tag rejects a four-digit year major" "MSI ProductVersion"
+
+write_tag_repo_files "256.0.1" "256.0.1" "256.0.1" "256.0.1"
+expect_tag 1 "v256.0.1" "tag rejects major above the MSI limit" "MSI ProductVersion"
+
+write_tag_repo_files "1.256.1" "1.256.1" "1.256.1" "1.256.1"
+expect_tag 1 "v1.256.1" "tag rejects minor above the MSI limit" "MSI ProductVersion"
+
+write_tag_repo_files "1.1.65536" "1.1.65536" "1.1.65536" "1.1.65536"
+expect_tag 1 "v1.1.65536" "tag rejects patch above the MSI limit" "MSI ProductVersion"
+
 # 若当前环境 openssl 支持 Ed25519，额外实测 assets 模式拒绝仅含 DMG 的单平台签名清单
 openssl_bin=""
 for cand in openssl /opt/homebrew/opt/openssl@3/bin/openssl /usr/local/opt/openssl@3/bin/openssl; do

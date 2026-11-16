@@ -4,7 +4,21 @@ Reference for `Sources/MijiaCore/Update*.swift`, `Sources/MenuBarMijiaApp/Update
 `Tests/MijiaCoreTests/Update*.swift`. Trust-chain rationale is in
 [ADR-0005](../adr/0005-update-signing-trust-chain.md); release mechanics are in
 [`scripts/release.sh`](../../scripts/release.sh), `.github/workflows/release.yml` and
-`.github/workflows/finalize.yml`.
+`.github/workflows/finalize.yml`. How the next version number is chosen is
+[ADR-0022](../adr/0022-date-version-scheme.md).
+
+## Choosing the next release version
+
+The release after 1.3.0 is a Shanghai calendar version, not a hand-picked semver bump.
+`scripts/next_version.sh` prints the machine version for today.
+`scripts/next_version.sh --label` prints the human label, for example `2026.11.17（v1）`.
+
+Copy that machine version into `VERSION` and into every file `scripts/check_release.sh tag`
+compares with it: `windows/src-tauri/tauri.conf.json`, `windows/package.json`,
+`windows/src-tauri/Cargo.toml`, `windows/package-lock.json`, `windows/src-tauri/Cargo.lock`,
+and `scripts/mijia`. Do not put a four-digit year in the first field.
+`check_release.sh tag` still accepts an existing tag such as `1.3.0`, and it rejects a
+leading zero or a value outside the Windows MSI ProductVersion limits.
 
 ## Order of operations (never reorder)
 

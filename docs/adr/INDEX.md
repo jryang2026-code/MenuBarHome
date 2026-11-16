@@ -25,3 +25,4 @@
 | [0019](0019-scheduled-command-source-scope.md) | 2026-11-09 | 已接受 | 定时指令记录创建时的 `sourceScopes`，按当前连接源集合过滤执行与保存。 |
 | [0020](0020-backend-descriptor-table.md) | 2026-11-13 | 已接受 | 连接后端保持封闭枚举，散落分支收进穷尽描述表；Windows 补齐 `HomeProvider` 接口层。 |
 | [0021](0021-lan-first-hybrid-miio.md) | 2026-11-15 | 已接受 | macOS 落地 miIO UDP 54321 局域网优先混合读写与云端自动回退（取代 ADR-0007）。 |
+| [0022](0022-date-version-scheme.md) | 2026-11-16 | 已接受 | 1.3.0 之后的发布版本改为上海日期 `YY.M.DDNN`，仍是三段数字，并守住 MSI 与 semver 限制。 |

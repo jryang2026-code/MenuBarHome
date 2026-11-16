@@ -28,7 +28,10 @@ usage() {
   scripts/check_release.sh draft-assets <version> <附件目录>
   scripts/check_release.sh notes <输入.md> <输出.md> <version> <signed:true|false>
 
-tag 必须等于 VERSION 加 v 前缀（例如 VERSION=1.0.6 → v1.0.6），并且指向当前 HEAD。
+tag 必须等于 VERSION 加 v 前缀（例如 VERSION=1.3.0 → v1.3.0），并且指向当前 HEAD。
+VERSION 必须是三段十进制、无前导零，且满足 MSI ProductVersion
+（major ≤ 255，minor ≤ 255，build ≤ 65535）。1.3.0 这种既有版本仍然合法。
+下一版用 scripts/next_version.sh 计算（ADR-0022），不要把四位年份写成 major。
 assets 只接受 6 个安装包和校验文件、两端 SPDX SBOM，再加上
 MenuBarHome-<version>.update.json 与 MenuBarHome-<version>.update.json.ed25519.sig，一共 10 个文件。
 draft-assets 只接受那 6 个待签附件与两端 SBOM，供 CI 产出草稿时自检；
@@ -156,6 +159,38 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# 单独的 0 合法（1.3.0）。多位且以 0 开头会被 Cargo / semver 拒绝。
+# 位数先拦住，避免 bash 把超长数字送进算术。
+release_version_problem() {
+    local version="$1"
+    if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        printf '%s\n' "必须是三段十进制数字"
+        return 0
+    fi
+    local major minor patch part
+    IFS=. read -r major minor patch <<< "$version"
+    for part in "$major" "$minor" "$patch"; do
+        if [ "$part" != "0" ] && [ "${part#0}" != "$part" ]; then
+            printf '%s\n' "不允许前导零"
+            return 0
+        fi
+    done
+    if [ "${#major}" -gt 3 ] || [ "${#minor}" -gt 3 ] || [ "${#patch}" -gt 5 ] \
+        || [ "$((10#$major))" -gt 255 ] || [ "$((10#$minor))" -gt 255 ] || [ "$((10#$patch))" -gt 65535 ]; then
+        printf '%s\n' "超过 MSI ProductVersion 上限（major ≤ 255，minor ≤ 255，build ≤ 65535）"
+    fi
+}
+
+require_release_version() {
+    local version="$1"
+    local label="$2"
+    local problem
+    problem="$(release_version_problem "$version")"
+    if [ -n "$problem" ]; then
+        fail "$label $problem（当前：$version）"
+    fi
+}
+
 validate_tag() {
     [ "$#" -eq 1 ] || usage
 
@@ -167,8 +202,7 @@ validate_tag() {
     local version tag head_sha tag_sha
     version="$(version_file)"
     [ -n "$version" ] || fail "VERSION 为空"
-    printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
-        || fail "VERSION 必须是 x.y.z（当前：$version）"
+    require_release_version "$version" "VERSION"
     tag="v${version}"
 
     [ "$requested" = "$tag" ] \
@@ -422,8 +456,7 @@ validate_assets() {
     local version="$2"
     local dir="$3"
 
-    printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
-        || fail "版本必须是 x.y.z（当前：$version）"
+    require_release_version "$version" "版本"
     [ "$version" = "$(version_file)" ] \
         || fail "附件版本 $version 与 VERSION=$(version_file) 不一致"
 
