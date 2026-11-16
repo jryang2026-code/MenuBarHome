@@ -470,7 +470,7 @@ BLOCK = [
     "### ⚠️ Windows 安装包未签名",
     "本次 release 的 EXE/MSI 没有 Authenticode 签名，安装时 SmartScreen 会提示“Windows 已保护你的电脑”。",
     f"这与 macOS 侧无关：发布清单 `MenuBarHome-{version}.update.json` 带 Ed25519 签名，应用内更新会强制校验。",
-    "Windows 安装包请以本页附带的 `.sha256` 为准。签名接入见 issue #32。",
+    "Windows 安装包请以本页附带的 `.sha256` 为准。签名接入见 issue #12。",
 ]
 
 text = open(raw_path, encoding="utf-8").read()
