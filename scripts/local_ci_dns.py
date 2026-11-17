@@ -24,6 +24,39 @@ def _default_opener():
     return urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
+def _set_read_timeout(response, seconds: float) -> None:
+    """Best-effort per-read socket timeout; `open()`'s timeout is fixed when it was set."""
+    try:
+        response.fp.raw._sock.settimeout(max(0.01, seconds))
+    except (AttributeError, OSError):
+        pass
+
+
+def _read_answer(response, expires_at: float, monotonic, timeout: float) -> bytes:
+    """Read the DoH body in chunks so a slow upstream cannot outlive the query deadline.
+
+    The opener's timeout bounds one blocking socket operation, not the whole response, so a
+    trickling upstream could otherwise hand us an answer the resolver already gave up on.
+    """
+    read_chunk = getattr(response, "read1", None)
+    body = bytearray()
+    while len(body) < 65535:
+        remaining = expires_at - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("DNS query budget spent while reading the answer")
+        _set_read_timeout(response, min(timeout, remaining))
+        limit = 65535 - len(body)
+        chunk = read_chunk(limit) if read_chunk is not None else response.read(limit)
+        if not chunk:
+            break
+        body += chunk
+        if read_chunk is None:
+            break
+    if monotonic() > expires_at:
+        raise TimeoutError("DNS answer arrived after the query budget")
+    return bytes(body)
+
+
 def resolve_dns_packet(
     packet: bytes,
     upstreams=DO_H_UPSTREAMS,
@@ -53,7 +86,7 @@ def resolve_dns_packet(
         try:
             # Only the time left for the whole query, never a second full timeout.
             with opener.open(request, timeout=min(timeout, remaining)) as response:
-                answer = response.read(65535)
+                answer = _read_answer(response, expires_at, monotonic, timeout)
         except Exception as error:
             print(f"DNS upstream {upstream} failed: {error}", flush=True)
             continue
@@ -145,6 +178,50 @@ def _run_self_test() -> int:
     assert stalled_reply == servfail_reply
     assert stalled.timeouts == [3.5, 1.0], stalled.timeouts
     assert fake_clock.elapsed <= QUERY_DEADLINE + 1e-6, fake_clock.elapsed
+
+    # A response that trickles in must be cut off too: `open()`'s timeout only bounds one socket
+    # operation, so the read loop checks the shared budget between chunks.
+    class _TricklingResponse:
+        def __init__(self, clock, state):
+            self.clock = clock
+            self.state = state
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read1(self, _limit: int = -1) -> bytes:
+            self.clock.elapsed += 0.1
+            start = self.state["delivered"]
+            end = min(len(query), start + 4)
+            self.state["delivered"] = end
+            return query[start:end]
+
+        def read(self, _limit: int = -1) -> bytes:
+            # What a single `read()` would hand back: the whole answer, however late it is.
+            self.clock.elapsed += 0.5
+            start = self.state["delivered"]
+            self.state["delivered"] = len(query)
+            return query[start:]
+
+    class _TricklingOpener:
+        def __init__(self, clock):
+            self.clock = clock
+            self.state = {"delivered": 0}
+
+        def open(self, request, timeout=None):
+            return _TricklingResponse(self.clock, self.state)
+
+    trickle_clock = _FakeClock()
+    trickling = _TricklingOpener(trickle_clock)
+    trickle_reply = resolve_dns_packet(
+        query, opener_factory=lambda: trickling, deadline=0.35, monotonic=trickle_clock
+    )
+    assert trickle_reply == servfail_reply
+    assert trickling.state["delivered"] < len(query), trickling.state
+    assert trickle_clock.elapsed <= 0.35 + 0.1 + 1e-6, trickle_clock.elapsed
 
     # Same guard on the real clock: a stalling upstream burns its slice and the query answers
     # instead of retrying three more times.

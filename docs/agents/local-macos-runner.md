@@ -22,7 +22,7 @@
 
 Tart 基础镜像名为 `menubarhome-ci-base`，每次任务的副本名为 `menubarhome-ci-job`。只可销毁任务副本，保留基础镜像。基础镜像包含独立的 macOS、Xcode 和 GitHub Actions runner，不能导入 Apple ID 或签名证书。
 
-本机网络的普通公网 DNS 查询超时，因此基础 VM 还安装了 `scripts/local_ci_dns.py` 到 `/usr/local/libexec/menubarhome-ci-dns.py`，由 `com.menubarhome.ci-dns` 系统 LaunchDaemon 启动，并将 Ethernet DNS 设为 `127.0.0.1`。服务只监听 VM 回环地址的 UDP 53，按 `DO_H_UPSTREAMS` 顺序轮询裸 IP DoH 上游（`223.5.5.5`、`1.12.12.12`、`1.1.1.1`、`1.0.0.1`），不依赖宿主代理或目录。单次查询共用 4.5 秒总预算（`QUERY_DEADLINE`，低于 macOS stub resolver 约 5 秒的单次时限）：每个上游只用剩余时间，预算用完立即回 SERVFAIL，不再逐个等满 3.5 秒。
+本机网络的普通公网 DNS 查询超时，因此基础 VM 还安装了 `scripts/local_ci_dns.py` 到 `/usr/local/libexec/menubarhome-ci-dns.py`，由 `com.menubarhome.ci-dns` 系统 LaunchDaemon 启动，并将 Ethernet DNS 设为 `127.0.0.1`。服务只监听 VM 回环地址的 UDP 53，按 `DO_H_UPSTREAMS` 顺序轮询裸 IP DoH 上游（`223.5.5.5`、`1.12.12.12`、`1.1.1.1`、`1.0.0.1`），不依赖宿主代理或目录。单次查询共用 4.5 秒总预算（`QUERY_DEADLINE`，低于 macOS stub resolver 约 5 秒的单次时限）：每个上游的连接与分块读取都只用剩余时间，预算用完立即回 SERVFAIL，不再逐个等满 3.5 秒，也不会把迟到（stub resolver 已放弃）的应答当结果。
 
 ## 启停和检查
 
