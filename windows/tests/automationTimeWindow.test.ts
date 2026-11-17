@@ -485,6 +485,78 @@ describe("automation time window", () => {
     await dispatch(engine, host, { kind: "tick" }, [rule], at(9, 0, 0));
     assert.equal(commands.length, 1);
   });
+
+  it("does not run a screen lock from before a night window when the flush lands inside it", async () => {
+    const engine = new AutomationEngine(new MemoryKV());
+    engine.primeLockBaseline(false);
+    const rule = loadStored(storedRule({ id: "lock-night", trigger: "screenLocked", timeWindow: NIGHT }));
+    const { host, commands } = trackingHost([makeLight()]);
+    const lockAt = at(21, 59, 59);
+    const tickAt = lockAt + 2_000;
+    await dispatch(engine, host, { kind: "lockChanged", isLocked: true }, [rule], lockAt);
+    await dispatch(engine, host, { kind: "tick" }, [rule], tickAt);
+    assert.equal(commands.length, 0);
+    assert.equal(engine.deduper.lastFireAtMs("screenLocked"), null);
+
+    const laterLockAt = tickAt + 30_000;
+    await dispatch(engine, host, { kind: "lockChanged", isLocked: false }, [rule], tickAt + 1_000);
+    await dispatch(engine, host, { kind: "lockChanged", isLocked: true }, [rule], laterLockAt);
+    await dispatch(engine, host, { kind: "tick" }, [rule], laterLockAt + 2_000);
+    assert.equal(commands.length, 1);
+    assert.equal(engine.deduper.lastFireAtMs("screenLocked"), laterLockAt);
+  });
+
+  it("runs a screen lock inside a day window that ends at 22:00 when the flush lands after it", async () => {
+    const engine = new AutomationEngine(new MemoryKV());
+    engine.primeLockBaseline(false);
+    const until22 = { isEnabled: true, startMinute: 9 * 60, endMinute: 22 * 60 };
+    const rule = loadStored(storedRule({ id: "lock-day", trigger: "screenLocked", timeWindow: until22 }));
+    const { host, commands } = trackingHost([makeLight()]);
+    const lockAt = at(21, 59, 59);
+    await dispatch(engine, host, { kind: "lockChanged", isLocked: true }, [rule], lockAt);
+    await dispatch(engine, host, { kind: "tick" }, [rule], lockAt + 2_000);
+    assert.equal(commands.length, 1);
+    assert.equal(engine.deduper.lastFireAtMs("screenLocked"), lockAt);
+  });
+
+  it("judges a screen lock at the lock instant when the confirming tick is at 00:30", async () => {
+    const engine = new AutomationEngine(new MemoryKV());
+    engine.primeLockBaseline(false);
+    const rule = loadStored(storedRule({ id: "lock-late", trigger: "screenLocked", timeWindow: NIGHT }));
+    const { host, commands } = trackingHost([makeLight()]);
+    const lockAt = at(21, 59, 59);
+    await dispatch(engine, host, { kind: "lockChanged", isLocked: true }, [rule], lockAt);
+    await dispatch(engine, host, { kind: "tick" }, [rule], at(0, 30, 0, 13));
+    assert.equal(commands.length, 0);
+    assert.equal(engine.deduper.lastFireAtMs("screenLocked"), null);
+  });
+
+  it("loads an enabled window whose minutes are not numbers as disabled and still runs at noon", async () => {
+    const kv = new MemoryKV();
+    kv.setItem(
+      AutomationRuleStore.storageKey,
+      JSON.stringify([
+        {
+          id: "string-minutes",
+          isEnabled: true,
+          trigger: "away",
+          action: deviceOffAction(),
+          conditions: {
+            wifi: { kind: "any" },
+            timeWindow: { isEnabled: true, startMinute: "540", endMinute: "1080" },
+          },
+        },
+      ]),
+    );
+    const rule = new AutomationRuleStore(kv).load()[0];
+    assert.ok(rule);
+    const engine = new AutomationEngine(new MemoryKV());
+    engine.primeLockBaseline(false);
+    const { host, commands } = trackingHost([makeLight()]);
+    await dispatch(engine, host, { kind: "lockChanged", isLocked: true }, [rule], at(12, 0, 0));
+    assert.equal(commands.length, 1);
+    assert.equal(rule.conditions.timeWindow?.isEnabled, false);
+  });
 });
 
 describe("automation time window settings", () => {
