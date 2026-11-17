@@ -32,14 +32,58 @@ export function isAutomationTrigger(value: unknown): value is AutomationTrigger 
   return typeof value === "string" && TRIGGER_SET.has(value);
 }
 
-type AutomationPermission = "location" | "focus" | "calendar";
-
 export function automationRequiredPermission(trigger: AutomationTrigger): AutomationPermission | null {
   if (trigger === "wifiNetworkJoined" || trigger === "wifiNetworkLeft") return "location";
   if (trigger === "focusModeEnabled" || trigger === "focusModeDisabled") return "focus";
   if (trigger === "calendarMeetingStartingSoon") return "calendar";
   return null;
 }
+
+export type SystemContextEventKind = SystemContextEvent["kind"];
+
+/**
+ * Windows 当前有生产事件来源驱动的自动化触发器集合。
+ *
+ * 生产链路只派发三类系统上下文事件（`ui/activityStackView.ts` 中 `dispatchSystemContextEvent`
+ * 的全部调用点）：锁屏轮询状态翻转派发 `lockChanged`，面板唤醒生命周期派发 `panelWake`，
+ * `tickSafetyHealthAndAutomation` 周期派发 `tick`。`dispatchEvent` 里其余事件分支
+ * （显示器电源、系统休眠/唤醒、电源/电池、Wi-Fi、摄像头/麦克风、外接显示器、
+ * 专注模式、日历）在 Windows 上没有事件源，规则永远等不到触发。
+ *
+ * 第二阶段接入原生事件采集后，把对应触发器加入本集合并在 `WINDOWS_TRIGGER_SOURCES`
+ * 登记其事件来源即可解锁设置界面下拉与规则标识。
+ */
+export const WINDOWS_SUPPORTED_TRIGGERS = [
+  "away",
+  "back",
+  "screenLocked",
+  "screenUnlocked",
+  "lateNightUsage",
+  "scheduledTime",
+  "sensorThreshold",
+] as const satisfies readonly AutomationTrigger[];
+
+export type WindowsSupportedTrigger = (typeof WINDOWS_SUPPORTED_TRIGGERS)[number];
+
+const WINDOWS_SUPPORTED_TRIGGER_SET: ReadonlySet<string> = new Set<string>(WINDOWS_SUPPORTED_TRIGGERS);
+
+/** 该触发器在 Windows 上是否有生产事件来源（用于设置界面只提供可触发的选项）。 */
+export function isTriggerSupportedOnWindows(trigger: AutomationTrigger): boolean {
+  return WINDOWS_SUPPORTED_TRIGGER_SET.has(trigger);
+}
+
+/** 每个受支持触发器的生产事件来源（守护测试据此静态核对生产派发点，防止加入未接线的触发器）。 */
+export const WINDOWS_TRIGGER_SOURCES: Readonly<Record<WindowsSupportedTrigger, readonly SystemContextEventKind[]>> = {
+  away: ["lockChanged"],
+  back: ["lockChanged"],
+  screenLocked: ["lockChanged", "tick"],
+  screenUnlocked: ["lockChanged"],
+  lateNightUsage: ["panelWake", "tick"],
+  scheduledTime: ["tick"],
+  sensorThreshold: ["tick"],
+};
+
+type AutomationPermission = "location" | "focus" | "calendar";
 
 const TRIGGER_TITLES: Readonly<Record<AutomationTrigger, readonly [string, string, string]>> = {
   away: ["离开（锁屏 / 息屏 / 睡眠）", "離開（鎖屏 / 息屏 / 睡眠）", "Away (lock, display off, sleep)"],
@@ -212,6 +256,19 @@ export function evaluateWiFiCondition(
   return list.includes(ssid)
     ? { status: "network-excluded", isSatisfied: false, ssid }
     : { status: "satisfied", isSatisfied: true, ssid };
+}
+
+/**
+ * Windows 是否支持按 Wi-Fi 网络过滤规则。引擎快照里的 `wifiSSID` 只会由
+ * `wifiChanged` 事件更新，而该事件在 Windows 生产链路中没有派发源，SSID 恒为
+ * null，任何 `inAny` / `notIn` 条件都判定为「未联网」而不满足。第二阶段接入
+ * Wi-Fi 事件采集后把此标志改为 true，即可解锁设置界面的条件编辑器。
+ */
+export const WINDOWS_WIFI_CONDITION_SUPPORTED = false;
+
+/** 该 Wi-Fi 条件在 Windows 上是否可被真实评估（`any` 恒可，其余跟随支持标志）。 */
+export function isWiFiConditionSupportedOnWindows(condition: AutomationWiFiCondition): boolean {
+  return WINDOWS_WIFI_CONDITION_SUPPORTED || condition.kind === "any";
 }
 
 const MINUTES_PER_DAY = 24 * 60;
