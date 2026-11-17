@@ -37,14 +37,24 @@ if [ -n "$require" ]; then
         echo "❌ 快照基准要求 Xcode ${require}，当前没有 xcodebuild。更换镜像后必须重录基线。" >&2
         exit 1
     fi
-    actual="$(xcodebuild -version | awk 'NR == 1 { print $2; exit }')"
+    # xcodebuild -version has aborted (exit 134) on a second call in the same job.
+    # Retry, and do not call it again after the version is known.
+    actual=""
+    attempt=1
+    while [ "$attempt" -le 3 ]; do
+        if actual="$(xcodebuild -version 2>/dev/null | awk 'NR == 1 { print $2; exit }')" && [ -n "$actual" ]; then
+            break
+        fi
+        actual=""
+        attempt=$((attempt + 1))
+        sleep 1
+    done
     if [ "$actual" != "$require" ]; then
         echo "❌ 快照基准要求 Xcode ${require}，当前是 ${actual:-未知}。更换 Xcode 或 macos-26-intel 镜像后必须重录基线。" >&2
-        xcodebuild -version >&2 || true
         sw_vers >&2 || true
         exit 1
     fi
-    xcodebuild -version
+    echo "Xcode ${actual}"
     sw_vers || true
 fi
 
