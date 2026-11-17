@@ -362,16 +362,21 @@ describe("Cover, Plug, Generic, and Climate Swing Detail Drawers", () => {
     });
 
     await click('[data-expand-device="garage_drag"]');
-    await drag("garage_drag", "10");
+    await drag("garage_drag", "2");
     assert.equal(serviceCalls.length, 3, "closing a garage door arms confirmation");
     assert.match(app.replyBanner?.text ?? "", /再点一次确认执行/);
-    await drag("garage_drag", "10");
+    assert.match(
+      app.replyBanner?.text ?? "",
+      /调到 2%/,
+      "the prompt names the position that will be sent, not the snapped 0% the row shows",
+    );
+    await drag("garage_drag", "2");
     assert.equal(serviceCalls.length, 4);
     assert.deepEqual(serviceCalls[3], {
       domain: "cover",
       service: "set_cover_position",
       entity_id: "cover.garage_drag",
-      data: { position: 10 },
+      data: { position: 2 },
     });
   });
 

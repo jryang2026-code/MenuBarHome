@@ -843,15 +843,16 @@ extension HomeStore {
         let previousPosition = startPosition ?? displayed
         // Asked before any optimistic state moves, so a refusal leaves the slider on the position
         // the device really reports. The direction comes from the value the command sends, not the
-        // snapped one the row shows: 0 → 1 % displays as a closed door but still opens it. The
-        // drag's origin decides the direction, so one answer covers the whole drag; the entry lives
-        // only as long as the drag's debounce slot.
-        if baselineCover == nil { approvedCoverDrags.removeValue(forKey: key) }
-        if let opening = Self.coverDragDirection(from: startPosition, to: clamped),
-           approvedCoverDrags[key] != opening,
+        // snapped one the row shows: 0 → 1 % displays as a closed door but still opens it. One
+        // answer covers the ticks of a drag that is still being accumulated; the moment the slot is
+        // sent, a new tick is a new decision and asks again.
+        let confirmedDrag = continuesConfirmedCoverDrag(key, deviceId: deviceId)
+        var answeredPrompt = false
+        if let opening = Self.coverDragDirection(from: s.positionPercent, to: clamped),
+           !confirmedDrag,
            ManualControlPolicy.requiresConfirmation(.power(opening), for: previous) {
             guard allowManualControl(.power(opening), for: previous) else { return }
-            approvedCoverDrags[key] = opening
+            answeredPrompt = true
         }
         let origin = activeCoverOrigin(for: deviceId, fallback: previousPosition) ?? previousPosition
         if let baselineCover {
@@ -889,6 +890,22 @@ extension HomeStore {
                 device.kind = .cover(spec)
             }
         )
+        // Each commit mints a new slot token, so keep the recorded one current for as long as this
+        // drag stays answered (or was just answered now).
+        if answeredPrompt || confirmedDrag, let token = debouncedWrites[key]?.token {
+            confirmedCoverDragTokens[key] = token
+        }
+    }
+
+    /// True while the slider is still accumulating the drag whose hazard prompt was answered: the
+    /// debounce slot still holds that answer's token and its patch has not been sent. A slot that
+    /// went out (or a replaced one) starts a new decision, so a second drag during the command's
+    /// flight time asks again instead of inheriting the first answer.
+    private func continuesConfirmedCoverDrag(_ key: String, deviceId: String) -> Bool {
+        guard let slot = debouncedWrites[key], confirmedCoverDragTokens[key] == slot.token else { return false }
+        return manualWriteSessions[deviceId]?.patches.contains {
+            $0.slotKey == key && $0.phase == .debouncing
+        } == true
     }
 
     /// The hazard direction a position drag takes (`true` opens), or nil when it cannot move the

@@ -663,13 +663,14 @@ export function bindDetailDrawerEvents(
       const command: DeviceCommand = { kind: "setNumberValue", entityId: dev.kind.entityId, value: clamped };
       const summary = t("已将{name}位置设为 {percent}%", { name: dev.name, percent: displayed });
       // A curtain keeps the drag as its confirmation; a garage door, gate or an opener opening
-      // asks first, the same rule its motor buttons follow.
+      // asks first, the same rule its motor buttons follow. The prompt names the value that will be
+      // sent, not the snapped one the row shows (1 % displays as 0 % but still moves the door).
       if (
         coverPositionRequiresConfirmation(dev.kind.subtype, dev.kind.positionPercent, clamped) &&
         !confirmHighRisk(
           dev.id,
           command,
-          t("将{name}位置调到 {percent}%", { name: dev.name, percent: displayed }),
+          t("将{name}位置调到 {percent}%", { name: dev.name, percent: clamped }),
         )
       ) {
         slider.value = String(Math.round(dev.kind.positionPercent ?? 0));
@@ -991,13 +992,14 @@ function bindCollapsedInlineSliders(
             percent: displayed,
           });
           // A garage door hides this inline slider; a window opener or airer shows it and asks the
-          // same way its motor buttons do when the drag opens.
+          // same way its motor buttons do when the drag opens. The prompt names the value that will
+          // be sent, not the snapped one the row shows.
           if (
             coverPositionRequiresConfirmation(dev.kind.subtype, dev.kind.positionPercent, clamped) &&
             !confirmHighRisk(
               dev.id,
               command,
-              t("将{name}位置调到 {percent}%", { name: dev.name, percent: displayed }),
+              t("将{name}位置调到 {percent}%", { name: dev.name, percent: clamped }),
             )
           ) {
             slider.value = String(Math.round(dev.kind.positionPercent ?? 0));

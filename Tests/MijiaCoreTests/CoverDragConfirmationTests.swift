@@ -60,7 +60,7 @@ struct CoverDragConfirmationTests {
         #expect(position(store, garage.id) == 0)
     }
 
-    @Test("A drag asks once per direction while it stays inside the debounce window")
+    @Test("A drag asks once while it is still accumulating inside the debounce window")
     func garageDoorDragAsksOncePerDirection() async throws {
         let garage = cover("garage", name: "车库门", subtype: .garageDoor, position: 100)
         let (store, provider) = try await makeStore([garage])
@@ -78,6 +78,30 @@ struct CoverDragConfirmationTests {
         await waitUntil { await provider.executedCommands.count == 1 }
         #expect(await provider.executedCommands == [.setNumberValue(entityId: "cover.garage", value: 40)],
                 "the debounce sends the last position of the drag")
+    }
+
+    @Test("A second drag after the first command went out asks again")
+    func secondDragAfterSendAsks() async throws {
+        let garage = cover("garage", name: "车库门", subtype: .garageDoor, position: 100)
+        let (store, provider) = try await makeStore([garage])
+        store.controlDebounceInterval = .milliseconds(20)
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return true
+        }
+
+        store.setCoverPosition(garage.id, percent: 0)
+        #expect(prompts == 1)
+        // The debounce slot is the drag: once it is gone, the answer it carried is gone with it.
+        await waitUntil {
+            await provider.executedCommands.count == 1 && store.debouncedWrites["garage.cover"] == nil
+        }
+
+        // Reversing right after the command went out is a new decision, not a tick of the drag that
+        // was already answered.
+        store.setCoverPosition(garage.id, percent: 100)
+        #expect(prompts == 2, "a drag after the slot went out asks again instead of inheriting the answer")
     }
 
     @Test("Dragging a curtain stays direct")
