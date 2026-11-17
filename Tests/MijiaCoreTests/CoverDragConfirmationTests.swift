@@ -104,6 +104,23 @@ struct CoverDragConfirmationTests {
         #expect(prompts == 2, "a drag after the slot went out asks again instead of inheriting the answer")
     }
 
+    @Test("Reversing inside one drag asks again because the answer was for the other way")
+    func reversedTickInSameDragAsks() async throws {
+        let garage = cover("garage", name: "车库门", subtype: .garageDoor, position: 100)
+        let (store, _) = try await makeStore([garage])
+        store.controlDebounceInterval = .seconds(2)
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return true
+        }
+
+        store.setCoverPosition(garage.id, percent: 0)
+        #expect(prompts == 1, "closing is approved")
+        store.setCoverPosition(garage.id, percent: 100)
+        #expect(prompts == 2, "opening the same door a moment later is a second hazard")
+    }
+
     @Test("Dragging a curtain stays direct")
     func curtainDragIsDirect() async throws {
         let curtain = cover("curtain", name: "客厅窗帘", subtype: .curtain, position: 100)

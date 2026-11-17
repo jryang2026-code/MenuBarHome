@@ -79,7 +79,7 @@ extension HomeStore {
         debouncedWrites.removeAll()
         manualWriteSessions.removeAll()
         // The cover drag answer belongs to the slot that asked for it (§13).
-        confirmedCoverDragTokens.removeAll()
+        confirmedCoverDragAnswers.removeAll()
         // A persistent toast carries an action for the connection that raised it (the expired Mi
         // session's Scan button). Reaching demo mode or another account leaves it a dead button,
         // so it must end with the context that created it (§13). A suspended prompt is dropped too,
