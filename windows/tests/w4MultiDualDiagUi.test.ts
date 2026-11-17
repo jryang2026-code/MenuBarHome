@@ -814,7 +814,7 @@ describe("W4 Dual-Source Context Menu: source pinning & tri-lingual '离线，�
       const badgeStyle = badge.getAttribute("style") ?? "";
       assert.match(badgeStyle, /font-size:\s*12px/);
       assert.match(badgeStyle, /color:\s*var\(--win-caution\)/);
-      assert.doesNotMatch(badgeStyle, /#e67e22|10\.5px|text-tertiary|text-secondary/);
+      assert.doesNotMatch(badgeStyle, /background|var\(--win-caution-bg\)|#e67e22|10\.5px|text-tertiary|text-secondary/);
       const statusStyle = status?.getAttribute("style") ?? "";
       assert.match(statusStyle, /font-size:\s*12px/);
       assert.match(statusStyle, /color:\s*var\(--win-caution\)/);

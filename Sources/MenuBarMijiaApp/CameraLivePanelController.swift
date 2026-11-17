@@ -1551,6 +1551,22 @@ private struct CameraHUDIconButton: View {
     }
 }
 
+enum CameraStreamWaitCopy {
+    static var encryptedP2P: String {
+        L10n.tr(
+            "正在建立 P2P 加密通道并解码实时画面…",
+            "Establishing P2P encrypted channel & decoding live video…"
+        )
+    }
+
+    static var mjpeg: String {
+        L10n.tr(
+            "正在接收 MJPEG 画面流…",
+            "Receiving the MJPEG picture stream…"
+        )
+    }
+}
+
 /// A still ring stands in for the spinner when Reduce Motion is on. An indeterminate
 /// `ProgressView` advances with the clock, so a snapshot of a connecting stream would differ
 /// on every capture.
@@ -1996,7 +2012,7 @@ struct CameraLivePanelView: View {
                     }
                     if !controller.hasLiveVideoFrame {
                         CameraStreamWait(
-                            text: L10n.tr("正在建立 P2P 加密通道并解码实时画面…", "Establishing P2P encrypted channel & decoding live video…"),
+                            text: CameraStreamWaitCopy.encryptedP2P,
                             reduceMotion: reduceMotion
                         )
                     }
@@ -2012,7 +2028,7 @@ struct CameraLivePanelView: View {
                     }
                 } else {
                     CameraStreamWait(
-                        text: L10n.tr("正在建立 P2P 加密通道并解码实时画面…", "Establishing P2P encrypted channel & decoding live video…"),
+                        text: CameraStreamWaitCopy.mjpeg,
                         reduceMotion: reduceMotion
                     )
                 }

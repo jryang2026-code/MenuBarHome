@@ -110,6 +110,21 @@ struct LocalizationTests {
                 #expect(L10n.tr("取消置顶", "Unpin") == "Unpin")
                 #expect(L10n.tr("旋转画面", "Rotate picture") == "Rotate picture")
             }
+            let p2pZh = "正在建立 P2P 加密通道并解码实时画面…"
+            let p2pEn = "Establishing P2P encrypted channel & decoding live video…"
+            let mjpegZh = "正在接收 MJPEG 画面流…"
+            let mjpegEn = "Receiving the MJPEG picture stream…"
+            L10n.$overrideLanguage.withValue(.zhHans) {
+                #expect(L10n.tr(mjpegZh, mjpegEn) != L10n.tr(p2pZh, p2pEn))
+            }
+            L10n.$overrideLanguage.withValue(.zhHant) {
+                #expect(L10n.tr(mjpegZh, mjpegEn) == "正在接收 MJPEG 畫面流…")
+                #expect(L10n.tr(mjpegZh, mjpegEn) != L10n.tr(p2pZh, p2pEn))
+            }
+            L10n.$overrideLanguage.withValue(.en) {
+                #expect(L10n.tr(mjpegZh, mjpegEn) == mjpegEn)
+                #expect(L10n.tr(mjpegZh, mjpegEn) != L10n.tr(p2pZh, p2pEn))
+            }
         }
     }
 
