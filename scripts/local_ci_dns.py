@@ -3,6 +3,7 @@
 import socketserver
 import struct
 import sys
+import time
 import urllib.request
 
 DO_H_UPSTREAMS = (
@@ -11,6 +12,11 @@ DO_H_UPSTREAMS = (
     "https://1.1.1.1/dns-query",
     "https://1.0.0.1/dns-query",
 )
+
+# macOS stub resolver abandons one lookup after roughly 5 s, so a reply that arrives later is
+# useless. Every upstream tried for a single query shares this budget instead of each getting a
+# fresh timeout, which kept the worst case around 14 s.
+QUERY_DEADLINE = 4.5
 
 
 def _default_opener():
@@ -23,11 +29,18 @@ def resolve_dns_packet(
     upstreams=DO_H_UPSTREAMS,
     timeout: float = 3.5,
     opener_factory=_default_opener,
+    deadline: float = QUERY_DEADLINE,
+    monotonic=time.monotonic,
 ) -> bytes | None:
     if len(packet) < 12:
         return None
     opener = opener_factory()
+    expires_at = monotonic() + deadline
     for upstream in upstreams:
+        remaining = expires_at - monotonic()
+        if remaining <= 0:
+            print("DNS query budget spent; no upstream left", flush=True)
+            break
         request = urllib.request.Request(
             upstream,
             data=packet,
@@ -38,7 +51,8 @@ def resolve_dns_packet(
             method="POST",
         )
         try:
-            with opener.open(request, timeout=timeout) as response:
+            # Only the time left for the whole query, never a second full timeout.
+            with opener.open(request, timeout=min(timeout, remaining)) as response:
                 answer = response.read(65535)
         except Exception as error:
             print(f"DNS upstream {upstream} failed: {error}", flush=True)
@@ -104,6 +118,52 @@ def _run_self_test() -> int:
     failed = resolve_dns_packet(query, opener_factory=_AllFailingOpener)
     assert failed == servfail_reply
     assert struct.unpack("!H", failed[2:4])[0] == 0x8182
+
+    # Four stalled upstreams must share one budget: 3.5 s, then only the 1 s that is left.
+    class _FakeClock:
+        def __init__(self):
+            self.elapsed = 0.0
+
+        def __call__(self):
+            return self.elapsed
+
+    class _StallingOpener:
+        def __init__(self, clock):
+            self.clock = clock
+            self.timeouts: list[float] = []
+
+        def open(self, request, timeout=None):
+            self.timeouts.append(timeout)
+            self.clock.elapsed += timeout
+            raise TimeoutError("upstream stalled")
+
+    fake_clock = _FakeClock()
+    stalled = _StallingOpener(fake_clock)
+    stalled_reply = resolve_dns_packet(
+        query, opener_factory=lambda: stalled, monotonic=fake_clock
+    )
+    assert stalled_reply == servfail_reply
+    assert stalled.timeouts == [3.5, 1.0], stalled.timeouts
+    assert fake_clock.elapsed <= QUERY_DEADLINE + 1e-6, fake_clock.elapsed
+
+    # Same guard on the real clock: a stalling upstream burns its slice and the query answers
+    # instead of retrying three more times.
+    class _WallClockStall:
+        def __init__(self):
+            self.calls = 0
+
+        def open(self, request, timeout=None):
+            self.calls += 1
+            time.sleep(timeout or 0)
+            raise TimeoutError("upstream stalled")
+
+    wall_stall = _WallClockStall()
+    started = time.monotonic()
+    wall_reply = resolve_dns_packet(query, opener_factory=lambda: wall_stall, deadline=0.2)
+    wall_elapsed = time.monotonic() - started
+    assert wall_reply == servfail_reply
+    assert wall_stall.calls <= 2, wall_stall.calls
+    assert wall_elapsed < 1.0, wall_elapsed
     return 0
 
 
