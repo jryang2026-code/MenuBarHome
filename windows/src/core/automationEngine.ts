@@ -296,23 +296,31 @@ export interface EngineWifiReading {
 
 export interface WifiPollObservation {
   readonly state: WindowsWifiProbeState;
-  /** 确定的读数；null 表示本次探针无法知晓，不参与派发。 */
-  readonly reading: EngineWifiReading | null;
+  /**
+   * 本次要应用到引擎的读数。确定的 connected / notConnected / noPermission 各自
+   * 映射；`unknown`（探针失败、隐藏网络、未知状态值）同样给出读数——SSID 置空
+   * 且不可信，让引擎立即进入「无法知晓」的关闭判定，而不是无限期保留上一次的
+   * 授权 SSID。
+   */
+  readonly reading: EngineWifiReading;
 }
 
 /**
  * 把 `wifi_current` 的返回映射成引擎读数。语义对照 macOS：
- * - `connected`（有 SSID）→ 已授权且联网；
  * - `notConnected` → 已授权但未关联任何 WLAN（`no-network`）；
  * - `noPermission` / `unknown` → 无法知晓（`not-authorized`，一切 Wi-Fi 条件不满足）；
  * - `connected` 但 SSID 为空（隐藏网络）→ 同样无法知晓。
  */
 export function wifiPollObservationFromProbe(probe: WindowsWifiProbeResult | null | undefined): WifiPollObservation {
-  if (!probe || typeof probe !== "object") return { state: "unknown", reading: null };
+  if (!probe || typeof probe !== "object") {
+    return { state: "unknown", reading: { ssid: null, isAuthorized: false } };
+  }
   switch (probe.state) {
     case "connected": {
       const ssid = typeof probe.ssid === "string" ? probe.ssid.trim() : "";
-      return ssid ? { state: "connected", reading: { ssid, isAuthorized: true } } : { state: "unknown", reading: null };
+      return ssid
+        ? { state: "connected", reading: { ssid, isAuthorized: true } }
+        : { state: "unknown", reading: { ssid: null, isAuthorized: false } };
     }
     case "notConnected":
       return { state: "notConnected", reading: { ssid: null, isAuthorized: true } };
@@ -320,7 +328,7 @@ export function wifiPollObservationFromProbe(probe: WindowsWifiProbeResult | nul
       return { state: "noPermission", reading: { ssid: null, isAuthorized: false } };
     // 未知状态值（包括未来新增的枚举）一律按「无法知晓」处理。
     default:
-      return { state: "unknown", reading: null };
+      return { state: "unknown", reading: { ssid: null, isAuthorized: false } };
   }
 }
 
@@ -330,15 +338,15 @@ export interface WifiDispatchDecision {
 }
 
 /**
- * 与上次派发的读数比较；仅在（SSID 或授权状态）发生变化且本次读数可信时返回
- * 决策，否则返回 null（调用点不得派发）。
+ * 与上次派发的读数比较；仅在（SSID 或授权状态）发生变化时返回决策，否则返回
+ * null（调用点不得派发）。读数本身总是可信的——「无法知晓」已经映射成
+ * SSID 置空 + 不可信的读数，不存在需要跳过派发的未知读数。
  */
 export function wifiDispatchDecisionForObservation(
   observation: WifiPollObservation,
   last: EngineWifiReading | null,
 ): WifiDispatchDecision | null {
   const reading = observation.reading;
-  if (!reading) return null;
   if (last && last.ssid === reading.ssid && last.isAuthorized === reading.isAuthorized) return null;
   return { reading };
 }
@@ -1221,8 +1229,10 @@ export class AutomationEngine {
         this.context = { ...this.context, isLocked: event.isLocked, lidClosed };
         if (event.isLocked) {
           // 锁上的瞬间抓取当时的 Wi-Fi 读数（对照 macOS `ingestAway(.screenLocked)`
-          // 抓取 `lockTimeWiFi`）：防抖窗口里网络可能切换，flush 必须按锁屏时刻的
-          // 读数判定，而不是 flush 时刻的读数。
+          // 抓取 `lockTimeWiFi`）。生产链路在锁屏翻转前刚做过一次实时探针
+          // （`tickSafetyHealthAndAutomation` 的锁屏分支），所以这里通常是最新
+          // 读数；探针不可用时退回最近一次轮询读数。防抖窗口里网络可能切换，
+          // flush 必须按锁屏时刻的读数判定，而不是 flush 时刻的读数。
           this.lockTimeWifi = {
             ssid: this.context.wifiSSID,
             isAuthorized: this.context.wifiAuthorized,

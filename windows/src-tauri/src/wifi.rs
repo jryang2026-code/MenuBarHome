@@ -141,6 +141,8 @@ unsafe fn enum_interfaces_status(handle: windows_sys::Win32::Foundation::HANDLE)
         match query_interface_status(handle, &info.InterfaceGuid) {
             connected @ WifiCurrentStatus::Connected { .. } => {
                 status = connected;
+                // 有确定 SSID 的网卡优先于更早网卡的报错。
+                fallback = None;
                 break;
             }
             other => {

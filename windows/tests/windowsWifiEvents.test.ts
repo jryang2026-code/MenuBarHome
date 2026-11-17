@@ -92,20 +92,32 @@ describe("Windows Wi-Fi probe mapping (wifi_current → engine reading)", () => 
       state: "noPermission",
       reading: { ssid: null, isAuthorized: false },
     });
-    // 未知：无法知晓，同样不产生读数。
-    assert.deepEqual(wifiPollObservationFromProbe({ state: "unknown" }), { state: "unknown", reading: null });
+    // 未知：同样给出「无法知晓」的读数（SSID 置空 + 不可信），引擎立即按不可信判定。
+    assert.deepEqual(wifiPollObservationFromProbe({ state: "unknown" }), {
+      state: "unknown",
+      reading: { ssid: null, isAuthorized: false },
+    });
     // 连接但 SSID 为空（隐藏网络）＝无法知晓。
-    assert.deepEqual(wifiPollObservationFromProbe({ state: "connected", ssid: "  " }), { state: "unknown", reading: null });
-    assert.deepEqual(wifiPollObservationFromProbe({ state: "connected", ssid: null }), { state: "unknown", reading: null });
+    assert.deepEqual(wifiPollObservationFromProbe({ state: "connected", ssid: "  " }), {
+      state: "unknown",
+      reading: { ssid: null, isAuthorized: false },
+    });
+    assert.deepEqual(wifiPollObservationFromProbe({ state: "connected", ssid: null }), {
+      state: "unknown",
+      reading: { ssid: null, isAuthorized: false },
+    });
     // 异常载荷按未知处理。
-    assert.deepEqual(wifiPollObservationFromProbe(undefined), { state: "unknown", reading: null });
+    assert.deepEqual(wifiPollObservationFromProbe(undefined), {
+      state: "unknown",
+      reading: { ssid: null, isAuthorized: false },
+    });
     assert.deepEqual(wifiPollObservationFromProbe({ state: "banana" } as unknown as WindowsWifiProbeResult), {
       state: "unknown",
-      reading: null,
+      reading: { ssid: null, isAuthorized: false },
     });
   });
 
-  it("dispatches only definite changed readings and keeps unknown probes silent", () => {
+  it("dispatches only changed readings; unknown probes flip the engine to a fail-closed reading", () => {
     const last: EngineWifiReading = { ssid: "Home_5G", isAuthorized: true };
     const changed = wifiDispatchDecisionForObservation(
       wifiPollObservationFromProbe({ state: "connected", ssid: "Office" }),
@@ -119,9 +131,16 @@ describe("Windows Wi-Fi probe mapping (wifi_current → engine reading)", () => 
       wifiDispatchDecisionForObservation(wifiPollObservationFromProbe({ state: "noPermission" }), last),
       { reading: { ssid: null, isAuthorized: false } },
     );
-    // 未知不派发。
-    assert.equal(wifiDispatchDecisionForObservation(wifiPollObservationFromProbe({ state: "unknown" }), null), null);
-    assert.equal(wifiDispatchDecisionForObservation(wifiPollObservationFromProbe(undefined), last), null);
+    // 未知读数把引擎切到「无法知晓」（fail-closed），而不是保留旧的授权 SSID。
+    assert.deepEqual(
+      wifiDispatchDecisionForObservation(wifiPollObservationFromProbe({ state: "unknown" }), last),
+      { reading: { ssid: null, isAuthorized: false } },
+    );
+    // 连续未知读数与上次相同，不再重复派发。
+    assert.equal(
+      wifiDispatchDecisionForObservation(wifiPollObservationFromProbe({ state: "unknown" }), { ssid: null, isAuthorized: false }),
+      null,
+    );
     // 首次读数（无基线）直接派发。
     assert.deepEqual(
       wifiDispatchDecisionForObservation(wifiPollObservationFromProbe({ state: "notConnected" }), null),
@@ -308,9 +327,9 @@ describe("Issue #9: lock-time Wi-Fi snapshot for the debounced flush", () => {
 describe("Windows Wi-Fi poll wiring (tick → wifiChanged dispatch)", () => {
   let dom: Window;
 
-  function miniHost(): MenuMijiaWindowsApp {
+  function miniHost(devices: SmartDevice[] = [makeLight("light.desk", true)]): MenuMijiaWindowsApp {
     return {
-      devices: [makeLight("light.desk", true)],
+      devices,
       scenes: [],
       settings: { connectionMode: "demo", hasCompletedOnboarding: true },
       queueBackgroundRender() {},
@@ -392,22 +411,97 @@ describe("Windows Wi-Fi poll wiring (tick → wifiChanged dispatch)", () => {
     await setImmediate();
     assert.equal(sent.length, 2);
 
-    // 探针失败：不派发、保留上次读数，状态标记 unknown。
+    // 探针失败：读数按「无法知晓」派发（SSID 置空 + 不可信，引擎失_close），
+    // 但信任门会拦下假的 joined/left 转换，不触发规则。
     wifiResponse = new Error("wlan svc down");
     tickSafetyHealthAndAutomation(host, t0 + 33_000);
     await setImmediate();
     await setImmediate();
     assert.equal(sent.length, 2);
     assert.equal(center.lastWifiProbeState, "unknown");
-    assert.equal(center.automationEngine.snapshot.wifiSSID, "Office");
+    assert.equal(center.automationEngine.snapshot.wifiSSID, null);
+    assert.equal(center.automationEngine.snapshot.wifiAuthorized, false);
 
-    // 无权限：状态驱动设置界面引导（这里只验证探针状态透传）。
+    // 连续无权限读数与上次「无法知晓」一致：不重复派发。
     wifiResponse = { state: "noPermission" };
     tickSafetyHealthAndAutomation(host, t0 + 44_000);
     await setImmediate();
     await setImmediate();
     assert.equal(center.lastWifiProbeState, "noPermission");
-    assert.equal(center.automationEngine.snapshot.wifiAuthorized, false);
+    assert.equal(sent.length, 2);
+
+    // 权限恢复后连上网络：读数变化会派发（上下文刷新），但不可信侧之后的
+    // 首次连接按 macOS 语义不触发 joined。
+    wifiResponse = { state: "connected", ssid: "Office" };
+    tickSafetyHealthAndAutomation(host, t0 + 55_000);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(sent.length, 2);
+    assert.equal(center.automationEngine.snapshot.wifiSSID, "Office");
+    assert.equal(center.automationEngine.snapshot.wifiAuthorized, true);
+  });
+
+  it("takes a fresh Wi-Fi sample when the screen locks so the debounced flush judges on the live network", async () => {
+    const host = miniHost([makeLight("light.a", true), makeLight("light.b", true)]);
+    const center = getHostActivityCenter(host);
+    const sent: DeviceCommand[] = [];
+    host.applyCommand = async (cmd) => {
+      sent.push(cmd);
+      return true;
+    };
+    center.automationEngine.store.save([
+      createAutomationRule({
+        id: "lock-a",
+        trigger: "screenLocked",
+        action: { kind: "devices", deviceIds: ["light.a"], isOn: false },
+        conditions: createAutomationConditions({ kind: "inAny", ssids: ["Net_A"] }),
+      }),
+      createAutomationRule({
+        id: "lock-b",
+        trigger: "screenLocked",
+        action: { kind: "devices", deviceIds: ["light.b"], isOn: false },
+        conditions: createAutomationConditions({ kind: "inAny", ssids: ["Net_B"] }),
+      }),
+    ]);
+
+    // 轮询只能看到 Net_A；真实网络在两次 Wi-Fi 轮询之间切到 Net_B，
+    // 锁屏瞬间的实时探针必须把 B 交给锁屏快照。
+    let wifiResponse: WindowsWifiProbeResult = { state: "connected", ssid: "Net_A" };
+    let locked = false;
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string) => {
+          if (cmd === "wifi_current") return wifiResponse;
+          if (cmd === "is_workstation_locked") return locked as unknown;
+          return undefined;
+        },
+      },
+    });
+
+    const t0 = 1_800_000_000_000;
+    tickSafetyHealthAndAutomation(host, t0);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.automationEngine.snapshot.wifiSSID, "Net_A");
+
+    wifiResponse = { state: "connected", ssid: "Net_B" };
+    locked = true;
+    tickSafetyHealthAndAutomation(host, t0 + 2000);
+    await setImmediate();
+    await setImmediate();
+    await setImmediate();
+    // 锁屏事件本身已经把实时读数带进上下文与锁屏快照。
+    assert.equal(center.automationEngine.snapshot.wifiSSID, "Net_B");
+
+    // 2 秒防抖后结算：按锁屏时刻的 Net_B 判定，而不是轮询缓存的 Net_A。
+    tickSafetyHealthAndAutomation(host, t0 + 4100);
+    await setImmediate();
+    await setImmediate();
+    assert.deepEqual(
+      sent.filter((c) => c.kind === "setLightPower"),
+      [{ kind: "setLightPower", entityId: "light.b", isOn: false }],
+    );
   });
 
   it("never probes Wi-Fi without a Tauri host (happy-dom without __TAURI_INTERNALS__)", () => {

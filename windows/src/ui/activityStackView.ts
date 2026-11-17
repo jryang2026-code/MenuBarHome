@@ -1023,9 +1023,34 @@ export function notifyPanelWakeLifecycle(host: unknown, nowMs = Date.now()): voi
 const WIFI_POLL_INTERVAL_MS = 10_000;
 
 /**
- * 轮询当前 WLAN 连接并在读数变化时派发 `wifiChanged`（`wifi_current` 命令由
- * `windows/src-tauri/src/wifi.rs` 提供）。读数无法知晓（无权限/探针失败）时既不
- * 派发也不清除上次读数，与 macOS「无法知晓 ≠ 未连接」的语义一致。
+ * 应用一次 Wi-Fi 探针读数：记录探针状态（设置界面「无权限」引导的数据源），
+ * 并在读数变化时经 `dispatchSystemContextEvent` 派发 `wifiChanged`。
+ * 「无法知晓」的读数会以 SSID 置空 + 不可信派发（引擎立即按不可信判定），但连续
+ * 相同的「无法知晓」读数不重复派发。
+ */
+async function observeAndDispatchWifi(
+  host: MenuMijiaWindowsApp,
+  center: HostActivityCenter,
+  probe: WindowsWifiProbeResult | null | undefined,
+  nowMs: number,
+): Promise<void> {
+  const observation = wifiPollObservationFromProbe(probe);
+  center.lastWifiProbeState = observation.state;
+  if (!isFullPanelHost(host)) return;
+  const decision = wifiDispatchDecisionForObservation(observation, center.lastWifiReading);
+  if (!decision) return;
+  center.lastWifiReading = decision.reading;
+  await dispatchSystemContextEvent(
+    host,
+    { kind: "wifiChanged", ssid: decision.reading.ssid, isAuthorized: decision.reading.isAuthorized },
+    nowMs,
+  );
+}
+
+/**
+ * 轮询当前 WLAN 连接（`wifi_current` 命令由 `windows/src-tauri/src/wifi.rs` 提供）。
+ * 探针失败（IPC 异常）与「无法知晓」返回同样按不可信读数派发，与 macOS
+ * 「无法知晓 ≠ 未连接」的语义一致。
  */
 async function pollAndDispatchWifi(
   host: MenuMijiaWindowsApp,
@@ -1038,18 +1063,13 @@ async function pollAndDispatchWifi(
   center.wifiPollInFlight = true;
   center.lastWifiPollAtMs = nowMs;
   try {
-    const probe = await invoke<WindowsWifiProbeResult>("wifi_current");
-    const observation = wifiPollObservationFromProbe(probe);
-    center.lastWifiProbeState = observation.state;
-    if (!isFullPanelHost(host)) return;
-    const decision = wifiDispatchDecisionForObservation(observation, center.lastWifiReading);
-    if (!decision) return;
-    center.lastWifiReading = decision.reading;
-    await dispatchSystemContextEvent(
-      host,
-      { kind: "wifiChanged", ssid: decision.reading.ssid, isAuthorized: decision.reading.isAuthorized },
-      nowMs,
-    );
+    let probe: WindowsWifiProbeResult | null = null;
+    try {
+      probe = await invoke<WindowsWifiProbeResult>("wifi_current");
+    } catch {
+      probe = null;
+    }
+    await observeAndDispatchWifi(host, center, probe, nowMs);
   } catch {
     center.lastWifiProbeState = "unknown";
   } finally {
@@ -1088,6 +1108,23 @@ export function tickSafetyHealthAndAutomation(
           return;
         }
         if (locked !== previous) {
+          if (locked) {
+            // 锁上的瞬间补一次实时 Wi-Fi 探针（对照 macOS 在锁屏信号时刻的实时
+            // 读取），让 #9 的锁屏快照拿到最新网络而不是最多 10 秒前的轮询缓存；
+            // 探针失败则退回最近一次轮询读数，锁屏事件照常派发。
+            const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
+            if (typeof invoke === "function") {
+              try {
+                await observeAndDispatchWifi(
+                  host,
+                  center,
+                  await invoke<WindowsWifiProbeResult>("wifi_current"),
+                  nowMs,
+                );
+              } catch {
+              }
+            }
+          }
           const runs = await dispatchSystemContextEvent(
             host,
             { kind: "lockChanged", isLocked: locked },
