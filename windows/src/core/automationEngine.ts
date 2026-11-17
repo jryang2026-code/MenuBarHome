@@ -214,14 +214,63 @@ export function evaluateWiFiCondition(
     : { status: "satisfied", isSatisfied: true, ssid };
 }
 
-interface AutomationConditions {
-  readonly wifi: AutomationWiFiCondition;
+const MINUTES_PER_DAY = 24 * 60;
+
+export interface AutomationTimeWindow {
+  readonly isEnabled: boolean;
+  readonly startMinute: number;
+  readonly endMinute: number;
 }
 
-export function createAutomationConditions(wifi: AutomationWiFiCondition = { kind: "any" }): AutomationConditions {
-  if (wifi.kind === "inAny") return { wifi: { kind: "inAny", ssids: normalizeWiFiSSIDs(wifi.ssids) } };
-  if (wifi.kind === "notIn") return { wifi: { kind: "notIn", ssids: normalizeWiFiSSIDs(wifi.ssids) } };
-  return { wifi: { kind: "any" } };
+function clampMinute(minute: number): number {
+  if (!Number.isFinite(minute)) return 0;
+  return Math.min(MINUTES_PER_DAY - 1, Math.max(0, Math.trunc(minute)));
+}
+
+export function createAutomationTimeWindow(partial: Partial<AutomationTimeWindow> = {}): AutomationTimeWindow {
+  return {
+    isEnabled: partial.isEnabled === true,
+    startMinute: clampMinute(partial.startMinute ?? 22 * 60),
+    endMinute: clampMinute(partial.endMinute ?? 7 * 60),
+  };
+}
+
+export function automationTimeWindowContains(window: AutomationTimeWindow, timestampMs: number): boolean {
+  if (!window.isEnabled) return true;
+  if (window.startMinute === window.endMinute) return true;
+  const when = new Date(timestampMs);
+  const minute = when.getHours() * 60 + when.getMinutes();
+  if (window.startMinute < window.endMinute) {
+    return minute >= window.startMinute && minute < window.endMinute;
+  }
+  return minute >= window.startMinute || minute < window.endMinute;
+}
+
+export function automationTimeWindowSummary(window: AutomationTimeWindow): string {
+  const clock = (minute: number): string => {
+    const hour = Math.trunc(minute / 60);
+    const rest = minute % 60;
+    return `${String(hour).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+  };
+  return `${clock(window.startMinute)}\u2013${clock(window.endMinute)}`;
+}
+
+interface AutomationConditions {
+  readonly wifi: AutomationWiFiCondition;
+  readonly timeWindow: AutomationTimeWindow;
+}
+
+export function createAutomationConditions(
+  wifi: AutomationWiFiCondition = { kind: "any" },
+  timeWindow?: Partial<AutomationTimeWindow>,
+): AutomationConditions {
+  const normalized: AutomationWiFiCondition =
+    wifi.kind === "inAny"
+      ? { kind: "inAny", ssids: normalizeWiFiSSIDs(wifi.ssids) }
+      : wifi.kind === "notIn"
+        ? { kind: "notIn", ssids: normalizeWiFiSSIDs(wifi.ssids) }
+        : { kind: "any" };
+  return { wifi: normalized, timeWindow: createAutomationTimeWindow(timeWindow) };
 }
 
 export type AutomationAction =
@@ -303,7 +352,7 @@ export function createAutomationRule(args: {
     trigger: args.trigger,
     action: args.action,
     triggerOptions: createAutomationTriggerOptions(args.triggerOptions),
-    conditions: args.conditions ? createAutomationConditions(args.conditions.wifi) : createAutomationConditions(),
+    conditions: createAutomationConditions(args.conditions?.wifi, args.conditions?.timeWindow),
     ...(args.highRiskApproved ? { highRiskApproved: true } : {}),
   };
 }
@@ -342,6 +391,16 @@ function parseStoredWiFiCondition(raw: unknown): AutomationWiFiCondition {
   if (obj.kind === "inAny") return { kind: "inAny", ssids };
   if (obj.kind === "notIn") return { kind: "notIn", ssids };
   return { kind: "any" };
+}
+
+function parseStoredTimeWindow(raw: unknown): AutomationTimeWindow {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return createAutomationTimeWindow();
+  const obj = raw as Record<string, unknown>;
+  return createAutomationTimeWindow({
+    isEnabled: obj.isEnabled === true,
+    ...(typeof obj.startMinute === "number" ? { startMinute: obj.startMinute } : {}),
+    ...(typeof obj.endMinute === "number" ? { endMinute: obj.endMinute } : {}),
+  });
 }
 
 function parseStoredRule(raw: unknown): AutomationRule | null {
@@ -407,7 +466,10 @@ function parseStoredRule(raw: unknown): AutomationRule | null {
   const condObj = obj.conditions && typeof obj.conditions === "object" && !Array.isArray(obj.conditions)
     ? (obj.conditions as Record<string, unknown>)
     : {};
-  const conditions = createAutomationConditions(parseStoredWiFiCondition(condObj.wifi));
+  const conditions = createAutomationConditions(
+    parseStoredWiFiCondition(condObj.wifi),
+    parseStoredTimeWindow(condObj.timeWindow),
+  );
   return {
     id: obj.id,
     isEnabled: obj.isEnabled,
@@ -950,6 +1012,16 @@ export class AutomationEngine {
     this.hasLockBaseline = true;
   }
 
+  private passesConditions(
+    rule: AutomationRule,
+    nowMs: number,
+    wifiSSID: string | null,
+    wifiAuthorized: boolean,
+  ): boolean {
+    return automationTimeWindowContains(rule.conditions.timeWindow, nowMs)
+      && evaluateWiFiCondition(rule.conditions.wifi, wifiSSID, wifiAuthorized).isSatisfied;
+  }
+
   public async dispatchEvent(
     host: AutomationExecutionHost,
     event: SystemContextEvent,
@@ -960,8 +1032,8 @@ export class AutomationEngine {
   ): Promise<RecordedAutomationRun[]> {
     const nowMs = options.nowMs ?? Date.now();
     const rules = (options.rules ?? this.store.load()).filter((r) => r.isEnabled);
-    const wifiOk = (rule: AutomationRule, ssid = this.context.wifiSSID, auth = this.context.wifiAuthorized): boolean =>
-      evaluateWiFiCondition(rule.conditions.wifi, ssid, auth).isSatisfied;
+    const conditionsOk = (rule: AutomationRule, ssid = this.context.wifiSSID, auth = this.context.wifiAuthorized): boolean =>
+      this.passesConditions(rule, nowMs, ssid, auth);
 
     const matchedRules: AutomationRule[] = [];
     const pushRulesFor = (
@@ -970,7 +1042,7 @@ export class AutomationEngine {
       cooldownMs: number = AUTOMATION_POLICY.triggerCooldownMs,
       predicate?: (rule: AutomationRule) => boolean,
     ): void => {
-      const candidates = rules.filter((r) => r.trigger === trigger && (predicate ? predicate(r) : true) && wifiOk(r));
+      const candidates = rules.filter((r) => r.trigger === trigger && (predicate ? predicate(r) : true) && conditionsOk(r));
       if (candidates.length === 0) return;
       if (!this.deduper.shouldFire(dedupeKey, nowMs, cooldownMs)) return;
       matchedRules.push(...candidates);
@@ -1052,7 +1124,7 @@ export class AutomationEngine {
           for (const rule of rules) {
             if (rule.trigger !== "powerSaverChanged") continue;
             if (rule.triggerOptions.powerSaverEnabled !== undefined && rule.triggerOptions.powerSaverEnabled !== nextSaver) continue;
-            if (!wifiOk(rule)) continue;
+            if (!conditionsOk(rule)) continue;
             if (this.deduper.shouldFire(`powerSaver:${rule.id}:${nextSaver ? 1 : 0}`, nowMs)) matchedRules.push(rule);
           }
         }
@@ -1063,7 +1135,7 @@ export class AutomationEngine {
             const below = nextBattery < rule.triggerOptions.batteryThresholdPercent;
             const prevBelow = this.batteryEdgeByRule.get(rule.id) ?? false;
             this.batteryEdgeByRule.set(rule.id, below);
-            if (!below || prevBelow || !wifiOk(rule)) continue;
+            if (!below || prevBelow || !conditionsOk(rule)) continue;
             if (this.deduper.shouldFire(`battery:${rule.id}:${rule.triggerOptions.batteryThresholdPercent}`, nowMs)) {
               matchedRules.push(rule);
             }
@@ -1089,7 +1161,7 @@ export class AutomationEngine {
           for (const rule of rules) {
             if (rule.trigger !== "wifiNetworkLeft") continue;
             if (rule.triggerOptions.wifiSSID && rule.triggerOptions.wifiSSID !== prevSSID) continue;
-            if (!wifiOk(rule, nextSSID, nextAuth)) continue;
+            if (!conditionsOk(rule, nextSSID, nextAuth)) continue;
             if (this.deduper.shouldFire(`wifiLeft:${rule.id}:${prevSSID}`, nowMs)) matchedRules.push(rule);
           }
         }
@@ -1097,7 +1169,7 @@ export class AutomationEngine {
           for (const rule of rules) {
             if (rule.trigger !== "wifiNetworkJoined") continue;
             if (rule.triggerOptions.wifiSSID && rule.triggerOptions.wifiSSID !== nextSSID) continue;
-            if (!wifiOk(rule, nextSSID, nextAuth)) continue;
+            if (!conditionsOk(rule, nextSSID, nextAuth)) continue;
             if (this.deduper.shouldFire(`wifiJoined:${rule.id}:${nextSSID}`, nowMs)) matchedRules.push(rule);
           }
         }
@@ -1134,7 +1206,7 @@ export class AutomationEngine {
       case "calendarMeetingSoon": {
         for (const rule of rules) {
           if (rule.trigger !== "calendarMeetingStartingSoon") continue;
-          if (event.startsInMinutes > rule.triggerOptions.calendarLeadMinutes || !wifiOk(rule)) continue;
+          if (event.startsInMinutes > rule.triggerOptions.calendarLeadMinutes || !conditionsOk(rule)) continue;
           if (this.deduper.shouldFire(`calendar:${rule.id}:${event.eventId}`, nowMs, AUTOMATION_POLICY.nightlyCooldownMs)) {
             matchedRules.push(rule);
           }
@@ -1182,7 +1254,7 @@ export class AutomationEngine {
       if (rule.trigger !== "lateNightUsage") continue;
       const anchorKey = lateNightAnchorKey(rule.triggerOptions.lateNightWindow, nowMs);
       if (!anchorKey) continue;
-      if (!evaluateWiFiCondition(rule.conditions.wifi, this.context.wifiSSID, this.context.wifiAuthorized).isSatisfied) continue;
+      if (!this.passesConditions(rule, nowMs, this.context.wifiSSID, this.context.wifiAuthorized)) continue;
       if (this.deduper.shouldFire(`lateNight:${rule.id}:${anchorKey}`, nowMs, AUTOMATION_POLICY.nightlyCooldownMs)) {
         out.push(rule);
       }
@@ -1202,7 +1274,7 @@ export class AutomationEngine {
       const sched = rule.triggerOptions.scheduledTime;
       if (!sched || sched.hour !== hour || sched.minute !== minute) continue;
       if (sched.weekdays && sched.weekdays.length > 0 && !sched.weekdays.includes(weekday)) continue;
-      if (!evaluateWiFiCondition(rule.conditions.wifi, this.context.wifiSSID, this.context.wifiAuthorized).isSatisfied) continue;
+      if (!this.passesConditions(rule, nowMs, this.context.wifiSSID, this.context.wifiAuthorized)) continue;
       if (this.deduper.shouldFire(`sched:${rule.id}:${dateKey}:${pad(sched.hour)}:${pad(sched.minute)}`, nowMs, AUTOMATION_POLICY.nightlyCooldownMs)) {
         out.push(rule);
       }
@@ -1239,7 +1311,7 @@ export class AutomationEngine {
       this.sensorConditionEdge.set(edgeKey, active);
       if (!active || previous) continue;
 
-      if (!evaluateWiFiCondition(rule.conditions.wifi, this.context.wifiSSID, this.context.wifiAuthorized).isSatisfied) continue;
+      if (!this.passesConditions(rule, nowMs, this.context.wifiSSID, this.context.wifiAuthorized)) continue;
       if (this.deduper.shouldFire(`sensor:${edgeKey}`, nowMs)) out.push(rule);
     }
   }
