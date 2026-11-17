@@ -246,6 +246,34 @@ describe("Mi account index corruption (#228)", () => {
     assert.deepEqual(readAccountIndex(storage), []);
   });
 
+  it("hydrates a partially damaged index whose only valid entry is a secondary account", async () => {
+    const storage = memoryStorage();
+    const { invoke } = makeCredentialFixture({ supportsSlotScan: false });
+    const seeded = new MiAccountsStore(new CredentialVault(invoke), storage);
+    await seedStore(seeded, [SESSION_PRIMARY, SESSION_SG]);
+
+    const sg = makeMiAccount(SESSION_SG);
+    storage.setItem(
+      MI_ACCOUNTS_INDEX_STORAGE_KEY,
+      JSON.stringify([
+        { id: 42 },
+        { id: sg.id, slotId: sg.slotId, region: sg.region, maskedUserId: sg.maskedUserId },
+      ]),
+    );
+    assert.equal(readAccountIndexState(storage).status, "ok");
+    assert.equal(
+      hasSecondaryMiAccountsInIndex(storage),
+      true,
+      "the raw length still triggers hydration after partial damage",
+    );
+
+    const store = new MiAccountsStore(new CredentialVault(invoke), storage);
+    const accounts = await store.load();
+    assert.deepEqual(accounts.map((account) => account.id), [miAccountId(SESSION_PRIMARY), sg.id]);
+    assert.equal(readAccountIndex(storage).length, 2);
+    assert.equal(storage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY)?.includes('"id":42'), false);
+  });
+
   it("treats a missing enumeration command as unknown and normalizes scanned slot ids", async () => {
     assert.equal(await secureStoreListMiAccountSlots(async () => null), null);
     assert.equal(

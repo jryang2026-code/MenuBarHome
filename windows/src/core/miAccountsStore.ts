@@ -291,8 +291,15 @@ export function readAccountIndex(storage: Storage | null = defaultStorage()): Mi
   return [...readAccountIndexState(storage).entries];
 }
 
-export function hasSecondaryMiAccountsInIndex(storage: Storage | null = defaultStorage()): boolean {
-  return readAccountIndexState(storage).entries.length > 1;
+export function hasSecondaryMiAccountsInIndex(storage: Storage | null = defaultStorage()): boolean { if (!storage) return false;
+  try { const raw = storage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY);
+    if (!raw) return false;
+    const parsed: unknown = JSON.parse(raw);
+    // Raw length, not the validated entry count: a partially damaged index must still trigger
+    // hydration so the surviving secondary entry is read and the index is repaired.
+    return Array.isArray(parsed) && parsed.length > 1;
+  } catch { return false;
+  }
 }
 
 export function hasCorruptMiAccountIndex(storage: Storage | null = defaultStorage()): boolean {
