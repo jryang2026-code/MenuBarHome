@@ -308,7 +308,11 @@ export function isPersistedMiSessionExpired(
     const fingerprint = upgradeMiSessionFingerprint(stored);
     if (fingerprint !== stored) {
       const expiredAtMs = typeof rec["expiredAtMs"] === "number" ? rec["expiredAtMs"] : Date.now();
-      storage.setItem(MI_SESSION_EXPIRED_STORAGE_KEY, JSON.stringify({ fingerprint, expiredAtMs }));
+      try {
+        storage.setItem(MI_SESSION_EXPIRED_STORAGE_KEY, JSON.stringify({ fingerprint, expiredAtMs }));
+      } catch {
+        // A failed rewrite must not change the verdict: the upgraded fingerprint below still matches.
+      }
     }
     return fingerprint === miSessionFingerprint(session);
   } catch {

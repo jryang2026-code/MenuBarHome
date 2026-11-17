@@ -129,6 +129,40 @@ describe("Xiaomi session fingerprint privacy", () => {
     );
   });
 
+  it("keeps the rejected verdict when the upgrade rewrite itself fails", () => {
+    const accountId = miAccountId(SESSION_A);
+    const legacySingle = JSON.stringify({ fingerprint: legacyFingerprint(SESSION_A), expiredAtMs: 77 });
+    const legacyMap = JSON.stringify({
+      [accountId]: { fingerprint: legacyFingerprint(SESSION_A), expiredAtMs: 4567 },
+    });
+    const readOnlyStorage = (values: Readonly<Record<string, string>>): Storage =>
+      ({
+        length: Object.keys(values).length,
+        clear: () => {},
+        getItem: (key: string) => values[key] ?? null,
+        key: () => null,
+        removeItem: () => {},
+        setItem: () => {
+          throw new Error("quota exceeded");
+        },
+      }) as unknown as Storage;
+
+    const single = readOnlyStorage({ [MI_SESSION_EXPIRED_STORAGE_KEY]: legacySingle });
+    assert.equal(
+      isPersistedMiSessionExpired(SESSION_A, single),
+      true,
+      "a failed migration write must not turn a rejected session into a valid one",
+    );
+    assert.equal(isPersistedMiSessionExpired(SESSION_B, single), false);
+
+    const accounts = readOnlyStorage({ [MI_ACCOUNTS_EXPIRED_STORAGE_KEY]: legacyMap });
+    assert.deepEqual(getAccountTokenStatus(SESSION_A, 1_000, accounts), {
+      kind: "expired",
+      source: "rejected",
+      expiredAtMs: 4567,
+    });
+  });
+
   it("keeps marking and clearing accounts with the v2 fingerprint", () => {
     markAccountSessionRejected(SESSION_A, true, { isPrimary: false, storage: localStorage, nowMs: 9000 });
     const map = readJSON(MI_ACCOUNTS_EXPIRED_STORAGE_KEY) as Record<string, Record<string, unknown>>;
