@@ -310,6 +310,55 @@ struct CoverDragTakeoverTests {
         #expect(shown.positionPercent == 50, "the row returns to the value before the dropped drag")
     }
 
+    @Test("A live report under a travel lock starts the next hazardous drag")
+    @MainActor
+    func liveReportUnderLockStartsNextDrag() async throws {
+        let opener = Self.cover(
+            id: "opener", name: "阳台窗", subtype: .windowOpener, position: 100, reported: 100
+        )
+        let (store, mock, gate) = try await makeStore([opener])
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return true
+        }
+
+        // Closing a window opener is direct.
+        store.setCoverPosition(opener.id, percent: 0)
+        #expect(prompts == 0)
+        await waitUntil { gate.waiting == 1 }
+        gate.release()
+        await waitUntil { await mock.executedCommands.count == 1 }
+        await waitUntil { hasSucceededPatch(store, opener.id) }
+
+        // The motor is already at 10% while the locked card still shows the commanded 0%.
+        let beforeReport = store.snapshotGeneration
+        await mock.updateSnapshot(SynthesizedHome(devices: [
+            Self.cover(
+                id: "opener", name: "阳台窗", subtype: .windowOpener,
+                position: 0, reported: 10, motion: .closing
+            )
+        ]))
+        await waitUntil { store.snapshotGeneration > beforeReport }
+        let moving = try #require(store.devices.first?.coverSpec)
+        #expect(moving.reportedPositionPercent == 10, "a lock hides the target, not the live report")
+
+        // 10 -> 30 opens the window even though the card still shows the commanded 0%.
+        store.setCoverPosition(opener.id, percent: 30)
+        #expect(prompts == 1, "the direction starts from the live report, not the locked target")
+        await waitUntil { gate.waiting == 1 }
+        let pending = try #require(store.devices.first?.coverSpec)
+        #expect(pending.positionPercent == 30)
+        #expect(pending.motion == .opening, "the card shows the travel the command will make")
+
+        let exits = store.manualWriteExits
+        gate.release()
+        await waitUntil { store.manualWriteExits > exits }
+        let sent = await mock.executedCommands
+        #expect(sent.count == 2)
+        #expect(sent.last == .setNumberValue(entityId: "cover.opener", value: 30))
+    }
+
     @Test("A window-opener drag is judged from the reported position, so opening asks")
     @MainActor
     func windowOpenerDragUsesReportedDirection() async throws {

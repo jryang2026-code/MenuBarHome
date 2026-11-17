@@ -541,15 +541,23 @@ extension HomeStore {
         return composed
     }
 
-    /// The final gate for a hazardous cover drag: the command's direction from `start` must be one
-    /// the drag's answer covers. A direction the hazard table treats as safe sends without a prompt.
-    /// Fails closed when the row is not a cover, since no cover plan should reach another kind.
-    static func coverDragMaySend(_ plan: CoverDragPlan, from start: SmartDevice) -> Bool {
-        guard case .cover(let spec) = start.kind else { return false }
-        let opens = coverDragDirection(
-            from: spec.reportedPositionPercent ?? spec.positionPercent,
-            to: plan.target
-        )
+    /// The position a cover reports, before any optimistic display substitution.
+    static func coverStartPosition(_ device: SmartDevice) -> Int? {
+        guard case .cover(let spec) = device.kind else { return nil }
+        return spec.reportedPositionPercent ?? spec.positionPercent
+    }
+
+    /// The final gate for a hazardous cover drag: the command's direction from `startPosition` must
+    /// be one the drag's answer covers. A direction the hazard table treats as safe sends without a
+    /// prompt. Fails closed when the row is not a cover, since no cover plan should reach another
+    /// kind.
+    static func coverDragMaySend(
+        _ plan: CoverDragPlan,
+        from start: SmartDevice,
+        startPosition: Int?
+    ) -> Bool {
+        guard case .cover = start.kind else { return false }
+        let opens = coverDragDirection(from: startPosition, to: plan.target)
         guard let opens else { return true }
         guard ManualControlPolicy.requiresConfirmation(.power(opens), for: start) else { return true }
         return plan.approvedOpens == opens
@@ -580,7 +588,11 @@ extension HomeStore {
         var rejected: [ManualWritePatch] = []
         session.patches.removeAll { patch in
             guard let plan = patch.coverDrag,
-                  !Self.coverDragMaySend(plan, from: incoming) else { return false }
+                  !Self.coverDragMaySend(
+                      plan,
+                      from: incoming,
+                      startPosition: Self.coverStartPosition(incoming)
+                  ) else { return false }
             rejected.append(patch)
             return true
         }
@@ -740,9 +752,14 @@ extension HomeStore {
             return .superseded
         }
         // Fail closed: the report that lands while the drag waits can move its start, so the
-        // direction the command travels now must still be one this drag was allowed to take.
+        // direction the command travels now must still be one this drag was allowed to take. The
+        // last raw report is the motor's position even while a lock hides it on the row.
         if let plan = session.patches[idx].coverDrag,
-           !Self.coverDragMaySend(plan, from: session.base) {
+           !Self.coverDragMaySend(
+               plan,
+               from: session.base,
+               startPosition: lastCoverPositions[deviceId] ?? Self.coverStartPosition(session.base)
+           ) {
             return .needsCoverConfirmation
         }
         let nowDate = optimisticNow()
