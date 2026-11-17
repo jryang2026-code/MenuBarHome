@@ -635,22 +635,36 @@ struct CameraLiveLifecycleTests {
         return labels
     }
 
-    private static func collectAccessibilityLabels(from root: NSObject) -> [String] {
+    private static func collectAccessibilityLabels(from root: NSView) -> [String] {
         var labels: [String] = []
         var seen = Set<ObjectIdentifier>()
-        func walk(_ object: NSObject) {
-            guard seen.insert(ObjectIdentifier(object)).inserted else { return }
-            if let raw = object.accessibilityLabel() ?? object.accessibilityTitle() {
-                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    labels.append(trimmed)
+        func remember(_ object: AnyObject) {
+            let token = ObjectIdentifier(object)
+            guard seen.insert(token).inserted else { return }
+            if let view = object as? NSView {
+                append(view.accessibilityLabel())
+                for child in view.accessibilityChildren() ?? [] {
+                    if let child = child as? AnyObject {
+                        remember(child)
+                    }
+                }
+                for subview in view.subviews {
+                    remember(subview)
+                }
+            } else if let element = object as? NSAccessibilityElement {
+                append(element.accessibilityLabel())
+                for child in element.accessibilityChildren() ?? [] {
+                    if let child = child as? AnyObject {
+                        remember(child)
+                    }
                 }
             }
-            for case let child as NSObject in object.accessibilityChildren() ?? [] {
-                walk(child)
-            }
         }
-        walk(root)
+        func append(_ raw: String?) {
+            guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return }
+            labels.append(trimmed)
+        }
+        remember(root)
         return labels
     }
 }
