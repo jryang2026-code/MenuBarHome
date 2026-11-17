@@ -354,6 +354,13 @@ public final class HomeStore {
     /// Test seam for the manual-control debounce window (sliders fire continuously, #113).
     var controlDebounceInterval: Duration = .milliseconds(280)
 
+    /// Test seam for the debounce wait itself. A test parks a drag here, delivers the provider
+    /// snapshot that would take the row over, and only then releases it, so the ordering is fixed
+    /// instead of raced against a wall clock.
+    @ObservationIgnored var controlDebounceSleep: @Sendable (Duration) async throws -> Void = {
+        try await Task.sleep(for: $0)
+    }
+
     /// How long a cover command keeps its optimistic row. The product value is 8 seconds.
     /// Tests set a shorter value instead of waiting out that lock.
     var coverOptimisticLockDuration: Duration = .seconds(8)
@@ -745,6 +752,10 @@ public final class HomeStore {
         let token: UUID
         let deviceId: String
         let origin: SmartDevice
+        /// The revision this drag owns and the fields it changed, kept so a patch that can no
+        /// longer be sent can put back exactly what it showed.
+        let revision: UInt64
+        let fields: Set<OptimisticField>
     }
     var debouncedWrites: [String: DebouncedWriteState] = [:]
     struct ManualWritePatch {

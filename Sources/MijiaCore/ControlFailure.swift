@@ -45,9 +45,10 @@ enum ControlFailure: Sendable {
         }
     }
 
-    /// The command was refused locally: no backend for it, a malformed address, or an action the spec lacks.
+    /// The command was refused locally: no backend for it, a malformed address, an action the spec lacks,
+    /// or a drag that a newer write superseded before anything was sent.
     private static func neverLeftThisMac(_ error: Error) -> Bool {
-        if error is MiotCommandError { return true }
+        if error is MiotCommandError || error is ManualWriteSuperseded { return true }
         switch error as? HomeProviderError {
         case .invalidURL?, .backendNotConfigured?: return true
         default: return false

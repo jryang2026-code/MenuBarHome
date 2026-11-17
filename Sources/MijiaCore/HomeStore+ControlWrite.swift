@@ -69,6 +69,11 @@ struct OptimisticWrite: Sendable {
 /// A write refused because the only Mi session has expired. The persistent toast is already showing.
 struct MiSessionWriteBlocked: Error {}
 
+/// A debounced drag that could not be sent because a newer write took its row over first. Nothing
+/// reached the device, so the row is put back where this write still owns the field and the toast
+/// says the adjustment did not land.
+struct ManualWriteSuperseded: Error {}
+
 extension HomeStore {
     /// True when the LAN client answers this command, so an expired Mi session cannot block it.
     func lgClientServes(_ command: DeviceCommand) -> Bool {
@@ -512,6 +517,78 @@ extension HomeStore {
             }
         }
         return composed
+    }
+
+    /// The device's own report confirms the travel a sent cover command started (#298), so the
+    /// report owns the row. Only commands that already left the Mac can be covered by it: a drag
+    /// still waiting in its debounce has not been sent, and dropping its session made the send
+    /// guard below skip it in silence, so the second half of a fast drag never reached the
+    /// device (`HomeStore+Backend.swift` cover-travel takeover).
+    ///
+    /// Re-bases the surviving session on the report and keeps its cover-position lock, so the card
+    /// shows the pending drag until its command is sent and reported back. Returns false when no
+    /// pending patch remains; the caller then lets the report take the row over as before.
+    func adoptCoverTravelReport(deviceId: String, incoming: SmartDevice) -> Bool {
+        guard var session = manualWriteSessions[deviceId],
+              optimisticLockRevision[deviceId] == session.revision else {
+            manualWriteSessions.removeValue(forKey: deviceId)
+            return false
+        }
+        session.patches.removeAll { $0.phase != .debouncing }
+        guard !session.patches.isEmpty else {
+            manualWriteSessions.removeValue(forKey: deviceId)
+            return false
+        }
+        session.base = incoming
+        session.baseCoverOrigin = nil
+        session.baseFieldLocks = session.baseFieldLocks.filter { field, _ in
+            field != .coverPosition
+        }
+        manualWriteSessions[deviceId] = session
+        // The pending drag starts from the reported position now, so a report parked there is the
+        // stale pre-command snapshot for the command it is about to send.
+        if case .cover(let spec) = incoming.kind,
+           let reported = spec.reportedPositionPercent ?? spec.positionPercent {
+            coverCommandOrigins[deviceId] = reported
+        }
+        return true
+    }
+
+    /// Ends a debounced patch that can no longer be sent because a newer write invalidated its
+    /// session. A current session is finalized as if the patch had failed; an older one only puts
+    /// back the fields no newer write has claimed, so it never fights that write.
+    private func abandonManualSessionPatch(
+        deviceId: String,
+        token: UUID,
+        revision: UInt64,
+        fields: Set<OptimisticField>,
+        fallback: SmartDevice
+    ) {
+        if var session = manualWriteSessions[deviceId],
+           optimisticLockRevision[deviceId] == session.revision {
+            session.patches.removeAll { $0.token == token }
+            manualWriteSessions[deviceId] = session
+            finalizeOrApplyManualWriteSession(for: deviceId)
+            return
+        }
+        let stillOwned = Set(fields.filter {
+            optimisticFieldRevisions[.field(deviceId, $0)] == revision
+        })
+        guard !stillOwned.isEmpty else { return }
+        if let idx = devices.firstIndex(where: { $0.id == deviceId }) {
+            devices[idx] = devices[idx].mergingOptimisticFields(
+                from: fallback,
+                lockedFields: stillOwned
+            )
+            syncGenericPowerFacet(devices[idx])
+        }
+        for field in stillOwned {
+            optimisticFieldLocks.removeValue(forKey: .field(deviceId, field))
+            optimisticFieldRevisions.removeValue(forKey: .field(deviceId, field))
+        }
+        if stillOwned.contains(.coverPosition) {
+            coverCommandOrigins.removeValue(forKey: deviceId)
+        }
     }
 
     private func foldExpiredSucceededPatches(
@@ -993,7 +1070,9 @@ extension HomeStore {
         debouncedWrites[debounceKey] = DebouncedWriteState(
             token: token,
             deviceId: deviceId,
-            origin: slotOrigin
+            origin: slotOrigin,
+            revision: rev,
+            fields: patchFields
         )
         debounceTasks[debounceKey]?.cancel()
         debounceTasks[debounceKey] = Task { [weak self] in
@@ -1004,12 +1083,28 @@ extension HomeStore {
                     self.debounceTasks.removeValue(forKey: debounceKey)
                 }
             }
-            try? await Task.sleep(for: self?.controlDebounceInterval ?? .milliseconds(280))
+            let debounceSleep = self?.controlDebounceSleep
+            let debounceInterval = self?.controlDebounceInterval ?? .milliseconds(280)
+            try? await debounceSleep?(debounceInterval)
             guard !Task.isCancelled,
                   let self,
                   self.controlContextID == context,
-                  self.debouncedWrites[debounceKey]?.token == token,
-                  self.updateManualSessionPatchForSend(deviceId: deviceId, token: token, lock: lock) else { return }
+                  let state = self.debouncedWrites[debounceKey],
+                  state.token == token else { return }
+            guard self.updateManualSessionPatchForSend(deviceId: deviceId, token: token, lock: lock) else {
+                // A newer write took the row over while this drag waited, so the session can no
+                // longer send it. Dropping it in silence left the card showing a position the
+                // device was never told: put that back where this drag still owns it, and say so.
+                self.abandonManualSessionPatch(
+                    deviceId: deviceId,
+                    token: token,
+                    revision: state.revision,
+                    fields: state.fields,
+                    fallback: state.origin
+                )
+                self.showControlFailure(ManualWriteSuperseded(), device: sessionBase, adjustment: true)
+                return
+            }
             do {
                 try await self.executeDeviceCommand(command)
                 guard self.controlContextID == context else { return }
