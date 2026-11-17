@@ -343,10 +343,11 @@ describe("automation time window", () => {
     const engine = new AutomationEngine(new MemoryKV());
     const rule = loadStored(storedRule({ id: "wifi-join", trigger: "wifiNetworkJoined", timeWindow: DAY }));
     const { host, commands } = trackingHost([makeLight()]);
-    await dispatch(engine, host, { kind: "wifiChanged", ssid: "Home" }, [rule], at(8, 59, 20));
+    // 显式可信读数：首轮建立基线（默认快照不可信，不会触发）。
+    await dispatch(engine, host, { kind: "wifiChanged", ssid: "Home", isAuthorized: true }, [rule], at(8, 59, 20));
     assert.equal(commands.length, 0);
-    await dispatch(engine, host, { kind: "wifiChanged", ssid: null }, [rule], at(8, 59, 40));
-    await dispatch(engine, host, { kind: "wifiChanged", ssid: "Home" }, [rule], at(9, 0, 0));
+    await dispatch(engine, host, { kind: "wifiChanged", ssid: null, isAuthorized: true }, [rule], at(8, 59, 40));
+    await dispatch(engine, host, { kind: "wifiChanged", ssid: "Home", isAuthorized: true }, [rule], at(9, 0, 0));
     assert.equal(commands.length, 1);
   });
 
@@ -354,11 +355,11 @@ describe("automation time window", () => {
     const engine = new AutomationEngine(new MemoryKV());
     const rule = loadStored(storedRule({ id: "wifi-leave", trigger: "wifiNetworkLeft", timeWindow: DAY }));
     const { host, commands } = trackingHost([makeLight()]);
-    await dispatch(engine, host, { kind: "wifiChanged", ssid: "Home" }, [rule], at(8, 59, 0));
-    await dispatch(engine, host, { kind: "wifiChanged", ssid: null }, [rule], at(8, 59, 20));
+    await dispatch(engine, host, { kind: "wifiChanged", ssid: "Home", isAuthorized: true }, [rule], at(8, 59, 0));
+    await dispatch(engine, host, { kind: "wifiChanged", ssid: null, isAuthorized: true }, [rule], at(8, 59, 20));
     assert.equal(commands.length, 0);
-    await dispatch(engine, host, { kind: "wifiChanged", ssid: "Home" }, [rule], at(8, 59, 40));
-    await dispatch(engine, host, { kind: "wifiChanged", ssid: null }, [rule], at(9, 0, 0));
+    await dispatch(engine, host, { kind: "wifiChanged", ssid: "Home", isAuthorized: true }, [rule], at(8, 59, 40));
+    await dispatch(engine, host, { kind: "wifiChanged", ssid: null, isAuthorized: true }, [rule], at(9, 0, 0));
     assert.equal(commands.length, 1);
   });
 
@@ -688,14 +689,15 @@ describe("automation time window settings", () => {
     assert.match(element("#settings-auto-time-hint").textContent ?? "", /Start and end must differ/);
   });
 
-  it("disables the Wi-Fi condition editor and keeps Save gated only by the time window", async () => {
+  it("keeps Save gated only by the time window now that the Wi-Fi condition editor is enabled", async () => {
     const app = createCloudApp();
     app.openSettingsSheet("system");
     toggleCheck("#settings-auto-time-window", true);
     selectValue("#settings-auto-time-start", "8");
     selectValue("#settings-auto-time-end", "8");
-    assert.equal(element<HTMLSelectElement>("#settings-auto-wifi-kind").disabled, true);
-    assert.ok(document.querySelector("#settings-auto-wifi-unsupported-hint"));
+    assert.equal(element<HTMLSelectElement>("#settings-auto-wifi-kind").disabled, false);
+    assert.equal(document.querySelector("#settings-auto-wifi-unsupported-hint"), null);
+    assert.equal(document.querySelector("#settings-auto-wifi-ssids"), null);
     assert.equal(element<HTMLButtonElement>("#btn-add-auto-rule").disabled, true);
 
     selectValue("#settings-auto-time-end", "18");

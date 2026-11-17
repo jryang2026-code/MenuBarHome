@@ -271,12 +271,14 @@ describe("Wave 4 · PC Context Automation Rule Editor UI & Live Runtime", () => 
     app.openSettingsSheet("system");
     assert.ok(document.querySelector("#settings-auto-rules-empty"));
 
-    // 触发器下拉只提供有生产事件来源的选项；Wi-Fi 条件编辑器禁用并附说明。
+    // 触发器下拉只提供有生产事件来源的选项；Wi-Fi 条件编辑器恢复可用。
     const triggerOptions = [...element<HTMLSelectElement>("#settings-auto-trigger").options].map((o) => o.value);
     assert.deepEqual(triggerOptions, [...WINDOWS_SUPPORTED_TRIGGERS]);
+    assert.ok(triggerOptions.includes("wifiNetworkJoined"));
+    assert.ok(triggerOptions.includes("wifiNetworkLeft"));
     const wifiKind = element<HTMLSelectElement>("#settings-auto-wifi-kind");
-    assert.equal(wifiKind.disabled, true);
-    assert.match(element("#settings-auto-wifi-unsupported-hint").textContent ?? "", /暂不支持按 Wi-Fi 判断/);
+    assert.equal(wifiKind.disabled, false);
+    assert.equal(document.querySelector("#settings-auto-wifi-unsupported-hint"), null);
 
     selectValue("#settings-auto-trigger", "away");
     assert.equal(element<HTMLButtonElement>("#btn-add-auto-rule").disabled, false);
@@ -306,16 +308,25 @@ describe("Wave 4 · PC Context Automation Rule Editor UI & Live Runtime", () => 
     selectValue("#settings-auto-scene-id", "scene.meeting");
     await click("#btn-add-auto-rule");
 
+    // Wi-Fi 条件编辑器：指定 SSID 列表后保存成 inAny 条件。
+    selectValue("#settings-auto-trigger", "screenLocked");
+    selectValue("#settings-auto-action-kind", "quickAction");
+    selectValue("#settings-auto-quick-action", "lightsOff");
+    selectValue("#settings-auto-wifi-kind", "inAny");
+    typeInput("#settings-auto-wifi-ssids", "Home_5G, Study");
+    await click("#btn-add-auto-rule");
+
     const store = new AutomationRuleStore();
     const savedRules = store.load();
-    assert.equal(savedRules.length, 4);
+    assert.equal(savedRules.length, 5);
     assert.equal(savedRules[0]?.trigger, "away");
     assert.deepEqual(savedRules[0]?.conditions.wifi, { kind: "any" });
     assert.deepEqual(savedRules[1]?.action, { kind: "devices", deviceIds: ["light.ambient"], isOn: true });
     assert.equal(savedRules[2]?.triggerOptions.sensorCondition?.threshold, 29);
     assert.deepEqual(savedRules[3]?.action, { kind: "scene", sceneId: "scene.meeting" });
     assert.deepEqual(savedRules[3]?.triggerOptions.scheduledTime, { hour: 8, minute: 15 });
-    assert.equal(document.querySelectorAll("[data-auto-rule-row]").length, 4);
+    assert.deepEqual(savedRules[4]?.conditions.wifi, { kind: "inAny", ssids: ["Home_5G", "Study"] });
+    assert.equal(document.querySelectorAll("[data-auto-rule-row]").length, 5);
     assert.equal(document.querySelectorAll("[data-auto-rule-unsupported]").length, 0);
 
     const t0 = new Date(2026, 10, 14, 14, 0, 0).getTime();
@@ -762,8 +773,8 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
     selectValue("#settings-auto-schedule-minute", "15");
     toggleCheck('[data-auto-weekday="1"]', true);
     toggleCheck('[data-auto-weekday="3"]', true);
-    // Wi-Fi 条件编辑器在 Windows 上禁用：不渲染 SSID 输入，也不能切到受限选项。
-    assert.equal(element<HTMLSelectElement>("#settings-auto-wifi-kind").disabled, true);
+    // Wi-Fi 条件编辑器已恢复可用：默认「不限」时不渲染 SSID 输入。
+    assert.equal(element<HTMLSelectElement>("#settings-auto-wifi-kind").disabled, false);
     assert.equal(document.querySelector("#settings-auto-wifi-ssids"), null);
     selectValue("#settings-auto-action-kind", "devices");
     toggleCheck('[data-auto-target-device="light.xss"]', true);
@@ -800,7 +811,7 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
     assert.equal(app.activeSheet, "none");
   });
 
-  it("flags saved legacy rules with unsupported triggers or Wi-Fi conditions without touching their stored data", async () => {
+  it("flags saved legacy rules with unsupported triggers without touching their stored data, and treats legacy Wi-Fi conditions as supported again", async () => {
     const legacyRules = [
       {
         id: "legacy-cam",
@@ -843,11 +854,13 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
 
     app.openSettingsSheet("system");
     assert.equal(document.querySelectorAll("[data-auto-rule-row]").length, 3);
-    assert.equal(document.querySelectorAll("[data-auto-rule-unsupported]").length, 3);
+    // Wi-Fi 条件在 Windows 上已接线支持，只有不受支持的触发器仍带标识。
+    assert.equal(document.querySelectorAll("[data-auto-rule-unsupported]").length, 2);
+    assert.equal(document.querySelector('[data-auto-rule-unsupported="legacy-wifi"]'), null);
     assert.match(document.body.textContent ?? "", /Windows 暂不支持，不会触发/);
 
     // 旧规则原值照常展示，不被静默改写。
-    const wifiRowText = element('[data-auto-rule-unsupported="legacy-wifi"]').closest("[data-auto-rule-row]")?.textContent ?? "";
+    const wifiRowText = element('[data-auto-rule-row="legacy-wifi"]').textContent ?? "";
     assert.match(wifiRowText, /Office_Guest, Home_5G/);
     assert.match(wifiRowText, /排除 Wi-Fi: Office_Guest, Home_5G/);
     const batteryRowText = element('[data-auto-rule-unsupported="legacy-battery"]').closest("[data-auto-rule-row]")?.textContent ?? "";
@@ -873,10 +886,41 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
     assert.equal(afterEnable[0]?.isEnabled, true);
     assert.deepEqual(afterEnable.map(project), before.map(project));
 
-    // 这些规则不会因 Windows 生产事件（lockChanged / tick）触发，即使处于启用状态。
+    // 不受支持的触发器不会因 Windows 生产事件（lockChanged / tick）触发，即使处于启用状态；
+    // legacy-wifi 的首条 lockChanged 只建立基线，不产生 away 触发。
     await dispatchSystemContextEvent(app, { kind: "lockChanged", isLocked: true }, new Date(2026, 10, 14, 14, 0, 0).getTime());
     await dispatchSystemContextEvent(app, { kind: "tick" }, new Date(2026, 10, 14, 14, 2, 30).getTime());
     assert.equal(dispatched.length, 0);
+  });
+
+  it("shows the Location-permission guidance when the Wi-Fi probe reports noPermission", async () => {
+    const app = createCloudApp();
+    app.devices = [makeLight("light.desk", "工作台灯", true)];
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string) => (cmd === "wifi_current" ? { state: "noPermission" } : undefined),
+      },
+    });
+
+    tickSafetyHealthAndAutomation(app, new Date(2026, 10, 14, 10, 0, 0).getTime());
+    await setImmediate();
+    await setImmediate();
+
+    app.openSettingsSheet("system");
+    assert.equal(document.querySelector("#settings-auto-wifi-permission-hint"), null, "no hint while the draft is unrelated to Wi-Fi");
+
+    selectValue("#settings-auto-trigger", "wifiNetworkJoined");
+    const hint = element("#settings-auto-wifi-permission-hint");
+    assert.match(hint.textContent ?? "", /位置/);
+    assert.match(hint.textContent ?? "", /不会生效/);
+
+    // 换成与 Wi-Fi 无关的触发器后不再展示。
+    selectValue("#settings-auto-trigger", "away");
+    assert.equal(document.querySelector("#settings-auto-wifi-permission-hint"), null);
+
+    selectValue("#settings-auto-wifi-kind", "inAny");
+    assert.match(element("#settings-auto-wifi-permission-hint").textContent ?? "", /位置/);
   });
 });
 
