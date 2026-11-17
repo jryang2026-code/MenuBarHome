@@ -6,6 +6,7 @@ import {
   automationRuleHighRiskConfirmation,
   automationTriggerTitle,
   clampDoorbellPopupSeconds,
+  automationTimeWindowSummary,
   createAutomationConditions,
   createAutomationRule,
   executeAutomationRule,
@@ -107,6 +108,9 @@ export interface NewRuleDraftState {
   calendarLeadMinutes: number;
   wifiKind: "any" | "inAny" | "notIn";
   wifiSSIDsText: string;
+  timeWindowEnabled: boolean;
+  timeWindowStartHour: number;
+  timeWindowEndHour: number;
   actionKind: "quickAction" | "devices" | "scene";
   quickAction: QuickActionId;
   devicesPowerOn: boolean;
@@ -194,6 +198,9 @@ function createDefaultDraft(): NewRuleDraftState {
     calendarLeadMinutes: 5,
     wifiKind: "any",
     wifiSSIDsText: "",
+    timeWindowEnabled: false,
+    timeWindowStartHour: 22,
+    timeWindowEndHour: 7,
     actionKind: "quickAction",
     quickAction: "lightsOff",
     devicesPowerOn: false,
@@ -619,6 +626,11 @@ function summarizeRuleDetails(
     );
   }
 
+  if (rule.conditions.timeWindow.isEnabled) {
+    const range = automationTimeWindowSummary(rule.conditions.timeWindow);
+    parts.push(uiText(lang, `时段 ${range}`, `時段 ${range}`, `Between ${range}`));
+  }
+
   const recentRun = recentRuns.find((r) => r.ruleId === rule.id);
   const lastFiredMs = recentRun?.firedAtMs ?? deduper.lastFireAtMs(rule.id);
   if (lastFiredMs !== null) {
@@ -802,11 +814,22 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
 
   const parsedWifiSSIDs = normalizeWiFiSSIDs(draft.wifiSSIDsText.split(/[,\n，]/));
   const wifiInvalid = draft.wifiKind !== "any" && parsedWifiSSIDs.length === 0;
+  const timeWindowInvalid = draft.timeWindowEnabled && draft.timeWindowStartHour === draft.timeWindowEndHour;
+  const timeWindowOvernight = draft.timeWindowEnabled && draft.timeWindowStartHour > draft.timeWindowEndHour;
   const actionInvalid =
     (draft.actionKind === "devices" && draft.selectedDeviceIds.size === 0) ||
     (draft.actionKind === "scene" && !effectiveSceneId);
   const triggerInvalid = draft.trigger === "sensorThreshold" && !effectiveSensorDeviceId;
-  const canAddRule = !wifiInvalid && !actionInvalid && !triggerInvalid;
+  const canAddRule = !wifiInvalid && !actionInvalid && !triggerInvalid && !timeWindowInvalid;
+  const timeHourOptions = (selected: number) =>
+    Array.from({ length: 24 }, (_, hour) => `<option value="${hour}" ${hour === selected ? "selected" : ""}>${pad2(hour)}:00</option>`).join("");
+  const timeWindowHint = !draft.timeWindowEnabled
+    ? ""
+    : timeWindowInvalid
+      ? uiText(lang, "起止不能相同", "起止不能相同", "Start and end must differ")
+      : timeWindowOvernight
+        ? uiText(lang, "跨夜", "跨夜", "Overnight")
+        : "";
 
   const safetyPrefs = loadSafetyGuardPrefs(storage);
   const sensorPolicy = loadSensorAlertPolicy(storage);
@@ -969,6 +992,24 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
               <input id="settings-auto-wifi-ssids" class="cc-input" type="text" value="${esc(draft.wifiSSIDsText)}" placeholder="${esc(uiText(lang, "输入 Wi-Fi 名称（多个用逗号分隔，如 Home_5G, Study）", "輸入 Wi-Fi 名稱（多個用逗號分隔）", "Wi-Fi SSIDs, comma-separated (e.g. Home_5G, Office)"))}" />
               ${wifiInvalid ? `<p class="cc-field-hint" id="settings-auto-wifi-hint" style="color: #e67e22;">${esc(uiText(lang, "请至少填写一个 Wi-Fi 名称（SSID）后再保存。", "請至少填寫一個 Wi-Fi 名稱（SSID）後再儲存。", "Enter at least one Wi-Fi SSID to save this condition."))}</p>` : ""}
             </div>`
+            : ""
+        }
+        <div class="cc-field-row" style="margin-top: 8px;">
+          <label class="cc-checkbox" for="settings-auto-time-window">
+            <input id="settings-auto-time-window" type="checkbox" ${draft.timeWindowEnabled ? "checked" : ""} />
+            <span>${esc(uiText(lang, "限定时段", "限定時段", "Only between"))}</span>
+          </label>
+        </div>
+        ${
+          draft.timeWindowEnabled
+            ? `<div class="cc-field-row" id="settings-auto-time-range" style="margin-top: 6px; gap: 8px; flex-wrap: wrap;">
+              <label for="settings-auto-time-start">${esc(uiText(lang, "开始", "開始", "Start"))}</label>
+              <select id="settings-auto-time-start" class="cc-select" style="width: auto;">${timeHourOptions(draft.timeWindowStartHour)}</select>
+              <span>\u2013</span>
+              <label for="settings-auto-time-end">${esc(uiText(lang, "结束", "結束", "End"))}</label>
+              <select id="settings-auto-time-end" class="cc-select" style="width: auto;">${timeHourOptions(draft.timeWindowEndHour)}</select>
+            </div>
+            ${timeWindowHint ? `<p class="cc-field-hint" id="settings-auto-time-hint">${esc(timeWindowHint)}</p>` : ""}`
             : ""
         }
         <div class="cc-field-row" style="margin-top: 8px; gap: 8px;">
@@ -1207,6 +1248,17 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
     } else if (target.id === "settings-auto-wifi-kind" && isSelectEl(target)) {
       draft.wifiKind = target.value as "any" | "inAny" | "notIn";
       host.render();
+    } else if (target.id === "settings-auto-time-window" && isInputEl(target)) {
+      draft.timeWindowEnabled = target.checked;
+      host.render();
+    } else if (target.id === "settings-auto-time-start" && isSelectEl(target)) {
+      const hour = Number(target.value);
+      if (Number.isInteger(hour)) draft.timeWindowStartHour = Math.min(23, Math.max(0, hour));
+      host.render();
+    } else if (target.id === "settings-auto-time-end" && isSelectEl(target)) {
+      const hour = Number(target.value);
+      if (Number.isInteger(hour)) draft.timeWindowEndHour = Math.min(23, Math.max(0, hour));
+      host.render();
     } else if (target.id === "settings-auto-action-kind" && isSelectEl(target)) {
       draft.actionKind = target.value as "quickAction" | "devices" | "scene";
       host.render();
@@ -1350,6 +1402,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
         if (ssids.length === 0) return;
         wifiCond = { kind: draft.wifiKind, ssids };
       }
+      if (draft.timeWindowEnabled && draft.timeWindowStartHour === draft.timeWindowEndHour) return;
       const sensorCond = buildSensorConditionFromDraft(draft, aliasedDevices);
       if (draft.trigger === "sensorThreshold" && !sensorCond) return;
       const scheduledTime =
@@ -1378,7 +1431,11 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
           scheduledTime,
           sensorCondition: sensorCond,
         },
-        conditions: createAutomationConditions(wifiCond),
+        conditions: createAutomationConditions(wifiCond, {
+          isEnabled: draft.timeWindowEnabled,
+          startMinute: draft.timeWindowStartHour * 60,
+          endMinute: draft.timeWindowEndHour * 60,
+        }),
       });
       const confirmation = automationRuleHighRiskConfirmation(created.action, aliasedDevices, host.settings.interfaceLanguage);
       if (confirmation) {
