@@ -315,6 +315,61 @@ describe("Issue #9: lock-time Wi-Fi snapshot for the debounced flush", () => {
     );
   });
 
+  it("prefers the live reading carried on the lock event over the polling context (race-free capture)", async () => {
+    const lightA = makeLight("light.a", true);
+    const lightB = makeLight("light.b", true);
+    const { host, commands } = trackingHost([lightA, lightB]);
+    const engine = new AutomationEngine(new MemoryKV());
+    engine.store.save([
+      createAutomationRule({
+        id: "away-a",
+        trigger: "away",
+        action: { kind: "devices", deviceIds: ["light.a"], isOn: false },
+        conditions: createAutomationConditions({ kind: "inAny", ssids: ["Net_A"] }),
+      }),
+      createAutomationRule({
+        id: "away-b",
+        trigger: "away",
+        action: { kind: "devices", deviceIds: ["light.b"], isOn: false },
+        conditions: createAutomationConditions({ kind: "inAny", ssids: ["Net_B"] }),
+      }),
+      createAutomationRule({
+        id: "flush-b",
+        trigger: "screenLocked",
+        action: { kind: "devices", deviceIds: ["light.b"], isOn: false },
+        conditions: createAutomationConditions({ kind: "inAny", ssids: ["Net_B"] }),
+      }),
+    ]);
+
+    const t0 = new Date(2026, 10, 16, 21, 0, 0).getTime();
+    await engine.dispatchEvent(host, { kind: "lockChanged", isLocked: false }, { nowMs: t0 - 1000 });
+    await engine.dispatchEvent(host, { kind: "wifiChanged", ssid: "Net_A", isAuthorized: true }, { nowMs: t0 - 500 });
+
+    // 锁屏事件自带实时读数 Net_B（锁屏翻转时的探针）：锁屏快照与 away 判定都用它，
+    // 不依赖可能被并发轮询写入的共享上下文；上下文本身保持轮询值。
+    await engine.dispatchEvent(
+      host,
+      { kind: "lockChanged", isLocked: true, wifi: { ssid: "Net_B", isAuthorized: true } },
+      { nowMs: t0 },
+    );
+    assert.equal(engine.snapshot.wifiSSID, "Net_A");
+    assert.deepEqual(
+      commands.filter((c) => c.kind === "setLightPower"),
+      [{ kind: "setLightPower", entityId: "light.b", isOn: false }],
+      "away rules judge on the lock-time reading, not the possibly-poisoned context",
+    );
+
+    // 防抖后的 flush 同样按事件读数判定。
+    await engine.dispatchEvent(host, { kind: "tick" }, { nowMs: t0 + 2100 });
+    assert.deepEqual(
+      commands.filter((c) => c.kind === "setLightPower"),
+      [
+        { kind: "setLightPower", entityId: "light.b", isOn: false },
+        { kind: "setLightPower", entityId: "light.b", isOn: false },
+      ],
+    );
+  });
+
   it("treats a snapshot inside 120s as fresh, including clock rollbacks", () => {
     const snapshot = { ssid: "Net_A", isAuthorized: true, capturedAtMs: 1000 };
     assert.equal(isAutomationWifiSnapshotFresh(snapshot, 1000 + AUTOMATION_WIFI_SNAPSHOT_MAX_AGE_MS), true);

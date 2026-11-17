@@ -820,7 +820,17 @@ function createDefaultSystemContextSnapshot(partial: Partial<SystemContextSnapsh
 }
 
 export type SystemContextEvent =
-  | { readonly kind: "lockChanged"; readonly isLocked: boolean; readonly lidClosed?: boolean }
+  | {
+      readonly kind: "lockChanged";
+      readonly isLocked: boolean;
+      readonly lidClosed?: boolean;
+      /**
+       * 锁屏瞬间实时探针读到的 Wi-Fi 读数（`tickSafetyHealthAndAutomation` 的
+       * 锁屏分支附加）。引擎据此写入锁屏快照，避免与并发的 10 秒轮询写入共享
+       * 上下文产生竞争。
+       */
+      readonly wifi?: { readonly ssid: string | null; readonly isAuthorized: boolean };
+    }
   | { readonly kind: "displayPowerChanged"; readonly isAsleep: boolean }
   | { readonly kind: "systemSleep"; readonly lidClosed?: boolean }
   | { readonly kind: "systemWake" }
@@ -1230,17 +1240,18 @@ export class AutomationEngine {
         const lidClosed = event.lidClosed ?? this.context.lidClosed;
         const wasLocked = this.context.isLocked;
         this.context = { ...this.context, isLocked: event.isLocked, lidClosed };
+        // 锁上的瞬间抓取当时的 Wi-Fi 读数（对照 macOS `ingestAway(.screenLocked)`
+        // 实时读取 `lockTimeWiFi`）。事件自带的实时探针读数优先；探针不可用时
+        // 退回最近一次轮询读数。防抖窗口里网络可能切换，flush 必须按锁屏时刻
+        // 的读数判定，而不是 flush 时刻的读数。仅在锁上时写入待决快照。
+        const observed = event.isLocked ? (event.wifi ?? null) : null;
+        const lockSnapshot: AutomationWifiSnapshot = {
+          ssid: observed ? observed.ssid : this.context.wifiSSID,
+          isAuthorized: observed ? observed.isAuthorized : this.context.wifiAuthorized,
+          capturedAtMs: nowMs,
+        };
         if (event.isLocked) {
-          // 锁上的瞬间抓取当时的 Wi-Fi 读数（对照 macOS `ingestAway(.screenLocked)`
-          // 抓取 `lockTimeWiFi`）。生产链路在锁屏翻转前刚做过一次实时探针
-          // （`tickSafetyHealthAndAutomation` 的锁屏分支），所以这里通常是最新
-          // 读数；探针不可用时退回最近一次轮询读数。防抖窗口里网络可能切换，
-          // flush 必须按锁屏时刻的读数判定，而不是 flush 时刻的读数。
-          this.lockTimeWifi = {
-            ssid: this.context.wifiSSID,
-            isAuthorized: this.context.wifiAuthorized,
-            capturedAtMs: nowMs,
-          };
+          this.lockTimeWifi = lockSnapshot;
         }
         if (!this.hasLockBaseline) {
           this.hasLockBaseline = true;
@@ -1248,7 +1259,16 @@ export class AutomationEngine {
         }
         if (event.isLocked === wasLocked) break;
         if (event.isLocked) {
-          pushRulesFor("away");
+          // away 在锁屏瞬间判定，Wi-Fi 用刚抓取的锁屏快照（对照 macOS
+          // `handle(trigger:.away)` 经 `wifiReadingForDispatch` 优先锁屏快照）。
+          const awayCandidates = rules.filter(
+            (rule) =>
+              rule.trigger === "away"
+              && this.passesConditions(rule, nowMs, lockSnapshot.ssid, lockSnapshot.isAuthorized),
+          );
+          if (awayCandidates.length > 0 && this.deduper.shouldFire("away", nowMs)) {
+            matchedRules.push(...awayCandidates);
+          }
           const outcome = this.arbitrator.ingest("screenLocked", lidClosed, nowMs);
           if (outcome) pushRulesFor(awayOutcomeTrigger(outcome));
         } else {

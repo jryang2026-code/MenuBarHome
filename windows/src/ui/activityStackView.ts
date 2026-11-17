@@ -1027,24 +1027,29 @@ const WIFI_POLL_INTERVAL_MS = 10_000;
  * 并在读数变化时经 `dispatchSystemContextEvent` 派发 `wifiChanged`。
  * 「无法知晓」的读数会以 SSID 置空 + 不可信派发（引擎立即按不可信判定），但连续
  * 相同的「无法知晓」读数不重复派发。
+ *
+ * 返回本次应用到引擎的读数（读数未变化时为当前基线），供锁屏分支把它随
+ * `lockChanged` 事件带给引擎，避免与并发轮询写入共享上下文产生竞争。
  */
 async function observeAndDispatchWifi(
   host: MenuMijiaWindowsApp,
   center: HostActivityCenter,
   probe: WindowsWifiProbeResult | null | undefined,
   nowMs: number,
-): Promise<void> {
+): Promise<EngineWifiReading | null> {
   const observation = wifiPollObservationFromProbe(probe);
   center.lastWifiProbeState = observation.state;
-  if (!isFullPanelHost(host)) return;
+  if (!isFullPanelHost(host)) return null;
   const decision = wifiDispatchDecisionForObservation(observation, center.lastWifiReading);
-  if (!decision) return;
+  const reading = decision ? decision.reading : center.lastWifiReading;
+  if (!decision) return reading;
   center.lastWifiReading = decision.reading;
   await dispatchSystemContextEvent(
     host,
     { kind: "wifiChanged", ssid: decision.reading.ssid, isAuthorized: decision.reading.isAuthorized },
     nowMs,
   );
+  return decision.reading;
 }
 
 /**
@@ -1108,26 +1113,29 @@ export function tickSafetyHealthAndAutomation(
           return;
         }
         if (locked !== previous) {
+          let lockWifi: EngineWifiReading | undefined;
           if (locked) {
             // 锁上的瞬间补一次实时 Wi-Fi 探针（对照 macOS 在锁屏信号时刻的实时
             // 读取），让 #9 的锁屏快照拿到最新网络而不是最多 10 秒前的轮询缓存；
-            // 探针失败则退回最近一次轮询读数，锁屏事件照常派发。
+            // 读数随 lockChanged 事件直接带给引擎，避免与并发轮询写入共享上下文
+            // 产生竞争。探针失败则退回最近一次轮询读数，锁屏事件照常派发。
             const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
             if (typeof invoke === "function") {
               try {
-                await observeAndDispatchWifi(
-                  host,
-                  center,
-                  await invoke<WindowsWifiProbeResult>("wifi_current"),
-                  nowMs,
-                );
+                lockWifi =
+                  (await observeAndDispatchWifi(
+                    host,
+                    center,
+                    await invoke<WindowsWifiProbeResult>("wifi_current"),
+                    nowMs,
+                  )) ?? undefined;
               } catch {
               }
             }
           }
           const runs = await dispatchSystemContextEvent(
             host,
-            { kind: "lockChanged", isLocked: locked },
+            { kind: "lockChanged", isLocked: locked, ...(lockWifi ? { wifi: lockWifi } : {}) },
             nowMs,
           );
           if (runs.length > 0) {
