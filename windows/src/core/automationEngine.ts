@@ -712,12 +712,39 @@ export class AutomationTriggerDeduper {
       for (const [k, v] of Object.entries(JSON.parse(raw) as Record<string, unknown>)) {
         if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
       }
-      return out;
+      // 旧格式键曾把观测到的 SSID 写进持久化存储，等于留下「去过哪些网络」的
+      // 历史；读取时清除并回写，不让它们留在磁盘上。
+      const pruned = AutomationTriggerDeduper.pruneLegacyWifiKeys(out);
+      if (pruned !== out) this.writeStamps(pruned);
+      return pruned;
     } catch { return {}; }
   }
 
   private writeStamps(stamps: Readonly<Record<string, number>>): void {
     try { this.storage.setItem(AutomationTriggerDeduper.storageKey, JSON.stringify(stamps)); } catch {}
+  }
+
+  /**
+   * 旧版 joined/left 去重键是 `wifiJoined:<规则ID>:<SSID>`（额外冒号段是观测
+   * 到的 SSID）；现行键是 `wifiJoined:<规则ID>`（对照 macOS transitionEvent）。
+   * 规则 ID 本身不含冒号，因此 wifi 键里出现第二个冒号段即旧格式。
+   */
+  private static pruneLegacyWifiKeys(stamps: Record<string, number>): Record<string, number> {
+    let changed = false;
+    const out: Record<string, number> = {};
+    for (const [key, value] of Object.entries(stamps)) {
+      const prefix = key.startsWith("wifiJoined:")
+        ? "wifiJoined:"
+        : key.startsWith("wifiLeft:")
+          ? "wifiLeft:"
+          : null;
+      if (prefix !== null && key.slice(prefix.length).includes(":")) {
+        changed = true;
+        continue;
+      }
+      out[key] = value;
+    }
+    return changed ? out : stamps;
   }
 }
 
@@ -1375,8 +1402,13 @@ export class AutomationEngine {
           for (const rule of rules) {
             if (rule.trigger !== "wifiNetworkLeft") continue;
             if (rule.triggerOptions.wifiSSID && rule.triggerOptions.wifiSSID !== prevSSID) continue;
-            if (!conditionsOk(rule, nextSSID, nextAuth)) continue;
-            if (this.deduper.shouldFire(`wifiLeft:${rule.id}:${prevSSID}`, nowMs)) matchedRules.push(rule);
+            // 离开规则按「刚离开的网络」判定条件（对照 macOS handle(context:) 的
+            // conditionSSID：left 用 previous.wifiSSID）；此时 SSID 已不在网上，
+            // 用新 SSID 判定会使 inAny 的离开规则永不触发、notIn 反向误触发。
+            if (!conditionsOk(rule, prevSSID, prevAuthorized)) continue;
+            // 去重键只含触发器与规则 ID（对照 macOS transitionEvent），不把观测
+            // 到的 SSID 写进持久化存储。
+            if (this.deduper.shouldFire(`wifiLeft:${rule.id}`, nowMs)) matchedRules.push(rule);
           }
         }
         if (nextSSID !== null && nextSSID !== prevSSID) {
@@ -1384,7 +1416,7 @@ export class AutomationEngine {
             if (rule.trigger !== "wifiNetworkJoined") continue;
             if (rule.triggerOptions.wifiSSID && rule.triggerOptions.wifiSSID !== nextSSID) continue;
             if (!conditionsOk(rule, nextSSID, nextAuth)) continue;
-            if (this.deduper.shouldFire(`wifiJoined:${rule.id}:${nextSSID}`, nowMs)) matchedRules.push(rule);
+            if (this.deduper.shouldFire(`wifiJoined:${rule.id}`, nowMs)) matchedRules.push(rule);
           }
         }
         break;

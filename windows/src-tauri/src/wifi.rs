@@ -191,9 +191,17 @@ fn read_current_wifi() -> WifiCurrentStatus {
 /// permission denied, unknown — so a denied Location grant on Windows 11 24H2+
 /// is never misread as "not connected" (macOS `MacHardwareProbe.currentWiFi()`
 /// semantics).
+///
+/// 同步 WLAN 查询改在阻塞线程池执行（`tauri::async_runtime::spawn_blocking`）：
+/// Tauri v2 的同步 command 在主线程执行，WLAN 服务或驱动变慢时会卡住主线程；
+/// 句柄与接口列表的生命周期完整留在阻塞闭包内。join 失败按「无法知晓」
+/// 失_close（Unknown）。
 #[tauri::command]
-pub(crate) fn wifi_current() -> WifiCurrentStatus {
-    read_current_wifi()
+pub(crate) async fn wifi_current() -> WifiCurrentStatus {
+    match tauri::async_runtime::spawn_blocking(read_current_wifi).await {
+        Ok(status) => status,
+        Err(_) => WifiCurrentStatus::Unknown,
+    }
 }
 
 #[cfg(test)]

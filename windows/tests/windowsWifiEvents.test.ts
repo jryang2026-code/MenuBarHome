@@ -7,6 +7,7 @@ import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.
 import {
   AUTOMATION_WIFI_SNAPSHOT_MAX_AGE_MS,
   AutomationEngine,
+  AutomationTriggerDeduper,
   createAutomationConditions,
   createAutomationRule,
   isAutomationWifiSnapshotFresh,
@@ -253,6 +254,148 @@ describe("Windows Wi-Fi conditions & triggers through wifiChanged", () => {
     // 之后正常的离开/回来仍触发。
     await engine.dispatchEvent(host, { kind: "wifiChanged", ssid: "Office", isAuthorized: true }, { nowMs: t0 + 300_100 });
     assert.equal(commands.length, 3, "left(Home_5G) fires again once both sides are trusted");
+  });
+
+  it("judges left transitions on the network just left and joined transitions on the new network (macOS matrix)", async () => {
+    // 转换矩阵：inAny / notIn 两种条件 × joined / left 两种触发器 ×
+    // A→B、A→null、null→A 三种转换，结果逐项对照 macOS handle(context:)：
+    // left 用刚离开的 SSID，joined 用新 SSID。
+    const lights = {
+      leftInAny: makeLight("light.left-in-any", true),
+      leftNotIn: makeLight("light.left-not-in", true),
+      joinInAny: makeLight("light.join-in-any", true),
+      joinNotIn: makeLight("light.join-not-in", true),
+    };
+    const { host, commands } = trackingHost(Object.values(lights));
+    const engine = new AutomationEngine(new MemoryKV());
+    engine.store.save([
+      createAutomationRule({
+        id: "left-in-any",
+        trigger: "wifiNetworkLeft",
+        action: { kind: "devices", deviceIds: ["light.left-in-any"], isOn: false },
+        conditions: createAutomationConditions({ kind: "inAny", ssids: ["Net_A"] }),
+      }),
+      createAutomationRule({
+        id: "left-not-in",
+        trigger: "wifiNetworkLeft",
+        action: { kind: "devices", deviceIds: ["light.left-not-in"], isOn: false },
+        conditions: createAutomationConditions({ kind: "notIn", ssids: ["Net_A"] }),
+      }),
+      createAutomationRule({
+        id: "join-in-any",
+        trigger: "wifiNetworkJoined",
+        action: { kind: "devices", deviceIds: ["light.join-in-any"], isOn: false },
+        conditions: createAutomationConditions({ kind: "inAny", ssids: ["Net_B"] }),
+      }),
+      createAutomationRule({
+        id: "join-not-in",
+        trigger: "wifiNetworkJoined",
+        action: { kind: "devices", deviceIds: ["light.join-not-in"], isOn: false },
+        conditions: createAutomationConditions({ kind: "notIn", ssids: ["Net_B"] }),
+      }),
+    ]);
+
+    const t0 = new Date(2026, 10, 16, 11, 0, 0).getTime();
+    const ssid = (ssid: string | null) => ({ kind: "wifiChanged" as const, ssid, isAuthorized: true });
+
+    // 先建立可信的「未连接」基线（默认快照不可信，首轮不触发——安全语义）。
+    await engine.dispatchEvent(host, ssid(null), { nowMs: t0 });
+    assert.equal(commands.length, 0);
+
+    // null → Net_A：joined 按新网络 Net_A 判定。inAny[Net_B] 不满足；
+    // notIn[Net_B] 满足 → join-not-in 触发。
+    await engine.dispatchEvent(host, ssid("Net_A"), { nowMs: t0 + 61_000 });
+    assert.deepEqual(commands, [{ kind: "setLightPower", entityId: "light.join-not-in", isOn: false }]);
+
+    // Net_A → Net_B：left 按刚离开的 Net_A 判定（inAny[Net_A] 满足 → 触发；
+    // notIn[Net_A] 排除 → 不触发，修复前两者相反）；joined 按新网络 Net_B 判定
+    // （inAny[Net_B] 满足 → 触发；notIn[Net_B] 排除 → 不触发）。
+    await engine.dispatchEvent(host, ssid("Net_B"), { nowMs: t0 + 122_000 });
+    assert.deepEqual(
+      commands.map((c) => c.entityId),
+      ["light.join-not-in", "light.left-in-any", "light.join-in-any"],
+    );
+
+    // Net_B → null：left 按刚离开的 Net_B 判定（inAny[Net_A] 不满足；notIn[Net_A]
+    // 满足 → left-not-in 触发）；joined 不进入（新网络为 null）。
+    await engine.dispatchEvent(host, ssid(null), { nowMs: t0 + 183_000 });
+    assert.deepEqual(
+      commands.map((c) => c.entityId),
+      ["light.join-not-in", "light.left-in-any", "light.join-in-any", "light.left-not-in"],
+    );
+  });
+
+  it("persists joined/left dedupe stamps without any observed SSID and purges legacy keys", async () => {
+    const light = makeLight("light.desk", true);
+    const { host } = trackingHost([light]);
+    const kv = new MemoryKV();
+    const engine = new AutomationEngine(kv);
+    engine.store.save([
+      createAutomationRule({
+        id: "join-any",
+        trigger: "wifiNetworkJoined",
+        action: { kind: "devices", deviceIds: ["light.desk"], isOn: false },
+      }),
+    ]);
+
+    const t0 = new Date(2026, 10, 16, 12, 0, 0).getTime();
+    await engine.dispatchEvent(host, { kind: "wifiChanged", ssid: null, isAuthorized: true }, { nowMs: t0 });
+    await engine.dispatchEvent(host, { kind: "wifiChanged", ssid: "Private_Visited_Network", isAuthorized: true }, { nowMs: t0 + 100 });
+    const persisted = kv.getItem(AutomationTriggerDeduper.storageKey) ?? "";
+    assert.ok(persisted.includes("wifiJoined:join-any"), "trigger + rule id remain the dedupe key");
+    assert.equal(persisted.includes("Private_Visited_Network"), false, "observed SSIDs must never be persisted");
+    assert.equal(persisted.includes("Net_A"), false);
+
+    // 旧格式键（含 SSID）在读取时清除并回写，不留在磁盘上；其他键保留。
+    const seeded = new MemoryKV();
+    seeded.setItem(
+      AutomationTriggerDeduper.storageKey,
+      JSON.stringify({
+        "wifiJoined:join-any:Private_Visited_Network": 1000,
+        "wifiLeft:r1:Net_A": 2000,
+        "lateNight:r2:2026-11-17": 3000,
+        "sched:r3:2026-11-17:08:15": 4000,
+      }),
+    );
+    const deduper = new AutomationTriggerDeduper(seeded);
+    assert.equal(deduper.lastFireAtMs("lateNight:r2:2026-11-17"), 3_000_000, "non-Wi-Fi keys survive");
+    assert.equal(deduper.lastFireAtMs("sched:r3:2026-11-17:08:15"), 4_000_000);
+    assert.equal(deduper.lastFireAtMs("wifiJoined:join-any:Private_Visited_Network"), null, "legacy key no longer readable");
+    assert.equal(deduper.lastFireAtMs("wifiLeft:r1:Net_A"), null);
+    const afterPurge = JSON.parse(seeded.getItem(AutomationTriggerDeduper.storageKey) ?? "{}") as Record<string, unknown>;
+    assert.deepEqual(Object.keys(afterPurge).sort(), ["lateNight:r2:2026-11-17", "sched:r3:2026-11-17:08:15"]);
+    assert.equal(
+      (seeded.getItem(AutomationTriggerDeduper.storageKey) ?? "").includes("Private_Visited_Network"),
+      false,
+      "legacy SSID keys are removed from storage, not just ignored",
+    );
+  });
+
+  it("shares one per-rule cooldown for joined/left transitions like macOS (A→B→A within the cooldown is suppressed)", async () => {
+    const light = makeLight("light.desk", true);
+    const { host, commands } = trackingHost([light]);
+    const engine = new AutomationEngine(new MemoryKV());
+    engine.store.save([
+      createAutomationRule({
+        id: "join-any",
+        trigger: "wifiNetworkJoined",
+        action: { kind: "devices", deviceIds: ["light.desk"], isOn: false },
+      }),
+    ]);
+
+    const t0 = new Date(2026, 10, 16, 13, 0, 0).getTime();
+    const ssid = (ssid: string | null) => ({ kind: "wifiChanged" as const, ssid, isAuthorized: true });
+    await engine.dispatchEvent(host, ssid(null), { nowMs: t0 });
+    await engine.dispatchEvent(host, ssid("Net_A"), { nowMs: t0 + 100 });
+    assert.equal(commands.length, 1);
+    // A → B → A 快速切换：同一规则在同一冷却窗口内只触发一次（macOS
+    // transitionEvent 的键不含网络标识，冷却跨网络共享）。
+    await engine.dispatchEvent(host, ssid("Net_B"), { nowMs: t0 + 200 });
+    await engine.dispatchEvent(host, ssid("Net_A"), { nowMs: t0 + 300 });
+    assert.equal(commands.length, 1);
+    // 冷却过后恢复触发。
+    await engine.dispatchEvent(host, ssid("Net_B"), { nowMs: t0 + 61_100 });
+    assert.equal(commands.length, 2);
   });
 });
 
