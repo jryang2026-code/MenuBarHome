@@ -531,6 +531,21 @@ describe("automation time window", () => {
     assert.equal(engine.deduper.lastFireAtMs("screenLocked"), null);
   });
 
+  it("records a confirmed screen lock at the lock instant and keeps undo open from the flush", async () => {
+    const engine = new AutomationEngine(new MemoryKV());
+    engine.primeLockBaseline(false);
+    const rule = loadStored(storedRule({ id: "lock-stamp", trigger: "screenLocked", timeWindow: NIGHT }));
+    const { host, commands } = trackingHost([makeLight()]);
+    const lockAt = at(22, 0, 0);
+    const tickAt = at(0, 30, 0, 13);
+    await dispatch(engine, host, { kind: "lockChanged", isLocked: true }, [rule], lockAt);
+    const runs = await dispatch(engine, host, { kind: "tick" }, [rule], tickAt);
+    assert.equal(commands.length, 1);
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]?.firedAtMs, lockAt);
+    assert.ok((runs[0]?.expiresAtMs ?? 0) > tickAt);
+  });
+
   it("loads an enabled window whose minutes are not numbers as disabled and still runs at noon", async () => {
     const kv = new MemoryKV();
     kv.setItem(
@@ -577,6 +592,12 @@ describe("automation time window settings", () => {
     const sel = element<HTMLSelectElement>(selector);
     sel.value = value;
     sel.dispatchEvent(new window.Event("change", { bubbles: true }));
+  }
+
+  function typeInput(selector: string, value: string): void {
+    const input = element<HTMLInputElement>(selector);
+    input.value = value;
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
   }
 
   function toggleCheck(selector: string, checked: boolean): void {
@@ -671,5 +692,23 @@ describe("automation time window settings", () => {
     app.settings.interfaceLanguage = "en";
     app.render();
     assert.match(element("#settings-auto-time-hint").textContent ?? "", /Start and end must differ/);
+  });
+
+  it("keeps Save disabled when an equal-hour window is set and an SSID is typed", async () => {
+    const app = createCloudApp();
+    app.openSettingsSheet("system");
+    toggleCheck("#settings-auto-time-window", true);
+    selectValue("#settings-auto-time-start", "8");
+    selectValue("#settings-auto-time-end", "8");
+    selectValue("#settings-auto-wifi-kind", "inAny");
+    assert.equal(element<HTMLButtonElement>("#btn-add-auto-rule").disabled, true);
+
+    typeInput("#settings-auto-wifi-ssids", "Home_5G");
+    assert.equal(element<HTMLButtonElement>("#btn-add-auto-rule").disabled, true);
+    await click("#btn-add-auto-rule");
+    assert.equal(new AutomationRuleStore().load().length, 0);
+
+    selectValue("#settings-auto-time-end", "18");
+    assert.equal(element<HTMLButtonElement>("#btn-add-auto-rule").disabled, false);
   });
 });
