@@ -679,6 +679,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "摆风": ["摆风", "Swing"],
   "已将{name}摆风设为 {mode}": ["已将{name}摆风设为 {mode}", "Set {name} swing to {mode}"],
   "已将{name}位置设为 {percent}%": ["已将{name}位置设为 {percent}%", "Set {name} position to {percent}%"],
+  "将{name}位置调到 {percent}%": ["将{name}位置调到 {percent}%", "Move {name} to {percent}%"],
   "已{action}{name}按键锁": ["已{action}{name}按键锁", "{action} child lock on {name}"],
   "已向{name}投喂 {count}": ["已向{name}投喂 {count}", "Dispensed {count} on {name}"],
   "升": ["升", "Up"],
@@ -721,6 +722,11 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
     "Could not update launch-at-login; check system permissions and try again",
   ],
   "自动化与安全控制": ["自动化与安全控制", "Automation & Security"],
+  "Windows 暂不支持，不会触发": ["Windows 暂不支持，不会触发", "Not supported on Windows; it will not fire"],
+  "Windows 暂不支持按 Wi-Fi 判断，已保存的 Wi-Fi 条件不会生效。": [
+    "Windows 暂不支持按 Wi-Fi 判断，已保存的 Wi-Fi 条件不会生效。",
+    "Wi-Fi conditions are not supported on Windows and will not take effect.",
+  ],
   "锁屏时禁止控制设备": ["锁屏时禁止控制设备", "Block device control while locked"],
   "锁屏期间拦截手动与外部链接控制；已设好的定时任务仍按时执行。": [
     "锁屏期间拦截手动与外部链接控制；已设好的定时任务仍按时执行。",

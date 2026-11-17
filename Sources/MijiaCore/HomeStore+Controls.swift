@@ -824,7 +824,9 @@ extension HomeStore {
         )
     }
 
-    /// A drag is the confirmation. One-tap open still asks via `setCoverMotor` / `togglePrimary`.
+    /// A curtain or blind treats the drag as the confirmation; a subtype the hazard table calls
+    /// dangerous (garage door, gate) asks before the row moves. The drag's first tick carries the
+    /// answer for the rest of that drag, the same way a facet slider rides on its first prompt.
     public func setCoverPosition(_ deviceId: String, percent: Int) {
         guard let previous = controllableDevice(deviceId), case .cover(var s) = previous.kind,
               s.positionWritable else { return }
@@ -837,7 +839,23 @@ extension HomeStore {
         } else {
             nil
         }
-        let previousPosition = (baselineCover ?? s).positionPercent ?? displayed
+        let startPosition = (baselineCover ?? s).positionPercent
+        let previousPosition = startPosition ?? displayed
+        // Asked before any optimistic state moves, so a refusal leaves the slider on the position
+        // the device really reports. The direction comes from the value the command sends, not the
+        // snapped one the row shows: 0 → 1 % displays as a closed door but still opens it. One
+        // answer covers the same-direction ticks of a drag still being accumulated; a tick the other
+        // way, or one after the slot went out, is a new decision and asks on its own.
+        let direction = Self.coverDragDirection(from: s.positionPercent, to: clamped)
+        let confirmedDrag = direction.map {
+            continuesConfirmedCoverDrag(key, deviceId: deviceId, opens: $0)
+        } ?? false
+        var answeredPrompt = false
+        if let direction, !confirmedDrag,
+           ManualControlPolicy.requiresConfirmation(.power(direction), for: previous) {
+            guard allowManualControl(.power(direction), for: previous) else { return }
+            answeredPrompt = true
+        }
         let origin = activeCoverOrigin(for: deviceId, fallback: previousPosition) ?? previousPosition
         if let baselineCover {
             s.motion = baselineCover.motion
@@ -874,6 +892,36 @@ extension HomeStore {
                 device.kind = .cover(spec)
             }
         )
+        // Each commit mints a new slot token, so keep the recorded one current for as long as this
+        // drag stays answered in the same direction (or was just answered now). A tick the other
+        // way is a new hazard and asks on its own.
+        if let direction, answeredPrompt || confirmedDrag, let token = debouncedWrites[key]?.token {
+            confirmedCoverDragAnswers[key] = (token, direction)
+        }
+    }
+
+    /// True while the slider is still accumulating the drag whose hazard prompt was answered for
+    /// this direction: the debounce slot still holds that answer's token and its patch has not been
+    /// sent. A slot that went out, a replaced one, or a tick the other way starts a new decision, so
+    /// neither a reversed drag nor a second one during the command's flight inherits the answer.
+    private func continuesConfirmedCoverDrag(_ key: String, deviceId: String, opens: Bool) -> Bool {
+        guard let slot = debouncedWrites[key],
+              let answer = confirmedCoverDragAnswers[key],
+              answer.token == slot.token,
+              answer.opens == opens else { return false }
+        return manualWriteSessions[deviceId]?.patches.contains {
+            $0.slotKey == key && $0.phase == .debouncing
+        } == true
+    }
+
+    /// The hazard direction a position drag takes (`true` opens), or nil when it cannot move the
+    /// device. A curtain has no hazard; a garage door is hazardous in both directions and a window
+    /// opener or airer only while opening. An unknown reported position counts as opening, the
+    /// direction every hazardous subtype asks about.
+    nonisolated static func coverDragDirection(from start: Int?, to target: Int) -> Bool? {
+        guard let start else { return true }
+        guard start != target else { return nil }
+        return target > start
     }
 
     func activeCoverOrigin(for deviceId: String, fallback: Int?) -> Int? {

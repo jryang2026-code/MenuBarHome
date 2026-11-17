@@ -2443,6 +2443,12 @@ describe("Smart camera support and live view (#97)", () => {
     await click('[data-cameramotion="camera.living_cam"]');
     assert.doesNotMatch(tile("camera.living_cam"), /侦测开/);
     await click("#btn-undo");
+    assert.doesNotMatch(
+      tile("camera.living_cam"),
+      /侦测开/,
+      "restoring a camera write is a high-risk restore, so the first undo click only arms it",
+    );
+    await click("#btn-undo");
     assert.match(tile("camera.living_cam"), /侦测开/);
   });
 
@@ -4085,6 +4091,10 @@ describe("Home Assistant source", () => {
     await click('[data-toggle-device="heat-only"]');
     assert.deepEqual(modes, ["heat"]);
     await click('[data-toggle-device="heat-only"]');
+    await click("#btn-undo");
+    // Restoring heating is the hazardous direction, so undo asks exactly like macOS
+    // `confirmUndoTargets`: the first click arms, the second restores.
+    assert.deepEqual(modes, ["heat", "off"], "the first undo click only arms the restore");
     await click("#btn-undo");
     assert.deepEqual(modes, ["heat", "off", "heat"]);
   });
