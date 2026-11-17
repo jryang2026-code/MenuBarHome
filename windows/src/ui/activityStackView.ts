@@ -1123,19 +1123,20 @@ export function tickSafetyHealthAndAutomation(
             // 锁上的瞬间补一次实时 Wi-Fi 探针（对照 macOS 在锁屏信号时刻的实时
             // 读取），让 #9 的锁屏快照拿到最新网络而不是最多 10 秒前的轮询缓存；
             // 读数随 lockChanged 事件直接带给引擎，避免与并发轮询写入共享上下文
-            // 产生竞争。探针失败则退回最近一次轮询读数，锁屏事件照常派发。
+            // 产生竞争。探针失败（IPC 异常）与轮询路径一致按「无法知晓」失_close：
+            // 传 null 探针得到不可信读数并派发，不把旧轮询的授权 SSID 带进锁屏
+            // 快照。
             const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
             if (typeof invoke === "function") {
+              let probe: WindowsWifiProbeResult | null = null;
               try {
-                lockWifi =
-                  (await observeAndDispatchWifi(
-                    host,
-                    center,
-                    await invoke<WindowsWifiProbeResult>("wifi_current"),
-                    nowMs,
-                  )) ?? undefined;
+                probe = await invoke<WindowsWifiProbeResult>("wifi_current");
               } catch {
+                probe = null;
               }
+              const applied = await observeAndDispatchWifi(host, center, probe, nowMs).catch(() => null);
+              lockWifi =
+                applied ? { ssid: applied.ssid, isAuthorized: applied.isAuthorized } : { ssid: null, isAuthorized: false };
             }
           }
           if (center.lastSampledLockState !== locked) return;

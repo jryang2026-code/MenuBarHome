@@ -635,6 +635,69 @@ describe("Windows Wi-Fi poll wiring (tick → wifiChanged dispatch)", () => {
     assert.equal(sent.length, 0, "no away rule may fire from a superseded lock event");
   });
 
+  it("fails closed when the lock-time Wi-Fi probe rejects instead of carrying the stale authorized SSID", async () => {
+    const host = miniHost([makeLight("light.home", true)]);
+    const center = getHostActivityCenter(host);
+    const sent: DeviceCommand[] = [];
+    host.applyCommand = async (cmd) => {
+      sent.push(cmd);
+      return true;
+    };
+    center.automationEngine.store.save([
+      createAutomationRule({
+        id: "away-in",
+        trigger: "away",
+        action: { kind: "devices", deviceIds: ["light.home"], isOn: false },
+        conditions: createAutomationConditions({ kind: "inAny", ssids: ["Net_A"] }),
+      }),
+      createAutomationRule({
+        id: "lock-in",
+        trigger: "screenLocked",
+        action: { kind: "devices", deviceIds: ["light.home"], isOn: false },
+        conditions: createAutomationConditions({ kind: "inAny", ssids: ["Net_A"] }),
+      }),
+    ]);
+
+    // 轮询先看到 Net_A；锁屏瞬间探针 IPC 失败，必须按「无法知晓」失_close。
+    let wifiResponse: WindowsWifiProbeResult | Error = { state: "connected", ssid: "Net_A" };
+    let locked = false;
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string) => {
+          if (cmd === "wifi_current") {
+            if (wifiResponse instanceof Error) throw wifiResponse;
+            return wifiResponse;
+          }
+          if (cmd === "is_workstation_locked") return locked as unknown;
+          return undefined;
+        },
+      },
+    });
+
+    const t0 = 1_800_000_000_000;
+    tickSafetyHealthAndAutomation(host, t0);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.automationEngine.snapshot.wifiSSID, "Net_A");
+
+    wifiResponse = new Error("wlan svc down at lock");
+    locked = true;
+    tickSafetyHealthAndAutomation(host, t0 + 1_000);
+    await setImmediate();
+    await setImmediate();
+    await setImmediate();
+    // 不可信读数已随 wifiChanged 派发进上下文，并随 lockChanged 进入锁屏快照。
+    assert.equal(center.automationEngine.snapshot.wifiSSID, null);
+    assert.equal(center.automationEngine.snapshot.wifiAuthorized, false);
+
+    // 防抖后结算：快照不可信，Wi-Fi 门控规则不触发。
+    tickSafetyHealthAndAutomation(host, t0 + 2_100);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(sent.length, 0);
+  });
+
   it("never probes Wi-Fi without a Tauri host (happy-dom without __TAURI_INTERNALS__)", () => {
     const host = miniHost();
     const center = getHostActivityCenter(host);
