@@ -19,6 +19,7 @@ SOURCE_PREFIX="Sources/MenuBarMijiaApp/"
 # that no snapshot test renders. Add a file only when nothing it defines draws into
 # `SnapshotTests`; a missed baseline is worse than one more `no-snapshot-change` label.
 NON_RENDERING=(
+    "Sources/MenuBarMijiaApp/AutomationEngine.swift"
     "Sources/MenuBarMijiaApp/MenuBarPanelController.swift"
     "Sources/MenuBarMijiaApp/HotkeyAndNotificationManager.swift"
 )
