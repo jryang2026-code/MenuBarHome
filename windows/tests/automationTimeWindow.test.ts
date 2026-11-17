@@ -688,14 +688,15 @@ describe("automation time window settings", () => {
     assert.match(element("#settings-auto-time-hint").textContent ?? "", /Start and end must differ/);
   });
 
-  it("disables the Wi-Fi condition editor and keeps Save gated only by the time window", async () => {
+  it("keeps Save gated only by the time window now that the Wi-Fi condition editor is enabled", async () => {
     const app = createCloudApp();
     app.openSettingsSheet("system");
     toggleCheck("#settings-auto-time-window", true);
     selectValue("#settings-auto-time-start", "8");
     selectValue("#settings-auto-time-end", "8");
-    assert.equal(element<HTMLSelectElement>("#settings-auto-wifi-kind").disabled, true);
-    assert.ok(document.querySelector("#settings-auto-wifi-unsupported-hint"));
+    assert.equal(element<HTMLSelectElement>("#settings-auto-wifi-kind").disabled, false);
+    assert.equal(document.querySelector("#settings-auto-wifi-unsupported-hint"), null);
+    assert.equal(document.querySelector("#settings-auto-wifi-ssids"), null);
     assert.equal(element<HTMLButtonElement>("#btn-add-auto-rule").disabled, true);
 
     selectValue("#settings-auto-time-end", "18");

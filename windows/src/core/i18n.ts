@@ -721,9 +721,9 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   ],
   "自动化与安全控制": ["自动化与安全控制", "Automation & Security"],
   "Windows 暂不支持，不会触发": ["Windows 暂不支持，不会触发", "Not supported on Windows; it will not fire"],
-  "Windows 暂不支持按 Wi-Fi 判断，已保存的 Wi-Fi 条件不会生效。": [
-    "Windows 暂不支持按 Wi-Fi 判断，已保存的 Wi-Fi 条件不会生效。",
-    "Wi-Fi conditions are not supported on Windows and will not take effect.",
+  "读取当前 Wi-Fi 名称需要系统「位置」权限，请在「设置 → 隐私和安全性 → 位置」中允许本应用，否则 Wi-Fi 条件不会生效。": [
+    "读取当前 Wi-Fi 名称需要系统「位置」权限，请在「设置 → 隐私和安全性 → 位置」中允许本应用，否则 Wi-Fi 条件不会生效。",
+    "Reading the Wi-Fi name needs the system Location permission. Allow this app under Settings > Privacy & security > Location, or Wi-Fi conditions will not apply.",
   ],
   "锁屏时禁止控制设备": ["锁屏时禁止控制设备", "Block device control while locked"],
   "锁屏期间拦截手动与外部链接控制；已设好的定时任务仍按时执行。": [

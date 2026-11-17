@@ -3,12 +3,17 @@ import {
   DoorbellCameraCoordinator,
   DoorbellDetector,
   getAutomationUndoRunId,
+  wifiDispatchDecisionForObservation,
+  wifiPollObservationFromProbe,
   type DoorbellCoordinatorScheduler,
   type DoorbellResponse,
   type DoorbellRing,
+  type EngineWifiReading,
   type HASnapshotLike,
   type RecordedAutomationRun,
   type SystemContextEvent,
+  type WindowsWifiProbeResult,
+  type WindowsWifiProbeState,
 } from "../core/automationEngine.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { speechLocale, t } from "../core/i18n.js";
@@ -113,6 +118,11 @@ export interface HostActivityCenter {
   lastClipboardMarkdown: string | null;
   pendingHighRiskUndoRunId?: string | null;
   dismissedProactiveSignature?: string | null;
+  /** Wi-Fi 轮询（约 10 秒一次）：最近一次派发的确定读数与探针状态。 */
+  wifiPollInFlight: boolean;
+  lastWifiPollAtMs: number;
+  lastWifiReading: EngineWifiReading | null;
+  lastWifiProbeState: WindowsWifiProbeState | null;
 }
 
 type HostWithActivity = MenuMijiaWindowsApp & {
@@ -243,6 +253,10 @@ function createHostActivityCenter(
     lastClipboardMarkdown: null,
     pendingHighRiskUndoRunId: null,
     dismissedProactiveSignature: null,
+    wifiPollInFlight: false,
+    lastWifiPollAtMs: 0,
+    lastWifiReading: null,
+    lastWifiProbeState: null,
   };
 }
 
@@ -1005,6 +1019,44 @@ export function notifyPanelWakeLifecycle(host: unknown, nowMs = Date.now()): voi
   void dispatchSystemContextEvent(host, { kind: "panelWake" }, nowMs);
 }
 
+/** Wi-Fi 轮询节奏，对照 macOS `MacContextObserver` 的 10 秒上下文轮询。 */
+const WIFI_POLL_INTERVAL_MS = 10_000;
+
+/**
+ * 轮询当前 WLAN 连接并在读数变化时派发 `wifiChanged`（`wifi_current` 命令由
+ * `windows/src-tauri/src/wifi.rs` 提供）。读数无法知晓（无权限/探针失败）时既不
+ * 派发也不清除上次读数，与 macOS「无法知晓 ≠ 未连接」的语义一致。
+ */
+async function pollAndDispatchWifi(
+  host: MenuMijiaWindowsApp,
+  center: HostActivityCenter,
+  nowMs: number,
+): Promise<void> {
+  const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
+  if (typeof invoke !== "function" || center.wifiPollInFlight) return;
+  if (nowMs - center.lastWifiPollAtMs < WIFI_POLL_INTERVAL_MS) return;
+  center.wifiPollInFlight = true;
+  center.lastWifiPollAtMs = nowMs;
+  try {
+    const probe = await invoke<WindowsWifiProbeResult>("wifi_current");
+    const observation = wifiPollObservationFromProbe(probe);
+    center.lastWifiProbeState = observation.state;
+    if (!isFullPanelHost(host)) return;
+    const decision = wifiDispatchDecisionForObservation(observation, center.lastWifiReading);
+    if (!decision) return;
+    center.lastWifiReading = decision.reading;
+    await dispatchSystemContextEvent(
+      host,
+      { kind: "wifiChanged", ssid: decision.reading.ssid, isAuthorized: decision.reading.isAuthorized },
+      nowMs,
+    );
+  } catch {
+    center.lastWifiProbeState = "unknown";
+  } finally {
+    center.wifiPollInFlight = false;
+  }
+}
+
 export function tickSafetyHealthAndAutomation(
   host: unknown,
   nowMs = Date.now(),
@@ -1052,6 +1104,8 @@ export function tickSafetyHealthAndAutomation(
   }
 
   const isLockedSnapshot = center.lastSampledLockState ?? false;
+
+  void pollAndDispatchWifi(host, center, nowMs);
 
   if (isLiveSnapshotReadyForTelemetry(host)) {
     const aliased = aliasedHostDevices(host);

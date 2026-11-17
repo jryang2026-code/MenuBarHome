@@ -44,13 +44,14 @@ export type SystemContextEventKind = SystemContextEvent["kind"];
 /**
  * Windows 当前有生产事件来源驱动的自动化触发器集合。
  *
- * 生产链路只派发三类系统上下文事件（`ui/activityStackView.ts` 中 `dispatchSystemContextEvent`
- * 的全部调用点）：锁屏轮询状态翻转派发 `lockChanged`，面板唤醒生命周期派发 `panelWake`，
- * `tickSafetyHealthAndAutomation` 周期派发 `tick`。`dispatchEvent` 里其余事件分支
- * （显示器电源、系统休眠/唤醒、电源/电池、Wi-Fi、摄像头/麦克风、外接显示器、
- * 专注模式、日历）在 Windows 上没有事件源，规则永远等不到触发。
+ * 生产链路在 `ui/activityStackView.ts` 的 `dispatchSystemContextEvent` 调用点派发四类
+ * 系统上下文事件：锁屏轮询状态翻转派发 `lockChanged`，面板唤醒生命周期派发 `panelWake`，
+ * `tickSafetyHealthAndAutomation` 周期派发 `tick`，Wi-Fi 轮询读数变化派发 `wifiChanged`
+ * （SSID 由 `windows/src-tauri/src/wifi.rs` 的 `wifi_current` 命令经 WLAN API 读取）。
+ * `dispatchEvent` 里其余事件分支（显示器电源、系统休眠/唤醒、电源/电池、摄像头/麦克风、
+ * 外接显示器、专注模式、日历）在 Windows 上没有事件源，规则永远等不到触发。
  *
- * 第二阶段接入原生事件采集后，把对应触发器加入本集合并在 `WINDOWS_TRIGGER_SOURCES`
+ * 后续接入更多原生事件采集后，把对应触发器加入本集合并在 `WINDOWS_TRIGGER_SOURCES`
  * 登记其事件来源即可解锁设置界面下拉与规则标识。
  */
 export const WINDOWS_SUPPORTED_TRIGGERS = [
@@ -61,6 +62,8 @@ export const WINDOWS_SUPPORTED_TRIGGERS = [
   "lateNightUsage",
   "scheduledTime",
   "sensorThreshold",
+  "wifiNetworkJoined",
+  "wifiNetworkLeft",
 ] as const satisfies readonly AutomationTrigger[];
 
 export type WindowsSupportedTrigger = (typeof WINDOWS_SUPPORTED_TRIGGERS)[number];
@@ -81,6 +84,8 @@ export const WINDOWS_TRIGGER_SOURCES: Readonly<Record<WindowsSupportedTrigger, r
   lateNightUsage: ["panelWake", "tick"],
   scheduledTime: ["tick"],
   sensorThreshold: ["tick"],
+  wifiNetworkJoined: ["wifiChanged"],
+  wifiNetworkLeft: ["wifiChanged"],
 };
 
 type AutomationPermission = "location" | "focus" | "calendar";
@@ -259,16 +264,97 @@ export function evaluateWiFiCondition(
 }
 
 /**
- * Windows 是否支持按 Wi-Fi 网络过滤规则。引擎快照里的 `wifiSSID` 只会由
- * `wifiChanged` 事件更新，而该事件在 Windows 生产链路中没有派发源，SSID 恒为
- * null，任何 `inAny` / `notIn` 条件都判定为「未联网」而不满足。第二阶段接入
- * Wi-Fi 事件采集后把此标志改为 true，即可解锁设置界面的条件编辑器。
+ * Windows 支持按 Wi-Fi 网络过滤规则。SSID 由 `wifi.rs` 的 `wifi_current` 命令经
+ * WLAN API 读取，前端约每 10 秒轮询一次并在读数变化时派发 `wifiChanged`；锁屏时
+ * 引擎还会抓取锁屏时刻的读数用于延迟 flush（与 macOS `lockTimeWiFi` 语义一致）。
  */
-export const WINDOWS_WIFI_CONDITION_SUPPORTED = false;
+export const WINDOWS_WIFI_CONDITION_SUPPORTED = true;
 
 /** 该 Wi-Fi 条件在 Windows 上是否可被真实评估（`any` 恒可，其余跟随支持标志）。 */
 export function isWiFiConditionSupportedOnWindows(condition: AutomationWiFiCondition): boolean {
   return WINDOWS_WIFI_CONDITION_SUPPORTED || condition.kind === "any";
+}
+
+/**
+ * `wifi_current`（`windows/src-tauri/src/wifi.rs`）对「拿不到 SSID」的三种归因，
+ * 对照 macOS `MacHardwareProbe.currentWiFi()` 的授权语义：「无权限」与「未知」都
+ * 是无法知晓（`isAuthorized = false`），绝不能当成「未连接」，否则会反转排除类
+ * 规则的含义。
+ */
+export type WindowsWifiProbeState = "connected" | "notConnected" | "noPermission" | "unknown";
+
+export interface WindowsWifiProbeResult {
+  readonly state: WindowsWifiProbeState;
+  readonly ssid?: string | null;
+}
+
+/** 引擎视角的一次 Wi-Fi 读数：SSID 与「能否知晓」。 */
+export interface EngineWifiReading {
+  readonly ssid: string | null;
+  readonly isAuthorized: boolean;
+}
+
+export interface WifiPollObservation {
+  readonly state: WindowsWifiProbeState;
+  /** 确定的读数；null 表示本次探针无法知晓，不参与派发。 */
+  readonly reading: EngineWifiReading | null;
+}
+
+/**
+ * 把 `wifi_current` 的返回映射成引擎读数。语义对照 macOS：
+ * - `connected`（有 SSID）→ 已授权且联网；
+ * - `notConnected` → 已授权但未关联任何 WLAN（`no-network`）；
+ * - `noPermission` / `unknown` → 无法知晓（`not-authorized`，一切 Wi-Fi 条件不满足）；
+ * - `connected` 但 SSID 为空（隐藏网络）→ 同样无法知晓。
+ */
+export function wifiPollObservationFromProbe(probe: WindowsWifiProbeResult | null | undefined): WifiPollObservation {
+  if (!probe || typeof probe !== "object") return { state: "unknown", reading: null };
+  switch (probe.state) {
+    case "connected": {
+      const ssid = typeof probe.ssid === "string" ? probe.ssid.trim() : "";
+      return ssid ? { state: "connected", reading: { ssid, isAuthorized: true } } : { state: "unknown", reading: null };
+    }
+    case "notConnected":
+      return { state: "notConnected", reading: { ssid: null, isAuthorized: true } };
+    case "noPermission":
+      return { state: "noPermission", reading: { ssid: null, isAuthorized: false } };
+    // 未知状态值（包括未来新增的枚举）一律按「无法知晓」处理。
+    default:
+      return { state: "unknown", reading: null };
+  }
+}
+
+/** 与上次派发读数对比：读数无法知晓或无变化时不派发，避免制造假「离开网络」转换。 */
+export interface WifiDispatchDecision {
+  readonly reading: EngineWifiReading;
+}
+
+/**
+ * 与上次派发的读数比较；仅在（SSID 或授权状态）发生变化且本次读数可信时返回
+ * 决策，否则返回 null（调用点不得派发）。
+ */
+export function wifiDispatchDecisionForObservation(
+  observation: WifiPollObservation,
+  last: EngineWifiReading | null,
+): WifiDispatchDecision | null {
+  const reading = observation.reading;
+  if (!reading) return null;
+  if (last && last.ssid === reading.ssid && last.isAuthorized === reading.isAuthorized) return null;
+  return { reading };
+}
+
+/** 锁屏时刻抓取的 Wi-Fi 读数，供防抖后的 flush 判定（对照 macOS `WiFiReading`）。 */
+export interface AutomationWifiSnapshot {
+  readonly ssid: string | null;
+  readonly isAuthorized: boolean;
+  readonly capturedAtMs: number;
+}
+
+/** 锁屏快照的可信时长（毫秒），对照 macOS `WiFiReading.maxAge = 120` 秒。 */
+export const AUTOMATION_WIFI_SNAPSHOT_MAX_AGE_MS = 120_000;
+
+export function isAutomationWifiSnapshotFresh(snapshot: AutomationWifiSnapshot, nowMs: number): boolean {
+  return nowMs - snapshot.capturedAtMs <= AUTOMATION_WIFI_SNAPSHOT_MAX_AGE_MS;
 }
 
 const MINUTES_PER_DAY = 24 * 60;
@@ -1067,6 +1153,8 @@ export class AutomationEngine {
   private hasLockBaseline = false;
   private sensorConditionEdge = new Map<string, boolean>();
   private batteryEdgeByRule = new Map<string, boolean>();
+  /** 锁屏瞬间抓取的 Wi-Fi 读数；flush 用完即弃，下一次锁屏重新抓取。 */
+  private lockTimeWifi: AutomationWifiSnapshot | null = null;
 
   constructor(storage: KeyValueStorageLike = defaultSafetyStorage()) {
     this.store = new AutomationRuleStore(storage);
@@ -1082,6 +1170,7 @@ export class AutomationEngine {
     this.hasLockBaseline = false;
     this.sensorConditionEdge.clear();
     this.batteryEdgeByRule.clear();
+    this.lockTimeWifi = null;
   }
 
   public primeLockBaseline(isLocked: boolean): void {
@@ -1130,6 +1219,16 @@ export class AutomationEngine {
         const lidClosed = event.lidClosed ?? this.context.lidClosed;
         const wasLocked = this.context.isLocked;
         this.context = { ...this.context, isLocked: event.isLocked, lidClosed };
+        if (event.isLocked) {
+          // 锁上的瞬间抓取当时的 Wi-Fi 读数（对照 macOS `ingestAway(.screenLocked)`
+          // 抓取 `lockTimeWiFi`）：防抖窗口里网络可能切换，flush 必须按锁屏时刻的
+          // 读数判定，而不是 flush 时刻的读数。
+          this.lockTimeWifi = {
+            ssid: this.context.wifiSSID,
+            isAuthorized: this.context.wifiAuthorized,
+            capturedAtMs: nowMs,
+          };
+        }
         if (!this.hasLockBaseline) {
           this.hasLockBaseline = true;
           break;
@@ -1229,11 +1328,16 @@ export class AutomationEngine {
 
       case "wifiChanged": {
         const prevSSID = this.context.wifiSSID?.trim() || null;
+        const prevAuthorized = this.context.wifiAuthorized;
         const nextSSID = event.ssid?.trim() || null;
         const nextAuth = event.isAuthorized ?? this.context.wifiAuthorized;
         this.context = { ...this.context, wifiSSID: nextSSID, wifiAuthorized: nextAuth };
 
         if (prevSSID === nextSSID) break;
+        // 加入/离开触发器要求两侧读数都可信（对照 macOS `MacContextAutomation` 的
+        // `current.isWiFiAuthorized, previous.isWiFiAuthorized` 门）：一侧「无法知晓」
+        // 时绝不能制造假的网络转换。
+        if (!prevAuthorized || !nextAuth) break;
         if (prevSSID !== null && nextSSID !== prevSSID) {
           for (const rule of rules) {
             if (rule.trigger !== "wifiNetworkLeft") continue;
@@ -1301,10 +1405,18 @@ export class AutomationEngine {
     if (flushed) {
       const trigger = awayOutcomeTrigger(flushed.outcome);
       const lockedAtMs = flushed.lockedAtMs;
+      // #9：时间按锁屏时刻判定，Wi-Fi 也按锁屏时刻的读数判定（对照 macOS
+      // `wifiReadingForDispatch` 优先 `lockTimeWiFi`）。快照超过 120 秒新鲜期
+      // （例如挂起后很久才收到下一条事件）时回退到当前读数，之后快照即作废。
+      const lockWifi =
+        this.lockTimeWifi !== null && isAutomationWifiSnapshotFresh(this.lockTimeWifi, nowMs)
+          ? this.lockTimeWifi
+          : { ssid: this.context.wifiSSID, isAuthorized: this.context.wifiAuthorized, capturedAtMs: nowMs };
+      this.lockTimeWifi = null;
       const candidates = rules.filter(
         (rule) =>
           rule.trigger === trigger
-          && this.passesConditions(rule, lockedAtMs, this.context.wifiSSID, this.context.wifiAuthorized),
+          && this.passesConditions(rule, lockedAtMs, lockWifi.ssid, lockWifi.isAuthorized),
       );
       if (candidates.length > 0 && this.deduper.shouldFire(trigger, lockedAtMs)) {
         confirmedLockAtMs = lockedAtMs;

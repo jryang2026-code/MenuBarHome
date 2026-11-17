@@ -94,6 +94,8 @@ describe("Windows automation trigger gating (source of truth)", () => {
       "screenLocked",
       "screenUnlocked",
       "sensorThreshold",
+      "wifiNetworkJoined",
+      "wifiNetworkLeft",
     ]);
     assert.deepEqual(new Set(WINDOWS_SUPPORTED_TRIGGERS).size, WINDOWS_SUPPORTED_TRIGGERS.length, "no duplicates");
     for (const trigger of WINDOWS_SUPPORTED_TRIGGERS) {
@@ -107,11 +109,11 @@ describe("Windows automation trigger gating (source of truth)", () => {
     }
   });
 
-  it("keeps Wi-Fi condition support explicitly off with an any-only predicate", () => {
-    assert.equal(WINDOWS_WIFI_CONDITION_SUPPORTED, false);
+  it("enables Wi-Fi condition support now that SSID events are wired", () => {
+    assert.equal(WINDOWS_WIFI_CONDITION_SUPPORTED, true);
     assert.equal(isWiFiConditionSupportedOnWindows({ kind: "any" }), true);
-    assert.equal(isWiFiConditionSupportedOnWindows({ kind: "inAny", ssids: ["Home_5G"] }), false);
-    assert.equal(isWiFiConditionSupportedOnWindows({ kind: "notIn", ssids: ["Office"] }), false);
+    assert.equal(isWiFiConditionSupportedOnWindows({ kind: "inAny", ssids: ["Home_5G"] }), true);
+    assert.equal(isWiFiConditionSupportedOnWindows({ kind: "notIn", ssids: ["Office"] }), true);
   });
 
   it("maps every supported trigger to declared source kinds and nothing else", () => {
@@ -125,6 +127,9 @@ describe("Windows automation trigger gating (source of truth)", () => {
       assert.ok(kinds.length > 0, `${trigger} must declare at least one source event kind`);
       assert.deepEqual(new Set(kinds).size, kinds.length, `${trigger} kinds must be unique`);
     }
+    // Wi-Fi 触发器的唯一来源是 wifiChanged，与前端轮询派发点对应。
+    assert.deepEqual(WINDOWS_TRIGGER_SOURCES.wifiNetworkJoined, ["wifiChanged"]);
+    assert.deepEqual(WINDOWS_TRIGGER_SOURCES.wifiNetworkLeft, ["wifiChanged"]);
   });
 
   it("guards that every supported trigger is driven by an event dispatched in production code", () => {
@@ -142,11 +147,11 @@ describe("Windows automation trigger gating (source of truth)", () => {
       }
     }
     dispatchedKinds.delete("");
-    // 当前生产链路只派发这三类事件；第二阶段接入原生事件后，连同本断言与
+    // 当前生产链路只派发这四类事件；后续接入原生事件后，连同本断言与
     // WINDOWS_SUPPORTED_TRIGGERS / WINDOWS_TRIGGER_SOURCES 一并扩展。
     assert.deepEqual(
       [...dispatchedKinds].sort(),
-      ["lockChanged", "panelWake", "tick"],
+      ["lockChanged", "panelWake", "tick", "wifiChanged"],
       "production dispatch sites changed; update WINDOWS_SUPPORTED_TRIGGERS gating together",
     );
 

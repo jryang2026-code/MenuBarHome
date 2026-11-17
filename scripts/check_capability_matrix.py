@@ -201,8 +201,8 @@ CODE_ANCHORS = (
             "symbol": "MacContextAutomation",
         },
         "windows": {
-            "roots": ("windows/src", "windows/src-tauri/src"),
-            "symbol": "MacContextAutomation",
+            "path": "windows/src/core/automationEngine.ts",
+            "symbol": "WINDOWS_SUPPORTED_TRIGGERS",
         },
     },
     {
