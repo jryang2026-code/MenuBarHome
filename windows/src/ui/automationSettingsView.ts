@@ -179,6 +179,33 @@ function uiText(
   return out;
 }
 
+function automationDraftSaveGate(
+  draft: NewRuleDraftState,
+  scenes: readonly HomeScene[],
+  devices: readonly SmartDevice[],
+): { readonly canSave: boolean; readonly wifiInvalid: boolean; readonly timeWindowInvalid: boolean } {
+  const wifiInvalid =
+    draft.wifiKind !== "any" && normalizeWiFiSSIDs(draft.wifiSSIDsText.split(/[,\n，]/)).length === 0;
+  const timeWindowInvalid = draft.timeWindowEnabled && draft.timeWindowStartHour === draft.timeWindowEndHour;
+  const sceneId =
+    draft.selectedSceneId && scenes.some((scene) => scene.id === draft.selectedSceneId)
+      ? draft.selectedSceneId
+      : (scenes[0]?.id ?? "");
+  const sensorDeviceId =
+    draft.sensorDeviceId && devices.some((device) => device.id === draft.sensorDeviceId)
+      ? draft.sensorDeviceId
+      : (devices[0]?.id ?? "");
+  const actionInvalid =
+    (draft.actionKind === "devices" && draft.selectedDeviceIds.size === 0) ||
+    (draft.actionKind === "scene" && sceneId === "");
+  const triggerInvalid = draft.trigger === "sensorThreshold" && sensorDeviceId === "";
+  return {
+    wifiInvalid,
+    timeWindowInvalid,
+    canSave: !wifiInvalid && !actionInvalid && !triggerInvalid && !timeWindowInvalid,
+  };
+}
+
 function createDefaultDraft(): NewRuleDraftState {
   return {
     formOpen: true,
@@ -807,20 +834,12 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
     draft.selectedSceneId && scenes.some((s) => s.id === draft.selectedSceneId)
       ? draft.selectedSceneId
       : (scenes[0]?.id ?? "");
-  const effectiveSensorDeviceId =
-    draft.sensorDeviceId && aliasedDevices.some((d) => d.id === draft.sensorDeviceId)
-      ? draft.sensorDeviceId
-      : (aliasedDevices[0]?.id ?? "");
 
-  const parsedWifiSSIDs = normalizeWiFiSSIDs(draft.wifiSSIDsText.split(/[,\n，]/));
-  const wifiInvalid = draft.wifiKind !== "any" && parsedWifiSSIDs.length === 0;
-  const timeWindowInvalid = draft.timeWindowEnabled && draft.timeWindowStartHour === draft.timeWindowEndHour;
+  const saveGate = automationDraftSaveGate(draft, scenes, aliasedDevices);
+  const wifiInvalid = saveGate.wifiInvalid;
+  const timeWindowInvalid = saveGate.timeWindowInvalid;
   const timeWindowOvernight = draft.timeWindowEnabled && draft.timeWindowStartHour > draft.timeWindowEndHour;
-  const actionInvalid =
-    (draft.actionKind === "devices" && draft.selectedDeviceIds.size === 0) ||
-    (draft.actionKind === "scene" && !effectiveSceneId);
-  const triggerInvalid = draft.trigger === "sensorThreshold" && !effectiveSensorDeviceId;
-  const canAddRule = !wifiInvalid && !actionInvalid && !triggerInvalid && !timeWindowInvalid;
+  const canAddRule = saveGate.canSave;
   const timeHourOptions = (selected: number) =>
     Array.from({ length: 24 }, (_, hour) => `<option value="${hour}" ${hour === selected ? "selected" : ""}>${pad2(hour)}:00</option>`).join("");
   const timeWindowHint = !draft.timeWindowEnabled
@@ -1286,12 +1305,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
       const addBtn = host.root.querySelector<HTMLButtonElement>("#btn-add-auto-rule");
       const hintEl = host.root.querySelector<HTMLElement>("#settings-auto-wifi-hint");
       if (hintEl) hintEl.hidden = valid;
-      if (addBtn) {
-        const actionInvalid =
-          (draft.actionKind === "devices" && draft.selectedDeviceIds.size === 0) ||
-          (draft.actionKind === "scene" && effectiveScenes.length === 0);
-        addBtn.disabled = !valid || actionInvalid;
-      }
+      if (addBtn) addBtn.disabled = !automationDraftSaveGate(draft, effectiveScenes, aliasedDevices).canSave;
     } else if (target.id === "settings-auto-battery-threshold") {
       const parsed = Number(target.value);
       if (Number.isFinite(parsed)) draft.batteryThreshold = Math.min(100, Math.max(1, Math.trunc(parsed)));
@@ -1394,6 +1408,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
     }
 
     if (btn.id === "btn-add-auto-rule") {
+      if (!automationDraftSaveGate(draft, effectiveScenes, aliasedDevices).canSave) return;
       const action = buildActionFromDraft(draft, effectiveScenes);
       if (!action) return;
       let wifiCond: AutomationWiFiCondition = { kind: "any" };
@@ -1402,7 +1417,6 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
         if (ssids.length === 0) return;
         wifiCond = { kind: draft.wifiKind, ssids };
       }
-      if (draft.timeWindowEnabled && draft.timeWindowStartHour === draft.timeWindowEndHour) return;
       const sensorCond = buildSensorConditionFromDraft(draft, aliasedDevices);
       if (draft.trigger === "sensorThreshold" && !sensorCond) return;
       const scheduledTime =
