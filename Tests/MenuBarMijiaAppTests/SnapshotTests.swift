@@ -1942,6 +1942,10 @@ struct SnapshotTests {
         })
         #expect(prompt.hint != nil)
 
+        // NSAlert's nib loads this icon while AppKit is still decoding the nib.
+        // On macos-26-intel that synchronous IconServices XPC never replies.
+        // Resolve it on this thread first. The compare runs deadlocked here.
+        _ = NSWorkspace.shared.icon(forFile: "/")
         let alert = ManualControlConfirmationPresenter.makeAlert(prompt)
         alert.window.appearance = NSAppearance(named: .aqua)
         alert.layout()
