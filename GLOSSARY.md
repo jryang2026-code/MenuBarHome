@@ -22,8 +22,8 @@ _Avoid_: Data mapping（数据映射）、Parsing（解析）
 驱动 `HomeStore` 的底层数据源（macOS 支持 HA `HAWebSocketProvider` 与米家云端 `MiCloudProvider` 单源或双源自动合并及 `DemoHomeProvider`；Windows 为互斥单选）。
 _Avoid_: Server type（服务器类型）、Mode（模式）
 
-**HomeBackendDescriptor（后端描述，ADR-0020 规划 / 现由 `HomeBackend` 与 `HomeStore+Backend` 承载）**：
-ADR-0020 规划为每个 `HomeBackend` 枚举值建立的集中描述表条目（显示名、是否已配置、连接源标识、provider 工厂）；当前代码由 `HomeBackend`（`HomeProvider.swift`）与 `HomeStore+Backend.swift`（`hasHASource` / `hasMiSource` / `makeLiveProvider`）穷尽 `switch` 承载，不是运行时插件扩展点。
+**HomeBackendDescriptor（后端描述）**：
+`Sources/MijiaCore/HomeBackendDescriptor.swift` 为每个 `HomeBackend` 枚举值建立的集中描述表条目（`HomeBackend.descriptor`，含显示名、是否已配置、主/全量连接源标识、provider 工厂）与唯一生效后端计算（`HomeBackendDescriptor.activeBackends` / `HomeStore.activeBackends`，ADR-0020）；由穷尽 `switch` 承载，不是运行时插件扩展点。
 _Avoid_: Plugin（插件）、Registry（注册表）
 
 **RaycastSnapshot（伴生快照）**：

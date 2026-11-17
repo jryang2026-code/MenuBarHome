@@ -10,11 +10,7 @@ public enum HomeBackend: String, CaseIterable, Identifiable, Sendable {
     public var id: String { rawValue }
 
     public var title: String {
-        switch self {
-        case .homeAssistant: return "Home Assistant"
-        case .xiaomiCloud: return L10n.tr("米家云端直连", "Xiaomi Cloud Direct")
-        case .demo: return L10n.tr("演示模式", "Demo Mode")
-        }
+        descriptor.title
     }
 }
 
