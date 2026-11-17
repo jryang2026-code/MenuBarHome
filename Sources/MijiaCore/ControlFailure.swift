@@ -13,6 +13,8 @@ enum ControlFailure: Sendable {
     case tokenRejected
     case deviceRejected(code: Int)
     case network
+    /// A hazardous cover drag's direction changed while it waited, so its answer no longer covers it.
+    case coverNeedsConfirmation
 
     /// MIoT per-item code for "device offline". Other negative per-item codes are device/gateway
     /// errors, which are rejections rather than a lost connection.
@@ -36,7 +38,8 @@ enum ControlFailure: Sendable {
     private static func classify(_ error: Error, isDeviceOnline: Bool) -> ControlFailure? {
         let failure = classify(error)
         switch failure {
-        case .some(.sessionExpired), .some(.signedOut), .some(.tokenRejected), .some(.rateLimited):
+        case .some(.sessionExpired), .some(.signedOut), .some(.tokenRejected), .some(.rateLimited),
+             .some(.coverNeedsConfirmation):
             return failure
         default:
             // Errors raised before anything reached the device say nothing about whether it is online.
@@ -57,6 +60,7 @@ enum ControlFailure: Sendable {
 
     private static func classify(_ error: Error) -> ControlFailure? {
         if isCancellation(error) { return nil }
+        if error is ManualWriteNeedsCoverConfirmation { return .coverNeedsConfirmation }
         if let cloud = error as? MiCloudError {
             switch cloud {
             case .notLoggedIn:
@@ -124,6 +128,11 @@ enum ControlFailure: Sendable {
             )
         case .network:
             reason = L10n.tr("网络异常，检查网络后重试", "network error, check the connection and try again")
+        case .coverNeedsConfirmation:
+            reason = L10n.tr(
+                "设备位置已变化，这次调节需要重新确认",
+                "the device moved, so confirm this adjustment again"
+            )
         }
         return L10n.format(
             "%@：%@",

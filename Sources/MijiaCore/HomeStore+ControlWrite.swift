@@ -74,6 +74,28 @@ struct MiSessionWriteBlocked: Error {}
 /// says the adjustment did not land.
 struct ManualWriteSuperseded: Error {}
 
+/// A hazardous cover drag whose direction changed while it waited in its debounce, so the answer
+/// the user gave no longer covers the command. Nothing was sent and the row falls back to the
+/// device's report; the toast asks for a fresh drag.
+struct ManualWriteNeedsCoverConfirmation: Error {}
+
+/// What a debounced patch may do once its wait is over: send, or why it must not.
+private enum ManualWriteSendDecision {
+    case send
+    /// A newer write invalidated the session or its patch.
+    case superseded
+    /// A hazardous cover direction no longer matches the answer the drag carried.
+    case needsCoverConfirmation
+}
+
+/// What a debounced cover position patch will command and the hazard answer that covers it.
+struct CoverDragPlan: Sendable {
+    /// The value the command sends, before display snapping.
+    let target: Int
+    /// The direction the user approved (`true` opens), or nil when the drag needed no prompt.
+    let approvedOpens: Bool?
+}
+
 extension HomeStore {
     /// True when the LAN client answers this command, so an expired Mi session cannot block it.
     func lgClientServes(_ command: DeviceCommand) -> Bool {
@@ -519,6 +541,20 @@ extension HomeStore {
         return composed
     }
 
+    /// The final gate for a hazardous cover drag: the command's direction from `start` must be one
+    /// the drag's answer covers. A direction the hazard table treats as safe sends without a prompt.
+    /// Fails closed when the row is not a cover, since no cover plan should reach another kind.
+    static func coverDragMaySend(_ plan: CoverDragPlan, from start: SmartDevice) -> Bool {
+        guard case .cover(let spec) = start.kind else { return false }
+        let opens = coverDragDirection(
+            from: spec.reportedPositionPercent ?? spec.positionPercent,
+            to: plan.target
+        )
+        guard let opens else { return true }
+        guard ManualControlPolicy.requiresConfirmation(.power(opens), for: start) else { return true }
+        return plan.approvedOpens == opens
+    }
+
     /// The device's own report confirms the travel a sent cover command started (#298), so the
     /// report owns the row. Only commands that already left the Mac can be covered by it: a drag
     /// still waiting in its debounce has not been sent, and dropping its session made the send
@@ -528,6 +564,10 @@ extension HomeStore {
     /// Re-bases the surviving session on the report and keeps its cover-position lock, so the card
     /// shows the pending drag until its command is sent and reported back. The patch recomputes its
     /// travel direction from the row it lands on, so the re-based target is confirmed the right way.
+    /// A hazardous patch whose direction the report flips is dropped instead of sent: the answer
+    /// the user gave covered the old direction, and asking again from a snapshot callback would
+    /// open a modal the user did not touch the slider for.
+    ///
     /// Returns false when no pending patch remains; the caller then lets the report take the row
     /// over as before.
     func adoptCoverTravelReport(deviceId: String, incoming: SmartDevice) -> Bool {
@@ -537,6 +577,21 @@ extension HomeStore {
             return false
         }
         session.patches.removeAll { $0.phase != .debouncing }
+        var rejected: [ManualWritePatch] = []
+        session.patches.removeAll { patch in
+            guard let plan = patch.coverDrag,
+                  !Self.coverDragMaySend(plan, from: incoming) else { return false }
+            rejected.append(patch)
+            return true
+        }
+        if !rejected.isEmpty {
+            cancelDebouncedWrites(
+                for: deviceId,
+                keys: Set(rejected.map(\.slotKey)),
+                recomputeRow: false
+            )
+            showControlFailure(ManualWriteNeedsCoverConfirmation(), device: incoming, adjustment: true)
+        }
         guard !session.patches.isEmpty else {
             manualWriteSessions.removeValue(forKey: deviceId)
             return false
@@ -547,6 +602,12 @@ extension HomeStore {
             field != .coverPosition
         }
         manualWriteSessions[deviceId] = session
+        syncManualSessionFieldLocks(
+            for: deviceId,
+            session: session,
+            now: optimisticNow(),
+            continuousNow: ContinuousClock.now
+        )
         // The pending drag starts from the reported position now, so a report parked there is the
         // stale pre-command snapshot for the command it is about to send.
         if case .cover(let spec) = incoming.kind,
@@ -672,11 +733,17 @@ extension HomeStore {
         deviceId: String,
         token: UUID,
         lock: Duration?
-    ) -> Bool {
+    ) -> ManualWriteSendDecision {
         guard var session = manualWriteSessions[deviceId],
               optimisticLockRevision[deviceId] == session.revision,
               let idx = session.patches.firstIndex(where: { $0.token == token }) else {
-            return false
+            return .superseded
+        }
+        // Fail closed: the report that lands while the drag waits can move its start, so the
+        // direction the command travels now must still be one this drag was allowed to take.
+        if let plan = session.patches[idx].coverDrag,
+           !Self.coverDragMaySend(plan, from: session.base) {
+            return .needsCoverConfirmation
         }
         let nowDate = optimisticNow()
         let continuousNow = ContinuousClock.now
@@ -687,7 +754,7 @@ extension HomeStore {
         }
         manualWriteSessions[deviceId] = session
         syncManualSessionFieldLocks(for: deviceId, session: session, now: nowDate, continuousNow: continuousNow)
-        return true
+        return .send
     }
 
     private func markManualSessionPatchSucceeded(deviceId: String, token: UUID) {
@@ -951,6 +1018,7 @@ extension HomeStore {
         lock: Duration?,
         debounceKey: String? = nil,
         priorCoverOrigin: Int? = nil,
+        coverDrag: CoverDragPlan? = nil,
         powersOffDevice: Bool = false,
         habitIntents: [DeviceIntent] = [],
         mutate: (@Sendable (inout SmartDevice) -> Void)? = nil
@@ -1043,6 +1111,7 @@ extension HomeStore {
             phase: phase,
             fields: patchFields,
             lockEntry: initialLockEntry,
+            coverDrag: coverDrag,
             apply: applyPatch
         ))
 
@@ -1093,10 +1162,12 @@ extension HomeStore {
                   self.controlContextID == context,
                   let state = self.debouncedWrites[debounceKey],
                   state.token == token else { return }
-            guard self.updateManualSessionPatchForSend(deviceId: deviceId, token: token, lock: lock) else {
-                // A newer write took the row over while this drag waited, so the session can no
-                // longer send it. Dropping it in silence left the card showing a position the
-                // device was never told: put that back where this drag still owns it, and say so.
+            let decision = self.updateManualSessionPatchForSend(deviceId: deviceId, token: token, lock: lock)
+            guard case .send = decision else {
+                // The drag cannot go out: a newer write took the row over, or a device report moved
+                // its start into a hazardous direction the user never approved. Dropping it in
+                // silence left the card showing a position the device was never told, so put that
+                // back where this drag still owns it and say why.
                 self.abandonManualSessionPatch(
                     deviceId: deviceId,
                     token: token,
@@ -1104,7 +1175,15 @@ extension HomeStore {
                     fields: state.fields,
                     fallback: state.origin
                 )
-                self.showControlFailure(ManualWriteSuperseded(), device: sessionBase, adjustment: true)
+                if case .needsCoverConfirmation = decision {
+                    self.showControlFailure(
+                        ManualWriteNeedsCoverConfirmation(),
+                        device: sessionBase,
+                        adjustment: true
+                    )
+                } else {
+                    self.showControlFailure(ManualWriteSuperseded(), device: sessionBase, adjustment: true)
+                }
                 return
             }
             do {

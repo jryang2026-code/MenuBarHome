@@ -839,14 +839,16 @@ extension HomeStore {
         } else {
             nil
         }
-        let startPosition = (baselineCover ?? s).positionPercent
+        let startPosition = s.reportedPositionPercent ?? s.positionPercent
         let previousPosition = startPosition ?? displayed
         // Asked before any optimistic state moves, so a refusal leaves the slider on the position
         // the device really reports. The direction comes from the value the command sends, not the
-        // snapped one the row shows: 0 → 1 % displays as a closed door but still opens it. One
-        // answer covers the same-direction ticks of a drag still being accumulated; a tick the other
-        // way, or one after the slot went out, is a new decision and asks on its own.
-        let direction = Self.coverDragDirection(from: s.positionPercent, to: clamped)
+        // snapped one the row shows: 0 → 1 % displays as a closed door but still opens it. It also
+        // starts from the motor's reported position, not the card's commanded target: a moving
+        // cover shows 100% while the motor is still at 0%, and 0 → 20% is the hazardous opening.
+        // One answer covers the same-direction ticks of a drag still being accumulated; a tick the
+        // other way, or one after the slot went out, is a new decision and asks on its own.
+        let direction = Self.coverDragDirection(from: startPosition, to: clamped)
         let confirmedDrag = direction.map {
             continuesConfirmedCoverDrag(key, deviceId: deviceId, opens: $0)
         } ?? false
@@ -856,6 +858,10 @@ extension HomeStore {
             guard allowManualControl(.power(direction), for: previous) else { return }
             answeredPrompt = true
         }
+        let coverDrag = CoverDragPlan(
+            target: clamped,
+            approvedOpens: (answeredPrompt || confirmedDrag) ? direction : nil
+        )
         let origin = activeCoverOrigin(for: deviceId, fallback: previousPosition) ?? previousPosition
         if let baselineCover {
             s.motion = baselineCover.motion
@@ -882,6 +888,7 @@ extension HomeStore {
             lock: s.isMoving ? coverOptimisticLockDuration : nil,
             debounceKey: key,
             priorCoverOrigin: priorCoverOrigin,
+            coverDrag: coverDrag,
             mutate: { device in
                 guard case .cover(var spec) = device.kind else { return }
                 // The direction is relative to where the motor actually is (the reported

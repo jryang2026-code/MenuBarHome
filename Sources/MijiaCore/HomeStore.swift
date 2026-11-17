@@ -769,6 +769,8 @@ public final class HomeStore {
         var phase: Phase
         let fields: Set<OptimisticField>
         var lockEntry: OptimisticLockEntry?
+        /// For a cover position write: what it commands and the hazard answer that covers it.
+        var coverDrag: CoverDragPlan?
         let apply: @Sendable (inout SmartDevice) -> Void
     }
     struct ManualWriteSession {
