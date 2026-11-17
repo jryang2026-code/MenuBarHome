@@ -217,6 +217,88 @@ struct FacetUndoTests {
         #expect(await provider.executedCommands == [command])
     }
 
+    /// A low-risk row on the same heater, so 更多设置 has one restore that never asks.
+    private func autoOffFacet(entityId: String) -> FacetControl {
+        FacetControl(
+            id: "4.1", kind: .toggle, name: "auto-off", title: "无人自动关机", serviceName: "setting",
+            value: .bool(false), isWritable: true, writesByDefault: true, isHighValue: true,
+            target: .property(entityId: entityId, piid: 4)
+        )
+    }
+
+    private func offerUndo(_ store: HomeStore, commands: [DeviceCommand]) {
+        store.scheduleUndoBanner(
+            title: "Updated settings", restoreCommands: commands, previousDevices: store.devices,
+            deviceCount: 1
+        )
+        store.pauseUndoBannerCountdown()
+    }
+
+    @Test("A declined restore takes the same device's earlier approval with it")
+    func declinedRestoreWithdrawsSameDeviceApproval() async throws {
+        let device = heater("heater", entityId: "miot:heater:2")
+        let autoOff = DeviceCommand.setMiotProperty(entityId: "miot:heater:4", piid: 4, value: .bool(true))
+        let heating = DeviceCommand.setMiotProperty(entityId: "miot:heater:3", piid: 1, value: .bool(true))
+        let facets = [device.id: [
+            autoOffFacet(entityId: "miot:heater:4"),
+            auxiliarySwitch(entityId: "miot:heater:3", current: .bool(false)),
+        ]]
+        let (store, provider) = try await makeStore(devices: [device], facets: facets)
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return false
+        }
+
+        // The low-risk row is approved on its own; the heating restore on the same device is refused.
+        offerUndo(store, commands: [autoOff, heating])
+        #expect(store.undoTurnAllOff() == nil)
+        #expect(prompts == 1)
+        #expect(store.undoBanner?.restoreCommands == [autoOff, heating], "a refused undo stays retryable")
+        #expect(await provider.executedCommands.isEmpty)
+
+        let (voiceStore, voiceProvider) = try await makeStore(devices: [device], facets: facets)
+        var voicePrompts = 0
+        voiceStore.manualControlConfirmationHandler = { _ in
+            voicePrompts += 1
+            return false
+        }
+        voiceStore.lastAssistantUndo = (
+            reply: "Updated settings", restore: [autoOff, heating], previous: voiceStore.devices,
+            at: Date(), habitReceipt: nil
+        )
+        _ = await voiceStore.runAssistantCommand("撤销")
+        #expect(voicePrompts == 1)
+        #expect(voiceStore.lastAssistantUndo?.restore == [autoOff, heating], "voice undo stays retryable")
+        #expect(await voiceProvider.executedCommands.isEmpty)
+    }
+
+    @Test("A refused device does not stop another approved device from undoing")
+    func refusedDeviceDoesNotBlockAnotherDevice() async throws {
+        let hot = heater("heater", entityId: "miot:heater:2")
+        let lamp = light("light", entityId: "miot:light:2")
+        let heating = DeviceCommand.setMiotProperty(entityId: "miot:heater:3", piid: 1, value: .bool(true))
+        let lampMode = DeviceCommand.setMiotProperty(entityId: "miot:light:3", piid: 2, value: .number(0))
+        let (store, provider) = try await makeStore(
+            devices: [hot, lamp],
+            facets: [hot.id: [auxiliarySwitch(entityId: "miot:heater:3", current: .bool(false))],
+                     lamp.id: [facet(entityId: "miot:light:3")]]
+        )
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return false
+        }
+
+        offerUndo(store, commands: [heating, lampMode])
+        let task = try #require(store.undoTurnAllOff())
+        #expect(prompts == 1, "only the heater heats again; the lamp's mode is low risk")
+        await task.value
+        #expect(await provider.executedCommands == [lampMode])
+        #expect(store.deviceFacets[lamp.id]?.first?.value == .number(0))
+        #expect(store.deviceFacets[hot.id]?.first?.value == .bool(false), "the refused device never shows")
+    }
+
     @Test("A de-escalating facet undo stays direct")
     func deescalatingFacetUndoIsDirect() async throws {
         let device = heater("heater", entityId: "miot:heater:2")

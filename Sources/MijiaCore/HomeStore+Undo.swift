@@ -893,19 +893,20 @@ extension HomeStore {
         previousDevices: [SmartDevice] = [],
         excludingDeviceIds: Set<String> = []
     ) -> UndoConfirmationFilterResult {
+        var approvedDeviceIds: Set<String> = []
         var declinedDeviceIds: Set<String> = []
         var checkedHighRiskDeviceIds: Set<String> = []
-        var hasApprovedTarget = false
 
         /// One prompt per device: whichever restore speaks for that device first decides, and a
-        /// refusal keeps all of its later commands unsent.
+        /// refusal keeps all of its later commands unsent. An approval is recorded per device, so a
+        /// refusal on the same device later takes that device's approval back with it.
         func settle(_ device: SmartDevice, requiresConfirmation: Bool, ask: () -> Bool) {
             guard requiresConfirmation else {
-                hasApprovedTarget = true
+                approvedDeviceIds.insert(device.id)
                 return
             }
             guard checkedHighRiskDeviceIds.insert(device.id).inserted else { return }
-            if ask() { hasApprovedTarget = true } else { declinedDeviceIds.insert(device.id) }
+            if ask() { approvedDeviceIds.insert(device.id) } else { declinedDeviceIds.insert(device.id) }
         }
 
         for command in commands {
@@ -961,9 +962,14 @@ extension HomeStore {
                 allowManualControl(.power(true), for: device)
             }
         }
+        // A device approved by an earlier restore is not approved for this undo once a later restore
+        // on it is refused: its commands are excluded, and if no other device is left there is
+        // nothing to send. Aborting keeps the banner and the voice entry retryable instead of
+        // clearing them and reporting "the device state changed".
+        let abortUndo = !declinedDeviceIds.isEmpty && approvedDeviceIds.subtracting(declinedDeviceIds).isEmpty
         return UndoConfirmationFilterResult(
             excludedDeviceIds: excludingDeviceIds.union(declinedDeviceIds),
-            abortUndo: !declinedDeviceIds.isEmpty && !hasApprovedTarget
+            abortUndo: abortUndo
         )
     }
 
