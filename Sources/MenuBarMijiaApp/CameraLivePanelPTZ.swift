@@ -401,7 +401,9 @@ extension CameraLivePanelController {
         notice: String?,
         ready: Bool,
         client: (any CameraPTZControlling)? = nil,
-        hasFrame: Bool = true
+        hasFrame: Bool = true,
+        isLoading: Bool = false,
+        errorText: String? = nil
     ) {
         ptzBeginAttemptID = nil
         ptzBeginTask = nil
@@ -424,6 +426,9 @@ extension CameraLivePanelController {
         activeDeviceId = deviceId
         streamSource = stream
         hasLiveVideoFrame = hasFrame && stream != nil
+        snapshotImage = nil
+        isLoadingStream = isLoading
+        errorMessage = errorText
         ptzBinding = binding
         ptzClientReady = ready
         ptzNotice = notice

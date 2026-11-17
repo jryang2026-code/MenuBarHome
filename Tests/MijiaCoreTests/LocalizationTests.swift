@@ -89,6 +89,30 @@ struct LocalizationTests {
         }
     }
 
+    @Test("Camera toolbar labels ship in Traditional Chinese, not the Simplified fallback")
+    func cameraToolbarLabelsShipInTraditionalChinese() {
+        let tables = Self.shippedTablesDirectory
+        L10n.$overrideTranslationDirectory.withValue(tables) {
+            L10n.$overrideLanguage.withValue(.zhHant) {
+                #expect(L10n.tr("置顶小窗", "Pin window") == "置頂小窗")
+                #expect(L10n.tr("取消置顶", "Unpin") == "取消置頂")
+                #expect(L10n.tr("旋转画面", "Rotate picture") == "旋轉畫面")
+                #expect(L10n.tr("仅画面", "Video only") == "僅畫面")
+                #expect(L10n.tr("开启声音", "Unmute audio") == "開啟聲音")
+                #expect(L10n.tr("关闭声音", "Mute audio") == "關閉聲音")
+                #expect(L10n.tr("最大化画面窗口", "Maximize camera window") == "最大化畫面視窗")
+                #expect(L10n.tr("恢复窗口大小", "Restore window size") == "恢復視窗大小")
+                #expect(L10n.tr("关闭摄像头小窗", "Close camera window") == "關閉攝影機小窗")
+                #expect(L10n.tr("画面操作", "Picture controls") == "畫面操作")
+            }
+            L10n.$overrideLanguage.withValue(.en) {
+                #expect(L10n.tr("置顶小窗", "Pin window") == "Pin window")
+                #expect(L10n.tr("取消置顶", "Unpin") == "Unpin")
+                #expect(L10n.tr("旋转画面", "Rotate picture") == "Rotate picture")
+            }
+        }
+    }
+
     @Test("Shipped tables are found and listed without Swift cases")
     func shippedTablesAreDiscovered() throws {
         let dir = Self.shippedTablesDirectory

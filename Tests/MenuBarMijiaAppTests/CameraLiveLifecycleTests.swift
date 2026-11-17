@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import MijiaCore
 @testable import MenuBarMijiaApp
@@ -538,6 +539,119 @@ struct CameraLiveLifecycleTests {
         await hungProvider.releaseHungStop()
         await controller.terminationTask?.value
         #expect(completionCount == 1)
+    }
+
+    @Test("Camera toolbar icon buttons expose localized accessibility labels")
+    func cameraToolbarIconButtonsExposeAccessibilityLabels() throws {
+        let suiteName = "MenuBarMijiaTests.CameraA11y.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let camera = Self.makeCameraDevice(id: "cam-a11y")
+        let store = HomeStore(provider: MockCameraLifecycleProvider(), defaultsSuiteName: suiteName)
+        store.devices = [camera]
+        let previewURL = try #require(URL(string: "http://127.0.0.1:9/camera"))
+        let controller = CameraLivePanelController()
+        controller.presentsActively = false
+        controller.isExpandedSize = false
+        controller.configurePTZPreview(
+            store: store,
+            deviceId: camera.id,
+            binding: nil,
+            stream: .mjpeg(previewURL),
+            notice: nil,
+            ready: false,
+            hasFrame: false
+        )
+        defer {
+            controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false)
+        }
+
+        let compact = CGSize(
+            width: CameraLivePanelController.compactSize.width,
+            height: CameraLivePanelController.compactSize.height
+        )
+        let languages: [(AppLanguage, [String], String, String, String, String)] = [
+            (.zhHans, ["仅画面", "旋转画面", "最大化画面窗口", "关闭摄像头小窗", "画面操作"], "取消置顶", "置顶小窗", "开启声音", "关闭声音"),
+            (.zhHant, ["僅畫面", "旋轉畫面", "最大化畫面視窗", "關閉攝影機小窗", "畫面操作"], "取消置頂", "置頂小窗", "開啟聲音", "關閉聲音"),
+            (.en, ["Video only", "Rotate picture", "Maximize camera window", "Close camera window", "Picture controls"], "Unpin", "Pin window", "Unmute audio", "Mute audio"),
+        ]
+        for (language, shared, pinned, unpinned, unmute, mute) in languages {
+            controller.isPinnedOnTop = true
+            let pinnedLabels = L10n.$overrideLanguage.withValue(language) {
+                self.accessibilityLabels(
+                    of: CameraLivePanelView(controller: controller, store: store),
+                    size: compact
+                )
+            }
+            for text in shared + [pinned] {
+                #expect(pinnedLabels.contains(text), "\(language.rawValue) missing \(text); saw \(pinnedLabels)")
+            }
+
+            controller.isPinnedOnTop = false
+            let unpinnedLabels = L10n.$overrideLanguage.withValue(language) {
+                self.accessibilityLabels(
+                    of: CameraLivePanelView(controller: controller, store: store),
+                    size: compact
+                )
+            }
+            #expect(unpinnedLabels.contains(unpinned), "\(language.rawValue) missing \(unpinned); saw \(unpinnedLabels)")
+
+            let unmuteLabels = L10n.$overrideLanguage.withValue(language) {
+                self.accessibilityLabels(
+                    of: CameraLiveAudioStatusView(status: .audio(isMuted: true)) {},
+                    size: CGSize(width: 44, height: 44)
+                )
+            }
+            #expect(unmuteLabels.contains(unmute), "\(language.rawValue) missing \(unmute); saw \(unmuteLabels)")
+
+            let muteLabels = L10n.$overrideLanguage.withValue(language) {
+                self.accessibilityLabels(
+                    of: CameraLiveAudioStatusView(status: .audio(isMuted: false)) {},
+                    size: CGSize(width: 44, height: 44)
+                )
+            }
+            #expect(muteLabels.contains(mute), "\(language.rawValue) missing \(mute); saw \(muteLabels)")
+        }
+    }
+
+    private func accessibilityLabels<V: View>(of view: V, size: CGSize) -> [String] {
+        _ = NSApplication.shared
+        let hosting = NSHostingView(rootView: view)
+        hosting.frame = NSRect(origin: .zero, size: size)
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentView = hosting
+        window.layoutIfNeeded()
+        hosting.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        let labels = Self.collectAccessibilityLabels(from: hosting)
+        window.contentView = nil
+        window.orderOut(nil)
+        return labels
+    }
+
+    private static func collectAccessibilityLabels(from root: NSObject) -> [String] {
+        var labels: [String] = []
+        var seen = Set<ObjectIdentifier>()
+        func walk(_ object: NSObject) {
+            guard seen.insert(ObjectIdentifier(object)).inserted else { return }
+            if let raw = object.accessibilityLabel() ?? object.accessibilityTitle() {
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    labels.append(trimmed)
+                }
+            }
+            for case let child as NSObject in object.accessibilityChildren() ?? [] {
+                walk(child)
+            }
+        }
+        walk(root)
+        return labels
     }
 }
 

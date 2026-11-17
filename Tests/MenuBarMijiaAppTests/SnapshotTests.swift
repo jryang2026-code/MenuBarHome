@@ -1793,6 +1793,68 @@ struct SnapshotTests {
         )
     }
 
+    @Test("Sleep, connecting, P2P, MJPEG, snapshot wait, and error recovery each have a snapshot")
+    func cameraViewportContentSnapshots() async throws {
+        let previewURL = try #require(URL(string: "http://127.0.0.1:9/camera"))
+        let fixture = try await SnapshotFixture(includeCamera: true)
+        defer { fixture.restore() }
+        let camera = try #require(fixture.store.devices.first { device in
+            if case .camera = device.kind { return true } else { return false }
+        })
+        let size = CGSize(
+            width: CameraLivePanelController.expandedSize.width,
+            height: CameraLivePanelController.expandedSize.height
+        )
+        let disconnected = L10n.$overrideLanguage.withValue(.zhHans) {
+            L10n.tr(
+                "实时画面连接中断，请检查摄像机与电脑是否在同一局域网或点击重试",
+                "Live stream disconnected. Check that the camera and Mac are on the same LAN, or click Retry"
+            )
+        }
+        let cases: [(name: String, isOn: Bool, stream: CameraStreamSource?, hasFrame: Bool, isLoading: Bool, errorText: String?)] = [
+            ("sleeping", false, nil, false, false, nil),
+            ("connecting", true, nil, false, true, nil),
+            ("p2p", true, .liveMP4(previewURL, mjpegFallback: nil, ptz: nil), false, false, nil),
+            ("mjpeg", true, .mjpeg(previewURL), false, false, nil),
+            ("snapshot-waiting", true, .snapshot(previewURL), false, false, nil),
+            ("error", true, nil, false, false, disconnected),
+        ]
+        for item in cases {
+            fixture.store.devices = fixture.store.devices.map { device in
+                guard device.id == camera.id, case .camera(var spec) = device.kind else { return device }
+                var updated = device
+                spec.isOn = item.isOn
+                updated.kind = .camera(spec)
+                return updated
+            }
+            let controller = CameraLivePanelController()
+            controller.presentsActively = false
+            controller.isExpandedSize = true
+            controller.configurePTZPreview(
+                store: fixture.store,
+                deviceId: camera.id,
+                binding: nil,
+                stream: item.stream,
+                notice: nil,
+                ready: false,
+                hasFrame: item.hasFrame,
+                isLoading: item.isLoading,
+                errorText: item.errorText
+            )
+            defer {
+                controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false)
+            }
+            try L10n.$overrideLanguage.withValue(.zhHans) {
+                assertRendered(
+                    snapshotReady(CameraLivePanelView(controller: controller, store: fixture.store), scheme: .dark),
+                    size: size,
+                    named: "camera-viewport-\(item.name)-dark",
+                    scheme: .dark
+                )
+            }
+        }
+    }
+
     // MARK: - Theme coverage
 
     /// The panel root for one theme. Classic and liquid glass keep separate view trees; this is the
