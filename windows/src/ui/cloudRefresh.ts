@@ -267,13 +267,14 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         });
       }
       clearXiaomiRateLimitBackoff(host);
-      host.miSessionExpired = false;
       // Only drop this session's record: a newer rejection another window stored for a different
-      // token/account must survive.
+      // token/account must survive. Clearing it stays correct even if the snapshot turns out stale,
+      // because this session did reach the cloud.
       await clearPersistedMiSessionExpiredIfMatches(session);
       // The await above is a suspension point; the user may have signed out, switched accounts or
-      // changed homes while it ran, so re-check before committing the snapshot.
+      // changed homes while it ran, so re-check before touching this host's flags or snapshot.
       if (cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) return;
+      host.miSessionExpired = false;
       host.markCloudValuesFresh();
       host.groupOwnerByMemberDid = memberGroupOwners(membersByGroup as Map<string, string[]>);
       const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
