@@ -42,7 +42,6 @@ import {
 import {
   clearAccountRateLimitBackoff,
   MI_ACCOUNTS_INDEX_STORAGE_KEY,
-  hasPendingMiAccountSignOut,
   readAccountIndex,
 } from "../core/miAccountsStore.js";
 import { clearPersistedMiSessionExpired } from "../core/pollingPolicy.js";
@@ -109,7 +108,7 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
           // Keep pendingSignOut flag so the user is not auto-signed back in and can still retry.
         }
       }
-      const effectiveCredentials = pendingSignOut || hasPendingMiAccountSignOut()
+      const effectiveCredentials = pendingSignOut
         ? { ...credentials, miSession: null }
         : credentials;
       if (!hasCredentials(effectiveCredentials)) {

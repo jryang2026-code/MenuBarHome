@@ -3,7 +3,7 @@ import { MI_CLOUD_REGIONS, MiAccountLogin, maskedMiUserId, miCloudRegionLabel, n
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { CredentialVault, credentialsFromSettings, secureStoreDelete, sessionWithoutPassToken } from "../core/secureStore.js";
-import { MiAccountScope, MiAccountsStore, formatAccountTokenNotice, getAccountTokenStatus, hasCorruptMiAccountIndex, hasPendingMiAccountIndexRecovery, hasSecondaryMiAccountsInIndex, makeMiAccount, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
+import { MiAccountScope, MiAccountsStore, formatAccountTokenNotice, getAccountTokenStatus, hasCorruptMiAccountIndex, hasSecondaryMiAccountsInIndex, makeMiAccount, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
 import { DiagnosticsReportBuilder, UnsupportedDeviceScanner, appDiagnosticsLog, deriveCameraDiagnostics, derivePollingBackoffDiagnostics, formatSpecSummaryText, summarizeModelCounts, type ScanUnsupportedOptions, type UnsupportedDevice } from "../core/diagnosticsAndScanner.js";
 import type { DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import type { EnvironmentReading, FacetControl, HomeBackend, HomeScene, SmartDevice } from "../core/models.js";
@@ -396,11 +396,11 @@ async function ensureHostMiAccountsHydrated(host: ConnectionsAndDiagHost): Promi
   session.hydratingVault = true;
   try {
     const beforeIds = resolveHostMiAccounts(host).map((a) => a.id).join(",");
-    const beforeRepair = store.getAccountIndexRepair();
+    const beforeReadState = store.getAccountsReadState();
     const loaded = await store.load();
     session.hydratedVaultOnce = true;
     if (
-      (beforeIds !== loaded.map((a) => a.id).join(",") || beforeRepair !== store.getAccountIndexRepair()) &&
+      (beforeIds !== loaded.map((a) => a.id).join(",") || beforeReadState !== store.getAccountsReadState()) &&
       isHostAttached(host)
     ) {
       syncConnectionContextWatcher(host);
@@ -1091,11 +1091,7 @@ export function renderConnectionsAndDiagSection(ctx: ConnectionsAndDiagViewConte
   if (host) {
     syncConnectionContextWatcher(host);
     const s = getHostConnDiagSession(host);
-    if (
-      !s.hydratedVaultOnce &&
-      !s.hydratingVault &&
-      (hasSecondaryMiAccountsInIndex() || hasCorruptMiAccountIndex() || hasPendingMiAccountIndexRecovery())
-    ) {
+    if (!s.hydratedVaultOnce && !s.hydratingVault && (hasSecondaryMiAccountsInIndex() || hasCorruptMiAccountIndex())) {
       void ensureHostMiAccountsHydrated(host);
     }
   }
@@ -1127,9 +1123,9 @@ export function renderConnectionsAndDiagSection(ctx: ConnectionsAndDiagViewConte
   const scanError = scanner?.errorMessage ?? null;
   const lastScannedAtMs = scanner?.lastScannedAtMs ?? null;
 
-  const indexUnrecovered = host?.miAccountsStore?.getAccountIndexRepair() === "unrecovered";
-  const accountIndexWarningHtml = indexUnrecovered
-    ? `<p class="cc-field-hint" data-mi-accounts-index-warning style="margin:4px 0 8px;color:#e67e22;">${esc(t("小米账号索引已损坏，部分副账号暂时无法列出；可在下方重新扫码登录以恢复。其余账号的登录凭据仍保留在 Windows 凭据管理器中。"))}</p>`
+  const accountsPartial = host?.miAccountsStore?.getAccountsReadState() === "partial";
+  const accountIndexWarningHtml = accountsPartial
+    ? `<p class="cc-field-hint" data-mi-accounts-index-warning style="margin:4px 0 8px;color:#e67e22;">${esc(t("部分小米账号暂时无法读取；其他账号仍可正常使用，稍后重启或重新登录可重试。"))}</p>`
     : "";
 
   const accountCardsHtml =

@@ -21,7 +21,6 @@ import {
 import {
   MiAccountsStore,
   hasCorruptMiAccountIndex,
-  hasPendingMiAccountIndexRecovery,
   hasSecondaryMiAccountsInIndex,
   makeMiAccount,
   refreshMiAccountsConcurrently,
@@ -86,8 +85,14 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
     if (!isHostAttachedToActiveWindow(host)) return;
     if (isDualSourceEnabled(host)) return refreshDualSourceDevices(host, silent);
     if (host.settings.connectionMode === "homeAssistant") return refreshHADevices(host, silent);
-    if (host.settings.connectionMode === "xiaomiCloud" && hasMultipleMiAccountsForHost(host)) {
-      return refreshMultiAccountXiaomiDevices(host, silent);
+    if (host.settings.connectionMode === "xiaomiCloud") {
+      // The store's first load of this window enumerates the credential slots; later loads read
+      // the assembled list. This replaces the old "only multi-account indexes hydrate" gate (#228).
+      const storeAccounts = host.miAccountsOverride
+        ?? (await getHostMiAccountsStore(host).load().catch(() => []));
+      if (storeAccounts.length > 1 || hasMultipleMiAccountsForHost(host)) {
+        return refreshMultiAccountXiaomiDevices(host, silent);
+      }
     }
     if (!host.settings.miSession || host.settings.connectionMode !== "xiaomiCloud" || host.isSyncingCloud) return;
     const session = host.settings.miSession;
@@ -771,9 +776,8 @@ export function getHostMiAccountsState(host: DualSourceInspectableHost): HostMul
 
 export function hasMultipleMiAccountsForHost(host: DualSourceInspectableHost): boolean {
   if (host.miAccountsOverride != null) return host.miAccountsOverride.length > 1;
-  // A corrupt index or a pending recovery means the stored list cannot prove there is only one
-  // account; `store.load()` must run so enumeration can fill it in (#228).
-  return hasSecondaryMiAccountsInIndex() || hasCorruptMiAccountIndex() || hasPendingMiAccountIndexRecovery();
+  // A corrupt index cannot prove there is only one account; `store.load()` must run to rebuild it.
+  return hasSecondaryMiAccountsInIndex() || hasCorruptMiAccountIndex();
 }
 
 function knownPreferenceIdsForHost(host: MenuMijiaWindowsApp): Set<string> {
@@ -1101,13 +1105,7 @@ export async function refreshDualSourceDevices(
   const token = host.settings.haToken;
   const overrideAccounts = host.miAccountsOverride;
   const loadedAccounts =
-    overrideAccounts ??
-    (host.settings.miSession &&
-    !hasSecondaryMiAccountsInIndex() &&
-    !hasCorruptMiAccountIndex() &&
-    !hasPendingMiAccountIndexRecovery()
-      ? [makeMiAccount(host.settings.miSession)]
-      : await getHostMiAccountsStore(host).load());
+    overrideAccounts ?? (await getHostMiAccountsStore(host).load().catch(() => []));
   if (
     !isHostAttachedToActiveWindow(host) ||
     !isDualSourceEnabled(host) ||
