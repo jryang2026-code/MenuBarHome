@@ -409,6 +409,17 @@ struct AutomationEngineTests {
         return calendar
     }
 
+    @Test("Production reads the autoupdating calendar so a time-zone change moves the windows")
+    func defaultCalendarIsAutoupdating() throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let engine = AutomationEngine(defaults: defaults)
+        // `Calendar.current` is the launch-time snapshot (a different value from the autoupdating
+        // instance), so this catches a default that freezes the zone again. A live zone-change test
+        // would have to mutate process-wide `NSTimeZone.default` and race parallel suites.
+        #expect(engine.calendar == Calendar.autoupdatingCurrent)
+    }
+
     private static func nightWindow() -> AutomationConditions {
         AutomationConditions(
             timeWindow: AutomationTimeWindow(isEnabled: true, startMinute: 22 * 60, endMinute: 7 * 60)
