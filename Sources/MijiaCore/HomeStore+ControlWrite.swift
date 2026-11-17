@@ -526,8 +526,10 @@ extension HomeStore {
     /// device (`HomeStore+Backend.swift` cover-travel takeover).
     ///
     /// Re-bases the surviving session on the report and keeps its cover-position lock, so the card
-    /// shows the pending drag until its command is sent and reported back. Returns false when no
-    /// pending patch remains; the caller then lets the report take the row over as before.
+    /// shows the pending drag until its command is sent and reported back. The patch recomputes its
+    /// travel direction from the row it lands on, so the re-based target is confirmed the right way.
+    /// Returns false when no pending patch remains; the caller then lets the report take the row
+    /// over as before.
     func adoptCoverTravelReport(deviceId: String, incoming: SmartDevice) -> Bool {
         guard var session = manualWriteSessions[deviceId],
               optimisticLockRevision[deviceId] == session.revision else {

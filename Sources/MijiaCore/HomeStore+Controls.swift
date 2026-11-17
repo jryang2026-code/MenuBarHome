@@ -851,8 +851,6 @@ extension HomeStore {
             s.motion = .closing
             s.motionIsInferred = false
         }
-        let targetMotion = s.motion
-        let targetInferred = s.motionIsInferred
         var updated = previous
         updated.kind = .cover(s)
         if s.isMoving {
@@ -868,9 +866,19 @@ extension HomeStore {
             priorCoverOrigin: priorCoverOrigin,
             mutate: { device in
                 guard case .cover(var spec) = device.kind else { return }
+                // The direction is relative to the row this patch lands on, not to the row the
+                // drag started from: a device report can re-base a still-pending drag (50 -> 20
+                // becomes 15 -> 20 when the first command stops at 15). A captured direction
+                // would then confirm travel the wrong way in `coverTravelTakesOver`.
+                let start = spec.positionPercent
                 spec.positionPercent = displayed
-                spec.motion = targetMotion
-                spec.motionIsInferred = targetInferred
+                if let start, displayed > start {
+                    spec.motion = .opening
+                    spec.motionIsInferred = false
+                } else if let start, displayed < start {
+                    spec.motion = .closing
+                    spec.motionIsInferred = false
+                }
                 device.kind = .cover(spec)
             }
         )

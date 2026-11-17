@@ -25,11 +25,16 @@ struct CoverDragTakeoverTests {
 
     /// The same curtain parked at `position`, as a report from the device.
     private static func curtain(at position: Int) -> SmartDevice {
+        curtain(at: position, motion: .stopped)
+    }
+
+    /// The same curtain at `position`, still travelling, as a report from the device.
+    private static func curtain(at position: Int, motion: CoverMotion) -> SmartDevice {
         var device = curtain
         guard case .cover(var spec) = device.kind else { return device }
         spec.positionPercent = position
         spec.reportedPositionPercent = position
-        spec.motion = .stopped
+        spec.motion = motion
         spec.motionIsInferred = false
         device.kind = .cover(spec)
         return device
@@ -85,7 +90,7 @@ struct CoverDragTakeoverTests {
 
         let held = try #require(store.devices.first?.coverSpec)
         #expect(held.positionPercent == 20, "the card keeps the drag that is still pending")
-        #expect(held.motion == .closing)
+        #expect(held.motion == .opening, "the pending 15 -> 20 drag travels the other way now")
         #expect(store.optimisticLockUntil[id] != nil, "the pending drag still owns the cover position")
 
         // Releasing the debounce must deliver the second position, not drop it.
@@ -99,6 +104,14 @@ struct CoverDragTakeoverTests {
             lastCommand == .setNumberValue(entityId: "cover.curtain", value: 20),
             "the second drag's position reaches the provider"
         )
+
+        // An intermediate opening report must not be read as confirmation of a closing drag.
+        let beforeTravel = store.snapshotGeneration
+        await mock.updateSnapshot(SynthesizedHome(devices: [Self.curtain(at: 16, motion: .opening)]))
+        await waitUntil { store.snapshotGeneration > beforeTravel }
+        let travelling = try #require(store.devices.first?.coverSpec)
+        #expect(travelling.positionPercent == 20, "travel towards the new target keeps the target on the card")
+        #expect(travelling.motion == .opening)
 
         // Once the device reports the second target, its own report settles the row.
         let beforeConfirm = store.snapshotGeneration
