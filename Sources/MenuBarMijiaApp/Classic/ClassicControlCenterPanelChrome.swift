@@ -1166,6 +1166,8 @@ extension ClassicControlCenterPanel {
     }
 
     var statusDotAnimates: Bool {
+        // 面板不可见时不必呼吸：`repeatForever` 停不下来，会一直占 CPU（见 `BreathingDot`）。
+        guard store.pollingContext.panelVisible else { return false }
         if case .ok = store.panelHealth { return true }
         return false
     }
