@@ -2405,7 +2405,7 @@ function smartDeviceFromConfirmation(device: ConfirmationFixtureDevice): SmartDe
 it("matches the shared confirmation table in confirmation_golden.json", () => {
   const raw = readFileSync(resolve(process.cwd(), "../Tests/Fixtures/confirmation_golden.json"), "utf8");
   const rows = parseConfirmationRows(raw);
-  assert.equal(rows.length, 73);
+  assert.equal(rows.length, 84);
   assert.equal(new Set(rows.map((row) => row.id)).size, rows.length);
   for (const row of rows) {
     if (row.device) assert.equal(row.device.id, row.id, row.id);
@@ -2714,6 +2714,17 @@ it("classifies switched lights on plug cards as light while excluding hazardous 
     makePlug("neg_ext_cord_trad", "延長線燈"),
     makePlug("neg_electric_heat_trad", "電暖燈"),
     makePlug("neg_healthpot_trad", "養生壺燈"),
+    makePlug("neg_rice_cooker_trad", "電飯鍋燈"),
+    makePlug("neg_stove_heater_trad", "暖爐燈"),
+    makePlug("neg_bath_hot_air_trad", "浴室熱風燈"),
+    makePlug("neg_dryer_trad", "烘乾機燈"),
+    makePlug("neg_bug_zapper_trad", "滅蟲燈"),
+    makePlug("neg_warning_trad", "警示燈"),
+    makePlug("neg_alarm_trad", "警報燈"),
+    makePlug("neg_smart_plug_trad", "智能插頭燈"),
+    makePlug("neg_adapter_trad", "轉接頭燈"),
+    makePlug("neg_rolling_door_trad", "鐵捲門燈"),
+    makePlug("neg_uvc_trad", "UVC燈"),
     makePlug("neg_button", "厨房灯", "lumi.switch.b1nacn02", { switchEntityId: "button.kitchen_light" }),
     makePlug("neg_ro", "厨房灯", "lumi.switch.b1nacn02", { powerWritable: false }),
     makePlug("neg_oven_model", "厨房灯", "chunmi.oven.s1"),
