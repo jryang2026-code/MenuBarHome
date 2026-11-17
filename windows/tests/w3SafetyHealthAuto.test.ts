@@ -786,7 +786,9 @@ describe("B1 + B5 PC Context Automation Engine, AwayArbitrator, 5m Undo & HA Doo
     assert.equal(arb.hasPendingLock, false);
     assert.equal(arb.ingest("screenLocked", false, 10_000), null);
     assert.equal(arb.flush(11_000), null);
-    assert.equal(arb.flush(12_000), "screenLockedOnly");
+    const confirmed = arb.flush(12_000);
+    assert.equal(confirmed?.outcome, "screenLockedOnly");
+    assert.equal(confirmed?.lockedAtMs, 10_000);
   });
 
   it("fires lock/sensor/scheduled rules via startTimerLoop & dispatchSystemContextEvent with 5-minute Undo (exempt on trigger, guarded on manual Undo while locked, zero habit pollution)", async () => {

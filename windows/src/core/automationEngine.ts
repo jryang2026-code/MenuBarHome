@@ -393,13 +393,24 @@ function parseStoredWiFiCondition(raw: unknown): AutomationWiFiCondition {
   return { kind: "any" };
 }
 
+function storedMinute(value: unknown): number | "invalid" | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return "invalid";
+}
+
 function parseStoredTimeWindow(raw: unknown): AutomationTimeWindow {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return createAutomationTimeWindow();
   const obj = raw as Record<string, unknown>;
+  const startMinute = storedMinute(obj.startMinute);
+  const endMinute = storedMinute(obj.endMinute);
+  if (obj.isEnabled === true && (startMinute === "invalid" || endMinute === "invalid")) {
+    return createAutomationTimeWindow({ isEnabled: false });
+  }
   return createAutomationTimeWindow({
     isEnabled: obj.isEnabled === true,
-    ...(typeof obj.startMinute === "number" ? { startMinute: obj.startMinute } : {}),
-    ...(typeof obj.endMinute === "number" ? { endMinute: obj.endMinute } : {}),
+    ...(typeof startMinute === "number" ? { startMinute } : {}),
+    ...(typeof endMinute === "number" ? { endMinute } : {}),
   });
 }
 
@@ -563,6 +574,11 @@ type AwaySignal = "screenLocked" | "screenUnlocked" | "willSleep" | "displayDidS
 
 type AwayOutcome = "screenLockedOnly" | "lidClosedSleep" | "systemSleep";
 
+export interface ConfirmedScreenLock {
+  readonly outcome: "screenLockedOnly";
+  readonly lockedAtMs: number;
+}
+
 function awayOutcomeTrigger(outcome: AwayOutcome): AutomationTrigger {
   if (outcome === "screenLockedOnly") return "screenLocked";
   return outcome === "lidClosedSleep" ? "lidClosedSleep" : "systemSleep";
@@ -606,12 +622,14 @@ export class AwayArbitrator {
     }
   }
 
-  public flush(nowMs: number): AwayOutcome | null {
+  public flush(nowMs: number): ConfirmedScreenLock | null {
     if (this.pendingLockAtMs === null) return null;
-    const elapsed = nowMs - this.pendingLockAtMs;
+    const lockedAtMs = this.pendingLockAtMs;
+    const elapsed = nowMs - lockedAtMs;
     if (elapsed >= 0 && elapsed < AwayArbitrator.lockDebounceMs) return null;
     this.pendingLockAtMs = null;
-    return this.recentlySlept(nowMs) ? null : "screenLockedOnly";
+    if (this.recentlySlept(nowMs)) return null;
+    return { outcome: "screenLockedOnly", lockedAtMs };
   }
 
   private recentlySlept(nowMs: number): boolean {
@@ -1219,7 +1237,18 @@ export class AutomationEngine {
     }
 
     const flushed = this.arbitrator.flush(nowMs);
-    if (flushed) pushRulesFor(awayOutcomeTrigger(flushed));
+    if (flushed) {
+      const trigger = awayOutcomeTrigger(flushed.outcome);
+      const lockedAtMs = flushed.lockedAtMs;
+      const candidates = rules.filter(
+        (rule) =>
+          rule.trigger === trigger
+          && this.passesConditions(rule, lockedAtMs, this.context.wifiSSID, this.context.wifiAuthorized),
+      );
+      if (candidates.length > 0 && this.deduper.shouldFire(trigger, lockedAtMs)) {
+        matchedRules.push(...candidates);
+      }
+    }
 
     if (!this.context.isLocked && !this.context.isSystemAsleep && !this.context.isDisplayAsleep) {
       this.evaluateLateNightRules(rules, nowMs, matchedRules);
