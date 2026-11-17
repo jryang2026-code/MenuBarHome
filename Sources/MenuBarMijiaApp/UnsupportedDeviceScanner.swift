@@ -98,19 +98,18 @@ final class UnsupportedDeviceScanner {
             }
         }
 
-        if store.homeBackend == .demo {
+        let active = store.activeBackends
+        if active.contains(.demo) {
             // Strictly offline: nothing is skipped, and nothing may be requested (#47).
             devices = []
             lastScannedAt = Date()
             return
         }
 
-        let scanMi = store.hasMiSource || (!store.hasHASource && store.homeBackend == .xiaomiCloud)
-        let scanHA = store.hasHASource || (!store.hasMiSource && store.homeBackend == .homeAssistant)
         var results: [UnsupportedDevice] = []
         var errors: [String] = []
 
-        if scanMi {
+        if active.contains(.xiaomiCloud) {
             // Every signed-in account, not just the first: a second account's devices are merged into
             // the panel too, so its skipped devices belong in this list. A device shared between two
             // accounts appears once.
@@ -125,7 +124,7 @@ final class UnsupportedDeviceScanner {
                 }
             }
         }
-        if scanHA {
+        if active.contains(.homeAssistant) {
             do {
                 let scanned = try await Self.scanHomeAssistant(baseURL: store.serverURLString, token: store.loadHAToken(), plaintextApproved: HAPlaintextConsent.allowsToken(to: store.serverURLString, defaults: store.userDefaults))
                 results.append(contentsOf: scanned)

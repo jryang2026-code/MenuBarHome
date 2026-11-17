@@ -5,7 +5,7 @@
 ## 核心逻辑与数据层（`Sources/MijiaCore/`）
 
 - **状态主存与控制入口**：`Sources/MijiaCore/HomeStore.swift`、`Sources/MijiaCore/HomeStore+Backend.swift`、`Sources/MijiaCore/HomeStore+Controls.swift`、`Sources/MijiaCore/HomeStore+ControlWrite.swift`、`Sources/MijiaCore/HomeStore+Undo.swift`、`Sources/MijiaCore/HomeStore+Security.swift`
-- **双源架构与设备合成**：`Sources/MijiaCore/HomeProvider.swift`、`Sources/MijiaCore/DualSourceHomeProvider.swift`、`Sources/MijiaCore/DeviceDeduplicator.swift`、`Sources/MijiaCore/DeviceSynthesizer.swift`、`Sources/MijiaCore/DeviceSourceIdentity.swift`、`Sources/MijiaCore/DeviceSourcePins.swift`
+- **双源架构与设备合成**：`Sources/MijiaCore/HomeBackendDescriptor.swift`、`Sources/MijiaCore/HomeProvider.swift`、`Sources/MijiaCore/DualSourceHomeProvider.swift`、`Sources/MijiaCore/DeviceDeduplicator.swift`、`Sources/MijiaCore/DeviceSynthesizer.swift`、`Sources/MijiaCore/DeviceSourceIdentity.swift`、`Sources/MijiaCore/DeviceSourcePins.swift`
 - **小米云端与 MIoT 协议**：`Sources/MijiaCore/MiCloud/MiAccountsProvider.swift`、`Sources/MijiaCore/MiCloud/MiAccountLogin.swift`、`Sources/MijiaCore/MiCloud/MiCloudClient.swift`、`Sources/MijiaCore/MiCloud/MiCloudProvider.swift`、`Sources/MijiaCore/MiCloud/MiotSpec.swift`、`Sources/MijiaCore/MiCloud/MiotCommandMapper.swift`
 - **Home Assistant 与局域网**：`Sources/MijiaCore/HADiscovery.swift`、`Sources/MijiaCore/HAHomeSnapshot.swift`、`Sources/MijiaCore/HAPlaintextConsent.swift`、`Sources/MijiaCore/MiCloud/LocalMiIOClient.swift`
 - **安全边界与凭据**：`Sources/MijiaCore/KeychainAndPrefs.swift`、`Sources/MijiaCore/CredentialVault.swift`、`Sources/MijiaCore/SafetyMonitor.swift`、`Sources/MijiaCore/ScreenLockPolicy.swift`、`Sources/MijiaCore/ManualControlPolicy.swift`

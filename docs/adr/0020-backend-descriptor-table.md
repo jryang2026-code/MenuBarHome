@@ -99,8 +99,13 @@ grep -rcE "\"(homeAssistant|xiaomiCloud)\"" windows/src | grep -v ":0" | sort -t
 2. 步骤 3 评估时发现描述表盖不住 LG 电视这类局域网单设备源；或
 3. Windows 有了独立维护者或两端有意不再追求一致——此时重新评估第 7 条的不拆仓。
 
+## 落地记录（2026-11）
+
+- **Swift 端（#203）**：新增 `Sources/MijiaCore/HomeBackendDescriptor.swift`，以穷尽 `switch` 为每个 `HomeBackend` 提供 `HomeBackend.descriptor`（`title`、`isConfigured`、`primaryScopeIdentifier`、`activeScopeIdentifiers`、`makeProvider`），并以 `HomeBackendDescriptor.activeBackends(homeBackend:hasHASource:hasMiSource:)` 与 `HomeStore.activeBackends` 收敛 `HomeStore+Backend.swift`、`MenuBarPanelController.swift`、`UnsupportedDeviceScanner.swift` 三处的生效后端计算。
+- **Windows 端**：新增 `windows/src/core/homeProvider.ts`（`HomeProvider`、`HomeAssistantProvider`、`MiCloudProvider`、`DemoHomeProvider`）与 `windows/src/core/dualSourceProvider.ts`，补齐连接后端接口与双源合并接缝。
+
 ## 相关
 
-- `Sources/MijiaCore/HomeProvider.swift`（`HomeBackend`、`HomeProvider`）、`Sources/MijiaCore/HomeStore+Backend.swift`（`makeLiveProvider`、`makeComposite`、`applyLGDeviceUpdate`）、`Sources/MijiaCore/DualSourceHomeProvider.swift`、`Sources/MijiaCore/LGWebOSClient.swift`
-- `windows/src/core/homeAssistant.ts`（`HomeAssistantClient`）、`windows/src/core/miCloudClient.ts`、`windows/src/core/models.ts`（`HomeBackend`）、`windows/src/ui/app.ts`
-- `GLOSSARY.md`：`HomeBackend（连接后端）`、`deviceBackends（卡片数据源表）`、`HomeBackendDescriptor（后端描述，ADR-0020 规划 / 现由 HomeBackend 与 HomeStore+Backend 承载）`。
+- `Sources/MijiaCore/HomeBackendDescriptor.swift`（`HomeBackendDescriptor`、`HomeBackend.descriptor`、`HomeStore.activeBackends`）、`Sources/MijiaCore/HomeProvider.swift`（`HomeBackend`、`HomeProvider`）、`Sources/MijiaCore/HomeStore+Backend.swift`（`makeLiveProvider`、`makeComposite`、`applyLGDeviceUpdate`）、`Sources/MijiaCore/DualSourceHomeProvider.swift`、`Sources/MijiaCore/LGWebOSClient.swift`
+- `windows/src/core/homeProvider.ts`、`windows/src/core/dualSourceProvider.ts`、`windows/src/core/homeAssistant.ts`（`HomeAssistantClient`）、`windows/src/core/miCloudClient.ts`、`windows/src/core/models.ts`（`HomeBackend`）、`windows/src/ui/app.ts`
+- `GLOSSARY.md`：`HomeBackend（连接后端）`、`deviceBackends（卡片数据源表）`、`HomeBackendDescriptor（后端描述）`。
