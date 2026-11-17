@@ -127,6 +127,25 @@ struct AutomationTimeWindowTests {
         #expect(AutomationConditions().summary() == nil)
     }
 
+    @Test func summaryNamesTheWindowInEachLanguage() {
+        let conditions = AutomationConditions(
+            timeWindow: AutomationTimeWindow(isEnabled: true, startMinute: 22 * 60, endMinute: 7 * 60)
+        )
+        let english = L10n.$overrideLanguage.withValue(.en) { conditions.summary() }
+        let simplified = L10n.$overrideLanguage.withValue(.zhHans) { conditions.summary() }
+        let traditional = L10n.$overrideLanguage.withValue(.zhHant) { conditions.summary() }
+        #expect(english == "Between 22:00–07:00")
+        #expect(simplified == "时段 22:00–07:00")
+        #expect(traditional == "時段 22:00–07:00")
+
+        let englishLabel = L10n.$overrideLanguage.withValue(.en) { L10n.tr("限定时段", "Only between") }
+        let simplifiedLabel = L10n.$overrideLanguage.withValue(.zhHans) { L10n.tr("限定时段", "Only between") }
+        let traditionalLabel = L10n.$overrideLanguage.withValue(.zhHant) { L10n.tr("限定时段", "Only between") }
+        #expect(englishLabel == "Only between")
+        #expect(simplifiedLabel == "限定时段")
+        #expect(traditionalLabel == "限定時段")
+    }
+
     @Test func windowIsEvaluatedAgainstTheGivenTimestamp() {
         let conditions = AutomationConditions(
             timeWindow: AutomationTimeWindow(isEnabled: true, startMinute: 22 * 60, endMinute: 7 * 60)
