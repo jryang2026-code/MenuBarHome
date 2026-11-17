@@ -305,7 +305,7 @@ function renderSevenDayChart(
       const dayCost = item.isObserved ? history.costForKwh(item.kwh) : null;
       const costHtml =
         dayCost !== null
-          ? `<span data-energy-day-cost="${esc(item.dayKey)}" style="font-size: 9.5px; opacity: 0.72; font-variant-numeric: tabular-nums;">${esc(formatCurrencyCost(dayCost))}</span>`
+          ? `<span data-energy-day-cost="${esc(item.dayKey)}" style="font-size: 11px; opacity: 0.72; font-variant-numeric: tabular-nums;">${esc(formatCurrencyCost(dayCost))}</span>`
           : "";
       const dateLabel = formatDayChartDate(item.day, isToday);
       const barBg = item.isObserved
@@ -319,7 +319,7 @@ function renderSevenDayChart(
         >
           <span
             data-energy-day-kwh="${esc(item.dayKey)}"
-            style="font-size: 9.5px; line-height: 1.15; text-align: center; font-variant-numeric: tabular-nums; opacity: ${item.isObserved ? "0.95" : "0.55"};"
+            style="font-size: 11px; line-height: 1.15; text-align: center; font-variant-numeric: tabular-nums; opacity: ${item.isObserved ? "0.95" : "0.55"};"
           >${esc(kwhLabel)}</span>
           <div style="width: 100%; max-width: 24px; height: 52px; border-radius: 6px; background: rgba(128, 128, 128, 0.14); display: flex; align-items: flex-end; overflow: hidden;">
             <div
@@ -330,7 +330,7 @@ function renderSevenDayChart(
           </div>
           <span
             data-energy-day-date="${esc(item.dayKey)}"
-            style="font-size: 9.5px; line-height: 1.15; text-align: center; font-variant-numeric: tabular-nums; opacity: ${isToday ? "1" : "0.75"}; font-weight: ${isToday ? "600" : "400"};"
+            style="font-size: 11px; line-height: 1.15; text-align: center; font-variant-numeric: tabular-nums; opacity: ${isToday ? "1" : "0.75"}; font-weight: ${isToday ? "600" : "400"};"
           >${esc(dateLabel)}</span>
           ${costHtml}
         </div>`;

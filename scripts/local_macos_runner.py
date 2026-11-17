@@ -40,14 +40,21 @@ def cleanup():
                    stderr=subprocess.DEVNULL)
     state = ROOT / "state.json"
     if state.exists():
-        data = json.loads(state.read_text())
-        if data.get("runner_id"):
-            try:
-                api(f"actions/runners/{data['runner_id']}", method="DELETE")
-            except subprocess.CalledProcessError as error:
-                if "404" not in error.stderr:
-                    raise
-        state.unlink()
+        try:
+            data = json.loads(state.read_text())
+            if data.get("runner_id"):
+                try:
+                    api(f"actions/runners/{data['runner_id']}", method="DELETE")
+                except subprocess.CalledProcessError as error:
+                    stderr = (error.stderr or "").strip()
+                    if "404" not in stderr:
+                        print(
+                            f"Warning: failed to delete runner {data['runner_id']}: {stderr or error}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+        finally:
+            state.unlink(missing_ok=True)
 
 
 def stop(_signum, _frame):
@@ -108,7 +115,45 @@ def once():
                 vm.wait(timeout=10)
 
 
+def _run_self_test() -> int:
+    import io
+    import tempfile
+
+    global ROOT, api
+    original_root = ROOT
+    original_api = api
+    original_run = subprocess.run
+    original_stderr = sys.stderr
+    captured_err = io.StringIO()
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            ROOT = Path(tmp)
+            state = ROOT / "state.json"
+            state.write_text(json.dumps({"runner_id": 4242, "name": "test-vm", "started": 1.0}))
+
+            def fake_run(*_args, **_kwargs):
+                return subprocess.CompletedProcess(["tart"], 0)
+
+            def failing_api(_path, payload=None, method=None):
+                raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 422")
+
+            subprocess.run = fake_run
+            api = failing_api
+            sys.stderr = captured_err
+            cleanup()
+            assert not state.exists(), "state.json must be unlinked even when DELETE returns HTTP 422"
+            assert "422" in captured_err.getvalue()
+    finally:
+        ROOT = original_root
+        api = original_api
+        subprocess.run = original_run
+        sys.stderr = original_stderr
+    return 0
+
+
 if __name__ == "__main__":
+    if "--self-test" in sys.argv[1:]:
+        raise SystemExit(_run_self_test())
     import fcntl
 
     os.umask(0o077)
