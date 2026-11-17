@@ -19,7 +19,11 @@ import {
 } from "../src/core/automationEngine.js";
 import type { DeviceCommand, SmartDevice } from "../src/core/models.js";
 import type { KeyValueStorageLike } from "../src/core/safetyAndHealth.js";
-import { getHostActivityCenter, tickSafetyHealthAndAutomation } from "../src/ui/activityStackView.js";
+import {
+  clearHostActivitiesOnSignOut,
+  getHostActivityCenter,
+  tickSafetyHealthAndAutomation,
+} from "../src/ui/activityStackView.js";
 import type { MenuMijiaWindowsApp } from "../src/ui/app.js";
 
 class MemoryKV implements KeyValueStorageLike {
@@ -949,18 +953,19 @@ describe("Windows Wi-Fi poll wiring (tick → wifiChanged dispatch)", () => {
     });
 
     const t0 = 1_800_000_000_000;
-    // 解锁基线。
+    // 解锁基线（首次采样即递增代际）。
     tickSafetyHealthAndAutomation(host, t0);
     await setImmediate();
     await setImmediate();
     assert.equal(center.lastSampledLockState, false);
+    assert.equal(center.lockSampleGeneration, 1);
 
-    // 锁 #1：回调把基线写成 true，代际 1，卡在门控探针（seq 1）。
+    // 锁 #1：回调把基线写成 true，代际 2，卡在门控探针（seq 1）。
     locked = true;
     tickSafetyHealthAndAutomation(host, t0 + 1_000);
     await setImmediate();
     await setImmediate();
-    assert.equal(center.lockSampleGeneration, 1);
+    assert.equal(center.lockSampleGeneration, 2);
     assert.equal(typeof probeGate.release, "function");
 
     // 等待期间解锁再上锁：第二次翻转的实时探针（seq 2，读到 Net_B）先行应用。
@@ -973,16 +978,16 @@ describe("Windows Wi-Fi poll wiring (tick → wifiChanged dispatch)", () => {
     await setImmediate();
     await setImmediate();
     await setImmediate();
-    assert.equal(center.lockSampleGeneration, 3);
+    assert.equal(center.lockSampleGeneration, 4);
     assert.equal(center.automationEngine.snapshot.wifiSSID, "Net_B", "lock #2's probe applied first");
 
-    // 放行锁 #1 的探针：回调已过时（代际 1 ≠ 3），不得派发过时的
+    // 放行锁 #1 的探针：回调已过时（代际 2 ≠ 4），不得派发过时的
     // lockChanged(true)——否则不可信读数会把合法快照洗掉。
     probeGate.release?.();
     await setImmediate();
     await setImmediate();
     await setImmediate();
-    assert.equal(center.lockSampleGeneration, 3);
+    assert.equal(center.lockSampleGeneration, 4);
     assert.equal(center.automationEngine.snapshot.isLocked, true);
     assert.equal(center.lastWifiReading?.ssid, "Net_B", "the newer lock snapshot must survive");
     assert.equal(sent.length, 0);
@@ -1056,6 +1061,166 @@ describe("Windows Wi-Fi poll wiring (tick → wifiChanged dispatch)", () => {
     await setImmediate();
     assert.equal(center.automationEngine.snapshot.wifiSSID, "Net_A");
     assert.equal(sent.length, 0, "the deferred join is trust-gated (untrusted default side), not fired");
+  });
+
+  it("keeps the lock-time reading when the flip probe is superseded by a later poll", async () => {
+    const host = miniHost([makeLight("light.a", true), makeLight("light.b", true)]);
+    const center = getHostActivityCenter(host);
+    const sent: DeviceCommand[] = [];
+    host.applyCommand = async (cmd) => {
+      sent.push(cmd);
+      return true;
+    };
+    center.automationEngine.store.save([
+      createAutomationRule({
+        id: "lock-a",
+        trigger: "screenLocked",
+        action: { kind: "devices", deviceIds: ["light.a"], isOn: false },
+        conditions: createAutomationConditions({ kind: "inAny", ssids: ["Net_A"] }),
+      }),
+      createAutomationRule({
+        id: "lock-b",
+        trigger: "screenLocked",
+        action: { kind: "devices", deviceIds: ["light.b"], isOn: false },
+        conditions: createAutomationConditions({ kind: "inAny", ssids: ["Net_B"] }),
+      }),
+    ]);
+
+    // 锁屏探针（seq 2，读到 Net_A）被门控挂起；随后的周期轮询（seq 3，Net_B）
+    // 先行应用。锁屏探针后被超越：不派发、不覆盖基线，但 lockChanged 仍携带
+    // 锁屏时刻的真实网络 Net_A，而不是 fail-closed 占位。
+    let locked = false;
+    let wifiProbeCalls = 0;
+    const probeGate: { release: (() => void) | null } = { release: null };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string) => {
+          if (cmd === "is_workstation_locked") return locked as unknown;
+          if (cmd === "wifi_current") {
+            wifiProbeCalls += 1;
+            if (wifiProbeCalls === 2) {
+              await new Promise<void>((resolve) => { probeGate.release = resolve; });
+              return { state: "connected", ssid: "Net_A" };
+            }
+            return { state: "connected", ssid: "Net_B" };
+          }
+          return undefined;
+        },
+      },
+    });
+
+    const t0 = 1_800_000_000_000;
+    tickSafetyHealthAndAutomation(host, t0);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.lastSampledLockState, false);
+    assert.equal(center.automationEngine.snapshot.wifiSSID, "Net_B", "the first poll (seq 1) establishes Net_B");
+
+    // 锁屏翻转：探针（seq 2，Net_A）被门控挂起。
+    locked = true;
+    tickSafetyHealthAndAutomation(host, t0 + 1_000);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.wifiProbeSeq, 2);
+    assert.equal(typeof probeGate.release, "function");
+
+    // 周期轮询（seq 3）先行应用 Net_B（需越过 10 秒轮询节流）。
+    tickSafetyHealthAndAutomation(host, t0 + 11_000);
+    await setImmediate();
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.automationEngine.snapshot.wifiSSID, "Net_B");
+
+    // 锁屏探针后返回：被超越 → 不派发，但 lockChanged 携带锁屏时刻的 Net_A。
+    probeGate.release?.();
+    await setImmediate();
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.wifiAppliedSeq, 3);
+    assert.equal(center.automationEngine.snapshot.wifiSSID, "Net_B", "the superseded probe must not overwrite the newer applied reading");
+
+    // 防抖后结算：按锁屏时刻的 Net_A 判定（而非上下文的 Net_B，也非 fail-closed）。
+    tickSafetyHealthAndAutomation(host, t0 + 12_100);
+    await setImmediate();
+    await setImmediate();
+    assert.deepEqual(
+      sent.filter((c) => c.kind === "setLightPower"),
+      [{ kind: "setLightPower", entityId: "light.a", isOn: false }],
+    );
+  });
+
+  it("invalidates in-flight lock callbacks across an activity reset (home switch)", async () => {
+    const host = miniHost([makeLight("light.desk", true)]);
+    const center = getHostActivityCenter(host);
+    const sent: DeviceCommand[] = [];
+    host.applyCommand = async (cmd) => {
+      sent.push(cmd);
+      return true;
+    };
+    center.automationEngine.store.save([
+      createAutomationRule({
+        id: "away-any",
+        trigger: "away",
+        action: { kind: "devices", deviceIds: ["light.desk"], isOn: false },
+      }),
+    ]);
+
+    // 锁屏翻转的回调卡在门控探针上；期间切换家庭（activity reset），新会话按
+    // 解锁状态重建基线。旧回调不得对新会话派发过时的 lockChanged(true)。
+    let locked = false;
+    let wifiProbeCalls = 0;
+    const probeGate: { release: (() => void) | null } = { release: null };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string) => {
+          if (cmd === "is_workstation_locked") return locked as unknown;
+          if (cmd === "wifi_current") {
+            wifiProbeCalls += 1;
+            if (wifiProbeCalls === 1) {
+              await new Promise<void>((resolve) => { probeGate.release = resolve; });
+              return { state: "connected", ssid: "Net_A" };
+            }
+            return { state: "connected", ssid: "Net_A" };
+          }
+          return undefined;
+        },
+      },
+    });
+
+    const t0 = 1_800_000_000_000;
+    tickSafetyHealthAndAutomation(host, t0);
+    await setImmediate();
+    await setImmediate();
+
+    locked = true;
+    tickSafetyHealthAndAutomation(host, t0 + 1_000);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(typeof probeGate.release, "function");
+    // 这次锁屏翻转本身合法触发 away（wifi any）；记录基线，重置后不得再新增。
+    const sentBeforeReset = sent.length;
+    assert.ok(sentBeforeReset >= 1);
+
+    // 家庭切换：重置锁屏基线并递增代际。
+    clearHostActivitiesOnSignOut(host);
+    assert.equal(center.lastSampledLockState, null);
+
+    // 新会话的第一次采样（解锁）重建基线，代际再次递增。
+    locked = false;
+    tickSafetyHealthAndAutomation(host, t0 + 2_000);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.automationEngine.snapshot.isLocked, false);
+
+    // 放行旧探针：回调已被重置 + 新基线双重作废。
+    probeGate.release?.();
+    await setImmediate();
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.automationEngine.snapshot.isLocked, false, "the stale lock event must not reach the new session");
+    assert.equal(sent.length, sentBeforeReset, "no away rule may fire for the new session from the stale lock");
   });
 
   it("never probes Wi-Fi without a Tauri host (happy-dom without __TAURI_INTERNALS__)", () => {

@@ -323,6 +323,9 @@ function clearCenterActivities(center: HostActivityCenter): void {
   center.safetyMonitor.resetSessionState(center.scopeKey);
   center.automationEngine.resetTransientState();
   center.lastSampledLockState = null;
+  // 会话/家庭切换即作废在途的锁屏回调：代际递增后，任何挂起中的旧回调
+  // 都不得对新会话派发过时的 lockChanged。
+  center.lockSampleGeneration += 1;
   center.pendingHighRiskUndoRunId = null;
   center.dismissedProactiveSignature = null;
 }
@@ -1057,12 +1060,12 @@ function wifiObservationDispatchAllowed(host: MenuMijiaWindowsApp, center: HostA
  * 「无法知晓」的读数会以 SSID 置空 + 不可信派发（引擎立即按不可信判定），但连续
  * 相同的「无法知晓」读数不重复派发。
  *
- * `seq` 是探针发起时的序号：小于已应用序号的探针结果直接丢弃——周期轮询与锁屏
- * 实时探针可能并发，先发起的读数可能后返回，不能覆盖更新的读数或制造假的
- * joined/left 转换。
+ * `seq` 是探针发起时的序号：不大于已应用序号的探针结果不参与派发与基线更新
+ * （周期轮询与锁屏实时探针可能并发，先发起的读数可能后返回，不能覆盖更新的
+ * 读数或制造假的 joined/left 转换），但仍返回其自身读数——锁屏分支需要锁屏
+ * 时刻的真实网络，而不是 fail-closed 占位。
  *
- * 返回本次应用到引擎的读数（读数未变化时为当前基线），供锁屏分支把它随
- * `lockChanged` 事件带给引擎，避免与并发轮询写入共享上下文产生竞争。
+ * 返回本次探针读到的读数；仅在宿主不可用时返回 null（调用方回退不可信读数）。
  */
 async function observeAndDispatchWifi(
   host: MenuMijiaWindowsApp,
@@ -1071,11 +1074,12 @@ async function observeAndDispatchWifi(
   nowMs: number,
   seq: number,
 ): Promise<EngineWifiReading | null> {
-  if (seq <= center.wifiAppliedSeq) return null;
   const observation = wifiPollObservationFromProbe(probe);
+  if (!isFullPanelHost(host)) return observation.reading;
+  const superseded = seq <= center.wifiAppliedSeq;
+  if (superseded) return observation.reading;
   center.lastWifiProbeState = observation.state;
   center.wifiAppliedSeq = Math.max(center.wifiAppliedSeq, seq);
-  if (!isFullPanelHost(host)) return null;
   const decision = wifiDispatchDecisionForObservation(observation, center.lastWifiReading);
   const reading = decision ? decision.reading : center.lastWifiReading;
   if (!decision) return reading;
@@ -1148,6 +1152,9 @@ export function tickSafetyHealthAndAutomation(
         if (previous === null) {
           center.automationEngine.primeLockBaseline(locked);
           center.lastSampledLockState = locked;
+          // 重新建立基线意味着此前的会话/重置已作废：递增代际，让任何在途的
+          // 旧锁屏回调失效，不得对新的会话派发过时的 lockChanged。
+          center.lockSampleGeneration += 1;
           return;
         }
         if (locked !== previous) {
