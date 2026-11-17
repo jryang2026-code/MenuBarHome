@@ -866,11 +866,12 @@ extension HomeStore {
             priorCoverOrigin: priorCoverOrigin,
             mutate: { device in
                 guard case .cover(var spec) = device.kind else { return }
-                // The direction is relative to the row this patch lands on, not to the row the
-                // drag started from: a device report can re-base a still-pending drag (50 -> 20
-                // becomes 15 -> 20 when the first command stops at 15). A captured direction
-                // would then confirm travel the wrong way in `coverTravelTakesOver`.
-                let start = spec.positionPercent
+                // The direction is relative to where the motor actually is (the reported
+                // position), not to a display target: a device report can re-base a still-pending
+                // drag (50 -> 20 becomes 15 -> 20 when the first command stops at 15), and a
+                // moving cover shows its commanded target while the motor is elsewhere. A captured
+                // direction would then confirm travel the wrong way in `coverTravelTakesOver`.
+                let start = spec.reportedPositionPercent ?? spec.positionPercent
                 spec.positionPercent = displayed
                 if let start, displayed > start {
                     spec.motion = .opening

@@ -16,6 +16,7 @@ struct CoverDragTakeoverTests {
             entityId: "cover.curtain",
             subtype: .curtain,
             positionPercent: 0,
+            reportedPositionPercent: 0,
             positionWritable: true,
             openDescription: "Open",
             closeDescription: "Close",
@@ -25,15 +26,20 @@ struct CoverDragTakeoverTests {
 
     /// The same curtain parked at `position`, as a report from the device.
     private static func curtain(at position: Int) -> SmartDevice {
-        curtain(at: position, motion: .stopped)
+        curtain(target: position, reported: position, motion: .stopped)
     }
 
     /// The same curtain at `position`, still travelling, as a report from the device.
     private static func curtain(at position: Int, motion: CoverMotion) -> SmartDevice {
+        curtain(target: position, reported: position, motion: motion)
+    }
+
+    /// A moving cover whose commanded target and reported position differ, as MIoT reports them.
+    private static func curtain(target: Int, reported: Int, motion: CoverMotion) -> SmartDevice {
         var device = curtain
         guard case .cover(var spec) = device.kind else { return device }
-        spec.positionPercent = position
-        spec.reportedPositionPercent = position
+        spec.positionPercent = target
+        spec.reportedPositionPercent = reported
         spec.motion = motion
         spec.motionIsInferred = false
         device.kind = .cover(spec)
@@ -75,12 +81,13 @@ struct CoverDragTakeoverTests {
         await waitUntil { await mock.executedCommands.count == 1 }
         await waitUntil { hasSucceededPatch(store, id) }
 
-        // Second drag: 50 -> 20%, still waiting in its debounce.
+        // Second drag: 50 -> 20%, still waiting in its debounce. The motor has not moved from its
+        // reported 0%, so the command travels 0 -> 20.
         store.setCoverPosition(id, percent: 20)
         await waitUntil { gate.waiting == 1 }
         let pending = try #require(store.devices.first?.coverSpec)
         #expect(pending.positionPercent == 20)
-        #expect(pending.motion == .closing)
+        #expect(pending.motion == .opening)
 
         // The motor reports a stop at 15%. It confirms travel, but it cannot confirm the 20% drag
         // that has not left the Mac yet.
@@ -121,6 +128,41 @@ struct CoverDragTakeoverTests {
         #expect(settled.positionPercent == 20)
         #expect(settled.motion == .stopped)
         #expect(store.optimisticLockUntil[id] == nil)
+    }
+
+    @Test("A reverse drag during travel takes its direction from the reported position")
+    @MainActor
+    func reverseDragDuringTravelKeepsItsDirection() async throws {
+        let (store, mock, gate) = try await makeStore()
+        let id = Self.curtain.id
+
+        // First drag: 0 -> 100%, sent. The card shows the commanded 100% while the motor is still
+        // near its reported 0%.
+        store.setCoverPosition(id, percent: 100)
+        await waitUntil { gate.waiting == 1 }
+        gate.release()
+        await waitUntil { await mock.executedCommands.count == 1 }
+        await waitUntil { hasSucceededPatch(store, id) }
+
+        // Reverse drag to 10%: the motor has to open 0 -> 10, not close 100 -> 10.
+        store.setCoverPosition(id, percent: 10)
+        await waitUntil { gate.waiting == 1 }
+        #expect(
+            store.devices.first?.coverSpec?.motion == .opening,
+            "the direction comes from the reported position, not the old display target"
+        )
+
+        // An opening report at 5% is behind the new target, so it cannot confirm the drag.
+        let beforeReport = store.snapshotGeneration
+        await mock.updateSnapshot(SynthesizedHome(devices: [
+            Self.curtain(target: 100, reported: 5, motion: .opening)
+        ]))
+        await waitUntil { store.snapshotGeneration > beforeReport }
+
+        let held = try #require(store.devices.first?.coverSpec)
+        #expect(held.positionPercent == 10)
+        #expect(held.motion == .opening)
+        #expect(store.optimisticLockUntil[id] != nil)
     }
 
     @Test("A travel report still takes the card over when no drag is waiting")
