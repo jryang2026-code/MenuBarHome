@@ -92,8 +92,8 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       const revision = host.localControlRevision;
       const store = getHostMiAccountsStore(host);
       const storeAccounts = host.miAccountsOverride ?? (await store.load().catch(() => []));
+      await adoptRecoveredPrimarySession(host, store, storeAccounts);
       if (host.localControlRevision !== revision) return;
-      adoptRecoveredPrimarySession(host, store, storeAccounts);
       if (storeAccounts.length > 1 || hasMultipleMiAccountsForHost(host)) {
         return refreshMultiAccountXiaomiDevices(host, silent);
       }
@@ -789,15 +789,18 @@ export function hasMultipleMiAccountsForHost(host: DualSourceInspectableHost): b
  * credential exists. The settings object must learn that session immediately, otherwise the next
  * settings save persists `miSession: null` and deletes the recovered account's only credential.
  */
-export function adoptRecoveredPrimarySession(
+export async function adoptRecoveredPrimarySession(
   host: { readonly settings: { miSession: MiSession | null; miCloudRegion: string } },
   store: MiAccountsStore,
   accounts: readonly MiAccount[],
-): void {
+): Promise<void> {
   const primary = accounts[0];
   if (!primary || host.settings.miSession !== null || hasPendingMiVaultDeletion() || !store.hasConfirmedPrimarySession()) {
     return;
   }
+  // The load may have raced a sign-out or another credential write. Only adopt a session that is
+  // still the stored primary; a revision bump alone (home selection etc.) must not drop it.
+  if (!(await store.isPrimarySessionCurrent(primary.session))) return;
   host.settings.miSession = primary.session;
   host.settings.miCloudRegion = normalizeMiCloudRegion(primary.region);
 }
@@ -868,6 +871,7 @@ export async function refreshMultiAccountXiaomiDevices(
   }
   const store = getHostMiAccountsStore(host);
   const loadedFromStore = host.miAccountsOverride ?? (await store.load());
+  await adoptRecoveredPrimarySession(host, store, loadedFromStore);
   if (
     !isHostAttachedToActiveWindow(host) ||
     host.settings.connectionMode !== "xiaomiCloud" ||
@@ -877,7 +881,6 @@ export async function refreshMultiAccountXiaomiDevices(
   ) {
     return;
   }
-  adoptRecoveredPrimarySession(host, store, loadedFromStore);
   const accounts =
     loadedFromStore.length > 0
       ? loadedFromStore
@@ -1131,6 +1134,7 @@ export async function refreshDualSourceDevices(
   const store = getHostMiAccountsStore(host);
   const loadedAccounts =
     overrideAccounts ?? (await store.load().catch(() => []));
+  await adoptRecoveredPrimarySession(host, store, loadedAccounts);
   if (
     !isHostAttachedToActiveWindow(host) ||
     !isDualSourceEnabled(host) ||
@@ -1140,7 +1144,6 @@ export async function refreshDualSourceDevices(
   ) {
     return;
   }
-  adoptRecoveredPrimarySession(host, store, loadedAccounts);
   const accounts =
     loadedAccounts.length > 0
       ? loadedAccounts

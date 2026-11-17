@@ -403,16 +403,24 @@ describe("Mi account index corruption (#228)", () => {
       settings: { miSession: null, miCloudRegion: "cn" },
     };
     assert.equal(store.hasConfirmedPrimarySession(), true);
-    adoptRecoveredPrimarySession(host, store, accounts);
+    await adoptRecoveredPrimarySession(host, store, accounts);
     assert.equal(host.settings.miSession?.userId, SESSION_SG.userId);
     assert.equal(host.settings.miCloudRegion, "sg");
 
     const existing: { settings: { miSession: MiSession | null; miCloudRegion: string } } = {
       settings: { miSession: SESSION_PRIMARY, miCloudRegion: "cn" },
     };
-    adoptRecoveredPrimarySession(existing, store, accounts);
+    await adoptRecoveredPrimarySession(existing, store, accounts);
     assert.equal(existing.settings.miSession?.userId, SESSION_PRIMARY.userId);
     assert.equal(existing.settings.miCloudRegion, "cn");
+
+    // A sign-out may delete the promoted credential after load; re-reading prevents restoring it.
+    data.delete("mi_session");
+    const afterDelete: { settings: { miSession: MiSession | null; miCloudRegion: string } } = {
+      settings: { miSession: null, miCloudRegion: "cn" },
+    };
+    await adoptRecoveredPrimarySession(afterDelete, store, accounts);
+    assert.equal(afterDelete.settings.miSession, null);
   });
 
   it("does not adopt a secondary as primary when the primary read failed", async () => {
@@ -432,7 +440,7 @@ describe("Mi account index corruption (#228)", () => {
     const host: { settings: { miSession: MiSession | null; miCloudRegion: string } } = {
       settings: { miSession: null, miCloudRegion: "cn" },
     };
-    adoptRecoveredPrimarySession(host, store, accounts);
+    await adoptRecoveredPrimarySession(host, store, accounts);
     assert.equal(host.settings.miSession, null, "an unread primary must not be replaced by a secondary");
   });
 

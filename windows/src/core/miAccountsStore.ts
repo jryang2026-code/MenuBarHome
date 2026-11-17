@@ -392,6 +392,12 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
   hasConfirmedPrimarySession(): boolean { return this.primaryConfirmed;
   }
 
+  /** Re-reads `mi_session` to prove a just-recovered primary is still the stored credential. */
+  async isPrimarySessionCurrent(session: MiSession): Promise<boolean> {
+    const current = await this.vault.loadPrimaryMiSession();
+    return current !== null && miSessionFingerprint(current) === miSessionFingerprint(session);
+  }
+
   async load(): Promise<MiAccount[]> {
     return this.enqueue(() => this.loadUnlocked());
   }

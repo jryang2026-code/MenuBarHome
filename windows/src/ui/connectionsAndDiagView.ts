@@ -372,10 +372,9 @@ export function resolveHostMiAccounts(host: ConnectionsAndDiagHost): MiAccount[]
   if (pendingDelete || (!host.settings.miSession && !hasSecondaryMiAccountsInIndex())) {
     setHostMiAccounts(host, null);
     if (!pendingDelete && storeAccounts.length > 0) {
-      const revision = host.localControlRevision;
       void store.load()
-        .then((loaded) => {
-          if (host.localControlRevision === revision) adoptRecoveredPrimarySession(host, store, loaded);
+        .then(async (loaded) => {
+          await adoptRecoveredPrimarySession(host, store, loaded);
         })
         .catch(() => {});
     }
@@ -404,11 +403,8 @@ async function ensureHostMiAccountsHydrated(host: ConnectionsAndDiagHost): Promi
   try {
     const beforeIds = resolveHostMiAccounts(host).map((a) => a.id).join(",");
     const beforeReadState = store.getAccountsReadState();
-    const revision = host.localControlRevision;
     const loaded = await store.load();
-    if (host.localControlRevision === revision) {
-      adoptRecoveredPrimarySession(host, store, loaded);
-    }
+    await adoptRecoveredPrimarySession(host, store, loaded);
     session.hydratedVaultOnce = true;
     if (
       (beforeIds !== loaded.map((a) => a.id).join(",") || beforeReadState !== store.getAccountsReadState()) &&
@@ -595,7 +591,6 @@ async function performSignOutSingleMiAccountOnHost(
           host.selectRoom(null);
           if (isFullPanelHost(host)) clearHostActivitiesOnSignOut(host);
         }
-        if (host.credentialVault) await host.credentialVault.deleteMiSession();
         host.saveSettings();
         host.replyBanner = {
           text: tr3("已退出米家账号", "已登出米家帳號", "Signed out of Xiaomi Home", lang),
