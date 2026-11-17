@@ -824,7 +824,9 @@ extension HomeStore {
         )
     }
 
-    /// A drag is the confirmation. One-tap open still asks via `setCoverMotor` / `togglePrimary`.
+    /// A curtain or blind treats the drag as the confirmation; a subtype the hazard table calls
+    /// dangerous (garage door, gate) asks before the row moves. The drag's first tick carries the
+    /// answer for the rest of that drag, the same way a facet slider rides on its first prompt.
     public func setCoverPosition(_ deviceId: String, percent: Int) {
         guard let previous = controllableDevice(deviceId), case .cover(var s) = previous.kind,
               s.positionWritable else { return }
@@ -837,7 +839,18 @@ extension HomeStore {
         } else {
             nil
         }
-        let previousPosition = (baselineCover ?? s).positionPercent ?? displayed
+        let startPosition = (baselineCover ?? s).positionPercent
+        let previousPosition = startPosition ?? displayed
+        // Asked before any optimistic state moves, so a refusal leaves the slider on the position
+        // the device really reports. The drag's origin decides the direction, so one answer covers
+        // the whole drag; the entry lives only as long as the drag's debounce slot.
+        if baselineCover == nil { approvedCoverDrags.removeValue(forKey: key) }
+        if let opening = Self.coverDragDirection(from: startPosition, to: displayed),
+           approvedCoverDrags[key] != opening,
+           ManualControlPolicy.requiresConfirmation(.power(opening), for: previous) {
+            guard allowManualControl(.power(opening), for: previous) else { return }
+            approvedCoverDrags[key] = opening
+        }
         let origin = activeCoverOrigin(for: deviceId, fallback: previousPosition) ?? previousPosition
         if let baselineCover {
             s.motion = baselineCover.motion
@@ -874,6 +887,16 @@ extension HomeStore {
                 device.kind = .cover(spec)
             }
         )
+    }
+
+    /// The hazard direction a position drag takes (`true` opens), or nil when it cannot move the
+    /// device. A curtain has no hazard; a garage door is hazardous in both directions and a window
+    /// opener or airer only while opening. An unknown reported position counts as opening, the
+    /// direction every hazardous subtype asks about.
+    nonisolated static func coverDragDirection(from start: Int?, to target: Int) -> Bool? {
+        guard let start else { return true }
+        guard start != target else { return nil }
+        return target > start
     }
 
     func activeCoverOrigin(for deviceId: String, fallback: Int?) -> Int? {

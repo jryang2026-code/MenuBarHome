@@ -851,6 +851,10 @@ public final class HomeStore {
     /// Position the card showed when the current cover travel started. A stopped report at that
     /// position is the pre-command snapshot; any other stopped position is the motor's real stop.
     var coverCommandOrigins: [String: Int] = [:]
+    /// Cover position drags whose hazard prompt is already answered, per debounce slot: the value
+    /// is the direction (`true` opens) that was approved. `setCoverPosition` drops the entry as soon
+    /// as the slot it belongs to is gone, so a new drag asks again.
+    var approvedCoverDrags: [String: Bool] = [:]
     /// Last position each cover reported. Inferred travel survives only while this value changes,
     /// so an obstructed motor with a stale target stops showing "opening" (#298).
     var lastCoverPositions: [String: Int] = [:]

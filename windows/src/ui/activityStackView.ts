@@ -37,7 +37,7 @@ import {
 import { ManualControlPolicy } from "../core/assistant.js";
 import { getScopedEnergyHistory } from "../core/energyHistory.js";
 import { resolveSensorHistoryScope, sharedSensorHistoryStore } from "../core/sensorHistory.js";
-import { isDeviceActiveOn, type DeviceCommand, type SmartDevice } from "../core/models.js";
+import { isDeviceActiveOn, type DeviceCommand, type FacetControl, type SmartDevice } from "../core/models.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import type { ReplyBannerState } from "./appTypes.js";
 import { SF_ICONS } from "./appConstants.js";
@@ -668,13 +668,22 @@ export async function executeSafetyTurnOffAction(
   return false;
 }
 
+/**
+ * True when restoring `step` would escalate the hazard of its device. A facet row carries the
+ * meaning of its own restore (an auxiliary switch turned back on, a mode restored away from off),
+ * so it is judged by the same table the original tap used, mirroring macOS `confirmUndoTargets`.
+ */
 export function doesUndoStepActivateHighRiskDevice(
   step: { readonly deviceId: string; readonly commands: readonly DeviceCommand[] },
   devices: readonly SmartDevice[],
   kindSnapshots?: ReadonlyMap<string, SmartDevice["kind"]>,
+  facetsById?: Readonly<Record<string, readonly FacetControl[]>>,
 ): boolean {
   const dev = devices.find((d) => d.id === step.deviceId);
-  if (!dev || !ManualControlPolicy.requiresConfirmation({ targetId: dev.id, operation: { kind: "power", isOn: true } }, devices)) {
+  if (!dev) return false;
+  const facets = facetsById?.[dev.id] ?? [];
+  if (step.commands.some((cmd) => facetRestoreNeedsConfirmation(dev, cmd, facets, devices))) return true;
+  if (!ManualControlPolicy.requiresConfirmation({ targetId: dev.id, operation: { kind: "power", isOn: true } }, devices)) {
     return false;
   }
   const snapKind = kindSnapshots?.get(step.deviceId);
@@ -699,11 +708,32 @@ export function doesUndoStepActivateHighRiskDevice(
       case "pressButton":
         return dev.kind.kind === "appliance" ? dev.kind.startAction?.entityId === cmd.entityId : true;
       case "setMiotProperty":
-        return cmd.value === true || (dev.kind.kind === "cover" && typeof cmd.value === "number" && cmd.value > 0);
+        // Reached only when no facet row explains the restore: a high-risk card is treated as one
+        // the property could turn back on, the same conservative rule macOS applies.
+        return dev.kind.kind === "cover" && typeof cmd.value === "number" && cmd.value > 0;
       default:
         return false;
     }
   });
+}
+
+/** The hazard a facet restore carries, judged by the table the original write used. */
+function facetRestoreNeedsConfirmation(
+  dev: SmartDevice,
+  cmd: DeviceCommand,
+  facets: readonly FacetControl[],
+  devices: readonly SmartDevice[],
+): boolean {
+  if (cmd.kind !== "setMiotProperty") return false;
+  const control = facets.find(
+    (item) =>
+      item.target?.kind === "property" &&
+      item.target.entityId === cmd.entityId &&
+      item.target.piid === cmd.piid,
+  );
+  if (control) return ManualControlPolicy.facetRequiresConfirmation(control, cmd.value, dev);
+  // No row explains this property: only the device-level hazard can speak.
+  return ManualControlPolicy.requiresConfirmation({ targetId: dev.id, operation: { kind: "power", isOn: true } }, devices);
 }
 
 export function partitionUndoStepsByHighRiskConfirmation<
@@ -715,7 +745,11 @@ export function partitionUndoStepsByHighRiskConfirmation<
 ): { readonly approvedSteps: T[]; readonly skippedHighRiskSteps: T[]; readonly abortedAllHighRisk: boolean; readonly armedPromptText?: string } {
   const aliased = aliasedHostDevices(host);
   const pref = host.settings.interfaceLanguage;
-  const highRiskSet = new Set(steps.filter((s) => doesUndoStepActivateHighRiskDevice(s, aliased, options.kindSnapshots)));
+  const highRiskSet = new Set(
+    steps.filter((s) =>
+      doesUndoStepActivateHighRiskDevice(s, aliased, options.kindSnapshots, host.deviceFacets),
+    ),
+  );
   if (highRiskSet.size === 0 || (typeof host.manualControlConfirmationHandler !== "function" && options.isArmed)) {
     options.disarm();
     return { approvedSteps: [...steps], skippedHighRiskSteps: [], abortedAllHighRisk: false };

@@ -1030,6 +1030,80 @@ describe("Wave 2 A11: classifyControlFailure, 2200ms echo read-back, and Facet U
     assert.equal(app.lastUndoAction, null, "momentary button facet must not populate lastUndoAction");
   });
 
+  it("asks before a single-device undo restores a heater's auxiliary switch", async () => {
+    const heater: SmartDevice = {
+      id: "heater_1",
+      name: "取暖器",
+      roomId: "room_live",
+      roomName: "客厅",
+      model: "dmaker.heater.v1",
+      isOnline: true,
+      kind: {
+        kind: "climate",
+        entityId: "miot:heater_1:2",
+        isOn: true,
+        hvacMode: "heat",
+        availableModes: ["off", "heat"],
+        targetTemperature: 22,
+        currentTemperature: 20,
+        minTemp: 16,
+        maxTemp: 30,
+        step: 1,
+        fanMode: null,
+        availableFanModes: [],
+      },
+    };
+    const auxiliary: FacetControl = {
+      id: "3.1",
+      kind: "toggle",
+      name: "on",
+      title: "辅助加热",
+      serviceName: "auxiliary",
+      unit: null,
+      scale: null,
+      value: 1,
+      options: [],
+      range: null,
+      isWritable: true,
+      writesByDefault: true,
+      isHighValue: true,
+      target: { kind: "property", entityId: "miot:heater_1:3", piid: 1 },
+    };
+
+    localStorage.setItem(
+      "menumijia.windows.settings.v2",
+      JSON.stringify({
+        connectionMode: "demo",
+        hasCompletedOnboarding: true,
+        allowAdvancedFacetWrites: true,
+      }),
+    );
+
+    const app = new MenuMijiaWindowsApp(element("#app"));
+    await setImmediate();
+    app.devices = [structuredClone(heater)];
+    app.deviceFacets = { heater_1: [structuredClone(auxiliary)] };
+    app.expandedDeviceId = "heater_1";
+    app.render();
+    element('[data-more-settings-toggle="heater_1"]').click();
+
+    // Turning the auxiliary switch off is direct: it makes the home safer.
+    element('[data-facet-toggle="heater_1|3.1"]').click();
+    await setImmediate();
+    await setImmediate();
+    assert.equal(app.deviceFacets.heater_1![0]!.value, false);
+    assert.ok(app.lastUndoAction, "the facet write offers an undo that would heat again");
+
+    await app.performUndo();
+    assert.match(app.replyBanner?.text ?? "", /再点一次「撤销」确认执行|click Undo again to confirm/);
+    assert.equal(app.deviceFacets.heater_1![0]!.value, false, "the first undo click only arms the restore");
+    assert.ok(app.lastUndoAction, "the armed undo stays available");
+
+    await app.performUndo();
+    assert.equal(app.deviceFacets.heater_1![0]!.value, true, "the second click restores the heating switch");
+    assert.equal(app.lastUndoAction, null);
+  });
+
   it("preserves splitParentDid/splitSiid on multi-key wall switches and generic split cards during 2200ms echo read-back", async () => {
     const wallSwitchSpec: MiotDeviceSpec = {
       type: "urn:miot-spec-v2:device:switch:0000A003:lumi-b2lacn02:1",

@@ -895,19 +895,49 @@ extension HomeStore {
         var checkedHighRiskDeviceIds: Set<String> = []
         var hasApprovedTarget = false
 
+        /// One prompt per device: whichever restore speaks for that device first decides, and a
+        /// refusal keeps all of its later commands unsent.
+        func settle(_ device: SmartDevice, requiresConfirmation: Bool, ask: () -> Bool) {
+            guard requiresConfirmation else {
+                hasApprovedTarget = true
+                return
+            }
+            guard checkedHighRiskDeviceIds.insert(device.id).inserted else { return }
+            if ask() { hasApprovedTarget = true } else { declinedDeviceIds.insert(device.id) }
+        }
+
         for command in commands {
             if let target = Self.facetTarget(for: command),
                let device = devices.first(where: {
                    deviceFacets[$0.id]?.contains { $0.target == target } == true && !excludingDeviceIds.contains($0.id)
-               }), device.isOnline {
-                hasApprovedTarget = true
+               }), device.isOnline,
+               let control = deviceFacets[device.id]?.first(where: { $0.target == target }),
+               !declinedDeviceIds.contains(device.id) {
+                // The facet row carries the meaning of the restore: an auxiliary switch turned back
+                // on, a mode restored away from off or a hotter setpoint is as hazardous as the tap
+                // that made the change. A row that cannot decode the restored value falls back to
+                // the device-level power hazard instead of passing silently.
+                if let value = Self.facetValue(for: command, control: control) {
+                    settle(device, requiresConfirmation: ManualControlPolicy.facetRequiresConfirmation(control, value: value, for: device)) {
+                        allowManualControl(facet: control, value: value, for: device)
+                    }
+                } else {
+                    settle(device, requiresConfirmation: ManualControlPolicy.requiresConfirmation(.power(true), for: device)) {
+                        allowManualControl(.power(true), for: device)
+                    }
+                }
                 continue
             }
             if case .setMiotProperty(let entityId, _, _) = command {
                 let did = MiotAddress.parse(entityId)?.did
                 let owners = devices.filter { device in did.map { device.id == $0 || device.miotCommandDids.contains($0) } == true }
-                if let device = owners.count == 1 ? owners.first : nil, device.isOnline, !excludingDeviceIds.contains(device.id) {
-                    hasApprovedTarget = true
+                if let device = owners.count == 1 ? owners.first : nil, device.isOnline,
+                   !excludingDeviceIds.contains(device.id), !declinedDeviceIds.contains(device.id) {
+                    // No facet row explains this restore, so only the device-level hazard can speak:
+                    // a high-risk card is treated as one the restore could turn back on.
+                    settle(device, requiresConfirmation: ManualControlPolicy.requiresConfirmation(.power(true), for: device)) {
+                        allowManualControl(.power(true), for: device)
+                    }
                 }
                 continue
             }
@@ -923,14 +953,10 @@ extension HomeStore {
                 resolved = nil
             }
             guard let (device, restored) = resolved, !declinedDeviceIds.contains(device.id) else { continue }
-            let requiresConfirm = restored.isActiveOn && ManualControlPolicy.requiresConfirmation(
+            settle(device, requiresConfirmation: restored.isActiveOn && ManualControlPolicy.requiresConfirmation(
                 DeviceIntent(targetId: device.id, operation: .power(true)), devices: devices
-            )
-            if requiresConfirm, checkedHighRiskDeviceIds.insert(device.id).inserted {
-                if allowManualControl(.power(true), for: device) { hasApprovedTarget = true }
-                else { declinedDeviceIds.insert(device.id) }
-            } else {
-                hasApprovedTarget = true
+            )) {
+                allowManualControl(.power(true), for: device)
             }
         }
         return UndoConfirmationFilterResult(

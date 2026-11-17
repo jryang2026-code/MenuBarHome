@@ -123,6 +123,22 @@ export function coverMotorRequiresConfirmation(
   return action === "open";
 }
 
+/**
+ * True when a position write from a slider must ask first. The subtype hazard table decides the
+ * direction (`to` above the reported position opens), exactly like the motor buttons, and an
+ * unknown reported position counts as opening. Mirrors macOS `setCoverPosition`.
+ */
+export function coverPositionRequiresConfirmation(
+  subtype: string | null | undefined,
+  from: number | null,
+  to: number,
+): boolean {
+  if (from === null) return coverMotorRequiresConfirmation(subtype, "open");
+  const start = Math.round(from);
+  if (start === to) return false;
+  return coverMotorRequiresConfirmation(subtype, to > start ? "open" : "close");
+}
+
 export function renderApplianceDrawer(
   dev: SmartDevice,
   k: ApplianceSpec,
@@ -646,6 +662,19 @@ export function bindDetailDrawerEvents(
       const displayed = snapCoverPosition(clamped);
       const command: DeviceCommand = { kind: "setNumberValue", entityId: dev.kind.entityId, value: clamped };
       const summary = t("已将{name}位置设为 {percent}%", { name: dev.name, percent: displayed });
+      // A curtain keeps the drag as its confirmation; a garage door, gate or an opener opening
+      // asks first, the same rule its motor buttons follow.
+      if (
+        coverPositionRequiresConfirmation(dev.kind.subtype, dev.kind.positionPercent, clamped) &&
+        !confirmHighRisk(
+          dev.id,
+          command,
+          t("将{name}位置调到 {percent}%", { name: dev.name, percent: displayed }),
+        )
+      ) {
+        slider.value = String(Math.round(dev.kind.positionPercent ?? 0));
+        return;
+      }
       void host.executeSingleCommand(dev, command, summary);
     });
   });
@@ -879,10 +908,13 @@ export function bindDetailDrawerEvents(
   });
 
   bindSpeakerCommandBars(host, confirmHighRisk);
-  bindCollapsedInlineSliders(host);
+  bindCollapsedInlineSliders(host, confirmHighRisk);
 }
 
-function bindCollapsedInlineSliders(host: MenuMijiaWindowsApp): void {
+function bindCollapsedInlineSliders(
+  host: MenuMijiaWindowsApp,
+  confirmHighRisk: DetailDrawerBindCallbacks["confirmHighRisk"],
+): void {
   host.root.querySelectorAll<HTMLElement>("[data-inline-slider-wrap]").forEach((wrap) => {
     wrap.addEventListener("pointerdown", (e) => {
       host.pointerIsDown = true;
@@ -958,6 +990,19 @@ function bindCollapsedInlineSliders(host: MenuMijiaWindowsApp): void {
             name: dev.name,
             percent: displayed,
           });
+          // A garage door hides this inline slider; a window opener or airer shows it and asks the
+          // same way its motor buttons do when the drag opens.
+          if (
+            coverPositionRequiresConfirmation(dev.kind.subtype, dev.kind.positionPercent, clamped) &&
+            !confirmHighRisk(
+              dev.id,
+              command,
+              t("将{name}位置调到 {percent}%", { name: dev.name, percent: displayed }),
+            )
+          ) {
+            slider.value = String(Math.round(dev.kind.positionPercent ?? 0));
+            return;
+          }
           void host.executeSingleCommand(dev, command, summary);
           return;
         }

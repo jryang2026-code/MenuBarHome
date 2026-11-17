@@ -135,4 +135,136 @@ struct FacetUndoTests {
         #expect(await provider.executedCommands.isEmpty)
     }
 
+    // MARK: - Restored values are judged like the tap that changed them
+
+    private func heater(_ id: String, entityId: String) -> SmartDevice {
+        SmartDevice(
+            id: id, name: "取暖器", roomId: "room", roomName: "room", model: "xiaomi.heater.v1",
+            isOnline: true,
+            kind: .climate(ClimateSpec(
+                entityId: entityId, isOn: true, hvacMode: "heat",
+                availableModes: ["off", "heat"], targetTemperature: 22, minTemp: 16, maxTemp: 32
+            ))
+        )
+    }
+
+    /// An auxiliary switch on a heater, the shape 更多设置 shows as a toggle.
+    private func auxiliarySwitch(entityId: String, current: JSONValue) -> FacetControl {
+        FacetControl(
+            id: "3.1", kind: .toggle, name: "on", title: "辅助加热", serviceName: "auxiliary",
+            value: current, isWritable: true, writesByDefault: true, isHighValue: true,
+            target: .property(entityId: entityId, piid: 1)
+        )
+    }
+
+    @Test("Undoing an auxiliary switch back on asks before the heater is restored")
+    func heaterFacetUndoAsks() async throws {
+        let device = heater("heater", entityId: "miot:heater:2")
+        let command = DeviceCommand.setMiotProperty(entityId: "miot:heater:3", piid: 1, value: .bool(true))
+        let (store, provider) = try await makeStore(
+            devices: [device],
+            facets: [device.id: [auxiliarySwitch(entityId: "miot:heater:3", current: .bool(false))]]
+        )
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return true
+        }
+        offerUndo(store, command: command)
+        let task = try #require(store.undoTurnAllOff())
+        #expect(prompts == 1, "turning the auxiliary switch back on is a heating write")
+        await task.value
+        #expect(await provider.executedCommands == [command])
+    }
+
+    @Test("Declining the undo prompt keeps the heater's restore command unsent")
+    func heaterFacetUndoDeclined() async throws {
+        let device = heater("heater", entityId: "miot:heater:2")
+        let command = DeviceCommand.setMiotProperty(entityId: "miot:heater:3", piid: 1, value: .bool(true))
+        let (store, provider) = try await makeStore(
+            devices: [device],
+            facets: [device.id: [auxiliarySwitch(entityId: "miot:heater:3", current: .bool(false))]]
+        )
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return false
+        }
+        offerUndo(store, command: command)
+        #expect(store.undoTurnAllOff() == nil)
+        #expect(prompts == 1)
+        #expect(store.undoBanner != nil, "a declined undo stays available to retry")
+        #expect(store.deviceFacets[device.id]?.first?.value == .bool(false), "the refused restore never shows")
+        #expect(await provider.executedCommands.isEmpty)
+    }
+
+    @Test("A low-risk facet undo never asks")
+    func lowRiskFacetUndoIsDirect() async throws {
+        let device = light("light", entityId: "miot:light:2")
+        let (store, provider) = try await makeStore(
+            devices: [device], facets: [device.id: [facet(entityId: "miot:light:3")]]
+        )
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return false
+        }
+        let command = DeviceCommand.setMiotProperty(entityId: "miot:light:3", piid: 2, value: .number(0))
+        offerUndo(store, command: command)
+        let task = try #require(store.undoTurnAllOff())
+        await task.value
+        #expect(prompts == 0)
+        #expect(await provider.executedCommands == [command])
+    }
+
+    @Test("A de-escalating facet undo stays direct")
+    func deescalatingFacetUndoIsDirect() async throws {
+        let device = heater("heater", entityId: "miot:heater:2")
+        let (store, provider) = try await makeStore(
+            devices: [device],
+            facets: [device.id: [auxiliarySwitch(entityId: "miot:heater:3", current: .bool(true))]]
+        )
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return false
+        }
+        let command = DeviceCommand.setMiotProperty(entityId: "miot:heater:3", piid: 1, value: .bool(false))
+        offerUndo(store, command: command)
+        let task = try #require(store.undoTurnAllOff())
+        await task.value
+        #expect(prompts == 0, "restoring the off state makes the home safer")
+        #expect(await provider.executedCommands == [command])
+    }
+
+    @Test("An undecodable MIoT restore on a high-risk card asks, on a light it does not")
+    func undecodedMiotRestoreFollowsDeviceHazard() async throws {
+        let hot = heater("heater", entityId: "miot:heater:2")
+        let (hotStore, hotProvider) = try await makeStore(devices: [hot], facets: [:])
+        var hotPrompts = 0
+        hotStore.manualControlConfirmationHandler = { _ in
+            hotPrompts += 1
+            return false
+        }
+        let hotCommand = DeviceCommand.setMiotProperty(entityId: "miot:heater:9", piid: 5, value: .number(1))
+        offerUndo(hotStore, command: hotCommand)
+        #expect(hotStore.undoTurnAllOff() == nil)
+        #expect(hotPrompts == 1, "no facet row explains the restore, so the heater hazard decides")
+        #expect(await hotProvider.executedCommands.isEmpty)
+
+        let lamp = light("light", entityId: "miot:light:2")
+        let (lampStore, lampProvider) = try await makeStore(devices: [lamp], facets: [:])
+        var lampPrompts = 0
+        lampStore.manualControlConfirmationHandler = { _ in
+            lampPrompts += 1
+            return false
+        }
+        let lampCommand = DeviceCommand.setMiotProperty(entityId: "miot:light:9", piid: 5, value: .number(1))
+        offerUndo(lampStore, command: lampCommand)
+        let task = try #require(lampStore.undoTurnAllOff())
+        await task.value
+        #expect(lampPrompts == 0)
+        #expect(await lampProvider.executedCommands == [lampCommand])
+    }
+
 }
