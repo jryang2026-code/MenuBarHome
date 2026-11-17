@@ -60,6 +60,12 @@ public struct FragmentedMP4Demuxer: Sendable {
         var flags: UInt32 = 0
     }
 
+    /// Most samples one `moof` + `mdat` pair may announce. A live fragment holds a couple of
+    /// seconds of video, so even 60 fps H.264/HEVC with several runs stays under a few hundred
+    /// frames; 4096 leaves two orders of magnitude of headroom while a forged `sample_count` of
+    /// millions is rejected before the sample loop runs.
+    static let maxSamplesPerFragment = 4_096
+
     public init(maxBufferedBytes: Int = 16 * 1024 * 1024) {
         self.maxBufferedBytes = maxBufferedBytes
     }
@@ -304,6 +310,9 @@ public struct FragmentedMP4Demuxer: Sendable {
         mdatHeaderSize: Int,
         into events: inout [FMP4DemuxEvent]
     ) throws {
+        // Shared across every `traf` of this fragment: the declared counts are untrusted, so the
+        // budget bounds the total work one network-supplied `moof` can ask for.
+        var fragmentSampleCount = 0
         for traf in Self.children(of: moof, from: 8) where traf.type == "traf" {
             var trackID: UInt32 = 0
             var defaults = TrackDefaults()
@@ -366,14 +375,16 @@ public struct FragmentedMP4Demuxer: Sendable {
                     firstFlags = Self.readUInt32(moof, o)
                     o += 4
                 }
+                // `sample_count` is the one number in `trun` the structural checks cannot bound:
+                // with no per-sample fields the payload guard below accepts any count, which a
+                // forged stream turns into one empty sample per iteration. Reject up front instead.
+                guard count <= Self.maxSamplesPerFragment - fragmentSampleCount else {
+                    throw FMP4DemuxError.malformedBox("trun")
+                }
+                fragmentSampleCount += count
                 let perSample = (flags & 0x100 != 0 ? 4 : 0) + (flags & 0x200 != 0 ? 4 : 0)
                     + (flags & 0x400 != 0 ? 4 : 0) + (flags & 0x800 != 0 ? 4 : 0)
                 guard o + perSample * count <= run.upperBound else {
-                    throw FMP4DemuxError.malformedBox("trun")
-                }
-                // Without per-sample fields the check above passes for any count. More samples
-                // than payload bytes can only be empty ones, so a huge count would loop for nothing.
-                guard perSample > 0 || count <= mdat.count else {
                     throw FMP4DemuxError.malformedBox("trun")
                 }
 
@@ -393,15 +404,20 @@ public struct FragmentedMP4Demuxer: Sendable {
                     guard start >= 0, end <= payloadLength else {
                         throw FMP4DemuxError.malformedBox("mdat")
                     }
-                    let sampleData = mdat.subdata(in: (mdatHeaderSize + start)..<(mdatHeaderSize + end))
-                    events.append(.sample(FMP4Sample(
-                        trackID: trackID,
-                        data: sampleData,
-                        decodeTime: decodeTime,
-                        duration: duration,
-                        compositionOffset: cto,
-                        isKeyframe: sampleFlags & 0x0001_0000 == 0
-                    )))
+                    // A zero-byte sample decodes to nothing; handing the player an empty access
+                    // unit only costs a queue slot, so skip the event while still advancing the
+                    // decode clock. The fragment budget above already bounds how many can appear.
+                    if size > 0 {
+                        let sampleData = mdat.subdata(in: (mdatHeaderSize + start)..<(mdatHeaderSize + end))
+                        events.append(.sample(FMP4Sample(
+                            trackID: trackID,
+                            data: sampleData,
+                            decodeTime: decodeTime,
+                            duration: duration,
+                            compositionOffset: cto,
+                            isKeyframe: sampleFlags & 0x0001_0000 == 0
+                        )))
+                    }
                     decodeTime &+= UInt64(duration)
                     dataOffset = end + mdatPayloadOffset
                 }
