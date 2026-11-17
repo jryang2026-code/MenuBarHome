@@ -41,10 +41,10 @@ import {
 } from "../core/dualSourceProvider.js";
 import {
   clearAccountRateLimitBackoff,
-  MI_ACCOUNTS_EXPIRED_STORAGE_KEY,
   MI_ACCOUNTS_INDEX_STORAGE_KEY,
   readAccountIndex,
 } from "../core/miAccountsStore.js";
+import { clearPersistedMiSessionExpired } from "../core/pollingPolicy.js";
 import {
   clearUpdateProgress,
   didMiExpiryKindChange,
@@ -220,7 +220,8 @@ export async function clearHostSessionAndDualSourceState(
   try {
     if (typeof localStorage !== "undefined") {
       localStorage.removeItem(MI_ACCOUNTS_INDEX_STORAGE_KEY);
-      localStorage.removeItem(MI_ACCOUNTS_EXPIRED_STORAGE_KEY);
+      // Removes the per-fingerprint rejection keys plus the two v1 migration keys.
+      clearPersistedMiSessionExpired();
       if (options.revokeAll) {
         localStorage.removeItem(DUAL_SOURCE_ENABLED_STORAGE_KEY);
         localStorage.removeItem(PINNED_DEVICE_SOURCES_STORAGE_KEY);

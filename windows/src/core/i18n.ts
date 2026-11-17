@@ -599,6 +599,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "配置流地址": ["配置流地址", "Configure stream URL"],
   "关闭画面": ["关闭画面", "Close live view"],
   "连接流地址": ["连接流地址", "Connect stream URL"],
+  "请填写局域网地址；本机回环地址（127.0.0.1）需先加入已授权服务地址，应用自带的 go2rtc 流不受影响": ["请填写局域网地址；本机回环地址（127.0.0.1）需先加入已授权服务地址，应用自带的 go2rtc 流不受影响", "Use a LAN address; a loopback address (127.0.0.1) must first be an authorized service origin. The bundled go2rtc stream is unaffected"],
   "已{action}{name}移动侦测": ["已{action}{name}移动侦测", "{action} motion detection on {name}"],
   "已将{name}设为{mode}": ["已将{name}设为{mode}", "Set {name} to {mode}"],
   "夜视关": ["夜视关", "Night Off"],
