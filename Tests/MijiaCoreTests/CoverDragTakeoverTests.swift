@@ -359,6 +359,90 @@ struct CoverDragTakeoverTests {
         #expect(sent.last == .setNumberValue(entityId: "cover.opener", value: 30))
     }
 
+    @Test("A missing position report cannot turn the optimistic target into the drag's start")
+    @MainActor
+    func missingReportFailsClosedForHazardousCover() async throws {
+        let opener = Self.cover(
+            id: "opener", name: "阳台窗", subtype: .windowOpener, position: 0, reported: 0
+        )
+        let (store, mock, gate) = try await makeStore([opener])
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return true
+        }
+
+        // Confirm and send 0 -> 100.
+        store.setCoverPosition(opener.id, percent: 100)
+        #expect(prompts == 1)
+        await waitUntil { gate.waiting == 1 }
+        gate.release()
+        await waitUntil { await mock.executedCommands.count == 1 }
+        await waitUntil { hasSucceededPatch(store, opener.id) }
+
+        // A report without any position keeps the locked 100% target on screen. The motor's real
+        // position is unknown and must not be borrowed from that optimistic target.
+        let beforeReport = store.snapshotGeneration
+        await mock.updateSnapshot(SynthesizedHome(devices: [
+            Self.cover(id: "opener", name: "阳台窗", subtype: .windowOpener, position: nil, reported: nil)
+        ]))
+        await waitUntil { store.snapshotGeneration > beforeReport }
+        #expect(store.lastCoverPositions[opener.id] == nil)
+        #expect(store.devices.first?.coverSpec?.positionPercent == 100)
+
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return false
+        }
+        store.setCoverPosition(opener.id, percent: 20)
+        #expect(prompts == 2, "an unknown start counts as the hazardous opening direction")
+        #expect(await mock.executedCommands.count == 1, "the refused drag never reaches the provider")
+        #expect(store.devices.first?.coverSpec?.positionPercent == 100, "the refused drag leaves the row")
+    }
+
+    @Test("A garage drag with an unknown start still asks")
+    @MainActor
+    func garageDragWithUnknownStartAsks() async throws {
+        let garage = Self.cover(
+            id: "garage", name: "车库门", subtype: .garageDoor, position: nil, reported: nil
+        )
+        let (store, mock, _) = try await makeStore([garage])
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return false
+        }
+
+        store.setCoverPosition(garage.id, percent: 60)
+        #expect(prompts == 1, "a garage door needs an answer in either direction")
+        #expect(await mock.executedCommands.isEmpty)
+        #expect(store.devices.first?.coverSpec?.positionPercent == nil)
+    }
+
+    @Test("A curtain drag with an unknown start stays direct")
+    @MainActor
+    func curtainDragWithUnknownStartStaysDirect() async throws {
+        let curtain = Self.cover(
+            id: "curtain", name: "客厅窗帘", subtype: .curtain, position: nil, reported: nil
+        )
+        let (store, mock, gate) = try await makeStore([curtain])
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return true
+        }
+
+        store.setCoverPosition(curtain.id, percent: 50)
+        #expect(prompts == 0, "a curtain has no hazard direction")
+        await waitUntil { gate.waiting == 1 }
+        #expect(store.devices.first?.coverSpec?.positionPercent == 50)
+
+        let exits = store.manualWriteExits
+        gate.release()
+        await waitUntil { store.manualWriteExits > exits }
+        #expect(await mock.executedCommands == [.setNumberValue(entityId: "cover.curtain", value: 50)])
+    }
+
     @Test("A window-opener drag is judged from the reported position, so opening asks")
     @MainActor
     func windowOpenerDragUsesReportedDirection() async throws {

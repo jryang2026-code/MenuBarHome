@@ -541,10 +541,12 @@ extension HomeStore {
         return composed
     }
 
-    /// The position a cover reports, before any optimistic display substitution.
-    static func coverStartPosition(_ device: SmartDevice) -> Int? {
+    /// The position the device last reported, or nil when its report carried none. Deliberately
+    /// not `positionPercent`: a locked or composed row can hold the optimistic target there, and a
+    /// missing report has to stay unknown so a hazardous drag fails closed.
+    static func coverReportedPosition(_ device: SmartDevice) -> Int? {
         guard case .cover(let spec) = device.kind else { return nil }
-        return spec.reportedPositionPercent ?? spec.positionPercent
+        return spec.reportedPositionPercent
     }
 
     /// The final gate for a hazardous cover drag: the command's direction from `startPosition` must
@@ -591,7 +593,7 @@ extension HomeStore {
                   !Self.coverDragMaySend(
                       plan,
                       from: incoming,
-                      startPosition: Self.coverStartPosition(incoming)
+                      startPosition: lastCoverPositions[deviceId]
                   ) else { return false }
             rejected.append(patch)
             return true
@@ -758,7 +760,7 @@ extension HomeStore {
            !Self.coverDragMaySend(
                plan,
                from: session.base,
-               startPosition: lastCoverPositions[deviceId] ?? Self.coverStartPosition(session.base)
+               startPosition: lastCoverPositions[deviceId] ?? Self.coverReportedPosition(session.base)
            ) {
             return .needsCoverConfirmation
         }

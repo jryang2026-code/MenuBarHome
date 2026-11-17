@@ -840,11 +840,10 @@ extension HomeStore {
             nil
         }
         // `lastCoverPositions` is the raw position the device last reported, updated by every
-        // snapshot even while a command lock hides it. It is the motor's real start; the row's
-        // `positionPercent` is only the commanded target and the lock can freeze the rest.
-        let startPosition = lastCoverPositions[deviceId]
-            ?? s.reportedPositionPercent
-            ?? s.positionPercent
+        // snapshot even while a command lock hides it. The row's `reportedPositionPercent` is the
+        // same truth after a lock merge; `positionPercent` is only the commanded target, so a
+        // missing report must stay unknown instead of borrowing the optimistic value.
+        let startPosition = lastCoverPositions[deviceId] ?? s.reportedPositionPercent
         let previousPosition = startPosition ?? displayed
         // Asked before any optimistic state moves, so a refusal leaves the slider on the position
         // the device really reports. The direction comes from the value the command sends, not the
@@ -873,7 +872,7 @@ extension HomeStore {
             target: clamped,
             approvedOpens: (answeredPrompt || confirmedDrag) ? travelDirection : nil
         )
-        let origin = activeCoverOrigin(for: deviceId, fallback: previousPosition) ?? previousPosition
+        let origin = activeCoverOrigin(for: deviceId, fallback: startPosition)
         if let baselineCover {
             s.motion = baselineCover.motion
             s.motionIsInferred = baselineCover.motionIsInferred
@@ -906,8 +905,10 @@ extension HomeStore {
                 // position), not to a display target: a device report can re-base a still-pending
                 // drag (50 -> 20 becomes 15 -> 20 when the first command stops at 15), and a
                 // moving cover shows its commanded target while the motor is elsewhere. A captured
-                // direction would then confirm travel the wrong way in `coverTravelTakesOver`.
-                let start = spec.reportedPositionPercent ?? spec.positionPercent
+                // direction, or the composed row's optimistic position, would then confirm travel
+                // the wrong way in `coverTravelTakesOver`. When both are missing the start stays
+                // unknown and no direction is invented.
+                let start = spec.reportedPositionPercent ?? startPosition
                 spec.positionPercent = displayed
                 if let start {
                     if displayed > start {
