@@ -8,6 +8,7 @@ import { applyOrder, homeOptions, pageSections, scopedKey, spans, tr3, withAlias
 import { filterByListCut, foldGroupedLights, kindChips, memberGroupOwners, showsKindRow } from "./listCut.js";
 import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom.js";
 import { getPanelThemeProfile } from "./panelTheme.js";
+import { hasPendingMiVaultDeletion } from "./speechGuard.js";
 import { environmentReadingPriority, type HomeBackend, type SmartDevice } from "../core/models.js";
 import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
 import {
@@ -794,7 +795,9 @@ export function adoptRecoveredPrimarySession(
   accounts: readonly MiAccount[],
 ): void {
   const primary = accounts[0];
-  if (!primary || host.settings.miSession !== null || !store.hasConfirmedPrimarySession()) return;
+  if (!primary || host.settings.miSession !== null || hasPendingMiVaultDeletion() || !store.hasConfirmedPrimarySession()) {
+    return;
+  }
   host.settings.miSession = primary.session;
   host.settings.miCloudRegion = normalizeMiCloudRegion(primary.region);
 }
