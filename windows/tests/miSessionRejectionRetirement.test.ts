@@ -206,6 +206,19 @@ describe("Replaced-token rejection retirement", () => {
     assert.equal(isPersistedMiSessionExpired(SESSION_A, localStorage), false);
   });
 
+  it("still retires when a sibling credential write fails after the primary write lands", async () => {
+    const { vault, data, failOnSet } = makeVault({ mi_session: serializeMiSession(SESSION_A) });
+    await vault.load();
+    persistMiSessionExpired(SESSION_A, true, localStorage, NOW);
+    const next = rotated(SESSION_A, 1);
+
+    failOnSet.add("ha_token");
+    await assert.rejects(() => vault.persist({ miSession: next, haToken: "ha-token", assistantApiKey: "" }));
+
+    assert.equal(parseMiSession(data.get("mi_session"))?.serviceToken, next.serviceToken);
+    assert.equal(isPersistedMiSessionExpired(SESSION_A, localStorage), false);
+  });
+
   it("keeps account-removal and sign-out clearing behavior", async () => {
     const { vault } = makeVault();
     const store = new MiAccountsStore(vault, localStorage);

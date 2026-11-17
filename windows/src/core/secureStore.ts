@@ -378,21 +378,25 @@ export class CredentialVault {
         ...keyWrites,
         ...accountSlotWrites,
       ]);
-      const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-      if (failure) throw failure.reason;
-      if (credentials.assistantApiKeys !== undefined) {
-        await this.sync("assistant_api_key", "");
-      }
+      // `results[0]` is the `mi_session` write. The retirement follows that result alone: a failed
+      // sibling (or the legacy-key clear below) must not leave the replaced token's marker behind.
+      const primaryWrite = results[0];
       const nextPrimary = credentials.miSession;
       if (
+        primaryWrite?.status === "fulfilled" &&
         previousPrimary &&
         nextPrimary &&
         miSessionFingerprint(previousPrimary) !== miSessionFingerprint(nextPrimary)
       ) {
-        // The write above succeeded, so the previous primary token is retired for good. Drop only
-        // that one fingerprint's rejection key (and its in-memory fallback); every other session's
-        // marker is untouched.
+        // The new primary is now the saved credential, so the previous token is retired for good.
+        // Drop only that one fingerprint's rejection key (and its in-memory fallback); every other
+        // session's marker is untouched.
         clearPersistedMiSessionExpiredFor(previousPrimary);
+      }
+      const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failure) throw failure.reason;
+      if (credentials.assistantApiKeys !== undefined) {
+        await this.sync("assistant_api_key", "");
       }
     });
   }
