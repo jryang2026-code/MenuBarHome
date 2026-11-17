@@ -1,0 +1,294 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import type { Window } from "happy-dom";
+
+import "./dom.js";
+import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
+import { setLanguage } from "../src/core/i18n.js";
+import { MenuMijiaWindowsApp } from "../src/ui/app.js";
+import { renderConnectionsAndDiagSection } from "../src/ui/connectionsAndDiagView.js";
+import type { MiSession } from "../src/core/miCloudClient.js";
+import {
+  MI_ACCOUNTS_INDEX_STORAGE_KEY,
+  MiAccountsStore,
+  hasCorruptMiAccountIndex,
+  hasSecondaryMiAccountsInIndex,
+  makeMiAccount,
+  miAccountId,
+  readAccountIndex,
+  readAccountIndexState,
+} from "../src/core/miAccountsStore.js";
+import {
+  CredentialVault,
+  miAccountSessionCredentialName,
+  secureStoreListMiAccountSlots,
+  type SecureInvoke,
+} from "../src/core/secureStore.js";
+
+const SESSION_PRIMARY: MiSession = {
+  userId: "100200300",
+  cUserId: "c-primary",
+  ssecurity: "ssecurity-primary",
+  serviceToken: "service-token-primary",
+  passToken: "",
+  region: "cn",
+};
+
+const SESSION_SG: MiSession = {
+  userId: "550066007",
+  cUserId: "c-sg",
+  ssecurity: "ssecurity-sg",
+  serviceToken: "service-token-sg",
+  passToken: "",
+  region: "sg",
+};
+
+const SESSION_FAMILY: MiSession = {
+  userId: "998877665",
+  cUserId: "c-family",
+  ssecurity: "ssecurity-family",
+  serviceToken: "service-token-family",
+  passToken: "",
+  region: "cn",
+};
+
+function memoryStorage(): Storage {
+  const map = new Map<string, string>();
+  return {
+    get length(): number {
+      return map.size;
+    },
+    clear(): void {
+      map.clear();
+    },
+    getItem(key: string): string | null {
+      return map.get(key) ?? null;
+    },
+    key(index: number): string | null {
+      return [...map.keys()][index] ?? null;
+    },
+    removeItem(key: string): void {
+      map.delete(key);
+    },
+    setItem(key: string, value: string): void {
+      map.set(key, `${value}`);
+    },
+  };
+}
+
+function makeCredentialFixture(options: {
+  readonly supportsSlotScan: boolean;
+  readonly failOnGet?: ReadonlySet<string>;
+}): {
+  invoke: SecureInvoke;
+  data: Map<string, string>;
+} {
+  const data = new Map<string, string>();
+  const invoke: SecureInvoke = async <T>(
+    cmd: string,
+    args: Record<string, unknown>,
+  ): Promise<T | null> => {
+    const name = String(args["name"] ?? "");
+    if (cmd === "secure_store_get") {
+      if (options.failOnGet?.has(name)) throw new Error(`simulated read failure for ${name}`);
+      return ((data.get(name) ?? null) as unknown) as T | null;
+    }
+    if (cmd === "secure_store_set") {
+      data.set(name, String(args["value"] ?? ""));
+      return null;
+    }
+    if (cmd === "secure_store_delete") {
+      data.delete(name);
+      return null;
+    }
+    if (cmd === "secure_store_list_mi_account_slots") {
+      if (!options.supportsSlotScan) return null;
+      const slots = [...data.keys()]
+        .filter((key) => key.startsWith("mi_session_"))
+        .map((key) => key.slice("mi_session_".length));
+      return slots as unknown as T;
+    }
+    return null;
+  };
+  return { invoke, data };
+}
+
+async function seedStore(store: MiAccountsStore, sessions: readonly MiSession[]): Promise<void> {
+  for (const session of sessions) await store.upsertAccount(session);
+}
+
+const expectedIds = (sessions: readonly MiSession[]): string[] => sessions.map((s) => miAccountId(s));
+
+describe("Mi account index corruption (#228)", () => {
+  const corruptValues: ReadonlyArray<readonly [string, string]> = [
+    ["invalid JSON", '{"accounts":'],
+    ["object instead of an array", JSON.stringify({ accounts: [] })],
+    ["only unusable entries", JSON.stringify([{ id: 42 }, null, "row", { slotId: "" }])],
+  ];
+
+  for (const [label, corruptValue] of corruptValues) {
+    it(`keeps cached secondary accounts and never rewrites the index for ${label}`, async () => {
+      const storage = memoryStorage();
+      const { invoke } = makeCredentialFixture({ supportsSlotScan: false });
+      const store = new MiAccountsStore(new CredentialVault(invoke), storage);
+      const sessions = [SESSION_PRIMARY, SESSION_SG, SESSION_FAMILY];
+      await seedStore(store, sessions);
+
+      storage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, corruptValue);
+      assert.equal(readAccountIndexState(storage).status, "corrupt");
+      assert.equal(hasCorruptMiAccountIndex(storage), true);
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const accounts = await store.load();
+        assert.deepEqual(accounts.map((account) => account.id), expectedIds(sessions));
+      }
+      assert.equal(storage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY), corruptValue);
+      assert.equal(store.getAccountIndexRepair(), "unrecovered");
+    });
+  }
+
+  it("rebuilds the index from credential slots, primary first and deduplicated", async () => {
+    const storage = memoryStorage();
+    const fixture = makeCredentialFixture({ supportsSlotScan: true });
+    const seeded = new MiAccountsStore(new CredentialVault(fixture.invoke), storage);
+    const sessions = [SESSION_PRIMARY, SESSION_SG, SESSION_FAMILY];
+    await seedStore(seeded, sessions);
+
+    const primary = makeMiAccount(SESSION_PRIMARY);
+    // A stale duplicate slot for the primary, e.g. left behind by an older promotion.
+    await new CredentialVault(fixture.invoke).saveMiAccountSlot(primary.slotId, SESSION_PRIMARY);
+    storage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, "not-json");
+
+    const store = new MiAccountsStore(new CredentialVault(fixture.invoke), storage);
+    const accounts = await store.load();
+
+    assert.equal(store.getAccountIndexRepair(), "rebuilt");
+    assert.equal(accounts.length, sessions.length);
+    assert.equal(accounts[0]?.id, primary.id, "primary account stays first");
+    assert.equal(new Set(accounts.map((account) => account.id)).size, accounts.length);
+    assert.deepEqual([...accounts.map((account) => account.id)].sort(), expectedIds(sessions).sort());
+
+    const entries = readAccountIndex(storage);
+    assert.deepEqual(entries.map((entry) => entry.id), accounts.map((account) => account.id));
+    assert.equal(readAccountIndexState(storage).status, "ok");
+    assert.equal(hasSecondaryMiAccountsInIndex(storage), true);
+    assert.equal(
+      fixture.data.has(miAccountSessionCredentialName(primary.slotId)),
+      false,
+      "the duplicate primary slot credential is deleted after deduplication",
+    );
+  });
+
+  it("keeps a cached account whose slot read fails instead of dropping it", async () => {
+    const storage = memoryStorage();
+    const sgSlotName = miAccountSessionCredentialName(makeMiAccount(SESSION_SG).slotId);
+    const { invoke } = makeCredentialFixture({
+      supportsSlotScan: true,
+      failOnGet: new Set([sgSlotName]),
+    });
+    const store = new MiAccountsStore(new CredentialVault(invoke), storage);
+    const sessions = [SESSION_PRIMARY, SESSION_SG, SESSION_FAMILY];
+    await seedStore(store, sessions);
+
+    storage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, "not-json");
+    const accounts = await store.load();
+
+    assert.deepEqual(
+      accounts.map((account) => account.id).sort(),
+      expectedIds(sessions).sort(),
+      "the unreadable slot survives from the in-memory cache",
+    );
+    assert.equal(store.getAccountIndexRepair(), "unrecovered");
+    assert.equal(storage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY), "not-json");
+  });
+
+  it("leaves a fresh install untouched and reports no repair", async () => {
+    const storage = memoryStorage();
+    const { invoke } = makeCredentialFixture({ supportsSlotScan: true });
+    const store = new MiAccountsStore(new CredentialVault(invoke), storage);
+
+    assert.deepEqual(await store.load(), []);
+    assert.equal(storage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY), null);
+    assert.equal(store.getAccountIndexRepair(), "none");
+    assert.equal(readAccountIndexState(storage).status, "missing");
+  });
+
+  it("keeps a readable index unchanged and never enters the repair path", async () => {
+    const storage = memoryStorage();
+    const { invoke } = makeCredentialFixture({ supportsSlotScan: false });
+    const store = new MiAccountsStore(new CredentialVault(invoke), storage);
+    const sessions = [SESSION_PRIMARY, SESSION_SG];
+    await seedStore(store, sessions);
+    const before = storage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY);
+
+    const accounts = await store.load();
+    assert.deepEqual(accounts.map((account) => account.id), expectedIds(sessions));
+    assert.equal(storage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY), before);
+    assert.equal(store.getAccountIndexRepair(), "none");
+  });
+
+  it("keeps valid entries of a partially damaged index and only flags a fully unusable one", () => {
+    const storage = memoryStorage();
+    const sg = makeMiAccount(SESSION_SG);
+    storage.setItem(
+      MI_ACCOUNTS_INDEX_STORAGE_KEY,
+      JSON.stringify([
+        { id: sg.id, slotId: sg.slotId, region: "sg", maskedUserId: sg.maskedUserId },
+        { id: 7 },
+        null,
+      ]),
+    );
+    assert.equal(readAccountIndexState(storage).status, "ok");
+    assert.deepEqual(readAccountIndex(storage).map((entry) => entry.id), [sg.id]);
+
+    storage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, "[]");
+    assert.equal(readAccountIndexState(storage).status, "ok");
+    assert.deepEqual(readAccountIndex(storage), []);
+  });
+
+  it("treats a missing enumeration command as unknown and normalizes scanned slot ids", async () => {
+    assert.equal(await secureStoreListMiAccountSlots(async () => null), null);
+    assert.equal(
+      await secureStoreListMiAccountSlots(async () => {
+        throw new Error("no such command");
+      }),
+      null,
+    );
+    const slots = await secureStoreListMiAccountSlots(
+      async <T>(_cmd: string, _args: Record<string, unknown>): Promise<T | null> =>
+        (["mi_cn_ab", "mi:sg:cd", "", 7, "mi_cn_ab"] as unknown) as T,
+    );
+    assert.deepEqual(slots, ["mi_cn_ab", "sg_cd"]);
+  });
+
+  it("renders a non-silent warning when a corrupt index could not be rebuilt", async () => {
+    const dom: Window = mountTestWindow({ stubInterval: true });
+    try {
+      setLanguage("en");
+      const { invoke } = makeCredentialFixture({ supportsSlotScan: false });
+      const store = new MiAccountsStore(new CredentialVault(invoke), localStorage);
+      await seedStore(store, [SESSION_PRIMARY, SESSION_SG]);
+      localStorage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, "{broken");
+      await store.load();
+      assert.equal(store.getAccountIndexRepair(), "unrecovered");
+
+      const app = new MenuMijiaWindowsApp(document.getElementById("app")!);
+      Object.assign(app, { miAccountsStore: store });
+      // App construction applies the saved interface language; pin English for the copy assertion.
+      setLanguage("en");
+      const html = renderConnectionsAndDiagSection({
+        settings: app.settings,
+        devices: app.devices,
+        escapeHtml: (value: string) => app.escapeHtml(value),
+        host: app,
+      });
+      assert.ok(html.includes("data-mi-accounts-index-warning"));
+      assert.ok(
+        html.includes("The Xiaomi account index is corrupted"),
+        "English catalog text is rendered, so the warning is never silent",
+      );
+    } finally {
+      await closeTestWindow(dom);
+    }
+  });
+});

@@ -230,42 +230,73 @@ interface MiAccountIndexEntry { readonly id: string;
   readonly maskedUserId: string;
 }
 
-export function hasSecondaryMiAccountsInIndex(storage: Storage | null = defaultStorage(),
-): boolean { if (!storage) return false;
-  try { const raw = storage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY);
-    if (!raw) return false;
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.length > 1;
-  } catch { return false;
-  }
+export type MiAccountIndexStatus = "missing" | "ok" | "corrupt";
+
+export interface MiAccountIndexSnapshot {
+  /** `missing`: no stored index. `ok`: parsed, with any unusable entry skipped. `corrupt`: exists but unreadable. */
+  readonly status: MiAccountIndexStatus;
+  /** Valid entries only; always empty for `missing` and `corrupt`. */
+  readonly entries: readonly MiAccountIndexEntry[];
 }
 
-export function readAccountIndex(storage: Storage | null = defaultStorage()): MiAccountIndexEntry[] { if (!storage) return [];
-  try { const raw = storage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const out: MiAccountIndexEntry[] = [];
-    const seen = new Set<string>();
-    for (const item of parsed) { if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-      const rec = item as Record<string, unknown>;
-      const id = typeof rec["id"] === "string" ? rec["id"].trim() : "";
-      const rawSlot = typeof rec["slotId"] === "string" ? rec["slotId"].trim() : "";
-      if (!id || seen.has(id)) continue;
-      let slotId: string;
-      try { slotId = normalizeMiCredentialSlotId(rawSlot || id);
-      } catch { continue;
-      }
-      seen.add(id);
-      const region = normalizeMiCloudRegion(rec["region"]);
-      const maskedUserId = typeof rec["maskedUserId"] === "string" && rec["maskedUserId"].trim() !== ""
-          ? rec["maskedUserId"].trim()
-          : "****";
-      out.push({ id, slotId, region, maskedUserId });
+function parseAccountIndexEntries(parsed: readonly unknown[]): MiAccountIndexEntry[] { const out: MiAccountIndexEntry[] = [];
+  const seen = new Set<string>();
+  for (const item of parsed) { if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const rec = item as Record<string, unknown>;
+    const id = typeof rec["id"] === "string" ? rec["id"].trim() : "";
+    const rawSlot = typeof rec["slotId"] === "string" ? rec["slotId"].trim() : "";
+    if (!id || seen.has(id)) continue;
+    let slotId: string;
+    try { slotId = normalizeMiCredentialSlotId(rawSlot || id);
+    } catch { continue;
     }
-    return out;
-  } catch { return [];
+    seen.add(id);
+    const region = normalizeMiCloudRegion(rec["region"]);
+    const maskedUserId = typeof rec["maskedUserId"] === "string" && rec["maskedUserId"].trim() !== ""
+        ? rec["maskedUserId"].trim()
+        : "****";
+    out.push({ id, slotId, region, maskedUserId });
   }
+  return out;
+}
+
+/**
+ * Reads the persisted account index together with its storage state (#228).
+ *
+ * The old reader returned `[]` for both "no index yet" and "index exists but cannot be parsed",
+ * which let `loadUnlocked` treat corruption as an empty account list: cached secondaries were
+ * dropped and the corrupt value was overwritten with a primary-only index.
+ */
+export function readAccountIndexState(storage: Storage | null = defaultStorage()): MiAccountIndexSnapshot { if (!storage) return { status: "missing", entries: [] };
+  let raw: string | null;
+  try { raw = storage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY);
+  } catch {
+    // Unreadable storage is not proof that no accounts exist; fail closed instead of clearing.
+    return { status: "corrupt", entries: [] };
+  }
+  if (!raw) return { status: "missing", entries: [] };
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw);
+  } catch { return { status: "corrupt", entries: [] };
+  }
+  if (!Array.isArray(parsed)) return { status: "corrupt", entries: [] };
+  const entries = parseAccountIndexEntries(parsed);
+  // A non-empty array where no entry survives validation is corruption, not "no accounts":
+  // `writeAccountIndex` never stores such a value, and treating it as empty drops every slot.
+  if (parsed.length > 0 && entries.length === 0) return { status: "corrupt", entries: [] };
+  return { status: "ok", entries };
+}
+
+export function readAccountIndex(storage: Storage | null = defaultStorage()): MiAccountIndexEntry[] {
+  return [...readAccountIndexState(storage).entries];
+}
+
+export function hasSecondaryMiAccountsInIndex(storage: Storage | null = defaultStorage()): boolean {
+  return readAccountIndexState(storage).entries.length > 1;
+}
+
+export function hasCorruptMiAccountIndex(storage: Storage | null = defaultStorage()): boolean {
+  return readAccountIndexState(storage).status === "corrupt";
 }
 
 function writeAccountIndex(storage: Storage | null,
@@ -287,9 +318,12 @@ function writeAccountIndex(storage: Storage | null,
   }
 }
 
+export type MiAccountIndexRepair = "none" | "rebuilt" | "unrecovered";
+
 export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
   private loaded = false;
   private lastWroteIndexToStorage = false;
+  private indexRepair: MiAccountIndexRepair = "none";
   private opQueue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly vault: CredentialVault = new CredentialVault(),
@@ -322,12 +356,18 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
     return this.cachedAccounts[0]?.session ?? null;
   }
 
+  /** Outcome of the last load for a corrupt index (#228); `none` when the index was readable. */
+  getAccountIndexRepair(): MiAccountIndexRepair { return this.indexRepair;
+  }
+
   async load(): Promise<MiAccount[]> {
     return this.enqueue(() => this.loadUnlocked());
   }
 
   private async loadUnlocked(): Promise<MiAccount[]> { this.syncExternalRevocation();
-    const index = readAccountIndex(this.storage);
+    const indexState = readAccountIndexState(this.storage);
+    const index = indexState.entries;
+    const indexCorrupt = indexState.status === "corrupt";
     let primaryReadFailed = false;
     let primarySession: MiSession | null = null;
     try {
@@ -337,18 +377,27 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       primaryReadFailed = true;
     }
     const primaryAccount = primarySession ? makeMiAccount(primarySession) : null;
-    if (!primaryReadFailed && this.storage !== null && index.length === 0 && this.cachedAccounts.length > 0) {
+    if (!primaryReadFailed && !indexCorrupt && this.storage !== null && index.length === 0 && this.cachedAccounts.length > 0) {
       this.cachedAccounts = [];
     }
 
+    // A corrupt index cannot say which slots exist; the credential store can. `null` means the
+    // native shell has no enumeration command or the scan failed, which is *not* an empty result:
+    // keep the in-memory accounts and leave the stored value untouched (#228).
+    const scannedSlotIds = indexCorrupt
+      ? await this.vault.listMiAccountSlotIds().catch(() => null)
+      : null;
+
     const secondarySlotIds: string[] = [];
+    const pushSecondarySlot = (slotId: string): void => { if (!secondarySlotIds.includes(slotId)) secondarySlotIds.push(slotId);
+    };
     for (const entry of index) { if (primaryAccount && entry.id === primaryAccount.id) continue;
-      secondarySlotIds.push(entry.slotId);
+      pushSecondarySlot(entry.slotId);
     }
     for (const mem of this.cachedAccounts) { if (primaryAccount && mem.id === primaryAccount.id) continue;
-      if (!secondarySlotIds.includes(mem.slotId)) { secondarySlotIds.push(mem.slotId);
-      }
+      pushSecondarySlot(mem.slotId);
     }
+    for (const slotId of scannedSlotIds ?? []) pushSecondarySlot(slotId);
 
     let slotsReadFailed = false;
     let loadedSlots: Record<string, MiSession> = {};
@@ -358,6 +407,11 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
     } catch {
       slotsReadFailed = true;
     }
+    // Every enumerated slot must parse; a slot we cannot read may still be the only handle on an
+    // account, so rebuilding without it would repeat the data loss this repair exists to undo.
+    const unreadScannedSlots = scannedSlotIds !== null
+      ? scannedSlotIds.filter((slotId) => loadedSlots[slotId] === undefined)
+      : [];
     const ordered: MiAccount[] = [];
     const seenIds = new Set<string>();
 
@@ -386,16 +440,32 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       ordered.push(account);
     }
 
+    if (indexCorrupt && slotsReadFailed) {
+      // The index cannot rebuild the slot list, so an unreadable slot is not proof the account is
+      // gone: keep the in-memory copy rather than dropping it on a transient credential error.
+      for (const cached of this.cachedAccounts) { if (seenIds.has(cached.id)) continue;
+        seenIds.add(cached.id);
+        ordered.push(cached);
+      }
+    }
+
     if (!primaryAccount && !primaryReadFailed && ordered.length > 0) { const promoted = ordered[0]!;
       await this.vault.savePrimaryMiSession(promoted.session);
       await this.vault.deleteMiAccountSlot(promoted.slotId).catch(() => {});
     }
 
+    const indexRebuilt = indexCorrupt
+      && scannedSlotIds !== null
+      && !primaryReadFailed
+      && !slotsReadFailed
+      && unreadScannedSlots.length === 0;
+
     this.cachedAccounts = ordered;
     this.loaded = true;
-    if (!primaryReadFailed && !slotsReadFailed) {
+    if (!primaryReadFailed && !slotsReadFailed && (!indexCorrupt || indexRebuilt)) {
       this.lastWroteIndexToStorage = writeAccountIndex(this.storage, ordered);
     }
+    this.indexRepair = !indexCorrupt ? "none" : indexRebuilt ? "rebuilt" : "unrecovered";
     return [...ordered];
   }
 

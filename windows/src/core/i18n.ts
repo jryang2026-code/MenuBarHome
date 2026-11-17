@@ -872,6 +872,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "窗帘": ["窗帘", "Curtain"],
   "重试退出米家登录": ["重试退出米家登录", "Retry sign-out"],
   "米家登录将在 {date} 到期": ["米家登录将在 {date} 到期", "Xiaomi Home sign-in expires {date}"],
+  "小米账号索引已损坏，部分副账号暂时无法列出；可在下方重新扫码登录以恢复。其余账号的登录凭据仍保留在 Windows 凭据管理器中。": ["小米账号索引已损坏，部分副账号暂时无法列出；可在下方重新扫码登录以恢复。其余账号的登录凭据仍保留在 Windows 凭据管理器中。", "The Xiaomi account index is corrupted, so some secondary accounts cannot be listed right now. Scan below to sign in again and restore them; other accounts' credentials are still stored in Windows Credential Manager."],
   "退出米家登录": ["退出米家登录", "Sign out"],
   "电视": ["电视", "TV"],
   "加湿器": ["加湿器", "Humidifier"],

@@ -37,6 +37,77 @@ pub(crate) fn credential_entry(name: &str) -> Result<keyring::Entry, String> {
         .map_err(|error| format!("无法打开 Windows 凭据管理器：{error}"))
 }
 
+/// Extracts the Xiaomi slot id from a keyring target name (#228).
+///
+/// keyring 3.x saves a Generic credential under the target name `{user}.{service}`, so the only
+/// shape accepted here is `mi_session_<slotId>.com.jryang.menubarmijia`. The slot id must satisfy
+/// the same whitelist the TypeScript side uses; anything else is another credential and is ignored.
+/// This command returns names only and must never turn into a generic key/value store (#28).
+fn mi_account_slot_from_target(target: &str) -> Option<String> {
+    let suffix = format!(".{CREDENTIAL_SERVICE}");
+    let name = target.strip_suffix(suffix.as_str())?;
+    let slot = name.strip_prefix("mi_session_")?;
+    if slot.is_empty()
+        || slot.len() > 48
+        || !slot
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    Some(slot.to_string())
+}
+
+fn credential_target_string(target: *const u16) -> String {
+    if target.is_null() {
+        return String::new();
+    }
+    let mut len = 0usize;
+    // Target names are short; the cap only guards against a pathological pointer.
+    while len < 4096 && unsafe { *target.add(len) } != 0 {
+        len += 1;
+    }
+    String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(target, len) })
+}
+
+#[tauri::command]
+pub(crate) fn secure_store_list_mi_account_slots() -> Result<Vec<String>, String> {
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_NOT_FOUND};
+    use windows_sys::Win32::Security::Credentials::{CredEnumerateW, CredFree, CREDENTIALW};
+
+    // Target names are `{user}.{service}`, so a prefix filter still matches every slot of ours.
+    let filter: Vec<u16> = "mi_session_*".encode_utf16().chain(std::iter::once(0)).collect();
+    let mut count: u32 = 0;
+    let mut credentials: *mut *mut CREDENTIALW = std::ptr::null_mut();
+    let ok = unsafe { CredEnumerateW(filter.as_ptr(), 0, &mut count, &mut credentials) };
+    if ok == 0 {
+        let code = unsafe { GetLastError() };
+        if code == ERROR_NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        return Err(format!("无法枚举 Windows 凭据：{code}"));
+    }
+    let mut slots: Vec<String> = Vec::new();
+    unsafe {
+        if !credentials.is_null() {
+            for index in 0..count as usize {
+                let credential = *credentials.add(index);
+                if credential.is_null() {
+                    continue;
+                }
+                let slot = mi_account_slot_from_target(&credential_target_string((*credential).TargetName));
+                if let Some(slot) = slot {
+                    if !slots.contains(&slot) {
+                        slots.push(slot);
+                    }
+                }
+            }
+            CredFree(credentials as *const std::ffi::c_void);
+        }
+    }
+    slots.sort();
+    Ok(slots)
+}
 
 #[tauri::command]
 pub(crate) fn secure_store_get(name: String) -> Result<Option<String>, String> {
@@ -71,6 +142,37 @@ pub(crate) fn secure_store_delete(name: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_only_whitelisted_mi_account_slots_from_credential_targets() {
+        let target = |slot: &str| format!("mi_session_{slot}.com.jryang.menubarmijia");
+        assert_eq!(
+            mi_account_slot_from_target(&target("mi_cn_10001")).as_deref(),
+            Some("mi_cn_10001")
+        );
+        assert_eq!(
+            mi_account_slot_from_target(&target("mi_sg.user-2_ok")),
+            None
+        );
+        assert_eq!(
+            mi_account_slot_from_target("mi_session.com.jryang.menubarmijia"),
+            None
+        );
+        assert_eq!(mi_account_slot_from_target(&target("")), None);
+        assert_eq!(mi_account_slot_from_target(&target("a/b")), None);
+        assert_eq!(
+            mi_account_slot_from_target(&target(&"a".repeat(49))),
+            None
+        );
+        assert_eq!(
+            mi_account_slot_from_target("mi_session_slot.other.service"),
+            None
+        );
+        assert_eq!(
+            mi_account_slot_from_target("ha_token.com.jryang.menubarmijia"),
+            None
+        );
+    }
 
     #[test]
     fn allows_constrained_secondary_xiaomi_credential_slots() {
