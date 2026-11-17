@@ -16,12 +16,14 @@ import {
   type MiSession,
 } from "../src/core/miCloudClient.js";
 import {
-  MI_SESSION_EXPIRED_STORAGE_KEY,
   PollingPolicy,
+  clearPersistedMiSessionExpired,
   describePollingContext,
   getXiaomiBackoffUntilMs,
   isPersistedMiSessionExpired,
   isXiaomiRateLimitError,
+  miSessionFingerprint,
+  miSessionRejectedStorageKey,
   recordXiaomiRateLimit,
   shouldSkipSilentPollForBackoff,
 } from "../src/core/pollingPolicy.js";
@@ -554,7 +556,8 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
 
     assert.equal(firstApp.miSessionExpired, true);
     assert.equal(isPersistedMiSessionExpired(SESSION_A), true);
-    const rawPersisted = localStorage.getItem(MI_SESSION_EXPIRED_STORAGE_KEY) ?? "";
+    const persistedKey = miSessionRejectedStorageKey(miSessionFingerprint(SESSION_A));
+    const rawPersisted = localStorage.getItem(persistedKey) ?? "";
     assert.ok(rawPersisted.length > 0);
     assert.equal(rawPersisted.includes(SESSION_A.serviceToken), false, "never persists plaintext serviceToken");
     assert.equal(rawPersisted.includes(SESSION_A.ssecurity), false, "never persists plaintext ssecurity");
@@ -562,7 +565,9 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
     firstApp.dispose();
     await closeTestWindow(dom!);
     dom = mountTestWindow({ stubInterval: true });
-    localStorage.setItem(MI_SESSION_EXPIRED_STORAGE_KEY, rawPersisted);
+    // Simulate a fresh process: drop the module-level fallback, then restore only what was persisted.
+    clearPersistedMiSessionExpired();
+    localStorage.setItem(persistedKey, rawPersisted);
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: {
@@ -610,7 +615,7 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
     assert.equal(isPersistedMiSessionExpired(SESSION_A), true);
     signOutXiaomiAccount(restartedApp);
     assert.equal(isPersistedMiSessionExpired(SESSION_A), false);
-    assert.equal(localStorage.getItem(MI_SESSION_EXPIRED_STORAGE_KEY), null);
+    assert.equal(localStorage.getItem(persistedKey), null);
   });
 
   it("recovers from a single transient 401 without marking the session expired, while two consecutive 401s reject (#18, #35a)", async () => {

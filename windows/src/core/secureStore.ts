@@ -15,6 +15,7 @@
 
 import { ASSISTANT_PROVIDER_PRESETS, assistantEndpointIdentity, inferAssistantPreset } from "./assistant/provider.js";
 import { normalizeMiCloudRegion, type MiSession } from "./miCloudClient.js";
+import { clearPersistedMiSessionExpired } from "./pollingPolicy.js";
 
 export const WIN32_CRED_MAX_BLOB_BYTES = 2560;
 
@@ -470,7 +471,6 @@ export class CredentialVault {
     async deleteMiSession(extraSlotIds: readonly string[] = []): Promise<void> {
     return this.serialize(async () => {
       const indexKeys = ["menumijia.windows.miAccountsIndex.v1", "menumijia.miAccountsIndex.v1"] as const;
-      const expiredKeys = ["menumijia.windows.miAccountsExpired.v1", "menumijia.miAccountsExpired.v1"] as const;
       const slots = new Set<SecureCredentialName>(["mi_session"]);
       for (const key of this.known.keys()) {
         if (key.startsWith("mi_session_")) slots.add(key);
@@ -505,7 +505,8 @@ export class CredentialVault {
       try {
         if (typeof localStorage !== "undefined") {
           for (const k of indexKeys) localStorage.removeItem(k);
-          for (const k of expiredKeys) localStorage.removeItem(k);
+          // Wipes the per-fingerprint rejection keys and both v1 expiry keys (no sessions remain).
+          clearPersistedMiSessionExpired();
         }
       } catch {
       }

@@ -128,7 +128,7 @@ import { registerUndoActionBatch } from "../core/optimisticLock.js";
 import { tr3 } from "../core/safetyAndHealth.js";
 import {
   clearPersistedMiSessionExpired,
-  clearPersistedMiSessionExpiredIfMatches,
+  clearPersistedMiSessionExpiredFor,
   persistMiSessionExpired,
 } from "../core/pollingPolicy.js";
 import { bindLayoutGestures } from "./layoutGestures.js";
@@ -347,19 +347,13 @@ export class MenuMijiaWindowsApp {
     const normalized = Boolean(next);
     this._miSessionExpired = normalized;
     if (normalized) {
-      if (this.settings.miSession) void persistMiSessionExpired(this.settings.miSession, true);
+      if (this.settings.miSession) persistMiSessionExpired(this.settings.miSession, true);
     } else if (this.settings.miSession) {
-      void clearPersistedMiSessionExpiredIfMatches(this.settings.miSession);
+      // Per-fingerprint keys: clearing one account must not drop another account's rejection.
+      clearPersistedMiSessionExpiredFor(this.settings.miSession);
     } else {
-      void clearPersistedMiSessionExpired();
+      clearPersistedMiSessionExpired();
     }
-  }
-  /**
-   * Clears only the in-memory flag. Used when the caller already reconciled `localStorage` inside
-   * the session-expiry lock, so a second (racing) storage write must not follow.
-   */
-  public clearMiSessionExpiredFlag(): void {
-    this._miSessionExpired = false;
   }
   /** True after a hold already ran All Off, so a later pointerup on the rebuilt button does not replace the result with the short-press hint. */
   private allOffHoldConsumed = false;

@@ -283,13 +283,14 @@ export function getXiaomiBackoffUntilMs(host: object, session: MiSession): numbe
 }
 
 export const MI_SESSION_EXPIRED_STORAGE_KEY = "menumijia.windows.miSessionExpired.v1";
+export const MI_ACCOUNTS_EXPIRED_STORAGE_KEY = "menumijia.windows.miAccountsExpired.v1";
 
 /**
- * Web Locks name shared by every same-origin window. WebView2 (and Chromium in general) hands the
- * same lock manager to all documents of the origin, so this serializes session-expiry storage
- * mutations between windows.
+ * One storage key per rejected session fingerprint. Rejections never share a JSON object, so two
+ * windows writing at the same time touch different keys and can never overwrite each other; no lock
+ * or compare-and-swap is needed.
  */
-export const MI_SESSION_EXPIRY_LOCK_NAME = "menumijia.miSessionExpired";
+export const MI_SESSION_REJECTED_STORAGE_PREFIX = "menumijia.windows.miSessionRejected.v2.";
 
 function defaultStorage(): Storage | null {
   try {
@@ -299,158 +300,239 @@ function defaultStorage(): Storage | null {
   }
 }
 
-function sessionExpiryLockManager(): LockManager | null {
-  try {
-    const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
-    return locks && typeof locks.request === "function" ? locks : null;
-  } catch {
+/**
+ * Stable non-secret account id (`mi:<region>:<8-byte hash>`); already privacy-safe.
+ * Lives here so the rejection store can read the legacy per-account map without a cycle.
+ */
+export function miAccountId(session: Pick<MiSession, "userId" | "region">): string {
+  const region = normalizeMiCloudRegion(session.region);
+  const digest = sha256(utf8Bytes(`${region}:${session.userId.trim()}`));
+  return `mi:${region}:${bytesToHex(digest.subarray(0, 8))}`;
+}
+
+export function miSessionRejectedStorageKey(fingerprint: string): string {
+  const digest = fingerprint.startsWith("v2:") ? fingerprint.slice(3) : fingerprint;
+  return `${MI_SESSION_REJECTED_STORAGE_PREFIX}${digest}`;
+}
+
+export interface MiSessionRejection {
+  readonly expiredAtMs: number;
+}
+
+/**
+ * Fingerprints rejected while their storage write failed. Consulted before storage so a server
+ * rejection is never lost to a quota/disabled-storage failure (fail-closed); entries are dropped
+ * once the write lands, and by every recovery path.
+ */
+const rejectedSessionFingerprints = new Map<string, number>();
+
+interface LegacyRejectionRecord {
+  /** Fingerprint already upgraded to the v2 digest. */
+  readonly fingerprint: string;
+  readonly expiredAtMs: number;
+}
+
+function parseLegacyRejection(value: unknown): LegacyRejectionRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record["fingerprint"] !== "string" || typeof record["expiredAtMs"] !== "number") {
     return null;
   }
+  return {
+    fingerprint: upgradeMiSessionFingerprint(record["fingerprint"]),
+    expiredAtMs: record["expiredAtMs"],
+  };
 }
 
-/**
- * Runs one storage mutation inside the cross-window lock. Without Web Locks (old runtimes, tests)
- * the callback runs synchronously, which is atomic inside one window; the merge/compare-and-swap
- * applied by each mutation keeps a concurrent window's newer record intact in that case.
- */
-function withSessionExpiryStorageLock(task: () => void): Promise<void> | undefined {
-  const locks = sessionExpiryLockManager();
-  if (!locks) {
-    task();
-    return undefined;
-  }
+function parseLegacySingle(raw: string): LegacyRejectionRecord[] {
   try {
-    return locks.request(MI_SESSION_EXPIRY_LOCK_NAME, () => {
-      task();
-    });
+    const record = parseLegacyRejection(JSON.parse(raw));
+    return record ? [record] : [];
   } catch {
-    task();
-    return undefined;
+    return [];
   }
 }
 
-/**
- * Serializes one session-expiry storage mutation across windows and never rejects: a lost lock or a
- * failed write must not surface as an exception, because every caller has already computed its
- * fail-closed verdict from the in-memory fingerprint.
- */
-export async function runSessionExpiryStorageMutation(task: () => void): Promise<void> {
+function parseLegacyAccountMap(raw: string): Map<string, LegacyRejectionRecord> {
+  const out = new Map<string, LegacyRejectionRecord>();
   try {
-    const pending = withSessionExpiryStorageLock(task);
-    if (pending) await pending;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return out;
+    for (const [accountId, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const record = parseLegacyRejection(value);
+      if (record) out.set(accountId, record);
+    }
+  } catch {}
+  return out;
+}
+
+/**
+ * Appends every legacy record as its own fingerprint key, then drops the legacy key only when all
+ * writes succeeded. A failure keeps the old key (the verdict still honours it) and retries later;
+ * re-writing a key is idempotent, so a partial migration is safe.
+ */
+function migrateLegacyRejectionKey(
+  storage: Storage,
+  legacyKey: string,
+  records: readonly LegacyRejectionRecord[],
+): void {
+  try {
+    for (const record of records) {
+      storage.setItem(
+        miSessionRejectedStorageKey(record.fingerprint),
+        JSON.stringify({ expiredAtMs: record.expiredAtMs }),
+      );
+    }
+    storage.removeItem(legacyKey);
   } catch {}
 }
 
-interface PersistedMiSessionExpiry {
-  /** Fingerprint upgraded to the current format. */
-  readonly fingerprint: string;
-  readonly expiredAtMs: number;
-  /** Raw JSON exactly as stored, used as the compare-and-swap snapshot for the migration. */
-  readonly raw: string;
-  readonly legacy: boolean;
-}
-
-function readPersistedMiSessionExpiry(storage: Storage): PersistedMiSessionExpiry | null {
+function migrateLegacyRejections(storage: Storage): void {
   try {
     const raw = storage.getItem(MI_SESSION_EXPIRED_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    const rec = parsed as Record<string, unknown>;
-    const stored = typeof rec["fingerprint"] === "string" ? rec["fingerprint"] : null;
-    if (stored === null) return null;
-    const fingerprint = upgradeMiSessionFingerprint(stored);
-    return {
-      fingerprint,
-      expiredAtMs: typeof rec["expiredAtMs"] === "number" ? rec["expiredAtMs"] : Date.now(),
-      raw,
-      legacy: fingerprint !== stored,
-    };
+    if (raw !== null) {
+      const records = parseLegacySingle(raw);
+      if (records.length === 0) storage.removeItem(MI_SESSION_EXPIRED_STORAGE_KEY);
+      else migrateLegacyRejectionKey(storage, MI_SESSION_EXPIRED_STORAGE_KEY, records);
+    }
+  } catch {}
+  try {
+    const raw = storage.getItem(MI_ACCOUNTS_EXPIRED_STORAGE_KEY);
+    if (raw !== null) {
+      const records = [...parseLegacyAccountMap(raw).values()];
+      if (records.length === 0) storage.removeItem(MI_ACCOUNTS_EXPIRED_STORAGE_KEY);
+      else migrateLegacyRejectionKey(storage, MI_ACCOUNTS_EXPIRED_STORAGE_KEY, records);
+    }
+  } catch {}
+}
+
+function readPersistedRejection(storage: Storage, fingerprint: string): MiSessionRejection | null {
+  try {
+    const raw = storage.getItem(miSessionRejectedStorageKey(fingerprint));
+    if (raw === null) return null;
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const expiredAtMs = (parsed as Record<string, unknown>)["expiredAtMs"];
+        if (typeof expiredAtMs === "number" && Number.isFinite(expiredAtMs)) return { expiredAtMs };
+      }
+    } catch {}
+    // The marker exists, so the session is rejected even if its payload is unreadable.
+    return { expiredAtMs: 0 };
   } catch {
     return null;
   }
 }
 
+function readLegacyRejection(
+  session: MiSession,
+  storage: Storage,
+  fingerprint: string,
+): MiSessionRejection | null {
+  try {
+    const raw = storage.getItem(MI_SESSION_EXPIRED_STORAGE_KEY);
+    if (raw !== null) {
+      const match = parseLegacySingle(raw).find((record) => record.fingerprint === fingerprint);
+      if (match) return { expiredAtMs: match.expiredAtMs };
+    }
+  } catch {}
+  try {
+    const raw = storage.getItem(MI_ACCOUNTS_EXPIRED_STORAGE_KEY);
+    if (raw !== null) {
+      const record = parseLegacyAccountMap(raw).get(miAccountId(session));
+      if (record && record.fingerprint === fingerprint) return { expiredAtMs: record.expiredAtMs };
+    }
+  } catch {}
+  return null;
+}
+
 /**
- * Upgrades a v1 record in place, but only while the stored JSON still equals the snapshot this
- * window read. A rejection another window wrote in the meantime wins: this migration drops.
+ * The rejection (if any) for this exact session: memory first (fail-closed), then its own key,
+ * then the not-yet-migrated v1 records. Also performs the best-effort v1 migration.
  */
-function migratePersistedMiSessionExpired(storage: Storage, snapshotRaw: string): Promise<void> {
-  return runSessionExpiryStorageMutation(() => {
-    try {
-      if (storage.getItem(MI_SESSION_EXPIRED_STORAGE_KEY) !== snapshotRaw) return;
-      const record = readPersistedMiSessionExpiry(storage);
-      if (!record || !record.legacy) return;
-      storage.setItem(
-        MI_SESSION_EXPIRED_STORAGE_KEY,
-        JSON.stringify({ fingerprint: record.fingerprint, expiredAtMs: record.expiredAtMs }),
-      );
-    } catch {}
-  });
+export function miSessionRejectedRecord(
+  session: MiSession | null | undefined,
+  storage: Storage | null = defaultStorage(),
+): MiSessionRejection | null {
+  if (!session) return null;
+  const fingerprint = miSessionFingerprint(session);
+  const inMemory = rejectedSessionFingerprints.get(fingerprint);
+  if (inMemory !== undefined) return { expiredAtMs: inMemory };
+  if (!storage) return null;
+  migrateLegacyRejections(storage);
+  return (
+    readPersistedRejection(storage, fingerprint) ?? readLegacyRejection(session, storage, fingerprint)
+  );
 }
 
 export function isPersistedMiSessionExpired(
   session: MiSession | null | undefined,
   storage: Storage | null = defaultStorage(),
 ): boolean {
-  if (!session || !storage) return false;
-  try {
-    const record = readPersistedMiSessionExpiry(storage);
-    if (!record) return false;
-    if (record.legacy) void migratePersistedMiSessionExpired(storage, record.raw);
-    return record.fingerprint === miSessionFingerprint(session);
-  } catch {
-    return false;
-  }
+  return miSessionRejectedRecord(session, storage) !== null;
 }
 
+/**
+ * Persists a rejection under the session's own fingerprint key. Memory is updated first and only
+ * dropped once the write succeeds, so a failed write still rejects the session for this run.
+ */
 export function persistMiSessionExpired(
   session: MiSession | null | undefined,
   expired: boolean,
   storage: Storage | null = defaultStorage(),
   nowMs: number = Date.now(),
-): Promise<void> {
-  if (!storage) return Promise.resolve();
-  return runSessionExpiryStorageMutation(() => {
-    try {
-      if (!expired || !session) {
-        storage.removeItem(MI_SESSION_EXPIRED_STORAGE_KEY);
-        return;
-      }
-      const fingerprint = miSessionFingerprint(session);
-      const current = readPersistedMiSessionExpiry(storage);
-      // An older rejection must not overwrite a newer one another window just persisted.
-      if (current && current.fingerprint !== fingerprint && current.expiredAtMs > nowMs) return;
-      storage.setItem(
-        MI_SESSION_EXPIRED_STORAGE_KEY,
-        JSON.stringify({ fingerprint, expiredAtMs: nowMs }),
-      );
-    } catch {}
-  });
+): void {
+  if (!session) {
+    if (!expired) clearPersistedMiSessionExpired(storage);
+    return;
+  }
+  const fingerprint = miSessionFingerprint(session);
+  if (!expired) {
+    clearPersistedMiSessionExpiredFor(session, storage);
+    return;
+  }
+  rejectedSessionFingerprints.set(fingerprint, nowMs);
+  if (!storage) return;
+  try {
+    storage.setItem(
+      miSessionRejectedStorageKey(fingerprint),
+      JSON.stringify({ expiredAtMs: nowMs }),
+    );
+    rejectedSessionFingerprints.delete(fingerprint);
+  } catch {
+    // Keep the in-memory rejection: the session stays rejected for this run.
+  }
 }
 
-export function clearPersistedMiSessionExpired(
-  storage: Storage | null = defaultStorage(),
-): Promise<void> {
-  if (!storage) return Promise.resolve();
-  return runSessionExpiryStorageMutation(() => {
-    try {
-      storage.removeItem(MI_SESSION_EXPIRED_STORAGE_KEY);
-    } catch {}
-  });
-}
-
-/** Clears the record only while it still belongs to `session`; a newer rejection survives. */
-export function clearPersistedMiSessionExpiredIfMatches(
+/** Removes this session's rejection only; other fingerprints are never touched. */
+export function clearPersistedMiSessionExpiredFor(
   session: MiSession | null | undefined,
   storage: Storage | null = defaultStorage(),
-): Promise<void> {
-  if (!session || !storage) return Promise.resolve();
-  return runSessionExpiryStorageMutation(() => {
-    try {
-      const record = readPersistedMiSessionExpiry(storage);
-      if (!record || record.fingerprint !== miSessionFingerprint(session)) return;
-      storage.removeItem(MI_SESSION_EXPIRED_STORAGE_KEY);
-    } catch {}
-  });
+): void {
+  if (!session) return;
+  const fingerprint = miSessionFingerprint(session);
+  rejectedSessionFingerprints.delete(fingerprint);
+  if (!storage) return;
+  // Move any v1 record for this session (and for other sessions) to its own key first, so the
+  // legacy fallback cannot report it as rejected right after a successful recovery.
+  migrateLegacyRejections(storage);
+  try {
+    storage.removeItem(miSessionRejectedStorageKey(fingerprint));
+  } catch {}
+}
+
+/** Sign-out: forgets every rejection, including the v1 records and all per-fingerprint keys. */
+export function clearPersistedMiSessionExpired(storage: Storage | null = defaultStorage()): void {
+  rejectedSessionFingerprints.clear();
+  if (!storage) return;
+  try {
+    const keys: string[] = [];
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (key !== null && key.startsWith(MI_SESSION_REJECTED_STORAGE_PREFIX)) keys.push(key);
+    }
+    for (const key of keys) storage.removeItem(key);
+    storage.removeItem(MI_SESSION_EXPIRED_STORAGE_KEY);
+    storage.removeItem(MI_ACCOUNTS_EXPIRED_STORAGE_KEY);
+  } catch {}
 }

@@ -428,6 +428,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   host.settings.cachedXiaomiDevices = [];
   host.settings.selectedHomeId = null;
   (host as { miSessionExpired?: boolean }).miSessionExpired = false;
+  clearPersistedMiSessionExpired();
   clearCachedXiaomiTopology(host);
   clearXiaomiRateLimitBackoff(host);
   host.cloudValuesStale = false;
@@ -462,9 +463,6 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   host.groupOwnerByMemberDid = new Map();
   host.deviceFacets = {};
   host.selectRoom(null);
-
-  // Keep the await out of the synchronous teardown above so a signed-out UI is never half-applied.
-  await clearPersistedMiSessionExpired();
 
   const appHost = host as unknown as MenuMijiaWindowsApp;
   const vault = (host as unknown as Partial<MenuMijiaWindowsApp>).credentialVault;
