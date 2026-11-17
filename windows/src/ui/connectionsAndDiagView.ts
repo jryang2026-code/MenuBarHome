@@ -494,11 +494,15 @@ async function performSignOutSingleMiAccountOnHost(
     if (store.getAccounts().length === 0 && host.settings.miSession) {
       for (const item of resolveHostMiAccounts(host)) await store.upsertAccount(item.session);
     }
-    const beforeCount = store.getAccounts().length;
-    if (beforeCount === 0) return false;
+    const beforeIds = new Set(store.getAccounts().map((account) => account.id));
+    if (beforeIds.size === 0) return false;
     const removal = await store.removeAccount(accountId, host.settings.selectedHomeId);
     setHostMiAccounts(host, null);
-    if (removal.accounts.length === beforeCount) return false;
+    // Hidden-account recovery can replace the removed account with a discovered one, keeping the
+    // count unchanged; only identity proves the requested account is gone.
+    if (!beforeIds.has(accountId) || removal.accounts.some((account) => account.id === accountId)) {
+      return false;
+    }
 
     host.localControlRevision += 1;
     host.invalidateSourceControl();

@@ -2,6 +2,7 @@ import { homeAssistantIdentity, type HAInvoke } from "../core/homeAssistant.js";
 import { DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import {
   MiAccountsStore,
+  hasPendingMiAccountSignOut,
   type MiAccount,
 } from "../core/miAccountsStore.js";
 import type { HostMultiAccountState } from "./cloudRefresh.js";
@@ -121,7 +122,7 @@ import { bindPersistentUndoEvents, undoTrackerFor } from "./undoTracker.js";
 import { getHostApplyCommand, getUnsupportedLightEffects, markCloudValuesFresh, markCloudValuesStale, pruneUnsupportedLightEffectsOnHost, setCustomApplyCommand } from "./commandDispatch.js";
 import { getSpeakerDrawerItemState } from "./detailDrawers.js";
 import { activeRoomOptions } from "./roomOrderEditor.js";
-import { foldGrouped, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
+import { foldGrouped, getHostMiAccountsStore, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
 import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
 import { getAutomationUndoRunId } from "../core/automationEngine.js";
 import { registerUndoActionBatch } from "../core/optimisticLock.js";
@@ -1071,6 +1072,20 @@ export class MenuMijiaWindowsApp {
 
   public async startXiaomiQRLogin(): Promise<void> {
     if (this.isPollingQR) return;
+    if (hasPendingMiAccountSignOut()) {
+      // Retry the unfinished wipe before accepting a session it would otherwise delete.
+      await getHostMiAccountsStore(this).load().catch(() => {});
+    }
+    if (hasPendingMiAccountSignOut()) {
+      this.qrStatusText = t("上一次退出尚未完成，请稍后重试");
+      this.replyBanner = {
+        text: t("上一次退出尚未完成，请稍后重试"),
+        source: t("出错提示"),
+        isError: true,
+      };
+      this.render();
+      return;
+    }
     const sourceRevAtStart = this.sourceRevision;
     this.isPollingQR = true;
     this.qrStatusText = t("正在获取小米安全登录二维码...");
