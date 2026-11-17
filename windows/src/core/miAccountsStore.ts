@@ -613,13 +613,14 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
           // that a failed read left in the vault's `known` map; those credentials are real and must
           // surface on a later load instead (#228).
           await this.vault.savePrimaryMiSession(null);
-          this.primaryConfirmed = false;
           for (const slotId of slotsForRemoval) await this.vault.deleteMiAccountSlot(slotId);
+          // Only after every deletion: a failed retry must still know this account owned the primary.
+          this.primaryConfirmed = false;
         } else { const promoted = remaining[0]!;
           await this.vault.savePrimaryMiSession(promoted.session);
-          this.primaryConfirmed = true;
           for (const slotId of slotsForRemoval) await this.vault.deleteMiAccountSlot(slotId);
           await this.vault.deleteMiAccountSlot(promoted.slotId);
+          this.primaryConfirmed = true;
         }
       } else {
         // The first cached account is a recovered secondary, not the primary: never overwrite the

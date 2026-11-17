@@ -464,6 +464,28 @@ describe("Mi account index corruption (#228)", () => {
     }
   });
 
+  it("keeps primary ownership across a failed removal so a retry clears it", async () => {
+    const storage = memoryStorage();
+    const failOnDelete = new Set<string>();
+    const fixture = makeCredentialFixture({ supportsSlotScan: true, failOnDelete });
+    const seeded = new MiAccountsStore(new CredentialVault(fixture.invoke), storage);
+    await seedStore(seeded, [SESSION_PRIMARY]);
+    const duplicateSlot = `${makeMiAccount(SESSION_PRIMARY).slotId}_old`;
+    await new CredentialVault(fixture.invoke).saveMiAccountSlot(duplicateSlot, SESSION_PRIMARY);
+
+    const store = new MiAccountsStore(new CredentialVault(fixture.invoke), storage);
+    await store.load();
+    failOnDelete.add(miAccountSessionCredentialName(duplicateSlot));
+    await assert.rejects(() => store.removeAccount(miAccountId(SESSION_PRIMARY)));
+
+    failOnDelete.clear();
+    const retry = await store.removeAccount(miAccountId(SESSION_PRIMARY));
+    assert.deepEqual(retry.accounts, []);
+    assert.equal(retry.primarySessionKnown, true, "the retry still owns the primary it cleared");
+    assert.equal(fixture.data.has("mi_session"), false);
+    assert.equal(fixture.data.has(miAccountSessionCredentialName(duplicateSlot)), false);
+  });
+
   it("leaves a fresh install untouched and reports a complete read", async () => {
     const storage = memoryStorage();
     const { invoke } = makeCredentialFixture({ supportsSlotScan: true });
