@@ -220,6 +220,38 @@ struct AutomationContextEngineTests {
         #expect(await mock.executedCommands == [offCommand(), onCommand(), offCommand()])
     }
 
+    @Test("A time window gates Mac context rules and leaves the trigger for an in-window event")
+    func timeWindowGatesContextRules() async throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(identifier: "UTC"))
+        let nightOnly = AutomationRule(
+            trigger: .powerConnected,
+            action: .devices(ids: [Self.lightId], isOn: false),
+            conditions: AutomationConditions(
+                timeWindow: AutomationTimeWindow(isEnabled: true, startMinute: 22 * 60, endMinute: 7 * 60)
+            )
+        )
+        let (_, _, mock, provider) = try await makeEngine(
+            rules: [nightOnly],
+            defaults: defaults,
+            calendar: calendar
+        )
+        let noon = try #require(calendar.date(from: DateComponents(year: 2026, month: 11, day: 12, hour: 12)))
+        let night = try #require(calendar.date(from: DateComponents(year: 2026, month: 11, day: 12, hour: 23)))
+        let battery = MacContextSnapshot(powerSource: .battery, batteryPercent: 80)
+        let ac = MacContextSnapshot(powerSource: .ac, batteryPercent: 80)
+
+        await provider.emit(battery, at: noon)
+        await provider.emit(ac, at: noon.addingTimeInterval(10))
+        #expect(await mock.executedCommands.isEmpty)
+
+        await provider.emit(battery, at: night)
+        await provider.emit(ac, at: night.addingTimeInterval(10))
+        #expect(await mock.executedCommands == [offCommand()])
+    }
+
     @Test("Wi-Fi rules target a SSID and ignore unauthorized SSID reads")
     func wifiRules() async throws {
         let (defaults, suite) = try makeDefaults()

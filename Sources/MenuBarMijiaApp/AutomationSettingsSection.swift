@@ -36,6 +36,12 @@ struct AutomationSettingsSection: View {
     @State private var newWiFiMode: WiFiConditionMode = .any
     @State private var newWiFiSSIDList = ""
 
+    // Time window. Hour granularity is what the editor offers today; the model stores minutes so a
+    // finer control can be added later without migrating stored rules.
+    @State private var newTimeWindowEnabled = false
+    @State private var newTimeStartHour = 22
+    @State private var newTimeEndHour = 7
+
     private enum WiFiConditionMode: String, CaseIterable, Identifiable {
         case any, only, exclude
 
@@ -329,6 +335,35 @@ struct AutomationSettingsSection: View {
             .controlSize(.regular)
         }
 
+        HStack(spacing: 6) {
+            Toggle(isOn: $newTimeWindowEnabled) {
+                Text(L10n.tr("限定时段", "Only between"))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.secondary)
+            }
+            .toggleStyle(.checkbox)
+
+            if newTimeWindowEnabled {
+                hourPicker($newTimeStartHour)
+
+                Text("–")
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.secondary)
+
+                hourPicker($newTimeEndHour)
+
+                if newTimeStartHour == newTimeEndHour {
+                    Text(L10n.tr("起止不能相同", "Start and end must differ"))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(.secondary)
+                } else if newTimeStartHour > newTimeEndHour {
+                    Text(L10n.tr("跨夜", "Overnight"))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+
         if newWiFiMode != .any {
             HStack(spacing: 6) {
                 TextField(
@@ -601,6 +636,9 @@ struct AutomationSettingsSection: View {
         // A network condition with no network would never fire; refuse it instead of storing a
         // dead rule the user cannot debug.
         if newWiFiMode != .any, parsedSSIDs.isEmpty { return false }
+        // Equal ends mean "all day" in the model but "never" for the late-night trigger; refuse the
+        // ambiguous window rather than store a rule the user reads the other way.
+        if newTimeWindowEnabled, newTimeStartHour == newTimeEndHour { return false }
         switch newActionKind {
         case .quickAction:
             return true
@@ -640,7 +678,14 @@ struct AutomationSettingsSection: View {
             trigger: newTrigger,
             action: action,
             triggerOptions: options,
-            conditions: AutomationConditions(wifi: wifi)
+            conditions: AutomationConditions(
+                wifi: wifi,
+                timeWindow: AutomationTimeWindow(
+                    isEnabled: newTimeWindowEnabled,
+                    startMinute: newTimeStartHour * 60,
+                    endMinute: newTimeEndHour * 60
+                )
+            )
         )
         if let confirmation = rule.highRiskConfirmation(devices: store.devices) {
             guard confirmHighRiskRule(confirmation) else { return }

@@ -217,6 +217,20 @@ final class AutomationEngine {
         // network must leave the trigger available for the next one.
         let reading = wifiReadingForDispatch(at: now)
         let eligible = rules.filter { rule in
+            // A rule outside its window must not consume the cooldown either: the trigger stays
+            // available for the first event that lands inside the window.
+            guard rule.conditions.isWithinTimeWindow(at: now, calendar: calendar) else {
+                logger.notice(
+                    """
+                    rule-check trigger=\(trigger.rawValue, privacy: .public) \
+                    rule=\(rule.id.uuidString.prefix(8), privacy: .public) \
+                    time=outside \
+                    window=\(rule.conditions.timeWindow.summary, privacy: .public) \
+                    verdict=skip
+                    """
+                )
+                return false
+            }
             let result = rule.conditions.evaluate(
                 wifiSSID: reading?.ssid,
                 isAuthorized: reading?.isAuthorized ?? true
@@ -225,6 +239,7 @@ final class AutomationEngine {
                 """
                 rule-check trigger=\(trigger.rawValue, privacy: .public) \
                 rule=\(rule.id.uuidString.prefix(8), privacy: .public) \
+                time=\(rule.conditions.timeWindow.isEnabled ? "inside" : "any", privacy: .public) \
                 wifi=\(result.logToken, privacy: .public) \
                 ssid=\(reading?.ssid ?? "-", privacy: .private) \
                 verdict=\(result.isSatisfied ? "run" : "skip", privacy: .public)
@@ -261,6 +276,8 @@ final class AutomationEngine {
         lastContext = effective
         guard let store else { return }
         for rule in ruleStore.load() where rule.isEnabled {
+            // Same time-window gate as `handle(trigger:)`, also checked before the cooldown is consumed.
+            guard rule.conditions.isWithinTimeWindow(at: now, calendar: calendar) else { continue }
             // Same Wi-Fi condition `handle(trigger:)` applies, checked before the cooldown is
             // consumed. A "left network" rule is judged against the network it just left, since
             // the current SSID is already gone.
