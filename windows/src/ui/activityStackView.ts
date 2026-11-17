@@ -115,6 +115,9 @@ export interface HostActivityCenter {
   lastEvaluatedAtMs: number;
   lockPollInFlight: boolean;
   lastSampledLockState: boolean | null;
+  /** `lastSampledLockState` 每次值翻转递增：用于作废在探针/规则执行期间被后续
+   * 翻转超越的锁屏回调（布尔值检查区分不了「解锁又上锁」的两次翻转）。 */
+  lockSampleGeneration: number;
   lastClipboardMarkdown: string | null;
   pendingHighRiskUndoRunId?: string | null;
   dismissedProactiveSignature?: string | null;
@@ -257,6 +260,7 @@ function createHostActivityCenter(
     lastEvaluatedAtMs: 0,
     lockPollInFlight: false,
     lastSampledLockState: null,
+    lockSampleGeneration: 0,
     lastClipboardMarkdown: null,
     pendingHighRiskUndoRunId: null,
     dismissedProactiveSignature: null,
@@ -1032,6 +1036,22 @@ export function notifyPanelWakeLifecycle(host: unknown, nowMs = Date.now()): voi
 const WIFI_POLL_INTERVAL_MS = 10_000;
 
 /**
+ * 与 tick 派发同一道快照就绪门槛（`tickSafetyHealthAndAutomation` 的 tick 分支）：
+ * 应用启动早期设备来自 `cachedXiaomiDevices` / `cachedHAHome` 且不一定带
+ * `telemetryStale` 标记，Wi-Fi 观察的派发会顺带评估 sensorThreshold 等规则，
+ * 不设门槛就会拿旧缓存测温/告警触发自动化。门槛未达标时只记录读数、暂缓
+ * 派发（快照就绪后的下一次探针自然补上）。
+ */
+function wifiObservationDispatchAllowed(host: MenuMijiaWindowsApp, center: HostActivityCenter): boolean {
+  const enabledRules = center.automationEngine.store.load().filter((rule) => rule.isEnabled);
+  return (
+    (enabledRules.length > 0 &&
+      (host.settings.connectionMode === "demo" || isLiveSnapshotReadyForTelemetry(host) || host.devices.length === 0)) ||
+    center.automationEngine.arbitrator.hasPendingLock
+  );
+}
+
+/**
  * 应用一次 Wi-Fi 探针读数：记录探针状态（设置界面「无权限」引导的数据源），
  * 并在读数变化时经 `dispatchSystemContextEvent` 派发 `wifiChanged`。
  * 「无法知晓」的读数会以 SSID 置空 + 不可信派发（引擎立即按不可信判定），但连续
@@ -1059,6 +1079,7 @@ async function observeAndDispatchWifi(
   const decision = wifiDispatchDecisionForObservation(observation, center.lastWifiReading);
   const reading = decision ? decision.reading : center.lastWifiReading;
   if (!decision) return reading;
+  if (!wifiObservationDispatchAllowed(host, center)) return reading;
   center.lastWifiReading = decision.reading;
   await dispatchSystemContextEvent(
     host,
@@ -1124,17 +1145,20 @@ export function tickSafetyHealthAndAutomation(
         center.lockPollInFlight = false;
         if (!isFullPanelHost(host)) return;
         const previous = center.lastSampledLockState;
-        center.lastSampledLockState = locked;
         if (previous === null) {
           center.automationEngine.primeLockBaseline(locked);
+          center.lastSampledLockState = locked;
           return;
         }
         if (locked !== previous) {
-          // 探针与规则执行都可能耗时：等待期间锁屏基线若已被更新的采样翻转，
-          // 本回调的翻转事件已过时——继续派发会把过时的 lockChanged 压在更新的
-          // 解锁事件之后，让引擎停留在错误的锁屏态。作废并交由下一次轮询按
-          // 最新状态派发（Codex 第 2 轮）。
-          if (center.lastSampledLockState !== locked) return;
+          // 记录翻转代际：探针与规则执行都可能耗时，等待期间可能发生「解锁又
+          // 上锁」等后续翻转。代际不一致说明本回调已被超越——继续派发会把过时
+          // 的 lockChanged 压在更新的事件之后（布尔值检查区分不了同值的两次
+          // 翻转），作废并交由下一次轮询按最新状态派发。
+          center.lastSampledLockState = locked;
+          center.lockSampleGeneration += 1;
+          const myGeneration = center.lockSampleGeneration;
+          if (center.lockSampleGeneration !== myGeneration) return;
           let lockWifi: EngineWifiReading | undefined;
           if (locked) {
             // 锁上的瞬间补一次实时 Wi-Fi 探针（对照 macOS 在锁屏信号时刻的实时
@@ -1159,7 +1183,7 @@ export function tickSafetyHealthAndAutomation(
                 applied ? { ssid: applied.ssid, isAuthorized: applied.isAuthorized } : { ssid: null, isAuthorized: false };
             }
           }
-          if (center.lastSampledLockState !== locked) return;
+          if (center.lockSampleGeneration !== myGeneration) return;
           const runs = await dispatchSystemContextEvent(
             host,
             { kind: "lockChanged", isLocked: locked, ...(lockWifi ? { wifi: lockWifi } : {}) },

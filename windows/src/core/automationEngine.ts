@@ -1270,15 +1270,16 @@ export class AutomationEngine {
         // 锁上的瞬间抓取当时的 Wi-Fi 读数（对照 macOS `ingestAway(.screenLocked)`
         // 实时读取 `lockTimeWiFi`）。事件自带的实时探针读数优先；探针不可用时
         // 退回最近一次轮询读数。防抖窗口里网络可能切换，flush 必须按锁屏时刻
-        // 的读数判定，而不是 flush 时刻的读数。仅在锁上时写入待决快照。
+        // 的读数判定，而不是 flush 时刻的读数。仅在真正的锁屏翻转（或首次建立
+        // 基线）时写入待决快照：重复的锁定事件不得覆盖既有快照——过时回调带入
+        // 的不可信读数会把合法快照洗掉（Codex 评审）。
         const observed = event.isLocked ? (event.wifi ?? null) : null;
-        const lockSnapshot: AutomationWifiSnapshot = {
-          ssid: observed ? observed.ssid : this.context.wifiSSID,
-          isAuthorized: observed ? observed.isAuthorized : this.context.wifiAuthorized,
-          capturedAtMs: nowMs,
-        };
-        if (event.isLocked) {
-          this.lockTimeWifi = lockSnapshot;
+        if (event.isLocked && (event.isLocked !== wasLocked || !this.hasLockBaseline)) {
+          this.lockTimeWifi = {
+            ssid: observed ? observed.ssid : this.context.wifiSSID,
+            isAuthorized: observed ? observed.isAuthorized : this.context.wifiAuthorized,
+            capturedAtMs: nowMs,
+          };
         }
         if (!this.hasLockBaseline) {
           this.hasLockBaseline = true;
@@ -1288,10 +1289,17 @@ export class AutomationEngine {
         if (event.isLocked) {
           // away 在锁屏瞬间判定，Wi-Fi 用刚抓取的锁屏快照（对照 macOS
           // `handle(trigger:.away)` 经 `wifiReadingForDispatch` 优先锁屏快照）。
+          // 翻转路径的快照刚在上面写入，必然存在。
+          const lockSnapshot = this.lockTimeWifi;
           const awayCandidates = rules.filter(
             (rule) =>
               rule.trigger === "away"
-              && this.passesConditions(rule, nowMs, lockSnapshot.ssid, lockSnapshot.isAuthorized),
+              && this.passesConditions(
+                rule,
+                nowMs,
+                lockSnapshot ? lockSnapshot.ssid : this.context.wifiSSID,
+                lockSnapshot ? lockSnapshot.isAuthorized : this.context.wifiAuthorized,
+              ),
           );
           if (awayCandidates.length > 0 && this.deduper.shouldFire("away", nowMs)) {
             matchedRules.push(...awayCandidates);

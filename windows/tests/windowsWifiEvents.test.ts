@@ -908,6 +908,156 @@ describe("Windows Wi-Fi poll wiring (tick → wifiChanged dispatch)", () => {
     assert.equal(sent.length, 0, "no spurious joined/left transition from the stale probe");
   });
 
+  it("drops a lock callback superseded by a later lock transition, preserving the newer snapshot", async () => {
+    const host = miniHost([makeLight("light.desk", true)]);
+    const center = getHostActivityCenter(host);
+    const sent: DeviceCommand[] = [];
+    host.applyCommand = async (cmd) => {
+      sent.push(cmd);
+      return true;
+    };
+    center.automationEngine.store.save([
+      createAutomationRule({
+        id: "lock-in",
+        trigger: "screenLocked",
+        action: { kind: "devices", deviceIds: ["light.desk"], isOn: false },
+        conditions: createAutomationConditions({ kind: "inAny", ssids: ["Net_B"] }),
+      }),
+    ]);
+
+    // 锁 #1 的回调卡在门控探针上；期间发生解锁 + 第二次上锁，第二次回调的
+    // 探针先应用了 (Net_B) 快照。布尔值检查区分不了同值的两次翻转，必须用代际。
+    let locked = false;
+    let wifiProbeCalls = 0;
+    const probeGate: { release: (() => void) | null } = { release: null };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string) => {
+          if (cmd === "is_workstation_locked") return locked as unknown;
+          if (cmd === "wifi_current") {
+            wifiProbeCalls += 1;
+            if (wifiProbeCalls === 1) {
+              await new Promise<void>((resolve) => { probeGate.release = resolve; });
+              return { state: "connected", ssid: "Net_A" };
+            }
+            return { state: "connected", ssid: "Net_B" };
+          }
+          return undefined;
+        },
+      },
+    });
+
+    const t0 = 1_800_000_000_000;
+    // 解锁基线。
+    tickSafetyHealthAndAutomation(host, t0);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.lastSampledLockState, false);
+
+    // 锁 #1：回调把基线写成 true，代际 1，卡在门控探针（seq 1）。
+    locked = true;
+    tickSafetyHealthAndAutomation(host, t0 + 1_000);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.lockSampleGeneration, 1);
+    assert.equal(typeof probeGate.release, "function");
+
+    // 等待期间解锁再上锁：第二次翻转的实时探针（seq 2，读到 Net_B）先行应用。
+    locked = false;
+    tickSafetyHealthAndAutomation(host, t0 + 2_000);
+    await setImmediate();
+    await setImmediate();
+    locked = true;
+    tickSafetyHealthAndAutomation(host, t0 + 3_000);
+    await setImmediate();
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.lockSampleGeneration, 3);
+    assert.equal(center.automationEngine.snapshot.wifiSSID, "Net_B", "lock #2's probe applied first");
+
+    // 放行锁 #1 的探针：回调已过时（代际 1 ≠ 3），不得派发过时的
+    // lockChanged(true)——否则不可信读数会把合法快照洗掉。
+    probeGate.release?.();
+    await setImmediate();
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.lockSampleGeneration, 3);
+    assert.equal(center.automationEngine.snapshot.isLocked, true);
+    assert.equal(center.lastWifiReading?.ssid, "Net_B", "the newer lock snapshot must survive");
+    assert.equal(sent.length, 0);
+  });
+
+  it("defers Wi-Fi observation dispatch until the device snapshot is live-ready", async () => {
+    const host = miniHost([makeLight("light.desk", true)]);
+    const center = getHostActivityCenter(host);
+    const sent: DeviceCommand[] = [];
+    host.applyCommand = async (cmd) => {
+      sent.push(cmd);
+      return true;
+    };
+    center.automationEngine.store.save([
+      createAutomationRule({
+        id: "join-any",
+        trigger: "wifiNetworkJoined",
+        action: { kind: "devices", deviceIds: ["light.desk"], isOn: false },
+      }),
+      createAutomationRule({
+        id: "sensor-hot",
+        trigger: "sensorThreshold",
+        action: { kind: "devices", deviceIds: ["light.desk"], isOn: false },
+        triggerOptions: {
+          sensorCondition: { deviceId: "light.desk", metric: "temperature", comparison: "gte", threshold: 30 },
+        },
+      }),
+    ]);
+    // 模拟启动早期：云端连接 + 过期的设备缓存（未标记 telemetryStale 的旧测温）。
+    host.settings.connectionMode = "xiaomiCloud";
+    (host.settings as unknown as Record<string, unknown>).cachedXiaomiDevices = [
+      { id: "light.desk", name: "灯", roomId: "r", roomName: "房间", model: "yeelink.light.lamp15", isOnline: true,
+        kind: { kind: "light", entityId: "light.desk", isOn: true, brightnessPercent: 80, colorTempKelvin: 4000,
+          minKelvin: 2700, maxKelvin: 6500, currentEffect: null, availableEffects: [], powerWritable: true } },
+    ];
+    (host as unknown as Record<string, unknown>).valuesAreStale = false;
+    (host as unknown as Record<string, unknown>).timerSnapshot = { sourceRevision: -1 };
+
+    let locked = false;
+    let wifiProbeCalls = 0;
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string) => {
+          if (cmd === "is_workstation_locked") return locked as unknown;
+          if (cmd === "wifi_current") {
+            wifiProbeCalls += 1;
+            return { state: "connected", ssid: "Net_A" };
+          }
+          return undefined;
+        },
+      },
+    });
+
+    const t0 = 1_800_000_000_000;
+    tickSafetyHealthAndAutomation(host, t0);
+    await setImmediate();
+    await setImmediate();
+    await setImmediate();
+    // 快照未就绪：读数被记录（探针状态、基线），但不派发——sensorThreshold
+    // 不会借这次派发在过期缓存上评估。
+    assert.equal(wifiProbeCalls, 1);
+    assert.equal(sent.length, 0, "no dispatch while the snapshot is not live-ready");
+    assert.equal(center.automationEngine.snapshot.wifiSSID, null);
+
+    // 快照就绪后（清掉过期缓存来源），下一次探针自然补上派发。
+    delete (host.settings as unknown as Record<string, unknown>).cachedXiaomiDevices;
+    tickSafetyHealthAndAutomation(host, t0 + 11_000);
+    await setImmediate();
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.automationEngine.snapshot.wifiSSID, "Net_A");
+    assert.equal(sent.length, 0, "the deferred join is trust-gated (untrusted default side), not fired");
+  });
+
   it("never probes Wi-Fi without a Tauri host (happy-dom without __TAURI_INTERNALS__)", () => {
     const host = miniHost();
     const center = getHostActivityCenter(host);
