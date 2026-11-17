@@ -728,9 +728,13 @@ export class AutomationTriggerDeduper {
    * 旧版 joined/left 去重键是 `wifiJoined:<规则ID>:<SSID>`（额外冒号段是观测
    * 到的 SSID）；现行键是 `wifiJoined:<规则ID>`（对照 macOS transitionEvent）。
    * 规则 ID 本身不含冒号，因此 wifi 键里出现第二个冒号段即旧格式。
+   *
+   * 清理时把同一规则所有旧键里最大的时间戳合并进新键（新键已有更大值则保留），
+   * 再删除旧键——否则清理本身会绕过仍在生效的冷却。
    */
   private static pruneLegacyWifiKeys(stamps: Record<string, number>): Record<string, number> {
     let changed = false;
+    const mergedStamps = new Map<string, number>();
     const out: Record<string, number> = {};
     for (const [key, value] of Object.entries(stamps)) {
       const prefix = key.startsWith("wifiJoined:")
@@ -740,9 +744,15 @@ export class AutomationTriggerDeduper {
           : null;
       if (prefix !== null && key.slice(prefix.length).includes(":")) {
         changed = true;
+        const rest = key.slice(prefix.length);
+        const mergedKey = prefix + rest.slice(0, rest.indexOf(":"));
+        mergedStamps.set(mergedKey, Math.max(mergedStamps.get(mergedKey) ?? value, value));
         continue;
       }
       out[key] = value;
+    }
+    for (const [mergedKey, value] of mergedStamps) {
+      out[mergedKey] = Math.max(out[mergedKey] ?? value, value);
     }
     return changed ? out : stamps;
   }

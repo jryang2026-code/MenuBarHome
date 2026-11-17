@@ -350,7 +350,8 @@ describe("Windows Wi-Fi conditions & triggers through wifiChanged", () => {
     assert.equal(persisted.includes("Private_Visited_Network"), false, "observed SSIDs must never be persisted");
     assert.equal(persisted.includes("Net_A"), false);
 
-    // 旧格式键（含 SSID）在读取时清除并回写，不留在磁盘上；其他键保留。
+    // 旧格式键（含 SSID）在读取时清除并回写，不留在磁盘上；冷却时间合并进
+    // 新键（取最大值），其他键保留。
     const seeded = new MemoryKV();
     seeded.setItem(
       AutomationTriggerDeduper.storageKey,
@@ -366,13 +367,42 @@ describe("Windows Wi-Fi conditions & triggers through wifiChanged", () => {
     assert.equal(deduper.lastFireAtMs("sched:r3:2026-11-17:08:15"), 4_000_000);
     assert.equal(deduper.lastFireAtMs("wifiJoined:join-any:Private_Visited_Network"), null, "legacy key no longer readable");
     assert.equal(deduper.lastFireAtMs("wifiLeft:r1:Net_A"), null);
+    // 合并后的冷却时间保留（迁移不清空仍在生效的冷却）。
+    assert.equal(deduper.lastFireAtMs("wifiJoined:join-any"), 1_000_000);
+    assert.equal(deduper.lastFireAtMs("wifiLeft:r1"), 2_000_000);
     const afterPurge = JSON.parse(seeded.getItem(AutomationTriggerDeduper.storageKey) ?? "{}") as Record<string, unknown>;
-    assert.deepEqual(Object.keys(afterPurge).sort(), ["lateNight:r2:2026-11-17", "sched:r3:2026-11-17:08:15"]);
+    assert.deepEqual(
+      Object.keys(afterPurge).sort(),
+      ["lateNight:r2:2026-11-17", "sched:r3:2026-11-17:08:15", "wifiJoined:join-any", "wifiLeft:r1"],
+    );
     assert.equal(
       (seeded.getItem(AutomationTriggerDeduper.storageKey) ?? "").includes("Private_Visited_Network"),
       false,
       "legacy SSID keys are removed from storage, not just ignored",
     );
+  });
+
+  it("keeps the cooldown effective when migrating legacy dedupe keys", async () => {
+    // 复现：旧键 wifiJoined:r:Net_A = t0/1000；迁移后新键继承该时间戳，
+    // shouldFire 在冷却期内必须被拒绝。
+    const t0 = new Date(2026, 10, 16, 14, 0, 0).getTime();
+    const seeded = new MemoryKV();
+    seeded.setItem(AutomationTriggerDeduper.storageKey, JSON.stringify({ "wifiJoined:r:Net_A": t0 / 1000 }));
+    const deduper = new AutomationTriggerDeduper(seeded);
+    assert.equal(deduper.shouldFire("wifiJoined:r", t0 + 1_000), false, "cooldown survives the migration");
+    assert.equal(deduper.shouldFire("wifiJoined:r", t0 + 61_000), true, "fires after the cooldown");
+    const persisted = JSON.parse(seeded.getItem(AutomationTriggerDeduper.storageKey) ?? "{}") as Record<string, unknown>;
+    assert.deepEqual(Object.keys(persisted), ["wifiJoined:r"]);
+    assert.equal((seeded.getItem(AutomationTriggerDeduper.storageKey) ?? "").includes("Net_A"), false);
+
+    // 新键已有更大值时保留新键。
+    const seeded2 = new MemoryKV();
+    seeded2.setItem(
+      AutomationTriggerDeduper.storageKey,
+      JSON.stringify({ "wifiLeft:r1": (t0 + 30_000) / 1000, "wifiLeft:r1:Net_A": t0 / 1000 }),
+    );
+    const deduper2 = new AutomationTriggerDeduper(seeded2);
+    assert.equal(deduper2.lastFireAtMs("wifiLeft:r1"), t0 + 30_000, "the larger existing value wins");
   });
 
   it("shares one per-rule cooldown for joined/left transitions like macOS (A→B→A within the cooldown is suppressed)", async () => {
@@ -1221,6 +1251,149 @@ describe("Windows Wi-Fi poll wiring (tick → wifiChanged dispatch)", () => {
     await setImmediate();
     assert.equal(center.automationEngine.snapshot.isLocked, false, "the stale lock event must not reach the new session");
     assert.equal(sent.length, sentBeforeReset, "no away rule may fire for the new session from the stale lock");
+  });
+
+  it("discards the pending lock probe entirely after an activity reset (no cross-session wifiChanged)", async () => {
+    // 复现（兜底复审 M）：可信 Net_B 基线 → 锁屏实时探针挂起 → 期间切换家庭
+    // （活动重置 + 新会话解锁基线）→ 旧探针随后返回 Net_A。探针结果必须在
+    // 应用之前核对代际：不得对新会话写 SSID、派发 wifiChanged、触发 joined。
+    const host = miniHost([makeLight("light.desk", true)]);
+    const center = getHostActivityCenter(host);
+    const sent: DeviceCommand[] = [];
+    host.applyCommand = async (cmd) => {
+      sent.push(cmd);
+      return true;
+    };
+    center.automationEngine.store.save([
+      createAutomationRule({
+        id: "join-any",
+        trigger: "wifiNetworkJoined",
+        action: { kind: "devices", deviceIds: ["light.desk"], isOn: false },
+      }),
+    ]);
+
+    let locked = false;
+    let wifiProbeCalls = 0;
+    const probeGate: { release: (() => void) | null } = { release: null };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string) => {
+          if (cmd === "is_workstation_locked") return locked as unknown;
+          if (cmd === "wifi_current") {
+            wifiProbeCalls += 1;
+            if (wifiProbeCalls === 2) {
+              await new Promise<void>((resolve) => { probeGate.release = resolve; });
+              return { state: "connected", ssid: "Net_A" };
+            }
+            return { state: "connected", ssid: "Net_B" };
+          }
+          return undefined;
+        },
+      },
+    });
+
+    const t0 = 1_800_000_000_000;
+    // 可信 Net_B 基线（首轮派发被不可信默认侧拦下触发，但读数进入上下文）。
+    tickSafetyHealthAndAutomation(host, t0);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.automationEngine.snapshot.wifiSSID, "Net_B");
+    const sentBeforeFlip = sent.length;
+
+    // 锁屏翻转：实时探针（seq 2，Net_A）挂起。
+    locked = true;
+    tickSafetyHealthAndAutomation(host, t0 + 1_000);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(typeof probeGate.release, "function");
+
+    // 期间切换家庭：活动重置 + 新会话解锁基线。
+    locked = false;
+    clearHostActivitiesOnSignOut(host);
+    tickSafetyHealthAndAutomation(host, t0 + 2_000);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.automationEngine.snapshot.isLocked, false);
+
+    // 旧探针返回：代际已失效 → 整条丢弃，不派发任何设备命令。
+    probeGate.release?.();
+    await setImmediate();
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.automationEngine.snapshot.wifiSSID, "Net_B", "SSID stays on the trusted baseline");
+    assert.equal(sent.length, sentBeforeFlip, "no joined/left rule may fire from the cross-session probe");
+  });
+
+  it("discards a periodic probe that spans an activity reset", async () => {
+    const host = miniHost([makeLight("light.desk", true)]);
+    const center = getHostActivityCenter(host);
+    const sent: DeviceCommand[] = [];
+    host.applyCommand = async (cmd) => {
+      sent.push(cmd);
+      return true;
+    };
+    center.automationEngine.store.save([
+      createAutomationRule({
+        id: "join-any",
+        trigger: "wifiNetworkJoined",
+        action: { kind: "devices", deviceIds: ["light.desk"], isOn: false },
+      }),
+    ]);
+
+    let locked = false;
+    let wifiProbeCalls = 0;
+    const probeGate: { release: (() => void) | null } = { release: null };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string) => {
+          if (cmd === "is_workstation_locked") return locked as unknown;
+          if (cmd === "wifi_current") {
+            wifiProbeCalls += 1;
+            if (wifiProbeCalls === 1) {
+              await new Promise<void>((resolve) => { probeGate.release = resolve; });
+              return { state: "connected", ssid: "Net_A" };
+            }
+            return { state: "connected", ssid: "Net_B" };
+          }
+          return undefined;
+        },
+      },
+    });
+
+    const t0 = 1_800_000_000_000;
+    // 周期探针（seq 1，Net_A）发起后被门控挂起。
+    tickSafetyHealthAndAutomation(host, t0);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.wifiProbeSeq, 1);
+    assert.equal(center.wifiAppliedSeq, 0);
+
+    // 会话重置 + 新基线（解锁）。
+    clearHostActivitiesOnSignOut(host);
+    tickSafetyHealthAndAutomation(host, t0 + 1_000);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.lockSampleGeneration, 3);
+
+    // 旧周期探针返回：代际失效 → 整条丢弃（状态、基线、派发都不动）。
+    probeGate.release?.();
+    await setImmediate();
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.wifiAppliedSeq, 0, "the cross-session probe is never applied");
+    assert.equal(center.lastWifiProbeState, null, "the stale probe must not touch the probe state");
+    assert.equal(center.lastWifiReading, null);
+    assert.equal(center.automationEngine.snapshot.wifiSSID, null);
+    assert.equal(sent.length, 0);
+
+    // 新会话的下一次探针正常工作。
+    tickSafetyHealthAndAutomation(host, t0 + 11_000);
+    await setImmediate();
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.automationEngine.snapshot.wifiSSID, "Net_B");
   });
 
   it("never probes Wi-Fi without a Tauri host (happy-dom without __TAURI_INTERNALS__)", () => {

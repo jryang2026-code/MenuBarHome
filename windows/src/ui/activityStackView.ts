@@ -1065,7 +1065,8 @@ function wifiObservationDispatchAllowed(host: MenuMijiaWindowsApp, center: HostA
  * 读数或制造假的 joined/left 转换），但仍返回其自身读数——锁屏分支需要锁屏
  * 时刻的真实网络，而不是 fail-closed 占位。
  *
- * 返回本次探针读到的读数；仅在宿主不可用时返回 null（调用方回退不可信读数）。
+ * 返回本次探针读到的读数；在代际失效或宿主不可用时返回 null（锁屏分支回退
+ * 不可信读数，且随后的代际检查会丢弃整个过时事件）。
  */
 async function observeAndDispatchWifi(
   host: MenuMijiaWindowsApp,
@@ -1073,7 +1074,11 @@ async function observeAndDispatchWifi(
   probe: WindowsWifiProbeResult | null | undefined,
   nowMs: number,
   seq: number,
+  generation: number,
 ): Promise<EngineWifiReading | null> {
+  // 会话有效性先于一切应用（写 SSID、派发 wifiChanged、写锁屏快照之前）：
+  // 家庭切换 / 会话重置递增代际后，在途探针的结果绝不能跨会话生效。
+  if (generation !== center.lockSampleGeneration) return null;
   const observation = wifiPollObservationFromProbe(probe);
   if (!isFullPanelHost(host)) return observation.reading;
   const superseded = seq <= center.wifiAppliedSeq;
@@ -1110,13 +1115,14 @@ async function pollAndDispatchWifi(
   center.lastWifiPollAtMs = nowMs;
   try {
     const seq = ++center.wifiProbeSeq;
+    const generation = center.lockSampleGeneration;
     let probe: WindowsWifiProbeResult | null = null;
     try {
       probe = await invoke<WindowsWifiProbeResult>("wifi_current");
     } catch {
       probe = null;
     }
-    await observeAndDispatchWifi(host, center, probe, nowMs, seq);
+    await observeAndDispatchWifi(host, center, probe, nowMs, seq, generation);
   } catch {
     center.lastWifiProbeState = "unknown";
   } finally {
@@ -1185,7 +1191,7 @@ export function tickSafetyHealthAndAutomation(
               } catch {
                 probe = null;
               }
-              const applied = await observeAndDispatchWifi(host, center, probe, nowMs, seq).catch(() => null);
+              const applied = await observeAndDispatchWifi(host, center, probe, nowMs, seq, myGeneration).catch(() => null);
               lockWifi =
                 applied ? { ssid: applied.ssid, isAuthorized: applied.isAuthorized } : { ssid: null, isAuthorized: false };
             }
