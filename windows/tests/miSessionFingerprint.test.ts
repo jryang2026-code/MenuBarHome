@@ -488,4 +488,48 @@ describe("session expiry writes across windows", () => {
     assert.equal(value, newer, "B's rejection survives A's primary recovery");
     assert.equal(isPersistedMiSessionExpired(SESSION_B, storage), true);
   });
+
+  it("a recovery keeps a rotated token's account rejection", async () => {
+    const accountId = miAccountId(SESSION_A);
+    const rejected = JSON.stringify({
+      [accountId]: { fingerprint: miSessionFingerprint(SESSION_B), expiredAtMs: 5_000 },
+    });
+    const { storage, current } = interleavingStorage(MI_ACCOUNTS_EXPIRED_STORAGE_KEY, rejected, rejected);
+    const restore = installNavigatorLocks(undefined);
+    try {
+      await markAccountSessionRejected(SESSION_A, false, { isPrimary: false, storage });
+      const stored = JSON.parse(current() ?? "{}") as Record<string, Record<string, unknown>>;
+      assert.equal(
+        stored[accountId]?.["fingerprint"],
+        miSessionFingerprint(SESSION_B),
+        "recovering A must not delete the rejection stored for B (rotated token, same account id)",
+      );
+      assert.equal(stored[accountId]?.["expiredAtMs"], 5_000);
+      assert.equal(getAccountTokenStatus(SESSION_B, 5_000, storage).kind, "expired");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a delayed rejection cannot overwrite a newer rotated-token entry", async () => {
+    const accountId = miAccountId(SESSION_A);
+    const rejected = JSON.stringify({
+      [accountId]: { fingerprint: miSessionFingerprint(SESSION_B), expiredAtMs: 5_000 },
+    });
+    const { storage, current } = interleavingStorage(MI_ACCOUNTS_EXPIRED_STORAGE_KEY, rejected, rejected);
+    const restore = installNavigatorLocks(undefined);
+    try {
+      await markAccountSessionRejected(SESSION_A, true, { isPrimary: false, storage, nowMs: 1_000 });
+      let stored = JSON.parse(current() ?? "{}") as Record<string, Record<string, unknown>>;
+      assert.equal(stored[accountId]?.["fingerprint"], miSessionFingerprint(SESSION_B));
+      assert.equal(stored[accountId]?.["expiredAtMs"], 5_000);
+
+      await markAccountSessionRejected(SESSION_A, true, { isPrimary: false, storage, nowMs: 6_000 });
+      stored = JSON.parse(current() ?? "{}") as Record<string, Record<string, unknown>>;
+      assert.equal(stored[accountId]?.["fingerprint"], miSessionFingerprint(SESSION_A));
+      assert.equal(stored[accountId]?.["expiredAtMs"], 6_000);
+    } finally {
+      restore();
+    }
+  });
 });

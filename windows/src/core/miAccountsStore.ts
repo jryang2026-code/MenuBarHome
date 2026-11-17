@@ -248,14 +248,24 @@ export async function markAccountSessionRejected(session: MiSession | null | und
   const nowMs = options.nowMs ?? Date.now();
   const accountId = miAccountId(session);
   await runSessionExpiryStorageMutation(() => {
-    const map = readPersistedAccountExpiryState(storage).map;
-    if (expired) { map[accountId] = {
-        fingerprint: miSessionFingerprint(session),
+    const state = readPersistedAccountExpiryState(storage);
+    const fingerprint = miSessionFingerprint(session);
+    const current = state.map[accountId];
+    if (expired) {
+      // A newer rejection for a rotated token of the same account must not be replaced by a
+      // delayed older one.
+      if (current && current.fingerprint !== fingerprint && current.expiredAtMs > nowMs) return;
+      state.map[accountId] = {
+        fingerprint,
         expiredAtMs: nowMs,
       };
-    } else { delete map[accountId];
+    } else if (current?.fingerprint === fingerprint) {
+      // Recover only this exact session; a rotated token's rejection keeps its slot.
+      delete state.map[accountId];
+    } else {
+      return;
     }
-    writePersistedAccountExpiryMap(storage, map);
+    writePersistedAccountExpiryMap(storage, state.map);
   });
   if (expired) {
     if (options.isPrimary) await persistMiSessionExpired(session, true, storage, nowMs);
