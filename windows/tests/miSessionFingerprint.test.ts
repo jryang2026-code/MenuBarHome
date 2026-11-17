@@ -200,6 +200,48 @@ describe("Mi session rejection storage", () => {
     assert.notEqual(getAccountTokenStatus(SESSION_B, 1_000).kind, "expired", "rotated token is not in the map");
   });
 
+  // main only required the fingerprint to match, so a broken timestamp must stay a rejection.
+  const brokenTimestamps: ReadonlyArray<readonly [string, unknown]> = [
+    ["missing", undefined],
+    ["null", null],
+    ["string", "1700000000000"],
+  ];
+
+  for (const [label, brokenExpiry] of brokenTimestamps) {
+    it(`migrates a v1 single record with a ${label} timestamp as a rejection`, () => {
+      const record: Record<string, unknown> = { fingerprint: legacyFingerprint(SESSION_A) };
+      if (brokenExpiry !== undefined) record["expiredAtMs"] = brokenExpiry;
+      localStorage.setItem(MI_SESSION_EXPIRED_STORAGE_KEY, JSON.stringify(record));
+
+      assert.equal(isPersistedMiSessionExpired(SESSION_A), true);
+      assert.equal(localStorage.getItem(MI_SESSION_EXPIRED_STORAGE_KEY), null);
+      assert.deepEqual(JSON.parse(localStorage.getItem(v2Key(SESSION_A)) ?? "{}"), { expiredAtMs: 0 });
+      assert.deepEqual(getAccountTokenStatus(SESSION_A, 1_000), {
+        kind: "expired",
+        source: "rejected",
+        expiredAtMs: 0,
+      });
+    });
+
+    it(`migrates a v1 account record with a ${label} timestamp as a rejection`, () => {
+      const record: Record<string, unknown> = { fingerprint: legacyFingerprint(SESSION_A) };
+      if (brokenExpiry !== undefined) record["expiredAtMs"] = brokenExpiry;
+      localStorage.setItem(
+        MI_ACCOUNTS_EXPIRED_STORAGE_KEY,
+        JSON.stringify({ [miAccountId(SESSION_A)]: record }),
+      );
+
+      assert.deepEqual(getAccountTokenStatus(SESSION_A, 1_000), {
+        kind: "expired",
+        source: "rejected",
+        expiredAtMs: 0,
+      });
+      assert.equal(localStorage.getItem(MI_ACCOUNTS_EXPIRED_STORAGE_KEY), null);
+      assert.deepEqual(JSON.parse(localStorage.getItem(v2Key(SESSION_A)) ?? "{}"), { expiredAtMs: 0 });
+      assert.equal(isPersistedMiSessionExpired(SESSION_A), true);
+    });
+  }
+
   it("keeps the v1 key and the rejected verdict when a migration write fails, then finishes later", () => {
     const harness = testStorage({
       [MI_ACCOUNTS_EXPIRED_STORAGE_KEY]: JSON.stringify({

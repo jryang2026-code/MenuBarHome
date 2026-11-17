@@ -335,12 +335,14 @@ interface LegacyRejectionRecord {
 function parseLegacyRejection(value: unknown): LegacyRejectionRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  if (typeof record["fingerprint"] !== "string" || typeof record["expiredAtMs"] !== "number") {
-    return null;
-  }
+  const stored = record["fingerprint"];
+  if (typeof stored !== "string" || stored.trim() === "") return null;
+  const expiredAtMs = record["expiredAtMs"];
   return {
-    fingerprint: upgradeMiSessionFingerprint(record["fingerprint"]),
-    expiredAtMs: record["expiredAtMs"],
+    fingerprint: upgradeMiSessionFingerprint(stored),
+    // The fingerprint identifies the rejected session; a missing or malformed timestamp must not
+    // invalidate it (v2 payloads fall back to 0 the same way).
+    expiredAtMs: typeof expiredAtMs === "number" && Number.isFinite(expiredAtMs) ? expiredAtMs : 0,
   };
 }
 

@@ -420,7 +420,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       const existingIdx = this.cachedAccounts.findIndex((item) => item.id === account.id);
       if (existingIdx === 0) { const prevFp = miSessionFingerprint(this.cachedAccounts[0]!.session);
         await this.vault.savePrimaryMiSession(account.session);
-        if (prevFp !== miSessionFingerprint(account.session)) { await markAccountSessionRejected(account.session, false, {
+        if (prevFp !== miSessionFingerprint(account.session)) { markAccountSessionRejected(account.session, false, {
             isPrimary: true,
             storage: this.storage,
           });
@@ -432,7 +432,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
 
       if (existingIdx > 0) { const prevFp = miSessionFingerprint(this.cachedAccounts[existingIdx]!.session);
         await this.vault.saveMiAccountSlot(account.slotId, account.session);
-        if (prevFp !== miSessionFingerprint(account.session)) { await markAccountSessionRejected(account.session, false, {
+        if (prevFp !== miSessionFingerprint(account.session)) { markAccountSessionRejected(account.session, false, {
             isPrimary: false,
             storage: this.storage,
           });
@@ -445,7 +445,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       }
 
       if (this.cachedAccounts.length === 0) { await this.vault.savePrimaryMiSession(account.session);
-        await markAccountSessionRejected(account.session, false, {
+        markAccountSessionRejected(account.session, false, {
           isPrimary: true,
           storage: this.storage,
         });
@@ -455,7 +455,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       }
 
       await this.vault.saveMiAccountSlot(account.slotId, account.session);
-      await markAccountSessionRejected(account.session, false, {
+      markAccountSessionRejected(account.session, false, {
         isPrimary: false,
         storage: this.storage,
       });
@@ -496,7 +496,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       } else { await this.vault.deleteMiAccountSlot(removed.slotId);
       }
 
-      await markAccountSessionRejected(removed.session, false, {
+      markAccountSessionRejected(removed.session, false, {
         isPrimary: idx === 0 && remaining.length === 0,
         storage: this.storage,
       });
@@ -1114,7 +1114,7 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
       const stamped = stampAccountSnapshot(rawHome, rawHomes, account, namespaceIds);
 
       clearAccountRateLimitBackoff(account.id);
-      await markAccountSessionRejected(account.session, false, {
+      markAccountSessionRejected(account.session, false, {
         isPrimary,
         storage,
         nowMs,
@@ -1133,7 +1133,7 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
         tokenStatus: freshTokenStatus,
       };
     } catch (error) { if (error instanceof MiCloudError && error.kind === "sessionExpired") {
-        await markAccountSessionRejected(account.session, true, {
+        markAccountSessionRejected(account.session, true, {
           isPrimary,
           storage,
           nowMs,
@@ -1261,7 +1261,7 @@ export async function executeMultiAccountMiotCommand(command: DeviceCommand,
       );
       return { executedByAccountId: account.id };
     } catch (error) { if (error instanceof MiCloudError && error.kind === "sessionExpired") { sawExpired = true;
-        await markAccountSessionRejected(account.session, true, {
+        markAccountSessionRejected(account.session, true, {
           isPrimary: accountIdx === 0,
           storage: options.storage,
         });
@@ -1356,7 +1356,7 @@ export class MultiAccountMiCloudProvider implements HomeProvider {
       } catch (error) {
         if (error instanceof MiCloudError && error.kind === "sessionExpired") {
           sawExpired = true;
-          await markAccountSessionRejected(account.session, true, {
+          markAccountSessionRejected(account.session, true, {
             isPrimary: accountIdx === 0,
             storage: this.dependencies.storage,
           });
