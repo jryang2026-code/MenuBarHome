@@ -810,7 +810,10 @@ function createDefaultSystemContextSnapshot(partial: Partial<SystemContextSnapsh
   return {
     isLocked: false, isDisplayAsleep: false, isSystemAsleep: false, lidClosed: false,
     onExternalPower: null, batteryPercent: null, powerSaverEnabled: false,
-    wifiSSID: null, wifiAuthorized: true, cameraInUse: false, microphoneInUse: false,
+    // 未经任何 Wi-Fi 观测前视为「无法知晓」：首轮 wifiChanged 只建立基线、
+    // 不触发 joined/left 转换（对照 macOS 首轮轮询没有 previous 不产生事件），
+    // 避免应用启动时对着默认快照误触发设备控制。
+    wifiSSID: null, wifiAuthorized: false, cameraInUse: false, microphoneInUse: false,
     externalDisplayCount: 0, focusModeEnabled: false,
     ...partial,
   };

@@ -383,11 +383,10 @@ describe("Windows Wi-Fi poll wiring (tick → wifiChanged dispatch)", () => {
     await setImmediate();
     await setImmediate();
     assert.equal(probeCalls, 1);
-    assert.deepEqual(
-      sent,
-      [{ kind: "setLightPower", entityId: "light.desk", isOn: false }],
-      "first definite reading joins Home_5G and fires the joined rule",
-    );
+    // 首次观测只建立基线：默认快照「无法知晓」，join 不触发设备控制。
+    assert.equal(sent.length, 0);
+    assert.equal(center.automationEngine.snapshot.wifiSSID, "Home_5G");
+    assert.equal(center.automationEngine.snapshot.wifiAuthorized, true);
     assert.equal(center.lastWifiProbeState, "connected");
 
     // 未到 10 秒节流间隔：不探针、不派发。
@@ -395,21 +394,24 @@ describe("Windows Wi-Fi poll wiring (tick → wifiChanged dispatch)", () => {
     await setImmediate();
     await setImmediate();
     assert.equal(probeCalls, 1);
-    assert.equal(sent.length, 1);
+    assert.equal(sent.length, 0);
 
     // 读数未变化：探针但不派发。
     tickSafetyHealthAndAutomation(host, t0 + 11_000);
     await setImmediate();
     await setImmediate();
     assert.equal(probeCalls, 2);
-    assert.equal(sent.length, 1);
+    assert.equal(sent.length, 0);
 
-    // 切换网络：派发 wifiChanged，joined 规则对新 SSID 再触发。
+    // 切换网络：两侧读数都可信，joined 规则触发。
     wifiResponse = { state: "connected", ssid: "Office" };
     tickSafetyHealthAndAutomation(host, t0 + 22_000);
     await setImmediate();
     await setImmediate();
-    assert.equal(sent.length, 2);
+    assert.deepEqual(
+      sent,
+      [{ kind: "setLightPower", entityId: "light.desk", isOn: false }],
+    );
 
     // 探针失败：读数按「无法知晓」派发（SSID 置空 + 不可信，引擎失_close），
     // 但信任门会拦下假的 joined/left 转换，不触发规则。
@@ -417,7 +419,7 @@ describe("Windows Wi-Fi poll wiring (tick → wifiChanged dispatch)", () => {
     tickSafetyHealthAndAutomation(host, t0 + 33_000);
     await setImmediate();
     await setImmediate();
-    assert.equal(sent.length, 2);
+    assert.equal(sent.length, 1);
     assert.equal(center.lastWifiProbeState, "unknown");
     assert.equal(center.automationEngine.snapshot.wifiSSID, null);
     assert.equal(center.automationEngine.snapshot.wifiAuthorized, false);
@@ -428,7 +430,7 @@ describe("Windows Wi-Fi poll wiring (tick → wifiChanged dispatch)", () => {
     await setImmediate();
     await setImmediate();
     assert.equal(center.lastWifiProbeState, "noPermission");
-    assert.equal(sent.length, 2);
+    assert.equal(sent.length, 1);
 
     // 权限恢复后连上网络：读数变化会派发（上下文刷新），但不可信侧之后的
     // 首次连接按 macOS 语义不触发 joined。
@@ -436,7 +438,7 @@ describe("Windows Wi-Fi poll wiring (tick → wifiChanged dispatch)", () => {
     tickSafetyHealthAndAutomation(host, t0 + 55_000);
     await setImmediate();
     await setImmediate();
-    assert.equal(sent.length, 2);
+    assert.equal(sent.length, 1);
     assert.equal(center.automationEngine.snapshot.wifiSSID, "Office");
     assert.equal(center.automationEngine.snapshot.wifiAuthorized, true);
   });
