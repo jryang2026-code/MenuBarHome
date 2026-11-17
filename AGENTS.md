@@ -24,12 +24,12 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
 
 - **`git commit`（约 4s）**：自动跑 `bash scripts/check.sh --lint-only`（密钥扫描、机械 lint、工作流契约与文档链接、能力矩阵、云台型号表）。全量脚本自检加 `--script-tests`。
 - **推 `main` / 开 PR 前**：非 UI 改动跑 `bash scripts/check.sh --changed`；**macOS 界面改动**须在本机跑完整 `bash scripts/check.sh`（快照基线以维护者 Mac 为准；CI 托管机用 `macos-26-intel` 且跳过像素比对，未改视觉才贴 `no-snapshot-change`）。确认输出无非预期 `⚠️ 部分通过：跳过 ...` 才算通过。
-- **专项检查**：工作流改动跑 `actionlint .github/workflows/*.yml`；维护者 Mac 未装 `cargo`/`rustc`，`windows/src-tauri` 原生层测试由云端 CI `windows-rust-test` 承担（Windows 宿主机跑 `cargo test --locked --manifest-path windows/src-tauri/Cargo.toml`）；单测提速用 `node windows/scripts/test-file.mjs tests/<file>.test.ts`、`scripts/repeat_test.sh <filter>`、`scripts/red-check.sh`。
+- **专项检查**：工作流改动跑 `actionlint .github/workflows/*.yml`；维护者 Mac 未装 `cargo`/`rustc`，`windows/src-tauri` 原生层测试由云端 CI `windows-rust-test` 承担（Windows 宿主机跑 `cargo test --locked --manifest-path windows/src-tauri/Cargo.toml`）；Windows 隔离工作树跑前端检查用 `bash scripts/shared_windows_deps.sh run npm --prefix windows test`（勿手工反复 `ln -sfn` / `rm -rf windows/node_modules`）；单测提速用 `node windows/scripts/test-file.mjs tests/<file>.test.ts`、`scripts/repeat_test.sh <filter>`、`scripts/red-check.sh`。
 - **检索与跨端**：Windows 无 Swift 工具链时本机跑 `--lint-only`（或 `scripts/remote-swift-test.sh`）；本仓 Swift/Rust 无 LSP，引用检索用 `grep`。
 
 ## 领域约定与按需文档
 
-- 领域术语对齐 [`GLOSSARY.md`](GLOSSARY.md)；改动架构边界先查 [`docs/adr/INDEX.md`](docs/adr/INDEX.md)，与已接受 ADR 冲突时须显式声明。
+- 领域术语对齐 [`GLOSSARY.md`](GLOSSARY.md)；模块与文件路径速查先看 [`docs/feature-map.md`](docs/feature-map.md)（避免跨工作树盲猜路径）；改动架构边界先查 [`docs/adr/INDEX.md`](docs/adr/INDEX.md)，与已接受 ADR 冲突时须显式声明。
 - 非机械编码/并发/UI/测试规范见 [`CODING_STANDARDS.md`](CODING_STANDARDS.md)。
 - 专项 Runbook（仅命中对应任务时读取）：
   - Issue/PR 编号、老号映射与协同脚本：[`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md)
@@ -38,10 +38,11 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
   - Linux 容器与云端环境（Antigravity Cloud / Cursor Cloud）：[`docs/agents/cursor-cloud.md`](docs/agents/cursor-cloud.md)
   - 本地隔离 macOS CI VM 运维：[`docs/agents/local-macos-runner.md`](docs/agents/local-macos-runner.md)
 
-## 技能路由（`pstack` & Matt Pocock `mp-*`）
+## 技能路由（`pstack` & Matt Pocock 工程套件）
 
-- **工程执行默认路由 `poteto-mode`**：涉及多文件修改、跨函数/模块签名调整、架构设计、根因未明的 Bug 或性能问题时，先调 `lookup_skill("poteto-mode")` 按对应 Playbook 与原则推进；单文件明确小改或纯问答直接执行并在真实产物上验证。意图已明确时直入专项技能（`how`、`why`、`architect`、`arena`、`swarm`、`interrogate`、`tdd`、`no-comments`、`deslop`、`technical-writing`、`reflect`）。Antigravity Cloud 派发子代理一律使用 `Workspace: "inherit"`、默认 `Model: "inherit"`。
-- **议题分拣、规划拆票与双轴审查**：使用 `mp-*` 套件（`mp-triage`、`mp-wayfinder`、`mp-grill-with-docs`、`mp-to-spec`、`mp-to-tickets`、`mp-implement`、`mp-diagnosing-bugs`、`mp-code-review`、`mp-retro`），与 [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md) 联动。
+- **工程执行默认路由 `poteto-mode`**：涉及多文件修改、跨函数/模块签名调整、架构设计、根因未明的 Bug 或性能问题时，按当前宿主读取并执行 `poteto-mode`（本机 Antigravity / Codex 直接 `read_file` 读取 `~/.agents/skills/poteto-mode/SKILL.md` 与 `~/.agents/skill-catalog/pstack/docs/harness/antigravity.md`）；单文件明确小改或纯问答直接执行并在真实产物上验证。意图已明确时直入对应专项技能（`~/.agents/skill-catalog/pstack/skills/` 下的 `how`、`why`、`architect`、`arena`、`pstack-swarm`、`interrogate`、`pstack-tdd`、`no-comments`、`unslop`、`technical-writing`、`reflect`）。
+- **本机 Swarm 与 PR 盯梢路由**：多代理并行协作遵循 `~/.agents/skills/poteto-swarm/SKILL.md`（并发写者用 `workspace: "share"` + Carbon/Argon/Hydrogen 三层模型路由，`Monitor` 固定 `gemini-4-hydrogen-xhigh` 且仅多波次并发时启用）；PR/CI 等待优先跑后台阻塞脚本 `bash scripts/pr-ready.sh --wait --max-codex-rounds 2 <pr>`，不用 LLM `schedule` 短周期轮询。Antigravity Cloud Linux 容器仍使用 `Workspace: "inherit"`、`Model: "inherit"`（见 [`docs/agents/cursor-cloud.md`](docs/agents/cursor-cloud.md)）。
+- **议题分拣、规划拆票与双轴审查**：使用已安装的 Matt Pocock 工程技能（`triage`、`wayfinder`、`grill-with-docs`、`to-spec`、`to-tickets`、`implement`、`diagnosing-bugs`、`code-review`、`retro`；Antigravity Cloud 镜像别名带 `mp-` 前缀），与 [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md) 联动。
 
 ## 并发与 Runner 安全红线
 
