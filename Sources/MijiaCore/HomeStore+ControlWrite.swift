@@ -880,6 +880,7 @@ extension HomeStore {
         guard let updated else {
             let write = beginOptimisticWrite(from: previous, to: nil, lock: nil)
             Task { [weak self] in
+                defer { self?.manualWriteExits &+= 1 }
                 guard let self else { return }
                 do {
                     try await self.send(command, for: write, context: context)
@@ -973,6 +974,7 @@ extension HomeStore {
         let sessionBase = session.base
         guard let debounceKey else {
             Task { [weak self] in
+                defer { self?.manualWriteExits &+= 1 }
                 guard let self else { return }
                 do {
                     try await self.executeDeviceCommand(command)
@@ -996,6 +998,7 @@ extension HomeStore {
         debounceTasks[debounceKey]?.cancel()
         debounceTasks[debounceKey] = Task { [weak self] in
             defer {
+                self?.manualWriteExits &+= 1
                 if let self, self.debouncedWrites[debounceKey]?.token == token {
                     self.debouncedWrites.removeValue(forKey: debounceKey)
                     self.debounceTasks.removeValue(forKey: debounceKey)

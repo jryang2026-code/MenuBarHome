@@ -42,27 +42,28 @@ struct AssistantScheduleTests {
     )
 
     @MainActor
-    private func makeStore() async throws -> (HomeStore, MockHomeProvider) {
+    private func makeStore() async throws -> (HomeStore, MockHomeProvider, ScheduledCommandTestSupport.SleepGate) {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.ceiling], scenes: []))
         let store = HomeStore(provider: mock, defaultsSuiteName: "test.schedule.\(UUID().uuidString)")
         try await store.waitForTestSnapshot()
-        store.assistantSleep = { _ in try await Task.sleep(for: .milliseconds(80)) }
-        return (store, mock)
+        let gate = ScheduledCommandTestSupport.SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
+        return (store, mock, gate)
     }
 
     @Test("A delayed command waits, then runs through the normal execution path")
     @MainActor
     func delayedCommandRunsLater() async throws {
-        let (store, mock) = try await makeStore()
+        let (store, mock, gate) = try await makeStore()
         let plan = try #require(await store.runAssistantCommand("10分钟后关闭书房吸顶灯"))
         #expect(plan.reply == "好的，10 分钟后关闭书房吸顶灯")
         #expect(store.assistantState == .done("好的，10 分钟后关闭书房吸顶灯"))
         #expect(store.scheduledCommands.map(\.reply) == ["10 分钟后关闭书房吸顶灯"])
+        await waitUntil { gate.waiting == 1 }
         #expect(await mock.executedCommands.isEmpty)
 
-        for _ in 0..<50 where await mock.executedCommands.isEmpty {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        gate.release()
+        await waitUntil { await mock.executedCommands.count == 1 }
         #expect(store.scheduledCommands.isEmpty)
         #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
     }
@@ -70,13 +71,15 @@ struct AssistantScheduleTests {
     @Test("取消定时 cancels pending commands so they never run")
     @MainActor
     func cancelStopsPending() async throws {
-        let (store, mock) = try await makeStore()
+        let (store, mock, gate) = try await makeStore()
         _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        await waitUntil { gate.waiting == 1 }
         #expect(store.scheduledCommands.count == 1)
+        let exits = store.scheduledTaskExits
         _ = await store.runAssistantCommand("取消定时")
         #expect(store.assistantState == .done("已取消 1 个定时"))
         #expect(store.scheduledCommands.isEmpty)
-        try await Task.sleep(for: .milliseconds(200))
+        await waitUntil { store.scheduledTaskExits > exits }
         #expect(await mock.executedCommands.isEmpty)
 
         _ = await store.runAssistantCommand("取消定时")
@@ -106,11 +109,12 @@ struct AssistantScheduleTests {
         #expect(store.missedScheduledCommands.isEmpty)
         #expect(await mock.executedCommands.isEmpty)
 
-        store.assistantSleep = { _ in try await Task.sleep(for: .milliseconds(30)) }
+        let gate = ScheduledCommandTestSupport.SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
         store.restoreScheduledCommands(now: Date())
-        for _ in 0..<50 where await mock.executedCommands.isEmpty {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        await waitUntil { gate.waiting == 1 }
+        gate.release()
+        await waitUntil { await mock.executedCommands.count == 1 }
         #expect(store.scheduledCommands.isEmpty)
         #expect(ScheduledCommand.load(from: defaults).isEmpty)
         #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
@@ -159,18 +163,17 @@ struct AssistantScheduleTests {
     @Test("A timer the Mac slept through waits for confirmation instead of firing on wake (#22)")
     @MainActor
     func timerLateAfterSleepWaits() async throws {
-        let (store, mock) = try await makeStore()
+        let (store, mock, gate) = try await makeStore()
         var notified: [ScheduledCommand] = []
         store.onMissedScheduledCommand = { notified.append($0) }
         _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
         let entry = try #require(store.scheduledCommands.first)
+        await waitUntil { gate.waiting == 1 }
         // The lid was closed for 3 hours: the task wakes long after its fire date.
         store.assistantNow = { Date().addingTimeInterval(3 * 3600) }
         store.isShowingAssistantBar = false
-
-        for _ in 0..<50 where !store.scheduledCommands.isEmpty {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        gate.release()
+        await waitUntil { store.scheduledCommands.isEmpty }
         #expect(store.scheduledCommands.isEmpty)
         #expect(store.missedScheduledCommands.map(\.id) == [entry.id])
         #expect(notified.map(\.id) == [entry.id])
@@ -185,12 +188,12 @@ struct AssistantScheduleTests {
     @Test("A timer that wakes up only a few seconds late still runs")
     @MainActor
     func timerSlightlyLateRuns() async throws {
-        let (store, mock) = try await makeStore()
+        let (store, mock, gate) = try await makeStore()
         _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        await waitUntil { gate.waiting == 1 }
         store.assistantNow = { Date().addingTimeInterval(10 * 60 + 20) }
-        for _ in 0..<50 where await mock.executedCommands.isEmpty {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        gate.release()
+        await waitUntil { await mock.executedCommands.count == 1 }
         #expect(store.missedScheduledCommands.isEmpty)
         #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
     }

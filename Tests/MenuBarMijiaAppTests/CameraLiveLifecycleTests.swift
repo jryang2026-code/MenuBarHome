@@ -10,6 +10,7 @@ private actor MockCameraLifecycleProvider: HomeProvider {
     private var secondResolveWaiter: CheckedContinuation<Void, Never>?
     private var stopWaiter: (deviceID: String, continuation: CheckedContinuation<Void, Never>)?
     private var stopHoldContinuation: CheckedContinuation<Void, Never>?
+    private var stopHungWaiter: CheckedContinuation<Bool, Never>?
     private var pauseFirstResolve = false
     private var hangStop = false
     private(set) var resolveCallOrder: [Int] = []
@@ -64,6 +65,8 @@ private actor MockCameraLifecycleProvider: HomeProvider {
             waiter.continuation.resume()
         }
         if hangStop {
+            stopHungWaiter?.resume(returning: true)
+            stopHungWaiter = nil
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                 stopHoldContinuation = cont
             }
@@ -73,6 +76,23 @@ private actor MockCameraLifecycleProvider: HomeProvider {
     func releaseHungStop() {
         stopHoldContinuation?.resume()
         stopHoldContinuation = nil
+    }
+
+    /// True once `stopCameraStream` is parked. False if that does not happen within 30 seconds.
+    func waitUntilStopHung() async -> Bool {
+        if stopHoldContinuation != nil { return true }
+        return await withCheckedContinuation { continuation in
+            stopHungWaiter = continuation
+            Task {
+                try? await Task.sleep(for: .seconds(30))
+                self.expireStopHungWait()
+            }
+        }
+    }
+
+    private func expireStopHungWait() {
+        stopHungWaiter?.resume(returning: false)
+        stopHungWaiter = nil
     }
 
     func waitForFirstResolveEntered() async {
@@ -495,7 +515,8 @@ struct CameraLiveLifecycleTests {
         hungStore.devices = [hungCam]
         controller.install(with: hungStore)
         controller.activeDeviceId = hungCam.id
-        controller.terminationTimeout = .milliseconds(35)
+        let timeoutGate = TerminationSleepGate()
+        controller.terminationSleep = { _ in await timeoutGate.park() }
         controller.bridgeShutdownOverride = {
             await bridgeShutdown.mark()
         }
@@ -508,6 +529,8 @@ struct CameraLiveLifecycleTests {
             hungCont.finish()
         }
         #expect(hungReply == .terminateLater)
+        #expect(await hungProvider.waitUntilStopHung(), "the hung stop never parked")
+        await timeoutGate.release()
         for await _ in hungStream { break }
 
         #expect(completionCount == 1)
@@ -515,5 +538,38 @@ struct CameraLiveLifecycleTests {
         await hungProvider.releaseHungStop()
         await controller.terminationTask?.value
         #expect(completionCount == 1)
+    }
+}
+
+/// Parks the quit-timeout sleep until the test releases it. Cancellation still has to be able to
+/// leave, because a drain that wins the race cancels this task.
+private actor TerminationSleepGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+
+    func park() async {
+        if released { return }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                if released {
+                    cont.resume()
+                } else {
+                    continuation = cont
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel() }
+        }
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+
+    private func cancel() {
+        continuation?.resume()
+        continuation = nil
     }
 }

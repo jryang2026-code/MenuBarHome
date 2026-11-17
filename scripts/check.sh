@@ -107,6 +107,9 @@ check_secret_leaks() {
         windows/src-tauri/src
         windows/tests
         raycast/src
+        scripts
+        .github/workflows
+        docs
     )
     # 缺失的目录（稀疏检出、只拉一端）让 rg/grep 退出 2，`if search_matches` 会把它当成「没匹配」而放过真泄漏；
     # 只扫存在的目录，并把退出码 1 以外的失败当作扫描本身出错。
@@ -136,10 +139,11 @@ check_secret_leaks() {
         return 1
     fi
 
-    # 共享 golden 里的 10/8 是测试向量，AssistantTests 里的 localhost:3425 测自定义端口往返；只豁免这两处。
+    # 共享 golden 里的 10/8 是测试向量。AssistantTests 里的 localhost:3425 测自定义端口往返。
+    # pre-push 把维护者 NAS 地址写在拒绝推送的名单里。check.sh 自己会写出它正在扫描的端口。
     local lan_ip_hits debug_port_hits
-    lan_ip_hits="$(search_matches '10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' "${scan_dirs[@]}" | grep -Ev '^Tests[/\\]+Fixtures[/\\]+local_network_endpoint_golden\.json:' || true)"
-    debug_port_hits="$(search_matches 'localhost:3425' "${scan_dirs[@]}" | grep -Ev '^Tests[/\\]+MijiaCoreTests[/\\]+AssistantTests\.swift:' || true)"
+    lan_ip_hits="$(search_matches '10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' "${scan_dirs[@]}" | grep -Ev '^Tests[/\\]+Fixtures[/\\]+local_network_endpoint_golden\.json:|^scripts[/\\]+hooks[/\\]+pre-push:' || true)"
+    debug_port_hits="$(search_matches 'localhost:3425' "${scan_dirs[@]}" | grep -Ev '^Tests[/\\]+MijiaCoreTests[/\\]+AssistantTests\.swift:|^scripts[/\\]+check\.sh:' || true)"
     if [ -n "$lan_ip_hits" ] || [ -n "$debug_port_hits" ]; then
         if [ -n "$lan_ip_hits" ]; then
             echo "$lan_ip_hits"

@@ -1235,6 +1235,8 @@ public final class HomeStore {
     var initialSnapshotWaiters = 0
     /// Scheduled-command tasks that have left, including cancellation.
     var scheduledTaskExits = 0
+    /// Card writes that have finished, including a cancellation that shows no toast.
+    @ObservationIgnored var manualWriteExits = 0
     /// The most recent assistant action, kept so "撤销" can restore it after the 5 s banner is gone.
     var lastAssistantUndo: (
         reply: String,
@@ -1267,6 +1269,8 @@ public final class HomeStore {
     @ObservationIgnored var isApplyingProviderSnapshot: Bool = false
     /// Pending coalesced export; see `scheduleRaycastSnapshotExport()`.
     @ObservationIgnored var raycastExportTask: Task<Void, Never>?
+    /// Test seam for the quiet period before a coalesced Raycast export.
+    @ObservationIgnored var raycastExportSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     /// Last snapshot written to disk, compared without `updatedAt` to skip identical writes.
     @ObservationIgnored var lastExportedRaycastSnapshot: RaycastSnapshot?
 

@@ -653,8 +653,9 @@ extension HomeStore {
     public func scheduleRaycastSnapshotExport() {
         guard raycastIntegrationEnabled, !isApplyingProviderSnapshot else { return }
         raycastExportTask?.cancel()
+        let sleep = raycastExportSleep
         raycastExportTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(300))
+            try? await sleep(.milliseconds(300))
             guard !Task.isCancelled, let self else { return }
             self.exportRaycastSnapshotIfNeeded()
         }

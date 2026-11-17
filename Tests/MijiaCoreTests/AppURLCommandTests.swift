@@ -132,6 +132,13 @@ struct AppURLCommandTests {
         )
         try await store.waitForTestSnapshot()
         store.raycastSnapshotTestURL = snapshotFile
+        let gate = ScheduledCommandTestSupport.SleepGate()
+        store.raycastExportSleep = { _ in
+            // Schedules cancelled by a later one are already cancelled before they run.
+            // Only the surviving quiet period parks, so `waiting == 1` is that period.
+            if Task.isCancelled { return }
+            await gate.sleep()
+        }
 
         // Off by default: nothing is written and there is no token.
         #expect(!store.raycastIntegrationEnabled)
@@ -139,7 +146,7 @@ struct AppURLCommandTests {
         store.scheduleRaycastSnapshotExport()
         store.exportRaycastSnapshotIfNeeded()
         store.recordRaycastCommandFeedback(requestId: "ignored", command: "toggle", message: "x")
-        try await Task.sleep(for: .milliseconds(500))
+        await store.raycastExportTask?.value
         #expect(!FileManager.default.fileExists(atPath: snapshotFile.path))
 
         store.setRaycastIntegration(enabled: true)
@@ -149,10 +156,11 @@ struct AppURLCommandTests {
 
         // A burst of changes schedules one export that lands after the quiet period.
         for _ in 0..<5 { store.scheduleRaycastSnapshotExport() }
+        await waitUntil { gate.waiting == 1 }
         #expect(!FileManager.default.fileExists(atPath: snapshotFile.path))
-        for _ in 0..<250 where !FileManager.default.fileExists(atPath: snapshotFile.path) {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        let exportTask = store.raycastExportTask
+        gate.release()
+        await exportTask?.value
         let first = try Data(contentsOf: snapshotFile)
 
         // Nothing changed except the clock: the file is left alone.

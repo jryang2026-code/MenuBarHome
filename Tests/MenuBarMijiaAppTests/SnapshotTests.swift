@@ -1699,7 +1699,7 @@ struct SnapshotTests {
         let camera = try #require(fixture.store.devices.first { device in
             if case .camera = device.kind { return true } else { return false }
         })
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         controller.isExpandedSize = false
         controller.configurePTZPreview(
             store: fixture.store,
@@ -1741,7 +1741,7 @@ struct SnapshotTests {
             guard case .camera(let spec) = device.kind else { return false }
             return spec.lenses.count > 1
         })
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         controller.isExpandedSize = true
         controller.configurePTZPreview(
             store: fixture.store,
@@ -1768,7 +1768,7 @@ struct SnapshotTests {
         let camera = try #require(fixture.store.devices.first { device in
             if case .camera = device.kind { return true } else { return false }
         })
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         controller.isExpandedSize = true
         controller.configurePTZPreview(
             store: fixture.store,
