@@ -72,6 +72,23 @@ private enum FMP4Fixture {
             out.append(unit)
         }
     }
+
+    /// A fragment whose `trun` declares `count` samples with no per-sample fields and a default
+    /// size of zero: the shape a forged stream uses to ask for millions of empty samples.
+    static func emptySampleFragment(count: UInt32, sampleBytes: Data = Data()) -> Data {
+        let mfhd = box("mfhd", Data(count: 4) + u32(1))
+        // tfhd carries only a default duration, so the sample size stays 0 (also 0 in `trex`).
+        let tfhd = box("tfhd", u32(0x0000_0008) + u32(1) + u32(3600))
+        let tfdt = box("tfdt", Data([0x01, 0, 0, 0]) + u64(0))
+        func moofBox(dataOffset: UInt32) -> Data {
+            let trun = box("trun", u32(0x0000_0001) + u32(count) + u32(dataOffset))
+            return box("moof", mfhd + box("traf", tfhd + tfdt + trun))
+        }
+        // The data offset must point past this moof; the offset field is fixed width, so building
+        // once with a placeholder yields the final size.
+        let sized = moofBox(dataOffset: 0)
+        return moofBox(dataOffset: UInt32(sized.count + 8)) + box("mdat", sampleBytes)
+    }
 }
 
 @Suite("Fragmented MP4 demuxer (#97)")
@@ -264,6 +281,49 @@ struct FragmentedMP4DemuxerFuzzTests {
         var demuxer = FragmentedMP4Demuxer()
         #expect(throws: FMP4DemuxError.malformedBox("tfhd")) {
             _ = try demuxer.append(stream)
+        }
+    }
+
+    @Test("A forged sample_count fails fast instead of walking millions of empty samples")
+    func forgedSampleCountIsRejectedBeforeTheLoop() {
+        var stream = FMP4Fixture.initSegment()
+        stream.append(FMP4Fixture.emptySampleFragment(count: 0xFFFF_FFFF))
+
+        let clock = ContinuousClock()
+        let started = clock.now
+        var failure: FMP4DemuxError?
+        do {
+            var demuxer = FragmentedMP4Demuxer()
+            _ = try demuxer.append(stream)
+        } catch let error as FMP4DemuxError {
+            failure = error
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+        #expect(failure == .malformedBox("trun"))
+        #expect(started.duration(to: clock.now) < .seconds(1))
+    }
+
+    @Test("Empty samples emit no events and one fragment cannot exceed the sample budget")
+    func emptySamplesAreSkippedWithinTheFragmentBudget() throws {
+        func sampleEvents(_ events: [FMP4DemuxEvent]) -> Int {
+            events.reduce(0) { total, event in
+                if case .sample = event { return total + 1 }
+                return total
+            }
+        }
+
+        var atBudget = FMP4Fixture.initSegment()
+        atBudget.append(FMP4Fixture.emptySampleFragment(count: UInt32(FragmentedMP4Demuxer.maxSamplesPerFragment)))
+        var demuxer = FragmentedMP4Demuxer()
+        let events = try demuxer.append(atBudget)
+        #expect(sampleEvents(events) == 0)
+
+        var overBudget = FMP4Fixture.initSegment()
+        overBudget.append(FMP4Fixture.emptySampleFragment(count: UInt32(FragmentedMP4Demuxer.maxSamplesPerFragment + 1)))
+        #expect(throws: FMP4DemuxError.malformedBox("trun")) {
+            var overBudgetDemuxer = FragmentedMP4Demuxer()
+            _ = try overBudgetDemuxer.append(overBudget)
         }
     }
 }
