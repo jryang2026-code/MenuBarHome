@@ -1,5 +1,4 @@
 import {
-  AUTOMATION_TRIGGERS,
   AutomationRuleStore,
   AutomationTriggerDeduper,
   automationRequiredPermission,
@@ -11,8 +10,12 @@ import {
   createAutomationRule,
   executeAutomationRule,
   isAutomationTrigger,
+  isTriggerSupportedOnWindows,
+  isWiFiConditionSupportedOnWindows,
   normalizeWiFiSSIDs,
   summarizeAutomationAction,
+  WINDOWS_SUPPORTED_TRIGGERS,
+  WINDOWS_WIFI_CONDITION_SUPPORTED,
   type AutomationAction,
   type AutomationHighRiskConfirmation,
   type AutomationRule,
@@ -26,7 +29,7 @@ import {
 import type { QuickActionId } from "../core/quickActions.js";
 import { demoScenes } from "./demo.js";
 import { getScopedEnergyHistory, type EnergyScopeSource } from "../core/energyHistory.js";
-import { currentLanguage, resolveLanguage, type AppLanguage, type LanguagePreference } from "../core/i18n.js";
+import { currentLanguage, resolveLanguage, t, type AppLanguage, type LanguagePreference } from "../core/i18n.js";
 import type { DeviceCommand, FacetControl, HomeScene, SmartDevice } from "../core/models.js";
 import {
   SENSOR_ALERT_KINDS,
@@ -184,8 +187,11 @@ function automationDraftSaveGate(
   scenes: readonly HomeScene[],
   devices: readonly SmartDevice[],
 ): { readonly canSave: boolean; readonly wifiInvalid: boolean; readonly timeWindowInvalid: boolean } {
+  // Windows 暂不支持 Wi-Fi 条件时编辑器被禁用，用户无法修改该条件，不应阻塞保存。
   const wifiInvalid =
-    draft.wifiKind !== "any" && normalizeWiFiSSIDs(draft.wifiSSIDsText.split(/[,\n，]/)).length === 0;
+    WINDOWS_WIFI_CONDITION_SUPPORTED &&
+    draft.wifiKind !== "any" &&
+    normalizeWiFiSSIDs(draft.wifiSSIDsText.split(/[,\n，]/)).length === 0;
   const timeWindowInvalid = draft.timeWindowEnabled && draft.timeWindowStartHour === draft.timeWindowEndHour;
   const sceneId =
     draft.selectedSceneId && scenes.some((scene) => scene.id === draft.selectedSceneId)
@@ -243,6 +249,16 @@ export function createDefaultHostAutoSafetySession(): HostAutoSafetySession {
     lastScopeKey: null,
     lastSourceRevision: null,
   };
+}
+
+/**
+ * Windows 的触发器下拉只提供有生产事件来源的选项；草稿若残留不再受支持的
+ * 历史值（例如支持集合收缩后），先归位到首个受支持项，避免保存出永远不触发的规则。
+ */
+function ensureDraftTriggerSupported(draft: NewRuleDraftState): void {
+  if (!isTriggerSupportedOnWindows(draft.trigger)) {
+    draft.trigger = WINDOWS_SUPPORTED_TRIGGERS[0] ?? "away";
+  }
 }
 
 export function syncAutoSafetySessionScope(
@@ -829,6 +845,7 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
     syncAutoSafetySessionScope(session, scopeKey, ctx.sourceRevision);
   }
   const draft = session?.draft ?? createDefaultDraft();
+  ensureDraftTriggerSupported(draft);
   const controllableDevices = aliasedDevices.filter(isDeviceControllableForRule);
   const effectiveSceneId =
     draft.selectedSceneId && scenes.some((s) => s.id === draft.selectedSceneId)
@@ -873,11 +890,18 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
           .map((rule) => {
             const titleText = `${automationTriggerTitle(rule.trigger, lang)} → ${summarizeAutomationAction(rule.action, aliasedDevices, scenes, lang)}`;
             const details = summarizeRuleDetails(rule, aliasedDevices, deduper, scopedRuns, lang);
+            const triggerSupported = isTriggerSupportedOnWindows(rule.trigger);
+            const wifiSupported = isWiFiConditionSupportedOnWindows(rule.conditions.wifi);
+            const unsupportedBadge =
+              triggerSupported && wifiSupported
+                ? ""
+                : `<div data-auto-rule-unsupported="${esc(rule.id)}" style="font-size: 11px; font-weight: 600; color: #e67e22; margin-top: 2px;">${esc(t("Windows 暂不支持，不会触发"))}</div>`;
             return `<div class="cc-update-row" data-auto-rule-row="${esc(rule.id)}" style="padding: 7px 8px; border-radius: 8px; background: rgba(128, 128, 128, 0.08); gap: 8px; align-items: center; flex-wrap: wrap;">
             <div style="display: flex; align-items: flex-start; gap: 7px; flex: 1 1 200px; min-width: 0;">
               <span style="margin-top: 2px; opacity: ${rule.isEnabled ? "0.9" : "0.45"};">${triggerIconSvg(rule.trigger)}</span>
               <div style="min-width: 0;">
                 <div style="font-size: 12.5px; font-weight: 600; opacity: ${rule.isEnabled ? "1" : "0.55"}; word-break: break-word;">${esc(titleText)}</div>
+                ${unsupportedBadge}
                 ${details ? `<div class="cc-field-hint" style="margin: 2px 0 0 0;">${esc(details)}</div>` : ""}
               </div>
             </div>
@@ -909,7 +933,7 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
       </div>`
       : "";
 
-  const triggerOptionsHtml = AUTOMATION_TRIGGERS.map(
+  const triggerOptionsHtml = WINDOWS_SUPPORTED_TRIGGERS.map(
     (tr) => `<option value="${tr}" ${tr === draft.trigger ? "selected" : ""}>${esc(automationTriggerTitle(tr, lang))}</option>`,
   ).join("");
   const sensorAlertTogglesHtml = SENSOR_ALERT_KINDS.map((kind) => {
@@ -986,7 +1010,7 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
             : uiText(lang, "＋ 展开新建规则", "＋ 展開新增規則", "+ Expand Rule Builder"),
         )}</button>
       </div>
-      <p class="cc-field-hint">${esc(uiText(lang, "根据电脑锁屏离开、解锁回来、深夜用机、定时、传感器状态、会议摄像头/麦克风占用或低电量自动控制当前家庭设备。", "根據電腦鎖屏離開、解鎖回來、深夜用機、定時、感測器狀態、會議攝影機/麥克風佔用或低電量自動控制目前家庭設備。", "Run home actions automatically on PC lock/away, unlock/back, late-night usage, schedules, sensor states, camera/mic meetings, or battery thresholds."))}</p>
+      <p class="cc-field-hint">${esc(uiText(lang, "根据电脑锁屏离开、解锁回来、深夜用机、定时或传感器状态自动控制当前家庭设备。", "根據電腦鎖屏離開、解鎖回來、深夜用機、定時或感測器狀態自動控制目前家庭設備。", "Run home actions automatically on PC lock/away, unlock/back, late-night usage, schedules, or sensor triggers."))}</p>
       ${highRiskConfirmHtml}
       ${rulesHtml}
       ${recentRunsHtml}
@@ -999,19 +1023,21 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
         ${renderTriggerOptionsEditor(draft, aliasedDevices, lang, esc)}
         <div class="cc-field-row" style="margin-top: 8px; gap: 8px;">
           <label for="settings-auto-wifi-kind">${esc(uiText(lang, "Wi-Fi 附加条件", "Wi-Fi 附加條件", "Wi-Fi condition"))}</label>
-          <select id="settings-auto-wifi-kind" class="cc-select">
+          <select id="settings-auto-wifi-kind" class="cc-select" ${WINDOWS_WIFI_CONDITION_SUPPORTED ? "" : "disabled"}>
             <option value="any" ${draft.wifiKind === "any" ? "selected" : ""}>${esc(uiText(lang, "不限 Wi-Fi 网络", "不限 Wi-Fi 網路", "Any Wi-Fi network"))}</option>
             <option value="inAny" ${draft.wifiKind === "inAny" ? "selected" : ""}>${esc(uiText(lang, "仅在指定 Wi-Fi 下生效", "僅在指定 Wi-Fi 下生效", "Only on specified Wi-Fi"))}</option>
             <option value="notIn" ${draft.wifiKind === "notIn" ? "selected" : ""}>${esc(uiText(lang, "排除指定 Wi-Fi", "排除指定 Wi-Fi", "Except on specified Wi-Fi"))}</option>
           </select>
         </div>
         ${
-          draft.wifiKind !== "any"
-            ? `<div style="margin-top: 6px;">
+          !WINDOWS_WIFI_CONDITION_SUPPORTED
+            ? `<p class="cc-field-hint" id="settings-auto-wifi-unsupported-hint" style="color: #e67e22;">${esc(t("Windows 暂不支持按 Wi-Fi 判断，已保存的 Wi-Fi 条件不会生效。"))}</p>`
+            : draft.wifiKind !== "any"
+              ? `<div style="margin-top: 6px;">
               <input id="settings-auto-wifi-ssids" class="cc-input" type="text" value="${esc(draft.wifiSSIDsText)}" placeholder="${esc(uiText(lang, "输入 Wi-Fi 名称（多个用逗号分隔，如 Home_5G, Study）", "輸入 Wi-Fi 名稱（多個用逗號分隔）", "Wi-Fi SSIDs, comma-separated (e.g. Home_5G, Office)"))}" />
               ${wifiInvalid ? `<p class="cc-field-hint" id="settings-auto-wifi-hint" style="color: #e67e22;">${esc(uiText(lang, "请至少填写一个 Wi-Fi 名称（SSID）后再保存。", "請至少填寫一個 Wi-Fi 名稱（SSID）後再儲存。", "Enter at least one Wi-Fi SSID to save this condition."))}</p>` : ""}
             </div>`
-            : ""
+              : ""
         }
         <div class="cc-field-row" style="margin-top: 8px;">
           <label class="cc-checkbox" for="settings-auto-time-window">
@@ -1157,6 +1183,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
   const storage = center?.storage ?? defaultSafetyStorage();
   const ruleStore = center?.automationEngine.store ?? new AutomationRuleStore(storage);
   const draft = session.draft;
+  ensureDraftTriggerSupported(draft);
   const lang = effectiveLanguage(host.settings.interfaceLanguage);
   const aliasedDevices = aliasedDevicesFor(host.devices, host.layout);
   const effectiveScenes = resolveScenesForContext(host);
@@ -1412,7 +1439,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
       const action = buildActionFromDraft(draft, effectiveScenes);
       if (!action) return;
       let wifiCond: AutomationWiFiCondition = { kind: "any" };
-      if (draft.wifiKind !== "any") {
+      if (WINDOWS_WIFI_CONDITION_SUPPORTED && draft.wifiKind !== "any") {
         const ssids = normalizeWiFiSSIDs(draft.wifiSSIDsText.split(/[,\n，]/));
         if (ssids.length === 0) return;
         wifiCond = { kind: draft.wifiKind, ssids };
