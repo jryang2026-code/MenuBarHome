@@ -561,6 +561,80 @@ describe("Windows Wi-Fi poll wiring (tick → wifiChanged dispatch)", () => {
     );
   });
 
+  it("drops a superseded lock flip when a newer sample already dispatched the opposite transition", async () => {
+    const host = miniHost([makeLight("light.a", true)]);
+    const center = getHostActivityCenter(host);
+    const sent: DeviceCommand[] = [];
+    host.applyCommand = async (cmd) => {
+      sent.push(cmd);
+      return true;
+    };
+    center.automationEngine.store.save([
+      createAutomationRule({
+        id: "away-any",
+        trigger: "away",
+        action: { kind: "devices", deviceIds: ["light.a"], isOn: false },
+      }),
+    ]);
+
+    const lockedQueue: boolean[] = [];
+    let wifiProbeCalls = 0;
+    // 闭包里赋值的函数句柄用对象属性承载，避免 TS 把流程收窄成 never。
+    const probeGate: { release: (() => void) | null } = { release: null };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string) => {
+          if (cmd === "is_workstation_locked") {
+            if (lockedQueue.length === 0) return false as unknown;
+            return lockedQueue.shift()! as unknown;
+          }
+          if (cmd === "wifi_current") {
+            wifiProbeCalls += 1;
+            // 第一次是常规 10 秒轮询，立即返回并建立基线；第二次是锁屏翻转的
+            // 实时探针，用门控挂起，模拟探针与规则执行耗时。
+            if (wifiProbeCalls === 1) return { state: "connected", ssid: "Net_A" };
+            await new Promise<void>((resolve) => { probeGate.release = resolve; });
+            return { state: "connected", ssid: "Net_A" };
+          }
+          return undefined;
+        },
+      },
+    });
+
+    const t0 = 1_800_000_000_000;
+    // 第一轮采样：解锁基线；Wi-Fi 轮询建立 (Net_A, true) 基线。
+    lockedQueue.push(false);
+    tickSafetyHealthAndAutomation(host, t0);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.lastSampledLockState, false);
+    assert.equal(center.automationEngine.snapshot.wifiSSID, "Net_A");
+
+    // 第二轮采样：锁上。回调卡在门控的 Wi-Fi 探针上，lastSampled 已写成 true。
+    lockedQueue.push(true);
+    tickSafetyHealthAndAutomation(host, t0 + 1_000);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.lastSampledLockState, true);
+    assert.equal(typeof probeGate.release, "function");
+
+    // 等待期间用户解锁：第三轮采样 false，按最新状态派发解锁事件。
+    lockedQueue.push(false);
+    tickSafetyHealthAndAutomation(host, t0 + 2_000);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.lastSampledLockState, false);
+
+    // 放行被门控的探针：旧回调恢复后不得再派发过时的 lockChanged(true)。
+    probeGate.release?.();
+    await setImmediate();
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.automationEngine.snapshot.isLocked, false, "engine must follow the newest sample, not the stale flip");
+    assert.equal(sent.length, 0, "no away rule may fire from a superseded lock event");
+  });
+
   it("never probes Wi-Fi without a Tauri host (happy-dom without __TAURI_INTERNALS__)", () => {
     const host = miniHost();
     const center = getHostActivityCenter(host);

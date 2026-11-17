@@ -1113,6 +1113,11 @@ export function tickSafetyHealthAndAutomation(
           return;
         }
         if (locked !== previous) {
+          // 探针与规则执行都可能耗时：等待期间锁屏基线若已被更新的采样翻转，
+          // 本回调的翻转事件已过时——继续派发会把过时的 lockChanged 压在更新的
+          // 解锁事件之后，让引擎停留在错误的锁屏态。作废并交由下一次轮询按
+          // 最新状态派发（Codex 第 2 轮）。
+          if (center.lastSampledLockState !== locked) return;
           let lockWifi: EngineWifiReading | undefined;
           if (locked) {
             // 锁上的瞬间补一次实时 Wi-Fi 探针（对照 macOS 在锁屏信号时刻的实时
@@ -1133,6 +1138,7 @@ export function tickSafetyHealthAndAutomation(
               }
             }
           }
+          if (center.lastSampledLockState !== locked) return;
           const runs = await dispatchSystemContextEvent(
             host,
             { kind: "lockChanged", isLocked: locked, ...(lockWifi ? { wifi: lockWifi } : {}) },
