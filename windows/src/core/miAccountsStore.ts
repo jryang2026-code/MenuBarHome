@@ -39,6 +39,7 @@ import { environmentReadingPriority,
   type SynthesizedHome,
 } from "./models.js";
 import { clearPersistedMiSessionExpired,
+  clearPersistedMiSessionExpiredFor,
   isXiaomiRateLimitError,
   MI_ACCOUNTS_EXPIRED_STORAGE_KEY,
   miAccountId,
@@ -418,9 +419,11 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       }
 
       const existingIdx = this.cachedAccounts.findIndex((item) => item.id === account.id);
-      if (existingIdx === 0) { const prevFp = miSessionFingerprint(this.cachedAccounts[0]!.session);
+      if (existingIdx === 0) { const previousSession = this.cachedAccounts[0]!.session;
+        const prevFp = miSessionFingerprint(previousSession);
         await this.vault.savePrimaryMiSession(account.session);
-        if (prevFp !== miSessionFingerprint(account.session)) { markAccountSessionRejected(account.session, false, {
+        if (prevFp !== miSessionFingerprint(account.session)) { clearPersistedMiSessionExpiredFor(previousSession, this.storage);
+          markAccountSessionRejected(account.session, false, {
             isPrimary: true,
             storage: this.storage,
           });
@@ -430,9 +433,11 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
         return { accounts: [...this.cachedAccounts], account, added: false };
       }
 
-      if (existingIdx > 0) { const prevFp = miSessionFingerprint(this.cachedAccounts[existingIdx]!.session);
+      if (existingIdx > 0) { const previousSession = this.cachedAccounts[existingIdx]!.session;
+        const prevFp = miSessionFingerprint(previousSession);
         await this.vault.saveMiAccountSlot(account.slotId, account.session);
-        if (prevFp !== miSessionFingerprint(account.session)) { markAccountSessionRejected(account.session, false, {
+        if (prevFp !== miSessionFingerprint(account.session)) { clearPersistedMiSessionExpiredFor(previousSession, this.storage);
+          markAccountSessionRejected(account.session, false, {
             isPrimary: false,
             storage: this.storage,
           });
