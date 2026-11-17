@@ -74,8 +74,9 @@ Pair every pending UI field, toast, consent banner, activity row, hover/expansio
 
 ## §14. Optimistic Lock Lifecycle
 
-- `beginOptimisticWrite` locks only for non-nil `lock`; covers lock before & after send (bumping `optimisticLockRevision`). Only `lockOptimistic` and `backendChanged` bump `optimisticLockRevision`; adoption clears the lock without bumping revision.
-- Locked rows remain visible only while present in snapshots (or `latestLGDevice` / local row), unexpired, and not superseded by non-cover read-back. Undo waits extend locks up to `HomeStore.undoWaitLockCeiling` (120s) without bumping revision, then relax to 3s.
+- Per-field/per-facet ownership (`Sources/MijiaCore/HomeStore+ControlWrite.swift:ownsRow` L743-752, `revert` L774-823, `revertManualSessionPatch` L624-633): `beginOptimisticWrite` (L651-721) and `commitManualWrite` (L868-1024) create timed `optimisticFieldLocks` leases only when `lock != nil` (covers lock before & after send), whereas any shown write mutating fields (`!fields.isEmpty`) still advances `optimisticFieldRevisions` and `optimisticLockRevision` even when `lock == nil` (L701-708, L954-958) so an older failed write cannot roll back over a newer write on the same field while disjoint fields/facets roll back independently.
+- Six sites advance `optimisticLockRevision`: `lockOptimistic` (L313-314), `lockOptimisticFacet` (L342-346, when `bumpDeviceRevision` is `true`; also updates `optimisticFacetRevisions`), `clearManualWriteSession` (L425-427, when `bumpRevision` is `true`), `beginOptimisticWrite` (L693-703), `commitManualWrite` (L954-955), and `backendChanged` during snapshot adoption (`Sources/MijiaCore/HomeStore+Backend.swift:handleProviderEvent` L317-324, after `clearOptimisticRevisions`).
+- Ordinary snapshot adoption (`!backendChanged`), lease expiry (`pruneExpiredOptimisticLocks` L250-267), non-cover read-back (`readBackNeedsSnapshot` L336-347), `coverTravelTakesOver` (L200-223, L349-359), and `HomeStore.undoWaitLockCeiling` (`Sources/MijiaCore/HomeStore+Undo.swift` L537, L780-796, 120s lock extension then 3s relaxation) never advance revisions. Locked fields/facets remain visible only while present in snapshots (or `latestLGDevice` / local row), unexpired, and not superseded by non-cover read-back or confirmed cover travel.
 
 ## §15. Bulk Write Results
 
