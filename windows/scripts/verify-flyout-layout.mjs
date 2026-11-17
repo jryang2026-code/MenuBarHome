@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const scriptPath = fileURLToPath(import.meta.url);
 const windowsRoot = path.resolve(path.dirname(scriptPath), "..");
 const repoRoot = path.resolve(windowsRoot, "..");
-const usageText = "usage: npm --prefix windows run verify:ui -- [--require-chrome] [--no-build] [--dist <dir>] [--out-dir <dir>] [--chrome <bin>]";
+const usageText = "usage: npm --prefix windows run verify:ui -- [--require-chrome] [--no-build] [--dist <dir>] [--out-dir <dir>] [--chrome <bin>] [--self-test]";
 
 function scenario(id, panelHeight, height, interfaceLanguage, appearance, view, panelTheme = "fluent") {
   const width = panelTheme === "classic" ? 472 : 412;
@@ -126,12 +126,13 @@ export function evaluateSnapshot(snapshot, sc) {
 
 export function parseArgs(argv) {
   const options = {
-    requireChrome: false, noBuild: false, customDist: false,
+    requireChrome: false, noBuild: false, customDist: false, selfTest: false,
     distDir: path.join(windowsRoot, "dist"), outDir: null, chromeBin: process.env.CHROME_BIN || null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--require-chrome") options.requireChrome = true;
+    else if (arg === "--self-test") options.selfTest = true;
     else if (arg === "--no-build") options.noBuild = true;
     else if (arg === "--dist" && i + 1 < argv.length) { options.distDir = path.resolve(argv[++i]); options.customDist = true; }
     else if (arg === "--out-dir" && i + 1 < argv.length) options.outDir = path.resolve(argv[++i]);
@@ -431,24 +432,43 @@ function buildSnapshotExpression(sc) {
   })()`;
 }
 
-function launchChrome(chromeBin, userDataDir) {
-  const flags = [
+function launchChrome(chromeBin, userDataDir, options = {}) {
+  const startupTimeoutMs = options.startupTimeoutMs ?? 8000;
+  const flags = options.args ?? [
     "--headless=new", "--remote-debugging-port=0", `--user-data-dir=${userDataDir}`, "--no-first-run",
     "--no-default-browser-check", "--disable-gpu", "--disable-background-networking", "--disable-sync",
     "--disable-extensions", "--mute-audio", "about:blank",
   ];
   return new Promise((resolve, reject) => {
     const proc = spawn(chromeBin, flags, { stdio: ["ignore", "ignore", "pipe"] });
+    if (typeof options.onSpawn === "function") options.onSpawn(proc);
     let stderrBuf = "";
-    const timer = setTimeout(() => reject(new Error(`Timed out waiting for DevTools port from ${chromeBin}: ${stderrBuf}`)), 8000);
-    proc.once("error", (err) => { clearTimeout(timer); reject(err); });
-    proc.stderr.setEncoding("utf8");
-    proc.stderr.on("data", (chunk) => {
-      stderrBuf += chunk;
-      const match = /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//.exec(stderrBuf);
-      if (match) { clearTimeout(timer); resolve({ proc, port: Number(match[1]) }); }
-    });
-    proc.once("exit", (code) => { clearTimeout(timer); reject(new Error(`Chrome exited early with code ${String(code)}: ${stderrBuf}`)); });
+    let settled = false;
+    let timer = null;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // Reap before reject. The exit after SIGTERM must not replace this error.
+      terminateChrome(proc, null).then(() => reject(err), () => reject(err));
+    };
+    const succeed = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    timer = setTimeout(() => fail(new Error(`Timed out waiting for DevTools port from ${chromeBin}: ${stderrBuf}`)), startupTimeoutMs);
+    proc.once("error", (err) => fail(err));
+    if (proc.stderr) {
+      proc.stderr.setEncoding("utf8");
+      proc.stderr.on("data", (chunk) => {
+        stderrBuf += chunk;
+        const match = /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//.exec(stderrBuf);
+        if (match) succeed({ proc, port: Number(match[1]) });
+      });
+    }
+    proc.once("exit", (code) => fail(new Error(`Chrome exited early with code ${String(code)}: ${stderrBuf}`)));
   });
 }
 
@@ -463,9 +483,110 @@ async function terminateChrome(proc, tmpDir) {
   if (tmpDir) { try { fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch {} }
 }
 
+function isPidAlive(pid) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function runLaunchChromeStartupSelfTest() {
+  const startupTimeoutMs = 800;
+  const midDelayMs = 200;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mmb-flyout-chrome-timeout-"));
+  let silentPid = 0;
+  try {
+    let spawnErr = null;
+    try {
+      await launchChrome("/no/such/menubarhome-chrome", tmpDir, { startupTimeoutMs: 500 });
+    } catch (err) {
+      spawnErr = err;
+    }
+    if (!(spawnErr instanceof Error) || spawnErr.code !== "ENOENT") {
+      throw new Error(`missing browser should reject with ENOENT, got ${spawnErr instanceof Error ? `${spawnErr.code ?? ""} ${spawnErr.message}` : String(spawnErr)}`);
+    }
+
+    const devtools = await launchChrome(process.execPath, tmpDir, {
+      startupTimeoutMs: 2000,
+      args: ["-e", "console.error('DevTools listening on ws://127.0.0.1:9222/'); setInterval(() => {}, 1000)"],
+    });
+    const devtoolsAlive = isPidAlive(devtools.proc.pid);
+    await terminateChrome(devtools.proc, null);
+    if (devtools.port !== 9222 || !devtoolsAlive) {
+      throw new Error(`devtools child should stay up until the caller reaps it (port ${devtools.port}, alive ${devtoolsAlive})`);
+    }
+
+    let earlyErr = null;
+    const earlyStarted = Date.now();
+    try {
+      await launchChrome(process.execPath, tmpDir, {
+        startupTimeoutMs: 2000,
+        args: ["-e", "process.exit(7)"],
+      });
+    } catch (err) {
+      earlyErr = err;
+    }
+    const earlyElapsed = Date.now() - earlyStarted;
+    if (!(earlyErr instanceof Error) || !earlyErr.message.includes("exited early with code 7")) {
+      throw new Error(`early exit should reject before the timeout, got ${earlyErr instanceof Error ? earlyErr.message : String(earlyErr)}`);
+    }
+    if (earlyElapsed > 1000) throw new Error(`early exit took ${earlyElapsed}ms`);
+
+    let aliveMid = false;
+    let midChecked = false;
+    const started = Date.now();
+    let error = null;
+    try {
+      await launchChrome(process.execPath, tmpDir, {
+        startupTimeoutMs,
+        args: ["-e", "setInterval(() => {}, 1000)"],
+        onSpawn(proc) {
+          silentPid = proc.pid ?? 0;
+          setTimeout(() => {
+            aliveMid = isPidAlive(silentPid);
+            midChecked = true;
+          }, midDelayMs);
+        },
+      });
+    } catch (err) {
+      error = err;
+    }
+    if (!midChecked) await new Promise((resolve) => setTimeout(resolve, midDelayMs));
+    const elapsed = Date.now() - started;
+    const aliveAfter = isPidAlive(silentPid);
+    const errorMessage = error instanceof Error ? error.message : "";
+    const failures = [];
+    if (!error) failures.push("expected launchChrome to reject when the child never prints DevTools");
+    else if (!errorMessage.includes("Timed out waiting for DevTools port")) failures.push(`expected timeout error, got: ${errorMessage}`);
+    if (elapsed + 20 < startupTimeoutMs) failures.push(`rejected at ${elapsed}ms, before the ${startupTimeoutMs}ms startup timeout`);
+    if (!midChecked || !aliveMid) failures.push(`child pid ${silentPid} was not alive ${midDelayMs}ms after spawn`);
+    if (aliveAfter) failures.push(`child pid ${silentPid} was still alive after launchChrome rejected`);
+    const report = `devtools child stayed alive (port 9222); early exit ${earlyElapsed}ms; silent child ${silentPid} alive at ${midDelayMs}ms: ${aliveMid}; rejected at ${elapsed}ms (timeout ${startupTimeoutMs}ms); alive after reject: ${aliveAfter}`;
+    if (failures.length > 0) throw new Error(`${failures.join("; ")}\n${report}`);
+    return report;
+  } finally {
+    if (silentPid && isPidAlive(silentPid)) {
+      try { process.kill(silentPid, "SIGKILL"); } catch { /* the assertion already recorded the leak */ }
+    }
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* the directory is already gone */ }
+  }
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (!options) { console.error(usageText); process.exit(2); }
+  if (options.selfTest) {
+    try {
+      console.log(await runLaunchChromeStartupSelfTest());
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+    }
+    return;
+  }
   const chromeBin = findChromeBinary(options.chromeBin);
   if (!chromeBin) {
     if (options.requireChrome) { console.error("❌ Chrome/Chromium/Edge binary not found (--require-chrome specified)"); process.exit(1); }
