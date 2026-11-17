@@ -626,45 +626,47 @@ struct CameraLiveLifecycleTests {
         )
         window.isReleasedWhenClosed = false
         window.contentView = hosting
+        window.orderFrontRegardless()
         window.layoutIfNeeded()
         hosting.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
         let labels = Self.collectAccessibilityLabels(from: hosting)
-        window.contentView = nil
         window.orderOut(nil)
+        window.contentView = nil
         return labels
     }
 
-    private static func collectAccessibilityLabels(from root: NSView) -> [String] {
+    /// SwiftUI's accessibility nodes are private subclasses, so the walk uses the informal
+    /// AppKit selectors instead of `NSAccessibilityElement`.
+    private static func collectAccessibilityLabels(from root: NSObject) -> [String] {
         var labels: [String] = []
         var seen = Set<ObjectIdentifier>()
-        func remember(_ object: AnyObject) {
-            let token = ObjectIdentifier(object)
-            guard seen.insert(token).inserted else { return }
-            if let view = object as? NSView {
-                append(view.accessibilityLabel())
-                for child in view.accessibilityChildren() ?? [] {
-                    if let child = child as? AnyObject {
-                        remember(child)
-                    }
+        let labelSelector = NSSelectorFromString("accessibilityLabel")
+        let childrenSelector = NSSelectorFromString("accessibilityChildren")
+        func walk(_ object: NSObject) {
+            guard seen.insert(ObjectIdentifier(object)).inserted else { return }
+            if object.responds(to: labelSelector),
+               let raw = object.perform(labelSelector)?.takeUnretainedValue() as? String {
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    labels.append(trimmed)
                 }
-                for subview in view.subviews {
-                    remember(subview)
-                }
-            } else if let element = object as? NSAccessibilityElement {
-                append(element.accessibilityLabel())
-                for child in element.accessibilityChildren() ?? [] {
-                    if let child = child as? AnyObject {
-                        remember(child)
+            }
+            if object.responds(to: childrenSelector),
+               let children = object.perform(childrenSelector)?.takeUnretainedValue() as? [Any] {
+                for child in children {
+                    if let child = child as? NSObject {
+                        walk(child)
                     }
                 }
             }
+            if let view = object as? NSView {
+                for subview in view.subviews {
+                    walk(subview)
+                }
+            }
         }
-        func append(_ raw: String?) {
-            guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return }
-            labels.append(trimmed)
-        }
-        remember(root)
+        walk(root)
         return labels
     }
 }
