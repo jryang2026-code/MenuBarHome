@@ -302,4 +302,139 @@ struct AutomationEngineTests {
         _ = modernFridgeCard.body
         _ = classicFridgeCard.body
     }
+
+    @Test("A saved window blocks a notification outside it and leaves the cooldown unused")
+    func timeWindowBlocksTriggerWithoutConsumingCooldown() async throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let calendar = Self.utcCalendar()
+        AutomationRuleStore(defaults: defaults).save([
+            AutomationRule(
+                trigger: .back,
+                action: .devices(ids: [Self.studyLight.id], isOn: false),
+                conditions: Self.nightWindow()
+            )
+        ])
+        let (store, mock) = try await makeStore()
+        let engine = AutomationEngine(defaults: defaults, calendar: calendar)
+        engine.attach(store: store)
+
+        let noon = try Self.date(calendar, year: 2026, hour: 12, minute: 0)
+        await engine.handle(trigger: .back, at: noon)
+        #expect(await mock.executedCommands.isEmpty)
+        #expect(Self.cooldownStamps(defaults).isEmpty)
+        #expect(store.devices.first?.isActiveOn == true)
+
+        let outside = try Self.date(calendar, year: 2026, hour: 21, minute: 59, second: 30)
+        let inside = try Self.date(calendar, year: 2026, hour: 22, minute: 0, second: 20)
+        await engine.handle(trigger: .back, at: outside)
+        #expect(await mock.executedCommands.isEmpty)
+        #expect(Self.cooldownStamps(defaults).isEmpty)
+
+        await engine.handle(trigger: .back, at: inside)
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study", isOn: false)])
+        #expect(Self.cooldownStamps(defaults).count == 1)
+    }
+
+    @Test("A lone screen lock at 21:59:59 stays outside a 22:00 window after the debounce flush")
+    func screenLockAt215959DoesNotEnterTheWindowOrTheCooldown() async throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let calendar = Self.utcCalendar()
+        // Next year keeps the engine's debounce sleep in the future. A past deadline would
+        // flush immediately at the wall clock and race this assertion.
+        let year = calendar.component(.year, from: Date()) + 1
+        AutomationRuleStore(defaults: defaults).save([
+            AutomationRule(
+                trigger: .screenLocked,
+                action: .devices(ids: [Self.studyLight.id], isOn: false),
+                conditions: Self.nightWindow()
+            )
+        ])
+        let (store, mock) = try await makeStore()
+        let engine = AutomationEngine(
+            defaults: defaults,
+            calendar: calendar,
+            environment: Self.quietEnvironment()
+        )
+        engine.attach(store: store)
+
+        let lock = try Self.date(calendar, year: year, hour: 21, minute: 59, second: 59)
+        await engine.ingestAway(.screenLocked, at: lock)
+        await engine.flushArbitration(at: lock.addingTimeInterval(AwayArbitrator.lockDebounce))
+        #expect(await mock.executedCommands.isEmpty)
+        #expect(Self.cooldownStamps(defaults).isEmpty)
+        #expect(store.devices.first?.isActiveOn == true)
+
+        let later = try Self.date(calendar, year: year, hour: 22, minute: 0, second: 30)
+        await engine.ingestAway(.screenLocked, at: later)
+        await engine.flushArbitration(at: later.addingTimeInterval(AwayArbitrator.lockDebounce))
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study", isOn: false)])
+        #expect(Self.cooldownStamps(defaults).count == 1)
+    }
+
+    @Test("Sleep is judged at the event instant, so 21:59:59 stays outside a 22:00 window")
+    func sleepAt215959StaysOutsideTheWindow() async throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let calendar = Self.utcCalendar()
+        AutomationRuleStore(defaults: defaults).save([
+            AutomationRule(
+                trigger: .systemSleep,
+                action: .devices(ids: [Self.studyLight.id], isOn: false),
+                conditions: Self.nightWindow()
+            )
+        ])
+        let (store, mock) = try await makeStore()
+        let engine = AutomationEngine(
+            defaults: defaults,
+            calendar: calendar,
+            environment: Self.quietEnvironment()
+        )
+        engine.attach(store: store)
+
+        let outside = try Self.date(calendar, year: 2026, hour: 21, minute: 59, second: 59)
+        await engine.ingestAway(.willSleep, at: outside)
+        #expect(await mock.executedCommands.isEmpty)
+        #expect(Self.cooldownStamps(defaults).isEmpty)
+
+        let inside = try Self.date(calendar, year: 2026, hour: 22, minute: 0)
+        await engine.ingestAway(.willSleep, at: inside)
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study", isOn: false)])
+    }
+
+    private static func utcCalendar() -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+
+    private static func nightWindow() -> AutomationConditions {
+        AutomationConditions(
+            timeWindow: AutomationTimeWindow(isEnabled: true, startMinute: 22 * 60, endMinute: 7 * 60)
+        )
+    }
+
+    private static func cooldownStamps(_ defaults: UserDefaults) -> [String: Any] {
+        defaults.dictionary(forKey: AutomationTriggerDeduper.storageKey) ?? [:]
+    }
+
+    private static func quietEnvironment() -> AutomationEnvironmentProbe {
+        AutomationEnvironmentProbe(
+            isLidClosed: { false },
+            currentWiFi: { (ssid: nil, isAuthorized: true) }
+        )
+    }
+
+    private static func date(
+        _ calendar: Calendar,
+        year: Int,
+        hour: Int,
+        minute: Int,
+        second: Int = 0
+    ) throws -> Date {
+        try #require(calendar.date(from: DateComponents(
+            year: year, month: 11, day: 12, hour: hour, minute: minute, second: second
+        )))
+    }
 }

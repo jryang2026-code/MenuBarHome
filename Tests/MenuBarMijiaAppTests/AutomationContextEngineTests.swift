@@ -252,6 +252,50 @@ struct AutomationContextEngineTests {
         #expect(await mock.executedCommands == [offCommand()])
     }
 
+    @Test("A camera rule outside its window runs nothing and does not start the cooldown")
+    func timeWindowBlocksContextWithoutConsumingCooldown() async throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let rule = AutomationRule(
+            trigger: .cameraInUse,
+            action: .devices(ids: [Self.lightId], isOn: false),
+            conditions: AutomationConditions(
+                timeWindow: AutomationTimeWindow(isEnabled: true, startMinute: 22 * 60, endMinute: 7 * 60)
+            )
+        )
+        let (engine, _, mock, _) = try await makeEngine(
+            rules: [rule],
+            defaults: defaults,
+            calendar: calendar
+        )
+
+        func at(hour: Int, minute: Int, second: Int = 0) throws -> Date {
+            try #require(calendar.date(from: DateComponents(
+                year: 2026, month: 11, day: 12, hour: hour, minute: minute, second: second
+            )))
+        }
+
+        let noon = try at(hour: 12, minute: 0)
+        await engine.handle(context: MacContextSnapshot(), at: noon.addingTimeInterval(-10))
+        await engine.handle(context: MacContextSnapshot(cameraInUse: true), at: noon)
+        #expect(await mock.executedCommands.isEmpty)
+        #expect((defaults.dictionary(forKey: AutomationTriggerDeduper.storageKey) ?? [:]).isEmpty)
+
+        let outside = try at(hour: 21, minute: 59, second: 30)
+        let inside = try at(hour: 22, minute: 0, second: 20)
+        await engine.handle(context: MacContextSnapshot(), at: outside.addingTimeInterval(-5))
+        await engine.handle(context: MacContextSnapshot(cameraInUse: true), at: outside)
+        #expect(await mock.executedCommands.isEmpty)
+        #expect((defaults.dictionary(forKey: AutomationTriggerDeduper.storageKey) ?? [:]).isEmpty)
+
+        await engine.handle(context: MacContextSnapshot(), at: inside.addingTimeInterval(-5))
+        await engine.handle(context: MacContextSnapshot(cameraInUse: true), at: inside)
+        #expect(await mock.executedCommands == [offCommand()])
+        #expect((defaults.dictionary(forKey: AutomationTriggerDeduper.storageKey) ?? [:]).count == 1)
+    }
+
     @Test("Wi-Fi rules target a SSID and ignore unauthorized SSID reads")
     func wifiRules() async throws {
         let (defaults, suite) = try makeDefaults()
