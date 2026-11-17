@@ -468,17 +468,11 @@ extension HomeStore {
     /// adopted on it. Scheduled commands no longer share this single primary value: each timer records
     /// the whole `activeConnectionScopes` set and matches against it (ADR-0019).
     public var connectionScopeIdentifier: String? {
-        if homeBackend == .demo { return "demo" }
-        if hasHASource { return homeAssistantScopeIdentifier }
-        if hasMiSource { return miSessionScopeIdentifier }
-        switch homeBackend {
-        case .demo:
-            return "demo"
-        case .homeAssistant:
-            return homeAssistantScopeIdentifier
-        case .xiaomiCloud:
-            return miSessionScopeIdentifier
+        if homeBackend == .demo { return HomeBackend.demo.descriptor.primaryScopeIdentifier(self) }
+        for backend in [HomeBackend.homeAssistant, .xiaomiCloud] where backend.descriptor.isConfigured(self) {
+            return backend.descriptor.primaryScopeIdentifier(self)
         }
+        return homeBackend.descriptor.primaryScopeIdentifier(self)
     }
 
     /// The Home Assistant scope value, shaped like the `ha:` entry `syncSensorHistoryScope()` writes, so
@@ -492,10 +486,11 @@ extension HomeStore {
     /// be removed without stranding timers owned by the sources that remain. With no saved source
     /// (injected test providers, signed out) the primary scope keeps the old behavior.
     public var activeConnectionScopes: Set<String> {
-        if homeBackend == .demo { return ["demo"] }
+        if homeBackend == .demo { return HomeBackend.demo.descriptor.activeScopeIdentifiers(self) }
         var scopes: Set<String> = []
-        if hasHASource { scopes.insert(homeAssistantScopeIdentifier) }
-        if hasMiSource { scopes.formUnion(miAccounts.map(\.id)) }
+        for backend in [HomeBackend.homeAssistant, .xiaomiCloud] where backend.descriptor.isConfigured(self) {
+            scopes.formUnion(backend.descriptor.activeScopeIdentifiers(self))
+        }
         if scopes.isEmpty, let scope = connectionScopeIdentifier { scopes.insert(scope) }
         return scopes
     }
@@ -615,8 +610,9 @@ extension HomeStore {
 
     func makeLiveProvider() -> any HomeProvider {
         let token = loadHAToken()
-        let wantsHA = hasHASource || (!hasMiSource && homeBackend == .homeAssistant)
-        let wantsMi = hasMiSource || (!hasHASource && homeBackend == .xiaomiCloud)
+        let active = activeBackends
+        let wantsHA = active.contains(.homeAssistant)
+        let wantsMi = active.contains(.xiaomiCloud)
         let ha: HAWebSocketProvider? = if wantsHA {
             makeHAProvider(baseURLString: serverURLString, token: token)
         } else {
@@ -680,8 +676,9 @@ extension HomeStore {
         }
 
         let token = loadHAToken()
-        let wantsHA = hasHASource || (!hasMiSource && homeBackend == .homeAssistant)
-        let wantsMi = hasMiSource || (!hasHASource && homeBackend == .xiaomiCloud)
+        let active = activeBackends
+        let wantsHA = active.contains(.homeAssistant)
+        let wantsMi = active.contains(.xiaomiCloud)
         var nextHAReplacement: (shouldReplace: Bool, provider: HAWebSocketProvider?) = (false, nil)
         var haCredentialUpdate: (provider: HAWebSocketProvider, url: String, token: String)?
         if wantsHA {
