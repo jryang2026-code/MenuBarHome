@@ -708,8 +708,9 @@ export function doesUndoStepActivateHighRiskDevice(
       case "pressButton":
         return dev.kind.kind === "appliance" ? dev.kind.startAction?.entityId === cmd.entityId : true;
       case "setMiotProperty":
-        // Reached only when no facet row explains the restore: a high-risk card is treated as one
-        // the property could turn back on, the same conservative rule macOS applies.
+        // Backstop only: a matching facet row was judged above, so this catches the cover position
+        // restore an older snapshot can carry without one. A high-risk card with no row at all is
+        // already refused (or approved) by `facetRestoreNeedsConfirmation`.
         return dev.kind.kind === "cover" && typeof cmd.value === "number" && cmd.value > 0;
       default:
         return false;
