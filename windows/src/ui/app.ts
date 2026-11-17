@@ -126,7 +126,11 @@ import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBat
 import { getAutomationUndoRunId } from "../core/automationEngine.js";
 import { registerUndoActionBatch } from "../core/optimisticLock.js";
 import { tr3 } from "../core/safetyAndHealth.js";
-import { clearPersistedMiSessionExpired, persistMiSessionExpired } from "../core/pollingPolicy.js";
+import {
+  clearPersistedMiSessionExpired,
+  clearPersistedMiSessionExpiredIfMatches,
+  persistMiSessionExpired,
+} from "../core/pollingPolicy.js";
 import { bindLayoutGestures } from "./layoutGestures.js";
 import { bindSettingsEvents } from "./settingsEvents.js";
 import { type SettingsTab } from "./settingsViews.js";
@@ -344,6 +348,8 @@ export class MenuMijiaWindowsApp {
     this._miSessionExpired = normalized;
     if (normalized) {
       if (this.settings.miSession) void persistMiSessionExpired(this.settings.miSession, true);
+    } else if (this.settings.miSession) {
+      void clearPersistedMiSessionExpiredIfMatches(this.settings.miSession);
     } else {
       void clearPersistedMiSessionExpired();
     }

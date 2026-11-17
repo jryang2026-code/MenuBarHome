@@ -39,7 +39,7 @@ import { renderSliderDeck } from "./panelView.js";
 import { isWorkstationLocked } from "./transport.js";
 import {
   clearCachedXiaomiTopology,
-  clearPersistedMiSessionExpired,
+  clearPersistedMiSessionExpiredIfMatches,
   clearXiaomiRateLimitBackoff,
   isPersistedMiSessionExpired,
   isXiaomiRateLimitError,
@@ -268,7 +268,12 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       }
       clearXiaomiRateLimitBackoff(host);
       host.miSessionExpired = false;
-      await clearPersistedMiSessionExpired();
+      // Only drop this session's record: a newer rejection another window stored for a different
+      // token/account must survive.
+      await clearPersistedMiSessionExpiredIfMatches(session);
+      // The await above is a suspension point; the user may have signed out, switched accounts or
+      // changed homes while it ran, so re-check before committing the snapshot.
+      if (cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) return;
       host.markCloudValuesFresh();
       host.groupOwnerByMemberDid = memberGroupOwners(membersByGroup as Map<string, string[]>);
       const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
@@ -329,8 +334,9 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         });
         if (err instanceof MiCloudError && err.kind === "sessionExpired") {
           host.miSessionExpired = true;
-          await persistMiSessionExpired(session, true);
           clearCachedXiaomiTopology(host);
+          // Persist after the synchronous host teardown so the await cannot split it.
+          await persistMiSessionExpired(session, true);
         } else if (isXiaomiRateLimitError(err)) {
           recordXiaomiRateLimit(host, session, Date.now());
         }
