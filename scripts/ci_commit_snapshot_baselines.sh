@@ -8,6 +8,12 @@
 # The push is not a force push. Rebase conflicts stop the run.
 set -euo pipefail
 
+# Ignore repo hooks and any git shim on PATH. The push job must not run a
+# hook planted in the target checkout.
+git() {
+    /usr/bin/git -c core.hooksPath=/dev/null "$@"
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || (cd "$SCRIPT_DIR/.." && pwd))"
 REL="Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests"
@@ -93,7 +99,8 @@ cmd_commit() {
     build_message "$count" "$files" >"$msg"
     echo "提交说明："
     cat "$msg"
-    git -c user.name="$GIT_AUTHOR_NAME" \
+    /usr/bin/git -c core.hooksPath=/dev/null \
+        -c user.name="$GIT_AUTHOR_NAME" \
         -c user.email="$GIT_AUTHOR_EMAIL" \
         commit -F "$msg"
     rm -f "$msg"

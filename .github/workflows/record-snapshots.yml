@@ -7,8 +7,8 @@ name: Record snapshots
 # 手动按钮要等本文件进入默认分支后才会出现在 Actions 页面。
 # 换 macos-26-intel 镜像或 Xcode 钉扎后必须重跑本工作流。不要放宽 SnapshotAssertion 容差。
 #
-# 目标分支上的脚本只负责渲染，并且看不到 GH_TOKEN，检出也不保存凭据。
-# 分支名归一化、PNG 白名单、推送和 dispatch 使用默认分支检出的脚本。
+# 渲染和推送分在两台机器上。渲染机只有 contents: read，跑目标分支的测试。
+# 推送机是一台新的 ubuntu，只检出默认分支的脚本，不执行目标树里的任何东西。
 on:
   workflow_dispatch:
     inputs:
@@ -52,22 +52,11 @@ jobs:
     runs-on: macos-26-intel
     timeout-minutes: 60
     permissions:
-      contents: write
-      actions: write
+      contents: read
     concurrency:
       group: record-snapshots-${{ needs.resolve.outputs.branch }}
       cancel-in-progress: false
     steps:
-      - name: Checkout trusted helpers from the default branch
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          path: trusted-snapshot
-          persist-credentials: false
-          sparse-checkout: scripts
-          sparse-checkout-cone-mode: true
-          fetch-depth: 1
-
       - name: Check out the target branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -105,6 +94,7 @@ jobs:
         env:
           GH_TOKEN: ""
           GITHUB_TOKEN: ""
+          SNAPSHOT_RECORD: "1"
         run: bash scripts/ci_restore_mtimes.sh
 
       - name: Reference locale
@@ -112,6 +102,7 @@ jobs:
         env:
           GH_TOKEN: ""
           GITHUB_TOKEN: ""
+          SNAPSHOT_RECORD: "1"
         run: bash scripts/ci_snapshot_locale.sh --require-xcode 26.6
 
       - name: Record UI snapshots
@@ -120,17 +111,64 @@ jobs:
           SWIFT_TEST_STALL_SECONDS: "300"
           GH_TOKEN: ""
           GITHUB_TOKEN: ""
+          SNAPSHOT_RECORD: "1"
         run: bash scripts/record_snapshots.sh
+
+      - name: Upload snapshot PNGs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snapshot-pngs
+          path: snapshot-work/Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests/*.png
+          if-no-files-found: error
+
+  push-snapshots:
+    needs: [resolve, record-snapshots]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: write
+    concurrency:
+      group: record-snapshots-${{ needs.resolve.outputs.branch }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout trusted helpers from the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: trusted-snapshot
+          persist-credentials: false
+          sparse-checkout: scripts
+          sparse-checkout-cone-mode: true
+          fetch-depth: 1
+
+      - name: Check out the target branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.branch }}
+          path: snapshot-work
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Download snapshot PNGs
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: snapshot-pngs
+          path: snapshot-artifact
 
       - name: Commit and push baseline PNGs
         id: commit
-        working-directory: snapshot-work
         env:
           SNAPSHOT_BRANCH: ${{ needs.resolve.outputs.branch }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          unset GITHUB_ENV GITHUB_PATH || true
+          bash "$GITHUB_WORKSPACE/trusted-snapshot/scripts/ci_snapshot_artifact.sh" install \
+            "$GITHUB_WORKSPACE/snapshot-artifact" \
+            "$GITHUB_WORKSPACE/snapshot-work/Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests"
+          cd "$GITHUB_WORKSPACE/snapshot-work"
           unset GITHUB_TOKEN
           gh auth setup-git
           bash "$GITHUB_WORKSPACE/trusted-snapshot/scripts/ci_commit_snapshot_baselines.sh" commit
