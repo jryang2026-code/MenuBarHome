@@ -179,6 +179,12 @@ function makeInMemoryInvoke(options: {
       data.delete(name);
       return null;
     }
+    if (cmd === "secure_store_list_mi_account_slots") {
+      const slots = [...data.keys()]
+        .filter((key) => key.startsWith("mi_session_"))
+        .map((key) => key.slice("mi_session_".length));
+      return slots as unknown as T;
+    }
     return null;
   };
   return { invoke, data, writes, deletes };

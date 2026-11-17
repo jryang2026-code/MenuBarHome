@@ -78,6 +78,12 @@ function defaultStorage(): Storage | null { try { return typeof localStorage !==
 }
 
 export const MI_ACCOUNTS_INDEX_STORAGE_KEY = "menumijia.windows.miAccountsIndex.v1";
+/**
+ * Set while the stored account list is known to be incomplete (#228). The index may have been
+ * corrupt, or it may have been rewritten from an incomplete cache after a failed credential scan;
+ * either way the next `load()` must enumerate slots again and merge them before trusting the index.
+ */
+export const MI_ACCOUNTS_INDEX_RECOVERY_STORAGE_KEY = "menumijia.miAccountsIndex.recovery.v1";
 // Re-exported for existing imports; the rejection store itself lives in `pollingPolicy.ts`.
 export { MI_ACCOUNTS_EXPIRED_STORAGE_KEY, miAccountId };
 
@@ -306,10 +312,26 @@ export function hasCorruptMiAccountIndex(storage: Storage | null = defaultStorag
   return readAccountIndexState(storage).status === "corrupt";
 }
 
+export function hasPendingMiAccountIndexRecovery(storage: Storage | null = defaultStorage()): boolean { if (!storage) return false;
+  try { return storage.getItem(MI_ACCOUNTS_INDEX_RECOVERY_STORAGE_KEY) === "1";
+  } catch { return false;
+  }
+}
+
+function writePendingMiAccountIndexRecovery(storage: Storage | null, pending: boolean): void { if (!storage) return;
+  try { if (pending) { storage.setItem(MI_ACCOUNTS_INDEX_RECOVERY_STORAGE_KEY, "1");
+    } else { storage.removeItem(MI_ACCOUNTS_INDEX_RECOVERY_STORAGE_KEY);
+    }
+  } catch {
+  }
+}
+
 function writeAccountIndex(storage: Storage | null,
   accounts: readonly MiAccount[],
+  recoveryPending = false,
 ): boolean { if (!storage) return false;
   try { if (accounts.length === 0) { storage.removeItem(MI_ACCOUNTS_INDEX_STORAGE_KEY);
+      if (!recoveryPending) storage.removeItem(MI_ACCOUNTS_INDEX_RECOVERY_STORAGE_KEY);
       return false;
     }
     const entries: MiAccountIndexEntry[] = accounts.map((acc) => ({
@@ -319,6 +341,11 @@ function writeAccountIndex(storage: Storage | null,
       maskedUserId: acc.maskedUserId,
     }));
     storage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, JSON.stringify(entries));
+    // A partially known list must carry the recovery marker, otherwise the next window would read
+    // it as the complete truth and never look for the accounts the failed scan could not name.
+    if (recoveryPending) { storage.setItem(MI_ACCOUNTS_INDEX_RECOVERY_STORAGE_KEY, "1");
+    } else { storage.removeItem(MI_ACCOUNTS_INDEX_RECOVERY_STORAGE_KEY);
+    }
     return true;
   } catch {
     return false;
@@ -367,6 +394,17 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
   getAccountIndexRepair(): MiAccountIndexRepair { return this.indexRepair;
   }
 
+  /**
+   * Writes the current in-memory list. While an unrecovered scan is pending the write keeps the
+   * recovery marker, so a login/removal cannot turn a partial list into the authoritative index.
+   */
+  private persistAccountIndex(): boolean {
+    const recoveryPending = this.indexRepair === "unrecovered";
+    const wrote = writeAccountIndex(this.storage, this.cachedAccounts, recoveryPending);
+    if (!recoveryPending) this.indexRepair = "none";
+    return wrote;
+  }
+
   async load(): Promise<MiAccount[]> {
     return this.enqueue(() => this.loadUnlocked());
   }
@@ -374,7 +412,9 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
   private async loadUnlocked(): Promise<MiAccount[]> { this.syncExternalRevocation();
     const indexState = readAccountIndexState(this.storage);
     const index = indexState.entries;
-    const indexCorrupt = indexState.status === "corrupt";
+    // The marker survives even after a later write replaced the corrupt raw value: until a scan
+    // succeeds, the stored list is not allowed to be the only source of truth (#228).
+    const needsRecovery = indexState.status === "corrupt" || hasPendingMiAccountIndexRecovery(this.storage);
     let primaryReadFailed = false;
     let primarySession: MiSession | null = null;
     try {
@@ -384,14 +424,14 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       primaryReadFailed = true;
     }
     const primaryAccount = primarySession ? makeMiAccount(primarySession) : null;
-    if (!primaryReadFailed && !indexCorrupt && this.storage !== null && index.length === 0 && this.cachedAccounts.length > 0) {
+    if (!primaryReadFailed && !needsRecovery && this.storage !== null && index.length === 0 && this.cachedAccounts.length > 0) {
       this.cachedAccounts = [];
     }
 
-    // A corrupt index cannot say which slots exist; the credential store can. `null` means the
-    // native shell has no enumeration command or the scan failed, which is *not* an empty result:
-    // keep the in-memory accounts and leave the stored value untouched (#228).
-    const scannedSlotIds = indexCorrupt
+    // A corrupt or incomplete index cannot say which slots exist; the credential store can. `null`
+    // means the native shell has no enumeration command or the scan failed, which is *not* an empty
+    // result: keep the in-memory accounts and keep the recovery marker set.
+    const scannedSlotIds = needsRecovery
       ? await this.vault.listMiAccountSlotIds().catch(() => null)
       : null;
 
@@ -439,6 +479,8 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       const account = makeMiAccount(slotSession);
       if (seenIds.has(account.id)) {
         if (!primaryReadFailed && !slotsReadFailed) {
+          // A failed delete leaves an orphan slot, but sign-out re-enumerates by account id and
+          // removes every slot of that account before the index changes (#228).
           await this.vault.deleteMiAccountSlot(slotId).catch(() => {});
         }
         continue;
@@ -447,10 +489,15 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       ordered.push(account);
     }
 
-    if (indexCorrupt && slotsReadFailed) {
-      // The index cannot rebuild the slot list, so an unreadable slot is not proof the account is
-      // gone: keep the in-memory copy rather than dropping it on a transient credential error.
+    if (needsRecovery) {
+      // The stored list cannot account for a slot that was enumerated but read as null, invalid
+      // content, or a failed IPC call. Keep the in-memory account for that slot so a transient
+      // credential problem never silently removes it; a slot that is genuinely gone (missing from
+      // the scan) is still dropped.
       for (const cached of this.cachedAccounts) { if (seenIds.has(cached.id)) continue;
+        if (loadedSlots[cached.slotId] !== undefined) continue;
+        const slotEnumerated = scannedSlotIds !== null && scannedSlotIds.includes(cached.slotId);
+        if (!slotsReadFailed && !slotEnumerated) continue;
         seenIds.add(cached.id);
         ordered.push(cached);
       }
@@ -461,7 +508,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       await this.vault.deleteMiAccountSlot(promoted.slotId).catch(() => {});
     }
 
-    const indexRebuilt = indexCorrupt
+    const indexRebuilt = needsRecovery
       && scannedSlotIds !== null
       && !primaryReadFailed
       && !slotsReadFailed
@@ -469,10 +516,20 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
 
     this.cachedAccounts = ordered;
     this.loaded = true;
-    if (!primaryReadFailed && !slotsReadFailed && (!indexCorrupt || indexRebuilt)) {
-      this.lastWroteIndexToStorage = writeAccountIndex(this.storage, ordered);
+    if (needsRecovery) {
+      if (indexRebuilt) {
+        this.lastWroteIndexToStorage = writeAccountIndex(this.storage, ordered);
+        this.indexRepair = "rebuilt";
+      } else {
+        writePendingMiAccountIndexRecovery(this.storage, true);
+        this.indexRepair = "unrecovered";
+      }
+    } else {
+      if (!primaryReadFailed && !slotsReadFailed) {
+        this.lastWroteIndexToStorage = writeAccountIndex(this.storage, ordered);
+      }
+      this.indexRepair = "none";
     }
-    this.indexRepair = !indexCorrupt ? "none" : indexRebuilt ? "rebuilt" : "unrecovered";
     return [...ordered];
   }
 
@@ -506,7 +563,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
           });
         }
         this.cachedAccounts = [account, ...this.cachedAccounts.slice(1)];
-        this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
+        this.lastWroteIndexToStorage = this.persistAccountIndex();
         return { accounts: [...this.cachedAccounts], account, added: false };
       }
 
@@ -522,7 +579,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
         const next = [...this.cachedAccounts];
         next[existingIdx] = account;
         this.cachedAccounts = next;
-        this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
+        this.lastWroteIndexToStorage = this.persistAccountIndex();
         return { accounts: [...this.cachedAccounts], account, added: false };
       }
 
@@ -532,7 +589,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
           storage: this.storage,
         });
         this.cachedAccounts = [account];
-        this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
+        this.lastWroteIndexToStorage = this.persistAccountIndex();
         return { accounts: [...this.cachedAccounts], account, added: true };
       }
 
@@ -542,9 +599,33 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
         storage: this.storage,
       });
       this.cachedAccounts = [...this.cachedAccounts, account];
-      this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
+      this.lastWroteIndexToStorage = this.persistAccountIndex();
       return { accounts: [...this.cachedAccounts], account, added: true };
     });
+  }
+
+  /**
+   * Every credential slot that belongs to `account`, including leftovers from a failed duplicate
+   * cleanup. Sign-out must remove all of them or an orphan slot resurrects the account the next
+   * time a damaged index is recovered (#228). Enumeration/read failures abort the removal instead
+   * of silently leaving a slot behind.
+   */
+  private async credentialSlotIdsForAccount(account: MiAccount): Promise<string[]> {
+    const scanned = await this.vault.listMiAccountSlotIds();
+    if (scanned === null) {
+      throw new Error("无法枚举小米账号凭据，已取消退出以避免残留账号");
+    }
+    const slots = new Set<string>([account.slotId]);
+    if (scanned.length > 0) {
+      const loaded = await this.vault.loadMiAccountSlots(scanned);
+      if (this.vault.didLastMiAccountSlotsReadFail()) {
+        throw new Error("无法读取小米账号凭据，已取消退出以避免残留账号");
+      }
+      for (const [slotId, session] of Object.entries(loaded)) {
+        if (makeMiAccount(session).id === account.id) slots.add(slotId);
+      }
+    }
+    return [...slots];
   }
 
     async removeAccount(accountId: string,
@@ -569,13 +650,19 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
             (MiAccountScope.owner(selectedHomeId) === null && idx === 0)),
       );
 
+      const slotsForRemoval = await this.credentialSlotIdsForAccount(removed);
       const remaining = this.cachedAccounts.filter((item) => item.id !== accountId);
-      if (idx === 0) { if (remaining.length === 0) { await this.vault.deleteMiSession();
+      if (idx === 0) { if (remaining.length === 0) { await this.vault.deleteMiSession([...slotsForRemoval]);
+          // Enumeration above made every slot known, so `deleteMiSession` also wiped the orphan
+          // slots; nothing is left to recover and the warning must not linger.
+          this.indexRepair = "none";
         } else { const promoted = remaining[0]!;
           await this.vault.savePrimaryMiSession(promoted.session);
+          for (const slotId of slotsForRemoval) await this.vault.deleteMiAccountSlot(slotId);
           await this.vault.deleteMiAccountSlot(promoted.slotId);
         }
-      } else { await this.vault.deleteMiAccountSlot(removed.slotId);
+      } else {
+        for (const slotId of slotsForRemoval) await this.vault.deleteMiAccountSlot(slotId);
       }
 
       markAccountSessionRejected(removed.session, false, {
@@ -583,7 +670,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
         storage: this.storage,
       });
       this.cachedAccounts = remaining;
-      this.lastWroteIndexToStorage = writeAccountIndex(this.storage, remaining);
+      this.lastWroteIndexToStorage = this.persistAccountIndex();
       return {
         accounts: [...remaining],
         primarySession: remaining[0]?.session ?? null,
@@ -596,13 +683,16 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       if (!this.loaded) { await this.loadUnlocked();
       }
       const index = readAccountIndex(this.storage);
+      const scanned = await this.vault.listMiAccountSlotIds().catch(() => null);
       const slotIds = new Set<string>([
         ...this.cachedAccounts.map((acc) => acc.slotId),
         ...index.map((entry) => entry.slotId),
+        ...(scanned ?? []),
       ]);
       await this.vault.deleteMiSession([...slotIds]);
       this.cachedAccounts = [];
       this.loaded = true;
+      this.indexRepair = "none";
       this.lastWroteIndexToStorage = writeAccountIndex(this.storage, []);
       clearPersistedMiSessionExpired(this.storage);
     });

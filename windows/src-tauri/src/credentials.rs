@@ -71,7 +71,16 @@ fn credential_target_string(target: *const u16) -> String {
 }
 
 #[tauri::command]
-pub(crate) fn secure_store_list_mi_account_slots() -> Result<Vec<String>, String> {
+pub(crate) async fn secure_store_list_mi_account_slots() -> Result<Vec<String>, String> {
+    // `CredEnumerateW` blocks while Windows walks the credential set. Keep it off the async
+    // runtime; a failed join is an enumeration failure, and the caller must then leave the account
+    // index untouched instead of rebuilding it from a partial scan (fail-closed, #228).
+    tauri::async_runtime::spawn_blocking(enumerate_mi_account_slots)
+        .await
+        .map_err(|error| format!("无法枚举 Windows 凭据：{error}"))?
+}
+
+fn enumerate_mi_account_slots() -> Result<Vec<String>, String> {
     use windows_sys::Win32::Foundation::{GetLastError, ERROR_NOT_FOUND};
     use windows_sys::Win32::Security::Credentials::{CredEnumerateW, CredFree, CREDENTIALW};
 
