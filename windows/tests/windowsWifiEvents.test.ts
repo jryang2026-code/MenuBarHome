@@ -841,6 +841,73 @@ describe("Windows Wi-Fi poll wiring (tick → wifiChanged dispatch)", () => {
     assert.equal(sent.length, 0);
   });
 
+  it("discards a periodic probe superseded by the lock-time probe instead of overwriting the newer reading", async () => {
+    const host = miniHost([makeLight("light.desk", true)]);
+    const center = getHostActivityCenter(host);
+    const sent: DeviceCommand[] = [];
+    host.applyCommand = async (cmd) => {
+      sent.push(cmd);
+      return true;
+    };
+    center.automationEngine.store.save([
+      createAutomationRule({
+        id: "join-any",
+        trigger: "wifiNetworkJoined",
+        action: { kind: "devices", deviceIds: ["light.desk"], isOn: false },
+      }),
+    ]);
+
+    // 周期轮询先发起（读到 Net_A）但被门控挂起；锁屏探针后发起（读到 Net_B）。
+    let locked = false;
+    let wifiProbeCalls = 0;
+    const probeGate: { release: (() => void) | null } = { release: null };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string) => {
+          if (cmd === "is_workstation_locked") return locked as unknown;
+          if (cmd === "wifi_current") {
+            wifiProbeCalls += 1;
+            if (wifiProbeCalls === 1) {
+              await new Promise<void>((resolve) => { probeGate.release = resolve; });
+              return { state: "connected", ssid: "Net_A" };
+            }
+            return { state: "connected", ssid: "Net_B" };
+          }
+          return undefined;
+        },
+      },
+    });
+
+    const t0 = 1_800_000_000_000;
+    tickSafetyHealthAndAutomation(host, t0);
+    await setImmediate();
+    await setImmediate();
+    // 周期探针已发起但尚未返回；锁屏采样建立基线。
+    assert.equal(center.wifiProbeSeq, 1);
+    assert.equal(center.wifiAppliedSeq, 0);
+    assert.equal(center.lastSampledLockState, false);
+
+    // 锁屏翻转：实时探针读到 Net_B 并先行应用。
+    locked = true;
+    tickSafetyHealthAndAutomation(host, t0 + 1_000);
+    await setImmediate();
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.wifiAppliedSeq, 2);
+    assert.equal(center.automationEngine.snapshot.wifiSSID, "Net_B");
+
+    // 后返回的 Net_A 是被超越的旧探针：丢弃，不覆盖 Net_B、不制造假转换。
+    probeGate.release?.();
+    await setImmediate();
+    await setImmediate();
+    await setImmediate();
+    assert.equal(center.wifiAppliedSeq, 2, "superseded probe result is discarded");
+    assert.equal(center.automationEngine.snapshot.wifiSSID, "Net_B");
+    assert.equal(center.lastWifiReading?.ssid, "Net_B");
+    assert.equal(sent.length, 0, "no spurious joined/left transition from the stale probe");
+  });
+
   it("never probes Wi-Fi without a Tauri host (happy-dom without __TAURI_INTERNALS__)", () => {
     const host = miniHost();
     const center = getHostActivityCenter(host);

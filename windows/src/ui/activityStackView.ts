@@ -123,6 +123,13 @@ export interface HostActivityCenter {
   lastWifiPollAtMs: number;
   lastWifiReading: EngineWifiReading | null;
   lastWifiProbeState: WindowsWifiProbeState | null;
+  /**
+   * 探针发起序号与最近一次已应用探针的序号：锁屏实时探针与周期轮询可能并发，
+   * 只应用「发起序号更新」的结果，避免先发起、后返回的旧读数覆盖新读数并制造
+   * 假的 joined/left 转换。
+   */
+  wifiProbeSeq: number;
+  wifiAppliedSeq: number;
 }
 
 type HostWithActivity = MenuMijiaWindowsApp & {
@@ -257,6 +264,8 @@ function createHostActivityCenter(
     lastWifiPollAtMs: 0,
     lastWifiReading: null,
     lastWifiProbeState: null,
+    wifiProbeSeq: 0,
+    wifiAppliedSeq: 0,
   };
 }
 
@@ -1028,6 +1037,10 @@ const WIFI_POLL_INTERVAL_MS = 10_000;
  * 「无法知晓」的读数会以 SSID 置空 + 不可信派发（引擎立即按不可信判定），但连续
  * 相同的「无法知晓」读数不重复派发。
  *
+ * `seq` 是探针发起时的序号：小于已应用序号的探针结果直接丢弃——周期轮询与锁屏
+ * 实时探针可能并发，先发起的读数可能后返回，不能覆盖更新的读数或制造假的
+ * joined/left 转换。
+ *
  * 返回本次应用到引擎的读数（读数未变化时为当前基线），供锁屏分支把它随
  * `lockChanged` 事件带给引擎，避免与并发轮询写入共享上下文产生竞争。
  */
@@ -1036,9 +1049,12 @@ async function observeAndDispatchWifi(
   center: HostActivityCenter,
   probe: WindowsWifiProbeResult | null | undefined,
   nowMs: number,
+  seq: number,
 ): Promise<EngineWifiReading | null> {
+  if (seq <= center.wifiAppliedSeq) return null;
   const observation = wifiPollObservationFromProbe(probe);
   center.lastWifiProbeState = observation.state;
+  center.wifiAppliedSeq = Math.max(center.wifiAppliedSeq, seq);
   if (!isFullPanelHost(host)) return null;
   const decision = wifiDispatchDecisionForObservation(observation, center.lastWifiReading);
   const reading = decision ? decision.reading : center.lastWifiReading;
@@ -1068,13 +1084,14 @@ async function pollAndDispatchWifi(
   center.wifiPollInFlight = true;
   center.lastWifiPollAtMs = nowMs;
   try {
+    const seq = ++center.wifiProbeSeq;
     let probe: WindowsWifiProbeResult | null = null;
     try {
       probe = await invoke<WindowsWifiProbeResult>("wifi_current");
     } catch {
       probe = null;
     }
-    await observeAndDispatchWifi(host, center, probe, nowMs);
+    await observeAndDispatchWifi(host, center, probe, nowMs, seq);
   } catch {
     center.lastWifiProbeState = "unknown";
   } finally {
@@ -1128,13 +1145,16 @@ export function tickSafetyHealthAndAutomation(
             // 快照。
             const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
             if (typeof invoke === "function") {
+              // 发起序号在探针发出前递增：锁屏探针必然晚于任何在途周期探针，
+              // 其结果不会被后返回的旧读数覆盖。
+              const seq = ++center.wifiProbeSeq;
               let probe: WindowsWifiProbeResult | null = null;
               try {
                 probe = await invoke<WindowsWifiProbeResult>("wifi_current");
               } catch {
                 probe = null;
               }
-              const applied = await observeAndDispatchWifi(host, center, probe, nowMs).catch(() => null);
+              const applied = await observeAndDispatchWifi(host, center, probe, nowMs, seq).catch(() => null);
               lockWifi =
                 applied ? { ssid: applied.ssid, isAuthorized: applied.isAuthorized } : { ssid: null, isAuthorized: false };
             }
