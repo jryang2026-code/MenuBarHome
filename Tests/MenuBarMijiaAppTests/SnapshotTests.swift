@@ -8,11 +8,12 @@ import KeychainTestSupport
 
 /// UI snapshots for the menu-bar panel and the five device-card families (#46).
 ///
-/// Two-phase baseline: `bash scripts/record_snapshots.sh` runs `SNAPSHOT_RECORD=1 swift test --filter
-/// SnapshotTests` on the maintainer's Mac, the only renderer they are compared on, and writes PNGs into
-/// `Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests/`; those files are then committed.
-/// An identical PNG is left untouched. Later runs compare against the committed PNGs; on a mismatch
-/// the new bitmap is written under `$SNAPSHOT_ARTIFACTS`/SnapshotTests (or `$TMPDIR/SnapshotTests`).
+/// Two-phase baseline: Record snapshots runs `SNAPSHOT_RECORD=1 swift test --filter SnapshotTests`
+/// on GitHub-hosted macos-26-intel (Xcode 26.6, zh_CN) and commits the PNGs under
+/// `Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests/`. That runner is the only renderer
+/// CI compares against. An identical PNG is left untouched. Later runs compare against the
+/// committed PNGs. On a mismatch the new bitmap is written under `$SNAPSHOT_ARTIFACTS`/SnapshotTests
+/// (or `$TMPDIR`/SnapshotTests). A local Mac is a preview and will differ.
 ///
 /// The panel and every card surface render once per `PanelTheme`, named `classic-…` / `liquid-…`.
 /// Shared surfaces — Settings, the camera HUD, and standalone drawers — stay a single baseline.

@@ -1,0 +1,105 @@
+name: Record snapshots
+
+# 在基准渲染机上重写 UI 快照 PNG，并提交回指定分支。
+# 基准是 macos-26-intel、Xcode 26.6、zh_CN（scripts/ci_snapshot_locale.sh）。
+# 只接受本仓库已有分支。GITHUB_TOKEN 的推送不会触发 pull_request 或 push 工作流，
+# workflow_dispatch 会。ci.yml 已在默认分支，因此这里直接 dispatch 它，不需要新的 PAT。
+# 换 macos-26-intel 镜像或 Xcode 钉扎后必须重跑本工作流。不要放宽 SnapshotAssertion 容差。
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "本仓库已有分支名。tag、提交号和其他仓库的分支会被拒绝。"
+        required: true
+        type: string
+  # BOOTSTRAP: 删掉这段 push。workflow_dispatch 要等本文件进入默认分支才能从网页启动。
+  # 本 job 用 GITHUB_TOKEN 推送的提交不会再次进入这个 trigger。
+  push:
+    branches: [cursor/github-hosted-snapshots-2d14]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: record-snapshots-${{ github.event.inputs.branch || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  record-snapshots:
+    if: github.event_name != 'push' || github.ref == 'refs/heads/cursor/github-hosted-snapshots-2d14'
+    runs-on: macos-26-intel
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Resolve a branch of this repository
+        id: branch
+        env:
+          BRANCH_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref_name }}
+        run: bash scripts/ci_snapshot_branch.sh resolve
+
+      - name: Check out the target branch
+        env:
+          SNAPSHOT_BRANCH: ${{ steps.branch.outputs.name }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$SNAPSHOT_BRANCH"
+          git checkout -B "$SNAPSHOT_BRANCH" "origin/$SNAPSHOT_BRANCH"
+
+      # macos-26-intel ships Xcode 26.6 (17F113). Do not select latest.
+      - name: Select Xcode 26.6
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: "26.6"
+
+      - name: Toolchain info
+        run: xcodebuild -version && swift --version && sw_vers
+
+      - name: Restore Swift build cache
+        id: swift-debug-cache
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build
+          key: spm-debug-v4-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: |
+            spm-debug-v4-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Reset incomplete Swift build cache
+        if: steps.swift-debug-cache.outcome != 'success'
+        run: rm -rf .build
+
+      - name: Restore source mtimes for the Swift cache
+        run: bash scripts/ci_restore_mtimes.sh
+
+      - name: Reference locale
+        run: bash scripts/ci_snapshot_locale.sh --require-xcode 26.6
+
+      - name: Record UI snapshots
+        env:
+          SWIFT_TEST_STALL_SECONDS: "300"
+        run: bash scripts/record_snapshots.sh
+
+      - name: Commit and push baseline PNGs
+        id: commit
+        env:
+          SNAPSHOT_BRANCH: ${{ steps.branch.outputs.name }}
+        run: bash scripts/ci_commit_snapshot_baselines.sh commit
+
+      - name: Dispatch CI for the new baselines
+        env:
+          SNAPSHOT_BRANCH: ${{ steps.branch.outputs.name }}
+        run: |
+          set -euo pipefail
+          gh workflow run ci.yml --ref "$SNAPSHOT_BRANCH"
+          echo "Dispatched CI on ${SNAPSHOT_BRANCH}."
+          echo "A GITHUB_TOKEN push does not start pull_request workflows. workflow_dispatch does."
+          echo "ci.yml is already on the default branch, so this does not need a new PAT."
+          echo "If this run is missing, dispatch it again: gh workflow run ci.yml --ref ${SNAPSHOT_BRANCH}"

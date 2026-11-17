@@ -83,9 +83,12 @@ MSG
 printf '%s\n' "$SOURCES" | sed 's/^/  - /' >&2
 cat >&2 <<'MSG'
 
-重录（在维护者这台 Mac 上；CI 托管机不比对快照）：
-  bash scripts/record_snapshots.sh --dry-run   # 只列出会变的 PNG
-  bash scripts/record_snapshots.sh             # 写入变化的 PNG，审阅后提交
+重录（基准是 GitHub 托管机 macos-26-intel，Xcode 26.6，zh_CN。本机 Mac 只作预览）：
+  Actions → Record snapshots，Branch 填本仓库已有分支名。
+  工作流提交变化的 PNG，再 workflow_dispatch 启动 CI。GITHUB_TOKEN 推送本身不会触发工作流。
+  更换该镜像或 Xcode 后必须重录。不要放宽 SnapshotAssertion 的容差。
+本机预览（结果会和基准不同）：
+  bash scripts/record_snapshots.sh --dry-run
 新增只在某个状态下出现的视图（横幅、提示、空状态）时，先给该状态加快照用例再录制。
 确实不影响渲染时：这个文件永远画不进截图，就把它加进本脚本的 NON_RENDERING 名单；
 只是这一次不影响，就给 PR 加 no-snapshot-change 标签跳过本检查。

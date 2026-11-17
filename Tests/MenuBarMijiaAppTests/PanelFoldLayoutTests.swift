@@ -7,8 +7,8 @@ import Testing
 
 extension PanelPresentationTests {
 /// Layout checks for the 560 pt panel in both panel themes. This suite is separate from
-/// `SnapshotTests` so the macOS CI job, which skips snapshot image comparison, still measures the
-/// fold.
+/// `SnapshotTests` so `macos-test` still measures the fold. That job skips image comparison
+/// because it may run on the local VM. `macos-snapshots` compares pixels on macos-26-intel.
 ///
 /// Both themes render in a 376 × 560 hosting view. Classic keeps the 321c067 geometry: the search
 /// field stays on screen above the checklist, and the first device card stays above 200 pt. The
