@@ -130,7 +130,7 @@ describe("Windows automation trigger gating (source of truth)", () => {
   it("guards that every supported trigger is driven by an event dispatched in production code", () => {
     const sources = readProductionSources();
     const engineSource = [...sources.entries()]
-      .filter(([path]) => path.endsWith("core/automationEngine.ts"))
+      .filter(([path]) => path.endsWith(join("core", "automationEngine.ts")))
       .map(([, text]) => text)
       .join("\n");
 
