@@ -241,11 +241,36 @@ export async function clearHostSessionAndDualSourceState(
       host.settings.dualSourceEnabled = false;
     }
   }
+  let signOutError: unknown = null;
   if (store) {
-    await store.clearAll().catch(() => {});
+    try {
+      await store.clearAll();
+    } catch (error) {
+      signOutError = error;
+    }
   }
   if (host.credentialVault && slotIds.length > 0) {
-    await host.credentialVault.deleteMiSession(slotIds).catch(() => {});
+    try {
+      await host.credentialVault.deleteMiSession(slotIds);
+    } catch (error) {
+      signOutError ??= error;
+    }
+  }
+  if (signOutError && host.replyBanner !== undefined) {
+    const detail =
+      signOutError instanceof Error && signOutError.message.trim()
+        ? ` (${signOutError.message.trim()})`
+        : "";
+    host.replyBanner = {
+      text: `${tr3(
+        "退出未完成，部分米家凭据仍保留，请重试",
+        "登出未完成，部分米家憑據仍保留，請重試",
+        "Sign-out incomplete; some Xiaomi credentials are still stored. Please retry",
+      )}${detail}`,
+      source: tr3("出错提示", "出錯提示", "Error"),
+      isError: true,
+    };
+    host.render?.();
   }
 }
 

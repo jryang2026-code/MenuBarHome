@@ -8,6 +8,7 @@ import { setLanguage } from "../src/core/i18n.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { renderConnectionsAndDiagSection } from "../src/ui/connectionsAndDiagView.js";
 import { hasMultipleMiAccountsForHost } from "../src/ui/cloudRefresh.js";
+import { clearHostSessionAndDualSourceState } from "../src/ui/appLifecycle.js";
 import type { MiSession } from "../src/core/miCloudClient.js";
 import {
   MI_ACCOUNTS_INDEX_STORAGE_KEY,
@@ -472,6 +473,26 @@ describe("Mi account index corruption (#228)", () => {
       assert.equal(clearedHtml.includes("data-mi-accounts-index-warning"), false);
       assert.equal(hasMultipleMiAccountsForHost(refreshHost), false);
       assert.equal(hasCorruptMiAccountIndex(localStorage), false);
+    } finally {
+      await closeTestWindow(dom);
+    }
+  });
+
+  it("shows an incomplete sign-out banner when a credential deletion fails (#2)", async () => {
+    const dom: Window = mountTestWindow({ stubInterval: true });
+    try {
+      setLanguage("zh-Hans");
+      const failOnDelete = new Set([slotName(SESSION_SG)]);
+      const fixture = makeCredentialFixture({ supportsSlotScan: true, failOnDelete });
+      const vault = new CredentialVault(fixture.invoke);
+      const store = new MiAccountsStore(vault, localStorage);
+      await seedStore(store, [SESSION_PRIMARY, SESSION_SG]);
+      const app = new MenuMijiaWindowsApp(document.getElementById("app")!);
+      Object.assign(app, { miAccountsStore: store, credentialVault: vault });
+
+      await clearHostSessionAndDualSourceState(app, { revokeAll: true });
+      assert.equal(app.replyBanner?.isError, true);
+      assert.match(app.replyBanner?.text ?? "", /退出未完成/);
     } finally {
       await closeTestWindow(dom);
     }
