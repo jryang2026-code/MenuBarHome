@@ -521,9 +521,11 @@ async function performSignOutSingleMiAccountOnHost(
     resetHostUnsupportedScanner(host);
 
     if (removal.resetSelectedHome) host.settings.selectedHomeId = null;
-    host.settings.miSession = removal.primarySession;
-    if (removal.primarySession) {
-      host.settings.miCloudRegion = normalizeMiCloudRegion(removal.primarySession.region);
+    if (removal.primarySessionKnown) {
+      host.settings.miSession = removal.primarySession;
+      if (removal.primarySession) {
+        host.settings.miCloudRegion = normalizeMiCloudRegion(removal.primarySession.region);
+      }
     }
 
     const removedIds = new Set(

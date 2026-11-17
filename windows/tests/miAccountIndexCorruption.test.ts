@@ -436,6 +436,34 @@ describe("Mi account index corruption (#228)", () => {
     assert.equal(host.settings.miSession, null, "an unread primary must not be replaced by a secondary");
   });
 
+  it("does not overwrite an unread primary when removing a recovered secondary", async () => {
+    const storage = memoryStorage();
+    const failOnGet = new Set<string>();
+    const fixture = makeCredentialFixture({ supportsSlotScan: true, failOnGet });
+    const seeded = new MiAccountsStore(new CredentialVault(fixture.invoke), storage);
+    await seedStore(seeded, [SESSION_PRIMARY, SESSION_SG, SESSION_FAMILY]);
+    storage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, "{broken");
+
+    failOnGet.add("mi_session");
+    const store = new MiAccountsStore(new CredentialVault(fixture.invoke), storage);
+    const recovered = await store.load();
+    assert.equal(store.hasConfirmedPrimarySession(), false);
+    const target = recovered[0]!;
+    const removal = await store.removeAccount(target.id);
+    assert.equal(removal.primarySessionKnown, false, "the caller must keep the existing settings session");
+    assert.equal(removal.accounts.length, recovered.length - 1);
+
+    failOnGet.clear();
+    assert.equal(
+      (await new CredentialVault(fixture.invoke).loadPrimaryMiSession())?.userId,
+      SESSION_PRIMARY.userId,
+      "the unread primary credential is untouched",
+    );
+    for (const account of removal.accounts) {
+      assert.equal(fixture.data.has(miAccountSessionCredentialName(account.slotId)), true);
+    }
+  });
+
   it("leaves a fresh install untouched and reports a complete read", async () => {
     const storage = memoryStorage();
     const { invoke } = makeCredentialFixture({ supportsSlotScan: true });

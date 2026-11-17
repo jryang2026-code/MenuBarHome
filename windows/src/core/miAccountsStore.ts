@@ -517,6 +517,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       if (existingIdx === 0) { const previousSession = this.cachedAccounts[0]!.session;
         const prevFp = miSessionFingerprint(previousSession);
         await this.vault.savePrimaryMiSession(account.session);
+        this.primaryConfirmed = true;
         if (prevFp !== miSessionFingerprint(account.session)) { clearPersistedMiSessionExpiredFor(previousSession, this.storage);
           markAccountSessionRejected(account.session, false, {
             isPrimary: true,
@@ -545,6 +546,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       }
 
       if (this.cachedAccounts.length === 0) { await this.vault.savePrimaryMiSession(account.session);
+        this.primaryConfirmed = true;
         markAccountSessionRejected(account.session, false, {
           isPrimary: true,
           storage: this.storage,
@@ -582,6 +584,8 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
     selectedHomeId?: string | null,
   ): Promise<{ readonly accounts: MiAccount[];
     readonly primarySession: MiSession | null;
+    /** False when the first cached account is not a confirmed primary; callers must keep settings. */
+    readonly primarySessionKnown: boolean;
     readonly resetSelectedHome: boolean;
   }> { return this.enqueue(async () => {
       if (!this.loaded) { await this.loadUnlocked();
@@ -590,11 +594,13 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       if (idx < 0) { return {
           accounts: [...this.cachedAccounts],
           primarySession: this.primarySession(),
+          primarySessionKnown: this.primaryConfirmed,
           resetSelectedHome: false,
         };
       }
 
       const removed = this.cachedAccounts[idx]!;
+      const ownsPrimary = this.primaryConfirmed;
       const resetSelectedHome = Boolean(selectedHomeId &&
           (MiAccountScope.isOwned(selectedHomeId, accountId) ||
             (MiAccountScope.owner(selectedHomeId) === null && idx === 0)),
@@ -602,23 +608,27 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
 
       const slotsForRemoval = this.slotIdsForAccount(removed);
       const remaining = this.cachedAccounts.filter((item) => item.id !== accountId);
-      if (idx === 0) { if (remaining.length === 0) {
+      if (idx === 0 && ownsPrimary) { if (remaining.length === 0) {
           // Remove only the selected account. `deleteMiSession()` would also wipe unrelated slots
           // that a failed read left in the vault's `known` map; those credentials are real and must
           // surface on a later load instead (#228).
           await this.vault.savePrimaryMiSession(null);
+          this.primaryConfirmed = false;
           for (const slotId of slotsForRemoval) await this.vault.deleteMiAccountSlot(slotId);
         } else { const promoted = remaining[0]!;
           await this.vault.savePrimaryMiSession(promoted.session);
+          this.primaryConfirmed = true;
           for (const slotId of slotsForRemoval) await this.vault.deleteMiAccountSlot(slotId);
           await this.vault.deleteMiAccountSlot(promoted.slotId);
         }
       } else {
+        // The first cached account is a recovered secondary, not the primary: never overwrite the
+        // unread `mi_session` credential just because it sits at index zero (#228).
         for (const slotId of slotsForRemoval) await this.vault.deleteMiAccountSlot(slotId);
       }
 
       markAccountSessionRejected(removed.session, false, {
-        isPrimary: idx === 0 && remaining.length === 0,
+        isPrimary: ownsPrimary && idx === 0 && remaining.length === 0,
         storage: this.storage,
       });
       this.cachedAccounts = remaining;
@@ -626,6 +636,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       return {
         accounts: [...remaining],
         primarySession: remaining[0]?.session ?? null,
+        primarySessionKnown: ownsPrimary,
         resetSelectedHome,
       };
     });
@@ -645,6 +656,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       this.cachedAccounts = [];
       this.loaded = true;
       this.accountsReadState = "complete";
+      this.primaryConfirmed = false;
       this.lastWroteIndexToStorage = writeAccountIndex(this.storage, []);
       clearPersistedMiSessionExpired(this.storage);
     });
