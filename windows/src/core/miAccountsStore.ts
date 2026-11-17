@@ -476,7 +476,12 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       await this.vault.savePrimaryMiSession(promoted.session);
       await this.vault.deleteMiAccountSlot(promoted.slotId).catch(() => {});
     }
-    this.primaryConfirmed = Boolean(primaryAccount) || (!primaryReadFailed && ordered.length > 0);
+    // A transient read failure must not revoke ownership already established for the retained
+    // cached primary; otherwise removing it would skip clearing `mi_session`.
+    const retainedCachedPrimary = !primaryAccount && primaryReadFailed && this.cachedAccounts.length > 0;
+    this.primaryConfirmed = Boolean(primaryAccount)
+      || (!primaryReadFailed && ordered.length > 0)
+      || (retainedCachedPrimary && this.primaryConfirmed);
 
     if (scannedSlotIds !== null) this.enumeratedSessions = { ...loadedSlots };
     const unreadScannedSlots = scannedSlotIds !== null

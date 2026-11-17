@@ -494,6 +494,26 @@ describe("Mi account index corruption (#228)", () => {
     assert.equal(fixture.data.has(miAccountSessionCredentialName(duplicateSlot)), false);
   });
 
+  it("retains established primary ownership across a transient read failure", async () => {
+    const storage = memoryStorage();
+    const failOnGet = new Set<string>();
+    const fixture = makeCredentialFixture({ supportsSlotScan: true, failOnGet });
+    const seeded = new MiAccountsStore(new CredentialVault(fixture.invoke), storage);
+    await seedStore(seeded, [SESSION_PRIMARY]);
+
+    const store = new MiAccountsStore(new CredentialVault(fixture.invoke), storage);
+    await store.load();
+    assert.equal(store.hasConfirmedPrimarySession(), true);
+
+    failOnGet.add("mi_session");
+    await store.load();
+    assert.equal(store.hasConfirmedPrimarySession(), true, "the cached primary keeps ownership");
+
+    const removal = await store.removeAccount(miAccountId(SESSION_PRIMARY));
+    assert.equal(removal.primarySessionKnown, true);
+    assert.equal(fixture.data.has("mi_session"), false, "removal still clears the unread primary");
+  });
+
   it("leaves a fresh install untouched and reports a complete read", async () => {
     const storage = memoryStorage();
     const { invoke } = makeCredentialFixture({ supportsSlotScan: true });
