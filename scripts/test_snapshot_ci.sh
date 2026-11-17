@@ -42,7 +42,53 @@ expect_status "reject tag" 2 bash scripts/ci_snapshot_branch.sh normalize 'refs/
 expect_status "reject space" 2 bash scripts/ci_snapshot_branch.sh normalize 'my branch'
 expect_status "reject HEAD" 2 bash scripts/ci_snapshot_branch.sh normalize 'HEAD'
 expect_status "reject shell metacharacter" 2 bash scripts/ci_snapshot_branch.sh normalize 'branch;rm'
+expect_status "reject newline injection" 2 bash scripts/ci_snapshot_branch.sh normalize $'$(id)\nmain'
+expect_status "reject embedded newline" 2 bash scripts/ci_snapshot_branch.sh normalize $'feature\nmain'
+expect_status "reject main" 2 bash scripts/ci_snapshot_branch.sh normalize main
+expect_status "reject refs/heads/main" 2 bash scripts/ci_snapshot_branch.sh normalize refs/heads/main
+expect_status "reject configured default branch" 2 env DEFAULT_BRANCH=develop bash scripts/ci_snapshot_branch.sh normalize develop
 expect_status "locale flag needs a version" 2 bash scripts/ci_snapshot_locale.sh --require-xcode
+
+test_unpushed_snapshot_commit() {
+    local tmp bare out
+    tmp="$(mktemp -d)"
+    bare="$(mktemp -d)"
+    out="$(mktemp)"
+    git init -q -b feature "$tmp"
+    git init -q --bare -b feature "$bare"
+    git -C "$tmp" config user.email test@example.com
+    git -C "$tmp" config user.name test
+    git -C "$tmp" commit -q --allow-empty -m init
+    git -C "$tmp" remote add origin "$bare"
+    git -C "$tmp" push -q origin feature
+    if ! (
+        cd "$tmp"
+        SNAPSHOT_BRANCH=feature GITHUB_OUTPUT="$out" \
+            bash "$OLDPWD/scripts/ci_commit_snapshot_baselines.sh" commit
+    ); then
+        printf 'FAIL in-sync empty record should succeed\n' >&2
+        failures=$((failures + 1))
+    elif ! grep -qx 'pushed=false' "$out"; then
+        printf 'FAIL in-sync empty record should set pushed=false\n' >&2
+        failures=$((failures + 1))
+    else
+        printf 'PASS in-sync empty record\n'
+    fi
+    git -C "$tmp" commit -q --allow-empty -m 'local only'
+    : >"$out"
+    if (
+        cd "$tmp"
+        SNAPSHOT_BRANCH=feature GITHUB_OUTPUT="$out" \
+            bash "$OLDPWD/scripts/ci_commit_snapshot_baselines.sh" commit
+    ); then
+        printf 'FAIL unpushed HEAD should not succeed\n' >&2
+        failures=$((failures + 1))
+    else
+        printf 'PASS unpushed HEAD is rejected\n'
+    fi
+    rm -rf "$tmp" "$bare" "$out"
+}
+test_unpushed_snapshot_commit
 
 msg="$(printf '%s\n' 'Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests/a.png' | bash scripts/ci_commit_snapshot_baselines.sh message)"
 first="$(printf '%s\n' "$msg" | head -n 1)"

@@ -5,44 +5,39 @@
 #   ci_snapshot_branch.sh resolve
 #
 # resolve reads BRANCH_INPUT, checks the GitHub branches API, and appends name=<branch>
-# to GITHUB_OUTPUT when that variable is set. Tags, commit SHAs, and forks are rejected
-# because the branches API only returns branches of GITHUB_REPOSITORY.
+# to GITHUB_OUTPUT when that variable is set. Tags, commit SHAs, forks, and the default
+# branch are rejected. DEFAULT_BRANCH overrides the default name (otherwise main).
 set -euo pipefail
 
 normalize_branch() {
     local raw="$1"
+    local default="${DEFAULT_BRANCH:-main}"
     raw="${raw//$'\r'/}"
     case "$raw" in
         refs/heads/*) raw="${raw#refs/heads/}" ;;
     esac
-    if [ -z "$raw" ]; then
-        echo "❌ 分支名为空" >&2
+    # Match the whole value. grep -Eq succeeds when any line matches, so
+    # $'$(id)\nmain' used to pass because the second line is "main".
+    if [[ ! "$raw" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+        echo "❌ 分支名不合法：${raw}" >&2
         return 2
     fi
     case "$raw" in
-        HEAD|refs|refs/*)
-            echo "❌ 只接受本仓库的分支名，收到：${raw}" >&2
-            return 2
-            ;;
-        -*|/*|*/|*//*)
-            echo "❌ 分支名不合法：${raw}" >&2
-            return 2
-            ;;
-        *..*)
+        HEAD|refs|refs/*|-*|/*|*/|*//*|*..*)
             echo "❌ 分支名不合法：${raw}" >&2
             return 2
             ;;
     esac
-    if ! printf '%s' "$raw" | grep -Eq '^[A-Za-z0-9._/-]+$'; then
-        echo "❌ 分支名含有不允许的字符：${raw}" >&2
-        return 2
-    fi
     case "/$raw/" in
         */./*|*/../*)
             echo "❌ 分支名不合法：${raw}" >&2
             return 2
             ;;
     esac
+    if [ "$raw" = "$default" ] || [ "$raw" = "main" ]; then
+        echo "❌ 不能在默认分支 ${raw} 上重录。请用功能分支。" >&2
+        return 2
+    fi
     printf '%s\n' "$raw"
 }
 

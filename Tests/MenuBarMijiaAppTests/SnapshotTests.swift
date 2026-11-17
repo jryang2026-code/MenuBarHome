@@ -1988,8 +1988,8 @@ struct SnapshotTests {
 
     // MARK: - Manual high-risk confirmation (#104)
 
-    @Test("A default-named wall switch's confirmation shows the rename hint under the decision text")
-    func wallSwitchConfirmationHintSnapshot() throws {
+    @Test("Text preview of the wall-switch hint under the decision text")
+    func wallSwitchConfirmationTextPreview() throws {
         _ = NSApplication.shared
         let wall = SmartDevice(
             id: "wall", name: "左键", roomId: "hall", roomName: "玄关",
@@ -2011,7 +2011,7 @@ struct SnapshotTests {
         assertRendered(
             wallSwitchConfirmation(prompt),
             size: CGSize(width: 320, height: 180),
-            named: "manual-confirmation-wall-switch-hint-zh-light"
+            named: "wall-switch-confirmation-text-preview-zh-light"
         )
     }
 

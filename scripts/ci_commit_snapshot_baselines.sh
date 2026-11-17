@@ -8,7 +8,8 @@
 # The push is not a force push. Rebase conflicts stop the run.
 set -euo pipefail
 
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null || (cd "$(dirname "$0")/.." && pwd))"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || (cd "$SCRIPT_DIR/.." && pwd))"
 REL="Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests"
 
 assert_snapshot_paths() {
@@ -49,17 +50,37 @@ cmd_message() {
     build_message "$count" "$files"
 }
 
+write_pushed() {
+    if [ -n "${GITHUB_OUTPUT:-}" ]; then
+        printf 'pushed=%s\n' "$1" >> "$GITHUB_OUTPUT"
+    fi
+}
+
+require_pushed_head() {
+    local branch="$1"
+    local head remote
+    git fetch origin "$branch"
+    head="$(git rev-parse HEAD)"
+    remote="$(git rev-parse "origin/${branch}")"
+    if [ "$head" != "$remote" ]; then
+        echo "❌ HEAD ${head} 不是 origin/${branch}（${remote}）。快照提交没有推上去。" >&2
+        write_pushed false
+        return 1
+    fi
+}
+
 cmd_commit() {
     local branch files count msg
-    branch="$(bash "$ROOT/scripts/ci_snapshot_branch.sh" normalize "${SNAPSHOT_BRANCH:?}")"
+    branch="$(bash "$SCRIPT_DIR/ci_snapshot_branch.sh" normalize "${SNAPSHOT_BRANCH:?}")"
     cd "$ROOT"
-    git add -A -- "$REL"
+    if [ -e "$REL" ]; then
+        git add -A -- "$REL"
+    fi
     files="$(git diff --cached --name-only -- "$REL")"
     if [ -z "$files" ]; then
+        require_pushed_head "$branch"
         echo "没有需要提交的快照基线"
-        if [ -n "${GITHUB_OUTPUT:-}" ]; then
-            echo "pushed=false" >> "$GITHUB_OUTPUT"
-        fi
+        write_pushed false
         return 0
     fi
     assert_snapshot_paths "$files"
@@ -79,10 +100,9 @@ cmd_commit() {
     git fetch origin "$branch"
     git rebase "origin/${branch}"
     git push origin "HEAD:refs/heads/${branch}"
+    require_pushed_head "$branch"
     echo "已推送 ${count} 张快照基线到 ${branch}"
-    if [ -n "${GITHUB_OUTPUT:-}" ]; then
-        echo "pushed=true" >> "$GITHUB_OUTPUT"
-    fi
+    write_pushed true
 }
 
 case "${1:-}" in
