@@ -451,4 +451,41 @@ describe("session expiry writes across windows", () => {
       restore();
     }
   });
+
+  it("a primary recovery cannot clear a rejection another window persisted meanwhile", async () => {
+    const newer = JSON.stringify({ fingerprint: miSessionFingerprint(SESSION_B), expiredAtMs: 4_000 });
+    let value: string | null = null;
+    const storage = {
+      getItem: (name: string) => (name === MI_SESSION_EXPIRED_STORAGE_KEY ? value : null),
+      setItem: (name: string, next: string) => {
+        if (name === MI_SESSION_EXPIRED_STORAGE_KEY) value = next;
+      },
+      removeItem: (name: string) => {
+        if (name === MI_SESSION_EXPIRED_STORAGE_KEY) value = null;
+      },
+      clear: () => {
+        value = null;
+      },
+      key: () => null,
+      get length() {
+        return value === null ? 0 : 1;
+      },
+    } as unknown as Storage;
+    const locks = deferredLockManager();
+    const restore = installNavigatorLocks(locks.locks);
+    try {
+      const pending = markAccountSessionRejected(SESSION_A, false, {
+        isPrimary: true,
+        storage,
+      });
+      await locks.flush();
+      storage.setItem(MI_SESSION_EXPIRED_STORAGE_KEY, newer);
+      await locks.flush();
+      await pending;
+    } finally {
+      restore();
+    }
+    assert.equal(value, newer, "B's rejection survives A's primary recovery");
+    assert.equal(isPersistedMiSessionExpired(SESSION_B, storage), true);
+  });
 });

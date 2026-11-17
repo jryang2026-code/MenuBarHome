@@ -261,9 +261,9 @@ export async function markAccountSessionRejected(session: MiSession | null | und
     if (options.isPrimary) await persistMiSessionExpired(session, true, storage, nowMs);
     return;
   }
-  if (options.isPrimary) { await clearPersistedMiSessionExpired(storage);
-  } else if (isPersistedMiSessionExpired(session, storage)) { await clearPersistedMiSessionExpiredIfMatches(session, storage);
-  }
+  // Only the record for this exact session may be cleared: a rejection another window persisted
+  // for a different account or a rotated token, meanwhile, must survive.
+  await clearPersistedMiSessionExpiredIfMatches(session, storage);
 }
 
 export function getAccountTokenStatus(accountOrSession: MiAccount | MiSession,
