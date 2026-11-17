@@ -260,6 +260,34 @@ describe("Mi account index corruption (#228)", () => {
     assert.equal(cold.getAccountsReadState(), "partial");
   });
 
+  it("does not wipe an unread account's credential when removing the visible primary", async () => {
+    const storage = memoryStorage();
+    const options: CredentialFixtureOptions = {
+      supportsSlotScan: true,
+      failOnGet: new Set([slotName(SESSION_SG)]),
+    };
+    const { invoke, data } = makeCredentialFixture(options);
+    const seeded = new MiAccountsStore(new CredentialVault(invoke), storage);
+    await seedStore(seeded, [SESSION_PRIMARY, SESSION_SG]);
+    storage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, "{broken");
+
+    const store = new MiAccountsStore(new CredentialVault(invoke), storage);
+    assert.deepEqual((await store.load()).map((account) => account.id), [miAccountId(SESSION_PRIMARY)]);
+    assert.equal(store.getAccountsReadState(), "partial");
+
+    const removal = await store.removeAccount(miAccountId(SESSION_PRIMARY));
+    assert.deepEqual(removal.accounts, []);
+    assert.equal(data.has(slotName(SESSION_SG)), true, "the unread secondary credential survives");
+
+    options.failOnGet?.clear();
+    const nextBoot = new MiAccountsStore(new CredentialVault(invoke), storage);
+    assert.deepEqual(
+      (await nextBoot.load()).map((account) => account.id),
+      [miAccountId(SESSION_SG)],
+      "the surviving credential surfaces on the next load",
+    );
+  });
+
   it("removes a secondary account without enumerating the credential store (#4)", async () => {
     const storage = memoryStorage();
     const fixture = makeCredentialFixture({ supportsSlotScan: false });

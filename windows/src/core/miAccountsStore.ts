@@ -592,7 +592,12 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
 
       const slotsForRemoval = this.slotIdsForAccount(removed);
       const remaining = this.cachedAccounts.filter((item) => item.id !== accountId);
-      if (idx === 0) { if (remaining.length === 0) { await this.vault.deleteMiSession(slotsForRemoval);
+      if (idx === 0) { if (remaining.length === 0) {
+          // Remove only the selected account. `deleteMiSession()` would also wipe unrelated slots
+          // that a failed read left in the vault's `known` map; those credentials are real and must
+          // surface on a later load instead (#228).
+          await this.vault.savePrimaryMiSession(null);
+          for (const slotId of slotsForRemoval) await this.vault.deleteMiAccountSlot(slotId);
         } else { const promoted = remaining[0]!;
           await this.vault.savePrimaryMiSession(promoted.session);
           for (const slotId of slotsForRemoval) await this.vault.deleteMiAccountSlot(slotId);
