@@ -60,36 +60,73 @@ mod imp {
         fn CloseHandle(handle: isize) -> i32;
     }
 
-    static KILL_ON_CLOSE_JOB: OnceLock<Option<isize>> = OnceLock::new();
+    /// Cached like the previous `OnceLock<Option<_>>`, but the failure reason is kept so every
+    /// later spawn fails closed with a diagnostic instead of continuing without the guarantee.
+    static KILL_ON_CLOSE_JOB: OnceLock<Result<isize, String>> = OnceLock::new();
 
-    pub(crate) fn ensure_kill_on_close_job() -> Option<isize> {
-        *KILL_ON_CLOSE_JOB.get_or_init(|| unsafe {
+    /// `GetLastError` code of the Win32 call that just failed.
+    fn last_error_code() -> Option<i32> {
+        std::io::Error::last_os_error().raw_os_error()
+    }
+
+    fn win32_error_text(code: Option<i32>) -> String {
+        match code {
+            Some(code) => format!(
+                "{}（Win32 错误码 {code}）",
+                std::io::Error::from_raw_os_error(code)
+            ),
+            None => "无法读取 Win32 错误码".to_string(),
+        }
+    }
+
+    pub(crate) fn ensure_kill_on_close_job() -> Result<isize, String> {
+        KILL_ON_CLOSE_JOB
+            .get_or_init(create_kill_on_close_job)
+            .clone()
+    }
+
+    fn create_kill_on_close_job() -> Result<isize, String> {
+        unsafe {
             let job = CreateJobObjectW(core::ptr::null(), core::ptr::null());
             if job == 0 {
-                return None;
+                return Err(format!(
+                    "创建 Job Object 失败：{}",
+                    win32_error_text(last_error_code())
+                ));
             }
             let mut info = JobObjectExtendedLimitInformation::default();
             info.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            let ok = SetInformationJobObject(
+            let configured = SetInformationJobObject(
                 job,
                 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
                 (&info as *const JobObjectExtendedLimitInformation).cast::<c_void>(),
                 core::mem::size_of::<JobObjectExtendedLimitInformation>() as u32,
             );
-            if ok == 0 {
+            if configured == 0 {
+                let detail = win32_error_text(last_error_code());
                 let _ = CloseHandle(job);
-                return None;
+                return Err(format!("设置 Job Object KILL_ON_JOB_CLOSE 失败：{detail}"));
             }
-            Some(job)
-        })
+            Ok(job)
+        }
     }
 
-    pub(crate) fn bind_child(child: &std::process::Child) {
-        if let Some(job) = ensure_kill_on_close_job() {
-            unsafe {
-                let _ = AssignProcessToJobObject(job, child.as_raw_handle() as isize);
-            }
+    pub(crate) fn bind_child(child: &std::process::Child) -> Result<(), String> {
+        let job = ensure_kill_on_close_job()?;
+        let assigned = unsafe { AssignProcessToJobObject(job, child.as_raw_handle() as isize) };
+        if assigned == 0 {
+            // Read `GetLastError` before another Win32 call could overwrite it.
+            return Err(assign_failure_message(last_error_code()));
         }
+        Ok(())
+    }
+
+    /// Pure mapping so the fail-closed error path is unit-testable without a live child process.
+    fn assign_failure_message(code: Option<i32>) -> String {
+        format!(
+            "将子进程加入 Job Object 失败：{}",
+            win32_error_text(code)
+        )
     }
 
     #[cfg(test)]
@@ -98,12 +135,30 @@ mod imp {
 
         #[test]
         fn kill_on_close_job_initializes_on_windows() {
-            assert!(ensure_kill_on_close_job().is_some());
+            assert!(ensure_kill_on_close_job().is_ok());
+        }
+
+        #[test]
+        fn assign_failure_message_carries_the_win32_error_code() {
+            let denied = assign_failure_message(Some(5));
+            assert!(denied.contains("Win32 错误码 5"), "{denied}");
+            assert!(denied.contains("Job Object"), "{denied}");
+            let unknown = assign_failure_message(None);
+            assert!(unknown.contains("无法读取 Win32 错误码"), "{unknown}");
         }
     }
 }
 
-pub(crate) fn bind_child_to_kill_on_close_job(child: &std::process::Child) {
+/// Binding failure must reach the caller: without the job the "app exit kills go2rtc" guarantee is
+/// gone, so the caller terminates the just-spawned child instead of running without it.
+pub(crate) fn bind_child_to_kill_on_close_job(child: &std::process::Child) -> Result<(), String> {
     #[cfg(windows)]
-    imp::bind_child(child);
+    {
+        imp::bind_child(child)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = child;
+        Ok(())
+    }
 }
