@@ -15,7 +15,10 @@
 
 import { ASSISTANT_PROVIDER_PRESETS, assistantEndpointIdentity, inferAssistantPreset } from "./assistant/provider.js";
 import { normalizeMiCloudRegion, type MiSession } from "./miCloudClient.js";
-import { clearPersistedMiSessionExpired } from "./pollingPolicy.js";
+import { clearPersistedMiSessionExpired,
+  clearPersistedMiSessionExpiredFor,
+  miSessionFingerprint,
+} from "./pollingPolicy.js";
 
 export const WIN32_CRED_MAX_BLOB_BYTES = 2560;
 
@@ -344,6 +347,9 @@ export class CredentialVault {
 
     async persist(credentials: CredentialSnapshot): Promise<void> {
     return this.serialize(async () => {
+      // Captured before the write: once `mi_session` holds the new token, the previous token is
+      // retired and its rejection marker can never belong to a live session again.
+      const previousPrimary = parseMiSession(this.known.get("mi_session") ?? null);
       const primarySerialized = credentials.miSession ? serializeMiSession(credentials.miSession) : "";
       if (primarySerialized !== "") {
         assertCredentialBlobWithinLimit(primarySerialized, "mi_session");
@@ -376,6 +382,17 @@ export class CredentialVault {
       if (failure) throw failure.reason;
       if (credentials.assistantApiKeys !== undefined) {
         await this.sync("assistant_api_key", "");
+      }
+      const nextPrimary = credentials.miSession;
+      if (
+        previousPrimary &&
+        nextPrimary &&
+        miSessionFingerprint(previousPrimary) !== miSessionFingerprint(nextPrimary)
+      ) {
+        // The write above succeeded, so the previous primary token is retired for good. Drop only
+        // that one fingerprint's rejection key (and its in-memory fallback); every other session's
+        // marker is untouched.
+        clearPersistedMiSessionExpiredFor(previousPrimary);
       }
     });
   }

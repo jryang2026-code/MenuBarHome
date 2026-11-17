@@ -42,7 +42,6 @@ import {
 import {
   clearAccountRateLimitBackoff,
   MI_ACCOUNTS_INDEX_STORAGE_KEY,
-  pruneSingleSessionRejections,
   readAccountIndex,
 } from "../core/miAccountsStore.js";
 import { clearPersistedMiSessionExpired } from "../core/pollingPolicy.js";
@@ -114,10 +113,6 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
         if (pendingSignOut) host.render();
         return;
       }
-      // Startup capacity sweep for the single-account case (the accounts store is not loaded
-      // then). The helper refuses to act unless the account index proves there is no second
-      // saved account; a multi-account setup is swept by MiAccountsStore itself.
-      pruneSingleSessionRejections(effectiveCredentials.miSession);
       if (effectiveCredentials.assistantApiKeys) {
         host.assistantKeysByPreset = { ...effectiveCredentials.assistantApiKeys, ...host.assistantKeysByPreset };
       }

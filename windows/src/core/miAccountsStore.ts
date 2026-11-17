@@ -39,6 +39,7 @@ import { environmentReadingPriority,
   type SynthesizedHome,
 } from "./models.js";
 import { clearPersistedMiSessionExpired,
+  clearPersistedMiSessionExpiredFor,
   isXiaomiRateLimitError,
   MI_ACCOUNTS_EXPIRED_STORAGE_KEY,
   miAccountId,
@@ -46,7 +47,6 @@ import { clearPersistedMiSessionExpired,
   miSessionRejectedRecord,
   persistMiSessionExpired,
   PollingPolicy,
-  prunePersistedMiSessionRejections,
 } from "./pollingPolicy.js";
 import { CredentialVault,
   WIN32_CRED_MAX_BLOB_BYTES,
@@ -240,32 +240,21 @@ export function hasSecondaryMiAccountsInIndex(storage: Storage | null = defaultS
   }
 }
 
-interface MiAccountIndexRead { readonly entries: MiAccountIndexEntry[];
-  /** False when storage or the stored JSON cannot be read, so saved accounts may be hidden. */
-  readonly readable: boolean;
-}
-
-function readAccountIndexState(storage: Storage | null): MiAccountIndexRead { if (!storage) return { entries: [], readable: false };
+export function readAccountIndex(storage: Storage | null = defaultStorage()): MiAccountIndexEntry[] { if (!storage) return [];
   try { const raw = storage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY);
-    if (!raw) return { entries: [], readable: true };
+    if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return { entries: [], readable: false };
+    if (!Array.isArray(parsed)) return [];
     const out: MiAccountIndexEntry[] = [];
     const seen = new Set<string>();
-    let dropped = false;
-    for (const item of parsed) { if (!item || typeof item !== "object" || Array.isArray(item)) { dropped = true;
-        continue;
-      }
+    for (const item of parsed) { if (!item || typeof item !== "object" || Array.isArray(item)) continue;
       const rec = item as Record<string, unknown>;
       const id = typeof rec["id"] === "string" ? rec["id"].trim() : "";
       const rawSlot = typeof rec["slotId"] === "string" ? rec["slotId"].trim() : "";
-      if (!id || seen.has(id)) { dropped = true;
-        continue;
-      }
+      if (!id || seen.has(id)) continue;
       let slotId: string;
       try { slotId = normalizeMiCredentialSlotId(rawSlot || id);
-      } catch { dropped = true;
-        continue;
+      } catch { continue;
       }
       seen.add(id);
       const region = normalizeMiCloudRegion(rec["region"]);
@@ -274,37 +263,9 @@ function readAccountIndexState(storage: Storage | null): MiAccountIndexRead { if
           : "****";
       out.push({ id, slotId, region, maskedUserId });
     }
-    return { entries: out, readable: !dropped };
-  } catch { return { entries: [], readable: false };
+    return out;
+  } catch { return [];
   }
-}
-
-export function readAccountIndex(storage: Storage | null = defaultStorage()): MiAccountIndexEntry[] { return readAccountIndexState(storage).entries;
-}
-
-/**
- * Startup sweep for the single-session case, where `MiAccountsStore` is never loaded. Only runs
- * when the account index is readable and lists no other account; otherwise the set of live
- * sessions is not provably complete and the store's own load owns the sweep (returns 0 here).
- */
-export function pruneSingleSessionRejections(
-  session: MiSession | null | undefined,
-  options: { readonly storage?: Storage | null;
-    readonly nowMs?: number;
-    readonly retentionMs?: number;
-  } = {},
-): number { if (!session) return 0;
-  const storage = options.storage !== undefined ? options.storage : defaultStorage();
-  const index = readAccountIndexState(storage);
-  if (!index.readable) return 0;
-  const accountId = miAccountId(session);
-  if (index.entries.some((entry) => entry.id !== accountId)) return 0;
-  return prunePersistedMiSessionRejections({
-    storage,
-    liveFingerprints: [miSessionFingerprint(session)],
-    ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
-    ...(options.retentionMs !== undefined ? { retentionMs: options.retentionMs } : {}),
-  });
 }
 
 function writeAccountIndex(storage: Storage | null,
@@ -329,8 +290,6 @@ function writeAccountIndex(storage: Storage | null,
 export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
   private loaded = false;
   private lastWroteIndexToStorage = false;
-  /** True until a load proved the primary credential, the index and every slot were readable. */
-  private lastLoadFailedClosed = true;
   private opQueue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly vault: CredentialVault = new CredentialVault(),
@@ -341,17 +300,6 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
     const run = this.opQueue.then(fn, fn);
     this.opQueue = run.then(() => undefined, () => undefined);
     return run;
-  }
-
-  /**
-   * Removes rejections for tokens no longer saved on any account. Skipped when the last load
-   * could not prove it saw every saved session: an incomplete set must never be used to delete.
-   */
-  private pruneStaleSessionRejections(): void { if (this.lastLoadFailedClosed) return;
-    prunePersistedMiSessionRejections({
-      storage: this.storage,
-      liveFingerprints: this.cachedAccounts.map((account) => miSessionFingerprint(account.session)),
-    });
   }
 
   private syncExternalRevocation(): void {
@@ -379,8 +327,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
   }
 
   private async loadUnlocked(): Promise<MiAccount[]> { this.syncExternalRevocation();
-    const indexState = readAccountIndexState(this.storage);
-    const index = indexState.entries;
+    const index = readAccountIndex(this.storage);
     let primaryReadFailed = false;
     let primarySession: MiSession | null = null;
     try {
@@ -449,8 +396,6 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
     if (!primaryReadFailed && !slotsReadFailed) {
       this.lastWroteIndexToStorage = writeAccountIndex(this.storage, ordered);
     }
-    this.lastLoadFailedClosed = primaryReadFailed || slotsReadFailed || !indexState.readable;
-    this.pruneStaleSessionRejections();
     return [...ordered];
   }
 
@@ -474,22 +419,25 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       }
 
       const existingIdx = this.cachedAccounts.findIndex((item) => item.id === account.id);
-      if (existingIdx === 0) { const prevFp = miSessionFingerprint(this.cachedAccounts[0]!.session);
+      if (existingIdx === 0) { const previousSession = this.cachedAccounts[0]!.session;
+        const prevFp = miSessionFingerprint(previousSession);
         await this.vault.savePrimaryMiSession(account.session);
-        if (prevFp !== miSessionFingerprint(account.session)) { markAccountSessionRejected(account.session, false, {
+        if (prevFp !== miSessionFingerprint(account.session)) { clearPersistedMiSessionExpiredFor(previousSession, this.storage);
+          markAccountSessionRejected(account.session, false, {
             isPrimary: true,
             storage: this.storage,
           });
         }
         this.cachedAccounts = [account, ...this.cachedAccounts.slice(1)];
         this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
-        this.pruneStaleSessionRejections();
         return { accounts: [...this.cachedAccounts], account, added: false };
       }
 
-      if (existingIdx > 0) { const prevFp = miSessionFingerprint(this.cachedAccounts[existingIdx]!.session);
+      if (existingIdx > 0) { const previousSession = this.cachedAccounts[existingIdx]!.session;
+        const prevFp = miSessionFingerprint(previousSession);
         await this.vault.saveMiAccountSlot(account.slotId, account.session);
-        if (prevFp !== miSessionFingerprint(account.session)) { markAccountSessionRejected(account.session, false, {
+        if (prevFp !== miSessionFingerprint(account.session)) { clearPersistedMiSessionExpiredFor(previousSession, this.storage);
+          markAccountSessionRejected(account.session, false, {
             isPrimary: false,
             storage: this.storage,
           });
@@ -498,7 +446,6 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
         next[existingIdx] = account;
         this.cachedAccounts = next;
         this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
-        this.pruneStaleSessionRejections();
         return { accounts: [...this.cachedAccounts], account, added: false };
       }
 
@@ -509,7 +456,6 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
         });
         this.cachedAccounts = [account];
         this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
-        this.pruneStaleSessionRejections();
         return { accounts: [...this.cachedAccounts], account, added: true };
       }
 
@@ -520,7 +466,6 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       });
       this.cachedAccounts = [...this.cachedAccounts, account];
       this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
-      this.pruneStaleSessionRejections();
       return { accounts: [...this.cachedAccounts], account, added: true };
     });
   }
@@ -562,7 +507,6 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       });
       this.cachedAccounts = remaining;
       this.lastWroteIndexToStorage = writeAccountIndex(this.storage, remaining);
-      this.pruneStaleSessionRejections();
       return {
         accounts: [...remaining],
         primarySession: remaining[0]?.session ?? null,
