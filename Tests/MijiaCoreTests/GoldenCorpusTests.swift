@@ -2028,7 +2028,7 @@ struct GoldenCorpusTests {
     func confirmationGoldenCorpus() throws {
         let fixtureURL = try Self.locateGoldenFixture("Tests/Fixtures/confirmation_golden.json")
         let corpus = try JSONDecoder().decode(ConfirmationCorpus.self, from: Data(contentsOf: fixtureURL))
-        #expect(corpus.rows.count == 58)
+        #expect(corpus.rows.count == 73)
         #expect(corpus.decisionRows.count == 4)
         #expect(Set(corpus.decisionRows.map(\.id)).count == corpus.decisionRows.count)
         #expect(Set(corpus.rows.map(\.id)).count == corpus.rows.count)

@@ -1,4 +1,5 @@
 import type { SmartDevice } from "../models.js";
+import { toSimplifiedChinese } from "./chineseIntentTables.js";
 
 export type IntentCategory = "light" | "climate" | "heater" | "fan" | "airPurifier" | "dehumidifier" | "diffuser" | "plug" | "vacuum" | "tv" | "camera" | "valve" | "other";
 
@@ -94,6 +95,7 @@ const SWITCHED_LIGHT_EXCLUDED_NAME_SUBSTRINGS = [
   "插排",
   "排插",
   "插线板",
+  "延长线",
   "转换器",
   "power strip",
   "powerstrip",
@@ -122,6 +124,7 @@ const SWITCHED_LIGHT_EXCLUDED_NAME_SUBSTRINGS = [
   "捕蚊",
   "指示灯",
   "信号灯",
+  "讯号灯",
   "车库",
   "门锁",
   "阀门",
@@ -225,7 +228,7 @@ export function isSwitchedLightDevice(dev: SmartDevice): boolean {
     return false;
   }
 
-  const lowerName = dev.name.trim().toLowerCase();
+  const lowerName = toSimplifiedChinese(dev.name.trim()).toLowerCase();
   const asciiWords = new Set(lowerName.split(/[^a-z]+/).filter(Boolean));
   if (SWITCHED_LIGHT_EXCLUDED_NAME_SUBSTRINGS.some((sub) => lowerName.includes(sub))) {
     return false;

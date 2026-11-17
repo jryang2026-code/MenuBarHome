@@ -1,4 +1,5 @@
 import { HomeAssistantClient, HomeAssistantSynthesizer, haServiceCall, homeAssistantCommand, homeAssistantIdentity, parseCachedHAHome } from "../src/core/homeAssistant.js";
+import { SIMP_CHARS, TRAD_CHARS } from "../src/core/assistant/chineseIntentTables.js";
 import { deviceCategory, isSwitchedLightDevice } from "../src/core/assistant/deviceCategory.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { buildRaycastSnapshot } from "../src/core/raycastSnapshot.js";
@@ -2404,7 +2405,7 @@ function smartDeviceFromConfirmation(device: ConfirmationFixtureDevice): SmartDe
 it("matches the shared confirmation table in confirmation_golden.json", () => {
   const raw = readFileSync(resolve(process.cwd(), "../Tests/Fixtures/confirmation_golden.json"), "utf8");
   const rows = parseConfirmationRows(raw);
-  assert.equal(rows.length, 58);
+  assert.equal(rows.length, 73);
   assert.equal(new Set(rows.map((row) => row.id)).size, rows.length);
   for (const row of rows) {
     if (row.device) assert.equal(row.device.id, row.id, row.id);
@@ -2587,7 +2588,12 @@ it("classifies switched lights on plug cards as light while excluding hazardous 
     makePlug("sw_en", "Kitchen Light", "switch.kitchen_light"),
     makePlug("sw_warm_strip", "暖光灯带", "cuco.plug.cp1"),
     makePlug("sw_illumination", "厨房照明", "090615.switch.09dh1"),
+    makePlug("sw_kitchen_trad", "廚房燈", "lumi.switch.b1nacn02"),
+    makePlug("sw_living_ceiling_trad", "客廳吸頂燈", "lumi.switch.b1nacn02"),
+    makePlug("sw_hall_lighting_trad", "玄關照明燈", "090615.switch.09dh1"),
   ];
+  assert.equal(TRAD_CHARS.length, SIMP_CHARS.length);
+  assert.equal(new Set(Array.from(TRAD_CHARS)).size, Array.from(TRAD_CHARS).length);
 
   for (const dev of positives) {
     assert.equal(isSwitchedLightDevice(dev), true, `isSwitchedLightDevice(${dev.name})`);
@@ -2696,6 +2702,18 @@ it("classifies switched lights on plug cards as light while excluding hazardous 
     makePlug("neg_indicator", "路由器指示灯"),
     makePlug("neg_outlet_zh", "台灯插座"),
     makePlug("neg_outlet_en", "Desk Lamp Outlet"),
+    makePlug("neg_uv_trad", "紫外線殺菌燈"),
+    makePlug("neg_bath_trad", "浴霸取暖燈"),
+    makePlug("neg_ir_trad", "紅外烤燈"),
+    makePlug("neg_mosquito_trad", "滅蚊燈"),
+    makePlug("neg_mosquito_repel_trad", "驅蚊燈"),
+    makePlug("neg_indicator_trad", "路由器指示燈"),
+    makePlug("neg_signal_trad", "信號燈"),
+    makePlug("neg_xunhao_trad", "訊號燈"),
+    makePlug("neg_outlet_trad", "檯燈插座"),
+    makePlug("neg_ext_cord_trad", "延長線燈"),
+    makePlug("neg_electric_heat_trad", "電暖燈"),
+    makePlug("neg_healthpot_trad", "養生壺燈"),
     makePlug("neg_button", "厨房灯", "lumi.switch.b1nacn02", { switchEntityId: "button.kitchen_light" }),
     makePlug("neg_ro", "厨房灯", "lumi.switch.b1nacn02", { powerWritable: false }),
     makePlug("neg_oven_model", "厨房灯", "chunmi.oven.s1"),
@@ -2822,6 +2840,9 @@ it("shows a rename hint only for a default-named wall switch and does not change
       const hint = hintOf(left) ?? "";
       const keywords = [...hint.matchAll(/[「“]([^」”]+)[」”]/g)].map((match) => match[1]!);
       assert.ok(keywords.length > 0, `${language} hint names a keyword: ${hint}`);
+      if (language === "zh-Hant") {
+        assert.deepEqual(keywords, ["燈"]);
+      }
       for (const keyword of keywords) {
         const renamed = { ...left, name: `${left.name} ${keyword}` };
         assert.equal(isSwitchedLightDevice(renamed), true, `${language} keyword ${keyword} is a light name`);

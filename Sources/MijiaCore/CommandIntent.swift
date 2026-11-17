@@ -202,11 +202,11 @@ extension SmartDevice {
     ]
 
     private static let switchedLightExcludedSubstrings: [String] = [
-        "插座", "插排", "排插", "插线板", "转换器",
+        "插座", "插排", "排插", "插线板", "延长线", "转换器",
         "power strip", "powerstrip", "smart plug", "smartplug",
         "杀菌", "消毒", "紫外", "臭氧", "浴霸", "取暖", "电暖", "暖风", "暖气", "暖灯",
         "加热", "发热", "电热", "热水", "保温", "烤", "红外",
-        "灭蚊", "驱蚊", "诱蚊", "捕蚊", "指示灯", "信号灯",
+        "灭蚊", "驱蚊", "诱蚊", "捕蚊", "指示灯", "信号灯", "讯号灯",
         "车库", "门锁", "阀门", "水壶", "饮水", "饭煲", "电锅", "炸锅", "烤箱", "微波", "养生壶",
         "晾衣", "开窗", "摄像", "监控", "扫地", "路由", "网关",
     ]
@@ -239,7 +239,7 @@ extension SmartDevice {
             return false
         }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lowerName = trimmed.lowercased()
+        let lowerName = LocalIntentParser.toSimplifiedChinese(trimmed).lowercased()
         let asciiWords = Set(lowerName.split { !($0.isASCII && $0.isLetter) }.map(String.init))
         if Self.switchedLightExcludedSubstrings.contains(where: { lowerName.contains($0) }) {
             return false
