@@ -842,10 +842,12 @@ extension HomeStore {
         let startPosition = (baselineCover ?? s).positionPercent
         let previousPosition = startPosition ?? displayed
         // Asked before any optimistic state moves, so a refusal leaves the slider on the position
-        // the device really reports. The drag's origin decides the direction, so one answer covers
-        // the whole drag; the entry lives only as long as the drag's debounce slot.
+        // the device really reports. The direction comes from the value the command sends, not the
+        // snapped one the row shows: 0 → 1 % displays as a closed door but still opens it. The
+        // drag's origin decides the direction, so one answer covers the whole drag; the entry lives
+        // only as long as the drag's debounce slot.
         if baselineCover == nil { approvedCoverDrags.removeValue(forKey: key) }
-        if let opening = Self.coverDragDirection(from: startPosition, to: displayed),
+        if let opening = Self.coverDragDirection(from: startPosition, to: clamped),
            approvedCoverDrags[key] != opening,
            ManualControlPolicy.requiresConfirmation(.power(opening), for: previous) {
             guard allowManualControl(.power(opening), for: previous) else { return }

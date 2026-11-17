@@ -117,4 +117,31 @@ struct CoverDragConfirmationTests {
         #expect(position(store, opener.id) == 0, "the refused opening never shows")
         #expect(await provider.executedCommands.count == 1)
     }
+
+    @Test("A drag that snaps to the same end still asks when the command moves the motor")
+    func snappedEndDragStillAsks() async throws {
+        let closed = cover("garage_closed", name: "车库门", subtype: .garageDoor, position: 0)
+        let (closedStore, closedProvider) = try await makeStore([closed])
+        var closedPrompts = 0
+        closedStore.manualControlConfirmationHandler = { _ in
+            closedPrompts += 1
+            return false
+        }
+        closedStore.setCoverPosition(closed.id, percent: 1)
+        #expect(closedPrompts == 1, "1% displays as 0% but the command still opens the door")
+        #expect(await closedProvider.executedCommands.isEmpty)
+        #expect(position(closedStore, closed.id) == 0)
+
+        let open = cover("garage_open", name: "车库门", subtype: .garageDoor, position: 100)
+        let (openStore, openProvider) = try await makeStore([open])
+        var openPrompts = 0
+        openStore.manualControlConfirmationHandler = { _ in
+            openPrompts += 1
+            return false
+        }
+        openStore.setCoverPosition(open.id, percent: 99)
+        #expect(openPrompts == 1, "99% displays as 100% but the command still closes the door")
+        #expect(await openProvider.executedCommands.isEmpty)
+        #expect(position(openStore, open.id) == 100)
+    }
 }
