@@ -426,9 +426,7 @@ extension CameraLivePanelController {
         activeDeviceId = deviceId
         streamSource = stream
         hasLiveVideoFrame = hasFrame && stream != nil
-        snapshotImage = nil
-        isLoadingStream = isLoading
-        errorMessage = errorText
+        setViewportPreview(isLoading: isLoading, errorText: errorText)
         ptzBinding = binding
         ptzClientReady = ready
         ptzNotice = notice

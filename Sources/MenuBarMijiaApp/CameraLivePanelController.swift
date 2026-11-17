@@ -580,6 +580,14 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         XiaomiCameraBridge.scrubStaleConfigOnLaunch()
     }
 
+    /// `snapshotImage`, `isLoadingStream`, and `errorMessage` are `private(set)`, so the
+    /// preview seam in the other file cannot assign them itself.
+    func setViewportPreview(isLoading: Bool, errorText: String?) {
+        snapshotImage = nil
+        isLoadingStream = isLoading
+        errorMessage = errorText
+    }
+
     private func stopStreamTasks() {
         clearPTZ()
         videoOnlyNoticeTask?.cancel()
