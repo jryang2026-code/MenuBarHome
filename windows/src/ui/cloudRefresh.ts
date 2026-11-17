@@ -88,9 +88,11 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
     if (host.settings.connectionMode === "xiaomiCloud") {
       // The store's first load of this window enumerates the credential slots; later loads read
       // the assembled list. This replaces the old "only multi-account indexes hydrate" gate (#228).
-      const storeAccounts = host.miAccountsOverride
-        ?? (await getHostMiAccountsStore(host).load().catch(() => []));
-      adoptRecoveredPrimarySession(host, storeAccounts);
+      const revision = host.localControlRevision;
+      const store = getHostMiAccountsStore(host);
+      const storeAccounts = host.miAccountsOverride ?? (await store.load().catch(() => []));
+      if (host.localControlRevision !== revision) return;
+      adoptRecoveredPrimarySession(host, store, storeAccounts);
       if (storeAccounts.length > 1 || hasMultipleMiAccountsForHost(host)) {
         return refreshMultiAccountXiaomiDevices(host, silent);
       }
@@ -788,10 +790,11 @@ export function hasMultipleMiAccountsForHost(host: DualSourceInspectableHost): b
  */
 export function adoptRecoveredPrimarySession(
   host: { readonly settings: { miSession: MiSession | null; miCloudRegion: string } },
+  store: MiAccountsStore,
   accounts: readonly MiAccount[],
 ): void {
   const primary = accounts[0];
-  if (!primary || host.settings.miSession !== null) return;
+  if (!primary || host.settings.miSession !== null || !store.hasConfirmedPrimarySession()) return;
   host.settings.miSession = primary.session;
   host.settings.miCloudRegion = normalizeMiCloudRegion(primary.region);
 }
@@ -860,8 +863,8 @@ export async function refreshMultiAccountXiaomiDevices(
   ) {
     return;
   }
-  const loadedFromStore = host.miAccountsOverride ?? (await getHostMiAccountsStore(host).load());
-  adoptRecoveredPrimarySession(host, loadedFromStore);
+  const store = getHostMiAccountsStore(host);
+  const loadedFromStore = host.miAccountsOverride ?? (await store.load());
   if (
     !isHostAttachedToActiveWindow(host) ||
     host.settings.connectionMode !== "xiaomiCloud" ||
@@ -871,6 +874,7 @@ export async function refreshMultiAccountXiaomiDevices(
   ) {
     return;
   }
+  adoptRecoveredPrimarySession(host, store, loadedFromStore);
   const accounts =
     loadedFromStore.length > 0
       ? loadedFromStore
@@ -1121,9 +1125,9 @@ export async function refreshDualSourceDevices(
   const endpoint = host.settings.haBaseURL;
   const token = host.settings.haToken;
   const overrideAccounts = host.miAccountsOverride;
+  const store = getHostMiAccountsStore(host);
   const loadedAccounts =
-    overrideAccounts ?? (await getHostMiAccountsStore(host).load().catch(() => []));
-  adoptRecoveredPrimarySession(host, loadedAccounts);
+    overrideAccounts ?? (await store.load().catch(() => []));
   if (
     !isHostAttachedToActiveWindow(host) ||
     !isDualSourceEnabled(host) ||
@@ -1133,6 +1137,7 @@ export async function refreshDualSourceDevices(
   ) {
     return;
   }
+  adoptRecoveredPrimarySession(host, store, loadedAccounts);
   const accounts =
     loadedAccounts.length > 0
       ? loadedAccounts

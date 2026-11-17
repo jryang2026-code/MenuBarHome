@@ -345,6 +345,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
   private lastWroteIndexToStorage = false;
   private firstLoadDone = false;
   private accountsReadState: MiAccountsReadState = "complete";
+  private primaryConfirmed = false;
   /** Slot sessions from the last successful enumeration; used to clear leftovers on sign-out. */
   private enumeratedSessions: Readonly<Record<string, MiSession>> | null = null;
   private opQueue: Promise<unknown> = Promise.resolve();
@@ -381,6 +382,14 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
 
   /** `partial` drives a non-blocking notice: some credentials could not be read this load. */
   getAccountsReadState(): MiAccountsReadState { return this.accountsReadState;
+  }
+
+  /**
+   * True only when this load read `mi_session` successfully or promoted a secondary into it. A
+   * failed primary read can still yield a cached/secondary first account; settings must not adopt
+   * that session as the primary.
+   */
+  hasConfirmedPrimarySession(): boolean { return this.primaryConfirmed;
   }
 
   async load(): Promise<MiAccount[]> {
@@ -461,6 +470,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       await this.vault.savePrimaryMiSession(promoted.session);
       await this.vault.deleteMiAccountSlot(promoted.slotId).catch(() => {});
     }
+    this.primaryConfirmed = Boolean(primaryAccount) || (!primaryReadFailed && ordered.length > 0);
 
     if (scannedSlotIds !== null) this.enumeratedSessions = { ...loadedSlots };
     const unreadScannedSlots = scannedSlotIds !== null

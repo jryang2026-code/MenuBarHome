@@ -402,16 +402,38 @@ describe("Mi account index corruption (#228)", () => {
     const host: { settings: { miSession: MiSession | null; miCloudRegion: string } } = {
       settings: { miSession: null, miCloudRegion: "cn" },
     };
-    adoptRecoveredPrimarySession(host, accounts);
+    assert.equal(store.hasConfirmedPrimarySession(), true);
+    adoptRecoveredPrimarySession(host, store, accounts);
     assert.equal(host.settings.miSession?.userId, SESSION_SG.userId);
     assert.equal(host.settings.miCloudRegion, "sg");
 
     const existing: { settings: { miSession: MiSession | null; miCloudRegion: string } } = {
       settings: { miSession: SESSION_PRIMARY, miCloudRegion: "cn" },
     };
-    adoptRecoveredPrimarySession(existing, accounts);
+    adoptRecoveredPrimarySession(existing, store, accounts);
     assert.equal(existing.settings.miSession?.userId, SESSION_PRIMARY.userId);
     assert.equal(existing.settings.miCloudRegion, "cn");
+  });
+
+  it("does not adopt a secondary as primary when the primary read failed", async () => {
+    const storage = memoryStorage();
+    const { invoke } = makeCredentialFixture({
+      supportsSlotScan: true,
+      failOnGet: new Set(["mi_session"]),
+    });
+    await new CredentialVault(invoke).saveMiAccountSlot(makeMiAccount(SESSION_SG).slotId, SESSION_SG);
+    storage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, "{broken");
+
+    const store = new MiAccountsStore(new CredentialVault(invoke), storage);
+    const accounts = await store.load();
+    assert.deepEqual(accounts.map((account) => account.id), [miAccountId(SESSION_SG)]);
+    assert.equal(store.hasConfirmedPrimarySession(), false);
+
+    const host: { settings: { miSession: MiSession | null; miCloudRegion: string } } = {
+      settings: { miSession: null, miCloudRegion: "cn" },
+    };
+    adoptRecoveredPrimarySession(host, store, accounts);
+    assert.equal(host.settings.miSession, null, "an unread primary must not be replaced by a secondary");
   });
 
   it("leaves a fresh install untouched and reports a complete read", async () => {
