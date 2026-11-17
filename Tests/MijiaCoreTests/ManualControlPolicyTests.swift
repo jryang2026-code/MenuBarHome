@@ -223,4 +223,118 @@ struct ManualControlPolicyTests {
         let plugFacet = try #require(plugFacets.first)
         #expect(plugFacet.writesByDefault == false)
     }
+
+    @Test("A default-named wall switch still confirms, and only that dialog offers the rename hint (#104)")
+    func wallSwitchLightHintDoesNotChangeConfirmation() {
+        func makePlug(
+            id: String,
+            name: String,
+            model: String,
+            switchEntityId: String? = nil,
+            powerWritable: Bool = true
+        ) -> SmartDevice {
+            SmartDevice(
+                id: id,
+                name: name,
+                roomId: "hall",
+                roomName: "玄关",
+                model: model,
+                isOnline: true,
+                kind: .plug(PlugSpec(
+                    switchEntityId: switchEntityId ?? "switch.\(id)",
+                    isOn: false,
+                    powerWritable: powerWritable
+                ))
+            )
+        }
+
+        let hintMark = "加上「灯」"
+        let wallSwitches = [
+            makePlug(id: "left", name: "左键", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "middle", name: "中键", model: "lumi.switch.b2nacn02"),
+            makePlug(id: "right", name: "右键", model: "lemesh.switch.sw2f12"),
+            makePlug(id: "channel", name: "一路开关", model: "090615.switch.09dh1"),
+        ]
+        for dev in wallSwitches {
+            #expect(ManualControlPolicy.requiresConfirmation(.power(true), for: dev), "\(dev.name) still confirms")
+            #expect(!ManualControlPolicy.requiresConfirmation(.power(false), for: dev), "\(dev.name) off stays direct")
+            let prompt = ManualControlPolicy.confirmation(
+                DeviceIntent(targetId: dev.id, operation: .power(true)),
+                devices: [dev]
+            )
+            #expect(prompt?.hint?.contains(hintMark) == true, "\(dev.name) hint")
+            #expect(prompt?.message.contains(hintMark) == false, "hint stays out of the decision message")
+        }
+
+        let silent = [
+            makePlug(id: "socket", name: "书房插座", model: "cuco.plug.v3"),
+            makePlug(id: "heater-plug", name: "取暖器插座", model: "chuangmi.plug.212a01"),
+            makePlug(id: "named-switch", name: "一路开关", model: "cuco.plug.cp1"),
+            makePlug(id: "uv", name: "杀菌灯", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "bath", name: "浴霸取暖灯", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "button", name: "左键", model: "lumi.switch.b1nacn02", switchEntityId: "button.left"),
+            makePlug(id: "breaker", name: "左键", model: "lumi.switch.b1nacn02", powerWritable: false),
+            makePlug(id: "oven", name: "左键", model: "chunmi.oven.s1"),
+            makePlug(id: "already", name: "厨房灯", model: "lumi.switch.b1nacn02"),
+        ]
+        for dev in silent {
+            let on = ManualControlPolicy.requiresConfirmation(.power(true), for: dev)
+            let prompt = ManualControlPolicy.confirmation(
+                DeviceIntent(targetId: dev.id, operation: .power(true)),
+                devices: [dev]
+            )
+            #expect(prompt?.hint == nil, "\(dev.name) (\(dev.model)) has no rename hint")
+            #expect((prompt != nil) == on, "\(dev.name) confirmation follows the existing decision")
+        }
+
+        let heater = SmartDevice(
+            id: "heater", name: "电暖器", roomId: "study", roomName: "书房",
+            model: "xiaomi.heater.v1", isOnline: true,
+            kind: .climate(ClimateSpec(
+                entityId: "climate.heater", isOn: false, hvacMode: "off",
+                availableModes: ["off", "heat"], targetTemperature: 22, minTemp: 16, maxTemp: 30
+            ))
+        )
+        #expect(ManualControlPolicy.requiresConfirmation(.power(true), for: heater))
+        #expect(ManualControlPolicy.confirmation(
+            DeviceIntent(targetId: heater.id, operation: .power(true)),
+            devices: [heater]
+        )?.hint == nil)
+
+    }
+
+    @Test("Every language's hint recommends a name keyword that really stops the confirmation (#104)")
+    func wallSwitchLightHintKeywordIsRecognizedInEveryLanguage() {
+        let left = SmartDevice(
+            id: "left", name: "左键", roomId: "hall", roomName: "玄关",
+            model: "lumi.switch.b1nacn02", isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.left", isOn: false, powerWritable: true))
+        )
+        #expect(Set(AppLanguage.allCases).isSuperset(of: [.zhHans, .zhHant, .en]))
+        for language in AppLanguage.allCases {
+            L10n.$overrideLanguage.withValue(language) {
+                let hint = ManualControlPolicy.confirmation(
+                    DeviceIntent(targetId: left.id, operation: .power(true)),
+                    devices: [left]
+                )?.hint ?? ""
+                let keywords = Self.quotedKeywords(in: hint)
+                #expect(!keywords.isEmpty, "\(language.rawValue) hint names a keyword: \(hint)")
+                for keyword in keywords {
+                    var renamed = left
+                    renamed.name = "\(left.name) \(keyword)"
+                    #expect(renamed.isSwitchedLight, "\(language.rawValue) keyword \(keyword) is a light name")
+                    #expect(
+                        !ManualControlPolicy.requiresConfirmation(.power(true), for: renamed),
+                        "\(language.rawValue) keyword \(keyword) stops the confirmation"
+                    )
+                }
+            }
+        }
+    }
+
+    /// Text inside 「」 or “”, the marks the hint uses around the word to add.
+    private static func quotedKeywords(in text: String) -> [String] {
+        let pattern = /[「“]([^」”]+)[」”]/
+        return text.matches(of: pattern).map { String($0.output.1) }
+    }
 }

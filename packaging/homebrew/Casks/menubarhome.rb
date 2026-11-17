@@ -10,8 +10,8 @@
 # 「系统设置 → 隐私与安全性」里手动放行。本 cask 刻意不在安装后执行 xattr -cr / spctl 之类命令，
 # 也不使用 --no-quarantine：不替用户关掉隔离属性。公证完成后再考虑提交官方 homebrew/cask。
 cask "menubarhome" do
-  version "1.2.0"
-  sha256 "037bb024e24b4022ea1e372572b05f4c8507661ebe9dfd3df65fe8d2e563e4d7"
+  version "1.3.0"
+  sha256 "0f64016e26ce88faef87dc8afc233b3aa0f02b12510b9d0f9f516da3bea10e03"
 
   url "https://github.com/jryang2026-code/MenuBarHome/releases/download/v#{version}/MenuBarHome-#{version}.dmg"
   name "MenuBarHome"

@@ -6,12 +6,21 @@ public struct ManualControlConfirmation: Equatable, Sendable {
     public let message: String
     public let confirmTitle: String
     public let cancelTitle: String
+    /// Extra guidance under the decision text. Nil unless this prompt is the wall-switch case (#104).
+    public let hint: String?
 
-    public init(title: String, message: String, confirmTitle: String, cancelTitle: String) {
+    public init(
+        title: String,
+        message: String,
+        confirmTitle: String,
+        cancelTitle: String,
+        hint: String? = nil
+    ) {
         self.title = title
         self.message = message
         self.confirmTitle = confirmTitle
         self.cancelTitle = cancelTitle
+        self.hint = hint
     }
 }
 
@@ -50,7 +59,26 @@ public enum ManualControlPolicy {
                 actionLabel(intent.operation)
             ),
             confirmTitle: L10n.tr("确认执行", "Confirm"),
-            cancelTitle: L10n.tr("取消", "Cancel")
+            cancelTitle: L10n.tr("取消", "Cancel"),
+            hint: wallSwitchLightHint(for: device)
+        )
+    }
+
+    /// Copy for an existing confirmation. Appending 「灯」 reuses `isSwitchedLight`, so the
+    /// sentence is shown only when that rename would actually stop the dialog.
+    public static func wallSwitchLightHint(for device: SmartDevice) -> String? {
+        guard case .plug(let spec) = device.kind,
+              spec.powerWritable,
+              !spec.switchEntityId.hasPrefix("button.") else { return nil }
+        let model = device.model.lowercased()
+        guard model.contains(".switch."), !model.contains(".plug.") else { return nil }
+        guard IntentDeviceCategory(device) == .plug else { return nil }
+        var renamed = device
+        renamed.name = device.name + "灯"
+        guard renamed.isSwitchedLight else { return nil }
+        return L10n.tr(
+            "如果这个开关实际控制的是普通照明灯，可在米家改名或在这里设置别名，名称里加上「灯」，以后就不会再弹出这个确认。",
+            "If this switch actually controls an ordinary light, rename it in Xiaomi Home or set an alias here and include “light”. This confirmation will stop appearing."
         )
     }
 

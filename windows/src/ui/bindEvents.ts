@@ -67,6 +67,9 @@ function confirmHighRiskForHost(
       ? { confirm: { command, summary: explicit.summary, intent: explicit.intent } }
       : {}),
   });
+  const aliased = withAliases(host.layout, host.devices);
+  const device = aliased.find((item) => item.id === deviceId);
+  const hint = device ? ManualControlPolicy.wallSwitchLightHint(device) : null;
   host.replyBanner = {
     text:
       bannerOverride ??
@@ -74,6 +77,7 @@ function confirmHighRiskForHost(
         ? t("「{action}」属于高风险设备，确认后执行", { action: label })
         : t("「{action}」属于高风险设备，再点一次确认执行", { action: label })),
     source: t("需要确认"),
+    ...(hint ? { hint } : {}),
   };
   host.render();
   return false;
@@ -650,11 +654,13 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         ) {
           const chips = ModelActionPolicy.chips(intents, null, "confirm:bare", aliasedDevices, host.scenes, true);
           host.pendingSuggestions = delaySpec ? chips.map((chip) => withSuggestionDelay(chip, delaySpec)) : chips;
+          const hint = ManualControlPolicy.wallSwitchLightHintForIntents(intents, aliasedDevices);
           host.replyBanner = {
             text: t("「{action}」属于高风险设备，再点一次确认执行", {
               action: IntentReply.describe(intents, aliasedDevices, host.scenes).replace(/^已/, ""),
             }),
             source: t("需要确认"),
+            ...(hint ? { hint } : {}),
           };
           host.render();
           return;
