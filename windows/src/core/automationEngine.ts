@@ -850,6 +850,7 @@ function commandsForPowerIntent(
 
 interface ExecuteAutomationRuleOptions {
   readonly nowMs?: number;
+  readonly firedAtMs?: number;
   readonly scope?: string;
   readonly displayDevices?: readonly SmartDevice[];
   readonly onUndoRecorded?: (run: RecordedAutomationRun) => void;
@@ -865,6 +866,7 @@ export async function executeAutomationRule(
   options: ExecuteAutomationRuleOptions = {},
 ): Promise<RecordedAutomationRun | null> {
   const nowMs = options.nowMs ?? Date.now();
+  const firedAtMs = options.firedAtMs ?? nowMs;
   const scope = options.scope ?? "default";
   const startingRevision = host.sourceRevision ?? 0;
   const preference = host.settings?.interfaceLanguage;
@@ -971,7 +973,7 @@ export async function executeAutomationRule(
     steps,
     kindSnapshots,
     scope,
-    firedAtMs: nowMs,
+    firedAtMs,
     expiresAtMs,
     attemptedCount,
     succeededCount,
@@ -1236,6 +1238,8 @@ export class AutomationEngine {
         break;
     }
 
+    const confirmedLockRuleIds = new Set<string>();
+    let confirmedLockAtMs: number | null = null;
     const flushed = this.arbitrator.flush(nowMs);
     if (flushed) {
       const trigger = awayOutcomeTrigger(flushed.outcome);
@@ -1246,6 +1250,8 @@ export class AutomationEngine {
           && this.passesConditions(rule, lockedAtMs, this.context.wifiSSID, this.context.wifiAuthorized),
       );
       if (candidates.length > 0 && this.deduper.shouldFire(trigger, lockedAtMs)) {
+        confirmedLockAtMs = lockedAtMs;
+        for (const rule of candidates) confirmedLockRuleIds.add(rule.id);
         matchedRules.push(...candidates);
       }
     }
@@ -1268,7 +1274,11 @@ export class AutomationEngine {
     const runs: RecordedAutomationRun[] = [];
     for (const rule of uniqueRules) {
       if ((host.sourceRevision ?? 0) !== startingRevision) break;
-      const run = await executeAutomationRule(host, rule, { ...options, nowMs });
+      const run = await executeAutomationRule(host, rule, {
+        ...options,
+        nowMs,
+        ...(confirmedLockAtMs !== null && confirmedLockRuleIds.has(rule.id) ? { firedAtMs: confirmedLockAtMs } : {}),
+      });
       if (run) {
         runs.push(run);
       } else if (!options.rules && !rule.highRiskApproved && automationRuleHighRiskConfirmation(rule.action, options.displayDevices ?? host.devices) !== null) {
