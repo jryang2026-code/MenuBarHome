@@ -443,15 +443,32 @@ function launchChrome(chromeBin, userDataDir, options = {}) {
     const proc = spawn(chromeBin, flags, { stdio: ["ignore", "ignore", "pipe"] });
     if (typeof options.onSpawn === "function") options.onSpawn(proc);
     let stderrBuf = "";
-    const timer = setTimeout(() => reject(new Error(`Timed out waiting for DevTools port from ${chromeBin}: ${stderrBuf}`)), startupTimeoutMs);
-    proc.once("error", (err) => { clearTimeout(timer); reject(err); });
-    proc.stderr.setEncoding("utf8");
-    proc.stderr.on("data", (chunk) => {
-      stderrBuf += chunk;
-      const match = /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//.exec(stderrBuf);
-      if (match) { clearTimeout(timer); resolve({ proc, port: Number(match[1]) }); }
-    });
-    proc.once("exit", (code) => { clearTimeout(timer); reject(new Error(`Chrome exited early with code ${String(code)}: ${stderrBuf}`)); });
+    let settled = false;
+    let timer = null;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // Reap before reject. The exit after SIGTERM must not replace this error.
+      terminateChrome(proc, null).then(() => reject(err), () => reject(err));
+    };
+    const succeed = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    timer = setTimeout(() => fail(new Error(`Timed out waiting for DevTools port from ${chromeBin}: ${stderrBuf}`)), startupTimeoutMs);
+    proc.once("error", (err) => fail(err));
+    if (proc.stderr) {
+      proc.stderr.setEncoding("utf8");
+      proc.stderr.on("data", (chunk) => {
+        stderrBuf += chunk;
+        const match = /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//.exec(stderrBuf);
+        if (match) succeed({ proc, port: Number(match[1]) });
+      });
+    }
+    proc.once("exit", (code) => fail(new Error(`Chrome exited early with code ${String(code)}: ${stderrBuf}`)));
   });
 }
 
@@ -502,6 +519,22 @@ export async function runLaunchChromeStartupSelfTest() {
       throw new Error(`devtools child should stay up until the caller reaps it (port ${devtools.port}, alive ${devtoolsAlive})`);
     }
 
+    let earlyErr = null;
+    const earlyStarted = Date.now();
+    try {
+      await launchChrome(process.execPath, tmpDir, {
+        startupTimeoutMs: 2000,
+        args: ["-e", "process.exit(7)"],
+      });
+    } catch (err) {
+      earlyErr = err;
+    }
+    const earlyElapsed = Date.now() - earlyStarted;
+    if (!(earlyErr instanceof Error) || !earlyErr.message.includes("exited early with code 7")) {
+      throw new Error(`early exit should reject before the timeout, got ${earlyErr instanceof Error ? earlyErr.message : String(earlyErr)}`);
+    }
+    if (earlyElapsed > 1000) throw new Error(`early exit took ${earlyElapsed}ms`);
+
     let aliveMid = false;
     let midChecked = false;
     const started = Date.now();
@@ -531,7 +564,7 @@ export async function runLaunchChromeStartupSelfTest() {
     if (elapsed + 20 < startupTimeoutMs) failures.push(`rejected at ${elapsed}ms, before the ${startupTimeoutMs}ms startup timeout`);
     if (!midChecked || !aliveMid) failures.push(`child pid ${silentPid} was not alive ${midDelayMs}ms after spawn`);
     if (aliveAfter) failures.push(`child pid ${silentPid} was still alive after launchChrome rejected`);
-    const report = `devtools child stayed alive (port 9222); silent child ${silentPid} alive at ${midDelayMs}ms: ${aliveMid}; rejected at ${elapsed}ms (timeout ${startupTimeoutMs}ms); alive after reject: ${aliveAfter}`;
+    const report = `devtools child stayed alive (port 9222); early exit ${earlyElapsed}ms; silent child ${silentPid} alive at ${midDelayMs}ms: ${aliveMid}; rejected at ${elapsed}ms (timeout ${startupTimeoutMs}ms); alive after reject: ${aliveAfter}`;
     if (failures.length > 0) throw new Error(`${failures.join("; ")}\n${report}`);
     return report;
   } finally {
