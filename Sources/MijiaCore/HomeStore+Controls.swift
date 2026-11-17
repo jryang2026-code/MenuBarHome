@@ -873,12 +873,20 @@ extension HomeStore {
                 // direction would then confirm travel the wrong way in `coverTravelTakesOver`.
                 let start = spec.reportedPositionPercent ?? spec.positionPercent
                 spec.positionPercent = displayed
-                if let start, displayed > start {
-                    spec.motion = .opening
-                    spec.motionIsInferred = false
-                } else if let start, displayed < start {
-                    spec.motion = .closing
-                    spec.motionIsInferred = false
+                if let start {
+                    if displayed > start {
+                        spec.motion = .opening
+                        spec.motionIsInferred = false
+                    } else if displayed < start {
+                        spec.motion = .closing
+                        spec.motionIsInferred = false
+                    } else {
+                        // The motor is already where the drag points, so no travel remains; a
+                        // left-over direction would make `coverTravelTakesOver` confirm the
+                        // previous command's report against this target.
+                        spec.motion = .stopped
+                        spec.motionIsInferred = false
+                    }
                 }
                 device.kind = .cover(spec)
             }

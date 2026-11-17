@@ -165,6 +165,36 @@ struct CoverDragTakeoverTests {
         #expect(store.optimisticLockUntil[id] != nil)
     }
 
+    @Test("A drag back to the reported position does not keep the old travel direction")
+    @MainActor
+    func dragBackToReportedPositionStops() async throws {
+        let (store, mock, gate) = try await makeStore()
+        let id = Self.curtain.id
+
+        store.setCoverPosition(id, percent: 50)
+        await waitUntil { gate.waiting == 1 }
+        gate.release()
+        await waitUntil { await mock.executedCommands.count == 1 }
+        await waitUntil { hasSucceededPatch(store, id) }
+
+        // The motor never left 0%, so dragging back to 0% leaves nothing to travel.
+        store.setCoverPosition(id, percent: 0)
+        await waitUntil { gate.waiting == 1 }
+        let held = try #require(store.devices.first?.coverSpec)
+        #expect(held.positionPercent == 0)
+        #expect(held.motion == .stopped, "a target the motor already reports has no direction")
+
+        // An opening report from the first command must not confirm the 0% target.
+        let beforeReport = store.snapshotGeneration
+        await mock.updateSnapshot(SynthesizedHome(devices: [
+            Self.curtain(target: 50, reported: 5, motion: .opening)
+        ]))
+        await waitUntil { store.snapshotGeneration > beforeReport }
+        let shown = try #require(store.devices.first?.coverSpec)
+        #expect(shown.positionPercent == 0)
+        #expect(store.optimisticLockUntil[id] != nil)
+    }
+
     @Test("A travel report still takes the card over when no drag is waiting")
     @MainActor
     func reportTakesOverWithoutPendingDrag() async throws {
