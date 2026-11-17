@@ -1457,6 +1457,7 @@ struct CameraLiveAudioStatusView: View {
                 CameraHUDIconButton(
                     symbol: "speaker.slash",
                     isActive: false,
+                    accessibilityLabel: L10n.tr("仅画面", "Video only"),
                     help: videoOnlyHelp,
                     action: onExplainVideoOnly
                 )
@@ -1468,10 +1469,14 @@ struct CameraLiveAudioStatusView: View {
                 .help(videoOnlyHelp)
             }
         case .audio(let isMuted):
+            let muteLabel = isMuted
+                ? L10n.tr("开启声音", "Unmute audio")
+                : L10n.tr("关闭声音", "Mute audio")
             CameraHUDIconButton(
                 symbol: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
                 isActive: !isMuted,
-                help: isMuted ? L10n.tr("开启声音", "Unmute audio") : L10n.tr("关闭声音", "Mute audio"),
+                accessibilityLabel: muteLabel,
+                help: muteLabel,
                 action: onToggleMute
             )
         }
@@ -1480,9 +1485,9 @@ struct CameraLiveAudioStatusView: View {
     private var videoOnlyBadge: some View {
         HStack(spacing: 3) {
             Image(systemName: "speaker.slash")
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
             Text(L10n.tr("仅画面", "Video only"))
-                .font(.system(size: 9.5, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .lineLimit(1)
         }
         .foregroundStyle(.white.opacity(0.72))
@@ -1523,6 +1528,7 @@ struct CameraHUDGlyph: View {
 private struct CameraHUDIconButton: View {
     let symbol: String
     let isActive: Bool
+    let accessibilityLabel: String
     let help: String
     let action: () -> Void
 
@@ -1532,7 +1538,38 @@ private struct CameraHUDIconButton: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(Text(accessibilityLabel))
         .help(help)
+    }
+}
+
+/// A still ring stands in for the spinner when Reduce Motion is on. An indeterminate
+/// `ProgressView` advances with the clock, so a snapshot of a connecting stream would differ
+/// on every capture.
+private struct CameraStreamWait: View {
+    let text: String
+    var spacing: CGFloat = 8
+    var weight: Font.Weight = .regular
+    var regularControl = false
+    var reduceMotion: Bool
+
+    var body: some View {
+        VStack(spacing: spacing) {
+            if reduceMotion {
+                Circle()
+                    .strokeBorder(Color.white.opacity(0.55), lineWidth: 2)
+                    .frame(width: 16, height: 16)
+                    .accessibilityHidden(true)
+            } else if regularControl {
+                ProgressView()
+                    .controlSize(.regular)
+            } else {
+                ProgressView()
+            }
+            Text(text)
+                .font(.system(size: 12, weight: weight))
+                .foregroundStyle(.white.opacity(0.75))
+        }
     }
 }
 
@@ -1660,7 +1697,7 @@ struct CameraLivePanelView: View {
 
             if controller.isExpandedSize, let room = device?.roomName, !room.isEmpty {
                 Text(L10n.displayRoomName(room))
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.72))
                     .lineLimit(1)
                     .padding(.horizontal, 6)
@@ -1685,6 +1722,9 @@ struct CameraLivePanelView: View {
             CameraHUDIconButton(
                 symbol: controller.isPinnedOnTop ? "pin.fill" : "pin.slash",
                 isActive: controller.isPinnedOnTop,
+                accessibilityLabel: controller.isPinnedOnTop
+                    ? L10n.tr("取消置顶", "Unpin")
+                    : L10n.tr("置顶小窗", "Pin window"),
                 help: controller.isPinnedOnTop
                     ? L10n.tr("已置顶（全屏看电视时保持最前）", "Pinned on top (stays above full-screen video)")
                     : L10n.tr("点击置顶小窗", "Pin window on top")
@@ -1695,6 +1735,7 @@ struct CameraLivePanelView: View {
             CameraHUDIconButton(
                 symbol: "rotate.right",
                 isActive: controller.videoRotation(for: device?.id) != 0,
+                accessibilityLabel: L10n.tr("旋转画面", "Rotate picture"),
                 help: controller.videoRotation(for: device?.id) == 0
                     ? L10n.tr("顺时针旋转画面 90°（四次恢复）", "Rotate picture 90° clockwise (four clicks restore)")
                     : L10n.tr(
@@ -1710,6 +1751,9 @@ struct CameraLivePanelView: View {
                     ? "arrow.down.right.and.arrow.up.left"
                     : "arrow.up.left.and.arrow.down.right",
                 isActive: controller.isMaximized,
+                accessibilityLabel: controller.isMaximized
+                    ? L10n.tr("恢复窗口大小", "Restore window size")
+                    : L10n.tr("最大化画面窗口", "Maximize camera window"),
                 help: controller.isMaximized
                     ? L10n.tr("恢复窗口大小", "Restore window size")
                     : L10n.tr("最大化画面窗口", "Maximize camera window")
@@ -1722,6 +1766,7 @@ struct CameraLivePanelView: View {
             CameraHUDIconButton(
                 symbol: "xmark",
                 isActive: false,
+                accessibilityLabel: L10n.tr("关闭摄像头小窗", "Close camera window"),
                 help: L10n.tr("关闭摄像头小窗", "Close camera window")
             ) {
                 controller.closePanel()
@@ -1789,6 +1834,7 @@ struct CameraLivePanelView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .accessibilityLabel(Text(L10n.tr("画面操作", "Picture controls")))
         .help(L10n.tr("画面操作", "Picture controls"))
     }
 
@@ -1919,13 +1965,13 @@ struct CameraLivePanelView: View {
             }
             .padding(20)
         } else if controller.isLoadingStream {
-            VStack(spacing: 10) {
-                ProgressView()
-                    .controlSize(.regular)
-                Text(L10n.tr("正在连接摄像机实时流…", "Connecting to live camera stream…"))
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.75))
-            }
+            CameraStreamWait(
+                text: L10n.tr("正在连接摄像机实时流…", "Connecting to live camera stream…"),
+                spacing: 10,
+                weight: .medium,
+                regularControl: true,
+                reduceMotion: reduceMotion
+            )
         } else if let source = controller.streamSource {
             switch source {
             case .hls(let url):
@@ -1941,12 +1987,10 @@ struct CameraLivePanelView: View {
                         }
                     }
                     if !controller.hasLiveVideoFrame {
-                        VStack(spacing: 8) {
-                            ProgressView()
-                            Text(L10n.tr("正在建立 P2P 加密通道并解码实时画面…", "Establishing P2P encrypted channel & decoding live video…"))
-                                .font(.system(size: 12))
-                                .foregroundStyle(.white.opacity(0.75))
-                        }
+                        CameraStreamWait(
+                            text: L10n.tr("正在建立 P2P 加密通道并解码实时画面…", "Establishing P2P encrypted channel & decoding live video…"),
+                            reduceMotion: reduceMotion
+                        )
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1959,12 +2003,10 @@ struct CameraLivePanelView: View {
                             .allowsHitTesting(false)
                     }
                 } else {
-                    VStack(spacing: 8) {
-                        ProgressView()
-                        Text(L10n.tr("正在建立 P2P 加密通道并解码实时画面…", "Establishing P2P encrypted channel & decoding live video…"))
-                            .font(.system(size: 12))
-                            .foregroundStyle(.white.opacity(0.75))
-                    }
+                    CameraStreamWait(
+                        text: L10n.tr("正在建立 P2P 加密通道并解码实时画面…", "Establishing P2P encrypted channel & decoding live video…"),
+                        reduceMotion: reduceMotion
+                    )
                 }
             case .snapshot:
                 if let img = controller.snapshotImage {
@@ -1975,12 +2017,10 @@ struct CameraLivePanelView: View {
                             .allowsHitTesting(false)
                     }
                 } else {
-                    VStack(spacing: 8) {
-                        ProgressView()
-                        Text(L10n.tr("正在拉取实时抓拍帧…", "Fetching live snapshot frames…"))
-                            .font(.system(size: 12))
-                            .foregroundStyle(.white.opacity(0.75))
-                    }
+                    CameraStreamWait(
+                        text: L10n.tr("正在拉取实时抓拍帧…", "Fetching live snapshot frames…"),
+                        reduceMotion: reduceMotion
+                    )
                 }
             case .demo:
                 rotatedMedia {

@@ -821,7 +821,7 @@ export function renderSensorHistorySection(
             <strong data-sensor-readout-value style="font-size:15px;font-weight:650;color:var(--text-primary);">${escapeHtml(defaultValueLabel)}</strong>
             ${comfortInfo ? `<span class="cc-comfort is-${escapeHtml(comfortInfo.level)}" data-sensor-comfort-hint>${escapeHtml(comfortInfo.label)}</span>` : ""}
           </div>
-          <span data-sensor-source-badge style="font-size:10.5px;color:var(--text-tertiary);white-space:nowrap;">${escapeHtml(sourceLabel)}</span>
+          <span data-sensor-source-badge style="font-size:12px;color:var(--text-primary);white-space:nowrap;">${escapeHtml(sourceLabel)}</span>
         </div>
         <div data-sensor-readout-sub style="font-size:11px;color:var(--text-secondary);line-height:1.35;">${escapeHtml(defaultSubLabel)}</div>
       </div>
