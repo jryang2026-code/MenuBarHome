@@ -890,14 +890,13 @@ export class MenuMijiaWindowsApp {
     });
     if (eligibleSteps.length === 0 && action.steps.length > 0) return;
     const autoRunId = getAutomationUndoRunId(action);
-    const confirmation =
-      ownerBatch !== null || autoRunId !== null || action.steps.length > 1
-        ? partitionUndoStepsByHighRiskConfirmation(this, eligibleSteps, {
-            isArmed: this.pendingHighRiskUndoAction === action,
-            arm: () => { this.pendingHighRiskUndoAction = action; },
-            disarm: () => { if (this.pendingHighRiskUndoAction === action) this.pendingHighRiskUndoAction = null; },
-          })
-        : { approvedSteps: eligibleSteps, skippedHighRiskSteps: [] as UndoStep[], abortedAllHighRisk: false };
+    // Every undo goes through the hazard gate, a one-device restore included: a facet or MIoT
+    // restore can turn a heater's auxiliary switch back on exactly like a batch step can.
+    const confirmation = partitionUndoStepsByHighRiskConfirmation(this, eligibleSteps, {
+      isArmed: this.pendingHighRiskUndoAction === action,
+      arm: () => { this.pendingHighRiskUndoAction = action; },
+      disarm: () => { if (this.pendingHighRiskUndoAction === action) this.pendingHighRiskUndoAction = null; },
+    });
     const defaultConfirmText = tr3("需要确认后才能恢复高风险设备", "需要確認後才能恢復高風險設備", "Confirm before restoring high-risk devices", undefined, this.settings.interfaceLanguage);
     if (confirmation.abortedAllHighRisk) {
       if (this.lastUndoAction === null) {

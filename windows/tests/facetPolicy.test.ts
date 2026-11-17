@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ManualControlPolicy, ModelActionPolicy } from "../src/core/assistant/actionPolicy.js";
+import { doesUndoStepActivateHighRiskDevice } from "../src/ui/activityStackView.js";
 import { deviceCategory } from "../src/core/assistant/deviceCategory.js";
 import { IntentValidator } from "../src/core/assistant/intent.js";
 import { type ManualControlRules } from "../src/core/miCloud/facets.js";
@@ -562,6 +563,74 @@ describe("assistant device category heater rule (#143)", () => {
         [plainWaterHeater],
       ),
       false,
+    );
+  });
+
+  it("judges a facet undo restore by the facet row, not only the device-level power rule", () => {
+    const heaterDevice = heater();
+    const auxSwitch = facet({
+      id: "3.1",
+      kind: "toggle",
+      name: "on",
+      title: "辅助加热",
+      serviceName: "auxiliary",
+      value: false,
+      writesByDefault: true,
+      target: { kind: "property", entityId: "miot:heater:3", piid: 1 },
+    });
+    const restoreOn = {
+      deviceId: heaterDevice.id,
+      commands: [{ kind: "setMiotProperty", entityId: "miot:heater:3", piid: 1, value: true } as const],
+    };
+    assert.equal(
+      doesUndoStepActivateHighRiskDevice(restoreOn, [heaterDevice], undefined, { [heaterDevice.id]: [auxSwitch] }),
+      true,
+      "an auxiliary switch restored on heats again",
+    );
+    assert.equal(
+      doesUndoStepActivateHighRiskDevice(
+        { ...restoreOn, commands: [{ kind: "setMiotProperty", entityId: "miot:heater:3", piid: 1, value: false }] },
+        [heaterDevice],
+        undefined,
+        { [heaterDevice.id]: [auxSwitch] },
+      ),
+      false,
+      "restoring the off state makes the home safer",
+    );
+
+    const lamp = device(
+      {
+        kind: "light",
+        entityId: "light.hall",
+        isOn: true,
+        brightnessPercent: 40,
+        colorTempKelvin: null,
+        minKelvin: 2000,
+        maxKelvin: 6500,
+        currentEffect: null,
+        availableEffects: [],
+      },
+      { id: "did_lamp", name: "走廊灯", model: "yeelink.light.lamp4" },
+    );
+    assert.equal(
+      doesUndoStepActivateHighRiskDevice(
+        { deviceId: lamp.id, commands: [{ kind: "setMiotProperty", entityId: "miot:lamp:9", piid: 5, value: 1 }] },
+        [lamp],
+        undefined,
+        {},
+      ),
+      false,
+      "a light carries no hazard",
+    );
+    assert.equal(
+      doesUndoStepActivateHighRiskDevice(
+        { deviceId: heaterDevice.id, commands: [{ kind: "setMiotProperty", entityId: "miot:heater:9", piid: 5, value: 1 }] },
+        [heaterDevice],
+        undefined,
+        {},
+      ),
+      true,
+      "with no facet row a high-risk card is treated as one the property could turn back on",
     );
   });
 
