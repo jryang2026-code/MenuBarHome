@@ -8,6 +8,7 @@ import {
   AutomationEngine,
   AutomationRuleStore,
   createAutomationRule,
+  WINDOWS_SUPPORTED_TRIGGERS,
   type DoorbellCoordinatorScheduler,
 } from "../src/core/automationEngine.js";
 import { getScopedEnergyHistory } from "../src/core/energyHistory.js";
@@ -246,11 +247,11 @@ afterEach(async () => {
 });
 
 describe("Wave 4 · PC Context Automation Rule Editor UI & Live Runtime", () => {
-  it("creates rules across triggers, Wi-Fi SSID conditions, quickAction/devices/scene actions, persists to AutomationRuleStore, and executes immediately", async () => {
+  it("creates rules across supported triggers, gates the Wi-Fi editor, persists to AutomationRuleStore, and executes immediately", async () => {
     const app = createCloudApp();
     const studyLight = makeLight("light.study", "书房台灯", true);
     const ambientLight = makeLight("light.ambient", "氛围灯带", false);
-    const tempSensor = makeSensor({ id: "sensor.study", name: "书房传感器", temperature: 31 });
+    const tempSensor = makeSensor({ id: "sensor.study", name: "书房传感器", temperature: 25 });
     const movieScene: HomeScene = { id: "scene.meeting", name: "会议专注场景", entityId: "scene.meeting_focus" };
     app.devices = [studyLight, ambientLight, tempSensor];
     app.scenes = [movieScene];
@@ -270,27 +271,23 @@ describe("Wave 4 · PC Context Automation Rule Editor UI & Live Runtime", () => 
     app.openSettingsSheet("system");
     assert.ok(document.querySelector("#settings-auto-rules-empty"));
 
-    selectValue("#settings-auto-trigger", "away");
-    selectValue("#settings-auto-wifi-kind", "inAny");
-    assert.equal(element<HTMLButtonElement>("#btn-add-auto-rule").disabled, true);
-    assert.ok(document.querySelector("#settings-auto-wifi-hint"));
+    // 触发器下拉只提供有生产事件来源的选项；Wi-Fi 条件编辑器禁用并附说明。
+    const triggerOptions = [...element<HTMLSelectElement>("#settings-auto-trigger").options].map((o) => o.value);
+    assert.deepEqual(triggerOptions, [...WINDOWS_SUPPORTED_TRIGGERS]);
+    const wifiKind = element<HTMLSelectElement>("#settings-auto-wifi-kind");
+    assert.equal(wifiKind.disabled, true);
+    assert.match(element("#settings-auto-wifi-unsupported-hint").textContent ?? "", /暂不支持按 Wi-Fi 判断/);
 
-    typeInput("#settings-auto-wifi-ssids", "Home_5G, Study_WiFi");
+    selectValue("#settings-auto-trigger", "away");
     assert.equal(element<HTMLButtonElement>("#btn-add-auto-rule").disabled, false);
     await click("#btn-add-auto-rule");
 
     selectValue("#settings-auto-trigger", "back");
-    selectValue("#settings-auto-wifi-kind", "any");
     selectValue("#settings-auto-action-kind", "devices");
     selectValue("#settings-auto-devices-power", "on");
     assert.equal(element<HTMLButtonElement>("#btn-add-auto-rule").disabled, true);
     toggleCheck('[data-auto-target-device="light.ambient"]', true);
     assert.equal(element<HTMLButtonElement>("#btn-add-auto-rule").disabled, false);
-    await click("#btn-add-auto-rule");
-
-    selectValue("#settings-auto-trigger", "cameraInUse");
-    selectValue("#settings-auto-action-kind", "scene");
-    selectValue("#settings-auto-scene-id", "scene.meeting");
     await click("#btn-add-auto-rule");
 
     selectValue("#settings-auto-trigger", "sensorThreshold");
@@ -302,32 +299,44 @@ describe("Wave 4 · PC Context Automation Rule Editor UI & Live Runtime", () => 
     selectValue("#settings-auto-quick-action", "softNightLight");
     await click("#btn-add-auto-rule");
 
+    selectValue("#settings-auto-trigger", "scheduledTime");
+    selectValue("#settings-auto-schedule-hour", "8");
+    selectValue("#settings-auto-schedule-minute", "15");
+    selectValue("#settings-auto-action-kind", "scene");
+    selectValue("#settings-auto-scene-id", "scene.meeting");
+    await click("#btn-add-auto-rule");
+
     const store = new AutomationRuleStore();
     const savedRules = store.load();
     assert.equal(savedRules.length, 4);
-    assert.deepEqual(savedRules[0]?.conditions.wifi, { kind: "inAny", ssids: ["Home_5G", "Study_WiFi"] });
+    assert.equal(savedRules[0]?.trigger, "away");
+    assert.deepEqual(savedRules[0]?.conditions.wifi, { kind: "any" });
     assert.deepEqual(savedRules[1]?.action, { kind: "devices", deviceIds: ["light.ambient"], isOn: true });
-    assert.deepEqual(savedRules[2]?.action, { kind: "scene", sceneId: "scene.meeting" });
-    assert.equal(savedRules[3]?.triggerOptions.sensorCondition?.threshold, 29);
+    assert.equal(savedRules[2]?.triggerOptions.sensorCondition?.threshold, 29);
+    assert.deepEqual(savedRules[3]?.action, { kind: "scene", sceneId: "scene.meeting" });
+    assert.deepEqual(savedRules[3]?.triggerOptions.scheduledTime, { hour: 8, minute: 15 });
     assert.equal(document.querySelectorAll("[data-auto-rule-row]").length, 4);
+    assert.equal(document.querySelectorAll("[data-auto-rule-unsupported]").length, 0);
 
     const t0 = new Date(2026, 10, 14, 14, 0, 0).getTime();
-    await dispatchSystemContextEvent(app, { kind: "wifiChanged", ssid: "CoffeeShop" }, t0);
     await dispatchSystemContextEvent(app, { kind: "lockChanged", isLocked: true }, t0 + 100);
-    await dispatchSystemContextEvent(app, { kind: "tick" }, t0 + 2500);
-    assert.equal(dispatched.filter((c) => c.kind === "setLightPower" && !c.isOn).length, 0);
+    assert.equal(dispatched.length, 0); // 首次锁屏事件只建立基线。
 
     await dispatchSystemContextEvent(app, { kind: "lockChanged", isLocked: false }, t0 + 3000);
     assert.ok(dispatched.some((c) => c.kind === "setLightPower" && c.entityId === "light.light.ambient" && c.isOn));
 
     dispatched.length = 0;
-    await dispatchSystemContextEvent(app, { kind: "wifiChanged", ssid: "Home_5G" }, t0 + 70_000);
     await dispatchSystemContextEvent(app, { kind: "lockChanged", isLocked: true }, t0 + 70_100);
-    await dispatchSystemContextEvent(app, { kind: "tick" }, t0 + 72_500);
     assert.ok(dispatched.some((c) => c.kind === "setLightPower" && c.entityId === "light.light.study" && !c.isOn));
 
+    // 传感器越过阈值（边沿）后，tick 派发评估 sensorThreshold 规则。
+    if (tempSensor.kind.kind === "sensor") tempSensor.kind = { ...tempSensor.kind, temperature: 31 };
     dispatched.length = 0;
-    await dispatchSystemContextEvent(app, { kind: "mediaCaptureChanged", cameraInUse: true }, t0 + 140_000);
+    await dispatchSystemContextEvent(app, { kind: "tick" }, t0 + 72_000);
+    assert.ok(dispatched.some((c) => c.kind === "setLightBrightness" && c.entityId === "light.light.study" && c.percent === 15));
+
+    dispatched.length = 0;
+    await dispatchSystemContextEvent(app, { kind: "tick" }, new Date(2026, 10, 14, 8, 15, 10).getTime());
     assert.deepEqual(dispatched, [{ kind: "activateScene", entityId: "scene.meeting_focus" }]);
   });
 
@@ -735,7 +744,7 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
     assert.equal(highlighted.getAttribute("data-settings-highlighted"), "doorbellAutoView");
   });
 
-  it("supports scheduled weekday triggers, sensor alarm triggers, battery thresholds, XSS escaping, and closes cleanly without false unsaved prompts", async () => {
+  it("supports scheduled weekday triggers, sensor alarm triggers, XSS escaping, and closes cleanly without false unsaved prompts", async () => {
     const app = createCloudApp();
     const xssLight = makeLight("light.xss", "<img src=x onerror=alert(1)>主灯", true, "<b>客厅</b>");
     const leakSensor = makeSensor({ id: "sensor.leak", name: "厨房水浸传感器" });
@@ -753,8 +762,9 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
     selectValue("#settings-auto-schedule-minute", "15");
     toggleCheck('[data-auto-weekday="1"]', true);
     toggleCheck('[data-auto-weekday="3"]', true);
-    selectValue("#settings-auto-wifi-kind", "notIn");
-    typeInput("#settings-auto-wifi-ssids", "<script>bad</script>Office_Guest");
+    // Wi-Fi 条件编辑器在 Windows 上禁用：不渲染 SSID 输入，也不能切到受限选项。
+    assert.equal(element<HTMLSelectElement>("#settings-auto-wifi-kind").disabled, true);
+    assert.equal(document.querySelector("#settings-auto-wifi-ssids"), null);
     selectValue("#settings-auto-action-kind", "devices");
     toggleCheck('[data-auto-target-device="light.xss"]', true);
     await click("#btn-add-auto-rule");
@@ -763,28 +773,23 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
     selectValue("#settings-auto-sensor-device", "sensor.leak");
     selectValue("#settings-auto-sensor-metric", "alarm");
     selectValue("#settings-auto-sensor-alert-kind", "leak");
-    selectValue("#settings-auto-wifi-kind", "any");
     selectValue("#settings-auto-action-kind", "quickAction");
     selectValue("#settings-auto-quick-action", "lightsOff");
     await click("#btn-add-auto-rule");
 
-    selectValue("#settings-auto-trigger", "batteryBelowThreshold");
-    typeInput("#settings-auto-battery-threshold", "18");
-    await click("#btn-add-auto-rule");
-
     const rules = new AutomationRuleStore().load();
-    assert.equal(rules.length, 3);
+    assert.equal(rules.length, 2);
     assert.deepEqual(rules[0]?.triggerOptions.scheduledTime, { hour: 8, minute: 15, weekdays: [1, 3] });
+    assert.deepEqual(rules[0]?.conditions.wifi, { kind: "any" });
     assert.deepEqual(rules[1]?.triggerOptions.sensorCondition, {
       deviceId: "sensor.leak",
       metric: "alarm",
       alertKind: "leak",
     });
-    assert.equal(rules[2]?.triggerOptions.batteryThresholdPercent, 18);
 
     const rulesList = element("#settings-auto-rules-list");
     assert.equal(rulesList.querySelectorAll("script, img").length, 0);
-    assert.match(rulesList.textContent ?? "", /Office_Guest/);
+    assert.equal(document.querySelectorAll("[data-auto-rule-unsupported]").length, 0);
 
     await click("#btn-generate-copy-health-report");
     assert.ok(document.querySelector("#settings-health-report-preview"));
@@ -793,6 +798,85 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
 
     await click("#btn-close-settings");
     assert.equal(app.activeSheet, "none");
+  });
+
+  it("flags saved legacy rules with unsupported triggers or Wi-Fi conditions without touching their stored data", async () => {
+    const legacyRules = [
+      {
+        id: "legacy-cam",
+        isEnabled: true,
+        trigger: "cameraInUse",
+        action: { kind: "quickAction", quickAction: "lightsOff" },
+        triggerOptions: { batteryThresholdPercent: 20, lateNightStartHour: 23, lateNightEndHour: 6, calendarLeadMinutes: 1 },
+        conditions: { wifi: { kind: "any" }, timeWindow: { isEnabled: false, startMinute: 1320, endMinute: 420 } },
+      },
+      {
+        id: "legacy-wifi",
+        isEnabled: true,
+        trigger: "away",
+        action: { kind: "quickAction", quickAction: "softNightLight" },
+        triggerOptions: { batteryThresholdPercent: 20, lateNightStartHour: 23, lateNightEndHour: 6, calendarLeadMinutes: 1 },
+        conditions: {
+          wifi: { kind: "notIn", ssids: ["Office_Guest", "Home_5G"] },
+          timeWindow: { isEnabled: false, startMinute: 1320, endMinute: 420 },
+        },
+      },
+      {
+        id: "legacy-battery",
+        isEnabled: true,
+        trigger: "batteryBelowThreshold",
+        action: { kind: "quickAction", quickAction: "climateSleepOff" },
+        triggerOptions: { batteryThresholdPercent: 18, lateNightStartHour: 23, lateNightEndHour: 6, calendarLeadMinutes: 1 },
+        conditions: { wifi: { kind: "any" }, timeWindow: { isEnabled: false, startMinute: 1320, endMinute: 420 } },
+      },
+    ];
+    localStorage.setItem(AutomationRuleStore.storageKey, JSON.stringify(legacyRules));
+
+    const app = createCloudApp();
+    const lamp = makeLight("light.desk", "工作台灯", true);
+    app.devices = [lamp];
+    const dispatched: DeviceCommand[] = [];
+    app.applyCommand = async (cmd) => {
+      dispatched.push(cmd);
+      return true;
+    };
+
+    app.openSettingsSheet("system");
+    assert.equal(document.querySelectorAll("[data-auto-rule-row]").length, 3);
+    assert.equal(document.querySelectorAll("[data-auto-rule-unsupported]").length, 3);
+    assert.match(document.body.textContent ?? "", /Windows 暂不支持，不会触发/);
+
+    // 旧规则原值照常展示，不被静默改写。
+    const wifiRowText = element('[data-auto-rule-unsupported="legacy-wifi"]').closest("[data-auto-rule-row]")?.textContent ?? "";
+    assert.match(wifiRowText, /Office_Guest, Home_5G/);
+    assert.match(wifiRowText, /排除 Wi-Fi: Office_Guest, Home_5G/);
+    const batteryRowText = element('[data-auto-rule-unsupported="legacy-battery"]').closest("[data-auto-rule-row]")?.textContent ?? "";
+    assert.match(batteryRowText, /电量 < 18%/);
+
+    // 开关切换只写 isEnabled，其余字段保持字节级一致。
+    const before = JSON.parse(localStorage.getItem(AutomationRuleStore.storageKey) ?? "[]") as Array<Record<string, unknown>>;
+    toggleCheck('[data-auto-rule-toggle="legacy-cam"]', false);
+    const afterDisable = JSON.parse(localStorage.getItem(AutomationRuleStore.storageKey) ?? "[]") as Array<Record<string, unknown>>;
+    assert.equal(afterDisable.length, 3);
+    assert.equal(afterDisable[0]?.isEnabled, false);
+    const project = (r: Record<string, unknown>): Record<string, unknown> => ({
+      id: r.id,
+      trigger: r.trigger,
+      action: r.action,
+      triggerOptions: r.triggerOptions,
+      conditions: r.conditions,
+    });
+    assert.deepEqual(afterDisable.map(project), before.map(project));
+
+    toggleCheck('[data-auto-rule-toggle="legacy-cam"]', true);
+    const afterEnable = JSON.parse(localStorage.getItem(AutomationRuleStore.storageKey) ?? "[]") as Array<Record<string, unknown>>;
+    assert.equal(afterEnable[0]?.isEnabled, true);
+    assert.deepEqual(afterEnable.map(project), before.map(project));
+
+    // 这些规则不会因 Windows 生产事件（lockChanged / tick）触发，即使处于启用状态。
+    await dispatchSystemContextEvent(app, { kind: "lockChanged", isLocked: true }, new Date(2026, 10, 14, 14, 0, 0).getTime());
+    await dispatchSystemContextEvent(app, { kind: "tick" }, new Date(2026, 10, 14, 14, 2, 30).getTime());
+    assert.equal(dispatched.length, 0);
   });
 });
 
