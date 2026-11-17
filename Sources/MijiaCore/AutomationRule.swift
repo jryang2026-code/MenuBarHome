@@ -566,12 +566,6 @@ public struct AutomationTimeWindow: Codable, Equatable, Sendable {
         return minute >= startMinute || minute < endMinute
     }
 
-    /// Log-friendly verdict, kept ASCII so it is greppable next to the other automation logs.
-    public var logToken: String {
-        guard isEnabled else { return "any" }
-        return "window"
-    }
-
     /// `22:00–07:00`, locale-neutral so the list reads the same in both languages.
     public var summary: String {
         Self.clock(startMinute) + "–" + Self.clock(endMinute)
@@ -630,8 +624,7 @@ public struct AutomationConditions: Codable, Equatable, Sendable {
         wifi.evaluate(wifiSSID: wifiSSID, isAuthorized: isAuthorized)
     }
 
-    /// Time windows are evaluated against the moment the trigger fired, not against "now" later in
-    /// the pipeline: a sleep trigger held for two seconds must still be judged by its own timestamp.
+    /// Judged at the dispatch time the engine passes in, so tests can inject a fixed clock.
     public func isWithinTimeWindow(at date: Date, calendar: Calendar = .current) -> Bool {
         timeWindow.contains(date, calendar: calendar)
     }

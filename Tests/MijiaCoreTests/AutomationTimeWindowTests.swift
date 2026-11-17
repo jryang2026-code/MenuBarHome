@@ -127,9 +127,7 @@ struct AutomationTimeWindowTests {
         #expect(AutomationConditions().summary() == nil)
     }
 
-    @Test func windowIsEvaluatedAgainstTheTriggerTimestamp() {
-        // The sleep trigger is held for two seconds; the verdict must use the trigger's own time,
-        // not the moment the pipeline happens to resume.
+    @Test func windowIsEvaluatedAgainstTheGivenTimestamp() {
         let conditions = AutomationConditions(
             timeWindow: AutomationTimeWindow(isEnabled: true, startMinute: 22 * 60, endMinute: 7 * 60)
         )

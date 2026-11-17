@@ -42,8 +42,6 @@ struct AutomationSettingsSection: View {
     @State private var newTimeStartHour = 22
     @State private var newTimeEndHour = 7
 
-    private let hourChoices = Array(0...23)
-
     private enum WiFiConditionMode: String, CaseIterable, Identifiable {
         case any, only, exclude
 
@@ -339,37 +337,23 @@ struct AutomationSettingsSection: View {
 
         HStack(spacing: 6) {
             Toggle(isOn: $newTimeWindowEnabled) {
-                Text(L10n.tr("限定时段", "Between"))
+                Text(L10n.tr("限定时段", "Only between"))
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(.secondary)
             }
             .toggleStyle(.checkbox)
 
             if newTimeWindowEnabled {
-                Picker("", selection: $newTimeStartHour) {
-                    ForEach(hourChoices, id: \.self) { hour in
-                        Text(String(format: "%02d:00", hour)).tag(hour)
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: 90)
-                .controlSize(.regular)
+                hourPicker($newTimeStartHour)
 
                 Text("–")
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(.secondary)
 
-                Picker("", selection: $newTimeEndHour) {
-                    ForEach(hourChoices, id: \.self) { hour in
-                        Text(String(format: "%02d:00", hour)).tag(hour)
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: 90)
-                .controlSize(.regular)
+                hourPicker($newTimeEndHour)
 
                 if newTimeStartHour == newTimeEndHour {
-                    Text(L10n.tr("起止相同 = 全天", "Same ends = all day"))
+                    Text(L10n.tr("起止不能相同", "Start and end must differ"))
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(.secondary)
                 } else if newTimeStartHour > newTimeEndHour {
@@ -652,6 +636,9 @@ struct AutomationSettingsSection: View {
         // A network condition with no network would never fire; refuse it instead of storing a
         // dead rule the user cannot debug.
         if newWiFiMode != .any, parsedSSIDs.isEmpty { return false }
+        // Equal ends mean "all day" in the model but "never" for the late-night trigger; refuse the
+        // ambiguous window rather than store a rule the user reads the other way.
+        if newTimeWindowEnabled, newTimeStartHour == newTimeEndHour { return false }
         switch newActionKind {
         case .quickAction:
             return true

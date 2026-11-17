@@ -276,6 +276,8 @@ final class AutomationEngine {
         lastContext = effective
         guard let store else { return }
         for rule in ruleStore.load() where rule.isEnabled {
+            // Same time-window gate as `handle(trigger:)`, also checked before the cooldown is consumed.
+            guard rule.conditions.isWithinTimeWindow(at: now, calendar: calendar) else { continue }
             // Same Wi-Fi condition `handle(trigger:)` applies, checked before the cooldown is
             // consumed. A "left network" rule is judged against the network it just left, since
             // the current SSID is already gone.
