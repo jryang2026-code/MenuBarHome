@@ -46,13 +46,6 @@ if [ -n "$require" ]; then
     fi
     xcodebuild -version
     sw_vers || true
-    # Two compare runs deadlock in NSAlert nib decode on IconServices
-    # (NSWorkspace iconForFile -> ISIconManager, synchronous XPC, no reply).
-    # Start iconservicesagent before the snapshots so that call can finish.
-    uid="$(id -u)"
-    if ! launchctl kickstart -k "gui/${uid}/com.apple.iconservices.iconservicesagent"; then
-        echo "iconservicesagent kickstart failed. NSAlert snapshots may hang." >&2
-    fi
 fi
 
 defaults write -g AppleLocale zh_CN

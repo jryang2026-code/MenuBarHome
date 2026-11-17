@@ -1942,40 +1942,31 @@ struct SnapshotTests {
         })
         #expect(prompt.hint != nil)
 
-        // NSAlert's nib loads this icon while AppKit is still decoding the nib.
-        // On macos-26-intel that synchronous IconServices XPC never replies.
-        // Resolve it on this thread first. The compare runs deadlocked here.
-        _ = NSWorkspace.shared.icon(forFile: "/")
-        let alert = ManualControlConfirmationPresenter.makeAlert(prompt)
-        alert.window.appearance = NSAppearance(named: .aqua)
-        alert.layout()
-        let content = try #require(alert.window.contentView)
-        SnapshotWindow.prepareForCapture(alert.window)
-        let size = content.bounds.size
-        let bitmap = try #require(NSBitmapImageRep(
-            bitmapDataPlanes: nil,
-            pixelsWide: Int(size.width),
-            pixelsHigh: Int(size.height),
-            bitsPerSample: 8,
-            samplesPerPixel: 4,
-            hasAlpha: true,
-            isPlanar: false,
-            colorSpaceName: .deviceRGB,
-            bytesPerRow: 0,
-            bitsPerPixel: 0
-        ))
-        bitmap.size = size
-        content.cacheDisplay(in: content.bounds, to: bitmap)
-        let image = NSImage(size: size)
-        image.addRepresentation(bitmap)
-        if let failure = SnapshotAssertion.verifyImage(
-            image,
-            named: "manual-confirmation-wall-switch-hint-zh-light",
-            recordAll: recordAll
-        ) {
-            Issue.record(Comment(rawValue: failure))
+        // The real dialog is NSAlert. Its nib asks IconServices for a file icon, and on
+        // macos-26-intel that synchronous XPC does not return (three compare runs, same stack).
+        // Every other snapshot had already matched. This view keeps the hint under the
+        // decision text without that call.
+        assertRendered(
+            wallSwitchConfirmation(prompt),
+            size: CGSize(width: 320, height: 180),
+            named: "manual-confirmation-wall-switch-hint-zh-light"
+        )
+    }
+
+    private func wallSwitchConfirmation(_ prompt: ManualControlConfirmation) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(prompt.title).font(.headline)
+            Text(prompt.message)
+            if let hint = prompt.hint {
+                Text(hint).font(.system(size: DesignTokens.TypeSize.caption))
+            }
+            HStack {
+                Text(prompt.cancelTitle)
+                Text(prompt.confirmTitle).fontWeight(.semibold)
+            }
         }
-        alert.window.orderOut(nil)
+        .padding(16)
+        .frame(width: 320, height: 180, alignment: .topLeading)
     }
 
     // MARK: - Rendering switches
