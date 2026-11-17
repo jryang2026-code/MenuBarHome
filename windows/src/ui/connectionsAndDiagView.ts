@@ -10,7 +10,7 @@ import type { EnvironmentReading, FacetControl, HomeBackend, HomeScene, SmartDev
 import { clearHostActivitiesOnSignOut, isFullPanelHost } from "./activityStackView.js";
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
-import { canUseDualSource, getHostDualSourceState, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, recomputeHostDualSource, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
+import { adoptRecoveredPrimarySession, canUseDualSource, getHostDualSourceState, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, recomputeHostDualSource, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
 import type { HomeOption, LayoutPrefs } from "./panelPrefs.js";
 import type { SettingsTab, SettingsViewContext } from "./settingsViews.js";
 import { hasPendingMiVaultDeletion, setPendingMiVaultDeletion } from "./speechGuard.js";
@@ -371,7 +371,11 @@ export function resolveHostMiAccounts(host: ConnectionsAndDiagHost): MiAccount[]
   const pendingDelete = hasPendingMiVaultDeletion();
   if (pendingDelete || (!host.settings.miSession && !hasSecondaryMiAccountsInIndex())) {
     setHostMiAccounts(host, null);
-    if (!pendingDelete && storeAccounts.length > 0) void store.load();
+    if (!pendingDelete && storeAccounts.length > 0) {
+      void store.load()
+        .then((loaded) => adoptRecoveredPrimarySession(host, loaded))
+        .catch(() => {});
+    }
     return [];
   }
   const multiStateAccounts = getHostMiAccountsState(host)?.accounts ?? [];
@@ -398,6 +402,7 @@ async function ensureHostMiAccountsHydrated(host: ConnectionsAndDiagHost): Promi
     const beforeIds = resolveHostMiAccounts(host).map((a) => a.id).join(",");
     const beforeReadState = store.getAccountsReadState();
     const loaded = await store.load();
+    adoptRecoveredPrimarySession(host, loaded);
     session.hydratedVaultOnce = true;
     if (
       (beforeIds !== loaded.map((a) => a.id).join(",") || beforeReadState !== store.getAccountsReadState()) &&

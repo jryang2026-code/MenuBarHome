@@ -90,6 +90,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       // the assembled list. This replaces the old "only multi-account indexes hydrate" gate (#228).
       const storeAccounts = host.miAccountsOverride
         ?? (await getHostMiAccountsStore(host).load().catch(() => []));
+      adoptRecoveredPrimarySession(host, storeAccounts);
       if (storeAccounts.length > 1 || hasMultipleMiAccountsForHost(host)) {
         return refreshMultiAccountXiaomiDevices(host, silent);
       }
@@ -780,6 +781,21 @@ export function hasMultipleMiAccountsForHost(host: DualSourceInspectableHost): b
   return hasSecondaryMiAccountsInIndex() || hasCorruptMiAccountIndex();
 }
 
+/**
+ * Enumeration can promote a recovered secondary account into `mi_session` when no primary
+ * credential exists. The settings object must learn that session immediately, otherwise the next
+ * settings save persists `miSession: null` and deletes the recovered account's only credential.
+ */
+export function adoptRecoveredPrimarySession(
+  host: { readonly settings: { miSession: MiSession | null; miCloudRegion: string } },
+  accounts: readonly MiAccount[],
+): void {
+  const primary = accounts[0];
+  if (!primary || host.settings.miSession !== null) return;
+  host.settings.miSession = primary.session;
+  host.settings.miCloudRegion = normalizeMiCloudRegion(primary.region);
+}
+
 function knownPreferenceIdsForHost(host: MenuMijiaWindowsApp): Set<string> {
   const ids = new Set<string>();
   const layout = host.settings.layout;
@@ -845,6 +861,7 @@ export async function refreshMultiAccountXiaomiDevices(
     return;
   }
   const loadedFromStore = host.miAccountsOverride ?? (await getHostMiAccountsStore(host).load());
+  adoptRecoveredPrimarySession(host, loadedFromStore);
   if (
     !isHostAttachedToActiveWindow(host) ||
     host.settings.connectionMode !== "xiaomiCloud" ||
@@ -1106,6 +1123,7 @@ export async function refreshDualSourceDevices(
   const overrideAccounts = host.miAccountsOverride;
   const loadedAccounts =
     overrideAccounts ?? (await getHostMiAccountsStore(host).load().catch(() => []));
+  adoptRecoveredPrimarySession(host, loadedAccounts);
   if (
     !isHostAttachedToActiveWindow(host) ||
     !isDualSourceEnabled(host) ||

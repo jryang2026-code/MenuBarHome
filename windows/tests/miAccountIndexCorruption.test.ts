@@ -7,7 +7,7 @@ import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { renderConnectionsAndDiagSection } from "../src/ui/connectionsAndDiagView.js";
-import { hasMultipleMiAccountsForHost } from "../src/ui/cloudRefresh.js";
+import { adoptRecoveredPrimarySession, hasMultipleMiAccountsForHost } from "../src/ui/cloudRefresh.js";
 import { clearHostSessionAndDualSourceState } from "../src/ui/appLifecycle.js";
 import type { MiSession } from "../src/core/miCloudClient.js";
 import {
@@ -385,6 +385,33 @@ describe("Mi account index corruption (#228)", () => {
 
     const nextBoot = new MiAccountsStore(new CredentialVault(fixture.invoke), storage);
     assert.deepEqual(await nextBoot.load(), []);
+  });
+
+  it("promotes a sole enumerated secondary and adopts it into settings", async () => {
+    const storage = memoryStorage();
+    const { invoke, data } = makeCredentialFixture({ supportsSlotScan: true });
+    await new CredentialVault(invoke).saveMiAccountSlot(makeMiAccount(SESSION_SG).slotId, SESSION_SG);
+    storage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, "{broken");
+
+    const store = new MiAccountsStore(new CredentialVault(invoke), storage);
+    const accounts = await store.load();
+    assert.deepEqual(accounts.map((account) => account.id), [miAccountId(SESSION_SG)]);
+    assert.equal((await new CredentialVault(invoke).loadPrimaryMiSession())?.userId, SESSION_SG.userId);
+    assert.equal(data.has(slotName(SESSION_SG)), false, "the promoted slot becomes the primary credential");
+
+    const host: { settings: { miSession: MiSession | null; miCloudRegion: string } } = {
+      settings: { miSession: null, miCloudRegion: "cn" },
+    };
+    adoptRecoveredPrimarySession(host, accounts);
+    assert.equal(host.settings.miSession?.userId, SESSION_SG.userId);
+    assert.equal(host.settings.miCloudRegion, "sg");
+
+    const existing: { settings: { miSession: MiSession | null; miCloudRegion: string } } = {
+      settings: { miSession: SESSION_PRIMARY, miCloudRegion: "cn" },
+    };
+    adoptRecoveredPrimarySession(existing, accounts);
+    assert.equal(existing.settings.miSession?.userId, SESSION_PRIMARY.userId);
+    assert.equal(existing.settings.miCloudRegion, "cn");
   });
 
   it("leaves a fresh install untouched and reports a complete read", async () => {
