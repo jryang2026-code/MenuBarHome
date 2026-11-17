@@ -12,10 +12,6 @@ on:
         description: "本仓库已有分支名。tag、提交号和其他仓库的分支会被拒绝。"
         required: true
         type: string
-  # BOOTSTRAP: 删掉这段 push。workflow_dispatch 要等本文件进入默认分支才能从网页启动。
-  # 本 job 用 GITHUB_TOKEN 推送的提交不会再次进入这个 trigger。
-  push:
-    branches: [cursor/github-hosted-snapshots-2d14]
 
 permissions:
   contents: write
@@ -27,7 +23,6 @@ concurrency:
 
 jobs:
   record-snapshots:
-    if: github.event_name != 'push' || github.ref == 'refs/heads/cursor/github-hosted-snapshots-2d14'
     runs-on: macos-26-intel
     timeout-minutes: 60
     env:
