@@ -59,8 +59,6 @@ LEGACY_SLEEP_LOOP_CEILING: RatchetCeiling = {
     "Tests/MenuBarMijiaAppTests/NotificationPermissionTests.swift": 1,
     "Tests/MenuBarMijiaAppTests/PanelLayoutStoreTests.swift": 1,
     "Tests/MenuBarMijiaAppTests/PreReleaseMacOSUIFixesTests.swift": 1,
-    "Tests/MijiaCoreTests/AppURLCommandTests.swift": 1,
-    "Tests/MijiaCoreTests/AssistantScheduleTests.swift": 4,
     "Tests/MijiaCoreTests/AuditWave2Tests.swift": 3,
     "Tests/MijiaCoreTests/AutomationExecutionTests.swift": 1,
     "Tests/MijiaCoreTests/BareCategoryCommandStoreTests.swift": 2,

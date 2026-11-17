@@ -179,7 +179,7 @@ struct CameraPTZDriverTests {
 
     @Test("A cancelled begin releases the bridge token instead of leaking it")
     func cancelledBeginReleasesToken() async throws {
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         let client = FakePTZClient()
         configure(controller, deviceId: "cam-a", client: client)
         defer { controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false) }
@@ -197,7 +197,7 @@ struct CameraPTZDriverTests {
 
     @Test("A begin that resolves after a device switch stops its old token and does not touch the new camera")
     func lateBeginAfterDeviceSwitchIsIsolated() async throws {
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         let client = FakePTZClient()
         configure(controller, deviceId: "cam-a", client: client)
 
@@ -216,7 +216,7 @@ struct CameraPTZDriverTests {
 
     @Test("A stop write failure retries once, then the stop-again button sends one more stop")
     func stopWriteFailureRetriesOnceThenTheButtonSendsStopAgain() async throws {
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         let client = FakePTZClient()
         let failed = CameraPTZStopResult(
             sent: false,
@@ -262,7 +262,7 @@ struct CameraPTZDriverTests {
 
     @Test("A stop that succeeds on the automatic retry clears the warning")
     func automaticStopRetrySuccessClearsTheWarning() async throws {
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         let client = FakePTZClient()
         await client.setStopScript([
             CameraPTZStopResult(sent: false, confirmed: false, mode: .continuous, errorReason: "write_failed"),
@@ -294,7 +294,7 @@ struct CameraPTZDriverTests {
 
     @Test("Pressing stop again after a failed stop clears the warning when the write succeeds")
     func manualStopSuccessClearsTheWarning() async throws {
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         let client = FakePTZClient()
         let failed = CameraPTZStopResult(
             sent: false,
@@ -333,7 +333,7 @@ struct CameraPTZDriverTests {
 
     @Test("Stop again does not clear a failed write when the old session reports a step no-op")
     func oldSessionRetryDoesNotClearAFailedStop() async throws {
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         let client = FakePTZClient()
         let failed = CameraPTZStopResult(
             sent: false,
@@ -374,7 +374,7 @@ struct CameraPTZDriverTests {
 
     @Test("A thrown stop retries once and clears the warning when the retry succeeds")
     func thrownStopRetriesOnceAndSuccessClearsTheWarning() async throws {
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         let client = FakePTZClient()
         await client.setStopErrorCount(1)
         configure(controller, deviceId: "cam-a", client: client)
@@ -403,7 +403,7 @@ struct CameraPTZDriverTests {
 
     @Test("A stop that throws twice stays on the manual warning, and the button can still stop it")
     func thrownStopTwiceStaysOnTheManualWarning() async throws {
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         let client = FakePTZClient()
         await client.setStopErrorCount(2)
         configure(controller, deviceId: "cam-a", client: client)
@@ -437,7 +437,7 @@ struct CameraPTZDriverTests {
 
     @Test("A successful begin and a panel close keep the stop-write warning until a stop succeeds")
     func warningSurvivesBeginAndPanelClose() async throws {
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         let client = FakePTZClient()
         configure(controller, deviceId: "cam-a", client: client)
         defer { controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false) }
@@ -470,7 +470,7 @@ struct CameraPTZDriverTests {
 
     @Test("The automatic retry stops the captured session after the panel lifecycle changed and stays retryable")
     func automaticRetrySurvivesLifecycleChange() async throws {
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         let client = FakePTZClient()
         await client.setStopResult(CameraPTZStopResult(
             sent: false,
@@ -508,7 +508,7 @@ struct CameraPTZDriverTests {
 
     @Test("A successful stop on another camera leaves the older failed stop and its retry untouched")
     func successfulStopOnAnotherCameraKeepsOlderRecovery() async throws {
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         let clientA = FakePTZClient()
         let failed = CameraPTZStopResult(
             sent: false,
@@ -565,7 +565,7 @@ struct CameraPTZDriverTests {
 
     @Test("Identical session tokens on two cameras keep two unresolved stops, and retry resolves each")
     func identicalTokensOnTwoCamerasStayIndependent() async throws {
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         let failed = CameraPTZStopResult(
             sent: false,
             confirmed: false,
@@ -649,7 +649,7 @@ struct CameraPTZDriverTests {
 
     @Test("A retry that fails after the panel closed stays retryable on reopening")
     func retryFailureAfterCloseStaysRetryable() async throws {
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         let failed = CameraPTZStopResult(
             sent: false,
             confirmed: false,
@@ -713,7 +713,7 @@ struct CameraPTZDriverTests {
 
     @Test("A new failed stop for the same camera replaces the older unresolved attempt")
     func newerFailureReplacesTheOlderAttemptForTheSameCamera() async throws {
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         let failed = CameraPTZStopResult(
             sent: false,
             confirmed: false,
@@ -774,7 +774,7 @@ struct CameraPTZDriverTests {
 
     @Test("Reopening the panel during a retry batch does not start an overlapping batch")
     func reopeningDoesNotStartOverlappingRetryBatches() async throws {
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         let failed = CameraPTZStopResult(
             sent: false,
             confirmed: false,
@@ -892,7 +892,7 @@ struct CameraPTZDriverTests {
 
     @Test("The automatic stop retry waits about half a second")
     func automaticStopRetryWaitsHalfASecond() async throws {
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         let client = FakePTZClient()
         await client.setStopResult(CameraPTZStopResult(
             sent: false,
@@ -914,7 +914,7 @@ struct CameraPTZDriverTests {
 
     @Test("Releasing PTZ before begin resolves retries a failed stop and raises the sticky stop warning")
     func quickClickCancelledBeginRetriesFailedStop() async throws {
-        let controller = CameraLivePanelController.shared
+        let controller = CameraLivePanelController()
         let client = UncancelledBeginFailingStopPTZClient()
         controller.configurePTZPreview(
             deviceId: "cam-quick",

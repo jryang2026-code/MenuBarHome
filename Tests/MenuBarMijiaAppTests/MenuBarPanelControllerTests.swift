@@ -69,6 +69,13 @@ struct MenuBarPanelControllerTests {
         SnapshotWindow.pinOverlayScrollers()
     }
 
+    private func makeCameraController(suite: String) throws -> CameraLivePanelController {
+        let controller = CameraLivePanelController()
+        controller.presentsActively = false
+        controller.frameDefaults = try #require(UserDefaults(suiteName: suite))
+        return controller
+    }
+
     private func makeStore() async throws -> (HomeStore, String) {
         let suite = "test.panel.controller.\(UUID().uuidString)"
         let mock = MockHomeProvider(snapshot: DemoHomeProvider.defaultHome())
@@ -1897,7 +1904,7 @@ struct MenuBarPanelControllerTests {
             return false
         }))
 
-        let cameraController = CameraLivePanelController.shared
+        let cameraController = try makeCameraController(suite: suite)
         cameraController.presentsActively = false
         cameraController.install(with: store)
         defer {
@@ -1926,7 +1933,7 @@ struct MenuBarPanelControllerTests {
             return false
         }))
 
-        let cameraController = CameraLivePanelController.shared
+        let cameraController = try makeCameraController(suite: suite)
         cameraController.presentsActively = false
         cameraController.isMuted = true
         cameraController.install(with: store)
@@ -1970,7 +1977,7 @@ struct MenuBarPanelControllerTests {
             return false
         }))
 
-        let cameraController = CameraLivePanelController.shared
+        let cameraController = try makeCameraController(suite: suite)
         cameraController.presentsActively = false
         cameraController.install(with: store)
         defer {
@@ -2016,7 +2023,7 @@ struct MenuBarPanelControllerTests {
             return false
         }))
 
-        let cameraController = CameraLivePanelController.shared
+        let cameraController = try makeCameraController(suite: suite)
         cameraController.presentsActively = false
         cameraController.install(with: store)
         defer {
@@ -2039,7 +2046,7 @@ struct MenuBarPanelControllerTests {
 
         cameraController.toggleMaximized()
         cameraController.storePanelFrame()
-        let stored = UserDefaults.standard.string(forKey: "camera_live_panel_frame_v1")
+        let stored = cameraController.frameDefaults.string(forKey: "camera_live_panel_frame_v1")
         #expect(stored == NSStringFromRect(original))
 
         cameraController.toggleExpandedSize()
@@ -2053,15 +2060,12 @@ struct MenuBarPanelControllerTests {
     func pictureInPictureRestoreThenMaximizeReturnsTheSmallFrame() async throws {
         _ = NSApplication.shared
         let (store, suite) = try await makeStore()
-        defer {
-            UserDefaults.standard.removeObject(forKey: "camera_live_panel_frame_v1")
-            UserDefaults.standard.removePersistentDomain(forName: suite)
-        }
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let camera = try #require(store.devices.first(where: {
             if case .camera = $0.kind { return true }
             return false
         }))
-        let cameraController = CameraLivePanelController.shared
+        let cameraController = try makeCameraController(suite: suite)
         cameraController.presentsActively = false
         cameraController.install(with: store)
         defer {
@@ -2091,17 +2095,13 @@ struct MenuBarPanelControllerTests {
     @Test("Reopening a hidden maximized window replaces the frame, so the next maximize fills the screen")
     func hiddenMaximizedWindowPresentsThenMaximizeFillsTheScreen() async throws {
         _ = NSApplication.shared
-        UserDefaults.standard.removeObject(forKey: "camera_live_panel_frame_v1")
         let (store, suite) = try await makeStore()
-        defer {
-            UserDefaults.standard.removeObject(forKey: "camera_live_panel_frame_v1")
-            UserDefaults.standard.removePersistentDomain(forName: suite)
-        }
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let camera = try #require(store.devices.first(where: {
             if case .camera = $0.kind { return true }
             return false
         }))
-        let cameraController = CameraLivePanelController.shared
+        let cameraController = try makeCameraController(suite: suite)
         cameraController.presentsActively = false
         cameraController.install(with: store)
         defer {
@@ -2139,7 +2139,7 @@ struct MenuBarPanelControllerTests {
             return false
         }))
 
-        let cameraController = CameraLivePanelController.shared
+        let cameraController = try makeCameraController(suite: suite)
         cameraController.presentsActively = false
         cameraController.install(with: store)
         defer {
@@ -2184,7 +2184,7 @@ struct MenuBarPanelControllerTests {
             return false
         }))
 
-        let cameraController = CameraLivePanelController.shared
+        let cameraController = try makeCameraController(suite: suite)
         cameraController.presentsActively = false
         cameraController.install(with: store)
         defer {

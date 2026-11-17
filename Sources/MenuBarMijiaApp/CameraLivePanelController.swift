@@ -152,6 +152,10 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     var mjpegMaxAttempts = 4
     var mjpegMaxReconnects = 6
     var terminationTimeout: Duration = .seconds(3)
+    /// Test seam for the quit timeout. Production sleeps for `terminationTimeout`.
+    var terminationSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    /// Remembered window frame. Tests pass a private suite so parallel runs do not share one key.
+    var frameDefaults: UserDefaults = .standard
     var consumeMJPEGOverride: (@MainActor (URL, @escaping @MainActor (NSImage) -> Void) async -> Void)?
     var bridgeShutdownOverride: (@Sendable () async -> Void)?
     var hasLiveOwnedProcessOverride: (() -> Bool)?
@@ -531,6 +535,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         pendingStopTasks.removeAll()
 
         let timeout = terminationTimeout
+        let sleep = terminationSleep
         let (raceStream, raceContinuation) = AsyncStream<Void>.makeStream()
         let drainTask = Task<Void, Never> { @MainActor in
             await ptzStopToAwait?.value
@@ -550,7 +555,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
             raceContinuation.finish()
         }
         let timeoutTask = Task<Void, Never> {
-            try? await Task.sleep(for: timeout)
+            try? await sleep(timeout)
             raceContinuation.yield()
             raceContinuation.finish()
         }
@@ -625,7 +630,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
             current: CameraWindowFrame(panel.frame)
         )
         guard let frame else { return }
-        UserDefaults.standard.set(NSStringFromRect(frame.nsRect), forKey: Self.frameStorageKey)
+        frameDefaults.set(NSStringFromRect(frame.nsRect), forKey: Self.frameStorageKey)
     }
 
     private func warmActivePlayback(
@@ -1249,7 +1254,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
 
     private func initialFrame(for size: NSSize) -> NSRect {
         let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        if let saved = UserDefaults.standard.string(forKey: Self.frameStorageKey) {
+        if let saved = frameDefaults.string(forKey: Self.frameStorageKey) {
             let rect = NSRectFromString(saved)
             if rect.width >= CameraLivePanelMetrics.compactWidth, rect.height >= 200 {
                 let x = min(max(rect.minX, visible.minX + 12), visible.maxX - size.width - 12)

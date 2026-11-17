@@ -199,8 +199,9 @@ struct ControlFailureTests {
     func cancelledWriteIsSilent() async throws {
         for error: any Error & Sendable in [CancellationError(), URLError(.cancelled)] {
             let store = try await makeStore(error: error, online: false)
+            let exits = store.manualWriteExits
             store.setLightEffect("lamp", effect: "Night")
-            try await Task.sleep(for: .milliseconds(300))
+            await waitUntil { store.manualWriteExits > exits }
             #expect(store.toastNotice == nil, "\(error)")
         }
     }
