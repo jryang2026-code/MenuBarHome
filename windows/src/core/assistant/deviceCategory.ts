@@ -1,4 +1,5 @@
 import type { SmartDevice } from "../models.js";
+import { toSimplifiedChinese } from "./chineseIntentTables.js";
 
 export type IntentCategory = "light" | "climate" | "heater" | "fan" | "airPurifier" | "dehumidifier" | "diffuser" | "plug" | "vacuum" | "tv" | "camera" | "valve" | "other";
 
@@ -94,7 +95,12 @@ const SWITCHED_LIGHT_EXCLUDED_NAME_SUBSTRINGS = [
   "插排",
   "排插",
   "插线板",
+  "延长线",
   "转换器",
+  "插头",
+  "转接",
+  "拖板",
+  "排苏",
   "power strip",
   "powerstrip",
   "smart plug",
@@ -109,6 +115,7 @@ const SWITCHED_LIGHT_EXCLUDED_NAME_SUBSTRINGS = [
   "暖风",
   "暖气",
   "暖灯",
+  "暖炉",
   "加热",
   "发热",
   "电热",
@@ -116,24 +123,37 @@ const SWITCHED_LIGHT_EXCLUDED_NAME_SUBSTRINGS = [
   "保温",
   "烤",
   "红外",
+  "热风",
+  "烘干",
+  "干衣",
   "灭蚊",
   "驱蚊",
   "诱蚊",
   "捕蚊",
+  "灭虫",
+  "杀虫",
+  "捕虫",
+  "诱虫",
   "指示灯",
   "信号灯",
+  "讯号灯",
+  "警示灯",
+  "警报灯",
   "车库",
   "门锁",
   "阀门",
   "水壶",
   "饮水",
   "饭煲",
+  "饭锅",
   "电锅",
   "炸锅",
   "烤箱",
   "微波",
   "养生壶",
   "晾衣",
+  "晒衣",
+  "卷门",
   "开窗",
   "摄像",
   "监控",
@@ -150,6 +170,9 @@ const SWITCHED_LIGHT_EXCLUDED_ASCII_WORDS = new Set([
   "socket",
   "sockets",
   "uv",
+  "uva",
+  "uvb",
+  "uvc",
   "ultraviolet",
   "germicidal",
   "sterilizer",
@@ -225,7 +248,7 @@ export function isSwitchedLightDevice(dev: SmartDevice): boolean {
     return false;
   }
 
-  const lowerName = dev.name.trim().toLowerCase();
+  const lowerName = toSimplifiedChinese(dev.name.trim()).toLowerCase();
   const asciiWords = new Set(lowerName.split(/[^a-z]+/).filter(Boolean));
   if (SWITCHED_LIGHT_EXCLUDED_NAME_SUBSTRINGS.some((sub) => lowerName.includes(sub))) {
     return false;

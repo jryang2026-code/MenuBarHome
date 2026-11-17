@@ -151,7 +151,10 @@ struct ManualControlPolicyTests {
             makePlug(id: "sw_downlight", name: "筒灯", model: "lemesh.switch.sw2f12"),
             makePlug(id: "sw_en_light", name: "Kitchen Light", model: "lumi.switch.b1nacn02", switchEntityId: "switch.kitchen_light"),
             makePlug(id: "sw_warm_strip", name: "暖光灯带", model: "cuco.plug.cp1"),
-            makePlug(id: "sw_lighting", name: "厨房照明", model: "090615.switch.09dh1")
+            makePlug(id: "sw_lighting", name: "厨房照明", model: "090615.switch.09dh1"),
+            makePlug(id: "sw_kitchen_trad", name: "廚房燈", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "sw_living_ceiling_trad", name: "客廳吸頂燈", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "sw_hall_lighting_trad", name: "玄關照明燈", model: "090615.switch.09dh1")
         ]
 
         for dev in positives {
@@ -169,6 +172,29 @@ struct ManualControlPolicyTests {
             makePlug(id: "neg_indicator", name: "路由器指示灯", model: "cuco.plug.v3"),
             makePlug(id: "neg_desk_outlet_zh", name: "台灯插座", model: "cuco.plug.v3"),
             makePlug(id: "neg_desk_outlet_en", name: "Desk Lamp Outlet", model: "cuco.plug.v3"),
+            makePlug(id: "neg_uv_trad", name: "紫外線殺菌燈", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "neg_bath_heat_trad", name: "浴霸取暖燈", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "neg_ir_trad", name: "紅外烤燈", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "neg_mosquito_trad", name: "滅蚊燈", model: "cuco.plug.v3"),
+            makePlug(id: "neg_mosquito_repel_trad", name: "驅蚊燈", model: "cuco.plug.v3"),
+            makePlug(id: "neg_indicator_trad", name: "路由器指示燈", model: "cuco.plug.v3"),
+            makePlug(id: "neg_signal_trad", name: "信號燈", model: "cuco.plug.v3"),
+            makePlug(id: "neg_xunhao_trad", name: "訊號燈", model: "cuco.plug.v3"),
+            makePlug(id: "neg_desk_outlet_trad", name: "檯燈插座", model: "cuco.plug.v3"),
+            makePlug(id: "neg_ext_cord_trad", name: "延長線燈", model: "cuco.plug.v3"),
+            makePlug(id: "neg_electric_heat_trad", name: "電暖燈", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "neg_healthpot_trad", name: "養生壺燈", model: "cuco.plug.v3"),
+            makePlug(id: "neg_rice_cooker_trad", name: "電飯鍋燈", model: "cuco.plug.v3"),
+            makePlug(id: "neg_stove_heater_trad", name: "暖爐燈", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "neg_bath_hot_air_trad", name: "浴室熱風燈", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "neg_dryer_trad", name: "烘乾機燈", model: "cuco.plug.v3"),
+            makePlug(id: "neg_bug_zapper_trad", name: "滅蟲燈", model: "cuco.plug.v3"),
+            makePlug(id: "neg_warning_trad", name: "警示燈", model: "cuco.plug.v3"),
+            makePlug(id: "neg_alarm_trad", name: "警報燈", model: "cuco.plug.v3"),
+            makePlug(id: "neg_smart_plug_trad", name: "智能插頭燈", model: "cuco.plug.v3"),
+            makePlug(id: "neg_adapter_trad", name: "轉接頭燈", model: "cuco.plug.v3"),
+            makePlug(id: "neg_rolling_door_trad", name: "鐵捲門燈", model: "lumi.switch.b1nacn02"),
+            makePlug(id: "neg_uvc_trad", name: "UVC燈", model: "cuco.plug.v3"),
             makePlug(id: "neg_button", name: "厨房灯", model: "lumi.switch.b1nacn02", switchEntityId: "button.kitchen_light"),
             makePlug(id: "neg_breaker", name: "厨房灯", model: "lumi.switch.b1nacn02", powerWritable: false),
             makePlug(id: "neg_oven", name: "厨房灯", model: "chunmi.oven.s1")
@@ -319,6 +345,9 @@ struct ManualControlPolicyTests {
                 )?.hint ?? ""
                 let keywords = Self.quotedKeywords(in: hint)
                 #expect(!keywords.isEmpty, "\(language.rawValue) hint names a keyword: \(hint)")
+                if language == .zhHant {
+                    #expect(keywords == ["燈"])
+                }
                 for keyword in keywords {
                     var renamed = left
                     renamed.name = "\(left.name) \(keyword)"

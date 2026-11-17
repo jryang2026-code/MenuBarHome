@@ -202,18 +202,19 @@ extension SmartDevice {
     ]
 
     private static let switchedLightExcludedSubstrings: [String] = [
-        "插座", "插排", "排插", "插线板", "转换器",
+        "插座", "插排", "排插", "插线板", "延长线", "转换器", "插头", "转接", "拖板", "排苏",
         "power strip", "powerstrip", "smart plug", "smartplug",
-        "杀菌", "消毒", "紫外", "臭氧", "浴霸", "取暖", "电暖", "暖风", "暖气", "暖灯",
-        "加热", "发热", "电热", "热水", "保温", "烤", "红外",
-        "灭蚊", "驱蚊", "诱蚊", "捕蚊", "指示灯", "信号灯",
-        "车库", "门锁", "阀门", "水壶", "饮水", "饭煲", "电锅", "炸锅", "烤箱", "微波", "养生壶",
-        "晾衣", "开窗", "摄像", "监控", "扫地", "路由", "网关",
+        "杀菌", "消毒", "紫外", "臭氧", "浴霸", "取暖", "电暖", "暖风", "暖气", "暖灯", "暖炉",
+        "加热", "发热", "电热", "热水", "保温", "烤", "红外", "热风", "烘干", "干衣",
+        "灭蚊", "驱蚊", "诱蚊", "捕蚊", "灭虫", "杀虫", "捕虫", "诱虫",
+        "指示灯", "信号灯", "讯号灯", "警示灯", "警报灯",
+        "车库", "门锁", "阀门", "水壶", "饮水", "饭煲", "饭锅", "电锅", "炸锅", "烤箱", "微波", "养生壶",
+        "晾衣", "晒衣", "卷门", "开窗", "摄像", "监控", "扫地", "路由", "网关",
     ]
 
     private static let switchedLightExcludedAsciiWords: Set<String> = [
         "plug", "plugs", "outlet", "outlets", "socket", "sockets",
-        "uv", "ultraviolet", "germicidal", "sterilizer", "steriliser", "sterilization", "sterilisation",
+        "uv", "uva", "uvb", "uvc", "ultraviolet", "germicidal", "sterilizer", "steriliser", "sterilization", "sterilisation",
         "disinfect", "disinfection", "ozone",
         "heat", "heater", "heating", "warmer", "warming", "infrared", "ir", "ptc", "bath",
         "mosquito", "insect", "bug", "zapper", "indicator",
@@ -239,7 +240,7 @@ extension SmartDevice {
             return false
         }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lowerName = trimmed.lowercased()
+        let lowerName = LocalIntentParser.toSimplifiedChinese(trimmed).lowercased()
         let asciiWords = Set(lowerName.split { !($0.isASCII && $0.isLetter) }.map(String.init))
         if Self.switchedLightExcludedSubstrings.contains(where: { lowerName.contains($0) }) {
             return false

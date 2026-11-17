@@ -22,7 +22,7 @@
 
 Tart 基础镜像名为 `menubarhome-ci-base`，每次任务的副本名为 `menubarhome-ci-job`。只可销毁任务副本，保留基础镜像。基础镜像包含独立的 macOS、Xcode 和 GitHub Actions runner，不能导入 Apple ID 或签名证书。
 
-本机网络的普通公网 DNS 查询超时，因此基础 VM 还安装了 `scripts/local_ci_dns.py` 到 `/usr/local/libexec/menubarhome-ci-dns.py`，由 `com.menubarhome.ci-dns` 系统 LaunchDaemon 启动，并将 Ethernet DNS 设为 `127.0.0.1`。服务只监听 VM 回环地址的 UDP 53，固定使用 `https://1.1.1.1/dns-query`，不依赖宿主代理或目录。
+本机网络的普通公网 DNS 查询超时，因此基础 VM 还安装了 `scripts/local_ci_dns.py` 到 `/usr/local/libexec/menubarhome-ci-dns.py`，由 `com.menubarhome.ci-dns` 系统 LaunchDaemon 启动，并将 Ethernet DNS 设为 `127.0.0.1`。服务只监听 VM 回环地址的 UDP 53，按 `DO_H_UPSTREAMS` 顺序轮询裸 IP DoH 上游（`223.5.5.5`、`1.12.12.12`、`1.1.1.1`、`1.0.0.1`），不依赖宿主代理或目录。
 
 ## 启停和检查
 

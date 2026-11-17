@@ -21,3 +21,8 @@ ADR-0012 把项目搬到 GitLab，因为原账号 `jryang1997` 被停用。GitLa
 - 1.1.7 及更早版本的更新地址仍是旧账号，只能手动安装一次，除非旧账号恢复。
 - CI 不比对快照，界面回归只由提交前的本机门禁拦截。（像素比对的现行规则见 [ADR-0022](0022-github-hosted-snapshot-baselines.md)。）
 - 应用显示名和安装包改成 MenuBarHome。Bundle ID、钥匙串条目、数据目录、URL scheme 和签名证书名保留旧名，改了用户会丢登录和设置。旧版要手动卸载，新版不会覆盖安装。
+
+## 修订（2026-11）
+
+- 非 fork 的 `macos-test` 任务可通过仓库变量 `MACOS_CI_RUNNER` 调度到本机一次性 Softnet 隔离 Tart 虚拟机执行（见 [`../agents/local-macos-runner.md`](../agents/local-macos-runner.md)）；跨仓库 fork PR、`macos-release`、`macos-appintents` 以及 `release.yml` 仍固定运行在 GitHub 托管 runner 上。
+- 签名私钥隔离红线不变：维护者宿主机 macOS 严禁直接注册为自托管 runner，虚拟机镜像内保持零签名证书身份（`0 valid identities found`），不挂载宿主目录、钥匙串或凭据。

@@ -821,7 +821,7 @@ export function renderSensorHistorySection(
             <strong data-sensor-readout-value style="font-size:15px;font-weight:650;color:var(--text-primary);">${escapeHtml(defaultValueLabel)}</strong>
             ${comfortInfo ? `<span class="cc-comfort is-${escapeHtml(comfortInfo.level)}" data-sensor-comfort-hint>${escapeHtml(comfortInfo.label)}</span>` : ""}
           </div>
-          <span data-sensor-source-badge style="font-size:10.5px;color:var(--text-tertiary);white-space:nowrap;">${escapeHtml(sourceLabel)}</span>
+          <span data-sensor-source-badge style="font-size:12px;color:var(--text-primary);white-space:nowrap;">${escapeHtml(sourceLabel)}</span>
         </div>
         <div data-sensor-readout-sub style="font-size:11px;color:var(--text-secondary);line-height:1.35;">${escapeHtml(defaultSubLabel)}</div>
       </div>
@@ -845,11 +845,11 @@ export function renderSensorHistorySection(
           <circle data-sensor-hover-dot cx="0" cy="0" r="4.3" fill="${accent}" stroke="#ffffff" stroke-width="1.6" hidden />
           ${hitColumns}
         </svg>
-        <span data-sensor-y-max style="position:absolute;top:5px;right:9px;font-size:9.5px;color:var(--text-tertiary);pointer-events:none;">${escapeHtml(yMaxLabel)}</span>
-        <span data-sensor-y-min style="position:absolute;bottom:6px;right:9px;font-size:9.5px;color:var(--text-tertiary);pointer-events:none;">${escapeHtml(yMinLabel)}</span>
+        <span data-sensor-y-max style="position:absolute;top:5px;right:9px;font-size:11px;color:var(--text-tertiary);pointer-events:none;">${escapeHtml(yMaxLabel)}</span>
+        <span data-sensor-y-min style="position:absolute;bottom:6px;right:9px;font-size:11px;color:var(--text-tertiary);pointer-events:none;">${escapeHtml(yMinLabel)}</span>
       </div>
 
-      <div class="cc-sensor-history-ticks" data-sensor-x-axis style="display:flex;align-items:center;justify-content:space-between;font-size:10px;color:var(--text-tertiary);padding:0 2px;">
+      <div class="cc-sensor-history-ticks" data-sensor-x-axis style="display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--text-tertiary);padding:0 2px;">
         ${ticksHtml}
       </div>
     </div>

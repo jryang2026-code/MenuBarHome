@@ -19,10 +19,12 @@ ADR-0002 引入了 `HAWebSocketProvider` 与 `MiCloudProvider` 双后端，但�
    - **一级（硬件标识精确匹配）**：解析 HA 设备注册表 `HADeviceEntry` 的 `identifiers` 与 `connections`（及实体 `unique_id`），优先匹配官方 `xiaomi_home` 的 `<server>_<did>`、`xiaomi_miot` 的裸 `did`、以及归一化后的设备 `MAC` 地址。
    - **二级（同房同款唯一兜底）**：对未命中硬件标识的设备，若归一化后的同一房间（`RoomArea`）内两边各仅有唯一一台相同 `model`（或相同归一化名称）且相同 `DeviceKind` 类别的设备，自动归并为同一物理设备；同房间存在多台同款同名设备时不猜测合并。
 3. **整卡级择优胜出（不跨源拼合单卡控制流）**：
-   - 对匹配为同一物理设备的两份候选 `SmartDevice`，按以下优先级选出唯一胜出卡（或遵从用户在卡片右键菜单设定的单设备固定来源覆盖）：
-     1. **在线优先**：一边在线、一边离线（或整端未连接）时，直接选用在线方，实现在家走 HA、出门 HA 断连自动无缝回落米家云；
-     2. **可控能力评分优先**：两边均在线时，按合成后 `SmartDevice` 暴露的可控特性项数量（如音箱 TTS/指令能力、灯光色温/灯效、空调风速/摆风、插座功率/电量等）打分，分高者胜出；
-     3. **同分 Home Assistant 优先**：能力分相同时优先选用局域网低延迟的 Home Assistant。
+   - 对匹配为同一物理设备的两份候选 `SmartDevice`，按 `Sources/MijiaCore/DeviceDeduplicator.swift:preferredCandidate`（L627-654）的顺序选出唯一胜出卡（或遵从用户在卡片右键菜单设定的单设备固定来源覆盖）：
+     1. **在线优先**（`ha.isOnline != mi.isOnline`）：一边在线、一边离线（或整端未连接）时，直接选用在线方，实现在家走 HA、出门 HA 断连自动无缝回落米家云；
+     2. **热水器专卡优先**（`.appliance` vs `.climate`，`#300`）：同一台热水器在一端合成出保留模式、故障与剩余时间的 `.appliance` 卡片，而另一端仅为通用 `.climate` 卡片时，优先选用 `.appliance` 卡片；
+     3. **可播放实时画面摄像机优先**（`hasLiveView`，`#266`）：摄像机卡片一端具备可打开的实时画面（米家云端固定可通过本地 go2rtc 小米桥接播放，或 Home Assistant 具备非空 `streamEntityId` / `snapshotPath`）而另一端无流可用时，优先选用可播放实时画面的一方；
+     4. **可控能力评分优先**（`capabilityScore`）：按合成后 `SmartDevice` 暴露的可控特性与读数项数量（如音箱 TTS/指令能力、灯光色温/灯效、空调风速/摆风、插座功率/电量等）打分，分高者胜出；
+     5. **同分 Home Assistant 优先**：能力分相同时优先选用局域网低延迟的 Home Assistant。
    - **房间与名称互补**：默认采用胜出方的名称与房间；若胜出方未分配房间（落入默认/未分配）而另一方有明确房间，自动借用另一方的非空房间归属。
    - **单源指令路由**：每张合成卡片在任意时刻完整绑定当前胜出方的 `HomeProvider` 下发控制指令与生成撤销逆操作，不在单张卡片内混发跨源指令。
 4. **跨源统一稳定主键（Canonical ID）**：
@@ -34,3 +36,8 @@ ADR-0002 引入了 `HAWebSocketProvider` 与 `MiCloudProvider` 双后端，但�
 - 用户无需在“HA 功能全”和“米家云免折腾/可外网兜底”之间二选一，配置两端即可自动获得去重后的最优设备集。
 - 整卡单源路由保证了现有 `HomeStore` 的 3 秒乐观锁、逆向指令撤销和批量操作语义无需重写。
 - 需要在 `MijiaCore` 新增纯函数式的双源去重合成器与组合 `HomeProvider` 路由层，并在 `HADeviceEntry` 补齐 `identifiers` 与 `connections` 解码。
+
+## 修订（2026-11）
+
+- `Sources/MijiaCore/DeviceDeduplicator.swift:preferredCandidate`（L627-654）在“在线优先”之后、“`capabilityScore` 评分”之前新增两项专项裁决：热水器 `.appliance` 卡片优先于通用 `.climate` 卡片（`#300`），以及具备可播放实时画面的摄像机（`hasLiveView`）优先于无流摄像机（`#266`）。
+- Windows 端已同步落地双源并行连接与整卡去重合并（`windows/src/core/dualSourceProvider.ts`），与 macOS 共享同一套配对与胜出语义。

@@ -335,13 +335,14 @@ final class MenuBarPanelController: NSObject {
             hasMiSource: Bool,
             preferredLiveBackend: HomeBackend
         ) {
-            isDemo = homeBackend == .demo
-            includesHomeAssistant = !isDemo && (
-                hasHASource || (!hasMiSource && homeBackend == .homeAssistant)
+            let active = HomeBackendDescriptor.activeBackends(
+                homeBackend: homeBackend,
+                hasHASource: hasHASource,
+                hasMiSource: hasMiSource
             )
-            includesXiaomiCloud = !isDemo && (
-                hasMiSource || (!hasHASource && homeBackend == .xiaomiCloud)
-            )
+            isDemo = active.contains(.demo)
+            includesHomeAssistant = active.contains(.homeAssistant)
+            includesXiaomiCloud = active.contains(.xiaomiCloud)
             self.preferredLiveBackend = preferredLiveBackend
         }
     }

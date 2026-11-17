@@ -179,13 +179,17 @@ export function renderContextMenu(host: MenuMijiaWindowsApp): string {
             <span>${host.escapeHtml(tr3("数据源锁定", "資料來源鎖定", "Data Source Pin"))}</span>
             ${
               fallbackActive
-                ? `<span class="cc-inline-pill" data-dual-source-fallback="true" style="margin-left:6px;font-size:10.5px;padding:1px 6px;color:#e67e22;background:rgba(230,126,34,0.16);border:1px solid rgba(230,126,34,0.35);">${host.escapeHtml(
+                ? `<span class="cc-inline-pill" data-dual-source-fallback="true" style="margin-left:6px;font-size:12px;padding:1px 6px;color:var(--win-caution);border-color:var(--win-caution-stroke);">${host.escapeHtml(
                     offlineFallbackBadgeText(host.settings.interfaceLanguage),
                   )}</span>`
                 : ""
             }
           </div>
-          <div class="cc-field-hint" data-dual-source-status="${id}" style="padding:0 10px 4px;margin:0;font-size:11px;">
+          <div class="cc-field-hint" data-dual-source-status="${id}" style="${
+            fallbackActive
+              ? "padding:0 10px 4px;margin:0;font-size:12px;color:var(--win-caution);"
+              : "padding:0 10px 4px;margin:0;font-size:11px;"
+          }">
             ${host.escapeHtml(
               currentSourceMenuTitle(
                 activeBackend,

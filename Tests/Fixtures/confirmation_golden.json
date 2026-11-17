@@ -888,6 +888,396 @@
         "isOn": true
       },
       "confirm": true
+    },
+    {
+      "id": "switched-trad-kitchen-light-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-kitchen-light-on",
+        "name": "廚房燈",
+        "model": "lumi.switch.b1nacn02",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": false
+    },
+    {
+      "id": "switched-trad-living-ceiling-light-off",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-living-ceiling-light-off",
+        "name": "客廳吸頂燈",
+        "model": "lumi.switch.b1nacn02",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": false
+      },
+      "confirm": false
+    },
+    {
+      "id": "switched-trad-hall-lighting-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-hall-lighting-on",
+        "name": "玄關照明燈",
+        "model": "090615.switch.09dh1",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": false
+    },
+    {
+      "id": "switched-trad-uv-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-uv-lamp-on",
+        "name": "紫外線殺菌燈",
+        "model": "lumi.switch.b1nacn02",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-bath-heat-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-bath-heat-lamp-on",
+        "name": "浴霸取暖燈",
+        "model": "lumi.switch.b1nacn02",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-ir-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-ir-lamp-on",
+        "name": "紅外烤燈",
+        "model": "lumi.switch.b1nacn02",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-mosquito-zapper-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-mosquito-zapper-on",
+        "name": "滅蚊燈",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-mosquito-repeller-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-mosquito-repeller-on",
+        "name": "驅蚊燈",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-router-indicator-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-router-indicator-on",
+        "name": "路由器指示燈",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-signal-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-signal-lamp-on",
+        "name": "信號燈",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-xunhao-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-xunhao-lamp-on",
+        "name": "訊號燈",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "plug-trad-desk-lamp-outlet-on",
+      "role": "new",
+      "device": {
+        "id": "plug-trad-desk-lamp-outlet-on",
+        "name": "檯燈插座",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "plug-trad-extension-cord-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "plug-trad-extension-cord-lamp-on",
+        "name": "延長線燈",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-electric-heater-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-electric-heater-lamp-on",
+        "name": "電暖燈",
+        "model": "lumi.switch.b1nacn02",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-healthpot-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-healthpot-lamp-on",
+        "name": "養生壺燈",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-rice-cooker-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-rice-cooker-lamp-on",
+        "name": "電飯鍋燈",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-stove-heater-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-stove-heater-lamp-on",
+        "name": "暖爐燈",
+        "model": "lumi.switch.b1nacn02",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-bath-hot-air-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-bath-hot-air-lamp-on",
+        "name": "浴室熱風燈",
+        "model": "lumi.switch.b1nacn02",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-dryer-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-dryer-lamp-on",
+        "name": "烘乾機燈",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-bug-zapper-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-bug-zapper-lamp-on",
+        "name": "滅蟲燈",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-warning-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-warning-lamp-on",
+        "name": "警示燈",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-alarm-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-alarm-lamp-on",
+        "name": "警報燈",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "plug-trad-smart-plug-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "plug-trad-smart-plug-lamp-on",
+        "name": "智能插頭燈",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "plug-trad-adapter-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "plug-trad-adapter-lamp-on",
+        "name": "轉接頭燈",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-rolling-door-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-rolling-door-lamp-on",
+        "name": "鐵捲門燈",
+        "model": "lumi.switch.b1nacn02",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "switched-trad-uvc-lamp-on",
+      "role": "new",
+      "device": {
+        "id": "switched-trad-uvc-lamp-on",
+        "name": "UVC燈",
+        "model": "cuco.plug.v3",
+        "kind": "plug"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
     }
   ],
   "decisionRows": [

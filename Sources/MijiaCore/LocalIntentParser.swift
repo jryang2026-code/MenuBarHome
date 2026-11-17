@@ -106,10 +106,11 @@ public enum LocalIntentParser {
         .union(CharacterSet(charactersIn: "，。！？、；：,!?;:~～\"'“”‘’"))
 
     private static let tradToSimpMap: [Character: Character] = {
-        let trad = Array("開關啟啓閉滅調變設為換執動進運場燈電氣機風熱涼溫濕溼乾淨掃視攝頭監閥門總鎖簾紗捲葉車庫揚聲魚寵餵煙霧應傳臥廳書廚陽臺檯衛間裡裏內頂帶環點黃藍綠紅檔擋級強靜愛搖擺別製備個盞隻條請幫煩給將兩過時鐘鍾後銷剛暫還計")
-        let simp = Array("开关启启闭灭调变设为换执动进运场灯电气机风热凉温湿湿干净扫视摄头监阀门总锁帘纱卷叶车库扬声鱼宠喂烟雾应传卧厅书厨阳台台卫间里里内顶带环点黄蓝绿红档档级强静爱摇摆别制备个盏只条请帮烦给将两过时钟钟后销刚暂还计")
+        let trad = Array("開關啟啓閉滅調變設為換執動進運場燈電氣機風熱涼溫濕溼乾淨掃視攝頭監閥門總鎖簾紗捲葉車庫揚聲魚寵餵煙霧應傳臥廳書廚陽臺檯衛間裡裏內頂帶環點黃藍綠紅檔擋級強靜愛搖擺別製備個盞隻條請幫煩給將兩過時鐘鍾後銷剛暫還計線轉殺發驅誘號訊壺飲飯鍋養網長報蟲爐蘇曬")
+        let simp = Array("开关启启闭灭调变设为换执动进运场灯电气机风热凉温湿湿干净扫视摄头监阀门总锁帘纱卷叶车库扬声鱼宠喂烟雾应传卧厅书厨阳台台卫间里里内顶带环点黄蓝绿红档档级强静爱摇摆别制备个盏只条请帮烦给将两过时钟钟后销刚暂还计线转杀发驱诱号讯壶饮饭锅养网长报虫炉苏晒")
+        precondition(trad.count == simp.count && Set(trad).count == trad.count)
         var map: [Character: Character] = [:]
-        for (idx, ch) in trad.enumerated() where idx < simp.count {
+        for (idx, ch) in trad.enumerated() {
             map[ch] = simp[idx]
         }
         return map
