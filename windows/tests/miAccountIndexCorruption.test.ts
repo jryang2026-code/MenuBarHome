@@ -9,16 +9,19 @@ import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { renderConnectionsAndDiagSection } from "../src/ui/connectionsAndDiagView.js";
 import type { MiSession } from "../src/core/miCloudClient.js";
 import {
+  MI_ACCOUNTS_INDEX_RECOVERY_STORAGE_KEY,
   MI_ACCOUNTS_INDEX_STORAGE_KEY,
   MiAccountsStore,
   hasCorruptMiAccountIndex,
   hasPendingMiAccountIndexRecovery,
+  hasPendingMiAccountSignOut,
   hasSecondaryMiAccountsInIndex,
   makeMiAccount,
   miAccountId,
   readAccountIndex,
   readAccountIndexState,
 } from "../src/core/miAccountsStore.js";
+import { hasMultipleMiAccountsForHost } from "../src/ui/cloudRefresh.js";
 import {
   CredentialVault,
   miAccountSessionCredentialName,
@@ -305,6 +308,36 @@ describe("Mi account index corruption (#228)", () => {
     assert.equal(recovered.some((account) => account.id === primary.id), false);
   });
 
+  it("does not wipe hidden secondary credentials when the visible primary is removed", async () => {
+    const storage = memoryStorage();
+    const options: CredentialFixtureOptions = { supportsSlotScan: false };
+    const { invoke } = makeCredentialFixture(options);
+    const seeded = new MiAccountsStore(new CredentialVault(invoke), storage);
+    await seedStore(seeded, [SESSION_PRIMARY, SESSION_SG]);
+    storage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, "{broken");
+
+    const store = new MiAccountsStore(new CredentialVault(invoke), storage);
+    const cold = await store.load();
+    assert.deepEqual(cold.map((account) => account.id), [miAccountId(SESSION_PRIMARY)]);
+
+    // Enumeration recovers before the user removes the visible primary.
+    options.supportsSlotScan = true;
+    const removal = await store.removeAccount(miAccountId(SESSION_PRIMARY));
+    assert.deepEqual(
+      removal.accounts.map((account) => account.id),
+      [miAccountId(SESSION_SG)],
+      "the hidden secondary is discovered before deciding this is the last account",
+    );
+    assert.equal(removal.primarySession?.userId, SESSION_SG.userId);
+    assert.equal(
+      (await new CredentialVault(invoke).loadPrimaryMiSession())?.userId,
+      SESSION_SG.userId,
+      "the secondary credential is promoted, not deleted",
+    );
+    assert.deepEqual(readAccountIndex(storage).map((entry) => entry.id), [miAccountId(SESSION_SG)]);
+    assert.equal(hasPendingMiAccountIndexRecovery(storage), false);
+  });
+
   it("aborts sign-out when slot enumeration fails instead of leaving orphan credentials", async () => {
     const storage = memoryStorage();
     const { invoke } = makeCredentialFixture({ supportsSlotScan: false });
@@ -321,7 +354,8 @@ describe("Mi account index corruption (#228)", () => {
 
   it("clears the recovery state and warning after a full sign-out", async () => {
     const storage = memoryStorage();
-    const { invoke } = makeCredentialFixture({ supportsSlotScan: false });
+    const options: CredentialFixtureOptions = { supportsSlotScan: false };
+    const { invoke } = makeCredentialFixture(options);
     const store = new MiAccountsStore(new CredentialVault(invoke), storage);
     await seedStore(store, [SESSION_PRIMARY, SESSION_SG]);
     storage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, "{broken");
@@ -329,10 +363,36 @@ describe("Mi account index corruption (#228)", () => {
     assert.equal(store.getAccountIndexRepair(), "unrecovered");
     assert.equal(hasPendingMiAccountIndexRecovery(storage), true);
 
+    options.supportsSlotScan = true;
     await store.clearAll();
     assert.equal(store.getAccountIndexRepair(), "none");
     assert.equal(hasPendingMiAccountIndexRecovery(storage), false);
+    assert.equal(hasPendingMiAccountSignOut(storage), false);
     assert.equal(storage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY), null);
+  });
+
+  it("keeps a failed full sign-out pending and wipes hidden slots before recovery", async () => {
+    const storage = memoryStorage();
+    const options: CredentialFixtureOptions = { supportsSlotScan: false };
+    const { invoke, data } = makeCredentialFixture(options);
+    const seeded = new MiAccountsStore(new CredentialVault(invoke), storage);
+    await seedStore(seeded, [SESSION_PRIMARY, SESSION_SG]);
+    const sgSlotName = miAccountSessionCredentialName(makeMiAccount(SESSION_SG).slotId);
+    storage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, "{broken");
+
+    const store = new MiAccountsStore(new CredentialVault(invoke), storage);
+    await store.load();
+    await assert.rejects(() => store.clearAll(), /无法枚举小米账号凭据/);
+    assert.equal(hasPendingMiAccountSignOut(storage), true);
+    assert.ok(data.has(sgSlotName), "a failed scan must not delete a partial set");
+
+    options.supportsSlotScan = true;
+    const cold = new MiAccountsStore(new CredentialVault(invoke), storage);
+    assert.deepEqual(await cold.load(), [], "the retried sign-out reports no accounts");
+    assert.equal(hasPendingMiAccountSignOut(storage), false);
+    assert.equal(data.has("mi_session"), false);
+    assert.equal(data.has(sgSlotName), false);
+    assert.deepEqual(await cold.load(), [], "the signed-out secondary never resurrects");
   });
 
   it("leaves a fresh install untouched and reports no repair", async () => {
@@ -426,7 +486,8 @@ describe("Mi account index corruption (#228)", () => {
     const dom: Window = mountTestWindow({ stubInterval: true });
     try {
       setLanguage("en");
-      const { invoke } = makeCredentialFixture({ supportsSlotScan: false });
+      const options: CredentialFixtureOptions = { supportsSlotScan: false };
+      const { invoke } = makeCredentialFixture(options);
       const store = new MiAccountsStore(new CredentialVault(invoke), localStorage);
       await seedStore(store, [SESSION_PRIMARY, SESSION_SG]);
       localStorage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, "{broken");
@@ -449,6 +510,17 @@ describe("Mi account index corruption (#228)", () => {
         "English catalog text is rendered, so the warning is never silent",
       );
 
+      const refreshHost = { settings: {} };
+      assert.equal(hasMultipleMiAccountsForHost(refreshHost), true, "a corrupt index forces a store load");
+      localStorage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, JSON.stringify([{ id: miAccountId(SESSION_PRIMARY) }]));
+      localStorage.setItem(MI_ACCOUNTS_INDEX_RECOVERY_STORAGE_KEY, "1");
+      assert.equal(
+        hasMultipleMiAccountsForHost(refreshHost),
+        true,
+        "a pending recovery keeps the multi-account refresh path",
+      );
+
+      options.supportsSlotScan = true;
       await store.clearAll();
       const clearedHtml = renderConnectionsAndDiagSection({
         settings: app.settings,

@@ -20,6 +20,8 @@ import {
 } from "../core/dualSourceProvider.js";
 import {
   MiAccountsStore,
+  hasCorruptMiAccountIndex,
+  hasPendingMiAccountIndexRecovery,
   hasSecondaryMiAccountsInIndex,
   makeMiAccount,
   refreshMiAccountsConcurrently,
@@ -769,7 +771,9 @@ export function getHostMiAccountsState(host: DualSourceInspectableHost): HostMul
 
 export function hasMultipleMiAccountsForHost(host: DualSourceInspectableHost): boolean {
   if (host.miAccountsOverride != null) return host.miAccountsOverride.length > 1;
-  return hasSecondaryMiAccountsInIndex();
+  // A corrupt index or a pending recovery means the stored list cannot prove there is only one
+  // account; `store.load()` must run so enumeration can fill it in (#228).
+  return hasSecondaryMiAccountsInIndex() || hasCorruptMiAccountIndex() || hasPendingMiAccountIndexRecovery();
 }
 
 function knownPreferenceIdsForHost(host: MenuMijiaWindowsApp): Set<string> {
@@ -1098,7 +1102,10 @@ export async function refreshDualSourceDevices(
   const overrideAccounts = host.miAccountsOverride;
   const loadedAccounts =
     overrideAccounts ??
-    (host.settings.miSession && !hasSecondaryMiAccountsInIndex()
+    (host.settings.miSession &&
+    !hasSecondaryMiAccountsInIndex() &&
+    !hasCorruptMiAccountIndex() &&
+    !hasPendingMiAccountIndexRecovery()
       ? [makeMiAccount(host.settings.miSession)]
       : await getHostMiAccountsStore(host).load());
   if (
