@@ -41,7 +41,7 @@ import {
 } from "../core/dualSourceProvider.js";
 import {
   clearAccountRateLimitBackoff,
-  MI_ACCOUNTS_EXPIRED_STORAGE_KEY,
+  clearPersistedMiAccountExpiryMap,
   MI_ACCOUNTS_INDEX_STORAGE_KEY,
   readAccountIndex,
 } from "../core/miAccountsStore.js";
@@ -220,7 +220,6 @@ export async function clearHostSessionAndDualSourceState(
   try {
     if (typeof localStorage !== "undefined") {
       localStorage.removeItem(MI_ACCOUNTS_INDEX_STORAGE_KEY);
-      localStorage.removeItem(MI_ACCOUNTS_EXPIRED_STORAGE_KEY);
       if (options.revokeAll) {
         localStorage.removeItem(DUAL_SOURCE_ENABLED_STORAGE_KEY);
         localStorage.removeItem(PINNED_DEVICE_SOURCES_STORAGE_KEY);
@@ -230,6 +229,7 @@ export async function clearHostSessionAndDualSourceState(
     }
   } catch {
   }
+  await clearPersistedMiAccountExpiryMap();
   if (options.revokeAll) {
     appDiagnosticsLog.clear();
     host.dualSourceCoordinator = null;

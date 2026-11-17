@@ -40,11 +40,13 @@ import { environmentReadingPriority,
   type SynthesizedHome,
 } from "./models.js";
 import { clearPersistedMiSessionExpired,
+  clearPersistedMiSessionExpiredIfMatches,
   isPersistedMiSessionExpired,
   isXiaomiRateLimitError,
   miSessionFingerprint,
   persistMiSessionExpired,
   PollingPolicy,
+  runSessionExpiryStorageMutation,
   upgradeMiSessionFingerprint,
 } from "./pollingPolicy.js";
 import { CredentialVault,
@@ -172,28 +174,36 @@ interface PersistedAccountExpiredRecord { readonly fingerprint: string;
   readonly expiredAtMs: number;
 }
 
-function readPersistedAccountExpiryMap(storage: Storage | null,
-): Record<string, PersistedAccountExpiredRecord> { if (!storage) return {};
+interface PersistedAccountExpiryState { readonly map: Record<string, PersistedAccountExpiredRecord>;
+  /** Raw JSON when at least one entry still carried the v1 plaintext fingerprint. */
+  readonly legacyRaw: string | null;
+}
+
+/**
+ * Reads the per-account rejection map. Every fingerprint is upgraded in memory; the raw JSON is
+ * returned when a v1 entry remains so a migration can be scheduled without losing newer writes.
+ */
+function readPersistedAccountExpiryState(storage: Storage | null,
+): PersistedAccountExpiryState { if (!storage) return { map: {}, legacyRaw: null };
   try { const raw = storage.getItem(MI_ACCOUNTS_EXPIRED_STORAGE_KEY);
-    if (!raw) return {};
+    if (!raw) return { map: {}, legacyRaw: null };
     const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const out: Record<string, PersistedAccountExpiredRecord> = {};
-    let upgradedLegacyFingerprint = false;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { map: {}, legacyRaw: null };
+    const map: Record<string, PersistedAccountExpiredRecord> = {};
+    let legacy = false;
     for (const [accountId, value] of Object.entries(parsed as Record<string, unknown>)) {
       if (!value || typeof value !== "object" || Array.isArray(value)) continue;
       const rec = value as Record<string, unknown>;
-      if (typeof rec["fingerprint"] === "string" && typeof rec["expiredAtMs"] === "number") { const fingerprint = upgradeMiSessionFingerprint(rec["fingerprint"]);
-        if (fingerprint !== rec["fingerprint"]) upgradedLegacyFingerprint = true;
-        out[accountId] = {
-          fingerprint,
-          expiredAtMs: rec["expiredAtMs"],
-        };
-      }
+      if (typeof rec["fingerprint"] !== "string" || typeof rec["expiredAtMs"] !== "number") continue;
+      const fingerprint = upgradeMiSessionFingerprint(rec["fingerprint"]);
+      if (fingerprint !== rec["fingerprint"]) legacy = true;
+      map[accountId] = {
+        fingerprint,
+        expiredAtMs: rec["expiredAtMs"],
+      };
     }
-    if (upgradedLegacyFingerprint) writePersistedAccountExpiryMap(storage, out);
-    return out;
-  } catch { return {};
+    return { map, legacyRaw: legacy ? raw : null };
+  } catch { return { map: {}, legacyRaw: null };
   }
 }
 
@@ -207,28 +217,53 @@ function writePersistedAccountExpiryMap(storage: Storage | null,
   }
 }
 
-export function markAccountSessionRejected(session: MiSession | null | undefined,
+/**
+ * Upgrades every v1 entry of the shared map under the cross-window lock. The merge reads the map
+ * again inside the locked block and only rewrites legacy fingerprints, so an account rejection
+ * another window persisted after our first read is kept as-is.
+ */
+function migratePersistedMiAccountExpiryMap(storage: Storage | null): Promise<void> {
+  if (!storage) return Promise.resolve();
+  return runSessionExpiryStorageMutation(() => {
+    const current = readPersistedAccountExpiryState(storage);
+    if (current.legacyRaw === null) return;
+    writePersistedAccountExpiryMap(storage, current.map);
+  });
+}
+
+export function clearPersistedMiAccountExpiryMap(
+  storage: Storage | null = defaultStorage(),
+): Promise<void> { if (!storage) return Promise.resolve();
+  return runSessionExpiryStorageMutation(() => writePersistedAccountExpiryMap(storage, {}));
+}
+
+export async function markAccountSessionRejected(session: MiSession | null | undefined,
   expired: boolean,
   options: { readonly isPrimary?: boolean;
     readonly storage?: Storage | null;
     readonly nowMs?: number;
   } = {},
-): void { if (!session) return;
+): Promise<void> { if (!session) return;
   const storage = options.storage !== undefined ? options.storage : defaultStorage();
   const nowMs = options.nowMs ?? Date.now();
   const accountId = miAccountId(session);
-  const map = readPersistedAccountExpiryMap(storage);
-  if (expired) { map[accountId] = {
-      fingerprint: miSessionFingerprint(session),
-      expiredAtMs: nowMs,
-    };
-    if (options.isPrimary) { persistMiSessionExpired(session, true, storage, nowMs);
+  await runSessionExpiryStorageMutation(() => {
+    const map = readPersistedAccountExpiryState(storage).map;
+    if (expired) { map[accountId] = {
+        fingerprint: miSessionFingerprint(session),
+        expiredAtMs: nowMs,
+      };
+    } else { delete map[accountId];
     }
-  } else { delete map[accountId];
-    if (options.isPrimary || isPersistedMiSessionExpired(session, storage)) { clearPersistedMiSessionExpired(storage);
-    }
+    writePersistedAccountExpiryMap(storage, map);
+  });
+  if (expired) {
+    if (options.isPrimary) await persistMiSessionExpired(session, true, storage, nowMs);
+    return;
   }
-  writePersistedAccountExpiryMap(storage, map);
+  if (options.isPrimary) { await clearPersistedMiSessionExpired(storage);
+  } else if (isPersistedMiSessionExpired(session, storage)) { await clearPersistedMiSessionExpiredIfMatches(session, storage);
+  }
 }
 
 export function getAccountTokenStatus(accountOrSession: MiAccount | MiSession,
@@ -237,9 +272,10 @@ export function getAccountTokenStatus(accountOrSession: MiAccount | MiSession,
   warningLeadMs = MI_SESSION_WARNING_LEAD_MS,
 ): MiAccountTokenStatus { const session = "session" in accountOrSession ? accountOrSession.session : accountOrSession;
   const accountId = miAccountId(session);
-  const map = readPersistedAccountExpiryMap(storage);
+  const expiryState = readPersistedAccountExpiryState(storage);
+  if (expiryState.legacyRaw !== null) void migratePersistedMiAccountExpiryMap(storage);
   const fp = miSessionFingerprint(session);
-  const rejected = map[accountId];
+  const rejected = expiryState.map[accountId];
   if (rejected?.fingerprint === fp) { return { kind: "expired", source: "rejected", expiredAtMs: rejected.expiredAtMs };
   }
   if (isPersistedMiSessionExpired(session, storage)) { return { kind: "expired", source: "rejected" };
@@ -482,7 +518,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       const existingIdx = this.cachedAccounts.findIndex((item) => item.id === account.id);
       if (existingIdx === 0) { const prevFp = miSessionFingerprint(this.cachedAccounts[0]!.session);
         await this.vault.savePrimaryMiSession(account.session);
-        if (prevFp !== miSessionFingerprint(account.session)) { markAccountSessionRejected(account.session, false, {
+        if (prevFp !== miSessionFingerprint(account.session)) { await markAccountSessionRejected(account.session, false, {
             isPrimary: true,
             storage: this.storage,
           });
@@ -494,7 +530,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
 
       if (existingIdx > 0) { const prevFp = miSessionFingerprint(this.cachedAccounts[existingIdx]!.session);
         await this.vault.saveMiAccountSlot(account.slotId, account.session);
-        if (prevFp !== miSessionFingerprint(account.session)) { markAccountSessionRejected(account.session, false, {
+        if (prevFp !== miSessionFingerprint(account.session)) { await markAccountSessionRejected(account.session, false, {
             isPrimary: false,
             storage: this.storage,
           });
@@ -507,7 +543,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       }
 
       if (this.cachedAccounts.length === 0) { await this.vault.savePrimaryMiSession(account.session);
-        markAccountSessionRejected(account.session, false, {
+        await markAccountSessionRejected(account.session, false, {
           isPrimary: true,
           storage: this.storage,
         });
@@ -517,7 +553,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       }
 
       await this.vault.saveMiAccountSlot(account.slotId, account.session);
-      markAccountSessionRejected(account.session, false, {
+      await markAccountSessionRejected(account.session, false, {
         isPrimary: false,
         storage: this.storage,
       });
@@ -558,7 +594,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       } else { await this.vault.deleteMiAccountSlot(removed.slotId);
       }
 
-      markAccountSessionRejected(removed.session, false, {
+      await markAccountSessionRejected(removed.session, false, {
         isPrimary: idx === 0 && remaining.length === 0,
         storage: this.storage,
       });
@@ -584,8 +620,8 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       this.cachedAccounts = [];
       this.loaded = true;
       this.lastWroteIndexToStorage = writeAccountIndex(this.storage, []);
-      writePersistedAccountExpiryMap(this.storage, {});
-      clearPersistedMiSessionExpired(this.storage);
+      await clearPersistedMiAccountExpiryMap(this.storage);
+      await clearPersistedMiSessionExpired(this.storage);
     });
   }
 
@@ -1177,7 +1213,7 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
       const stamped = stampAccountSnapshot(rawHome, rawHomes, account, namespaceIds);
 
       clearAccountRateLimitBackoff(account.id);
-      markAccountSessionRejected(account.session, false, {
+      await markAccountSessionRejected(account.session, false, {
         isPrimary,
         storage,
         nowMs,
@@ -1196,7 +1232,7 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
         tokenStatus: freshTokenStatus,
       };
     } catch (error) { if (error instanceof MiCloudError && error.kind === "sessionExpired") {
-        markAccountSessionRejected(account.session, true, {
+        await markAccountSessionRejected(account.session, true, {
           isPrimary,
           storage,
           nowMs,
@@ -1324,7 +1360,7 @@ export async function executeMultiAccountMiotCommand(command: DeviceCommand,
       );
       return { executedByAccountId: account.id };
     } catch (error) { if (error instanceof MiCloudError && error.kind === "sessionExpired") { sawExpired = true;
-        markAccountSessionRejected(account.session, true, {
+        await markAccountSessionRejected(account.session, true, {
           isPrimary: accountIdx === 0,
           storage: options.storage,
         });
@@ -1419,7 +1455,7 @@ export class MultiAccountMiCloudProvider implements HomeProvider {
       } catch (error) {
         if (error instanceof MiCloudError && error.kind === "sessionExpired") {
           sawExpired = true;
-          markAccountSessionRejected(account.session, true, {
+          await markAccountSessionRejected(account.session, true, {
             isPrimary: accountIdx === 0,
             storage: this.dependencies.storage,
           });

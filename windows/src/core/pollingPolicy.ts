@@ -284,6 +284,13 @@ export function getXiaomiBackoffUntilMs(host: object, session: MiSession): numbe
 
 export const MI_SESSION_EXPIRED_STORAGE_KEY = "menumijia.windows.miSessionExpired.v1";
 
+/**
+ * Web Locks name shared by every same-origin window. WebView2 (and Chromium in general) hands the
+ * same lock manager to all documents of the origin, so this serializes session-expiry storage
+ * mutations between windows.
+ */
+export const MI_SESSION_EXPIRY_LOCK_NAME = "menumijia.miSessionExpired";
+
 function defaultStorage(): Storage | null {
   try {
     return typeof localStorage !== "undefined" ? localStorage : null;
@@ -292,29 +299,106 @@ function defaultStorage(): Storage | null {
   }
 }
 
+function sessionExpiryLockManager(): LockManager | null {
+  try {
+    const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+    return locks && typeof locks.request === "function" ? locks : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Runs one storage mutation inside the cross-window lock. Without Web Locks (old runtimes, tests)
+ * the callback runs synchronously, which is atomic inside one window; the merge/compare-and-swap
+ * applied by each mutation keeps a concurrent window's newer record intact in that case.
+ */
+function withSessionExpiryStorageLock(task: () => void): Promise<void> | undefined {
+  const locks = sessionExpiryLockManager();
+  if (!locks) {
+    task();
+    return undefined;
+  }
+  try {
+    return locks.request(MI_SESSION_EXPIRY_LOCK_NAME, () => {
+      task();
+    });
+  } catch {
+    task();
+    return undefined;
+  }
+}
+
+/**
+ * Serializes one session-expiry storage mutation across windows and never rejects: a lost lock or a
+ * failed write must not surface as an exception, because every caller has already computed its
+ * fail-closed verdict from the in-memory fingerprint.
+ */
+export async function runSessionExpiryStorageMutation(task: () => void): Promise<void> {
+  try {
+    const pending = withSessionExpiryStorageLock(task);
+    if (pending) await pending;
+  } catch {}
+}
+
+interface PersistedMiSessionExpiry {
+  /** Fingerprint upgraded to the current format. */
+  readonly fingerprint: string;
+  readonly expiredAtMs: number;
+  /** Raw JSON exactly as stored, used as the compare-and-swap snapshot for the migration. */
+  readonly raw: string;
+  readonly legacy: boolean;
+}
+
+function readPersistedMiSessionExpiry(storage: Storage): PersistedMiSessionExpiry | null {
+  try {
+    const raw = storage.getItem(MI_SESSION_EXPIRED_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const rec = parsed as Record<string, unknown>;
+    const stored = typeof rec["fingerprint"] === "string" ? rec["fingerprint"] : null;
+    if (stored === null) return null;
+    const fingerprint = upgradeMiSessionFingerprint(stored);
+    return {
+      fingerprint,
+      expiredAtMs: typeof rec["expiredAtMs"] === "number" ? rec["expiredAtMs"] : Date.now(),
+      raw,
+      legacy: fingerprint !== stored,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Upgrades a v1 record in place, but only while the stored JSON still equals the snapshot this
+ * window read. A rejection another window wrote in the meantime wins: this migration drops.
+ */
+function migratePersistedMiSessionExpired(storage: Storage, snapshotRaw: string): Promise<void> {
+  return runSessionExpiryStorageMutation(() => {
+    try {
+      if (storage.getItem(MI_SESSION_EXPIRED_STORAGE_KEY) !== snapshotRaw) return;
+      const record = readPersistedMiSessionExpiry(storage);
+      if (!record || !record.legacy) return;
+      storage.setItem(
+        MI_SESSION_EXPIRED_STORAGE_KEY,
+        JSON.stringify({ fingerprint: record.fingerprint, expiredAtMs: record.expiredAtMs }),
+      );
+    } catch {}
+  });
+}
+
 export function isPersistedMiSessionExpired(
   session: MiSession | null | undefined,
   storage: Storage | null = defaultStorage(),
 ): boolean {
   if (!session || !storage) return false;
   try {
-    const raw = storage.getItem(MI_SESSION_EXPIRED_STORAGE_KEY);
-    if (!raw) return false;
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
-    const rec = parsed as Record<string, unknown>;
-    const stored = typeof rec["fingerprint"] === "string" ? rec["fingerprint"] : null;
-    if (stored === null) return false;
-    const fingerprint = upgradeMiSessionFingerprint(stored);
-    if (fingerprint !== stored) {
-      const expiredAtMs = typeof rec["expiredAtMs"] === "number" ? rec["expiredAtMs"] : Date.now();
-      try {
-        storage.setItem(MI_SESSION_EXPIRED_STORAGE_KEY, JSON.stringify({ fingerprint, expiredAtMs }));
-      } catch {
-        // A failed rewrite must not change the verdict: the upgraded fingerprint below still matches.
-      }
-    }
-    return fingerprint === miSessionFingerprint(session);
+    const record = readPersistedMiSessionExpiry(storage);
+    if (!record) return false;
+    if (record.legacy) void migratePersistedMiSessionExpired(storage, record.raw);
+    return record.fingerprint === miSessionFingerprint(session);
   } catch {
     return false;
   }
@@ -325,28 +409,48 @@ export function persistMiSessionExpired(
   expired: boolean,
   storage: Storage | null = defaultStorage(),
   nowMs: number = Date.now(),
-): void {
-  if (!storage) return;
-  try {
-    if (!expired || !session) {
-      storage.removeItem(MI_SESSION_EXPIRED_STORAGE_KEY);
-      return;
-    }
+): Promise<void> {
+  if (!storage) return Promise.resolve();
+  return runSessionExpiryStorageMutation(() => {
+    try {
+      if (!expired || !session) {
+        storage.removeItem(MI_SESSION_EXPIRED_STORAGE_KEY);
+        return;
+      }
+      const fingerprint = miSessionFingerprint(session);
+      const current = readPersistedMiSessionExpiry(storage);
+      // An older rejection must not overwrite a newer one another window just persisted.
+      if (current && current.fingerprint !== fingerprint && current.expiredAtMs > nowMs) return;
       storage.setItem(
-      MI_SESSION_EXPIRED_STORAGE_KEY,
-      JSON.stringify({
-        fingerprint: miSessionFingerprint(session),
-        expiredAtMs: nowMs,
-      }),
-    );
-  } catch {}
+        MI_SESSION_EXPIRED_STORAGE_KEY,
+        JSON.stringify({ fingerprint, expiredAtMs: nowMs }),
+      );
+    } catch {}
+  });
 }
 
 export function clearPersistedMiSessionExpired(
   storage: Storage | null = defaultStorage(),
-): void {
-  if (!storage) return;
-  try {
-    storage.removeItem(MI_SESSION_EXPIRED_STORAGE_KEY);
-  } catch {}
+): Promise<void> {
+  if (!storage) return Promise.resolve();
+  return runSessionExpiryStorageMutation(() => {
+    try {
+      storage.removeItem(MI_SESSION_EXPIRED_STORAGE_KEY);
+    } catch {}
+  });
+}
+
+/** Clears the record only while it still belongs to `session`; a newer rejection survives. */
+export function clearPersistedMiSessionExpiredIfMatches(
+  session: MiSession | null | undefined,
+  storage: Storage | null = defaultStorage(),
+): Promise<void> {
+  if (!session || !storage) return Promise.resolve();
+  return runSessionExpiryStorageMutation(() => {
+    try {
+      const record = readPersistedMiSessionExpiry(storage);
+      if (!record || record.fingerprint !== miSessionFingerprint(session)) return;
+      storage.removeItem(MI_SESSION_EXPIRED_STORAGE_KEY);
+    } catch {}
+  });
 }

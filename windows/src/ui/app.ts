@@ -343,9 +343,9 @@ export class MenuMijiaWindowsApp {
     const normalized = Boolean(next);
     this._miSessionExpired = normalized;
     if (normalized) {
-      if (this.settings.miSession) persistMiSessionExpired(this.settings.miSession, true);
+      if (this.settings.miSession) void persistMiSessionExpired(this.settings.miSession, true);
     } else {
-      clearPersistedMiSessionExpired();
+      void clearPersistedMiSessionExpired();
     }
   }
   /** True after a hold already ran All Off, so a later pointerup on the rebuilt button does not replace the result with the short-press hint. */

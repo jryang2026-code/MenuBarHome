@@ -268,7 +268,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       }
       clearXiaomiRateLimitBackoff(host);
       host.miSessionExpired = false;
-      clearPersistedMiSessionExpired();
+      await clearPersistedMiSessionExpired();
       host.markCloudValuesFresh();
       host.groupOwnerByMemberDid = memberGroupOwners(membersByGroup as Map<string, string[]>);
       const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
@@ -329,7 +329,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         });
         if (err instanceof MiCloudError && err.kind === "sessionExpired") {
           host.miSessionExpired = true;
-          persistMiSessionExpired(session, true);
+          await persistMiSessionExpired(session, true);
           clearCachedXiaomiTopology(host);
         } else if (isXiaomiRateLimitError(err)) {
           recordXiaomiRateLimit(host, session, Date.now());

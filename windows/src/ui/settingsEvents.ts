@@ -428,7 +428,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   host.settings.cachedXiaomiDevices = [];
   host.settings.selectedHomeId = null;
   (host as { miSessionExpired?: boolean }).miSessionExpired = false;
-  clearPersistedMiSessionExpired();
+  await clearPersistedMiSessionExpired();
   clearCachedXiaomiTopology(host);
   clearXiaomiRateLimitBackoff(host);
   host.cloudValuesStale = false;
