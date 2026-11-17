@@ -271,10 +271,13 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       // token/account must survive. Clearing it stays correct even if the snapshot turns out stale,
       // because this session did reach the cloud.
       await clearPersistedMiSessionExpiredIfMatches(session);
-      // The await above is a suspension point; the user may have signed out, switched accounts or
-      // changed homes while it ran, so re-check before touching this host's flags or snapshot.
+      // The await above is a suspension point. If the host switched away from this session, the
+      // in-memory flag now belongs to the new context and must not be cleared from a stale success.
+      if (cloudSessionReplaced(host, session)) return;
+      // Same session (even if a home or the local control revision moved meanwhile): the cloud
+      // answered, so polling may resume. Storage was reconciled above, so bypass the persisting setter.
+      host.clearMiSessionExpiredFlag();
       if (cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) return;
-      host.miSessionExpired = false;
       host.markCloudValuesFresh();
       host.groupOwnerByMemberDid = memberGroupOwners(membersByGroup as Map<string, string[]>);
       const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
@@ -461,6 +464,15 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       groupOwners: [...host.groupOwnerByMemberDid],
     });
   }
+
+/**
+ * True when the host no longer belongs to the session a refresh validated. Unlike
+ * `cloudSnapshotIsStale`, this ignores home/revision/generation drift: the expiry flag is
+ * per-session, so a successful answer still clears it for the same session.
+ */
+function cloudSessionReplaced(host: MenuMijiaWindowsApp, session: MiSession): boolean {
+  return host.settings.connectionMode !== "xiaomiCloud" || host.settings.miSession !== session;
+}
 
 export function cloudSnapshotIsStale(
   host: MenuMijiaWindowsApp,

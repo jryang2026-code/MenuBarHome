@@ -354,6 +354,13 @@ export class MenuMijiaWindowsApp {
       void clearPersistedMiSessionExpired();
     }
   }
+  /**
+   * Clears only the in-memory flag. Used when the caller already reconciled `localStorage` inside
+   * the session-expiry lock, so a second (racing) storage write must not follow.
+   */
+  public clearMiSessionExpiredFlag(): void {
+    this._miSessionExpired = false;
+  }
   /** True after a hold already ran All Off, so a later pointerup on the rebuilt button does not replace the result with the short-press hint. */
   private allOffHoldConsumed = false;
   private allOffHoldTimer: number | null = null;
