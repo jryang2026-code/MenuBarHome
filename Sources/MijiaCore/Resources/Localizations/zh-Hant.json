@@ -930,6 +930,8 @@
     "默认每次都会先列出设备与动作，确认后才执行。链接格式：menumijia://toggle?device=<id>、menumijia://scene?name=<场景>、menumijia://ask?text=<一句话>。": "預設每次都會先列出裝置與動作，確認後才執行。連結格式：menumijia://toggle?device=<id>、menumijia://scene?name=<場景>、menumijia://ask?text=<一句話>。",
     "需要 macOS 26 并开启 Apple Intelligence": "需要 macOS 26 並開啟 Apple Intelligence",
     "时间": "時間",
+    "时段 %@": "時段 %@",
+    "限定时段": "限定時段",
     "环境": "環境",
     "开启中": "開啟中",
     "本机 AI 没能处理这条指令，换个说法再试；「打开书房灯」这类简单指令仍可直接使用": "本機 AI 沒能處理這條指令，換個說法再試；「開啟書房燈」這類簡單指令仍可直接使用",

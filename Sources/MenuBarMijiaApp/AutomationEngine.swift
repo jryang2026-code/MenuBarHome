@@ -65,7 +65,8 @@ final class AutomationEngine {
     private var lockTimeWiFi: WiFiReading?
     /// Last reading from the 10 s context poll, including "authorized but no network" results.
     private var lastKnownWiFi: WiFiReading?
-    private var arbitrationTask: Task<Void, Never>?
+    // Written on the main actor. `nonisolated(unsafe)` lets `deinit` cancel the debounce sleep.
+    private nonisolated(unsafe) var arbitrationTask: Task<Void, Never>?
 
     struct WiFiReading: Equatable, Sendable {
         var ssid: String?
@@ -95,6 +96,10 @@ final class AutomationEngine {
         self.calendar = calendar
         self.environment = environment
         self.lastExternalDisplayCount = Self.activeExternalDisplayCount()
+    }
+
+    deinit {
+        arbitrationTask?.cancel()
     }
 
     func start(with store: HomeStore) {
@@ -368,10 +373,15 @@ final class AutomationEngine {
     }
 
     /// Runs when the pending-lock deadline is reached.
+    ///
+    /// `now` only answers whether the debounce has elapsed. The rule is judged at the lock
+    /// instant, one debounce earlier, so a flush that lands at 22:00:01 still sees a 21:59:59
+    /// lock as outside a 22:00 window. A late wake must not move that verdict.
     func flushArbitration(at now: Date = Date()) async {
+        let lockInstant = arbitrator.pendingDeadline?.addingTimeInterval(-AwayArbitrator.lockDebounce)
         guard let outcome = arbitrator.flush(at: now) else { return }
         logger.notice("away-flush outcome=\(String(describing: outcome), privacy: .public)")
-        await dispatchAway(outcome, at: now)
+        await dispatchAway(outcome, at: lockInstant ?? now)
     }
 
     private func scheduleArbitrationFlush() {
