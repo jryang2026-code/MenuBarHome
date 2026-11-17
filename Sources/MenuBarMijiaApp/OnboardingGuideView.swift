@@ -288,7 +288,7 @@ public struct OnboardingGuideView: View {
             if !store.hasConnectedHomeSource, let supportedDevicesURL {
                 Link(destination: supportedDevicesURL) {
                     Label(L10n.tr("我的设备支持吗？", "Will my devices work?"), systemImage: "questionmark.circle")
-                        .font(.system(size: 10.5, weight: .medium))
+                        .font(.system(size: 11, weight: .medium))
                 }
             }
 
@@ -599,7 +599,7 @@ public struct OnboardingGuideView: View {
                 }
                 Spacer(minLength: 0)
                 Text(L10n.tr("默认收起", "Collapsed"))
-                    .font(.system(size: 9.5, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(DesignTokens.secondaryText)
             }
         }

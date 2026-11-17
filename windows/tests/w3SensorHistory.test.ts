@@ -5,7 +5,7 @@ import type { Window } from "happy-dom";
 
 import { assertMissing } from "./dom.js";
 import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.js";
-import { setLanguage } from "../src/core/i18n.js";
+import { currentLanguage, setLanguage } from "../src/core/i18n.js";
 import type { MiSession } from "../src/core/miCloudClient.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
 import { hasDetailDrawer, type FacetControl, type SmartDevice } from "../src/core/models.js";
@@ -42,6 +42,7 @@ import { demoDevices, demoSensorHistorySamples, seedDemoSensorHistory } from "..
 import {
   buildSmoothCubicBezierPath,
   extractRawMiCloudDid,
+  renderSensorHistorySection,
   resetSensorHistoryUiState,
 } from "../src/ui/sensorHistoryView.js";
 
@@ -1192,5 +1193,23 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
     assert.equal(loadedDuringOutage.length, 2);
     assert.equal(credMap.get("mi_session"), savedPrimaryBefore);
     assert.equal(credMap.get("mi_session"), serializeMiSession(primarySess));
+  });
+});
+
+describe("Sensor history provenance text", () => {
+  it("states the local-log limit at 12px in the primary color", () => {
+    resetSharedSensorHistoryStoreForTests();
+    const previous = currentLanguage();
+    setLanguage("zh-Hans");
+    try {
+      const html = renderSensorHistorySection(makeSensor("s_local_log"), [], (value) => value);
+      const badge = html.match(/<span data-sensor-source-badge[^>]*>/)?.[0] ?? "";
+      assert.match(html, /本机记录/);
+      assert.match(badge, /font-size:\s*12px/);
+      assert.match(badge, /var\(--text-primary\)/);
+      assert.doesNotMatch(badge, /10\.5px|text-tertiary|text-secondary/);
+    } finally {
+      setLanguage(previous);
+    }
   });
 });

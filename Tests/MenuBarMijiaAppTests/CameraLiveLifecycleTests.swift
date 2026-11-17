@@ -539,6 +539,15 @@ struct CameraLiveLifecycleTests {
         await controller.terminationTask?.value
         #expect(completionCount == 1)
     }
+
+    @Test("MJPEG wait copy is not the P2P sentence")
+    func mjpegWaitCopyDiffersFromP2P() {
+        for language in [AppLanguage.zhHans, .zhHant, .en] {
+            L10n.$overrideLanguage.withValue(language) {
+                #expect(CameraStreamWaitCopy.mjpeg != CameraStreamWaitCopy.encryptedP2P)
+            }
+        }
+    }
 }
 
 /// Parks the quit-timeout sleep until the test releases it. Cancellation still has to be able to

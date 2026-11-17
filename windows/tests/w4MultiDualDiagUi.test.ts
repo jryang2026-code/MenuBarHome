@@ -811,6 +811,14 @@ describe("W4 Dual-Source Context Menu: source pinning & tri-lingual '离线，�
       const status = app.root.querySelector<HTMLElement>(`[data-dual-source-status="${lamp.id}"]`);
       assert.ok(badge, `fallback badge rendered for ${lang}`);
       assert.equal(badge.textContent?.trim(), expectedBadge);
+      const badgeStyle = badge.getAttribute("style") ?? "";
+      assert.match(badgeStyle, /font-size:\s*12px/);
+      assert.match(badgeStyle, /color:\s*var\(--win-caution\)/);
+      assert.doesNotMatch(badgeStyle, /background|var\(--win-caution-bg\)|#e67e22|10\.5px|text-tertiary|text-secondary/);
+      const statusStyle = status?.getAttribute("style") ?? "";
+      assert.match(statusStyle, /font-size:\s*12px/);
+      assert.match(statusStyle, /color:\s*var\(--win-caution\)/);
+      assert.doesNotMatch(statusStyle, /#e67e22|text-tertiary|text-secondary/);
       assert.ok(status?.textContent?.toLowerCase().includes(expectedBadge.toLowerCase()));
       assert.ok(
         app.root.querySelector('[data-pin-device-source="xiaomiCloud"]')?.classList.contains("is-checked"),
