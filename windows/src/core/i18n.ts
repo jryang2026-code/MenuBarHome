@@ -678,6 +678,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "摆风": ["摆风", "Swing"],
   "已将{name}摆风设为 {mode}": ["已将{name}摆风设为 {mode}", "Set {name} swing to {mode}"],
   "已将{name}位置设为 {percent}%": ["已将{name}位置设为 {percent}%", "Set {name} position to {percent}%"],
+  "将{name}位置调到 {percent}%": ["将{name}位置调到 {percent}%", "Move {name} to {percent}%"],
   "已{action}{name}按键锁": ["已{action}{name}按键锁", "{action} child lock on {name}"],
   "已向{name}投喂 {count}": ["已向{name}投喂 {count}", "Dispensed {count} on {name}"],
   "升": ["升", "Up"],

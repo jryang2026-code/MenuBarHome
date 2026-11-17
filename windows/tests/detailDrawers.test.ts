@@ -298,6 +298,88 @@ describe("Cover, Plug, Generic, and Climate Swing Detail Drawers", () => {
     assert.equal(serviceCalls.length, 11, "unknown cover close is direct");
   });
 
+  it("asks before a garage door or opener position drag while a curtain slider stays direct", async () => {
+    const makeCover = (
+      id: string,
+      name: string,
+      subtype: Extract<SmartDevice["kind"], { kind: "cover" }>["subtype"],
+      positionPercent: number,
+    ): SmartDevice => ({
+      id,
+      name,
+      roomId: "living",
+      roomName: "客厅",
+      model: "lumi.curtain.v1",
+      isOnline: true,
+      kind: {
+        kind: "cover",
+        entityId: `cover.${id}`,
+        subtype,
+        positionPercent,
+        positionWritable: true,
+        openDescription: "Open",
+        closeDescription: "Close",
+        pauseDescription: "Pause",
+        batteryPercent: null,
+        faultText: null,
+        motion: "stopped",
+      },
+    });
+
+    const { app, serviceCalls } = await mountWithHADevices([
+      makeCover("curtain_drag", "客厅窗帘", "curtain", 40),
+      makeCover("window_drag", "阳台推窗器", "window-opener", 40),
+      makeCover("garage_drag", "车库门", "garage-door", 40),
+    ]);
+
+    const drag = async (id: string, value: string): Promise<void> => {
+      const slider = element<HTMLInputElement>(`[data-coverpos="${id}"]`);
+      slider.value = value;
+      slider.dispatchEvent(new Event("change", { bubbles: true }));
+      await setImmediate();
+      await setImmediate();
+    };
+
+    await click('[data-expand-device="curtain_drag"]');
+    await drag("curtain_drag", "72");
+    assert.equal(serviceCalls.length, 1, "a curtain keeps the drag as its confirmation");
+    assert.equal(serviceCalls[0]?.service, "set_cover_position");
+
+    await click('[data-expand-device="window_drag"]');
+    await drag("window_drag", "10");
+    assert.equal(serviceCalls.length, 2, "closing a window opener stays direct");
+
+    await drag("window_drag", "90");
+    assert.equal(serviceCalls.length, 2, "opening the window opener arms confirmation");
+    assert.match(app.replyBanner?.text ?? "", /再点一次确认执行/);
+    await drag("window_drag", "90");
+    assert.equal(serviceCalls.length, 3, "the second drag executes");
+    assert.deepEqual(serviceCalls[2], {
+      domain: "cover",
+      service: "set_cover_position",
+      entity_id: "cover.window_drag",
+      data: { position: 90 },
+    });
+
+    await click('[data-expand-device="garage_drag"]');
+    await drag("garage_drag", "2");
+    assert.equal(serviceCalls.length, 3, "closing a garage door arms confirmation");
+    assert.match(app.replyBanner?.text ?? "", /再点一次确认执行/);
+    assert.match(
+      app.replyBanner?.text ?? "",
+      /调到 2%/,
+      "the prompt names the position that will be sent, not the snapped 0% the row shows",
+    );
+    await drag("garage_drag", "2");
+    assert.equal(serviceCalls.length, 4);
+    assert.deepEqual(serviceCalls[3], {
+      domain: "cover",
+      service: "set_cover_position",
+      entity_id: "cover.garage_drag",
+      data: { position: 2 },
+    });
+  });
+
   it("renders plug live W / kWh metrics and child-lock toggle end-to-end", async () => {
     const { serviceCalls } = await mountWithHADevices([
       {

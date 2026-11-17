@@ -614,6 +614,7 @@ export const ZH_HANT_CATALOG: Readonly<Record<string, string>> = {
   "摆风": "擺風",
   "已将{name}摆风设为 {mode}": "已將{name}擺風設為 {mode}",
   "已将{name}位置设为 {percent}%": "已將{name}位置設為 {percent}%",
+  "将{name}位置调到 {percent}%": "將{name}位置調到 {percent}%",
   "已{action}{name}按键锁": "已{action}{name}按鍵鎖",
   "已向{name}投喂 {count}": "已向{name}投餵 {count}",
   "升": "升",

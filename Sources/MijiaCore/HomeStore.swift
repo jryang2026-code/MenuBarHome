@@ -862,6 +862,11 @@ public final class HomeStore {
     /// Position the card showed when the current cover travel started. A stopped report at that
     /// position is the pre-command snapshot; any other stopped position is the motor's real stop.
     var coverCommandOrigins: [String: Int] = [:]
+    /// The cover position hazard prompt the user answered, per debounce slot: the direction that
+    /// was approved and the slot token carrying it. `setCoverPosition` honours it only while that
+    /// slot is still accumulating the same drag and the tick goes the same way, so a reversal or a
+    /// second drag after the command went out asks again.
+    var confirmedCoverDragAnswers: [String: (token: UUID, opens: Bool)] = [:]
     /// Last position each cover reported. Inferred travel survives only while this value changes,
     /// so an obstructed motor with a stale target stops showing "opening" (#298).
     var lastCoverPositions: [String: Int] = [:]
