@@ -45,6 +45,7 @@ import { clearPersistedMiSessionExpired,
   miSessionFingerprint,
   persistMiSessionExpired,
   PollingPolicy,
+  upgradeMiSessionFingerprint,
 } from "./pollingPolicy.js";
 import { CredentialVault,
   WIN32_CRED_MAX_BLOB_BYTES,
@@ -178,15 +179,19 @@ function readPersistedAccountExpiryMap(storage: Storage | null,
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     const out: Record<string, PersistedAccountExpiredRecord> = {};
+    let upgradedLegacyFingerprint = false;
     for (const [accountId, value] of Object.entries(parsed as Record<string, unknown>)) {
       if (!value || typeof value !== "object" || Array.isArray(value)) continue;
       const rec = value as Record<string, unknown>;
-      if (typeof rec["fingerprint"] === "string" && typeof rec["expiredAtMs"] === "number") { out[accountId] = {
-          fingerprint: rec["fingerprint"],
+      if (typeof rec["fingerprint"] === "string" && typeof rec["expiredAtMs"] === "number") { const fingerprint = upgradeMiSessionFingerprint(rec["fingerprint"]);
+        if (fingerprint !== rec["fingerprint"]) upgradedLegacyFingerprint = true;
+        out[accountId] = {
+          fingerprint,
           expiredAtMs: rec["expiredAtMs"],
         };
       }
     }
+    if (upgradedLegacyFingerprint) writePersistedAccountExpiryMap(storage, out);
     return out;
   } catch { return {};
   }

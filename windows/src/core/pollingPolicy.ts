@@ -107,15 +107,39 @@ function bytesToHex(bytes: Uint8Array): string {
   return hex;
 }
 
+const MI_SESSION_FINGERPRINT_PREFIX = "v2:";
+const MI_SESSION_FINGERPRINT_DOMAIN = "menumijia.windows.miSessionFingerprint";
+
+function digestSessionIdentity(identity: string): string {
+  return bytesToHex(sha256(utf8Bytes(`${MI_SESSION_FINGERPRINT_DOMAIN}\n${identity}`)));
+}
+
 /**
- * Non-secret session identity key (`userId + region + sha256(serviceToken)`).
- * Never exposes raw `serviceToken` or `ssecurity` to `localStorage`.
+ * Opaque session identity key for the whole `userId + region + sha256(serviceToken)` tuple.
+ * The digest covers the Xiaomi userId, so `localStorage` never holds a plaintext account ID
+ * (v1 records wrote `userId|region|tokenHash`). The token still contributes its entropy, which
+ * keeps the digest unguessable even for a low-entropy numeric userId.
  */
 export function miSessionFingerprint(session: MiSession): string {
   const userId = session.userId.trim();
   const region = normalizeMiCloudRegion(session.region);
   const tokenHash = bytesToHex(sha256(utf8Bytes(session.serviceToken)));
-  return `${userId}|${region}|${tokenHash}`;
+  return `${MI_SESSION_FINGERPRINT_PREFIX}${digestSessionIdentity(`${userId}|${region}|${tokenHash}`)}`;
+}
+
+function isLegacyMiSessionFingerprint(fingerprint: string): boolean {
+  return !fingerprint.startsWith(MI_SESSION_FINGERPRINT_PREFIX);
+}
+
+/**
+ * Upgrades a v1 `userId|region|tokenHash` fingerprint to the v2 digest. Hashing the legacy string
+ * is a pure function of the same identity, so "this exact session was rejected" keeps holding after
+ * the upgrade instead of silently turning an expired session back into a valid one.
+ */
+export function upgradeMiSessionFingerprint(fingerprint: string): string {
+  return isLegacyMiSessionFingerprint(fingerprint)
+    ? `${MI_SESSION_FINGERPRINT_PREFIX}${digestSessionIdentity(fingerprint)}`
+    : fingerprint;
 }
 
 interface CachedXiaomiTopology {
@@ -279,7 +303,14 @@ export function isPersistedMiSessionExpired(
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
     const rec = parsed as Record<string, unknown>;
-    return rec["fingerprint"] === miSessionFingerprint(session);
+    const stored = typeof rec["fingerprint"] === "string" ? rec["fingerprint"] : null;
+    if (stored === null) return false;
+    const fingerprint = upgradeMiSessionFingerprint(stored);
+    if (fingerprint !== stored) {
+      const expiredAtMs = typeof rec["expiredAtMs"] === "number" ? rec["expiredAtMs"] : Date.now();
+      storage.setItem(MI_SESSION_EXPIRED_STORAGE_KEY, JSON.stringify({ fingerprint, expiredAtMs }));
+    }
+    return fingerprint === miSessionFingerprint(session);
   } catch {
     return false;
   }
