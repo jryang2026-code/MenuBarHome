@@ -67,7 +67,7 @@ pub(crate) fn status_from_query_error(error: u32) -> WifiCurrentStatus {
 #[cfg(windows)]
 unsafe fn query_interface_status(
     handle: windows_sys::Win32::Foundation::HANDLE,
-    interface_guid: &windows_sys::Win32::Foundation::GUID,
+    interface_guid: &windows_sys::core::GUID,
 ) -> WifiCurrentStatus {
     use core::ffi::c_void;
     use windows_sys::Win32::NetworkManagement::WiFi::{
