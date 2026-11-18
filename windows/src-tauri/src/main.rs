@@ -10,6 +10,7 @@ mod network;
 mod placement;
 mod system_events;
 mod update;
+mod wifi;
 mod window;
 mod update_manifest;
 use camera::*;
@@ -25,6 +26,7 @@ use placement::{
 };
 use system_events::*;
 use update::*;
+use wifi::wifi_current;
 use window::*;
 
 #[cfg(test)]
@@ -265,6 +267,7 @@ fn main() {
             is_workstation_locked,
             system_power_status,
             external_display_count,
+            wifi_current,
             set_tray_tooltip, send_desktop_notification,
             write_raycast_snapshot,
             remove_raycast_snapshot,

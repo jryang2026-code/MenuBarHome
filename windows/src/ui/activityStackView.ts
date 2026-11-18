@@ -4,12 +4,17 @@ import {
   DoorbellCameraCoordinator,
   DoorbellDetector,
   getAutomationUndoRunId,
+  wifiDispatchDecisionForObservation,
+  wifiPollObservationFromProbe,
   type DoorbellCoordinatorScheduler,
   type DoorbellResponse,
   type DoorbellRing,
+  type EngineWifiReading,
   type HASnapshotLike,
   type RecordedAutomationRun,
   type SystemContextEvent,
+  type WindowsWifiProbeResult,
+  type WindowsWifiProbeState,
 } from "../core/automationEngine.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { speechLocale, t } from "../core/i18n.js";
@@ -38,7 +43,7 @@ import {
 import { ManualControlPolicy } from "../core/assistant.js";
 import { getScopedEnergyHistory } from "../core/energyHistory.js";
 import { resolveSensorHistoryScope, sharedSensorHistoryStore } from "../core/sensorHistory.js";
-import { isDeviceActiveOn, type DeviceCommand, type SmartDevice } from "../core/models.js";
+import { isDeviceActiveOn, type DeviceCommand, type FacetControl, type SmartDevice } from "../core/models.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import type { ReplyBannerState } from "./appTypes.js";
 import { SF_ICONS } from "./appConstants.js";
@@ -122,9 +127,24 @@ export interface HostActivityCenter {
   systemSignalBaseline: SystemSignalBaseline | null;
   lastSystemPollAtMs: number;
   systemPollInFlight: boolean;
+  /** `lastSampledLockState` 每次值翻转递增：用于作废在探针/规则执行期间被后续
+   * 翻转超越的锁屏回调（布尔值检查区分不了「解锁又上锁」的两次翻转）。 */
+  lockSampleGeneration: number;
   lastClipboardMarkdown: string | null;
   pendingHighRiskUndoRunId?: string | null;
   dismissedProactiveSignature?: string | null;
+  /** Wi-Fi 轮询（约 10 秒一次）：最近一次派发的确定读数与探针状态。 */
+  wifiPollInFlight: boolean;
+  lastWifiPollAtMs: number;
+  lastWifiReading: EngineWifiReading | null;
+  lastWifiProbeState: WindowsWifiProbeState | null;
+  /**
+   * 探针发起序号与最近一次已应用探针的序号：锁屏实时探针与周期轮询可能并发，
+   * 只应用「发起序号更新」的结果，避免先发起、后返回的旧读数覆盖新读数并制造
+   * 假的 joined/left 转换。
+   */
+  wifiProbeSeq: number;
+  wifiAppliedSeq: number;
 }
 
 type HostWithActivity = MenuMijiaWindowsApp & {
@@ -255,9 +275,16 @@ function createHostActivityCenter(
     systemSignalBaseline: null,
     lastSystemPollAtMs: 0,
     systemPollInFlight: false,
+    lockSampleGeneration: 0,
     lastClipboardMarkdown: null,
     pendingHighRiskUndoRunId: null,
     dismissedProactiveSignature: null,
+    wifiPollInFlight: false,
+    lastWifiPollAtMs: 0,
+    lastWifiReading: null,
+    lastWifiProbeState: null,
+    wifiProbeSeq: 0,
+    wifiAppliedSeq: 0,
   };
 }
 
@@ -315,6 +342,9 @@ function clearCenterActivities(center: HostActivityCenter): void {
   // looks like a power or display transition.
   center.systemSignalBaseline = null;
   center.lastSystemPollAtMs = 0;
+  // 会话/家庭切换即作废在途的锁屏回调：代际递增后，任何挂起中的旧回调
+  // 都不得对新会话派发过时的 lockChanged。
+  center.lockSampleGeneration += 1;
   center.pendingHighRiskUndoRunId = null;
   center.dismissedProactiveSignature = null;
 }
@@ -687,13 +717,22 @@ export async function executeSafetyTurnOffAction(
   return false;
 }
 
+/**
+ * True when restoring `step` would escalate the hazard of its device. A facet row carries the
+ * meaning of its own restore (an auxiliary switch turned back on, a mode restored away from off),
+ * so it is judged by the same table the original tap used, mirroring macOS `confirmUndoTargets`.
+ */
 export function doesUndoStepActivateHighRiskDevice(
   step: { readonly deviceId: string; readonly commands: readonly DeviceCommand[] },
   devices: readonly SmartDevice[],
   kindSnapshots?: ReadonlyMap<string, SmartDevice["kind"]>,
+  facetsById?: Readonly<Record<string, readonly FacetControl[]>>,
 ): boolean {
   const dev = devices.find((d) => d.id === step.deviceId);
-  if (!dev || !ManualControlPolicy.requiresConfirmation({ targetId: dev.id, operation: { kind: "power", isOn: true } }, devices)) {
+  if (!dev) return false;
+  const facets = facetsById?.[dev.id] ?? [];
+  if (step.commands.some((cmd) => facetRestoreNeedsConfirmation(dev, cmd, facets, devices))) return true;
+  if (!ManualControlPolicy.requiresConfirmation({ targetId: dev.id, operation: { kind: "power", isOn: true } }, devices)) {
     return false;
   }
   const snapKind = kindSnapshots?.get(step.deviceId);
@@ -718,11 +757,33 @@ export function doesUndoStepActivateHighRiskDevice(
       case "pressButton":
         return dev.kind.kind === "appliance" ? dev.kind.startAction?.entityId === cmd.entityId : true;
       case "setMiotProperty":
-        return cmd.value === true || (dev.kind.kind === "cover" && typeof cmd.value === "number" && cmd.value > 0);
+        // Backstop only: a matching facet row was judged above, so this catches the cover position
+        // restore an older snapshot can carry without one. A high-risk card with no row at all is
+        // already refused (or approved) by `facetRestoreNeedsConfirmation`.
+        return dev.kind.kind === "cover" && typeof cmd.value === "number" && cmd.value > 0;
       default:
         return false;
     }
   });
+}
+
+/** The hazard a facet restore carries, judged by the table the original write used. */
+function facetRestoreNeedsConfirmation(
+  dev: SmartDevice,
+  cmd: DeviceCommand,
+  facets: readonly FacetControl[],
+  devices: readonly SmartDevice[],
+): boolean {
+  if (cmd.kind !== "setMiotProperty") return false;
+  const control = facets.find(
+    (item) =>
+      item.target?.kind === "property" &&
+      item.target.entityId === cmd.entityId &&
+      item.target.piid === cmd.piid,
+  );
+  if (control) return ManualControlPolicy.facetRequiresConfirmation(control, cmd.value, dev);
+  // No row explains this property: only the device-level hazard can speak.
+  return ManualControlPolicy.requiresConfirmation({ targetId: dev.id, operation: { kind: "power", isOn: true } }, devices);
 }
 
 export function partitionUndoStepsByHighRiskConfirmation<
@@ -734,7 +795,11 @@ export function partitionUndoStepsByHighRiskConfirmation<
 ): { readonly approvedSteps: T[]; readonly skippedHighRiskSteps: T[]; readonly abortedAllHighRisk: boolean; readonly armedPromptText?: string } {
   const aliased = aliasedHostDevices(host);
   const pref = host.settings.interfaceLanguage;
-  const highRiskSet = new Set(steps.filter((s) => doesUndoStepActivateHighRiskDevice(s, aliased, options.kindSnapshots)));
+  const highRiskSet = new Set(
+    steps.filter((s) =>
+      doesUndoStepActivateHighRiskDevice(s, aliased, options.kindSnapshots, host.deviceFacets),
+    ),
+  );
   if (highRiskSet.size === 0 || (typeof host.manualControlConfirmationHandler !== "function" && options.isArmed)) {
     options.disarm();
     return { approvedSteps: [...steps], skippedHighRiskSteps: [], abortedAllHighRisk: false };
@@ -1137,6 +1202,101 @@ export function notifyPanelWakeLifecycle(host: unknown, nowMs = Date.now()): voi
   void dispatchSystemContextEvent(host, { kind: "panelWake" }, nowMs);
 }
 
+/** Wi-Fi 轮询节奏，对照 macOS `MacContextObserver` 的 10 秒上下文轮询。 */
+const WIFI_POLL_INTERVAL_MS = 10_000;
+
+/**
+ * 与 tick 派发同一道快照就绪门槛（`tickSafetyHealthAndAutomation` 的 tick 分支）：
+ * 应用启动早期设备来自 `cachedXiaomiDevices` / `cachedHAHome` 且不一定带
+ * `telemetryStale` 标记，Wi-Fi 观察的派发会顺带评估 sensorThreshold 等规则，
+ * 不设门槛就会拿旧缓存测温/告警触发自动化。门槛未达标时只记录读数、暂缓
+ * 派发（快照就绪后的下一次探针自然补上）。
+ */
+function wifiObservationDispatchAllowed(host: MenuMijiaWindowsApp, center: HostActivityCenter): boolean {
+  const enabledRules = center.automationEngine.store.load().filter((rule) => rule.isEnabled);
+  return (
+    (enabledRules.length > 0 &&
+      (host.settings.connectionMode === "demo" || isLiveSnapshotReadyForTelemetry(host) || host.devices.length === 0)) ||
+    center.automationEngine.arbitrator.hasPendingLock
+  );
+}
+
+/**
+ * 应用一次 Wi-Fi 探针读数：记录探针状态（设置界面「无权限」引导的数据源），
+ * 并在读数变化时经 `dispatchSystemContextEvent` 派发 `wifiChanged`。
+ * 「无法知晓」的读数会以 SSID 置空 + 不可信派发（引擎立即按不可信判定），但连续
+ * 相同的「无法知晓」读数不重复派发。
+ *
+ * `seq` 是探针发起时的序号：不大于已应用序号的探针结果不参与派发与基线更新
+ * （周期轮询与锁屏实时探针可能并发，先发起的读数可能后返回，不能覆盖更新的
+ * 读数或制造假的 joined/left 转换），但仍返回其自身读数——锁屏分支需要锁屏
+ * 时刻的真实网络，而不是 fail-closed 占位。
+ *
+ * 返回本次探针读到的读数；在代际失效或宿主不可用时返回 null（锁屏分支回退
+ * 不可信读数，且随后的代际检查会丢弃整个过时事件）。
+ */
+async function observeAndDispatchWifi(
+  host: MenuMijiaWindowsApp,
+  center: HostActivityCenter,
+  probe: WindowsWifiProbeResult | null | undefined,
+  nowMs: number,
+  seq: number,
+  generation: number,
+): Promise<EngineWifiReading | null> {
+  // 会话有效性先于一切应用（写 SSID、派发 wifiChanged、写锁屏快照之前）：
+  // 家庭切换 / 会话重置递增代际后，在途探针的结果绝不能跨会话生效。
+  if (generation !== center.lockSampleGeneration) return null;
+  const observation = wifiPollObservationFromProbe(probe);
+  if (!isFullPanelHost(host)) return observation.reading;
+  const superseded = seq <= center.wifiAppliedSeq;
+  if (superseded) return observation.reading;
+  center.lastWifiProbeState = observation.state;
+  center.wifiAppliedSeq = Math.max(center.wifiAppliedSeq, seq);
+  const decision = wifiDispatchDecisionForObservation(observation, center.lastWifiReading);
+  const reading = decision ? decision.reading : center.lastWifiReading;
+  if (!decision) return reading;
+  if (!wifiObservationDispatchAllowed(host, center)) return reading;
+  center.lastWifiReading = decision.reading;
+  await dispatchSystemContextEvent(
+    host,
+    { kind: "wifiChanged", ssid: decision.reading.ssid, isAuthorized: decision.reading.isAuthorized },
+    nowMs,
+  );
+  return decision.reading;
+}
+
+/**
+ * 轮询当前 WLAN 连接（`wifi_current` 命令由 `windows/src-tauri/src/wifi.rs` 提供）。
+ * 探针失败（IPC 异常）与「无法知晓」返回同样按不可信读数派发，与 macOS
+ * 「无法知晓 ≠ 未连接」的语义一致。
+ */
+async function pollAndDispatchWifi(
+  host: MenuMijiaWindowsApp,
+  center: HostActivityCenter,
+  nowMs: number,
+): Promise<void> {
+  const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
+  if (typeof invoke !== "function" || center.wifiPollInFlight) return;
+  if (nowMs - center.lastWifiPollAtMs < WIFI_POLL_INTERVAL_MS) return;
+  center.wifiPollInFlight = true;
+  center.lastWifiPollAtMs = nowMs;
+  try {
+    const seq = ++center.wifiProbeSeq;
+    const generation = center.lockSampleGeneration;
+    let probe: WindowsWifiProbeResult | null = null;
+    try {
+      probe = await invoke<WindowsWifiProbeResult>("wifi_current");
+    } catch {
+      probe = null;
+    }
+    await observeAndDispatchWifi(host, center, probe, nowMs, seq, generation);
+  } catch {
+    center.lastWifiProbeState = "unknown";
+  } finally {
+    center.wifiPollInFlight = false;
+  }
+}
+
 export function tickSafetyHealthAndAutomation(
   host: unknown,
   nowMs = Date.now(),
@@ -1162,15 +1322,51 @@ export function tickSafetyHealthAndAutomation(
         center.lockPollInFlight = false;
         if (!isFullPanelHost(host)) return;
         const previous = center.lastSampledLockState;
-        center.lastSampledLockState = locked;
         if (previous === null) {
           center.automationEngine.primeLockBaseline(locked);
+          center.lastSampledLockState = locked;
+          // 重新建立基线意味着此前的会话/重置已作废：递增代际，让任何在途的
+          // 旧锁屏回调失效，不得对新的会话派发过时的 lockChanged。
+          center.lockSampleGeneration += 1;
           return;
         }
         if (locked !== previous) {
+          // 记录翻转代际：探针与规则执行都可能耗时，等待期间可能发生「解锁又
+          // 上锁」等后续翻转。代际不一致说明本回调已被超越——继续派发会把过时
+          // 的 lockChanged 压在更新的事件之后（布尔值检查区分不了同值的两次
+          // 翻转），作废并交由下一次轮询按最新状态派发。
+          center.lastSampledLockState = locked;
+          center.lockSampleGeneration += 1;
+          const myGeneration = center.lockSampleGeneration;
+          if (center.lockSampleGeneration !== myGeneration) return;
+          let lockWifi: EngineWifiReading | undefined;
+          if (locked) {
+            // 锁上的瞬间补一次实时 Wi-Fi 探针（对照 macOS 在锁屏信号时刻的实时
+            // 读取），让 #9 的锁屏快照拿到最新网络而不是最多 10 秒前的轮询缓存；
+            // 读数随 lockChanged 事件直接带给引擎，避免与并发轮询写入共享上下文
+            // 产生竞争。探针失败（IPC 异常）与轮询路径一致按「无法知晓」失_close：
+            // 传 null 探针得到不可信读数并派发，不把旧轮询的授权 SSID 带进锁屏
+            // 快照。
+            const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
+            if (typeof invoke === "function") {
+              // 发起序号在探针发出前递增：锁屏探针必然晚于任何在途周期探针，
+              // 其结果不会被后返回的旧读数覆盖。
+              const seq = ++center.wifiProbeSeq;
+              let probe: WindowsWifiProbeResult | null = null;
+              try {
+                probe = await invoke<WindowsWifiProbeResult>("wifi_current");
+              } catch {
+                probe = null;
+              }
+              const applied = await observeAndDispatchWifi(host, center, probe, nowMs, seq, myGeneration).catch(() => null);
+              lockWifi =
+                applied ? { ssid: applied.ssid, isAuthorized: applied.isAuthorized } : { ssid: null, isAuthorized: false };
+            }
+          }
+          if (center.lockSampleGeneration !== myGeneration) return;
           const runs = await dispatchSystemContextEvent(
             host,
-            { kind: "lockChanged", isLocked: locked },
+            { kind: "lockChanged", isLocked: locked, ...(lockWifi ? { wifi: lockWifi } : {}) },
             nowMs,
           );
           if (runs.length > 0) {
@@ -1184,6 +1380,8 @@ export function tickSafetyHealthAndAutomation(
   }
 
   const isLockedSnapshot = center.lastSampledLockState ?? false;
+
+  void pollAndDispatchWifi(host, center, nowMs);
 
   if (isLiveSnapshotReadyForTelemetry(host)) {
     const aliased = aliasedHostDevices(host);

@@ -1124,8 +1124,14 @@ pub(crate) async fn spawn_fresh_go2rtc(
         {
             command.creation_flags(CREATE_NO_WINDOW);
         }
-        let child = command.spawn().map_err(|e| format!("启动 go2rtc 失败：{e}"))?;
-        crate::job_object::bind_child_to_kill_on_close_job(&child);
+        let mut child = command.spawn().map_err(|e| format!("启动 go2rtc 失败：{e}"))?;
+        if let Err(error) = crate::job_object::bind_child_to_kill_on_close_job(&child) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "go2rtc 已启动但无法绑定退出时一并结束的 Job Object，已结束该进程：{error}"
+            ));
+        }
         let pid = child.id();
         if let Ok(mut guard) = GO2RTC_PROCESS.lock() {
             *guard = Some(child);

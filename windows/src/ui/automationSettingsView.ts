@@ -187,7 +187,8 @@ function automationDraftSaveGate(
   scenes: readonly HomeScene[],
   devices: readonly SmartDevice[],
 ): { readonly canSave: boolean; readonly wifiInvalid: boolean; readonly timeWindowInvalid: boolean } {
-  // Windows 暂不支持 Wi-Fi 条件时编辑器被禁用，用户无法修改该条件，不应阻塞保存。
+  // Wi-Fi 条件编辑器跟随 WINDOWS_WIFI_CONDITION_SUPPORTED；开关关闭时用户无法修改
+  // 该条件，此时不应阻塞保存。
   const wifiInvalid =
     WINDOWS_WIFI_CONDITION_SUPPORTED &&
     draft.wifiKind !== "any" &&
@@ -857,6 +858,10 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
   const timeWindowInvalid = saveGate.timeWindowInvalid;
   const timeWindowOvernight = draft.timeWindowEnabled && draft.timeWindowStartHour > draft.timeWindowEndHour;
   const canAddRule = saveGate.canSave;
+  // Wi-Fi 轮询探到「无权限」时给出引导；只在用户正在编辑 Wi-Fi 相关条件时展示。
+  const wifiPermissionDenied =
+    center?.lastWifiProbeState === "noPermission" &&
+    (draft.wifiKind !== "any" || draft.trigger === "wifiNetworkJoined" || draft.trigger === "wifiNetworkLeft");
   const timeHourOptions = (selected: number) =>
     Array.from({ length: 24 }, (_, hour) => `<option value="${hour}" ${hour === selected ? "selected" : ""}>${pad2(hour)}:00</option>`).join("");
   const timeWindowHint = !draft.timeWindowEnabled
@@ -1033,14 +1038,19 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
           </select>
         </div>
         ${
-          !WINDOWS_WIFI_CONDITION_SUPPORTED
-            ? `<p class="cc-field-hint" id="settings-auto-wifi-unsupported-hint" style="color: #e67e22;">${esc(t("Windows 暂不支持按 Wi-Fi 判断，已保存的 Wi-Fi 条件不会生效。"))}</p>`
-            : draft.wifiKind !== "any"
-              ? `<div style="margin-top: 6px;">
+          draft.wifiKind !== "any"
+            ? `<div style="margin-top: 6px;">
               <input id="settings-auto-wifi-ssids" class="cc-input" type="text" value="${esc(draft.wifiSSIDsText)}" placeholder="${esc(uiText(lang, "输入 Wi-Fi 名称（多个用逗号分隔，如 Home_5G, Study）", "輸入 Wi-Fi 名稱（多個用逗號分隔）", "Wi-Fi SSIDs, comma-separated (e.g. Home_5G, Office)"))}" />
               ${wifiInvalid ? `<p class="cc-field-hint" id="settings-auto-wifi-hint" style="color: #e67e22;">${esc(uiText(lang, "请至少填写一个 Wi-Fi 名称（SSID）后再保存。", "請至少填寫一個 Wi-Fi 名稱（SSID）後再儲存。", "Enter at least one Wi-Fi SSID to save this condition."))}</p>` : ""}
             </div>`
-              : ""
+            : ""
+        }
+        ${
+          wifiPermissionDenied
+            ? `<p class="cc-field-hint" id="settings-auto-wifi-permission-hint" style="color: #e67e22;">${esc(
+                t("读取当前 Wi-Fi 名称需要系统「位置」权限，请在「设置 → 隐私和安全性 → 位置」中允许本应用，否则 Wi-Fi 条件不会生效。"),
+              )}</p>`
+            : ""
         }
         <div class="cc-field-row" style="margin-top: 8px;">
           <label class="cc-checkbox" for="settings-auto-time-window">

@@ -599,6 +599,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "配置流地址": ["配置流地址", "Configure stream URL"],
   "关闭画面": ["关闭画面", "Close live view"],
   "连接流地址": ["连接流地址", "Connect stream URL"],
+  "请填写局域网地址；本机回环地址（127.0.0.1）需先加入已授权服务地址，应用自带的 go2rtc 流不受影响": ["请填写局域网地址；本机回环地址（127.0.0.1）需先加入已授权服务地址，应用自带的 go2rtc 流不受影响", "Use a LAN address; a loopback address (127.0.0.1) must first be an authorized service origin. The bundled go2rtc stream is unaffected"],
   "已{action}{name}移动侦测": ["已{action}{name}移动侦测", "{action} motion detection on {name}"],
   "已将{name}设为{mode}": ["已将{name}设为{mode}", "Set {name} to {mode}"],
   "夜视关": ["夜视关", "Night Off"],
@@ -678,6 +679,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "摆风": ["摆风", "Swing"],
   "已将{name}摆风设为 {mode}": ["已将{name}摆风设为 {mode}", "Set {name} swing to {mode}"],
   "已将{name}位置设为 {percent}%": ["已将{name}位置设为 {percent}%", "Set {name} position to {percent}%"],
+  "将{name}位置调到 {percent}%": ["将{name}位置调到 {percent}%", "Move {name} to {percent}%"],
   "已{action}{name}按键锁": ["已{action}{name}按键锁", "{action} child lock on {name}"],
   "已向{name}投喂 {count}": ["已向{name}投喂 {count}", "Dispensed {count} on {name}"],
   "升": ["升", "Up"],
@@ -721,9 +723,9 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   ],
   "自动化与安全控制": ["自动化与安全控制", "Automation & Security"],
   "Windows 暂不支持，不会触发": ["Windows 暂不支持，不会触发", "Not supported on Windows; it will not fire"],
-  "Windows 暂不支持按 Wi-Fi 判断，已保存的 Wi-Fi 条件不会生效。": [
-    "Windows 暂不支持按 Wi-Fi 判断，已保存的 Wi-Fi 条件不会生效。",
-    "Wi-Fi conditions are not supported on Windows and will not take effect.",
+  "读取当前 Wi-Fi 名称需要系统「位置」权限，请在「设置 → 隐私和安全性 → 位置」中允许本应用，否则 Wi-Fi 条件不会生效。": [
+    "读取当前 Wi-Fi 名称需要系统「位置」权限，请在「设置 → 隐私和安全性 → 位置」中允许本应用，否则 Wi-Fi 条件不会生效。",
+    "Reading the Wi-Fi name needs the system Location permission. Allow this app under Settings > Privacy & security > Location, or Wi-Fi conditions will not apply.",
   ],
   "电源与显示器变化每 10 秒采样一次；休眠与息屏由系统电源通知即时推送，台式机没有电池，不会触发低电量规则。": [
     "电源与显示器变化每 10 秒采样一次；休眠与息屏由系统电源通知即时推送，台式机没有电池，不会触发低电量规则。",

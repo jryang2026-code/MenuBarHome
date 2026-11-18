@@ -15,6 +15,10 @@
 
 import { ASSISTANT_PROVIDER_PRESETS, assistantEndpointIdentity, inferAssistantPreset } from "./assistant/provider.js";
 import { normalizeMiCloudRegion, type MiSession } from "./miCloudClient.js";
+import { clearPersistedMiSessionExpired,
+  clearPersistedMiSessionExpiredFor,
+  miSessionFingerprint,
+} from "./pollingPolicy.js";
 
 export const WIN32_CRED_MAX_BLOB_BYTES = 2560;
 
@@ -343,6 +347,9 @@ export class CredentialVault {
 
     async persist(credentials: CredentialSnapshot): Promise<void> {
     return this.serialize(async () => {
+      // Captured before the write: once `mi_session` holds the new token, the previous token is
+      // retired and its rejection marker can never belong to a live session again.
+      const previousPrimary = parseMiSession(this.known.get("mi_session") ?? null);
       const primarySerialized = credentials.miSession ? serializeMiSession(credentials.miSession) : "";
       if (primarySerialized !== "") {
         assertCredentialBlobWithinLimit(primarySerialized, "mi_session");
@@ -371,6 +378,21 @@ export class CredentialVault {
         ...keyWrites,
         ...accountSlotWrites,
       ]);
+      // `results[0]` is the `mi_session` write. The retirement follows that result alone: a failed
+      // sibling (or the legacy-key clear below) must not leave the replaced token's marker behind.
+      const primaryWrite = results[0];
+      const nextPrimary = credentials.miSession;
+      if (
+        primaryWrite?.status === "fulfilled" &&
+        previousPrimary &&
+        nextPrimary &&
+        miSessionFingerprint(previousPrimary) !== miSessionFingerprint(nextPrimary)
+      ) {
+        // The new primary is now the saved credential, so the previous token is retired for good.
+        // Drop only that one fingerprint's rejection key (and its in-memory fallback); every other
+        // session's marker is untouched.
+        clearPersistedMiSessionExpiredFor(previousPrimary);
+      }
       const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
       if (failure) throw failure.reason;
       if (credentials.assistantApiKeys !== undefined) {
@@ -470,7 +492,6 @@ export class CredentialVault {
     async deleteMiSession(extraSlotIds: readonly string[] = []): Promise<void> {
     return this.serialize(async () => {
       const indexKeys = ["menumijia.windows.miAccountsIndex.v1", "menumijia.miAccountsIndex.v1"] as const;
-      const expiredKeys = ["menumijia.windows.miAccountsExpired.v1", "menumijia.miAccountsExpired.v1"] as const;
       const slots = new Set<SecureCredentialName>(["mi_session"]);
       for (const key of this.known.keys()) {
         if (key.startsWith("mi_session_")) slots.add(key);
@@ -505,7 +526,8 @@ export class CredentialVault {
       try {
         if (typeof localStorage !== "undefined") {
           for (const k of indexKeys) localStorage.removeItem(k);
-          for (const k of expiredKeys) localStorage.removeItem(k);
+          // Wipes the per-fingerprint rejection keys and both v1 expiry keys (no sessions remain).
+          clearPersistedMiSessionExpired();
         }
       } catch {
       }

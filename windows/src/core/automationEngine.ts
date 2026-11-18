@@ -44,15 +44,17 @@ export type SystemContextEventKind = SystemContextEvent["kind"];
 /**
  * Windows 当前有生产事件来源驱动的自动化触发器集合。
  *
- * 生产链路派发这些系统上下文事件（`ui/activityStackView.ts` 中 `dispatchSystemContextEvent`
- * 的全部调用点）：锁屏轮询状态翻转派发 `lockChanged`，面板唤醒生命周期派发 `panelWake`，
+ * 生产链路在 `ui/activityStackView.ts` 的 `dispatchSystemContextEvent` 调用点派发这些系统
+ * 上下文事件：锁屏轮询状态翻转派发 `lockChanged`，面板唤醒生命周期派发 `panelWake`，
  * `tickSafetyHealthAndAutomation` 周期派发 `tick`；`pollSystemContextSignals` 每 10 秒采样
  * 电源/电量与外接显示器数量，变化时派发 `powerChanged`、`externalDisplayChanged`；
  * `system_events.rs` 的电源回调推送 `systemSleep` / `systemWake` / `displayPowerChanged`
- * （`notifySystemSleep` / `notifySystemWake` / `notifyDisplayPowerChanged`）。
+ * （`notifySystemSleep` / `notifySystemWake` / `notifyDisplayPowerChanged`）；Wi-Fi 轮询读数
+ * 变化派发 `wifiChanged`（SSID 由 `windows/src-tauri/src/wifi.rs` 的 `wifi_current` 命令经
+ * WLAN API 读取）。
  *
- * 仍未接入的触发器（Wi-Fi、摄像头/麦克风、专注模式、日历、合盖休眠）没有事件源，规则永远
- * 等不到触发，因此留在本集合之外，设置界面也不会提供。
+ * 仍未接入的触发器（摄像头/麦克风、专注模式、日历、合盖休眠）没有事件源，规则永远等不到
+ * 触发，因此留在本集合之外，设置界面也不会提供。
  */
 export const WINDOWS_SUPPORTED_TRIGGERS = [
   "away",
@@ -71,6 +73,8 @@ export const WINDOWS_SUPPORTED_TRIGGERS = [
   "lateNightUsage",
   "scheduledTime",
   "sensorThreshold",
+  "wifiNetworkJoined",
+  "wifiNetworkLeft",
 ] as const satisfies readonly AutomationTrigger[];
 
 export type WindowsSupportedTrigger = (typeof WINDOWS_SUPPORTED_TRIGGERS)[number];
@@ -100,6 +104,8 @@ export const WINDOWS_TRIGGER_SOURCES: Readonly<Record<WindowsSupportedTrigger, r
   lateNightUsage: ["panelWake", "tick"],
   scheduledTime: ["tick"],
   sensorThreshold: ["tick"],
+  wifiNetworkJoined: ["wifiChanged"],
+  wifiNetworkLeft: ["wifiChanged"],
 };
 
 type AutomationPermission = "location" | "focus" | "calendar";
@@ -278,16 +284,105 @@ export function evaluateWiFiCondition(
 }
 
 /**
- * Windows 是否支持按 Wi-Fi 网络过滤规则。引擎快照里的 `wifiSSID` 只会由
- * `wifiChanged` 事件更新，而该事件在 Windows 生产链路中没有派发源，SSID 恒为
- * null，任何 `inAny` / `notIn` 条件都判定为「未联网」而不满足。第二阶段接入
- * Wi-Fi 事件采集后把此标志改为 true，即可解锁设置界面的条件编辑器。
+ * Windows 支持按 Wi-Fi 网络过滤规则。SSID 由 `wifi.rs` 的 `wifi_current` 命令经
+ * WLAN API 读取，前端约每 10 秒轮询一次并在读数变化时派发 `wifiChanged`；锁屏时
+ * 引擎还会抓取锁屏时刻的读数用于延迟 flush（与 macOS `lockTimeWiFi` 语义一致）。
  */
-export const WINDOWS_WIFI_CONDITION_SUPPORTED = false;
+export const WINDOWS_WIFI_CONDITION_SUPPORTED = true;
 
 /** 该 Wi-Fi 条件在 Windows 上是否可被真实评估（`any` 恒可，其余跟随支持标志）。 */
 export function isWiFiConditionSupportedOnWindows(condition: AutomationWiFiCondition): boolean {
   return WINDOWS_WIFI_CONDITION_SUPPORTED || condition.kind === "any";
+}
+
+/**
+ * `wifi_current`（`windows/src-tauri/src/wifi.rs`）对「拿不到 SSID」的三种归因，
+ * 对照 macOS `MacHardwareProbe.currentWiFi()` 的授权语义：「无权限」与「未知」都
+ * 是无法知晓（`isAuthorized = false`），绝不能当成「未连接」，否则会反转排除类
+ * 规则的含义。
+ */
+export type WindowsWifiProbeState = "connected" | "notConnected" | "noPermission" | "unknown";
+
+export interface WindowsWifiProbeResult {
+  readonly state: WindowsWifiProbeState;
+  readonly ssid?: string | null;
+}
+
+/** 引擎视角的一次 Wi-Fi 读数：SSID 与「能否知晓」。 */
+export interface EngineWifiReading {
+  readonly ssid: string | null;
+  readonly isAuthorized: boolean;
+}
+
+export interface WifiPollObservation {
+  readonly state: WindowsWifiProbeState;
+  /**
+   * 本次要应用到引擎的读数。确定的 connected / notConnected / noPermission 各自
+   * 映射；`unknown`（探针失败、隐藏网络、未知状态值）同样给出读数——SSID 置空
+   * 且不可信，让引擎立即进入「无法知晓」的关闭判定，而不是无限期保留上一次的
+   * 授权 SSID。
+   */
+  readonly reading: EngineWifiReading;
+}
+
+/**
+ * 把 `wifi_current` 的返回映射成引擎读数。语义对照 macOS：
+ * - `notConnected` → 已授权但未关联任何 WLAN（`no-network`）；
+ * - `noPermission` / `unknown` → 无法知晓（`not-authorized`，一切 Wi-Fi 条件不满足）；
+ * - `connected` 但 SSID 为空（隐藏网络）→ 同样无法知晓。
+ */
+export function wifiPollObservationFromProbe(probe: WindowsWifiProbeResult | null | undefined): WifiPollObservation {
+  if (!probe || typeof probe !== "object") {
+    return { state: "unknown", reading: { ssid: null, isAuthorized: false } };
+  }
+  switch (probe.state) {
+    case "connected": {
+      const ssid = typeof probe.ssid === "string" ? probe.ssid.trim() : "";
+      return ssid
+        ? { state: "connected", reading: { ssid, isAuthorized: true } }
+        : { state: "unknown", reading: { ssid: null, isAuthorized: false } };
+    }
+    case "notConnected":
+      return { state: "notConnected", reading: { ssid: null, isAuthorized: true } };
+    case "noPermission":
+      return { state: "noPermission", reading: { ssid: null, isAuthorized: false } };
+    // 未知状态值（包括未来新增的枚举）一律按「无法知晓」处理。
+    default:
+      return { state: "unknown", reading: { ssid: null, isAuthorized: false } };
+  }
+}
+
+/** 与上次派发读数对比：读数无法知晓或无变化时不派发，避免制造假「离开网络」转换。 */
+export interface WifiDispatchDecision {
+  readonly reading: EngineWifiReading;
+}
+
+/**
+ * 与上次派发的读数比较；仅在（SSID 或授权状态）发生变化时返回决策，否则返回
+ * null（调用点不得派发）。读数本身总是可信的——「无法知晓」已经映射成
+ * SSID 置空 + 不可信的读数，不存在需要跳过派发的未知读数。
+ */
+export function wifiDispatchDecisionForObservation(
+  observation: WifiPollObservation,
+  last: EngineWifiReading | null,
+): WifiDispatchDecision | null {
+  const reading = observation.reading;
+  if (last && last.ssid === reading.ssid && last.isAuthorized === reading.isAuthorized) return null;
+  return { reading };
+}
+
+/** 锁屏时刻抓取的 Wi-Fi 读数，供防抖后的 flush 判定（对照 macOS `WiFiReading`）。 */
+export interface AutomationWifiSnapshot {
+  readonly ssid: string | null;
+  readonly isAuthorized: boolean;
+  readonly capturedAtMs: number;
+}
+
+/** 锁屏快照的可信时长（毫秒），对照 macOS `WiFiReading.maxAge = 120` 秒。 */
+export const AUTOMATION_WIFI_SNAPSHOT_MAX_AGE_MS = 120_000;
+
+export function isAutomationWifiSnapshotFresh(snapshot: AutomationWifiSnapshot, nowMs: number): boolean {
+  return nowMs - snapshot.capturedAtMs <= AUTOMATION_WIFI_SNAPSHOT_MAX_AGE_MS;
 }
 
 const MINUTES_PER_DAY = 24 * 60;
@@ -637,12 +732,49 @@ export class AutomationTriggerDeduper {
       for (const [k, v] of Object.entries(JSON.parse(raw) as Record<string, unknown>)) {
         if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
       }
-      return out;
+      // 旧格式键曾把观测到的 SSID 写进持久化存储，等于留下「去过哪些网络」的
+      // 历史；读取时清除并回写，不让它们留在磁盘上。
+      const pruned = AutomationTriggerDeduper.pruneLegacyWifiKeys(out);
+      if (pruned !== out) this.writeStamps(pruned);
+      return pruned;
     } catch { return {}; }
   }
 
   private writeStamps(stamps: Readonly<Record<string, number>>): void {
     try { this.storage.setItem(AutomationTriggerDeduper.storageKey, JSON.stringify(stamps)); } catch {}
+  }
+
+  /**
+   * 旧版 joined/left 去重键是 `wifiJoined:<规则ID>:<SSID>`（额外冒号段是观测
+   * 到的 SSID）；现行键是 `wifiJoined:<规则ID>`（对照 macOS transitionEvent）。
+   * 规则 ID 本身不含冒号，因此 wifi 键里出现第二个冒号段即旧格式。
+   *
+   * 清理时把同一规则所有旧键里最大的时间戳合并进新键（新键已有更大值则保留），
+   * 再删除旧键——否则清理本身会绕过仍在生效的冷却。
+   */
+  private static pruneLegacyWifiKeys(stamps: Record<string, number>): Record<string, number> {
+    let changed = false;
+    const mergedStamps = new Map<string, number>();
+    const out: Record<string, number> = {};
+    for (const [key, value] of Object.entries(stamps)) {
+      const prefix = key.startsWith("wifiJoined:")
+        ? "wifiJoined:"
+        : key.startsWith("wifiLeft:")
+          ? "wifiLeft:"
+          : null;
+      if (prefix !== null && key.slice(prefix.length).includes(":")) {
+        changed = true;
+        const rest = key.slice(prefix.length);
+        const mergedKey = prefix + rest.slice(0, rest.indexOf(":"));
+        mergedStamps.set(mergedKey, Math.max(mergedStamps.get(mergedKey) ?? value, value));
+        continue;
+      }
+      out[key] = value;
+    }
+    for (const [mergedKey, value] of mergedStamps) {
+      out[mergedKey] = Math.max(out[mergedKey] ?? value, value);
+    }
+    return changed ? out : stamps;
   }
 }
 
@@ -735,14 +867,27 @@ function createDefaultSystemContextSnapshot(partial: Partial<SystemContextSnapsh
   return {
     isLocked: false, isDisplayAsleep: false, isSystemAsleep: false, lidClosed: false,
     onExternalPower: null, batteryPercent: null, powerSaverEnabled: false,
-    wifiSSID: null, wifiAuthorized: true, cameraInUse: false, microphoneInUse: false,
+    // 未经任何 Wi-Fi 观测前视为「无法知晓」：首轮 wifiChanged 只建立基线、
+    // 不触发 joined/left 转换（对照 macOS 首轮轮询没有 previous 不产生事件），
+    // 避免应用启动时对着默认快照误触发设备控制。
+    wifiSSID: null, wifiAuthorized: false, cameraInUse: false, microphoneInUse: false,
     externalDisplayCount: 0, focusModeEnabled: false,
     ...partial,
   };
 }
 
 export type SystemContextEvent =
-  | { readonly kind: "lockChanged"; readonly isLocked: boolean; readonly lidClosed?: boolean }
+  | {
+      readonly kind: "lockChanged";
+      readonly isLocked: boolean;
+      readonly lidClosed?: boolean;
+      /**
+       * 锁屏瞬间实时探针读到的 Wi-Fi 读数（`tickSafetyHealthAndAutomation` 的
+       * 锁屏分支附加）。引擎据此写入锁屏快照，避免与并发的 10 秒轮询写入共享
+       * 上下文产生竞争。
+       */
+      readonly wifi?: { readonly ssid: string | null; readonly isAuthorized: boolean };
+    }
   | { readonly kind: "displayPowerChanged"; readonly isAsleep: boolean }
   | { readonly kind: "systemSleep"; readonly lidClosed?: boolean }
   | { readonly kind: "systemWake" }
@@ -1086,6 +1231,8 @@ export class AutomationEngine {
   private hasLockBaseline = false;
   private sensorConditionEdge = new Map<string, boolean>();
   private batteryEdgeByRule = new Map<string, boolean>();
+  /** 锁屏瞬间抓取的 Wi-Fi 读数；flush 用完即弃，下一次锁屏重新抓取。 */
+  private lockTimeWifi: AutomationWifiSnapshot | null = null;
 
   constructor(storage: KeyValueStorageLike = defaultSafetyStorage()) {
     this.store = new AutomationRuleStore(storage);
@@ -1101,6 +1248,7 @@ export class AutomationEngine {
     this.hasLockBaseline = false;
     this.sensorConditionEdge.clear();
     this.batteryEdgeByRule.clear();
+    this.lockTimeWifi = null;
   }
 
   public primeLockBaseline(isLocked: boolean): void {
@@ -1174,13 +1322,43 @@ export class AutomationEngine {
         const lidClosed = event.lidClosed ?? this.context.lidClosed;
         const wasLocked = this.context.isLocked;
         this.context = { ...this.context, isLocked: event.isLocked, lidClosed };
+        // 锁上的瞬间抓取当时的 Wi-Fi 读数（对照 macOS `ingestAway(.screenLocked)`
+        // 实时读取 `lockTimeWiFi`）。事件自带的实时探针读数优先；探针不可用时
+        // 退回最近一次轮询读数。防抖窗口里网络可能切换，flush 必须按锁屏时刻
+        // 的读数判定，而不是 flush 时刻的读数。仅在真正的锁屏翻转（或首次建立
+        // 基线）时写入待决快照：重复的锁定事件不得覆盖既有快照——过时回调带入
+        // 的不可信读数会把合法快照洗掉（Codex 评审）。
+        const observed = event.isLocked ? (event.wifi ?? null) : null;
+        if (event.isLocked && (event.isLocked !== wasLocked || !this.hasLockBaseline)) {
+          this.lockTimeWifi = {
+            ssid: observed ? observed.ssid : this.context.wifiSSID,
+            isAuthorized: observed ? observed.isAuthorized : this.context.wifiAuthorized,
+            capturedAtMs: nowMs,
+          };
+        }
         if (!this.hasLockBaseline) {
           this.hasLockBaseline = true;
           break;
         }
         if (event.isLocked === wasLocked) break;
         if (event.isLocked) {
-          pushRulesFor("away");
+          // away 在锁屏瞬间判定，Wi-Fi 用刚抓取的锁屏快照（对照 macOS
+          // `handle(trigger:.away)` 经 `wifiReadingForDispatch` 优先锁屏快照）。
+          // 翻转路径的快照刚在上面写入，必然存在。
+          const lockSnapshot = this.lockTimeWifi;
+          const awayCandidates = rules.filter(
+            (rule) =>
+              rule.trigger === "away"
+              && this.passesConditions(
+                rule,
+                nowMs,
+                lockSnapshot ? lockSnapshot.ssid : this.context.wifiSSID,
+                lockSnapshot ? lockSnapshot.isAuthorized : this.context.wifiAuthorized,
+              ),
+          );
+          if (awayCandidates.length > 0 && this.deduper.shouldFire("away", nowMs)) {
+            matchedRules.push(...awayCandidates);
+          }
           const outcome = this.arbitrator.ingest("screenLocked", lidClosed, nowMs);
           if (outcome) pushRulesFor(awayOutcomeTrigger(outcome));
         } else {
@@ -1273,17 +1451,27 @@ export class AutomationEngine {
 
       case "wifiChanged": {
         const prevSSID = this.context.wifiSSID?.trim() || null;
+        const prevAuthorized = this.context.wifiAuthorized;
         const nextSSID = event.ssid?.trim() || null;
         const nextAuth = event.isAuthorized ?? this.context.wifiAuthorized;
         this.context = { ...this.context, wifiSSID: nextSSID, wifiAuthorized: nextAuth };
 
         if (prevSSID === nextSSID) break;
+        // 加入/离开触发器要求两侧读数都可信（对照 macOS `MacContextAutomation` 的
+        // `current.isWiFiAuthorized, previous.isWiFiAuthorized` 门）：一侧「无法知晓」
+        // 时绝不能制造假的网络转换。
+        if (!prevAuthorized || !nextAuth) break;
         if (prevSSID !== null && nextSSID !== prevSSID) {
           for (const rule of rules) {
             if (rule.trigger !== "wifiNetworkLeft") continue;
             if (rule.triggerOptions.wifiSSID && rule.triggerOptions.wifiSSID !== prevSSID) continue;
-            if (!conditionsOk(rule, nextSSID, nextAuth)) continue;
-            if (this.deduper.shouldFire(`wifiLeft:${rule.id}:${prevSSID}`, nowMs)) matchedRules.push(rule);
+            // 离开规则按「刚离开的网络」判定条件（对照 macOS handle(context:) 的
+            // conditionSSID：left 用 previous.wifiSSID）；此时 SSID 已不在网上，
+            // 用新 SSID 判定会使 inAny 的离开规则永不触发、notIn 反向误触发。
+            if (!conditionsOk(rule, prevSSID, prevAuthorized)) continue;
+            // 去重键只含触发器与规则 ID（对照 macOS transitionEvent），不把观测
+            // 到的 SSID 写进持久化存储。
+            if (this.deduper.shouldFire(`wifiLeft:${rule.id}`, nowMs)) matchedRules.push(rule);
           }
         }
         if (nextSSID !== null && nextSSID !== prevSSID) {
@@ -1291,7 +1479,7 @@ export class AutomationEngine {
             if (rule.trigger !== "wifiNetworkJoined") continue;
             if (rule.triggerOptions.wifiSSID && rule.triggerOptions.wifiSSID !== nextSSID) continue;
             if (!conditionsOk(rule, nextSSID, nextAuth)) continue;
-            if (this.deduper.shouldFire(`wifiJoined:${rule.id}:${nextSSID}`, nowMs)) matchedRules.push(rule);
+            if (this.deduper.shouldFire(`wifiJoined:${rule.id}`, nowMs)) matchedRules.push(rule);
           }
         }
         break;
@@ -1345,10 +1533,18 @@ export class AutomationEngine {
     if (flushed) {
       const trigger = awayOutcomeTrigger(flushed.outcome);
       const lockedAtMs = flushed.lockedAtMs;
+      // #9：时间按锁屏时刻判定，Wi-Fi 也按锁屏时刻的读数判定（对照 macOS
+      // `wifiReadingForDispatch` 优先 `lockTimeWiFi`）。快照超过 120 秒新鲜期
+      // （例如挂起后很久才收到下一条事件）时回退到当前读数，之后快照即作废。
+      const lockWifi =
+        this.lockTimeWifi !== null && isAutomationWifiSnapshotFresh(this.lockTimeWifi, nowMs)
+          ? this.lockTimeWifi
+          : { ssid: this.context.wifiSSID, isAuthorized: this.context.wifiAuthorized, capturedAtMs: nowMs };
+      this.lockTimeWifi = null;
       const candidates = rules.filter(
         (rule) =>
           rule.trigger === trigger
-          && this.passesConditions(rule, lockedAtMs, this.context.wifiSSID, this.context.wifiAuthorized),
+          && this.passesConditions(rule, lockedAtMs, lockWifi.ssid, lockWifi.isAuthorized),
       );
       if (candidates.length > 0 && this.deduper.shouldFire(trigger, lockedAtMs)) {
         confirmedLockAtMs = lockedAtMs;

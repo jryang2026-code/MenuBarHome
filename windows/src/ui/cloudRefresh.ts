@@ -39,7 +39,6 @@ import { renderSliderDeck } from "./panelView.js";
 import { isWorkstationLocked } from "./transport.js";
 import {
   clearCachedXiaomiTopology,
-  clearPersistedMiSessionExpired,
   clearXiaomiRateLimitBackoff,
   isPersistedMiSessionExpired,
   isXiaomiRateLimitError,
@@ -267,8 +266,8 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         });
       }
       clearXiaomiRateLimitBackoff(host);
+      // The setter clears only this session's own rejection key, so other accounts' records survive.
       host.miSessionExpired = false;
-      clearPersistedMiSessionExpired();
       host.markCloudValuesFresh();
       host.groupOwnerByMemberDid = memberGroupOwners(membersByGroup as Map<string, string[]>);
       const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
