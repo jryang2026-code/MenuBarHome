@@ -1333,16 +1333,16 @@ export async function dispatchSystemContextEvent(
   host: MenuMijiaWindowsApp,
   event: SystemContextEvent,
   nowMs = Date.now(),
-  rules?: readonly AutomationRule[],
 ): Promise<RecordedAutomationRun[]> {
   const center = getHostActivityCenter(host);
+  // The engine reads the rule store itself: a rule disabled a moment ago must not run, and a
+  // refused high-risk rule can only be switched off when no rule snapshot is supplied.
   const runs = await center.automationEngine.dispatchEvent(host, event, {
     nowMs,
     scope: center.scopeKey,
     displayDevices: aliasedHostDevices(host),
     observationsByDeviceId: center.observationsOverride ?? undefined,
     recordUndoKindSnapshots,
-    ...(rules ? { rules } : {}),
     onUndoRecorded: (run) => {
       center.dismissedActivityIds.delete(`auto:${run.id}`);
       center.recentAutomationRuns = [
@@ -1422,7 +1422,6 @@ export async function pollSystemContextSignals(
           batteryPercent: transition.power.batteryPercent,
         },
         nowMs,
-        latestRules,
       );
       fired = fired || runs.length > 0;
     }
@@ -1434,7 +1433,6 @@ export async function pollSystemContextSignals(
           externalDisplayCount: transition.externalDisplayCount,
         },
         nowMs,
-        latestRules,
       );
       fired = fired || runs.length > 0;
     }
@@ -1713,7 +1711,7 @@ export function tickSafetyHealthAndAutomation(
     (enabledRules.length > 0 && (host.settings.connectionMode === "demo" || isLiveSnapshotReadyForTelemetry(host) || host.devices.length === 0)) ||
     center.automationEngine.arbitrator.hasPendingLock
   ) {
-    void dispatchSystemContextEvent(host, { kind: "tick" }, nowMs, enabledRules);
+    void dispatchSystemContextEvent(host, { kind: "tick" }, nowMs);
   }
   center.lastEvaluatedAtMs = nowMs;
 

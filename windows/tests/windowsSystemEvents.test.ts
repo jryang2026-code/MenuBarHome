@@ -390,7 +390,35 @@ describe("Windows power/display automation (pollSystemContextSignals)", () => {
     assert.deepEqual(stub.calls, ["system_power_status", "system_power_status"]);
   });
 
-  it("is kicked by the safety/automation tick in production, parses the rule store once per tick, and clears baseline when disabled", async () => {
+  it("does not run a display rule that was disabled while the power rule was executing", async () => {
+    const powerRule = createAutomationRule({ id: "rule-p", trigger: "powerConnected", action: LIGHT_OFF_ACTION });
+    const displayRule = createAutomationRule({
+      id: "rule-d",
+      trigger: "externalDisplayConnected",
+      action: { kind: "devices", deviceIds: ["light.desk"], isOn: true },
+    });
+    const { app, sent } = trackingApp([powerRule, displayRule]);
+    const stub = stubNative({
+      power: { hasBattery: true, onExternalPower: false, batteryPercent: 70 },
+      displays: 0,
+    });
+    const store = getHostActivityCenter(app).automationEngine.store;
+    await pollSystemContextSignals(app, t0);
+
+    const applyCommand = app.applyCommand.bind(app);
+    app.applyCommand = async (command) => {
+      store.save(store.load().map((rule) => (rule.id === "rule-d" ? { ...rule, isEnabled: false } : rule)));
+      return applyCommand(command);
+    };
+    stub.power = { hasBattery: true, onExternalPower: true, batteryPercent: 70 };
+    stub.displays = 1;
+    await pollSystemContextSignals(app, t0 + SYSTEM_CONTEXT_POLL_INTERVAL_MS);
+
+    assert.equal(sent.length, 1, "only the power rule may send a command");
+    assert.deepEqual(sent.map((command) => command.kind === "setLightPower" && command.isOn), [false]);
+  });
+
+  it("is kicked by the safety/automation tick in production, adds no extra rule-store read, and clears baseline when disabled", async () => {
     const powerRule = createAutomationRule({ id: "rule-p", trigger: "powerConnected", action: LIGHT_OFF_ACTION });
     const { app } = trackingApp([powerRule]);
     const stub = stubNative({
@@ -405,18 +433,17 @@ describe("Windows power/display automation (pollSystemContextSignals)", () => {
       return origLoad();
     };
 
-    // Poll-due tick: must parse rule store only once synchronously across tick + poll + tick dispatch.
+    // The poll reuses the tick's rules; the second read is the engine's own dispatch.
     tickSafetyHealthAndAutomation(app, t0);
-    assert.equal(storeLoadCalls, 1, "poll-due tick must parse the automation rule store only once");
+    assert.equal(storeLoadCalls, 2, "poll-due tick reads the rule store for the tick and the engine only");
     await flush();
     assert.ok(stub.calls.includes("system_power_status"));
     assert.notEqual(center.systemSignalBaseline, null);
     assert.equal(center.lastSystemPollAtMs, t0);
 
-    // Non-due tick: still parses rule store only once.
     storeLoadCalls = 0;
     tickSafetyHealthAndAutomation(app, t0 + 1_000);
-    assert.equal(storeLoadCalls, 1, "non-due tick must parse the automation rule store only once");
+    assert.equal(storeLoadCalls, 2, "non-due tick reads the rule store for the tick and the engine only");
     await flush();
 
     // Disabling power/display consumers clears cached baseline & poll timestamp.
