@@ -321,11 +321,12 @@ extension HomeStore {
     }
 
     public func joinsAllOff(_ device: SmartDevice) -> Bool {
-        allOffOverrides[device.id] ?? Self.joinsAllOffByDefault(device)
+        if device.kind.isCover { return false }
+        return allOffOverrides[device.id] ?? Self.joinsAllOffByDefault(device)
     }
 
     public func setJoinsAllOff(_ joins: Bool, deviceId: String) {
-        guard let device = devices.first(where: { $0.id == deviceId }) else { return }
+        guard let device = devices.first(where: { $0.id == deviceId }), !device.kind.isCover else { return }
         allOffOverrides[deviceId] = joins == Self.joinsAllOffByDefault(device) ? nil : joins
     }
 

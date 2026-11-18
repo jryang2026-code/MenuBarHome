@@ -881,7 +881,7 @@ function renderSystemPanel(ctx: SettingsViewContext): string {
       <label>${t("「全关」包含哪些设备（插座、扫地机默认不包含）")}</label>
       <div class="cc-timers-stack">
         ${ctx.devices
-          .filter((d) => d.kind.kind !== "sensor" && d.kind.kind !== "fridge")
+          .filter((d) => d.kind.kind !== "sensor" && d.kind.kind !== "fridge" && d.kind.kind !== "cover")
           .map(
             (d) => `
           <label class="cc-checkbox">

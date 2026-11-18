@@ -39,9 +39,8 @@ public struct ClassicDeviceCardView: View {
         return false
     }
 
-    private var isGenericDevice: Bool {
-        if case .generic = device.kind { return true }
-        return false
+    public static func showsAllOffMenuOption(for device: SmartDevice) -> Bool {
+        !device.kind.isGenericDevice && !device.kind.isCover
     }
 
     private var panelLayout: PanelLayoutStore { PanelLayoutStore.shared(for: store.userDefaults) }
@@ -332,7 +331,7 @@ public struct ClassicDeviceCardView: View {
                 }
             }
 
-            if !isGenericDevice {
+            if Self.showsAllOffMenuOption(for: device) {
                 Button {
                     store.setJoinsAllOff(!store.joinsAllOff(device), deviceId: device.id)
                 } label: {
