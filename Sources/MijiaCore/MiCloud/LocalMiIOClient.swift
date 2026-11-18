@@ -39,11 +39,15 @@ public actor NWConnectionMiIOUDPTransport: MiIOUDPTransport {
         private var continuation: CheckedContinuation<Data, any Error>?
         private var connection: NWConnection?
         private var timeoutTask: Task<Void, Never>?
+        private var didCompleteSendFlag = false
 
         init(continuation: CheckedContinuation<Data, any Error>, connection: NWConnection) {
             self.continuation = continuation
             self.connection = connection
         }
+
+        var didCompleteSend: Bool { lock.withLock { didCompleteSendFlag } }
+        func markSendCompleted() { lock.withLock { didCompleteSendFlag = true } }
 
         func attachTimeout(_ task: Task<Void, Never>) {
             lock.lock()
@@ -125,9 +129,12 @@ public actor NWConnectionMiIOUDPTransport: MiIOUDPTransport {
                     case .ready:
                         connection.send(content: packet, completion: .contentProcessed { sendError in
                             if let sendError {
-                                complete(.failure(sendError))
+                                let denied = LocalNetworkPermissionClassifier.isDeniedNWConnection(error: sendError, unsatisfiedReason: connection.currentPath?.unsatisfiedReason)
+                                    || LocalNetworkPermissionClassifier.isDeniedConnectionError(sendError, targetHost: trimmedHost)
+                                complete(.failure(denied ? MiIOError.localNetworkDenied : sendError))
                                 return
                             }
+                            call.markSendCompleted()
                             connection.receiveMessage { content, _, _, receiveError in
                                 if let receiveError {
                                     complete(.failure(receiveError))
@@ -140,8 +147,11 @@ public actor NWConnectionMiIOUDPTransport: MiIOUDPTransport {
                                 complete(.success(content))
                             }
                         })
+                    case .waiting(let err) where !call.didCompleteSend && LocalNetworkPermissionClassifier.isDeniedNWConnection(error: err, unsatisfiedReason: connection.currentPath?.unsatisfiedReason):
+                        complete(.failure(MiIOError.localNetworkDenied))
                     case .failed(let err):
-                        complete(.failure(err))
+                        let denied = !call.didCompleteSend && LocalNetworkPermissionClassifier.isDeniedNWConnection(error: err, unsatisfiedReason: connection.currentPath?.unsatisfiedReason)
+                        complete(.failure(denied ? MiIOError.localNetworkDenied : err))
                     case .cancelled:
                         complete(.failure(CancellationError()))
                     default:
@@ -257,16 +267,16 @@ enum DarwinBSDMiIOBroadcastScanner {
         _ = setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &broadcastOn, socklen_t(MemoryLayout<Int32>.size))
         _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK)
         let packetBytes = [UInt8](packet)
-        var sentCount = 0
+        var sentCount = 0, sawDenied = false
         for target in broadcastIPs.sorted() {
             var dst = sockaddr_in(sin_len: UInt8(MemoryLayout<sockaddr_in>.size), sin_family: sa_family_t(AF_INET), sin_port: port.bigEndian, sin_addr: in_addr(), sin_zero: (0, 0, 0, 0, 0, 0, 0, 0))
             guard inet_pton(AF_INET, target, &dst.sin_addr) == 1 else { continue }
             let sent = packetBytes.withUnsafeBytes { rawBuf in
                 withUnsafePointer(to: &dst) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { sendto(fd, rawBuf.baseAddress, packetBytes.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
             }
-            if sent >= 0 { sentCount += 1 }
+            if sent >= 0 { sentCount += 1 } else if LocalNetworkPermissionClassifier.isDeniedPOSIXCode(errno) { sawDenied = true }
         }
-        if sentCount == 0 { return [] }
+        if sentCount == 0 { if sawDenied { throw MiIOError.localNetworkDenied }; return [] }
         let deadline = ContinuousClock.now + .milliseconds(max(1, Int(timeout.components.seconds) * 1000 + Int(timeout.components.attoseconds / 1_000_000_000_000_000)))
         var replies: [MiIOBroadcastReply] = [], seenSources: Set<String> = [], buf = [UInt8](repeating: 0, count: 2048)
         while !cancelFlag.withLock({ $0 }) {
@@ -497,6 +507,7 @@ public actor LocalMiIOClient {
         let sendStart = ContinuousClock.now, responsePacket: Data
         do { responsePacket = try await transport.send(probePacket, to: sourceIP, port: port, timeout: handshakeTimeout) }
         catch is CancellationError { throw CancellationError() }
+        catch let error as MiIOError where error == .shutDown || error == .localNetworkDenied { throw error }
         catch { return false }
         guard !isShutDown else { throw MiIOError.shutDown }
         guard let (respHeader, plaintext) = try? MiIOPacket.decode(responsePacket, token: tokenData),
@@ -710,7 +721,7 @@ public actor LocalMiIOClient {
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as MiIOError {
-            throw error == .transportUnavailable ? error : MiIOError.handshakeFailed
+            throw error == .transportUnavailable || error == .localNetworkDenied ? error : MiIOError.handshakeFailed
         } catch {
             throw MiIOError.handshakeFailed
         }
@@ -818,11 +829,14 @@ public actor LocalMiIOClient {
             }
             json = decoded
         } catch {
+            if (error as? MiIOError) == .localNetworkDenied {
+                sessions.removeValue(forKey: did)
+            }
             if !allowPostSendRetry {
                 if error is CancellationError || error is MiCloudError {
                     throw error
                 }
-                if let miio = error as? MiIOError, miio == .transportUnavailable {
+                if let miio = error as? MiIOError, miio == .transportUnavailable || miio == .localNetworkDenied {
                     throw error
                 }
                 // Clear session after ambiguous UDP send/reply loss so the next request re-handshakes,
@@ -884,7 +898,7 @@ public actor LocalMiIOClient {
                 return true
             case .invalidToken, .invalidAddress, .payloadTooLarge, .checksumMismatch,
                  .unsupportedNonNumericDeviceId, .shutDown, .encryptionFailed,
-                 .decryptionFailed, .transportUnavailable, .ambiguousActionOutcome, .deviceError:
+                 .decryptionFailed, .transportUnavailable, .localNetworkDenied, .ambiguousActionOutcome, .deviceError:
                 return false
             }
         }

@@ -209,6 +209,7 @@ public enum DiagnosticsReportBuilder {
         /// True while the panel shows one home only, which is what makes an empty panel look
         /// like an account with no devices at all (#76, #67).
         public var isMiHomeFiltered: Bool
+        public var transportSummary: TransportSummary?
 
         public init(
             appVersion: String,
@@ -227,7 +228,8 @@ public enum DiagnosticsReportBuilder {
             extraSettings: [String] = [],
             miHomeCount: Int? = nil,
             miSharedHomeCount: Int? = nil,
-            isMiHomeFiltered: Bool = false
+            isMiHomeFiltered: Bool = false,
+            transportSummary: TransportSummary? = nil
         ) {
             self.appVersion = appVersion
             self.buildNumber = buildNumber
@@ -246,6 +248,7 @@ public enum DiagnosticsReportBuilder {
             self.miHomeCount = miHomeCount
             self.miSharedHomeCount = miSharedHomeCount
             self.isMiHomeFiltered = isMiHomeFiltered
+            self.transportSummary = transportSummary
         }
     }
 
@@ -301,6 +304,19 @@ public enum DiagnosticsReportBuilder {
             lines.append(homeLine)
         }
         lines.append("- \(L10n.tr("设备", "Devices")): \(input.deviceCount) (\(L10n.tr("在线", "online")) \(input.onlineDeviceCount), \(L10n.tr("隐藏", "hidden")) \(input.hiddenDeviceCount))")
+        if let transport = input.transportSummary {
+            var parts: [String] = [
+                "\(L10n.tr("局域网直连", "LAN direct")) \(transport.lanDeviceCount)",
+                "\(L10n.tr("云端回退", "cloud")) \(transport.cloudDeviceCount)",
+            ]
+            if transport.cooldownDeviceCount > 0 { parts.append("\(L10n.tr("冷却中", "cooldown")) \(transport.cooldownDeviceCount)") }
+            if transport.blockedDeviceCount > 0 { parts.append("\(L10n.tr("权限受阻", "permission blocked")) \(transport.blockedDeviceCount)") }
+            if transport.broadcastRecoveredCount > 0 { parts.append("\(L10n.tr("广播自愈", "broadcast recovered")) \(transport.broadcastRecoveredCount)") }
+            if let medianRTT = transport.medianLANRTTMs { parts.append("\(L10n.tr("中位延迟", "median RTT")) \(medianRTT) ms") }
+            let tccState = transport.isLocalNetworkBlocked ? L10n.tr("受阻", "blocked") : L10n.tr("正常", "ok")
+            parts.append("\(L10n.tr("本地网络权限", "Local Network TCC")): \(tccState)")
+            lines.append("- \(L10n.tr("传输通道", "Transport")): \(parts.joined(separator: " · "))")
+        }
         if !input.extraSettings.isEmpty {
             lines.append("- \(L10n.tr("设置", "Settings")): \(input.extraSettings.joined(separator: " · "))")
         }

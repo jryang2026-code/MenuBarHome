@@ -42,6 +42,7 @@ public enum HomeProviderEvent: Sendable {
     /// Per-source states for a composite provider, emitted even when no snapshot is available
     /// (for example while both sources are reconnecting) so the panel footer cannot go stale (#111).
     case sourceStatusesChanged([HomeBackend: ConnectionStatus])
+    case localNetworkPermissionChanged(Set<LocalNetworkBlockedFeature>)
     /// The cloud rejected the session; the store persists it as the session's end (#181).
     case sessionExpired(MiSession)
     /// A Home Assistant doorbell was pressed (#308).
@@ -200,6 +201,8 @@ public actor HAWebSocketProvider: HomeProvider {
     private let allowsToken: @Sendable (String) -> Bool
     /// Told when the address needs plaintext consent; nothing carrying the token is sent until then.
     private let onPlaintextConsentNeeded: (@Sendable (String) -> Void)?
+    private let isNetworkSatisfied: @Sendable () async -> Bool
+    private var isLocalNetworkDenied = false
 
     enum ConnectTestOutcome: Sendable {
         case failedBeforeAuth(any Error)
@@ -237,7 +240,8 @@ public actor HAWebSocketProvider: HomeProvider {
         onAddressSuggestion: (@Sendable (HADiscoveredInstance) -> Void)? = nil,
         rediscover: @escaping @Sendable (String) async -> [HADiscoveredInstance] = { await HADiscovery.discoverOnLAN(currentURLHint: $0) },
         allowsToken: @escaping @Sendable (String) -> Bool = { HAPlaintextConsent.allowsToken(to: $0, defaults: .standard) },
-        onPlaintextConsentNeeded: (@Sendable (String) -> Void)? = nil
+        onPlaintextConsentNeeded: (@Sendable (String) -> Void)? = nil,
+        isNetworkSatisfied: @escaping @Sendable () async -> Bool = { true }
     ) {
         self.baseURLString = Self.normalizeBaseURL(baseURLString)
         self.token = token
@@ -245,6 +249,7 @@ public actor HAWebSocketProvider: HomeProvider {
         self.rediscover = rediscover
         self.allowsToken = allowsToken
         self.onPlaintextConsentNeeded = onPlaintextConsentNeeded
+        self.isNetworkSatisfied = isNetworkSatisfied
     }
 
     private static func makeURLSession() -> URLSession {
@@ -300,6 +305,7 @@ public actor HAWebSocketProvider: HomeProvider {
     public func updateCredentials(baseURLString: String, token: String) {
         self.baseURLString = Self.normalizeBaseURL(baseURLString)
         self.token = token
+        updateLocalNetworkDenied(false)
         guard !isShutDown else { return }
         restartLoop()
     }
@@ -394,10 +400,12 @@ public actor HAWebSocketProvider: HomeProvider {
         var consecutiveFailures = 0
         while !Task.isCancelled {
             if token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                updateLocalNetworkDenied(false)
                 continuation?.yield(.statusChanged(.disconnected(L10n.tr("请在设置中配置访问令牌", "Configure your access token in Settings"))))
                 return
             }
             guard allowsToken(baseURLString) else {
+                updateLocalNetworkDenied(false)
                 onPlaintextConsentNeeded?(baseURLString)
                 continuation?.yield(.statusChanged(.disconnected(HAPlaintextConsent.waitingMessage(baseURLString))))
                 return
@@ -411,11 +419,13 @@ public actor HAWebSocketProvider: HomeProvider {
                     case .authenticatedThenDisconnected(let error):
                         backoffSeconds = 0.8
                         consecutiveFailures = 0
+                        updateLocalNetworkDenied(false)
                         continuation?.yield(.statusChanged(.connected))
                         throw error
                     case .authenticatedStayConnected:
                         backoffSeconds = 0.8
                         consecutiveFailures = 0
+                        updateLocalNetworkDenied(false)
                         continuation?.yield(.statusChanged(.connected))
                         return
                     }
@@ -429,16 +439,21 @@ public actor HAWebSocketProvider: HomeProvider {
                 consecutiveFailures = 0
             } catch {
                 if Task.isCancelled { break }
+                let networkSatisfied = await isNetworkSatisfied()
+                let host = URL(string: Self.normalizeBaseURL(baseURLString))?.host?.lowercased()
+                updateLocalNetworkDenied(LocalNetworkPermissionClassifier.isDeniedConnectionError(
+                    error, targetHost: host, isGeneralNetworkSatisfied: networkSatisfied
+                ))
                 if case HomeProviderError.unauthorized = error {
                     activeWebSocket = nil
-                    let msg = Self.describeConnectionError(error, baseURLString: baseURLString)
+                    let msg = Self.describeConnectionError(error, baseURLString: baseURLString, isGeneralNetworkSatisfied: networkSatisfied)
                     logger.error("WebSocket unauthorized: \(msg, privacy: .public)")
                     continuation?.yield(.statusChanged(.disconnected(msg)))
                     return
                 } else {
                     consecutiveFailures += 1
                     await suggestOtherAddressIfDue(consecutiveFailures: consecutiveFailures)
-                    let msg = Self.describeConnectionError(error, baseURLString: baseURLString)
+                    let msg = Self.describeConnectionError(error, baseURLString: baseURLString, isGeneralNetworkSatisfied: networkSatisfied)
                     logger.error("WebSocket disconnected: \(msg, privacy: .public)")
                     continuation?.yield(.statusChanged(.disconnected(msg)))
                 }
@@ -446,6 +461,12 @@ public actor HAWebSocketProvider: HomeProvider {
                 backoffSeconds = min(backoffSeconds * 1.8, 10.0)
             }
         }
+    }
+
+    private func updateLocalNetworkDenied(_ denied: Bool) {
+        guard isLocalNetworkDenied != denied else { return }
+        isLocalNetworkDenied = denied
+        continuation?.yield(.localNetworkPermissionChanged(denied ? [.homeAssistant] : []))
     }
 
     /// After two failures in a row, looks for Home Assistant elsewhere on the network at most every
@@ -527,6 +548,7 @@ public actor HAWebSocketProvider: HomeProvider {
         resetStartupReplyState()
         logger.info("Connected to Home Assistant WebSocket: \(self.baseURLString, privacy: .public)")
 
+        updateLocalNetworkDenied(false)
         continuation?.yield(.statusChanged(.connected))
 
         let startedPingTask = Task { [weak self] in
@@ -1070,12 +1092,15 @@ public actor HAWebSocketProvider: HomeProvider {
         return URL(string: "\(wsStr)/api/websocket")
     }
 
-    public static func describeConnectionError(_ error: Error, baseURLString: String) -> String {
-        let nsError = error as NSError
-        if nsError.domain == NSURLErrorDomain,
-           nsError.code == URLError.notConnectedToInternet.rawValue,
-           let host = URL(string: normalizeBaseURL(baseURLString))?.host?.lowercased(),
-           (HADiscovery.isPrivateLANIPv4(host) || host.hasSuffix(".local")) {
+    public static func describeConnectionError(
+        _ error: Error, baseURLString: String, isGeneralNetworkSatisfied: Bool = true
+    ) -> String {
+        let host = URL(string: normalizeBaseURL(baseURLString))?.host?.lowercased()
+        if LocalNetworkPermissionClassifier.isDeniedConnectionError(
+            error,
+            targetHost: host,
+            isGeneralNetworkSatisfied: isGeneralNetworkSatisfied
+        ) {
             return L10n.tr(
                 "局域网连接被系统拦截（请检查「系统设置 → 隐私与安全性 → 本地网络」中的 MenuBarHome 权限，或重新安装对齐本地应用签名）",
                 "Local network connection blocked by macOS (check System Settings → Privacy & Security → Local Network for MenuBarHome)"
