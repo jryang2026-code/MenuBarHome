@@ -6,9 +6,10 @@ name: Snapshot Guard
 #
 # workflow_dispatch 供 Record snapshots 在推完基线后重评指定 PR：
 # GITHUB_TOKEN 的推送不会触发 pull_request 工作流，PR 上的 snapshot-baselines
-# 检查会停在旧头提交上，靠这里按 PR 号手动补跑。派发不带 --ref，运行的是
-# 默认分支上的本文件；head/base 由 PR API 解析，分支代码只在下面的检出里运行，
-# 与普通 pull_request 触发的信任面一致。
+# 检查会停在旧头提交上，靠这里按 PR 号手动补跑。派发带 --ref 目标分支，运行的
+# 是分支上的本文件（pull_request 事件跑的也是 PR 合并提交里的工作流定义，同一
+# 信任面），运行的头提交就是 PR 头提交，检查运行直接落在 PR 上；head/base
+# 由 PR API 解析，分支代码只在下面的检出里运行。
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]

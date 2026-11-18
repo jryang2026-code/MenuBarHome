@@ -218,6 +218,9 @@ jobs:
           fi
           # GITHUB_TOKEN 推送不会触发 pull_request 工作流，所以 PR 上的
           # snapshot-baselines 检查要靠这里手动派发 snapshot-guard.yml 重评。
-          gh workflow run snapshot-guard.yml --repo "$GH_REPO" -f pr="$pr"
+          # 必须带 --ref 目标分支：派发运行的头提交就是刚推的基线提交，
+          # 检查运行才落在 PR 头提交上；不带 --ref 会挂到默认分支顶上，
+          # PR 看不到。
+          gh workflow run snapshot-guard.yml --repo "$GH_REPO" --ref "$SNAPSHOT_BRANCH" -f pr="$pr"
           echo "Dispatched Snapshot Guard for PR ${pr}."
           echo "guard 自己用 PR API 解析 head/base，在 PR 当前头提交上重跑基线检查。"
