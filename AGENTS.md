@@ -17,14 +17,14 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
   3. 数据迁移、跨源设备去重（`DeviceDeduplicator`）与跨端黄金语料语义变更
   4. 自动更新与代码签名/发版（`Update*.swift`、`release.sh`、Ed25519 验签）
   5. 跨平台契约或包构建/发布链路变更（`.github/workflows/` 打包链、Windows MSI/NSIS 安装器）
-- **PR 纪律**：单 PR 代码改动控制在约 800 行以内（PNG、夹具、锁文件不计）；Codex 自动评审最多 2 轮（`bash scripts/pr-ready.sh --wait --max-codex-rounds 2 <pr>`），2 轮后仅修可达的安全、数据丢失或崩溃问题，其余转 issue 后合入；已开 PR 跟进 `main` 用 `git merge origin/main`（**严禁 rebase 强推**）；多代理并行时逐个合入，见 `main` 红即停、先修 `main`；多行提交说明用 `git commit -F`。
+- **PR 纪律**：单 PR 代码改动控制在约 800 行以内（PNG、夹具、锁文件不计）；Codex 自动评审最多 2 轮（`bash scripts/pr-ready.sh --wait --max-codex-rounds 2 <pr>`），2 轮后仅修可达的安全、数据丢失或崩溃问题，其余转 issue 后合入；已开 PR 跟进 `main` 用 `git merge origin/main`（**严禁 rebase 强推**）；合入用 `gh pr merge <n> --squash --match-head-commit <sha>`，且因 `windows-rust-test` 等重型任务在常规 PR 上按条件跳过、推 `main` 才跑，合入后须确认 `main` CI 全绿并区分「已合并」与「`main` CI 已通过」（详见 [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md)）；多代理并行时逐个合入，见 `main` 红即停、先修 `main`；多行提交说明用 `git commit -F`。
 - **`CHANGELOG.md`**：仅发版整理，不要求每个 PR 手动维护（已在 `git tag` 的版本段严禁追加）。
 
 ## 本地门禁与验证环境
 
 - **`git commit`（约 4s）**：自动跑 `bash scripts/check.sh --lint-only`（密钥扫描、机械 lint、工作流契约与文档链接、能力矩阵、云台型号表）。全量脚本自检加 `--script-tests`。
 - **推 `main` / 开 PR 前**：非 UI 改动跑 `bash scripts/check.sh --changed`；**macOS 界面改动**须在本机跑完整 `bash scripts/check.sh`（快照基线以维护者 Mac 为准；CI 托管机用 `macos-26-intel` 且跳过像素比对，未改视觉才贴 `no-snapshot-change`）。确认输出无非预期 `⚠️ 部分通过：跳过 ...` 才算通过。
-- **专项检查**：工作流改动跑 `actionlint .github/workflows/*.yml`；维护者 Mac 未装 `cargo`/`rustc`，`windows/src-tauri` 原生层测试由云端 CI `windows-rust-test` 承担（Windows 宿主机跑 `cargo test --locked --manifest-path windows/src-tauri/Cargo.toml`）；Windows 隔离工作树跑前端检查用 `bash scripts/shared_windows_deps.sh run npm --prefix windows test`（勿手工反复 `ln -sfn` / `rm -rf windows/node_modules`）；单测提速用 `node windows/scripts/test-file.mjs tests/<file>.test.ts`、`scripts/repeat_test.sh <filter>`、`scripts/red-check.sh`。
+- **专项检查**：工作流改动跑 `actionlint .github/workflows/*.yml`；维护者 Mac 未装 `cargo`/`rustc`，`windows/src-tauri` 原生层测试由云端 CI `windows-rust-test` 承担（Windows 宿主机跑 `cargo test --locked --manifest-path windows/src-tauri/Cargo.toml`）；Windows 隔离工作树跑前端检查用 `bash scripts/shared_windows_deps.sh run npm --prefix windows test`（勿手工反复 `ln -sfn` / `rm -rf windows/node_modules`）；单测提速用 `node windows/scripts/test-file.mjs tests/<file>.test.ts`（支持 `--test-name-pattern <pattern>` 只跑匹配用例）、`scripts/repeat_test.sh <filter>`（支持 `--stress [workers]` 压测复跑）、`scripts/red-check.sh`。
 - **检索与跨端**：Windows 无 Swift 工具链时本机跑 `--lint-only`（或 `scripts/remote-swift-test.sh`）；本仓 Swift/Rust 无 LSP，引用检索用 `grep`。
 
 ## 领域约定与按需文档

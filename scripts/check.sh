@@ -262,6 +262,7 @@ if [ -n "$PYTHON_BIN" ]; then
     "$PYTHON_BIN" scripts/check_windows_motion_tokens.py
     "$PYTHON_BIN" scripts/check_timer_render.py
     "$PYTHON_BIN" scripts/check_swift_harness_lints.py
+    "$PYTHON_BIN" scripts/check_windows_test_lints.py
     "$PYTHON_BIN" scripts/check_workflows.py
     "$PYTHON_BIN" scripts/check_doc_links.py
     "$PYTHON_BIN" scripts/check_capability_matrix.py
@@ -332,9 +333,11 @@ run_script_self_tests() {
         run_clean_env "$PYTHON_BIN" scripts/measure_footprint.py --self-test
         run_clean_env "$PYTHON_BIN" scripts/local_ci_dns.py --self-test
         run_clean_env "$PYTHON_BIN" scripts/local_macos_runner.py --self-test
+        run_clean_env "$PYTHON_BIN" scripts/check_windows_test_lints.py --self-test
         run_clean_env bash scripts/test_ci_relevant_paths.sh
         run_clean_env bash scripts/test_check_release.sh
         run_clean_env bash scripts/test_nas_setup.sh
+        run_clean_env bash scripts/test_harness_tools.sh
     fi
 }
 

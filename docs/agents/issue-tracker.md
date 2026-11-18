@@ -30,7 +30,8 @@ Some migrated bodies hold a broken `## Blocked by` section with `#$(cat n9)` pla
 ## Pull requests & skill hooks
 
 - **Checks**: `gh pr checks <n>`. `.github/workflows/ci.yml` runs on GitHub-hosted Linux, macOS and Windows machines, without the snapshot comparison. Failed job logs: `bash scripts/ci_errors.sh <run-id>`.
-- **Merge**: `gh pr merge <n> --squash --delete-branch`.
+- **Merge**: `gh pr merge <n> --squash --delete-branch --match-head-commit <head-sha>`. The `--match-head-commit` lock refuses the merge if anyone (including you) pushed to the branch after the checks you verified ran.
+- **Post-merge `main` CI verification**: heavy jobs are path-filtered to skip on regular PRs and only run on push `main`: a pure Windows-frontend PR skips `windows-camera-bin`, `windows-rust-test` (Win32 frontend unit tests + `cargo test`) and `windows-installer`; a regular macOS PR (no AppIntents / packaging-entry changes) skips `macos-appintents` and `macos-release`. Their PR checks show SKIPPED-as-success, so a green PR does not prove those jobs. After merging, verify the `main` branch's CI run is fully green **and** the path-filtered jobs actually executed, and report「已合并」and「`main` CI 已通过」as separate facts. If `main` is red, stop merging anything else and fix `main` first.
 - **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `triage` reads this flag.)_
 - **When a skill says "publish to the issue tracker"**: create a GitHub issue with `gh issue create --label ready-for-agent`.
 - **When a skill says "fetch the relevant ticket"**: run `gh issue view <n> --comments`.
