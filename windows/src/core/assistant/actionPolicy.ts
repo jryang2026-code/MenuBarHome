@@ -406,20 +406,52 @@ function requiresOperationConfirmation(device: SmartDevice, operation: IntentOpe
  * so every cover operation goes through the subtype hazard table. An unknown target is low risk.
  */
 export const ManualControlPolicy = {
+  primaryPowerEntityId(device: SmartDevice): string | null {
+    switch (device.kind.kind) {
+      case "plug":
+        return device.kind.switchEntityId;
+      case "camera":
+      case "humidifier":
+      case "light":
+      case "climate":
+      case "fan":
+      case "vacuum":
+      case "cover":
+        return device.kind.entityId;
+      case "appliance":
+        return device.kind.powerEntityId;
+      case "speaker":
+      case "tv":
+        return device.kind.mediaEntityId;
+      case "generic":
+        return device.kind.powerControl?.target?.entityId ?? null;
+      case "fridge":
+      case "sensor":
+        return null;
+    }
+  },
+
+  isPrimaryPowerEntity(device: SmartDevice, entityId: string): boolean {
+    return this.primaryPowerEntityId(device) === entityId;
+  },
+
   requiresConfirmation(
     intent: DeviceIntent,
     devices: readonly SmartDevice[],
     markedLightIds?: ReadonlySet<string>,
+    targetEntityId?: string,
   ): boolean {
     const device = devices.find((d) => d.id === intent.targetId);
     if (!device) return false;
     if (deescalatesHazard(intent.operation) && device.kind.kind !== "cover") return false;
     // #104: a wall switch the user marked as an ordinary light stops asking on primary power here —
     // the single decision point — so no UI layer can decide to skip the gate. The mark never
-    // widens: the wall-switch rule re-runs, so a stale id on a plug, cover, lock or heater still asks.
+    // widens: the wall-switch rule re-runs, so a stale id on a plug, cover, lock or heater still asks,
+    // and auxiliary switches targeting another entity stay gated.
     if (intent.operation.kind === "power") {
       const marks = markedLightIds ?? switchLightMarkIds();
-      if (marks.has(device.id) && this.wallSwitchMayControlLight(device)) return false;
+      const targetsPrimary = targetEntityId === undefined || this.isPrimaryPowerEntity(device, targetEntityId);
+      if (targetsPrimary && marks.has(device.id) && this.wallSwitchMayControlLight(device)) return false;
     }
     return ModelActionPolicy.needsConfirmation(intent, devices);
   },
