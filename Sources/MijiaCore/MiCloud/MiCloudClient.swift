@@ -846,17 +846,35 @@ public actor MiCloudClient: MiCloudAPI {
             "did": .string(call.did), "siid": .number(Double(call.siid)),
             "aiid": .number(Double(call.aiid)), "in": .array(call.inputs),
         ])]))
-        // An action answers with its own `code` (and usually `out`); an array is the older gateway
-        // shape. `.null` or `{}` carries no device verdict, so it cannot count as acknowledged.
+        try Self.checkActionResult(result)
+        return result
+    }
+
+    /// An action answers with its own `code` (and usually `out`); an array is the older gateway shape.
+    /// `.null`, `{}` and `{"out":[]}` say nothing, so they cannot count as acknowledged. An object that
+    /// returns real output without a `code` did answer: camera stream actions rely on that URL.
+    static func checkActionResult(_ result: JSONValue) throws {
         if let items = result.arrayValue {
             guard !items.isEmpty else {
                 throw MiCloudError.badResponse(L10n.tr("设备未返回写入结果", "Device returned no write verdict"))
             }
-            try Self.checkWriteCodes(items)
-        } else {
-            try Self.checkWriteCodes([result])
+            try checkWriteCodes(items)
+            return
         }
-        return result
+        if result["code"] == nil, hasActionOutput(result) { return }
+        try checkWriteCodes([result])
+    }
+
+    private static func hasActionOutput(_ result: JSONValue) -> Bool {
+        guard case .object(let fields) = result else { return false }
+        return fields.values.contains { value in
+            switch value {
+            case .null: return false
+            case .array(let items): return !items.isEmpty
+            case .object(let nested): return !nested.isEmpty
+            case .string, .number, .bool: return true
+            }
+        }
     }
 
     /// MIoT per-item codes: 0 = done, 1 = accepted (async); negatives are device/gateway errors such as -704042011 (offline).

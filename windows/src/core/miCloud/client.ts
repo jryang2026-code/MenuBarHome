@@ -718,17 +718,37 @@ export class MiCloudClient {
         in: call.inputs,
       },
     });
-    // An action answers with its own `code` (and usually `out`); an array is the older gateway
-    // shape. `null` or `{}` carries no device verdict, so it cannot count as acknowledged.
+    MiCloudClient.checkActionResult(result);
+    return result;
+  }
+
+  /**
+   * An action answers with its own `code` (and usually `out`); an array is the older gateway shape.
+   * `null`, `{}` and `{out: []}` say nothing, so they cannot count as acknowledged. An object that
+   * returns real output without a `code` did answer: camera stream actions rely on that URL.
+   */
+  private static checkActionResult(result: unknown): void {
     if (Array.isArray(result)) {
       if (result.length === 0) {
         throw new MiCloudError("badResponse", t("设备未返回执行结果"));
       }
       for (const item of result) MiCloudClient.checkWriteCode(item);
-    } else {
-      MiCloudClient.checkWriteCode(result);
+      return;
     }
-    return result;
+    if (MiCloudClient.hasActionOutputWithoutCode(result)) return;
+    MiCloudClient.checkWriteCode(result);
+  }
+
+  private static hasActionOutputWithoutCode(result: unknown): boolean {
+    if (!result || typeof result !== "object") return false;
+    const fields = result as Record<string, unknown>;
+    if (fields["code"] !== undefined) return false;
+    return Object.values(fields).some((value) => {
+      if (value === null || value === undefined) return false;
+      if (Array.isArray(value)) return value.length > 0;
+      if (typeof value === "object") return Object.keys(value).length > 0;
+      return true;
+    });
   }
 
   /** Throws unless `item` carries an integer MIoT code; a negative code is the device's verdict. */

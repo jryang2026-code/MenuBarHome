@@ -233,7 +233,7 @@ async function mountCamera(options: {
       return {
         status: 200,
         headers: {},
-        body: JSON.stringify({ code: 0, result: { code: 0, out: [HLS_URL] } }),
+        body: JSON.stringify({ code: 0, result: { out: [HLS_URL] } }),
       };
     }
     if (call?.siid === STREAM_SIID && call.aiid === STOP_STREAM_AIID) {

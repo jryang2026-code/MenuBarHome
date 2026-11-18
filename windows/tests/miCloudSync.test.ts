@@ -169,12 +169,24 @@ describe("Mi Cloud empty success is a control failure, not a success", () => {
 
   it("fails an action whose answer carries no device verdict", async () => {
     const call = { did: "lamp-1", siid: 2, aiid: 1, inputs: [] };
-    for (const result of [null, {}, [], [{ out: [] }]]) {
+    for (const result of [null, {}, [], { out: [] }, [{ out: [] }], { code: "bad", out: ["x"] }]) {
       await assert.rejects(
         () => new MiCloudClient(SESSION, reply({ code: 0, result })).callAction(call),
         isBadResponse,
       );
     }
+  });
+
+  it("accepts action output without a code, because camera stream URLs arrive that way", async () => {
+    const call = { did: "cam-1", siid: 2, aiid: 1, inputs: [] };
+    const url = "https://example.com/live.m3u8";
+    for (const result of [{ out: [url] }, { url }]) {
+      assert.deepEqual(await new MiCloudClient(SESSION, reply({ code: 0, result })).callAction(call), result);
+    }
+    await assert.rejects(
+      () => new MiCloudClient(SESSION, reply({ code: 0, result: { code: -704042011, out: [url] } })).callAction(call),
+      (err: unknown) => err instanceof MiCloudError && err.code === -704042011,
+    );
   });
 
   it("keeps the legitimate empty answers: a verdict without output, async acceptance, and no writes", async () => {

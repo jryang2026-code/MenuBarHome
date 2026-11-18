@@ -121,13 +121,26 @@ struct MiCloudSyncResilienceTests {
             }
         }
         // callAction used to treat `.null` and `{}` as an acknowledged action.
-        for result in ["null", "{}", "[]", #"[{"out":[]}]"#] {
+        for result in ["null", "{}", "[]", #"{"out":[]}"#, #"[{"out":[]}]"#, #"{"code":"bad","out":["x"]}"#] {
             await #expect(throws: noVerdict) {
                 _ = try await client(result: result).callAction(call)
             }
         }
 
+        // Camera stream actions return their URL without a `code`; that output is the answer.
+        let streamURL = "https://example.com/live.m3u8"
+        let outOnly = try await client(result: #"{"out":["\#(streamURL)"]}"#).callAction(call)
+        #expect(outOnly["out"]?.arrayValue?.first?.stringValue == streamURL)
+        let urlOnly = try await client(result: #"{"url":"\#(streamURL)"}"#).callAction(call)
+        #expect(urlOnly["url"]?.stringValue == streamURL)
+
         // A negative per-item code is still the device's own verdict, not a parse failure.
+        await #expect(throws: MiCloudError.deviceError(
+            code: -704042011,
+            message: L10n.tr("设备未响应或离线", "Device did not respond or is offline")
+        )) {
+            _ = try await client(result: #"{"code":-704042011,"out":["x"]}"#).callAction(call)
+        }
         await #expect(throws: MiCloudError.deviceError(
             code: -704042011,
             message: L10n.tr("设备未响应或离线", "Device did not respond or is offline")
