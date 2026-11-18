@@ -42,7 +42,12 @@ import type { HostActivityCenter } from "./activityStackView.js";
 import type { PersistedSettings } from "./appTypes.js";
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
 import { renderAutomationAndSafetySettingsSections, type HostAutoSafetySession } from "./automationSettingsView.js";
-import { renderConnectionsAndDiagSection, type ConnectionsAndDiagHost } from "./connectionsAndDiagView.js";
+import {
+  readCustomHomeTitle,
+  renderConnectionsAndDiagSection,
+  renderCustomHomeTitleField,
+  type ConnectionsAndDiagHost,
+} from "./connectionsAndDiagView.js";
 import { renderEnergySettingsSection, type HostEnergySession } from "./energySettingsView.js";
 import { readAskWhenUnsure } from "./settings.js";
 
@@ -68,6 +73,7 @@ const SETTINGS_TABS: ReadonlyArray<{ readonly id: SettingsTab; readonly title: s
  * DOM, so switching tabs already keeps a draft; these ids cover the refresh-driven rebuilds.
  */
 const DRAFT_VALUE_IDS: readonly string[] = [
+  "settings-custom-home-title",
   "settings-ha-url",
   "settings-ha-token",
   "settings-base-url",
@@ -138,6 +144,17 @@ export function restoreSettingsDraft(
   const unsavedBar = root.querySelector<HTMLElement>("#settings-unsaved-confirm");
   if (unsavedBar) {
     unsavedBar.hidden = !draft.unsavedConfirmOpen;
+  }
+  const haUrlEl = root.querySelector<HTMLInputElement>("#settings-ha-url");
+  if (haUrlEl) {
+    const warnEl = root.querySelector<HTMLElement>("[data-ha-plaintext-warning]");
+    if (warnEl) {
+      warnEl.hidden = !isPlainHttpRemoteEndpoint(haUrlEl.value);
+    }
+    const fillBtn = root.querySelector<HTMLButtonElement>("#btn-fill-default-ha");
+    if (fillBtn) {
+      fillBtn.disabled = haUrlEl.value.trim().length > 0;
+    }
   }
   const baseEl = root.querySelector<HTMLInputElement>("#settings-base-url");
   if (baseEl) {
@@ -306,6 +323,8 @@ export function buildInactiveTabCacheKey(ctx: SettingsViewContext, tabId: Settin
       ctx.settings.hideOfflineDevices, ctx.settings.hideGroupedLights, ctx.settings.showQuickActionsBar,
       ctx.settings.launchAtLogin, ctx.settings.enableGlobalHotkey, ctx.settings.globalHotkey,
       ctx.isRecordingHotkey, ctx.hotkeyNeedsHint, ctx.hotkeyRegistrationError,
+      readCustomHomeTitle(ctx.settings), ctx.connDiagHost?.connDiagSession?.titleDraft,
+      ctx.connDiagHost?.homeTitle, ctx.settings.selectedHomeId, ctx.connDiagHost?.homes.map((h) => [h.id, h.name]),
       hiddenDeviceIds(layout), layout?.aliases, layout?.roomAliases, ctx.devices.map((d) => [d.id, d.name, d.roomId, d.roomName]),
     ]);
   }
@@ -359,7 +378,7 @@ function renderGeneralHiddenDevicesRestore(ctx: SettingsViewContext): string {
         )}</span>
         ${
           hiddenList.length > 1
-            ? `<button type="button" class="cc-inline-pill" id="btn-unhide-all-devices">${ctx.escapeHtml(
+            ? `<button type="button" class="cc-inline-pill" id="btn-settings-unhide-all-devices">${ctx.escapeHtml(
                 tr3("全部恢复显示", "全部恢復顯示", "Unhide All"),
               )}</button>`
             : ""
@@ -424,6 +443,7 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
             .join("")}
         </div>
       </div>
+      ${renderCustomHomeTitleField(ctx)}
     </section>
 
     <section class="cc-settings-group" data-general-section="interaction" style="display: flex; flex-direction: column; gap: 8px;">
@@ -601,6 +621,7 @@ export function isPlainHttpRemoteEndpoint(rawURL: string): boolean {
 
 function renderHomeAssistantCredentialsBlock(ctx: SettingsViewContext): string {
   const warnPlainHttp = isPlainHttpRemoteEndpoint(ctx.settings.haBaseURL);
+  const hasHaUrl = ctx.settings.haBaseURL.trim().length > 0;
   return `
     <div class="cc-field">
       <div data-settings-anchor="haServerAddress">
@@ -608,16 +629,16 @@ function renderHomeAssistantCredentialsBlock(ctx: SettingsViewContext): string {
           <label for="settings-ha-url" style="margin: 0;">${ctx.escapeHtml(
             tr3("Home Assistant 地址 (URL)", "Home Assistant 位址 (URL)", "Home Assistant URL"),
           )}</label>
-          <button type="button" class="cc-inline-pill" id="btn-find-local-ha">${ctx.escapeHtml(
-            tr3("查找家中的 Home Assistant", "尋找家中的 Home Assistant", "Find Home Assistant at Home"),
+          <button type="button" class="cc-inline-pill" id="btn-fill-default-ha" ${hasHaUrl ? "disabled" : ""}>${ctx.escapeHtml(
+            tr3("填入常用地址", "填入常用位址", "Fill Default Address"),
           )}</button>
         </div>
         <input id="settings-ha-url" class="cc-input" type="url" value="${ctx.escapeHtml(ctx.settings.haBaseURL)}" placeholder="http://homeassistant.local:8123" />
         <p class="cc-field-hint" style="margin: 4px 0 0;">${ctx.escapeHtml(
           tr3(
-            "没找到？在 Home Assistant 网页设置里查看地址。",
-            "找不到？在 Home Assistant 網頁設定裡查看位址。",
-            "Not found? Check the address in your Home Assistant web settings.",
+            "不确定地址？可在 Home Assistant 网页设置里查看。",
+            "不確定位址？可在 Home Assistant 網頁設定裡查看。",
+            "Unsure of the address? Check your Home Assistant web settings.",
           ),
         )}</p>
         <p

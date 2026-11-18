@@ -66,9 +66,9 @@ interface ConnectionsDiagSearchAnchorSpec {
   readonly synonyms: readonly string[];
 }
 
-const SEC_CONNECTION: readonly [string, string, string] = ["数据源", "資料來源", "Data Source"];
+const SEC_CONNECTION: readonly [string, string, string] = ["家居连接", "家居連線", "Connections"];
 const SEC_DIAGNOSTICS: readonly [string, string, string] = ["诊断与隐私", "診斷與隱私", "Diagnostics & Privacy"];
-const SEC_GENERAL: readonly [string, string, string] = ["外观与面板", "外觀與面板", "Appearance & Panel"];
+const SEC_GENERAL: readonly [string, string, string] = ["常规", "常規", "General"];
 
 export const CONNECTIONS_DIAG_SEARCH_ANCHORS: readonly ConnectionsDiagSearchAnchorSpec[] = [
   {
@@ -138,7 +138,7 @@ export const CONNECTIONS_DIAG_SEARCH_ANCHORS: readonly ConnectionsDiagSearchAnch
   },
   {
     anchor: "dashboardTitle",
-    tab: "connection",
+    tab: "general",
     section: SEC_GENERAL,
     title: ["面板标题", "面板標題", "Dashboard Title"],
     synonyms: [
@@ -1362,10 +1362,33 @@ function resolveHostFromContext(ctx: ConnectionsAndDiagViewContext): Connections
   return undefined;
 }
 
-export function renderConnectionsAndDiagSection(ctx: ConnectionsAndDiagViewContext): string {
+export function renderCustomHomeTitleField(ctx: ConnectionsAndDiagViewContext): string {
   const esc = ctx.escapeHtml ? (v: string) => ctx.escapeHtml!(v) : escapeFallback;
   const host = resolveHostFromContext(ctx);
   const lang = activeLanguage(ctx.settings.interfaceLanguage);
+  const session = host ? getHostConnDiagSession(host) : null;
+  const customTitleValue = session?.titleDraft ?? readCustomHomeTitle(ctx.settings);
+  const defaultTitlePlaceholder = host ? defaultPanelHomeTitle(host) : tr3("我的米家", "我的米家", "My Home", lang);
+  return `
+    <div class="cc-field" id="conn-diag-title-section" data-settings-anchor="dashboardTitle">
+      <label for="settings-custom-home-title">${esc(tr3("自定义面板顶部标题", "自訂面板頂部標題", "Custom Panel Header Title", lang))}</label>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <input id="settings-custom-home-title" class="cc-input" type="text" autocomplete="off" placeholder="${esc(defaultTitlePlaceholder)}" value="${esc(customTitleValue)}" style="flex:1;" />
+        <button type="button" class="cc-btn-secondary" id="btn-save-custom-home-title">${esc(tr3("应用", "套用", "Apply", lang))}</button>
+        ${readCustomHomeTitle(ctx.settings) !== "" ? `<button type="button" class="cc-inline-pill" id="btn-reset-custom-home-title">${esc(tr3("恢复默认", "恢復預設", "Reset", lang))}</button>` : ""}
+      </div>
+      <p class="cc-field-hint" style="margin-top:4px;">${esc(tr3("留空并点击应用将恢复默认家庭名称。", "留空並點擊套用將恢復預設家庭名稱。", "Leave blank and apply to restore the default home name.", lang))}</p>
+    </div>`;
+}
+
+export function renderConnectionsAndDiagSection(
+  ctx: ConnectionsAndDiagViewContext,
+  options: { readonly includeDashboardTitle?: boolean } = {},
+): string {
+  const esc = ctx.escapeHtml ? (v: string) => ctx.escapeHtml!(v) : escapeFallback;
+  const host = resolveHostFromContext(ctx);
+  const lang = activeLanguage(ctx.settings.interfaceLanguage);
+  const includeDashboardTitle = options.includeDashboardTitle ?? !("activeTab" in ctx);
 
   if (host) {
     syncConnectionContextWatcher(host);
@@ -1392,9 +1415,6 @@ export function renderConnectionsAndDiagSection(ctx: ConnectionsAndDiagViewConte
     : hasHAConfigured && hasMiConfigured;
   const dualChecked = host ? isDualSourceEnabled(host) : Boolean(ctx.settings.dualSourceEnabled);
   const dualState = host ? getHostDualSourceState(host) : null;
-
-  const customTitleValue = session?.titleDraft ?? readCustomHomeTitle(ctx.settings);
-  const defaultTitlePlaceholder = host ? defaultPanelHomeTitle(host) : tr3("我的米家", "我的米家", "My Home", lang);
 
   const scanner = session?.scanner ?? null;
   const unsupportedDevices = scanner?.devices ?? [];
@@ -1505,6 +1525,11 @@ export function renderConnectionsAndDiagSection(ctx: ConnectionsAndDiagViewConte
 
   return `
     <div id="connections-and-diag-root" style="display:flex;flex-direction:column;gap:12px;">
+      <div class="cc-field" id="conn-diag-ha-disconnect-row" data-settings-anchor="haDisconnect" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <span class="cc-field-hint" style="margin:0;flex:1;">${esc(haDisconnectHint)}</span>
+        <button type="button" class="cc-btn-danger" id="btn-disconnect-ha" ${hasHAToken || ctx.settings.connectionMode === "homeAssistant" || dualChecked ? "" : "disabled"}>${esc(tr3("断开连接", "中斷連線", "Disconnect", lang))}</button>
+      </div>
+
       <details class="cc-conn-secondary" data-conn-section="advancedConnectionOptions">
         <summary class="cc-conn-secondary-summary">${esc(tr3("高级连接选项", "進階連線選項", "Advanced Connection Options", lang))}</summary>
         <div style="display:flex;flex-direction:column;gap:12px;">
@@ -1527,21 +1552,8 @@ export function renderConnectionsAndDiagSection(ctx: ConnectionsAndDiagViewConte
               <input id="settings-dual-source-enabled" type="checkbox" ${dualChecked ? "checked" : ""} ${dualSupported || dualChecked ? "" : "disabled"} />
             </label>
             <p class="cc-field-hint" style="margin-top:4px;">${esc(dualHint)}</p>
-            <div id="conn-diag-ha-disconnect-row" data-settings-anchor="haDisconnect" style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(128,128,128,0.14);display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <span class="cc-field-hint" style="margin:0;flex:1;">${esc(haDisconnectHint)}</span>
-              <button type="button" class="cc-btn-danger" id="btn-disconnect-ha" ${hasHAToken || ctx.settings.connectionMode === "homeAssistant" || dualChecked ? "" : "disabled"}>${esc(tr3("断开连接", "中斷連線", "Disconnect", lang))}</button>
-            </div>
           </div>
-
-          <div class="cc-field" id="conn-diag-title-section" data-settings-anchor="dashboardTitle">
-            <label for="settings-custom-home-title">${esc(tr3("自定义面板顶部标题", "自訂面板頂部標題", "Custom Panel Header Title", lang))}</label>
-            <div style="display:flex;gap:6px;align-items:center;">
-              <input id="settings-custom-home-title" class="cc-input" type="text" autocomplete="off" placeholder="${esc(defaultTitlePlaceholder)}" value="${esc(customTitleValue)}" style="flex:1;" />
-              <button type="button" class="cc-btn-secondary" id="btn-save-custom-home-title">${esc(tr3("应用", "套用", "Apply", lang))}</button>
-              ${readCustomHomeTitle(ctx.settings) !== "" ? `<button type="button" class="cc-inline-pill" id="btn-reset-custom-home-title">${esc(tr3("恢复默认", "恢復預設", "Reset", lang))}</button>` : ""}
-            </div>
-            <p class="cc-field-hint" style="margin-top:4px;">${esc(tr3("留空并点击应用将恢复默认家庭名称。", "留空並點擊套用將恢復預設家庭名稱。", "Leave blank and apply to restore the default home name.", lang))}</p>
-          </div>
+          ${includeDashboardTitle ? renderCustomHomeTitleField(ctx) : ""}
         </div>
       </details>
 
@@ -1605,7 +1617,7 @@ export function renderConnectionsAndDiagModal(host: ConnectionsAndDiagHost): str
           <button type="button" class="cc-circle-btn is-small" id="btn-close-conn-diag-modal" aria-label="${esc(tr3("关闭", "關閉", "Close", lang))}">${SF_ICONS.xmark}</button>
         </div>
         <div class="cc-sheet-body" style="overflow-y:auto;padding-right:2px;">
-          ${renderConnectionsAndDiagSection({ settings: host.settings, devices: host.devices, host, escapeHtml: esc })}
+          ${renderConnectionsAndDiagSection({ settings: host.settings, devices: host.devices, host, escapeHtml: esc }, { includeDashboardTitle: true })}
         </div>
       </div>
     </div>`;
@@ -1698,20 +1710,20 @@ export function bindConnectionsAndDiagEvents(host: ConnectionsAndDiagHost): void
   });
   onClick("#btn-copy-diagnostics-report", () => void copyDiagnosticsReportOnHost(host));
   const haUrlInput = host.root.querySelector<HTMLInputElement>("#settings-ha-url");
-  const syncPlaintextWarning = (val: string) => {
+  const syncHaUrlControls = (val: string) => {
     const warnEl = host.root.querySelector<HTMLElement>("[data-ha-plaintext-warning]");
     if (warnEl) warnEl.hidden = !isPlainHttpRemoteEndpoint(val);
+    const fillBtn = host.root.querySelector<HTMLButtonElement>("#btn-fill-default-ha");
+    if (fillBtn) fillBtn.disabled = val.trim().length > 0;
   };
   bindElementListener(haUrlInput, "input", (input) => {
-    syncPlaintextWarning(input.value);
+    syncHaUrlControls(input.value);
   });
-  onClick("#btn-find-local-ha", () => {
+  onClick("#btn-fill-default-ha", () => {
     const input = host.root.querySelector<HTMLInputElement>("#settings-ha-url");
-    if (!input) return;
-    if (!input.value.trim()) {
-      input.value = "http://homeassistant.local:8123";
-    }
-    syncPlaintextWarning(input.value);
+    if (!input || input.value.trim().length > 0) return;
+    input.value = "http://homeassistant.local:8123";
+    syncHaUrlControls(input.value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }

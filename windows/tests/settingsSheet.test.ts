@@ -541,38 +541,162 @@ describe("WP3d · Windows 常规与家居连接导航整理", () => {
     );
   });
 
-  it("uses §1.2 vocabulary in 家居连接, provides 查找家中的 Home Assistant, and folds technical options", async () => {
+  it("uses §1.2 vocabulary in 家居连接, provides 填入常用地址 without overwriting existing input, keeps haDisconnect visible outside folded details, moves dashboardTitle to 常规 › 基础显示, and syncs plaintext warning across draft restore", async () => {
     const app = startDemo();
     await click("#btn-settings");
-    await click('[data-settings-tab="connection"]');
 
+    // 3. dashboardTitle lives in 常规 › 基础显示, and openConnectionsAndDiagModal('title') / search still reach it.
+    const gen = panel("general");
+    const basicDisplay = gen.querySelector('[data-general-section="basicDisplay"]');
+    assert.ok(basicDisplay, "basicDisplay section exists in general tab");
+    const titleSection = basicDisplay.querySelector<HTMLElement>('[data-settings-anchor="dashboardTitle"]');
+    assert.ok(titleSection, "dashboardTitle anchor must live in 常规 › 基础显示");
+    const titleInput = titleSection.querySelector<HTMLInputElement>("#settings-custom-home-title");
+    assert.ok(titleInput, "#settings-custom-home-title must live inside dashboardTitle section");
+    type("#settings-custom-home-title", "我的温馨小家");
+    await click("#btn-save-custom-home-title");
+    assert.equal(app.settings.customHomeTitle, "我的温馨小家");
+    const resetTitleBtn = panel("general").querySelector<HTMLButtonElement>("#btn-reset-custom-home-title");
+    assert.ok(resetTitleBtn, "#btn-reset-custom-home-title appears when custom title is set");
+    await click("#btn-reset-custom-home-title");
+    assert.equal(app.settings.customHomeTitle, "");
+
+    // Search for 面板标题 lands on general tab and highlights dashboardTitle.
+    await click('[data-settings-tab="connection"]');
+    type("#settings-search-input", "面板标题");
+    await click('[data-settings-search-hit="dashboardTitle"]');
+    assert.equal(visibleTab(), "general");
+    assert.equal(
+      panel("general").querySelector('[data-settings-anchor="dashboardTitle"]')?.getAttribute("data-settings-highlighted"),
+      "dashboardTitle",
+    );
+
+    await click('[data-settings-tab="connection"]');
     const conn = panel("connection");
     assert.match(conn.textContent ?? "", /示例家庭，不会控制真实设备/);
     assert.match(conn.textContent ?? "", /先逛逛示例家庭/);
     assert.match(conn.textContent ?? "", /专属连接钥匙/);
-    assert.match(conn.textContent ?? "", /查找家中的 Home Assistant/);
+    assert.match(conn.textContent ?? "", /填入常用地址/);
+    assert.doesNotMatch(conn.textContent ?? "", /查找家中的 Home Assistant/);
+    assert.match(conn.textContent ?? "", /不确定地址？可在 Home Assistant 网页设置里查看/);
+    assert.doesNotMatch(conn.textContent ?? "", /没找到？在 Home Assistant 网页设置里查看地址/);
     assert.match(conn.textContent ?? "", /个人资料/);
     assert.match(conn.textContent ?? "", /使用非官方连接方式/);
     assert.match(conn.textContent ?? "", /添加更多米家账号/);
     assert.match(conn.textContent ?? "", /同时连接多个家居平台（相同设备自动合并）/);
 
-    // Clicking 查找家中的 Home Assistant fills the default local discovery URL if empty or probes local HA.
-    const findHaBtn = conn.querySelector<HTMLButtonElement>("#btn-find-local-ha");
-    assert.ok(findHaBtn);
-    findHaBtn.click();
+    // 1. Clicking 填入常用地址 (#btn-fill-default-ha) fills http://homeassistant.local:8123 when empty,
+    // and never overwrites user-typed URL.
+    const fillHaBtn = conn.querySelector<HTMLButtonElement>("#btn-fill-default-ha");
+    assert.ok(fillHaBtn, "#btn-fill-default-ha must be rendered");
+    assert.equal(fillHaBtn.disabled, false);
+    fillHaBtn.click();
     await setImmediate();
     assert.equal(field("#settings-ha-url").value, "http://homeassistant.local:8123");
 
-    // Plaintext HTTP warning is shown at >=12px amber when a remote plain HTTP URL is entered.
-    type("#settings-ha-url", "http://example.com:8123");
-    const httpWarn = conn.querySelector<HTMLElement>("[data-ha-plaintext-warning]");
-    assert.ok(httpWarn && !httpWarn.hidden, "remote plain HTTP URL shows plaintext warning");
+    type("#settings-ha-url", "https://my-ha.example.com:8123");
+    assert.equal(
+      conn.querySelector<HTMLButtonElement>("#btn-fill-default-ha")?.disabled,
+      true,
+      "fill button disables when URL input is non-empty",
+    );
+    conn.querySelector<HTMLButtonElement>("#btn-fill-default-ha")?.click();
+    await setImmediate();
+    assert.equal(
+      field("#settings-ha-url").value,
+      "https://my-ha.example.com:8123",
+      "must not overwrite existing user input",
+    );
+
+    // 2. Disconnect HA row (#conn-diag-ha-disconnect-row) is visible by default outside folded details.
+    const disconnectRow = conn.querySelector<HTMLElement>("#conn-diag-ha-disconnect-row");
+    assert.ok(disconnectRow, "#conn-diag-ha-disconnect-row must be rendered in connection tab");
+    assert.equal(disconnectRow.dataset.settingsAnchor, "haDisconnect");
+    assert.equal(
+      disconnectRow.closest("details"),
+      null,
+      "#conn-diag-ha-disconnect-row must not be hidden inside any <details>",
+    );
+
+    // 4. Plaintext HTTP warning syncs with restored draft across re-renders in both directions:
+    // Direction A: saved haBaseURL is safe (empty/https), draft is remote plain HTTP -> warning stays visible after re-render.
+    app.settings.haBaseURL = "https://safe.example.com:8123";
+    app.render();
+    await setImmediate();
+    type("#settings-ha-url", "http://remote.example.com:8123");
+    let httpWarn = panel("connection").querySelector<HTMLElement>("[data-ha-plaintext-warning]");
+    assert.ok(httpWarn && !httpWarn.hidden, "remote plain HTTP draft shows plaintext warning");
+    app.render();
+    await setImmediate();
+    httpWarn = panel("connection").querySelector<HTMLElement>("[data-ha-plaintext-warning]");
+    assert.equal(field("#settings-ha-url").value, "http://remote.example.com:8123");
+    assert.ok(
+      httpWarn && !httpWarn.hidden,
+      "plaintext warning must remain visible after re-render when saved URL is safe but draft is remote HTTP",
+    );
+
+    // Direction B: saved haBaseURL is remote plain HTTP, draft is HTTPS -> warning stays hidden after re-render.
+    app.settings.haBaseURL = "http://saved-insecure.example.com:8123";
+    app.render();
+    await setImmediate();
+    type("#settings-ha-url", "https://secure-draft.example.com:8123");
+    httpWarn = panel("connection").querySelector<HTMLElement>("[data-ha-plaintext-warning]");
+    assert.ok(httpWarn && httpWarn.hidden, "HTTPS draft hides plaintext warning immediately");
+    app.render();
+    await setImmediate();
+    httpWarn = panel("connection").querySelector<HTMLElement>("[data-ha-plaintext-warning]");
+    assert.equal(field("#settings-ha-url").value, "https://secure-draft.example.com:8123");
+    assert.ok(
+      httpWarn && httpWarn.hidden,
+      "plaintext warning must stay hidden after re-render when saved URL is remote HTTP but draft is HTTPS",
+    );
+
+    // 5. #btn-settings-unhide-all-devices works even when the panel's hidden-devices tray (#btn-unhide-all-devices) is mounted simultaneously.
+    app.isEditingLayout = true;
+    app.layout.hiddenDeviceIds = ["light.living_ceiling", "light.study_desk"];
+    app.render();
+    await setImmediate();
+    assert.ok(document.querySelector("#btn-unhide-all-devices"), "panel hidden-devices tray mounts #btn-unhide-all-devices");
+    assert.ok(panel("general").querySelector("#btn-settings-unhide-all-devices"), "settings mounts distinct #btn-settings-unhide-all-devices");
+    await click("#btn-settings-unhide-all-devices");
+    assert.deepEqual(app.layout.hiddenDeviceIds ?? [], [], "settings unhide-all button restores all devices even when tray button is also in DOM");
+
+    // And the panel tray's #btn-unhide-all-devices still works too.
+    app.layout.hiddenDeviceIds = ["light.living_ceiling", "light.study_desk"];
+    app.render();
+    await setImmediate();
+    await click("#btn-unhide-all-devices");
+    assert.deepEqual(app.layout.hiddenDeviceIds ?? [], [], "panel tray unhide-all button also restores all devices");
+    app.isEditingLayout = false;
+    app.render();
+    await setImmediate();
+
+    // 6. Search section captions match the new tab titles across zh-Hans, zh-Hant, and en.
+    for (const [lang, genSec, connSec] of [
+      ["zh-Hans", "常规", "家居连接"],
+      ["zh-Hant", "常規", "家居連線"],
+      ["en", "General", "Connections"],
+    ] as const) {
+      setLanguage(lang);
+      app.settings.interfaceLanguage = lang;
+      app.render();
+      await setImmediate();
+      type("#settings-search-input", lang === "en" ? "Appearance" : "外观");
+      const genHit = document.querySelector<HTMLElement>('[data-settings-search-hit="appearanceMode"]');
+      assert.ok(genHit?.textContent?.includes(genSec), `appearanceMode search hit in ${lang} should show section ${genSec}`);
+      type("#settings-search-input", "Home Assistant");
+      const connHit = document.querySelector<HTMLElement>('[data-settings-search-hit="haServerAddress"]');
+      assert.ok(connHit?.textContent?.includes(connSec), `haServerAddress search hit in ${lang} should show section ${connSec}`);
+    }
+    setLanguage("zh-Hans");
+    app.settings.interfaceLanguage = "zh-Hans";
+    app.render();
+    await setImmediate();
 
     // Quit button keeps its anchor and explains that tray icon and shortcut will stop.
     const quitBtn = element("#btn-settings-quit");
     assert.equal(quitBtn.dataset.settingsAnchor, "quitApp");
     assert.match(quitBtn.getAttribute("title") ?? "", /完全退出后，托盘图标和快捷键都会停止/);
-    assert.ok(app);
   });
 });
 

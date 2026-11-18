@@ -144,6 +144,7 @@ export function resolveSettingsAnchorTab(anchor: SettingsAnchor, hasAvailableUpd
     case "globalHotkey":
     case "voiceControl":
     case "setupGuide":
+    case "dashboardTitle":
       return "general";
     case "dataSource":
     case "demoMode":
@@ -154,7 +155,6 @@ export function resolveSettingsAnchorTab(anchor: SettingsAnchor, hasAvailableUpd
     case "miMultiAccounts":
     case "haDisconnect":
     case "dualSourceFusion":
-    case "dashboardTitle":
     case "scanUnsupportedDevices":
     case "copyDiagnostics":
       return "connection";
@@ -193,8 +193,8 @@ interface RawAnchorSpec {
   readonly synonyms: readonly string[];
 }
 
-const SEC_GENERAL: readonly [string, string, string] = ["外观与面板", "外觀與面板", "Appearance & Panel"];
-const SEC_CONNECTION: readonly [string, string, string] = ["数据源", "資料來源", "Data Source"];
+const SEC_GENERAL: readonly [string, string, string] = ["常规", "常規", "General"];
+const SEC_CONNECTION: readonly [string, string, string] = ["家居连接", "家居連線", "Connections"];
 const SEC_ASSISTANT: readonly [string, string, string] = ["AI 与习惯", "AI 與習慣", "AI & Habits"];
 const SEC_SYSTEM: readonly [string, string, string] = ["全关与更新", "全關與更新", "All Off & Updates"];
 const SEC_SECURITY: readonly [string, string, string] = ["安全与权限", "安全與權限", "Security & Permissions"];
@@ -311,7 +311,7 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
     anchor: "haServerAddress",
     section: SEC_CONNECTION,
     title: ["Home Assistant 服务器地址", "Home Assistant 伺服器位址", "Home Assistant Server URL"],
-    synonyms: ["服务器", "地址", "查找家中的 home assistant", "查找家中", "局域网", "代理", "链接", "home assistant", "find home assistant", "ha", "server", "url", "nabu casa", "8123", "websocket", "daili", "dizhi"],
+    synonyms: ["服务器", "地址", "填入常用地址", "填入常用位址", "默认地址", "局域网", "代理", "链接", "home assistant", "fill default address", "default address", "ha", "server", "url", "nabu casa", "8123", "websocket", "daili", "dizhi"],
   },
   {
     anchor: "haToken",
