@@ -60,6 +60,14 @@ import {
   appDiagnosticsLog,
   assertZeroSensitiveLeaks,
 } from "../src/core/diagnosticsAndScanner.js";
+import {
+  getCachedXiaomiTopology,
+  getXiaomiBackoffUntilMs,
+  miSessionFingerprint,
+  recordXiaomiRateLimit,
+  shouldSkipSilentPollForBackoff,
+  storeCachedXiaomiTopology,
+} from "../src/core/pollingPolicy.js";
 import type { SmartDevice } from "../src/core/models.js";
 
 const SECURITY = "AQIDBAUGBwgJCgsMDQ4PEA==";
@@ -602,6 +610,112 @@ describe("W4 Multi-Account UI: account cards, token health badges, non-overwriti
     assert.equal(resolveHostMiAccounts(app).length, 0);
     assert.equal(app.root.querySelectorAll("[data-mi-account-card]").length, 0);
     assert.ok(app.root.querySelector("[data-mi-accounts-empty]"));
+  });
+
+  it("clears Xiaomi topology cache and rate-limit backoff only when signing out the last account via multi-account modal", async () => {
+    const secure = makeInMemorySecureStore({});
+    const vault = new CredentialVault(secure.invoke);
+    const app = createMountedApp({ vault, secureInvoke: secure.invoke });
+    app.settings.connectionMode = "xiaomiCloud";
+
+    await addOrUpdateMiAccountOnHost(app, SESSION_CN_PRIMARY, { triggerRefresh: false });
+    await addOrUpdateMiAccountOnHost(app, SESSION_SG_SECONDARY, { triggerRefresh: false });
+    // Prevent post-signout refresh from mutating backoff/topology so this test observes the sign-out path itself.
+    app.refreshDevices = async () => {};
+
+    const nowMs = Date.now();
+    storeCachedXiaomiTopology(app, {
+      sessionFingerprint: miSessionFingerprint(SESSION_SG_SECONDARY),
+      sourceRevision: app.sourceRevision,
+      selectedHomeId: null,
+      allDevices: [
+        { did: "did-sg-cam", name: "SG Cam", model: CAMERA_MODEL, isOnline: true, specType: null },
+      ],
+      allRooms: [{ id: "r-sg", name: "Study", dids: ["did-sg-cam"] }],
+      rawDevices: [
+        { did: "did-sg-cam", name: "SG Cam", model: CAMERA_MODEL, isOnline: true, specType: null },
+      ],
+      rooms: [{ id: "r-sg", name: "Study", dids: ["did-sg-cam"] }],
+      specs: {},
+      membersByGroup: new Map(),
+    });
+    recordXiaomiRateLimit(app, SESSION_SG_SECONDARY, nowMs);
+
+    assert.ok(getCachedXiaomiTopology(app));
+    assert.ok(getXiaomiBackoffUntilMs(app, SESSION_SG_SECONDARY) !== null);
+    assert.equal(shouldSkipSilentPollForBackoff(app, SESSION_SG_SECONDARY, nowMs + 1000), true);
+
+    openConnectionsAndDiagModal(app, "accounts");
+    await settleUi(4);
+
+    const cnAcc = makeMiAccount(SESSION_CN_PRIMARY);
+    const sgAcc = makeMiAccount(SESSION_SG_SECONDARY);
+
+    app.root.querySelector<HTMLButtonElement>(`[data-mi-account-signout="${cnAcc.id}"]`)!.click();
+    await settleUi(12);
+
+    assert.equal(resolveHostMiAccounts(app).length, 1);
+    assert.ok(
+      getCachedXiaomiTopology(app),
+      "removing one account while another remains must not clear the remaining account's topology cache",
+    );
+    assert.ok(
+      getXiaomiBackoffUntilMs(app, SESSION_SG_SECONDARY) !== null,
+      "removing one account while another remains must not clear the remaining account's rate-limit backoff",
+    );
+
+    app.root.querySelector<HTMLButtonElement>(`[data-mi-account-signout="${sgAcc.id}"]`)!.click();
+    await settleUi(12);
+
+    assert.equal(resolveHostMiAccounts(app).length, 0);
+    assert.equal(
+      getCachedXiaomiTopology(app),
+      null,
+      "signing out the last Xiaomi account via multi-account modal must clear cached Xiaomi topology",
+    );
+    assert.equal(
+      getXiaomiBackoffUntilMs(app, SESSION_SG_SECONDARY),
+      null,
+      "signing out the last Xiaomi account via multi-account modal must clear Xiaomi rate-limit backoff",
+    );
+    assert.equal(shouldSkipSilentPollForBackoff(app, SESSION_SG_SECONDARY, nowMs + 1000), false);
+  });
+
+  it("clears Xiaomi topology cache and rate-limit backoff on signOutXiaomiAccount without duplicate errors", async () => {
+    const secure = makeInMemorySecureStore({});
+    const vault = new CredentialVault(secure.invoke);
+    const app = createMountedApp({ vault, secureInvoke: secure.invoke });
+    app.settings.connectionMode = "xiaomiCloud";
+
+    await addOrUpdateMiAccountOnHost(app, SESSION_CN_PRIMARY, { triggerRefresh: false });
+
+    const nowMs = Date.now();
+    storeCachedXiaomiTopology(app, {
+      sessionFingerprint: miSessionFingerprint(SESSION_CN_PRIMARY),
+      sourceRevision: app.sourceRevision,
+      selectedHomeId: null,
+      allDevices: [
+        { did: "did-cn-cam", name: "CN Cam", model: CAMERA_MODEL, isOnline: true, specType: null },
+      ],
+      allRooms: [{ id: "r-cn", name: "客厅", dids: ["did-cn-cam"] }],
+      rawDevices: [
+        { did: "did-cn-cam", name: "CN Cam", model: CAMERA_MODEL, isOnline: true, specType: null },
+      ],
+      rooms: [{ id: "r-cn", name: "客厅", dids: ["did-cn-cam"] }],
+      specs: {},
+      membersByGroup: new Map(),
+    });
+    recordXiaomiRateLimit(app, SESSION_CN_PRIMARY, nowMs);
+
+    assert.ok(getCachedXiaomiTopology(app));
+    assert.ok(getXiaomiBackoffUntilMs(app, SESSION_CN_PRIMARY) !== null);
+
+    signOutXiaomiAccount(app);
+    await settleUi(10);
+
+    assert.equal(getCachedXiaomiTopology(app), null);
+    assert.equal(getXiaomiBackoffUntilMs(app, SESSION_CN_PRIMARY), null);
+    assert.notEqual(app.replyBanner?.isError, true);
   });
 
   it("stops Xiaomi camera bridge and restores HA single-source list on signOutXiaomiAccount in HA-primary dual-source mode (#33)", async () => {

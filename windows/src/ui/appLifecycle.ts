@@ -307,8 +307,10 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     host.settings.miSession = null;
     host.settings.cachedXiaomiDevices = [];
     host.settings.selectedHomeId = null;
-    clearCachedXiaomiTopology(host);
-    clearXiaomiRateLimitBackoff(host);
+    if (retryOnly) {
+      clearCachedXiaomiTopology(host);
+      clearXiaomiRateLimitBackoff(host);
+    }
     const clearMultiPromise = clearHostSessionAndDualSourceState(host, { revokeAll: false });
     host.miSessionExpired = false;
     host.cloudValuesStale = false;

@@ -3,7 +3,8 @@ import { MI_CLOUD_REGIONS, MiAccountLogin, maskedMiUserId, miCloudRegionLabel, n
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { CredentialVault, credentialsFromSettings, secureStoreDelete, sessionWithoutPassToken } from "../core/secureStore.js";
-import { MiAccountScope, MiAccountsStore, formatAccountTokenNotice, getAccountTokenStatus, hasCorruptMiAccountIndex, hasSecondaryMiAccountsInIndex, makeMiAccount, mergeMiAccountSnapshots, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
+import { MiAccountScope, MiAccountsStore, clearAccountRateLimitBackoff, formatAccountTokenNotice, getAccountTokenStatus, hasCorruptMiAccountIndex, hasSecondaryMiAccountsInIndex, makeMiAccount, mergeMiAccountSnapshots, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
+import { clearCachedXiaomiTopology, clearXiaomiRateLimitBackoff } from "../core/pollingPolicy.js";
 import { DiagnosticsReportBuilder, UnsupportedDeviceScanner, appDiagnosticsLog, deriveCameraDiagnostics, derivePollingBackoffDiagnostics, formatSpecSummaryText, summarizeModelCounts, type ScanUnsupportedOptions, type UnsupportedDevice } from "../core/diagnosticsAndScanner.js";
 import type { DeviceMergeRoute, DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import { environmentReadingPriority, type EnvironmentReading, type FacetControl, type HomeBackend, type HomeScene, type SmartDevice } from "../core/models.js";
@@ -513,6 +514,7 @@ async function performSignOutSingleMiAccountOnHost(
     if (!beforeIds.has(accountId) || removal.accounts.some((account) => account.id === accountId)) {
       return false;
     }
+    clearAccountRateLimitBackoff(accountId);
 
     switchSource(host, "mi-account-removed");
     host.clearPendingHighRisk();
@@ -806,6 +808,9 @@ export function finishAllMiAccountsSignedOutOnHost(
   host.settings.cachedXiaomiDevices = [];
   host.miSessionExpired = false;
   host.cloudValuesStale = false;
+  clearCachedXiaomiTopology(host);
+  clearXiaomiRateLimitBackoff(host);
+  clearAccountRateLimitBackoff();
 
   const currentHAIdentity = homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken);
   const hasHA = currentHAIdentity !== null;
