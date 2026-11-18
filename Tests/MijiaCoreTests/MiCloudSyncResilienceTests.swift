@@ -41,6 +41,113 @@ struct MiCloudSyncResilienceTests {
         }
     }
 
+    // MARK: - Empty success
+
+    @Test("A plain 200 `code:0` without a usable result is a bad response, not an empty success")
+    func plainZeroWithoutResult() throws {
+        func decode(_ json: String) throws -> JSONValue {
+            try MiCloudClient.decodeResponse(Data(json.utf8), statusCode: 200, signedNonce: "")
+        }
+
+        // The audit case: HTTP 200, a plain `{"code":0}`, and no encrypted body behind it.
+        #expect(throws: MiCloudError.badResponse(L10n.tr("缺少成功结果", "Missing success result"))) {
+            try decode(#"{"code":0}"#)
+        }
+        // An explicit null is the same missing payload.
+        #expect(throws: MiCloudError.badResponse(L10n.tr("缺少成功结果", "Missing success result"))) {
+            try decode(#"{"code":0,"result":null}"#)
+        }
+        // A plain envelope that does carry a usable payload keeps decoding, so mirrored replies and
+        // the Windows transport fixtures stay valid.
+        #expect(try decode(#"{"code":0,"result":{"list":[]}}"#) == .object(["list": .array([])]))
+    }
+
+    @Test("A plain `code:0` reply fails the device list instead of reporting zero devices")
+    func plainZeroFailsDeviceList() async {
+        let transport = ScriptedTransport { _ in (200, [:], #"{"code":0}"#) }
+
+        await #expect(throws: MiCloudError.badResponse(L10n.tr("缺少成功结果", "Missing success result"))) {
+            _ = try await MiCloudClient(session: Self.session, transport: transport).deviceList()
+        }
+    }
+
+    @Test("A plain `code:0` reply disconnects the provider instead of connecting with zero devices")
+    func plainZeroDisconnectsProvider() async throws {
+        let transport = ScriptedTransport { _ in (200, [:], #"{"code":0}"#) }
+        let provider = MiCloudProvider(
+            sessionLoader: { Self.session },
+            apiFactory: { MiCloudClient(session: $0, transport: transport) },
+            specSource: StubSpecSource(),
+            pollInterval: .seconds(60),
+            closedPollInterval: .seconds(60),
+            deviceRefreshEveryPolls: 1000,
+            followUpDelay: .milliseconds(10),
+            selectedHomeLoader: { nil }
+        )
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+
+        let surfaced = await log.wait { log in
+            await log.statuses.contains { status in
+                if case .disconnected = status { return true }
+                return false
+            }
+        }
+        #expect(surfaced)
+        #expect(!(await log.statuses.contains(.connected)))
+        #expect(await log.snapshots.isEmpty)
+        await provider.shutdown()
+    }
+
+    @Test("A write without a per-device verdict fails instead of passing the zero-loop check")
+    func writesRequireDeviceVerdicts() async throws {
+        let write = MiotPropWrite(did: "123", siid: 2, piid: 1, value: .bool(true))
+        let call = MiotActionCall(did: "123", siid: 2, aiid: 1)
+        let noVerdict = MiCloudError.badResponse(L10n.tr("设备未返回写入结果", "Device returned no write verdict"))
+
+        func client(result: String) -> MiCloudClient {
+            MiCloudClient(session: Self.session, transport: cloudTransport { path, _ in
+                switch path {
+                case "/miotspec/prop/set", "/miotspec/action": return result
+                default: throw UnexpectedPath(path)
+                }
+            })
+        }
+
+        // `null`, an empty array and rows without a `code` carry no verdict for any write.
+        for result in ["null", "[]", #"[{"did":"123","siid":2,"piid":1}]"#] {
+            await #expect(throws: noVerdict) {
+                try await client(result: result).setProps([write])
+            }
+        }
+        // callAction used to treat `.null` and `{}` as an acknowledged action.
+        for result in ["null", "{}", "[]", #"[{"out":[]}]"#] {
+            await #expect(throws: noVerdict) {
+                _ = try await client(result: result).callAction(call)
+            }
+        }
+
+        // A negative per-item code is still the device's own verdict, not a parse failure.
+        await #expect(throws: MiCloudError.deviceError(
+            code: -704042011,
+            message: L10n.tr("设备未响应或离线", "Device did not respond or is offline")
+        )) {
+            try await client(result: #"[{"code":-704042011}]"#).setProps([write])
+        }
+
+        // A verdict with no output payload is a real success: `code: 0` inside the action result,
+        // `code: 1` (accepted asynchronously) for a property write.
+        let emptyAction = try await client(result: #"{"code":0}"#).callAction(call)
+        #expect(emptyAction["code"]?.intValue == 0)
+        let arrayAction = try await client(result: #"[{"code":0}]"#).callAction(call)
+        #expect(arrayAction.arrayValue?.first?["code"]?.intValue == 0)
+        try await client(result: #"[{"code":0},{"code":1}]"#).setProps([write, write])
+
+        // No writes is a no-op, so it needs no verdict and sends no request.
+        let unused = ScriptedTransport { request in throw UnexpectedPath(request.url?.path ?? "") }
+        try await MiCloudClient(session: Self.session, transport: unused).setProps([])
+    }
+
     // MARK: - Room page
 
     @Test("homeRooms sends app_ver 9 and merges max_id pages without repeating a did")

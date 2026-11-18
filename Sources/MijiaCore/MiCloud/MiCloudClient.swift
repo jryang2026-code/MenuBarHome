@@ -323,7 +323,12 @@ public actor MiCloudClient: MiCloudAPI {
             if let code = plain["code"]?.intValue {
                 if code != 0 { return try unwrapResult(plain) }
                 // `{"code":0}` without the encrypted body is not a payload this client can use.
+                // Returning it as `.null` made a read look like "connected, 0 devices" and a write
+                // look like a zero-loop success.
                 guard statusCode == 200 else { throw MiCloudError.http(statusCode) }
+                guard let result = plain["result"], result != .null else {
+                    throw MiCloudError.badResponse(L10n.tr("缺少成功结果", "Missing success result"))
+                }
                 return try unwrapResult(plain)
             }
             if Self.isAuthRejection(plain) { throw MiCloudError.sessionExpired }
@@ -816,6 +821,7 @@ public actor MiCloudClient: MiCloudAPI {
     }
 
     public func setProps(_ writes: [MiotPropWrite]) async throws {
+        guard !writes.isEmpty else { return }
         let params: [JSONValue] = writes.map {
             .object([
                 "did": .string($0.did), "siid": .number(Double($0.siid)),
@@ -823,7 +829,12 @@ public actor MiCloudClient: MiCloudAPI {
             ])
         }
         let result = try await request("miotspec/prop/set", data: .object(["params": .array(params)]))
-        try Self.checkWriteCodes(result.arrayValue ?? [])
+        // One row per write is the cloud's acknowledgement; no rows means nothing was decided, and
+        // the old zero-iteration loop reported that as a success.
+        guard let items = result.arrayValue, !items.isEmpty else {
+            throw MiCloudError.badResponse(L10n.tr("设备未返回写入结果", "Device returned no write verdict"))
+        }
+        try Self.checkWriteCodes(items)
     }
 
     public func action(_ call: MiotActionCall) async throws {
@@ -835,14 +846,26 @@ public actor MiCloudClient: MiCloudAPI {
             "did": .string(call.did), "siid": .number(Double(call.siid)),
             "aiid": .number(Double(call.aiid)), "in": .array(call.inputs),
         ])]))
-        try Self.checkWriteCodes([result])
+        // An action answers with its own `code` (and usually `out`); an array is the older gateway
+        // shape. `.null` or `{}` carries no device verdict, so it cannot count as acknowledged.
+        if let items = result.arrayValue {
+            guard !items.isEmpty else {
+                throw MiCloudError.badResponse(L10n.tr("设备未返回写入结果", "Device returned no write verdict"))
+            }
+            try Self.checkWriteCodes(items)
+        } else {
+            try Self.checkWriteCodes([result])
+        }
         return result
     }
 
     /// MIoT per-item codes: 0 = done, 1 = accepted (async); negatives are device/gateway errors such as -704042011 (offline).
+    /// A row without an integer `code` has no verdict: the old `?? 0` let `.null` and `{}` pass as success.
     static func checkWriteCodes(_ items: [JSONValue]) throws {
         for item in items {
-            let code = item["code"]?.intValue ?? 0
+            guard let code = item["code"]?.intValue else {
+                throw MiCloudError.badResponse(L10n.tr("设备未返回写入结果", "Device returned no write verdict"))
+            }
             if code < 0 {
                 throw MiCloudError.deviceError(
                     code: code,

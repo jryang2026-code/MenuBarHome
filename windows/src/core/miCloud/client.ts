@@ -208,7 +208,13 @@ export class MiCloudClient {
           if (statusCode !== 200) {
             throw new MiCloudError("http", t("米家云服务 HTTP {status}", { status: statusCode }), statusCode);
           }
-          return plain["result"] ?? null;
+          const result = plain["result"];
+          // A code-only envelope carries no payload. The old `?? null` made a read look like
+          // "connected, 0 devices" and a write look like a zero-loop success.
+          if (result === undefined || result === null) {
+            throw new MiCloudError("badResponse", t("米家云响应缺少成功结果"));
+          }
+          return result;
         }
         return MiCloudClient.unwrapResult(plain);
       }
@@ -683,6 +689,7 @@ export class MiCloudClient {
   }
 
   async setProps(writes: readonly MiotPropWrite[]): Promise<void> {
+    if (writes.length === 0) return;
     const params = writes.map((w) => ({
       did: w.did,
       siid: w.siid,
@@ -690,18 +697,12 @@ export class MiCloudClient {
       value: w.value,
     }));
     const result = await this.request("miotspec/prop/set", { params });
-    if (Array.isArray(result)) {
-      for (const item of result) {
-        if (item && typeof item === "object") {
-          const code = typeof (item as Record<string, unknown>)["code"] === "number"
-            ? Math.trunc((item as Record<string, unknown>)["code"] as number)
-            : 0;
-          if (code < 0) {
-            throw new MiCloudError("api", t("设备未响应或离线"), code);
-          }
-        }
-      }
+    // One row per write is the cloud's acknowledgement; no rows means nothing was decided, and
+    // the old loop reported that as a success.
+    if (!Array.isArray(result) || result.length === 0) {
+      throw new MiCloudError("badResponse", t("设备未返回执行结果"));
     }
+    for (const item of result) MiCloudClient.checkWriteCode(item);
   }
 
   async action(call: MiotActionCall): Promise<void> {
@@ -717,15 +718,32 @@ export class MiCloudClient {
         in: call.inputs,
       },
     });
-    if (result && typeof result === "object") {
-      const code = typeof (result as Record<string, unknown>)["code"] === "number"
-        ? Math.trunc((result as Record<string, unknown>)["code"] as number)
-        : 0;
-      if (code < 0) {
-        throw new MiCloudError("api", t("设备未响应或离线"), code);
+    // An action answers with its own `code` (and usually `out`); an array is the older gateway
+    // shape. `null` or `{}` carries no device verdict, so it cannot count as acknowledged.
+    if (Array.isArray(result)) {
+      if (result.length === 0) {
+        throw new MiCloudError("badResponse", t("设备未返回执行结果"));
       }
+      for (const item of result) MiCloudClient.checkWriteCode(item);
+    } else {
+      MiCloudClient.checkWriteCode(result);
     }
     return result;
+  }
+
+  /** Throws unless `item` carries an integer MIoT code; a negative code is the device's verdict. */
+  private static checkWriteCode(item: unknown): void {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new MiCloudError("badResponse", t("设备未返回执行结果"));
+    }
+    const rawCode = (item as Record<string, unknown>)["code"];
+    if (typeof rawCode !== "number" || !Number.isFinite(rawCode)) {
+      throw new MiCloudError("badResponse", t("设备未返回执行结果"));
+    }
+    const code = Math.trunc(rawCode);
+    if (code < 0) {
+      throw new MiCloudError("api", t("设备未响应或离线"), code);
+    }
   }
 }
 
