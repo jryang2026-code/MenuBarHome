@@ -38,6 +38,8 @@ import { bindConnectionsAndDiagPanelEvents } from "./connectionsAndDiagView.js";
 import { bindSensorHistoryEvents } from "./sensorHistoryView.js";
 import { syncSettingsSaveHint } from "./settingsEvents.js";
 import { setVoiceInputEnabled, shouldKeepPopoverPinned } from "./speechGuard.js";
+import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
+import { evaluateDeviceEntityWriteGate } from "../core/miAccountControl.js";
 
 function confirmHighRiskForHost(
   host: MenuMijiaWindowsApp,
@@ -48,6 +50,21 @@ function confirmHighRiskForHost(
   bannerOverride?: string,
   primaryPower?: { readonly command: DeviceCommand; readonly summary: string; readonly intent: DeviceIntent },
 ): boolean {
+  if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+    const gateMsg = evaluateDeviceEntityWriteGate({
+      targetKind: "device",
+      targetIdOrEntityId: command.entityId,
+      resolvedActiveDeviceId: deviceId,
+      context: buildHostCapabilityContext(host),
+      languagePreference: host.settings.interfaceLanguage,
+    });
+    if (gateMsg !== null) {
+      host.clearPendingHighRisk();
+      host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+      host.render();
+      return false;
+    }
+  }
   const actionKey = JSON.stringify(command);
   const armed = host.pendingHighRisk;
   if (

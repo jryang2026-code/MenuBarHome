@@ -124,7 +124,9 @@ import { bindPersistentUndoEvents, undoTrackerFor } from "./undoTracker.js";
 import { getHostApplyCommand, getUnsupportedLightEffects, markCloudValuesFresh, markCloudValuesStale, pruneUnsupportedLightEffectsOnHost, setCustomApplyCommand } from "./commandDispatch.js";
 import { getSpeakerDrawerItemState } from "./detailDrawers.js";
 import { activeRoomOptions } from "./roomOrderEditor.js";
-import { foldGrouped, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
+import { foldGrouped, isHostMiSessionEnabled, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
+import { hasSecondaryMiAccountsInIndex, miAccountId } from "../core/miAccountsStore.js";
+import { writeMiAccountSelectionMutation } from "../core/miAccountControl.js";
 import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
 import { getAutomationUndoRunId } from "../core/automationEngine.js";
 import { registerUndoActionBatch } from "../core/optimisticLock.js";
@@ -425,8 +427,12 @@ export class MenuMijiaWindowsApp {
     this.applyTemperatureSetting();
     this.root.dataset.panelTheme = normalizePanelTheme(this.settings.panelTheme);
     const haCache = this.settings.cachedHAHome?.identity === homeAssistantIdentity(this.settings.haBaseURL, this.settings.haToken) ? this.settings.cachedHAHome.home : null;
+    const primaryDisabledOnly =
+      this.settings.miSession !== null &&
+      !isHostMiSessionEnabled(this, this.settings.miSession) &&
+      !hasSecondaryMiAccountsInIndex();
     this.devices = this.settings.connectionMode === "xiaomiCloud"
-      ? structuredClone(this.settings.cachedXiaomiDevices)
+      ? (primaryDisabledOnly ? [] : structuredClone(this.settings.cachedXiaomiDevices))
       : this.settings.connectionMode === "homeAssistant" ? structuredClone(haCache?.devices ?? []) : demoDevices();
     this.scenes = this.settings.connectionMode === "homeAssistant" ? structuredClone(haCache?.scenes ?? []) : this.settings.connectionMode === "demo" ? demoScenes() : [];
     this.environmentReadings = this.settings.connectionMode === "homeAssistant" ? structuredClone(haCache?.environmentReadings ?? []) : [];
@@ -475,7 +481,7 @@ export class MenuMijiaWindowsApp {
     this.restoreUpdateState();
     this.render();
 
-    if (this.settings.connectionMode === "xiaomiCloud" && this.settings.miSession) {
+    if (this.settings.connectionMode === "xiaomiCloud" && this.settings.miSession && !primaryDisabledOnly) {
       void this.refreshDevices();
     }
     // At most one GitHub request per local day, and only inside the packaged app (#39).
@@ -1085,7 +1091,16 @@ export class MenuMijiaWindowsApp {
       if (this.sourceRevision !== sourceRevAtStart) return;
       switchSource(this, "qr-login-success");
       // The account-level passToken is never persisted (#27).
-      this.settings.miSession = sessionWithoutPassToken(session);
+      const cleanScanned = sessionWithoutPassToken(session);
+      const scannedAccountId = miAccountId(cleanScanned);
+      writeMiAccountSelectionMutation({
+        mutate: (prev) => ({
+          ...prev,
+          disabledAccountIds: prev.disabledAccountIds.filter((id) => id !== scannedAccountId),
+          knownDisabledDevices: prev.knownDisabledDevices.filter((d) => d.accountId !== scannedAccountId),
+        }),
+      });
+      this.settings.miSession = cleanScanned;
       this.miSessionExpired = false;
       this.settings.miCloudRegion = normalizeMiCloudRegion(session.region);
       const regionSwitched = this.settings.miCloudRegion !== requestedRegion;

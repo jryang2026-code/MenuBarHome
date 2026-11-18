@@ -26,7 +26,7 @@ import type {
   UndoStep,
 } from "./appTypes.js";
 import { isConnectionsAndDiagModalOpen } from "./connectionsAndDiagView.js";
-import { foldGrouped } from "./cloudRefresh.js";
+import { foldGrouped, resolveHostMiSelectionState } from "./cloudRefresh.js";
 import { recordHabits } from "./intentExecution.js";
 import { filterByListCut } from "./listCut.js";
 import { invokeTauriVoid, isWorkstationLockBlockingControl } from "./transport.js";
@@ -637,6 +637,7 @@ export async function executeBuiltInQuickAction(
   host: MenuMijiaWindowsApp,
   actionId: QuickActionId,
 ): Promise<void> {
+  if (resolveHostMiSelectionState(host).pausedQuickActionIds.has(actionId)) return;
   if (await rejectIfControlBlockedWhileLocked(host)) return;
   const sourceRevision = host.sourceRevision;
   const planned = planQuickAction(actionId, quickActionScopeDevices(host), host.lastManuallyUsedLightId);

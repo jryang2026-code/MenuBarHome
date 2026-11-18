@@ -24,9 +24,17 @@ export function missingScheduledCommandTargets(
   return missing;
 }
 
+export interface PausedScheduledCommand {
+  readonly command: ScheduledCommand;
+  readonly originalPartition: "waiting" | "missed";
+  readonly sourceScopes: readonly string[];
+  readonly pausedCapabilities: readonly string[];
+}
+
 export interface TimerQueue {
   scheduledCommands: ScheduledCommand[];
   missedScheduledCommands: ScheduledCommand[];
+  pausedScheduledCommands?: PausedScheduledCommand[];
 }
 
 interface TimerStorage {
@@ -79,6 +87,19 @@ function parseTimer(value: unknown): ScheduledCommand | null {
   };
 }
 
+function parsePausedTimer(value: unknown): PausedScheduledCommand | null {
+  if (!isRecord(value)) return null;
+  const command = parseTimer(value.command);
+  if (!command || (value.originalPartition !== "waiting" && value.originalPartition !== "missed")) return null;
+  if (!Array.isArray(value.sourceScopes) || !Array.isArray(value.pausedCapabilities)) return null;
+  return {
+    command,
+    originalPartition: value.originalPartition,
+    sourceScopes: value.sourceScopes.filter((s): s is string => typeof s === "string" && s.length > 0),
+    pausedCapabilities: value.pausedCapabilities.filter((c): c is string => typeof c === "string" && c.length > 0),
+  };
+}
+
 function parseQueues(
   raw: string | null,
 ): { readonly queues: Map<string, TimerQueue>; readonly hadCorruption: boolean } | null {
@@ -95,7 +116,8 @@ function parseQueues(
         !source.identity ||
         sources.has(source.identity) ||
         !Array.isArray(source.scheduledCommands) ||
-        !Array.isArray(source.missedScheduledCommands)
+        !Array.isArray(source.missedScheduledCommands) ||
+        (source.pausedScheduledCommands !== undefined && !Array.isArray(source.pausedScheduledCommands))
       ) {
         hadCorruption = true;
         continue;
@@ -121,7 +143,17 @@ function parseQueues(
         seenIds.add(parsed.id);
         missedScheduledCommands.push(parsed);
       }
-      sources.set(source.identity, { scheduledCommands, missedScheduledCommands });
+      const pausedScheduledCommands: PausedScheduledCommand[] = [];
+      for (const rawItem of source.pausedScheduledCommands ?? []) {
+        const parsed = parsePausedTimer(rawItem);
+        if (!parsed || seenIds.has(parsed.command.id)) {
+          hadCorruption = true;
+          continue;
+        }
+        seenIds.add(parsed.command.id);
+        pausedScheduledCommands.push(parsed);
+      }
+      sources.set(source.identity, { scheduledCommands, missedScheduledCommands, pausedScheduledCommands });
     }
     return { queues: sources, hadCorruption };
   } catch {
@@ -131,7 +163,7 @@ function parseQueues(
 
 export class ScheduledCommandStore {
   private readonly sources: Map<string, TimerQueue>;
-  private readonly unavailable: TimerQueue = { scheduledCommands: [], missedScheduledCommands: [] };
+  private readonly unavailable: TimerQueue = { scheduledCommands: [], missedScheduledCommands: [], pausedScheduledCommands: [] };
   private unreadableRaw: string | null = null;
   private storageReadable = true;
 
@@ -153,13 +185,22 @@ export class ScheduledCommandStore {
     if (changed) this.persist();
   }
 
+  hasStorageError(): boolean {
+    return !this.storageReadable || this.unreadableRaw !== null;
+  }
+
+  entries(): ReadonlyArray<readonly [string, TimerQueue]> {
+    return [...this.sources.entries()];
+  }
+
   queue(identity: string | null): TimerQueue {
     if (identity === null) return this.unavailable;
     let queue = this.sources.get(identity);
     if (!queue) {
-      queue = { scheduledCommands: [], missedScheduledCommands: [] };
+      queue = { scheduledCommands: [], missedScheduledCommands: [], pausedScheduledCommands: [] };
       this.sources.set(identity, queue);
     }
+    queue.pausedScheduledCommands ??= [];
     return queue;
   }
 
@@ -176,7 +217,12 @@ export class ScheduledCommandStore {
       }
       this.storage.setItem(SCHEDULED_COMMANDS_STORAGE_KEY, JSON.stringify({
         version: 1,
-        sources: [...this.sources].map(([identity, queue]) => ({ identity, ...queue })),
+        sources: [...this.sources].map(([identity, queue]) => ({
+          identity,
+          scheduledCommands: queue.scheduledCommands,
+          missedScheduledCommands: queue.missedScheduledCommands,
+          ...(queue.pausedScheduledCommands?.length ? { pausedScheduledCommands: queue.pausedScheduledCommands } : {}),
+        })),
       }));
       return true;
     } catch { return false; }

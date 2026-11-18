@@ -1,18 +1,35 @@
+import { AutomationRuleStore } from "../core/automationEngine.js";
+import type { CapabilityDeactivationVerdict } from "../core/capabilityReferenceVerdict.js";
 import { currentLanguage, resolveLanguage, t, type AppLanguage, type LanguagePreference } from "../core/i18n.js";
+import {
+  applyPauseItemsFromVerdict,
+  filterEnabledMiAccounts,
+  previewMiAccountDisable,
+  removeSignedOutMiAccountFromSelection,
+  resolveDeviceMiAccountOwner,
+  revalidateAfterMiAccountReenable,
+  snapshotDisabledMiDevice,
+  writeMiAccountSelectionMutation,
+} from "../core/miAccountControl.js";
 import { MI_CLOUD_REGIONS, MiAccountLogin, maskedMiUserId, miCloudRegionLabel, normalizeMiCloudRegion, type HttpTransport, type MiSession, type MiotSpecResolver, type QRLoginTicket } from "../core/miCloudClient.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { CredentialVault, credentialsFromSettings, secureStoreDelete, sessionWithoutPassToken } from "../core/secureStore.js";
-import { MiAccountScope, MiAccountsStore, clearAccountRateLimitBackoff, formatAccountTokenNotice, getAccountTokenStatus, hasCorruptMiAccountIndex, hasSecondaryMiAccountsInIndex, makeMiAccount, mergeMiAccountSnapshots, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
-import { clearCachedXiaomiTopology, clearXiaomiRateLimitBackoff } from "../core/pollingPolicy.js";
+import { MiAccountScope, MiAccountsStore, clearAccountRateLimitBackoff, formatAccountTokenNotice, getAccountTokenStatus, hasCorruptMiAccountIndex, hasSecondaryMiAccountsInIndex, makeMiAccount, mergeMiAccountSnapshots, miAccountId, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
+import { cancelDelayedReadBack, type OptimisticLockHost } from "../core/optimisticLock.js";
+import { clearCachedXiaomiTopology, clearXiaomiRateLimitBackoff, getXiaomiBackoffUntilMs } from "../core/pollingPolicy.js";
+import { ScheduledCommandStore } from "../core/scheduledCommands.js";
 import { DiagnosticsReportBuilder, UnsupportedDeviceScanner, appDiagnosticsLog, deriveCameraDiagnostics, derivePollingBackoffDiagnostics, formatSpecSummaryText, summarizeModelCounts, type ScanUnsupportedOptions, type UnsupportedDevice } from "../core/diagnosticsAndScanner.js";
 import type { DeviceMergeRoute, DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import { environmentReadingPriority, type EnvironmentReading, type FacetControl, type HomeBackend, type HomeScene, type SmartDevice } from "../core/models.js";
+import type { MenuMijiaWindowsApp } from "./app.js";
 import { clearHostActivitiesOnSignOut, isFullPanelHost } from "./activityStackView.js";
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
-import { adoptRecoveredPrimarySession, canUseDualSource, getHostDualSourceState, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, recomputeHostDualSource, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
+import { adoptRecoveredPrimarySession, buildHostCapabilityContext, canUseDualSource, getHostDualSourceState, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, recomputeHostDualSource, resolveHostMiSelectionState, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
+import { cancelEchoReadBack } from "./commandDispatch.js";
 import { applyOrder, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
+import { markTimerSnapshotReady, scheduledCommandIdentity } from "./scheduledCommands.js";
 import { switchSource, type SourceSwitchHost } from "./sourceSwitch.js";
 import type { SettingsTab, SettingsViewContext } from "./settingsViews.js";
 import { hasPendingMiVaultDeletion, setPendingMiVaultDeletion } from "./speechGuard.js";
@@ -217,6 +234,10 @@ export interface HostConnDiagSession {
   readonly signingOutAccountIds: Set<string>;
   signOutChain: Promise<boolean>;
   readonly addQr: AddAccountQrState;
+  pendingDisablePreview: {
+    readonly accountId: string;
+    readonly verdict: CapabilityDeactivationVerdict;
+  } | null;
 }
 
 export interface ConnectionsAndDiagHost extends SourceSwitchHost {
@@ -299,6 +320,7 @@ export function createDefaultHostConnDiagSession(region?: string): HostConnDiagS
       statusText: "",
       generation: 0,
     },
+    pendingDisablePreview: null,
   };
 }
 
@@ -434,6 +456,8 @@ export async function addOrUpdateMiAccountOnHost(
   }
   const result = await store.upsertAccount(cleanSession);
   setHostMiAccounts(host, null);
+  removeSignedOutMiAccountFromSelection(miAccountId(cleanSession));
+  getHostConnDiagSession(host).pendingDisablePreview = null;
 
   setPendingMiVaultDeletion(false);
   switchSource(host, "mi-account-added");
@@ -467,6 +491,146 @@ export async function addOrUpdateMiAccountOnHost(
   host.render();
   if (options.triggerRefresh !== false) await host.refreshDevices(false);
   return result.accounts;
+}
+
+export type SetMiAccountEnabledOutcome =
+  | { readonly status: "applied" }
+  | { readonly status: "requiresPauseConfirmation"; readonly verdict: CapabilityDeactivationVerdict }
+  | { readonly status: "blocked"; readonly verdict: CapabilityDeactivationVerdict };
+
+export async function setMiAccountEnabledOnHost(
+  host: ConnectionsAndDiagHost,
+  accountId: string,
+  enabled: boolean,
+  options: { readonly confirmPause?: boolean; readonly expectedGeneration?: number; readonly currentGeneration?: number; readonly nowMs?: number } = {},
+): Promise<SetMiAccountEnabledOutcome> {
+  const session = getHostConnDiagSession(host), store = getHostMiAccountsStore(host);
+  let allAccounts = resolveHostMiAccounts(host);
+  if (!allAccounts.some((acc) => acc.id === accountId) && store.getAccounts().length === 0 && !hasPendingMiVaultDeletion()) {
+    await store.load();
+    allAccounts = resolveHostMiAccounts(host);
+  }
+  const fallbackStorage = typeof localStorage !== "undefined" ? localStorage : { getItem: () => null, setItem: () => {} };
+  const scheduledCommandStore = (host as { readonly scheduledCommandStore?: ScheduledCommandStore }).scheduledCommandStore ?? new ScheduledCommandStore(fallbackStorage);
+  const ruleStore = new AutomationRuleStore();
+
+  if (enabled) {
+    session.pendingDisablePreview = null;
+    writeMiAccountSelectionMutation({ mutate: (prev) => ({
+      ...prev, disabledAccountIds: prev.disabledAccountIds.filter((id) => id !== accountId),
+      knownDisabledDevices: prev.knownDisabledDevices.filter((d) => d.accountId !== accountId),
+    }) });
+    resetHostUnsupportedScanner(host);
+    host.render();
+    if (host.settings.connectionMode !== "demo") await host.refreshDevices(false);
+    revalidateAfterMiAccountReenable({
+      context: buildHostCapabilityContext(host, resolveHostMiAccounts(host)), scheduledCommandStore,
+      activeTimerIdentity: scheduledCommandIdentity(host.settings), ruleStore,
+      ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
+    });
+    host.render();
+    return { status: "applied" };
+  }
+
+  const context = buildHostCapabilityContext(host, allAccounts);
+  if (context.state.disabledAccountIds.has(accountId)) { session.pendingDisablePreview = null; host.render(); return { status: "applied" }; }
+  const verdict = previewMiAccountDisable({
+    accountId, context, scheduledCommandStore, activeTimerIdentity: scheduledCommandIdentity(host.settings),
+    ruleStore, expectedGeneration: options.expectedGeneration ?? null, currentGeneration: options.currentGeneration ?? null,
+  });
+  if (verdict.disposition === "blocked") { session.pendingDisablePreview = null; host.render(); return { status: "blocked", verdict }; }
+  if (verdict.disposition === "requiresPauseConfirmation" && !options.confirmPause) {
+    session.pendingDisablePreview = { accountId, verdict }; host.render();
+    return { status: "requiresPauseConfirmation", verdict };
+  }
+
+  session.pendingDisablePreview = null;
+  const wasDualSource = isDualSourceEnabled(host);
+  const dualRoutes = wasDualSource ? host.dualSourceCoordinator?.getLastMerged()?.routes : undefined;
+  const deviceOwners = getHostMiAccountsState(host)?.merged?.deviceOwners;
+  const ownerOf = (dev: SmartDevice): string | null => resolveDeviceMiAccountOwner({
+    device: dev, accounts: allAccounts, ...(deviceOwners ? { deviceOwners } : {}), ...(dualRoutes?.[dev.id] ? { dualRoute: dualRoutes[dev.id]! } : {}),
+  });
+  const hasHaAlternate = (dev: SmartDevice): boolean => {
+    const route = dualRoutes?.[dev.id];
+    return route ? route.backend === "homeAssistant" || (route.alternateBackend === "homeAssistant" && route.alternateDevice !== null) : wasDualSource && dev.sourceBackend === "homeAssistant";
+  };
+
+  const ownedDevices = host.devices.filter((d) => ownerOf(d) === accountId);
+  const snapshots = ownedDevices.map((d) => snapshotDisabledMiDevice(d, accountId, host.deviceFacets[d.id] ?? []));
+  const newlyPausedQaIds = applyPauseItemsFromVerdict({ verdict, scheduledCommandStore, ruleStore });
+  const wrote = writeMiAccountSelectionMutation({ mutate: (prev) => ({
+    ...prev,
+    disabledAccountIds: [...new Set([...prev.disabledAccountIds, accountId])],
+    pausedQuickActionIds: [...new Set([...prev.pausedQuickActionIds, ...newlyPausedQaIds])],
+    knownDisabledDevices: [...prev.knownDisabledDevices.filter((d) => d.accountId !== accountId && !snapshots.some((s) => s.id === d.id)), ...snapshots],
+  }) });
+  if (!wrote) { host.render(); return { status: "blocked", verdict }; }
+
+  const removedIds = new Set(ownedDevices.filter((d) => !hasHaAlternate(d)).map((d) => d.id));
+  if (host.cameraLive?.activeLiveCameraId) {
+    host.cameraLive.closeXiaomiCameraLiveView?.(accountId);
+    const camId = host.cameraLive.activeLiveCameraId;
+    if (camId && (removedIds.has(camId) || MiAccountScope.isOwned(camId, accountId))) host.cameraLive.closeCameraLiveView();
+  }
+  for (const dev of ownedDevices) {
+    const rawDid = MiAccountScope.localId(dev.id);
+    for (const id of rawDid !== dev.id ? [dev.id, rawDid] : [dev.id]) {
+      cancelDelayedReadBack(host as unknown as OptimisticLockHost, id);
+      cancelEchoReadBack(host as unknown as MenuMijiaWindowsApp, id);
+    }
+  }
+
+  clearAccountRateLimitBackoff(accountId);
+  const targetAccount = allAccounts.find((acc) => acc.id === accountId);
+  const enabledAfter = filterEnabledMiAccounts(allAccounts, resolveHostMiSelectionState(host, allAccounts));
+  if (enabledAfter.length === 0 || (host.settings.miSession && miAccountId(host.settings.miSession) === accountId) || (targetAccount && getXiaomiBackoffUntilMs(host, targetAccount.session) !== null)) {
+    clearXiaomiRateLimitBackoff(host);
+    clearCachedXiaomiTopology(host);
+  }
+
+  const hadTimerSnapshot = Boolean((host as { readonly timerSnapshot?: { readonly identity: string; readonly sourceRevision: number } | null }).timerSnapshot);
+  switchSource(host, "mi-account-disabled");
+  host.clearPendingHighRisk();
+  resetHostUnsupportedScanner(host);
+  const nextDual = wasDualSource ? (host.dualSourceCoordinator?.removeXiaomiAccount(accountId, host.settings.interfaceLanguage) ?? null) : null;
+  if (host.waitingDeviceIds) for (const id of removedIds) host.waitingDeviceIds.delete(id);
+
+  if (nextDual) {
+    host.homes = applyOrder(host.homes.map((h) => h.id), nextDual.homes);
+    host.groupOwnerByMemberDid = new Map(nextDual.lightGroupOwners);
+    host.devices = applyOrder(host.devices.map((d) => d.id), nextDual.home.devices);
+    host.deviceFacets = nextDual.home.deviceFacets ?? {};
+    host.scenes = [...nextDual.home.scenes];
+    const prio = new Map(host.devices.map((d) => [d.id, environmentReadingPriority(d.kind)]));
+    host.environmentReadings = applyOrder(host.environmentReadings.map((r) => r.id), nextDual.home.environmentReadings).sort((a, b) => (prio.get(a.id) ?? 0) - (prio.get(b.id) ?? 0));
+  } else if (!wasDualSource && host.settings.connectionMode === "xiaomiCloud" && enabledAfter.length === 0) {
+    host.devices = []; host.scenes = []; host.environmentReadings = []; host.homes = [];
+    host.groupOwnerByMemberDid = new Map(); host.deviceFacets = {}; host.cloudValuesStale = false; host.selectRoom(null);
+  } else if (removedIds.size > 0) {
+    host.devices = host.devices.filter((d) => !removedIds.has(d.id));
+    host.environmentReadings = host.environmentReadings.filter((r) => !removedIds.has(r.id));
+    const nextFacets = { ...host.deviceFacets };
+    for (const id of removedIds) delete nextFacets[id];
+    host.deviceFacets = nextFacets;
+  }
+
+  if (enabledAfter.length === 0) {
+    host.settings.cachedXiaomiDevices = []; host.multiAccountState = null;
+  } else {
+    host.settings.cachedXiaomiDevices = host.settings.cachedXiaomiDevices.filter((d) => d.accountId !== accountId && !MiAccountScope.isOwned(d.id, accountId) && !removedIds.has(d.id));
+    if (host.multiAccountState) {
+      const nextChildren = { ...host.multiAccountState.children };
+      delete nextChildren[accountId];
+      host.multiAccountState = { accounts: enabledAfter, children: nextChildren, merged: mergeMiAccountSnapshots(enabledAfter, nextChildren) };
+    }
+  }
+  if (host.expandedDeviceId && (removedIds.has(host.expandedDeviceId) || !host.devices.some((d) => d.id === host.expandedDeviceId))) host.expandedDeviceId = null;
+  const hasRemainingActiveSource = enabledAfter.length > 0 || wasDualSource || host.settings.connectionMode === "homeAssistant" || host.settings.connectionMode === "demo";
+  if (hadTimerSnapshot && hasRemainingActiveSource && "timerSnapshot" in host) markTimerSnapshotReady(host as unknown as MenuMijiaWindowsApp);
+  host.saveSettings();
+  host.render();
+  return { status: "applied" };
 }
 
 function signOutSingleMiAccountOnHost(
@@ -513,6 +677,10 @@ async function performSignOutSingleMiAccountOnHost(
     // count unchanged; only identity proves the requested account is gone.
     if (!beforeIds.has(accountId) || removal.accounts.some((account) => account.id === accountId)) {
       return false;
+    }
+    removeSignedOutMiAccountFromSelection(accountId);
+    if (session.pendingDisablePreview?.accountId === accountId) {
+      session.pendingDisablePreview = null;
     }
     clearAccountRateLimitBackoff(accountId);
 
@@ -811,6 +979,8 @@ export function finishAllMiAccountsSignedOutOnHost(
   clearCachedXiaomiTopology(host);
   clearXiaomiRateLimitBackoff(host);
   clearAccountRateLimitBackoff();
+  removeSignedOutMiAccountFromSelection(null);
+  if (host.connDiagSession) host.connDiagSession.pendingDisablePreview = null;
 
   const currentHAIdentity = homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken);
   const hasHA = currentHAIdentity !== null;
@@ -1078,10 +1248,12 @@ function buildUnsupportedScanOptions(
   accountsOverride?: readonly MiAccount[],
 ): ScanUnsupportedOptions {
   const haInvoke = resolveScannerHAInvoke(host);
+  const rawAccounts = accountsOverride ? [...accountsOverride] : resolveHostMiAccounts(host);
+  const miAccounts = filterEnabledMiAccounts(rawAccounts, resolveHostMiSelectionState(host, rawAccounts));
   return {
     connectionMode: host.settings.connectionMode,
     dualSourceEnabled: isDualSourceEnabled(host),
-    miAccounts: accountsOverride ? [...accountsOverride] : resolveHostMiAccounts(host),
+    miAccounts,
     transport: host.transport ?? createTransport(),
     ...(host.specResolver ? { specResolver: host.specResolver } : {}),
     haBaseURL: host.settings.haBaseURL,
@@ -1394,11 +1566,15 @@ export function renderConnectionsAndDiagSection(ctx: ConnectionsAndDiagViewConte
     ? `<p class="cc-field-hint" data-mi-accounts-index-warning style="margin:4px 0 8px;color:#e67e22;">${esc(t("部分小米账号暂时无法读取；其他账号仍可正常使用，稍后重启或重新登录可重试。"))}</p>`
     : "";
 
+  const selectionState = host ? resolveHostMiSelectionState(host, accounts) : null;
+  const disabledSet = selectionState?.disabledAccountIds ?? new Set<string>();
+
   const accountCardsHtml =
     accounts.length === 0
       ? `<p class="cc-field-hint" data-mi-accounts-empty style="margin:4px 0 8px;">${esc(tr3("尚未登录米家账号。可点击下方按钮扫码添加首个或多个跨地区账号。", "尚未登入米家帳號。可點擊下方按鈕掃碼新增首個或多個跨地區帳號。", "No Xiaomi account signed in yet. Scan below to add one or multiple regional accounts.", lang))}</p>`
       : accounts
           .map((acc, index) => {
+            const isEnabled = !disabledSet.has(acc.id);
             const rawStatus = getAccountTokenStatus(acc);
             const effectiveStatus: MiAccountTokenStatus =
               index === 0 && Boolean(host?.miSessionExpired) && rawStatus.kind !== "expired"
@@ -1406,29 +1582,52 @@ export function renderConnectionsAndDiagSection(ctx: ConnectionsAndDiagViewConte
                 : rawStatus;
             const childSnap = multiState?.children[acc.id];
             const disconnectReason =
-              childSnap?.status.kind === "disconnected" && childSnap.status.reason
-                ? childSnap.status.reason
-                : effectiveStatus.kind === "expired" && miSessionExpiryState(acc.session).kind !== "expired"
-                  ? tr3("米家登录已失效，请重新扫码", "米家登入已失效，請重新掃碼", "Xiaomi session expired; please rescan", lang)
-                  : null;
-            const { badgeHtml, noticeHtml, needsRescan } = renderTokenBadge(
+              !isEnabled
+                ? null
+                : childSnap?.status.kind === "disconnected" && childSnap.status.reason
+                  ? childSnap.status.reason
+                  : effectiveStatus.kind === "expired" && miSessionExpiryState(acc.session).kind !== "expired"
+                    ? tr3("米家登录已失效，请重新扫码", "米家登入已失效，請重新掃碼", "Xiaomi session expired; please rescan", lang)
+                    : null;
+            const { badgeHtml: activeBadgeHtml, noticeHtml, needsRescan } = renderTokenBadge(
               acc,
               effectiveStatus,
               disconnectReason,
               lang,
               esc,
             );
+            const badgeHtml = isEnabled
+              ? activeBadgeHtml
+              : `<span class="cc-inline-pill" data-mi-account-status="disabled" style="font-size:11px;padding:2px 7px;color:#8a8f98;background:rgba(128,128,128,0.16);border:1px solid rgba(128,128,128,0.28);">${esc(tr3("已停用", "已停用", "Turned Off", lang))}</span>`;
+            const preview = session?.pendingDisablePreview?.accountId === acc.id ? session.pendingDisablePreview.verdict : null;
+            const previewSummary = preview
+              ? preview.itemsToPause.map((item) => item.name).slice(0, 4).join("、")
+              : "";
+            const previewHtml = preview
+              ? `<div data-mi-account-pause-preview="${esc(acc.id)}" style="margin-top:8px;padding:8px;border-radius:8px;background:rgba(230,126,34,0.12);border:1px solid rgba(230,126,34,0.28);">
+                  <p class="cc-field-hint" style="margin:0 0 6px;">${esc(tr3(`停用此账号会影响 ${preview.itemsToPause.length} 项定时、自动化或快捷动作（${previewSummary}）。暂停后不会执行，重新启用时恢复重验。`, `停用此帳號會影響 ${preview.itemsToPause.length} 項定時、自動化或捷徑動作（${previewSummary}）。暫停後不會執行，重新啟用時恢復重驗。`, `Turning off this account affects ${preview.itemsToPause.length} timer(s), automation(s), or quick action(s) (${previewSummary}). They stay paused until re-enabled.`, lang))}</p>
+                  <div style="display:flex;gap:6px;justify-content:flex-end;">
+                    <button type="button" class="cc-btn-secondary" data-mi-account-cancel-disable="${esc(acc.id)}" style="padding:3px 9px;font-size:11.5px;">${esc(tr3("保持开启", "保持開啟", "Keep On", lang))}</button>
+                    <button type="button" class="cc-btn-primary" data-mi-account-confirm-disable="${esc(acc.id)}" style="padding:3px 9px;font-size:11.5px;">${esc(tr3("暂停这些项并关闭", "暫停這些項並關閉", "Pause & Turn Off", lang))}</button>
+                  </div>
+                </div>`
+              : "";
             return `<div class="cc-settings-account-card" data-mi-account-card="${esc(acc.id)}" style="padding:8px 10px;margin-bottom:6px;border-radius:10px;background:rgba(128,128,128,0.08);border:1px solid rgba(128,128,128,0.14);">
               <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
                 <strong style="font-size:12.5px;">${esc(acc.displayName)}</strong>
                 <span class="cc-inline-pill" style="font-size:11px;padding:1px 6px;">${esc(miCloudRegionLabel(acc.region))} (${esc(acc.region)})</span>
                 ${badgeHtml}
-                <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
-                  ${needsRescan ? `<button type="button" class="cc-inline-pill" data-mi-account-rescan="${esc(acc.id)}" data-mi-account-region="${esc(acc.region)}">${esc(tr3("重新扫码", "重新掃碼", "Rescan", lang))}</button>` : ""}
+                <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
+                  <label style="display:inline-flex;align-items:center;gap:4px;margin:0;font-size:11.5px;cursor:pointer;">
+                    <span>${esc(tr3("连接", "連線", "Connected", lang))}</span>
+                    <input type="checkbox" data-mi-account-enabled="${esc(acc.id)}" ${isEnabled && !preview ? "checked" : ""} />
+                  </label>
+                  ${isEnabled && needsRescan ? `<button type="button" class="cc-inline-pill" data-mi-account-rescan="${esc(acc.id)}" data-mi-account-region="${esc(acc.region)}">${esc(tr3("重新扫码", "重新掃碼", "Rescan", lang))}</button>` : ""}
                   <button type="button" class="cc-btn-danger" data-mi-account-signout="${esc(acc.id)}"${session && session.signingOutAccountIds.size > 0 ? " disabled" : ""} style="padding:3px 9px;font-size:11.5px;">${esc(tr3("退出", "登出", "Sign Out", lang))}</button>
                 </div>
               </div>
               ${noticeHtml}
+              ${previewHtml}
             </div>`;
           })
           .join("");
@@ -1494,7 +1693,7 @@ export function renderConnectionsAndDiagSection(ctx: ConnectionsAndDiagViewConte
     <div id="connections-and-diag-root" style="display:flex;flex-direction:column;gap:12px;">
       <div class="cc-field" id="conn-diag-accounts-section" data-settings-anchor="miMultiAccounts">
         <div class="cc-field-row" style="margin-bottom:6px;">
-          <label style="margin:0;font-weight:600;">${esc(tr3("米家多账号管理", "米家多帳號管理", "Xiaomi Multi-Account", lang))}</label>
+          <label style="margin:0;font-weight:600;">${esc(tr3("连接 · 米家多账号管理", "連線 · 米家多帳號管理", "Connections · Xiaomi Multi-Account", lang))}</label>
           <span class="cc-field-hint" style="margin:0;">${esc(tr3(`已登录 ${accounts.length} 个账号`, `已登入 ${accounts.length} 個帳號`, `${accounts.length} signed in`, lang))}</span>
         </div>
         ${accountCardsHtml}
@@ -1610,6 +1809,31 @@ export function bindConnectionsAndDiagEvents(host: ConnectionsAndDiagHost): void
   const onClick = (sel: string, fn: () => void) =>
     bindElementListener(host.root.querySelector<HTMLButtonElement>(sel), "click", () => fn());
 
+  host.root.querySelectorAll<HTMLInputElement>("[data-mi-account-enabled]").forEach((box) => {
+    box.checked = box.hasAttribute("checked");
+    bindElementListener(box, "change", (el) => {
+      const targetAccountId = el.dataset.miAccountEnabled;
+      if (!targetAccountId) return;
+      void setMiAccountEnabledOnHost(host, targetAccountId, el.checked);
+    });
+  });
+  host.root.querySelectorAll<HTMLButtonElement>("[data-mi-account-confirm-disable]").forEach((btn) => {
+    bindElementListener(btn, "click", (el) => {
+      const targetAccountId = el.dataset.miAccountConfirmDisable;
+      if (!targetAccountId) return;
+      void setMiAccountEnabledOnHost(host, targetAccountId, false, { confirmPause: true });
+    });
+  });
+  host.root.querySelectorAll<HTMLButtonElement>("[data-mi-account-cancel-disable]").forEach((btn) => {
+    bindElementListener(btn, "click", (el) => {
+      const targetAccountId = el.dataset.miAccountCancelDisable;
+      if (!targetAccountId) return;
+      if (session.pendingDisablePreview?.accountId === targetAccountId) {
+        session.pendingDisablePreview = null;
+      }
+      host.render();
+    });
+  });
   host.root.querySelectorAll<HTMLButtonElement>("[data-mi-account-signout]").forEach((btn) => {
     bindElementListener(btn, "click", (el) => {
       const targetAccountId = el.dataset.miAccountSignout;

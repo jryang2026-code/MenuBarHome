@@ -51,11 +51,18 @@ import {
 import {
   clearAccountRateLimitBackoff,
   hasSecondaryMiAccountsInIndex,
+  makeMiAccount,
   MI_ACCOUNTS_INDEX_STORAGE_KEY,
   readAccountIndex,
 } from "../core/miAccountsStore.js";
+import type { MiSession } from "../core/miCloudClient.js";
 import { clearCachedXiaomiTopology, clearPersistedMiSessionExpired, clearXiaomiRateLimitBackoff } from "../core/pollingPolicy.js";
-import { isDualSourceEnabled } from "./cloudRefresh.js";
+import {
+  isDualSourceEnabled,
+  isHostMiSessionEnabled,
+  resolveEnabledMiAccountsForHost,
+  type DualSourceInspectableHost,
+} from "./cloudRefresh.js";
 import { finishAllMiAccountsSignedOutOnHost } from "./connectionsAndDiagView.js";
 import {
   clearUpdateProgress,
@@ -159,7 +166,11 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
       submitServiceEndpoints(host);
       writeSettingsForStorage(host.settings);
       if (host.settings.connectionMode === "xiaomiCloud" && host.settings.miSession) {
-        void host.refreshDevices(true);
+        if (!isHostMiSessionEnabled(host, host.settings.miSession) && !hasSecondaryMiAccountsInIndex()) {
+          host.devices = [];
+        } else {
+          void host.refreshDevices(true);
+        }
       }
       if (host.settings.connectionMode === "homeAssistant") {
         const cache = host.settings.cachedHAHome;
@@ -651,9 +662,23 @@ function isLifecycleHostAttached(host: { readonly root?: OptimisticLockRootLike 
 }
 
 export function canRefreshDevicesInBackground(host: ResumeRecoveryHost): boolean {
+  const dualInspectable = host as ResumeRecoveryHost & DualSourceInspectableHost & {
+    readonly miAccountsStore?: import("../core/miAccountsStore.js").MiAccountsStore | null;
+  };
+  const hasEnabledMi = (): boolean => {
+    const accounts =
+      dualInspectable.miAccountsOverride ??
+      dualInspectable.multiAccountState?.accounts ??
+      (host.settings.miSession ? [makeMiAccount(host.settings.miSession as MiSession)] : []);
+    if (accounts.length > 0) {
+      return resolveEnabledMiAccountsForHost(dualInspectable, accounts).length > 0;
+    }
+    return hasSecondaryMiAccountsInIndex();
+  };
   const hasActiveSource =
+    isDualSourceEnabled(dualInspectable) ||
     host.settings.connectionMode === "homeAssistant" ||
-    (host.settings.connectionMode === "xiaomiCloud" && Boolean(host.settings.miSession));
+    (host.settings.connectionMode === "xiaomiCloud" && hasEnabledMi());
   return (
     hasActiveSource &&
     host.activeSheet === "none" &&
