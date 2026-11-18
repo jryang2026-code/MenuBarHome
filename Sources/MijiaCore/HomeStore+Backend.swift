@@ -627,6 +627,33 @@ extension HomeStore {
         if devices != nextDevices { devices = nextDevices }
     }
 
+    // MARK: - Wall-switch «this is a light» marks (#104)
+
+    public func isSwitchMarkedAsLight(_ deviceId: String) -> Bool {
+        SwitchLightMarks.isMarked(deviceId, defaults: userDefaults)
+    }
+
+    /// Marks a wall switch as an ordinary light so its power control stops the high-risk
+    /// confirmation (#104). The confirmation policy reads the mark at its single decision point;
+    /// no UI layer skips the gate. Guarded by the same wall-switch rule the rename hint uses, so a
+    /// stray id can never silence a plug, cover, lock or heater.
+    public func markSwitchAsLight(_ deviceId: String) {
+        guard let device = devices.first(where: { $0.id == deviceId }),
+              ManualControlPolicy.wallSwitchMayControlLight(device) else { return }
+        var ids = SwitchLightMarks.load(defaults: userDefaults)
+        guard ids.insert(deviceId).inserted else { return }
+        SwitchLightMarks.save(ids, defaults: userDefaults)
+        scheduleRaycastSnapshotExport()
+    }
+
+    /// Restores the confirmation for a marked wall switch, from the device menu (#104).
+    public func unmarkSwitchAsLight(_ deviceId: String) {
+        var ids = SwitchLightMarks.load(defaults: userDefaults)
+        guard ids.remove(deviceId) != nil else { return }
+        SwitchLightMarks.save(ids, defaults: userDefaults)
+        scheduleRaycastSnapshotExport()
+    }
+
     func devicesWithAliases(_ input: [SmartDevice], overrides: [String: String]? = nil) -> [SmartDevice] {
         var result = input
         let aliases: [String: String]

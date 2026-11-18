@@ -424,7 +424,7 @@ extension HomeStore {
             return (true, already, false)
         }
         let previousToastId = toastNotice?.id
-        guard let task = togglePrimary(device) else {
+        guard let task = togglePrimary(device, offersSwitchLightMark: false) else {
             let refusal = (toastNotice?.id != previousToastId ? toastNotice?.message : nil)
                 ?? L10n.format("%@ 响应失败", "%@ failed to respond", device.name)
             return (true, primaryToggleFailureMessage(refusal, for: device), true)
