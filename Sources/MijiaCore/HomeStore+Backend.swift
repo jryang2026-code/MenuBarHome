@@ -428,7 +428,7 @@ extension HomeStore {
             isApplyingProviderSnapshot = false
             let sampleNow = Date()
             scheduleRaycastSnapshotExport()
-            energyHistory.record(devices: devices, now: sampleNow)
+            energyHistory.record(devices: devices, deviceBackends: deviceBackends, now: sampleNow)
             sensorHistory.record(devices: devices, now: sampleNow)
             offlineHistory.record(devices: devices, now: sampleNow)
 
@@ -506,7 +506,9 @@ extension HomeStore {
     /// Updates `sensorHistory.connectionScope` so sensors on different Home Assistant servers,
     /// Xiaomi Cloud accounts, or Demo mode never share or overwrite each other's time series.
     func syncSensorHistoryScope() {
-        sensorHistory.setConnectionScope(connectionScopeIdentifier ?? "mi:signed-out")
+        let scope = connectionScopeIdentifier ?? "mi:signed-out"
+        sensorHistory.setConnectionScope(scope)
+        energyHistory.setConnectionScope(scope)
     }
 
     /// Triggers an on-demand provider fetch for `deviceId`'s historical readings when due.

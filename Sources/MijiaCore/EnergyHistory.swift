@@ -48,9 +48,43 @@ private struct EnergyHistoryStored: Codable, Equatable, Sendable {
     var buckets: [EnergyHistoryBucket] = []
     var observedDays: [Date] = []
     var baselines: [String: Double] = [:]
+    var baselineSources: [String: String] = [:]
     var lastSampleAt: [String: Date] = [:]
     var names: [String: String] = [:]
     var recordingStartedAt: Date?
+
+    init(
+        buckets: [EnergyHistoryBucket] = [],
+        observedDays: [Date] = [],
+        baselines: [String: Double] = [:],
+        baselineSources: [String: String] = [:],
+        lastSampleAt: [String: Date] = [:],
+        names: [String: String] = [:],
+        recordingStartedAt: Date? = nil
+    ) {
+        self.buckets = buckets
+        self.observedDays = observedDays
+        self.baselines = baselines
+        self.baselineSources = baselineSources
+        self.lastSampleAt = lastSampleAt
+        self.names = names
+        self.recordingStartedAt = recordingStartedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case buckets, observedDays, baselines, baselineSources, lastSampleAt, names, recordingStartedAt
+    }
+
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        buckets = try c.decodeIfPresent([EnergyHistoryBucket].self, forKey: .buckets) ?? []
+        observedDays = try c.decodeIfPresent([Date].self, forKey: .observedDays) ?? []
+        baselines = try c.decodeIfPresent([String: Double].self, forKey: .baselines) ?? [:]
+        baselineSources = try c.decodeIfPresent([String: String].self, forKey: .baselineSources) ?? [:]
+        lastSampleAt = try c.decodeIfPresent([String: Date].self, forKey: .lastSampleAt) ?? [:]
+        names = try c.decodeIfPresent([String: String].self, forKey: .names) ?? [:]
+        recordingStartedAt = try c.decodeIfPresent(Date.self, forKey: .recordingStartedAt)
+    }
 }
 
 /// Local, on-device energy history for plugs (#62).
@@ -83,24 +117,66 @@ public final class EnergyHistory {
     /// and the payload stays small (one `Double` per device per day).
     public static let retentionDays = 31
     public static let storageKey = "plug_energy_history_v1"
+    public static let migrationFlagKey = "plug_energy_history_v1_migrated"
+    public static let maxEnergyCounterKwh: Double = 1_000_000_000
+    public static let maxSingleDeltaKwh: Double = 500
 
     private let defaults: UserDefaults
     private let calendar: Calendar
 
     private var stored: EnergyHistoryStored
+    public private(set) var connectionScope: String
 
     /// Price per kWh entered by the user; `nil` means “not set”, which hides every cost figure.
     public private(set) var pricePerKwh: Double?
 
-    public init(defaults: UserDefaults = .standard, calendar: Calendar = .current) {
+    public init(
+        defaults: UserDefaults = .standard,
+        calendar: Calendar = .current,
+        connectionScope: String = "default"
+    ) {
         self.defaults = defaults
         self.calendar = calendar
-        let loaded = Self.decode(from: defaults)
+        let normalized = connectionScope.trimmingCharacters(in: .whitespacesAndNewlines)
+        let initialScope = normalized.isEmpty ? "default" : normalized
+        self.connectionScope = initialScope
+        Self.migrateLegacyPayloadIfNeeded(defaults: defaults, to: initialScope)
+        let loaded = Self.decode(from: defaults, scope: initialScope)
         self.stored = Self.sanitized(loaded, calendar: calendar)
         let storedPrice: Double? = defaults.object(forKey: Self.priceKey) != nil
             ? defaults.double(forKey: Self.priceKey)
             : nil
         self.pricePerKwh = Self.sanitizedPrice(storedPrice)
+    }
+
+    public func setConnectionScope(_ scope: String) {
+        let normalized = scope.trimmingCharacters(in: .whitespacesAndNewlines)
+        let next = normalized.isEmpty ? "default" : normalized
+        guard next != connectionScope else { return }
+        Self.migrateLegacyPayloadIfNeeded(defaults: defaults, to: next)
+        connectionScope = next
+        let loaded = Self.decode(from: defaults, scope: next)
+        stored = Self.sanitized(loaded, calendar: calendar)
+    }
+
+    private static func scopedStorageKey(for scope: String) -> String {
+        scope == "default" ? storageKey : "\(storageKey)::\(scope)"
+    }
+
+    private static func migrateLegacyPayloadIfNeeded(defaults: UserDefaults, to scope: String) {
+        guard scope != "default",
+              scope != "demo",
+              scope != "mi:signed-out",
+              !defaults.bool(forKey: migrationFlagKey) else {
+            return
+        }
+        let targetKey = scopedStorageKey(for: scope)
+        if defaults.data(forKey: targetKey) == nil,
+           let legacyData = defaults.data(forKey: storageKey) {
+            defaults.set(legacyData, forKey: targetKey)
+            defaults.removeObject(forKey: storageKey)
+        }
+        defaults.set(true, forKey: migrationFlagKey)
     }
 
     /// The day the first baseline was recorded. `nil` until a plug with a counter is observed.
@@ -114,7 +190,11 @@ public final class EnergyHistory {
     /// Feeds the current device list into the history. `now` is the observation time.
     ///
     /// Called once per provider snapshot; nothing is derived from the device list order.
-    public func record(devices: [SmartDevice], now: Date) {
+    public func record(
+        devices: [SmartDevice],
+        deviceBackends: [String: HomeBackend] = [:],
+        now: Date
+    ) {
         // `lastSampleAt` alone is not worth a write: losing it across a crash only means one
         // already-seen snapshot may be accepted again, and the baseline still prevents double count.
         var shouldPersist = false
@@ -122,13 +202,19 @@ public final class EnergyHistory {
 
         for device in devices {
             guard device.isOnline,
+                  !device.telemetryStale,
                   case .plug(let spec) = device.kind,
                   let reading = spec.energyKwh,
                   reading.isFinite,
-                  reading >= 0 else {
+                  reading >= 0,
+                  reading <= Self.maxEnergyCounterKwh else {
                 continue
             }
             observedCounter = true
+
+            let backend = deviceBackends[device.id]
+                ?? (MiotAddress.parse(spec.switchEntityId) != nil ? .xiaomiCloud : .homeAssistant)
+            let sourceSig = "\(backend.rawValue)|\(device.accountId ?? "")|\(spec.switchEntityId)"
 
             let name = device.name.trimmingCharacters(in: .whitespacesAndNewlines)
             if !name.isEmpty, stored.names[device.id] != name {
@@ -152,10 +238,21 @@ public final class EnergyHistory {
             guard let baseline = stored.baselines[device.id] else {
                 // First observation: this is the baseline only. No consumption is inferred.
                 stored.baselines[device.id] = reading
+                stored.baselineSources[device.id] = sourceSig
                 if stored.recordingStartedAt == nil {
                     stored.recordingStartedAt = now
                 }
                 shouldPersist = true
+                continue
+            }
+
+            let prevSourceSig = stored.baselineSources[device.id]
+            if prevSourceSig != sourceSig {
+                stored.baselineSources[device.id] = sourceSig
+                shouldPersist = true
+            }
+            if let prevSourceSig, prevSourceSig != sourceSig {
+                stored.baselines[device.id] = reading
                 continue
             }
 
@@ -168,7 +265,7 @@ public final class EnergyHistory {
             guard reading >= baseline else { continue }
 
             let delta = reading - baseline
-            guard delta > 0 else { continue }
+            guard delta > 0, delta <= Self.maxSingleDeltaKwh else { continue }
 
             // Attribute the delta to the earlier observation day. A missing previous timestamp (only
             // possible from a partial persisted payload) or a gap longer than the retention window
@@ -316,11 +413,11 @@ public final class EnergyHistory {
 
     private func persist() {
         guard let data = try? JSONEncoder().encode(stored) else { return }
-        defaults.set(data, forKey: Self.storageKey)
+        defaults.set(data, forKey: Self.scopedStorageKey(for: connectionScope))
     }
 
-    private static func decode(from defaults: UserDefaults) -> EnergyHistoryStored {
-        guard let data = defaults.data(forKey: storageKey),
+    private static func decode(from defaults: UserDefaults, scope: String = "default") -> EnergyHistoryStored {
+        guard let data = defaults.data(forKey: scopedStorageKey(for: scope)),
               let decoded = try? JSONDecoder().decode(EnergyHistoryStored.self, from: data) else {
             return EnergyHistoryStored()
         }
@@ -367,7 +464,12 @@ public final class EnergyHistory {
         }
         result.observedDays = observed
 
-        result.baselines = result.baselines.filter { $0.value.isFinite && $0.value >= 0 }
+        result.baselines = result.baselines.filter {
+            $0.value.isFinite && $0.value >= 0 && $0.value <= maxEnergyCounterKwh
+        }
+        result.baselineSources = result.baselineSources.filter {
+            result.baselines[$0.key] != nil && !$0.value.isEmpty
+        }
         result.names = result.names.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         return result
     }
@@ -403,6 +505,7 @@ public final class EnergyHistory {
             recentDevices.contains(deviceId) || (lastSampleAt[deviceId] ?? .distantPast) >= cutoff
         }
         stored.baselines = stored.baselines.filter { isTracked($0.key) }
+        stored.baselineSources = stored.baselineSources.filter { isTracked($0.key) }
         stored.names = stored.names.filter { isTracked($0.key) }
         stored.lastSampleAt = lastSampleAt.filter { isTracked($0.key) }
     }

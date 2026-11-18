@@ -512,4 +512,135 @@ struct EnergyHistoryTests {
         // Tomorrow before any observation of plug_a, todayKwh is nil rather than claiming 0.
         #expect(history.todayKwh(forDevice: "plug_a", now: testDate(1, 8)) == nil)
     }
+
+    @Test("HA <-> Mi source handoff rebases plug baseline without recording a fake spike, then tracks post-handoff deltas")
+    @MainActor
+    func sourceHandoffRebasesWithoutFakeSpike() throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let history = EnergyHistory(defaults: defaults, calendar: testCalendar)
+
+        func makePlug(entityId: String, kwh: Double, accountId: String? = nil) -> SmartDevice {
+            SmartDevice(
+                id: "plug_living",
+                name: "客厅插座",
+                roomId: "living",
+                roomName: "客厅",
+                model: "cuco.plug.v3",
+                isOnline: true,
+                kind: .plug(PlugSpec(switchEntityId: entityId, isOn: true, energyKwh: kwh)),
+                accountId: accountId
+            )
+        }
+
+        // HA daily-reset counter: 0.4 -> 0.9 (+0.5 kWh)
+        history.record(
+            devices: [makePlug(entityId: "switch.living_plug", kwh: 0.4)],
+            deviceBackends: ["plug_living": .homeAssistant],
+            now: testDate(0, 9)
+        )
+        history.record(
+            devices: [makePlug(entityId: "switch.living_plug", kwh: 0.9)],
+            deviceBackends: ["plug_living": .homeAssistant],
+            now: testDate(0, 10)
+        )
+        expectClose(history.totalKwh(dayCount: 7, now: testDate(0, 10)), 0.5)
+
+        // Failover to Xiaomi Cloud lifetime counter (120.0 kWh) -> rebases baseline, zero spike.
+        history.record(
+            devices: [makePlug(entityId: "miot:999:2", kwh: 120.0, accountId: "cn:1001")],
+            deviceBackends: ["plug_living": .xiaomiCloud],
+            now: testDate(0, 11)
+        )
+        expectClose(history.totalKwh(dayCount: 7, now: testDate(0, 11)), 0.5)
+
+        // Subsequent Mi Cloud reading (120.3 kWh) adds +0.3 kWh -> 0.8 kWh total.
+        history.record(
+            devices: [makePlug(entityId: "miot:999:2", kwh: 120.3, accountId: "cn:1001")],
+            deviceBackends: ["plug_living": .xiaomiCloud],
+            now: testDate(0, 12)
+        )
+        expectClose(history.totalKwh(dayCount: 7, now: testDate(0, 12)), 0.8)
+
+        // Recovery back to HA (1.1 kWh) -> rebases baseline again, then 1.3 kWh adds +0.2 kWh -> 1.0 kWh total.
+        history.record(
+            devices: [makePlug(entityId: "switch.living_plug", kwh: 1.1)],
+            deviceBackends: ["plug_living": .homeAssistant],
+            now: testDate(0, 13)
+        )
+        expectClose(history.totalKwh(dayCount: 7, now: testDate(0, 13)), 0.8)
+
+        history.record(
+            devices: [makePlug(entityId: "switch.living_plug", kwh: 1.3)],
+            deviceBackends: ["plug_living": .homeAssistant],
+            now: testDate(0, 14)
+        )
+        expectClose(history.totalKwh(dayCount: 7, now: testDate(0, 14)), 1.0)
+    }
+
+    @Test("Stale telemetry, absurd counters, and >500 kWh single-step jumps are rejected")
+    @MainActor
+    func staleAndOutlierGuards() throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let history = EnergyHistory(defaults: defaults, calendar: testCalendar)
+
+        var stalePlug = testPlug("plug_tv", "电视插座", kwh: 10)
+        stalePlug.telemetryStale = true
+        history.record(devices: [stalePlug], now: testDate(0, 8))
+        #expect(history.recordingStartedAt == nil)
+
+        history.record(
+            devices: [testPlug("plug_tv", "电视插座", kwh: EnergyHistory.maxEnergyCounterKwh + 1)],
+            now: testDate(0, 9)
+        )
+        #expect(history.recordingStartedAt == nil)
+
+        history.record(devices: [testPlug("plug_tv", "电视插座", kwh: 10)], now: testDate(0, 10))
+        // Jump > 500 kWh is rejected as a bogus spike, rebasing baseline to 600.
+        history.record(devices: [testPlug("plug_tv", "电视插座", kwh: 600)], now: testDate(0, 11))
+        expectClose(history.totalKwh(dayCount: 7, now: testDate(0, 11)), 0)
+
+        history.record(devices: [testPlug("plug_tv", "电视插座", kwh: 600.4)], now: testDate(0, 12))
+        expectClose(history.totalKwh(dayCount: 7, now: testDate(0, 12)), 0.4)
+    }
+
+    @Test("Connection scopes isolate plug energy history and migrate legacy unscoped payload once")
+    @MainActor
+    func connectionScopeIsolationAndOneTimeLegacyMigration() throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        // Seed legacy payload (without baselineSources key) under EnergyHistory.storageKey.
+        let legacyHistory = EnergyHistory(defaults: defaults, calendar: testCalendar, connectionScope: "default")
+        legacyHistory.record(devices: [testPlug("plug_tv", "电视插座", kwh: 10)], now: testDate(0, 9))
+        legacyHistory.record(devices: [testPlug("plug_tv", "电视插座", kwh: 10.6)], now: testDate(0, 10))
+        expectClose(legacyHistory.totalKwh(dayCount: 7, now: testDate(0, 10)), 0.6)
+        #expect(defaults.data(forKey: EnergyHistory.storageKey) != nil)
+
+        // Switching to "demo" or "mi:signed-out" does NOT consume the one-time legacy migration.
+        legacyHistory.setConnectionScope("demo")
+        #expect(legacyHistory.totalKwh(dayCount: 7, now: testDate(0, 10)) == 0)
+        #expect(defaults.data(forKey: EnergyHistory.storageKey) != nil)
+
+        // Switching to a live HA scope migrates the legacy payload losslessly once.
+        legacyHistory.setConnectionScope("ha:http://192.0.2.10:8123")
+        #expect(defaults.data(forKey: EnergyHistory.storageKey) == nil)
+        #expect(defaults.bool(forKey: EnergyHistory.migrationFlagKey) == true)
+        expectClose(legacyHistory.totalKwh(dayCount: 7, now: testDate(0, 10)), 0.6)
+
+        // Next sample on that scope continues from baseline 10.6 without resetting.
+        legacyHistory.record(devices: [testPlug("plug_tv", "电视插座", kwh: 11.0)], now: testDate(0, 11))
+        expectClose(legacyHistory.totalKwh(dayCount: 7, now: testDate(0, 11)), 1.0)
+
+        // Switching to another live scope starts with a clean slate and preserves the first scope.
+        legacyHistory.setConnectionScope("mi:10001")
+        expectClose(legacyHistory.totalKwh(dayCount: 7, now: testDate(0, 11)), 0)
+        legacyHistory.record(devices: [testPlug("plug_tv", "电视插座", kwh: 50)], now: testDate(0, 12))
+        legacyHistory.record(devices: [testPlug("plug_tv", "电视插座", kwh: 50.25)], now: testDate(0, 13))
+        expectClose(legacyHistory.totalKwh(dayCount: 7, now: testDate(0, 13)), 0.25)
+
+        legacyHistory.setConnectionScope("ha:http://192.0.2.10:8123")
+        expectClose(legacyHistory.totalKwh(dayCount: 7, now: testDate(0, 13)), 1.0)
+    }
 }

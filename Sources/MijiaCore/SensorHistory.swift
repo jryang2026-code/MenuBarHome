@@ -361,7 +361,7 @@ public final class SensorHistory {
         var shouldPersist = false
 
         for device in devices {
-            guard device.isOnline, case .sensor(let spec) = device.kind else { continue }
+            guard device.isOnline, !device.telemetryStale, case .sensor(let spec) = device.kind else { continue }
             let t = Self.sanitizeTemperature(spec.temperature)
             let h = Self.sanitizeHumidity(spec.humidity)
             guard t != nil || h != nil else { continue }

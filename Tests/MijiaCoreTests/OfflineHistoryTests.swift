@@ -70,4 +70,33 @@ struct OfflineHistoryTests {
         #expect(report.markdown(language: .chinese).contains("- 客厅 · flaky（本周 3 天出现离线）"))
         #expect(report.markdown(language: .chinese).contains("- 客厅 · down（现在离线）"))
     }
+
+    @Test("Devices marked telemetryStale do not record false hardware offline days or stale sensor samples")
+    func telemetryStaleSkippedInOfflineAndSensorHistory() throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let offlineHistory = OfflineHistory(defaults: defaults, calendar: calendar)
+
+        var staleOffline = plug("stale-plug", online: false)
+        staleOffline.telemetryStale = true
+        let realOffline = plug("real-offline-plug", online: false)
+
+        offlineHistory.record(devices: [staleOffline, realOffline], now: date(4, 10))
+        #expect(offlineHistory.offlineDays(dayCount: 7, now: date(4, 12)) == ["real-offline-plug": 1])
+
+        let sensorHistory = SensorHistory(defaults: defaults, calendar: calendar, connectionScope: "ha:test")
+        let staleSensor = SmartDevice(
+            id: "sensor-1",
+            name: "温湿度计",
+            roomId: "r",
+            roomName: "客厅",
+            model: "lumi.sensor_ht.v1",
+            isOnline: true,
+            kind: .sensor(SensorSpec(temperature: 24.0, humidity: 50.0, statusText: "24°C")),
+            telemetryStale: true
+        )
+        sensorHistory.record(devices: [staleSensor], now: date(4, 10))
+        let points = sensorHistory.points(forDevice: "sensor-1", window: .last24Hours, now: date(4, 10))
+        #expect(points.filter(\.isObserved).isEmpty)
+    }
 }
