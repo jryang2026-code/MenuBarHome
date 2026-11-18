@@ -483,20 +483,24 @@ extension HomeStore {
             guard snapshotGeneration != before else { return .unmatched }
             if powerMatches(deviceId, requested: requested) { return .matched }
             readBackTickets.releaseTap(deviceId, ticket: ticket)
-            let again = snapshotGeneration
             if holdReadBackEcho {
-                isHoldingReadBackEcho = true
+                let key = ReadBackEchoHoldKey(deviceId: deviceId, ticket: ticket)
                 await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                    self.readBackEchoHold = cont
+                    self.readBackEchoHolds.removeValue(forKey: key)?.resume()
+                    self.readBackEchoHolds[key] = cont
                 }
             } else {
                 try? await Task.sleep(for: readBackEchoDelay)
             }
+            guard !isResumeShutdown, controlContextID == context else { return .superseded }
             if !readBackTickets.isLatest(deviceId, ticket: ticket) { return .superseded }
+            let again = snapshotGeneration
             let second = await provider.readBack(deviceId: deviceId)
+            guard !isResumeShutdown, controlContextID == context else { return .superseded }
             if !readBackTickets.isLatest(deviceId, ticket: ticket) { return .superseded }
             if case .failed = second { return .unmatched }
             await settleSnapshot(after: again)
+            guard !isResumeShutdown, controlContextID == context else { return .superseded }
             // A newer toggle may have started and even finished during the second read.
             if !readBackTickets.isLatest(deviceId, ticket: ticket) { return .superseded }
             return powerMatches(deviceId, requested: requested) ? .matched : .unmatched

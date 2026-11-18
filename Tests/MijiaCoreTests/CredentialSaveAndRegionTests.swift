@@ -372,6 +372,56 @@ struct CredentialSaveResultTests {
         await client.shutdown()
     }
 
+    @Test("Late callbacks from a replaced or shut down LGWebOSClient cannot overwrite current device or pairing key")
+    @MainActor
+    func staleLGClientCallbacksCannotOverwriteCurrentDeviceOrKey() async throws {
+        let storage = MemoryVaultStorage()
+        let vault = memoryVault(storage)
+        let (suite, defaults) = try suiteDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "has_completed_onboarding")
+
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
+            defaultsSuiteName: suite,
+            credentialVault: vault
+        )
+        store.toastAutoDismissInterval = nil
+
+        let oldConfig = LGWebOSConfig(isEnabled: true, host: "192.0.2.10", name: "Old TV", clientKey: "old-key")
+        #expect(store.updateLGWebOSConfig(oldConfig))
+        let oldClient = try #require(store.lgWebOSClient)
+
+        let newConfig = LGWebOSConfig(isEnabled: true, host: "192.0.2.20", name: "New TV", clientKey: "new-key")
+        #expect(newConfig.save(to: defaults, vault: vault))
+        store.lgConfig = newConfig
+        store.startLGWebOSIfNeeded()
+        let newClient = try #require(store.lgWebOSClient)
+        #expect(newClient !== oldClient)
+
+        await newClient.simulateRegisteredForTesting(clientKey: "new-key")
+        let waitNewDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while store.latestLGDevice?.name != "New TV", ContinuousClock.now < waitNewDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(store.latestLGDevice?.name == "New TV")
+
+        // Simulate late callbacks arriving from the replaced client.
+        await oldClient.simulateRegisteredForTesting(clientKey: "stale-old-key")
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(store.lgConfig.clientKey == "new-key", "stale client callback must not overwrite current pairing key")
+        #expect(store.latestLGDevice?.name == "New TV", "stale client callback must not overwrite current LG device")
+        #expect(store.devices.first(where: { $0.id == LGWebOSProtocol.deviceId })?.name == "New TV")
+
+        // Post-shutdown late callbacks from the active client must also be rejected.
+        await store.shutdown()
+        await newClient.simulateRegisteredForTesting(clientKey: "post-shutdown-key")
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(store.lgConfig.clientKey == "new-key")
+        #expect(store.latestLGDevice?.name == "New TV")
+    }
+
     @Test("LGWebOSClient.resetTrust keeps the active session intact when clearing trust fails")
     func lgClientResetTrustFailureDoesNotStopClient() async throws {
         let storage = MemoryVaultStorage()
