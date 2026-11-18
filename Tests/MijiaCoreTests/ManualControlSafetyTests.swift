@@ -348,6 +348,79 @@ struct ManualControlSafetyTests {
         #expect(store.devices.first(where: { $0.id == plug.id })?.isActiveOn == true)
     }
 
+    @Test("The 全关 undo banner is refused while the Mac is locked and stays retryable")
+    @MainActor
+    func screenLockBlocksUndoBanner() async throws {
+        let onLight = SmartDevice(
+            id: "dev_light_lock",
+            name: "书房灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.study", isOn: true))
+        )
+        let (store, mock) = try await makeStore([onLight])
+        _ = await store.turnAllOff()?.value
+        #expect(store.undoBanner != nil)
+        let commandsAfterAllOff = await mock.executedCommands
+
+        store.setScreenLocked(true)
+        // Even a handler that approves every hazard cannot unblock the lock gate: the undo of a
+        // control write is itself a user control (#143).
+        store.manualControlConfirmationHandler = { _ in true }
+        #expect(store.undoTurnAllOff() == nil)
+        #expect(store.undoBanner != nil, "A refused undo keeps the banner retryable after unlocking")
+        #expect(store.toastNotice?.message == store.screenLockBlockedMessage)
+        #expect(await mock.executedCommands.count == commandsAfterAllOff.count, "No restore command while locked")
+
+        store.setScreenLocked(false)
+        let undo = try #require(store.undoTurnAllOff())
+        await undo.value
+        #expect(await mock.executedCommands.count == commandsAfterAllOff.count + 1)
+        #expect(store.devices.first?.isActiveOn == true)
+    }
+
+    @Test("Voice undo is refused while the Mac is locked and stays retryable")
+    @MainActor
+    func screenLockBlocksVoiceUndo() async throws {
+        let onLight = SmartDevice(
+            id: "dev_light_lock",
+            name: "书房灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.study", isOn: true))
+        )
+        let (store, mock) = try await makeStore([onLight])
+        _ = await store.executeIntentPlan(
+            IntentPlan(
+                intents: [DeviceIntent(targetId: onLight.id, operation: .power(false))],
+                reply: "关灯",
+                source: .local
+            ),
+            recordedUtterance: "关灯",
+            origin: .userInitiated
+        )
+        let commandsAfterOff = await mock.executedCommands
+        #expect(store.devices.first?.isActiveOn == false)
+
+        store.setScreenLocked(true)
+        _ = await store.runAssistantCommand("撤销")
+        if case .failed(let message) = store.assistantState {
+            #expect(message == store.screenLockBlockedMessage)
+        } else {
+            Issue.record("A locked voice undo must report the lock message")
+        }
+        #expect(await mock.executedCommands.count == commandsAfterOff.count, "No restore command while locked")
+
+        store.setScreenLocked(false)
+        _ = await store.runAssistantCommand("撤销")
+        #expect(store.devices.first?.isActiveOn == true)
+        #expect(await mock.executedCommands.count == commandsAfterOff.count + 1)
+    }
+
     @Test("Speaker directive commands require confirmation and return false when cancelled while TTS succeeds directly")
     @MainActor
     func speakerDirectiveConfirmation() async throws {

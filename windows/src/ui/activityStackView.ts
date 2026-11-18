@@ -721,6 +721,9 @@ export async function executeSafetyTurnOffAction(
  * True when restoring `step` would escalate the hazard of its device. A facet row carries the
  * meaning of its own restore (an auxiliary switch turned back on, a mode restored away from off),
  * so it is judged by the same table the original tap used, mirroring macOS `confirmUndoTargets`.
+ * A cover restore is judged by the direction it actually moves: a garage door returning to its
+ * close word or to position 0 is as hazardous as one returning to open, while a curtain restore
+ * and a window opener closing stay direct.
  */
 export function doesUndoStepActivateHighRiskDevice(
   step: { readonly deviceId: string; readonly commands: readonly DeviceCommand[] },
@@ -737,6 +740,11 @@ export function doesUndoStepActivateHighRiskDevice(
   }
   const snapKind = kindSnapshots?.get(step.deviceId);
   if (snapKind && !isDeviceActiveOn(dev) && isDeviceActiveOn({ ...dev, kind: snapKind })) return true;
+  const coverRestoreNeedsConfirmation = (restoredOpen: boolean): boolean =>
+    ManualControlPolicy.requiresConfirmation(
+      { targetId: dev.id, operation: { kind: "power", isOn: restoredOpen } },
+      devices,
+    );
   return step.commands.some((cmd) => {
     switch (cmd.kind) {
       case "setSwitch":
@@ -749,9 +757,12 @@ export function doesUndoStepActivateHighRiskDevice(
         return cmd.hvacMode.trim().toLowerCase() !== "off";
       case "setSelectOption":
         if (dev.kind.kind === "camera" || dev.kind.kind === "fridge") return false;
-        return dev.kind.kind === "cover" ? cmd.option === dev.kind.openDescription : cmd.option.trim().toLowerCase() !== "off";
+        if (dev.kind.kind === "cover") {
+          return coverRestoreNeedsConfirmation(cmd.option === dev.kind.openDescription);
+        }
+        return cmd.option.trim().toLowerCase() !== "off";
       case "setNumberValue":
-        return dev.kind.kind === "cover" && cmd.value > 0;
+        return dev.kind.kind === "cover" && coverRestoreNeedsConfirmation(cmd.value > 0);
       case "vacuumAction":
         return cmd.action === "start";
       case "pressButton":
@@ -759,8 +770,9 @@ export function doesUndoStepActivateHighRiskDevice(
       case "setMiotProperty":
         // Backstop only: a matching facet row was judged above, so this catches the cover position
         // restore an older snapshot can carry without one. A high-risk card with no row at all is
-        // already refused (or approved) by `facetRestoreNeedsConfirmation`.
-        return dev.kind.kind === "cover" && typeof cmd.value === "number" && cmd.value > 0;
+        // already refused (or approved) by `facetRestoreNeedsConfirmation`; the direction rule is
+        // the same as the position write above.
+        return dev.kind.kind === "cover" && typeof cmd.value === "number" && coverRestoreNeedsConfirmation(cmd.value > 0);
       default:
         return false;
     }

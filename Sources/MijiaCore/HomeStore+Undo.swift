@@ -732,6 +732,10 @@ extension HomeStore {
         // puts its rows back and drops this banner through the blocked path, which is exactly the
         // cleanup an undo would otherwise do.
         guard let banner = undoBanner else { return nil }
+        // The undo of a control write is itself a user control: the same lock gate as
+        // `turnAllOff` refuses it before the banner, the rows or a batch state move, and a
+        // refused undo stays retryable after unlocking (#143).
+        guard !rejectControlWhileLocked() else { return nil }
         // Only an undo whose restores are all Mi-dependent is refused outright. A mixed undo sends
         // its LAN restores, keeps the refused Mi ones in the banner and leaves the expiry toast up.
         let hasLGRestore = banner.restoreCommands.contains { lgClientServes($0) }
@@ -956,10 +960,13 @@ extension HomeStore {
                 resolved = nil
             }
             guard let (device, restored) = resolved, !declinedDeviceIds.contains(device.id) else { continue }
-            settle(device, requiresConfirmation: restored.isActiveOn && ManualControlPolicy.requiresConfirmation(
-                DeviceIntent(targetId: device.id, operation: .power(true)), devices: devices
-            )) {
-                allowManualControl(.power(true), for: device)
+            // The restore direction is the restored state's, not an assumed "back on": a garage
+            // door returning to closed is as hazardous as one returning to open (a cover keeps the
+            // off direction in the subtype hazard table), while a plug or heater restore that ends
+            // in off stays direct.
+            let restoreOperation = IntentOperation.power(restored.isActiveOn)
+            settle(device, requiresConfirmation: ManualControlPolicy.requiresConfirmation(restoreOperation, for: device)) {
+                allowManualControl(restoreOperation, for: device)
             }
         }
         // A device approved by an earlier restore is not approved for this undo once a later restore
@@ -1005,6 +1012,10 @@ extension HomeStore {
         preUndoFacetsById: [String: [FacetControl]],
         habitReceipt: UserHabitMemory.RecordingReceipt?
     ) async -> UndoRunOutcome? {
+        // The undo entries already refused a locked screen before any state moved. This is the
+        // shared send path, so the check catches a lock that lands mid-undo (the batch wait can
+        // span the lock) without repeating the prompt in the normal path.
+        guard !rejectControlWhileLocked() else { return nil }
         var failedCommands: [DeviceCommand] = []
         var failedDeviceIds: Set<String> = []
         var failedNames: [String] = []

@@ -1278,6 +1278,102 @@
         "isOn": true
       },
       "confirm": true
+    },
+    {
+      "id": "garage-cover-power-on",
+      "role": "new",
+      "device": {
+        "id": "garage-cover-power-on",
+        "name": "地下车库门",
+        "model": "lumi.curtain.v1",
+        "kind": "cover",
+        "subtype": "garage-door"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "garage-cover-power-off",
+      "role": "new",
+      "device": {
+        "id": "garage-cover-power-off",
+        "name": "地下车库门",
+        "model": "lumi.curtain.v1",
+        "kind": "cover",
+        "subtype": "garage-door"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": false
+      },
+      "confirm": true
+    },
+    {
+      "id": "curtain-cover-power-on",
+      "role": "new",
+      "device": {
+        "id": "curtain-cover-power-on",
+        "name": "客厅窗帘",
+        "model": "lumi.curtain.v1",
+        "kind": "cover",
+        "subtype": "curtain"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": false
+    },
+    {
+      "id": "curtain-cover-power-off",
+      "role": "new",
+      "device": {
+        "id": "curtain-cover-power-off",
+        "name": "客厅窗帘",
+        "model": "lumi.curtain.v1",
+        "kind": "cover",
+        "subtype": "curtain"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": false
+      },
+      "confirm": false
+    },
+    {
+      "id": "window-opener-cover-power-on",
+      "role": "new",
+      "device": {
+        "id": "window-opener-cover-power-on",
+        "name": "阳台开窗器",
+        "model": "linp.wopener.wd1lb",
+        "kind": "cover",
+        "subtype": "window-opener"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": true
+      },
+      "confirm": true
+    },
+    {
+      "id": "window-opener-cover-power-off",
+      "role": "new",
+      "device": {
+        "id": "window-opener-cover-power-off",
+        "name": "阳台开窗器",
+        "model": "linp.wopener.wd1lb",
+        "kind": "cover",
+        "subtype": "window-opener"
+      },
+      "operation": {
+        "kind": "power",
+        "isOn": false
+      },
+      "confirm": false
     }
   ],
   "decisionRows": [

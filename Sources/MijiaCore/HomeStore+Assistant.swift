@@ -518,6 +518,12 @@ extension HomeStore {
             setAssistantState(.failed(L10n.tr("没有可以撤销的操作", "Nothing to undo")))
             return
         }
+        // A locked Mac refuses the restore itself, not just the command that made the change: the
+        // entry stays recorded so the same 撤销 works after unlocking (#143).
+        if rejectControlWhileLocked() {
+            setAssistantState(.failed(screenLockBlockedMessage))
+            return
+        }
         let confirmation = confirmUndoTargets(last.restore, previousDevices: last.previous)
         if confirmation.abortUndo {
             setAssistantState(.failed(L10n.tr("已取消高风险操作", "High-risk action cancelled.")))
