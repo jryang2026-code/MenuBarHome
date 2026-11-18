@@ -16,6 +16,7 @@ import { deviceCategory, isSwitchedLightDevice } from "./deviceCategory.js";
 import { IntentReply, IntentValidator } from "./intent.js";
 import { PROMPT_NAME_LIMIT, sanitizePromptText } from "./promptText.js";
 import { t } from "../i18n.js";
+import { switchLightMarkIds } from "../switchLightMarks.js";
 
 export function deviceHeadInstruction(alias: string): string {
   return `What action should be taken on device ${alias} for this command? Choose none if unrelated.`;
@@ -391,7 +392,11 @@ function selectedModeIsOff(selected: string | null): boolean {
 }
 
 function requiresOperationConfirmation(device: SmartDevice, operation: IntentOperation): boolean {
-  return ManualControlPolicy.requiresConfirmation({ targetId: device.id, operation }, [device]);
+  return ManualControlPolicy.requiresConfirmation(
+    { targetId: device.id, operation },
+    [device],
+    new Set(),
+  );
 }
 
 /**
@@ -401,24 +406,84 @@ function requiresOperationConfirmation(device: SmartDevice, operation: IntentOpe
  * so every cover operation goes through the subtype hazard table. An unknown target is low risk.
  */
 export const ManualControlPolicy = {
-  requiresConfirmation(intent: DeviceIntent, devices: readonly SmartDevice[]): boolean {
+  primaryPowerEntityId(device: SmartDevice): string | null {
+    switch (device.kind.kind) {
+      case "plug":
+        return device.kind.switchEntityId;
+      case "camera":
+      case "humidifier":
+      case "light":
+      case "climate":
+      case "fan":
+      case "vacuum":
+      case "cover":
+        return device.kind.entityId;
+      case "appliance":
+        return device.kind.powerEntityId;
+      case "speaker":
+      case "tv":
+        return device.kind.mediaEntityId;
+      case "generic":
+        return device.kind.powerControl?.target?.entityId ?? null;
+      case "fridge":
+      case "sensor":
+        return null;
+    }
+  },
+
+  isPrimaryPowerEntity(device: SmartDevice, entityId: string): boolean {
+    return this.primaryPowerEntityId(device) === entityId;
+  },
+
+  requiresConfirmation(
+    intent: DeviceIntent,
+    devices: readonly SmartDevice[],
+    markedLightIds?: ReadonlySet<string>,
+    targetEntityId?: string,
+  ): boolean {
     const device = devices.find((d) => d.id === intent.targetId);
     if (!device) return false;
     if (deescalatesHazard(intent.operation) && device.kind.kind !== "cover") return false;
+    // #104: a wall switch the user marked as an ordinary light stops asking on primary power here —
+    // the single decision point — so no UI layer can decide to skip the gate. The mark never
+    // widens: the wall-switch rule re-runs, so a stale id on a plug, cover, lock or heater still asks,
+    // and auxiliary switches targeting another entity stay gated.
+    if (intent.operation.kind === "power") {
+      const marks = markedLightIds ?? switchLightMarkIds();
+      const targetsPrimary = targetEntityId === undefined || this.isPrimaryPowerEntity(device, targetEntityId);
+      if (targetsPrimary && marks.has(device.id) && this.wallSwitchMayControlLight(device)) return false;
+    }
     return ModelActionPolicy.needsConfirmation(intent, devices);
   },
 
-  /** Copy for an existing confirmation. Appending 「灯」 reuses `isSwitchedLightDevice`. */
-  wallSwitchLightHint(device: SmartDevice): string | null {
-    if (device.kind.kind !== "plug") return null;
-    if (device.kind.powerWritable === false) return null;
-    if (device.kind.switchEntityId.startsWith("button.")) return null;
+  /**
+   * #104: the wall-switch shape the rename hint and the light mark both key on: a writable
+   * `.plug` card on a switch model whose name is the only thing keeping it out of
+   * `isSwitchedLightDevice` (appending 「灯」 would make it a light).
+   */
+  wallSwitchMayControlLight(device: SmartDevice): boolean {
+    if (device.kind.kind !== "plug") return false;
+    if (device.kind.powerWritable === false) return false;
+    if (device.kind.switchEntityId.startsWith("button.")) return false;
     const model = device.model.toLowerCase();
-    if (!model.includes(".switch.") || model.includes(".plug.")) return null;
-    if (deviceCategory(device) !== "plug") return null;
-    if (!isSwitchedLightDevice({ ...device, name: `${device.name}灯` })) return null;
+    if (!model.includes(".switch.") || model.includes(".plug.")) return false;
+    if (deviceCategory(device) !== "plug") return false;
+    return isSwitchedLightDevice({ ...device, name: `${device.name}灯` });
+  },
+
+  /** Rename guidance for confirmations that do not offer the in-prompt mark button (#104). */
+  wallSwitchLightHint(device: SmartDevice): string | null {
+    if (!this.wallSwitchMayControlLight(device)) return null;
     return t(
       "如果这个开关实际控制的是普通照明灯，可在米家改名或在这里设置别名，名称里加上「灯」，以后就不会再弹出这个确认。",
+    );
+  },
+
+  /** In-prompt guidance shown only when the confirmation actually carries the mark button (#104). */
+  wallSwitchMarkPromptHint(device: SmartDevice): string | null {
+    if (!this.wallSwitchMayControlLight(device)) return null;
+    return t(
+      "如果这个开关实际控制的是普通照明灯，点「这是灯，以后不再询问」，以后就不会再弹出这个确认。",
     );
   },
 

@@ -348,8 +348,9 @@ extension HomeStore {
     /// of its own, so a high-risk device asks here before it changes (#143, #274 review). Low-risk
     /// devices pass through untouched.
     private func hazardApprovedIntents(_ intents: [DeviceIntent]) -> [DeviceIntent] {
-        intents.filter { intent in
-            !ManualControlPolicy.requiresConfirmation(intent, devices: devices)
+        let markedLightIds = SwitchLightMarks.load(defaults: userDefaults)
+        return intents.filter { intent in
+            !ManualControlPolicy.requiresConfirmation(intent, devices: devices, markedLightIds: markedLightIds)
                 || allowManualControl(intent)
         }
     }

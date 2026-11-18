@@ -276,6 +276,148 @@ struct DeviceReadoutTests {
         #expect(store.snapshotGeneration != before)
         #expect(store.devices[0].isActiveOn == true)
     }
+
+    @Test("Concurrent echo holds across devices do not overwrite continuations or leak tickets")
+    func concurrentEchoHoldsAcrossDevicesDoNotOverwriteOrLeakTickets() async throws {
+        let lamp1 = SmartDevice(
+            id: "lamp1",
+            name: "台灯1",
+            roomId: "room",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.lamp1", isOn: true))
+        )
+        let lamp2 = SmartDevice(
+            id: "lamp2",
+            name: "台灯2",
+            roomId: "room",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.lamp2", isOn: true))
+        )
+        let provider = MultiEchoHomeProvider(snapshot: SynthesizedHome(
+            rooms: [RoomArea(id: "room", name: "书房", sortOrder: 0)],
+            devices: [lamp1, lamp2]
+        ))
+        let suite = "test.readout.echo-multi.\(UUID().uuidString)"
+        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        defer {
+            store.releaseReadBackEcho()
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        }
+        store.holdReadBackEcho = true
+        try await store.waitForTestSnapshot()
+
+        let first = try #require(store.togglePrimary(store.devices[0]))
+        await waitUntil { await provider.readCount(for: "lamp1") >= 1 && store.isHoldingReadBackEcho(for: "lamp1") }
+        #expect(await provider.readCount(for: "lamp1") == 1)
+        #expect(store.isHoldingReadBackEcho(for: "lamp1"))
+
+        let second = try #require(store.togglePrimary(store.devices[1]))
+        await waitUntil { await provider.readCount(for: "lamp2") >= 1 && store.isHoldingReadBackEcho(for: "lamp2") }
+        #expect(await provider.readCount(for: "lamp2") == 1)
+        #expect(store.isHoldingReadBackEcho(for: "lamp1"), "second device hold must not overwrite first device's hold")
+        #expect(store.isHoldingReadBackEcho(for: "lamp2"))
+
+        store.releaseReadBackEcho(for: "lamp1")
+        #expect(!store.isHoldingReadBackEcho(for: "lamp1"))
+        #expect(store.isHoldingReadBackEcho(for: "lamp2"), "releasing lamp1 must leave lamp2 held")
+
+        var firstCompleted = false
+        let firstObserver = Task { @MainActor in
+            let ok = await first.value
+            firstCompleted = true
+            return ok
+        }
+        await waitUntil { firstCompleted }
+        #expect(firstCompleted, "first device's echo continuation must not be overwritten")
+        if firstCompleted {
+            #expect(await firstObserver.value == true)
+        } else {
+            firstObserver.cancel()
+        }
+
+        store.releaseReadBackEcho(for: "lamp2")
+        #expect(await second.value == true)
+        #expect(store.readBackTickets.isEmpty, "all read-back tickets must finish cleanly without leaking")
+        #expect(!store.isHoldingReadBackEcho)
+        #expect(store.devices.first(where: { $0.id == "lamp1" })?.isActiveOn == false)
+        #expect(store.devices.first(where: { $0.id == "lamp2" })?.isActiveOn == false)
+    }
+
+    @Test("Context invalidation releases held echo continuations and drains tickets")
+    func contextInvalidationReleasesHeldEchoContinuations() async throws {
+        let lamp = light(on: true)
+        let provider = MultiEchoHomeProvider(snapshot: SynthesizedHome(
+            rooms: [RoomArea(id: "room", name: "书房", sortOrder: 0)],
+            devices: [lamp]
+        ))
+        let suite = "test.readout.echo-invalidate.\(UUID().uuidString)"
+        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        defer {
+            store.releaseReadBackEcho()
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        }
+        store.holdReadBackEcho = true
+        try await store.waitForTestSnapshot()
+
+        let toggle = try #require(store.togglePrimary(store.devices[0]))
+        await waitUntil { store.isHoldingReadBackEcho(for: "lamp") }
+        #expect(store.isHoldingReadBackEcho(for: "lamp"))
+
+        store.invalidateUndoContext()
+        #expect(!store.isHoldingReadBackEcho)
+        #expect(await toggle.value == false)
+        #expect(store.readBackTickets.isEmpty)
+    }
+}
+
+private actor MultiEchoHomeProvider: HomeProvider {
+    private var snapshot: SynthesizedHome
+    private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
+    private var commandsByEntityId: [String: DeviceCommand] = [:]
+    private var readsByDeviceId: [String: Int] = [:]
+
+    init(snapshot: SynthesizedHome) {
+        self.snapshot = snapshot
+    }
+
+    func readCount(for deviceId: String) -> Int {
+        readsByDeviceId[deviceId, default: 0]
+    }
+
+    nonisolated func events() -> AsyncStream<HomeProviderEvent> {
+        AsyncStream { cont in
+            Task { await self.register(cont) }
+        }
+    }
+
+    private func register(_ cont: AsyncStream<HomeProviderEvent>.Continuation) {
+        continuation = cont
+        cont.yield(.statusChanged(.connected))
+        cont.yield(.snapshotUpdated(snapshot))
+    }
+
+    func execute(_ command: DeviceCommand) async throws {
+        commandsByEntityId[command.targetEntityId] = command
+    }
+
+    func readBack(deviceId: String) async -> ControlReadBack {
+        let count = readsByDeviceId[deviceId, default: 0] + 1
+        readsByDeviceId[deviceId] = count
+        if count >= 2,
+           let device = snapshot.devices.first(where: { $0.id == deviceId }),
+           case .light(let spec) = device.kind,
+           let command = commandsByEntityId[spec.entityId] {
+            snapshot = DemoHomeProvider.applying(command, to: snapshot)
+        }
+        continuation?.yield(.snapshotUpdated(snapshot))
+        return .published
+    }
+
+    func refreshNow() async {}
 }
 
 private actor HoldingHomeProvider: HomeProvider {

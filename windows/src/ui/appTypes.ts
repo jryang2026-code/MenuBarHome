@@ -156,6 +156,8 @@ export interface ReplyBannerState {
  * A high-risk manual write waiting for its confirm. `actionKey` binds the arm to one exact
  * command and `sourceRevision` to the backend that produced it; a write whose control cannot
  * repeat the same value (the climate slider) carries the captured command for one explicit button.
+ * `primaryPower` is set only by card/detail primary power (`toggleDeviceForHost`), scoping the
+ * «这是灯，以后不再询问» button strictly to that confirmation (#104).
  */
 export interface PendingHighRiskConfirmation {
   readonly deviceId: string;
@@ -167,6 +169,11 @@ export interface PendingHighRiskConfirmation {
     readonly summary: string;
     readonly intent: DeviceIntent;
     readonly promptLabel?: string;
+  };
+  readonly primaryPower?: {
+    readonly command: DeviceCommand;
+    readonly summary: string;
+    readonly intent: DeviceIntent;
   };
 }
 

@@ -10,6 +10,7 @@ import { deviceCategory } from "../src/core/assistant/deviceCategory.js";
 import { IntentValidator } from "../src/core/assistant/intent.js";
 import { type ManualControlRules } from "../src/core/miCloud/facets.js";
 import type { FacetControl, SmartDevice } from "../src/core/models.js";
+import { markSwitchAsLight, setSwitchLightMarkStorage } from "../src/core/switchLightMarks.js";
 
 /**
  * The Windows 更多设置 confirmation table, one row per macOS branch:
@@ -649,6 +650,298 @@ describe("assistant device category heater rule (#143)", () => {
       true,
       "with no facet row a high-risk card is treated as one the property could turn back on",
     );
+  });
+
+  it("keeps confirmation on auxiliary switches, uncached MIoT restores, and other facets even when a wall switch is marked as a light (#104)", () => {
+    const wall: SmartDevice = device(
+      {
+        kind: "plug",
+        switchEntityId: "switch.wall_left",
+        isOn: false,
+        powerWatts: null,
+        childLockEntityId: "switch.wall_child_lock",
+        isChildLocked: false,
+      },
+      { id: "sw_marked_aux", name: "左键", model: "lumi.switch.b2nacn02" },
+    );
+    const haAuxSwitch = facet({
+      id: "switch.wall_right",
+      kind: "toggle",
+      name: "wall-right",
+      title: "右键",
+      serviceName: "switch",
+      value: false,
+      writesByDefault: false,
+      target: { kind: "property", entityId: "switch.wall_right", piid: 0 },
+    });
+    const haLedSwitch = facet({
+      id: "switch.wall_led",
+      kind: "toggle",
+      name: "led",
+      title: "指示灯",
+      serviceName: "switch",
+      value: false,
+      writesByDefault: true,
+      target: { kind: "property", entityId: "switch.wall_led", piid: 0 },
+    });
+    const haAuxSelect = facet({
+      id: "select.wall_power_on",
+      kind: "select",
+      name: "mode",
+      title: "通电默认状态",
+      serviceName: "heater",
+      value: 0,
+      options: [
+        { value: 0, label: "off" },
+        { value: 1, label: "on" },
+      ],
+      writesByDefault: false,
+      target: { kind: "property", entityId: "select.wall_power_on", piid: 0 },
+    });
+    const haAuxNumber = facet({
+      id: "number.wall_limit",
+      kind: "slider",
+      name: "valve-position",
+      title: "阀门开度",
+      serviceName: "water-valve",
+      value: 50,
+      range: { min: 10, max: 100, step: 10 },
+      writesByDefault: false,
+      target: { kind: "property", entityId: "number.wall_limit", piid: 0 },
+    });
+    const haLowRiskNumber = facet({
+      id: "number.wall_backlight",
+      kind: "slider",
+      name: "backlight",
+      title: "背光亮度",
+      serviceName: "number",
+      value: 50,
+      range: { min: 0, max: 100, step: 10 },
+      writesByDefault: true,
+      target: { kind: "property", entityId: "number.wall_backlight", piid: 0 },
+    });
+    const haAuxButton = facet({
+      id: "button.wall_calibrate",
+      kind: "button",
+      name: "calibrate",
+      title: "校准",
+      serviceName: "switch",
+      value: null,
+      writesByDefault: false,
+      target: { kind: "action", entityId: "button.wall_calibrate" },
+    });
+    const facetsById = {
+      [wall.id]: [haAuxSwitch, haLedSwitch, haAuxSelect, haAuxNumber, haLowRiskNumber, haAuxButton],
+    };
+
+    const backing = new Map<string, string>();
+    setSwitchLightMarkStorage({
+      length: 0,
+      clear: () => void backing.clear(),
+      getItem: (key: string) => (backing.has(key) ? backing.get(key)! : null),
+      key: () => null,
+      removeItem: (key: string) => void backing.delete(key),
+      setItem: (key: string, value: string) => void backing.set(key, value),
+    });
+    try {
+      markSwitchAsLight(wall.id);
+
+      // Primary power restore on the marked wall switch stays direct.
+      const prevKind: SmartDevice["kind"] = {
+        kind: "plug",
+        switchEntityId: "switch.wall_left",
+        isOn: true,
+        powerWatts: null,
+        childLockEntityId: "switch.wall_child_lock",
+        isChildLocked: false,
+      };
+      assert.equal(
+        doesUndoStepActivateHighRiskDevice(
+          { deviceId: wall.id, commands: [{ kind: "setSwitch", entityId: "switch.wall_left", isOn: true }] },
+          [wall],
+          new Map([[wall.id, prevKind]]),
+          facetsById,
+        ),
+        false,
+        "primary power restore uses the light mark exemption",
+      );
+
+      // Home Assistant auxiliary switch restore on still confirms (with or without facet row).
+      assert.equal(
+        doesUndoStepActivateHighRiskDevice(
+          { deviceId: wall.id, commands: [{ kind: "setSwitch", entityId: "switch.wall_right", isOn: true }] },
+          [wall],
+          undefined,
+          facetsById,
+        ),
+        true,
+        "HA auxiliary setSwitch(..., true) with facet row still confirms",
+      );
+      assert.equal(
+        doesUndoStepActivateHighRiskDevice(
+          { deviceId: wall.id, commands: [{ kind: "setSwitch", entityId: "switch.wall_right", isOn: false }] },
+          [wall],
+          undefined,
+          facetsById,
+        ),
+        false,
+        "HA auxiliary setSwitch(..., false) stays direct",
+      );
+      assert.equal(
+        doesUndoStepActivateHighRiskDevice(
+          { deviceId: wall.id, commands: [{ kind: "setSwitch", entityId: "switch.wall_led", isOn: true }] },
+          [wall],
+          undefined,
+          facetsById,
+        ),
+        false,
+        "low-risk HA indicator switch stays direct",
+      );
+      assert.equal(
+        doesUndoStepActivateHighRiskDevice(
+          { deviceId: wall.id, commands: [{ kind: "setSwitch", entityId: "switch.wall_right", isOn: true }] },
+          [wall],
+          undefined,
+          {},
+        ),
+        true,
+        "HA auxiliary setSwitch(..., true) without facet row still confirms",
+      );
+      assert.equal(
+        doesUndoStepActivateHighRiskDevice(
+          { deviceId: wall.id, commands: [{ kind: "setSwitch", entityId: "switch.wall_child_lock", isOn: true }] },
+          [wall],
+          undefined,
+          {},
+        ),
+        false,
+        "child lock switch stays direct",
+      );
+
+      // Uncached MIoT property restore retains unmarked hazard fallback.
+      assert.equal(
+        doesUndoStepActivateHighRiskDevice(
+          { deviceId: wall.id, commands: [{ kind: "setMiotProperty", entityId: "miot:sw_marked_aux:3", piid: 1, value: true }] },
+          [wall],
+          undefined,
+          {},
+        ),
+        true,
+        "uncached MIoT restore on marked wall switch retains unmarked hazard fallback",
+      );
+
+      // Other HA facet commands (select / number / button) still obey facetRequiresConfirmation.
+      assert.equal(
+        doesUndoStepActivateHighRiskDevice(
+          { deviceId: wall.id, commands: [{ kind: "setSelectOption", entityId: "select.wall_power_on", option: "on" }] },
+          [wall],
+          undefined,
+          facetsById,
+        ),
+        true,
+        "HA select facet restore away from off confirms",
+      );
+      assert.equal(
+        doesUndoStepActivateHighRiskDevice(
+          { deviceId: wall.id, commands: [{ kind: "setSelectOption", entityId: "select.wall_power_on", option: "off" }] },
+          [wall],
+          undefined,
+          facetsById,
+        ),
+        false,
+        "HA select facet restore to off stays direct",
+      );
+      assert.equal(
+        doesUndoStepActivateHighRiskDevice(
+          { deviceId: wall.id, commands: [{ kind: "setNumberValue", entityId: "number.wall_limit", value: 80 }] },
+          [wall],
+          undefined,
+          facetsById,
+        ),
+        true,
+        "HA high-risk number facet restore confirms",
+      );
+      assert.equal(
+        doesUndoStepActivateHighRiskDevice(
+          { deviceId: wall.id, commands: [{ kind: "setNumberValue", entityId: "number.wall_backlight", value: 80 }] },
+          [wall],
+          undefined,
+          facetsById,
+        ),
+        false,
+        "HA low-risk number facet restore stays direct",
+      );
+      assert.equal(
+        doesUndoStepActivateHighRiskDevice(
+          { deviceId: wall.id, commands: [{ kind: "pressButton", entityId: "button.wall_calibrate" }] },
+          [wall],
+          undefined,
+          facetsById,
+        ),
+        true,
+        "HA button facet restore confirms",
+      );
+      assert.equal(
+        doesUndoStepActivateHighRiskDevice(
+          { deviceId: wall.id, commands: [{ kind: "pressButton", entityId: "button.wall_calibrate" }] },
+          [wall],
+          undefined,
+          {},
+        ),
+        true,
+        "uncached HA button facet restore on marked wall switch confirms",
+      );
+
+      // Mixed primary + auxiliary commands in one step still ask with open-direction prompt.
+      const host = {
+        devices: [wall],
+        layout: { aliases: {}, roomAliases: {}, hiddenDeviceIds: [], roomOrder: [], deviceOrder: {} },
+        settings: { interfaceLanguage: "zh-Hans" },
+        deviceFacets: facetsById,
+        manualControlConfirmationHandler: null,
+      } as unknown as MenuMijiaWindowsApp;
+      const partitioned = partitionUndoStepsByHighRiskConfirmation(
+        host,
+        [
+          {
+            deviceId: wall.id,
+            commands: [
+              { kind: "setSwitch", entityId: "switch.wall_left", isOn: true },
+              { kind: "setSwitch", entityId: "switch.wall_right", isOn: true },
+            ],
+          },
+        ],
+        { isArmed: false, arm: () => {}, disarm: () => {} },
+      );
+      assert.equal(partitioned.abortedAllHighRisk, true);
+      assert.equal(partitioned.armedPromptText, "撤销将重新开启高风险设备「左键」，再点一次「撤销」确认执行");
+
+      // Direct ManualControlPolicy primary-entity scoping checks.
+      assert.equal(ManualControlPolicy.isPrimaryPowerEntity(wall, "switch.wall_left"), true);
+      assert.equal(ManualControlPolicy.isPrimaryPowerEntity(wall, "switch.wall_right"), false);
+      assert.equal(
+        ManualControlPolicy.requiresConfirmation(
+          { targetId: wall.id, operation: { kind: "power", isOn: true } },
+          [wall],
+          undefined,
+          "switch.wall_left",
+        ),
+        false,
+        "targetEntityId matching primary power allows light mark exemption",
+      );
+      assert.equal(
+        ManualControlPolicy.requiresConfirmation(
+          { targetId: wall.id, operation: { kind: "power", isOn: true } },
+          [wall],
+          undefined,
+          "switch.wall_right",
+        ),
+        true,
+        "targetEntityId for auxiliary entity ignores light mark exemption",
+      );
+    } finally {
+      setSwitchLightMarkStorage(undefined);
+    }
   });
 
   it("judges a cover undo restore by its actual direction: a garage door closing restore also asks", () => {

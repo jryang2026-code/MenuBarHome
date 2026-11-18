@@ -55,6 +55,7 @@ extension HomeStore {
     func invalidateUndoContext() {
         controlContextID = UUID()
         readBackTickets.reset()
+        releaseReadBackEcho()
         undoTimerTask?.cancel()
         undoBanner = nil
         lastAssistantUndo = nil
@@ -959,6 +960,7 @@ extension HomeStore {
             if ask() { approvedDeviceIds.insert(device.id) } else { declinedDeviceIds.insert(device.id) }
         }
 
+        let markedLightIds = SwitchLightMarks.load(defaults: userDefaults)
         for command in commands {
             if let target = Self.facetTarget(for: command),
                let device = devices.first(where: {
@@ -975,8 +977,8 @@ extension HomeStore {
                         allowManualControl(facet: control, value: value, for: device)
                     }
                 } else {
-                    settle(device, requiresConfirmation: ManualControlPolicy.requiresConfirmation(.power(true), for: device)) {
-                        allowManualControl(.power(true), for: device)
+                    settle(device, requiresConfirmation: ManualControlPolicy.requiresConfirmation(.power(true), for: device, markedLightIds: [])) {
+                        allowManualControl(.power(true), for: device, ignoresSwitchLightMark: true)
                     }
                 }
                 continue
@@ -988,8 +990,8 @@ extension HomeStore {
                    !excludingDeviceIds.contains(device.id), !declinedDeviceIds.contains(device.id) {
                     // No facet row explains this restore, so only the device-level hazard can speak:
                     // a high-risk card is treated as one the restore could turn back on.
-                    settle(device, requiresConfirmation: ManualControlPolicy.requiresConfirmation(.power(true), for: device)) {
-                        allowManualControl(.power(true), for: device)
+                    settle(device, requiresConfirmation: ManualControlPolicy.requiresConfirmation(.power(true), for: device, markedLightIds: [])) {
+                        allowManualControl(.power(true), for: device, ignoresSwitchLightMark: true)
                     }
                 }
                 continue
@@ -1011,7 +1013,7 @@ extension HomeStore {
             // off direction in the subtype hazard table), while a plug or heater restore that ends
             // in off stays direct.
             let restoreOperation = IntentOperation.power(restored.isActiveOn)
-            settle(device, requiresConfirmation: ManualControlPolicy.requiresConfirmation(restoreOperation, for: device)) {
+            settle(device, requiresConfirmation: ManualControlPolicy.requiresConfirmation(restoreOperation, for: device, markedLightIds: markedLightIds)) {
                 allowManualControl(restoreOperation, for: device)
             }
         }

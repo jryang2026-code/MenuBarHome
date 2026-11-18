@@ -49,12 +49,13 @@ extension HomeStore {
         } else {
             .shared
         }
+        let clientID = UUID()
         let client = LGWebOSClient(
             config: lgConfig,
             trustStore: trustStore,
             onDeviceUpdated: { [weak self] dev in
                 Task { @MainActor [weak self] in
-                    self?.applyLGDeviceUpdate(dev)
+                    self?.applyLGDeviceUpdate(dev, fromClientID: clientID)
                 }
             },
             onClientKeyRegistered: { [weak self] key in
@@ -62,12 +63,12 @@ extension HomeStore {
                     guard let self else { return }
                     // The pairing only counts once the key is actually in the Keychain (#7);
                     // `applyLGClientKey` owns both the success toast and the error.
-                    self.applyLGClientKey(key)
+                    self.applyLGClientKey(key, fromClientID: clientID)
                 }
             },
             onSecurityFailure: { [weak self] message in
                 Task { @MainActor [weak self] in
-                    self?.showToast(message, isError: true)
+                    self?.applyLGSecurityFailure(message, fromClientID: clientID)
                 }
             }
         )
@@ -76,16 +77,27 @@ extension HomeStore {
             Task { await previousLG.shutdown() }
         }
         self.lgWebOSClient = client
+        self.lgWebOSClientID = clientID
         if lgConfig.isEnabled && lgConfig.hasConfiguredHost {
             Task { await client.start() }
         }
+    }
+
+    func applyLGSecurityFailure(_ message: String, fromClientID clientID: UUID? = nil) {
+        if let clientID {
+            guard !isResumeShutdown, homeBackend != .demo, clientID == lgWebOSClientID else { return }
+        }
+        showToast(message, isError: true)
     }
 
     /// Applies a freshly registered LG pairing key. Returns false when the Keychain refused to store it,
     /// rolling the live client back to the persisted `lgConfig` so client and store never diverge and the
     /// caller never sees a "Paired" toast for a key that will be gone after relaunch (#7).
     @discardableResult
-    func applyLGClientKey(_ key: String) -> Bool {
+    func applyLGClientKey(_ key: String, fromClientID clientID: UUID? = nil) -> Bool {
+        if let clientID {
+            guard !isResumeShutdown, homeBackend != .demo, clientID == lgWebOSClientID else { return false }
+        }
         var updated = lgConfig
         updated.clientKey = key
         // Write before swapping the in-memory config so a refused write keeps the old pairing key.
@@ -112,7 +124,10 @@ extension HomeStore {
         return true
     }
 
-    func applyLGDeviceUpdate(_ dev: SmartDevice) {
+    func applyLGDeviceUpdate(_ dev: SmartDevice, fromClientID clientID: UUID? = nil) {
+        if let clientID {
+            guard !isResumeShutdown, clientID == lgWebOSClientID else { return }
+        }
         // Demo mode never shows the LAN TV tile (#47), and a disabled or unconfigured TV drops it too.
         guard homeBackend != .demo, lgConfig.isEnabled, lgConfig.hasConfiguredHost else {
             latestLGDevice = nil
@@ -625,6 +640,33 @@ extension HomeStore {
     public func applyDeviceAliases(_ overrides: [String: String]? = nil) {
         let nextDevices = devicesWithAliases(devices, overrides: overrides)
         if devices != nextDevices { devices = nextDevices }
+    }
+
+    // MARK: - Wall-switch «this is a light» marks (#104)
+
+    public func isSwitchMarkedAsLight(_ deviceId: String) -> Bool {
+        SwitchLightMarks.isMarked(deviceId, defaults: userDefaults)
+    }
+
+    /// Marks a wall switch as an ordinary light so its power control stops the high-risk
+    /// confirmation (#104). The confirmation policy reads the mark at its single decision point;
+    /// no UI layer skips the gate. Guarded by the same wall-switch rule the rename hint uses, so a
+    /// stray id can never silence a plug, cover, lock or heater.
+    public func markSwitchAsLight(_ deviceId: String) {
+        guard let device = devices.first(where: { $0.id == deviceId }),
+              ManualControlPolicy.wallSwitchMayControlLight(device) else { return }
+        var ids = SwitchLightMarks.load(defaults: userDefaults)
+        guard ids.insert(deviceId).inserted else { return }
+        SwitchLightMarks.save(ids, defaults: userDefaults)
+        scheduleRaycastSnapshotExport()
+    }
+
+    /// Restores the confirmation for a marked wall switch, from the device menu (#104).
+    public func unmarkSwitchAsLight(_ deviceId: String) {
+        var ids = SwitchLightMarks.load(defaults: userDefaults)
+        guard ids.remove(deviceId) != nil else { return }
+        SwitchLightMarks.save(ids, defaults: userDefaults)
+        scheduleRaycastSnapshotExport()
     }
 
     func devicesWithAliases(_ input: [SmartDevice], overrides: [String: String]? = nil) -> [SmartDevice] {
