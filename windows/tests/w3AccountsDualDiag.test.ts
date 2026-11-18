@@ -594,6 +594,71 @@ describe("B6: MiAccountsStore coexistence, <accountId>/ namespacing, shared did 
     assert.equal(getHostMiAccountsState(app)?.accounts.length, 3);
     assert.equal(app.roomOptions.length, 2, "two distinct room pills for the two accounts' 客厅");
   });
+
+  it("sends a refused MIoT write once, then parks the rejected account instead of reusing the dead session (#6)", async () => {
+    const rejected = makeMiAccount({ ...SESSION_CN_PRIMARY, serviceToken: "tok-cn-refused-write-once" });
+    const live = makeMiAccount({ ...SESSION_SG_SECONDARY, serviceToken: "tok-sg-write-after-reject" });
+    const setPropsTokens: string[] = [];
+    const transport: HttpTransport = async (req) => {
+      if (req.url.includes("miot-spec.org")) {
+        return { status: 200, headers: {}, body: JSON.stringify(LIGHT_SPEC_RAW) };
+      }
+      const { serviceToken, path } = cookieHeaderAccount(req);
+      if (path === "miotspec/prop/set") {
+        setPropsTokens.push(serviceToken);
+        if (serviceToken === rejected.session.serviceToken) {
+          return { status: 401, headers: {}, body: "" };
+        }
+        return okMi([{ did: "did-lamp", siid: 2, piid: 1, code: 0 }]);
+      }
+      return okMi({});
+    };
+    const device: SmartDevice = {
+      id: "did-lamp",
+      name: "台灯",
+      roomId: "room-living",
+      roomName: "客厅",
+      model: LIGHT_MODEL,
+      isOnline: true,
+      kind: {
+        kind: "light",
+        entityId: "miot:did-lamp:2",
+        isOn: true,
+        brightnessPercent: 50,
+        colorTempKelvin: 4000,
+        minKelvin: 2700,
+        maxKelvin: 6500,
+        availableEffects: [],
+        currentEffect: null,
+      },
+    };
+    const command = { kind: "setLightPower", entityId: "miot:did-lamp:2", isOn: false } as const;
+    const options = {
+      accounts: [rejected, live],
+      deviceOwners: { "did-lamp": [rejected.id, live.id] },
+      specsByModel: { [LIGHT_MODEL]: parseMiotDeviceSpec(LIGHT_SPEC_RAW)! },
+      devices: [device],
+      transport,
+      storage: localStorage,
+    };
+
+    const first = await executeMultiAccountMiotCommand(command, options);
+    assert.equal(first.executedByAccountId, live.id);
+    assert.deepEqual(
+      setPropsTokens,
+      [rejected.session.serviceToken, live.session.serviceToken],
+      "one write per account: the refused serviceToken is never retried",
+    );
+    assert.equal(getAccountTokenStatus(rejected, Date.now(), localStorage).kind, "expired");
+
+    const second = await executeMultiAccountMiotCommand(command, options);
+    assert.equal(second.executedByAccountId, live.id);
+    assert.deepEqual(
+      setPropsTokens,
+      [rejected.session.serviceToken, live.session.serviceToken, live.session.serviceToken],
+      "a parked account is skipped instead of sending the dead credential again",
+    );
+  });
 });
 
 describe("B7: Home Assistant + Xiaomi Cloud dual-source parallel fusion, 3-tier dedupe & offline fallback pin (ADR-0008)", () => {

@@ -282,10 +282,18 @@ struct UpdateCheckerTests {
 
         let staleDir = stagingParent.appendingPathComponent("com.jryang1997.MenuBarMijia.update-stale", isDirectory: true)
         try FileManager.default.createDirectory(at: staleDir, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000_000)],
+            ofItemAtPath: staleDir.path
+        )
+        let activePeerDir = stagingParent.appendingPathComponent("com.jryang1997.MenuBarMijia.update-active-peer", isDirectory: true)
+        try FileManager.default.createDirectory(at: activePeerDir, withIntermediateDirectories: true)
 
         let updater = makeUpdater(driver: happyDriver)
         let staged = try await updater.stageUpdate(for: release) { _ in }
         #expect(!FileManager.default.fileExists(atPath: staleDir.path))
+        #expect(FileManager.default.fileExists(atPath: activePeerDir.path))
+        try? FileManager.default.removeItem(at: activePeerDir)
         #expect(FileManager.default.fileExists(atPath: staged.stagedBundleURL.path))
         updater.cleanupStagedApp(staged)
         #expect(!FileManager.default.fileExists(atPath: staged.stagingRootURL.path))

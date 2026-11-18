@@ -224,6 +224,37 @@ extension HomeStore {
             : incomingPosition <= localPosition
     }
 
+    /// Records a server rejection as the stored session's end and keeps `miAccounts`/`miSessionExpiresAt`
+    /// in step. Split out of the event switch so the rejection path is testable without a live provider.
+    func handleMiSessionRejected(_ rejected: MiSession) {
+        guard let updated = MiSessionStore.markRejected(
+            rejected,
+            defaults: userDefaults,
+            vault: credentialVault
+        ) else { return }
+        if let idx = miAccounts.firstIndex(where: {
+            $0.session.userId == updated.userId && $0.session.serviceToken == updated.serviceToken
+        }) {
+            miAccounts[idx].session = updated
+        }
+        miSessionExpiresAt = miAccounts.compactMap(\.session.expiresAt).min()
+        refreshMiAccountsAfterRejection()
+    }
+
+    /// Hands the live provider the list the rejection just changed, so that account's child is
+    /// rebuilt around the stored end instead of waking on the dead token forever. The update rides
+    /// the same serialized chain as a provider swap; every other account keeps its child and data.
+    private func refreshMiAccountsAfterRejection() {
+        guard let provider = activeMiAccountsProvider else { return }
+        let accounts = miAccounts
+        activeMiProviderAccounts = accounts
+        let previous = providerShutdownTask
+        providerShutdownTask = Task {
+            await previous?.value
+            await provider.updateAccounts(accounts)
+        }
+    }
+
     func handleProviderEvent(_ event: HomeProviderEvent) {
         switch event {
         case .statusChanged(let status):
@@ -241,14 +272,7 @@ extension HomeStore {
             handleDoorbellRing(ring)
 
         case .sessionExpired(let rejected):
-            if let updated = MiSessionStore.markRejected(rejected, defaults: userDefaults, vault: credentialVault) {
-                if let idx = miAccounts.firstIndex(where: {
-                    $0.session.userId == updated.userId && $0.session.serviceToken == updated.serviceToken
-                }) {
-                    miAccounts[idx].session = updated
-                }
-                miSessionExpiresAt = miAccounts.compactMap(\.session.expiresAt).min()
-            }
+            handleMiSessionRejected(rejected)
 
         case .snapshotUpdated(let snapshot):
             isApplyingProviderSnapshot = true

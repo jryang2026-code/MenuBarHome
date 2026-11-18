@@ -618,8 +618,9 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
     assert.equal(localStorage.getItem(persistedKey), null);
   });
 
-  it("recovers from a single transient 401 without marking the session expired, while two consecutive 401s reject (#18, #35a)", async () => {
-    let remaining401s = 1;
+  it("treats a 401 as final for that credential: one request, no background retry, and a new scan recovers (#6, #35a)", async () => {
+    let rejectAuth = true;
+    let deviceListCalls = 0;
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: {
@@ -629,10 +630,8 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
           const url = String(args["url"] ?? "");
           if (url.includes("miot-spec.org")) return okResponse(LIGHT_SPEC_RAW);
           if (url.includes("device_list")) {
-            if (remaining401s > 0) {
-              remaining401s -= 1;
-              return { status: 401, headers: {}, body: "" };
-            }
+            deviceListCalls += 1;
+            if (rejectAuth) return { status: 401, headers: {}, body: "" };
             return okResponse({
               list: [{ did: "lamp-1", name: "台灯", model: LIGHT_MODEL, isOnline: true, spec_type: LIGHT_SPEC_RAW.type }],
             });
@@ -659,22 +658,32 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
     );
 
     const app = new MenuMijiaWindowsApp(document.querySelector<HTMLElement>("#app")!);
-    while (app.isSyncingCloud || app.devices.length === 0) {
+    while (app.isSyncingCloud || !app.miSessionExpired) {
       await setImmediate();
     }
 
-    assert.equal(app.miSessionExpired, false, "single transient 401 recovers on retry");
-    assert.equal(isPersistedMiSessionExpired(SESSION_A), false, "single transient 401 does not persist rejection");
-    assert.equal(app.devices.length, 1);
+    assert.equal(deviceListCalls, 1, "the refused serviceToken is never re-sent in the same refresh");
+    assert.equal(app.miSessionExpired, true, "a 401 means the login is dead, not a transient hiccup");
+    assert.equal(isPersistedMiSessionExpired(SESSION_A), true);
+    assert.equal(app.devices.length, 0);
+    assert.match(document.querySelector("#btn-footer-health")?.textContent ?? "", /登录已过期/);
 
     const firstHabits = app.habitSequences();
     const secondHabits = app.habitSequences();
     assert.equal(firstHabits, secondHabits, "habitSequences memoizes parsed array while localStorage is unchanged");
 
-    remaining401s = 2;
+    // Silent polls and wake refreshes stay quiet on the rejected credential.
+    await app.refreshDevices(true);
+    assert.equal(deviceListCalls, 1, "no background retry against the dead session");
+
+    // A re-scan replaces the serviceToken; the same loop polls again on the new fingerprint.
+    rejectAuth = false;
+    app.settings.miSession = SESSION_B;
     await app.refreshDevices(false);
-    assert.equal(app.miSessionExpired, true, "two consecutive 401s mark session expired");
-    assert.equal(isPersistedMiSessionExpired(SESSION_A), true, "two consecutive 401s persist rejection");
+    assert.equal(app.miSessionExpired, false);
+    assert.equal(deviceListCalls, 2);
+    assert.equal(app.devices.length, 1);
+    assert.equal(isPersistedMiSessionExpired(SESSION_A), true, "the old credential stays recorded as rejected");
   });
 });
 

@@ -25,7 +25,6 @@ import {
   hasSecondaryMiAccountsInIndex,
   makeMiAccount,
   refreshMiAccountsConcurrently,
-  withSessionExpiredRetry,
   type AccountChildSnapshot,
   type MergedMiAccountsSnapshot,
   type MiAccount,
@@ -186,8 +185,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         specs = cachedTopology.specs;
         membersByGroup = cachedTopology.membersByGroup;
       } else {
-        const discovery = await withSessionExpiredRetry(() =>
-          discoverMiHome(client, {
+        const discovery = await discoverMiHome(client, {
           unresolvedDids: host.unresolvedRoomDids,
           retryUnresolved: !silent,
           cachedRooms: () => {
@@ -207,8 +205,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
               rooms: fetchedRooms,
             };
           },
-          }),
-        );
+        });
         const homeRoomsError = discovery.roomsError;
         const allRooms = discovery.rooms;
         const allDevices = discovery.devices;
@@ -252,7 +249,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       try {
         values =
           propKeys.length > 0
-            ? await withSessionExpiredRetry(() => client.getProps(propKeys))
+            ? await client.getProps(propKeys)
             : new Map<string, unknown>();
       } catch (error) {
         if (!cloudSnapshotIsStale(host, session, stateToken, syncRun, selectedHomeAtStart)) {
@@ -338,6 +335,8 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
           forbiddenLiterals: [session.userId, session.cUserId, session.serviceToken, session.ssecurity],
         });
         if (err instanceof MiCloudError && err.kind === "sessionExpired") {
+          // A refused Xiaomi serviceToken cannot refresh itself: no retry here, and silent polls
+          // stay off until a new scan changes the fingerprint (#6).
           host.miSessionExpired = true;
           persistMiSessionExpired(session, true);
           clearCachedXiaomiTopology(host);
