@@ -12,14 +12,14 @@ ADR-0012 把项目搬到 GitLab，因为原账号 `jryang1997` 被停用。GitLa
 2. macOS 与 Windows 都从 GitHub Releases 检查和下载更新，恢复 `release.yml` 加 `finalize.yml` 的两阶段发布。ADR-0005 的信任链不变：Ed25519 私钥只留在维护者本机。
 3. 每个版本都发三端清单。Windows 解析器只接受三个文件，只发 macOS 的单文件清单会让 Windows 判为无效。
 4. CI 全部用 GitHub 托管机。公开仓库不用自托管 runner，因为外部 PR 可能在上面执行代码，而这台 Mac 存着签名私钥。
-5. 快照基线仍以维护者的 Mac 为准。托管机渲染不同，CI 跳过快照比对，由本机 `scripts/check.sh` 比对。
+5. 快照基线仍以维护者的 Mac 为准。托管机渲染不同，CI 跳过快照比对，由本机 `scripts/check.sh` 比对。（此条已被 [ADR-0022](0022-github-hosted-snapshot-baselines.md) 取代。基准改为 GitHub 托管的 `macos-26-intel`。）
 6. GitLab 保留为只读备份，不再放工单和发版。
 
 ## 代价
 
 - 新账号有被停用的风险：GitHub 条款规定一人只能有一个免费账号。保留 GitLab 备份，账号稳定之前不依赖它发版。
 - 1.1.7 及更早版本的更新地址仍是旧账号，只能手动安装一次，除非旧账号恢复。
-- CI 不比对快照，界面回归只由提交前的本机门禁拦截。
+- CI 不比对快照，界面回归只由提交前的本机门禁拦截。（像素比对的现行规则见 [ADR-0022](0022-github-hosted-snapshot-baselines.md)。）
 - 应用显示名和安装包改成 MenuBarHome。Bundle ID、钥匙串条目、数据目录、URL scheme 和签名证书名保留旧名，改了用户会丢登录和设置。旧版要手动卸载，新版不会覆盖安装。
 
 ## 修订（2026-11）
