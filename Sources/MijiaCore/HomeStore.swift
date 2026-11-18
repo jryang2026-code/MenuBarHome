@@ -1312,6 +1312,7 @@ public final class HomeStore {
 
     @ObservationIgnored var debouncedResumeCoordinator: DebouncedResumeCoordinator?
     @ObservationIgnored var resumeSyncTask: Task<Void, Never>?
+    @ObservationIgnored let networkSatisfiedBox = L10n.LockedBox<Bool>(true)
     @ObservationIgnored var isNetworkSatisfiedForResume: Bool = true
     @ObservationIgnored var isResumeShutdown: Bool = false
     @ObservationIgnored var resumeDebounceInterval: Duration = .milliseconds(300)

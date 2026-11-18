@@ -864,10 +864,14 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
 
         await waitUntil {
-            store.devices.count == 2 && store.deviceBackend(for: haCamId) == .xiaomiCloud
+            store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
+                && store.pairedDeviceIDs.count == 1
         }
+        let pairedCamId = try #require(store.pairedDeviceIDs.first)
+        #expect(store.deviceBackend(for: pairedCamId) == .xiaomiCloud)
 
         var miHomeAcc1Disconnected = miHomeBothConnected
         miHomeAcc1Disconnected.accountStatuses = [
@@ -877,9 +881,9 @@ struct DualSourceIntegrationTests {
         await miMock.updateSnapshot(miHomeAcc1Disconnected)
 
         await waitUntil {
-            store.deviceBackend(for: haCamId) == .homeAssistant
+            store.deviceBackend(for: pairedCamId) == .homeAssistant
         }
-        let camCard = try #require(store.devices.first { $0.id == haCamId })
+        let camCard = try #require(store.devices.first { $0.id == pairedCamId })
         #expect(camCard.isOnline == true)
         #expect(camCard.telemetryStale == false)
 
@@ -889,8 +893,8 @@ struct DualSourceIntegrationTests {
             acc2Id: .connected,
         ]
         await miMock.updateSnapshot(miHomeAcc1Retrying)
-        #expect(store.deviceBackend(for: haCamId) == .homeAssistant)
-        let camCardDuringRetry = try #require(store.devices.first { $0.id == haCamId })
+        #expect(store.deviceBackend(for: pairedCamId) == .homeAssistant)
+        let camCardDuringRetry = try #require(store.devices.first { $0.id == pairedCamId })
         #expect(camCardDuringRetry.isOnline == true)
         #expect(camCardDuringRetry.telemetryStale == false)
     }
@@ -944,13 +948,16 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
         store.hasHASource = true
 
         await waitUntil {
-            store.devices.count == 2 && store.deviceTransportDiagnostics[miOnlyDid]?.route == .lan
+            store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
+                && store.pairedDeviceIDs.count == 1
+                && store.deviceTransportDiagnostics[miOnlyDid]?.route == .lan
         }
 
-        let pairedCardId = try #require(store.devices.first { $0.id != miOnlyDid }?.id)
+        let pairedCardId = try #require(store.pairedDeviceIDs.first)
         #expect(store.deviceBackend(for: pairedCardId) == .homeAssistant)
         #expect(store.deviceTransportDiagnostics[pairedCardId] == nil)
         #expect(store.deviceTransportDiagnostics[miOnlyDid]?.rttMs == 20)
@@ -962,15 +969,64 @@ struct DualSourceIntegrationTests {
         }
         #expect(store.deviceTransportDiagnostics[pairedCardId]?.usedBroadcastRecovery == true)
 
-        let tccError = NSError(domain: NSURLErrorDomain, code: URLError.notConnectedToInternet.rawValue)
-        let tccReason = HAWebSocketProvider.describeConnectionError(tccError, baseURLString: "http://192.168.1.10:8123")
-        await haMock.sendStatus(.disconnected(tccReason))
+        await haMock.sendLocalNetworkPermission([.homeAssistant])
         await waitUntil {
             store.effectiveLocalNetworkBlocks.contains(.homeAssistant)
         }
-
         L10n.$overrideLanguage.withValue(.zhHans) {
             #expect(store.panelHealth == .degraded(reason: "Home Assistant 本地网络权限受阻，米家云端仍可用"))
         }
+
+        await haMock.sendLocalNetworkPermission([])
+        await waitUntil {
+            !store.effectiveLocalNetworkBlocks.contains(.homeAssistant)
+        }
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(store.panelHealth == .ok)
+        }
+    }
+
+    @MainActor
+    @Test("HomeStore wires setNetworkSatisfiedForResume into HAWebSocketProvider so offline -1009 is not misclassified as Local Network TCC block")
+    func homeStoreNetworkSatisfiedGatingInHAProvider() async throws {
+        let suite = "test.ha.net_satisfied.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        defer { store.stop() }
+
+        store.setNetworkSatisfiedForResume(false)
+        let haProvider = store.makeHAProvider(baseURLString: "http://192.168.1.50:8123", token: "ha-tok")
+        let offlineErr = NSError(domain: NSURLErrorDomain, code: URLError.notConnectedToInternet.rawValue)
+        await haProvider.setTestSeams(
+            connectOverride: { .failedBeforeAuth(offlineErr) },
+            reconnectSleep: { _ in try await Task.sleep(for: .seconds(3600)) }
+        )
+
+        let stream = haProvider.events()
+        var iterator = stream.makeAsyncIterator()
+        var sawLocalNetworkBlockedWhileOffline = false
+        for _ in 0..<2 {
+            guard let event = await iterator.next() else { break }
+            if case .localNetworkPermissionChanged(let blocked) = event, blocked.contains(.homeAssistant) {
+                sawLocalNetworkBlockedWhileOffline = true
+            }
+            if case .statusChanged(.disconnected) = event { break }
+        }
+        #expect(sawLocalNetworkBlockedWhileOffline == false)
+
+        store.setNetworkSatisfiedForResume(true)
+        await haProvider.refreshNow()
+        var sawLocalNetworkBlockedWhenOnline = false
+        for _ in 0..<4 {
+            guard let event = await iterator.next() else { break }
+            if case .localNetworkPermissionChanged(let blocked) = event, blocked.contains(.homeAssistant) {
+                sawLocalNetworkBlockedWhenOnline = true
+                break
+            }
+        }
+        #expect(sawLocalNetworkBlockedWhenOnline == true)
+        await haProvider.shutdown()
     }
 }

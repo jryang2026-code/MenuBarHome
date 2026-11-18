@@ -153,6 +153,11 @@ public actor MockHomeProvider: HomeProvider {
         continuation?.yield(.statusChanged(status))
     }
 
+    public func sendLocalNetworkPermission(_ blocked: Set<LocalNetworkBlockedFeature>) {
+        snapshot.localNetworkBlockedFeatures = blocked
+        continuation?.yield(.localNetworkPermissionChanged(blocked))
+    }
+
     public func fetchSensorHistory(
         deviceId: String,
         window: SensorHistoryWindow,

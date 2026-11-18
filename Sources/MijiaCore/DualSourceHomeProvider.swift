@@ -171,10 +171,6 @@ public actor DualSourceHomeProvider: HomeProvider {
             if backend == .homeAssistant {
                 haStatus = status
                 if case .connected = status { haLocalNetworkBlocks.remove(.homeAssistant) }
-                else if case .disconnected(let reason) = status,
-                        reason.contains("局域网连接被系统拦截") || reason.contains("Local network connection blocked by macOS") {
-                    haLocalNetworkBlocks.insert(.homeAssistant)
-                }
             } else if backend == .xiaomiCloud {
                 miStatus = status
             }

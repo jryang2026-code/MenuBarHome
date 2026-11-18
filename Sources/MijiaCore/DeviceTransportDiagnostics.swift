@@ -37,8 +37,11 @@ public enum LocalNetworkPermissionClassifier {
             guard let nsError = current else { break }
             let code32 = Int32(truncatingIfNeeded: nsError.code)
             if (nsError.domain == NSPOSIXErrorDomain && isDeniedPOSIXCode(code32)) || isDeniedDNSCode(code32) { return true }
-            if let sc = nsError.userInfo["_kCFStreamErrorCodeKey"] as? Int,
-               isDeniedPOSIXCode(Int32(truncatingIfNeeded: sc)) || isDeniedDNSCode(Int32(truncatingIfNeeded: sc)) { return true }
+            if let sc = (nsError.userInfo["_kCFStreamErrorCodeKey"] as? NSNumber)?.intValue {
+                let sc32 = Int32(truncatingIfNeeded: sc)
+                let sd = (nsError.userInfo["_kCFStreamErrorDomainKey"] as? NSNumber)?.intValue
+                if (sd == 1 && isDeniedPOSIXCode(sc32)) || isDeniedDNSCode(sc32) { return true }
+            }
             if nsError.domain == NSURLErrorDomain, nsError.code == URLError.notConnectedToInternet.rawValue,
                isGeneralNetworkSatisfied, isLocalTargetHost(targetHost) { return true }
             current = nsError.userInfo[NSUnderlyingErrorKey] as? NSError

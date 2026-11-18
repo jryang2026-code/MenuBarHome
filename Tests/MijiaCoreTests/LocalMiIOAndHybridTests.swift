@@ -910,6 +910,27 @@ struct LocalMiIOClientTests {
         )
         #expect(LocalNetworkPermissionClassifier.isDeniedConnectionError(wrappedPosix, targetHost: "example.com", isGeneralNetworkSatisfied: false) == true)
 
+        let cfPosixDenied = NSError(
+            domain: NSURLErrorDomain,
+            code: URLError.cannotConnectToHost.rawValue,
+            userInfo: ["_kCFStreamErrorDomainKey": 1, "_kCFStreamErrorCodeKey": Int(EPERM)]
+        )
+        #expect(LocalNetworkPermissionClassifier.isDeniedConnectionError(cfPosixDenied, targetHost: "192.168.1.50", isGeneralNetworkSatisfied: true) == true)
+
+        let cfNetDBCodeOne = NSError(
+            domain: NSURLErrorDomain,
+            code: URLError.cannotFindHost.rawValue,
+            userInfo: ["_kCFStreamErrorDomainKey": 12, "_kCFStreamErrorCodeKey": 1]
+        )
+        #expect(LocalNetworkPermissionClassifier.isDeniedConnectionError(cfNetDBCodeOne, targetHost: "192.168.1.50", isGeneralNetworkSatisfied: true) == false)
+
+        let cfDNSPolicyDenied = NSError(
+            domain: NSURLErrorDomain,
+            code: URLError.cannotFindHost.rawValue,
+            userInfo: ["_kCFStreamErrorDomainKey": 12, "_kCFStreamErrorCodeKey": Int(LocalNetworkPermissionClassifier.dnsPolicyDeniedCode)]
+        )
+        #expect(LocalNetworkPermissionClassifier.isDeniedConnectionError(cfDNSPolicyDenied, targetHost: "homeassistant.local", isGeneralNetworkSatisfied: true) == true)
+
         #expect(DeviceTransportDiagnostics.quantizeRTT(1) == 1)
         #expect(DeviceTransportDiagnostics.quantizeRTT(4) == 4)
         #expect(DeviceTransportDiagnostics.quantizeRTT(17) == 15)

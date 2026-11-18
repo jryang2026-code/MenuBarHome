@@ -228,11 +228,8 @@ extension HomeStore {
         switch event {
         case .statusChanged(let status):
             if connectionStatus != status { connectionStatus = status }
-            if case .disconnected(let reason) = status {
+            if case .disconnected = status {
                 connectedBackends = []
-                if !hasMiSource, reason.contains("局域网连接被系统拦截") || reason.contains("Local network connection blocked by macOS") {
-                    localNetworkBlocks.insert(.homeAssistant)
-                }
             } else if case .connected = status {
                 if connectedBackends.isEmpty { connectedBackends = homeBackend == .demo ? [.demo] : [homeBackend] }
                 if !hasMiSource { localNetworkBlocks.remove(.homeAssistant) }
@@ -240,10 +237,7 @@ extension HomeStore {
 
         case .sourceStatusesChanged(let statuses):
             if sourceStatuses != statuses { sourceStatuses = statuses }
-            if case .disconnected(let reason) = statuses[.homeAssistant],
-               reason.contains("局域网连接被系统拦截") || reason.contains("Local network connection blocked by macOS") {
-                localNetworkBlocks.insert(.homeAssistant)
-            } else if case .connected = statuses[.homeAssistant] {
+            if case .connected = statuses[.homeAssistant] {
                 localNetworkBlocks.remove(.homeAssistant)
             }
 
@@ -292,12 +286,9 @@ extension HomeStore {
             if deviceTransportDiagnostics != snapshot.deviceTransportDiagnostics {
                 deviceTransportDiagnostics = snapshot.deviceTransportDiagnostics
             }
-            var nextLocalNetworkBlocks = snapshot.localNetworkBlockedFeatures
-            if hasHASource, case .disconnected(let reason) = (snapshot.sourceStatuses[.homeAssistant] ?? sourceStatuses[.homeAssistant]),
-               reason.contains("局域网连接被系统拦截") || reason.contains("Local network connection blocked by macOS") {
-                nextLocalNetworkBlocks.insert(.homeAssistant)
+            if localNetworkBlocks != snapshot.localNetworkBlockedFeatures {
+                localNetworkBlocks = snapshot.localNetworkBlockedFeatures
             }
-            if localNetworkBlocks != nextLocalNetworkBlocks { localNetworkBlocks = nextLocalNetworkBlocks }
             var nextRooms = snapshot.rooms
             if var lgDev = latestLGDevice, lgConfig.isEnabled {
                 if let matchedRoom = nextRooms.first(where: { $0.id == lgDev.roomId || $0.name == lgDev.roomName }) {
@@ -604,6 +595,7 @@ extension HomeStore {
             }
         }
         let defaults = UncheckedUserDefaults(userDefaults)
+        let networkSatisfiedBox = self.networkSatisfiedBox
         return HAWebSocketProvider(
             baseURLString: baseURLString,
             token: token,
@@ -613,7 +605,8 @@ extension HomeStore {
                 Task { @MainActor [weak self] in
                     self?.askHAPlaintext(url)
                 }
-            }
+            },
+            isNetworkSatisfied: { networkSatisfiedBox.get() }
         )
     }
 
@@ -1361,12 +1354,7 @@ extension HomeStore {
     public var effectiveLocalNetworkBlocks: Set<LocalNetworkBlockedFeature> {
         guard homeBackend != .demo else { return [] }
         var blocks = localNetworkBlocks
-        if !hasHASource {
-            blocks.remove(.homeAssistant)
-        } else if case .disconnected(let reason) = (sourceStatuses[.homeAssistant] ?? (hasMiSource ? .connecting : connectionStatus)),
-                  reason.contains("局域网连接被系统拦截") || reason.contains("Local network connection blocked by macOS") {
-            blocks.insert(.homeAssistant)
-        }
+        if !hasHASource { blocks.remove(.homeAssistant) }
         if !hasMiSource { blocks.remove(.xiaomiLAN) }
         return blocks
     }

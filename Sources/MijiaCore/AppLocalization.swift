@@ -284,7 +284,7 @@ public enum L10n {
 
     // MARK: Locked storage
 
-    private final class LockedBox<Value>: @unchecked Sendable {
+    final class LockedBox<Value>: @unchecked Sendable {
         private let lock = NSLock()
         private var value: Value
 

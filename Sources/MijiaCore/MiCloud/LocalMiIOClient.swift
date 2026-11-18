@@ -125,12 +125,11 @@ public actor NWConnectionMiIOUDPTransport: MiIOUDPTransport {
                 }
 
                 connection.stateUpdateHandler = { state in
-                    let reason = connection.currentPath?.unsatisfiedReason
                     switch state {
                     case .ready:
                         connection.send(content: packet, completion: .contentProcessed { sendError in
                             if let sendError {
-                                let denied = LocalNetworkPermissionClassifier.isDeniedNWConnection(error: sendError, unsatisfiedReason: reason)
+                                let denied = LocalNetworkPermissionClassifier.isDeniedNWConnection(error: sendError, unsatisfiedReason: connection.currentPath?.unsatisfiedReason)
                                     || LocalNetworkPermissionClassifier.isDeniedConnectionError(sendError, targetHost: trimmedHost)
                                 complete(.failure(denied ? MiIOError.localNetworkDenied : sendError))
                                 return
@@ -138,8 +137,7 @@ public actor NWConnectionMiIOUDPTransport: MiIOUDPTransport {
                             call.markSendCompleted()
                             connection.receiveMessage { content, _, _, receiveError in
                                 if let receiveError {
-                                    let denied = !call.didCompleteSend && LocalNetworkPermissionClassifier.isDeniedNWConnection(error: receiveError, unsatisfiedReason: reason)
-                                    complete(.failure(denied ? MiIOError.localNetworkDenied : receiveError))
+                                    complete(.failure(receiveError))
                                     return
                                 }
                                 guard let content, !content.isEmpty else {
@@ -149,10 +147,11 @@ public actor NWConnectionMiIOUDPTransport: MiIOUDPTransport {
                                 complete(.success(content))
                             }
                         })
-                    case .waiting(let err) where !call.didCompleteSend && LocalNetworkPermissionClassifier.isDeniedNWConnection(error: err, unsatisfiedReason: reason):
+                    case .waiting(let err) where !call.didCompleteSend && LocalNetworkPermissionClassifier.isDeniedNWConnection(error: err, unsatisfiedReason: connection.currentPath?.unsatisfiedReason):
                         complete(.failure(MiIOError.localNetworkDenied))
                     case .failed(let err):
-                        complete(.failure((!call.didCompleteSend && LocalNetworkPermissionClassifier.isDeniedNWConnection(error: err, unsatisfiedReason: reason)) ? MiIOError.localNetworkDenied : err))
+                        let denied = !call.didCompleteSend && LocalNetworkPermissionClassifier.isDeniedNWConnection(error: err, unsatisfiedReason: connection.currentPath?.unsatisfiedReason)
+                        complete(.failure(denied ? MiIOError.localNetworkDenied : err))
                     case .cancelled:
                         complete(.failure(CancellationError()))
                     default:
