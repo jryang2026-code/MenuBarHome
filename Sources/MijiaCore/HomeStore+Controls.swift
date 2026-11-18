@@ -839,24 +839,60 @@ extension HomeStore {
         } else {
             nil
         }
-        let startPosition = (baselineCover ?? s).positionPercent
+        // `lastCoverPositions` is the raw position the device last reported, updated by every
+        // snapshot even while a command lock hides it. The row's `reportedPositionPercent` is the
+        // same truth after a lock merge; `positionPercent` is only the commanded target, so a
+        // missing report must stay unknown instead of borrowing the optimistic value.
+        let startPosition = lastCoverPositions[deviceId] ?? s.reportedPositionPercent
         let previousPosition = startPosition ?? displayed
         // Asked before any optimistic state moves, so a refusal leaves the slider on the position
         // the device really reports. The direction comes from the value the command sends, not the
-        // snapped one the row shows: 0 → 1 % displays as a closed door but still opens it. One
-        // answer covers the same-direction ticks of a drag still being accumulated; a tick the other
-        // way, or one after the slot went out, is a new decision and asks on its own.
-        let direction = Self.coverDragDirection(from: s.positionPercent, to: clamped)
-        let confirmedDrag = direction.map {
+        // snapped one the row shows: 0 → 1 % displays as a closed door but still opens it. It also
+        // starts from the motor's reported position, not the card's commanded target: a moving
+        // cover shows 100% while the motor is still at 0%, and 0 → 20% is the hazardous opening.
+        // One answer covers the same-direction ticks of a drag still being accumulated; a tick the
+        // other way, or one after the slot went out, is a new decision and asks on its own.
+        // The command travels from the motor's reported position. A tick that lands back on that
+        // reported position has no travel of its own, but a pending/in-flight command may still be
+        // heading elsewhere; reversing it is a hazard decision on its own (#223), so the prompt
+        // falls back to the displayed target. The send gate only trusts the reported direction.
+        let startIsUnknown = startPosition == nil
+        let travelDirection = startIsUnknown
+            ? true
+            : Self.coverDragDirection(from: startPosition, to: clamped)
+        let displayDirection = Self.coverDragDirection(from: s.positionPercent, to: clamped)
+        let promptDirection = travelDirection ?? displayDirection
+        let confirmedDrag = promptDirection.map {
             continuesConfirmedCoverDrag(key, deviceId: deviceId, opens: $0)
         } ?? false
         var answeredPrompt = false
-        if let direction, !confirmedDrag,
-           ManualControlPolicy.requiresConfirmation(.power(direction), for: previous) {
-            guard allowManualControl(.power(direction), for: previous) else { return }
+        if let promptDirection, !confirmedDrag,
+           ManualControlPolicy.requiresConfirmation(.power(promptDirection), for: previous) {
+            if startIsUnknown {
+                guard allowUnknownStartCoverControl(for: previous) else { return }
+            } else {
+                guard allowManualControl(.power(promptDirection), for: previous) else { return }
+            }
             answeredPrompt = true
         }
-        let origin = activeCoverOrigin(for: deviceId, fallback: previousPosition) ?? previousPosition
+        let approval: CoverDragApproval?
+        if startIsUnknown {
+            // The answer covers a write from an unknown position; it is not an opening approval.
+            approval = (answeredPrompt || confirmedDrag)
+                && ManualControlPolicy.requiresConfirmation(.power(true), for: previous)
+                ? .unknownStart
+                : nil
+        } else if let travelDirection, answeredPrompt || confirmedDrag {
+            approval = travelDirection ? .opening : .closing
+        } else {
+            approval = nil
+        }
+        let coverDrag = CoverDragPlan(
+            target: clamped,
+            approval: approval,
+            startPosition: startPosition
+        )
+        let origin = activeCoverOrigin(for: deviceId, fallback: startPosition)
         if let baselineCover {
             s.motion = baselineCover.motion
             s.motionIsInferred = baselineCover.motionIsInferred
@@ -869,8 +905,6 @@ extension HomeStore {
             s.motion = .closing
             s.motionIsInferred = false
         }
-        let targetMotion = s.motion
-        let targetInferred = s.motionIsInferred
         var updated = previous
         updated.kind = .cover(s)
         if s.isMoving {
@@ -884,19 +918,42 @@ extension HomeStore {
             lock: s.isMoving ? coverOptimisticLockDuration : nil,
             debounceKey: key,
             priorCoverOrigin: priorCoverOrigin,
+            coverDrag: coverDrag,
             mutate: { device in
                 guard case .cover(var spec) = device.kind else { return }
+                // The direction is relative to where the motor actually is (the reported
+                // position), not to a display target: a device report can re-base a still-pending
+                // drag (50 -> 20 becomes 15 -> 20 when the first command stops at 15), and a
+                // moving cover shows its commanded target while the motor is elsewhere. A captured
+                // direction, or the composed row's optimistic position, would then confirm travel
+                // the wrong way in `coverTravelTakesOver`. The plan's start is refreshed by every
+                // report, including Home Assistant covers that never publish a reported position;
+                // when it is nil the start stays unknown and no direction is invented.
+                let start = spec.reportedPositionPercent ?? coverDrag.startPosition
                 spec.positionPercent = displayed
-                spec.motion = targetMotion
-                spec.motionIsInferred = targetInferred
+                if let start {
+                    if displayed > start {
+                        spec.motion = .opening
+                        spec.motionIsInferred = false
+                    } else if displayed < start {
+                        spec.motion = .closing
+                        spec.motionIsInferred = false
+                    } else {
+                        // The motor is already where the drag points, so no travel remains; a
+                        // left-over direction would make `coverTravelTakesOver` confirm the
+                        // previous command's report against this target.
+                        spec.motion = .stopped
+                        spec.motionIsInferred = false
+                    }
+                }
                 device.kind = .cover(spec)
             }
         )
         // Each commit mints a new slot token, so keep the recorded one current for as long as this
         // drag stays answered in the same direction (or was just answered now). A tick the other
         // way is a new hazard and asks on its own.
-        if let direction, answeredPrompt || confirmedDrag, let token = debouncedWrites[key]?.token {
-            confirmedCoverDragAnswers[key] = (token, direction)
+        if let promptDirection, answeredPrompt || confirmedDrag, let token = debouncedWrites[key]?.token {
+            confirmedCoverDragAnswers[key] = (token, promptDirection)
         }
     }
 

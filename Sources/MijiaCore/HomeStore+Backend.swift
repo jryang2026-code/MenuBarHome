@@ -351,11 +351,14 @@ extension HomeStore {
                    coverTravelTakesOver(deviceId: incoming.id, local: local, incoming: incoming) {
                     // The motor has confirmed the command, so its own report is authoritative.
                     // Keeping the timed lock here would hide it and make the card jump when
-                    // the lock expired (#298).
-                    optimisticFieldLocks.removeValue(forKey: .field(incoming.id, .coverPosition))
-                    coverCommandOrigins.removeValue(forKey: incoming.id)
-                    manualWriteSessions.removeValue(forKey: incoming.id)
-                    lockedFields.remove(.coverPosition)
+                    // the lock expired (#298). A drag still waiting in its debounce has not
+                    // reached the provider, so this report cannot have confirmed it; that patch
+                    // and its row stay, and the command still goes out when the debounce ends.
+                    if !adoptCoverTravelReport(deviceId: incoming.id, incoming: incoming) {
+                        optimisticFieldLocks.removeValue(forKey: .field(incoming.id, .coverPosition))
+                        coverCommandOrigins.removeValue(forKey: incoming.id)
+                        lockedFields.remove(.coverPosition)
+                    }
                 }
                 if !lockedFields.contains(.coverPosition) {
                     coverCommandOrigins.removeValue(forKey: incoming.id)
