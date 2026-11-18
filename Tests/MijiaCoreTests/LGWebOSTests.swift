@@ -159,9 +159,30 @@ struct LGWebOSTests {
             probeHost: probe
         )
         #expect(allowed.map(\.host) == ["lg-tv.local", "192.168.1.50"])
-        #expect(probed.items == ["lg-tv.local", "192.168.1.50"])
+        #expect(probed.items.sorted() == ["192.168.1.50", "lg-tv.local"])
         #expect(LGWebOSClient.discoveryFailureMessage(hostHint: "8.8.8.8").contains("8.8.8.8"))
         #expect(!LGWebOSClient.discoveryFailureMessage(hostHint: "192.168.1.50").contains("192.168.1.50"))
+    }
+
+    @Test("HomeStore LG discovery failure message explains rejected host hints including saved fallback")
+    @MainActor
+    func storeDiscoveryFailureMessageExplainsRejectedHost() async throws {
+        let suite = "test.lg.discovery.msg.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [], scenes: [])), defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+
+        let explicitRejected = store.lgWebOSDiscoveryFailureMessage(hostHint: "8.8.8.8")
+        #expect(explicitRejected.contains("8.8.8.8"))
+
+        let allowedHint = store.lgWebOSDiscoveryFailureMessage(hostHint: "192.168.1.50")
+        #expect(!allowedHint.contains("192.168.1.50"))
+
+        store.updateLGWebOSConfig(LGWebOSConfig(isEnabled: true, host: "example.com"))
+        let savedRejected = store.lgWebOSDiscoveryFailureMessage(hostHint: "   ")
+        #expect(savedRejected.contains("example.com"))
     }
 }
 
