@@ -9,6 +9,8 @@ name: Record snapshots
 #
 # 渲染和推送分在两台机器上。渲染机只有 contents: read，跑目标分支的测试。
 # 推送机是一台新的 ubuntu，只检出默认分支的脚本，不执行目标树里的任何东西。
+# 推送机只认录制机渲染时锁定的提交：录制期间分支再前进，提交脚本会失败并要求重录，
+# 不会把旧像素覆盖到新提交上。
 on:
   workflow_dispatch:
     inputs:
@@ -53,6 +55,9 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    outputs:
+      # 渲染所基于的分支提交。推送机只在这个提交上安装基线。
+      sha: ${{ steps.recorded.outputs.sha }}
     concurrency:
       group: record-snapshots-${{ needs.resolve.outputs.branch }}
       cancel-in-progress: false
@@ -64,6 +69,14 @@ jobs:
           path: snapshot-work
           persist-credentials: false
           fetch-depth: 0
+
+      - name: Pin the commit the baselines were rendered from
+        id: recorded
+        run: |
+          set -euo pipefail
+          sha="$(git -C snapshot-work rev-parse HEAD)"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Baselines were rendered from ${sha}."
 
       # macos-26-intel ships Xcode 26.6 (17F113). Do not select latest.
       - name: Select Xcode 26.6
@@ -142,10 +155,11 @@ jobs:
           sparse-checkout-cone-mode: true
           fetch-depth: 1
 
-      - name: Check out the target branch
+      - name: Check out the recorded commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.resolve.outputs.branch }}
+          # 录制锁定的提交，不是分支现值。分支若已前进，后面的提交脚本会拒绝并要求重录。
+          ref: ${{ needs.record-snapshots.outputs.sha }}
           path: snapshot-work
           persist-credentials: false
           fetch-depth: 0
@@ -177,10 +191,33 @@ jobs:
         if: steps.commit.outputs.pushed == 'true'
         env:
           SNAPSHOT_BRANCH: ${{ needs.resolve.outputs.branch }}
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh workflow run ci.yml --ref "$SNAPSHOT_BRANCH"
+          # 本步在 workspace 根（trusted-snapshot / snapshot-work 所在目录，不是 Git 仓库）执行，
+          # 不设 GH_REPO 时 gh 无法推断仓库，会报 fatal: not a git repository。
+          gh workflow run ci.yml --repo "$GH_REPO" --ref "$SNAPSHOT_BRANCH"
           echo "Dispatched CI on ${SNAPSHOT_BRANCH}."
           echo "A GITHUB_TOKEN push does not start pull_request workflows. workflow_dispatch does."
           echo "ci.yml is already on the default branch, so this does not need a new PAT."
+
+      - name: Re-run Snapshot Guard for the open pull request
+        if: steps.commit.outputs.pushed == 'true'
+        env:
+          SNAPSHOT_BRANCH: ${{ needs.resolve.outputs.branch }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --repo "$GH_REPO" --head "$SNAPSHOT_BRANCH" --state open \
+              --json number --jq 'if length > 0 then .[0].number else "" end')"
+          if [ -z "$pr" ]; then
+            echo "${SNAPSHOT_BRANCH} 没有关联的开放 PR，PR 检查无需重评。"
+            exit 0
+          fi
+          # GITHUB_TOKEN 推送不会触发 pull_request 工作流，所以 PR 上的
+          # snapshot-baselines 检查要靠这里手动派发 snapshot-guard.yml 重评。
+          gh workflow run snapshot-guard.yml --repo "$GH_REPO" -f pr="$pr"
+          echo "Dispatched Snapshot Guard for PR ${pr}."
+          echo "guard 自己用 PR API 解析 head/base，在 PR 当前头提交上重跑基线检查。"

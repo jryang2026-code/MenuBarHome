@@ -7,6 +7,11 @@
 # Every entry must be a regular PNG file directly in DIR. Symlinks, nested paths,
 # traversal, non-PNGs, and unreasonable sizes are rejected. install copies only
 # after that check, and removes destination PNGs the artifact no longer has.
+#
+# install additionally refuses to touch a destination whose path or directory
+# already contains a symlink: cp would follow the link and let the target branch
+# overwrite files outside the baseline directory (for example the trusted push
+# helper this workflow runs right after). Reject up front, never write through.
 set -euo pipefail
 
 # Largest committed UI snapshot is about 240 KB. 8 MiB is still one picture, not a dump.
@@ -68,11 +73,50 @@ validate_dir() {
     echo "已检查 ${count} 张 PNG"
 }
 
+reject_destination_symlinks() {
+    local dest="$1"
+    local cur next rel part entry
+    # Check each ancestor of the destination path (including itself), and then
+    # the entries inside it. $dest points into a checkout of the target branch,
+    # so any of these can be a symlink planted by that branch.
+    if [[ "$dest" == /* ]]; then
+        cur="/"
+    else
+        cur="."
+    fi
+    rel="${dest#/}"
+    rel="${rel%/}"
+    while IFS= read -r part; do
+        [ -n "$part" ] || continue
+        if [ "$cur" = "/" ]; then
+            next="/$part"
+        elif [ "$cur" = "." ]; then
+            next="$part"
+        else
+            next="$cur/$part"
+        fi
+        if [ -L "$next" ]; then
+            echo "❌ 目标路径上有符号链接，拒绝安装：$next" >&2
+            return 1
+        fi
+        cur="$next"
+    done < <(printf '%s\n' "$rel" | tr '/' '\n')
+    if [ -d "$dest" ]; then
+        while IFS= read -r -d '' entry; do
+            if [ -L "$entry" ]; then
+                echo "❌ 目标目录里已有符号链接，拒绝安装：$(basename "$entry")" >&2
+                return 1
+            fi
+        done < <(find "$dest" -mindepth 1 -maxdepth 1 -print0)
+    fi
+}
+
 install_dir() {
     local artifact="$1"
     local dest="$2"
     local name src
     validate_dir "$artifact"
+    reject_destination_symlinks "$dest"
     mkdir -p "$dest"
     if [ -d "$dest" ]; then
         while IFS= read -r -d '' src; do

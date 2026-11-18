@@ -263,6 +263,154 @@ tiny_png "$nested_dir/sub/panel.png"
 expect_validate_fail "reject nested path" "$nested_dir"
 rm -rf "$artifact_root"
 
+physical_tmp() {
+    # mktemp -d on the maintainer's Mac returns a path under /var, itself a
+    # symlink to /private/var. The install guards reject symlinked ancestors,
+    # so the tests must use the physical path.
+    local d
+    d="$(mktemp -d)"
+    (cd "$d" && pwd -P)
+}
+
+test_install_happy_path() {
+    local root artifact dest listing
+    root="$(physical_tmp)"
+    artifact="$root/artifact"
+    dest="$root/dest"
+    mkdir -p "$artifact" "$dest"
+    tiny_png "$artifact/panel.png"
+    tiny_png "$artifact/extra.png"
+    printf 'old\n' >"$dest/panel.png"
+    printf 'stale\n' >"$dest/stale.png"
+    if ! bash scripts/ci_snapshot_artifact.sh install "$artifact" "$dest" >/tmp/snapshot-ci-test.out 2>/tmp/snapshot-ci-test.err; then
+        printf 'FAIL install happy path\n' >&2
+        cat /tmp/snapshot-ci-test.err >&2
+        failures=$((failures + 1))
+    else
+        listing="$(ls "$dest")"
+        expect_eq "install keeps only artifact pngs" "$(printf 'extra.png\npanel.png')" "$listing"
+        if cmp -s "$artifact/panel.png" "$dest/panel.png"; then
+            printf 'PASS install copies artifact pixels\n'
+        else
+            printf 'FAIL install copies artifact pixels\n' >&2
+            failures=$((failures + 1))
+        fi
+    fi
+    rm -rf "$root"
+}
+test_install_happy_path
+
+test_install_rejects_destination_symlink() {
+    local root artifact dest outside
+    root="$(physical_tmp)"
+    artifact="$root/artifact"
+    dest="$root/dest"
+    mkdir -p "$artifact" "$dest"
+    tiny_png "$artifact/panel.png"
+    outside="$root/outside.bin"
+    printf 'sentinel\n' >"$outside"
+    ln -s "$outside" "$dest/panel.png"
+    if bash scripts/ci_snapshot_artifact.sh install "$artifact" "$dest" >/tmp/snapshot-ci-test.out 2>/tmp/snapshot-ci-test.err; then
+        printf 'FAIL install should reject a destination png symlink\n' >&2
+        failures=$((failures + 1))
+    elif ! grep -qx 'sentinel' "$outside"; then
+        printf 'FAIL install wrote through the destination symlink\n' >&2
+        failures=$((failures + 1))
+    elif [ ! -L "$dest/panel.png" ]; then
+        printf 'FAIL install replaced the destination symlink itself\n' >&2
+        failures=$((failures + 1))
+    else
+        printf 'PASS install rejects a destination png symlink\n'
+    fi
+    rm -rf "$root"
+}
+test_install_rejects_destination_symlink
+
+test_install_rejects_ancestor_symlink() {
+    local root artifact real linkpath
+    root="$(physical_tmp)"
+    artifact="$root/artifact"
+    real="$root/real"
+    mkdir -p "$artifact" "$real"
+    tiny_png "$artifact/panel.png"
+    ln -s real "$root/linkdir"
+    linkpath="$root/linkdir/dest"
+    if bash scripts/ci_snapshot_artifact.sh install "$artifact" "$linkpath" >/tmp/snapshot-ci-test.out 2>/tmp/snapshot-ci-test.err; then
+        printf 'FAIL install should reject a symlinked ancestor\n' >&2
+        failures=$((failures + 1))
+    elif [ -e "$real/dest" ]; then
+        printf 'FAIL install wrote through a symlinked ancestor\n' >&2
+        failures=$((failures + 1))
+    else
+        printf 'PASS install rejects a symlinked ancestor\n'
+    fi
+    rm -rf "$root"
+}
+test_install_rejects_ancestor_symlink
+
+test_branch_advance_rejected() {
+    local tmp next bare out rel
+    tmp="$(mktemp -d)"
+    next="$(mktemp -d)"
+    bare="$(mktemp -d)"
+    out="$(mktemp)"
+    rel="Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests"
+    git init -q -b feature "$tmp"
+    git init -q --bare -b feature "$bare"
+    git -C "$tmp" config user.email test@example.com
+    git -C "$tmp" config user.name test
+    mkdir -p "$tmp/$rel"
+    printf 'before\n' >"$tmp/$rel/panel.png"
+    git -C "$tmp" add "$rel/panel.png"
+    git -C "$tmp" commit -q -m init
+    git -C "$tmp" remote add origin "$bare"
+    git -C "$tmp" push -q origin feature
+    git clone -q "$bare" "$next"
+    git -C "$next" config user.email test@example.com
+    git -C "$next" config user.name test
+    git -C "$next" commit -q --allow-empty -m advance
+    git -C "$next" push -q origin feature
+    recorded="$(git -C "$tmp" rev-parse HEAD)"
+    advanced="$(git -C "$bare" rev-parse feature)"
+    printf 'after\n' >"$tmp/$rel/panel.png"
+    if (
+        cd "$tmp"
+        SNAPSHOT_BRANCH=feature GITHUB_OUTPUT="$out" \
+            bash "$OLDPWD/scripts/ci_commit_snapshot_baselines.sh" commit
+    ) >/tmp/snapshot-ci-test.out 2>/tmp/snapshot-ci-test.err; then
+        printf 'FAIL advanced branch should reject the commit\n' >&2
+        failures=$((failures + 1))
+    else
+        if grep -q '已前进' /tmp/snapshot-ci-test.err; then
+            printf 'PASS advanced branch reports the re-record hint\n'
+        else
+            printf 'FAIL advanced branch message missing\n' >&2
+            cat /tmp/snapshot-ci-test.err >&2
+            failures=$((failures + 1))
+        fi
+        if grep -qx 'pushed=false' "$out"; then
+            printf 'PASS advanced branch writes pushed=false\n'
+        else
+            printf 'FAIL advanced branch should write pushed=false\n' >&2
+            failures=$((failures + 1))
+        fi
+        if [ "$(git -C "$tmp" rev-parse HEAD)" != "$recorded" ]; then
+            printf 'FAIL advanced branch should not commit on the old tip\n' >&2
+            failures=$((failures + 1))
+        else
+            printf 'PASS recording worktree stays on the recorded commit\n'
+        fi
+        if [ "$(git -C "$bare" rev-parse feature)" != "$advanced" ]; then
+            printf 'FAIL advanced branch should push nothing\n' >&2
+            failures=$((failures + 1))
+        else
+            printf 'PASS remote tip is untouched\n'
+        fi
+    fi
+    rm -rf "$tmp" "$next" "$bare" "$out"
+}
+test_branch_advance_rejected
+
 if [ "$failures" -ne 0 ]; then
     printf '❌ %d 项 snapshot CI 脚本自测失败\n' "$failures" >&2
     exit 1

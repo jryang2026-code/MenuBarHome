@@ -2,10 +2,12 @@
 # Commit changed snapshot PNGs and push them to SNAPSHOT_BRANCH.
 #
 #   ci_commit_snapshot_baselines.sh message   # read a path list on stdin, print the commit message
-#   ci_commit_snapshot_baselines.sh commit    # stage, commit, rebase onto the remote branch, push
+#   ci_commit_snapshot_baselines.sh commit    # stage, commit, push
 #
 # A second run with the same pixels finds nothing to commit and exits 0.
-# The push is not a force push. Rebase conflicts stop the run.
+# The push is not a force push. The run must sit on the current branch tip: if
+# the branch advanced past the recorded commit, the run fails and asks for a
+# re-record instead of rebasing old pixels onto the new tip.
 set -euo pipefail
 
 # Ignore repo hooks and any git shim on PATH. The push job must not run a
@@ -75,16 +77,33 @@ require_pushed_head() {
     fi
 }
 
+require_recorded_tip() {
+    # The record job rendered baselines from one exact commit; that commit must
+    # still be the branch tip. Rebasing old pixels onto a newer tip would push
+    # baselines that do not match the new source.
+    local branch="$1" base="$2"
+    local remote
+    git fetch origin "$branch"
+    remote="$(git rev-parse "origin/${branch}")"
+    if [ "$base" != "$remote" ]; then
+        echo "❌ 分支 ${branch} 已前进：origin=${remote}，本次录制基于 ${base}。" >&2
+        echo "   旧录制不能覆盖新提交。请在新分支顶上重新运行 Record snapshots。" >&2
+        write_pushed false
+        return 1
+    fi
+}
+
 cmd_commit() {
-    local branch files count msg
+    local branch files count msg base
     branch="$(bash "$SCRIPT_DIR/ci_snapshot_branch.sh" normalize "${SNAPSHOT_BRANCH:?}")"
     cd "$ROOT"
+    base="$(git rev-parse HEAD)"
+    require_recorded_tip "$branch" "$base"
     if [ -e "$REL" ]; then
         git add -A -- "$REL"
     fi
     files="$(git diff --cached --name-only -- "$REL")"
     if [ -z "$files" ]; then
-        require_pushed_head "$branch"
         echo "没有需要提交的快照基线"
         write_pushed false
         return 0
@@ -104,8 +123,6 @@ cmd_commit() {
         -c user.email="$GIT_AUTHOR_EMAIL" \
         commit -F "$msg"
     rm -f "$msg"
-    git fetch origin "$branch"
-    git rebase "origin/${branch}"
     git push origin "HEAD:refs/heads/${branch}"
     require_pushed_head "$branch"
     echo "已推送 ${count} 张快照基线到 ${branch}"
