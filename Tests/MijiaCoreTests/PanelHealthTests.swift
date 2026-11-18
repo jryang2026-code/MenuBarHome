@@ -841,6 +841,59 @@ struct PanelHealthTests {
         }
     }
 
+    @Test("PanelHealth surfaces HA and Xiaomi LAN Local Network TCC blocks, Demo suppresses them, and DeviceReadout honors per-device telemetryStale")
+    func localNetworkBlocksAndPerDeviceTelemetryStaleReadout() async throws {
+        let haOnlyBlocked = try await makeStore(backend: .homeAssistant, haSource: true)
+        haOnlyBlocked.connectionStatus = .disconnected("blocked")
+        haOnlyBlocked.localNetworkBlocks = [.homeAssistant]
+
+        let dualHABlocked = try await makeStore(backend: .xiaomiCloud, session: validSession(), haSource: true)
+        dualHABlocked.connectionStatus = .connected
+        dualHABlocked.localNetworkBlocks = [.homeAssistant]
+
+        let miLANBlockedCloudOK = try await makeStore(backend: .xiaomiCloud, session: validSession())
+        miLANBlockedCloudOK.connectionStatus = .connected
+        miLANBlockedCloudOK.localNetworkBlocks = [.xiaomiLAN]
+
+        let demoWithStaleBlocks = try await makeStore(backend: .demo)
+        demoWithStaleBlocks.connectionStatus = .connected
+        demoWithStaleBlocks.localNetworkBlocks = [.homeAssistant, .xiaomiLAN, .lgWebOS]
+
+        let staleDevice = SmartDevice(
+            id: "stale-lamp", name: "离线缓存灯", roomId: "room", roomName: "书房",
+            model: "yeelink.light.lamp4", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.stale", isOn: true)), telemetryStale: true
+        )
+        let freshDevice = SmartDevice(
+            id: "fresh-lamp", name: "局域网灯", roomId: "room", roomName: "书房",
+            model: "yeelink.light.lamp4", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.fresh", isOn: true)), telemetryStale: false
+        )
+        let readoutProvider = MockHomeProvider(snapshot: SynthesizedHome(devices: [staleDevice, freshDevice]))
+        let readoutStore = try await makeStore(backend: .xiaomiCloud, session: validSession(), provider: readoutProvider)
+
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(health(haOnlyBlocked) == .blocked(
+                reason: "本地网络权限受阻 · 点此检查设置",
+                action: .openConnectionSettings
+            ))
+            #expect(health(dualHABlocked) == .degraded(
+                reason: "Home Assistant 本地网络权限受阻，米家云端仍可用"
+            ))
+            #expect(health(miLANBlockedCloudOK) == .degraded(
+                reason: "米家局域网直连权限受阻，已回退云端"
+            ))
+            #expect(demoWithStaleBlocks.effectiveLocalNetworkBlocks.isEmpty)
+            #expect(health(demoWithStaleBlocks) == .ok)
+
+            #expect(readoutStore.readout(for: "stale-lamp") == .possiblyStale)
+            #expect(readoutStore.presentedStatus(for: staleDevice) == "可能过期")
+            #expect(readoutStore.presentsAsActive(staleDevice) == false)
+            #expect(readoutStore.readout(for: "fresh-lamp") == .live)
+            #expect(readoutStore.presentsAsActive(freshDevice) == true)
+        }
+    }
+
     private func health(_ store: HomeStore) -> PanelHealth {
         store.panelHealth
     }

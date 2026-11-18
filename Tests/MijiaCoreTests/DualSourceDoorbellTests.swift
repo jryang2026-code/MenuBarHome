@@ -97,7 +97,7 @@ struct DualSourceDoorbellTests {
                 lastDeviceCount = home.devices.count
             case .doorbellRang(let ring):
                 rings.append(ring)
-            case .statusChanged, .sessionExpired, .sourceStatusesChanged:
+            case .statusChanged, .sessionExpired, .sourceStatusesChanged, .localNetworkPermissionChanged:
                 break
             }
         }

@@ -904,4 +904,124 @@ struct DualSourceIntegrationTests {
         #expect(camCardDuringRetry.isOnline == true)
         #expect(camCardDuringRetry.telemetryStale == false)
     }
+
+    @MainActor
+    @Test("Dual-source remaps deviceTransportDiagnostics to canonicalID only for Xiaomi-driven cards and unmasks HA Local Network TCC block while Mi Cloud is connected")
+    func dualSourceTransportDiagnosticsRemapAndHATCCUnmasking() async throws {
+        let suite = "test.dual.tcc_and_diag.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let session = MiSession(
+            userId: "1001", cUserId: "c1", ssecurity: "s", serviceToken: "tok",
+            expiresAt: Date().addingTimeInterval(86_400)
+        )
+        #expect(MiSessionStore.save(session, defaults: defaults))
+        #expect(KeychainHelper.saveToken("ha-token", defaults: defaults))
+
+        let pairedHA = light(id: haID, name: "客厅灯", roomID: "ha-r1", roomName: "客厅", entityId: "light.living")
+        let pairedMi = light(id: did, name: "客厅灯", roomID: "mi-r1", roomName: "客厅", entityId: "miot:\(did):2")
+        let miOnlyDid = "mi-plug-99"
+        let miOnlyPlug = SmartDevice(
+            id: miOnlyDid, name: "书房插座", roomId: "mi-r2", roomName: "书房",
+            model: "cuco.plug.v3", isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "miot:\(miOnlyDid):2", isOn: true))
+        )
+
+        let haHome = home(
+            [pairedHA],
+            identities: [haID: DeviceSourceIdentity(dids: [did], model: "yeelink.light.ceiling22", name: "客厅灯", roomName: "客厅", kindTag: .light)]
+        )
+        var miHome = home(
+            [pairedMi, miOnlyPlug],
+            identities: [
+                did: DeviceSourceIdentity(dids: [did], model: "yeelink.light.ceiling22", name: "客厅灯", roomName: "客厅", kindTag: .light),
+                miOnlyDid: DeviceSourceIdentity(dids: [miOnlyDid], model: "cuco.plug.v3", name: "书房插座", roomName: "书房", kindTag: .plug),
+            ]
+        )
+        miHome.deviceTransportDiagnostics = [
+            did: DeviceTransportDiagnostics(route: .lan, rttMs: 15, consecutiveFailures: 0, usedBroadcastRecovery: true),
+            miOnlyDid: DeviceTransportDiagnostics(route: .lan, rttMs: 20, consecutiveFailures: 0, usedBroadcastRecovery: false),
+        ]
+
+        let haMock = MockHomeProvider(snapshot: haHome)
+        let miMock = MockHomeProvider(snapshot: miHome)
+        let store = HomeStore(dualSource: (homeAssistant: haMock, xiaomiCloud: miMock), defaultsSuiteName: suite)
+        defer { store.stop() }
+        store.hasHASource = true
+
+        await waitUntil {
+            store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
+                && store.pairedDeviceIDs.count == 1
+                && store.deviceTransportDiagnostics[miOnlyDid]?.route == .lan
+        }
+
+        let pairedCardId = try #require(store.pairedDeviceIDs.first)
+        #expect(store.deviceBackend(for: pairedCardId) == .homeAssistant)
+        #expect(store.deviceTransportDiagnostics[pairedCardId] == nil)
+        #expect(store.deviceTransportDiagnostics[miOnlyDid]?.rttMs == 20)
+
+        store.pinDeviceSource(pairedCardId, to: .xiaomiCloud)
+        await waitUntil {
+            store.deviceBackend(for: pairedCardId) == .xiaomiCloud
+                && store.deviceTransportDiagnostics[pairedCardId]?.route == .lan
+        }
+        #expect(store.deviceTransportDiagnostics[pairedCardId]?.usedBroadcastRecovery == true)
+
+        await haMock.sendLocalNetworkPermission([.homeAssistant])
+        await waitUntil { store.effectiveLocalNetworkBlocks.contains(.homeAssistant) }
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(store.panelHealth == .degraded(reason: "Home Assistant 本地网络权限受阻，米家云端仍可用"))
+        }
+
+        await haMock.sendLocalNetworkPermission([])
+        await waitUntil { !store.effectiveLocalNetworkBlocks.contains(.homeAssistant) }
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(store.panelHealth == .ok)
+        }
+    }
+
+    @MainActor
+    @Test("HomeStore wires setNetworkSatisfiedForResume into HAWebSocketProvider so offline -1009 is not misclassified as Local Network TCC block")
+    func homeStoreNetworkSatisfiedGatingInHAProvider() async throws {
+        let suite = "test.ha.net_satisfied.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        defer { store.stop() }
+
+        store.setNetworkSatisfiedForResume(false)
+        let haProvider = store.makeHAProvider(baseURLString: "http://192.168.1.50:8123", token: "ha-tok")
+        let offlineErr = NSError(domain: NSURLErrorDomain, code: URLError.notConnectedToInternet.rawValue)
+        await haProvider.setTestSeams(
+            connectOverride: { .failedBeforeAuth(offlineErr) },
+            reconnectSleep: { _ in try await Task.sleep(for: .seconds(3600)) }
+        )
+
+        let stream = haProvider.events()
+        var iterator = stream.makeAsyncIterator()
+        var sawLocalNetworkBlockedWhileOffline = false
+        for _ in 0..<2 {
+            guard let event = await iterator.next() else { break }
+            if case .localNetworkPermissionChanged(let blocked) = event, blocked.contains(.homeAssistant) {
+                sawLocalNetworkBlockedWhileOffline = true
+            }
+            if case .statusChanged(.disconnected) = event { break }
+        }
+        #expect(sawLocalNetworkBlockedWhileOffline == false)
+
+        store.setNetworkSatisfiedForResume(true)
+        await haProvider.refreshNow()
+        var sawLocalNetworkBlockedWhenOnline = false
+        for _ in 0..<4 {
+            guard let event = await iterator.next() else { break }
+            if case .localNetworkPermissionChanged(let blocked) = event, blocked.contains(.homeAssistant) {
+                sawLocalNetworkBlockedWhenOnline = true
+                break
+            }
+        }
+        #expect(sawLocalNetworkBlockedWhenOnline == true)
+        await haProvider.shutdown()
+    }
 }

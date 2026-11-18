@@ -474,6 +474,8 @@ struct MultiAccountHomeStoreTests {
         #expect(splitSnap.accountStatuses[cnId] == .connected)
         #expect(splitSnap.accountStatuses[deId] == .connected)
         #expect(splitSnap.devices.map(\.id) == ["101", "shared-plug"])
+        #expect(splitSnap.deviceTransportDiagnostics["101"]?.route == .lan)
+        #expect(splitSnap.deviceTransportDiagnostics["shared-plug"]?.route == .cloud)
         let lanCard = try #require(splitSnap.devices.first { $0.id == "101" })
         #expect(lanCard.accountId == cnId)
         #expect(lanCard.isOnline == true)

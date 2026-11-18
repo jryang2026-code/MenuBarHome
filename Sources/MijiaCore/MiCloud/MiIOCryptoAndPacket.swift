@@ -19,6 +19,7 @@ public enum MiIOError: Error, Equatable, Sendable {
     case encryptionFailed
     case decryptionFailed
     case transportUnavailable
+    case localNetworkDenied
     case ambiguousActionOutcome
     case deviceError(code: Int, message: String)
 }
@@ -50,6 +51,8 @@ extension MiIOError: LocalizedError {
             return L10n.tr("miIO 数据包解密失败", "miIO payload decryption failed")
         case .transportUnavailable:
             return L10n.tr("当前平台不支持本地 UDP 传输", "Local UDP transport is unavailable on this platform")
+        case .localNetworkDenied:
+            return L10n.tr("本地网络权限被系统拦截，请在系统设置中允许访问局域网设备", "Local network access is blocked by macOS; allow Local Network permission in System Settings")
         case .ambiguousActionOutcome:
             return L10n.tr("局域网动作结果未确认，请检查设备状态后再试", "Local action outcome could not be confirmed; check device state before retrying")
         case .deviceError(let code, let message):
