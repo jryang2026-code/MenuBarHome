@@ -590,7 +590,7 @@ public struct ClassicControlCenterPanel: View {
                     Color.clear
                         .frame(width: 20, height: 18)
                 }
-            } else {
+            } else if store.enableVoiceInput {
                 Button {
                     withAnimation(AppleMotion.snappySpring) {
                         store.presentAssistantBar(startVoice: true)
@@ -624,6 +624,7 @@ public struct ClassicControlCenterPanel: View {
         .onChange(of: store.assistantFocusRequest) { _, _ in focusInput() }
         .onChange(of: store.assistantVoiceRequest) { _, newValue in
             lastHandledVoiceRequest = newValue
+            guard store.enableVoiceInput else { return }
             speech.toggle(store: store)
         }
         // Dictation lands in the same field; once the instruction ran the draft empties and so does it.
@@ -638,7 +639,9 @@ public struct ClassicControlCenterPanel: View {
         .onAppear {
             if store.assistantVoiceRequest != lastHandledVoiceRequest {
                 lastHandledVoiceRequest = store.assistantVoiceRequest
-                Task { await speech.start(holdMode: false, store: store) }
+                if store.enableVoiceInput {
+                    Task { await speech.start(holdMode: false, store: store) }
+                }
             } else if search.focusRequest > 0 {
                 focusInput()
             }
@@ -661,6 +664,9 @@ public struct ClassicControlCenterPanel: View {
         }
         if speech.isListening {
             return L10n.tr("正在聆听…说完自动执行", "Listening… runs when you stop")
+        }
+        if !store.enableVoiceInput {
+            return L10n.tr("搜索设备，或输入一句话", "Search devices, or type a command")
         }
         return L10n.tr("搜索设备，或直接说一句话", "Search devices, or say a command")
     }

@@ -87,10 +87,17 @@ struct PanelKeyRouterTests {
         #expect(route(Key(code: kVK_ANSI_Slash, characters: "/"), layout) == .presentAssistant(voice: false))
     }
 
-    @Test("Plain / and v open the assistant; with ⌘ they do not")
+    @Test("Plain / and v open the assistant; with ⌘ they do not; disabling voice input gates v while keeping / and device shortcuts")
     func assistantKeys() {
         #expect(route(Key(code: kVK_ANSI_V, characters: "v")) == .presentAssistant(voice: true))
         #expect(route(Key(code: kVK_ANSI_V, command: true, characters: "v")) == .passThrough)
+
+        let voiceDisabled = Context(voiceInputEnabled: false)
+        #expect(route(Key(code: kVK_ANSI_V, characters: "v"), voiceDisabled) == .passThrough)
+        #expect(route(Key(code: kVK_ANSI_V, characters: "V"), voiceDisabled) == .passThrough)
+        #expect(route(Key(code: kVK_ANSI_Slash, characters: "/"), voiceDisabled) == .presentAssistant(voice: false))
+        #expect(route(Key(code: kVK_Space, characters: " "), voiceDisabled) == .toggleFocusedDevice)
+        #expect(route(Key(code: kVK_DownArrow), voiceDisabled) == .moveFocus(1))
     }
 
     @Test("Device shortcuts: arrows, Space, Tab and digits")

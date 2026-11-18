@@ -58,6 +58,9 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     func attachStoreForTesting(_ store: HomeStore?) {
         cancelHotkeyHold()
         self.store = store
+        store?.onVoiceInputPreferenceChanged = { [weak self] enabled in
+            self?.handleVoiceInputPreferenceChanged(enabled: enabled)
+        }
     }
 
     public func start(with store: HomeStore) {
@@ -67,6 +70,9 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         }
         store.onGlobalHotkeyPreferenceChanged = { [weak self] enabled in
             self?.syncGlobalHotKeyRegistration(enabled: enabled)
+        }
+        store.onVoiceInputPreferenceChanged = { [weak self] enabled in
+            self?.handleVoiceInputPreferenceChanged(enabled: enabled)
         }
         syncGlobalHotKeyRegistration(enabled: store.enableGlobalHotkey)
         MenuBarPanelController.shared.install(with: store)
@@ -80,6 +86,13 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             guard let self, let store = self.store, store.shouldShowOnboarding else { return }
             self.ensureMenuBarExtraWindowVisible()
         }
+    }
+
+    private func handleVoiceInputPreferenceChanged(enabled: Bool) {
+        guard !enabled else { return }
+        cancelHotkeyHoldOnVoiceDisable()
+        MenuBarPanelController.shared.cancelHoldToTalkOnDisable()
+        SpeechInputController.shared.handleVoiceInputPreferenceChanged(enabled: false, store: store)
     }
 
     // MARK: - 1. Global Hotkey (user-recorded, ⌥M by default) via Carbon RegisterEventHotKey
@@ -216,11 +229,20 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         hotkeyPressedAt = Date()
         isHotkeyHoldTriggered = false
         hotkeyHoldTask?.cancel()
-        hotkeyHoldTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(holdThreshold))
-            guard !Task.isCancelled, let self, self.isHotkeyPhysicallyDown, !self.isHotkeyHoldTriggered else { return }
-            self.isHotkeyHoldTriggered = true
-            MenuBarPanelController.shared.beginHoldToTalk()
+        if store.enableVoiceInput {
+            hotkeyHoldTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(holdThreshold))
+                guard !Task.isCancelled,
+                      let self,
+                      let store = self.store,
+                      store.enableVoiceInput,
+                      self.isHotkeyPhysicallyDown,
+                      !self.isHotkeyHoldTriggered else { return }
+                self.isHotkeyHoldTriggered = true
+                MenuBarPanelController.shared.beginHoldToTalk()
+            }
+        } else {
+            hotkeyHoldTask = nil
         }
     }
 
@@ -250,6 +272,14 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         if wasHoldTriggered {
             MenuBarPanelController.shared.endHoldToTalk()
         }
+    }
+
+    private func cancelHotkeyHoldOnVoiceDisable() {
+        hotkeyHoldTask?.cancel()
+        hotkeyHoldTask = nil
+        hotkeyPressedAt = nil
+        isHotkeyPhysicallyDown = false
+        isHotkeyHoldTriggered = false
     }
 
     /// Opens the control center, or closes it when it is already on screen.
@@ -434,7 +464,8 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             isShowingAssistantBar: store.isShowingAssistantBar,
             editMode: LayoutUIState.shared.editMode,
             hasExpandedDevice: store.expandedDeviceId != nil,
-            hasFocusedDevice: store.focusedDeviceId != nil
+            hasFocusedDevice: store.focusedDeviceId != nil,
+            voiceInputEnabled: store.enableVoiceInput
         )
     }
 

@@ -458,8 +458,12 @@ struct GrokBallControl: View {
             .buttonStyle(.plain)
             .accessibilityLabel(Text(L10n.tr("GrokBall 家居助手", "GrokBall home assistant")))
             .accessibilityValue(Text(localizedEmotion(emotionId)))
-            .accessibilityHint(Text(L10n.tr("轻点展开或收起建议，拖动调整位置，长按开始语音输入", "Click to toggle suggestions, drag to reposition, or hold to start voice input")))
-            .help(L10n.tr("轻点推荐 · 拖动移位 · 长按说话", "Click for suggestions · Drag to move · Hold to speak"))
+            .accessibilityHint(Text(store.enableVoiceInput
+                ? L10n.tr("轻点展开或收起建议，拖动调整位置，长按开始语音输入", "Click to toggle suggestions, drag to reposition, or hold to start voice input")
+                : L10n.tr("轻点展开或收起建议，拖动调整位置", "Click to toggle suggestions or drag to reposition")))
+            .help(store.enableVoiceInput
+                ? L10n.tr("轻点推荐 · 拖动移位 · 长按说话", "Click for suggestions · Drag to move · Hold to speak")
+                : L10n.tr("轻点推荐 · 拖动移位", "Click for suggestions · Drag to move"))
         }
     }
 

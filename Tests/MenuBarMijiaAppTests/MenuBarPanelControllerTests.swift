@@ -1,4 +1,5 @@
 import AppKit
+import Speech
 import SwiftUI
 import Testing
 @testable import MijiaCore
@@ -2511,8 +2512,436 @@ struct MenuBarPanelControllerTests {
     }
     #endif
 
+    @Test("Disabling voice input blocks panel, status-item, hotkey, and GrokBall voice entry points with zero recognition tasks, audio taps, timers, or command submissions while preserving ordinary click and hotkey panel toggle")
+    func voiceInputDisabledBlocksAllEntryPointsWhileKeepingClickAndHotkeyToggle() async throws {
+        let (store, suite) = try await makeStore()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+
+        _ = NSApplication.shared
+        let speech = SpeechInputController.shared
+        var capturedEvents: (@Sendable (String?, Bool, Bool) -> Void)?
+        let mockRuntime = SpeechInputRuntime(
+            isPackagedApp: { true },
+            requestMicrophoneAccess: { true },
+            requestSpeechAuthorization: { .authorized },
+            isHoldInputPhysicallyActive: { true },
+            startCaptureSession: {
+                _,
+                onTapInstalled,
+                onTapRemoved,
+                onEngineStarted,
+                onEngineStopped,
+                onRecognitionTaskStarted,
+                onRecognitionTaskCancelled,
+                onEvent in
+                onTapInstalled()
+                onEngineStarted()
+                onRecognitionTaskStarted()
+                capturedEvents = onEvent
+                return SpeechCaptureSession(
+                    endAudio: {},
+                    cancelRecognitionTask: { onRecognitionTaskCancelled() },
+                    stopAudioEngine: { onEngineStopped() },
+                    removeAudioTap: { onTapRemoved() }
+                )
+            }
+        )
+        speech.resetMetricsAndRuntimeForTesting(runtime: mockRuntime)
+
+        let sharedController = MenuBarPanelController.shared
+        let prevPresentsActively = sharedController.presentsActively
+        sharedController.presentsActively = false
+        store.enableGrokBall = true
+        store.enableVoiceInput = false
+        sharedController.install(with: store)
+        HotkeyAndNotificationManager.shared.attachStoreForTesting(store)
+        defer {
+            HotkeyAndNotificationManager.shared.attachStoreForTesting(nil)
+            speech.resetMetricsAndRuntimeForTesting(runtime: .live)
+            sharedController.uninstall()
+            sharedController.presentsActively = prevPresentsActively
+        }
+
+        // Direct SpeechInputController entry points must no-op when disabled.
+        speech.toggle(store: store)
+        speech.startHoldToTalk(store: store)
+        speech.finishHoldToTalk(store: store)
+        await speech.start(holdMode: false, store: store)
+        await speech.start(holdMode: true, store: store)
+        speech.draft = "打开客厅灯"
+        speech.submit(store: store)
+        #expect(speech.isListening == false)
+        #expect(speech.isHoldToTalk == false)
+        #expect(speech.recognitionTasksStartedCount == 0)
+        #expect(speech.activeRecognitionTaskCount == 0)
+        #expect(speech.audioTapsInstalledCount == 0)
+        #expect(speech.activeAudioTapCount == 0)
+        #expect(speech.isAudioEngineRunning == false)
+        #expect(speech.silenceTimersScheduledCount == 0)
+        #expect(speech.holdReleaseTimersScheduledCount == 0)
+        #expect(speech.hasActiveSilenceTimer == false)
+        #expect(speech.hasActiveHoldReleaseTimer == false)
+        #expect(speech.submittedCommandsCount == 0)
+        #expect(capturedEvents == nil)
+
+        // Status-item native long press must not start voice or open assistant bar when disabled.
+        sharedController.handleStatusItemNativeLongPressEvent(
+            eventType: .leftMouseDown,
+            pressedMouseButtons: 0x1
+        )
+        #expect(sharedController.isPanelVisible == false)
+        #expect(store.isShowingAssistantBar == false)
+        #expect(speech.recognitionTasksStartedCount == 0)
+        #expect(speech.audioTapsInstalledCount == 0)
+        #expect(speech.silenceTimersScheduledCount == 0)
+        #expect(speech.holdReleaseTimersScheduledCount == 0)
+        #expect(speech.submittedCommandsCount == 0)
+
+        // Ordinary primary status-item click still toggles the panel open and closed.
+        sharedController.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0x1)
+        sharedController.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
+        #expect(sharedController.isPanelVisible == true)
+        sharedController.handleStatusItemEvent(eventType: .leftMouseDown, pressedMouseButtons: 0x1)
+        sharedController.handleStatusItemEvent(eventType: .leftMouseUp, pressedMouseButtons: 0)
+        #expect(sharedController.isPanelVisible == false)
+
+        // Holding the global shortcut beyond the threshold must not trigger hold-to-talk; releasing still toggles the panel.
+        HotkeyAndNotificationManager.shared.handleGlobalHotKeyPressed(holdThreshold: 0.02)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(HotkeyAndNotificationManager.shared.isHotkeyHoldTriggered == false)
+        #expect(speech.isHoldToTalk == false)
+        #expect(speech.recognitionTasksStartedCount == 0)
+        #expect(speech.audioTapsInstalledCount == 0)
+        HotkeyAndNotificationManager.shared.handleGlobalHotKeyReleased()
+        #expect(sharedController.isPanelVisible == true)
+        #expect(store.isShowingAssistantBar == false)
+
+        // Holding the GrokBall sidecar while voice input is off must not start voice; releasing toggles suggestions.
+        let sidecar = try #require(sharedController.grokBallSidecarWindow)
+        let ballPoint = NSPoint(x: sidecar.frame.midX, y: sidecar.frame.midY)
+        sendBallMouse(.leftMouseDown, at: ballPoint, window: sidecar)
+        try await Task.sleep(for: .milliseconds(550))
+        #expect(speech.isHoldToTalk == false)
+        #expect(speech.recognitionTasksStartedCount == 0)
+        #expect(speech.audioTapsInstalledCount == 0)
+        sendBallMouse(.leftMouseUp, at: ballPoint, window: sidecar)
+        #expect(store.isGrokBallStageExpanded == true)
+        #expect(speech.submittedCommandsCount == 0)
+    }
+
+    @Test("Turning off voice input while recording stops recognition and audio engine, removes tap, cancels silence and hold-release timers, and blocks late results")
+    func disablingVoiceInputWhileRecordingStopsAudioTapTimersAndBlocksLateResults() async throws {
+        let (store, suite) = try await makeStore()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+
+        let speech = SpeechInputController.shared
+        var latestEventHandler: (@Sendable (String?, Bool, Bool) -> Void)?
+        var endAudioCallCount = 0
+        let mockRuntime = SpeechInputRuntime(
+            isPackagedApp: { true },
+            requestMicrophoneAccess: { true },
+            requestSpeechAuthorization: { .authorized },
+            isHoldInputPhysicallyActive: { true },
+            startCaptureSession: {
+                _,
+                onTapInstalled,
+                onTapRemoved,
+                onEngineStarted,
+                onEngineStopped,
+                onRecognitionTaskStarted,
+                onRecognitionTaskCancelled,
+                onEvent in
+                onTapInstalled()
+                onEngineStarted()
+                onRecognitionTaskStarted()
+                latestEventHandler = onEvent
+                var cancelled = false
+                var stopped = false
+                var removed = false
+                return SpeechCaptureSession(
+                    endAudio: { endAudioCallCount += 1 },
+                    cancelRecognitionTask: {
+                        guard !cancelled else { return }
+                        cancelled = true
+                        onRecognitionTaskCancelled()
+                    },
+                    stopAudioEngine: {
+                        guard !stopped else { return }
+                        stopped = true
+                        onEngineStopped()
+                    },
+                    removeAudioTap: {
+                        guard !removed else { return }
+                        removed = true
+                        onTapRemoved()
+                    }
+                )
+            }
+        )
+        speech.resetMetricsAndRuntimeForTesting(runtime: mockRuntime)
+        speech.silenceAutoSubmitDelay = .seconds(5)
+        speech.holdReleaseDelay = .seconds(5)
+        defer {
+            speech.resetMetricsAndRuntimeForTesting(runtime: .live)
+        }
+
+        // 1. Hands-free recording with active silence auto-submit timer.
+        await speech.start(holdMode: false, store: store)
+        #expect(speech.isListening == true)
+        #expect(speech.recognitionTasksStartedCount == 1)
+        #expect(speech.activeRecognitionTaskCount == 1)
+        #expect(speech.audioTapsInstalledCount == 1)
+        #expect(speech.activeAudioTapCount == 1)
+        #expect(speech.isAudioEngineRunning == true)
+
+        let firstEventHandler = try #require(latestEventHandler)
+        firstEventHandler("把客厅灯打开", false, false)
+        #expect(await Self.waitUntilCondition { speech.hasActiveSilenceTimer })
+        #expect(speech.draft == "把客厅灯打开")
+        #expect(speech.hasActiveSilenceTimer == true)
+        #expect(speech.silenceTimersScheduledCount == 1)
+
+        // Turn off voice input while actively listening and waiting on the silence timer.
+        store.enableVoiceInput = false
+        #expect(speech.isListening == false)
+        #expect(speech.activeRecognitionTaskCount == 0)
+        #expect(speech.recognitionTasksCancelledCount == 1)
+        #expect(speech.activeAudioTapCount == 0)
+        #expect(speech.audioTapsRemovedCount == 1)
+        #expect(speech.isAudioEngineRunning == false)
+        #expect(speech.hasActiveSilenceTimer == false)
+        #expect(speech.hasActiveHoldReleaseTimer == false)
+        #expect(speech.draft.isEmpty)
+        #expect(speech.submittedCommandsCount == 0)
+        #expect(endAudioCallCount == 1)
+
+        // Late recognition callback from the cancelled session must not resurrect draft, timers, or submit.
+        firstEventHandler("把客厅灯关掉", true, false)
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(speech.draft.isEmpty)
+        #expect(speech.hasActiveSilenceTimer == false)
+        #expect(speech.silenceTimersScheduledCount == 1, "Zero new silence timers after turning off")
+        #expect(speech.recognitionTasksStartedCount == 1, "Zero new recognition tasks after turning off")
+        #expect(speech.audioTapsInstalledCount == 1, "Zero new audio taps after turning off")
+        #expect(speech.submittedCommandsCount == 0, "Zero command submissions after turning off")
+
+        // 2. Hold-to-talk recording with active hold-release flush timer.
+        store.enableVoiceInput = true
+        await speech.start(holdMode: true, store: store)
+        #expect(speech.isListening == true)
+        #expect(speech.isHoldToTalk == true)
+        #expect(speech.activeRecognitionTaskCount == 1)
+        #expect(speech.activeAudioTapCount == 1)
+        #expect(speech.isAudioEngineRunning == true)
+
+        let secondEventHandler = try #require(latestEventHandler)
+        secondEventHandler("关闭卧室空调", false, false)
+        #expect(await Self.waitUntilCondition { speech.draft == "关闭卧室空调" })
+        speech.finishHoldToTalk(store: store)
+        #expect(speech.hasActiveHoldReleaseTimer == true)
+        let holdTimersBeforeDisable = speech.holdReleaseTimersScheduledCount
+        let tasksBeforeDisable = speech.recognitionTasksStartedCount
+        let tapsBeforeDisable = speech.audioTapsInstalledCount
+
+        // Turn off voice input during the 320ms hold-release window.
+        store.enableVoiceInput = false
+        #expect(speech.isListening == false)
+        #expect(speech.isHoldToTalk == false)
+        #expect(speech.activeRecognitionTaskCount == 0)
+        #expect(speech.activeAudioTapCount == 0)
+        #expect(speech.isAudioEngineRunning == false)
+        #expect(speech.hasActiveHoldReleaseTimer == false)
+        #expect(speech.hasActiveSilenceTimer == false)
+
+        // Late final transcript arriving after disable must not submit or start anything.
+        secondEventHandler("关闭卧室空调", true, false)
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(speech.recognitionTasksStartedCount == tasksBeforeDisable)
+        #expect(speech.audioTapsInstalledCount == tapsBeforeDisable)
+        #expect(speech.holdReleaseTimersScheduledCount == holdTimersBeforeDisable)
+        #expect(speech.submittedCommandsCount == 0)
+    }
+
+    @Test("Turning off voice input while awaiting microphone or speech authorization prevents late grant from starting capture or submitting")
+    func disablingVoiceInputDuringPendingAuthorizationBlocksLateGrant() async throws {
+        let (store, suite) = try await makeStore()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+
+        let speech = SpeechInputController.shared
+        var micContinuation: CheckedContinuation<Bool, Never>?
+        var speechContinuation: CheckedContinuation<SFSpeechRecognizerAuthorizationStatus, Never>?
+        let mockRuntime = SpeechInputRuntime(
+            isPackagedApp: { true },
+            requestMicrophoneAccess: {
+                await withCheckedContinuation { cont in
+                    micContinuation = cont
+                }
+            },
+            requestSpeechAuthorization: {
+                await withCheckedContinuation { cont in
+                    speechContinuation = cont
+                }
+            },
+            isHoldInputPhysicallyActive: { true },
+            startCaptureSession: {
+                _,
+                onTapInstalled,
+                onTapRemoved,
+                onEngineStarted,
+                onEngineStopped,
+                onRecognitionTaskStarted,
+                onRecognitionTaskCancelled,
+                _ in
+                onTapInstalled()
+                onEngineStarted()
+                onRecognitionTaskStarted()
+                return SpeechCaptureSession(
+                    endAudio: {},
+                    cancelRecognitionTask: { onRecognitionTaskCancelled() },
+                    stopAudioEngine: { onEngineStopped() },
+                    removeAudioTap: { onTapRemoved() }
+                )
+            }
+        )
+        speech.resetMetricsAndRuntimeForTesting(runtime: mockRuntime)
+        defer {
+            micContinuation?.resume(returning: false)
+            speechContinuation?.resume(returning: .denied)
+            speech.resetMetricsAndRuntimeForTesting(runtime: .live)
+        }
+
+        // 1. Disable while waiting on microphone permission dialog.
+        let startTask1 = Task { @MainActor in
+            await speech.start(holdMode: false, store: store)
+        }
+        #expect(await Self.waitUntilCondition { micContinuation != nil })
+        #expect(speech.isStarting == true)
+        store.enableVoiceInput = false
+        #expect(speech.isStarting == false)
+
+        micContinuation?.resume(returning: true)
+        micContinuation = nil
+        await startTask1.value
+        #expect(speech.isListening == false)
+        #expect(speech.recognitionTasksStartedCount == 0)
+        #expect(speech.audioTapsInstalledCount == 0)
+        #expect(speech.activeAudioTapCount == 0)
+        #expect(speech.isAudioEngineRunning == false)
+        #expect(speech.silenceTimersScheduledCount == 0)
+        #expect(speech.holdReleaseTimersScheduledCount == 0)
+        #expect(speech.submittedCommandsCount == 0)
+
+        // 2. Re-enable, pass mic permission, then disable while waiting on speech recognition permission.
+        store.enableVoiceInput = true
+        let startTask2 = Task { @MainActor in
+            await speech.start(holdMode: true, store: store)
+        }
+        #expect(await Self.waitUntilCondition { micContinuation != nil })
+        micContinuation?.resume(returning: true)
+        micContinuation = nil
+        #expect(await Self.waitUntilCondition { speechContinuation != nil })
+        #expect(speech.isStarting == true)
+        store.enableVoiceInput = false
+        #expect(speech.isStarting == false)
+
+        speechContinuation?.resume(returning: .authorized)
+        speechContinuation = nil
+        await startTask2.value
+        #expect(speech.isListening == false)
+        #expect(speech.isHoldToTalk == false)
+        #expect(speech.recognitionTasksStartedCount == 0)
+        #expect(speech.audioTapsInstalledCount == 0)
+        #expect(speech.activeAudioTapCount == 0)
+        #expect(speech.isAudioEngineRunning == false)
+        #expect(speech.silenceTimersScheduledCount == 0)
+        #expect(speech.holdReleaseTimersScheduledCount == 0)
+        #expect(speech.submittedCommandsCount == 0)
+    }
+
+    @Test("Re-enabling voice input restores recording and command submission while typed commands remain unaffected")
+    func reenablingVoiceInputRestoresRecordingAndTypedCommandsStayWorking() async throws {
+        let (store, suite) = try await makeStore()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+
+        let speech = SpeechInputController.shared
+        var latestEventHandler: (@Sendable (String?, Bool, Bool) -> Void)?
+        let mockRuntime = SpeechInputRuntime(
+            isPackagedApp: { true },
+            requestMicrophoneAccess: { true },
+            requestSpeechAuthorization: { .authorized },
+            isHoldInputPhysicallyActive: { true },
+            startCaptureSession: {
+                _,
+                onTapInstalled,
+                onTapRemoved,
+                onEngineStarted,
+                onEngineStopped,
+                onRecognitionTaskStarted,
+                onRecognitionTaskCancelled,
+                onEvent in
+                onTapInstalled()
+                onEngineStarted()
+                onRecognitionTaskStarted()
+                latestEventHandler = onEvent
+                return SpeechCaptureSession(
+                    endAudio: {},
+                    cancelRecognitionTask: { onRecognitionTaskCancelled() },
+                    stopAudioEngine: { onEngineStopped() },
+                    removeAudioTap: { onTapRemoved() }
+                )
+            }
+        )
+        speech.resetMetricsAndRuntimeForTesting(runtime: mockRuntime)
+        speech.silenceAutoSubmitDelay = .milliseconds(30)
+        defer {
+            speech.resetMetricsAndRuntimeForTesting(runtime: .live)
+        }
+
+        // Typed command while voice input is disabled still executes normally.
+        store.enableVoiceInput = false
+        let searchState = PanelSearchState()
+        searchState.query = "把书房灯打开"
+        PanelSearchKeyboard.runCommand(searchState.query, store: store, state: searchState)
+        let typedCommandSucceeded = await Self.waitUntilCondition {
+            if case .done = store.assistantState { return true }
+            return false
+        }
+        #expect(typedCommandSucceeded == true)
+        #expect(speech.recognitionTasksStartedCount == 0)
+        #expect(speech.audioTapsInstalledCount == 0)
+
+        // Turn voice input back on and verify recording + silence auto-submit work end-to-end.
+        store.enableVoiceInput = true
+        await speech.start(holdMode: false, store: store)
+        #expect(speech.isListening == true)
+        #expect(speech.recognitionTasksStartedCount == 1)
+        #expect(speech.audioTapsInstalledCount == 1)
+        #expect(speech.activeAudioTapCount == 1)
+        #expect(speech.isAudioEngineRunning == true)
+
+        let eventHandler = try #require(latestEventHandler)
+        eventHandler("把客厅灯打开", false, false)
+        #expect(await Self.waitUntilCondition { speech.submittedCommandsCount == 1 })
+        #expect(speech.submittedCommandsCount == 1)
+        #expect(speech.submittedCommands == ["把客厅灯打开"])
+        #expect(speech.isListening == false)
+        #expect(speech.activeAudioTapCount == 0)
+        #expect(speech.activeRecognitionTaskCount == 0)
+        #expect(speech.isAudioEngineRunning == false)
+    }
+
+    private static func waitUntilCondition(_ predicate: () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !predicate() {
+            guard ContinuousClock.now < deadline else { return false }
+            await Task.yield()
+        }
+        return true
+    }
+
     private static func pumpMainRunLoop(_ seconds: TimeInterval = 0.05) {
         CFRunLoopRunInMode(.defaultMode, seconds, false)
     }
 }
 }
+
