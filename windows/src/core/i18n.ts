@@ -395,6 +395,8 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   // Settings sheet
   "偏好设置": ["偏好设置", "Preferences"],
   "设置分类": ["设置分类", "Settings categories"],
+  "常规": ["常规", "General"],
+  "家居连接": ["家居连接", "Connections"],
   "外观与面板": ["外观与面板", "General"],
   "数据源": ["数据源", "Sources"],
   "AI 与习惯": ["AI 与习惯", "AI & Habits"],
@@ -454,6 +456,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "深色": ["深色", "Dark"],
   "切换浅色模式": ["切换浅色模式", "Switch to light mode"],
   "切换深色模式": ["切换深色模式", "Switch to dark mode"],
+  "界面语言": ["界面语言", "Interface language"],
   "界面语言 / 语言": ["界面语言 / 语言", "Language"],
   "跟随系统": ["跟随系统", "System"],
   "简体中文": ["简体中文", "Simplified Chinese"],
