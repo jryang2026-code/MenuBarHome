@@ -14,6 +14,7 @@ struct CapabilityManifestTests {
         let docs = try JSONDecoder().decode(DocsCapabilities.self, from: loadRepoData("docs/capabilities.json"))
         let docIDs = Set(docs.rows.map(\.id))
 
+        #expect(CapabilityManifest.shared == manifest)
         #expect(manifest.schemaVersion == 1)
         #expect(manifest.entries.count == CapabilityID.allCases.count)
         #expect(manifest.entry(for: .feature(.cameraLive)).dependsOn == [.deviceCategory(.camera)])

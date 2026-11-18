@@ -225,6 +225,10 @@ public struct SynthesizedHome: Equatable, Sendable {
     public var homes: [HomeOption] = []
     /// Per-account connection status when merged across several Mi accounts.
     public var accountStatuses: [String: ConnectionStatus] = [:]
+    /// Accounts in `MiAccountsProvider` that have delivered a post-poll snapshot (`closesAwayGap`).
+    public var freshAccountIds: Set<String> = []
+    /// Monotonic configuration epoch stamped by `MiAccountsProvider` so `HomeStore` ignores buffered pre-rebuild snapshots.
+    public var miAccountsEpoch: Int?
     /// A Mi Cloud refresh emits the last values before the poll returns. That snapshot must not
     /// close the away gap, because the door may have opened while polling was paused.
     public var closesAwayGap: Bool = true

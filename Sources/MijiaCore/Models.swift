@@ -1351,8 +1351,8 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
 
     /// Underlying MIoT `did`s addressed by this card's entity IDs (differs from `id` on split-key
     /// devices whose card `id` is `<parentDid>.s<N>` while commands target `<parentDid>`).
-    var miotCommandDids: [String] {
-        let entityIds: [String?] = switch kind {
+    var referencedEntityIds: [String] {
+        let raw: [String?] = switch kind {
         case .light(let s): [s.entityId]
         case .climate(let s): [s.entityId]
         case .fan(let s): [s.entityId]
@@ -1360,12 +1360,9 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
         case .fridge(let s): [s.modeEntityId, s.fridgeTargetEntityId, s.freezerTargetEntityId]
         case .vacuum(let s): [s.entityId, s.modeEntityId]
         case .speaker(let s):
-            [
-                s.mediaEntityId, s.muteSwitchEntityId, s.sleepModeEntityId,
-                s.ttsNotifyEntityId, s.directiveNotifyEntityId,
-                s.playMusicButtonId, s.stopAlarmButtonId,
-            ]
-        case .tv(let s): [s.mediaEntityId]
+            [s.mediaEntityId, s.muteSwitchEntityId, s.sleepModeEntityId,
+             s.ttsNotifyEntityId, s.directiveNotifyEntityId, s.playMusicButtonId, s.stopAlarmButtonId]
+        case .tv(let s): [s.mediaEntityId, s.turnOnButtonId]
         case .camera(let s): [s.entityId, s.motionDetectionEntityId, s.streamEntityId]
         case .sensor: []
         case .cover(let s): [s.entityId]
@@ -1374,17 +1371,18 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
              s.light?.entityId, s.fanLevel?.entityId,
              s.startAction?.entityId, s.pauseAction?.entityId, s.stopAction?.entityId]
         case .generic(let s):
-            s.powerControl?.target.flatMap { target in
-                if case .property(let entityId, _) = target { return entityId }
-                return nil
-            }.map { [$0] } ?? []
+            switch s.powerControl?.target {
+            case .property(let id, _), .action(let id), .haProperty(let id), .haAction(let id): [id]
+            case nil: []
+            }
         case .humidifier(let s): [s.entityId]
         case .valve(let s): [s.entityId]
         }
-        return entityIds.compactMap { id in
-            guard let id else { return nil }
-            return MiotAddress.parseAction(id)?.did ?? MiotAddress.parse(id)?.did
-        }
+        return raw.compactMap { $0 }
+    }
+
+    var miotCommandDids: [String] {
+        referencedEntityIds.compactMap { MiotAddress.parse($0)?.did }
     }
 
     /// Whether this device represents a stateless momentary action button (e.g. Home Assistant `button.*` / Wake on LAN, #100).

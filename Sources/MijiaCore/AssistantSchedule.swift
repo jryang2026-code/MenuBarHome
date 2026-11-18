@@ -222,6 +222,39 @@ public struct ScheduledCommand: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
+/// Timers paused by capability/account deactivation. Stored under a separate key so older builds
+/// never accidentally arm paused timers on downgrade.
+public struct PausedScheduledCommand: Codable, Equatable, Sendable {
+    public static let storageKey = "assistant_paused_scheduled_commands_v1"
+
+    public var command: ScheduledCommand
+    public var originalPartition: TimerPartition
+    public var pausedCapabilities: [CapabilityID]
+
+    public init(command: ScheduledCommand, originalPartition: TimerPartition, pausedCapabilities: [CapabilityID]) {
+        self.command = command
+        self.originalPartition = originalPartition
+        self.pausedCapabilities = pausedCapabilities
+    }
+
+    public static func load(from defaults: UserDefaults) -> [PausedScheduledCommand] {
+        guard let data = defaults.data(forKey: storageKey),
+              let decoded = try? JSONDecoder().decode([PausedScheduledCommand].self, from: data) else {
+            return []
+        }
+        return decoded
+    }
+
+    public static func save(_ entries: [PausedScheduledCommand], to defaults: UserDefaults) {
+        if entries.isEmpty {
+            defaults.removeObject(forKey: storageKey)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(entries) else { return }
+        defaults.set(data, forKey: storageKey)
+    }
+}
+
 // MARK: - Spoken Undo ("撤销", "刚才那个撤销")
 
 public enum UndoPhrase {

@@ -83,10 +83,11 @@ final class URLCommandHandler {
         }
 
         guard let resolved = resolve(envelope.command, store: store) else {
-            let message = L10n.tr(
-                "链接里的设备或场景不存在，或尚未加载",
-                "The device or scene in the link is missing or not loaded yet"
-            )
+            let message = disabledAccountRejectionMessage(for: envelope.command, store: store)
+                ?? L10n.tr(
+                    "链接里的设备或场景不存在，或尚未加载",
+                    "The device or scene in the link is missing or not loaded yet"
+                )
             store.showToast(message, isError: true)
             store.recordRaycastCommandFeedback(
                 requestId: envelope.requestId,
@@ -205,6 +206,20 @@ final class URLCommandHandler {
     /// a different device whose name happens to match.
     private static func device(_ deviceId: String, in store: HomeStore) -> SmartDevice? {
         store.devices.first(where: { $0.id == deviceId })
+    }
+
+    private func disabledAccountRejectionMessage(for command: AppURLCommand, store: HomeStore) -> String? {
+        let targetId: String
+        switch command {
+        case .toggle(let id), .power(let id, _), .brightness(let id, _),
+             .colorTemp(let id, _), .temperature(let id, _), .fan(let id, _, _), .focus(let id):
+            targetId = id
+        case .scene, .ask:
+            return nil
+        }
+        let gate = store.evaluateDeviceControlGate(deviceId: targetId)
+        guard !gate.allowed, let reason = gate.rejectionReason, reason != .deviceNotFound else { return nil }
+        return reason.userMessage
     }
 
     private func description(for resolved: Resolved) -> String {

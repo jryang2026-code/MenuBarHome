@@ -681,6 +681,14 @@ extension HomeStore {
         ScheduledCommand.save(all.sorted { $0.fireDate < $1.fireDate }, to: userDefaults)
     }
 
+    func persistScheduledCommandsFromCapabilities() {
+        persistAllScheduledCommands()
+    }
+
+    func startScheduledTaskFromCapabilities(for entry: ScheduledCommand, delay: TimeInterval) {
+        startScheduledTask(for: entry, delay: delay)
+    }
+
     /// Re-partitions timers after the connected sources changed. Called from `startListening()`, where
     /// the new provider is already in place; re-arming from persisted data is the existing restore path.
     func syncScheduledCommandScopeIfNeeded() {
@@ -1112,6 +1120,10 @@ extension HomeStore {
     private func apply(_ intent: DeviceIntent, context: UUID) async -> AssistantApplyOutcome {
         guard context == controlContextID else { return .skipped }
         if intent.operation == .activateScene {
+            let gate = evaluateSceneControlGate(sceneId: intent.targetId)
+            if !gate.allowed {
+                return .failed(gate.rejectionReason?.userMessage ?? intent.targetId)
+            }
             guard let scene = scenes.first(where: { $0.id == intent.targetId }) else { return .skipped }
             do {
                 try await executeDeviceCommand(.activateScene(entityId: scene.entityId))
@@ -1122,6 +1134,13 @@ extension HomeStore {
             }
         }
 
+        if let indexed = indexedDevicesById[intent.targetId],
+           indexed.connection != nil || !capabilitySelection.enabledCategories.contains(indexed.category) {
+            let gate = evaluateDeviceControlGate(deviceId: intent.targetId)
+            if !gate.allowed {
+                return .failed(gate.rejectionReason?.userMessage ?? indexed.name)
+            }
+        }
         guard let previous = devices.first(where: { $0.id == intent.targetId }) else { return .skipped }
         guard previous.isOnline else { return .offline(previous.name) }
         // Appliance cards are not assistant-controllable in this cut. Their `.power` effect exists

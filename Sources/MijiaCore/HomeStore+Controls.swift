@@ -59,6 +59,7 @@ extension HomeStore {
 
     @discardableResult
     public func togglePrimary(_ device: SmartDevice, offersSwitchLightMark: Bool = true) -> Task<Bool, Never>? {
+        if rejectDeviceWriteIfCapabilityDisabled(deviceId: device.id) != nil { return nil }
         // A tap on an LG TV is answered over the LAN, so the expired Mi session does not refuse it.
         guard !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(device)) else { return nil }
         guard device.isOnline else {
@@ -1730,6 +1731,7 @@ extension HomeStore {
 
     @discardableResult
     public func sendSpeakerText(_ deviceId: String, text: String, asDirective: Bool) -> Bool {
+        if rejectDeviceWriteIfCapabilityDisabled(deviceId: deviceId) != nil { return false }
         guard !rejectWritesBlockedByMiSession() else { return false }
         guard !rejectControlWhileLocked() else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1818,6 +1820,7 @@ extension HomeStore {
     }
 
     public func openCameraLiveView(_ deviceId: String) {
+        if rejectDeviceWriteIfCapabilityDisabled(deviceId: deviceId) != nil { return }
         guard let device = devices.first(where: { $0.id == deviceId }),
               case .camera = device.kind else { return }
         guard device.isOnline else {
@@ -1864,6 +1867,13 @@ extension HomeStore {
     }
 
     public func resolveCameraStream(for deviceId: String, channel: Int = 0) async throws -> CameraStreamSource {
+        if let indexed = indexedDevicesById[deviceId],
+           indexed.connection != nil || !capabilitySelection.enabledCategories.contains(indexed.category) {
+            let gate = evaluateDeviceControlGate(deviceId: deviceId)
+            if !gate.allowed, let reason = gate.rejectionReason {
+                throw CapabilityControlBlockedError(reason: reason)
+            }
+        }
         guard let device = devices.first(where: { $0.id == deviceId }),
               case .camera = device.kind else {
             throw HomeProviderError.serviceCallFailed(400, L10n.tr("未找到该摄像头设备", "Camera device not found"))

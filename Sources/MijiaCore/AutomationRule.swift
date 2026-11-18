@@ -661,6 +661,7 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
     /// AND-ed with the trigger. Older rules decode with no conditions and behave exactly as before.
     public var conditions: AutomationConditions
     public var highRiskApproved: Bool
+    public var pausedCapabilities: [CapabilityID]
 
     public init(
         id: UUID = UUID(),
@@ -669,7 +670,8 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         isEnabled: Bool = true,
         triggerOptions: AutomationTriggerOptions = AutomationTriggerOptions(),
         conditions: AutomationConditions = AutomationConditions(),
-        highRiskApproved: Bool = false
+        highRiskApproved: Bool = false,
+        pausedCapabilities: [CapabilityID] = []
     ) {
         self.id = id
         self.trigger = trigger
@@ -678,6 +680,7 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         self.triggerOptions = triggerOptions
         self.conditions = conditions
         self.highRiskApproved = highRiskApproved
+        self.pausedCapabilities = pausedCapabilities
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -688,6 +691,7 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         case triggerOptions
         case conditions
         case highRiskApproved
+        case pausedCapabilities
     }
 
     public init(from decoder: any Decoder) throws {
@@ -702,6 +706,7 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         conditions = try container.decodeIfPresent(AutomationConditions.self, forKey: .conditions)
             ?? AutomationConditions()
         highRiskApproved = try container.decodeIfPresent(Bool.self, forKey: .highRiskApproved) ?? false
+        pausedCapabilities = try container.decodeIfPresent([CapabilityID].self, forKey: .pausedCapabilities) ?? []
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -713,6 +718,9 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         try container.encode(triggerOptions, forKey: .triggerOptions)
         try container.encode(conditions, forKey: .conditions)
         try container.encode(highRiskApproved, forKey: .highRiskApproved)
+        if !pausedCapabilities.isEmpty {
+            try container.encode(pausedCapabilities, forKey: .pausedCapabilities)
+        }
     }
 
     public func highRiskConfirmation(devices: [SmartDevice]) -> ManualControlConfirmation? {

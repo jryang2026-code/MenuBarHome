@@ -1533,6 +1533,33 @@ struct SnapshotTests {
         }
     }
 
+    @Test("Connection settings render the turned-off state and Enable Connection button when Xiaomi Home is disabled")
+    func settingsConnectionDisabledMiAccountSnapshots() async throws {
+        let fixture = try await SnapshotFixture(
+            miSession: MiSession(
+                userId: "45123481",
+                cUserId: "c",
+                ssecurity: Data(repeating: 7, count: 16).base64EncodedString(),
+                serviceToken: "tok"
+            ),
+            configuredHASource: false
+        )
+        defer { fixture.restore() }
+        let accountId = try #require(fixture.store.miAccounts.first?.id)
+        fixture.store.setMiAccountEnabled(false, id: accountId)
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                SettingsWindowView(store: fixture.store, selectedTab: .connection)
+                    .environment(\.colorScheme, scheme)
+                    .environment(\.reduceMotionOverride, true)
+                    .environment(\.reduceTransparencyOverride, true),
+                size: CGSize(width: 780, height: 680),
+                named: "settings-connection-disabled-mi-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
     @Test("Settings search suggestions remain readable in both appearances")
     func settingsSearchSuggestions() async throws {
         for scheme in [ColorScheme.light, .dark] {
