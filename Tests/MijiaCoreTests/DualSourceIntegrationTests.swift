@@ -113,6 +113,14 @@ struct DualSourceIntegrationTests {
         #expect(haCommands.contains { $0.targetEntityId == "light.living_ceiling" })
 
         await haMock.sendStatus(.disconnected("LAN unreachable"))
+        // The fallback grace (#25) holds the HA route through a brief blip; the outage that
+        // outlasts the window adopts the Mi Cloud handoff. The drop must be observed before the
+        // seam rewinds it, or the seam races the still-in-flight status event.
+        await waitUntil {
+            if case .disconnected = store.sourceStatuses[.homeAssistant] ?? .connecting { return true }
+            return false
+        }
+        await (store.provider as? DualSourceHomeProvider)?.expireFallbackGraceForTesting()
         await waitUntil {
             store.devices.count == 1 && store.deviceBackend(for: canonical) == .xiaomiCloud
         }
@@ -440,6 +448,11 @@ struct DualSourceIntegrationTests {
         // HA disconnects before the user taps Undo; the card falls back to Mi Cloud (`miot:...`).
         await haMock.sendStatus(.disconnected("HA down"))
         await waitUntil {
+            if case .disconnected = store.sourceStatuses[.homeAssistant] ?? .connecting { return true }
+            return false
+        }
+        await (store.provider as? DualSourceHomeProvider)?.expireFallbackGraceForTesting()
+        await waitUntil {
             store.deviceBackend(for: canonical) == .xiaomiCloud
         }
 
@@ -514,6 +527,11 @@ struct DualSourceIntegrationTests {
         store.setLightBrightness(canonical, percent: 45)
         let debouncedTask = try #require(store.debounceTasks["\(canonical).brightness"])
         await haMock.sendStatus(.disconnected("HA down"))
+        await waitUntil {
+            if case .disconnected = store.sourceStatuses[.homeAssistant] ?? .connecting { return true }
+            return false
+        }
+        await (store.provider as? DualSourceHomeProvider)?.expireFallbackGraceForTesting()
         await waitUntil {
             store.deviceBackend(for: canonical) == .xiaomiCloud
         }
@@ -772,6 +790,13 @@ struct DualSourceIntegrationTests {
         #expect(store.favoriteDeviceIds.contains(unpairedMiDid))
 
         await miMock.sendStatus(.disconnected("HTTP 429 Too Many Requests"))
+        // Within the fallback grace (#25) the kettle keeps its last known fresh state; once the
+        // drop outlasts the window it is retained as offline+stale rather than dropped.
+        await waitUntil {
+            if case .disconnected = store.sourceStatuses[.xiaomiCloud] ?? .connecting { return true }
+            return false
+        }
+        await (store.provider as? DualSourceHomeProvider)?.expireFallbackGraceForTesting()
         await waitUntil {
             guard store.connectedBackends == Set([.homeAssistant]),
                   let kettle = store.devices.first(where: { $0.id == unpairedMiDid }) else { return false }

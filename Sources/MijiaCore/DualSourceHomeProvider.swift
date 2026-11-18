@@ -5,11 +5,19 @@ import Foundation
 public actor DualSourceHomeProvider: HomeProvider {
     public typealias CanonicalIDPersistence = @Sendable ([String: String]) -> Void
 
+    /// How long a configured source that just dropped stays trusted for routing after its last
+    /// snapshot (#25). A Wi-Fi roam, a wake-from-sleep reconnect or a websocket blip resolves in
+    /// seconds; within this window the paired cards keep their winning source and an active live
+    /// camera keeps playing, so neither flips back and forth. A real outage outlasts it and the
+    /// ordinary online-first fallback takes over, closing the dead source's stream explicitly.
+    public static let sourceFallbackGrace: TimeInterval = 15
+
     private var homeAssistant: (any HomeProvider)?
     private var xiaomiCloud: (any HomeProvider)?
     private let knownPreferenceIDs: @Sendable () -> Set<String>
     private let pinnedBackends: @Sendable () -> [String: HomeBackend]
     private let persistCanonicalIDs: CanonicalIDPersistence
+    private let nowProvider: @Sendable () -> Date
 
     private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
     private var haTask: Task<Void, Never>?
@@ -20,6 +28,11 @@ public actor DualSourceHomeProvider: HomeProvider {
 
     private var haStatus: ConnectionStatus = .connecting
     private var miStatus: ConnectionStatus = .connecting
+    /// When each source last dropped while holding a snapshot, for the fallback grace (#25).
+    private var haOfflineSince: Date?
+    private var miOfflineSince: Date?
+    /// Re-schedules a recompute for the moment a deferred fallback would take over (#25).
+    private var fallbackRecheckTask: Task<Void, Never>?
     private var haSnapshot: SynthesizedHome?
     private var miSnapshot: SynthesizedHome?
     private var haLocalNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
@@ -71,7 +84,8 @@ public actor DualSourceHomeProvider: HomeProvider {
         initialCanonicalIDs: [String: String] = [:],
         knownPreferenceIDs: @escaping @Sendable () -> Set<String> = { [] },
         pinnedBackends: @escaping @Sendable () -> [String: HomeBackend] = { [:] },
-        persistCanonicalIDs: @escaping CanonicalIDPersistence = { _ in }
+        persistCanonicalIDs: @escaping CanonicalIDPersistence = { _ in },
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.homeAssistant = homeAssistant
         self.xiaomiCloud = xiaomiCloud
@@ -79,6 +93,7 @@ public actor DualSourceHomeProvider: HomeProvider {
         self.knownPreferenceIDs = knownPreferenceIDs
         self.pinnedBackends = pinnedBackends
         self.persistCanonicalIDs = persistCanonicalIDs
+        self.nowProvider = now
     }
 
     public nonisolated func events() -> AsyncStream<HomeProviderEvent> {
@@ -140,10 +155,12 @@ public actor DualSourceHomeProvider: HomeProvider {
         if backend == .homeAssistant, homeAssistant != nil {
             haSnapshot = nil
             haStatus = .connecting
+            haOfflineSince = nil
             haLocalNetworkBlocks = []
         } else if backend == .xiaomiCloud, xiaomiCloud != nil {
             miSnapshot = nil
             miStatus = .connecting
+            miOfflineSince = nil
             miLocalNetworkBlocks = []
         } else {
             return
@@ -168,6 +185,7 @@ public actor DualSourceHomeProvider: HomeProvider {
             homeAssistant = next
             haSnapshot = nil
             haStatus = .connecting
+            haOfflineSince = nil
             haLocalNetworkBlocks = []
         } else {
             miTask?.cancel()
@@ -176,6 +194,7 @@ public actor DualSourceHomeProvider: HomeProvider {
             xiaomiCloud = next
             miSnapshot = nil
             miStatus = .connecting
+            miOfflineSince = nil
             miLocalNetworkBlocks = []
         }
         await previous?.shutdown()
@@ -199,9 +218,11 @@ public actor DualSourceHomeProvider: HomeProvider {
         switch event {
         case .statusChanged(let status):
             if backend == .homeAssistant {
+                recordStatusTransition(status, previous: haStatus, offlineSince: &haOfflineSince)
                 haStatus = status
                 if case .connected = status { haLocalNetworkBlocks.remove(.homeAssistant) }
             } else if backend == .xiaomiCloud {
+                recordStatusTransition(status, previous: miStatus, offlineSince: &miOfflineSince)
                 miStatus = status
             }
             emitStatus()
@@ -242,10 +263,12 @@ public actor DualSourceHomeProvider: HomeProvider {
         case .snapshotUpdated(let home):
             if backend == .homeAssistant {
                 haStatus = .connected
+                haOfflineSince = nil
                 haSnapshot = home
                 haLocalNetworkBlocks = home.localNetworkBlockedFeatures
             } else if backend == .xiaomiCloud {
                 miStatus = .connected
+                miOfflineSince = nil
                 miSnapshot = home
                 miLocalNetworkBlocks = home.localNetworkBlockedFeatures
             }
@@ -259,14 +282,80 @@ public actor DualSourceHomeProvider: HomeProvider {
         guard !isShutDown else { return }
         if backend == .homeAssistant {
             guard homeAssistant != nil else { return }
+            recordStatusTransition(.disconnected(""), previous: haStatus, offlineSince: &haOfflineSince)
             haStatus = .disconnected("")
         } else if backend == .xiaomiCloud {
             guard xiaomiCloud != nil else { return }
+            recordStatusTransition(.disconnected(""), previous: miStatus, offlineSince: &miOfflineSince)
             miStatus = .disconnected("")
         }
         emitStatus()
         emitSourceStatuses()
         recompute()
+    }
+
+    /// Marks when a source that still holds a snapshot dropped, so the fallback grace (#25) can
+    /// keep its cards routed until the drop proves persistent.
+    private func recordStatusTransition(
+        _ next: ConnectionStatus,
+        previous: ConnectionStatus,
+        offlineSince: inout Date?
+    ) {
+        if next.isConnected {
+            offlineSince = nil
+        } else if previous.isConnected {
+            offlineSince = nowProvider()
+        }
+    }
+
+    /// Test seam (#25): rewinds the recorded drop timestamps past the grace window and re-merges,
+    /// so store-level tests reach the post-grace fallback deterministically without waiting the
+    /// window out in wall-clock time.
+    public func expireFallbackGraceForTesting() {
+        if let since = haOfflineSince {
+            haOfflineSince = since.addingTimeInterval(-(Self.sourceFallbackGrace + 1))
+        }
+        if let since = miOfflineSince {
+            miOfflineSince = since.addingTimeInterval(-(Self.sourceFallbackGrace + 1))
+        }
+        recompute()
+    }
+
+    /// A dropped source stays trusted while its last snapshot is this fresh (#25). The status bar
+    /// keeps showing the real state; only routing holds.
+    private static func effectiveConnected(
+        actual: Bool,
+        snapshot: SynthesizedHome?,
+        offlineSince: Date?,
+        now: Date
+    ) -> Bool {
+        if actual { return true }
+        guard let snapshot, !snapshot.devices.isEmpty, let offlineSince else { return false }
+        return now.timeIntervalSince(offlineSince) < sourceFallbackGrace
+    }
+
+    /// Schedules the recompute that adopts the fallback once a deferred grace expires, so a silent
+    /// line (no further events) still hands the cards to the surviving source (#25).
+    private func scheduleFallbackRecheckIfNeeded(now: Date) {
+        fallbackRecheckTask?.cancel()
+        guard let deadline = earliestPendingFallbackDeadline(after: now) else { return }
+        fallbackRecheckTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(0.1, now.distance(to: deadline))))
+            await self?.recompute()
+        }
+    }
+
+    private func earliestPendingFallbackDeadline(after now: Date) -> Date? {
+        var deadline: Date?
+        if homeAssistant != nil, !haStatus.isConnected, let since = haOfflineSince {
+            let expiry = since.addingTimeInterval(Self.sourceFallbackGrace)
+            if expiry > now { deadline = deadline.map { min($0, expiry) } ?? expiry }
+        }
+        if xiaomiCloud != nil, !miStatus.isConnected, let since = miOfflineSince {
+            let expiry = since.addingTimeInterval(Self.sourceFallbackGrace)
+            if expiry > now { deadline = deadline.map { min($0, expiry) } ?? expiry }
+        }
+        return deadline
     }
 
     /// True when the other backend already reported a press for this card within the dedupe
@@ -408,16 +497,33 @@ public actor DualSourceHomeProvider: HomeProvider {
     private func recompute(allowEmpty: Bool = false) {
         guard !isShutDown else { return }
         guard allowEmpty || haSnapshot != nil || miSnapshot != nil else { return }
+        let now = nowProvider()
+        // Hysteresis (#25): a source that just dropped keeps routing its cards for the grace
+        // window, so a brief blip neither flips paired cards nor kills a live camera view. The
+        // deadline task re-merges when the window lapses, even if no further event arrives.
+        let haGraceConnected = Self.effectiveConnected(
+            actual: haStatus.isConnected,
+            snapshot: haSnapshot,
+            offlineSince: haOfflineSince,
+            now: now
+        )
+        let miGraceConnected = Self.effectiveConnected(
+            actual: miStatus.isConnected,
+            snapshot: miSnapshot,
+            offlineSince: miOfflineSince,
+            now: now
+        )
         let result = DeviceDeduplicator.merge(
             homeAssistant: haSnapshot,
             xiaomiCloud: miSnapshot,
-            haConnected: haStatus.isConnected,
-            miConnected: miStatus.isConnected,
+            haConnected: haGraceConnected,
+            miConnected: miGraceConnected,
             canonical: canonical,
             rooms: rooms,
             knownPreferenceIDs: knownPreferenceIDs(),
             pinnedBackends: pinnedBackends()
         )
+        scheduleFallbackRecheckIfNeeded(now: now)
         if result.canonical != canonical {
             canonical = result.canonical
             persistCanonicalIDs(result.canonical.assignments)
@@ -680,6 +786,8 @@ public actor DualSourceHomeProvider: HomeProvider {
         haTask = nil
         miTask?.cancel()
         miTask = nil
+        fallbackRecheckTask?.cancel()
+        fallbackRecheckTask = nil
         continuation?.finish()
         continuation = nil
         let ha = homeAssistant
