@@ -50,6 +50,23 @@ extension HomeStore {
         return presentManualControlConfirmation(prompt, for: device)
     }
 
+    /// Gate for a cover position move whose start the device never reported. The direction is
+    /// unknown, so the opening/closing copy would be wrong; the write still needs a second answer
+    /// on the subtypes whose hazard table guards movement.
+    func allowUnknownStartCoverControl(for device: SmartDevice) -> Bool {
+        let prompt = ManualControlConfirmation(
+            title: L10n.tr("确认操作高风险设备？", "Control a high-risk device?"),
+            message: L10n.format(
+                "「%@」的位置回报缺失，任何位置调整都需要再次确认。",
+                "\"%@\" reported no position, so any position change needs confirmation.",
+                device.name
+            ),
+            confirmTitle: L10n.tr("确认执行", "Confirm"),
+            cancelTitle: L10n.tr("取消", "Cancel")
+        )
+        return presentManualControlConfirmation(prompt, for: device)
+    }
+
     private func presentManualControlConfirmation(_ prompt: ManualControlConfirmation, for device: SmartDevice) -> Bool {
         guard let handler = manualControlConfirmationHandler, handler(prompt) else {
             showToast(

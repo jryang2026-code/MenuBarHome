@@ -359,6 +359,50 @@ struct CoverDragTakeoverTests {
         #expect(sent.last == .setNumberValue(entityId: "cover.opener", value: 30))
     }
 
+    @Test("A re-based cover without a reported position keeps the new direction")
+    @MainActor
+    func rebasedCoverWithoutReportedPositionKeepsDirection() async throws {
+        // A Home Assistant cover publishes only `positionPercent`; `reportedPositionPercent` stays
+        // nil. The pending patch must still follow the report that re-bases it.
+        let curtain = Self.cover(
+            id: "ha_curtain", name: "客厅窗帘", subtype: .curtain, position: 50, reported: nil
+        )
+        let (store, mock, gate) = try await makeStore([curtain])
+
+        store.setCoverPosition(curtain.id, percent: 20)
+        await waitUntil { gate.waiting == 1 }
+        #expect(store.devices.first?.coverSpec?.motion == .closing)
+
+        // The motor stopped at 15%, so the pending 20% is now an opening.
+        let beforeReport = store.snapshotGeneration
+        await mock.updateSnapshot(SynthesizedHome(devices: [
+            Self.cover(id: "ha_curtain", name: "客厅窗帘", subtype: .curtain, position: 15)
+        ]))
+        await waitUntil { store.snapshotGeneration > beforeReport }
+        let held = try #require(store.devices.first?.coverSpec)
+        #expect(held.positionPercent == 20)
+        #expect(held.motion == .opening, "the displayed direction follows the re-based start")
+
+        let exits = store.manualWriteExits
+        gate.release()
+        await waitUntil { store.manualWriteExits > exits }
+        let lastCommand = await mock.executedCommands.last
+        #expect(lastCommand == .setNumberValue(entityId: "cover.ha_curtain", value: 20))
+
+        // An intermediate opening report is below the pending target, so it cannot settle the card.
+        let beforeTravel = store.snapshotGeneration
+        await mock.updateSnapshot(SynthesizedHome(devices: [
+            Self.cover(
+                id: "ha_curtain", name: "客厅窗帘", subtype: .curtain,
+                position: 16, motion: .opening
+            )
+        ]))
+        await waitUntil { store.snapshotGeneration > beforeTravel }
+        let travelling = try #require(store.devices.first?.coverSpec)
+        #expect(travelling.positionPercent == 20, "the card keeps the target until the motor reaches it")
+        #expect(travelling.motion == .opening)
+    }
+
     @Test("A missing position report cannot turn the optimistic target into the drag's start")
     @MainActor
     func missingReportFailsClosedForHazardousCover() async throws {
@@ -408,13 +452,19 @@ struct CoverDragTakeoverTests {
         )
         let (store, mock, _) = try await makeStore([garage])
         var prompts = 0
-        store.manualControlConfirmationHandler = { _ in
+        var promptMessage: String?
+        store.manualControlConfirmationHandler = { prompt in
             prompts += 1
+            promptMessage = prompt.message
             return false
         }
 
         store.setCoverPosition(garage.id, percent: 60)
         #expect(prompts == 1, "a garage door needs an answer in either direction")
+        #expect(
+            promptMessage?.contains("位置回报缺失") == true,
+            "an unknown start gets the direction-free copy, not the opening prompt"
+        )
         #expect(await mock.executedCommands.isEmpty)
         #expect(store.devices.first?.coverSpec?.positionPercent == nil)
     }

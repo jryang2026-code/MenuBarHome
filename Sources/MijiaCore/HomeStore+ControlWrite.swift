@@ -88,12 +88,33 @@ private enum ManualWriteSendDecision {
     case needsCoverConfirmation
 }
 
+/// The direction a hazardous cover drag was approved for. `unknownStart` covers a write whose start
+/// position the device never reported: the answer covers the write, but it is not an opening answer.
+enum CoverDragApproval: Sendable, Equatable {
+    case opening
+    case closing
+    case unknownStart
+}
+
 /// What a debounced cover position patch will command and the hazard answer that covers it.
-struct CoverDragPlan: Sendable {
+///
+/// A reference type because the pending patch's start is re-based by a device report: the patch's
+/// display closure and the session must read the same current value. It is only touched on the
+/// main actor (`HomeStore` and its patch `apply` closures), so the unchecked `Sendable` is safe.
+final class CoverDragPlan: @unchecked Sendable {
     /// The value the command sends, before display snapping.
     let target: Int
-    /// The direction the user approved (`true` opens), or nil when the drag needed no prompt.
-    let approvedOpens: Bool?
+    /// The direction the user approved, or nil when the drag needed no prompt.
+    let approval: CoverDragApproval?
+    /// The device-reported start, or nil while the report carries none. Updated when a re-base
+    /// changes the row the patch lands on, so the displayed motion never keeps a stale direction.
+    var startPosition: Int?
+
+    init(target: Int, approval: CoverDragApproval?, startPosition: Int?) {
+        self.target = target
+        self.approval = approval
+        self.startPosition = startPosition
+    }
 }
 
 extension HomeStore {
@@ -524,6 +545,13 @@ extension HomeStore {
             nextBase = incoming
         }
         session.base = nextBase
+        // A pending drag starts from the latest raw report, even when a lock hides it on the row.
+        // Home Assistant covers carry their position only in `positionPercent`, so the cache (set
+        // from the incoming snapshot) is what keeps the displayed direction current after a re-base.
+        let rawStart = lastCoverPositions[incoming.id]
+        for idx in session.patches.indices where session.patches[idx].phase == .debouncing {
+            session.patches[idx].coverDrag?.startPosition = rawStart
+        }
         manualWriteSessions[incoming.id] = session
         var composed = nextBase
         for patch in session.patches {
@@ -551,18 +579,23 @@ extension HomeStore {
 
     /// The final gate for a hazardous cover drag: the command's direction from `startPosition` must
     /// be one the drag's answer covers. A direction the hazard table treats as safe sends without a
-    /// prompt. Fails closed when the row is not a cover, since no cover plan should reach another
-    /// kind.
+    /// prompt. A missing start position is unknown, so it requires the dedicated unknown answer
+    /// instead of borrowing a direction. Fails closed when the row is not a cover, since no cover
+    /// plan should reach another kind.
     static func coverDragMaySend(
         _ plan: CoverDragPlan,
         from start: SmartDevice,
         startPosition: Int?
     ) -> Bool {
         guard case .cover = start.kind else { return false }
+        guard let startPosition else {
+            guard ManualControlPolicy.requiresConfirmation(.power(true), for: start) else { return true }
+            return plan.approval == .unknownStart
+        }
         let opens = coverDragDirection(from: startPosition, to: plan.target)
         guard let opens else { return true }
         guard ManualControlPolicy.requiresConfirmation(.power(opens), for: start) else { return true }
-        return plan.approvedOpens == opens
+        return plan.approval == (opens ? .opening : .closing)
     }
 
     /// The device's own report confirms the travel a sent cover command started (#298), so the
@@ -614,6 +647,10 @@ extension HomeStore {
         session.baseCoverOrigin = nil
         session.baseFieldLocks = session.baseFieldLocks.filter { field, _ in
             field != .coverPosition
+        }
+        let rawStart = lastCoverPositions[deviceId]
+        for idx in session.patches.indices {
+            session.patches[idx].coverDrag?.startPosition = rawStart
         }
         manualWriteSessions[deviceId] = session
         syncManualSessionFieldLocks(

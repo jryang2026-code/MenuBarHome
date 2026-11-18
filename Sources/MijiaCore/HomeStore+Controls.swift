@@ -856,7 +856,10 @@ extension HomeStore {
         // reported position has no travel of its own, but a pending/in-flight command may still be
         // heading elsewhere; reversing it is a hazard decision on its own (#223), so the prompt
         // falls back to the displayed target. The send gate only trusts the reported direction.
-        let travelDirection = Self.coverDragDirection(from: startPosition, to: clamped)
+        let startIsUnknown = startPosition == nil
+        let travelDirection = startIsUnknown
+            ? true
+            : Self.coverDragDirection(from: startPosition, to: clamped)
         let displayDirection = Self.coverDragDirection(from: s.positionPercent, to: clamped)
         let promptDirection = travelDirection ?? displayDirection
         let confirmedDrag = promptDirection.map {
@@ -865,12 +868,29 @@ extension HomeStore {
         var answeredPrompt = false
         if let promptDirection, !confirmedDrag,
            ManualControlPolicy.requiresConfirmation(.power(promptDirection), for: previous) {
-            guard allowManualControl(.power(promptDirection), for: previous) else { return }
+            if startIsUnknown {
+                guard allowUnknownStartCoverControl(for: previous) else { return }
+            } else {
+                guard allowManualControl(.power(promptDirection), for: previous) else { return }
+            }
             answeredPrompt = true
+        }
+        let approval: CoverDragApproval?
+        if startIsUnknown {
+            // The answer covers a write from an unknown position; it is not an opening approval.
+            approval = (answeredPrompt || confirmedDrag)
+                && ManualControlPolicy.requiresConfirmation(.power(true), for: previous)
+                ? .unknownStart
+                : nil
+        } else if let travelDirection, answeredPrompt || confirmedDrag {
+            approval = travelDirection ? .opening : .closing
+        } else {
+            approval = nil
         }
         let coverDrag = CoverDragPlan(
             target: clamped,
-            approvedOpens: (answeredPrompt || confirmedDrag) ? travelDirection : nil
+            approval: approval,
+            startPosition: startPosition
         )
         let origin = activeCoverOrigin(for: deviceId, fallback: startPosition)
         if let baselineCover {
@@ -906,9 +926,10 @@ extension HomeStore {
                 // drag (50 -> 20 becomes 15 -> 20 when the first command stops at 15), and a
                 // moving cover shows its commanded target while the motor is elsewhere. A captured
                 // direction, or the composed row's optimistic position, would then confirm travel
-                // the wrong way in `coverTravelTakesOver`. When both are missing the start stays
-                // unknown and no direction is invented.
-                let start = spec.reportedPositionPercent ?? startPosition
+                // the wrong way in `coverTravelTakesOver`. The plan's start is refreshed by every
+                // report, including Home Assistant covers that never publish a reported position;
+                // when it is nil the start stays unknown and no direction is invented.
+                let start = spec.reportedPositionPercent ?? coverDrag.startPosition
                 spec.positionPercent = displayed
                 if let start {
                     if displayed > start {
