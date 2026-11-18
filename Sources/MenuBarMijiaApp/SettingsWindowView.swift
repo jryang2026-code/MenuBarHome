@@ -552,6 +552,23 @@ private struct GeneralSettingsTab: View {
                 .settingsRow(anchor: .grokBall)
 
                 SettingsToggleRow(
+                    title: L10n.tr("语音输入", "Voice Input"),
+                    isOn: Binding(
+                        get: { store.enableVoiceInput },
+                        set: { store.enableVoiceInput = $0 }
+                    )
+                )
+                .settingsRow(anchor: .voiceInput)
+
+                Text(L10n.tr(
+                    "开启后，面板顶部显示麦克风按钮，也能按 V 或长按菜单栏图标、全局快捷键说话。关闭后隐藏麦克风按钮，也不会启动语音识别。",
+                    "When on, the panel shows the microphone button and lets you speak by pressing V or holding the menu bar icon or global shortcut. When off, the microphone button is hidden and voice recognition never starts."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+                SettingsToggleRow(
                     title: L10n.tr("操作声音反馈", "Play Feedback Sounds"),
                     isOn: $soundFeedbackEnabled
                 )
@@ -648,10 +665,15 @@ private struct GeneralSettingsTab: View {
 
             SettingsSection(title: L10n.tr("全局快捷键", "Global Shortcut"), anchor: .globalHotkey) {
                 SettingsToggleRow(
-                    title: L10n.tr(
-                        "启用全局快捷键 \(hotkey.shortcut.displayString)（短按面板，长按语音）",
-                        "Global shortcut \(hotkey.shortcut.displayString) (tap for dashboard, hold to speak)"
-                    ),
+                    title: store.enableVoiceInput
+                        ? L10n.tr(
+                            "启用全局快捷键 \(hotkey.shortcut.displayString)（短按面板，长按语音）",
+                            "Global shortcut \(hotkey.shortcut.displayString) (tap for dashboard, hold to speak)"
+                        )
+                        : L10n.tr(
+                            "启用全局快捷键 \(hotkey.shortcut.displayString)（打开/收起面板）",
+                            "Global shortcut \(hotkey.shortcut.displayString) (open or close dashboard)"
+                        ),
                     isOn: Binding(
                         get: { store.enableGlobalHotkey },
                         set: { store.enableGlobalHotkey = $0 }

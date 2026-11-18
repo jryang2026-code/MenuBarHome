@@ -21,6 +21,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case hideGroupedLights
     case quickScenesBar
     case grokBall
+    case voiceInput
     case soundFeedback
     case launchAtLogin
     case advancedDeviceWrites
@@ -78,11 +79,11 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     var tab: SettingsTab {
         switch self {
         case .language, .temperatureUnit, .dashboardTitle, .menuBarReadout, .compactGrid,
-             .hideOfflineDevices, .hideGroupedLights, .quickScenesBar, .grokBall, .soundFeedback,
-             .launchAtLogin, .advancedDeviceWrites, .globalHotkey, .safetyAlerts, .sensorAlerts,
-             .alertsOnlyWhenAway, .doorbellAutoView, .doorbellChime, .doorbellAutoCloseSeconds,
-             .weeklyReport, .notificationPermission, .hiddenDevices, .setupGuide,
-             .automationRules, .allowURLControl, .raycast, .energyHistory:
+             .hideOfflineDevices, .hideGroupedLights, .quickScenesBar, .grokBall, .voiceInput,
+             .soundFeedback, .launchAtLogin, .advancedDeviceWrites, .globalHotkey, .safetyAlerts,
+             .sensorAlerts, .alertsOnlyWhenAway, .doorbellAutoView, .doorbellChime,
+             .doorbellAutoCloseSeconds, .weeklyReport, .notificationPermission, .hiddenDevices,
+             .setupGuide, .automationRules, .allowURLControl, .raycast, .energyHistory:
             return .general
         case .demoMode, .haServerAddress, .haToken, .haDiscovery, .miAccount, .lgTV:
             return .connection
@@ -270,6 +271,9 @@ enum SettingsSearch {
             entry(.quickScenesBar, section: generalSection,
                   zhTitle: "输入框里显示快捷场景", enTitle: "Show Scenes Under the Input",
                   synonyms: ["快捷场景", "场景栏", "输入框", "quick action", "scene bar", "shortcut"]),
+            entry(.voiceInput, section: generalSection, zhTitle: "语音输入", enTitle: "Voice Input",
+                  synonyms: ["语音", "麦克风", "说话", "听写", "长按说话", "录音", "voice", "mic",
+                             "microphone", "speech", "dictation", "hold to talk"]),
             entry(.grokBall, section: generalSection, zhTitle: "启用侧边情绪智能球",
                   enTitle: "Enable Sidecar Grok Ball",
                   synonyms: ["情绪球", "智能球", "侧边球", "grok", "ball", "sidecar", "emotion"]),

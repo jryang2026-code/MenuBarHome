@@ -233,6 +233,18 @@ public final class HomeStore {
         }
     }
 
+    public var enableVoiceInput: Bool {
+        didSet {
+            HomePreferences.enableVoiceInput.save(enableVoiceInput, to: userDefaults)
+            if enableVoiceInput != oldValue {
+                onVoiceInputPreferenceChanged?(enableVoiceInput)
+                for observer in voiceInputPreferenceObservers.values {
+                    observer(enableVoiceInput)
+                }
+            }
+        }
+    }
+
     public var isCompactGridMode: Bool {
         didSet { HomePreferences.isCompactGridMode.save(isCompactGridMode, to: userDefaults) }
     }
@@ -699,6 +711,19 @@ public final class HomeStore {
     /// stack records the alert in `recentSafetyAlerts` whether or not this is installed.
     public var onSafetyAlert: ((SafetyAlert) -> Void)?
     public var onGlobalHotkeyPreferenceChanged: ((Bool) -> Void)?
+    public var onVoiceInputPreferenceChanged: ((Bool) -> Void)?
+    @ObservationIgnored private var voiceInputPreferenceObservers: [UUID: (Bool) -> Void] = [:]
+
+    @discardableResult
+    public func addVoiceInputPreferenceObserver(_ observer: @escaping (Bool) -> Void) -> UUID {
+        let id = UUID()
+        voiceInputPreferenceObservers[id] = observer
+        return id
+    }
+
+    public func removeVoiceInputPreferenceObserver(_ id: UUID) {
+        voiceInputPreferenceObservers.removeValue(forKey: id)
+    }
 
     public var onOpenCameraLiveView: ((SmartDevice) -> Void)?
     public internal(set) var activeLiveCameraDeviceId: String?
@@ -1048,6 +1073,7 @@ public final class HomeStore {
         self.hideGroupedLights = HomePreferences.hideGroupedLights.load(from: ud)
         self.allowAdvancedFacetWrites = HomePreferences.allowAdvancedFacetWrites.load(from: ud)
         self.enableGlobalHotkey = HomePreferences.enableGlobalHotkey.load(from: ud)
+        self.enableVoiceInput = HomePreferences.enableVoiceInput.load(from: ud)
         self.enableSafetyAlerts = HomePreferences.enableSafetyAlerts.load(from: ud)
         self.doorbellAutoPopup = HomePreferences.doorbellAutoPopup.load(from: ud)
         self.enableWeeklyHealthReport = HomePreferences.enableWeeklyHealthReport.load(from: ud)

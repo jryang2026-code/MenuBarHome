@@ -18,7 +18,7 @@ extension HomeStore {
     public func presentAssistantBar(startVoice: Bool = false) {
         isShowingAssistantBar = true
         refreshProactiveSuggestionCacheIfStale()
-        if startVoice {
+        if startVoice && enableVoiceInput {
             assistantVoiceRequest &+= 1
         } else {
             assistantFocusRequest &+= 1
