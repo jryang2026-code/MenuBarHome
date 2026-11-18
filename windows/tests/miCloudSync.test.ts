@@ -169,7 +169,16 @@ describe("Mi Cloud empty success is a control failure, not a success", () => {
 
   it("fails an action whose answer carries no device verdict", async () => {
     const call = { did: "lamp-1", siid: 2, aiid: 1, inputs: [] };
-    for (const result of [null, {}, [], { out: [] }, [{ out: [] }], { code: "bad", out: ["x"] }]) {
+    for (const result of [
+      null,
+      {},
+      [],
+      { out: [] },
+      [{ out: [] }],
+      { code: "bad", out: ["x"] },
+      { did: "lamp-1", siid: 2, aiid: 1, out: [] },
+      { message: "offline" },
+    ]) {
       await assert.rejects(
         () => new MiCloudClient(SESSION, reply({ code: 0, result })).callAction(call),
         isBadResponse,

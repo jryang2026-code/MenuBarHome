@@ -121,7 +121,10 @@ struct MiCloudSyncResilienceTests {
             }
         }
         // callAction used to treat `.null` and `{}` as an acknowledged action.
-        for result in ["null", "{}", "[]", #"{"out":[]}"#, #"[{"out":[]}]"#, #"{"code":"bad","out":["x"]}"#] {
+        for result in [
+            "null", "{}", "[]", #"{"out":[]}"#, #"[{"out":[]}]"#, #"{"code":"bad","out":["x"]}"#,
+            #"{"did":"123","siid":2,"aiid":1,"out":[]}"#, #"{"message":"offline"}"#,
+        ] {
             await #expect(throws: noVerdict) {
                 _ = try await client(result: result).callAction(call)
             }

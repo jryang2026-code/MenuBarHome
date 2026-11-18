@@ -851,8 +851,8 @@ public actor MiCloudClient: MiCloudAPI {
     }
 
     /// An action answers with its own `code` (and usually `out`); an array is the older gateway shape.
-    /// `.null`, `{}` and `{"out":[]}` say nothing, so they cannot count as acknowledged. An object that
-    /// returns real output without a `code` did answer: camera stream actions rely on that URL.
+    /// `.null`, `{}`, an echo of the call and `{"message":"offline"}` are not acknowledgements. Without
+    /// a `code`, only real output counts: a non-empty `out` or the stream URL camera actions return.
     static func checkActionResult(_ result: JSONValue) throws {
         if let items = result.arrayValue {
             guard !items.isEmpty else {
@@ -866,15 +866,9 @@ public actor MiCloudClient: MiCloudAPI {
     }
 
     private static func hasActionOutput(_ result: JSONValue) -> Bool {
-        guard case .object(let fields) = result else { return false }
-        return fields.values.contains { value in
-            switch value {
-            case .null: return false
-            case .array(let items): return !items.isEmpty
-            case .object(let nested): return !nested.isEmpty
-            case .string, .number, .bool: return true
-            }
-        }
+        guard case .object = result else { return false }
+        if let out = result["out"]?.arrayValue, !out.isEmpty { return true }
+        return MiCloudProvider.extractStreamURL(from: result) != nil
     }
 
     /// MIoT per-item codes: 0 = done, 1 = accepted (async); negatives are device/gateway errors such as -704042011 (offline).

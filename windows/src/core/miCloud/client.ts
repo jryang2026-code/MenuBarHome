@@ -724,8 +724,8 @@ export class MiCloudClient {
 
   /**
    * An action answers with its own `code` (and usually `out`); an array is the older gateway shape.
-   * `null`, `{}` and `{out: []}` say nothing, so they cannot count as acknowledged. An object that
-   * returns real output without a `code` did answer: camera stream actions rely on that URL.
+   * `null`, `{}`, an echo of the call and `{message: "offline"}` are not acknowledgements. Without
+   * a `code`, only real output counts: a non-empty `out` or the stream URL camera actions return.
    */
   private static checkActionResult(result: unknown): void {
     if (Array.isArray(result)) {
@@ -743,12 +743,9 @@ export class MiCloudClient {
     if (!result || typeof result !== "object") return false;
     const fields = result as Record<string, unknown>;
     if (fields["code"] !== undefined) return false;
-    return Object.values(fields).some((value) => {
-      if (value === null || value === undefined) return false;
-      if (Array.isArray(value)) return value.length > 0;
-      if (typeof value === "object") return Object.keys(value).length > 0;
-      return true;
-    });
+    const out = fields["out"];
+    if (Array.isArray(out) && out.length > 0) return true;
+    return /https?:\/\//i.test(JSON.stringify(fields));
   }
 
   /** Throws unless `item` carries an integer MIoT code; a negative code is the device's verdict. */
