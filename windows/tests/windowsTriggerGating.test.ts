@@ -89,11 +89,20 @@ describe("Windows automation trigger gating (source of truth)", () => {
     assert.deepEqual([...WINDOWS_SUPPORTED_TRIGGERS].sort(), [
       "away",
       "back",
+      "batteryBelowThreshold",
+      "displaySleep",
+      "displayWake",
+      "externalDisplayConnected",
+      "externalDisplayDisconnected",
       "lateNightUsage",
+      "powerConnected",
+      "powerDisconnected",
       "scheduledTime",
       "screenLocked",
       "screenUnlocked",
       "sensorThreshold",
+      "systemSleep",
+      "systemWake",
       "wifiNetworkJoined",
       "wifiNetworkLeft",
     ]);
@@ -147,11 +156,23 @@ describe("Windows automation trigger gating (source of truth)", () => {
       }
     }
     dispatchedKinds.delete("");
-    // 当前生产链路只派发这四类事件；后续接入原生事件后，连同本断言与
+    // 生产派发点：锁屏轮询、面板唤醒、周期 tick、Wi-Fi 轮询，以及电源/外接显示器采样
+    // （`pollSystemContextSignals`）和原生休眠/息屏回调（`notifySystem*` /
+    // `notifyDisplayPowerChanged`）。新增派发点必须连同本断言与
     // WINDOWS_SUPPORTED_TRIGGERS / WINDOWS_TRIGGER_SOURCES 一并扩展。
     assert.deepEqual(
       [...dispatchedKinds].sort(),
-      ["lockChanged", "panelWake", "tick", "wifiChanged"],
+      [
+        "displayPowerChanged",
+        "externalDisplayChanged",
+        "lockChanged",
+        "panelWake",
+        "powerChanged",
+        "systemSleep",
+        "systemWake",
+        "tick",
+        "wifiChanged",
+      ],
       "production dispatch sites changed; update WINDOWS_SUPPORTED_TRIGGERS gating together",
     );
 

@@ -854,8 +854,9 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
 
     app.openSettingsSheet("system");
     assert.equal(document.querySelectorAll("[data-auto-rule-row]").length, 3);
-    // Wi-Fi 条件在 Windows 上已接线支持，只有不受支持的触发器仍带标识。
-    assert.equal(document.querySelectorAll("[data-auto-rule-unsupported]").length, 2);
+    // 只剩 cameraInUse 不受支持：batteryBelowThreshold 已接入电源事件，Wi-Fi 条件在 Windows 上已接线。
+    assert.equal(document.querySelectorAll("[data-auto-rule-unsupported]").length, 1);
+    assert.equal(document.querySelector('[data-auto-rule-unsupported="legacy-battery"]'), null);
     assert.equal(document.querySelector('[data-auto-rule-unsupported="legacy-wifi"]'), null);
     assert.match(document.body.textContent ?? "", /Windows 暂不支持，不会触发/);
 
@@ -863,7 +864,7 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
     const wifiRowText = element('[data-auto-rule-row="legacy-wifi"]').textContent ?? "";
     assert.match(wifiRowText, /Office_Guest, Home_5G/);
     assert.match(wifiRowText, /排除 Wi-Fi: Office_Guest, Home_5G/);
-    const batteryRowText = element('[data-auto-rule-unsupported="legacy-battery"]').closest("[data-auto-rule-row]")?.textContent ?? "";
+    const batteryRowText = element('[data-auto-rule-row="legacy-battery"]').textContent ?? "";
     assert.match(batteryRowText, /电量 < 18%/);
 
     // 开关切换只写 isEnabled，其余字段保持字节级一致。
@@ -887,9 +888,11 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
     assert.deepEqual(afterEnable.map(project), before.map(project));
 
     // 不受支持的触发器不会因 Windows 生产事件（lockChanged / tick）触发，即使处于启用状态；
-    // legacy-wifi 的首条 lockChanged 只建立基线，不产生 away 触发。
+    // 电量规则只在 powerChanged 越过阈值时执行，legacy-wifi 的首条 lockChanged 只建立基线。
     await dispatchSystemContextEvent(app, { kind: "lockChanged", isLocked: true }, new Date(2026, 10, 14, 14, 0, 0).getTime());
     await dispatchSystemContextEvent(app, { kind: "tick" }, new Date(2026, 10, 14, 14, 2, 30).getTime());
+    assert.equal(dispatched.length, 0);
+    // 已接入的电源事件不在 lockChanged / tick 里，所以旧电量规则同样不会被动触发。
     assert.equal(dispatched.length, 0);
   });
 

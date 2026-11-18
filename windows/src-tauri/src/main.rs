@@ -8,6 +8,7 @@ mod job_object;
 mod credentials;
 mod network;
 mod placement;
+mod system_events;
 mod update;
 mod wifi;
 mod window;
@@ -23,6 +24,7 @@ use placement::{
     move_suppression_deadline, place, primary_button_virtual_key, resized_top, taskbar_edge,
     PanelAnchor, PanelPlacement, PlacementInput, Rect, TaskbarEdge, DRAG_SETTLE_MS,
 };
+use system_events::*;
 use update::*;
 use wifi::wifi_current;
 use window::*;
@@ -264,6 +266,8 @@ fn main() {
             get_launch_at_login,
             get_env_var,
             is_workstation_locked,
+            system_power_status,
+            external_display_count,
             wifi_current,
             set_tray_tooltip, send_desktop_notification,
             write_raycast_snapshot,
@@ -281,6 +285,7 @@ fn main() {
         .setup(move |app| {
             sweep_stale_update_installers();
             scrub_stale_camera_config_on_startup();
+            let _ = install_power_notifications(app.handle().clone());
             start_companion_runtime(app.handle().clone());
             if let Some(path) = authorization_store_path() {
                 if let Ok(mut guard) = EXTRA_ALLOWED_ORIGINS.write() {

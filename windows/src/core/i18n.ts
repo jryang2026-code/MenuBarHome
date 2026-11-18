@@ -727,6 +727,10 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
     "读取当前 Wi-Fi 名称需要系统「位置」权限，请在「设置 → 隐私和安全性 → 位置」中允许本应用，否则 Wi-Fi 条件不会生效。",
     "Reading the Wi-Fi name needs the system Location permission. Allow this app under Settings > Privacy & security > Location, or Wi-Fi conditions will not apply.",
   ],
+  "电源与显示器变化每 10 秒采样一次；休眠与息屏由系统电源通知即时推送，台式机没有电池，不会触发低电量规则。": [
+    "电源与显示器变化每 10 秒采样一次；休眠与息屏由系统电源通知即时推送，台式机没有电池，不会触发低电量规则。",
+    "Power and display changes are sampled every 10 seconds; sleep and display off arrive from the system power notifications. Desktops have no battery, so low-battery rules never fire there.",
+  ],
   "锁屏时禁止控制设备": ["锁屏时禁止控制设备", "Block device control while locked"],
   "锁屏期间拦截手动与外部链接控制；已设好的定时任务仍按时执行。": [
     "锁屏期间拦截手动与外部链接控制；已设好的定时任务仍按时执行。",

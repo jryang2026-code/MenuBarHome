@@ -80,8 +80,8 @@
     },
     {
       "id": "mac-event-automation",
-      "en": "Mac Event Automation",
-      "zh": "Mac 状态自动化",
+      "en": "Event Automation",
+      "zh": "状态自动化",
       "macos": "supported",
       "windows": "partial"
     },

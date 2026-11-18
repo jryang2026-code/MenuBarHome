@@ -885,9 +885,9 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
       ? `<p class="cc-field-hint" id="settings-auto-rules-empty" style="margin: 4px 0 8px 0;">${esc(
           uiText(
             lang,
-            "暂未创建自动化规则。可在下方选择锁屏离开、解锁回来、深夜用机、定时或传感器条件快速添加。",
-            "暫未建立自動化規則。可在下方選擇鎖屏離開、解鎖回來、深夜用機、定時或感測器條件快速新增。",
-            "No automation rules yet. Add rules below for lock/away, unlock/back, late-night PC use, schedules, or sensor triggers.",
+            "暂未创建自动化规则。可在下方选择锁屏离开、解锁回来、电源或外接显示器变化、休眠与息屏、深夜用机、定时或传感器条件快速添加。",
+            "暫未建立自動化規則。可在下方選擇鎖屏離開、解鎖回來、電源或外接顯示器變化、休眠與息屏、深夜用機、定時或感測器條件快速新增。",
+            "No automation rules yet. Add rules below for lock/away, unlock/back, power or external display changes, sleep and display off, late-night PC use, schedules, or sensor triggers.",
           ),
         )}</p>`
       : `<div id="settings-auto-rules-list" class="cc-timers-stack" style="margin: 6px 0 8px 0;">
@@ -1025,6 +1025,9 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
           <label for="settings-auto-trigger">${esc(uiText(lang, "当本机发生", "當本機發生", "When PC / Sensor"))}</label>
           <select id="settings-auto-trigger" class="cc-select">${triggerOptionsHtml}</select>
         </div>
+        <p class="cc-field-hint" id="settings-auto-trigger-system-hint" style="margin: 2px 0 0 0;">${esc(
+          t("电源与显示器变化每 10 秒采样一次；休眠与息屏由系统电源通知即时推送，台式机没有电池，不会触发低电量规则。"),
+        )}</p>
         ${renderTriggerOptionsEditor(draft, aliasedDevices, lang, esc)}
         <div class="cc-field-row" style="margin-top: 8px; gap: 8px;">
           <label for="settings-auto-wifi-kind">${esc(uiText(lang, "Wi-Fi 附加条件", "Wi-Fi 附加條件", "Wi-Fi condition"))}</label>

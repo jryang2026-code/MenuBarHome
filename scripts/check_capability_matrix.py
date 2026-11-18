@@ -201,8 +201,16 @@ CODE_ANCHORS = (
             "symbol": "MacContextAutomation",
         },
         "windows": {
-            "path": "windows/src/core/automationEngine.ts",
-            "symbol": "WINDOWS_SUPPORTED_TRIGGERS",
+            "checks": (
+                {
+                    "path": "windows/src/ui/systemContextPoll.ts",
+                    "symbols": ("SYSTEM_CONTEXT_POLL_INTERVAL_MS",),
+                },
+                {
+                    "path": "windows/src/core/automationEngine.ts",
+                    "symbols": ("WINDOWS_SUPPORTED_TRIGGERS",),
+                },
+            ),
         },
     },
     {
