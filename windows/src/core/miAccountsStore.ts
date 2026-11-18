@@ -656,11 +656,13 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
           for (const slotId of slotsForRemoval) await this.vault.deleteMiAccountSlot(slotId);
           // Only after every deletion: a failed retry must still know this account owned the primary.
           this.primaryConfirmed = false;
+          this.lastPrimaryReadFailed = false;
         } else { const promoted = remaining[0]!;
           await this.vault.savePrimaryMiSession(promoted.session);
           for (const slotId of slotsForRemoval) await this.vault.deleteMiAccountSlot(slotId);
           await this.vault.deleteMiAccountSlot(promoted.slotId);
           this.primaryConfirmed = true;
+          this.lastPrimaryReadFailed = false;
         }
       } else {
         // The first cached account is a recovered secondary, not the primary: never overwrite the
@@ -698,6 +700,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       this.loaded = true;
       this.accountsReadState = "complete";
       this.primaryConfirmed = false;
+      this.lastPrimaryReadFailed = false;
       this.lastWroteIndexToStorage = writeAccountIndex(this.storage, []);
       clearPersistedMiSessionExpired(this.storage);
     });
