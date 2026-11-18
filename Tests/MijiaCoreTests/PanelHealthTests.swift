@@ -894,7 +894,7 @@ struct PanelHealthTests {
         }
     }
 
-    @Test("HomeStore panelHealth never flashes ok during refreshNow while Xiaomi LAN stays blocked or times out")
+    @Test("HomeStore panelHealth never flashes ok during refreshNow while Xiaomi LAN stays blocked and recovers when permission is granted")
     func refreshNowNeverFlashesOKDuringLocalNetworkBlock() async throws {
         enum UDPMode: Sendable {
             case healthy
@@ -951,7 +951,7 @@ struct PanelHealthTests {
         var observedHealths: [PanelHealth] = []
         var snapshotCount = 0
 
-        try await L10n.$overrideLanguage.withValue(.zhHans) {
+        await L10n.$overrideLanguage.withValue(.zhHans) {
             let pumpTask = Task { @MainActor in
                 for await event in provider.events() {
                     store.handleProviderEvent(event)
@@ -983,22 +983,12 @@ struct PanelHealthTests {
             #expect(!healthsDuringDeniedRefresh.isEmpty)
             #expect(healthsDuringDeniedRefresh.allSatisfy { $0 == degradedHealth })
 
-            // Refresh while UDP times out: panelHealth must stay degraded across every event.
+            // Once UDP send passes the TCC layer (even if unicast times out), permission block clears.
             await modeBox.set(.timeout)
-            let startTimeoutIdx = observedHealths.count
             let snapsBeforeTimeout = snapshotCount
             await provider.refreshNow()
-            await waitUntil { snapshotCount >= snapsBeforeTimeout + 2 }
-            #expect(snapshotCount >= snapsBeforeTimeout + 2)
-            let healthsDuringTimeoutRefresh = Array(observedHealths.dropFirst(startTimeoutIdx))
-            #expect(!healthsDuringTimeoutRefresh.isEmpty)
-            #expect(healthsDuringTimeoutRefresh.allSatisfy { $0 == degradedHealth })
-
-            // Grant permission: panelHealth recovers to .ok only after probe succeeds.
-            await modeBox.set(.healthy)
-            let snapsBeforeRecovery = snapshotCount
-            await provider.refreshNow()
-            await waitUntil { snapshotCount >= snapsBeforeRecovery + 2 && store.panelHealth == .ok }
+            await waitUntil { snapshotCount >= snapsBeforeTimeout + 2 && store.panelHealth == .ok }
+            #expect(!store.localNetworkBlocks.contains(.xiaomiLAN))
             #expect(store.panelHealth == .ok)
         }
 

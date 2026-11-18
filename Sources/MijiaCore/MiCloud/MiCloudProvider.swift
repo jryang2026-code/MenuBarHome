@@ -928,6 +928,7 @@ public actor MiCloudProvider: HomeProvider {
                 let error: (any Error)?
             }
             var remainingLANKeysByDid = lanKeysByDid
+            var failedOutcomes: [LANPollResult] = [], shouldSweep = false
             if isLocalNetworkDenied, let probeDid = remainingLANKeysByDid.keys.sorted().first,
                let probeKeys = remainingLANKeysByDid[probeDid], let probeEndpoint = lanEndpoints[probeDid] {
                 do {
@@ -959,7 +960,8 @@ public actor MiCloudProvider: HomeProvider {
                         }
                         remainingLANKeysByDid.removeAll()
                     } else {
-                        cloudKeys.append(contentsOf: probeKeys)
+                        failedOutcomes.append(LANPollResult(did: probeDid, values: nil, rttMs: nil, keys: probeKeys, error: error))
+                        if (lanHealthByDid[probeDid]?.consecutiveFailures ?? 0) >= lanFailureThreshold { shouldSweep = true }
                         remainingLANKeysByDid.removeValue(forKey: probeDid)
                     }
                 }
@@ -983,7 +985,6 @@ public actor MiCloudProvider: HomeProvider {
                 return out
             }
 
-            var failedOutcomes: [LANPollResult] = [], shouldSweep = false
             for outcome in lanResults {
                 if let err = outcome.error {
                     if err is CancellationError { throw CancellationError() }
@@ -1005,14 +1006,6 @@ public actor MiCloudProvider: HomeProvider {
                     if !missingKeys.isEmpty {
                         cloudKeys.append(contentsOf: missingKeys)
                     }
-                }
-            }
-
-            if isLocalNetworkDenied {
-                for outcome in failedOutcomes {
-                    var state = lanHealthByDid[outcome.did] ?? LANHealthState()
-                    state.cooldownUntil = nil
-                    lanHealthByDid[outcome.did] = state
                 }
             }
 
@@ -1230,12 +1223,10 @@ public actor MiCloudProvider: HomeProvider {
             state.lastErrorWasLocalNetworkDenied = true
             state.cooldownUntil = nil
             updateLocalNetworkDenied(true)
-        } else if isLocalNetworkDenied {
-            // While Local Network permission is denied, a non-TCC probe failure (such as a timeout)
-            // has not proven LAN permission was restored. Keep the denied state intact and avoid
-            // entering cooldown so future polls and refreshNow can continue probing LAN.
-            state.cooldownUntil = nil
         } else {
+            if isLocalNetworkDenied {
+                updateLocalNetworkDenied(false)
+            }
             state.lastErrorWasLocalNetworkDenied = false
             state.consecutiveFailures += 1
             if state.consecutiveFailures >= lanFailureThreshold {

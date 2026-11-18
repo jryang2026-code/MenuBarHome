@@ -2900,40 +2900,52 @@ struct HybridProviderAndDoorbellTests {
         await provider.shutdown()
     }
 
-    @Test("refreshNow keeps localNetworkDenied active until a LAN probe succeeds and avoids cooldown trap on timeouts")
-    func refreshNowKeepsLocalNetworkDeniedUntilLANProbeSucceeds() async throws {
+    @Test("Non-denied LAN errors clear localNetworkDenied and allow broadcast recovery when device IP changed after granting permission")
+    func nonDeniedLANErrorClearsLocalNetworkDeniedAndRecoversViaBroadcast() async throws {
         enum UDPMode: Sendable {
             case healthy
             case denied
-            case timeout
+            case ipMovedTo180
         }
         let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
         let udpMode = LockedBox(UDPMode.healthy)
-        let udpTransport = MockUDPTransport { packet, _, _ in
+        let udpTransport = MockUDPTransport { packet, host, _ in
             switch udpMode.withValue({ $0 }) {
             case .denied:
                 throw MiIOError.localNetworkDenied
-            case .timeout:
-                throw MiIOError.timeout
+            case .ipMovedTo180:
+                guard host == "192.168.1.180" else { throw MiIOError.timeout }
+                if packet == MiIOPacket.helloPacket { return makeHelloResponse(deviceId: 101, stamp: 10) }
+                let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+                let reqId = (try JSONDecoder().decode(JSONValue.self, from: plaintext))["id"]?.intValue ?? 0
+                let reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":65,"code":0}]}"#
+                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
             case .healthy:
                 if packet == MiIOPacket.helloPacket { return makeHelloResponse(deviceId: 101, stamp: 10) }
                 let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
                 let reqId = (try JSONDecoder().decode(JSONValue.self, from: plaintext))["id"]?.intValue ?? 0
-                let reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":65,"code":0},{"did":"102","siid":2,"piid":1,"value":true,"code":0},{"did":"102","siid":2,"piid":2,"value":70,"code":0}]}"#
+                let reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":65,"code":0}]}"#
                 return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
             }
         }
-        await udpTransport.setBroadcastHandler { _, _, _ in [] }
+        await udpTransport.setBroadcastHandler { _, _, _ in
+            switch udpMode.withValue({ $0 }) {
+            case .denied:
+                throw MiIOError.localNetworkDenied
+            case .ipMovedTo180:
+                return [MiIOBroadcastReply(sourceIP: "192.168.1.180", packet: makeHelloResponse(deviceId: 101, stamp: 15))]
+            case .healthy:
+                return []
+            }
+        }
 
         let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
         let ownWifi1 = MiDeviceRecord(did: "101", name: "Speaker Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.50", token: tokenHex, isShared: false)
-        let ownWifi2 = MiDeviceRecord(did: "102", name: "Desk Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.51", token: tokenHex, isShared: false)
         let api = HybridMockCloudAPI(
-            devices: [ownWifi1, ownWifi2],
-            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101", "102"])],
+            devices: [ownWifi1],
+            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101"])],
             props: [
                 MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "101", siid: 2, piid: 2): .number(55),
-                MiotPropKey(did: "102", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "102", siid: 2, piid: 2): .number(60),
             ]
         )
         let provider = MiCloudProvider(
@@ -2956,7 +2968,6 @@ struct HybridProviderAndDoorbellTests {
 
         #expect(await collector.wait {
             $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan
-                && $0.snapshots.last?.deviceTransportDiagnostics["102"]?.route == .lan
         })
 
         // Enter localNetworkDenied state.
@@ -2965,7 +2976,6 @@ struct HybridProviderAndDoorbellTests {
         #expect(await collector.wait {
             $0.snapshots.last?.localNetworkBlockedFeatures == [.xiaomiLAN]
                 && $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .localNetworkBlocked
-                && $0.snapshots.last?.deviceTransportDiagnostics["102"]?.route == .localNetworkBlocked
         })
 
         // Refresh while still denied must NOT emit an intermediate [] permission event or clear snapshot flags.
@@ -2978,33 +2988,19 @@ struct HybridProviderAndDoorbellTests {
         #expect(!permsDuringDeniedRefresh.contains([]))
         #expect(snapsDuringDeniedRefresh.allSatisfy { $0.localNetworkBlockedFeatures == [.xiaomiLAN] })
 
-        // Refresh when UDP probes fail as timeouts must keep localNetworkDenied active and avoid cooldown.
-        udpMode.withValue { $0 = .timeout }
-        let permsBeforeTimeoutRefresh = await collector.localNetworkPermissions.count
-        let snapsBeforeTimeoutRefresh = await collector.snapshots.count
-        await provider.refreshNow()
-        #expect(await collector.wait { $0.snapshots.count >= snapsBeforeTimeoutRefresh + 2 })
-        let permsDuringTimeoutRefresh = await collector.localNetworkPermissions.dropFirst(permsBeforeTimeoutRefresh)
-        let snapsDuringTimeoutRefresh = await collector.snapshots.dropFirst(snapsBeforeTimeoutRefresh)
-        #expect(!permsDuringTimeoutRefresh.contains([]))
-        #expect(snapsDuringTimeoutRefresh.allSatisfy {
-            $0.localNetworkBlockedFeatures == [.xiaomiLAN]
-                && $0.deviceTransportDiagnostics["101"]?.route == .localNetworkBlocked
-                && $0.deviceTransportDiagnostics["102"]?.route == .localNetworkBlocked
-        })
-        #expect(await provider.lanTransportState(for: "101").isCoolingDown == false)
-        #expect(await provider.lanTransportState(for: "102").isCoolingDown == false)
-
-        // Grant permission inside the 30s cooldown window: refreshNow must immediately probe LAN and recover.
-        udpMode.withValue { $0 = .healthy }
+        // User grants Local Network permission, but device IP moved from .50 to .180.
+        // Unicast to .50 times out (passing TCC), so provider must clear localNetworkDenied,
+        // increment consecutiveFailures to reach threshold, run broadcast sweep, and self-heal to .180!
+        udpMode.withValue { $0 = .ipMovedTo180 }
         clock.advance(by: 2)
         let snapsBeforeRecovery = await collector.snapshots.count
-        await provider.refreshNow()
-        #expect(await collector.wait { $0.snapshots.count >= snapsBeforeRecovery + 2 })
-        #expect(await collector.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan)
-        #expect(await collector.snapshots.last?.deviceTransportDiagnostics["102"]?.route == .lan)
+        _ = await provider.readBack(deviceId: "101")
+        #expect(await collector.wait { $0.snapshots.count > snapsBeforeRecovery })
         #expect(await collector.snapshots.last?.localNetworkBlockedFeatures.isEmpty == true)
         #expect(await collector.localNetworkPermissions.last == [])
+        #expect(await collector.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan)
+        #expect(await collector.snapshots.last?.deviceTransportDiagnostics["101"]?.usedBroadcastRecovery == true)
+        #expect(await provider.lanTransportState(for: "101").effectiveIP == "192.168.1.180")
 
         await provider.shutdown()
     }
