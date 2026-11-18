@@ -807,6 +807,11 @@ struct DualSourceIntegrationTests {
     func multiAccountSingleDisconnectFailsOverPairedCardToHA() async throws {
         let suite = "test.dual.multi_acc_failover.\(UUID().uuidString)"
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let suiteDefaults = try #require(UserDefaults(suiteName: suite))
+        // Without an explicit list, a Mi snapshot arriving first seeds favorites with the Mi id and
+        // makes it the paired card's canonical id.
+        suiteDefaults.set([String](), forKey: ViewPreferenceKeys.favoriteDeviceIds)
+        suiteDefaults.set([String](), forKey: ViewPreferenceKeys.favoriteOrder)
 
         let acc1Id = "cn:1001"
         let acc2Id = "de:2002"
