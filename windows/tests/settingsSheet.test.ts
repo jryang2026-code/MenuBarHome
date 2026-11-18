@@ -470,3 +470,109 @@ describe("Settings keeps its tab under a live cloud refresh (#78)", () => {
     assert.equal(visibleTab(), "system");
   });
 });
+
+describe("WP3d · Windows 常规与家居连接导航整理", () => {
+  it("labels the first two tabs 常规 and 家居连接 across zh-Hans, zh-Hant, and en", async () => {
+    const app = startDemo();
+    await click("#btn-settings");
+    assert.equal(element('[data-settings-tab="general"]').textContent?.trim(), "常规");
+    assert.equal(element('[data-settings-tab="connection"]').textContent?.trim(), "家居连接");
+
+    await click('[data-interface-language="zh-Hant"]');
+    assert.equal(element('[data-settings-tab="general"]').textContent?.trim(), "常規");
+    assert.equal(element('[data-settings-tab="connection"]').textContent?.trim(), "家居連線");
+
+    await click('[data-interface-language="en"]');
+    assert.equal(element('[data-settings-tab="general"]').textContent?.trim(), "General");
+    assert.equal(element('[data-settings-tab="connection"]').textContent?.trim(), "Connections");
+
+    setLanguage("zh-Hans");
+    app.settings.interfaceLanguage = "zh-Hans";
+    app.render();
+  });
+
+  it("organizes 常规 into 基础显示, 交互, 启动与快捷键, 设备可见性, and folds height/opacity/anchor into 高级显示", async () => {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      connectionMode: "demo",
+      hasCompletedOnboarding: true,
+      layout: {
+        tileSizes: {},
+        order: [],
+        groups: [],
+        groupMap: {},
+        collapsed: [],
+        aliases: {},
+        hiddenDeviceIds: ["light.living_ceiling"],
+      },
+    }));
+    new MenuMijiaWindowsApp(element("#app"));
+    await click("#btn-settings");
+
+    const gen = panel("general");
+    for (const group of ["basicDisplay", "interaction", "startupShortcuts", "deviceVisibility"]) {
+      assert.ok(gen.querySelector(`[data-general-section="${group}"]`), `missing general section ${group}`);
+    }
+
+    const langLabel = gen.querySelector('[data-settings-anchor="language"] label')?.textContent?.trim();
+    assert.equal(langLabel, "界面语言", "Windows language uses a single clean label");
+
+    const advDetails = gen.querySelector<HTMLDetailsElement>('details.cc-conn-secondary[data-conn-section="advancedDisplay"]');
+    assert.ok(advDetails, "高级显示 must be a collapsible details section");
+    assert.equal(advDetails.open, false);
+    for (const anchor of ["panelTheme", "panelHeight", "panelOpacity", "panelAnchor", "climatePanelModule", "hideGroupedLights"]) {
+      assert.ok(advDetails.querySelector(`[data-settings-anchor="${anchor}"]`), `${anchor} must live inside 高级显示`);
+    }
+    const heightPills = [...advDetails.querySelectorAll<HTMLElement>("[data-panel-height]")].map((b) => b.dataset.panelHeight);
+    assert.deepEqual(heightPills, ["compact", "standard", "tall", "max"]);
+
+    // Device visibility lists manually hidden devices and restores them in place.
+    const unhideBtn = gen.querySelector<HTMLButtonElement>('[data-unhide-device="light.living_ceiling"]');
+    assert.ok(unhideBtn, "deviceVisibility section lists hidden devices for restoration");
+    unhideBtn.click();
+    await setImmediate();
+    assert.equal(panel("general").querySelector('[data-unhide-device="light.living_ceiling"]'), null);
+
+    // Search deep-link auto-opens the folded 高级显示 section and preserves open state across re-render.
+    type("#settings-search-input", "不透明度");
+    await click('[data-settings-search-hit="panelOpacity"]');
+    assert.equal(
+      panel("general").querySelector<HTMLDetailsElement>('details.cc-conn-secondary[data-conn-section="advancedDisplay"]')?.open,
+      true,
+    );
+  });
+
+  it("uses §1.2 vocabulary in 家居连接, provides 查找家中的 Home Assistant, and folds technical options", async () => {
+    const app = startDemo();
+    await click("#btn-settings");
+    await click('[data-settings-tab="connection"]');
+
+    const conn = panel("connection");
+    assert.match(conn.textContent ?? "", /示例家庭，不会控制真实设备/);
+    assert.match(conn.textContent ?? "", /先逛逛示例家庭/);
+    assert.match(conn.textContent ?? "", /专属连接钥匙/);
+    assert.match(conn.textContent ?? "", /查找家中的 Home Assistant/);
+    assert.match(conn.textContent ?? "", /个人资料/);
+    assert.match(conn.textContent ?? "", /使用非官方连接方式/);
+    assert.match(conn.textContent ?? "", /添加更多米家账号/);
+    assert.match(conn.textContent ?? "", /同时连接多个家居平台（相同设备自动合并）/);
+
+    // Clicking 查找家中的 Home Assistant fills the default local discovery URL if empty or probes local HA.
+    const findHaBtn = conn.querySelector<HTMLButtonElement>("#btn-find-local-ha");
+    assert.ok(findHaBtn);
+    findHaBtn.click();
+    await setImmediate();
+    assert.equal(field("#settings-ha-url").value, "http://homeassistant.local:8123");
+
+    // Plaintext HTTP warning is shown at >=12px amber when a remote plain HTTP URL is entered.
+    type("#settings-ha-url", "http://example.com:8123");
+    const httpWarn = conn.querySelector<HTMLElement>("[data-ha-plaintext-warning]");
+    assert.ok(httpWarn && !httpWarn.hidden, "remote plain HTTP URL shows plaintext warning");
+
+    // Quit button keeps its anchor and explains that tray icon and shortcut will stop.
+    const quitBtn = element("#btn-settings-quit");
+    assert.equal(quitBtn.dataset.settingsAnchor, "quitApp");
+    assert.match(quitBtn.getAttribute("title") ?? "", /完全退出后，托盘图标和快捷键都会停止/);
+    assert.ok(app);
+  });
+});
+
